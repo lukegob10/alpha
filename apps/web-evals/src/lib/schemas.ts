@@ -6,8 +6,7 @@ import { rooCodeSettingsSchema } from "@alpha-code/types"
  * ExecutionMethod
  */
 
-export const executionMethodSchema = z.enum(["vscode", "cli"])
-export type ExecutionMethod = z.infer<typeof executionMethodSchema>
+export const executionMethodSchema = z.literal("vscode")
 
 /**
  * CreateRun

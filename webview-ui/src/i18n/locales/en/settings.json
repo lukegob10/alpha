@@ -376,16 +376,19 @@
 			"timeoutLabel": "Time to wait before auto-selecting the first answer"
 		},
 		"execute": {
-			"label": "Execute",
-			"description": "Automatically execute allowed terminal commands without requiring approval",
-			"allowedCommands": "Allowed Auto-Execute Commands",
-			"allowedCommandsDescription": "Command prefixes that can be auto-executed when \"Always approve execute operations\" is enabled. Add * to allow all commands (use with caution).",
+			"label": "Command rules",
+			"description": "Auto-approve commands within the task write scope. Network access is enabled. Writes outside that scope are blocked. Setup is global and persists across projects.",
+			"allowedCommands": "Allowed command prefixes",
+			"allowedCommandsDescription": "Use * to auto-approve commands, including scripts. Saved rules apply globally. Detected outside-root writes and unresolved write paths still require approval. This is a command/path check, not an OS sandbox.",
 			"deniedCommands": "Denied Commands",
 			"deniedCommandsDescription": "Command prefixes that will be automatically denied without asking for approval. In case of conflicts with allowed commands, the longest prefix match takes precedence. Add * to deny all commands.",
 			"commandPlaceholder": "Enter command prefix (e.g., 'git ')",
 			"deniedCommandPlaceholder": "Enter command prefix to deny (e.g., 'rm -rf')",
 			"addButton": "Add",
-			"autoDenied": "Commands with the prefix `{{prefix}}` have been forbidden by the user. Do not bypass this restriction by running another command."
+			"autoDenied": "Commands with the prefix `{{prefix}}` have been forbidden by the user. Do not bypass this restriction by running another command.",
+			"pathApprovalTitle": "File paths need approval",
+			"pathApprovalDescription": "This command may change files outside the task root. Approval applies only to this run.",
+			"pathApprovalUnresolved": "Some write paths could not be resolved."
 		},
 		"apiRequestLimit": {
 			"title": "Max Count",

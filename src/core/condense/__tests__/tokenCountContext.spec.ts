@@ -505,7 +505,7 @@ describe("operation-scoped context token counting", () => {
 		const handler = createHandler(countTokens)
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "Initial instruction", ts: 1 },
-			{ role: "assistant", content: "Completed work", ts: 2 },
+			{ role: "assistant", content: "Completed work. ".repeat(200), ts: 2 },
 			{ role: "user", content: "Continue", ts: 3 },
 		]
 		const deadline = TEST_START.getTime() + 100

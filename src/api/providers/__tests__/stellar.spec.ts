@@ -75,6 +75,7 @@ describe("StellarHandler", () => {
 			createAsyncStream([{ choices: [{ delta: { content: "Stellar response" } }] }]),
 		)
 		const handler = createHandler()
+		expect(handler.streamCapabilities.cancellation).toBe(false)
 
 		const firstChunk = await handler.createMessage("system prompt", []).next()
 

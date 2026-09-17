@@ -146,12 +146,7 @@ interface ExecuteCommandParams {
 }
 
 export function resolveAgentTimeoutMs(timeoutSeconds: number | null | undefined): number {
-	const requestedAgentTimeout = typeof timeoutSeconds === "number" && timeoutSeconds > 0 ? timeoutSeconds * 1000 : 0
-
-	// In CLI runtime, stdin harnesses expect command lifetime to be governed
-	// solely by commandExecutionTimeout (user setting), not model-provided
-	// background timeouts.
-	return process.env.ROO_CLI_RUNTIME === "1" ? 0 : requestedAgentTimeout
+	return typeof timeoutSeconds === "number" && timeoutSeconds > 0 ? timeoutSeconds * 1000 : 0
 }
 
 export function isGitHubCliCommand(command: string): boolean {
@@ -246,7 +241,11 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 
 			task.consecutiveMistakeCount = 0
 
-			const didApprove = await askApproval("command", canonicalCommand)
+			const didApprove = customCwd
+				? await askApproval("command", canonicalCommand, {
+						text: redactTaskPrivatePaths(task, path.resolve(task.cwd, customCwd)),
+					})
+				: await askApproval("command", canonicalCommand)
 
 			if (!didApprove) {
 				task.failCommandExecution?.(commandEvidenceId, "denied")
@@ -929,6 +928,7 @@ export async function executeCommandInTerminal(
 	try {
 		onExecutionState?.("unknown")
 		process = terminal.runCommand(command, callbacks)
+		process.executionId = physicalExecutionId
 		onExecutionState?.("yes")
 	} catch (error) {
 		const launchError = new CommandExecutionLifecycleError("launch-command", error)
@@ -1154,6 +1154,9 @@ export async function executeCommandInTerminal(
 	}
 
 	const displayOutput = result || latestCompressedOutput || ""
+	if (toolCallId && (message || (!completed && !exitDetails))) {
+		task.markCommandExecutionBackgrounded?.(toolCallId, physicalExecutionId)
+	}
 	if (!completed && !exitDetails) {
 		backgroundResultReturned = true
 		void handleBackgroundOutputBookkeepingFailure()
@@ -1169,7 +1172,7 @@ export async function executeCommandInTerminal(
 				redactTaskPrivatePaths(
 					task,
 					[
-						`Command is still running in terminal from '${terminal.getCurrentWorkingDirectory().toPosix()}'.`,
+						`Command is still running in terminal from '${terminal.getCurrentWorkingDirectory().toPosix()}'. execution_id: ${physicalExecutionId}. Use manage_command to wait or stop this command.`,
 						displayOutput.length > 0 ? `Here's the output so far:\n${displayOutput}\n` : "\n",
 						`<user_message>\n${text}\n</user_message>`,
 					].join("\n"),
@@ -1233,7 +1236,7 @@ export async function executeCommandInTerminal(
 			redactTaskPrivatePaths(
 				task,
 				[
-					`Command is still running in terminal ${workingDir ? ` from '${isManagedWorker ? "." : workingDir.toPosix()}'` : ""}.`,
+					`Command is still running in terminal ${workingDir ? ` from '${isManagedWorker ? "." : workingDir.toPosix()}'` : ""}. execution_id: ${physicalExecutionId}. Use manage_command to wait for output or stop this command.`,
 					displayOutput.length > 0 ? `Here's the output so far:\n${displayOutput}\n` : "\n",
 					"You will be updated on the terminal status and new output in the future.",
 				].join("\n"),

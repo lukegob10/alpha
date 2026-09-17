@@ -82,6 +82,8 @@ export const modelInfoSchema = z.object({
 	maxTokens: z.number().nullish(),
 	maxThinkingTokens: z.number().nullish(),
 	contextWindow: z.number(),
+	/** False when the provider reports a dedicated input limit, such as VS Code LM. */
+	contextWindowIncludesOutput: z.boolean().optional(),
 	supportsImages: z.boolean().optional(),
 	supportsPromptCache: z.boolean(),
 	// Optional default prompt cache retention policy for providers that support it.

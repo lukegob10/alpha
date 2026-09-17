@@ -9,7 +9,6 @@ type AutoApproveToggles = Pick<
 	| "alwaysAllowReadOnly"
 	| "alwaysAllowWrite"
 	| "alwaysAllowMcp"
-	| "alwaysAllowModeSwitch"
 	| "alwaysAllowSubtasks"
 	| "alwaysAllowSubagents"
 	| "alwaysAllowTickets"
@@ -48,13 +47,6 @@ export const autoApproveSettingsConfig: Record<AutoApproveSetting, AutoApproveCo
 		descriptionKey: "settings:autoApprove.mcp.description",
 		icon: "plug",
 		testId: "always-allow-mcp-toggle",
-	},
-	alwaysAllowModeSwitch: {
-		key: "alwaysAllowModeSwitch",
-		labelKey: "settings:autoApprove.modeSwitch.label",
-		descriptionKey: "settings:autoApprove.modeSwitch.description",
-		icon: "sync",
-		testId: "always-allow-mode-switch-toggle",
 	},
 	alwaysAllowSubtasks: {
 		key: "alwaysAllowSubtasks",

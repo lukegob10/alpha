@@ -1,4 +1,13 @@
 {
+	"messageActions": {
+		"copy": "Kopiëren",
+		"copied": "Gekopieerd",
+		"edit": "Bewerken en opnieuw verzenden",
+		"restart": "Opnieuw starten vanaf de vorige opdracht",
+		"restartWarning": "De vorige opdracht wordt opnieuw uitgevoerd en alle volgende berichten worden vervangen. De bestanden in de werkruimte blijven zoals ze zijn.",
+		"restartWithCheckpoint": "De vorige opdracht wordt opnieuw uitgevoerd en alle volgende berichten worden vervangen. Ook de bestanden herstellen naar het bijbehorende checkpoint?",
+		"restartOnly": "Opnieuw starten zonder bestanden te herstellen"
+	},
 	"activityTrace": {
 		"needsAttention": "Aandacht vereist",
 		"workedFor": "Gewerkt gedurende {{duration}}"
@@ -215,10 +224,10 @@
 		"didViewTopLevel": "Alpha heeft de bovenliggende bestanden in deze map bekeken",
 		"wantsToViewRecursive": "Alpha wil alle bestanden in deze map recursief bekijken",
 		"didViewRecursive": "Alpha heeft alle bestanden in deze map recursief bekeken",
-		"wantsToSearch": "Alpha wil deze map doorzoeken op <code>{{regex}}</code>",
-		"didSearch": "Alpha heeft deze map doorzocht op <code>{{regex}}</code>",
-		"wantsToSearchOutsideWorkspace": "Alpha wil deze map (buiten werkruimte) doorzoeken op <code>{{regex}}</code>",
-		"didSearchOutsideWorkspace": "Alpha heeft deze map (buiten werkruimte) doorzocht op <code>{{regex}}</code>",
+		"wantsToSearch": "Alpha wil een map doorzoeken",
+		"didSearch": "Alpha heeft een map doorzocht",
+		"wantsToSearchOutsideWorkspace": "Alpha wil een map doorzoeken (buiten de werkruimte)",
+		"didSearchOutsideWorkspace": "Alpha heeft een map doorzocht (buiten de werkruimte)",
 		"wantsToViewTopLevelOutsideWorkspace": "Alpha wil de bovenliggende bestanden in deze map (buiten werkruimte) bekijken",
 		"didViewTopLevelOutsideWorkspace": "Alpha heeft de bovenliggende bestanden in deze map (buiten werkruimte) bekeken",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha wil alle bestanden in deze map (buiten werkruimte) recursief bekijken",
@@ -328,8 +337,11 @@
 			"gpt54": "Poe-provider: Poe toegevoegd als AI-provider, zodat je in Alpha direct toegang hebt tot Poe-modellen.",
 			"slashSkills": "xAI- en MiniMax-verbeteringen: De xAI-provider gemigreerd naar de Responses API, herbruikbare transformatiehulpmiddelen toegevoegd, Grok-4.20-standaardinstellingen bijgewerkt en MiniMax-modellijsten plus de afhandeling van het contextvenster gerepareerd voor een betrouwbaardere configuratie.",
 			"geminiPro": "Gemini 3.1 Pro ondersteuning: Ondersteuning voor het Gemini 3.1 Pro model is toegevoegd en ingesteld als standaard Gemini-model voor betere prestaties.",
-			"cliNdjson": "CLI NDJSON-protocol: Nieuw NDJSON stdin-protocol, list-subopdrachten en gemodulariseerd run-commando voor flexibelere CLI-workflows.",
-			"cliRelease": "CLI v0.1.0: De Alpha CLI bereikt zijn eerste officiële release met een stabiele opdrachtinterface."
+			"welcome": "Alpha v{{version}} verbetert verificatie, opdrachtbeheer en taakcontinuïteit.",
+			"acceptanceChecks": "Hergebruik geslaagde controles zolang de opgegeven invoer ongewijzigd blijft.",
+			"commandControl": "Wacht op achtergrondopdrachten van de taak, stuur invoer en stop ze.",
+			"workflowContinuity": "Behoud taakbeperkingen en vaardigheidscontext bij herladen en contextcompressie.",
+			"chatUpdates": "Gebruik duidelijkere chatacties en selecteer een provider nadat de taak is voltooid."
 		}
 	},
 	"reasoning": {
@@ -339,6 +351,7 @@
 	"contextManagement": {
 		"tokens": "tokens",
 		"condensation": {
+			"unchanged": "De context past al binnen de limiet",
 			"title": "Context samengevat",
 			"inProgress": "Context aan het samenvatten...",
 			"errorHeader": "Context samenvatten mislukt"
@@ -498,5 +511,13 @@
 		"title": "Provider wordt niet meer ondersteund",
 		"message": "Sorry, deze provider wordt niet meer ondersteund. We zagen dat heel weinig Alpha-gebruikers het daadwerkelijk gebruikten en we moeten de omvang van onze codebase verkleinen zodat we snel kunnen blijven leveren en onze community goed kunnen blijven bedienen. Het was een heel moeilijke beslissing, maar het stelt ons in staat om ons te richten op wat het belangrijkst voor je is. Het is vervelend, dat weten we.",
 		"openSettings": "Instellingen openen"
+	},
+	"githubActions": {
+		"request": "Verzoek",
+		"create_pull_request": "Pull request aanmaken",
+		"get_pull_request": "Pull request bekijken",
+		"list_checks": "Controles weergeven",
+		"merge_pull_request": "Pull request samenvoegen",
+		"comment": "Reactie toevoegen"
 	}
 }

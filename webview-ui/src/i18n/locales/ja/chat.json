@@ -1,4 +1,13 @@
 {
+	"messageActions": {
+		"copy": "コピー",
+		"copied": "コピーしました",
+		"edit": "編集して再送信",
+		"restart": "直前のリクエストから再開",
+		"restartWarning": "直前のリクエストを再実行し、それ以降のすべてのメッセージを置き換えます。ワークスペースのファイルは現在の状態を維持します。",
+		"restartWithCheckpoint": "直前のリクエストを再実行し、それ以降のすべてのメッセージを置き換えます。ファイルも対応するチェックポイントに復元しますか？",
+		"restartOnly": "ファイルを復元せずに再開"
+	},
 	"activityTrace": {
 		"needsAttention": "対応が必要",
 		"workedFor": "作業時間 {{duration}}"
@@ -220,10 +229,10 @@
 		"didViewTopLevel": "Alphaはこのディレクトリのトップレベルファイルを表示しました",
 		"wantsToViewRecursive": "Alphaはこのディレクトリのすべてのファイルを再帰的に表示したい",
 		"didViewRecursive": "Alphaはこのディレクトリのすべてのファイルを再帰的に表示しました",
-		"wantsToSearch": "Alphaはこのディレクトリで <code>{{regex}}</code> を検索したい",
-		"didSearch": "Alphaはこのディレクトリで <code>{{regex}}</code> を検索しました",
-		"wantsToSearchOutsideWorkspace": "Alphaはこのディレクトリ（ワークスペース外）で <code>{{regex}}</code> を検索したい",
-		"didSearchOutsideWorkspace": "Alphaはこのディレクトリ（ワークスペース外）で <code>{{regex}}</code> を検索しました",
+		"wantsToSearch": "Alphaはディレクトリ内を検索しようとしています",
+		"didSearch": "Alphaはディレクトリ内を検索しました",
+		"wantsToSearchOutsideWorkspace": "Alphaはディレクトリ内を検索しようとしています（ワークスペース外）",
+		"didSearchOutsideWorkspace": "Alphaはディレクトリ内を検索しました（ワークスペース外）",
 		"wantsToViewTopLevelOutsideWorkspace": "Alphaはこのディレクトリ（ワークスペース外）のトップレベルファイルを表示したい",
 		"didViewTopLevelOutsideWorkspace": "Alphaはこのディレクトリ（ワークスペース外）のトップレベルファイルを表示しました",
 		"wantsToViewRecursiveOutsideWorkspace": "Alphaはこのディレクトリ（ワークスペース外）のすべてのファイルを再帰的に表示したい",
@@ -323,6 +332,7 @@
 	"contextManagement": {
 		"tokens": "トークン",
 		"condensation": {
+			"unchanged": "コンテキストは既に上限内です",
 			"title": "コンテキスト要約",
 			"inProgress": "コンテキストを圧縮中...",
 			"errorHeader": "コンテキストの圧縮に失敗しました"
@@ -355,8 +365,11 @@
 			"gpt54": "Poe プロバイダー: Poe を AI プロバイダーとして追加し、Alpha から Poe のモデルに直接アクセスできるようにしました。",
 			"slashSkills": "xAI と MiniMax の改善: xAI プロバイダーを Responses API へ移行し、再利用可能な変換ユーティリティを追加し、Grok-4.20 のデフォルト設定を更新し、MiniMax のモデル一覧とコンテキストウィンドウの扱いを修正して、より信頼性の高いセットアップにしました。",
 			"geminiPro": "Gemini 3.1 Pro サポート: Gemini 3.1 Pro モデルのサポートを追加し、パフォーマンス向上のためデフォルトの Gemini モデルに設定しました。",
-			"cliNdjson": "CLI NDJSON プロトコル: 新しい NDJSON stdin プロトコル、list サブコマンド、より柔軟な CLI ワークフローのためのモジュール化された run コマンド。",
-			"cliRelease": "CLI v0.1.0: Alpha CLI が安定したコマンドインターフェースで初の正式リリースに到達しました。"
+			"welcome": "Alpha v{{version}} では、検証、コマンド制御、タスクの継続性が向上しました。",
+			"acceptanceChecks": "宣言された入力が変わらない限り、合格したチェックを再利用します。",
+			"commandControl": "タスクが所有するバックグラウンドコマンドの待機、入力送信、停止を行えます。",
+			"workflowContinuity": "再読み込みやコンテキストの圧縮後も、タスクの制約とスキルの情報を保持します。",
+			"chatUpdates": "チャット操作が分かりやすくなり、タスク完了後にプロバイダーを選択できます。"
 		}
 	},
 	"costs": {
@@ -498,5 +511,13 @@
 		"title": "プロバイダーのサポート終了",
 		"message": "申し訳ございませんが、このプロバイダーはサポートを終了しました。実際に利用しているAlphaユーザーが非常に少なく、コードベースの範囲を縮小して、迅速な開発とコミュニティへの貢献を続ける必要がありました。本当に難しい決断でしたが、あなたにとって最も重要なことに集中するためです。残念ですが、ご理解ください。",
 		"openSettings": "設定を開く"
+	},
+	"githubActions": {
+		"request": "リクエスト",
+		"create_pull_request": "プルリクエストを作成",
+		"get_pull_request": "プルリクエストを表示",
+		"list_checks": "チェックを一覧表示",
+		"merge_pull_request": "プルリクエストをマージ",
+		"comment": "コメントを追加"
 	}
 }

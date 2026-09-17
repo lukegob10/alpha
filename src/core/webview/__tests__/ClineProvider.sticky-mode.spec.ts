@@ -149,8 +149,6 @@ vi.mock("../../../shared/modes", () => ({
 	}),
 	defaultModeSlug: "code",
 	planModeSlug: "architect",
-	isCodePlanModeTransition: (currentMode: string | undefined, newMode: string) =>
-		(currentMode === "code" && newMode === "architect") || (currentMode === "architect" && newMode === "code"),
 }))
 
 vi.mock("../../prompts/system", () => ({
@@ -265,6 +263,18 @@ vi.mock("@alpha-code/telemetry", () => ({
 }))
 
 describe("ClineProvider - Sticky Mode", () => {
+	it.each(["debug", "ask", "orchestrator", "custom-mode"])(
+		"rejects new task mode %s before configuration or task effects",
+		async (mode) => {
+			const setValues = vi.spyOn(provider, "setValues")
+			const finalize = vi.spyOn(provider as any, "finalizeActiveCompletionCandidate")
+			await expect(
+				provider.createTask("Test", undefined, undefined, { preserveExisting: true }, { mode }),
+			).rejects.toThrow("Unsupported mode")
+			expect(setValues).not.toHaveBeenCalled()
+			expect(finalize).not.toHaveBeenCalled()
+		},
+	)
 	let provider: ClineProvider
 	let mockContext: vscode.ExtensionContext
 	let mockOutputChannel: vscode.OutputChannel
@@ -441,61 +451,19 @@ describe("ClineProvider - Sticky Mode", () => {
 			},
 		)
 
-		it("applies the target mode provider profile to the task lane during task-local mode switches", async () => {
-			const task = new Task({
-				provider,
-				apiConfiguration: { apiProvider: "anthropic" },
-				taskMode: "orchestrator",
-				taskApiConfigName: "orchestrator-profile",
-			})
-
-			await provider.taskHistoryStore.upsert({
-				id: (task as any).taskId,
-				ts: Date.now(),
-				task: "Test task",
-				number: 1,
-				tokensIn: 0,
-				tokensOut: 0,
-				totalCost: 0,
-			})
-
-			const updateTaskHistorySpy = vi
-				.spyOn(provider, "updateTaskHistory")
-				.mockImplementation((item) => Promise.resolve([item]))
-			vi.spyOn(provider.providerSettingsManager, "getModeConfigId").mockResolvedValue("ask-profile-id")
-			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "ask-profile", id: "ask-profile-id", apiProvider: "openrouter" },
-			])
-			vi.spyOn(provider.providerSettingsManager, "getProfile").mockResolvedValue({
-				name: "ask-profile",
-				id: "ask-profile-id",
-				apiProvider: "openrouter",
-				openRouterModelId: "anthropic/claude-sonnet-4.6",
-			} as any)
-
-			await provider.addClineToStack(task as any)
-
-			await provider.setTaskMode((task as any).taskId, "ask")
-
-			expect((task as any)._taskMode).toBe("ask")
-			expect(await (task as any).getTaskApiConfigName()).toBe("ask-profile")
-			expect((task as any).apiConfiguration).toMatchObject({
-				apiProvider: "openrouter",
-				openRouterModelId: "anthropic/claude-sonnet-4.6",
-			})
-			expect(updateTaskHistorySpy).toHaveBeenCalledWith(
-				expect.objectContaining({
-					id: (task as any).taskId,
-					mode: "ask",
-				}),
-			)
-			expect(updateTaskHistorySpy).toHaveBeenCalledWith(
-				expect.objectContaining({
-					id: (task as any).taskId,
-					apiConfigName: "ask-profile",
-				}),
-			)
-		})
+		it.each(["ask", "debug", "orchestrator", "custom-mode"])(
+			"rejects %s before task or profile mutation",
+			async (mode) => {
+				const task = new Task({ provider, apiConfiguration: { apiProvider: "anthropic" }, taskMode: "code" })
+				await provider.addClineToStack(task as any)
+				const updateHistory = vi.spyOn(provider, "updateTaskHistory")
+				const profileLookup = vi.spyOn(provider.providerSettingsManager, "getModeConfigId")
+				await expect(provider.setTaskMode(task.taskId, mode)).rejects.toThrow("Unsupported mode")
+				expect(await task.getTaskMode()).toBe("code")
+				expect(updateHistory).not.toHaveBeenCalled()
+				expect(profileLookup).not.toHaveBeenCalled()
+			},
+		)
 
 		it("keeps the existing task provider profile when mode profile lookup is locked", async () => {
 			vi.mocked(mockContext.workspaceState.get).mockImplementation((key: string) => {
@@ -513,9 +481,9 @@ describe("ClineProvider - Sticky Mode", () => {
 			const getModeConfigIdSpy = vi.spyOn(provider.providerSettingsManager, "getModeConfigId")
 			await provider.addClineToStack(task as any)
 
-			await provider.setTaskMode((task as any).taskId, "ask")
+			await provider.setTaskMode((task as any).taskId, "code")
 
-			expect((task as any)._taskMode).toBe("ask")
+			expect((task as any)._taskMode).toBe("code")
 			expect(await (task as any).getTaskApiConfigName()).toBe("orchestrator-profile")
 			expect((task as any).apiConfiguration).toMatchObject({ apiProvider: "anthropic" })
 			expect(getModeConfigIdSpy).not.toHaveBeenCalled()
@@ -973,11 +941,11 @@ describe("ClineProvider - Sticky Mode", () => {
 			await provider.addClineToStack(mockTask)
 
 			// Trigger a mode switch
-			await provider.handleModeSwitch("debug")
+			await provider.handleModeSwitch("architect")
 
 			// Verify mode was included in the updated history item
 			expect(updatedHistoryItem).toBeDefined()
-			expect(updatedHistoryItem.mode).toBe("debug")
+			expect(updatedHistoryItem.mode).toBe("architect")
 		})
 	})
 
@@ -1260,7 +1228,7 @@ describe("ClineProvider - Sticky Mode", () => {
 			// Simulate concurrent mode switches
 			const switches = [
 				provider.handleModeSwitch("architect"),
-				provider.handleModeSwitch("debug"),
+				provider.handleModeSwitch("architect"),
 				provider.handleModeSwitch("code"),
 			]
 
@@ -1356,11 +1324,8 @@ describe("ClineProvider - Sticky Mode", () => {
 			// Clear previous calls
 			vi.mocked(mockContext.globalState.update).mockClear()
 
-			// Try to switch to invalid mode - it will actually switch
-			await provider.handleModeSwitch("invalid-mode" as any)
-
-			// The mode WILL be updated to invalid-mode (this is the actual behavior)
-			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "invalid-mode")
+			await expect(provider.handleModeSwitch("invalid-mode")).rejects.toThrow("Unsupported mode")
+			expect(mockContext.globalState.update).not.toHaveBeenCalled()
 		})
 
 		it("should handle errors during mode switch gracefully", async () => {
@@ -1549,7 +1514,7 @@ describe("ClineProvider - Sticky Mode", () => {
 					cacheWrites: 0,
 					cacheReads: 0,
 					totalCost: 0,
-					mode: "debug",
+					mode: "architect",
 				},
 			])
 
@@ -1566,7 +1531,7 @@ describe("ClineProvider - Sticky Mode", () => {
 			const switch1 = provider.handleModeSwitch("architect")
 
 			getCurrentTaskSpy.mockReturnValue(task2 as any)
-			const switch2 = provider.handleModeSwitch("debug")
+			const switch2 = provider.handleModeSwitch("architect")
 
 			getCurrentTaskSpy.mockReturnValue(task3 as any)
 			const switch3 = provider.handleModeSwitch("code")
@@ -1575,12 +1540,12 @@ describe("ClineProvider - Sticky Mode", () => {
 
 			// Verify each task was updated with its new mode
 			expect(task1._taskMode).toBe("architect")
-			expect(task2._taskMode).toBe("debug")
+			expect(task2._taskMode).toBe("architect")
 			expect(task3._taskMode).toBe("code")
 
 			// Verify emit was called for each task
 			expect(task1.emit).toHaveBeenCalledWith("taskModeSwitched", task1.taskId, "architect")
-			expect(task2.emit).toHaveBeenCalledWith("taskModeSwitched", task2.taskId, "debug")
+			expect(task2.emit).toHaveBeenCalledWith("taskModeSwitched", task2.taskId, "architect")
 			expect(task3.emit).toHaveBeenCalledWith("taskModeSwitched", task3.taskId, "code")
 		})
 	})
@@ -1662,7 +1627,7 @@ describe("ClineProvider - Sticky Mode", () => {
 			const switches: Promise<void>[] = []
 			tasks.forEach((task, index) => {
 				getCurrentTaskSpy.mockReturnValue(task as any)
-				const mode = ["architect", "debug", "code"][index % 3]
+				const mode = ["architect", "code"][index % 2]
 				switches.push(provider.handleModeSwitch(mode as any))
 			})
 

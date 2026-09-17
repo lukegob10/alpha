@@ -146,20 +146,20 @@ describe("ModeSelector", () => {
 		expect(onChange).not.toHaveBeenCalled()
 	})
 
-	it("keeps an active legacy mode visible without coercing its slug", () => {
+	it("restores a retired mode into Plan without exposing it", () => {
 		const onChange = vi.fn()
 		renderSelector("debug", onChange)
 
-		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent("Debug")
-		expect(onChange).not.toHaveBeenCalled()
+		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent("Plan")
+		expect(onChange).toHaveBeenCalledWith("architect")
 
 		fireEvent.click(screen.getByTestId("mode-selector-trigger"))
-		expect(screen.getAllByTestId("mode-selector-item")).toHaveLength(3)
+		expect(screen.getAllByTestId("mode-selector-item")).toHaveLength(2)
 	})
 
-	it("keeps an active custom mode visible but hides it from other tasks", () => {
+	it("restores an unsupported custom mode into Plan", () => {
 		const { unmount } = renderSelector("security-review")
-		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent("Security Review")
+		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent("Plan")
 		unmount()
 
 		renderSelector("code")
@@ -182,12 +182,12 @@ describe("ModeSelector", () => {
 		expect(screen.getByText("Custom code description")).toBeInTheDocument()
 	})
 
-	it("falls back to Code when the stored mode no longer exists", async () => {
+	it("falls back to Plan when the stored mode no longer exists", async () => {
 		mockModes = primaryAndCompatibilityModes.slice(0, 2)
 		const onChange = vi.fn()
 		renderSelector("missing-mode", onChange)
 
-		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent("Code")
-		await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith("code"))
+		expect(screen.getByTestId("mode-selector-trigger")).toHaveTextContent("Plan")
+		await vi.waitFor(() => expect(onChange).toHaveBeenCalledWith("architect"))
 	})
 })

@@ -20,7 +20,7 @@ import {
 	getExercisesForLanguage,
 } from "@alpha-code/evals"
 
-import { CreateRun } from "@/lib/schemas"
+import { type CreateRun, createRunSchema } from "@/lib/schemas"
 import { redisClient } from "@/lib/server/redis"
 
 // Storage base path for eval logs
@@ -28,14 +28,8 @@ const EVALS_STORAGE_PATH = "/tmp/evals/runs"
 
 const EVALS_REPO_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../../evals")
 
-export async function createRun({
-	suite,
-	exercises = [],
-	timeout,
-	iterations = 1,
-	executionMethod = "vscode",
-	...values
-}: CreateRun) {
+export async function createRun(input: CreateRun) {
+	const { suite, exercises = [], timeout, iterations, executionMethod, ...values } = createRunSchema.parse(input)
 	const run = await _createRun({
 		...values,
 		timeout,

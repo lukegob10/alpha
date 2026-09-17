@@ -1,31 +1,29 @@
 import type OpenAI from "openai"
 
-const SEARCH_FILES_DESCRIPTION = `Request to perform a regex search across files in a specified directory, providing context-rich results. This tool searches for patterns or specific content across multiple files, displaying each match with encapsulating context.
+const SEARCH_FILES_DESCRIPTION = `Search file contents recursively with Rust regex syntax, or literal text when literal=true. Regex searches are line-oriented; explicit newline matches automatically enable multiline search.
 
-Craft your regex patterns carefully to balance specificity and flexibility. Use this tool to find code patterns, TODO comments, function definitions, or any text-based information across the project. The results include surrounding context, so analyze the surrounding code to better understand the matches. Leverage this tool in combination with other tools for more comprehensive analysis.
+Choose output_mode="content" (default) for numbered snippets with context, "files" for unique matching paths, or "count" for per-file match counts without snippets. Counts are occurrences, not matching lines; truncated counts are partial lower bounds. Ignore rules and output limits apply in every mode.
 
-Use path/regex for one search. When several independent searches are already known, use one bounded queries batch with 1 to 8 entries. Never concatenate multiple root JSON objects.
+Use path/regex for one search, or queries for 1 to 8 independent searches with their own options. Batch results retain each query's success or error; one failed query does not discard successful searches. Never concatenate root JSON objects.
 
-Parameters:
-- path: (required) The path of the directory to search in (relative to the current workspace directory). This directory will be recursively searched.
-- regex: (required) The regular expression pattern to search for. Uses Rust regex syntax.
-- file_pattern: (optional) Glob pattern to filter files (e.g., '*.ts' for TypeScript files). If not provided, it will search all files (*).
-- queries: (optional) Batch of 1 to 8 search objects. Use this instead of the top-level path/regex fields for multiple independent searches.
+Example: { "queries": [{ "path": "src", "regex": "foo(.bar", "literal": true, "output_mode": "files" }, { "path": "tests", "regex": "TODO|FIXME", "output_mode": "count" }] }`
 
-Example: Searching for all .ts files in the current directory
-{ "path": ".", "regex": ".*", "file_pattern": "*.ts" }
+const PATH_PARAMETER_DESCRIPTION = `Absolute directory path or path relative to the task workspace, searched recursively. Use "." for the workspace root; never an empty string.`
 
-Example: Searching for function definitions in JavaScript files
-{ "path": "src", "regex": "function\\s+\\w+", "file_pattern": "*.js" }
-
-Example: Searching frontend and backend in one model turn
-{ "queries": [{ "path": "frontend/src", "regex": "fetch|submit", "file_pattern": "*.tsx" }, { "path": "backend/app", "regex": "@router|def ", "file_pattern": "*.py" }] }`
-
-const PATH_PARAMETER_DESCRIPTION = `Directory to search recursively, relative to the workspace`
-
-const REGEX_PARAMETER_DESCRIPTION = `Rust-compatible regular expression pattern to match`
+const REGEX_PARAMETER_DESCRIPTION = `Rust regex, or exact text when literal=true`
 
 const FILE_PATTERN_PARAMETER_DESCRIPTION = `Optional glob to limit which files are searched (e.g., *.ts)`
+
+const OUTPUT_MODE_PARAMETER = {
+	type: ["string", "null"],
+	enum: ["content", "files", "count", null],
+	description: "content: snippets (default); files: unique paths; count: per-file occurrences. Null uses content.",
+}
+
+const LITERAL_PARAMETER = {
+	type: ["boolean", "null"],
+	description: "Treat regex as fixed text when true. False, null, or omitted uses regex.",
+}
 
 const SEARCH_FILES_INPUT_LIMITS = {
 	path: 4_096,
@@ -44,14 +42,17 @@ export default {
 			properties: {
 				queries: {
 					type: "array",
-					description: "Batch of 1 to 8 independent regex searches. Use instead of path/regex.",
+					description: "Batch of 1 to 8 independent searches. Use instead of path/regex.",
 					minItems: 1,
 					maxItems: 8,
 					items: {
 						type: "object",
 						properties: {
+							output_mode: OUTPUT_MODE_PARAMETER,
+							literal: LITERAL_PARAMETER,
 							path: {
 								type: "string",
+								minLength: 1,
 								maxLength: SEARCH_FILES_INPUT_LIMITS.path,
 								description: PATH_PARAMETER_DESCRIPTION,
 							},
@@ -70,8 +71,11 @@ export default {
 						additionalProperties: false,
 					},
 				},
+				output_mode: OUTPUT_MODE_PARAMETER,
+				literal: LITERAL_PARAMETER,
 				path: {
 					type: "string",
+					minLength: 1,
 					maxLength: SEARCH_FILES_INPUT_LIMITS.path,
 					description: PATH_PARAMETER_DESCRIPTION,
 				},

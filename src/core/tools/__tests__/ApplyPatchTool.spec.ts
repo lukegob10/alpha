@@ -61,6 +61,7 @@ function createTask(
 ) {
 	return {
 		cwd: "/workspace",
+		getTaskCancellationSignal: vi.fn(() => new AbortController().signal),
 		taskKind: "subagent",
 		subagentRole: "worker",
 		consecutiveMistakeCount: 0,
@@ -69,7 +70,10 @@ function createTask(
 		rooIgnoreController: { validateAccess: vi.fn(validateAccess) },
 		rooProtectedController: { isWriteProtected: vi.fn(() => false) },
 		providerRef: {
-			deref: () => ({ getState: vi.fn(async () => providerState) }),
+			deref: () => ({
+				getState: vi.fn(async () => providerState),
+				runWorkspaceMutation: async (_task: unknown, _label: string, run: () => Promise<void>) => run(),
+			}),
 		},
 		diffViewProvider: {
 			editType: undefined,
@@ -102,6 +106,7 @@ function createTask(
 		say: vi.fn(),
 		recordToolError: vi.fn(),
 		recordToolUsage: vi.fn(),
+		checkpointSave: vi.fn(),
 		processQueuedMessages: vi.fn(),
 	} as unknown as Task
 }
@@ -111,10 +116,210 @@ function createCallbacks(): any {
 		askApproval: vi.fn(async () => true),
 		pushToolResult: vi.fn(),
 		handleError: vi.fn(),
+		setResultMetadata: vi.fn(),
 	}
 }
 
 describe("ApplyPatchTool", () => {
+	it("keeps newly created files out of editor tabs during background editing", async () => {
+		mockedFileExists.mockResolvedValue(false)
+		mockedFs.readFile.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }))
+		const task = createTask(() => true, { diagnosticsEnabled: false, writeDelayMs: 0 })
+		task.diffViewProvider = new DiffViewProvider(task.cwd, task)
+		const openPreview = vi.spyOn(task.diffViewProvider, "open")
+		const callbacks = createCallbacks()
+
+		await new ApplyPatchTool().execute(
+			{ patch: "*** Begin Patch\n*** Add File: new.txt\n+new content\n*** End Patch" },
+			task,
+			callbacks,
+		)
+
+		expect(callbacks.askApproval).toHaveBeenCalledOnce()
+		expect(mockedFs.writeFile).toHaveBeenCalledWith(path.resolve(task.cwd, "new.txt"), "new content\n", {
+			encoding: "utf-8",
+			flag: "wx",
+		})
+		expect(vscode.window.showTextDocument).not.toHaveBeenCalled()
+		expect(openPreview).not.toHaveBeenCalled()
+		expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).files).toMatchObject([
+			{ path: "new.txt", status: "applied" },
+		])
+	})
+
+	it("reports committed bytes even if post-write tracking fails", async () => {
+		mockedFileExists.mockResolvedValue(false)
+		const task = createTask()
+		vi.mocked(task.fileContextTracker.trackFileContext).mockRejectedValueOnce(new Error("tracking failed"))
+		const callbacks = createCallbacks()
+		await new ApplyPatchTool().execute(
+			{
+				patch: "*** Begin Patch\n*** Add File: first.txt\n+first\n*** Add File: second.txt\n+second\n*** End Patch",
+			},
+			task,
+			callbacks,
+		)
+		expect(task.diffViewProvider.saveDirectly).toHaveBeenCalledOnce()
+		expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).files).toMatchObject([
+			{
+				path: "first.txt",
+				status: "applied",
+				reason: expect.stringContaining("Changes saved, but follow-up failed"),
+			},
+			{ path: "second.txt", status: "skipped" },
+		])
+		expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+	})
+
+	it.each([true, false])("preserves update bytes through the real save boundary (direct: %s)", async (direct) => {
+		vi.mocked(experiments.isEnabled).mockReturnValue(direct)
+		const original = "\uFEFFold\r\nkeep"
+		const expected = "\uFEFF$& $$ $' &amp;\r\nkeep"
+		mockedFs.readFile.mockResolvedValue(original)
+		const task = createTask(() => true, { diagnosticsEnabled: false, writeDelayMs: 0 })
+		const provider = new DiffViewProvider(task.cwd, task)
+		task.diffViewProvider = provider
+		if (!direct) {
+			// The editor mock retains the exact approved text; saveChanges still
+			// exercises the shared filesystem write and stale-content checks.
+			vi.spyOn(provider, "open").mockImplementation(async (relPath, expectedFileState) => {
+				Object.assign(provider, { relPath, expectedFileState, originalContent: original, isEditing: true })
+			})
+			vi.spyOn(provider, "update").mockImplementation(async (content) => {
+				Object.assign(provider, {
+					newContent: content,
+					activeDiffEditor: { document: { getText: () => content, version: 1 } },
+				})
+			})
+			vi.spyOn(provider, "scrollToFirstDiff").mockImplementation(() => {})
+		}
+		const callbacks = createCallbacks()
+		await new ApplyPatchTool().execute(
+			{ patch: "*** Begin Patch\n*** Update File: source.txt\n@@\n-old\n+$& $$ $' &amp;\n*** End Patch" },
+			task,
+			callbacks,
+		)
+		expect(mockedFs.writeFile).toHaveBeenCalledWith(expect.stringContaining("source.txt"), expected, "utf-8")
+		expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "success" })
+	})
+
+	it.each(["denied", "cancelled"])(
+		"keeps the first write and publishes the complete ledger after file two is %s",
+		async (decision) => {
+			mockedFileExists.mockResolvedValue(false)
+			const task = createTask()
+			const published: unknown[] = []
+			Object.assign(task, {
+				abort: false,
+				userMessageContent: [],
+				ask: vi
+					.fn()
+					.mockResolvedValueOnce({ response: "yesButtonClicked" })
+					.mockImplementationOnce(async () => {
+						if (decision === "cancelled") task.abort = true
+						return {
+							response: "noButtonClicked",
+							text: decision === "denied" ? "Keep the second file unchanged" : undefined,
+						}
+					}),
+				pushToolResultToUserContent: (result: unknown) => {
+					published.push(result)
+					return true
+				},
+			})
+			const call = {
+				type: "tool_call" as const,
+				id: "patch-ledger",
+				name: "apply_patch",
+				arguments: {
+					patch: "*** Begin Patch\n*** Add File: first.txt\n+first\n*** Add File: second.txt\n+second\n*** Add File: third.txt\n+third\n*** End Patch",
+				},
+			}
+			const outcome = await new ToolScheduler({
+				task,
+				registry: new ToolRegistry(),
+				mode: "code",
+				preserveAbortedResults: true,
+				validateCall: () => {},
+			}).run({ items: [call], text: "", reasoning: "", toolCalls: [call] })
+			expect(task.diffViewProvider.saveDirectly).toHaveBeenCalledExactlyOnceWith(
+				"first.txt",
+				"first\n",
+				false,
+				true,
+				0,
+				{ exists: false },
+			)
+			expect(mockedFs.unlink).not.toHaveBeenCalled()
+			expect(outcome.results).toHaveLength(1)
+			expect(outcome.results[0].status).toBe(decision)
+			const content = String(outcome.results[0].content)
+			expect(content).toContain('"path":"first.txt","status":"applied"')
+			expect(content).toContain('"path":"second.txt","status":"skipped"')
+			expect(content).toContain('"path":"third.txt","status":"skipped"')
+			if (decision === "denied") expect(content).toContain("Keep the second file unchanged")
+			expect(published).toEqual([expect.objectContaining({ tool_use_id: call.id, is_error: true })])
+		},
+	)
+
+	it.each(["mismatch", "ignored"])("reports every path after %s preflight failure", async (failure) => {
+		const task = createTask((filePath) => failure !== "ignored" || filePath !== "second.txt")
+		const callbacks = createCallbacks()
+		mockedFs.readFile.mockImplementation(async (filePath) =>
+			String(filePath).endsWith("second.txt") ? "different\n" : "old\n",
+		)
+		const patch =
+			"*** Begin Patch\n*** Update File: first.txt\n@@\n-old\n+new\n*** Update File: second.txt\n@@\n-old\n+new\n*** Update File: third.txt\n@@\n-old\n+new\n*** End Patch"
+		await new ApplyPatchTool().execute({ patch }, task, callbacks)
+		expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
+		expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).files).toMatchObject([
+			{ path: "first.txt", status: "applied" },
+			{ path: "second.txt", status: failure === "ignored" ? "skipped" : "error", reason: expect.any(String) },
+			{ path: "third.txt", status: "applied" },
+		])
+		expect(task.diffViewProvider.saveDirectly).toHaveBeenCalledTimes(2)
+		expect(Math.max(...mockedFs.readFile.mock.invocationCallOrder)).toBeLessThan(
+			callbacks.askApproval.mock.invocationCallOrder[0],
+		)
+		if (failure === "ignored")
+			expect(mockedFs.readFile.mock.calls.some(([filePath]) => String(filePath).endsWith("second.txt"))).toBe(
+				false,
+			)
+	})
+
+	it.each([true, false])(
+		"reviews an external move destination for a primary task (approved: %s)",
+		async (approved) => {
+			const missing = Object.assign(new Error("missing"), { code: "ENOENT" })
+			mockedFs.readFile.mockImplementation(async (filePath: unknown) => {
+				if (String(filePath).endsWith("moved.txt")) throw missing
+				return "old\n"
+			})
+			const task = createTask()
+			Object.assign(task, { taskKind: "primary" })
+			const callbacks = createCallbacks()
+			callbacks.askApproval.mockResolvedValue(approved)
+			await new ApplyPatchTool().execute(
+				{
+					patch: "*** Begin Patch\n*** Update File: source.txt\n*** Move to: ../outside/moved.txt\n@@\n-old\n+new\n*** End Patch",
+				},
+				task,
+				callbacks,
+			)
+			expect(callbacks.askApproval).toHaveBeenCalledOnce()
+			expect(JSON.parse(callbacks.askApproval.mock.calls[0][1])).toMatchObject({
+				isOutsideWorkspace: true,
+				content: expect.stringContaining("moved.txt"),
+			})
+			if (approved) {
+				expect(task.diffViewProvider.saveDirectly).toHaveBeenCalled()
+			} else {
+				expect(task.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
+				expect(mockedFs.unlink).not.toHaveBeenCalled()
+			}
+		},
+	)
+
 	beforeEach(() => {
 		vi.clearAllMocks()
 		vi.mocked(experiments.isEnabled).mockReturnValue(true)
@@ -130,7 +335,7 @@ describe("ApplyPatchTool", () => {
 		mockedFs.unlink.mockResolvedValue()
 	})
 
-	it("validates every source and destination before reading any hunk", async () => {
+	it("skips ignored paths before reading their contents", async () => {
 		const task = createTask((filePath) => filePath !== "ignored.txt")
 		const callbacks = createCallbacks()
 		const patch = `*** Begin Patch
@@ -143,7 +348,7 @@ describe("ApplyPatchTool", () => {
 
 		await new ApplyPatchTool().execute({ patch }, task, callbacks as any)
 
-		expect(mockedFs.readFile).not.toHaveBeenCalled()
+		expect(mockedFs.readFile).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("allowed.txt"), "utf8")
 		expect(task.say).toHaveBeenCalledWith("rooignore_error", "ignored.txt")
 		expect(callbacks.pushToolResult).toHaveBeenCalledTimes(1)
 	})
@@ -164,7 +369,10 @@ describe("ApplyPatchTool", () => {
 
 		expect(callbacks.askApproval).toHaveBeenCalledTimes(1)
 		expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
-		expect(callbacks.pushToolResult).toHaveBeenCalledWith("Changes were rejected by the user.")
+		expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).files).toEqual([
+			{ path: "first.txt", status: "skipped", reason: "Changes were rejected by the user." },
+			{ path: "second.txt", status: "skipped", reason: "Not attempted after denied in first.txt" },
+		])
 		expect(task.didRejectTool).toBe(true)
 		expect(task.recordToolUsage).not.toHaveBeenCalled()
 	})
@@ -220,7 +428,10 @@ describe("ApplyPatchTool", () => {
 
 		expect(task.diffViewProvider.saveDirectly).toHaveBeenCalledTimes(2)
 		expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
-		expect(callbacks.pushToolResult).toHaveBeenCalledWith("write complete\n\nwrite complete")
+		expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).files).toEqual([
+			{ path: "first.txt", status: "applied", result: "write complete" },
+			{ path: "second.txt", status: "applied", result: "write complete" },
+		])
 		expect(task.recordToolUsage).toHaveBeenCalledWith("apply_patch")
 	})
 
@@ -242,7 +453,9 @@ describe("ApplyPatchTool", () => {
 			content: "old\n",
 		})
 		expect(mockedFs.unlink).not.toHaveBeenCalled()
-		expect(callbacks.pushToolResult).toHaveBeenCalledWith("write complete")
+		expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).files).toMatchObject([
+			{ path: "same.txt", status: "applied", result: "write complete" },
+		])
 	})
 
 	it("captures the existing move destination before approval and rejects a concurrent edit", async () => {
@@ -279,7 +492,11 @@ describe("ApplyPatchTool", () => {
 
 		await new ApplyPatchTool().execute({ patch }, task, callbacks as any)
 
-		expect(callbacks.handleError).toHaveBeenCalledWith("apply patch", expect.any(Error))
+		expect(callbacks.handleError).not.toHaveBeenCalled()
+		expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
+		expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).files).toMatchObject([
+			{ path: "source.txt", status: "error", reason: expect.stringMatching(/changed|unsaved changes/) },
+		])
 		const approvalMessage = JSON.parse((callbacks.askApproval as any).mock.calls[0][1] as string) as {
 			content: string
 		}
@@ -321,7 +538,11 @@ describe("ApplyPatchTool", () => {
 
 		await new ApplyPatchTool().execute({ patch }, task, callbacks as any)
 
-		expect(callbacks.handleError).toHaveBeenCalledWith("apply patch", expect.any(Error))
+		expect(callbacks.handleError).not.toHaveBeenCalled()
+		expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
+		expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).files).toMatchObject([
+			{ path: "source.txt", status: "error", reason: expect.stringMatching(/changed|unsaved changes/) },
+		])
 		expect(mockedFs.writeFile).not.toHaveBeenCalled()
 		expect(mockedFs.unlink).not.toHaveBeenCalled()
 		expect(task.diffViewProvider.saveChanges).toHaveBeenCalledWith(true, 0, {
@@ -341,7 +562,7 @@ describe("ApplyPatchTool", () => {
 		})
 		;(vscode.workspace as any).textDocuments = [
 			{
-				uri: { scheme: "file", fsPath: "/workspace/moved.txt" },
+				uri: { scheme: "file", fsPath: path.resolve("/workspace/moved.txt") },
 				isDirty: true,
 			},
 		]
@@ -360,7 +581,11 @@ describe("ApplyPatchTool", () => {
 		await new ApplyPatchTool().execute({ patch }, task, callbacks as any)
 
 		expect(callbacks.askApproval).not.toHaveBeenCalled()
-		expect(callbacks.handleError).toHaveBeenCalledWith("apply patch", expect.any(Error))
+		expect(callbacks.handleError).not.toHaveBeenCalled()
+		expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
+		expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).files).toMatchObject([
+			{ path: "source.txt", status: "error", reason: expect.stringMatching(/changed|unsaved changes/) },
+		])
 		expect(mockedFs.writeFile).not.toHaveBeenCalled()
 		expect(mockedFs.unlink).not.toHaveBeenCalled()
 	})
@@ -396,7 +621,11 @@ describe("ApplyPatchTool", () => {
 		await new ApplyPatchTool().execute({ patch }, task, callbacks as any)
 
 		expect(callbacks.askApproval).not.toHaveBeenCalled()
-		expect(callbacks.handleError).toHaveBeenCalledWith("apply patch", expect.any(Error))
+		expect(callbacks.handleError).not.toHaveBeenCalled()
+		expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
+		expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).files).toMatchObject([
+			{ path: "source.txt", status: "error", reason: expect.stringMatching(/changed|unsaved changes/) },
+		])
 		expect(mockedFs.writeFile).not.toHaveBeenCalled()
 		expect(mockedFs.unlink).not.toHaveBeenCalled()
 	})
@@ -543,6 +772,41 @@ describe("ApplyPatchTool deletion protection", () => {
 		return document
 	}
 
+	it("preserves committed CRLF/BOM bytes and an external edit to file two through the real save guard", async () => {
+		const first = path.join(directory, "first.txt")
+		const third = path.join(directory, "third.txt")
+		await realFs.writeFile(first, "\uFEFFold\r\nkeep")
+		await realFs.writeFile(target, "old\n")
+		await realFs.writeFile(third, "old\n")
+		mockedFs.writeFile.mockImplementation(realFs.writeFile)
+		vi.mocked(experiments.isEnabled).mockReturnValue(true)
+		callbacks.askApproval.mockImplementationOnce(async () => {
+			await realFs.writeFile(target, "user edit during approval\n")
+			return true
+		})
+		await new ApplyPatchTool().execute(
+			{
+				patch: "*** Begin Patch\n*** Update File: first.txt\n@@\n-old\n+$& $$ $'\n*** Update File: target.txt\n@@\n-old\n+new\n*** Update File: third.txt\n@@\n-old\n+new\n*** End Patch",
+			},
+			task,
+			callbacks,
+		)
+		expect(await realFs.readFile(first)).toEqual(Buffer.from("\uFEFF$& $$ $'\r\nkeep"))
+		expect(await realFs.readFile(target, "utf8")).toBe("user edit during approval\n")
+		expect(await realFs.readFile(third, "utf8")).toBe("old\n")
+		expect(mockedFs.writeFile).toHaveBeenCalledOnce()
+		expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
+		expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).files).toMatchObject([
+			{ path: "first.txt", status: "applied" },
+			{
+				path: "target.txt",
+				status: "error",
+				reason: expect.stringContaining("changed while approval was pending"),
+			},
+			{ path: "third.txt", status: "skipped", reason: expect.stringContaining("target.txt") },
+		])
+	})
+
 	it("deletes an unchanged file only after approval and preserves the protected approval flag", async () => {
 		vi.mocked(task.rooProtectedController!.isWriteProtected).mockReturnValue(true)
 		const approve = await waitForApproval()
@@ -551,7 +815,9 @@ describe("ApplyPatchTool deletion protection", () => {
 		expect(callbacks.askApproval).toHaveBeenCalledWith("tool", expect.any(String), undefined, true)
 		await approve()
 		await expect(realFs.access(target)).rejects.toMatchObject({ code: "ENOENT" })
-		expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith("Successfully deleted target.txt")
+		expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
+			expect.stringContaining("Successfully deleted target.txt"),
+		)
 		expect(task.didEditFile).toBe(true)
 		expect(task.recordToolUsage).toHaveBeenCalledExactlyOnceWith("apply_patch")
 	})
@@ -746,7 +1012,9 @@ describe("ApplyPatchTool deletion protection", () => {
 		expect(document.save).not.toHaveBeenCalled()
 		expect(await realFs.readFile(target, "utf8")).toBe("user content after denial\n")
 		expect(task.didRejectTool).toBe(true)
-		expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith("Delete operation was rejected by the user.")
+		expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
+			expect.stringContaining("Delete operation was rejected by the user."),
+		)
 		expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "denied" })
 	})
 
@@ -760,7 +1028,9 @@ describe("ApplyPatchTool deletion protection", () => {
 		expectNoDeletion()
 		expect(await realFs.readFile(target, "utf8")).toBe("approved content\n")
 		expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "cancelled" })
-		expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith("Delete operation was cancelled.")
+		expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
+			expect.stringContaining("Delete operation was cancelled."),
+		)
 		expect(task.recordToolError).not.toHaveBeenCalled()
 	})
 })

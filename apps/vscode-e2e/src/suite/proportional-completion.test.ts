@@ -332,7 +332,7 @@ suite("Alpha proportional completion settlement measurements", function () {
 							...originalConfiguration,
 							apiProvider: "fake-ai",
 							fakeAi: scripted,
-							mode: "ask",
+							mode: "code",
 							autoApprovalEnabled: true,
 							requestDelaySeconds: 0,
 							writeDelayMs: 0,

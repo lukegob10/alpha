@@ -21,11 +21,11 @@ const GEMINI_MODEL_NAME = geminiDefaultModelId
 
 describe("GeminiHandler", () => {
 	it.each([
-		[undefined, "medium"],
-		["low", "low"],
-		["medium", "medium"],
-		["high", "high"],
-		["minimal", "medium"],
+		[undefined, "MEDIUM"],
+		["low", "LOW"],
+		["medium", "MEDIUM"],
+		["high", "HIGH"],
+		["minimal", "MEDIUM"],
 	] as const)("sends Gemini 3.8 reasoning %s as %s", async (reasoningEffort, thinkingLevel) => {
 		const gemini38 = new GeminiHandler({
 			apiModelId: "gemini-3.8-flash",

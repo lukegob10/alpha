@@ -243,13 +243,13 @@ export async function checkpointRestore(
 	const service = await getCheckpointService(task)
 
 	if (!service) {
-		return
+		return false
 	}
 
 	const index = task.clineMessages.findIndex((m) => m.ts === ts)
 
 	if (index === -1) {
-		return
+		return false
 	}
 
 	const provider = task.providerRef.deref()
@@ -282,18 +282,26 @@ export async function checkpointRestore(
 				includeTargetMessage: operation === "edit",
 			})
 
-			// Report the deleted API request metrics
-			await task.say(
-				"api_req_deleted",
-				JSON.stringify({
-					tokensIn: totalTokensIn,
-					tokensOut: totalTokensOut,
-					cacheWrites: totalCacheWrites,
-					cacheReads: totalCacheReads,
-					cost: totalCost,
-				} satisfies ClineApiReqInfo),
-			)
+			// The task is stopped; say() correctly rejects new agent output after abort.
+			// Persist the host's accounting row through the transcript owner instead.
+			await task.overwriteClineMessages([
+				...task.clineMessages,
+				{
+					ts: Math.max(Date.now(), (task.clineMessages.at(-1)?.ts ?? 0) + 1),
+					type: "say",
+					say: "api_req_deleted",
+					text: JSON.stringify({
+						tokensIn: totalTokensIn,
+						tokensOut: totalTokensOut,
+						cacheWrites: totalCacheWrites,
+						cacheReads: totalCacheReads,
+						cost: totalCost,
+					} satisfies ClineApiReqInfo),
+				},
+			])
+			await provider?.postStateToWebview()
 		}
+		return true
 	} catch (err) {
 		provider?.log("[checkpointRestore] disabling checkpoints for this task")
 		task.enableCheckpoints = false

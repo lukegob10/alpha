@@ -5,6 +5,26 @@ import type { ClineMessage } from "@alpha-code/types"
 import { consolidateTokenUsage, hasTokenUsageChanged, hasToolUsageChanged } from "../consolidateTokenUsage.js"
 
 describe("consolidateTokenUsage", () => {
+	it("counts synopsis usage without changing the agent context window size", () => {
+		const result = consolidateTokenUsage([
+			{ ts: 1, type: "say", say: "api_req_started", text: JSON.stringify({ tokensIn: 1000, tokensOut: 100 }) },
+			{
+				ts: 2,
+				type: "say",
+				say: "reasoning",
+				text: "Original reasoning",
+				reasoningSummary: "A synopsis.",
+				reasoningSummaryUsage: { tokensIn: 20, tokensOut: 10, cacheWrites: 0, cacheReads: 5, cost: 0.002 },
+			},
+		])
+		expect(result).toMatchObject({
+			totalTokensIn: 1020,
+			totalTokensOut: 110,
+			totalCacheReads: 5,
+			totalCost: 0.002,
+			contextTokens: 1100,
+		})
+	})
 	// Helper function to create a basic api_req_started message
 	const createApiReqMessage = (
 		ts: number,

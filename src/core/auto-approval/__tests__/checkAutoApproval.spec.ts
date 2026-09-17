@@ -4,6 +4,79 @@ import { checkAutoApproval, checkAutoApprovalWithInheritedPolicy } from "../inde
 import { createSubagentCommandApprovalPolicy } from "../commands"
 
 describe("checkAutoApproval", () => {
+	it("keeps mixed batch reads under outside-read approval", async () => {
+		await expect(
+			checkAutoApproval({
+				ask: "tool",
+				text: JSON.stringify({
+					tool: "readFile",
+					batchFiles: [
+						{ path: "inside.ts", isOutsideWorkspace: false },
+						{ path: "../outside.ts", isOutsideWorkspace: true },
+					],
+				}),
+				state: {
+					autoApprovalEnabled: true,
+					alwaysAllowReadOnly: true,
+					alwaysAllowReadOnlyOutsideWorkspace: false,
+				},
+			}),
+		).resolves.toEqual({ decision: "ask" })
+	})
+	it.each([
+		{ deniedCommands: [], decision: "ask" },
+		{ deniedCommands: ["node"], decision: "deny" },
+	])(
+		"preserves mandatory command approval and configured denial: $decision",
+		async ({ deniedCommands, decision }) => {
+			await expect(
+				checkAutoApproval({
+					ask: "command",
+					text: "node script.js",
+					requiresExplicitApproval: true,
+					state: {
+						autoApprovalEnabled: true,
+						alwaysAllowExecute: true,
+						allowedCommands: ["*"],
+						deniedCommands,
+					},
+				}),
+			).resolves.toEqual({ decision })
+		},
+	)
+
+	it.each([true, false])("honors outside read auto-approval setting %s", async (outsideRead) => {
+		await expect(
+			checkAutoApproval({
+				ask: "tool",
+				text: JSON.stringify({ tool: "readFile", path: "../code.ts", isOutsideWorkspace: true }),
+				state: {
+					autoApprovalEnabled: true,
+					alwaysAllowReadOnly: true,
+					alwaysAllowReadOnlyOutsideWorkspace: outsideRead,
+				},
+			}),
+		).resolves.toEqual({ decision: outsideRead ? "approve" : "ask" })
+	})
+
+	it.each(["newFileCreated", "editedExistingFile", "appliedDiff", "generateImage"])(
+		"requires explicit approval for outside %s even with legacy auto-approval enabled",
+		async (tool) => {
+			await expect(
+				checkAutoApproval({
+					ask: "tool",
+					text: JSON.stringify({ tool, path: "../other/file", isOutsideWorkspace: true }),
+					state: {
+						autoApprovalEnabled: true,
+						alwaysAllowWrite: true,
+						alwaysAllowWriteOutsideWorkspace: true,
+						alwaysAllowWriteProtected: true,
+					},
+				}),
+			).resolves.toEqual({ decision: "ask" })
+		},
+	)
+
 	describe.each(["create", "update"] as const)("Alpha Tickets %s", (operation) => {
 		const request = {
 			ask: "tool" as const,
@@ -150,7 +223,7 @@ describe("checkAutoApproval", () => {
 				ask: "tool",
 				text: JSON.stringify({ tool: "switchMode", mode: "Code" }),
 			}),
-		).resolves.toEqual({ decision: "approve" })
+		).resolves.toEqual({ decision: "deny" })
 	})
 
 	it("keeps delegation control tools interactive when auto-approval is disabled", async () => {

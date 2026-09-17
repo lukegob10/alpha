@@ -7,6 +7,12 @@ The source directory is `webview-ui/public/artifact-kit/v1/`. Standalone example
 in with `<script defer data-alpha-standalone src="../kit.js"></script>`; this is a
 gallery harness, not permission for authored executable code in the viewer.
 
+Preview authored documents only in Alpha's built-in HTML previewer using the
+`alpha-document://open` chat action from the rich-documents skill. Do not open or
+validate them with browser tools, an external browser, or a localhost server.
+When direct preview inspection is unavailable, validate the HTML source and
+deliver the document link without claiming visual verification.
+
 ```html
 <!doctype html>
 <html lang="en">
@@ -103,6 +109,148 @@ Paths are relative to the document's workspace root: no absolute paths, `..`,
 backslashes, or schemes. The viewer owns validation and source opening. Ordinary
 HTTPS citations use `href`. Source links in the fictional review are illustrative
 and intentionally do not claim those fixture files exist in the reader's repo.
+
+## Navigation, evidence, and metrics
+
+Use `<nav data-alpha-toc aria-label="Document contents"><p class="eyebrow">On this page</p></nav>`
+after the opening recommendation or introduction. Give major h2/h3 headings stable,
+unique IDs. The kit lists up to 200 headings, excluding headings inside navigation,
+details, or tabs. Outline labels are capped at 160 characters; full headings remain
+in the document. Links move keyboard focus to the section in the viewer. Use ordinary
+`href="#section-id"` links for section references, glossary terms, and return links.
+Do not hide required decisions inside tabs or disclosures.
+
+Evidence cards use `aside.evidence-card` with an h3, a source link, and a description
+list for provenance, method, and limits. A card must identify what a source supports;
+it must not imply that a claim was verified merely because it has a citation.
+Use ordinary numbered links for footnotes, with distinct citation/source IDs:
+
+```html
+<p>
+	State the supported claim.<sup><a id="cite-1" href="#source-1" aria-label="Source 1">[1]</a></sup>
+</p>
+<aside class="evidence-card">
+	<h3>Evidence basis</h3>
+	<dl>
+		<dt>Method</dt>
+		<dd>Describe what was actually checked.</dd>
+		<dt>Limit</dt>
+		<dd>Explain missing coverage.</dd>
+	</dl>
+</aside>
+<section class="footnotes" aria-label="Sources">
+	<h2 id="sources">Sources</h2>
+	<ol>
+		<li id="source-1">
+			Describe the actual source and link to it.
+			<a href="#cite-1" aria-label="Return to citation 1">Return to citation</a>
+		</li>
+	</ol>
+</section>
+```
+
+Use `div.metric-grid > article.metric-card` for two to four key results, each with
+an h3 label, `p.metric-value`, unit, period, evidence link, and relevant baseline.
+Use a description list for the baseline, calculated difference, target, or limits.
+The kit styles authored values; it does **not** calculate or verify them. Distinguish
+percent from percentage points, measured from estimated values, and missing from
+zero. Avoid unexplained red/green scores and decorative metrics. `examples/report.html`
+contains complete cards derived from its canonical table, citations and provenance.
+
+For a decision, compose `section.summary`, a small alternatives table, and an
+evidence card stating assumptions and unresolved questions. For a process, use
+`ol.timeline` with an h3 and explanation in each li. Dates and statuses are authored
+facts or explicitly labeled proposals, not live task state. These patterns have
+no inputs, persistent approval state, or background actions.
+
+## Workspace images
+
+```html
+<figure>
+	<img data-image="images/screen.png" alt="Describe the relevant visual evidence." />
+	<figcaption>Explain the observation, provenance, and any numbered callouts.</figcaption>
+</figure>
+```
+
+The `data-image` path is relative to the document's workspace root, just like source
+references. Existing documents keep that behavior. Ordinary local PNG/JPEG `src`
+paths are also supported and resolve relative to the HTML file. For example,
+`reports/analysis.html` can use `<img src="plots/fit.png" alt="Model fit">` for
+`reports/plots/fit.png`. This works for Matplotlib charts and other saved raster
+figures. Relative `./` and `../` segments and URL-encoded spaces are supported for
+`src`, provided the resolved asset stays inside the document's workspace root.
+When both attributes exist, `data-image` wins.
+
+Use real workspace assets and descriptive alt text. The host resolves the path,
+reads bounded bytes, checks static PNG/JPEG headers and dimensions, then embeds a
+data image. It does not grant the webview access to the workspace. Absolute paths,
+file URLs, authored base64, `srcset`, SVG, animation, event handlers and remote
+images remain unsupported. Missing, invalid, inaccessible or oversized local
+assets show an explanation alongside the rest of the document.
+
+Limits: 8 images, 1 MiB per image, 4 MiB combined encoded bytes, 8,388,608 combined
+pixels, and 4,096 pixels per dimension. Keep images appropriately sized for a document.
+Referenced file changes trigger the same bounded refresh pipeline, without writing
+either file. The HTML remains one editable content file; referenced images are
+workspace dependencies that must accompany it when moving the document. This is
+not a standalone export pipeline.
+
+`examples/spec.html` uses the supplied `fixture-workspace/images/layout-sample.png`.
+Copy that fixture's `images` folder to the workspace root when trying the example.
+Its ordinary `src` supports the standalone gallery only; the viewer strips that
+attribute and resolves `data-image` through the host.
+
+## Relationship diagrams
+
+Use a diagram to explain a **directed acyclic** ownership, dependency, or process
+relationship. The trusted kit draws nodes and arrows from a semantic table; authors
+never supply SVG, graph scripts, layout expressions, or executable diagram languages.
+
+```html
+<figure data-alpha-diagram>
+	<figcaption>Request flow. Arrows show direction; the table names each relationship.</figcaption>
+	<div class="table-scroll">
+		<table>
+			<caption>
+				Responsibilities
+			</caption>
+			<thead>
+				<tr>
+					<th scope="col">From</th>
+					<th scope="col">Relationship</th>
+					<th scope="col">To</th>
+				</tr>
+			</thead>
+			<tbody>
+				<tr>
+					<th scope="row">Client</th>
+					<td>Sends requests</td>
+					<td>API</td>
+				</tr>
+				<tr>
+					<th scope="row">API</th>
+					<td>Dispatches work</td>
+					<td>Worker</td>
+				</tr>
+				<tr>
+					<th scope="row">API</th>
+					<td>Reads cached results</td>
+					<td>Cache</td>
+				</tr>
+			</tbody>
+		</table>
+	</div>
+</figure>
+```
+
+Use exactly three columns, one header row, one body, no merged cells, and 1–48
+relationships among at most 24 nodes. Every cell needs 1–80 characters of text.
+Identical source/target labels identify the same node. The diagram arranges layers
+from left to right; arrows encode direction and the always-visible table retains
+exact relationship labels. The scroll region supports keyboard use on narrow views.
+Cycles, missing labels and over-budget graphs retain the table with an explanation.
+For feedback loops, sequence timing, or dense networks, use a plain relationship
+table and prose rather than claiming this component supports those graph forms.
 
 ## Tables
 

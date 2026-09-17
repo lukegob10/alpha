@@ -210,6 +210,28 @@ describe("searchReplaceTool", () => {
 		return toolResult
 	}
 
+	it.each(["\n", "\r\n"])("preserves BOM and %j endings while replacing literal dollar text", async (eol) => {
+		const replacement = "$& $$ $' &amp;\nchanged"
+		await executeSearchReplaceTool(
+			{ old_string: "Line 1\nLine 2", new_string: replacement },
+			{ fileContent: `\uFEFFLine 1${eol}Line 2${eol}Line 3` },
+		)
+		expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith(
+			`\uFEFF$& $$ $' &amp;${eol}changed${eol}Line 3`,
+			true,
+		)
+	})
+
+	it("rejects mixed endings without requesting approval or saving", async () => {
+		await executeSearchReplaceTool({}, { fileContent: "Line 1\r\nLine 2\nLine 3" })
+		expect(mockHandleError).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.objectContaining({ message: expect.stringMatching(/mixed line endings/i) }),
+		)
+		expect(mockAskApproval).not.toHaveBeenCalled()
+		expect(mockCline.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+	})
+
 	describe("parameter validation", () => {
 		it("returns error when file_path is missing", async () => {
 			const result = await executeSearchReplaceTool({ file_path: undefined })
@@ -265,6 +287,40 @@ describe("searchReplaceTool", () => {
 	})
 
 	describe("search and replace logic", () => {
+		describe.each([false, true])("literal replacements with direct save = %s", (directSave) => {
+			it.each(["$&", "$$", "$`", "$'", "$1", "$<name>"])("preserves %s in replacement text", async (token) => {
+				mockCline.providerRef.deref().getState.mockResolvedValue({
+					diagnosticsEnabled: true,
+					writeDelayMs: 1000,
+					experiments: { preventFocusDisruption: directSave },
+				})
+				const replacement = `const value = "${token}"`
+				const originalContent = "before\nTARGET\nafter"
+				const expectedContent = `before\n${replacement}\nafter`
+
+				await executeSearchReplaceTool(
+					{ old_string: "TARGET", new_string: replacement },
+					{ fileContent: originalContent },
+				)
+
+				expect(mockHandleError).not.toHaveBeenCalled()
+				expect(mockCline.didEditFile).toBe(true)
+				if (directSave) {
+					expect(mockCline.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+						testFilePath,
+						expectedContent,
+						false,
+						true,
+						1000,
+						{ exists: true, content: originalContent },
+					)
+				} else {
+					expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith(expectedContent, true)
+					expect(mockCline.diffViewProvider.saveChanges).toHaveBeenCalled()
+				}
+			})
+		})
+
 		it("returns error when no match is found", async () => {
 			const result = await executeSearchReplaceTool(
 				{ old_string: "NonExistent" },
@@ -464,7 +520,7 @@ describe("searchReplaceTool", () => {
 
 			expect(mockCline.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
 				testFilePath,
-				"Line 1\nModified Line 2\nLine 3",
+				"Line 1\r\nModified Line 2\r\nLine 3",
 				false,
 				true,
 				0,

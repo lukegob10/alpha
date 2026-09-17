@@ -25,6 +25,20 @@ describe("MessageManager", () => {
 	})
 
 	describe("Basic rewind operations", () => {
+		it("clears legacy API records when replacing the opening prompt", async () => {
+			mockTask.clineMessages = [
+				{ ts: 100, type: "say", say: "text", text: "Original prompt" },
+				{ ts: 200, type: "say", say: "completion_result", text: "Original answer" },
+			]
+			mockTask.apiConversationHistory = [
+				{ role: "user", content: "Original prompt" },
+				{ role: "assistant", content: "Original answer" },
+			]
+			await manager.rewindToTimestamp(100)
+			expect(mockTask.overwriteClineMessages).toHaveBeenCalledWith([])
+			expect(mockTask.overwriteApiConversationHistory).toHaveBeenCalledWith([])
+		})
+
 		it("should remove messages at and after the target timestamp", async () => {
 			mockTask.clineMessages = [
 				{ ts: 100, say: "user", text: "First" },

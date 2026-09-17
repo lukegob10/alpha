@@ -60,13 +60,20 @@ export const SkillsSettings: React.FC<SkillsSettingsProps> = ({
 	// Check if we're in a workspace/project
 	const hasWorkspace = Boolean(cwd)
 
-	// Get available modes for the checkboxes (built-in + custom modes)
+	// Saved bindings remain editable even after their modes stop being executable.
 	const availableModes = useMemo(() => {
-		return getUserFacingModeOptions(getAllModes(customModes), selectedModes).map((m) => ({
+		const allModes = getAllModes(customModes)
+		const options = getUserFacingModeOptions(allModes).map((m) => ({
 			slug: m.slug,
 			name: m.name,
 		}))
-	}, [customModes, selectedModes])
+		for (const slug of skillToEditModes?.modeSlugs ?? []) {
+			if (!options.some((mode) => mode.slug === slug)) {
+				options.push({ slug, name: allModes.find((mode) => mode.slug === slug)?.name ?? slug })
+			}
+		}
+		return options
+	}, [customModes, skillToEditModes])
 
 	const handleRefresh = useCallback(() => {
 		vscode.postMessage({ type: "requestSkills" })

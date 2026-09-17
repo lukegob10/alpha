@@ -1,4 +1,4 @@
-import { HTMLAttributes, useState } from "react"
+import { HTMLAttributes, useId, useState } from "react"
 import { X } from "lucide-react"
 import { Trans } from "react-i18next"
 import { Package } from "@alpha/package"
@@ -22,7 +22,6 @@ type AutoApproveSettingsProps = HTMLAttributes<HTMLDivElement> & {
 	alwaysAllowWriteOutsideWorkspace?: boolean
 	alwaysAllowWriteProtected?: boolean
 	alwaysAllowMcp?: boolean
-	alwaysAllowModeSwitch?: boolean
 	alwaysAllowSubtasks?: boolean
 	alwaysAllowSubagents?: boolean
 	alwaysAllowTickets?: boolean
@@ -41,7 +40,6 @@ type AutoApproveSettingsProps = HTMLAttributes<HTMLDivElement> & {
 		| "alwaysAllowWriteOutsideWorkspace"
 		| "alwaysAllowWriteProtected"
 		| "alwaysAllowMcp"
-		| "alwaysAllowModeSwitch"
 		| "alwaysAllowSubtasks"
 		| "alwaysAllowSubagents"
 		| "alwaysAllowTickets"
@@ -60,10 +58,9 @@ export const AutoApproveSettings = ({
 	alwaysAllowReadOnly,
 	alwaysAllowReadOnlyOutsideWorkspace,
 	alwaysAllowWrite,
-	alwaysAllowWriteOutsideWorkspace,
+	alwaysAllowWriteOutsideWorkspace: _legacyOutsideWriteApproval,
 	alwaysAllowWriteProtected,
 	alwaysAllowMcp,
-	alwaysAllowModeSwitch,
 	alwaysAllowSubtasks,
 	alwaysAllowSubagents,
 	alwaysAllowTickets,
@@ -81,6 +78,8 @@ export const AutoApproveSettings = ({
 	const { t } = useAppTranslation()
 	const [commandInput, setCommandInput] = useState("")
 	const [deniedCommandInput, setDeniedCommandInput] = useState("")
+	const allowedCommandInputId = useId()
+	const deniedCommandInputId = useId()
 	const effectiveAutoApprovalEnabled = autoApprovalEnabled ?? false
 
 	const handleAddCommand = () => {
@@ -153,7 +152,6 @@ export const AutoApproveSettings = ({
 						alwaysAllowReadOnly={alwaysAllowReadOnly}
 						alwaysAllowWrite={alwaysAllowWrite}
 						alwaysAllowMcp={alwaysAllowMcp}
-						alwaysAllowModeSwitch={alwaysAllowModeSwitch}
 						alwaysAllowSubtasks={alwaysAllowSubtasks}
 						alwaysAllowSubagents={alwaysAllowSubagents}
 						alwaysAllowTickets={alwaysAllowTickets}
@@ -205,24 +203,6 @@ export const AutoApproveSettings = ({
 							<span className="codicon codicon-edit" />
 							<div>{t("settings:autoApprove.write.label")}</div>
 						</div>
-						<SearchableSetting
-							settingId="auto-approve-write-outside-workspace"
-							section="autoApprove"
-							label={t("settings:autoApprove.write.outsideWorkspace.label")}>
-							<VSCodeCheckbox
-								checked={alwaysAllowWriteOutsideWorkspace}
-								onChange={(e: any) =>
-									setCachedStateField("alwaysAllowWriteOutsideWorkspace", e.target.checked)
-								}
-								data-testid="always-allow-write-outside-workspace-checkbox">
-								<span className="font-medium">
-									{t("settings:autoApprove.write.outsideWorkspace.label")}
-								</span>
-							</VSCodeCheckbox>
-							<div className="text-vscode-descriptionForeground text-sm mt-1">
-								{t("settings:autoApprove.write.outsideWorkspace.description")}
-							</div>
-						</SearchableSetting>
 						<SearchableSetting
 							settingId="auto-approve-write-protected"
 							section="autoApprove"
@@ -283,7 +263,10 @@ export const AutoApproveSettings = ({
 							settingId="auto-approve-allowed-commands"
 							section="autoApprove"
 							label={t("settings:autoApprove.execute.allowedCommands")}>
-							<label className="block font-medium mb-1" data-testid="allowed-commands-heading">
+							<label
+								htmlFor={allowedCommandInputId}
+								className="block font-medium mb-1"
+								data-testid="allowed-commands-heading">
 								{t("settings:autoApprove.execute.allowedCommands")}
 							</label>
 							<div className="text-vscode-descriptionForeground text-sm mt-1">
@@ -293,6 +276,7 @@ export const AutoApproveSettings = ({
 
 						<div className="flex gap-2">
 							<Input
+								id={allowedCommandInputId}
 								value={commandInput}
 								onChange={(e: any) => setCommandInput(e.target.value)}
 								onKeyDown={(e: any) => {
@@ -334,7 +318,10 @@ export const AutoApproveSettings = ({
 							section="autoApprove"
 							label={t("settings:autoApprove.execute.deniedCommands")}
 							className="mt-6">
-							<label className="block font-medium mb-1" data-testid="denied-commands-heading">
+							<label
+								htmlFor={deniedCommandInputId}
+								className="block font-medium mb-1"
+								data-testid="denied-commands-heading">
 								{t("settings:autoApprove.execute.deniedCommands")}
 							</label>
 							<div className="text-vscode-descriptionForeground text-sm mt-1">
@@ -344,6 +331,7 @@ export const AutoApproveSettings = ({
 
 						<div className="flex gap-2">
 							<Input
+								id={deniedCommandInputId}
 								value={deniedCommandInput}
 								onChange={(e: any) => setDeniedCommandInput(e.target.value)}
 								onKeyDown={(e: any) => {

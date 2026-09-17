@@ -1,3 +1,20 @@
+import {
+	assertPrimaryMode,
+	restoreTaskMode,
+	taskWorkContextSchema,
+	taskWorkPlanSchema,
+	type TaskWorkContext,
+	type TaskWorkPlan,
+	type AcceptanceReceipt,
+} from "@alpha-code/types"
+import {
+	captureAcceptanceChecks,
+	settleAcceptanceChecks,
+	getOutstandingAcceptanceChecks,
+	replaceWorkPlan,
+	restoreWorkContext,
+	formatWorkContext,
+} from "../agent/TaskWorkContext"
 import * as path from "path"
 import * as fsSync from "fs"
 import * as vscode from "vscode"
@@ -119,7 +136,7 @@ import { getApiMetrics, hasTokenUsageChanged, hasToolUsageChanged } from "../../
 import { ClineAskResponse } from "../../shared/WebviewMessage"
 import { defaultModeSlug, getModeBySlug, getModeSelection, planModeSlug } from "../../shared/modes"
 import { DiffStrategy, type ToolUse, type ToolParamName, toolParamNames } from "../../shared/tools"
-import { getModelMaxOutputTokens } from "../../shared/api"
+import { getModelMaxOutputTokens, getModelReservedOutputTokens } from "../../shared/api"
 import { ensureProposedPlanBlock } from "../../shared/plan-mode"
 
 // services
@@ -135,6 +152,7 @@ import { OutputInterceptor } from "../../integrations/terminal/OutputInterceptor
 
 // utils
 import { calculateApiCostAnthropic, calculateApiCostOpenAI } from "../../shared/cost"
+import { ReasoningSummary } from "./ReasoningSummary"
 import { getWorkspacePath } from "../../utils/path"
 import { sanitizeToolUseId } from "../../utils/tool-id"
 import { getTaskDirectoryPath } from "../../utils/storage"
@@ -152,6 +170,7 @@ import { formatToolFailureGuidance, normalizeToolFailure, type ToolFailureMetada
 import type { ParentCommandVerificationEvidence } from "../agent/AgentControlStore"
 import { AgentControlTransactionError } from "../agent/AgentControlTransaction"
 import type { CommandVerificationDiagnostic } from "../agent/VerificationScope"
+import { formatBackgroundCommandContext } from "../agent/CommandOutcomeContext"
 import { CompletionRecovery } from "../agent/CompletionRecovery"
 import { redactTaskPrivatePaths } from "../tools/taskPathPresentation"
 import { restoreTodoListForTask } from "../tools/UpdateTodoListTool"
@@ -179,7 +198,13 @@ import {
 import type { TaskToolSurface } from "../tools/TaskToolSurface"
 import type { AgentTurnEvent } from "../agent/AgentTurnEvents"
 import type { StepContext } from "../agent/StepContext"
-import { manageContext, willManageContext } from "../context-management"
+import {
+	getCompactionTargetTokens,
+	getContextLimits,
+	manageContext,
+	resolveCondenseThreshold,
+	willManageContext,
+} from "../context-management"
 import { ClineProvider } from "../webview/ClineProvider"
 import { MultiSearchReplaceDiffStrategy } from "../diff/strategies/multi-search-replace"
 import {
@@ -245,6 +270,7 @@ import { reconcileSubagentGroupAfterReload } from "../agent/SubagentGroupRecover
 export type CommandExecutionEvidenceStatus = "running" | "succeeded" | "failed" | "denied" | "cancelled" | "timed_out"
 
 export interface CommandExecutionEvidence {
+	acceptanceChecks?: AcceptanceReceipt[]
 	toolCallId: string
 	executionId: string
 	status: CommandExecutionEvidenceStatus
@@ -252,6 +278,8 @@ export interface CommandExecutionEvidence {
 	signalName?: string
 	startedAt: number
 	completedAt?: number
+	/** This invocation returned before delivering its final process outcome to the model. */
+	returnedInBackground?: boolean
 	/** Task-memory only. Durable verification stores the covered applied paths, never command text. */
 	command?: string
 	/** Explicit applied change sets this command was requested to verify. */
@@ -334,7 +362,6 @@ const DEFAULT_USAGE_COLLECTION_TIMEOUT_MS = 5000 // 5 seconds
 // timeout safe by preventing the abandoned promise from touching the next
 // turn's state.
 const STREAMING_PREVIEW_DRAIN_TIMEOUT_MS = 1000
-const FORCED_CONTEXT_REDUCTION_PERCENT = 75 // Keep 75% of context (remove 25%) on context window errors
 const MAX_CONTEXT_WINDOW_RETRIES = 3 // Maximum retries for context window errors
 const MAX_AUTOMATIC_MISTAKE_RECOVERIES = 1
 
@@ -397,6 +424,7 @@ interface TaskStepExecutionResult {
 }
 
 interface CurrentAgentStep {
+	createReasoningSummaryHandler: () => ApiHandler
 	snapshot: AgentStepSnapshot<ApiHandler, unknown>
 	/** Fresh wire copies from the private, unsanitized logical capture; never persisted or logged. */
 	getRequest: () => {
@@ -508,6 +536,7 @@ export function getSubagentAllowedToolNames(
 					"edit_file",
 					"apply_patch",
 					"execute_command",
+					"manage_command",
 					"read_command_output",
 					"attempt_completion",
 				]
@@ -559,6 +588,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	readonly metadata: TaskMetadata
 
 	todoList?: TodoItem[]
+	workContext?: TaskWorkContext
 
 	readonly rootTask: Task | undefined
 	readonly parentTask: Task | undefined = undefined
@@ -677,6 +707,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	/** Manual compaction is not part of AgentTurnEngine, but Stop must still reach it. */
 	private contextCondenseAbortController?: AbortController
 	private readonly taskCancellationController = new AbortController()
+	private reasoningSummaries?: ReasoningSummary
 	private agentWaitAbortController?: AbortController
 	private readonly subagentAuthority?: SubagentAuthorityGrant
 	private readonly subagentResearchDeadlineAt?: number
@@ -1344,6 +1375,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		subagentResearchDeadlineAt,
 	}: TaskOptions) {
 		super()
+		if (!historyItem && taskMode !== undefined) assertPrimaryMode(taskMode)
 
 		if (startTask && !task && !images && !historyItem) {
 			throw new Error("Either historyItem or task/images must be provided")
@@ -1382,6 +1414,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.subagentRole = historyItem?.subagentRole ?? subagentRole
 		this.subagentModelRoute = structuredClone(historyItem?.subagentModelRoute ?? subagentModelRoute)
 		this.subagentContextManifest = structuredClone(contextManifest)
+		const restoredWork = taskWorkContextSchema.safeParse(historyItem?.workContext)
+		if (restoredWork.success) this.workContext = restoreWorkContext(restoredWork.data)
 		this.subagentInstructionPlacement = historyItem?.subagentInstructionPlacement ?? subagentInstructionPlacement
 		this.subagentDelegationPolicy = historyItem?.subagentDelegationPolicy ?? subagentDelegationPolicy
 		this.subagentDelegationExplicitlyEnabled =
@@ -1454,7 +1488,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// For history items, use the stored values; for new tasks, we'll set them
 		// after getting state.
 		if (historyItem) {
-			this._taskMode = historyItem.mode || defaultModeSlug
+			this._taskMode = restoreTaskMode(historyItem.mode)
 			this._taskApiConfigName = historyItem.apiConfigName
 			this.taskModeReady = Promise.resolve()
 			this.taskApiConfigReady = Promise.resolve()
@@ -1598,7 +1632,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async initializeTaskMode(provider: ClineProvider): Promise<void> {
 		try {
 			const state = await provider.getState()
-			this._taskMode = state?.mode || defaultModeSlug
+			this._taskMode = restoreTaskMode(state?.mode)
 		} catch (error) {
 			// If there's an error getting state, use the default mode
 			this._taskMode = defaultModeSlug
@@ -1811,6 +1845,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * Update this task's execution mode without changing the foreground provider mode.
 	 */
 	public setTaskMode(mode: string): void {
+		assertPrimaryMode(mode)
 		this._taskMode = mode
 		this.taskModeReady = Promise.resolve()
 	}
@@ -3649,7 +3684,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		)
 
 		this.currentAgentStep?.releaseRequest?.()
+		const summaryConfiguration: ProviderSettings = {
+			...structuredClone(diagnosticProviderOptions),
+			modelMaxTokens: 2_048,
+			includeMaxTokens: true,
+			modelMaxThinkingTokens: 1_024,
+			// Pick the least expensive supported effort for this presentation-only request.
+			reasoningEffort: modelInfo.requiredReasoningEffort
+				? Array.isArray(modelInfo.supportsReasoningEffort)
+					? modelInfo.supportsReasoningEffort[0]
+					: modelInfo.reasoningEffort
+				: "disable",
+		}
 		this.currentAgentStep = {
+			createReasoningSummaryHandler: () => buildApiHandler(summaryConfiguration),
 			snapshot,
 			getRequest: () => {
 				if (!capturedRequest) throw new Error("The captured provider request has been released.")
@@ -3785,6 +3833,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public async overwriteClineMessages(newMessages: ClineMessage[]) {
+		this.reasoningSummaries?.dispose()
+		this.reasoningSummaries = undefined
 		this.invalidateBackgroundUsageDrain("UI transcript was replaced")
 		this.clineMessages = newMessages
 		restoreTodoListForTask(this)
@@ -3799,6 +3849,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await provider?.postMessageToWebview({ type: "messageUpdated", taskId: this.taskId, clineMessage: message })
 		}
 		this.emit(RooCodeEventName.Message, { action: "updated", message })
+	}
+
+	private summarizeReasoning(message: ClineMessage | undefined): void {
+		const step = this.currentAgentStep
+		if (this.abort || !step || message?.say !== "reasoning") return
+		this.reasoningSummaries ??= new ReasoningSummary(this.taskId, async (updated) => {
+			if (this.abort || !this.clineMessages.includes(updated)) return
+			await this.updateClineMessage(updated)
+			await this.saveClineMessages()
+		})
+		this.reasoningSummaries.update({
+			message,
+			createHandler: step.createReasoningSummaryHandler,
+			protocol: step.snapshot.context.provider.apiProtocol === "anthropic" ? "anthropic" : "openai",
+		})
 	}
 
 	private async enqueueClineMessagesSave(
@@ -3830,6 +3895,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					workspace: this.historyWorkspacePath,
 					mode: this._taskMode || defaultModeSlug, // Use the task's own mode, not the current provider mode.
 					apiConfigName: this._taskApiConfigName, // Use the task's own provider profile, not the current provider profile.
+					workContext: this.workContext,
 					initialStatus: this.initialStatus,
 					taskKind: this.taskKind,
 					subagentGroupId: this.subagentGroupId,
@@ -4202,6 +4268,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		partial?: boolean,
 		progressStatus?: ToolProgressStatus,
 		isProtected?: boolean,
+		requiresExplicitApproval?: boolean,
 	): Promise<{ response: ClineAskResponse; text?: string; images?: string[] }> {
 		// If this Alpha instance was aborted by the provider, then the only
 		// thing keeping us alive is a promise still running in the background,
@@ -4243,7 +4310,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// state.
 					askTs = Date.now()
 					this.lastMessageTs = askTs
-					await this.addToClineMessages({ ts: askTs, type: "ask", ask: type, text, partial, isProtected })
+					await this.addToClineMessages({
+						ts: askTs,
+						type: "ask",
+						ask: type,
+						text,
+						partial,
+						isProtected,
+						progressStatus,
+					})
 					// console.log("Task#ask: current ask promise was ignored (#2)")
 					throw new AskIgnoredError("new partial")
 				}
@@ -4281,7 +4356,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					this.askResponseImages = undefined
 					askTs = Date.now()
 					this.lastMessageTs = askTs
-					await this.addToClineMessages({ ts: askTs, type: "ask", ask: type, text, isProtected })
+					await this.addToClineMessages({
+						ts: askTs,
+						type: "ask",
+						ask: type,
+						text,
+						isProtected,
+						progressStatus,
+					})
 				}
 			}
 		} else {
@@ -4291,7 +4373,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.askResponseImages = undefined
 			askTs = Date.now()
 			this.lastMessageTs = askTs
-			await this.addToClineMessages({ ts: askTs, type: "ask", ask: type, text, isProtected })
+			await this.addToClineMessages({ ts: askTs, type: "ask", ask: type, text, isProtected, progressStatus })
 		}
 
 		this.activeAsk = { type, ts: askTs }
@@ -4301,22 +4383,28 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Automatically approve if the ask according to the user's settings.
 		const provider = this.providerRef.deref()
 		const state = provider ? await provider.getState() : undefined
-		const offscreenAutoResponse = this.getOffscreenAutoAskResponse(type, text, isProtected)
-		const approval = this.isParentAuthorizedSubagentAsk(type, text, isProtected)
-			? ({ decision: "approve" } as const)
-			: offscreenAutoResponse
-				? ({ decision: "ask" } as const)
-				: await checkAutoApprovalWithInheritedPolicy({
-						state,
-						inheritedState:
-							this.taskKind === "subagent"
-								? (this.subagentContextManifest?.runtimePolicy.autoApproval ??
-									disabledSubagentAutoApprovalPolicy)
-								: undefined,
-						ask: type,
-						text,
-						isProtected,
-					})
+		// The execution boundary supplies mandatory approval requirements. Otherwise,
+		// apply the user's settings and any narrower inherited command grant.
+		const offscreenAutoResponse = requiresExplicitApproval
+			? undefined
+			: this.getOffscreenAutoAskResponse(type, text, isProtected)
+		const approval =
+			!requiresExplicitApproval && this.isParentAuthorizedSubagentAsk(type, text, isProtected)
+				? ({ decision: "approve" } as const)
+				: offscreenAutoResponse
+					? ({ decision: "ask" } as const)
+					: await checkAutoApprovalWithInheritedPolicy({
+							state,
+							inheritedState:
+								this.taskKind === "subagent"
+									? (this.subagentContextManifest?.runtimePolicy.autoApproval ??
+										disabledSubagentAutoApprovalPolicy)
+									: undefined,
+							ask: type,
+							text,
+							isProtected,
+							requiresExplicitApproval,
+						})
 
 		if (offscreenAutoResponse) {
 			this.handleWebviewAskResponse(
@@ -4772,6 +4860,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		try {
 			await this.pendingCommandVerification
 			const runtimeRevision = this.completionRuntimeRevision
+			const outstanding = this.workContext?.plan
+				? await getOutstandingAcceptanceChecks(
+						this.workContext,
+						this.cwd,
+						(file) => this.rooIgnoreController?.validateAccess(file) ?? true,
+					)
+				: []
 			const decision = await provider.getParentCompletionDecision(this)
 			// Commands and evidence publication can start while the durable snapshot is read.
 			const lateRuntimeDecision = this.getPendingCompletionRuntimeDecision()
@@ -4786,6 +4881,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						"Command evidence changed while reading the completion decision. Refresh the durable evidence before completing.",
 				}
 			}
+			if (outstanding.length && decision.allowed)
+				return {
+					allowed: false,
+					classification: "repairable",
+					reasonCode: "verification_missing",
+					modelCanResolveRejection: true,
+					blockerKey: JSON.stringify(outstanding),
+					message: `Declared acceptance checks need attention: ${outstanding.join("; ")}. Run only the relevant checks, repair failures, or report a blocked outcome when evidence is unavailable.`,
+				}
 			if (decision.allowed)
 				return { ...decision, classification: "ready", reasonCode: "ready", modelCanResolveRejection: true }
 			const obligations = decision.blockingObligations ?? []
@@ -5103,6 +5207,39 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			})
 		}
 		if (this.abort) throw new Error("Command admission was cancelled")
+		await this.pendingCommandVerification
+		await this.prepareCommandEvidenceSlot(toolCallId)
+		if (this.abort) throw new Error("Command admission was cancelled")
+		this.beginCommandExecution(toolCallId, executionId, command, verificationChangeSetIds)
+		const evidence = this.commandExecutionEvidence.get(toolCallId)!
+		evidence.cwd = commandCwd
+		evidence.verificationVersions = structuredClone(verificationVersions)
+		evidence.verificationDiagnostics = verificationDiagnostics
+		await this.enqueueCommandEvidence(async () => {
+			evidence.acceptanceChecks = await captureAcceptanceChecks(
+				this.workContext,
+				this.cwd,
+				command,
+				commandCwd,
+				executionId,
+				(file) => this.rooIgnoreController?.validateAccess(file) ?? true,
+			)
+			if (evidence.acceptanceChecks.length && this.workContext) {
+				this.workContext = {
+					...this.workContext,
+					receipts: [
+						...this.workContext.receipts.filter(
+							(receipt) => !evidence.acceptanceChecks!.some((item) => item.checkId === receipt.checkId),
+						),
+						...evidence.acceptanceChecks,
+					],
+				}
+				await this.requireClineMessagesSaved("acceptance check admission")
+			}
+		})
+	}
+
+	private async prepareCommandEvidenceSlot(toolCallId: string): Promise<void> {
 		this.commandExecutionEvidence.delete(toolCallId)
 		if (this.commandExecutionEvidence.size >= 128) {
 			await this.pendingCommandVerification
@@ -5111,11 +5248,29 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (this.commandExecutionEvidence.size < 128) break
 			}
 		}
-		this.beginCommandExecution(toolCallId, executionId, command, verificationChangeSetIds)
-		const evidence = this.commandExecutionEvidence.get(toolCallId)!
-		evidence.cwd = commandCwd
-		evidence.verificationVersions = structuredClone(verificationVersions)
-		evidence.verificationDiagnostics = verificationDiagnostics
+	}
+
+	/** Joined inspections record process outcomes without claiming verification of workspace mutations. */
+	public async recordCommandInspectionResult(evidence: CommandExecutionEvidence): Promise<void> {
+		const previous = this.commandExecutionEvidence.get(evidence.toolCallId)
+		if (previous?.executionId === evidence.executionId && previous.status !== "running") return
+		await this.prepareCommandEvidenceSlot(evidence.toolCallId)
+		this.commandExecutionEvidence.set(evidence.toolCallId, {
+			toolCallId: evidence.toolCallId,
+			executionId: evidence.executionId,
+			command: evidence.command,
+			cwd: evidence.cwd,
+			startedAt: evidence.startedAt,
+			completedAt: evidence.completedAt,
+			status: this.abort ? "cancelled" : evidence.status,
+			...(previous?.executionId === evidence.executionId && previous.returnedInBackground
+				? { returnedInBackground: true }
+				: {}),
+			exitCode: evidence.exitCode,
+			signalName: evidence.signalName,
+		})
+		this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
+		this.publishParentVerificationEvidence()
 	}
 
 	public completeCommandExecution(
@@ -5153,24 +5308,81 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.publishParentVerificationEvidence()
 	}
 
-	private publishParentVerificationEvidence(): void {
-		if (this.taskKind === "subagent") return
-		const provider = this.providerRef.deref()
-		if (!provider) return
+	/** Serialize working-record reads and writes with terminal evidence publication. */
+	private enqueueCommandEvidence(operation: () => Promise<void>): Promise<void> {
 		this.pendingCommandVerificationCount = (this.pendingCommandVerificationCount ?? 0) + 1
 		this.pendingCommandVerification = (this.pendingCommandVerification ?? Promise.resolve())
 			.catch(() => undefined)
-			.then(() => provider.recordParentVerificationEvidence(this))
+			.then(operation)
 			.finally(() => {
 				this.pendingCommandVerificationCount--
 			})
-		void this.pendingCommandVerification.catch((error) =>
+		return this.pendingCommandVerification
+	}
+
+	private publishParentVerificationEvidence(): void {
+		if (this.taskKind === "subagent" && !this.workContext?.plan) return
+		const provider = this.providerRef.deref()
+		if (!provider) return
+		const publication = this.enqueueCommandEvidence(async () => {
+			for (const evidence of this.commandExecutionEvidence.values()) {
+				if (evidence.status === "running" || !evidence.acceptanceChecks?.length || !this.workContext) continue
+				this.workContext = await settleAcceptanceChecks(
+					this.workContext,
+					this.cwd,
+					evidence.acceptanceChecks,
+					evidence.status === "succeeded",
+					evidence.exitCode,
+					(file) => this.rooIgnoreController?.validateAccess(file) ?? true,
+				)
+				await this.requireClineMessagesSaved("acceptance evidence")
+				evidence.acceptanceChecks = undefined
+			}
+			if (this.taskKind !== "subagent") await provider.recordParentVerificationEvidence(this)
+		})
+		void publication.catch((error) =>
 			console.error(`[Task] Failed to persist parent verification evidence: ${String(error)}`),
 		)
 	}
 
 	public getCommandExecutionEvidence(): CommandExecutionEvidence[] {
 		return structuredClone([...this.commandExecutionEvidence.values()])
+	}
+
+	public markCommandExecutionBackgrounded(toolCallId: string, executionId: string): void {
+		const evidence = this.commandExecutionEvidence.get(toolCallId)
+		if (evidence?.executionId === executionId) evidence.returnedInBackground = true
+	}
+
+	public getBackgroundCommandContext(): string | undefined {
+		return formatBackgroundCommandContext(this.commandExecutionEvidence.values())
+	}
+
+	public async updateWorkPlan(plan: TaskWorkPlan): Promise<void> {
+		await this.enqueueCommandEvidence(async () => {
+			this.workContext = replaceWorkPlan(this.workContext, taskWorkPlanSchema.parse(plan))
+			this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
+			await this.requireClineMessagesSaved("task working record")
+		})
+	}
+
+	public async recordLoadedSkill(name: string, skillPath: string, digest: string): Promise<void> {
+		await this.enqueueCommandEvidence(async () => {
+			const context = this.workContext ?? { receipts: [], skills: [] }
+			this.workContext = {
+				...context,
+				skills: [
+					...context.skills.filter((skill) => skill.path !== skillPath),
+					{ name, path: skillPath, digest },
+				].slice(-16),
+			}
+			await this.requireClineMessagesSaved("loaded skill identity")
+		})
+	}
+
+	public async getWorkContext(): Promise<string | undefined> {
+		await this.pendingCommandVerification
+		return this.workContext ? formatWorkContext(this.workContext) : undefined
 	}
 
 	public hasActiveCommandExecutions(): boolean {
@@ -5190,8 +5402,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
-	private async stopActiveWorkerCommand(): Promise<void> {
-		if (this.taskKind !== "subagent" || this.subagentRole !== "worker") return
+	private async stopActiveTaskCommands(): Promise<void> {
+		if (this.taskKind === "subagent" && this.subagentRole !== "worker") return
 		// Command launch can still be awaiting approval or terminal acquisition, so
 		// cancel its evidence even when no process has become visible yet.
 		this.failActiveCommandExecutions("cancelled")
@@ -5202,9 +5414,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// still owns the busy process under this task ID. Cancellation must stop
 		// both forms before the task can become terminal.
 		const processes = new Set<RooTerminalProcess>()
+		const physicallyRunning = new Set<RooTerminalProcess>()
 		if (this.terminalProcess) processes.add(this.terminalProcess)
 		for (const terminal of TerminalRegistry.getTerminals(true, this.taskId)) {
-			if (terminal.process) processes.add(terminal.process)
+			if (
+				terminal.process &&
+				(this.taskKind === "subagent" ||
+					[...this.commandExecutionEvidence.values()].some(
+						(evidence) => evidence.executionId === terminal.process?.executionId,
+					))
+			) {
+				processes.add(terminal.process)
+				if (terminal.running) physicallyRunning.add(terminal.process)
+			}
 		}
 		if (processes.size === 0) return
 
@@ -5216,18 +5438,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// ExecuteCommand clears its direct reference immediately after a
 				// foreground completion. Cancellation can observe that narrow gap,
 				// so do not wait for an event that has already been emitted.
-				if (process.isSettled === true) return
+				if (process.isSettled === true && !physicallyRunning.has(process)) return
+				// A failed output reader can settle before the underlying shell exits.
+				const finishEvent = process.isSettled ? "shell_execution_complete" : "completed"
 
 				let finish!: () => void
 				const settled = new Promise<void>((resolve) => {
 					finish = resolve
-					process.once("completed", finish)
+					process.once(finishEvent, finish)
 					process.once("error", finish)
 				})
 				let timeout: ReturnType<typeof setTimeout> | undefined
 				const timedOut = new Promise<never>((_resolve, reject) => {
 					timeout = setTimeout(
-						() => reject(new Error(`Timed out stopping a managed Worker command for task ${this.taskId}`)),
+						() => reject(new Error(`Timed out stopping a command for task ${this.taskId}`)),
 						10_000,
 					)
 				})
@@ -5236,7 +5460,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					await Promise.race([Promise.all([Promise.resolve(process.abort()), settled]), timedOut])
 				} finally {
 					if (timeout) clearTimeout(timeout)
-					process.removeListener("completed", finish)
+					process.removeListener(finishEvent, finish)
 					process.removeListener("error", finish)
 				}
 			}),
@@ -6025,7 +6249,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.throwIfStepInterrupted(metadata.signal)
 		const tokens = await countContextTokens(messages, apiHandler, systemPrompt, metadata, countContext)
 		this.throwIfStepInterrupted(metadata.signal)
-		if (!Number.isFinite(tokens) || (targetContextTokens !== undefined && tokens > targetContextTokens)) {
+		if (
+			!Number.isFinite(tokens) ||
+			tokens < 0 ||
+			(targetContextTokens !== undefined && tokens > targetContextTokens)
+		) {
 			this.logCompactionDiagnostic({
 				stage: "validation",
 				tokens,
@@ -6090,8 +6318,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const customCondensingPrompt = state?.customSupportPrompts?.CONDENSE
 		const mode = await this.getTaskMode()
 
-		const { contextTokens: prevContextTokens } = this.getTokenUsage()
-
 		// Build tools for condensing metadata (same tools used for normal API calls)
 		const provider = this.providerRef.deref()
 		let allTools: import("openai").default.Chat.ChatCompletionTool[] = []
@@ -6140,10 +6366,33 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			signal,
 			remoteDeadline: metadata.deadline,
 		})
+		const { id: modelId, info: modelInfo } = apiHandler.getModel()
+		const reservedTokens = getModelReservedOutputTokens({ modelId, model: modelInfo, settings: apiConfiguration })
+		const currentProfileId = await this.getCurrentProfileId(state)
+		const threshold = resolveCondenseThreshold(
+			state?.autoCondenseContextPercent ?? 100,
+			state?.profileThresholds,
+			currentProfileId,
+		)
+		const { triggerTokens } = getContextLimits(modelInfo.contextWindow, reservedTokens, threshold)
+		const fixedTokens = await countContextTokens([], apiHandler, systemPrompt, metadata, countContext)
+		const maxContextTokens = getCompactionTargetTokens({
+			contextWindow: modelInfo.contextWindow,
+			reservedTokens,
+			triggerTokens,
+			fixedTokens,
+		})
+		const prevContextTokens = await countContextTokens(
+			getEffectiveApiHistory(history),
+			apiHandler,
+			systemPrompt,
+			metadata,
+			countContext,
+		)
 		const filesReadByRoo = await this.getFilesReadByRooSafely("condenseContext")
 		this.throwIfStepInterrupted(signal)
 
-		const { messages, summary, cost, error, condenseId, targetContextTokens, diagnostic } =
+		const { messages, summary, cost, error, condenseId, targetContextTokens, diagnostic, status } =
 			await summarizeConversation({
 				messages: history,
 				apiHandler,
@@ -6156,6 +6405,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				cwd: this.cwd,
 				rooIgnoreController: this.rooIgnoreController,
 				countContext,
+				maxContextTokens,
 			})
 		this.logCompactionDiagnostic(diagnostic && { stage: "summary", automatic: false, ...diagnostic })
 		this.throwIfStepInterrupted(signal)
@@ -6175,6 +6425,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			)
 			return
 		}
+		if (status === "unchanged") {
+			await this.say(
+				"condense_context",
+				undefined,
+				undefined,
+				false,
+				undefined,
+				undefined,
+				{ isNonInteractive: true },
+				{
+					outcome: "unchanged",
+					cost,
+					summary: "",
+					prevContextTokens,
+					newContextTokens: prevContextTokens,
+				},
+			)
+			return
+		}
 		let newContextTokens = await this.measureCompactedContext(
 			apiHandler,
 			systemPrompt,
@@ -6185,6 +6454,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			getEffectiveApiHistory(messages),
 			countContext,
 		)
+		if (newContextTokens >= prevContextTokens) throw new ContextRecoveryExhaustedError()
 		this.throwIfStepInterrupted(signal)
 		if (digestProviderTranscript(this.apiConversationHistory) !== historyDigest) {
 			throw new Error("Conversation history changed during context compaction; retry with the current history")
@@ -6202,6 +6472,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			getEffectiveApiHistory(this.apiConversationHistory),
 			countContext,
 		)
+		if (newContextTokens >= prevContextTokens) throw new ContextRecoveryExhaustedError()
 
 		const contextCondense: ContextCondense = {
 			summary,
@@ -6231,6 +6502,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		progressStatus?: ToolProgressStatus,
 		options: {
 			isNonInteractive?: boolean
+			commandExecutionId?: string
 			stateUpdate?: "full" | "task"
 			previewEpoch?: number
 		} = {},
@@ -6244,6 +6516,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			throw new Error(`[RooCode#say] task ${this.taskId}.${this.instanceId} aborted`)
 		}
 		if (text !== undefined) text = redactTaskPrivatePaths(this, text)
+		if (type === "user_feedback" && !partial && this.workContext) {
+			// External state is reusable only within the current user request.
+			await this.enqueueCommandEvidence(async () => {
+				this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
+				if (this.workContext) this.workContext = restoreWorkContext(this.workContext)
+			})
+		}
 
 		if (partial !== undefined) {
 			const lastMessage = this.clineMessages.at(-1)
@@ -6356,6 +6635,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					checkpoint,
 					contextCondense,
 					contextTruncation,
+					...(options.commandExecutionId ? { commandExecutionId: options.commandExecutionId } : {}),
 				},
 				options.stateUpdate,
 			)
@@ -6697,6 +6977,36 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	/** Start a rehydrated task with a replacement prompt after the host has rewound its history. */
+	public async resumeWithEditedMessage(text: string, images: string[] = []): Promise<void> {
+		if (this._started || this.abort) throw new Error("The task has already started or was cancelled")
+		if (!text.trim() && images.length === 0) throw new Error("A prompt or image is required")
+		this._started = true
+		this.skipPrevResponseIdOnce = true
+		let persisted = false
+		let resolvePersisted!: () => void
+		let rejectPersisted!: (error: unknown) => void
+		const admission = new Promise<void>((resolve, reject) => {
+			resolvePersisted = resolve
+			rejectPersisted = reject
+		})
+		const lifecycle = this.resumeTaskFromHistory(
+			text,
+			() => {
+				persisted = true
+				this.emit(RooCodeEventName.TaskActive, this.taskId)
+				resolvePersisted()
+			},
+			images,
+			{ deferTaskStartedUntilInitialUserContentPersisted: true },
+		)
+		this.ownBackgroundLifecycle("resume", lifecycle)
+		void lifecycle.then(() => {
+			if (!persisted) rejectPersisted(new Error("The edited prompt was not persisted"))
+		}, rejectPersisted)
+		await admission
+	}
+
 	private async resumeTaskFromHistory(
 		followupText?: string,
 		onSubagentSteeringPersisted?: () => Promise<void> | void,
@@ -6796,10 +7106,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (hasDirectFollowup) {
 				responseText = followupText
 				responseImages = followupImages
+				const messageType = this.clineMessages.length === 0 ? "text" : "user_feedback"
 				if (followupImages === undefined) {
-					await this.say("user_feedback", followupText)
+					await this.say(messageType, followupText)
 				} else {
-					await this.say("user_feedback", followupText, followupImages)
+					await this.say(messageType, followupText, followupImages)
 				}
 			} else {
 				const askType: ClineAsk =
@@ -6910,6 +7221,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				} else {
 					throw new Error("Unexpected: Last message is not a user or assistant message")
 				}
+			} else if (hasDirectFollowup) {
+				// Editing the opening prompt intentionally removes the entire old request.
+				modifiedApiConversationHistory = []
+				modifiedOldUserContent = []
 			} else {
 				throw new Error("Unexpected: No existing API conversation history")
 			}
@@ -7001,6 +7316,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * This immediately aborts the underlying stream rather than waiting for the next chunk.
 	 */
 	public cancelCurrentRequest(): void {
+		this.reasoningSummaries?.dispose()
+		this.reasoningSummaries = undefined
 		this.invalidateBackgroundUsageDrain("Current task request was cancelled")
 		this.agentWaitAbortController?.abort(new Error("Current task request was cancelled"))
 		const cancellation = new Error("Current task request was cancelled")
@@ -7025,6 +7342,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public abortTask(isAbandoned = false): Promise<void> {
+		this.reasoningSummaries?.dispose()
 		if (isAbandoned) {
 			this.abandoned = true
 		}
@@ -7116,7 +7434,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		await this.drainStreamingPreviews("task abort")
 		this.releaseSubagentReviewBarrierIfSettled(true)
 		try {
-			await this.stopActiveWorkerCommand()
+			await this.stopActiveTaskCommands()
 		} catch (error) {
 			cleanupError ??= error
 		}
@@ -7156,6 +7474,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public dispose(): void {
+		this.reasoningSummaries?.dispose()
 		console.log(`[Task#dispose] disposing task ${this.taskId}.${this.instanceId}`)
 		this.releaseSubagentReviewBarrierIfSettled(true)
 		this.invalidateStreamingPreviewEpoch()
@@ -8413,6 +8732,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 										)
 									}
 									await this.say("reasoning", formattedReasoning, undefined, true)
+									this.summarizeReasoning(this.clineMessages.at(-1))
 									break
 								}
 								case "usage":
@@ -9101,6 +9421,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						if (lastReasoningIndex !== -1 && this.clineMessages[lastReasoningIndex].partial) {
 							this.clineMessages[lastReasoningIndex].partial = false
 							await this.updateClineMessage(this.clineMessages[lastReasoningIndex])
+							this.summarizeReasoning(this.clineMessages[lastReasoningIndex])
 						}
 					}
 
@@ -10015,7 +10336,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const { contextTokens } = this.getTokenUsage()
 		const modelInfo = apiHandler.getModel().info
 
-		const maxTokens = getModelMaxOutputTokens({
+		const maxTokens = getModelReservedOutputTokens({
 			modelId: apiHandler.getModel().id,
 			model: modelInfo,
 			settings: apiConfiguration,
@@ -10031,7 +10352,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		console.warn(
 			`[Task#${this.taskId}] Context window exceeded for model ${apiHandler.getModel().id}. ` +
 				`Current tokens: ${contextTokens}, Context window: ${contextWindow}. ` +
-				`Forcing truncation to ${FORCED_CONTEXT_REDUCTION_PERCENT}% of current context.`,
+				`Recovering within the configured compaction budget.`,
 		)
 		let contextManagementUiStarted = false
 		let contextRecoveryError: unknown
@@ -10096,7 +10417,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.getSystemPrompt(state, { apiHandler, apiConfiguration }),
 			)
 			assertRecoveryWithinBudget()
-			// Force aggressive truncation by keeping only 75% of the conversation history
+			// Provider rejection forces a real reduction under the same captured settings.
 			const truncateResult = await waitForBoundedRecovery(
 				manageContext({
 					messages: this.apiConversationHistory,
@@ -10105,7 +10426,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					contextWindow,
 					apiHandler,
 					autoCondenseContext: true,
-					autoCondenseContextPercent: FORCED_CONTEXT_REDUCTION_PERCENT,
+					autoCondenseContextPercent: state?.autoCondenseContextPercent ?? 100,
 					forceCompaction: true,
 					systemPrompt,
 					taskId: this.taskId,
@@ -10488,7 +10809,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				options.retryDeadline,
 			)
 
-			const maxTokens = getModelMaxOutputTokens({
+			const maxTokens = getModelReservedOutputTokens({
 				modelId: apiHandler.getModel().id,
 				model: modelInfo,
 				settings: apiConfiguration,
@@ -10656,6 +10977,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							contextCount,
 						),
 					)
+					if (tokens >= truncateResult.prevContextTokens) throw new ContextRecoveryExhaustedError()
 					assertPreflightWithinBudget()
 					// Do not race this generation-owned, queue-capped transcript write.
 					// Completing it before surfacing cancellation prevents a detached
@@ -10677,6 +10999,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							contextCount,
 						),
 					)
+					if (tokens >= truncateResult.prevContextTokens) throw new ContextRecoveryExhaustedError()
 					truncateResult.newContextTokens = tokens
 					truncateResult.newContextTokensAfterTruncation = tokens
 					compactedContextTarget = truncateResult.targetContextTokens

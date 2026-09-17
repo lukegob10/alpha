@@ -723,8 +723,9 @@ describe("summarizeConversation", () => {
 		expect(result.messages).toEqual(messages)
 		expect(result.cost).toBe(0)
 		expect(result.summary).toBe("")
-		expect(result.newContextTokens).toBeUndefined()
-		expect(result.error).toBeTruthy() // Error should be set for not enough messages
+		expect(result.newContextTokens).toBe(200)
+		expect(result.status).toBe("unchanged")
+		expect(result.error).toBeUndefined()
 		expect(mockApiHandler.createMessage).not.toHaveBeenCalled()
 	})
 
@@ -744,6 +745,7 @@ describe("summarizeConversation", () => {
 			apiHandler: mockApiHandler,
 			systemPrompt: defaultSystemPrompt,
 			taskId,
+			recentTailTokenBudget: 500,
 		})
 
 		// Check that the API was called correctly
@@ -830,6 +832,7 @@ describe("summarizeConversation", () => {
 			apiHandler: lifecycleHandler,
 			systemPrompt: defaultSystemPrompt,
 			taskId,
+			recentTailTokenBudget: 500,
 		})
 
 		expect(result.status).toBe("no_progress")
@@ -1283,7 +1286,7 @@ describe("summarizeConversation", () => {
 		const mockCallArgs = (maybeRemoveImageBlocks as Mock).mock.calls[0][0] as any[]
 		const finalMessage = mockCallArgs[mockCallArgs.length - 1]
 		expect(finalMessage.role).toBe("user")
-		expect(finalMessage.content).toContain("Your task is to create a detailed summary of the conversation")
+		expect(finalMessage.content).toContain("Create a concise handoff")
 	})
 
 	it("should include the original first user message in summarization input", async () => {
@@ -1345,6 +1348,7 @@ describe("summarizeConversation", () => {
 			apiHandler: mockApiHandler,
 			systemPrompt,
 			taskId,
+			recentTailTokenBudget: 500,
 		})
 
 		// Verify that token accounting covers the system prompt, summary, and retained suffix.
@@ -1570,7 +1574,8 @@ describe("summarizeConversation with custom settings", () => {
 		const requestMessages = createMessageCalls[0][1]
 		const lastMessage = requestMessages[requestMessages.length - 1]
 		expect(lastMessage.role).toBe("user")
-		expect(lastMessage.content).toBe(customPrompt)
+		expect(lastMessage.content).toContain(customPrompt)
+		expect(lastMessage.content).toMatch(/within \d+ tokens/)
 	})
 
 	/**

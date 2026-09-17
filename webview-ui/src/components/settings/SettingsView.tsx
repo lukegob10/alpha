@@ -175,7 +175,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		language,
 		alwaysAllowExecute,
 		alwaysAllowMcp,
-		alwaysAllowModeSwitch,
 		alwaysAllowSubtasks,
 		alwaysAllowSubagents,
 		alwaysAllowTickets = false,
@@ -462,7 +461,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					autoApprovalEnabled: autoApprovalEnabled ?? false,
 					disabledBuiltinSkills: cachedState.disabledBuiltinSkills ?? [],
 					alwaysAllowMcp,
-					alwaysAllowModeSwitch,
 					allowedCommands: allowedCommands ?? [],
 					deniedCommands: deniedCommands ?? [],
 					// Note that we use `null` instead of `undefined` since `JSON.stringify`
@@ -935,7 +933,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 								alwaysAllowWriteOutsideWorkspace={alwaysAllowWriteOutsideWorkspace}
 								alwaysAllowWriteProtected={alwaysAllowWriteProtected}
 								alwaysAllowMcp={alwaysAllowMcp}
-								alwaysAllowModeSwitch={alwaysAllowModeSwitch}
 								alwaysAllowSubtasks={alwaysAllowSubtasks}
 								alwaysAllowSubagents={alwaysAllowSubagents}
 								alwaysAllowTickets={alwaysAllowTickets}

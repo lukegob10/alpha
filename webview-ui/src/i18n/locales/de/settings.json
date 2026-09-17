@@ -281,16 +281,19 @@
 			"timeoutLabel": "Wartezeit vor der automatischen Auswahl der ersten Antwort"
 		},
 		"execute": {
-			"label": "Ausführen",
-			"description": "Erlaubte Terminal-Befehle automatisch ohne Genehmigung ausführen",
-			"allowedCommands": "Erlaubte Auto-Ausführungsbefehle",
-			"allowedCommandsDescription": "Befehlspräfixe, die automatisch ausgeführt werden können, wenn 'Ausführungsoperationen immer genehmigen' aktiviert ist. Fügen Sie * hinzu, um alle Befehle zu erlauben (mit Vorsicht verwenden).",
+			"label": "Befehlsregeln",
+			"description": "Befehle im Schreibbereich der Aufgabe automatisch genehmigen. Netzwerkzugriff ist aktiviert. Schreibzugriffe außerhalb werden blockiert. Die globale Einrichtung bleibt projektübergreifend erhalten.",
+			"allowedCommands": "Erlaubte Befehlspräfixe",
+			"allowedCommandsDescription": "Mit * werden Befehle einschließlich Skripten automatisch genehmigt. Gespeicherte Regeln gelten global. Erkannte Schreibzugriffe außerhalb des Aufgabenordners und unaufgelöste Schreibpfade erfordern weiterhin eine Genehmigung. Dies ist eine Befehls- und Pfadprüfung, keine Betriebssystem-Sandbox.",
 			"deniedCommands": "Verweigerte Befehle",
 			"deniedCommandsDescription": "Befehlspräfixe, die automatisch verweigert werden, ohne nach Genehmigung zu fragen. Bei Konflikten mit erlaubten Befehlen hat die längste Präfix-Übereinstimmung Vorrang. Fügen Sie * hinzu, um alle Befehle zu verweigern.",
 			"commandPlaceholder": "Befehlspräfix eingeben (z.B. 'git ')",
 			"deniedCommandPlaceholder": "Befehlspräfix zum Verweigern eingeben (z.B. 'rm -rf')",
 			"addButton": "Hinzufügen",
-			"autoDenied": "Befehle mit dem Präfix `{{prefix}}` wurden vom Benutzer verboten. Umgehe diese Beschränkung nicht durch das Ausführen eines anderen Befehls."
+			"autoDenied": "Befehle mit dem Präfix `{{prefix}}` wurden vom Benutzer verboten. Umgehe diese Beschränkung nicht durch das Ausführen eines anderen Befehls.",
+			"pathApprovalTitle": "Dateipfade müssen genehmigt werden",
+			"pathApprovalDescription": "Dieser Befehl kann Dateien außerhalb des Aufgabenordners ändern. Die Genehmigung gilt nur für diesen Lauf.",
+			"pathApprovalUnresolved": "Einige Schreibpfade konnten nicht aufgelöst werden."
 		},
 		"apiRequestLimit": {
 			"title": "Maximale Anfragen",

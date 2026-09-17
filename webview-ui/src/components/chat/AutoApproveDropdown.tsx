@@ -44,7 +44,6 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		setAlwaysAllowWriteProtected,
 		setAlwaysAllowExecute,
 		setAlwaysAllowMcp,
-		setAlwaysAllowModeSwitch,
 		setAlwaysAllowSubtasks,
 		setAlwaysAllowSubagents,
 		setAlwaysAllowTickets,
@@ -64,7 +63,6 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 			alwaysAllowWriteProtected: true,
 			alwaysAllowExecute: true,
 			alwaysAllowMcp: true,
-			alwaysAllowModeSwitch: true,
 			alwaysAllowSubtasks: true,
 			alwaysAllowSubagents: true,
 			alwaysAllowTickets: true,
@@ -81,7 +79,6 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		setAlwaysAllowWriteProtected(true)
 		setAlwaysAllowExecute(true)
 		setAlwaysAllowMcp(true)
-		setAlwaysAllowModeSwitch(true)
 		setAlwaysAllowSubtasks(true)
 		setAlwaysAllowSubagents(true)
 		setAlwaysAllowTickets(true)
@@ -99,7 +96,6 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		setAlwaysAllowExecute,
 		setAlwaysAllowFollowupQuestions,
 		setAlwaysAllowMcp,
-		setAlwaysAllowModeSwitch,
 		setAlwaysAllowReadOnly,
 		setAlwaysAllowReadOnlyOutsideWorkspace,
 		setAlwaysAllowSubtasks,
@@ -128,9 +124,6 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 				case "alwaysAllowMcp":
 					setAlwaysAllowMcp(value)
 					break
-				case "alwaysAllowModeSwitch":
-					setAlwaysAllowModeSwitch(value)
-					break
 				case "alwaysAllowSubtasks":
 					setAlwaysAllowSubtasks(value)
 					break
@@ -157,7 +150,6 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 			setAlwaysAllowWrite,
 			setAlwaysAllowExecute,
 			setAlwaysAllowMcp,
-			setAlwaysAllowModeSwitch,
 			setAlwaysAllowSubtasks,
 			setAlwaysAllowSubagents,
 			setAlwaysAllowTickets,

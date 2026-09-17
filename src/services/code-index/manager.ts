@@ -488,6 +488,11 @@ export class CodeIndexManager {
 
 					// Recreate services with new configuration
 					await this._recreateServices()
+					// The save handler sees the replacement services as initialized, so it will not call
+					// initialize() again. Start the replacement scan and watcher with the selected provider.
+					if (this.isFeatureEnabled && this.isFeatureConfigured && this.isWorkspaceEnabled) {
+						void this._orchestrator?.startIndexing()
+					}
 				} catch (error) {
 					// Error state already set in _recreateServices
 					console.error("Failed to recreate services:", error)

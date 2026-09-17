@@ -281,16 +281,19 @@
 			"timeoutLabel": "Tempo de espera antes de selecionar automaticamente a primeira resposta"
 		},
 		"execute": {
-			"label": "Executar",
-			"description": "Executar automaticamente comandos de terminal permitidos sem exigir aprovação",
-			"allowedCommands": "Comandos de auto-execução permitidos",
-			"allowedCommandsDescription": "Prefixos de comando que podem ser auto-executados quando \"Aprovar sempre operações de execução\" está ativado. Adicione * para permitir todos os comandos (use com cautela).",
+			"label": "Regras de comandos",
+			"description": "Aprovar comandos automaticamente no escopo de escrita da tarefa. A rede está habilitada. Escritas fora do escopo são bloqueadas. A configuração global permanece entre projetos.",
+			"allowedCommands": "Prefixos de comandos permitidos",
+			"allowedCommandsDescription": "Use * para aprovar comandos automaticamente, incluindo scripts. As regras salvas são globais. Gravações detectadas fora da raiz e caminhos de gravação não resolvidos exigem aprovação. Esta é uma verificação de comandos e caminhos, não um isolamento do sistema.",
 			"deniedCommands": "Comandos negados",
 			"deniedCommandsDescription": "Prefixos de comandos que serão automaticamente negados sem pedir aprovação. Em caso de conflitos com comandos permitidos, a correspondência de prefixo mais longa tem precedência. Adicione * para negar todos os comandos.",
 			"commandPlaceholder": "Digite o prefixo do comando (ex. 'git ')",
 			"deniedCommandPlaceholder": "Digite o prefixo do comando para negar (ex. 'rm -rf')",
 			"addButton": "Adicionar",
-			"autoDenied": "Comandos com o prefixo `{{prefix}}` foram proibidos pelo usuário. Não contorne esta restrição executando outro comando."
+			"autoDenied": "Comandos com o prefixo `{{prefix}}` foram proibidos pelo usuário. Não contorne esta restrição executando outro comando.",
+			"pathApprovalTitle": "Os caminhos de arquivo exigem aprovação",
+			"pathApprovalDescription": "Este comando pode alterar arquivos fora da raiz da tarefa. A aprovação vale apenas para esta execução.",
+			"pathApprovalUnresolved": "Não foi possível resolver alguns caminhos de gravação."
 		},
 		"apiRequestLimit": {
 			"title": "Máximo de Solicitações",

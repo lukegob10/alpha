@@ -5,6 +5,7 @@
 
 import type { Hunk, UpdateFileChunk } from "./parser"
 import { seekSequence } from "./seek-sequence"
+import { fileEditContent } from "../fileEditContent"
 
 /**
  * Error during patch application.
@@ -56,12 +57,7 @@ function computeReplacements(
 		if (chunk.oldLines.length === 0) {
 			// Anchored additions belong immediately after their context. Unanchored
 			// additions retain the existing append-at-end behavior.
-			const insertionIdx =
-				chunk.changeContext !== null
-					? lineIndex
-					: originalLines.length > 0 && originalLines[originalLines.length - 1] === ""
-						? originalLines.length - 1
-						: originalLines.length
+			const insertionIdx = chunk.changeContext !== null ? lineIndex : originalLines.length
 			replacements.push([insertionIdx, 0, chunk.newLines])
 			continue
 		}
@@ -124,8 +120,9 @@ function applyReplacements(lines: string[], replacements: Array<[number, number,
  * @returns The new file content
  */
 export function applyChunksToContent(originalContent: string, filePath: string, chunks: UpdateFileChunk[]): string {
-	// Split content into lines
-	let originalLines = originalContent.split("\n")
+	const projection = fileEditContent(originalContent)
+	const hasTrailingNewline = projection.content.endsWith("\n")
+	let originalLines = projection.content === "" ? [] : projection.content.split("\n")
 
 	// Drop trailing empty element that results from final newline
 	// so that line counts match standard diff behavior
@@ -134,14 +131,11 @@ export function applyChunksToContent(originalContent: string, filePath: string, 
 	}
 
 	const replacements = computeReplacements(originalLines, filePath, chunks)
-	let newLines = applyReplacements(originalLines, replacements)
-
-	// Ensure file ends with newline
-	if (newLines.length === 0 || newLines[newLines.length - 1] !== "") {
-		newLines = [...newLines, ""]
-	}
-
-	return newLines.join("\n")
+	const newLines = applyReplacements(originalLines, replacements)
+	// Patch line separators do not implicitly add a final newline. An explicit
+	// added empty line can still terminate a previously unterminated file.
+	const content = newLines.join("\n") + (hasTrailingNewline && newLines.length > 0 ? "\n" : "")
+	return projection.restore(content)
 }
 
 /**

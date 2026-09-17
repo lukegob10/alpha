@@ -2217,6 +2217,7 @@ describe("VsCodeLmHandler", () => {
 			const model = handler.getModel()
 			expect(model.info.supportsReasoningEffort).toEqual(["low", "medium", "high", "xhigh", "max"])
 			expect(model.info.contextWindow).toBe(200_000)
+			expect(model.info.contextWindowIncludesOutput).toBe(false)
 		})
 
 		it("should report the selected extended input window", () => {
@@ -2229,6 +2230,15 @@ describe("VsCodeLmHandler", () => {
 			const model = handler.getModel()
 			expect(model.info.contextWindow).toBe(921_793)
 			expect(model.info.supportsReasoningEffort).toEqual(["none", "low", "medium", "high", "xhigh", "max"])
+		})
+
+		it("preserves the selected context while waiting for live model discovery", () => {
+			handler = new VsCodeLmHandler({
+				vsCodeLmModelSelector: { vendor: "copilot", family: "claude-opus-4.7" },
+				vsCodeLmContextSize: 936_000,
+			})
+			expect(handler.getModel().info.contextWindow).toBe(936_000)
+			expect(handler.getModel().info.contextWindowIncludesOutput).toBe(false)
 		})
 
 		it("should ignore a stale extended setting when the live selector only advertises the standard tier", () => {

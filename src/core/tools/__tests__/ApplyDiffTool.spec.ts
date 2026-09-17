@@ -137,6 +137,23 @@ async function runScheduledDiff(task: ReturnType<typeof createTask>, diff: strin
 }
 
 describe("ApplyDiffTool", () => {
+	it.each(["gpt-5-codex", "gemini", "claude-3"])("keeps native JSON entities literal for %s", async (id) => {
+		const task = createTask()
+		task.api.getModel.mockReturnValue({ id })
+		task.diffStrategy = new MultiSearchReplaceDiffStrategy()
+		const callbacks = createCallbacks()
+		const replacement = "&amp; &lt; $& $$ $'"
+		await new ApplyDiffTool().execute({ path: "test.txt", diff: patchBlock("old", replacement) }, task, callbacks)
+		expect(task.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+			"test.txt",
+			replacement + "\n",
+			false,
+			false,
+			0,
+			{ exists: true, content: "old\n" },
+		)
+	})
+
 	beforeEach(() => {
 		vi.clearAllMocks()
 		vi.mocked(experiments.isEnabled).mockReturnValue(true)

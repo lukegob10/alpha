@@ -9,5 +9,7 @@
 	"missing": "Manquant",
 	"inspect": "Les valeurs du graphique figurent dans le tableau de données. Placez le focus sur une valeur représentée pour l’examiner.",
 	"sortAscending": "croissant",
-	"sortDescending": "décroissant"
+	"sortDescending": "décroissant",
+	"invalidDiagram": "Diagramme indisponible. Utilisez une table de relations à trois colonnes avec au plus 24 nœuds nommés, 48 liens et aucun cycle. La table reste lisible.",
+	"imageUnavailable": "Image indisponible. Vérifiez le chemin dans l’espace de travail et utilisez un PNG ou JPEG statique respectant les limites documentées."
 }

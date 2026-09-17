@@ -1,4 +1,13 @@
 {
+	"messageActions": {
+		"copy": "复制",
+		"copied": "已复制",
+		"edit": "编辑并重新发送",
+		"restart": "从上一条请求重新开始",
+		"restartWarning": "将重新执行上一条请求，并替换其后的所有消息。工作区文件将保持现状。",
+		"restartWithCheckpoint": "将重新执行上一条请求，并替换其后的所有消息。是否同时将文件恢复到对应的检查点？",
+		"restartOnly": "重新开始但不恢复文件"
+	},
 	"activityTrace": {
 		"needsAttention": "需要处理",
 		"workedFor": "工作用时 {{duration}}"
@@ -220,10 +229,10 @@
 		"didViewTopLevel": "已查看目录文件列表",
 		"wantsToViewRecursive": "需要查看目录所有文件",
 		"didViewRecursive": "已查看目录所有文件",
-		"wantsToSearch": "需要搜索内容: {{regex}}",
-		"didSearch": "已完成内容搜索: {{regex}}",
-		"wantsToSearchOutsideWorkspace": "需要搜索内容（工作区外）: {{regex}}",
-		"didSearchOutsideWorkspace": "已完成内容搜索（工作区外）: {{regex}}",
+		"wantsToSearch": "Alpha 想要搜索一个目录",
+		"didSearch": "Alpha 已搜索一个目录",
+		"wantsToSearchOutsideWorkspace": "Alpha 想要搜索一个目录（工作区外）",
+		"didSearchOutsideWorkspace": "Alpha 已搜索一个目录（工作区外）",
 		"wantsToViewTopLevelOutsideWorkspace": "需要查看目录文件列表（工作区外）",
 		"didViewTopLevelOutsideWorkspace": "已查看目录文件列表（工作区外）",
 		"wantsToViewRecursiveOutsideWorkspace": "需要查看目录所有文件（工作区外）",
@@ -324,6 +333,7 @@
 	"contextManagement": {
 		"tokens": "Token",
 		"condensation": {
+			"unchanged": "上下文已在限制范围内",
 			"title": "上下文已压缩",
 			"inProgress": "正在压缩上下文...",
 			"errorHeader": "上下文压缩失败"
@@ -356,8 +366,11 @@
 			"gpt54": "Poe 提供商：已将 Poe 添加为 AI 提供商，让你可以在 Alpha 中直接访问 Poe 模型。",
 			"slashSkills": "xAI 和 MiniMax 改进：已将 xAI 提供商迁移到 Responses API，加入了可复用的转换工具，更新了 Grok-4.20 默认设置，并修复了 MiniMax 模型列表和上下文窗口处理方式，让配置更加可靠。",
 			"geminiPro": "Gemini 3.1 Pro 支持：添加了 Gemini 3.1 Pro 模型支持，并将其设为默认 Gemini 模型以提升性能。",
-			"cliNdjson": "CLI NDJSON 协议：新增 NDJSON stdin 协议、list 子命令，以及模块化的 run 命令，提供更灵活的 CLI 工作流。",
-			"cliRelease": "CLI v0.1.0：Alpha CLI 以稳定的命令接口达成首个正式版本。"
+			"welcome": "Alpha v{{version}} 改进了验证、命令控制和任务连续性。",
+			"acceptanceChecks": "只要声明的输入保持不变，就可复用已通过的检查。",
+			"commandControl": "等待、发送输入并停止属于当前任务的后台命令。",
+			"workflowContinuity": "重新加载和压缩上下文后，保留任务约束和技能上下文。",
+			"chatUpdates": "使用更清晰的聊天操作，并在任务完成后选择提供商。"
 		}
 	},
 	"costs": {
@@ -499,5 +512,13 @@
 		"title": "供应商不再受支持",
 		"message": "抱歉，此供应商已不再受支持。我们发现实际使用它的 Alpha 用户非常少，我们需要缩减代码库的范围，以便继续快速交付并更好地服务社区。这是一个非常艰难的决定，但它能让我们专注于对你最重要的事情。我们知道这很遗憾。",
 		"openSettings": "打开设置"
+	},
+	"githubActions": {
+		"request": "请求",
+		"create_pull_request": "创建拉取请求",
+		"get_pull_request": "查看拉取请求",
+		"list_checks": "列出检查",
+		"merge_pull_request": "合并拉取请求",
+		"comment": "添加评论"
 	}
 }

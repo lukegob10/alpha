@@ -15,7 +15,8 @@ import {
 	type InstallMarketplaceItemOptions,
 	marketplaceItemSchema,
 } from "./marketplace.js"
-import type { TodoItem } from "./todo.js"
+import type { TodoItem, TodoApprovalEdit } from "./todo.js"
+import type { GitHubToolApproval } from "./github.js"
 import type { TicketActivity, TicketSearchResponse, TicketTarget } from "./ticket.js"
 import type { SerializedCustomToolDefinition } from "./custom-tool.js"
 import type { GitCommit } from "./git.js"
@@ -26,6 +27,7 @@ import type { SkillMetadata } from "./skills.js"
 import type { WorktreeIncludeStatus } from "./worktree.js"
 import type { SubagentChangeSetActionCapability, SubagentChangeSetActionResult } from "./subagent.js"
 import type { BrowserToolName } from "./browser.js"
+import type { SearchFilesOutputMode, SearchFilesQueryResult } from "./tool-params.js"
 import type {
 	CreateScheduledTaskPayload,
 	ScheduledTask,
@@ -446,6 +448,7 @@ export interface ExtensionMessage {
 	settings?: any // eslint-disable-line @typescript-eslint/no-explicit-any
 	messageTs?: number
 	hasCheckpoint?: boolean
+	messageAction?: "restart"
 	context?: string
 	commands?: Command[]
 	queuedMessages?: QueuedMessage[]
@@ -695,10 +698,7 @@ export type ClineAskResponse = "yesButtonClicked" | "noButtonClicked" | "message
 
 export type AudioType = "notification" | "celebration" | "progress_loop"
 
-export interface UpdateTodoListPayload {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	todos: any[]
-}
+export type UpdateTodoListPayload = TodoApprovalEdit
 
 export type EditQueuedMessagePayload = Pick<QueuedMessage, "id" | "text" | "images">
 export interface ReorderQueuedMessagePayload {
@@ -955,6 +955,7 @@ interface WebviewMessageBase {
 	terminalOperation?: "continue" | "abort"
 	messageTs?: number
 	restoreCheckpoint?: boolean
+	messageAction?: "restart"
 	historyPreviewCollapsed?: boolean
 	filters?: { type?: string; search?: string; tags?: string[] }
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1108,6 +1109,7 @@ export interface LanguageModelChatSelector {
 
 export interface ClineSayTool {
 	ticketActivity?: TicketActivity
+	github?: GitHubToolApproval
 	tool:
 		| "editedExistingFile"
 		| "appliedDiff"
@@ -1131,6 +1133,7 @@ export interface ClineSayTool {
 		| "updateTodoList"
 		| "skill"
 		| "browserAction"
+		| "githubApi"
 	path?: string
 	// For readCommandOutput
 	readStart?: number
@@ -1146,6 +1149,9 @@ export interface ClineSayTool {
 	diffStats?: { added: number; removed: number }
 	regex?: string
 	filePattern?: string
+	outputMode?: SearchFilesOutputMode
+	literal?: boolean
+	searchStatus?: "success" | "error"
 	mode?: string
 	reason?: string
 	isOutsideWorkspace?: boolean
@@ -1161,13 +1167,7 @@ export interface ClineSayTool {
 		key: string
 		content?: string
 	}>
-	batchSearches?: Array<{
-		path: string
-		regex: string
-		filePattern?: string
-		isOutsideWorkspace?: boolean
-		content: string
-	}>
+	batchSearches?: SearchFilesQueryResult[]
 	batchDiffs?: Array<{
 		path: string
 		changeCount: number

@@ -41,7 +41,6 @@ import { ExecaHarnessProcessRunner, type HarnessProcessRunner } from "../orchest
 import { Logger, getTag, isDockerContainer } from "./utils"
 import { redisClient, getPubSubKey, registerRunner, deregisterRunner } from "./redis"
 import { runUnitTest } from "./runUnitTest"
-import { runTaskWithCli } from "./runTaskInCli"
 import { runTaskInVscode } from "./runTaskInVscode"
 
 type ProcessTaskOptions = {
@@ -102,6 +101,11 @@ export const processTask = async ({
 
 	try {
 		await transition({ type: "start" })
+		if (run.executionMethod !== "vscode") {
+			throw new Error(
+				"The Alpha CLI is retired. Create a new VS Code evaluation run; historical results are preserved.",
+			)
+		}
 		await registerRunner({ runId: run.id, taskId, timeoutSeconds: (run.timeout || 5) * 60 })
 		registered = true
 		const benchmark = await findBenchmarkTask(EVALS_REPO_PATH, `${task.language}/${task.exercise}`)
@@ -138,12 +142,8 @@ export const processTask = async ({
 			const redis = await redisClient()
 			await redis.publish(getPubSubKey(run.id), JSON.stringify(event))
 		}
-		const executionMethod = run.executionMethod || "vscode"
-		logger.info(`running task ${task.id} (${task.language}/${task.exercise}) via ${executionMethod}...`)
-		const executionOutcome =
-			executionMethod === "cli"
-				? await runTaskWithCli({ run, task, jobToken, publish, logger, workspaceRoot })
-				: await runTaskInVscode({ run, task, jobToken, publish, logger, workspaceRoot })
+		logger.info(`running task ${task.id} (${task.language}/${task.exercise}) via vscode...`)
+		const executionOutcome = await runTaskInVscode({ run, task, jobToken, publish, logger, workspaceRoot })
 		await transition({ type: "agent_completed" })
 
 		const evidencePaths = taskEvidencePaths(logger.path, task)
@@ -302,6 +302,10 @@ export const processTaskInContainer = async ({
 }) => {
 	const task = await findTask(taskId)
 	const run = await findRun(task.runId)
+	if (run.executionMethod !== "vscode") {
+		// Finalize retired runs through the normal lifecycle without starting containers or retrying.
+		return processTask({ taskId, jobToken, logger, processRunner })
+	}
 	const benchmark = await findBenchmarkTask(EVALS_REPO_PATH, `${task.language}/${task.exercise}`)
 	const requiresBroker = benchmark.task.graders.some(({ bundleId }) => Boolean(bundleId))
 	const retryLimit = typeof run.campaignHardCapUsd === "number" ? 0 : maxRetries

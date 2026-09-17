@@ -194,7 +194,7 @@ suite("Alpha proportional context request measurements", function () {
 							...originalConfiguration,
 							apiProvider: "fake-ai",
 							fakeAi: scripted,
-							mode: "ask",
+							mode: "code",
 							autoApprovalEnabled: true,
 							alwaysAllowReadOnly: true,
 							requestDelaySeconds: 0,

@@ -44,11 +44,7 @@ function findPackageRoot(resolvedPath, packageName) {
 }
 
 function resolveRipgrepPackageDir(packageName) {
-	const resolutionBases = [
-		import.meta.url,
-		path.join(__dirname, "..", "package.json"),
-		path.join(__dirname, "..", "apps", "cli", "package.json"),
-	]
+	const resolutionBases = [import.meta.url, path.join(__dirname, "..", "package.json")]
 
 	for (const resolutionBase of resolutionBases) {
 		try {

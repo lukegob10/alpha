@@ -281,16 +281,19 @@
 			"timeoutLabel": "Temps d'espera abans de seleccionar automàticament la primera resposta"
 		},
 		"execute": {
-			"label": "Executar",
-			"description": "Executar automàticament comandes de terminal permeses sense requerir aprovació",
-			"allowedCommands": "Comandes d'auto-execució permeses",
-			"allowedCommandsDescription": "Prefixos de comandes que poden ser executats automàticament quan \"Aprovar sempre operacions d'execució\" està habilitat. Afegeix * per permetre totes les comandes (usar amb precaució).",
+			"label": "Regles d’ordres",
+			"description": "Aprova automàticament ordres dins l’àmbit d’escriptura de la tasca. La xarxa està habilitada. Es bloquegen escriptures externes. La configuració global es conserva entre projectes.",
+			"allowedCommands": "Prefixos d’ordres permesos",
+			"allowedCommandsDescription": "Fes servir * per aprovar automàticament ordres, inclosos scripts. Les regles desades són globals. Les escriptures detectades fora de l’arrel i les rutes no resoltes requereixen aprovació. És una comprovació d’ordres i rutes, no un aïllament del sistema.",
 			"deniedCommands": "Comandes denegades",
 			"deniedCommandsDescription": "Prefixos de comandes que es rebutjaran automàticament sense requerir aprovació. En cas de conflicte amb comandes permeses, la coincidència de prefix més llarga té prioritat. Afegeix * per denegar totes les comandes.",
 			"commandPlaceholder": "Introduïu prefix de comanda (ex. 'git ')",
 			"deniedCommandPlaceholder": "Introduïu prefix de comanda a denegar (ex. 'rm -rf')",
 			"addButton": "Afegir",
-			"autoDenied": "Les comandes amb el prefix `{{prefix}}` han estat prohibides per l'usuari. No eludeixis aquesta restricció executant una altra comanda."
+			"autoDenied": "Les comandes amb el prefix `{{prefix}}` han estat prohibides per l'usuari. No eludeixis aquesta restricció executant una altra comanda.",
+			"pathApprovalTitle": "Cal aprovar les rutes de fitxer",
+			"pathApprovalDescription": "Aquesta ordre pot modificar fitxers fora de l’arrel de la tasca. L’aprovació només s’aplica a aquesta execució.",
+			"pathApprovalUnresolved": "Algunes rutes d’escriptura no s’han pogut resoldre."
 		},
 		"apiRequestLimit": {
 			"title": "Màximes Sol·licituds",

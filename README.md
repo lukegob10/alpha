@@ -6,14 +6,17 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.37 Preview
+## Welcome to Alpha v2.1.46 Preview
 
-Alpha v2.1.37 adds polished rich HTML documents with automatic preview delivery and a broader design kit for reviews, specs, and reports.
+Alpha v2.1.46 adds reliable Vertex Gemini Embedding 2 indexing alongside reusable verification evidence, background command controls, and durable task and skill context in the existing extension workflow.
 
-- Completed rich-document links open in the right editor group while keeping chat focus, with an Open document link for explicit reopening
-- Rich documents use wider responsive layouts, rounded tables and cards, labeled status badges, compact metrics, and evidence-focused examples
-- Existing HTML documents retain their source file identity and refresh in the same preview as they are edited
-- Chat readability, Copilot model-family tool selection, and Vertex gateway request pacing remain intact
+- Vertex Gemini Embedding 2 requests use the model's `:embedContent` endpoint while Gemini 001 keeps its existing contract
+
+- Optional acceptance checks reuse passing evidence while their declared inputs remain unchanged
+- Tasks can wait for, send input to, and stop their own background commands under existing approval rules
+- Saved task context retains constraints and skill identities across reload and compaction
+- Chat includes improved edit and restart actions, reasoning summaries, and provider selection after completion
+- The standalone Alpha CLI is retired; Alpha continues as a VS Code extension
 
 <details>
   <summary>🌐 Available languages</summary>

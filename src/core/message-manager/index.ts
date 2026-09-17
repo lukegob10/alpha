@@ -77,6 +77,9 @@ export class MessageManager {
 	 */
 	private async performRewind(toIndex: number, cutoffTs: number, options: RewindOptions): Promise<void> {
 		const { skipCleanup = false } = options
+		const firstMessage = this.task.clineMessages[0]
+		const replacesOpeningPrompt =
+			firstMessage?.ts === cutoffTs && firstMessage.type === "say" && firstMessage.say === "text"
 
 		// Step 1: Collect context event IDs from messages being removed
 		const removedIds = this.collectRemovedContextEventIds(toIndex)
@@ -85,7 +88,7 @@ export class MessageManager {
 		await this.truncateClineMessages(toIndex)
 
 		// Step 3: Truncate and clean API history (combined with cleanup for efficiency)
-		await this.truncateApiHistoryWithCleanup(cutoffTs, removedIds, skipCleanup)
+		await this.truncateApiHistoryWithCleanup(cutoffTs, removedIds, skipCleanup, replacesOpeningPrompt)
 	}
 
 	/**
@@ -149,6 +152,7 @@ export class MessageManager {
 		cutoffTs: number,
 		removedIds: ContextEventIds,
 		skipCleanup: boolean,
+		replacesOpeningPrompt: boolean,
 	): Promise<void> {
 		const originalHistory = this.task.apiConversationHistory
 		let apiHistory = [...originalHistory]
@@ -184,7 +188,8 @@ export class MessageManager {
 		}
 
 		// Step 2: Filter by the actual cutoff timestamp
-		apiHistory = apiHistory.filter((m) => !m.ts || m.ts < actualCutoff)
+		// Nothing precedes the opening prompt, including legacy records without timestamps.
+		apiHistory = replacesOpeningPrompt ? [] : apiHistory.filter((m) => !m.ts || m.ts < actualCutoff)
 
 		// Step 3: Remove Summaries whose condense_context was removed
 		if (removedIds.condenseIds.size > 0) {

@@ -9,5 +9,7 @@
 	"missing": "缺漏",
 	"inspect": "圖表數值可在資料表中查看。將焦點移至圖中某個值即可檢查。",
 	"sortAscending": "遞增",
-	"sortDescending": "遞減"
+	"sortDescending": "遞減",
+	"invalidDiagram": "無法顯示關係圖。請使用三欄關係表，最多包含24個具名節點和48條連線，且不能有循環。表格仍可閱讀。",
+	"imageUnavailable": "無法顯示圖片。請檢查工作區路徑，並使用符合文件大小限制的靜態PNG或JPEG。"
 }

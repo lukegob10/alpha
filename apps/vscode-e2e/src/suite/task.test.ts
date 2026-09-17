@@ -64,14 +64,13 @@ suite("Alpha Task", function () {
 						...api.getConfiguration(),
 						apiProvider: "fake-ai" as const,
 						fakeAi: new TaskScriptedAI(),
-						mode: "ask",
-						alwaysAllowModeSwitch: true,
+						mode: "code",
 						autoApprovalEnabled: true,
 						requestDelaySeconds: 0,
 						writeDelayMs: 0,
 						enableCheckpoints: false,
 					}
-				: { mode: "ask" as const, alwaysAllowModeSwitch: true, autoApprovalEnabled: true }
+				: { mode: "code" as const, autoApprovalEnabled: true }
 		const taskId = await api.startNewTask({
 			configuration,
 			text: "Hello world, what is your name? Respond with 'My name is ...'",

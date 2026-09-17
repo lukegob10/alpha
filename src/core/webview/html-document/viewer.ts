@@ -13,6 +13,7 @@ import i18n, { t } from "../../../i18n"
 import { resolveDocumentPath, resolveSourcePath } from "./paths"
 import type { SanitizedDocument } from "./sanitize"
 import { DocumentParser } from "./parser"
+import { hydrateDocumentImages } from "./images"
 
 type Snapshot = { revision: number; html?: string; title?: string; error?: string; stale: boolean }
 type Entry = {
@@ -27,6 +28,7 @@ type Entry = {
 	closed: boolean
 	timer?: ReturnType<typeof setTimeout>
 	disposables: vscode.Disposable[]
+	imageWatchers: Map<string, vscode.Disposable>
 	document?: SanitizedDocument
 	snapshot?: Snapshot
 }
@@ -48,13 +50,15 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 		restoredPanel?: vscode.WebviewPanel,
 		options: { automatic?: boolean; isCurrent?: () => boolean } = {},
 	): Promise<void> {
+		// Capture the tab group before file validation yields, including when an editor webview has focus.
+		const viewColumn = vscode.window.tabGroups.activeTabGroup.viewColumn
 		const target = htmlDocumentTargetSchema.parse(input)
 		const resolved = await resolveDocumentPath(target.uri, this.roots(), true)
 		if (this.disposed || options.isCurrent?.() === false) return
 		const existing = this.entries.get(resolved.uri)
 		if (existing) {
 			restoredPanel?.dispose()
-			if (!restoredPanel && !options.automatic) existing.panel.reveal(undefined, false)
+			if (!restoredPanel && !options.automatic) existing.panel.reveal(viewColumn, false)
 			return
 		}
 		if (this.entries.size >= HTML_DOCUMENT_LIMITS.panels) throw new Error("panelLimit")
@@ -64,7 +68,7 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 				HTML_DOCUMENT_VIEW_TYPE,
 				path.basename(resolved.fsPath),
 				{
-					viewColumn: options.automatic ? vscode.ViewColumn.Two : vscode.ViewColumn.Beside,
+					viewColumn,
 					preserveFocus: options.automatic === true,
 				},
 				{},
@@ -82,6 +86,7 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 			running: false,
 			closed: false,
 			disposables: [],
+			imageWatchers: new Map(),
 		}
 		this.entries.set(resolved.uri, entry)
 		const assetRoot = vscode.Uri.joinPath(this.extensionUri, "webview-ui", "build")
@@ -156,7 +161,7 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 		const config = escapeHtml(
 			JSON.stringify({ documentId: entry.target.uri, token: entry.token, target: entry.target, labels }),
 		)
-		return `<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src ${entry.panel.webview.cspSource}; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none';"><link rel="stylesheet" href="${resource("artifact-kit", "v1", "kit.css")}"><link rel="stylesheet" href="${resource("html-document", "viewer.css")}"><title>${escapeHtml(t("htmlDocument:title"))}</title></head><body data-viewer-config="${config}"><header class="viewer-toolbar"><span id="viewer-title">${escapeHtml(path.basename(entry.fsPath))}</span><button id="viewer-source" type="button">${escapeHtml(t("htmlDocument:openSource"))}</button></header><p id="viewer-status" role="status">${escapeHtml(t("htmlDocument:loading"))}</p><div id="viewer-content"></div><script nonce="${nonce}" src="${resource("artifact-kit", "v1", "kit.js")}"></script><script nonce="${nonce}" src="${resource("html-document", "viewer.js")}"></script></body></html>`
+		return `<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src ${entry.panel.webview.cspSource}; img-src data:; font-src 'none'; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none';"><link rel="stylesheet" href="${resource("artifact-kit", "v1", "kit.css")}"><link rel="stylesheet" href="${resource("html-document", "viewer.css")}"><title>${escapeHtml(t("htmlDocument:title"))}</title></head><body data-viewer-config="${config}"><header class="viewer-toolbar"><span id="viewer-title">${escapeHtml(path.basename(entry.fsPath))}</span><button id="viewer-source" type="button">${escapeHtml(t("htmlDocument:openSource"))}</button></header><p id="viewer-status" role="status">${escapeHtml(t("htmlDocument:loading"))}</p><div id="viewer-content"></div><script nonce="${nonce}" src="${resource("artifact-kit", "v1", "kit.js")}"></script><script nonce="${nonce}" src="${resource("html-document", "viewer.js")}"></script></body></html>`
 	}
 
 	private schedule(entry: Entry, immediate = false): void {
@@ -210,11 +215,24 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 		try {
 			const source = await this.read(entry)
 			if (entry.closed || entry.revision !== revision) return
-			const document = await entry.parser.parse(source)
+			const documentDirectory = path.relative(entry.root, path.dirname(entry.fsPath)).split(path.sep).join("/")
+			const document = await entry.parser.parse(source, documentDirectory)
+			if (entry.closed || entry.revision !== revision) return
+			await this.watchImages(entry, document, revision)
+			const html = await hydrateDocumentImages(
+				document,
+				entry.root,
+				async () => {
+					if (entry.closed || entry.revision !== revision) return false
+					await this.validateIdentity(entry, true)
+					return !entry.closed && entry.revision === revision
+				},
+				t("htmlArtifactKit:imageUnavailable"),
+			)
 			if (entry.closed || entry.revision !== revision) return
 			entry.document = document
 			entry.panel.title = document.title
-			entry.snapshot = { revision, html: document.html, title: document.title, stale: false }
+			entry.snapshot = { revision, html, title: document.title, stale: false }
 		} catch (error) {
 			if (entry.closed || entry.revision !== revision) return
 			const code = error instanceof Error ? error.message : "format"
@@ -282,6 +300,38 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 		})
 	}
 
+	private async watchImages(entry: Entry, document: SanitizedDocument, revision: number): Promise<void> {
+		const paths = new Set([...document.images.values()].map((image) => image.path))
+		for (const [imagePath, watcher] of entry.imageWatchers) {
+			if (!paths.has(imagePath)) {
+				watcher.dispose()
+				entry.imageWatchers.delete(imagePath)
+			}
+		}
+		for (const imagePath of paths) {
+			if (entry.imageWatchers.has(imagePath)) continue
+			try {
+				await resolveSourcePath(entry.root, imagePath, true)
+			} catch {
+				continue
+			}
+			if (entry.closed || entry.revision !== revision) return
+			const absolute = path.join(entry.root, ...imagePath.split("/"))
+			const watcher = vscode.workspace.createFileSystemWatcher(
+				new vscode.RelativePattern(path.dirname(absolute), path.basename(absolute)),
+			)
+			const subscriptions = [
+				watcher,
+				watcher.onDidChange(() => this.schedule(entry)),
+				watcher.onDidCreate(() => this.schedule(entry)),
+				watcher.onDidDelete(() => this.schedule(entry)),
+			]
+			entry.imageWatchers.set(imagePath, {
+				dispose: () => subscriptions.forEach((subscription) => subscription.dispose()),
+			})
+		}
+	}
+
 	private close(entry: Entry): void {
 		if (entry.closed) return
 		entry.closed = true
@@ -289,6 +339,8 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 		if (entry.timer) clearTimeout(entry.timer)
 		this.entries.delete(entry.target.uri)
 		for (const disposable of entry.disposables) disposable.dispose()
+		for (const watcher of entry.imageWatchers.values()) watcher.dispose()
+		entry.imageWatchers.clear()
 		entry.document = undefined
 		entry.snapshot = undefined
 	}

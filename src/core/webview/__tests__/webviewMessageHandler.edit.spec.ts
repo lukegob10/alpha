@@ -32,7 +32,8 @@ vi.mock("../../../api/providers/fetchers/modelCache", () => ({
 	getModelsFromCache: vi.fn().mockReturnValue(undefined),
 }))
 
-vi.mock("../checkpointRestoreHandler", () => ({
+vi.mock("../checkpointRestoreHandler", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../checkpointRestoreHandler")>()),
 	handleCheckpointRestoreOperation: vi.fn(),
 }))
 
@@ -42,10 +43,87 @@ import type { ClineProvider } from "../ClineProvider"
 import type { ClineMessage } from "@alpha-code/types"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { MessageManager } from "../../message-manager"
+import { handleCheckpointRestoreOperation } from "../checkpointRestoreHandler"
 
 describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 	let mockClineProvider: ClineProvider
 	let mockCurrentTask: any
+
+	it.each([false, true])(
+		"resends the opening prompt in the addressed task with images (checkpoint: %s)",
+		async (restoreCheckpoint) => {
+			const images = ["data:image/png;base64,aGVsbG8="]
+			mockCurrentTask.clineMessages = [
+				{ ts: 1000, type: "say", say: "text", text: "Original prompt" },
+				{ ts: 1001, type: "say", say: "checkpoint_saved", text: "original-checkpoint" },
+				{ ts: 2000, type: "say", say: "completion_result", text: "Original answer" },
+			]
+			mockCurrentTask.apiConversationHistory = [
+				{ ts: 1000, role: "user", content: [{ type: "text", text: "Original prompt" }] },
+			]
+			mockCurrentTask.submitUserMessage = vi.fn()
+			mockCurrentTask.overwriteClineMessages.mockImplementation(async (messages: ClineMessage[]) => {
+				mockCurrentTask.clineMessages = messages
+			})
+			mockClineProvider.postStateToWebview = vi.fn()
+			mockClineProvider.getLiveTask = vi.fn().mockReturnValue(mockCurrentTask)
+			const otherTask = { taskId: "different-task", clineMessages: [], apiConversationHistory: [] }
+			;(mockClineProvider.getCurrentTask as Mock).mockReturnValue(otherTask)
+			await webviewMessageHandler(mockClineProvider, {
+				type: "submitEditedMessage",
+				taskId: mockCurrentTask.taskId,
+				value: 1000,
+				editedMessageContent: "",
+				images,
+				messageAction: "restart",
+			})
+			expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+				type: "showEditMessageDialog",
+				taskId: mockCurrentTask.taskId,
+				messageTs: 1000,
+				text: "",
+				images,
+				hasCheckpoint: true,
+				messageAction: "restart",
+			})
+			await webviewMessageHandler(mockClineProvider, {
+				type: "editMessageConfirm",
+				taskId: mockCurrentTask.taskId,
+				messageTs: 1000,
+				text: "",
+				images,
+				restoreCheckpoint,
+			})
+			if (restoreCheckpoint) {
+				expect(handleCheckpointRestoreOperation).toHaveBeenCalledWith(
+					expect.objectContaining({
+						currentCline: mockCurrentTask,
+						messageTs: 1000,
+						checkpoint: { hash: "original-checkpoint" },
+						editData: expect.objectContaining({ editedContent: "", images }),
+					}),
+				)
+			} else {
+				expect(mockCurrentTask.overwriteClineMessages).toHaveBeenCalledWith([])
+				expect(mockCurrentTask.overwriteApiConversationHistory).toHaveBeenCalledWith([])
+				const resumed = await vi.mocked(mockClineProvider.createTaskWithHistoryItem).mock.results[0].value
+				expect(resumed.resumeWithEditedMessage).toHaveBeenCalledWith("", images)
+			}
+			expect(otherTask.clineMessages).toEqual([])
+		},
+	)
+
+	it("does not fall back to the foreground task for a stale task ID", async () => {
+		mockClineProvider.getLiveTask = vi.fn().mockReturnValue(undefined)
+		await webviewMessageHandler(mockClineProvider, {
+			type: "editMessageConfirm",
+			taskId: "closed-task",
+			messageTs: 1000,
+			text: "Retry",
+		})
+		expect(mockCurrentTask.overwriteClineMessages).not.toHaveBeenCalled()
+		expect(mockClineProvider.getCurrentTask).not.toHaveBeenCalled()
+	})
 
 	beforeEach(() => {
 		vi.clearAllMocks()
@@ -58,12 +136,17 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 			overwriteClineMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),
 			handleWebviewAskResponse: vi.fn(),
+			abortTask: vi.fn(),
+			waitForTermination: vi.fn(),
 		}
 		mockCurrentTask.messageManager = new MessageManager(mockCurrentTask)
 
 		// Create mock provider
 		mockClineProvider = {
 			getCurrentTask: vi.fn().mockReturnValue(mockCurrentTask),
+			getLiveTask: vi.fn().mockImplementation(() => mockCurrentTask),
+			getTaskWithId: vi.fn().mockResolvedValue({ historyItem: { id: "test-task-id" } }),
+			createTaskWithHistoryItem: vi.fn().mockResolvedValue({ resumeWithEditedMessage: vi.fn() }),
 			postMessageToWebview: vi.fn(),
 			contextProxy: {
 				getValue: vi.fn(),

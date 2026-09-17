@@ -1,26 +1,50 @@
 import { load } from "cheerio"
+import { posix } from "node:path"
 import { HTML_DOCUMENT_LIMITS, HTML_DOCUMENT_VERSION, type HtmlDocumentReference } from "@alpha-code/types"
 
 const tags = new Set(
-	"main article section header footer nav aside h1 h2 h3 h4 h5 h6 p div span strong em b i u s small mark sub sup abbr time blockquote pre code kbd samp ul ol li dl dt dd table caption colgroup col thead tbody tfoot tr th td details summary a hr br label input figure figcaption".split(
+	"main article section header footer nav aside h1 h2 h3 h4 h5 h6 p div span strong em b i u s small mark sub sup abbr time blockquote pre code kbd samp ul ol li dl dt dd table caption colgroup col thead tbody tfoot tr th td details summary a hr br label input figure figcaption img".split(
 		" ",
 	),
 )
 const attributes = new Set(
-	"id class title role aria-label aria-labelledby aria-describedby aria-hidden for scope colspan rowspan datetime open data-alpha-kit data-severity data-alpha-table data-alpha-filter data-sort data-sort-value data-alpha-chart data-chart-type data-alpha-chart-data data-unit data-value data-alpha-tabs data-tab-label".split(
+	"id class title role aria-label aria-labelledby aria-describedby aria-hidden for scope colspan rowspan datetime open data-alpha-kit data-severity data-alpha-table data-alpha-filter data-sort data-sort-value data-alpha-chart data-chart-type data-alpha-chart-data data-unit data-value data-alpha-tabs data-tab-label data-alpha-toc data-alpha-diagram".split(
 		" ",
 	),
 )
 const forbidden =
-	"script,style,iframe,frame,frameset,object,embed,svg,math,template,form,link,meta,base,audio,video,canvas,img,source,textarea,select,button"
+	"script,style,iframe,frame,frameset,object,embed,svg,math,template,form,link,meta,base,audio,video,canvas,source,textarea,select,button"
+export type DocumentImage = { path: string; alt: string }
+export type DocumentParseRequest = { source: string; documentDirectory: string }
 export interface SanitizedDocument {
 	title: string
 	html: string
 	references: Map<string, HtmlDocumentReference>
+	images: Map<string, DocumentImage>
+}
+
+/** Convert an ordinary relative image URL to the existing workspace-scoped image contract. */
+function localImagePath(src: string | undefined, documentDirectory: string): string | undefined {
+	if (!src || src.length > 2048 || /[?#]/.test(src)) return undefined
+	try {
+		const decoded = decodeURIComponent(src)
+		if (
+			/[\\:]/.test(decoded) ||
+			decoded.startsWith("/") ||
+			[...decoded].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) ||
+			!/\.(png|jpe?g)$/i.test(decoded)
+		)
+			return undefined
+		const relative = posix.normalize(posix.join(documentDirectory, decoded))
+		if (relative === ".." || relative.startsWith("../")) return undefined
+		return relative
+	} catch {
+		return undefined
+	}
 }
 
 /** Parse and reconstruct an allowlist. CSP is defense in depth, not the sanitizer. */
-export function sanitizeDocument(source: string): SanitizedDocument {
+export function sanitizeDocument(source: string, documentDirectory = ""): SanitizedDocument {
 	if (Buffer.byteLength(source, "utf8") > HTML_DOCUMENT_LIMITS.bytes) throw new Error("size")
 	const $ = load(source)
 	const markers = $('meta[name="alpha-document"]')
@@ -42,6 +66,7 @@ export function sanitizeDocument(source: string): SanitizedDocument {
 	}
 	root.find(forbidden).remove()
 	const references = new Map<string, HtmlDocumentReference>()
+	const images = new Map<string, DocumentImage>()
 	const ids = new Set<string>()
 	for (const element of root.find("*").addBack().toArray()) {
 		if (element.type !== "tag") continue
@@ -53,6 +78,9 @@ export function sanitizeDocument(source: string): SanitizedDocument {
 		const sourcePath = node.attr("data-source")
 		const line = node.attr("data-line") ?? "1"
 		const href = node.attr("href")
+		const declaredImagePath = node.attr("data-image")
+		const imagePath = declaredImagePath ?? localImagePath(node.attr("src"), documentDirectory)
+		const alt = node.attr("alt")?.trim() ?? ""
 		for (const [name, value] of Object.entries(element.attribs)) {
 			if (!attributes.has(name) || value.length > 2048) node.removeAttr(name)
 		}
@@ -60,6 +88,27 @@ export function sanitizeDocument(source: string): SanitizedDocument {
 		if (id) {
 			if (!/^[A-Za-z][\w-]{0,127}$/.test(id) || ids.has(id)) node.removeAttr("id")
 			else ids.add(id)
+		}
+		if (element.name === "img") {
+			// Local src URLs become scoped image slots; authored URLs never reach
+			// the renderer. Only the host may hydrate bounded raster bytes.
+			if (!imagePath || (declaredImagePath !== undefined && !alt)) {
+				node.remove()
+				continue
+			}
+			if (
+				imagePath.length > 2048 ||
+				/[\\:]/.test(imagePath) ||
+				[...imagePath].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) ||
+				imagePath.startsWith("/") ||
+				imagePath.split("/").some((part) => !part || part === "." || part === "..") ||
+				!/\.(png|jpe?g)$/i.test(imagePath)
+			)
+				throw new Error("reference")
+			if (images.size >= HTML_DOCUMENT_LIMITS.images || alt.length > 2048) throw new Error("size")
+			const imageId = `image-${images.size}`
+			images.set(imageId, { path: imagePath, alt })
+			node.replaceWith(`<span data-alpha-image="${imageId}"></span>`)
 		}
 		if (element.name === "input") {
 			if (!node.is("[data-alpha-filter]") || !node.closest("[data-alpha-table]").length) {
@@ -102,14 +151,17 @@ export function sanitizeDocument(source: string): SanitizedDocument {
 			}
 		}
 	}
-	if (root.find("[data-alpha-chart],[data-alpha-table],[data-alpha-tabs]").length > HTML_DOCUMENT_LIMITS.widgets)
+	if (
+		root.find("[data-alpha-chart],[data-alpha-table],[data-alpha-tabs],[data-alpha-toc],[data-alpha-diagram]")
+			.length > HTML_DOCUMENT_LIMITS.widgets
+	)
 		throw new Error("size")
 	for (const cell of root.find("[data-value]").toArray()) {
 		const value = $(cell).attr("data-value")!
 		if (value !== "" && (!/^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value) || !Number.isFinite(Number(value))))
 			throw new Error("data")
 	}
-	return { title, html: $.html(root), references }
+	return { title, html: $.html(root), references, images }
 }
 
 export function escapeHtml(value: string): string {

@@ -2,7 +2,7 @@ import type OpenAI from "openai"
 
 const NEW_TASK_DESCRIPTION = `Hand off the current task to one child task in the selected mode. This blocking mode/task handoff suspends the caller until the child completes, then resumes it with the child result. Call new_task alone after any required setup.`
 
-const MODE_PARAMETER_DESCRIPTION = `Slug of the mode to begin the new task in (e.g., code, debug, architect)`
+const MODE_PARAMETER_DESCRIPTION = `Slug of the mode to begin the new task in (code for implementation, architect for Plan)`
 
 const MESSAGE_PARAMETER_DESCRIPTION = `Initial user instructions or context for the new task`
 
@@ -19,6 +19,7 @@ export default {
 			properties: {
 				mode: {
 					type: "string",
+					enum: ["code", "architect"],
 					description: MODE_PARAMETER_DESCRIPTION,
 				},
 				message: {

@@ -9,5 +9,7 @@
 	"missing": "Ontbrekend",
 	"inspect": "De grafiekwaarden staan in de gegevenstabel. Geef een weergegeven waarde de focus om deze te bekijken.",
 	"sortAscending": "oplopend",
-	"sortDescending": "aflopend"
+	"sortDescending": "aflopend",
+	"invalidDiagram": "Diagram niet beschikbaar. Gebruik een relatietabel met drie kolommen, maximaal 24 benoemde knooppunten en 48 verbindingen, zonder cycli. De tabel blijft leesbaar.",
+	"imageUnavailable": "Afbeelding niet beschikbaar. Controleer het werkruimtepad en gebruik een statische PNG of JPEG binnen de gedocumenteerde groottelimieten."
 }

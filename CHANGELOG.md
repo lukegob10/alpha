@@ -1,5 +1,89 @@
 # Changelog
 
+## 2.1.46
+
+### Patch Changes
+
+- Fix Vertex AI Gemini Embedding 2 requests by using the model's `:embedContent` endpoint through Google GenAI SDK 1.47.0 while preserving Gemini 001's existing prediction contract. Preserve routed gateway headers and token refresh behavior, and report the actual number of HTTP attempts for non-retryable embedding failures.
+
+## 2.1.45
+
+### Patch Changes
+
+- Add optional acceptance checks with reusable evidence, owned background command controls, and durable task and skill context.
+- Restore provider selection after task completion and improve chat message editing, restart actions, reasoning summaries, and search output.
+- Improve rich HTML document rendering and file-read continuation while preserving the existing extension workflow.
+- Retire the standalone Alpha CLI and its VS Code shim; new evaluation runs use the VS Code extension while historical results remain readable.
+- Add exact-host and unattended live Copilot coverage for check repair, command and browser sessions, and composed skills.
+
+## 2.1.44
+
+### Patch Changes
+
+- Keep background file edits out of the user's focus, tabs, and unsaved buffers while preserving diagnostics and conflict checks.
+- Cancel direct saves when the task is aborted, abandoned, or superseded, so a late write cannot revive an interrupted edit.
+- Return actionable directory guidance from batched file reads without turning a recoverable path mistake into a task-level error.
+- Project bounded background command outcomes into the next model step, including successful, failed, cancelled, timed-out, and unknown exits.
+- Add exact-host and live Copilot coverage for background editing and command outcome delivery.
+
+## 2.1.43
+
+### Patch Changes
+
+- Preserve the user's file bytes during edits, including line endings, BOMs, missing final newlines, and literal replacement text.
+- Return bounded file reads with truthful continuation cursors, shared batch limits, and version checks for changed files.
+- Add selectable search output modes, literal matching, isolated batch outcomes, and clearer truncation diagnostics.
+- Reduce redundant investigation guidance by reusing evidence, targeting known symbols, and delegating only distinct questions.
+- Add live GPT-5.6 Luna coverage for file edits, reads, searches, continuation, repair, and review workflows.
+
+## 2.1.42
+
+### Patch Changes
+
+- Add Preview HTML Document to the Explorer context menu for local HTML files, opening Alpha's document renderer without an active chat or source editor.
+- Reuse the existing preview tab and translated command label for `.html` and `.htm` documents.
+- Start storing Vertex indexing results earlier with smaller whole-file groups and up to eight continuously refilled embedding requests.
+- Preserve request spacing, result order, failure draining, and whole-file replacement, with deterministic indexing performance coverage.
+
+## 2.1.41
+
+### Patch Changes
+
+- Fix VS Code LM chat metadata staying at the default context window after selecting extended context.
+- Use the active task's resolved input limit for the context display and percentage, with the saved selection as a fallback before live model discovery.
+- Keep settings previews, provider input budgets, and chat metadata consistent when switching between standard and extended context.
+- Preserve embedding provider and endpoint edits during chat state refreshes until Save or Discard.
+- Restart indexing with the newly selected embedding provider after saving, while respecting the workspace indexing toggle.
+
+## 2.1.40
+
+### Patch Changes
+
+- Replace the downloaded sandbox executable and Windows provisioning with command and path preflight in Alpha.
+- Keep saved global `*` auto-approval for ordinary commands and scripts. Detected outside-root writes/deletes and unresolved write destinations require approval for that run, with the affected paths shown in the command card.
+- Restore the saved inline/VS Code terminal choice and its settings. No per-project setup or new executable is required.
+- Clarify that command/path checks are best effort and do not isolate arbitrary scripts or child processes.
+
+## 2.1.39
+
+### Patch Changes
+
+- Restore saved global command auto-approval rules, including `*`, with native OS enforcement of each task's filesystem write scope.
+- Install the pinned command sandbox once per user, reuse Windows setup across projects, and keep network access available for approved commands.
+- Simplify terminal settings to show effective inline execution and preserve cancellation, streaming output, Windows quoting, Git, and pnpm compatibility.
+
+## 2.1.38
+
+### Patch Changes
+
+- Batch independent Git and ripgrep inspections into bounded parallel runs after collecting each command's approval.
+- Expand rich documents with section navigation, evidence and metric cards, scoped images, relationship diagrams, and timelines while preserving the existing responsive design and automatic document opening.
+- Bundle an evidence-driven debugging skill with focused triggers and existing skill controls.
+- Fix browser routing to reject local files, allow outside-workspace inspection through the existing approval policy, and require approval for outside writes and shell commands.
+- Isolate TODO approvals by task, show complete GitHub action details before approval, propagate GitHub cancellation and deadlines, and preserve literal replacement text.
+- Recover multiline file searches with bounded output and improve context compaction, file-change summaries, and command activity presentation.
+- Retire executable modes other than Code and Plan while preserving readable saved tasks and requiring user-controlled mode changes.
+
 ## 2.1.37
 
 ### Patch Changes

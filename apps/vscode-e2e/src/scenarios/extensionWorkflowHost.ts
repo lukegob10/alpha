@@ -239,7 +239,6 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			alwaysAllowExecute: false,
 			alwaysAllowMcp: false,
 			mcpEnabled: false,
-			alwaysAllowModeSwitch: false,
 			alwaysAllowSubtasks: false,
 			alwaysAllowSubagents: false,
 			alwaysAllowFollowupQuestions: false,

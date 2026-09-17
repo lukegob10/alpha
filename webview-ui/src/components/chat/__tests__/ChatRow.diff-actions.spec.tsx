@@ -81,7 +81,7 @@ describe("ChatRow - inline diff stats and actions", () => {
 			text: "Please update the implementation",
 		}
 		renderChatRow(message)
-		const editButton = screen.getByRole("button", { name: "chat:queuedMessages.edit" })
+		const editButton = screen.getByRole("button", { name: "chat:messageActions.edit" })
 		const deleteButton = screen.getByRole("button", { name: "common:confirmation.deleteMessage" })
 		expect(editButton.tagName).toBe("BUTTON")
 		expect(deleteButton.tagName).toBe("BUTTON")
@@ -89,9 +89,7 @@ describe("ChatRow - inline diff stats and actions", () => {
 
 		fireEvent.click(deleteButton)
 
-		expect(mockPostMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ type: "deleteMessage", value: 123 }),
-		)
+		expect(mockPostMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "deleteMessage", value: 123 }))
 	})
 
 	it("uses appliedDiff edit treatment (header/icon/diff stats)", () => {

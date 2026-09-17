@@ -541,13 +541,13 @@ describe("SYSTEM_PROMPT", () => {
 			undefined,
 			experiments,
 		)
-		const askPrompt = await SYSTEM_PROMPT(
+		const planPrompt = await SYSTEM_PROMPT(
 			mockContext,
 			"/test/path",
 			false,
 			undefined,
 			undefined,
-			"ask",
+			"architect",
 			undefined,
 			undefined,
 			undefined,
@@ -560,10 +560,10 @@ describe("SYSTEM_PROMPT", () => {
 		expect(codePrompt).not.toContain("one bounded final review")
 		expect(codePrompt).not.toContain("Use a concise todo list")
 		expect(codePrompt).toContain("Do not optimize for file count")
-		expect(askPrompt).not.toContain("Before consequential code changes")
-		expect(askPrompt).not.toContain("use equivalent evidence at the same behavioral level")
-		expect(askPrompt).not.toContain("not compressed code, monolithic responsibilities, or the fewest files")
-		expect(askPrompt).not.toContain("Do not optimize for file count")
+		expect(planPrompt).not.toContain("Before consequential code changes")
+		expect(planPrompt).not.toContain("use equivalent evidence at the same behavioral level")
+		expect(planPrompt).not.toContain("not compressed code, monolithic responsibilities, or the fewest files")
+		expect(planPrompt).not.toContain("Do not optimize for file count")
 	})
 
 	it.each(["code", "architect", "ask"])("assembles one complete workflow rule in %s mode", async (mode) => {

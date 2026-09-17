@@ -281,16 +281,19 @@
 			"timeoutLabel": "첫 번째 답변을 자동 선택하기 전 대기 시간"
 		},
 		"execute": {
-			"label": "실행",
-			"description": "승인 없이 자동으로 허용된 터미널 명령 실행",
-			"allowedCommands": "허용된 자동 실행 명령",
-			"allowedCommandsDescription": "\"실행 작업 항상 승인\"이 활성화되었을 때 자동 실행될 수 있는 명령 접두사. 모든 명령을 허용하려면 * 추가(주의해서 사용)",
+			"label": "명령 규칙",
+			"description": "작업의 쓰기 범위 내 명령을 자동 승인합니다. 네트워크는 활성화됩니다. 범위 밖 쓰기는 차단됩니다. 전역 설정은 프로젝트 간에 유지됩니다.",
+			"allowedCommands": "허용된 명령 접두사",
+			"allowedCommandsDescription": "*를 사용하면 스크립트를 포함한 명령을 자동 승인합니다. 저장한 규칙은 모든 프로젝트에 적용됩니다. 감지된 작업 루트 밖 쓰기와 확인할 수 없는 쓰기 경로에는 승인이 필요합니다. 이는 명령 및 경로 검사이며 OS 샌드박스가 아닙니다.",
 			"deniedCommands": "거부된 명령",
 			"deniedCommandsDescription": "승인을 요청하지 않고 자동으로 거부될 명령 접두사. 허용된 명령과 충돌하는 경우 가장 긴 접두사 일치가 우선됩니다. 모든 명령을 거부하려면 * 추가",
 			"commandPlaceholder": "명령 접두사 입력(예: 'git ')",
 			"deniedCommandPlaceholder": "거부할 명령 접두사 입력(예: 'rm -rf')",
 			"addButton": "추가",
-			"autoDenied": "접두사 `{{prefix}}`를 가진 명령어는 사용자에 의해 금지되었습니다. 다른 명령어를 실행하여 이 제한을 우회하지 마세요."
+			"autoDenied": "접두사 `{{prefix}}`를 가진 명령어는 사용자에 의해 금지되었습니다. 다른 명령어를 실행하여 이 제한을 우회하지 마세요.",
+			"pathApprovalTitle": "파일 경로 승인이 필요합니다",
+			"pathApprovalDescription": "이 명령은 작업 루트 밖의 파일을 변경할 수 있습니다. 승인은 이번 실행에만 적용됩니다.",
+			"pathApprovalUnresolved": "일부 쓰기 경로를 확인할 수 없습니다."
 		},
 		"apiRequestLimit": {
 			"title": "최대 요청 수",

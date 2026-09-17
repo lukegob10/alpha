@@ -23,6 +23,8 @@ type DeepSeekChatCompletionParams = OpenAI.Chat.ChatCompletionCreateParamsStream
 }
 
 export class DeepSeekHandler extends OpenAiHandler {
+	// This override has its own transport and does not yet propagate request cancellation.
+	override readonly streamCapabilities = { cancellation: false } as const
 	constructor(options: ApiHandlerOptions) {
 		super({
 			...options,

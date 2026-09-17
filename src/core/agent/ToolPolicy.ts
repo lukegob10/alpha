@@ -1,6 +1,7 @@
 import type { ToolConcurrency, ToolSideEffects } from "../tools/ToolRegistry"
 import { canonicalizeToolName } from "../tools/ToolRegistry"
 import path from "path"
+import { isPathWithinRoot } from "../tools/pathSafety"
 
 import { digestValue } from "./StepContext"
 
@@ -11,6 +12,7 @@ export interface ToolPolicyCapability {
 	sideEffects: ToolSideEffects
 	controlFlow: boolean
 	requiresApproval: boolean
+	parallelCommandRead?: boolean
 }
 
 export type ToolSandboxMode = "workspace-write"
@@ -27,6 +29,8 @@ export interface ToolCommandPolicy {
 export interface ToolExecutionPolicy {
 	sandboxMode: ToolSandboxMode
 	workspaceRoots: readonly string[]
+	/** Primary file tools may leave the workspace; external writes require a human decision. Omission denies access. */
+	outsideWorkspace?: "approval"
 	command: ToolCommandPolicy
 	cancellation: "abort-process"
 }
@@ -58,6 +62,7 @@ export interface ToolPolicyInput {
 	execution?: {
 		sandboxMode?: ToolSandboxMode
 		workspaceRoots?: readonly string[]
+		outsideWorkspace?: "approval"
 		command?: Partial<ToolCommandPolicy>
 		cancellation?: "abort-process"
 	}
@@ -105,6 +110,7 @@ export function createToolPolicySnapshot(input: ToolPolicyInput): ToolPolicySnap
 	const execution: ToolExecutionPolicy = {
 		sandboxMode: "workspace-write",
 		workspaceRoots: uniqueNames(executionInput.workspaceRoots ?? []),
+		...(executionInput.outsideWorkspace === "approval" ? { outsideWorkspace: "approval" as const } : {}),
 		command: {
 			allowedPrefixes: uniqueNames(commandInput.allowedPrefixes ?? []),
 			deniedPrefixes: uniqueNames(commandInput.deniedPrefixes ?? []),
@@ -113,7 +119,7 @@ export function createToolPolicySnapshot(input: ToolPolicyInput): ToolPolicySnap
 		},
 		cancellation: "abort-process",
 	}
-	const summary = formatToolPolicySummary(execution, input.autoApprovalEnabled === true, outputLimits)
+	const summary = formatToolPolicySummary(execution, outputLimits)
 	const normalized = {
 		visibleTools: Object.freeze(visibleTools),
 		allowedTools: Object.freeze(allowedTools),
@@ -174,14 +180,7 @@ export function isPathAllowed(policy: ToolPolicySnapshot | undefined, candidate:
 	if (roots.length === 0) return true
 
 	const resolvedCandidate = path.resolve(cwd ?? roots[0], candidate)
-	return roots.some((root) => {
-		const resolvedRoot = path.resolve(root)
-		const relative = path.relative(resolvedRoot, resolvedCandidate)
-		return (
-			relative === "" ||
-			(relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
-		)
-	})
+	return roots.some((root) => isPathWithinRoot(root, resolvedCandidate))
 }
 
 export function resolveCommandTimeoutMs(
@@ -216,15 +215,18 @@ export function isCommandDeniedByPolicy(policy: ToolPolicySnapshot | undefined, 
 
 function formatToolPolicySummary(
 	execution: ToolExecutionPolicy,
-	autoApprovalEnabled: boolean,
 	outputLimits: Readonly<Record<string, number>>,
 ): string {
 	const timeout = execution.command.userTimeoutMs > 0 ? `${execution.command.userTimeoutMs}ms` : "none"
 	const outputLimit = Math.max(0, ...Object.values(outputLimits)) || DEFAULT_TOOL_OUTPUT_LIMIT
 	return [
-		`Sandbox: ${execution.sandboxMode}`,
+		`File policy: ${execution.sandboxMode}; commands use the user's normal shell with command and path preflight`,
 		`Workspace roots: ${execution.workspaceRoots.join(", ") || "task workspace"}`,
-		`Command approval: ${autoApprovalEnabled ? "auto-approval may apply; policy is revalidated" : "approval required"}`,
+		...(execution.outsideWorkspace === "approval"
+			? ["Outside file reads use read approvals; outside file writes require explicit approval"]
+			: ["File tools are restricted to the workspace roots"]),
+		"Command approval: follows global auto-approval and command rules; detected outside writes or unresolved write paths require approval.",
+		"Command path checks are best effort, not OS isolation. Arbitrary scripts and child processes are not contained.",
 		`Command timeout: ${timeout}`,
 		`Tool output limit: ${outputLimit} characters; large command output may be available as an artifact`,
 		"Cancellation: aborts active tool processes",

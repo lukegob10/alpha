@@ -10,6 +10,7 @@ import {
 	getVscodeLlmModelId,
 	getVscodeLlmModelInfo,
 	getVscodeLlmExtendedContextSize,
+	getVscodeLlmContextWindow,
 } from "@alpha-code/types"
 
 import { useAppTranslation } from "@src/i18n/TranslationContext"
@@ -111,25 +112,14 @@ function toStoredVsCodeLmSelector(model: VSCodeLmModel): LanguageModelChatSelect
 
 function buildVsCodeLmModelInfo(model: VSCodeLmModel, configuredContextSize?: number): ModelInfo {
 	const staticInfo = getVscodeLlmModelInfo(model)
-	const extendedContextSize = getVscodeLlmExtendedContextSize(model)
-	const isExtendedContextSelected = configuredContextSize === extendedContextSize
-	const liveContextWindow =
-		typeof model.maxInputTokens === "number" && Number.isFinite(model.maxInputTokens) && model.maxInputTokens > 0
-			? model.maxInputTokens
-			: undefined
-	const configuredWindow =
-		staticInfo?.supportsContextWindowConfiguration && isExtendedContextSelected && extendedContextSize
-			? extendedContextSize
-			: staticInfo?.contextWindow
-	const contextWindow = liveContextWindow
-		? Math.min(liveContextWindow, configuredWindow ?? liveContextWindow)
-		: (configuredWindow ?? openAiModelInfoSaneDefaults.contextWindow)
+	const contextWindow = getVscodeLlmContextWindow(model, configuredContextSize)
 
 	return {
 		...openAiModelInfoSaneDefaults,
 		...staticInfo,
 		maxTokens: staticInfo?.maxTokens ?? 0,
 		contextWindow,
+		contextWindowIncludesOutput: false,
 		supportsImages: staticInfo?.supportsImages ?? false,
 		supportsPromptCache: staticInfo?.supportsPromptCache ?? false,
 		supportsReasoningEffort: staticInfo?.supportsReasoningEffort,

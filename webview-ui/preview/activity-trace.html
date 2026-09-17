@@ -114,6 +114,7 @@
 		<nav id="preview-controls">
 			<strong style="margin-right: auto">Alpha · Extension preview</strong><button id="running">Running</button
 			><button id="complete">Complete</button><button id="followup">Follow-up</button>
+			<button id="thinking">Thinking</button>
 			<button id="finish-followup">Finish follow-up</button><button id="narrow">Narrow</button>
 			<button id="long-messages" aria-pressed="false">Long messages</button>
 			<select id="surface" aria-label="Preview surface">
@@ -160,6 +161,8 @@
 					ts: base + 2000,
 					type: "say",
 					say: "reasoning",
+					reasoningSummary:
+						"Checking focus and selection behavior so keyboard navigation remains predictable.",
 					text: "I’ll inspect how the palette handles focus and selection, then cover the keyboard interactions with tests.",
 				},
 				{
@@ -216,7 +219,23 @@
 					}),
 				),
 			)
-			function show(completed, followup = false) {
+			messages.splice(
+				3,
+				0,
+				...["focus|selectedItem", "onKeyDown|restoreFocus"].map((regex, index) => ({
+					ts: base + 3000 + index,
+					type: "ask",
+					ask: "tool",
+					text: JSON.stringify({
+						tool: "searchFiles",
+						path: "src/components/palette",
+						regex,
+						filePattern: "*.tsx",
+						content: "src/components/palette/CommandPalette.tsx:42: restoreFocus(selectedItem)",
+					}),
+				})),
+			)
+			function show(completed, followup = false, thinking = false) {
 				const taskId = "trace-preview"
 				const completedTurn = [
 					...messages,
@@ -257,7 +276,22 @@
 					: completed
 						? completedTurn
 						: messages
-				const clineMessages = transcript.map((message, index) => {
+				const thinkingTranscript = thinking
+					? [
+							...transcript,
+							{ ts: base + 46000, type: "say", say: "api_req_started", text: "{}" },
+							{
+								ts: base + 47000,
+								type: "say",
+								say: "reasoning",
+								partial: true,
+								reasoningSummary:
+									"Checking focus restoration and narrow layouts so the palette stays usable from the keyboard.",
+								text: "**Checking keyboard focus restoration**\nThe keyboard tests pass. I’m tracing how focus returns to the input after the palette closes.\n\n**Reviewing the narrow sidebar layout**\nChecking that the controls remain readable while work continues.",
+							},
+						]
+					: transcript
+				const clineMessages = thinkingTranscript.map((message, index) => {
 					if (!longMessages) return message
 					if (index === 0)
 						return {
@@ -334,6 +368,7 @@
 							isActive: true,
 							isStreaming: false,
 							isTurnActive: !completed,
+							activityPhase: thinking ? "working" : "executing",
 							canInterrupt: !completed,
 							isWaitingForInput: false,
 							lastUpdatedAt: clineMessages.at(-1).ts,
@@ -377,6 +412,7 @@
 				),
 			)
 			document.getElementById("running").onclick = () => show(false)
+			document.getElementById("thinking").onclick = () => show(false, false, true)
 			document.getElementById("complete").onclick = () => show(true)
 			document.getElementById("followup").onclick = () => show(false, true)
 			document.getElementById("finish-followup").onclick = () => show(true, true)

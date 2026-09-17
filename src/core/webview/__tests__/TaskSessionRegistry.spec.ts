@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import {
 	agentLifecycleSnapshotSchema,
 	type AgentLifecycleSnapshot,
@@ -46,6 +46,30 @@ const createLifecycleSnapshot = (
 	})
 
 describe("TaskSessionRegistry", () => {
+	it("projects each task's current provider input budget independently", () => {
+		const registry = new TaskSessionRegistry(2)
+		const model = (contextWindow: number) => ({
+			id: "copilot-claude-opus-4.7",
+			info: { contextWindow, maxTokens: 64_000, supportsPromptCache: false, contextWindowIncludesOutput: false },
+		})
+		const getModel = vi.fn(() => model(935_793))
+		const task = createTask("extended", {
+			api: { getModel, createMessage: vi.fn(), countTokens: vi.fn() },
+		})
+		registry.register(task)
+		registry.register(
+			createTask("standard", {
+				api: { getModel: () => model(200_000), createMessage: vi.fn(), countTokens: vi.fn() },
+			}),
+		)
+		expect(registry.getMetadata().extended.model).toEqual(model(935_793))
+		expect(registry.getMetadata().standard.model).toEqual(model(200_000))
+		getModel.mockReturnValue(model(199_793))
+		expect(registry.getMetadata().extended.model).toEqual(model(199_793))
+		registry.focus("extended")
+		expect(registry.getMetadata().standard.model).toEqual(model(200_000))
+	})
+
 	it("tracks live tasks and explicit active focus", () => {
 		const registry = new TaskSessionRegistry(3)
 		const taskA = createTask("task-a")

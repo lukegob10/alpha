@@ -18,6 +18,7 @@ import type {
 	SubagentForkTurns,
 	BrowserToolArgs,
 	DiscoverToolsParams,
+	SearchFilesParams,
 } from "@alpha-code/types"
 
 export type ToolResponse = string | Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam>
@@ -47,6 +48,8 @@ export const toolParamNames = [
 	"content",
 	"regex",
 	"file_pattern",
+	"output_mode",
+	"literal",
 	"recursive",
 	"action",
 	"url",
@@ -84,7 +87,6 @@ export const toolParamNames = [
 	"result",
 	"outcome",
 	"diff",
-	"mode_slug",
 	"reason",
 	"line",
 	"mode",
@@ -162,6 +164,12 @@ export type NativeToolArgs = BrowserToolArgs & {
 	discover_tools: DiscoverToolsParams
 	read_file: import("@alpha-code/types").ReadFileToolParams
 	read_command_output: { artifact_id: string; search?: string; offset?: number; limit?: number }
+	manage_command: {
+		execution_id: string
+		action: "wait" | "stop" | "input"
+		input?: string | null
+		timeout_ms?: number | null
+	}
 	attempt_completion: { result: string; outcome?: "completed" | "blocked" }
 	execute_command: {
 		command: string
@@ -229,22 +237,13 @@ export type NativeToolArgs = BrowserToolArgs & {
 	generate_image: GenerateImageParams
 	run_slash_command: { command: string; args?: string }
 	skill: { skill: string; args?: string }
-	search_files:
-		| { path: string; regex: string; file_pattern?: string | null }
-		| {
-				queries: Array<{
-					path: string
-					regex: string
-					file_pattern?: string | null
-				}>
-		  }
-	switch_mode: { mode_slug: string; reason: string }
+	search_files: SearchFilesParams
 	list_tickets: { query?: string; status?: "backlog" | "in-progress" | "complete"; offset?: number; limit?: number }
 	read_ticket: { id: string }
 	create_ticket: CreateTicket
 	update_ticket: UpdateTicket
 	delete_ticket: DeleteTicket
-	update_todo_list: { todos: string }
+	update_todo_list: { todos: string; work_plan?: import("@alpha-code/types").TaskWorkPlan | null }
 	use_mcp_tool: { server_name: string; tool_name: string; arguments?: Record<string, unknown> }
 	write_to_file: { path: string; content: string }
 	github_api:
@@ -374,7 +373,9 @@ export interface CodebaseSearchToolUse extends ToolUse<"codebase_search"> {
 
 export interface SearchFilesToolUse extends ToolUse<"search_files"> {
 	name: "search_files"
-	params: Partial<Pick<Record<ToolParamName, string>, "path" | "regex" | "file_pattern" | "queries">>
+	params: Partial<
+		Pick<Record<ToolParamName, string>, "path" | "regex" | "file_pattern" | "queries" | "output_mode" | "literal">
+	>
 }
 
 export interface ListFilesToolUse extends ToolUse<"list_files"> {
@@ -400,11 +401,6 @@ export interface AskFollowupQuestionToolUse extends ToolUse<"ask_followup_questi
 export interface AttemptCompletionToolUse extends ToolUse<"attempt_completion"> {
 	name: "attempt_completion"
 	params: Partial<Pick<Record<ToolParamName, string>, "result" | "outcome">>
-}
-
-export interface SwitchModeToolUse extends ToolUse<"switch_mode"> {
-	name: "switch_mode"
-	params: Partial<Pick<Record<ToolParamName, string>, "mode_slug" | "reason">>
 }
 
 export interface NewTaskToolUse extends ToolUse<"new_task"> {
@@ -457,6 +453,7 @@ export type ToolGroupConfig = {
 
 export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	execute_command: "run commands",
+	manage_command: "control task commands",
 	read_file: "read files",
 	read_command_output: "read command output",
 	write_to_file: "write files",
@@ -473,7 +470,6 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	discover_tools: "discover optional MCP tools",
 	ask_followup_question: "ask questions",
 	attempt_completion: "complete tasks",
-	switch_mode: "switch modes",
 	new_task: "create new task",
 	delegate_task: "delegate bounded tasks",
 	spawn_agent: "spawn a bounded agent",
@@ -520,7 +516,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 		customTools: ["edit", "search_replace", "edit_file", "apply_patch"],
 	},
 	command: {
-		tools: ["execute_command", "read_command_output"],
+		tools: ["execute_command", "read_command_output", "manage_command"],
 	},
 	mcp: {
 		tools: ["use_mcp_tool", "access_mcp_resource", "discover_tools"],
@@ -529,7 +525,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 		tools: ["github_api"],
 	},
 	modes: {
-		tools: ["switch_mode", "new_task"],
+		tools: ["new_task"],
 		alwaysAvailable: true,
 	},
 	agents: {
@@ -567,7 +563,6 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 export const ALWAYS_AVAILABLE_TOOLS: ToolName[] = [
 	"ask_followup_question",
 	"attempt_completion",
-	"switch_mode",
 	"new_task",
 	"update_todo_list",
 	"run_slash_command",

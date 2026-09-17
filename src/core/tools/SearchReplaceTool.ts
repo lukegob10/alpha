@@ -12,6 +12,7 @@ import { sanitizeUnifiedDiff, computeDiffStats } from "../diff/stats"
 import type { ToolUse } from "../../shared/tools"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { fileEditContent, normalizeToLF } from "./fileEditContent"
 import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
 interface SearchReplaceParams {
@@ -105,11 +106,12 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 
 			// Normalize only the matching projection. The raw content remains the
 			// baseline used to reject edits made while approval was pending.
-			const fileContent = originalFileContent.replace(/\r\n/g, "\n")
+			const projection = fileEditContent(originalFileContent)
+			const fileContent = projection.content
 
 			// Normalize line endings in search/replace strings to match file content
-			const normalizedOldString = old_string.replace(/\r\n/g, "\n")
-			const normalizedNewString = new_string.replace(/\r\n/g, "\n")
+			const normalizedOldString = normalizeToLF(old_string)
+			const normalizedNewString = normalizeToLF(new_string)
 
 			// Check for exact match (literal string, not regex)
 			const matchCount = fileContent.split(normalizedOldString).length - 1
@@ -137,10 +139,10 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 			}
 
 			// Apply the single replacement
-			const newContent = fileContent.replace(normalizedOldString, normalizedNewString)
+			const newContent = projection.restore(fileContent.replace(normalizedOldString, () => normalizedNewString))
 
 			// Check if any changes were made
-			if (newContent === fileContent) {
+			if (newContent === originalFileContent) {
 				pushToolResult(`No changes needed for '${relPath}'`)
 				return
 			}
@@ -152,7 +154,7 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 			task.diffViewProvider.originalContent = originalFileContent
 
 			// Generate and validate diff
-			const diff = formatResponse.createPrettyPatch(relPath, fileContent, newContent)
+			const diff = formatResponse.createPrettyPatch(relPath, originalFileContent, newContent)
 			if (!diff) {
 				pushToolResult(`No changes needed for '${relPath}'`)
 				await task.diffViewProvider.reset()

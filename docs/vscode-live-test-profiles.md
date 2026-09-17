@@ -8,11 +8,47 @@ compatibility target. A passing setup/preflight is not a passing Alpha task or a
 write/close/reopen/read regression passed on **both 1.122.1 and 1.136.1** for Alpha's global memento, workspace memento,
 and a synthetic SecretStorage value. The previous extension-test path failed the same test because its underlying
 state database is intentionally in memory. A separate real sign-in/close/reopen check on **1.122.1** subsequently
-confirmed Alpha-owned `canSendRequest: true` for exact Luna with High, without a setup request probe. Authorization on
-1.136.1 and actual live workflows remain unverified. No credentials were copied or inspected.
+confirmed Alpha-owned `canSendRequest: true` for exact Luna with High, without a setup request probe. At that point,
+authorization on 1.136.1 and actual live workflows remained unverified. No credentials were copied or inspected.
 
 **Current live blocker:** the authenticated 1.122.1 workflow hit an uncaught exception in its bundled Copilot 0.50.1,
 before an Alpha task was created. Repeating sign-in does not address that failure.
+
+### Copilot Git observer failure: investigation on 2026-09-14
+
+The exact-host core campaign `mode-removal-live-20260914-01` passed its harness unit, core regression, smoke and core
+1.122.1 prerequisites. Its first live scenario, `dev-git-inspect`, then failed with `TypeError: e is not iterable` in
+Copilot 0.50.1's `ObservableGit.init` / `mapObservableArrayCached` path. Authentication and exact Luna/High selection
+succeeded. A fresh-workspace isolated run reproduced the same stack; the other eight campaign scenarios did not run.
+The stack also appears in the pre-change campaign `core-luna-1221-20260911-01`.
+
+The bundled code matches the
+[1.122.1 source](https://github.com/microsoft/vscode/blob/8761a5560cfd65fdd19ce7e2bd18dab5c0a4d84e/extensions/copilot/src/platform/inlineEdits/common/observableGit.ts#L25)
+and [Microsoft's matching telemetry issue](https://github.com/microsoft/vscode/issues/318772).
+The [proposed upstream fix](https://github.com/microsoft/vscode/pull/318781) describes an observable subscription
+lifecycle problem that supplies `undefined` where an array is expected. That PR was still open when checked on
+2026-09-14; its proposed diagnosis is supporting evidence, not proof of a released fix. Disabling
+`github.copilot.nextEditSuggestions.enabled` in the dedicated 1.122.1 profile did not prevent the exception. The
+diagnostic override was removed afterward.
+
+The same isolated scenario passed on the already-installed **1.136.1 / Copilot 0.64.1** with real Luna/High, six model
+requests, all fixture and tool-transaction checks passing, and a normal host exit. Its run ID is
+`isolated-git-inspect-1361-20260914-01`. This is supplemental evidence from one sample, not an exact-host gate pass or a
+claim that the upstream bug is fixed in every newer host. Keep 1.122.1's failure visible; a baseline migration requires
+the coordinated repository changes described in `AGENTS.md`. Do not patch the downloaded Copilot bundle, suppress its
+uncaught exception, disable Git integration, or reset authentication to manufacture a passing run.
+
+The subsequent full campaign `mode-removal-live-1361-20260914-01` passed **9/9 core scenarios**, with one sample per
+scenario and **61 live Luna/High requests**. Git inspection, refactoring, search recovery, completion/idle, empty and
+error response recovery, stream cancellation/recovery, reload continuation, and background isolation all passed.
+All four gate prerequisites passed again, including the 1.122.1 smoke and core suites. The final gate receipt records
+`status: passed`, `stopReason: completed`, complete evidence retention, and unchanged built artifacts during the run.
+Token and cost totals were unavailable. This establishes a working supplemental live validation path on 1.136.1;
+the 1.122.1 live gate remains blocked by the separately recorded Copilot exception.
+
+Local campaign evidence is under `F:\alpha-vscode-e2e-runs\core-confidence`; isolated diagnostics are under its
+`mode-removal-isolated-evidence-20260914` directory. The runner receipts and `workflow-result.json`, when present, are
+the evidence of actual execution; a successful model preflight alone is insufficient.
 
 ## Persistent storage requires a normal development host
 

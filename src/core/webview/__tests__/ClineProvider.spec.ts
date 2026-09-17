@@ -310,8 +310,6 @@ vi.mock("../../../shared/modes", () => ({
 		}
 	}),
 	defaultModeSlug: "code",
-	isCodePlanModeTransition: (currentMode: string | undefined, newMode: string) =>
-		(currentMode === "code" && newMode === "architect") || (currentMode === "architect" && newMode === "code"),
 }))
 
 vi.mock("../../prompts/system", () => ({
@@ -585,8 +583,8 @@ describe("ClineProvider", () => {
 		expect(writes).toEqual(["running", "completed"])
 	})
 
-	test("shows the v2.1.3 announcement once per installation", async () => {
-		const announcementId = "august-2026-v2.1.3-plan-code-workflow"
+	test("shows the v2.1.45 announcement once per installation", async () => {
+		const announcementId = "september-2026-v2.1.45-harness-quality-ux"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
@@ -1831,48 +1829,18 @@ describe("ClineProvider", () => {
 		expect(mockPostMessage).toHaveBeenCalled()
 	})
 
-	it("loads saved API config when switching modes", async () => {
+	it.each(["ask", "debug", "orchestrator"])("rejects a retired %s selection from the webview", async (mode) => {
 		await provider.resolveWebviewView(mockWebviewView)
 		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
-
-		const profile: ProviderSettingsEntry = { name: "test-config", id: "test-id", apiProvider: "anthropic" }
-
-		;(provider as any).providerSettingsManager = {
-			getModeConfigId: vi.fn().mockResolvedValue("test-id"),
-			listConfig: vi.fn().mockResolvedValue([profile]),
-			activateProfile: vi.fn().mockResolvedValue(profile),
-			setModeConfig: vi.fn(),
-			getProfile: vi.fn().mockResolvedValue(profile),
-		} as any
-
-		// Switch to a legacy mode that still has its own saved profile.
-		await messageHandler({ type: "mode", text: "debug" })
-
-		// Legacy modes retain mode-specific profile behavior.
-		expect(provider.providerSettingsManager.getModeConfigId).toHaveBeenCalledWith("debug")
-		expect(provider.providerSettingsManager.activateProfile).toHaveBeenCalledWith({ name: "test-config" })
-		expect(mockContext.globalState.update).toHaveBeenCalledWith("currentApiConfigName", "test-config")
-	})
-
-	it("saves current config when switching to mode without config", async () => {
-		await provider.resolveWebviewView(mockWebviewView)
-		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
-
-		;(provider as any).providerSettingsManager = {
-			getModeConfigId: vi.fn().mockResolvedValue(undefined),
-			listConfig: vi
-				.fn()
-				.mockResolvedValue([{ name: "current-config", id: "current-id", apiProvider: "anthropic" }]),
-			setModeConfig: vi.fn(),
-		} as any
-
-		provider.setValue("currentApiConfigName", "current-config")
-
-		// Switch to a legacy mode without a saved profile.
-		await messageHandler({ type: "mode", text: "debug" })
-
-		// Legacy modes retain mode-specific profile behavior.
-		expect(provider.providerSettingsManager.setModeConfig).toHaveBeenCalledWith("debug", "current-id")
+		const lookup = vi.spyOn(provider.providerSettingsManager, "getModeConfigId")
+		const activate = vi.spyOn(provider, "activateProviderProfile")
+		const save = vi.spyOn(provider.providerSettingsManager, "setModeConfig")
+		vi.mocked(mockContext.globalState.update).mockClear()
+		await messageHandler({ type: "mode", text: mode })
+		expect(mockContext.globalState.update).not.toHaveBeenCalledWith("mode", mode)
+		expect(lookup).not.toHaveBeenCalled()
+		expect(activate).not.toHaveBeenCalled()
+		expect(save).not.toHaveBeenCalled()
 	})
 
 	it("saves config as default for current mode when loading config", async () => {
@@ -2147,6 +2115,7 @@ describe("ClineProvider", () => {
 			// Verify that the dialog message was sent to webview
 			expect(mockPostMessage).toHaveBeenCalledWith({
 				type: "showDeleteMessageDialog",
+				taskId: "test-task-id",
 				messageTs: 4000,
 				hasCheckpoint: false,
 			})
@@ -2245,6 +2214,7 @@ describe("ClineProvider", () => {
 			// Verify that the dialog message was sent to webview
 			expect(mockPostMessage).toHaveBeenCalledWith({
 				type: "showEditMessageDialog",
+				taskId: "test-task-id",
 				messageTs: 4000,
 				text: "Edited message content",
 				hasCheckpoint: false,
@@ -2412,205 +2382,54 @@ describe("ClineProvider", () => {
 	})
 
 	describe("handleModeSwitch", () => {
-		beforeEach(async () => {
-			// Set up webview for each test
-			await provider.resolveWebviewView(mockWebviewView)
-		})
-
-		it("loads saved API config when switching modes", async () => {
-			const profile: ProviderSettingsEntry = {
-				name: "saved-config",
-				id: "saved-config-id",
-				apiProvider: "anthropic",
-			}
-
-			;(provider as any).providerSettingsManager = {
-				getModeConfigId: vi.fn().mockResolvedValue("saved-config-id"),
-				listConfig: vi.fn().mockResolvedValue([profile]),
-				activateProfile: vi.fn().mockResolvedValue(profile),
-				setModeConfig: vi.fn(),
-				getProfile: vi.fn().mockResolvedValue(profile),
-			} as any
-
-			// Switch to a legacy mode with a saved profile.
-			await provider.handleModeSwitch("debug")
-
-			// Verify mode was updated
-			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "debug")
-
-			// Verify saved config was loaded
-			expect(provider.providerSettingsManager.getModeConfigId).toHaveBeenCalledWith("debug")
-			expect(provider.providerSettingsManager.activateProfile).toHaveBeenCalledWith({ name: "saved-config" })
-			expect(mockContext.globalState.update).toHaveBeenCalledWith("currentApiConfigName", "saved-config")
-
-			// Verify state was posted to webview
-			expect(mockPostMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "state" }))
-		})
-
-		test("saves current config when switching to mode without config", async () => {
-			;(provider as any).providerSettingsManager = {
-				getModeConfigId: vi.fn().mockResolvedValue(undefined),
-				listConfig: vi
-					.fn()
-					.mockResolvedValue([{ name: "current-config", id: "current-id", apiProvider: "anthropic" }]),
-				setModeConfig: vi.fn(),
-			} as any
-
-			// Mock the ContextProxy's getValue method to return the current config name
-			const contextProxy = (provider as any).contextProxy
-			const getValueSpy = vi.spyOn(contextProxy, "getValue")
-			getValueSpy.mockImplementation((key: any) => {
-				if (key === "currentApiConfigName") return "current-config"
-				return undefined
-			})
-
-			// Switch to a legacy mode without a saved profile.
-			await provider.handleModeSwitch("debug")
-
-			// Verify mode was updated
-			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "debug")
-
-			// Verify current config was saved as default for new mode
-			expect(provider.providerSettingsManager.setModeConfig).toHaveBeenCalledWith("debug", "current-id")
-
-			// Verify state was posted to webview
-			expect(mockPostMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "state" }))
-		})
+		it.each(["ask", "debug", "orchestrator", "custom-mode"])(
+			"rejects %s before state or profile changes",
+			async (mode) => {
+				await provider.resolveWebviewView(mockWebviewView)
+				const lookup = vi.spyOn(provider.providerSettingsManager, "getModeConfigId")
+				vi.mocked(mockContext.globalState.update).mockClear()
+				await expect(provider.handleModeSwitch(mode)).rejects.toThrow("Only Code")
+				expect(mockContext.globalState.update).not.toHaveBeenCalledWith("mode", mode)
+				expect(lookup).not.toHaveBeenCalled()
+			},
+		)
 	})
 
 	describe("createTaskWithHistoryItem mode validation", () => {
-		test("validates and falls back to default mode when restored mode no longer exists", async () => {
-			await provider.resolveWebviewView(mockWebviewView)
-
-			// Mock custom modes that don't include the saved mode
-			const mockCustomModesManager = {
-				getCustomModes: vi.fn().mockResolvedValue([
-					{
-						slug: "existing-mode",
-						name: "Existing Mode",
-						roleDefinition: "Test role",
-						groups: ["read"] as const,
-					},
-				]),
-				dispose: vi.fn(),
-			}
-			;(provider as any).customModesManager = mockCustomModesManager
-
-			// Mock getModeBySlug to return undefined for non-existent mode
-			const { getModeBySlug } = await import("../../../shared/modes")
-			vi.mocked(getModeBySlug)
-				.mockReturnValueOnce(undefined) // First call returns undefined (mode doesn't exist)
-				.mockReturnValue({
-					slug: "code",
-					name: "Code Mode",
-					roleDefinition: "You are a code assistant",
-					groups: ["read", "edit"],
-				}) // Subsequent calls return default mode
-
-			// Mock provider settings manager
-			;(provider as any).providerSettingsManager = {
-				getModeConfigId: vi.fn().mockResolvedValue(undefined),
-				listConfig: vi.fn().mockResolvedValue([]),
-			}
-
-			// Spy on log method to verify warning was logged
-			const logSpy = vi.spyOn(provider, "log")
-
-			// Create history item with non-existent mode
-			const historyItem = {
-				id: "test-id",
-				ts: Date.now(),
-				task: "Test task",
-				mode: "non-existent-mode", // This mode doesn't exist
-				number: 1,
-				tokensIn: 0,
-				tokensOut: 0,
-				totalCost: 0,
-			}
-
-			// Initialize with history item
-			await provider.createTaskWithHistoryItem(historyItem)
-
-			// Verify mode validation occurred
-			expect(mockCustomModesManager.getCustomModes).toHaveBeenCalled()
-			expect(getModeBySlug).toHaveBeenCalledWith("non-existent-mode", expect.any(Array))
-
-			// Verify fallback to default mode
-			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "code")
-			expect(logSpy).toHaveBeenCalledWith(
-				"Mode 'non-existent-mode' from history no longer exists. Falling back to default mode 'code'.",
-			)
-
-			// Verify history item was updated with default mode
-			expect(historyItem.mode).toBe("code")
-		})
-
-		test("preserves mode when it exists in custom modes", async () => {
-			await provider.resolveWebviewView(mockWebviewView)
-
-			// Mock custom modes that include the saved mode
-			const mockCustomModesManager = {
-				getCustomModes: vi.fn().mockResolvedValue([
-					{
-						slug: "custom-mode",
-						name: "Custom Mode",
-						roleDefinition: "Custom role",
-						groups: ["read", "edit"] as const,
-					},
-				]),
-				dispose: vi.fn(),
-			}
-			;(provider as any).customModesManager = mockCustomModesManager
-
-			// Mock getModeBySlug to return the custom mode
-			const { getModeBySlug } = await import("../../../shared/modes")
-			vi.mocked(getModeBySlug).mockReturnValue({
-				slug: "custom-mode",
-				name: "Custom Mode",
-				roleDefinition: "Custom role",
-				groups: ["read", "edit"],
-			})
-
-			// Mock provider settings manager
-			;(provider as any).providerSettingsManager = {
-				getModeConfigId: vi.fn().mockResolvedValue("config-id"),
-				listConfig: vi
-					.fn()
-					.mockResolvedValue([{ name: "test-config", id: "config-id", apiProvider: "anthropic" }]),
-				activateProfile: vi
-					.fn()
-					.mockResolvedValue({ name: "test-config", id: "config-id", apiProvider: "anthropic" }),
-			}
-
-			// Spy on log method to verify no warning was logged
-			const logSpy = vi.spyOn(provider, "log")
-
-			// Create history item with existing custom mode
-			const historyItem = {
-				id: "test-id",
-				ts: Date.now(),
-				task: "Test task",
-				mode: "custom-mode",
-				number: 1,
-				tokensIn: 0,
-				tokensOut: 0,
-				totalCost: 0,
-			}
-
-			// Initialize with history item
-			await provider.createTaskWithHistoryItem(historyItem)
-
-			// Verify mode validation occurred
-			expect(mockCustomModesManager.getCustomModes).toHaveBeenCalled()
-			expect(getModeBySlug).toHaveBeenCalledWith("custom-mode", expect.any(Array))
-
-			// Verify mode was preserved
-			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "custom-mode")
-			expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("no longer exists"))
-
-			// Verify history item mode was not changed
-			expect(historyItem.mode).toBe("custom-mode")
-		})
+		test.each(["ask", "debug", "orchestrator", "non-existent-mode", "custom-mode"])(
+			"restores %s into Plan without mutating the supplied history",
+			async (mode) => {
+				await provider.resolveWebviewView(mockWebviewView)
+				;(provider as any).customModesManager = {
+					getCustomModes: vi
+						.fn()
+						.mockResolvedValue([
+							{ slug: "custom-mode", name: "Custom", roleDefinition: "Custom", groups: ["edit"] },
+						]),
+					dispose: vi.fn(),
+				}
+				;(provider as any).providerSettingsManager = {
+					getModeConfigId: vi.fn().mockResolvedValue(undefined),
+					listConfig: vi.fn().mockResolvedValue([]),
+				}
+				const historyItem = {
+					id: "test-id",
+					ts: Date.now(),
+					task: "Test task",
+					mode,
+					number: 1,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				}
+				await provider.createTaskWithHistoryItem(historyItem)
+				expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "architect")
+				expect(vi.mocked(Task)).toHaveBeenLastCalledWith(
+					expect.objectContaining({ historyItem: expect.objectContaining({ mode: "architect" }) }),
+				)
+				expect(historyItem.mode).toBe(mode)
+			},
+		)
 
 		test("preserves mode when it exists in built-in modes", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
@@ -3680,7 +3499,10 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			mockCline.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }, { ts: 3000 }] as any[]
 			mockCline.overwriteClineMessages = vi.fn()
 			mockCline.overwriteApiConversationHistory = vi.fn()
-			mockCline.submitUserMessage = vi.fn()
+			const resumeWithEditedMessage = vi.fn()
+			vi.spyOn(provider, "createTaskWithHistoryItem").mockResolvedValue({
+				resumeWithEditedMessage,
+			} as unknown as Task)
 
 			await provider.addClineToStack(mockCline)
 			;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
@@ -3697,6 +3519,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			// Verify dialog was shown
 			expect(mockPostMessage).toHaveBeenCalledWith({
 				type: "showEditMessageDialog",
+				taskId: "test-task-id",
 				messageTs: 3000,
 				text: "Edited message with preserved images",
 				hasCheckpoint: false,
@@ -3713,8 +3536,8 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			// Verify messages were edited correctly - the ORIGINAL user message and all subsequent messages are removed
 			expect(mockCline.overwriteClineMessages).toHaveBeenCalledWith([mockMessages[0]])
 			expect(mockCline.overwriteApiConversationHistory).toHaveBeenCalledWith([{ ts: 1000 }])
-			// Verify submitUserMessage was called with the edited content
-			expect(mockCline.submitUserMessage).toHaveBeenCalledWith("Edited message with preserved images", [])
+			// The fresh instance admits the edited content after rewind.
+			expect(resumeWithEditedMessage).toHaveBeenCalledWith("Edited message with preserved images", [])
 		})
 
 		test("handles editing messages with file attachments", async () => {
@@ -3736,7 +3559,10 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			mockCline.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }, { ts: 3000 }] as any[]
 			mockCline.overwriteClineMessages = vi.fn()
 			mockCline.overwriteApiConversationHistory = vi.fn()
-			mockCline.submitUserMessage = vi.fn()
+			const resumeWithEditedMessage = vi.fn()
+			vi.spyOn(provider, "createTaskWithHistoryItem").mockResolvedValue({
+				resumeWithEditedMessage,
+			} as unknown as Task)
 
 			await provider.addClineToStack(mockCline)
 			;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
@@ -3753,6 +3579,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			// Verify dialog was shown
 			expect(mockPostMessage).toHaveBeenCalledWith({
 				type: "showEditMessageDialog",
+				taskId: "test-task-id",
 				messageTs: 3000,
 				text: "Edited message with file attachment",
 				hasCheckpoint: false,
@@ -3767,7 +3594,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			})
 
 			expect(mockCline.overwriteClineMessages).toHaveBeenCalled()
-			expect(mockCline.submitUserMessage).toHaveBeenCalledWith("Edited message with file attachment", [])
+			expect(resumeWithEditedMessage).toHaveBeenCalledWith("Edited message with file attachment", [])
 		})
 	})
 
@@ -3807,6 +3634,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			// Verify dialog was shown
 			expect(mockPostMessage).toHaveBeenCalledWith({
 				type: "showEditMessageDialog",
+				taskId: "test-task-id",
 				messageTs: 2000,
 				text: "Edited message",
 				hasCheckpoint: false,
@@ -3849,6 +3677,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			// Verify dialog was shown
 			expect(mockPostMessage).toHaveBeenCalledWith({
 				type: "showEditMessageDialog",
+				taskId: "test-task-id",
 				messageTs: 2000,
 				text: "Edited message",
 				hasCheckpoint: false,
@@ -3907,6 +3736,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			// Verify dialogs were shown for both edits
 			expect(mockPostMessage).toHaveBeenCalledWith({
 				type: "showEditMessageDialog",
+				taskId: "test-task-id",
 				messageTs: 2000,
 				text: "Edited message 1",
 				hasCheckpoint: false,
@@ -3914,6 +3744,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			})
 			expect(mockPostMessage).toHaveBeenCalledWith({
 				type: "showEditMessageDialog",
+				taskId: "test-task-id",
 				messageTs: 4000,
 				text: "Edited message 2",
 				hasCheckpoint: false,
@@ -4096,14 +3927,9 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 					editedMessageContent: "Edited non-existent message",
 				})
 
-				// Should show edit dialog
-				expect(mockPostMessage).toHaveBeenCalledWith({
-					type: "showEditMessageDialog",
-					messageTs: 5000,
-					text: "Edited non-existent message",
-					hasCheckpoint: false,
-					images: undefined,
-				})
+				expect(mockPostMessage).not.toHaveBeenCalledWith(
+					expect.objectContaining({ type: "showEditMessageDialog" }),
+				)
 
 				// Simulate user confirming the edit
 				await messageHandler({
@@ -4142,6 +3968,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				// Should show delete dialog
 				expect(mockPostMessage).toHaveBeenCalledWith({
 					type: "showDeleteMessageDialog",
+					taskId: "test-task-id",
 					messageTs: 5000,
 					hasCheckpoint: false,
 				})
@@ -4193,6 +4020,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				// Should show edit dialog
 				expect(mockPostMessage).toHaveBeenCalledWith({
 					type: "showEditMessageDialog",
+					taskId: "test-task-id",
 					messageTs: 2000,
 					text: "Edited message",
 					hasCheckpoint: false,
@@ -4235,6 +4063,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				// Should show delete dialog
 				expect(mockPostMessage).toHaveBeenCalledWith({
 					type: "showDeleteMessageDialog",
+					taskId: "test-task-id",
 					messageTs: 2000,
 					hasCheckpoint: false,
 				})
@@ -4267,7 +4096,10 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				mockCline.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }] as any[]
 				mockCline.overwriteClineMessages = vi.fn()
 				mockCline.overwriteApiConversationHistory = vi.fn()
-				mockCline.submitUserMessage = vi.fn()
+				const resumeWithEditedMessage = vi.fn()
+				vi.spyOn(provider, "createTaskWithHistoryItem").mockResolvedValue({
+					resumeWithEditedMessage,
+				} as unknown as Task)
 
 				await provider.addClineToStack(mockCline)
 				;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
@@ -4286,6 +4118,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				// Should show edit dialog
 				expect(mockPostMessage).toHaveBeenCalledWith({
 					type: "showEditMessageDialog",
+					taskId: "test-task-id",
 					messageTs: 2000,
 					text: largeEditedContent,
 					hasCheckpoint: false,
@@ -4296,7 +4129,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				await messageHandler({ type: "editMessageConfirm", messageTs: 2000, text: largeEditedContent })
 
 				expect(mockCline.overwriteClineMessages).toHaveBeenCalled()
-				expect(mockCline.submitUserMessage).toHaveBeenCalledWith(largeEditedContent, [])
+				expect(resumeWithEditedMessage).toHaveBeenCalledWith(largeEditedContent, [])
 			})
 
 			test("handles deleting messages with large payloads", async () => {
@@ -4327,6 +4160,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				// Should show delete dialog
 				expect(mockPostMessage).toHaveBeenCalledWith({
 					type: "showDeleteMessageDialog",
+					taskId: "test-task-id",
 					messageTs: 3000,
 					hasCheckpoint: false,
 				})
@@ -4370,6 +4204,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				// Should show delete dialog
 				expect(mockPostMessage).toHaveBeenCalledWith({
 					type: "showDeleteMessageDialog",
+					taskId: "test-task-id",
 					messageTs: 2000,
 					hasCheckpoint: false,
 				})
@@ -4444,6 +4279,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				// Should show delete dialog
 				expect(mockPostMessage).toHaveBeenCalledWith({
 					type: "showDeleteMessageDialog",
+					taskId: "test-task-id",
 					messageTs: 1000,
 					hasCheckpoint: false,
 				})
@@ -4476,7 +4312,10 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				] as any[]
 				mockCline.overwriteClineMessages = vi.fn()
 				mockCline.overwriteApiConversationHistory = vi.fn()
-				mockCline.submitUserMessage = vi.fn()
+				const resumeWithEditedMessage = vi.fn()
+				vi.spyOn(provider, "createTaskWithHistoryItem").mockResolvedValue({
+					resumeWithEditedMessage,
+				} as unknown as Task)
 
 				await provider.addClineToStack(mockCline)
 				;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
@@ -4494,6 +4333,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				// Should show edit dialog
 				expect(mockPostMessage).toHaveBeenCalledWith({
 					type: "showEditMessageDialog",
+					taskId: "test-task-id",
 					messageTs: futureTimestamp + 1000,
 					text: "Edited future message",
 					hasCheckpoint: false,
@@ -4509,7 +4349,7 @@ describe("ClineProvider - Comprehensive Edit/Delete Edge Cases", () => {
 
 				// Should handle future timestamps correctly
 				expect(mockCline.overwriteClineMessages).toHaveBeenCalled()
-				expect(mockCline.submitUserMessage).toHaveBeenCalled()
+				expect(resumeWithEditedMessage).toHaveBeenCalled()
 			})
 		})
 	})

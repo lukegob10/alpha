@@ -121,6 +121,7 @@ export const globalSettingsSchema = z.object({
 	writeDelayMs: z.number().min(0).optional(),
 	requestDelaySeconds: z.number().optional(),
 	alwaysAllowMcp: z.boolean().optional(),
+	/** @deprecated Retained for settings import only. Models cannot switch modes. */
 	alwaysAllowModeSwitch: z.boolean().optional(),
 	alwaysAllowSubtasks: z.boolean().optional(),
 	alwaysAllowSubagents: z.boolean().optional(),
@@ -378,7 +379,6 @@ export const EVALS_SETTINGS: RooCodeSettings = {
 	writeDelayMs: 1000,
 	requestDelaySeconds: 10,
 	alwaysAllowMcp: true,
-	alwaysAllowModeSwitch: true,
 	alwaysAllowSubtasks: true,
 	alwaysAllowSubagents: true,
 	alwaysAllowExecute: true,

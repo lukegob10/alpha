@@ -7,6 +7,7 @@ import {
 	type ToolName,
 	toolNames,
 	type FileEntry,
+	type SearchFilesQuery,
 	discoverToolsParamsSchema,
 } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
@@ -122,19 +123,21 @@ export class NativeToolCallParser {
 		return undefined
 	}
 
-	private static isSearchFilesQuery(value: unknown): value is {
-		path: string
-		regex: string
-		file_pattern?: string | null
-	} {
+	private static isSearchFilesQuery(value: unknown): value is SearchFilesQuery {
 		if (typeof value !== "object" || value === null || Array.isArray(value)) return false
 		const query = value as Record<string, unknown>
 		return (
 			typeof query.path === "string" &&
-			query.path.length > 0 &&
 			typeof query.regex === "string" &&
-			query.regex.length > 0 &&
-			(query.file_pattern === undefined || query.file_pattern === null || typeof query.file_pattern === "string")
+			(query.file_pattern === undefined ||
+				query.file_pattern === null ||
+				typeof query.file_pattern === "string") &&
+			(query.output_mode === undefined ||
+				query.output_mode === null ||
+				query.output_mode === "content" ||
+				query.output_mode === "files" ||
+				query.output_mode === "count") &&
+			(query.literal === undefined || query.literal === null || typeof query.literal === "boolean")
 		)
 	}
 
@@ -239,12 +242,8 @@ export class NativeToolCallParser {
 	 * This is intentionally scoped to search_files; arbitrary tools must not gain
 	 * implicit multi-operation semantics.
 	 */
-	private static parseConcatenatedSearchQueries(raw: string): Array<{
-		path: string
-		regex: string
-		file_pattern?: string | null
-	}> | null {
-		const queries: Array<{ path: string; regex: string; file_pattern?: string | null }> = []
+	private static parseConcatenatedSearchQueries(raw: string): SearchFilesQuery[] | null {
+		const queries: SearchFilesQuery[] = []
 		let objectStart = -1
 		let depth = 0
 		let inString = false
@@ -592,7 +591,7 @@ export class NativeToolCallParser {
 	private static convertFileEntries(files: unknown[]): FileEntry[] {
 		return files.map((file: unknown) => {
 			const f = file as Record<string, unknown>
-			const entry: FileEntry = { path: f.path as string }
+			const entry: FileEntry = { ...f, path: f.path as string }
 			if (f.line_ranges && Array.isArray(f.line_ranges)) {
 				entry.lineRanges = (f.line_ranges as unknown[])
 					.map((range: unknown) => {
@@ -803,15 +802,8 @@ export class NativeToolCallParser {
 						path: partialArgs.path,
 						regex: partialArgs.regex,
 						file_pattern: partialArgs.file_pattern,
-					}
-				}
-				break
-
-			case "switch_mode":
-				if (partialArgs.mode_slug !== undefined || partialArgs.reason !== undefined) {
-					nativeArgs = {
-						mode_slug: partialArgs.mode_slug,
-						reason: partialArgs.reason,
+						output_mode: partialArgs.output_mode,
+						literal: partialArgs.literal,
 					}
 				}
 				break
@@ -1119,6 +1111,11 @@ export class NativeToolCallParser {
 							usedLegacyFormat = true
 							nativeArgs = {
 								files: this.convertFileEntries(filesArray),
+								mode: args.mode,
+								offset: this.coerceOptionalNumber(args.offset),
+								limit: this.coerceOptionalNumber(args.limit),
+								indentation: args.indentation,
+								continuation: args.continuation,
 								_legacyFormat: true as const,
 							} as NativeArgsFor<TName>
 						}
@@ -1128,6 +1125,7 @@ export class NativeToolCallParser {
 						nativeArgs = {
 							path: args.path,
 							mode: args.mode,
+							continuation: args.continuation,
 							offset: this.coerceOptionalNumber(args.offset),
 							limit: this.coerceOptionalNumber(args.limit),
 							indentation:
@@ -1252,15 +1250,8 @@ export class NativeToolCallParser {
 							path: args.path,
 							regex: args.regex,
 							file_pattern: args.file_pattern,
-						} as NativeArgsFor<TName>
-					}
-					break
-
-				case "switch_mode":
-					if (args.mode_slug !== undefined && args.reason !== undefined) {
-						nativeArgs = {
-							mode_slug: args.mode_slug,
-							reason: args.reason,
+							output_mode: args.output_mode,
+							literal: args.literal,
 						} as NativeArgsFor<TName>
 					}
 					break
@@ -1277,8 +1268,13 @@ export class NativeToolCallParser {
 					if (args.todos !== undefined) {
 						nativeArgs = {
 							todos: args.todos,
+							work_plan: args.work_plan,
 						} as NativeArgsFor<TName>
 					}
+					break
+
+				case "manage_command":
+					nativeArgs = args as NativeArgsFor<TName>
 					break
 
 				case "read_command_output":

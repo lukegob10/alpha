@@ -3,13 +3,8 @@ import path from "path"
 import type { MockedFunction } from "vitest"
 
 import type { ToolUse } from "../../../shared/tools"
-import { isPathOutsideWorkspace } from "../../../utils/pathUtils"
 import type { Task } from "../../task/Task"
 import { ApplyPatchTool } from "../ApplyPatchTool"
-
-vi.mock("../../../utils/pathUtils", () => ({
-	isPathOutsideWorkspace: vi.fn(),
-}))
 
 interface PartialApplyPatchPayload {
 	tool: string
@@ -37,7 +32,6 @@ function parsePartialApplyPatchPayload(payloadText: string): PartialApplyPatchPa
 
 describe("ApplyPatchTool.handlePartial", () => {
 	const cwd = path.join(path.sep, "workspace", "project")
-	const mockedIsPathOutsideWorkspace = isPathOutsideWorkspace as MockedFunction<typeof isPathOutsideWorkspace>
 
 	let askSpy: MockedFunction<Task["ask"]>
 	let mockTask: Pick<Task, "cwd" | "ask">
@@ -54,9 +48,6 @@ describe("ApplyPatchTool.handlePartial", () => {
 			ask: askSpy,
 		}
 
-		mockedIsPathOutsideWorkspace.mockImplementation((absolutePath) =>
-			absolutePath.replace(/\\/g, "/").includes("/outside/"),
-		)
 		tool = new ApplyPatchTool()
 	})
 
@@ -162,7 +153,7 @@ describe("ApplyPatchTool.handlePartial", () => {
 
 	it("reflects isOutsideWorkspace for both derived and fallback paths", async () => {
 		const derivedPatch = `*** Begin Patch
-*** Update File: outside/derived.ts
+*** Update File: ../outside/derived.ts
 @@
 -old
 +new
@@ -172,7 +163,7 @@ describe("ApplyPatchTool.handlePartial", () => {
 		const derivedPayload = await executePartial(derivedPatch)
 		const fallbackPayload = await executePartial(fallbackPatch)
 
-		expect(derivedPayload.path).toBe("outside/derived.ts")
+		expect(derivedPayload.path).toBe(path.resolve(cwd, "../outside/derived.ts").toPosix())
 		expect(derivedPayload.isOutsideWorkspace).toBe(true)
 
 		expect(fallbackPayload.path).toBe(path.basename(cwd))

@@ -1,5 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@/utils/test-utils"
-import userEvent from "@testing-library/user-event"
+import { act, cleanup, fireEvent, render, screen } from "@/utils/test-utils"
 
 import { SearchableSelect } from "@/components/ui/searchable-select"
 
@@ -15,7 +14,10 @@ describe("SearchableSelect custom values", () => {
 		onValueChange: vi.fn(),
 	}
 
-	afterEach(() => cleanup())
+	afterEach(() => {
+		cleanup()
+		vi.useRealTimers()
+	})
 
 	it("renders a selected custom value when custom values are enabled", () => {
 		render(<SearchableSelect {...defaultProps} value="custom-location1" allowCustomValue />)
@@ -24,8 +26,8 @@ describe("SearchableSelect custom values", () => {
 	})
 
 	it("allows selecting trimmed custom search text", async () => {
+		vi.useFakeTimers()
 		const onValueChange = vi.fn()
-		const user = userEvent.setup()
 		render(
 			<SearchableSelect
 				{...defaultProps}
@@ -36,12 +38,26 @@ describe("SearchableSelect custom values", () => {
 			/>,
 		)
 
-		await user.click(screen.getByRole("combobox"))
+		fireEvent.click(screen.getByRole("combobox"))
 		fireEvent.change(screen.getByPlaceholderText("Search options..."), {
 			target: { value: "  custom-location1  " },
 		})
-		fireEvent.click(await screen.findByTestId("custom-select-custom-option"))
+		await act(async () => vi.advanceTimersByTimeAsync(100))
+		expect(screen.getByPlaceholderText("Search options...")).toHaveValue("  custom-location1  ")
+		fireEvent.click(screen.getByTestId("custom-select-custom-option"))
 
 		expect(onValueChange).toHaveBeenCalledWith("custom-location1")
+	})
+
+	it("preserves new search text when reopened before an old reset would run", async () => {
+		vi.useFakeTimers()
+		render(<SearchableSelect {...defaultProps} allowCustomValue />)
+		fireEvent.click(screen.getByRole("combobox"))
+		fireEvent.change(screen.getByPlaceholderText("Search options..."), { target: { value: "old search" } })
+		fireEvent.keyDown(screen.getByPlaceholderText("Search options..."), { key: "Escape" })
+		fireEvent.click(screen.getByRole("combobox"))
+		fireEvent.change(screen.getByPlaceholderText("Search options..."), { target: { value: "new search" } })
+		await act(async () => vi.advanceTimersByTimeAsync(100))
+		expect(screen.getByPlaceholderText("Search options...")).toHaveValue("new search")
 	})
 })

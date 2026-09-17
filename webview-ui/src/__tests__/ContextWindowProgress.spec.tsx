@@ -71,7 +71,7 @@ describe("ContextWindowProgress", () => {
 		renderComponent({ contextTokens: 1000, contextWindow: 4000 })
 
 		// First expand the TaskHeader to access ContextWindowProgress
-		const taskHeader = screen.getByText("Test task")
+		const taskHeader = screen.getByRole("button", { name: "Expand task" })
 		fireEvent.click(taskHeader)
 
 		// Check for basic elements
@@ -88,7 +88,7 @@ describe("ContextWindowProgress", () => {
 		renderComponent({ contextTokens: 0, contextWindow: 0 })
 
 		// First expand the TaskHeader to access ContextWindowProgress
-		const taskHeader = screen.getByText("Test task")
+		const taskHeader = screen.getByRole("button", { name: "Expand task" })
 		fireEvent.click(taskHeader)
 
 		// In the current implementation, the component is still displayed with zero values
@@ -102,7 +102,7 @@ describe("ContextWindowProgress", () => {
 		renderComponent({ contextTokens: -100, contextWindow: 4000 })
 
 		// First expand the TaskHeader to access ContextWindowProgress
-		const taskHeader = screen.getByText("Test task")
+		const taskHeader = screen.getByRole("button", { name: "Expand task" })
 		fireEvent.click(taskHeader)
 
 		// Should show 0 instead of -100
@@ -115,7 +115,7 @@ describe("ContextWindowProgress", () => {
 		renderComponent({ contextTokens: 1000, contextWindow: 4000 })
 
 		// First expand the TaskHeader to access ContextWindowProgress
-		const taskHeader = screen.getByText("Test task")
+		const taskHeader = screen.getByRole("button", { name: "Expand task" })
 		fireEvent.click(taskHeader)
 
 		// Verify that the token count and window size are displayed correctly

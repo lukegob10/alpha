@@ -42,6 +42,67 @@ afterEach(() => {
 	for (const window of windows.splice(0)) window.close()
 })
 
+describe("document navigation and relationship diagrams", () => {
+	it("builds an outline from stable visible section IDs and removes it on dispose", () => {
+		const { root, mount } = fixture(
+			'<nav data-alpha-toc aria-label="Contents"></nav><h2 id="decision">Decision</h2><h3 id="evidence">Evidence</h3><h2>No ID</h2><details><h2 id="optional">Optional</h2></details>',
+		)
+		const dispose = mount()
+		expect([...root.querySelectorAll("nav a")].map((a) => a.getAttribute("href"))).toEqual([
+			"#decision",
+			"#evidence",
+		])
+		mount()
+		expect(root.querySelectorAll("nav ol")).toHaveLength(1)
+		dispose()
+		expect(root.querySelectorAll("nav a")).toHaveLength(0)
+		expect(root.querySelector("#decision")?.textContent).toBe("Decision")
+	})
+	const diagram = (rows: string) =>
+		`<figure data-alpha-diagram><figcaption>Request flow</figcaption><div class="table-scroll"><table><thead><tr><th>From</th><th>Relationship</th><th>To</th></tr></thead><tbody>${rows}</tbody></table></div></figure>`
+	const edge = (from: string, to: string) => `<tr><td>${from}</td><td>calls</td><td>${to}</td></tr>`
+	it("draws a bounded directed graph while retaining exact evidence and safe labels", () => {
+		const { root, mount } = fixture(
+			diagram(edge("Client &lt;script&gt;", "API") + edge("API", "Worker") + edge("API", "Cache")),
+		)
+		const original = root.querySelector("table")?.textContent
+		const dispose = mount()
+		expect(root.querySelectorAll("svg rect")).toHaveLength(4)
+		expect(root.querySelectorAll("svg path")).toHaveLength(6)
+		expect(root.querySelector("script")).toBeNull()
+		expect(root.querySelector(".diagram-scroll")?.getAttribute("tabindex")).toBe("0")
+		expect(root.querySelector("table")?.textContent).toBe(original)
+		dispose()
+		expect(root.querySelector("svg")).toBeNull()
+		expect(root.querySelector("table")?.textContent).toBe(original)
+	})
+	it.each([
+		edge("A", "A"),
+		edge("A", "B") + edge("B", "A"),
+		"<tr><td>A</td><td>B</td></tr>",
+		Array.from({ length: 25 }, (_, i) => edge(`N${i}`, `N${i + 1}`)).join(""),
+	])("retains fallback for invalid or cyclic graph %s", (rows) => {
+		const { root, mount } = fixture(diagram(rows))
+		mount()
+		expect(root.querySelector("svg")).toBeNull()
+		expect(root.querySelector(".kit-status")?.textContent).toContain("Diagram unavailable")
+		expect(root.querySelector("table")).not.toBeNull()
+	})
+	it("explains image decode failure once and removes its listener on dispose", () => {
+		const { root, mount, window } = fixture(
+			'<figure><img alt="Screen preview"><figcaption>Illustration</figcaption></figure>',
+		)
+		const dispose = mount()
+		const img = root.querySelector("img")!
+		img.dispatchEvent(new window.Event("error"))
+		img.dispatchEvent(new window.Event("error"))
+		expect(root.querySelectorAll(".image-unavailable")).toHaveLength(1)
+		dispose()
+		img.dispatchEvent(new window.Event("error"))
+		expect(root.querySelector(".image-unavailable")).toBeNull()
+	})
+})
+
 describe("Alpha HTML kit tables", () => {
 	it("enhances nested wrappers only once", () => {
 		const { root, mount } = fixture(`<section data-alpha-table>${table}</section>`)

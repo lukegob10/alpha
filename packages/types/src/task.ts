@@ -11,6 +11,7 @@ import type { ToolUsage, ToolName } from "./tool.js"
 import type { StaticAppProperties, GitProperties, TelemetryProperties } from "./telemetry.js"
 import type { TodoItem } from "./todo.js"
 import type { AgentLifecyclePhase } from "./agent-lifecycle.js"
+import type { ModelInfo } from "./model.js"
 
 /**
  * TaskProviderLike
@@ -178,6 +179,8 @@ export type CurrentTaskView =
 
 export interface LiveTaskMetadata {
 	id: string
+	/** Resolved provider capabilities for this task; absent on older hosts. */
+	model?: { id: string; info: ModelInfo }
 	status: TaskStatus
 	lifecycle: TaskLifecycleState
 	isActive: boolean

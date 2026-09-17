@@ -9,6 +9,30 @@
  */
 export type ReadFileMode = "slice" | "indentation"
 
+export type SearchFilesOutputMode = "content" | "files" | "count"
+
+export interface SearchFilesQuery {
+	path: string
+	regex: string
+	file_pattern?: string | null
+	output_mode?: SearchFilesOutputMode | null
+	literal?: boolean | null
+}
+
+export type SearchFilesParams = SearchFilesQuery | { queries: SearchFilesQuery[] }
+
+/** Optional metadata keeps historical content-only search messages readable. */
+export interface SearchFilesQueryResult {
+	path: string
+	regex: string
+	filePattern?: string
+	isOutsideWorkspace?: boolean
+	content: string
+	outputMode?: SearchFilesOutputMode
+	literal?: boolean
+	searchStatus?: "success" | "error"
+}
+
 /**
  * Indentation-mode configuration for the read_file tool.
  */
@@ -30,9 +54,7 @@ export interface IndentationParams {
  *
  * NOTE: This is the canonical, single-file-per-call shape.
  */
-export interface ReadFileParams {
-	/** Path to the file, relative to workspace */
-	path: string
+export interface ReadFileOptions {
 	/** Reading mode: "slice" (default) or "indentation" */
 	mode?: ReadFileMode
 	/** 1-based line number to start reading from (slice mode, default: 1) */
@@ -41,6 +63,13 @@ export interface ReadFileParams {
 	limit?: number
 	/** Indentation-mode configuration (only used when mode === "indentation") */
 	indentation?: IndentationParams
+	/** Opaque continuation returned by read_file; bound to the file content and selection. */
+	continuation?: string | null
+}
+
+export interface ReadFileParams extends ReadFileOptions {
+	/** Path to the file, relative to workspace */
+	path: string
 }
 
 // ─── Legacy Format Types (Backward Compatibility) ─────────────────────────────
@@ -58,13 +87,13 @@ export interface LineRange {
  * File entry for legacy read_file format.
  * Supports reading multiple disjoint line ranges from a single file.
  */
-export interface FileEntry {
+export interface FileEntry extends ReadFileOptions {
 	/** Path to the file, relative to workspace */
 	path: string
 	/** Optional list of line ranges to read (if omitted, reads entire file) */
-	lineRanges?: LineRange[]
+	lineRanges?: LineRange[] | null
 	/** Public native-tool spelling; lineRanges remains readable from saved calls. */
-	line_ranges?: LineRange[]
+	line_ranges?: LineRange[] | null
 }
 
 /**
@@ -74,7 +103,7 @@ export interface FileEntry {
  * @deprecated Use ReadFileParams instead. This format is maintained for
  * backward compatibility with existing chat histories.
  */
-export interface LegacyReadFileParams {
+export interface LegacyReadFileParams extends ReadFileOptions {
 	/** Array of file entries to read */
 	files: FileEntry[]
 	/** Discriminant flag for type narrowing */
@@ -91,7 +120,7 @@ export type ReadFileToolParams = ReadFileParams | LegacyReadFileParams
  * Type guard to check if params are in legacy format.
  */
 export function isLegacyReadFileParams(params: ReadFileToolParams): params is LegacyReadFileParams {
-	return "files" in params || ("_legacyFormat" in params && params._legacyFormat === true)
+	return ("files" in params && params.files != null) || ("_legacyFormat" in params && params._legacyFormat === true)
 }
 
 export interface Coordinate {

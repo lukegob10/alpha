@@ -9,5 +9,7 @@
 	"missing": "Eksik",
 	"inspect": "Grafik değerleri veri tablosunda bulunur. İncelemek için çizilmiş bir değere odaklanın.",
 	"sortAscending": "artan",
-	"sortDescending": "azalan"
+	"sortDescending": "azalan",
+	"invalidDiagram": "Diyagram kullanılamıyor. En fazla 24 adlandırılmış düğüm ve 48 bağlantı içeren, döngüsüz üç sütunlu bir ilişki tablosu kullanın. Tablo okunabilir durumda kalır.",
+	"imageUnavailable": "Görsel kullanılamıyor. Çalışma alanı yolunu kontrol edin ve belgelenen boyut sınırları içinde statik PNG veya JPEG kullanın."
 }

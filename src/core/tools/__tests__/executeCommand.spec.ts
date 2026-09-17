@@ -66,6 +66,7 @@ describe("executeCommand", () => {
 			getTaskLifetimeCancellationSignal: vitest.fn(() => taskLifetimeController.signal),
 			supersedePendingAsk: vitest.fn(),
 			completeCommandExecution: vitest.fn(),
+			markCommandExecutionBackgrounded: vitest.fn(),
 			failCommandExecution: vitest.fn(),
 		}
 
@@ -401,6 +402,7 @@ describe("executeCommand", () => {
 			try {
 				const execution = executeCommandInTerminal(mockTask, {
 					executionId: "managed-worker-background",
+					toolCallId: "background-call",
 					command: "long-running-command",
 					terminalShellIntegrationDisabled: false,
 					agentTimeout: 1_000,
@@ -415,6 +417,10 @@ describe("executeCommand", () => {
 				expect(rejected).toBe(false)
 				expect(result).toContain("Command is still running")
 				expect(result).toContain("PID_READY=12345")
+				expect(mockTask.markCommandExecutionBackgrounded).toHaveBeenCalledWith(
+					"background-call",
+					expect.stringMatching(/^managed-worker-background:[\da-f-]+$/),
+				)
 				expect(backgroundProcess.continue).toHaveBeenCalledOnce()
 				expect(mockTask.supersedePendingAsk).toHaveBeenCalledOnce()
 				expect(mockTask.terminalProcess).toBeUndefined()
@@ -529,6 +535,7 @@ describe("executeCommand", () => {
 				{ exitCode: 0 },
 				expect.stringMatching(/^evidence-execution:[\da-f-]+$/),
 			)
+			expect(mockTask.markCommandExecutionBackgrounded).not.toHaveBeenCalled()
 		})
 
 		it("should handle completed command with non-zero exit code", async () => {
@@ -649,12 +656,17 @@ describe("executeCommand", () => {
 
 		const [rejected, result] = await executeCommandInTerminal(mockTask, {
 			executionId: "offscreen-output",
+			toolCallId: "offscreen-call",
 			command: "git status --short",
 			terminalShellIntegrationDisabled: false,
 		})
 
 		expect(rejected).toBe(false)
 		expect(backgroundProcess.continue).toHaveBeenCalledOnce()
+		expect(mockTask.markCommandExecutionBackgrounded).toHaveBeenCalledWith(
+			"offscreen-call",
+			expect.stringMatching(/^offscreen-output:[\da-f-]+$/),
+		)
 		expect(result).not.toContain("<user_message>")
 		expect(result).not.toContain("undefined")
 		expect(mockTask.say).not.toHaveBeenCalledWith("user_feedback", expect.anything(), expect.anything())

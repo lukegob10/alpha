@@ -1,4 +1,13 @@
 {
+	"messageActions": {
+		"copy": "Sao chép",
+		"copied": "Đã sao chép",
+		"edit": "Chỉnh sửa và gửi lại",
+		"restart": "Bắt đầu lại từ yêu cầu trước",
+		"restartWarning": "Yêu cầu trước sẽ được chạy lại và tất cả tin nhắn sau đó sẽ được thay thế. Các tệp trong không gian làm việc sẽ giữ nguyên.",
+		"restartWithCheckpoint": "Yêu cầu trước sẽ được chạy lại và tất cả tin nhắn sau đó sẽ được thay thế. Bạn có muốn khôi phục cả các tệp về điểm kiểm tra tương ứng không?",
+		"restartOnly": "Bắt đầu lại mà không khôi phục tệp"
+	},
 	"activityTrace": {
 		"needsAttention": "Cần chú ý",
 		"workedFor": "Đã làm việc trong {{duration}}"
@@ -220,10 +229,10 @@
 		"didViewTopLevel": "Alpha đã xem các tệp cấp cao nhất trong thư mục này",
 		"wantsToViewRecursive": "Alpha muốn xem đệ quy tất cả các tệp trong thư mục này",
 		"didViewRecursive": "Alpha đã xem đệ quy tất cả các tệp trong thư mục này",
-		"wantsToSearch": "Alpha muốn tìm kiếm trong thư mục này cho <code>{{regex}}</code>",
-		"didSearch": "Alpha đã tìm kiếm trong thư mục này cho <code>{{regex}}</code>",
-		"wantsToSearchOutsideWorkspace": "Alpha muốn tìm kiếm trong thư mục này (ngoài không gian làm việc) cho <code>{{regex}}</code>",
-		"didSearchOutsideWorkspace": "Alpha đã tìm kiếm trong thư mục này (ngoài không gian làm việc) cho <code>{{regex}}</code>",
+		"wantsToSearch": "Alpha muốn tìm kiếm trong một thư mục",
+		"didSearch": "Alpha đã tìm kiếm trong một thư mục",
+		"wantsToSearchOutsideWorkspace": "Alpha muốn tìm kiếm trong một thư mục (ngoài không gian làm việc)",
+		"didSearchOutsideWorkspace": "Alpha đã tìm kiếm trong một thư mục (ngoài không gian làm việc)",
 		"wantsToViewTopLevelOutsideWorkspace": "Alpha muốn xem các tệp cấp cao nhất trong thư mục này (ngoài không gian làm việc)",
 		"didViewTopLevelOutsideWorkspace": "Alpha đã xem các tệp cấp cao nhất trong thư mục này (ngoài không gian làm việc)",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha muốn xem đệ quy tất cả các tệp trong thư mục này (ngoài không gian làm việc)",
@@ -324,6 +333,7 @@
 	"contextManagement": {
 		"tokens": "token",
 		"condensation": {
+			"unchanged": "Ngữ cảnh đã nằm trong giới hạn",
 			"title": "Ngữ cảnh đã tóm tắt",
 			"inProgress": "Đang cô đọng ngữ cảnh...",
 			"errorHeader": "Không thể cô đọng ngữ cảnh"
@@ -356,8 +366,11 @@
 			"gpt54": "Nhà cung cấp Poe: Đã thêm Poe làm nhà cung cấp AI để bạn có thể truy cập trực tiếp các model Poe trong Alpha.",
 			"slashSkills": "Cải tiến xAI và MiniMax: Đã chuyển nhà cung cấp xAI sang Responses API, thêm các tiện ích chuyển đổi có thể tái sử dụng, cập nhật các giá trị mặc định của Grok-4.20 và sửa danh sách model MiniMax cùng cách xử lý context window để thiết lập đáng tin cậy hơn.",
 			"geminiPro": "Hỗ trợ Gemini 3.1 Pro: Đã thêm hỗ trợ model Gemini 3.1 Pro và đặt làm model Gemini mặc định để cải thiện hiệu suất.",
-			"cliNdjson": "Giao thức NDJSON CLI: Giao thức NDJSON stdin mới, lệnh con list, và lệnh run được module hóa cho quy trình CLI linh hoạt hơn.",
-			"cliRelease": "CLI v0.1.0: CLI Alpha đạt bản phát hành chính thức đầu tiên với giao diện lệnh ổn định."
+			"welcome": "Alpha v{{version}} cải thiện việc xác minh, điều khiển lệnh và tính liên tục của tác vụ.",
+			"acceptanceChecks": "Sử dụng lại các kiểm tra đã đạt khi dữ liệu đầu vào đã khai báo không thay đổi.",
+			"commandControl": "Chờ, gửi dữ liệu đầu vào và dừng các lệnh chạy nền thuộc tác vụ.",
+			"workflowContinuity": "Giữ lại các ràng buộc của tác vụ và ngữ cảnh kỹ năng khi tải lại và nén ngữ cảnh.",
+			"chatUpdates": "Sử dụng các thao tác trò chuyện rõ ràng hơn và chọn nhà cung cấp sau khi tác vụ hoàn tất."
 		}
 	},
 	"costs": {
@@ -499,5 +512,13 @@
 		"title": "Nhà cung cấp không còn được hỗ trợ",
 		"message": "Xin lỗi, nhà cung cấp này không còn được hỗ trợ. Chúng tôi nhận thấy rất ít người dùng Alpha thực sự sử dụng nó và chúng tôi cần thu hẹp phạm vi mã nguồn để tiếp tục phát triển nhanh và phục vụ tốt cộng đồng. Đây là một quyết định thực sự khó khăn nhưng nó cho phép chúng tôi tập trung vào điều quan trọng nhất với bạn. Chúng tôi biết điều này thật phiền, xin thông cảm.",
 		"openSettings": "Mở cài đặt"
+	},
+	"githubActions": {
+		"request": "Yêu cầu",
+		"create_pull_request": "Tạo pull request",
+		"get_pull_request": "Xem pull request",
+		"list_checks": "Liệt kê các kiểm tra",
+		"merge_pull_request": "Hợp nhất pull request",
+		"comment": "Thêm bình luận"
 	}
 }

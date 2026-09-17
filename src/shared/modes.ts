@@ -7,6 +7,7 @@ import {
 	type ToolGroup,
 	type PromptComponent,
 	DEFAULT_MODES,
+	isPrimaryMode,
 } from "@alpha-code/types"
 
 import { TOOL_GROUPS, ALWAYS_AVAILABLE_TOOLS } from "./tools"
@@ -43,16 +44,12 @@ export function getToolsForMode(groups: readonly GroupEntry[]): string[] {
 export const modes = DEFAULT_MODES
 
 // Keep the registry order stable for persisted/legacy mode compatibility while
-// making Code the explicit default for new work and invalid-mode fallbacks.
+// making Code the explicit default for new work. Retired tasks restore separately to Plan.
 export const codeModeSlug = "code"
 export const planModeSlug = "architect"
 export const defaultModeSlug = codeModeSlug
 export const defaultMode = modes.find((mode) => mode.slug === defaultModeSlug) ?? modes[0]
 export const planMode = modes.find((mode) => mode.slug === planModeSlug) ?? modes[0]
-
-export const isCodePlanModeTransition = (currentMode: string | undefined, newMode: string): boolean =>
-	(currentMode === codeModeSlug && newMode === planModeSlug) ||
-	(currentMode === planModeSlug && newMode === codeModeSlug)
 
 // Helper functions
 export function getModeBySlug(slug: string, customModes?: ModeConfig[]): ModeConfig | undefined {
@@ -91,7 +88,7 @@ export function getAllModes(customModes?: ModeConfig[]): ModeConfig[] {
 
 	// Process custom modes
 	customModes.forEach((customMode) => {
-		if (customMode.slug === planModeSlug) return
+		if (!isPrimaryMode(customMode.slug) || customMode.slug === planModeSlug) return
 
 		const index = allModes.findIndex((mode) => mode.slug === customMode.slug)
 		if (index !== -1) {

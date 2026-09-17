@@ -1,5 +1,5 @@
 import type { ClineMessage } from "@alpha-code/types"
-import { fileChangesFromMessages } from "../components/chat/utils/fileChangesFromMessages"
+import { fileChangeTurnsFromMessages, fileChangesFromMessages } from "../components/chat/utils/fileChangesFromMessages"
 
 function msg(overrides: Partial<ClineMessage> & { text: string }): ClineMessage {
 	return {
@@ -217,8 +217,20 @@ describe("fileChangesFromMessages", () => {
 		expect(result[0].diffStats).toEqual({ added: 2, removed: 1 })
 	})
 
-	it("recognizes all ClineSayTool file-edit tool names (editedExistingFile, appliedDiff, newFileCreated)", () => {
-		const tools = ["editedExistingFile", "appliedDiff", "newFileCreated"]
+	it("recognizes all supported file-edit tool names", () => {
+		const tools = [
+			"editedExistingFile",
+			"appliedDiff",
+			"newFileCreated",
+			"insertContent",
+			"searchAndReplace",
+			"search_and_replace",
+			"search_replace",
+			"edit",
+			"edit_file",
+			"apply_patch",
+			"apply_diff",
+		]
 		for (const tool of tools) {
 			const messages: ClineMessage[] = [
 				msg({
@@ -265,6 +277,37 @@ describe("fileChangesFromMessages", () => {
 		expect(result).toHaveLength(2)
 		expect(result[0].path).toBe("first.ts")
 		expect(result[1].path).toBe("second.ts")
+	})
+
+	it("keeps applied edits attached to their own follow-up turn", () => {
+		const messages: ClineMessage[] = [
+			msg({
+				type: "ask",
+				ask: "tool",
+				ts: 1,
+				isAnswered: true,
+				text: JSON.stringify({ tool: "appliedDiff", path: "first.ts", diff: "+first" }),
+			}),
+			msg({ type: "say", say: "completion_result", ts: 2, text: "First response" }),
+			msg({ type: "say", say: "user_feedback", ts: 3, text: "Now make another change" }),
+			msg({
+				type: "ask",
+				ask: "tool",
+				ts: 4,
+				isAnswered: true,
+				text: JSON.stringify({ tool: "appliedDiff", path: "second.ts", diff: "+second" }),
+			}),
+		]
+
+		const turns = fileChangeTurnsFromMessages(messages, "task")
+
+		expect(turns).toHaveLength(2)
+		expect(turns.map((turn) => turn.key)).toEqual(["task:1", "task:3"])
+		expect(turns.map((turn) => turn.endIndex)).toEqual([1, 3])
+		expect(turns.map((turn) => fileChangesFromMessages(turn.messages).map((entry) => entry.path))).toEqual([
+			["first.ts"],
+			["second.ts"],
+		])
 	})
 
 	it("skips invalid JSON in message text", () => {

@@ -384,6 +384,103 @@ describe("Task persistence", () => {
 	})
 
 	// ── saveApiConversationHistory (via retrySaveApiConversationHistory) ──
+
+	it.each(["ask", "debug", "orchestrator", "custom-mode"])(
+		"restores historical %s tasks in Plan without rewriting the input record",
+		async (mode) => {
+			const historyItem: HistoryItem = {
+				id: "retired-mode",
+				number: 1,
+				ts: 1,
+				task: "Saved work",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				mode,
+			}
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				historyItem,
+				startTask: false,
+			})
+			expect(await task.getTaskMode()).toBe("architect")
+			expect(historyItem.mode).toBe(mode)
+			expect(() => task.setTaskMode(mode)).toThrow("Unsupported mode")
+			expect(await task.getTaskMode()).toBe("architect")
+		},
+	)
+
+	it("restores task constraints and skill identities while invalidating interrupted checks", async () => {
+		const historyItem: HistoryItem = {
+			id: "saved-work-context",
+			number: 1,
+			ts: 1,
+			task: "Saved work",
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+			workContext: {
+				plan: {
+					objective: "Finish the workflow",
+					constraints: ["Preserve source inputs"],
+					notes: ["artifact: output.txt"],
+					checks: [
+						{
+							id: "behavior",
+							description: "Check behavior",
+							command: "node check.js",
+							cwd: null,
+							paths: ["check.js"],
+							reusable: true,
+						},
+					],
+				},
+				receipts: [
+					{
+						checkId: "behavior",
+						definitionDigest: "digest",
+						executionId: "interrupted",
+						status: "running",
+						observedAt: 1,
+					},
+				],
+				skills: [{ name: "workflow", path: "/skills/workflow/SKILL.md", digest: "instructions" }],
+			},
+		}
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			historyItem,
+			startTask: false,
+		})
+		expect(task.workContext?.plan).toEqual(historyItem.workContext?.plan)
+		expect(task.workContext?.skills).toEqual(historyItem.workContext?.skills)
+		expect(task.workContext?.receipts[0].status).toBe("stale")
+		expect(historyItem.workContext?.receipts[0].status).toBe("running")
+	})
+
+	it("persists the inline synopsis alongside its full reasoning without changing provider history", async () => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "test",
+			startTask: false,
+		})
+		const message = {
+			ts: 1,
+			type: "say" as const,
+			say: "reasoning" as const,
+			text: "Complete source reasoning.",
+			reasoningSummary: "Checking implementation against the docs.",
+			reasoningSummaryUsage: { tokensIn: 10, tokensOut: 5, cacheWrites: 0, cacheReads: 0, cost: 0.01 },
+		}
+		await task.overwriteClineMessages([message])
+		expect(mockSaveTaskMessages).toHaveBeenCalledWith(expect.objectContaining({ messages: [message] }))
+		expect(task.apiConversationHistory).toEqual([])
+		expect(mockSaveApiMessages).not.toHaveBeenCalled()
+	})
+
 	describe("environment delivery fence", () => {
 		function createEnvironmentTask() {
 			const task = new Task({
@@ -859,7 +956,7 @@ describe("Task persistence", () => {
 			const task = createTask()
 			mockSaveApiMessages.mockRejectedValueOnce(new Error("disk unavailable"))
 			expect(await (task as any).saveApiConversationHistory()).toBe(false)
-			const stop = vi.spyOn(task as any, "stopActiveWorkerCommand").mockResolvedValue(undefined)
+			const stop = vi.spyOn(task as any, "stopActiveTaskCommands").mockResolvedValue(undefined)
 			const dispose = vi.spyOn(task, "dispose")
 			const signal = (task as any).getTaskLifetimeCancellationSignal() as AbortSignal
 			await expect(task.abortTask()).rejects.toThrow("disk unavailable")
@@ -928,7 +1025,7 @@ describe("Task persistence", () => {
 			})
 
 			it.each(
-				["wait_agent", "switch_mode", "ask_followup_question"].flatMap((barrier) =>
+				["wait_agent", "ask_followup_question"].flatMap((barrier) =>
 					[false, true].map((cancelled) => ({ barrier, cancelled })),
 				),
 			)(

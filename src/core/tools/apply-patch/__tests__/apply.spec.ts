@@ -170,7 +170,7 @@ describe("apply-patch apply", () => {
 			expect(result).toBe("a\nB\nc\nd\nE\nf\n")
 		})
 
-		it("should preserve trailing newline in result", () => {
+		it("preserves the absence of a trailing newline", () => {
 			const original = "foo\nbar"
 			const chunks: UpdateFileChunk[] = [
 				{
@@ -181,8 +181,69 @@ describe("apply-patch apply", () => {
 				},
 			]
 			const result = applyChunksToContent(original, "test.txt", chunks)
-			// Should add trailing newline
-			expect(result).toBe("foo\nbaz\n")
+			expect(result).toBe("foo\nbaz")
+		})
+
+		it.each(["\n", "\r\n"])("preserves BOM, %j endings and literal replacement text", (eol) => {
+			const replacement = "$& $$ $' &amp;"
+			const chunks: UpdateFileChunk[] = [
+				{
+					changeContext: null,
+					oldLines: ["foo"],
+					newLines: [replacement],
+					isEndOfFile: false,
+				},
+			]
+			expect(applyChunksToContent(`\uFEFFfoo${eol}bar${eol}`, "test.txt", chunks)).toBe(
+				`\uFEFF${replacement}${eol}bar${eol}`,
+			)
+		})
+
+		it("allows an explicit added empty line to terminate an unterminated file", () => {
+			expect(
+				applyChunksToContent("foo", "test.txt", [
+					{
+						changeContext: null,
+						oldLines: ["foo"],
+						newLines: ["foo", ""],
+						isEndOfFile: true,
+					},
+				]),
+			).toBe("foo\n")
+		})
+
+		it.each([
+			["foo\n\n", ["bar"], "bar\n\n"],
+			["foo\n", ["bar", ""], "bar\n\n"],
+			["foo\n", [], ""],
+			["foo", [], ""],
+		] as Array<[string, string[], string]>)(
+			"preserves explicit blank lines and empty results for %j",
+			(original, newLines, expected) => {
+				expect(
+					applyChunksToContent(original, "test.txt", [
+						{
+							changeContext: null,
+							oldLines: ["foo"],
+							newLines,
+							isEndOfFile: false,
+						},
+					]),
+				).toBe(expected)
+			},
+		)
+
+		it("rejects mixed endings instead of rewriting untouched lines", () => {
+			expect(() =>
+				applyChunksToContent("foo\r\nbar\nbaz", "test.txt", [
+					{
+						changeContext: null,
+						oldLines: ["foo"],
+						newLines: ["changed"],
+						isEndOfFile: false,
+					},
+				]),
+			).toThrow(/mixed line endings/i)
 		})
 
 		it("should handle trailing empty line in pattern", () => {

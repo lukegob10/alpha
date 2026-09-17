@@ -14,7 +14,7 @@ Primary sources consulted on 2026-09-12:
 - [Qdrant sparse indexing and IDF](https://qdrant.tech/documentation/manage-data/indexing/#idf-modifier): indexed sparse retrieval with corpus IDF; the IDF modifier requires Qdrant 1.10 or later. Alpha's installed REST client is 1.14.0.
 - [LanceDB full-text search](https://docs.lancedb.com/search/full-text-search) and [reindexing](https://docs.lancedb.com/indexing/reindexing): native lexical indexing and updating changed data. Implementation and native regression tests use the installed 0.27.2 binding.
 - [Cohere on Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-embed-v4.html), [Nova embedding schema](https://docs.aws.amazon.com/nova/latest/userguide/embeddings-schema.html), and [Gemini embeddings](https://ai.google.dev/gemini-api/docs/embeddings): query/document configuration belongs in provider adapters.
-- [Vertex text embedding requests](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/embeddings/get-text-embeddings): Gemini 001 accepts one text per prediction request. Google provider adapters and a serialization regression test use the installed Google GenAI SDK 1.29.1.
+- [Vertex text embedding requests](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/embeddings/get-text-embeddings): Gemini 001 accepts one text per prediction request. The original Google adapter baseline and serialization regression test used Google GenAI SDK 1.29.1; the endpoint fix below records the subsequent SDK update.
 
 ## Implemented contract
 
@@ -79,6 +79,12 @@ Compared `6a04173` (2.1.34) with its parent and the earlier `c60a47f` Vertex bat
 Restore the earlier gateway JSON (`instances: [{ content: text }]`) while retaining singleton predictions required by [Google's Gemini 001 contract](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/embeddings/get-text-embeddings), checked on 2026-09-12. Apply the existing rate limiter at the Vertex request boundary. Tests using the real SDK and stubbed HTTP cover canonical/legacy settings, routed URLs and headers, validation/document/query payloads, and 401 token refresh. A fake-clock regression reproduced four simultaneous calls despite a one-second setting; with the fix their starts are 0, 1, 2, and 3 seconds. These are deterministic contract checks; no live customer gateway failure has been reproduced.
 
 Validation passed on Node 20.19.2 / pnpm 10.8.1: `pnpm --dir src test services/code-index shared/__tests__/embeddingModels.spec.ts` (560 tests), `pnpm --dir src check-types`, `pnpm --dir src lint`, and `pnpm --filter @alpha-code/vscode-e2e test:smoke:1221` (actual host 1.122.1).
+
+### Gemini Embedding 2 Vertex endpoint fix (2026-09-17)
+
+The Google GenAI SDK 1.29.1 serialized every Vertex embedding request as `:predict` with `instances`. Gemini Embedding 2 requires `:embedContent` with a `content` object and returns `embedding`. The adapter now uses Google GenAI SDK 1.47.0, which selects the model-specific Vertex endpoint while retaining Gemini 001's existing `:predict` and task-type contract. The supported `global` and `us` multi-regions are exercised by native SDK wire tests, and gateway requests retain routed model aliases, headers, and token refresh behavior.
+
+Non-retryable failures report the actual number of HTTP requests, including a gateway authentication replay, instead of always reporting the configured retry ceiling. These tests stub Google HTTP responses and do not establish access, IAM permissions, or model availability in a particular GCP project.
 
 ## Recorded workload
 

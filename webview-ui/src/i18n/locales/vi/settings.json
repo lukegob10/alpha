@@ -281,16 +281,19 @@
 			"timeoutLabel": "Thời gian chờ trước khi tự động chọn câu trả lời đầu tiên"
 		},
 		"execute": {
-			"label": "Thực thi",
-			"description": "Tự động thực thi các lệnh terminal được phép mà không cần phê duyệt",
-			"allowedCommands": "Các lệnh tự động thực thi được phép",
-			"allowedCommandsDescription": "Tiền tố lệnh có thể được tự động thực thi khi \"Luôn phê duyệt các hoạt động thực thi\" được bật. Thêm * để cho phép tất cả các lệnh (sử dụng cẩn thận).",
+			"label": "Quy tắc lệnh",
+			"description": "Tự động phê duyệt lệnh trong phạm vi ghi của tác vụ. Cho phép mạng. Chặn ghi ngoài phạm vi. Thiết lập toàn cục được giữ giữa các dự án.",
+			"allowedCommands": "Tiền tố lệnh được phép",
+			"allowedCommandsDescription": "Dùng * để tự động phê duyệt lệnh, bao gồm tập lệnh. Quy tắc đã lưu áp dụng cho mọi dự án. Các thao tác ghi ngoài thư mục gốc được phát hiện và đường dẫn ghi chưa xác định vẫn cần phê duyệt. Đây là kiểm tra lệnh và đường dẫn, không phải vùng cách ly của hệ điều hành.",
 			"deniedCommands": "Lệnh bị từ chối",
 			"deniedCommandsDescription": "Tiền tố lệnh sẽ được tự động từ chối mà không yêu cầu phê duyệt. Trong trường hợp xung đột với lệnh được phép, khớp tiền tố dài nhất sẽ được ưu tiên. Thêm * để từ chối tất cả lệnh.",
 			"commandPlaceholder": "Nhập tiền tố lệnh (ví dụ: 'git ')",
 			"deniedCommandPlaceholder": "Nhập tiền tố lệnh để từ chối (ví dụ: 'rm -rf')",
 			"addButton": "Thêm",
-			"autoDenied": "Các lệnh có tiền tố `{{prefix}}` đã bị người dùng cấm. Đừng vượt qua hạn chế này bằng cách chạy lệnh khác."
+			"autoDenied": "Các lệnh có tiền tố `{{prefix}}` đã bị người dùng cấm. Đừng vượt qua hạn chế này bằng cách chạy lệnh khác.",
+			"pathApprovalTitle": "Đường dẫn tệp cần phê duyệt",
+			"pathApprovalDescription": "Lệnh này có thể thay đổi tệp ngoài thư mục gốc của tác vụ. Phê duyệt chỉ áp dụng cho lần chạy này.",
+			"pathApprovalUnresolved": "Không thể xác định một số đường dẫn ghi."
 		},
 		"apiRequestLimit": {
 			"title": "Số lượng yêu cầu tối đa",

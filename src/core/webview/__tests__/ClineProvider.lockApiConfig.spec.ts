@@ -159,8 +159,6 @@ vi.mock("../../../shared/modes", () => {
 			groups: ["read", "edit"],
 		}),
 		defaultModeSlug: "code",
-		isCodePlanModeTransition: (currentMode: string | undefined, newMode: string) =>
-			(currentMode === "code" && newMode === "architect") || (currentMode === "architect" && newMode === "code"),
 	}
 })
 
@@ -350,53 +348,20 @@ describe("ClineProvider - Lock API Config Across Modes", () => {
 		})
 	})
 
-	describe("handleModeSwitch honors lockApiConfigAcrossModes as a read-time override", () => {
-		beforeEach(async () => {
+	describe("Code/Plan transitions preserve the task provider", () => {
+		it.each([true, false])("ignores legacy profile mappings with lock=%s", async (lock) => {
 			await provider.resolveWebviewView(mockWebviewView)
-		})
-
-		it("skips mode-specific config lookup/load when lockApiConfigAcrossModes is true", async () => {
-			await mockContext.workspaceState.update("lockApiConfigAcrossModes", true)
-
-			const getModeConfigIdSpy = vi
+			await mockContext.workspaceState.update("lockApiConfigAcrossModes", lock)
+			const lookup = vi
 				.spyOn(provider.providerSettingsManager, "getModeConfigId")
-				.mockResolvedValue("debug-profile-id")
-			const listConfigSpy = vi
-				.spyOn(provider.providerSettingsManager, "listConfig")
-				.mockResolvedValue([{ name: "debug-profile", id: "debug-profile-id", apiProvider: "anthropic" }])
-			const activateProviderProfileSpy = vi
-				.spyOn(provider, "activateProviderProfile")
-				.mockResolvedValue(undefined)
-
-			await provider.handleModeSwitch("debug")
-
-			expect(getModeConfigIdSpy).not.toHaveBeenCalled()
-			expect(listConfigSpy).not.toHaveBeenCalled()
-			expect(activateProviderProfileSpy).not.toHaveBeenCalled()
-		})
-
-		it("keeps normal mode-specific lookup/load behavior when lockApiConfigAcrossModes is false", async () => {
-			await mockContext.workspaceState.update("lockApiConfigAcrossModes", false)
-
-			const getModeConfigIdSpy = vi
-				.spyOn(provider.providerSettingsManager, "getModeConfigId")
-				.mockResolvedValue("debug-profile-id")
-			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "debug-profile", id: "debug-profile-id", apiProvider: "anthropic" },
-			])
-			vi.spyOn(provider.providerSettingsManager, "getProfile").mockResolvedValue({
-				name: "debug-profile",
-				apiProvider: "anthropic",
-			})
-
-			const activateProviderProfileSpy = vi
-				.spyOn(provider, "activateProviderProfile")
-				.mockResolvedValue(undefined)
-
-			await provider.handleModeSwitch("debug")
-
-			expect(getModeConfigIdSpy).toHaveBeenCalledWith("debug")
-			expect(activateProviderProfileSpy).toHaveBeenCalledWith({ name: "debug-profile" })
+				.mockResolvedValue("plan-profile-id")
+			const activate = vi.spyOn(provider, "activateProviderProfile").mockResolvedValue(undefined)
+			const save = vi.spyOn(provider.providerSettingsManager, "setModeConfig")
+			await provider.handleModeSwitch("architect")
+			await provider.handleModeSwitch("code")
+			expect(lookup).not.toHaveBeenCalled()
+			expect(activate).not.toHaveBeenCalled()
+			expect(save).not.toHaveBeenCalled()
 		})
 	})
 })

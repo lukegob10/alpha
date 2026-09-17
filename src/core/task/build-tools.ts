@@ -474,6 +474,7 @@ function createCapturedToolSurface(input: {
 		readGrant: options.readGrant,
 		mode: options.mode,
 		cwd: options.cwd,
+		taskKind: options.taskKind ?? "primary",
 		includeAllToolsWithRestrictions,
 		// `filterNativeToolsForMode` already applied legacy mode, task authority,
 		// lifecycle, and feature restrictions exactly once. The compatibility

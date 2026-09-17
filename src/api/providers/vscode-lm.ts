@@ -8,6 +8,7 @@ import {
 	openAiModelInfoSaneDefaults,
 	getVscodeLlmModelInfo,
 	getVscodeLlmExtendedContextSize,
+	getVscodeLlmContextWindow,
 	mergeVscodeLlmModels,
 } from "@alpha-code/types"
 
@@ -590,25 +591,14 @@ function buildVsCodeLmModelInfo(
 	configuredContextSize?: ProviderSettings["vsCodeLmContextSize"],
 ): ModelInfo {
 	const staticInfo = getVscodeLlmModelInfo(client)
-	const liveContextWindow =
-		typeof client.maxInputTokens === "number" && Number.isFinite(client.maxInputTokens) && client.maxInputTokens > 0
-			? Math.floor(client.maxInputTokens)
-			: undefined
-	const selectedContextSize = getVsCodeLmContextSizeOption(client, configuredContextSize)?.contextSize
-	const configuredOrStaticContextWindow = selectedContextSize ?? staticInfo?.contextWindow ?? liveContextWindow
-	const safeContextWindow =
-		typeof configuredOrStaticContextWindow === "number" &&
-		Number.isFinite(configuredOrStaticContextWindow) &&
-		configuredOrStaticContextWindow > 0
-			? Math.floor(configuredOrStaticContextWindow)
-			: openAiModelInfoSaneDefaults.contextWindow
-	const contextWindow = liveContextWindow ? Math.min(safeContextWindow, liveContextWindow) : safeContextWindow
+	const contextWindow = getVscodeLlmContextWindow(client, configuredContextSize)
 
 	return applyCopilotToolPreferences(client, {
 		...openAiModelInfoSaneDefaults,
 		...staticInfo,
 		maxTokens: staticInfo?.maxTokens ?? -1,
 		contextWindow,
+		contextWindowIncludesOutput: false,
 		supportsImages: staticInfo?.supportsImages ?? false,
 		supportsPromptCache: staticInfo?.supportsPromptCache ?? true,
 		inputPrice: staticInfo?.inputPrice ?? 0,
@@ -645,6 +635,7 @@ function buildVsCodeLmModelInfo(
  * ```
  */
 export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHandler {
+	readonly streamCapabilities = { cancellation: true } as const
 	protected options: ApiHandlerOptions
 	private client: vscode.LanguageModelChat | null
 	/** A model-catalog refresh applies at the next new step, not between capture and dispatch/retry. */
@@ -1388,6 +1379,12 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			id: fallbackId,
 			info: {
 				...openAiModelInfoSaneDefaults,
+				...getVscodeLlmModelInfo(this.options.vsCodeLmModelSelector ?? {}),
+				contextWindow: getVscodeLlmContextWindow(
+					this.options.vsCodeLmModelSelector ?? {},
+					this.options.vsCodeLmContextSize,
+				),
+				contextWindowIncludesOutput: false,
 				description: `VSCode Language Model (Fallback): ${fallbackId}`,
 			},
 		}

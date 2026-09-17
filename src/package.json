@@ -3,7 +3,7 @@
 	"displayName": "%extension.displayName%",
 	"description": "%extension.description%",
 	"publisher": "AlphaInc",
-	"version": "2.1.37",
+	"version": "2.1.46",
 	"icon": "assets/icons/icon.png",
 	"galleryBanner": {
 		"color": "#617A91",
@@ -184,6 +184,13 @@
 			}
 		],
 		"menus": {
+			"explorer/context": [
+				{
+					"command": "alpha.previewHtmlDocument",
+					"group": "navigation@10",
+					"when": "!explorerResourceIsFolder && resourceScheme == file && resourceExtname =~ /^\\.html?$/i"
+				}
+			],
 			"editor/context": [
 				{
 					"submenu": "alpha.contextMenu",
@@ -489,7 +496,7 @@
 		"@anthropic-ai/vertex-sdk": "^0.7.0",
 		"@aws-sdk/client-bedrock-runtime": "^3.922.0",
 		"@aws-sdk/credential-providers": "^3.1046.0",
-		"@google/genai": "^1.29.1",
+		"@google/genai": "^1.47.0",
 		"@lancedb/lancedb": "^0.27.2",
 		"@lmstudio/sdk": "^1.1.1",
 		"@mistralai/mistralai": "^1.9.18",

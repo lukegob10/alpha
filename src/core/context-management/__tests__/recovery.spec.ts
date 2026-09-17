@@ -69,7 +69,7 @@ describe("bounded context recovery policy", () => {
 		expect(requestMetadata).toMatchObject({ tools: [], tool_choice: "none", parallelToolCalls: false })
 	})
 
-	it("requires a measurable ten percent reduction unless the input is already under target", () => {
+	it("requires a measured decrease, reaching the target or reducing at least ten percent", () => {
 		expect(
 			evaluateCompactionProgress({
 				beforeTokens: 1000,
@@ -93,7 +93,7 @@ describe("bounded context recovery policy", () => {
 				targetTokens: 700,
 			}).status,
 		).toBe("reduced")
-		expect(getCompactionTargetTokens({ contextWindow: 1000, reservedTokens: 200 })).toBe(600)
+		expect(getCompactionTargetTokens({ contextWindow: 1000, reservedTokens: 200 })).toBe(200)
 	})
 
 	it("keeps tool call/result pairs together when truncating", () => {
@@ -125,7 +125,7 @@ describe("bounded context recovery policy", () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "One" },
 			{ role: "assistant", content: "Two" },
-			{ role: "user", content: "Three" },
+			{ role: "user", content: "Three".repeat(100) },
 			{ role: "assistant", content: "Four" },
 			{ role: "user", content: "Five" },
 		]

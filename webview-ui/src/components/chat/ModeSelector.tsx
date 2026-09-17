@@ -1,9 +1,9 @@
 import React from "react"
 import { Check } from "lucide-react"
 
-import { type ModeConfig, type CustomModePrompts, TelemetryEventName } from "@alpha-code/types"
+import { type ModeConfig, type CustomModePrompts, TelemetryEventName, restoreTaskMode } from "@alpha-code/types"
 
-import { type Mode, getAllModes, defaultModeSlug } from "@alpha/modes"
+import { type Mode, getAllModes } from "@alpha/modes"
 
 import { vscode } from "@/utils/vscode"
 import { telemetryClient } from "@/utils/TelemetryClient"
@@ -68,7 +68,7 @@ export const ModeSelector = ({
 
 	// Find the selected mode, falling back to default if current mode doesn't exist (e.g., after workspace switch)
 	const selectedMode = React.useMemo(() => {
-		return modes.find((mode) => mode.slug === value) ?? modes.find((mode) => mode.slug === defaultModeSlug)
+		return modes.find((mode) => mode.slug === value) ?? modes.find((mode) => mode.slug === restoreTaskMode(value))
 	}, [modes, value])
 
 	// Notify parent when current mode is invalid so it can update its state
@@ -84,7 +84,7 @@ export const ModeSelector = ({
 			return
 		}
 
-		const fallbackMode = modes.find((mode) => mode.slug === defaultModeSlug)
+		const fallbackMode = modes.find((mode) => mode.slug === restoreTaskMode(value))
 		if (fallbackMode) {
 			lastNotifiedInvalidModeRef.current = value
 			onChange(fallbackMode.slug as Mode)

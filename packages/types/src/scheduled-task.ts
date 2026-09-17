@@ -130,7 +130,8 @@ export const scheduledTaskAutoApprovalSchema = z.object({
 	alwaysAllowWriteProtected: z.boolean().default(false),
 	alwaysAllowExecute: z.boolean().default(false),
 	alwaysAllowMcp: z.boolean().default(false),
-	alwaysAllowModeSwitch: z.boolean().default(false),
+	// Retained only to read existing schedules; mode switches are user-controlled.
+	alwaysAllowModeSwitch: z.boolean().optional(),
 	alwaysAllowSubtasks: z.boolean().default(false),
 	allowedCommands: z.array(z.string()).default([]),
 	deniedCommands: z.array(z.string()).default([]),

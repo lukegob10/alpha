@@ -14,6 +14,27 @@ function schema(name: string) {
 }
 
 describe("ToolRegistry", () => {
+	it("retires model mode switching while retaining both delegation mechanisms", () => {
+		const registry = new ToolRegistry()
+		expect(registry.resolve("switch_mode")).toBeUndefined()
+		expect(
+			registry.getSchemas().some((tool) => tool.type === "function" && tool.function.name === "switch_mode"),
+		).toBe(false)
+		expect(registry.has("new_task")).toBe(true)
+		expect(registry.has("spawn_agent")).toBe(true)
+		expect(registry.getSchema("new_task")).toMatchObject({
+			function: { parameters: { properties: { mode: { enum: ["code", "architect"] } } } },
+		})
+		expect(registry.getSchema("ask_followup_question")).toMatchObject({
+			function: {
+				parameters: {
+					properties: {
+						follow_up: { items: { properties: { mode: { enum: ["code", "architect", null] } } } },
+					},
+				},
+			},
+		})
+	})
 	it("registers the built-in tools with their provider schemas", () => {
 		const registry = new ToolRegistry()
 

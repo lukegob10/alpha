@@ -1,3 +1,4 @@
+import { assertPrimaryMode, restoreTaskMode } from "@alpha-code/types"
 import os from "os"
 import * as path from "path"
 import fs from "fs/promises"
@@ -102,14 +103,7 @@ import { Package } from "../../shared/package"
 import { findLast } from "../../shared/array"
 import { supportPrompt } from "../../shared/support-prompt"
 import { GlobalFileNames } from "../../shared/globalFileNames"
-import {
-	Mode,
-	defaultModeSlug,
-	getAllModes,
-	getModeBySlug,
-	isCodePlanModeTransition,
-	planModeSlug,
-} from "../../shared/modes"
+import { Mode, defaultModeSlug, getAllModes, planModeSlug } from "../../shared/modes"
 import { experimentDefault } from "../../shared/experiments"
 import { formatLanguage } from "../../shared/language"
 import { WebviewMessage } from "../../shared/WebviewMessage"
@@ -233,16 +227,6 @@ import { createSubagentCommandApprovalPolicy } from "../auto-approval/commands"
 
 export type ClineProviderEvents = {
 	clineCreated: [cline: Task]
-}
-
-interface PendingEditOperation {
-	messageTs: number
-	editedContent: string
-	images?: string[]
-	messageIndex: number
-	apiConversationHistoryIndex: number
-	timeoutId: NodeJS.Timeout
-	createdAt: number
 }
 
 interface LegacyHandoffInputBuffer {
@@ -447,8 +431,6 @@ export class ClineProvider
 	private agentLifecycleMessageQueue: Promise<void> = Promise.resolve()
 	private modeSwitchQueue: Promise<void> = Promise.resolve()
 	private static readonly GLOBAL_STATE_WRITE_THROUGH_DEBOUNCE_MS = 5000 // 5 seconds
-	private pendingOperations: Map<string, PendingEditOperation> = new Map()
-	private static readonly PENDING_OPERATION_TIMEOUT_MS = 30000 // 30 seconds
 
 	/** Independent wire-order guards for task-view state domains. */
 	private clineMessagesSeq = 0
@@ -458,7 +440,7 @@ export class ClineProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "august-2026-v2.1.3-plan-code-workflow" // v2.1.3 Plan/Code workflow
+	public readonly latestAnnouncementId = "september-2026-v2.1.45-harness-quality-ux"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -881,72 +863,6 @@ export class ClineProvider
 		return this.clineStack.map((cline) => cline.taskId)
 	}
 
-	// Pending Edit Operations Management
-
-	/**
-	 * Sets a pending edit operation with automatic timeout cleanup
-	 */
-	public setPendingEditOperation(
-		operationId: string,
-		editData: {
-			messageTs: number
-			editedContent: string
-			images?: string[]
-			messageIndex: number
-			apiConversationHistoryIndex: number
-		},
-	): void {
-		// Clear any existing operation with the same ID
-		this.clearPendingEditOperation(operationId)
-
-		// Create timeout for automatic cleanup
-		const timeoutId = setTimeout(() => {
-			this.clearPendingEditOperation(operationId)
-			this.log(`[setPendingEditOperation] Automatically cleared stale pending operation: ${operationId}`)
-		}, ClineProvider.PENDING_OPERATION_TIMEOUT_MS)
-
-		// Store the operation
-		this.pendingOperations.set(operationId, {
-			...editData,
-			timeoutId,
-			createdAt: Date.now(),
-		})
-
-		this.log(`[setPendingEditOperation] Set pending operation: ${operationId}`)
-	}
-
-	/**
-	 * Gets a pending edit operation by ID
-	 */
-	private getPendingEditOperation(operationId: string): PendingEditOperation | undefined {
-		return this.pendingOperations.get(operationId)
-	}
-
-	/**
-	 * Clears a specific pending edit operation
-	 */
-	private clearPendingEditOperation(operationId: string): boolean {
-		const operation = this.pendingOperations.get(operationId)
-		if (operation) {
-			clearTimeout(operation.timeoutId)
-			this.pendingOperations.delete(operationId)
-			this.log(`[clearPendingEditOperation] Cleared pending operation: ${operationId}`)
-			return true
-		}
-		return false
-	}
-
-	/**
-	 * Clears all pending edit operations
-	 */
-	private clearAllPendingEditOperations(): void {
-		for (const [operationId, operation] of this.pendingOperations) {
-			clearTimeout(operation.timeoutId)
-		}
-		this.pendingOperations.clear()
-		this.log(`[clearAllPendingEditOperations] Cleared all pending operations`)
-	}
-
 	/*
 	VSCode extensions use the disposable pattern to clean up resources when the sidebar/editor tab is closed by the user or system. This applies to event listening, commands, interacting with the UI, etc.
 	- https://vscode-docs.readthedocs.io/en/stable/extensions/patterns-and-principles/
@@ -984,8 +900,6 @@ export class ClineProvider
 		this.log("Cleared all tasks")
 		await this.closeAgentLifecycleJournals()
 
-		// Clear all pending edit operations to prevent memory leaks
-		this.clearAllPendingEditOperations()
 		this.log("Cleared pending operations")
 
 		if (this.view && "dispose" in this.view) {
@@ -1278,11 +1192,6 @@ export class ClineProvider
 			>
 		},
 	) {
-		const isCliRuntime = process.env.ROO_CLI_RUNTIME === "1"
-		// CLI injects runtime provider settings from command flags/env at startup.
-		// Restoring provider profiles from task history can overwrite those
-		// runtime settings with stale/incomplete persisted profiles.
-		const skipProfileRestoreFromHistory = isCliRuntime
 		let restoredApiConfiguration: ProviderSettings | undefined
 
 		// Check if we're replacing an already-live task. Foreground replacement avoids
@@ -1298,17 +1207,9 @@ export class ClineProvider
 
 		// If the history item has a saved mode, restore it and its associated API configuration.
 		if (historyItem.mode) {
-			// Validate that the mode still exists
-			const customModes = await this.customModesManager.getCustomModes()
-			const modeExists = getModeBySlug(historyItem.mode, customModes) !== undefined
-
-			if (!modeExists) {
-				// Mode no longer exists, fall back to default mode.
-				this.log(
-					`Mode '${historyItem.mode}' from history no longer exists. Falling back to default mode '${defaultModeSlug}'.`,
-				)
-				historyItem.mode = defaultModeSlug
-			}
+			// Retired/custom modes cannot silently gain Code permissions on restoration.
+			const restoredMode = restoreTaskMode(historyItem.mode)
+			historyItem = { ...historyItem, mode: restoredMode }
 
 			await this.updateGlobalState("mode", historyItem.mode)
 
@@ -1317,8 +1218,8 @@ export class ClineProvider
 			// since the task's specific provider profile will override it anyway.
 			const lockApiConfigAcrossModes = this.context.workspaceState.get("lockApiConfigAcrossModes", false)
 
-			if (!historyItem.apiConfigName && !lockApiConfigAcrossModes && !skipProfileRestoreFromHistory) {
-				const savedConfigId = await this.providerSettingsManager.getModeConfigId(historyItem.mode)
+			if (!historyItem.apiConfigName && !lockApiConfigAcrossModes) {
+				const savedConfigId = await this.providerSettingsManager.getModeConfigId(restoredMode)
 				const listApiConfig = await this.providerSettingsManager.listConfig()
 
 				// Update listApiConfigMeta first to ensure UI has latest data.
@@ -1331,9 +1232,6 @@ export class ClineProvider
 					if (profile?.name) {
 						try {
 							// Check if the profile has actual API configuration (not just an id).
-							// In CLI mode, the ProviderSettingsManager may return empty default profiles
-							// that only contain 'id' and 'name' fields. Activating such a profile would
-							// overwrite the CLI's working API configuration with empty settings.
 							const fullProfile = await this.providerSettingsManager.getProfile({ name: profile.name })
 							const hasActualSettings = !!fullProfile.apiProvider
 
@@ -1359,7 +1257,7 @@ export class ClineProvider
 		// If the history item has a saved API config name (provider profile), restore it.
 		// This overrides any mode-based config restoration above, because the task's
 		// specific provider profile takes precedence over mode defaults.
-		if (historyItem.apiConfigName && !skipProfileRestoreFromHistory) {
+		if (historyItem.apiConfigName) {
 			const listApiConfig = await this.providerSettingsManager.listConfig()
 			// Keep global state/UI in sync with latest profiles for parity with mode restoration above.
 			await this.updateGlobalState("listApiConfigMeta", listApiConfig)
@@ -1382,10 +1280,6 @@ export class ClineProvider
 					`Provider profile '${historyItem.apiConfigName}' from history no longer exists. Using current configuration.`,
 				)
 			}
-		} else if (historyItem.apiConfigName && skipProfileRestoreFromHistory) {
-			this.log(
-				`Skipping restore of provider profile '${historyItem.apiConfigName}' for task ${historyItem.id} in CLI runtime.`,
-			)
 		}
 
 		const {
@@ -1489,49 +1383,6 @@ export class ClineProvider
 			this.log(
 				`[createTaskWithHistoryItem] ${task.parentTask ? "child" : "parent"} task ${task.taskId}.${task.instanceId} instantiated`,
 			)
-		}
-
-		// Check if there's a pending edit after checkpoint restoration
-		const operationId = `task-${task.taskId}`
-		const pendingEdit = this.getPendingEditOperation(operationId)
-		if (pendingEdit) {
-			this.clearPendingEditOperation(operationId) // Clear the pending edit
-
-			this.log(`[createTaskWithHistoryItem] Processing pending edit after checkpoint restoration`)
-
-			// Process the pending edit after a short delay to ensure the task is fully initialized
-			setTimeout(async () => {
-				try {
-					// Find the message index in the restored state
-					const { messageIndex, apiConversationHistoryIndex } = (() => {
-						const messageIndex = task.clineMessages.findIndex((msg) => msg.ts === pendingEdit.messageTs)
-						const apiConversationHistoryIndex = task.apiConversationHistory.findIndex(
-							(msg) => msg.ts === pendingEdit.messageTs,
-						)
-						return { messageIndex, apiConversationHistoryIndex }
-					})()
-
-					if (messageIndex !== -1) {
-						// Remove the target message and all subsequent messages
-						await task.overwriteClineMessages(task.clineMessages.slice(0, messageIndex))
-
-						if (apiConversationHistoryIndex !== -1) {
-							await task.overwriteApiConversationHistory(
-								task.apiConversationHistory.slice(0, apiConversationHistoryIndex),
-							)
-						}
-
-						// Process the edited message
-						await task.handleWebviewAskResponse(
-							"messageResponse",
-							pendingEdit.editedContent,
-							pendingEdit.images,
-						)
-					}
-				} catch (error) {
-					this.log(`[createTaskWithHistoryItem] Error processing pending edit: ${error}`)
-				}
-			}, 100) // Small delay to ensure task is fully ready
 		}
 
 		return task
@@ -1812,13 +1663,11 @@ export class ClineProvider
 	}
 
 	private async handleModeSwitchForTask(newMode: Mode, task: Task | undefined): Promise<void> {
-		const currentMode =
-			(task ? ((await getTaskModeForSwitch(task)) ?? this.getGlobalState("mode")) : this.newTaskDraftMode) ??
-			defaultModeSlug
+		assertPrimaryMode(newMode)
 
 		if (task) {
 			try {
-				await this.setTaskMode(task.taskId, newMode, { postState: false, applyModeProfile: false })
+				await this.setTaskMode(task.taskId, newMode, { postState: false })
 			} catch (error) {
 				// If persistence fails, log the error but don't update the in-memory state.
 				this.log(
@@ -1838,62 +1687,7 @@ export class ClineProvider
 
 		this.emit(RooCodeEventName.ModeChanged, newMode)
 
-		// Code and Plan are two workflows over the same active provider lane. Their
-		// transition must not activate or create a mode-specific provider mapping.
-		if (isCodePlanModeTransition(currentMode, newMode)) {
-			await this.postStateToWebview()
-			return
-		}
-
-		// If workspace lock is on, keep the current API config — don't load mode-specific config
-		const lockApiConfigAcrossModes = this.context.workspaceState.get("lockApiConfigAcrossModes", false)
-		if (lockApiConfigAcrossModes) {
-			await this.postStateToWebview()
-			return
-		}
-
-		// Load the saved API config for the new mode if it exists.
-		const savedConfigId = await this.providerSettingsManager.getModeConfigId(newMode)
-		const listApiConfig = await this.providerSettingsManager.listConfig()
-
-		// Update listApiConfigMeta first to ensure UI has latest data.
-		await this.updateGlobalState("listApiConfigMeta", listApiConfig)
-
-		// If this mode has a saved config, use it.
-		if (savedConfigId) {
-			const profile = listApiConfig.find(({ id }) => id === savedConfigId)
-
-			if (profile?.name) {
-				// Check if the profile has actual API configuration (not just an id).
-				// In CLI mode, the ProviderSettingsManager may return empty default profiles
-				// that only contain 'id' and 'name' fields. Activating such a profile would
-				// overwrite the CLI's working API configuration with empty settings.
-				// Skip activation if the profile has no apiProvider set - this indicates
-				// an unconfigured/empty profile.
-				const fullProfile = await this.providerSettingsManager.getProfile({ name: profile.name })
-				const hasActualSettings = !!fullProfile.apiProvider
-
-				if (hasActualSettings) {
-					await this.activateProviderProfile({ name: profile.name })
-				} else {
-					// The task will continue with the current/default configuration.
-				}
-			} else {
-				// The task will continue with the current/default configuration.
-			}
-		} else {
-			// If no saved config for this mode, save current config as default.
-			const currentApiConfigNameAfter = this.getGlobalState("currentApiConfigName")
-
-			if (currentApiConfigNameAfter) {
-				const config = listApiConfig.find((c) => c.name === currentApiConfigNameAfter)
-
-				if (config?.id) {
-					await this.providerSettingsManager.setModeConfig(newMode, config.id)
-				}
-			}
-		}
-
+		// User mode changes preserve the active task and model.
 		await this.postStateToWebview()
 	}
 
@@ -1978,33 +1772,27 @@ export class ClineProvider
 		}
 	}
 
-	private async applyModeProviderProfileToTask(task: Task, mode: string): Promise<void> {
-		const modeProviderProfile = await this.getModeProviderProfile(mode)
-		if (!modeProviderProfile) {
-			return
-		}
-
-		await this.setTaskProviderProfile(task.taskId, modeProviderProfile.name, modeProviderProfile.providerSettings, {
-			postState: false,
-		})
-	}
-
 	public async setTaskMode(
 		taskId: string,
 		mode: string,
-		options: { postState?: boolean; applyModeProfile?: boolean } = {},
+		options: {
+			postState?: boolean
+			/** @deprecated Accepted for compatibility; mode changes always retain the task provider. */
+			applyModeProfile?: boolean
+		} = {},
 	): Promise<void> {
+		assertPrimaryMode(mode)
 		const task = this.getLiveTask(taskId)
 		if (!task) {
 			throw new Error(`Cannot switch mode for unknown task ${taskId}`)
 		}
-		const { postState = true, applyModeProfile = true } = options
+		const { postState = true } = options
 		const currentMode = await getTaskModeForSwitch(task)
 		if (mode === planModeSlug && currentMode !== planModeSlug) {
 			const transition = this.workspaceMutationGate.runIfIdle(
 				task.taskId,
 				"enter Plan mode",
-				() => this.setTaskModeWithinAdmission(task, currentMode, mode, { postState, applyModeProfile }),
+				() => this.setTaskModeWithinAdmission(task, currentMode, mode, { postState }),
 				() => task.abort,
 			)
 			if (!transition) {
@@ -2015,16 +1803,16 @@ export class ClineProvider
 			return transition
 		}
 
-		return this.setTaskModeWithinAdmission(task, currentMode, mode, { postState, applyModeProfile })
+		return this.setTaskModeWithinAdmission(task, currentMode, mode, { postState })
 	}
 
 	private async setTaskModeWithinAdmission(
 		task: Task,
 		currentMode: string | undefined,
 		mode: string,
-		options: { postState: boolean; applyModeProfile: boolean },
+		options: { postState: boolean },
 	): Promise<void> {
-		const { postState, applyModeProfile } = options
+		const { postState } = options
 		await this.assertPlanModeEntryAllowed(task, currentMode, mode)
 
 		TelemetryService.instance.captureModeSwitch(task.taskId, mode)
@@ -2042,10 +1830,6 @@ export class ClineProvider
 			task.setTaskMode(mode)
 		} else {
 			;(task as any)._taskMode = mode
-		}
-
-		if (applyModeProfile && !isCodePlanModeTransition(currentMode, mode)) {
-			await this.applyModeProviderProfileToTask(task, mode)
 		}
 
 		if (postState && this.isTaskOnScreen(task.taskId)) {
@@ -3172,7 +2956,7 @@ export class ClineProvider
 		let mode =
 			this.currentView.type === "newTaskDraft"
 				? this.newTaskDraftMode
-				: (this.contextProxy.getValue("mode") ?? defaultModeSlug)
+				: restoreTaskMode(this.contextProxy.getValue("mode"))
 
 		if (currentTask) {
 			try {
@@ -3594,7 +3378,6 @@ export class ClineProvider
 			allowedCommands,
 			deniedCommands,
 			alwaysAllowMcp,
-			alwaysAllowModeSwitch,
 			alwaysAllowSubtasks,
 			alwaysAllowSubagents,
 			alwaysAllowTickets,
@@ -3743,7 +3526,6 @@ export class ClineProvider
 			alwaysAllowWriteProtected: alwaysAllowWriteProtected ?? false,
 			alwaysAllowExecute: alwaysAllowExecute ?? false,
 			alwaysAllowMcp: alwaysAllowMcp ?? false,
-			alwaysAllowModeSwitch: alwaysAllowModeSwitch ?? false,
 			alwaysAllowSubtasks: alwaysAllowSubtasks ?? false,
 			alwaysAllowSubagents: alwaysAllowSubagents ?? false,
 			alwaysAllowTickets: alwaysAllowTickets ?? false,
@@ -3802,10 +3584,9 @@ export class ClineProvider
 			currentApiConfigName: currentTaskApiConfigName ?? currentApiConfigName ?? "default",
 			listApiConfigMeta: listApiConfigMeta ?? [],
 			pinnedApiConfigs: pinnedApiConfigs ?? {},
-			mode:
-				currentTaskMode ??
-				(this.currentView.type === "newTaskDraft" ? this.newTaskDraftMode : mode) ??
-				defaultModeSlug,
+			mode: restoreTaskMode(
+				currentTaskMode ?? (this.currentView.type === "newTaskDraft" ? this.newTaskDraftMode : mode),
+			),
 			customModePrompts: customModePrompts ?? {},
 			customSupportPrompts: customSupportPrompts ?? {},
 			enhancementApiConfigId,
@@ -3939,7 +3720,6 @@ export class ClineProvider
 			alwaysAllowWriteProtected: stateValues.alwaysAllowWriteProtected ?? false,
 			alwaysAllowExecute: stateValues.alwaysAllowExecute ?? false,
 			alwaysAllowMcp: stateValues.alwaysAllowMcp ?? false,
-			alwaysAllowModeSwitch: stateValues.alwaysAllowModeSwitch ?? false,
 			alwaysAllowSubtasks: stateValues.alwaysAllowSubtasks ?? false,
 			alwaysAllowSubagents: stateValues.alwaysAllowSubagents ?? false,
 			alwaysAllowTickets: stateValues.alwaysAllowTickets ?? false,
@@ -3982,10 +3762,7 @@ export class ClineProvider
 			terminalZshOhMy: stateValues.terminalZshOhMy ?? false,
 			terminalZshP10k: stateValues.terminalZshP10k ?? false,
 			terminalZdotdir: stateValues.terminalZdotdir ?? false,
-			mode:
-				this.currentView.type === "newTaskDraft"
-					? this.newTaskDraftMode
-					: (stateValues.mode ?? defaultModeSlug),
+			mode: this.currentView.type === "newTaskDraft" ? this.newTaskDraftMode : restoreTaskMode(stateValues.mode),
 			language: stateValues.language ?? formatLanguage(vscode.env.language),
 			mcpEnabled: stateValues.mcpEnabled ?? true,
 			mcpServers: this.mcpHub?.getAllServers() ?? [],
@@ -4193,6 +3970,7 @@ export class ClineProvider
 	}
 
 	public async setValues(values: RooCodeSettings) {
+		if (values.mode !== undefined) assertPrimaryMode(values.mode)
 		await this.contextProxy.setValues(values)
 		if (values.maxConcurrentTasks !== undefined) {
 			this.setMaxConcurrentTasks(values.maxConcurrentTasks)
@@ -4741,6 +4519,9 @@ export class ClineProvider
 		options: ManagedCreateTaskOptions = {},
 		configuration: RooCodeSettings = {},
 	): Promise<Task> {
+		if (options.taskMode !== undefined) assertPrimaryMode(options.taskMode)
+		if (configuration.mode !== undefined) assertPrimaryMode(configuration.mode)
+
 		if (!parentTask && options.preserveExisting && !options.background) {
 			await this.finalizeActiveCompletionCandidate()
 		}
@@ -5078,6 +4859,7 @@ export class ClineProvider
 	}
 
 	public async setMode(mode: string): Promise<void> {
+		assertPrimaryMode(mode)
 		await this.setValues({ mode })
 	}
 
@@ -5183,8 +4965,13 @@ export class ClineProvider
 		return this.currentWorkspacePath || getWorkspacePath()
 	}
 
-	public async runWorkspaceMutation<T>(task: Task, label: string, run: () => Promise<T>): Promise<T> {
-		return this.workspaceMutationGate.run(task.taskId, label, run, () => task.abort)
+	public async runWorkspaceMutation<T>(
+		task: Task,
+		label: string,
+		run: () => Promise<T>,
+		options: { allowStoppedTask?: boolean } = {},
+	): Promise<T> {
+		return this.workspaceMutationGate.run(task.taskId, label, run, () => !options.allowStoppedTask && task.abort)
 	}
 
 	private getParentDelegationAuthority(parent: Task): {
@@ -9594,6 +9381,7 @@ export class ClineProvider
 		mode: string
 	}): Promise<Task> {
 		const { parentTaskId, message, initialTodos, mode } = params
+		assertPrimaryMode(mode)
 
 		// Metadata-driven delegation is always enabled
 

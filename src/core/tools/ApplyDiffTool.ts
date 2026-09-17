@@ -8,13 +8,12 @@ import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { fileExistsAtPath } from "../../utils/fs"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
-import { unescapeHtmlEntities } from "../../utils/text-normalization"
 import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { computeDiffStats, sanitizeUnifiedDiff } from "../diff/stats"
 import type { DiffResult, ToolUse } from "../../shared/tools"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
-import { getTaskReadablePath } from "./taskPathPresentation"
+import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
 interface ApplyDiffParams {
 	path: string
@@ -31,11 +30,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 
 	async execute(params: ApplyDiffParams, task: Task, callbacks: ToolCallbacks): Promise<void> {
 		const { askApproval, handleError, pushToolResult } = callbacks
-		let { path: relPath, diff: diffContent } = params
-
-		if (diffContent && !task.api.getModel().id.includes("claude")) {
-			diffContent = unescapeHtmlEntities(diffContent)
-		}
+		const { path: relPath, diff: diffContent } = params
 
 		try {
 			if (!relPath) {
@@ -137,6 +132,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 			const sharedMessageProps: ClineSayTool = {
 				tool: "appliedDiff",
 				path: getTaskReadablePath(task, relPath),
+				isOutsideWorkspace: isTaskPathOutsideWorkspace(task, absolutePath),
 				diff: diffContent,
 			}
 

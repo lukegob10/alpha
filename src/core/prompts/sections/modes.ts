@@ -9,9 +9,7 @@ export async function getModesSection(context: vscode.ExtensionContext): Promise
 	// Make sure path gets created
 	await ensureSettingsDirectoryExists(context)
 
-	// Keep the ordinary model-facing workflow catalog intentionally small. The
-	// complete mode registry remains available for restoring and running legacy
-	// tasks, but new model-authored routing should converge on Plan and Code. Use
+	// Code and Plan are the complete execution catalog. Use
 	// prompt-component overrides from Settings without allowing a persisted
 	// custom mode with a reserved slug to replace either canonical definition.
 	const customModePrompts = context.globalState.get<CustomModePrompts>("customModePrompts") ?? {}

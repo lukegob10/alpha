@@ -281,16 +281,19 @@
 			"timeoutLabel": "İlk yanıtı otomatik olarak seçmeden önce beklenecek süre"
 		},
 		"execute": {
-			"label": "Yürüt",
-			"description": "Onay gerektirmeden otomatik olarak izin verilen terminal komutlarını yürüt",
-			"allowedCommands": "İzin Verilen Otomatik Yürütme Komutları",
-			"allowedCommandsDescription": "\"Yürütme işlemlerini her zaman onayla\" etkinleştirildiğinde otomatik olarak yürütülebilen komut önekleri. Tüm komutlara izin vermek için * ekleyin (dikkatli kullanın).",
+			"label": "Komut kuralları",
+			"description": "Görevin yazma kapsamındaki komutları otomatik onayla. Ağ erişimi açıktır. Kapsam dışı yazmalar engellenir. Genel kurulum projeler arasında korunur.",
+			"allowedCommands": "İzin verilen komut önekleri",
+			"allowedCommandsDescription": "Betikler dahil komutları otomatik onaylamak için * kullanın. Kaydedilen kurallar tüm projelerde geçerlidir. Görev kökü dışında algılanan yazmalar ve çözülemeyen yazma yolları onay gerektirir. Bu bir komut ve yol denetimidir, işletim sistemi korumalı alanı değildir.",
 			"deniedCommands": "Reddedilen komutlar",
 			"deniedCommandsDescription": "Onay istenmeden otomatik olarak reddedilecek komut önekleri. İzin verilen komutlarla çakışma durumunda, en uzun önek eşleşmesi öncelik alır. Tüm komutları reddetmek için * ekleyin.",
 			"commandPlaceholder": "Komut öneki girin (örn. 'git ')",
 			"deniedCommandPlaceholder": "Reddetmek için komut öneki girin (örn. 'rm -rf')",
 			"addButton": "Ekle",
-			"autoDenied": "`{{prefix}}` önekli komutlar kullanıcı tarafından yasaklandı. Başka bir komut çalıştırarak bu kısıtlamayı aşma."
+			"autoDenied": "`{{prefix}}` önekli komutlar kullanıcı tarafından yasaklandı. Başka bir komut çalıştırarak bu kısıtlamayı aşma.",
+			"pathApprovalTitle": "Dosya yolları onay gerektiriyor",
+			"pathApprovalDescription": "Bu komut görev kökü dışındaki dosyaları değiştirebilir. Onay yalnızca bu çalıştırma için geçerlidir.",
+			"pathApprovalUnresolved": "Bazı yazma yolları çözümlenemedi."
 		},
 		"apiRequestLimit": {
 			"title": "Maksimum İstek",

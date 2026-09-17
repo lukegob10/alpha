@@ -9,5 +9,7 @@
 	"missing": "Mancante",
 	"inspect": "I valori del grafico sono disponibili nella tabella dati. Porta il focus su un valore tracciato per esaminarlo.",
 	"sortAscending": "crescente",
-	"sortDescending": "decrescente"
+	"sortDescending": "decrescente",
+	"invalidDiagram": "Diagramma non disponibile. Usa una tabella di relazioni a tre colonne con un massimo di 24 nodi denominati, 48 collegamenti e nessun ciclo. La tabella resta leggibile.",
+	"imageUnavailable": "Immagine non disponibile. Controlla il percorso nell’area di lavoro e usa un PNG o JPEG statico entro i limiti documentati."
 }

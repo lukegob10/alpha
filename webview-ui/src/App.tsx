@@ -33,12 +33,15 @@ type Tab = (typeof supportedTabs)[number]
 
 interface DeleteMessageDialogState {
 	isOpen: boolean
+	taskId?: string
 	messageTs: number
 	hasCheckpoint: boolean
 }
 
 interface EditMessageDialogState {
 	isOpen: boolean
+	taskId?: string
+	messageAction?: "restart"
 	messageTs: number
 	text: string
 	hasCheckpoint: boolean
@@ -65,6 +68,7 @@ const App = () => {
 		telemetryKey,
 		machineId,
 		renderContext,
+		currentTaskId,
 	} = useExtensionState()
 
 	// Create a persistent state manager
@@ -145,16 +149,23 @@ const App = () => {
 			if (message.type === "showDeleteMessageDialog" && message.messageTs) {
 				setDeleteMessageDialogState({
 					isOpen: true,
+					taskId: message.taskId ?? currentTaskId,
 					messageTs: message.messageTs,
 					hasCheckpoint: message.hasCheckpoint || false,
 				})
 			}
 
-			if (message.type === "showEditMessageDialog" && message.messageTs && message.text) {
+			if (
+				message.type === "showEditMessageDialog" &&
+				message.messageTs &&
+				(message.text || message.images?.length)
+			) {
 				setEditMessageDialogState({
 					isOpen: true,
+					taskId: message.taskId ?? currentTaskId,
+					messageAction: message.messageAction,
 					messageTs: message.messageTs,
-					text: message.text,
+					text: message.text ?? "",
 					hasCheckpoint: message.hasCheckpoint || false,
 					images: message.images || [],
 				})
@@ -164,7 +175,7 @@ const App = () => {
 				chatViewRef.current?.acceptInput()
 			}
 		},
-		[switchTab],
+		[switchTab, currentTaskId],
 	)
 
 	useEvent("message", onMessage)
@@ -256,6 +267,7 @@ const App = () => {
 					onConfirm={(restoreCheckpoint: boolean) => {
 						vscode.postMessage({
 							type: "deleteMessageConfirm",
+							taskId: deleteMessageDialogState.taskId,
 							messageTs: deleteMessageDialogState.messageTs,
 							restoreCheckpoint,
 						})
@@ -269,6 +281,7 @@ const App = () => {
 					onConfirm={() => {
 						vscode.postMessage({
 							type: "deleteMessageConfirm",
+							taskId: deleteMessageDialogState.taskId,
 							messageTs: deleteMessageDialogState.messageTs,
 						})
 						setDeleteMessageDialogState((prev) => ({ ...prev, isOpen: false }))
@@ -278,14 +291,16 @@ const App = () => {
 			{editMessageDialogState.hasCheckpoint ? (
 				<MemoizedCheckpointRestoreDialog
 					open={editMessageDialogState.isOpen}
-					type="edit"
+					type={editMessageDialogState.messageAction ?? "edit"}
 					hasCheckpoint={editMessageDialogState.hasCheckpoint}
 					onOpenChange={(open: boolean) => setEditMessageDialogState((prev) => ({ ...prev, isOpen: open }))}
 					onConfirm={(restoreCheckpoint: boolean) => {
 						vscode.postMessage({
 							type: "editMessageConfirm",
+							taskId: editMessageDialogState.taskId,
 							messageTs: editMessageDialogState.messageTs,
 							text: editMessageDialogState.text,
+							images: editMessageDialogState.images,
 							restoreCheckpoint,
 						})
 						setEditMessageDialogState((prev) => ({ ...prev, isOpen: false }))
@@ -294,10 +309,12 @@ const App = () => {
 			) : (
 				<MemoizedEditMessageDialog
 					open={editMessageDialogState.isOpen}
+					type={editMessageDialogState.messageAction ?? "edit"}
 					onOpenChange={(open: boolean) => setEditMessageDialogState((prev) => ({ ...prev, isOpen: open }))}
 					onConfirm={() => {
 						vscode.postMessage({
 							type: "editMessageConfirm",
+							taskId: editMessageDialogState.taskId,
 							messageTs: editMessageDialogState.messageTs,
 							text: editMessageDialogState.text,
 							images: editMessageDialogState.images,

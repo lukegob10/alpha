@@ -265,7 +265,7 @@ describe("foldedFileContext", () => {
 
 			const messages: any[] = [
 				{ role: "user", content: "First message" },
-				{ role: "assistant", content: "Second message" },
+				{ role: "assistant", content: "Second message. ".repeat(1000) },
 				{ role: "user", content: "Third message" },
 				{ role: "assistant", content: "Fourth message" },
 				{ role: "user", content: "Fifth message" },
@@ -310,6 +310,7 @@ describe("foldedFileContext", () => {
 
 			// Verify generateFoldedFileContext was called with the right arguments
 			expect(mockedGenerateFoldedFileContext).toHaveBeenCalledWith(filesReadByRoo, {
+				maxCharacters: expect.any(Number),
 				cwd,
 				rooIgnoreController: undefined,
 			})
@@ -344,6 +345,35 @@ describe("foldedFileContext", () => {
 			expect(apiFileBlock.text).toContain("fetchData")
 		})
 
+		it("omits optional file context that would exceed the measured summary budget", async () => {
+			const { summarizeConversation, getEffectiveApiHistory } = await import("../index")
+			const provider = new MockApiHandler()
+			const oversizedSection = "## File Context: /test/large.ts\n" + "definition ".repeat(1000)
+			mockedGenerateFoldedFileContext.mockResolvedValueOnce({
+				content: oversizedSection,
+				sections: [oversizedSection],
+				filesProcessed: 1,
+				filesSkipped: 0,
+				characterCount: oversizedSection.length,
+			})
+			const result = await summarizeConversation({
+				messages: [
+					{ role: "user", content: "Initial task" },
+					{ role: "assistant", content: "Older investigation. ".repeat(1000) },
+					{ role: "user", content: "Continue" },
+				],
+				apiHandler: provider,
+				systemPrompt: "System",
+				taskId: "bounded-files",
+				maxContextTokens: 100,
+				filesReadByRoo: ["/test/large.ts"],
+				cwd: "/test",
+			})
+			expect(result.status).toBe("reduced")
+			expect(result.newContextTokens).toBeLessThanOrEqual(100)
+			expect(JSON.stringify(getEffectiveApiHistory(result.messages))).not.toContain("## File Context")
+		})
+
 		it("should not include file context section when filesReadByRoo is empty", async () => {
 			const { summarizeConversation } = await import("../index")
 
@@ -352,7 +382,7 @@ describe("foldedFileContext", () => {
 
 			const messages: any[] = [
 				{ role: "user", content: "First message" },
-				{ role: "assistant", content: "Second message" },
+				{ role: "assistant", content: "Second message. ".repeat(1000) },
 				{ role: "user", content: "Third message" },
 				{ role: "assistant", content: "Fourth message" },
 				{ role: "user", content: "Fifth message" },

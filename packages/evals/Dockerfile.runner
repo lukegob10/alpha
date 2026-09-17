@@ -108,7 +108,6 @@ WORKDIR /roo/repo
 # Install npm packages
 RUN mkdir -p \
   scripts \
-  apps/cli \
   packages/build \
   packages/config-eslint \
   packages/config-typescript \
@@ -117,7 +116,6 @@ RUN mkdir -p \
   packages/ipc \
   packages/telemetry \
   packages/types \
-  packages/vscode-shim \
   src \
   webview-ui
 
@@ -125,7 +123,6 @@ COPY ./package.json                            ./
 COPY ./pnpm-lock.yaml                          ./
 COPY ./pnpm-workspace.yaml                     ./
 COPY ./scripts/bootstrap.mjs                   ./scripts/
-COPY ./apps/cli/package.json                   ./apps/cli/
 COPY ./packages/build/package.json             ./packages/build/
 COPY ./packages/config-eslint/package.json     ./packages/config-eslint/
 COPY ./packages/config-typescript/package.json ./packages/config-typescript/
@@ -134,7 +131,6 @@ COPY ./packages/evals/package.json             ./packages/evals/
 COPY ./packages/ipc/package.json               ./packages/ipc/
 COPY ./packages/telemetry/package.json         ./packages/telemetry/
 COPY ./packages/types/package.json             ./packages/types/
-COPY ./packages/vscode-shim/package.json       ./packages/vscode-shim/
 COPY ./src/package.json                        ./src/
 COPY ./webview-ui/package.json                 ./webview-ui/
 
@@ -158,11 +154,6 @@ RUN cp -r /roo/.vscode-template /roo/.vscode
 # Build the Alpha extension (for VSCode execution method)
 RUN pnpm vsix -- --out ../bin/alpha-code.vsix \
     && yes | code --no-sandbox --user-data-dir /roo/.vscode --install-extension bin/alpha-code.vsix
-
-# Build the extension bundle and CLI (for CLI execution method)
-# The CLI requires the extension bundle (src/dist/extension.js) and the CLI build (apps/cli/dist/index.js)
-RUN pnpm --filter alpha bundle \
-    && pnpm --filter @alpha-code/cli build
 
 # Copy entrypoint script
 COPY packages/evals/.docker/entrypoints/runner.sh /usr/local/bin/entrypoint.sh

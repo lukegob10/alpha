@@ -9,5 +9,7 @@
 	"missing": "Tidak tersedia",
 	"inspect": "Nilai grafik tersedia dalam tabel data. Fokuskan nilai yang diplot untuk memeriksanya.",
 	"sortAscending": "menaik",
-	"sortDescending": "menurun"
+	"sortDescending": "menurun",
+	"invalidDiagram": "Diagram tidak tersedia. Gunakan tabel relasi tiga kolom dengan maksimal 24 simpul bernama, 48 tautan, dan tanpa siklus. Tabel tetap dapat dibaca.",
+	"imageUnavailable": "Gambar tidak tersedia. Periksa jalur ruang kerja dan gunakan PNG atau JPEG statis dalam batas ukuran yang didokumentasikan."
 }

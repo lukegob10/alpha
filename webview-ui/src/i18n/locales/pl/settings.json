@@ -281,16 +281,19 @@
 			"timeoutLabel": "Czas oczekiwania przed automatycznym wybraniem pierwszej odpowiedzi"
 		},
 		"execute": {
-			"label": "Wykonaj",
-			"description": "Automatycznie wykonuj dozwolone polecenia terminala bez konieczności zatwierdzania",
-			"allowedCommands": "Dozwolone polecenia auto-wykonania",
-			"allowedCommandsDescription": "Prefiksy poleceń, które mogą być automatycznie wykonywane, gdy \"Zawsze zatwierdzaj operacje wykonania\" jest włączone. Dodaj * aby zezwolić na wszystkie polecenia (używaj z ostrożnością).",
+			"label": "Reguły poleceń",
+			"description": "Automatycznie zatwierdzaj polecenia w zakresie zapisu zadania. Sieć jest włączona. Zapis poza zakresem jest blokowany. Konfiguracja globalna pozostaje między projektami.",
+			"allowedCommands": "Dozwolone prefiksy poleceń",
+			"allowedCommandsDescription": "Użyj *, aby automatycznie zatwierdzać polecenia, także skrypty. Zapisane reguły są globalne. Wykryte zapisy poza katalogiem zadania i nierozpoznane ścieżki zapisu nadal wymagają zgody. To kontrola poleceń i ścieżek, a nie piaskownica systemowa.",
 			"deniedCommands": "Odrzucone polecenia",
 			"deniedCommandsDescription": "Prefiksy poleceń, które będą automatycznie odrzucane bez pytania o zatwierdzenie. W przypadku konfliktów z dozwolonymi poleceniami, najdłuższe dopasowanie prefiksu ma pierwszeństwo. Dodaj * aby odrzucić wszystkie polecenia.",
 			"commandPlaceholder": "Wprowadź prefiks polecenia (np. 'git ')",
 			"deniedCommandPlaceholder": "Wprowadź prefiks polecenia do odrzucenia (np. 'rm -rf')",
 			"addButton": "Dodaj",
-			"autoDenied": "Polecenia z prefiksem `{{prefix}}` zostały zabronione przez użytkownika. Nie obchodź tego ograniczenia uruchamiając inne polecenie."
+			"autoDenied": "Polecenia z prefiksem `{{prefix}}` zostały zabronione przez użytkownika. Nie obchodź tego ograniczenia uruchamiając inne polecenie.",
+			"pathApprovalTitle": "Ścieżki plików wymagają zgody",
+			"pathApprovalDescription": "To polecenie może zmienić pliki poza katalogiem zadania. Zgoda dotyczy tylko tego uruchomienia.",
+			"pathApprovalUnresolved": "Nie udało się ustalić niektórych ścieżek zapisu."
 		},
 		"apiRequestLimit": {
 			"title": "Maksymalna liczba żądań",

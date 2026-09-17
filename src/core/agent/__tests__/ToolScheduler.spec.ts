@@ -820,6 +820,7 @@ describe("ToolScheduler", () => {
 				cwd: workspace,
 				consecutiveMistakeCount: 0,
 				recordToolError: () => {},
+				rooIgnoreController: { validateAccess: () => true },
 			})
 			const events: any[] = []
 			const eventLog = new AgentTurnEventLog("stale-apply-patch", telemetryStorage)
@@ -918,7 +919,16 @@ describe("ToolScheduler", () => {
 					onEvent: (event) => {
 						events.push(event)
 					},
-				}).run(response({ id: testCase.id, name: testCase.name })),
+				}).run(
+					response({
+						id: testCase.id,
+						name: testCase.name,
+						arguments:
+							testCase.name === "apply_patch"
+								? { patch: "*** Begin Patch\n*** Add File: fixture.txt\n+fixture\n*** End Patch" }
+								: {},
+					}),
+				),
 			)
 		}
 

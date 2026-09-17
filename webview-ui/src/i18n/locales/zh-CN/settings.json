@@ -281,16 +281,19 @@
 			"timeoutLabel": "自动选择第一个答案前的等待时间"
 		},
 		"execute": {
-			"label": "执行",
-			"description": "自动执行白名单中的命令而无需批准",
-			"allowedCommands": "命令白名单",
-			"allowedCommandsDescription": "当\"自动批准命令行操作\"启用时可以自动执行的命令前缀。添加 * 以允许所有命令（谨慎使用）。",
+			"label": "命令规则",
+			"description": "自动批准任务写入范围内的命令。允许网络访问，阻止范围外写入。全局设置在所有项目间持久保存。",
+			"allowedCommands": "允许的命令前缀",
+			"allowedCommandsDescription": "使用 * 自动批准命令，包括脚本。保存的规则全局生效。检测到的任务根目录外写入以及无法解析的写入路径仍需批准。这是命令和路径检查，并非操作系统沙箱。",
 			"deniedCommands": "拒绝的命令",
 			"deniedCommandsDescription": "将自动拒绝的命令前缀，无需用户批准。与允许命令冲突时，最长前缀匹配优先。添加 * 拒绝所有命令。",
 			"commandPlaceholder": "输入命令前缀（例如 'git '）",
 			"deniedCommandPlaceholder": "输入要拒绝的命令前缀（例如 'rm -rf'）",
 			"addButton": "添加",
-			"autoDenied": "前缀为 `{{prefix}}` 的命令已被用户禁止。不要通过运行其他命令来绕过此限制。"
+			"autoDenied": "前缀为 `{{prefix}}` 的命令已被用户禁止。不要通过运行其他命令来绕过此限制。",
+			"pathApprovalTitle": "文件路径需要批准",
+			"pathApprovalDescription": "此命令可能修改任务根目录外的文件。批准仅适用于本次运行。",
+			"pathApprovalUnresolved": "部分写入路径无法解析。"
 		},
 		"apiRequestLimit": {
 			"title": "最大请求数",

@@ -30,6 +30,7 @@ export const toolNames = [
 	"update_ticket",
 	"delete_ticket",
 	"execute_command",
+	"manage_command",
 	"read_file",
 	"read_command_output",
 	"write_to_file",
@@ -46,7 +47,6 @@ export const toolNames = [
 	"discover_tools",
 	"ask_followup_question",
 	"attempt_completion",
-	"switch_mode",
 	"new_task",
 	"delegate_task",
 	"spawn_agent",
@@ -76,8 +76,9 @@ export type ToolName = z.infer<typeof toolNamesSchema>
  * ToolUsage
  */
 
+// Historical usage remains readable after a tool is retired; it does not register executable tools.
 export const toolUsageSchema = z.record(
-	toolNamesSchema,
+	z.enum([...toolNames, "switch_mode"]),
 	z.object({
 		attempts: z.number(),
 		failures: z.number(),

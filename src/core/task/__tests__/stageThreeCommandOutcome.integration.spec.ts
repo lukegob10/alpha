@@ -1453,8 +1453,11 @@ describe("Stage Three command outcome integration", () => {
 			// This calls the real Task abort path on a prototype harness. The narrow
 			// lifecycle seams in createTask keep persistence/UI teardown inert while
 			// preserving the command-evidence transition that cancellation owns.
-			await harness.task.abortTask()
+			const stopRequested = new Promise<void>((resolve) => terminal.processForTest!.once("aborted", resolve))
+			const abort = harness.task.abortTask()
+			await stopRequested
 			await terminal.processForTest!.complete({ exitCode: 0 }, "late successful close after cancellation")
+			await abort
 			const outcome = await run
 
 			expect(outcome.status).toBe("aborted")

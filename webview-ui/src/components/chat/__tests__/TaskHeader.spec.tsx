@@ -4,7 +4,12 @@ import React from "react"
 import { render, screen, fireEvent } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
-import type { ProviderSettings, SubagentChangeSetState, SubagentModelRouteState } from "@alpha-code/types"
+import type {
+	LiveTaskMetadata,
+	ProviderSettings,
+	SubagentChangeSetState,
+	SubagentModelRouteState,
+} from "@alpha-code/types"
 
 import TaskHeader, { TaskHeaderProps } from "../TaskHeader"
 
@@ -38,8 +43,10 @@ vi.mock("@vscode/webview-ui-toolkit/react", () => ({
 // Create a variable to hold the mock state
 let mockExtensionState: {
 	apiConfiguration: ProviderSettings
+	liveTasksById?: Record<string, Partial<LiveTaskMetadata>>
 	currentTaskItem: {
 		id: string
+		task?: string
 		subagentNickname?: string
 		subagentRole?: "explore" | "review" | "worker"
 		subagentWriteScope?: string[]
@@ -112,13 +119,20 @@ vi.mock("@/components/ui/hooks/useSelectedModel", () => ({
 	}),
 }))
 
-// Mock getModelMaxOutputTokens from @alpha/api
+// Mock getModelReservedOutputTokens from @alpha/api
 let mockMaxOutputTokens = 0
 vi.mock("@alpha/api", () => ({
-	getModelMaxOutputTokens: () => mockMaxOutputTokens,
+	getModelReservedOutputTokens: () => mockMaxOutputTokens,
 }))
 
 describe("TaskHeader", () => {
+	it("keeps prompt copying on the message instead of in task metadata", () => {
+		mockExtensionState.currentTaskItem = { id: "test-task-id", task: "Original prompt" }
+		render(<TaskHeader {...defaultProps} />)
+		fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
+		expect(screen.getByRole("button", { name: "chat:task.export" })).toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: "history:copyPrompt" })).not.toBeInTheDocument()
+	})
 	const defaultProps: TaskHeaderProps = {
 		tokensIn: 100,
 		tokensOut: 50,
@@ -527,7 +541,7 @@ describe("TaskHeader", () => {
 		beforeEach(() => {
 			// Set up mock model with known contextWindow
 			mockModelInfo = { contextWindow: 1000, maxTokens: 200 }
-			// Set up mock for getModelMaxOutputTokens to return reservedForOutput
+			// Set up mock for getModelReservedOutputTokens to return reservedForOutput
 			mockMaxOutputTokens = 200
 		})
 
@@ -535,6 +549,39 @@ describe("TaskHeader", () => {
 			// Reset mocks
 			mockModelInfo = undefined
 			mockMaxOutputTokens = 0
+			mockExtensionState.liveTasksById = undefined
+		})
+
+		it("uses the visible task's resolved context as live model limits change", () => {
+			mockModelInfo = { contextWindow: 200_000, maxTokens: 64_000 }
+			mockMaxOutputTokens = 0
+			const setLiveWindow = (contextWindow: number) => {
+				mockExtensionState.liveTasksById = {
+					"test-task-id": {
+						model: {
+							id: "copilot-claude-opus-4.7",
+							info: {
+								contextWindow,
+								maxTokens: 64_000,
+								supportsPromptCache: false,
+								contextWindowIncludesOutput: false,
+							},
+						},
+					},
+					"background-task": {
+						model: { id: "other-model", info: { contextWindow: 10_000, supportsPromptCache: false } },
+					},
+				}
+			}
+			setLiveWindow(935_793)
+			const { rerender } = renderTaskHeader({ contextTokens: 100_000 })
+			expect(screen.getByText("11%")).toBeVisible()
+			setLiveWindow(200_000)
+			rerender(<TaskHeader {...defaultProps} contextTokens={100_001} />)
+			expect(screen.getByText("50%")).toBeVisible()
+			setLiveWindow(935_793)
+			rerender(<TaskHeader {...defaultProps} contextTokens={100_002} />)
+			expect(screen.getByText("11%")).toBeVisible()
 		})
 
 		it("should calculate percentage based on available input space, not total context window", () => {

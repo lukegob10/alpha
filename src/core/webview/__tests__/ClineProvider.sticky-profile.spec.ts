@@ -137,8 +137,6 @@ vi.mock("../../../shared/modes", () => ({
 		groups: ["read", "edit"],
 	}),
 	defaultModeSlug: "code",
-	isCodePlanModeTransition: (currentMode: string | undefined, newMode: string) =>
-		(currentMode === "code" && newMode === "architect") || (currentMode === "architect" && newMode === "code"),
 }))
 
 vi.mock("../../prompts/system", () => ({
@@ -513,7 +511,7 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 	})
 
 	describe("createTaskWithHistoryItem", () => {
-		it("should restore a legacy task's mode and provider profile when reopening outside CLI runtime", async () => {
+		it("restores a retired task into Plan while preserving its provider profile", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
 
 			// Create a history item with saved provider profile
@@ -553,7 +551,7 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			expect(activateProviderProfileSpy).not.toHaveBeenCalledWith({ name: "saved-profile" }, expect.anything())
 			expect(vi.mocked(Task)).toHaveBeenLastCalledWith(
 				expect.objectContaining({
-					historyItem: expect.objectContaining({ mode: "ask" }),
+					historyItem: expect.objectContaining({ mode: "architect" }),
 					taskApiConfigName: "saved-profile",
 					apiConfiguration: expect.objectContaining({
 						apiProvider: "anthropic",
@@ -563,7 +561,7 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			)
 		})
 
-		it("should skip restoring task apiConfigName from history in CLI runtime", async () => {
+		it("restores the saved task profile even with the retired CLI environment flag", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
 			process.env.ROO_CLI_RUNTIME = "1"
 
@@ -583,21 +581,31 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			const activateProviderProfileSpy = vi
 				.spyOn(provider, "activateProviderProfile")
 				.mockResolvedValue(undefined)
-			const logSpy = vi.spyOn(provider, "log")
-
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
 				{ name: "saved-profile", id: "saved-profile-id", apiProvider: "anthropic" },
 			])
+			vi.spyOn(provider.providerSettingsManager, "getProfile").mockResolvedValue({
+				name: "saved-profile",
+				id: "saved-profile-id",
+				apiProvider: "anthropic",
+				apiKey: "saved-key",
+			})
 
 			await provider.createTaskWithHistoryItem(historyItem)
 
 			expect(activateProviderProfileSpy).not.toHaveBeenCalledWith({ name: "saved-profile" }, expect.anything())
-			expect(logSpy).toHaveBeenCalledWith(
-				expect.stringContaining("Skipping restore of provider profile 'saved-profile'"),
+			expect(vi.mocked(Task)).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					taskApiConfigName: "saved-profile",
+					apiConfiguration: expect.objectContaining({
+						apiProvider: "anthropic",
+						apiKey: "saved-key",
+					}),
+				}),
 			)
 		})
 
-		it("should skip restoring mode-based provider config from history in CLI runtime", async () => {
+		it("restores the saved mode profile even with the retired CLI environment flag", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
 			process.env.ROO_CLI_RUNTIME = "1"
 
@@ -622,10 +630,16 @@ describe("ClineProvider - Sticky Provider Profile", () => {
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
 				{ name: "mode-profile", id: "mode-config-id", apiProvider: "anthropic" },
 			])
+			vi.spyOn(provider.providerSettingsManager, "getProfile").mockResolvedValue({
+				name: "mode-profile",
+				id: "mode-config-id",
+				apiProvider: "anthropic",
+				apiKey: "mode-key",
+			})
 
 			await provider.createTaskWithHistoryItem(historyItem)
 
-			expect(activateProviderProfileSpy).not.toHaveBeenCalled()
+			expect(activateProviderProfileSpy).toHaveBeenCalledWith({ name: "mode-profile" })
 		})
 
 		it("should use current profile if history item has no saved apiConfigName", async () => {

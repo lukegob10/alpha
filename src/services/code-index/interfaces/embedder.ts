@@ -42,4 +42,6 @@ export type AvailableEmbedders =
 
 export interface EmbedderInfo {
 	name: AvailableEmbedders
+	/** Target group size for indexing; whole files remain together for safe replacement. */
+	preferredBatchSize?: number
 }

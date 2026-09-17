@@ -1,6 +1,8 @@
 import React from "react"
 
 import { render, screen } from "@/utils/test-utils"
+import { TranslationContext } from "@src/i18n/TranslationContext"
+import i18n from "@src/i18n/setup"
 
 import Announcement from "../Announcement"
 
@@ -12,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "2.1.3",
+		version: "2.1.45",
 	},
 }))
 
@@ -24,29 +26,53 @@ vi.mock("@vscode/webview-ui-toolkit/react", () => ({
 	),
 }))
 
-vi.mock("react-i18next", () => ({
-	Trans: ({ i18nKey }: { i18nKey: string }) => <span>{i18nKey}</span>,
-}))
+const renderAnnouncement = (language = "en") =>
+	render(
+		<TranslationContext.Provider value={{ i18n, t: (key, options) => i18n.t(key, { ...options, lng: language }) }}>
+			<Announcement hideAnnouncement={vi.fn()} />
+		</TranslationContext.Provider>,
+	)
 
 describe("Announcement", () => {
 	it("renders the current release announcement", () => {
-		render(<Announcement hideAnnouncement={vi.fn()} />)
+		renderAnnouncement()
 
-		expect(screen.getByText("Welcome to Alpha v2.1.3")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v2.1.45")).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Alpha v2.1.3 focuses everyday agent work on a clean Plan and Code workflow without changing the proven Code loop.",
-			),
+			screen.getByText("Alpha v2.1.45 improves verification, command control, and task continuity."),
 		).toBeInTheDocument()
 	})
 
 	it("renders the release highlights", () => {
-		render(<Announcement hideAnnouncement={vi.fn()} />)
+		renderAnnouncement()
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
-		expect(screen.getByText("Plan and Code are the only ordinary user-facing mode choices.")).toBeInTheDocument()
-		expect(screen.getByText("Press Shift+Tab in the chat composer to switch between them.")).toBeInTheDocument()
-		expect(screen.getByText("Code and Plan stay in the same task and provider configuration.")).toBeInTheDocument()
-		expect(screen.getByText("Existing legacy and custom-mode tasks remain compatible.")).toBeInTheDocument()
+		expect(
+			screen.getByText("Reuse passing checks while their declared inputs remain unchanged."),
+		).toBeInTheDocument()
+		expect(
+			screen.getByText("Wait for, send input to, and stop background commands owned by the task."),
+		).toBeInTheDocument()
+		expect(
+			screen.getByText("Preserve task constraints and skill context across reload and compaction."),
+		).toBeInTheDocument()
+		expect(
+			screen.getByText("Use clearer chat actions and select a provider after task completion."),
+		).toBeInTheDocument()
+	})
+
+	it("uses localized release text with the current package version", () => {
+		renderAnnouncement("de")
+
+		expect(
+			screen.getByText(
+				"Alpha v2.1.45 verbessert die Überprüfung, die Befehlssteuerung und die Fortführung von Aufgaben.",
+			),
+		).toBeInTheDocument()
+		expect(
+			screen.getByText(
+				"Erfolgreiche Prüfungen wiederverwenden, solange ihre angegebenen Eingaben unverändert bleiben.",
+			),
+		).toBeInTheDocument()
 	})
 })

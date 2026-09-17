@@ -29,6 +29,14 @@ export const COMMAND_OUTPUT_STRING = "Output:"
 export function consolidateCommands(messages: ClineMessage[]): ClineMessage[] {
 	const consolidatedMessages = new Map<number, ClineMessage>()
 	const processedIndices = new Set<number>()
+	const commandOutputs = new Map<string, Array<{ index: number; message: ClineMessage }>>()
+	for (const [index, message] of messages.entries()) {
+		if (message?.commandExecutionId && (message.say === "command_output" || message.ask === "command_output")) {
+			const outputs = commandOutputs.get(message.commandExecutionId) ?? []
+			outputs.push({ index, message })
+			commandOutputs.set(message.commandExecutionId, outputs)
+		}
+	}
 
 	// Single pass through all messages
 	for (let i = 0; i < messages.length; i++) {
@@ -78,6 +86,15 @@ export function consolidateCommands(messages: ClineMessage[]): ClineMessage[] {
 		}
 		// Handle command sequences
 		else if (msg.type === "ask" && msg.ask === "command") {
+			const outputs = commandOutputs.get(msg.ts.toString())
+			if (outputs) {
+				consolidatedMessages.set(msg.ts, {
+					...msg,
+					text: `${msg.text || ""}\n${COMMAND_OUTPUT_STRING}${outputs.map(({ message }) => message.text || "").join("\n")}`,
+				})
+				for (const { index } of outputs) processedIndices.add(index)
+				continue
+			}
 			let consolidatedText = msg.text || ""
 			let j = i + 1
 			let previous: { type: "ask" | "say"; text: string } | undefined
@@ -95,7 +112,7 @@ export function consolidateCommands(messages: ClineMessage[]): ClineMessage[] {
 					break // Stop if we encounter the next command.
 				}
 
-				if (ask === "command_output" || say === "command_output") {
+				if ((ask === "command_output" || say === "command_output") && !currentMsg.commandExecutionId) {
 					if (!previous) {
 						consolidatedText += `\n${COMMAND_OUTPUT_STRING}`
 					}

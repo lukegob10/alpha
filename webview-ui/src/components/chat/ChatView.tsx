@@ -62,6 +62,7 @@ import { WorktreeSelector } from "./WorktreeSelector"
 import FileChangesPanel from "./FileChangesPanel"
 import { ActivityTraceToggle } from "./ActivityTraceToggle"
 import { getCompletedActivity } from "./completedActivity"
+import { fileChangeTurnsFromMessages } from "./utils/fileChangesFromMessages"
 import { useProgressiveTranscript } from "./hooks/useProgressiveTranscript"
 import { useChatScrollController } from "@src/hooks/useChatScrollController"
 
@@ -123,7 +124,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		apiConfiguration,
 		mode,
 		setMode,
-		alwaysAllowModeSwitch,
 		telemetrySetting,
 		soundEnabled,
 		soundVolume,
@@ -323,6 +323,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const hasOpenCompletedTaskResponseBoundary =
 		completedTaskResponseAsk === "resume_completed_task" ||
 		(completedTaskResponseAsk === "completion_result" && !isVisibleTaskCompleted)
+	// A completion ask is a user-facing review boundary, even if the task
+	// metadata still reports the underlying model turn as active. Keep the
+	// provider selector usable at that boundary so a stale turn flag cannot
+	// leave the completed-task composer partially disabled.
+	const isCompletedTaskResponseBoundary = completedTaskResponseAsk !== undefined
 	const isVisibleTaskFailedOrClosed =
 		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Failed ||
 		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Closed
@@ -1774,6 +1779,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 		return result
 	}, [isCondensing, visibleMessages])
+	const fileChangeTurns = useMemo(
+		() => fileChangeTurnsFromMessages(groupedMessages, visibleCurrentTaskId ?? (task ? String(task.ts) : "task")),
+		[groupedMessages, task, visibleCurrentTaskId],
+	)
+	const fileChangeTurnsByEndIndex = useMemo(
+		() => new Map(fileChangeTurns.map((turn) => [turn.endIndex, turn] as const)),
+		[fileChangeTurns],
+	)
 	const transcriptRootMessageTs = activeMessages.at(0)?.ts
 	const transcriptIdentity = visibleCurrentTaskId ?? (task ? String(task.ts) : undefined)
 	const transcriptTaskKey = transcriptIdentity
@@ -1954,13 +1967,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			// Suggestions may contain legacy mode hints. Keep the visible workflow
 			// within Plan/Code and ignore unknown custom-mode hints.
 			const suggestedMode = normalizeUserFacingSuggestionMode(suggestion.mode)
-			if (suggestedMode && !event?.shiftKey) {
-				// Only switch modes if it's a manual click (event exists) or auto-approval is allowed
-				const isManualClick = !!event
-				if (isManualClick || alwaysAllowModeSwitch) {
-					// Switch mode without waiting
-					switchToMode(suggestedMode)
-				}
+			// Only a user click may change execution mode; auto-approved replies stay in the current mode.
+			if (suggestedMode && event && !event.shiftKey) {
+				switchToMode(suggestedMode)
 			}
 
 			if (event?.shiftKey) {
@@ -1977,7 +1986,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				setInputValue(preservedInput)
 			}
 		},
-		[handleSendMessage, setInputValue, switchToMode, alwaysAllowModeSwitch],
+		[handleSendMessage, setInputValue, switchToMode],
 	)
 
 	const handleBatchFileResponse = useCallback(
@@ -2070,6 +2079,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					lastModifiedMessage={isLast ? modifiedMessages.at(-1) : undefined}
 					isLast={isLast}
 					isStreaming={isStreaming}
+					messageActionsDisabled={isTurnActive}
 					onSuggestionClick={handleSuggestionClickInRow} // This was already stabilized
 					onBatchFileResponse={handleBatchFileResponse}
 					onFollowUpUnmount={handleFollowUpUnmount}
@@ -2106,6 +2116,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			modifiedMessages,
 			groupedMessages.length,
 			isStreaming,
+			isTurnActive,
 			handleSuggestionClickInRow,
 			handleBatchFileResponse,
 			handleFollowUpUnmount,
@@ -2275,6 +2286,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 									isExpanded={expandedRows[task.ts] || false}
 									isLast={false}
 									isStreaming={isStreaming}
+									messageActionsDisabled={isTurnActive}
 									onToggleExpand={toggleRowExpansion}
 								/>
 							)}
@@ -2282,6 +2294,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 								const index = transcriptStartIndex + localIndex
 								const trace = completedActivity.get(index)
 								const traceExpanded = trace ? Boolean(expandedTraces[trace.id]) : false
+								const fileChangeTurn = fileChangeTurnsByEndIndex.get(index)
 								return (
 									<div key={`${transcriptTaskKey}:${computeChatItemKey(index, message)}`}>
 										{trace && index === Math.max(trace.startIndex, transcriptStartIndex) && (
@@ -2307,15 +2320,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 											data-testid={`chat-message-${index}`}>
 											{itemContent(index, message)}
 										</div>
+										{fileChangeTurn && (
+											<FileChangesPanel
+												key={`file-changes:${fileChangeTurn.key}`}
+												clineMessages={fileChangeTurn.messages}
+												taskId={fileChangeTurn.key}
+												onExpandedChange={handleFileChangesExpandedChange}
+											/>
+										)}
 									</div>
 								)
 							})}
-							<FileChangesPanel
-								key={visibleCurrentTaskId}
-								clineMessages={activeMessages}
-								taskId={visibleCurrentTaskId}
-								onExpandedChange={handleFileChangesExpandedChange}
-							/>
 						</div>
 					</div>
 					{showScrollToBottom && (
@@ -2512,7 +2527,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							isCondensing ||
 							Boolean(pendingQueueRequest)
 						}
-						selectApiConfigDisabled={isTurnActive && clineAsk !== "api_req_failed"}
+						selectApiConfigDisabled={
+							isTurnActive && !isCompletedTaskResponseBoundary && clineAsk !== "api_req_failed"
+						}
 						placeholderText={placeholderText}
 						selectedImages={selectedImages}
 						setSelectedImages={setSelectedImages}

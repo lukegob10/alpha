@@ -18,10 +18,62 @@ const { JSDOM } = createRequire(path.join(repository, "webview-ui/package.json")
 	}
 }
 const kitScript = readFileSync(path.join(kitDirectory, "kit.js"), "utf8")
+const viewerScript = readFileSync(path.join(repository, "webview-ui/public/html-document/viewer.js"), "utf8")
 const examples = ["review", "spec", "report"] as const
 const sourceFor = (name: string) => readFileSync(path.join(kitDirectory, "examples", `${name}.html`), "utf8")
 
 describe("bundled Rich documents authoring and viewer contract", () => {
+	it("renders charts through sanitization and the actual viewer message adapter on initial delivery and refresh", () => {
+		const dom = new JSDOM(
+			'<body><span id="viewer-title"></span><button id="viewer-source">Source</button><p id="viewer-status"></p><div id="viewer-content"></div></body>',
+			{ runScripts: "outside-only" },
+		)
+		try {
+			const { window } = dom
+			const target = { uri: "file:///workspace/report.html" }
+			const identity = { documentId: target.uri, token: "a".repeat(48) }
+			const api = { getState: vi.fn(), setState: vi.fn(), postMessage: vi.fn() }
+			Object.assign(window, {
+				acquireVsCodeApi: () => api,
+				requestAnimationFrame: (callback: () => void) => callback(),
+				scrollTo: vi.fn(),
+			})
+			window.document.body.dataset.viewerConfig = JSON.stringify({ target, ...identity })
+			window.eval(kitScript)
+			window.eval(viewerScript)
+			expect(api.postMessage).toHaveBeenCalledWith({ ...identity, action: "ready", revision: 0 })
+			const sanitized = sanitizeDocument(sourceFor("report"))
+			expect(sanitized.html).not.toMatch(/<script|<svg|<canvas/)
+			for (const revision of [1, 2]) {
+				const previous = window.document.querySelector("svg")
+				window.dispatchEvent(
+					new window.MessageEvent("message", {
+						data: { ...identity, type: "document", revision, html: sanitized.html, title: sanitized.title },
+					}),
+				)
+				expect(window.document.querySelectorAll("figure[data-alpha-chart] svg")).toHaveLength(2)
+				expect(window.document.querySelectorAll("table[data-alpha-chart-data] tbody tr")).toHaveLength(16)
+				expect(window.document.querySelectorAll("svg [tabindex]").length).toBeGreaterThan(0)
+				if (previous) expect(previous.isConnected).toBe(false)
+			}
+			window.dispatchEvent(new window.Event("pagehide"))
+			expect(window.document.querySelector("svg")).toBeNull()
+		} finally {
+			dom.window.close()
+		}
+	})
+
+	it("requires native HTML preview delivery and source validation without browser fallbacks", () => {
+		const skill = readFileSync(path.join(repository, "src/assets/skills/rich-documents/SKILL.md"), "utf8")
+		expect(skill).toContain("Always use Alpha's built-in HTML previewer")
+		expect(skill).toContain("Never use browser tools")
+		for (const tool of ["open_browser_page", "navigate_page", "run_playwright_code"]) expect(skill).toContain(tool)
+		expect(skill).toContain("localhost server")
+		expect(skill).toContain("[Open document](alpha-document://open?uri=")
+		expect(skill).toContain("validate the source and deliver the document link")
+		expect(skill).not.toContain("Use available preview validation")
+	})
+
 	it("retains labeled status components and table controls from the component gallery", () => {
 		const result = load(sanitizeDocument(sourceFor("index")).html)
 		for (const status of ["good", "warning", "danger", "info"])
@@ -122,10 +174,20 @@ describe("bundled Rich documents authoring and viewer contract", () => {
 					expect(sort.closest("th")!.getAttribute("aria-sort")).toBe("ascending")
 				}
 				if (name === "report") {
+					expect(root.querySelectorAll(".metric-card")).toHaveLength(2)
+					expect(root.querySelector('a[href="#source-1"]')).not.toBeNull()
 					expect(root.querySelectorAll("figure[data-alpha-chart] svg")).toHaveLength(2)
 					expect(root.querySelectorAll("table[data-alpha-chart-data] tbody tr")).toHaveLength(16)
 					expect(root.querySelectorAll("svg [tabindex]").length).toBeGreaterThan(0)
 				}
+				if (name === "spec") {
+					expect(root.querySelectorAll("[data-alpha-diagram] svg rect")).toHaveLength(6)
+					expect(root.querySelectorAll(".timeline > li")).toHaveLength(3)
+					expect(sanitizeDocument(sourceFor(name)).images.get("image-0")?.path).toBe(
+						"images/layout-sample.png",
+					)
+				}
+				expect(root.querySelector("nav[data-alpha-toc] a")).not.toBeNull()
 				dispose()
 				expect(root.querySelectorAll("svg, th button")).toHaveLength(0)
 				expect(tableRows()).toEqual(originalTableText)

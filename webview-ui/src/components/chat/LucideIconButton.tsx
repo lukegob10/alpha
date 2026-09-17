@@ -19,6 +19,7 @@ export const LucideIconButton = forwardRef<HTMLButtonElement, LucideIconButtonPr
 			<StandardTooltip content={tooltip ? title : undefined}>
 				<Button
 					ref={ref}
+					type="button"
 					variant="ghost"
 					aria-label={title}
 					className={cn(

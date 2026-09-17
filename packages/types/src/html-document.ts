@@ -10,6 +10,10 @@ export const HTML_DOCUMENT_LIMITS = {
 	depth: 64,
 	widgets: 32,
 	references: 1000,
+	images: 8,
+	imageBytes: 1024 * 1024,
+	imageTotalBytes: 4 * 1024 * 1024,
+	imageTotalPixels: 8 * 1024 * 1024,
 	refreshDelayMs: 150,
 } as const
 

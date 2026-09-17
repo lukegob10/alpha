@@ -281,16 +281,19 @@
 			"timeoutLabel": "Tempo di attesa prima di selezionare automaticamente la prima risposta"
 		},
 		"execute": {
-			"label": "Esegui",
-			"description": "Esegui automaticamente i comandi del terminale consentiti senza richiedere approvazione",
-			"allowedCommands": "Comandi di auto-esecuzione consentiti",
-			"allowedCommandsDescription": "Prefissi di comando che possono essere auto-eseguiti quando \"Approva sempre operazioni di esecuzione\" è abilitato. Aggiungi * per consentire tutti i comandi (usare con cautela).",
+			"label": "Regole dei comandi",
+			"description": "Approva automaticamente i comandi nell’ambito di scrittura dell’attività. La rete è abilitata. Le scritture esterne sono bloccate. La configurazione globale persiste tra i progetti.",
+			"allowedCommands": "Prefissi dei comandi consentiti",
+			"allowedCommandsDescription": "Usa * per approvare automaticamente i comandi, inclusi gli script. Le regole salvate sono globali. Le scritture rilevate fuori dalla radice e i percorsi di scrittura non risolti richiedono approvazione. È un controllo di comandi e percorsi, non una sandbox del sistema.",
 			"deniedCommands": "Comandi negati",
 			"deniedCommandsDescription": "Prefissi di comandi che verranno automaticamente negati senza richiedere approvazione. In caso di conflitti con comandi consentiti, la corrispondenza del prefisso più lungo ha la precedenza. Aggiungi * per negare tutti i comandi.",
 			"commandPlaceholder": "Inserisci prefisso comando (es. 'git ')",
 			"deniedCommandPlaceholder": "Inserisci prefisso comando da negare (es. 'rm -rf')",
 			"addButton": "Aggiungi",
-			"autoDenied": "I comandi con il prefisso `{{prefix}}` sono stati vietati dall'utente. Non aggirare questa restrizione eseguendo un altro comando."
+			"autoDenied": "I comandi con il prefisso `{{prefix}}` sono stati vietati dall'utente. Non aggirare questa restrizione eseguendo un altro comando.",
+			"pathApprovalTitle": "I percorsi dei file richiedono approvazione",
+			"pathApprovalDescription": "Questo comando può modificare file fuori dalla radice dell’attività. L’approvazione vale solo per questa esecuzione.",
+			"pathApprovalUnresolved": "Non è stato possibile risolvere alcuni percorsi di scrittura."
 		},
 		"apiRequestLimit": {
 			"title": "Richieste massime",

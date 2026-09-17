@@ -131,7 +131,7 @@ export async function resolveDocumentPath(
 }
 
 /** Source references use forward-slash, workspace-root-relative paths only. */
-export async function resolveSourcePath(root: string, relativePath: string): Promise<string> {
+export async function resolveSourcePath(root: string, relativePath: string, allowMissing = false): Promise<string> {
 	if (
 		typeof relativePath !== "string" ||
 		!relativePath ||
@@ -144,5 +144,5 @@ export async function resolveSourcePath(root: string, relativePath: string): Pro
 		fail("path")
 	}
 	const canonical = await canonicalRoot(root)
-	return canonicalFile(path.join(canonical, ...relativePath.split("/")), canonical, false)
+	return canonicalFile(path.join(canonical, ...relativePath.split("/")), canonical, allowMissing)
 }

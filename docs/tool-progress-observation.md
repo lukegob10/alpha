@@ -1,5 +1,105 @@
 # Tool progress observation (NOR-56)
 
+## Content searches and investigation batching, September 14, 2026
+
+Follow-up report: investigations were warned about repeated work even while changing Git or search commands, with an
+API request between individual commands. Source inspection found another concrete false-positive path: the command
+observer recognized `rg --files`, but rejected ordinary successful content searches such as `rg -n symbol src`.
+`Task.recordToolCallForStopping` consequently treated those searches as checks against unchanged workspace/verification
+state. Changing the search query could still accumulate stagnation strikes. This reproduces a supported command pattern;
+the user's original trace was not available, so it does not establish every cause of their reported warning.
+
+The existing observer now recognizes bounded ripgrep content searches, including explicit patterns, common short-option
+clusters, file filters, case/matching options, and bounded context/count options. Identity retains the query and canonical
+workspace-contained targets. Line-number, heading, filename-display, and color switches do not manufacture novelty.
+Ordered glob/type selectors remain ordered because their overrides can change scope. Shell composition, unsupported
+syntax/options, external preprocessors, pattern files, symlink-following, and nonzero or unfinished process outcomes still
+receive no trusted exploration observation. Native `search_files` remains the preferred search surface and treats valid
+empty results as success. There is no command-authorization, failure-status, verification, or persisted-schema change.
+
+The primary Code and Plan guidelines now explicitly request small batches of independent Git inspections/searches as
+separate native calls in one model response when their arguments are already known. The scheduler still executes commands
+and approvals serially. Dependent discovery waits for evidence before selecting the next calls. This clarifies an existing
+capability; it does not add a second scheduler, combine shell commands, or force a model to batch.
+
+### Evidence and measurement
+
+New observer tests failed before the repair because normal content searches produced no observation. The scripted
+`Task.inspection-batching.spec.ts` exercises the real turn engine, scheduler, observer, and Task stopping adapter with the
+same twelve successful inspections: four Git reads followed by eight distinct content searches. Workspace/verification
+fingerprints and returned fixture text stay constant. With the repaired observer, both strategies finish:
+
+| Scripted response strategy | Inspection calls | Model steps including final synthesis | Maximum simultaneous commands | Approvals |
+| -------------------------- | ---------------- | ------------------------------------- | ----------------------------- | --------- |
+| One call per response      | 12               | 13                                    | 1                             | 12        |
+| Four calls per response    | 12               | 4                                     | 1                             | 12        |
+
+Both retain one ordered terminal receipt per call. Four later rereads of the same search with cosmetic changes still
+produce one strategy warning and stop. These are deterministic request-count and correctness checks, not measured
+before/after live-model latency or proof of model adherence to the prompt. The fixed guidance adds 75 `o200k_base` tokens
+to each primary system prompt; it is stable across steps. Provider cache effects and live-model request reduction remain
+unmeasured. Large cycles beyond retained observation history still require the independent task budgets.
+
+Run the focused reproduction with:
+
+```sh
+pnpm --dir src test -- core/tools/__tests__/CommandExploration.spec.ts core/task/__tests__/Task.inspection-batching.spec.ts
+```
+
+Primary references retrieved September 14, 2026: [ripgrep's guide](https://github.com/BurntSushi/ripgrep/blob/master/GUIDE.md)
+and [its flag definitions](https://github.com/BurntSushi/ripgrep/blob/master/crates/core/flags/defs.rs).
+
+Validation: all 229 tests across eleven focused/affected suites passed, including prompt snapshots, command execution,
+the observer, repetition detection, scheduler, and Task/turn integration. Extension lint and typecheck passed. The full
+`test:smoke:1221` command built the extension and webview, then its LM suite timed out waiting for the second no-choices
+recovery request while the host repeatedly reported unresponsiveness. The unchanged scenario passed in isolation.
+`pnpm --filter @alpha-code/vscode-e2e test:smoke:1221:run` then passed all three suites (10 tests) against the same build
+on exactly 1.122.1, including the complete LM suite. No timeout/assertion was weakened to obtain those passes.
+
+## Git review false positives and search diagnostics, September 14, 2026
+
+Reported symptom: a review stopped with "Task remains incomplete: repeated tool outcomes produced no new state or
+verification evidence" while issuing distinct Git inspections. The original trace was unavailable. A separate screenshot
+showed a recovered `search_files` error containing only "ripgrep process exited with code 2". These reports do not establish
+the original search failure's cause, but deterministic reproductions exposed two bugs in the current extension.
+
+`CommandExploration` reused the Plan authorization classifier to observe completed commands. Ordinary developer-mode
+`git show`, `git diff`, and `git ls-tree` calls consequently received no exploration credit unless invoked with Plan's
+required flags. Recognized commands then discarded every argument and used only the subcommand as their identity.
+Reading different historical files therefore looked like repeated work against unchanged verification state.
+
+The observer now recognizes the supported Git inspections independently of approval classification and retains revision,
+path, query, and captured working-directory selection. Workspace-contained `-C` directories are resolved canonically.
+Pager flags, equivalent common aliases, leading `./`, color, and literal formatting changes cannot manufacture new
+inspection identities. Shell composition, configuration overrides, explicit external helpers, writes, failed commands,
+and still-running commands receive no trusted exploration credit. Plan authorization is unchanged.
+
+A different successful query can teach the agent that a path or result is absent, so Git path-query novelty now follows
+the existing query-based shell exploration contract instead of collapsing every possible negative query. This observation
+permits investigation; it does not prove relevance to the user's objective, satisfy verification, or clear an unrelated
+failed operation's retry block. It does not infer substantive changes from arbitrary terminal output. Unknown shell syntax
+and cycles beyond bounded history remain limitations; independent request/cost budgets remain authoritative.
+
+The real-Git regression creates 16 files in a temporary repository, records a failed search and a corrected search, then
+runs 48 successful `show`, `diff`, and `ls-tree` inspections through the actual command observer and Task progress adapter.
+Workspace and verification fingerprints remain constant. Before the fix, the fourth inspection suspended the task with
+the reported message at `noProgressLimit: 2`. With the fix, all 48 inspections continue. Four subsequent reads of the same
+target, despite cosmetic command changes, still produce one strategy warning and stop. These are correctness counts,
+not a latency or live-model quality benchmark.
+
+The ripgrep runner passed `--no-messages`, suppressing file-access diagnostics that the error handler otherwise retains.
+A missing-directory search reproduced the screenshot's generic exit-code error. Removing that flag preserves bounded
+stderr diagnostics so the agent can correct the path or access problem. Invalid regexes and actual execution errors
+still fail; a valid search with no matches remains successful. No automatic retry or false empty result is introduced.
+
+Primary references checked September 14, 2026: [Git command documentation](https://git-scm.com/docs/git) and
+[ripgrep's manual source](https://github.com/BurntSushi/ripgrep/blob/master/crates/core/flags/doc/template.rg.1).
+
+Validation: 212 tests across the command observer, Task adapter, repetition/failure recovery, command execution,
+file search, ripgrep, and Plan-command suites passed. `pnpm --dir src lint`, `pnpm --dir src check-types`, and
+`pnpm --filter @alpha-code/vscode-e2e test:smoke:1221` passed, including the extension/webview builds and all three
+exact-host scenarios. Existing unrelated webview edits were preserved. No version or published release changed.
+
 ## Initial repair, September 11, 2026
 
 Source baseline: `2f8eb34a5cd4092676dc79a11b06430cb37d5288`. This change addresses successful Alpha Ticket

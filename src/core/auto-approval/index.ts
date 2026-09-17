@@ -20,7 +20,6 @@ export type AutoApprovalState =
 	| "alwaysAllowWrite"
 	| "alwaysAllowTickets"
 	| "alwaysAllowMcp"
-	| "alwaysAllowModeSwitch"
 	| "alwaysAllowSubtasks"
 	| "alwaysAllowSubagents"
 	| "alwaysAllowExecute"
@@ -52,6 +51,8 @@ export interface CheckAutoApprovalInput {
 	ask: ClineAsk
 	text?: string
 	isProtected?: boolean
+	/** Trusted execution-boundary requirement; settings cannot turn this into automatic approval. */
+	requiresExplicitApproval?: boolean
 }
 
 export async function checkAutoApproval({
@@ -59,6 +60,7 @@ export async function checkAutoApproval({
 	ask,
 	text,
 	isProtected,
+	requiresExplicitApproval,
 }: CheckAutoApprovalInput): Promise<CheckAutoApprovalResult> {
 	if (isNonBlockingAsk(ask)) {
 		return { decision: "approve" }
@@ -124,7 +126,7 @@ export async function checkAutoApproval({
 		if (state.alwaysAllowExecute === true) {
 			const decision = getCommandDecision(text, state.allowedCommands || [], state.deniedCommands || [])
 
-			if (decision === "auto_approve") {
+			if (decision === "auto_approve" && !requiresExplicitApproval) {
 				return { decision: "approve" }
 			} else if (decision === "auto_deny") {
 				return { decision: "deny" }
@@ -135,6 +137,7 @@ export async function checkAutoApproval({
 	}
 
 	if (ask === "tool") {
+		if (requiresExplicitApproval) return { decision: "ask" }
 		let tool: ClineSayTool | undefined
 
 		try {
@@ -167,14 +170,12 @@ export async function checkAutoApproval({
 			return { decision: "approve" }
 		}
 
-		// Mode and delegation controls are non-mutating flow-control actions. Once
-		// auto-approval is enabled, do not pause the task on Continue/New task for
-		// these asks; the tools used by the resulting lane still apply their own
-		// read/write/command approval rules.
 		if (tool?.tool === "switchMode") {
-			return { decision: "approve" }
+			// Historical pending prompts cannot authorize a retired tool.
+			return { decision: "deny" }
 		}
 
+		// Delegated tasks still enforce their own read/write/command approvals.
 		if (["newTask", "finishTask"].includes(tool?.tool)) {
 			return { decision: "approve" }
 		}
@@ -201,7 +202,9 @@ export async function checkAutoApproval({
 				: { decision: "ask" }
 		}
 
-		const isOutsideWorkspace = !!tool.isOutsideWorkspace
+		const isOutsideWorkspace =
+			!!tool.isOutsideWorkspace ||
+			(Array.isArray(tool.batchFiles) && tool.batchFiles.some((file) => file.isOutsideWorkspace))
 
 		if (isReadOnlyToolAction(tool)) {
 			return state.alwaysAllowReadOnly === true &&
@@ -212,7 +215,7 @@ export async function checkAutoApproval({
 
 		if (isWriteToolAction(tool)) {
 			return state.alwaysAllowWrite === true &&
-				(!isOutsideWorkspace || state.alwaysAllowWriteOutsideWorkspace === true) &&
+				!isOutsideWorkspace &&
 				(!isProtected || state.alwaysAllowWriteProtected === true)
 				? { decision: "approve" }
 				: { decision: "ask" }

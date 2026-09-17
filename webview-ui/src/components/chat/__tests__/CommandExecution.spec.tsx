@@ -72,6 +72,14 @@ const publishStatus = (status: CommandExecutionStatus) => {
 }
 
 describe("CommandExecution", () => {
+	it("shows the requested working directory before expanding the command", () => {
+		render(
+			<ExtensionStateWrapper>
+				<CommandExecution executionId="outside" text="node script.js" workingDirectory="/other/project" />
+			</ExtensionStateWrapper>,
+		)
+		expect(screen.getByText("/other/project")).toBeVisible()
+	})
 	beforeEach(() => {
 		vi.clearAllMocks()
 	})
@@ -99,6 +107,22 @@ describe("CommandExecution", () => {
 		publishStatus({ executionId: "other-task-command", status: "output", output: "Unrelated" })
 		fireEvent.click(toggle)
 		expect(screen.getByTestId("terminal-output")).toHaveTextContent("All tests passed")
+	})
+
+	it("shows path review while collapsed and does not offer command rules as a path bypass", () => {
+		const { container } = render(
+			<ExtensionStateWrapper>
+				<CommandExecution
+					executionId="review"
+					text="rm ../other/file"
+					pathApproval={{ outsidePaths: ["/other/file"], unresolved: true }}
+				/>
+			</ExtensionStateWrapper>,
+		)
+		expect(screen.getByText("/other/file")).toBeVisible()
+		expect(screen.getByRole("note")).toBeVisible()
+		fireEvent.click(container.querySelector<HTMLButtonElement>("button[aria-expanded]")!)
+		expect(screen.queryByTestId("command-pattern-selector")).not.toBeInTheDocument()
 	})
 
 	it("uses persisted final output instead of a stale stream snapshot", () => {

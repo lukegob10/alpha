@@ -289,16 +289,19 @@
 			"timeoutLabel": "自動選擇第一個答案前的等待時間"
 		},
 		"execute": {
-			"label": "執行命令",
-			"description": "無需核准即可自動執行允許的終端機命令",
-			"allowedCommands": "允許自動執行的命令",
-			"allowedCommandsDescription": "啟用「始終核准執行」時，可自動執行的命令前綴。新增 * 可允許所有命令（請謹慎使用）。",
+			"label": "命令規則",
+			"description": "自動核准工作寫入範圍內的命令。允許網路存取，封鎖範圍外寫入。全域設定會在所有專案間持續保留。",
+			"allowedCommands": "允許的命令前綴",
+			"allowedCommandsDescription": "使用 * 自動核准命令，包括指令碼。儲存的規則全域生效。偵測到的任務根目錄外寫入及無法解析的寫入路徑仍需核准。這是命令和路徑檢查，並非作業系統沙箱。",
 			"deniedCommands": "拒絕的命令",
 			"deniedCommandsDescription": "將自動拒絕且不詢問核准的命令前綴。若與允許的命令衝突，將以最長前綴比對優先。新增 * 可拒絕所有命令。",
 			"commandPlaceholder": "輸入命令前綴（例如 'git '）",
 			"deniedCommandPlaceholder": "輸入要拒絕的命令前綴（例如 'rm -rf'）",
 			"addButton": "新增",
-			"autoDenied": "前綴為 `{{prefix}}` 的命令已被使用者禁止。請勿透過執行其他命令來繞過此限制。"
+			"autoDenied": "前綴為 `{{prefix}}` 的命令已被使用者禁止。請勿透過執行其他命令來繞過此限制。",
+			"pathApprovalTitle": "檔案路徑需要核准",
+			"pathApprovalDescription": "此命令可能修改任務根目錄外的檔案。核准僅適用於本次執行。",
+			"pathApprovalUnresolved": "部分寫入路徑無法解析。"
 		},
 		"apiRequestLimit": {
 			"title": "請求次數上限",

@@ -31,6 +31,9 @@ jobs:
             - name: Run exact VS Code 1.122.1 release gate
               run: pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
 
+            - name: Verify global command auto-approval and outside-path review
+              run: pnpm --filter @alpha-code/vscode-e2e test:command-paths:1221:run
+
             - name: Package extension
               shell: pwsh
               run: |

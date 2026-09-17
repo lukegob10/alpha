@@ -76,7 +76,6 @@ src/node_modules
 !pnpm-workspace.yaml
 !scripts/bootstrap.mjs
 !apps/web-evals/
-!apps/cli/
 !src/
 !webview-ui/
 !packages/evals/.docker/entrypoints/runner.sh
@@ -88,6 +87,5 @@ src/node_modules
 !packages/ipc/
 !packages/telemetry/
 !packages/types/
-!packages/vscode-shim/
 !packages/cloud/
 !locales/

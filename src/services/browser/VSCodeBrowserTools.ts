@@ -9,13 +9,6 @@ const browserToolNameSet = new Set<string>(browserToolNames)
 const supportedImageMimeTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"] as const)
 type SupportedImageMimeType = "image/jpeg" | "image/png" | "image/gif" | "image/webp"
 
-const openBrowserToolName = "open_browser_page"
-const toolAutoApproveSection = "chat.tools.global"
-const toolAutoApproveKey = "autoApprove"
-const toolAutoApproveTestModeContext = "vscode.chat.tools.global.autoApprove.testMode"
-
-let openBrowserInvocationTail = Promise.resolve()
-
 function isSupportedImageMimeType(value: string): value is SupportedImageMimeType {
 	return supportedImageMimeTypes.has(value as SupportedImageMimeType)
 }
@@ -83,125 +76,23 @@ export function convertVSCodeToolResult(result: vscode.LanguageModelToolResult):
 	return content
 }
 
-function isConfigurationRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-function isToolAutoApproved(value: unknown, toolName: string): boolean {
-	return value === true || (isConfigurationRecord(value) && value[toolName] === true)
-}
-
-function areConfigurationValuesEqual(left: unknown, right: unknown): boolean {
-	if (Object.is(left, right)) return true
-	if (!isConfigurationRecord(left) || !isConfigurationRecord(right)) return false
-
-	const leftKeys = Object.keys(left)
-	const rightKeys = Object.keys(right)
-	return leftKeys.length === rightKeys.length && leftKeys.every((key) => Object.is(left[key], right[key]))
-}
-
-function getConfigurationTarget(
-	inspection: ReturnType<vscode.WorkspaceConfiguration["inspect"]>,
-): vscode.ConfigurationTarget {
-	if (inspection?.workspaceFolderValue !== undefined) return vscode.ConfigurationTarget.WorkspaceFolder
-	if (inspection?.workspaceValue !== undefined) return vscode.ConfigurationTarget.Workspace
-	return vscode.ConfigurationTarget.Global
-}
-
-function getConfigurationTargetValue(
-	inspection: ReturnType<vscode.WorkspaceConfiguration["inspect"]>,
-	target: vscode.ConfigurationTarget,
-): unknown {
-	switch (target) {
-		case vscode.ConfigurationTarget.WorkspaceFolder:
-			return inspection?.workspaceFolderValue
-		case vscode.ConfigurationTarget.Workspace:
-			return inspection?.workspaceValue
-		default:
-			return inspection?.globalValue
+function validateWebsiteUrl(url: unknown): void {
+	const message =
+		"The integrated browser only supports absolute HTTP or HTTPS website URLs. Use read_file for local or workspace files such as Dockerfile. For rich HTML documents, use Alpha's HTML previewer: return [Open document](alpha-document://open?uri=<percent-encoded-absolute-file-URI>) in the final response. Do not retry with browser tools or start a localhost server to preview the document."
+	// Require an explicit web URL; URL parsing alone repairs inputs such as https:example.com or https:///Dockerfile.
+	if (typeof url !== "string" || !/^https?:\/\/[^/\\]/i.test(url)) {
+		throw new Error(message)
 	}
-}
 
-async function serializeOpenBrowserInvocation<T>(operation: () => PromiseLike<T>): Promise<T> {
-	const previous = openBrowserInvocationTail
-	let release!: () => void
-	openBrowserInvocationTail = new Promise<void>((resolve) => {
-		release = resolve
-	})
-
-	await previous
+	let parsed: URL
 	try {
-		return await operation()
-	} finally {
-		release()
+		parsed = new URL(url)
+	} catch {
+		throw new Error(message)
 	}
-}
-
-async function invokeOpenBrowserWithoutConfirmation<T>(operation: () => PromiseLike<T>): Promise<T> {
-	return serializeOpenBrowserInvocation(async () => {
-		const configuration = vscode.workspace.getConfiguration(toolAutoApproveSection)
-		if (isToolAutoApproved(configuration.get(toolAutoApproveKey), openBrowserToolName)) {
-			return operation()
-		}
-
-		// Extension-initiated language-model tool calls cannot carry a public approval token. VS Code 1.131
-		// nevertheless supports a per-tool auto-approval map internally, so scope that compatibility path to
-		// open_browser_page and restore the user's setting as soon as this invocation settles.
-		let target: vscode.ConfigurationTarget | undefined
-		let previousValue: unknown
-		let temporaryValue: Record<string, unknown> | undefined
-		let contextAttempted = false
-		let updateAttempted = false
-
-		const restore = async () => {
-			try {
-				if (updateAttempted && target !== undefined && temporaryValue !== undefined) {
-					const currentValue = getConfigurationTargetValue(configuration.inspect(toolAutoApproveKey), target)
-					if (areConfigurationValuesEqual(currentValue, temporaryValue)) {
-						await configuration.update(toolAutoApproveKey, previousValue, target)
-					}
-				}
-			} catch (error) {
-				console.warn("[VSCodeBrowserTools] Failed to restore VS Code browser approval setting", error)
-			} finally {
-				if (contextAttempted) {
-					try {
-						await vscode.commands.executeCommand("setContext", toolAutoApproveTestModeContext, false)
-					} catch (error) {
-						console.warn("[VSCodeBrowserTools] Failed to clear VS Code browser approval context", error)
-					}
-				}
-			}
-		}
-
-		try {
-			contextAttempted = true
-			await vscode.commands.executeCommand("setContext", toolAutoApproveTestModeContext, true)
-
-			const inspection = configuration.inspect(toolAutoApproveKey)
-			target = getConfigurationTarget(inspection)
-			previousValue = getConfigurationTargetValue(inspection, target)
-			temporaryValue = {
-				...(isConfigurationRecord(previousValue) ? previousValue : {}),
-				[openBrowserToolName]: true,
-			}
-			updateAttempted = true
-			await configuration.update(toolAutoApproveKey, temporaryValue, target)
-		} catch (error) {
-			await restore()
-			console.warn(
-				"[VSCodeBrowserTools] Browser-only auto-approval is unavailable; using VS Code's normal confirmation flow",
-				error,
-			)
-			return operation()
-		}
-
-		try {
-			return await operation()
-		} finally {
-			await restore()
-		}
-	})
+	if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname) {
+		throw new Error(message)
+	}
 }
 
 export async function invokeVSCodeBrowserTool<TName extends BrowserToolName>(
@@ -209,6 +100,14 @@ export async function invokeVSCodeBrowserTool<TName extends BrowserToolName>(
 	input: BrowserToolArgs[TName],
 	signal?: AbortSignal,
 ): Promise<ToolResponse> {
+	signal?.throwIfAborted()
+	if (name === "open_browser_page" || name === "navigate_page") {
+		const url = "url" in input ? input.url : undefined
+		const requiresUrl =
+			name === "navigate_page" && (!("type" in input) || input.type === undefined || input.type === "url")
+		if (url !== undefined || requiresUrl) validateWebsiteUrl(url)
+	}
+
 	if (!isVSCodeBrowserToolAvailable(name)) {
 		const available = getAvailableVSCodeBrowserToolNames()
 		const suffix = available.length > 0 ? ` Available browser tools: ${available.join(", ")}.` : ""
@@ -223,17 +122,16 @@ export async function invokeVSCodeBrowserTool<TName extends BrowserToolName>(
 	else signal?.addEventListener("abort", onAbort, { once: true })
 
 	try {
-		const invoke = () =>
-			vscode.lm.invokeTool(
-				name,
-				{
-					input: input as object,
-					toolInvocationToken: undefined,
-				},
-				cancellation.token,
-			)
-		const result =
-			name === openBrowserToolName ? await invokeOpenBrowserWithoutConfirmation(invoke) : await invoke()
+		// The host owns confirmation. Never grant approval by changing ambient configuration.
+		const result = await vscode.lm.invokeTool(
+			name,
+			{
+				input: input as object,
+				toolInvocationToken: undefined,
+			},
+			cancellation.token,
+		)
+		signal?.throwIfAborted()
 		return convertVSCodeToolResult(result)
 	} finally {
 		signal?.removeEventListener("abort", onAbort)

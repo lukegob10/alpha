@@ -13,6 +13,10 @@
 		invalidChart:
 			"Chart enhancement is unavailable. Check the data table: up to 120 rows, three series, one shared unit, and finite numeric values; leave missing values empty.",
 		invalidTabs: "Tabs are unavailable. Give each section a unique ID and a tab label.",
+		invalidDiagram:
+			"Diagram unavailable. Use a three-column relationship table with at most 24 named nodes, 48 links, and no cycles. The table remains readable.",
+		imageUnavailable:
+			"Image unavailable. Check the workspace path and use a static PNG or JPEG within the documented size limits.",
 		missing: "Missing",
 		inspect: "Chart values are available in the data table. Focus a plotted value to inspect it.",
 		sortAscending: "ascending",
@@ -52,6 +56,135 @@
 		if (root.getAttribute("data-alpha-kit") !== "1") {
 			notice(root, "unsupported")
 			return dispose
+		}
+
+		for (const nav of root.querySelectorAll("nav[data-alpha-toc]")) {
+			const headings = [...root.querySelectorAll("h2[id],h3[id]")]
+				.filter((heading) => !heading.closest("nav,details,[data-alpha-tabs]") && heading.textContent.trim())
+				.slice(0, 200)
+			if (!headings.length) continue
+			const list = add(nav, "ol", undefined, "document-outline")
+			for (const heading of headings) {
+				const item = add(list, "li", undefined, heading.tagName === "H3" ? "outline-child" : undefined)
+				const text = heading.textContent.trim()
+				const link = add(item, "a", text.length > 160 ? text.slice(0, 159) + "…" : text)
+				link.setAttribute("href", `#${heading.id}`)
+			}
+		}
+		for (const img of root.querySelectorAll("img")) {
+			const failed = () => {
+				if (disposed || img.nextElementSibling?.classList.contains("image-unavailable")) return
+				const message = add(
+					img.parentElement,
+					"p",
+					`${img.alt} — ${t("imageUnavailable")}`,
+					"image-unavailable",
+				)
+				img.after(message)
+			}
+			listen(img, "error", failed)
+			if (img.complete && !img.naturalWidth) failed()
+		}
+
+		// Relationships remain canonical table rows. Only this trusted runtime
+		// draws SVG; authored SVG, scripts and layout expressions are unsupported.
+		for (const figure of root.querySelectorAll("figure[data-alpha-diagram]")) {
+			const table = figure.querySelector("table")
+			if (table && table.closest("figure[data-alpha-diagram]") !== figure) continue
+			const label = figure.querySelector("figcaption")?.textContent.trim() || table?.caption?.textContent.trim()
+			const rows = [...(table?.tBodies[0]?.rows ?? [])]
+			const edges = rows.map((row) => [...row.cells].map((cell) => cell.textContent.trim()))
+			const names = [...new Set(edges.flatMap((edge) => [edge[0], edge[2]]))]
+			if (
+				!table ||
+				!label ||
+				table.tHead?.rows.length !== 1 ||
+				table.tHead.rows[0].cells.length !== 3 ||
+				table.tBodies.length !== 1 ||
+				!edges.length ||
+				edges.length > 48 ||
+				names.length > 24 ||
+				edges.some((edge) => edge.length !== 3 || edge.some((label) => !label || label.length > 80)) ||
+				[...table.rows].some((row) => [...row.cells].some((cell) => cell.colSpan !== 1 || cell.rowSpan !== 1))
+			) {
+				notice(figure, "invalidDiagram")
+				continue
+			}
+			const remaining = new Set(names)
+			const layers = []
+			while (remaining.size) {
+				const layer = names.filter(
+					(name) => remaining.has(name) && !edges.some(([from, , to]) => to === name && remaining.has(from)),
+				)
+				if (!layer.length) break
+				layers.push(layer)
+				for (const name of layer) remaining.delete(name)
+			}
+			if (remaining.size) {
+				notice(figure, "invalidDiagram")
+				continue
+			}
+			const width = Math.max(420, layers.length * 250)
+			const nodeHeight = Math.max(...layers.map((layer) => layer.length)) * 140 + 40
+			const ranks = new Map(layers.flatMap((layer, rank) => layer.map((name) => [name, rank])))
+			const longEdges = edges.filter(([from, , to]) => ranks.get(to) - ranks.get(from) > 1).length
+			const height = nodeHeight + longEdges * 14
+			const region = add(figure, "div", undefined, "diagram-scroll")
+			let tableContainer = table
+			while (tableContainer.parentElement !== figure) tableContainer = tableContainer.parentElement
+			figure.insertBefore(region, tableContainer)
+			region.tabIndex = 0
+			region.setAttribute("role", "region")
+			region.setAttribute("aria-label", label)
+			const svgNode = (tag, attributes, parent) => {
+				const node = doc.createElementNS("http://www.w3.org/2000/svg", tag)
+				for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, String(value))
+				parent.append(node)
+				return node
+			}
+			const svg = svgNode(
+				"svg",
+				{ viewBox: `0 0 ${width} ${height}`, width, height, "aria-hidden": "true" },
+				region,
+			)
+			const positions = new Map(
+				layers.flatMap((layer, x) => layer.map((name, y) => [name, { x: 20 + x * 250, y: 20 + y * 140 }])),
+			)
+			let lane = 0
+			for (const [from, , to] of edges) {
+				const a = positions.get(from),
+					b = positions.get(to)
+				const x = a.x + 180,
+					y = a.y + 50,
+					endX = b.x - 8,
+					endY = b.y + 50
+				// Skipping a layer must not draw through an unrelated intermediate node.
+				const routeY = nodeHeight + lane * 14
+				const skipsLayer = b.x - a.x > 250
+				if (skipsLayer) lane++
+				svgNode(
+					"path",
+					{
+						d: skipsLayer
+							? `M${x},${y} H${x + 20} V${routeY} H${endX - 20} V${endY} H${endX}`
+							: `M${x},${y} C${x + 35},${y} ${endX - 35},${endY} ${endX},${endY}`,
+						class: "diagram-edge",
+					},
+					svg,
+				)
+				svgNode(
+					"path",
+					{ d: `M${endX - 6},${endY - 5} L${endX},${endY} L${endX - 6},${endY + 5}`, class: "diagram-edge" },
+					svg,
+				)
+			}
+			for (const [name, { x, y }] of positions) {
+				svgNode("rect", { x, y, width: 180, height: 100, rx: 6, class: "diagram-node" }, svg)
+				const lines = name.match(/[\s\S]{1,20}/g) || [name]
+				for (const [index, line] of lines.entries())
+					svgNode("text", { x: x + 12, y: y + 25 + index * 20, class: "diagram-label" }, svg).textContent =
+						line.trim()
+			}
 		}
 
 		for (const wrapper of root.querySelectorAll("[data-alpha-table]")) {

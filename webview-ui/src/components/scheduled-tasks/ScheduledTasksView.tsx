@@ -1,3 +1,4 @@
+import { restoreTaskMode } from "@alpha-code/types"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
 	ArrowLeft,
@@ -133,7 +134,6 @@ const defaultAutoApproval: ScheduledTaskAutoApproval = {
 	alwaysAllowWriteProtected: false,
 	alwaysAllowExecute: false,
 	alwaysAllowMcp: false,
-	alwaysAllowModeSwitch: false,
 	alwaysAllowSubtasks: false,
 	allowedCommands: [],
 	deniedCommands: [],
@@ -149,7 +149,6 @@ const approvalOptions = [
 	["alwaysAllowWrite", "Write files"],
 	["alwaysAllowExecute", "Execute commands"],
 	["alwaysAllowMcp", "MCP"],
-	["alwaysAllowModeSwitch", "Mode switch"],
 	["alwaysAllowSubtasks", "Subtasks"],
 ] as const
 
@@ -278,7 +277,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 			setExecutionArguments(
 				execution.type === "skill" || execution.type === "plugin" ? (execution.arguments ?? "") : "",
 			)
-			setTaskMode(task.mode ?? normalizeUserFacingModeSlug(mode))
+			setTaskMode(restoreTaskMode(task.mode))
 			const approval = normalizeAutoApproval(task.autoApproval)
 			setAutoApproval(
 				execution.type === "command"
@@ -290,7 +289,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 			setIntervalValue(getInterval(task.schedule))
 			setNotificationPreference(task.notificationPreference)
 		},
-		[mode, cwd],
+		[cwd],
 	)
 
 	useEffect(() => {

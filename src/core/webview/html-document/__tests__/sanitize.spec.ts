@@ -5,6 +5,62 @@ const fixture = (body: string) =>
 	`<!doctype html><html><head><meta name="alpha-document" content="1"><title>Review &amp; evidence</title></head><body><main class="alpha-doc" data-alpha-kit="1">${body}</main></body></html>`
 
 describe("HTML document validation boundary", () => {
+	it("normalizes local PNG/JPEG src paths relative to the HTML file while preserving data-image semantics", () => {
+		const result = sanitizeDocument(
+			fixture(
+				'<img src="./plots/fit%20chart.png" alt="Fit"><img src="../shared/trend.jpg"><img data-image="images/original.png" src="other.png" alt="Original">',
+			),
+			"reports",
+		)
+		expect([...result.images.values()]).toEqual([
+			{ path: "reports/plots/fit chart.png", alt: "Fit" },
+			{ path: "shared/trend.jpg", alt: "" },
+			{ path: "images/original.png", alt: "Original" },
+		])
+		expect(result.html).not.toMatch(/<img|src=/)
+		expect(result.html.match(/data-alpha-image/g)).toHaveLength(3)
+	})
+
+	it.each([
+		"../../outside.png",
+		"../%2e%2e/outside.png",
+		"https://example.com/chart.png",
+		"//server/share/chart.png",
+		"file:///outside/chart.png",
+		"C:/outside/chart.png",
+		"/outside/chart.png",
+		"plots%5cchart.png",
+		"plots/%00chart.png",
+		"data:image/png;base64,AAAA",
+		"chart.svg",
+		"chart.png?redirect=x",
+		"%ZZ.png",
+	])("does not retain unsupported or workspace-escaping src %s", (src) => {
+		const result = sanitizeDocument(fixture(`<img src="${src}" alt="Chart">`), "reports")
+		expect(result.images.size).toBe(0)
+		expect(result.html).not.toContain("<img")
+	})
+
+	it("retains new declarative patterns and isolates image sources from authored attributes", () => {
+		const result = sanitizeDocument(
+			fixture(
+				'<nav data-alpha-toc aria-label="Contents"></nav><figure data-alpha-diagram><table></table></figure><img data-image="images/screen.png" alt="A &quot;quoted&quot; &gt; screen" src="https://evil.test" srcset="x 2x" onerror="alert(1)"><span data-alpha-image="image-0">spoof</span>',
+			),
+		)
+		expect(result.images.get("image-0")).toEqual({ path: "images/screen.png", alt: 'A "quoted" > screen' })
+		expect(result.html).toContain('<span data-alpha-image="image-0"></span>')
+		expect(result.html).not.toMatch(/<img|src=|srcset|onerror|https:/)
+		expect(result.html.match(/data-alpha-image/g)).toHaveLength(1)
+		expect(result.html).toContain("data-alpha-toc")
+		expect(result.html).toContain("data-alpha-diagram")
+	})
+	it.each(["../x.png", "C:/x.png", "https://host/x.png", "a\\x.png", "x.svg"])("rejects image path %s", (image) => {
+		expect(() => sanitizeDocument(fixture(`<img data-image="${image}" alt="Evidence">`))).toThrow("reference")
+	})
+	it("bounds image slots and all enhanced component families", () => {
+		expect(() => sanitizeDocument(fixture('<img data-image="x.png" alt="Evidence">'.repeat(9)))).toThrow("size")
+		expect(() => sanitizeDocument(fixture("<nav data-alpha-toc></nav>".repeat(33)))).toThrow("size")
+	})
 	it("keeps ordinary content, encoded snippets and opaque source references", () => {
 		const result = sanitizeDocument(
 			fixture(

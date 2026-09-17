@@ -1,6 +1,6 @@
 import path from "path"
 
-import { type ClineSayTool } from "@alpha-code/types"
+import type { ClineSayTool, SearchFilesOutputMode, SearchFilesQuery, SearchFilesQueryResult } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
 import { regexSearchFiles } from "../../services/ripgrep"
@@ -11,18 +11,11 @@ import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPrese
 
 type SearchFilesParams = NativeToolArgs["search_files"]
 
-interface SearchFilesQuery {
-	path: string
-	regex: string
-	file_pattern?: string | null
-}
-
-interface SearchFilesResult {
-	path: string
-	regex: string
-	filePattern?: string
+interface SearchFilesResult extends SearchFilesQueryResult {
 	isOutsideWorkspace: boolean
-	content: string
+	outputMode: SearchFilesOutputMode
+	literal: boolean
+	searchStatus: "success" | "error"
 }
 
 const MAX_SEARCH_QUERIES = 8
@@ -44,7 +37,7 @@ function truncateSearchMetadata(value: string, maxChars: number): string {
 	return `${value.slice(0, maxChars - SEARCH_METADATA_TRUNCATION_NOTICE.length)}${SEARCH_METADATA_TRUNCATION_NOTICE}`
 }
 
-function truncateSearchContent(content: string, maxChars: number): string {
+function truncateSearchContent(content: string, maxChars: number, outputMode: SearchFilesOutputMode): string {
 	if (content.length <= maxChars) {
 		return content
 	}
@@ -53,7 +46,11 @@ function truncateSearchContent(content: string, maxChars: number): string {
 		return SEARCH_OUTPUT_TRUNCATION_NOTICE.slice(0, Math.max(0, maxChars))
 	}
 
-	return `${content.slice(0, maxChars - SEARCH_OUTPUT_TRUNCATION_NOTICE.length)}${SEARCH_OUTPUT_TRUNCATION_NOTICE}`
+	let prefix = content.slice(0, maxChars - SEARCH_OUTPUT_TRUNCATION_NOTICE.length)
+	// A shortened path or count looks like real data. Compact modes retain only
+	// complete entries; snippet mode keeps its historical character truncation.
+	if (outputMode !== "content") prefix = prefix.slice(0, Math.max(0, prefix.lastIndexOf("\n")))
+	return `${prefix}${SEARCH_OUTPUT_TRUNCATION_NOTICE}`
 }
 
 function renderSearchResults(results: SearchFilesResult[]): string {
@@ -62,7 +59,7 @@ function renderSearchResults(results: SearchFilesResult[]): string {
 		: results
 				.map(
 					(result, index) =>
-						`Search ${index + 1}: path=${result.path}, regex=${JSON.stringify(result.regex)}${result.filePattern ? `, file_pattern=${result.filePattern}` : ""}\n${result.content}`,
+						`Search ${index + 1}: path=${result.path}, regex=${JSON.stringify(result.regex)}${result.filePattern ? `, file_pattern=${result.filePattern}` : ""}, output_mode=${result.outputMode}, literal=${result.literal}, status=${result.searchStatus}\n${result.content}`,
 				)
 				.join("\n\n---\n\n")
 }
@@ -119,7 +116,7 @@ function boundSearchResults(results: SearchFilesResult[]): SearchFilesResult[] {
 	const materialize = (contentLimit: number) =>
 		compacted.slice(0, visibleCount).map((result, index) => ({
 			...result,
-			content: `${index === visibleCount - 1 && droppedSearchNotice ? `${droppedSearchNotice}\n\n` : ""}${truncateSearchContent(result.content, contentLimit)}`,
+			content: `${index === visibleCount - 1 && droppedSearchNotice ? `${droppedSearchNotice}\n\n` : ""}${truncateSearchContent(result.content, contentLimit, result.outputMode)}`,
 		}))
 	let lower = 0
 	let upper = Math.max(...compacted.slice(0, visibleCount).map((result) => result.content.length))
@@ -148,6 +145,7 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 		const queries = "queries" in params ? params.queries : [params]
 
 		if (queries.length === 0 || queries.length > MAX_SEARCH_QUERIES) {
+			callbacks.setResultMetadata?.({ status: "error" })
 			task.consecutiveMistakeCount++
 			task.recordToolError("search_files")
 			task.didToolFailInCurrentTurn = true
@@ -156,7 +154,8 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 		}
 
 		const missingPath = queries.find((query) => !query.path)
-		if (missingPath) {
+		if (queries.length === 1 && missingPath) {
+			callbacks.setResultMetadata?.({ status: "error" })
 			task.consecutiveMistakeCount++
 			task.recordToolError("search_files")
 			task.didToolFailInCurrentTurn = true
@@ -165,7 +164,8 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 		}
 
 		const missingRegex = queries.find((query) => !query.regex)
-		if (missingRegex) {
+		if (queries.length === 1 && missingRegex) {
+			callbacks.setResultMetadata?.({ status: "error" })
 			task.consecutiveMistakeCount++
 			task.recordToolError("search_files")
 			task.didToolFailInCurrentTurn = true
@@ -178,39 +178,69 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 		try {
 			callbacks.signal?.throwIfAborted()
 			const results = await Promise.all(
-				queries.map(async (query) => {
+				queries.map(async (query): Promise<SearchFilesResult> => {
 					const absolutePath = path.resolve(task.cwd, query.path)
 					const filePattern = query.file_pattern || undefined
-					const content = await regexSearchFiles(
-						task.cwd,
-						absolutePath,
-						query.regex,
-						filePattern,
-						task.rooIgnoreController,
-						callbacks.signal,
-					)
-
-					return {
+					const outputMode = query.output_mode ?? "content"
+					const literal = query.literal ?? false
+					const metadata = {
 						path: getTaskReadablePath(task, query.path),
 						regex: query.regex,
 						filePattern,
 						isOutsideWorkspace: isTaskPathOutsideWorkspace(task, absolutePath),
-						content,
+						outputMode,
+						literal,
+					}
+					try {
+						if (!query.path.trim()) throw new Error('Missing path. Use "." for the workspace root.')
+						if (!query.regex) throw new Error("Missing regex. Supply a search pattern for this query.")
+						const content = await regexSearchFiles(
+							task.cwd,
+							absolutePath,
+							query.regex,
+							filePattern,
+							task.rooIgnoreController,
+							callbacks.signal,
+							{ outputMode, literal },
+						)
+						return { ...metadata, searchStatus: "success", content }
+					} catch (error) {
+						return {
+							...metadata,
+							searchStatus: "error",
+							content: `Error: ${error instanceof Error ? error.message : String(error)}`,
+						}
 					}
 				}),
 			)
+			// Settle all children before cancellation finalizes the single tool call.
+			callbacks.signal?.throwIfAborted()
 
 			const boundedResults = boundSearchResults(results)
-			const completeMessage = createSearchMessage(boundedResults)
+			const completeMessage: ClineSayTool = {
+				...createSearchMessage(boundedResults),
+				// Truncating displayed queries must not hide the full approval scope.
+				isOutsideWorkspace: results.some((result) => result.isOutsideWorkspace),
+			}
 
 			const didApprove = await askApproval("tool", JSON.stringify(completeMessage))
+			callbacks.signal?.throwIfAborted()
 
 			if (!didApprove) {
+				callbacks.setResultMetadata?.({ status: "denied" })
 				return
 			}
 
+			const status = results.some((result) => result.searchStatus === "success") ? "success" : "error"
+			callbacks.setResultMetadata?.({ status })
+			if (status === "error") {
+				task.consecutiveMistakeCount++
+				task.recordToolError("search_files")
+				task.didToolFailInCurrentTurn = true
+			}
 			pushToolResult(renderSearchResults(boundedResults))
 		} catch (error) {
+			callbacks.setResultMetadata?.({ status: callbacks.signal?.aborted ? "cancelled" : "error" })
 			await handleError("searching files", error as Error)
 		}
 	}
@@ -231,6 +261,8 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 			path: getTaskReadablePath(task, relDirPath ?? ""),
 			regex: regex ?? "",
 			filePattern: filePattern ?? "",
+			outputMode: firstQuery?.output_mode ?? "content",
+			literal: firstQuery?.literal ?? false,
 			isOutsideWorkspace,
 		}
 

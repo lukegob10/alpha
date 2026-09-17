@@ -1,5 +1,6 @@
 import { CodeIndexManager } from "../manager"
 import { CodeIndexServiceFactory } from "../service-factory"
+import { CodeIndexOrchestrator } from "../orchestrator"
 import type { MockedClass } from "vitest"
 import * as path from "path"
 
@@ -130,6 +131,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 	beforeEach(() => {
 		// Clear all instances before each test
 		CodeIndexManager.disposeAll()
+		vi.spyOn(CodeIndexOrchestrator.prototype, "startIndexing").mockResolvedValue(undefined)
 
 		const workspaceStateStore: Record<string, any> = {}
 		const globalStateStore: Record<string, any> = {}
@@ -168,6 +170,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 
 	afterEach(() => {
 		CodeIndexManager.disposeAll()
+		vi.mocked(CodeIndexOrchestrator.prototype.startIndexing).mockRestore()
 	})
 
 	describe("handleSettingsChange", () => {
@@ -329,7 +332,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 			expect(mockConfigManager.loadConfiguration).toHaveBeenCalled()
 			// _recreateServices should be called when requiresRestart is true
 			expect(recreateServicesSpy).toHaveBeenCalled()
-			// Note: startIndexing is NOT called by handleSettingsChange - it's only called by initialize()
+			expect(CodeIndexOrchestrator.prototype.startIndexing).toHaveBeenCalledOnce()
 		})
 
 		it("should handle case when config manager is not set", async () => {
@@ -412,6 +415,23 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 			expect(mockServiceFactoryInstance.validateEmbedder).toHaveBeenCalledWith(createdEmbedder)
 			expect(mockStateManager.setSystemState).not.toHaveBeenCalledWith("Error", expect.any(String))
 		})
+
+		it.each([true, false])(
+			"starts indexing after a provider change only when the workspace is enabled (%s)",
+			async (workspaceEnabled) => {
+				await manager.setWorkspaceEnabled(workspaceEnabled)
+				const configManager = (manager as any)._configManager
+				configManager.loadConfiguration.mockResolvedValue({ requiresRestart: true })
+				mockEmbedder.embedderInfo.name = "vertex"
+				mockServiceFactoryInstance.validateEmbedder.mockResolvedValue({ valid: true })
+				;(manager as any)._cacheManager = { initialize: vi.fn() }
+
+				await manager.handleSettingsChange()
+
+				expect(mockServiceFactoryInstance.validateEmbedder).toHaveBeenCalledWith(mockEmbedder)
+				expect(CodeIndexOrchestrator.prototype.startIndexing).toHaveBeenCalledTimes(workspaceEnabled ? 1 : 0)
+			},
+		)
 
 		it("should set error state when embedder validation fails", async () => {
 			// Arrange

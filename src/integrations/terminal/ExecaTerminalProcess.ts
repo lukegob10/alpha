@@ -46,6 +46,7 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 
 			this.subprocess = execa({
 				shell: BaseTerminal.getExecaShellPath() || true,
+				windowsHide: true,
 				cwd: this.terminal.getCurrentWorkingDirectory(),
 				all: true,
 				// Ignore stdin to ensure non-interactive mode and prevent hanging
@@ -95,6 +96,7 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				}
 
 				this.fullOutput += line
+				this.emit("output_available")
 
 				const now = Date.now()
 

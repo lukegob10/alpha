@@ -2,6 +2,7 @@ import { memo, useState } from "react"
 
 import { Package } from "@alpha/package"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@src/components/ui"
+import { useAppTranslation } from "@src/i18n/TranslationContext"
 
 interface AnnouncementProps {
 	hideAnnouncement: () => void
@@ -18,6 +19,7 @@ interface AnnouncementProps {
 
 const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 	const [open, setOpen] = useState(true)
+	const { t } = useAppTranslation()
 
 	return (
 		<Dialog
@@ -31,18 +33,15 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 			}}>
 			<DialogContent>
 				<DialogHeader>
-					<DialogTitle>Welcome to Alpha v{Package.version}</DialogTitle>
+					<DialogTitle>{t("chat:announcement.title", { version: Package.version })}</DialogTitle>
 				</DialogHeader>
 				<div className="space-y-2 text-sm">
-					<p>
-						Alpha v{Package.version} focuses everyday agent work on a clean Plan and Code workflow without
-						changing the proven Code loop.
-					</p>
+					<p>{t("chat:announcement.release.welcome", { version: Package.version })}</p>
 					<ul className="list-disc space-y-1 pl-5">
-						<li>Plan and Code are the only ordinary user-facing mode choices.</li>
-						<li>Press Shift+Tab in the chat composer to switch between them.</li>
-						<li>Code and Plan stay in the same task and provider configuration.</li>
-						<li>Existing legacy and custom-mode tasks remain compatible.</li>
+						<li>{t("chat:announcement.release.acceptanceChecks")}</li>
+						<li>{t("chat:announcement.release.commandControl")}</li>
+						<li>{t("chat:announcement.release.workflowContinuity")}</li>
+						<li>{t("chat:announcement.release.chatUpdates")}</li>
 					</ul>
 				</div>
 			</DialogContent>

@@ -10,6 +10,14 @@ import {
 } from "../taskPathPresentation"
 
 describe("managed worker path presentation", () => {
+	it("uses a primary task's root rather than the foreground workspace", () => {
+		const cwd = path.resolve("background-project")
+		expect(isTaskPathOutsideWorkspace({ taskKind: "primary", cwd }, path.join(cwd, "file.ts"))).toBe(false)
+		expect(
+			isTaskPathOutsideWorkspace({ taskKind: "primary", cwd }, path.resolve("foreground-project/file.ts")),
+		).toBe(true)
+	})
+
 	const testRoot = path.join(process.cwd(), ".test-path-presentation")
 	const privateRoot = path.join(testRoot, "global-storage", "change-set")
 	const privateWorkspace = path.join(privateRoot, "repo")

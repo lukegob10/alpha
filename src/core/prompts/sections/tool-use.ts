@@ -66,7 +66,7 @@ The frozen delegation policy is explicit-only. Do not call spawn_agent or delega
 			: subagentDelegationPolicy === "proactive"
 				? `
 
-The frozen delegation policy is proactive. Delegate only when it materially advances the user's request within the configured limits and approvals.`
+The frozen delegation policy is proactive. Delegate only when a distinct unanswered question benefits from independent work. Give each child a non-overlapping scope and concrete deliverables; available capacity alone does not justify delegation. Integrate returned evidence, verify consequential findings, and investigate remaining gaps instead of routinely repeating the child's entire discovery. Stay within the configured limits and approvals.`
 				: ""
 
 	return `====

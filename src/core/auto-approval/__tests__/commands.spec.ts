@@ -36,6 +36,14 @@ describe("containsDangerousSubstitution", () => {
 })
 
 describe("getCommandDecision", () => {
+	it.each(['echo "$(date)"', 'echo "${var@P}"', 'node -e "console.log(1)"'])(
+		"honors explicit global wildcard approval for dynamic commands: %s",
+		(command) => {
+			expect(getCommandDecision(command, ["*"])).toBe("auto_approve")
+			const policy = createSubagentCommandApprovalPolicy(["*"], [], "b".repeat(64))
+			expect(getSubagentCommandDecision(command, policy)).toBe("auto_approve")
+		},
+	)
 	it("should auto_approve array assignment command with wildcard allowlist", () => {
 		const command = 'files=(a.ts b.ts); for f in "${files[@]}"; do echo "$f"; done'
 		const result = getCommandDecision(command, ["*"])

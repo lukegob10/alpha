@@ -666,6 +666,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			assert.equal(nestedApply.success, true, nestedApply.message)
 			assert.equal(nestedApply.changeSetStatus, "applied")
 			scriptedAI.setVerificationChangeSets("outer", [nestedChangeSet.changeSetId])
+			// The inherited vitest rule must approve verification without a harness response.
 
 			const [outerChangeSet, discardChangeSet] = await Promise.all([
 				waitForPendingChangeSet(groups, rootTaskId, OUTER_OBJECTIVE),

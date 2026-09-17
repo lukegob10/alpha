@@ -379,6 +379,16 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 	// Current settings state - tracks user changes
 	const [currentSettings, setCurrentSettings] = useState<LocalCodeIndexSettings>(getDefaultSettings())
 
+	const hasUnsavedChanges = useMemo(() => {
+		const keys = new Set([...Object.keys(initialSettings), ...Object.keys(currentSettings)])
+		return [...keys].some((key) => {
+			const field = key as keyof LocalCodeIndexSettings
+			return currentSettings[field] !== SECRET_PLACEHOLDER && currentSettings[field] !== initialSettings[field]
+		})
+	}, [currentSettings, initialSettings])
+	const preserveDraftRef = useRef(false)
+	preserveDraftRef.current = hasUnsavedChanges || saveStatus === "saving"
+
 	const hasSavedSecret = useCallback((field: SecretField) => savedSecretStatus[field], [savedSecretStatus])
 
 	const getSecretPlaceholder = useCallback(
@@ -411,6 +421,10 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 
 	// Initialize settings from global state
 	useEffect(() => {
+		// State broadcasts recreate these objects during chat activity. Keep edits until Save or Discard;
+		// changing dirty state alone must not reload the older host snapshot after a save acknowledgement.
+		if (preserveDraftRef.current) return
+
 		if (codebaseIndexConfig) {
 			const embedderProvider = codebaseIndexConfig.codebaseIndexEmbedderProvider || "openai"
 			const activeVertexConfig = apiConfiguration?.apiProvider === "vertex" ? apiConfiguration : undefined
@@ -496,7 +510,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 			// Request secret status to check if secrets exist
 			vscode.postMessage({ type: "requestCodeIndexSecretStatus" })
 		}
-	}, [apiConfiguration, codebaseIndexConfig])
+	}, [apiConfiguration, codebaseIndexConfig, open])
 
 	// Request initial indexing status
 	useEffect(() => {
@@ -637,35 +651,6 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 		window.addEventListener("message", handleMessage)
 		return () => window.removeEventListener("message", handleMessage)
 	}, [saveStatus])
-
-	// Generic comparison function that detects changes between initial and current settings
-	const hasUnsavedChanges = useMemo(() => {
-		// Get all keys from both objects to handle any field
-		const allKeys = [...Object.keys(initialSettings), ...Object.keys(currentSettings)] as Array<
-			keyof LocalCodeIndexSettings
-		>
-
-		// Use a Set to ensure unique keys
-		const uniqueKeys = Array.from(new Set(allKeys))
-
-		for (const key of uniqueKeys) {
-			const currentValue = currentSettings[key]
-			const initialValue = initialSettings[key]
-
-			// For secret fields, check if the value has been modified from placeholder
-			if (currentValue === SECRET_PLACEHOLDER) {
-				// If it's still showing placeholder, no change
-				continue
-			}
-
-			// Compare values - handles all types including undefined
-			if (currentValue !== initialValue) {
-				return true
-			}
-		}
-
-		return false
-	}, [currentSettings, initialSettings])
 
 	const updateSetting = (key: keyof LocalCodeIndexSettings, value: any) => {
 		setCurrentSettings((prev) => ({ ...prev, [key]: value }))

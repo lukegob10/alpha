@@ -51,6 +51,7 @@ logs
 .qodo/
 .vercel
 .alpha/mcp.json
+.alpha/code-index/
 
 # Qdrant
 qdrant_storage/

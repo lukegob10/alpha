@@ -32,7 +32,7 @@ import { type ApiMessage } from "../task-persistence/apiMessages"
 import { saveTaskMessages } from "../task-persistence"
 
 import { ClineProvider } from "./ClineProvider"
-import { handleCheckpointRestoreOperation } from "./checkpointRestoreHandler"
+import { handleCheckpointRestoreOperation, restartTaskFromMessage } from "./checkpointRestoreHandler"
 import { generateErrorDiagnostics } from "./diagnosticsHandler"
 import {
 	handleRequestSkills,
@@ -291,7 +291,7 @@ export const webviewMessageHandler = async (
 	 */
 	const handleDeleteOperation = async (messageTs: number): Promise<void> => {
 		// Check if there's a checkpoint before this message
-		const currentCline = provider.getCurrentTask()
+		const currentCline = getTaskForMessage(provider, message, { allowActiveFallback: true })
 		let hasCheckpoint = false
 
 		if (!currentCline) {
@@ -312,6 +312,7 @@ export const webviewMessageHandler = async (
 		// Send message to webview to show delete confirmation dialog
 		await provider.postMessageToWebview({
 			type: "showDeleteMessageDialog",
+			taskId: currentCline?.taskId,
 			messageTs,
 			hasCheckpoint,
 		})
@@ -321,7 +322,7 @@ export const webviewMessageHandler = async (
 	 * Handles confirmed message deletion from webview dialog
 	 */
 	const handleDeleteMessageConfirm = async (messageTs: number, restoreCheckpoint?: boolean): Promise<void> => {
-		const currentCline = provider.getCurrentTask()
+		const currentCline = getTaskForMessage(provider, message, { allowActiveFallback: true })
 		if (!currentCline) {
 			console.error("[handleDeleteMessageConfirm] No current cline available")
 			return
@@ -413,7 +414,7 @@ export const webviewMessageHandler = async (
 	 */
 	const handleEditOperation = async (messageTs: number, editedContent: string, images?: string[]): Promise<void> => {
 		// Check if there's a checkpoint before this message
-		const currentCline = provider.getCurrentTask()
+		const currentCline = getTaskForMessage(provider, message, { allowActiveFallback: true })
 		let hasCheckpoint = false
 		if (currentCline) {
 			const { messageIndex } = findMessageIndices(messageTs, currentCline)
@@ -426,14 +427,18 @@ export const webviewMessageHandler = async (
 				hasCheckpoint = checkpoints.length > 0
 			} else {
 				console.log("[webviewMessageHandler] Edit - Message not found in clineMessages!")
+				return
 			}
 		} else {
 			console.log("[webviewMessageHandler] Edit - No currentCline available!")
+			return
 		}
 
 		// Send message to webview to show edit confirmation dialog
 		await provider.postMessageToWebview({
 			type: "showEditMessageDialog",
+			taskId: currentCline?.taskId,
+			messageAction: message.messageAction,
 			messageTs,
 			text: editedContent,
 			hasCheckpoint,
@@ -450,7 +455,7 @@ export const webviewMessageHandler = async (
 		restoreCheckpoint?: boolean,
 		images?: string[],
 	): Promise<void> => {
-		const currentCline = provider.getCurrentTask()
+		const currentCline = getTaskForMessage(provider, message, { allowActiveFallback: true })
 		if (!currentCline) {
 			console.error("[handleEditMessageConfirm] No current cline available")
 			return
@@ -467,7 +472,18 @@ export const webviewMessageHandler = async (
 		}
 
 		try {
-			const targetMessage = currentCline.clineMessages[messageIndex]
+			// Older clients may address an assistant row. Replace its preceding prompt.
+			let targetMessage = currentCline.clineMessages[messageIndex]
+			for (let i = messageIndex; i >= 0; i--) {
+				const candidate = currentCline.clineMessages[i]
+				if (
+					candidate.type === "say" &&
+					(candidate.say === "user_feedback" || (i === 0 && candidate.say === "text"))
+				) {
+					targetMessage = candidate
+					break
+				}
+			}
 
 			// If checkpoint restoration is requested, find and restore to the last checkpoint before this message
 			if (restoreCheckpoint) {
@@ -492,8 +508,6 @@ export const webviewMessageHandler = async (
 							apiConversationHistoryIndex,
 						},
 					})
-					// The task will be cancelled and reinitialized by checkpointRestore
-					// The pending edit will be processed in the reinitialized task
 					return
 				} else {
 					// No checkpoint found before this message
@@ -503,72 +517,7 @@ export const webviewMessageHandler = async (
 				}
 			}
 
-			// For non-checkpoint edits, remove the ORIGINAL user message being edited and all subsequent messages
-			// Determine the correct starting index to delete from (prefer the last preceding user_feedback message)
-			let deleteFromMessageIndex = messageIndex
-			let deleteFromApiIndex = apiConversationHistoryIndex
-
-			// Find the nearest preceding user message to ensure we replace the original, not just the assistant reply
-			for (let i = messageIndex; i >= 0; i--) {
-				const m = currentCline.clineMessages[i]
-				if (m?.say === "user_feedback") {
-					deleteFromMessageIndex = i
-					// Align API history truncation to the same user message timestamp if present
-					const userTs = m.ts
-					if (typeof userTs === "number") {
-						const apiIdx = currentCline.apiConversationHistory.findIndex(
-							(am: ApiMessage) => am.ts === userTs,
-						)
-						if (apiIdx !== -1) {
-							deleteFromApiIndex = apiIdx
-						}
-					}
-					break
-				}
-			}
-
-			// Timestamp fallback for API history when exact user message isn't present
-			if (deleteFromApiIndex === -1) {
-				const tsThresholdForEdit = currentCline.clineMessages[deleteFromMessageIndex]?.ts
-				if (typeof tsThresholdForEdit === "number") {
-					deleteFromApiIndex = findFirstApiIndexAtOrAfter(tsThresholdForEdit, currentCline)
-				}
-			}
-
-			// Store checkpoints from messages that will be preserved
-			const preservedCheckpoints = new Map<number, any>()
-			for (let i = 0; i < deleteFromMessageIndex; i++) {
-				const msg = currentCline.clineMessages[i]
-				if (msg?.checkpoint && msg.ts) {
-					preservedCheckpoints.set(msg.ts, msg.checkpoint)
-				}
-			}
-
-			// Delete the original (user) message and all subsequent messages using MessageManager
-			const rewindTs = currentCline.clineMessages[deleteFromMessageIndex]?.ts
-			if (rewindTs) {
-				await currentCline.messageManager.rewindToTimestamp(rewindTs, { includeTargetMessage: false })
-			}
-
-			// Restore checkpoint associations for preserved messages
-			for (const [ts, checkpoint] of preservedCheckpoints) {
-				const msgIndex = currentCline.clineMessages.findIndex((msg) => msg.ts === ts)
-				if (msgIndex !== -1) {
-					currentCline.clineMessages[msgIndex].checkpoint = checkpoint
-				}
-			}
-
-			// Save the updated messages with restored checkpoints
-			await saveTaskMessages({
-				messages: currentCline.clineMessages,
-				taskId: currentCline.taskId,
-				globalStoragePath: provider.contextProxy.globalStorageUri.fsPath,
-			})
-
-			// Update the UI to reflect the deletion
-			await provider.postStateToWebview()
-
-			await currentCline.submitUserMessage(editedContent, images)
+			await restartTaskFromMessage(provider, currentCline, targetMessage.ts, editedContent, images)
 		} catch (error) {
 			console.error("Error in edit message:", error)
 			vscode.window.showErrorMessage(
@@ -594,8 +543,8 @@ export const webviewMessageHandler = async (
 	): Promise<void> => {
 		if (operation === "delete") {
 			await handleDeleteOperation(messageTs)
-		} else if (operation === "edit" && editedContent) {
-			await handleEditOperation(messageTs, editedContent, images)
+		} else if (operation === "edit" && (editedContent?.trim() || images?.length)) {
+			await handleEditOperation(messageTs, editedContent ?? "", images)
 		}
 	}
 
@@ -1725,7 +1674,7 @@ export const webviewMessageHandler = async (
 			}
 			break
 		case "deleteMessage": {
-			if (!provider.getCurrentTask()) {
+			if (!getTaskForMessage(provider, message, { allowActiveFallback: true })) {
 				await vscode.window.showErrorMessage(t("common:errors.message.no_active_task_to_delete"))
 				break
 			}
@@ -1740,10 +1689,10 @@ export const webviewMessageHandler = async (
 		}
 		case "submitEditedMessage": {
 			if (
-				provider.getCurrentTask() &&
+				getTaskForMessage(provider, message, { allowActiveFallback: true }) &&
 				typeof message.value === "number" &&
 				message.value &&
-				message.editedMessageContent
+				(message.editedMessageContent?.trim() || message.images?.length)
 			) {
 				await handleMessageModificationsOperation(
 					message.value,
@@ -1958,11 +1907,8 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "updateTodoList": {
-			const payload = message.payload as { todos?: any[] }
-			const todos = payload?.todos
-			if (Array.isArray(todos)) {
-				await setPendingTodoList(todos)
-			}
+			const task = getRequiredTaskForMessage(provider, message, "updateTodoList")
+			if (task) setPendingTodoList(task, message.payload)
 			break
 		}
 		case "refreshCustomTools": {
@@ -2107,8 +2053,13 @@ export const webviewMessageHandler = async (
 			await handleDeleteMessageConfirm(message.messageTs, message.restoreCheckpoint)
 			break
 		case "editMessageConfirm":
-			if (message.messageTs && message.text) {
-				const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
+			if (message.messageTs && (message.text?.trim() || message.images?.length)) {
+				if (!getTaskForMessage(provider, message, { allowActiveFallback: true })) break
+				const resolved = await resolveIncomingImages({
+					text: message.text,
+					images: message.images,
+					taskId: message.taskId,
+				})
 				await handleEditMessageConfirm(
 					message.messageTs,
 					resolved.text,

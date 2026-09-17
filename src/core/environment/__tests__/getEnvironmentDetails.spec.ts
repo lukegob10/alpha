@@ -162,7 +162,7 @@ describe("getEnvironmentDetails", () => {
 
 		expect(mockProvider.getState).toHaveBeenCalled()
 
-		expect(result).toContain("<name>💻 Code</name>")
+		expect(result).toContain("<name>Code</name>")
 
 		expect(getApiMetrics).toHaveBeenCalledWith(mockCline.clineMessages)
 	})
@@ -170,7 +170,7 @@ describe("getEnvironmentDetails", () => {
 	it("reuses the request state snapshot instead of re-reading provider state", async () => {
 		const result = await getEnvironmentDetails(mockCline as Task, false, mockState)
 
-		expect(result).toContain("<name>💻 Code</name>")
+		expect(result).toContain("<name>Code</name>")
 		expect(mockProvider.getState).not.toHaveBeenCalled()
 	})
 
@@ -266,6 +266,20 @@ describe("getEnvironmentDetails", () => {
 		next.release()
 		expect(listFiles).not.toHaveBeenCalled()
 		expect(formatResponse.formatFilesList).not.toHaveBeenCalled()
+	})
+	it("restores the working record after compaction without repeating it on unchanged steps", async () => {
+		const context = new EnvironmentContext()
+		mockCline.getWorkContext = vi.fn(async () => "Preserve source inputs; loaded workflow skill; behavior: passed")
+		const first = await captureEnvironmentDetails(mockCline as Task, false, mockState, { context })
+		expect(first.details).toContain("Preserve source inputs")
+		first.commit()
+		const unchanged = await captureEnvironmentDetails(mockCline as Task, false, mockState, { context })
+		expect(unchanged.details).not.toContain("Preserve source inputs")
+		unchanged.commit()
+		context.reset()
+		const compacted = await captureEnvironmentDetails(mockCline as Task, false, mockState, { context })
+		expect(compacted.details).toContain("Preserve source inputs")
+		compacted.release()
 	})
 
 	it("should handle desktop directory specially", async () => {

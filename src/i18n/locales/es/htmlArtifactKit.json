@@ -9,5 +9,7 @@
 	"missing": "Sin datos",
 	"inspect": "Los valores del gráfico están disponibles en la tabla de datos. Enfoque un valor representado para inspeccionarlo.",
 	"sortAscending": "ascendente",
-	"sortDescending": "descendente"
+	"sortDescending": "descendente",
+	"invalidDiagram": "Diagrama no disponible. Use una tabla de relaciones de tres columnas con hasta 24 nodos con nombre, 48 enlaces y sin ciclos. La tabla sigue siendo legible.",
+	"imageUnavailable": "Imagen no disponible. Compruebe la ruta del espacio de trabajo y use un PNG o JPEG estático dentro de los límites documentados."
 }

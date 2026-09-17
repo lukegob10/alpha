@@ -111,6 +111,7 @@ vi.mock("vscode", async () => {
 			}),
 		},
 		window: {
+			tabGroups: { activeTabGroup: { viewColumn: 3 } },
 			createWebviewPanel: vi.fn(() => {
 				const panel = host.panel()
 				host.panels.push(panel)
@@ -129,8 +130,8 @@ vi.mock("../parser", async () => {
 	const { sanitizeDocument } = await import("../sanitize")
 	return {
 		DocumentParser: class {
-			async parse(source: string) {
-				return sanitizeDocument(source)
+			async parse(source: string, documentDirectory?: string) {
+				return sanitizeDocument(source, documentDirectory)
 			}
 			cancelPending() {}
 			dispose() {}
@@ -191,8 +192,60 @@ describe("HTML document viewer lifecycle through host boundaries", () => {
 		})
 	}
 
+	it("refreshes referenced image changes, recovers missing assets, and disposes image watchers", async () => {
+		const panel = await open("images.html", "Images", '<img data-image="screen.png" alt="Screen">')
+		expect(latest(panel).html).toContain("image-unavailable")
+		expect(host.watchers).toHaveLength(2)
+		const imageWatcher = host.watchers[1]
+		await fs.writeFile(
+			path.join(root, "screen.png"),
+			Buffer.from(
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1cAAAAASUVORK5CYII=",
+				"base64",
+			),
+		)
+		await refresh(panel, () => imageWatcher.create.fire())
+		expect(latest(panel).html).toContain("data:image/png;base64,")
+		expect(host.watchers).toHaveLength(2)
+		await fs.writeFile(path.join(root, "images.html"), documentHtml("Images", "<p>Removed image</p>"))
+		await refresh(panel, () => host.watchers[0].change.fire())
+		expect(imageWatcher.dispose).toHaveBeenCalledOnce()
+		expect(imageWatcher.change.listeners.size).toBe(0)
+		panel.dispose()
+		expect(panel.webview.html).toContain("img-src data:")
+	})
+
+	it("renders relative PNG chart files and refreshes their images in a nested document", async () => {
+		await fs.mkdir(path.join(root, "reports", "plots"), { recursive: true })
+		const panel = await open(
+			"reports/report.html",
+			"Analysis",
+			'<figure><img src="plots/fit%20chart.png" alt="Matplotlib fit"><figcaption>Fit evidence</figcaption></figure>',
+		)
+		expect(latest(panel).html).toContain("image-unavailable")
+		expect(host.watchers).toHaveLength(2)
+		const imageWatcher = host.watchers[1]
+		expect(vscode.workspace.createFileSystemWatcher).toHaveBeenLastCalledWith(
+			expect.objectContaining({ base: path.join(root, "reports", "plots"), pattern: "fit chart.png" }),
+		)
+		await fs.writeFile(
+			path.join(root, "reports", "plots", "fit chart.png"),
+			Buffer.from(
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1cAAAAASUVORK5CYII=",
+				"base64",
+			),
+		)
+		await refresh(panel, () => imageWatcher.create.fire())
+		expect(latest(panel).html).toContain('src="data:image/png;base64,')
+		expect(latest(panel).html).toContain('alt="Matplotlib fit"')
+		expect(vscode.env.openExternal).not.toHaveBeenCalled()
+		panel.dispose()
+		expect(imageWatcher.dispose).toHaveBeenCalledOnce()
+	})
+
 	beforeEach(async () => {
 		vi.clearAllMocks()
+		Object.assign(vscode.window.tabGroups.activeTabGroup, { viewColumn: 3 })
 		vi.mocked(fs.open)
 			.mockReset()
 			.mockImplementation((await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).open)
@@ -218,6 +271,7 @@ describe("HTML document viewer lifecycle through host boundaries", () => {
 		expect(JSON.parse(load(second.webview.html)("body").attr("data-viewer-config")!).target.taskId).toBe("task-two")
 		await viewer.open(target("one.html"))
 		expect(first.reveal).toHaveBeenCalledOnce()
+		expect(first.reveal).toHaveBeenCalledWith(3, false)
 		expect(second.reveal).not.toHaveBeenCalled()
 		expect(host.panels).toHaveLength(2)
 		await fs.writeFile(path.join(root, "one.html"), documentHtml("Changed"))
@@ -227,13 +281,26 @@ describe("HTML document viewer lifecycle through host boundaries", () => {
 		expect(first.reveal).toHaveBeenCalledTimes(1)
 	})
 
-	it("automatically opens in the right editor group without taking focus or refocusing an existing preview", async () => {
+	it("opens in the originating tab group even if focus changes during path validation", async () => {
+		await fs.writeFile(path.join(root, "current.html"), documentHtml("Current"))
+		const opening = viewer.open(target("current.html"))
+		Object.assign(vscode.window.tabGroups.activeTabGroup, { viewColumn: 1 })
+		await opening
+		expect(vscode.window.createWebviewPanel).toHaveBeenCalledWith(
+			expect.any(String),
+			"current.html",
+			{ viewColumn: 3, preserveFocus: false },
+			{},
+		)
+	})
+
+	it("automatically opens in the active tab group without taking focus or refocusing an existing preview", async () => {
 		await fs.writeFile(path.join(root, "auto.html"), documentHtml("Delivered"))
 		await viewer.open(target("auto.html"), undefined, { automatic: true, isCurrent: () => true })
 		expect(vscode.window.createWebviewPanel).toHaveBeenCalledWith(
 			expect.any(String),
 			"auto.html",
-			{ viewColumn: 2, preserveFocus: true },
+			{ viewColumn: 3, preserveFocus: true },
 			{},
 		)
 		await viewer.open(target("auto.html"), undefined, { automatic: true })

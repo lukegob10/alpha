@@ -1,7 +1,6 @@
 import * as path from "path"
 
 import { getReadablePath } from "../../utils/path"
-import { isPathOutsideWorkspace } from "../../utils/pathUtils"
 import { isPathWithinRoot } from "./pathSafety"
 
 type TaskPathContext = {
@@ -36,10 +35,9 @@ export function getTaskReadablePath(task: TaskPathContext, relPath?: string): st
 	return getReadablePath(task.cwd, relPath)
 }
 
-/** Check paths against the worker's isolated logical root rather than VS Code's foreground workspace. */
+/** Scope approvals to this task, including junctions, independently of the foreground VS Code workspace. */
 export function isTaskPathOutsideWorkspace(task: TaskPathContext, absolutePath: string): boolean {
-	if (isManagedWorker(task)) return !isWithin(task.cwd, absolutePath)
-	return isPathOutsideWorkspace(absolutePath)
+	return !isWithin(task.cwd, absolutePath)
 }
 
 /** Map a private worktree path to the corresponding user-workspace path for UI navigation. */

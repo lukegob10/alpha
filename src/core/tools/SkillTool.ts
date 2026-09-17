@@ -126,6 +126,8 @@ export class SkillTool extends BaseTool<"skill"> {
 				return
 			}
 
+			callbacks.signal?.throwIfAborted()
+			await task.recordLoadedSkill?.(skillName, skillContent.path, digestValue(skillContent.instructions))
 			pushToolResult(buildSkillResult(skillName, args, skillContent))
 		} catch (error) {
 			await handleError("executing skill", error as Error)

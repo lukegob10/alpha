@@ -311,6 +311,8 @@ export function getCommandDecision(
 	allowedCommands: string[],
 	deniedCommands?: string[],
 ): CommandDecision {
+	// A global wildcard accepts scripts and computed commands. Path review is a separate scheduler check.
+	if (allowedCommands.includes("*") && !deniedCommands?.length) return "auto_approve"
 	return aggregateCommandDecision(command, (singleCommand) =>
 		getSingleCommandDecision(singleCommand, allowedCommands, deniedCommands),
 	)
@@ -400,6 +402,7 @@ function getHashedSingleCommandDecision(command: string, policy: SubagentCommand
 
 /** Evaluate a command against an approval ceiling that contains no plaintext command rules. */
 export function getSubagentCommandDecision(command: string, policy: SubagentCommandApprovalPolicy): CommandDecision {
+	if (policy.allowAll && !policy.denyAll && !policy.denied.length) return "auto_approve"
 	return aggregateCommandDecision(command, (singleCommand) => getHashedSingleCommandDecision(singleCommand, policy))
 }
 

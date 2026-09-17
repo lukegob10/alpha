@@ -12,6 +12,7 @@ import { sanitizeUnifiedDiff, computeDiffStats } from "../diff/stats"
 import type { ToolUse } from "../../shared/tools"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { fileEditContent, normalizeToLF } from "./fileEditContent"
 import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
 interface EditParams {
@@ -99,11 +100,12 @@ export class EditTool extends BaseTool<"edit"> {
 			}
 
 			// Normalize line endings to LF for consistent matching
-			const fileContent = originalFileContent.replace(/\r\n/g, "\n")
+			const projection = fileEditContent(originalFileContent)
+			const fileContent = projection.content
 
 			// Normalize line endings in old_string/new_string to match file content
-			const normalizedOld = oldString.replace(/\r\n/g, "\n")
-			const normalizedNew = newString.replace(/\r\n/g, "\n")
+			const normalizedOld = normalizeToLF(oldString)
+			const normalizedNew = normalizeToLF(newString)
 
 			// Count occurrences of old_string in file content
 			const matchCount = fileContent.split(normalizedOld).length - 1
@@ -142,8 +144,9 @@ export class EditTool extends BaseTool<"edit"> {
 				newContent = fileContent.replace(normalizedOld, () => normalizedNew)
 			}
 
+			newContent = projection.restore(newContent)
 			// Check if any changes were made
-			if (newContent === fileContent) {
+			if (newContent === originalFileContent) {
 				pushToolResult(`No changes needed for '${relPath}'`)
 				return
 			}
@@ -155,7 +158,7 @@ export class EditTool extends BaseTool<"edit"> {
 			task.diffViewProvider.originalContent = originalFileContent
 
 			// Generate and validate diff
-			const diff = formatResponse.createPrettyPatch(relPath, fileContent, newContent)
+			const diff = formatResponse.createPrettyPatch(relPath, originalFileContent, newContent)
 			if (!diff) {
 				pushToolResult(`No changes needed for '${relPath}'`)
 				await task.diffViewProvider.reset()

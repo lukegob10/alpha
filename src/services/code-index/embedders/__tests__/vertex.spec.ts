@@ -343,7 +343,7 @@ describe("VertexGeminiEmbedder", () => {
 			config: { taskType: "RETRIEVAL_DOCUMENT" },
 		})
 	})
-	it("bounds requests across batches and preserves order when responses complete out of order", async () => {
+	it("refills a free request slot before slower requests finish and preserves result order", async () => {
 		const embedder = new VertexGeminiEmbedder({
 			apiProvider: "vertex",
 			vertexProjectId: "project",
@@ -351,11 +351,15 @@ describe("VertexGeminiEmbedder", () => {
 		})
 		let firstStarted!: () => void
 		let secondStarted!: () => void
+		let slotRefilled!: () => void
 		const first = new Promise<void>((resolve) => {
 			firstStarted = resolve
 		})
 		const second = new Promise<void>((resolve) => {
 			secondStarted = resolve
+		})
+		const refilled = new Promise<void>((resolve) => {
+			slotRefilled = resolve
 		})
 		const pending: Array<() => void> = []
 		mockEmbedContent.mockImplementation(
@@ -364,22 +368,54 @@ describe("VertexGeminiEmbedder", () => {
 					expect(contents).toHaveLength(1)
 					const index = Number(contents[0])
 					pending.push(() => resolve({ embeddings: [{ values: [index, 1] }] }))
-					if (pending.length === 4) firstStarted()
-					if (pending.length === 8) secondStarted()
+					if (pending.length === 8) firstStarted()
+					if (pending.length === 9) slotRefilled()
+					if (pending.length === 16) secondStarted()
 				}),
 		)
-		const response = embedder.createEmbeddings(Array.from({ length: 8 }, (_, index) => String(index)))
+		const response = embedder.createEmbeddings(Array.from({ length: 16 }, (_, index) => String(index)))
 		await first
-		expect(mockEmbedContent).toHaveBeenCalledTimes(4)
+		expect(mockEmbedContent).toHaveBeenCalledTimes(8)
+		pending[7]()
+		await refilled
+		expect(mockEmbedContent).toHaveBeenCalledTimes(9)
 		pending
-			.slice(0, 4)
+			.slice(0, 7)
 			.reverse()
 			.forEach((resolve) => resolve())
 		await second
 		pending
-			.slice(4)
+			.slice(8)
 			.reverse()
 			.forEach((resolve) => resolve())
-		expect((await response).embeddings).toEqual(Array.from({ length: 8 }, (_, index) => [index, 1]))
+		expect((await response).embeddings).toEqual(Array.from({ length: 16 }, (_, index) => [index, 1]))
+	})
+
+	it("drains accepted requests and stops scheduling more work after a failure", async () => {
+		vitest.useFakeTimers()
+		const embedder = new VertexGeminiEmbedder({
+			apiProvider: "vertex",
+			projectId: "project",
+			location: "us-central1",
+		})
+		let completed = 0
+		mockEmbedContent.mockImplementation(async ({ contents }) => {
+			if (contents[0] === "0") throw Object.assign(new Error("Invalid input"), { status: 400 })
+			await new Promise((resolve) => setTimeout(resolve, 100))
+			completed++
+			return { embeddings: [{ values: [1, 0] }] }
+		})
+		let settled = false
+		const response = embedder.createEmbeddings(Array.from({ length: 20 }, (_, index) => String(index)))
+		const rejection = expect(response).rejects.toThrow()
+		void response.catch(() => {
+			settled = true
+		})
+		await vitest.advanceTimersByTimeAsync(0)
+		expect(settled).toBe(false)
+		await vitest.runAllTimersAsync()
+		await rejection
+		expect(completed).toBe(7)
+		expect(mockEmbedContent).toHaveBeenCalledTimes(8)
 	})
 })

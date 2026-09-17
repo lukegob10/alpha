@@ -20,6 +20,56 @@ export interface CheckpointRestoreConfig {
 	}
 }
 
+const pendingRestarts = new WeakSet<Task>()
+
+/** Rewind only after the old task has stopped, then resume a fresh instance with the same identity. */
+export async function restartTaskFromMessage(
+	provider: ClineProvider,
+	task: Task,
+	messageTs: number,
+	text: string,
+	images?: string[],
+	checkpoint?: { hash: string },
+): Promise<void> {
+	if (pendingRestarts.has(task)) return
+	if (!text.trim() && !images?.length) return
+	pendingRestarts.add(task)
+	try {
+		const abortResult = task.abort ? undefined : await task.abortTask()
+		await awaitTaskCancellationBoundary(task, abortResult)
+		const rewind = async () => {
+			if (provider.getLiveTask(task.taskId) !== task)
+				throw new Error("The task changed before the prompt could be restarted")
+			if (checkpoint) {
+				const restored = await task.checkpointRestore({
+					ts: messageTs,
+					commitHash: checkpoint.hash,
+					mode: "restore",
+					operation: "edit",
+				})
+				if (restored === false) throw new Error("The checkpoint is no longer available")
+			}
+			await task.messageManager.rewindToTimestamp(messageTs, { includeTargetMessage: false })
+		}
+		if (checkpoint) {
+			// Cancellation must join before taking the workspace gate: the old loop
+			// may itself need the gate to finish. This host restore outlives that loop.
+			await provider.runWorkspaceMutation(task, "restart from checkpoint", rewind, { allowStoppedTask: true })
+		} else {
+			await rewind()
+		}
+		const { historyItem } = await provider.getTaskWithId(task.taskId)
+		const resumedTask = await provider.createTaskWithHistoryItem(historyItem, {
+			startTask: false,
+			preserveExisting: true,
+			background: provider.getCurrentTask()?.taskId !== task.taskId,
+		})
+		await resumedTask.resumeWithEditedMessage(text, images)
+	} finally {
+		pendingRestarts.delete(task)
+	}
+}
+
 /**
  * Handles checkpoint restoration for both delete and edit operations.
  * This consolidates the common logic while handling operation-specific behavior.
@@ -28,24 +78,23 @@ export async function handleCheckpointRestoreOperation(config: CheckpointRestore
 	const { provider, currentCline, messageTs, checkpoint, operation, editData } = config
 
 	try {
+		if (operation === "edit") {
+			if (!editData) throw new Error("An edited prompt is required")
+			await restartTaskFromMessage(
+				provider,
+				currentCline,
+				messageTs,
+				editData.editedContent,
+				editData.images,
+				checkpoint,
+			)
+			return
+		}
 		// For delete operations, ensure the task is properly aborted to handle any pending ask operations
 		// This prevents "Current ask promise was ignored" errors
-		// For edit operations, we don't abort because the checkpoint restore will handle it
 		if (operation === "delete" && currentCline) {
 			const abortResult = currentCline.abort ? undefined : await currentCline.abortTask()
 			await awaitTaskCancellationBoundary(currentCline, abortResult)
-		}
-
-		// For edit operations, set up pending edit data before restoration
-		if (operation === "edit" && editData) {
-			const operationId = `task-${currentCline.taskId}`
-			provider.setPendingEditOperation(operationId, {
-				messageTs,
-				editedContent: editData.editedContent,
-				images: editData.images,
-				messageIndex: config.messageIndex,
-				apiConversationHistoryIndex: editData.apiConversationHistoryIndex,
-			})
 		}
 
 		// Perform the checkpoint restoration
@@ -56,9 +105,7 @@ export async function handleCheckpointRestoreOperation(config: CheckpointRestore
 			operation,
 		})
 
-		// For delete operations, we need to save messages and reinitialize
-		// For edit operations, the reinitialization happens automatically
-		// and processes the pending edit
+		// Save messages and reload the stopped task after deletion.
 		if (operation === "delete") {
 			// Save the updated messages to disk after checkpoint restoration
 			await saveTaskMessages({
@@ -71,8 +118,6 @@ export async function handleCheckpointRestoreOperation(config: CheckpointRestore
 			const { historyItem } = await provider.getTaskWithId(currentCline.taskId)
 			await provider.createTaskWithHistoryItem(historyItem)
 		}
-		// For edit operations, the task cancellation in checkpointRestore
-		// will trigger reinitialization, which will process pendingEditAfterRestore
 	} catch (error) {
 		console.error(`Error in checkpoint restore (${operation}):`, error)
 		vscode.window.showErrorMessage(
