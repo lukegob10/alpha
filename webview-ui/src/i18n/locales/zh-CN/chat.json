@@ -1,4 +1,18 @@
 {
+	"messageActions": {
+		"copy": "复制",
+		"copied": "已复制",
+		"edit": "编辑并重新发送",
+		"restart": "从上一条请求重新开始",
+		"restartWarning": "将重新执行上一条请求，并替换其后的所有消息。工作区文件将保持现状。",
+		"restartWithCheckpoint": "将重新执行上一条请求，并替换其后的所有消息。是否同时将文件恢复到对应的检查点？",
+		"restartOnly": "重新开始但不恢复文件"
+	},
+	"activityTrace": {
+		"needsAttention": "需要处理",
+		"workedFor": "工作用时 {{duration}}"
+	},
+	"completionReport": "完成报告",
 	"greeting": "欢迎使用 Alpha",
 	"task": {
 		"title": "任务",
@@ -30,7 +44,9 @@
 	"unpin": "取消置顶",
 	"pin": "置顶",
 	"fileChangesInConversation": {
-		"header": "此对话中已更改 {{count}} 个文件"
+		"header": "已编辑文件：{{count}}",
+		"linesChanged": "新增 {{added}} 行，删除 {{removed}} 行",
+		"openFile": "打开文件：{{path}}"
 	},
 	"tokenProgress": {
 		"availableSpace": "可用: {{amount}}",
@@ -213,18 +229,21 @@
 		"didViewTopLevel": "已查看目录文件列表",
 		"wantsToViewRecursive": "需要查看目录所有文件",
 		"didViewRecursive": "已查看目录所有文件",
-		"wantsToSearch": "需要搜索内容: {{regex}}",
-		"didSearch": "已完成内容搜索: {{regex}}",
-		"wantsToSearchOutsideWorkspace": "需要搜索内容（工作区外）: {{regex}}",
-		"didSearchOutsideWorkspace": "已完成内容搜索（工作区外）: {{regex}}",
+		"wantsToSearch": "Alpha 想要搜索一个目录",
+		"didSearch": "Alpha 已搜索一个目录",
+		"wantsToSearchOutsideWorkspace": "Alpha 想要搜索一个目录（工作区外）",
+		"didSearchOutsideWorkspace": "Alpha 已搜索一个目录（工作区外）",
 		"wantsToViewTopLevelOutsideWorkspace": "需要查看目录文件列表（工作区外）",
 		"didViewTopLevelOutsideWorkspace": "已查看目录文件列表（工作区外）",
 		"wantsToViewRecursiveOutsideWorkspace": "需要查看目录所有文件（工作区外）",
 		"didViewRecursiveOutsideWorkspace": "已查看目录所有文件（工作区外）",
-		"wantsToViewMultipleDirectories": "Alpha 想要查看多个目录"
+		"wantsToViewMultipleDirectories": "Alpha 想要查看多个目录",
+		"wantsToSearchMultiple": "Alpha 想要运行 {{count}} 文件搜索",
+		"didSearchMultiple": "Alpha 运行 {{count}} 文件搜索"
 	},
 	"commandOutput": "命令输出",
 	"commandExecution": {
+		"command": "命令",
 		"running": "正在运行",
 		"abort": "中止",
 		"pid": "PID: {{pid}}",
@@ -316,6 +335,7 @@
 	"contextManagement": {
 		"tokens": "Token",
 		"condensation": {
+			"unchanged": "上下文已在限制范围内",
 			"title": "上下文已压缩",
 			"inProgress": "正在压缩上下文...",
 			"errorHeader": "上下文压缩失败"
@@ -348,8 +368,11 @@
 			"gpt54": "Poe 提供商：已将 Poe 添加为 AI 提供商，让你可以在 Alpha 中直接访问 Poe 模型。",
 			"slashSkills": "xAI 和 MiniMax 改进：已将 xAI 提供商迁移到 Responses API，加入了可复用的转换工具，更新了 Grok-4.20 默认设置，并修复了 MiniMax 模型列表和上下文窗口处理方式，让配置更加可靠。",
 			"geminiPro": "Gemini 3.1 Pro 支持：添加了 Gemini 3.1 Pro 模型支持，并将其设为默认 Gemini 模型以提升性能。",
-			"cliNdjson": "CLI NDJSON 协议：新增 NDJSON stdin 协议、list 子命令，以及模块化的 run 命令，提供更灵活的 CLI 工作流。",
-			"cliRelease": "CLI v0.1.0：Alpha CLI 以稳定的命令接口达成首个正式版本。"
+			"welcome": "Alpha v{{version}} 改进了验证、命令控制和任务连续性。",
+			"acceptanceChecks": "只要声明的输入保持不变，就可复用已通过的检查。",
+			"commandControl": "等待、发送输入并停止属于当前任务的后台命令。",
+			"workflowContinuity": "重新加载和压缩上下文后，保留任务约束和技能上下文。",
+			"chatUpdates": "使用更清晰的聊天操作，并在任务完成后选择提供商。"
 		}
 	},
 	"costs": {
@@ -364,7 +387,6 @@
 			"copy_code": "复制代码"
 		}
 	},
-	"profileViolationWarning": "当前配置文件与您的组织设置不兼容",
 	"shellIntegration": {
 		"title": "命令执行警告",
 		"description": "您的命令正在没有 VSCode 终端 shell 集成的情况下执行。要隐藏此警告，您可以在 <settingsLink>Alpha 设置</settingsLink>的 <strong>Terminal</strong> 部分禁用 shell 集成，或使用下方链接排查 VSCode 终端集成问题。",
@@ -383,6 +405,7 @@
 		}
 	},
 	"codebaseSearch": {
+		"title": "代码库搜索",
 		"wantsToSearch": "Alpha 需要搜索代码库: <code>{{query}}</code>",
 		"wantsToSearchWithPath": "Alpha 需要在 <code>{{path}}</code> 中搜索: <code>{{query}}</code>",
 		"didSearch_one": "找到 1 个结果",
@@ -458,8 +481,19 @@
 	},
 	"queuedMessages": {
 		"title": "队列消息",
-		"clickToEdit": "点击编辑消息"
+		"clickToEdit": "点击编辑消息",
+		"steering": "正在转向…",
+		"queueFailed": "消息无法加入队列。草稿仍保留在输入框中。",
+		"steerFailed": "无法开始转向。队列中的消息仍然可用。",
+		"edit": "编辑",
+		"editTooltip": "编辑此排队消息",
+		"editing": "在编辑器中编辑",
+		"dragHandle": "拖动排队消息",
+		"dragTooltip": "拖动以重新排序此排队消息",
+		"steer": "转向",
+		"steerTooltip": "将此排队消息发送到当前回合"
 	},
+	"modelResponseDelayed": "正在等待模型的下一次更新。较长的推理可能需要一些时间。",
 	"slashCommand": {
 		"wantsToRun": "Alpha 想要运行斜杠命令",
 		"didRun": "Alpha 运行了斜杠命令"
@@ -487,5 +521,38 @@
 		"title": "供应商不再受支持",
 		"message": "抱歉，此供应商已不再受支持。我们发现实际使用它的 Alpha 用户非常少，我们需要缩减代码库的范围，以便继续快速交付并更好地服务社区。这是一个非常艰难的决定，但它能让我们专注于对你最重要的事情。我们知道这很遗憾。",
 		"openSettings": "打开设置"
+	},
+	"githubActions": {
+		"request": "请求",
+		"create_pull_request": "创建拉取请求",
+		"get_pull_request": "查看拉取请求",
+		"list_checks": "列出检查",
+		"merge_pull_request": "合并拉取请求",
+		"comment": "添加评论"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "检查代理",
+			"wait_agent": "等待代理更新",
+			"unknown": "代理操作"
+		},
+		"failed": "{{action}} 失败：{{error}}",
+		"list": {
+			"running": "正在检查代理...",
+			"completed": "已检查 {{count}} 代理",
+			"completed_other": "检查 {{count}} 代理",
+			"mailbox": "{{count}} 邮箱更新",
+			"mailbox_other": "{{count}} 邮箱更新"
+		},
+		"wait": {
+			"running": "正在等待代理更新...",
+			"noActiveAgents": "没有活动代理等待",
+			"cancelled": "代理等待已取消",
+			"timedOut": "超时前没有代理更新",
+			"alreadyDelivered": "没有新更新；结果已交付",
+			"received": "已收到 {{count}} 代理更新",
+			"received_other": "已收到 {{count}} 代理更新",
+			"completed": "代理等待已完成"
+		}
 	}
 }

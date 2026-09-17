@@ -4,7 +4,12 @@ import * as path from "path"
 import * as vscode from "vscode"
 import { isBinaryFile } from "isbinaryfile"
 
-import { mentionRegexGlobal, commandRegexGlobal, unescapeSpaces } from "../../shared/context-mentions"
+import {
+	mentionRegexGlobal,
+	commandRegexGlobal,
+	unescapeSpaces,
+	getTicketMentionLocator,
+} from "../../shared/context-mentions"
 
 import { getCommitInfo, getWorkingState } from "../../utils/git"
 
@@ -15,17 +20,27 @@ import { DEFAULT_LINE_LIMIT } from "../prompts/tools/native-tools/read_file"
 
 import { FileContextTracker } from "../context-tracking/FileContextTracker"
 
-import { RooIgnoreController } from "../ignore/RooIgnoreController"
+import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
 import { getCommand, type Command } from "../../services/command/commands"
 import { buildSkillResult, resolveSkillContentForMode, type SkillLookup } from "../../services/skills/skillInvocation"
 import type { SkillContent } from "../../shared/skills"
+import { parsePlanModeCommand } from "../../shared/plan-mode"
+import { planModeSlug } from "../../shared/modes"
+import type { TicketActivity } from "@alpha-code/types"
+import { TicketStore } from "../../services/tickets/TicketStore"
+import { readTicketMention } from "../../services/tickets/TicketChat"
 
 export async function openMention(cwd: string, mention?: string): Promise<void> {
 	if (!mention) {
 		return
 	}
 
-	if (mention.startsWith("/")) {
+	const ticketLocator = getTicketMentionLocator(mention)
+	if (ticketLocator) {
+		const store = await TicketStore.forWorkspace(cwd)
+		const ticket = await store.read(ticketLocator)
+		await vscode.commands.executeCommand("alpha.openTickets", { project: store.projectId, id: ticket.id })
+	} else if (mention.startsWith("/")) {
 		// Slice off the leading slash and unescape any spaces in the path
 		const relPath = unescapeSpaces(mention.slice(1))
 		const absPath = path.resolve(cwd, relPath)
@@ -49,7 +64,7 @@ export async function openMention(cwd: string, mention?: string): Promise<void> 
  * proper formatting as distinct message blocks.
  */
 export interface MentionContentBlock {
-	type: "file" | "folder" | "url" | "diagnostics" | "git_changes" | "git_commit" | "terminal" | "command"
+	type: "file" | "folder" | "url" | "diagnostics" | "git_changes" | "git_commit" | "terminal" | "command" | "ticket"
 	/** Path for file/folder mentions */
 	path?: string
 	/** The content to display */
@@ -96,25 +111,59 @@ File: ${filePath}
 ${result.content}`
 }
 
+function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
+	const relativePath = path.relative(rootPath, candidatePath)
+	return (
+		relativePath === "" ||
+		(relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativePath))
+	)
+}
+
+async function resolveWorkspaceMentionPath(cwd: string, candidatePath: string): Promise<string> {
+	const workspacePath = path.resolve(cwd)
+	const resolvedCandidate = path.resolve(candidatePath)
+
+	if (!isPathWithinRoot(workspacePath, resolvedCandidate)) {
+		throw new Error("Mention path is outside the current workspace.")
+	}
+
+	const [realWorkspacePath, realCandidatePath] = await Promise.all([
+		fs.realpath(workspacePath),
+		fs.realpath(resolvedCandidate),
+	])
+
+	if (!isPathWithinRoot(realWorkspacePath, realCandidatePath)) {
+		throw new Error("Mention path is outside the current workspace.")
+	}
+
+	return realCandidatePath
+}
+
 export async function parseMentions(
 	text: string,
 	cwd: string,
 	fileContextTracker?: FileContextTracker,
-	rooIgnoreController?: RooIgnoreController,
+	alphaIgnoreController?: AlphaIgnoreController,
 	showRooIgnoredFiles: boolean = false,
 	includeDiagnosticMessages: boolean = true,
 	maxDiagnosticMessages: number = 50,
 	skillsManager?: SkillLookup,
 	currentMode: string = "code",
+	onTicketActivity?: (activity: TicketActivity) => Promise<void>,
 ): Promise<ParseMentionsResult> {
 	const mentions: Set<string> = new Set()
 	const validCommands: Map<string, Command> = new Map()
 	const validSkills: Map<string, SkillContent> = new Map()
 	const contentBlocks: MentionContentBlock[] = []
-	let commandMode: string | undefined // Track mode from the first slash command that has one
+	const planCommand = parsePlanModeCommand(text)
+	let parsedText = planCommand?.rewrittenText ?? text
+	let commandMode: string | undefined = planCommand ? planModeSlug : undefined
 
 	// First pass: check which command mentions exist and cache the results
-	const commandMatches = Array.from(text.matchAll(commandRegexGlobal))
+	// `/plan <prompt>` is one atomic built-in command. Its remainder is user
+	// prompt text, not another slash-command/skill invocation to resolve under
+	// the mode that was active before Plan admission.
+	const commandMatches = planCommand ? [] : Array.from(parsedText.matchAll(commandRegexGlobal))
 	const uniqueCommandNames = new Set(commandMatches.map(([, commandName]) => commandName))
 
 	const commandExistenceChecks = await Promise.all(
@@ -151,7 +200,6 @@ export async function parseMentions(
 	}
 
 	// Only replace text for commands that actually exist (keep "see below" for commands)
-	let parsedText = text
 	for (const [match, commandName] of commandMatches) {
 		if (validCommands.has(commandName) || validSkills.has(commandName)) {
 			parsedText = parsedText.replace(match, `Command '${commandName}' (see below for command content)`)
@@ -161,8 +209,11 @@ export async function parseMentions(
 	// Second pass: handle regular mentions - replace with clean references
 	// Content will be provided as separate blocks that look like read_file results
 	parsedText = parsedText.replace(mentionRegexGlobal, (match, mention) => {
-		mentions.add(mention)
-		if (mention.startsWith("http")) {
+		const ticketLocator = getTicketMentionLocator(mention)
+		mentions.add(ticketLocator ? `ticket:${ticketLocator}` : mention)
+		if (ticketLocator) {
+			return `Alpha ticket ${ticketLocator} (attached below)`
+		} else if (mention.startsWith("http")) {
 			return `'${mention}'`
 		} else if (mention.startsWith("/")) {
 			// Clean path reference - no "see below" since we format like tool results
@@ -181,13 +232,18 @@ export async function parseMentions(
 	})
 
 	for (const mention of mentions) {
-		if (mention.startsWith("/")) {
+		const ticketLocator = getTicketMentionLocator(mention)
+		if (ticketLocator) {
+			const result = await readTicketMention(cwd, ticketLocator)
+			contentBlocks.push({ type: "ticket", content: result.content })
+			await onTicketActivity?.(result.activity)
+		} else if (mention.startsWith("/")) {
 			const mentionPath = mention.slice(1)
 			try {
 				const fileResult = await getFileOrFolderContentWithMetadata(
 					mentionPath,
 					cwd,
-					rooIgnoreController,
+					alphaIgnoreController,
 					showRooIgnoredFiles,
 					fileContextTracker,
 				)
@@ -265,15 +321,15 @@ export async function parseMentions(
 async function getFileOrFolderContentWithMetadata(
 	mentionPath: string,
 	cwd: string,
-	rooIgnoreController?: any,
+	alphaIgnoreController?: any,
 	showRooIgnoredFiles: boolean = false,
 	fileContextTracker?: FileContextTracker,
 ): Promise<MentionContentBlock> {
 	const unescapedPath = unescapeSpaces(mentionPath)
-	const absPath = path.resolve(cwd, unescapedPath)
 	const isFolder = mentionPath.endsWith("/")
 
 	try {
+		const absPath = await resolveWorkspaceMentionPath(cwd, path.resolve(cwd, unescapedPath))
 		const stats = await fs.stat(absPath)
 
 		if (stats.isFile()) {
@@ -287,7 +343,7 @@ async function getFileOrFolderContentWithMetadata(
 					content: `[read_file for '${mentionPath}']\nNote: Binary file omitted from context.`,
 				}
 			}
-			if (rooIgnoreController && !rooIgnoreController.validateAccess(unescapedPath)) {
+			if (alphaIgnoreController && !alphaIgnoreController.validateAccess(unescapedPath)) {
 				return {
 					type: "file",
 					path: mentionPath,
@@ -334,8 +390,8 @@ async function getFileOrFolderContentWithMetadata(
 				const entryPath = path.join(absPath, entry.name)
 
 				let isIgnored = false
-				if (rooIgnoreController) {
-					isIgnored = !rooIgnoreController.validateAccess(entryPath)
+				if (alphaIgnoreController) {
+					isIgnored = !alphaIgnoreController.validateAccess(entryPath)
 				}
 
 				if (isIgnored && !showRooIgnoredFiles) {
@@ -348,8 +404,11 @@ async function getFileOrFolderContentWithMetadata(
 					folderListing += `${linePrefix}${displayName}\n`
 					if (!isIgnored) {
 						const filePath = path.join(mentionPath, entry.name)
-						const absoluteFilePath = path.resolve(absPath, entry.name)
 						try {
+							const absoluteFilePath = await resolveWorkspaceMentionPath(
+								cwd,
+								path.resolve(absPath, entry.name),
+							)
 							const isBinary = await isBinaryFile(absoluteFilePath).catch(() => false)
 							if (!isBinary) {
 								const result = await extractTextFromFileWithMetadata(absoluteFilePath)

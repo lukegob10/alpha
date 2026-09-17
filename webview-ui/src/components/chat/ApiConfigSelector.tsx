@@ -20,8 +20,6 @@ interface ApiConfigSelectorProps {
 	listApiConfigMeta: Array<{ id: string; name: string; modelId?: string }>
 	pinnedApiConfigs?: Record<string, boolean>
 	togglePinnedApiConfig: (id: string) => void
-	lockApiConfigAcrossModes: boolean
-	onToggleLockApiConfig: () => void
 }
 
 export const ApiConfigSelector = ({
@@ -34,8 +32,6 @@ export const ApiConfigSelector = ({
 	listApiConfigMeta,
 	pinnedApiConfigs,
 	togglePinnedApiConfig,
-	lockApiConfigAcrossModes,
-	onToggleLockApiConfig,
 }: ApiConfigSelectorProps) => {
 	const { t } = useAppTranslation()
 	const [open, setOpen] = useState(false)
@@ -96,43 +92,45 @@ export const ApiConfigSelector = ({
 			return (
 				<div
 					key={config.id}
-					onClick={() => handleSelect(config.id)}
 					className={cn(
-						"px-3 py-1.5 text-sm cursor-pointer flex items-center group",
-						"hover:bg-vscode-list-hoverBackground",
-						isCurrentConfig &&
-							"bg-vscode-list-activeSelectionBackground text-vscode-list-activeSelectionForeground",
+						"px-1.5 py-0.5 text-sm flex items-center group",
+						"hover:bg-[var(--alpha-accent-soft)]",
+						isCurrentConfig && "bg-[var(--alpha-accent-soft)] text-vscode-foreground",
 					)}>
-					<div className="flex-1 min-w-0 flex items-center gap-1 overflow-hidden">
-						<span className="flex-shrink-0">{config.name}</span>
-						{config.modelId && (
-							<>
+					<button
+						type="button"
+						onClick={() => handleSelect(config.id)}
+						aria-current={isCurrentConfig ? "true" : undefined}
+						className="flex flex-1 min-w-0 items-center gap-1 overflow-hidden border-0 bg-transparent px-1.5 py-1 text-left text-vscode-foreground cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder">
+						<span className="flex-1 min-w-0 flex items-center gap-1 overflow-hidden">
+							<span className="flex-shrink-0">{config.name}</span>
+							{config.modelId && (
 								<span
 									className="text-vscode-descriptionForeground opacity-70 min-w-0 overflow-hidden"
 									style={{ direction: "rtl", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
 									{config.modelId}
 								</span>
-							</>
-						)}
-					</div>
-					<div className="flex items-center gap-1">
+							)}
+						</span>
 						{isCurrentConfig && (
-							<div className="size-5 p-1 flex items-center justify-center">
+							<span className="size-5 p-1 flex items-center justify-center">
 								<span className="codicon codicon-check text-xs" />
-							</div>
+							</span>
 						)}
+					</button>
+					<div className="flex items-center gap-1">
 						<StandardTooltip content={isPinned ? t("chat:unpin") : t("chat:pin")}>
 							<Button
 								variant="ghost"
 								size="icon"
-								tabIndex={-1}
-								onClick={(e) => {
-									e.stopPropagation()
+								aria-label={isPinned ? t("chat:unpin") : t("chat:pin")}
+								onClick={() => {
 									togglePinnedApiConfig(config.id)
 									vscode.postMessage({ type: "toggleApiConfigPin", text: config.id })
 								}}
 								className={cn("size-5 flex items-center justify-center", {
-									"opacity-0 group-hover:opacity-100": !isPinned && !isCurrentConfig,
+									"opacity-0 group-hover:opacity-100 focus-visible:opacity-100":
+										!isPinned && !isCurrentConfig,
 									"bg-accent opacity-100": isPinned,
 								})}>
 								<span className="codicon codicon-pin text-xs opacity-50" />
@@ -153,11 +151,9 @@ export const ApiConfigSelector = ({
 					data-testid="dropdown-trigger"
 					className={cn(
 						"min-w-0 inline-flex items-center relative whitespace-nowrap px-1.5 py-1 text-xs",
-						"bg-transparent border border-[rgba(255,255,255,0.08)] rounded-md text-vscode-foreground",
+						"composer-control text-vscode-foreground",
 						"transition-all duration-150 focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder focus-visible:ring-inset",
-						disabled
-							? "opacity-50 cursor-not-allowed"
-							: "opacity-90 hover:opacity-100 hover:bg-[rgba(255,255,255,0.03)] hover:border-[rgba(255,255,255,0.15)] cursor-pointer",
+						disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer opacity-90 hover:opacity-100",
 						triggerClassName,
 					)}>
 					<span className="truncate">{displayName}</span>
@@ -182,7 +178,9 @@ export const ApiConfigSelector = ({
 							/>
 							{searchValue.length > 0 && (
 								<div className="absolute right-4 top-0 bottom-0 flex items-center justify-center">
-									<span
+									<button
+										type="button"
+										aria-label="Clear search"
 										className="codicon codicon-close text-vscode-input-foreground opacity-50 hover:opacity-100 text-xs cursor-pointer"
 										onClick={() => setSearchValue("")}
 									/>
@@ -225,22 +223,12 @@ export const ApiConfigSelector = ({
 
 					{/* Bottom bar with buttons on left and title on right */}
 					<div className="flex flex-row items-center justify-between px-2 py-2 border-t border-vscode-dropdown-border">
-						<div className="flex flex-row gap-1">
+						<div>
 							<IconButton
 								iconClass="codicon-settings-gear"
 								title={t("chat:edit")}
 								onClick={handleEditClick}
 								tooltip={false}
-							/>
-							<IconButton
-								iconClass={lockApiConfigAcrossModes ? "codicon-lock" : "codicon-unlock"}
-								title={
-									lockApiConfigAcrossModes
-										? t("chat:unlockApiConfigAcrossModes")
-										: t("chat:lockApiConfigAcrossModes")
-								}
-								className={lockApiConfigAcrossModes ? "text-vscode-focusBorder" : "opacity-60"}
-								onClick={onToggleLockApiConfig}
 							/>
 						</div>
 

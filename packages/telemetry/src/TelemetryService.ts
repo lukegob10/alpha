@@ -20,8 +20,8 @@ export class TelemetryService {
 	}
 
 	/**
-	 * Sets the ClineProvider reference to use for global properties
-	 * @param provider A ClineProvider instance to use
+	 * Sets the AlphaProvider reference to use for global properties
+	 * @param provider A AlphaProvider instance to use
 	 */
 	public setProvider(provider: TelemetryPropertiesProvider): void {
 		// If client is initialized, pass the provider reference.

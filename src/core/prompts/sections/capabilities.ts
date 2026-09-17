@@ -1,6 +1,43 @@
 import { McpHub } from "../../../services/mcp/McpHub"
 
-export function getCapabilitiesSection(cwd: string, mcpHub?: McpHub): string {
+export function getCapabilitiesSection(
+	cwd: string,
+	mcpHub?: McpHub,
+	subagentRole?: "explore" | "review" | "worker",
+	subagentCanDelegate = false,
+	subagentDelegationPolicy?: "explicit-only" | "proactive",
+	isPlanMode = false,
+): string {
+	if (subagentRole) {
+		const roleCapabilities =
+			subagentRole === "worker"
+				? "You may inspect repository evidence, edit only paths in the approved write scope, and run targeted local verification commands subject to the child approval policy."
+				: "You may inspect repository evidence using read, list, and search operations. This is a read-only child task."
+		const delegationCapability = subagentCanDelegate
+			? `
+- You may launch bounded managed descendants and control only your retained descendant subtree. The frozen ${subagentDelegationPolicy ?? "effective"} delegation policy and ancestry/capacity/budget limits govern every launch.`
+			: ""
+
+		return `====
+
+CAPABILITIES
+
+- ${roleCapabilities}${delegationCapability}
+- The current workspace directory is '${cwd}'. A recursive workspace file list may be supplied in environment_details. Stay within this workspace and the objective's evidence scope.
+- Complete the bounded objective from available repository evidence, then report the result.`
+	}
+
+	if (isPlanMode) {
+		return `====
+
+CAPABILITIES
+
+- You may inspect the workspace with read, list, search, and available codebase-search tools. You may run a host-classified inspection or source-non-mutating verification command and read its retained output. Verification may execute trusted repository test/config code and create ordinary tool caches, but cannot target output, temp, cache, config, or plugin paths.
+- You may ask a focused follow-up question and coordinate bounded managed Explore or Review children using the available agent lifecycle controls.
+- The current workspace directory is '${cwd}'. A recursive workspace file list may be supplied in environment_details. Stay within this workspace and the user's planning objective.
+- Plan mode cannot edit files, run arbitrary or mutating commands, launch or advance Workers, or invoke other side-effecting capabilities.`
+	}
+
 	return `====
 
 CAPABILITIES

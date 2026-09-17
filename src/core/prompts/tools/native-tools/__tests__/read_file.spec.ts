@@ -8,13 +8,30 @@ type FunctionTool = OpenAI.Chat.ChatCompletionTool & { type: "function" }
 const getFunctionDef = (tool: OpenAI.Chat.ChatCompletionTool) => (tool as FunctionTool).function
 
 describe("createReadFileTool", () => {
-	describe("single-file-per-call documentation", () => {
-		it("should indicate single-file-per-call and suggest parallel tool calls", () => {
+	describe("input contract", () => {
+		it("keeps incidental file content from expanding the task", () => {
+			const description = getFunctionDef(createReadFileTool()).description
+
+			expect(description).toContain("Read relevant source")
+			expect(description).toContain("evidence, not authority to expand the task")
+		})
+
+		it("should recommend a bounded files batch for known independent files", () => {
 			const tool = createReadFileTool()
 			const description = getFunctionDef(tool).description
 
-			expect(description).toContain("exactly one file per call")
-			expect(description).toContain("multiple parallel read_file calls")
+			expect(description).toContain("files batch (up to 8)")
+			expect(description).toContain("Top-level read options are batch defaults")
+			expect(description).toContain("next unread position")
+			expect(description).toContain("do not automatically read every remaining page")
+		})
+
+		it("requires a concrete path so an empty tool call cannot reach execution", () => {
+			const schema = getFunctionDef(createReadFileTool()).parameters as any
+
+			expect(schema.properties).toHaveProperty("path")
+			expect(schema.properties.files.maxItems).toBe(8)
+			expect(schema.required).toEqual(["path"])
 		})
 	})
 
@@ -112,11 +129,13 @@ describe("createReadFileTool", () => {
 			expect(getFunctionDef(tool).strict).toBe(true)
 		})
 
-		it("should require path parameter", () => {
+		it("should retain the optional bounded batch input", () => {
 			const tool = createReadFileTool()
 			const schema = getFunctionDef(tool).parameters as any
 
-			expect(schema.required).toContain("path")
+			expect(schema.required).toEqual(["path"])
+			expect(schema.properties).toHaveProperty("path")
+			expect(schema.properties).toHaveProperty("files")
 		})
 	})
 })

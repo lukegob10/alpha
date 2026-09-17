@@ -1,4 +1,57 @@
+import { createHash, randomBytes } from "crypto"
+
+import type { SubagentCommandApprovalPolicy, SubagentCommandApprovalRule } from "@alpha-code/types"
+
 import { parseCommand } from "../../shared/parse-command"
+import { analyzeShellCommands, containsDynamicExecutable } from "./shellCommand"
+
+const SUBAGENT_COMMAND_APPROVAL_ALGORITHM = "sha256-salted-prefix-v1" as const
+
+// Match findLongestPrefixMatch exactly: commands are trimmed, configured prefixes are not.
+const normalizeCommandPrefix = (prefix: string): string => prefix.toLowerCase()
+
+const digestCommandPrefix = (salt: string, prefix: string): string =>
+	createHash("sha256").update(salt).update("\0").update(prefix).digest("hex")
+
+/**
+ * Freeze command prefix rules without copying their potentially credential-bearing
+ * plaintext into durable child manifests.
+ */
+export function createSubagentCommandApprovalPolicy(
+	allowedCommands: string[],
+	deniedCommands: string[],
+	salt = randomBytes(32).toString("hex"),
+): SubagentCommandApprovalPolicy {
+	const buildRules = (commands: string[]): { wildcard: boolean; rules: SubagentCommandApprovalRule[] } => {
+		let wildcard = false
+		const normalized = new Set<string>()
+		for (const command of commands) {
+			const prefix = normalizeCommandPrefix(command)
+			if (!prefix) continue
+			if (prefix === "*") wildcard = true
+			else normalized.add(prefix)
+		}
+		return {
+			wildcard,
+			rules: [...normalized]
+				.map((prefix) => ({ prefixLength: prefix.length, digest: digestCommandPrefix(salt, prefix) }))
+				.sort(
+					(left, right) => left.prefixLength - right.prefixLength || left.digest.localeCompare(right.digest),
+				),
+		}
+	}
+
+	const allowed = buildRules(allowedCommands)
+	const denied = buildRules(deniedCommands)
+	return {
+		algorithm: SUBAGENT_COMMAND_APPROVAL_ALGORITHM,
+		salt,
+		allowAll: allowed.wildcard,
+		denyAll: denied.wildcard,
+		allowed: allowed.rules,
+		denied: denied.rules,
+	}
+}
 
 /**
  * Detect dangerous parameter substitutions that could lead to command execution.
@@ -258,19 +311,34 @@ export function getCommandDecision(
 	allowedCommands: string[],
 	deniedCommands?: string[],
 ): CommandDecision {
+	// A global wildcard accepts scripts and computed commands. Path review is a separate scheduler check.
+	if (allowedCommands.includes("*") && !deniedCommands?.length) return "auto_approve"
+	return aggregateCommandDecision(command, (singleCommand) =>
+		getSingleCommandDecision(singleCommand, allowedCommands, deniedCommands),
+	)
+}
+
+function aggregateCommandDecision(
+	command: string,
+	getDecision: (singleCommand: string) => CommandDecision,
+): CommandDecision {
 	if (!command?.trim()) {
 		return "auto_approve"
 	}
 
-	// Parse into sub-commands (split by &&, ||, ;, |)
-	const subCommands = parseCommand(command)
+	// Keep the established parser for compatibility, then add commands that are
+	// executable through quoted, parameter-default, arithmetic, or process substitution.
+	const shellAnalysis = analyzeShellCommands(command)
+	const subCommands = [
+		...new Set([...parseCommand(command), ...shellAnalysis.commands.flatMap((inner) => parseCommand(inner))]),
+	]
 
 	// Check each sub-command and collect decisions
 	const decisions: CommandDecision[] = subCommands.map((cmd) => {
 		// Remove simple PowerShell-like redirections (e.g. 2>&1) before checking
 		const cmdWithoutRedirection = cmd.replace(/\d*>&\d*/, "").trim()
 
-		return getSingleCommandDecision(cmdWithoutRedirection, allowedCommands, deniedCommands)
+		return getDecision(cmdWithoutRedirection)
 	})
 
 	// If any sub-command is denied, deny the whole command
@@ -283,6 +351,12 @@ export function getCommandDecision(
 		return "ask_user"
 	}
 
+	// A prefix policy cannot determine an executable supplied by shell expansion.
+	// Never inherit approval for an indeterminate command name.
+	if (shellAnalysis.malformedSubstitution || containsDynamicExecutable(command)) {
+		return "ask_user"
+	}
+
 	// If all sub-commands are approved, approve the whole command
 	if (decisions.every((decision) => decision === "auto_approve")) {
 		return "auto_approve"
@@ -290,6 +364,46 @@ export function getCommandDecision(
 
 	// Otherwise, ask user
 	return "ask_user"
+}
+
+function findLongestHashedPrefixMatch(
+	command: string,
+	rules: SubagentCommandApprovalRule[],
+	salt: string,
+	wildcard: boolean,
+): number | null {
+	const normalizedCommand = command.trim().toLowerCase()
+	let longestMatch: number | null = wildcard ? 1 : null
+
+	for (const rule of rules) {
+		if (rule.prefixLength > normalizedCommand.length) continue
+		const candidate = normalizedCommand.slice(0, rule.prefixLength)
+		if (digestCommandPrefix(salt, candidate) === rule.digest) {
+			longestMatch = Math.max(longestMatch ?? 0, rule.prefixLength)
+		}
+	}
+
+	return longestMatch
+}
+
+function getHashedSingleCommandDecision(command: string, policy: SubagentCommandApprovalPolicy): CommandDecision {
+	if (!command) return "auto_approve"
+
+	const longestAllowedMatch = findLongestHashedPrefixMatch(command, policy.allowed, policy.salt, policy.allowAll)
+	const longestDeniedMatch = findLongestHashedPrefixMatch(command, policy.denied, policy.salt, policy.denyAll)
+
+	if (longestAllowedMatch !== null && longestDeniedMatch === null) return "auto_approve"
+	if (longestAllowedMatch === null && longestDeniedMatch !== null) return "auto_deny"
+	if (longestAllowedMatch !== null && longestDeniedMatch !== null) {
+		return longestAllowedMatch > longestDeniedMatch ? "auto_approve" : "auto_deny"
+	}
+	return "ask_user"
+}
+
+/** Evaluate a command against an approval ceiling that contains no plaintext command rules. */
+export function getSubagentCommandDecision(command: string, policy: SubagentCommandApprovalPolicy): CommandDecision {
+	if (policy.allowAll && !policy.denyAll && !policy.denied.length) return "auto_approve"
+	return aggregateCommandDecision(command, (singleCommand) => getHashedSingleCommandDecision(singleCommand, policy))
 }
 
 /**

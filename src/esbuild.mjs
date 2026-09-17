@@ -7,22 +7,10 @@ import process from "node:process"
 import * as console from "node:console"
 
 import { copyPaths, copyWasms, copyLocales, setupLocaleWatcher } from "@alpha-code/build"
+import { resolveLanceDbNativeDependencies } from "./lancedb-native.mjs"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
-const require = createRequire(import.meta.url)
-
-const lancedbNativePackages = [
-	"@lancedb/lancedb-win32-x64-msvc",
-	"@lancedb/lancedb-linux-x64-gnu",
-	"@lancedb/lancedb-linux-x64-musl",
-]
-
-const lancedbNativeBindingFiles = [
-	"lancedb.win32-x64-msvc.node",
-	"lancedb.linux-x64-gnu.node",
-	"lancedb.linux-x64-musl.node",
-]
 
 const ripgrepPackages = [
 	"@vscode/ripgrep",
@@ -56,11 +44,7 @@ function findPackageRoot(resolvedPath, packageName) {
 }
 
 function resolveRipgrepPackageDir(packageName) {
-	const resolutionBases = [
-		import.meta.url,
-		path.join(__dirname, "..", "package.json"),
-		path.join(__dirname, "..", "apps", "cli", "package.json"),
-	]
+	const resolutionBases = [import.meta.url, path.join(__dirname, "..", "package.json")]
 
 	for (const resolutionBase of resolutionBases) {
 		try {
@@ -136,33 +120,7 @@ async function cleanDistDir(distDir) {
 	}
 }
 
-function resolveLanceDbNativeBindings() {
-	const nativeBindings = []
-	const lanceDbEntry = require.resolve("@lancedb/lancedb")
-	const lanceDbRequire = createRequire(lanceDbEntry)
-
-	for (const nativePackage of lancedbNativePackages) {
-		try {
-			const nativePackageJson = lanceDbRequire.resolve(`${nativePackage}/package.json`)
-			const nativePackageDir = path.dirname(nativePackageJson)
-			const nativeBinding = lancedbNativeBindingFiles
-				.map((fileName) => path.join(nativePackageDir, fileName))
-				.find((filePath) => fs.existsSync(filePath))
-
-			if (nativeBinding) {
-				nativeBindings.push(nativeBinding)
-			}
-		} catch {
-			// Optional native packages are only installed for the current package manager environment.
-		}
-	}
-
-	return nativeBindings
-}
-
-function copyLanceDbNativeBindings(distDir) {
-	const nativeBindings = resolveLanceDbNativeBindings()
-
+function copyLanceDbNativeBindings(distDir, nativeBindings) {
 	if (nativeBindings.length === 0) {
 		return
 	}
@@ -211,6 +169,8 @@ async function main() {
 	const srcDir = __dirname
 	const buildDir = __dirname
 	const distDir = path.join(buildDir, "dist")
+	// Resolve before cleaning outputs. Externalization and copied runtime bindings must share one inventory.
+	const lanceDbNative = resolveLanceDbNativeDependencies()
 
 	if (fs.existsSync(distDir)) {
 		console.log(`[${name}] Cleaning dist directory: ${distDir}`)
@@ -230,7 +190,6 @@ async function main() {
 							["../README.md", "README.md"],
 							["../CHANGELOG.md", "CHANGELOG.md"],
 							["../LICENSE", "LICENSE"],
-							["../.env", ".env", { optional: true }],
 							["node_modules/vscode-material-icons/generated", "assets/vscode-material-icons"],
 							["../webview-ui/audio", "webview-ui/audio"],
 						],
@@ -257,7 +216,7 @@ async function main() {
 			setup(build) {
 				build.onEnd((result) => {
 					if (result.errors.length === 0) {
-						copyLanceDbNativeBindings(distDir)
+						copyLanceDbNativeBindings(distDir, lanceDbNative.bindings)
 						copyBundledRipgrepDependencies(distDir)
 					}
 				})
@@ -292,7 +251,7 @@ async function main() {
 		// global-agent must be external because it dynamically patches Node.js http/https modules
 		// which breaks when bundled. It needs access to the actual Node.js module instances.
 		// undici must be bundled because our VSIX is packaged with `--no-dependencies`.
-		external: ["vscode", "esbuild", "global-agent", ...lancedbNativePackages],
+		external: ["vscode", "esbuild", "global-agent", ...lanceDbNative.packages],
 	}
 
 	/**
@@ -300,7 +259,7 @@ async function main() {
 	 */
 	const workerConfig = {
 		...buildOptions,
-		entryPoints: ["workers/countTokens.ts"],
+		entryPoints: ["workers/countTokens.ts", "workers/sanitizeDocument.ts"],
 		outdir: "dist/workers",
 	}
 

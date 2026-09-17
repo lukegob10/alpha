@@ -81,6 +81,7 @@ describe("finishRun", () => {
 				read_file: { attempts: 6, failures: 0 },
 				apply_diff: { attempts: 5, failures: 1 },
 			},
+			requestUsage: [],
 			createdAt: expect.any(Date),
 		})
 	})

@@ -1,0 +1,8 @@
+{
+	"name": "alpha-frontier-repo-auth-session-rotation",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "node --test test/behavior.test.js"
+	}
+}

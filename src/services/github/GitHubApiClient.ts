@@ -56,6 +56,26 @@ export class GitHubApiError extends Error {
 	}
 }
 
+export class GitHubRequestInterruptedError extends GitHubApiError {
+	constructor(
+		public readonly reason: "cancelled" | "timeout",
+		public readonly outcomeUnknown: boolean,
+	) {
+		super(
+			`GitHub request ${reason === "timeout" ? "timed out" : "was cancelled"}.` +
+				(outcomeUnknown ? " The write may have reached GitHub; check its state before retrying." : ""),
+		)
+		this.name = "GitHubRequestInterruptedError"
+	}
+}
+
+interface GitHubRequestOptions {
+	signal?: AbortSignal
+	timeoutMs?: number
+}
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
+
 type GitHubProxyConfig = {
 	proxyUrl?: string
 	proxyAuthorization?: string
@@ -67,7 +87,10 @@ type GitHubProxyConfig = {
 export class GitHubApiClient {
 	private readonly baseUrl = "https://api.github.com"
 
-	constructor(private readonly token: string) {}
+	constructor(
+		private readonly token: string,
+		private readonly options: GitHubRequestOptions = {},
+	) {}
 
 	async createPullRequest(input: {
 		owner: string
@@ -179,6 +202,33 @@ export class GitHubApiClient {
 	}
 
 	private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+		const parentSignal = this.options.signal
+		if (parentSignal?.aborted) throw new GitHubRequestInterruptedError("cancelled", false)
+		const timeoutMs = this.options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
+		if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new GitHubApiError("Invalid GitHub request timeout.")
+		const controller = new AbortController()
+		let timedOut = false
+		const onAbort = () => controller.abort()
+		parentSignal?.addEventListener("abort", onAbort, { once: true })
+		const timeout = setTimeout(() => {
+			timedOut = true
+			controller.abort()
+		}, timeoutMs)
+		try {
+			const result = await this.requestWithSignal<T>(method, path, body, controller.signal)
+			controller.signal.throwIfAborted()
+			return result
+		} catch (error) {
+			if (controller.signal.aborted)
+				throw new GitHubRequestInterruptedError(timedOut ? "timeout" : "cancelled", method !== "GET")
+			throw error
+		} finally {
+			clearTimeout(timeout)
+			parentSignal?.removeEventListener("abort", onAbort)
+		}
+	}
+
+	private async requestWithSignal<T>(method: string, path: string, body: unknown, signal: AbortSignal): Promise<T> {
 		const url = `${this.baseUrl}${path}`
 		const headers = {
 			Authorization: `Bearer ${this.token}`,
@@ -188,9 +238,10 @@ export class GitHubApiClient {
 		}
 		const bodyText = body === undefined ? undefined : JSON.stringify(body)
 		const proxyConfig = getGitHubProxyConfig(url)
+		signal.throwIfAborted()
 
 		if (proxyConfig.proxyUrl) {
-			return requestWithCurl<T>(url, method, headers, bodyText, proxyConfig)
+			return requestWithCurl<T>(url, method, headers, bodyText, proxyConfig, signal)
 		}
 
 		let response: Response
@@ -200,6 +251,7 @@ export class GitHubApiClient {
 				method,
 				headers,
 				body: bodyText,
+				signal,
 			})
 		} catch (error) {
 			throw new GitHubApiError(formatNetworkError(url, error, proxyConfig))
@@ -218,6 +270,7 @@ async function requestWithCurl<T>(
 	headers: Record<string, string>,
 	body: string | undefined,
 	proxyConfig: GitHubProxyConfig,
+	signal: AbortSignal,
 ): Promise<T> {
 	const statusMarker = "__ALPHA_GITHUB_HTTP_STATUS__:"
 	const args = [
@@ -259,7 +312,7 @@ async function requestWithCurl<T>(
 
 	let stdout: string
 	try {
-		stdout = await runCurl(args)
+		stdout = await runCurl(args, signal)
 	} catch (error) {
 		throw new GitHubApiError(formatCurlNetworkError(error, proxyConfig))
 	}
@@ -287,7 +340,7 @@ async function requestWithCurl<T>(
 	}
 }
 
-function runCurl(args: string[]): Promise<string> {
+function runCurl(args: string[], signal: AbortSignal): Promise<string> {
 	return new Promise((resolve, reject) => {
 		execFile(
 			"curl",
@@ -296,10 +349,14 @@ function runCurl(args: string[]): Promise<string> {
 				encoding: "utf8",
 				maxBuffer: 10 * 1024 * 1024,
 				windowsHide: true,
+				signal,
 			},
-			(error, stdout) => {
+			(error, stdout, stderr) => {
 				if (error) {
-					reject(error)
+					// ExecFile errors include the complete argv in their message. Curl argv
+					// contains Authorization headers, so never propagate that raw error.
+					const detail = stderr.trim() || `curl exited with code ${error.code ?? "unknown"}`
+					reject(new Error(detail))
 					return
 				}
 

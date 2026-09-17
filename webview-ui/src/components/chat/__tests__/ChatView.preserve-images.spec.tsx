@@ -9,7 +9,7 @@ import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContex
 import ChatView, { ChatViewProps } from "../ChatView"
 
 // Define minimal types needed for testing
-interface ClineMessage {
+interface AlphaMessage {
 	type: "say" | "ask"
 	say?: string
 	ask?: string
@@ -20,7 +20,7 @@ interface ClineMessage {
 
 interface ExtensionState {
 	version: string
-	clineMessages: ClineMessage[]
+	clineMessages: AlphaMessage[]
 	taskHistory: any[]
 	shouldShowAnnouncement: boolean
 	allowedCommands: string[]
@@ -45,7 +45,7 @@ vi.mock("use-sound", () => ({
 
 // Mock components that use ESM dependencies
 vi.mock("../ChatRow", () => ({
-	default: function MockChatRow({ message }: { message: ClineMessage }) {
+	default: function MockChatRow({ message }: { message: AlphaMessage }) {
 		return <div data-testid="chat-row">{JSON.stringify(message)}</div>
 	},
 }))
@@ -202,27 +202,6 @@ vi.mock("../ChatTextArea", () => {
 		ChatTextArea: ChatTextAreaComponent,
 	}
 })
-
-// Mock react-virtuoso
-vi.mock("react-virtuoso", () => ({
-	Virtuoso: function MockVirtuoso({
-		data,
-		itemContent,
-	}: {
-		data: ClineMessage[]
-		itemContent: (index: number, item: ClineMessage) => React.ReactNode
-	}) {
-		return (
-			<div data-testid="virtuoso-item-list">
-				{data.map((item, index) => (
-					<div key={item.ts} data-testid={`virtuoso-item-${index}`}>
-						{itemContent(index, item)}
-					</div>
-				))}
-			</div>
-		)
-	},
-}))
 
 // Mock window.postMessage to trigger state hydration
 const mockPostMessage = (state: Partial<ExtensionState>) => {

@@ -8,7 +8,7 @@ import type { GlobalState, ProviderSettings } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../Task"
-import { ClineProvider } from "../../webview/ClineProvider"
+import { AlphaProvider } from "../../webview/AlphaProvider"
 import { ContextProxy } from "../../config/ContextProxy"
 
 // Mock delay before any imports that might use it
@@ -45,6 +45,67 @@ vi.mock("fs/promises", async (importOriginal) => {
 const { mockPWaitFor } = vi.hoisted(() => {
 	return { mockPWaitFor: vi.fn().mockImplementation(async () => Promise.resolve()) }
 })
+
+// This suite exercises the legacy history flush in isolation. Task now
+// dual-writes every successful history save to the provider transcript
+// sidecar, so keep that new persistence authority explicit here instead of
+// letting proper-lockfile run against the intentionally narrow fs mock above.
+const { MockProviderTranscriptStore, MockProviderTranscriptStoreError, MockProviderTranscriptRevisionConflictError } =
+	vi.hoisted(() => {
+		class MockProviderTranscriptStoreError extends Error {
+			code = "write_failed"
+			taskId = "test-id"
+		}
+
+		class MockProviderTranscriptRevisionConflictError extends MockProviderTranscriptStoreError {
+			override code = "revision_conflict"
+		}
+
+		const receipt = {
+			version: 1,
+			taskId: "test-id",
+			revision: 1,
+			digest: "0".repeat(64),
+			writtenAt: 1,
+		}
+
+		const MockProviderTranscriptStore = vi.fn().mockImplementation((taskId: string) => ({
+			read: vi.fn().mockResolvedValue({
+				version: 1,
+				taskId,
+				revision: 0,
+				digest: "0".repeat(64),
+				writtenAt: 0,
+				messages: [],
+			}),
+			getLastCommitReceipt: vi.fn().mockReturnValue({ ...receipt, taskId }),
+			commitAuthoritativeTranscript: vi.fn().mockResolvedValue({ ...receipt, taskId }),
+			verifyCommitReceipt: vi.fn().mockResolvedValue(undefined),
+			assertCommitReceipt: vi.fn().mockResolvedValue(undefined),
+			repairFromAuthoritativeTranscript: vi.fn().mockResolvedValue({ ...receipt, taskId }),
+		}))
+
+		return {
+			MockProviderTranscriptStore,
+			MockProviderTranscriptStoreError,
+			MockProviderTranscriptRevisionConflictError,
+		}
+	})
+
+vi.mock("../../task-persistence/ProviderTranscriptStore", () => ({
+	ProviderTranscriptStore: MockProviderTranscriptStore,
+	ProviderTranscriptStoreError: MockProviderTranscriptStoreError,
+	ProviderTranscriptRevisionConflictError: MockProviderTranscriptRevisionConflictError,
+	digestProviderTranscript: vi.fn(() => "0".repeat(64)),
+	serializeProviderTranscript: (messages: unknown) => JSON.stringify(messages),
+	assertAuthoritativeTranscriptReplacementAllowed: vi.fn(),
+	withLegacyTranscriptMigration: (_path: string, _taskId: string, operation: () => Promise<unknown>) => operation(),
+}))
+
+vi.mock("../../task-persistence/atomicWrite", () => ({
+	atomicWriteText: vi.fn().mockResolvedValue(undefined),
+	withFileLock: vi.fn(async (_path: string, operation: () => Promise<unknown>) => operation()),
+}))
 
 vi.mock("p-wait-for", () => ({
 	default: mockPWaitFor,
@@ -122,9 +183,12 @@ vi.mock("../../../integrations/misc/extract-text", () => ({
 
 vi.mock("../../environment/getEnvironmentDetails", () => ({
 	getEnvironmentDetails: vi.fn().mockResolvedValue(""),
+	captureEnvironmentDetails: vi
+		.fn()
+		.mockImplementation(async () => ({ details: "", commit: vi.fn(), release: vi.fn() })),
 }))
 
-vi.mock("../../ignore/RooIgnoreController")
+vi.mock("../../ignore/AlphaIgnoreController")
 
 vi.mock("../../condense", async (importOriginal) => {
 	const actual = (await importOriginal()) as any
@@ -203,7 +267,7 @@ describe("flushPendingToolResultsToHistory", () => {
 			dispose: vi.fn(),
 		}
 
-		mockProvider = new ClineProvider(
+		mockProvider = new AlphaProvider(
 			mockExtensionContext,
 			mockOutputChannel,
 			"sidebar",
@@ -248,6 +312,7 @@ describe("flushPendingToolResultsToHistory", () => {
 			task: "test task",
 			startTask: false,
 		})
+		task.assistantMessageSavedToHistory = true
 
 		// Set up pending tool result in userMessageContent
 		task.userMessageContent = [
@@ -278,6 +343,7 @@ describe("flushPendingToolResultsToHistory", () => {
 			task: "test task",
 			startTask: false,
 		})
+		task.assistantMessageSavedToHistory = true
 
 		// Set up pending tool result
 		task.userMessageContent = [
@@ -301,6 +367,7 @@ describe("flushPendingToolResultsToHistory", () => {
 			task: "test task",
 			startTask: false,
 		})
+		task.assistantMessageSavedToHistory = true
 
 		// Set up multiple pending tool results
 		task.userMessageContent = [
@@ -333,6 +400,7 @@ describe("flushPendingToolResultsToHistory", () => {
 			task: "test task",
 			startTask: false,
 		})
+		task.assistantMessageSavedToHistory = true
 
 		const beforeTs = Date.now()
 
@@ -408,6 +476,9 @@ describe("flushPendingToolResultsToHistory", () => {
 
 		// Clear mock call history
 		mockPWaitFor.mockClear()
+		mockPWaitFor.mockImplementationOnce(async () => {
+			task.assistantMessageSavedToHistory = true
+		})
 
 		await task.flushPendingToolResultsToHistory()
 

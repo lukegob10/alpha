@@ -1,3 +1,4 @@
+import { getIndexIdentity } from "./shared/embedding-input"
 import * as vscode from "vscode"
 import { Ignore } from "ignore"
 
@@ -10,7 +11,7 @@ import { t } from "../../i18n"
 import { getDefaultModelId, getModelDimension } from "../../shared/embeddingModels"
 import { Package } from "../../shared/package"
 
-import { RooIgnoreController } from "../../core/ignore/RooIgnoreController"
+import { AlphaIgnoreController } from "../../core/ignore/AlphaIgnoreController"
 
 import { OpenAiEmbedder } from "./embedders/openai"
 import { CodeIndexOllamaEmbedder } from "./embedders/ollama"
@@ -87,7 +88,7 @@ export class CodeIndexServiceFactory {
 			) {
 				throw new Error(t("embeddings:serviceFactory.vertexConfigMissing"))
 			}
-			return new VertexGeminiEmbedder(config.vertexOptions, config.modelId)
+			return new VertexGeminiEmbedder(config.vertexOptions, config.modelId, config.embeddingRateLimitSeconds)
 		} else if (provider === "mistral") {
 			if (!config.mistralOptions?.apiKey) {
 				throw new Error(t("embeddings:serviceFactory.mistralConfigMissing"))
@@ -183,6 +184,7 @@ export class CodeIndexServiceFactory {
 				this.workspacePath,
 				config.localIndexPath || DEFAULT_LOCAL_INDEX_PATH,
 				vectorSize,
+				getIndexIdentity(config),
 			)
 		}
 
@@ -190,7 +192,13 @@ export class CodeIndexServiceFactory {
 			throw new Error(t("embeddings:serviceFactory.qdrantUrlMissing"))
 		}
 
-		return new QdrantVectorStore(this.workspacePath, config.qdrantUrl, vectorSize, config.qdrantApiKey)
+		return new QdrantVectorStore(
+			this.workspacePath,
+			config.qdrantUrl,
+			vectorSize,
+			config.qdrantApiKey,
+			getIndexIdentity(config),
+		)
 	}
 
 	/**
@@ -233,7 +241,7 @@ export class CodeIndexServiceFactory {
 		vectorStore: IVectorStore,
 		cacheManager: CacheManager,
 		ignoreInstance: Ignore,
-		rooIgnoreController?: RooIgnoreController,
+		alphaIgnoreController?: AlphaIgnoreController,
 	): IFileWatcher {
 		const config = this.configManager.getConfig()
 		// Get the configurable batch size from VSCode settings
@@ -253,7 +261,7 @@ export class CodeIndexServiceFactory {
 			embedder,
 			vectorStore,
 			ignoreInstance,
-			rooIgnoreController,
+			alphaIgnoreController,
 			batchSize,
 			config.embeddingRateLimitSeconds,
 		)
@@ -267,7 +275,7 @@ export class CodeIndexServiceFactory {
 		context: vscode.ExtensionContext,
 		cacheManager: CacheManager,
 		ignoreInstance: Ignore,
-		rooIgnoreController?: RooIgnoreController,
+		alphaIgnoreController?: AlphaIgnoreController,
 	): {
 		embedder: IEmbedder
 		vectorStore: IVectorStore
@@ -289,7 +297,7 @@ export class CodeIndexServiceFactory {
 			vectorStore,
 			cacheManager,
 			ignoreInstance,
-			rooIgnoreController,
+			alphaIgnoreController,
 		)
 
 		return {

@@ -1,0 +1,15 @@
+{
+	"filter": "Filtruj wiersze",
+	"sort": "Sortuj według {column}",
+	"rows": "{visible} z {total} wierszy",
+	"unsupported": "Ta wersja zestawu nie jest obsługiwana. Otwórz źródło i użyj data-alpha-kit=\"1\".",
+	"invalidTable": "Dodatkowe funkcje tabeli są niedostępne. Użyj prostokątnej tabeli z jednym wierszem nagłówka i maksymalnie 1 000 wierszy oraz 20 kolumnami.",
+	"invalidChart": "Dodatkowe funkcje wykresu są niedostępne. Sprawdź tabelę danych: maksymalnie 120 wierszy, trzy serie, jedna wspólna jednostka i skończone wartości liczbowe; pozostaw brakujące wartości puste.",
+	"invalidTabs": "Karty są niedostępne. Nadaj każdej sekcji unikatowy identyfikator ID i etykietę karty.",
+	"missing": "Brak danych",
+	"inspect": "Wartości wykresu są dostępne w tabeli danych. Ustaw fokus na przedstawionej wartości, aby ją sprawdzić.",
+	"sortAscending": "rosnąco",
+	"sortDescending": "malejąco",
+	"invalidDiagram": "Diagram jest niedostępny. Użyj tabeli relacji z trzema kolumnami, maksymalnie 24 nazwanymi węzłami i 48 połączeniami, bez cykli. Tabela pozostaje czytelna.",
+	"imageUnavailable": "Obraz jest niedostępny. Sprawdź ścieżkę obszaru roboczego i użyj statycznego pliku PNG lub JPEG zgodnego z udokumentowanymi limitami rozmiaru."
+}

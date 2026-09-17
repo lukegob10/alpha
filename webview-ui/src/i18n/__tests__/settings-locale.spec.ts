@@ -14,6 +14,9 @@ describe("English settings locale", () => {
 		const keys = [
 			"providers.googleCloudProjectId",
 			"providers.googleCloudRegion",
+			"providers.googleCloudRegionPicker.searchPlaceholder",
+			"providers.googleCloudRegionPicker.noMatchFound",
+			"providers.googleCloudRegionPicker.useCustomRegion",
 			"providers.googleCloudCredentials",
 			"providers.googleCloudKeyFile",
 			"providers.googleCloudSetup.title",

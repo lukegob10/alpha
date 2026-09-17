@@ -1,0 +1,15 @@
+{
+	"filter": "Satırları filtrele",
+	"sort": "{column} sütununa göre sırala",
+	"rows": "{total} satırdan {visible} tanesi",
+	"unsupported": "Bu kit sürümü desteklenmiyor. Kaynağı açın ve data-alpha-kit=\"1\" kullanın.",
+	"invalidTable": "Ek tablo özellikleri kullanılamıyor. Bir başlık satırı ve en fazla 1.000 satır ile 20 sütun içeren dikdörtgen bir tablo kullanın.",
+	"invalidChart": "Ek grafik özellikleri kullanılamıyor. Veri tablosunu kontrol edin: en fazla 120 satır, üç seri, ortak bir birim ve sonlu sayısal değerler kullanın; eksik değerleri boş bırakın.",
+	"invalidTabs": "Sekmeler kullanılamıyor. Her bölüme benzersiz bir ID ve sekme etiketi verin.",
+	"missing": "Eksik",
+	"inspect": "Grafik değerleri veri tablosunda bulunur. İncelemek için çizilmiş bir değere odaklanın.",
+	"sortAscending": "artan",
+	"sortDescending": "azalan",
+	"invalidDiagram": "Diyagram kullanılamıyor. En fazla 24 adlandırılmış düğüm ve 48 bağlantı içeren, döngüsüz üç sütunlu bir ilişki tablosu kullanın. Tablo okunabilir durumda kalır.",
+	"imageUnavailable": "Görsel kullanılamıyor. Çalışma alanı yolunu kontrol edin ve belgelenen boyut sınırları içinde statik PNG veya JPEG kullanın."
+}

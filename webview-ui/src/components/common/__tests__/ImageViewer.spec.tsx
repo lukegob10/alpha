@@ -1,6 +1,6 @@
 // npx vitest run src/components/common/__tests__/ImageViewer.spec.tsx
 
-import { render, fireEvent } from "@testing-library/react"
+import { render, fireEvent, screen } from "@/utils/test-utils"
 import { describe, it, expect, vi } from "vitest"
 import { ImageViewer } from "../ImageViewer"
 
@@ -112,5 +112,21 @@ describe("ImageViewer", () => {
 		expect(pathElement).toBeTruthy()
 		// Accept filename or relative path depending on environment
 		expect(pathElement?.textContent).toContain("image.png")
+	})
+
+	it("exposes named controls to keyboard users without requiring hover", () => {
+		render(<ImageViewer imageUri="data:image/png;base64,AA==" imagePath="/workspace/image.png" alt="Preview" />)
+
+		const openImage = screen.getByRole("button", { name: "Preview" })
+		const zoom = screen.getByRole("button", { name: "common:mermaid.buttons.zoom" })
+		const copy = screen.getByRole("button", { name: "common:mermaid.buttons.copy" })
+
+		expect(openImage).toHaveAttribute("type", "button")
+		expect(zoom).toHaveAttribute("type", "button")
+		expect(copy).toHaveAttribute("type", "button")
+
+		fireEvent.click(zoom)
+		expect(screen.getByRole("dialog", { name: "Preview" })).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "common:mermaid.buttons.close" })).toBeInTheDocument()
 	})
 })

@@ -66,7 +66,7 @@ describe("alphamodes JSON schema", () => {
 		expect(valid).toBe(true)
 	})
 
-	it("should accept the built-in architect mode with tuple-style edit group", () => {
+	it("should keep accepting a legacy architect-shaped custom config", () => {
 		const config = {
 			customModes: [
 				{

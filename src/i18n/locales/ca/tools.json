@@ -16,6 +16,41 @@
 			"policy_restriction": "No s'ha pogut crear una nova tasca a causa de restriccions de política."
 		}
 	},
+	"fileConflicts": {
+		"save": "No es pot desar '{{path}}': {{reason}}. Torna a llegir el fitxer i reintenta-ho perquè es conservin els canvis de l'usuari.",
+		"delete": "No es pot suprimir '{{path}}': {{reason}}. Torna a llegir el fitxer i reintenta-ho.",
+		"saveDestination": "No es pot desar '{{path}}': {{reason}}. Revisa la destinació i reintenta-ho.",
+		"reasons": {
+			"fileUnsavedChanges": "el fitxer té canvis sense desar en un editor obert",
+			"fileChangedDuringApproval": "el fitxer ha canviat mentre l'aprovació estava pendent",
+			"editorChangedWhileChecked": "l'editor obert ha canviat mentre es comprovava el fitxer",
+			"destinationUnsavedChanges": "la destinació té canvis sense desar en un editor obert",
+			"destinationNotRegularFile": "la destinació no és un fitxer normal",
+			"destinationChangedDuringInspection": "la destinació ha canviat mentre s'inspeccionava",
+			"destinationPathChanged": "la destinació ara resol a un camí diferent",
+			"destinationCreatedAfterInspection": "la destinació s'ha creat després de la inspecció",
+			"destinationDeletedAfterInspection": "la destinació s'ha suprimit després de la inspecció",
+			"destinationChangedAfterInspection": "la destinació ha canviat després de la inspecció"
+		}
+	},
+	"diffView": {
+		"editCancelled": "L'edició del fitxer s'ha cancel·lat",
+		"applyContentFailed": "No s'ha pogut aplicar el contingut a l'editor de diferències",
+		"previewChangedDuringEdit": "La previsualització de diferències ha canviat durant l'edició; s'han conservat els canvis de l'usuari",
+		"noEditAvailableToSave": "No hi ha cap edició de fitxer disponible per desar",
+		"previewChangedAfterApproval": "La previsualització de diferències ha canviat després de l'aprovació; revisa els canvis i reintenta-ho",
+		"previewHasUserChanges": "La previsualització de diferències té canvis de l'usuari; revisa'ls abans de tornar a provar l'edició",
+		"noFilePathForOpening": "No s'ha establert cap camí de fitxer per obrir l'editor de diferències",
+		"previewChangedWhileOpening": "La previsualització de diferències ha canviat mentre s'obria; s'han conservat els canvis de l'usuari",
+		"openFailed": "No s'ha pogut obrir l'editor de diferències per a {{path}}: {{message}}",
+		"missingExpectedFileState": "Falta l'estat esperat del fitxer abans d'obrir la previsualització de diferències"
+	},
+	"applyPatch": {
+		"deleteCancelled": "S'ha cancel·lat l'operació de supressió."
+	},
+	"imageOutput": {
+		"writeIncomplete": "No s'ha pogut acabar d'escriure '{{path}}'; el fitxer pot estar incomplet. {{cause}}"
+	},
 	"generateImage": {
 		"openRouterApiKeyRequired": "Es requereix la clau API d'OpenRouter per a la generació d'imatges amb models d'OpenRouter. Configura-la a la configuració experimental de Generació d'Imatges.",
 		"failedWithStatus": "Error en generar imatge: {{status}} {{statusText}}",
@@ -24,6 +59,10 @@
 		"invalidImageData": "Dades d'imatge no vàlides en la resposta",
 		"invalidImageFormat": "Format d'imatge no vàlid rebut",
 		"unknownError": "S'ha produït un error desconegut",
+		"cancelledBeforeSave": "La generació de la imatge s'ha cancel·lat abans de desar-la.",
+		"destinationUnavailableBeforeGeneration": "La destinació de la imatge no estava disponible abans de la generació. Torna a intentar-ho.",
+		"destinationPolicyChangedBeforeSave": "El camí o la política d'accés de la destinació de la imatge ha canviat abans de desar-la. Torna a intentar-ho.",
+		"postSaveProcessingFailed": "{{path}}\nLa imatge s'ha desat, però el processament posterior al desament ha fallat: {{message}}",
 		"roo": {}
 	}
 }

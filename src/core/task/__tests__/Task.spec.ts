@@ -2,19 +2,34 @@
 
 import * as os from "os"
 import * as path from "path"
+import { EventEmitter } from "events"
 
 import * as vscode from "vscode"
 import { Anthropic } from "@anthropic-ai/sdk"
 
-import type { GlobalState, ProviderSettings, ModelInfo } from "@alpha-code/types"
+import { AlphaCodeEventName, type GlobalState, type ProviderSettings, type ModelInfo } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../Task"
-import { ClineProvider } from "../../webview/ClineProvider"
+import { AskIgnoredError } from "../AskIgnoredError"
+import { AlphaProvider } from "../../webview/AlphaProvider"
 import { ApiStreamChunk } from "../../../api/transform/stream"
+import { maybeRemoveImageBlocks } from "../../../api/transform/image-cleaning"
 import { ContextProxy } from "../../config/ContextProxy"
 import { processUserContentMentions } from "../../mentions/processUserContentMentions"
 import { MultiSearchReplaceDiffStrategy } from "../../diff/strategies/multi-search-replace"
+import { formatResponse } from "../../prompts/responses"
+import { createAgentResponse } from "../../agent/AgentResponse"
+import { AgentRetryPolicy } from "../../agent/AgentRetryPolicy"
+import { AgentControlTransactionError } from "../../agent/AgentControlTransaction"
+import { createTaskToolSurface } from "../../tools/TaskToolSurface"
+import { ToolRegistry } from "../../tools/ToolRegistry"
+import type { AgentTurnEvent } from "../../agent/AgentTurnEvents"
+import { captureEnvironmentDetails } from "../../environment/getEnvironmentDetails"
+import * as contextManagement from "../../context-management"
+import type { ApiMessage } from "../../task-persistence/apiMessages"
+import i18n from "../../../i18n"
+import enCommon from "../../../i18n/locales/en/common.json"
 
 // Mock delay before any imports that might use it
 vi.mock("delay", () => ({
@@ -152,9 +167,12 @@ vi.mock("../../../integrations/misc/extract-text", () => ({
 
 vi.mock("../../environment/getEnvironmentDetails", () => ({
 	getEnvironmentDetails: vi.fn().mockResolvedValue(""),
+	captureEnvironmentDetails: vi
+		.fn()
+		.mockImplementation(async () => ({ details: "", commit: vi.fn(), release: vi.fn() })),
 }))
 
-vi.mock("../../ignore/RooIgnoreController")
+vi.mock("../../ignore/AlphaIgnoreController")
 
 vi.mock("../../condense", async (importOriginal) => {
 	const actual = (await importOriginal()) as any
@@ -265,7 +283,7 @@ describe("Alpha", () => {
 		}
 
 		// Setup mock provider with output channel
-		mockProvider = new ClineProvider(
+		mockProvider = new AlphaProvider(
 			mockExtensionContext,
 			mockOutputChannel,
 			"sidebar",
@@ -283,6 +301,12 @@ describe("Alpha", () => {
 		mockProvider.postMessageToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebviewWithoutTaskHistory = vi.fn().mockResolvedValue(undefined)
+		mockProvider.updateTaskHistory = vi.fn().mockResolvedValue([])
+		mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+		mockProvider.rollbackTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+		mockProvider.publishAgentLifecycleEvent = vi.fn().mockResolvedValue({ accepted: true })
+		mockProvider.replayAgentLifecycle = vi.fn().mockResolvedValue(undefined)
+		mockProvider.getAgentLifecycleSnapshot = vi.fn().mockReturnValue(undefined)
 		mockProvider.getTaskWithId = vi.fn().mockImplementation(async (id) => ({
 			historyItem: {
 				id,
@@ -314,7 +338,7 @@ describe("Alpha", () => {
 
 	describe("constructor", () => {
 		it("should always have diff strategy defined", async () => {
-			const cline = new Task({
+			const alphaTask = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				task: "test task",
@@ -322,22 +346,22 @@ describe("Alpha", () => {
 			})
 
 			// Diff is always enabled - diffStrategy should be defined
-			expect(cline.diffStrategy).toBeDefined()
+			expect(alphaTask.diffStrategy).toBeDefined()
 		})
 
 		it("should use default consecutiveMistakeLimit when not provided", () => {
-			const cline = new Task({
+			const alphaTask = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				task: "test task",
 				startTask: false,
 			})
 
-			expect(cline.consecutiveMistakeLimit).toBe(3)
+			expect(alphaTask.consecutiveMistakeLimit).toBe(3)
 		})
 
 		it("should respect provided consecutiveMistakeLimit", () => {
-			const cline = new Task({
+			const alphaTask = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				consecutiveMistakeLimit: 5,
@@ -345,11 +369,11 @@ describe("Alpha", () => {
 				startTask: false,
 			})
 
-			expect(cline.consecutiveMistakeLimit).toBe(5)
+			expect(alphaTask.consecutiveMistakeLimit).toBe(5)
 		})
 
 		it("should keep consecutiveMistakeLimit of 0 as 0 for unlimited", () => {
-			const cline = new Task({
+			const alphaTask = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				consecutiveMistakeLimit: 0,
@@ -357,11 +381,11 @@ describe("Alpha", () => {
 				startTask: false,
 			})
 
-			expect(cline.consecutiveMistakeLimit).toBe(0)
+			expect(alphaTask.consecutiveMistakeLimit).toBe(0)
 		})
 
 		it("should pass 0 to ToolRepetitionDetector for unlimited mode", () => {
-			const cline = new Task({
+			const alphaTask = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				consecutiveMistakeLimit: 0,
@@ -370,13 +394,13 @@ describe("Alpha", () => {
 			})
 
 			// The toolRepetitionDetector should be initialized with 0 for unlimited mode
-			expect(cline.toolRepetitionDetector).toBeDefined()
+			expect(alphaTask.toolRepetitionDetector).toBeDefined()
 			// Verify the limit remains as 0
-			expect(cline.consecutiveMistakeLimit).toBe(0)
+			expect(alphaTask.consecutiveMistakeLimit).toBe(0)
 		})
 
 		it("should pass consecutiveMistakeLimit to ToolRepetitionDetector", () => {
-			const cline = new Task({
+			const alphaTask = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				consecutiveMistakeLimit: 5,
@@ -385,8 +409,61 @@ describe("Alpha", () => {
 			})
 
 			// The toolRepetitionDetector should be initialized with the same limit
-			expect(cline.toolRepetitionDetector).toBeDefined()
-			expect(cline.consecutiveMistakeLimit).toBe(5)
+			expect(alphaTask.toolRepetitionDetector).toBeDefined()
+			expect(alphaTask.consecutiveMistakeLimit).toBe(5)
+		})
+
+		it("retains the concrete tool failure behind mistake-limit recovery", () => {
+			const alphaTask = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+
+			alphaTask.recordToolError("attempt_completion", "Completion still needs verification")
+			alphaTask.consecutiveMistakeLimit = 1
+
+			expect(alphaTask.didToolFailInCurrentTurn).toBe(true)
+			const guidance = (alphaTask as any).getMistakeLimitGuidance()
+			expect(guidance).toContain(
+				"Most recent tool failure: attempt_completion — Completion still needs verification",
+			)
+			expect(guidance).toContain("The previous completion call failed. Do not repeat it unchanged")
+			expect(guidance).toContain(
+				"This provider profile's Error & Repetition Limit is 1, so a single failed tool call opens this dialog.",
+			)
+		})
+
+		it("retains the original root identity across a nested task chain", () => {
+			const root = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "root task",
+				startTask: false,
+			})
+			const child = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "child task",
+				rootTask: root,
+				parentTask: root,
+				startTask: false,
+			})
+			const grandchild = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "grandchild task",
+				rootTask: child.rootTask ?? child,
+				parentTask: child,
+				startTask: false,
+			})
+
+			expect(child.rootTask).toBe(root)
+			expect(child.rootTaskId).toBe(root.taskId)
+			expect(grandchild.rootTask).toBe(root)
+			expect(grandchild.rootTaskId).toBe(root.taskId)
+			expect(grandchild.parentTaskId).toBe(child.taskId)
 		})
 
 		it("should require either task or historyItem", () => {
@@ -394,47 +471,76 @@ describe("Alpha", () => {
 				new Task({ provider: mockProvider, apiConfiguration: mockApiConfig })
 			}).toThrow("Either historyItem or task/images must be provided")
 		})
+
+		it("does not wait for MCP initialization when counting startup tools", async () => {
+			const alphaTask = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			const fullState = vi.spyOn(mockProvider, "getState").mockImplementation(() => new Promise<never>(() => {}))
+			vi.spyOn(mockProvider, "getValue").mockReturnValue(true)
+			vi.spyOn(mockProvider, "getMcpHub").mockReturnValue(undefined)
+
+			await expect((alphaTask as any).getEnabledMcpToolsCount()).resolves.toEqual({
+				enabledToolCount: 0,
+				enabledServerCount: 0,
+			})
+			expect(fullState).not.toHaveBeenCalled()
+		})
+
+		it("publishes the initial user message through the lightweight task snapshot", async () => {
+			const alphaTask = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			mockProvider.postTaskStateToWebview = vi.fn().mockResolvedValue(undefined)
+
+			await (alphaTask as any).addToAlphaMessages({ ts: 1, type: "say", say: "text", text: "test task" }, "task")
+
+			expect(mockProvider.postTaskStateToWebview).toHaveBeenCalledTimes(1)
+			expect(mockProvider.postStateToWebviewWithoutTaskHistory).not.toHaveBeenCalled()
+		})
+
+		it("publishes subsequent messages incrementally without rebuilding extension state", async () => {
+			const alphaTask = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			const message = { ts: 2, type: "say", say: "text", text: "next message" } as const
+			mockProvider.postMessageToWebview.mockClear()
+			mockProvider.postTaskStateToWebview = vi.fn().mockResolvedValue(undefined)
+			mockProvider.postStateToWebviewWithoutTaskHistory.mockClear()
+
+			await (alphaTask as any).addToAlphaMessages(message)
+
+			expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "messageCreated",
+					taskId: alphaTask.taskId,
+					clineMessage: message,
+					clineMessagesSeq: expect.any(Number),
+				}),
+			)
+			expect(mockProvider.postTaskStateToWebview).not.toHaveBeenCalled()
+			expect(mockProvider.postStateToWebviewWithoutTaskHistory).not.toHaveBeenCalled()
+		})
 	})
 
 	describe("getEnvironmentDetails", () => {
 		describe("API conversation handling", () => {
-			it.skip("should clean conversation history before sending to API", async () => {
-				// Alpha.create will now use our mocked getEnvironmentDetails
-				const [cline, task] = Task.create({
+			it("should clean conversation history before sending to API", () => {
+				const alphaTask = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
 					task: "test task",
+					startTask: false,
 				})
-
-				cline.abandoned = true
-				await task
-
-				// Set up mock stream.
-				const mockStreamForClean = (async function* () {
-					yield { type: "text", text: "test response" }
-				})()
-
-				// Set up spy.
-				const cleanMessageSpy = vi.fn().mockReturnValue(mockStreamForClean)
-				vi.spyOn(cline.api, "createMessage").mockImplementation(cleanMessageSpy)
-
-				// Add test message to conversation history.
-				cline.apiConversationHistory = [
-					{
-						role: "user" as const,
-						content: [{ type: "text" as const, text: "test message" }],
-						ts: Date.now(),
-					},
-				]
-
-				// Mock abort state
-				Object.defineProperty(cline, "abort", {
-					get: () => false,
-					set: () => {},
-					configurable: true,
-				})
-
-				// Add a message with extra properties to the conversation history
 				const messageWithExtra = {
 					role: "user" as const,
 					content: [{ type: "text" as const, text: "test message" }],
@@ -442,32 +548,51 @@ describe("Alpha", () => {
 					extraProp: "should be removed",
 				}
 
-				cline.apiConversationHistory = [messageWithExtra]
+				const history = (alphaTask as any).buildCleanConversationHistory([messageWithExtra])
 
-				// Trigger an API request
-				await cline.recursivelyMakeClineRequests([{ type: "text", text: "test request" }], false)
-
-				// Get the conversation history from the first API call
-				expect(cleanMessageSpy.mock.calls.length).toBeGreaterThan(0)
-				const history = cleanMessageSpy.mock.calls[0]?.[1]
-				expect(history).toBeDefined()
-				expect(history.length).toBeGreaterThan(0)
-
-				// Find our test message
-				const cleanedMessage = history.find((msg: { content?: Array<{ text: string }> }) =>
-					msg.content?.some((content) => content.text === "test message"),
-				)
-				expect(cleanedMessage).toBeDefined()
-				expect(cleanedMessage).toEqual({
-					role: "user",
-					content: [{ type: "text", text: "test message" }],
-				})
-
-				// Verify extra properties were removed
-				expect(Object.keys(cleanedMessage!)).toEqual(["role", "content"])
+				expect(history).toEqual([
+					{
+						role: "user",
+						content: [{ type: "text", text: "test message" }],
+					},
+				])
+				expect(Object.keys(history[0])).toEqual(["role", "content"])
 			})
 
-			it.skip("should handle image blocks based on model capabilities", async () => {
+			it("should persist VS Code LM stateful markers and only replay them to that provider", async () => {
+				const alphaTask = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "test task",
+					startTask: false,
+				})
+				const statefulMarker = "bW9kZWxcXHJlc3BvbnNl"
+				;(alphaTask.api as any).getStatefulMarker = () => statefulMarker
+				vi.spyOn(alphaTask as any, "saveApiConversationHistory").mockResolvedValue(true)
+
+				await (alphaTask as any).addToApiConversationHistory({
+					role: "assistant" as const,
+					content: [{ type: "tool_use" as const, id: "call-1", name: "read_file", input: { path: "a.ts" } }],
+				})
+				const markerMessage = alphaTask.apiConversationHistory.at(-1)!
+				expect(markerMessage).toHaveProperty("vscodeLmStatefulMarker", statefulMarker)
+
+				const anthropicHistory = (alphaTask as any).buildCleanConversationHistory([markerMessage])
+				expect(anthropicHistory[0]).not.toHaveProperty("vscodeLmStatefulMarker")
+
+				alphaTask.apiConfiguration = {
+					...mockApiConfig,
+					apiProvider: "vscode-lm",
+				} as ProviderSettings
+				const vscodeLmHistory = (alphaTask as any).buildCleanConversationHistory([markerMessage])
+
+				expect(vscodeLmHistory[0]).toMatchObject({
+					role: "assistant",
+					vscodeLmStatefulMarker: statefulMarker,
+				})
+			})
+
+			it("should handle image blocks based on model capabilities", () => {
 				// Create two configurations - one with image support, one without
 				const configWithImages = {
 					...mockApiConfig,
@@ -509,14 +634,15 @@ describe("Alpha", () => {
 				]
 
 				// Test with model that supports images
-				const [clineWithImages, taskWithImages] = Task.create({
+				const alphaWithImages = new Task({
 					provider: mockProvider,
 					apiConfiguration: configWithImages,
 					task: "test task",
+					startTask: false,
 				})
 
 				// Mock the model info to indicate image support
-				vi.spyOn(clineWithImages.api, "getModel").mockReturnValue({
+				vi.spyOn(alphaWithImages.api, "getModel").mockReturnValue({
 					id: "claude-3-sonnet",
 					info: {
 						supportsImages: true,
@@ -528,17 +654,16 @@ describe("Alpha", () => {
 					} as ModelInfo,
 				})
 
-				clineWithImages.apiConversationHistory = conversationHistory
-
 				// Test with model that doesn't support images
-				const [clineWithoutImages, taskWithoutImages] = Task.create({
+				const alphaWithoutImages = new Task({
 					provider: mockProvider,
 					apiConfiguration: configWithoutImages,
 					task: "test task",
+					startTask: false,
 				})
 
 				// Mock the model info to indicate no image support
-				vi.spyOn(clineWithoutImages.api, "getModel").mockReturnValue({
+				vi.spyOn(alphaWithoutImages.api, "getModel").mockReturnValue({
 					id: "gpt-3.5-turbo",
 					info: {
 						supportsImages: false,
@@ -550,95 +675,28 @@ describe("Alpha", () => {
 					} as ModelInfo,
 				})
 
-				clineWithoutImages.apiConversationHistory = conversationHistory
+				const preserved = maybeRemoveImageBlocks(conversationHistory as any, alphaWithImages.api)
+				const converted = maybeRemoveImageBlocks(conversationHistory as any, alphaWithoutImages.api)
 
-				// Mock abort state for both instances
-				Object.defineProperty(clineWithImages, "abort", {
-					get: () => false,
-					set: () => {},
-					configurable: true,
-				})
-
-				Object.defineProperty(clineWithoutImages, "abort", {
-					get: () => false,
-					set: () => {},
-					configurable: true,
-				})
-
-				// Set up mock streams
-				const mockStreamWithImages = (async function* () {
-					yield { type: "text", text: "test response" }
-				})()
-
-				const mockStreamWithoutImages = (async function* () {
-					yield { type: "text", text: "test response" }
-				})()
-
-				// Set up spies
-				const imagesSpy = vi.fn().mockReturnValue(mockStreamWithImages)
-				const noImagesSpy = vi.fn().mockReturnValue(mockStreamWithoutImages)
-
-				vi.spyOn(clineWithImages.api, "createMessage").mockImplementation(imagesSpy)
-				vi.spyOn(clineWithoutImages.api, "createMessage").mockImplementation(noImagesSpy)
-
-				// Set up conversation history with images
-				clineWithImages.apiConversationHistory = [
-					{
-						role: "user",
-						content: [
-							{ type: "text", text: "Here is an image" },
-							{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: "base64data" } },
-						],
-					},
-				]
-
-				clineWithImages.abandoned = true
-				await taskWithImages.catch(() => {})
-
-				clineWithoutImages.abandoned = true
-				await taskWithoutImages.catch(() => {})
-
-				// Trigger API requests
-				await clineWithImages.recursivelyMakeClineRequests([{ type: "text", text: "test request" }])
-				await clineWithoutImages.recursivelyMakeClineRequests([{ type: "text", text: "test request" }])
-
-				// Get the calls
-				const imagesCalls = imagesSpy.mock.calls
-				const noImagesCalls = noImagesSpy.mock.calls
-
-				// Verify model with image support preserves image blocks
-				expect(imagesCalls.length).toBeGreaterThan(0)
-				if (imagesCalls[0]?.[1]?.[0]?.content) {
-					expect(imagesCalls[0][1][0].content).toHaveLength(2)
-					expect(imagesCalls[0][1][0].content[0]).toEqual({ type: "text", text: "Here is an image" })
-					expect(imagesCalls[0][1][0].content[1]).toHaveProperty("type", "image")
-				}
-
-				// Verify model without image support converts image blocks to text
-				expect(noImagesCalls.length).toBeGreaterThan(0)
-				if (noImagesCalls[0]?.[1]?.[0]?.content) {
-					expect(noImagesCalls[0][1][0].content).toHaveLength(2)
-					expect(noImagesCalls[0][1][0].content[0]).toEqual({ type: "text", text: "Here is an image" })
-					expect(noImagesCalls[0][1][0].content[1]).toEqual({
-						type: "text",
-						text: "[Referenced image in conversation]",
-					})
-				}
+				expect(preserved[0]?.content).toEqual(conversationHistory[0]?.content)
+				expect(converted[0]?.content).toEqual([
+					{ type: "text", text: "Here is an image" },
+					{ type: "text", text: "[Referenced image in conversation]" },
+				])
 			})
 
-			it.skip("should handle API retry with countdown", async () => {
-				const [cline, task] = Task.create({
+			it("should cap the provider retry countdown to the policy-approved delay", async () => {
+				vi.useFakeTimers()
+				const alphaTask = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
 					task: "test task",
+					startTask: false,
 				})
-
-				// Mock delay to track countdown timing
-				const mockDelay = vi.fn().mockResolvedValue(undefined)
-				vi.spyOn(await import("delay"), "default").mockImplementation(mockDelay)
+				vi.spyOn(alphaTask as any, "getSystemPrompt").mockResolvedValue("test instructions")
 
 				// Mock say to track messages
-				const saySpy = vi.spyOn(cline, "say")
+				const saySpy = vi.spyOn(alphaTask, "say").mockResolvedValue(undefined)
 
 				// Create a stream that fails on first chunk
 				const mockError = new Error("API Error")
@@ -682,7 +740,7 @@ describe("Alpha", () => {
 
 				// Mock createMessage to fail first then succeed
 				let firstAttempt = true
-				vi.spyOn(cline.api, "createMessage").mockImplementation(() => {
+				vi.spyOn(alphaTask.api, "createMessage").mockImplementation(() => {
 					if (firstAttempt) {
 						firstAttempt = false
 						return mockFailedStream
@@ -691,10 +749,13 @@ describe("Alpha", () => {
 				})
 
 				// Set up mock state
-				mockProvider.getState = vi.fn().mockResolvedValue({})
+				mockProvider.getState = vi.fn().mockResolvedValue({
+					autoApprovalEnabled: true,
+					requestDelaySeconds: 3,
+				})
 
 				// Mock previous API request message
-				cline.clineMessages = [
+				alphaTask.clineMessages = [
 					{
 						ts: Date.now(),
 						type: "say",
@@ -709,57 +770,75 @@ describe("Alpha", () => {
 				]
 
 				// Trigger API request
-				const iterator = cline.attemptApiRequest(0)
-				await iterator.next()
+				const iterator = alphaTask.attemptApiRequest(0)
+				const request = iterator.next()
+				try {
+					await vi.waitFor(() =>
+						expect(saySpy).toHaveBeenCalledWith(
+							"api_req_retry_delayed",
+							expect.stringContaining("<retry_timer>1</retry_timer>"),
+							undefined,
+							true,
+						),
+					)
+					await vi.advanceTimersByTimeAsync(1_000)
+					await request
+				} finally {
+					vi.useRealTimers()
+				}
 
-				// Calculate expected delay for first retry
-				const baseDelay = 3 // test retry delay
+				// AgentRetryPolicy approves one second even though the provider requests three.
+				const baseDelay = 1
 
 				// Verify countdown messages
 				for (let i = baseDelay; i > 0; i--) {
 					expect(saySpy).toHaveBeenCalledWith(
 						"api_req_retry_delayed",
-						expect.stringContaining(`Retrying in ${i} seconds`),
+						expect.stringContaining(`<retry_timer>${i}</retry_timer>`),
 						undefined,
 						true,
 					)
 				}
 
-				expect(saySpy).toHaveBeenCalledWith(
-					"api_req_retry_delayed",
-					expect.stringContaining("Retrying now"),
-					undefined,
-					false,
-				)
-
-				// Calculate expected delay calls for countdown
-				const totalExpectedDelays = baseDelay // One delay per second for countdown
-				expect(mockDelay).toHaveBeenCalledTimes(totalExpectedDelays)
-				expect(mockDelay).toHaveBeenCalledWith(1000)
+				expect(saySpy).toHaveBeenCalledWith("api_req_retry_delayed", "API Error\n", undefined, false)
 
 				// Verify error message content
-				const errorMessage = saySpy.mock.calls.find((call) => call[1]?.includes(mockError.message))?.[1]
-				expect(errorMessage).toBe(
-					`${mockError.message}\n\nRetry attempt 1\nRetrying in ${baseDelay} seconds...`,
-				)
-
-				await cline.abortTask(true)
-				await task.catch(() => {})
+				const errorMessage = saySpy.mock.calls.find((call) => call[1]?.includes("<retry_timer>"))?.[1]
+				expect(errorMessage).toBe(`${mockError.message}\n<retry_timer>${baseDelay}</retry_timer>`)
 			})
 
-			it.skip("should not apply retry delay twice", async () => {
-				const [cline, task] = Task.create({
+			it("should honor an explicit zero-second API retry delay", async () => {
+				const alphaTask = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
 					task: "test task",
+					startTask: false,
 				})
-
-				// Mock delay to track countdown timing
 				const mockDelay = vi.fn().mockResolvedValue(undefined)
 				vi.spyOn(await import("delay"), "default").mockImplementation(mockDelay)
+				const saySpy = vi.spyOn(alphaTask, "say").mockResolvedValue(undefined)
+				mockProvider.getState = vi.fn().mockResolvedValue({
+					requestDelaySeconds: 0,
+				})
+
+				await (alphaTask as any).backoffAndAnnounce(0, new Error("transient failure"))
+
+				expect(mockDelay).not.toHaveBeenCalled()
+				expect(saySpy).not.toHaveBeenCalledWith("api_req_retry_delayed", expect.anything())
+			})
+
+			it("should not apply retry delay twice", async () => {
+				vi.useFakeTimers()
+				const alphaTask = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "test task",
+					startTask: false,
+				})
+				vi.spyOn(alphaTask as any, "getSystemPrompt").mockResolvedValue("test instructions")
 
 				// Mock say to track messages
-				const saySpy = vi.spyOn(cline, "say")
+				const saySpy = vi.spyOn(alphaTask, "say").mockResolvedValue(undefined)
 
 				// Create a stream that fails on first chunk
 				const mockError = new Error("API Error")
@@ -803,7 +882,7 @@ describe("Alpha", () => {
 
 				// Mock createMessage to fail first then succeed
 				let firstAttempt = true
-				vi.spyOn(cline.api, "createMessage").mockImplementation(() => {
+				vi.spyOn(alphaTask.api, "createMessage").mockImplementation(() => {
 					if (firstAttempt) {
 						firstAttempt = false
 						return mockFailedStream
@@ -812,10 +891,13 @@ describe("Alpha", () => {
 				})
 
 				// Set up mock state
-				mockProvider.getState = vi.fn().mockResolvedValue({})
+				mockProvider.getState = vi.fn().mockResolvedValue({
+					autoApprovalEnabled: true,
+					requestDelaySeconds: 3,
+				})
 
 				// Mock previous API request message
-				cline.clineMessages = [
+				alphaTask.clineMessages = [
 					{
 						ts: Date.now(),
 						type: "say",
@@ -830,18 +912,29 @@ describe("Alpha", () => {
 				]
 
 				// Trigger API request
-				const iterator = cline.attemptApiRequest(0)
-				await iterator.next()
+				const iterator = alphaTask.attemptApiRequest(0)
+				const request = iterator.next()
+				try {
+					await vi.waitFor(() =>
+						expect(saySpy).toHaveBeenCalledWith(
+							"api_req_retry_delayed",
+							expect.stringContaining("<retry_timer>1</retry_timer>"),
+							undefined,
+							true,
+						),
+					)
+					await vi.advanceTimersByTimeAsync(1_000)
+					await request
+				} finally {
+					vi.useRealTimers()
+				}
 
-				// Verify delay is only applied for the countdown
-				const baseDelay = 3 // test retry delay
-				const expectedDelayCount = baseDelay // One delay per second for countdown
-				expect(mockDelay).toHaveBeenCalledTimes(expectedDelayCount)
-				expect(mockDelay).toHaveBeenCalledWith(1000) // Each delay should be 1 second
+				// Verify delay is only applied for the policy-approved countdown.
+				const baseDelay = 1
 
 				// Verify countdown messages were only shown once
 				const retryMessages = saySpy.mock.calls.filter(
-					(call) => call[0] === "api_req_retry_delayed" && call[1]?.includes("Retrying in"),
+					(call) => call[0] === "api_req_retry_delayed" && call[1]?.includes("<retry_timer>"),
 				)
 				expect(retryMessages).toHaveLength(baseDelay)
 
@@ -849,27 +942,19 @@ describe("Alpha", () => {
 				for (let i = baseDelay; i > 0; i--) {
 					expect(saySpy).toHaveBeenCalledWith(
 						"api_req_retry_delayed",
-						expect.stringContaining(`Retrying in ${i} seconds`),
+						expect.stringContaining(`<retry_timer>${i}</retry_timer>`),
 						undefined,
 						true,
 					)
 				}
 
 				// Verify final retry message
-				expect(saySpy).toHaveBeenCalledWith(
-					"api_req_retry_delayed",
-					expect.stringContaining("Retrying now"),
-					undefined,
-					false,
-				)
-
-				await cline.abortTask(true)
-				await task.catch(() => {})
+				expect(saySpy).toHaveBeenCalledWith("api_req_retry_delayed", "API Error\n", undefined, false)
 			})
 
 			describe("processUserContentMentions", () => {
 				it("should process mentions in user_message tags", async () => {
-					const [cline, task] = Task.create({
+					const [alphaTask, task] = Task.create({
 						provider: mockProvider,
 						apiConfiguration: mockApiConfig,
 						task: "test task",
@@ -908,8 +993,8 @@ describe("Alpha", () => {
 
 					const { content: processedContent } = await processUserContentMentions({
 						userContent,
-						cwd: cline.cwd,
-						fileContextTracker: cline.fileContextTracker,
+						cwd: alphaTask.cwd,
+						fileContextTracker: alphaTask.fileContextTracker,
 					})
 
 					// Regular text should not be processed
@@ -938,7 +1023,7 @@ describe("Alpha", () => {
 						"Regular tool result with 'path' (see below for file content)",
 					)
 
-					await cline.abortTask(true)
+					await alphaTask.abortTask(true)
 					await task.catch(() => {})
 				})
 			})
@@ -980,6 +1065,10 @@ describe("Alpha", () => {
 					postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
 					postMessageToWebview: vi.fn().mockResolvedValue(undefined),
 					updateTaskHistory: vi.fn().mockResolvedValue(undefined),
+					claimAutomaticSubagentResults: vi.fn().mockResolvedValue({ claimId: "claim-default", taskIds: [] }),
+					acknowledgeAutomaticSubagentResults: vi.fn().mockResolvedValue(undefined),
+					releaseAutomaticSubagentResults: vi.fn().mockResolvedValue(undefined),
+					acknowledgeWaitAgentResults: vi.fn().mockResolvedValue(undefined),
 				}
 
 				// Get the mocked delay function
@@ -990,6 +1079,593 @@ describe("Alpha", () => {
 			afterEach(() => {
 				// Clean up the global state after each test
 				Task.resetGlobalApiRequestTime()
+			})
+
+			it("persists local tool results before an interruptible provider-rate-limit wait", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "persist a lifecycle result",
+					startTask: false,
+				})
+				const saveApiConversationHistory = vi
+					.spyOn(task as any, "saveApiConversationHistory")
+					.mockResolvedValue(true)
+				task.apiConversationHistory = [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "call-list", name: "list_agents", input: {} }],
+						ts: 1,
+					},
+				] as any
+
+				let announceWaitStarted!: () => void
+				const waitStarted = new Promise<void>((resolve) => {
+					announceWaitStarted = resolve
+				})
+				let rejectWait!: (error: Error) => void
+				const blockedWait = new Promise<void>((_resolve, reject) => {
+					rejectWait = reject
+				})
+				vi.spyOn(task as any, "maybeWaitForProviderRateLimit").mockImplementation(async () => {
+					announceWaitStarted()
+					await blockedWait
+				})
+
+				const onPersisted = vi.fn(() => {
+					expect(
+						task.apiConversationHistory.some(
+							(message) =>
+								message.role === "user" &&
+								Array.isArray(message.content) &&
+								message.content.some(
+									(block) => block.type === "tool_result" && block.tool_use_id === "call-list",
+								),
+						),
+					).toBe(true)
+				})
+				const request = task.runAgentRequests(
+					[
+						{
+							type: "tool_result",
+							tool_use_id: "call-list",
+							content: '{"agents":[]}',
+						},
+					],
+					false,
+					onPersisted,
+				)
+				await waitStarted
+				expect(saveApiConversationHistory).toHaveBeenCalledOnce()
+				expect(onPersisted).toHaveBeenCalledOnce()
+				const persistedBeforeInterruption = task.apiConversationHistory.some(
+					(message) =>
+						message.role === "user" &&
+						Array.isArray(message.content) &&
+						message.content.some(
+							(block) => block.type === "tool_result" && block.tool_use_id === "call-list",
+						),
+				)
+
+				rejectWait(new Error("rate-limit wait interrupted"))
+				await expect(request).rejects.toThrow("rate-limit wait interrupted")
+				expect(persistedBeforeInterruption).toBe(true)
+			})
+
+			it("does not acknowledge steering when API-history persistence and retries fail", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "retain an unacknowledged steering message",
+					startTask: false,
+				})
+				task.apiConversationHistory = [
+					{
+						role: "assistant",
+						content: [{ type: "text", text: "ready" }],
+						ts: 1,
+					},
+				] as any
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(false)
+				const retry = vi.spyOn(task, "retrySaveApiConversationHistory").mockResolvedValue(false)
+				const onPersisted = vi.fn()
+
+				await expect(
+					task.runAgentRequests(
+						[{ type: "text", text: "<user_message>steer me</user_message>" }],
+						false,
+						onPersisted,
+					),
+				).rejects.toThrow("Failed to persist the user turn")
+
+				expect(retry).toHaveBeenCalledOnce()
+				expect(onPersisted).not.toHaveBeenCalled()
+			})
+
+			it.each([
+				{ recovery: "none", manual: false, restore: "ok" },
+				{ recovery: "summary", manual: false, restore: "ok" },
+				{ recovery: "summary", manual: true, restore: "ok" },
+				{ recovery: "truncation", manual: false, restore: "ok" },
+				{ recovery: "truncation", manual: true, restore: "ok" },
+				{ recovery: "summary", manual: false, restore: "failed" },
+				{ recovery: "summary", manual: false, restore: "cancelled" },
+				{ recovery: "summary", manual: false, restore: "steered" },
+			])(
+				"preserves acknowledged context across empty retry ($recovery, manual=$manual, restore=$restore)",
+				async ({ recovery, manual, restore }) => {
+					mockProvider.getState.mockResolvedValue({
+						apiConfiguration: mockApiConfig,
+						autoApprovalEnabled: !manual,
+						mcpEnabled: false,
+					})
+					const task = new Task({
+						provider: mockProvider,
+						apiConfiguration: mockApiConfig,
+						task: "retry environment",
+						startTask: false,
+					})
+					const capture = {
+						details: "<environment_details>terminal A</environment_details>",
+						commit: vi.fn(),
+						release: vi.fn(),
+					}
+					const refreshed = {
+						details: "<environment_details>terminal B</environment_details>",
+						commit: vi.fn(),
+						release: vi.fn(),
+					}
+					vi.mocked(captureEnvironmentDetails).mockResolvedValueOnce(capture)
+					const requests: Anthropic.Messages.MessageParam[][] = []
+					vi.spyOn(task as any, "saveApiConversationHistory").mockImplementation(async () => {
+						if (requests.length === 1 && restore === "cancelled") {
+							;(task as any).stepInterruptionController.abort(new Error("restore cancelled"))
+						}
+						return !(requests.length === 1 && restore === "failed")
+					})
+					vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("fixed system prompt")
+					vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
+					vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+					vi.spyOn(task as any, "maybeWaitForProviderRateLimit").mockResolvedValue(undefined)
+					vi.spyOn(task as any, "waitForRetryDecision").mockImplementation(async () => {
+						if (restore === "steered") {
+							;(task as any).pendingSteerMessage = { text: "new user steer" }
+							throw new Error("steered during retry wait")
+						}
+					})
+					vi.spyOn(task, "say").mockResolvedValue(undefined)
+					vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+					vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+					let compacted = false
+					if (recovery !== "none") {
+						// Model a real reduction while retaining the tool transaction and refreshed environment.
+						vi.spyOn(task.api, "countTokens").mockImplementation(async (blocks) =>
+							JSON.stringify(blocks).includes("hidden old") ? 1000 : 1,
+						)
+						task.apiConversationHistory = [
+							{ role: "user", content: "hidden old user" },
+							{ role: "assistant", content: "hidden old assistant" },
+							{ role: "user", content: "inspect file" },
+							{
+								role: "assistant",
+								content: [
+									{ type: "tool_use", id: "read-1", name: "read_file", input: { path: "file.ts" } },
+								],
+							},
+						]
+						vi.mocked(captureEnvironmentDetails).mockResolvedValueOnce(refreshed)
+						vi.spyOn(task, "getTokenUsage").mockReturnValue({ ...task.getTokenUsage(), contextTokens: 100 })
+						vi.spyOn(task.api, "getModel").mockReturnValue({
+							id: "claude-3-5-sonnet-20241022",
+							info: { contextWindow: 200_000, maxTokens: 8192, supportsPromptCache: false },
+						})
+						vi.spyOn(task as any, "getFilesReadByAlphaSafely").mockResolvedValue([])
+						vi.spyOn(contextManagement, "willManageContext").mockImplementation(() => !compacted)
+						vi.spyOn(contextManagement, "manageContext").mockImplementation(async ({ messages }) => {
+							if (compacted) return { messages, summary: "", cost: 0, prevContextTokens: 100 }
+							compacted = true
+							const id = "recovery-1"
+							const next: ApiMessage[] =
+								recovery === "summary"
+									? [
+											...messages.map((message) => ({ ...message, condenseParent: id })),
+											{
+												role: "user",
+												content: "compacted summary",
+												isSummary: true,
+												condenseId: id,
+											},
+										]
+									: [
+											...messages
+												.slice(0, 2)
+												.map((message) => ({ ...message, truncationParent: id })),
+											{
+												role: "user",
+												content: "truncated prefix",
+												isTruncationMarker: true,
+												truncationId: id,
+											},
+											...messages.slice(2),
+										]
+							return {
+								messages: next,
+								summary: recovery === "summary" ? "compacted summary" : "",
+								cost: 0,
+								prevContextTokens: 100,
+								...(recovery === "truncation" ? { truncationId: id, messagesRemoved: 2 } : {}),
+							}
+						})
+					}
+					let attempts = 0
+					vi.spyOn(task.api, "createMessage").mockImplementation(async function* (_system, messages) {
+						requests.push(structuredClone(messages))
+						if (recovery !== "none") expect(refreshed.commit).toHaveBeenCalledOnce()
+						if (attempts++ > 0) yield { type: "text", text: "Done." } as ApiStreamChunk
+					})
+					const content: Anthropic.Messages.ContentBlockParam[] =
+						recovery === "none"
+							? [{ type: "text", text: "continue" }]
+							: [{ type: "tool_result", tool_use_id: "read-1", content: "file result" }]
+					const result = await task
+						.runAgentRequests(content, true)
+						.catch((error: Error) => ({ status: "thrown", error }))
+					if (restore === "failed" || restore === "cancelled") {
+						expect(requests).toHaveLength(1)
+						expect(result).not.toMatchObject({ status: "completed" })
+						expect(JSON.stringify(task.apiConversationHistory)).toContain("terminal B")
+						return
+					}
+					expect(result).toMatchObject({ status: "completed" })
+					expect(requests).toHaveLength(2)
+					if (restore === "steered") {
+						const beforeSteer = requests[0][0].content as Anthropic.Messages.ContentBlockParam[]
+						const afterSteer = requests[1][0].content as Anthropic.Messages.ContentBlockParam[]
+						expect(afterSteer.slice(0, beforeSteer.length)).toEqual(beforeSteer)
+						expect(JSON.stringify(requests[1])).toContain("new user steer")
+					} else expect(requests[1]).toEqual(requests[0])
+					const serialized = JSON.stringify(requests[1])
+					expect(serialized.match(recovery === "none" ? /terminal A/g : /terminal B/g)).toHaveLength(1)
+					expect(serialized).not.toContain("hidden old")
+					if (recovery === "summary")
+						expect(task.apiConversationHistory.some((message) => message.isSummary)).toBe(true)
+					if (recovery === "truncation") {
+						const blocks = requests[1].flatMap((message) =>
+							Array.isArray(message.content) ? message.content : [],
+						)
+						expect(blocks.filter((block) => block.type === "tool_use")).toMatchObject([{ id: "read-1" }])
+						expect(blocks.filter((block) => block.type === "tool_result")).toMatchObject([
+							{ tool_use_id: "read-1" },
+						])
+					}
+					expect(captureEnvironmentDetails).toHaveBeenCalledTimes(
+						recovery === "none" ? 1 : restore === "steered" ? 3 : 2,
+					)
+					expect(capture.commit).toHaveBeenCalledOnce()
+				},
+			)
+
+			it("acknowledges a native wait claim only after its matching tool result is durably saved", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "persist an owned native wait result",
+					startTask: false,
+				})
+				task.apiConversationHistory = [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "call-wait", name: "wait_agent", input: {} }],
+						ts: 1,
+					},
+				] as any
+				task.retainWaitAgentResultClaim("call-wait", "claim-native-wait")
+				let releaseSave!: (saved: boolean) => void
+				const saveBlocked = new Promise<boolean>((resolve) => (releaseSave = resolve))
+				vi.spyOn(task as any, "saveApiConversationHistory").mockReturnValue(saveBlocked)
+				const toolResult = {
+					role: "user" as const,
+					content: [
+						{
+							type: "tool_result" as const,
+							tool_use_id: "call-wait",
+							content: JSON.stringify({ source: "managed_agent_mailbox", claimId: "claim-native-wait" }),
+						},
+					],
+				}
+
+				const persisting = (task as any).addToApiConversationHistory(toolResult)
+				expect(mockProvider.acknowledgeWaitAgentResults).not.toHaveBeenCalled()
+				releaseSave(true)
+				await expect(persisting).resolves.toBe(true)
+
+				expect(mockProvider.acknowledgeWaitAgentResults).toHaveBeenCalledWith(task, "claim-native-wait")
+				expect((task as any).pendingWaitAgentResultClaims.size).toBe(0)
+			})
+
+			it("retains a native wait claim when history persistence fails and ACKs it after a successful retry", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "retry a native wait receipt",
+					startTask: false,
+				})
+				task.apiConversationHistory = [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "call-retry", name: "wait_agent", input: {} }],
+						ts: 1,
+					},
+				] as any
+				task.retainWaitAgentResultClaim("call-retry", "claim-retry")
+				vi.spyOn(task as any, "saveApiConversationHistory")
+					.mockResolvedValueOnce(false)
+					.mockResolvedValueOnce(true)
+				const toolResult = {
+					role: "user" as const,
+					content: [
+						{
+							type: "tool_result" as const,
+							tool_use_id: "call-retry",
+							content: JSON.stringify({ source: "managed_agent_mailbox", claimId: "claim-retry" }),
+						},
+					],
+				}
+
+				await expect((task as any).addToApiConversationHistory(toolResult)).resolves.toBe(false)
+				expect(mockProvider.acknowledgeWaitAgentResults).not.toHaveBeenCalled()
+				expect((task as any).pendingWaitAgentResultClaims.size).toBe(1)
+
+				vi.useFakeTimers()
+				try {
+					const retrying = task.retrySaveApiConversationHistory()
+					await vi.advanceTimersByTimeAsync(100)
+					await expect(retrying).resolves.toBe(true)
+				} finally {
+					vi.useRealTimers()
+				}
+				expect(mockProvider.acknowledgeWaitAgentResults).toHaveBeenCalledWith(task, "claim-retry")
+				expect((task as any).pendingWaitAgentResultClaims.size).toBe(0)
+			})
+
+			it("does not ACK a native wait claim from an error or mismatched JSON result with the same tool call ID", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "reject a false native wait receipt",
+					startTask: false,
+				})
+				task.apiConversationHistory = [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "call-false-receipt", name: "wait_agent", input: {} }],
+						ts: 1,
+					},
+				] as any
+				task.retainWaitAgentResultClaim("call-false-receipt", "claim-expected")
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+
+				await (task as any).addToApiConversationHistory({
+					role: "user",
+					content: [
+						{
+							type: "tool_result",
+							tool_use_id: "call-false-receipt",
+							content: JSON.stringify({
+								source: "managed_agent_mailbox",
+								claimId: "claim-different",
+								error: "presentation failed",
+							}),
+						},
+					],
+				})
+
+				expect(mockProvider.acknowledgeWaitAgentResults).not.toHaveBeenCalled()
+				expect((task as any).pendingWaitAgentResultClaims).toEqual(
+					new Map([["call-false-receipt", "claim-expected"]]),
+				)
+			})
+
+			it("uses the task-owned profile when the foreground profile has a rate limit", async () => {
+				mockProvider.getState.mockResolvedValue({
+					apiConfiguration: mockApiConfig,
+					mcpEnabled: false,
+				})
+
+				const limitedTask = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "limited task",
+					startTask: false,
+				})
+				await (limitedTask as any).maybeWaitForProviderRateLimit(0)
+				mockDelay.mockClear()
+
+				const child = new Task({
+					provider: mockProvider,
+					apiConfiguration: { ...mockApiConfig, rateLimitSeconds: 0 },
+					task: "routed child task",
+					startTask: false,
+				})
+
+				await (child as any).maybeWaitForProviderRateLimit(0)
+
+				expect(mockDelay).not.toHaveBeenCalled()
+			})
+
+			it("uses the task-owned rate limit when the foreground profile has none", async () => {
+				mockProvider.getState.mockResolvedValue({
+					apiConfiguration: { ...mockApiConfig, rateLimitSeconds: 0 },
+					mcpEnabled: false,
+				})
+
+				const child = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "routed child task",
+					startTask: false,
+				})
+				await (child as any).maybeWaitForProviderRateLimit(0)
+				mockDelay.mockClear()
+
+				await (child as any).maybeWaitForProviderRateLimit(0)
+
+				expect(mockDelay).toHaveBeenCalledTimes(mockApiConfig.rateLimitSeconds)
+				expect(mockDelay).toHaveBeenCalledWith(1000)
+			})
+
+			it("serializes simultaneous requests routed to the same stable profile", async () => {
+				const route = {
+					source: "role" as const,
+					resolution: "selected" as const,
+					profileId: "shared-profile-id",
+					profileName: "Shared profile",
+					provider: "anthropic",
+					modelId: "claude-test",
+				}
+				const first = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "first routed task",
+					startTask: false,
+					subagentModelRoute: route,
+				})
+				const second = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "second routed task",
+					startTask: false,
+					subagentModelRoute: route,
+				})
+
+				await Promise.all([
+					(first as any).maybeWaitForProviderRateLimit(0),
+					(second as any).maybeWaitForProviderRateLimit(0),
+				])
+
+				expect(mockDelay).toHaveBeenCalledTimes(mockApiConfig.rateLimitSeconds)
+				expect(mockDelay).toHaveBeenCalledWith(1000)
+			})
+
+			it("records task-local waits without misclassifying the configured shared lane as an error", async () => {
+				const route = {
+					source: "role" as const,
+					resolution: "selected" as const,
+					profileId: "shared-profile-id",
+					profileName: "Shared profile",
+					provider: "anthropic",
+					modelId: "claude-test",
+				}
+				const first = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "first routed task",
+					startTask: false,
+					subagentModelRoute: route,
+				})
+				const second = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "second routed task",
+					startTask: false,
+					subagentModelRoute: route,
+				})
+
+				await (first as any).maybeWaitForProviderRateLimit(0)
+				await (second as any).maybeWaitForProviderRateLimit(0)
+
+				expect(first.getRequestPacingMetrics()).toEqual({
+					configuredIntervalSeconds: 5,
+					waitCount: 0,
+					totalWaitMs: 0,
+					scope: "provider_profile",
+				})
+				expect(second.getRequestPacingMetrics()).toEqual({
+					configuredIntervalSeconds: 5,
+					waitCount: 1,
+					totalWaitMs: 5_000,
+					scope: "provider_profile",
+				})
+			})
+
+			it("adds the completed current wait to the latest model-facing user request", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "report pacing",
+					startTask: false,
+				})
+				task.apiConversationHistory = [
+					{
+						role: "user",
+						content: [{ type: "text", text: "<environment_details>old totals</environment_details>" }],
+					},
+				] as any
+				;(task as any).requestPacingWaitCount = 2
+				;(task as any).requestPacingWaitMs = 20_000
+
+				await (task as any).appendRequestPacingUpdateToLatestUserMessage()
+
+				const content = task.apiConversationHistory[0].content as Array<{ type: string; text: string }>
+				expect(content.at(-1)?.text).toContain('wait_count="2"')
+				expect(content.at(-1)?.text).toContain('total_wait_ms="20000"')
+				expect(content.at(-1)?.text).toContain('classification="configured_pacing_not_provider_error"')
+			})
+
+			it("does not serialize simultaneous requests routed to different stable profiles", async () => {
+				const createRoutedTask = (profileId: string) =>
+					new Task({
+						provider: mockProvider,
+						apiConfiguration: mockApiConfig,
+						task: `task for ${profileId}`,
+						startTask: false,
+						subagentModelRoute: {
+							source: "role",
+							resolution: "selected",
+							profileId,
+							profileName: profileId,
+							provider: "anthropic",
+							modelId: "claude-test",
+						},
+					})
+
+				const first = createRoutedTask("profile-a")
+				const second = createRoutedTask("profile-b")
+				await Promise.all([
+					(first as any).maybeWaitForProviderRateLimit(0),
+					(second as any).maybeWaitForProviderRateLimit(0),
+				])
+
+				expect(mockDelay).not.toHaveBeenCalled()
+			})
+
+			it("keeps legacy tasks on different providers in independent lanes", async () => {
+				const anthropicTask = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					taskApiConfigName: "legacy-profile",
+					task: "anthropic task",
+					startTask: false,
+				})
+				const openAiTask = new Task({
+					provider: mockProvider,
+					apiConfiguration: {
+						apiProvider: "openai",
+						openAiApiKey: "test-key",
+						openAiModelId: "gpt-test",
+						rateLimitSeconds: mockApiConfig.rateLimitSeconds,
+					},
+					taskApiConfigName: "legacy-profile",
+					task: "openai task",
+					startTask: false,
+				})
+
+				await Promise.all([
+					(anthropicTask as any).maybeWaitForProviderRateLimit(0),
+					(openAiTask as any).maybeWaitForProviderRateLimit(0),
+				])
+
+				expect(mockDelay).not.toHaveBeenCalled()
 			})
 
 			it("should enforce rate limiting across parent and subtask", async () => {
@@ -1285,7 +1961,7 @@ describe("Alpha", () => {
 				expect(mockDelay).not.toHaveBeenCalled()
 			})
 
-			it("should update global timestamp even when no rate limiting is needed", async () => {
+			it("should reserve a lane even when the first request needs no delay", async () => {
 				// Create task
 				const task = new Task({
 					provider: mockProvider,
@@ -1318,10 +1994,11 @@ describe("Alpha", () => {
 				const iterator = task.attemptApiRequest(0)
 				await iterator.next()
 
-				// Access the private static property via reflection for testing
-				const globalTimestamp = (Task as any).lastGlobalApiRequestTime
-				expect(globalTimestamp).toBeDefined()
-				expect(globalTimestamp).toBeGreaterThan(0)
+				mockDelay.mockClear()
+
+				// A subsequent request on the same lane observes the first reservation.
+				await (task as any).maybeWaitForProviderRateLimit(0)
+				expect(mockDelay).toHaveBeenCalledTimes(mockApiConfig.rateLimitSeconds)
 			})
 		})
 
@@ -1508,6 +2185,26 @@ describe("Alpha", () => {
 				expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
 			})
 
+			it("treats explicit user feedback as recovery guidance", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "initial task",
+					startTask: false,
+				})
+				task.consecutiveMistakeCount = 1
+				task.consecutiveNoToolUseCount = 2
+				task.consecutiveNoAssistantMessagesCount = 1
+				;(task as any).automaticMistakeRecoveryCount = 1
+
+				await task.submitUserMessage("Did we finish?")
+
+				expect(task.consecutiveMistakeCount).toBe(0)
+				expect(task.consecutiveNoToolUseCount).toBe(0)
+				expect(task.consecutiveNoAssistantMessagesCount).toBe(0)
+				expect((task as any).automaticMistakeRecoveryCount).toBe(0)
+			})
+
 			it("should handle empty messages gracefully", async () => {
 				const task = new Task({
 					provider: mockProvider,
@@ -1594,130 +2291,755 @@ describe("Alpha", () => {
 				// Restore console.error
 				consoleErrorSpy.mockRestore()
 			})
+		})
+	})
+
+	describe("steerUserMessage", () => {
+		it("queues steering for a managed child before its first request", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+				taskKind: "subagent",
+			})
+			const submitSpy = vi.spyOn(task, "submitUserMessage")
+
+			await task.steerUserMessage("focus on the cancellation race")
+
+			expect(submitSpy).not.toHaveBeenCalled()
+			expect((task as any).pendingSteerMessage).toEqual({
+				text: "focus on the cancellation race",
+				images: [],
+			})
+			expect(task.canAcceptSteerMessage()).toBe(false)
+
+			// Moving the message into a turn stack must not reopen the steering slot
+			// before that stack item is durably written to API history.
+			;(task as any).pendingSteerMessage = undefined
+			expect(task.canAcceptSteerMessage()).toBe(false)
+		})
+
+		it("retains a durable steering receipt when an initialized managed child is idle", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+				taskKind: "subagent",
+			})
+			task.isInitialized = true
+			const submitSpy = vi.spyOn(task, "submitUserMessage")
+			const onPersisted = vi.fn()
+
+			expect((task as any).didComplete).toBe(false)
+			expect(task.canAcceptSteerMessage()).toBe(false)
+			await expect(task.steerUserMessage("recover this message", [], onPersisted)).rejects.toThrow(
+				"became inactive before steering could be durably persisted",
+			)
+
+			expect(submitSpy).not.toHaveBeenCalled()
+			expect(onPersisted).not.toHaveBeenCalled()
+			expect((task as any).pendingSteerMessage).toEqual({
+				text: "recover this message",
+				images: [],
+				onPersisted,
+			})
+			expect((task as any).steerMessageAwaitingPersistence).toBe(true)
+		})
+
+		it("retains a durable steering receipt when an ask appears after the provider precheck", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+				taskKind: "subagent",
+			})
+			const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
+			const onPersisted = vi.fn()
+			;(task as any).activeAsk = { type: "tool", ts: Date.now() }
+
+			expect(task.canAcceptSteerMessage()).toBe(false)
+			await expect(task.steerUserMessage("retain across the ask race", [], onPersisted)).rejects.toThrow(
+				"waiting for input before steering could be durably persisted",
+			)
+
+			expect(handleResponseSpy).not.toHaveBeenCalled()
+			expect(onPersisted).not.toHaveBeenCalled()
+			expect((task as any).pendingSteerMessage).toEqual({
+				text: "retain across the ask race",
+				images: [],
+				onPersisted,
+			})
+			expect((task as any).steerMessageAwaitingPersistence).toBe(true)
+		})
+
+		it("responds like a user message when the task is waiting on an ask", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
+
+			await task.steerUserMessage("new context", ["image1.png"])
+
+			expect(handleResponseSpy).toHaveBeenCalledWith("messageResponse", "new context", ["image1.png"])
+		})
+
+		it("aborts the active request without aborting the task when steering during streaming", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			const abortController = new AbortController()
+			const abortSpy = vi.spyOn(abortController, "abort")
+			const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
+
+			task.isStreaming = true
+			task.currentRequestAbortController = abortController
+			task.consecutiveMistakeCount = 1
+			task.consecutiveNoToolUseCount = 2
+			task.consecutiveNoAssistantMessagesCount = 1
+			;(task as any).automaticMistakeRecoveryCount = 1
+
+			await task.steerUserMessage("interrupt with this", ["image1.png"])
+
+			expect(abortSpy).toHaveBeenCalled()
+			expect(task.abort).toBe(false)
+			expect(handleResponseSpy).not.toHaveBeenCalled()
+			expect((task as any).pendingSteerMessage).toEqual({
+				text: "interrupt with this",
+				images: ["image1.png"],
+			})
+			expect(task.consecutiveMistakeCount).toBe(0)
+			expect(task.consecutiveNoToolUseCount).toBe(0)
+			expect(task.consecutiveNoAssistantMessagesCount).toBe(0)
+			expect((task as any).automaticMistakeRecoveryCount).toBe(0)
+		})
+
+		it.each([false, true])("starts an edited prompt from saved history (opening prompt: %s)", async (opening) => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "original",
+				startTask: false,
+			})
+			const prefix: ApiMessage[] = opening
+				? []
+				: [
+						{ role: "user", content: [{ type: "text", text: "Earlier prompt" }], ts: 1 },
+						{ role: "assistant", content: [{ type: "text", text: "Earlier answer" }], ts: 2 },
+					]
+			vi.spyOn(task as any, "getSavedAlphaMessages").mockResolvedValue(
+				opening
+					? []
+					: [
+							{ ts: 1, type: "say", say: "text", text: "Earlier prompt" },
+							{ ts: 2, type: "say", say: "text", text: "Earlier answer" },
+						],
+			)
+			vi.spyOn(task as any, "getSavedApiConversationHistory").mockResolvedValue(prefix)
+			vi.spyOn(task as any, "flushApiConversationHistoryPersistence").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
+			const say = vi.spyOn(task, "say").mockResolvedValue(undefined)
+			const overwrite = vi.spyOn(task, "overwriteApiConversationHistory").mockResolvedValue(true)
+			const images = ["data:image/png;base64,aGVsbG8="]
+			const loop = vi.spyOn(task as any, "initiateTaskLoop").mockImplementation(async (...args: unknown[]) => {
+				await (args[1] as () => void)()
+			})
+			await task.resumeWithEditedMessage("Replacement", images)
+			expect(say).toHaveBeenCalledWith(opening ? "text" : "user_feedback", "Replacement", images)
+			expect(overwrite).toHaveBeenCalledWith(prefix)
+			expect(loop).toHaveBeenCalledWith(
+				[
+					{ type: "text", text: "<user_message>\nReplacement\n</user_message>" },
+					...formatResponse.imageBlocks(images),
+				],
+				expect.any(Function),
+				{ deferTaskStartedUntilInitialUserContentPersisted: true },
+			)
+			await expect(task.resumeWithEditedMessage("Duplicate")).rejects.toThrow("already started")
+		})
+
+		it("reports an edited prompt persistence failure without activating the task", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "original",
+				startTask: false,
+			})
+			vi.spyOn(task as any, "resumeTaskFromHistory").mockRejectedValue(new Error("Persistence failed"))
+			const active = vi.fn()
+			task.on(AlphaCodeEventName.TaskActive, active)
+			await expect(task.resumeWithEditedMessage("Replacement")).rejects.toThrow("Persistence failed")
+			expect(active).not.toHaveBeenCalled()
+		})
+
+		it("resumes a completed primary task with the same task identity", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			;(task as any).didComplete = true
+			const active = vi.fn()
+			task.on(AlphaCodeEventName.TaskActive, active)
+			const resume = vi
+				.spyOn(task as any, "resumeTaskFromHistory")
+				.mockImplementation(async (...args: unknown[]) => {
+					const onPersisted = args[1] as (() => Promise<void> | void) | undefined
+					await onPersisted?.()
+				})
+
+			await task.resumeCompletedTaskFollowup("evaluate the prior answer", ["image1.png"])
+
+			expect(task.taskId).toBeDefined()
+			expect(resume).toHaveBeenCalledWith("evaluate the prior answer", expect.any(Function), ["image1.png"], {
+				deferTaskStartedUntilInitialUserContentPersisted: true,
+				reuseRetainedHistory: true,
+			})
+			expect((task as any).didComplete).toBe(false)
+			expect(active).toHaveBeenCalledWith(task.taskId)
+		})
+
+		it("reuses retained completed-task history without redundant disk reloads", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			;(task as any).didComplete = true
+			task.clineMessages = [
+				{ ts: 1, type: "say", say: "text", text: "initial task" },
+				{ ts: 2, type: "say", say: "completion_result", text: "done" },
+			]
+			task.apiConversationHistory = [
+				{ role: "user", content: [{ type: "text", text: "initial task" }] },
+				{ role: "assistant", content: [{ type: "text", text: "done" }] },
+			] as any
+			const loadAlphaMessages = vi.spyOn(task as any, "getSavedAlphaMessages")
+			const loadApiHistory = vi.spyOn(task as any, "getSavedApiConversationHistory")
+			const overwriteAlphaMessages = vi.spyOn(task, "overwriteAlphaMessages")
+			const reconcileSubagents = vi.spyOn(task as any, "reconcileInterruptedSubagentGroups")
+			vi.spyOn(task as any, "flushApiConversationHistoryPersistence").mockResolvedValue(undefined)
+			vi.spyOn(task, "say").mockResolvedValue(undefined)
+			const overwriteApiHistory = vi.spyOn(task, "overwriteApiConversationHistory").mockResolvedValue(true)
+			const continueLoop = vi
+				.spyOn(task as any, "initiateTaskLoop")
+				.mockImplementation(async (...args: unknown[]) => {
+					const onPersisted = args[1] as (() => Promise<void> | void) | undefined
+					await onPersisted?.()
+				})
+
+			await task.resumeCompletedTaskFollowup("continue in place")
+
+			expect(loadAlphaMessages).not.toHaveBeenCalled()
+			expect(loadApiHistory).not.toHaveBeenCalled()
+			expect(overwriteAlphaMessages).not.toHaveBeenCalled()
+			expect(reconcileSubagents).not.toHaveBeenCalled()
+			expect(overwriteApiHistory).not.toHaveBeenCalled()
+			expect(continueLoop).toHaveBeenCalledWith(
+				[{ type: "text", text: "<user_message>\ncontinue in place\n</user_message>" }],
+				expect.any(Function),
+				{ deferTaskStartedUntilInitialUserContentPersisted: true },
+			)
+		})
+
+		it("restores retained API history when the atomic follow-up write fails", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			;(task as any).didComplete = true
+			;(task as any).didEmitTaskCompleted = true
+			task.clineMessages = [{ ts: 1, type: "say", say: "completion_result", text: "done" }]
+			const originalHistory = [
+				{ role: "user", content: [{ type: "text", text: "initial task" }] },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "completion-1", name: "attempt_completion", input: {} }],
+				},
+				{
+					role: "user",
+					content: [{ type: "tool_result", tool_use_id: "completion-1", content: "done" }],
+				},
+			] as any
+			task.apiConversationHistory = originalHistory
+			vi.spyOn(task as any, "flushApiConversationHistoryPersistence").mockResolvedValue(undefined)
+			vi.spyOn(task, "say").mockResolvedValue(undefined)
+			const overwriteApiHistory = vi.spyOn(task, "overwriteApiConversationHistory")
+			vi.spyOn(task as any, "initiateTaskLoop").mockRejectedValue(new Error("atomic history write failed"))
+
+			await expect(task.resumeCompletedTaskFollowup("retry this follow-up")).rejects.toThrow(
+				"atomic history write failed",
+			)
+
+			expect(overwriteApiHistory).not.toHaveBeenCalled()
+			expect(task.apiConversationHistory).toBe(originalHistory)
+			expect((task as any).didComplete).toBe(true)
+			expect((task as any).steerMessageAwaitingPersistence).toBe(false)
+		})
+
+		it("keeps a completed task terminal when its follow-up fails before persistence", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			;(task as any).didComplete = true
+			;(task as any).didEmitTaskCompleted = true
+			const active = vi.fn()
+			const started = vi.fn()
+			task.on(AlphaCodeEventName.TaskActive, active)
+			task.on(AlphaCodeEventName.TaskStarted, started)
+			vi.spyOn(task as any, "resumeTaskFromHistory").mockRejectedValue(new Error("durable write failed"))
+
+			await expect(task.resumeCompletedTaskFollowup("retain this draft")).rejects.toThrow("durable write failed")
+
+			expect((task as any).didComplete).toBe(true)
+			expect((task as any).didEmitTaskCompleted).toBe(true)
+			expect((task as any).steerMessageAwaitingPersistence).toBe(false)
+			expect(active).not.toHaveBeenCalled()
+			expect(started).not.toHaveBeenCalled()
+		})
+
+		it("acknowledges a completed-task follow-up before waiting for the prior lifecycle flush", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			;(task as any).didComplete = true
+			;(task as any).isTaskLoopActive = true
+			let finishPriorLifecycle!: () => void
+			;(task as any).ownedLifecyclePromise = new Promise<void>((resolve) => {
+				finishPriorLifecycle = resolve
+			})
+			const publicationOrder: string[] = []
+			const resume = vi.spyOn(task as any, "resumeTaskFromHistory")
+			task.on(AlphaCodeEventName.TaskUserMessage, () => publicationOrder.push("admitted"))
+			task.on(AlphaCodeEventName.TaskActive, () => publicationOrder.push("active"))
+			resume.mockImplementation(async (...args: unknown[]) => {
+				publicationOrder.push("resume")
+				const onPersisted = args[1] as (() => Promise<void> | void) | undefined
+				await onPersisted?.()
+			})
+
+			let accepted = false
+			const followup = task.resumeCompletedTaskFollowup("continue after the terminal flush").then(() => {
+				accepted = true
+			})
+			await Promise.resolve()
+
+			expect(accepted).toBe(false)
+			expect(resume).not.toHaveBeenCalled()
+			expect(publicationOrder).toEqual(["admitted"])
+			;(task as any).isTaskLoopActive = false
+			finishPriorLifecycle()
+			await followup
+
+			expect(resume).toHaveBeenCalledOnce()
+			expect(accepted).toBe(true)
+			expect(publicationOrder).toEqual(["admitted", "resume", "active"])
+		})
+
+		it("rejects a second completed-task follow-up while the first admission is pending", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			;(task as any).didComplete = true
+			;(task as any).isTaskLoopActive = true
+			let finishPriorLifecycle!: () => void
+			;(task as any).ownedLifecyclePromise = new Promise<void>((resolve) => {
+				finishPriorLifecycle = resolve
+			})
+			vi.spyOn(task as any, "resumeTaskFromHistory").mockImplementation(async (...args: unknown[]) => {
+				const onPersisted = args[1] as (() => Promise<void> | void) | undefined
+				await onPersisted?.()
+			})
+
+			const firstFollowup = task.resumeCompletedTaskFollowup("first follow-up")
+			await Promise.resolve()
+
+			await expect(task.resumeCompletedTaskFollowup("duplicate follow-up")).rejects.toThrow(
+				"already being admitted",
+			)
+			;(task as any).isTaskLoopActive = false
+			finishPriorLifecycle()
+			await firstFollowup
+		})
+
+		it("rejects the completed-task resume route while the task is not completed", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "active task",
+				startTask: false,
+			})
+			const resume = vi.spyOn(task as any, "resumeTaskFromHistory")
+
+			await expect(task.resumeCompletedTaskFollowup("do not fork this task")).rejects.toThrow("has not completed")
+			expect(resume).not.toHaveBeenCalled()
+		})
+
+		it("retains steered content when the task loop is active before streaming starts", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
+
+			;(task as any).isTaskLoopActive = true
+
+			await task.steerUserMessage("skip data", [])
+
+			expect(handleResponseSpy).not.toHaveBeenCalled()
+			expect((task as any).pendingSteerMessage).toEqual({
+				text: "skip data",
+				images: [],
 			})
 		})
 
-		describe("steerUserMessage", () => {
-			it("responds like a user message when the task is waiting on an ask", async () => {
+		it.each([true, false])(
+			"captures the read grant in an ordinary provider request (enabled=%s)",
+			async (alwaysAllowReadOnly) => {
 				const task = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
-					task: "initial task",
+					task: "capture exploration policy",
 					startTask: false,
 				})
-				const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
-
-				await task.steerUserMessage("new context", ["image1.png"])
-
-				expect(handleResponseSpy).toHaveBeenCalledWith("messageResponse", "new context", ["image1.png"])
-			})
-
-			it("aborts the active request without aborting the task when steering during streaming", async () => {
-				const task = new Task({
-					provider: mockProvider,
-					apiConfiguration: mockApiConfig,
-					task: "initial task",
-					startTask: false,
+				vi.spyOn(mockProvider, "getState").mockResolvedValue({
+					mode: "code",
+					autoApprovalEnabled: true,
+					alwaysAllowReadOnly,
+					showRooIgnoredFiles: false,
+				} as any)
+				vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("test instructions")
+				vi.spyOn(task.api, "createMessage").mockImplementation(async function* () {
+					yield { type: "text", text: "Ordinary answer." } as const
 				})
-				const abortController = new AbortController()
-				const abortSpy = vi.spyOn(abortController, "abort")
-				const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
-
-				task.isStreaming = true
-				task.currentRequestAbortController = abortController
-
-				await task.steerUserMessage("interrupt with this", ["image1.png"])
-
-				expect(abortSpy).toHaveBeenCalled()
-				expect(task.abort).toBe(false)
-				expect(handleResponseSpy).not.toHaveBeenCalled()
-				expect((task as any).pendingSteerMessage).toEqual({
-					text: "interrupt with this",
-					images: ["image1.png"],
-				})
-			})
-
-			it("retains steered content when the task loop is active before streaming starts", async () => {
-				const task = new Task({
-					provider: mockProvider,
-					apiConfiguration: mockApiConfig,
-					task: "initial task",
-					startTask: false,
-				})
-				const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
-
-				;(task as any).isTaskLoopActive = true
-
-				await task.steerUserMessage("skip data", [])
-
-				expect(handleResponseSpy).not.toHaveBeenCalled()
-				expect((task as any).pendingSteerMessage).toEqual({
-					text: "skip data",
-					images: [],
-				})
-			})
-
-			it("does not surface a provider failure when steering before the first chunk arrives", async () => {
-				const task = new Task({
-					provider: mockProvider,
-					apiConfiguration: mockApiConfig,
-					task: "initial task",
-					startTask: false,
-				})
-				const askSpy = vi.spyOn(task, "ask")
-
-				async function* neverRespondingStream(): AsyncGenerator<ApiStreamChunk> {
-					await new Promise<void>(() => {})
-					yield { type: "text", text: "unreachable" }
+				for await (const _chunk of task.attemptApiRequest(0)) {
+					/* Consume the real request boundary. */
 				}
-
-				vi.spyOn(task.api, "createMessage").mockReturnValue(neverRespondingStream())
-
-				;(task as any).isTaskLoopActive = true
-				const nextChunk = task.attemptApiRequest(0).next()
-
-				await vi.waitFor(() => {
-					expect(task.currentRequestAbortController).toBeDefined()
+				const surface = (task as any).currentTaskToolSurface
+				expect(surface?.readGrant).toEqual({
+					enabled: alwaysAllowReadOnly,
+					workspaceRoot: task.cwd,
+					showIgnoredFiles: false,
 				})
+				expect(Object.isFrozen(surface.readGrant)).toBe(true)
+				expect(surface.policy.approval.autoApprovalEnabled).toBe(true)
+				expect(surface.resolve("list_files")?.prepareParallelRead).toBeTypeOf("function")
+			},
+		)
 
-				await task.steerUserMessage("add this context", [])
-
-				await expect(nextChunk).rejects.toThrow("Request interrupted by steered user message")
-				expect(askSpy).not.toHaveBeenCalledWith("api_req_failed", expect.anything())
-				expect((task as any).pendingSteerMessage).toEqual({
-					text: "add this context",
-					images: [],
-				})
+		it("prevents an obsolete provider call when steering interrupts request preflight", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
 			})
+			let resolveState!: (state: Record<string, never>) => void
+			const getState = vi
+				.spyOn(mockProvider, "getState")
+				.mockImplementationOnce(
+					() => new Promise((resolve) => (resolveState = resolve as (state: Record<string, never>) => void)),
+				)
+			const createMessage = vi.spyOn(task.api, "createMessage")
+			const stepController = new AbortController()
 
-			it("merges steered content with the interrupted user turn", async () => {
-				const task = new Task({
-					provider: mockProvider,
-					apiConfiguration: mockApiConfig,
-					task: "initial task",
-					startTask: false,
-				})
-				task.apiConversationHistory = [
-					{
-						role: "user",
-						content: [{ type: "text", text: "<user_message>\noriginal\n</user_message>" }],
-					} as any,
-				]
+			;(task as any).isTaskLoopActive = true
+			;(task as any).stepInterruptionController = stepController
+			const nextChunk = task.attemptApiRequest(0, { interruptionSignal: stepController.signal }).next()
 
-				const mergedContent = [
-					...(task as any).takeLastApiUserMessageContent(),
-					...(task as any).buildUserMessageContent("steered context", []),
-				]
+			await vi.waitFor(() => expect(getState).toHaveBeenCalled())
+			await task.steerUserMessage("use this newer direction", [])
+			resolveState({})
 
-				expect(mergedContent).toEqual([
-					{ type: "text", text: "<user_message>\noriginal\n</user_message>" },
-					{ type: "text", text: "<user_message>\nsteered context\n</user_message>" },
-				])
-				expect(task.apiConversationHistory).toEqual([])
+			await expect(nextChunk).rejects.toThrow("Request interrupted by steered user message")
+			expect(createMessage).not.toHaveBeenCalled()
+			expect((task as any).pendingSteerMessage).toEqual({
+				text: "use this newer direction",
+				images: [],
 			})
 		})
 
-		describe("abortTask", () => {
+		it("rejects steering during an independently owned manual compaction", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			;(task as any).contextCondenseAbortController = new AbortController()
+
+			expect(task.canAcceptSteerMessage()).toBe(false)
+			await expect(task.steerUserMessage("wait until compaction completes", [])).rejects.toThrow(
+				"Context compaction is in progress",
+			)
+			expect((task as any).pendingSteerMessage).toBeUndefined()
+		})
+
+		it("does not replace a steering message that is still pending persistence", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+
+			;(task as any).isTaskLoopActive = true
+
+			await task.steerUserMessage("first steering message", [])
+			await expect(task.steerUserMessage("second steering message", [])).rejects.toThrow(
+				"A steering message is already pending",
+			)
+
+			expect((task as any).pendingSteerMessage).toEqual({
+				text: "first steering message",
+				images: [],
+			})
+		})
+
+		it("does not replace a steering response that an active ask has not consumed", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+
+			;(task as any).activeAsk = { type: "followup", ts: Date.now() }
+
+			await task.steerUserMessage("first steering response", [])
+			await expect(task.steerUserMessage("second steering response", [])).rejects.toThrow(
+				"A steering message is already pending",
+			)
+
+			expect((task as any).askResponseText).toBe("first steering response")
+		})
+
+		it("does not surface a provider failure when steering before the first chunk arrives", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("test instructions")
+			const askSpy = vi.spyOn(task, "ask")
+
+			async function* neverRespondingStream(): AsyncGenerator<ApiStreamChunk> {
+				await new Promise<void>(() => {})
+				yield { type: "text", text: "unreachable" }
+			}
+
+			vi.spyOn(task.api, "createMessage").mockReturnValue(neverRespondingStream())
+			;(task as any).isTaskLoopActive = true
+			const nextChunk = task.attemptApiRequest(0).next()
+
+			await vi.waitFor(() => {
+				expect(task.currentRequestAbortController).toBeDefined()
+			})
+
+			await task.steerUserMessage("add this context", [])
+
+			await expect(nextChunk).rejects.toThrow("Request interrupted by steered user message")
+			expect(askSpy).not.toHaveBeenCalledWith("api_req_failed", expect.anything())
+			expect((task as any).pendingSteerMessage).toEqual({
+				text: "add this context",
+				images: [],
+			})
+		})
+
+		it("does not let a late request abort clear a newer operation controller", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "preserve newer cancellation owner",
+				startTask: false,
+			})
+			vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("test instructions")
+
+			async function* neverRespondingStream(): AsyncGenerator<ApiStreamChunk> {
+				await new Promise<void>(() => {})
+				yield { type: "text", text: "unreachable" }
+			}
+
+			vi.spyOn(task.api, "createMessage").mockReturnValue(neverRespondingStream())
+			const nextChunk = task.attemptApiRequest(0).next()
+			await vi.waitFor(() => expect(task.currentRequestAbortController).toBeDefined())
+			const oldController = task.currentRequestAbortController!
+			const newerController = new AbortController()
+			task.currentRequestAbortController = newerController
+
+			oldController.abort()
+
+			await expect(nextChunk).rejects.toThrow("Request cancelled by user")
+			expect(task.currentRequestAbortController).toBe(newerController)
+			expect(newerController.signal.aborted).toBe(false)
+		})
+
+		it("merges steered content with the interrupted user turn", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			task.apiConversationHistory = [
+				{
+					role: "user",
+					content: [{ type: "text", text: "<user_message>\noriginal\n</user_message>" }],
+				} as any,
+			]
+
+			const mergedContent = [
+				...(task as any).takeLastApiUserMessageContent(),
+				...(task as any).buildUserMessageContent("steered context", []),
+			]
+
+			expect(mergedContent).toEqual([
+				{ type: "text", text: "<user_message>\noriginal\n</user_message>" },
+				{ type: "text", text: "<user_message>\nsteered context\n</user_message>" },
+			])
+			expect(task.apiConversationHistory).toEqual([])
+		})
+	})
+
+	describe("abortTask", () => {
+		it("waits for both the Worker process abort and terminal settlement", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			let finishAbort!: () => void
+			const terminalProcess = Object.assign(new EventEmitter(), {
+				isSettled: false,
+				abort: vi.fn(
+					() =>
+						new Promise<void>((resolve) => {
+							finishAbort = resolve
+						}),
+				),
+			})
+			Object.assign(task, { taskKind: "subagent", subagentRole: "worker", terminalProcess })
+			vi.spyOn(task, "dispose").mockImplementation(() => {})
+			vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(undefined)
+
+			let settled = false
+			const abort = task.abortTask().finally(() => (settled = true))
+			await vi.waitFor(() => expect(terminalProcess.abort).toHaveBeenCalledOnce())
+
+			finishAbort()
+			await Promise.resolve()
+			expect(settled).toBe(false)
+
+			terminalProcess.isSettled = true
+			terminalProcess.emit("completed")
+			await abort
+			expect(settled).toBe(true)
+		})
+
+		it("does not wait for a Worker terminal event that already settled", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			const terminalProcess = Object.assign(new EventEmitter(), {
+				isSettled: true,
+				abort: vi.fn(async () => undefined),
+			})
+			Object.assign(task, { taskKind: "subagent", subagentRole: "worker", terminalProcess })
+			vi.spyOn(task, "dispose").mockImplementation(() => {})
+			vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(undefined)
+
+			await expect(task.abortTask()).resolves.toBeUndefined()
+			expect(terminalProcess.abort).not.toHaveBeenCalled()
+		})
+
+		it("coalesces concurrent aborts into one lifecycle transition", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			const emitSpy = vi.spyOn(task, "emit")
+			const disposeSpy = vi.spyOn(task, "dispose").mockImplementation(() => {})
+			let finishSave!: () => void
+			const saveSpy = vi.spyOn(task as any, "saveAlphaMessages").mockImplementation(
+				async () =>
+					await new Promise<void>((resolve) => {
+						finishSave = resolve
+					}),
+			)
+
+			const first = task.abortTask()
+			const second = task.abortTask(true)
+			expect(second).toBe(first)
+			await vi.waitFor(() => expect(saveSpy).toHaveBeenCalledOnce())
+			finishSave()
+			await Promise.all([first, second])
+
+			expect(task.abandoned).toBe(true)
+			expect(disposeSpy).toHaveBeenCalledOnce()
+			const abortEmits = (emitSpy.mock.calls as unknown[][]).filter(([event]) => event === "taskAborted")
+			expect(abortEmits).toHaveLength(1)
+		})
+
+		it("disposes and persists before surfacing a retryable managed-process cleanup failure", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "test task",
+				startTask: false,
+			})
+			let abortAttempt = 0
+			const terminalProcess = Object.assign(new EventEmitter(), {
+				abort: vi.fn(async () => {
+					abortAttempt++
+					if (abortAttempt === 1) throw new Error("tree cleanup failed")
+					terminalProcess.emit("completed")
+				}),
+			})
+			Object.assign(task, { taskKind: "subagent", subagentRole: "worker", terminalProcess })
+			const disposeSpy = vi.spyOn(task, "dispose").mockImplementation(() => {})
+			const saveSpy = vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(undefined)
+
+			await expect(task.abortTask()).rejects.toThrow("tree cleanup failed")
+
+			expect(disposeSpy).toHaveBeenCalledOnce()
+			expect(saveSpy).toHaveBeenCalledOnce()
+
+			await expect(task.abortTask()).resolves.toBeUndefined()
+			expect(terminalProcess.abort).toHaveBeenCalledTimes(2)
+			expect(disposeSpy).toHaveBeenCalledTimes(2)
+			expect(saveSpy).toHaveBeenCalledTimes(2)
+		})
+
 		it("should set abort flag and emit TaskAborted event", async () => {
 			const task = new Task({
 				provider: mockProvider,
@@ -1940,6 +3262,1931 @@ describe("Alpha", () => {
 		})
 	})
 
+	describe("v2.0.9 root task loop", () => {
+		const createTask = (taskKind: "primary" | "subagent" = "primary") => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "root loop regression",
+				taskKind,
+				startTask: false,
+				enableCheckpoints: false,
+			})
+			vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
+			vi.spyOn(task as any, "enqueueAlphaMessagesSave").mockImplementation(async (...args: unknown[]) => {
+				const [createSnapshot, onPersisted] = args as [() => unknown, (() => void) | undefined]
+				createSnapshot()
+				onPersisted?.()
+				return true
+			})
+			return task
+		}
+
+		beforeEach(() => {
+			i18n.addResourceBundle("en", "common", enCommon)
+			mockProvider.getParentCompletionDecision = vi.fn().mockResolvedValue({ allowed: true })
+			vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
+				() => ({ get: (_key: string, defaultValue: unknown) => defaultValue }) as any,
+			)
+		})
+
+		it.each(["apply_patch", "edit"])(
+			"executes the advertised %s preference through the Task scheduler",
+			async (name) => {
+				const task = createTask()
+				vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+				vi.spyOn(task, "say").mockResolvedValue(undefined)
+				vi.spyOn(
+					task as unknown as { assertCurrentProviderTranscriptBeforeEffects(): Promise<void> },
+					"assertCurrentProviderTranscriptBeforeEffects",
+				).mockResolvedValue(undefined)
+				const registry = new ToolRegistry({ includeBuiltIns: false })
+				const execute = vi.fn(
+					async ({ callbacks }: { callbacks: { pushToolResult: (text: string) => void } }) => {
+						callbacks.pushToolResult("Edit completed")
+					},
+				)
+				registry.register({
+					name,
+					aliases: [],
+					schema: {
+						type: "function",
+						function: {
+							name,
+							description: "Scoped edit fixture",
+							parameters: { type: "object", properties: {} },
+						},
+					},
+					capabilities: {
+						concurrency: "serial",
+						sideEffects: "none",
+						requiresApproval: false,
+						controlFlow: false,
+					},
+					execute,
+				})
+				const surface = createTaskToolSurface({ registry, mode: "code" })
+				const outcome = await task["executeCanonicalToolCalls"](
+					createAgentResponse([
+						{
+							type: "tool_call",
+							id: "preferred-edit",
+							name,
+							arguments:
+								name === "apply_patch"
+									? { patch: "*** Begin Patch\n*** Add File: fixture.txt\n+fixture\n*** End Patch" }
+									: {},
+						},
+						{ type: "tool_call", id: "hidden-edit", name: "apply_diff", arguments: {} },
+					]),
+					surface,
+					"code",
+					undefined,
+					new AbortController().signal,
+				)
+				expect(outcome.results[0]).toMatchObject({ status: "success", content: "Edit completed" })
+				expect(outcome.results[1].status).toBe("error")
+				expect(execute).toHaveBeenCalledOnce()
+			},
+		)
+
+		it("finishes a managed child from its streamed final text without a forced tool round", async () => {
+			const task = createTask("subagent")
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+			const completed = vi.fn()
+			task.on(AlphaCodeEventName.TaskCompleted, completed)
+			const request = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					if (request.mock.calls.length > 1) {
+						throw Object.assign(new Error("Unexpected extra request after the final answer"), {
+							retryable: false,
+						})
+					}
+					yield { type: "text", text: "The parser handles the reported case correctly." }
+				})(),
+			)
+
+			await Reflect.get(task, "initiateTaskLoop").call(task, [{ type: "text", text: "Review the parser." }])
+
+			expect(request).toHaveBeenCalledOnce()
+			expect(ask).not.toHaveBeenCalled()
+			expect(completed).toHaveBeenCalledOnce()
+			expect(Reflect.get(task, "didComplete")).toBe(true)
+			expect(task.subagentCompletionOutcome).toBe("completed")
+			expect(task.clineMessages.filter((message) => message.say === "completion_result")).toEqual([
+				expect.objectContaining({ text: "The parser handles the reported case correctly.", partial: false }),
+			])
+			expect(JSON.stringify(task.apiConversationHistory)).not.toContain(formatResponse.noToolsUsed())
+			expect(await task.finalizeTaskCompletion()).toBe(false)
+			expect(completed).toHaveBeenCalledOnce()
+		})
+
+		it.each([false, true])(
+			"automatically recovers a recognized empty response with tool auto-approval=%s",
+			async (autoApprovalEnabled) => {
+				const task = createTask()
+				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled })
+				vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+				const events = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+				vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+				Object.assign(task, { agentRetryPolicy: new AgentRetryPolicy({ baseDelayMs: 0 }) })
+				const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+				const request = vi
+					.spyOn(task, "attemptApiRequest")
+					.mockImplementationOnce(() =>
+						(async function* (): AsyncGenerator<ApiStreamChunk> {
+							yield* []
+							throw Object.assign(new Error("Response contained no choices."), {
+								firstChunkFailure: true,
+								retryable: true,
+								retryCategory: "empty-response",
+							})
+						})(),
+					)
+					.mockImplementationOnce(() =>
+						(async function* (): AsyncGenerator<ApiStreamChunk> {
+							yield { type: "text", text: "Recovered answer." }
+						})(),
+					)
+
+				await expect(task.runAgentRequests([{ type: "text", text: "start" }], false)).resolves.toMatchObject({
+					status: "completed",
+				})
+				expect(request).toHaveBeenCalledTimes(2)
+				expect(ask).not.toHaveBeenCalled()
+				expect(events).toHaveBeenCalledWith(expect.objectContaining({ type: "retry", attempt: 1 }))
+			},
+		)
+
+		it.each([undefined, false, true])(
+			"bounds first-chunk recovery with retryable=%s and keeps manual recovery available",
+			async (retryable) => {
+				const task = createTask()
+				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: false })
+				vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+				vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+				vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+				Object.assign(task, { agentRetryPolicy: new AgentRetryPolicy({ baseDelayMs: 0 }) })
+				const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+				const request = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+					(async function* (): AsyncGenerator<ApiStreamChunk> {
+						yield* []
+						throw Object.assign(new Error("Provider failure"), {
+							firstChunkFailure: true,
+							retryable,
+							retryCategory: "empty-response",
+						})
+					})(),
+				)
+
+				await expect(task.runAgentRequests([{ type: "text", text: "start" }], false)).resolves.toMatchObject({
+					status: "failed",
+				})
+				expect(request).toHaveBeenCalledTimes(retryable === true ? 2 : 1)
+				if (retryable === false) expect(ask).not.toHaveBeenCalled()
+				else expect(ask).toHaveBeenCalledExactlyOnceWith("api_req_failed", "Provider failure")
+			},
+		)
+
+		it.each([false, true])(
+			"stops at the logical retry deadline with tool auto-approval=%s",
+			async (autoApprovalEnabled) => {
+				vi.useFakeTimers()
+				try {
+					vi.setSystemTime(5_000)
+					const task = createTask()
+					mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled })
+					vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+					vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+					vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+					vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+					Object.assign(task, {
+						agentRetryPolicy: new AgentRetryPolicy({
+							maxAttempts: 2,
+							maxElapsedMs: 100,
+							baseDelayMs: 100,
+							jitter: "none",
+						}),
+					})
+					let markRetryAnnouncementStarted!: () => void
+					const retryAnnouncementStarted = new Promise<void>((resolve) => {
+						markRetryAnnouncementStarted = resolve
+					})
+					vi.spyOn(task, "say").mockImplementation(async (type, _text, _images, partial) => {
+						if (type === "api_req_retry_delayed" && partial) {
+							markRetryAnnouncementStarted()
+							await new Promise<void>(() => undefined)
+						}
+					})
+					const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+						(async function* (): AsyncGenerator<ApiStreamChunk> {
+							yield* []
+							throw Object.assign(new Error("transient provider failure"), {
+								firstChunkFailure: true,
+								retryable: true,
+								retryCategory: "transport",
+							})
+						})(),
+					)
+
+					const pending = task.runAgentRequests([{ type: "text", text: "start" }], false)
+					await retryAnnouncementStarted
+					await vi.advanceTimersByTimeAsync(100)
+					await expect(pending).resolves.toMatchObject({
+						status: "exhausted",
+						reason: "Automatic retry deadline exceeded",
+					})
+					expect(attempt).toHaveBeenCalledOnce()
+					expect(vi.getTimerCount()).toBe(0)
+				} finally {
+					vi.useRealTimers()
+				}
+			},
+		)
+
+		it.each(["new_task", "delegate_task", "attempt_completion", "ask_followup_question", "wait_agent"])(
+			"rejects a mixed %s batch before persisting the assistant response",
+			async (barrier) => {
+				const task = createTask()
+				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+				vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+				const events = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+				vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+				const fence = vi
+					.spyOn(task as any, "assertCurrentProviderTranscriptBeforeEffects")
+					.mockResolvedValue(undefined)
+				const execute = vi.spyOn(task as any, "executeCanonicalToolCallsForTurn")
+				const usage = vi.spyOn(task, "recordToolUsage")
+				const surface = createTaskToolSurface({
+					registry: new ToolRegistry({
+						mcpTools: [
+							{
+								type: "function",
+								function: { name: "mcp--docs--lookup", parameters: { type: "object", properties: {} } },
+							},
+						],
+					}),
+					mode: "code",
+				})
+				const snapshots: Task["userMessageContent"][] = []
+				const persist = vi
+					.spyOn(task as any, "persistAssistantResponseBeforeEffects")
+					.mockImplementation(async () => {
+						snapshots.push([...task.userMessageContent])
+						return true
+					})
+				vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+					(async function* (): AsyncGenerator<ApiStreamChunk> {
+						// A real request captures this surface before reading provider chunks.
+						Object.assign(task, { currentTaskToolSurface: surface })
+						yield { type: "reasoning", text: "Inspect the workspace first." }
+						yield { type: "text", text: "Preparing the tools." }
+						for (const [id, name] of [
+							["read-first", "read_file"],
+							["barrier", barrier],
+							["mcp-last", "mcp__docs__lookup"],
+						]) {
+							yield { type: "tool_call", id, name, arguments: "{}" }
+						}
+					})(),
+				)
+
+				await task.runAgentRequests([{ type: "text", text: "start" }], false)
+
+				expect(persist).toHaveBeenCalledOnce()
+				expect(execute).toHaveBeenCalledOnce()
+				expect(fence).toHaveBeenCalledOnce() // Scheduler-entry fence only; no per-effect fence is reached.
+				expect(usage).not.toHaveBeenCalled()
+				expect(snapshots[0]).toEqual([
+					expect.objectContaining({ type: "tool_result", tool_use_id: "read-first", is_error: true }),
+					expect.objectContaining({ type: "tool_result", tool_use_id: "barrier", is_error: true }),
+					expect.objectContaining({ type: "tool_result", tool_use_id: "mcp-last", is_error: true }),
+				])
+				expect(task.assistantMessageContent).toEqual([])
+				expect(task.userMessageContentReady).toBe(true)
+				expect(task.userMessageContent).toEqual(snapshots[0])
+				expect(
+					events.mock.calls.flatMap(([input]) => {
+						const event = input as AgentTurnEvent
+						return event.type === "tool_result" ? [{ callId: event.callId, status: event.status }] : []
+					}),
+				).toEqual([
+					{ callId: "read-first", status: "error" },
+					{ callId: "barrier", status: "error" },
+					{ callId: "mcp-last", status: "error" },
+				])
+			},
+		)
+
+		it.each([
+			["successful", false],
+			["failed", true],
+		] as const)("forwards a %s tool result into the next turn", async (_label, isError) => {
+			const task = createTask()
+			const initialContent: Anthropic.Messages.ContentBlockParam[] = [{ type: "text", text: "start" }]
+			const toolResult: Anthropic.ToolResultBlockParam = {
+				type: "tool_result",
+				tool_use_id: "read-1",
+				content: isError ? "read failed" : "file contents",
+				...(isError ? { is_error: true } : {}),
+			}
+			const requestStep = vi
+				.spyOn(task, "runAgentRequests")
+				.mockImplementationOnce(async () => {
+					task.userMessageContent = [toolResult]
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop(initialContent)
+
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[0]?.slice(0, 2)).toEqual([initialContent, true])
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([[toolResult], false])
+		})
+
+		it("persists one deterministic error receipt for every unexecuted terminal tool call", async () => {
+			const task = createTask()
+			task.apiConversationHistory = [
+				{ role: "user", content: [{ type: "text", text: "start" }], ts: 1 },
+				{
+					role: "assistant",
+					content: [
+						{ type: "tool_use", id: "terminal-read", name: "read_file", input: { path: "a.ts" } },
+						{ type: "tool_use", id: "terminal-list", name: "list_files", input: {} },
+					],
+					ts: 2,
+				},
+			] as any
+			task.assistantMessageSavedToHistory = true
+			const saveHistory = vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			const response = createAgentResponse([
+				{ type: "tool_call", id: "terminal-read", name: "read_file", arguments: { path: "a.ts" } },
+				{ type: "tool_call", id: "terminal-list", name: "list_files", arguments: {} },
+			])
+
+			const repaired = await (task as any).persistUnexecutedTerminalToolResults(response, "cancelled")
+
+			expect(repaired).toBe(true)
+			expect(saveHistory).toHaveBeenCalledOnce()
+			expect(task.apiConversationHistory.at(-1)).toEqual({
+				role: "user",
+				content: [
+					{
+						type: "tool_result",
+						tool_use_id: "terminal-read",
+						content: "Tool call was not executed because the provider response was cancelled.",
+						is_error: true,
+					},
+					{
+						type: "tool_result",
+						tool_use_id: "terminal-list",
+						content: "Tool call was not executed because the provider response was cancelled.",
+						is_error: true,
+					},
+				],
+				ts: expect.any(Number),
+			})
+			expect(task.userMessageContent).toEqual([])
+
+			// A direct/empty continuation must be idempotent: the durable assistant
+			// boundary and its receipts are not duplicated on a second repair pass.
+			await expect((task as any).persistUnexecutedTerminalToolResults(response, "cancelled")).resolves.toBe(true)
+			expect(saveHistory).toHaveBeenCalledOnce()
+			expect(task.apiConversationHistory.filter((message) => message.role === "user")).toHaveLength(2)
+		})
+
+		it("retains terminal error receipts in memory when their history write fails", async () => {
+			const task = createTask()
+			task.apiConversationHistory = [
+				{ role: "user", content: [{ type: "text", text: "start" }], ts: 1 },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "failed-write", name: "read_file", input: {} }],
+					ts: 2,
+				},
+			] as any
+			task.assistantMessageSavedToHistory = true
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(false)
+
+			const repaired = await (task as any).persistUnexecutedTerminalToolResults(
+				createAgentResponse([{ type: "tool_call", id: "failed-write", name: "read_file", arguments: {} }]),
+				"incomplete",
+			)
+
+			expect(repaired).toBe(false)
+			expect(task.apiConversationHistory).toHaveLength(2)
+			expect(task.userMessageContent).toEqual([
+				{
+					type: "tool_result",
+					tool_use_id: "failed-write",
+					content: "Tool call was not executed because the provider response was incomplete.",
+					is_error: true,
+				},
+			])
+		})
+
+		it.each([
+			["Resume", [{ type: "text", text: "[TASK RESUMPTION] Resuming task..." }]],
+			["typed guidance", [{ type: "text", text: "<user_message>Continue from the failed tool.</user_message>" }]],
+		] as const)("reconciles retained terminal receipts before %s", async (_label, followupContent) => {
+			const task = createTask()
+			task.apiConversationHistory = [
+				{ role: "user", content: [{ type: "text", text: "start" }], ts: 1 },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "retained-result", name: "read_file", input: {} }],
+					ts: 2,
+				},
+			] as any
+			task.assistantMessageSavedToHistory = true
+			const saveHistory = vi
+				.spyOn(task as any, "saveApiConversationHistory")
+				.mockResolvedValueOnce(false)
+				.mockResolvedValueOnce(true)
+			const response = createAgentResponse([
+				{ type: "tool_call", id: "retained-result", name: "read_file", arguments: {} },
+			])
+
+			await expect((task as any).persistUnexecutedTerminalToolResults(response, "failed")).resolves.toBe(false)
+			const requestContent = (task as any).mergePendingToolResultsIntoUserContent(followupContent)
+			expect(requestContent).toEqual([
+				{
+					type: "tool_result",
+					tool_use_id: "retained-result",
+					content: "Tool call was not executed because the provider response failed.",
+					is_error: true,
+				},
+				...followupContent,
+			])
+
+			await (task as any).persistUserContentWithEnvironment(requestContent, undefined, undefined)
+			;(task as any).acknowledgePersistedUserMessageContent(requestContent)
+
+			const resultBlocks = task.apiConversationHistory.flatMap((message) =>
+				message.role === "user" && Array.isArray(message.content)
+					? message.content.filter((block) => block.type === "tool_result")
+					: [],
+			)
+			expect(resultBlocks).toEqual([
+				expect.objectContaining({
+					tool_use_id: "retained-result",
+					content: "Tool call was not executed because the provider response failed.",
+					is_error: true,
+				}),
+			])
+			expect(task.userMessageContent).toEqual([])
+			expect(saveHistory).toHaveBeenCalledTimes(2)
+		})
+
+		it("fails closed without staging a tool result before the assistant boundary", async () => {
+			const task = createTask()
+			const saveHistory = vi.spyOn(task as any, "saveApiConversationHistory")
+
+			const repaired = await (task as any).persistUnexecutedTerminalToolResults(
+				createAgentResponse([{ type: "tool_call", id: "no-boundary", name: "read_file", arguments: {} }]),
+				"failed",
+			)
+
+			expect(repaired).toBe(false)
+			expect(task.userMessageContent).toEqual([])
+			expect(saveHistory).not.toHaveBeenCalled()
+		})
+
+		it.each([
+			["incomplete provider response", "incomplete", false, "failed"],
+			["provider-declared cancellation", "cancelled", false, "failed"],
+			["authoritative task cancellation", "cancelled", true, "aborted"],
+		] as const)(
+			"promotes terminal receipt persistence failure for %s to %s",
+			async (_label, providerStatus, taskCancelled, expectedStatus) => {
+				const task = createTask()
+				if (taskCancelled) {
+					;(task as any).taskCancellationController.abort(new Error("User cancelled the task."))
+				}
+				vi.spyOn(task as any, "persistAssistantResponseBeforeEffects").mockResolvedValue(true)
+				vi.spyOn(task as any, "persistUnexecutedTerminalToolResults").mockResolvedValue(false)
+				const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+				const response = createAgentResponse(
+					[{ type: "tool_call", id: `receipt-${providerStatus}`, name: "read_file", arguments: {} }],
+					{ status: providerStatus, reason: "Provider terminal outcome." },
+				)
+
+				const result = await (task as any).persistTerminalCanonicalResponse(
+					response,
+					providerStatus,
+					"Provider terminal outcome.",
+				)
+
+				expect(result).toMatchObject({
+					status: expectedStatus,
+					reason: expect.stringContaining("Terminal tool-result receipts could not be durably saved."),
+					error: expect.any(Error),
+				})
+				expect((result as any).error.name).toBe("TaskPersistenceError")
+				expect(appendEvent).toHaveBeenLastCalledWith(
+					expect.objectContaining({ type: "response_terminal", status: expectedStatus }),
+					undefined,
+				)
+			},
+		)
+
+		it("promotes an assistant-boundary persistence failure to failed", async () => {
+			const task = createTask()
+			vi.spyOn(task as any, "persistAssistantResponseBeforeEffects").mockResolvedValue(false)
+			const persistReceipts = vi.spyOn(task as any, "persistUnexecutedTerminalToolResults")
+			const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			const response = createAgentResponse(
+				[{ type: "tool_call", id: "assistant-boundary", name: "read_file", arguments: {} }],
+				{ status: "incomplete", reason: "Stream ended." },
+			)
+
+			const result = await (task as any).persistTerminalCanonicalResponse(response, "incomplete", "Stream ended.")
+
+			expect(result).toMatchObject({
+				status: "failed",
+				reason: expect.stringContaining("The assistant response could not be durably saved."),
+				error: expect.any(Error),
+			})
+			expect(persistReceipts).not.toHaveBeenCalled()
+			expect(appendEvent).toHaveBeenLastCalledWith(
+				expect.objectContaining({ type: "response_terminal", status: "failed" }),
+				undefined,
+			)
+		})
+
+		it("persists the canonical tool boundary and an unexecuted receipt when a failed stream throws", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			const executeTools = vi.spyOn(task as any, "executeCanonicalToolCalls")
+			const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation(() => {
+				return (async function* (): AsyncGenerator<ApiStreamChunk> {
+					yield {
+						type: "tool_call",
+						id: "failed-stream-tool",
+						name: "read_file",
+						arguments: JSON.stringify({ path: "README.md" }),
+					}
+					yield {
+						type: "error",
+						error: "policy_rejected",
+						message: "Policy rejected",
+						retryable: false,
+						semanticOutputObserved: true,
+					}
+					yield {
+						type: "outcome",
+						status: "failed",
+						terminal: true,
+						semanticOutputObserved: true,
+						reason: "Policy rejected",
+						retryable: false,
+					}
+					throw Object.assign(new Error("Response failed: Policy rejected"), {
+						retryable: false,
+						semanticOutputObserved: true,
+					})
+				})()
+			})
+
+			const result = await task.runAgentRequests([{ type: "text", text: "start" }], false)
+
+			expect(result).toMatchObject({
+				status: "failed",
+				reason: "Policy rejected",
+				response: {
+					outcome: { status: "failed", retryable: false },
+					toolCalls: [
+						{
+							id: "failed-stream-tool",
+							name: "read_file",
+							arguments: { path: "README.md" },
+						},
+					],
+				},
+			})
+			expect(attempt).toHaveBeenCalledOnce()
+			expect(executeTools).not.toHaveBeenCalled()
+			const assistantBoundary = task.apiConversationHistory.find(
+				(message) =>
+					message.role === "assistant" &&
+					Array.isArray(message.content) &&
+					message.content.some((block) => block.type === "tool_use" && block.id === "failed-stream-tool"),
+			)
+			expect(assistantBoundary).toBeDefined()
+			expect(task.apiConversationHistory.at(-1)).toMatchObject({
+				role: "user",
+				content: [
+					{
+						type: "tool_result",
+						tool_use_id: "failed-stream-tool",
+						content: "Tool call was not executed because the provider response failed.",
+						is_error: true,
+					},
+				],
+			})
+		})
+
+		it("classifies a normal provider terminal receipt persistence failure", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "persistUnexecutedTerminalToolResults").mockResolvedValue(false)
+			const executeTools = vi.spyOn(task as any, "executeCanonicalToolCalls")
+			const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation(() => {
+				return (async function* (): AsyncGenerator<ApiStreamChunk> {
+					yield {
+						type: "tool_call",
+						id: "terminal-receipt-write",
+						name: "read_file",
+						arguments: JSON.stringify({ path: "README.md" }),
+					}
+					yield {
+						type: "outcome",
+						status: "failed",
+						terminal: true,
+						semanticOutputObserved: true,
+						reason: "Provider terminal outcome.",
+						retryable: false,
+					}
+				})()
+			})
+
+			const result = await task.runAgentRequests([{ type: "text", text: "start" }], false)
+
+			expect(result).toMatchObject({
+				status: "failed",
+				error: expect.objectContaining({ name: "TaskPersistenceError" }),
+				reason: expect.stringContaining("Terminal tool-result receipts could not be durably saved."),
+			})
+			expect(attempt).toHaveBeenCalledOnce()
+			expect(executeTools).not.toHaveBeenCalled()
+		})
+
+		it("publishes a durable completion boundary for an ordinary primary response", async () => {
+			const task = createTask()
+			let streamedMessageTs: number | undefined
+			task.consecutiveMistakeCount = 1
+			task.consecutiveNoToolUseCount = 2
+			task.consecutiveNoAssistantMessagesCount = 1
+			;(task as any).automaticMistakeRecoveryCount = 1
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({
+				response: "yesButtonClicked",
+				text: "",
+				images: [],
+			})
+			const say = vi.spyOn(task, "say")
+			const flush = vi.spyOn(task, "flushPendingToolResultsToHistory")
+			const completed = vi.fn()
+			task.on(AlphaCodeEventName.TaskCompleted, completed)
+			const requestStep = vi.spyOn(task, "runAgentRequests").mockImplementationOnce(async () => {
+				await task.say("text", "The requested explanation.", undefined, false)
+				streamedMessageTs = task.clineMessages.at(-1)?.ts
+				task.assistantMessageContent = [{ type: "text", content: "The requested explanation.", partial: false }]
+				return false
+			})
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledOnce()
+			expect(ask).toHaveBeenCalledOnce()
+			expect(ask).toHaveBeenCalledWith("completion_result", "", false)
+			expect(say).not.toHaveBeenCalledWith("completion_result", expect.anything())
+			const visibleFinals = task.clineMessages.filter(
+				(message) => message.type === "say" && message.say === "completion_result",
+			)
+			expect(visibleFinals).toHaveLength(1)
+			expect(visibleFinals[0]).toMatchObject({
+				ts: streamedMessageTs,
+				text: "The requested explanation.",
+				partial: false,
+			})
+			expect(task.clineMessages).not.toContainEqual(
+				expect.objectContaining({ type: "say", say: "text", text: "The requested explanation." }),
+			)
+			expect(flush).toHaveBeenCalledOnce()
+			expect(completed).toHaveBeenCalledOnce()
+			expect(completed).toHaveBeenCalledWith(task.taskId, expect.anything(), task.toolUsage)
+			expect(await task.finalizeTaskCompletion()).toBe(false)
+			expect(completed).toHaveBeenCalledOnce()
+			expect(task.userMessageContent).toEqual([])
+			expect(task.consecutiveMistakeCount).toBe(0)
+			expect(task.consecutiveNoToolUseCount).toBe(0)
+			expect(task.consecutiveNoAssistantMessagesCount).toBe(0)
+			expect((task as any).automaticMistakeRecoveryCount).toBe(0)
+		})
+
+		it.each(["failed", "incomplete", "exhausted"] as const)(
+			"persists one safe recovery explanation before asking to resume a pre-provider %s turn",
+			async (status) => {
+				const task = createTask()
+				mockProvider.postTaskMessageToWebview = vi.fn().mockResolvedValue(undefined)
+				const privateReason =
+					"Authorization: Bearer test-secret\nPrivate prompt: do not publish\n at internalFrame"
+				const save = vi.mocked((task as any).saveAlphaMessages)
+				const ask = vi.spyOn(task, "ask").mockImplementation(async () => {
+					const errors = task.clineMessages.filter((message) => message.say === "error")
+					expect(errors).toHaveLength(1)
+					expect(errors[0].text).toBe(enCommon.errors[`task_recovery_${status}`])
+					expect(JSON.stringify(task.clineMessages)).not.toContain(privateReason)
+					expect(save).toHaveBeenCalled()
+					expect(mockProvider.postTaskMessageToWebview).toHaveBeenCalledExactlyOnceWith(
+						"messageCreated",
+						task.taskId,
+						errors[0],
+					)
+					return { response: "yesButtonClicked" }
+				})
+				const requestStep = vi
+					.spyOn(task, "runAgentRequests")
+					.mockResolvedValueOnce({ status, reason: privateReason })
+					.mockResolvedValueOnce(true)
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				expect(ask).toHaveBeenCalledExactlyOnceWith("resume_task")
+				expect(requestStep).toHaveBeenCalledTimes(2)
+				expect(task.clineMessages.filter((message) => message.say === "error")).toHaveLength(1)
+			},
+		)
+
+		it.each(["ELOCKOWNER", "ELOCKLEGACY"] as const)(
+			"explains the offline repair required by %s before offering recovery",
+			async (code) => {
+				const task = createTask()
+				const privateReason = "Private storage path and request content"
+				vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+				vi.spyOn(task, "runAgentRequests")
+					.mockRejectedValueOnce(new AgentControlTransactionError(privateReason, code))
+					.mockResolvedValueOnce(true)
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				const errors = task.clineMessages.filter((message) => message.say === "error")
+				expect(errors).toHaveLength(1)
+				expect(errors[0].text).toContain("Close all VS Code windows")
+				expect(errors[0].text).toContain("agent_control.json.transaction.lock")
+				expect(JSON.stringify(task.clineMessages)).not.toContain(privateReason)
+			},
+		)
+
+		it("explains an unhandled pre-provider exception without copying private diagnostics", async () => {
+			const task = createTask()
+			vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+			vi.spyOn(task, "runAgentRequests")
+				.mockRejectedValueOnce(new Error("Private request body with credentials and prompt"))
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(task.clineMessages.filter((message) => message.say === "error")).toEqual([
+				expect.objectContaining({ text: enCommon.errors.task_recovery_failed }),
+			])
+		})
+
+		it("explains a pacing metadata persistence failure before any provider request", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "maybeWaitForProviderRateLimit").mockImplementation(async () => {
+				;(task as any).requestPacingWaitCount++
+			})
+			vi.spyOn(task as any, "appendRequestPacingUpdateToLatestUserMessage").mockResolvedValue(false)
+			const request = vi.spyOn(task, "attemptApiRequest")
+			vi.spyOn(task, "ask").mockImplementation(async () => {
+				task.abort = true
+				return { response: "noButtonClicked" }
+			})
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(request).not.toHaveBeenCalled()
+			expect(task.clineMessages.filter((message) => message.say === "error")).toEqual([
+				expect.objectContaining({ text: enCommon.errors.task_recovery_persistence }),
+			])
+		})
+
+		it.each([
+			["error", undefined],
+			["api_req_started", "streaming_failed"],
+			["api_req_started", undefined],
+		] as const)(
+			"does not duplicate an existing terminal %s explanation (cancel reason: %s)",
+			async (say, cancelReason) => {
+				const task = createTask()
+				vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+				vi.spyOn(task, "runAgentRequests")
+					.mockImplementationOnce(async () => {
+						await task.say(
+							say,
+							say === "error"
+								? "Tool failed."
+								: JSON.stringify({
+										cancelReason,
+										streamingFailedMessage: "Provider failed.",
+									}),
+						)
+						return { status: "failed", reason: "Failure already presented." }
+					})
+					.mockResolvedValueOnce(true)
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				expect(task.clineMessages).toHaveLength(1)
+				expect(task.clineMessages[0].say).toBe(say)
+			},
+		)
+
+		it("does not let a recovered provider attempt hide a later persistence failure", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "maybeWaitForProviderRateLimit")
+				.mockResolvedValueOnce(undefined)
+				.mockImplementationOnce(async () => {
+					;(task as any).requestPacingWaitCount++
+				})
+			vi.spyOn(task as any, "appendRequestPacingUpdateToLatestUserMessage").mockResolvedValue(false)
+			vi.spyOn(task as any, "waitForRetryDecision").mockImplementation(async () => {
+				await task.say("error", "Recovered provider attempt.")
+			})
+			const request = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					yield* []
+					throw Object.assign(new Error("Transient failure"), {
+						firstChunkFailure: true,
+						retryable: true,
+						retryCategory: "transport",
+					})
+				})(),
+			)
+			vi.spyOn(task, "ask").mockImplementation(async () => {
+				task.abort = true
+				return { response: "noButtonClicked" }
+			})
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(request).toHaveBeenCalledOnce()
+			expect(
+				task.clineMessages.filter((message) => message.say === "error").map((message) => message.text),
+			).toEqual(["Recovered provider attempt.", enCommon.errors.task_recovery_persistence])
+		})
+
+		it("does not let an earlier recovered step hide a new runtime failure", async () => {
+			const task = createTask()
+			vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+			vi.spyOn(task, "runAgentRequests")
+				.mockImplementationOnce(async () => {
+					await task.say("error", "Earlier recoverable tool error.")
+					return { status: "completed", response: createAgentResponse([]) }
+				})
+				.mockRejectedValueOnce(new Error("New runtime failure"))
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(
+				task.clineMessages.filter((message) => message.say === "error").map((message) => message.text),
+			).toEqual(["Earlier recoverable tool error.", enCommon.errors.task_recovery_failed])
+		})
+
+		it("retains one recovery explanation when the task is loaded again", async () => {
+			const task = createTask()
+			vi.spyOn(task, "runAgentRequests")
+				.mockResolvedValueOnce({ status: "incomplete" })
+				.mockResolvedValueOnce(true)
+			vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+			let saved = structuredClone(task.clineMessages)
+			saved.push({ ts: Date.now() + 1, type: "ask", ask: "resume_task" })
+			vi.spyOn(task as any, "getSavedAlphaMessages").mockImplementation(async () => structuredClone(saved))
+			vi.spyOn(task as any, "overwriteAlphaMessages").mockImplementation(async (...args: unknown[]) => {
+				saved = structuredClone(args[0] as typeof saved)
+				return true
+			})
+			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "getSavedApiConversationHistory").mockResolvedValue([
+				{ role: "user", content: [{ type: "text", text: "start" }], ts: 1 },
+			])
+			vi.spyOn(task as any, "overwriteApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "initiateTaskLoop").mockResolvedValue(undefined)
+
+			await (task as any).resumeTaskFromHistory()
+
+			expect(task.clineMessages.filter((message) => message.say === "error")).toEqual([
+				expect.objectContaining({ text: enCommon.errors.task_recovery_incomplete }),
+			])
+			expect(task.clineMessages.some((message) => message.ask === "resume_task")).toBe(false)
+			// Hydration cleans the in-memory view; this mocked ask does not persist
+			// an interaction, so the original saved bytes must remain untouched.
+			expect(saved.some((message) => message.ask === "resume_task")).toBe(true)
+			expect(task.overwriteAlphaMessages).not.toHaveBeenCalled()
+		})
+
+		it.each([true, false])(
+			"reports blocked stagnation once and preserves receipt-persistence failure (%s)",
+			async (persisted) => {
+				const task = createTask()
+				const report = "Task remains incomplete: repeated search outcomes produced no new evidence."
+				vi.spyOn(task as any, "flushPendingToolResultsToHistory").mockResolvedValue(persisted)
+				const request = vi.spyOn(task, "runAgentRequests").mockImplementationOnce(async () => {
+					task.suspendAfterCurrentTurn(report, "blocked")
+					return { status: "completed", response: createAgentResponse([]) }
+				})
+				const ask = vi.spyOn(task, "ask").mockImplementation(async () => {
+					task.abort = true
+					return { response: "noButtonClicked" }
+				})
+				await (task as any).initiateTaskLoop([{ type: "text", text: "Search the codebase." }])
+				expect(request).toHaveBeenCalledOnce()
+				expect(ask).toHaveBeenCalledWith("resume_task")
+				const reports = task.clineMessages.filter((message) => message.say === (persisted ? "text" : "error"))
+				expect(reports).toEqual([expect.objectContaining({ text: expect.stringContaining(report) })])
+				expect(reports[0].partial).not.toBe(true)
+				expect(task.clineMessages.some((message) => message.say === "completion_result")).toBe(false)
+				expect(task.clineMessages.some((message) => message.say === "error")).toBe(!persisted)
+				expect(Reflect.get(task, "didComplete")).toBe(false)
+			},
+		)
+
+		it.each(["failed", "incomplete", "exhausted"] as const)(
+			"resumes a primary task after a %s turn and consumes its follow-up once",
+			async (status) => {
+				const task = createTask()
+				const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent")
+				const ask = vi.spyOn(task, "ask").mockResolvedValue({
+					response: "messageResponse",
+					text: "Please continue from the partial result.",
+					images: [],
+				})
+				const feedback = vi.spyOn(task, "say")
+				const requestStep = vi
+					.spyOn(task, "runAgentRequests")
+					.mockResolvedValueOnce({
+						status,
+						reason: `Provider turn ${status}.`,
+						response: createAgentResponse([{ type: "text", text: "Partial result." }]),
+					})
+					.mockResolvedValueOnce(true)
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				expect(ask).toHaveBeenCalledOnce()
+				expect(ask).toHaveBeenCalledWith("resume_task")
+				expect(requestStep).toHaveBeenCalledTimes(2)
+				expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+					[
+						{
+							type: "text",
+							text: "<user_message>\nPlease continue from the partial result.\n</user_message>",
+						},
+					],
+					false,
+				])
+				expect(feedback).toHaveBeenCalledTimes(2)
+				expect(feedback).toHaveBeenCalledWith("error", enCommon.errors[`task_recovery_${status}`])
+				expect(feedback).toHaveBeenCalledWith("user_feedback", "Please continue from the partial result.", [])
+				const eventTypes = appendEvent.mock.calls.map(([event]) => (event as AgentTurnEvent).type)
+				expect(eventTypes).toContain(status === "incomplete" ? "turn_incomplete" : "turn_failed")
+				expect(eventTypes).not.toContain("task_failed")
+				expect(eventTypes).not.toContain("task_incomplete")
+			},
+		)
+
+		it("uses the established resumption marker when Resume has no follow-up", async () => {
+			const task = createTask()
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({
+				response: "yesButtonClicked",
+				text: undefined,
+				images: undefined,
+			})
+			const requestStep = vi
+				.spyOn(task, "runAgentRequests")
+				.mockResolvedValueOnce({ status: "incomplete", reason: "Stream ended before completion." })
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(ask).toHaveBeenCalledWith("resume_task")
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+				[{ type: "text", text: "[TASK RESUMPTION] Resuming task..." }],
+				false,
+			])
+		})
+
+		it("aborts instead of resuming when recovery is declined", async () => {
+			const task = createTask()
+			const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent")
+			const abortTask = vi.spyOn(task, "abortTask").mockImplementation(async () => {
+				task.abort = true
+			})
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+			const requestStep = vi
+				.spyOn(task, "runAgentRequests")
+				.mockResolvedValueOnce({ status: "failed", reason: "Stream ended before completion." })
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(ask).toHaveBeenCalledWith("resume_task")
+			expect(abortTask).toHaveBeenCalledOnce()
+			expect(requestStep).toHaveBeenCalledOnce()
+			expect(appendEvent).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "task_completed", status: "aborted" }),
+			)
+		})
+
+		it("stops the stale loop when recovery is superseded by another ask", async () => {
+			const task = createTask()
+			const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent")
+			const abortTask = vi.spyOn(task, "abortTask")
+			;(task as any).activeAsk = { type: "followup", ts: 42 }
+			const ask = vi.spyOn(task, "ask").mockRejectedValue(new AskIgnoredError("superseded"))
+			const requestStep = vi
+				.spyOn(task, "runAgentRequests")
+				.mockResolvedValueOnce({ status: "failed", reason: "Stream ended before completion." })
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(ask).toHaveBeenCalledWith("resume_task")
+			expect(abortTask).not.toHaveBeenCalled()
+			expect(requestStep).toHaveBeenCalledOnce()
+			expect(appendEvent.mock.calls.map(([event]) => (event as AgentTurnEvent).type)).not.toContain("task_failed")
+			expect(appendEvent.mock.calls.map(([event]) => (event as AgentTurnEvent).type)).not.toContain(
+				"task_incomplete",
+			)
+		})
+
+		it("does not offer recovery after an authoritative aborted outcome", async () => {
+			const task = createTask()
+			const ask = vi.spyOn(task, "ask")
+			const requestStep = vi
+				.spyOn(task, "runAgentRequests")
+				.mockResolvedValueOnce({ status: "aborted", reason: "The request was cancelled." })
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledOnce()
+			expect(ask).not.toHaveBeenCalledWith("resume_task")
+		})
+
+		it.each(["primary", "subagent"] as const)(
+			"does not offer recovery when %s completion is aborted",
+			async (kind) => {
+				const task = createTask(kind)
+				const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent")
+				const ask = vi.spyOn(task, "ask").mockResolvedValue({
+					response: "yesButtonClicked",
+					text: "",
+					images: [],
+				})
+				vi.spyOn(task, "runAgentRequests").mockImplementationOnce(async () => {
+					task.assistantMessageContent = [{ type: "text", content: "Everything is done.", partial: false }]
+					return false
+				})
+				vi.spyOn(task, "finalizeTaskCompletion").mockImplementationOnce(async () => {
+					task.abort = true
+					return false
+				})
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				expect(ask).not.toHaveBeenCalledWith("resume_task")
+				expect(appendEvent).toHaveBeenCalledWith(
+					expect.objectContaining({ type: "task_completed", status: "aborted" }),
+				)
+			},
+		)
+
+		it("keeps failed managed children on their terminal handoff path", async () => {
+			const task = createTask("subagent")
+			const ask = vi.spyOn(task, "ask")
+			const requestStep = vi
+				.spyOn(task, "runAgentRequests")
+				.mockResolvedValueOnce({ status: "failed", reason: "Managed child failed." })
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledOnce()
+			expect(ask).not.toHaveBeenCalledWith("resume_task")
+		})
+
+		it.each(["primary", "subagent"] as const)(
+			"blocks %s text completion while the enabled todo policy has open work",
+			async (kind) => {
+				vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
+					() =>
+						({
+							get: (key: string, defaultValue: unknown) =>
+								key === "preventCompletionWithOpenTodos" ? true : defaultValue,
+						}) as any,
+				)
+				const task = createTask(kind)
+				task.todoList = [{ id: "pending", content: "Finish the regression", status: "pending" }]
+				const ask = vi.spyOn(task, "ask")
+				const requestStep = vi
+					.spyOn(task, "runAgentRequests")
+					.mockImplementationOnce(async () => {
+						task.assistantMessageContent = [
+							{ type: "text", content: "Everything is done.", partial: false },
+						]
+						return false
+					})
+					.mockResolvedValueOnce(true)
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				expect(ask).not.toHaveBeenCalledWith("completion_result", expect.anything(), expect.anything())
+				expect(requestStep).toHaveBeenCalledTimes(2)
+				expect(requestStep.mock.calls[1]?.[0]).toEqual([
+					expect.objectContaining({
+						type: "text",
+						text: expect.stringContaining("incomplete todos"),
+					}),
+				])
+				expect((task as any).didComplete).toBe(false)
+			},
+		)
+
+		it("rechecks open todos after the completion review boundary", async () => {
+			vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
+				() =>
+					({
+						get: (key: string, defaultValue: unknown) =>
+							key === "preventCompletionWithOpenTodos" ? true : defaultValue,
+					}) as any,
+			)
+			const task = createTask()
+			task.todoList = [{ id: "late", content: "Late work", status: "completed" }]
+			const finalize = vi.spyOn(task, "finalizeTaskCompletion")
+			const retract = vi.spyOn(task, "retractCompletionResult")
+			vi.spyOn(task, "ask").mockImplementationOnce(async () => {
+				task.todoList = [{ id: "late", content: "Late work", status: "in_progress" }]
+				return { response: "yesButtonClicked", text: "", images: [] }
+			})
+			const requestStep = vi
+				.spyOn(task, "runAgentRequests")
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [{ type: "text", content: "Everything is done.", partial: false }]
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(retract).toHaveBeenCalledOnce()
+			expect(finalize).not.toHaveBeenCalled()
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[1]?.[0]).toEqual([
+				expect.objectContaining({
+					type: "text",
+					text: expect.stringContaining("incomplete todos"),
+				}),
+			])
+			expect((task as any).didComplete).toBe(false)
+		})
+
+		it.each([
+			[false, "pending"],
+			[true, "completed"],
+		] as const)(
+			"allows ordinary text completion with todo prevention %s and todo status %s",
+			async (enabled, status) => {
+				vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
+					() =>
+						({
+							get: (key: string, defaultValue: unknown) =>
+								key === "preventCompletionWithOpenTodos" ? enabled : defaultValue,
+						}) as any,
+				)
+				const task = createTask()
+				task.todoList = [{ id: "todo", content: "Tracked work", status }]
+				vi.spyOn(task, "ask").mockResolvedValue({
+					response: "yesButtonClicked",
+					text: "",
+					images: [],
+				})
+				vi.spyOn(task, "runAgentRequests").mockImplementationOnce(async () => {
+					task.assistantMessageContent = [
+						{ type: "text", content: "The requested work is complete.", partial: false },
+					]
+					return false
+				})
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				expect((task as any).didComplete).toBe(true)
+			},
+		)
+
+		it("does not expose a newly staged completion when every transcript write fails", async () => {
+			const task = createTask()
+			const stagedSnapshots: any[][] = []
+			vi.mocked((task as any).enqueueAlphaMessagesSave).mockImplementation(
+				async (createSnapshot: () => any[]) => {
+					stagedSnapshots.push(createSnapshot())
+					return false
+				},
+			)
+			const publish = vi.spyOn(task as any, "publishAlphaMessageCreated")
+
+			await expect(task.presentCompletionResult("Durable final answer.")).rejects.toThrow(
+				"Unable to persist the completion result",
+			)
+
+			expect(stagedSnapshots).toHaveLength(3)
+			expect(stagedSnapshots).toEqual(
+				expect.arrayContaining([
+					expect.arrayContaining([
+						expect.objectContaining({ say: "completion_result", text: "Durable final answer." }),
+					]),
+				]),
+			)
+			expect(task.clineMessages).not.toContainEqual(expect.objectContaining({ say: "completion_result" }))
+			expect(publish).not.toHaveBeenCalled()
+		})
+
+		it("keeps the last durable terminal style when retraction persistence fails", async () => {
+			const task = createTask()
+			const completion = {
+				ts: 42,
+				type: "say" as const,
+				say: "completion_result" as const,
+				text: "Persisted final answer.",
+				partial: false,
+			}
+			task.clineMessages = [completion]
+			;(task as any).currentAssistantResponseMessageTs = completion.ts
+			const stagedSnapshots: any[][] = []
+			vi.mocked((task as any).enqueueAlphaMessagesSave).mockImplementation(
+				async (createSnapshot: () => any[]) => {
+					stagedSnapshots.push(createSnapshot())
+					return false
+				},
+			)
+			const update = vi.spyOn(task as any, "updateAlphaMessage")
+
+			await expect(task.retractCompletionResult()).rejects.toThrow(
+				"Unable to persist the rejected completion state",
+			)
+
+			expect(stagedSnapshots).toHaveLength(3)
+			expect(stagedSnapshots[0]).toContainEqual(expect.objectContaining({ say: "text", partial: false }))
+			expect(task.clineMessages).toEqual([completion])
+			expect(update).not.toHaveBeenCalled()
+			expect((task as any).pendingTurnSuspension?.reason).toContain("paused before another model request")
+		})
+
+		it.each(["primary", "subagent"] as const)(
+			"does not expose a completion boundary when %s text fails the durable gate",
+			async (kind) => {
+				const task = createTask(kind)
+				mockProvider.getParentCompletionDecision.mockResolvedValue({
+					allowed: false,
+					message: "A managed descendant is still active.",
+				})
+				const ask = vi.spyOn(task, "ask")
+				const requestStep = vi
+					.spyOn(task, "runAgentRequests")
+					.mockImplementationOnce(async () => {
+						await task.say("text", "Everything is finished.", undefined, false)
+						task.assistantMessageContent = [
+							{ type: "text", content: "Everything is finished.", partial: false },
+						]
+						return false
+					})
+					.mockResolvedValueOnce(true)
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				expect(ask).not.toHaveBeenCalledWith("completion_result", expect.anything(), expect.anything())
+				expect(task.clineMessages).not.toContainEqual(
+					expect.objectContaining({ type: "say", say: "completion_result" }),
+				)
+				expect(requestStep).toHaveBeenCalledTimes(2)
+				expect(requestStep.mock.calls[1]?.[0]).toEqual([
+					expect.objectContaining({ type: "text", text: expect.stringContaining("still active") }),
+				])
+			},
+		)
+
+		it("returns an accepted raw completion from a legacy child to its parent", async () => {
+			const parent = createTask()
+			const child = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "legacy child",
+				parentTask: parent,
+				rootTask: parent,
+				startTask: false,
+				enableCheckpoints: false,
+			})
+			vi.spyOn(child as any, "saveAlphaMessages").mockResolvedValue(true)
+			vi.spyOn(child as any, "enqueueAlphaMessagesSave").mockImplementation(async (...args: unknown[]) => {
+				const [createSnapshot, onPersisted] = args as [() => unknown, (() => void) | undefined]
+				createSnapshot()
+				onPersisted?.()
+				return true
+			})
+			mockProvider.getTaskWithId = vi.fn().mockResolvedValue({
+				historyItem: { id: child.taskId, status: "active" },
+			})
+			mockProvider.reopenParentFromDelegation = vi.fn().mockResolvedValue(undefined)
+			vi.spyOn(child, "ask").mockResolvedValue({
+				response: "yesButtonClicked",
+				text: "",
+				images: [],
+			})
+			const finalize = vi.spyOn(child, "finalizeTaskCompletion").mockResolvedValue(true)
+			vi.spyOn(child, "runAgentRequests").mockImplementationOnce(async () => {
+				child.assistantMessageContent = [{ type: "text", content: "Legacy review complete.", partial: false }]
+				return false
+			})
+
+			await (child as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(mockProvider.reopenParentFromDelegation).toHaveBeenCalledWith({
+				parentTaskId: parent.taskId,
+				childTaskId: child.taskId,
+				completionResultSummary: "Legacy review complete.",
+			})
+			// The transactional parent handoff owns the terminal child state. Finalizing
+			// the child independently would publish a duplicate completion boundary.
+			expect(finalize).not.toHaveBeenCalled()
+		})
+
+		it.each(["review", "review gate", "finalization"])(
+			"preserves the final answer for a follow-up queued during %s",
+			async (boundary) => {
+				const task = createTask()
+				vi.spyOn(task, "ask").mockImplementationOnce(async () => {
+					if (boundary === "review") task.messageQueueService.addMessage("Please add the missing detail.")
+					return { response: "yesButtonClicked", text: "", images: [] }
+				})
+				if (boundary === "review gate") {
+					vi.spyOn(task, "waitForCompletionGateDecision")
+						.mockResolvedValueOnce({ allowed: true, modelCanResolveRejection: false })
+						.mockImplementationOnce(async () => {
+							task.messageQueueService.addMessage("Please add the missing detail.")
+							return { allowed: true, modelCanResolveRejection: false }
+						})
+				} else if (boundary === "finalization") {
+					vi.spyOn(task, "finalizeTaskCompletion").mockImplementationOnce(async () => {
+						task.messageQueueService.addMessage("Please add the missing detail.")
+						return false
+					})
+				}
+				const requestStep = vi
+					.spyOn(task, "runAgentRequests")
+					.mockImplementationOnce(async () => {
+						task.assistantMessageContent = [{ type: "text", content: "Initial answer.", partial: false }]
+						return false
+					})
+					.mockResolvedValueOnce(true)
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				expect(requestStep).toHaveBeenCalledTimes(2)
+				expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+					[{ type: "text", text: "<user_message>\nPlease add the missing detail.\n</user_message>" }],
+					false,
+				])
+				expect(task.messageQueueService.isEmpty()).toBe(true)
+				expect(task.clineMessages).toContainEqual(
+					expect.objectContaining({ say: "completion_result", text: "Initial answer." }),
+				)
+			},
+		)
+
+		it("continues the same task when the user replies at the ordinary completion boundary", async () => {
+			let timestamp = 1000
+			vi.spyOn(Date, "now").mockImplementation(() => ++timestamp)
+			const task = createTask()
+			const retract = vi.spyOn(task, "retractCompletionResult")
+			const ask = vi
+				.spyOn(task, "ask")
+				.mockResolvedValueOnce({
+					response: "messageResponse",
+					text: "Please expand on that.",
+					images: [],
+				})
+				.mockResolvedValueOnce({ response: "yesButtonClicked", text: "", images: [] })
+			const say = vi.spyOn(task, "say")
+			const requestStep = vi
+				.spyOn(task, "runAgentRequests")
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [{ type: "text", content: "First answer.", partial: false }]
+					return false
+				})
+				.mockImplementationOnce(async () => {
+					await task.say("text", "Expanded answer.", undefined, false)
+					task.assistantMessageContent = [{ type: "text", content: "Expanded answer.", partial: false }]
+					return false
+				})
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+				[{ type: "text", text: "<user_message>\nPlease expand on that.\n</user_message>" }],
+				false,
+			])
+			expect(retract).not.toHaveBeenCalled()
+			expect(say).toHaveBeenCalledWith("user_feedback", "Please expand on that.", [])
+			expect(ask).toHaveBeenCalledTimes(2)
+			expect(
+				task.clineMessages
+					.filter((message) => message.say === "completion_result")
+					.map((message) => message.text),
+			).toEqual(["First answer.", "Expanded answer."])
+		})
+
+		it("does not start another model turn when a rejected completion cannot be retracted durably", async () => {
+			const task = createTask()
+			let saveAttempt = 0
+			vi.mocked((task as any).enqueueAlphaMessagesSave).mockImplementation(
+				async (createSnapshot: () => unknown, onPersisted?: () => void) => {
+					createSnapshot()
+					saveAttempt++
+					if (saveAttempt === 1) {
+						onPersisted?.()
+						return true
+					}
+					return false
+				},
+			)
+			vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked", text: "", images: [] })
+			vi.spyOn(task, "waitForCompletionGateDecision")
+				.mockResolvedValueOnce({ allowed: true, modelCanResolveRejection: false })
+				.mockResolvedValueOnce({
+					allowed: false,
+					modelCanResolveRejection: true,
+					message: "Verification failed.",
+				})
+			const say = vi.spyOn(task, "say")
+			const requestStep = vi.spyOn(task, "runAgentRequests").mockImplementationOnce(async () => {
+				task.assistantMessageContent = [{ type: "text", content: "Premature answer.", partial: false }]
+				return false
+			})
+
+			await expect((task as any).initiateTaskLoop([{ type: "text", text: "start" }])).rejects.toThrow(
+				"Unable to persist the rejected completion state",
+			)
+
+			expect(requestStep).toHaveBeenCalledOnce()
+			expect(say).not.toHaveBeenCalledWith("user_feedback", expect.anything(), expect.anything())
+			expect(task.clineMessages).toContainEqual(
+				expect.objectContaining({ type: "say", say: "completion_result", text: "Premature answer." }),
+			)
+			expect((task as any).pendingTurnSuspension?.reason).toContain("paused before another model request")
+		})
+
+		it.each(["primary", "subagent"] as const)(
+			"retains pending user continuation after a %s no-tool response",
+			async (kind) => {
+				const task = createTask(kind)
+				const queuedUserContent = [{ type: "text" as const, text: "Please continue with this detail." }]
+				const requestStep = vi
+					.spyOn(task, "runAgentRequests")
+					.mockImplementationOnce(async () => {
+						task.assistantMessageContent = [
+							{ type: "text", content: "I can continue when that detail is available.", partial: false },
+						]
+						task.userMessageContent = queuedUserContent
+						return false
+					})
+					.mockResolvedValueOnce(true)
+
+				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+				expect(requestStep).toHaveBeenCalledTimes(2)
+				expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([queuedUserContent, false])
+			},
+		)
+
+		it("promotes one queued user message with images after a visible primary response", async () => {
+			const task = createTask()
+			const firstImage = "data:image/png;base64,Zmlyc3Q="
+			const secondImage = "data:image/jpeg;base64,c2Vjb25k"
+			task.messageQueueService.addMessage("Use this queued detail.", [firstImage])
+			task.messageQueueService.addMessage("Keep this for later.", [secondImage])
+			const feedback = vi.spyOn(task, "say").mockResolvedValue(undefined)
+			const requestStep = vi
+				.spyOn(task, "runAgentRequests")
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [
+						{ type: "text", content: "The first requested explanation.", partial: false },
+					]
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+				[
+					{ type: "text", text: "<user_message>\nUse this queued detail.\n</user_message>" },
+					{
+						type: "image",
+						source: { type: "base64", media_type: "image/png", data: "Zmlyc3Q=" },
+					},
+				],
+				false,
+			])
+			expect(feedback).toHaveBeenCalledWith("user_feedback", "Use this queued detail.", [firstImage])
+			expect(task.messageQueueService.messages).toHaveLength(1)
+			expect(task.messageQueueService.messages[0]).toMatchObject({
+				text: "Keep this for later.",
+				images: [secondImage],
+			})
+		})
+
+		it("keeps the queue behind pending turn content", async () => {
+			const task = createTask()
+			const pendingContent = [{ type: "text" as const, text: "tool result continuation" }]
+			task.messageQueueService.addMessage("queued after tool results")
+			const requestStep = vi
+				.spyOn(task, "runAgentRequests")
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [
+						{ type: "text", content: "I handled the previous step.", partial: false },
+					]
+					task.userMessageContent = pendingContent
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([pendingContent, false])
+			expect(task.messageQueueService.messages).toHaveLength(1)
+		})
+
+		it.each(["primary", "subagent"] as const)("keeps the %s queue behind pending steering", async (kind) => {
+			const task = createTask(kind)
+			task.messageQueueService.addMessage("queued after steering")
+			const requestStep = vi
+				.spyOn(task, "runAgentRequests")
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [
+						{ type: "text", content: "I received the original request.", partial: false },
+					]
+					;(task as any).pendingSteerMessage = { text: "higher-priority steering", images: [] }
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+				[{ type: "text", text: formatResponse.noToolsUsed() }],
+				false,
+			])
+			expect(task.messageQueueService.messages).toHaveLength(1)
+		})
+
+		it.each(["failed", "incomplete", "aborted", "exhausted"] as const)(
+			"does not publish managed text from a %s response",
+			async (status) => {
+				const task = createTask("subagent")
+				const completed = vi.fn()
+				task.on(AlphaCodeEventName.TaskCompleted, completed)
+				const request = vi.spyOn(task, "runAgentRequests").mockResolvedValueOnce({
+					status,
+					response: createAgentResponse([{ type: "text", text: "Partial analysis before interruption." }]),
+				})
+
+				await Reflect.get(task, "initiateTaskLoop").call(task, [{ type: "text", text: "Investigate." }])
+
+				expect(request).toHaveBeenCalledOnce()
+				expect(completed).not.toHaveBeenCalled()
+				expect(Reflect.get(task, "didComplete")).toBe(false)
+				expect(task.clineMessages.some((message) => message.say === "completion_result")).toBe(false)
+			},
+		)
+
+		it("allows a managed final answer after a recoverable completion rejection", async () => {
+			const task = createTask("subagent")
+			mockProvider.getParentCompletionDecision
+				.mockResolvedValueOnce({
+					allowed: false,
+					modelCanResolveRejection: true,
+					message: "Inspect the pending result.",
+				})
+				.mockResolvedValue({ allowed: true })
+			const request = vi.spyOn(task, "runAgentRequests").mockImplementation(async () => {
+				task.userMessageContent = []
+				return {
+					status: "completed",
+					response: createAgentResponse([{ type: "text", text: "Reviewed result." }]),
+				}
+			})
+			const completed = vi.fn()
+			task.on(AlphaCodeEventName.TaskCompleted, completed)
+
+			await Reflect.get(task, "initiateTaskLoop").call(task, [{ type: "text", text: "Review." }])
+
+			expect(request).toHaveBeenCalledTimes(2)
+			expect(request.mock.calls[1]?.[0]).toEqual([
+				expect.objectContaining({ text: expect.stringContaining("Inspect the pending result.") }),
+			])
+			expect(completed).toHaveBeenCalledOnce()
+			expect(Reflect.get(task, "didComplete")).toBe(true)
+		})
+
+		it("retains guidance arriving while a managed answer is being persisted", async () => {
+			const task = createTask("subagent")
+			const present = task.presentCompletionResult.bind(task)
+			vi.spyOn(task, "presentCompletionResult").mockImplementationOnce(async (...args) => {
+				await present(...args)
+				task.messageQueueService.addMessage("Include the cancellation case.")
+			})
+			const request = vi
+				.spyOn(task, "runAgentRequests")
+				.mockResolvedValueOnce({
+					status: "completed",
+					response: createAgentResponse([{ type: "text", text: "Initial review." }]),
+				})
+				.mockResolvedValueOnce({
+					status: "completed",
+					response: createAgentResponse([{ type: "text", text: "Expanded review." }]),
+				})
+			const completed = vi.fn()
+			task.on(AlphaCodeEventName.TaskCompleted, completed)
+
+			await Reflect.get(task, "initiateTaskLoop").call(task, [{ type: "text", text: "Review." }])
+
+			expect(request).toHaveBeenCalledTimes(2)
+			expect(request.mock.calls[1]?.[0]).toEqual([
+				{ type: "text", text: "<user_message>\nInclude the cancellation case.\n</user_message>" },
+			])
+			expect(task.clineMessages.filter((message) => message.say === "completion_result")).toEqual([
+				expect.objectContaining({ text: "Expanded review." }),
+			])
+			expect(completed).toHaveBeenCalledOnce()
+		})
+
+		it("does not publish managed completion when persistence fails and can retry once it recovers", async () => {
+			const task = createTask("subagent")
+			vi.spyOn(task, "runAgentRequests").mockResolvedValue({
+				status: "completed",
+				response: createAgentResponse([{ type: "text", text: "The durable report." }]),
+			})
+			vi.spyOn(task, "flushPendingToolResultsToHistory").mockRejectedValueOnce(
+				new Error("Persistence unavailable"),
+			)
+			const completed = vi.fn()
+			task.on(AlphaCodeEventName.TaskCompleted, completed)
+			const run = () => Reflect.get(task, "initiateTaskLoop").call(task, [{ type: "text", text: "Review." }])
+
+			await expect(run()).rejects.toThrow("Persistence unavailable")
+			expect(completed).not.toHaveBeenCalled()
+			expect(Reflect.get(task, "didComplete")).toBe(false)
+			await run()
+			expect(Reflect.get(task, "didComplete")).toBe(true)
+			expect(completed).toHaveBeenCalledOnce()
+		})
+
+		it("consumes queued guidance before accepting managed child text", async () => {
+			const task = createTask("subagent")
+			task.messageQueueService.addMessage("Check the additional edge case.")
+			const requestStep = vi
+				.spyOn(task, "runAgentRequests")
+				.mockImplementationOnce(async () => {
+					task.assistantMessageContent = [
+						{ type: "text", content: "Managed child progress.", partial: false },
+					]
+					return false
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([
+				[{ type: "text", text: "<user_message>\nCheck the additional edge case.\n</user_message>" }],
+				false,
+			])
+			expect(task.messageQueueService.messages).toHaveLength(0)
+			expect(Reflect.get(task, "didComplete")).toBe(false)
+		})
+
+		it("stops at the completion boundary without starting another request", async () => {
+			const task = createTask()
+			const requestStep = vi.spyOn(task, "runAgentRequests").mockImplementationOnce(async () => {
+				task.userMessageContent = [{ type: "text", text: "stale continuation" }]
+				task.markCompleted()
+				return false
+			})
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "finish" }])
+
+			expect(requestStep).toHaveBeenCalledOnce()
+		})
+
+		it("resumes a delegated parent from its persisted new_task child result", async () => {
+			const task = createTask()
+			const capture = {
+				details: "<environment_details>refreshed after delegation</environment_details>",
+				commit: vi.fn(),
+				release: vi.fn(),
+			}
+			vi.mocked(captureEnvironmentDetails).mockResolvedValueOnce(capture)
+			const childResult: Anthropic.ToolResultBlockParam = {
+				type: "tool_result",
+				tool_use_id: "new-task-1",
+				content: "Child task completed: inspected the parser",
+			}
+			task.apiConversationHistory = [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "tool_use",
+							id: "new-task-1",
+							name: "new_task",
+							input: { mode: "code", message: "Inspect the parser" },
+						},
+					],
+				},
+				{ role: "user", content: [childResult] },
+			]
+			const persistedChildMessage = task.apiConversationHistory[1]
+			Object.assign(task, {
+				abort: true,
+				abandoned: true,
+				isStreaming: true,
+				isWaitingForFirstChunk: true,
+			})
+			const ask = vi.spyOn(task, "ask")
+			const saveHistory = vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			const continueLoop = vi.spyOn(task as any, "initiateTaskLoop").mockResolvedValue(undefined)
+
+			await task.resumeAfterDelegation()
+
+			expect(ask).not.toHaveBeenCalled()
+			expect(task.apiConversationHistory).toHaveLength(3)
+			expect(task.apiConversationHistory[1]).toBe(persistedChildMessage)
+			expect(persistedChildMessage.content).toEqual([childResult])
+			expect(task.apiConversationHistory[2]).toMatchObject({
+				role: "user",
+				content: [{ type: "text", text: capture.details }],
+			})
+			expect(saveHistory).toHaveBeenCalledOnce()
+			expect(capture.commit).toHaveBeenCalledOnce()
+			expect(continueLoop).toHaveBeenCalledWith([])
+			expect(task.skipPrevResponseIdOnce).toBe(true)
+			expect(task.abort).toBe(false)
+			expect(task.abandoned).toBe(false)
+		})
+
+		it("hydrates both histories before publishing or saving a reopened task", async () => {
+			const task = createTask()
+			const savedUi = [
+				{ ts: 1, type: "say", say: "text", text: "historical task" },
+				{ ts: 2, type: "say", say: "reasoning", text: "completed reasoning", partial: false },
+				{ ts: 3, type: "say", say: "reasoning", text: "interrupted reasoning", partial: true },
+			]
+			const savedApi = [{ role: "user", content: "original task", ts: 1 }]
+			let releaseRead!: () => void
+			const readBarrier = new Promise<void>((resolve) => {
+				releaseRead = resolve
+			})
+			let reachedRead!: () => void
+			const readStarted = new Promise<void>((resolve) => {
+				reachedRead = resolve
+			})
+			vi.spyOn(task as any, "getSavedAlphaMessages").mockImplementation(async () => structuredClone(savedUi))
+			vi.spyOn(task as any, "getSavedApiConversationHistory").mockImplementation(async () => {
+				reachedRead()
+				await readBarrier
+				return savedApi
+			})
+			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(undefined)
+			const save = vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
+			vi.spyOn(task as any, "overwriteApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "initiateTaskLoop").mockResolvedValue(undefined)
+			const ask = vi.spyOn(task, "ask").mockImplementation(async () => {
+				expect(task.apiConversationHistory).toEqual(savedApi)
+				return { response: "noButtonClicked" }
+			})
+			const resume = (task as any).resumeTaskFromHistory()
+			await readStarted
+			const effectsBeforeRead = [overwrite.mock.calls.length, save.mock.calls.length, ask.mock.calls.length]
+			releaseRead()
+			await resume
+			expect(effectsBeforeRead).toEqual([0, 0, 0])
+			expect(overwrite).not.toHaveBeenCalled()
+			expect(task.clineMessages).toEqual(savedUi.slice(0, 2))
+		})
+
+		it.each(["ui", "api"] as const)("preserves history when the %s read fails during reopen", async (phase) => {
+			const task = createTask()
+			const failure = new Error("History read unavailable")
+			const uiRead = vi
+				.spyOn(task as any, "getSavedAlphaMessages")
+				.mockResolvedValue([{ ts: 1, type: "say", say: "text", text: "saved" }])
+			const apiRead = vi
+				.spyOn(task as any, "getSavedApiConversationHistory")
+				.mockResolvedValue([{ role: "user", content: "saved", ts: 1 }])
+			if (phase === "ui") uiRead.mockRejectedValue(failure)
+			else apiRead.mockRejectedValue(failure)
+			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(undefined)
+			const save = vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
+			const ask = vi.spyOn(task, "ask")
+			await expect((task as any).resumeTaskFromHistory()).rejects.toBe(failure)
+			expect(overwrite).not.toHaveBeenCalled()
+			expect(save).not.toHaveBeenCalled()
+			expect(ask).not.toHaveBeenCalled()
+		})
+
+		it.each(["ui", "api"] as const)("abandons hydration after eviction during the %s read", async (phase) => {
+			const task = createTask()
+			vi.spyOn(task as any, "getSavedAlphaMessages").mockImplementation(async () => {
+				if (phase === "ui") task.abandoned = true
+				return [{ ts: 1, type: "say", say: "text", text: "saved" }]
+			})
+			vi.spyOn(task as any, "getSavedApiConversationHistory").mockImplementation(async () => {
+				task.abandoned = true
+				return [{ role: "user", content: "saved", ts: 1 }]
+			})
+			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(undefined)
+			const save = vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "initiateTaskLoop").mockResolvedValue(undefined)
+			await (task as any).resumeTaskFromHistory()
+			expect(overwrite).not.toHaveBeenCalled()
+			expect(save).not.toHaveBeenCalled()
+			expect(ask).not.toHaveBeenCalled()
+			expect(task.clineMessages).toEqual([])
+			expect(task.apiConversationHistory).toEqual([])
+		})
+
+		it("repairs an interrupted tool call when a root task resumes after reload", async () => {
+			const task = createTask()
+			const savedAlphaMessages = [{ ts: 1, type: "say", say: "text", text: "historical task" }]
+			const savedApiHistory = [
+				{ role: "user", content: [{ type: "text", text: "inspect" }], ts: 1 },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "read-after-reload", name: "read_file", input: {} }],
+					ts: 2,
+				},
+			]
+			vi.spyOn(task as any, "getSavedAlphaMessages").mockResolvedValue(savedAlphaMessages)
+			vi.spyOn(task as any, "overwriteAlphaMessages").mockResolvedValue(true)
+			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
+			const loadApiHistory = vi
+				.spyOn(task as any, "getSavedApiConversationHistory")
+				.mockResolvedValue(savedApiHistory)
+			vi.spyOn(task as any, "overwriteApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task, "say").mockResolvedValue(undefined)
+			vi.spyOn(task, "ask").mockResolvedValue({
+				response: "messageResponse",
+				text: "continue after reload",
+				images: [],
+			} as any)
+			const continueLoop = vi.spyOn(task as any, "initiateTaskLoop").mockResolvedValue(undefined)
+
+			await (task as any).resumeTaskFromHistory()
+
+			expect(loadApiHistory).toHaveBeenCalledOnce()
+			expect(continueLoop).toHaveBeenCalledWith(
+				[
+					{
+						type: "tool_result",
+						tool_use_id: "read-after-reload",
+						content: "Task was interrupted before this tool call could be completed.",
+						is_error: true,
+					},
+					{ type: "text", text: "<user_message>\ncontinue after reload\n</user_message>" },
+				],
+				undefined,
+			)
+		})
+	})
+
 	describe("start()", () => {
 		it("should be a no-op if the task was already started in the constructor", () => {
 			const task = new Task({
@@ -1984,7 +5231,51 @@ describe("Alpha", () => {
 	})
 })
 
+describe("Plan completion presentation", () => {
+	it("normalizes a primary Plan response to one exact proposed-plan block", async () => {
+		const message = { ts: 1, type: "say", say: "text", text: "streamed draft", partial: true }
+		const commitAlphaMessageMutation = vi.fn(
+			async (_timestamp: number, _context: string, mutate: (value: any) => any) => {
+				const committed = mutate(message)
+				Object.assign(message, committed)
+				return { message, created: false }
+			},
+		)
+		const task = {
+			taskKind: "primary",
+			cwd: "F:/workspace",
+			getTaskMode: vi.fn().mockResolvedValue("architect"),
+			currentAssistantResponseMessageTs: 1,
+			findMessageByTimestamp: vi.fn().mockReturnValue(message),
+			commitAlphaMessageMutation,
+			updateAlphaMessage: vi.fn().mockResolvedValue(undefined),
+			say: vi.fn().mockResolvedValue(undefined),
+		} as unknown as Task
+
+		await Task.prototype.presentCompletionResult.call(task, "# Provider plan\n- Update model lookup")
+
+		expect(message).toMatchObject({
+			say: "completion_result",
+			text: "<proposed_plan>\n# Provider plan\n- Update model lookup\n</proposed_plan>",
+			partial: false,
+		})
+		expect((task as any).say).not.toHaveBeenCalled()
+	})
+})
+
 describe("Queued message processing after condense", () => {
+	function prepareCompaction(task: Task) {
+		task.apiConversationHistory = [{ role: "user", content: "Original context before compaction" }]
+		vi.spyOn(task.api, "countTokens").mockImplementation(async (blocks) =>
+			JSON.stringify(blocks).includes("Original context before compaction") ? 1000 : 1,
+		)
+		vi.spyOn(
+			task as unknown as { saveApiConversationHistory(): Promise<boolean> },
+			"saveApiConversationHistory",
+		).mockResolvedValue(true)
+		vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("system")
+	}
+
 	function createProvider(): any {
 		const storageUri = { fsPath: path.join(os.tmpdir(), "test-storage") }
 		const ctx = {
@@ -2017,7 +5308,7 @@ describe("Queued message processing after condense", () => {
 			dispose: vi.fn(),
 		}
 
-		const provider = new ClineProvider(ctx, output as any, "sidebar", new ContextProxy(ctx)) as any
+		const provider = new AlphaProvider(ctx, output as any, "sidebar", new ContextProxy(ctx)) as any
 		provider.postMessageToWebview = vi.fn().mockResolvedValue(undefined)
 		provider.postStateToWebview = vi.fn().mockResolvedValue(undefined)
 		provider.postStateToWebviewWithoutTaskHistory = vi.fn().mockResolvedValue(undefined)
@@ -2039,19 +5330,51 @@ describe("Queued message processing after condense", () => {
 			task: "initial task",
 			startTask: false,
 		})
-
-		// Make condense fast + deterministic
-		vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("system")
+		prepareCompaction(task)
 		const submitSpy = vi.spyOn(task, "submitUserMessage").mockResolvedValue(undefined)
+		task.consecutiveMistakeCount = 1
+		task.consecutiveNoToolUseCount = 2
+		task.consecutiveNoAssistantMessagesCount = 1
+		;(task as any).automaticMistakeRecoveryCount = 1
 
 		// Queue a message during condensing
 		task.messageQueueService.addMessage("queued text", ["img1.png"])
+		expect(task.consecutiveMistakeCount).toBe(0)
+		expect(task.consecutiveNoToolUseCount).toBe(0)
+		expect(task.consecutiveNoAssistantMessagesCount).toBe(0)
+		expect((task as any).automaticMistakeRecoveryCount).toBe(0)
 
 		await task.condenseContext()
 
 		expect(submitSpy).not.toHaveBeenCalled()
 		expect(task.messageQueueService.isEmpty()).toBe(false)
 		expect(task.messageQueueService.messages[0]?.text).toBe("queued text")
+	})
+
+	it("uses queued user guidance instead of reopening the mistake-limit dialog", async () => {
+		const provider = createProvider()
+		const task = new Task({
+			provider,
+			apiConfiguration: apiConfig,
+			task: "initial task",
+			startTask: false,
+		})
+		const feedback = vi.spyOn(task, "say").mockResolvedValue(undefined)
+		task.consecutiveMistakeLimit = 1
+		task.messageQueueService.addMessage("Did we finish?")
+		// Simulate the in-flight model turn failing after the message was queued.
+		task.consecutiveMistakeCount = 1
+		const userContent: Anthropic.Messages.ContentBlockParam[] = []
+
+		await (task as any).handleConsecutiveMistakeLimit(userContent)
+
+		expect(feedback).toHaveBeenCalledWith("user_feedback", "Did we finish?", undefined)
+		expect(task.messageQueueService.isEmpty()).toBe(true)
+		expect(userContent).toContainEqual({
+			type: "text",
+			text: "<user_message>\nDid we finish?\n</user_message>",
+		})
+		expect(task.consecutiveMistakeCount).toBe(0)
 	})
 
 	it("does not cross-drain queues between separate tasks", async () => {
@@ -2070,9 +5393,8 @@ describe("Queued message processing after condense", () => {
 			task: "task B",
 			startTask: false,
 		})
-
-		vi.spyOn(taskA as any, "getSystemPrompt").mockResolvedValue("system")
-		vi.spyOn(taskB as any, "getSystemPrompt").mockResolvedValue("system")
+		prepareCompaction(taskA)
+		prepareCompaction(taskB)
 
 		const spyA = vi.spyOn(taskA, "submitUserMessage").mockResolvedValue(undefined)
 		const spyB = vi.spyOn(taskB, "submitUserMessage").mockResolvedValue(undefined)
@@ -2141,7 +5463,7 @@ describe("pushToolResultToUserContent", () => {
 			dispose: vi.fn(),
 		}
 
-		mockProvider = new ClineProvider(
+		mockProvider = new AlphaProvider(
 			mockExtensionContext,
 			mockOutputChannel,
 			"sidebar",
@@ -2297,5 +5619,205 @@ describe("pushToolResultToUserContent", () => {
 		expect(task.userMessageContent[0].type).toBe("text")
 		expect(task.userMessageContent[1].type).toBe("image")
 		expect(task.userMessageContent[2]).toEqual(toolResult)
+	})
+
+	it("coalesces a burst of streaming preview requests to one trailing presentation", async () => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "preview burst task",
+			startTask: false,
+		})
+		let releaseFirstPreview!: () => void
+		const firstPreviewBlocked = new Promise<void>((resolve) => {
+			releaseFirstPreview = resolve
+		})
+		const say = vi.spyOn(task, "say").mockImplementation(async (type, _text, _images, partial) => {
+			if (type === "text" && partial && say.mock.calls.length === 1) await firstPreviewBlocked
+			return undefined
+		})
+
+		task.assistantMessageContent = [{ type: "text", content: "streaming preview", partial: true }]
+		task.currentStreamingContentIndex = 0
+		;(task as any).scheduleStreamingPreview()
+		await vi.waitFor(() => expect(say).toHaveBeenCalledOnce())
+
+		for (let index = 0; index < 99; index += 1) {
+			;(task as any).scheduleStreamingPreview()
+		}
+		expect(say).toHaveBeenCalledOnce()
+
+		releaseFirstPreview()
+		await (task as any).streamingPreviewQueue
+
+		// One in-flight presentation plus one latest trailing presentation replaces
+		// the previous one-promise-per-delta backlog (100 presentations here).
+		expect(say).toHaveBeenCalledTimes(2)
+	})
+
+	it("releases a normal turn boundary when a streaming preview never settles", async () => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "stalled preview task",
+			startTask: false,
+		})
+		let releasePreview!: () => void
+		const previewBlocked = new Promise<void>((resolve) => {
+			releasePreview = resolve
+		})
+		const say = vi.spyOn(task, "say").mockImplementation(async (type, _text, _images, partial) => {
+			if (type === "text" && partial) await previewBlocked
+			return undefined
+		})
+
+		task.assistantMessageContent = [{ type: "text", content: "stalled preview", partial: true }]
+		;(task as any).scheduleStreamingPreview()
+		await vi.waitFor(() => expect(say).toHaveBeenCalledOnce())
+		const initialEpoch = task.getStreamingPreviewEpoch()
+
+		vi.useFakeTimers()
+		try {
+			let drainSettled = false
+			const drain = (task as any).drainStreamingPreviews("test normal completion").then(() => {
+				drainSettled = true
+			})
+
+			await vi.advanceTimersByTimeAsync(999)
+			expect(drainSettled).toBe(false)
+			await vi.advanceTimersByTimeAsync(1)
+			await drain
+
+			expect(drainSettled).toBe(true)
+			expect(task.getStreamingPreviewEpoch()).toBe(initialEpoch + 1)
+			expect(task.presentAssistantMessageLocked).toBe(false)
+		} finally {
+			vi.useRealTimers()
+			releasePreview()
+		}
+	})
+
+	it("joins delayed streaming previews before replacing them with canonical response state", async () => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "preview race task",
+			startTask: false,
+		})
+		let releasePreview!: () => void
+		const previewBlocked = new Promise<void>((resolve) => {
+			releasePreview = resolve
+		})
+		const say = vi.spyOn(task, "say").mockImplementation(async (type, _text, _images, partial) => {
+			if (type === "text" && partial) await previewBlocked
+			return undefined
+		})
+
+		task.assistantMessageContent = [{ type: "text", content: "stale preview", partial: true }]
+		task.currentStreamingContentIndex = 0
+		;(task as any).scheduleStreamingPreview()
+		await vi.waitFor(() => expect(say).toHaveBeenCalled())
+
+		const canonicalResponse = createAgentResponse([
+			{ type: "text", text: "canonical response" },
+			{ type: "tool_call", id: "canonical-tool", name: "read_file", arguments: { path: "README.md" } },
+		])
+		let canonicalApplied = false
+		const canonicalReplacement = (async () => {
+			await (task as any).drainStreamingPreviews("test canonical replacement")
+			await (task as any).applyCanonicalAgentResponse(canonicalResponse)
+			canonicalApplied = true
+		})()
+
+		await Promise.resolve()
+		expect(canonicalApplied).toBe(false)
+		releasePreview()
+		await canonicalReplacement
+
+		expect(canonicalApplied).toBe(true)
+		expect(task.assistantMessageContent).toEqual([
+			{ type: "text", content: "canonical response", partial: false },
+			expect.objectContaining({ type: "tool_use", id: "canonical-tool", name: "read_file", partial: false }),
+		])
+		expect(task.userMessageContent).toEqual([])
+		expect(task.presentAssistantMessageLocked).toBe(false)
+	})
+
+	it("does not let a timed-out preview release a resumed preview lock", async () => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "preview cancellation race",
+			startTask: false,
+		})
+		const releases = new Map<number, () => void>()
+		const say = vi
+			.spyOn(task, "say")
+			.mockImplementation(async (type, _text, _images, partial, _checkpoint, _progressStatus, options) => {
+				const previewEpoch = options?.previewEpoch
+				if (type === "text" && partial && previewEpoch !== undefined) {
+					const gate = new Promise<void>((resolve) => releases.set(previewEpoch, resolve))
+					await gate
+				}
+				return undefined
+			})
+
+		task.assistantMessageContent = [{ type: "text", content: "old preview", partial: true }]
+		;(task as any).scheduleStreamingPreview()
+		await vi.waitFor(() => expect(say).toHaveBeenCalledOnce())
+		const oldEpoch = task.getStreamingPreviewEpoch()
+
+		task.abort = true
+		vi.useFakeTimers()
+		try {
+			const drain = (task as any).drainStreamingPreviews("test cancellation")
+			await vi.advanceTimersByTimeAsync(1000)
+			await drain
+		} finally {
+			vi.useRealTimers()
+		}
+
+		task.abort = false
+		task.assistantMessageContent = [{ type: "text", content: "new preview", partial: true }]
+		task.currentStreamingContentIndex = 0
+		;(task as any).scheduleStreamingPreview()
+		await vi.waitFor(() => expect(say).toHaveBeenCalledTimes(2))
+		expect(task.presentAssistantMessageLocked).toBe(true)
+
+		releases.get(oldEpoch)?.()
+		await Promise.resolve()
+		expect(task.presentAssistantMessageLocked).toBe(true)
+
+		releases.get(task.getStreamingPreviewEpoch())?.()
+		await (task as any).streamingPreviewQueue
+		expect(task.presentAssistantMessageLocked).toBe(false)
+	})
+
+	it("interrupts a full preview join when task cancellation arrives", async () => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "preview cancellation handoff",
+			startTask: false,
+		})
+		let releasePreview!: () => void
+		const previewBlocked = new Promise<void>((resolve) => {
+			releasePreview = resolve
+		})
+		const say = vi.spyOn(task, "say").mockImplementation(async (type, _text, _images, partial) => {
+			if (type === "text" && partial) await previewBlocked
+			return undefined
+		})
+
+		task.assistantMessageContent = [{ type: "text", content: "preview", partial: true }]
+		;(task as any).scheduleStreamingPreview()
+		await vi.waitFor(() => expect(say).toHaveBeenCalledOnce())
+
+		const drain = (task as any).drainStreamingPreviews("test cancellation handoff")
+		;(task as any).taskCancellationController.abort(new Error("cancelled"))
+		await expect(drain).resolves.toBeUndefined()
+
+		releasePreview()
+		await (task as any).streamingPreviewQueue
 	})
 })

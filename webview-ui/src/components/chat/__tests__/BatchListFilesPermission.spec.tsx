@@ -7,12 +7,12 @@ import { BatchListFilesPermission } from "../BatchListFilesPermission"
 describe("BatchListFilesPermission", () => {
 	const mockDirs = [
 		{
-			key: "apps/cli",
-			path: "apps/cli",
+			key: "apps/vscode-e2e",
+			path: "apps/vscode-e2e",
 		},
 		{
-			key: "apps/web-evals",
-			path: "apps/web-evals",
+			key: "webview-ui",
+			path: "webview-ui",
 		},
 		{
 			key: "packages/core",
@@ -31,8 +31,8 @@ describe("BatchListFilesPermission", () => {
 			</TranslationProvider>,
 		)
 
-		expect(screen.getByText("apps/cli")).toBeInTheDocument()
-		expect(screen.getByText("apps/web-evals")).toBeInTheDocument()
+		expect(screen.getByText("apps/vscode-e2e")).toBeInTheDocument()
+		expect(screen.getByText("webview-ui")).toBeInTheDocument()
 		expect(screen.getByText("packages/core")).toBeInTheDocument()
 	})
 
@@ -53,7 +53,7 @@ describe("BatchListFilesPermission", () => {
 			</TranslationProvider>,
 		)
 
-		expect(screen.getByText("apps/cli")).toBeInTheDocument()
+		expect(screen.getByText("apps/vscode-e2e")).toBeInTheDocument()
 
 		rerender(
 			<TranslationProvider>
@@ -61,7 +61,7 @@ describe("BatchListFilesPermission", () => {
 			</TranslationProvider>,
 		)
 
-		expect(screen.getByText("apps/cli")).toBeInTheDocument()
+		expect(screen.getByText("apps/vscode-e2e")).toBeInTheDocument()
 	})
 
 	it("renders all directories in a single container", () => {
@@ -72,7 +72,7 @@ describe("BatchListFilesPermission", () => {
 		)
 
 		// All directories should be within a single bordered container
-		const container = screen.getByText("apps/cli").closest(".border.border-border.rounded-md")
+		const container = screen.getByText("apps/vscode-e2e").closest(".border.border-border.rounded-md")
 		expect(container).toBeInTheDocument()
 
 		// All 3 dirs should be inside this container
@@ -82,8 +82,8 @@ describe("BatchListFilesPermission", () => {
 	it("renders a single directory", () => {
 		const singleDir = [
 			{
-				key: "apps/cli",
-				path: "apps/cli",
+				key: "apps/vscode-e2e",
+				path: "apps/vscode-e2e",
 			},
 		]
 
@@ -93,10 +93,10 @@ describe("BatchListFilesPermission", () => {
 			</TranslationProvider>,
 		)
 
-		expect(screen.getByText("apps/cli")).toBeInTheDocument()
+		expect(screen.getByText("apps/vscode-e2e")).toBeInTheDocument()
 
 		// Single directory should still be rendered inside the container
-		const bordered = screen.getByText("apps/cli").closest(".border.border-border.rounded-md")
+		const bordered = screen.getByText("apps/vscode-e2e").closest(".border.border-border.rounded-md")
 		expect(bordered).toBeInTheDocument()
 		expect(bordered?.querySelectorAll(".flex.items-center.gap-2")).toHaveLength(1)
 	})

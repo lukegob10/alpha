@@ -132,7 +132,7 @@ const HistoryView = ({ onDone }: HistoryViewProps) => {
 						</Button>
 					</StandardTooltip>
 				</div>
-				<div className="flex flex-col gap-2">
+				<div className="surface-raised flex flex-col gap-2 rounded-2xl p-2.5">
 					<VSCodeTextField
 						className="w-full"
 						placeholder={t("history:searchPlaceholder")}
@@ -311,7 +311,7 @@ const HistoryView = ({ onDone }: HistoryViewProps) => {
 
 			{/* Fixed action bar at bottom - only shown in selection mode with selected items */}
 			{isSelectionMode && selectedTaskIds.length > 0 && (
-				<div className="fixed bottom-0 left-0 right-2 bg-vscode-editor-background border-t border-vscode-panel-border p-2 flex justify-between items-center">
+				<div className="surface-overlay fixed right-2 bottom-2 left-2 z-20 flex items-center justify-between rounded-xl p-2.5">
 					<div className="text-vscode-foreground">
 						{t("history:selectedItems", { selected: selectedTaskIds.length, total: tasks.length })}
 					</div>

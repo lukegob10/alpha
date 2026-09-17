@@ -40,7 +40,7 @@ describe("CustomModesManager - YAML Edge Cases", () => {
 
 	const mockStoragePath = `${path.sep}mock${path.sep}settings`
 	const mockSettingsPath = path.join(mockStoragePath, "settings", GlobalFileNames.customModes)
-	const mockRoomodes = `${path.sep}mock${path.sep}workspace${path.sep}.alphamodes`
+	const mockAlphaModes = `${path.sep}mock${path.sep}workspace${path.sep}.alphamodes`
 
 	// Helper function to reduce duplication in fs.readFile mocks
 	const mockFsReadFile = (files: Record<string, string>) => {
@@ -69,7 +69,7 @@ describe("CustomModesManager - YAML Edge Cases", () => {
 		;(vscode.workspace.onDidSaveTextDocument as Mock).mockReturnValue({ dispose: vi.fn() })
 		;(getWorkspacePath as Mock).mockReturnValue("/mock/workspace")
 		;(fileExistsAtPath as Mock).mockImplementation(async (path: string) => {
-			return path === mockSettingsPath || path === mockRoomodes
+			return path === mockSettingsPath || path === mockAlphaModes
 		})
 		;(fs.mkdir as Mock).mockResolvedValue(undefined)
 		;(fs.readFile as Mock).mockImplementation(async (path: string) => {
@@ -111,7 +111,7 @@ describe("CustomModesManager - YAML Edge Cases", () => {
 				})
 
 			mockFsReadFile({
-				[mockRoomodes]: yamlWithBOM,
+				[mockAlphaModes]: yamlWithBOM,
 				[mockSettingsPath]: yaml.stringify({ customModes: [] }),
 			})
 
@@ -138,7 +138,7 @@ describe("CustomModesManager - YAML Edge Cases", () => {
 				})
 
 			mockFsReadFile({
-				[mockRoomodes]: yamlWithBOM,
+				[mockAlphaModes]: yamlWithBOM,
 				[mockSettingsPath]: yaml.stringify({ customModes: [] }),
 			})
 
@@ -159,7 +159,7 @@ describe("CustomModesManager - YAML Edge Cases", () => {
     groups: ["read"]`
 
 			mockFsReadFile({
-				[mockRoomodes]: yamlWithNonBreakingSpaces,
+				[mockAlphaModes]: yamlWithNonBreakingSpaces,
 				[mockSettingsPath]: yaml.stringify({ customModes: [] }),
 			})
 
@@ -179,7 +179,7 @@ describe("CustomModesManager - YAML Edge Cases", () => {
     groups: ["read"]`
 
 			mockFsReadFile({
-				[mockRoomodes]: yamlWithZeroWidth,
+				[mockAlphaModes]: yamlWithZeroWidth,
 				[mockSettingsPath]: yaml.stringify({ customModes: [] }),
 			})
 
@@ -205,7 +205,7 @@ describe("CustomModesManager - YAML Edge Cases", () => {
 			})
 
 			mockFsReadFile({
-				[mockRoomodes]: yamlWithFancyQuotes,
+				[mockAlphaModes]: yamlWithFancyQuotes,
 				[mockSettingsPath]: yaml.stringify({ customModes: [] }),
 			})
 
@@ -233,7 +233,7 @@ describe("CustomModesManager - YAML Edge Cases", () => {
 			})
 
 			mockFsReadFile({
-				[mockRoomodes]: yamlWithComplexFileRegex,
+				[mockAlphaModes]: yamlWithComplexFileRegex,
 				[mockSettingsPath]: yaml.stringify({ customModes: [] }),
 			})
 
@@ -256,7 +256,7 @@ describe("CustomModesManager - YAML Edge Cases", () => {
 			   - ["edit", { fileRegex: "\\.md$" }]  # This line has invalid YAML syntax`
 
 			mockFsReadFile({
-				[mockRoomodes]: invalidYaml,
+				[mockAlphaModes]: invalidYaml,
 				[mockSettingsPath]: yaml.stringify({ customModes: [] }),
 			})
 
@@ -277,7 +277,7 @@ describe("CustomModesManager - YAML Edge Cases", () => {
 	   groups: ["read"]` // Missing closing quote
 
 			mockFsReadFile({
-				[mockRoomodes]: invalidYaml,
+				[mockAlphaModes]: invalidYaml,
 				[mockSettingsPath]: yaml.stringify({ customModes: [] }),
 			})
 
@@ -301,7 +301,7 @@ describe("CustomModesManager - YAML Edge Cases", () => {
 			})
 
 			mockFsReadFile({
-				[mockRoomodes]: invalidSchema,
+				[mockAlphaModes]: invalidSchema,
 				[mockSettingsPath]: yaml.stringify({ customModes: [] }),
 			})
 
@@ -327,7 +327,7 @@ describe("CustomModesManager - YAML Edge Cases", () => {
 			})
 
 			mockFsReadFile({
-				[mockRoomodes]: yamlWithEmojis,
+				[mockAlphaModes]: yamlWithEmojis,
 				[mockSettingsPath]: yaml.stringify({ customModes: [] }),
 			})
 
@@ -351,7 +351,7 @@ describe("CustomModesManager - YAML Edge Cases", () => {
 			})
 
 			mockFsReadFile({
-				[mockRoomodes]: yamlWithInternational,
+				[mockAlphaModes]: yamlWithInternational,
 				[mockSettingsPath]: yaml.stringify({ customModes: [] }),
 			})
 
@@ -375,7 +375,7 @@ describe("CustomModesManager - YAML Edge Cases", () => {
 				'    groups: ["read"]'
 
 			mockFsReadFile({
-				[mockRoomodes]: yamlWithMixedLineEndings,
+				[mockAlphaModes]: yamlWithMixedLineEndings,
 				[mockSettingsPath]: yaml.stringify({ customModes: [] }),
 			})
 
@@ -402,7 +402,7 @@ describe("CustomModesManager - YAML Edge Cases", () => {
 				})
 
 			mockFsReadFile({
-				[mockRoomodes]: yamlWithMultipleBOMs,
+				[mockAlphaModes]: yamlWithMultipleBOMs,
 				[mockSettingsPath]: yaml.stringify({ customModes: [] }),
 			})
 
@@ -434,7 +434,7 @@ describe("CustomModesManager - YAML Edge Cases", () => {
 			})
 
 			mockFsReadFile({
-				[mockRoomodes]: yamlWithComplexNesting,
+				[mockAlphaModes]: yamlWithComplexNesting,
 				[mockSettingsPath]: yaml.stringify({ customModes: [] }),
 			})
 

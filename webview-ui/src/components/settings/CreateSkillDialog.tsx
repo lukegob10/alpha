@@ -23,6 +23,7 @@ import {
 	Textarea,
 } from "@/components/ui"
 import { vscode } from "@/utils/vscode"
+import { getUserFacingModeOptions } from "@/utils/modePresentation"
 
 interface CreateSkillDialogProps {
 	open: boolean
@@ -89,8 +90,11 @@ export const CreateSkillDialog: React.FC<CreateSkillDialogProps> = ({
 
 	// Get available modes for the checkboxes (built-in + custom modes)
 	const availableModes = useMemo(() => {
-		return getAllModes(customModes).map((m) => ({ slug: m.slug, name: m.name }))
-	}, [customModes])
+		return getUserFacingModeOptions(getAllModes(customModes), selectedModes).map((m) => ({
+			slug: m.slug,
+			name: m.name,
+		}))
+	}, [customModes, selectedModes])
 
 	const resetForm = useCallback(() => {
 		setName("")

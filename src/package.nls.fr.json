@@ -44,5 +44,10 @@
 	"settings.debug.description": "Active le mode debug pour afficher des boutons supplémentaires permettant de visualiser l'historique de conversation de l'API et les messages de l'interface utilisateur sous forme de JSON formaté dans des fichiers temporaires.",
 	"settings.debugProxy.enabled.description": "**Activer le Debug Proxy** — Redirige toutes les requêtes réseau sortantes via un proxy pour le debug MITM. Actif uniquement quand tu es en mode debug (F5).",
 	"settings.debugProxy.serverUrl.description": "URL du proxy (par ex. `http://127.0.0.1:8888`). Utilisée uniquement quand le **Debug Proxy** est activé.",
-	"settings.debugProxy.tlsInsecure.description": "Accepter les certificats auto-signés du proxy. **Requis pour l'inspection MITM.** ⚠️ Non sécurisé — à utiliser uniquement pour le debug local."
+	"settings.debugProxy.tlsInsecure.description": "Accepter les certificats auto-signés du proxy. **Requis pour l'inspection MITM.** ⚠️ Non sécurisé — à utiliser uniquement pour le debug local.",
+	"command.openTickets.title": "Alpha: Tickets",
+	"command.previewHtmlDocument.title": "Aperçu du document HTML",
+	"command.scheduledTasks.title": "Tâches planifiées",
+	"settings.vsCodeLmModelSelector.version.description": "La version du modèle de langage",
+	"settings.vsCodeLmModelSelector.id.description": "L'identifiant unique du modèle de langage"
 }

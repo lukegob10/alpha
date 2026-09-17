@@ -7,9 +7,9 @@ import { SYSTEM_PROMPT } from "../prompts/system"
 import { MultiSearchReplaceDiffStrategy } from "../diff/strategies/multi-search-replace"
 import { Package } from "../../shared/package"
 
-import { ClineProvider } from "./ClineProvider"
+import { AlphaProvider } from "./AlphaProvider"
 
-export const generateSystemPrompt = async (provider: ClineProvider, message: WebviewMessage) => {
+export const generateSystemPrompt = async (provider: AlphaProvider, message: WebviewMessage) => {
 	const {
 		apiConfiguration,
 		customModePrompts,
@@ -27,7 +27,7 @@ export const generateSystemPrompt = async (provider: ClineProvider, message: Web
 	const mode = message.mode ?? defaultModeSlug
 	const customModes = await provider.customModesManager.getCustomModes()
 
-	const rooIgnoreInstructions = provider.getCurrentTask()?.rooIgnoreController?.getInstructions()
+	const alphaIgnoreInstructions = provider.getCurrentTask()?.alphaIgnoreController?.getInstructions()
 
 	// Create a temporary API handler to check model info for stealth mode.
 	// This avoids relying on an active Alpha instance which might not exist during preview.
@@ -51,7 +51,7 @@ export const generateSystemPrompt = async (provider: ClineProvider, message: Web
 		customInstructions,
 		experiments,
 		language,
-		rooIgnoreInstructions,
+		alphaIgnoreInstructions,
 		{
 			todoListEnabled: apiConfiguration?.todoListEnabled ?? true,
 			useAgentRules: vscode.workspace.getConfiguration(Package.name).get<boolean>("useAgentRules") ?? true,

@@ -9,8 +9,9 @@ type AutoApproveToggles = Pick<
 	| "alwaysAllowReadOnly"
 	| "alwaysAllowWrite"
 	| "alwaysAllowMcp"
-	| "alwaysAllowModeSwitch"
 	| "alwaysAllowSubtasks"
+	| "alwaysAllowSubagents"
+	| "alwaysAllowTickets"
 	| "alwaysAllowExecute"
 	| "alwaysAllowFollowupQuestions"
 >
@@ -47,19 +48,26 @@ export const autoApproveSettingsConfig: Record<AutoApproveSetting, AutoApproveCo
 		icon: "plug",
 		testId: "always-allow-mcp-toggle",
 	},
-	alwaysAllowModeSwitch: {
-		key: "alwaysAllowModeSwitch",
-		labelKey: "settings:autoApprove.modeSwitch.label",
-		descriptionKey: "settings:autoApprove.modeSwitch.description",
-		icon: "sync",
-		testId: "always-allow-mode-switch-toggle",
-	},
 	alwaysAllowSubtasks: {
 		key: "alwaysAllowSubtasks",
 		labelKey: "settings:autoApprove.subtasks.label",
 		descriptionKey: "settings:autoApprove.subtasks.description",
 		icon: "list-tree",
 		testId: "always-allow-subtasks-toggle",
+	},
+	alwaysAllowSubagents: {
+		key: "alwaysAllowSubagents",
+		labelKey: "settings:autoApprove.subagents.label",
+		descriptionKey: "settings:autoApprove.subagents.description",
+		icon: "organization",
+		testId: "always-allow-subagents-toggle",
+	},
+	alwaysAllowTickets: {
+		key: "alwaysAllowTickets",
+		labelKey: "settings:autoApprove.tickets.label",
+		descriptionKey: "settings:autoApprove.tickets.description",
+		icon: "issues",
+		testId: "always-allow-tickets-toggle",
 	},
 	alwaysAllowExecute: {
 		key: "alwaysAllowExecute",

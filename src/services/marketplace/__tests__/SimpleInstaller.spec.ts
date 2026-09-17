@@ -201,6 +201,57 @@ describe("SimpleInstaller", () => {
 			expect(writtenData.mcpServers["existing-server"]).toBeDefined()
 			expect(writtenData.mcpServers["test-mcp"]).toBeDefined()
 		})
+
+		it("replaces parameter keys and values literally", async () => {
+			const parameterizedItem: MarketplaceItem = {
+				...mockMcpItem,
+				content: JSON.stringify({ command: "test", args: ["{{api.key}}", "{{apiXkey}}"] }),
+				parameters: [{ name: "API key", key: "api.key", placeholder: "key", optional: false }],
+			}
+			const notFoundError = Object.assign(new Error("File not found"), { code: "ENOENT" })
+			mockFs.readFile.mockRejectedValueOnce(notFoundError)
+			mockFs.writeFile.mockResolvedValueOnce(undefined as any)
+
+			await installer.installItem(parameterizedItem, {
+				target: "project",
+				parameters: { "api.key": "$&-secret" },
+			})
+
+			const writtenData = JSON.parse(mockFs.writeFile.mock.calls[0][1] as string)
+			expect(writtenData.mcpServers["test-mcp"].args).toEqual(["$&-secret", "{{apiXkey}}"])
+		})
+	})
+
+	describe("removeMcp", () => {
+		const mockMcpItem: MarketplaceItem = {
+			id: "test-mcp",
+			name: "Test MCP",
+			description: "A test MCP server for testing",
+			type: "mcp",
+			url: "https://example.com/mcp",
+			content: JSON.stringify({ command: "test-server" }),
+		}
+
+		it("ignores a missing MCP settings file", async () => {
+			mockFs.readFile.mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }))
+
+			await expect(installer.removeItem(mockMcpItem, { target: "project" })).resolves.toBeUndefined()
+			expect(mockFs.writeFile).not.toHaveBeenCalled()
+		})
+
+		it("propagates malformed settings instead of reporting a false success", async () => {
+			mockFs.readFile.mockResolvedValueOnce("{invalid json")
+
+			await expect(installer.removeItem(mockMcpItem, { target: "project" })).rejects.toBeInstanceOf(SyntaxError)
+			expect(mockFs.writeFile).not.toHaveBeenCalled()
+		})
+
+		it("propagates write failures", async () => {
+			mockFs.readFile.mockResolvedValueOnce(JSON.stringify({ mcpServers: { "test-mcp": {} } }))
+			mockFs.writeFile.mockRejectedValueOnce(Object.assign(new Error("permission denied"), { code: "EACCES" }))
+
+			await expect(installer.removeItem(mockMcpItem, { target: "project" })).rejects.toThrow("permission denied")
+		})
 	})
 
 	describe("removeMode", () => {

@@ -20,6 +20,12 @@
 		"delete_custom_mode_with_rules": "¿Estás seguro de que quieres eliminar este modo {scope}?\n\nEsto también eliminará la carpeta de reglas asociada en:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "La tarea sigue incompleta y sin verificar: después de 30 segundos aún falta el registro de un cambio en el espacio de trabajo. No hay ninguna operación activa registrada para ese registro pendiente. Reintentar la finalización o la verificación no lo reparará. Use la información detallada del error para investigar el error original de la herramienta o del almacenamiento antes de reanudar.",
+		"task_recovery_lock_repair": "Alpha no puede verificar el propietario del bloqueo compartido de tareas. Reanudar o recargar no lo repara de forma segura. Cierra todas las ventanas de VS Code y los hosts de prueba de Alpha. Después, respalda y elimina solo agent_control.json.transaction.lock del almacenamiento global de Alpha antes de volver a abrir. Nunca elimines el bloqueo con un host en ejecución; conserva el historial y agent_control.json.",
+		"task_recovery_failed": "El turno se detuvo porque falló una operación. Puedes reanudar la tarea o enviar nuevas indicaciones.",
+		"task_recovery_incomplete": "El turno terminó antes de completar la tarea. Puedes reanudar la tarea o enviar nuevas indicaciones.",
+		"task_recovery_exhausted": "El turno se detuvo al alcanzar el límite de reintentos automáticos. Puedes reanudar la tarea o enviar nuevas indicaciones.",
+		"task_recovery_persistence": "La tarea se pausó porque no se pudieron guardar los datos necesarios. Comprueba el espacio libre en disco y el acceso a la carpeta de almacenamiento de tareas; después, reanuda la tarea o envía nuevas indicaciones.",
 		"invalid_data_uri": "Formato de URI de datos no válido",
 		"error_copying_image": "Error copiando la imagen: {{errorMessage}}",
 		"error_saving_image": "Error guardando la imagen: {{errorMessage}}",
@@ -72,6 +78,10 @@
 		"url_fetch_failed": "Error al obtener el contenido de la URL: {{error}}",
 		"url_fetch_error_with_url": "Error al obtener contenido para {{url}}: {{error}}",
 		"command_timeout": "La ejecución del comando superó el tiempo de espera de {{seconds}} segundos",
+		"command_mutation_observation_incomplete": "La tarea permanece incompleta y sin verificar porque no fue posible observar por completo las modificaciones realizadas por el comando.",
+		"command_mutation_receipt_incomplete": "La tarea permanece incompleta y sin verificar porque no fue posible finalizar el comprobante de modificaciones del comando.",
+		"mutation_receipt_incomplete": "La tarea sigue incompleta porque no se pudo finalizar el registro de un cambio en el espacio de trabajo. Revisa el error original de la herramienta antes de continuar.",
+		"command_output_bookkeeping_incomplete": "La tarea permanece incompleta porque no fue posible finalizar la salida del comando completado.",
 		"share_task_failed": "Error al compartir la tarea. Por favor, inténtalo de nuevo.",
 		"share_no_active_task": "No hay tarea activa para compartir",
 		"share_auth_required": "Se requiere autenticación. Por favor, inicia sesión para compartir tareas.",
@@ -143,7 +153,7 @@
 	"warnings": {
 		"no_terminal_content": "No hay contenido de terminal seleccionado",
 		"missing_task_files": "Los archivos de esta tarea faltan. ¿Deseas eliminarla de la lista de tareas?",
-		"auto_import_failed": "Error al importar automáticamente la configuración de RooCode: {{error}}"
+		"auto_import_failed": "Error al importar automáticamente la configuración de Alpha: {{error}}"
 	},
 	"info": {
 		"no_changes": "No se encontraron cambios.",
@@ -152,7 +162,7 @@
 		"custom_storage_path_set": "Ruta de almacenamiento personalizada establecida: {{path}}",
 		"default_storage_path": "Se ha vuelto a usar la ruta de almacenamiento predeterminada",
 		"settings_imported": "Configuración importada correctamente.",
-		"auto_import_success": "Configuración de RooCode importada automáticamente desde {{filename}}",
+		"auto_import_success": "Configuración de Alpha importada automáticamente desde {{filename}}",
 		"share_link_copied": "Enlace de compartir copiado al portapapeles",
 		"image_copied_to_clipboard": "URI de datos de imagen copiada al portapapeles",
 		"image_saved": "Imagen guardada en {{path}}",

@@ -3,6 +3,7 @@ import OpenAI from "openai"
 import { OpenAiHandler } from "../openai"
 import { OpenAiNativeHandler } from "../openai-native"
 import type { ApiHandlerOptions } from "../../../shared/api"
+import { NativeToolCallParser } from "../../../core/assistant-message/NativeToolCallParser"
 
 describe("OpenAiHandler native tools", () => {
 	it("includes tools in request when tools are provided via metadata (regression test)", async () => {
@@ -358,6 +359,126 @@ describe("OpenAiNativeHandler MCP tool schema handling", () => {
 			name: "read_file",
 			arguments: '"/tmp/test.txt"}',
 		})
+	})
+
+	it("keeps parallel Responses function calls distinct by item_id and output_index", async () => {
+		const handler = new OpenAiNativeHandler({
+			openAiNativeApiKey: "test-key",
+			apiModelId: "gpt-4o",
+		} as ApiHandlerOptions)
+		const calls = [
+			{
+				outputIndex: 0,
+				itemId: "fc_spawn_reviewer",
+				callId: "call_spawn_reviewer",
+				name: "spawn_agent",
+				deltas: ['{"objective":"Review backend",', '"agent_kind":"review"}'],
+			},
+			{
+				outputIndex: 1,
+				itemId: "fc_spawn_explorer",
+				callId: "call_spawn_explorer",
+				name: "spawn_agent",
+				deltas: ['{"objective":"Map frontend",', '"agent_kind":"explore"}'],
+			},
+			{
+				outputIndex: 2,
+				itemId: "fc_read_parent",
+				callId: "call_read_parent",
+				name: "read_file",
+				deltas: ['{"path":"F:/test/', 'README.md"}'],
+			},
+		]
+
+		;(handler as any).client = {
+			responses: {
+				create: vi.fn().mockResolvedValue({
+					async *[Symbol.asyncIterator]() {
+						for (const call of calls) {
+							yield {
+								type: "response.output_item.added",
+								output_index: call.outputIndex,
+								item: {
+									type: "function_call",
+									id: call.itemId,
+									call_id: call.callId,
+									name: call.name,
+									arguments: "",
+								},
+							}
+						}
+						for (let part = 0; part < 2; part++) {
+							for (const call of calls) {
+								yield {
+									type: "response.function_call_arguments.delta",
+									item_id: call.itemId,
+									output_index: call.outputIndex,
+									delta: call.deltas[part],
+								}
+							}
+						}
+						for (const call of calls) {
+							yield {
+								type: "response.output_item.done",
+								output_index: call.outputIndex,
+								item: {
+									type: "function_call",
+									id: call.itemId,
+									call_id: call.callId,
+									name: call.name,
+									arguments: call.deltas.join(""),
+								},
+							}
+						}
+					},
+				}),
+			},
+		}
+
+		const chunks: any[] = []
+		for await (const chunk of handler.createMessage("system prompt", [], { taskId: "parallel-native" })) {
+			chunks.push(chunk)
+		}
+		const partials = chunks.filter((chunk) => chunk.type === "tool_call_partial")
+		const expectedPartials = [0, 1].flatMap((part) =>
+			calls.map((call) => ({
+				type: "tool_call_partial",
+				index: call.outputIndex,
+				id: call.callId,
+				name: call.name,
+				arguments: call.deltas[part],
+			})),
+		)
+		expect(partials).toEqual(expectedPartials)
+		expect(chunks.filter((chunk) => chunk.type === "tool_call")).toEqual([])
+
+		const scope = "parallel-native-parser"
+		const parserEvents = partials.flatMap((chunk) =>
+			NativeToolCallParser.processRawChunk(
+				{
+					index: chunk.index,
+					id: chunk.id,
+					name: chunk.name,
+					arguments: chunk.arguments,
+				},
+				scope,
+			),
+		)
+		parserEvents.push(...NativeToolCallParser.finalizeRawChunks(scope))
+		expect(
+			parserEvents
+				.filter((event) => event.type === "tool_call_start")
+				.map((event) => ({ id: event.id, name: event.name })),
+		).toEqual(calls.map((call) => ({ id: call.callId, name: call.name })))
+		for (const call of calls) {
+			expect(
+				parserEvents
+					.flatMap((event) =>
+						event.type === "tool_call_delta" && event.id === call.callId ? [event.delta] : [],
+					)
+					.join(""),
+			).toBe(call.deltas.join(""))
+		}
 	})
 })
 

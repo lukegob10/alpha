@@ -1,50 +1,56 @@
-import React from "react"
-import { useTranslation } from "react-i18next"
+import { FileCode2, ArrowUpRight } from "lucide-react"
 import { vscode } from "@src/utils/vscode"
-import { StandardTooltip } from "@/components/ui"
 
 interface CodebaseSearchResultProps {
 	filePath: string
-	score: number
 	startLine: number
 	endLine: number
+	context?: string
 	snippet: string
-	language: string
 }
 
-const CodebaseSearchResult: React.FC<CodebaseSearchResultProps> = ({ filePath, score, startLine, endLine }) => {
-	const { t } = useTranslation("chat")
-
-	const handleClick = () => {
-		console.log(filePath)
-		vscode.postMessage({
-			type: "openFile",
-			text: "./" + filePath,
-			values: {
-				line: startLine,
-			},
-		})
-	}
+export default function CodebaseSearchResult({
+	filePath,
+	startLine,
+	endLine,
+	context,
+	snippet,
+}: CodebaseSearchResultProps) {
+	const normalizedPath = filePath.replace(/\\/g, "/")
+	const parts = normalizedPath.split("/")
+	const filename = parts.pop()
+	const directory = parts.join("/")
+	const lines = startLine === endLine ? String(startLine) : `${startLine}–${endLine}`
+	const scope = context?.split("\n")[0].trim()
+	const preview = snippet.trim().split("\n").slice(0, 3).join("\n")
 
 	return (
-		<StandardTooltip content={t("codebaseSearch.resultTooltip", { score: score.toFixed(3) })}>
-			<div
-				onClick={handleClick}
-				className="p-2 border border-[var(--vscode-editorGroup-border)] cursor-pointer hover:bg-secondary hover:text-white">
-				<div className="flex gap-2 items-center overflow-hidden">
-					<span className="text-primary-300 whitespace-nowrap flex-shrink-0">
-						{filePath.split("/").at(-1)}:{startLine === endLine ? startLine : `${startLine}-${endLine}`}
+		<button
+			type="button"
+			title={`${normalizedPath}:${lines}`}
+			onClick={() =>
+				vscode.postMessage({ type: "openFile", text: "./" + normalizedPath, values: { line: startLine } })
+			}
+			className="flex w-full min-w-0 items-start gap-2.5 rounded-md px-2 py-2.5 text-left text-vscode-foreground hover:bg-vscode-list-hoverBackground focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-2 focus-visible:outline-vscode-focusBorder">
+			<FileCode2 className="mt-0.5 size-4 shrink-0 text-vscode-descriptionForeground" aria-hidden="true" />
+			<span className="min-w-0 flex-1">
+				<span className="flex min-w-0 items-baseline gap-2">
+					<span className="min-w-0 truncate text-sm font-medium">{filename}</span>
+					<span className="shrink-0 text-xs tabular-nums text-vscode-descriptionForeground">{lines}</span>
+				</span>
+				{directory && (
+					<span className="block truncate text-xs text-vscode-descriptionForeground">{directory}</span>
+				)}
+				{scope && (
+					<span className="mt-1 block truncate text-xs text-vscode-descriptionForeground">{scope}</span>
+				)}
+				{preview && (
+					<span className="mt-1 line-clamp-2 whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-vscode-descriptionForeground">
+						{preview}
 					</span>
-					<span className="text-gray-500 truncate min-w-0 flex-1">
-						{filePath.split("/").slice(0, -1).join("/")}
-					</span>
-					<span className="text-xs text-vscode-descriptionForeground whitespace-nowrap ml-auto opacity-60">
-						{score.toFixed(3)}
-					</span>
-				</div>
-			</div>
-		</StandardTooltip>
+				)}
+			</span>
+			<ArrowUpRight className="mt-0.5 size-3.5 shrink-0 text-vscode-descriptionForeground" aria-hidden="true" />
+		</button>
 	)
 }
-
-export default CodebaseSearchResult

@@ -11,6 +11,7 @@
 		"missing_update_modes_fields": "Gerekli alanlar eksik: skillName veya source",
 		"manager_unavailable": "Beceri yöneticisi kullanılamıyor",
 		"missing_delete_fields": "Gerekli alanlar eksik: skillName veya source",
-		"skill_not_found": "\"{{name}}\" becerisi bulunamadı"
+		"skill_not_found": "\"{{name}}\" becerisi bulunamadı",
+		"builtin_read_only": "Yerleşik beceriler salt okunurdur. Bunların yerine kullanmak için kişisel bir beceri veya çalışma alanı becerisi oluşturun."
 	}
 }

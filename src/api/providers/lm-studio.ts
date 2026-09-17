@@ -171,7 +171,10 @@ export class LmStudioHandler extends BaseProvider implements SingleCompletionHan
 	}
 
 	override getModel(): { id: string; info: ModelInfo } {
-		const models = getModelsFromCache("lmstudio")
+		const models = getModelsFromCache({
+			provider: "lmstudio",
+			baseUrl: this.options.lmStudioBaseUrl || "http://localhost:1234",
+		})
 		if (models && this.options.lmStudioModelId && models[this.options.lmStudioModelId]) {
 			return {
 				id: this.options.lmStudioModelId,

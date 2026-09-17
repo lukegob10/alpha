@@ -1,0 +1,5 @@
+schemaVersion: 1
+bundles:
+  - id: frontier-v1-graders
+    version: 2
+    contentDigest: sha256:0f94925970b79f1d3e0dcb65a8b15832711c014cd0e443c2c2ce36b40bd7072e

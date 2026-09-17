@@ -1,8 +1,8 @@
 import type { Mock } from "vitest"
 import * as vscode from "vscode"
-import { ClineProvider } from "../../core/webview/ClineProvider"
+import { AlphaProvider } from "../../core/webview/AlphaProvider"
 
-import { getVisibleProviderOrLog, registerCommands } from "../registerCommands"
+import { getPanel, getVisibleProviderOrLog, registerCommands, setPanel } from "../registerCommands"
 
 vi.mock("execa", () => ({
 	execa: vi.fn(),
@@ -38,7 +38,7 @@ vi.mock("vscode", () => ({
 	},
 }))
 
-vi.mock("../../core/webview/ClineProvider")
+vi.mock("../../core/webview/AlphaProvider")
 
 describe("getVisibleProviderOrLog", () => {
 	let mockOutputChannel: vscode.OutputChannel
@@ -58,8 +58,8 @@ describe("getVisibleProviderOrLog", () => {
 	})
 
 	it("returns the visible provider if found", () => {
-		const mockProvider = {} as ClineProvider
-		;(ClineProvider.getVisibleInstance as Mock).mockReturnValue(mockProvider)
+		const mockProvider = {} as AlphaProvider
+		;(AlphaProvider.getVisibleInstance as Mock).mockReturnValue(mockProvider)
 
 		const result = getVisibleProviderOrLog(mockOutputChannel)
 
@@ -68,12 +68,31 @@ describe("getVisibleProviderOrLog", () => {
 	})
 
 	it("logs and returns undefined if no provider found", () => {
-		;(ClineProvider.getVisibleInstance as Mock).mockReturnValue(undefined)
+		;(AlphaProvider.getVisibleInstance as Mock).mockReturnValue(undefined)
 
 		const result = getVisibleProviderOrLog(mockOutputChannel)
 
 		expect(result).toBeUndefined()
 		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith("Cannot find any visible Alpha instances.")
+	})
+})
+
+describe("panel ownership", () => {
+	beforeEach(() => {
+		setPanel(undefined, "tab")
+		setPanel(undefined, "sidebar")
+	})
+
+	it("restores the existing sidebar as active when a tab panel closes", () => {
+		const sidebar = {} as vscode.WebviewView
+		const tab = {} as vscode.WebviewPanel
+
+		setPanel(sidebar, "sidebar")
+		setPanel(tab, "tab")
+		expect(getPanel()).toBe(tab)
+
+		setPanel(undefined, "tab")
+		expect(getPanel()).toBe(sidebar)
 	})
 })
 
@@ -99,11 +118,11 @@ describe("registerCommands", () => {
 		const postMessageToWebview = vi.fn().mockResolvedValue(undefined)
 		const visibleProvider = {
 			startBlankTask,
-			removeClineFromStack: vi.fn().mockResolvedValue(undefined),
+			removeTaskFromStack: vi.fn().mockResolvedValue(undefined),
 			refreshWorkspace: vi.fn().mockResolvedValue(undefined),
 			postMessageToWebview,
-		} as unknown as ClineProvider
-		;(ClineProvider.getVisibleInstance as Mock).mockReturnValue(visibleProvider)
+		} as unknown as AlphaProvider
+		;(AlphaProvider.getVisibleInstance as Mock).mockReturnValue(visibleProvider)
 
 		const context = { subscriptions: [] } as unknown as vscode.ExtensionContext
 		registerCommands({ context, outputChannel: mockOutputChannel, provider: visibleProvider })
@@ -116,7 +135,7 @@ describe("registerCommands", () => {
 		await plusRegistration![1]()
 
 		expect(visibleProvider.startBlankTask).toHaveBeenCalledTimes(1)
-		expect(visibleProvider.removeClineFromStack).not.toHaveBeenCalled()
+		expect(visibleProvider.removeTaskFromStack).not.toHaveBeenCalled()
 		expect(visibleProvider.refreshWorkspace).toHaveBeenCalledTimes(1)
 		expect(visibleProvider.postMessageToWebview).toHaveBeenCalledWith({
 			type: "action",
@@ -127,5 +146,13 @@ describe("registerCommands", () => {
 		expect(postMessageToWebview.mock.invocationCallOrder[0]).toBeLessThan(
 			startBlankTask.mock.invocationCallOrder[0],
 		)
+	})
+
+	it("does not register the removed Goal Seek command", () => {
+		const context = { subscriptions: [] } as unknown as vscode.ExtensionContext
+		registerCommands({ context, outputChannel: mockOutputChannel, provider: {} as AlphaProvider })
+		const commands = vi.mocked(vscode.commands.registerCommand).mock.calls.map(([command]) => command)
+		expect(commands).not.toContain("alpha.goalSeekButtonClicked")
+		expect(commands).toContain("alpha.scheduledTasksButtonClicked")
 	})
 })

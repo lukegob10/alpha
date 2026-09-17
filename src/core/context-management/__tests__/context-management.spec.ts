@@ -276,7 +276,7 @@ describe("Context Management", () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "First message" },
 			{ role: "assistant", content: "Second message" },
-			{ role: "user", content: "Third message" },
+			{ role: "user", content: "Third message. ".repeat(200) },
 			{ role: "assistant", content: "Fourth message" },
 			{ role: "user", content: "Fifth message" },
 		]
@@ -343,7 +343,9 @@ describe("Context Management", () => {
 			expect(result.messagesRemoved).toBe(2) // With 4 messages after first, 0.5 fraction = 2 to remove
 			expect(result.summary).toBe("")
 			expect(result.cost).toBe(0)
-			expect(result.prevContextTokens).toBe(totalTokens)
+			expect(result.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),
+			)
 			// Should have all original messages + truncation marker (non-destructive)
 			expect(result.messages.length).toBe(6) // 5 original + 1 marker
 		})
@@ -505,7 +507,9 @@ describe("Context Management", () => {
 			expect(resultWithLarge.messages).not.toEqual(messagesWithLargeContent) // Should truncate
 			expect(resultWithLarge.summary).toBe("")
 			expect(resultWithLarge.cost).toBe(0)
-			expect(resultWithLarge.prevContextTokens).toBe(baseTokensForLarge + largeContentTokens)
+			expect(resultWithLarge.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithLargeContent, mockApiHandler, "System prompt"),
+			)
 
 			// Test case 3: Very large content that will definitely exceed threshold
 			const veryLargeContent = [{ type: "text" as const, text: "X".repeat(1000) }]
@@ -533,7 +537,9 @@ describe("Context Management", () => {
 			expect(resultWithVeryLarge.messages).not.toEqual(messagesWithVeryLargeContent) // Should truncate
 			expect(resultWithVeryLarge.summary).toBe("")
 			expect(resultWithVeryLarge.cost).toBe(0)
-			expect(resultWithVeryLarge.prevContextTokens).toBe(baseTokensForVeryLarge + veryLargeContentTokens)
+			expect(resultWithVeryLarge.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithVeryLargeContent, mockApiHandler, "System prompt"),
+			)
 		})
 
 		it("should truncate if tokens are within TOKEN_BUFFER_PERCENTAGE of the threshold", async () => {
@@ -566,7 +572,9 @@ describe("Context Management", () => {
 			expect(result.messagesRemoved).toBe(2) // With 4 messages after first, 0.5 fraction = 2 to remove
 			expect(result.summary).toBe("")
 			expect(result.cost).toBe(0)
-			expect(result.prevContextTokens).toBe(totalTokens)
+			expect(result.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),
+			)
 			// Should have all original messages + truncation marker (non-destructive)
 			expect(result.messages.length).toBe(6) // 5 original + 1 marker
 		})
@@ -612,13 +620,16 @@ describe("Context Management", () => {
 			})
 
 			// Verify summarizeConversation was called with the right parameters
-			expect(summarizeSpy).toHaveBeenCalledWith({
-				messages: messagesWithSmallContent,
-				apiHandler: mockApiHandler,
-				systemPrompt: "System prompt",
-				taskId,
-				isAutomaticTrigger: true,
-			})
+			expect(summarizeSpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					maxContextTokens: 15002,
+					messages: messagesWithSmallContent,
+					apiHandler: mockApiHandler,
+					systemPrompt: "System prompt",
+					taskId,
+					isAutomaticTrigger: true,
+				}),
+			)
 
 			// Verify the result contains the summary information
 			expect(result).toMatchObject({
@@ -682,7 +693,9 @@ describe("Context Management", () => {
 			expect(result.truncationId).toBeDefined()
 			expect(result.messagesRemoved).toBe(2)
 			expect(result.summary).toBe("")
-			expect(result.prevContextTokens).toBe(totalTokens)
+			expect(result.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),
+			)
 			// Should have all original messages + truncation marker
 			expect(result.messages.length).toBe(6) // 5 original + 1 marker
 			// The cost might be different than expected, so we don't check it
@@ -733,7 +746,9 @@ describe("Context Management", () => {
 			expect(result.messagesRemoved).toBe(2)
 			expect(result.summary).toBe("")
 			expect(result.cost).toBe(0)
-			expect(result.prevContextTokens).toBe(totalTokens)
+			expect(result.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),
+			)
 			// Should have all original messages + truncation marker
 			expect(result.messages.length).toBe(6) // 5 original + 1 marker
 
@@ -784,13 +799,16 @@ describe("Context Management", () => {
 			})
 
 			// Verify summarizeConversation was called with the right parameters
-			expect(summarizeSpy).toHaveBeenCalledWith({
-				messages: messagesWithSmallContent,
-				apiHandler: mockApiHandler,
-				systemPrompt: "System prompt",
-				taskId,
-				isAutomaticTrigger: true,
-			})
+			expect(summarizeSpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					maxContextTokens: 12502,
+					messages: messagesWithSmallContent,
+					apiHandler: mockApiHandler,
+					systemPrompt: "System prompt",
+					taskId,
+					isAutomaticTrigger: true,
+				}),
+			)
 
 			// Verify the result contains the summary information
 			expect(result).toMatchObject({
@@ -880,16 +898,18 @@ describe("Context Management", () => {
 			expect(result.truncationId).toBeDefined()
 			expect(result.messagesRemoved).toBe(2)
 			expect(result.error).toContain("max input tokens exceeded")
-			expect(result.prevContextTokens).toBe(50000)
+			expect(result.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),
+			)
 
 			summarizeSpy.mockRestore()
 		})
 	})
 
 	/**
-	 * Tests for filesReadByRoo being passed to summarizeConversation
+	 * Tests for filesReadByAlpha being passed to summarizeConversation
 	 */
-	describe("filesReadByRoo parameters", () => {
+	describe("filesReadByAlpha parameters", () => {
 		const createModelInfo = (contextWindow: number, maxTokens?: number): ModelInfo => ({
 			contextWindow,
 			supportsPromptCache: true,
@@ -899,12 +919,12 @@ describe("Context Management", () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "First message" },
 			{ role: "assistant", content: "Second message" },
-			{ role: "user", content: "Third message" },
+			{ role: "user", content: "Third message. ".repeat(200) },
 			{ role: "assistant", content: "Fourth message" },
 			{ role: "user", content: "Fifth message" },
 		]
 
-		it("should pass filesReadByRoo, cwd, and rooIgnoreController to summarizeConversation when provided", async () => {
+		it("should pass filesReadByAlpha, cwd, and alphaIgnoreController to summarizeConversation when provided", async () => {
 			// Mock the summarizeConversation function
 			const mockSummary = "Summary with folded context"
 			const mockCost = 0.05
@@ -930,11 +950,11 @@ describe("Context Management", () => {
 				{ ...messages[messages.length - 1], content: "" },
 			]
 
-			const filesReadByRoo = ["src/test.ts", "src/utils.ts"]
+			const filesReadByAlpha = ["src/test.ts", "src/utils.ts"]
 			const cwd = "/test/project"
-			const mockRooIgnoreController = {
+			const mockAlphaIgnoreController = {
 				filterPaths: vi.fn(),
-			} as unknown as import("../../ignore/RooIgnoreController").RooIgnoreController
+			} as unknown as import("../../ignore/AlphaIgnoreController").AlphaIgnoreController
 
 			const result = await manageContext({
 				messages: messagesWithSmallContent,
@@ -948,22 +968,25 @@ describe("Context Management", () => {
 				taskId,
 				profileThresholds: {},
 				currentProfileId: "default",
-				filesReadByRoo,
+				filesReadByAlpha,
 				cwd,
-				rooIgnoreController: mockRooIgnoreController,
+				alphaIgnoreController: mockAlphaIgnoreController,
 			})
 
-			// Verify summarizeConversation was called with filesReadByRoo, cwd, and rooIgnoreController
-			expect(summarizeSpy).toHaveBeenCalledWith({
-				messages: messagesWithSmallContent,
-				apiHandler: mockApiHandler,
-				systemPrompt: "System prompt",
-				taskId,
-				isAutomaticTrigger: true,
-				filesReadByRoo,
-				cwd,
-				rooIgnoreController: mockRooIgnoreController,
-			})
+			// Verify summarizeConversation was called with filesReadByAlpha, cwd, and alphaIgnoreController
+			expect(summarizeSpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					maxContextTokens: 15002,
+					messages: messagesWithSmallContent,
+					apiHandler: mockApiHandler,
+					systemPrompt: "System prompt",
+					taskId,
+					isAutomaticTrigger: true,
+					filesReadByAlpha,
+					cwd,
+					alphaIgnoreController: mockAlphaIgnoreController,
+				}),
+			)
 
 			// Verify the result contains the summary information
 			expect(result).toMatchObject({
@@ -977,7 +1000,7 @@ describe("Context Management", () => {
 			summarizeSpy.mockRestore()
 		})
 
-		it("should pass undefined filesReadByRoo parameters when not provided", async () => {
+		it("should pass undefined filesReadByAlpha parameters when not provided", async () => {
 			// Mock the summarizeConversation function
 			const mockSummary = "Summary without folded context"
 			const mockCost = 0.03
@@ -1015,17 +1038,20 @@ describe("Context Management", () => {
 				taskId,
 				profileThresholds: {},
 				currentProfileId: "default",
-				// filesReadByRoo, cwd, rooIgnoreController are NOT provided
+				// filesReadByAlpha, cwd, alphaIgnoreController are NOT provided
 			})
 
 			// Verify summarizeConversation was called with undefined parameters
-			expect(summarizeSpy).toHaveBeenCalledWith({
-				messages: messagesWithSmallContent,
-				apiHandler: mockApiHandler,
-				systemPrompt: "System prompt",
-				taskId,
-				isAutomaticTrigger: true,
-			})
+			expect(summarizeSpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					maxContextTokens: 15002,
+					messages: messagesWithSmallContent,
+					apiHandler: mockApiHandler,
+					systemPrompt: "System prompt",
+					taskId,
+					isAutomaticTrigger: true,
+				}),
+			)
 
 			// Verify the result
 			expect(result).toMatchObject({
@@ -1037,7 +1063,7 @@ describe("Context Management", () => {
 			summarizeSpy.mockRestore()
 		})
 
-		it("should pass empty array filesReadByRoo when provided as empty", async () => {
+		it("should pass empty array filesReadByAlpha when provided as empty", async () => {
 			// Mock the summarizeConversation function
 			const mockSummary = "Summary with empty file list"
 			const mockCost = 0.04
@@ -1075,20 +1101,23 @@ describe("Context Management", () => {
 				taskId,
 				profileThresholds: {},
 				currentProfileId: "default",
-				filesReadByRoo: [], // Empty array
+				filesReadByAlpha: [], // Empty array
 				cwd: "/test/project",
 			})
 
 			// Verify summarizeConversation was called with empty array
-			expect(summarizeSpy).toHaveBeenCalledWith({
-				messages: messagesWithSmallContent,
-				apiHandler: mockApiHandler,
-				systemPrompt: "System prompt",
-				taskId,
-				isAutomaticTrigger: true,
-				filesReadByRoo: [],
-				cwd: "/test/project",
-			})
+			expect(summarizeSpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					maxContextTokens: 15002,
+					messages: messagesWithSmallContent,
+					apiHandler: mockApiHandler,
+					systemPrompt: "System prompt",
+					taskId,
+					isAutomaticTrigger: true,
+					filesReadByAlpha: [],
+					cwd: "/test/project",
+				}),
+			)
 
 			// Clean up
 			summarizeSpy.mockRestore()
@@ -1108,7 +1137,7 @@ describe("Context Management", () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "First message" },
 			{ role: "assistant", content: "Second message" },
-			{ role: "user", content: "Third message" },
+			{ role: "user", content: "Third message. ".repeat(200) },
 			{ role: "assistant", content: "Fourth message" },
 			{ role: "user", content: "Fifth message" },
 		]
@@ -1316,7 +1345,7 @@ describe("Context Management", () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "First message" },
 			{ role: "assistant", content: "Second message" },
-			{ role: "user", content: "Third message" },
+			{ role: "user", content: "Third message. ".repeat(200) },
 			{ role: "assistant", content: "Fourth message" },
 			{ role: "user", content: "Fifth message" },
 		]
@@ -1374,7 +1403,9 @@ describe("Context Management", () => {
 			expect(result2.messagesRemoved).toBe(2)
 			expect(result2.summary).toBe("")
 			expect(result2.cost).toBe(0)
-			expect(result2.prevContextTokens).toBe(50001)
+			expect(result2.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),
+			)
 		})
 
 		it("should use ANTHROPIC_DEFAULT_MAX_TOKENS as buffer when maxTokens is undefined", async () => {
@@ -1429,7 +1460,9 @@ describe("Context Management", () => {
 			expect(result2.truncationId).toBeDefined()
 			expect(result2.summary).toBe("")
 			expect(result2.cost).toBe(0)
-			expect(result2.prevContextTokens).toBe(81809)
+			expect(result2.prevContextTokens).toBe(
+				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),
+			)
 		})
 
 		it("should handle small context windows appropriately", async () => {
@@ -1664,7 +1697,7 @@ describe("Context Management", () => {
 			const messages: ApiMessage[] = [
 				{ role: "user", content: "First message" },
 				{ role: "assistant", content: "Second message" },
-				{ role: "user", content: "Third message" },
+				{ role: "user", content: "Third message. ".repeat(200) },
 				{ role: "assistant", content: "Fourth message" },
 				{ role: "user", content: "" }, // Small content in last message
 			]
@@ -1706,7 +1739,7 @@ describe("Context Management", () => {
 			const messages: ApiMessage[] = [
 				{ role: "user", content: "First message" },
 				{ role: "assistant", content: "Second message" },
-				{ role: "user", content: "Third message" },
+				{ role: "user", content: "Third message. ".repeat(200) },
 				{ role: "assistant", content: "Fourth message" },
 				{ role: "user", content: "" }, // Small content in last message
 			]

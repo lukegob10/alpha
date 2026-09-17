@@ -108,7 +108,8 @@
 		"goToModes": "Anar a la configuració de Modes",
 		"moreInfoMcp": "Veure documentació MCP de {{name}}",
 		"validationRequired": "Si us plau, proporciona un valor per a {{paramName}}",
-		"prerequisites": "Prerequisits"
+		"prerequisites": "Prerequisits",
+		"installing": "S'està instal·lant..."
 	},
 	"sources": {
 		"title": "Configurar fonts del marketplace",

@@ -2,7 +2,10 @@ import { cn } from "@/lib/utils"
 
 export const ToolUseBlock = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
 	<div
-		className={cn("overflow-hidden rounded-md p-2 cursor-pointer bg-vscode-editor-background", className)}
+		className={cn(
+			"overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-sunken)] p-2 cursor-pointer transition-colors hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)]",
+			className,
+		)}
 		{...props}
 	/>
 )

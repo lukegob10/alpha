@@ -1,5 +1,6 @@
 import fs from "fs/promises"
 import * as path from "path"
+import { randomUUID } from "crypto"
 import * as vscode from "vscode"
 
 import delay from "delay"
@@ -11,8 +12,14 @@ import { Task } from "../task/Task"
 
 import { ToolUse, ToolResponse } from "../../shared/tools"
 import { formatResponse } from "../prompts/responses"
+import { defaultModeSlug, planModeSlug } from "../../shared/modes"
 import { unescapeHtmlEntities } from "../../utils/text-normalization"
-import { ExitCodeDetails, RooTerminalCallbacks, RooTerminalProcess } from "../../integrations/terminal/types"
+import {
+	ExitCodeDetails,
+	AlphaTerminal,
+	AlphaTerminalCallbacks,
+	AlphaTerminalProcess,
+} from "../../integrations/terminal/types"
 import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
 import { Terminal } from "../../integrations/terminal/Terminal"
 import { OutputInterceptor } from "../../integrations/terminal/OutputInterceptor"
@@ -20,22 +27,126 @@ import { Package } from "../../shared/package"
 import { t } from "../../i18n"
 import { getTaskDirectoryPath } from "../../utils/storage"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { createToolFailure, type ToolFailureMetadata } from "./ToolFailure"
+import { isToolAllowedForMode } from "./validateToolUse"
+import { redactTaskPrivatePaths } from "./taskPathPresentation"
+import {
+	captureWorkspaceMutationState,
+	compareWorkspaceMutationState,
+	type WorkspaceMutationState,
+} from "../agent/VerificationScope"
+import { getTrustedCommandExploration } from "./CommandExploration"
 
 class ShellIntegrationError extends Error {}
 
+type CommandMutationReceiptPhase =
+	| "capture-final-state"
+	| "compare-final-state"
+	| "launch-outcome-unknown"
+	| "process-outcome-unknown"
+	| "persist-final-receipt"
+	| "release-pre-launch-reservation"
+	| "release-no-op-receipt"
+	| "complete-command-evidence"
+
+export class CommandMutationReceiptError extends Error {
+	override readonly name = "CommandMutationReceiptError"
+
+	constructor(
+		readonly phase: CommandMutationReceiptPhase,
+		readonly observationUnknown: boolean,
+		cause: unknown,
+	) {
+		const detail = cause instanceof Error ? cause.message : String(cause)
+		super(`Command mutation receipt failed during ${phase}: ${detail.slice(0, 512)}`, { cause })
+	}
+}
+
+type CommandExecutionLifecyclePhase = "admit-command" | "launch-command" | "await-command-process"
+
+export class CommandExecutionLifecycleError extends Error {
+	override readonly name = "CommandExecutionLifecycleError"
+
+	constructor(
+		readonly phase: CommandExecutionLifecyclePhase,
+		cause: unknown,
+	) {
+		const detail = cause instanceof Error ? cause.message : String(cause)
+		super(
+			phase === "admit-command"
+				? `Command was not started because pre-launch bookkeeping failed: ${detail.slice(0, 512)}`
+				: `Command execution failed during ${phase}: ${detail.slice(0, 512)}`,
+			{ cause },
+		)
+	}
+}
+
+export class CommandOutputBookkeepingError extends Error {
+	override readonly name = "CommandOutputBookkeepingError"
+	readonly phase = "finalize-command-output" as const
+
+	constructor(cause: unknown) {
+		const detail = cause instanceof Error ? cause.message : String(cause)
+		super(`Command output bookkeeping failed during finalize-command-output: ${detail.slice(0, 512)}`, { cause })
+	}
+}
+
+async function finalizeCommandMutationReceipt(
+	task: Task,
+	mutationBaseline: WorkspaceMutationState | undefined,
+	physicalExecutionId: string,
+	onIncomplete: () => void,
+): Promise<void> {
+	if (task.taskKind !== "primary") return
+
+	let changes: Awaited<ReturnType<typeof compareWorkspaceMutationState>> | undefined
+	if (mutationBaseline) {
+		try {
+			const after = await captureWorkspaceMutationState(task.cwd, mutationBaseline)
+			changes = await compareWorkspaceMutationState(task.cwd, mutationBaseline, after)
+		} catch {
+			// A terminal process outcome is independent of our bounded diff observer.
+			// Record incompleteness durably instead of turning a real exit into failure.
+		}
+	}
+
+	if (changes && changes.changedPaths.length > 0) {
+		try {
+			const owner = task.providerRef.deref()
+			if (!owner) throw new Error("Primary mutation ledger is unavailable")
+			const receiptSettled = await owner.recordPrimaryMutation(task, changes.files, false, physicalExecutionId)
+			if (!receiptSettled) {
+				throw new Error("Primary mutation ledger did not affirm the final receipt")
+			}
+		} catch (error) {
+			throw new CommandMutationReceiptError("persist-final-receipt", false, error)
+		}
+		return
+	}
+
+	try {
+		const owner = task.providerRef.deref()
+		if (!owner) throw new Error("Primary mutation ledger is unavailable")
+		if (changes) {
+			await owner.releasePrimaryMutation(task, physicalExecutionId)
+		} else {
+			onIncomplete()
+			await owner.releasePrimaryMutation(task, physicalExecutionId, true)
+		}
+	} catch (error) {
+		throw new CommandMutationReceiptError("release-no-op-receipt", false, error)
+	}
+}
+
 interface ExecuteCommandParams {
 	command: string
-	cwd?: string
+	cwd?: string | null
 	timeout?: number | null
+	verification?: { change_set_ids: string[] } | null
 }
 
 export function resolveAgentTimeoutMs(timeoutSeconds: number | null | undefined): number {
-	const requestedAgentTimeout = typeof timeoutSeconds === "number" && timeoutSeconds > 0 ? timeoutSeconds * 1000 : 0
-
-	// In CLI runtime, stdin harnesses expect command lifetime to be governed
-	// solely by commandExecutionTimeout (user setting), not model-provided
-	// background timeouts.
-	return process.env.ROO_CLI_RUNTIME === "1" ? 0 : requestedAgentTimeout
+	return typeof timeoutSeconds === "number" && timeoutSeconds > 0 ? timeoutSeconds * 1000 : 0
 }
 
 export function isGitHubCliCommand(command: string): boolean {
@@ -47,11 +158,45 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 	readonly name = "execute_command" as const
 
 	async execute(params: ExecuteCommandParams, task: Task, callbacks: ToolCallbacks): Promise<void> {
-		const { command, cwd: customCwd, timeout: timeoutSeconds } = params
+		const { command, cwd: requestedCwd, timeout: timeoutSeconds, verification } = params
+		const customCwd = requestedCwd ?? undefined
 		const { handleError, pushToolResult, askApproval } = callbacks
+		let commandEvidenceId: string | undefined
+		let effectsStarted: ToolFailureMetadata["effectsStarted"] = "no"
+		let failure: ToolFailureMetadata | undefined
+		const reportFailure = (metadata: ToolFailureMetadata) => {
+			failure = metadata
+			callbacks.setResultMetadata?.({
+				status:
+					metadata.reason === "policy_denied" || metadata.reason === "approval_denied"
+						? "denied"
+						: metadata.reason === "cancelled"
+							? "cancelled"
+							: "error",
+				failure: metadata,
+			})
+		}
+		const preLaunchFailure = (
+			reason: ToolFailureMetadata["reason"],
+			recovery: ToolFailureMetadata["recovery"],
+			identity: unknown = command,
+		) => {
+			reportFailure(
+				createToolFailure({
+					reason,
+					scopeKind: "capability",
+					scopeIdentity: ["execute_command", task.cwd, identity],
+					effectsStarted: "no",
+					outcome: "known",
+					recovery,
+				}),
+			)
+		}
 
 		try {
 			if (!command) {
+				preLaunchFailure("invalid_arguments", { kind: "repair" })
+				callbacks.setResultMetadata?.({ status: "error" })
 				task.consecutiveMistakeCount++
 				task.recordToolError("execute_command")
 				pushToolResult(await task.sayAndCreateMissingParamError("execute_command", "command"))
@@ -59,8 +204,18 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			}
 
 			const canonicalCommand = unescapeHtmlEntities(command)
+			const executionId = task.lastMessageTs?.toString() ?? Date.now().toString()
+			commandEvidenceId = callbacks.toolCallId ?? `${executionId}:legacy:${randomUUID()}`
+			task.beginCommandExecution?.(commandEvidenceId, executionId, canonicalCommand, verification?.change_set_ids)
 
 			if (isGitHubCliCommand(canonicalCommand)) {
+				preLaunchFailure(
+					"capability_unavailable",
+					{ kind: "alternative", toolName: "github_api" },
+					"github-cli",
+				)
+				callbacks.setResultMetadata?.({ status: "error" })
+				task.failCommandExecution?.(commandEvidenceId)
 				task.recordToolError("execute_command")
 				pushToolResult(
 					formatResponse.toolError(
@@ -70,23 +225,54 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				return
 			}
 
-			const ignoredFileAttemptedToAccess = task.rooIgnoreController?.validateCommand(canonicalCommand)
+			const ignoredFileAttemptedToAccess = task.alphaIgnoreController?.validateCommand(canonicalCommand)
 
 			if (ignoredFileAttemptedToAccess) {
+				preLaunchFailure("policy_denied", { kind: "user-action" }, [
+					"alphaignore",
+					ignoredFileAttemptedToAccess,
+				])
+				callbacks.setResultMetadata?.({ status: "denied" })
+				task.failCommandExecution?.(commandEvidenceId, "denied")
 				await task.say("rooignore_error", ignoredFileAttemptedToAccess)
-				pushToolResult(formatResponse.rooIgnoreError(ignoredFileAttemptedToAccess))
+				pushToolResult(formatResponse.alphaIgnoreError(ignoredFileAttemptedToAccess))
 				return
 			}
 
 			task.consecutiveMistakeCount = 0
 
-			const didApprove = await askApproval("command", canonicalCommand)
+			const didApprove = customCwd
+				? await askApproval("command", canonicalCommand, {
+						text: redactTaskPrivatePaths(task, path.resolve(task.cwd, customCwd)),
+					})
+				: await askApproval("command", canonicalCommand)
 
 			if (!didApprove) {
+				task.failCommandExecution?.(commandEvidenceId, "denied")
 				return
 			}
 
-			const executionId = task.lastMessageTs?.toString() ?? Date.now().toString()
+			const executionMode = typeof task.getTaskMode === "function" ? await task.getTaskMode() : defaultModeSlug
+			if (
+				!isToolAllowedForMode("execute_command", executionMode, [], undefined, {
+					command: canonicalCommand,
+					cwd: customCwd ?? null,
+					timeout: timeoutSeconds ?? null,
+					verification: verification ?? null,
+				})
+			) {
+				task.failCommandExecution?.(commandEvidenceId, "denied")
+				task.recordToolError("execute_command", "Command authority changed while approval was pending")
+				preLaunchFailure("policy_denied", { kind: "user-action" }, ["mode", executionMode])
+				callbacks.setResultMetadata?.({ status: "denied" })
+				pushToolResult(
+					formatResponse.toolError(
+						`Command was not started because it is not allowed in the task's current ${executionMode} mode.`,
+					),
+				)
+				return
+			}
+
 			const provider = await task.providerRef.deref()
 			const providerState = await provider?.getState()
 
@@ -115,11 +301,17 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 
 			const options: ExecuteCommandOptions = {
 				executionId,
+				toolCallId: commandEvidenceId,
 				command: canonicalCommand,
 				customCwd,
+				verificationChangeSetIds: verification?.change_set_ids,
 				terminalShellIntegrationDisabled,
 				commandExecutionTimeout,
 				agentTimeout,
+				onExecutionState: (state) => {
+					effectsStarted = state
+				},
+				onFailure: reportFailure,
 			}
 
 			try {
@@ -131,6 +323,8 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 
 				pushToolResult(result)
 			} catch (error: unknown) {
+				if (!(error instanceof ShellIntegrationError)) throw error
+
 				const status: CommandExecutionStatus = { executionId, status: "fallback" }
 				provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
 				await task.say("shell_integration_warning")
@@ -138,26 +332,97 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				// Invalidate pending ask from first execution to prevent race condition
 				task.supersedePendingAsk()
 
-				if (error instanceof ShellIntegrationError) {
-					const [rejected, result] = await executeCommandInTerminal(task, {
-						...options,
-						terminalShellIntegrationDisabled: true,
-					})
+				const [rejected, result] = await executeCommandInTerminal(task, {
+					...options,
+					terminalShellIntegrationDisabled: true,
+				})
 
-					if (rejected) {
-						task.didRejectTool = true
-					}
-
-					pushToolResult(result)
-				} else {
-					pushToolResult(`Command failed to execute in terminal due to a shell integration error.`)
+				if (rejected) {
+					task.didRejectTool = true
 				}
+
+				pushToolResult(result)
 			}
 
 			return
 		} catch (error) {
+			if (!failure) {
+				const outcomeKnown =
+					effectsStarted === "no" ||
+					error instanceof CommandOutputBookkeepingError ||
+					(error instanceof CommandMutationReceiptError && !error.observationUnknown)
+				reportFailure(
+					createToolFailure({
+						reason:
+							effectsStarted === "no"
+								? "pre_launch_rejected"
+								: outcomeKnown
+									? "execution_failed"
+									: "outcome_unknown",
+						scopeKind: effectsStarted === "no" ? "capability" : "operation",
+						scopeIdentity:
+							effectsStarted === "no"
+								? ["command-admission", task.cwd]
+								: ["execute_command", task.cwd, command, customCwd],
+						effectsStarted,
+						outcome: outcomeKnown ? "known" : "unknown",
+						recovery: { kind: outcomeKnown ? "repair" : "verify-outcome" },
+					}),
+				)
+			}
+			callbacks.setResultMetadata?.({ status: "error" })
+			if (commandEvidenceId) task.failCommandExecution?.(commandEvidenceId)
 			await handleError("executing command", error as Error)
 			return
+		} finally {
+			const evidence = task.getCommandExecutionEvidence?.().find((item) => item.toolCallId === commandEvidenceId)
+			if (evidence) {
+				if (!failure && evidence.status !== "succeeded" && evidence.status !== "running") {
+					const unknown =
+						effectsStarted !== "no" &&
+						evidence.exitCode === undefined &&
+						evidence.status !== "denied" &&
+						evidence.status !== "cancelled"
+					reportFailure(
+						createToolFailure({
+							reason: unknown
+								? "outcome_unknown"
+								: evidence.status === "denied"
+									? "approval_denied"
+									: evidence.status === "cancelled"
+										? "cancelled"
+										: "execution_failed",
+							scopeKind: "operation",
+							scopeIdentity: ["execute_command", task.cwd, command, customCwd],
+							effectsStarted,
+							outcome: unknown ? "unknown" : "known",
+							recovery: { kind: unknown ? "verify-outcome" : "repair" },
+						}),
+					)
+				}
+				const trustedExploration =
+					evidence.command && evidence.cwd
+						? await getTrustedCommandExploration({
+								command: evidence.command,
+								workspaceRoot: task.cwd,
+								cwd: evidence.cwd,
+								executionStatus: evidence.status,
+								exitCode: evidence.exitCode,
+							})
+						: undefined
+				callbacks.setResultMetadata?.({
+					executionStatus: evidence.status === "running" ? "running" : undefined,
+					status:
+						evidence.status === "succeeded" || evidence.status === "running"
+							? "success"
+							: evidence.status === "denied" || evidence.status === "cancelled"
+								? evidence.status
+								: "error",
+					exitCode: evidence.exitCode,
+					timedOut: evidence.status === "timed_out",
+					...(trustedExploration ? { trustedExploration } : {}),
+				})
+			}
 		}
 	}
 
@@ -169,28 +434,74 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 
 export type ExecuteCommandOptions = {
 	executionId: string
+	toolCallId?: string
 	command: string
 	customCwd?: string
+	verificationChangeSetIds?: readonly string[]
 	terminalShellIntegrationDisabled?: boolean
 	commandExecutionTimeout?: number
 	agentTimeout?: number
+	/** Trusted launch boundary for distinguishing rejection from an unknown process outcome. */
+	onExecutionState?: (state: ToolFailureMetadata["effectsStarted"]) => void
+	onFailure?: (failure: ToolFailureMetadata) => void
 }
 
 export async function executeCommandInTerminal(
 	task: Task,
 	{
 		executionId,
+		toolCallId,
 		command,
 		customCwd,
+		verificationChangeSetIds,
 		terminalShellIntegrationDisabled = true,
 		commandExecutionTimeout = 0,
 		agentTimeout = 0,
+		onExecutionState,
+		onFailure,
 	}: ExecuteCommandOptions,
 ): Promise<[boolean, ToolResponse]> {
 	// Convert milliseconds back to seconds for display purposes.
 	const commandExecutionTimeoutSeconds = commandExecutionTimeout / 1000
 	let workingDir: string
+	const physicalExecutionId = `${executionId}:${randomUUID()}`
+	let mutationBaseline: WorkspaceMutationState | undefined
+	let mutationReceiptCompletion: Promise<void> | undefined
+	let commandMutationCompletion = Promise.resolve()
+	let commandMutationFailureHandling: Promise<{ recoveryError?: unknown }> | undefined
+	let commandTerminalOutcomeFenced = false
 
+	const isManagedWorker = task.taskKind === "subagent" && task.subagentRole === "worker"
+	const executionMode = typeof task.getTaskMode === "function" ? await task.getTaskMode() : defaultModeSlug
+	const isPlanMode = executionMode === planModeSlug
+	const rejectBeforeLaunch = (reason: ToolFailureMetadata["reason"], scope: unknown) =>
+		onFailure?.(
+			createToolFailure({
+				reason,
+				scopeKind: "workspace",
+				scopeIdentity: ["command-directory", task.cwd, scope],
+				effectsStarted: "no",
+				outcome: "known",
+				recovery: { kind: reason === "policy_denied" ? "user-action" : "repair" },
+			}),
+		)
+	const restrictCommandCwdToWorkspace = isManagedWorker || isPlanMode
+	const cancellationResult = (): [boolean, ToolResponse] => {
+		if (toolCallId) task.failCommandExecution?.(toolCallId, "cancelled")
+		return [false, "Command was not started because the task was cancelled."]
+	}
+	const taskWasCancelled = () => task.abort || task.getTaskLifetimeCancellationSignal().aborted
+	if (taskWasCancelled()) return cancellationResult()
+	if (restrictCommandCwdToWorkspace && customCwd && path.isAbsolute(customCwd)) {
+		rejectBeforeLaunch("policy_denied", customCwd)
+		if (toolCallId) task.failCommandExecution?.(toolCallId)
+		return [
+			false,
+			isPlanMode
+				? "Plan commands may use only workspace-relative command directories."
+				: "Editing workers may use only workspace-relative command directories.",
+		]
+	}
 	if (!customCwd) {
 		workingDir = task.cwd
 	} else if (path.isAbsolute(customCwd)) {
@@ -201,8 +512,27 @@ export async function executeCommandInTerminal(
 
 	try {
 		await fs.access(workingDir)
+		if (restrictCommandCwdToWorkspace) {
+			const [realWorkspace, realWorkingDir] = await Promise.all([fs.realpath(task.cwd), fs.realpath(workingDir)])
+			const relative = path.relative(realWorkspace, realWorkingDir)
+			if (relative.startsWith("..") || path.isAbsolute(relative)) {
+				rejectBeforeLaunch("policy_denied", realWorkingDir)
+				if (toolCallId) task.failCommandExecution?.(toolCallId)
+				return [
+					false,
+					isPlanMode
+						? "Plan command directory resolves outside the task workspace."
+						: "Editing worker command directory is outside its isolated workspace.",
+				]
+			}
+		}
 	} catch (error) {
-		return [false, `Working directory '${workingDir}' does not exist.`]
+		rejectBeforeLaunch("pre_launch_rejected", workingDir)
+		if (toolCallId) task.failCommandExecution?.(toolCallId)
+		return [
+			false,
+			`Working directory '${restrictCommandCwdToWorkspace ? customCwd || "." : workingDir}' does not exist.`,
+		]
 	}
 
 	let message: { text?: string; images?: string[] } | undefined
@@ -214,8 +544,94 @@ export async function executeCommandInTerminal(
 	let shellIntegrationError: string | undefined
 	let hasAskedForCommandOutput = false
 
-	const terminalProvider = terminalShellIntegrationDisabled ? "execa" : "vscode"
+	// Managed workers run unattended and must use the terminal provider whose
+	// process tree can be deterministically terminated by task cancellation.
+	const terminalProvider = isManagedWorker || terminalShellIntegrationDisabled ? "execa" : "vscode"
 	const provider = await task.providerRef.deref()
+	const handleCommandMutationFailure = (error: unknown): Promise<{ recoveryError?: unknown }> => {
+		commandMutationFailureHandling ??= (async () => {
+			const receiptError =
+				error instanceof CommandMutationReceiptError
+					? error
+					: new CommandMutationReceiptError("complete-command-evidence", false, error)
+			let recoveryError: unknown
+			if (receiptError.observationUnknown) {
+				try {
+					const owner = task.providerRef.deref()
+					if (!owner) throw new Error("Primary mutation ledger is unavailable")
+					const receiptSettled = await owner.recordPrimaryMutation(
+						task,
+						{ __unobserved_command_scope__: physicalExecutionId },
+						true,
+						physicalExecutionId,
+					)
+					if (!receiptSettled) {
+						throw new Error("Primary mutation ledger did not affirm the unresolved receipt")
+					}
+					// The unresolved receipt now owns this physical reservation. A late
+					// terminal callback must not try to settle the same token a second time.
+					mutationReceiptCompletion = Promise.resolve()
+				} catch (recoveryFailure) {
+					recoveryError = recoveryFailure
+				}
+			}
+
+			if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+			task.didToolFailInCurrentTurn = true
+			task.suspendAfterCurrentTurn(
+				receiptError.observationUnknown
+					? t("common:errors.command_mutation_observation_incomplete")
+					: t("common:errors.command_mutation_receipt_incomplete"),
+			)
+			console.error(
+				`[ExecuteCommandTool] ${redactTaskPrivatePaths(task, receiptError.message)}`,
+				recoveryError
+					? new AggregateError(
+							[receiptError, recoveryError],
+							"Failed to preserve unresolved command mutation debt",
+						)
+					: receiptError,
+			)
+			return { recoveryError }
+		})()
+		return commandMutationFailureHandling
+	}
+	const observeCommandMutationFailure = (operation: Promise<void>): Promise<void> =>
+		operation.catch(async (error) => {
+			const { recoveryError } = await handleCommandMutationFailure(error)
+			if (recoveryError) {
+				throw new AggregateError(
+					[error, recoveryError],
+					"Command mutation observation failed and unresolved debt could not be persisted",
+				)
+			}
+			throw error
+		})
+	const ensureMutationReceipt = (): Promise<void> => {
+		mutationReceiptCompletion ??= observeCommandMutationFailure(
+			finalizeCommandMutationReceipt(task, mutationBaseline, physicalExecutionId, () => {
+				workspaceObservationIncomplete = true
+			}),
+		)
+		return mutationReceiptCompletion
+	}
+	let mutationReservationAcquired = false
+	let workspaceObservationIncomplete = false
+	const releaseMutationReservationBeforeLaunch = async (primaryError: unknown): Promise<void> => {
+		if (!mutationReservationAcquired) return
+		try {
+			const owner = task.providerRef.deref()
+			if (!owner) throw new Error("Primary mutation ledger is unavailable")
+			await owner.releasePrimaryMutation(task, physicalExecutionId)
+		} catch (error) {
+			const receiptError = new CommandMutationReceiptError("release-pre-launch-reservation", false, error)
+			await handleCommandMutationFailure(receiptError)
+			throw new AggregateError(
+				[primaryError, receiptError],
+				"Command did not launch and its mutation reservation could not be released",
+			)
+		}
+	}
 
 	// Get global storage path for persisted output artifacts
 	const globalStoragePath = provider?.context?.globalStorageUri?.fsPath
@@ -295,12 +711,53 @@ export async function executeCommandInTerminal(
 	// explicitly to ensure persistedResult is set before we use it.
 	let onCompletedPromise: Promise<void> | undefined
 	let resolveOnCompleted: (() => void) | undefined
-	onCompletedPromise = new Promise((resolve) => {
+	let rejectOnCompleted: ((error: CommandOutputBookkeepingError) => void) | undefined
+	let onCompletedInvoked = false
+	let missingOutputCompletionTimer: NodeJS.Timeout | undefined
+	let backgroundResultReturned = false
+	let outputBookkeepingFailure: CommandOutputBookkeepingError | undefined
+	let outputBookkeepingFailureHandling: Promise<void> | undefined
+	const handleBackgroundOutputBookkeepingFailure = (): Promise<void> => {
+		if (!backgroundResultReturned || !outputBookkeepingFailure || !exitDetails) return Promise.resolve()
+		const failure = outputBookkeepingFailure
+		outputBookkeepingFailureHandling ??= (async () => {
+			// The terminal completion callback owns mutation settlement and may still be
+			// running. Wait for it before marking the already-returned command failed so
+			// its success projection cannot overwrite this bookkeeping failure.
+			await commandMutationCompletion.catch(() => undefined)
+			if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+			task.didToolFailInCurrentTurn = true
+			task.suspendAfterCurrentTurn(t("common:errors.command_output_bookkeeping_incomplete"))
+			console.error(`[ExecuteCommandTool] ${redactTaskPrivatePaths(task, failure.message)}`, failure)
+		})()
+		return outputBookkeepingFailureHandling
+	}
+	onCompletedPromise = new Promise((resolve, reject) => {
 		resolveOnCompleted = resolve
+		rejectOnCompleted = reject
 	})
+	// Terminal event emitters do not await the async callback. Attach an observer
+	// immediately, while retaining the original promise for the foreground join.
+	void onCompletedPromise.catch(() => undefined)
+	const scheduleMissingOutputCompletionFailure = () => {
+		if (onCompletedInvoked || outputBookkeepingFailure || missingOutputCompletionTimer) return
+		// Both terminal providers synchronously emit `completed` (which invokes
+		// onCompleted) in the same turn or the microtask immediately following the
+		// shell outcome. Yield one timer turn so that supported ordering can settle,
+		// then fail closed instead of retaining an unjoinable output promise.
+		missingOutputCompletionTimer = setTimeout(() => {
+			missingOutputCompletionTimer = undefined
+			if (onCompletedInvoked || outputBookkeepingFailure) return
+			outputBookkeepingFailure = new CommandOutputBookkeepingError(
+				new Error(t("common:errors.command_output_bookkeeping_incomplete")),
+			)
+			rejectOnCompleted?.(outputBookkeepingFailure)
+			void handleBackgroundOutputBookkeepingFailure()
+		}, 0)
+	}
 
-	const callbacks: RooTerminalCallbacks = {
-		onLine: async (lines: string, process: RooTerminalProcess) => {
+	const callbacks: AlphaTerminalCallbacks = {
+		onLine: async (lines: string, process: AlphaTerminalProcess) => {
 			accumulatedOutput += lines
 
 			// Trim accumulated output to prevent unbounded memory growth
@@ -330,7 +787,7 @@ export async function executeCommandInTerminal(
 				runInBackground = true
 
 				if (response === "messageResponse") {
-					message = { text, images }
+					if (text || images?.length) message = { text, images }
 					process.continue()
 				}
 			} catch (_error) {
@@ -338,6 +795,9 @@ export async function executeCommandInTerminal(
 			}
 		},
 		onCompleted: async (output: string | undefined) => {
+			onCompletedInvoked = true
+			clearTimeout(missingOutputCompletionTimer)
+			missingOutputCompletionTimer = undefined
 			try {
 				clearTimeout(pendingCommandOutputEmitTimer)
 				pendingCommandOutputEmitTimer = undefined
@@ -358,9 +818,11 @@ export async function executeCommandInTerminal(
 				await commandOutputSayChain
 				await queueCommandOutputMessage(result, false, true)
 				completed = true
-			} finally {
-				// Signal that onCompleted has finished, so the main code can safely use persistedResult
 				resolveOnCompleted?.()
+			} catch (error) {
+				outputBookkeepingFailure = new CommandOutputBookkeepingError(error)
+				rejectOnCompleted?.(outputBookkeepingFailure)
+				void handleBackgroundOutputBookkeepingFailure()
 			}
 		},
 		onShellExecutionStarted: (pid: number | undefined) => {
@@ -371,6 +833,29 @@ export async function executeCommandInTerminal(
 			const status: CommandExecutionStatus = { executionId, status: "exited", exitCode: details.exitCode }
 			provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
 			exitDetails = details
+			// A process-level failure already persisted unknown mutation debt and owns
+			// the terminal evidence. Late success callbacks may flush output, but must
+			// never settle that reservation again or overwrite the failed outcome.
+			if (commandMutationFailureHandling || commandTerminalOutcomeFenced) return
+			scheduleMissingOutputCompletionFailure()
+			commandMutationCompletion = observeCommandMutationFailure(
+				(async () => {
+					await ensureMutationReceipt()
+					// Output persistence is not mutation observation, but command success
+					// must not be published until it has settled. A rejected output gate is
+					// surfaced separately by the foreground join or background observer.
+					await onCompletedPromise?.catch(() => undefined)
+					if (outputBookkeepingFailure || commandMutationFailureHandling) return
+					if (!toolCallId) return
+					try {
+						task.completeCommandExecution?.(toolCallId, details, physicalExecutionId)
+					} catch (error) {
+						throw new CommandMutationReceiptError("complete-command-evidence", false, error)
+					}
+				})(),
+			)
+			void commandMutationCompletion.catch(() => undefined)
+			void handleBackgroundOutputBookkeepingFailure()
 		},
 	}
 
@@ -381,7 +866,9 @@ export async function executeCommandInTerminal(
 		}
 	}
 
+	if (taskWasCancelled()) return cancellationResult()
 	const terminal = await TerminalRegistry.getOrCreateTerminal(workingDir, task.taskId, terminalProvider)
+	if (taskWasCancelled()) return cancellationResult()
 
 	if (terminal instanceof Terminal) {
 		terminal.terminal.show(true)
@@ -392,17 +879,83 @@ export async function executeCommandInTerminal(
 		workingDir = terminal.getCurrentWorkingDirectory()
 	}
 
-	const process = terminal.runCommand(command, callbacks)
+	if (task.taskKind === "primary") {
+		try {
+			mutationBaseline = await captureWorkspaceMutationState(task.cwd)
+		} catch {
+			workspaceObservationIncomplete = true
+		}
+	}
+	let admissionFailure: { error: unknown; cancelled: boolean } | undefined
+	try {
+		if (taskWasCancelled()) return cancellationResult()
+		if (task.taskKind === "primary") {
+			const owner = task.providerRef.deref()
+			if (!owner) throw new Error("Primary mutation ledger is unavailable")
+			await owner.reservePrimaryMutation(task, physicalExecutionId)
+			mutationReservationAcquired = true
+		}
+		if (toolCallId)
+			await task.admitCommandExecution?.(
+				toolCallId,
+				physicalExecutionId,
+				command,
+				workingDir,
+				verificationChangeSetIds,
+			)
+		if (taskWasCancelled()) {
+			admissionFailure = {
+				error: new CommandExecutionLifecycleError(
+					"launch-command",
+					new Error("Command admission was cancelled"),
+				),
+				cancelled: true,
+			}
+		}
+	} catch (error) {
+		admissionFailure = { error, cancelled: taskWasCancelled() }
+	}
+	if (admissionFailure) {
+		await releaseMutationReservationBeforeLaunch(admissionFailure.error)
+		if (admissionFailure.cancelled) return cancellationResult()
+		throw new CommandExecutionLifecycleError("admit-command", admissionFailure.error)
+	}
+	if (taskWasCancelled()) {
+		await releaseMutationReservationBeforeLaunch(new Error("Command admission was cancelled"))
+		return cancellationResult()
+	}
+	let process: ReturnType<AlphaTerminal["runCommand"]>
+	try {
+		onExecutionState?.("unknown")
+		process = terminal.runCommand(command, callbacks)
+		process.executionId = physicalExecutionId
+		onExecutionState?.("yes")
+	} catch (error) {
+		const launchError = new CommandExecutionLifecycleError("launch-command", error)
+		if (mutationReservationAcquired) {
+			const receiptError = new CommandMutationReceiptError("launch-outcome-unknown", true, launchError)
+			const { recoveryError } = await handleCommandMutationFailure(receiptError)
+			if (recoveryError) {
+				throw new AggregateError(
+					[launchError, recoveryError],
+					"Command launch failed and unresolved mutation debt could not be persisted",
+				)
+			}
+		} else if (toolCallId) {
+			task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+		}
+		throw launchError
+	}
 	task.terminalProcess = process
 
 	// Dual-timeout logic:
-	// - Agent timeout: transitions the command to background (continues running)
-	// - User timeout: aborts the command (kills it)
-	// Both timers run independently — the user timeout remains active as a safety net
-	// even after the agent timeout moves the command to the background.
+	// - Agent timeout: transitions the command to background (continues running).
+	// - User timeout: remains a hard process-lifetime ceiling and aborts the
+	//   registry-owned process even if the agent timeout returned first.
 	let agentTimeoutId: NodeJS.Timeout | undefined
 	let userTimeoutId: NodeJS.Timeout | undefined
 	let isUserTimedOut = false
+	let userTimeoutCleanupError: unknown
 
 	try {
 		const racers: Promise<void>[] = [process]
@@ -427,18 +980,94 @@ export async function executeCommandInTerminal(
 				new Promise<void>((_, reject) => {
 					userTimeoutId = setTimeout(() => {
 						isUserTimedOut = true
-						task.terminalProcess?.abort()
-						reject(new Error(`Command execution timed out after ${commandExecutionTimeout}ms`))
+						// The timeout now owns the terminal outcome. A callback emitted by
+						// process cleanup may still flush output, but it must not settle the
+						// reservation or publish success independently of the timeout path.
+						commandTerminalOutcomeFenced = true
+						if (toolCallId) task.failCommandExecution?.(toolCallId, "timed_out", physicalExecutionId)
+						const status: CommandExecutionStatus = { executionId, status: "timeout" }
+						provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
+						if (runInBackground) {
+							task.didToolFailInCurrentTurn = true
+							void task
+								.say(
+									"error",
+									t("common:errors:command_timeout", { seconds: commandExecutionTimeoutSeconds }),
+								)
+								.catch((error) =>
+									console.error("Failed to report a background command timeout:", error),
+								)
+						}
+						void Promise.resolve(process.abort()).then(
+							() => reject(new Error(`Command execution timed out after ${commandExecutionTimeout}ms`)),
+							(error) => {
+								userTimeoutCleanupError = error
+								console.error("Failed to terminate a timed-out command:", error)
+								reject(error)
+							},
+						)
 					}, commandExecutionTimeout)
 				}),
 			)
 		}
 
 		await Promise.race(racers)
+		// Abort cleanup can resolve the process promise before the timeout racer's
+		// rejection microtask. The timer has already claimed terminal ownership, so
+		// do not let that cleanup ordering turn a timed-out command into success.
+		if (isUserTimedOut) {
+			throw new Error(`Command execution timed out after ${commandExecutionTimeout}ms`)
+		}
 	} catch (error) {
 		if (isUserTimedOut) {
-			const status: CommandExecutionStatus = { executionId, status: "timeout" }
-			provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
+			if (userTimeoutCleanupError) {
+				const cleanupError = new CommandExecutionLifecycleError(
+					"await-command-process",
+					new Error(
+						`Command exceeded its timeout and process cleanup failed: ${userTimeoutCleanupError instanceof Error ? userTimeoutCleanupError.message : String(userTimeoutCleanupError)}`,
+						{ cause: userTimeoutCleanupError },
+					),
+				)
+				if (mutationReservationAcquired) {
+					const receiptError = new CommandMutationReceiptError("process-outcome-unknown", true, cleanupError)
+					const { recoveryError } = await handleCommandMutationFailure(receiptError)
+					if (recoveryError) {
+						throw new AggregateError(
+							[cleanupError, recoveryError],
+							"Timed-out command cleanup failed and unresolved mutation debt could not be persisted",
+						)
+					}
+				}
+				throw cleanupError
+			}
+
+			if (mutationReservationAcquired) {
+				const timeoutError = new CommandExecutionLifecycleError("await-command-process", error)
+				if (exitDetails) {
+					// A terminal outcome arrived as part of abort cleanup. Settle the
+					// exact/no-op receipt here because its normal callback is fenced.
+					try {
+						await ensureMutationReceipt()
+					} catch (receiptError) {
+						throw new AggregateError(
+							[timeoutError, receiptError],
+							"Timed-out command mutation receipt could not be finalized",
+						)
+					}
+				} else {
+					// A successful abort without a terminal callback does not prove the
+					// final workspace scope. Persist conservative unknown debt under the
+					// same physical reservation before returning the timeout result.
+					const receiptError = new CommandMutationReceiptError("process-outcome-unknown", true, timeoutError)
+					const { recoveryError } = await handleCommandMutationFailure(receiptError)
+					if (recoveryError) {
+						throw new AggregateError(
+							[timeoutError, receiptError, recoveryError],
+							"Timed-out command ended without an observable outcome and unresolved debt could not be persisted",
+						)
+					}
+				}
+			}
 			await task.say("error", t("common:errors:command_timeout", { seconds: commandExecutionTimeoutSeconds }))
 			task.didToolFailInCurrentTurn = true
 			task.terminalProcess = undefined
@@ -448,16 +1077,59 @@ export async function executeCommandInTerminal(
 				`The command was terminated after exceeding a user-configured ${commandExecutionTimeoutSeconds}s timeout. Do not try to re-run the command.`,
 			]
 		}
-		throw error
+
+		const processError = new CommandExecutionLifecycleError("await-command-process", error)
+		const failures: unknown[] = [processError]
+		if (exitDetails) {
+			const receiptResult = await Promise.allSettled([commandMutationCompletion])
+			if (receiptResult[0].status === "rejected") failures.push(receiptResult[0].reason)
+		} else if (mutationReservationAcquired) {
+			const receiptError = new CommandMutationReceiptError("process-outcome-unknown", true, processError)
+			const { recoveryError } = await handleCommandMutationFailure(receiptError)
+			if (recoveryError) failures.push(recoveryError)
+		}
+		if (onCompletedInvoked && onCompletedPromise) {
+			const outputResult = await Promise.allSettled([onCompletedPromise])
+			if (outputResult[0].status === "rejected") failures.push(outputResult[0].reason)
+		}
+		if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+		if (failures.length > 1) {
+			throw new AggregateError(failures, "Command process and completion bookkeeping failed")
+		}
+		throw processError
 	} finally {
 		clearTimeout(agentTimeoutId)
-		clearTimeout(userTimeoutId)
+		const keepUserTimeoutForBackground =
+			commandExecutionTimeout > 0 && runInBackground && !completed && !exitDetails && process.isSettled !== true
+		if (keepUserTimeoutForBackground) {
+			const clearBackgroundUserTimeout = () => {
+				clearTimeout(userTimeoutId)
+				process.removeListener("completed", clearBackgroundUserTimeout)
+				process.removeListener("error", clearBackgroundUserTimeout)
+			}
+			process.once("completed", clearBackgroundUserTimeout)
+			process.once("error", clearBackgroundUserTimeout)
+		} else {
+			clearTimeout(userTimeoutId)
+		}
 		clearTimeout(pendingCommandOutputEmitTimer)
 		task.terminalProcess = undefined
 	}
 
 	if (shellIntegrationError) {
-		throw new ShellIntegrationError(shellIntegrationError)
+		const shellError = new ShellIntegrationError(shellIntegrationError)
+		const completions: Promise<void>[] = [ensureMutationReceipt()]
+		if (onCompletedInvoked && onCompletedPromise) completions.push(onCompletedPromise)
+		const completionResults = await Promise.allSettled(completions)
+		if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+		const failures = completionResults.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))
+		if (failures.length > 0) {
+			throw new AggregateError(
+				[shellError, ...failures],
+				"Shell integration and command completion bookkeeping failed",
+			)
+		}
+		throw shellError
 	}
 
 	// Wait for a short delay to ensure all messages are sent to the webview.
@@ -471,7 +1143,23 @@ export async function executeCommandInTerminal(
 	// This ensures persistedResult is set before we try to use it, fixing the race
 	// condition where exitDetails is set (sync) before the async onCompleted finishes.
 	if (exitDetails && onCompletedPromise) {
-		await onCompletedPromise
+		const [outputResult, mutationResult] = await Promise.allSettled([onCompletedPromise, commandMutationCompletion])
+		const failures = [mutationResult, outputResult].flatMap((settled) =>
+			settled.status === "rejected" ? [settled.reason] : [],
+		)
+		if (failures.length === 1) throw failures[0]
+		if (failures.length > 1) {
+			throw new AggregateError(failures, "Command mutation and output bookkeeping failed")
+		}
+	}
+
+	const displayOutput = result || latestCompressedOutput || ""
+	if (toolCallId && (message || (!completed && !exitDetails))) {
+		task.markCommandExecutionBackgrounded?.(toolCallId, physicalExecutionId)
+	}
+	if (!completed && !exitDetails) {
+		backgroundResultReturned = true
+		void handleBackgroundOutputBookkeepingFailure()
 	}
 
 	if (message) {
@@ -481,20 +1169,33 @@ export async function executeCommandInTerminal(
 		return [
 			true,
 			formatResponse.toolResult(
-				[
-					`Command is still running in terminal from '${terminal.getCurrentWorkingDirectory().toPosix()}'.`,
-					result.length > 0 ? `Here's the output so far:\n${result}\n` : "\n",
-					`<user_message>\n${text}\n</user_message>`,
-				].join("\n"),
+				redactTaskPrivatePaths(
+					task,
+					[
+						`Command is still running in terminal from '${terminal.getCurrentWorkingDirectory().toPosix()}'. execution_id: ${physicalExecutionId}. Use manage_command to wait or stop this command.`,
+						displayOutput.length > 0 ? `Here's the output so far:\n${displayOutput}\n` : "\n",
+						`<user_message>\n${text}\n</user_message>`,
+					].join("\n"),
+				),
 				images,
 			),
 		]
 	} else if (completed || exitDetails) {
 		const currentWorkingDir = terminal.getCurrentWorkingDirectory().toPosix()
+		const displayWorkingDir = isManagedWorker ? "." : currentWorkingDir
+		const observationNote = workspaceObservationIncomplete
+			? "\nWorkspace diff observation was incomplete; this result reports the process outcome, not a complete inventory of changed files."
+			: ""
 
 		// Use persisted output format when output was truncated and spilled to disk
 		if (persistedResult?.truncated) {
-			return [false, formatPersistedOutput(persistedResult, exitDetails, currentWorkingDir)]
+			return [
+				false,
+				redactTaskPrivatePaths(
+					task,
+					formatPersistedOutput(persistedResult, exitDetails, displayWorkingDir) + observationNote,
+				),
+			]
 		}
 
 		// Use inline format for small outputs (original behavior with exit status)
@@ -524,16 +1225,22 @@ export async function executeCommandInTerminal(
 
 		return [
 			false,
-			`Command executed in terminal within working directory '${currentWorkingDir}'. ${exitStatus}\nOutput:\n${result}`,
+			redactTaskPrivatePaths(
+				task,
+				`Command executed in terminal within working directory '${displayWorkingDir}'. ${exitStatus}${observationNote}\nOutput:\n${result}`,
+			),
 		]
 	} else {
 		return [
 			false,
-			[
-				`Command is still running in terminal ${workingDir ? ` from '${workingDir.toPosix()}'` : ""}.`,
-				result.length > 0 ? `Here's the output so far:\n${result}\n` : "\n",
-				"You will be updated on the terminal status and new output in the future.",
-			].join("\n"),
+			redactTaskPrivatePaths(
+				task,
+				[
+					`Command is still running in terminal ${workingDir ? ` from '${isManagedWorker ? "." : workingDir.toPosix()}'` : ""}. execution_id: ${physicalExecutionId}. Use manage_command to wait for output or stop this command.`,
+					displayOutput.length > 0 ? `Here's the output so far:\n${displayOutput}\n` : "\n",
+					"You will be updated on the terminal status and new output in the future.",
+				].join("\n"),
+			),
 		]
 	}
 }

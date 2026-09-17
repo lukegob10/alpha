@@ -34,10 +34,12 @@
 			"save": "保存图片",
 			"viewCode": "查看代码",
 			"viewDiagram": "查看图表",
-			"close": "关闭"
+			"close": "关闭",
+			"open": "打开图表"
 		},
 		"modal": {
-			"codeTitle": "Mermaid 代码"
+			"codeTitle": "Mermaid 代码",
+			"title": "美人鱼图表"
 		},
 		"tabs": {
 			"diagram": "图表",
@@ -110,5 +112,7 @@
 	"costs": {
 		"own": "自身",
 		"subtasks": "子任务"
-	}
+	},
+	"dismiss": "忽略",
+	"dismissAndDontShowAgain": "关闭并不再显示"
 }

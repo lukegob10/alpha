@@ -632,8 +632,7 @@ export class CodeIndexConfigManager {
 			return true
 		}
 
-		// Vector dimension changes (still important for compatibility)
-		if (this._hasVectorDimensionChanged(prevProvider, prev?.modelId)) {
+		if (this._hasEmbeddingModelChanged(prevProvider, prev?.modelId)) {
 			return true
 		}
 
@@ -641,29 +640,20 @@ export class CodeIndexConfigManager {
 	}
 
 	/**
-	 * Checks if model changes result in vector dimension changes that require restart.
+	 * Different embedding spaces require restart regardless of their vector dimensions.
 	 */
-	private _hasVectorDimensionChanged(prevProvider: EmbedderProvider, prevModelId?: string): boolean {
+	private _hasEmbeddingModelChanged(prevProvider: EmbedderProvider, prevModelId?: string): boolean {
 		const currentProvider = this.embedderProvider
 		const currentModelId = this.modelId ?? getDefaultModelId(currentProvider)
 		const resolvedPrevModelId = prevModelId ?? getDefaultModelId(prevProvider)
 
-		// If model IDs are the same and provider is the same, no dimension change
+		// Resolve defaults before comparing model identity.
 		if (prevProvider === currentProvider && resolvedPrevModelId === currentModelId) {
 			return false
 		}
 
-		// Get vector dimensions for both models
-		const prevDimension = getModelDimension(prevProvider, resolvedPrevModelId)
-		const currentDimension = getModelDimension(currentProvider, currentModelId)
-
-		// If we can't determine dimensions, be safe and restart
-		if (prevDimension === undefined || currentDimension === undefined) {
-			return true
-		}
-
-		// Only restart if dimensions actually changed
-		return prevDimension !== currentDimension
+		// Embeddings from different models cannot share an index, even with equal dimensions.
+		return true
 	}
 
 	/**

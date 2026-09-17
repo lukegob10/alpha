@@ -324,4 +324,14 @@ describe("CodeIndexOllamaEmbedder", () => {
 			expect(result.error).toBe("Network timeout")
 		})
 	})
+	it("adds the code-search instruction only to queries", async () => {
+		const codeEmbedder = new CodeIndexOllamaEmbedder({ ollamaModelId: "nomic-embed-code" })
+		mockFetch.mockResolvedValue({ ok: true, json: async () => ({ embeddings: [[1, 2]] }) } as Response)
+		await codeEmbedder.createEmbeddings(["source"])
+		await codeEmbedder.createEmbeddings(["find source"], undefined, "query")
+		expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body)).input).toEqual(["source"])
+		expect(JSON.parse(String(mockFetch.mock.calls[1][1]?.body)).input).toEqual([
+			"Represent this query for searching relevant code: find source",
+		])
+	})
 })

@@ -7,7 +7,12 @@ import { fileExistsAtPath } from "../../utils/fs"
 import fs from "fs/promises"
 import { ContextProxy } from "../config/ContextProxy"
 import type { FileMetadataEntry, RecordSource, TaskMetadata } from "./FileContextTrackerTypes"
-import { ClineProvider } from "../webview/ClineProvider"
+import { AlphaProvider } from "../webview/AlphaProvider"
+
+export interface RecentlyModifiedFilesReceipt {
+	readonly files: readonly string[]
+	commit(): void
+}
 
 // This class is responsible for tracking file operations that may result in stale context.
 // If a user modifies a file outside of Alpha, the context may become stale and need to be updated.
@@ -22,15 +27,17 @@ import { ClineProvider } from "../webview/ClineProvider"
 // If a file is modified outside of Alpha, we detect and track this change to prevent stale context.
 export class FileContextTracker {
 	readonly taskId: string
-	private providerRef: WeakRef<ClineProvider>
+	private providerRef: WeakRef<AlphaProvider>
 
 	// File tracking and watching
 	private fileWatchers = new Map<string, vscode.FileSystemWatcher>()
-	private recentlyModifiedFiles = new Set<string>()
-	private recentlyEditedByRoo = new Set<string>()
+	private recentlyModifiedFiles = new Map<string, number>()
+	private recentlyModifiedFilesVersion = 0
+	private recentlyEditedByAlpha = new Set<string>()
 	private checkpointPossibleFiles = new Set<string>()
+	private metadataUpdateQueue: Promise<void> = Promise.resolve()
 
-	constructor(provider: ClineProvider, taskId: string) {
+	constructor(provider: AlphaProvider, taskId: string) {
 		this.providerRef = new WeakRef(provider)
 		this.taskId = taskId
 	}
@@ -64,10 +71,10 @@ export class FileContextTracker {
 
 		// Track file changes
 		watcher.onDidChange(() => {
-			if (this.recentlyEditedByRoo.has(filePath)) {
-				this.recentlyEditedByRoo.delete(filePath) // This was an edit by Alpha, no need to inform Alpha
+			if (this.recentlyEditedByAlpha.has(filePath)) {
+				this.recentlyEditedByAlpha.delete(filePath) // This was an edit by Alpha, no need to inform Alpha
 			} else {
-				this.recentlyModifiedFiles.add(filePath) // This was a user edit, we will inform Alpha
+				this.markRecentlyModifiedFile(filePath) // This was a user edit, we will inform Alpha
 				this.trackFileContext(filePath, "user_edited") // Update the task metadata with file tracking
 			}
 		})
@@ -97,7 +104,7 @@ export class FileContextTracker {
 	public getContextProxy(): ContextProxy | undefined {
 		const provider = this.providerRef.deref()
 		if (!provider) {
-			console.error("ClineProvider reference is no longer valid")
+			console.error("AlphaProvider reference is no longer valid")
 			return undefined
 		}
 		const context = provider.contextProxy
@@ -141,6 +148,12 @@ export class FileContextTracker {
 	// This handles the business logic of determining if the file is new, stale, or active.
 	// It also updates the metadata with the latest read/edit dates.
 	async addFileToFileContextTracker(taskId: string, filePath: string, source: RecordSource) {
+		const update = this.metadataUpdateQueue.then(() => this.updateFileContextMetadata(taskId, filePath, source))
+		this.metadataUpdateQueue = update.catch(() => {})
+		await update
+	}
+
+	private async updateFileContextMetadata(taskId: string, filePath: string, source: RecordSource) {
 		try {
 			const metadata = await this.getTaskMetadata(taskId)
 			const now = Date.now()
@@ -174,7 +187,7 @@ export class FileContextTracker {
 				// user_edited: The user has edited the file
 				case "user_edited":
 					newEntry.user_edit_date = now
-					this.recentlyModifiedFiles.add(filePath)
+					this.markRecentlyModifiedFile(filePath)
 					break
 
 				// roo_edited: Alpha has edited the file
@@ -182,7 +195,7 @@ export class FileContextTracker {
 					newEntry.roo_read_date = now
 					newEntry.roo_edit_date = now
 					this.checkpointPossibleFiles.add(filePath)
-					this.markFileAsEditedByRoo(filePath)
+					this.markFileAsEditedByAlpha(filePath)
 					break
 
 				// read_tool/file_mentioned: Alpha has read the file via a tool or file mention
@@ -199,11 +212,58 @@ export class FileContextTracker {
 		}
 	}
 
-	// Returns (and then clears) the set of recently modified files
+	private markRecentlyModifiedFile(filePath: string): void {
+		this.recentlyModifiedFiles.set(filePath, ++this.recentlyModifiedFilesVersion)
+	}
+
+	/**
+	 * Captures a bounded snapshot of pending user modifications.
+	 *
+	 * The receipt only clears the versions it captured, so a later modification
+	 * to a captured path remains pending when the receipt is committed.
+	 * Paths that do not fit the character budget remain pending and are not
+	 * acknowledged; later fitting paths can still be captured.
+	 *
+	 * @param limit Maximum number of file paths to capture.
+	 * @param maxCharacters Maximum length of the captured paths joined with newlines.
+	 */
+	captureRecentlyModifiedFiles(limit = 200, maxCharacters = Number.MAX_SAFE_INTEGER): RecentlyModifiedFilesReceipt {
+		const captureLimit = normalizeCaptureLimit(limit)
+		const characterLimit = normalizeCharacterLimit(maxCharacters)
+		const capturedEntries: Array<[string, number]> = []
+		let capturedCharacters = 0
+
+		for (const entry of this.recentlyModifiedFiles.entries()) {
+			if (capturedEntries.length >= captureLimit) break
+
+			const [filePath] = entry
+			const candidateCharacters = capturedCharacters + filePath.length + (capturedEntries.length > 0 ? 1 : 0)
+			if (candidateCharacters > characterLimit) continue
+
+			capturedEntries.push(entry)
+			capturedCharacters = candidateCharacters
+		}
+
+		const capturedVersions = new Map(capturedEntries)
+		const files = Object.freeze(capturedEntries.map(([filePath]) => filePath))
+
+		return {
+			files,
+			commit: () => {
+				for (const [filePath, version] of capturedVersions) {
+					if (this.recentlyModifiedFiles.get(filePath) === version) {
+						this.recentlyModifiedFiles.delete(filePath)
+					}
+				}
+			},
+		}
+	}
+
+	// Returns (and then clears) all pending modified files for legacy callers.
 	getAndClearRecentlyModifiedFiles(): string[] {
-		const files = Array.from(this.recentlyModifiedFiles)
-		this.recentlyModifiedFiles.clear()
-		return files
+		const receipt = this.captureRecentlyModifiedFiles(this.recentlyModifiedFiles.size)
+		receipt.commit()
+		return [...receipt.files]
 	}
 
 	/**
@@ -215,14 +275,14 @@ export class FileContextTracker {
 	 * @param sinceTimestamp - Optional timestamp to filter files read after this time
 	 * @returns Array of unique file paths that have been read, most recent first
 	 */
-	async getFilesReadByRoo(sinceTimestamp?: number): Promise<string[]> {
+	async getFilesReadByAlpha(sinceTimestamp?: number): Promise<string[]> {
 		try {
 			const metadata = await this.getTaskMetadata(this.taskId)
 
 			const readEntries = metadata.files_in_context.filter((entry) => {
 				// Only include files that were read by Alpha (not user edits)
-				const isReadByRoo = entry.record_source === "read_tool" || entry.record_source === "file_mentioned"
-				if (!isReadByRoo) {
+				const isReadByAlpha = entry.record_source === "read_tool" || entry.record_source === "file_mentioned"
+				if (!isReadByAlpha) {
 					return false
 				}
 
@@ -266,8 +326,8 @@ export class FileContextTracker {
 	}
 
 	// Marks a file as edited by Alpha to prevent false positives in file watchers
-	markFileAsEditedByRoo(filePath: string): void {
-		this.recentlyEditedByRoo.add(filePath)
+	markFileAsEditedByAlpha(filePath: string): void {
+		this.recentlyEditedByAlpha.add(filePath)
 	}
 
 	// Disposes all file watchers
@@ -277,4 +337,15 @@ export class FileContextTracker {
 		}
 		this.fileWatchers.clear()
 	}
+}
+
+function normalizeCaptureLimit(limit: number): number {
+	if (!Number.isFinite(limit)) return 0
+	return Math.max(0, Math.floor(limit))
+}
+
+function normalizeCharacterLimit(limit: number): number {
+	if (limit === Number.POSITIVE_INFINITY) return Number.MAX_SAFE_INTEGER
+	if (!Number.isFinite(limit)) return 0
+	return Math.max(0, Math.floor(limit))
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import {
 	parseLines,
 	formatWithLineNumbers,
@@ -255,6 +255,46 @@ describe("formatWithLineNumbers", () => {
 // ─── readWithSlice Tests ──────────────────────────────────────────────────────
 
 describe("readWithSlice", () => {
+	it("does not analyze indentation outside the requested slice", () => {
+		const content = Array.from({ length: 10_000 }, (_, index) => `\t    value${index} => {`).join("\n")
+		const trimStart = vi.spyOn(String.prototype, "trimStart")
+		let analysisCalls: number
+		try {
+			readWithSlice(content, 5_000, 20)
+			analysisCalls = trimStart.mock.calls.length
+		} finally {
+			trimStart.mockRestore()
+		}
+		expect(analysisCalls).toBeLessThanOrEqual(20)
+	})
+
+	it.each(["", "\n", "alpha\nbeta\n", "alpha\r\n\tbeta\r\n", `λ\n${"x".repeat(2100)}\n  \nlast`])(
+		"preserves source text and metadata for slices of %j",
+		(content) => {
+			const records = parseLines(content)
+			for (const offset of [-2, 0, 1, 1.5, records.length - 1]) {
+				for (const limit of [0, 1, 2, 2000]) {
+					const start = Math.max(0, offset)
+					if (start >= records.length) continue
+					const end = Math.min(start + limit, records.length)
+					const selected = records.slice(start, end)
+					expect(readWithSlice(content, offset, limit)).toEqual({
+						content: formatWithLineNumbers(selected),
+						includedRanges: [[start + 1, end]],
+						totalLines: records.length,
+						returnedLines: selected.length,
+						wasTruncated: end < records.length,
+					})
+				}
+			}
+		},
+	)
+
+	it("keeps exact padded source line numbers when the slice crosses a digit boundary", () => {
+		const result = readWithSlice(Array.from({ length: 12 }, (_, index) => `value${index}`).join("\n"), 8, 3)
+		expect(result.content).toBe(" 9 | value8\n10 | value9\n11 | value10")
+	})
+
 	it("should read from beginning with default offset", () => {
 		const result = readWithSlice(SIMPLE_CODE, 0, 10)
 

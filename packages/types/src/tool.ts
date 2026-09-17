@@ -1,10 +1,12 @@
 import { z } from "zod"
 
+import { browserToolNames } from "./browser.js"
+
 /**
  * ToolGroup
  */
 
-export const toolGroups = ["read", "edit", "command", "mcp", "github", "modes"] as const
+export const toolGroups = ["read", "edit", "command", "mcp", "github", "modes", "agents", "browser"] as const
 
 export const toolGroupsSchema = z.enum(toolGroups)
 
@@ -13,7 +15,7 @@ export const toolGroupsSchema = z.enum(toolGroups)
  * Used by schema preprocessing to silently strip these before validation,
  * preventing errors for users with older configs.
  */
-export const deprecatedToolGroups: readonly string[] = ["browser"]
+export const deprecatedToolGroups: readonly string[] = []
 
 export type ToolGroup = z.infer<typeof toolGroupsSchema>
 
@@ -22,7 +24,13 @@ export type ToolGroup = z.infer<typeof toolGroupsSchema>
  */
 
 export const toolNames = [
+	"list_tickets",
+	"read_ticket",
+	"create_ticket",
+	"update_ticket",
+	"delete_ticket",
 	"execute_command",
+	"manage_command",
 	"read_file",
 	"read_command_output",
 	"write_to_file",
@@ -36,16 +44,27 @@ export const toolNames = [
 	"list_files",
 	"use_mcp_tool",
 	"access_mcp_resource",
+	"discover_tools",
 	"ask_followup_question",
 	"attempt_completion",
-	"switch_mode",
 	"new_task",
+	"delegate_task",
+	"spawn_agent",
+	"list_agents",
+	"wait_agent",
+	"send_message",
+	"report_progress",
+	"followup_task",
+	"interrupt_agent",
+	"cancel_agent",
+	"close_agent",
 	"codebase_search",
 	"update_todo_list",
 	"run_slash_command",
 	"skill",
 	"generate_image",
 	"github_api",
+	...browserToolNames,
 	"custom_tool",
 ] as const
 
@@ -57,8 +76,9 @@ export type ToolName = z.infer<typeof toolNamesSchema>
  * ToolUsage
  */
 
+// Historical usage remains readable after a tool is retired; it does not register executable tools.
 export const toolUsageSchema = z.record(
-	toolNamesSchema,
+	z.enum([...toolNames, "switch_mode"]),
 	z.object({
 		attempts: z.number(),
 		failures: z.number(),

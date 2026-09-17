@@ -188,6 +188,74 @@ describe("processResponsesApiStream", () => {
 				},
 			])
 		})
+
+		it("should preserve call_id while correlating parallel deltas by item_id and output_index", async () => {
+			const stream = mockStream([
+				{
+					type: "response.output_item.added",
+					output_index: 0,
+					item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "first" },
+				},
+				{
+					type: "response.output_item.added",
+					output_index: 1,
+					item: { type: "function_call", id: "fc_2", call_id: "call_2", name: "second" },
+				},
+				{
+					type: "response.function_call_arguments.delta",
+					item_id: "fc_1",
+					output_index: 0,
+					delta: '{"first":true}',
+				},
+				{
+					type: "response.function_call_arguments.delta",
+					item_id: "fc_2",
+					output_index: 1,
+					delta: '{"second":true}',
+				},
+				{
+					type: "response.output_item.done",
+					output_index: 0,
+					item: {
+						type: "function_call",
+						id: "fc_1",
+						call_id: "call_1",
+						name: "first",
+						arguments: '{"first":true}',
+					},
+				},
+				{
+					type: "response.output_item.done",
+					output_index: 1,
+					item: {
+						type: "function_call",
+						id: "fc_2",
+						call_id: "call_2",
+						name: "second",
+						arguments: '{"second":true}',
+					},
+				},
+			])
+
+			const chunks = await collectChunks(processResponsesApiStream(stream, noopUsage))
+
+			expect(chunks).toEqual([
+				{
+					type: "tool_call_partial",
+					index: 0,
+					id: "call_1",
+					name: "first",
+					arguments: '{"first":true}',
+				},
+				{
+					type: "tool_call_partial",
+					index: 1,
+					id: "call_2",
+					name: "second",
+					arguments: '{"second":true}',
+				},
+			])
+		})
 	})
 
 	describe("completion and usage", () => {
@@ -255,6 +323,139 @@ describe("processResponsesApiStream", () => {
 			const chunks = await collectChunks(processResponsesApiStream(stream, noopUsage))
 
 			expect(chunks).toEqual([])
+		})
+	})
+
+	describe("terminal errors", () => {
+		it("throws for response.failed errors nested on the response", async () => {
+			const stream = mockStream([
+				{ type: "response.failed", response: { error: { message: "model overloaded" } } },
+			])
+
+			await expect(collectChunks(processResponsesApiStream(stream, noopUsage))).rejects.toThrow(
+				"Response failed: model overloaded",
+			)
+		})
+
+		it.each([
+			["response.error", { error: { message: "request rejected" } }],
+			["error", { message: "connection lost" }],
+		])("throws for %s events", async (type, detail) => {
+			const stream = mockStream([{ type, ...detail }])
+
+			await expect(collectChunks(processResponsesApiStream(stream, noopUsage))).rejects.toThrow()
+		})
+
+		it("rejects a failure after yielding partial text", async () => {
+			const iterator = processResponsesApiStream(
+				mockStream([
+					{ type: "response.output_text.delta", delta: "partial" },
+					{ type: "response.failed", response: { error: { message: "boom" } } },
+				]),
+				noopUsage,
+			)
+
+			await expect(iterator.next()).resolves.toEqual({
+				done: false,
+				value: { type: "text", text: "partial" },
+			})
+			await expect(iterator.next()).rejects.toThrow("Response failed: boom")
+		})
+	})
+
+	describe("canonical lifecycle outcomes", () => {
+		it("emits one completed outcome with semantic-output state", async () => {
+			const chunks = await collectChunks(
+				processResponsesApiStream(
+					mockStream([
+						{ type: "response.output_text.delta", delta: "partial" },
+						{ type: "response.completed" },
+					]),
+					noopUsage,
+					{ emitLifecycle: true, requestId: "request-1", attemptId: "attempt-1" },
+				),
+			)
+
+			expect(chunks).toEqual([
+				{ type: "text", text: "partial" },
+				{
+					type: "outcome",
+					status: "completed",
+					terminal: true,
+					semanticOutputObserved: true,
+					phase: "stream",
+					requestId: "request-1",
+					attemptId: "attempt-1",
+				},
+			])
+		})
+
+		it("classifies an abrupt iterator failure as a failed outcome", async () => {
+			async function* failedStream() {
+				yield { type: "response.output_text.delta", delta: "partial" }
+				throw new Error("connection reset")
+			}
+
+			const chunks = await collectChunks(
+				processResponsesApiStream(failedStream(), noopUsage, { emitLifecycle: true }),
+			)
+
+			expect(chunks.at(-2)).toMatchObject({ type: "error", message: "connection reset" })
+			expect(chunks.at(-1)).toMatchObject({
+				type: "outcome",
+				status: "failed",
+				terminal: true,
+				semanticOutputObserved: true,
+			})
+		})
+
+		it("preserves terminal metadata when lifecycle callers request a throw", async () => {
+			const iterator = processResponsesApiStream(
+				mockStream([
+					{
+						type: "response.failed",
+						error: { message: "policy rejected", status: 400, retryable: false },
+					},
+				]),
+				noopUsage,
+				{
+					emitLifecycle: true,
+					throwOnError: true,
+					requestId: "responses-request",
+					attemptId: "responses-attempt",
+				},
+			)
+
+			await expect(iterator.next()).resolves.toMatchObject({ value: { type: "error", retryable: false } })
+			await expect(iterator.next()).resolves.toMatchObject({ value: { type: "outcome", status: "failed" } })
+			await expect(iterator.next()).rejects.toMatchObject({
+				status: 400,
+				retryable: false,
+				reason: "policy rejected",
+				requestId: "responses-request",
+				attemptId: "responses-attempt",
+				terminal: true,
+			})
+		})
+
+		it("preserves an explicit cancelled response status", async () => {
+			const chunks = await collectChunks(
+				processResponsesApiStream(
+					mockStream([{ type: "response.done", response: { status: "cancelled" } }]),
+					noopUsage,
+					{ emitLifecycle: true },
+				),
+			)
+
+			expect(chunks).toEqual([
+				{
+					type: "outcome",
+					status: "cancelled",
+					terminal: true,
+					semanticOutputObserved: false,
+					phase: "stream",
+				},
+			])
 		})
 	})
 

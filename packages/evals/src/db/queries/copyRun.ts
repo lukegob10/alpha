@@ -36,6 +36,7 @@ export const copyRun = async ({
 			cost: sourceRun.taskMetrics.cost,
 			duration: sourceRun.taskMetrics.duration,
 			toolUsage: sourceRun.taskMetrics.toolUsage,
+			requestUsage: sourceRun.taskMetrics.requestUsage,
 		}
 
 		const newRunTaskMetrics = await targetDb
@@ -58,13 +59,28 @@ export const copyRun = async ({
 	const runData: InsertRun = {
 		taskMetricsId: newRunTaskMetricsId,
 		model: sourceRun.model,
+		name: sourceRun.name,
 		description: sourceRun.description,
+		contextWindow: sourceRun.contextWindow,
+		inputPrice: sourceRun.inputPrice,
+		outputPrice: sourceRun.outputPrice,
+		cacheWritesPrice: sourceRun.cacheWritesPrice,
+		cacheReadsPrice: sourceRun.cacheReadsPrice,
 		settings: sourceRun.settings,
+		jobToken: sourceRun.jobToken,
 		pid: sourceRun.pid,
 		socketPath: sourceRun.socketPath,
+		executionMethod: sourceRun.executionMethod,
 		concurrency: sourceRun.concurrency,
+		timeout: sourceRun.timeout,
 		passed: sourceRun.passed,
 		failed: sourceRun.failed,
+		campaignTier: sourceRun.campaignTier,
+		campaignHardCapUsd: sourceRun.campaignHardCapUsd,
+		taskCostCapUsd: sourceRun.taskCostCapUsd,
+		estimatedCostUsd: sourceRun.estimatedCostUsd,
+		highCostApproved: sourceRun.highCostApproved,
+		modelFallbackAllowed: sourceRun.modelFallbackAllowed,
 	}
 
 	const newRuns = await targetDb
@@ -100,6 +116,7 @@ export const copyRun = async ({
 				cost: sourceTask.taskMetrics.cost,
 				duration: sourceTask.taskMetrics.duration,
 				toolUsage: sourceTask.taskMetrics.toolUsage,
+				requestUsage: sourceTask.taskMetrics.requestUsage,
 			}
 
 			const newTaskMetrics = await targetDb
@@ -121,6 +138,9 @@ export const copyRun = async ({
 			taskMetricsId: newTaskMetricsId,
 			language: sourceTask.language,
 			exercise: sourceTask.exercise,
+			benchmarkTaskIdentity: sourceTask.benchmarkTaskIdentity,
+			benchmarkPartition: sourceTask.benchmarkPartition,
+			iteration: sourceTask.iteration,
 			passed: sourceTask.passed,
 			startedAt: sourceTask.startedAt,
 			finishedAt: sourceTask.finishedAt,

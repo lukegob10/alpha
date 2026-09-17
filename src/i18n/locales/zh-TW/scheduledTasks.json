@@ -1,0 +1,6 @@
+{
+	"profileRequired": "執行此排程任務前，請選擇已儲存的設定檔。",
+	"profileUnavailable": "設定檔「{{name}}」不存在、已重新命名或無法載入。請重新選擇已儲存的設定檔。",
+	"skillUnavailable": "技能「{{name}}」不存在、無法讀取或在排程的工作區和模式下無法使用。請重新選擇技能。",
+	"workspaceInvalid": "排程任務的工作區必須使用絕對路徑。"
+}

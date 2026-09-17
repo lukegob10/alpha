@@ -3,6 +3,7 @@ import * as fsSync from "fs"
 import * as path from "path"
 import * as lockfile from "proper-lockfile"
 import { JsonStreamStringify } from "json-stream-stringify"
+import { pipeline } from "stream/promises"
 
 /**
  * Options for safeWriteJson function
@@ -15,6 +16,14 @@ export interface SafeWriteJsonOptions {
 	 * @default false
 	 */
 	prettyPrint?: boolean
+	/** Serialization buffer threshold in characters (512–65,536; default 512). A primitive may exceed it. */
+	serializationBufferSize?: number
+	/** Optional replacement; each attempt must synchronously fence ownership and rename the closed temporary file. */
+	commitTempFile?: (temporaryPath: string, destinationPath: string) => void | Promise<void>
+	/** Replace the destination in one rename instead of creating a rollback backup. */
+	atomicReplace?: boolean
+	/** Caller holds an unstealable transaction lock and supplies the synchronous commit fence. */
+	externalTransaction?: true
 }
 
 /**
@@ -33,6 +42,17 @@ export interface SafeWriteJsonOptions {
  */
 
 async function safeWriteJson(filePath: string, data: any, options?: SafeWriteJsonOptions): Promise<void> {
+	const serializationBufferSize = options?.serializationBufferSize ?? 512
+	if (
+		!Number.isSafeInteger(serializationBufferSize) ||
+		serializationBufferSize < 512 ||
+		serializationBufferSize > 65_536
+	) {
+		throw new RangeError("JSON serialization buffer size must be an integer between 512 and 65536 characters")
+	}
+	if (options?.externalTransaction && (!options.atomicReplace || typeof options.commitTempFile !== "function")) {
+		throw new Error("External JSON transactions require atomic replacement and a synchronous commit fence")
+	}
 	const absoluteFilePath = path.resolve(filePath)
 	let releaseLock = async () => {} // Initialized to a no-op
 
@@ -53,22 +73,24 @@ async function safeWriteJson(filePath: string, data: any, options?: SafeWriteJso
 
 	// Acquire the lock before any file operations
 	try {
-		releaseLock = await lockfile.lock(absoluteFilePath, {
-			stale: 31000, // Stale after 31 seconds
-			update: 10000, // Update mtime every 10 seconds to prevent staleness if operation is long
-			realpath: false, // the file may not exist yet, which is acceptable
-			retries: {
-				// Configuration for retrying lock acquisition
-				retries: 5, // Number of retries after the initial attempt
-				factor: 2, // Exponential backoff factor (e.g., 100ms, 200ms, 400ms, ...)
-				minTimeout: 100, // Minimum time to wait before the first retry (in ms)
-				maxTimeout: 1000, // Maximum time to wait for any single retry (in ms)
-			},
-			onCompromised: (err) => {
-				console.error(`Lock at ${absoluteFilePath} was compromised:`, err)
-				throw err
-			},
-		})
+		if (!options?.externalTransaction) {
+			releaseLock = await lockfile.lock(absoluteFilePath, {
+				stale: 31000, // Stale after 31 seconds
+				update: 10000, // Update mtime every 10 seconds to prevent staleness if operation is long
+				realpath: false, // the file may not exist yet, which is acceptable
+				retries: {
+					// Configuration for retrying lock acquisition
+					retries: 5, // Number of retries after the initial attempt
+					factor: 2, // Exponential backoff factor (e.g., 100ms, 200ms, 400ms, ...)
+					minTimeout: 100, // Minimum time to wait before the first retry (in ms)
+					maxTimeout: 1000, // Maximum time to wait for any single retry (in ms)
+				},
+				onCompromised: (err) => {
+					console.error(`Lock at ${absoluteFilePath} was compromised:`, err)
+					throw err
+				},
+			})
+		}
 	} catch (lockError) {
 		// If lock acquisition fails, we throw immediately.
 		// The releaseLock remains a no-op, so the finally block in the main file operations
@@ -89,30 +111,40 @@ async function safeWriteJson(filePath: string, data: any, options?: SafeWriteJso
 			`.${path.basename(absoluteFilePath)}.new_${Date.now()}_${Math.random().toString(36).substring(2)}.tmp`,
 		)
 
-		await _streamDataToFile(actualTempNewFilePath, data, options?.prettyPrint)
+		await _streamDataToFile(actualTempNewFilePath, data, options?.prettyPrint, serializationBufferSize)
 
-		// Step 2: Check if the target file exists. If so, rename it to a backup path.
-		try {
-			// Check for target file existence
-			await fs.access(absoluteFilePath)
-			// Target exists, create a backup path and rename.
-			actualTempBackupFilePath = path.join(
-				path.dirname(absoluteFilePath),
-				`.${path.basename(absoluteFilePath)}.bak_${Date.now()}_${Math.random().toString(36).substring(2)}.tmp`,
-			)
-			await fs.rename(absoluteFilePath, actualTempBackupFilePath)
-		} catch (accessError: any) {
-			// Explicitly type accessError
-			if (accessError.code !== "ENOENT") {
-				// An error other than "file not found" occurred during access check.
-				throw accessError
+		// Step 2: The default path retains a rollback backup. Callers with an
+		// external transaction fence can choose a single atomic replacement so
+		// there is no missing-target window after ownership is checked.
+		if (!options?.atomicReplace) {
+			try {
+				// Check for target file existence
+				await fs.access(absoluteFilePath)
+				// Target exists, create a backup path and rename.
+				actualTempBackupFilePath = path.join(
+					path.dirname(absoluteFilePath),
+					`.${path.basename(absoluteFilePath)}.bak_${Date.now()}_${Math.random().toString(36).substring(2)}.tmp`,
+				)
+				await fs.rename(absoluteFilePath, actualTempBackupFilePath)
+			} catch (accessError: any) {
+				// Explicitly type accessError
+				if (accessError.code !== "ENOENT") {
+					// An error other than "file not found" occurred during access check.
+					throw accessError
+				}
+				// Target file does not exist, so no backup is made. actualTempBackupFilePath remains null.
 			}
-			// Target file does not exist, so no backup is made. actualTempBackupFilePath remains null.
 		}
 
 		// Step 3: Rename the new temporary file to the target file path.
 		// This is the main "commit" step.
-		await fs.rename(actualTempNewFilePath, absoluteFilePath)
+		if (options?.commitTempFile) {
+			// The owner may wait between failed OS replacement attempts. Invoke it
+			// once and retain the temporary file until its complete commit settles.
+			await options.commitTempFile(actualTempNewFilePath, absoluteFilePath)
+		} else {
+			await fs.rename(actualTempNewFilePath, absoluteFilePath)
+		}
 
 		// If we reach here, the new file is successfully in place.
 		// The original actualTempNewFilePath is now the main file, so we shouldn't try to clean it up as "temp".
@@ -167,16 +199,9 @@ async function safeWriteJson(filePath: string, data: any, options?: SafeWriteJso
 			}
 		}
 
-		// Cleanup the .bak file if it still needs to be (i.e., wasn't successfully restored)
+		// If rollback failed, the backup is the last known-good copy. Preserve it for recovery.
 		if (actualTempBackupFilePath) {
-			try {
-				await fs.unlink(actualTempBackupFilePath)
-			} catch (cleanupError) {
-				console.error(
-					`[Catch] Failed to clean up temporary backup file ${actualTempBackupFilePath}:`,
-					cleanupError,
-				)
-			}
+			console.error(`[Catch] Preserved backup for manual recovery: ${actualTempBackupFilePath}`)
 		}
 		throw originalError // This MUST be the error that rejects the promise.
 	} finally {
@@ -197,12 +222,15 @@ async function safeWriteJson(filePath: string, data: any, options?: SafeWriteJso
  * @param targetPath The path to write the stream to.
  * @param data The data to stream.
  * @param prettyPrint Whether to format the JSON with indentation.
+ * @param serializationBufferSize Serialization buffer threshold in characters, not a hard byte limit.
  * @returns Promise<void>
  */
-async function _streamDataToFile(targetPath: string, data: any, prettyPrint = false): Promise<void> {
-	// Stream data to avoid high memory usage for large JSON objects.
-	const fileWriteStream = fsSync.createWriteStream(targetPath, { encoding: "utf8" })
-
+async function _streamDataToFile(
+	targetPath: string,
+	data: any,
+	prettyPrint = false,
+	serializationBufferSize = 512,
+): Promise<void> {
 	// JsonStreamStringify traverses the object and streams tokens directly
 	// The 'spaces' parameter adds indentation during streaming, not via a separate pass
 	// Convert undefined to null for valid JSON serialization (undefined is not valid JSON)
@@ -210,14 +238,22 @@ async function _streamDataToFile(targetPath: string, data: any, prettyPrint = fa
 		data === undefined ? null : data,
 		undefined, // replacer
 		prettyPrint ? "\t" : undefined, // spaces for indentation
+		undefined, // preserve the serializer's default cycle handling
+		serializationBufferSize,
 	)
+	// Construct the serializer before opening the file: root toJSON can throw.
+	const fileWriteStream = fsSync.createWriteStream(targetPath, { encoding: "utf8" })
+	const closed = new Promise<void>((resolve) => fileWriteStream.once("close", resolve))
 
-	return new Promise<void>((resolve, reject) => {
-		stringifyStream.on("error", reject)
-		fileWriteStream.on("error", reject)
-		fileWriteStream.on("finish", resolve)
-		stringifyStream.pipe(fileWriteStream)
-	})
+	// finish only means writes were flushed; the owned file descriptor can still
+	// be closing. Settle both streams before committing or cleaning the temp file.
+	try {
+		await pipeline(stringifyStream, fileWriteStream)
+	} finally {
+		// A source error can reject pipeline before destination destruction ends.
+		// Joining close must preserve the original serialization or write error.
+		await closed
+	}
 }
 
 export { safeWriteJson }

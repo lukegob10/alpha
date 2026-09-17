@@ -20,6 +20,12 @@
 		"delete_custom_mode_with_rules": "Anda yakin ingin menghapus mode {scope} ini?\n\nIni juga akan menghapus folder aturan terkait di:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "Tugas tetap belum selesai dan belum terverifikasi: setelah 30 detik, bukti perubahan ruang kerja masih belum tersedia. Tidak ada operasi aktif yang dilacak untuk bukti tersebut. Mengulangi penyelesaian atau verifikasi tidak akan memperbaikinya. Gunakan informasi kesalahan terperinci untuk menyelidiki kesalahan alat atau penyimpanan awal sebelum melanjutkan.",
+		"task_recovery_lock_repair": "Alpha tidak dapat memverifikasi pemilik kunci penyimpanan tugas bersama. Melanjutkan atau memuat ulang tidak dapat memperbaikinya dengan aman. Tutup semua jendela VS Code dan host pengujian Alpha, lalu cadangkan dan hapus hanya agent_control.json.transaction.lock dari penyimpanan global Alpha sebelum membuka kembali. Jangan hapus kunci saat host berjalan; pertahankan riwayat tugas dan agent_control.json.",
+		"task_recovery_failed": "Giliran berhenti karena suatu operasi gagal. Anda dapat melanjutkan tugas atau mengirim petunjuk baru.",
+		"task_recovery_incomplete": "Giliran berakhir sebelum tugas selesai. Anda dapat melanjutkan tugas atau mengirim petunjuk baru.",
+		"task_recovery_exhausted": "Giliran berhenti setelah mencapai batas percobaan ulang otomatis. Anda dapat melanjutkan tugas atau mengirim petunjuk baru.",
+		"task_recovery_persistence": "Tugas dijeda karena data tugas yang diperlukan tidak dapat disimpan. Periksa ruang disk kosong dan akses ke folder penyimpanan tugas, lalu lanjutkan tugas atau kirim petunjuk baru.",
 		"invalid_data_uri": "Format data URI tidak valid",
 		"error_copying_image": "Error menyalin gambar: {{errorMessage}}",
 		"error_opening_image": "Error membuka gambar: {{error}}",
@@ -72,6 +78,10 @@
 		"url_fetch_failed": "Gagal mengambil konten URL: {{error}}",
 		"url_fetch_error_with_url": "Error mengambil konten untuk {{url}}: {{error}}",
 		"command_timeout": "Eksekusi perintah waktu habis setelah {{seconds}} detik",
+		"command_mutation_observation_incomplete": "Tugas tetap belum selesai dan belum diverifikasi karena perubahan yang dilakukan perintah tidak dapat diamati sepenuhnya.",
+		"command_mutation_receipt_incomplete": "Tugas tetap belum selesai dan belum diverifikasi karena bukti perubahan perintah tidak dapat diselesaikan.",
+		"mutation_receipt_incomplete": "Tugas belum selesai karena catatan perubahan ruang kerja tidak dapat diselesaikan. Periksa kesalahan alat yang asli sebelum melanjutkan.",
+		"command_output_bookkeeping_incomplete": "Tugas tetap belum selesai karena output perintah yang telah selesai tidak dapat difinalisasi.",
 		"share_task_failed": "Gagal membagikan tugas. Silakan coba lagi.",
 		"share_no_active_task": "Tidak ada tugas aktif untuk dibagikan",
 		"share_auth_required": "Autentikasi diperlukan. Silakan masuk untuk berbagi tugas.",
@@ -143,7 +153,7 @@
 	"warnings": {
 		"no_terminal_content": "Tidak ada konten terminal yang dipilih",
 		"missing_task_files": "File tugas ini hilang. Apakah kamu ingin menghapusnya dari daftar tugas?",
-		"auto_import_failed": "Gagal mengimpor pengaturan RooCode secara otomatis: {{error}}"
+		"auto_import_failed": "Gagal mengimpor pengaturan Alpha secara otomatis: {{error}}"
 	},
 	"info": {
 		"no_changes": "Tidak ada perubahan ditemukan.",
@@ -152,7 +162,7 @@
 		"custom_storage_path_set": "Path penyimpanan kustom diatur: {{path}}",
 		"default_storage_path": "Kembali menggunakan path penyimpanan default",
 		"settings_imported": "Pengaturan berhasil diimpor.",
-		"auto_import_success": "Pengaturan RooCode berhasil diimpor secara otomatis dari {{filename}}",
+		"auto_import_success": "Pengaturan Alpha berhasil diimpor secara otomatis dari {{filename}}",
 		"share_link_copied": "Link bagikan disalin ke clipboard",
 		"image_copied_to_clipboard": "Data URI gambar disalin ke clipboard",
 		"image_saved": "Gambar disimpan ke {{path}}",

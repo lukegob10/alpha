@@ -61,7 +61,7 @@ vi.mock("../updateTodoListTool", () => ({
 }))
 
 // Define a minimal type for the resolved value
-type MockClineInstance = { taskId: string }
+type MockAlphaInstance = { taskId: string }
 
 // Mock dependencies after modules are mocked
 const mockAskApproval = vi.fn<AskApproval>()
@@ -71,7 +71,7 @@ const mockEmit = vi.fn()
 const mockRecordToolError = vi.fn()
 const mockSayAndCreateMissingParamError = vi.fn()
 const mockStartSubtask = vi
-	.fn<(message: string, todoItems: any[], mode: string) => Promise<MockClineInstance>>()
+	.fn<(message: string, todoItems: any[], mode: string) => Promise<MockAlphaInstance>>()
 	.mockResolvedValue({ taskId: "mock-subtask-id" })
 
 // Adapter to satisfy legacy expectations while exercising new delegation path
@@ -85,7 +85,7 @@ const mockDelegateParentAndOpenChild = vi.fn(
 const mockCheckpointSave = vi.fn()
 
 // Mock the Alpha instance and its methods/properties
-const mockCline = {
+const mockAlphaTask = {
 	ask: vi.fn(),
 	sayAndCreateMissingParamError: mockSayAndCreateMissingParamError,
 	emit: mockEmit,
@@ -124,6 +124,19 @@ const withNativeArgs = (block: ToolUse<"new_task">): ToolUse<"new_task"> => ({
 })
 
 describe("newTaskTool", () => {
+	it.each(["ask", "debug", "orchestrator", "custom-mode"])(
+		"rejects delegation to retired mode %s before approval",
+		async (mode) => {
+			await newTaskTool.execute({ mode, message: "Investigate" }, mockAlphaTask as any, {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+			})
+			expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("Invalid mode"))
+			expect(mockAskApproval).not.toHaveBeenCalled()
+			expect(mockDelegateParentAndOpenChild).not.toHaveBeenCalled()
+		},
+	)
 	beforeEach(() => {
 		// Reset mocks before each test
 		vi.clearAllMocks()
@@ -134,8 +147,8 @@ describe("newTaskTool", () => {
 			roleDefinition: "Test role definition",
 			groups: ["command", "read", "edit"],
 		}) // Default valid mode
-		mockCline.consecutiveMistakeCount = 0
-		mockCline.isPaused = false
+		mockAlphaTask.consecutiveMistakeCount = 0
+		mockAlphaTask.isPaused = false
 		// Default: VSCode setting is disabled
 		const mockGet = vi.fn().mockReturnValue(false)
 		vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
@@ -155,7 +168,7 @@ describe("newTaskTool", () => {
 			partial: false,
 		}
 
-		await newTaskTool.handle(mockCline as any, withNativeArgs(block), {
+		await newTaskTool.handle(mockAlphaTask as any, withNativeArgs(block), {
 			askApproval: mockAskApproval,
 			handleError: mockHandleError,
 			pushToolResult: mockPushToolResult,
@@ -190,7 +203,7 @@ describe("newTaskTool", () => {
 			partial: false,
 		}
 
-		await newTaskTool.handle(mockCline as any, withNativeArgs(block), {
+		await newTaskTool.handle(mockAlphaTask as any, withNativeArgs(block), {
 			askApproval: mockAskApproval,
 			handleError: mockHandleError,
 			pushToolResult: mockPushToolResult,
@@ -215,7 +228,7 @@ describe("newTaskTool", () => {
 			partial: false,
 		}
 
-		await newTaskTool.handle(mockCline as any, withNativeArgs(block), {
+		await newTaskTool.handle(mockAlphaTask as any, withNativeArgs(block), {
 			askApproval: mockAskApproval,
 			handleError: mockHandleError,
 			pushToolResult: mockPushToolResult,
@@ -240,7 +253,7 @@ describe("newTaskTool", () => {
 			partial: false,
 		}
 
-		await newTaskTool.handle(mockCline as any, withNativeArgs(block), {
+		await newTaskTool.handle(mockAlphaTask as any, withNativeArgs(block), {
 			askApproval: mockAskApproval,
 			handleError: mockHandleError,
 			pushToolResult: mockPushToolResult,
@@ -265,7 +278,7 @@ describe("newTaskTool", () => {
 			partial: false,
 		}
 
-		await newTaskTool.handle(mockCline as any, withNativeArgs(block), {
+		await newTaskTool.handle(mockAlphaTask as any, withNativeArgs(block), {
 			askApproval: mockAskApproval,
 			handleError: mockHandleError,
 			pushToolResult: mockPushToolResult,
@@ -273,8 +286,8 @@ describe("newTaskTool", () => {
 
 		// Should NOT error when todos is missing
 		expect(mockSayAndCreateMissingParamError).not.toHaveBeenCalledWith("new_task", "todos")
-		expect(mockCline.consecutiveMistakeCount).toBe(0)
-		expect(mockCline.recordToolError).not.toHaveBeenCalledWith("new_task")
+		expect(mockAlphaTask.consecutiveMistakeCount).toBe(0)
+		expect(mockAlphaTask.recordToolError).not.toHaveBeenCalledWith("new_task")
 
 		// Should create task with empty todos array
 		expect(mockStartSubtask).toHaveBeenCalledWith("Test message", [], "code")
@@ -295,7 +308,7 @@ describe("newTaskTool", () => {
 			partial: false,
 		}
 
-		await newTaskTool.handle(mockCline as any, withNativeArgs(block), {
+		await newTaskTool.handle(mockAlphaTask as any, withNativeArgs(block), {
 			askApproval: mockAskApproval,
 			handleError: mockHandleError,
 			pushToolResult: mockPushToolResult,
@@ -326,15 +339,15 @@ describe("newTaskTool", () => {
 			partial: false,
 		}
 
-		await newTaskTool.handle(mockCline as any, withNativeArgs(block), {
+		await newTaskTool.handle(mockAlphaTask as any, withNativeArgs(block), {
 			askApproval: mockAskApproval,
 			handleError: mockHandleError,
 			pushToolResult: mockPushToolResult,
 		})
 
 		expect(mockSayAndCreateMissingParamError).toHaveBeenCalledWith("new_task", "mode")
-		expect(mockCline.consecutiveMistakeCount).toBe(1)
-		expect(mockCline.recordToolError).toHaveBeenCalledWith("new_task")
+		expect(mockAlphaTask.consecutiveMistakeCount).toBe(1)
+		expect(mockAlphaTask.recordToolError).toHaveBeenCalledWith("new_task")
 	})
 
 	it("should error when message parameter is missing", async () => {
@@ -349,15 +362,15 @@ describe("newTaskTool", () => {
 			partial: false,
 		}
 
-		await newTaskTool.handle(mockCline as any, withNativeArgs(block), {
+		await newTaskTool.handle(mockAlphaTask as any, withNativeArgs(block), {
 			askApproval: mockAskApproval,
 			handleError: mockHandleError,
 			pushToolResult: mockPushToolResult,
 		})
 
 		expect(mockSayAndCreateMissingParamError).toHaveBeenCalledWith("new_task", "message")
-		expect(mockCline.consecutiveMistakeCount).toBe(1)
-		expect(mockCline.recordToolError).toHaveBeenCalledWith("new_task")
+		expect(mockAlphaTask.consecutiveMistakeCount).toBe(1)
+		expect(mockAlphaTask.recordToolError).toHaveBeenCalledWith("new_task")
 	})
 
 	it("should parse todos with different statuses correctly", async () => {
@@ -372,7 +385,7 @@ describe("newTaskTool", () => {
 			partial: false,
 		}
 
-		await newTaskTool.handle(mockCline as any, withNativeArgs(block), {
+		await newTaskTool.handle(mockAlphaTask as any, withNativeArgs(block), {
 			askApproval: mockAskApproval,
 			handleError: mockHandleError,
 			pushToolResult: mockPushToolResult,
@@ -408,7 +421,7 @@ describe("newTaskTool", () => {
 				partial: false,
 			}
 
-			await newTaskTool.handle(mockCline as any, withNativeArgs(block), {
+			await newTaskTool.handle(mockAlphaTask as any, withNativeArgs(block), {
 				askApproval: mockAskApproval,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
@@ -416,8 +429,8 @@ describe("newTaskTool", () => {
 
 			// Should NOT error when todos is missing and setting is disabled
 			expect(mockSayAndCreateMissingParamError).not.toHaveBeenCalledWith("new_task", "todos")
-			expect(mockCline.consecutiveMistakeCount).toBe(0)
-			expect(mockCline.recordToolError).not.toHaveBeenCalledWith("new_task")
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(0)
+			expect(mockAlphaTask.recordToolError).not.toHaveBeenCalledWith("new_task")
 
 			// Should create task with empty todos array
 			expect(mockStartSubtask).toHaveBeenCalledWith("Test message", [], "code")
@@ -444,7 +457,7 @@ describe("newTaskTool", () => {
 				partial: false,
 			}
 
-			await newTaskTool.handle(mockCline as any, withNativeArgs(block), {
+			await newTaskTool.handle(mockAlphaTask as any, withNativeArgs(block), {
 				askApproval: mockAskApproval,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
@@ -452,8 +465,8 @@ describe("newTaskTool", () => {
 
 			// Should error when todos is missing and setting is enabled
 			expect(mockSayAndCreateMissingParamError).toHaveBeenCalledWith("new_task", "todos")
-			expect(mockCline.consecutiveMistakeCount).toBe(1)
-			expect(mockCline.recordToolError).toHaveBeenCalledWith("new_task")
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(1)
+			expect(mockAlphaTask.recordToolError).toHaveBeenCalledWith("new_task")
 
 			// Should NOT create task
 			expect(mockStartSubtask).not.toHaveBeenCalled()
@@ -480,7 +493,7 @@ describe("newTaskTool", () => {
 				partial: false,
 			}
 
-			await newTaskTool.handle(mockCline as any, withNativeArgs(block), {
+			await newTaskTool.handle(mockAlphaTask as any, withNativeArgs(block), {
 				askApproval: mockAskApproval,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
@@ -488,7 +501,7 @@ describe("newTaskTool", () => {
 
 			// Should NOT error when todos is provided and setting is enabled
 			expect(mockSayAndCreateMissingParamError).not.toHaveBeenCalledWith("new_task", "todos")
-			expect(mockCline.consecutiveMistakeCount).toBe(0)
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(0)
 
 			// Should create task with parsed todos
 			expect(mockStartSubtask).toHaveBeenCalledWith(
@@ -522,7 +535,7 @@ describe("newTaskTool", () => {
 				partial: false,
 			}
 
-			await newTaskTool.handle(mockCline as any, withNativeArgs(block), {
+			await newTaskTool.handle(mockAlphaTask as any, withNativeArgs(block), {
 				askApproval: mockAskApproval,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
@@ -530,7 +543,7 @@ describe("newTaskTool", () => {
 
 			// Should NOT error when todos is empty string and setting is enabled
 			expect(mockSayAndCreateMissingParamError).not.toHaveBeenCalledWith("new_task", "todos")
-			expect(mockCline.consecutiveMistakeCount).toBe(0)
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(0)
 
 			// Should create task with empty todos array
 			expect(mockStartSubtask).toHaveBeenCalledWith("Test message", [], "code")
@@ -556,7 +569,7 @@ describe("newTaskTool", () => {
 				partial: false,
 			}
 
-			await newTaskTool.handle(mockCline as any, withNativeArgs(block), {
+			await newTaskTool.handle(mockAlphaTask as any, withNativeArgs(block), {
 				askApproval: mockAskApproval,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
@@ -589,7 +602,7 @@ describe("newTaskTool", () => {
 				partial: false,
 			}
 
-			await newTaskTool.handle(mockCline as any, withNativeArgs(block), {
+			await newTaskTool.handle(mockAlphaTask as any, withNativeArgs(block), {
 				askApproval: mockAskApproval,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
@@ -619,7 +632,7 @@ describe("newTaskTool delegation flow", () => {
 		// Use a fresh local cline instance to avoid cross-test interference
 		const localStartSubtask = vi.fn()
 		const localEmit = vi.fn()
-		const localCline = {
+		const localAlpha = {
 			ask: vi.fn(),
 			sayAndCreateMissingParamError: mockSayAndCreateMissingParamError,
 			emit: localEmit,
@@ -648,7 +661,7 @@ describe("newTaskTool delegation flow", () => {
 		}
 
 		// Act
-		await newTaskTool.handle(localCline as any, withNativeArgs(block), {
+		await newTaskTool.handle(localAlpha as any, withNativeArgs(block), {
 			askApproval: mockAskApproval,
 			handleError: mockHandleError,
 			pushToolResult: mockPushToolResult,

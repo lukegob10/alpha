@@ -34,10 +34,12 @@
 			"save": "Afbeelding opslaan",
 			"viewCode": "Code bekijken",
 			"viewDiagram": "Diagram bekijken",
-			"close": "Sluiten"
+			"close": "Sluiten",
+			"open": "Diagram openen"
 		},
 		"modal": {
-			"codeTitle": "Mermaid-code"
+			"codeTitle": "Mermaid-code",
+			"title": "Zeemeermindiagram"
 		},
 		"tabs": {
 			"diagram": "Diagram",
@@ -110,5 +112,7 @@
 	"costs": {
 		"own": "Eigen",
 		"subtasks": "Subtaken"
-	}
+	},
+	"dismiss": "Negeer",
+	"dismissAndDontShowAgain": "Sluiten en niet meer weergeven"
 }

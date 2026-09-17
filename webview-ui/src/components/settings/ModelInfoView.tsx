@@ -121,7 +121,7 @@ export const ModelInfoView = ({
 					<div className="text-xs text-vscode-descriptionForeground mb-1">
 						{t("settings:serviceTier.pricingTableTitle")}
 					</div>
-					<div className="border border-vscode-dropdown-border rounded-xs overflow-hidden">
+					<div className="overflow-hidden rounded-xl border border-vscode-dropdown-border shadow-sm">
 						<table className="w-full text-sm">
 							<thead className="bg-vscode-dropdown-background">
 								<tr>

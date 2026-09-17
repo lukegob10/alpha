@@ -1,4 +1,18 @@
 {
+	"messageActions": {
+		"copy": "Copia",
+		"copied": "Copiato",
+		"edit": "Modifica e invia di nuovo",
+		"restart": "Riparti dalla richiesta precedente",
+		"restartWarning": "La richiesta precedente verrà eseguita di nuovo e tutti i messaggi successivi verranno sostituiti. I file dell’area di lavoro resteranno invariati.",
+		"restartWithCheckpoint": "La richiesta precedente verrà eseguita di nuovo e tutti i messaggi successivi verranno sostituiti. Ripristinare anche i file al relativo checkpoint?",
+		"restartOnly": "Riavvia senza ripristinare i file"
+	},
+	"activityTrace": {
+		"needsAttention": "Richiede attenzione",
+		"workedFor": "Ha lavorato per {{duration}}"
+	},
+	"completionReport": "Resoconto finale",
 	"greeting": "Benvenuto a Alpha",
 	"task": {
 		"title": "Attività",
@@ -30,7 +44,9 @@
 	"unpin": "Rilascia",
 	"pin": "Fissa",
 	"fileChangesInConversation": {
-		"header": "{{count}} file modificati in questa conversazione"
+		"header": "File modificati: {{count}}",
+		"linesChanged": "{{added}} righe aggiunte, {{removed}} righe rimosse",
+		"openFile": "Apri file: {{path}}"
 	},
 	"tokenProgress": {
 		"availableSpace": "Spazio disponibile: {{amount}} tokens",
@@ -213,18 +229,21 @@
 		"didViewTopLevel": "Alpha ha visualizzato i file di primo livello in questa directory",
 		"wantsToViewRecursive": "Alpha vuole visualizzare ricorsivamente tutti i file in questa directory",
 		"didViewRecursive": "Alpha ha visualizzato ricorsivamente tutti i file in questa directory",
-		"wantsToSearch": "Alpha vuole cercare in questa directory <code>{{regex}}</code>",
-		"didSearch": "Alpha ha cercato in questa directory <code>{{regex}}</code>",
-		"wantsToSearchOutsideWorkspace": "Alpha vuole cercare in questa directory (fuori dall'area di lavoro) <code>{{regex}}</code>",
-		"didSearchOutsideWorkspace": "Alpha ha cercato in questa directory (fuori dall'area di lavoro) <code>{{regex}}</code>",
+		"wantsToSearch": "Alpha vuole cercare in una directory",
+		"didSearch": "Alpha ha cercato in una directory",
+		"wantsToSearchOutsideWorkspace": "Alpha vuole cercare in una directory (fuori dall'area di lavoro)",
+		"didSearchOutsideWorkspace": "Alpha ha cercato in una directory (fuori dall'area di lavoro)",
 		"wantsToViewTopLevelOutsideWorkspace": "Alpha vuole visualizzare i file di primo livello in questa directory (fuori dall'area di lavoro)",
 		"didViewTopLevelOutsideWorkspace": "Alpha ha visualizzato i file di primo livello in questa directory (fuori dall'area di lavoro)",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha vuole visualizzare ricorsivamente tutti i file in questa directory (fuori dall'area di lavoro)",
 		"didViewRecursiveOutsideWorkspace": "Alpha ha visualizzato ricorsivamente tutti i file in questa directory (fuori dall'area di lavoro)",
-		"wantsToViewMultipleDirectories": "Alpha vuole visualizzare più directory"
+		"wantsToViewMultipleDirectories": "Alpha vuole visualizzare più directory",
+		"wantsToSearchMultiple": "Alpha desidera eseguire ricerche di file {{count}}",
+		"didSearchMultiple": "Alpha ha eseguito ricerche di file {{count}}"
 	},
 	"commandOutput": "Output del Comando",
 	"commandExecution": {
+		"command": "Comando",
 		"abort": "Interrompi",
 		"running": "In esecuzione",
 		"pid": "PID: {{pid}}",
@@ -315,6 +334,7 @@
 	"contextManagement": {
 		"tokens": "token",
 		"condensation": {
+			"unchanged": "Il contesto rientra già nel limite",
 			"title": "Contesto condensato",
 			"inProgress": "Condensazione del contesto...",
 			"errorHeader": "Impossibile condensare il contesto"
@@ -347,8 +367,11 @@
 			"gpt54": "Provider Poe: abbiamo aggiunto Poe come provider AI così puoi accedere direttamente ai modelli Poe in Alpha.",
 			"slashSkills": "Miglioramenti per xAI e MiniMax: il provider xAI è stato migrato alla Responses API, sono state aggiunte utility di trasformazione riutilizzabili, sono stati aggiornati i valori predefiniti di Grok-4.20 e sono stati corretti gli elenchi dei modelli MiniMax e la gestione della finestra di contesto per una configurazione più affidabile.",
 			"geminiPro": "Supporto Gemini 3.1 Pro: Aggiunto il supporto per il modello Gemini 3.1 Pro e impostato come modello Gemini predefinito per prestazioni migliori.",
-			"cliNdjson": "Protocollo NDJSON del CLI: Nuovo protocollo NDJSON via stdin, sottocomandi di elenco e comando di esecuzione modularizzato per flussi di lavoro CLI più flessibili.",
-			"cliRelease": "CLI v0.1.0: Il CLI di Alpha raggiunge la sua prima release ufficiale con un'interfaccia di comandi stabile."
+			"welcome": "Alpha v{{version}} migliora la verifica, il controllo dei comandi e la continuità delle attività.",
+			"acceptanceChecks": "Riutilizza i controlli superati finché gli input dichiarati rimangono invariati.",
+			"commandControl": "Attendi, invia input e interrompi i comandi in background appartenenti all’attività.",
+			"workflowContinuity": "Mantieni i vincoli dell’attività e il contesto delle competenze dopo ricaricamento e compattazione.",
+			"chatUpdates": "Usa azioni di chat più chiare e seleziona un fornitore al termine dell’attività."
 		}
 	},
 	"costs": {
@@ -363,7 +386,6 @@
 			"copy_code": "Copia codice"
 		}
 	},
-	"profileViolationWarning": "Il profilo corrente non è compatibile con le impostazioni della tua organizzazione",
 	"shellIntegration": {
 		"title": "Avviso di esecuzione comando",
 		"description": "Il tuo comando viene eseguito senza l'integrazione shell del terminale VSCode. Per sopprimere questo avviso puoi disattivare l'integrazione shell nella sezione <strong>Terminal</strong> delle <settingsLink>impostazioni di Alpha</settingsLink> o risolvere i problemi di integrazione del terminale VSCode utilizzando il link qui sotto.",
@@ -382,6 +404,7 @@
 		}
 	},
 	"codebaseSearch": {
+		"title": "Ricerca nel codice",
 		"wantsToSearch": "Alpha vuole cercare nella base di codice <code>{{query}}</code>",
 		"wantsToSearchWithPath": "Alpha vuole cercare nella base di codice <code>{{query}}</code> in <code>{{path}}</code>",
 		"didSearch_one": "Trovato 1 risultato",
@@ -457,8 +480,19 @@
 	},
 	"queuedMessages": {
 		"title": "Messaggi in coda",
-		"clickToEdit": "Clicca per modificare il messaggio"
+		"clickToEdit": "Clicca per modificare il messaggio",
+		"steering": "Reindirizzamento…",
+		"queueFailed": "Non è stato possibile mettere il messaggio in coda. La bozza è ancora nell'editor.",
+		"steerFailed": "Non è stato possibile avviare il reindirizzamento. Il messaggio in coda è ancora disponibile.",
+		"edit": "Modifica",
+		"editTooltip": "Modifica questo messaggio in coda",
+		"editing": "Modifica nel compositore",
+		"dragHandle": "Trascina il messaggio in coda",
+		"dragTooltip": "Trascina per riordinare questo messaggio in coda",
+		"steer": "Sterza",
+		"steerTooltip": "Invia questo messaggio in coda nella svolta corrente"
 	},
+	"modelResponseDelayed": "In attesa del prossimo aggiornamento del modello. Un ragionamento più lungo può richiedere tempo.",
 	"slashCommand": {
 		"wantsToRun": "Alpha vuole eseguire un comando slash",
 		"didRun": "Alpha ha eseguito un comando slash"
@@ -486,5 +520,38 @@
 		"title": "Provider non più supportato",
 		"message": "Ci dispiace, questo provider non è più supportato. Abbiamo visto che pochissimi utenti di Alpha lo utilizzavano effettivamente e dobbiamo ridurre la portata del nostro codice per continuare a procedere velocemente e servire bene la nostra community. È stata una decisione davvero difficile, ma ci permette di concentrarci su ciò che conta di più per te. Lo sappiamo, è una seccatura.",
 		"openSettings": "Apri impostazioni"
+	},
+	"githubActions": {
+		"request": "Richiesta",
+		"create_pull_request": "Crea pull request",
+		"get_pull_request": "Visualizza pull request",
+		"list_checks": "Elenca controlli",
+		"merge_pull_request": "Unisci pull request",
+		"comment": "Aggiungi commento"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "Ispeziona agenti",
+			"wait_agent": "Attendi aggiornamenti agente",
+			"unknown": "Azione agente"
+		},
+		"failed": "{{action}} non riuscito: {{error}}",
+		"list": {
+			"running": "Ispezione agenti...",
+			"completed": "Agente {{count}} ispezionato",
+			"completed_other": "Agenti {{count}} ispezionati",
+			"mailbox": "Aggiornamento della casella di posta {{count}}",
+			"mailbox_other": "Aggiornamenti della casella di posta {{count}}"
+		},
+		"wait": {
+			"running": "In attesa degli aggiornamenti dell'agente...",
+			"noActiveAgents": "Nessun agente attivo da attendere",
+			"cancelled": "Attesa dell'agente annullata",
+			"timedOut": "Nessun aggiornamento dell'agente prima del timeout",
+			"alreadyDelivered": "Nessun nuovo aggiornamento; risultati già consegnati",
+			"received": "Aggiornamento agente {{count}} ricevuto",
+			"received_other": "Aggiornamenti agente {{count}} ricevuti",
+			"completed": "Attesa agente completata"
+		}
 	}
 }

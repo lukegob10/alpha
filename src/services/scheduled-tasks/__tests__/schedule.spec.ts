@@ -33,6 +33,29 @@ describe("scheduled task schedule calculation", () => {
 		expect(getNextRunAt(schedule, 3 * 24 * 60 * 60 * 1000)).toBe(259_201_000)
 	})
 
+	it("advances fixed intervals beyond the former iteration limit", () => {
+		const schedule: ScheduledTaskSchedule = {
+			type: "customInterval",
+			startAt: 0,
+			timezone: "UTC",
+			intervalMs: 1,
+		}
+
+		expect(getNextRunAt(schedule, 20_000)).toBe(20_001)
+	})
+
+	it("honors endAt after advancing many fixed intervals", () => {
+		const schedule: ScheduledTaskSchedule = {
+			type: "customInterval",
+			startAt: 0,
+			endAt: 20_000,
+			timezone: "UTC",
+			intervalMs: 1,
+		}
+
+		expect(getNextRunAt(schedule, 20_000)).toBeUndefined()
+	})
+
 	it("clamps monthly schedules to valid target-month days", () => {
 		const schedule: ScheduledTaskSchedule = {
 			type: "monthly",

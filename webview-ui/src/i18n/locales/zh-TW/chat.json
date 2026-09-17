@@ -1,4 +1,18 @@
 {
+	"messageActions": {
+		"copy": "複製",
+		"copied": "已複製",
+		"edit": "編輯並重新傳送",
+		"restart": "從上一則請求重新開始",
+		"restartWarning": "將重新執行上一則請求，並取代其後的所有訊息。工作區檔案將維持現狀。",
+		"restartWithCheckpoint": "將重新執行上一則請求，並取代其後的所有訊息。是否同時將檔案還原至對應的檢查點？",
+		"restartOnly": "重新開始但不還原檔案"
+	},
+	"activityTrace": {
+		"needsAttention": "需要處理",
+		"workedFor": "工作用時 {{duration}}"
+	},
+	"completionReport": "完成報告",
 	"greeting": "歡迎使用 Alpha！",
 	"task": {
 		"title": "工作",
@@ -30,7 +44,9 @@
 	"unpin": "取消釘選",
 	"pin": "釘選",
 	"fileChangesInConversation": {
-		"header": "此對話中已變更 {{count}} 個檔案"
+		"header": "已編輯檔案：{{count}}",
+		"linesChanged": "新增 {{added}} 行，刪除 {{removed}} 行",
+		"openFile": "開啟檔案：{{path}}"
 	},
 	"retry": {
 		"title": "重試",
@@ -209,6 +225,7 @@
 	"contextManagement": {
 		"tokens": "Token",
 		"condensation": {
+			"unchanged": "上下文已在限制範圍內",
 			"title": "上下文已壓縮",
 			"inProgress": "正在壓縮上下文...",
 			"errorHeader": "壓縮上下文失敗"
@@ -256,13 +273,16 @@
 		"didViewRecursive": "Alpha 已遞迴檢視此目錄中的所有檔案",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha 想要遞迴檢視此目錄（工作區外）中的所有檔案",
 		"didViewRecursiveOutsideWorkspace": "Alpha 已遞迴檢視此目錄（工作區外）中的所有檔案",
-		"wantsToSearch": "Alpha 想要在此目錄中搜尋 <code>{{regex}}</code>",
-		"didSearch": "Alpha 已在此目錄中搜尋 <code>{{regex}}</code>",
-		"wantsToSearchOutsideWorkspace": "Alpha 想要在此目錄（工作區外）中搜尋 <code>{{regex}}</code>",
-		"didSearchOutsideWorkspace": "Alpha 已在此目錄（工作區外）中搜尋 <code>{{regex}}</code>",
-		"wantsToViewMultipleDirectories": "Alpha 想要查看多個目錄"
+		"wantsToSearch": "Alpha 想要搜尋一個目錄",
+		"didSearch": "Alpha 已搜尋一個目錄",
+		"wantsToSearchOutsideWorkspace": "Alpha 想要搜尋一個目錄（工作區外）",
+		"didSearchOutsideWorkspace": "Alpha 已搜尋一個目錄（工作區外）",
+		"wantsToViewMultipleDirectories": "Alpha 想要查看多個目錄",
+		"wantsToSearchMultiple": "Alpha 想要執行 {{count}} 檔案搜索",
+		"didSearchMultiple": "Alpha 運行 {{count}} 文件搜索"
 	},
 	"codebaseSearch": {
+		"title": "程式碼庫搜尋",
 		"wantsToSearch": "Alpha 想要在程式碼庫中搜尋 <code>{{query}}</code>",
 		"wantsToSearchWithPath": "Alpha 想要在 <code>{{path}}</code> 中搜尋程式碼庫 <code>{{query}}</code>",
 		"didSearch_one": "找到 1 個結果",
@@ -271,6 +291,7 @@
 	},
 	"commandOutput": "命令輸出",
 	"commandExecution": {
+		"command": "命令",
 		"abort": "中止",
 		"running": "執行中",
 		"pid": "PID: {{pid}}",
@@ -369,8 +390,11 @@
 			"gpt54": "Poe 供應商：已將 Poe 新增為 AI 供應商，讓你可以在 Alpha 中直接存取 Poe 模型。",
 			"slashSkills": "xAI 與 MiniMax 改進：已將 xAI 供應商遷移至 Responses API，加入可重複使用的轉換工具，更新了 Grok-4.20 預設值，並修正 MiniMax 模型清單和上下文視窗處理方式，讓設定更加可靠。",
 			"geminiPro": "Gemini 3.1 Pro 支援：新增 Gemini 3.1 Pro 模型支援，並設為預設 Gemini 模型以提升效能。",
-			"cliNdjson": "CLI NDJSON 協定：新增 NDJSON stdin 協定、list 子指令，以及模組化的 run 指令，提供更彈性的 CLI 工作流程。",
-			"cliRelease": "CLI v0.1.0：Alpha CLI 以穩定的指令介面達成首個正式版本。"
+			"welcome": "Alpha v{{version}} 改善了驗證、命令控制和任務連續性。",
+			"acceptanceChecks": "只要宣告的輸入保持不變，就可重用已通過的檢查。",
+			"commandControl": "等待、傳送輸入並停止屬於目前任務的背景命令。",
+			"workflowContinuity": "重新載入和壓縮上下文後，保留任務限制和技能上下文。",
+			"chatUpdates": "使用更清楚的聊天操作，並在任務完成後選擇提供者。"
 		}
 	},
 	"reasoning": {
@@ -393,7 +417,6 @@
 			"copy_code": "複製程式碼"
 		}
 	},
-	"profileViolationWarning": "目前設定檔與您的組織設定不相容",
 	"shellIntegration": {
 		"title": "命令執行警告",
 		"description": "命令正在沒有 VS Code 終端機 Shell 整合的情況下執行。若要隱藏此警告，可在 <settingsLink>Alpha 設定</settingsLink> 的 <strong>終端機</strong> 區塊中停用 Shell 整合，或使用下方連結排解 VS Code 終端機整合問題。",
@@ -451,8 +474,19 @@
 	},
 	"queuedMessages": {
 		"title": "佇列中的訊息",
-		"clickToEdit": "點選以編輯訊息"
+		"clickToEdit": "點選以編輯訊息",
+		"steering": "正在轉向…",
+		"queueFailed": "訊息無法加入佇列。草稿仍保留在輸入框中。",
+		"steerFailed": "無法開始轉向。佇列中的訊息仍然可用。",
+		"edit": "編輯",
+		"editTooltip": "編輯此排隊訊息",
+		"editing": "在作曲家中編輯",
+		"dragHandle": "拖曳排隊訊息",
+		"dragTooltip": "拖曳以重新排序此排隊訊息",
+		"steer": "轉向",
+		"steerTooltip": "將此排隊訊息發送到當前回合"
 	},
+	"modelResponseDelayed": "正在等待模型的下一次更新。較長的推理可能需要一些時間。",
 	"contextMenu": {
 		"noResults": "找不到結果",
 		"problems": "問題",
@@ -482,5 +516,38 @@
 		"title": "供應商不再受支援",
 		"message": "抱歉，此供應商已不再受支援。我們發現實際使用它的 Alpha 使用者非常少，我們需要縮減程式碼庫的範圍，以便繼續快速交付並更好地服務社群。這是一個非常艱難的決定，但它能讓我們專注於對你最重要的事情。我們知道這很遺憾。",
 		"openSettings": "開啟設定"
+	},
+	"githubActions": {
+		"request": "請求",
+		"create_pull_request": "建立提取要求",
+		"get_pull_request": "檢視提取要求",
+		"list_checks": "列出檢查",
+		"merge_pull_request": "合併提取要求",
+		"comment": "新增留言"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "檢查代理",
+			"wait_agent": "等待代理更新",
+			"unknown": "代理行動"
+		},
+		"failed": "{{action}} 失敗：{{error}}",
+		"list": {
+			"running": "考察代理...",
+			"completed": "檢查{{count}}代理",
+			"completed_other": "檢查{{count}}代理商",
+			"mailbox": "{{count}}信箱更新",
+			"mailbox_other": "{{count}}信箱更新"
+		},
+		"wait": {
+			"running": "等待代理更新...",
+			"noActiveAgents": "沒有活躍的代理商等待",
+			"cancelled": "代理等待已取消",
+			"timedOut": "超時前沒有代理更新",
+			"alreadyDelivered": "沒有新的更新；結果已經交付",
+			"received": "收到 {{count}} 代理程式更新",
+			"received_other": "收到 {{count}} 代理程式更新",
+			"completed": "代理等待完成"
+		}
 	}
 }

@@ -1,6 +1,3 @@
-import * as vscode from "vscode"
-import path from "path"
-
 import { Task } from "../task/Task"
 import { CodeIndexManager } from "../../services/code-index/manager"
 import { getWorkspacePath } from "../../utils/path"
@@ -57,7 +54,7 @@ export class CodebaseSearchTool extends BaseTool<"codebase_search"> {
 				throw new Error("Extension context is not available.")
 			}
 
-			const manager = CodeIndexManager.getInstance(context)
+			const manager = CodeIndexManager.getInstance(context, workspacePath)
 
 			if (!manager) {
 				throw new Error("CodeIndexManager is not available.")
@@ -87,6 +84,7 @@ export class CodebaseSearchTool extends BaseTool<"codebase_search"> {
 					score: number
 					startLine: number
 					endLine: number
+					context?: string
 					codeChunk: string
 				}>
 			}
@@ -95,13 +93,14 @@ export class CodebaseSearchTool extends BaseTool<"codebase_search"> {
 				if (!result.payload) return
 				if (!("filePath" in result.payload)) return
 
-				const relativePath = vscode.workspace.asRelativePath(result.payload.filePath, false)
+				const relativePath = result.payload.filePath
 
 				jsonResult.results.push({
 					filePath: relativePath,
 					score: result.score,
 					startLine: result.payload.startLine,
 					endLine: result.payload.endLine,
+					context: result.payload.context,
 					codeChunk: result.payload.codeChunk.trim(),
 				})
 			})
@@ -117,6 +116,7 @@ ${jsonResult.results
 		(result) => `File path: ${result.filePath}
 Score: ${result.score}
 Lines: ${result.startLine}-${result.endLine}
+Context: ${result.context ?? ""}
 Code Chunk: ${result.codeChunk}
 `,
 	)

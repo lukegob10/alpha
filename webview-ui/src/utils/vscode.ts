@@ -1,3 +1,4 @@
+import type { TicketRequest } from "@alpha-code/types"
 import type { WebviewApi } from "vscode-webview"
 
 import { WebviewMessage } from "@alpha/WebviewMessage"
@@ -30,6 +31,10 @@ class VSCodeAPIWrapper {
 	 *
 	 * @param message Arbitrary data (must be JSON serializable) to send to the extension context.
 	 */
+	public postTicketMessage(message: TicketRequest | { type: "ticketsReady" }) {
+		this.vsCodeApi?.postMessage(message)
+	}
+
 	public postMessage(message: WebviewMessage) {
 		if (this.vsCodeApi) {
 			this.vsCodeApi.postMessage(message)

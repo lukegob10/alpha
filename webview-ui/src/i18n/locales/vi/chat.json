@@ -1,4 +1,18 @@
 {
+	"messageActions": {
+		"copy": "Sao chép",
+		"copied": "Đã sao chép",
+		"edit": "Chỉnh sửa và gửi lại",
+		"restart": "Bắt đầu lại từ yêu cầu trước",
+		"restartWarning": "Yêu cầu trước sẽ được chạy lại và tất cả tin nhắn sau đó sẽ được thay thế. Các tệp trong không gian làm việc sẽ giữ nguyên.",
+		"restartWithCheckpoint": "Yêu cầu trước sẽ được chạy lại và tất cả tin nhắn sau đó sẽ được thay thế. Bạn có muốn khôi phục cả các tệp về điểm kiểm tra tương ứng không?",
+		"restartOnly": "Bắt đầu lại mà không khôi phục tệp"
+	},
+	"activityTrace": {
+		"needsAttention": "Cần chú ý",
+		"workedFor": "Đã làm việc trong {{duration}}"
+	},
+	"completionReport": "Báo cáo hoàn tất",
 	"greeting": "Chào mừng đến với Alpha",
 	"task": {
 		"title": "Nhiệm vụ",
@@ -30,7 +44,9 @@
 	"unpin": "Bỏ ghim khỏi đầu",
 	"pin": "Ghim lên đầu",
 	"fileChangesInConversation": {
-		"header": "{{count}} tệp đã thay đổi trong cuộc hội thoại này"
+		"header": "Tệp đã chỉnh sửa: {{count}}",
+		"linesChanged": "Đã thêm {{added}} dòng, đã xóa {{removed}} dòng",
+		"openFile": "Mở tệp: {{path}}"
 	},
 	"tokenProgress": {
 		"availableSpace": "Không gian khả dụng: {{amount}} tokens",
@@ -213,18 +229,21 @@
 		"didViewTopLevel": "Alpha đã xem các tệp cấp cao nhất trong thư mục này",
 		"wantsToViewRecursive": "Alpha muốn xem đệ quy tất cả các tệp trong thư mục này",
 		"didViewRecursive": "Alpha đã xem đệ quy tất cả các tệp trong thư mục này",
-		"wantsToSearch": "Alpha muốn tìm kiếm trong thư mục này cho <code>{{regex}}</code>",
-		"didSearch": "Alpha đã tìm kiếm trong thư mục này cho <code>{{regex}}</code>",
-		"wantsToSearchOutsideWorkspace": "Alpha muốn tìm kiếm trong thư mục này (ngoài không gian làm việc) cho <code>{{regex}}</code>",
-		"didSearchOutsideWorkspace": "Alpha đã tìm kiếm trong thư mục này (ngoài không gian làm việc) cho <code>{{regex}}</code>",
+		"wantsToSearch": "Alpha muốn tìm kiếm trong một thư mục",
+		"didSearch": "Alpha đã tìm kiếm trong một thư mục",
+		"wantsToSearchOutsideWorkspace": "Alpha muốn tìm kiếm trong một thư mục (ngoài không gian làm việc)",
+		"didSearchOutsideWorkspace": "Alpha đã tìm kiếm trong một thư mục (ngoài không gian làm việc)",
 		"wantsToViewTopLevelOutsideWorkspace": "Alpha muốn xem các tệp cấp cao nhất trong thư mục này (ngoài không gian làm việc)",
 		"didViewTopLevelOutsideWorkspace": "Alpha đã xem các tệp cấp cao nhất trong thư mục này (ngoài không gian làm việc)",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha muốn xem đệ quy tất cả các tệp trong thư mục này (ngoài không gian làm việc)",
 		"didViewRecursiveOutsideWorkspace": "Alpha đã xem đệ quy tất cả các tệp trong thư mục này (ngoài không gian làm việc)",
-		"wantsToViewMultipleDirectories": "Alpha muốn xem nhiều thư mục"
+		"wantsToViewMultipleDirectories": "Alpha muốn xem nhiều thư mục",
+		"wantsToSearchMultiple": "Alpha muốn chạy tìm kiếm tệp {{count}}",
+		"didSearchMultiple": "Alpha chạy tìm kiếm tệp {{count}}"
 	},
 	"commandOutput": "Kết quả lệnh",
 	"commandExecution": {
+		"command": "Lệnh",
 		"running": "Đang chạy",
 		"abort": "Hủy bỏ",
 		"pid": "PID: {{pid}}",
@@ -316,6 +335,7 @@
 	"contextManagement": {
 		"tokens": "token",
 		"condensation": {
+			"unchanged": "Ngữ cảnh đã nằm trong giới hạn",
 			"title": "Ngữ cảnh đã tóm tắt",
 			"inProgress": "Đang cô đọng ngữ cảnh...",
 			"errorHeader": "Không thể cô đọng ngữ cảnh"
@@ -348,8 +368,11 @@
 			"gpt54": "Nhà cung cấp Poe: Đã thêm Poe làm nhà cung cấp AI để bạn có thể truy cập trực tiếp các model Poe trong Alpha.",
 			"slashSkills": "Cải tiến xAI và MiniMax: Đã chuyển nhà cung cấp xAI sang Responses API, thêm các tiện ích chuyển đổi có thể tái sử dụng, cập nhật các giá trị mặc định của Grok-4.20 và sửa danh sách model MiniMax cùng cách xử lý context window để thiết lập đáng tin cậy hơn.",
 			"geminiPro": "Hỗ trợ Gemini 3.1 Pro: Đã thêm hỗ trợ model Gemini 3.1 Pro và đặt làm model Gemini mặc định để cải thiện hiệu suất.",
-			"cliNdjson": "Giao thức NDJSON CLI: Giao thức NDJSON stdin mới, lệnh con list, và lệnh run được module hóa cho quy trình CLI linh hoạt hơn.",
-			"cliRelease": "CLI v0.1.0: CLI Alpha đạt bản phát hành chính thức đầu tiên với giao diện lệnh ổn định."
+			"welcome": "Alpha v{{version}} cải thiện việc xác minh, điều khiển lệnh và tính liên tục của tác vụ.",
+			"acceptanceChecks": "Sử dụng lại các kiểm tra đã đạt khi dữ liệu đầu vào đã khai báo không thay đổi.",
+			"commandControl": "Chờ, gửi dữ liệu đầu vào và dừng các lệnh chạy nền thuộc tác vụ.",
+			"workflowContinuity": "Giữ lại các ràng buộc của tác vụ và ngữ cảnh kỹ năng khi tải lại và nén ngữ cảnh.",
+			"chatUpdates": "Sử dụng các thao tác trò chuyện rõ ràng hơn và chọn nhà cung cấp sau khi tác vụ hoàn tất."
 		}
 	},
 	"costs": {
@@ -364,7 +387,6 @@
 			"copy_code": "Sao chép mã"
 		}
 	},
-	"profileViolationWarning": "Hồ sơ hiện tại không tương thích với cài đặt của tổ chức của bạn",
 	"shellIntegration": {
 		"title": "Cảnh báo thực thi lệnh",
 		"description": "Lệnh của bạn đang được thực thi mà không có tích hợp shell terminal VSCode. Để ẩn cảnh báo này, bạn có thể vô hiệu hóa tích hợp shell trong phần <strong>Terminal</strong> của <settingsLink>cài đặt Alpha</settingsLink> hoặc khắc phục sự cố tích hợp terminal VSCode bằng liên kết bên dưới.",
@@ -383,6 +405,7 @@
 		}
 	},
 	"codebaseSearch": {
+		"title": "Tìm kiếm mã nguồn",
 		"wantsToSearch": "Alpha muốn tìm kiếm trong cơ sở mã cho <code>{{query}}</code>",
 		"wantsToSearchWithPath": "Alpha muốn tìm kiếm trong cơ sở mã cho <code>{{query}}</code> trong <code>{{path}}</code>",
 		"didSearch_one": "Đã tìm thấy 1 kết quả",
@@ -458,8 +481,19 @@
 	},
 	"queuedMessages": {
 		"title": "Tin nhắn trong hàng đợi",
-		"clickToEdit": "Nhấp để chỉnh sửa tin nhắn"
+		"clickToEdit": "Nhấp để chỉnh sửa tin nhắn",
+		"steering": "Đang chuyển hướng…",
+		"queueFailed": "Không thể thêm tin nhắn vào hàng đợi. Bản nháp vẫn còn trong ô soạn thảo.",
+		"steerFailed": "Không thể bắt đầu chuyển hướng. Tin nhắn trong hàng đợi vẫn còn đó.",
+		"edit": "Biên tập",
+		"editTooltip": "Chỉnh sửa tin nhắn được xếp hàng đợi này",
+		"editing": "Chỉnh sửa trong nhà soạn nhạc",
+		"dragHandle": "Kéo tin nhắn xếp hàng đợi",
+		"dragTooltip": "Kéo để sắp xếp lại thư đã xếp hàng đợi này",
+		"steer": "Chỉ đạo",
+		"steerTooltip": "Gửi tin nhắn được xếp hàng đợi này vào lượt hiện tại"
 	},
+	"modelResponseDelayed": "Đang chờ cập nhật tiếp theo từ mô hình. Quá trình suy luận dài hơn có thể mất thời gian.",
 	"slashCommand": {
 		"wantsToRun": "Alpha muốn chạy lệnh slash",
 		"didRun": "Alpha đã chạy lệnh slash"
@@ -487,5 +521,38 @@
 		"title": "Nhà cung cấp không còn được hỗ trợ",
 		"message": "Xin lỗi, nhà cung cấp này không còn được hỗ trợ. Chúng tôi nhận thấy rất ít người dùng Alpha thực sự sử dụng nó và chúng tôi cần thu hẹp phạm vi mã nguồn để tiếp tục phát triển nhanh và phục vụ tốt cộng đồng. Đây là một quyết định thực sự khó khăn nhưng nó cho phép chúng tôi tập trung vào điều quan trọng nhất với bạn. Chúng tôi biết điều này thật phiền, xin thông cảm.",
 		"openSettings": "Mở cài đặt"
+	},
+	"githubActions": {
+		"request": "Yêu cầu",
+		"create_pull_request": "Tạo pull request",
+		"get_pull_request": "Xem pull request",
+		"list_checks": "Liệt kê các kiểm tra",
+		"merge_pull_request": "Hợp nhất pull request",
+		"comment": "Thêm bình luận"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "Kiểm tra đại lý",
+			"wait_agent": "Chờ cập nhật đại lý",
+			"unknown": "Hành động của đại lý"
+		},
+		"failed": "{{action}} không thành công: {{error}}",
+		"list": {
+			"running": "Đại lý kiểm tra...",
+			"completed": "Đại lý {{count}} đã được kiểm tra",
+			"completed_other": "Đại lý {{count}} đã được kiểm tra",
+			"mailbox": "Cập nhật hộp thư {{count}}",
+			"mailbox_other": "Cập nhật hộp thư {{count}}"
+		},
+		"wait": {
+			"running": "Đang chờ cập nhật đại lý...",
+			"noActiveAgents": "Không có đại lý đang hoạt động nào để chờ",
+			"cancelled": "Đã hủy chờ đại lý",
+			"timedOut": "Không có cập nhật đại lý nào trước khi hết thời gian chờ",
+			"alreadyDelivered": "Không có bản cập nhật mới; kết quả đã được gửi",
+			"received": "Đã nhận được bản cập nhật tác nhân {{count}}",
+			"received_other": "Đã nhận được bản cập nhật tác nhân {{count}}",
+			"completed": "Đã hoàn tất chờ tác nhân"
+		}
 	}
 }

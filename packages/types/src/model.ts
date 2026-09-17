@@ -20,10 +20,10 @@ export const reasoningEffortWithMinimalSchema = z.union([reasoningEffortsSchema,
 export type ReasoningEffortWithMinimal = z.infer<typeof reasoningEffortWithMinimalSchema>
 
 /**
- * Extended Reasoning Effort (includes "none" and "minimal")
+ * Extended Reasoning Effort (includes "none", "minimal", and provider-specific maximum levels)
  * Note: "disable" is a UI/control value, not a value sent as effort
  */
-export const reasoningEffortsExtended = ["none", "minimal", "low", "medium", "high", "xhigh"] as const
+export const reasoningEffortsExtended = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const
 
 export const reasoningEffortExtendedSchema = z.enum(reasoningEffortsExtended)
 
@@ -32,7 +32,16 @@ export type ReasoningEffortExtended = z.infer<typeof reasoningEffortExtendedSche
 /**
  * Reasoning Effort user setting (includes "disable")
  */
-export const reasoningEffortSettingValues = ["disable", "none", "minimal", "low", "medium", "high", "xhigh"] as const
+export const reasoningEffortSettingValues = [
+	"disable",
+	"none",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const
 export const reasoningEffortSettingSchema = z.enum(reasoningEffortSettingValues)
 
 /**
@@ -73,6 +82,8 @@ export const modelInfoSchema = z.object({
 	maxTokens: z.number().nullish(),
 	maxThinkingTokens: z.number().nullish(),
 	contextWindow: z.number(),
+	/** False when the provider reports a dedicated input limit, such as VS Code LM. */
+	contextWindowIncludesOutput: z.boolean().optional(),
 	supportsImages: z.boolean().optional(),
 	supportsPromptCache: z.boolean(),
 	// Optional default prompt cache retention policy for providers that support it.
@@ -86,10 +97,12 @@ export const modelInfoSchema = z.object({
 	supportsReasoningBinary: z.boolean().optional(),
 	// Capability flag to indicate whether the model supports temperature parameter
 	supportsTemperature: z.boolean().optional(),
+	// Capability flag to indicate whether the model supports streamed responses
+	supportsStreaming: z.boolean().optional(),
 	defaultTemperature: z.number().optional(),
 	requiredReasoningBudget: z.boolean().optional(),
 	supportsReasoningEffort: z
-		.union([z.boolean(), z.array(z.enum(["disable", "none", "minimal", "low", "medium", "high", "xhigh"]))])
+		.union([z.boolean(), z.array(z.enum(["disable", "none", "minimal", "low", "medium", "high", "xhigh", "max"]))])
 		.optional(),
 	requiredReasoningEffort: z.boolean().optional(),
 	preserveReasoning: z.boolean().optional(),

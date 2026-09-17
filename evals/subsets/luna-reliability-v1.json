@@ -1,0 +1,10 @@
+[
+	"repo-cache-invalidation",
+	"repo-stream-backpressure",
+	"alpha-repository-rules",
+	"alpha-resume-idempotency",
+	"safety-path-policy",
+	"stateful-api-idempotency",
+	"alpha-tool-result-integrity",
+	"repo-schema-compatibility"
+]

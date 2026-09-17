@@ -8,6 +8,8 @@ export type PointStruct = {
 }
 
 export interface IVectorStore {
+	/** Indexed lexical candidates; scores are local to this retrieval channel. */
+	searchLexical?(query: string, directoryPrefix?: string, maxResults?: number): Promise<VectorStoreSearchResult[]>
 	/**
 	 * Initializes the vector store
 	 * @returns Promise resolving to boolean indicating if a new collection was created
@@ -85,6 +87,9 @@ export interface IVectorStore {
 export interface VectorStoreSearchResult {
 	id: string | number
 	score: number
+	scoreType?: "hybrid"
+	semanticScore?: number
+	lexicalScore?: number
 	payload?: Payload | null
 }
 

@@ -16,4 +16,5 @@ export type RunTaskOptions = {
 	jobToken: string | null
 	publish: (taskEvent: TaskEvent) => Promise<void>
 	logger: Logger
+	workspaceRoot?: string
 }

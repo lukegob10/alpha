@@ -1,188 +1,119 @@
 ---
 name: evals-context
-description: Provides context about the Alpha evals system structure in this monorepo. Use when tasks mention "evals", "evaluation", "eval runs", "eval exercises", or working with the evals infrastructure. Helps distinguish between the evals execution system (packages/evals, apps/web-evals) and the evals web app (apps/web-evals/src/app/evals).
+description: Provides context for Alpha's retained evaluation infrastructure and extension quality suites. Use when a task mentions evals, evaluation runs, eval exercises, benchmark campaigns, or VS Code extension certification.
 ---
 
 # Evals Codebase Context
 
-## When to Use This Skill
+Use this skill for work on the evaluation infrastructure that exercises the Alpha VS Code extension. The repository keeps
+the evaluator package, the exact-host VS Code runner, extension-specific suites, and the campaign definitions needed to
+reproduce benchmark work. The former standalone eval dashboard and nightly packaging variant are retired.
 
-Use this skill when the task involves:
+## When to use this skill
 
-- Modifying or debugging the evals execution infrastructure
-- Adding new eval exercises or languages
-- Working with the evals web interface (apps/web-evals)
-- Modifying the public evals display page on Alpha repository
-- Understanding where evals code lives in this monorepo
+Use it when a task involves:
 
-## When NOT to Use This Skill
+- `packages/evals/` controller, runner, database, evidence, grading, or benchmark code
+- `apps/vscode-e2e/` host-contract and live evaluation runners
+- extension-specific suites under `evals/`
+- reproducible benchmark campaign definitions under `.frontier-campaign/`
+- adding or reviewing exercises in the external [Alpha-Evals](https://github.com/AlphaInc/Alpha-Evals) repository
 
-Do NOT use this skill when:
+Do not use it for ordinary extension or webview changes unless the task also changes an evaluation contract.
 
-- Working on unrelated parts of the codebase (extension, webview-ui, etc.)
-- The task is purely about the VS Code extension's core functionality
-- Working on the main website pages that don't involve evals
+## Repository boundaries
 
-## Key Disambiguation: Two "Evals" Locations
+| Component              | Path                                                   | Purpose                                                                                                                  |
+| ---------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| Evaluation package     | `packages/evals/`                                      | Optional controller, runner, database, evidence, grading, and benchmark tooling that executes the real VS Code extension |
+| VS Code runner         | `apps/vscode-e2e/`                                     | Exact VS Code 1.122.1 contract tests, scripted providers, and live host harnesses                                        |
+| Local extension suites | `evals/`                                               | Deterministic extension and safety suites that are part of Alpha's quality checks                                        |
+| Campaign definitions   | `.frontier-campaign/`                                  | Tracked campaign configuration and templates; generated attempt output is disposable and ignored                         |
+| Exercise repository    | [Alpha-Evals](https://github.com/AlphaInc/Alpha-Evals) | External language exercises and their tests                                                                              |
 
-This monorepo has **two distinct evals-related locations** that can cause confusion:
+The evaluator launches the real extension through VS Code. It is not a second Alpha runtime. Keep extension policy,
+tool availability, persisted task behavior, and provider contracts in the extension packages that own them.
 
-| Component                   | Path                                                   | Purpose                                                        |
-| --------------------------- | ------------------------------------------------------ | -------------------------------------------------------------- |
-| **Evals Execution System**  | `packages/evals/`                                      | Core eval infrastructure: CLI, DB schema, Docker configs       |
-| **Evals Management UI**     | `apps/web-evals/`                                      | Next.js app for creating/monitoring eval runs (localhost:3446) |
-| **Website Evals Page**      | `apps/web-evals/`                                      | Public Alpha repository page displaying eval results           |
-| **External Exercises Repo** | [Alpha-Evals](https://github.com/AlphaInc/Alpha-Evals) | Actual coding exercises (NOT in this monorepo)                 |
+## Package layout
 
-## Directory Structure Reference
+The package layout can evolve with the evaluator; these are the current active areas:
 
-### `packages/evals/` - Core Evals Package
-
-```
+```text
 packages/evals/
-├── ARCHITECTURE.md          # Detailed architecture documentation
-├── ADDING-EVALS.md          # Guide for adding new exercises/languages
-├── README.md                # Setup and running instructions
-├── docker-compose.yml       # Container orchestration
-├── Dockerfile.runner        # Runner container definition
-├── Dockerfile.web           # Web app container
-├── drizzle.config.ts        # Database ORM config
-├── src/
-│   ├── index.ts             # Package exports
-│   ├── cli/                 # CLI commands for running evals
-│   │   ├── runEvals.ts      # Orchestrates complete eval runs
-│   │   ├── runTask.ts       # Executes individual tasks in containers
-│   │   ├── runUnitTest.ts   # Validates task completion via tests
-│   │   └── redis.ts         # Redis pub/sub integration
-│   ├── db/
-│   │   ├── schema.ts        # Database schema (runs, tasks)
-│   │   ├── queries/         # Database query functions
-│   │   └── migrations/      # SQL migrations
-│   └── exercises/
-│       └── index.ts         # Exercise loading utilities
-└── scripts/
-    └── setup.sh             # Local macOS setup script
+├── src/benchmark/       # benchmark commands
+├── src/campaign/        # reproducible campaign definitions and runs
+├── src/certification/   # certification workflows
+├── src/cli/             # evaluator orchestration and VS Code task execution
+├── src/db/              # run, task, and evidence persistence
+├── src/evidence/        # manifests, journals, reconstruction, and integrity checks
+├── src/experiments/     # governed comparison and reporting helpers
+├── src/exercises/       # exercise loading and task metadata
+├── src/grading/         # result aggregation and grading plugins
+├── src/infrastructure/  # Docker and runner lifecycle adapters
+├── src/lifecycle/       # run state transitions
+├── src/orchestration/   # run scheduling and coordination
+└── src/testing/         # evaluator test helpers and contracts
 ```
 
-### `apps/web-evals/` - Evals Management Web App
+Treat `packages/evals/src/**/__fixtures__` and contract fixtures as immutable test inputs unless a contract change
+explicitly requires updating them. Historical `.frontier-campaign/campaigns/*/attempts/` output is evidence, not a source
+fixture; new runs should write it outside Git or under the ignored attempts path.
 
-```
-apps/web-evals/
-├── src/
-│   ├── app/
-│   │   ├── page.tsx         # Home page (runs list)
-│   │   ├── runs/
-│   │   │   ├── new/         # Create new eval run
-│   │   │   └── [id]/        # View specific run status
-│   │   └── api/runs/        # SSE streaming endpoint
-│   ├── actions/             # Server actions
-│   │   ├── runs.ts          # Run CRUD operations
-│   │   ├── tasks.ts         # Task queries
-│   │   ├── exercises.ts     # Exercise listing
-│   │   └── heartbeat.ts     # Controller health checks
-│   ├── hooks/               # React hooks (SSE, models, etc.)
-│   └── lib/                 # Utilities and schemas
+## Common commands
+
+Run the default repository checks from the root for the extension, webview, and VS Code E2E dependency graph:
+
+```sh
+pnpm lint
+pnpm check-types
+pnpm test
 ```
 
-### `apps/web-evals/` - Evals Web App
+Use the exact release-host gate when a change affects extension activation, VS Code APIs, task lifecycle, or packaging:
 
-```
-apps/web-evals/
-├── page.tsx      # Fetches and displays public eval results
-├── evals.tsx     # Main evals display component
-├── plot.tsx      # Visualization component
-└── types.ts      # EvalRun type (extends packages/evals types)
+```sh
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
 ```
 
-This page **displays** eval results on the public Alpha repository website. It imports types from `@alpha-code/evals` but does NOT run evals.
+The default root checks intentionally exclude optional evaluator work. Run all retained workspace checks explicitly when
+that surface is in scope:
 
-## Architecture Overview
-
-The evals system is a distributed evaluation platform that runs AI coding tasks in isolated VS Code environments:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Web App (apps/web-evals)  ──────────────────────────────── │
-│        │                                                    │
-│        ▼                                                    │
-│  PostgreSQL ◄────► Controller Container                     │
-│        │               │                                    │
-│        ▼               ▼                                    │
-│     Redis ◄───► Runner Containers (1-25 parallel)           │
-└─────────────────────────────────────────────────────────────┘
+```sh
+pnpm lint:all
+pnpm check-types:all
+pnpm test:all
 ```
 
-**Key components:**
+For evaluator-only validation, prefer the package scripts so each suite's environment is explicit:
 
-- **Controller**: Orchestrates eval runs, spawns runners, manages task queue (p-queue)
-- **Runner**: Isolated Docker container with VS Code + Alpha extension + language runtimes
-- **Redis**: Pub/sub for real-time events (NOT task queuing)
-- **PostgreSQL**: Stores runs, tasks, metrics
-
-## Common Tasks Quick Reference
-
-### Adding a New Eval Exercise
-
-1. Add exercise to [Alpha-Evals](https://github.com/AlphaInc/Alpha-Evals) repo (external)
-2. See [`packages/evals/ADDING-EVALS.md`](packages/evals/ADDING-EVALS.md) for structure
-
-### Modifying Eval CLI Behavior
-
-Edit files in [`packages/evals/src/cli/`](packages/evals/src/cli/):
-
-- [`runEvals.ts`](packages/evals/src/cli/runEvals.ts) - Run orchestration
-- [`runTask.ts`](packages/evals/src/cli/runTask.ts) - Task execution
-- [`runUnitTest.ts`](packages/evals/src/cli/runUnitTest.ts) - Test validation
-
-### Modifying the Evals Web Interface
-
-Edit files in [`apps/web-evals/src/`](apps/web-evals/src/):
-
-- [`app/runs/new/new-run.tsx`](apps/web-evals/src/app/runs/new/new-run.tsx) - New run form
-- [`actions/runs.ts`](apps/web-evals/src/actions/runs.ts) - Run server actions
-
-### Modifying the Public Evals Display Page
-
-Edit files in [`apps/web-evals/`](apps/web-evals/):
-
-- [`evals.tsx`](apps/web-evals/evals.tsx) - Display component
-- [`plot.tsx`](apps/web-evals/plot.tsx) - Charts
-
-### Database Schema Changes
-
-1. Edit [`packages/evals/src/db/schema.ts`](packages/evals/src/db/schema.ts)
-2. Generate migration: `cd packages/evals && pnpm drizzle-kit generate`
-3. Apply migration: `pnpm drizzle-kit migrate`
-
-## Running Evals Locally
-
-```bash
-# From repo root
-pnpm evals
-
-# Opens web UI at http://localhost:3446
+```sh
+pnpm test:evals
+pnpm test:evals:offline
+pnpm --filter @alpha-code/evals test:unit
+pnpm --filter @alpha-code/evals test:contract
+pnpm --filter @alpha-code/evals test:certification
 ```
 
-**Ports (defaults):**
+Live evaluator runs require the configured provider credentials, a working VS Code installation, and any services named
+by the selected package command. Do not treat an offline or fixture run as evidence for live provider quality.
 
-- PostgreSQL: 5433
-- Redis: 6380
-- Web: 3446
+## Adding or changing exercises
 
-## Testing
+Exercises live in the external [Alpha-Evals](https://github.com/AlphaInc/Alpha-Evals) repository. Follow
+[`packages/evals/ADDING-EVALS.md`](../../../packages/evals/ADDING-EVALS.md) for the exercise contract and keep the evaluator's
+language adapters, Docker image, and tests in sync. A new exercise should include its instructions, implementation stub,
+language-specific test, and deterministic success criteria.
 
-```bash
-# packages/evals tests
-cd packages/evals && npx vitest run
+Changes to evaluator behavior should include focused package tests and, when the behavior crosses the extension boundary,
+an exact-host or contract test. Preserve historical run records and result values; migrations and compatibility readers
+must remain able to load older records.
 
-# apps/web-evals tests
-cd apps/web-evals && npx vitest run
-```
+## Campaigns and evidence
 
-## Key Types/Exports from `@alpha-code/evals`
+Tracked files under `.frontier-campaign/` are definitions, templates, and reproducibility metadata. Generated attempt
+outputs belong in the ignored `campaigns/*/attempts/` paths or in the external evidence roots documented by the run. Do
+not delete campaign definitions or immutable evaluator fixtures because no current source file imports them: the campaign
+runner resolves them by path at execution time.
 
-The package exports are defined in [`packages/evals/src/index.ts`](packages/evals/src/index.ts):
-
-- Database queries: `getRuns`, `getTasks`, `getTaskMetrics`, etc.
-- Schema types: `Run`, `Task`, `TaskMetrics`
-- Used by both `apps/web-evals` and `apps/web-evals`
+When reporting benchmark results, identify the campaign/configuration, evaluator version, VS Code host, model and effort,
+fixture or exercise revision, and evidence root. Separate deterministic offline checks from live-model observations.

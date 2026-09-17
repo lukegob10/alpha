@@ -39,13 +39,17 @@ function fuzzySearch(lines: string[], searchChunk: string, startIndex: number, e
 	let bestMatchIndex = -1
 	let bestMatchContent = ""
 	const searchLen = searchChunk.split(/\r?\n/).length
+	const maxStartIndex = endIndex - searchLen
+	if (maxStartIndex < startIndex) {
+		return { bestScore, bestMatchIndex, bestMatchContent }
+	}
 
 	// Middle-out from the midpoint
-	const midPoint = Math.floor((startIndex + endIndex) / 2)
+	const midPoint = Math.floor((startIndex + maxStartIndex) / 2)
 	let leftIndex = midPoint
 	let rightIndex = midPoint + 1
 
-	while (leftIndex >= startIndex || rightIndex <= endIndex - searchLen) {
+	while (leftIndex >= startIndex || rightIndex <= maxStartIndex) {
 		if (leftIndex >= startIndex) {
 			const originalChunk = lines.slice(leftIndex, leftIndex + searchLen).join("\n")
 			const similarity = getSimilarity(originalChunk, searchChunk)
@@ -57,7 +61,7 @@ function fuzzySearch(lines: string[], searchChunk: string, startIndex: number, e
 			leftIndex--
 		}
 
-		if (rightIndex <= endIndex - searchLen) {
+		if (rightIndex <= maxStartIndex) {
 			const originalChunk = lines.slice(rightIndex, rightIndex + searchLen).join("\n")
 			const similarity = getSimilarity(originalChunk, searchChunk)
 			if (similarity > bestScore) {
@@ -306,7 +310,8 @@ export class MultiSearchReplaceDiffStrategy implements DiffStrategy {
 		let diffResults: DiffResult[] = []
 		let appliedCount = 0
 		const replacements = matches
-			.map((match) => ({
+			.map((match, index) => ({
+				blockIndex: index + 1,
 				startLine: Number(match[2] ?? 0),
 				searchContent: match[6],
 				replaceContent: match[7],
@@ -316,6 +321,11 @@ export class MultiSearchReplaceDiffStrategy implements DiffStrategy {
 		for (const replacement of replacements) {
 			let { searchContent, replaceContent } = replacement
 			let startLine = replacement.startLine + (replacement.startLine === 0 ? 0 : delta)
+			// Keep the submitted identity even when blocks are sorted or earlier edits shift their lines.
+			const blockDescription =
+				`SEARCH/REPLACE block ${replacement.blockIndex}` +
+				(replacement.startLine ? ` (original start line: ${replacement.startLine})` : "") +
+				":\n"
 
 			// First unescape any escaped markers in the content
 			searchContent = this.unescapeMarkers(searchContent)
@@ -340,10 +350,11 @@ export class MultiSearchReplaceDiffStrategy implements DiffStrategy {
 				diffResults.push({
 					success: false,
 					error:
+						blockDescription +
 						`Search and replace content are identical - no changes would be made\n\n` +
 						`Debug Info:\n` +
 						`- Search and replace must be different to make changes\n` +
-						`- Use read_file to verify the content you want to change`,
+						`- Omit this unchanged block. If a different edit was intended, use read_file to verify the current content and submit a different replacement.`,
 				})
 				continue
 			}
@@ -356,7 +367,9 @@ export class MultiSearchReplaceDiffStrategy implements DiffStrategy {
 			if (searchLines.length === 0) {
 				diffResults.push({
 					success: false,
-					error: `Empty search content is not allowed\n\nDebug Info:\n- Search content cannot be empty\n- For insertions, provide a specific line using :start_line: and include content to search for\n- For example, match a single line to insert before/after it`,
+					error:
+						blockDescription +
+						`Empty search content is not allowed\n\nDebug Info:\n- Search content cannot be empty\n- For insertions, provide a specific line using :start_line: and include content to search for\n- For example, match a single line to insert before/after it`,
 				})
 				continue
 			}
@@ -381,8 +394,10 @@ export class MultiSearchReplaceDiffStrategy implements DiffStrategy {
 				const exactEndIndex = exactStartIndex + searchLen - 1
 
 				// Try exact match first
-				const originalChunk = resultLines.slice(exactStartIndex, exactEndIndex + 1).join("\n")
-				const similarity = getSimilarity(originalChunk, searchChunk)
+				const originalChunkLines = resultLines.slice(exactStartIndex, exactEndIndex + 1)
+				const originalChunk = originalChunkLines.join("\n")
+				const similarity =
+					originalChunkLines.length === searchLen ? getSimilarity(originalChunk, searchChunk) : 0
 				if (similarity >= this.fuzzyThreshold) {
 					matchIndex = exactStartIndex
 					bestMatchScore = similarity
@@ -453,7 +468,9 @@ export class MultiSearchReplaceDiffStrategy implements DiffStrategy {
 
 					diffResults.push({
 						success: false,
-						error: `No sufficiently similar match found${lineRange} (${Math.floor(bestMatchScore * 100)}% similar, needs ${Math.floor(this.fuzzyThreshold * 100)}%)\n\nDebug Info:\n- Similarity Score: ${Math.floor(bestMatchScore * 100)}%\n- Required Threshold: ${Math.floor(this.fuzzyThreshold * 100)}%\n- Search Range: ${startLine ? `starting at line ${startLine}` : "start to end"}\n- Tried both standard and aggressive line number stripping\n- Tip: Use the read_file tool to get the latest content of the file before attempting to use the apply_diff tool again, as the file content may have changed\n\nSearch Content:\n${searchChunk}${bestMatchSection}${originalContentSection}`,
+						error:
+							blockDescription +
+							`No sufficiently similar match found${lineRange} (${Math.floor(bestMatchScore * 100)}% similar, needs ${Math.floor(this.fuzzyThreshold * 100)}%)\n\nDebug Info:\n- Similarity Score: ${Math.floor(bestMatchScore * 100)}%\n- Required Threshold: ${Math.floor(this.fuzzyThreshold * 100)}%\n- Search Range: ${startLine ? `starting at line ${startLine}` : "start to end"}\n- Tried both standard and aggressive line number stripping\n- Tip: Use the read_file tool to get the latest content of the file before attempting to use the apply_diff tool again, as the file content may have changed\n\nSearch Content:\n${searchChunk}${bestMatchSection}${originalContentSection}`,
 					})
 					continue
 				}

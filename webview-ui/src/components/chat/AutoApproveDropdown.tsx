@@ -31,6 +31,11 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 	const {
 		autoApprovalEnabled,
 		allowedCommands,
+		deniedCommands,
+		currentTaskAutoApprovalRestricted,
+		alwaysAllowReadOnlyOutsideWorkspace,
+		alwaysAllowWriteOutsideWorkspace,
+		alwaysAllowWriteProtected,
 		setAutoApprovalEnabled,
 		setAlwaysAllowReadOnly,
 		setAlwaysAllowReadOnlyOutsideWorkspace,
@@ -39,8 +44,9 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		setAlwaysAllowWriteProtected,
 		setAlwaysAllowExecute,
 		setAlwaysAllowMcp,
-		setAlwaysAllowModeSwitch,
 		setAlwaysAllowSubtasks,
+		setAlwaysAllowSubagents,
+		setAlwaysAllowTickets,
 		setAlwaysAllowFollowupQuestions,
 		setAllowedCommands,
 	} = useExtensionState()
@@ -57,8 +63,9 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 			alwaysAllowWriteProtected: true,
 			alwaysAllowExecute: true,
 			alwaysAllowMcp: true,
-			alwaysAllowModeSwitch: true,
 			alwaysAllowSubtasks: true,
+			alwaysAllowSubagents: true,
+			alwaysAllowTickets: true,
 			alwaysAllowFollowupQuestions: true,
 			allowedCommands: nextAllowedCommands,
 		}
@@ -72,8 +79,9 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		setAlwaysAllowWriteProtected(true)
 		setAlwaysAllowExecute(true)
 		setAlwaysAllowMcp(true)
-		setAlwaysAllowModeSwitch(true)
 		setAlwaysAllowSubtasks(true)
+		setAlwaysAllowSubagents(true)
+		setAlwaysAllowTickets(true)
 		setAlwaysAllowFollowupQuestions(true)
 		setAllowedCommands(nextAllowedCommands)
 
@@ -88,10 +96,11 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		setAlwaysAllowExecute,
 		setAlwaysAllowFollowupQuestions,
 		setAlwaysAllowMcp,
-		setAlwaysAllowModeSwitch,
 		setAlwaysAllowReadOnly,
 		setAlwaysAllowReadOnlyOutsideWorkspace,
 		setAlwaysAllowSubtasks,
+		setAlwaysAllowSubagents,
+		setAlwaysAllowTickets,
 		setAlwaysAllowWrite,
 		setAlwaysAllowWriteOutsideWorkspace,
 		setAlwaysAllowWriteProtected,
@@ -115,11 +124,14 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 				case "alwaysAllowMcp":
 					setAlwaysAllowMcp(value)
 					break
-				case "alwaysAllowModeSwitch":
-					setAlwaysAllowModeSwitch(value)
-					break
 				case "alwaysAllowSubtasks":
 					setAlwaysAllowSubtasks(value)
+					break
+				case "alwaysAllowSubagents":
+					setAlwaysAllowSubagents(value)
+					break
+				case "alwaysAllowTickets":
+					setAlwaysAllowTickets(value)
 					break
 				case "alwaysAllowFollowupQuestions":
 					setAlwaysAllowFollowupQuestions(value)
@@ -138,8 +150,9 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 			setAlwaysAllowWrite,
 			setAlwaysAllowExecute,
 			setAlwaysAllowMcp,
-			setAlwaysAllowModeSwitch,
 			setAlwaysAllowSubtasks,
+			setAlwaysAllowSubagents,
+			setAlwaysAllowTickets,
 			setAlwaysAllowFollowupQuestions,
 			setAutoApprovalEnabled,
 		],
@@ -185,6 +198,29 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		return Object.keys(toggles).length
 	}, [toggles])
 
+	const hasFullAutoApproval = React.useMemo(
+		() =>
+			enabledCount === totalCount &&
+			alwaysAllowReadOnlyOutsideWorkspace &&
+			alwaysAllowWriteOutsideWorkspace &&
+			alwaysAllowWriteProtected &&
+			!currentTaskAutoApprovalRestricted &&
+			(!toggles.alwaysAllowExecute ||
+				(allowedCommands?.some((command) => command.trim() === "*") === true &&
+					deniedCommands?.some((command) => command.trim().length > 0) !== true)),
+		[
+			allowedCommands,
+			alwaysAllowReadOnlyOutsideWorkspace,
+			alwaysAllowWriteOutsideWorkspace,
+			alwaysAllowWriteProtected,
+			currentTaskAutoApprovalRestricted,
+			deniedCommands,
+			enabledCount,
+			toggles.alwaysAllowExecute,
+			totalCount,
+		],
+	)
+
 	const { effectiveAutoApprovalEnabled } = useAutoApprovalState(toggles, autoApprovalEnabled)
 
 	const tooltipText =
@@ -205,12 +241,11 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 					data-testid="auto-approve-dropdown-trigger"
 					className={cn(
 						"inline-flex items-center gap-1.5 relative whitespace-nowrap px-1.5 py-1 text-xs",
-						"bg-transparent border border-[rgba(255,255,255,0.08)] rounded-md text-vscode-foreground",
+						"composer-control text-vscode-foreground",
 						"transition-all duration-150 focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder focus-visible:ring-inset",
 						"max-[300px]:shrink-0",
-						disabled
-							? "opacity-50 cursor-not-allowed"
-							: "opacity-90 hover:opacity-100 hover:bg-[rgba(255,255,255,0.03)] hover:border-[rgba(255,255,255,0.15)] cursor-pointer",
+						disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer opacity-90 hover:opacity-100",
+						effectiveAutoApprovalEnabled && "text-[var(--alpha-brand-teal)]",
 						triggerClassName,
 					)}>
 					{!effectiveAutoApprovalEnabled ? (
@@ -222,14 +257,14 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 					<span className="hidden min-[300px]:inline truncate min-w-0">
 						{!effectiveAutoApprovalEnabled
 							? t("chat:autoApprove.triggerLabelOff")
-							: enabledCount === totalCount
+							: hasFullAutoApproval
 								? t("chat:autoApprove.triggerLabelAll")
 								: t("chat:autoApprove.triggerLabel", { count: enabledCount })}
 					</span>
 					<span className="inline min-[300px]:hidden min-w-0">
 						{!effectiveAutoApprovalEnabled
 							? t("chat:autoApprove.triggerLabelOffShort")
-							: enabledCount === totalCount
+							: hasFullAutoApproval
 								? t("chat:autoApprove.triggerLabelAll")
 								: enabledCount}
 					</span>

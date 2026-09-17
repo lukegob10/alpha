@@ -27,12 +27,13 @@ export function convertToMentionPath(path: string, cwd?: string): string {
 	let pathWithoutProtocol = path
 
 	if (path.startsWith("file://")) {
-		pathWithoutProtocol = path.substring(7)
+		const protocolStripped = path.substring("file://".length)
+		pathWithoutProtocol = protocolStripped.startsWith("/") ? protocolStripped : `//${protocolStripped}`
 	} else if (path.startsWith("vscode-remote://")) {
 		const protocolStripped = path.substring("vscode-remote://".length)
 		const firstSlashIndex = protocolStripped.indexOf("/")
 		if (firstSlashIndex !== -1) {
-			pathWithoutProtocol = protocolStripped.substring(firstSlashIndex + 1)
+			pathWithoutProtocol = protocolStripped.substring(firstSlashIndex)
 		} else {
 			pathWithoutProtocol = ""
 		}
@@ -61,11 +62,12 @@ export function convertToMentionPath(path: string, cwd?: string): string {
 		normalizedCwd = normalizedCwd.slice(0, -1)
 	}
 
-	// Always use case-insensitive comparison for path matching
-	const lowerPath = normalizedPath.toLowerCase()
-	const lowerCwd = normalizedCwd.toLowerCase()
+	// Windows drive and UNC paths are case-insensitive. POSIX paths are not.
+	const isCaseInsensitive = /^[a-z]:\//i.test(normalizedCwd) || normalizedCwd.startsWith("//")
+	const comparablePath = isCaseInsensitive ? normalizedPath.toLowerCase() : normalizedPath
+	const comparableCwd = isCaseInsensitive ? normalizedCwd.toLowerCase() : normalizedCwd
 
-	if (lowerPath.startsWith(lowerCwd)) {
+	if (comparablePath === comparableCwd || comparablePath.startsWith(`${comparableCwd}/`)) {
 		let relativePath = normalizedPath.substring(normalizedCwd.length)
 		// Ensure there's a slash after the @ symbol when we create the mention path
 		relativePath = relativePath.startsWith("/") ? relativePath : "/" + relativePath

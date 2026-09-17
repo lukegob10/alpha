@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef, useCallback, useState } from "react"
 import styled from "styled-components"
 import { useCopyToClipboard } from "@src/utils/clipboard"
-import { getHighlighter, isLanguageLoaded, normalizeLanguage } from "@src/utils/highlighter"
+import { getHighlighter, normalizeLanguage } from "@src/utils/highlighter"
 import type { ShikiTransformer } from "shiki"
 import { toJsxRuntime } from "hast-util-to-jsx-runtime"
 import { Fragment, jsx, jsxs } from "react/jsx-runtime"
@@ -21,10 +21,12 @@ export const WINDOW_SHADE_SETTINGS = {
 // Tolerance in pixels for determining when a container is considered "at the bottom"
 export const SCROLL_SNAP_TOLERANCE = 20
 
+const CHAT_TRANSCRIPT_SCROLLER_SELECTOR = '[data-chat-transcript-scroller="true"]'
+
 /*
 overflowX: auto + inner div with padding results in an issue where the top/left/bottom padding renders but the right padding inside does not count as overflow as the width of the element is not exceeded. Once the inner div is outside the boundaries of the parent it counts as overflow.
 https://stackoverflow.com/questions/60778406/why-is-padding-right-clipped-with-overflowscroll/77292459#77292459
-this fixes the issue of right padding clipped off 
+this fixes the issue of right padding clipped off
 “ideal” size in a given axis when given infinite available space--allows the syntax highlighter to grow to largest possible width including its padding
 minWidth: "max-content",
 */
@@ -37,6 +39,7 @@ interface CodeBlockProps {
 	initialWordWrap?: boolean
 	collapsedHeight?: number
 	initialWindowShade?: boolean
+	partial?: boolean
 }
 
 const CodeBlockButton = styled.button`
@@ -59,6 +62,12 @@ const CodeBlockButton = styled.button`
 	&:hover {
 		background: var(--vscode-toolbar-hoverBackground);
 		opacity: 1;
+	}
+
+	&:focus-visible {
+		opacity: 1;
+		outline: 1px solid var(--vscode-focusBorder);
+		outline-offset: 1px;
 	}
 
 	/* Style for Lucide icons to ensure consistent sizing and positioning */
@@ -110,6 +119,11 @@ const CodeBlockContainer = styled.div`
 		opacity: 1;
 		pointer-events: all;
 		cursor: pointer;
+	}
+
+	&:focus-within ${CodeBlockButtonWrapper} {
+		opacity: 1;
+		pointer-events: all;
 	}
 `
 
@@ -174,47 +188,52 @@ const CodeBlock = memo(
 		initialWordWrap = true,
 		initialWindowShade = true,
 		collapsedHeight,
+		partial = false,
 	}: CodeBlockProps) => {
 		// Use word wrap from props, default to true
 		const wordWrap = initialWordWrap
 		const [windowShade, setWindowShade] = useState(initialWindowShade)
 		const currentLanguage = normalizeLanguage(language)
-		const [highlightedCode, setHighlightedCode] = useState<React.ReactNode>(null)
+		const [highlightedCode, setHighlightedCode] = useState<{
+			source: string
+			language: string
+			node: React.ReactNode
+		} | null>(null)
 		const [showCollapseButton, setShowCollapseButton] = useState(true)
 		const codeBlockRef = useRef<HTMLDivElement>(null)
 		const preRef = useRef<HTMLDivElement>(null)
 		const copyButtonWrapperRef = useRef<HTMLDivElement>(null)
 		const { showCopyFeedback, copyWithFeedback } = useCopyToClipboard()
 		const { t } = useAppTranslation()
-		const isMountedRef = useRef(true)
 		const buttonPositionTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 		const collapseTimeout1Ref = useRef<NodeJS.Timeout | null>(null)
 		const collapseTimeout2Ref = useRef<NodeJS.Timeout | null>(null)
 
-		// Syntax highlighting with cached Shiki instance and mounted state management
+		const sourceText = source || ""
+		const fallback = (
+			<pre style={{ padding: 0, margin: 0 }}>
+				<code className={`hljs language-${currentLanguage || "txt"}`}>{sourceText}</code>
+			</pre>
+		)
+		const displayedCode =
+			!partial && highlightedCode?.source === sourceText && highlightedCode.language === currentLanguage
+				? highlightedCode.node
+				: fallback
+
+		// Do not start expensive highlighter work for every fragment of a partial
+		// code fence. The final source is highlighted once when streaming ends.
 		useEffect(() => {
-			// Set mounted state at the beginning of this effect
-			isMountedRef.current = true
-
-			// Create a safe fallback using React elements instead of HTML string
-			const fallback = (
-				<pre style={{ padding: 0, margin: 0 }}>
-					<code className={`hljs language-${currentLanguage || "txt"}`}>{source || ""}</code>
-				</pre>
-			)
-
-			const highlight = async () => {
-				// Show plain text if language needs to be loaded.
-				if (currentLanguage && !isLanguageLoaded(currentLanguage)) {
-					if (isMountedRef.current) {
-						setHighlightedCode(fallback)
-					}
+			let cancelled = false
+			if (partial)
+				return () => {
+					cancelled = true
 				}
 
+			const highlight = async () => {
 				const highlighter = await getHighlighter(currentLanguage)
-				if (!isMountedRef.current) return
+				if (cancelled) return
 
-				const hast = await highlighter.codeToHast(source || "", {
+				const hast = await highlighter.codeToHast(sourceText, {
 					lang: currentLanguage || "txt",
 					theme: document.body.className.toLowerCase().includes("light") ? "github-light" : "github-dark",
 					transformers: [
@@ -236,7 +255,7 @@ const CodeBlock = memo(
 						},
 					] as ShikiTransformer[],
 				})
-				if (!isMountedRef.current) return
+				if (cancelled) return
 
 				// Convert HAST to React elements using hast-util-to-jsx-runtime
 				// This approach eliminates XSS vulnerabilities by avoiding dangerouslySetInnerHTML
@@ -249,27 +268,24 @@ const CodeBlock = memo(
 						// Don't override components - let them render as-is to maintain exact output
 					})
 
-					if (isMountedRef.current) {
-						setHighlightedCode(reactElement)
-					}
+					setHighlightedCode({ source: sourceText, language: currentLanguage, node: reactElement })
 				} catch (error) {
 					console.error("[CodeBlock] Error converting HAST to JSX:", error)
-					if (isMountedRef.current) {
-						setHighlightedCode(fallback)
-					}
 				}
 			}
 
 			highlight().catch((e) => {
+				if (cancelled) return
 				console.error("[CodeBlock] Syntax highlighting error:", e, "\nStack trace:", e.stack)
-				if (isMountedRef.current) {
-					setHighlightedCode(fallback)
-				}
 			})
 
-			// Cleanup function - manage mounted state and clear all timeouts
 			return () => {
-				isMountedRef.current = false
+				cancelled = true
+			}
+		}, [sourceText, currentLanguage, partial])
+
+		useEffect(() => {
+			return () => {
 				if (buttonPositionTimeoutRef.current) {
 					clearTimeout(buttonPositionTimeoutRef.current)
 					buttonPositionTimeoutRef.current = null
@@ -283,7 +299,7 @@ const CodeBlock = memo(
 					collapseTimeout2Ref.current = null
 				}
 			}
-		}, [source, currentLanguage, collapsedHeight])
+		}, [])
 
 		// Check if content height exceeds collapsed height whenever content changes
 		useEffect(() => {
@@ -293,7 +309,7 @@ const CodeBlock = memo(
 				const actualHeight = codeBlock.scrollHeight
 				setShowCollapseButton(actualHeight >= WINDOW_SHADE_SETTINGS.collapsedHeight)
 			}
-		}, [highlightedCode])
+		}, [sourceText, highlightedCode])
 
 		// Ref to track if user was scrolled up *before* the source update
 		// potentially changes scrollHeight
@@ -342,7 +358,7 @@ const CodeBlock = memo(
 			}
 
 			const rectCodeBlock = codeBlock.getBoundingClientRect()
-			const scrollContainer = document.querySelector('[data-virtuoso-scroller="true"]')
+			const scrollContainer = codeBlock.closest<HTMLElement>(CHAT_TRANSCRIPT_SCROLLER_SELECTOR)
 
 			if (!scrollContainer) {
 				return
@@ -410,7 +426,7 @@ const CodeBlock = memo(
 			const handleScroll = () => updateCodeBlockButtonPosition()
 			const handleResize = () => updateCodeBlockButtonPosition()
 
-			const scrollContainer = document.querySelector('[data-virtuoso-scroller="true"]')
+			const scrollContainer = codeBlockRef.current?.closest<HTMLElement>(CHAT_TRANSCRIPT_SCROLLER_SELECTOR)
 			if (scrollContainer) {
 				scrollContainer.addEventListener("scroll", handleScroll)
 				window.addEventListener("resize", handleResize)
@@ -446,8 +462,8 @@ const CodeBlock = memo(
 						wasScrolledUpRef.current = false
 					}
 
-					// Outer container scrolling is handled by Virtuoso's followOutput
-					// and ChatView's handleRowHeightChange — no direct DOM manipulation needed.
+					// ChatView's transcript observer preserves the outer bottom anchor while following,
+					// so this component only owns its inner code-scroll position.
 
 					// Reset the flag
 					shouldScrollAfterHighlightRef.current = false
@@ -460,98 +476,6 @@ const CodeBlock = memo(
 				}
 			}
 		}, [highlightedCode, updateCodeBlockButtonPosition])
-
-		// Advanced inertial scroll chaining
-		// This effect handles the transition between scrolling the code block and the outer container.
-		// When a user scrolls to the boundary of a code block (top or bottom), this implementation:
-		// 1. Detects the boundary condition
-		// 2. Applies inertial scrolling to the outer container for a smooth transition
-		// 3. Adds physics-based momentum for natural deceleration
-		// This creates a seamless experience where scrolling flows naturally between nested scrollable areas
-		useEffect(() => {
-			if (!preRef.current) return
-
-			// Find the outer scrollable container
-			const getScrollContainer = () => {
-				return document.querySelector('[data-virtuoso-scroller="true"]') as HTMLElement
-			}
-
-			// Inertial scrolling implementation
-			let velocity = 0
-			let animationFrameId: number | null = null
-			const FRICTION = 0.85 // Friction coefficient (lower = more friction)
-			const MIN_VELOCITY = 0.5 // Minimum velocity before stopping
-
-			// Animation function for inertial scrolling
-			const animate = () => {
-				const scrollContainer = getScrollContainer()
-				if (!scrollContainer) return
-
-				// Apply current velocity
-				if (Math.abs(velocity) > MIN_VELOCITY) {
-					scrollContainer.scrollBy(0, velocity)
-					velocity *= FRICTION // Apply friction
-					animationFrameId = requestAnimationFrame(animate)
-				} else {
-					velocity = 0
-					animationFrameId = null
-				}
-			}
-
-			// Wheel event handler with inertial scrolling
-			const handleWheel = (e: WheelEvent) => {
-				// If shift is pressed, let the browser handle default horizontal scrolling
-				if (e.shiftKey) {
-					return
-				}
-				if (!preRef.current) return
-
-				// Only handle wheel events if the inner container has a scrollbar,
-				// otherwise let the browser handle the default scrolling
-				const hasScrollbar = preRef.current.scrollHeight > preRef.current.clientHeight
-
-				// Pass through events if we don't need special handling
-				if (!hasScrollbar) {
-					return
-				}
-
-				const scrollContainer = getScrollContainer()
-				if (!scrollContainer) return
-
-				// Check if we're at the top or bottom of the inner container
-				const isAtVeryTop = preRef.current.scrollTop === 0
-				const isAtVeryBottom =
-					Math.abs(preRef.current.scrollHeight - preRef.current.scrollTop - preRef.current.clientHeight) < 1
-
-				// Handle scrolling at container boundaries
-				if ((e.deltaY < 0 && isAtVeryTop) || (e.deltaY > 0 && isAtVeryBottom)) {
-					// Prevent default to stop inner container from handling
-					e.preventDefault()
-
-					const boost = 0.15
-					velocity += e.deltaY * boost
-
-					// Start animation if not already running
-					if (!animationFrameId) {
-						animationFrameId = requestAnimationFrame(animate)
-					}
-				}
-			}
-
-			// Add wheel event listener to inner container
-			const preElement = preRef.current
-			preElement.addEventListener("wheel", handleWheel, { passive: false })
-
-			// Clean up
-			return () => {
-				preElement.removeEventListener("wheel", handleWheel)
-
-				// Cancel any ongoing animation
-				if (animationFrameId) {
-					cancelAnimationFrame(animationFrameId)
-				}
-			}
-		}, [])
 
 		// Track text selection state
 		const [isSelecting, setIsSelecting] = useState(false)
@@ -609,7 +533,7 @@ const CodeBlock = memo(
 					wordWrap={wordWrap}
 					windowShade={windowShade}
 					collapsedHeight={collapsedHeight}
-					highlightedCode={highlightedCode}
+					highlightedCode={displayedCode}
 					updateCodeBlockButtonPosition={updateCodeBlockButtonPosition}
 				/>
 				{!isSelecting && (
@@ -622,6 +546,8 @@ const CodeBlock = memo(
 								content={t(`chat:codeblock.tooltips.${windowShade ? "expand" : "collapse"}`)}
 								side="top">
 								<CodeBlockButton
+									type="button"
+									aria-label={t(`chat:codeblock.tooltips.${windowShade ? "expand" : "collapse"}`)}
 									onClick={() => {
 										// Get the current code block element
 										const codeBlock = codeBlockRef.current // Capture ref early
@@ -656,7 +582,10 @@ const CodeBlock = memo(
 							</StandardTooltip>
 						)}
 						<StandardTooltip content={t("chat:codeblock.tooltips.copy_code")} side="top">
-							<CodeBlockButton onClick={handleCopy}>
+							<CodeBlockButton
+								type="button"
+								aria-label={t("chat:codeblock.tooltips.copy_code")}
+								onClick={handleCopy}>
 								{showCopyFeedback ? <Check size={16} /> : <Copy size={16} />}
 							</CodeBlockButton>
 						</StandardTooltip>

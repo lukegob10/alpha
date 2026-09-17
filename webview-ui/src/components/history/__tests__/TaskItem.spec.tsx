@@ -1,9 +1,10 @@
-import { render, screen, fireEvent } from "@/utils/test-utils"
+import { act, render, screen, fireEvent } from "@/utils/test-utils"
 import { TaskLifecycleState, TaskStatus, type LiveTaskMetadata } from "@alpha-code/types"
-import { ExtensionStateContext } from "@/context/ExtensionStateContext"
+import { ExtensionStateContext, type ExtensionStateContextType } from "@/context/ExtensionStateContext"
 import { vscode } from "@/utils/vscode"
 
 import TaskItem from "../TaskItem"
+import { TASK_OPENING_FEEDBACK_TIMEOUT_MS } from "../useTaskOpeningFeedback"
 
 vi.mock("@/utils/vscode", () => ({
 	vscode: {
@@ -47,6 +48,13 @@ const liveTask = (overrides: Partial<LiveTaskMetadata>): LiveTaskMetadata => ({
 	totalCost: 0,
 	...overrides,
 })
+
+const taskWithLiveMetadata = (metadata: LiveTaskMetadata, variant: "compact" | "full" = "compact") => (
+	<ExtensionStateContext.Provider
+		value={{ currentTaskId: undefined, liveTasksById: { [metadata.id]: metadata } } as ExtensionStateContextType}>
+		<TaskItem item={mockTask} variant={variant} />
+	</ExtensionStateContext.Provider>
+)
 
 describe("TaskItem", () => {
 	beforeEach(() => {
@@ -132,8 +140,26 @@ describe("TaskItem", () => {
 		expect(taskItem).toHaveClass("hover:text-vscode-foreground")
 	})
 
-	it("opens the task when the row is clicked", () => {
+	it("lets a containing task group own the shared card surface", () => {
 		render(
+			<TaskItem
+				item={mockTask}
+				variant="compact"
+				contained
+				isSelected={false}
+				onToggleSelection={vi.fn()}
+				isSelectionMode={false}
+			/>,
+		)
+
+		const taskItem = screen.getByTestId("task-item-1")
+		expect(taskItem).toHaveAttribute("data-contained", "true")
+		expect(taskItem).not.toHaveClass("surface-raised")
+	})
+
+	it("opens the task when the row is clicked", () => {
+		vi.useFakeTimers()
+		const { unmount } = render(
 			<TaskItem
 				item={mockTask}
 				variant="full"
@@ -143,9 +169,59 @@ describe("TaskItem", () => {
 			/>,
 		)
 
-		fireEvent.click(screen.getByTestId("task-item-1"))
+		try {
+			const taskItem = screen.getByTestId("task-item-1")
+			fireEvent.click(taskItem)
+			fireEvent.click(taskItem)
 
-		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "showTaskWithId", text: "1" })
+			expect(vscode.postMessage).toHaveBeenCalledWith({ type: "showTaskWithId", text: "1" })
+			expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+			expect(taskItem).toHaveAttribute("aria-busy", "true")
+			expect(screen.getByTestId("task-opening-indicator")).toBeInTheDocument()
+
+			act(() => vi.advanceTimersByTime(TASK_OPENING_FEEDBACK_TIMEOUT_MS))
+			expect(taskItem).toHaveAttribute("aria-busy", "false")
+			expect(screen.queryByTestId("task-opening-indicator")).not.toBeInTheDocument()
+
+			fireEvent.click(taskItem)
+			expect(vscode.postMessage).toHaveBeenCalledTimes(2)
+		} finally {
+			unmount()
+			vi.useRealTimers()
+		}
+	})
+
+	describe.each(["compact", "full"] as const)("%s task status", (variant) => {
+		it.each([
+			{ lifecycle: TaskLifecycleState.Initializing, isStreaming: false, label: "Starting" },
+			{ lifecycle: TaskLifecycleState.Running, isStreaming: true, label: "Running" },
+			{ lifecycle: TaskLifecycleState.Running, isStreaming: false, label: "Active" },
+		])("shows a spinner for background $label tasks", ({ lifecycle, isStreaming, label }) => {
+			render(taskWithLiveMetadata(liveTask({ lifecycle, isStreaming }), variant))
+
+			const indicator = screen.getByTestId("task-status-indicator")
+			expect(indicator).toHaveAttribute("aria-label", `Task status: ${label}`)
+			expect(indicator.querySelector(".animate-spin")).toBeInTheDocument()
+			expect(indicator.querySelector(".rounded-full")).not.toBeInTheDocument()
+			expect(screen.queryByTestId("task-opening-indicator")).not.toBeInTheDocument()
+		})
+	})
+
+	it.each([
+		{ lifecycle: TaskLifecycleState.Waiting, status: TaskStatus.Interactive, label: "Waiting for input" },
+		{ lifecycle: TaskLifecycleState.Completed, status: TaskStatus.None, label: "Complete" },
+		{ lifecycle: TaskLifecycleState.Failed, status: TaskStatus.None, label: "Failed" },
+	])("replaces the running spinner with a dot when the task becomes $label", ({ lifecycle, status, label }) => {
+		const { rerender } = render(taskWithLiveMetadata(liveTask({})))
+		expect(screen.getByTestId("task-status-indicator").querySelector(".animate-spin")).toBeInTheDocument()
+
+		// A delayed streaming update must not keep a waiting or finished task spinning.
+		rerender(taskWithLiveMetadata(liveTask({ lifecycle, status, isStreaming: true })))
+
+		const indicator = screen.getByTestId("task-status-indicator")
+		expect(indicator).toHaveAttribute("aria-label", `Task status: ${label}`)
+		expect(indicator.querySelector(".animate-spin")).not.toBeInTheDocument()
+		expect(indicator.querySelector(".rounded-full")).toBeInTheDocument()
 	})
 
 	it("shows waiting live tasks as a static status dot", () => {

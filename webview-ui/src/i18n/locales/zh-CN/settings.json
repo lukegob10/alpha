@@ -41,7 +41,9 @@
 		"experimental": "实验性",
 		"language": "语言",
 		"about": "关于 Alpha",
-		"skills": "Skills"
+		"skills": "Skills",
+		"agents": "代理",
+		"github": "GitHub"
 	},
 	"about": {
 		"bugReport": {
@@ -209,7 +211,8 @@
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
 			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
 			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
-			"localIndexPathRequired": "Local index path is required"
+			"localIndexPathRequired": "Local index path is required",
+			"embeddingRateLimitSecondsRange": "嵌入请求延迟必须介于 0.1 到 60 秒之间"
 		},
 		"optional": "可选",
 		"advancedConfigLabel": "高级配置",
@@ -230,7 +233,9 @@
 		"localIndexPathLabel": "Local Index Path",
 		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
 		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
-		"savedSecretPlaceholder": "Saved value hidden"
+		"savedSecretPlaceholder": "Saved value hidden",
+		"embeddingRateLimitLabel": "限制嵌入请求率",
+		"embeddingRateLimitDescription": "在索引时嵌入 API 请求之间添加延迟。如果您的嵌入提供程序对代码库索引进行速率限制，请增加此值。"
 	},
 	"autoApprove": {
 		"toggleShortcut": "您可以<SettingsLink>在 IDE 首选项中</SettingsLink>为此设置配置全局快捷方式。",
@@ -271,22 +276,29 @@
 			"label": "子任务",
 			"description": "允许创建和完成子任务而无需批准"
 		},
+		"tickets": {
+			"label": "Alpha 工单",
+			"description": "自动批准创建和更新 Alpha 工单。"
+		},
 		"followupQuestions": {
 			"label": "问题",
 			"description": "在配置的超时时间后自动选择后续问题的第一个建议答案",
 			"timeoutLabel": "自动选择第一个答案前的等待时间"
 		},
 		"execute": {
-			"label": "执行",
-			"description": "自动执行白名单中的命令而无需批准",
-			"allowedCommands": "命令白名单",
-			"allowedCommandsDescription": "当\"自动批准命令行操作\"启用时可以自动执行的命令前缀。添加 * 以允许所有命令（谨慎使用）。",
+			"label": "命令规则",
+			"description": "自动批准任务写入范围内的命令。允许网络访问，阻止范围外写入。全局设置在所有项目间持久保存。",
+			"allowedCommands": "允许的命令前缀",
+			"allowedCommandsDescription": "使用 * 自动批准命令，包括脚本。保存的规则全局生效。检测到的任务根目录外写入以及无法解析的写入路径仍需批准。这是命令和路径检查，并非操作系统沙箱。",
 			"deniedCommands": "拒绝的命令",
 			"deniedCommandsDescription": "将自动拒绝的命令前缀，无需用户批准。与允许命令冲突时，最长前缀匹配优先。添加 * 拒绝所有命令。",
 			"commandPlaceholder": "输入命令前缀（例如 'git '）",
 			"deniedCommandPlaceholder": "输入要拒绝的命令前缀（例如 'rm -rf'）",
 			"addButton": "添加",
-			"autoDenied": "前缀为 `{{prefix}}` 的命令已被用户禁止。不要通过运行其他命令来绕过此限制。"
+			"autoDenied": "前缀为 `{{prefix}}` 的命令已被用户禁止。不要通过运行其他命令来绕过此限制。",
+			"pathApprovalTitle": "文件路径需要批准",
+			"pathApprovalDescription": "此命令可能修改任务根目录外的文件。批准仅适用于本次运行。",
+			"pathApprovalUnresolved": "部分写入路径无法解析。"
 		},
 		"apiRequestLimit": {
 			"title": "最大请求数",
@@ -299,6 +311,10 @@
 		},
 		"maxLimits": {
 			"description": "在请求批准继续之前，自动发出请求，最多不超过这些限制。"
+		},
+		"subagents": {
+			"label": "子代理",
+			"description": "允许 Alpha 无需批准即可启动只读子代理组。读取访问权限还必须自动批准。"
 		}
 	},
 	"providers": {
@@ -378,7 +394,8 @@
 			"hint": "请重新打开设置以查看最新模型。",
 			"loading": "正在刷新模型列表...",
 			"success": "模型列表刷新成功！",
-			"error": "刷新模型列表失败。请重试。"
+			"error": "刷新模型列表失败。请重试。",
+			"missingConfig": "在刷新模型之前输入所需的提供程序配置。"
 		},
 		"getRequestyApiKey": "获取 Requesty API 密钥",
 		"getRequestyBaseUrl": "基础 URL",
@@ -542,7 +559,8 @@
 			"high": "高",
 			"xhigh": "超高",
 			"medium": "中",
-			"low": "低"
+			"low": "低",
+			"max": "最大值"
 		},
 		"verbosity": {
 			"label": "输出详细程度",
@@ -558,7 +576,55 @@
 			"placeholder": "默认：claude",
 			"maxTokensLabel": "最大输出 Token",
 			"maxTokensDescription": "Claude Code 响应的最大输出 Token 数量。默认为 8000。"
-		}
+		},
+		"vertexStreamingEnabledLabel": "启用流响应",
+		"vertexStreamingEnabledDescription": "当网关或模型不支持流式传输时禁用此功能。完成后将出现响应。",
+		"vscodeLmLoading": "正在加载此 VS Code 窗口中可用的语言模型...",
+		"vscodeLmNoModels": "此 VS Code 窗口中没有可用的语言模型。在此登录 GitHub Copilot，使用“Chat: Manage Language Models”启用您需要的模型，然后刷新。",
+		"vscodeLmRefresh": "刷新模型",
+		"vscodeLmUnavailable": "所选模型在此 VS Code 窗口中不可用。选择 VS Code 返回的模型，或使用“Chat: Manage Language Models”启用它。",
+		"vscodeLmContextSize": {
+			"label": "上下文窗口",
+			"default": "标准（{{contextSize}} 输入令牌）",
+			"extended": "扩展（{{contextSize}} 输入令牌）",
+			"description": "为此模型选择发送到 GitHub Copilot 的输入令牌预算。扩展上下文可能会消耗更多高级请求。"
+		},
+		"googleCloudProjectId": "Google Cloud 项目 ID",
+		"googleCloudRegion": "Google Cloud 区域",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "搜索或输入区域",
+			"noMatchFound": "未找到匹配区域",
+			"useCustomRegion": "使用自定义：{{region}}"
+		},
+		"googleCloudCredentials": "Google Cloud 凭据 JSON",
+		"googleCloudKeyFile": "Google Cloud 密钥文件",
+		"googleCloudSetup": {
+			"title": "Google Cloud 设置",
+			"step1": "启用 Vertex AI 和模型访问",
+			"step2": "设置应用程序默认凭据",
+			"step3": "创建服务帐户密钥"
+		},
+		"vertexGatewayBaseUrl": "Vertex 网关基础 URL",
+		"vertexGatewayCaBundlePath": "Vertex 网关 CA 捆绑路径",
+		"vertexGatewayHelixCommand": "Vertex 网关 Helix 命令",
+		"vertexGatewayHelixParseMode": "Vertex 网关 Helix 解析模式",
+		"vertexGatewayHelixParseModeRawStdout": "原始标准输出",
+		"vertexGatewayHelixParseModeJsonField": "JSON 字段",
+		"vertexGatewayHelixTokenKey": "Vertex 网关 Helix 令牌密钥",
+		"vertexGatewayTokenRefreshMinutes": "Vertex 网关令牌刷新分钟",
+		"vertexGatewayModelRoutingMap": "Vertex 网关模型路由映射",
+		"vertexGatewayModelRoutingMapDescription": "由模型 ID 键入的 JSON 对象。值可以是旧模型覆盖字符串或具有 projectId、location、modelOverride 和 extraHeaders 的对象。",
+		"stellarDescription": "连接到内部 Stellar OpenAI 兼容型号网关。 API 密钥会通过 Helix 自动检索，并且永远不会存储。",
+		"stellarBaseUrl": "Stellar 基础 URL",
+		"stellarCaBundlePath": "Stellar PEM CA 捆绑包路径",
+		"stellarHelixCommand": "Stellar Helix 命令",
+		"stellarHelixParseMode": "Stellar Helix 解析模式",
+		"stellarHelixParseModeRawStdout": "原始标准输出",
+		"stellarHelixParseModeJsonField": "JSON 字段",
+		"stellarHelixTokenKey": "Stellar Helix 令牌密钥",
+		"stellarTokenRefreshMinutes": "Stellar 令牌刷新分钟数",
+		"stellarStreamingEnabledLabel": "启用流响应",
+		"stellarStreamingEnabledDescription": "如果 Stellar 部署不支持流式传输，请禁用此选项。完成后将出现响应。"
 	},
 	"checkpoints": {
 		"timeout": {
@@ -898,7 +964,11 @@
 		"providerNotAllowed": "提供商 '{{provider}}' 不允许用于您的组织",
 		"modelNotAllowed": "模型 '{{model}}' 不允许用于提供商 '{{provider}}'，您的组织不允许",
 		"profileInvalid": "此配置文件包含您的组织不允许的提供商或模型",
-		"qwenCodeOauthPath": "您必须提供有效的 OAuth 凭证路径"
+		"qwenCodeOauthPath": "您必须提供有效的 OAuth 凭证路径",
+		"googleCloud": "您必须提供 Google Cloud 项目 ID 和区域。",
+		"vertexGateway": "Vertex 网关需要基本 URL、CA 捆绑路径和 Helix 命令。",
+		"vertexGatewayModelRoutingMap": "Vertex 网关模型路由映射必须是具有字符串模型 ID 的 JSON 对象。",
+		"stellar": "Stellar 需要有效的基本 URL 和 PEM CA 捆绑路径。"
 	},
 	"placeholders": {
 		"apiKey": "请输入 API 密钥...",
@@ -960,6 +1030,10 @@
 		"requireCtrlEnterToSend": {
 			"label": "需要 {{primaryMod}}+Enter 发送消息",
 			"description": "启用后，必须按 {{primaryMod}}+Enter 发送消息，而不仅仅是 Enter"
+		},
+		"maxConcurrentTasks": {
+			"label": "最大并行任务数",
+			"description": "可以同时运行的实时任务数。失败和已完成的任务不计入此限制。"
 		}
 	},
 	"skills": {
@@ -1013,6 +1087,44 @@
 			"descriptionRequired": "描述为必填项",
 			"descriptionTooLong": "描述不得超过1024个字符"
 		},
-		"footer": "使用技能编写器模式创建您自己的技能，可在 <MarketplaceLink>模式市集</MarketplaceLink> 中获得。"
+		"footer": "使用技能编写器模式创建您自己的技能，可在 <MarketplaceLink>模式市集</MarketplaceLink> 中获得。",
+		"builtinSkills": "内置",
+		"enabled": "已启用",
+		"inspectSkill": "查看内容",
+		"builtinDescription": "随 Alpha 提供。保存设置后更改生效。同名的工作区技能和个人技能优先；禁用内置技能不会禁用你提供的替代技能。"
+	},
+	"agents": {
+		"description": "选择 Alpha 用于子代理的已保存提供商配置文件。角色覆盖优先于默认角色，然后继承父任务。",
+		"searchPlaceholder": "搜索提供商配置文件...",
+		"noProfilesFound": "没有匹配的提供商配置文件",
+		"unavailableProfile": "不可用的配置文件 ({{id}})",
+		"staleWarning": "此保存的配置文件不可用。新的子代理将使用父配置文件，直到您选择另一个配置文件。",
+		"defaultProfile": {
+			"label": "默认子代理配置文件",
+			"inheritParent": "继承父级",
+			"description": "当角色没有自己的配置文件覆盖时使用。"
+		},
+		"roles": {
+			"title": "角色覆盖",
+			"description": "可以选择通过不同的已保存提供商配置文件路由每个代理角色。",
+			"useDefault": "使用默认的",
+			"explore": {
+				"label": "Explorer 配置文件",
+				"description": "存储库探索代理的可选配置文件覆盖。"
+			},
+			"review": {
+				"label": "审阅者个人资料",
+				"description": "审阅代理的可选个人资料覆盖。"
+			},
+			"worker": {
+				"label": "工作人员配置文件",
+				"description": "独立编辑工作人员的可选配置文件覆盖。"
+			}
+		}
+	},
+	"github": {
+		"tokenLabel": "GitHub 令牌",
+		"tokenPlaceholder": "ghp_...",
+		"tokenDescription": "安全存储在 VS Code 秘密存储中。由本机 GitHub API 工具用于拉取请求、检查、注释和合并。"
 	}
 }

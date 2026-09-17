@@ -1,7 +1,16 @@
 import { z } from "zod"
 
+import {
+	subagentChangeSetStateSchema,
+	subagentModelRouteStateSchema,
+	parentVerificationSummarySchema,
+	subagentRoleSchema,
+	subagentVerificationSchema,
+} from "./subagent.js"
+import { subagentStopReasonSchema, subagentUsageSchema } from "./subagent-orchestration.js"
+
 /**
- * ClineAsk
+ * AlphaAsk
  */
 
 /**
@@ -24,7 +33,7 @@ import { z } from "zod"
  * - `use_mcp_server`: Permission to use Model Context Protocol (MCP) server functionality
  * - `auto_approval_max_req_reached`: Auto-approval limit has been reached, manual approval required
  */
-export const clineAsks = [
+export const alphaAsks = [
 	"followup",
 	"command",
 	"command_output",
@@ -38,9 +47,9 @@ export const clineAsks = [
 	"auto_approval_max_req_reached",
 ] as const
 
-export const clineAskSchema = z.enum(clineAsks)
+export const alphaAskSchema = z.enum(alphaAsks)
 
-export type ClineAsk = z.infer<typeof clineAskSchema>
+export type AlphaAsk = z.infer<typeof alphaAskSchema>
 /**
  * IdleAsk
  *
@@ -53,12 +62,12 @@ export const idleAsks = [
 	"resume_completed_task",
 	"mistake_limit_reached",
 	"auto_approval_max_req_reached",
-] as const satisfies readonly ClineAsk[]
+] as const satisfies readonly AlphaAsk[]
 
 export type IdleAsk = (typeof idleAsks)[number]
 
-export function isIdleAsk(ask: ClineAsk): ask is IdleAsk {
-	return (idleAsks as readonly ClineAsk[]).includes(ask)
+export function isIdleAsk(ask: AlphaAsk): ask is IdleAsk {
+	return (idleAsks as readonly AlphaAsk[]).includes(ask)
 }
 
 /**
@@ -67,12 +76,12 @@ export function isIdleAsk(ask: ClineAsk): ask is IdleAsk {
  * Asks that put the task into an "resumable" state.
  */
 
-export const resumableAsks = ["resume_task"] as const satisfies readonly ClineAsk[]
+export const resumableAsks = ["resume_task"] as const satisfies readonly AlphaAsk[]
 
 export type ResumableAsk = (typeof resumableAsks)[number]
 
-export function isResumableAsk(ask: ClineAsk): ask is ResumableAsk {
-	return (resumableAsks as readonly ClineAsk[]).includes(ask)
+export function isResumableAsk(ask: AlphaAsk): ask is ResumableAsk {
+	return (resumableAsks as readonly AlphaAsk[]).includes(ask)
 }
 
 /**
@@ -81,12 +90,12 @@ export function isResumableAsk(ask: ClineAsk): ask is ResumableAsk {
  * Asks that put the task into an "user interaction required" state.
  */
 
-export const interactiveAsks = ["followup", "command", "tool", "use_mcp_server"] as const satisfies readonly ClineAsk[]
+export const interactiveAsks = ["followup", "command", "tool", "use_mcp_server"] as const satisfies readonly AlphaAsk[]
 
 export type InteractiveAsk = (typeof interactiveAsks)[number]
 
-export function isInteractiveAsk(ask: ClineAsk): ask is InteractiveAsk {
-	return (interactiveAsks as readonly ClineAsk[]).includes(ask)
+export function isInteractiveAsk(ask: AlphaAsk): ask is InteractiveAsk {
+	return (interactiveAsks as readonly AlphaAsk[]).includes(ask)
 }
 
 /**
@@ -96,16 +105,16 @@ export function isInteractiveAsk(ask: ClineAsk): ask is InteractiveAsk {
  * to update chat messages.
  */
 
-export const nonBlockingAsks = ["command_output"] as const satisfies readonly ClineAsk[]
+export const nonBlockingAsks = ["command_output"] as const satisfies readonly AlphaAsk[]
 
 export type NonBlockingAsk = (typeof nonBlockingAsks)[number]
 
-export function isNonBlockingAsk(ask: ClineAsk): ask is NonBlockingAsk {
-	return (nonBlockingAsks as readonly ClineAsk[]).includes(ask)
+export function isNonBlockingAsk(ask: AlphaAsk): ask is NonBlockingAsk {
+	return (nonBlockingAsks as readonly AlphaAsk[]).includes(ask)
 }
 
 /**
- * ClineSay
+ * AlphaSay
  */
 
 /**
@@ -141,7 +150,7 @@ export function isNonBlockingAsk(ask: ClineAsk): ask is NonBlockingAsk {
  * - `codebase_search_result`: Results from searching the codebase
  * - `too_many_tools_warning`: Warning that too many MCP tools are enabled, which may confuse the LLM
  */
-export const clineSays = [
+export const alphaSays = [
 	"error",
 	"api_req_started",
 	"api_req_finished",
@@ -170,22 +179,207 @@ export const clineSays = [
 	"user_edit_todos",
 	"too_many_tools_warning",
 	"tool",
+	"subagent_group",
 ] as const
 
-export const clineSaySchema = z.enum(clineSays)
+export const alphaSaySchema = z.enum(alphaSays)
 
-export type ClineSay = z.infer<typeof clineSaySchema>
+export type AlphaSay = z.infer<typeof alphaSaySchema>
 
 /**
  * ToolProgressStatus
  */
 
 export const toolProgressStatusSchema = z.object({
+	commandPathApproval: z.object({ outsidePaths: z.array(z.string()), unresolved: z.boolean() }).optional(),
 	icon: z.string().optional(),
 	text: z.string().optional(),
 })
 
 export type ToolProgressStatus = z.infer<typeof toolProgressStatusSchema>
+
+/** Persisted lifecycle state for a bounded sub-agent batch. */
+export const subagentRunStatusSchema = z.enum([
+	"pending",
+	"running",
+	"cancelling",
+	"completed",
+	"blocked",
+	"failed",
+	"cancelled",
+	"timed_out",
+	"interrupted",
+])
+
+/** Nonterminal statuses that can be observed while a sub-agent remains active. */
+export const subagentActiveRunStatusSchema = z.enum(["pending", "running", "cancelling"])
+
+/** Terminal statuses emitted exactly once a sub-agent run has finished. */
+export const subagentTerminalRunStatusSchema = z.enum([
+	"completed",
+	"blocked",
+	"failed",
+	"cancelled",
+	"timed_out",
+	"interrupted",
+])
+
+/** Fine-grained, nonterminal progress for a managed sub-agent. */
+export const subagentRunPhaseSchema = z.enum([
+	"queued",
+	"starting",
+	"working",
+	"waiting",
+	"steering",
+	"reporting",
+	"finalizing",
+])
+
+export const subagentRunStateSchema = z.object({
+	taskId: z.string(),
+	nickname: z.string(),
+	role: subagentRoleSchema,
+	objective: z.string(),
+	writeScope: z.array(z.string()).min(1).max(12).optional(),
+	status: subagentRunStatusSchema,
+	phase: subagentRunPhaseSchema.optional(),
+	phaseStartedAt: z.number().optional(),
+	modelRoute: subagentModelRouteStateSchema.optional(),
+	summary: z.string().optional(),
+	error: z.string().optional(),
+	stopReason: subagentStopReasonSchema.optional(),
+	changedFiles: z.array(z.string()).optional(),
+	verification: z.array(subagentVerificationSchema).optional(),
+	changeSet: subagentChangeSetStateSchema.optional(),
+	requiresParentVerification: z.boolean().optional(),
+	parentVerification: parentVerificationSummarySchema.optional(),
+	pendingApproval: z
+		.object({
+			id: z.string(),
+			type: z.enum(["command", "protected_write"]),
+			operation: z.string(),
+			scope: z.string().optional(),
+			createdAt: z.number(),
+		})
+		.optional(),
+	steerCount: z.number().int().nonnegative().optional(),
+	lastSteeredAt: z.number().optional(),
+	cancelRequestedAt: z.number().optional(),
+	startedAt: z.number().optional(),
+	completedAt: z.number().optional(),
+	/** When the terminal report was persisted into the parent model's conversation. */
+	resultDeliveredAt: z.number().optional(),
+	usage: subagentUsageSchema,
+})
+
+export const subagentGroupStatusSchema = z.enum([
+	"pending",
+	"running",
+	"cancelling",
+	"completed",
+	"partial",
+	"failed",
+	"cancelled",
+	"timed_out",
+	"interrupted",
+])
+
+export const subagentGroupStateSchema = z.object({
+	groupId: z.string(),
+	parentTaskId: z.string(),
+	toolCallId: z.string().optional(),
+	/** Distinguishes blocking delegate_task groups from nonblocking spawn_agent groups. */
+	executionMode: z.enum(["blocking", "async"]).optional(),
+	status: subagentGroupStatusSchema,
+	createdAt: z.number(),
+	startedAt: z.number().optional(),
+	completedAt: z.number().optional(),
+	agents: z.array(subagentRunStateSchema).min(1).max(2),
+})
+
+const subagentIdentifierSchema = z.string().min(1)
+const subagentTimestampSchema = z.number().int().nonnegative()
+
+/**
+ * Stable acknowledgement returned as soon as an asynchronous sub-agent has
+ * been accepted. The handle deliberately contains no completion result: the
+ * parent observes progress through lifecycle events while continuing its turn.
+ */
+export const subagentSpawnHandleSchema = z.object({
+	taskId: subagentIdentifierSchema,
+	runId: subagentIdentifierSchema,
+	groupId: subagentIdentifierSchema,
+	parentTaskId: subagentIdentifierSchema,
+	path: z.string().regex(/^\/root(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/),
+	nickname: z.string().min(1),
+	role: subagentRoleSchema,
+	status: z.enum(["pending", "running"]),
+	createdAt: subagentTimestampSchema,
+})
+
+const subagentLifecycleEventBaseSchema = z.object({
+	eventId: subagentIdentifierSchema,
+	sequence: z.number().int().positive(),
+	runId: subagentIdentifierSchema,
+	taskId: subagentIdentifierSchema,
+	groupId: subagentIdentifierSchema,
+	parentTaskId: subagentIdentifierSchema,
+	occurredAt: subagentTimestampSchema,
+})
+
+const subagentStartedSnapshotSchema = subagentRunStateSchema.extend({
+	status: z.literal("running"),
+	startedAt: subagentTimestampSchema,
+})
+
+const subagentActiveSnapshotSchema = subagentRunStateSchema.extend({
+	status: subagentActiveRunStatusSchema,
+})
+
+const subagentCompletedSnapshotSchema = subagentRunStateSchema.extend({
+	status: subagentTerminalRunStatusSchema,
+	completedAt: subagentTimestampSchema,
+})
+
+/**
+ * Snapshot-based lifecycle notification for a nonblocking sub-agent run.
+ * Snapshots make every notification independently usable by persistence and UI
+ * consumers without requiring them to reconstruct state from deltas.
+ */
+export const subagentLifecycleEventSchema = z
+	.discriminatedUnion("type", [
+		subagentLifecycleEventBaseSchema.extend({
+			type: z.literal("started"),
+			snapshot: subagentStartedSnapshotSchema,
+		}),
+		subagentLifecycleEventBaseSchema.extend({
+			type: z.literal("status"),
+			snapshot: subagentActiveSnapshotSchema,
+		}),
+		subagentLifecycleEventBaseSchema.extend({
+			type: z.literal("completed"),
+			snapshot: subagentCompletedSnapshotSchema,
+		}),
+	])
+	.superRefine(({ taskId, snapshot }, context) => {
+		if (snapshot.taskId !== taskId) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["snapshot", "taskId"],
+				message: "Lifecycle event taskId must match snapshot.taskId",
+			})
+		}
+	})
+
+export type SubagentRunStatus = z.infer<typeof subagentRunStatusSchema>
+export type SubagentActiveRunStatus = z.infer<typeof subagentActiveRunStatusSchema>
+export type SubagentTerminalRunStatus = z.infer<typeof subagentTerminalRunStatusSchema>
+export type SubagentRunPhase = z.infer<typeof subagentRunPhaseSchema>
+export type SubagentRunState = z.infer<typeof subagentRunStateSchema>
+export type SubagentGroupStatus = z.infer<typeof subagentGroupStatusSchema>
+export type SubagentGroupState = z.infer<typeof subagentGroupStateSchema>
+export type SubagentSpawnHandle = z.infer<typeof subagentSpawnHandleSchema>
+export type SubagentLifecycleEvent = z.infer<typeof subagentLifecycleEventSchema>
 
 /**
  * ContextCondense
@@ -206,6 +400,8 @@ export const contextCondenseSchema = z.object({
 	newContextTokens: z.number(),
 	summary: z.string(),
 	condenseId: z.string().optional(),
+	/** Omitted by saved events from versions before idempotent manual compaction. */
+	outcome: z.enum(["reduced", "unchanged"]).optional(),
 })
 
 export type ContextCondense = z.infer<typeof contextCondenseSchema>
@@ -235,7 +431,7 @@ export const contextTruncationSchema = z.object({
 export type ContextTruncation = z.infer<typeof contextTruncationSchema>
 
 /**
- * ClineMessage
+ * AlphaMessage
  *
  * The main message type used for communication between the extension and webview.
  * Messages can either be "ask" (requiring user response) or "say" (informational).
@@ -246,18 +442,34 @@ export type ContextTruncation = z.infer<typeof contextTruncationSchema>
  *
  * Note: These fields are mutually exclusive - a message will have at most one of them.
  */
-export const clineMessageSchema = z.object({
+export const alphaMessageSchema = z.object({
+	/** Associates completed command output with its approval message when a batch runs concurrently. */
+	commandExecutionId: z.string().optional(),
 	ts: z.number(),
 	type: z.union([z.literal("ask"), z.literal("say")]),
-	ask: clineAskSchema.optional(),
-	say: clineSaySchema.optional(),
+	ask: alphaAskSchema.optional(),
+	say: alphaSaySchema.optional(),
 	text: z.string().optional(),
 	images: z.array(z.string()).optional(),
 	partial: z.boolean().optional(),
 	reasoning: z.string().optional(),
+	/** Presentation-only synopsis of provider-visible reasoning; never sent back as provider history. */
+	reasoningSummary: z.string().max(280).optional(),
+	reasoningSummaryUsage: z
+		.object({
+			tokensIn: z.number().nonnegative(),
+			tokensOut: z.number().nonnegative(),
+			cacheWrites: z.number().nonnegative(),
+			cacheReads: z.number().nonnegative(),
+			cost: z.number().nonnegative(),
+		})
+		.optional(),
 	conversationHistoryIndex: z.number().optional(),
 	checkpoint: z.record(z.string(), z.unknown()).optional(),
 	progressStatus: toolProgressStatusSchema.optional(),
+	subagentGroup: subagentGroupStateSchema.optional(),
+	/** Idempotency key for a legacy blocking child result injected into its parent. */
+	subtaskResultChildId: z.string().min(1).optional(),
 	/**
 	 * Data for successful context condensation.
 	 * Present when `say: "condense_context"` and `partial: false`.
@@ -273,7 +485,7 @@ export const clineMessageSchema = z.object({
 	isAnswered: z.boolean().optional(),
 })
 
-export type ClineMessage = z.infer<typeof clineMessageSchema>
+export type AlphaMessage = z.infer<typeof alphaMessageSchema>
 
 /**
  * TokenUsage
@@ -302,3 +514,27 @@ export const queuedMessageSchema = z.object({
 })
 
 export type QueuedMessage = z.infer<typeof queuedMessageSchema>
+
+/** @deprecated Use alphaAsks. Retained for existing API consumers. */
+export { alphaAsks as clineAsks }
+
+/** @deprecated Use alphaAskSchema. Retained for existing API consumers. */
+export { alphaAskSchema as clineAskSchema }
+
+/** @deprecated Use AlphaAsk. Retained for existing API consumers. */
+export type { AlphaAsk as ClineAsk }
+
+/** @deprecated Use alphaSays. Retained for existing API consumers. */
+export { alphaSays as clineSays }
+
+/** @deprecated Use alphaSaySchema. Retained for existing API consumers. */
+export { alphaSaySchema as clineSaySchema }
+
+/** @deprecated Use AlphaSay. Retained for existing API consumers. */
+export type { AlphaSay as ClineSay }
+
+/** @deprecated Use alphaMessageSchema. Retained for existing API consumers. */
+export { alphaMessageSchema as clineMessageSchema }
+
+/** @deprecated Use AlphaMessage. Retained for existing API consumers. */
+export type { AlphaMessage as ClineMessage }

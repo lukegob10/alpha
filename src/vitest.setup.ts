@@ -2,6 +2,11 @@ import nock from "nock"
 
 import "./utils/path" // Import to enable String.prototype.toPosix().
 
+// Keep test git subprocesses non-interactive without inheriting a custom pager.
+// simple-git 3.36 correctly rejects executable pager environment variables by default.
+delete process.env.GIT_PAGER
+delete process.env.PAGER
+
 // Disable network requests by default for all tests.
 nock.disableNetConnect()
 

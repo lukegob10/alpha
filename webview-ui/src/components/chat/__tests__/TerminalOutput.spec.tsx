@@ -1,4 +1,5 @@
 import { render } from "@testing-library/react";
+import Convert from "ansi-to-html";
 import { TerminalOutput } from "../TerminalOutput";
 
 describe("TerminalOutput", () => {
@@ -22,6 +23,19 @@ describe("TerminalOutput", () => {
         );
         expect(container.innerHTML).not.toContain("<script>");
         expect(container.textContent).toContain('<script>alert("xss")</script>');
+    });
+
+    it("escapes raw terminal content when ANSI conversion fails", () => {
+        vi.spyOn(Convert.prototype, "toHtml").mockImplementationOnce(() => {
+            throw new Error("converter failure");
+        });
+
+        const { container } = render(
+            <TerminalOutput content={'\x1B[31m<img src=x onerror="alert(1)">'} />
+        );
+
+        expect(container.querySelector("img")).not.toBeInTheDocument();
+        expect(container.textContent).toBe('<img src=x onerror="alert(1)">');
     });
 
     it("handles empty content", () => {

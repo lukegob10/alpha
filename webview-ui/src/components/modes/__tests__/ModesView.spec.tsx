@@ -1,267 +1,119 @@
-// npx vitest src/components/modes/__tests__/ModesView.spec.tsx
+import { fireEvent, render, screen } from "@/utils/test-utils"
 
-import { render, screen, fireEvent, waitFor } from "@/utils/test-utils"
+import type { CustomModePrompts } from "@alpha-code/types"
+
 import ModesView from "../ModesView"
-import { ExtensionStateContext } from "@src/context/ExtensionStateContext"
-import { vscode } from "@src/utils/vscode"
 
-// Mock vscode API
-vitest.mock("@src/utils/vscode", () => ({
-	vscode: {
-		postMessage: vitest.fn(),
-	},
+vi.mock("@/i18n/TranslationContext", () => ({
+	useAppTranslation: () => ({
+		t: (key: string, values?: { modeName?: string }) => (values?.modeName ? `${key} ${values.modeName}` : key),
+	}),
 }))
 
-const mockExtensionState = {
-	customModePrompts: {},
-	listApiConfigMeta: [
-		{ id: "config1", name: "Config 1" },
-		{ id: "config2", name: "Config 2" },
-	],
-	enhancementApiConfigId: "",
-	setEnhancementApiConfigId: vitest.fn(),
-	mode: "code",
-	customModes: [],
-	customSupportPrompts: [],
-	currentApiConfigName: "",
-	customInstructions: "Initial instructions",
-	setCustomInstructions: vitest.fn(),
-}
-
-const renderPromptsView = (props = {}) => {
-	return render(
-		<ExtensionStateContext.Provider value={{ ...mockExtensionState, ...props } as any}>
-			<ModesView />
-		</ExtensionStateContext.Provider>,
+const renderModesView = ({
+	customModePrompts = {},
+	customInstructions = "Global instructions",
+	setCustomModePrompts = vi.fn(),
+	setCustomInstructions = vi.fn(),
+}: {
+	customModePrompts?: CustomModePrompts
+	customInstructions?: string
+	setCustomModePrompts?: (value: CustomModePrompts) => void
+	setCustomInstructions?: (value: string | undefined) => void
+} = {}) =>
+	render(
+		<ModesView
+			customModePrompts={customModePrompts}
+			customInstructions={customInstructions}
+			setCustomModePrompts={setCustomModePrompts}
+			setCustomInstructions={setCustomInstructions}
+		/>,
 	)
-}
 
-Element.prototype.scrollIntoView = vitest.fn()
+describe("ModesView", () => {
+	it("shows only the local Plan and Code setup choices", () => {
+		renderModesView()
 
-describe("PromptsView", () => {
-	beforeEach(() => {
-		vitest.clearAllMocks()
+		const setupButtons = screen.getAllByTestId(/^mode-setup-/)
+		expect(setupButtons).toHaveLength(2)
+		expect(screen.getByTestId("mode-setup-architect")).toHaveTextContent("Plan")
+		expect(screen.getByTestId("mode-setup-code")).toHaveTextContent("Code")
+		expect(screen.queryByText("Ask")).not.toBeInTheDocument()
+		expect(screen.queryByText("Debug")).not.toBeInTheDocument()
+		expect(screen.queryByText("Orchestrator")).not.toBeInTheDocument()
+		expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
+		expect(screen.queryByText(/marketplace/i)).not.toBeInTheDocument()
+		expect(screen.queryByText(/import mode/i)).not.toBeInTheDocument()
+		expect(screen.queryByText(/export mode/i)).not.toBeInTheDocument()
+		expect(screen.queryByText(/create mode/i)).not.toBeInTheDocument()
 	})
 
-	it("displays the current mode name in the select trigger", () => {
-		renderPromptsView({ mode: "code" })
-		const selectTrigger = screen.getByTestId("mode-select-trigger")
-		expect(selectTrigger).toHaveTextContent("Code")
+	it("navigates between setup editors without changing a task mode", () => {
+		const setCustomModePrompts = vi.fn()
+		renderModesView({ setCustomModePrompts })
+
+		expect(screen.getByTestId("code-prompt-textarea")).toBeInTheDocument()
+		fireEvent.click(screen.getByTestId("mode-setup-architect"))
+		expect(screen.getByTestId("architect-prompt-textarea")).toBeInTheDocument()
+		expect(setCustomModePrompts).not.toHaveBeenCalled()
 	})
 
-	it("opens the mode selection popover when the trigger is clicked", async () => {
-		renderPromptsView()
-		const selectTrigger = screen.getByTestId("mode-select-trigger")
-		fireEvent.click(selectTrigger)
-		await waitFor(() => {
-			expect(selectTrigger).toHaveAttribute("aria-expanded", "true")
+	it("updates a primary prompt while preserving compatibility records", () => {
+		const setCustomModePrompts = vi.fn()
+		const customModePrompts: CustomModePrompts = {
+			code: { description: "Existing code description" },
+			debug: { roleDefinition: "Legacy debug role" },
+			"security-review": { customInstructions: "Saved custom instructions" },
+		}
+		renderModesView({ customModePrompts, setCustomModePrompts })
+
+		fireEvent.change(screen.getByTestId("code-prompt-textarea"), {
+			target: { value: "Updated code role" },
 		})
-	})
 
-	it("filters mode options based on search input", async () => {
-		renderPromptsView()
-		const selectTrigger = screen.getByTestId("mode-select-trigger")
-		fireEvent.click(selectTrigger)
-
-		const searchInput = screen.getByTestId("mode-search-input")
-		fireEvent.change(searchInput, { target: { value: "ask" } })
-
-		await waitFor(() => {
-			expect(screen.getByTestId("mode-option-ask")).toBeInTheDocument()
-			expect(screen.queryByTestId("mode-option-code")).not.toBeInTheDocument()
-			expect(screen.queryByTestId("mode-option-architect")).not.toBeInTheDocument()
-		})
-	})
-
-	it("selects a mode from the dropdown and sends update message", async () => {
-		renderPromptsView()
-		const selectTrigger = screen.getByTestId("mode-select-trigger")
-		fireEvent.click(selectTrigger)
-
-		const askOption = await waitFor(() => screen.getByTestId("mode-option-ask"))
-		fireEvent.click(askOption)
-
-		expect(mockExtensionState.setEnhancementApiConfigId).not.toHaveBeenCalled() // Ensure this is not called by mode switch
-		expect(vscode.postMessage).toHaveBeenCalledWith({
-			type: "mode",
-			text: "ask",
-		})
-		await waitFor(() => {
-			expect(selectTrigger).toHaveAttribute("aria-expanded", "false")
-		})
-	})
-
-	it("handles prompt changes correctly", async () => {
-		renderPromptsView()
-
-		// Get the textarea
-		const textarea = await waitFor(() => screen.getByTestId("code-prompt-textarea"))
-
-		// Simulate VSCode TextArea change event
-		const changeEvent = new CustomEvent("change", {
-			detail: {
-				target: {
-					value: "New prompt value",
-				},
+		expect(setCustomModePrompts).toHaveBeenCalledWith({
+			code: {
+				description: "Existing code description",
+				roleDefinition: "Updated code role",
 			},
-		})
-
-		fireEvent(textarea, changeEvent)
-
-		expect(vscode.postMessage).toHaveBeenCalledWith({
-			type: "updatePrompt",
-			promptMode: "code",
-			customPrompt: { roleDefinition: "New prompt value" },
+			debug: { roleDefinition: "Legacy debug role" },
+			"security-review": { customInstructions: "Saved custom instructions" },
 		})
 	})
 
-	it("resets role definition only for built-in modes", async () => {
-		const customMode = {
-			slug: "custom-mode",
-			name: "Custom Mode",
-			roleDefinition: "Custom role",
-			groups: [],
+	it("resets one primary prompt field without deleting other or legacy values", () => {
+		const setCustomModePrompts = vi.fn()
+		const customModePrompts: CustomModePrompts = {
+			code: { roleDefinition: "Custom role", whenToUse: "Custom guidance" },
+			ask: { description: "Compatibility record" },
 		}
+		renderModesView({ customModePrompts, setCustomModePrompts })
 
-		// Test with built-in mode (code)
-		const { unmount } = render(
-			<ExtensionStateContext.Provider
-				value={{ ...mockExtensionState, mode: "code", customModes: [customMode] } as any}>
-				<ModesView />
-			</ExtensionStateContext.Provider>,
-		)
+		fireEvent.click(screen.getByTestId("code-roleDefinition-reset"))
 
-		// Find and click the role definition reset button
-		const resetButton = screen.getByTestId("role-definition-reset")
-		expect(resetButton).toBeInTheDocument()
-		await fireEvent.click(resetButton)
-
-		// Verify it only resets role definition
-		// When resetting a built-in mode's role definition, the field should be removed entirely
-		// from the customPrompt object, not set to undefined.
-		// This allows the default role definition from the built-in mode to be used instead.
-		expect(vscode.postMessage).toHaveBeenCalledWith({
-			type: "updatePrompt",
-			promptMode: "code",
-			customPrompt: {}, // Empty object because the role definition field is removed entirely
+		expect(setCustomModePrompts).toHaveBeenCalledWith({
+			code: { whenToUse: "Custom guidance" },
+			ask: { description: "Compatibility record" },
 		})
-
-		// Cleanup before testing custom mode
-		unmount()
-
-		// Test with custom mode
-		render(
-			<ExtensionStateContext.Provider
-				value={{ ...mockExtensionState, mode: "custom-mode", customModes: [customMode] } as any}>
-				<ModesView />
-			</ExtensionStateContext.Provider>,
-		)
-
-		// Verify reset button is not present for custom mode
-		expect(screen.queryByTestId("role-definition-reset")).not.toBeInTheDocument()
 	})
 
-	it("description section behavior for different mode types", async () => {
-		const customMode = {
-			slug: "custom-mode",
-			name: "Custom Mode",
-			roleDefinition: "Custom role",
-			description: "Custom description",
-			groups: [],
-		}
+	it("does not dirty settings when resetting an unchanged prompt field", () => {
+		const setCustomModePrompts = vi.fn()
+		renderModesView({ setCustomModePrompts })
 
-		// Test with built-in mode (code) - description section should be shown with reset button
-		const { unmount } = render(
-			<ExtensionStateContext.Provider
-				value={{ ...mockExtensionState, mode: "code", customModes: [customMode] } as any}>
-				<ModesView />
-			</ExtensionStateContext.Provider>,
-		)
+		fireEvent.click(screen.getByTestId("code-roleDefinition-reset"))
 
-		// Verify description reset button IS present for built-in modes
-		// because built-in modes can have their descriptions customized and reset
-		expect(screen.queryByTestId("description-reset")).toBeInTheDocument()
-
-		// Cleanup before testing custom mode
-		unmount()
-
-		// Test with custom mode - description section should be shown
-		render(
-			<ExtensionStateContext.Provider
-				value={{ ...mockExtensionState, mode: "custom-mode", customModes: [customMode] } as any}>
-				<ModesView />
-			</ExtensionStateContext.Provider>,
-		)
-
-		// Verify description section is present for custom modes
-		// but reset button is NOT present (since custom modes manage their own descriptions)
-		expect(screen.queryByTestId("description-reset")).not.toBeInTheDocument()
-
-		// Verify the description text field is present for custom modes
-		expect(screen.getByTestId("custom-mode-description-textfield")).toBeInTheDocument()
+		expect(setCustomModePrompts).not.toHaveBeenCalled()
 	})
 
-	it("handles clearing custom instructions correctly", async () => {
-		const setCustomInstructions = vitest.fn()
-		renderPromptsView({
-			...mockExtensionState,
-			customInstructions: "Initial instructions",
-			setCustomInstructions,
+	it("preserves an explicit empty value when clearing global instructions", () => {
+		const setCustomInstructions = vi.fn()
+		renderModesView({ customInstructions: "Existing", setCustomInstructions })
+
+		fireEvent.change(screen.getByTestId("global-custom-instructions-textarea"), {
+			target: { value: "" },
 		})
 
-		const textarea = screen.getByTestId("global-custom-instructions-textarea")
-
-		// Simulate VSCode TextArea change event with empty value
-		// We need to simulate both the CustomEvent format and regular event format
-		// since the component handles both
-		Object.defineProperty(textarea, "value", {
-			writable: true,
-			value: "",
-		})
-
-		const changeEvent = new Event("change", { bubbles: true })
-		fireEvent(textarea, changeEvent)
-
-		// The component calls setCustomInstructions with value ?? undefined
-		// With nullish coalescing, empty string is preserved (not treated as nullish)
 		expect(setCustomInstructions).toHaveBeenCalledWith("")
-		// The postMessage call will have multiple calls, we need to check the right one
-		expect(vscode.postMessage).toHaveBeenCalledWith({
-			type: "customInstructions",
-			text: "", // empty string is now preserved with ?? operator
-		})
-	})
-
-	it("closes the mode selection popover when ESC key is pressed", async () => {
-		renderPromptsView()
-		const selectTrigger = screen.getByTestId("mode-select-trigger")
-
-		// Open the popover
-		fireEvent.click(selectTrigger)
-		await waitFor(() => {
-			expect(selectTrigger).toHaveAttribute("aria-expanded", "true")
-		})
-
-		// Press ESC key
-		fireEvent.keyDown(window, { key: "Escape" })
-
-		// Verify popover is closed
-		await waitFor(() => {
-			expect(selectTrigger).toHaveAttribute("aria-expanded", "false")
-		})
-	})
-
-	it("does not close the popover when ESC is pressed while popover is closed", async () => {
-		renderPromptsView()
-		const selectTrigger = screen.getByTestId("mode-select-trigger")
-
-		// Ensure popover is closed
-		expect(selectTrigger).toHaveAttribute("aria-expanded", "false")
-
-		// Press ESC key
-		fireEvent.keyDown(window, { key: "Escape" })
-
-		// Verify popover remains closed
-		expect(selectTrigger).toHaveAttribute("aria-expanded", "false")
 	})
 })

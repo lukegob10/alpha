@@ -2,7 +2,7 @@ import * as vscode from "vscode"
 
 import { arePathsEqual } from "../../utils/path"
 
-import { RooTerminal, RooTerminalProvider } from "./types"
+import { AlphaTerminal, AlphaTerminalProvider } from "./types"
 import { TerminalProcess } from "./TerminalProcess"
 import { Terminal } from "./Terminal"
 import { ExecaTerminal } from "./ExecaTerminal"
@@ -18,7 +18,7 @@ import { ShellIntegrationManager } from "./ShellIntegrationManager"
 // benefit of keep track of busy terminals even after a task is closed.
 
 export class TerminalRegistry {
-	private static terminals: RooTerminal[] = []
+	private static terminals: AlphaTerminal[] = []
 	private static nextTerminalId = 1
 	private static disposables: vscode.Disposable[] = []
 	private static isInitialized = false
@@ -60,9 +60,12 @@ export class TerminalRegistry {
 						terminal.setActiveStream(stream)
 						terminal.busy = true // Mark terminal as busy when shell execution starts
 					} else {
-						console.debug("[onDidStartTerminalShellExecution] Ignoring unregistered terminal shell execution.", {
-							command: e.execution?.commandLine?.value,
-						})
+						console.debug(
+							"[onDidStartTerminalShellExecution] Ignoring unregistered terminal shell execution.",
+							{
+								command: e.execution?.commandLine?.value,
+							},
+						)
 					}
 				},
 			)
@@ -78,10 +81,13 @@ export class TerminalRegistry {
 					const exitDetails = TerminalProcess.interpretExitCode(e.exitCode)
 
 					if (!terminal) {
-						console.debug("[onDidEndTerminalShellExecution] Ignoring unregistered terminal shell execution.", {
-							command: e.execution?.commandLine?.value,
-							...exitDetails,
-						})
+						console.debug(
+							"[onDidEndTerminalShellExecution] Ignoring unregistered terminal shell execution.",
+							{
+								command: e.execution?.commandLine?.value,
+								...exitDetails,
+							},
+						)
 
 						return
 					}
@@ -125,7 +131,7 @@ export class TerminalRegistry {
 		}
 	}
 
-	public static createTerminal(cwd: string, provider: RooTerminalProvider): RooTerminal {
+	public static createTerminal(cwd: string, provider: AlphaTerminalProvider): AlphaTerminal {
 		let newTerminal
 
 		if (provider === "vscode") {
@@ -150,10 +156,10 @@ export class TerminalRegistry {
 	public static async getOrCreateTerminal(
 		cwd: string,
 		taskId?: string,
-		provider: RooTerminalProvider = "vscode",
-	): Promise<RooTerminal> {
+		provider: AlphaTerminalProvider = "vscode",
+	): Promise<AlphaTerminal> {
 		const terminals = this.getAllTerminals()
-		let terminal: RooTerminal | undefined
+		let terminal: AlphaTerminal | undefined
 
 		// First priority: Find a terminal already assigned to this task with
 		// matching directory.
@@ -227,7 +233,7 @@ export class TerminalRegistry {
 	 * @param taskId Optional task ID to filter terminals by
 	 * @returns Array of Terminal objects
 	 */
-	public static getTerminals(busy: boolean, taskId?: string): RooTerminal[] {
+	public static getTerminals(busy: boolean, taskId?: string): AlphaTerminal[] {
 		return this.getAllTerminals().filter((t) => {
 			// Filter by busy state.
 			if (t.busy !== busy) {
@@ -250,7 +256,7 @@ export class TerminalRegistry {
 	 * @param busy Whether to get busy or non-busy terminals
 	 * @returns Array of Terminal objects
 	 */
-	public static getBackgroundTerminals(busy?: boolean): RooTerminal[] {
+	public static getBackgroundTerminals(busy?: boolean): AlphaTerminal[] {
 		return this.getAllTerminals().filter((t) => {
 			// Only get background terminals (taskId undefined).
 			if (t.taskId !== undefined) {
@@ -287,12 +293,12 @@ export class TerminalRegistry {
 		})
 	}
 
-	private static getAllTerminals(): RooTerminal[] {
+	private static getAllTerminals(): AlphaTerminal[] {
 		this.terminals = this.terminals.filter((t) => !t.isClosed())
 		return this.terminals
 	}
 
-	private static getTerminalById(id: number): RooTerminal | undefined {
+	private static getTerminalById(id: number): AlphaTerminal | undefined {
 		const terminal = this.terminals.find((t) => t.id === id)
 
 		if (terminal?.isClosed()) {
@@ -308,7 +314,7 @@ export class TerminalRegistry {
 	 * @param terminal The VSCode terminal instance
 	 * @returns The Terminal object, or undefined if not found
 	 */
-	private static getTerminalByVSCETerminal(vsceTerminal: vscode.Terminal): RooTerminal | undefined {
+	private static getTerminalByVSCETerminal(vsceTerminal: vscode.Terminal): AlphaTerminal | undefined {
 		const found = this.terminals.find((t) => t instanceof Terminal && t.terminal === vsceTerminal)
 
 		if (found?.isClosed()) {

@@ -16,6 +16,41 @@
 			"policy_restriction": "由于策略限制，无法创建新任务。"
 		}
 	},
+	"fileConflicts": {
+		"save": "无法保存“{{path}}”：{{reason}}。请重新读取文件并重试，以保留用户的更改。",
+		"delete": "无法删除“{{path}}”：{{reason}}。请重新读取文件并重试。",
+		"saveDestination": "无法保存“{{path}}”：{{reason}}。请检查目标并重试。",
+		"reasons": {
+			"fileUnsavedChanges": "打开的编辑器中有未保存的文件更改",
+			"fileChangedDuringApproval": "等待批准期间文件发生了更改",
+			"editorChangedWhileChecked": "检查文件期间打开的编辑器发生了更改",
+			"destinationUnsavedChanges": "打开的编辑器中有未保存的目标更改",
+			"destinationNotRegularFile": "目标不是普通文件",
+			"destinationChangedDuringInspection": "检查期间目标发生了更改",
+			"destinationPathChanged": "目标现在解析到不同的路径",
+			"destinationCreatedAfterInspection": "目标在检查后被创建",
+			"destinationDeletedAfterInspection": "目标在检查后被删除",
+			"destinationChangedAfterInspection": "目标在检查后发生了更改"
+		}
+	},
+	"diffView": {
+		"editCancelled": "文件编辑已取消",
+		"applyContentFailed": "无法将内容应用到差异编辑器",
+		"previewChangedDuringEdit": "差异预览在编辑期间发生了更改；用户的更改已保留",
+		"noEditAvailableToSave": "没有可保存的文件编辑",
+		"previewChangedAfterApproval": "差异预览在批准后发生了更改；请检查更改并重试",
+		"previewHasUserChanges": "差异预览包含用户更改；请在重试编辑前进行检查",
+		"noFilePathForOpening": "未设置用于打开差异编辑器的文件路径",
+		"previewChangedWhileOpening": "差异预览在打开期间发生了更改；用户的更改已保留",
+		"openFailed": "无法为 {{path}} 打开差异编辑器：{{message}}",
+		"missingExpectedFileState": "打开差异预览前缺少预期的文件状态"
+	},
+	"applyPatch": {
+		"deleteCancelled": "删除操作已取消。"
+	},
+	"imageOutput": {
+		"writeIncomplete": "无法完成写入“{{path}}”；文件可能不完整。{{cause}}"
+	},
 	"generateImage": {
 		"openRouterApiKeyRequired": "使用 OpenRouter 模型生成图像需要 OpenRouter API 密钥。请在图像生成实验设置中配置。",
 		"failedWithStatus": "图像生成失败：{{status}} {{statusText}}",
@@ -24,6 +59,10 @@
 		"invalidImageData": "响应中的图像数据无效",
 		"invalidImageFormat": "收到的图像格式无效",
 		"unknownError": "发生未知错误",
+		"cancelledBeforeSave": "图像保存前，图像生成已取消。",
+		"destinationUnavailableBeforeGeneration": "生成前无法访问图像目标。请重试请求。",
+		"destinationPolicyChangedBeforeSave": "保存前图像目标的路径或访问策略发生了更改。请重试请求。",
+		"postSaveProcessingFailed": "{{path}}\n图像已保存，但保存后的处理失败：{{message}}",
 		"roo": {}
 	}
 }

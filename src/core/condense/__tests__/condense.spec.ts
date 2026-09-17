@@ -123,6 +123,45 @@ Line 2
 	})
 
 	describe("summarizeConversation", () => {
+		it.each([
+			{ count: 1_001, reason: "candidate_over_budget" },
+			{ count: Number.NaN, reason: "invalid_candidate_count" },
+			{ count: 20, reason: "candidate_ready" },
+		])("reports $reason without retaining private content in diagnostics", async ({ count, reason }) => {
+			const handler = new MockApiHandler()
+			vi.spyOn(handler, "countTokens").mockImplementation(async (blocks) =>
+				JSON.stringify(blocks).includes("Mock summary of the conversation") ? count : 10,
+			)
+			const messages: ApiMessage[] = [
+				{ role: "user", content: "PRIVATE_TASK_CONTENT" },
+				{ role: "assistant", content: "PRIVATE_ANSWER_CONTENT" },
+				{ role: "user", content: "PRIVATE_FOLLOWUP_CONTENT" },
+			]
+			const result = await summarizeConversation({
+				messages,
+				apiHandler: handler,
+				systemPrompt: "PRIVATE_SYSTEM_CONTENT",
+				taskId,
+				forceCompaction: true,
+				maxContextTokens: 1_000,
+				recentTailTokenBudget: 0,
+			})
+			expect(result.diagnostic).toMatchObject({
+				reason,
+				storedMessages: 3,
+				activeMessages: 3,
+				targetTokens: 1_000,
+				tailMessages: 0,
+				textParts: 1,
+			})
+			expect(JSON.stringify(result.diagnostic)).not.toContain("PRIVATE_")
+			expect(JSON.stringify(result.diagnostic)).not.toContain("Mock summary")
+			if (reason !== "candidate_ready") {
+				expect(result.messages).toBe(messages)
+				expect(result.status).toBe("no_progress")
+			} else expect(result.status).toBe("reduced")
+		})
+
 		it("should create a summary message with role user (fresh start model)", async () => {
 			const messages: ApiMessage[] = [
 				{ role: "user", content: "First message with /prr command content" },
@@ -154,14 +193,27 @@ Line 2
 			// Should NOT have reasoning blocks (no longer needed for user messages)
 			expect(contentArray.some((b) => b.type === "reasoning")).toBe(false)
 
-			// Fresh start model: effective history should only contain the summary
+			// The summary is followed by the exact recent suffix.
 			const effectiveHistory = getEffectiveApiHistory(result.messages)
-			expect(effectiveHistory.length).toBe(1)
+			expect(effectiveHistory).toHaveLength(8)
 			expect(effectiveHistory[0].isSummary).toBe(true)
 			expect(effectiveHistory[0].role).toBe("user")
+			expect(effectiveHistory.slice(1)).toEqual(messages.slice(2))
+			expect(result.retainedTailMessages).toBe(7)
+
+			const summaryIndex = result.messages.findIndex((msg) => msg.isSummary)
+			expect(summaryIndex).toBe(2)
+			const condenseId = result.messages[summaryIndex].condenseId
+			expect(condenseId).toBeDefined()
+			for (const message of result.messages.slice(0, summaryIndex)) {
+				expect(message.condenseParent).toBe(condenseId)
+			}
+			for (const message of result.messages.slice(summaryIndex + 1)) {
+				expect(message.condenseParent).toBeUndefined()
+			}
 		})
 
-		it("should tag ALL messages with condenseParent", async () => {
+		it("should tag only the summarized prefix with condenseParent", async () => {
 			const messages: ApiMessage[] = [
 				{ role: "user", content: "First message with /prr command content" },
 				{ role: "assistant", content: "Second message" },
@@ -178,11 +230,16 @@ Line 2
 				isAutomaticTrigger: false,
 			})
 
-			// All original messages should be tagged with condenseParent
-			const taggedMessages = result.messages.filter((msg) => !msg.isSummary)
-			expect(taggedMessages.length).toBe(messages.length)
-			for (const msg of taggedMessages) {
-				expect(msg.condenseParent).toBeDefined()
+			const summaryIndex = result.messages.findIndex((msg) => msg.isSummary)
+			expect(summaryIndex).toBe(2)
+			const condenseId = result.messages[summaryIndex].condenseId
+			expect(condenseId).toBeDefined()
+			expect(result.messages.slice(summaryIndex + 1)).toEqual(messages.slice(2))
+			for (const message of result.messages.slice(0, summaryIndex)) {
+				expect(message.condenseParent).toBe(condenseId)
+			}
+			for (const message of result.messages.slice(summaryIndex + 1)) {
+				expect(message.condenseParent).toBeUndefined()
 			}
 		})
 
@@ -195,7 +252,7 @@ Line 2
 						{ type: "text", text: '<command name="prr">Help content</command>' },
 					],
 				},
-				{ role: "assistant", content: "Second message" },
+				{ role: "assistant", content: "Second message. ".repeat(1000) },
 				{ role: "user", content: "Third message" },
 				{ role: "assistant", content: "Fourth message" },
 				{ role: "user", content: "Fifth message" },
@@ -253,14 +310,15 @@ Line 2
 				isAutomaticTrigger: false,
 			})
 
-			// Effective history should contain only the summary (fresh start)
+			// The summary is followed by the exact recent suffix.
 			const effectiveHistory = getEffectiveApiHistory(result.messages)
-			expect(effectiveHistory).toHaveLength(1)
+			expect(effectiveHistory).toHaveLength(8)
 			expect(effectiveHistory[0].isSummary).toBe(true)
 			expect(effectiveHistory[0].role).toBe("user")
+			expect(effectiveHistory.slice(1)).toEqual(messages.slice(2))
 		})
 
-		it("should return error when not enough messages to summarize", async () => {
+		it("leaves a short single message unchanged", async () => {
 			const messages: ApiMessage[] = [{ role: "user", content: "Only one message" }]
 
 			const result = await summarizeConversation({
@@ -271,8 +329,9 @@ Line 2
 				isAutomaticTrigger: false,
 			})
 
-			// Should return an error since we have only 1 message
-			expect(result.error).toBeDefined()
+			// A short history is a successful no-op, not a failed API operation.
+			expect(result.status).toBe("unchanged")
+			expect(result.error).toBeUndefined()
 			expect(result.messages).toEqual(messages) // Original messages unchanged
 			expect(result.summary).toBe("")
 		})
@@ -291,8 +350,8 @@ Line 2
 				isAutomaticTrigger: false,
 			})
 
-			// Should return an error due to recent summary with no substantial messages after
-			expect(result.error).toBeDefined()
+			expect(result.status).toBe("unchanged")
+			expect(result.error).toBeUndefined()
 			expect(result.messages).toEqual(messages)
 			expect(result.summary).toBe("")
 		})

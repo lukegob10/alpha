@@ -1,0 +1,6 @@
+{
+	"profileRequired": "Bu zamanlanmış görevi çalıştırmadan önce kayıtlı bir profil seçin.",
+	"profileUnavailable": "“{{name}}” profili bulunamadı, yeniden adlandırıldı veya yüklenemedi. Kayıtlı bir profili yeniden seçin.",
+	"skillUnavailable": "“{{name}}” becerisi bulunamadı, okunamıyor veya zamanlanan çalışma alanı ve modda kullanılamıyor. Beceriyi yeniden seçin.",
+	"workspaceInvalid": "Zamanlanan çalışma alanı mutlak bir yol olmalıdır."
+}

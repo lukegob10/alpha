@@ -104,9 +104,13 @@ const DiffView = memo(({ source, filePath }: DiffViewProps) => {
 
 	// Effect to handle async highlighting
 	useEffect(() => {
+		let cancelled = false
+		setProcessedHunks(hunks)
+
 		if (!shouldHighlight) {
-			setProcessedHunks(hunks)
-			return
+			return () => {
+				cancelled = true
+			}
 		}
 
 		const processHunks = async () => {
@@ -123,21 +127,31 @@ const DiffView = memo(({ source, filePath }: DiffViewProps) => {
 						i,
 						filePath,
 					)
+					if (cancelled) return
+
 					processed.push({
 						...hunk,
 						highlightedOldLines: highlighted.oldLines,
 						highlightedNewLines: highlighted.newLines,
 					})
 				} catch {
+					if (cancelled) return
+
 					// Fall back to unhighlighted on error
 					processed.push(hunk)
 				}
 			}
 
-			setProcessedHunks(processed)
+			if (!cancelled) {
+				setProcessedHunks(processed)
+			}
 		}
 
-		processHunks()
+		void processHunks()
+
+		return () => {
+			cancelled = true
+		}
 	}, [hunks, shouldHighlight, normalizedLang, isLightTheme, filePath])
 
 	// Render helper that uses precomputed highlighting

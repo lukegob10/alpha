@@ -166,6 +166,22 @@ describe("WorktreeSelector", () => {
 		})
 	})
 
+	test("renders worktree choices as native buttons", () => {
+		render(<WorktreeSelector />)
+		simulateWorktreeListMessage(mockWorktrees)
+		fireEvent.click(screen.getByTestId("worktree-selector-trigger"))
+		const featureButton = screen.getByRole("button", { name: /feature-branch/ })
+
+		expect(featureButton.tagName).toBe("BUTTON")
+		expect(featureButton).toHaveAttribute("type", "button")
+		fireEvent.click(featureButton)
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "switchWorktree",
+			worktreePath: "/path/to/feature-branch",
+			worktreeNewWindow: false,
+		})
+	})
+
 	test("does not send switch message when selecting current worktree", () => {
 		render(<WorktreeSelector />)
 

@@ -1,0 +1,15 @@
+{
+	"filter": "Filtra righe",
+	"sort": "Ordina per {column}",
+	"rows": "{visible} di {total} righe",
+	"unsupported": "Questa versione del kit non è supportata. Apri il sorgente e usa data-alpha-kit=\"1\".",
+	"invalidTable": "Le funzioni della tabella non sono disponibili. Usa una tabella rettangolare con una riga di intestazione e al massimo 1.000 righe e 20 colonne.",
+	"invalidChart": "Le funzioni del grafico non sono disponibili. Controlla la tabella dati: fino a 120 righe, tre serie, un’unità condivisa e valori numerici finiti; lascia vuoti i valori mancanti.",
+	"invalidTabs": "Le schede non sono disponibili. Assegna a ogni sezione un ID univoco e un’etichetta della scheda.",
+	"missing": "Mancante",
+	"inspect": "I valori del grafico sono disponibili nella tabella dati. Porta il focus su un valore tracciato per esaminarlo.",
+	"sortAscending": "crescente",
+	"sortDescending": "decrescente",
+	"invalidDiagram": "Diagramma non disponibile. Usa una tabella di relazioni a tre colonne con un massimo di 24 nodi denominati, 48 collegamenti e nessun ciclo. La tabella resta leggibile.",
+	"imageUnavailable": "Immagine non disponibile. Controlla il percorso nell’area di lavoro e usa un PNG o JPEG statico entro i limiti documentati."
+}

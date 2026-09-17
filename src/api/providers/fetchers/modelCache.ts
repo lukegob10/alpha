@@ -1,6 +1,7 @@
 import * as path from "path"
 import fs from "fs/promises"
 import * as fsSync from "fs"
+import { createHash } from "crypto"
 
 import NodeCache from "node-cache"
 import { z } from "zod"
@@ -33,10 +34,10 @@ const modelRecordSchema = z.record(z.string(), modelInfoSchema)
 
 // Track in-flight refresh requests to prevent concurrent API calls for the same provider
 // This prevents race conditions where multiple calls might overwrite each other's results
-const inFlightRefresh = new Map<RouterName, Promise<ModelRecord>>()
+const inFlightRefresh = new Map<string, Promise<ModelRecord>>()
 
-async function writeModels(router: RouterName, data: ModelRecord) {
-	const filename = `${router}_models.json`
+async function writeModels(cacheKey: string, data: ModelRecord) {
+	const filename = `${cacheKey}_models.json`
 	const cacheDir = await getCacheDirectoryPath(ContextProxy.instance.globalStorageUri.fsPath)
 	await safeWriteJson(path.join(cacheDir, filename), data)
 }
@@ -47,6 +48,62 @@ async function readModels(router: RouterName): Promise<ModelRecord | undefined> 
 	const filePath = path.join(cacheDir, filename)
 	const exists = await fileExistsAtPath(filePath)
 	return exists ? JSON.parse(await fs.readFile(filePath, "utf8")) : undefined
+}
+
+function normalizeCacheBaseUrl(baseUrl?: string): string {
+	const trimmed = baseUrl?.trim()
+	if (!trimmed) {
+		return ""
+	}
+
+	try {
+		const url = new URL(trimmed)
+		url.hash = ""
+		url.pathname = url.pathname.replace(/\/+$/, "")
+		return url.toString()
+	} catch {
+		return trimmed.replace(/\/+$/, "")
+	}
+}
+
+/**
+ * Cache provider catalogs by every setting that can change their contents.
+ * The digest keeps credentials and credential-bearing URLs out of filenames.
+ */
+function getModelCacheKey(options: GetModelsOptions): string {
+	const { provider } = options
+	let scope: readonly string[]
+
+	switch (provider) {
+		case "openrouter":
+		case "vercel-ai-gateway":
+			return provider
+		case "unbound":
+			scope = [options.apiKey ?? ""]
+			break
+		case "lmstudio":
+			scope = [normalizeCacheBaseUrl(options.baseUrl)]
+			break
+		case "requesty":
+		case "ollama":
+		case "poe":
+			scope = [normalizeCacheBaseUrl(options.baseUrl), options.apiKey ?? ""]
+			break
+		case "litellm":
+			scope = [normalizeCacheBaseUrl(options.baseUrl), options.apiKey]
+			break
+		default: {
+			const exhaustiveCheck: never = provider
+			throw new Error(`Unknown provider: ${exhaustiveCheck}`)
+		}
+	}
+
+	if (scope.every((value) => value === "")) {
+		return provider
+	}
+
+	const fingerprint = createHash("sha256").update(JSON.stringify(scope)).digest("hex").slice(0, 16)
+	return `${provider}_${fingerprint}`
 }
 
 /**
@@ -111,8 +168,9 @@ async function fetchModelsFromProvider(options: GetModelsOptions): Promise<Model
  */
 export const getModels = async (options: GetModelsOptions): Promise<ModelRecord> => {
 	const { provider } = options
+	const cacheKey = getModelCacheKey(options)
 
-	let models = getModelsFromCache(provider)
+	let models = getModelsFromCache(options)
 
 	if (models) {
 		return models
@@ -125,9 +183,9 @@ export const getModels = async (options: GetModelsOptions): Promise<ModelRecord>
 		// Only cache non-empty results to prevent persisting failed API responses
 		// Empty results could indicate API failure rather than "no models exist"
 		if (modelCount > 0) {
-			memoryCache.set(provider, models)
+			memoryCache.set(cacheKey, models)
 
-			await writeModels(provider, models).catch((err) =>
+			await writeModels(cacheKey, models).catch((err) =>
 				console.error(`[MODEL_CACHE] Error writing ${provider} models to file cache:`, err),
 			)
 		} else {
@@ -158,11 +216,12 @@ export const getModels = async (options: GetModelsOptions): Promise<ModelRecord>
  */
 export const refreshModels = async (options: GetModelsOptions): Promise<ModelRecord> => {
 	const { provider } = options
+	const cacheKey = getModelCacheKey(options)
 
 	// Check if there's already an in-flight refresh for this provider
 	// This prevents race conditions where multiple concurrent refreshes might
 	// overwrite each other's results
-	const existingRequest = inFlightRefresh.get(provider)
+	const existingRequest = inFlightRefresh.get(cacheKey)
 	if (existingRequest) {
 		return existingRequest
 	}
@@ -175,7 +234,7 @@ export const refreshModels = async (options: GetModelsOptions): Promise<ModelRec
 			const modelCount = Object.keys(models).length
 
 			// Get existing cached data for comparison
-			const existingCache = getModelsFromCache(provider)
+			const existingCache = getModelsFromCache(options)
 			const existingCount = existingCache ? Object.keys(existingCache).length : 0
 
 			if (modelCount === 0) {
@@ -193,10 +252,10 @@ export const refreshModels = async (options: GetModelsOptions): Promise<ModelRec
 			}
 
 			// Update memory cache first
-			memoryCache.set(provider, models)
+			memoryCache.set(cacheKey, models)
 
 			// Atomically write to disk (safeWriteJson handles atomic writes)
-			await writeModels(provider, models).catch((err) =>
+			await writeModels(cacheKey, models).catch((err) =>
 				console.error(`[refreshModels] Error writing ${provider} models to disk:`, err),
 			)
 
@@ -204,15 +263,15 @@ export const refreshModels = async (options: GetModelsOptions): Promise<ModelRec
 		} catch (error) {
 			// Log the error for debugging, then return existing cache if available (graceful degradation)
 			console.error(`[refreshModels] Failed to refresh ${provider} models:`, error)
-			return getModelsFromCache(provider) || {}
+			return getModelsFromCache(options) || {}
 		} finally {
 			// Always clean up the in-flight tracking
-			inFlightRefresh.delete(provider)
+			inFlightRefresh.delete(cacheKey)
 		}
 	})()
 
 	// Track the in-flight request
-	inFlightRefresh.set(provider, refreshPromise)
+	inFlightRefresh.set(cacheKey, refreshPromise)
 
 	return refreshPromise
 }
@@ -250,7 +309,6 @@ export async function initializeModelCacheRefresh(): Promise<void> {
  * @param refresh - If true, immediately fetch fresh data from API
  */
 export const flushModels = async (options: GetModelsOptions, refresh: boolean = false): Promise<void> => {
-	const { provider } = options
 	if (refresh) {
 		// Don't delete memory cache - let refreshModels atomically replace it
 		// This prevents a race condition where getModels() might be called
@@ -259,7 +317,7 @@ export const flushModels = async (options: GetModelsOptions, refresh: boolean = 
 		await refreshModels(options)
 	} else {
 		// Only delete memory cache when not refreshing
-		memoryCache.del(provider)
+		memoryCache.del(getModelCacheKey(options))
 	}
 }
 
@@ -268,12 +326,15 @@ export const flushModels = async (options: GetModelsOptions, refresh: boolean = 
  * This ensures providers always have access to last known good data,
  * preventing fallback to hardcoded defaults on startup.
  *
- * @param provider - The provider to get models for.
+ * @param identity - Provider options identifying the exact provider configuration,
+ * or a provider name for public, unscoped catalogs.
  * @returns Models from memory cache, disk cache, or undefined if not cached.
  */
-export function getModelsFromCache(provider: ProviderName): ModelRecord | undefined {
+export function getModelsFromCache(identity: ProviderName | GetModelsOptions): ModelRecord | undefined {
+	const provider = typeof identity === "string" ? identity : identity.provider
+	const cacheKey = typeof identity === "string" ? identity : getModelCacheKey(identity)
 	// Check memory cache first (fast)
-	const memoryModels = memoryCache.get<ModelRecord>(provider)
+	const memoryModels = memoryCache.get<ModelRecord>(cacheKey)
 	if (memoryModels) {
 		return memoryModels
 	}
@@ -281,7 +342,7 @@ export function getModelsFromCache(provider: ProviderName): ModelRecord | undefi
 	// Memory cache miss - try to load from disk synchronously
 	// This is acceptable because it only happens on cold start or after cache expiry
 	try {
-		const filename = `${provider}_models.json`
+		const filename = `${cacheKey}_models.json`
 		const cacheDir = getCacheDirectoryPathSync()
 		if (!cacheDir) {
 			return undefined
@@ -306,7 +367,7 @@ export function getModelsFromCache(provider: ProviderName): ModelRecord | undefi
 			}
 
 			// Populate memory cache for future fast access
-			memoryCache.set(provider, validation.data)
+			memoryCache.set(cacheKey, validation.data)
 
 			return validation.data
 		}

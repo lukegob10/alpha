@@ -177,6 +177,7 @@ describe("ProfileValidator", () => {
 			"deepseek",
 			"xai",
 			"sambanova",
+			"stellar",
 			"fireworks",
 		]
 

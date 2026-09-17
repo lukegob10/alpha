@@ -1,14 +1,8 @@
+import { createIndexPoint, getEmbeddingText, validateEmbeddingBatch } from "../shared/embedding-input"
 import * as vscode from "vscode"
-import {
-	QDRANT_CODE_BLOCK_NAMESPACE,
-	MAX_FILE_SIZE_BYTES,
-	BATCH_SEGMENT_THRESHOLD,
-	MAX_BATCH_RETRIES,
-	INITIAL_RETRY_DELAY_MS,
-} from "../constants"
+import { MAX_FILE_SIZE_BYTES, BATCH_SEGMENT_THRESHOLD, MAX_BATCH_RETRIES, INITIAL_RETRY_DELAY_MS } from "../constants"
 import { createHash } from "crypto"
-import { RooIgnoreController } from "../../../core/ignore/RooIgnoreController"
-import { v5 as uuidv5 } from "uuid"
+import { AlphaIgnoreController } from "../../../core/ignore/AlphaIgnoreController"
 import { Ignore } from "ignore"
 import { scannerExtensions } from "../shared/supported-extensions"
 import {
@@ -21,7 +15,7 @@ import {
 } from "../interfaces"
 import { codeParser } from "./parser"
 import { CacheManager } from "../cache-manager"
-import { generateNormalizedAbsolutePath, generateRelativeFilePath } from "../shared/get-relative-path"
+import { generateRelativeFilePath } from "../shared/get-relative-path"
 import { isPathInIgnoredDirectory } from "../../glob/ignore-utils"
 import { TelemetryService } from "@alpha-code/telemetry"
 import { TelemetryEventName } from "@alpha-code/types"
@@ -35,9 +29,12 @@ import { EmbeddingRateLimiter } from "../shared/embedding-rate-limiter"
 export class FileWatcher implements IFileWatcher {
 	private ignoreInstance?: Ignore
 	private fileWatcher?: vscode.FileSystemWatcher
-	private ignoreController: RooIgnoreController
+	private ignoreController: AlphaIgnoreController
 	private accumulatedEvents: Map<string, { uri: vscode.Uri; type: "create" | "change" | "delete" }> = new Map()
 	private batchProcessDebounceTimer?: NodeJS.Timeout
+	private batchProcessingTail: Promise<void> = Promise.resolve()
+	private lifecycleVersion = 0
+	private disposed = false
 	private readonly BATCH_DEBOUNCE_DELAY_MS = 500
 	private readonly FILE_PROCESSING_CONCURRENCY_LIMIT = 10
 	private readonly batchSegmentThreshold: number
@@ -81,11 +78,11 @@ export class FileWatcher implements IFileWatcher {
 		private embedder?: IEmbedder,
 		private vectorStore?: IVectorStore,
 		ignoreInstance?: Ignore,
-		ignoreController?: RooIgnoreController,
+		ignoreController?: AlphaIgnoreController,
 		batchSegmentThreshold?: number,
 		embeddingRateLimitSeconds?: number,
 	) {
-		this.ignoreController = ignoreController || new RooIgnoreController(workspacePath)
+		this.ignoreController = ignoreController || new AlphaIgnoreController(workspacePath)
 		if (ignoreInstance) {
 			this.ignoreInstance = ignoreInstance
 		}
@@ -110,6 +107,25 @@ export class FileWatcher implements IFileWatcher {
 	 * Initializes the file watcher
 	 */
 	async initialize(): Promise<void> {
+		if (this.disposed) {
+			throw new Error("Cannot initialize a disposed file watcher.")
+		}
+		if (this.fileWatcher) {
+			return
+		}
+		const lifecycleVersion = this.lifecycleVersion
+		await this.whenIdle()
+		if (this.disposed) {
+			throw new Error("Cannot initialize a disposed file watcher.")
+		}
+		if (lifecycleVersion !== this.lifecycleVersion) {
+			const error = new Error("File watcher initialization was stopped.")
+			error.name = "AbortError"
+			throw error
+		}
+		if (this.fileWatcher) {
+			return
+		}
 		// Create file watcher
 		const filePattern = new vscode.RelativePattern(
 			this.workspacePath,
@@ -123,18 +139,29 @@ export class FileWatcher implements IFileWatcher {
 		this.fileWatcher.onDidDelete(this.handleFileDeleted.bind(this))
 	}
 
+	stop(): void {
+		this.lifecycleVersion++
+		this.fileWatcher?.dispose()
+		this.fileWatcher = undefined
+		if (this.batchProcessDebounceTimer) {
+			clearTimeout(this.batchProcessDebounceTimer)
+			this.batchProcessDebounceTimer = undefined
+		}
+		this.accumulatedEvents.clear()
+	}
+
 	/**
 	 * Disposes the file watcher
 	 */
 	dispose(): void {
-		this.fileWatcher?.dispose()
-		if (this.batchProcessDebounceTimer) {
-			clearTimeout(this.batchProcessDebounceTimer)
+		if (this.disposed) {
+			return
 		}
+		this.disposed = true
+		this.stop()
 		this._onDidStartBatchProcessing.dispose()
 		this._onBatchProgressUpdate.dispose()
 		this._onDidFinishBatchProcessing.dispose()
-		this.accumulatedEvents.clear()
 	}
 
 	/**
@@ -177,18 +204,28 @@ export class FileWatcher implements IFileWatcher {
 	/**
 	 * Triggers processing of accumulated events
 	 */
-	private async triggerBatchProcessing(): Promise<void> {
+	private triggerBatchProcessing(): Promise<void> {
 		if (this.accumulatedEvents.size === 0) {
-			return
+			return Promise.resolve()
 		}
 
 		const eventsToProcess = new Map(this.accumulatedEvents)
 		this.accumulatedEvents.clear()
+		const processBatch = async () => {
+			const filePathsInBatch = Array.from(eventsToProcess.keys())
+			this._onDidStartBatchProcessing.fire(filePathsInBatch)
+			await this.processBatch(eventsToProcess)
+		}
+		const result = this.batchProcessingTail.then(processBatch, processBatch)
+		this.batchProcessingTail = result.then(
+			() => undefined,
+			() => undefined,
+		)
+		return result
+	}
 
-		const filePathsInBatch = Array.from(eventsToProcess.keys())
-		this._onDidStartBatchProcessing.fire(filePathsInBatch)
-
-		await this.processBatch(eventsToProcess)
+	public whenIdle(): Promise<void> {
+		return this.batchProcessingTail
 	}
 
 	/**
@@ -549,7 +586,7 @@ export class FileWatcher implements IFileWatcher {
 
 			// Read file content
 			const fileContent = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath))
-			const content = fileContent.toString()
+			const content = Buffer.from(fileContent).toString("utf8")
 
 			// Calculate hash
 			const newHash = createHash("sha256").update(content).digest("hex")
@@ -569,26 +606,14 @@ export class FileWatcher implements IFileWatcher {
 			// Prepare points for batch processing
 			let pointsToUpsert: PointStruct[] = []
 			if (this.embedder && blocks.length > 0) {
-				const texts = blocks.map((block) => block.content)
+				const texts = blocks.map((block) => getEmbeddingText(block, this.workspacePath))
 				await this.embeddingRateLimiter.wait()
-				const { embeddings } = await this.embedder.createEmbeddings(texts)
+				const { embeddings } = await this.embedder.createEmbeddings(texts, undefined, "document")
 
-				pointsToUpsert = blocks.map((block, index) => {
-					const normalizedAbsolutePath = generateNormalizedAbsolutePath(block.file_path, this.workspacePath)
-					const stableName = `${normalizedAbsolutePath}:${block.start_line}`
-					const pointId = uuidv5(stableName, QDRANT_CODE_BLOCK_NAMESPACE)
-
-					return {
-						id: pointId,
-						vector: embeddings[index],
-						payload: {
-							filePath: generateRelativeFilePath(normalizedAbsolutePath, this.workspacePath),
-							codeChunk: block.content,
-							startLine: block.start_line,
-							endLine: block.end_line,
-						},
-					}
-				})
+				validateEmbeddingBatch(embeddings, blocks.length)
+				pointsToUpsert = blocks.map((block, index) =>
+					createIndexPoint(block, this.workspacePath, embeddings[index]),
+				)
 			}
 
 			return {

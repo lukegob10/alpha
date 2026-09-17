@@ -44,7 +44,7 @@ const MERMAID_THEME = {
 
 mermaid.initialize({
 	startOnLoad: false,
-	securityLevel: "loose",
+	securityLevel: "strict",
 	theme: "dark",
 	suppressErrorRendering: true,
 	themeVariables: {
@@ -88,7 +88,8 @@ interface MermaidBlockProps {
 }
 
 export default function MermaidBlock({ code }: MermaidBlockProps) {
-	const containerRef = useRef<HTMLDivElement>(null)
+	const containerRef = useRef<HTMLButtonElement>(null)
+	const renderGeneration = useRef(0)
 	const [isLoading, setIsLoading] = useState(false)
 	const [error, setError] = useState<string | null>(null)
 	const [isErrorExpanded, setIsErrorExpanded] = useState(false)
@@ -97,8 +98,13 @@ export default function MermaidBlock({ code }: MermaidBlockProps) {
 
 	// 1) Whenever `code` changes, mark that we need to re-render a new chart
 	useEffect(() => {
+		const generation = ++renderGeneration.current
 		setIsLoading(true)
 		setError(null)
+
+		return () => {
+			renderGeneration.current = generation + 1
+		}
 	}, [code])
 
 	// 2) Debounce the actual parse/render
@@ -108,24 +114,33 @@ export default function MermaidBlock({ code }: MermaidBlockProps) {
 				containerRef.current.innerHTML = ""
 			}
 
-			mermaid
-				.parse(code)
-				.then(() => {
+			const generation = renderGeneration.current
+
+			const renderDiagram = async () => {
+				try {
+					await mermaid.parse(code)
+					if (generation !== renderGeneration.current) return
+
 					const id = `mermaid-${Math.random().toString(36).substring(2)}`
-					return mermaid.render(id, code)
-				})
-				.then(({ svg }) => {
+					const { svg } = await mermaid.render(id, code)
+					if (generation !== renderGeneration.current) return
+
 					if (containerRef.current) {
 						containerRef.current.innerHTML = svg
 					}
-				})
-				.catch((err) => {
+				} catch (err) {
+					if (generation !== renderGeneration.current) return
+
 					console.warn("Mermaid parse/render failed:", err)
-					setError(err.message || "Failed to render Mermaid diagram")
-				})
-				.finally(() => {
-					setIsLoading(false)
-				})
+					setError(err instanceof Error ? err.message : "Failed to render Mermaid diagram")
+				} finally {
+					if (generation === renderGeneration.current) {
+						setIsLoading(false)
+					}
+				}
+			}
+
+			void renderDiagram()
 		},
 		500, // Delay 500ms
 		[code], // Dependencies for scheduling
@@ -216,7 +231,13 @@ export default function MermaidBlock({ code }: MermaidBlockProps) {
 				</div>
 			) : (
 				<MermaidButton containerRef={containerRef} code={code} isLoading={isLoading} svgToPng={svgToPng}>
-					<SvgContainer onClick={handleClick} ref={containerRef} $isLoading={isLoading}></SvgContainer>
+					<SvgContainer
+						type="button"
+						aria-label={t("common:mermaid.buttons.open")}
+						onClick={handleClick}
+						ref={containerRef}
+						$isLoading={isLoading}
+					/>
 				</MermaidButton>
 			)}
 		</MermaidBlockContainer>
@@ -313,11 +334,16 @@ interface SvgContainerProps {
 	$isLoading: boolean
 }
 
-const SvgContainer = styled.div<SvgContainerProps>`
+const SvgContainer = styled.button<SvgContainerProps>`
 	opacity: ${(props) => (props.$isLoading ? 0.3 : 1)};
+	width: 100%;
 	min-height: 20px;
 	transition: opacity 0.2s ease;
 	cursor: pointer;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	color: inherit;
 	display: flex;
 	justify-content: center;
 	max-height: 400px;

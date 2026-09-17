@@ -8,6 +8,7 @@ import type { Mock } from "vitest"
 import {
 	ProviderSettings,
 	ModelInfo,
+	anthropicDefaultModelId,
 	BEDROCK_1M_CONTEXT_MODEL_IDS,
 	litellmDefaultModelInfo,
 	openAiModelInfoSaneDefaults,
@@ -38,6 +39,28 @@ const createWrapper = () => {
 }
 
 describe("useSelectedModel", () => {
+	describe("Copilot context selection", () => {
+		it("updates the input window when switching between standard and extended context", () => {
+			mockUseRouterModels.mockReturnValue({ data: {}, isLoading: false, isError: false } as any)
+			mockUseOpenRouterModelProviders.mockReturnValue({ data: {}, isLoading: false, isError: false } as any)
+			const configuration: ProviderSettings = {
+				apiProvider: "vscode-lm",
+				vsCodeLmModelSelector: { vendor: "copilot", family: "claude-opus-4.7" },
+				vsCodeLmContextSize: 200_000,
+			}
+			const { result, rerender } = renderHook((config) => useSelectedModel(config), {
+				initialProps: configuration,
+				wrapper: createWrapper(),
+			})
+			expect(result.current.info?.contextWindow).toBe(200_000)
+			rerender({ ...configuration, vsCodeLmContextSize: 936_000 })
+			expect(result.current.info?.contextWindow).toBe(936_000)
+			expect(result.current.info?.contextWindowIncludesOutput).toBe(false)
+			rerender(configuration)
+			expect(result.current.info?.contextWindow).toBe(200_000)
+		})
+	})
+
 	describe("OpenRouter provider merging", () => {
 		it("should merge base model info with specific provider info when both exist", () => {
 			const baseModelInfo: ModelInfo = {
@@ -399,7 +422,7 @@ describe("useSelectedModel", () => {
 			const { result } = renderHook(() => useSelectedModel(), { wrapper })
 
 			expect(result.current.provider).toBe("anthropic")
-			expect(result.current.id).toBe("claude-sonnet-4-5")
+			expect(result.current.id).toBe(anthropicDefaultModelId)
 			expect(result.current.info).toBeUndefined()
 		})
 	})

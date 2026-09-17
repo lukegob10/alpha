@@ -41,7 +41,17 @@ function extractSessionEntry(value: unknown): TaskSessionEntry | undefined {
 		ts,
 		workspace: typeof workspace === "string" ? workspace : undefined,
 		mode: typeof mode === "string" ? mode : undefined,
-		status: status === "active" || status === "completed" || status === "delegated" ? status : undefined,
+		status:
+			status === "active" ||
+			status === "completed" ||
+			status === "blocked" ||
+			status === "delegated" ||
+			status === "failed" ||
+			status === "cancelled" ||
+			status === "timed_out" ||
+			status === "interrupted"
+				? status
+				: undefined,
 	}
 }
 

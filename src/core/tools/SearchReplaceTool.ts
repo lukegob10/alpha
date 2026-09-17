@@ -1,10 +1,8 @@
 import fs from "fs/promises"
 import path from "path"
 
-import { type ClineSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
+import { type AlphaSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
 
-import { getReadablePath } from "../../utils/path"
-import { isPathOutsideWorkspace } from "../../utils/pathUtils"
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
@@ -14,6 +12,8 @@ import { sanitizeUnifiedDiff, computeDiffStats } from "../diff/stats"
 import type { ToolUse } from "../../shared/tools"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { fileEditContent, normalizeToLF } from "./fileEditContent"
+import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
 interface SearchReplaceParams {
 	file_path: string
@@ -69,16 +69,16 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 				relPath = file_path
 			}
 
-			const accessAllowed = task.rooIgnoreController?.validateAccess(relPath)
+			const accessAllowed = task.alphaIgnoreController?.validateAccess(relPath)
 
 			if (!accessAllowed) {
 				await task.say("rooignore_error", relPath)
-				pushToolResult(formatResponse.rooIgnoreError(relPath))
+				pushToolResult(formatResponse.alphaIgnoreError(relPath))
 				return
 			}
 
 			// Check if file is write-protected
-			const isWriteProtected = task.rooProtectedController?.isWriteProtected(relPath) || false
+			const isWriteProtected = task.alphaProtectedController?.isWriteProtected(relPath) || false
 
 			const absolutePath = path.resolve(task.cwd, relPath)
 
@@ -92,11 +92,9 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 				return
 			}
 
-			let fileContent: string
+			let originalFileContent: string
 			try {
-				fileContent = await fs.readFile(absolutePath, "utf8")
-				// Normalize line endings to LF for consistent matching
-				fileContent = fileContent.replace(/\r\n/g, "\n")
+				originalFileContent = await fs.readFile(absolutePath, "utf8")
 			} catch (error) {
 				task.consecutiveMistakeCount++
 				task.recordToolError("search_replace")
@@ -106,9 +104,14 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 				return
 			}
 
+			// Normalize only the matching projection. The raw content remains the
+			// baseline used to reject edits made while approval was pending.
+			const projection = fileEditContent(originalFileContent)
+			const fileContent = projection.content
+
 			// Normalize line endings in search/replace strings to match file content
-			const normalizedOldString = old_string.replace(/\r\n/g, "\n")
-			const normalizedNewString = new_string.replace(/\r\n/g, "\n")
+			const normalizedOldString = normalizeToLF(old_string)
+			const normalizedNewString = normalizeToLF(new_string)
 
 			// Check for exact match (literal string, not regex)
 			const matchCount = fileContent.split(normalizedOldString).length - 1
@@ -136,10 +139,10 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 			}
 
 			// Apply the single replacement
-			const newContent = fileContent.replace(normalizedOldString, normalizedNewString)
+			const newContent = projection.restore(fileContent.replace(normalizedOldString, () => normalizedNewString))
 
 			// Check if any changes were made
-			if (newContent === fileContent) {
+			if (newContent === originalFileContent) {
 				pushToolResult(`No changes needed for '${relPath}'`)
 				return
 			}
@@ -148,10 +151,10 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 
 			// Initialize diff view
 			task.diffViewProvider.editType = "modify"
-			task.diffViewProvider.originalContent = fileContent
+			task.diffViewProvider.originalContent = originalFileContent
 
 			// Generate and validate diff
-			const diff = formatResponse.createPrettyPatch(relPath, fileContent, newContent)
+			const diff = formatResponse.createPrettyPatch(relPath, originalFileContent, newContent)
 			if (!diff) {
 				pushToolResult(`No changes needed for '${relPath}'`)
 				await task.diffViewProvider.reset()
@@ -170,11 +173,11 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 
 			const sanitizedDiff = sanitizeUnifiedDiff(diff)
 			const diffStats = computeDiffStats(sanitizedDiff) || undefined
-			const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
+			const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
-			const sharedMessageProps: ClineSayTool = {
+			const sharedMessageProps: AlphaSayTool = {
 				tool: "appliedDiff",
-				path: getReadablePath(task.cwd, relPath),
+				path: getTaskReadablePath(task, relPath),
 				diff: sanitizedDiff,
 				isOutsideWorkspace,
 			}
@@ -184,11 +187,11 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 				content: sanitizedDiff,
 				isProtected: isWriteProtected,
 				diffStats,
-			} satisfies ClineSayTool)
+			} satisfies AlphaSayTool)
 
 			// Show diff view if focus disruption prevention is disabled
 			if (!isPreventFocusDisruptionEnabled) {
-				await task.diffViewProvider.open(relPath)
+				await task.diffViewProvider.open(relPath, { exists: true, content: originalFileContent })
 				await task.diffViewProvider.update(newContent, true)
 				task.diffViewProvider.scrollToFirstDiff()
 			}
@@ -208,7 +211,10 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 			// Save the changes
 			if (isPreventFocusDisruptionEnabled) {
 				// Direct file write without diff view or opening the file
-				await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs)
+				await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs, {
+					exists: true,
+					content: originalFileContent,
+				})
 			} else {
 				// Call saveChanges to update the DiffViewProvider properties
 				await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)
@@ -262,11 +268,11 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 		}
 
 		const absolutePath = path.resolve(task.cwd, relPath)
-		const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
+		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
-		const sharedMessageProps: ClineSayTool = {
+		const sharedMessageProps: AlphaSayTool = {
 			tool: "appliedDiff",
-			path: getReadablePath(task.cwd, relPath),
+			path: getTaskReadablePath(task, relPath),
 			diff: operationPreview,
 			isOutsideWorkspace,
 		}

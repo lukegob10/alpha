@@ -24,21 +24,12 @@ vi.mock("@/i18n/TranslationContext", () => ({
 	}),
 }))
 
-vi.mock("react-use", () => ({
-	useKeyPress: vi.fn(),
-}))
-
-import { useKeyPress } from "react-use"
-
-const mockUseKeyPress = useKeyPress as any
-
 describe("DeleteTaskDialog", () => {
 	const mockTaskId = "test-task-id"
 	const mockOnOpenChange = vi.fn()
 
 	beforeEach(() => {
 		vi.clearAllMocks()
-		mockUseKeyPress.mockReturnValue([false, null])
 	})
 
 	it("renders dialog with correct content", () => {
@@ -85,24 +76,10 @@ describe("DeleteTaskDialog", () => {
 		expect(mockOnOpenChange).toHaveBeenCalledWith(false)
 	})
 
-	it("handles Enter key press to delete task", () => {
-		// Mock Enter key being pressed
-		mockUseKeyPress.mockReturnValue([true, null])
-
+	it("does not delete when Enter is pressed outside the confirmation action", () => {
 		render(<DeleteTaskDialog taskId={mockTaskId} open={true} onOpenChange={mockOnOpenChange} />)
 
-		expect(vscode.postMessage).toHaveBeenCalledWith({
-			type: "deleteTaskWithId",
-			text: mockTaskId,
-		})
-		expect(mockOnOpenChange).toHaveBeenCalledWith(false)
-	})
-
-	it("does not delete on Enter key press when taskId is empty", () => {
-		// Mock Enter key being pressed
-		mockUseKeyPress.mockReturnValue([true, null])
-
-		render(<DeleteTaskDialog taskId="" open={true} onOpenChange={mockOnOpenChange} />)
+		fireEvent.keyDown(screen.getByText("Cancel"), { key: "Enter", code: "Enter" })
 
 		expect(vscode.postMessage).not.toHaveBeenCalled()
 		expect(mockOnOpenChange).not.toHaveBeenCalled()
@@ -127,25 +104,6 @@ describe("DeleteTaskDialog", () => {
 		// These should have the correct styling classes based on the component
 		expect(cancelButton).toBeInTheDocument()
 		expect(deleteButton).toBeInTheDocument()
-	})
-
-	it("handles multiple Enter key presses correctly", () => {
-		// First render with Enter not pressed
-		const { rerender } = render(
-			<DeleteTaskDialog taskId={mockTaskId} open={true} onOpenChange={mockOnOpenChange} />,
-		)
-
-		expect(vscode.postMessage).not.toHaveBeenCalled()
-
-		// Then simulate Enter key press
-		mockUseKeyPress.mockReturnValue([true, null])
-		rerender(<DeleteTaskDialog taskId={mockTaskId} open={true} onOpenChange={mockOnOpenChange} />)
-
-		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
-		expect(vscode.postMessage).toHaveBeenCalledWith({
-			type: "deleteTaskWithId",
-			text: mockTaskId,
-		})
 	})
 
 	describe("cascade delete warning", () => {

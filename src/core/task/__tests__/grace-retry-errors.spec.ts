@@ -8,7 +8,7 @@ import type { GlobalState, ProviderSettings } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../Task"
-import { ClineProvider } from "../../webview/ClineProvider"
+import { AlphaProvider } from "../../webview/AlphaProvider"
 import { ContextProxy } from "../../config/ContextProxy"
 
 // Mock @alpha-code/core
@@ -30,6 +30,13 @@ vi.mock("execa", () => ({
 	execa: vi.fn(),
 }))
 
+// Keep legacy history persistence isolated from the real filesystem too. The
+// fs/promises mock below is intentionally narrow and does not create the task
+// directory used by safeWriteJson.
+vi.mock("../../../utils/safeWriteJson", () => ({
+	safeWriteJson: vi.fn().mockResolvedValue(undefined),
+}))
+
 vi.mock("fs/promises", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, any>
 	const mockFunctions = {
@@ -46,6 +53,51 @@ vi.mock("fs/promises", async (importOriginal) => {
 		default: mockFunctions,
 	}
 })
+
+// This spec keeps the legacy API-history filesystem mocked. The provider
+// transcript sidecar has its own persistence suite; mock its receipt boundary
+// here so the blanket fs/promises read mock cannot turn a successful legacy
+// save into a false sidecar failure.
+vi.mock("../../task-persistence/ProviderTranscriptStore", () => ({
+	ProviderTranscriptStore: vi.fn().mockImplementation((taskId: string) => ({
+		read: vi.fn().mockResolvedValue({
+			version: 1,
+			taskId,
+			revision: 0,
+			digest: "0".repeat(64),
+			writtenAt: 0,
+			messages: [],
+		}),
+		getLastCommitReceipt: vi.fn(),
+		commitAuthoritativeTranscript: vi.fn().mockResolvedValue({
+			version: 1,
+			taskId,
+			revision: 1,
+			digest: "1".repeat(64),
+			writtenAt: 1,
+		}),
+		verifyCommitReceipt: vi.fn().mockResolvedValue(undefined),
+		assertCommitReceipt: vi.fn().mockResolvedValue(undefined),
+		repairFromAuthoritativeTranscript: vi.fn(),
+	})),
+	ProviderTranscriptStoreError: class MockProviderTranscriptStoreError extends Error {
+		code = "write_failed"
+		taskId = "test-id"
+	},
+	ProviderTranscriptRevisionConflictError: class MockProviderTranscriptRevisionConflictError extends Error {
+		code = "revision_conflict"
+		taskId = "test-id"
+	},
+	digestProviderTranscript: vi.fn(() => "0".repeat(64)),
+	serializeProviderTranscript: (messages: unknown) => JSON.stringify(messages),
+	assertAuthoritativeTranscriptReplacementAllowed: vi.fn(),
+	withLegacyTranscriptMigration: (_path: string, _taskId: string, operation: () => Promise<unknown>) => operation(),
+}))
+
+vi.mock("../../task-persistence/atomicWrite", () => ({
+	atomicWriteText: vi.fn().mockResolvedValue(undefined),
+	withFileLock: vi.fn(async (_path: string, operation: () => Promise<unknown>) => operation()),
+}))
 
 vi.mock("p-wait-for", () => ({
 	default: vi.fn().mockImplementation(async () => Promise.resolve()),
@@ -123,9 +175,12 @@ vi.mock("../../../integrations/misc/extract-text", () => ({
 
 vi.mock("../../environment/getEnvironmentDetails", () => ({
 	getEnvironmentDetails: vi.fn().mockResolvedValue(""),
+	captureEnvironmentDetails: vi
+		.fn()
+		.mockImplementation(async () => ({ details: "", commit: vi.fn(), release: vi.fn() })),
 }))
 
-vi.mock("../../ignore/RooIgnoreController")
+vi.mock("../../ignore/AlphaIgnoreController")
 
 vi.mock("../../../utils/storage", () => ({
 	getTaskDirectoryPath: vi
@@ -191,7 +246,7 @@ describe("Grace Retry Error Handling", () => {
 			dispose: vi.fn(),
 		}
 
-		mockProvider = new ClineProvider(
+		mockProvider = new AlphaProvider(
 			mockExtensionContext,
 			mockOutputChannel,
 			"sidebar",

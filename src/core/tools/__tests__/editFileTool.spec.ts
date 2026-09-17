@@ -39,7 +39,7 @@ vi.mock("../../../utils/fs", () => ({
 vi.mock("../../prompts/responses", () => ({
 	formatResponse: {
 		toolError: vi.fn((msg) => `Error: ${msg}`),
-		rooIgnoreError: vi.fn((path) => `Access denied: ${path}`),
+		alphaIgnoreError: vi.fn((path) => `Access denied: ${path}`),
 		createPrettyPatch: vi.fn(() => "mock-diff"),
 	},
 }))
@@ -117,10 +117,10 @@ describe("editFileTool", () => {
 				}),
 			}),
 		}
-		mockTask.rooIgnoreController = {
+		mockTask.alphaIgnoreController = {
 			validateAccess: vi.fn().mockReturnValue(true),
 		}
-		mockTask.rooProtectedController = {
+		mockTask.alphaProtectedController = {
 			isWriteProtected: vi.fn().mockReturnValue(false),
 		}
 		mockTask.diffViewProvider = {
@@ -175,7 +175,7 @@ describe("editFileTool", () => {
 
 		mockedFileExistsAtPath.mockResolvedValue(fileExists)
 		mockedFsReadFile.mockResolvedValue(fileContent)
-		mockTask.rooIgnoreController.validateAccess.mockReturnValue(accessAllowed)
+		mockTask.alphaIgnoreController.validateAccess.mockReturnValue(accessAllowed)
 
 		const nativeArgs: Record<string, unknown> = {
 			file_path: testFilePath,
@@ -269,7 +269,7 @@ describe("editFileTool", () => {
 
 				mockedFileExistsAtPath.mockResolvedValue(fileExists)
 				mockedFsReadFile.mockResolvedValue(fileContent)
-				mockTask.rooIgnoreController.validateAccess.mockReturnValue(true)
+				mockTask.alphaIgnoreController.validateAccess.mockReturnValue(true)
 
 				const toolUse: ToolUse = {
 					type: "tool_use",
@@ -420,6 +420,17 @@ describe("editFileTool", () => {
 			expect(mockTask.consecutiveMistakeCount).toBe(0)
 			expect(mockTask.diffViewProvider.editType).toBe("modify")
 			expect(mockAskApproval).toHaveBeenCalled()
+		})
+
+		it("passes the raw baseline to the diff preview", async () => {
+			const rawBaseline = "Line 1\r\nLine 2\r\nLine 3"
+
+			await executeEditFileTool({ old_string: "Line 2", new_string: "Changed" }, { fileContent: rawBaseline })
+
+			expect(mockTask.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, {
+				exists: true,
+				content: rawBaseline,
+			})
 		})
 
 		it("defaults expected_replacements to 1", async () => {
@@ -683,6 +694,46 @@ describe("editFileTool", () => {
 		})
 	})
 
+	it.each(["\n", "\r\n"])("preserves BOM and %j endings while replacing literal dollar text", async (eol) => {
+		await executeEditFileTool(
+			{ old_string: "Line 1\nLine 2", new_string: "$& $$ $' &amp;\nchanged" },
+			{ fileContent: `\uFEFFLine 1${eol}Line 2${eol}Line 3` },
+		)
+		expect(mockTask.diffViewProvider.update).toHaveBeenCalledWith(
+			`\uFEFF$& $$ $' &amp;${eol}changed${eol}Line 3`,
+			true,
+		)
+	})
+
+	it("rejects mixed endings without requesting approval or saving", async () => {
+		const result = await executeEditFileTool({}, { fileContent: "Line 1\r\nLine 2\nLine 3" })
+		expect(result).toMatch(/mixed line endings/i)
+		expect(mockAskApproval).not.toHaveBeenCalled()
+		expect(mockTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+	})
+
+	it("keeps newly created files out of editor tabs during background editing", async () => {
+		mockTask.providerRef.deref.mockReturnValue({
+			getState: vi.fn().mockResolvedValue({
+				diagnosticsEnabled: false,
+				writeDelayMs: 0,
+				experiments: { preventFocusDisruption: true },
+			}),
+		})
+
+		await executeEditFileTool({ old_string: "", new_string: "new content" }, { fileExists: false })
+
+		expect(mockTask.diffViewProvider.open).not.toHaveBeenCalled()
+		expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalledExactlyOnceWith(
+			testFilePath,
+			"new content",
+			false,
+			false,
+			0,
+			{ exists: false },
+		)
+	})
+
 	describe("CRLF normalization", () => {
 		it("preserves CRLF line endings on output", async () => {
 			const contentWithCRLF = "Line 1\r\nLine 2\r\nLine 3"
@@ -695,6 +746,31 @@ describe("editFileTool", () => {
 			expect(mockTask.consecutiveMistakeCount).toBe(0)
 			expect(mockAskApproval).toHaveBeenCalled()
 			expect(mockTask.diffViewProvider.update).toHaveBeenCalledWith("Line 1\r\nModified Line 2\r\nLine 3", true)
+		})
+
+		it("passes the raw CRLF baseline to a direct save", async () => {
+			const contentWithCRLF = "Line 1\r\nLine 2\r\nLine 3"
+			mockTask.providerRef.deref.mockReturnValue({
+				getState: vi.fn().mockResolvedValue({
+					diagnosticsEnabled: false,
+					writeDelayMs: 0,
+					experiments: { preventFocusDisruption: true },
+				}),
+			})
+
+			await executeEditFileTool(
+				{ old_string: "Line 2", new_string: "Modified Line 2" },
+				{ fileContent: contentWithCRLF },
+			)
+
+			expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+				testFilePath,
+				"Line 1\r\nModified Line 2\r\nLine 3",
+				false,
+				false,
+				0,
+				{ exists: true, content: contentWithCRLF },
+			)
 		})
 
 		it("normalizes CRLF in old_string for matching against LF file content", async () => {

@@ -26,7 +26,9 @@
 			"read": "读取文件",
 			"edit": "编辑文件",
 			"command": "运行命令",
-			"mcp": "MCP服务"
+			"mcp": "MCP服务",
+			"github": "使用 GitHub",
+			"browser": "使用集成浏览器"
 		},
 		"noTools": "无"
 	},
@@ -188,16 +190,7 @@
 		"buttons": {
 			"cancel": "取消",
 			"create": "创建模式"
-		},
-		"deleteMode": "删除模式"
+		}
 	},
-	"allFiles": "所有文件",
-	"deleteMode": {
-		"title": "删除模式",
-		"message": "您确定要删除\"{{modeName}}\"模式吗？",
-		"rulesFolder": "此模式在 {{folderPath}} 有一个规则文件夹，该文件夹也将被删除。",
-		"descriptionNoRules": "您确定要删除此自定义模式吗？",
-		"confirm": "删除",
-		"cancel": "取消"
-	}
+	"allFiles": "所有文件"
 }

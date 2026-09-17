@@ -1,6 +1,8 @@
 import { addCustomInstructions } from "../sections/custom-instructions"
 import { getCapabilitiesSection } from "../sections/capabilities"
 import { getRulesSection, getCommandChainOperator } from "../sections/rules"
+import { getObjectiveSection } from "../sections/objective"
+import { getToolUseGuidelinesSection } from "../sections/tool-use-guidelines"
 import { McpHub } from "../../../services/mcp/McpHub"
 import * as shellUtils from "../../../utils/shell"
 
@@ -68,6 +70,35 @@ describe("getRulesSection", () => {
 		expect(result).toContain(cwd)
 	})
 
+	it("uses command evidence without requiring user confirmation", () => {
+		const result = getToolUseGuidelinesSection()
+
+		expect(result).toContain("Never assume success")
+		expect(result).toContain("bounded follow-up")
+		expect(result).not.toContain("assume the terminal executed the command successfully")
+		expect(result).not.toContain("wait for the user's response after each tool use")
+	})
+
+	it("keeps primary rules free of fixed conversation and discovery recipes", () => {
+		const result = getRulesSection(cwd)
+
+		expect(result).toContain("ask_followup_question tool")
+		expect(result).not.toContain("2-4 suggested answers")
+		expect(result).not.toContain("Desktop")
+		expect(result).not.toContain("list_files tool")
+		expect(result).not.toContain('starting your messages with "Great"')
+	})
+
+	it("uses side-effect-aware MCP batching", () => {
+		const result = getToolUseGuidelinesSection()
+
+		expect(result).toContain("Group independent, read-only calls when policy permits")
+		expect(result).toContain(
+			"Serialize dependent actions, workspace mutations, approvals, and control-flow operations",
+		)
+		expect(result).not.toContain("MCP operations should be used one at a time")
+	})
+
 	it("includes vendor confidentiality section when isStealthModel is true", () => {
 		const settings = {
 			todoListEnabled: true,
@@ -110,6 +141,35 @@ describe("getRulesSection", () => {
 
 		expect(result).not.toContain("VENDOR CONFIDENTIALITY")
 		expect(result).not.toContain("Never reveal the vendor or company")
+	})
+
+	it("allows a primary task to finish with a visible ordinary answer", () => {
+		const result = getRulesSection(cwd)
+
+		expect(result).not.toContain("visible ordinary assistant answer")
+		expect(getObjectiveSection()).toContain(
+			"visible ordinary assistant answer when no tool call or continuation is needed",
+		)
+		expect(result).not.toContain("you must use the attempt_completion tool")
+	})
+
+	it("requires fresh file evidence when content or mutation safeguards need it", () => {
+		expect(getRulesSection(cwd)).toContain(
+			"obtain fresh reads when current content or mutation safeguards require them",
+		)
+	})
+
+	it("allows managed final answers while keeping blocked outcomes explicit", () => {
+		const result = getRulesSection(cwd, {
+			todoListEnabled: true,
+			useAgentRules: true,
+			newTaskRequireTodos: false,
+			subagentRole: "worker",
+		})
+
+		expect(result).toContain("provide a concise, self-contained final answer or use attempt_completion")
+		expect(result).toContain("assigned work and required checks are complete")
+		expect(result).toContain("outcome blocked when a constraint prevents completion")
 	})
 })
 
@@ -159,30 +219,29 @@ describe("getRulesSection shell-aware command chaining", () => {
 		vi.restoreAllMocks()
 	})
 
-	it("uses && for Unix shells in command chaining example", () => {
+	it("uses && for Unix shell command chaining", () => {
 		vi.spyOn(shellUtils, "getShell").mockReturnValue("/bin/bash")
 		const result = getRulesSection(cwd)
 
-		expect(result).toContain("cd (path to project) && (command")
-		expect(result).not.toContain("cd (path to project) ; (command")
-		expect(result).not.toContain("cd (path to project) & (command")
+		expect(result).toContain("commands must be chained, use `&&`")
+		expect(result).not.toContain("commands must be chained, use `;`")
 	})
 
-	it("uses ; for PowerShell in command chaining example", () => {
+	it("uses ; for PowerShell command chaining", () => {
 		vi.spyOn(shellUtils, "getShell").mockReturnValue(
 			"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
 		)
 		const result = getRulesSection(cwd)
 
-		expect(result).toContain("cd (path to project) ; (command")
+		expect(result).toContain("commands must be chained, use `;`")
 		expect(result).toContain("Note: Using `;` for PowerShell command chaining")
 	})
 
-	it("uses && for cmd.exe in command chaining example", () => {
+	it("uses && for cmd.exe command chaining", () => {
 		vi.spyOn(shellUtils, "getShell").mockReturnValue("C:\\Windows\\System32\\cmd.exe")
 		const result = getRulesSection(cwd)
 
-		expect(result).toContain("cd (path to project) && (command")
+		expect(result).toContain("commands must be chained, use `&&`")
 		expect(result).toContain("Note: Using `&&` for cmd.exe command chaining")
 	})
 

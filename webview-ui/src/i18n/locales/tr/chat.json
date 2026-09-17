@@ -1,4 +1,18 @@
 {
+	"messageActions": {
+		"copy": "Kopyala",
+		"copied": "Kopyalandı",
+		"edit": "Düzenle ve yeniden gönder",
+		"restart": "Önceki istekten yeniden başlat",
+		"restartWarning": "Önceki istek yeniden çalıştırılacak ve sonraki tüm mesajlar değiştirilecek. Çalışma alanındaki dosyalar olduğu gibi kalacak.",
+		"restartWithCheckpoint": "Önceki istek yeniden çalıştırılacak ve sonraki tüm mesajlar değiştirilecek. Dosyalar da ilgili kontrol noktasına geri yüklensin mi?",
+		"restartOnly": "Dosyaları geri yüklemeden yeniden başlat"
+	},
+	"activityTrace": {
+		"needsAttention": "İlgilenilmesi gerekiyor",
+		"workedFor": "{{duration}} boyunca çalıştı"
+	},
+	"completionReport": "Tamamlama raporu",
 	"greeting": "Alpha'a Hoş Geldiniz",
 	"task": {
 		"title": "Görev",
@@ -30,7 +44,9 @@
 	"unpin": "Sabitlemeyi iptal et",
 	"pin": "Sabitle",
 	"fileChangesInConversation": {
-		"header": "Bu sohbette {{count}} dosya değiştirildi"
+		"header": "Düzenlenen dosyalar: {{count}}",
+		"linesChanged": "{{added}} satır eklendi, {{removed}} satır silindi",
+		"openFile": "Dosyayı aç: {{path}}"
 	},
 	"tokenProgress": {
 		"availableSpace": "Kullanılabilir alan: {{amount}} token",
@@ -213,18 +229,21 @@
 		"didViewTopLevel": "Alpha bu dizindeki üst düzey dosyaları görüntüledi",
 		"wantsToViewRecursive": "Alpha bu dizindeki tüm dosyaları özyinelemeli olarak görüntülemek istiyor",
 		"didViewRecursive": "Alpha bu dizindeki tüm dosyaları özyinelemeli olarak görüntüledi",
-		"wantsToSearch": "Alpha bu dizinde <code>{{regex}}</code> için arama yapmak istiyor",
-		"didSearch": "Alpha bu dizinde <code>{{regex}}</code> için arama yaptı",
-		"wantsToSearchOutsideWorkspace": "Alpha bu dizinde (çalışma alanı dışında) <code>{{regex}}</code> için arama yapmak istiyor",
-		"didSearchOutsideWorkspace": "Alpha bu dizinde (çalışma alanı dışında) <code>{{regex}}</code> için arama yaptı",
+		"wantsToSearch": "Alpha bir dizinde arama yapmak istiyor",
+		"didSearch": "Alpha bir dizinde arama yaptı",
+		"wantsToSearchOutsideWorkspace": "Alpha bir dizinde arama yapmak istiyor (çalışma alanı dışında)",
+		"didSearchOutsideWorkspace": "Alpha bir dizinde arama yaptı (çalışma alanı dışında)",
 		"wantsToViewTopLevelOutsideWorkspace": "Alpha bu dizindeki (çalışma alanı dışında) üst düzey dosyaları görüntülemek istiyor",
 		"didViewTopLevelOutsideWorkspace": "Alpha bu dizindeki (çalışma alanı dışında) üst düzey dosyaları görüntüledi",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha bu dizindeki (çalışma alanı dışında) tüm dosyaları özyinelemeli olarak görüntülemek istiyor",
 		"didViewRecursiveOutsideWorkspace": "Alpha bu dizindeki (çalışma alanı dışında) tüm dosyaları özyinelemeli olarak görüntüledi",
-		"wantsToViewMultipleDirectories": "Alpha birden fazla dizini görüntülemek istiyor"
+		"wantsToViewMultipleDirectories": "Alpha birden fazla dizini görüntülemek istiyor",
+		"wantsToSearchMultiple": "Alpha, {{count}} dosya aramalarını çalıştırmak istiyor",
+		"didSearchMultiple": "Alpha, {{count}} dosya aramalarını çalıştırdı"
 	},
 	"commandOutput": "Komut Çıktısı",
 	"commandExecution": {
+		"command": "Komut",
 		"running": "Çalışıyor",
 		"abort": "İptal Et",
 		"pid": "PID: {{pid}}",
@@ -316,6 +335,7 @@
 	"contextManagement": {
 		"tokens": "token",
 		"condensation": {
+			"unchanged": "Bağlam zaten sınır içinde",
 			"title": "Bağlam Özetlendi",
 			"inProgress": "Bağlam yoğunlaştırılıyor...",
 			"errorHeader": "Bağlam yoğunlaştırılamadı"
@@ -348,8 +368,11 @@
 			"gpt54": "Poe Sağlayıcısı: Poe, Alpha içinde Poe modellerine doğrudan erişebilmen için bir AI sağlayıcısı olarak eklendi.",
 			"slashSkills": "xAI ve MiniMax İyileştirmeleri: xAI sağlayıcısı Responses API'ye taşındı, yeniden kullanılabilir dönüştürme yardımcıları eklendi, Grok-4.20 varsayılanları güncellendi ve daha güvenilir bir kurulum için MiniMax model listeleriyle context window işleme düzeltildi.",
 			"geminiPro": "Gemini 3.1 Pro Desteği: Gemini 3.1 Pro model desteği eklendi ve daha iyi performans için varsayılan Gemini modeli olarak ayarlandı.",
-			"cliNdjson": "CLI NDJSON Protokolü: Yeni NDJSON stdin protokolü, list alt komutları ve daha esnek CLI iş akışları için modüler run komutu.",
-			"cliRelease": "CLI v0.1.0: Alpha CLI, kararlı bir komut arayüzüyle ilk resmi sürümüne ulaştı."
+			"welcome": "Alpha v{{version}} doğrulamayı, komut denetimini ve görev sürekliliğini iyileştirir.",
+			"acceptanceChecks": "Belirtilen girdileri değişmediği sürece başarılı kontrolleri yeniden kullanın.",
+			"commandControl": "Göreve ait arka plan komutlarını bekleyin, bu komutlara girdi gönderin ve onları durdurun.",
+			"workflowContinuity": "Yeniden yükleme ve bağlam sıkıştırma sırasında görev kısıtlarını ve beceri bağlamını koruyun.",
+			"chatUpdates": "Daha anlaşılır sohbet eylemlerini kullanın ve görev tamamlandıktan sonra sağlayıcı seçin."
 		}
 	},
 	"costs": {
@@ -364,7 +387,6 @@
 			"copy_code": "Kodu kopyala"
 		}
 	},
-	"profileViolationWarning": "Geçerli profil kuruluşunuzun ayarlarıyla uyumlu değil",
 	"shellIntegration": {
 		"title": "Komut Çalıştırma Uyarısı",
 		"description": "Komutunuz VSCode terminal kabuk entegrasyonu olmadan çalıştırılıyor. Bu uyarıyı gizlemek için <settingsLink>Alpha ayarları</settingsLink>'nın <strong>Terminal</strong> bölümünden kabuk entegrasyonunu devre dışı bırakabilir veya aşağıdaki bağlantıyı kullanarak VSCode terminal entegrasyonu sorunlarını giderebilirsiniz.",
@@ -383,6 +405,7 @@
 		}
 	},
 	"codebaseSearch": {
+		"title": "Kod tabanında arama",
 		"wantsToSearch": "Alpha kod tabanında <code>{{query}}</code> aramak istiyor",
 		"wantsToSearchWithPath": "Alpha <code>{{path}}</code> içinde kod tabanında <code>{{query}}</code> aramak istiyor",
 		"didSearch_one": "1 sonuç bulundu",
@@ -458,8 +481,19 @@
 	},
 	"queuedMessages": {
 		"title": "Sıradaki Mesajlar",
-		"clickToEdit": "Mesajı düzenlemek için tıkla"
+		"clickToEdit": "Mesajı düzenlemek için tıkla",
+		"steering": "Yönlendiriliyor…",
+		"queueFailed": "Mesaj sıraya eklenemedi. Taslağınız yazma alanında duruyor.",
+		"steerFailed": "Yönlendirme başlatılamadı. Sıradaki mesaj hâlâ kullanılabilir.",
+		"edit": "Düzenle",
+		"editTooltip": "Sıraya alınmış bu mesajı düzenleyin",
+		"editing": "Bestecide düzenleme",
+		"dragHandle": "Sıraya alınmış mesajı sürükleyin",
+		"dragTooltip": "Sıraya alınmış bu mesajı yeniden sıralamak için sürükleyin",
+		"steer": "Yönlendir",
+		"steerTooltip": "Sıraya alınmış bu mesajı mevcut dönüşe gönder"
 	},
+	"modelResponseDelayed": "Modelin sonraki güncellemesi bekleniyor. Daha uzun akıl yürütme zaman alabilir.",
 	"slashCommand": {
 		"wantsToRun": "Alpha bir slash komutu çalıştırmak istiyor",
 		"didRun": "Alpha bir slash komutu çalıştırdı"
@@ -487,5 +521,38 @@
 		"title": "Sağlayıcı artık desteklenmiyor",
 		"message": "Üzgünüz, bu sağlayıcı artık desteklenmiyor. Çok az Alpha kullanıcısının bunu gerçekten kullandığını gördük ve hızlı gelişmeye devam edip topluluğumuza iyi hizmet verebilmek için kod tabanımızın kapsamını daraltmamız gerekiyor. Gerçekten zor bir karardı ama senin için en önemli olana odaklanmamızı sağlıyor. Bunun can sıkıcı olduğunu biliyoruz.",
 		"openSettings": "Ayarları aç"
+	},
+	"githubActions": {
+		"request": "İstek",
+		"create_pull_request": "Çekme isteği oluştur",
+		"get_pull_request": "Çekme isteğini görüntüle",
+		"list_checks": "Kontrolleri listele",
+		"merge_pull_request": "Çekme isteğini birleştir",
+		"comment": "Yorum ekle"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "Temsilcileri incele",
+			"wait_agent": "Temsilci güncellemelerini bekle",
+			"unknown": "Temsilci eylemi"
+		},
+		"failed": "{{action}} başarısız oldu: {{error}}",
+		"list": {
+			"running": "Temsilciler inceleniyor...",
+			"completed": "{{count}} aracısı incelendi",
+			"completed_other": "İncelenen {{count}} aracıları",
+			"mailbox": "{{count}} posta kutusu güncellemesi",
+			"mailbox_other": "{{count}} posta kutusu güncellemeleri"
+		},
+		"wait": {
+			"running": "Temsilci güncellemeleri bekleniyor...",
+			"noActiveAgents": "Beklenecek aktif temsilci yok",
+			"cancelled": "Temsilci beklemesi iptal edildi",
+			"timedOut": "Zaman aşımından önce temsilci güncellemesi yok",
+			"alreadyDelivered": "Yeni güncelleme yok; sonuçlar zaten teslim edildi",
+			"received": "{{count}} aracı güncellemesi alındı ​​",
+			"received_other": "{{count}} aracı güncellemesi alındı ​​",
+			"completed": "Aracı beklemesi tamamlandı"
+		}
 	}
 }

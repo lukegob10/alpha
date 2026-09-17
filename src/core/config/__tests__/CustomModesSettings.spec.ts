@@ -169,8 +169,8 @@ describe("CustomModesSettings", () => {
 		})
 	})
 
-	describe("deprecated tool group migration", () => {
-		it("should strip deprecated 'browser' group when validating custom modes settings", () => {
+	describe("browser tool group", () => {
+		it("should retain the browser group when validating custom modes settings", () => {
 			const result = customModesSettingsSchema.parse({
 				customModes: [
 					{
@@ -181,10 +181,10 @@ describe("CustomModesSettings", () => {
 					},
 				],
 			})
-			expect(result.customModes[0].groups).toEqual(["read", "edit"])
+			expect(result.customModes[0].groups).toEqual(["read", "browser", "edit"])
 		})
 
-		it("should strip deprecated 'browser' from multiple modes in settings", () => {
+		it("should retain browser in multiple modes in settings", () => {
 			const result = customModesSettingsSchema.parse({
 				customModes: [
 					{
@@ -201,8 +201,8 @@ describe("CustomModesSettings", () => {
 					},
 				],
 			})
-			expect(result.customModes[0].groups).toEqual(["read"])
-			expect(result.customModes[1].groups).toEqual(["edit", "command"])
+			expect(result.customModes[0].groups).toEqual(["read", "browser"])
+			expect(result.customModes[1].groups).toEqual(["browser", "edit", "command"])
 		})
 	})
 })

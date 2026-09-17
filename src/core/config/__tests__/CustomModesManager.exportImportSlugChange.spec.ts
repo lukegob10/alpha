@@ -49,7 +49,7 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 	const mockStoragePath = `${path.sep}mock${path.sep}settings`
 	const mockSettingsPath = path.join(mockStoragePath, "settings", GlobalFileNames.customModes)
 	const mockWorkspacePath = path.resolve("/mock/workspace")
-	const mockRoomodes = path.join(mockWorkspacePath, ".alphamodes")
+	const mockAlphaModes = path.join(mockWorkspacePath, ".alphamodes")
 
 	beforeEach(() => {
 		mockOnUpdate = vi.fn()
@@ -71,7 +71,7 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 		;(vscode.workspace.onDidSaveTextDocument as Mock).mockReturnValue({ dispose: vi.fn() })
 		;(getWorkspacePath as Mock).mockReturnValue(mockWorkspacePath)
 		;(fileExistsAtPath as Mock).mockImplementation(async (path: string) => {
-			return path === mockSettingsPath || path === mockRoomodes
+			return path === mockSettingsPath || path === mockAlphaModes
 		})
 		;(fs.mkdir as Mock).mockResolvedValue(undefined)
 		;(fs.writeFile as Mock).mockResolvedValue(undefined)
@@ -95,7 +95,7 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 
 	describe("Export Path Calculation", () => {
 		it("should exclude rules-{slug} folder from exported relative paths", async () => {
-			const roomodesContent = {
+			const alphaModesContent = {
 				customModes: [
 					{
 						slug: "test-mode",
@@ -107,11 +107,11 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 			}
 
 			;(fileExistsAtPath as Mock).mockImplementation(async (path: string) => {
-				return path === mockRoomodes
+				return path === mockAlphaModes
 			})
 			;(fs.readFile as Mock).mockImplementation(async (path: string) => {
-				if (path === mockRoomodes) {
-					return yaml.stringify(roomodesContent)
+				if (path === mockAlphaModes) {
+					return yaml.stringify(alphaModesContent)
 				}
 				if (path.includes("rules-test-mode") && path.includes("rule1.md")) {
 					return "Rule 1 content"
@@ -148,7 +148,7 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 		})
 
 		it("should handle files at root level correctly", async () => {
-			const roomodesContent = {
+			const alphaModesContent = {
 				customModes: [
 					{
 						slug: "root-mode",
@@ -160,11 +160,11 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 			}
 
 			;(fileExistsAtPath as Mock).mockImplementation(async (path: string) => {
-				return path === mockRoomodes
+				return path === mockAlphaModes
 			})
 			;(fs.readFile as Mock).mockImplementation(async (path: string) => {
-				if (path === mockRoomodes) {
-					return yaml.stringify(roomodesContent)
+				if (path === mockAlphaModes) {
+					return yaml.stringify(alphaModesContent)
 				}
 				if (path.includes("rules-root-mode") && path.includes("file1.md")) {
 					return "File 1 content"
@@ -393,10 +393,10 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 			}
 
 			;(fileExistsAtPath as Mock).mockImplementation(async (path: string) => {
-				return path === mockRoomodes
+				return path === mockAlphaModes
 			})
 			;(fs.readFile as Mock).mockImplementation(async (path: string) => {
-				if (path === mockRoomodes) {
+				if (path === mockAlphaModes) {
 					return yaml.stringify({ customModes: [originalMode] })
 				}
 				if (path.includes("rules-original-mode") && path.includes("rule.md")) {

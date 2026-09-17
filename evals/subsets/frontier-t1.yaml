@@ -1,0 +1,181 @@
+schemaVersion: 1
+id: frontier-t1
+suiteIdentity: frontier-v1@1
+tier: t1
+historyBasis: mixed
+measurementRunIds:
+  - 12
+hardCapUsd: 0.5
+taskReservationUsd: 0.06
+minimumTasks: 8
+maximumTasks: 8
+stableCore:
+  - repo-cache-invalidation
+  - alpha-repository-rules
+  - safety-path-policy
+  - stateful-api-idempotency
+  - repo-stream-backpressure
+dynamicSlots:
+  - id: tool-recovery
+    candidates:
+      - alpha-tool-result-integrity
+      - alpha-cancellation-cleanup
+      - repo-worker-shutdown
+  - id: historical-regression
+    candidates:
+      - alpha-validation-after-edit
+      - alpha-resume-idempotency
+      - safety-secret-redaction
+  - id: additional-coding
+    candidates:
+      - repo-pagination-cursor
+      - repo-transaction-outbox
+      - repo-workspace-package-order
+requiredCoverage:
+  real-repository: 2
+  alpha-extension: 1
+  safety-stateful: 2
+  long-or-multifile: 1
+  regression: 1
+  tool-or-recovery: 1
+history:
+  repo-cache-invalidation:
+    discrimination: 0.9
+    severity: 0.8
+    graderConfidence: 0.95
+    meanCostUsd: 0.0360317
+    meanLatencyMs: 51359
+    redundancy: 0.1
+    regressionValue: 0.7
+    costLatencyBasis: measured
+    observationCount: 1
+  alpha-repository-rules:
+    discrimination: 0.85
+    severity: 0.95
+    graderConfidence: 0.95
+    meanCostUsd: 0.0591478
+    meanLatencyMs: 84659
+    redundancy: 0.05
+    regressionValue: 1
+    costLatencyBasis: measured
+    observationCount: 1
+  safety-path-policy:
+    discrimination: 0.8
+    severity: 1
+    graderConfidence: 0.98
+    meanCostUsd: 0.0644331
+    meanLatencyMs: 80665
+    redundancy: 0.05
+    regressionValue: 1
+    costLatencyBasis: measured
+    observationCount: 1
+  stateful-api-idempotency:
+    discrimination: 0.9
+    severity: 1
+    graderConfidence: 0.95
+    meanCostUsd: 0.054953
+    meanLatencyMs: 72787
+    redundancy: 0.1
+    regressionValue: 0.8
+    costLatencyBasis: measured
+    observationCount: 1
+  repo-stream-backpressure:
+    discrimination: 0.9
+    severity: 0.85
+    graderConfidence: 0.9
+    meanCostUsd: 0.0608
+    meanLatencyMs: 81747
+    redundancy: 0.1
+    regressionValue: 0.6
+    costLatencyBasis: measured
+    observationCount: 1
+  alpha-tool-result-integrity:
+    discrimination: 0.95
+    severity: 0.95
+    graderConfidence: 0.9
+    meanCostUsd: 0.0604799
+    meanLatencyMs: 72866
+    redundancy: 0.05
+    regressionValue: 1
+    costLatencyBasis: measured
+    observationCount: 1
+  alpha-cancellation-cleanup:
+    discrimination: 0.82
+    severity: 0.9
+    graderConfidence: 0.92
+    meanCostUsd: 0.038
+    meanLatencyMs: 58000
+    redundancy: 0.12
+    regressionValue: 1
+    costLatencyBasis: seeded
+    observationCount: 0
+  repo-worker-shutdown:
+    discrimination: 0.88
+    severity: 0.85
+    graderConfidence: 0.88
+    meanCostUsd: 0.052
+    meanLatencyMs: 85000
+    redundancy: 0.15
+    regressionValue: 0.6
+    costLatencyBasis: seeded
+    observationCount: 0
+  alpha-validation-after-edit:
+    discrimination: 0.88
+    severity: 0.8
+    graderConfidence: 0.98
+    meanCostUsd: 0.028
+    meanLatencyMs: 39000
+    redundancy: 0.05
+    regressionValue: 1
+    costLatencyBasis: seeded
+    observationCount: 0
+  alpha-resume-idempotency:
+    discrimination: 0.9
+    severity: 0.9
+    graderConfidence: 0.92
+    meanCostUsd: 0.04
+    meanLatencyMs: 63000
+    redundancy: 0.1
+    regressionValue: 1
+    costLatencyBasis: seeded
+    observationCount: 0
+  safety-secret-redaction:
+    discrimination: 0.78
+    severity: 1
+    graderConfidence: 0.98
+    meanCostUsd: 0.0642986
+    meanLatencyMs: 89652
+    redundancy: 0.08
+    regressionValue: 1
+    costLatencyBasis: measured
+    observationCount: 1
+  repo-pagination-cursor:
+    discrimination: 0.9
+    severity: 0.75
+    graderConfidence: 0.95
+    meanCostUsd: 0.035
+    meanLatencyMs: 51000
+    redundancy: 0.08
+    regressionValue: 0.7
+    costLatencyBasis: seeded
+    observationCount: 0
+  repo-transaction-outbox:
+    discrimination: 0.92
+    severity: 0.95
+    graderConfidence: 0.92
+    meanCostUsd: 0.0145852
+    meanLatencyMs: 917360
+    redundancy: 0.08
+    regressionValue: 0.8
+    costLatencyBasis: measured
+    observationCount: 1
+  repo-workspace-package-order:
+    discrimination: 0.86
+    severity: 0.75
+    graderConfidence: 0.94
+    meanCostUsd: 0.039
+    meanLatencyMs: 60000
+    redundancy: 0.12
+    regressionValue: 0.6
+    costLatencyBasis: seeded
+    observationCount: 0

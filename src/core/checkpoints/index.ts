@@ -1,7 +1,7 @@
 import pWaitFor from "p-wait-for"
 import * as vscode from "vscode"
 
-import type { ClineApiReqInfo } from "@alpha-code/types"
+import type { AlphaApiReqInfo } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../task/Task"
@@ -13,6 +13,8 @@ import { t } from "../../i18n"
 import { getApiMetrics } from "../../shared/getApiMetrics"
 
 import { DIFF_VIEW_URI_SCHEME } from "../../integrations/editor/DiffViewProvider"
+
+import { awaitTaskCancellationBoundary } from "../webview/TaskCancellationBoundary"
 
 import { CheckpointServiceOptions, RepoPerTaskCheckpointService } from "../../services/checkpoints"
 
@@ -241,18 +243,27 @@ export async function checkpointRestore(
 	const service = await getCheckpointService(task)
 
 	if (!service) {
-		return
+		return false
 	}
 
 	const index = task.clineMessages.findIndex((m) => m.ts === ts)
 
 	if (index === -1) {
-		return
+		return false
 	}
 
 	const provider = task.providerRef.deref()
 
 	try {
+		// Workspace restoration and transcript rewind must not race the task that
+		// currently owns the workspace. Abort the active task first, then join its
+		// real termination/persistence boundary before replacing either resource.
+		let abortResult: unknown
+		if (!task.abort && typeof task.abortTask === "function") {
+			abortResult = await task.abortTask()
+		}
+		await awaitTaskCancellationBoundary(task, abortResult)
+
 		await service.restoreCheckpoint(commitHash)
 		TelemetryService.instance.captureCheckpointRestored(task.taskId)
 		await provider?.postMessageToWebview({ type: "currentCheckpointUpdated", text: commitHash })
@@ -271,33 +282,30 @@ export async function checkpointRestore(
 				includeTargetMessage: operation === "edit",
 			})
 
-			// Report the deleted API request metrics
-			await task.say(
-				"api_req_deleted",
-				JSON.stringify({
-					tokensIn: totalTokensIn,
-					tokensOut: totalTokensOut,
-					cacheWrites: totalCacheWrites,
-					cacheReads: totalCacheReads,
-					cost: totalCost,
-				} satisfies ClineApiReqInfo),
-			)
+			// The task is stopped; say() correctly rejects new agent output after abort.
+			// Persist the host's accounting row through the transcript owner instead.
+			await task.overwriteAlphaMessages([
+				...task.clineMessages,
+				{
+					ts: Math.max(Date.now(), (task.clineMessages.at(-1)?.ts ?? 0) + 1),
+					type: "say",
+					say: "api_req_deleted",
+					text: JSON.stringify({
+						tokensIn: totalTokensIn,
+						tokensOut: totalTokensOut,
+						cacheWrites: totalCacheWrites,
+						cacheReads: totalCacheReads,
+						cost: totalCost,
+					} satisfies AlphaApiReqInfo),
+				},
+			])
+			await provider?.postStateToWebview()
 		}
-
-		// The task is already cancelled by the provider beforehand, but we
-		// need to re-init to get the updated messages.
-		//
-		// This was taken from Alpha's implementation of the checkpoints
-		// feature. The task instance will hang if we don't cancel twice,
-		// so this is currently necessary, but it seems like a complicated
-		// and hacky solution to a problem that I don't fully understand.
-		// I'd like to revisit this in the future and try to improve the
-		// task flow and the communication between the webview and the
-		// `Task` instance.
-		provider?.cancelTask()
+		return true
 	} catch (err) {
 		provider?.log("[checkpointRestore] disabling checkpoints for this task")
 		task.enableCheckpoints = false
+		throw err
 	}
 }
 

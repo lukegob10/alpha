@@ -26,7 +26,9 @@
 			"read": "Baca File",
 			"edit": "Edit File",
 			"command": "Jalankan Perintah",
-			"mcp": "Gunakan MCP"
+			"mcp": "Gunakan MCP",
+			"github": "Gunakan GitHub",
+			"browser": "Gunakan Browser Terintegrasi"
 		},
 		"noTools": "Tidak Ada"
 	},
@@ -188,16 +190,7 @@
 		"buttons": {
 			"cancel": "Batal",
 			"create": "Buat Mode"
-		},
-		"deleteMode": "Hapus mode"
+		}
 	},
-	"allFiles": "semua file",
-	"deleteMode": {
-		"title": "Hapus Mode",
-		"message": "Anda yakin ingin menghapus mode \"{{modeName}}\"?",
-		"rulesFolder": "Mode ini memiliki folder aturan di {{folderPath}} yang juga akan dihapus.",
-		"descriptionNoRules": "Apakah Anda yakin ingin menghapus mode kustom ini?",
-		"confirm": "Hapus",
-		"cancel": "Batal"
-	}
+	"allFiles": "semua file"
 }

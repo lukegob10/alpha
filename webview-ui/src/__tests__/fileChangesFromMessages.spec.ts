@@ -1,7 +1,7 @@
-import type { ClineMessage } from "@alpha-code/types"
-import { fileChangesFromMessages } from "../components/chat/utils/fileChangesFromMessages"
+import type { AlphaMessage } from "@alpha-code/types"
+import { fileChangeTurnsFromMessages, fileChangesFromMessages } from "../components/chat/utils/fileChangesFromMessages"
 
-function msg(overrides: Partial<ClineMessage> & { text: string }): ClineMessage {
+function msg(overrides: Partial<AlphaMessage> & { text: string }): AlphaMessage {
 	return {
 		type: "say",
 		say: "tool",
@@ -21,7 +21,7 @@ describe("fileChangesFromMessages", () => {
 	})
 
 	it("ignores non-tool messages", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			msg({ type: "say", say: "text", text: "hello" }),
 			msg({ type: "ask", ask: "followup", text: "world" }),
 		]
@@ -29,7 +29,7 @@ describe("fileChangesFromMessages", () => {
 	})
 
 	it("ignores tool messages with non-file-edit tool type", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			msg({
 				type: "ask",
 				ask: "tool",
@@ -40,7 +40,7 @@ describe("fileChangesFromMessages", () => {
 	})
 
 	it("skips partial messages", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			msg({
 				type: "ask",
 				ask: "tool",
@@ -68,7 +68,7 @@ describe("fileChangesFromMessages", () => {
 	})
 
 	it("includes ask tool file-edit when isAnswered is true", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			msg({
 				type: "ask",
 				ask: "tool",
@@ -86,7 +86,7 @@ describe("fileChangesFromMessages", () => {
 	})
 
 	it("extracts single-file edit from ask tool message", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			msg({
 				type: "ask",
 				ask: "tool",
@@ -109,7 +109,7 @@ describe("fileChangesFromMessages", () => {
 	})
 
 	it("extracts single-file edit from say tool message", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			msg({
 				type: "say",
 				say: "tool",
@@ -127,7 +127,7 @@ describe("fileChangesFromMessages", () => {
 	})
 
 	it("uses content when diff is missing for single-file", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			msg({
 				type: "ask",
 				ask: "tool",
@@ -145,7 +145,7 @@ describe("fileChangesFromMessages", () => {
 	})
 
 	it("ignores single-file tool when path is missing", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			msg({
 				type: "ask",
 				ask: "tool",
@@ -159,7 +159,7 @@ describe("fileChangesFromMessages", () => {
 	})
 
 	it("ignores single-file tool when diff and content are empty", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			msg({
 				type: "ask",
 				ask: "tool",
@@ -173,7 +173,7 @@ describe("fileChangesFromMessages", () => {
 	})
 
 	it("extracts from batchDiffs", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			msg({
 				type: "ask",
 				ask: "tool",
@@ -196,7 +196,7 @@ describe("fileChangesFromMessages", () => {
 	})
 
 	it("includes diffStats from batchDiffs when present", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			msg({
 				type: "ask",
 				ask: "tool",
@@ -217,10 +217,22 @@ describe("fileChangesFromMessages", () => {
 		expect(result[0].diffStats).toEqual({ added: 2, removed: 1 })
 	})
 
-	it("recognizes all ClineSayTool file-edit tool names (editedExistingFile, appliedDiff, newFileCreated)", () => {
-		const tools = ["editedExistingFile", "appliedDiff", "newFileCreated"]
+	it("recognizes all supported file-edit tool names", () => {
+		const tools = [
+			"editedExistingFile",
+			"appliedDiff",
+			"newFileCreated",
+			"insertContent",
+			"searchAndReplace",
+			"search_and_replace",
+			"search_replace",
+			"edit",
+			"edit_file",
+			"apply_patch",
+			"apply_diff",
+		]
 		for (const tool of tools) {
-			const messages: ClineMessage[] = [
+			const messages: AlphaMessage[] = [
 				msg({
 					type: "ask",
 					ask: "tool",
@@ -239,7 +251,7 @@ describe("fileChangesFromMessages", () => {
 	})
 
 	it("returns multiple entries for multiple file-edit messages", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			msg({
 				type: "ask",
 				ask: "tool",
@@ -267,8 +279,39 @@ describe("fileChangesFromMessages", () => {
 		expect(result[1].path).toBe("second.ts")
 	})
 
+	it("keeps applied edits attached to their own follow-up turn", () => {
+		const messages: AlphaMessage[] = [
+			msg({
+				type: "ask",
+				ask: "tool",
+				ts: 1,
+				isAnswered: true,
+				text: JSON.stringify({ tool: "appliedDiff", path: "first.ts", diff: "+first" }),
+			}),
+			msg({ type: "say", say: "completion_result", ts: 2, text: "First response" }),
+			msg({ type: "say", say: "user_feedback", ts: 3, text: "Now make another change" }),
+			msg({
+				type: "ask",
+				ask: "tool",
+				ts: 4,
+				isAnswered: true,
+				text: JSON.stringify({ tool: "appliedDiff", path: "second.ts", diff: "+second" }),
+			}),
+		]
+
+		const turns = fileChangeTurnsFromMessages(messages, "task")
+
+		expect(turns).toHaveLength(2)
+		expect(turns.map((turn) => turn.key)).toEqual(["task:1", "task:3"])
+		expect(turns.map((turn) => turn.endIndex)).toEqual([1, 3])
+		expect(turns.map((turn) => fileChangesFromMessages(turn.messages).map((entry) => entry.path))).toEqual([
+			["first.ts"],
+			["second.ts"],
+		])
+	})
+
 	it("skips invalid JSON in message text", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			msg({
 				type: "ask",
 				ask: "tool",

@@ -1,25 +1,27 @@
 import {
-	type ClineAsk,
-	type ClineSayTool,
+	type AlphaAsk,
+	type AlphaSayTool,
 	type McpServerUse,
 	type FollowUpData,
 	type ExtensionState,
+	type SubagentAutoApprovalPolicy,
 	isNonBlockingAsk,
 } from "@alpha-code/types"
 
-import { ClineAskResponse } from "../../shared/WebviewMessage"
+import { AlphaAskResponse } from "../../shared/WebviewMessage"
 
 import { isWriteToolAction, isReadOnlyToolAction } from "./tools"
 import { isMcpToolAlwaysAllowed } from "./mcp"
-import { getCommandDecision } from "./commands"
+import { getCommandDecision, getSubagentCommandDecision } from "./commands"
 
 // We have auto-approval actions for different categories.
 export type AutoApprovalState =
 	| "alwaysAllowReadOnly"
 	| "alwaysAllowWrite"
+	| "alwaysAllowTickets"
 	| "alwaysAllowMcp"
-	| "alwaysAllowModeSwitch"
 	| "alwaysAllowSubtasks"
+	| "alwaysAllowSubagents"
 	| "alwaysAllowExecute"
 	| "alwaysAllowFollowupQuestions"
 
@@ -41,20 +43,25 @@ export type CheckAutoApprovalResult =
 	| {
 			decision: "timeout"
 			timeout: number
-			fn: () => { askResponse: ClineAskResponse; text?: string; images?: string[] }
+			fn: () => { askResponse: AlphaAskResponse; text?: string; images?: string[] }
 	  }
+
+export interface CheckAutoApprovalInput {
+	state?: Pick<ExtensionState, AutoApprovalState | AutoApprovalStateOptions>
+	ask: AlphaAsk
+	text?: string
+	isProtected?: boolean
+	/** Trusted execution-boundary requirement; settings cannot turn this into automatic approval. */
+	requiresExplicitApproval?: boolean
+}
 
 export async function checkAutoApproval({
 	state,
 	ask,
 	text,
 	isProtected,
-}: {
-	state?: Pick<ExtensionState, AutoApprovalState | AutoApprovalStateOptions>
-	ask: ClineAsk
-	text?: string
-	isProtected?: boolean
-}): Promise<CheckAutoApprovalResult> {
+	requiresExplicitApproval,
+}: CheckAutoApprovalInput): Promise<CheckAutoApprovalResult> {
 	if (isNonBlockingAsk(ask)) {
 		return { decision: "approve" }
 	}
@@ -119,7 +126,7 @@ export async function checkAutoApproval({
 		if (state.alwaysAllowExecute === true) {
 			const decision = getCommandDecision(text, state.allowedCommands || [], state.deniedCommands || [])
 
-			if (decision === "auto_approve") {
+			if (decision === "auto_approve" && !requiresExplicitApproval) {
 				return { decision: "approve" }
 			} else if (decision === "auto_deny") {
 				return { decision: "deny" }
@@ -130,7 +137,8 @@ export async function checkAutoApproval({
 	}
 
 	if (ask === "tool") {
-		let tool: ClineSayTool | undefined
+		if (requiresExplicitApproval) return { decision: "ask" }
+		let tool: AlphaSayTool | undefined
 
 		try {
 			tool = JSON.parse(text || "{}")
@@ -146,6 +154,15 @@ export async function checkAutoApproval({
 			return { decision: "approve" }
 		}
 
+		if (tool.tool === "ticket") {
+			const activity = tool.ticketActivity
+			return state.alwaysAllowTickets === true &&
+				activity?.state === "pending" &&
+				(activity.operation === "create" || activity.operation === "update")
+				? { decision: "approve" }
+				: { decision: "ask" }
+		}
+
 		// The skill tool only loads pre-defined instructions from global or project skills.
 		// It does not read arbitrary files - skills must be explicitly installed/defined by the user.
 		// Auto-approval is intentional to provide a seamless experience when loading task instructions.
@@ -153,19 +170,41 @@ export async function checkAutoApproval({
 			return { decision: "approve" }
 		}
 
-		// Mode and delegation controls are non-mutating flow-control actions. Once
-		// auto-approval is enabled, do not pause the task on Continue/New task for
-		// these asks; the tools used by the resulting lane still apply their own
-		// read/write/command approval rules.
 		if (tool?.tool === "switchMode") {
-			return { decision: "approve" }
+			// Historical pending prompts cannot authorize a retired tool.
+			return { decision: "deny" }
 		}
 
+		// Delegated tasks still enforce their own read/write/command approvals.
 		if (["newTask", "finishTask"].includes(tool?.tool)) {
 			return { decision: "approve" }
 		}
 
-		const isOutsideWorkspace = !!tool.isOutsideWorkspace
+		const toolName: string = tool.tool
+		const subagentTool = tool as AlphaSayTool & {
+			agent?: { role?: string }
+			agents?: Array<{ role?: string }>
+		}
+		if (toolName === "delegateTask" || toolName === "spawnAgent") {
+			const agents =
+				toolName === "spawnAgent"
+					? subagentTool.agent
+						? [subagentTool.agent]
+						: []
+					: Array.isArray(subagentTool.agents)
+						? subagentTool.agents
+						: []
+			const hasWorker = agents.some((agent) => agent.role === "worker")
+			return state.alwaysAllowSubagents === true &&
+				state.alwaysAllowReadOnly === true &&
+				(!hasWorker || state.alwaysAllowWrite === true)
+				? { decision: "approve" }
+				: { decision: "ask" }
+		}
+
+		const isOutsideWorkspace =
+			!!tool.isOutsideWorkspace ||
+			(Array.isArray(tool.batchFiles) && tool.batchFiles.some((file) => file.isOutsideWorkspace))
 
 		if (isReadOnlyToolAction(tool)) {
 			return state.alwaysAllowReadOnly === true &&
@@ -176,7 +215,7 @@ export async function checkAutoApproval({
 
 		if (isWriteToolAction(tool)) {
 			return state.alwaysAllowWrite === true &&
-				(!isOutsideWorkspace || state.alwaysAllowWriteOutsideWorkspace === true) &&
+				!isOutsideWorkspace &&
 				(!isProtected || state.alwaysAllowWriteProtected === true)
 				? { decision: "approve" }
 				: { decision: "ask" }
@@ -184,6 +223,47 @@ export async function checkAutoApproval({
 	}
 
 	return { decision: "ask" }
+}
+
+/**
+ * Apply the live settings and the approval grant captured for a managed child.
+ * The captured grant is an upper bound: live settings can revoke approval, but
+ * changing global settings later cannot silently widen a child's authority.
+ */
+export async function checkAutoApprovalWithInheritedPolicy({
+	inheritedState,
+	...input
+}: CheckAutoApprovalInput & {
+	inheritedState?: SubagentAutoApprovalPolicy
+}): Promise<CheckAutoApprovalResult> {
+	if (!inheritedState) return checkAutoApproval(input)
+	const checkInheritedPolicy = async (): Promise<CheckAutoApprovalResult> => {
+		if (input.ask !== "command") return checkAutoApproval({ ...input, state: inheritedState })
+		if (!inheritedState.autoApprovalEnabled || !inheritedState.alwaysAllowExecute || !input.text) {
+			return { decision: "ask" }
+		}
+		const decisions = [inheritedState.commandApproval, ...(inheritedState.commandApprovalCeilings ?? [])].map(
+			(policy) => getSubagentCommandDecision(input.text!, policy),
+		)
+		if (decisions.some((decision) => decision === "auto_deny")) return { decision: "deny" }
+		if (decisions.every((decision) => decision === "auto_approve")) return { decision: "approve" }
+		return { decision: "ask" }
+	}
+
+	const [liveResult, inheritedResult] = await Promise.all([checkAutoApproval(input), checkInheritedPolicy()])
+	const results = [liveResult, inheritedResult]
+
+	if (results.some(({ decision }) => decision === "deny")) return { decision: "deny" }
+	if (results.some(({ decision }) => decision === "ask")) return { decision: "ask" }
+
+	const timeouts = results.filter(
+		(result): result is Extract<CheckAutoApprovalResult, { decision: "timeout" }> => result.decision === "timeout",
+	)
+	if (timeouts.length > 0) {
+		return timeouts.reduce((longest, current) => (current.timeout > longest.timeout ? current : longest))
+	}
+
+	return { decision: "approve" }
 }
 
 export { AutoApprovalHandler } from "./AutoApprovalHandler"

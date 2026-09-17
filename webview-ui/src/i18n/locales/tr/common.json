@@ -34,10 +34,12 @@
 			"save": "Resmi kaydet",
 			"viewCode": "Kodu görüntüle",
 			"viewDiagram": "Diyagramı görüntüle",
-			"close": "Kapat"
+			"close": "Kapat",
+			"open": "Diyagramı aç"
 		},
 		"modal": {
-			"codeTitle": "Mermaid Kodu"
+			"codeTitle": "Mermaid Kodu",
+			"title": "Denizkızı diyagramı"
 		},
 		"tabs": {
 			"diagram": "Diyagram",
@@ -110,5 +112,7 @@
 	"costs": {
 		"own": "Kendi",
 		"subtasks": "Alt görevler"
-	}
+	},
+	"dismiss": "Reddet",
+	"dismissAndDontShowAgain": "Kapat ve bir daha gösterme"
 }

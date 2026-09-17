@@ -33,6 +33,11 @@ interface SearchableSelectProps {
 	disabled?: boolean
 	/** Maximum items to display when not searching. Defaults to 50 for performance. */
 	maxDisplayItems?: number
+	/** Allow the current search text to be selected when it is not one of the predefined options. */
+	allowCustomValue?: boolean
+	/** Format the option shown for a custom value. Defaults to the value itself. */
+	customValueLabel?: (value: string) => React.ReactNode
+	"aria-label"?: string
 	"data-testid"?: string
 }
 
@@ -46,16 +51,21 @@ export function SearchableSelect({
 	className,
 	disabled,
 	maxDisplayItems = 50,
+	allowCustomValue = false,
+	customValueLabel,
+	"aria-label": ariaLabel,
 	"data-testid": dataTestId,
 }: SearchableSelectProps) {
 	const [open, setOpen] = React.useState(false)
 	const [searchValue, setSearchValue] = React.useState("")
 	const searchInputRef = React.useRef<HTMLInputElement>(null)
-	const searchResetTimeoutRef = React.useRef<NodeJS.Timeout | null>(null)
-	const isMountedRef = React.useRef(true)
 
 	// Find the selected option
 	const selectedOption = options.find((option) => option.value === value)
+	const selectedLabel = selectedOption?.label ?? (allowCustomValue ? value : undefined)
+	const customValue = searchValue.trim()
+	const showCustomValue =
+		allowCustomValue && customValue.length > 0 && !options.some((option) => option.value === customValue)
 
 	// Filter options based on search, always limit for performance.
 	// Ensure the selected option remains visible even when truncating.
@@ -86,24 +96,9 @@ export function SearchableSelect({
 		return limitedOptions
 	}, [options, searchValue, maxDisplayItems, selectedOption])
 
-	// Cleanup timeout on unmount
+	// Reset at the transition; a delayed reset can erase text typed after opening.
 	React.useEffect(() => {
-		return () => {
-			isMountedRef.current = false
-			if (searchResetTimeoutRef.current) {
-				clearTimeout(searchResetTimeoutRef.current)
-			}
-		}
-	}, [])
-
-	// Reset search when value changes
-	React.useEffect(() => {
-		const timeoutId = setTimeout(() => {
-			if (isMountedRef.current) {
-				setSearchValue("")
-			}
-		}, 100)
-		return () => clearTimeout(timeoutId)
+		setSearchValue("")
 	}, [value])
 
 	// Use the shared ESC key handler hook
@@ -111,17 +106,11 @@ export function SearchableSelect({
 
 	const handleOpenChange = (open: boolean) => {
 		setOpen(open)
-		// Reset search when closing
-		if (!open) {
-			if (searchResetTimeoutRef.current) {
-				clearTimeout(searchResetTimeoutRef.current)
-			}
-			searchResetTimeoutRef.current = setTimeout(() => setSearchValue(""), 100)
-		}
+		if (!open) setSearchValue("")
 	}
 
 	const handleSelect = (selectedValue: string) => {
-		setOpen(false)
+		handleOpenChange(false)
 		onValueChange(selectedValue)
 	}
 
@@ -136,6 +125,7 @@ export function SearchableSelect({
 				<Button
 					variant="outline"
 					role="combobox"
+					aria-label={ariaLabel}
 					aria-expanded={open}
 					disabled={disabled}
 					className={cn(
@@ -146,11 +136,11 @@ export function SearchableSelect({
 						"text-vscode-dropdown-foreground",
 						"focus-visible:border-vscode-focusBorder",
 						"aria-expanded:border-vscode-focusBorder",
-						!selectedOption && "text-muted-foreground",
+						!selectedLabel && "text-muted-foreground",
 						className,
 					)}
 					data-testid={dataTestId}>
-					<span className="truncate">{selectedOption ? selectedOption.label : placeholder}</span>
+					<span className="truncate">{selectedLabel ?? placeholder}</span>
 					<ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
 				</Button>
 			</PopoverTrigger>
@@ -198,6 +188,16 @@ export function SearchableSelect({
 								</CommandItem>
 							))}
 						</CommandGroup>
+						{showCustomValue && (
+							<CommandGroup forceMount className="border-t border-vscode-input-border">
+								<CommandItem
+									value={customValue}
+									onSelect={() => handleSelect(customValue)}
+									data-testid={dataTestId ? `${dataTestId}-custom-option` : undefined}>
+									{customValueLabel?.(customValue) ?? customValue}
+								</CommandItem>
+							</CommandGroup>
+						)}
 					</CommandList>
 				</Command>
 			</PopoverContent>

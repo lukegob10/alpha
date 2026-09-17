@@ -16,6 +16,41 @@
 			"policy_restriction": "Không thể tạo nhiệm vụ mới do hạn chế chính sách."
 		}
 	},
+	"fileConflicts": {
+		"save": "Không thể lưu '{{path}}': {{reason}}. Đọc lại tệp và thử lại để bảo toàn các thay đổi của người dùng.",
+		"delete": "Không thể xóa '{{path}}': {{reason}}. Đọc lại tệp và thử lại.",
+		"saveDestination": "Không thể lưu '{{path}}': {{reason}}. Kiểm tra đích và thử lại.",
+		"reasons": {
+			"fileUnsavedChanges": "tệp có các thay đổi chưa lưu trong trình chỉnh sửa đang mở",
+			"fileChangedDuringApproval": "tệp đã thay đổi trong khi chờ phê duyệt",
+			"editorChangedWhileChecked": "trình chỉnh sửa đang mở đã thay đổi trong khi kiểm tra tệp",
+			"destinationUnsavedChanges": "đích có các thay đổi chưa lưu trong trình chỉnh sửa đang mở",
+			"destinationNotRegularFile": "đích không phải là tệp thông thường",
+			"destinationChangedDuringInspection": "đích đã thay đổi trong khi kiểm tra",
+			"destinationPathChanged": "đích hiện trỏ đến một đường dẫn khác",
+			"destinationCreatedAfterInspection": "đích đã được tạo sau khi kiểm tra",
+			"destinationDeletedAfterInspection": "đích đã bị xóa sau khi kiểm tra",
+			"destinationChangedAfterInspection": "đích đã thay đổi sau khi kiểm tra"
+		}
+	},
+	"diffView": {
+		"editCancelled": "Đã hủy chỉnh sửa tệp",
+		"applyContentFailed": "Không thể áp dụng nội dung vào trình chỉnh sửa khác biệt",
+		"previewChangedDuringEdit": "Bản xem trước khác biệt đã thay đổi trong khi chỉnh sửa; các thay đổi của người dùng đã được bảo toàn",
+		"noEditAvailableToSave": "Không có chỉnh sửa tệp nào để lưu",
+		"previewChangedAfterApproval": "Bản xem trước khác biệt đã thay đổi sau khi phê duyệt; hãy xem lại các thay đổi và thử lại",
+		"previewHasUserChanges": "Bản xem trước khác biệt có các thay đổi của người dùng; hãy xem lại trước khi thử lại việc chỉnh sửa",
+		"noFilePathForOpening": "Chưa đặt đường dẫn tệp để mở trình chỉnh sửa khác biệt",
+		"previewChangedWhileOpening": "Bản xem trước khác biệt đã thay đổi khi đang mở; các thay đổi của người dùng đã được bảo toàn",
+		"openFailed": "Không thể mở trình chỉnh sửa khác biệt cho {{path}}: {{message}}",
+		"missingExpectedFileState": "Thiếu trạng thái tệp dự kiến trước khi mở bản xem trước khác biệt"
+	},
+	"applyPatch": {
+		"deleteCancelled": "Đã hủy thao tác xóa."
+	},
+	"imageOutput": {
+		"writeIncomplete": "Không thể hoàn tất việc ghi '{{path}}'; tệp có thể chưa hoàn chỉnh. {{cause}}"
+	},
 	"generateImage": {
 		"openRouterApiKeyRequired": "Yêu cầu khóa API OpenRouter để tạo hình ảnh với các mô hình OpenRouter. Vui lòng cấu hình trong cài đặt thử nghiệm Tạo hình ảnh.",
 		"failedWithStatus": "Tạo hình ảnh thất bại: {{status}} {{statusText}}",
@@ -24,6 +59,10 @@
 		"invalidImageData": "Dữ liệu hình ảnh không hợp lệ trong phản hồi",
 		"invalidImageFormat": "Nhận được định dạng hình ảnh không hợp lệ",
 		"unknownError": "Đã xảy ra lỗi không xác định",
+		"cancelledBeforeSave": "Đã hủy tạo hình ảnh trước khi lưu hình ảnh.",
+		"destinationUnavailableBeforeGeneration": "Không thể truy cập đích hình ảnh trước khi tạo. Hãy thử lại yêu cầu.",
+		"destinationPolicyChangedBeforeSave": "Đường dẫn hoặc chính sách truy cập của đích hình ảnh đã thay đổi trước khi lưu. Hãy thử lại yêu cầu.",
+		"postSaveProcessingFailed": "{{path}}\nĐã lưu hình ảnh nhưng xử lý sau khi lưu không thành công: {{message}}",
 		"roo": {}
 	}
 }

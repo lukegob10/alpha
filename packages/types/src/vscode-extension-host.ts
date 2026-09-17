@@ -1,20 +1,23 @@
 import { z } from "zod"
 
-import type { GlobalSettings, RooCodeSettings } from "./global-settings.js"
+import type { GlobalSettings, AlphaCodeSettings } from "./global-settings.js"
 import type { ProviderSettings, ProviderSettingsEntry } from "./provider-settings.js"
 import type { HistoryItem } from "./history.js"
 import type { ModeConfig, PromptComponent } from "./mode.js"
 import type { TelemetrySetting } from "./telemetry.js"
 import type { Experiments } from "./experiment.js"
-import type { ClineMessage, QueuedMessage } from "./message.js"
+import type { AlphaMessage, QueuedMessage } from "./message.js"
 import type { CurrentTaskView, LiveTaskMetadata } from "./task.js"
+import type { ManagedAgentTreeProjection } from "./managed-agent-tree.js"
 import {
 	type MarketplaceItem,
 	type MarketplaceInstalledMetadata,
 	type InstallMarketplaceItemOptions,
 	marketplaceItemSchema,
 } from "./marketplace.js"
-import type { TodoItem } from "./todo.js"
+import type { TodoItem, TodoApprovalEdit } from "./todo.js"
+import type { GitHubToolApproval } from "./github.js"
+import type { TicketActivity, TicketSearchResponse, TicketTarget } from "./ticket.js"
 import type { SerializedCustomToolDefinition } from "./custom-tool.js"
 import type { GitCommit } from "./git.js"
 import type { McpServer } from "./mcp.js"
@@ -22,36 +25,269 @@ import type { ModelRecord, RouterModels } from "./model.js"
 import type { OpenAiCodexRateLimitInfo } from "./providers/openai-codex-rate-limits.js"
 import type { SkillMetadata } from "./skills.js"
 import type { WorktreeIncludeStatus } from "./worktree.js"
+import type { SubagentChangeSetActionCapability, SubagentChangeSetActionResult } from "./subagent.js"
+import type { BrowserToolName } from "./browser.js"
+import type { SearchFilesOutputMode, SearchFilesQueryResult } from "./tool-params.js"
 import type {
 	CreateScheduledTaskPayload,
 	ScheduledTask,
 	ScheduledTaskRun,
 	ScheduledTaskState,
+	ScheduledTaskSkillsRequest,
+	ScheduledTaskSkillsResponse,
 	UpdateScheduledTaskPayload,
 } from "./scheduled-task.js"
-import type {
-	CreateGoalSeekJobPayload,
-	GoalSeekAttempt,
-	GoalSeekJob,
-	GoalSeekRun,
-	GoalSeekState,
-	UpdateGoalSeekJobPayload,
-} from "./goal-seek.js"
+import {
+	agentLifecycleEventSchema,
+	agentLifecycleDegradedSignalSchema,
+	agentLifecycleSnapshotSchema,
+	agentTaskIdSchema,
+	type AgentLifecycleEvent,
+	type AgentLifecycleDegradedSignal,
+	type AgentLifecycleSnapshot,
+	type AgentTaskId,
+} from "./agent-lifecycle.js"
+
+export type AgentLifecycleEventMessage =
+	| {
+			type: "agentLifecycleEvent"
+			taskId?: AgentTaskId
+			payload: AgentLifecycleEvent
+			event?: AgentLifecycleEvent
+			agentLifecycleEvent?: AgentLifecycleEvent
+			agentLifecycleSnapshot?: AgentLifecycleSnapshot
+	  }
+	| {
+			type: "agentLifecycleEvent"
+			taskId?: AgentTaskId
+			event: AgentLifecycleEvent
+			payload?: AgentLifecycleEvent
+			agentLifecycleEvent?: AgentLifecycleEvent
+			agentLifecycleSnapshot?: AgentLifecycleSnapshot
+	  }
+
+export type AgentLifecycleSnapshotMessage =
+	| {
+			type: "agentLifecycleSnapshot"
+			taskId?: AgentTaskId
+			payload: AgentLifecycleSnapshot
+			snapshot?: AgentLifecycleSnapshot
+			agentLifecycleSnapshot?: AgentLifecycleSnapshot
+	  }
+	| {
+			type: "agentLifecycleSnapshot"
+			taskId?: AgentTaskId
+			snapshot: AgentLifecycleSnapshot
+			payload?: AgentLifecycleSnapshot
+			agentLifecycleSnapshot?: AgentLifecycleSnapshot
+	  }
+
+export type AgentLifecycleDegradedMessage =
+	| {
+			type: "agentLifecycleDegraded"
+			taskId?: AgentTaskId
+			payload: AgentLifecycleDegradedSignal
+			signal?: AgentLifecycleDegradedSignal
+			agentLifecycleDegraded?: AgentLifecycleDegradedSignal
+	  }
+	| {
+			type: "agentLifecycleDegraded"
+			taskId?: AgentTaskId
+			signal: AgentLifecycleDegradedSignal
+			payload?: AgentLifecycleDegradedSignal
+			agentLifecycleDegraded?: AgentLifecycleDegradedSignal
+	  }
+
+export type ExtensionLifecycleMessage =
+	| AgentLifecycleEventMessage
+	| AgentLifecycleSnapshotMessage
+	| AgentLifecycleDegradedMessage
+
+const lifecycleEnvelopeValue = (value: AgentLifecycleEvent | AgentLifecycleSnapshot): string => JSON.stringify(value)
+const lifecycleDegradedEnvelopeValue = (value: AgentLifecycleDegradedSignal): string => JSON.stringify(value)
+
+/**
+ * Extension-side lifecycle messages use the existing `payload` convention.
+ * `event`/`snapshot` aliases are retained for hosts that adopted the contract
+ * before the message envelope was standardized.
+ */
+export const agentLifecycleEventMessageSchema: z.ZodType<AgentLifecycleEventMessage, z.ZodTypeDef, unknown> = z
+	.object({
+		type: z.literal("agentLifecycleEvent"),
+		taskId: agentTaskIdSchema.optional(),
+		payload: agentLifecycleEventSchema.optional(),
+		event: agentLifecycleEventSchema.optional(),
+		agentLifecycleEvent: agentLifecycleEventSchema.optional(),
+		agentLifecycleSnapshot: agentLifecycleSnapshotSchema.optional(),
+	})
+	.passthrough()
+	.superRefine((message, context) => {
+		const candidates = [message.payload, message.event, message.agentLifecycleEvent].filter(
+			(candidate): candidate is AgentLifecycleEvent => candidate !== undefined,
+		)
+		if (candidates.length === 0) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["payload"],
+				message: "agentLifecycleEvent messages require a validated lifecycle event payload",
+			})
+			return
+		}
+		const event = candidates[0]!
+		if (message.taskId !== undefined && message.taskId !== event.taskId) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["taskId"],
+				message: "agentLifecycleEvent taskId must match the lifecycle event taskId",
+			})
+		}
+		if (candidates.some((candidate) => lifecycleEnvelopeValue(candidate) !== lifecycleEnvelopeValue(event))) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["payload"],
+				message: "Lifecycle event aliases must describe the same event",
+			})
+		}
+		const snapshot = message.agentLifecycleSnapshot
+		if (
+			snapshot !== undefined &&
+			(snapshot.taskId !== event.taskId ||
+				snapshot.runId !== event.runId ||
+				snapshot.turnId !== event.turnId ||
+				snapshot.lastSequence < event.sequence ||
+				!snapshot.processedEvents.some(
+					(receipt) => receipt.eventId === event.eventId && receipt.sequence === event.sequence,
+				))
+		) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["agentLifecycleSnapshot"],
+				message: "Attached lifecycle snapshot must include the event for the same task, run, and turn",
+			})
+		}
+	}) as unknown as z.ZodType<AgentLifecycleEventMessage, z.ZodTypeDef, unknown>
+
+export const agentLifecycleSnapshotMessageSchema: z.ZodType<AgentLifecycleSnapshotMessage, z.ZodTypeDef, unknown> = z
+	.object({
+		type: z.literal("agentLifecycleSnapshot"),
+		taskId: agentTaskIdSchema.optional(),
+		payload: agentLifecycleSnapshotSchema.optional(),
+		snapshot: agentLifecycleSnapshotSchema.optional(),
+		agentLifecycleSnapshot: agentLifecycleSnapshotSchema.optional(),
+	})
+	.passthrough()
+	.superRefine((message, context) => {
+		const candidates = [message.payload, message.snapshot, message.agentLifecycleSnapshot].filter(
+			(candidate): candidate is AgentLifecycleSnapshot => candidate !== undefined,
+		)
+		if (candidates.length === 0) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["payload"],
+				message: "agentLifecycleSnapshot messages require a validated lifecycle snapshot payload",
+			})
+			return
+		}
+		const snapshot = candidates[0]!
+		if (message.taskId !== undefined && message.taskId !== snapshot.taskId) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["taskId"],
+				message: "agentLifecycleSnapshot taskId must match the lifecycle snapshot taskId",
+			})
+		}
+		if (candidates.some((candidate) => lifecycleEnvelopeValue(candidate) !== lifecycleEnvelopeValue(snapshot))) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["payload"],
+				message: "Lifecycle snapshot aliases must describe the same snapshot",
+			})
+		}
+	}) as unknown as z.ZodType<AgentLifecycleSnapshotMessage, z.ZodTypeDef, unknown>
+
+export const agentLifecycleDegradedMessageSchema: z.ZodType<AgentLifecycleDegradedMessage, z.ZodTypeDef, unknown> = z
+	.object({
+		type: z.literal("agentLifecycleDegraded"),
+		taskId: agentTaskIdSchema.optional(),
+		payload: agentLifecycleDegradedSignalSchema.optional(),
+		signal: agentLifecycleDegradedSignalSchema.optional(),
+		agentLifecycleDegraded: agentLifecycleDegradedSignalSchema.optional(),
+	})
+	.passthrough()
+	.superRefine((message, context) => {
+		const candidates = [message.payload, message.signal, message.agentLifecycleDegraded].filter(
+			(candidate): candidate is AgentLifecycleDegradedSignal => candidate !== undefined,
+		)
+		if (candidates.length === 0) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["payload"],
+				message: "agentLifecycleDegraded messages require a validated signal payload",
+			})
+			return
+		}
+		const signal = candidates[0]!
+		if (message.taskId !== undefined && message.taskId !== signal.taskId) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["taskId"],
+				message: "agentLifecycleDegraded taskId must match the signal taskId",
+			})
+		}
+		if (
+			candidates.some(
+				(candidate) => lifecycleDegradedEnvelopeValue(candidate) !== lifecycleDegradedEnvelopeValue(signal),
+			)
+		) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["payload"],
+				message: "Lifecycle degraded aliases must describe the same signal",
+			})
+		}
+	}) as unknown as z.ZodType<AgentLifecycleDegradedMessage, z.ZodTypeDef, unknown>
+
+// Explicit aliases make the schema names discoverable to extension callers.
+export const extensionAgentLifecycleEventMessageSchema = agentLifecycleEventMessageSchema
+export const extensionAgentLifecycleSnapshotMessageSchema = agentLifecycleSnapshotMessageSchema
+export const extensionAgentLifecycleDegradedMessageSchema = agentLifecycleDegradedMessageSchema
+
+export type ChatCommand = "queueMessage" | "steerQueuedMessage"
+
+export type ChatCommandErrorCode =
+	| "task_unavailable"
+	| "message_not_found"
+	| "steer_pending"
+	| "image_resolution_failed"
+	| "unknown"
+
+export interface ChatCommandResult {
+	requestId: string
+	taskId?: string
+	command: ChatCommand
+	status: "accepted" | "rejected"
+	errorCode?: ChatCommandErrorCode
+}
 
 /**
  * ExtensionMessage
- * Extension -> Webview | CLI
+ * Extension -> Webview
  */
 export interface ExtensionMessage {
 	type:
 		| "action"
 		| "state"
+		| "agentLifecycleEvent"
+		| "agentLifecycleSnapshot"
+		| "agentLifecycleDegraded"
+		| "chatCommandResult"
 		| "taskHistoryUpdated"
 		| "taskHistoryItemUpdated"
 		| "selectedImages"
 		| "theme"
 		| "workspaceUpdated"
 		| "invoke"
+		| "messageCreated"
 		| "messageUpdated"
 		| "mcpServers"
 		| "enhancedPrompt"
@@ -77,6 +313,7 @@ export interface ExtensionMessage {
 		| "ttsStart"
 		| "ttsStop"
 		| "fileSearchResults"
+		| "ticketSearchResults"
 		| "toggleApiConfigPin"
 		| "acceptInput"
 		| "setHistoryPreviewCollapsed"
@@ -116,18 +353,26 @@ export interface ExtensionMessage {
 		| "skills"
 		| "fileContent"
 		| "scheduledTasksUpdated"
-		| "goalSeekUpdated"
+		| "scheduledTaskSkills"
+		| "subagentChangeSetActionCapability"
+		| "subagentChangeSetActionResult"
 	text?: string
 	taskId?: string
+	subagentChangeSetActionCapability?: SubagentChangeSetActionCapability
+	subagentChangeSetActionResult?: SubagentChangeSetActionResult
 	/** For fileContent: { path, content, error? } */
 	fileContent?: { path: string; content: string | null; error?: string }
+	ticketSearch?: TicketSearchResponse
 	scheduledTasks?: ScheduledTask[]
 	scheduledTaskRuns?: ScheduledTaskRun[]
 	scheduledTaskState?: ScheduledTaskState
-	goalSeekJobs?: GoalSeekJob[]
-	goalSeekRuns?: GoalSeekRun[]
-	goalSeekAttempts?: GoalSeekAttempt[]
-	goalSeekState?: GoalSeekState
+	scheduledTaskSkills?: ScheduledTaskSkillsResponse
+	/** Canonical lifecycle event payload for extension -> webview rollout. */
+	agentLifecycleEvent?: AgentLifecycleEvent
+	/** Canonical lifecycle snapshot payload for extension -> webview rollout. */
+	agentLifecycleSnapshot?: AgentLifecycleSnapshot
+	/** Per-task fallback signal when canonical lifecycle persistence is unavailable. */
+	agentLifecycleDegraded?: AgentLifecycleDegradedSignal
 	payload?: any // eslint-disable-line @typescript-eslint/no-explicit-any
 	checkpointWarning?: {
 		type: "WAIT_TIMEOUT" | "INIT_TIMEOUT"
@@ -155,7 +400,9 @@ export interface ExtensionMessage {
 		isActive: boolean
 		path?: string
 	}>
-	clineMessage?: ClineMessage
+	clineMessage?: AlphaMessage
+	/** Transcript sequence shared with transcript snapshots for ordered incremental delivery. */
+	clineMessagesSeq?: number
 	routerModels?: RouterModels
 	openAiModels?: string[]
 	ollamaModels?: ModelRecord
@@ -179,6 +426,10 @@ export interface ExtensionMessage {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	values?: Record<string, any>
 	requestId?: string
+	/** Task-scoped queue/steer acceptance result. */
+	chatCommandResult?: ChatCommandResult
+	/** Fresh task activity metadata attached to incremental transcript messages. */
+	liveTask?: LiveTaskMetadata
 	promptText?: string
 	results?:
 		| { path: string; type: "file" | "folder"; label?: string }[]
@@ -197,6 +448,7 @@ export interface ExtensionMessage {
 	settings?: any // eslint-disable-line @typescript-eslint/no-explicit-any
 	messageTs?: number
 	hasCheckpoint?: boolean
+	messageAction?: "restart"
 	context?: string
 	commands?: Command[]
 	queuedMessages?: QueuedMessage[]
@@ -277,7 +529,18 @@ export type ExtensionState = Pick<
 	| "customInstructions"
 	| "dismissedUpsells"
 	| "autoApprovalEnabled"
+	| "disabledBuiltinSkills"
 	| "maxConcurrentTasks"
+	| "maxConcurrentSubagents"
+	| "subagentDelegationPolicy"
+	| "subagentMaxDepth"
+	| "subagentRoleTimeoutsMs"
+	| "subagentMaxInputTokens"
+	| "subagentMaxOutputTokens"
+	| "subagentRootTokenBudget"
+	| "subagentRootCostBudget"
+	| "subagentDefaultApiConfigId"
+	| "subagentApiConfigByRole"
 	| "alwaysAllowReadOnly"
 	| "alwaysAllowReadOnlyOutsideWorkspace"
 	| "alwaysAllowWrite"
@@ -286,6 +549,8 @@ export type ExtensionState = Pick<
 	| "alwaysAllowMcp"
 	| "alwaysAllowModeSwitch"
 	| "alwaysAllowSubtasks"
+	| "alwaysAllowSubagents"
+	| "alwaysAllowTickets"
 	| "alwaysAllowFollowupQuestions"
 	| "alwaysAllowExecute"
 	| "followupAutoApproveTimeoutMs"
@@ -333,14 +598,21 @@ export type ExtensionState = Pick<
 > & {
 	lockApiConfigAcrossModes?: boolean
 	version: string
-	clineMessages: ClineMessage[]
+	clineMessages: AlphaMessage[]
 	currentTaskId?: string
 	currentTaskItem?: HistoryItem
 	currentTaskTodos?: TodoItem[] // Initial todos for the current task
 	currentView?: CurrentTaskView
+	/** True when the visible managed child has a frozen approval ceiling below global "All". */
+	currentTaskAutoApprovalRestricted?: boolean
 	activeTaskId?: string
 	liveTaskIds?: string[]
 	liveTasksById?: Record<string, LiveTaskMetadata>
+	/** Per-task canonical lifecycle state; omitted by legacy hosts. */
+	agentLifecycleSnapshots?: Record<string, AgentLifecycleSnapshot>
+	/** Tasks whose canonical lifecycle projection must defer to legacy state. */
+	agentLifecycleDegraded?: Record<string, AgentLifecycleDegradedSignal>
+	managedAgentTree?: ManagedAgentTreeProjection
 	apiConfiguration: ProviderSettings
 	uriScheme?: string
 	shouldShowAnnouncement: boolean
@@ -392,19 +664,21 @@ export type ExtensionState = Pick<
 	mcpServers?: McpServer[]
 	scheduledTasks?: ScheduledTask[]
 	scheduledTaskRuns?: ScheduledTaskRun[]
-	goalSeekJobs?: GoalSeekJob[]
-	goalSeekRuns?: GoalSeekRun[]
-	goalSeekAttempts?: GoalSeekAttempt[]
 	openAiCodexIsAuthenticated?: boolean
 	debug?: boolean
 
 	/**
-	 * Monotonically increasing sequence number for clineMessages state pushes.
-	 * When present, the frontend should only apply clineMessages from a state push
-	 * if its seq is greater than the last applied seq. This prevents stale state
-	 * (captured during async getStateToPostToWebview) from overwriting newer messages.
+	 * Monotonically increasing sequence number for transcript snapshots and
+	 * incremental message pushes.
+	 * The legacy field name is retained for wire compatibility.
 	 */
 	clineMessagesSeq?: number
+	/** Sequence for task identity and lifecycle projections. */
+	taskStateSeq?: number
+	/** Sequence for the visible task's queued messages. */
+	messageQueueSeq?: number
+	/** Sequence for the visible task's todo projection. */
+	currentTaskTodosSeq?: number
 }
 
 export interface Command {
@@ -417,17 +691,14 @@ export interface Command {
 
 /**
  * WebviewMessage
- * Webview | CLI -> Extension
+ * Webview -> Extension
  */
 
-export type ClineAskResponse = "yesButtonClicked" | "noButtonClicked" | "messageResponse" | "objectResponse"
+export type AlphaAskResponse = "yesButtonClicked" | "noButtonClicked" | "messageResponse" | "objectResponse"
 
 export type AudioType = "notification" | "celebration" | "progress_loop"
 
-export interface UpdateTodoListPayload {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	todos: any[]
-}
+export type UpdateTodoListPayload = TodoApprovalEdit
 
 export type EditQueuedMessagePayload = Pick<QueuedMessage, "id" | "text" | "images">
 export interface ReorderQueuedMessagePayload {
@@ -435,7 +706,7 @@ export interface ReorderQueuedMessagePayload {
 	toIndex: number
 }
 
-export interface WebviewMessage {
+interface WebviewMessageBase {
 	type:
 		| "updateTodoList"
 		| "deleteMultipleTasksWithIds"
@@ -450,6 +721,7 @@ export interface WebviewMessage {
 		| "customInstructions"
 		| "webviewDidLaunch"
 		| "newTask"
+		| "resumeCompletedTask"
 		| "startBlankTask"
 		| "askResponse"
 		| "terminalOperation"
@@ -472,10 +744,19 @@ export interface WebviewMessage {
 		| "openImage"
 		| "saveImage"
 		| "openFile"
+		| "openHtmlDocument"
 		| "readFileContent"
 		| "openMention"
 		| "closeTask"
 		| "cancelTask"
+		| "cancelSubagentGroup"
+		| "cancelSubagent"
+		| "steerSubagent"
+		| "respondToSubagentApproval"
+		| "openSubagentChangeSet"
+		| "requestSubagentChangeSetActionCapability"
+		| "applySubagentChangeSet"
+		| "discardSubagentChangeSet"
 		| "cancelAutoApproval"
 		| "updateVSCodeSetting"
 		| "getVSCodeSetting"
@@ -521,6 +802,8 @@ export interface WebviewMessage {
 		| "codebaseIndexEnabled"
 		| "telemetrySetting"
 		| "searchFiles"
+		| "searchTickets"
+		| "openTicket"
 		| "toggleApiConfigPin"
 		| "hasOpenedModeSelector"
 		| "lockApiConfigAcrossModes"
@@ -606,26 +889,25 @@ export interface WebviewMessage {
 		| "resumeScheduledTask"
 		| "runScheduledTaskNow"
 		| "duplicateScheduledTask"
-		| "createGoalSeekJob"
-		| "updateGoalSeekJob"
-		| "deleteGoalSeekJob"
-		| "runGoalSeekJob"
-		| "cancelGoalSeekRun"
+		| "requestScheduledTaskSkills"
 	text?: string
 	taskId?: string
+	groupId?: string
+	ticketTarget?: TicketTarget
+	subagentTaskId?: string
+	approvalId?: string
+	changeSetId?: string
+	approved?: boolean
 	scheduledTaskId?: string
 	scheduledTask?: CreateScheduledTaskPayload
 	scheduledTaskUpdate?: UpdateScheduledTaskPayload
-	goalSeekJobId?: string
-	goalSeekRunId?: string
-	goalSeekJob?: CreateGoalSeekJobPayload
-	goalSeekJobUpdate?: UpdateGoalSeekJobPayload
+	scheduledTaskSkillsRequest?: ScheduledTaskSkillsRequest
 	editedMessageContent?: string
-	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "marketplace" | "scheduledTasks" | "goalSeek"
+	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "marketplace" | "scheduledTasks"
 	disabled?: boolean
 	context?: string
 	dataUri?: string
-	askResponse?: ClineAskResponse
+	askResponse?: AlphaAskResponse
 	apiConfiguration?: ProviderSettings
 	images?: string[]
 	bool?: boolean
@@ -642,6 +924,11 @@ export interface WebviewMessage {
 	mode?: string
 	promptMode?: string | "enhance"
 	customPrompt?: PromptComponent
+	enhancementOptions?: {
+		apiConfigId: string
+		includeTaskHistory: boolean
+		supportPrompt: string
+	}
 	dataUrls?: string[]
 	/** Generic payload for webview messages that use `values` */
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -652,7 +939,7 @@ export interface WebviewMessage {
 	modeConfig?: ModeConfig
 	timeout?: number
 	payload?: WebViewMessagePayload
-	source?: "global" | "project"
+	source?: "global" | "project" | "builtin"
 	skillName?: string // For skill operations (createSkill, deleteSkill, moveSkill, openSkillFile)
 	/** @deprecated Use skillModeSlugs instead */
 	skillMode?: string // For skill operations (current mode restriction)
@@ -668,6 +955,7 @@ export interface WebviewMessage {
 	terminalOperation?: "continue" | "abort"
 	messageTs?: number
 	restoreCheckpoint?: boolean
+	messageAction?: "restart"
 	historyPreviewCollapsed?: boolean
 	filters?: { type?: string; search?: string; tags?: string[] }
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -727,9 +1015,9 @@ export interface WebviewMessage {
 		codebaseIndexVercelAiGatewayApiKey?: string
 		codebaseIndexOpenRouterApiKey?: string
 	}
-	updatedSettings?: RooCodeSettings
+	updatedSettings?: AlphaCodeSettings
 	/** Task configuration applied via `createTask()`. */
-	taskConfiguration?: RooCodeSettings
+	taskConfiguration?: AlphaCodeSettings
 	// Worktree properties
 	worktreePath?: string
 	worktreeBranch?: string
@@ -739,6 +1027,12 @@ export interface WebviewMessage {
 	worktreeNewWindow?: boolean
 	worktreeIncludeContent?: string
 }
+
+export type WebviewMessage =
+	| (Omit<WebviewMessageBase, "type" | "value"> & { type: "updateVSCodeSetting"; value?: number | boolean })
+	| (Omit<WebviewMessageBase, "type"> & {
+			type: Exclude<WebviewMessageBase["type"], "updateVSCodeSetting">
+	  })
 
 export interface RequestOpenAiCodexRateLimitsMessage {
 	type: "requestOpenAiCodexRateLimits"
@@ -813,7 +1107,9 @@ export interface LanguageModelChatSelector {
 	id?: string
 }
 
-export interface ClineSayTool {
+export interface AlphaSayTool {
+	ticketActivity?: TicketActivity
+	github?: GitHubToolApproval
 	tool:
 		| "editedExistingFile"
 		| "appliedDiff"
@@ -826,12 +1122,18 @@ export interface ClineSayTool {
 		| "searchFiles"
 		| "switchMode"
 		| "newTask"
+		| "delegateTask"
+		| "spawnAgent"
+		| "agentLifecycle"
 		| "finishTask"
 		| "generateImage"
 		| "imageGenerated"
 		| "runSlashCommand"
+		| "ticket"
 		| "updateTodoList"
 		| "skill"
+		| "browserAction"
+		| "githubApi"
 	path?: string
 	// For readCommandOutput
 	readStart?: number
@@ -847,6 +1149,9 @@ export interface ClineSayTool {
 	diffStats?: { added: number; removed: number }
 	regex?: string
 	filePattern?: string
+	outputMode?: SearchFilesOutputMode
+	literal?: boolean
+	searchStatus?: "success" | "error"
 	mode?: string
 	reason?: string
 	isOutsideWorkspace?: boolean
@@ -862,6 +1167,7 @@ export interface ClineSayTool {
 		key: string
 		content?: string
 	}>
+	batchSearches?: SearchFilesQueryResult[]
 	batchDiffs?: Array<{
 		path: string
 		changeCount: number
@@ -889,9 +1195,26 @@ export interface ClineSayTool {
 	description?: string
 	// Properties for skill tool
 	skill?: string
+	// Properties for VS Code integrated-browser tools
+	action?: BrowserToolName
+	status?: "running" | "completed" | "error" | "cancelled"
+	pageId?: string
+	url?: string
+	element?: string
+	code?: string
+	// Properties for non-interactive managed-agent lifecycle status rows
+	agentAction?: "list_agents" | "wait_agent"
+	lifecycleStatus?: "running" | "completed" | "error"
+	agentCount?: number
+	mailboxUnreadCount?: number
+	eventCount?: number
+	timedOut?: boolean
+	alreadyDelivered?: boolean
+	cancelled?: boolean
+	noActiveAgents?: boolean
 }
 
-export interface ClineAskUseMcpServer {
+export interface AlphaAskUseMcpServer {
 	serverName: string
 	type: "use_mcp_tool" | "access_mcp_resource"
 	toolName?: string
@@ -900,16 +1223,31 @@ export interface ClineAskUseMcpServer {
 	response?: string
 }
 
-export interface ClineApiReqInfo {
+export interface AlphaApiReqInfo {
 	request?: string
 	tokensIn?: number
 	tokensOut?: number
 	cacheWrites?: number
 	cacheReads?: number
 	cost?: number
-	cancelReason?: ClineApiReqCancelReason
+	cancelReason?: AlphaApiReqCancelReason
 	streamingFailedMessage?: string
 	apiProtocol?: "anthropic" | "openai"
 }
 
-export type ClineApiReqCancelReason = "streaming_failed" | "user_cancelled"
+export type AlphaApiReqCancelReason = "streaming_failed" | "user_cancelled"
+
+/** @deprecated Use AlphaAskResponse. Retained for existing API consumers. */
+export type { AlphaAskResponse as ClineAskResponse }
+
+/** @deprecated Use AlphaSayTool. Retained for existing API consumers. */
+export type { AlphaSayTool as ClineSayTool }
+
+/** @deprecated Use AlphaAskUseMcpServer. Retained for existing API consumers. */
+export type { AlphaAskUseMcpServer as ClineAskUseMcpServer }
+
+/** @deprecated Use AlphaApiReqInfo. Retained for existing API consumers. */
+export type { AlphaApiReqInfo as ClineApiReqInfo }
+
+/** @deprecated Use AlphaApiReqCancelReason. Retained for existing API consumers. */
+export type { AlphaApiReqCancelReason as ClineApiReqCancelReason }

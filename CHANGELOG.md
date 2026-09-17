@@ -1,5 +1,428 @@
 # Changelog
 
+## 2.1.46
+
+### Patch Changes
+
+- Fix Vertex AI Gemini Embedding 2 requests by using the model's `:embedContent` endpoint through Google GenAI SDK 1.47.0 while preserving Gemini 001's existing prediction contract. Preserve routed gateway headers and token refresh behavior, and report the actual number of HTTP attempts for non-retryable embedding failures.
+
+## 2.1.45
+
+### Patch Changes
+
+- Add optional acceptance checks with reusable evidence, owned background command controls, and durable task and skill context.
+- Restore provider selection after task completion and improve chat message editing, restart actions, reasoning summaries, and search output.
+- Improve rich HTML document rendering and file-read continuation while preserving the existing extension workflow.
+- Retire the standalone Alpha CLI and its VS Code shim; new evaluation runs use the VS Code extension while historical results remain readable.
+- Add exact-host and unattended live Copilot coverage for check repair, command and browser sessions, and composed skills.
+
+## 2.1.44
+
+### Patch Changes
+
+- Keep background file edits out of the user's focus, tabs, and unsaved buffers while preserving diagnostics and conflict checks.
+- Cancel direct saves when the task is aborted, abandoned, or superseded, so a late write cannot revive an interrupted edit.
+- Return actionable directory guidance from batched file reads without turning a recoverable path mistake into a task-level error.
+- Project bounded background command outcomes into the next model step, including successful, failed, cancelled, timed-out, and unknown exits.
+- Add exact-host and live Copilot coverage for background editing and command outcome delivery.
+
+## 2.1.43
+
+### Patch Changes
+
+- Preserve the user's file bytes during edits, including line endings, BOMs, missing final newlines, and literal replacement text.
+- Return bounded file reads with truthful continuation cursors, shared batch limits, and version checks for changed files.
+- Add selectable search output modes, literal matching, isolated batch outcomes, and clearer truncation diagnostics.
+- Reduce redundant investigation guidance by reusing evidence, targeting known symbols, and delegating only distinct questions.
+- Add live GPT-5.6 Luna coverage for file edits, reads, searches, continuation, repair, and review workflows.
+
+## 2.1.42
+
+### Patch Changes
+
+- Add Preview HTML Document to the Explorer context menu for local HTML files, opening Alpha's document renderer without an active chat or source editor.
+- Reuse the existing preview tab and translated command label for `.html` and `.htm` documents.
+- Start storing Vertex indexing results earlier with smaller whole-file groups and up to eight continuously refilled embedding requests.
+- Preserve request spacing, result order, failure draining, and whole-file replacement, with deterministic indexing performance coverage.
+
+## 2.1.41
+
+### Patch Changes
+
+- Fix VS Code LM chat metadata staying at the default context window after selecting extended context.
+- Use the active task's resolved input limit for the context display and percentage, with the saved selection as a fallback before live model discovery.
+- Keep settings previews, provider input budgets, and chat metadata consistent when switching between standard and extended context.
+- Preserve embedding provider and endpoint edits during chat state refreshes until Save or Discard.
+- Restart indexing with the newly selected embedding provider after saving, while respecting the workspace indexing toggle.
+
+## 2.1.40
+
+### Patch Changes
+
+- Replace the downloaded sandbox executable and Windows provisioning with command and path preflight in Alpha.
+- Keep saved global `*` auto-approval for ordinary commands and scripts. Detected outside-root writes/deletes and unresolved write destinations require approval for that run, with the affected paths shown in the command card.
+- Restore the saved inline/VS Code terminal choice and its settings. No per-project setup or new executable is required.
+- Clarify that command/path checks are best effort and do not isolate arbitrary scripts or child processes.
+
+## 2.1.39
+
+### Patch Changes
+
+- Restore saved global command auto-approval rules, including `*`, with native OS enforcement of each task's filesystem write scope.
+- Install the pinned command sandbox once per user, reuse Windows setup across projects, and keep network access available for approved commands.
+- Simplify terminal settings to show effective inline execution and preserve cancellation, streaming output, Windows quoting, Git, and pnpm compatibility.
+
+## 2.1.38
+
+### Patch Changes
+
+- Batch independent Git and ripgrep inspections into bounded parallel runs after collecting each command's approval.
+- Expand rich documents with section navigation, evidence and metric cards, scoped images, relationship diagrams, and timelines while preserving the existing responsive design and automatic document opening.
+- Bundle an evidence-driven debugging skill with focused triggers and existing skill controls.
+- Fix browser routing to reject local files, allow outside-workspace inspection through the existing approval policy, and require approval for outside writes and shell commands.
+- Isolate TODO approvals by task, show complete GitHub action details before approval, propagate GitHub cancellation and deadlines, and preserve literal replacement text.
+- Recover multiline file searches with bounded output and improve context compaction, file-change summaries, and command activity presentation.
+- Retire executable modes other than Code and Plan while preserving readable saved tasks and requiring user-controlled mode changes.
+
+## 2.1.37
+
+### Patch Changes
+
+- Add automatic right-group delivery for completed rich-document links while retaining explicit Open document links and keeping background or restored tasks quiet.
+- Expand the HTML design kit with wider responsive layouts, rounded tables and cards, labeled status badges, compact metrics, key-value groups, and richer review/spec/report examples.
+- Ensure public webview design-kit assets invalidate the build cache so the packaged and development viewers use the current kit.
+
+## 2.1.36
+
+### Patch Changes
+
+- Improve chat readability with left-aligned user message text, compact previews for long pasted content, and accessible expand and collapse controls.
+
+## 2.1.35
+
+### Patch Changes
+
+- Refresh dark chat with a charcoal and indigo palette, centered conversation columns, and right-aligned user bubbles with centered text.
+- Preserve completed answers and independently collapsed activity traces when follow-up messages start a new turn.
+- Select Copilot edit tools from the actual model family and keep model selection, captured tools, and execution consistent across retries.
+- Restore Gemini 001 Vertex gateway embedding payloads and apply configured pacing to individual requests, including split batches and retries.
+
+## 2.1.34
+
+### Patch Changes
+
+- Improve task execution reliability with clearer lifecycle progress, bounded tool scheduling, cancellation recovery, and expanded confidence coverage.
+- Improve code search and indexing with stronger retrieval, parser/chunking, embedding, and storage behavior.
+- Refresh the extension UI with compact activity traces, expandable batch file searches and code-search results, running task indicators, queue placement guides, and updated ticket/history presentation.
+
+## 2.1.33
+
+### Patch Changes
+
+- Add Bug, Feature, and Improvement tags to Alpha Tickets, with type selection, filtering, and support in ticket tools.
+- Refresh ticket lists and detail views with compact rows, visible type badges, and a properties sidebar.
+- Separate ticket stages with clear single-line borders while preserving theme support and narrow layouts.
+
+## 2.1.32
+
+### Patch Changes
+
+- Keep commands collapsed by default and fold completed activity into an expandable elapsed-time row, leaving prompts and formatted final answers visible.
+- Refresh the extension's chat, file-change summaries, settings, history, and shared controls with consistent theme-aware styling.
+- Automatically retry recognized Copilot empty-response failures once before requiring Continue, while preserving cancellation, partial responses, and tool approval boundaries.
+
+## 2.1.31
+
+### Patch Changes
+
+- Publish the current main-v2 worktree, including the reordered extension menus and current scheduled-task/UI updates.
+- Remove retired Goal Seek surfaces and documentation-only artifacts from the V2 extension package.
+
+## 2.1.30
+
+### Patch Changes
+
+- Add Claude Opus 5 and Grok 4.6 to the VS Code language-model provider with Copilot-compatible reasoning and context controls.
+- Forward model-specific reasoning defaults and selected context sizes through the VS Code LM request compatibility paths.
+
+## 2.1.29
+
+### Patch Changes
+
+- Stop a task at the original file-receipt persistence error instead of allowing later commands to mask unresolved mutation debt.
+- Add bounded settlement diagnostics and exact-host/live Copilot coverage for long HTML workflows, reloads, installation identity, and receipt recovery.
+- Show interrupted completion reports as reports instead of falsely labeling them as completed tasks.
+
+## 2.1.28
+
+### Patch Changes
+
+- Harden compaction and long-context recovery so hidden rewind history does not consume the active context budget.
+- Preserve complete tool and reasoning history across reopen, reload, cancellation, and retry paths while preventing stale writes.
+- Add deterministic and live Copilot recovery campaigns with bounded request accounting and retained evidence.
+
+## 2.1.27
+
+### Patch Changes
+
+- Add live Copilot reliability campaigns covering completion-idle behavior, recovery, cancellation, and provider faults with retained evidence.
+- Preserve completion-review lifecycle state when late host snapshots arrive, preventing false stalled-turn warnings after long implementations.
+- Handle VS Code command-menu focus context while keeping malformed ticket targets rejected.
+
+## 2.1.26
+
+### Patch Changes
+
+- Add ticket deletion to Alpha Tickets with named confirmation, revision checks, linked-task preservation, and permanent reference sequencing.
+- Require manual approval for native ticket deletion and preserve drafts, focus, pagination, and search when deletion is cancelled or fails.
+
+## 2.1.25
+
+### Patch Changes
+
+- Include the current main-v2 extension, agent lifecycle, persistence, tool, terminal, and UI improvements.
+- Add an on-demand live Copilot development gate covering local Git workflows, refactoring, cancellation, reload, and migration with retained trace evidence.
+- Harden test-profile persistence, workflow grading, and campaign evidence retention.
+- Validation: ten live workflows passed on VS Code 1.136.1 with Luna/high. Exact VS Code 1.122.1 deterministic smoke checks passed; live Copilot validation on 1.122.1 remains blocked by an exception in bundled Copilot.
+
+## 2.1.24
+
+### Patch Changes
+
+- Let approved commands run when bounded workspace observation is unavailable, while preserving explicit incomplete-scope reporting and cancellation semantics.
+- Keep ordinary primary edits proportionate to the request instead of forcing inferred verification recipes or dependency scans.
+- Repair public batch file reads and reduce lifecycle persistence amplification by coalescing compatible response fragments.
+
+## 2.1.22
+
+### Patch Changes
+
+- Fix tasks incorrectly stopping as unverified after committing already-observed workspace changes, including initial commits and commands that finish in the background.
+- Detect edits, additions, and deletions committed during a command through bounded Git tree comparisons, while retaining stale-snapshot checks and observation limits.
+
+## 2.1.21
+
+### Patch Changes
+
+- Include the exact skill file and base directory when loading skills, including slash commands and inherited mode-specific skills, so linked references can be resolved without guessing a workspace-relative path.
+- Clarify skill-relative file handling while preserving file-read approvals, ignore rules, and the selected skill's instructions.
+
+## 2.1.20
+
+### Patch Changes
+
+- Route immediate follow-up answers using the current transcript boundary, including fast suggestion clicks and host-invoked replies before presentation effects settle.
+- Retain all agent-harness and incremental-persistence improvements from 2.1.19.
+- Align the default-model UI test with the existing shared Anthropic default contract; provider defaults are unchanged.
+
+## 2.1.19
+
+### Patch Changes
+
+- Make assistant-message presentation preview-only so the canonical tool registry and scheduler own execution.
+- Stabilize captured policy-scoped tool catalogs and defer discovery of large MCP tool collections.
+- Reuse bounded task-scoped environment snapshots and deltas while cancelling obsolete request preflight work.
+- Run eligible, automatically approved nonrecursive directory reads in bounded parallel batches, preserving policy checks, cancellation, and ordered results.
+- Retain recent complete working steps during safe context compaction, including tool transactions and opaque provider state.
+- Require current change-scoped verification for applicable edits and bound stagnant completion attempts while preserving ordinary answers and reviews.
+- Replace duplicate full-history sidecar writes with compact durable receipts, fresh authoritative-file integrity checks, bounded persistence queues, and cleanup that still completes after a failed save.
+
+## 2.1.18
+
+### Patch Changes
+
+- Add Claude Fable 5.1 to the Anthropic setup and expose Low, Medium, High, XHigh, and Max reasoning for Fable 5.1, Fable 5, Opus 5, Sonnet 5, Opus 4.8, and Opus 4.7.
+- Send the selected effort with adaptive thinking for chat and single completions, defaulting unsupported saved settings to High.
+- Use Sonnet 5 for new Claude setups and hide retired Claude models from new selections while retaining their saved model IDs.
+- Enable Fable 5.1's thinking binding compatibility control so history edits and context compaction can discard invalidated thinking instead of failing the request.
+
+## 2.1.17
+
+### Patch Changes
+
+- Add GPT-6 Astra to the OpenAI provider with selectable Low, Medium, High, XHigh, and Max reasoning levels.
+- Add Gemini 3.8 Flash to the Gemini provider with selectable Low, Medium, and High thinking levels.
+- Initialize both models with Medium reasoning, omit unsupported sampling parameters, and replace unsupported saved Astra reasoning settings with its default.
+
+## 2.1.16
+
+### Patch Changes
+
+- Keep managed-agent completion verification available after system sleep, extension-host stalls, or transient owner-heartbeat failures by deferring stale-looking live leases for a confirmation scan.
+- Recover a compromised runtime lease with a fresh fencing token only when the durable agent tree and mailbox claims still match the current host, while continuing to reject a writer after another host has recovered or adopted its work.
+
+## 2.1.15
+
+### Patch Changes
+
+- Make steering interrupt the entire active model step, including provider pacing, retry waits, request preflight, and automatic context compaction, so stale work cannot admit an obsolete model call.
+- Preserve composer drafts and queued messages until the extension acknowledges queue or steering admission, and keep Stop responsive while other webview operations are still running.
+- Drive chat controls from task-scoped live lifecycle metadata, tolerate malformed historical request records, and show recoverable feedback when an active turn has produced no output for a while.
+- Include the Windows managed-agent transaction-lock promotion retry from v2.1.14 for users upgrading from the affected v2.1.12 build.
+
+## 2.1.14
+
+### Patch Changes
+
+- Retry transient Windows failures while atomically promoting the managed-agent transaction lock, preventing a disappearing competing lock from blocking completion verification.
+
+## 2.1.13
+
+### Patch Changes
+
+- Open long chats promptly by presenting cached task state immediately, progressively mounting older transcript rows, and moving the expensive global refresh off the focus critical path.
+- Show immediate busy feedback when opening a task and prevent duplicate task-opening requests while the selected chat loads.
+- Admit completed-task follow-ups before prior lifecycle durability settles, prevent duplicate submissions, preserve truthful lifecycle ordering, and avoid redundant full-history writes.
+- Share VS Code Language Model discovery across matching handlers and defer fallback token estimation until it is actually needed.
+
+## 2.1.12
+
+### Patch Changes
+
+- Require `read_file` calls to include a path in the tool schema exposed to VS Code Language Models, preventing empty calls and avoidable retries.
+- Show immediate progress when continuing a completed task, suppress stale new-task controls and duplicate submissions, and restore the draft if resume admission fails.
+- Reuse retained task history during completed-task follow-ups to remove redundant transcript reads and writes while preserving the lifecycle finalization boundary.
+
+## 2.1.11
+
+### Patch Changes
+
+- Validate the extension and VS Code Language Model contract on exact VS Code 1.122.1.
+- Keep completed-task follow-ups in the same task, restore drafts after resume failures, and prevent stale streams from interfering with later turns.
+- Reduce tool-call and completion latency by coalescing streaming persistence, removing fixed delays, and bounding provider-side waits.
+- Harden cancellation, lifecycle persistence, checkpoint execution, dependency security, and the release regression gate.
+
+## 2.1.10
+
+### Patch Changes
+
+- Keep completed model turns distinct from completed tasks so follow-up prompts continue in the current task.
+- Preserve the active composer and task controls while a completion review boundary is pending, preventing submitted follow-ups from disappearing or freezing the UI.
+- Mark task history complete only after the authoritative task lifecycle reports completion, including when delayed snapshots arrive out of order.
+
+## 2.1.9
+
+### Patch Changes
+
+- Converge the extension agent loop on explicit turn, step, item, tool, retry, cancellation, and terminal lifecycle contracts.
+- Persist deterministic tool receipts and preserve truthful failed, incomplete, and cancelled outcomes across provider and task recovery paths.
+- Add joinable task cancellation with fail-closed checkpoint and Goal Seek rollback handling.
+
+## 2.1.8
+
+### Patch Changes
+
+- Preserve VS Code LM stateful-response markers across tool turns so Copilot Responses models can match tool outputs to their original function calls.
+
+## 2.1.7
+
+### Patch Changes
+
+- Add `xai/grok-4.6` to GCP Vertex AI through its OpenAI-compatible partner-model endpoint, with global-region metadata and Grok-specific capabilities.
+- Reuse the existing Vertex project, location, gateway URL, PEM CA bundle, Helix token refresh, streaming, and per-model routing settings while preserving the native Gemini and Anthropic transports.
+- Refresh an expired Helix credential once before a Grok stream starts, and cover endpoint construction, request shape, routing overrides, legacy settings, streaming, and non-streaming behavior.
+
+## 2.1.6
+
+### Patch Changes
+
+- Make VS Code's live Language Model API response authoritative so account-, plan-, policy-, or window-unavailable models are never exposed as clickable choices.
+- Preserve exact selectors and display names for current Copilot GPT-5.3-Codex, GPT-5.5, GPT-5.6 Luna/Sol/Terra, Anthropic Claude, Gemini, MAI, Raptor, Kimi, and Grok models while continuing to exclude Mythos.
+- Correct Claude context and reasoning metadata, and offer standard versus extended / 1M context only when the selected live model advertises the larger tier.
+- Add model refresh, unavailable-selection guidance, exact-selector initialization, and clearer errors for missing Copilot authentication in an Extension Development Host.
+- Keep VS Code LM requests on the public VS Code 1.122.1 API, move token estimation off the generation critical path, and report the VS Code 1.128 requirement when Copilot cannot expose GPT-5.6 on an older host.
+- Normalize tool and non-tool providers onto one persisted completion boundary, promote streamed assistant text in place instead of rendering a duplicate final, and let queued follow-ups continue the same task safely.
+- Reduce extension/webview churn with incremental transcript, queue, and todo updates protected by independent ordering domains.
+
+## 2.1.5
+
+### Patch Changes
+
+- Keep the VS Code Language Model provider selectable before account-specific discovery completes by merging live selectors into a current GitHub Copilot catalog fallback.
+- Add and deduplicate current GPT-5.3-Codex, GPT-5.5, GPT-5.6 Luna/Sol/Terra, and Claude model selectors while removing the unsupported Mythos entry.
+- Add explicit standard and extended context-window selection for compatible Copilot models, including the correct 200K Luna and 272K GPT-5.5/Sol/Terra standard tiers and the provider-adjusted 1M tier.
+
+## 2.1.4
+
+### Patch Changes
+
+- Remove slow full-state, MCP connection, and credential-store work from the new-task submission path so a submitted task opens and starts promptly in managed corporate environments.
+- Prevent stale mistake-recovery state from intercepting completion feedback, queued guidance, or otherwise productive turns, and include the failed tool and bounded error details in future recovery guidance.
+
+## 2.1.3
+
+### Patch Changes
+
+- Focus ordinary user-facing mode selection on Plan and Code across chat, follow-up suggestions, slash suggestions, scheduled tasks, Goal Seek, Marketplace, and skill setup.
+- Add a composer-scoped `Shift+Tab` shortcut for switching between Plan and Code, with guards for streaming, queued-message editing, composition, repeated events, and conflicting modifiers.
+- Keep Code and Plan changes within the current task and provider configuration while resetting new-task drafts to Code.
+- Preserve legacy and custom-mode tasks for compatibility without offering them in normal mode selectors or Settings setup.
+- Keep mode configuration edits buffered in Settings until the user explicitly saves them.
+
+## 2.1.2
+
+### Patch Changes
+
+- Add the internal Stellar provider with OpenAI-compatible chat completions, Helix token refresh, PEM CA trust, streaming controls, and custom model IDs.
+- Refresh the built-in Anthropic, Gemini, OpenAI, Vertex AI, and VS Code language-model catalogs and capability metadata.
+- Harden OpenAI-compatible and Vertex AI native tool-call handling across streaming and non-streaming responses.
+- Keep queued steering messages scoped to the active task and preserve drafts when the task is not ready to accept them.
+- Support organization-specific custom model selections without destabilizing the Settings edit buffer.
+
+## 2.1.1
+
+### Patch Changes
+
+- Add model-controlled access to VS Code's integrated browser, including browser-only automatic approval for opening pages.
+- Allow explicit chat requests to compact the current task context without starting a separate model turn.
+- Bound unproductive recovery loops, enforce explicit-only delegation at execution time, and preserve same-task continuation.
+- Replace virtualized chat scrolling with exact native scroll geometry to prevent long-conversation bottom bounce.
+- Preserve the proven primary-agent loop while managed child work runs asynchronously.
+- Freeze child instructions in the system layer and pass only bounded, sanitized parent context.
+- Return managed child completions exactly once through native `wait_agent` tool results, including after reloads.
+- Clarify blocking handoffs, background delegation, and reload-safe lifecycle controls.
+
+## 2.1.0
+
+### Minor Changes
+
+- Add managed subagent lifecycle control, nested delegation, follow-up delivery, recovery, and monitoring UX.
+
+## 2.0.7
+
+### Patch Changes
+
+- Eliminate end-of-chat scroll bouncing by converging bottom detection and correction on the physical scroller boundary.
+- Preserve deliberate history browsing during late row measurement and nested code-block scrolling.
+
+## 2.0.6
+
+### Patch Changes
+
+- Keep transcript wheel scrolling active when the pointer is over the floating bottom-navigation controls.
+- Replace the full-width bottom-navigation bar with compact controls that no longer obscure completed-task output.
+
+## 2.0.5
+
+### Patch Changes
+
+- Make the virtualized list the single owner of appended-message and viewport-resize following, and route streamed row growth through its built-in bottom-follow path.
+- Add a 32px physical gap between the transcript scrollbar and composer while preserving the existing space below the newest message.
+
+## 2.0.4
+
+### Patch Changes
+
+- Fix virtualized long chats opening away from the newest message and preserve the transcript viewport when recovery controls appear.
+- Keep bottom-following stable while late Markdown, image, and row-height measurements settle without interrupting manual history browsing.
+
+## 2.0.3
+
+### Patch Changes
+
+- Stabilize long-chat bottom following by coalescing streamed row-growth corrections into a single exact-bottom scroll.
+- Add comfortable space beneath the latest response while preserving manual history browsing.
+
 ## 1.1.6
 
 ### Patch Changes

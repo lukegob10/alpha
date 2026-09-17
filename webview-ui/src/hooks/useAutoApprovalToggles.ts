@@ -11,8 +11,9 @@ export function useAutoApprovalToggles() {
 		alwaysAllowWrite,
 		alwaysAllowExecute,
 		alwaysAllowMcp,
-		alwaysAllowModeSwitch,
 		alwaysAllowSubtasks,
+		alwaysAllowSubagents,
+		alwaysAllowTickets = false,
 		alwaysAllowFollowupQuestions,
 	} = useExtensionState()
 
@@ -22,8 +23,9 @@ export function useAutoApprovalToggles() {
 			alwaysAllowWrite,
 			alwaysAllowExecute,
 			alwaysAllowMcp,
-			alwaysAllowModeSwitch,
 			alwaysAllowSubtasks,
+			alwaysAllowSubagents,
+			alwaysAllowTickets,
 			alwaysAllowFollowupQuestions,
 		}),
 		[
@@ -31,8 +33,9 @@ export function useAutoApprovalToggles() {
 			alwaysAllowWrite,
 			alwaysAllowExecute,
 			alwaysAllowMcp,
-			alwaysAllowModeSwitch,
 			alwaysAllowSubtasks,
+			alwaysAllowSubagents,
+			alwaysAllowTickets,
 			alwaysAllowFollowupQuestions,
 		],
 	)

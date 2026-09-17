@@ -4,22 +4,46 @@ import { BaseTool, ToolCallbacks } from "./BaseTool"
 import type { ToolUse } from "../../shared/tools"
 import cloneDeep from "clone-deep"
 import crypto from "crypto"
-import { TodoItem, TodoStatus, todoStatusSchema } from "@alpha-code/types"
+import {
+	TodoItem,
+	TodoStatus,
+	todoStatusSchema,
+	todoApprovalEditSchema,
+	taskWorkPlanSchema,
+	type TaskWorkPlan,
+} from "@alpha-code/types"
 import { getLatestTodo } from "../../shared/todo"
 
 interface UpdateTodoListParams {
 	todos: string
+	work_plan?: TaskWorkPlan | null
 }
 
-let approvedTodoList: TodoItem[] | undefined = undefined
+interface PendingTodoApproval {
+	approvalId: string
+	todos: TodoItem[]
+}
+
+// A task can have one pending TODO approval; stale UI edits must not reach its next invocation.
+const pendingTodoApprovals = new WeakMap<Task, PendingTodoApproval>()
 
 export class UpdateTodoListTool extends BaseTool<"update_todo_list"> {
 	readonly name = "update_todo_list" as const
 
 	async execute(params: UpdateTodoListParams, task: Task, callbacks: ToolCallbacks): Promise<void> {
 		const { pushToolResult, handleError, askApproval } = callbacks
+		let pending: PendingTodoApproval | undefined
+		const clearPending = () => {
+			if (pending && pendingTodoApprovals.get(task) === pending) pendingTodoApprovals.delete(task)
+		}
+		const assertActive = () => {
+			callbacks.signal?.throwIfAborted()
+			if (task.abort) throw new Error("The TODO update was cancelled.")
+		}
 
 		try {
+			assertActive()
+			const workPlan = params.work_plan == null ? undefined : taskWorkPlanSchema.parse(params.work_plan)
 			const todosRaw = params.todos
 
 			let todos: TodoItem[]
@@ -48,23 +72,29 @@ export class UpdateTodoListTool extends BaseTool<"update_todo_list"> {
 				status: normalizeStatus(t.status),
 			}))
 
+			if (pendingTodoApprovals.has(task)) throw new Error("This task already has a pending TODO approval.")
+			pending = { approvalId: crypto.randomUUID(), todos: cloneDeep(normalizedTodos) }
+			pendingTodoApprovals.set(task, pending)
+			callbacks.signal?.addEventListener("abort", clearPending, { once: true })
 			const approvalMsg = JSON.stringify({
 				tool: "updateTodoList",
 				todos: normalizedTodos,
+				approvalId: pending.approvalId,
 			})
 
-			approvedTodoList = cloneDeep(normalizedTodos)
 			const didApprove = await askApproval("tool", approvalMsg)
+			assertActive()
+			clearPending()
 			if (!didApprove) {
+				callbacks.setResultMetadata?.({ status: "denied" })
 				pushToolResult("User declined to update the todoList.")
 				return
 			}
 
-			const isTodoListChanged =
-				approvedTodoList !== undefined && JSON.stringify(normalizedTodos) !== JSON.stringify(approvedTodoList)
+			const isTodoListChanged = JSON.stringify(normalizedTodos) !== JSON.stringify(pending.todos)
 			if (isTodoListChanged) {
-				normalizedTodos = approvedTodoList ?? []
-				task.say(
+				normalizedTodos = pending.todos
+				await task.say(
 					"user_edit_todos",
 					JSON.stringify({
 						tool: "updateTodoList",
@@ -73,6 +103,8 @@ export class UpdateTodoListTool extends BaseTool<"update_todo_list"> {
 				)
 			}
 
+			assertActive()
+			if (workPlan) await task.updateWorkPlan(workPlan)
 			await setTodoListForTask(task, normalizedTodos)
 
 			if (isTodoListChanged) {
@@ -82,7 +114,15 @@ export class UpdateTodoListTool extends BaseTool<"update_todo_list"> {
 				pushToolResult(formatResponse.toolResult("Todo list updated successfully."))
 			}
 		} catch (error) {
+			if (callbacks.signal?.aborted || task.abort) {
+				callbacks.setResultMetadata?.({ status: "cancelled" })
+				pushToolResult(formatResponse.toolError("The TODO update was cancelled."))
+				return
+			}
 			await handleError("update todo list", error as Error)
+		} finally {
+			clearPending()
+			callbacks.signal?.removeEventListener("abort", clearPending)
 		}
 	}
 
@@ -106,56 +146,57 @@ export class UpdateTodoListTool extends BaseTool<"update_todo_list"> {
 	}
 }
 
-export function addTodoToTask(cline: Task, content: string, status: TodoStatus = "pending", id?: string): TodoItem {
+export function addTodoToTask(alphaTask: Task, content: string, status: TodoStatus = "pending", id?: string): TodoItem {
 	const todo: TodoItem = {
 		id: id ?? crypto.randomUUID(),
 		content,
 		status,
 	}
-	if (!cline.todoList) cline.todoList = []
-	cline.todoList.push(todo)
+	if (!alphaTask.todoList) alphaTask.todoList = []
+	alphaTask.todoList.push(todo)
 	return todo
 }
 
-export function updateTodoStatusForTask(cline: Task, id: string, nextStatus: TodoStatus): boolean {
-	if (!cline.todoList) return false
-	const idx = cline.todoList.findIndex((t) => t.id === id)
+export function updateTodoStatusForTask(alphaTask: Task, id: string, nextStatus: TodoStatus): boolean {
+	if (!alphaTask.todoList) return false
+	const idx = alphaTask.todoList.findIndex((t) => t.id === id)
 	if (idx === -1) return false
-	const current = cline.todoList[idx]
+	const current = alphaTask.todoList[idx]
 	if (
 		(current.status === "pending" && nextStatus === "in_progress") ||
 		(current.status === "in_progress" && nextStatus === "completed") ||
 		current.status === nextStatus
 	) {
-		cline.todoList[idx] = { ...current, status: nextStatus }
+		alphaTask.todoList[idx] = { ...current, status: nextStatus }
 		return true
 	}
 	return false
 }
 
-export function removeTodoFromTask(cline: Task, id: string): boolean {
-	if (!cline.todoList) return false
-	const idx = cline.todoList.findIndex((t) => t.id === id)
+export function removeTodoFromTask(alphaTask: Task, id: string): boolean {
+	if (!alphaTask.todoList) return false
+	const idx = alphaTask.todoList.findIndex((t) => t.id === id)
 	if (idx === -1) return false
-	cline.todoList.splice(idx, 1)
+	alphaTask.todoList.splice(idx, 1)
 	return true
 }
 
-export function getTodoListForTask(cline: Task): TodoItem[] | undefined {
-	return cline.todoList?.slice()
+export function getTodoListForTask(alphaTask: Task): TodoItem[] | undefined {
+	return alphaTask.todoList?.slice()
 }
 
-export async function setTodoListForTask(cline?: Task, todos?: TodoItem[]) {
-	if (cline === undefined) return
-	cline.todoList = Array.isArray(todos) ? todos : []
+export async function setTodoListForTask(alphaTask?: Task, todos?: TodoItem[]) {
+	if (alphaTask === undefined) return
+	alphaTask.todoList = Array.isArray(todos) ? todos : []
+	await alphaTask.providerRef.deref()?.postTaskTodosToWebview?.(alphaTask.taskId, alphaTask.todoList)
 }
 
-export function restoreTodoListForTask(cline: Task, todoList?: TodoItem[]) {
+export function restoreTodoListForTask(alphaTask: Task, todoList?: TodoItem[]) {
 	if (todoList) {
-		cline.todoList = Array.isArray(todoList) ? todoList : []
+		alphaTask.todoList = Array.isArray(todoList) ? todoList : []
 		return
 	}
-	cline.todoList = getLatestTodo(cline.clineMessages)
+	alphaTask.todoList = getLatestTodo(alphaTask.clineMessages)
 }
 
 function todoListToMarkdown(todos: TodoItem[]): string {
@@ -201,8 +242,15 @@ export function parseMarkdownChecklist(md: string): TodoItem[] {
 	return todos
 }
 
-export function setPendingTodoList(todos: TodoItem[]) {
-	approvedTodoList = todos
+export function setPendingTodoList(task: Task, payload: unknown): boolean {
+	const pending = pendingTodoApprovals.get(task)
+	if (!pending || task.abort) return false
+	const parsed = todoApprovalEditSchema.safeParse(payload)
+	if (!parsed.success || parsed.data.approvalId !== pending.approvalId) return false
+	const todos = parsed.data.todos
+	if (new Set(todos.map((todo) => todo.id)).size !== todos.length) return false
+	pending.todos = todos
+	return true
 }
 
 function validateTodos(todos: any[]): { valid: boolean; error?: string } {

@@ -34,10 +34,12 @@
 			"save": "Zapisz obraz",
 			"viewCode": "Zobacz kod",
 			"viewDiagram": "Zobacz diagram",
-			"close": "Zamknij"
+			"close": "Zamknij",
+			"open": "Otwórz diagram"
 		},
 		"modal": {
-			"codeTitle": "Kod Mermaid"
+			"codeTitle": "Kod Mermaid",
+			"title": "Schemat syreny"
 		},
 		"tabs": {
 			"diagram": "Diagram",
@@ -110,5 +112,7 @@
 	"costs": {
 		"own": "Własne",
 		"subtasks": "Podzadania"
-	}
+	},
+	"dismiss": "Odrzuć",
+	"dismissAndDontShowAgain": "Zamknij i nie pokazuj więcej"
 }

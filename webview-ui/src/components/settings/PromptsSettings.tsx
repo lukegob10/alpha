@@ -23,28 +23,22 @@ import { SearchableSetting } from "./SearchableSetting"
 interface PromptsSettingsProps {
 	customSupportPrompts: Record<string, string | undefined>
 	setCustomSupportPrompts: (prompts: Record<string, string | undefined>) => void
-	includeTaskHistoryInEnhance?: boolean
-	setIncludeTaskHistoryInEnhance?: (value: boolean) => void
+	includeTaskHistoryInEnhance: boolean
+	setIncludeTaskHistoryInEnhance: (value: boolean) => void
+	enhancementApiConfigId?: string
+	setEnhancementApiConfigId: (value: string) => void
 }
 
 const PromptsSettings = ({
 	customSupportPrompts,
 	setCustomSupportPrompts,
-	includeTaskHistoryInEnhance: propsIncludeTaskHistoryInEnhance,
-	setIncludeTaskHistoryInEnhance: propsSetIncludeTaskHistoryInEnhance,
+	includeTaskHistoryInEnhance,
+	setIncludeTaskHistoryInEnhance,
+	enhancementApiConfigId,
+	setEnhancementApiConfigId,
 }: PromptsSettingsProps) => {
 	const { t } = useAppTranslation()
-	const {
-		listApiConfigMeta,
-		enhancementApiConfigId,
-		setEnhancementApiConfigId,
-		includeTaskHistoryInEnhance: contextIncludeTaskHistoryInEnhance,
-		setIncludeTaskHistoryInEnhance: contextSetIncludeTaskHistoryInEnhance,
-	} = useExtensionState()
-
-	// Use props if provided, otherwise fall back to context
-	const includeTaskHistoryInEnhance = propsIncludeTaskHistoryInEnhance ?? contextIncludeTaskHistoryInEnhance ?? true
-	const setIncludeTaskHistoryInEnhance = propsSetIncludeTaskHistoryInEnhance ?? contextSetIncludeTaskHistoryInEnhance
+	const { listApiConfigMeta } = useExtensionState()
 
 	const [testPrompt, setTestPrompt] = useState("")
 	const [isEnhancing, setIsEnhancing] = useState(false)
@@ -96,6 +90,11 @@ const PromptsSettings = ({
 		vscode.postMessage({
 			type: "enhancePrompt",
 			text: testPrompt,
+			enhancementOptions: {
+				apiConfigId: enhancementApiConfigId ?? "",
+				includeTaskHistory: includeTaskHistoryInEnhance,
+				supportPrompt: getSupportPromptValue("ENHANCE"),
+			},
 		})
 	}
 
@@ -168,10 +167,6 @@ const PromptsSettings = ({
 									onValueChange={(value) => {
 										const newConfigId = value === "-" ? "" : value
 										setEnhancementApiConfigId(newConfigId)
-										vscode.postMessage({
-											type: "enhancementApiConfigId",
-											text: value,
-										})
 									}}>
 									<SelectTrigger data-testid="api-config-select" className="w-full">
 										<SelectValue
@@ -208,11 +203,6 @@ const PromptsSettings = ({
 										}
 
 										setIncludeTaskHistoryInEnhance(target.checked)
-
-										vscode.postMessage({
-											type: "updateSettings",
-											updatedSettings: { includeTaskHistoryInEnhance: target.checked },
-										})
 									}}>
 									<span className="font-medium">
 										{t("prompts:supportPrompts.enhance.includeTaskHistory")}

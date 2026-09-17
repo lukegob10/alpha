@@ -16,6 +16,11 @@ export class CodeIndexOrchestrator {
 	private _fileWatcherSubscriptions: vscode.Disposable[] = []
 	private _isProcessing: boolean = false
 	private _abortController: AbortController | null = null
+	private _activeRunToken: symbol | null = null
+	private _activeRunCompletion: Promise<void> = Promise.resolve()
+	private _resolveActiveRunCompletion: (() => void) | undefined
+	private _clearOperation: Promise<void> | null = null
+	private _isClearing = false
 
 	constructor(
 		private readonly configManager: CodeIndexConfigManager,
@@ -39,11 +44,12 @@ export class CodeIndexOrchestrator {
 
 		try {
 			await this.fileWatcher.initialize()
+			this.disposeWatcherSubscriptions()
 
 			this._fileWatcherSubscriptions = [
 				this.fileWatcher.onDidStartBatchProcessing((filePaths: string[]) => {}),
 				this.fileWatcher.onBatchProgressUpdate(({ processedInBatch, totalInBatch, currentFile }) => {
-					if (totalInBatch > 0 && this.stateManager.state !== "Indexing") {
+					if (processedInBatch < totalInBatch && this.stateManager.state !== "Indexing") {
 						this.stateManager.setSystemState("Indexing", "Processing file changes...")
 					}
 					this.stateManager.reportFileQueueProgress(
@@ -51,29 +57,20 @@ export class CodeIndexOrchestrator {
 						totalInBatch,
 						currentFile ? path.basename(currentFile) : undefined,
 					)
-					if (processedInBatch === totalInBatch) {
-						// Covers (N/N) and (0/0)
-						if (totalInBatch > 0) {
-							// Batch with items completed
-							this.stateManager.setSystemState("Indexed", "File changes processed. Index up-to-date.")
-						} else {
-							if (this.stateManager.state === "Indexing") {
-								// Only transition if it was "Indexing"
-								this.stateManager.setSystemState("Indexed", "Index up-to-date. File queue empty.")
-							}
-						}
-					}
 				}),
 				this.fileWatcher.onDidFinishBatchProcessing((summary: BatchProcessingSummary) => {
-					if (summary.batchError) {
-						console.error(`[CodeIndexOrchestrator] Batch processing failed:`, summary.batchError)
+					const failedFiles = summary.processedFiles.filter(
+						(file) => file.status === "error" || file.status === "local_error",
+					)
+					const batchError = summary.batchError ?? failedFiles[0]?.error
+					if (batchError || failedFiles.length > 0) {
+						console.error("[CodeIndexOrchestrator] Batch processing failed:", batchError)
+						this.stateManager.setSystemState(
+							"Error",
+							batchError?.message ?? `${failedFiles.length} file change(s) failed to process.`,
+						)
 					} else {
-						const successCount = summary.processedFiles.filter(
-							(f: { status: string }) => f.status === "success",
-						).length
-						const errorCount = summary.processedFiles.filter(
-							(f: { status: string }) => f.status === "error" || f.status === "local_error",
-						).length
+						this.stateManager.setSystemState("Indexed", "File changes processed. Index up-to-date.")
 					}
 				}),
 			]
@@ -110,6 +107,7 @@ export class CodeIndexOrchestrator {
 		}
 
 		if (
+			this._isClearing ||
 			this._isProcessing ||
 			(this.stateManager.state !== "Standby" &&
 				this.stateManager.state !== "Error" &&
@@ -121,9 +119,15 @@ export class CodeIndexOrchestrator {
 			return
 		}
 
+		const runToken = Symbol("code-index-run")
+		this._activeRunToken = runToken
+		this._activeRunCompletion = new Promise<void>((resolve) => {
+			this._resolveActiveRunCompletion = resolve
+		})
 		this._isProcessing = true
-		this._abortController = new AbortController()
-		const signal = this._abortController.signal
+		const abortController = new AbortController()
+		this._abortController = abortController
+		const signal = abortController.signal
 		this.stateManager.setSystemState("Indexing", "Initializing services...")
 
 		// Track whether we successfully connected to Qdrant and started indexing
@@ -193,6 +197,12 @@ export class CodeIndexOrchestrator {
 
 				if (!result) {
 					throw new Error("Incremental scan failed, is scanner initialized?")
+				}
+
+				if (batchErrors.length > 0) {
+					const firstError = batchErrors[0]
+					this.stateManager.setSystemState("Error", `Incremental indexing failed: ${firstError.message}`)
+					return
 				}
 
 				// If new files were found and indexed, log the results
@@ -352,8 +362,16 @@ export class CodeIndexOrchestrator {
 			)
 			this.stopWatcher()
 		} finally {
-			this._isProcessing = false
-			this._abortController = null
+			if (this._activeRunToken === runToken) {
+				this._isProcessing = false
+				if (this._abortController === abortController) {
+					this._abortController = null
+				}
+				this._activeRunToken = null
+				const resolveCompletion = this._resolveActiveRunCompletion
+				this._resolveActiveRunCompletion = undefined
+				resolveCompletion?.()
+			}
 		}
 	}
 
@@ -364,7 +382,6 @@ export class CodeIndexOrchestrator {
 		if (this._abortController) {
 			this.stateManager.setSystemState("Stopping", t("embeddings:orchestrator.indexingStoppedPartial"))
 			this._abortController.abort()
-			this._abortController = null
 		}
 		this.stopWatcher()
 	}
@@ -373,25 +390,57 @@ export class CodeIndexOrchestrator {
 	 * Stops the file watcher and cleans up resources.
 	 */
 	public stopWatcher(): void {
-		this.fileWatcher.dispose()
-		this._fileWatcherSubscriptions.forEach((sub) => sub.dispose())
-		this._fileWatcherSubscriptions = []
+		this.fileWatcher.stop()
+		this.disposeWatcherSubscriptions()
 
 		if (this.stateManager.state !== "Error" && this.stateManager.state !== "Stopping") {
 			this.stateManager.setSystemState("Standby", t("embeddings:orchestrator.fileWatcherStopped"))
 		}
-		this._isProcessing = false
+	}
+
+	public dispose(): void {
+		this._abortController?.abort()
+		this.fileWatcher.dispose()
+		this.disposeWatcherSubscriptions()
+	}
+
+	private disposeWatcherSubscriptions(): void {
+		this._fileWatcherSubscriptions.forEach((subscription) => subscription.dispose())
+		this._fileWatcherSubscriptions = []
+	}
+
+	public async whenIdle(): Promise<void> {
+		await this._activeRunCompletion
+		await this.fileWatcher.whenIdle()
 	}
 
 	/**
 	 * Clears all index data by stopping the watcher, clearing the vector store,
 	 * and resetting the cache file.
 	 */
-	public async clearIndexData(): Promise<void> {
+	public clearIndexData(): Promise<void> {
+		if (this._clearOperation) {
+			return this._clearOperation
+		}
+		const operation = this.clearIndexDataExclusive()
+		this._clearOperation = operation
+		const clearOperation = () => {
+			if (this._clearOperation === operation) {
+				this._clearOperation = null
+			}
+		}
+		void operation.then(clearOperation, clearOperation)
+		return operation
+	}
+
+	private async clearIndexDataExclusive(): Promise<void> {
+		this._isClearing = true
 		this._isProcessing = true
 
 		try {
-			await this.stopWatcher()
+			this.stopIndexing()
+			await this._activeRunCompletion
+			await this.fileWatcher.whenIdle()
 
 			try {
 				if (this.configManager.isFeatureConfigured) {
@@ -415,6 +464,7 @@ export class CodeIndexOrchestrator {
 				this.stateManager.setSystemState("Standby", "Index data cleared successfully.")
 			}
 		} finally {
+			this._isClearing = false
 			this._isProcessing = false
 		}
 	}

@@ -9,6 +9,13 @@ import { Package } from "../../shared/package"
 
 export type FileResult = { path: string; type: "file" | "folder"; label?: string }
 
+function normalizeResultPath(result: FileResult): FileResult {
+	// File paths cross the extension/webview boundary and are later parsed with
+	// POSIX separators by the mention UI. Keep native separators for filesystem
+	// calls, but normalize the relative presentation path on Windows as well.
+	return process.platform === "win32" ? { ...result, path: result.path.replace(/\\/g, "/") } : result
+}
+
 export async function executeRipgrep({
 	args,
 	workspacePath,
@@ -145,7 +152,7 @@ export async function searchWorkspaceFiles(
 ): Promise<{ path: string; type: "file" | "folder"; label?: string }[]> {
 	try {
 		// Get all files and directories (uses configured limit)
-		const allItems = await executeRipgrepForFiles(workspacePath)
+		const allItems = (await executeRipgrepForFiles(workspacePath)).map(normalizeResultPath)
 
 		// If no query, just return the top items
 		if (!query.trim()) {

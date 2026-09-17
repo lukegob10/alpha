@@ -1,4 +1,4 @@
-import type { TokenUsage, ToolUsage, ToolName, ClineMessage } from "@alpha-code/types"
+import type { TokenUsage, ToolUsage, ToolName, AlphaMessage } from "@alpha-code/types"
 
 export type ParsedApiReqStartedTextType = {
 	tokensIn: number
@@ -16,7 +16,7 @@ export type ParsedApiReqStartedTextType = {
  * consolidated with their corresponding 'api_req_finished' messages by the consolidateApiRequests function.
  * It extracts and sums up the tokensIn, tokensOut, cacheWrites, cacheReads, and cost from these messages.
  *
- * @param messages - An array of ClineMessage objects to process.
+ * @param messages - An array of AlphaMessage objects to process.
  * @returns A TokenUsage object containing totalTokensIn, totalTokensOut, totalCacheWrites, totalCacheReads, totalCost, and contextTokens.
  *
  * @example
@@ -26,7 +26,7 @@ export type ParsedApiReqStartedTextType = {
  * const { totalTokensIn, totalTokensOut, totalCost } = consolidateTokenUsage(messages);
  * // Result: { totalTokensIn: 10, totalTokensOut: 20, totalCost: 0.005 }
  */
-export function consolidateTokenUsage(messages: ClineMessage[]): TokenUsage {
+export function consolidateTokenUsage(messages: AlphaMessage[]): TokenUsage {
 	const result: TokenUsage = {
 		totalTokensIn: 0,
 		totalTokensOut: 0,
@@ -38,6 +38,14 @@ export function consolidateTokenUsage(messages: ClineMessage[]): TokenUsage {
 
 	// Calculate running totals.
 	messages.forEach((message) => {
+		if (message.type === "say" && message.say === "reasoning" && message.reasoningSummaryUsage) {
+			const usage = message.reasoningSummaryUsage
+			result.totalTokensIn += usage.tokensIn
+			result.totalTokensOut += usage.tokensOut
+			result.totalCacheWrites = (result.totalCacheWrites ?? 0) + usage.cacheWrites
+			result.totalCacheReads = (result.totalCacheReads ?? 0) + usage.cacheReads
+			result.totalCost += usage.cost
+		}
 		if (message.type === "say" && message.say === "api_req_started" && message.text) {
 			try {
 				const parsedText: ParsedApiReqStartedTextType = JSON.parse(message.text)

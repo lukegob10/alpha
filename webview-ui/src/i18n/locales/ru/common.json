@@ -34,10 +34,12 @@
 			"save": "Сохранить изображение",
 			"viewCode": "Посмотреть код",
 			"viewDiagram": "Посмотреть диаграмму",
-			"close": "Закрыть"
+			"close": "Закрыть",
+			"open": "Открыть диаграмму"
 		},
 		"modal": {
-			"codeTitle": "Код Mermaid"
+			"codeTitle": "Код Mermaid",
+			"title": "Схема русалки"
 		},
 		"tabs": {
 			"diagram": "Диаграмма",
@@ -110,5 +112,7 @@
 	"costs": {
 		"own": "Собственные",
 		"subtasks": "Подзадачи"
-	}
+	},
+	"dismiss": "Отклонить",
+	"dismissAndDontShowAgain": "Закрыть и больше не показывать"
 }

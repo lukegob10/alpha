@@ -11,13 +11,13 @@ vi.mock("../index", () => ({
 
 describe("processUserContentMentions", () => {
 	let mockFileContextTracker: FileContextTracker
-	let mockRooIgnoreController: any
+	let mockAlphaIgnoreController: any
 
 	beforeEach(() => {
 		vi.clearAllMocks()
 
 		mockFileContextTracker = {} as FileContextTracker
-		mockRooIgnoreController = {}
+		mockAlphaIgnoreController = {}
 
 		// Default mock implementation - returns ParseMentionsResult object
 		vi.mocked(parseMentions).mockImplementation(async (text) => ({
@@ -196,6 +196,7 @@ describe("processUserContentMentions", () => {
 				50, // maxDiagnosticMessages
 				undefined,
 				"code",
+				undefined,
 			)
 		})
 
@@ -224,11 +225,42 @@ describe("processUserContentMentions", () => {
 				50, // maxDiagnosticMessages
 				undefined,
 				"code",
+				undefined,
 			)
 		})
 	})
 
 	describe("slash command content processing", () => {
+		it("selects the first source-ordered mode when parsing completes out of order", async () => {
+			let resolveFirst: ((value: Awaited<ReturnType<typeof parseMentions>>) => void) | undefined
+			let resolveSecond: ((value: Awaited<ReturnType<typeof parseMentions>>) => void) | undefined
+			vi.mocked(parseMentions).mockImplementation(
+				(text) =>
+					new Promise((resolve) => {
+						if (text.includes("First")) {
+							resolveFirst = resolve
+						} else {
+							resolveSecond = resolve
+						}
+					}),
+			)
+
+			const processing = processUserContentMentions({
+				userContent: [
+					{ type: "text", text: "<user_message>First</user_message>" },
+					{ type: "text", text: "<user_message>Second</user_message>" },
+				],
+				cwd: "/test",
+				fileContextTracker: mockFileContextTracker,
+			})
+
+			await vi.waitFor(() => expect(parseMentions).toHaveBeenCalledTimes(2))
+			resolveSecond?.({ text: "second", mode: "ask", contentBlocks: [] })
+			resolveFirst?.({ text: "first", mode: "code", contentBlocks: [] })
+
+			await expect(processing).resolves.toMatchObject({ mode: "code" })
+		})
+
 		it("should separate slash command content into a new block", async () => {
 			vi.mocked(parseMentions).mockResolvedValueOnce({
 				text: "parsed text",

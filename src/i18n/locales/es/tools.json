@@ -16,6 +16,41 @@
 			"policy_restriction": "No se pudo crear una nueva tarea debido a restricciones de política."
 		}
 	},
+	"fileConflicts": {
+		"save": "No se puede guardar '{{path}}': {{reason}}. Vuelve a leer el archivo y reinténtalo para conservar los cambios del usuario.",
+		"delete": "No se puede eliminar '{{path}}': {{reason}}. Vuelve a leer el archivo y reinténtalo.",
+		"saveDestination": "No se puede guardar '{{path}}': {{reason}}. Revisa el destino y reinténtalo.",
+		"reasons": {
+			"fileUnsavedChanges": "el archivo tiene cambios sin guardar en un editor abierto",
+			"fileChangedDuringApproval": "el archivo cambió mientras la aprobación estaba pendiente",
+			"editorChangedWhileChecked": "el editor abierto cambió mientras se comprobaba el archivo",
+			"destinationUnsavedChanges": "el destino tiene cambios sin guardar en un editor abierto",
+			"destinationNotRegularFile": "el destino no es un archivo normal",
+			"destinationChangedDuringInspection": "el destino cambió mientras se inspeccionaba",
+			"destinationPathChanged": "el destino ahora resuelve a una ruta diferente",
+			"destinationCreatedAfterInspection": "el destino se creó después de la inspección",
+			"destinationDeletedAfterInspection": "el destino se eliminó después de la inspección",
+			"destinationChangedAfterInspection": "el destino cambió después de la inspección"
+		}
+	},
+	"diffView": {
+		"editCancelled": "La edición del archivo se canceló",
+		"applyContentFailed": "No se pudo aplicar el contenido al editor de diferencias",
+		"previewChangedDuringEdit": "La vista previa de diferencias cambió durante la edición; se conservaron los cambios del usuario",
+		"noEditAvailableToSave": "No hay ninguna edición de archivo disponible para guardar",
+		"previewChangedAfterApproval": "La vista previa de diferencias cambió después de la aprobación; revisa los cambios y reinténtalo",
+		"previewHasUserChanges": "La vista previa de diferencias tiene cambios del usuario; revísalos antes de volver a intentar la edición",
+		"noFilePathForOpening": "No se estableció ninguna ruta de archivo para abrir el editor de diferencias",
+		"previewChangedWhileOpening": "La vista previa de diferencias cambió mientras se abría; se conservaron los cambios del usuario",
+		"openFailed": "No se pudo abrir el editor de diferencias para {{path}}: {{message}}",
+		"missingExpectedFileState": "Falta el estado esperado del archivo antes de abrir la vista previa de diferencias"
+	},
+	"applyPatch": {
+		"deleteCancelled": "La operación de eliminación se canceló."
+	},
+	"imageOutput": {
+		"writeIncomplete": "No se pudo terminar de escribir '{{path}}'; el archivo puede estar incompleto. {{cause}}"
+	},
 	"generateImage": {
 		"openRouterApiKeyRequired": "Se requiere la clave API de OpenRouter para la generación de imágenes con modelos de OpenRouter. Por favor, configúrala en la configuración experimental de Generación de Imágenes.",
 		"failedWithStatus": "Error al generar imagen: {{status}} {{statusText}}",
@@ -24,6 +59,10 @@
 		"invalidImageData": "Datos de imagen no válidos en la respuesta",
 		"invalidImageFormat": "Formato de imagen no válido recibido",
 		"unknownError": "Ocurrió un error desconocido",
+		"cancelledBeforeSave": "La generación de imágenes se canceló antes de guardar la imagen.",
+		"destinationUnavailableBeforeGeneration": "El destino de la imagen no estaba disponible antes de la generación. Vuelve a intentarlo.",
+		"destinationPolicyChangedBeforeSave": "La ruta o la política de acceso del destino de la imagen cambió antes de guardar. Vuelve a intentarlo.",
+		"postSaveProcessingFailed": "{{path}}\nLa imagen se guardó, pero el procesamiento posterior al guardado falló: {{message}}",
 		"roo": {}
 	}
 }

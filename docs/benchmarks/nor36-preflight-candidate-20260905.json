@@ -1,0 +1,234 @@
+{
+	"schemaVersion": 1,
+	"benchmark": "nor36-production-request-preflight",
+	"revision": "e1ca2c78c6bc24ff7072292ecd379b492c255761",
+	"workingTree": "clean",
+	"node": "v20.19.2",
+	"harnessDigest": "3dd31583707112e153a6bda795cb9a4385d95833974bece7388a904eaee2472d",
+	"fixtureDigest": "f143dbd666e04afa26ccae7f0b188e3eadb97f4e70742cf45d9aabb07bd1a956",
+	"configuration": "openai-fixture-code-autoapproval-readgrant-low-context-v1",
+	"cache": "fresh task catalog per sample; shared process tokenizer; provider prompt caching disabled",
+	"boundary": "Task.attemptApiRequest with real context manager, catalog builder and step capture; injected lifecycle/UI/provider",
+	"tokenMethod": "Alpha local o200k_base estimator with 1.5 safety multiplier over separate text/JSON parts; not provider usage",
+	"providerTokens": null,
+	"wholeTaskCompletion": null,
+	"timeToUsefulAnswerMs": null,
+	"samples": [
+		{
+			"catalog": "none",
+			"sampleIndex": 0,
+			"catalogBuildCalls": 1,
+			"nativeSchemaFactoryCalls": 1,
+			"providerRequests": 1,
+			"emittedToolCalls": 0,
+			"commandsExecuted": 0,
+			"inputBytes": {
+				"system": 90,
+				"messages": 398,
+				"schemas": 33033
+			},
+			"localInputTokenEstimates": {
+				"system": 23,
+				"messages": 155,
+				"schemas": 10665
+			},
+			"outputTextBytes": 47,
+			"requestDigest": "61a30a390b842203172d7947ef085e03a7961f698b0568f98b09877ddbd71973",
+			"toolSchemaDigest": "c7ca3ae97c82595f828b8f8638a443752569e82a67597d458f390e1a0c67fae6",
+			"quality": "request-and-response-parity-passed",
+			"providerTokens": null
+		},
+		{
+			"catalog": "none",
+			"sampleIndex": 1,
+			"catalogBuildCalls": 1,
+			"nativeSchemaFactoryCalls": 1,
+			"providerRequests": 1,
+			"emittedToolCalls": 0,
+			"commandsExecuted": 0,
+			"inputBytes": {
+				"system": 90,
+				"messages": 398,
+				"schemas": 33033
+			},
+			"localInputTokenEstimates": {
+				"system": 23,
+				"messages": 155,
+				"schemas": 10665
+			},
+			"outputTextBytes": 47,
+			"requestDigest": "61a30a390b842203172d7947ef085e03a7961f698b0568f98b09877ddbd71973",
+			"toolSchemaDigest": "c7ca3ae97c82595f828b8f8638a443752569e82a67597d458f390e1a0c67fae6",
+			"quality": "request-and-response-parity-passed",
+			"providerTokens": null
+		},
+		{
+			"catalog": "none",
+			"sampleIndex": 2,
+			"catalogBuildCalls": 1,
+			"nativeSchemaFactoryCalls": 1,
+			"providerRequests": 1,
+			"emittedToolCalls": 0,
+			"commandsExecuted": 0,
+			"inputBytes": {
+				"system": 90,
+				"messages": 398,
+				"schemas": 33033
+			},
+			"localInputTokenEstimates": {
+				"system": 23,
+				"messages": 155,
+				"schemas": 10665
+			},
+			"outputTextBytes": 47,
+			"requestDigest": "61a30a390b842203172d7947ef085e03a7961f698b0568f98b09877ddbd71973",
+			"toolSchemaDigest": "c7ca3ae97c82595f828b8f8638a443752569e82a67597d458f390e1a0c67fae6",
+			"quality": "request-and-response-parity-passed",
+			"providerTokens": null
+		},
+		{
+			"catalog": "small",
+			"sampleIndex": 0,
+			"catalogBuildCalls": 1,
+			"nativeSchemaFactoryCalls": 1,
+			"providerRequests": 1,
+			"emittedToolCalls": 0,
+			"commandsExecuted": 0,
+			"inputBytes": {
+				"system": 90,
+				"messages": 398,
+				"schemas": 34204
+			},
+			"localInputTokenEstimates": {
+				"system": 23,
+				"messages": 155,
+				"schemas": 11034
+			},
+			"outputTextBytes": 47,
+			"requestDigest": "35e970ca1fb17ff2153754e648d8f41a63b5031c2f6a58367b01e6960db8b1fb",
+			"toolSchemaDigest": "a0cc373bbed2f9e8299843b58a066345577469c278d1f90784d1ba9e1ddcecf1",
+			"quality": "request-and-response-parity-passed",
+			"providerTokens": null
+		},
+		{
+			"catalog": "small",
+			"sampleIndex": 1,
+			"catalogBuildCalls": 1,
+			"nativeSchemaFactoryCalls": 1,
+			"providerRequests": 1,
+			"emittedToolCalls": 0,
+			"commandsExecuted": 0,
+			"inputBytes": {
+				"system": 90,
+				"messages": 398,
+				"schemas": 34204
+			},
+			"localInputTokenEstimates": {
+				"system": 23,
+				"messages": 155,
+				"schemas": 11034
+			},
+			"outputTextBytes": 47,
+			"requestDigest": "35e970ca1fb17ff2153754e648d8f41a63b5031c2f6a58367b01e6960db8b1fb",
+			"toolSchemaDigest": "a0cc373bbed2f9e8299843b58a066345577469c278d1f90784d1ba9e1ddcecf1",
+			"quality": "request-and-response-parity-passed",
+			"providerTokens": null
+		},
+		{
+			"catalog": "small",
+			"sampleIndex": 2,
+			"catalogBuildCalls": 1,
+			"nativeSchemaFactoryCalls": 1,
+			"providerRequests": 1,
+			"emittedToolCalls": 0,
+			"commandsExecuted": 0,
+			"inputBytes": {
+				"system": 90,
+				"messages": 398,
+				"schemas": 34204
+			},
+			"localInputTokenEstimates": {
+				"system": 23,
+				"messages": 155,
+				"schemas": 11034
+			},
+			"outputTextBytes": 47,
+			"requestDigest": "35e970ca1fb17ff2153754e648d8f41a63b5031c2f6a58367b01e6960db8b1fb",
+			"toolSchemaDigest": "a0cc373bbed2f9e8299843b58a066345577469c278d1f90784d1ba9e1ddcecf1",
+			"quality": "request-and-response-parity-passed",
+			"providerTokens": null
+		},
+		{
+			"catalog": "large",
+			"sampleIndex": 0,
+			"catalogBuildCalls": 1,
+			"nativeSchemaFactoryCalls": 1,
+			"providerRequests": 1,
+			"emittedToolCalls": 0,
+			"commandsExecuted": 0,
+			"inputBytes": {
+				"system": 90,
+				"messages": 398,
+				"schemas": 33676
+			},
+			"localInputTokenEstimates": {
+				"system": 23,
+				"messages": 155,
+				"schemas": 10868
+			},
+			"outputTextBytes": 47,
+			"requestDigest": "7a1e4e4b2f75046c7c373fd427d4c627fa325d876b1b6574b60f9c5dcda7cff8",
+			"toolSchemaDigest": "67a68e239f0112ea746d35b2753b392ce5bfc4eddf8218f3d0086bc5f5b8cb93",
+			"quality": "request-and-response-parity-passed",
+			"providerTokens": null
+		},
+		{
+			"catalog": "large",
+			"sampleIndex": 1,
+			"catalogBuildCalls": 1,
+			"nativeSchemaFactoryCalls": 1,
+			"providerRequests": 1,
+			"emittedToolCalls": 0,
+			"commandsExecuted": 0,
+			"inputBytes": {
+				"system": 90,
+				"messages": 398,
+				"schemas": 33676
+			},
+			"localInputTokenEstimates": {
+				"system": 23,
+				"messages": 155,
+				"schemas": 10868
+			},
+			"outputTextBytes": 47,
+			"requestDigest": "7a1e4e4b2f75046c7c373fd427d4c627fa325d876b1b6574b60f9c5dcda7cff8",
+			"toolSchemaDigest": "67a68e239f0112ea746d35b2753b392ce5bfc4eddf8218f3d0086bc5f5b8cb93",
+			"quality": "request-and-response-parity-passed",
+			"providerTokens": null
+		},
+		{
+			"catalog": "large",
+			"sampleIndex": 2,
+			"catalogBuildCalls": 1,
+			"nativeSchemaFactoryCalls": 1,
+			"providerRequests": 1,
+			"emittedToolCalls": 0,
+			"commandsExecuted": 0,
+			"inputBytes": {
+				"system": 90,
+				"messages": 398,
+				"schemas": 33676
+			},
+			"localInputTokenEstimates": {
+				"system": 23,
+				"messages": 155,
+				"schemas": 10868
+			},
+			"outputTextBytes": 47,
+			"requestDigest": "7a1e4e4b2f75046c7c373fd427d4c627fa325d876b1b6574b60f9c5dcda7cff8",
+			"toolSchemaDigest": "67a68e239f0112ea746d35b2753b392ce5bfc4eddf8218f3d0086bc5f5b8cb93",
+			"quality": "request-and-response-parity-passed",
+			"providerTokens": null
+		}
+	]
+}

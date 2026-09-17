@@ -4,13 +4,13 @@ The Alpha extension exposes an API that can be used by other extensions.
 To use this API in your extension:
 
 1. Install `@alpha-code/types` with npm, pnpm, or yarn.
-2. Import the `RooCodeAPI` type.
+2. Import the `AlphaCodeAPI` type.
 3. Load the extension API.
 
 ```typescript
-import { RooCodeAPI } from "@alpha-code/types"
+import { AlphaCodeAPI } from "@alpha-code/types"
 
-const extension = vscode.extensions.getExtension<RooCodeAPI>("Alpha.alpha")
+const extension = vscode.extensions.getExtension<AlphaCodeAPI>("Alpha.alpha")
 
 if (!extension?.isActive) {
 	throw new Error("Extension is not activated")

@@ -1,0 +1,15 @@
+{
+	"filter": "Lọc hàng",
+	"sort": "Sắp xếp theo {column}",
+	"rows": "{visible} trên {total} hàng",
+	"unsupported": "Phiên bản bộ công cụ này không được hỗ trợ. Mở mã nguồn và dùng data-alpha-kit=\"1\".",
+	"invalidTable": "Các tính năng nâng cao của bảng không khả dụng. Dùng bảng hình chữ nhật với một hàng tiêu đề, tối đa 1.000 hàng và 20 cột.",
+	"invalidChart": "Các tính năng nâng cao của biểu đồ không khả dụng. Kiểm tra bảng dữ liệu: tối đa 120 hàng, ba chuỗi, một đơn vị chung và các giá trị số hữu hạn; để trống các giá trị bị thiếu.",
+	"invalidTabs": "Tab không khả dụng. Gán cho mỗi phần một ID duy nhất và một nhãn tab.",
+	"missing": "Thiếu",
+	"inspect": "Các giá trị biểu đồ có trong bảng dữ liệu. Đưa tiêu điểm đến một giá trị trên biểu đồ để kiểm tra.",
+	"sortAscending": "tăng dần",
+	"sortDescending": "giảm dần",
+	"invalidDiagram": "Không thể hiển thị sơ đồ. Hãy dùng bảng quan hệ ba cột với tối đa 24 nút có tên, 48 liên kết và không có chu trình. Bảng vẫn đọc được.",
+	"imageUnavailable": "Không thể hiển thị ảnh. Kiểm tra đường dẫn trong không gian làm việc và dùng PNG hoặc JPEG tĩnh trong giới hạn kích thước đã ghi trong tài liệu."
+}

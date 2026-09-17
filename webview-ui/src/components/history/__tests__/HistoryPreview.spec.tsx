@@ -120,7 +120,7 @@ describe("HistoryPreview", () => {
 		const { container } = render(<HistoryPreview />)
 
 		// Should render the container but no task groups
-		expect(container.firstChild).toHaveClass("flex", "flex-col", "gap-1")
+		expect(container.firstChild).toHaveClass("flex", "flex-col")
 		expect(screen.queryByTestId(/task-group-/)).not.toBeInTheDocument()
 	})
 

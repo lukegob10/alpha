@@ -1,0 +1,526 @@
+schemaVersion: 1
+id: smoke-v1
+version: 1
+status: released
+primaryModel: luna-high
+referenceModel: sol-high
+tasks:
+  - id: smoke-read-edit
+    version: 1
+    partition: smoke
+    admission: admitted
+    fixture: javascript/smoke-read-edit
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:smoke
+      commit: smoke-v1
+      snapshotDigest: sha256:f77f2dadae963aa5a8ce0d4162c131f4fbbd2c5bd02cc4ebb5db8e30b96cef89
+    family: smoke
+    capabilities:
+      - basic-edit
+      - validation
+    risk: low
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 180
+      modelCalls: 20
+      toolCalls: 60
+      costUsd: 0.05
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: &a1
+      - final_workspace
+      - changed_paths
+      - normalized_trace
+      - usage
+      - environment
+      - final_response
+      - grader_evidence
+    graderReferenceDigest: sha256:b747157da8c9abdaa89d6fc7bddcdb2f5ad4885aaa8dde0c854824ca0a4a635d
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:f77f2dadae963aa5a8ce0d4162c131f4fbbd2c5bd02cc4ebb5db8e30b96cef89
+    promptDigest: sha256:8999c9e5182d3b2aa3daf9ab3aa031ed89b22948dfc8ee811494e65159999244
+  - id: smoke-test-repair
+    version: 1
+    partition: smoke
+    admission: admitted
+    fixture: javascript/smoke-test-repair
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:smoke
+      commit: smoke-v1
+      snapshotDigest: sha256:bf4713f5d1f0e666202565468bbbfd33fdda8754eee627e5c93845a0bcdbdc14
+    family: smoke
+    capabilities:
+      - basic-edit
+      - validation
+    risk: low
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 180
+      modelCalls: 20
+      toolCalls: 60
+      costUsd: 0.05
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:b747157da8c9abdaa89d6fc7bddcdb2f5ad4885aaa8dde0c854824ca0a4a635d
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:bf4713f5d1f0e666202565468bbbfd33fdda8754eee627e5c93845a0bcdbdc14
+    promptDigest: sha256:8999c9e5182d3b2aa3daf9ab3aa031ed89b22948dfc8ee811494e65159999244
+  - id: smoke-multi-file
+    version: 1
+    partition: smoke
+    admission: admitted
+    fixture: javascript/smoke-multi-file
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:smoke
+      commit: smoke-v1
+      snapshotDigest: sha256:961744d52fe52e098aa49b37464e915d2c9b96cc12eab0e213a2592c6fa8afb5
+    family: smoke
+    capabilities:
+      - basic-edit
+      - validation
+    risk: low
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 180
+      modelCalls: 20
+      toolCalls: 60
+      costUsd: 0.05
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:b747157da8c9abdaa89d6fc7bddcdb2f5ad4885aaa8dde0c854824ca0a4a635d
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:961744d52fe52e098aa49b37464e915d2c9b96cc12eab0e213a2592c6fa8afb5
+    promptDigest: sha256:8999c9e5182d3b2aa3daf9ab3aa031ed89b22948dfc8ee811494e65159999244
+  - id: smoke-config
+    version: 1
+    partition: smoke
+    admission: admitted
+    fixture: javascript/smoke-config
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:smoke
+      commit: smoke-v1
+      snapshotDigest: sha256:df83ec4e00a770f270de174c54a757448c72986c8a1f339c3d7706167fec211b
+    family: smoke
+    capabilities:
+      - basic-edit
+      - validation
+    risk: low
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 180
+      modelCalls: 20
+      toolCalls: 60
+      costUsd: 0.05
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:b747157da8c9abdaa89d6fc7bddcdb2f5ad4885aaa8dde0c854824ca0a4a635d
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:df83ec4e00a770f270de174c54a757448c72986c8a1f339c3d7706167fec211b
+    promptDigest: sha256:8999c9e5182d3b2aa3daf9ab3aa031ed89b22948dfc8ee811494e65159999244
+  - id: smoke-api-contract
+    version: 1
+    partition: smoke
+    admission: admitted
+    fixture: javascript/smoke-api-contract
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:smoke
+      commit: smoke-v1
+      snapshotDigest: sha256:3988a9ceb72b85a41276a28ba546ccc4766c6f6dd89462fa40d71f3164f159e8
+    family: smoke
+    capabilities:
+      - basic-edit
+      - validation
+    risk: low
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 180
+      modelCalls: 20
+      toolCalls: 60
+      costUsd: 0.05
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:b747157da8c9abdaa89d6fc7bddcdb2f5ad4885aaa8dde0c854824ca0a4a635d
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:3988a9ceb72b85a41276a28ba546ccc4766c6f6dd89462fa40d71f3164f159e8
+    promptDigest: sha256:8999c9e5182d3b2aa3daf9ab3aa031ed89b22948dfc8ee811494e65159999244
+  - id: smoke-state
+    version: 1
+    partition: smoke
+    admission: admitted
+    fixture: javascript/smoke-state
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:smoke
+      commit: smoke-v1
+      snapshotDigest: sha256:33ce360c521f7da5f573d6b835cfde6ccfc46b431b9ce36661f0c6bb9de18c43
+    family: smoke
+    capabilities:
+      - basic-edit
+      - validation
+    risk: low
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 180
+      modelCalls: 20
+      toolCalls: 60
+      costUsd: 0.05
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:b747157da8c9abdaa89d6fc7bddcdb2f5ad4885aaa8dde0c854824ca0a4a635d
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:33ce360c521f7da5f573d6b835cfde6ccfc46b431b9ce36661f0c6bb9de18c43
+    promptDigest: sha256:8999c9e5182d3b2aa3daf9ab3aa031ed89b22948dfc8ee811494e65159999244
+  - id: smoke-safety
+    version: 1
+    partition: smoke
+    admission: admitted
+    fixture: javascript/smoke-safety
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:smoke
+      commit: smoke-v1
+      snapshotDigest: sha256:5789a0053c952088e472419dc9a9826932e821beb0561d0ac6006661981e64b1
+    family: smoke
+    capabilities:
+      - basic-edit
+      - validation
+    risk: low
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 180
+      modelCalls: 20
+      toolCalls: 60
+      costUsd: 0.05
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:b747157da8c9abdaa89d6fc7bddcdb2f5ad4885aaa8dde0c854824ca0a4a635d
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:5789a0053c952088e472419dc9a9826932e821beb0561d0ac6006661981e64b1
+    promptDigest: sha256:8999c9e5182d3b2aa3daf9ab3aa031ed89b22948dfc8ee811494e65159999244
+  - id: smoke-validation
+    version: 1
+    partition: smoke
+    admission: admitted
+    fixture: javascript/smoke-validation
+    prompt: prompt.md
+    repository:
+      upstream: local-snapshot:smoke
+      commit: smoke-v1
+      snapshotDigest: sha256:add42e1ba1c0357a89ef278d675bf295db4e1b3b87429bb275928543efc5f45d
+    family: smoke
+    capabilities:
+      - basic-edit
+      - validation
+    risk: low
+    difficulty: foundation
+    restraint: false
+    budgets:
+      wallSeconds: 180
+      modelCalls: 20
+      toolCalls: 60
+      costUsd: 0.05
+    repetitions:
+      smoke: 1
+      scored: 1
+    graders:
+      - id: visible-tests
+        version: 1
+        alias: visible_tests
+      - id: final-state
+        version: 1
+        alias: final_state
+      - id: diff-scope
+        version: 1
+        alias: diff_scope
+      - id: static-boundary
+        version: 1
+        alias: static_boundary_check
+      - id: validation
+        version: 1
+        alias: validation_after_edit
+      - id: usage
+        version: 1
+        alias: usage_limit
+    contextBand: compact
+    editTopology:
+      kind: single-file
+      minFiles: 1
+      maxFiles: 2
+      allowedRoots:
+        - src
+        - test
+    validation:
+      commands:
+        - command: node
+          args:
+            - --test
+            - test/workflow.test.js
+      network: disabled
+    evidenceRequirements: *a1
+    graderReferenceDigest: sha256:b747157da8c9abdaa89d6fc7bddcdb2f5ad4885aaa8dde0c854824ca0a4a635d
+    environmentDigest: sha256:24a63cbbb71347cd70ffb4942ba5d80d41e14673a060386e2f86636e48021a59
+    fixtureDigest: sha256:add42e1ba1c0357a89ef278d675bf295db4e1b3b87429bb275928543efc5f45d
+    promptDigest: sha256:8999c9e5182d3b2aa3daf9ab3aa031ed89b22948dfc8ee811494e65159999244

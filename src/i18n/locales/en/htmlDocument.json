@@ -1,0 +1,21 @@
+{
+	"title": "Document",
+	"openSource": "Open source",
+	"loading": "Loading document…",
+	"referenceError": "The source reference could not be opened. Check that the file is inside this workspace.",
+	"openError": "This document cannot be opened. Use a local HTML file inside an open workspace folder.",
+	"chooseSource": "Open an HTML source file, then run Preview HTML Document.",
+	"reopenError": "This document could not be restored. Reopen its workspace folder and use its saved document link.",
+	"stale": "Preview is out of date.",
+	"errors": {
+		"scope": "Document access is outside the open workspace. Reopen its original workspace folder.",
+		"missing": "Source file is missing or unreadable. Restore it at the original path to recover this preview.",
+		"path": "Use a local .html or .htm file inside the workspace.",
+		"size": "Document exceeds viewer limits (512 KiB, 12,000 elements, 64 levels or 32 widgets). Reduce its size. The parsing time limit may also have been exceeded.",
+		"version": "This document needs alpha-document version 1. Correct its version marker to recover the preview.",
+		"reference": "A source reference is malformed. Use a workspace-relative path and a positive line number.",
+		"data": "Widget data contains an invalid number. Correct the source to recover the preview.",
+		"format": "Document needs a title and one main.alpha-doc element with data-alpha-kit=\"1\". Correct the source to recover the preview."
+	},
+	"panelLimit": "Close an HTML document preview before opening another. Up to eight previews can be open at once."
+}

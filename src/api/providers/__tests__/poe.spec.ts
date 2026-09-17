@@ -67,6 +67,7 @@ vitest.mock("../fetchers/modelCache", () => ({
 
 import { poeDefaultModelId } from "@alpha-code/types"
 import { PoeHandler } from "../poe"
+import { getModelsFromCache } from "../fetchers/modelCache"
 
 describe("PoeHandler", () => {
 	const mockLanguageModel = { modelId: "test-model" }
@@ -111,6 +112,11 @@ describe("PoeHandler", () => {
 			const handler = new PoeHandler({ poeApiKey: "key", apiModelId: "anthropic/claude-sonnet-4" })
 			const result = handler.getModel()
 
+			expect(getModelsFromCache).toHaveBeenCalledWith({
+				provider: "poe",
+				apiKey: "key",
+				baseUrl: undefined,
+			})
 			expect(result.id).toBe("anthropic/claude-sonnet-4")
 			expect(result.info.contextWindow).toBe(200_000)
 			expect(result.info.maxTokens).toBe(10_000)

@@ -106,7 +106,8 @@
 		"goToModes": "モード設定に移動",
 		"moreInfoMcp": "{{name}} MCPドキュメントを表示",
 		"validationRequired": "{{paramName}}の値を入力してください",
-		"prerequisites": "前提条件"
+		"prerequisites": "前提条件",
+		"installing": "インストール中…"
 	},
 	"sources": {
 		"title": "Marketplaceソースを設定",

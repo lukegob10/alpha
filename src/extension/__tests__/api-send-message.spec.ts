@@ -2,20 +2,41 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import * as vscode from "vscode"
 
 import { API } from "../api"
-import { ClineProvider } from "../../core/webview/ClineProvider"
+import { AlphaProvider } from "../../core/webview/AlphaProvider"
 import { TaskCommandName } from "@alpha-code/types"
 
+const ipcMock = vi.hoisted(() => ({
+	handler: undefined as undefined | ((clientId: string, command: any) => void),
+	listen: vi.fn(),
+	send: vi.fn(),
+	broadcast: vi.fn(),
+	dispose: vi.fn(),
+}))
+
 vi.mock("vscode")
-vi.mock("../../core/webview/ClineProvider")
+vi.mock("../../core/webview/AlphaProvider")
+vi.mock("@alpha-code/ipc", () => ({
+	IpcServer: vi.fn().mockImplementation(() => ({
+		listen: ipcMock.listen,
+		send: ipcMock.send,
+		broadcast: ipcMock.broadcast,
+		dispose: ipcMock.dispose,
+		on: vi.fn((_eventName, handler) => {
+			ipcMock.handler = handler
+		}),
+	})),
+}))
 
 describe("API - SendMessage Command", () => {
 	let api: API
 	let mockOutputChannel: vscode.OutputChannel
-	let mockProvider: ClineProvider
+	let mockProvider: AlphaProvider
 	let mockPostMessageToWebview: ReturnType<typeof vi.fn>
 	let mockLog: ReturnType<typeof vi.fn>
 
 	beforeEach(() => {
+		ipcMock.listen.mockReset()
+		ipcMock.handler = undefined
 		// Setup mocks
 		mockOutputChannel = {
 			appendLine: vi.fn(),
@@ -24,13 +45,13 @@ describe("API - SendMessage Command", () => {
 		mockPostMessageToWebview = vi.fn().mockResolvedValue(undefined)
 
 		mockProvider = {
-			context: {} as vscode.ExtensionContext,
+			context: { subscriptions: [] } as unknown as vscode.ExtensionContext,
 			postMessageToWebview: mockPostMessageToWebview,
 			on: vi.fn(),
 			getCurrentTaskStack: vi.fn().mockReturnValue([]),
 			getCurrentTask: vi.fn().mockReturnValue(undefined),
 			viewLaunched: true,
-		} as unknown as ClineProvider
+		} as unknown as AlphaProvider
 
 		mockLog = vi.fn()
 
@@ -152,5 +173,36 @@ describe("API - SendMessage Command", () => {
 			images,
 		})
 		expect(mockPostMessageToWebview).toHaveBeenCalledTimes(1)
+	})
+
+	it("registers the IPC server for context disposal before listening", () => {
+		const subscriptions = mockProvider.context.subscriptions
+		ipcMock.listen.mockImplementationOnce(() => {
+			expect(subscriptions).toHaveLength(1)
+		})
+
+		const ipcApi = new API(mockOutputChannel, mockProvider, "test-socket", true)
+		const ipc = (ipcApi as unknown as { ipc: object }).ipc
+
+		expect(subscriptions).toEqual([ipc])
+		expect(ipcMock.listen).toHaveBeenCalledOnce()
+	})
+
+	it("contains rejected IPC commands instead of leaking an unhandled rejection", async () => {
+		const ipcApi = new API(mockOutputChannel, mockProvider, "test-socket", true)
+		const startNewTask = vi.spyOn(ipcApi, "startNewTask").mockRejectedValue(new Error("task start failed"))
+		const ipcLog = vi.fn()
+		;(ipcApi as any).log = ipcLog
+
+		expect(ipcMock.handler).toBeTypeOf("function")
+		ipcMock.handler!("client-1", {
+			commandName: TaskCommandName.StartNewTask,
+			data: { text: "start", configuration: {} },
+		})
+
+		await vi.waitFor(() => {
+			expect(startNewTask).toHaveBeenCalledOnce()
+			expect(ipcLog).toHaveBeenCalledWith(`[API] ${TaskCommandName.StartNewTask} failed: task start failed`)
+		})
 	})
 })

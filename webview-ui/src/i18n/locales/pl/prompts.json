@@ -26,7 +26,9 @@
 			"read": "Czytaj pliki",
 			"edit": "Edytuj pliki",
 			"command": "Uruchamiaj polecenia",
-			"mcp": "Używaj MCP"
+			"mcp": "Używaj MCP",
+			"github": "Użyj GitHub",
+			"browser": "Użyj zintegrowanej przeglądarki"
 		},
 		"noTools": "Brak"
 	},
@@ -188,16 +190,7 @@
 		"buttons": {
 			"cancel": "Anuluj",
 			"create": "Utwórz tryb"
-		},
-		"deleteMode": "Usuń tryb"
+		}
 	},
-	"allFiles": "wszystkie pliki",
-	"deleteMode": {
-		"title": "Usuń tryb",
-		"message": "Czy na pewno chcesz usunąć tryb \"{{modeName}}\"?",
-		"rulesFolder": "Ten tryb ma folder z regułami w {{folderPath}}, który również zostanie usunięty.",
-		"descriptionNoRules": "Czy na pewno chcesz usunąć ten niestandardowy tryb?",
-		"confirm": "Usuń",
-		"cancel": "Anuluj"
-	}
+	"allFiles": "wszystkie pliki"
 }

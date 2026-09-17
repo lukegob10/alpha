@@ -1,16 +1,88 @@
-import type { ToolName } from "@alpha-code/types"
+import type { AlphaAsk, AlphaAskResponse, ToolName, ToolProgressStatus } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
 import type { ToolUse, HandleError, PushToolResult, AskApproval, NativeToolArgs } from "../../shared/tools"
+import { createToolFailure, type ToolFailureMetadata } from "./ToolFailure"
+
+export type { ToolFailureMetadata } from "./ToolFailure"
+
+/** A captured read grant was revoked; never turn this into an interactive parallel ask. */
+export class ToolReadDeniedError extends Error {}
+
+/**
+ * Full approval response for tools whose UI supports structured decisions.
+ * Most tools only need the boolean askApproval callback; batch file reads also
+ * support objectResponse payloads keyed by each displayed file.
+ */
+export interface ToolApprovalResponse {
+	response: AlphaAskResponse
+	text?: string
+	images?: string[]
+}
+
+export type AskApprovalResponse = (
+	type: AlphaAsk,
+	partialMessage?: string,
+	progressStatus?: ToolProgressStatus,
+	forceApproval?: boolean,
+) => Promise<ToolApprovalResponse | undefined>
 
 /**
  * Callbacks passed to tool execution
  */
+export interface TrustedExplorationObservation {
+	/** Real, workspace-contained scope captured by the execution host. */
+	scope: string
+	/** Stable digest of supported inspection semantics; never raw command output. */
+	semanticFingerprint: string
+}
+
+/** Semantic resource state captured by a host tool after a confirmed operation, never parsed from tool text. */
+export interface TrustedToolProgressObservation {
+	kind: "read" | "mutation"
+	/** Stable resource or collection identity, scoped to its owning workspace/service. */
+	scope: string
+	/** Digest of substantive returned state, excluding timestamps and execution/revision IDs. */
+	stateFingerprint: string
+	/** For mutations, the state protected by the operation's concurrency check; absence is not a delta. */
+	previousStateFingerprint?: string
+}
+
+export const MAX_TOOL_PROGRESS_OBSERVATIONS = 128
+
+export interface ToolResultMetadata {
+	status?: "success" | "error" | "denied" | "cancelled"
+	executionStatus?: "running" | "success" | "error" | "denied" | "cancelled"
+	exitCode?: number
+	timedOut?: boolean
+	/** Host-issued progress observation. This is deliberately not verification evidence. */
+	trustedExploration?: TrustedExplorationObservation
+	/** Progress only. Does not satisfy repository verification or widen execution authority. */
+	trustedProgress?: TrustedToolProgressObservation | TrustedToolProgressObservation[]
+	/** Host wait classification, independent of progress or successful task completion. */
+	waitOutcome?: "active" | "idle"
+	/** Host digest of an opaque external request/result. Novelty permits continuation, never proves progress. */
+	opaqueResultFingerprint?: string
+	/** Trusted bounded cause and recovery information; never extracted from model/tool text. */
+	failure?: ToolFailureMetadata
+}
+
 export interface ToolCallbacks {
 	askApproval: AskApproval
+	/** Optional rich approval channel for structured UI responses (for example, batch file permissions). */
+	askApprovalResponse?: AskApprovalResponse
 	handleError: HandleError
 	pushToolResult: PushToolResult
+	/** Remaining text allowance after scheduler-owned approval feedback; read tools reserve their own framing. */
+	getRemainingOutputChars?: () => number
+	setResultMetadata?: (metadata: ToolResultMetadata) => void
 	toolCallId?: string
+	signal?: AbortSignal
+	/** Recheck the captured MCP contract after approval/UI waits, immediately before dispatch. */
+	beforeMcpDispatch?: (serverName: string, toolName: string, source?: "global" | "project") => void
+	/** Host-captured server scope for a dynamic descriptor; never read from model arguments. */
+	mcpSource?: "global" | "project"
+	resolveCommandTimeoutMs?: (requestedTimeoutMs: number | null | undefined, command: string) => number
 }
 
 /**
@@ -149,6 +221,17 @@ export abstract class BaseTool<TName extends ToolName> {
 			}
 		} catch (error) {
 			console.error(`Error parsing parameters:`, error)
+			callbacks.setResultMetadata?.({
+				status: "error",
+				failure: createToolFailure({
+					reason: "invalid_arguments",
+					scopeKind: "operation",
+					scopeIdentity: [this.name, block.nativeArgs ?? block.params],
+					effectsStarted: "no",
+					outcome: "known",
+					recovery: { kind: "repair" },
+				}),
+			})
 			const errorMessage = `Failed to parse ${this.name} parameters: ${error instanceof Error ? error.message : String(error)}`
 			await callbacks.handleError(`parsing ${this.name} args`, new Error(errorMessage))
 			// Note: handleError already emits a tool_result via formatResponse.toolError in the caller.
@@ -157,6 +240,10 @@ export abstract class BaseTool<TName extends ToolName> {
 		}
 
 		// Execute with typed parameters
-		await this.execute(params, task, callbacks)
+		await this.execute(
+			params,
+			task,
+			callbacks.toolCallId || !block.id ? callbacks : { ...callbacks, toolCallId: block.id },
+		)
 	}
 }

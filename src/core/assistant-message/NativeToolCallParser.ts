@@ -1,6 +1,15 @@
 import { parseJSON } from "partial-json"
 
-import { type ToolName, toolNames, type FileEntry } from "@alpha-code/types"
+import {
+	browserToolNames,
+	isSubagentForkTurns,
+	type BrowserToolName,
+	type ToolName,
+	toolNames,
+	type FileEntry,
+	type SearchFilesQuery,
+	discoverToolsParamsSchema,
+} from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 
 import {
@@ -51,7 +60,20 @@ export type ToolCallStreamEvent = ApiStreamToolCallStartChunk | ApiStreamToolCal
  * provider-level raw chunks into start/delta/end events.
  */
 export class NativeToolCallParser {
+	private static isAttemptCompletionOutcome(value: unknown): value is "completed" | "blocked" | null | undefined {
+		return value === undefined || value === null || value === "completed" || value === "blocked"
+	}
+
 	private static readonly defaultScope = "__default__"
+	private static readonly vscodeBrowserToolNameSet = new Set<string>(browserToolNames)
+
+	private static isVSCodeBrowserToolName(name: string): name is BrowserToolName {
+		return this.vscodeBrowserToolNameSet.has(name)
+	}
+
+	private static isArgumentObject(value: unknown): value is Record<string, unknown> {
+		return typeof value === "object" && value !== null && !Array.isArray(value)
+	}
 
 	// Streaming state management for argument accumulation (keyed by scope + tool call id)
 	// Note: name is string to accommodate dynamic MCP tools (mcp--serverName--toolName)
@@ -99,6 +121,178 @@ export class NativeToolCallParser {
 			}
 		}
 		return undefined
+	}
+
+	private static isSearchFilesQuery(value: unknown): value is SearchFilesQuery {
+		if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+		const query = value as Record<string, unknown>
+		return (
+			typeof query.path === "string" &&
+			typeof query.regex === "string" &&
+			(query.file_pattern === undefined ||
+				query.file_pattern === null ||
+				typeof query.file_pattern === "string") &&
+			(query.output_mode === undefined ||
+				query.output_mode === null ||
+				query.output_mode === "content" ||
+				query.output_mode === "files" ||
+				query.output_mode === "count") &&
+			(query.literal === undefined || query.literal === null || typeof query.literal === "boolean")
+		)
+	}
+
+	private static isBoundedNonEmptyStringArray(value: unknown, minItems: number, maxItems: number): value is string[] {
+		return (
+			Array.isArray(value) &&
+			value.length >= minItems &&
+			value.length <= maxItems &&
+			value.every((item) => typeof item === "string" && item.length >= 1)
+		)
+	}
+
+	private static hasOnlyKeys(value: Record<string, unknown>, allowedKeys: readonly string[]): boolean {
+		const allowed = new Set(allowedKeys)
+		return Object.keys(value).every((key) => allowed.has(key))
+	}
+
+	private static isNonEmptyString(value: unknown): value is string {
+		return typeof value === "string" && value.trim().length > 0 && value.trim().length <= 2_000
+	}
+
+	private static isCanonicalAgentPath(value: unknown): value is string {
+		return typeof value === "string" && /^\/root(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/.test(value)
+	}
+
+	private static isAgentTarget(value: unknown): value is string {
+		return (
+			typeof value === "string" &&
+			/^(?:\/root(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*|[A-Za-z0-9][A-Za-z0-9._:-]*)$/.test(value)
+		)
+	}
+
+	private static isWaitTimeout(value: unknown): value is number {
+		return typeof value === "number" && Number.isInteger(value) && value >= 10_000 && value <= 300_000
+	}
+
+	private static isSpawnAgentArgs(value: unknown): value is NativeToolArgs["spawn_agent"] {
+		if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+
+		const args = value as Record<string, unknown>
+		const allowedKeys = new Set([
+			"task_name",
+			"fork_turns",
+			"objective",
+			"agent_kind",
+			"write_scope",
+			"expected_output",
+		])
+		const keys = Object.keys(args)
+		if (keys.length !== allowedKeys.size || keys.some((key) => !allowedKeys.has(key))) return false
+		if (typeof args.task_name !== "string" || !/^[a-z][a-z0-9_]{0,31}$/.test(args.task_name)) return false
+		if (!isSubagentForkTurns(args.fork_turns)) return false
+		if (typeof args.objective !== "string" || args.objective.length < 1) return false
+		if (args.expected_output !== null && !this.isBoundedNonEmptyStringArray(args.expected_output, 0, 12)) {
+			return false
+		}
+
+		if (args.agent_kind === "worker") {
+			return this.isBoundedNonEmptyStringArray(args.write_scope, 1, 12)
+		}
+
+		return (args.agent_kind === "explore" || args.agent_kind === "review") && args.write_scope === null
+	}
+
+	private static isDelegateTaskArgs(value: unknown): value is NativeToolArgs["delegate_task"] {
+		if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+		const args = value as Record<string, unknown>
+		if (!this.hasOnlyKeys(args, ["tasks"]) || !Array.isArray(args.tasks)) return false
+		if (args.tasks.length < 1 || args.tasks.length > 2) return false
+
+		return args.tasks.every((value) => {
+			if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+			const task = value as Record<string, unknown>
+			if (
+				!this.hasOnlyKeys(task, ["objective", "fork_turns", "agent_kind", "write_scope", "expected_output"]) ||
+				typeof task.objective !== "string" ||
+				task.objective.length < 1 ||
+				!isSubagentForkTurns(task.fork_turns) ||
+				(task.expected_output !== undefined &&
+					task.expected_output !== null &&
+					!this.isBoundedNonEmptyStringArray(task.expected_output, 0, 12))
+			) {
+				return false
+			}
+
+			if (task.agent_kind === "worker") {
+				return this.isBoundedNonEmptyStringArray(task.write_scope, 1, 12)
+			}
+
+			return (
+				(task.agent_kind === "explore" || task.agent_kind === "review") &&
+				(task.write_scope === undefined ||
+					task.write_scope === null ||
+					this.isBoundedNonEmptyStringArray(task.write_scope, 1, 12))
+			)
+		})
+	}
+
+	/**
+	 * Recover a common model formatting error where multiple argument objects for the
+	 * same search_files call are emitted back-to-back instead of inside `queries`.
+	 * This is intentionally scoped to search_files; arbitrary tools must not gain
+	 * implicit multi-operation semantics.
+	 */
+	private static parseConcatenatedSearchQueries(raw: string): SearchFilesQuery[] | null {
+		const queries: SearchFilesQuery[] = []
+		let objectStart = -1
+		let depth = 0
+		let inString = false
+		let escaped = false
+
+		for (let index = 0; index < raw.length; index++) {
+			const char = raw[index]
+
+			if (objectStart === -1) {
+				if (/\s/.test(char)) continue
+				if (char !== "{") return null
+				objectStart = index
+				depth = 1
+				continue
+			}
+
+			if (inString) {
+				if (escaped) {
+					escaped = false
+				} else if (char === "\\") {
+					escaped = true
+				} else if (char === '"') {
+					inString = false
+				}
+				continue
+			}
+
+			if (char === '"') {
+				inString = true
+			} else if (char === "{") {
+				depth++
+			} else if (char === "}") {
+				depth--
+				if (depth < 0) return null
+				if (depth === 0) {
+					let parsed: unknown
+					try {
+						parsed = JSON.parse(raw.slice(objectStart, index + 1))
+					} catch {
+						return null
+					}
+					if (!this.isSearchFilesQuery(parsed)) return null
+					queries.push(parsed)
+					objectStart = -1
+				}
+			}
+		}
+
+		return objectStart === -1 && !inString && queries.length > 1 && queries.length <= 8 ? queries : null
 	}
 
 	/**
@@ -374,6 +568,16 @@ export class NativeToolCallParser {
 		return undefined
 	}
 
+	private static parseCommandVerificationScope(value: unknown): { change_set_ids: string[] } | null | undefined {
+		if (value === null) return null
+		if (typeof value !== "object" || value === undefined) return undefined
+		const ids = (value as { change_set_ids?: unknown }).change_set_ids
+		if (!Array.isArray(ids) || ids.length === 0) return undefined
+		const normalized = ids.map((id) => (typeof id === "string" ? id.trim() : ""))
+		if (normalized.some((id) => id.length === 0)) return undefined
+		return { change_set_ids: [...new Set(normalized)] }
+	}
+
 	/**
 	 * Convert raw file entries from API (with line_ranges) to FileEntry objects
 	 * (with lineRanges). Handles multiple formats for backward compatibility:
@@ -387,7 +591,7 @@ export class NativeToolCallParser {
 	private static convertFileEntries(files: unknown[]): FileEntry[] {
 		return files.map((file: unknown) => {
 			const f = file as Record<string, unknown>
-			const entry: FileEntry = { path: f.path as string }
+			const entry: FileEntry = { ...f, path: f.path as string }
 			if (f.line_ranges && Array.isArray(f.line_ranges)) {
 				entry.lineRanges = (f.line_ranges as unknown[])
 					.map((range: unknown) => {
@@ -439,7 +643,11 @@ export class NativeToolCallParser {
 		}
 
 		// Build partial nativeArgs based on what we have so far
-		let nativeArgs: any = undefined
+		// Browser tools are a transparent bridge to tools registered by VS Code. Keep
+		// the streamed object intact so status rendering sees the same arguments that
+		// will be passed to vscode.lm.invokeTool; VS Code remains the validation owner.
+		let nativeArgs: any =
+			this.isVSCodeBrowserToolName(name) && this.isArgumentObject(partialArgs) ? partialArgs : undefined
 
 		// Track if legacy format was used (for telemetry)
 		let usedLegacyFormat = false
@@ -499,8 +707,13 @@ export class NativeToolCallParser {
 				break
 
 			case "attempt_completion":
-				if (partialArgs.result) {
-					nativeArgs = { result: partialArgs.result }
+				if (partialArgs.result && this.isAttemptCompletionOutcome(partialArgs.outcome)) {
+					nativeArgs = {
+						result: partialArgs.result,
+						...(partialArgs.outcome === "completed" || partialArgs.outcome === "blocked"
+							? { outcome: partialArgs.outcome }
+							: {}),
+					}
 				}
 				break
 
@@ -510,6 +723,7 @@ export class NativeToolCallParser {
 						command: partialArgs.command,
 						cwd: partialArgs.cwd,
 						timeout: partialArgs.timeout,
+						verification: this.parseCommandVerificationScope(partialArgs.verification),
 					}
 				}
 				break
@@ -579,20 +793,17 @@ export class NativeToolCallParser {
 				break
 
 			case "search_files":
-				if (partialArgs.path !== undefined || partialArgs.regex !== undefined) {
+				if (Array.isArray(partialArgs.queries) && partialArgs.queries.length > 0) {
+					nativeArgs = {
+						queries: partialArgs.queries.filter((query: unknown) => this.isSearchFilesQuery(query)),
+					}
+				} else if (partialArgs.path !== undefined || partialArgs.regex !== undefined) {
 					nativeArgs = {
 						path: partialArgs.path,
 						regex: partialArgs.regex,
 						file_pattern: partialArgs.file_pattern,
-					}
-				}
-				break
-
-			case "switch_mode":
-				if (partialArgs.mode_slug !== undefined || partialArgs.reason !== undefined) {
-					nativeArgs = {
-						mode_slug: partialArgs.mode_slug,
-						reason: partialArgs.reason,
+						output_mode: partialArgs.output_mode,
+						literal: partialArgs.literal,
 					}
 				}
 				break
@@ -687,6 +898,91 @@ export class NativeToolCallParser {
 				}
 				break
 
+			case "spawn_agent":
+				if (this.isSpawnAgentArgs(partialArgs)) {
+					nativeArgs = partialArgs
+				}
+				break
+
+			case "list_agents":
+				if (
+					this.hasOnlyKeys(partialArgs, ["path_prefix"]) &&
+					(partialArgs.path_prefix === undefined ||
+						partialArgs.path_prefix === null ||
+						this.isCanonicalAgentPath(partialArgs.path_prefix))
+				) {
+					nativeArgs = {
+						path_prefix: partialArgs.path_prefix === null ? undefined : partialArgs.path_prefix,
+					}
+				}
+				break
+
+			case "wait_agent":
+				if (
+					this.hasOnlyKeys(partialArgs, ["timeout_ms", "target", "until_terminal"]) &&
+					(partialArgs.timeout_ms === undefined ||
+						partialArgs.timeout_ms === null ||
+						this.isWaitTimeout(partialArgs.timeout_ms)) &&
+					(partialArgs.target === undefined ||
+						partialArgs.target === null ||
+						this.isAgentTarget(partialArgs.target)) &&
+					(partialArgs.until_terminal === undefined ||
+						partialArgs.until_terminal === null ||
+						typeof partialArgs.until_terminal === "boolean")
+				) {
+					nativeArgs = {
+						timeout_ms: partialArgs.timeout_ms === null ? undefined : partialArgs.timeout_ms,
+						...(Object.hasOwn(partialArgs, "target")
+							? { target: partialArgs.target === null ? undefined : partialArgs.target }
+							: {}),
+						...(Object.hasOwn(partialArgs, "until_terminal")
+							? {
+									until_terminal:
+										partialArgs.until_terminal === null ? undefined : partialArgs.until_terminal,
+								}
+							: {}),
+					}
+				}
+				break
+
+			case "send_message":
+			case "followup_task":
+				if (this.hasOnlyKeys(partialArgs, ["target", "message"])) {
+					nativeArgs = {
+						target: partialArgs.target,
+						message: partialArgs.message,
+					}
+				}
+				break
+
+			case "report_progress":
+				if (this.hasOnlyKeys(partialArgs, ["message"])) {
+					nativeArgs = { message: partialArgs.message }
+				}
+				break
+
+			case "interrupt_agent":
+			case "close_agent":
+				if (this.hasOnlyKeys(partialArgs, ["target"])) {
+					nativeArgs = { target: partialArgs.target }
+				}
+				break
+
+			case "cancel_agent":
+				if (this.hasOnlyKeys(partialArgs, ["target", "reason"])) {
+					nativeArgs = {
+						target: partialArgs.target,
+						reason: partialArgs.reason === null ? undefined : partialArgs.reason,
+					}
+				}
+				break
+
+			case "delegate_task":
+				if (this.isDelegateTaskArgs(partialArgs)) {
+					nativeArgs = { tasks: partialArgs.tasks }
+				}
+				break
+
 			default:
 				break
 		}
@@ -748,7 +1044,15 @@ export class NativeToolCallParser {
 
 		try {
 			// Parse the arguments JSON string
-			const args = toolCall.arguments === "" ? {} : JSON.parse(toolCall.arguments)
+			let args: Record<string, any>
+			try {
+				args = toolCall.arguments === "" ? {} : JSON.parse(toolCall.arguments)
+			} catch (error) {
+				const recoveredQueries =
+					resolvedName === "search_files" ? this.parseConcatenatedSearchQueries(toolCall.arguments) : null
+				if (!recoveredQueries) throw error
+				args = { queries: recoveredQueries }
+			}
 
 			// Build stringified params for display/logging.
 			// Tool execution MUST use nativeArgs (typed) and does not support legacy fallbacks.
@@ -770,7 +1074,14 @@ export class NativeToolCallParser {
 			// Build typed nativeArgs for tool execution.
 			// Each case validates the minimum required parameters and constructs a properly typed
 			// nativeArgs object. If validation fails, we treat the tool call as invalid and fail fast.
-			let nativeArgs: NativeArgsFor<TName> | undefined = undefined
+			// VS Code owns the browser-tool schemas and validates them again when the
+			// extension calls vscode.lm.invokeTool. The native parser must preserve the
+			// provider payload instead of dropping it merely because these tools are
+			// implemented outside Alpha's per-tool validation switch.
+			let nativeArgs: NativeArgsFor<TName> | undefined =
+				this.isVSCodeBrowserToolName(resolvedName) && this.isArgumentObject(args)
+					? (args as NativeArgsFor<TName>)
+					: undefined
 
 			// Track if legacy format was used (for telemetry)
 			let usedLegacyFormat = false
@@ -800,6 +1111,11 @@ export class NativeToolCallParser {
 							usedLegacyFormat = true
 							nativeArgs = {
 								files: this.convertFileEntries(filesArray),
+								mode: args.mode,
+								offset: this.coerceOptionalNumber(args.offset),
+								limit: this.coerceOptionalNumber(args.limit),
+								indentation: args.indentation,
+								continuation: args.continuation,
 								_legacyFormat: true as const,
 							} as NativeArgsFor<TName>
 						}
@@ -809,6 +1125,7 @@ export class NativeToolCallParser {
 						nativeArgs = {
 							path: args.path,
 							mode: args.mode,
+							continuation: args.continuation,
 							offset: this.coerceOptionalNumber(args.offset),
 							limit: this.coerceOptionalNumber(args.limit),
 							indentation:
@@ -828,8 +1145,13 @@ export class NativeToolCallParser {
 					break
 
 				case "attempt_completion":
-					if (args.result) {
-						nativeArgs = { result: args.result } as NativeArgsFor<TName>
+					if (args.result && this.isAttemptCompletionOutcome(args.outcome)) {
+						nativeArgs = {
+							result: args.result,
+							...(args.outcome === "completed" || args.outcome === "blocked"
+								? { outcome: args.outcome }
+								: {}),
+						} as NativeArgsFor<TName>
 					}
 					break
 
@@ -839,6 +1161,7 @@ export class NativeToolCallParser {
 							command: args.command,
 							cwd: args.cwd,
 							timeout: args.timeout,
+							verification: this.parseCommandVerificationScope(args.verification),
 						} as NativeArgsFor<TName>
 					}
 					break
@@ -915,30 +1238,43 @@ export class NativeToolCallParser {
 					break
 
 				case "search_files":
-					if (args.path !== undefined && args.regex !== undefined) {
+					if (
+						Array.isArray(args.queries) &&
+						args.queries.length >= 1 &&
+						args.queries.length <= 8 &&
+						args.queries.every((query: unknown) => this.isSearchFilesQuery(query))
+					) {
+						nativeArgs = { queries: args.queries } as NativeArgsFor<TName>
+					} else if (this.isSearchFilesQuery(args)) {
 						nativeArgs = {
 							path: args.path,
 							regex: args.regex,
 							file_pattern: args.file_pattern,
+							output_mode: args.output_mode,
+							literal: args.literal,
 						} as NativeArgsFor<TName>
 					}
 					break
 
-				case "switch_mode":
-					if (args.mode_slug !== undefined && args.reason !== undefined) {
-						nativeArgs = {
-							mode_slug: args.mode_slug,
-							reason: args.reason,
-						} as NativeArgsFor<TName>
-					}
+				case "list_tickets":
+				case "read_ticket":
+				case "create_ticket":
+				case "update_ticket":
+				case "delete_ticket":
+					nativeArgs = args as NativeArgsFor<TName>
 					break
 
 				case "update_todo_list":
 					if (args.todos !== undefined) {
 						nativeArgs = {
 							todos: args.todos,
+							work_plan: args.work_plan,
 						} as NativeArgsFor<TName>
 					}
+					break
+
+				case "manage_command":
+					nativeArgs = args as NativeArgsFor<TName>
 					break
 
 				case "read_command_output":
@@ -973,7 +1309,9 @@ export class NativeToolCallParser {
 
 				case "github_api": {
 					const baseParamsAreValid =
-						typeof args.action === "string" && typeof args.owner === "string" && typeof args.repo === "string"
+						typeof args.action === "string" &&
+						typeof args.owner === "string" &&
+						typeof args.repo === "string"
 
 					if (!baseParamsAreValid) {
 						break
@@ -1031,9 +1369,12 @@ export class NativeToolCallParser {
 										args.merge_method === null
 											? args.merge_method
 											: undefined,
-									title: typeof args.title === "string" || args.title === null ? args.title : undefined,
+									title:
+										typeof args.title === "string" || args.title === null ? args.title : undefined,
 									message:
-										typeof args.message === "string" || args.message === null ? args.message : undefined,
+										typeof args.message === "string" || args.message === null
+											? args.message
+											: undefined,
 								} as NativeArgsFor<TName>
 							}
 							break
@@ -1061,6 +1402,14 @@ export class NativeToolCallParser {
 						} as NativeArgsFor<TName>
 					}
 					break
+
+				case "discover_tools": {
+					const parsed = discoverToolsParamsSchema.safeParse(args)
+					if (parsed.success) {
+						nativeArgs = parsed.data as NativeArgsFor<TName>
+					}
+					break
+				}
 
 				case "apply_patch":
 					if (args.patch !== undefined) {
@@ -1115,6 +1464,93 @@ export class NativeToolCallParser {
 							message: args.message,
 							todos: args.todos,
 						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "spawn_agent":
+					if (this.isSpawnAgentArgs(args)) {
+						nativeArgs = args as NativeArgsFor<TName>
+					}
+					break
+
+				case "list_agents":
+					if (
+						this.hasOnlyKeys(args, ["path_prefix"]) &&
+						(args.path_prefix === undefined ||
+							args.path_prefix === null ||
+							this.isCanonicalAgentPath(args.path_prefix))
+					) {
+						nativeArgs = {
+							path_prefix: args.path_prefix === null ? undefined : args.path_prefix,
+						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "wait_agent":
+					if (
+						this.hasOnlyKeys(args, ["timeout_ms", "target", "until_terminal"]) &&
+						(args.timeout_ms === undefined ||
+							args.timeout_ms === null ||
+							this.isWaitTimeout(args.timeout_ms)) &&
+						(args.target === undefined || args.target === null || this.isAgentTarget(args.target)) &&
+						(args.until_terminal === undefined ||
+							args.until_terminal === null ||
+							typeof args.until_terminal === "boolean")
+					) {
+						nativeArgs = {
+							timeout_ms: args.timeout_ms === null ? undefined : args.timeout_ms,
+							...(Object.hasOwn(args, "target")
+								? { target: args.target === null ? undefined : args.target }
+								: {}),
+							...(Object.hasOwn(args, "until_terminal")
+								? {
+										until_terminal: args.until_terminal === null ? undefined : args.until_terminal,
+									}
+								: {}),
+						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "send_message":
+				case "followup_task":
+					if (
+						this.hasOnlyKeys(args, ["target", "message"]) &&
+						this.isAgentTarget(args.target) &&
+						this.isNonEmptyString(args.message)
+					) {
+						nativeArgs = { target: args.target, message: args.message } as NativeArgsFor<TName>
+					}
+					break
+
+				case "report_progress":
+					if (this.hasOnlyKeys(args, ["message"]) && this.isNonEmptyString(args.message)) {
+						nativeArgs = { message: args.message } as NativeArgsFor<TName>
+					}
+					break
+
+				case "interrupt_agent":
+				case "close_agent":
+					if (this.hasOnlyKeys(args, ["target"]) && this.isAgentTarget(args.target)) {
+						nativeArgs = { target: args.target } as NativeArgsFor<TName>
+					}
+					break
+
+				case "cancel_agent":
+					if (
+						this.hasOnlyKeys(args, ["target", "reason"]) &&
+						this.isAgentTarget(args.target) &&
+						(args.reason === undefined || args.reason === null || this.isNonEmptyString(args.reason))
+					) {
+						nativeArgs = {
+							target: args.target,
+							reason: args.reason === null ? undefined : args.reason,
+						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "delegate_task":
+					if (this.isDelegateTaskArgs(args)) {
+						nativeArgs = { tasks: args.tasks } as NativeArgsFor<TName>
 					}
 					break
 

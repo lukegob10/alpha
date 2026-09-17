@@ -18,6 +18,7 @@ export interface ICodeParser {
 			maxBlockLines?: number
 			content?: string
 			fileHash?: string
+			signal?: AbortSignal
 		},
 	): Promise<CodeBlock[]>
 }
@@ -55,6 +56,12 @@ export interface IFileWatcher extends vscode.Disposable {
 	 * Initializes the file watcher
 	 */
 	initialize(): Promise<void>
+
+	/** Stops accepting filesystem events while preserving event subscribers for a later restart. */
+	stop(): void
+
+	/** Resolves after all batches already accepted by the watcher have settled. */
+	whenIdle(): Promise<void>
 
 	/**
 	 * Event emitted when a batch of files begins processing.
@@ -106,6 +113,12 @@ export interface FileProcessingResult {
  */
 
 export interface CodeBlock {
+	/** Exact UTF-16 offsets into source; optional for custom parsers. */
+	startOffset?: number
+	endOffset?: number
+	/** Derived scope text, kept separate from exact source. */
+	context?: string
+	tokenCount?: number
 	file_path: string
 	identifier: string | null
 	type: string

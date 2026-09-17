@@ -11,6 +11,7 @@
 		"missing_update_modes_fields": "缺少必填字段：skillName 或 source",
 		"manager_unavailable": "技能管理器不可用",
 		"missing_delete_fields": "缺少必填字段：skillName 或 source",
-		"skill_not_found": "未找到技能 \"{{name}}\""
+		"skill_not_found": "未找到技能 \"{{name}}\"",
+		"builtin_read_only": "内置技能为只读。要覆盖它们，请创建个人技能或工作区技能。"
 	}
 }

@@ -44,7 +44,7 @@ export type GroupEntry = z.infer<typeof groupEntrySchema>
 
 /**
  * Checks if a group entry references a deprecated tool group.
- * Handles both string entries ("browser") and tuple entries (["browser", { ... }]).
+ * Handles both string entries and tuple entries.
  */
 function isDeprecatedGroupEntry(entry: unknown): boolean {
 	if (typeof entry === "string") {
@@ -80,12 +80,12 @@ const rawGroupEntryArraySchema = z.array(groupEntrySchema).refine(
 
 /**
  * Schema for mode group entries. Preprocesses the input to strip deprecated
- * tool groups (e.g., "browser") before validation, ensuring backward compatibility
+ * legacy tool groups before validation, ensuring backward compatibility
  * with older user configs.
  *
  * The type assertion to `z.ZodType<GroupEntry[], z.ZodTypeDef, GroupEntry[]>` is
  * required because `z.preprocess` erases the input type to `unknown`, which
- * propagates through `modeConfigSchema → rooCodeSettingsSchema → createRunSchema`
+ * propagates through `modeConfigSchema → alphaCodeSettingsSchema → createRunSchema`
  * and breaks `zodResolver` generic inference in downstream consumers (e.g., web-evals).
  */
 export const groupEntryArraySchema = z.preprocess((val) => {
@@ -165,63 +165,75 @@ export type CustomSupportPrompts = z.infer<typeof customSupportPromptsSchema>
  * DEFAULT_MODES
  */
 
+const CODE_MODE_INSTRUCTIONS = `Before consequential code changes, ground the approach in relevant repository architecture and conventions, component responsibilities and data flow, states and failure paths, constraints and compatibility. Share a plan when requested or a material choice needs discussion.
+
+Implement the smallest coherent solution: the least unnecessary complexity, not compressed code, monolithic responsibilities, or the fewest files. Preserve sound patterns and maintainable boundaries. For user-facing work, handle relevant validation, loading, empty, error, and recovery states. Write tests that establish requested behavior and important integration boundaries rather than merely exercising implementation details.
+
+If a required verification approach cannot work, repair it or use equivalent evidence at the same behavioral level while preserving explicit requirements. Do not optimize for file count, code volume, test count, token output, or superficial checklist coverage.`
+
+export const PLAN_MODE_INSTRUCTIONS = `You are in strict Plan collaboration mode until the host or user changes modes. Plan the work; do not implement it.
+
+Use only non-mutating repository inspection. Read, list, and search repository evidence before asking questions. You may run only host-approved inspection or source-non-mutating verification commands and read their output. Verification may execute trusted repository test/config code and create ordinary tool caches, but it cannot target output, temp, cache, config, or plugin paths. You may coordinate managed Explore or Review sub-agents for bounded read-only investigation, but never launch or advance a Worker or request file changes, configuration changes, commits, or other side effects.
+
+Resolve facts from the request and available evidence first. Ask a concise follow-up question only when an undiscoverable product or technical choice would materially change the plan. Do not ask the user to choose details that repository inspection can answer.
+
+When the plan is decision-complete, return exactly one handoff block and no text outside it:
+
+<proposed_plan>
+# Plan title
+
+A concise summary of the intended outcome and approach.
+
+## Implementation
+- Ordered, specific changes with relevant files, components, interfaces, data flow, edge cases, and compatibility constraints.
+
+## Verification
+- Tests and checks that establish the requested behavior.
+
+## Assumptions
+- Only material assumptions or defaults that remain; write "None" when there are none.
+</proposed_plan>
+
+Do not use a todo-management tool as the plan, write a plan file, ask whether the plan is approved, offer to proceed, or switch modes yourself.`
+
+/** The persisted identifier for Plan remains architect. */
+export const primaryModeSlugs = ["architect", "code"] as const
+export type PrimaryMode = (typeof primaryModeSlugs)[number]
+
+export function isPrimaryMode(mode: unknown): mode is PrimaryMode {
+	return mode === "code" || mode === "architect"
+}
+
+export function assertPrimaryMode(mode: unknown): asserts mode is PrimaryMode {
+	if (!isPrimaryMode(mode)) throw new Error("Unsupported mode. Only Code (code) and Plan (architect) are available.")
+}
+
+/** Missing mode predates mode persistence; retired modes resume without write authority. */
+export function restoreTaskMode(mode: string | undefined): PrimaryMode {
+	return mode === undefined || mode === "" ? "code" : isPrimaryMode(mode) ? mode : "architect"
+}
+
 export const DEFAULT_MODES: readonly ModeConfig[] = [
 	{
 		slug: "architect",
-		name: "🏗️ Architect",
+		name: "Plan",
 		roleDefinition:
-			"You are Alpha, an experienced technical leader who is inquisitive and an excellent planner. Your goal is to gather information and get context to create a detailed plan for accomplishing the user's task, which the user will review and approve before they switch into another mode to implement the solution.",
+			"You are Alpha in Plan collaboration mode. Investigate the user's request and produce an evidence-grounded, decision-complete implementation plan without making changes.",
 		whenToUse:
-			"Use this mode when you need to plan, design, or strategize before implementation. Perfect for breaking down complex problems, creating technical specifications, designing system architecture, or brainstorming solutions before coding.",
-		description: "Plan and design before implementation",
-		groups: ["read", ["edit", { fileRegex: "\\.(md|html)$", description: "Markdown and HTML files only" }], "mcp"],
-		customInstructions:
-			"1. Do some information gathering (using provided tools) to get more context about the task.\n\n2. You should also ask the user clarifying questions to get a better understanding of the task.\n\n3. Once you've gained more context about the user's request, break down the task into clear, actionable steps and create a todo list using the `update_todo_list` tool. Each todo item should be:\n   - Specific and actionable\n   - Listed in logical execution order\n   - Focused on a single, well-defined outcome\n   - Clear enough that another mode could execute it independently\n\n   **Note:** If the `update_todo_list` tool is not available, write the plan to a markdown file (e.g., `plan.md` or `todo.md`) instead.\n\n4. As you gather more information or discover new requirements, update the todo list to reflect the current understanding of what needs to be accomplished.\n\n5. Ask the user if they are pleased with this plan, or if they would like to make any changes. Think of this as a brainstorming session where you can discuss the task and refine the todo list.\n\n6. Include Mermaid diagrams if they help clarify complex workflows or system architecture. Please avoid using double quotes (\"\") and parentheses () inside square brackets ([]) in Mermaid diagrams, as this can cause parsing errors.\n\n7. Use the switch_mode tool to request that the user switch to another mode to implement the solution.\n\n**IMPORTANT: Focus on creating clear, actionable todo lists rather than lengthy markdown documents. Use the todo list as your primary planning tool to track and organize the work that needs to be done.**\n\n**CRITICAL: Never provide level of effort time estimates (e.g., hours, days, weeks) for tasks. Focus solely on breaking down the work into clear, actionable steps without estimating how long they will take.**\n\nUnless told otherwise, if you want to save a plan file, put it in the /plans directory",
+			"Use Plan mode to investigate a request, clarify only material unresolved decisions, and produce a concrete implementation handoff before any changes are made.",
+		description: "Investigate and produce an implementation-ready plan",
+		groups: ["read", "command", "agents"],
+		customInstructions: PLAN_MODE_INSTRUCTIONS,
 	},
 	{
 		slug: "code",
-		name: "💻 Code",
+		name: "Code",
 		roleDefinition:
 			"You are Alpha, a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns, and best practices.",
 		whenToUse:
 			"Use this mode when you need to write, modify, or refactor code. Ideal for implementing features, fixing bugs, creating new files, or making code improvements across any programming language or framework.",
 		description: "Write, modify, and refactor code",
-		groups: ["read", "edit", "command", "mcp", "github"],
-	},
-	{
-		slug: "ask",
-		name: "❓ Ask",
-		roleDefinition:
-			"You are Alpha, a knowledgeable technical assistant focused on answering questions and providing information about software development, technology, and related topics.",
-		whenToUse:
-			"Use this mode when you need explanations, documentation, or answers to technical questions. Best for understanding concepts, analyzing existing code, getting recommendations, or learning about technologies without making changes.",
-		description: "Get answers and explanations",
-		groups: ["read", "mcp"],
-		customInstructions:
-			"You can analyze code, explain concepts, and access external resources. Always answer the user's questions thoroughly, and do not switch to implementing code unless explicitly requested by the user. Include Mermaid diagrams when they clarify your response.",
-	},
-	{
-		slug: "debug",
-		name: "🪲 Debug",
-		roleDefinition:
-			"You are Alpha, an expert software debugger specializing in systematic problem diagnosis and resolution.",
-		whenToUse:
-			"Use this mode when you're troubleshooting issues, investigating errors, or diagnosing problems. Specialized in systematic debugging, adding logging, analyzing stack traces, and identifying root causes before applying fixes.",
-		description: "Diagnose and fix software issues",
-		groups: ["read", "edit", "command", "mcp", "github"],
-		customInstructions:
-			"Reflect on 5-7 different possible sources of the problem, distill those down to 1-2 most likely sources, and then add logs to validate your assumptions. Explicitly ask the user to confirm the diagnosis before fixing the problem.",
-	},
-	{
-		slug: "orchestrator",
-		name: "🪃 Orchestrator",
-		roleDefinition:
-			"You are Alpha, a strategic workflow orchestrator who coordinates complex tasks by delegating them to appropriate specialized modes. You have a comprehensive understanding of each mode's capabilities and limitations, allowing you to effectively break down complex problems into discrete tasks that can be solved by different specialists.",
-		whenToUse:
-			"Use this mode for complex, multi-step projects that require coordination across different specialties. Ideal when you need to break down large tasks into subtasks, manage workflows, or coordinate work that spans multiple domains or expertise areas.",
-		description: "Coordinate tasks across multiple modes",
-		groups: [],
-		customInstructions:
-			"Your role is to coordinate complex workflows by delegating tasks to specialized modes. As an orchestrator, you should:\n\n1. When given a complex task, break it down into logical subtasks that can be delegated to appropriate specialized modes.\n\n2. For each subtask, use the `new_task` tool to delegate. Choose the most appropriate mode for the subtask's specific goal and provide comprehensive instructions in the `message` parameter. These instructions must include:\n    *   All necessary context from the parent task or previous subtasks required to complete the work.\n    *   A clearly defined scope, specifying exactly what the subtask should accomplish.\n    *   An explicit statement that the subtask should *only* perform the work outlined in these instructions and not deviate.\n    *   An instruction for the subtask to signal completion by using the `attempt_completion` tool, providing a concise yet thorough summary of the outcome in the `result` parameter, keeping in mind that this summary will be the source of truth used to keep track of what was completed on this project.\n    *   A statement that these specific instructions supersede any conflicting general instructions the subtask's mode might have.\n\n3. For simple requests that clearly belong in another mode, delegate a single subtask immediately with `new_task`. Do not narrate that you need to switch to Ask, Code, Architect, or Debug mode; create the subtask instead.\n\n4. Do not use `switch_mode` as your normal delegation mechanism. Use `switch_mode` only when the user explicitly asks to change the current task's mode. For routing work to Ask, Code, Architect, or Debug, use `new_task`.\n\n5. Track and manage the progress of all subtasks. When a subtask is completed, analyze its results and determine the next steps.\n\n6. Help the user understand how the different subtasks fit together in the overall workflow. Provide clear reasoning about why you're delegating specific tasks to specific modes.\n\n7. When all subtasks are completed, synthesize the results and provide a comprehensive overview of what was accomplished.\n\n8. Ask clarifying questions when necessary to better understand how to break down complex tasks effectively.\n\n9. Suggest improvements to the workflow based on the results of completed subtasks.\n\nUse subtasks to maintain clarity. If a request significantly shifts focus or requires a different expertise (mode), consider creating a subtask rather than overloading the current one.",
+		groups: ["read", "edit", "command", "mcp", "github", "agents", "browser"],
+		customInstructions: CODE_MODE_INSTRUCTIONS,
 	},
 ] as const

@@ -1,0 +1,103 @@
+name: Release V2 Preview VSIX
+
+on:
+    push:
+        branches: [main-v2]
+    workflow_dispatch:
+
+permissions:
+    contents: write
+
+concurrency:
+    group: release-vsix-v2-preview-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    release-vsix-v2-preview:
+        runs-on: windows-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Setup Node.js and pnpm
+              uses: ./.github/actions/setup-node-pnpm
+
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
+
+            - name: Run exact VS Code 1.122.1 release gate
+              run: pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
+
+            - name: Verify global command auto-approval and outside-path review
+              run: pnpm --filter @alpha-code/vscode-e2e test:command-paths:1221:run
+
+            - name: Package extension
+              shell: pwsh
+              run: |
+                  $version = node -p "require('./src/package.json').version"
+                  New-Item -ItemType Directory -Force -Path bin | Out-Null
+                  pnpm --dir src exec vsce package --no-dependencies --pre-release --out "../bin/alpha-$version.vsix"
+                  if ($LASTEXITCODE -ne 0) {
+                    throw "Preview VSIX packaging failed."
+                  }
+
+            - name: Collect preview metadata
+              id: release
+              shell: pwsh
+              run: |
+                  $version = node -p "require('./src/package.json').version"
+                  $shortSha = "${{ github.sha }}".Substring(0, 7)
+                  $tag = "vsix-v2-preview-$version-$shortSha"
+                  $vsix = Get-Item -LiteralPath "bin/alpha-$version.vsix" -ErrorAction Stop
+
+                  "version=$version" >> $env:GITHUB_OUTPUT
+                  "short_sha=$shortSha" >> $env:GITHUB_OUTPUT
+                  "tag=$tag" >> $env:GITHUB_OUTPUT
+                  "vsix_path=$($vsix.FullName)" >> $env:GITHUB_OUTPUT
+                  "vsix_name=$($vsix.Name)" >> $env:GITHUB_OUTPUT
+
+            - name: Verify VSIX contents
+              run: node scripts/verify-vsix-contents.mjs "${{ steps.release.outputs.vsix_path }}" --check-source
+
+            - name: Create GitHub prerelease
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              shell: pwsh
+              run: |
+                  $tag = "${{ steps.release.outputs.tag }}"
+                  $version = "${{ steps.release.outputs.version }}"
+                  $shortSha = "${{ steps.release.outputs.short_sha }}"
+                  $vsix = "${{ steps.release.outputs.vsix_path }}"
+                  $releaseTitle = "Alpha V2 Preview v$version ($shortSha)"
+                  $changelog = Get-Content -LiteralPath src/CHANGELOG.md -Raw
+                  $versionHeading = [regex]::Escape("## $version")
+                  $entry = [regex]::Match($changelog, "(?ms)^$versionHeading\r?\n(?<body>.*?)(?=^## |\z)")
+                  if (-not $entry.Success -or [string]::IsNullOrWhiteSpace($entry.Groups["body"].Value)) {
+                    throw "No changelog entry found for preview version $version."
+                  }
+                  $highlights = $entry.Groups["body"].Value.Trim()
+                  $notes = @"
+                  Preview VSIX build from main-v2. This is not published to the VS Code Marketplace.
+
+                  $highlights
+
+                  Commit: ${{ github.sha }}
+
+                  Test this build in an isolated VS Code profile or extension directory. Installing it over the stable
+                  extension replaces that installation because both channels intentionally share the production extension ID.
+                  If another v$version preview is already installed, use --force to replace the same-version build.
+
+                  Install command: code --install-extension ${{ steps.release.outputs.vsix_name }} --force
+                  "@
+
+                  gh release view "$tag" --json tagName 2>$null
+                  if ($LASTEXITCODE -eq 0) {
+                    throw "Preview release $tag already exists; refusing to overwrite its published artifact."
+                  }
+                  gh release create "$tag" "$vsix" --prerelease --latest=false --title "$releaseTitle" --notes "$notes" --target "${{ github.sha }}"
+                  if ($LASTEXITCODE -ne 0) {
+                    throw "Preview release creation failed."
+                  }

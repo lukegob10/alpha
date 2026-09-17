@@ -878,6 +878,40 @@ function processData(data) {
 			expect(result.success).toBe(false)
 		})
 
+		it("does not fuzzy-match an EOF candidate shorter than the SEARCH block", async () => {
+			const originalContent = "a".repeat(100)
+			const diffContent = [
+				"<<<<<<< SEARCH",
+				"a".repeat(100),
+				"missing",
+				"=======",
+				"replacement",
+				">>>>>>> REPLACE",
+			].join("\n")
+
+			const result = await strategy.applyDiff(originalContent, diffContent)
+
+			expect(result.success).toBe(false)
+		})
+
+		it("does not accept a hinted EOF candidate shorter than the SEARCH block", async () => {
+			const originalContent = "a".repeat(100)
+			const diffContent = [
+				"<<<<<<< SEARCH",
+				":start_line:1",
+				"-------",
+				"a".repeat(100),
+				"missing",
+				"=======",
+				"replacement",
+				">>>>>>> REPLACE",
+			].join("\n")
+
+			const result = await strategy.applyDiff(originalContent, diffContent)
+
+			expect(result.success).toBe(false)
+		})
+
 		it("should match content with extra whitespace", async () => {
 			const originalContent = "function sum(a, b) {\n    return a + b;\n}"
 			const diffContent = `test.ts

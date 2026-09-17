@@ -1,0 +1,6 @@
+{
+	"profileRequired": "Selecciona un perfil desat abans d'executar aquesta tasca programada.",
+	"profileUnavailable": "El perfil «{{name}}» falta, s'ha canviat de nom o no s'ha pogut carregar. Torna a seleccionar un perfil desat.",
+	"skillUnavailable": "L'habilitat «{{name}}» falta, no es pot llegir o no està disponible a l'espai de treball i mode programats. Torna-la a seleccionar.",
+	"workspaceInvalid": "L'espai de treball programat ha de ser un camí absolut."
+}

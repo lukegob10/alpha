@@ -17,6 +17,7 @@ import path from "path"
 import { isBinaryFile } from "isbinaryfile"
 
 import { readFileTool, ReadFileTool } from "../ReadFileTool"
+import type { AskApprovalResponse } from "../BaseTool"
 import { formatResponse } from "../../prompts/responses"
 import {
 	validateImageForProcessing,
@@ -55,10 +56,16 @@ vi.mock("../../../integrations/misc/extract-text", () => ({
 	getSupportedBinaryFormats: vi.fn(() => [".pdf", ".docx", ".ipynb"]),
 }))
 
-vi.mock("../../../integrations/misc/indentation-reader", () => ({
-	readWithIndentation: vi.fn(),
-	readWithSlice: vi.fn(),
-}))
+vi.mock("../../../integrations/misc/indentation-reader", async () => {
+	const actual = await vi.importActual<typeof import("../../../integrations/misc/indentation-reader")>(
+		"../../../integrations/misc/indentation-reader",
+	)
+	return {
+		...actual,
+		readWithIndentation: vi.fn(),
+		readWithSlice: vi.fn(),
+	}
+})
 
 vi.mock("../helpers/imageHelpers", () => ({
 	DEFAULT_MAX_IMAGE_FILE_SIZE_MB: 5,
@@ -83,7 +90,7 @@ vi.mock("../../prompts/responses", () => ({
 			(feedback?: string) =>
 				`The user approved this operation and responded with the message:\n<user_message>\n${feedback}\n</user_message>`,
 		),
-		rooIgnoreError: vi.fn(
+		alphaIgnoreError: vi.fn(
 			(filePath: string) =>
 				`Access to ${filePath} is blocked by the .alphaignore file settings. You must try to continue in the task without using this file, or ask the user to update the .alphaignore file.`,
 		),
@@ -129,13 +136,13 @@ const mockedProcessImageFile = vi.mocked(processImageFile)
 
 interface MockTaskOptions {
 	supportsImages?: boolean
-	rooIgnoreAllowed?: boolean
+	alphaIgnoreAllowed?: boolean
 	maxImageFileSize?: number
 	maxTotalImageSize?: number
 }
 
 function createMockTask(options: MockTaskOptions = {}) {
-	const { supportsImages = false, rooIgnoreAllowed = true, maxImageFileSize = 5, maxTotalImageSize = 20 } = options
+	const { supportsImages = false, alphaIgnoreAllowed = true, maxImageFileSize = 5, maxTotalImageSize = 20 } = options
 
 	return {
 		cwd: "/test/workspace",
@@ -151,8 +158,8 @@ function createMockTask(options: MockTaskOptions = {}) {
 		say: vi.fn().mockResolvedValue(undefined),
 		sayAndCreateMissingParamError: vi.fn().mockResolvedValue("Missing required parameter: path"),
 		recordToolError: vi.fn(),
-		rooIgnoreController: {
-			validateAccess: vi.fn().mockReturnValue(rooIgnoreAllowed),
+		alphaIgnoreController: {
+			validateAccess: vi.fn().mockReturnValue(alphaIgnoreAllowed),
 		},
 		fileContextTracker: {
 			trackFileContext: vi.fn().mockResolvedValue(undefined),
@@ -171,8 +178,11 @@ function createMockTask(options: MockTaskOptions = {}) {
 function createMockCallbacks() {
 	return {
 		pushToolResult: vi.fn(),
-		askApproval: vi.fn(),
+		askApproval: vi.fn().mockResolvedValue(true),
+		askApprovalResponse: vi.fn<AskApprovalResponse>().mockResolvedValue({ response: "yesButtonClicked" }),
 		handleError: vi.fn(),
+		setResultMetadata: vi.fn(),
+		signal: undefined as AbortSignal | undefined,
 	}
 }
 
@@ -196,6 +206,50 @@ describe("ReadFileTool", () => {
 	})
 
 	describe("input validation", () => {
+		it("observes legacy batch members separately and preserves partial failures", async () => {
+			const task = createMockTask()
+			const callbacks = createMockCallbacks()
+			await readFileTool.execute({ files: [{ path: "a.ts" }, { path: "b.ts" }] }, task as any, callbacks)
+			const observations = callbacks.setResultMetadata.mock.calls.at(-1)?.[0].trustedProgress
+			expect(observations).toHaveLength(2)
+			expect(observations[0].scope).not.toBe(observations[1].scope)
+			expect(observations[0].stateFingerprint).toBe(observations[1].stateFingerprint)
+			callbacks.setResultMetadata.mockClear()
+			task.alphaIgnoreController.validateAccess.mockReturnValueOnce(false)
+			await readFileTool.execute({ files: [{ path: "a.ts" }, { path: "b.ts" }] }, task as any, callbacks)
+			const merged = Object.assign({}, ...callbacks.setResultMetadata.mock.calls.map(([metadata]) => metadata))
+			expect(merged.status).toBe("denied")
+			expect(merged.trustedProgress).toHaveLength(1)
+		})
+
+		it.each(["slice", "indentation"] as const)(
+			"observes returned %s content independently of display metadata",
+			async (mode) => {
+				const task = createMockTask()
+				const callbacks = createMockCallbacks()
+				const read = async (content: string, totalLines: number, limit: number) => {
+					const result = {
+						content,
+						totalLines,
+						returnedLines: 1,
+						wasTruncated: true,
+						includedRanges: [[1, 1]] as [number, number][],
+					}
+					mockedFsReadFile.mockResolvedValue(Buffer.from(content.replace(/^1 \| /, "")))
+					mockedReadWithSlice.mockReturnValue(result)
+					mockedReadWithIndentation.mockReturnValue(result)
+					callbacks.setResultMetadata.mockClear()
+					await readFileTool.execute({ path: "file.ts", mode, limit }, task as any, callbacks)
+					const metadata = callbacks.setResultMetadata.mock.calls.at(-1)?.[0]
+					expect(metadata).toMatchObject({ status: "success", trustedProgress: { kind: "read" } })
+					return metadata.trustedProgress.stateFingerprint
+				}
+				const initial = await read("1 | original", 100, 10)
+				expect(await read("1 | original", 200, 20)).toBe(initial)
+				expect(await read("1 | changed", 200, 20)).not.toBe(initial)
+			},
+		)
+
 		it("should return error when path is missing", async () => {
 			const mockTask = createMockTask()
 			const callbacks = createMockCallbacks()
@@ -277,36 +331,143 @@ describe("ReadFileTool", () => {
 				expect.stringContaining("anchor_line must be a 1-indexed line number"),
 			)
 		})
+
+		it("should reject non-integral and non-positive limits", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+
+			await readFileTool.execute({ path: "test.txt", limit: 0 }, mockTask as any, callbacks)
+
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(
+				expect.stringContaining("limit must be a positive integer"),
+			)
+			expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+
+			callbacks.pushToolResult.mockClear()
+			await readFileTool.execute({ path: "test.txt", offset: 1.5 }, mockTask as any, callbacks)
+
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(
+				expect.stringContaining("offset must be a 1-indexed line number"),
+			)
+		})
+
+		it("does not emit a tool result after approval is cancelled", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+			const controller = new AbortController()
+			callbacks.signal = controller.signal
+			callbacks.askApprovalResponse.mockImplementation(async () => {
+				controller.abort()
+				return undefined
+			})
+
+			await readFileTool.execute({ path: "test.txt" }, mockTask as any, callbacks)
+
+			expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "cancelled" })
+			expect(callbacks.pushToolResult).not.toHaveBeenCalled()
+			expect(mockedFsReadFile).not.toHaveBeenCalled()
+		})
 	})
 
 	describe("RooIgnore handling", () => {
 		it("should block access to alphaignore-protected files", async () => {
-			const mockTask = createMockTask({ rooIgnoreAllowed: false })
+			const mockTask = createMockTask({ alphaIgnoreAllowed: false })
 			const callbacks = createMockCallbacks()
 
 			await readFileTool.execute({ path: "secret.env" }, mockTask as any, callbacks)
 
 			expect(mockTask.say).toHaveBeenCalledWith("rooignore_error", "secret.env")
-			expect(formatResponse.rooIgnoreError).toHaveBeenCalledWith("secret.env")
-			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("blocked by the .alphaignore"))
+			expect(formatResponse.alphaIgnoreError).toHaveBeenCalledWith("secret.env")
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(
+				expect.stringContaining("blocked by the .alphaignore"),
+			)
+		})
+
+		it("should allow reads when no ignore controller is configured", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+			;(mockTask as any).alphaIgnoreController = undefined
+
+			await readFileTool.execute({ path: "test.ts" }, mockTask as any, callbacks)
+
+			expect(callbacks.askApprovalResponse).toHaveBeenCalled()
+			expect(mockedFsReadFile).toHaveBeenCalled()
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("File: test.ts"))
 		})
 	})
 
 	describe("directory handling", () => {
-		it("should return error when trying to read a directory", async () => {
+		it.each([{ path: "docs" }, { files: [{ path: "docs" }] }])(
+			"should return directory guidance to the model without an extension error for %j",
+			async (params) => {
+				const mockTask = createMockTask()
+				const callbacks = createMockCallbacks()
+
+				mockedFsStat.mockResolvedValue({ isDirectory: () => true } as any)
+
+				await readFileTool.execute(params, mockTask as any, callbacks)
+
+				expect(mockTask.say).not.toHaveBeenCalledWith("error", expect.anything())
+				expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
+					"File: docs\nError: Cannot read 'docs' because it is a directory. Use list_files tool instead.",
+				)
+				expect(callbacks.setResultMetadata).toHaveBeenLastCalledWith({ status: "error" })
+				expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+				expect(mockedIsBinaryFile).not.toHaveBeenCalled()
+				expect(mockedFsReadFile).not.toHaveBeenCalled()
+				expect(mockTask.fileContextTracker.trackFileContext).not.toHaveBeenCalled()
+			},
+		)
+
+		it.each(["binary detection", "file read"])(
+			"should recover when a file becomes a directory during %s",
+			async (phase) => {
+				const mockTask = createMockTask()
+				const callbacks = createMockCallbacks()
+				const error = Object.assign(
+					new Error("EISDIR: illegal operation on a directory, read 'C:\\private\\workspace\\docs'"),
+					{ code: "EISDIR" },
+				)
+				if (phase === "binary detection") mockedIsBinaryFile.mockRejectedValueOnce(error)
+				else mockedFsReadFile.mockRejectedValueOnce(error)
+
+				await readFileTool.execute({ path: "docs" }, mockTask as any, callbacks)
+
+				expect(mockTask.say).not.toHaveBeenCalledWith("error", expect.anything())
+				expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
+				expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("it is a directory"))
+				expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("list_files"))
+				expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.not.stringContaining("C:\\private"))
+				expect(callbacks.setResultMetadata).toHaveBeenLastCalledWith({ status: "error" })
+				expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+				expect(mockTask.fileContextTracker.trackFileContext).not.toHaveBeenCalled()
+			},
+		)
+
+		it("should preserve successful file reads alongside a directory error in a batch", async () => {
 			const mockTask = createMockTask()
 			const callbacks = createMockCallbacks()
+			mockedFsStat.mockResolvedValueOnce({ isDirectory: () => true } as any)
 
-			mockedFsStat.mockResolvedValue({ isDirectory: () => true } as any)
-
-			await readFileTool.execute({ path: "src/utils" }, mockTask as any, callbacks)
-
-			expect(mockTask.say).toHaveBeenCalledWith(
-				"error",
-				expect.stringContaining("Cannot read 'src/utils' because it is a directory"),
+			await readFileTool.execute(
+				{ files: [{ path: "docs" }, { path: "docs/guide.md" }] },
+				mockTask as any,
+				callbacks,
 			)
-			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("it is a directory"))
+
+			expect(mockTask.say).not.toHaveBeenCalledWith("error", expect.anything())
+			expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
+				"File: docs\nError: Cannot read 'docs' because it is a directory. Use list_files tool instead.\n\n---\n\nFile: docs/guide.md\n1 | test content",
+			)
+			const metadata = Object.assign({}, ...callbacks.setResultMetadata.mock.calls.map(([value]) => value))
+			expect(metadata.status).toBe("error")
+			expect(metadata.trustedProgress).toHaveLength(1)
 			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+			expect(mockedFsReadFile).toHaveBeenCalledOnce()
+			expect(mockTask.fileContextTracker.trackFileContext).toHaveBeenCalledExactlyOnceWith(
+				"docs/guide.md",
+				"read_tool",
+			)
 		})
 	})
 
@@ -485,7 +646,7 @@ describe("ReadFileTool", () => {
 
 			await readFileTool.execute({ path: "test.ts" }, mockTask as any, callbacks)
 
-			expect(mockedReadWithSlice).toHaveBeenCalled()
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith("File: test.ts\n1 | line 1\n2 | line 2\n3 | line 3")
 			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("line 1"))
 		})
 
@@ -508,7 +669,8 @@ describe("ReadFileTool", () => {
 				callbacks,
 			)
 
-			expect(mockedReadWithSlice).toHaveBeenCalledWith(expect.any(String), 1, 2) // offset converted to 0-based
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("2 | line 2\n3 | line 3"))
+			expect(callbacks.pushToolResult.mock.calls[0][0]).not.toMatch(/^[14] \|/m)
 		})
 
 		it("should read text file with indentation mode", async () => {
@@ -547,7 +709,7 @@ describe("ReadFileTool", () => {
 			const mockTask = createMockTask()
 			const callbacks = createMockCallbacks()
 
-			mockedFsReadFile.mockResolvedValue(Buffer.from("lots of content..."))
+			mockedFsReadFile.mockResolvedValue(Buffer.from("source line\n".repeat(5000)))
 			mockedReadWithSlice.mockReturnValue({
 				content: "1 | truncated content",
 				returnedLines: 100,
@@ -558,8 +720,8 @@ describe("ReadFileTool", () => {
 
 			await readFileTool.execute({ path: "large.ts" }, mockTask as any, callbacks)
 
-			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("truncated"))
-			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("To read more"))
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("Partial read"))
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("Continuation:"))
 		})
 
 		it("should handle empty files", async () => {
@@ -579,6 +741,191 @@ describe("ReadFileTool", () => {
 
 			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("empty"))
 		})
+
+		it("should strip a UTF-8 BOM before returning text", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+			mockedFsReadFile.mockResolvedValue(Buffer.from([0xef, 0xbb, 0xbf, ...Buffer.from("content")]))
+			mockedReadWithSlice.mockReturnValue({
+				content: "1 | content",
+				returnedLines: 1,
+				totalLines: 1,
+				wasTruncated: false,
+				includedRanges: [[1, 1]],
+			})
+
+			await readFileTool.execute({ path: "bom.txt" }, mockTask as any, callbacks)
+
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith("File: bom.txt\n1 | content")
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.not.stringContaining("\uFEFF"))
+		})
+	})
+
+	describe("legacy multi-file input", () => {
+		it("should emit exactly one result for a malformed files value", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+
+			await readFileTool.execute(
+				{ _legacyFormat: true, files: "not-an-array" } as any,
+				mockTask as any,
+				callbacks,
+			)
+
+			expect(callbacks.pushToolResult).toHaveBeenCalledTimes(1)
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("Missing required parameter"))
+			expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+		})
+
+		it("should return one error result instead of throwing for an entry without a path", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+
+			await readFileTool.execute({ _legacyFormat: true, files: [{}] } as any, mockTask as any, callbacks)
+
+			expect(callbacks.pushToolResult).toHaveBeenCalledTimes(1)
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("non-empty path"))
+			expect(mockedFsReadFile).not.toHaveBeenCalled()
+		})
+
+		it("should reject invalid line ranges before reading the file", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+
+			await readFileTool.execute(
+				{
+					_legacyFormat: true,
+					files: [{ path: "test.ts", lineRanges: [{ start: 4, end: 2 }] }],
+				} as any,
+				mockTask as any,
+				callbacks,
+			)
+
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("start <= end"))
+			expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+			expect(mockedFsReadFile).not.toHaveBeenCalled()
+		})
+
+		it("should return legacy missing-file drift to the model without showing an extension error", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+			const missingError = Object.assign(
+				new Error("ENOENT: no such file or directory, stat 'C:\\private\\workspace\\missing.ts'"),
+				{ code: "ENOENT", path: "C:\\private\\workspace\\missing.ts" },
+			)
+			mockedFsStat.mockRejectedValue(missingError)
+
+			await readFileTool.execute(
+				{ _legacyFormat: true, files: [{ path: "missing.ts" }] } as any,
+				mockTask as any,
+				callbacks,
+			)
+
+			expect(mockTask.say).not.toHaveBeenCalledWith("error", expect.anything())
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(
+				expect.stringContaining("may have been moved or deleted"),
+			)
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.not.stringContaining("C:\\private"))
+			expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+		})
+
+		it("should use the scheduler rich approval callback for legacy files", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+			await readFileTool.execute(
+				{ _legacyFormat: true, files: [{ path: "test.ts" }] } as any,
+				mockTask as any,
+				callbacks,
+			)
+
+			expect(callbacks.askApprovalResponse).toHaveBeenCalledWith("tool", expect.any(String))
+			expect(mockTask.ask).not.toHaveBeenCalled()
+		})
+
+		it("keeps successful legacy reads when a sibling file is denied", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+			callbacks.askApprovalResponse = vi.fn().mockImplementation(async (_type, message) => {
+				const { batchFiles } = JSON.parse(message)
+				return {
+					response: "objectResponse",
+					text: JSON.stringify({ [batchFiles[0].key]: false, [batchFiles[1].key]: true }),
+				}
+			})
+
+			await readFileTool.execute(
+				{
+					_legacyFormat: true,
+					files: [{ path: "first.ts" }, { path: "second.ts" }],
+				} as any,
+				mockTask as any,
+				callbacks,
+			)
+
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(
+				expect.stringContaining("File: first.ts\nStatus: Denied by user"),
+			)
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(
+				expect.stringContaining("File: second.ts\n1 | test content"),
+			)
+			expect(mockedFsReadFile).toHaveBeenCalledOnce()
+			expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "denied" })
+		})
+
+		it("should preserve per-file decisions from a rich batch approval response", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+			const fileResults = [
+				{ path: "first.ts", status: "pending", entry: { path: "first.ts" } },
+				{ path: "second.ts", status: "pending", entry: { path: "second.ts" } },
+			] as any[]
+			const richApproval = vi.fn().mockImplementation(async (_type: string, message: string) => {
+				const { batchFiles } = JSON.parse(message)
+				return {
+					response: "objectResponse",
+					text: JSON.stringify({ [batchFiles[0].key]: true, [batchFiles[1].key]: false }),
+				}
+			})
+			callbacks.askApprovalResponse = richApproval
+
+			await (readFileTool as any).requestApproval(
+				mockTask,
+				fileResults,
+				(result: object, updates: Record<string, unknown>) => Object.assign(result, updates),
+				callbacks,
+			)
+
+			expect(richApproval).toHaveBeenCalledOnce()
+			expect(mockTask.ask).not.toHaveBeenCalled()
+			expect(fileResults[0].status).toBe("approved")
+			expect(fileResults[1].status).toBe("denied")
+			expect(mockTask.didRejectTool).toBe(true)
+		})
+
+		it("should preserve original source line numbers and remove CRLF terminators", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+			mockedFsReadFile.mockResolvedValue(Buffer.from("one\r\ntwo\r\nthree\r\nfour\r\nfive"))
+
+			await readFileTool.execute(
+				{
+					_legacyFormat: true,
+					files: [
+						{
+							path: "test.ts",
+							lineRanges: [
+								{ start: 2, end: 2 },
+								{ start: 4, end: 4 },
+							],
+						},
+					],
+				} as any,
+				mockTask as any,
+				callbacks,
+			)
+
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith("File: test.ts\n2 | two\n4 | four")
+		})
 	})
 
 	describe("approval flow", () => {
@@ -586,11 +933,9 @@ describe("ReadFileTool", () => {
 			const mockTask = createMockTask()
 			const callbacks = createMockCallbacks()
 
-			mockTask.ask.mockResolvedValue({ response: "yesButtonClicked", text: undefined, images: undefined })
-
 			await readFileTool.execute({ path: "test.ts" }, mockTask as any, callbacks)
 
-			expect(mockTask.ask).toHaveBeenCalledWith("tool", expect.any(String), false)
+			expect(callbacks.askApprovalResponse).toHaveBeenCalledWith("tool", expect.any(String))
 			expect(mockTask.didRejectTool).toBe(false)
 		})
 
@@ -598,7 +943,7 @@ describe("ReadFileTool", () => {
 			const mockTask = createMockTask()
 			const callbacks = createMockCallbacks()
 
-			mockTask.ask.mockResolvedValue({ response: "noButtonClicked", text: undefined, images: undefined })
+			callbacks.askApprovalResponse.mockResolvedValue({ response: "noButtonClicked" })
 
 			await readFileTool.execute({ path: "test.ts" }, mockTask as any, callbacks)
 
@@ -609,12 +954,11 @@ describe("ReadFileTool", () => {
 		it("should include user feedback when provided with approval", async () => {
 			const mockTask = createMockTask()
 			const callbacks = createMockCallbacks()
-
-			mockTask.ask.mockResolvedValue({
+			callbacks.askApprovalResponse.mockResolvedValue({
 				response: "yesButtonClicked",
 				text: "Please be careful with this file",
-				images: undefined,
 			})
+
 			mockedFsReadFile.mockResolvedValue(Buffer.from("content"))
 			mockedReadWithSlice.mockReturnValue({
 				content: "1 | content",
@@ -634,10 +978,9 @@ describe("ReadFileTool", () => {
 			const mockTask = createMockTask()
 			const callbacks = createMockCallbacks()
 
-			mockTask.ask.mockResolvedValue({
+			callbacks.askApprovalResponse.mockResolvedValue({
 				response: "noButtonClicked",
 				text: "This file contains secrets",
-				images: undefined,
 			})
 
 			await readFileTool.execute({ path: "secrets.env" }, mockTask as any, callbacks)
@@ -686,15 +1029,35 @@ describe("ReadFileTool", () => {
 	})
 
 	describe("error handling", () => {
-		it("should handle file read errors gracefully", async () => {
+		it("should show extension diagnostics for unexpected file read errors", async () => {
 			const mockTask = createMockTask()
 			const callbacks = createMockCallbacks()
 
-			mockedFsReadFile.mockRejectedValue(new Error("ENOENT: no such file or directory"))
+			mockedFsReadFile.mockRejectedValue(Object.assign(new Error("EIO: input/output error"), { code: "EIO" }))
 
 			await readFileTool.execute({ path: "nonexistent.ts" }, mockTask as any, callbacks)
 
 			expect(mockTask.say).toHaveBeenCalledWith("error", expect.stringContaining("Error reading file"))
+			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+		})
+
+		it("should return missing-file drift to the model without showing an extension error", async () => {
+			const mockTask = createMockTask()
+			const callbacks = createMockCallbacks()
+			const missingError = Object.assign(
+				new Error("ENOENT: no such file or directory, stat 'C:\\private\\workspace\\missing.ts'"),
+				{ code: "ENOENT", path: "C:\\private\\workspace\\missing.ts" },
+			)
+			mockedFsStat.mockRejectedValue(missingError)
+
+			await readFileTool.execute({ path: "missing.ts" }, mockTask as any, callbacks)
+
+			expect(mockTask.say).not.toHaveBeenCalledWith("error", expect.anything())
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(
+				expect.stringContaining("may have been moved or deleted"),
+			)
+			expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.not.stringContaining("C:\\private"))
+			expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
 			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
 		})
 

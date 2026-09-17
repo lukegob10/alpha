@@ -1,2 +1,2 @@
 export type { AssistantMessageContent } from "./types"
-export { presentAssistantMessage } from "./presentAssistantMessage"
+export { presentAssistantMessage, type PresentAssistantMessageOptions } from "./presentAssistantMessage"

@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react"
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react"
 
 import {
 	type ProviderSettings,
@@ -10,6 +10,8 @@ import {
 	type TelemetrySetting,
 	type ExtensionMessage,
 	type ExtensionState,
+	type AlphaMessage,
+	type LiveTaskMetadata,
 	type MarketplaceInstalledMetadata,
 	type SkillMetadata,
 	type Command,
@@ -27,6 +29,14 @@ import { experimentDefault } from "@alpha/experiments"
 
 import { vscode } from "@src/utils/vscode"
 import { convertTextMateToHljs } from "@src/utils/textMateToHljs"
+import {
+	applyLifecycleEventToExtensionState,
+	applyLifecycleDegradedToExtensionState,
+	applyLifecycleSnapshotToExtensionState,
+	applyLifecycleSnapshotsToExtensionState,
+	mergeAgentLifecycleDegradedSignals,
+	mergeAgentLifecycleSnapshots,
+} from "./agentLifecycleState"
 
 export interface ExtensionStateContextType extends ExtensionState {
 	historyPreviewCollapsed?: boolean // Add the new state property
@@ -58,9 +68,10 @@ export interface ExtensionStateContextType extends ExtensionState {
 	setAlwaysAllowWriteProtected: (value: boolean) => void
 	setAlwaysAllowExecute: (value: boolean) => void
 	setAlwaysAllowMcp: (value: boolean) => void
-	setAlwaysAllowModeSwitch: (value: boolean) => void
 	setAlwaysAllowSubtasks: (value: boolean) => void
-	setShowRooIgnoredFiles: (value: boolean) => void
+	setAlwaysAllowSubagents: (value: boolean) => void
+	setAlwaysAllowTickets: (value: boolean) => void
+	setShowAlphaIgnoredFiles: (value: boolean) => void
 	setEnableSubfolderRules: (value: boolean) => void
 	setShowAnnouncement: (value: boolean) => void
 	setAllowedCommands: (value: string[]) => void
@@ -151,31 +162,79 @@ export const mergeExtensionState = (prevState: ExtensionState, newState: Partial
 	const customModePrompts = { ...prevCustomModePrompts, ...(newCustomModePrompts ?? {}) }
 	const experiments = { ...prevExperiments, ...(newExperiments ?? {}) }
 	const rest = { ...prevRest, ...newRest }
+	const agentLifecycleSnapshots = mergeAgentLifecycleSnapshots(
+		prevState.agentLifecycleSnapshots,
+		newState.agentLifecycleSnapshots,
+	)
+	const agentLifecycleDegraded = mergeAgentLifecycleDegradedSignals(
+		prevState.agentLifecycleDegraded,
+		newState.agentLifecycleDegraded,
+	)
 
-	// Protect clineMessages from stale state pushes using sequence numbering.
-	// Multiple async event sources (state updates and task streaming) can trigger
-	// concurrent state pushes. If a stale push arrives after a newer one, its clineMessages
-	// would overwrite the newer messages. The sequence number prevents this by only applying
-	// clineMessages when the incoming seq is strictly greater than the last applied seq.
-	if (
-		newState.clineMessagesSeq !== undefined &&
-		prevState.clineMessagesSeq !== undefined &&
-		newState.clineMessagesSeq <= prevState.clineMessagesSeq &&
-		newState.clineMessages !== undefined
-	) {
+	const hasDedicatedDomainSequence =
+		newState.taskStateSeq !== undefined ||
+		newState.messageQueueSeq !== undefined ||
+		newState.currentTaskTodosSeq !== undefined
+	const legacyDomainSequence = hasDedicatedDomainSequence ? undefined : newState.clineMessagesSeq
+	const incomingTaskStateSeq = newState.taskStateSeq ?? legacyDomainSequence
+	const incomingQueueSeq = newState.messageQueueSeq ?? legacyDomainSequence
+	const incomingTodosSeq = newState.currentTaskTodosSeq ?? legacyDomainSequence
+	const previousTaskStateSeq =
+		prevState.taskStateSeq ?? (hasDedicatedDomainSequence ? undefined : prevState.clineMessagesSeq)
+	const previousQueueSeq =
+		prevState.messageQueueSeq ?? (hasDedicatedDomainSequence ? undefined : prevState.clineMessagesSeq)
+	const previousTodosSeq =
+		prevState.currentTaskTodosSeq ?? (hasDedicatedDomainSequence ? undefined : prevState.clineMessagesSeq)
+	const isStale = (incoming: number | undefined, previous: number | undefined) =>
+		incoming !== undefined && previous !== undefined && incoming <= previous
+
+	// Transcript, lifecycle, queue, and todos are delivered independently. Guard
+	// each domain separately so a tiny queue patch cannot suppress a valid later
+	// lifecycle snapshot (or let an older full snapshot erase a newer queue).
+	if (isStale(newState.clineMessagesSeq, prevState.clineMessagesSeq)) {
 		rest.clineMessages = prevState.clineMessages
 		rest.clineMessagesSeq = prevState.clineMessagesSeq
 	}
 
+	const taskStateIsStale = isStale(incomingTaskStateSeq, previousTaskStateSeq)
+	const patchHasNoTaskStateSequence = hasDedicatedDomainSequence && incomingTaskStateSeq === undefined
+	if (taskStateIsStale || patchHasNoTaskStateSequence) {
+		rest.currentTaskId = prevState.currentTaskId
+		rest.currentTaskItem = prevState.currentTaskItem
+		rest.currentView = prevState.currentView
+		rest.currentTaskAutoApprovalRestricted = prevState.currentTaskAutoApprovalRestricted
+		rest.activeTaskId = prevState.activeTaskId
+		rest.liveTaskIds = prevState.liveTaskIds
+		rest.liveTasksById = prevState.liveTasksById
+		rest.managedAgentTree = prevState.managedAgentTree
+		rest.taskStateSeq = prevState.taskStateSeq
+	}
+
+	const targetsDifferentTask =
+		newState.currentTaskId !== undefined && newState.currentTaskId !== prevState.currentTaskId
+	const rejectScopedDomains = targetsDifferentTask && (taskStateIsStale || patchHasNoTaskStateSequence)
+	if (rejectScopedDomains || isStale(incomingQueueSeq, previousQueueSeq)) {
+		rest.messageQueue = prevState.messageQueue
+		rest.messageQueueSeq = prevState.messageQueueSeq
+	}
+	if (rejectScopedDomains || isStale(incomingTodosSeq, previousTodosSeq)) {
+		rest.currentTaskTodos = prevState.currentTaskTodos
+		rest.currentTaskTodosSeq = prevState.currentTaskTodosSeq
+	}
+
 	// Note that we completely replace the previous apiConfiguration and customSupportPrompts objects
 	// with new ones since the state that is broadcast is the entire objects so merging is not necessary.
-	return {
+	const mergedState = {
 		...rest,
 		apiConfiguration: apiConfiguration ?? prevState.apiConfiguration,
 		customModePrompts,
 		customSupportPrompts: customSupportPrompts ?? prevState.customSupportPrompts,
 		experiments,
+		agentLifecycleSnapshots,
+		agentLifecycleDegraded,
 	}
+
+	return applyLifecycleSnapshotsToExtensionState(mergedState, agentLifecycleSnapshots)
 }
 
 export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -186,12 +245,10 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		taskHistory: [],
 		scheduledTasks: [],
 		scheduledTaskRuns: [],
-		goalSeekJobs: [],
-		goalSeekRuns: [],
-		goalSeekAttempts: [],
 		currentView: { type: "newTaskDraft" },
 		liveTaskIds: [],
 		liveTasksById: {},
+		agentLifecycleDegraded: {},
 		shouldShowAnnouncement: false,
 		allowedCommands: [],
 		deniedCommands: [],
@@ -215,6 +272,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		enhancementApiConfigId: "",
 		hasOpenedModeSelector: false, // Default to false (not opened yet)
 		autoApprovalEnabled: false,
+		alwaysAllowTickets: false,
 		customModes: [],
 		maxOpenTabsContext: 20,
 		maxWorkspaceFiles: 200,
@@ -267,7 +325,8 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	})
 
 	const [didHydrateState, setDidHydrateState] = useState(false)
-	const [showWelcome, setShowWelcome] = useState(false)
+	const [providerSetupRequired, setProviderSetupRequired] = useState(false)
+	const [observedActiveTaskId, setObservedActiveTaskId] = useState<string>()
 	const [theme, setTheme] = useState<any>(undefined)
 	const [filePaths, setFilePaths] = useState<string[]>([])
 	const [openedTabs, setOpenedTabs] = useState<Array<{ label: string; isActive: boolean; path?: string }>>([])
@@ -286,6 +345,17 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const [includeTaskHistoryInEnhance, setIncludeTaskHistoryInEnhance] = useState(true)
 	const [includeCurrentTime, setIncludeCurrentTime] = useState(true)
 	const [includeCurrentCost, setIncludeCurrentCost] = useState(true)
+	const latestTaskStateSeqRef = useRef<number>()
+	const latestMessageQueueSeqRef = useRef<number>()
+	const latestTaskTodosSeqRef = useRef<number>()
+	type IncrementalMessage = {
+		taskId?: string
+		clineMessage: AlphaMessage
+		clineMessagesSeq?: number
+		liveTask?: LiveTaskMetadata
+	}
+	const pendingMessageUpdatesRef = useRef(new Map<string, IncrementalMessage>())
+	const messageUpdateFrameRef = useRef<number | undefined>(undefined)
 
 	const setListApiConfigMeta = useCallback(
 		(value: ProviderSettingsEntry[]) => setState((prevState) => ({ ...prevState, listApiConfigMeta: value })),
@@ -302,14 +372,189 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		}))
 	}, [])
 
+	const applyMessageUpdates = useCallback((updates: IncrementalMessage[]) => {
+		if (updates.length === 0) return
+
+		setState((prevState) => {
+			let nextMessages = prevState.clineMessages
+			let nextSequence = prevState.clineMessagesSeq
+			let didChange = false
+			let liveTasksById = prevState.liveTasksById
+
+			for (const { taskId, clineMessage, clineMessagesSeq, liveTask } of updates) {
+				const existingLiveTask = liveTask ? liveTasksById?.[liveTask.id] : undefined
+				if (liveTask && (!existingLiveTask || liveTask.lastUpdatedAt >= existingLiveTask.lastUpdatedAt)) {
+					liveTasksById = { ...(liveTasksById ?? {}), [liveTask.id]: liveTask }
+				}
+				if (taskId && taskId !== prevState.currentTaskId) continue
+				if (clineMessagesSeq !== undefined && nextSequence !== undefined && clineMessagesSeq <= nextSequence) {
+					continue
+				}
+
+				const index = findLastIndex(nextMessages, (msg) => msg.ts === clineMessage.ts)
+				if (index === -1) {
+					console.warn(
+						`[messageUpdated] Received update for unknown message ts=${clineMessage.ts}, dropping. ` +
+							`Frontend has ${nextMessages.length} messages.`,
+					)
+					continue
+				}
+
+				if (!didChange) {
+					nextMessages = [...nextMessages]
+					didChange = true
+				}
+				nextMessages[index] = clineMessage
+				if (clineMessagesSeq !== undefined) nextSequence = clineMessagesSeq
+			}
+
+			return didChange || liveTasksById !== prevState.liveTasksById
+				? { ...prevState, clineMessages: nextMessages, clineMessagesSeq: nextSequence, liveTasksById }
+				: prevState
+		})
+	}, [])
+
+	const applyMessageCreation = useCallback(
+		({ taskId, clineMessage, clineMessagesSeq, liveTask }: IncrementalMessage) => {
+			setState((prevState) => {
+				const existingLiveTask = liveTask ? prevState.liveTasksById?.[liveTask.id] : undefined
+				const liveTasksById =
+					liveTask && (!existingLiveTask || liveTask.lastUpdatedAt >= existingLiveTask.lastUpdatedAt)
+						? { ...(prevState.liveTasksById ?? {}), [liveTask.id]: liveTask }
+						: prevState.liveTasksById
+				if (taskId && taskId !== prevState.currentTaskId) {
+					return liveTasksById === prevState.liveTasksById ? prevState : { ...prevState, liveTasksById }
+				}
+				if (
+					clineMessagesSeq !== undefined &&
+					prevState.clineMessagesSeq !== undefined &&
+					clineMessagesSeq <= prevState.clineMessagesSeq
+				) {
+					return liveTasksById === prevState.liveTasksById ? prevState : { ...prevState, liveTasksById }
+				}
+
+				const existingIndex = findLastIndex(
+					prevState.clineMessages,
+					(message) => message.ts === clineMessage.ts,
+				)
+				const clineMessages = [...prevState.clineMessages]
+				if (existingIndex === -1) {
+					clineMessages.push(clineMessage)
+				} else {
+					clineMessages[existingIndex] = clineMessage
+				}
+
+				return {
+					...prevState,
+					clineMessages,
+					clineMessagesSeq: clineMessagesSeq ?? prevState.clineMessagesSeq,
+					liveTasksById,
+				}
+			})
+		},
+		[],
+	)
+
+	const takePendingMessageUpdates = useCallback(() => {
+		const updates = Array.from(pendingMessageUpdatesRef.current.values())
+		pendingMessageUpdatesRef.current.clear()
+		// Replacing a Map value retains its original insertion position. Sort by the
+		// latest wire sequence so interleaved updates for multiple messages all apply.
+		updates.sort((left, right) => {
+			if (left.clineMessagesSeq === undefined || right.clineMessagesSeq === undefined) return 0
+			return left.clineMessagesSeq - right.clineMessagesSeq
+		})
+		return updates
+	}, [])
+
+	const flushPendingMessageUpdates = useCallback(() => {
+		if (messageUpdateFrameRef.current !== undefined) {
+			cancelAnimationFrame(messageUpdateFrameRef.current)
+			messageUpdateFrameRef.current = undefined
+		}
+
+		applyMessageUpdates(takePendingMessageUpdates())
+	}, [applyMessageUpdates, takePendingMessageUpdates])
+
+	const queuePartialMessageUpdate = useCallback(
+		(
+			taskId: string | undefined,
+			clineMessage: AlphaMessage,
+			clineMessagesSeq?: number,
+			liveTask?: LiveTaskMetadata,
+		) => {
+			const key = `${taskId ?? ""}:${clineMessage.ts}`
+			pendingMessageUpdatesRef.current.set(key, { taskId, clineMessage, clineMessagesSeq, liveTask })
+
+			if (messageUpdateFrameRef.current !== undefined) return
+			messageUpdateFrameRef.current = requestAnimationFrame(() => {
+				messageUpdateFrameRef.current = undefined
+				applyMessageUpdates(takePendingMessageUpdates())
+			})
+		},
+		[applyMessageUpdates, takePendingMessageUpdates],
+	)
+
 	const handleMessage = useCallback(
 		(event: MessageEvent) => {
 			const message: ExtensionMessage = event.data
 			switch (message.type) {
+				case "agentLifecycleEvent": {
+					setState((prevState) => applyLifecycleEventToExtensionState(prevState, message))
+					break
+				}
+				case "agentLifecycleSnapshot": {
+					setState((prevState) => applyLifecycleSnapshotToExtensionState(prevState, message))
+					break
+				}
+				case "agentLifecycleDegraded": {
+					setState((prevState) => applyLifecycleDegradedToExtensionState(prevState, message))
+					break
+				}
 				case "state": {
+					// Preserve event ordering: a newer state snapshot must not be followed by
+					// a previously queued partial update.
+					flushPendingMessageUpdates()
 					const newState = message.state ?? {}
 					setState((prevState) => mergeExtensionState(prevState, newState))
-					setShowWelcome(!checkExistKey(newState.apiConfiguration))
+
+					// Queue/todo fast paths can arrive before the full task snapshot. They
+					// intentionally do not own task-domain state, but a fresh patch for a
+					// concrete task is still authoritative evidence that a chat is active.
+					// Track that evidence separately so onboarding can never flash over it.
+					const taskStateSeq = newState.taskStateSeq
+					if (taskStateSeq !== undefined && taskStateSeq > (latestTaskStateSeqRef.current ?? -1)) {
+						latestTaskStateSeqRef.current = taskStateSeq
+						setObservedActiveTaskId(newState.currentTaskId)
+					} else if (taskStateSeq === undefined && newState.currentTaskId !== undefined) {
+						const hasFreshQueueSignal =
+							newState.messageQueueSeq !== undefined &&
+							newState.messageQueueSeq > (latestMessageQueueSeqRef.current ?? -1)
+						const hasFreshTodosSignal =
+							newState.currentTaskTodosSeq !== undefined &&
+							newState.currentTaskTodosSeq > (latestTaskTodosSeqRef.current ?? -1)
+						if (hasFreshQueueSignal || hasFreshTodosSignal) {
+							setObservedActiveTaskId(newState.currentTaskId)
+						}
+					}
+					if (
+						newState.messageQueueSeq !== undefined &&
+						newState.messageQueueSeq > (latestMessageQueueSeqRef.current ?? -1)
+					) {
+						latestMessageQueueSeqRef.current = newState.messageQueueSeq
+					}
+					if (
+						newState.currentTaskTodosSeq !== undefined &&
+						newState.currentTaskTodosSeq > (latestTaskTodosSeqRef.current ?? -1)
+					) {
+						latestTaskTodosSeqRef.current = newState.currentTaskTodosSeq
+					}
+
+					// Configuration-less state messages are partial transport patches, not
+					// evidence that provider setup is missing.
+					if (newState.apiConfiguration !== undefined) {
+						setProviderSetupRequired(!checkExistKey(newState.apiConfiguration))
+					}
 					setDidHydrateState(true)
 					// Update alwaysAllowFollowupQuestions if present in state message
 					if ((newState as any).alwaysAllowFollowupQuestions !== undefined) {
@@ -372,27 +617,38 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 				}
 				case "messageUpdated": {
 					const clineMessage = message.clineMessage!
-					setState((prevState) => {
-						if (message.taskId && message.taskId !== prevState.currentTaskId) {
-							return prevState
-						}
+					const key = `${message.taskId ?? ""}:${clineMessage.ts}`
 
-						// worth noting it will never be possible for a more up-to-date message to be sent here or in normal messages post since the presentAssistantContent function uses lock
-						const lastIndex = findLastIndex(prevState.clineMessages, (msg) => msg.ts === clineMessage.ts)
-						if (lastIndex !== -1) {
-							const newClineMessages = [...prevState.clineMessages]
-							newClineMessages[lastIndex] = clineMessage
-							return { ...prevState, clineMessages: newClineMessages }
-						}
-						// Log a warning if messageUpdated arrives for a timestamp not in the
-						// frontend's clineMessages. With the seq guard and state event isolation
-						// (layers 1+2), this should not happen under normal conditions. If it
-						// does, it signals a state synchronization issue worth investigating.
-						console.warn(
-							`[messageUpdated] Received update for unknown message ts=${clineMessage.ts}, dropping. ` +
-								`Frontend has ${prevState.clineMessages.length} messages.`,
+					if (clineMessage.partial) {
+						queuePartialMessageUpdate(
+							message.taskId,
+							clineMessage,
+							message.clineMessagesSeq,
+							message.liveTask,
 						)
-						return prevState
+					} else {
+						// A terminal update supersedes any partial for the same message and is
+						// applied immediately so completion controls never lag behind the stream.
+						flushPendingMessageUpdates()
+						pendingMessageUpdatesRef.current.delete(key)
+						applyMessageUpdates([
+							{
+								taskId: message.taskId,
+								clineMessage,
+								clineMessagesSeq: message.clineMessagesSeq,
+								liveTask: message.liveTask,
+							},
+						])
+					}
+					break
+				}
+				case "messageCreated": {
+					flushPendingMessageUpdates()
+					applyMessageCreation({
+						taskId: message.taskId,
+						clineMessage: message.clineMessage!,
+						clineMessagesSeq: message.clineMessagesSeq,
+						liveTask: message.liveTask,
 					})
 					break
 				}
@@ -470,30 +726,41 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					}))
 					break
 				}
-				case "goalSeekUpdated": {
-					setState((prevState) => ({
-						...prevState,
-						goalSeekJobs: message.goalSeekJobs ?? message.goalSeekState?.jobs ?? [],
-						goalSeekRuns: message.goalSeekRuns ?? message.goalSeekState?.runs ?? [],
-						goalSeekAttempts: message.goalSeekAttempts ?? message.goalSeekState?.attempts ?? [],
-					}))
-					break
-				}
 			}
 		},
-		[setListApiConfigMeta],
+		[
+			applyMessageCreation,
+			applyMessageUpdates,
+			flushPendingMessageUpdates,
+			queuePartialMessageUpdate,
+			setListApiConfigMeta,
+		],
 	)
 
 	useEffect(() => {
+		const pendingUpdates = pendingMessageUpdatesRef.current
 		window.addEventListener("message", handleMessage)
 		return () => {
 			window.removeEventListener("message", handleMessage)
+			if (messageUpdateFrameRef.current !== undefined) {
+				cancelAnimationFrame(messageUpdateFrameRef.current)
+			}
+			pendingUpdates.clear()
 		}
 	}, [handleMessage])
 
 	useEffect(() => {
 		vscode.postMessage({ type: "webviewDidLaunch" })
 	}, [])
+
+	// Provider setup is onboarding for a new-task draft, never an overlay for an
+	// established chat. Deriving the task guard from the sequence-aware merged
+	// state also prevents stale lifecycle patches from hiding the current view.
+	const showWelcome =
+		providerSetupRequired &&
+		state.currentView?.type !== "task" &&
+		state.currentTaskId === undefined &&
+		observedActiveTaskId === undefined
 
 	const contextValue: ExtensionStateContextType = {
 		...state,
@@ -529,8 +796,9 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 			setState((prevState) => ({ ...prevState, alwaysAllowWriteProtected: value })),
 		setAlwaysAllowExecute: (value) => setState((prevState) => ({ ...prevState, alwaysAllowExecute: value })),
 		setAlwaysAllowMcp: (value) => setState((prevState) => ({ ...prevState, alwaysAllowMcp: value })),
-		setAlwaysAllowModeSwitch: (value) => setState((prevState) => ({ ...prevState, alwaysAllowModeSwitch: value })),
 		setAlwaysAllowSubtasks: (value) => setState((prevState) => ({ ...prevState, alwaysAllowSubtasks: value })),
+		setAlwaysAllowSubagents: (value) => setState((prevState) => ({ ...prevState, alwaysAllowSubagents: value })),
+		setAlwaysAllowTickets: (value) => setState((prevState) => ({ ...prevState, alwaysAllowTickets: value })),
 		setAlwaysAllowFollowupQuestions,
 		setFollowupAutoApproveTimeoutMs: (value) =>
 			setState((prevState) => ({ ...prevState, followupAutoApproveTimeoutMs: value })),
@@ -566,7 +834,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		setMaxOpenTabsContext: (value) => setState((prevState) => ({ ...prevState, maxOpenTabsContext: value })),
 		setMaxWorkspaceFiles: (value) => setState((prevState) => ({ ...prevState, maxWorkspaceFiles: value })),
 		setTelemetrySetting: (value) => setState((prevState) => ({ ...prevState, telemetrySetting: value })),
-		setShowRooIgnoredFiles: (value) => setState((prevState) => ({ ...prevState, showRooIgnoredFiles: value })),
+		setShowAlphaIgnoredFiles: (value) => setState((prevState) => ({ ...prevState, showRooIgnoredFiles: value })),
 		setEnableSubfolderRules: (value) => setState((prevState) => ({ ...prevState, enableSubfolderRules: value })),
 		setAwsUsePromptCache: (value) => setState((prevState) => ({ ...prevState, awsUsePromptCache: value })),
 		setMaxImageFileSize: (value) => setState((prevState) => ({ ...prevState, maxImageFileSize: value })),

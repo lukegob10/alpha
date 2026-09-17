@@ -16,6 +16,41 @@
 			"policy_restriction": "Failed to create new task due to policy restrictions."
 		}
 	},
+	"fileConflicts": {
+		"save": "Cannot save '{{path}}': {{reason}}. Re-read the file and retry so the user's changes are preserved.",
+		"delete": "Cannot delete '{{path}}': {{reason}}. Re-read the file and retry.",
+		"saveDestination": "Cannot save '{{path}}': {{reason}}. Review the destination and retry.",
+		"reasons": {
+			"fileUnsavedChanges": "the file has unsaved changes in an open editor",
+			"fileChangedDuringApproval": "the file changed while approval was pending",
+			"editorChangedWhileChecked": "the open editor changed while the file was being checked",
+			"destinationUnsavedChanges": "the destination has unsaved changes in an open editor",
+			"destinationNotRegularFile": "the destination is not a regular file",
+			"destinationChangedDuringInspection": "the destination changed while it was being inspected",
+			"destinationPathChanged": "the destination now resolves to a different path",
+			"destinationCreatedAfterInspection": "the destination was created after inspection",
+			"destinationDeletedAfterInspection": "the destination was deleted after inspection",
+			"destinationChangedAfterInspection": "the destination changed after inspection"
+		}
+	},
+	"diffView": {
+		"editCancelled": "The file edit was cancelled",
+		"applyContentFailed": "Failed to apply the content to the diff editor",
+		"previewChangedDuringEdit": "The diff preview changed during the edit; the user's changes were preserved",
+		"noEditAvailableToSave": "No file edit is available to save",
+		"previewChangedAfterApproval": "The diff preview changed after approval; review the changes and retry",
+		"previewHasUserChanges": "The diff preview has user changes; review them before retrying the edit",
+		"noFilePathForOpening": "No file path set for opening diff editor",
+		"previewChangedWhileOpening": "The diff preview changed while it was opening; the user's changes were preserved",
+		"openFailed": "Failed to open diff editor for {{path}}: {{message}}",
+		"missingExpectedFileState": "Missing expected file state before opening the diff preview"
+	},
+	"applyPatch": {
+		"deleteCancelled": "Delete operation was cancelled."
+	},
+	"imageOutput": {
+		"writeIncomplete": "Failed to finish writing '{{path}}'; the file may be incomplete. {{cause}}"
+	},
 	"generateImage": {
 		"openRouterApiKeyRequired": "OpenRouter API key is required for image generation with OpenRouter models. Please configure it in the Image Generation experimental settings.",
 		"failedWithStatus": "Failed to generate image: {{status}} {{statusText}}",
@@ -24,6 +59,10 @@
 		"invalidImageData": "Invalid image data in response",
 		"invalidImageFormat": "Invalid image format received",
 		"unknownError": "Unknown error occurred",
+		"cancelledBeforeSave": "Image generation was cancelled before saving the image.",
+		"destinationUnavailableBeforeGeneration": "The image destination was not accessible before generation. Retry the request.",
+		"destinationPolicyChangedBeforeSave": "The image destination's path or access policy changed before saving. Retry the request.",
+		"postSaveProcessingFailed": "{{path}}\nImage saved, but post-save processing failed: {{message}}",
 		"roo": {}
 	}
 }

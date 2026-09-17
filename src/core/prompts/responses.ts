@@ -1,8 +1,8 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import * as path from "path"
 import * as diff from "diff"
-import { RooIgnoreController, LOCK_TEXT_SYMBOL } from "../ignore/RooIgnoreController"
-import { RooProtectedController } from "../protect/RooProtectedController"
+import { AlphaIgnoreController, LOCK_TEXT_SYMBOL } from "../ignore/AlphaIgnoreController"
+import { AlphaProtectedController } from "../protect/AlphaProtectedController"
 
 export const formatResponse = {
 	toolDenied: () =>
@@ -30,7 +30,7 @@ export const formatResponse = {
 			error,
 		}),
 
-	rooIgnoreError: (path: string) =>
+	alphaIgnoreError: (path: string) =>
 		JSON.stringify({
 			status: "error",
 			type: "access_denied",
@@ -42,7 +42,7 @@ export const formatResponse = {
 	noToolsUsed: () => {
 		const instructions = getToolInstructionsReminder()
 
-		return `[ERROR] You did not use a tool in your previous response! Please retry with a tool use.
+		return `[ERROR] You did not use a tool in your previous response. Do not narrate, restate a plan, or claim work is in progress. Retry with a valid tool call.
 
 ${instructions}
 
@@ -50,7 +50,7 @@ ${instructions}
 
 If you have completed the user's task, use the attempt_completion tool.
 If you require additional information from the user, use the ask_followup_question tool.
-Otherwise, if you have not completed the task and do not need additional information, then proceed with the next step of the task.
+Otherwise, if work remains and no input is missing, your next response must contain the concrete tool call that performs the next step.
 (This is an automated message, so do not respond to it conversationally.)`
 	},
 
@@ -118,9 +118,9 @@ Otherwise, if you have not completed the task and do not need additional informa
 		absolutePath: string,
 		files: string[],
 		didHitLimit: boolean,
-		rooIgnoreController: RooIgnoreController | undefined,
+		alphaIgnoreController: AlphaIgnoreController | undefined,
 		showRooIgnoredFiles: boolean,
-		rooProtectedController?: RooProtectedController,
+		alphaProtectedController?: AlphaProtectedController,
 	): string => {
 		const sorted = files
 			.map((file) => {
@@ -128,7 +128,7 @@ Otherwise, if you have not completed the task and do not need additional informa
 				const relativePath = path.relative(absolutePath, file).toPosix()
 				return file.endsWith("/") ? relativePath + "/" : relativePath
 			})
-			// Sort so files are listed under their respective directories to make it clear what files are children of what directories. Since we build file list top down, even if file list is truncated it will show directories that cline can then explore further.
+			// Sort so files are listed under their respective directories to make it clear what files are children of what directories. Since we build file list top down, even if file list is truncated it will show directories that Alpha can then explore further.
 			.sort((a, b) => {
 				const aParts = a.split("/") // only works if we use toPosix first
 				const bParts = b.split("/")
@@ -150,16 +150,16 @@ Otherwise, if you have not completed the task and do not need additional informa
 				return aParts.length - bParts.length
 			})
 
-		let rooIgnoreParsed: string[] = sorted
+		let alphaIgnoreParsed: string[] = sorted
 
-		if (rooIgnoreController) {
-			rooIgnoreParsed = []
+		if (alphaIgnoreController) {
+			alphaIgnoreParsed = []
 			for (const filePath of sorted) {
 				// path is relative to absolute path, not cwd
 				// validateAccess expects either path relative to cwd or absolute path
 				// otherwise, for validating against ignore patterns like "assets/icons", we would end up with just "icons", which would result in the path not being ignored.
 				const absoluteFilePath = path.resolve(absolutePath, filePath)
-				const isIgnored = !rooIgnoreController.validateAccess(absoluteFilePath)
+				const isIgnored = !alphaIgnoreController.validateAccess(absoluteFilePath)
 
 				if (isIgnored) {
 					// If file is ignored and we're not showing ignored files, skip it
@@ -167,26 +167,26 @@ Otherwise, if you have not completed the task and do not need additional informa
 						continue
 					}
 					// Otherwise, mark it with a lock symbol
-					rooIgnoreParsed.push(LOCK_TEXT_SYMBOL + " " + filePath)
+					alphaIgnoreParsed.push(LOCK_TEXT_SYMBOL + " " + filePath)
 				} else {
 					// Check if file is write-protected (only for non-ignored files)
-					const isWriteProtected = rooProtectedController?.isWriteProtected(absoluteFilePath) || false
+					const isWriteProtected = alphaProtectedController?.isWriteProtected(absoluteFilePath) || false
 					if (isWriteProtected) {
-						rooIgnoreParsed.push("🛡️ " + filePath)
+						alphaIgnoreParsed.push("🛡️ " + filePath)
 					} else {
-						rooIgnoreParsed.push(filePath)
+						alphaIgnoreParsed.push(filePath)
 					}
 				}
 			}
 		}
 		if (didHitLimit) {
-			return `${rooIgnoreParsed.join(
+			return `${alphaIgnoreParsed.join(
 				"\n",
 			)}\n\n(File list truncated. Use list_files on specific subdirectories if you need to explore further.)`
-		} else if (rooIgnoreParsed.length === 0 || (rooIgnoreParsed.length === 1 && rooIgnoreParsed[0] === "")) {
+		} else if (alphaIgnoreParsed.length === 0 || (alphaIgnoreParsed.length === 1 && alphaIgnoreParsed[0] === "")) {
 			return "No files found."
 		} else {
-			return rooIgnoreParsed.join("\n")
+			return alphaIgnoreParsed.join("\n")
 		}
 	},
 

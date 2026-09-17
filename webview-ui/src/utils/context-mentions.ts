@@ -1,4 +1,5 @@
 import { Fzf } from "fzf"
+import { planModeSlug } from "@alpha/modes"
 
 import type { ModeConfig, Command } from "@alpha-code/types"
 
@@ -104,6 +105,7 @@ export enum ContextMenuOptionType {
 	Terminal = "terminal",
 	URL = "url",
 	Git = "git",
+	Ticket = "ticket",
 	NoResults = "noResults",
 	Mode = "mode", // Add mode type
 	Command = "command", // Add command type
@@ -128,6 +130,7 @@ export function getContextMenuOptions(
 	dynamicSearchResults: SearchResult[] = [],
 	modes?: ModeConfig[],
 	commands?: Command[],
+	ticketOptions: ContextMenuQueryItem[] = [],
 ): ContextMenuQueryItem[] {
 	// Handle slash commands for modes and commands
 	// Only process as slash command if the query itself starts with "/" (meaning we're typing a slash command)
@@ -192,13 +195,14 @@ export function getContextMenuOptions(
 				? fzf.find(slashQuery).map((result) => ({
 						type: ContextMenuOptionType.Mode,
 						value: result.item.original.slug,
-						slashCommand: `/${result.item.original.slug}`,
+						slashCommand:
+							result.item.original.slug === planModeSlug ? "/plan" : `/${result.item.original.slug}`,
 						description: getModeDescription(result.item.original),
 					}))
 				: modes.map((mode) => ({
 						type: ContextMenuOptionType.Mode,
 						value: mode.slug,
-						slashCommand: `/${mode.slug}`,
+						slashCommand: mode.slug === planModeSlug ? "/plan" : `/${mode.slug}`,
 						description: getModeDescription(mode),
 					}))
 
@@ -213,6 +217,8 @@ export function getContextMenuOptions(
 
 		return results.length > 0 ? results : [{ type: ContextMenuOptionType.NoResults }]
 	}
+
+	if (selectedType === ContextMenuOptionType.Ticket) return ticketOptions
 
 	const workingChanges: ContextMenuQueryItem = {
 		type: ContextMenuOptionType.Git,
@@ -255,11 +261,19 @@ export function getContextMenuOptions(
 			{ type: ContextMenuOptionType.Folder },
 			{ type: ContextMenuOptionType.File },
 			{ type: ContextMenuOptionType.Git },
+			{ type: ContextMenuOptionType.Ticket },
 		]
 	}
 
 	const lowerQuery = query.toLowerCase()
 	const suggestions: ContextMenuQueryItem[] = []
+	if (selectedType === null && /^[a-z]{2,4}$/i.test(query))
+		suggestions.push(
+			...ticketOptions.filter((option) => option.type === ContextMenuOptionType.Ticket && option.value),
+		)
+	if ("tickets".startsWith(lowerQuery) || "alpha tickets".startsWith(lowerQuery)) {
+		suggestions.push({ type: ContextMenuOptionType.Ticket })
+	}
 
 	// Check for top-level option matches
 	if ("git".startsWith(lowerQuery)) {

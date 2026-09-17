@@ -1,0 +1,7 @@
+[
+	"repo-cache-invalidation",
+	"repo-stream-backpressure",
+	"repo-workspace-package-order",
+	"repo-concurrent-file-lock",
+	"repo-transaction-outbox"
+]

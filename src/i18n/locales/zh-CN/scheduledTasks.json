@@ -1,0 +1,6 @@
+{
+	"profileRequired": "运行此计划任务前，请选择已保存的配置。",
+	"profileUnavailable": "配置“{{name}}”不存在、已重命名或无法加载。请重新选择已保存的配置。",
+	"skillUnavailable": "技能“{{name}}”不存在、无法读取或在计划的工作区和模式下不可用。请重新选择技能。",
+	"workspaceInvalid": "计划任务的工作区必须使用绝对路径。"
+}

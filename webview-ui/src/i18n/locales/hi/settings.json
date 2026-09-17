@@ -41,7 +41,9 @@
 		"experimental": "प्रायोगिक",
 		"language": "भाषा",
 		"about": "परिचय",
-		"skills": "Skills"
+		"skills": "Skills",
+		"agents": "एजेंटों",
+		"github": "GitHub"
 	},
 	"about": {
 		"bugReport": {
@@ -209,7 +211,8 @@
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
 			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
 			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
-			"localIndexPathRequired": "Local index path is required"
+			"localIndexPathRequired": "Local index path is required",
+			"embeddingRateLimitSecondsRange": "एम्बेडिंग अनुरोध विलंब 0.1 और 60 सेकंड के बीच होना चाहिए"
 		},
 		"optional": "वैकल्पिक",
 		"advancedConfigLabel": "उन्नत कॉन्फ़िगरेशन",
@@ -230,7 +233,9 @@
 		"localIndexPathLabel": "Local Index Path",
 		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
 		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
-		"savedSecretPlaceholder": "Saved value hidden"
+		"savedSecretPlaceholder": "Saved value hidden",
+		"embeddingRateLimitLabel": "एम्बेडिंग अनुरोध दर सीमित करें",
+		"embeddingRateLimitDescription": "अनुक्रमण करते समय API अनुरोधों को एम्बेड करने के बीच विलंब जोड़ता है। यदि आपका एम्बेडिंग प्रदाता कोडबेस इंडेक्सिंग को सीमित कर रहा है तो इसे बढ़ाएँ।"
 	},
 	"autoApprove": {
 		"toggleShortcut": "आप <SettingsLink>अपनी आईडीई वरीयताओं में</SettingsLink> इस सेटिंग के लिए एक वैश्विक शॉर्टकट कॉन्फ़िगर कर सकते हैं।",
@@ -271,22 +276,29 @@
 			"label": "उप-कार्य",
 			"description": "अनुमोदन की आवश्यकता के बिना उप-कार्यों के निर्माण और पूर्णता की अनुमति दें"
 		},
+		"tickets": {
+			"label": "Alpha टिकट",
+			"description": "Alpha टिकट बनाने और अपडेट करने को अपने आप मंज़ूरी दें।"
+		},
 		"followupQuestions": {
 			"label": "प्रश्न",
 			"description": "कॉन्फ़िगर किए गए टाइमआउट के बाद अनुवर्ती प्रश्नों के लिए पहले सुझाए गए उत्तर को स्वचालित रूप से चुनें",
 			"timeoutLabel": "पहले उत्तर को स्वचालित रूप से चुनने से पहले प्रतीक्षा करने का समय"
 		},
 		"execute": {
-			"label": "निष्पादित करें",
-			"description": "अनुमोदन की आवश्यकता के बिना स्वचालित रूप से अनुमत टर्मिनल कमांड निष्पादित करें",
-			"allowedCommands": "अनुमत स्वतः-निष्पादन कमांड",
-			"allowedCommandsDescription": "कमांड प्रीफिक्स जो स्वचालित रूप से निष्पादित किए जा सकते हैं जब \"निष्पादन ऑपरेशन हमेशा अनुमोदित करें\" सक्षम है। सभी कमांड की अनुमति देने के लिए * जोड़ें (सावधानी से उपयोग करें)।",
+			"label": "कमांड नियम",
+			"description": "कार्य के लेखन दायरे में कमांड अपने आप स्वीकृत करें। नेटवर्क सक्षम है। दायरे से बाहर लेखन रोका जाता है। वैश्विक सेटअप सभी प्रोजेक्ट में बना रहता है।",
+			"allowedCommands": "अनुमत कमांड उपसर्ग",
+			"allowedCommandsDescription": "स्क्रिप्ट सहित कमांड अपने आप मंज़ूर करने के लिए * का उपयोग करें। सहेजे गए नियम सभी प्रोजेक्ट पर लागू होते हैं। रूट से बाहर लिखने की पहचानी गई क्रियाओं और अनसुलझे लेखन पथों के लिए मंज़ूरी ज़रूरी है। यह कमांड और पथ की जाँच है, OS सैंडबॉक्स नहीं।",
 			"deniedCommands": "अस्वीकृत कमांड",
 			"deniedCommandsDescription": "कमांड प्रीफिक्स जो स्वचालित रूप से अस्वीकार हो जाएंगे बिना अनुमोदन की आवश्यकता के। अनुमत कमांड के साथ संघर्ष के मामले में, सबसे लंबा प्रीफिक्स मैच प्राथमिकता लेता है। सभी कमांड अस्वीकार करने के लिए * जोड़ें।",
 			"commandPlaceholder": "कमांड प्रीफिक्स दर्ज करें (उदा. 'git ')",
 			"deniedCommandPlaceholder": "अस्वीकार करने के लिए कमांड प्रीफिक्स दर्ज करें (उदा. 'rm -rf')",
 			"addButton": "जोड़ें",
-			"autoDenied": "प्रीफिक्स `{{prefix}}` वाले कमांड उपयोगकर्ता द्वारा प्रतिबंधित किए गए हैं। दूसरा कमांड चलाकर इस प्रतिबंध को दरकिनार न करें।"
+			"autoDenied": "प्रीफिक्स `{{prefix}}` वाले कमांड उपयोगकर्ता द्वारा प्रतिबंधित किए गए हैं। दूसरा कमांड चलाकर इस प्रतिबंध को दरकिनार न करें।",
+			"pathApprovalTitle": "फ़ाइल पथों के लिए मंज़ूरी चाहिए",
+			"pathApprovalDescription": "यह कमांड कार्य के रूट से बाहर की फ़ाइलें बदल सकती है। मंज़ूरी केवल इस बार चलाने के लिए है।",
+			"pathApprovalUnresolved": "कुछ लेखन पथ तय नहीं किए जा सके।"
 		},
 		"apiRequestLimit": {
 			"title": "अधिकतम अनुरोध",
@@ -299,6 +311,10 @@
 		},
 		"maxLimits": {
 			"description": "स्वचालित रूप से जारी रखने के लिए अनुमोदन माँगने से पहले इन सीमाओं तक अनुरोध करें।"
+		},
+		"subagents": {
+			"label": "उप-एजेंटों",
+			"description": "Alpha को अनुमोदन की आवश्यकता के बिना केवल पढ़ने योग्य उप-एजेंट समूह लॉन्च करने की अनुमति दें। पढ़ने की पहुंच भी स्वतः स्वीकृत होनी चाहिए।"
 		}
 	},
 	"providers": {
@@ -378,7 +394,8 @@
 			"hint": "नवीनतम मॉडल देखने के लिए कृपया सेटिंग्स को फिर से खोलें।",
 			"loading": "मॉडल सूची अपडेट हो रही है...",
 			"success": "मॉडल सूची सफलतापूर्वक अपडेट की गई!",
-			"error": "मॉडल सूची अपडेट करने में विफल। कृपया पुनः प्रयास करें।"
+			"error": "मॉडल सूची अपडेट करने में विफल। कृपया पुनः प्रयास करें।",
+			"missingConfig": "मॉडलों को ताज़ा करने से पहले आवश्यक प्रदाता कॉन्फ़िगरेशन दर्ज करें।"
 		},
 		"getRequestyApiKey": "Requesty API कुंजी प्राप्त करें",
 		"getRequestyBaseUrl": "बेस URL",
@@ -542,7 +559,8 @@
 			"high": "उच्च",
 			"xhigh": "बहुत उच्च",
 			"medium": "मध्यम",
-			"low": "निम्न"
+			"low": "निम्न",
+			"max": "अधिकतम"
 		},
 		"verbosity": {
 			"label": "आउटपुट वर्बोसिटी",
@@ -558,7 +576,55 @@
 			"placeholder": "डिफ़ॉल्ट: claude",
 			"maxTokensLabel": "अधिकतम आउटपुट टोकन",
 			"maxTokensDescription": "Claude Code प्रतिक्रियाओं के लिए आउटपुट टोकन की अधिकतम संख्या। डिफ़ॉल्ट 8000 है।"
-		}
+		},
+		"vertexStreamingEnabledLabel": "स्ट्रीमिंग प्रतिक्रियाएँ सक्षम करें",
+		"vertexStreamingEnabledDescription": "जब कोई गेटवे या मॉडल स्ट्रीमिंग का समर्थन नहीं करता है तो इसे अक्षम करें। प्रतिक्रियाएँ पूर्ण होने के बाद दिखाई देंगी.",
+		"vscodeLmLoading": "इस VS Code विंडो में उपलब्ध भाषा मॉडल लोड हो रहा है...",
+		"vscodeLmNoModels": "इस VS Code विंडो में कोई भाषा मॉडल उपलब्ध नहीं है। यहां GitHub Copilot में साइन इन करें, 'Chat: Manage Language Models' के साथ अपनी जरूरत के मॉडल को सक्षम करें और फिर रीफ्रेश करें।",
+		"vscodeLmRefresh": "मॉडल ताज़ा करें",
+		"vscodeLmUnavailable": "चयनित मॉडल इस VS Code विंडो में उपलब्ध नहीं है। VS Code द्वारा लौटाया गया मॉडल चुनें, या इसे 'Chat: Manage Language Models' के साथ सक्षम करें।",
+		"vscodeLmContextSize": {
+			"label": "प्रसंग विंडो",
+			"default": "मानक ({{contextSize}} इनपुट टोकन)",
+			"extended": "विस्तारित ({{contextSize}} इनपुट टोकन)",
+			"description": "इस मॉडल के लिए GitHub Copilot पर भेजा गया इनपुट-टोकन बजट चुनें। विस्तारित संदर्भ अधिक प्रीमियम अनुरोधों का उपभोग कर सकता है।"
+		},
+		"googleCloudProjectId": "Google क्लाउड प्रोजेक्ट ID",
+		"googleCloudRegion": "गूगल क्लाउड क्षेत्र",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "कोई क्षेत्र खोजें या दर्ज करें",
+			"noMatchFound": "कोई मेल खाता क्षेत्र नहीं मिला",
+			"useCustomRegion": "कस्टम का उपयोग करें: {{region}}"
+		},
+		"googleCloudCredentials": "Google क्लाउड क्रेडेंशियल JSON",
+		"googleCloudKeyFile": "Google क्लाउड कुंजी फ़ाइल",
+		"googleCloudSetup": {
+			"title": "Google क्लाउड सेटअप",
+			"step1": "Vertex AI और मॉडल एक्सेस सक्षम करें",
+			"step2": "एप्लिकेशन डिफ़ॉल्ट क्रेडेंशियल सेट करें",
+			"step3": "एक सेवा खाता कुंजी बनाएँ"
+		},
+		"vertexGatewayBaseUrl": "Vertex गेटवे बेस URL",
+		"vertexGatewayCaBundlePath": "Vertex गेटवे CA बंडल पथ",
+		"vertexGatewayHelixCommand": "Vertex गेटवे Helix कमांड",
+		"vertexGatewayHelixParseMode": "Vertex गेटवे Helix पार्स मोड",
+		"vertexGatewayHelixParseModeRawStdout": "कच्चा स्टडआउट",
+		"vertexGatewayHelixParseModeJsonField": "JSON फ़ील्ड",
+		"vertexGatewayHelixTokenKey": "Vertex गेटवे Helix टोकन कुंजी",
+		"vertexGatewayTokenRefreshMinutes": "Vertex गेटवे टोकन रिफ्रेश मिनट",
+		"vertexGatewayModelRoutingMap": "Vertex गेटवे मॉडल रूटिंग मानचित्र",
+		"vertexGatewayModelRoutingMapDescription": "JSON ऑब्जेक्ट को मॉडल ID द्वारा कुंजीबद्ध किया गया है। मान projectId, location, modelOverride, और extraHeaders के साथ लीगेसी मॉडल ओवरराइड स्ट्रिंग्स या ऑब्जेक्ट हो सकते हैं।",
+		"stellarDescription": "आंतरिक Stellar OpenAI-संगत मॉडल गेटवे से जुड़ता है। API कुंजी Helix के साथ स्वचालित रूप से पुनर्प्राप्त की जाती है और कभी संग्रहीत नहीं होती है।",
+		"stellarBaseUrl": "Stellar बेस URL",
+		"stellarCaBundlePath": "Stellar PEM CA बंडल पथ",
+		"stellarHelixCommand": "Stellar Helix कमांड",
+		"stellarHelixParseMode": "Stellar Helix पार्स मोड",
+		"stellarHelixParseModeRawStdout": "कच्चा स्टडआउट",
+		"stellarHelixParseModeJsonField": "JSON फ़ील्ड",
+		"stellarHelixTokenKey": "Stellar Helix टोकन कुंजी",
+		"stellarTokenRefreshMinutes": "Stellar टोकन रिफ्रेश मिनट",
+		"stellarStreamingEnabledLabel": "स्ट्रीमिंग प्रतिक्रियाएँ सक्षम करें",
+		"stellarStreamingEnabledDescription": "यदि Stellar परिनियोजन स्ट्रीमिंग का समर्थन नहीं करता है तो इसे अक्षम करें। प्रतिक्रियाएँ पूर्ण होने के बाद दिखाई देंगी."
 	},
 	"checkpoints": {
 		"timeout": {
@@ -898,7 +964,11 @@
 		"providerNotAllowed": "प्रदाता '{{provider}}' आपके संगठन द्वारा अनुमत नहीं है",
 		"modelNotAllowed": "मॉडल '{{model}}' प्रदाता '{{provider}}' के लिए आपके संगठन द्वारा अनुमत नहीं है",
 		"profileInvalid": "इस प्रोफ़ाइल में एक प्रदाता या मॉडल शामिल है जो आपके संगठन द्वारा अनुमत नहीं है",
-		"qwenCodeOauthPath": "आपको एक वैध OAuth क्रेडेंशियल पथ प्रदान करना होगा"
+		"qwenCodeOauthPath": "आपको एक वैध OAuth क्रेडेंशियल पथ प्रदान करना होगा",
+		"googleCloud": "आपको एक Google क्लाउड प्रोजेक्ट ID और क्षेत्र प्रदान करना होगा।",
+		"vertexGateway": "Vertex गेटवे के लिए आधार URL, CA बंडल पथ और Helix कमांड की आवश्यकता होती है।",
+		"vertexGatewayModelRoutingMap": "Vertex गेटवे मॉडल रूटिंग मैप स्ट्रिंग मॉडल आईडी के साथ एक JSON ऑब्जेक्ट होना चाहिए।",
+		"stellar": "Stellar को वैध आधार URL और PEM CA बंडल पथ की आवश्यकता है।"
 	},
 	"placeholders": {
 		"apiKey": "API कुंजी दर्ज करें...",
@@ -960,6 +1030,10 @@
 		"requireCtrlEnterToSend": {
 			"label": "संदेश भेजने के लिए {{primaryMod}}+Enter की आवश्यकता है",
 			"description": "जब सक्षम हो, तो आपको केवल Enter के बजाय संदेश भेजने के लिए {{primaryMod}}+Enter दबाना होगा"
+		},
+		"maxConcurrentTasks": {
+			"label": "अधिकतम समानांतर कार्य",
+			"description": "एक ही समय में चल सकने वाले लाइव कार्यों की संख्या. असफल और पूर्ण किए गए कार्यों को इस सीमा में नहीं गिना जाता है।"
 		}
 	},
 	"skills": {
@@ -1013,6 +1087,44 @@
 			"descriptionRequired": "विवरण आवश्यक है",
 			"descriptionTooLong": "विवरण 1024 वर्णों से अधिक नहीं होना चाहिए"
 		},
-		"footer": "Skill Writer मोड के साथ अपने स्वयं के Skills बनाएं, <MarketplaceLink>Modes Marketplace</MarketplaceLink> में उपलब्ध।"
+		"footer": "Skill Writer मोड के साथ अपने स्वयं के Skills बनाएं, <MarketplaceLink>Modes Marketplace</MarketplaceLink> में उपलब्ध।",
+		"builtinSkills": "अंतर्निहित",
+		"enabled": "सक्षम",
+		"inspectSkill": "देखें",
+		"builtinDescription": "Alpha के साथ शामिल है। सेटिंग सहेजने पर बदलाव लागू होते हैं। समान नाम वाले कार्यक्षेत्र और व्यक्तिगत कौशल को प्राथमिकता मिलती है; अंतर्निहित कौशल को अक्षम करने से आपके बनाए विकल्प अक्षम नहीं होते।"
+	},
+	"agents": {
+		"description": "चुनें कि Alpha उप-एजेंटों के लिए कौन सी सहेजी गई प्रदाता प्रोफ़ाइल का उपयोग करता है। भूमिका ओवरराइड को डिफ़ॉल्ट पर प्राथमिकता दी जाती है, फिर मूल कार्य विरासत में मिलता है।",
+		"searchPlaceholder": "प्रदाता प्रोफ़ाइल खोजें...",
+		"noProfilesFound": "कोई मेल खाने वाली प्रदाता प्रोफ़ाइल नहीं",
+		"unavailableProfile": "अनुपलब्ध प्रोफ़ाइल ({{id}})",
+		"staleWarning": "यह सहेजी गई प्रोफ़ाइल अनुपलब्ध है. जब तक आप कोई अन्य प्रोफ़ाइल नहीं चुनते तब तक नए उप-एजेंट मूल प्रोफ़ाइल का उपयोग करेंगे।",
+		"defaultProfile": {
+			"label": "डिफ़ॉल्ट उप-एजेंट प्रोफ़ाइल",
+			"inheritParent": "माता-पिता की विरासत",
+			"description": "इसका उपयोग तब किया जाता है जब किसी भूमिका की अपनी प्रोफ़ाइल ओवरराइड नहीं होती है।"
+		},
+		"roles": {
+			"title": "भूमिका ओवरराइड हो जाती है",
+			"description": "वैकल्पिक रूप से प्रत्येक एजेंट भूमिका को एक अलग सहेजे गए प्रदाता प्रोफ़ाइल के माध्यम से रूट करें।",
+			"useDefault": "डिफ़ॉल्ट उपयोग करें",
+			"explore": {
+				"label": "एक्सप्लोरर प्रोफ़ाइल",
+				"description": "रिपॉजिटरी अन्वेषण एजेंटों के लिए वैकल्पिक प्रोफ़ाइल ओवरराइड।"
+			},
+			"review": {
+				"label": "समीक्षक प्रोफ़ाइल",
+				"description": "समीक्षा एजेंटों के लिए वैकल्पिक प्रोफ़ाइल ओवरराइड।"
+			},
+			"worker": {
+				"label": "कार्यकर्ता प्रोफ़ाइल",
+				"description": "पृथक संपादन कर्मियों के लिए वैकल्पिक प्रोफ़ाइल ओवरराइड।"
+			}
+		}
+	},
+	"github": {
+		"tokenLabel": "GitHub टोकन",
+		"tokenPlaceholder": "ghp_...",
+		"tokenDescription": "VS Code गुप्त भंडारण में सुरक्षित रूप से संग्रहीत। पुल अनुरोधों, जांचों, टिप्पणियों और विलयों के लिए मूल GitHub API टूल द्वारा उपयोग किया जाता है।"
 	}
 }

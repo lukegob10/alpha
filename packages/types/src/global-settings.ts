@@ -15,6 +15,15 @@ import { modeConfigSchema } from "./mode.js"
 import { customModePromptsSchema, customSupportPromptsSchema } from "./mode.js"
 import { toolNamesSchema } from "./tool.js"
 import { languagesSchema } from "./vscode.js"
+import {
+	maxConcurrentSubagentsSchema,
+	subagentDelegationPolicySchema,
+	subagentMaxDepthSchema,
+	subagentRoleTimeoutsMsSchema,
+	subagentRootCostBudgetSchema,
+	subagentRootTokenBudgetSchema,
+	subagentTokenLimitSchema,
+} from "./subagent-orchestration.js"
 
 /**
  * Default delay in milliseconds after writes to allow diagnostics to detect potential problems.
@@ -102,16 +111,20 @@ export const globalSettingsSchema = z.object({
 	customCondensingPrompt: z.string().optional(),
 
 	autoApprovalEnabled: z.boolean().optional(),
+	disabledBuiltinSkills: z.array(z.string()).optional(),
 	alwaysAllowReadOnly: z.boolean().optional(),
 	alwaysAllowReadOnlyOutsideWorkspace: z.boolean().optional(),
 	alwaysAllowWrite: z.boolean().optional(),
 	alwaysAllowWriteOutsideWorkspace: z.boolean().optional(),
 	alwaysAllowWriteProtected: z.boolean().optional(),
+	alwaysAllowTickets: z.boolean().optional(),
 	writeDelayMs: z.number().min(0).optional(),
 	requestDelaySeconds: z.number().optional(),
 	alwaysAllowMcp: z.boolean().optional(),
+	/** @deprecated Retained for settings import only. Models cannot switch modes. */
 	alwaysAllowModeSwitch: z.boolean().optional(),
 	alwaysAllowSubtasks: z.boolean().optional(),
+	alwaysAllowSubagents: z.boolean().optional(),
 	alwaysAllowExecute: z.boolean().optional(),
 	alwaysAllowFollowupQuestions: z.boolean().optional(),
 	followupAutoApproveTimeoutMs: z.number().optional(),
@@ -125,6 +138,30 @@ export const globalSettingsSchema = z.object({
 	autoCondenseContext: z.boolean().optional(),
 	autoCondenseContextPercent: z.number().optional(),
 	maxConcurrentTasks: z.number().int().min(MIN_MAX_CONCURRENT_TASKS).max(MAX_MAX_CONCURRENT_TASKS).optional(),
+	/** Root-wide live managed-child cap, independent from maxConcurrentTasks. */
+	maxConcurrentSubagents: maxConcurrentSubagentsSchema.optional(),
+	/** Whether the model may delegate proactively or only after an explicit user request. */
+	subagentDelegationPolicy: subagentDelegationPolicySchema.optional(),
+	/** Root-relative nesting ceiling. A direct child has depth 1. */
+	subagentMaxDepth: subagentMaxDepthSchema.optional(),
+	/** Per-role wall-clock timeouts in milliseconds; omitted roles retain their defaults. */
+	subagentRoleTimeoutsMs: subagentRoleTimeoutsMsSchema.optional(),
+	/** Per-child cumulative input-token ceiling. */
+	subagentMaxInputTokens: subagentTokenLimitSchema.optional(),
+	/** Per-child cumulative output-token ceiling. */
+	subagentMaxOutputTokens: subagentTokenLimitSchema.optional(),
+	/** Optional aggregate input-plus-output token budget for one root tree; null disables it. */
+	subagentRootTokenBudget: subagentRootTokenBudgetSchema.optional(),
+	/** Optional aggregate provider-reported cost budget for one root tree; null disables it. */
+	subagentRootCostBudget: subagentRootCostBudgetSchema.optional(),
+	subagentDefaultApiConfigId: z.string().optional(),
+	subagentApiConfigByRole: z
+		.object({
+			explore: z.string().optional(),
+			review: z.string().optional(),
+			worker: z.string().optional(),
+		})
+		.optional(),
 
 	/**
 	 * Whether to include current time in the environment details
@@ -246,12 +283,12 @@ export type GlobalSettings = z.infer<typeof globalSettingsSchema>
 export const GLOBAL_SETTINGS_KEYS = globalSettingsSchema.keyof().options
 
 /**
- * RooCodeSettings
+ * AlphaCodeSettings
  */
 
-export const rooCodeSettingsSchema = providerSettingsSchema.merge(globalSettingsSchema)
+export const alphaCodeSettingsSchema = providerSettingsSchema.merge(globalSettingsSchema)
 
-export type RooCodeSettings = GlobalSettings & ProviderSettings
+export type AlphaCodeSettings = GlobalSettings & ProviderSettings
 
 /**
  * SecretState
@@ -312,10 +349,10 @@ export const isSecretStateKey = (key: string): key is Keys<SecretState> =>
  * GlobalState
  */
 
-export type GlobalState = Omit<RooCodeSettings, Keys<SecretState>>
+export type GlobalState = Omit<AlphaCodeSettings, Keys<SecretState>>
 
 export const GLOBAL_STATE_KEYS = [...GLOBAL_SETTINGS_KEYS, ...PROVIDER_SETTINGS_KEYS].filter(
-	(key: Keys<RooCodeSettings>) => !isSecretStateKey(key),
+	(key: Keys<AlphaCodeSettings>) => !isSecretStateKey(key),
 ) as Keys<GlobalState>[]
 
 export const isGlobalStateKey = (key: string): key is Keys<GlobalState> =>
@@ -326,7 +363,7 @@ export const isGlobalStateKey = (key: string): key is Keys<GlobalState> =>
  */
 
 // Default settings when running evals (unless overridden).
-export const EVALS_SETTINGS: RooCodeSettings = {
+export const EVALS_SETTINGS: AlphaCodeSettings = {
 	apiProvider: "openrouter",
 
 	lastShownAnnouncementId: "jul-09-2025-3-23-0",
@@ -342,8 +379,8 @@ export const EVALS_SETTINGS: RooCodeSettings = {
 	writeDelayMs: 1000,
 	requestDelaySeconds: 10,
 	alwaysAllowMcp: true,
-	alwaysAllowModeSwitch: true,
 	alwaysAllowSubtasks: true,
+	alwaysAllowSubagents: true,
 	alwaysAllowExecute: true,
 	alwaysAllowFollowupQuestions: true,
 	followupAutoApproveTimeoutMs: 0,
@@ -390,3 +427,9 @@ export const EVALS_SETTINGS: RooCodeSettings = {
 }
 
 export const EVALS_TIMEOUT = 5 * 60 * 1_000
+
+/** @deprecated Use alphaCodeSettingsSchema. Retained for existing API consumers. */
+export { alphaCodeSettingsSchema as rooCodeSettingsSchema }
+
+/** @deprecated Use AlphaCodeSettings. Retained for existing API consumers. */
+export type { AlphaCodeSettings as RooCodeSettings }

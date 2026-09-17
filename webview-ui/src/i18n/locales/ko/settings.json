@@ -41,7 +41,9 @@
 		"experimental": "실험적",
 		"language": "언어",
 		"about": "Alpha 정보",
-		"skills": "Skills"
+		"skills": "Skills",
+		"agents": "에이전트",
+		"github": "GitHub"
 	},
 	"about": {
 		"bugReport": {
@@ -209,7 +211,8 @@
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
 			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
 			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
-			"localIndexPathRequired": "Local index path is required"
+			"localIndexPathRequired": "Local index path is required",
+			"embeddingRateLimitSecondsRange": "포함 요청 지연은 0.1~60초 사이여야 합니다."
 		},
 		"optional": "선택 사항",
 		"advancedConfigLabel": "고급 구성",
@@ -230,7 +233,9 @@
 		"localIndexPathLabel": "Local Index Path",
 		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
 		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
-		"savedSecretPlaceholder": "Saved value hidden"
+		"savedSecretPlaceholder": "Saved value hidden",
+		"embeddingRateLimitLabel": "삽입 요청 비율 제한",
+		"embeddingRateLimitDescription": "색인을 생성하는 동안 API 요청 삽입 사이에 지연을 추가합니다. 임베딩 공급자가 코드베이스 인덱싱을 제한하는 속도인 경우 이 값을 늘립니다."
 	},
 	"autoApprove": {
 		"toggleShortcut": "<SettingsLink>IDE 환경 설정</SettingsLink>에서 이 설정에 대한 전역 바로 가기를 구성할 수 있습니다.",
@@ -271,22 +276,29 @@
 			"label": "하위 작업",
 			"description": "승인 없이 하위 작업 생성 및 완료 허용"
 		},
+		"tickets": {
+			"label": "Alpha 티켓",
+			"description": "Alpha 티켓 생성 및 업데이트를 자동으로 승인합니다."
+		},
 		"followupQuestions": {
 			"label": "질문",
 			"description": "설정된 시간이 지나면 후속 질문에 대한 첫 번째 제안 답변을 자동으로 선택합니다",
 			"timeoutLabel": "첫 번째 답변을 자동 선택하기 전 대기 시간"
 		},
 		"execute": {
-			"label": "실행",
-			"description": "승인 없이 자동으로 허용된 터미널 명령 실행",
-			"allowedCommands": "허용된 자동 실행 명령",
-			"allowedCommandsDescription": "\"실행 작업 항상 승인\"이 활성화되었을 때 자동 실행될 수 있는 명령 접두사. 모든 명령을 허용하려면 * 추가(주의해서 사용)",
+			"label": "명령 규칙",
+			"description": "작업의 쓰기 범위 내 명령을 자동 승인합니다. 네트워크는 활성화됩니다. 범위 밖 쓰기는 차단됩니다. 전역 설정은 프로젝트 간에 유지됩니다.",
+			"allowedCommands": "허용된 명령 접두사",
+			"allowedCommandsDescription": "*를 사용하면 스크립트를 포함한 명령을 자동 승인합니다. 저장한 규칙은 모든 프로젝트에 적용됩니다. 감지된 작업 루트 밖 쓰기와 확인할 수 없는 쓰기 경로에는 승인이 필요합니다. 이는 명령 및 경로 검사이며 OS 샌드박스가 아닙니다.",
 			"deniedCommands": "거부된 명령",
 			"deniedCommandsDescription": "승인을 요청하지 않고 자동으로 거부될 명령 접두사. 허용된 명령과 충돌하는 경우 가장 긴 접두사 일치가 우선됩니다. 모든 명령을 거부하려면 * 추가",
 			"commandPlaceholder": "명령 접두사 입력(예: 'git ')",
 			"deniedCommandPlaceholder": "거부할 명령 접두사 입력(예: 'rm -rf')",
 			"addButton": "추가",
-			"autoDenied": "접두사 `{{prefix}}`를 가진 명령어는 사용자에 의해 금지되었습니다. 다른 명령어를 실행하여 이 제한을 우회하지 마세요."
+			"autoDenied": "접두사 `{{prefix}}`를 가진 명령어는 사용자에 의해 금지되었습니다. 다른 명령어를 실행하여 이 제한을 우회하지 마세요.",
+			"pathApprovalTitle": "파일 경로 승인이 필요합니다",
+			"pathApprovalDescription": "이 명령은 작업 루트 밖의 파일을 변경할 수 있습니다. 승인은 이번 실행에만 적용됩니다.",
+			"pathApprovalUnresolved": "일부 쓰기 경로를 확인할 수 없습니다."
 		},
 		"apiRequestLimit": {
 			"title": "최대 요청 수",
@@ -299,6 +311,10 @@
 		},
 		"maxLimits": {
 			"description": "이러한 한도까지 자동으로 요청을 수행한 후, 계속 진행하기 위한 승인을 요청합니다."
+		},
+		"subagents": {
+			"label": "하위 에이전트",
+			"description": "Alpha가 승인 없이 읽기 전용 하위 에이전트 그룹을 시작할 수 있도록 허용합니다. 읽기 액세스도 자동 승인되어야 합니다."
 		}
 	},
 	"providers": {
@@ -378,7 +394,8 @@
 			"hint": "최신 모델을 보려면 설정을 다시 열어주세요.",
 			"loading": "모델 목록 새로고침 중...",
 			"success": "모델 목록이 성공적으로 새로고침되었습니다!",
-			"error": "모델 목록 새로고침에 실패했습니다. 다시 시도해 주세요."
+			"error": "모델 목록 새로고침에 실패했습니다. 다시 시도해 주세요.",
+			"missingConfig": "모델을 새로 고치기 전에 필수 공급자 구성을 입력하세요."
 		},
 		"getRequestyApiKey": "Requesty API 키 받기",
 		"getRequestyBaseUrl": "기본 URL",
@@ -542,7 +559,8 @@
 			"high": "높음",
 			"xhigh": "매우 높음",
 			"medium": "중간",
-			"low": "낮음"
+			"low": "낮음",
+			"max": "최고"
 		},
 		"verbosity": {
 			"label": "출력 상세도",
@@ -558,7 +576,55 @@
 			"placeholder": "기본값: claude",
 			"maxTokensLabel": "최대 출력 토큰",
 			"maxTokensDescription": "Claude Code 응답의 최대 출력 토큰 수. 기본값은 8000입니다."
-		}
+		},
+		"vertexStreamingEnabledLabel": "스트리밍 응답 활성화",
+		"vertexStreamingEnabledDescription": "게이트웨이나 모델이 스트리밍을 지원하지 않는 경우 이 기능을 비활성화합니다. 완료 후 응답이 표시됩니다.",
+		"vscodeLmLoading": "이 VS Code 창에서 사용할 수 있는 언어 모델을 로드하는 중...",
+		"vscodeLmNoModels": "이 VS Code 창에서는 사용할 수 있는 언어 모델이 없습니다. 여기에서 GitHub Copilot에 로그인하고 'Chat: Manage Language Models'로 필요한 모델을 활성화한 다음 새로 고침하세요.",
+		"vscodeLmRefresh": "모델 새로 고침",
+		"vscodeLmUnavailable": "선택한 모델은 이 VS Code 창에서 사용할 수 없습니다. VS Code에서 반환된 모델을 선택하거나 'Chat: Manage Language Models'로 활성화하세요.",
+		"vscodeLmContextSize": {
+			"label": "컨텍스트 창",
+			"default": "표준({{contextSize}} 입력 토큰)",
+			"extended": "확장({{contextSize}} 입력 토큰)",
+			"description": "이 모델에 대해 GitHub Copilot로 전송된 입력 토큰 예산을 선택합니다. 확장된 컨텍스트는 더 많은 프리미엄 요청을 소비할 수 있습니다."
+		},
+		"googleCloudProjectId": "Google Cloud 프로젝트 ID",
+		"googleCloudRegion": "Google Cloud 지역",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "지역 검색 또는 입력",
+			"noMatchFound": "일치하는 지역 없음",
+			"useCustomRegion": "맞춤 사용: {{region}}"
+		},
+		"googleCloudCredentials": "Google Cloud 자격 증명 JSON",
+		"googleCloudKeyFile": "Google Cloud 키 파일",
+		"googleCloudSetup": {
+			"title": "Google Cloud 설정",
+			"step1": "Vertex AI 및 모델 액세스 활성화",
+			"step2": "애플리케이션 기본 자격 증명 설정",
+			"step3": "서비스 계정 키 만들기"
+		},
+		"vertexGatewayBaseUrl": "Vertex 게이트웨이 베이스 URL",
+		"vertexGatewayCaBundlePath": "Vertex 게이트웨이 CA 번들 경로",
+		"vertexGatewayHelixCommand": "Vertex 게이트웨이 Helix 명령",
+		"vertexGatewayHelixParseMode": "Vertex 게이트웨이 Helix 구문 분석 모드",
+		"vertexGatewayHelixParseModeRawStdout": "원시 stdout",
+		"vertexGatewayHelixParseModeJsonField": "JSON 필드",
+		"vertexGatewayHelixTokenKey": "Vertex 게이트웨이 Helix 토큰 키",
+		"vertexGatewayTokenRefreshMinutes": "Vertex 게이트웨이 토큰 새로 고침 분",
+		"vertexGatewayModelRoutingMap": "Vertex 게이트웨이 모델 라우팅 맵",
+		"vertexGatewayModelRoutingMapDescription": "JSON 모델 ID에 의해 키가 지정된 개체입니다. 값은 projectId, location, modelOverride 및 extraHeaders가 포함된 레거시 모델 재정의 문자열 또는 개체일 수 있습니다.",
+		"stellarDescription": "내부 Stellar OpenAI 호환 모델 게이트웨이에 연결됩니다. API 키는 Helix를 사용하여 자동으로 검색되며 저장되지 않습니다.",
+		"stellarBaseUrl": "Stellar 기본 URL",
+		"stellarCaBundlePath": "Stellar PEM CA 번들 경로",
+		"stellarHelixCommand": "Stellar Helix 명령",
+		"stellarHelixParseMode": "Stellar Helix 구문 분석 모드",
+		"stellarHelixParseModeRawStdout": "원시 stdout",
+		"stellarHelixParseModeJsonField": "JSON 필드",
+		"stellarHelixTokenKey": "Stellar Helix 토큰 키",
+		"stellarTokenRefreshMinutes": "Stellar 토큰 새로 고침 시간(분)",
+		"stellarStreamingEnabledLabel": "스트리밍 응답 활성화",
+		"stellarStreamingEnabledDescription": "Stellar 배포가 스트리밍을 지원하지 않는 경우 이 기능을 비활성화합니다. 완료 후 응답이 표시됩니다."
 	},
 	"checkpoints": {
 		"timeout": {
@@ -710,7 +776,7 @@
 		},
 		"shellIntegrationDisabled": {
 			"label": "인라인 터미널 사용(권장)",
-			"description": "더 빠르고 안정적인 실행을 위해 셸 프로필/통합��� 우회하려면 인라인 터미널(채팅)에�� 명령을 실행하십시오. 비활성화하면 Alpha는 셸 프로필, 프롬프트 및 플러그인과 함께 VS Code 터미널을 사용합니다. <0>자세히 알아보기</0>"
+			"description": "더 빠르고 안정적인 실행을 위해 셸 프로필/통합을 우회하려면 인라인 터미널(채팅)에서 명령을 실행하십시오. 비활성화하면 Alpha는 셸 프로필, 프롬프트 및 플러그인과 함께 VS Code 터미널을 사용합니다. <0>자세히 알아보기</0>"
 		},
 		"commandDelay": {
 			"label": "터미널 명령 지연",
@@ -738,7 +804,7 @@
 		},
 		"inheritEnv": {
 			"label": "환경 변수 상속",
-			"description": "부모 VS Code 프로세���에서 환경 변수를 상속하려면 이 기능을 켜십시오. <0>자세히 알아보기</0>"
+			"description": "부모 VS Code 프로세스에서 환경 변수를 상속하려면 이 기능을 켜십시오. <0>자세히 알아보기</0>"
 		}
 	},
 	"advancedSettings": {
@@ -898,7 +964,11 @@
 		"providerNotAllowed": "제공자 '{{provider}}'는 조직에서 허용되지 않습니다",
 		"modelNotAllowed": "모델 '{{model}}'은 제공자 '{{provider}}'에 대해 조직에서 허용되지 않습니다",
 		"profileInvalid": "이 프로필에는 조직에서 허용되지 않는 제공자 또는 모델이 포함되어 있습니다",
-		"qwenCodeOauthPath": "유효한 OAuth 자격 증명 경로를 제공해야 합니다"
+		"qwenCodeOauthPath": "유효한 OAuth 자격 증명 경로를 제공해야 합니다",
+		"googleCloud": "Google Cloud 프로젝트 ID 및 리전을 제공해야 합니다.",
+		"vertexGateway": "Vertex 게이트웨이에는 기본 URL, CA 번들 경로 및 Helix 명령이 필요합니다.",
+		"vertexGatewayModelRoutingMap": "Vertex 게이트웨이 모델 라우팅 맵은 문자열 모델 ID가 있는 JSON 개체여야 합니다.",
+		"stellar": "Stellar에는 유효한 기본 URL 및 PEM CA 번들 경로가 필요합니다."
 	},
 	"placeholders": {
 		"apiKey": "API 키 입력...",
@@ -960,6 +1030,10 @@
 		"requireCtrlEnterToSend": {
 			"label": "메시지를 보내려면 {{primaryMod}}+Enter가 필요",
 			"description": "활성화하면 Enter만으로는 안 되고 {{primaryMod}}+Enter를 눌러야 메시지를 보낼 수 있습니다"
+		},
+		"maxConcurrentTasks": {
+			"label": "최대 병렬 작업",
+			"description": "동시에 실행할 수 있는 라이브 작업 수입니다. 실패하고 완료된 작업은 이 제한에 포함되지 않습니다."
 		}
 	},
 	"skills": {
@@ -1013,6 +1087,44 @@
 			"descriptionRequired": "설명은 필수입니다",
 			"descriptionTooLong": "설명은 1024자 이하여야 합니다"
 		},
-		"footer": "스킬 작성자 모드로 자신만의 스킬을 만들 수 있습니다. <MarketplaceLink>모드 마켓플레이스</MarketplaceLink>에서 사용 가능합니다."
+		"footer": "스킬 작성자 모드로 자신만의 스킬을 만들 수 있습니다. <MarketplaceLink>모드 마켓플레이스</MarketplaceLink>에서 사용 가능합니다.",
+		"builtinSkills": "기본 제공",
+		"enabled": "활성화",
+		"inspectSkill": "내용 보기",
+		"builtinDescription": "Alpha에 포함되어 있습니다. 설정을 저장하면 변경 사항이 적용됩니다. 이름이 같은 작업 영역 스킬과 개인 스킬이 우선하며, 기본 제공 스킬을 비활성화해도 사용자가 만든 대체 스킬은 비활성화되지 않습니다."
+	},
+	"agents": {
+		"description": "Alpha가 하위 에이전트에 사용하는 저장된 공급자 프로필을 선택합니다. 역할 재정의가 기본값보다 우선하며 상위 작업이 상속됩니다.",
+		"searchPlaceholder": "공급자 프로필 검색...",
+		"noProfilesFound": "일치하는 공급자 프로필 없음",
+		"unavailableProfile": "사용할 수 없는 프로필({{id}})",
+		"staleWarning": "이 저장된 프로필은 사용할 수 없습니다. 새로운 하위 에이전트는 귀하가 다른 프로필을 선택할 때까지 상위 프로필을 사용합니다.",
+		"defaultProfile": {
+			"label": "기본 하위 에이전트 프로필",
+			"inheritParent": "상위 상속",
+			"description": "역할에 자체 프로필 재정의가 없을 때 사용됩니다."
+		},
+		"roles": {
+			"title": "역할 재정의",
+			"description": "선택적으로 저장된 다른 제공자 프로필을 통해 각 상담원 역할을 라우팅합니다.",
+			"useDefault": "기본 사용",
+			"explore": {
+				"label": "Explorer 프로필",
+				"description": "저장소 탐색 에이전트에 대한 선택적 프로필 재정의."
+			},
+			"review": {
+				"label": "리뷰어 프로필",
+				"description": "리뷰 상담원을 위한 선택적 프로필 재정의."
+			},
+			"worker": {
+				"label": "작업자 프로필",
+				"description": "격리된 편집 작업자에 대한 선택적 프로필 재정의."
+			}
+		}
+	},
+	"github": {
+		"tokenLabel": "GitHub 토큰",
+		"tokenPlaceholder": "ghp_...",
+		"tokenDescription": "VS Code 비밀 저장소에 안전하게 저장됩니다. 풀 요청, 확인, 댓글 및 병합을 위해 기본 GitHub API 도구에서 사용됩니다."
 	}
 }

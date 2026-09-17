@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import React from "react"
 
 import SettingsView from "../SettingsView"
+import { vscode } from "@src/utils/vscode"
 
 // Mock vscode API
 const mockPostMessage = vi.fn()
@@ -11,6 +12,7 @@ const mockVscode = {
 	postMessage: mockPostMessage,
 }
 ;(global as any).acquireVsCodeApi = () => mockVscode
+vi.spyOn(vscode, "postMessage").mockImplementation(mockPostMessage)
 
 // Mock the extension state context
 vi.mock("@src/context/ExtensionStateContext", () => ({
@@ -65,7 +67,7 @@ vi.mock("@src/components/ui", () => ({
 			{...props}
 		/>
 	),
-	AlertDialog: ({ children }: any) => <div>{children}</div>,
+	AlertDialog: ({ children, open }: any) => (open ? <div data-testid="alert-dialog">{children}</div> : null),
 	AlertDialogContent: ({ children }: any) => <div>{children}</div>,
 	AlertDialogTitle: ({ children }: any) => <div>{children}</div>,
 	AlertDialogDescription: ({ children }: any) => <div>{children}</div>,
@@ -170,7 +172,25 @@ vi.mock("@src/components/modes/ModesView", () => ({
 }))
 
 vi.mock("@src/components/mcp/McpView", () => ({
-	default: () => null,
+	default: ({ mcpEnabled, onMcpEnabledChange }: any) => (
+		<button
+			data-testid="cached-mcp-enabled"
+			data-value={String(mcpEnabled)}
+			onClick={() => onMcpEnabledChange(!mcpEnabled)}>
+			Toggle MCP
+		</button>
+	),
+}))
+
+vi.mock("@src/components/worktrees/WorktreesView", () => ({
+	WorktreesView: ({ showWorktreesInHomeScreen, onShowWorktreesInHomeScreenChange }: any) => (
+		<button
+			data-testid="cached-worktrees-home"
+			data-value={String(showWorktreesInHomeScreen)}
+			onClick={() => onShowWorktreesInHomeScreenChange(!showWorktreesInHomeScreen)}>
+			Toggle Worktrees home
+		</button>
+	),
 }))
 
 // Mock Tab components
@@ -187,9 +207,17 @@ vi.mock("../common/Tab", () => ({
 }))
 
 // Mock child components that are complex
-// Mock ApiConfigManager to not interact with props
 vi.mock("../ApiConfigManager", () => ({
-	default: vi.fn(() => <div data-testid="api-config-manager">ApiConfigManager</div>),
+	default: vi.fn(({ onDeleteConfig, onUpsertConfig }: any) => (
+		<div data-testid="api-config-manager">
+			<button data-testid="delete-profile" onClick={() => onDeleteConfig("default")}>
+				Delete profile
+			</button>
+			<button data-testid="create-profile" onClick={() => onUpsertConfig("new-profile")}>
+				Create profile
+			</button>
+		</div>
+	)),
 }))
 
 vi.mock("../ApiOptions", () => ({
@@ -210,7 +238,19 @@ vi.mock("../ContextManagementSettings", () => ({
 	ContextManagementSettings: vi.fn(() => <div>ContextManagementSettings</div>),
 }))
 vi.mock("../TerminalSettings", () => ({
-	TerminalSettings: vi.fn(() => <div>TerminalSettings</div>),
+	TerminalSettings: vi.fn(({ terminalInheritEnv, onTerminalInheritEnvLoaded, setCachedStateField }: any) => (
+		<div>
+			<button data-testid="load-inherit-env" onClick={() => onTerminalInheritEnvLoaded(true)}>
+				Load inherit environment
+			</button>
+			<button
+				data-testid="cached-inherit-env"
+				data-value={String(terminalInheritEnv)}
+				onClick={() => setCachedStateField("terminalInheritEnv", !terminalInheritEnv)}>
+				Toggle inherit environment
+			</button>
+		</div>
+	)),
 }))
 vi.mock("../ExperimentalSettings", () => ({
 	ExperimentalSettings: vi.fn(() => <div>ExperimentalSettings</div>),
@@ -242,6 +282,7 @@ vi.mock("../SettingsSearch", () => ({
 
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 import ApiOptions from "../ApiOptions"
+import { NotificationSettings } from "../NotificationSettings"
 
 describe("SettingsView - Unsaved Changes Detection", () => {
 	let queryClient: QueryClient
@@ -316,6 +357,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			// Don't do anything with props, just render a div
 			return <div data-testid="api-options">ApiOptions</div>
 		})
+		vi.mocked(NotificationSettings).mockImplementation(() => <div>NotificationSettings</div>)
 		queryClient = new QueryClient({
 			defaultOptions: {
 				queries: { retry: false },
@@ -325,10 +367,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		;(useExtensionState as any).mockReturnValue(defaultExtensionState)
 	})
 
-	// TODO: Fix underlying issue - dialog appears even when no user changes have been made
-	// This happens because some component is triggering setCachedStateField during initialization
-	// without properly marking it as a non-user action
-	it.skip("should not show unsaved changes when settings are automatically initialized", async () => {
+	it("should not show unsaved changes when settings are automatically initialized", async () => {
 		const onDone = vi.fn()
 
 		render(
@@ -361,8 +400,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		expect(screen.queryByText("settings:unsavedChangesDialog.title")).not.toBeInTheDocument()
 	})
 
-	// TODO: Fix underlying issue - see above
-	it.skip("should not trigger unsaved changes for automatic model initialization", async () => {
+	it("should not trigger unsaved changes for automatic model initialization", async () => {
 		const onDone = vi.fn()
 
 		// Mock ApiOptions to simulate ModelPicker initialization
@@ -378,7 +416,11 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 				}
 			}, [hasInitialized, apiConfiguration?.apiModelId, setApiConfigurationField])
 
-			return <div data-testid="api-options">ApiOptions with Init</div>
+			return (
+				<div data-testid="api-options" data-initialized={hasInitialized}>
+					ApiOptions with Init
+				</div>
+			)
 		})
 
 		render(
@@ -392,8 +434,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			expect(screen.getByTestId("api-options")).toBeInTheDocument()
 		})
 
-		// Give time for effects to complete
-		await new Promise((resolve) => setTimeout(resolve, 100))
+		await waitFor(() => expect(screen.getByTestId("api-options")).toHaveAttribute("data-initialized", "true"))
 
 		// Check that save button is disabled (no changes detected)
 		const saveButton = screen.getByTestId("save-button") as HTMLButtonElement
@@ -460,8 +501,182 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		expect(onDone).not.toHaveBeenCalled()
 	})
 
-	// TODO: Fix underlying issue - see above
-	it.skip("should handle initialization from undefined to value without triggering unsaved changes", async () => {
+	it("keeps provider edits isolated from live extension state until Save", async () => {
+		const liveState = {
+			...defaultExtensionState,
+			apiConfiguration: { ...defaultExtensionState.apiConfiguration },
+		}
+		;(useExtensionState as any).mockReturnValue(liveState)
+		vi.mocked(ApiOptions).mockImplementation(({ apiConfiguration, setApiConfigurationField }) => (
+			<div data-testid="api-options">
+				<span data-testid="cached-model">{apiConfiguration.apiModelId}</span>
+				<button onClick={() => setApiConfigurationField("apiModelId", "buffered-model")}>Edit model</button>
+			</div>
+		))
+
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} />
+			</QueryClientProvider>,
+		)
+
+		await waitFor(() => expect(screen.getByText("Edit model")).toBeInTheDocument())
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByText("Edit model"))
+
+		expect(liveState.apiConfiguration.apiModelId).toBe("")
+		expect(screen.getByTestId("cached-model")).toHaveTextContent("buffered-model")
+		expect(mockPostMessage).not.toHaveBeenCalled()
+
+		fireEvent.click(screen.getByTestId("save-button"))
+
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "upsertApiConfiguration",
+				apiConfiguration: expect.objectContaining({ apiModelId: "buffered-model" }),
+			}),
+		)
+	})
+
+	it("keeps non-provider settings isolated from live extension state until Save", async () => {
+		const liveState = { ...defaultExtensionState, soundEnabled: false }
+		;(useExtensionState as any).mockReturnValue(liveState)
+		vi.mocked(NotificationSettings).mockImplementation(({ soundEnabled, setCachedStateField }) => (
+			<div>
+				<span data-testid="cached-sound">{String(soundEnabled)}</span>
+				<button onClick={() => setCachedStateField("soundEnabled", true)}>Enable sound</button>
+			</div>
+		))
+
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="notifications" />
+			</QueryClientProvider>,
+		)
+
+		await waitFor(() => expect(screen.getByText("Enable sound")).toBeInTheDocument())
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByText("Enable sound"))
+
+		expect(liveState.soundEnabled).toBe(false)
+		expect(screen.getByTestId("cached-sound")).toHaveTextContent("true")
+		expect(mockPostMessage).not.toHaveBeenCalled()
+
+		fireEvent.click(screen.getByTestId("save-button"))
+
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({ soundEnabled: true }),
+			}),
+		)
+	})
+
+	it.each([
+		{
+			field: "mcpEnabled",
+			targetSection: "mcp",
+			testId: "cached-mcp-enabled",
+		},
+		{
+			field: "showWorktreesInHomeScreen",
+			targetSection: "worktrees",
+			testId: "cached-worktrees-home",
+		},
+	] as const)("buffers the embedded $field control until Save", async ({ field, targetSection, testId }) => {
+		const liveState = {
+			...defaultExtensionState,
+			mcpEnabled: false,
+			showWorktreesInHomeScreen: false,
+		}
+		;(useExtensionState as any).mockReturnValue(liveState)
+
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection={targetSection} />
+			</QueryClientProvider>,
+		)
+
+		await waitFor(() => expect(screen.getByTestId(testId)).toBeInTheDocument())
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByTestId(testId))
+
+		expect(liveState[field]).toBe(false)
+		expect(screen.getByTestId(testId)).toHaveAttribute("data-value", "true")
+		expect(mockPostMessage).not.toHaveBeenCalled()
+
+		fireEvent.click(screen.getByTestId("save-button"))
+
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({ [field]: true }),
+			}),
+		)
+	})
+
+	it("buffers the VS Code inherit-environment setting and writes it only on Save", async () => {
+		const liveState = { ...defaultExtensionState }
+		;(useExtensionState as any).mockReturnValue(liveState)
+
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="terminal" />
+			</QueryClientProvider>,
+		)
+
+		await waitFor(() => expect(screen.getByTestId("load-inherit-env")).toBeInTheDocument())
+		fireEvent.click(screen.getByTestId("load-inherit-env"))
+		await waitFor(() => expect(screen.getByTestId("cached-inherit-env")).toHaveAttribute("data-value", "true"))
+		mockPostMessage.mockClear()
+
+		fireEvent.click(screen.getByTestId("cached-inherit-env"))
+
+		expect(liveState).not.toHaveProperty("terminalInheritEnv")
+		expect(screen.getByTestId("cached-inherit-env")).toHaveAttribute("data-value", "false")
+		expect(mockPostMessage).not.toHaveBeenCalled()
+
+		fireEvent.click(screen.getByTestId("save-button"))
+
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "updateVSCodeSetting",
+			setting: "terminal.integrated.inheritEnv",
+			value: false,
+		})
+
+		fireEvent.click(screen.getByTestId("load-inherit-env"))
+		expect(screen.getByTestId("cached-inherit-env")).toHaveAttribute("data-value", "false")
+	})
+
+	it.each([
+		["delete-profile", "deleteApiConfiguration"],
+		["create-profile", "upsertApiConfiguration"],
+	])("guards %s while settings contain unsaved edits", async (buttonTestId, messageType) => {
+		vi.mocked(ApiOptions).mockImplementation(({ setApiConfigurationField }) => (
+			<div data-testid="api-options">
+				<button
+					data-testid="change-model"
+					onClick={() => setApiConfigurationField("apiModelId", "edited-model")}>
+					Change Model
+				</button>
+			</div>
+		))
+
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} />
+			</QueryClientProvider>,
+		)
+
+		await waitFor(() => expect(screen.getByTestId("change-model")).toBeInTheDocument())
+		fireEvent.click(screen.getByTestId("change-model"))
+		fireEvent.click(screen.getByTestId(buttonTestId))
+
+		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: messageType }))
+		expect(screen.getByText("settings:unsavedChangesDialog.title")).toBeInTheDocument()
+	})
+
+	it("should handle initialization from undefined to value without triggering unsaved changes", async () => {
 		const onDone = vi.fn()
 
 		// Start with undefined apiModelId
@@ -504,8 +719,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		expect(screen.queryByText("settings:unsavedChangesDialog.title")).not.toBeInTheDocument()
 	})
 
-	// TODO: Fix underlying issue - see above
-	it.skip("should handle initialization from null to value without triggering unsaved changes", async () => {
+	it("should handle initialization from null to value without triggering unsaved changes", async () => {
 		const onDone = vi.fn()
 
 		// Start with null apiModelId
@@ -548,8 +762,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		expect(screen.queryByText("settings:unsavedChangesDialog.title")).not.toBeInTheDocument()
 	})
 
-	// TODO: Fix underlying issue - see above
-	it.skip("should not trigger changes when ApiOptions syncs model IDs during mount", async () => {
+	it("should not trigger changes when ApiOptions syncs model IDs during mount", async () => {
 		const onDone = vi.fn()
 
 		// This specifically tests the bug we fixed where ApiOptions' useEffect
@@ -570,7 +783,11 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 				}
 			}, [hasSynced, apiConfiguration?.apiModelId, setApiConfigurationField])
 
-			return <div data-testid="api-options">ApiOptions</div>
+			return (
+				<div data-testid="api-options" data-synced={hasSynced}>
+					ApiOptions
+				</div>
+			)
 		})
 
 		render(
@@ -584,8 +801,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			expect(screen.getByTestId("api-options")).toBeInTheDocument()
 		})
 
-		// Wait for any async effects to complete
-		await new Promise((resolve) => setTimeout(resolve, 100))
+		await waitFor(() => expect(screen.getByTestId("api-options")).toHaveAttribute("data-synced", "true"))
 
 		// Save button should still be disabled (no user changes)
 		const saveButton = screen.getByTestId("save-button") as HTMLButtonElement

@@ -1,6 +1,6 @@
 // npx vitest src/components/settings/__tests__/TemperatureControl.spec.tsx
 
-import { render, screen, fireEvent, waitFor } from "@/utils/test-utils"
+import { render, screen, fireEvent } from "@/utils/test-utils"
 
 import { TemperatureControl } from "../TemperatureControl"
 
@@ -55,27 +55,27 @@ describe("TemperatureControl", () => {
 		expect(input).toHaveValue("0.7")
 	})
 
-	it("updates when checkbox is toggled", async () => {
+	it("updates synchronously when checkbox is toggled", () => {
 		const onChange = vi.fn()
-		render(<TemperatureControl value={0.7} onChange={onChange} />)
+		const { rerender } = render(<TemperatureControl value={0.7} onChange={onChange} defaultValue={0.7} />)
 
 		const checkbox = screen.getByRole("checkbox")
 
-		// Uncheck - should clear temperature.
 		fireEvent.click(checkbox)
+		expect(onChange).toHaveBeenLastCalledWith(null)
 
-		// Wait for debounced onChange call.
-		await waitFor(() => {
-			expect(onChange).toHaveBeenCalledWith(null)
-		})
-
-		// Check - should restore previous temperature.
+		rerender(<TemperatureControl value={null} onChange={onChange} defaultValue={0.7} />)
 		fireEvent.click(checkbox)
+		expect(onChange).toHaveBeenLastCalledWith(0.7)
+	})
 
-		// Wait for debounced onChange call.
-		await waitFor(() => {
-			expect(onChange).toHaveBeenCalledWith(0.7)
-		})
+	it("updates the cached value in the slider event", () => {
+		const onChange = vi.fn()
+		render(<TemperatureControl value={0.7} onChange={onChange} />)
+
+		fireEvent.change(screen.getByRole("slider"), { target: { value: "0.42" } })
+
+		expect(onChange).toHaveBeenCalledWith(0.42)
 	})
 
 	it("syncs checkbox state when value prop changes", () => {

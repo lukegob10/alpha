@@ -1,6 +1,14 @@
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react"
+import React, {
+	forwardRef,
+	useCallback,
+	useEffect,
+	useImperativeHandle,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react"
 import { useDeepCompareEffect, useEvent } from "react-use"
-import { Virtuoso, type VirtuosoHandle } from "react-virtuoso"
 import removeMd from "remove-markdown"
 import useSound from "use-sound"
 import { LRUCache } from "lru-cache"
@@ -11,9 +19,9 @@ import { getCostBreakdownIfNeeded } from "@src/utils/costFormatting"
 import { batchConsecutive } from "@src/utils/batchConsecutive"
 
 import type {
-	ClineAsk,
-	ClineSayTool,
-	ClineMessage,
+	AlphaAsk,
+	AlphaSayTool,
+	AlphaMessage,
 	ExtensionMessage,
 	AudioType,
 	QueuedMessage,
@@ -21,16 +29,19 @@ import type {
 import { isRetiredProvider, TaskLifecycleState } from "@alpha-code/types"
 
 import { findLast } from "@alpha/array"
+import { planModeSlug } from "@alpha/modes"
+import { parsePlanModeCommand } from "@alpha/plan-mode"
 import { SuggestionItem } from "@alpha-code/types"
 import { combineApiRequests } from "@alpha/combineApiRequests"
 import { combineCommandSequences } from "@alpha/combineCommandSequences"
 import { getApiMetrics } from "@alpha/getApiMetrics"
-import { getAllModes } from "@alpha/modes"
 import { getLatestTodo } from "@alpha/todo"
 
 import { vscode } from "@src/utils/vscode"
+import { normalizeUserFacingSuggestionMode } from "@src/utils/modePresentation"
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
+import { projectLegacyLiveTaskMetadata } from "@src/context/agentLifecycleState"
 import { useSelectedModel } from "@src/components/ui/hooks/useSelectedModel"
 import AlphaHero from "@src/components/welcome/AlphaHero"
 import AlphaTips from "@src/components/welcome/AlphaTips"
@@ -39,8 +50,9 @@ import { StandardTooltip, Button } from "@src/components/ui"
 import TelemetryBanner from "../common/TelemetryBanner"
 import VersionIndicator from "../common/VersionIndicator"
 import HistoryPreview from "../history/HistoryPreview"
+import { ManagedAgentTree } from "../agents/ManagedAgentTree"
 import Announcement from "./Announcement"
-import ChatRow from "./ChatRow"
+import ChatRow, { type ChatRowEnvironment } from "./ChatRow"
 import WarningRow from "./WarningRow"
 import { ChatTextArea } from "./ChatTextArea"
 import TaskHeader from "./TaskHeader"
@@ -48,7 +60,11 @@ import { CheckpointWarning } from "./CheckpointWarning"
 import { QueuedMessages } from "./QueuedMessages"
 import { WorktreeSelector } from "./WorktreeSelector"
 import FileChangesPanel from "./FileChangesPanel"
-import { useScrollLifecycle } from "@src/hooks/useScrollLifecycle"
+import { ActivityTraceToggle } from "./ActivityTraceToggle"
+import { getCompletedActivity } from "./completedActivity"
+import { fileChangeTurnsFromMessages } from "./utils/fileChangesFromMessages"
+import { useProgressiveTranscript } from "./hooks/useProgressiveTranscript"
+import { useChatScrollController } from "@src/hooks/useChatScrollController"
 
 export interface ChatViewProps {
 	isHidden: boolean
@@ -62,18 +78,29 @@ export interface ChatViewRef {
 
 export const MAX_IMAGES_PER_MESSAGE = 20 // This is the Anthropic limit.
 
-const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0
-const messageResponseAskTypes = new Set<ClineAsk>([
+const messageResponseAskTypes = new Set<AlphaAsk>([
 	"followup",
 	"completion_result",
 	"resume_task",
 	"resume_completed_task",
 	"mistake_limit_reached",
 ])
-const completedTaskResponseAskTypes = new Set<ClineAsk>(["completion_result", "resume_completed_task"])
-const approvalAskTypes = new Set<ClineAsk>(["tool", "command", "use_mcp_server"])
+const completedTaskResponseAskTypes = new Set<AlphaAsk>(["completion_result", "resume_completed_task"])
+const approvalAskTypes = new Set<AlphaAsk>(["tool", "command", "use_mcp_server"])
+const MODEL_RESPONSE_DELAY_MS = 30_000
 
-const isCompletedTaskResponseAsk = (ask: ClineAsk | undefined) => Boolean(ask && completedTaskResponseAskTypes.has(ask))
+const computeChatItemKey = (index: number, message: AlphaMessage) => `${message.ts}:${index}`
+
+const isCompletedTaskResponseAsk = (ask: AlphaAsk | undefined) => Boolean(ask && completedTaskResponseAskTypes.has(ask))
+
+/**
+ * Recognizes an explicit user request to run context condensation without
+ * treating ordinary requests that merely mention context as commands.
+ */
+export const isContextCondensationRequest = (text: string): boolean =>
+	/^(?:(?:please|can you|could you|would you)\s+)?(?:compact|condense)\s+(?:(?:the|this)\s+)?(?:context|conversation|chat|thread)\s*[.!?]*$/i.test(
+		text.trim(),
+	)
 
 const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewProps> = (
 	{ isHidden, showAnnouncement, hideAnnouncement },
@@ -84,8 +111,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	})
 
 	const { t } = useAppTranslation()
-	const modeShortcutText = `${isMac ? "⌘" : "Ctrl"} + . ${t("chat:forNextMode")}, ${isMac ? "⌘" : "Ctrl"} + Shift + . ${t("chat:forPreviousMode")}`
+	const modeShortcutText = "Shift + Tab"
 
+	const extensionState = useExtensionState()
 	const {
 		clineMessages: messages,
 		currentTaskId,
@@ -96,16 +124,20 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		apiConfiguration,
 		mode,
 		setMode,
-		alwaysAllowModeSwitch,
-		customModes,
 		telemetrySetting,
 		soundEnabled,
 		soundVolume,
 		messageQueue = [],
 		liveTasksById,
+		agentLifecycleSnapshots,
+		agentLifecycleDegraded,
+		managedAgentTree,
 		showWorktreesInHomeScreen,
-	} = useExtensionState()
-
+		mcpServers,
+		alwaysAllowMcp,
+		currentCheckpoint,
+		reasoningBlockCollapsed,
+	} = extensionState
 	// Show a WarningRow when the user sends a message with a retired provider.
 	const [showRetiredProviderWarning, setShowRetiredProviderWarning] = useState(false)
 
@@ -129,16 +161,42 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[visibleCurrentTaskId],
 	)
 	const visibleLiveTask = visibleCurrentTaskId ? liveTasksById?.[visibleCurrentTaskId] : undefined
-	const isVisibleTaskCompleted = visibleLiveTask?.lifecycle === TaskLifecycleState.Completed
+	const isVisibleTaskLifecycleDegraded = Boolean(
+		visibleCurrentTaskId && agentLifecycleDegraded?.[visibleCurrentTaskId]?.degraded,
+	)
+	const legacyVisibleLiveTask =
+		visibleCurrentTaskId && isVisibleTaskLifecycleDegraded
+			? projectLegacyLiveTaskMetadata(extensionState, visibleCurrentTaskId, visibleLiveTask)
+			: undefined
+	const effectiveVisibleLiveTask = isVisibleTaskLifecycleDegraded ? legacyVisibleLiveTask : visibleLiveTask
+	const isVisibleTaskCompleted = effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Completed
 	const visibleCurrentTaskItem = isDraftView ? undefined : currentTaskItem
+	const isManagedSubagent = visibleCurrentTaskItem?.taskKind === "subagent"
+	const managedAgentGroups = useMemo(
+		() => activeMessages.flatMap((message) => (message.subagentGroup ? [message.subagentGroup] : [])),
+		[activeMessages],
+	)
+	const managedAgentTreeProjection =
+		managedAgentTree !== undefined &&
+		managedAgentTree.rootTaskId === visibleCurrentTaskId &&
+		managedAgentTree.nodes.length > 1
+			? managedAgentTree
+			: undefined
+	const showManagedAgentTree =
+		!isManagedSubagent &&
+		Boolean(visibleCurrentTaskId) &&
+		(Boolean(managedAgentTreeProjection) || managedAgentGroups.length > 0)
 	const visibleCurrentTaskTodos = useMemo(
 		() => (isDraftView ? [] : currentTaskTodos),
 		[isDraftView, currentTaskTodos],
 	)
 	const messagesRef = useRef(activeMessages)
 	const isBlankTaskPendingRef = useRef(false)
+	const getAlphaMessages = useCallback(() => messagesRef.current, [])
 
-	useEffect(() => {
+	// Interaction routing must observe the transcript that committed with the
+	// visible row, before passive ask-control effects can update their state.
+	useLayoutEffect(() => {
 		messagesRef.current = activeMessages
 	}, [activeMessages])
 
@@ -157,7 +215,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			return
 		}
 
-		const providerSelectedTask = currentView?.type === "task" && currentTaskId && hasSeenProviderDraftRef.current
+		const providerSelectedTask =
+			currentView?.type === "task" &&
+			currentTaskId &&
+			(hasSeenProviderDraftRef.current || currentTaskId !== blankTaskSourceIdRef.current)
 		const legacySelectedDifferentTask =
 			!currentView && currentTaskId && currentTaskId !== blankTaskSourceIdRef.current
 
@@ -224,20 +285,85 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		priorText: string
 		priorImages: string[]
 	} | null>(null)
+	const [pendingQueueRequest, setPendingQueueRequest] = useState<{
+		requestId: string
+		taskId: string
+		text: string
+		images: string[]
+	} | null>(null)
+	const [pendingSteerRequest, setPendingSteerRequest] = useState<{
+		requestId: string
+		taskId: string
+		messageId: string
+	} | null>(null)
+	const pendingQueueRequestRef = useRef(pendingQueueRequest)
+	const pendingSteerRequestRef = useRef(pendingSteerRequest)
+	const [chatCommandError, setChatCommandError] = useState<string>()
+	const [activityClock, setActivityClock] = useState(() => Date.now())
 
 	// We need to hold on to the ask because useEffect > lastMessage will always
 	// let us know when an ask comes in and handle it, but by the time
 	// handleMessage is called, the last message might not be the ask anymore
 	// (it could be a say that followed).
-	const [clineAsk, setClineAsk] = useState<ClineAsk | undefined>(undefined)
+	const [alphaAsk, setAlphaAsk] = useState<AlphaAsk | undefined>(undefined)
 	const [enableButtons, setEnableButtons] = useState<boolean>(false)
 	const [primaryButtonText, setPrimaryButtonText] = useState<string | undefined>(undefined)
 	const [secondaryButtonText, setSecondaryButtonText] = useState<string | undefined>(undefined)
+	const pendingCompletedTaskResumeIdRef = useRef<string | undefined>(undefined)
+	const [pendingCompletedTaskResumeId, setPendingCompletedTaskResumeId] = useState<string | undefined>(undefined)
+	const isCompletedTaskResumePending = Boolean(
+		visibleCurrentTaskId && pendingCompletedTaskResumeId === visibleCurrentTaskId,
+	)
+	const latestVisibleMessage = activeMessages.at(-1)
+	const completedTaskResponseAsk = isCompletedTaskResponseAsk(alphaAsk)
+		? alphaAsk
+		: latestVisibleMessage?.type === "ask" && isCompletedTaskResponseAsk(latestVisibleMessage.ask)
+			? latestVisibleMessage.ask
+			: undefined
+	const hasOpenCompletedTaskResponseBoundary =
+		completedTaskResponseAsk === "resume_completed_task" ||
+		(completedTaskResponseAsk === "completion_result" && !isVisibleTaskCompleted)
+	// A completion ask is a user-facing review boundary, even if the task
+	// metadata still reports the underlying model turn as active. Keep the
+	// provider selector usable at that boundary so a stale turn flag cannot
+	// leave the completed-task composer partially disabled.
+	const isCompletedTaskResponseBoundary = completedTaskResponseAsk !== undefined
+	const isVisibleTaskFailedOrClosed =
+		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Failed ||
+		effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Closed
+	const shouldClearTerminalControls =
+		isVisibleTaskFailedOrClosed || (isVisibleTaskCompleted && !hasOpenCompletedTaskResponseBoundary)
+	useEffect(() => {
+		// If fallback metadata recovers a task from stale terminal state, clear the
+		// disabled controls; the transcript effect below restores any ask/streaming
+		// controls that still apply.
+		if (isVisibleTaskLifecycleDegraded && !shouldClearTerminalControls) {
+			setSendingDisabled(false)
+			setAlphaAsk(undefined)
+			setEnableButtons(false)
+			setPrimaryButtonText(undefined)
+			setSecondaryButtonText(undefined)
+			return
+		}
+		if (!shouldClearTerminalControls) return
+		setSendingDisabled(true)
+		setAlphaAsk(undefined)
+		setEnableButtons(false)
+		setPrimaryButtonText(undefined)
+		setSecondaryButtonText(undefined)
+	}, [isVisibleTaskLifecycleDegraded, shouldClearTerminalControls, visibleCurrentTaskId])
+	useEffect(() => {
+		const pendingTaskId = pendingCompletedTaskResumeIdRef.current
+		if (!pendingTaskId) return
+		if (liveTasksById?.[pendingTaskId]?.lifecycle === TaskLifecycleState.Completed) return
+
+		pendingCompletedTaskResumeIdRef.current = undefined
+		setPendingCompletedTaskResumeId(undefined)
+	}, [liveTasksById])
 	const [_didClickCancel, setDidClickCancel] = useState(false)
-	const virtuosoRef = useRef<VirtuosoHandle>(null)
+	const transcriptScrollerRef = useRef<HTMLDivElement | null>(null)
 	const [expandedRows, setExpandedRows] = useState<Record<number, boolean>>({})
 	const prevExpandedRowsRef = useRef<Record<number, boolean>>()
-	const scrollContainerRef = useRef<HTMLDivElement>(null)
 	const lastTtsRef = useRef<string>("")
 	const [wasStreaming, setWasStreaming] = useState<boolean>(false)
 	const [checkpointWarning, setCheckpointWarning] = useState<
@@ -254,6 +380,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const autoApproveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 	const userRespondedRef = useRef<boolean>(false)
 	const [currentFollowUpTs, setCurrentFollowUpTs] = useState<number | null>(null)
+	const submittedFollowUpRef = useRef<{ taskId: string | undefined; ts: number }>()
 	const [aggregatedCostsMap, setAggregatedCostsMap] = useState<
 		Map<
 			string,
@@ -265,10 +392,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		>
 	>(new Map())
 
-	const clineAskRef = useRef(clineAsk)
+	const alphaAskRef = useRef(alphaAsk)
 	useEffect(() => {
-		clineAskRef.current = clineAsk
-	}, [clineAsk])
+		alphaAskRef.current = alphaAsk
+	}, [alphaAsk])
 
 	// Keep inputValueRef in sync with inputValue state
 	useEffect(() => {
@@ -281,17 +408,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	// Compute whether auto-approval is paused (user is typing in a followup)
 	const isFollowUpAutoApprovalPaused = useMemo(() => {
-		return !!(inputValue && inputValue.trim().length > 0 && clineAsk === "followup")
-	}, [inputValue, clineAsk])
+		return !!(inputValue && inputValue.trim().length > 0 && alphaAsk === "followup")
+	}, [inputValue, alphaAsk])
 
 	// Cancel auto-approval timeout when user starts typing
 	useEffect(() => {
 		// Only send cancel if there's actual input (user is typing)
 		// and we have a pending follow-up question
 		if (isFollowUpAutoApprovalPaused) {
-			vscode.postMessage({ type: "cancelAutoApproval" })
+			vscode.postMessage({ type: "cancelAutoApproval", ...visibleTaskPayload })
 		}
-	}, [isFollowUpAutoApprovalPaused])
+	}, [isFollowUpAutoApprovalPaused, visibleTaskPayload])
 
 	const isProfileDisabled = false
 
@@ -358,7 +485,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						case "api_req_failed":
 							playSound("progress_loop")
 							setSendingDisabled(true)
-							setClineAsk("api_req_failed")
+							setAlphaAsk("api_req_failed")
 							setEnableButtons(true)
 							setPrimaryButtonText(t("chat:retry.title"))
 							setSecondaryButtonText(t("chat:startNewTask.title"))
@@ -366,7 +493,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						case "mistake_limit_reached":
 							playSound("progress_loop")
 							setSendingDisabled(false)
-							setClineAsk("mistake_limit_reached")
+							setAlphaAsk("mistake_limit_reached")
 							setEnableButtons(true)
 							setPrimaryButtonText(t("chat:proceedAnyways.title"))
 							setSecondaryButtonText(t("chat:startNewTask.title"))
@@ -374,14 +501,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						case "followup":
 							if (lastMessage.isAnswered || isVisibleTaskCompleted) {
 								setSendingDisabled(false)
-								setClineAsk(undefined)
+								setAlphaAsk(undefined)
 								setEnableButtons(false)
 								setPrimaryButtonText(undefined)
 								setSecondaryButtonText(undefined)
 								break
 							}
 							setSendingDisabled(isPartial)
-							setClineAsk("followup")
+							setAlphaAsk("followup")
 							// setting enable buttons to `false` would trigger a focus grab when
 							// the text area is enabled which is undesirable.
 							// We have no buttons for this tool, so no problem having them "enabled"
@@ -392,9 +519,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							break
 						case "tool":
 							setSendingDisabled(isPartial)
-							setClineAsk("tool")
+							setAlphaAsk("tool")
 							setEnableButtons(!isPartial)
-							const tool = JSON.parse(lastMessage.text || "{}") as ClineSayTool
+							const tool = JSON.parse(lastMessage.text || "{}") as AlphaSayTool
 							switch (tool.tool) {
 								case "editedExistingFile":
 								case "appliedDiff":
@@ -442,40 +569,41 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							break
 						case "command":
 							setSendingDisabled(isPartial)
-							setClineAsk("command")
+							setAlphaAsk("command")
 							setEnableButtons(!isPartial)
 							setPrimaryButtonText(t("chat:runCommand.title"))
 							setSecondaryButtonText(t("chat:reject.title"))
 							break
 						case "command_output":
 							setSendingDisabled(false)
-							setClineAsk("command_output")
+							setAlphaAsk("command_output")
 							setEnableButtons(true)
 							setPrimaryButtonText(t("chat:proceedWhileRunning.title"))
 							setSecondaryButtonText(t("chat:killCommand.title"))
 							break
 						case "use_mcp_server":
 							setSendingDisabled(isPartial)
-							setClineAsk("use_mcp_server")
+							setAlphaAsk("use_mcp_server")
 							setEnableButtons(!isPartial)
 							setPrimaryButtonText(t("chat:approve.title"))
 							setSecondaryButtonText(t("chat:reject.title"))
 							break
 						case "completion_result":
-							// Extension waiting for feedback, but we can just present a new task button.
+							// The button starts a separate task. Composer submission remains a follow-up
+							// in this task so the current thread and its context are preserved.
 							// Only play celebration sound if there are no queued messages.
 							if (!isPartial && visibleMessageQueue.length === 0) {
 								playSound("celebration")
 							}
 							setSendingDisabled(isPartial)
-							setClineAsk("completion_result")
+							setAlphaAsk("completion_result")
 							setEnableButtons(!isPartial)
 							setPrimaryButtonText(t("chat:startNewTask.title"))
 							setSecondaryButtonText(undefined)
 							break
 						case "resume_task":
 							setSendingDisabled(false)
-							setClineAsk("resume_task")
+							setAlphaAsk("resume_task")
 							setEnableButtons(true)
 							// For completed subtasks, show "Start New Task" instead of "Resume"
 							// A subtask is considered completed if:
@@ -497,7 +625,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							break
 						case "resume_completed_task":
 							setSendingDisabled(false)
-							setClineAsk("resume_completed_task")
+							setAlphaAsk("resume_completed_task")
 							setEnableButtons(true)
 							setPrimaryButtonText(t("chat:startNewTask.title"))
 							setSecondaryButtonText(undefined)
@@ -522,7 +650,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							// images the user has pasted while the chat is in progress.
 							// Images are already cleared in the appropriate user-action
 							// handlers (handleSendMessage, handlePrimaryButtonClick, etc.).
-							setClineAsk(undefined)
+							setAlphaAsk(undefined)
 							setEnableButtons(false)
 							setPrimaryButtonText(undefined)
 							setSecondaryButtonText(undefined)
@@ -543,7 +671,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	// Update button text when messages change (e.g., completion_result is added) for subtasks in resume_task state
 	useEffect(() => {
-		if (clineAsk === "resume_task" && visibleCurrentTaskItem?.parentTaskId) {
+		if (alphaAsk === "resume_task" && visibleCurrentTaskItem?.parentTaskId) {
 			const hasCompletionResult = activeMessages.some(
 				(msg) => msg.ask === "completion_result" || msg.say === "completion_result",
 			)
@@ -552,20 +680,20 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				setSecondaryButtonText(undefined)
 			}
 		}
-	}, [clineAsk, visibleCurrentTaskItem?.parentTaskId, activeMessages, t])
+	}, [alphaAsk, visibleCurrentTaskItem?.parentTaskId, activeMessages, t])
 
 	useEffect(() => {
 		if (activeMessages.length === 0) {
 			setSendingDisabled(false)
-			setClineAsk(undefined)
+			setAlphaAsk(undefined)
 			setEnableButtons(false)
 			setPrimaryButtonText(undefined)
 			setSecondaryButtonText(undefined)
 		}
 	}, [activeMessages.length])
 
-	// Reset UI states when task changes. Scroll lifecycle is handled by
-	// useScrollLifecycle which has its own effect keyed on taskTs.
+	// Reset UI states when task changes. The scroll controller has its own
+	// task-keyed layout effect.
 	useEffect(() => {
 		setExpandedRows({})
 		everVisibleMessagesTsRef.current.clear()
@@ -604,9 +732,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 	}, [])
 
-	const isStreaming = useMemo(() => {
-		// Checking clineAsk isn't enough since messages effect may be called
-		// again for a tool for example, set clineAsk to its value, and if the
+	const legacyIsStreaming = useMemo(() => {
+		// Checking alphaAsk isn't enough since messages effect may be called
+		// again for a tool for example, set alphaAsk to its value, and if the
 		// next message is not an ask then it doesn't reset. This is likely due
 		// to how much more often we're updating messages as compared to before,
 		// and should be resolved with optimizations as it's likely a rendering
@@ -615,7 +743,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		const isLastAsk = !!modifiedMessages.at(-1)?.ask
 
 		const isToolCurrentlyAsking =
-			isLastAsk && clineAsk !== undefined && enableButtons && primaryButtonText !== undefined
+			isLastAsk && alphaAsk !== undefined && enableButtons && primaryButtonText !== undefined
 
 		if (isToolCurrentlyAsking) {
 			return false
@@ -628,7 +756,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		} else {
 			const lastApiReqStarted = findLast(
 				modifiedMessages,
-				(message: ClineMessage) => message.say === "api_req_started",
+				(message: AlphaMessage) => message.say === "api_req_started",
 			)
 
 			if (
@@ -637,7 +765,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				lastApiReqStarted.text !== undefined &&
 				lastApiReqStarted.say === "api_req_started"
 			) {
-				const cost = JSON.parse(lastApiReqStarted.text).cost
+				let cost: unknown
+				try {
+					cost = (JSON.parse(lastApiReqStarted.text) as { cost?: unknown }).cost
+				} catch {
+					// Corrupt or pre-migration transcript data must not crash the composer.
+					return false
+				}
 
 				if (cost === undefined) {
 					return true // API request has not finished yet.
@@ -646,10 +780,48 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 
 		return false
-	}, [modifiedMessages, clineAsk, enableButtons, primaryButtonText])
+	}, [modifiedMessages, alphaAsk, enableButtons, primaryButtonText])
+	const isTurnActive =
+		effectiveVisibleLiveTask?.isTurnActive ?? effectiveVisibleLiveTask?.isStreaming ?? legacyIsStreaming
+	const isToolCurrentlyAsking =
+		Boolean(modifiedMessages.at(-1)?.ask) &&
+		alphaAsk !== undefined &&
+		enableButtons &&
+		primaryButtonText !== undefined
+	const isStreaming = isTurnActive && !effectiveVisibleLiveTask?.isWaitingForInput && !isToolCurrentlyAsking
+	const visibleLifecycleSnapshot = visibleCurrentTaskId ? agentLifecycleSnapshots?.[visibleCurrentTaskId] : undefined
+	const hasPendingToolCalls = useMemo(() => {
+		if (!visibleLifecycleSnapshot) return false
+		const completed = new Set(visibleLifecycleSnapshot.terminalToolCallIds)
+		return visibleLifecycleSnapshot.acceptedToolCallIds.some((id) => !completed.has(id))
+	}, [visibleLifecycleSnapshot])
+	// Silence is expected while tools (including wait_agent), compaction, or other runtime phases run.
+	// Missing/degraded phase data cannot establish that the model is the source of a delay.
+	const isModelResponseDelayed =
+		isStreaming &&
+		!isVisibleTaskLifecycleDegraded &&
+		effectiveVisibleLiveTask?.activityPhase === "working" &&
+		!hasPendingToolCalls &&
+		Boolean(effectiveVisibleLiveTask?.lastUpdatedAt) &&
+		activityClock - (effectiveVisibleLiveTask?.lastUpdatedAt ?? activityClock) >= MODEL_RESPONSE_DELAY_MS
+
+	useEffect(() => {
+		if (!isTurnActive) return
+		setActivityClock(Date.now())
+		const interval = setInterval(() => setActivityClock(Date.now()), 5_000)
+		return () => clearInterval(interval)
+	}, [isTurnActive, visibleCurrentTaskId])
+
+	useEffect(() => {
+		pendingQueueRequestRef.current = null
+		pendingSteerRequestRef.current = null
+		setPendingQueueRequest(null)
+		setPendingSteerRequest(null)
+		setChatCommandError(undefined)
+	}, [visibleCurrentTaskId])
 
 	const markFollowUpAsAnswered = useCallback(() => {
-		const lastFollowUpMessage = messagesRef.current.findLast((msg: ClineMessage) => msg.ask === "followup")
+		const lastFollowUpMessage = messagesRef.current.findLast((msg: AlphaMessage) => msg.ask === "followup")
 		if (lastFollowUpMessage) {
 			setCurrentFollowUpTs(lastFollowUpMessage.ts)
 		}
@@ -668,7 +840,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setInputValue("")
 		setSendingDisabled(true)
 		setSelectedImages([])
-		setClineAsk(undefined)
+		setAlphaAsk(undefined)
 		setEnableButtons(false)
 		// Do not reset mode here as it should persist.
 		// setPrimaryButtonText(undefined)
@@ -684,9 +856,63 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setIsBlankTaskView(true)
 		handleChatReset()
 		setSendingDisabled(false)
+		setPrimaryButtonText(undefined)
+		setSecondaryButtonText(undefined)
 
 		setTimeout(() => textAreaRef.current?.focus(), 0)
 	}, [currentTaskId, currentView?.type, handleChatReset])
+
+	const startNewTask = useCallback(
+		(text?: string, images: string[] = []) => {
+			const trimmedInput = text?.trim() ?? ""
+			enterBlankTaskView()
+
+			if (trimmedInput || images.length > 0) {
+				isBlankTaskPendingRef.current = false
+				vscode.postMessage({ type: "newTask", text: trimmedInput, images })
+				return
+			}
+
+			vscode.postMessage({ type: "startBlankTask" })
+		},
+		[enterBlankTaskView],
+	)
+
+	const handleCondenseContext = useCallback(
+		(taskId: string) => {
+			if (isCondensing || sendingDisabled) {
+				return
+			}
+			setIsCondensing(true)
+			setSendingDisabled(true)
+			vscode.postMessage({ type: "condenseTaskContextRequest", text: taskId })
+		},
+		[isCondensing, sendingDisabled],
+	)
+
+	const postQueuedMessage = useCallback(
+		(text: string, images: string[]) => {
+			// Queue messages are task-scoped on the extension side. Preserve the draft
+			// during transient view/task state instead of posting a request it will reject.
+			if (!visibleCurrentTaskId || pendingQueueRequestRef.current) {
+				return false
+			}
+
+			const requestId = crypto.randomUUID()
+			const request = {
+				requestId,
+				taskId: visibleCurrentTaskId,
+				text,
+				images: [...images],
+			}
+			pendingQueueRequestRef.current = request
+			setPendingQueueRequest(request)
+			setChatCommandError(undefined)
+			vscode.postMessage({ type: "queueMessage", text, images, taskId: visibleCurrentTaskId, requestId })
+			return true
+		},
+		[visibleCurrentTaskId],
+	)
 
 	/**
 	 * Handles sending messages to the extension
@@ -696,8 +922,21 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const handleSendMessage = useCallback(
 		(text: string, images: string[]) => {
 			text = text.trim()
+			const planCommand = parsePlanModeCommand(text)
 
 			if (!text && images.length === 0) {
+				return
+			}
+			if (visibleCurrentTaskId && pendingCompletedTaskResumeIdRef.current === visibleCurrentTaskId) {
+				return
+			}
+
+			// Allow users to trigger the same operation as the context-condense
+			// button by explicitly asking for it in the chat input.
+			if (visibleCurrentTaskId && images.length === 0 && isContextCondensationRequest(text)) {
+				handleCondenseContext(visibleCurrentTaskId)
+				setInputValue("")
+				setSelectedImages([])
 				return
 			}
 
@@ -723,36 +962,85 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				return
 			}
 
-			const lastMessage = messagesRef.current.at(-1)
-			const isAwaitingCompletedTaskResponse =
-				isCompletedTaskResponseAsk(clineAskRef.current) ||
-				(lastMessage?.type === "ask" && isCompletedTaskResponseAsk(lastMessage.ask))
+			if (planCommand) {
+				const isPlanCommandUnavailable =
+					isTurnActive ||
+					visibleMessageQueue.length > 0 ||
+					isLastFollowUpAnswered ||
+					alphaAskRef.current === "command_output" ||
+					(alphaAskRef.current !== undefined && approvalAskTypes.has(alphaAskRef.current))
 
-			if (isVisibleTaskCompleted && !isAwaitingCompletedTaskResponse) {
-				isBlankTaskPendingRef.current = false
-				vscode.postMessage({ type: "newTask", text, images })
+				// Match the CLI contract: mode commands do not become queued user
+				// messages while the current turn or an approval boundary is active.
+				if (isPlanCommandUnavailable) return
+
+				if (!planCommand.prompt && images.length === 0) {
+					if (mode !== planModeSlug) {
+						setMode(planModeSlug)
+						vscode.postMessage({ type: "mode", text: planModeSlug })
+					}
+					setInputValue("")
+					setSelectedImages([])
+					return
+				}
+
+				// Keep `/plan` attached to the user message. The extension host parses
+				// and admits the mode transition before persisting or sending the turn,
+				// so a rejected Plan transition can never leak this prompt into Code.
+			}
+
+			if (isVisibleTaskCompleted && !hasOpenCompletedTaskResponseBoundary && visibleCurrentTaskId) {
+				pendingCompletedTaskResumeIdRef.current = visibleCurrentTaskId
+				setPendingCompletedTaskResumeId(visibleCurrentTaskId)
+				vscode.postMessage({
+					type: "resumeCompletedTask",
+					taskId: visibleCurrentTaskId,
+					text,
+					images,
+				})
 				handleChatReset()
+				setPrimaryButtonText(undefined)
+				setSecondaryButtonText(undefined)
 				return
 			}
 
-			if (isLastFollowUpAnswered) {
-				vscode.postMessage({ type: "queueMessage", text, images, ...visibleTaskPayload })
-				setInputValue("")
-				setSelectedImages([])
+			if (isVisibleTaskFailedOrClosed) {
+				startNewTask(text, images)
 				return
 			}
 
+			const currentInputBoundary = messagesRef.current.findLast(
+				(message) =>
+					message.type === "ask" ||
+					(message.type === "say" && (message.say === "api_req_started" || message.say === "user_feedback")),
+			)
+			const isFollowUpLocallyAnswered =
+				currentInputBoundary?.ask === "followup" &&
+				submittedFollowUpRef.current?.taskId === visibleCurrentTaskId &&
+				submittedFollowUpRef.current?.ts === currentInputBoundary.ts
+			if (isLastFollowUpAnswered || isFollowUpLocallyAnswered) {
+				postQueuedMessage(text, images)
+				return
+			}
+
+			const isCurrentFollowUpResponse =
+				currentInputBoundary?.ask === "followup" &&
+				currentInputBoundary.partial !== true &&
+				currentInputBoundary.isAnswered !== true
+
+			// A follow-up answer unblocks the current turn, which remains active while
+			// waiting. Existing queued instructions belong to later turns, not this ask.
+			// Waiting metadata can lag the complete ask; use conversation boundaries
+			// instead so an immediate reply works without re-answering a stale question.
 			const shouldQueueMessage =
-				sendingDisabled ||
-				isStreaming ||
-				visibleMessageQueue.length > 0 ||
-				clineAskRef.current === "command_output" ||
-				(clineAskRef.current !== undefined && approvalAskTypes.has(clineAskRef.current))
+				!isCurrentFollowUpResponse &&
+				(isTurnActive ||
+					visibleMessageQueue.length > 0 ||
+					alphaAskRef.current === "command_output" ||
+					(alphaAskRef.current !== undefined && approvalAskTypes.has(alphaAskRef.current)))
 
 			if (shouldQueueMessage) {
-				vscode.postMessage({ type: "queueMessage", text, images, ...visibleTaskPayload })
-				setInputValue("")
-				setSelectedImages([])
+				postQueuedMessage(text, images)
 				return
 			}
 
@@ -762,8 +1050,15 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			if (isBlankTaskPendingRef.current || messagesRef.current.length === 0) {
 				isBlankTaskPendingRef.current = false
 				vscode.postMessage({ type: "newTask", text, images })
-			} else if (!clineAskRef.current || messageResponseAskTypes.has(clineAskRef.current)) {
-				if (clineAskRef.current === "followup") {
+			} else if (
+				isCurrentFollowUpResponse ||
+				!alphaAskRef.current ||
+				messageResponseAskTypes.has(alphaAskRef.current)
+			) {
+				if (isCurrentFollowUpResponse) {
+					// Claim synchronously: another invoke/click can precede the render or
+					// host acknowledgement that marks this question answered.
+					submittedFollowUpRef.current = { taskId: visibleCurrentTaskId, ts: currentInputBoundary.ts }
 					markFollowUpAsAnswered()
 				}
 
@@ -781,19 +1076,41 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[
 			handleChatReset,
 			markFollowUpAsAnswered,
-			sendingDisabled,
-			isStreaming,
+			isTurnActive,
 			visibleMessageQueue.length,
 			apiConfiguration?.apiProvider,
 			visibleTaskPayload,
 			editingQueuedMessage,
+			isVisibleTaskFailedOrClosed,
 			isVisibleTaskCompleted,
+			hasOpenCompletedTaskResponseBoundary,
 			isLastFollowUpAnswered,
-		], // messagesRef and clineAskRef are stable
+			postQueuedMessage,
+			startNewTask,
+			handleCondenseContext,
+			visibleCurrentTaskId,
+			mode,
+			setMode,
+		], // messagesRef and alphaAskRef are stable
 	)
+	const committedSendMessageRef = useRef(handleSendMessage)
+	useLayoutEffect(() => {
+		committedSendMessageRef.current = handleSendMessage
+	}, [handleSendMessage])
 
 	const handleSetChatBoxMessage = useCallback(
 		(text: string, images: string[]) => {
+			const pendingTaskId = pendingCompletedTaskResumeIdRef.current
+			if (pendingTaskId === visibleCurrentTaskId) {
+				pendingCompletedTaskResumeIdRef.current = undefined
+				setPendingCompletedTaskResumeId(undefined)
+				setSendingDisabled(false)
+				setAlphaAsk("completion_result")
+				setEnableButtons(true)
+				setPrimaryButtonText(t("chat:startNewTask.title"))
+				setSecondaryButtonText(undefined)
+			}
+
 			// Avoid nested template literals by breaking down the logic
 			let newValue = text
 
@@ -804,13 +1121,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			setInputValue(newValue)
 			setSelectedImages([...selectedImages, ...images])
 		},
-		[inputValue, selectedImages],
+		[inputValue, selectedImages, t, visibleCurrentTaskId],
 	)
-
-	const startNewTask = useCallback(() => {
-		enterBlankTaskView()
-		vscode.postMessage({ type: "startBlankTask" })
-	}, [enterBlankTaskView])
 
 	// Handle stop button click from textarea
 	const handleStopTask = useCallback(() => {
@@ -821,17 +1133,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	// Handle enqueue button click from textarea
 	const handleEnqueueCurrentMessage = useCallback(() => {
 		const text = inputValue.trim()
-		if (text || selectedImages.length > 0) {
-			vscode.postMessage({
-				type: "queueMessage",
-				text,
-				images: selectedImages,
-				...visibleTaskPayload,
-			})
-			setInputValue("")
-			setSelectedImages([])
-		}
-	}, [visibleTaskPayload, inputValue, selectedImages])
+		if (text || selectedImages.length > 0) postQueuedMessage(text, selectedImages)
+	}, [inputValue, postQueuedMessage, selectedImages])
 
 	const startQueuedMessageEdit = useCallback(
 		(message: QueuedMessage) => {
@@ -858,17 +1161,27 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setTimeout(() => textAreaRef.current?.focus(), 0)
 	}, [editingQueuedMessage])
 
-	// This logic depends on the useEffect[messages] above to set clineAsk,
+	// This logic depends on the useEffect[messages] above to set alphaAsk,
 	// after which buttons are shown and we then send an askResponse to the
 	// extension.
 	const handlePrimaryButtonClick = useCallback(
 		(text?: string, images?: string[]) => {
+			if (
+				isVisibleTaskFailedOrClosed ||
+				(visibleCurrentTaskId && pendingCompletedTaskResumeIdRef.current === visibleCurrentTaskId)
+			) {
+				return
+			}
 			// Mark that user has responded
 			userRespondedRef.current = true
 
 			const trimmedInput = text?.trim()
+			if (isCompletedTaskResponseAsk(alphaAsk)) {
+				startNewTask(trimmedInput, images)
+				return
+			}
 
-			switch (clineAsk) {
+			switch (alphaAsk) {
 				case "api_req_failed":
 				case "mistake_limit_reached":
 					// Only send text/images if they exist
@@ -909,7 +1222,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							(msg) => msg.ask === "completion_result" || msg.say === "completion_result",
 						)
 					if (isCompletedSubtaskForClick) {
-						startNewTask()
+						startNewTask(trimmedInput, images)
+						return
 					} else {
 						// Only send text/images if they exist
 						if (trimmedInput || (images && images.length > 0)) {
@@ -932,11 +1246,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						}
 					}
 					break
-				case "completion_result":
-				case "resume_completed_task":
-					// Waiting for feedback, but we can just present a new task button
-					startNewTask()
-					break
 				case "command_output":
 					vscode.postMessage({
 						type: "terminalOperation",
@@ -947,15 +1256,23 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 
 			setSendingDisabled(true)
-			setClineAsk(undefined)
+			setAlphaAsk(undefined)
 			setEnableButtons(false)
 			setPrimaryButtonText(undefined)
 			setSecondaryButtonText(undefined)
 		},
-		[clineAsk, visibleTaskPayload, startNewTask, visibleCurrentTaskItem?.parentTaskId],
+		[
+			alphaAsk,
+			visibleTaskPayload,
+			startNewTask,
+			visibleCurrentTaskItem?.parentTaskId,
+			isVisibleTaskFailedOrClosed,
+			visibleCurrentTaskId,
+		],
 	)
 
 	const handleSecondaryButtonClick = useCallback(() => {
+		if (isVisibleTaskFailedOrClosed) return
 		// Mark that user has responded
 		userRespondedRef.current = true
 
@@ -965,12 +1282,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			return
 		}
 
-		switch (clineAsk) {
+		switch (alphaAsk) {
 			case "api_req_failed":
 			case "mistake_limit_reached":
 			case "resume_task":
 				startNewTask()
-				break
+				return
 			case "command":
 			case "tool":
 			case "use_mcp_server":
@@ -990,11 +1307,35 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				break
 		}
 		setSendingDisabled(true)
-		setClineAsk(undefined)
+		setAlphaAsk(undefined)
 		setEnableButtons(false)
-	}, [clineAsk, visibleTaskPayload, startNewTask, isStreaming, setDidClickCancel])
+	}, [alphaAsk, visibleTaskPayload, startNewTask, isStreaming, setDidClickCancel, isVisibleTaskFailedOrClosed])
 
 	const { info: model } = useSelectedModel(apiConfiguration)
+	const chatRowEnvironment = useMemo<ChatRowEnvironment>(
+		() => ({
+			mcpServers,
+			alwaysAllowMcp,
+			currentCheckpoint,
+			mode,
+			currentTaskItem: visibleCurrentTaskItem,
+			currentTaskId: visibleCurrentTaskId,
+			reasoningBlockCollapsed,
+			modelSupportsImages: model?.supportsImages,
+			getAlphaMessages,
+		}),
+		[
+			mcpServers,
+			alwaysAllowMcp,
+			currentCheckpoint,
+			mode,
+			visibleCurrentTaskItem,
+			visibleCurrentTaskId,
+			reasoningBlockCollapsed,
+			model?.supportsImages,
+			getAlphaMessages,
+		],
+	)
 
 	const selectImages = useCallback(() => vscode.postMessage({ type: "selectImages" }), [])
 
@@ -1032,7 +1373,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							enterBlankTaskView()
 							break
 						case "sendMessage":
-							handleSendMessage(message.text ?? "", message.images ?? [])
+							// The window listener refreshes passively; route an immediate host
+							// invoke through the callback from the latest committed task view.
+							committedSendMessageRef.current(message.text ?? "", message.images ?? [])
 							break
 						case "setChatBoxMessage":
 							handleSetChatBoxMessage(message.text ?? "", message.images ?? [])
@@ -1046,26 +1389,55 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					}
 					break
 				case "condenseTaskContextStarted":
-					// Handle both manual and automatic condensation start
-					// We don't check the task ID because:
-					// 1. There can only be one active task at a time
-					// 2. Task switching resets isCondensing to false (see useEffect with task?.ts dependency)
-					// 3. For new tasks, currentTaskItem may not be populated yet due to async state updates
-					if (message.text) {
+					// Concurrent tasks share this message channel; only update the visible task.
+					if (message.text === visibleCurrentTaskId) {
 						setIsCondensing(true)
 						// Note: sendingDisabled is only set for manual condensation via handleCondenseContext
 						// Automatic condensation doesn't disable sending since the task is already running
 					}
 					break
 				case "condenseTaskContextResponse":
-					// Same reasoning as above - we trust this is for the current task
-					if (message.text) {
+					if (message.text === visibleCurrentTaskId) {
 						if (isCondensing && sendingDisabled) {
 							setSendingDisabled(false)
 						}
 						setIsCondensing(false)
 					}
 					break
+				case "chatCommandResult": {
+					const result = message.chatCommandResult
+					const queueRequest = pendingQueueRequestRef.current
+					if (!result) break
+
+					if (result.command === "queueMessage" && queueRequest?.requestId === result.requestId) {
+						pendingQueueRequestRef.current = null
+						setPendingQueueRequest(null)
+						if (result.status === "accepted") {
+							const imagesAreUnchanged =
+								selectedImagesRef.current.length === queueRequest.images.length &&
+								selectedImagesRef.current.every((image, index) => image === queueRequest.images[index])
+							if (inputValueRef.current.trim() === queueRequest.text && imagesAreUnchanged) {
+								setInputValue("")
+								setSelectedImages([])
+							}
+							setChatCommandError(undefined)
+						} else {
+							setChatCommandError(t("chat:queuedMessages.queueFailed"))
+						}
+					}
+
+					if (
+						result.command === "steerQueuedMessage" &&
+						pendingSteerRequestRef.current?.requestId === result.requestId
+					) {
+						pendingSteerRequestRef.current = null
+						setPendingSteerRequest(null)
+						setChatCommandError(
+							result.status === "accepted" ? undefined : t("chat:queuedMessages.steerFailed"),
+						)
+					}
+					break
+				}
 				case "checkpointInitWarning":
 					setCheckpointWarning(message.checkpointWarning)
 					break
@@ -1092,12 +1464,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			sendingDisabled,
 			enableButtons,
 			enterBlankTaskView,
-			handleSendMessage,
 			handleSetChatBoxMessage,
 			handlePrimaryButtonClick,
 			handleSecondaryButtonClick,
 			setCheckpointWarning,
 			playSound,
+			visibleCurrentTaskId,
+			t,
 		],
 	)
 
@@ -1117,8 +1490,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 		})
 
-		// Remove the 500-message limit to prevent array index shifting
-		// Virtuoso is designed to efficiently handle large lists through virtualization
+		// Keep every message mounted so native scroll geometry remains exact and
+		// message indices stay stable for checkpoint navigation.
 		const newVisibleMessages = modifiedMessages.filter((message) => {
 			// Filter out checkpoint_saved messages that should be suppressed
 			if (message.say === "checkpoint_saved") {
@@ -1138,7 +1511,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 
 			if (everVisibleMessagesTsRef.current.has(message.ts)) {
-				const alwaysHiddenOnceProcessedAsk: ClineAsk[] = [
+				const alwaysHiddenOnceProcessedAsk: AlphaAsk[] = [
 					"api_req_failed",
 					"resume_task",
 					"resume_completed_task",
@@ -1193,7 +1566,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		const viewportStart = Math.max(0, newVisibleMessages.length - 100)
 		newVisibleMessages
 			.slice(viewportStart)
-			.forEach((msg: ClineMessage) => everVisibleMessagesTsRef.current.set(msg.ts, true))
+			.forEach((msg: AlphaMessage) => everVisibleMessagesTsRef.current.set(msg.ts, true))
 
 		return newVisibleMessages
 	}, [modifiedMessages])
@@ -1201,9 +1574,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	useEffect(() => {
 		const cleanupInterval = setInterval(() => {
 			const cache = everVisibleMessagesTsRef.current
-			const currentMessageIds = new Set(modifiedMessages.map((m: ClineMessage) => m.ts))
+			const currentMessageIds = new Set(modifiedMessages.map((m: AlphaMessage) => m.ts))
 			const viewportMessages = visibleMessages.slice(Math.max(0, visibleMessages.length - 100))
-			const viewportMessageIds = new Set(viewportMessages.map((m: ClineMessage) => m.ts))
+			const viewportMessageIds = new Set(viewportMessages.map((m: AlphaMessage) => m.ts))
 
 			cache.forEach((_value: boolean, key: number) => {
 				if (!currentMessageIds.has(key) && !viewportMessageIds.has(key)) {
@@ -1259,10 +1632,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [isStreaming, lastMessage, wasStreaming, activeMessages.length])
 
 	const groupedMessages = useMemo(() => {
-		const filtered: ClineMessage[] = visibleMessages
+		const filtered: AlphaMessage[] = visibleMessages
 
 		// Helper to check if a message is a read_file ask that should be batched
-		const isReadFileAsk = (msg: ClineMessage): boolean => {
+		const isReadFileAsk = (msg: AlphaMessage): boolean => {
 			if (msg.type !== "ask" || msg.ask !== "tool") return false
 			try {
 				const tool = JSON.parse(msg.text || "{}")
@@ -1273,7 +1646,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 
 		// Helper to check if a message is a list_files ask that should be batched
-		const isListFilesAsk = (msg: ClineMessage): boolean => {
+		const isListFilesAsk = (msg: AlphaMessage): boolean => {
 			if (msg.type !== "ask" || msg.ask !== "tool") return false
 			try {
 				const tool = JSON.parse(msg.text || "{}")
@@ -1295,7 +1668,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		])
 
 		// Helper to check if a message is a file-edit ask that should be batched
-		const isEditFileAsk = (msg: ClineMessage): boolean => {
+		const isEditFileAsk = (msg: AlphaMessage): boolean => {
 			if (msg.type !== "ask" || msg.ask !== "tool") return false
 			try {
 				const tool = JSON.parse(msg.text || "{}")
@@ -1306,7 +1679,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 
 		// Synthesize a batch of consecutive read_file asks into a single message
-		const synthesizeReadFileBatch = (batch: ClineMessage[]): ClineMessage => {
+		const synthesizeReadFileBatch = (batch: AlphaMessage[]): AlphaMessage => {
 			const batchFiles = batch.map((batchMsg) => {
 				try {
 					const tool = JSON.parse(batchMsg.text || "{}")
@@ -1335,7 +1708,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 
 		// Synthesize a batch of consecutive list_files asks into a single message
-		const synthesizeListFilesBatch = (batch: ClineMessage[]): ClineMessage => {
+		const synthesizeListFilesBatch = (batch: AlphaMessage[]): AlphaMessage => {
 			const batchDirs = batch.map((batchMsg) => {
 				try {
 					const tool = JSON.parse(batchMsg.text || "{}")
@@ -1363,7 +1736,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 
 		// Synthesize a batch of consecutive file-edit asks into a single message
-		const synthesizeEditFileBatch = (batch: ClineMessage[]): ClineMessage => {
+		const synthesizeEditFileBatch = (batch: AlphaMessage[]): AlphaMessage => {
 			const batchDiffs = batch.map((batchMsg) => {
 				try {
 					const tool = JSON.parse(batchMsg.text || "{}")
@@ -1402,10 +1775,60 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				say: "condense_context",
 				ts: Date.now(),
 				partial: true,
-			} as ClineMessage)
+			} as AlphaMessage)
 		}
 		return result
 	}, [isCondensing, visibleMessages])
+	const fileChangeTurns = useMemo(
+		() => fileChangeTurnsFromMessages(groupedMessages, visibleCurrentTaskId ?? (task ? String(task.ts) : "task")),
+		[groupedMessages, task, visibleCurrentTaskId],
+	)
+	const fileChangeTurnsByEndIndex = useMemo(
+		() => new Map(fileChangeTurns.map((turn) => [turn.endIndex, turn] as const)),
+		[fileChangeTurns],
+	)
+	const transcriptRootMessageTs = activeMessages.at(0)?.ts
+	const transcriptIdentity = visibleCurrentTaskId ?? (task ? String(task.ts) : undefined)
+	const transcriptTaskKey = transcriptIdentity
+		? `${transcriptIdentity}:${transcriptRootMessageTs ?? "pending"}`
+		: undefined
+	const completedActivity = useMemo(
+		() => getCompletedActivity(groupedMessages, activeMessages, effectiveVisibleLiveTask),
+		[groupedMessages, activeMessages, effectiveVisibleLiveTask],
+	)
+	const [traceExpansion, setTraceExpansion] = useState<{ taskKey?: string; expanded: Record<number, boolean> }>({
+		expanded: {},
+	})
+	const focusedActivityRef = useRef<{ taskKey?: string; index: number }>()
+	useEffect(() => {
+		// Retracted completions and checkpoint restores must not reuse an old
+		// expansion choice if that activity completes again later.
+		const traceIds = new Set(Array.from(completedActivity.values(), (trace) => trace.id))
+		setTraceExpansion((current) => {
+			if (current.taskKey !== transcriptTaskKey) return { taskKey: transcriptTaskKey, expanded: {} }
+			const entries = Object.entries(current.expanded)
+			const retained = entries.filter(([id]) => traceIds.has(Number(id)))
+			return retained.length === entries.length ? current : { ...current, expanded: Object.fromEntries(retained) }
+		})
+	}, [completedActivity, transcriptTaskKey])
+	const expandedTraces = useMemo(
+		() => (traceExpansion.taskKey === transcriptTaskKey ? traceExpansion.expanded : {}),
+		[traceExpansion, transcriptTaskKey],
+	)
+	const setTraceExpanded = useCallback(
+		(id: number, expanded: boolean) => {
+			setTraceExpansion((current) => ({
+				taskKey: transcriptTaskKey,
+				expanded: { ...(current.taskKey === transcriptTaskKey ? current.expanded : {}), [id]: expanded },
+			}))
+		},
+		[transcriptTaskKey],
+	)
+	const {
+		items: renderedGroupedMessages,
+		startIndex: transcriptStartIndex,
+		revealIndex: revealTranscriptIndex,
+	} = useProgressiveTranscript(groupedMessages, transcriptTaskKey, !isHidden)
 
 	const checkpointIndices = useMemo(() => {
 		const indices: number[] = []
@@ -1419,34 +1842,62 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	const hasLatestCheckpoint = checkpointIndices.length > 0
 	const checkpointJumpCursorRef = useRef<number | null>(null)
+	const pendingCheckpointIndexRef = useRef<number | null>(null)
 
 	useEffect(() => {
 		checkpointJumpCursorRef.current = null
 	}, [task?.ts, checkpointIndices])
 
-	// Scroll lifecycle is managed by a dedicated hook to keep ChatView focused
-	// on message handling and UI orchestration.
+	// Native DOM geometry keeps the scrollbar range exact while chat rows stream,
+	// expand, or load asynchronous content. This controller is the sole owner of
+	// automatic bottom pinning.
 	const {
 		showScrollToBottom,
-		handleRowHeightChange,
 		handleScrollToBottomClick,
-		enterUserBrowsingHistory,
-		followOutputCallback,
-		atBottomStateChangeCallback,
-		scrollToBottomAuto,
-		isAtBottomRef,
-		scrollPhaseRef,
-	} = useScrollLifecycle({
-		virtuosoRef,
-		scrollContainerRef,
+		releaseFollow,
+		setScrollerRef,
+		setContentRef,
+		handleScrollerScroll,
+		handleScrollerWheel,
+		handleScrollerPointerDown,
+		handleScrollerPointerUp,
+		handleContentLoad,
+	} = useChatScrollController({
 		taskTs: task?.ts,
-		isStreaming,
-		isHidden,
-		hasTask: !!task,
+		itemCount: renderedGroupedMessages.length,
 	})
 
+	const bindTranscriptScroller = useCallback(
+		(element: HTMLDivElement | null) => {
+			transcriptScrollerRef.current = element
+			setScrollerRef(element)
+		},
+		[setScrollerRef],
+	)
+	useLayoutEffect(() => {
+		const focused = document.activeElement
+		const activity = focusedActivityRef.current
+		if (!activity || activity.taskKey !== transcriptTaskKey) return
+		// Hiding a focused element may already have returned focus to body before
+		// layout effects run. The capture handler retains the previous row identity.
+		if (focused !== document.body && !transcriptScrollerRef.current?.contains(focused)) return
+		const trace = completedActivity.get(activity.index)
+		if (trace && !expandedTraces[trace.id]) {
+			transcriptScrollerRef.current
+				?.querySelector<HTMLButtonElement>(`[data-activity-trace-id="${trace.id}"]`)
+				?.focus({ preventScroll: true })
+		}
+	}, [completedActivity, expandedTraces, transcriptTaskKey])
+
+	// The floating controls are siblings of the transcript scroller, so wheel input
+	// over a button would otherwise stop at the overflow-hidden viewport wrapper.
+	const handleScrollControlsWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+		event.preventDefault()
+		transcriptScrollerRef.current?.scrollBy({ top: event.deltaY, behavior: "auto" })
+	}, [])
+
 	// Expanding a row indicates the user is browsing; disable sticky follow.
-	// Placed after the hook call so enterUserBrowsingHistory is defined.
+	// Placed after the hook call so releaseFollow is defined.
 	useEffect(() => {
 		const prev = prevExpandedRowsRef.current
 		let wasAnyRowExpandedByUser = false
@@ -1461,11 +1912,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 
 		if (wasAnyRowExpandedByUser) {
-			enterUserBrowsingHistory("row-expansion")
+			releaseFollow("row-expansion")
 		}
 
 		prevExpandedRowsRef.current = expandedRows
-	}, [enterUserBrowsingHistory, expandedRows])
+	}, [expandedRows, releaseFollow])
 
 	const handleSetExpandedRow = useCallback(
 		(ts: number, expand?: boolean) => {
@@ -1477,14 +1928,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[setExpandedRows], // setExpandedRows is stable
 	)
 
-	// Scroll when user toggles certain rows.
 	const toggleRowExpansion = useCallback(
 		(ts: number) => {
+			// Release following before either size change, including collapsing a long user message.
+			releaseFollow("row-expansion")
 			handleSetExpandedRow(ts)
-			// The logic to set disableAutoScrollRef.current = true on expansion
-			// is now handled by the useEffect hook that observes expandedRows.
 		},
-		[handleSetExpandedRow],
+		[handleSetExpandedRow, releaseFollow],
 	)
 
 	// Effect to clear checkpoint warning when messages appear or task changes
@@ -1514,19 +1964,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				userRespondedRef.current = true
 			}
 
-			// Mark the current follow-up question as answered when a suggestion is clicked
-			if (clineAsk === "followup" && !event?.shiftKey) {
-				markFollowUpAsAnswered()
-			}
-
-			// Check if we need to switch modes
-			if (suggestion.mode) {
-				// Only switch modes if it's a manual click (event exists) or auto-approval is allowed
-				const isManualClick = !!event
-				if (isManualClick || alwaysAllowModeSwitch) {
-					// Switch mode without waiting
-					switchToMode(suggestion.mode)
-				}
+			// Suggestions may contain legacy mode hints. Keep the visible workflow
+			// within Plan/Code and ignore unknown custom-mode hints.
+			const suggestedMode = normalizeUserFacingSuggestionMode(suggestion.mode)
+			// Only a user click may change execution mode; auto-approved replies stay in the current mode.
+			if (suggestedMode && event && !event.shiftKey) {
+				switchToMode(suggestedMode)
 			}
 
 			if (event?.shiftKey) {
@@ -1543,7 +1986,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				setInputValue(preservedInput)
 			}
 		},
-		[handleSendMessage, setInputValue, switchToMode, alwaysAllowModeSwitch, clineAsk, markFollowUpAsAnswered],
+		[handleSendMessage, setInputValue, switchToMode],
 	)
 
 	const handleBatchFileResponse = useCallback(
@@ -1569,6 +2012,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		handleScrollToBottomClick()
 	}, [handleScrollToBottomClick])
 
+	const handleTaskHeaderExpandedChange = useCallback(() => {
+		releaseFollow("task-header-toggle")
+	}, [releaseFollow])
+	const handleFileChangesExpandedChange = useCallback(() => {
+		releaseFollow("row-expansion")
+	}, [releaseFollow])
+
 	const handleScrollToLatestCheckpoint = useCallback(() => {
 		if (checkpointIndices.length === 0) {
 			return
@@ -1579,29 +2029,57 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		const nextCheckpointIndex = checkpointIndices[nextCursor]
 		checkpointJumpCursorRef.current = nextCursor
 
-		enterUserBrowsingHistory("keyboard-nav-up")
-		virtuosoRef.current?.scrollToIndex({
-			index: nextCheckpointIndex,
-			align: "center",
-			behavior: "smooth",
-		})
-	}, [checkpointIndices, enterUserBrowsingHistory])
+		releaseFollow("checkpoint-navigation")
+		const trace = completedActivity.get(nextCheckpointIndex)
+		if (trace && !expandedTraces[trace.id]) {
+			pendingCheckpointIndexRef.current = nextCheckpointIndex
+			setTraceExpanded(trace.id, true)
+			revealTranscriptIndex(nextCheckpointIndex)
+			return
+		}
+		const checkpoint = transcriptScrollerRef.current?.querySelector<HTMLElement>(
+			`[data-chat-message-index="${nextCheckpointIndex}"]`,
+		)
+		if (checkpoint) {
+			checkpoint.scrollIntoView({ block: "center", behavior: "smooth" })
+			return
+		}
+
+		pendingCheckpointIndexRef.current = nextCheckpointIndex
+		revealTranscriptIndex(nextCheckpointIndex)
+	}, [checkpointIndices, releaseFollow, revealTranscriptIndex, completedActivity, expandedTraces, setTraceExpanded])
+
+	useEffect(() => {
+		const pendingCheckpointIndex = pendingCheckpointIndexRef.current
+		if (pendingCheckpointIndex === null || pendingCheckpointIndex < transcriptStartIndex) {
+			return
+		}
+
+		const checkpoint = transcriptScrollerRef.current?.querySelector<HTMLElement>(
+			`[data-chat-message-index="${pendingCheckpointIndex}"]`,
+		)
+		if (checkpoint) {
+			pendingCheckpointIndexRef.current = null
+			checkpoint.scrollIntoView({ block: "center", behavior: "smooth" })
+		}
+	}, [renderedGroupedMessages.length, transcriptStartIndex, expandedTraces])
 
 	const itemContent = useCallback(
-		(index: number, messageOrGroup: ClineMessage) => {
-			const hasCheckpoint = modifiedMessages.some((message) => message.say === "checkpoint_saved")
+		(index: number, messageOrGroup: AlphaMessage) => {
+			const isLast = index === groupedMessages.length - 1
 
 			// regular message
 			return (
 				<ChatRow
 					key={messageOrGroup.ts}
 					message={messageOrGroup}
+					environment={chatRowEnvironment}
 					isExpanded={expandedRows[messageOrGroup.ts] || false}
 					onToggleExpand={toggleRowExpansion} // This was already stabilized
-					lastModifiedMessage={modifiedMessages.at(-1)} // Original direct access
-					isLast={index === groupedMessages.length - 1} // Original direct access
-					onHeightChange={handleRowHeightChange}
+					lastModifiedMessage={isLast ? modifiedMessages.at(-1) : undefined}
+					isLast={isLast}
 					isStreaming={isStreaming}
+					messageActionsDisabled={isTurnActive}
 					onSuggestionClick={handleSuggestionClickInRow} // This was already stabilized
 					onBatchFileResponse={handleBatchFileResponse}
 					onFollowUpUnmount={handleFollowUpUnmount}
@@ -1626,18 +2104,19 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							return tool.tool === "updateTodoList" && enableButtons && !!primaryButtonText
 						})()
 					}
-					hasCheckpoint={hasCheckpoint}
+					hasCheckpoint={hasLatestCheckpoint}
 					onJumpToPreviousCheckpoint={handleScrollToLatestCheckpoint}
 				/>
 			)
 		},
 		[
+			chatRowEnvironment,
 			expandedRows,
 			toggleRowExpansion,
 			modifiedMessages,
 			groupedMessages.length,
-			handleRowHeightChange,
 			isStreaming,
+			isTurnActive,
 			handleSuggestionClickInRow,
 			handleBatchFileResponse,
 			handleFollowUpUnmount,
@@ -1647,50 +2126,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			enableButtons,
 			primaryButtonText,
 			handleScrollToLatestCheckpoint,
+			hasLatestCheckpoint,
 		],
 	)
-
-	// Function to handle mode switching
-	const switchToNextMode = useCallback(() => {
-		const allModes = getAllModes(customModes)
-		const currentModeIndex = allModes.findIndex((m) => m.slug === mode)
-		const nextModeIndex = (currentModeIndex + 1) % allModes.length
-		// Update local state and notify extension to sync mode change
-		switchToMode(allModes[nextModeIndex].slug)
-	}, [mode, customModes, switchToMode])
-
-	// Function to handle switching to previous mode
-	const switchToPreviousMode = useCallback(() => {
-		const allModes = getAllModes(customModes)
-		const currentModeIndex = allModes.findIndex((m) => m.slug === mode)
-		const previousModeIndex = (currentModeIndex - 1 + allModes.length) % allModes.length
-		// Update local state and notify extension to sync mode change
-		switchToMode(allModes[previousModeIndex].slug)
-	}, [mode, customModes, switchToMode])
-
-	// Mode switching keyboard handler. Scroll-intent keyboard detection
-	// (PageUp, Home, ArrowUp) is handled by useScrollLifecycle.
-	const handleKeyDown = useCallback(
-		(event: KeyboardEvent) => {
-			if ((event.metaKey || event.ctrlKey) && event.key === ".") {
-				event.preventDefault()
-				if (event.shiftKey) {
-					switchToPreviousMode()
-				} else {
-					switchToNextMode()
-				}
-			}
-		},
-		[switchToNextMode, switchToPreviousMode],
-	)
-
-	useEffect(() => {
-		window.addEventListener("keydown", handleKeyDown)
-
-		return () => {
-			window.removeEventListener("keydown", handleKeyDown)
-		}
-	}, [handleKeyDown])
 
 	useImperativeHandle(ref, () => ({
 		acceptInput: () => {
@@ -1703,15 +2141,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 			// Special case: during command_output, queue the message instead of
 			// triggering the primary button action (which would lose the message)
-			if (clineAskRef.current === "command_output" && hasInput) {
-				vscode.postMessage({
-					type: "queueMessage",
-					text: inputValue.trim(),
-					images: selectedImages,
-					...visibleTaskPayload,
-				})
-				setInputValue("")
-				setSelectedImages([])
+			if (alphaAskRef.current === "command_output" && hasInput) {
+				postQueuedMessage(inputValue.trim(), selectedImages)
 				return
 			}
 
@@ -1723,21 +2154,18 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		},
 	}))
 
-	const handleCondenseContext = (taskId: string) => {
-		if (isCondensing || sendingDisabled) {
-			return
-		}
-		setIsCondensing(true)
-		setSendingDisabled(true)
-		vscode.postMessage({ type: "condenseTaskContextRequest", text: taskId })
-	}
-
-	const areButtonsVisible = showScrollToBottom || primaryButtonText || secondaryButtonText
+	const areActionButtonsVisible = primaryButtonText || secondaryButtonText
 
 	return (
 		<div
 			data-testid="chat-view"
-			className={isHidden ? "hidden" : "fixed top-0 left-0 right-0 bottom-0 flex flex-col overflow-hidden"}>
+			onFocusCapture={(event) => {
+				const row = event.target.closest<HTMLElement>("[data-chat-message-index]")
+				focusedActivityRef.current = row
+					? { taskKey: transcriptTaskKey, index: Number(row.dataset.chatMessageIndex) }
+					: undefined
+			}}
+			className={isHidden ? "hidden" : "app-shell fixed inset-0 flex flex-col overflow-hidden"}>
 			{telemetrySetting === "unset" && <TelemetryBanner />}
 			{(showAnnouncement || showAnnouncementModal) && (
 				<Announcement
@@ -1754,7 +2182,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			{task ? (
 				<>
 					<TaskHeader
-						task={task}
 						tokensIn={apiMetrics.totalTokensIn}
 						tokensOut={apiMetrics.totalTokensOut}
 						cacheWrites={apiMetrics.totalCacheWrites}
@@ -1773,6 +2200,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							)
 						}
 						parentTaskId={visibleCurrentTaskItem?.parentTaskId}
+						isManagedSubagent={isManagedSubagent}
 						costBreakdown={
 							visibleCurrentTaskItem?.id && aggregatedCostsMap.has(visibleCurrentTaskItem.id)
 								? getCostBreakdownIfNeeded(aggregatedCostsMap.get(visibleCurrentTaskItem.id)!, {
@@ -1785,7 +2213,20 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						buttonsDisabled={sendingDisabled}
 						handleCondenseContext={handleCondenseContext}
 						todos={latestTodos}
+						onExpandedChange={handleTaskHeaderExpandedChange}
 					/>
+
+					{showManagedAgentTree && visibleCurrentTaskId && (
+						<div className="px-3 pb-1">
+							<ManagedAgentTree
+								rootTaskId={visibleCurrentTaskId}
+								groups={managedAgentGroups}
+								projection={managedAgentTreeProjection}
+								liveTasksById={liveTasksById}
+								onShowTask={(taskId) => vscode.postMessage({ type: "showTaskWithId", text: taskId })}
+							/>
+						</div>
+					)}
 
 					{checkpointWarning && (
 						<div className="px-3">
@@ -1794,13 +2235,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					)}
 				</>
 			) : (
-				<div className="flex flex-col h-full justify-center p-6 min-h-0 overflow-y-auto gap-4 relative">
-					<div className="flex flex-col items-start gap-2 justify-center h-full min-[400px]:px-6">
+				<div className="relative flex h-full min-h-0 flex-col justify-center gap-4 overflow-y-auto p-5 min-[400px]:p-7">
+					<div className="mx-auto flex h-full w-full max-w-[760px] flex-col items-start justify-center gap-3">
 						<VersionIndicator
 							onClick={() => setShowAnnouncementModal(true)}
 							className="absolute top-2 right-3 z-10"
 						/>
-						<div className="flex flex-col gap-4 w-full">
+						<div className="hero-panel flex w-full flex-col gap-5 rounded-3xl p-5 min-[400px]:p-7">
 							<AlphaHero />
 							{/* Show AlphaTips when authenticated or when user is new */}
 							{taskHistory.length < 6 && <AlphaTips />}
@@ -1814,186 +2255,299 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			{!task && showWorktreesInHomeScreen && <WorktreeSelector />}
 
 			{task && (
-				<>
-					<div className="grow flex" ref={scrollContainerRef}>
-						<Virtuoso
-							ref={virtuosoRef}
-							key={task.ts}
-							className="scrollable grow overflow-y-scroll mb-1"
-							increaseViewportBy={{ top: 3_000, bottom: 1000 }}
-							data={groupedMessages}
-							itemContent={itemContent}
-							followOutput={followOutputCallback}
-							atBottomStateChange={atBottomStateChangeCallback}
-							atBottomThreshold={10}
-						/>
-					</div>
-					<FileChangesPanel clineMessages={activeMessages} />
-					{areButtonsVisible && (
+				<div data-testid="chat-transcript-viewport" className="relative mb-2 min-h-0 flex-1 overflow-hidden">
+					<div
+						ref={bindTranscriptScroller}
+						key={task.ts}
+						data-testid="chat-transcript-scroller"
+						data-chat-transcript-scroller="true"
+						tabIndex={0}
+						className="scrollable h-full min-h-0 w-full overflow-y-auto overscroll-contain"
+						style={{ overflowAnchor: "none", scrollbarGutter: "stable both-edges" }}
+						onScroll={handleScrollerScroll}
+						onWheel={handleScrollerWheel}
+						onPointerDown={handleScrollerPointerDown}
+						onPointerUp={handleScrollerPointerUp}
+						onPointerCancel={handleScrollerPointerUp}
+						onLoadCapture={handleContentLoad}>
 						<div
-							className={`flex h-9 items-center mb-1 px-[15px] ${
-								showScrollToBottom ? "opacity-100" : enableButtons ? "opacity-100" : "opacity-50"
-							}`}>
-							{showScrollToBottom ? (
-								<>
-									<StandardTooltip content={t("chat:scrollToBottom")}>
-										<Button
-											variant="secondary"
-											className={hasLatestCheckpoint ? "flex-1 mr-[6px]" : "flex-[2]"}
-											onClick={handleScrollToBottomAndResetCheckpointCursor}>
-											<span className="codicon codicon-chevron-down"></span>
-										</Button>
-									</StandardTooltip>
-									{hasLatestCheckpoint && (
-										<StandardTooltip content={t("chat:scrollToLatestCheckpoint")}>
-											<Button
-												variant="secondary"
-												className="flex-1 ml-[6px]"
-												onClick={handleScrollToLatestCheckpoint}
-												aria-label={t("chat:scrollToLatestCheckpoint")}>
-												<span className="codicon codicon-history"></span>
-											</Button>
-										</StandardTooltip>
-									)}
-								</>
-							) : (
-								<>
-									{primaryButtonText && (
-										<StandardTooltip
-											content={
-												primaryButtonText === t("chat:retry.title")
-													? t("chat:retry.tooltip")
-													: primaryButtonText === t("chat:save.title")
-														? t("chat:save.tooltip")
-														: primaryButtonText === t("chat:approve.title")
-															? t("chat:approve.tooltip")
-															: primaryButtonText === t("chat:runCommand.title")
-																? t("chat:runCommand.tooltip")
-																: primaryButtonText === t("chat:startNewTask.title")
-																	? t("chat:startNewTask.tooltip")
-																	: primaryButtonText === t("chat:resumeTask.title")
-																		? t("chat:resumeTask.tooltip")
-																		: primaryButtonText ===
-																			  t("chat:proceedAnyways.title")
-																			? t("chat:proceedAnyways.tooltip")
-																			: primaryButtonText ===
-																				  t("chat:proceedWhileRunning.title")
-																				? t("chat:proceedWhileRunning.tooltip")
-																				: undefined
-											}>
-											<Button
-												variant="primary"
-												disabled={!enableButtons}
-												className={secondaryButtonText ? "flex-1 mr-[6px]" : "flex-[2] mr-0"}
-												onClick={() => handlePrimaryButtonClick(inputValue, selectedImages)}>
-												{primaryButtonText}
-											</Button>
-										</StandardTooltip>
-									)}
-									{secondaryButtonText && (
-										<StandardTooltip
-											content={
-												secondaryButtonText === t("chat:startNewTask.title")
-													? t("chat:startNewTask.tooltip")
-													: secondaryButtonText === t("chat:reject.title")
-														? t("chat:reject.tooltip")
-														: secondaryButtonText === t("chat:terminate.title")
-															? t("chat:terminate.tooltip")
-															: secondaryButtonText === t("chat:killCommand.title")
-																? t("chat:killCommand.tooltip")
-																: undefined
-											}>
-											<Button
-												variant="secondary"
-												disabled={!enableButtons}
-												className="flex-1 ml-[6px]"
-												onClick={() => handleSecondaryButtonClick()}>
-												{secondaryButtonText}
-											</Button>
-										</StandardTooltip>
-									)}
-								</>
+							ref={setContentRef}
+							className="chat-column chat-transcript py-3"
+							data-testid="chat-transcript-content"
+							data-count={groupedMessages.length}
+							data-rendered-count={renderedGroupedMessages.length}>
+							{/* Keep the prompt outside assistant activity groups and prepend it with the oldest rows. */}
+							{transcriptStartIndex === 0 && (
+								<ChatRow
+									key={`${transcriptTaskKey}:prompt`}
+									message={task}
+									isTaskPrompt
+									environment={chatRowEnvironment}
+									isExpanded={expandedRows[task.ts] || false}
+									isLast={false}
+									isStreaming={isStreaming}
+									messageActionsDisabled={isTurnActive}
+									onToggleExpand={toggleRowExpansion}
+								/>
+							)}
+							{renderedGroupedMessages.map((message, localIndex) => {
+								const index = transcriptStartIndex + localIndex
+								const trace = completedActivity.get(index)
+								const traceExpanded = trace ? Boolean(expandedTraces[trace.id]) : false
+								const fileChangeTurn = fileChangeTurnsByEndIndex.get(index)
+								return (
+									<div key={`${transcriptTaskKey}:${computeChatItemKey(index, message)}`}>
+										{trace && index === Math.max(trace.startIndex, transcriptStartIndex) && (
+											<ActivityTraceToggle
+												traceId={trace.id}
+												durationMs={trace.durationMs}
+												expanded={traceExpanded}
+												controls={Array.from(
+													{ length: trace.endIndex - index + 1 },
+													(_, offset) => `activity-row-${index + offset}`,
+												).join(" ")}
+												onToggle={() => {
+													releaseFollow("row-expansion")
+													setTraceExpanded(trace.id, !traceExpanded)
+												}}
+											/>
+										)}
+										{/* Keep live tool subscriptions mounted when hiding finished activity. */}
+										<div
+											id={`activity-row-${index}`}
+											hidden={Boolean(trace) && !traceExpanded}
+											data-chat-message-index={index}
+											data-testid={`chat-message-${index}`}>
+											{itemContent(index, message)}
+										</div>
+										{fileChangeTurn && (
+											<FileChangesPanel
+												key={`file-changes:${fileChangeTurn.key}`}
+												clineMessages={fileChangeTurn.messages}
+												taskId={fileChangeTurn.key}
+												onExpandedChange={handleFileChangesExpandedChange}
+											/>
+										)}
+									</div>
+								)
+							})}
+						</div>
+					</div>
+					{showScrollToBottom && (
+						<div
+							data-testid="chat-scroll-controls"
+							className="pointer-events-none absolute inset-x-0 bottom-2 z-10 flex h-9 items-center justify-center gap-2 px-[15px]"
+							onWheel={handleScrollControlsWheel}>
+							<StandardTooltip content={t("chat:scrollToBottom")}>
+								<Button
+									variant="secondary"
+									size="icon"
+									className="pointer-events-auto rounded-full"
+									onClick={handleScrollToBottomAndResetCheckpointCursor}
+									aria-label={t("chat:scrollToBottom")}>
+									<span className="codicon codicon-chevron-down"></span>
+								</Button>
+							</StandardTooltip>
+							{hasLatestCheckpoint && (
+								<StandardTooltip content={t("chat:scrollToLatestCheckpoint")}>
+									<Button
+										variant="secondary"
+										size="icon"
+										className="pointer-events-auto rounded-full"
+										onClick={handleScrollToLatestCheckpoint}
+										aria-label={t("chat:scrollToLatestCheckpoint")}>
+										<span className="codicon codicon-history"></span>
+									</Button>
+								</StandardTooltip>
 							)}
 						</div>
 					)}
-				</>
-			)}
-
-			<QueuedMessages
-				queue={visibleMessageQueue}
-				editingMessageId={editingQueuedMessage?.id}
-				onRemove={(index) => {
-					if (visibleMessageQueue[index]) {
-						vscode.postMessage({
-							type: "removeQueuedMessage",
-							text: visibleMessageQueue[index].id,
-							...visibleTaskPayload,
-						})
-					}
-				}}
-				onSteer={(index) => {
-					if (visibleMessageQueue[index]) {
-						vscode.postMessage({
-							type: "steerQueuedMessage",
-							text: visibleMessageQueue[index].id,
-							...visibleTaskPayload,
-						})
-					}
-				}}
-				onEdit={(index) => {
-					if (visibleMessageQueue[index]) {
-						startQueuedMessageEdit(visibleMessageQueue[index])
-					}
-				}}
-				onReorder={(fromIndex, toIndex) => {
-					if (visibleMessageQueue[fromIndex]) {
-						vscode.postMessage({
-							type: "reorderQueuedMessage",
-							payload: {
-								id: visibleMessageQueue[fromIndex].id,
-								toIndex,
-							},
-							...visibleTaskPayload,
-						})
-					}
-				}}
-			/>
-			{showRetiredProviderWarning && (
-				<div className="px-[15px] py-1">
-					<WarningRow
-						title={t("chat:retiredProvider.title")}
-						message={t("chat:retiredProvider.message")}
-						actionText={t("chat:retiredProvider.openSettings")}
-						onAction={() => vscode.postMessage({ type: "switchTab", tab: "settings" })}
-					/>
 				</div>
 			)}
-			<ChatTextArea
-				ref={textAreaRef}
-				inputValue={inputValue}
-				setInputValue={setInputValue}
-				sendingDisabled={sendingDisabled || isProfileDisabled}
-				selectApiConfigDisabled={sendingDisabled && clineAsk !== "api_req_failed"}
-				placeholderText={placeholderText}
-				selectedImages={selectedImages}
-				setSelectedImages={setSelectedImages}
-				onSend={() => handleSendMessage(inputValue, selectedImages)}
-				onSelectImages={selectImages}
-				shouldDisableImages={shouldDisableImages}
-				onHeightChange={() => {
-					if (isAtBottomRef.current && scrollPhaseRef.current !== "USER_BROWSING_HISTORY") {
-						scrollToBottomAuto()
-					}
-				}}
-				mode={mode}
-				setMode={setMode}
-				modeShortcutText={modeShortcutText}
-				isEditMode={Boolean(editingQueuedMessage)}
-				onCancel={cancelQueuedMessageEdit}
-				isStreaming={isStreaming}
-				onStop={handleStopTask}
-				onEnqueueMessage={handleEnqueueCurrentMessage}
-			/>
+
+			<div data-testid="chat-bottom-dock" className="chat-column relative z-20 flex shrink-0 flex-col">
+				{task && (
+					<>
+						{isCompletedTaskResumePending && !isManagedSubagent && (
+							<div
+								data-testid="completed-task-resume-pending"
+								role="status"
+								aria-live="polite"
+								className="mb-1 flex h-9 shrink-0 items-center justify-center gap-2 px-[15px] text-vscode-descriptionForeground">
+								<span className="codicon codicon-loading codicon-modifier-spin" aria-hidden="true" />
+								<span>{t("chat:resumeTask.title")}…</span>
+							</div>
+						)}
+						{areActionButtonsVisible && !isManagedSubagent && !isCompletedTaskResumePending && (
+							<div
+								className={`mb-1 flex h-9 shrink-0 items-center px-[15px] ${enableButtons ? "opacity-100" : "opacity-50"}`}>
+								{primaryButtonText && (
+									<StandardTooltip
+										content={
+											primaryButtonText === t("chat:retry.title")
+												? t("chat:retry.tooltip")
+												: primaryButtonText === t("chat:save.title")
+													? t("chat:save.tooltip")
+													: primaryButtonText === t("chat:approve.title")
+														? t("chat:approve.tooltip")
+														: primaryButtonText === t("chat:runCommand.title")
+															? t("chat:runCommand.tooltip")
+															: primaryButtonText === t("chat:startNewTask.title")
+																? t("chat:startNewTask.tooltip")
+																: primaryButtonText === t("chat:resumeTask.title")
+																	? t("chat:resumeTask.tooltip")
+																	: primaryButtonText ===
+																		  t("chat:proceedAnyways.title")
+																		? t("chat:proceedAnyways.tooltip")
+																		: primaryButtonText ===
+																			  t("chat:proceedWhileRunning.title")
+																			? t("chat:proceedWhileRunning.tooltip")
+																			: undefined
+										}>
+										<Button
+											variant="primary"
+											disabled={!enableButtons}
+											className={secondaryButtonText ? "flex-1 mr-[6px]" : "flex-[2] mr-0"}
+											onClick={() => handlePrimaryButtonClick(inputValue, selectedImages)}>
+											{primaryButtonText}
+										</Button>
+									</StandardTooltip>
+								)}
+								{secondaryButtonText && (
+									<StandardTooltip
+										content={
+											secondaryButtonText === t("chat:startNewTask.title")
+												? t("chat:startNewTask.tooltip")
+												: secondaryButtonText === t("chat:reject.title")
+													? t("chat:reject.tooltip")
+													: secondaryButtonText === t("chat:terminate.title")
+														? t("chat:terminate.tooltip")
+														: secondaryButtonText === t("chat:killCommand.title")
+															? t("chat:killCommand.tooltip")
+															: undefined
+										}>
+										<Button
+											variant="secondary"
+											disabled={!enableButtons}
+											className="flex-1 ml-[6px]"
+											onClick={() => handleSecondaryButtonClick()}>
+											{secondaryButtonText}
+										</Button>
+									</StandardTooltip>
+								)}
+							</div>
+						)}
+					</>
+				)}
+
+				{!isManagedSubagent && (
+					<QueuedMessages
+						queue={visibleMessageQueue}
+						editingMessageId={editingQueuedMessage?.id}
+						steeringMessageId={pendingSteerRequest?.messageId}
+						onRemove={(index) => {
+							if (visibleMessageQueue[index]) {
+								vscode.postMessage({
+									type: "removeQueuedMessage",
+									text: visibleMessageQueue[index].id,
+									...visibleTaskPayload,
+								})
+							}
+						}}
+						onSteer={(index) => {
+							if (visibleMessageQueue[index] && visibleCurrentTaskId && !pendingSteerRequestRef.current) {
+								const requestId = crypto.randomUUID()
+								const request = {
+									requestId,
+									taskId: visibleCurrentTaskId,
+									messageId: visibleMessageQueue[index].id,
+								}
+								pendingSteerRequestRef.current = request
+								setPendingSteerRequest(request)
+								setChatCommandError(undefined)
+								vscode.postMessage({
+									type: "steerQueuedMessage",
+									text: visibleMessageQueue[index].id,
+									taskId: visibleCurrentTaskId,
+									requestId,
+								})
+							}
+						}}
+						onEdit={(index) => {
+							if (visibleMessageQueue[index]) {
+								startQueuedMessageEdit(visibleMessageQueue[index])
+							}
+						}}
+						onReorder={(fromIndex, toIndex) => {
+							if (visibleMessageQueue[fromIndex]) {
+								vscode.postMessage({
+									type: "reorderQueuedMessage",
+									payload: {
+										id: visibleMessageQueue[fromIndex].id,
+										toIndex,
+									},
+									...visibleTaskPayload,
+								})
+							}
+						}}
+					/>
+				)}
+				{chatCommandError && (
+					<div
+						role="alert"
+						className="mx-[15px] mb-2 rounded-md border border-vscode-inputValidation-errorBorder bg-vscode-inputValidation-errorBackground px-3 py-2 text-sm text-vscode-inputValidation-errorForeground">
+						{chatCommandError}
+					</div>
+				)}
+				{isModelResponseDelayed && (
+					<div
+						role="status"
+						className="mx-[15px] mb-2 rounded-md border border-vscode-panel-border px-3 py-2 text-sm text-vscode-descriptionForeground">
+						{t("chat:modelResponseDelayed")}
+					</div>
+				)}
+				{showRetiredProviderWarning && (
+					<div className="px-[15px] py-1">
+						<WarningRow
+							title={t("chat:retiredProvider.title")}
+							message={t("chat:retiredProvider.message")}
+							actionText={t("chat:retiredProvider.openSettings")}
+							onAction={() => vscode.postMessage({ type: "switchTab", tab: "settings" })}
+						/>
+					</div>
+				)}
+				{!isManagedSubagent && (
+					<ChatTextArea
+						ref={textAreaRef}
+						inputValue={inputValue}
+						setInputValue={setInputValue}
+						sendingDisabled={
+							isProfileDisabled ||
+							isCompletedTaskResumePending ||
+							isCondensing ||
+							Boolean(pendingQueueRequest)
+						}
+						selectApiConfigDisabled={
+							isTurnActive && !isCompletedTaskResponseBoundary && alphaAsk !== "api_req_failed"
+						}
+						placeholderText={placeholderText}
+						selectedImages={selectedImages}
+						setSelectedImages={setSelectedImages}
+						onSend={() => handleSendMessage(inputValue, selectedImages)}
+						onSelectImages={selectImages}
+						shouldDisableImages={shouldDisableImages}
+						mode={mode}
+						setMode={setMode}
+						modeShortcutText={modeShortcutText}
+						isEditMode={Boolean(editingQueuedMessage)}
+						onCancel={cancelQueuedMessageEdit}
+						isStreaming={isStreaming}
+						onStop={handleStopTask}
+						onEnqueueMessage={handleEnqueueCurrentMessage}
+						enqueueDisabled={Boolean(pendingQueueRequest)}
+					/>
+				)}
+			</div>
 
 			<div id="alpha-portal" />
 		</div>

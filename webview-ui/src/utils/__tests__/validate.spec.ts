@@ -83,6 +83,30 @@ describe("Model Validation Functions", () => {
 			expect(result).toContain("settings:validation.modelAvailability")
 		})
 
+		it("validates membership when a provider exposes exactly one model", () => {
+			const singleModelCatalog: RouterModels = {
+				...mockRouterModels,
+				openrouter: {
+					"only-model": mockRouterModels.openrouter["valid-model"],
+				},
+			}
+
+			expect(
+				getModelValidationError(
+					{ apiProvider: "openrouter", openRouterModelId: "only-model" },
+					singleModelCatalog,
+					allowAllOrganization,
+				),
+			).toBeUndefined()
+			expect(
+				getModelValidationError(
+					{ apiProvider: "openrouter", openRouterModelId: "stale-model" },
+					singleModelCatalog,
+					allowAllOrganization,
+				),
+			).toContain("settings:validation.modelAvailability")
+		})
+
 		it("returns error for model not allowed by organization", () => {
 			const config: ProviderSettings = {
 				apiProvider: "openrouter",
@@ -195,6 +219,38 @@ describe("Model Validation Functions", () => {
 
 			const result = validateApiConfigurationExcludingModelErrors(config, mockRouterModels, allowAllOrganization)
 			expect(result).toBeUndefined()
+		})
+
+		it("requires a valid Stellar base URL and PEM CA bundle path", () => {
+			const missingPem: ProviderSettings = {
+				apiProvider: "stellar",
+				stellarBaseUrl: "https://gateway.example.com/stellar/v1",
+			}
+			const invalidUrl: ProviderSettings = {
+				apiProvider: "stellar",
+				stellarBaseUrl: "not-a-url",
+				stellarPemCaBundlePath: "C:\\certs\\corp.pem",
+			}
+
+			expect(
+				validateApiConfigurationExcludingModelErrors(missingPem, mockRouterModels, allowAllOrganization),
+			).toBe("settings:validation.stellar")
+			expect(
+				validateApiConfigurationExcludingModelErrors(invalidUrl, mockRouterModels, allowAllOrganization),
+			).toBe("settings:validation.stellar")
+		})
+
+		it("accepts a complete Stellar configuration without a stored API key", () => {
+			const config: ProviderSettings = {
+				apiProvider: "stellar",
+				stellarBaseUrl: "https://gateway.example.com/stellar/v1",
+				stellarPemCaBundlePath: "C:\\certs\\corp.pem",
+				apiModelId: "Meta-Llama-3.3-70B-Instruct",
+			}
+
+			expect(
+				validateApiConfigurationExcludingModelErrors(config, mockRouterModels, allowAllOrganization),
+			).toBeUndefined()
 		})
 	})
 })

@@ -4,7 +4,7 @@ import * as vscode from "vscode"
 
 import type { ProviderSettings } from "@alpha-code/types"
 import { Task } from "../Task"
-import { ClineProvider } from "../../webview/ClineProvider"
+import { AlphaProvider } from "../../webview/AlphaProvider"
 
 vi.mock("@alpha-code/telemetry", () => ({
 	TelemetryService: {
@@ -86,9 +86,12 @@ vi.mock("vscode", () => {
 
 vi.mock("../../environment/getEnvironmentDetails", () => ({
 	getEnvironmentDetails: vi.fn().mockResolvedValue(""),
+	captureEnvironmentDetails: vi
+		.fn()
+		.mockImplementation(async () => ({ details: "", commit: vi.fn(), release: vi.fn() })),
 }))
 
-vi.mock("../../ignore/RooIgnoreController")
+vi.mock("../../ignore/AlphaIgnoreController")
 
 vi.mock("p-wait-for", () => ({
 	default: vi.fn().mockImplementation(async () => Promise.resolve()),
@@ -123,7 +126,7 @@ describe("Task - sticky provider profile init race", () => {
 			postStateToWebview: vi.fn().mockResolvedValue(undefined),
 			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
 			updateTaskHistory: vi.fn().mockResolvedValue(undefined),
-		} as unknown as ClineProvider
+		} as unknown as AlphaProvider
 
 		const task = new Task({
 			provider: mockProvider,

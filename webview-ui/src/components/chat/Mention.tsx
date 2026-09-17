@@ -1,4 +1,4 @@
-import { mentionRegexGlobal } from "@alpha/context-mentions"
+import { mentionRegexGlobal, getTicketMentionLocator } from "@alpha/context-mentions"
 
 import { vscode } from "../../utils/vscode"
 
@@ -18,6 +18,15 @@ export const Mention = ({ text, withShadow = false }: MentionProps) => {
 			return part
 		} else {
 			// This is a mention.
+			if (getTicketMentionLocator(part))
+				return (
+					<button
+						key={index}
+						className="mention-context-highlight text-[0.9em] cursor-pointer"
+						onClick={() => vscode.postMessage({ type: "openMention", text: part })}>
+						@{part}
+					</button>
+				)
 			return (
 				<span
 					key={index}

@@ -1,0 +1,15 @@
+{
+	"filter": "Filtrar filas",
+	"sort": "Ordenar por {column}",
+	"rows": "{visible} de {total} filas",
+	"unsupported": "Esta versión del kit no es compatible. Abra el código fuente y use data-alpha-kit=\"1\".",
+	"invalidTable": "Las funciones de tabla no están disponibles. Use una tabla rectangular con una fila de encabezado y un máximo de 1.000 filas y 20 columnas.",
+	"invalidChart": "Las funciones de gráfico no están disponibles. Revise la tabla de datos: hasta 120 filas, tres series, una unidad compartida y valores numéricos finitos; deje vacíos los valores que faltan.",
+	"invalidTabs": "Las pestañas no están disponibles. Asigne a cada sección un ID único y una etiqueta de pestaña.",
+	"missing": "Sin datos",
+	"inspect": "Los valores del gráfico están disponibles en la tabla de datos. Enfoque un valor representado para inspeccionarlo.",
+	"sortAscending": "ascendente",
+	"sortDescending": "descendente",
+	"invalidDiagram": "Diagrama no disponible. Use una tabla de relaciones de tres columnas con hasta 24 nodos con nombre, 48 enlaces y sin ciclos. La tabla sigue siendo legible.",
+	"imageUnavailable": "Imagen no disponible. Compruebe la ruta del espacio de trabajo y use un PNG o JPEG estático dentro de los límites documentados."
+}

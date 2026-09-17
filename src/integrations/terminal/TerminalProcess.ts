@@ -1,12 +1,29 @@
 import * as vscode from "vscode"
 import { inspect } from "util"
 
+import { MAX_TERMINAL_OUTPUT_RECEIPT_CARRY_CHARACTERS } from "./types"
 import type { ExitCodeDetails } from "./types"
 import { BaseTerminalProcess } from "./BaseTerminalProcess"
 import { Terminal } from "./Terminal"
 
+type TerminalOutputCleanupMode = "normal" | "escape" | "osc" | "oscEscape" | "csi" | "csiSave"
+
+type TerminalOutputCleanupState = {
+	mode: TerminalOutputCleanupMode
+	pending: string
+}
+
+const INITIAL_TERMINAL_OUTPUT_CLEANUP_STATE: TerminalOutputCleanupState = {
+	mode: "normal",
+	pending: "",
+}
+const MAX_CSI_PREFIX_CHARACTERS = MAX_TERMINAL_OUTPUT_RECEIPT_CARRY_CHARACTERS
+
 export class TerminalProcess extends BaseTerminalProcess {
 	private terminalRef: WeakRef<Terminal>
+	private aborted = false
+	private commandSubmitted = false
+	private outputCleanupState: TerminalOutputCleanupState = INITIAL_TERMINAL_OUTPUT_CLEANUP_STATE
 
 	constructor(terminal: Terminal) {
 		super()
@@ -15,6 +32,10 @@ export class TerminalProcess extends BaseTerminalProcess {
 
 		this.once("completed", () => {
 			this.terminal.busy = false
+		})
+		this.once("error", () => {
+			this.stopHotTimer()
+			this.isHot = false
 		})
 
 		this.once("no_shell_integration", () => {
@@ -37,12 +58,14 @@ export class TerminalProcess extends BaseTerminalProcess {
 
 	public override async run(command: string) {
 		this.command = command
+		if (this.completeCancellationBeforeLaunch()) return
 
 		const terminal = this.terminal.terminal
 
 		const isShellIntegrationAvailable = terminal.shellIntegration && terminal.shellIntegration.executeCommand
 
 		if (!isShellIntegrationAvailable) {
+			this.commandSubmitted = true
 			terminal.sendText(command, true)
 
 			console.warn(
@@ -62,10 +85,11 @@ export class TerminalProcess extends BaseTerminalProcess {
 			this.emit("continue")
 			return
 		}
-
 		// Create a promise that resolves when the stream becomes available
+		let streamTimeoutId: NodeJS.Timeout | undefined
+		let onStreamAvailable: ((stream: AsyncIterable<string>) => void) | undefined
 		const streamAvailable = new Promise<AsyncIterable<string>>((resolve, reject) => {
-			const timeoutId = setTimeout(() => {
+			streamTimeoutId = setTimeout(() => {
 				// Remove event listener to prevent memory leaks
 				this.removeAllListeners("stream_available")
 
@@ -84,15 +108,18 @@ export class TerminalProcess extends BaseTerminalProcess {
 			}, Terminal.getShellIntegrationTimeout())
 
 			// Clean up timeout if stream becomes available
-			this.once("stream_available", (stream: AsyncIterable<string>) => {
-				clearTimeout(timeoutId)
+			onStreamAvailable = (stream: AsyncIterable<string>) => {
+				clearTimeout(streamTimeoutId)
 				resolve(stream)
-			})
+			}
+			this.once("stream_available", onStreamAvailable)
 		})
 
 		// Create promise that resolves when shell execution completes for this terminal
+		let onShellExecutionComplete: ((details: ExitCodeDetails) => void) | undefined
 		const shellExecutionComplete = new Promise<ExitCodeDetails>((resolve) => {
-			this.once("shell_execution_complete", (details: ExitCodeDetails) => resolve(details))
+			onShellExecutionComplete = resolve
+			this.once("shell_execution_complete", onShellExecutionComplete)
 		})
 
 		// Execute command
@@ -105,22 +132,30 @@ export class TerminalProcess extends BaseTerminalProcess {
 			(defaultWindowsShellProfile === null ||
 				(defaultWindowsShellProfile as string)?.toLowerCase().includes("powershell"))
 
-		if (isPowerShell) {
-			let commandToExecute = command
+		try {
+			this.commandSubmitted = true
+			if (isPowerShell) {
+				let commandToExecute = command
 
-			// Only add the PowerShell counter workaround if enabled
-			if (Terminal.getPowershellCounter()) {
-				commandToExecute += ` ; "(Alpha/PS Workaround: ${this.terminal.cmdCounter++})" > $null`
+				// Only add the PowerShell counter workaround if enabled
+				if (Terminal.getPowershellCounter()) {
+					commandToExecute += ` ; "(Alpha/PS Workaround: ${this.terminal.cmdCounter++})" > $null`
+				}
+
+				// Only add the sleep command if the command delay is greater than 0
+				if (Terminal.getCommandDelay() > 0) {
+					commandToExecute += ` ; start-sleep -milliseconds ${Terminal.getCommandDelay()}`
+				}
+
+				terminal.shellIntegration.executeCommand(commandToExecute)
+			} else {
+				terminal.shellIntegration.executeCommand(command)
 			}
-
-			// Only add the sleep command if the command delay is greater than 0
-			if (Terminal.getCommandDelay() > 0) {
-				commandToExecute += ` ; start-sleep -milliseconds ${Terminal.getCommandDelay()}`
-			}
-
-			terminal.shellIntegration.executeCommand(commandToExecute)
-		} else {
-			terminal.shellIntegration.executeCommand(command)
+		} catch (error) {
+			clearTimeout(streamTimeoutId)
+			if (onStreamAvailable) this.removeListener("stream_available", onStreamAvailable)
+			if (onShellExecutionComplete) this.removeListener("shell_execution_complete", onShellExecutionComplete)
+			throw error
 		}
 
 		this.isHot = true
@@ -170,7 +205,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 				if (match !== undefined) {
 					commandOutputStarted = true
 					data = match
-					this.fullOutput = "" // Reset fullOutput when command actually starts
+					this.resetOutputBuffer()
 					this.emit("line", "") // Trigger UI to proceed
 				} else {
 					continue
@@ -182,6 +217,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 			// filtering here: fullOutput cannot change in length (see getUnretrievedOutput),
 			// and chunks may not be complete so you cannot rely on detecting or removing escape sequences mid-stream.
 			this.fullOutput += data
+			this.emit("output_available")
 
 			// For non-immediately returning commands we want to show loading spinner
 			// right away but this wouldn't happen until it emits a line break, so
@@ -256,10 +292,27 @@ export class TerminalProcess extends BaseTerminalProcess {
 	}
 
 	public override abort() {
-		if (this.isListening) {
+		// A failed output reader settles its promise while the shell can still run.
+		if (this.aborted || (this.isSettled && !this.terminal.running)) return
+		this.aborted = true
+		if (this.commandSubmitted && this.terminal.process === this) {
 			// Send SIGINT using CTRL+C
 			this.terminal.terminal.sendText("\x03")
 		}
+	}
+
+	public writeInput(input: string): void {
+		if (!this.commandSubmitted || this.isSettled || this.terminal.process !== this)
+			throw new Error("Command is no longer accepting input")
+		this.terminal.terminal.sendText(input, false)
+	}
+
+	private completeCancellationBeforeLaunch(): boolean {
+		if (!this.aborted || this.commandSubmitted) return false
+		this.emit("shell_execution_complete", { exitCode: 130, signalName: "SIGINT" })
+		this.emit("completed", "")
+		this.emit("continue")
+		return true
 	}
 
 	public override hasUnretrievedOutput(): boolean {
@@ -267,13 +320,16 @@ export class TerminalProcess extends BaseTerminalProcess {
 		return this.lastRetrievedIndex < this.fullOutput.length
 	}
 
-	public override getUnretrievedOutput(): string {
-		// Get raw unretrieved output
-		let outputToProcess = this.fullOutput.slice(this.lastRetrievedIndex)
+	protected override getUnretrievedOutputRange(
+		maxCharacters: number,
+		includeTrailingOutput: boolean,
+	): { endIndex: number; output: string; onCommit?: () => void } {
+		const startIndex = Math.min(Math.max(0, this.lastRetrievedIndex), this.fullOutput.length)
 
-		// Check for VSCE command end markers
-		const index633 = outputToProcess.indexOf("\x1b]633;D")
-		const index133 = outputToProcess.indexOf("\x1b]133;D")
+		// Check for VSCE command end markers without copying the complete unread
+		// buffer. Receipt captures are bounded by maxCharacters below.
+		const index633 = this.fullOutput.indexOf("\x1b]633;D", startIndex)
+		const index133 = this.fullOutput.indexOf("\x1b]133;D", startIndex)
 		let endIndex = -1
 
 		if (index633 !== -1 && index133 !== -1) {
@@ -288,29 +344,47 @@ export class TerminalProcess extends BaseTerminalProcess {
 		//   For active streams: return only complete lines (up to last \n).
 		//   For closed streams: return all remaining content.
 		if (endIndex === -1) {
-			if (!this.terminal.isStreamClosed) {
+			if (!this.terminal.isStreamClosed && !(includeTrailingOutput && this.isSettled)) {
 				// Stream still running - only process complete lines
-				endIndex = outputToProcess.lastIndexOf("\n")
+				endIndex = this.fullOutput.lastIndexOf("\n", this.fullOutput.length - 1)
 
-				if (endIndex === -1) {
+				if (endIndex < startIndex) {
 					// No complete lines
-					return ""
+					return { endIndex: startIndex, output: "" }
 				}
 
 				// Include carriage return
 				endIndex++
 			} else {
 				// Stream closed - process all remaining output
-				endIndex = outputToProcess.length
+				endIndex = this.fullOutput.length
 			}
 		}
 
-		// Update index and slice output
-		this.lastRetrievedIndex += endIndex
-		outputToProcess = outputToProcess.slice(0, endIndex)
+		// Convert the relative cap to an absolute raw-buffer endpoint.
+		endIndex = Math.min(endIndex, startIndex + maxCharacters)
+		if (endIndex <= startIndex) {
+			return { endIndex: startIndex, output: "" }
+		}
 
-		// Clean and return output
-		return this.stripCursorSequences(this.removeVSCodeShellIntegration(outputToProcess))
+		// Clean and return only the bounded raw range. Existing consuming callers
+		// advance the cursor in BaseTerminalProcess after this hook returns.
+		const sanitized = this.sanitizeOutputRange(
+			this.fullOutput.slice(startIndex, endIndex),
+			endIndex >= this.fullOutput.length && (this.terminal.isStreamClosed || this.isSettled),
+		)
+
+		return {
+			endIndex,
+			output: sanitized.output,
+			onCommit: () => {
+				this.outputCleanupState = sanitized.state
+			},
+		}
+	}
+
+	protected override onOutputBufferReset(): void {
+		this.outputCleanupState = INITIAL_TERMINAL_OUTPUT_CLEANUP_STATE
 	}
 
 	private emitRemainingBufferIfListening() {
@@ -397,6 +471,127 @@ export class TerminalProcess extends BaseTerminalProcess {
 				// eslint-disable-next-line no-control-regex
 				.replace(/\x1B\][0-9]+;[^\x07\x1B]*(?:\x07|\x1B\\)/g, "")
 		) // Also remove other common OSC sequences that aren't color-related
+	}
+
+	/**
+	 * Removes OSC sequences while carrying only parser state across receipt
+	 * boundaries. The sequence payload is never retained, so a large marker
+	 * cannot turn a bounded receipt into an unbounded duplicate buffer.
+	 */
+	private sanitizeOutputRange(raw: string, finalize: boolean): { output: string; state: TerminalOutputCleanupState } {
+		let mode = this.outputCleanupState.mode
+		let pending = this.outputCleanupState.pending
+		let output = ""
+
+		for (let index = 0; index < raw.length; index++) {
+			const character = raw[index]
+
+			switch (mode) {
+				case "normal":
+					if (character === "\x1b") {
+						mode = "escape"
+						pending = "\x1b"
+					} else {
+						output += character
+					}
+					break
+				case "escape":
+					if (character === "]") {
+						mode = "osc"
+						pending = ""
+					} else if (character === "[") {
+						mode = "csi"
+						pending += character
+					} else {
+						output += pending
+						if (character === "\x1b") {
+							mode = "escape"
+							pending = "\x1b"
+						} else {
+							output += character
+							mode = "normal"
+							pending = ""
+						}
+					}
+					break
+				case "csi": {
+					if (character === "\x1b") {
+						output += pending
+						mode = "escape"
+						pending = "\x1b"
+						break
+					}
+
+					const characterCode = character.charCodeAt(0)
+					const isCsiFinal = characterCode >= 0x40 && characterCode <= 0x7e
+
+					if (isCsiFinal) {
+						if (character === "s" && pending === "\x1b[") {
+							pending += character
+							mode = "csiSave"
+							break
+						}
+
+						pending += character
+						if (this.stripCursorSequences(pending) !== "") output += pending
+						mode = "normal"
+						pending = ""
+					} else if (pending.length < MAX_CSI_PREFIX_CHARACTERS) {
+						pending += character
+					} else {
+						// An invalid or unusually long CSI cannot be held across an
+						// unbounded number of receipts. Emit the bounded prefix and
+						// resume normal parsing so later output remains deliverable.
+						output += pending + character
+						mode = "normal"
+						pending = ""
+					}
+					break
+				}
+				case "csiSave":
+					if (character === "u") {
+						mode = "normal"
+						pending = ""
+					} else if (character === "\x1b") {
+						output += pending
+						mode = "escape"
+						pending = "\x1b"
+					} else {
+						output += pending + character
+						mode = "normal"
+						pending = ""
+					}
+					break
+				case "osc":
+					if (character === "\x07") {
+						mode = "normal"
+					} else if (character === "\x1b") {
+						mode = "oscEscape"
+					}
+					break
+				case "oscEscape":
+					if (character === "\\") {
+						mode = "normal"
+					} else if (character !== "\x1b") {
+						mode = "osc"
+					}
+					break
+			}
+		}
+
+		if (finalize) {
+			// A completed stream cannot provide another fragment for these short
+			// prefixes. Preserve incomplete ESC/CSI bytes like the legacy cleanup;
+			// an unterminated OSC is treated as control data and discarded.
+			if (mode === "escape" || mode === "csi" || mode === "csiSave") output += pending
+			mode = "normal"
+			pending = ""
+		}
+
+		return {
+			output: this.stripCursorSequences(output),
+			state: { mode, pending },
+		}
 	}
 
 	private stripCursorSequences(text: string): string {

@@ -34,10 +34,12 @@
 			"save": "Salvar imagem",
 			"viewCode": "Ver código",
 			"viewDiagram": "Ver diagrama",
-			"close": "Fechar"
+			"close": "Fechar",
+			"open": "Abrir diagrama"
 		},
 		"modal": {
-			"codeTitle": "Código Mermaid"
+			"codeTitle": "Código Mermaid",
+			"title": "Diagrama sereia"
 		},
 		"tabs": {
 			"diagram": "Diagrama",
@@ -110,5 +112,7 @@
 	"costs": {
 		"own": "Próprio",
 		"subtasks": "Subtarefas"
-	}
+	},
+	"dismiss": "Dispensar",
+	"dismissAndDontShowAgain": "Ignorar e não mostrar novamente"
 }

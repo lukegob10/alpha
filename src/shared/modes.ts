@@ -7,6 +7,7 @@ import {
 	type ToolGroup,
 	type PromptComponent,
 	DEFAULT_MODES,
+	isPrimaryMode,
 } from "@alpha-code/types"
 
 import { TOOL_GROUPS, ALWAYS_AVAILABLE_TOOLS } from "./tools"
@@ -42,11 +43,23 @@ export function getToolsForMode(groups: readonly GroupEntry[]): string[] {
 // Main modes configuration as an ordered array
 export const modes = DEFAULT_MODES
 
-// Export the default mode slug
-export const defaultModeSlug = modes[0].slug
+// Keep the registry order stable for persisted/legacy mode compatibility while
+// making Code the explicit default for new work. Retired tasks restore separately to Plan.
+export const codeModeSlug = "code"
+export const planModeSlug = "architect"
+export const defaultModeSlug = codeModeSlug
+export const defaultMode = modes.find((mode) => mode.slug === defaultModeSlug) ?? modes[0]
+export const planMode = modes.find((mode) => mode.slug === planModeSlug) ?? modes[0]
 
 // Helper functions
 export function getModeBySlug(slug: string, customModes?: ModeConfig[]): ModeConfig | undefined {
+	// `architect` is the persisted compatibility slug for the built-in Plan
+	// collaboration state. It is a host policy boundary, so an old custom mode
+	// with the same slug must remain loadable without replacing that boundary.
+	if (slug === planModeSlug) {
+		return planMode
+	}
+
 	// Check custom modes first
 	const customMode = customModes?.find((mode) => mode.slug === slug)
 	if (customMode) {
@@ -75,6 +88,8 @@ export function getAllModes(customModes?: ModeConfig[]): ModeConfig[] {
 
 	// Process custom modes
 	customModes.forEach((customMode) => {
+		if (!isPrimaryMode(customMode.slug) || customMode.slug === planModeSlug) return
+
 		const index = allModes.findIndex((mode) => mode.slug === customMode.slug)
 		if (index !== -1) {
 			// Override existing mode
@@ -90,6 +105,7 @@ export function getAllModes(customModes?: ModeConfig[]): ModeConfig[] {
 
 // Check if a mode is custom or an override
 export function isCustomMode(slug: string, customModes?: ModeConfig[]): boolean {
+	if (slug === planModeSlug) return false
 	return !!customModes?.some((mode) => mode.slug === slug)
 }
 
@@ -107,6 +123,14 @@ export function findModeBySlug(slug: string, modes: readonly ModeConfig[] | unde
  * If neither is found, the default mode is used.
  */
 export function getModeSelection(mode: string, promptComponent?: PromptComponent, customModes?: ModeConfig[]) {
+	if (mode === planModeSlug) {
+		return {
+			roleDefinition: planMode.roleDefinition || "",
+			baseInstructions: planMode.customInstructions || "",
+			description: planMode.description || "",
+		}
+	}
+
 	const customMode = findModeBySlug(mode, customModes)
 	const builtInMode = findModeBySlug(mode, modes)
 
@@ -120,7 +144,7 @@ export function getModeSelection(mode: string, promptComponent?: PromptComponent
 	}
 
 	// Otherwise, use built-in mode as base and merge with promptComponent
-	const baseMode = builtInMode || modes[0] // fallback to default mode
+	const baseMode = builtInMode || defaultMode
 
 	return {
 		roleDefinition: promptComponent?.roleDefinition || baseMode.roleDefinition || "",
@@ -161,13 +185,17 @@ export async function getAllModesWithPrompts(context: vscode.ExtensionContext): 
 	const customModePrompts = (await context.globalState.get<CustomModePrompts>("customModePrompts")) || {}
 
 	const allModes = getAllModes(customModes)
-	return allModes.map((mode) => ({
-		...mode,
-		roleDefinition: customModePrompts[mode.slug]?.roleDefinition ?? mode.roleDefinition,
-		whenToUse: customModePrompts[mode.slug]?.whenToUse ?? mode.whenToUse,
-		customInstructions: customModePrompts[mode.slug]?.customInstructions ?? mode.customInstructions,
-		// description is not overridable via customModePrompts, so we keep the original
-	}))
+	return allModes.map((mode) => {
+		if (mode.slug === planModeSlug) return mode
+
+		return {
+			...mode,
+			roleDefinition: customModePrompts[mode.slug]?.roleDefinition ?? mode.roleDefinition,
+			whenToUse: customModePrompts[mode.slug]?.whenToUse ?? mode.whenToUse,
+			customInstructions: customModePrompts[mode.slug]?.customInstructions ?? mode.customInstructions,
+			// description is not overridable via customModePrompts, so we keep the original
+		}
+	})
 }
 
 // Helper function to safely get role definition

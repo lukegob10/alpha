@@ -295,4 +295,14 @@ describe("XAIHandler", () => {
 		const stream = handler.createMessage("test prompt", [])
 		await expect(stream.next()).rejects.toThrow(`xAI completion error: ${errorMessage}`)
 	})
+
+	it("should surface terminal failure events from the response stream", async () => {
+		mockResponsesCreate.mockResolvedValueOnce(
+			mockStream([{ type: "response.failed", response: { error: { message: "model overloaded" } } }]),
+		)
+
+		const stream = handler.createMessage("test prompt", [])
+		await expect(stream.next()).rejects.toThrow("xAI completion error: Response failed: model overloaded")
+		expect(mockCaptureException).toHaveBeenCalled()
+	})
 })

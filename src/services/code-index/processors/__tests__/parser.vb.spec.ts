@@ -177,7 +177,7 @@ End Namespace
 
 		// Verify chunks don't exceed max size
 		result.forEach((block) => {
-			expect(block.content.length).toBeLessThanOrEqual(150000) // MAX_BLOCK_CHARS * MAX_CHARS_TOLERANCE_FACTOR
+			expect(block.content.length).toBeLessThanOrEqual(4096)
 		})
 	})
 
@@ -201,8 +201,8 @@ End Namespace
 			fileHash: "small-hash",
 		})
 
-		// Should return empty array for content below MIN_BLOCK_CHARS
-		expect(result).toEqual([])
+		// Short imports are useful retrieval evidence too.
+		expect(result.map((block) => block.content).join("")).toBe(smallContent)
 	})
 
 	it("should use fallback chunking for other configured fallback extensions", async () => {

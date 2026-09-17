@@ -1,4 +1,18 @@
 {
+	"messageActions": {
+		"copy": "コピー",
+		"copied": "コピーしました",
+		"edit": "編集して再送信",
+		"restart": "直前のリクエストから再開",
+		"restartWarning": "直前のリクエストを再実行し、それ以降のすべてのメッセージを置き換えます。ワークスペースのファイルは現在の状態を維持します。",
+		"restartWithCheckpoint": "直前のリクエストを再実行し、それ以降のすべてのメッセージを置き換えます。ファイルも対応するチェックポイントに復元しますか？",
+		"restartOnly": "ファイルを復元せずに再開"
+	},
+	"activityTrace": {
+		"needsAttention": "対応が必要",
+		"workedFor": "作業時間 {{duration}}"
+	},
+	"completionReport": "完了レポート",
 	"greeting": "Alpha へようこそ",
 	"task": {
 		"title": "タスク",
@@ -30,7 +44,9 @@
 	"unpin": "ピン留めを解除",
 	"pin": "ピン留め",
 	"fileChangesInConversation": {
-		"header": "この会話で {{count}} 個のファイルが変更されました"
+		"header": "編集したファイル: {{count}}",
+		"linesChanged": "{{added}} 行追加、{{removed}} 行削除",
+		"openFile": "ファイルを開く: {{path}}"
 	},
 	"tokenProgress": {
 		"availableSpace": "利用可能な空き容量: {{amount}} トークン",
@@ -213,18 +229,21 @@
 		"didViewTopLevel": "Alphaはこのディレクトリのトップレベルファイルを表示しました",
 		"wantsToViewRecursive": "Alphaはこのディレクトリのすべてのファイルを再帰的に表示したい",
 		"didViewRecursive": "Alphaはこのディレクトリのすべてのファイルを再帰的に表示しました",
-		"wantsToSearch": "Alphaはこのディレクトリで <code>{{regex}}</code> を検索したい",
-		"didSearch": "Alphaはこのディレクトリで <code>{{regex}}</code> を検索しました",
-		"wantsToSearchOutsideWorkspace": "Alphaはこのディレクトリ（ワークスペース外）で <code>{{regex}}</code> を検索したい",
-		"didSearchOutsideWorkspace": "Alphaはこのディレクトリ（ワークスペース外）で <code>{{regex}}</code> を検索しました",
+		"wantsToSearch": "Alphaはディレクトリ内を検索しようとしています",
+		"didSearch": "Alphaはディレクトリ内を検索しました",
+		"wantsToSearchOutsideWorkspace": "Alphaはディレクトリ内を検索しようとしています（ワークスペース外）",
+		"didSearchOutsideWorkspace": "Alphaはディレクトリ内を検索しました（ワークスペース外）",
 		"wantsToViewTopLevelOutsideWorkspace": "Alphaはこのディレクトリ（ワークスペース外）のトップレベルファイルを表示したい",
 		"didViewTopLevelOutsideWorkspace": "Alphaはこのディレクトリ（ワークスペース外）のトップレベルファイルを表示しました",
 		"wantsToViewRecursiveOutsideWorkspace": "Alphaはこのディレクトリ（ワークスペース外）のすべてのファイルを再帰的に表示したい",
 		"didViewRecursiveOutsideWorkspace": "Alphaはこのディレクトリ（ワークスペース外）のすべてのファイルを再帰的に表示しました",
-		"wantsToViewMultipleDirectories": "Alpha は複数のディレクトリを表示したい"
+		"wantsToViewMultipleDirectories": "Alpha は複数のディレクトリを表示したい",
+		"wantsToSearchMultiple": "Alpha は {{count}} ファイル検索の実行を希望しています",
+		"didSearchMultiple": "Alpha は {{count}} ファイル検索を実行しました"
 	},
 	"commandOutput": "コマンド出力",
 	"commandExecution": {
+		"command": "コマンド",
 		"abort": "中止",
 		"running": "実行中",
 		"pid": "PID: {{pid}}",
@@ -315,6 +334,7 @@
 	"contextManagement": {
 		"tokens": "トークン",
 		"condensation": {
+			"unchanged": "コンテキストは既に上限内です",
 			"title": "コンテキスト要約",
 			"inProgress": "コンテキストを圧縮中...",
 			"errorHeader": "コンテキストの圧縮に失敗しました"
@@ -347,8 +367,11 @@
 			"gpt54": "Poe プロバイダー: Poe を AI プロバイダーとして追加し、Alpha から Poe のモデルに直接アクセスできるようにしました。",
 			"slashSkills": "xAI と MiniMax の改善: xAI プロバイダーを Responses API へ移行し、再利用可能な変換ユーティリティを追加し、Grok-4.20 のデフォルト設定を更新し、MiniMax のモデル一覧とコンテキストウィンドウの扱いを修正して、より信頼性の高いセットアップにしました。",
 			"geminiPro": "Gemini 3.1 Pro サポート: Gemini 3.1 Pro モデルのサポートを追加し、パフォーマンス向上のためデフォルトの Gemini モデルに設定しました。",
-			"cliNdjson": "CLI NDJSON プロトコル: 新しい NDJSON stdin プロトコル、list サブコマンド、より柔軟な CLI ワークフローのためのモジュール化された run コマンド。",
-			"cliRelease": "CLI v0.1.0: Alpha CLI が安定したコマンドインターフェースで初の正式リリースに到達しました。"
+			"welcome": "Alpha v{{version}} では、検証、コマンド制御、タスクの継続性が向上しました。",
+			"acceptanceChecks": "宣言された入力が変わらない限り、合格したチェックを再利用します。",
+			"commandControl": "タスクが所有するバックグラウンドコマンドの待機、入力送信、停止を行えます。",
+			"workflowContinuity": "再読み込みやコンテキストの圧縮後も、タスクの制約とスキルの情報を保持します。",
+			"chatUpdates": "チャット操作が分かりやすくなり、タスク完了後にプロバイダーを選択できます。"
 		}
 	},
 	"costs": {
@@ -363,7 +386,6 @@
 			"copy_code": "コードをコピー"
 		}
 	},
-	"profileViolationWarning": "現在のプロファイルは組織の設定と互換性がありません",
 	"shellIntegration": {
 		"title": "コマンド実行警告",
 		"description": "コマンドはVSCodeターミナルシェル統合なしで実行されています。この警告を非表示にするには、<settingsLink>Alpha設定</settingsLink>の<strong>Terminal</strong>セクションでシェル統合を無効にするか、以下のリンクを使用してVSCodeターミナル統合のトラブルシューティングを行ってください。",
@@ -382,6 +404,7 @@
 		}
 	},
 	"codebaseSearch": {
+		"title": "コードベース検索",
 		"wantsToSearch": "Alphaはコードベースで <code>{{query}}</code> を検索したい",
 		"wantsToSearchWithPath": "Alphaは <code>{{path}}</code> 内のコードベースで <code>{{query}}</code> を検索したい",
 		"didSearch_one": "1件の結果が見つかりました",
@@ -457,8 +480,19 @@
 	},
 	"queuedMessages": {
 		"title": "キューメッセージ",
-		"clickToEdit": "クリックしてメッセージを編集"
+		"clickToEdit": "クリックしてメッセージを編集",
+		"steering": "方向転換中…",
+		"queueFailed": "メッセージをキューに追加できませんでした。下書きは入力欄に残っています。",
+		"steerFailed": "方向転換を開始できませんでした。キューのメッセージは引き続き利用できます。",
+		"edit": "編集",
+		"editTooltip": "このキューに入れられたメッセージを編集",
+		"editing": "コンポーザーで編集",
+		"dragHandle": "キューに入れられたメッセージをドラッグ",
+		"dragTooltip": "このキューに入れられたメッセージをドラッグして並べ替える",
+		"steer": "ステアリング",
+		"steerTooltip": "このキューに入れられたメッセージを現在のターンに送信"
 	},
+	"modelResponseDelayed": "モデルからの次の更新を待っています。長い推論には時間がかかることがあります。",
 	"slashCommand": {
 		"wantsToRun": "Alphaはスラッシュコマンドを実行したい",
 		"didRun": "Alphaはスラッシュコマンドを実行しました"
@@ -486,5 +520,38 @@
 		"title": "プロバイダーのサポート終了",
 		"message": "申し訳ございませんが、このプロバイダーはサポートを終了しました。実際に利用しているAlphaユーザーが非常に少なく、コードベースの範囲を縮小して、迅速な開発とコミュニティへの貢献を続ける必要がありました。本当に難しい決断でしたが、あなたにとって最も重要なことに集中するためです。残念ですが、ご理解ください。",
 		"openSettings": "設定を開く"
+	},
+	"githubActions": {
+		"request": "リクエスト",
+		"create_pull_request": "プルリクエストを作成",
+		"get_pull_request": "プルリクエストを表示",
+		"list_checks": "チェックを一覧表示",
+		"merge_pull_request": "プルリクエストをマージ",
+		"comment": "コメントを追加"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "エージェントを検査します",
+			"wait_agent": "エージェントの更新を待ちます",
+			"unknown": "エージェントのアクション"
+		},
+		"failed": "{{action}} が失敗しました: {{error}}",
+		"list": {
+			"running": "エージェントを検査しています...",
+			"completed": "{{count}} エージェントを検査しました",
+			"completed_other": "検査された {{count}} エージェント",
+			"mailbox": "{{count}} メールボックスの更新",
+			"mailbox_other": "{{count}} メールボックスの更新"
+		},
+		"wait": {
+			"running": "エージェントの更新を待機しています...",
+			"noActiveAgents": "待機するアクティブなエージェントがありません",
+			"cancelled": "エージェントの待機はキャンセルされました",
+			"timedOut": "タイムアウトになるまでエージェントの更新はありません",
+			"alreadyDelivered": "新しい更新はありません。結果はすでに配信されています",
+			"received": "{{count}} エージェントの更新を受信しました",
+			"received_other": "{{count}} エージェントの更新を受信しました",
+			"completed": "エージェントの待機が完了しました"
+		}
 	}
 }

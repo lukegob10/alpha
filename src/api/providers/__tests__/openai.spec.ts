@@ -91,6 +91,88 @@ describe("OpenAiHandler", () => {
 	})
 
 	describe("constructor", () => {
+		it.each(["gpt-4", "o3-mini"])(
+			"preserves reasoning for %s in streaming and non-streaming responses",
+			async (modelId) => {
+				for (const streaming of [true, false]) {
+					for (const field of ["reasoning", "reasoning_content"]) {
+						const message = {
+							content: null,
+							[field]: "Checking the documented roles before reading the implementation.",
+							tool_calls: [
+								{
+									index: 0,
+									id: "read",
+									type: "function",
+									function: { name: "read_file", arguments: "{}" },
+								},
+							],
+						}
+						mockCreate.mockImplementationOnce(async () =>
+							streaming
+								? {
+										[Symbol.asyncIterator]: async function* () {
+											yield { choices: [{ delta: message, finish_reason: "tool_calls" }] }
+										},
+									}
+								: { choices: [{ message }] },
+						)
+						const provider = new OpenAiHandler({
+							...mockOptions,
+							openAiModelId: modelId,
+							openAiStreamingEnabled: streaming,
+						})
+						const chunks = []
+						for await (const chunk of provider.createMessage("system", [])) chunks.push(chunk)
+						expect(chunks.filter((chunk) => chunk.type === "reasoning")).toEqual([
+							{ type: "reasoning", text: message[field] },
+						])
+						expect(chunks.findIndex((chunk) => chunk.type.startsWith("tool_call"))).toBeGreaterThan(
+							chunks.findIndex((chunk) => chunk.type === "reasoning"),
+						)
+					}
+				}
+			},
+		)
+
+		it("passes cancellation to the transport and settles a stalled request", async () => {
+			let requestSignal: AbortSignal | undefined
+			mockCreate.mockImplementationOnce((_request, options) => {
+				requestSignal = options.signal
+				return new Promise((_resolve, reject) =>
+					options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }),
+				)
+			})
+			const controller = new AbortController()
+			const stream = handler.createMessage("system", [], { taskId: "cancel", signal: controller.signal })
+			const next = stream.next()
+			controller.abort()
+			await expect(next).rejects.toThrow()
+			expect(requestSignal?.aborted).toBe(true)
+		})
+
+		it("does not invent reasoning for tool-only responses", async () => {
+			mockCreate.mockImplementationOnce(async () => ({
+				[Symbol.asyncIterator]: async function* () {
+					yield {
+						choices: [
+							{
+								delta: {
+									tool_calls: [
+										{ index: 0, id: "read", function: { name: "read_file", arguments: "{}" } },
+									],
+								},
+								finish_reason: "tool_calls",
+							},
+						],
+					}
+				},
+			}))
+			const chunks = []
+			for await (const chunk of handler.createMessage("system", [])) chunks.push(chunk)
+			expect(chunks.some((chunk) => chunk.type === "reasoning")).toBe(false)
+		})
+
 		it("should initialize with provided options", () => {
 			expect(handler).toBeInstanceOf(OpenAiHandler)
 			expect(handler.getModel().id).toBe(mockOptions.openAiModelId)

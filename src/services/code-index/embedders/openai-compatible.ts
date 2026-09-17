@@ -91,11 +91,15 @@ export class OpenAICompatibleEmbedder implements IEmbedder {
 	 * @param model Optional model identifier
 	 * @returns Promise resolving to embedding response
 	 */
-	async createEmbeddings(texts: string[], model?: string): Promise<EmbeddingResponse> {
+	async createEmbeddings(
+		texts: string[],
+		model?: string,
+		purpose: "document" | "query" = "document",
+	): Promise<EmbeddingResponse> {
 		const modelToUse = model || this.defaultModelId
 
 		// Apply model-specific query prefix if required
-		const queryPrefix = getModelQueryPrefix("openai-compatible", modelToUse)
+		const queryPrefix = purpose === "query" ? getModelQueryPrefix("openai-compatible", modelToUse) : undefined
 		const processedTexts = queryPrefix
 			? texts.map((text, index) => {
 					// Prevent double-prefixing

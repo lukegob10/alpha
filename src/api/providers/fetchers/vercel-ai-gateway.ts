@@ -23,17 +23,24 @@ const vercelAiGatewayPricingSchema = z.object({
  * VercelAiGatewayModel
  */
 
-const vercelAiGatewayModelSchema = z.object({
+const vercelAiGatewayCatalogModelSchema = z.object({
 	id: z.string(),
 	object: z.string(),
 	created: z.number(),
 	owned_by: z.string(),
 	name: z.string(),
 	description: z.string(),
-	context_window: z.number(),
-	max_tokens: z.number(),
+	// Non-language catalog entries do not consistently publish token limits.
+	context_window: z.number().positive().optional(),
+	max_tokens: z.number().positive().optional(),
 	type: z.string(),
 	pricing: vercelAiGatewayPricingSchema,
+})
+
+const vercelAiGatewayModelSchema = vercelAiGatewayCatalogModelSchema.extend({
+	type: z.literal("language"),
+	context_window: z.number().positive(),
+	max_tokens: z.number().positive(),
 })
 
 export type VercelAiGatewayModel = z.infer<typeof vercelAiGatewayModelSchema>
@@ -44,7 +51,7 @@ export type VercelAiGatewayModel = z.infer<typeof vercelAiGatewayModelSchema>
 
 const vercelAiGatewayModelsResponseSchema = z.object({
 	object: z.string(),
-	data: z.array(vercelAiGatewayModelSchema),
+	data: z.array(vercelAiGatewayCatalogModelSchema),
 })
 
 type VercelAiGatewayModelsResponse = z.infer<typeof vercelAiGatewayModelsResponseSchema>
@@ -60,22 +67,44 @@ export async function getVercelAiGatewayModels(options?: ApiHandlerOptions): Pro
 	try {
 		const response = await axios.get<VercelAiGatewayModelsResponse>(`${baseURL}/models`)
 		const result = vercelAiGatewayModelsResponseSchema.safeParse(response.data)
-		const data = result.success ? result.data.data : response.data.data
-
+		const rawData = (response.data as { data?: unknown })?.data
+		if (!Array.isArray(rawData)) {
+			console.error("Vercel AI Gateway models response is invalid: data is not an array")
+			return models
+		}
+		const data: unknown[] = result.success ? result.data.data : rawData
 		if (!result.success) {
-			console.error(`Vercel AI Gateway models response is invalid ${JSON.stringify(result.error.format())}`)
+			console.error("Vercel AI Gateway response metadata is invalid; validating catalog entries individually")
 		}
 
-		for (const model of data) {
-			const { id } = model
-
-			// Only include language models for chat inference.
-			// Embedding models are statically defined in embeddingModels.ts.
-			if (model.type !== "language") {
+		let skippedLanguageModels = 0
+		for (const candidate of data) {
+			const catalogModel = vercelAiGatewayCatalogModelSchema.safeParse(candidate)
+			if (!catalogModel.success) {
+				if (
+					typeof candidate === "object" &&
+					candidate !== null &&
+					(candidate as { type?: unknown }).type === "language"
+				) {
+					skippedLanguageModels++
+				}
 				continue
 			}
+			if (catalogModel.data.type !== "language") continue
+			const parsedModel = vercelAiGatewayModelSchema.safeParse(catalogModel.data)
+			if (!parsedModel.success) {
+				skippedLanguageModels++
+				continue
+			}
+			const model = parsedModel.data
+			const { id } = model
 
 			models[id] = parseVercelAiGatewayModel({ id, model })
+		}
+		if (skippedLanguageModels > 0) {
+			console.warn(
+				`Skipped ${skippedLanguageModels} Vercel AI Gateway language model${skippedLanguageModels === 1 ? "" : "s"} with incomplete token metadata`,
+			)
 		}
 	} catch (error) {
 		console.error(

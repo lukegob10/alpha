@@ -1,0 +1,3791 @@
+{
+	"valid": true,
+	"taskCount": 48,
+	"issues": [],
+	"similarity": {
+		"pairs": [
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "repo-config-precedence@1",
+				"prompt": 0.2909090909090909,
+				"source": 0,
+				"tests": 0.2,
+				"capabilities": 0.2,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "repo-auth-session-rotation@1",
+				"prompt": 0.2807017543859649,
+				"source": 0,
+				"tests": 0.16923076923076924,
+				"capabilities": 0.2,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "repo-stream-backpressure@1",
+				"prompt": 0.2711864406779661,
+				"source": 0,
+				"tests": 0.14925373134328357,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "repo-workspace-package-order@1",
+				"prompt": 0.2807017543859649,
+				"source": 0,
+				"tests": 0.17543859649122806,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "repo-migration-rollback@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.14285714285714285,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "repo-event-deduplication@1",
+				"prompt": 0.27586206896551724,
+				"source": 0,
+				"tests": 0.15384615384615385,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "repo-cli-config-layering@1",
+				"prompt": 0.2807017543859649,
+				"source": 0,
+				"tests": 0.2127659574468085,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "repo-concurrent-file-lock@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.15625,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "repo-pagination-cursor@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.1506849315068493,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "repo-plugin-dependency-cycle@1",
+				"prompt": 0.27586206896551724,
+				"source": 0,
+				"tests": 0.1694915254237288,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "repo-transaction-outbox@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.12345679012345678,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "repo-rate-limit-window@1",
+				"prompt": 0.2711864406779661,
+				"source": 0,
+				"tests": 0.2,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "repo-schema-compatibility@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.1694915254237288,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "repo-worker-shutdown@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.1282051282051282,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "repo-build-artifact-boundary@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.20408163265306123,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "alpha-repository-rules@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.20754716981132076,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.2711864406779661,
+				"source": 0,
+				"tests": 0.18333333333333332,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.2857142857142857,
+				"source": 0,
+				"tests": 0.19607843137254902,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.2807017543859649,
+				"source": 0,
+				"tests": 0.19607843137254902,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.27586206896551724,
+				"source": 0,
+				"tests": 0.14285714285714285,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.16129032258064516,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.27586206896551724,
+				"source": 0,
+				"tests": 0.18867924528301888,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.18518518518518517,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.2711864406779661,
+				"source": 0,
+				"tests": 0.2127659574468085,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.2127659574468085,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.20408163265306123,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cache-invalidation@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.16129032258064516,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "repo-auth-session-rotation@1",
+				"prompt": 0.27586206896551724,
+				"source": 0,
+				"tests": 0.15151515151515152,
+				"capabilities": 0.2,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "repo-stream-backpressure@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.14925373134328357,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "repo-workspace-package-order@1",
+				"prompt": 0.27586206896551724,
+				"source": 0,
+				"tests": 0.21818181818181817,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "repo-migration-rollback@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.14285714285714285,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "repo-event-deduplication@1",
+				"prompt": 0.2711864406779661,
+				"source": 0,
+				"tests": 0.15384615384615385,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "repo-cli-config-layering@1",
+				"prompt": 0.27586206896551724,
+				"source": 0,
+				"tests": 0.26666666666666666,
+				"capabilities": 0.2,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "repo-concurrent-file-lock@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.15625,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "repo-pagination-cursor@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.13513513513513514,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "repo-plugin-dependency-cycle@1",
+				"prompt": 0.2711864406779661,
+				"source": 0,
+				"tests": 0.21052631578947367,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "repo-transaction-outbox@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.12345679012345678,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "repo-rate-limit-window@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.17857142857142858,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "repo-schema-compatibility@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.21052631578947367,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "repo-worker-shutdown@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.1282051282051282,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "repo-build-artifact-boundary@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.2553191489361702,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "alpha-repository-rules@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.18518518518518517,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.16393442622950818,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.2807017543859649,
+				"source": 0,
+				"tests": 0.24489795918367346,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.27586206896551724,
+				"source": 0,
+				"tests": 0.22,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.2711864406779661,
+				"source": 0,
+				"tests": 0.14285714285714285,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.16129032258064516,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.2711864406779661,
+				"source": 0,
+				"tests": 0.23529411764705882,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.23076923076923078,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.2391304347826087,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.26666666666666666,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.2553191489361702,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-config-precedence@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.16129032258064516,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "repo-stream-backpressure@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.12048192771084337,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "repo-workspace-package-order@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.136986301369863,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "repo-migration-rollback@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.11627906976744186,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "repo-event-deduplication@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.12345679012345678,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "repo-cli-config-layering@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.15873015873015872,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "repo-concurrent-file-lock@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.125,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "repo-pagination-cursor@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.12359550561797752,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "repo-plugin-dependency-cycle@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.13333333333333333,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "repo-transaction-outbox@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.10309278350515463,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "repo-rate-limit-window@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.15492957746478872,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "repo-schema-compatibility@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.13333333333333333,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "repo-worker-shutdown@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.10638297872340426,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "repo-build-artifact-boundary@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.15384615384615385,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "alpha-repository-rules@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.15942028985507245,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.14473684210526316,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.2711864406779661,
+				"source": 0,
+				"tests": 0.14925373134328357,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.16666666666666666,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.11627906976744186,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.14285714285714285,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.14492753623188406,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.14285714285714285,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.23728813559322035,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.15873015873015872,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.15384615384615385,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-auth-session-rotation@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.1282051282051282,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "repo-workspace-package-order@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.13513513513513514,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "repo-migration-rollback@1",
+				"prompt": 0.24242424242424243,
+				"source": 0.029411764705882353,
+				"tests": 0.12790697674418605,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "repo-event-deduplication@1",
+				"prompt": 0.25396825396825395,
+				"source": 0.022727272727272728,
+				"tests": 0.13580246913580246,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "repo-cli-config-layering@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.15625,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "repo-concurrent-file-lock@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.12345679012345678,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "repo-pagination-cursor@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.10989010989010989,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "repo-plugin-dependency-cycle@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.13157894736842105,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "repo-transaction-outbox@1",
+				"prompt": 0.23529411764705882,
+				"source": 0.03125,
+				"tests": 0.1134020618556701,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "repo-rate-limit-window@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.136986301369863,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "repo-schema-compatibility@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.13157894736842105,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "repo-worker-shutdown@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.12903225806451613,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "repo-build-artifact-boundary@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.15151515151515152,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "alpha-repository-rules@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.14084507042253522,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.1282051282051282,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.14705882352941177,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.14705882352941177,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.11494252873563218,
+				"capabilities": 0.2,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.24242424242424243,
+				"source": 0.025,
+				"tests": 0.14102564102564102,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.14285714285714285,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.14084507042253522,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.15625,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.15625,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.15151515151515152,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-stream-backpressure@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.23880597014925373,
+				"source": 0.02857142857142857,
+				"tests": 0.14102564102564102,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "repo-migration-rollback@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.12987012987012986,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "repo-event-deduplication@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.1388888888888889,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "repo-cli-config-layering@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.2549019607843137,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "repo-concurrent-file-lock@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.14084507042253522,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "repo-pagination-cursor@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.12345679012345678,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "repo-plugin-dependency-cycle@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.2459016393442623,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "repo-transaction-outbox@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.11363636363636363,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "repo-rate-limit-window@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.15873015873015872,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "repo-schema-compatibility@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.1875,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "repo-worker-shutdown@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.11764705882352941,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "repo-build-artifact-boundary@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.24528301886792453,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "alpha-repository-rules@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.16393442622950818,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.14705882352941177,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.2711864406779661,
+				"source": 0,
+				"tests": 0.21428571428571427,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.19298245614035087,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.12987012987012986,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.14492753623188406,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.20689655172413793,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.2033898305084746,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.20754716981132076,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.23076923076923078,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.2222222222222222,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-workspace-package-order@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.14492753623188406,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "repo-event-deduplication@1",
+				"prompt": 0.24615384615384617,
+				"source": 0.022222222222222223,
+				"tests": 0.14457831325301204,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "repo-cli-config-layering@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.14925373134328357,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "repo-concurrent-file-lock@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.11904761904761904,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "repo-pagination-cursor@1",
+				"prompt": 0.22535211267605634,
+				"source": 0,
+				"tests": 0.10638297872340426,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "repo-plugin-dependency-cycle@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.12658227848101267,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "repo-transaction-outbox@1",
+				"prompt": 0.22857142857142856,
+				"source": 0.030303030303030304,
+				"tests": 0.12121212121212122,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "repo-rate-limit-window@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.13157894736842105,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "repo-schema-compatibility@1",
+				"prompt": 0.22857142857142856,
+				"source": 0,
+				"tests": 0.12658227848101267,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "repo-worker-shutdown@1",
+				"prompt": 0.22535211267605634,
+				"source": 0,
+				"tests": 0.1134020618556701,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "repo-build-artifact-boundary@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.14492753623188406,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "alpha-repository-rules@1",
+				"prompt": 0.2727272727272727,
+				"source": 0,
+				"tests": 0.13513513513513514,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.12345679012345678,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.14084507042253522,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.14084507042253522,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.1111111111111111,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.23529411764705882,
+				"source": 0.024390243902439025,
+				"tests": 0.15,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.136986301369863,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.13513513513513514,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.14925373134328357,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.14925373134328357,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.14492753623188406,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-migration-rollback@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.2318840579710145,
+				"source": 0.027777777777777776,
+				"tests": 0.15,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "repo-cli-config-layering@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.16129032258064516,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "repo-concurrent-file-lock@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.12658227848101267,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "repo-pagination-cursor@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.11235955056179775,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "repo-plugin-dependency-cycle@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.13513513513513514,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "repo-transaction-outbox@1",
+				"prompt": 0.23880597014925373,
+				"source": 0.023255813953488372,
+				"tests": 0.1276595744680851,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "repo-rate-limit-window@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.14084507042253522,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "repo-schema-compatibility@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.13513513513513514,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "repo-worker-shutdown@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.11956521739130435,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "repo-build-artifact-boundary@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.15625,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "alpha-repository-rules@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.14492753623188406,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.13157894736842105,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.15151515151515152,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.15151515151515152,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.11764705882352941,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.24615384615384617,
+				"source": 0.0196078431372549,
+				"tests": 0.16,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.14705882352941177,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.14492753623188406,
+				"capabilities": 0.2,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.16129032258064516,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.16129032258064516,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.15625,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-event-deduplication@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.24242424242424243,
+				"source": 0.021739130434782608,
+				"tests": 0.16,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "repo-concurrent-file-lock@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.16393442622950818,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "repo-pagination-cursor@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.14084507042253522,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "repo-plugin-dependency-cycle@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.2222222222222222,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "repo-transaction-outbox@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.1282051282051282,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "repo-rate-limit-window@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.18867924528301888,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "repo-schema-compatibility@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.2222222222222222,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "repo-worker-shutdown@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.13333333333333333,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "repo-build-artifact-boundary@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.3023255813953488,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "alpha-repository-rules@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.19607843137254902,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.1724137931034483,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.2711864406779661,
+				"source": 0,
+				"tests": 0.2608695652173913,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.23404255319148937,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.14925373134328357,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.1694915254237288,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.25,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.24489795918367346,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.2558139534883721,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.27419354838709675,
+				"source": 0,
+				"tests": 0.2857142857142857,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.2727272727272727,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-cli-config-layering@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.1694915254237288,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "repo-pagination-cursor@1",
+				"prompt": 0.2222222222222222,
+				"source": 0,
+				"tests": 0.11363636363636363,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "repo-plugin-dependency-cycle@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.136986301369863,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "repo-transaction-outbox@1",
+				"prompt": 0.22535211267605634,
+				"source": 0,
+				"tests": 0.10526315789473684,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "repo-rate-limit-window@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.23076923076923078,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "repo-schema-compatibility@1",
+				"prompt": 0.22535211267605634,
+				"source": 0,
+				"tests": 0.136986301369863,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "repo-worker-shutdown@1",
+				"prompt": 0.2222222222222222,
+				"source": 0,
+				"tests": 0.10869565217391304,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "repo-build-artifact-boundary@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.15873015873015872,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "alpha-repository-rules@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.14705882352941177,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.13333333333333333,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.15384615384615385,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.15384615384615385,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.13253012048192772,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.13157894736842105,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.14925373134328357,
+				"capabilities": 0.2,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.14705882352941177,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.16393442622950818,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.16393442622950818,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.15873015873015872,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-concurrent-file-lock@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.22857142857142856,
+				"source": 0,
+				"tests": 0.13157894736842105,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "repo-plugin-dependency-cycle@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.12048192771084337,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "repo-transaction-outbox@1",
+				"prompt": 0.2191780821917808,
+				"source": 0,
+				"tests": 0.09523809523809523,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "repo-rate-limit-window@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.13924050632911392,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "repo-schema-compatibility@1",
+				"prompt": 0.2191780821917808,
+				"source": 0,
+				"tests": 0.12048192771084337,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "repo-worker-shutdown@1",
+				"prompt": 0.21621621621621623,
+				"source": 0,
+				"tests": 0.09803921568627451,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "repo-build-artifact-boundary@1",
+				"prompt": 0.22857142857142856,
+				"source": 0,
+				"tests": 0.136986301369863,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "alpha-repository-rules@1",
+				"prompt": 0.22535211267605634,
+				"source": 0,
+				"tests": 0.14285714285714285,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.13095238095238096,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.13333333333333333,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.13333333333333333,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.10638297872340426,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.22535211267605634,
+				"source": 0,
+				"tests": 0.11627906976744186,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.12987012987012986,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.22857142857142856,
+				"source": 0,
+				"tests": 0.15789473684210525,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.14084507042253522,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.22857142857142856,
+				"source": 0,
+				"tests": 0.14084507042253522,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.22535211267605634,
+				"source": 0,
+				"tests": 0.136986301369863,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-pagination-cursor@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.2222222222222222,
+				"source": 0,
+				"tests": 0.12941176470588237,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "repo-transaction-outbox@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.1111111111111111,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "repo-rate-limit-window@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.15384615384615385,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "repo-schema-compatibility@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.18181818181818182,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "repo-worker-shutdown@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.11494252873563218,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "repo-build-artifact-boundary@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.21428571428571427,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "alpha-repository-rules@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.15873015873015872,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.14285714285714285,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.20689655172413793,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.1864406779661017,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.12658227848101267,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.14084507042253522,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.2,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.19672131147540983,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.2,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.2222222222222222,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.21428571428571427,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-plugin-dependency-cycle@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.14084507042253522,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-transaction-outbox@1",
+				"right": "repo-rate-limit-window@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.11494252873563218,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-transaction-outbox@1",
+				"right": "repo-schema-compatibility@1",
+				"prompt": 0.2222222222222222,
+				"source": 0,
+				"tests": 0.1111111111111111,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-transaction-outbox@1",
+				"right": "repo-worker-shutdown@1",
+				"prompt": 0.2191780821917808,
+				"source": 0,
+				"tests": 0.10185185185185185,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-transaction-outbox@1",
+				"right": "repo-build-artifact-boundary@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.125,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-transaction-outbox@1",
+				"right": "alpha-repository-rules@1",
+				"prompt": 0.2463768115942029,
+				"source": 0,
+				"tests": 0.11764705882352941,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-transaction-outbox@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.10869565217391304,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-transaction-outbox@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.12195121951219512,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-transaction-outbox@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.12195121951219512,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-transaction-outbox@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.09900990099009901,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-transaction-outbox@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.22857142857142856,
+				"source": 0.02564102564102564,
+				"tests": 0.13186813186813187,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-transaction-outbox@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.11904761904761904,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-transaction-outbox@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.11764705882352941,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-transaction-outbox@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.1282051282051282,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-transaction-outbox@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.1282051282051282,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-transaction-outbox@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.22857142857142856,
+				"source": 0,
+				"tests": 0.125,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-transaction-outbox@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.22535211267605634,
+				"source": 0.029411764705882353,
+				"tests": 0.14444444444444443,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-rate-limit-window@1",
+				"right": "repo-schema-compatibility@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.15384615384615385,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-rate-limit-window@1",
+				"right": "repo-worker-shutdown@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.11904761904761904,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-rate-limit-window@1",
+				"right": "repo-build-artifact-boundary@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.18181818181818182,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-rate-limit-window@1",
+				"right": "alpha-repository-rules@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.1864406779661017,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-rate-limit-window@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.16666666666666666,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-rate-limit-window@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.17543859649122806,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-rate-limit-window@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.17543859649122806,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-rate-limit-window@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.13157894736842105,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-rate-limit-window@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.14705882352941177,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-rate-limit-window@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.1694915254237288,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-rate-limit-window@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.16666666666666666,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-rate-limit-window@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.18867924528301888,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-rate-limit-window@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.18867924528301888,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-rate-limit-window@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.18181818181818182,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-rate-limit-window@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.14705882352941177,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-schema-compatibility@1",
+				"right": "repo-worker-shutdown@1",
+				"prompt": 0.2191780821917808,
+				"source": 0,
+				"tests": 0.11494252873563218,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-schema-compatibility@1",
+				"right": "repo-build-artifact-boundary@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.21428571428571427,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-schema-compatibility@1",
+				"right": "alpha-repository-rules@1",
+				"prompt": 0.22857142857142856,
+				"source": 0,
+				"tests": 0.15873015873015872,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-schema-compatibility@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.14285714285714285,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-schema-compatibility@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.20689655172413793,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-schema-compatibility@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.1864406779661017,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-schema-compatibility@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.12658227848101267,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-schema-compatibility@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.22857142857142856,
+				"source": 0,
+				"tests": 0.14084507042253522,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-schema-compatibility@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.2,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-schema-compatibility@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.19672131147540983,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-schema-compatibility@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.2,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-schema-compatibility@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.2222222222222222,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-schema-compatibility@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.22857142857142856,
+				"source": 0,
+				"tests": 0.21428571428571427,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-schema-compatibility@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.22535211267605634,
+				"source": 0,
+				"tests": 0.14084507042253522,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-worker-shutdown@1",
+				"right": "repo-build-artifact-boundary@1",
+				"prompt": 0.22857142857142856,
+				"source": 0,
+				"tests": 0.12987012987012986,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-worker-shutdown@1",
+				"right": "alpha-repository-rules@1",
+				"prompt": 0.22535211267605634,
+				"source": 0,
+				"tests": 0.12195121951219512,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-worker-shutdown@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.11235955056179775,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-worker-shutdown@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.12658227848101267,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-worker-shutdown@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.12658227848101267,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-worker-shutdown@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.10204081632653061,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-worker-shutdown@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.22535211267605634,
+				"source": 0,
+				"tests": 0.12359550561797752,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-worker-shutdown@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.12345679012345678,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-worker-shutdown@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.22857142857142856,
+				"source": 0,
+				"tests": 0.12195121951219512,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-worker-shutdown@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.13333333333333333,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-worker-shutdown@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.22857142857142856,
+				"source": 0,
+				"tests": 0.13333333333333333,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-worker-shutdown@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.22535211267605634,
+				"source": 0,
+				"tests": 0.12987012987012986,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-worker-shutdown@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.2222222222222222,
+				"source": 0,
+				"tests": 0.12359550561797752,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-build-artifact-boundary@1",
+				"right": "alpha-repository-rules@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.18867924528301888,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-build-artifact-boundary@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.16666666666666666,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-build-artifact-boundary@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.25,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-build-artifact-boundary@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.22448979591836735,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-build-artifact-boundary@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.14492753623188406,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-build-artifact-boundary@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.16393442622950818,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-build-artifact-boundary@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.24,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-build-artifact-boundary@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.23529411764705882,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-build-artifact-boundary@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.24444444444444444,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-build-artifact-boundary@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.2727272727272727,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-build-artifact-boundary@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.2608695652173913,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "repo-build-artifact-boundary@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.16393442622950818,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-repository-rules@1",
+				"right": "alpha-context-continuity@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.171875,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-repository-rules@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.18181818181818182,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-repository-rules@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.18181818181818182,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-repository-rules@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.13513513513513514,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-repository-rules@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.15151515151515152,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-repository-rules@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.17543859649122806,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-repository-rules@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.1724137931034483,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-repository-rules@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.19607843137254902,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-repository-rules@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.19607843137254902,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-repository-rules@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.18867924528301888,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-repository-rules@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.15151515151515152,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-context-continuity@1",
+				"right": "alpha-compaction-resume@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.16129032258064516,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-context-continuity@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.16129032258064516,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-context-continuity@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.12345679012345678,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-context-continuity@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.136986301369863,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-context-continuity@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.15625,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-context-continuity@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.15384615384615385,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-context-continuity@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.1724137931034483,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-context-continuity@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.1724137931034483,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-context-continuity@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.16666666666666666,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-context-continuity@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.136986301369863,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-compaction-resume@1",
+				"right": "alpha-validation-after-edit@1",
+				"prompt": 0.2711864406779661,
+				"source": 0,
+				"tests": 0.21568627450980393,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-compaction-resume@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.14084507042253522,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-compaction-resume@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.15873015873015872,
+				"capabilities": 0.2,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-compaction-resume@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.26666666666666666,
+				"source": 0,
+				"tests": 0.23076923076923078,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-compaction-resume@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.22641509433962265,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-compaction-resume@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.23404255319148937,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-compaction-resume@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.2608695652173913,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-compaction-resume@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.25,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-compaction-resume@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.15873015873015872,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-validation-after-edit@1",
+				"right": "alpha-cancellation-cleanup@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.14084507042253522,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-validation-after-edit@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.15873015873015872,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-validation-after-edit@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.26229508196721313,
+				"source": 0,
+				"tests": 0.20754716981132076,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-validation-after-edit@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.2037037037037037,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-validation-after-edit@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.28888888888888886,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-validation-after-edit@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.23404255319148937,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-validation-after-edit@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.22448979591836735,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-validation-after-edit@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.15873015873015872,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-cancellation-cleanup@1",
+				"right": "alpha-resume-idempotency@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.12195121951219512,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-cancellation-cleanup@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.25806451612903225,
+				"source": 0,
+				"tests": 0.136986301369863,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-cancellation-cleanup@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.13513513513513514,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-cancellation-cleanup@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.14925373134328357,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-cancellation-cleanup@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.14925373134328357,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-cancellation-cleanup@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.14492753623188406,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-cancellation-cleanup@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.12195121951219512,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-resume-idempotency@1",
+				"right": "alpha-tool-result-integrity@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.15384615384615385,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-resume-idempotency@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.15151515151515152,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-resume-idempotency@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.1694915254237288,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-resume-idempotency@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.1694915254237288,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-resume-idempotency@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.16393442622950818,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-resume-idempotency@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.25,
+				"source": 0.023809523809523808,
+				"tests": 0.2537313432835821,
+				"capabilities": 0.2,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-tool-result-integrity@1",
+				"right": "alpha-scheduler-ordering@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.21818181818181817,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-tool-result-integrity@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.25396825396825395,
+				"source": 0,
+				"tests": 0.22448979591836735,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-tool-result-integrity@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.25,
+				"source": 0,
+				"tests": 0.25,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-tool-result-integrity@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.24,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-tool-result-integrity@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.15384615384615385,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-scheduler-ordering@1",
+				"right": "safety-path-policy@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.22,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-scheduler-ordering@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.24489795918367346,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-scheduler-ordering@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.23529411764705882,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "alpha-scheduler-ordering@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.15151515151515152,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "safety-path-policy@1",
+				"right": "safety-secret-redaction@1",
+				"prompt": 0.24615384615384617,
+				"source": 0,
+				"tests": 0.2558139534883721,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "safety-path-policy@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.24242424242424243,
+				"source": 0,
+				"tests": 0.24444444444444444,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "safety-path-policy@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.1694915254237288,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "safety-secret-redaction@1",
+				"right": "safety-prompt-injection@1",
+				"prompt": 0.23880597014925373,
+				"source": 0,
+				"tests": 0.2727272727272727,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "safety-secret-redaction@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.23529411764705882,
+				"source": 0,
+				"tests": 0.1694915254237288,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			},
+			{
+				"left": "safety-prompt-injection@1",
+				"right": "stateful-api-idempotency@1",
+				"prompt": 0.2318840579710145,
+				"source": 0,
+				"tests": 0.16393442622950818,
+				"capabilities": 0,
+				"duplicate": false,
+				"reasons": []
+			}
+		],
+		"duplicatePairs": [],
+		"privateDuplicatePairs": []
+	}
+}

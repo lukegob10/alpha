@@ -5,9 +5,9 @@ import { getCommand, getCommands } from "../commands"
 
 // Mock fs and path modules
 vi.mock("fs/promises")
-vi.mock("../roo-config", () => ({
-	getGlobalRooDirectory: vi.fn(() => "/mock/global/.roo"),
-	getProjectRooDirectoryForCwd: vi.fn(() => "/mock/project/.roo"),
+vi.mock("../config-paths", () => ({
+	getLegacyGlobalConfigDirectory: vi.fn(() => "/mock/global/.roo"),
+	getLegacyProjectConfigDirectory: vi.fn(() => "/mock/project/.roo"),
 }))
 vi.mock("../built-in-commands", () => ({
 	getBuiltInCommands: vi.fn(() => Promise.resolve([])),
@@ -23,6 +23,19 @@ describe("Command loading with frontmatter", () => {
 	})
 
 	describe("getCommand with frontmatter", () => {
+		it.each(["../outside", "..\\outside", "/absolute", "folder/command", "folder\\command"])(
+			"should reject path-like command name %s before filesystem access",
+			async (name) => {
+				;(mockFs as any).stat = vi.fn()
+				;(mockFs as any).readFile = vi.fn()
+				const result = await getCommand("/test/cwd", name)
+
+				expect(result).toBeUndefined()
+				expect(mockFs.stat).not.toHaveBeenCalled()
+				expect(mockFs.readFile).not.toHaveBeenCalled()
+			},
+		)
+
 		it("should load command with description from frontmatter", async () => {
 			const commandContent = `---
 description: Sets up the development environment

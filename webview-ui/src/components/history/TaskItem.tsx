@@ -1,15 +1,15 @@
 import { memo, useContext, type KeyboardEvent } from "react"
-import { ArrowRight, Folder } from "lucide-react"
+import { ArrowRight, Folder, LoaderCircle } from "lucide-react"
 import { TaskLifecycleState, TaskStatus, type LiveTaskMetadata } from "@alpha-code/types"
 import type { DisplayHistoryItem } from "./types"
 
-import { vscode } from "@/utils/vscode"
 import { cn } from "@/lib/utils"
 import { Checkbox } from "@/components/ui/checkbox"
 import { ExtensionStateContext } from "@/context/ExtensionStateContext"
 
 import TaskItemFooter from "./TaskItemFooter"
 import { StandardTooltip } from "../ui"
+import { useTaskOpeningFeedback } from "./useTaskOpeningFeedback"
 
 const formatStatusText = (value: string) =>
 	value.replace(/[_-]/g, " ").replace(/\b\w/g, (character) => character.toUpperCase())
@@ -50,6 +50,8 @@ interface TaskItemProps {
 	variant: "compact" | "full"
 	showWorkspace?: boolean
 	hasSubtasks?: boolean
+	/** Render inside a TaskGroupItem-owned surface instead of creating a second card surface. */
+	contained?: boolean
 	isSelectionMode?: boolean
 	isSelected?: boolean
 	onToggleSelection?: (taskId: string, isSelected: boolean) => void
@@ -62,17 +64,21 @@ const TaskItem = ({
 	variant,
 	showWorkspace = false,
 	hasSubtasks = false,
+	contained = false,
 	isSelectionMode = false,
 	isSelected = false,
 	onToggleSelection,
 	onDelete,
 	className,
 }: TaskItemProps) => {
+	const { isOpening, openTask } = useTaskOpeningFeedback(item.id)
 	const extensionState = useContext(ExtensionStateContext)
 	const currentTaskId = extensionState?.currentTaskId
 	const liveTasksById = extensionState?.liveTasksById
 	const liveTask = liveTasksById?.[item.id]
 	const liveTaskIndicator = liveTask ? getLiveTaskIndicator(liveTask) : undefined
+	const isRunning =
+		liveTask?.lifecycle === TaskLifecycleState.Running || liveTask?.lifecycle === TaskLifecycleState.Initializing
 	const isActive = currentTaskId === item.id
 	const liveTaskTooltip = liveTask
 		? `${isActive ? "Selected" : "Background"} task: ${liveTaskIndicator?.label ?? formatStatusText(liveTask.lifecycle)}${
@@ -85,9 +91,10 @@ const TaskItem = ({
 	const handleClick = () => {
 		if (isSelectionMode && onToggleSelection) {
 			onToggleSelection(item.id, !isSelected)
-		} else {
-			vscode.postMessage({ type: "showTaskWithId", text: item.id })
+			return
 		}
+
+		openTask()
 	}
 
 	const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -107,9 +114,13 @@ const TaskItem = ({
 		<div
 			key={item.id}
 			data-testid={`task-item-${item.id}`}
+			data-contained={contained ? "true" : "false"}
 			className={cn(
-				"cursor-pointer group relative overflow-hidden",
-				"text-vscode-foreground/80 hover:text-vscode-foreground transition-colors",
+				"cursor-pointer group relative overflow-hidden text-vscode-foreground/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-vscode-focusBorder",
+				contained
+					? "bg-transparent transition-[color,background-color] duration-150 hover:bg-[var(--alpha-accent-soft)] hover:text-vscode-foreground"
+					: "surface-raised transition-[color,background-color,border-color,box-shadow,transform] duration-150 hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)] hover:text-vscode-foreground",
+				isActive && "border-[var(--border-accent)] bg-[var(--alpha-accent-soft)] text-vscode-foreground",
 				hasSubtasks ? "rounded-t-xl" : "rounded-xl",
 				className,
 			)}
@@ -117,8 +128,10 @@ const TaskItem = ({
 			onKeyDown={handleKeyDown}
 			role="button"
 			tabIndex={0}
+			aria-busy={isOpening}
+			aria-current={isActive ? "page" : undefined}
 			aria-label={`Open task: ${item.task}`}>
-			<div className={(!isCompact && isSelectionMode ? "pl-3 pb-3" : "pl-4") + " flex gap-3 px-3 pt-3 pb-1"}>
+			<div className={cn("flex gap-3 px-4 py-3.5", !isCompact && isSelectionMode && "pb-3 pl-3")}>
 				{/* Selection checkbox - only in full variant */}
 				{!isCompact && isSelectionMode && (
 					<div
@@ -139,7 +152,7 @@ const TaskItem = ({
 						{item.highlight ? (
 							<div
 								className={cn(
-									"flex-1 min-w-0 overflow-hidden whitespace-pre-wrap font-light text-ellipsis line-clamp-3",
+									"flex-1 min-w-0 overflow-hidden whitespace-pre-wrap font-normal leading-5 text-ellipsis line-clamp-3",
 									{
 										"text-base": !isCompact,
 									},
@@ -151,7 +164,7 @@ const TaskItem = ({
 						) : (
 							<div
 								className={cn(
-									"flex-1 min-w-0 overflow-hidden whitespace-pre-wrap font-light text-ellipsis line-clamp-3",
+									"flex-1 min-w-0 overflow-hidden whitespace-pre-wrap font-normal leading-5 text-ellipsis line-clamp-3",
 									{
 										"text-base": !isCompact,
 									},
@@ -169,15 +182,30 @@ const TaskItem = ({
 									className="mt-1.5 flex size-3.5 shrink-0 items-center justify-center"
 									aria-label={`Task status: ${liveTaskIndicator.label}`}
 									data-testid="task-status-indicator">
-									<span
-										className={cn("block size-2 rounded-full", liveTaskIndicator.className)}
-										aria-hidden="true"
-									/>
+									{isRunning ? (
+										<LoaderCircle
+											className="size-3.5 animate-spin motion-reduce:animate-none text-vscode-progressBar-background"
+											aria-hidden="true"
+										/>
+									) : (
+										<span
+											className={cn("block size-2 rounded-full", liveTaskIndicator.className)}
+											aria-hidden="true"
+										/>
+									)}
 								</span>
 							</StandardTooltip>
 						)}
 						{/* Arrow icon that appears on hover */}
-						<ArrowRight className="size-4 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+						{isOpening ? (
+							<span
+								className="codicon codicon-loading codicon-modifier-spin size-4 shrink-0"
+								data-testid="task-opening-indicator"
+								aria-hidden="true"
+							/>
+						) : (
+							<ArrowRight className="size-4 shrink-0 -translate-x-1 opacity-0 transition-[opacity,transform] group-hover:translate-x-0 group-hover:opacity-100" />
+						)}
 					</div>
 
 					{showWorkspace && item.workspace && (

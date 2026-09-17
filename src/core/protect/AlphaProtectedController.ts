@@ -1,0 +1,111 @@
+import path from "path"
+import ignore, { Ignore } from "ignore"
+
+import { getPathRelativeToRoot, resolvePathWithExistingAncestor } from "../tools/pathSafety"
+
+export const SHIELD_SYMBOL = "\u{1F6E1}"
+
+/**
+ * Controls write access to Alpha configuration files by enforcing protection patterns.
+ * Prevents auto-approved modifications to sensitive Alpha configuration files.
+ */
+export class AlphaProtectedController {
+	private cwd: string
+	private ignoreInstance: Ignore
+
+	// Predefined list of protected Alpha configuration patterns
+	private static readonly PROTECTED_PATTERNS = [
+		".alphaignore",
+		".alphamodes",
+		".alpharules*",
+		".alpharules*",
+		".alpha/**",
+		".vscode/**",
+		"*.code-workspace",
+		".rooprotected", // For future use
+		"AGENTS.md",
+		"AGENT.md",
+	]
+
+	constructor(cwd: string) {
+		this.cwd = cwd
+		// Initialize ignore instance with protected patterns
+		this.ignoreInstance = ignore()
+		this.ignoreInstance.add(AlphaProtectedController.PROTECTED_PATTERNS)
+	}
+
+	/**
+	 * Check if a file is write-protected
+	 * @param filePath - Path to check (relative to cwd)
+	 * @returns true if file is write-protected, false otherwise
+	 */
+	isWriteProtected(filePath: string): boolean {
+		try {
+			const absolutePath = path.resolve(this.cwd, filePath)
+			const lexicalRelativePath = getPathRelativeToRoot(this.cwd, absolutePath)
+			if (lexicalRelativePath === undefined) return false
+			if (this.ignoreInstance.ignores(lexicalRelativePath)) return true
+
+			const realRoot = resolvePathWithExistingAncestor(this.cwd)
+			const realPath = resolvePathWithExistingAncestor(absolutePath)
+			const canonicalRelativePath = getPathRelativeToRoot(realRoot, realPath)
+			return canonicalRelativePath !== undefined && this.ignoreInstance.ignores(canonicalRelativePath)
+		} catch (error) {
+			// If there's an error processing the path, err on the side of caution
+			console.error(`Error checking protection for ${filePath}:`, error)
+			return true
+		}
+	}
+
+	/**
+	 * Get set of write-protected files from a list
+	 * @param paths - Array of paths to filter (relative to cwd)
+	 * @returns Set of protected file paths
+	 */
+	getProtectedFiles(paths: string[]): Set<string> {
+		const protectedFiles = new Set<string>()
+
+		for (const filePath of paths) {
+			if (this.isWriteProtected(filePath)) {
+				protectedFiles.add(filePath)
+			}
+		}
+
+		return protectedFiles
+	}
+
+	/**
+	 * Filter an array of paths, marking which ones are protected
+	 * @param paths - Array of paths to check (relative to cwd)
+	 * @returns Array of objects with path and protection status
+	 */
+	annotatePathsWithProtection(paths: string[]): Array<{ path: string; isProtected: boolean }> {
+		return paths.map((filePath) => ({
+			path: filePath,
+			isProtected: this.isWriteProtected(filePath),
+		}))
+	}
+
+	/**
+	 * Get display message for protected file operations
+	 */
+	getProtectionMessage(): string {
+		return "This is a Alpha configuration file and requires approval for modifications"
+	}
+
+	/**
+	 * Get formatted instructions about protected files for the LLM
+	 * @returns Formatted instructions about file protection
+	 */
+	getInstructions(): string {
+		const patterns = AlphaProtectedController.PROTECTED_PATTERNS.join(", ")
+		return `# Protected Files\n\n(The following Alpha configuration file patterns are write-protected and always require approval for modifications, regardless of autoapproval settings. When using list_files, you'll notice a ${SHIELD_SYMBOL} next to files that are write-protected.)\n\nProtected patterns: ${patterns}`
+	}
+
+	/**
+	 * Get the list of protected patterns (for testing/debugging)
+	 */
+	static getProtectedPatterns(): readonly string[] {
+		return AlphaProtectedController.PROTECTED_PATTERNS
+	}
+}

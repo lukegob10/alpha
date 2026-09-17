@@ -5,13 +5,12 @@
     - Before attempting completion, always make sure that any code changes have test coverage
     - Ensure all tests pass before submitting changes
     - The vitest framework is used for testing; the `vi`, `describe`, `test`, `it`, etc functions are defined by default in `tsconfig.json` and therefore don't need to be imported from `vitest`
-    - Tests must be run from the same directory as the `package.json` file that specifies `vitest` in `devDependencies`
-    - Run tests with: `npx vitest run <relative-path-from-workspace-root>`
-    - Do NOT run tests from project root - this causes "vitest: command not found" error
-    - Tests must be run from inside the correct workspace:
-        - Backend tests: `cd src && npx vitest run path/to/test-file` (don't include `src/` in path)
-        - UI tests: `cd webview-ui && npx vitest run src/path/to/test-file`
-    - Example: For `src/tests/user.test.ts`, run `cd src && npx vitest run tests/user.test.ts` NOT `npx vitest run src/tests/user.test.ts`
+    - Use the repository package manager and workspace scripts rather than invoking `npx`:
+        - Default extension checks: `pnpm test`
+        - Backend tests: `pnpm --dir src test -- path/to/test-file` (don't include `src/` in the path)
+        - UI tests: `pnpm --dir webview-ui test -- src/path/to/test-file`
+        - VS Code E2E unit tests: `pnpm --filter @alpha-code/vscode-e2e test:unit`
+    - Run focused tests from the owning workspace so its dependencies and configuration are loaded.
 
 2. Lint Rules:
 

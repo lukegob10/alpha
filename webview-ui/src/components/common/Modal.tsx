@@ -1,20 +1,38 @@
+import * as Dialog from "@radix-ui/react-dialog"
+import { useRef } from "react"
+
 interface ModalProps {
 	isOpen: boolean
 	onClose: () => void
+	title: string
 	children: React.ReactNode
 	className?: string
 }
 
-export function Modal({ isOpen, onClose, children, className = "" }: ModalProps) {
-	if (!isOpen) return null
+export function Modal({ isOpen, onClose, title, children, className = "" }: ModalProps) {
+	const contentRef = useRef<HTMLDivElement>(null)
 
 	return (
-		<div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[1000]" onClick={onClose}>
-			<div
-				className={`bg-vscode-editor-background rounded w-[90%] h-[90%] max-w-[1200px] flex flex-col shadow-[0_5px_15px_rgba(0,0,0,0.5)] border border-vscode-editorGroup-border relative ${className}`}
-				onClick={(e) => e.stopPropagation()}>
-				{children}
-			</div>
-		</div>
+		<Dialog.Root open={isOpen} onOpenChange={(open) => !open && onClose()}>
+			<Dialog.Portal>
+				<Dialog.Overlay className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/55 backdrop-blur-[2px]">
+					<Dialog.Content
+						ref={contentRef}
+						aria-describedby={undefined}
+						onOpenAutoFocus={(event) => {
+							event.preventDefault()
+							const firstControl = contentRef.current?.querySelector<HTMLElement>(
+								'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+							)
+							const focusTarget = firstControl ?? contentRef.current
+							focusTarget?.focus()
+						}}
+						className={`surface-overlay relative flex h-[90%] w-[90%] max-w-[1200px] flex-col overflow-hidden rounded-2xl ${className}`}>
+						<Dialog.Title className="sr-only">{title}</Dialog.Title>
+						{children}
+					</Dialog.Content>
+				</Dialog.Overlay>
+			</Dialog.Portal>
+		</Dialog.Root>
 	)
 }

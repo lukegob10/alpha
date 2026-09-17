@@ -16,6 +16,41 @@
 			"policy_restriction": "नीति प्रतिबंधों के कारण नया कार्य बनाने में विफल।"
 		}
 	},
+	"fileConflicts": {
+		"save": "'{{path}}' सहेजा नहीं जा सकता: {{reason}}। उपयोगकर्ता के बदलाव सुरक्षित रखने के लिए फ़ाइल फिर से पढ़ें और पुनः प्रयास करें।",
+		"delete": "'{{path}}' हटाया नहीं जा सकता: {{reason}}। फ़ाइल फिर से पढ़ें और पुनः प्रयास करें।",
+		"saveDestination": "'{{path}}' सहेजा नहीं जा सकता: {{reason}}। गंतव्य की समीक्षा करें और पुनः प्रयास करें।",
+		"reasons": {
+			"fileUnsavedChanges": "खुले हुए संपादक में फ़ाइल में बिना सहेजे बदलाव हैं",
+			"fileChangedDuringApproval": "अनुमोदन लंबित रहने के दौरान फ़ाइल बदल गई",
+			"editorChangedWhileChecked": "फ़ाइल की जाँच के दौरान खुला हुआ संपादक बदल गया",
+			"destinationUnsavedChanges": "खुले हुए संपादक में गंतव्य में बिना सहेजे बदलाव हैं",
+			"destinationNotRegularFile": "गंतव्य एक सामान्य फ़ाइल नहीं है",
+			"destinationChangedDuringInspection": "जाँच के दौरान गंतव्य बदल गया",
+			"destinationPathChanged": "गंतव्य अब किसी अलग पथ पर जाता है",
+			"destinationCreatedAfterInspection": "जाँच के बाद गंतव्य बनाया गया",
+			"destinationDeletedAfterInspection": "जाँच के बाद गंतव्य हटाया गया",
+			"destinationChangedAfterInspection": "जाँच के बाद गंतव्य बदल गया"
+		}
+	},
+	"diffView": {
+		"editCancelled": "फ़ाइल संपादन रद्द कर दिया गया",
+		"applyContentFailed": "डिफ़ संपादक में सामग्री लागू नहीं की जा सकी",
+		"previewChangedDuringEdit": "संपादन के दौरान डिफ़ पूर्वावलोकन बदल गया; उपयोगकर्ता के बदलाव सुरक्षित रखे गए",
+		"noEditAvailableToSave": "सहेजने के लिए कोई फ़ाइल संपादन उपलब्ध नहीं है",
+		"previewChangedAfterApproval": "अनुमोदन के बाद डिफ़ पूर्वावलोकन बदल गया; बदलावों की समीक्षा करें और पुनः प्रयास करें",
+		"previewHasUserChanges": "डिफ़ पूर्वावलोकन में उपयोगकर्ता के बदलाव हैं; फ़ाइल संपादन दोबारा आज़माने से पहले उनकी समीक्षा करें",
+		"noFilePathForOpening": "डिफ़ संपादक खोलने के लिए कोई फ़ाइल पथ निर्धारित नहीं है",
+		"previewChangedWhileOpening": "खोलते समय डिफ़ पूर्वावलोकन बदल गया; उपयोगकर्ता के बदलाव सुरक्षित रखे गए",
+		"openFailed": "{{path}} के लिए डिफ़ संपादक नहीं खोला जा सका: {{message}}",
+		"missingExpectedFileState": "डिफ़ पूर्वावलोकन खोलने से पहले अपेक्षित फ़ाइल स्थिति उपलब्ध नहीं है"
+	},
+	"applyPatch": {
+		"deleteCancelled": "हटाने की कार्रवाई रद्द कर दी गई।"
+	},
+	"imageOutput": {
+		"writeIncomplete": "'{{path}}' लिखना पूरा नहीं हो सका; फ़ाइल अधूरी हो सकती है। {{cause}}"
+	},
 	"generateImage": {
 		"openRouterApiKeyRequired": "OpenRouter मॉडल के साथ छवि निर्माण के लिए OpenRouter API कुंजी आवश्यक है। कृपया इसे छवि निर्माण प्रयोगात्मक सेटिंग में कॉन्फ़िगर करें।",
 		"failedWithStatus": "छवि निर्माण विफल: {{status}} {{statusText}}",
@@ -24,6 +59,10 @@
 		"invalidImageData": "प्रतिक्रिया में अमान्य छवि डेटा",
 		"invalidImageFormat": "अमान्य छवि प्रारूप प्राप्त हुआ",
 		"unknownError": "एक अज्ञात त्रुटि हुई",
+		"cancelledBeforeSave": "छवि सहेजने से पहले छवि निर्माण रद्द कर दिया गया।",
+		"destinationUnavailableBeforeGeneration": "निर्माण से पहले छवि गंतव्य उपलब्ध नहीं था। अनुरोध फिर से आज़माएँ।",
+		"destinationPolicyChangedBeforeSave": "सहेजने से पहले छवि गंतव्य का पथ या पहुँच नीति बदल गई। अनुरोध फिर से आज़माएँ।",
+		"postSaveProcessingFailed": "{{path}}\nछवि सहेजी गई, लेकिन सहेजने के बाद की प्रक्रिया विफल रही: {{message}}",
 		"roo": {}
 	}
 }

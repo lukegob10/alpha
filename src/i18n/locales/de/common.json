@@ -20,6 +20,12 @@
 		"delete_custom_mode_with_rules": "Bist du sicher, dass du diesen {scope}-Modus löschen möchtest?\n\nDadurch wird auch der zugehörige Regelordner unter folgender Adresse gelöscht:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "Die Aufgabe bleibt unvollständig und ungeprüft: Nach 30 Sekunden fehlt weiterhin ein Beleg für eine Änderung im Arbeitsbereich. Für diesen Beleg wird kein aktiver Vorgang erfasst. Erneutes Abschließen oder Prüfen behebt diesen Zustand nicht. Untersuchen Sie vor dem Fortsetzen anhand der detaillierten Fehlerinformationen den ursprünglichen Werkzeug- oder Speicherfehler.",
+		"task_recovery_lock_repair": "Alpha kann den Eigentümer der gemeinsamen Aufgabenspeichersperre nicht prüfen. Fortsetzen oder Neuladen repariert dies nicht sicher. Schließen Sie alle VS-Code-Fenster und Alpha-Testhosts. Sichern und entfernen Sie dann nur agent_control.json.transaction.lock aus Alphas globalem Speicher, bevor Sie neu öffnen. Entfernen Sie die Sperre nie bei laufendem Host; behalten Sie Aufgabenverlauf und agent_control.json.",
+		"task_recovery_failed": "Der Durchlauf wurde angehalten, weil ein Vorgang fehlgeschlagen ist. Du kannst die Aufgabe fortsetzen oder neue Anweisungen senden.",
+		"task_recovery_incomplete": "Der Durchlauf endete, bevor die Aufgabe abgeschlossen war. Du kannst die Aufgabe fortsetzen oder neue Anweisungen senden.",
+		"task_recovery_exhausted": "Der Durchlauf wurde angehalten, weil das Limit für automatische Wiederholungen erreicht wurde. Du kannst die Aufgabe fortsetzen oder neue Anweisungen senden.",
+		"task_recovery_persistence": "Die Aufgabe wurde pausiert, weil erforderliche Aufgabendaten nicht gespeichert werden konnten. Prüfe den freien Speicherplatz und den Zugriff auf den Aufgabenordner. Setze dann die Aufgabe fort oder sende neue Anweisungen.",
 		"invalid_data_uri": "Ungültiges Daten-URI-Format",
 		"error_copying_image": "Fehler beim Kopieren des Bildes: {{errorMessage}}",
 		"error_saving_image": "Fehler beim Speichern des Bildes: {{errorMessage}}",
@@ -72,6 +78,10 @@
 		"url_fetch_failed": "Fehler beim Abrufen des URL-Inhalts: {{error}}",
 		"url_fetch_error_with_url": "Fehler beim Abrufen des Inhalts für {{url}}: {{error}}",
 		"command_timeout": "Zeitüberschreitung bei der Befehlsausführung nach {{seconds}} Sekunden",
+		"command_mutation_observation_incomplete": "Die Aufgabe bleibt unvollständig und ungeprüft, da die durch den Befehl verursachten Änderungen nicht vollständig erfasst werden konnten.",
+		"command_mutation_receipt_incomplete": "Die Aufgabe bleibt unvollständig und ungeprüft, da der Änderungsnachweis des Befehls nicht abgeschlossen werden konnte.",
+		"mutation_receipt_incomplete": "Die Aufgabe bleibt unvollständig, da der Nachweis einer Arbeitsbereichsänderung nicht abgeschlossen werden konnte. Prüfen Sie vor dem Fortsetzen den ursprünglichen Werkzeugfehler.",
+		"command_output_bookkeeping_incomplete": "Die Aufgabe bleibt unvollständig, da die Ausgabe des abgeschlossenen Befehls nicht finalisiert werden konnte.",
 		"share_task_failed": "Teilen der Aufgabe fehlgeschlagen. Bitte versuche es erneut.",
 		"share_no_active_task": "Keine aktive Aufgabe zum Teilen",
 		"share_auth_required": "Authentifizierung erforderlich. Bitte melde dich an, um Aufgaben zu teilen.",
@@ -143,7 +153,7 @@
 	"warnings": {
 		"no_terminal_content": "Kein Terminal-Inhalt ausgewählt",
 		"missing_task_files": "Die Dateien dieser Aufgabe fehlen. Möchtest du sie aus der Aufgabenliste entfernen?",
-		"auto_import_failed": "Fehler beim automatischen Import der RooCode-Einstellungen: {{error}}"
+		"auto_import_failed": "Fehler beim automatischen Import der Alpha-Einstellungen: {{error}}"
 	},
 	"info": {
 		"no_changes": "Keine Änderungen gefunden.",
@@ -152,7 +162,7 @@
 		"custom_storage_path_set": "Benutzerdefinierter Speicherpfad festgelegt: {{path}}",
 		"default_storage_path": "Auf Standardspeicherpfad zurückgesetzt",
 		"settings_imported": "Einstellungen erfolgreich importiert.",
-		"auto_import_success": "RooCode-Einstellungen automatisch importiert aus {{filename}}",
+		"auto_import_success": "Alpha-Einstellungen automatisch importiert aus {{filename}}",
 		"share_link_copied": "Share-Link in die Zwischenablage kopiert",
 		"image_copied_to_clipboard": "Bild-Daten-URI in die Zwischenablage kopiert",
 		"image_saved": "Bild gespeichert unter {{path}}",

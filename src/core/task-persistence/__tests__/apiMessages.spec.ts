@@ -83,4 +83,25 @@ describe("apiMessages.readApiMessages", () => {
 
 		expect(result).toEqual([])
 	})
+
+	it("migrates valid fallback history before removing the legacy file", async () => {
+		const taskId = "task-valid-fallback"
+		const taskDir = path.join(tmpBaseDir, "tasks", taskId)
+		await fs.mkdir(taskDir, { recursive: true })
+		const oldPath = path.join(taskDir, "claude_messages.json")
+		const newPath = path.join(taskDir, "api_conversation_history.json")
+		const messages = [
+			{ role: "user", content: [{ type: "text", text: "keep me" }] },
+			{ role: "assistant", content: [{ type: "text", text: "kept" }] },
+		]
+		await fs.writeFile(oldPath, JSON.stringify(messages), "utf8")
+
+		const firstRead = await readApiMessages({ taskId, globalStoragePath: tmpBaseDir })
+		const secondRead = await readApiMessages({ taskId, globalStoragePath: tmpBaseDir })
+
+		expect(firstRead).toEqual(messages)
+		expect(secondRead).toEqual(messages)
+		expect(JSON.parse(await fs.readFile(newPath, "utf8"))).toEqual(messages)
+		await expect(fs.access(oldPath)).rejects.toMatchObject({ code: "ENOENT" })
+	})
 })

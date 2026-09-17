@@ -1,19 +1,140 @@
 import path from "path"
 
-import { type ClineSayTool } from "@alpha-code/types"
+import type { AlphaSayTool, SearchFilesOutputMode, SearchFilesQuery, SearchFilesQueryResult } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
-import { getReadablePath } from "../../utils/path"
-import { isPathOutsideWorkspace } from "../../utils/pathUtils"
 import { regexSearchFiles } from "../../services/ripgrep"
-import type { ToolUse } from "../../shared/tools"
+import type { NativeToolArgs, ToolUse } from "../../shared/tools"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
-interface SearchFilesParams {
-	path: string
-	regex: string
-	file_pattern?: string | null
+type SearchFilesParams = NativeToolArgs["search_files"]
+
+interface SearchFilesResult extends SearchFilesQueryResult {
+	isOutsideWorkspace: boolean
+	outputMode: SearchFilesOutputMode
+	literal: boolean
+	searchStatus: "success" | "error"
+}
+
+const MAX_SEARCH_QUERIES = 8
+const MAX_SEARCH_OUTPUT_CHARS = 16_000
+const SEARCH_METADATA_LIMITS = {
+	path: 512,
+	regex: 1_024,
+	filePattern: 256,
+} as const
+const SEARCH_METADATA_TRUNCATION_NOTICE = "...[truncated]"
+const SEARCH_OUTPUT_TRUNCATION_NOTICE =
+	"\n[Search output truncated. Refine path, regex, or file_pattern for more specific results.]"
+
+function truncateSearchMetadata(value: string, maxChars: number): string {
+	if (value.length <= maxChars) {
+		return value
+	}
+
+	return `${value.slice(0, maxChars - SEARCH_METADATA_TRUNCATION_NOTICE.length)}${SEARCH_METADATA_TRUNCATION_NOTICE}`
+}
+
+function truncateSearchContent(content: string, maxChars: number, outputMode: SearchFilesOutputMode): string {
+	if (content.length <= maxChars) {
+		return content
+	}
+
+	if (maxChars <= SEARCH_OUTPUT_TRUNCATION_NOTICE.length) {
+		return SEARCH_OUTPUT_TRUNCATION_NOTICE.slice(0, Math.max(0, maxChars))
+	}
+
+	let prefix = content.slice(0, maxChars - SEARCH_OUTPUT_TRUNCATION_NOTICE.length)
+	// A shortened path or count looks like real data. Compact modes retain only
+	// complete entries; snippet mode keeps its historical character truncation.
+	if (outputMode !== "content") prefix = prefix.slice(0, Math.max(0, prefix.lastIndexOf("\n")))
+	return `${prefix}${SEARCH_OUTPUT_TRUNCATION_NOTICE}`
+}
+
+function renderSearchResults(results: SearchFilesResult[]): string {
+	return results.length === 1
+		? results[0].content
+		: results
+				.map(
+					(result, index) =>
+						`Search ${index + 1}: path=${result.path}, regex=${JSON.stringify(result.regex)}${result.filePattern ? `, file_pattern=${result.filePattern}` : ""}, output_mode=${result.outputMode}, literal=${result.literal}, status=${result.searchStatus}\n${result.content}`,
+				)
+				.join("\n\n---\n\n")
+}
+
+function createSearchMessage(results: SearchFilesResult[]): AlphaSayTool {
+	return results.length === 1
+		? { tool: "searchFiles", ...results[0] }
+		: {
+				tool: "searchFiles",
+				batchSearches: results,
+				isOutsideWorkspace: results.some((result) => result.isOutsideWorkspace),
+			}
+}
+
+function boundSearchResults(results: SearchFilesResult[]): SearchFilesResult[] {
+	const measure = (candidate: SearchFilesResult[]) =>
+		Math.max(JSON.stringify(createSearchMessage(candidate)).length, renderSearchResults(candidate).length)
+	const compacted = results.map((result) => ({
+		...result,
+		path: truncateSearchMetadata(result.path, SEARCH_METADATA_LIMITS.path),
+		regex: truncateSearchMetadata(result.regex, SEARCH_METADATA_LIMITS.regex),
+		filePattern: result.filePattern
+			? truncateSearchMetadata(result.filePattern, SEARCH_METADATA_LIMITS.filePattern)
+			: undefined,
+	}))
+
+	if (measure(compacted) <= MAX_SEARCH_OUTPUT_CHARS) {
+		return compacted
+	}
+
+	let visibleCount = compacted.length
+	let visibleResults: SearchFilesResult[] = []
+	while (visibleCount > 0) {
+		visibleResults = compacted.slice(0, visibleCount).map((result) => ({ ...result, content: "" }))
+		if (visibleCount < compacted.length) {
+			visibleResults[visibleResults.length - 1].content =
+				`[Search output truncated: showing ${visibleCount} of ${compacted.length} searches. ` +
+				"Refine path, regex, or file_pattern for more specific results.]"
+		}
+
+		if (measure(visibleResults) <= MAX_SEARCH_OUTPUT_CHARS) {
+			break
+		}
+		visibleCount--
+	}
+
+	// Per-field metadata caps guarantee that at least one metadata-only result fits.
+	// Keep the fallback defensive so malformed external input can never escape the hard cap.
+	if (visibleCount === 0) {
+		return []
+	}
+
+	const droppedSearchNotice = visibleCount < compacted.length ? visibleResults[visibleResults.length - 1].content : ""
+	const materialize = (contentLimit: number) =>
+		compacted.slice(0, visibleCount).map((result, index) => ({
+			...result,
+			content: `${index === visibleCount - 1 && droppedSearchNotice ? `${droppedSearchNotice}\n\n` : ""}${truncateSearchContent(result.content, contentLimit, result.outputMode)}`,
+		}))
+	let lower = 0
+	let upper = Math.max(...compacted.slice(0, visibleCount).map((result) => result.content.length))
+	let best = materialize(0)
+
+	while (lower <= upper) {
+		const contentLimit = Math.floor((lower + upper) / 2)
+		const candidate = materialize(contentLimit)
+
+		if (measure(candidate) <= MAX_SEARCH_OUTPUT_CHARS) {
+			best = candidate
+			lower = contentLimit + 1
+		} else {
+			upper = contentLimit - 1
+		}
+	}
+
+	return best
 }
 
 export class SearchFilesTool extends BaseTool<"search_files"> {
@@ -21,12 +142,20 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 
 	async execute(params: SearchFilesParams, task: Task, callbacks: ToolCallbacks): Promise<void> {
 		const { askApproval, handleError, pushToolResult } = callbacks
+		const queries = "queries" in params ? params.queries : [params]
 
-		const relDirPath = params.path
-		const regex = params.regex
-		const filePattern = params.file_pattern || undefined
+		if (queries.length === 0 || queries.length > MAX_SEARCH_QUERIES) {
+			callbacks.setResultMetadata?.({ status: "error" })
+			task.consecutiveMistakeCount++
+			task.recordToolError("search_files")
+			task.didToolFailInCurrentTurn = true
+			pushToolResult(`search_files requires between 1 and ${MAX_SEARCH_QUERIES} queries.`)
+			return
+		}
 
-		if (!relDirPath) {
+		const missingPath = queries.find((query) => !query.path)
+		if (queries.length === 1 && missingPath) {
+			callbacks.setResultMetadata?.({ status: "error" })
 			task.consecutiveMistakeCount++
 			task.recordToolError("search_files")
 			task.didToolFailInCurrentTurn = true
@@ -34,7 +163,9 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 			return
 		}
 
-		if (!regex) {
+		const missingRegex = queries.find((query) => !query.regex)
+		if (queries.length === 1 && missingRegex) {
+			callbacks.setResultMetadata?.({ status: "error" })
 			task.consecutiveMistakeCount++
 			task.recordToolError("search_files")
 			task.didToolFailInCurrentTurn = true
@@ -44,50 +175,98 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 
 		task.consecutiveMistakeCount = 0
 
-		const absolutePath = path.resolve(task.cwd, relDirPath)
-		const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
-
-		const sharedMessageProps: ClineSayTool = {
-			tool: "searchFiles",
-			path: getReadablePath(task.cwd, relDirPath),
-			regex: regex,
-			filePattern: filePattern,
-			isOutsideWorkspace,
-		}
-
 		try {
-			const results = await regexSearchFiles(task.cwd, absolutePath, regex, filePattern, task.rooIgnoreController)
+			callbacks.signal?.throwIfAborted()
+			const results = await Promise.all(
+				queries.map(async (query): Promise<SearchFilesResult> => {
+					const absolutePath = path.resolve(task.cwd, query.path)
+					const filePattern = query.file_pattern || undefined
+					const outputMode = query.output_mode ?? "content"
+					const literal = query.literal ?? false
+					const metadata = {
+						path: getTaskReadablePath(task, query.path),
+						regex: query.regex,
+						filePattern,
+						isOutsideWorkspace: isTaskPathOutsideWorkspace(task, absolutePath),
+						outputMode,
+						literal,
+					}
+					try {
+						if (!query.path.trim()) throw new Error('Missing path. Use "." for the workspace root.')
+						if (!query.regex) throw new Error("Missing regex. Supply a search pattern for this query.")
+						const content = await regexSearchFiles(
+							task.cwd,
+							absolutePath,
+							query.regex,
+							filePattern,
+							task.alphaIgnoreController,
+							callbacks.signal,
+							{ outputMode, literal },
+						)
+						return { ...metadata, searchStatus: "success", content }
+					} catch (error) {
+						return {
+							...metadata,
+							searchStatus: "error",
+							content: `Error: ${error instanceof Error ? error.message : String(error)}`,
+						}
+					}
+				}),
+			)
+			// Settle all children before cancellation finalizes the single tool call.
+			callbacks.signal?.throwIfAborted()
 
-			const completeMessage = JSON.stringify({ ...sharedMessageProps, content: results } satisfies ClineSayTool)
-			const didApprove = await askApproval("tool", completeMessage)
+			const boundedResults = boundSearchResults(results)
+			const completeMessage: AlphaSayTool = {
+				...createSearchMessage(boundedResults),
+				// Truncating displayed queries must not hide the full approval scope.
+				isOutsideWorkspace: results.some((result) => result.isOutsideWorkspace),
+			}
+
+			const didApprove = await askApproval("tool", JSON.stringify(completeMessage))
+			callbacks.signal?.throwIfAborted()
 
 			if (!didApprove) {
+				callbacks.setResultMetadata?.({ status: "denied" })
 				return
 			}
 
-			pushToolResult(results)
+			const status = results.some((result) => result.searchStatus === "success") ? "success" : "error"
+			callbacks.setResultMetadata?.({ status })
+			if (status === "error") {
+				task.consecutiveMistakeCount++
+				task.recordToolError("search_files")
+				task.didToolFailInCurrentTurn = true
+			}
+			pushToolResult(renderSearchResults(boundedResults))
 		} catch (error) {
+			callbacks.setResultMetadata?.({ status: callbacks.signal?.aborted ? "cancelled" : "error" })
 			await handleError("searching files", error as Error)
 		}
 	}
 
 	override async handlePartial(task: Task, block: ToolUse<"search_files">): Promise<void> {
-		const relDirPath = block.params.path
-		const regex = block.params.regex
-		const filePattern = block.params.file_pattern
+		const nativeArgs = block.nativeArgs
+		const firstQuery: Partial<SearchFilesQuery> | undefined =
+			nativeArgs && "queries" in nativeArgs ? nativeArgs.queries[0] : nativeArgs
+		const relDirPath = firstQuery?.path ?? block.params.path
+		const regex = firstQuery?.regex ?? block.params.regex
+		const filePattern = firstQuery?.file_pattern ?? block.params.file_pattern
 
 		const absolutePath = relDirPath ? path.resolve(task.cwd, relDirPath) : task.cwd
-		const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
+		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
-		const sharedMessageProps: ClineSayTool = {
+		const sharedMessageProps: AlphaSayTool = {
 			tool: "searchFiles",
-			path: getReadablePath(task.cwd, relDirPath ?? ""),
+			path: getTaskReadablePath(task, relDirPath ?? ""),
 			regex: regex ?? "",
 			filePattern: filePattern ?? "",
+			outputMode: firstQuery?.output_mode ?? "content",
+			literal: firstQuery?.literal ?? false,
 			isOutsideWorkspace,
 		}
 
-		const partialMessage = JSON.stringify({ ...sharedMessageProps, content: "" } satisfies ClineSayTool)
+		const partialMessage = JSON.stringify({ ...sharedMessageProps, content: "" } satisfies AlphaSayTool)
 		await task.ask("tool", partialMessage, block.partial).catch(() => {})
 	}
 }

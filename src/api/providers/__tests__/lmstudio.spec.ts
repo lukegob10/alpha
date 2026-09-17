@@ -58,9 +58,14 @@ vi.mock("openai", () => {
 	}
 })
 
+vi.mock("../fetchers/modelCache", () => ({
+	getModelsFromCache: vi.fn(),
+}))
+
 import type { Anthropic } from "@anthropic-ai/sdk"
 
 import { LmStudioHandler } from "../lm-studio"
+import { getModelsFromCache } from "../fetchers/modelCache"
 import type { ApiHandlerOptions } from "../../../shared/api"
 
 describe("LmStudioHandler", () => {
@@ -158,6 +163,10 @@ describe("LmStudioHandler", () => {
 	describe("getModel", () => {
 		it("should return model info", () => {
 			const modelInfo = handler.getModel()
+			expect(getModelsFromCache).toHaveBeenCalledWith({
+				provider: "lmstudio",
+				baseUrl: "http://localhost:1234",
+			})
 			expect(modelInfo.id).toBe(mockOptions.lmStudioModelId)
 			expect(modelInfo.info).toBeDefined()
 			expect(modelInfo.info.maxTokens).toBe(-1)

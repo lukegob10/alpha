@@ -1,4 +1,40 @@
+import { browserToolNames, type BrowserToolArgs, type BrowserToolName } from "@alpha-code/types"
+
 import { NativeToolCallParser } from "../NativeToolCallParser"
+
+const browserPayloads = {
+	open_browser_page: {
+		url: "https://www.usgs.gov/programs/national-geospatial-program/topographic-maps",
+		forceNew: true,
+	},
+	list_browser_pages: {},
+	read_page: { pageId: "page-1" },
+	screenshot_page: {
+		pageId: "page-1",
+		ref: "ref-1",
+		element: "Map preview",
+		scrollIntoViewIfNeeded: true,
+	},
+	navigate_page: { pageId: "page-1", type: "url", url: "https://example.com" },
+	click_element: { pageId: "page-1", ref: "ref-2", element: "Submit button", button: "left" },
+	type_in_page: {
+		pageId: "page-1",
+		ref: "ref-3",
+		element: "Search input",
+		text: "topographic maps",
+		submit: true,
+	},
+	hover_element: { pageId: "page-1", ref: "ref-4", element: "Map layer" },
+	drag_element: {
+		pageId: "page-1",
+		fromRef: "ref-5",
+		fromElement: "Map pin",
+		toRef: "ref-6",
+		toElement: "Destination",
+	},
+	handle_dialog: { pageId: "page-1", acceptModal: true, promptText: "continue" },
+	run_playwright_code: { pageId: "page-1", code: "return await page.title()", timeoutMs: 5_000 },
+} satisfies { [K in BrowserToolName]: BrowserToolArgs[K] }
 
 describe("NativeToolCallParser", () => {
 	beforeEach(() => {
@@ -7,7 +43,567 @@ describe("NativeToolCallParser", () => {
 	})
 
 	describe("parseToolCall", () => {
+		describe("VS Code integrated-browser tools", () => {
+			it.each([...browserToolNames])("preserves a valid %s payload as native arguments", (name) => {
+				const payload = browserPayloads[name]
+				const result = NativeToolCallParser.parseToolCall({
+					id: `browser-${name}`,
+					name,
+					arguments: JSON.stringify(payload),
+				})
+
+				expect(result?.type).toBe("tool_use")
+				if (result?.type === "tool_use") {
+					expect(result.nativeArgs).toEqual(payload)
+				}
+			})
+		})
+
+		it("preserves a structured sub-agent completion outcome", () => {
+			const result = NativeToolCallParser.parseToolCall({
+				id: "subagent-completion",
+				name: "attempt_completion",
+				arguments: JSON.stringify({
+					result: "Write authority was unavailable.",
+					outcome: "blocked",
+				}),
+			})
+
+			expect(result?.type).toBe("tool_use")
+			if (result?.type === "tool_use") {
+				expect(result.nativeArgs).toEqual({
+					result: "Write authority was unavailable.",
+					outcome: "blocked",
+				})
+			}
+		})
+
+		it("accepts a null outcome from an OpenAI strict schema as omitted", () => {
+			const result = NativeToolCallParser.parseToolCall({
+				id: "primary-completion",
+				name: "attempt_completion",
+				arguments: JSON.stringify({ result: "Done.", outcome: null }),
+			})
+
+			expect(result?.type).toBe("tool_use")
+			if (result?.type === "tool_use") {
+				expect(result.nativeArgs).toEqual({ result: "Done." })
+			}
+		})
+
+		it("preserves an explicit execute-command verification scope", () => {
+			const result = NativeToolCallParser.parseToolCall({
+				id: "verify-worker-change",
+				name: "execute_command",
+				arguments: JSON.stringify({
+					command: "pnpm test",
+					cwd: null,
+					timeout: null,
+					verification: { change_set_ids: ["change-1", "change-1", "change-2"] },
+				}),
+			})
+
+			expect(result?.type).toBe("tool_use")
+			if (result?.type === "tool_use") {
+				expect(result.nativeArgs).toEqual({
+					command: "pnpm test",
+					cwd: null,
+					timeout: null,
+					verification: { change_set_ids: ["change-1", "change-2"] },
+				})
+			}
+		})
+
+		it("does not promote a malformed execute-command verification scope", () => {
+			const result = NativeToolCallParser.parseToolCall({
+				id: "invalid-verification",
+				name: "execute_command",
+				arguments: JSON.stringify({
+					command: "echo src/example.ts",
+					cwd: null,
+					timeout: null,
+					verification: { change_set_ids: [] },
+				}),
+			})
+
+			expect(result?.type).toBe("tool_use")
+			if (result?.type === "tool_use") {
+				expect(result.nativeArgs).toEqual({
+					command: "echo src/example.ts",
+					cwd: null,
+					timeout: null,
+					verification: undefined,
+				})
+			}
+		})
+
+		it("rejects an unknown completion outcome instead of treating it as success", () => {
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+			const result = NativeToolCallParser.parseToolCall({
+				id: "invalid-completion",
+				name: "attempt_completion",
+				arguments: JSON.stringify({ result: "Maybe done.", outcome: "partial" }),
+			})
+
+			expect(result).toBeNull()
+			expect(errorSpy).toHaveBeenCalled()
+			errorSpy.mockRestore()
+		})
+
+		describe("spawn_agent tool", () => {
+			it.each([
+				{
+					label: "explore",
+					payload: {
+						task_name: "parser_explore",
+						fork_turns: "none",
+						objective: "Map the parser lifecycle.",
+						agent_kind: "explore",
+						write_scope: null,
+						expected_output: null,
+					},
+				},
+				{
+					label: "review",
+					payload: {
+						task_name: "backend_review",
+						fork_turns: "all",
+						objective: "Review the parser validation boundary.",
+						agent_kind: "review",
+						write_scope: null,
+						expected_output: ["risk summary"],
+					},
+				},
+				{
+					label: "worker",
+					payload: {
+						task_name: "parser_worker",
+						fork_turns: "2",
+						objective: "Add focused parser coverage.",
+						agent_kind: "worker",
+						write_scope: ["src/core/assistant-message"],
+						expected_output: [],
+					},
+				},
+			])("parses a valid $label payload", ({ label, payload }) => {
+				const result = NativeToolCallParser.parseToolCall({
+					id: `spawn-${label}`,
+					name: "spawn_agent",
+					arguments: JSON.stringify(payload),
+				})
+
+				expect(result?.type).toBe("tool_use")
+				if (result?.type === "tool_use") {
+					expect(result.nativeArgs).toEqual(payload)
+				}
+			})
+
+			it.each([
+				[
+					"missing stable task name",
+					{
+						task_name: undefined,
+						fork_turns: "none",
+						objective: "Inspect the parser.",
+						agent_kind: "review",
+						write_scope: null,
+						expected_output: null,
+					},
+				],
+				[
+					"missing fork turns",
+					{
+						task_name: "parser_review",
+						fork_turns: undefined,
+						objective: "Inspect the parser.",
+						agent_kind: "review",
+						write_scope: null,
+						expected_output: null,
+					},
+				],
+				[
+					"noncanonical fork turns",
+					{
+						task_name: "parser_review",
+						fork_turns: "01",
+						objective: "Inspect the parser.",
+						agent_kind: "review",
+						write_scope: null,
+						expected_output: null,
+					},
+				],
+				[
+					"unsafe fork turns",
+					{
+						task_name: "parser_review",
+						fork_turns: "9007199254740992",
+						objective: "Inspect the parser.",
+						agent_kind: "review",
+						write_scope: null,
+						expected_output: null,
+					},
+				],
+				[
+					"unknown role",
+					{
+						objective: "Inspect the parser.",
+						agent_kind: "research",
+						write_scope: null,
+						expected_output: null,
+					},
+				],
+				[
+					"read-only role with write scope",
+					{
+						objective: "Inspect the parser.",
+						agent_kind: "review",
+						write_scope: ["src"],
+						expected_output: null,
+					},
+				],
+				[
+					"worker with null write scope",
+					{
+						objective: "Fix the parser.",
+						agent_kind: "worker",
+						write_scope: null,
+						expected_output: null,
+					},
+				],
+				[
+					"worker with empty write scope",
+					{
+						objective: "Fix the parser.",
+						agent_kind: "worker",
+						write_scope: [],
+						expected_output: null,
+					},
+				],
+				[
+					"non-array expected output",
+					{
+						objective: "Inspect the parser.",
+						agent_kind: "explore",
+						write_scope: null,
+						expected_output: "summary",
+					},
+				],
+				[
+					"empty expected output entry",
+					{
+						objective: "Inspect the parser.",
+						agent_kind: "explore",
+						write_scope: null,
+						expected_output: [""],
+					},
+				],
+				[
+					"too many expected outputs",
+					{
+						objective: "Inspect the parser.",
+						agent_kind: "explore",
+						write_scope: null,
+						expected_output: Array.from({ length: 13 }, (_, index) => `output-${index}`),
+					},
+				],
+				[
+					"invalid stable task name",
+					{
+						task_name: "backend-review",
+						objective: "Inspect the parser.",
+						agent_kind: "review",
+						write_scope: null,
+						expected_output: null,
+					},
+				],
+				[
+					"additional property",
+					{
+						objective: "Inspect the parser.",
+						agent_kind: "explore",
+						write_scope: null,
+						expected_output: null,
+						mode: "code",
+					},
+				],
+			])("rejects %s", (_label, payload) => {
+				const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				const result = NativeToolCallParser.parseToolCall({
+					id: "invalid-spawn",
+					name: "spawn_agent",
+					arguments: JSON.stringify({ task_name: "parser_review", fork_turns: "none", ...payload }),
+				})
+
+				expect(result).toBeNull()
+				expect(errorSpy).toHaveBeenCalled()
+				errorSpy.mockRestore()
+			})
+		})
+
+		describe("delegate_task tool", () => {
+			it.each([
+				{
+					label: "no parent turns",
+					payload: {
+						tasks: [{ objective: "Map the parser.", fork_turns: "none", agent_kind: "explore" }],
+					},
+				},
+				{
+					label: "all bounded parent turns",
+					payload: {
+						tasks: [
+							{
+								objective: "Review the parser.",
+								fork_turns: "all",
+								agent_kind: "review",
+								write_scope: null,
+								expected_output: ["risk summary"],
+							},
+						],
+					},
+				},
+				{
+					label: "different selections per child",
+					payload: {
+						tasks: [
+							{
+								objective: "Inspect the parser.",
+								fork_turns: "none",
+								agent_kind: "review",
+							},
+							{
+								objective: "Add parser coverage.",
+								fork_turns: "2",
+								agent_kind: "worker",
+								write_scope: ["src/core/assistant-message"],
+								expected_output: null,
+							},
+						],
+					},
+				},
+			])("parses $label", ({ payload }) => {
+				const result = NativeToolCallParser.parseToolCall({
+					id: "delegate-valid",
+					name: "delegate_task",
+					arguments: JSON.stringify(payload),
+				})
+
+				expect(result?.type).toBe("tool_use")
+				if (result?.type === "tool_use") expect(result.nativeArgs).toEqual(payload)
+			})
+
+			it.each([
+				["missing fork turns", { objective: "Inspect.", agent_kind: "review" }],
+				["noncanonical fork turns", { objective: "Inspect.", fork_turns: "01", agent_kind: "review" }],
+				["unsafe fork turns", { objective: "Inspect.", fork_turns: "9007199254740992", agent_kind: "review" }],
+				["worker without write scope", { objective: "Fix.", fork_turns: "none", agent_kind: "worker" }],
+				[
+					"unknown task field",
+					{ objective: "Inspect.", fork_turns: "none", agent_kind: "review", mode: "code" },
+				],
+			] as const)("rejects %s", (_label, task) => {
+				const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				const result = NativeToolCallParser.parseToolCall({
+					id: "delegate-invalid",
+					name: "delegate_task",
+					arguments: JSON.stringify({ tasks: [task] }),
+				})
+
+				expect(result).toBeNull()
+				expect(errorSpy).toHaveBeenCalled()
+				errorSpy.mockRestore()
+			})
+
+			it("rejects unknown top-level fields", () => {
+				const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				const result = NativeToolCallParser.parseToolCall({
+					id: "delegate-unknown-top-level",
+					name: "delegate_task",
+					arguments: JSON.stringify({
+						tasks: [{ objective: "Inspect.", fork_turns: "none", agent_kind: "review" }],
+						background: true,
+					}),
+				})
+
+				expect(result).toBeNull()
+				expect(errorSpy).toHaveBeenCalled()
+				errorSpy.mockRestore()
+			})
+		})
+
+		describe("agent lifecycle tools", () => {
+			it.each([
+				["list_agents", { path_prefix: "/root/review" }],
+				["wait_agent", { timeout_ms: 45_000 }],
+				["wait_agent", { timeout_ms: 45_000, target: "/root/review", until_terminal: true }],
+				["send_message", { target: "/root/review", message: "Check the parser edge case." }],
+				["report_progress", { message: "Finished the parser audit." }],
+				["followup_task", { target: "child-123", message: "Verify the second pass." }],
+				["interrupt_agent", { target: "/root/review" }],
+				["cancel_agent", { target: "child-123", reason: "No longer needed." }],
+				["close_agent", { target: "/root/review" }],
+			] as const)("parses valid %s arguments", (name, payload) => {
+				const result = NativeToolCallParser.parseToolCall({
+					id: `lifecycle-${name}`,
+					name,
+					arguments: JSON.stringify(payload),
+				})
+
+				expect(result?.type).toBe("tool_use")
+				if (result?.type === "tool_use") expect(result.nativeArgs).toEqual(payload)
+			})
+
+			it("normalizes strict-schema null optionals", () => {
+				const list = NativeToolCallParser.parseToolCall({
+					id: "list-all",
+					name: "list_agents",
+					arguments: JSON.stringify({ path_prefix: null }),
+				})
+				const wait = NativeToolCallParser.parseToolCall({
+					id: "wait-default",
+					name: "wait_agent",
+					arguments: JSON.stringify({ timeout_ms: null, target: null, until_terminal: null }),
+				})
+				const cancel = NativeToolCallParser.parseToolCall({
+					id: "cancel-default",
+					name: "cancel_agent",
+					arguments: JSON.stringify({ target: "child-123", reason: null }),
+				})
+
+				expect((list as any)?.nativeArgs).toEqual({ path_prefix: undefined })
+				expect((wait as any)?.nativeArgs).toEqual({
+					timeout_ms: undefined,
+					target: undefined,
+					until_terminal: undefined,
+				})
+				expect((cancel as any)?.nativeArgs).toEqual({ target: "child-123", reason: undefined })
+			})
+
+			it.each([
+				["list_agents", { path_prefix: "/root/Review" }],
+				["wait_agent", { timeout_ms: 9_999 }],
+				["wait_agent", { timeout_ms: 10_000, target: "/root/Review", until_terminal: true }],
+				["wait_agent", { timeout_ms: 10_000, target: "/root/review", until_terminal: "yes" }],
+				["send_message", { target: "/root/review", message: "" }],
+				["report_progress", { message: "", extra: true }],
+				["followup_task", { target: "/root/review", message: "Next", extra: true }],
+				["interrupt_agent", { target: "/root/Review" }],
+				["cancel_agent", { target: "child-123", reason: "" }],
+				["close_agent", { target: "not a task id" }],
+			] as const)("rejects invalid %s arguments", (name, payload) => {
+				const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				const result = NativeToolCallParser.parseToolCall({
+					id: `invalid-${name}`,
+					name,
+					arguments: JSON.stringify(payload),
+				})
+
+				expect(result).toBeNull()
+				expect(errorSpy).toHaveBeenCalled()
+				errorSpy.mockRestore()
+			})
+		})
+
+		describe("search_files tool", () => {
+			it("parses a bounded queries batch", () => {
+				const result = NativeToolCallParser.parseToolCall({
+					id: "search-batch",
+					name: "search_files",
+					arguments: JSON.stringify({
+						queries: [
+							{ path: "frontend/src", regex: "fetch|submit", file_pattern: "*.tsx" },
+							{ path: "backend/app", regex: "@router|def ", file_pattern: "*.py" },
+						],
+					}),
+				})
+
+				expect(result?.type).toBe("tool_use")
+				if (result?.type === "tool_use") {
+					expect(result.nativeArgs).toEqual({
+						queries: [
+							{ path: "frontend/src", regex: "fetch|submit", file_pattern: "*.tsx" },
+							{ path: "backend/app", regex: "@router|def ", file_pattern: "*.py" },
+						],
+					})
+				}
+			})
+
+			it("recovers concatenated query objects emitted for one tool call", () => {
+				const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				const result = NativeToolCallParser.parseToolCall({
+					id: "search-concatenated",
+					name: "search_files",
+					arguments:
+						'{"path":"frontend/src","regex":"fetch|submit","file_pattern":"*.tsx"}' +
+						'{"path":"backend/app","regex":"@router|def ","file_pattern":"*.py"}',
+				})
+
+				expect(result?.type).toBe("tool_use")
+				if (result?.type === "tool_use") {
+					expect(result.nativeArgs).toEqual({
+						queries: [
+							{ path: "frontend/src", regex: "fetch|submit", file_pattern: "*.tsx" },
+							{ path: "backend/app", regex: "@router|def ", file_pattern: "*.py" },
+						],
+					})
+				}
+				expect(errorSpy).not.toHaveBeenCalled()
+				errorSpy.mockRestore()
+			})
+
+			it("rejects batches beyond the bounded limit", () => {
+				const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				const result = NativeToolCallParser.parseToolCall({
+					id: "search-too-large",
+					name: "search_files",
+					arguments: JSON.stringify({
+						queries: Array.from({ length: 9 }, (_, index) => ({
+							path: `src/${index}`,
+							regex: "TODO",
+						})),
+					}),
+				})
+
+				expect(result).toBeNull()
+				expect(errorSpy).toHaveBeenCalled()
+				errorSpy.mockRestore()
+			})
+		})
+
 		describe("read_file tool", () => {
+			it("preserves batch defaults and per-file selections", () => {
+				const result = NativeToolCallParser.parseToolCall({
+					id: "batch-defaults",
+					name: "read_file",
+					arguments: JSON.stringify({
+						path: "first.ts",
+						offset: 220,
+						limit: 3,
+						files: [
+							{ path: "first.ts", line_ranges: null },
+							{ path: "second.ts", offset: 40, limit: 2 },
+						],
+					}),
+				})
+				expect(result?.type === "tool_use" && result.nativeArgs).toMatchObject({
+					offset: 220,
+					limit: 3,
+					files: [{ path: "first.ts" }, { path: "second.ts", offset: 40, limit: 2 }],
+				})
+			})
+
+			it("preserves opaque continuations for a single file", () => {
+				const result = NativeToolCallParser.parseToolCall({
+					id: "continuation",
+					name: "read_file",
+					arguments: JSON.stringify({ path: "first.ts", continuation: "opaque-cursor" }),
+				})
+				expect(result?.type === "tool_use" && result.nativeArgs).toMatchObject({
+					path: "first.ts",
+					continuation: "opaque-cursor",
+				})
+			})
+
 			it("should parse minimal single-file read_file args", () => {
 				const toolCall = {
 					id: "toolu_123",
@@ -354,6 +950,38 @@ describe("NativeToolCallParser", () => {
 	})
 
 	describe("scoped streaming state", () => {
+		it("preserves the raw streamed browser call that previously failed in the live trace", () => {
+			const taskId = "browser-trace-task"
+			const id = "call-open-browser"
+			const payload = browserPayloads.open_browser_page
+			let finalToolUse: ReturnType<typeof NativeToolCallParser.finalizeStreamingToolCall> = null
+
+			const events = [
+				...NativeToolCallParser.processRawChunk(
+					{ index: 0, id, name: "open_browser_page", arguments: JSON.stringify(payload) },
+					taskId,
+				),
+				...NativeToolCallParser.finalizeRawChunks(taskId),
+			]
+
+			for (const event of events) {
+				if (event.type === "tool_call_start") {
+					NativeToolCallParser.startStreamingToolCall(event.id, event.name, taskId)
+				} else if (event.type === "tool_call_delta") {
+					const partial = NativeToolCallParser.processStreamingChunk(event.id, event.delta, taskId)
+					expect(partial?.nativeArgs).toEqual(payload)
+				} else if (event.type === "tool_call_end") {
+					finalToolUse = NativeToolCallParser.finalizeStreamingToolCall(event.id, taskId)
+				}
+			}
+
+			expect(finalToolUse).toMatchObject({
+				type: "tool_use",
+				name: "open_browser_page",
+				nativeArgs: payload,
+			})
+		})
+
 		it("attaches index-only argument deltas to a tool call started with an id", () => {
 			const taskId = "orchestrator-task"
 			let finalToolUse: ReturnType<typeof NativeToolCallParser.finalizeStreamingToolCall> = null
@@ -439,6 +1067,77 @@ describe("NativeToolCallParser", () => {
 	})
 
 	describe("processStreamingChunk", () => {
+		describe("spawn_agent tool", () => {
+			it("emits strict partial nativeArgs and preserves them on finalize", () => {
+				const id = "spawn-streaming"
+				const payload = {
+					task_name: "streamed_review",
+					fork_turns: "all",
+					objective: "Review the streamed parser output.",
+					agent_kind: "review",
+					write_scope: null,
+					expected_output: ["native argument shape"],
+				}
+				const encoded = JSON.stringify(payload)
+				const splitAt = encoded.indexOf('"write_scope"')
+				NativeToolCallParser.startStreamingToolCall(id, "spawn_agent")
+
+				const incomplete = NativeToolCallParser.processStreamingChunk(id, encoded.slice(0, splitAt))
+				expect(incomplete?.nativeArgs).toBeUndefined()
+
+				const partial = NativeToolCallParser.processStreamingChunk(id, encoded.slice(splitAt))
+				expect(partial?.partial).toBe(true)
+				expect(partial?.nativeArgs).toEqual(payload)
+
+				const finalized = NativeToolCallParser.finalizeStreamingToolCall(id)
+				expect(finalized?.type).toBe("tool_use")
+				if (finalized?.type === "tool_use") {
+					expect(finalized.partial).toBe(false)
+					expect(finalized.nativeArgs).toEqual(payload)
+				}
+			})
+		})
+
+		describe("delegate_task tool", () => {
+			it("preserves an explicit per-child fork selection through finalization", () => {
+				const id = "delegate-streaming"
+				const payload = {
+					tasks: [{ objective: "Inspect recent evidence.", fork_turns: "2", agent_kind: "explore" }],
+				}
+				const encoded = JSON.stringify(payload)
+				const splitAt = encoded.indexOf('"fork_turns"')
+				NativeToolCallParser.startStreamingToolCall(id, "delegate_task")
+
+				const incomplete = NativeToolCallParser.processStreamingChunk(id, encoded.slice(0, splitAt))
+				expect(incomplete?.nativeArgs).toBeUndefined()
+
+				const partial = NativeToolCallParser.processStreamingChunk(id, encoded.slice(splitAt))
+				expect(partial?.nativeArgs).toEqual(payload)
+
+				const finalized = NativeToolCallParser.finalizeStreamingToolCall(id)
+				expect((finalized as any)?.nativeArgs).toEqual(payload)
+			})
+		})
+
+		describe("agent lifecycle tools", () => {
+			it("preserves a streamed follow-up through finalization", () => {
+				const id = "followup-streaming"
+				const payload = { target: "/root/review", message: "Inspect the remaining race." }
+				const encoded = JSON.stringify(payload)
+				const splitAt = encoded.indexOf('"message"')
+				NativeToolCallParser.startStreamingToolCall(id, "followup_task")
+
+				const incomplete = NativeToolCallParser.processStreamingChunk(id, encoded.slice(0, splitAt))
+				expect(incomplete?.nativeArgs).toEqual({ target: "/root/review", message: undefined })
+
+				const partial = NativeToolCallParser.processStreamingChunk(id, encoded.slice(splitAt))
+				expect(partial?.nativeArgs).toEqual(payload)
+
+				const finalized = NativeToolCallParser.finalizeStreamingToolCall(id)
+				expect((finalized as any)?.nativeArgs).toEqual(payload)
+			})
+		})
+
 		describe("read_file tool", () => {
 			it("should emit a partial ToolUse with nativeArgs.path during streaming", () => {
 				const id = "toolu_streaming_123"

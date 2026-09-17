@@ -1,0 +1,6 @@
+{
+	"profileRequired": "Select a saved profile before running this scheduled task.",
+	"profileUnavailable": "Profile “{{name}}” is missing, renamed, or could not be loaded. Select a saved profile again.",
+	"skillUnavailable": "Skill “{{name}}” is missing, unreadable, or unavailable in the scheduled workspace and mode. Select the skill again.",
+	"workspaceInvalid": "The scheduled workspace must be an absolute path."
+}

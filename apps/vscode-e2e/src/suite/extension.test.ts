@@ -6,6 +6,43 @@ import { setDefaultSuiteTimeout } from "./test-utils"
 suite("Alpha Extension", function () {
 	setDefaultSuiteTimeout(this)
 
+	test("Runs on the requested VS Code version", function () {
+		const expectedVersion = process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION
+		if (!expectedVersion) this.skip()
+		assert.equal(vscode.version, expectedVersion)
+	})
+
+	test("Ticket editor opens once and can be closed", async () => {
+		const ticketTabs = () =>
+			vscode.window.tabGroups.all
+				.flatMap((group) => group.tabs)
+				.filter(
+					(tab) =>
+						tab.input instanceof vscode.TabInputWebview && tab.input.viewType.includes("alpha.tickets"),
+				)
+		const opened = new Promise<void>((resolve, reject) => {
+			const listener = vscode.window.tabGroups.onDidChangeTabs(() => {
+				if (ticketTabs().length) {
+					clearTimeout(timeout)
+					listener.dispose()
+					resolve()
+				}
+			})
+			const timeout = setTimeout(() => {
+				listener.dispose()
+				reject(new Error("Ticket tab did not open"))
+			}, 10000)
+		})
+		// VS Code 1.122.1 title-menu mouse actions forward this focus context.
+		await vscode.commands.executeCommand("alpha.openTickets", { preserveFocus: false })
+		await opened
+		await vscode.commands.executeCommand("alpha.openTickets", { preserveFocus: false })
+		await vscode.commands.executeCommand("alpha.openTickets")
+		const tabs = ticketTabs()
+		assert.equal(tabs.length, 1)
+		await vscode.window.tabGroups.close(tabs)
+	})
+
 	test("Commands should be registered", async () => {
 		const expectedCommands = [
 			"SidebarProvider.open",
@@ -19,10 +56,16 @@ suite("Alpha Extension", function () {
 			"openInNewTab",
 			"settingsButtonClicked",
 			"historyButtonClicked",
+			"scheduledTasksButtonClicked",
+			"openTickets",
+			"marketplaceButtonClicked",
 			"newTask",
 			"setCustomStoragePath",
+			"importSettings",
 			"focusInput",
+			"focusPanel",
 			"acceptInput",
+			"toggleAutoApprove",
 			"explainCode",
 			"fixCode",
 			"improveCode",
@@ -37,5 +80,15 @@ suite("Alpha Extension", function () {
 		for (const command of expectedCommands) {
 			assert.ok(commands.has(`alpha.${command}`), `Command ${command} should be registered`)
 		}
+
+		assert.ok(!commands.has("alpha.goalSeekButtonClicked"), "Goal Seek must not be registered")
+		const extensionId = process.env.ALPHA_E2E_EXTENSION_ID
+		assert.ok(extensionId, "The E2E runner should provide the extension ID")
+		const extension = vscode.extensions.getExtension(extensionId)
+		assert.ok(extension, "Alpha extension should be installed")
+		assert.ok(
+			!JSON.stringify(extension.packageJSON.contributes).includes("alpha.goalSeekButtonClicked"),
+			"Goal Seek must not be contributed to the command palette or title menus",
+		)
 	})
 })

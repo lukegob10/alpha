@@ -363,6 +363,7 @@ describe("CodeIndexServiceFactory", () => {
 				embedderProvider: "vertex",
 				modelId: "gemini-embedding-001",
 				vertexOptions,
+				embeddingRateLimitSeconds: 2,
 			}
 			mockConfigManager.getConfig.mockReturnValue(testConfig as any)
 
@@ -370,7 +371,7 @@ describe("CodeIndexServiceFactory", () => {
 			factory.createEmbedder()
 
 			// Assert
-			expect(MockedVertexGeminiEmbedder).toHaveBeenCalledWith(vertexOptions, "gemini-embedding-001")
+			expect(MockedVertexGeminiEmbedder).toHaveBeenCalledWith(vertexOptions, "gemini-embedding-001", 2)
 		})
 
 		it("should throw error when Vertex provider settings are missing", () => {
@@ -426,6 +427,7 @@ describe("CodeIndexServiceFactory", () => {
 				"http://localhost:6333",
 				3072,
 				"test-key",
+				expect.any(String),
 			)
 		})
 
@@ -451,6 +453,7 @@ describe("CodeIndexServiceFactory", () => {
 				"http://localhost:6333",
 				768,
 				"test-key",
+				expect.any(String),
 			)
 		})
 
@@ -476,6 +479,7 @@ describe("CodeIndexServiceFactory", () => {
 				"http://localhost:6333",
 				3072,
 				"test-key",
+				expect.any(String),
 			)
 		})
 
@@ -508,6 +512,7 @@ describe("CodeIndexServiceFactory", () => {
 				"http://localhost:6333",
 				modelDimension, // Should use model's built-in dimension, not manual
 				"test-key",
+				expect.any(String),
 			)
 		})
 
@@ -539,6 +544,7 @@ describe("CodeIndexServiceFactory", () => {
 				"http://localhost:6333",
 				manualDimension, // Should use manual dimension as fallback
 				"test-key",
+				expect.any(String),
 			)
 		})
 
@@ -568,6 +574,7 @@ describe("CodeIndexServiceFactory", () => {
 				"http://localhost:6333",
 				768,
 				"test-key",
+				expect.any(String),
 			)
 		})
 
@@ -637,6 +644,7 @@ describe("CodeIndexServiceFactory", () => {
 				"http://localhost:6333",
 				3072,
 				"test-key",
+				expect.any(String),
 			)
 		})
 
@@ -662,6 +670,7 @@ describe("CodeIndexServiceFactory", () => {
 				"http://localhost:6333",
 				3072,
 				"test-key",
+				expect.any(String),
 			)
 		})
 
@@ -686,6 +695,7 @@ describe("CodeIndexServiceFactory", () => {
 				"http://localhost:6333",
 				3072,
 				"test-key",
+				expect.any(String),
 			)
 		})
 
@@ -704,7 +714,12 @@ describe("CodeIndexServiceFactory", () => {
 			factory.createVectorStore()
 
 			// Assert
-			expect(MockedLanceDbVectorStore).toHaveBeenCalledWith("/test/workspace", ".alpha/code-index/lancedb", 1536)
+			expect(MockedLanceDbVectorStore).toHaveBeenCalledWith(
+				"/test/workspace",
+				".alpha/code-index/lancedb",
+				1536,
+				expect.any(String),
+			)
 			expect(MockedQdrantVectorStore).not.toHaveBeenCalled()
 		})
 
@@ -729,6 +744,7 @@ describe("CodeIndexServiceFactory", () => {
 				"http://localhost:6333",
 				1536,
 				"test-key",
+				expect.any(String),
 			)
 		})
 

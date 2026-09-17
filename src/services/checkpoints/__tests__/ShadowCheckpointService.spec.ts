@@ -5,14 +5,33 @@ import path from "path"
 import os from "os"
 import { EventEmitter } from "events"
 
-import { simpleGit, SimpleGit } from "simple-git"
+import { type DiffResult, simpleGit, SimpleGit } from "simple-git"
 
 import { fileExistsAtPath } from "../../../utils/fs"
 import * as fileSearch from "../../../services/search/file-search"
 
 import { RepoPerTaskCheckpointService } from "../RepoPerTaskCheckpointService"
 
-const tmpDir = path.join(os.tmpdir(), "CheckpointService")
+let tmpDir: string
+
+const deferred = () => {
+	let resolve!: () => void
+	const promise = new Promise<void>((resolvePromise) => {
+		resolve = resolvePromise
+	})
+	return { promise, resolve }
+}
+
+beforeAll(async () => {
+	tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-checkpoint-service-"))
+})
+
+afterAll(async () => {
+	// Git processes can release handles a little after their promise settles on
+	// Windows. Use Node's bounded retry support and a run-unique root so parallel
+	// suites cannot delete one another's repositories.
+	await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+}, 60_000)
 
 const initWorkspaceRepo = async ({
 	workspaceDir,
@@ -47,6 +66,22 @@ const initWorkspaceRepo = async ({
 	return { git, testFile }
 }
 
+describe("checkpoint path guards", () => {
+	it("rejects normalized aliases of protected directories", () => {
+		const protectedAlias = `${os.homedir()}${path.sep}.`
+		expect(
+			() => new RepoPerTaskCheckpointService("task", path.join(tmpDir, "shadow"), protectedAlias, () => {}),
+		).toThrow(`Cannot use checkpoints in ${protectedAlias}`)
+	})
+
+	it("rejects filesystem roots", () => {
+		const filesystemRoot = path.parse(tmpDir).root
+		expect(
+			() => new RepoPerTaskCheckpointService("task", path.join(tmpDir, "shadow"), filesystemRoot, () => {}),
+		).toThrow(`Cannot use checkpoints in ${filesystemRoot}`)
+	})
+})
+
 describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 	"CheckpointService",
 	(klass, prefix) => {
@@ -71,10 +106,6 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 		afterEach(async () => {
 			vitest.restoreAllMocks()
 		})
-
-		afterAll(async () => {
-			await fs.rm(tmpDir, { recursive: true, force: true })
-		}, 60_000) // 60 second timeout for Windows cleanup
 
 		describe(`${klass.name}#getDiff`, () => {
 			it("returns the correct diff between commits", async () => {
@@ -137,9 +168,102 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				expect(change!.content.before).toBe("New file content")
 				expect(change!.content.after).toBe("")
 			})
+
+			it("returns the link blob instead of reading through a workspace symlink", async ({ skip }) => {
+				const checkpointGit = (service as unknown as { git: SimpleGit }).git
+				const externalFile = path.join(tmpDir, `${path.basename(service.workspaceDir)}-outside.txt`)
+				const linkPath = path.join(service.workspaceDir, "outside-link.txt")
+				const secret = "SECRET_OUTSIDE_WORKSPACE"
+				await fs.writeFile(externalFile, secret)
+				await checkpointGit.addConfig("core.symlinks", "true")
+
+				try {
+					await fs.symlink(externalFile, linkPath, "file")
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException).code
+					if (code === "EPERM" || code === "EACCES" || code === "ENOTSUP") {
+						skip()
+						return
+					}
+					throw error
+				}
+
+				const changes = await service.getDiff({ from: service.baseHash })
+				const stagedEntry = await checkpointGit.raw(["ls-files", "-s", "--", "outside-link.txt"])
+				const stagedLink = await checkpointGit.show([":outside-link.txt"])
+				const change = changes.find(({ paths }) => paths.relative === "outside-link.txt")
+
+				expect(stagedEntry).toMatch(/^120000 /)
+				expect(change?.content.after).toBe(stagedLink)
+				expect(change?.content.after).not.toContain(secret)
+			})
+		})
+
+		describe(`${klass.name} checkpoint transactions`, () => {
+			it("does not restore while a checkpoint save is inspecting staged changes", async () => {
+				const checkpointGit = (service as unknown as { git: SimpleGit }).git
+				const diffStarted = deferred()
+				const releaseDiff = deferred()
+				const operations: string[] = []
+				const asyncGit = checkpointGit as unknown as {
+					diffSummary(options: string[]): Promise<DiffResult>
+				}
+				const diffSummary = asyncGit.diffSummary.bind(asyncGit)
+
+				vitest.spyOn(asyncGit, "diffSummary").mockImplementationOnce(async (options) => {
+					operations.push("save-diff-start")
+					diffStarted.resolve()
+					await releaseDiff.promise
+					operations.push("save-diff-end")
+					return diffSummary(options)
+				})
+				const clean = vitest.spyOn(checkpointGit, "clean")
+
+				await fs.writeFile(testFile, "Content to checkpoint")
+				const save = service.saveCheckpoint("Serialized save")
+				await diffStarted.promise
+
+				const restore = service.restoreCheckpoint(service.baseHash!)
+				await Promise.resolve()
+				const operationsBeforeRelease = [...operations]
+				const cleanCallsBeforeRelease = clean.mock.calls.length
+
+				releaseDiff.resolve()
+				await Promise.all([save, restore])
+
+				expect(operationsBeforeRelease).toEqual(["save-diff-start"])
+				expect(cleanCallsBeforeRelease).toBe(0)
+				expect(operations).toEqual(["save-diff-start", "save-diff-end"])
+				expect(clean).toHaveBeenCalledTimes(1)
+			})
+
+			it("continues checkpoint transactions after a save fails", async () => {
+				const checkpointGit = (service as unknown as { git: SimpleGit }).git
+				vitest.spyOn(checkpointGit, "add").mockRejectedValueOnce(new Error("staging failed"))
+
+				await expect(service.saveCheckpoint("Failed save")).rejects.toThrow("staging failed")
+				await expect(service.restoreCheckpoint(service.baseHash!)).resolves.toBeUndefined()
+			})
 		})
 
 		describe(`${klass.name}#saveCheckpoint`, () => {
+			it("fails closed when staging files fails", async () => {
+				const checkpointGit = (service as unknown as { git: SimpleGit }).git
+				const baseHash = service.baseHash
+				const checkpointHandler = vitest.fn()
+				service.on("checkpoint", checkpointHandler)
+				await fs.writeFile(testFile, "Content that must not be partially checkpointed")
+
+				vitest.spyOn(checkpointGit, "add").mockRejectedValueOnce(new Error("git add failed"))
+				const commitSpy = vitest.spyOn(checkpointGit, "commit")
+
+				await expect(service.saveCheckpoint("Must fail closed")).rejects.toThrow("git add failed")
+				expect(commitSpy).not.toHaveBeenCalled()
+				expect(checkpointHandler).not.toHaveBeenCalled()
+				expect(service.getCheckpoints()).toEqual([])
+				expect(service.baseHash).toBe(baseHash)
+			})
+
 			it("creates a checkpoint if there are pending changes", async () => {
 				await fs.writeFile(testFile, "Ahoy, world!")
 				const commit1 = await service.saveCheckpoint("First checkpoint")
@@ -342,6 +466,49 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 		})
 
 		describe(`${klass.name}#create`, () => {
+			it("does not publish an initial baseline when staging fails", async () => {
+				const failedShadowDir = path.join(tmpDir, `${prefix}-failed-initial-stage-${Date.now()}`)
+				const failedWorkspaceDir = path.join(tmpDir, `workspace-failed-initial-stage-${Date.now()}`)
+				await fs.mkdir(failedWorkspaceDir, { recursive: true })
+				await fs.writeFile(path.join(failedWorkspaceDir, "test.txt"), "Must not become a partial baseline")
+
+				const failedService = new klass(taskId, failedShadowDir, failedWorkspaceDir, () => {})
+				vitest.spyOn(failedService as any, "stageAll").mockRejectedValueOnce(new Error("git add failed"))
+
+				await expect(failedService.initShadowGit()).rejects.toThrow("git add failed")
+				expect(failedService.baseHash).toBeUndefined()
+				expect(failedService.isInitialized).toBe(false)
+				await expect(simpleGit(failedShadowDir).revparse(["--verify", "HEAD"])).rejects.toThrow()
+
+				await fs.rm(failedShadowDir, { recursive: true, force: true })
+				await fs.rm(failedWorkspaceDir, { recursive: true, force: true })
+			})
+
+			it("migrates tracked .venv files out of an existing shadow repository without deleting them", async () => {
+				const trackedVenvFile = path.join(service.workspaceDir, ".venv", "tracked.txt")
+				await fs.mkdir(path.dirname(trackedVenvFile), { recursive: true })
+				await fs.writeFile(trackedVenvFile, "Keep this workspace dependency")
+
+				const shadowGit = simpleGit(service.checkpointsDir)
+				await shadowGit.add(["-f", ".venv/tracked.txt"])
+				const legacyCommit = await shadowGit.commit("Legacy tracked virtual environment")
+				expect(legacyCommit.commit).toBeTruthy()
+				expect((await shadowGit.raw(["ls-files", "--", ".venv/tracked.txt"])).trim()).toBe(".venv/tracked.txt")
+
+				const migratedService = new klass(
+					service.taskId,
+					service.checkpointsDir,
+					service.workspaceDir,
+					() => {},
+				)
+				await migratedService.initShadowGit()
+
+				expect(await fs.readFile(trackedVenvFile, "utf-8")).toBe("Keep this workspace dependency")
+				expect((await shadowGit.raw(["ls-files", "--", ".venv/tracked.txt"])).trim()).toBe("")
+				expect(migratedService.baseHash).toBe(await shadowGit.revparse(["HEAD"]))
+				expect(migratedService.baseHash).not.toBe(legacyCommit.commit)
+			})
+
 			it("initializes a git repository if one does not already exist", async () => {
 				const shadowDir = path.join(tmpDir, `${prefix}2-${Date.now()}`)
 				const workspaceDir = path.join(tmpDir, `workspace2-${Date.now()}`)
@@ -467,7 +634,7 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				await mainGit.add(".")
 				await mainGit.commit("Initial commit in main repo")
 
-				vitest.spyOn(fileSearch, "executeRipgrep").mockImplementation(() => {
+				const searchSpy = vitest.spyOn(fileSearch, "executeRipgrep").mockImplementation(() => {
 					// Return empty array to simulate no nested git repos found
 					return Promise.resolve([])
 				})
@@ -477,11 +644,26 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				// Verify that initialization succeeds when no nested git repos are detected
 				await expect(service.initShadowGit()).resolves.not.toThrow()
 				expect(service.isInitialized).toBe(true)
+				expect(searchSpy.mock.calls[0][0].args).toContain("!**/.venv/**")
 
 				// Clean up.
 				vitest.restoreAllMocks()
 				await fs.rm(shadowDir, { recursive: true, force: true })
 				await fs.rm(workspaceDir, { recursive: true, force: true })
+			})
+
+			it("fails closed when nested repository detection cannot complete", async () => {
+				const shadowDir = path.join(tmpDir, `${prefix}-nested-scan-error-${Date.now()}`)
+				const workspaceDir = path.join(tmpDir, `workspace-nested-scan-error-${Date.now()}`)
+				await initWorkspaceRepo({ workspaceDir })
+				const scanError = new Error("ripgrep unavailable")
+				vitest.spyOn(fileSearch, "executeRipgrep").mockRejectedValue(scanError)
+				const testService = new klass(taskId, shadowDir, workspaceDir, () => {})
+
+				await expect(testService.initShadowGit()).rejects.toThrow(
+					"Unable to verify that the workspace contains no nested Git repositories",
+				)
+				expect(testService.isInitialized).toBe(false)
 			})
 		})
 
@@ -599,6 +781,20 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				const eventData = errorHandler.mock.calls[0][0]
 				expect(eventData.type).toBe("error")
 				expect(eventData.error).toBeInstanceOf(Error)
+			})
+
+			it("preserves the original restore failure when no error listener is registered", async () => {
+				expect(service.listenerCount("error")).toBe(0)
+
+				let caught: unknown
+				try {
+					await service.restoreCheckpoint("invalid-commit-hash")
+				} catch (error) {
+					caught = error
+				}
+
+				expect(caught).toBeInstanceOf(Error)
+				expect((caught as Error).message).not.toContain("Unhandled error")
 			})
 
 			it("supports multiple event listeners for the same event", async () => {
@@ -973,7 +1169,9 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 
 				process.env.GIT_CONFIG_COUNT = "1"
 				process.env.GIT_CONFIG_KEY_0 = "core.autocrlf"
-				process.env.GIT_CONFIG_VALUE_0 = "false"
+				const secretConfigValue = "Authorization: Bearer checkpoint-secret"
+				process.env.GIT_CONFIG_VALUE_0 = secretConfigValue
+				const consoleLogSpy = vitest.spyOn(console, "log").mockImplementation(() => {})
 
 				try {
 					const testService = await klass.create({
@@ -984,6 +1182,9 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 					})
 
 					await expect(testService.initShadowGit()).resolves.not.toThrow()
+					const logOutput = consoleLogSpy.mock.calls.flat().join(" ")
+					expect(logOutput).toContain("GIT_CONFIG_VALUE_0")
+					expect(logOutput).not.toContain(secretConfigValue)
 				} finally {
 					if (originalGitConfigCount !== undefined) {
 						process.env.GIT_CONFIG_COUNT = originalGitConfigCount
@@ -1001,6 +1202,42 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 						process.env.GIT_CONFIG_VALUE_0 = originalGitConfigValue0
 					} else {
 						delete process.env.GIT_CONFIG_VALUE_0
+					}
+
+					await fs.rm(testShadowDir, { recursive: true, force: true })
+					await fs.rm(testWorkspaceDir, { recursive: true, force: true })
+				}
+			})
+
+			it("isolates checkpoint operations from inherited pager environment variables", async () => {
+				const testShadowDir = path.join(tmpDir, `shadow-git-pager-test-${Date.now()}`)
+				const testWorkspaceDir = path.join(tmpDir, `workspace-git-pager-test-${Date.now()}`)
+				await initWorkspaceRepo({ workspaceDir: testWorkspaceDir })
+
+				const originalGitPager = process.env.GIT_PAGER
+				const originalPager = process.env.PAGER
+				process.env.GIT_PAGER = "untrusted-pager --execute"
+				process.env.PAGER = "untrusted-pager --execute"
+
+				try {
+					const testService = await klass.create({
+						taskId: `test-git-pager-${Date.now()}`,
+						shadowDir: testShadowDir,
+						workspaceDir: testWorkspaceDir,
+						log: () => {},
+					})
+
+					await expect(testService.initShadowGit()).resolves.not.toThrow()
+				} finally {
+					if (originalGitPager !== undefined) {
+						process.env.GIT_PAGER = originalGitPager
+					} else {
+						delete process.env.GIT_PAGER
+					}
+					if (originalPager !== undefined) {
+						process.env.PAGER = originalPager
+					} else {
+						delete process.env.PAGER
 					}
 
 					await fs.rm(testShadowDir, { recursive: true, force: true })

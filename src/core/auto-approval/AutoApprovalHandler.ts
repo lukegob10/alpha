@@ -1,7 +1,7 @@
-import { GlobalState, ClineMessage, ClineAsk } from "@alpha-code/types"
+import { GlobalState, AlphaMessage, AlphaAsk } from "@alpha-code/types"
 
 import { getApiMetrics } from "../../shared/getApiMetrics"
-import { ClineAskResponse } from "../../shared/WebviewMessage"
+import { AlphaAskResponse } from "../../shared/WebviewMessage"
 
 export interface AutoApprovalResult {
 	shouldProceed: boolean
@@ -20,20 +20,26 @@ export class AutoApprovalHandler {
 	 */
 	async checkAutoApprovalLimits(
 		state: GlobalState | undefined,
-		messages: ClineMessage[],
+		messages: AlphaMessage[],
 		askForApproval: (
-			type: ClineAsk,
+			type: AlphaAsk,
 			data: string,
-		) => Promise<{ response: ClineAskResponse; text?: string; images?: string[] }>,
+		) => Promise<{ response: AlphaAskResponse; text?: string; images?: string[] }>,
+		options: { currentRequestRecorded?: boolean } = {},
 	): Promise<AutoApprovalResult> {
 		// Check request count limit
-		const requestResult = await this.checkRequestLimit(state, messages, askForApproval)
+		const requestResult = await this.checkRequestLimit(
+			state,
+			messages,
+			askForApproval,
+			options.currentRequestRecorded,
+		)
 		if (!requestResult.shouldProceed || requestResult.requiresApproval) {
 			return requestResult
 		}
 
 		// Check cost limit
-		const costResult = await this.checkCostLimit(state, messages, askForApproval)
+		const costResult = await this.checkCostLimit(state, messages, askForApproval, options.currentRequestRecorded)
 		return costResult
 	}
 
@@ -42,19 +48,21 @@ export class AutoApprovalHandler {
 	 */
 	private async checkRequestLimit(
 		state: GlobalState | undefined,
-		messages: ClineMessage[],
+		messages: AlphaMessage[],
 		askForApproval: (
-			type: ClineAsk,
+			type: AlphaAsk,
 			data: string,
-		) => Promise<{ response: ClineAskResponse; text?: string; images?: string[] }>,
+		) => Promise<{ response: AlphaAskResponse; text?: string; images?: string[] }>,
+		currentRequestRecorded = false,
 	): Promise<AutoApprovalResult> {
 		const maxRequests = state?.allowedMaxRequests || Infinity
 
 		// Calculate request count from messages after the last reset point
 		const messagesAfterReset = messages.slice(this.lastResetMessageIndex)
-		// Count API request messages (simplified - you may need to adjust based on your message structure)
+		// The owning Task loop records the current start before preflight; direct callers may not.
 		this.consecutiveAutoApprovedRequestsCount =
-			messagesAfterReset.filter((msg) => msg.type === "say" && msg.say === "api_req_started").length + 1 // +1 for the current request being checked
+			messagesAfterReset.filter((msg) => msg.type === "say" && msg.say === "api_req_started").length +
+			(currentRequestRecorded ? 0 : 1)
 
 		if (this.consecutiveAutoApprovedRequestsCount > maxRequests) {
 			const { response } = await askForApproval(
@@ -65,7 +73,7 @@ export class AutoApprovalHandler {
 			// If we get past the promise, it means the user approved and did not start a new task
 			if (response === "yesButtonClicked") {
 				// Reset tracking by recording the current message count
-				this.lastResetMessageIndex = messages.length
+				this.resetAllowance(messages, currentRequestRecorded)
 				return {
 					shouldProceed: true,
 					requiresApproval: true,
@@ -90,11 +98,12 @@ export class AutoApprovalHandler {
 	 */
 	private async checkCostLimit(
 		state: GlobalState | undefined,
-		messages: ClineMessage[],
+		messages: AlphaMessage[],
 		askForApproval: (
-			type: ClineAsk,
+			type: AlphaAsk,
 			data: string,
-		) => Promise<{ response: ClineAskResponse; text?: string; images?: string[] }>,
+		) => Promise<{ response: AlphaAskResponse; text?: string; images?: string[] }>,
+		currentRequestRecorded = false,
 	): Promise<AutoApprovalResult> {
 		const maxCost = state?.allowedMaxCost || Infinity
 
@@ -114,7 +123,7 @@ export class AutoApprovalHandler {
 			if (response === "yesButtonClicked") {
 				// Reset tracking by recording the current message count
 				// Future calculations will only include messages after this point
-				this.lastResetMessageIndex = messages.length
+				this.resetAllowance(messages, currentRequestRecorded)
 				return {
 					shouldProceed: true,
 					requiresApproval: true,
@@ -134,9 +143,20 @@ export class AutoApprovalHandler {
 		return { shouldProceed: true, requiresApproval: false }
 	}
 
-	/**
-	 * Reset the tracking (typically called when starting a new task)
-	 */
+	private resetAllowance(messages: AlphaMessage[], currentRequestRecorded: boolean): void {
+		this.lastResetMessageIndex = messages.length
+		if (!currentRequestRecorded) return
+		// Preflight can publish messages after the request start. Retain that request
+		// itself, including the cost that will be attached when it settles.
+		for (let index = messages.length - 1; index >= 0; index--) {
+			if (messages[index].type === "say" && messages[index].say === "api_req_started") {
+				this.lastResetMessageIndex = index
+				return
+			}
+		}
+	}
+
+	/** Reset the tracking (typically called when starting a new task). */
 	resetRequestCount(): void {
 		this.lastResetMessageIndex = 0
 		this.consecutiveAutoApprovedRequestsCount = 0

@@ -11,6 +11,7 @@
 		"missing_update_modes_fields": "Campos obrigatórios ausentes: skillName ou source",
 		"manager_unavailable": "Gerenciador de habilidades não disponível",
 		"missing_delete_fields": "Campos obrigatórios ausentes: skillName ou source",
-		"skill_not_found": "Habilidade \"{{name}}\" não encontrada"
+		"skill_not_found": "Habilidade \"{{name}}\" não encontrada",
+		"builtin_read_only": "As habilidades integradas são somente leitura. Crie uma habilidade pessoal ou do espaço de trabalho para substituí-las."
 	}
 }

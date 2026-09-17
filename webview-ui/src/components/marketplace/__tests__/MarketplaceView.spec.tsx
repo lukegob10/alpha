@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 
 import { ExtensionStateContext } from "@/context/ExtensionStateContext"
 import { vscode } from "@/utils/vscode"
@@ -63,6 +63,20 @@ describe("MarketplaceView", () => {
 				type: "fetchMarketplaceData",
 			})
 		})
+	})
+
+	it("projects legacy mode targets and state onto the MCP-only marketplace", async () => {
+		stateManager.transition({ type: "SET_ACTIVE_TAB", payload: { tab: "mode" } })
+
+		render(
+			<ExtensionStateContext.Provider value={mockExtensionState}>
+				<MarketplaceView stateManager={stateManager} targetTab="mode" />
+			</ExtensionStateContext.Provider>,
+		)
+
+		expect(screen.queryByRole("button", { name: "Modes" })).not.toBeInTheDocument()
+		expect(screen.getByPlaceholderText("marketplace:filters.search.placeholderMcp")).toBeInTheDocument()
+		await waitFor(() => expect(stateManager.getState().activeTab).toBe("mcp"))
 	})
 
 	it("should not trigger fetchMarketplaceData when marketplace data is already loaded", async () => {

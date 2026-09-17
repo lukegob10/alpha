@@ -1,14 +1,14 @@
 import React, { memo, useState } from "react"
 import { Trans } from "react-i18next"
 
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 
 import { vscode } from "@src/utils/vscode"
 import { Button } from "@src/components/ui"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 
 type AutoApprovedRequestLimitWarningProps = {
-	message: ClineMessage
+	message: AlphaMessage
 }
 
 export const AutoApprovedRequestLimitWarning = memo(({ message }: AutoApprovedRequestLimitWarningProps) => {

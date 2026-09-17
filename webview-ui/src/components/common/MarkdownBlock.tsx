@@ -1,5 +1,6 @@
 import React, { memo, useMemo } from "react"
-import ReactMarkdown from "react-markdown"
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown"
+import { parseHtmlDocumentLink } from "@alpha-code/types"
 import styled from "styled-components"
 import { visit } from "unist-util-visit"
 import rehypeKatex from "rehype-katex"
@@ -13,6 +14,7 @@ import MermaidBlock from "./MermaidBlock"
 
 interface MarkdownBlockProps {
 	markdown?: string
+	partial?: boolean
 }
 
 const StyledMarkdown = styled.div`
@@ -26,11 +28,11 @@ const StyledMarkdown = styled.div`
 
 	code:not(pre > code) {
 		font-family: var(--vscode-editor-font-family, monospace);
-		font-size: 0.85em;
-		filter: saturation(110%) brightness(95%);
-		color: var(--vscode-textPreformat-foreground) !important;
-		background-color: var(--vscode-textPreformat-background) !important;
-		padding: 1px 2px;
+		font-size: 0.9em;
+		color: var(--vscode-textPreformat-foreground, var(--vscode-foreground));
+		background-color: var(--vscode-textPreformat-background, var(--surface-raised));
+		padding: 1px 5px;
+		border-radius: 4px;
 		white-space: pre-line;
 		word-break: break-word;
 		overflow-wrap: anywhere;
@@ -89,16 +91,16 @@ const StyledMarkdown = styled.div`
 	li,
 	ol,
 	ul {
-		line-height: 1.35em;
+		line-height: 1.65;
 	}
 
 	li {
-		margin: 0.5em 0;
+		margin: 0.25em 0;
 	}
 
 	ol,
 	ul {
-		padding-left: 2em;
+		padding-left: 1.75em;
 		margin-left: 0;
 	}
 
@@ -120,7 +122,15 @@ const StyledMarkdown = styled.div`
 
 	p {
 		white-space: pre-wrap;
-		margin: 1em 0 0.25em;
+		margin: 0.75em 0;
+	}
+
+	> :first-child {
+		margin-top: 0;
+	}
+
+	> :last-child {
+		margin-bottom: 0;
 	}
 
 	/* Prevent layout shifts during streaming */
@@ -203,7 +213,7 @@ const StyledMarkdown = styled.div`
 	}
 `
 
-const MarkdownBlock = memo(({ markdown }: MarkdownBlockProps) => {
+const MarkdownBlock = memo(({ markdown, partial = false }: MarkdownBlockProps) => {
 	const components = useMemo(
 		() => ({
 			table: ({ children, ...props }: any) => {
@@ -215,6 +225,11 @@ const MarkdownBlock = memo(({ markdown }: MarkdownBlockProps) => {
 			},
 			a: ({ href, children, ...props }: any) => {
 				const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+					if (href?.startsWith("alpha-document:")) {
+						e.preventDefault()
+						if (parseHtmlDocumentLink(href)) vscode.postMessage({ type: "openHtmlDocument", text: href })
+						return
+					}
 					// Only process file:// protocol or local file paths
 					const isLocalPath = href?.startsWith("file://") || href?.startsWith("/") || !href?.includes("://")
 
@@ -275,7 +290,11 @@ const MarkdownBlock = memo(({ markdown }: MarkdownBlockProps) => {
 				if (className.includes("language-mermaid")) {
 					return (
 						<div style={{ margin: "1em 0" }}>
-							<MermaidBlock code={codeString} />
+							{partial ? (
+								<CodeBlock source={codeString} language="mermaid" partial />
+							) : (
+								<MermaidBlock code={codeString} />
+							)}
 						</div>
 					)
 				}
@@ -287,7 +306,7 @@ const MarkdownBlock = memo(({ markdown }: MarkdownBlockProps) => {
 				// Wrap CodeBlock in a div to ensure proper separation
 				return (
 					<div style={{ margin: "1em 0" }}>
-						<CodeBlock source={codeString} language={language} />
+						<CodeBlock source={codeString} language={language} partial={partial} />
 					</div>
 				)
 			},
@@ -300,12 +319,13 @@ const MarkdownBlock = memo(({ markdown }: MarkdownBlockProps) => {
 				)
 			},
 		}),
-		[],
+		[partial],
 	)
 
 	return (
 		<StyledMarkdown>
 			<ReactMarkdown
+				urlTransform={(url) => (parseHtmlDocumentLink(url) ? url : defaultUrlTransform(url))}
 				remarkPlugins={[
 					remarkGfm,
 					remarkMath,

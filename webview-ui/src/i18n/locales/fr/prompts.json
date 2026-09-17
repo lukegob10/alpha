@@ -26,7 +26,9 @@
 			"read": "Lire les fichiers",
 			"edit": "Modifier les fichiers",
 			"command": "Exécuter des commandes",
-			"mcp": "Utiliser MCP"
+			"mcp": "Utiliser MCP",
+			"github": "Utiliser GitHub",
+			"browser": "Utiliser le navigateur intégré"
 		},
 		"noTools": "Aucun"
 	},
@@ -188,16 +190,7 @@
 		"buttons": {
 			"cancel": "Annuler",
 			"create": "Créer le mode"
-		},
-		"deleteMode": "Supprimer le mode"
+		}
 	},
-	"allFiles": "tous les fichiers",
-	"deleteMode": {
-		"title": "Supprimer le mode",
-		"message": "Êtes-vous sûr de vouloir supprimer le mode \"{{modeName}}\" ?",
-		"rulesFolder": "Ce mode a un dossier de règles à {{folderPath}} qui sera également supprimé.",
-		"descriptionNoRules": "Êtes-vous sûr de vouloir supprimer ce mode personnalisé ?",
-		"confirm": "Supprimer",
-		"cancel": "Annuler"
-	}
+	"allFiles": "tous les fichiers"
 }

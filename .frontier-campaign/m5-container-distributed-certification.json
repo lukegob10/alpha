@@ -1,0 +1,42 @@
+{
+	"version": 1,
+	"id": "m5-container-distributed-certification",
+	"target": "docs/testing-harness-convergence-plans/m5-container-distributed-certification.md",
+	"suite": "evals/suite.yaml",
+	"artifactRoot": ".frontier-campaign/campaigns",
+	"budgets": {
+		"maxCampaignWallMs": 900000,
+		"maxCommandWallMs": 300000,
+		"maxCommands": 8,
+		"maxOutputBytesPerCommand": 1048576
+	},
+	"allowedCommandPrefixes": [
+		["pnpm", "--filter", "@alpha-code/evals", "test:all"],
+		["pnpm", "--filter", "@alpha-code/evals", "test:infrastructure"],
+		["pnpm", "--filter", "@alpha-code/evals", "test:coverage"],
+		["pnpm", "--filter", "@alpha-code/evals", "check-types"],
+		["pnpm", "--filter", "@alpha-code/evals", "lint"],
+		["pnpm", "--filter", "@alpha-code/web-evals", "test"],
+		["pnpm", "--filter", "@alpha-code/web-evals", "check-types"]
+	],
+	"validationCommands": [
+		{ "id": "eval-all", "command": "pnpm", "args": ["--filter", "@alpha-code/evals", "test:all"], "cwd": "." },
+		{
+			"id": "real-infrastructure",
+			"command": "pnpm",
+			"args": ["--filter", "@alpha-code/evals", "test:infrastructure"],
+			"cwd": "."
+		},
+		{ "id": "coverage", "command": "pnpm", "args": ["--filter", "@alpha-code/evals", "test:coverage"], "cwd": "." },
+		{ "id": "types", "command": "pnpm", "args": ["--filter", "@alpha-code/evals", "check-types"], "cwd": "." },
+		{ "id": "lint", "command": "pnpm", "args": ["--filter", "@alpha-code/evals", "lint"], "cwd": "." },
+		{ "id": "web-tests", "command": "pnpm", "args": ["--filter", "@alpha-code/web-evals", "test"], "cwd": "." },
+		{
+			"id": "web-types",
+			"command": "pnpm",
+			"args": ["--filter", "@alpha-code/web-evals", "check-types"],
+			"cwd": "."
+		}
+	],
+	"model": { "enabled": false }
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import type { ClineProvider } from "../../webview/ClineProvider"
+import type { AlphaProvider } from "../../webview/AlphaProvider"
 import type { ProviderSettings, ModelInfo } from "@alpha-code/types"
 
 // All vi.mock() calls are hoisted to the top of the file by Vitest
@@ -115,10 +115,13 @@ vi.mock("../../../integrations/misc/extract-text", () => ({
 // Mock getEnvironmentDetails
 vi.mock("../../environment/getEnvironmentDetails", () => ({
 	getEnvironmentDetails: vi.fn().mockResolvedValue(""),
+	captureEnvironmentDetails: vi
+		.fn()
+		.mockImplementation(async () => ({ details: "", commit: vi.fn(), release: vi.fn() })),
 }))
 
-// Mock RooIgnoreController
-vi.mock("../../ignore/RooIgnoreController")
+// Mock AlphaIgnoreController
+vi.mock("../../ignore/AlphaIgnoreController")
 
 // Mock condense
 vi.mock("../../condense", () => ({
@@ -149,7 +152,7 @@ vi.mock("../../../utils/fs", () => ({
 import { Task } from "../Task"
 
 describe("Task reasoning preservation", () => {
-	let mockProvider: Partial<ClineProvider>
+	let mockProvider: Partial<AlphaProvider>
 	let mockApiConfiguration: ProviderSettings
 
 	beforeEach(() => {
@@ -179,7 +182,7 @@ describe("Task reasoning preservation", () => {
 	it("should append reasoning to assistant message when preserveReasoning is true", async () => {
 		// Create a task instance
 		const task = new Task({
-			provider: mockProvider as ClineProvider,
+			provider: mockProvider as AlphaProvider,
 			apiConfiguration: mockApiConfiguration,
 			task: "Test task",
 			startTask: false,
@@ -246,7 +249,7 @@ describe("Task reasoning preservation", () => {
 	it("should NOT append reasoning to assistant message when preserveReasoning is false", async () => {
 		// Create a task instance
 		const task = new Task({
-			provider: mockProvider as ClineProvider,
+			provider: mockProvider as AlphaProvider,
 			apiConfiguration: mockApiConfiguration,
 			task: "Test task",
 			startTask: false,
@@ -304,7 +307,7 @@ describe("Task reasoning preservation", () => {
 	it("should handle empty reasoning message gracefully when preserveReasoning is true", async () => {
 		// Create a task instance
 		const task = new Task({
-			provider: mockProvider as ClineProvider,
+			provider: mockProvider as AlphaProvider,
 			apiConfiguration: mockApiConfiguration,
 			task: "Test task",
 			startTask: false,
@@ -358,7 +361,7 @@ describe("Task reasoning preservation", () => {
 	it("should handle undefined preserveReasoning (defaults to false)", async () => {
 		// Create a task instance
 		const task = new Task({
-			provider: mockProvider as ClineProvider,
+			provider: mockProvider as AlphaProvider,
 			apiConfiguration: mockApiConfiguration,
 			task: "Test task",
 			startTask: false,
@@ -402,7 +405,7 @@ describe("Task reasoning preservation", () => {
 
 	it("should embed encrypted reasoning as first assistant content block", async () => {
 		const task = new Task({
-			provider: mockProvider as ClineProvider,
+			provider: mockProvider as AlphaProvider,
 			apiConfiguration: mockApiConfiguration,
 			task: "Test task",
 			startTask: false,
@@ -448,7 +451,7 @@ describe("Task reasoning preservation", () => {
 
 	it("should store plain text reasoning from streaming for all providers", async () => {
 		const task = new Task({
-			provider: mockProvider as ClineProvider,
+			provider: mockProvider as AlphaProvider,
 			apiConfiguration: mockApiConfiguration,
 			task: "Test task",
 			startTask: false,

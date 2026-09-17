@@ -12,29 +12,36 @@ import { telemetryClient } from "./utils/TelemetryClient"
 import { initializeSourceMaps, exposeSourceMapsForDebugging } from "./utils/sourceMapInitializer"
 import { ExtensionStateContextProvider, useExtensionState } from "./context/ExtensionStateContext"
 import ChatView, { ChatViewRef } from "./components/chat/ChatView"
-import HistoryView from "./components/history/HistoryView"
-import SettingsView, { SettingsViewRef } from "./components/settings/SettingsView"
+import type { SettingsViewRef } from "./components/settings/SettingsView"
 import WelcomeView from "./components/welcome/WelcomeViewProvider"
-import { MarketplaceView } from "./components/marketplace/MarketplaceView"
 import { CheckpointRestoreDialog } from "./components/chat/CheckpointRestoreDialog"
 import { DeleteMessageDialog, EditMessageDialog } from "./components/chat/MessageModificationConfirmationDialog"
 import ErrorBoundary from "./components/ErrorBoundary"
-import ScheduledTasksView from "./components/scheduled-tasks/ScheduledTasksView"
-import GoalSeekView from "./components/goal-seek/GoalSeekView"
 import { useAddNonInteractiveClickListener } from "./components/ui/hooks/useNonInteractiveClick"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { STANDARD_TOOLTIP_DELAY } from "./components/ui/standard-tooltip"
 
-type Tab = "settings" | "history" | "chat" | "marketplace" | "scheduledTasks" | "goalSeek"
+const HistoryView = React.lazy(() => import("./components/history/HistoryView"))
+const SettingsView = React.lazy(() => import("./components/settings/SettingsView"))
+const MarketplaceView = React.lazy(() =>
+	import("./components/marketplace/MarketplaceView").then(({ MarketplaceView }) => ({ default: MarketplaceView })),
+)
+const ScheduledTasksView = React.lazy(() => import("./components/scheduled-tasks/ScheduledTasksView"))
+
+const supportedTabs = ["settings", "history", "chat", "marketplace", "scheduledTasks"] as const
+type Tab = (typeof supportedTabs)[number]
 
 interface DeleteMessageDialogState {
 	isOpen: boolean
+	taskId?: string
 	messageTs: number
 	hasCheckpoint: boolean
 }
 
 interface EditMessageDialogState {
 	isOpen: boolean
+	taskId?: string
+	messageAction?: "restart"
 	messageTs: number
 	text: string
 	hasCheckpoint: boolean
@@ -61,6 +68,7 @@ const App = () => {
 		telemetryKey,
 		machineId,
 		renderContext,
+		currentTaskId,
 	} = useExtensionState()
 
 	// Create a persistent state manager
@@ -69,7 +77,6 @@ const App = () => {
 	const [showAnnouncement, setShowAnnouncement] = useState(false)
 	const [tab, setTab] = useState<Tab>("chat")
 	const [scheduledTaskTargetId, setScheduledTaskTargetId] = useState<string | undefined>(undefined)
-	const [goalSeekTargetId, setGoalSeekTargetId] = useState<string | undefined>(undefined)
 
 	const [deleteMessageDialogState, setDeleteMessageDialogState] = useState<DeleteMessageDialogState>({
 		isOpen: false,
@@ -109,12 +116,10 @@ const App = () => {
 			if (message.type === "action" && message.action) {
 				// Handle switchTab action with tab parameter
 				if (message.action === "switchTab" && message.tab) {
-					const targetTab = message.tab as Tab
+					const targetTab = supportedTabs.find((tab) => tab === message.tab)
+					if (!targetTab) return
 					if (targetTab === "scheduledTasks") {
 						setScheduledTaskTargetId(message.values?.scheduledTaskId as string | undefined)
-					}
-					if (targetTab === "goalSeek") {
-						setGoalSeekTargetId(message.values?.goalSeekJobId as string | undefined)
 					}
 					switchTab(targetTab)
 					// Extract targetSection from values if provided
@@ -144,16 +149,23 @@ const App = () => {
 			if (message.type === "showDeleteMessageDialog" && message.messageTs) {
 				setDeleteMessageDialogState({
 					isOpen: true,
+					taskId: message.taskId ?? currentTaskId,
 					messageTs: message.messageTs,
 					hasCheckpoint: message.hasCheckpoint || false,
 				})
 			}
 
-			if (message.type === "showEditMessageDialog" && message.messageTs && message.text) {
+			if (
+				message.type === "showEditMessageDialog" &&
+				message.messageTs &&
+				(message.text || message.images?.length)
+			) {
 				setEditMessageDialogState({
 					isOpen: true,
+					taskId: message.taskId ?? currentTaskId,
+					messageAction: message.messageAction,
 					messageTs: message.messageTs,
-					text: message.text,
+					text: message.text ?? "",
 					hasCheckpoint: message.hasCheckpoint || false,
 					images: message.images || [],
 				})
@@ -163,7 +175,7 @@ const App = () => {
 				chatViewRef.current?.acceptInput()
 			}
 		},
-		[switchTab],
+		[switchTab, currentTaskId],
 	)
 
 	useEvent("message", onMessage)
@@ -224,21 +236,22 @@ const App = () => {
 		<WelcomeView />
 	) : (
 		<>
-			{tab === "history" && <HistoryView onDone={() => switchTab("chat")} />}
-			{tab === "settings" && (
-				<SettingsView ref={settingsRef} onDone={() => setTab("chat")} targetSection={currentSection} />
-			)}
-			{tab === "marketplace" && (
-				<MarketplaceView
-					stateManager={marketplaceStateManager}
-					onDone={() => switchTab("chat")}
-					targetTab={currentMarketplaceTab as "mcp" | "mode" | undefined}
-				/>
-			)}
-			{tab === "scheduledTasks" && (
-				<ScheduledTasksView onDone={() => switchTab("chat")} targetTaskId={scheduledTaskTargetId} />
-			)}
-			{tab === "goalSeek" && <GoalSeekView onDone={() => switchTab("chat")} targetJobId={goalSeekTargetId} />}
+			<React.Suspense fallback={null}>
+				{tab === "history" && <HistoryView onDone={() => switchTab("chat")} />}
+				{tab === "settings" && (
+					<SettingsView ref={settingsRef} onDone={() => setTab("chat")} targetSection={currentSection} />
+				)}
+				{tab === "marketplace" && (
+					<MarketplaceView
+						stateManager={marketplaceStateManager}
+						onDone={() => switchTab("chat")}
+						targetTab={currentMarketplaceTab as "mcp" | "mode" | undefined}
+					/>
+				)}
+				{tab === "scheduledTasks" && (
+					<ScheduledTasksView onDone={() => switchTab("chat")} targetTaskId={scheduledTaskTargetId} />
+				)}
+			</React.Suspense>
 			<ChatView
 				ref={chatViewRef}
 				isHidden={tab !== "chat"}
@@ -254,6 +267,7 @@ const App = () => {
 					onConfirm={(restoreCheckpoint: boolean) => {
 						vscode.postMessage({
 							type: "deleteMessageConfirm",
+							taskId: deleteMessageDialogState.taskId,
 							messageTs: deleteMessageDialogState.messageTs,
 							restoreCheckpoint,
 						})
@@ -267,6 +281,7 @@ const App = () => {
 					onConfirm={() => {
 						vscode.postMessage({
 							type: "deleteMessageConfirm",
+							taskId: deleteMessageDialogState.taskId,
 							messageTs: deleteMessageDialogState.messageTs,
 						})
 						setDeleteMessageDialogState((prev) => ({ ...prev, isOpen: false }))
@@ -276,14 +291,16 @@ const App = () => {
 			{editMessageDialogState.hasCheckpoint ? (
 				<MemoizedCheckpointRestoreDialog
 					open={editMessageDialogState.isOpen}
-					type="edit"
+					type={editMessageDialogState.messageAction ?? "edit"}
 					hasCheckpoint={editMessageDialogState.hasCheckpoint}
 					onOpenChange={(open: boolean) => setEditMessageDialogState((prev) => ({ ...prev, isOpen: open }))}
 					onConfirm={(restoreCheckpoint: boolean) => {
 						vscode.postMessage({
 							type: "editMessageConfirm",
+							taskId: editMessageDialogState.taskId,
 							messageTs: editMessageDialogState.messageTs,
 							text: editMessageDialogState.text,
+							images: editMessageDialogState.images,
 							restoreCheckpoint,
 						})
 						setEditMessageDialogState((prev) => ({ ...prev, isOpen: false }))
@@ -292,10 +309,12 @@ const App = () => {
 			) : (
 				<MemoizedEditMessageDialog
 					open={editMessageDialogState.isOpen}
+					type={editMessageDialogState.messageAction ?? "edit"}
 					onOpenChange={(open: boolean) => setEditMessageDialogState((prev) => ({ ...prev, isOpen: open }))}
 					onConfirm={() => {
 						vscode.postMessage({
 							type: "editMessageConfirm",
+							taskId: editMessageDialogState.taskId,
 							messageTs: editMessageDialogState.messageTs,
 							text: editMessageDialogState.text,
 							images: editMessageDialogState.images,

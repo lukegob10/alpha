@@ -1,7 +1,11 @@
-import type { SecretState } from "@alpha-code/types"
+import type { GitHubToolApproval, SecretState } from "@alpha-code/types"
 
 import { formatResponse } from "../prompts/responses"
-import { GitHubApiClient, type GitHubMergeMethod } from "../../services/github/GitHubApiClient"
+import {
+	GitHubApiClient,
+	GitHubRequestInterruptedError,
+	type GitHubMergeMethod,
+} from "../../services/github/GitHubApiClient"
 import type { NativeToolArgs, ToolUse } from "../../shared/tools"
 import { Task } from "../task/Task"
 
@@ -14,18 +18,27 @@ export class GitHubApiTool extends BaseTool<"github_api"> {
 
 	async execute(params: GitHubApiParams, task: Task, callbacks: ToolCallbacks): Promise<void> {
 		const { askApproval, handleError, pushToolResult } = callbacks
+		let requestStarted = false
+		const assertActive = () => {
+			callbacks.signal?.throwIfAborted()
+			if (task.abort) throw new Error("GitHub request was cancelled.")
+		}
 
 		try {
+			assertActive()
 			const validationError = await this.validateParams(params, task)
 			if (validationError) {
 				pushToolResult(validationError)
 				return
 			}
 
+			assertActive()
 			const approvalMessage = JSON.stringify(buildApprovalMessage(params))
 			const didApprove = await askApproval("tool", approvalMessage, undefined, isWriteAction(params.action))
+			assertActive()
 
 			if (!didApprove) {
+				callbacks.setResultMetadata?.({ status: "denied" })
 				pushToolResult(formatResponse.toolDenied())
 				return
 			}
@@ -40,11 +53,25 @@ export class GitHubApiTool extends BaseTool<"github_api"> {
 				return
 			}
 
-			const client = new GitHubApiClient(token)
+			assertActive()
+			const client = new GitHubApiClient(token, { signal: callbacks.signal })
+			requestStarted = true
 			const result = await executeGitHubAction(client, params)
+			assertActive()
 			task.consecutiveMistakeCount = 0
 			pushToolResult(JSON.stringify(result, null, 2))
 		} catch (error) {
+			if (callbacks.signal?.aborted || task.abort || error instanceof GitHubRequestInterruptedError) {
+				const interrupted =
+					error instanceof GitHubRequestInterruptedError
+						? error
+						: new GitHubRequestInterruptedError("cancelled", requestStarted && isWriteAction(params.action))
+				callbacks.setResultMetadata?.(
+					interrupted.reason === "timeout" ? { status: "error", timedOut: true } : { status: "cancelled" },
+				)
+				pushToolResult(formatResponse.toolError(interrupted.message))
+				return
+			}
 			await handleError("using GitHub API", error as Error)
 		}
 	}
@@ -125,19 +152,21 @@ export class GitHubApiTool extends BaseTool<"github_api"> {
 }
 
 function buildApprovalMessage(params: Partial<GitHubApiParams>) {
-	return {
-		tool: "githubApi",
-		action: params.action ?? "",
+	const github: GitHubToolApproval = {
+		action: params.action,
 		owner: params.owner ?? "",
 		repo: params.repo ?? "",
 		pull_number: "pull_number" in params ? params.pull_number : undefined,
 		issue_number: "issue_number" in params ? params.issue_number : undefined,
 		head: "head" in params ? params.head : undefined,
 		base: "base" in params ? params.base : undefined,
-		title: "title" in params ? params.title : undefined,
+		title: "title" in params ? (params.title ?? undefined) : undefined,
+		body: "body" in params ? (params.body ?? undefined) : undefined,
 		sha: "sha" in params ? params.sha : undefined,
-		merge_method: "merge_method" in params ? params.merge_method : undefined,
+		merge_method: "merge_method" in params ? (params.merge_method ?? undefined) : undefined,
+		message: "message" in params ? (params.message ?? undefined) : undefined,
 	}
+	return { tool: "githubApi", github }
 }
 
 function isWriteAction(action: string): boolean {

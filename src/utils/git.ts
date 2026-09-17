@@ -1,7 +1,7 @@
 import * as vscode from "vscode"
 import * as path from "path"
 import { promises as fs } from "fs"
-import { exec } from "child_process"
+import { exec, execFile } from "child_process"
 import { promisify } from "util"
 
 import type { GitRepositoryInfo, GitCommit } from "@alpha-code/types"
@@ -9,6 +9,7 @@ import type { GitRepositoryInfo, GitCommit } from "@alpha-code/types"
 import { truncateOutput } from "../integrations/misc/extract-text"
 
 const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 const GIT_OUTPUT_LINE_LIMIT = 500
 
@@ -191,11 +192,14 @@ export async function getWorkspaceGitInfo(): Promise<GitRepositoryInfo> {
 	return getGitRepositoryInfo(workspaceRoot)
 }
 
-async function checkGitRepo(cwd: string): Promise<boolean> {
+async function checkGitRepo(cwd: string, signal?: AbortSignal): Promise<boolean> {
 	try {
-		await execAsync("git rev-parse --git-dir", { cwd })
+		signal?.throwIfAborted()
+		if (signal) await execFileAsync("git", ["rev-parse", "--git-dir"], { cwd, signal })
+		else await execAsync("git rev-parse --git-dir", { cwd })
 		return true
 	} catch (error) {
+		signal?.throwIfAborted()
 		return false
 	}
 }
@@ -209,11 +213,14 @@ async function checkGitRepo(cwd: string): Promise<boolean> {
  *   console.log("Git is not installed");
  * }
  */
-export async function checkGitInstalled(): Promise<boolean> {
+export async function checkGitInstalled(signal?: AbortSignal): Promise<boolean> {
 	try {
-		await execAsync("git --version")
+		signal?.throwIfAborted()
+		if (signal) await execFileAsync("git", ["--version"], { signal })
+		else await execAsync("git --version")
 		return true
 	} catch (error) {
+		signal?.throwIfAborted()
 		return false
 	}
 }
@@ -233,16 +240,26 @@ export async function searchCommits(query: string, cwd: string): Promise<GitComm
 		}
 
 		// Search commits by hash or message, limiting to 10 results
-		const { stdout } = await execAsync(
-			`git log -n 10 --format="%H%n%h%n%s%n%an%n%ad" --date=short ` + `--grep="${query}" --regexp-ignore-case`,
+		const { stdout } = await execFileAsync(
+			"git",
+			[
+				"log",
+				"-n",
+				"10",
+				"--format=%H%n%h%n%s%n%an%n%ad",
+				"--date=short",
+				`--grep=${query}`,
+				"--regexp-ignore-case",
+			],
 			{ cwd },
 		)
 
 		let output = stdout
 		if (!output.trim() && /^[a-f0-9]+$/i.test(query)) {
 			// If no results from grep search and query looks like a hash, try searching by hash
-			const { stdout: hashStdout } = await execAsync(
-				`git log -n 10 --format="%H%n%h%n%s%n%an%n%ad" --date=short ` + `--author-date-order ${query}`,
+			const { stdout: hashStdout } = await execFileAsync(
+				"git",
+				["log", "-n", "10", "--format=%H%n%h%n%s%n%an%n%ad", "--date=short", "--author-date-order", query],
 				{ cwd },
 			).catch(() => ({ stdout: "" }))
 
@@ -278,6 +295,10 @@ export async function searchCommits(query: string, cwd: string): Promise<GitComm
 
 export async function getCommitInfo(hash: string, cwd: string): Promise<string> {
 	try {
+		if (!/^[a-f0-9]{4,40}$/i.test(hash)) {
+			return "Invalid commit hash"
+		}
+
 		const isInstalled = await checkGitInstalled()
 		if (!isInstalled) {
 			return "Git is not installed"
@@ -289,14 +310,16 @@ export async function getCommitInfo(hash: string, cwd: string): Promise<string> 
 		}
 
 		// Get commit info, stats, and diff separately
-		const { stdout: info } = await execAsync(`git show --format="%H%n%h%n%s%n%an%n%ad%n%b" --no-patch ${hash}`, {
-			cwd,
-		})
+		const { stdout: info } = await execFileAsync(
+			"git",
+			["show", "--format=%H%n%h%n%s%n%an%n%ad%n%b", "--no-patch", hash],
+			{ cwd },
+		)
 		const [fullHash, shortHash, subject, author, date, body] = info.trim().split("\n")
 
-		const { stdout: stats } = await execAsync(`git show --stat --format="" ${hash}`, { cwd })
+		const { stdout: stats } = await execFileAsync("git", ["show", "--stat", "--format=", hash], { cwd })
 
-		const { stdout: diff } = await execAsync(`git show --format="" ${hash}`, { cwd })
+		const { stdout: diff } = await execFileAsync("git", ["show", "--format=", hash], { cwd })
 
 		const summary = [
 			`Commit: ${shortHash} (${fullHash})`,
@@ -352,20 +375,23 @@ export async function getWorkingState(cwd: string): Promise<string> {
  * @param maxFiles Maximum number of file entries to include (0 = disabled)
  * @returns Git status string or null if not a git repository
  */
-export async function getGitStatus(cwd: string, maxFiles: number = 20): Promise<string | null> {
+export async function getGitStatus(cwd: string, maxFiles: number = 20, signal?: AbortSignal): Promise<string | null> {
 	try {
-		const isInstalled = await checkGitInstalled()
+		const isInstalled = await checkGitInstalled(signal)
 		if (!isInstalled) {
 			return null
 		}
 
-		const isRepo = await checkGitRepo(cwd)
+		const isRepo = await checkGitRepo(cwd, signal)
 		if (!isRepo) {
 			return null
 		}
 
 		// Use porcelain v1 format with branch info
-		const { stdout } = await execAsync("git status --porcelain=v1 --branch", { cwd })
+		signal?.throwIfAborted()
+		const { stdout } = signal
+			? await execFileAsync("git", ["status", "--porcelain=v1", "--branch"], { cwd, signal })
+			: await execAsync("git status --porcelain=v1 --branch", { cwd })
 
 		if (!stdout.trim()) {
 			return null
@@ -392,6 +418,7 @@ export async function getGitStatus(cwd: string, maxFiles: number = 20): Promise<
 
 		return output.join("\n")
 	} catch (error) {
+		signal?.throwIfAborted()
 		console.error("Error getting git status:", error)
 		return null
 	}

@@ -1,0 +1,11 @@
+node_modules
+.vscode-test
+.turbo
+coverage
+dist
+build
+out
+.next
+.venv
+pnpm-lock.yaml
+/artifacts/certification

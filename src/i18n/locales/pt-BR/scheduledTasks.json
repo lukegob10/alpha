@@ -1,0 +1,6 @@
+{
+	"profileRequired": "Selecione um perfil salvo antes de executar esta tarefa agendada.",
+	"profileUnavailable": "O perfil “{{name}}” não existe, foi renomeado ou não pôde ser carregado. Selecione novamente um perfil salvo.",
+	"skillUnavailable": "A habilidade “{{name}}” não existe, não pode ser lida ou está indisponível no espaço de trabalho e modo agendados. Selecione-a novamente.",
+	"workspaceInvalid": "O espaço de trabalho agendado deve ser um caminho absoluto."
+}

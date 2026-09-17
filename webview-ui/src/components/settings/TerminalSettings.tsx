@@ -1,4 +1,4 @@
-import { HTMLAttributes, useState, useCallback } from "react"
+import { HTMLAttributes, useCallback } from "react"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { vscode } from "@/utils/vscode"
 import { VSCodeCheckbox, VSCodeLink } from "@vscode/webview-ui-toolkit/react"
@@ -11,7 +11,7 @@ import { type ExtensionMessage, type TerminalOutputPreviewSize } from "@alpha-co
 import { cn } from "@/lib/utils"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Slider } from "@/components/ui"
 
-import { SetCachedStateField } from "./types"
+import type { SettingsCachedState } from "./managed-agent-settings"
 import { SectionHeader } from "./SectionHeader"
 import { Section } from "./Section"
 import { SearchableSetting } from "./SearchableSetting"
@@ -26,17 +26,24 @@ type TerminalSettingsProps = HTMLAttributes<HTMLDivElement> & {
 	terminalZshOhMy?: boolean
 	terminalZshP10k?: boolean
 	terminalZdotdir?: boolean
-	setCachedStateField: SetCachedStateField<
-		| "terminalOutputPreviewSize"
-		| "terminalShellIntegrationTimeout"
-		| "terminalShellIntegrationDisabled"
-		| "terminalCommandDelay"
-		| "terminalPowershellCounter"
-		| "terminalZshClearEolMark"
-		| "terminalZshOhMy"
-		| "terminalZshP10k"
-		| "terminalZdotdir"
-	>
+	terminalInheritEnv?: boolean
+	onTerminalInheritEnvLoaded: (value: boolean) => void
+	setCachedStateField: <
+		K extends
+			| "terminalOutputPreviewSize"
+			| "terminalShellIntegrationTimeout"
+			| "terminalShellIntegrationDisabled"
+			| "terminalCommandDelay"
+			| "terminalPowershellCounter"
+			| "terminalZshClearEolMark"
+			| "terminalZshOhMy"
+			| "terminalZshP10k"
+			| "terminalZdotdir"
+			| "terminalInheritEnv",
+	>(
+		field: K,
+		value: SettingsCachedState[K],
+	) => void
 }
 
 export const TerminalSettings = ({
@@ -49,33 +56,36 @@ export const TerminalSettings = ({
 	terminalZshOhMy,
 	terminalZshP10k,
 	terminalZdotdir,
+	terminalInheritEnv,
+	onTerminalInheritEnvLoaded,
 	setCachedStateField,
 	className,
 	...props
 }: TerminalSettingsProps) => {
 	const { t } = useAppTranslation()
 
-	const [inheritEnv, setInheritEnv] = useState<boolean>(true)
-
 	useMount(() => vscode.postMessage({ type: "getVSCodeSetting", setting: "terminal.integrated.inheritEnv" }))
 
-	const onMessage = useCallback((event: MessageEvent) => {
-		const message: ExtensionMessage = event.data
+	const onMessage = useCallback(
+		(event: MessageEvent) => {
+			const message: ExtensionMessage = event.data
 
-		switch (message.type) {
-			case "vsCodeSetting":
-				switch (message.setting) {
-					case "terminal.integrated.inheritEnv":
-						setInheritEnv(message.value ?? true)
-						break
-					default:
-						break
-				}
-				break
-			default:
-				break
-		}
-	}, [])
+			switch (message.type) {
+				case "vsCodeSetting":
+					switch (message.setting) {
+						case "terminal.integrated.inheritEnv":
+							onTerminalInheritEnvLoaded(message.value ?? true)
+							break
+						default:
+							break
+					}
+					break
+				default:
+					break
+			}
+		},
+		[onTerminalInheritEnvLoaded],
+	)
 
 	useEvent("message", onMessage)
 
@@ -173,15 +183,10 @@ export const TerminalSettings = ({
 									section="terminal"
 									label={t("settings:terminal.inheritEnv.label")}>
 									<VSCodeCheckbox
-										checked={inheritEnv}
-										onChange={(e: any) => {
-											setInheritEnv(e.target.checked)
-											vscode.postMessage({
-												type: "updateVSCodeSetting",
-												setting: "terminal.integrated.inheritEnv",
-												value: e.target.checked,
-											})
-										}}
+										checked={terminalInheritEnv ?? true}
+										onChange={(e: any) =>
+											setCachedStateField("terminalInheritEnv", e.target.checked)
+										}
 										data-testid="terminal-inherit-env-checkbox">
 										<span className="font-medium">{t("settings:terminal.inheritEnv.label")}</span>
 									</VSCodeCheckbox>

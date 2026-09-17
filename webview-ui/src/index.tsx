@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react"
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 
@@ -5,13 +6,16 @@ import "./index.css"
 import App from "./App"
 import "@vscode/codicons/dist/codicon.css"
 
-import { getHighlighter } from "./utils/highlighter"
-
-// Initialize Shiki early to hide initialization latency (async)
-getHighlighter().catch((error: Error) => console.error("Failed to initialize Shiki highlighter:", error))
+const Tickets = lazy(() => import("./components/tickets/TicketsView"))
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
-		<App />
+		{document.getElementById("root")?.dataset.view === "tickets" ? (
+			<Suspense fallback={null}>
+				<Tickets />
+			</Suspense>
+		) : (
+			<App />
+		)}
 	</StrictMode>,
 )

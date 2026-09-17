@@ -37,6 +37,7 @@ describe("getSystemInfoSection", () => {
 		expect(result).toContain("Default Shell: /bin/bash")
 		expect(result).toContain(`Home Directory: ${mockHomeDir}`)
 		expect(result).toContain(`Current Workspace Directory: ${mockCwd}`)
+		expect(result).toContain(`current workspace directory ('${mockCwd}')`)
 	})
 
 	it("should fallback to platform and release when os-name throws error", () => {

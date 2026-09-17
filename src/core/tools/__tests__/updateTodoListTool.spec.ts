@@ -1,6 +1,122 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import { parseMarkdownChecklist } from "../UpdateTodoListTool"
+import {
+	parseMarkdownChecklist,
+	setTodoListForTask,
+	setPendingTodoList,
+	updateTodoListTool,
+} from "../UpdateTodoListTool"
 import { TodoItem } from "@alpha-code/types"
+import type { Task } from "../../task/Task"
+import type { ToolCallbacks } from "../BaseTool"
+
+describe("TODO approval isolation", () => {
+	function harness() {
+		const task = {
+			taskId: "task",
+			todoList: [],
+			say: vi.fn(),
+			providerRef: { deref: () => undefined },
+		} as unknown as Task
+		const callbacks = {
+			askApproval: vi.fn<ToolCallbacks["askApproval"]>().mockResolvedValue(true),
+			pushToolResult: vi.fn(),
+			handleError: vi.fn(),
+			setResultMetadata: vi.fn(),
+		}
+		return { task, callbacks }
+	}
+
+	it("accepts only validated edits for the addressed pending approval", async () => {
+		const { task, callbacks } = harness()
+		const edited: TodoItem[] = [{ id: "edited", content: "Human edit", status: "pending" }]
+		let approvalId = ""
+		callbacks.askApproval.mockImplementation(async (_kind, message) => {
+			approvalId = JSON.parse(message!).approvalId
+			expect(setPendingTodoList(task, { approvalId: "stale", todos: edited })).toBe(false)
+			expect(setPendingTodoList(task, { approvalId, todos: [{ ...edited[0], status: "invalid" }] })).toBe(false)
+			expect(setPendingTodoList(task, { approvalId, todos: [edited[0], edited[0]] })).toBe(false)
+			expect(setPendingTodoList(task, { approvalId, todos: edited })).toBe(true)
+			return true
+		})
+		await updateTodoListTool.execute({ todos: "- [ ] Original" }, task, callbacks)
+		expect(task.todoList).toEqual(edited)
+		expect(task.say).toHaveBeenCalledWith("user_edit_todos", expect.stringContaining("Human edit"))
+		expect(setPendingTodoList(task, { approvalId, todos: [] })).toBe(false)
+		expect(callbacks.handleError).not.toHaveBeenCalled()
+	})
+
+	it.each(["denied", "cancelled", "task-aborted", "error"] as const)(
+		"discards pending edits after %s",
+		async (outcome) => {
+			const { task, callbacks } = harness()
+			const controller = new AbortController()
+			let approvalId = ""
+			callbacks.askApproval.mockImplementation(async (_kind, message) => {
+				approvalId = JSON.parse(message!).approvalId
+				if (outcome === "cancelled") {
+					controller.abort()
+					expect(setPendingTodoList(task, { approvalId, todos: [] })).toBe(false)
+				}
+				if (outcome === "task-aborted") task.abort = true
+				if (outcome === "error") throw new Error("Approval failed")
+				return outcome !== "denied"
+			})
+			await updateTodoListTool.execute({ todos: "- [ ] Original" }, task, {
+				...callbacks,
+				signal: controller.signal,
+			})
+			expect(task.todoList).toEqual([])
+			expect(setPendingTodoList(task, { approvalId, todos: [] })).toBe(false)
+			if (outcome !== "error")
+				expect(callbacks.setResultMetadata).toHaveBeenCalledWith({
+					status: outcome === "denied" ? "denied" : "cancelled",
+				})
+		},
+	)
+
+	it("rejects an earlier invocation's approval ID in a later invocation of the same task", async () => {
+		const { task, callbacks } = harness()
+		let oldId = ""
+		callbacks.askApproval.mockImplementationOnce(async (_kind, message) => {
+			oldId = JSON.parse(message!).approvalId
+			return false
+		})
+		await updateTodoListTool.execute({ todos: "- [ ] First" }, task, callbacks)
+		callbacks.askApproval.mockImplementationOnce(async (_kind, message) => {
+			expect(JSON.parse(message!).approvalId).not.toBe(oldId)
+			expect(setPendingTodoList(task, { approvalId: oldId, todos: [] })).toBe(false)
+			return true
+		})
+		await updateTodoListTool.execute({ todos: "- [ ] Second" }, task, callbacks)
+		expect(task.todoList?.map((todo) => todo.content)).toEqual(["Second"])
+	})
+
+	it("keeps concurrent tasks' proposals separate while approval is pending", async () => {
+		const makeTask = (taskId: string) =>
+			({ taskId, todoList: [], say: vi.fn(), providerRef: { deref: () => undefined } }) as unknown as Task
+		const first = makeTask("first")
+		const second = makeTask("second")
+		let approveFirst!: (approved: boolean) => void
+		const firstApproval = new Promise<boolean>((resolve) => {
+			approveFirst = resolve
+		})
+		const callbacks: ToolCallbacks = {
+			askApproval: vi.fn().mockResolvedValue(true),
+			pushToolResult: vi.fn(),
+			handleError: vi.fn(),
+		}
+		const firstRun = updateTodoListTool.execute({ todos: "- [ ] First task work" }, first, {
+			...callbacks,
+			askApproval: () => firstApproval,
+		})
+		await updateTodoListTool.execute({ todos: "- [ ] Second task work" }, second, callbacks)
+		approveFirst(true)
+		await firstRun
+		expect(callbacks.handleError).not.toHaveBeenCalled()
+		expect(first.todoList?.map((todo) => todo.content)).toEqual(["First task work"])
+		expect(second.todoList?.map((todo) => todo.content)).toEqual(["Second task work"])
+	})
+})
 
 describe("parseMarkdownChecklist", () => {
 	describe("standard checkbox format (without dash prefix)", () => {
@@ -239,5 +355,22 @@ Just some text
 			const result2 = parseMarkdownChecklist(md2)
 			expect(result1[0].id).toBe(result2[0].id)
 		})
+	})
+})
+
+describe("setTodoListForTask", () => {
+	it("publishes a targeted todo update", async () => {
+		const postTaskTodosToWebview = vi.fn().mockResolvedValue(undefined)
+		const task = {
+			taskId: "task-1",
+			todoList: [],
+			providerRef: { deref: () => ({ postTaskTodosToWebview }) },
+		} as any
+		const todos: TodoItem[] = [{ id: "todo-1", content: "Verify performance", status: "in_progress" }]
+
+		await setTodoListForTask(task, todos)
+
+		expect(task.todoList).toEqual(todos)
+		expect(postTaskTodosToWebview).toHaveBeenCalledWith("task-1", todos)
 	})
 })

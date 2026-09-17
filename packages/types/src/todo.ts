@@ -17,3 +17,16 @@ export const todoItemSchema = z.object({
 })
 
 export type TodoItem = z.infer<typeof todoItemSchema>
+
+/** Edits apply only to the identified pending approval in the addressed live task. */
+export const todoApprovalEditSchema = z.object({
+	approvalId: z.string().min(1),
+	todos: z.array(
+		todoItemSchema.extend({
+			id: z.string().min(1),
+			content: z.string().refine((value) => value.trim().length > 0),
+		}),
+	),
+})
+
+export type TodoApprovalEdit = z.infer<typeof todoApprovalEditSchema>

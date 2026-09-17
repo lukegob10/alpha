@@ -4,11 +4,10 @@ import { useTranslation } from "react-i18next"
 import type { HistoryItem } from "@alpha-code/types"
 
 import { vscode } from "@/utils/vscode"
-import { useCopyToClipboard } from "@/utils/clipboard"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 
 import { DeleteTaskDialog } from "../history/DeleteTaskDialog"
-import { CopyIcon, CheckIcon, DownloadIcon, Trash2Icon, FileJsonIcon, MessageSquareCodeIcon } from "lucide-react"
+import { DownloadIcon, Trash2Icon, FileJsonIcon, MessageSquareCodeIcon } from "lucide-react"
 import { LucideIconButton } from "./LucideIconButton"
 
 interface TaskActionsProps {
@@ -19,7 +18,6 @@ interface TaskActionsProps {
 export const TaskActions = ({ item, buttonsDisabled }: TaskActionsProps) => {
 	const [deleteTaskId, setDeleteTaskId] = useState<string | null>(null)
 	const { t } = useTranslation()
-	const { copyWithFeedback, showCopyFeedback } = useCopyToClipboard()
 	const { debug } = useExtensionState()
 
 	return (
@@ -30,13 +28,6 @@ export const TaskActions = ({ item, buttonsDisabled }: TaskActionsProps) => {
 				onClick={() => vscode.postMessage({ type: "exportCurrentTask", taskId: item?.id })}
 			/>
 
-			{item?.task && (
-				<LucideIconButton
-					icon={showCopyFeedback ? CheckIcon : CopyIcon}
-					title={t("history:copyPrompt")}
-					onClick={(e) => copyWithFeedback(item.task, e)}
-				/>
-			)}
 			{!!item?.size && item.size > 0 && (
 				<>
 					<LucideIconButton

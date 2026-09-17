@@ -653,4 +653,22 @@ describe("BedrockEmbedder", () => {
 			expect(result.error).toBe("Configuration error")
 		})
 	})
+	it("uses query input_type for Cohere searches and document input_type for indexing", async () => {
+		const cohere = new BedrockEmbedder("us-east-1", "test-profile", "cohere.embed-english-v3")
+		mockSend.mockResolvedValue({ body: new TextEncoder().encode(JSON.stringify({ embeddings: [[0.1, 0.2]] })) })
+		await cohere.createEmbeddings(["source"])
+		await cohere.createEmbeddings(["find source"], undefined, "query")
+		const bodies = vi.mocked(InvokeModelCommand).mock.calls.map(([input]) => JSON.parse(String(input.body)))
+		expect(bodies[0].input_type).toBe("search_document")
+		expect(bodies[1].input_type).toBe("search_query")
+	})
+	it("uses text retrieval embeddings for Nova code searches", async () => {
+		const nova = new BedrockEmbedder("us-east-1", "test-profile", "amazon.nova-2-multimodal-embeddings-v1:0")
+		mockSend.mockResolvedValue({
+			body: new TextEncoder().encode(JSON.stringify({ embeddings: [{ embedding: [0.1, 0.2] }] })),
+		})
+		await nova.createEmbeddings(["find source"], undefined, "query")
+		const input = vi.mocked(InvokeModelCommand).mock.calls[0][0]
+		expect(JSON.parse(String(input.body)).singleEmbeddingParams.embeddingPurpose).toBe("TEXT_RETRIEVAL")
+	})
 })

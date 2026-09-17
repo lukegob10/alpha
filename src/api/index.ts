@@ -1,9 +1,9 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 
-import { isRetiredProvider, type ProviderSettings, type ModelInfo } from "@alpha-code/types"
+import { isRetiredProvider, type ProviderSettings, type ModelInfo, vertexDefaultModelId } from "@alpha-code/types"
 
-import { ApiStream } from "./transform/stream"
+import { ApiStream, type ApiStreamCapabilities, type ApiStreamRequestMetadata } from "./transform/stream"
 
 import {
 	AnthropicHandler,
@@ -12,6 +12,7 @@ import {
 	PoeHandler,
 	VertexHandler,
 	AnthropicVertexHandler,
+	VertexOpenAiHandler,
 	OpenAiHandler,
 	OpenAiCodexHandler,
 	LmStudioHandler,
@@ -28,6 +29,7 @@ import {
 	LiteLLMHandler,
 	QwenCodeHandler,
 	SambaNovaHandler,
+	StellarHandler,
 	ZAiHandler,
 	FireworksHandler,
 	VercelAiGatewayHandler,
@@ -40,7 +42,7 @@ export interface SingleCompletionHandler {
 	completePrompt(prompt: string): Promise<string>
 }
 
-export interface ApiHandlerCreateMessageMetadata {
+export interface ApiHandlerCreateMessageMetadata extends ApiStreamRequestMetadata {
 	/**
 	 * Task ID used for tracking and provider-specific features:
 	 * - Alpha: Sent as X-Alpha-Task-ID header
@@ -86,9 +88,29 @@ export interface ApiHandlerCreateMessageMetadata {
 	 * Only applies to providers that support function calling restrictions (e.g., Gemini).
 	 */
 	allowedFunctionNames?: string[]
+	/**
+	 * Optional provider capability override. Legacy callers/providers omit this
+	 * and retain the historical throw/no-terminal behavior; canonical adapters
+	 * advertise lifecycle and cancellation explicitly.
+	 */
+	streamCapabilities?: ApiStreamCapabilities
+}
+
+/**
+ * Operation-scoped controls for provider token counting. `signal` is terminal:
+ * providers must reject when the caller cancels. `remoteDeadline` bounds only
+ * native/remote tokenizer waiting, so providers may use a conservative local
+ * estimate after it expires without converting caller cancellation to success.
+ */
+export interface ApiHandlerCountTokensMetadata {
+	signal?: AbortSignal
+	remoteDeadline?: number | Date
 }
 
 export interface ApiHandler {
+	/** Additive capability declaration; absent means legacy stream semantics. */
+	readonly streamCapabilities?: ApiStreamCapabilities
+
 	createMessage(
 		systemPrompt: string,
 		messages: Anthropic.Messages.MessageParam[],
@@ -96,6 +118,9 @@ export interface ApiHandler {
 	): ApiStream
 
 	getModel(): { id: string; info: ModelInfo }
+
+	/** Resolve and retain a dynamic model before a new step captures capabilities and tools. Retries reuse it. */
+	prepareModel?(metadata?: ApiStreamRequestMetadata): Promise<void>
 
 	/**
 	 * Counts tokens for content blocks
@@ -105,7 +130,10 @@ export interface ApiHandler {
 	 * @param content The content to count tokens for
 	 * @returns A promise resolving to the token count
 	 */
-	countTokens(content: Array<Anthropic.Messages.ContentBlockParam>): Promise<number>
+	countTokens(
+		content: Array<Anthropic.Messages.ContentBlockParam>,
+		metadata?: ApiHandlerCountTokensMetadata,
+	): Promise<number>
 }
 
 export function buildApiHandler(configuration: ProviderSettings): ApiHandler {
@@ -124,10 +152,16 @@ export function buildApiHandler(configuration: ProviderSettings): ApiHandler {
 			return new OpenRouterHandler(options)
 		case "bedrock":
 			return new AwsBedrockHandler(options)
-		case "vertex":
-			return options.apiModelId?.startsWith("claude")
-				? new AnthropicVertexHandler(options)
-				: new VertexHandler(options)
+		case "vertex": {
+			const vertexModelId = (options.apiModelId?.trim() || vertexDefaultModelId).toLowerCase()
+			if (vertexModelId.includes("claude")) {
+				return new AnthropicVertexHandler(options)
+			}
+			if (vertexModelId.startsWith("gemini")) {
+				return new VertexHandler(options)
+			}
+			return new VertexOpenAiHandler(options)
+		}
 		case "openai":
 			return new OpenAiHandler(options)
 		case "ollama":
@@ -162,6 +196,8 @@ export function buildApiHandler(configuration: ProviderSettings): ApiHandler {
 			return new LiteLLMHandler(options)
 		case "sambanova":
 			return new SambaNovaHandler(options)
+		case "stellar":
+			return new StellarHandler(options)
 		case "zai":
 			return new ZAiHandler(options)
 		case "fireworks":

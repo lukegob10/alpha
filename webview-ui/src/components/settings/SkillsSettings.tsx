@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react"
-import { Plus, Globe, Folder, Edit, Trash2, Settings } from "lucide-react"
+import { Plus, Globe, Folder, Edit, Trash2, Settings, BookOpen } from "lucide-react"
 import { Trans } from "react-i18next"
 
 import type { SkillMetadata } from "@alpha-code/types"
@@ -29,11 +29,20 @@ import {
 } from "@/components/ui"
 import { vscode } from "@/utils/vscode"
 import { buildDocLink } from "@/utils/docLinks"
+import { getUserFacingModeOptions } from "@/utils/modePresentation"
 
 import { SectionHeader } from "./SectionHeader"
 import { CreateSkillDialog } from "./CreateSkillDialog"
 
-export const SkillsSettings: React.FC = () => {
+interface SkillsSettingsProps {
+	disabledBuiltinSkills?: string[]
+	onDisabledBuiltinSkillsChange?: (names: string[]) => void
+}
+
+export const SkillsSettings: React.FC<SkillsSettingsProps> = ({
+	disabledBuiltinSkills = [],
+	onDisabledBuiltinSkillsChange,
+}) => {
 	const { t } = useAppTranslation()
 	const { cwd, skills: rawSkills, customModes } = useExtensionState()
 	const skills = useMemo(() => rawSkills ?? [], [rawSkills])
@@ -51,10 +60,20 @@ export const SkillsSettings: React.FC = () => {
 	// Check if we're in a workspace/project
 	const hasWorkspace = Boolean(cwd)
 
-	// Get available modes for the checkboxes (built-in + custom modes)
+	// Saved bindings remain editable even after their modes stop being executable.
 	const availableModes = useMemo(() => {
-		return getAllModes(customModes).map((m) => ({ slug: m.slug, name: m.name }))
-	}, [customModes])
+		const allModes = getAllModes(customModes)
+		const options = getUserFacingModeOptions(allModes).map((m) => ({
+			slug: m.slug,
+			name: m.name,
+		}))
+		for (const slug of skillToEditModes?.modeSlugs ?? []) {
+			if (!options.some((mode) => mode.slug === slug)) {
+				options.push({ slug, name: allModes.find((mode) => mode.slug === slug)?.name ?? slug })
+			}
+		}
+		return options
+	}, [customModes, skillToEditModes])
 
 	const handleRefresh = useCallback(() => {
 		vscode.postMessage({ type: "requestSkills" })
@@ -161,6 +180,8 @@ export const SkillsSettings: React.FC = () => {
 	const projectSkills = useMemo(() => skills.filter((skill) => skill.source === "project"), [skills])
 	const globalSkills = useMemo(() => skills.filter((skill) => skill.source === "global"), [skills])
 
+	const builtinSkills = useMemo(() => skills.filter((skill) => skill.source === "builtin"), [skills])
+
 	// Render a single skill item
 	const renderSkillItem = useCallback(
 		(skill: SkillMetadata) => {
@@ -184,30 +205,60 @@ export const SkillsSettings: React.FC = () => {
 
 						{/* Actions */}
 						<div className="flex items-center gap-1 px-0 ml-0 min-[400px]:ml-0 min-[400px]:mt-4 flex-shrink-0">
-							{/* Mode settings button (gear icon) */}
-							<StandardTooltip content={t("settings:skills.configureModes")}>
-								<Button variant="ghost" size="icon" onClick={() => handleOpenModeDialog(skill)}>
-									<Settings className="size-4" />
-								</Button>
-							</StandardTooltip>
+							{skill.source === "builtin" ? (
+								<>
+									<Checkbox
+										id={`builtin-${skill.name}`}
+										checked={!disabledBuiltinSkills.includes(skill.name)}
+										onCheckedChange={(checked) =>
+											onDisabledBuiltinSkillsChange?.(
+												checked === true
+													? disabledBuiltinSkills.filter((name) => name !== skill.name)
+													: [...new Set([...disabledBuiltinSkills, skill.name])],
+											)
+										}
+									/>
+									<label htmlFor={`builtin-${skill.name}`}>{t("settings:skills.enabled")}</label>
+									<Button variant="ghost" size="sm" onClick={() => handleEditClick(skill)}>
+										<BookOpen className="size-4" />
+										{t("settings:skills.inspectSkill")}
+									</Button>
+								</>
+							) : (
+								<>
+									{/* Mode settings button (gear icon) */}
+									<StandardTooltip content={t("settings:skills.configureModes")}>
+										<Button variant="ghost" size="icon" onClick={() => handleOpenModeDialog(skill)}>
+											<Settings className="size-4" />
+										</Button>
+									</StandardTooltip>
 
-							<StandardTooltip content={t("settings:skills.editSkill")}>
-								<Button variant="ghost" size="icon" onClick={() => handleEditClick(skill)}>
-									<Edit />
-								</Button>
-							</StandardTooltip>
+									<StandardTooltip content={t("settings:skills.editSkill")}>
+										<Button variant="ghost" size="icon" onClick={() => handleEditClick(skill)}>
+											<Edit />
+										</Button>
+									</StandardTooltip>
 
-							<StandardTooltip content={t("settings:skills.deleteSkill")}>
-								<Button variant="ghost" size="icon" onClick={() => handleDeleteClick(skill)}>
-									<Trash2 className="text-destructive" />
-								</Button>
-							</StandardTooltip>
+									<StandardTooltip content={t("settings:skills.deleteSkill")}>
+										<Button variant="ghost" size="icon" onClick={() => handleDeleteClick(skill)}>
+											<Trash2 className="text-destructive" />
+										</Button>
+									</StandardTooltip>
+								</>
+							)}
 						</div>
 					</div>
 				</div>
 			)
 		},
-		[t, handleOpenModeDialog, handleEditClick, handleDeleteClick],
+		[
+			t,
+			handleOpenModeDialog,
+			handleEditClick,
+			handleDeleteClick,
+			disabledBuiltinSkills,
+			onDisabledBuiltinSkillsChange,
+		],
 	)
 
 	return (
@@ -244,6 +295,18 @@ export const SkillsSettings: React.FC = () => {
 			{/* Scrollable List Area */}
 			<div className="flex-1 overflow-y-auto px-4 py-2 min-h-0">
 				<div className="flex flex-col gap-1">
+					{builtinSkills.length > 0 && (
+						<>
+							<div className="flex items-center gap-2 px-2 py-2 mt-2">
+								<BookOpen className="size-4 shrink-0" />
+								<span className="font-medium text-lg">{t("settings:skills.builtinSkills")}</span>
+							</div>
+							<p className="px-2 text-sm text-vscode-descriptionForeground">
+								{t("settings:skills.builtinDescription")}
+							</p>
+							{builtinSkills.map(renderSkillItem)}
+						</>
+					)}
 					{/* Project Skills Section - Only show if in a workspace */}
 					{hasWorkspace && (
 						<>
@@ -274,30 +337,6 @@ export const SkillsSettings: React.FC = () => {
 						</div>
 					)}
 				</div>
-			</div>
-
-			{/* Fixed Footer */}
-			<div className="px-6 py-1 text-sm border-t border-vscode-panel-border text-muted-foreground">
-				<Trans
-					i18nKey="settings:skills.footer"
-					components={{
-						MarketplaceLink: (
-							<span
-								onClick={() => {
-									window.postMessage(
-										{
-											type: "action",
-											action: "marketplaceButtonClicked",
-											values: { marketplaceTab: "mode" },
-										},
-										"*",
-									)
-								}}
-								className="text-vscode-textLink-foreground hover:underline cursor-pointer"
-							/>
-						),
-					}}
-				/>
 			</div>
 
 			{/* Delete Confirmation Dialog */}

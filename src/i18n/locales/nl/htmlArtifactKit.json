@@ -1,0 +1,15 @@
+{
+	"filter": "Rijen filteren",
+	"sort": "Sorteren op {column}",
+	"rows": "{visible} van {total} rijen",
+	"unsupported": "Deze kitversie wordt niet ondersteund. Open de bron en gebruik data-alpha-kit=\"1\".",
+	"invalidTable": "De extra tabelfuncties zijn niet beschikbaar. Gebruik een rechthoekige tabel met één koprij en maximaal 1.000 rijen en 20 kolommen.",
+	"invalidChart": "De extra grafiekfuncties zijn niet beschikbaar. Controleer de gegevenstabel: maximaal 120 rijen, drie reeksen, één gedeelde eenheid en eindige numerieke waarden; laat ontbrekende waarden leeg.",
+	"invalidTabs": "Tabbladen zijn niet beschikbaar. Geef elke sectie een unieke ID en een tabbladlabel.",
+	"missing": "Ontbrekend",
+	"inspect": "De grafiekwaarden staan in de gegevenstabel. Geef een weergegeven waarde de focus om deze te bekijken.",
+	"sortAscending": "oplopend",
+	"sortDescending": "aflopend",
+	"invalidDiagram": "Diagram niet beschikbaar. Gebruik een relatietabel met drie kolommen, maximaal 24 benoemde knooppunten en 48 verbindingen, zonder cycli. De tabel blijft leesbaar.",
+	"imageUnavailable": "Afbeelding niet beschikbaar. Controleer het werkruimtepad en gebruik een statische PNG of JPEG binnen de gedocumenteerde groottelimieten."
+}

@@ -26,7 +26,9 @@
 			"read": "Dateien lesen",
 			"edit": "Dateien bearbeiten",
 			"command": "Befehle ausführen",
-			"mcp": "MCP verwenden"
+			"mcp": "MCP verwenden",
+			"github": "GitHub verwenden",
+			"browser": "Integrierten Browser verwenden"
 		},
 		"noTools": "Keine"
 	},
@@ -188,16 +190,7 @@
 		"buttons": {
 			"cancel": "Abbrechen",
 			"create": "Modus erstellen"
-		},
-		"deleteMode": "Modus löschen"
+		}
 	},
-	"allFiles": "alle Dateien",
-	"deleteMode": {
-		"title": "Modus löschen",
-		"message": "Möchten Sie den Modus \"{{modeName}}\" wirklich löschen?",
-		"rulesFolder": "Dieser Modus hat einen Regelordner unter {{folderPath}}, der ebenfalls gelöscht wird.",
-		"descriptionNoRules": "Möchten Sie diesen benutzerdefinierten Modus wirklich löschen?",
-		"confirm": "Löschen",
-		"cancel": "Abbrechen"
-	}
+	"allFiles": "alle Dateien"
 }

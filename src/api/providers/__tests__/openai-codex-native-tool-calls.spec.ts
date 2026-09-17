@@ -98,6 +98,59 @@ describe("OpenAiCodexHandler native tool calls", () => {
 		})
 	})
 
+	it("keeps interleaved function-call deltas correlated to their Codex output items", async () => {
+		vi.spyOn(openAiCodexOAuthManager, "getAccessToken").mockResolvedValue("test-token")
+		vi.spyOn(openAiCodexOAuthManager, "getAccountId").mockResolvedValue("acct_test")
+		const calls = [
+			{ outputIndex: 0, itemId: "fc_one", callId: "call_one", name: "spawn_agent", argument: '{"one":1}' },
+			{ outputIndex: 1, itemId: "fc_two", callId: "call_two", name: "spawn_agent", argument: '{"two":2}' },
+			{ outputIndex: 2, itemId: "fc_three", callId: "call_three", name: "read_file", argument: '{"three":3}' },
+		]
+		;(handler as any).client = {
+			responses: {
+				create: vi.fn().mockResolvedValue({
+					async *[Symbol.asyncIterator]() {
+						for (const call of calls) {
+							yield {
+								type: "response.output_item.added",
+								output_index: call.outputIndex,
+								item: {
+									type: "function_call",
+									id: call.itemId,
+									call_id: call.callId,
+									name: call.name,
+									arguments: "",
+								},
+							}
+						}
+						for (const call of calls) {
+							yield {
+								type: "response.function_call_arguments.delta",
+								item_id: call.itemId,
+								output_index: call.outputIndex,
+								delta: call.argument,
+							}
+						}
+					},
+				}),
+			},
+		}
+
+		const chunks: any[] = []
+		for await (const chunk of handler.createMessage("system", [], { taskId: "parallel-codex", tools: [] })) {
+			chunks.push(chunk)
+		}
+		expect(chunks.filter((chunk) => chunk.type === "tool_call_partial")).toEqual(
+			calls.map((call) => ({
+				type: "tool_call_partial",
+				index: call.outputIndex,
+				id: call.callId,
+				name: call.name,
+				arguments: call.argument,
+			})),
+		)
+	})
+
 	it("yields text when Codex emits assistant message only in response.output_item.done", async () => {
 		vi.spyOn(openAiCodexOAuthManager, "getAccessToken").mockResolvedValue("test-token")
 		vi.spyOn(openAiCodexOAuthManager, "getAccountId").mockResolvedValue("acct_test")
@@ -404,5 +457,113 @@ describe("OpenAiCodexHandler native tool calls", () => {
 
 		const textChunks = chunks.filter((c) => c.type === "text")
 		expect(textChunks.map((c) => c.text).join("")).toBe("hello world")
+	})
+
+	it("returns a metadata-rich failed outcome without throwing for lifecycle callers", async () => {
+		vi.spyOn(openAiCodexOAuthManager, "getAccessToken").mockResolvedValue("test-token")
+		vi.spyOn(openAiCodexOAuthManager, "getAccountId").mockResolvedValue("acct_test")
+		;(handler as any).client = {
+			responses: {
+				create: vi.fn().mockResolvedValue({
+					async *[Symbol.asyncIterator]() {
+						yield {
+							type: "response.failed",
+							error: {
+								message: "Codex policy rejected",
+								code: "policy_rejected",
+								status: 400,
+								retryable: false,
+							},
+						}
+					},
+				}),
+			},
+		}
+
+		const stream = handler.createMessage("system", [{ role: "user", content: "test" } as any], {
+			taskId: "t",
+			tools: [],
+			requestId: "codex-request-terminal-1",
+			attemptId: "codex-attempt-terminal-1",
+			streamCapabilities: { lifecycle: true },
+		} as any)
+		const chunks: any[] = []
+		let thrown: any
+		try {
+			for await (const chunk of stream) chunks.push(chunk)
+		} catch (error) {
+			thrown = error
+		}
+
+		expect(chunks).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "error",
+					retryable: false,
+					status: 400,
+					requestId: "codex-request-terminal-1",
+					attemptId: "codex-attempt-terminal-1",
+				}),
+				expect.objectContaining({ type: "outcome", status: "failed", retryable: false }),
+			]),
+		)
+		expect(thrown).toBeUndefined()
+	})
+
+	it.each([
+		{
+			label: "completed followed by done",
+			first: { type: "response.completed" },
+			second: { type: "response.done" },
+			expectedStatus: "completed",
+		},
+		{
+			label: "incomplete followed by completed",
+			first: {
+				type: "response.incomplete",
+				response: { incomplete_details: { reason: "max_output_tokens" } },
+			},
+			second: { type: "response.completed" },
+			expectedStatus: "incomplete",
+		},
+		{
+			label: "cancelled followed by completed",
+			first: { type: "response.done", response: { status: "cancelled" } },
+			second: { type: "response.completed" },
+			expectedStatus: "cancelled",
+		},
+	])("emits only the first terminal outcome for $label", async ({ first, second, expectedStatus }) => {
+		vi.spyOn(openAiCodexOAuthManager, "getAccessToken").mockResolvedValue("test-token")
+		vi.spyOn(openAiCodexOAuthManager, "getAccountId").mockResolvedValue("acct_test")
+		;(handler as any).client = {
+			responses: {
+				create: vi.fn().mockResolvedValue({
+					async *[Symbol.asyncIterator]() {
+						yield first
+						yield second
+					},
+				}),
+			},
+		}
+
+		const chunks: any[] = []
+		for await (const chunk of handler.createMessage("system", [], {
+			taskId: "terminal-codex",
+			requestId: "codex-terminal-request",
+			attemptId: "codex-terminal-attempt",
+			streamCapabilities: { lifecycle: true },
+		} as any)) {
+			chunks.push(chunk)
+		}
+
+		const outcomes = chunks.filter((chunk) => chunk.type === "outcome")
+		expect(outcomes).toHaveLength(1)
+		expect(outcomes[0]).toMatchObject({
+			type: "outcome",
+			status: expectedStatus,
+			terminal: true,
+			requestId: "codex-terminal-request",
+			attemptId: "codex-terminal-attempt",
+		})
 	})
 })

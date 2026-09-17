@@ -17,6 +17,7 @@ export * from "./poe.js"
 export * from "./qwen-code.js"
 export * from "./requesty.js"
 export * from "./sambanova.js"
+export * from "./stellar.js"
 export * from "./unbound.js"
 export * from "./vertex.js"
 export * from "./vscode-llm.js"
@@ -40,6 +41,7 @@ import { poeDefaultModelId } from "./poe.js"
 import { qwenCodeDefaultModelId } from "./qwen-code.js"
 import { requestyDefaultModelId } from "./requesty.js"
 import { sambaNovaDefaultModelId } from "./sambanova.js"
+import { stellarDefaultModelId } from "./stellar.js"
 import { unboundDefaultModelId } from "./unbound.js"
 import { vertexDefaultModelId } from "./vertex.js"
 import { vscodeLlmDefaultModelId } from "./vscode-llm.js"
@@ -75,6 +77,8 @@ export function getProviderDefaultModelId(
 			return bedrockDefaultModelId
 		case "vertex":
 			return vertexDefaultModelId
+		case "stellar":
+			return stellarDefaultModelId
 		case "gemini":
 			return geminiDefaultModelId
 		case "deepseek":

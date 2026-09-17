@@ -1,4 +1,18 @@
 {
+	"messageActions": {
+		"copy": "Kopiëren",
+		"copied": "Gekopieerd",
+		"edit": "Bewerken en opnieuw verzenden",
+		"restart": "Opnieuw starten vanaf de vorige opdracht",
+		"restartWarning": "De vorige opdracht wordt opnieuw uitgevoerd en alle volgende berichten worden vervangen. De bestanden in de werkruimte blijven zoals ze zijn.",
+		"restartWithCheckpoint": "De vorige opdracht wordt opnieuw uitgevoerd en alle volgende berichten worden vervangen. Ook de bestanden herstellen naar het bijbehorende checkpoint?",
+		"restartOnly": "Opnieuw starten zonder bestanden te herstellen"
+	},
+	"activityTrace": {
+		"needsAttention": "Aandacht vereist",
+		"workedFor": "Gewerkt gedurende {{duration}}"
+	},
+	"completionReport": "Afrondingsrapport",
 	"greeting": "Welkom bij Alpha",
 	"task": {
 		"title": "Taak",
@@ -30,7 +44,9 @@
 	"unpin": "Losmaken",
 	"pin": "Vastmaken",
 	"fileChangesInConversation": {
-		"header": "{{count}} bestand(en) gewijzigd in dit gesprek"
+		"header": "Bewerkte bestanden: {{count}}",
+		"linesChanged": "{{added}} regels toegevoegd, {{removed}} regels verwijderd",
+		"openFile": "Bestand openen: {{path}}"
 	},
 	"retry": {
 		"title": "Opnieuw proberen",
@@ -208,18 +224,21 @@
 		"didViewTopLevel": "Alpha heeft de bovenliggende bestanden in deze map bekeken",
 		"wantsToViewRecursive": "Alpha wil alle bestanden in deze map recursief bekijken",
 		"didViewRecursive": "Alpha heeft alle bestanden in deze map recursief bekeken",
-		"wantsToSearch": "Alpha wil deze map doorzoeken op <code>{{regex}}</code>",
-		"didSearch": "Alpha heeft deze map doorzocht op <code>{{regex}}</code>",
-		"wantsToSearchOutsideWorkspace": "Alpha wil deze map (buiten werkruimte) doorzoeken op <code>{{regex}}</code>",
-		"didSearchOutsideWorkspace": "Alpha heeft deze map (buiten werkruimte) doorzocht op <code>{{regex}}</code>",
+		"wantsToSearch": "Alpha wil een map doorzoeken",
+		"didSearch": "Alpha heeft een map doorzocht",
+		"wantsToSearchOutsideWorkspace": "Alpha wil een map doorzoeken (buiten de werkruimte)",
+		"didSearchOutsideWorkspace": "Alpha heeft een map doorzocht (buiten de werkruimte)",
 		"wantsToViewTopLevelOutsideWorkspace": "Alpha wil de bovenliggende bestanden in deze map (buiten werkruimte) bekijken",
 		"didViewTopLevelOutsideWorkspace": "Alpha heeft de bovenliggende bestanden in deze map (buiten werkruimte) bekeken",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha wil alle bestanden in deze map (buiten werkruimte) recursief bekijken",
 		"didViewRecursiveOutsideWorkspace": "Alpha heeft alle bestanden in deze map (buiten werkruimte) recursief bekeken",
-		"wantsToViewMultipleDirectories": "Alpha wil meerdere mappen bekijken"
+		"wantsToViewMultipleDirectories": "Alpha wil meerdere mappen bekijken",
+		"wantsToSearchMultiple": "Alpha wil {{count}}-bestandszoekopdrachten uitvoeren",
+		"didSearchMultiple": "Alpha heeft zoekopdrachten naar {{count}}-bestanden uitgevoerd"
 	},
 	"commandOutput": "Commando-uitvoer",
 	"commandExecution": {
+		"command": "Opdracht",
 		"running": "Lopend",
 		"abort": "Afbreken",
 		"pid": "PID: {{pid}}",
@@ -320,8 +339,11 @@
 			"gpt54": "Poe-provider: Poe toegevoegd als AI-provider, zodat je in Alpha direct toegang hebt tot Poe-modellen.",
 			"slashSkills": "xAI- en MiniMax-verbeteringen: De xAI-provider gemigreerd naar de Responses API, herbruikbare transformatiehulpmiddelen toegevoegd, Grok-4.20-standaardinstellingen bijgewerkt en MiniMax-modellijsten plus de afhandeling van het contextvenster gerepareerd voor een betrouwbaardere configuratie.",
 			"geminiPro": "Gemini 3.1 Pro ondersteuning: Ondersteuning voor het Gemini 3.1 Pro model is toegevoegd en ingesteld als standaard Gemini-model voor betere prestaties.",
-			"cliNdjson": "CLI NDJSON-protocol: Nieuw NDJSON stdin-protocol, list-subopdrachten en gemodulariseerd run-commando voor flexibelere CLI-workflows.",
-			"cliRelease": "CLI v0.1.0: De Alpha CLI bereikt zijn eerste officiële release met een stabiele opdrachtinterface."
+			"welcome": "Alpha v{{version}} verbetert verificatie, opdrachtbeheer en taakcontinuïteit.",
+			"acceptanceChecks": "Hergebruik geslaagde controles zolang de opgegeven invoer ongewijzigd blijft.",
+			"commandControl": "Wacht op achtergrondopdrachten van de taak, stuur invoer en stop ze.",
+			"workflowContinuity": "Behoud taakbeperkingen en vaardigheidscontext bij herladen en contextcompressie.",
+			"chatUpdates": "Gebruik duidelijkere chatacties en selecteer een provider nadat de taak is voltooid."
 		}
 	},
 	"reasoning": {
@@ -331,6 +353,7 @@
 	"contextManagement": {
 		"tokens": "tokens",
 		"condensation": {
+			"unchanged": "De context past al binnen de limiet",
 			"title": "Context samengevat",
 			"inProgress": "Context aan het samenvatten...",
 			"errorHeader": "Context samenvatten mislukt"
@@ -363,7 +386,6 @@
 			"copy_code": "Code kopiëren"
 		}
 	},
-	"profileViolationWarning": "Het huidige profiel is niet compatibel met de instellingen van uw organisatie",
 	"shellIntegration": {
 		"title": "Waarschuwing commando-uitvoering",
 		"description": "Je commando wordt uitgevoerd zonder VSCode-terminal shell-integratie. Om deze waarschuwing te onderdrukken kun je shell-integratie uitschakelen in het gedeelte <strong>Terminal</strong> van de <settingsLink>Alpha-instellingen</settingsLink> of de VSCode-terminalintegratie oplossen via de onderstaande link.",
@@ -382,6 +404,7 @@
 		}
 	},
 	"codebaseSearch": {
+		"title": "Code doorzoeken",
 		"wantsToSearch": "Alpha wil de codebase doorzoeken op <code>{{query}}</code>",
 		"wantsToSearchWithPath": "Alpha wil de codebase doorzoeken op <code>{{query}}</code> in <code>{{path}}</code>",
 		"didSearch_one": "1 resultaat gevonden",
@@ -457,8 +480,19 @@
 	},
 	"queuedMessages": {
 		"title": "Berichten in wachtrij",
-		"clickToEdit": "Klik om bericht te bewerken"
+		"clickToEdit": "Klik om bericht te bewerken",
+		"steering": "Bijsturen…",
+		"queueFailed": "Het bericht kon niet in de wachtrij worden geplaatst. Je concept staat nog in het invoerveld.",
+		"steerFailed": "Bijsturen kon niet worden gestart. Het bericht in de wachtrij blijft beschikbaar.",
+		"edit": "Bewerken",
+		"editTooltip": "Bewerk dit bericht in de wachtrij",
+		"editing": "Bewerken in de componist",
+		"dragHandle": "Sleep het bericht in de wachtrij",
+		"dragTooltip": "Sleep om dit bericht in de wachtrij opnieuw te ordenen",
+		"steer": "Stuur",
+		"steerTooltip": "Stuur dit bericht in de wachtrij naar de huidige beurt"
 	},
+	"modelResponseDelayed": "Wachten op de volgende update van het model. Uitgebreider nadenken kan tijd kosten.",
 	"slashCommand": {
 		"wantsToRun": "Alpha wil een slash commando uitvoeren",
 		"didRun": "Alpha heeft een slash commando uitgevoerd"
@@ -486,5 +520,38 @@
 		"title": "Provider wordt niet meer ondersteund",
 		"message": "Sorry, deze provider wordt niet meer ondersteund. We zagen dat heel weinig Alpha-gebruikers het daadwerkelijk gebruikten en we moeten de omvang van onze codebase verkleinen zodat we snel kunnen blijven leveren en onze community goed kunnen blijven bedienen. Het was een heel moeilijke beslissing, maar het stelt ons in staat om ons te richten op wat het belangrijkst voor je is. Het is vervelend, dat weten we.",
 		"openSettings": "Instellingen openen"
+	},
+	"githubActions": {
+		"request": "Verzoek",
+		"create_pull_request": "Pull request aanmaken",
+		"get_pull_request": "Pull request bekijken",
+		"list_checks": "Controles weergeven",
+		"merge_pull_request": "Pull request samenvoegen",
+		"comment": "Reactie toevoegen"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "Agenten inspecteren",
+			"wait_agent": "Wachten op agentupdates",
+			"unknown": "Agentactie"
+		},
+		"failed": "{{action}} mislukt: {{error}}",
+		"list": {
+			"running": "Agenten inspecteren...",
+			"completed": "{{count}}-agent geïnspecteerd",
+			"completed_other": "Geïnspecteerde {{count}}-agenten",
+			"mailbox": "{{count}} mailbox-update",
+			"mailbox_other": "{{count}} mailbox-updates"
+		},
+		"wait": {
+			"running": "Wachten op agentupdates...",
+			"noActiveAgents": "Geen actieve agenten om op te wachten",
+			"cancelled": "Wachttijd agent geannuleerd",
+			"timedOut": "Geen agentupdates vóór time-out",
+			"alreadyDelivered": "Geen nieuwe updates; resultaten al geleverd",
+			"received": "{{count}} agentupdate ontvangen",
+			"received_other": "{{count}} agentupdates ontvangen",
+			"completed": "Wachttijd agent voltooid"
+		}
 	}
 }

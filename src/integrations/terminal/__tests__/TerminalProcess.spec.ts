@@ -1,11 +1,13 @@
 // npx vitest run src/integrations/terminal/__tests__/TerminalProcess.spec.ts
 
 import * as vscode from "vscode"
+import pWaitFor from "p-wait-for"
 
 import { mergePromise } from "../mergePromise"
 import { TerminalProcess } from "../TerminalProcess"
 import { Terminal } from "../Terminal"
 import { TerminalRegistry } from "../TerminalRegistry"
+import type { AlphaTerminalCallbacks } from "../types"
 
 class TestTerminalProcess extends TerminalProcess {
 	public callTrimRetrievedOutput(): void {
@@ -16,6 +18,7 @@ class TestTerminalProcess extends TerminalProcess {
 vi.mock("execa", () => ({
 	execa: vi.fn(),
 }))
+vi.mock("p-wait-for", () => ({ default: vi.fn().mockResolvedValue(undefined) }))
 
 describe("TerminalProcess", () => {
 	let terminalProcess: TestTerminalProcess
@@ -58,6 +61,31 @@ describe("TerminalProcess", () => {
 	})
 
 	describe("run", () => {
+		it("does not submit a command cancelled before shell integration becomes available", async () => {
+			const outcome = vi.fn()
+			terminalProcess.on("shell_execution_complete", outcome)
+			terminalProcess.abort()
+			await terminalProcess.run("echo test")
+			expect(mockTerminal.shellIntegration.executeCommand).not.toHaveBeenCalled()
+			expect(mockTerminal.sendText).not.toHaveBeenCalled()
+			expect(outcome).toHaveBeenCalledExactlyOnceWith({ exitCode: 130, signalName: "SIGINT" })
+		})
+
+		it("removes pending stream resources when command submission throws", async () => {
+			vi.useFakeTimers()
+			try {
+				mockTerminal.shellIntegration.executeCommand.mockImplementationOnce(() => {
+					throw new Error("submission failed")
+				})
+				await expect(terminalProcess.run("echo test")).rejects.toThrow("submission failed")
+				expect(vi.getTimerCount()).toBe(0)
+				expect(terminalProcess.listenerCount("stream_available")).toBe(0)
+				expect(terminalProcess.listenerCount("shell_execution_complete")).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
 		it("handles shell integration commands correctly", async () => {
 			let lines: string[] = []
 
@@ -171,6 +199,124 @@ describe("TerminalProcess", () => {
 
 			await completePromise
 			expect(terminalProcess.isHot).toBe(false)
+		})
+	})
+
+	describe("terminal execution errors", () => {
+		const callbacks = (): AlphaTerminalCallbacks => ({
+			onLine: vi.fn(),
+			onCompleted: vi.fn(),
+			onShellExecutionStarted: vi.fn(),
+			onShellExecutionComplete: vi.fn(),
+			onNoShellIntegration: vi.fn(),
+		})
+
+		it("propagates process failures without reporting a shell integration timeout", async () => {
+			const failure = new Error("stream reader failed")
+			const run = vi.spyOn(TerminalProcess.prototype, "run").mockRejectedValueOnce(failure)
+			const observed = callbacks()
+			try {
+				await expect(mockTerminalInfo.runCommand("echo test", observed)).rejects.toBe(failure)
+				expect(observed.onNoShellIntegration).not.toHaveBeenCalled()
+				expect(mockTerminalInfo.busy).toBe(false)
+				expect(mockTerminalInfo.running).toBe(false)
+			} finally {
+				run.mockRestore()
+			}
+		})
+
+		it("retains the shell integration diagnostic when integration itself never becomes available", async () => {
+			vi.mocked(pWaitFor).mockRejectedValueOnce(new Error("integration timed out"))
+			const run = vi.spyOn(TerminalProcess.prototype, "run")
+			const observed = callbacks()
+			try {
+				await mockTerminalInfo.runCommand("echo test", observed)
+				expect(run).not.toHaveBeenCalled()
+				expect(observed.onNoShellIntegration).toHaveBeenCalledTimes(1)
+			} finally {
+				run.mockRestore()
+			}
+		})
+
+		it("keeps a physically running terminal reserved when its output reader fails", async () => {
+			const run = vi.spyOn(TerminalProcess.prototype, "run").mockImplementationOnce(async () => {
+				mockTerminalInfo.running = true
+				throw new Error("active stream failed")
+			})
+			try {
+				await expect(mockTerminalInfo.runCommand("echo test", callbacks())).rejects.toThrow(
+					"active stream failed",
+				)
+				expect(mockTerminalInfo.running).toBe(true)
+				expect(mockTerminalInfo.busy).toBe(true)
+			} finally {
+				run.mockRestore()
+			}
+		})
+
+		it("can still cancel a physical command after its output reader has failed", async () => {
+			mockTerminal.shellIntegration.executeCommand.mockImplementationOnce(() => {
+				mockTerminalInfo.setActiveStream(
+					(async function* () {
+						yield "\x1b]633;C\x07output before failure\n"
+						throw new Error("active stream failed")
+					})(),
+				)
+			})
+			const running = mockTerminalInfo.runCommand("echo test", callbacks())
+			await expect(running).rejects.toThrow("active stream failed")
+			expect(running.isSettled).toBe(true)
+			expect(mockTerminalInfo.running).toBe(true)
+			running.abort()
+			running.abort()
+			expect(mockTerminal.sendText).toHaveBeenCalledExactlyOnceWith("\x03")
+			mockTerminalInfo.shellExecutionComplete({ exitCode: 130, signalName: "SIGINT" })
+		})
+
+		it("does not interrupt the shell after the physical command has completed", async () => {
+			mockTerminal.shellIntegration.executeCommand.mockImplementationOnce(() => {
+				mockTerminalInfo.setActiveStream(
+					(async function* () {
+						yield "\x1b]633;C\x07completed output\n"
+						mockTerminalInfo.shellExecutionComplete({ exitCode: 0 })
+					})(),
+				)
+			})
+			const running = mockTerminalInfo.runCommand("echo test", callbacks())
+			await running
+			expect(running.isSettled).toBe(true)
+			expect(mockTerminalInfo.running).toBe(false)
+			running.abort()
+			expect(mockTerminal.sendText).not.toHaveBeenCalled()
+		})
+
+		it("can send input and stop after a command is backgrounded", async () => {
+			let release!: () => void
+			const gate = new Promise<void>((resolve) => {
+				release = resolve
+			})
+			mockTerminal.shellIntegration.executeCommand.mockImplementationOnce(() => {
+				mockTerminalInfo.setActiveStream(
+					(async function* () {
+						yield "\x1b]633;C\x07server ready\n"
+						await gate
+					})(),
+				)
+			})
+			const running = mockTerminalInfo.runCommand("node server.cjs", callbacks())
+			await vi.waitFor(() => expect(mockTerminal.shellIntegration.executeCommand).toHaveBeenCalled())
+			running.continue()
+			await running
+			try {
+				expect(running.isSettled).toBe(false)
+				running.writeInput!("hello\n")
+				running.abort()
+				expect(mockTerminal.sendText).toHaveBeenNthCalledWith(1, "hello\n", false)
+				expect(mockTerminal.sendText).toHaveBeenNthCalledWith(2, "\x03")
+			} finally {
+				mockTerminalInfo.shellExecutionComplete({ exitCode: 130, signalName: "SIGINT" })
+				release()
+			}
 		})
 	})
 

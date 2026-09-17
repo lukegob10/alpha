@@ -215,4 +215,35 @@ describe("MarketplaceInstallModal - Nested Parameters", () => {
 			expect(preservedInput).toHaveValue("test-value")
 		})
 	})
+
+	it("sends at most one install request while a result is pending", () => {
+		const item = { ...createMockItem(false), parameters: [] }
+		render(<MarketplaceInstallModal item={item} isOpen={true} onClose={mockOnClose} hasWorkspace={true} />)
+
+		const installButton = screen.getByRole("button", { name: "marketplace:install.button" })
+		fireEvent.click(installButton)
+		fireEvent.click(installButton)
+
+		const installMessages = mockedVscode.postMessage.mock.calls.filter(
+			([message]: [{ type: string }]) => message.type === "installMarketplaceItem",
+		)
+		expect(installMessages).toHaveLength(1)
+		expect(screen.getByRole("button", { name: "marketplace:install.installing" })).toBeDisabled()
+	})
+
+	it("does not register an installation listener while closed and idle", () => {
+		const addEventListener = vi.spyOn(window, "addEventListener")
+
+		render(
+			<MarketplaceInstallModal
+				item={createMockItem(false)}
+				isOpen={false}
+				onClose={mockOnClose}
+				hasWorkspace={true}
+			/>,
+		)
+
+		expect(addEventListener).not.toHaveBeenCalledWith("message", expect.any(Function))
+		addEventListener.mockRestore()
+	})
 })

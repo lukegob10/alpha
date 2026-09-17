@@ -1,4 +1,18 @@
 {
+	"messageActions": {
+		"copy": "कॉपी करें",
+		"copied": "कॉपी किया गया",
+		"edit": "संपादित करके फिर भेजें",
+		"restart": "पिछले अनुरोध से फिर शुरू करें",
+		"restartWarning": "पिछला अनुरोध फिर चलाया जाएगा और उसके बाद के सभी संदेश बदल दिए जाएंगे। कार्यक्षेत्र की फ़ाइलें जैसी हैं वैसी रहेंगी।",
+		"restartWithCheckpoint": "पिछला अनुरोध फिर चलाया जाएगा और उसके बाद के सभी संदेश बदल दिए जाएंगे। क्या फ़ाइलों को भी उसके चेकपॉइंट पर पुनर्स्थापित करें?",
+		"restartOnly": "फ़ाइलें पुनर्स्थापित किए बिना फिर शुरू करें"
+	},
+	"activityTrace": {
+		"needsAttention": "ध्यान देने की आवश्यकता है",
+		"workedFor": "{{duration}} तक काम किया"
+	},
+	"completionReport": "समापन रिपोर्ट",
 	"greeting": "Alpha में आपका स्वागत है",
 	"task": {
 		"title": "कार्य",
@@ -30,7 +44,9 @@
 	"unpin": "पिन करें",
 	"pin": "अवपिन करें",
 	"fileChangesInConversation": {
-		"header": "इस वार्तालाप में {{count}} फ़ाइल(ें) बदली गईं"
+		"header": "संपादित फ़ाइलें: {{count}}",
+		"linesChanged": "{{added}} पंक्तियाँ जोड़ी गईं, {{removed}} पंक्तियाँ हटाई गईं",
+		"openFile": "फ़ाइल खोलें: {{path}}"
 	},
 	"tokenProgress": {
 		"availableSpace": "उपलब्ध स्थान: {{amount}} tokens",
@@ -213,18 +229,21 @@
 		"didViewTopLevel": "Alpha ने इस निर्देशिका में शीर्ष स्तर की फ़ाइलें देखीं",
 		"wantsToViewRecursive": "Alpha इस निर्देशिका में सभी फ़ाइलों को पुनरावर्ती रूप से देखना चाहता है",
 		"didViewRecursive": "Alpha ने इस निर्देशिका में सभी फ़ाइलों को पुनरावर्ती रूप से देखा",
-		"wantsToSearch": "Alpha इस निर्देशिका में <code>{{regex}}</code> के लिए खोज करना चाहता है",
-		"didSearch": "Alpha ने इस निर्देशिका में <code>{{regex}}</code> के लिए खोज की",
-		"wantsToSearchOutsideWorkspace": "Alpha इस निर्देशिका (कार्यक्षेत्र के बाहर) में <code>{{regex}}</code> के लिए खोज करना चाहता है",
-		"didSearchOutsideWorkspace": "Alpha ने इस निर्देशिका (कार्यक्षेत्र के बाहर) में <code>{{regex}}</code> के लिए खोज की",
+		"wantsToSearch": "Alpha एक निर्देशिका में खोज करना चाहता है",
+		"didSearch": "Alpha ने एक निर्देशिका में खोज की",
+		"wantsToSearchOutsideWorkspace": "Alpha एक निर्देशिका में खोज करना चाहता है (कार्यक्षेत्र के बाहर)",
+		"didSearchOutsideWorkspace": "Alpha ने एक निर्देशिका में खोज की (कार्यक्षेत्र के बाहर)",
 		"wantsToViewTopLevelOutsideWorkspace": "Alpha इस निर्देशिका (कार्यक्षेत्र के बाहर) में शीर्ष स्तर की फ़ाइलें देखना चाहता है",
 		"didViewTopLevelOutsideWorkspace": "Alpha ने इस निर्देशिका (कार्यक्षेत्र के बाहर) में शीर्ष स्तर की फ़ाइलें देखीं",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha इस निर्देशिका (कार्यक्षेत्र के बाहर) में सभी फ़ाइलों को पुनरावर्ती रूप से देखना चाहता है",
 		"didViewRecursiveOutsideWorkspace": "Alpha ने इस निर्देशिका (कार्यक्षेत्र के बाहर) में सभी फ़ाइलों को पुनरावर्ती रूप से देखा",
-		"wantsToViewMultipleDirectories": "Alpha कई डायरेक्ट्रीज़ देखना चाहता है"
+		"wantsToViewMultipleDirectories": "Alpha कई डायरेक्ट्रीज़ देखना चाहता है",
+		"wantsToSearchMultiple": "Alpha {{count}} फ़ाइल खोज चलाना चाहता है",
+		"didSearchMultiple": "Alpha ने {{count}} फ़ाइल खोज चलाई"
 	},
 	"commandOutput": "कमांड आउटपुट",
 	"commandExecution": {
+		"command": "कमांड",
 		"abort": "रद्द करें",
 		"running": "चल रहा है",
 		"pid": "पीआईडी: {{pid}}",
@@ -243,7 +262,7 @@
 	"response": "प्रतिक्रिया",
 	"arguments": "आर्ग्युमेंट्स",
 	"text": {
-		"rooSaid": "रू ने कहा"
+		"rooSaid": "Alpha ने कहा"
 	},
 	"feedback": {
 		"youSaid": "आपने कहा"
@@ -315,6 +334,7 @@
 	"contextManagement": {
 		"tokens": "टोकन",
 		"condensation": {
+			"unchanged": "संदर्भ पहले से सीमा में है",
 			"title": "संदर्भ संक्षिप्त किया गया",
 			"inProgress": "संदर्भ संघनित कर रहा है...",
 			"errorHeader": "संदर्भ संघनित करने में विफल"
@@ -347,8 +367,11 @@
 			"gpt54": "Poe provider: Poe को AI provider के रूप में जोड़ा गया है, ताकि आप Alpha में सीधे Poe models तक पहुँच सकें।",
 			"slashSkills": "xAI और MiniMax में सुधार: xAI provider को Responses API पर migrate किया गया है, reusable transform utilities जोड़ी गई हैं, Grok-4.20 defaults अपडेट किए गए हैं, और ज़्यादा भरोसेमंद setup के लिए MiniMax model listings व context window handling को ठीक किया गया है।",
 			"geminiPro": "Gemini 3.1 Pro सपोर्ट: Gemini 3.1 Pro मॉडल का सपोर्ट जोड़ा गया और बेहतर प्रदर्शन के लिए इसे डिफ़ॉल्ट Gemini मॉडल के रूप में सेट किया गया।",
-			"cliNdjson": "CLI NDJSON प्रोटोकॉल: नया NDJSON stdin प्रोटोकॉल, list सबकमांड, और अधिक लचीले CLI वर्कफ़्लो के लिए मॉड्यूलर run कमांड।",
-			"cliRelease": "CLI v0.1.0: Alpha CLI एक स्थिर कमांड इंटरफ़ेस के साथ अपनी पहली आधिकारिक रिलीज़ तक पहुँचा।"
+			"welcome": "Alpha v{{version}} सत्यापन, कमांड नियंत्रण और कार्य की निरंतरता को बेहतर बनाता है।",
+			"acceptanceChecks": "घोषित इनपुट अपरिवर्तित रहने तक सफल जाँचों का पुनः उपयोग करें।",
+			"commandControl": "कार्य की अपनी बैकग्राउंड कमांड की प्रतीक्षा करें, उन्हें इनपुट भेजें और रोकें।",
+			"workflowContinuity": "रीलोड और संक्षेपण के बाद भी कार्य की सीमाएँ और स्किल का संदर्भ बनाए रखें।",
+			"chatUpdates": "अधिक स्पष्ट चैट क्रियाओं का उपयोग करें और कार्य पूरा होने के बाद प्रदाता चुनें।"
 		}
 	},
 	"costs": {
@@ -363,7 +386,6 @@
 			"copy_code": "कोड कॉपी करें"
 		}
 	},
-	"profileViolationWarning": "वर्तमान प्रोफ़ाइल आपके संगठन की सेटिंग्स के साथ संगत नहीं है",
 	"shellIntegration": {
 		"title": "कमांड निष्पादन चेतावनी",
 		"description": "आपका कमांड VSCode टर्मिनल शेल इंटीग्रेशन के बिना निष्पादित हो रहा है। इस चेतावनी को दबाने के लिए आप <settingsLink>Alpha सेटिंग्स</settingsLink> के <strong>Terminal</strong> अनुभाग में शेल इंटीग्रेशन को अक्षम कर सकते हैं या नीचे दिए गए लिंक का उपयोग करके VSCode टर्मिनल इंटीग्रेशन की समस्या का समाधान कर सकते हैं।",
@@ -382,6 +404,7 @@
 		}
 	},
 	"codebaseSearch": {
+		"title": "कोडबेस खोज",
 		"wantsToSearch": "Alpha कोडबेस में <code>{{query}}</code> खोजना चाहता है",
 		"wantsToSearchWithPath": "Alpha <code>{{path}}</code> में कोडबेस में <code>{{query}}</code> खोजना चाहता है",
 		"didSearch_one": "1 परिणाम मिला",
@@ -457,8 +480,19 @@
 	},
 	"queuedMessages": {
 		"title": "कतार में संदेश",
-		"clickToEdit": "संदेश संपादित करने के लिए क्लिक करें"
+		"clickToEdit": "संदेश संपादित करने के लिए क्लिक करें",
+		"steering": "दिशा बदली जा रही है…",
+		"queueFailed": "संदेश कतार में नहीं जोड़ा जा सका। आपका ड्राफ़्ट अभी भी कंपोज़र में है।",
+		"steerFailed": "दिशा बदलना शुरू नहीं हो सका। कतार वाला संदेश अभी भी उपलब्ध है।",
+		"edit": "संपादन करना",
+		"editTooltip": "इस पंक्तिबद्ध संदेश को संपादित करें",
+		"editing": "संगीतकार में संपादन",
+		"dragHandle": "पंक्तिबद्ध संदेश खींचें",
+		"dragTooltip": "इस पंक्तिबद्ध संदेश को पुन: व्यवस्थित करने के लिए खींचें",
+		"steer": "रास्ते पर लाना",
+		"steerTooltip": "इस कतारबद्ध संदेश को वर्तमान मोड़ में भेजें"
 	},
+	"modelResponseDelayed": "मॉडल के अगले अपडेट की प्रतीक्षा है। लंबे तर्क-विचार में समय लग सकता है।",
 	"slashCommand": {
 		"wantsToRun": "Alpha एक स्लैश कमांड चलाना चाहता है",
 		"didRun": "Alpha ने एक स्लैश कमांड चलाया"
@@ -486,5 +520,38 @@
 		"title": "प्रदाता अब समर्थित नहीं है",
 		"message": "क्षमा करें, यह प्रदाता अब समर्थित नहीं है। हमने देखा कि बहुत कम Alpha उपयोगकर्ता वास्तव में इसका उपयोग कर रहे थे और हमें अपने कोडबेस का दायरा कम करने की आवश्यकता है ताकि हम तेज़ी से काम करना और अपने समुदाय की अच्छी सेवा करना जारी रख सकें। यह वाकई एक कठिन निर्णय था, लेकिन इससे हम उस पर ध्यान केंद्रित कर सकते हैं जो तुम्हारे लिए सबसे ज़्यादा मायने रखता है। हम जानते हैं, यह बुरा लगता है।",
 		"openSettings": "सेटिंग्स खोलें"
+	},
+	"githubActions": {
+		"request": "अनुरोध",
+		"create_pull_request": "पुल अनुरोध बनाएँ",
+		"get_pull_request": "पुल अनुरोध देखें",
+		"list_checks": "जाँचों की सूची देखें",
+		"merge_pull_request": "पुल अनुरोध मर्ज करें",
+		"comment": "टिप्पणी जोड़ें"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "एजेंटों का निरीक्षण करें",
+			"wait_agent": "एजेंट अपडेट की प्रतीक्षा करें",
+			"unknown": "एजेंट कार्रवाई"
+		},
+		"failed": "{{action}} विफल: {{error}}",
+		"list": {
+			"running": "एजेंटों का निरीक्षण...",
+			"completed": "{{count}} एजेंट का निरीक्षण किया",
+			"completed_other": "{{count}} एजेंटों का निरीक्षण किया",
+			"mailbox": "{{count}} मेलबॉक्स अद्यतन",
+			"mailbox_other": "{{count}} मेलबॉक्स अद्यतन"
+		},
+		"wait": {
+			"running": "एजेंट अपडेट की प्रतीक्षा में...",
+			"noActiveAgents": "प्रतीक्षा करने के लिए कोई सक्रिय एजेंट नहीं है",
+			"cancelled": "एजेंट प्रतीक्षा रद्द कर दी गई",
+			"timedOut": "टाइमआउट से पहले कोई एजेंट अपडेट नहीं होता",
+			"alreadyDelivered": "कोई नया अपडेट नहीं; परिणाम पहले ही वितरित किये जा चुके हैं",
+			"received": "{{count}} एजेंट अपडेट प्राप्त हुआ",
+			"received_other": "{{count}} एजेंट अपडेट प्राप्त हुए",
+			"completed": "एजेंट का इंतजार पूरा हुआ"
+		}
 	}
 }

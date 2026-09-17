@@ -26,7 +26,9 @@
 			"read": "ファイルを読み込む",
 			"edit": "ファイルを編集",
 			"command": "コマンドを実行",
-			"mcp": "MCP を使用"
+			"mcp": "MCP を使用",
+			"github": "GitHub を使用する",
+			"browser": "統合ブラウザを使用する"
 		},
 		"noTools": "なし"
 	},
@@ -188,16 +190,7 @@
 		"buttons": {
 			"cancel": "キャンセル",
 			"create": "モードを作成"
-		},
-		"deleteMode": "モードを削除"
+		}
 	},
-	"allFiles": "すべてのファイル",
-	"deleteMode": {
-		"title": "モードを削除",
-		"message": "モード「{{modeName}}」を削除してもよろしいですか？",
-		"rulesFolder": "このモードには{{folderPath}}にルールフォルダがあり、それも削除されます。",
-		"descriptionNoRules": "このカスタムモードを削除してもよろしいですか？",
-		"confirm": "削除",
-		"cancel": "キャンセル"
-	}
+	"allFiles": "すべてのファイル"
 }

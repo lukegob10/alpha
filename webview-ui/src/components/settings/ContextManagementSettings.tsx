@@ -23,7 +23,6 @@ import { SetCachedStateField } from "./types"
 import { SectionHeader } from "./SectionHeader"
 import { Section } from "./Section"
 import { SearchableSetting } from "./SearchableSetting"
-import { vscode } from "@/utils/vscode"
 
 type ContextManagementSettingsProps = HTMLAttributes<HTMLDivElement> & {
 	autoCondenseContext: boolean
@@ -135,7 +134,6 @@ export const ContextManagementSettings = ({
 			}
 
 			setCachedStateField("profileThresholds", newThresholds)
-			vscode.postMessage({ type: "updateSettings", updatedSettings: { profileThresholds: newThresholds } })
 		}
 	}
 	return (

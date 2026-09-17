@@ -41,7 +41,9 @@
 		"experimental": "Eksperymentalne",
 		"language": "Język",
 		"about": "O Alpha",
-		"skills": "Skills"
+		"skills": "Skills",
+		"agents": "Agenci",
+		"github": "GitHub"
 	},
 	"about": {
 		"bugReport": {
@@ -209,7 +211,8 @@
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
 			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
 			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
-			"localIndexPathRequired": "Local index path is required"
+			"localIndexPathRequired": "Local index path is required",
+			"embeddingRateLimitSecondsRange": "Opóźnienie żądania osadzania musi mieścić się w przedziale od 0,1 do 60 sekund."
 		},
 		"optional": "opcjonalny",
 		"advancedConfigLabel": "Konfiguracja zaawansowana",
@@ -230,7 +233,9 @@
 		"localIndexPathLabel": "Local Index Path",
 		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
 		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
-		"savedSecretPlaceholder": "Saved value hidden"
+		"savedSecretPlaceholder": "Saved value hidden",
+		"embeddingRateLimitLabel": "Limit liczby żądań osadzania",
+		"embeddingRateLimitDescription": "Dodaje opóźnienie pomiędzy osadzaniem żądań API podczas indeksowania. Zwiększ tę wartość, jeśli Twój dostawca osadzania ogranicza szybkość indeksowania bazy kodu."
 	},
 	"autoApprove": {
 		"toggleShortcut": "Możesz skonfigurować globalny skrót dla tego ustawienia <SettingsLink>w preferencjach swojego IDE</SettingsLink>.",
@@ -271,22 +276,29 @@
 			"label": "Podzadania",
 			"description": "Zezwalaj na tworzenie i ukończenie podzadań bez konieczności zatwierdzania"
 		},
+		"tickets": {
+			"label": "Zgłoszenia Alpha",
+			"description": "Automatycznie zatwierdzaj tworzenie i aktualizowanie zgłoszeń Alpha."
+		},
 		"followupQuestions": {
 			"label": "Pytanie",
 			"description": "Automatycznie wybierz pierwszą sugerowaną odpowiedź na pytania uzupełniające po skonfigurowanym limicie czasu",
 			"timeoutLabel": "Czas oczekiwania przed automatycznym wybraniem pierwszej odpowiedzi"
 		},
 		"execute": {
-			"label": "Wykonaj",
-			"description": "Automatycznie wykonuj dozwolone polecenia terminala bez konieczności zatwierdzania",
-			"allowedCommands": "Dozwolone polecenia auto-wykonania",
-			"allowedCommandsDescription": "Prefiksy poleceń, które mogą być automatycznie wykonywane, gdy \"Zawsze zatwierdzaj operacje wykonania\" jest włączone. Dodaj * aby zezwolić na wszystkie polecenia (używaj z ostrożnością).",
+			"label": "Reguły poleceń",
+			"description": "Automatycznie zatwierdzaj polecenia w zakresie zapisu zadania. Sieć jest włączona. Zapis poza zakresem jest blokowany. Konfiguracja globalna pozostaje między projektami.",
+			"allowedCommands": "Dozwolone prefiksy poleceń",
+			"allowedCommandsDescription": "Użyj *, aby automatycznie zatwierdzać polecenia, także skrypty. Zapisane reguły są globalne. Wykryte zapisy poza katalogiem zadania i nierozpoznane ścieżki zapisu nadal wymagają zgody. To kontrola poleceń i ścieżek, a nie piaskownica systemowa.",
 			"deniedCommands": "Odrzucone polecenia",
 			"deniedCommandsDescription": "Prefiksy poleceń, które będą automatycznie odrzucane bez pytania o zatwierdzenie. W przypadku konfliktów z dozwolonymi poleceniami, najdłuższe dopasowanie prefiksu ma pierwszeństwo. Dodaj * aby odrzucić wszystkie polecenia.",
 			"commandPlaceholder": "Wprowadź prefiks polecenia (np. 'git ')",
 			"deniedCommandPlaceholder": "Wprowadź prefiks polecenia do odrzucenia (np. 'rm -rf')",
 			"addButton": "Dodaj",
-			"autoDenied": "Polecenia z prefiksem `{{prefix}}` zostały zabronione przez użytkownika. Nie obchodź tego ograniczenia uruchamiając inne polecenie."
+			"autoDenied": "Polecenia z prefiksem `{{prefix}}` zostały zabronione przez użytkownika. Nie obchodź tego ograniczenia uruchamiając inne polecenie.",
+			"pathApprovalTitle": "Ścieżki plików wymagają zgody",
+			"pathApprovalDescription": "To polecenie może zmienić pliki poza katalogiem zadania. Zgoda dotyczy tylko tego uruchomienia.",
+			"pathApprovalUnresolved": "Nie udało się ustalić niektórych ścieżek zapisu."
 		},
 		"apiRequestLimit": {
 			"title": "Maksymalna liczba żądań",
@@ -299,6 +311,10 @@
 		},
 		"maxLimits": {
 			"description": "Automatycznie składaj zapytania do tych limitów przed poproszeniem o zgodę na kontynuowanie."
+		},
+		"subagents": {
+			"label": "Podagenci",
+			"description": "Zezwól Alpha na uruchamianie grup podagentów tylko do odczytu bez konieczności zatwierdzania. Dostęp do odczytu również musi zostać automatycznie zatwierdzony."
 		}
 	},
 	"providers": {
@@ -378,7 +394,8 @@
 			"hint": "Proszę ponownie otworzyć ustawienia, aby zobaczyć najnowsze modele.",
 			"loading": "Odświeżanie listy modeli...",
 			"success": "Lista modeli została pomyślnie odświeżona!",
-			"error": "Nie udało się odświeżyć listy modeli. Spróbuj ponownie."
+			"error": "Nie udało się odświeżyć listy modeli. Spróbuj ponownie.",
+			"missingConfig": "Przed odświeżeniem modeli wprowadź wymaganą konfigurację dostawcy."
 		},
 		"getRequestyApiKey": "Uzyskaj klucz API Requesty",
 		"getRequestyBaseUrl": "Bazowy URL",
@@ -542,7 +559,8 @@
 			"high": "Wysoki",
 			"xhigh": "Bardzo wysoki",
 			"medium": "Średni",
-			"low": "Niski"
+			"low": "Niski",
+			"max": "Maksymalnie"
 		},
 		"verbosity": {
 			"label": "Szczegółowość danych wyjściowych",
@@ -558,7 +576,55 @@
 			"placeholder": "Domyślnie: claude",
 			"maxTokensLabel": "Maksymalna liczba tokenów wyjściowych",
 			"maxTokensDescription": "Maksymalna liczba tokenów wyjściowych dla odpowiedzi Claude Code. Domyślnie 8000."
-		}
+		},
+		"vertexStreamingEnabledLabel": "Włącz odpowiedzi przesyłane strumieniowo",
+		"vertexStreamingEnabledDescription": "Wyłącz tę opcję, jeśli bramka lub model nie obsługuje przesyłania strumieniowego. Odpowiedzi pojawią się po zakończeniu.",
+		"vscodeLmLoading": "Ładowanie modeli językowych dostępnych w tym oknie VS Code...",
+		"vscodeLmNoModels": "W tym oknie VS Code nie są dostępne żadne modele językowe. Zaloguj się tutaj do GitHub Copilot, włącz potrzebne modele za pomocą „Chat: Manage Language Models”, a następnie odśwież.",
+		"vscodeLmRefresh": "Odśwież modele",
+		"vscodeLmUnavailable": "Wybrany model nie jest dostępny w tym oknie VS Code. Wybierz model zwrócony przez VS Code lub włącz go za pomocą opcji „Chat: Manage Language Models”.",
+		"vscodeLmContextSize": {
+			"label": "Okno kontekstowe",
+			"default": "Standard (tokeny wejściowe {{contextSize}})",
+			"extended": "Rozszerzony (tokeny wejściowe {{contextSize}})",
+			"description": "Wybierz budżet tokenów wejściowych wysyłany do GitHub Copilot dla tego modelu. Rozszerzony kontekst może zużywać więcej żądań premium."
+		},
+		"googleCloudProjectId": "Projekt Google Cloud ID",
+		"googleCloudRegion": "Region Google Cloud",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "Wyszukaj lub wprowadź region",
+			"noMatchFound": "Nie znaleziono pasującego regionu",
+			"useCustomRegion": "Użyj niestandardowego: {{region}}"
+		},
+		"googleCloudCredentials": "Dane uwierzytelniające Google Cloud JSON",
+		"googleCloudKeyFile": "Plik klucza Google Cloud",
+		"googleCloudSetup": {
+			"title": "Konfiguracja Google Cloud",
+			"step1": "Włącz Vertex AI i dostęp do modelu",
+			"step2": "Skonfiguruj domyślne dane uwierzytelniające aplikacji",
+			"step3": "Utwórz klucz konta usługi"
+		},
+		"vertexGatewayBaseUrl": "Vertex Podstawa bramy URL",
+		"vertexGatewayCaBundlePath": "Vertex Brama CA Ścieżka pakietu",
+		"vertexGatewayHelixCommand": "Vertex Brama Helix Polecenie",
+		"vertexGatewayHelixParseMode": "Brama Vertex Helix Tryb analizy",
+		"vertexGatewayHelixParseModeRawStdout": "Surowe standardowe wyjście",
+		"vertexGatewayHelixParseModeJsonField": "Pole JSON",
+		"vertexGatewayHelixTokenKey": "Vertex Brama Helix Klucz tokenu",
+		"vertexGatewayTokenRefreshMinutes": "Vertex Minuty odświeżania tokenu bramy",
+		"vertexGatewayModelRoutingMap": "Vertex Mapa tras modelu bramy",
+		"vertexGatewayModelRoutingMapDescription": "JSON Obiekt z kluczem według modelu ID. Wartościami mogą być ciągi znaków zastąpienia starszego modelu lub obiekty z projectId, location, modelOverride i extraHeaders.",
+		"stellarDescription": "Łączy się z wewnętrzną bramką modelu Stellar OpenAI. Klucz API jest pobierany automatycznie za pomocą Helix i nigdy nie jest zapisywany.",
+		"stellarBaseUrl": "Stellar Baza URL",
+		"stellarCaBundlePath": "Stellar PEM CA Ścieżka pakietu",
+		"stellarHelixCommand": "Stellar Helix Polecenie",
+		"stellarHelixParseMode": "Stellar Helix Tryb analizy",
+		"stellarHelixParseModeRawStdout": "Surowe standardowe wyjście",
+		"stellarHelixParseModeJsonField": "Pole JSON",
+		"stellarHelixTokenKey": "Stellar Helix Klucz tokena",
+		"stellarTokenRefreshMinutes": "Stellar Minuty odświeżania tokenu",
+		"stellarStreamingEnabledLabel": "Włącz odpowiedzi przesyłane strumieniowo",
+		"stellarStreamingEnabledDescription": "Wyłącz tę opcję, jeśli wdrożenie Stellar nie obsługuje przesyłania strumieniowego. Odpowiedzi pojawią się po zakończeniu."
 	},
 	"checkpoints": {
 		"timeout": {
@@ -898,7 +964,11 @@
 		"providerNotAllowed": "Dostawca '{{provider}}' nie jest dozwolony przez Twoją organizację",
 		"modelNotAllowed": "Model '{{model}}' nie jest dozwolony dla dostawcy '{{provider}}' przez Twoją organizację",
 		"profileInvalid": "Ten profil zawiera dostawcę lub model, który nie jest dozwolony przez Twoją organizację",
-		"qwenCodeOauthPath": "Musisz podać prawidłową ścieżkę do poświadczeń OAuth"
+		"qwenCodeOauthPath": "Musisz podać prawidłową ścieżkę do poświadczeń OAuth",
+		"googleCloud": "Musisz podać projekt Google Cloud ID i region.",
+		"vertexGateway": "Brama Vertex wymaga podstawowej ścieżki pakietu URL, CA i polecenia Helix.",
+		"vertexGatewayModelRoutingMap": "Vertex Mapa tras modelu bramy musi być obiektem JSON z ciągiem identyfikatorów modelu.",
+		"stellar": "Stellar wymaga prawidłowej ścieżki pakietu bazowego URL i PEM CA."
 	},
 	"placeholders": {
 		"apiKey": "Wprowadź klucz API...",
@@ -960,6 +1030,10 @@
 		"requireCtrlEnterToSend": {
 			"label": "Wymagaj {{primaryMod}}+Enter do wysyłania wiadomości",
 			"description": "Po włączeniu musisz nacisnąć {{primaryMod}}+Enter, aby wysłać wiadomości, zamiast tylko Enter"
+		},
+		"maxConcurrentTasks": {
+			"label": "Maksymalna liczba zadań równoległych",
+			"description": "Liczba aktywnych zadań, które można uruchomić w tym samym czasie. Zadania nieudane i ukończone nie wliczają się do tego limitu."
 		}
 	},
 	"skills": {
@@ -1013,6 +1087,44 @@
 			"descriptionRequired": "Opis jest wymagany",
 			"descriptionTooLong": "Opis musi mieć maksymalnie 1024 znaki"
 		},
-		"footer": "Twórz własne umiejętności za pomocą trybu Skill Writer, dostępnego w <MarketplaceLink>Modes Marketplace</MarketplaceLink>."
+		"footer": "Twórz własne umiejętności za pomocą trybu Skill Writer, dostępnego w <MarketplaceLink>Modes Marketplace</MarketplaceLink>.",
+		"builtinSkills": "Wbudowane",
+		"enabled": "Włączona",
+		"inspectSkill": "Wyświetl",
+		"builtinDescription": "Dołączona do Alpha. Zmiany są stosowane po zapisaniu ustawień. Umiejętności obszaru roboczego i osobiste o tej samej nazwie mają pierwszeństwo; wyłączenie wbudowanej umiejętności nie wyłącza własnych zamienników."
+	},
+	"agents": {
+		"description": "Wybierz zapisane profile dostawców, których Alpha używa dla podagentów. Zastąpienia roli mają pierwszeństwo przed rolą domyślną, a następnie zadanie nadrzędne jest dziedziczone.",
+		"searchPlaceholder": "Profile dostawców wyszukiwania...",
+		"noProfilesFound": "Brak pasujących profili dostawców",
+		"unavailableProfile": "Profil niedostępny ({{id}})",
+		"staleWarning": "Ten zapisany profil jest niedostępny. Nowi agenci podrzędni będą korzystać z profilu nadrzędnego, dopóki nie wybierzesz innego profilu.",
+		"defaultProfile": {
+			"label": "Domyślny profil subageta",
+			"inheritParent": "Dziedzicz element nadrzędny",
+			"description": "Używany, gdy rola nie ma własnego zastąpienia profilu."
+		},
+		"roles": {
+			"title": "Zastąpienie roli",
+			"description": "Opcjonalnie kieruj każdą rolę agenta przez inny zapisany profil dostawcy.",
+			"useDefault": "Użyj domyślnego",
+			"explore": {
+				"label": "profilu eksploratora",
+				"description": "Opcjonalne zastąpienie profilu dla agentów eksploracji repozytorium."
+			},
+			"review": {
+				"label": "Profil recenzenta",
+				"description": "Opcjonalne zastąpienie profilu dla agentów recenzujących."
+			},
+			"worker": {
+				"label": "Profil pracownika",
+				"description": "Opcjonalne zastąpienie profilu dla izolowanych pracowników edytujących."
+			}
+		}
+	},
+	"github": {
+		"tokenLabel": "Token GitHub",
+		"tokenPlaceholder": "ghp_...",
+		"tokenDescription": "Bezpiecznie przechowywany w tajnym magazynie VS Code. Używane przez natywne narzędzie GitHub API do żądań ściągnięcia, kontroli, komentarzy i scalania."
 	}
 }

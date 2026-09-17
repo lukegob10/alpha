@@ -1,0 +1,6 @@
+{
+	"profileRequired": "Chọn hồ sơ đã lưu trước khi chạy tác vụ theo lịch này.",
+	"profileUnavailable": "Hồ sơ “{{name}}” bị thiếu, đã đổi tên hoặc không thể tải. Hãy chọn lại hồ sơ đã lưu.",
+	"skillUnavailable": "Kỹ năng “{{name}}” bị thiếu, không đọc được hoặc không khả dụng trong không gian làm việc và chế độ đã lên lịch. Hãy chọn lại kỹ năng.",
+	"workspaceInvalid": "Không gian làm việc theo lịch phải là đường dẫn tuyệt đối."
+}

@@ -1,6 +1,7 @@
 import React from "react"
-import { render, screen } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 import ErrorBoundary from "../components/ErrorBoundary"
+import { telemetryClient } from "@src/utils/TelemetryClient"
 
 // Mock telemetry client
 vi.mock("@src/utils/TelemetryClient", () => ({
@@ -38,6 +39,7 @@ describe("ErrorBoundary", () => {
 	})
 
 	afterEach(() => {
+		vi.unstubAllEnvs()
 		vi.restoreAllMocks()
 	})
 
@@ -52,7 +54,7 @@ describe("ErrorBoundary", () => {
 		expect(screen.getByText("Test Content")).toBeInTheDocument()
 	})
 
-	it("renders error UI when a child component throws", () => {
+	it("renders error UI when a child component throws", async () => {
 		vi.stubEnv("PKG_VERSION", "1.2.3")
 
 		// Using the React testing library's render method with an error boundary is tricky
@@ -82,6 +84,10 @@ describe("ErrorBoundary", () => {
 
 		// The test error message should be included in the error display
 		expect(screen.getByText(/Test component error/)).toBeInTheDocument()
+
+		// componentDidCatch enhances the error asynchronously. Wait for that work to
+		// finish so it cannot update React after the test environment is torn down.
+		await waitFor(() => expect(telemetryClient.capture).toHaveBeenCalledTimes(1))
 
 		spy.mockRestore()
 	})

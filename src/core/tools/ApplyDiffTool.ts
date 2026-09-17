@@ -1,24 +1,28 @@
 import path from "path"
 import fs from "fs/promises"
 
-import { type ClineSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
+import { type AlphaSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
-import { getReadablePath } from "../../utils/path"
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { fileExistsAtPath } from "../../utils/fs"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
-import { unescapeHtmlEntities } from "../../utils/text-normalization"
 import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { computeDiffStats, sanitizeUnifiedDiff } from "../diff/stats"
-import type { ToolUse } from "../../shared/tools"
+import type { DiffResult, ToolUse } from "../../shared/tools"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
 interface ApplyDiffParams {
 	path: string
 	diff: string
+}
+
+function formatDiffFailure(failure: Extract<DiffResult, { success: false }>): string {
+	const details = failure.details ? `\n\nDetails:\n${JSON.stringify(failure.details, null, 2)}` : ""
+	return `<error_details>\n${failure.error ?? "Diff could not be applied"}${details}\n</error_details>`
 }
 
 export class ApplyDiffTool extends BaseTool<"apply_diff"> {
@@ -26,14 +30,11 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 
 	async execute(params: ApplyDiffParams, task: Task, callbacks: ToolCallbacks): Promise<void> {
 		const { askApproval, handleError, pushToolResult } = callbacks
-		let { path: relPath, diff: diffContent } = params
-
-		if (diffContent && !task.api.getModel().id.includes("claude")) {
-			diffContent = unescapeHtmlEntities(diffContent)
-		}
+		const { path: relPath, diff: diffContent } = params
 
 		try {
 			if (!relPath) {
+				callbacks.setResultMetadata?.({ status: "error" })
 				task.consecutiveMistakeCount++
 				task.recordToolError("apply_diff")
 				pushToolResult(await task.sayAndCreateMissingParamError("apply_diff", "path"))
@@ -41,17 +42,19 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 			}
 
 			if (!diffContent) {
+				callbacks.setResultMetadata?.({ status: "error" })
 				task.consecutiveMistakeCount++
 				task.recordToolError("apply_diff")
 				pushToolResult(await task.sayAndCreateMissingParamError("apply_diff", "diff"))
 				return
 			}
 
-			const accessAllowed = task.rooIgnoreController?.validateAccess(relPath)
+			const accessAllowed = task.alphaIgnoreController?.validateAccess(relPath)
 
 			if (!accessAllowed) {
+				callbacks.setResultMetadata?.({ status: "denied" })
 				await task.say("rooignore_error", relPath)
-				pushToolResult(formatResponse.rooIgnoreError(relPath))
+				pushToolResult(formatResponse.alphaIgnoreError(relPath))
 				return
 			}
 
@@ -59,6 +62,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 			const fileExists = await fileExistsAtPath(absolutePath)
 
 			if (!fileExists) {
+				callbacks.setResultMetadata?.({ status: "error" })
 				task.consecutiveMistakeCount++
 				task.recordToolError("apply_diff")
 				const formattedError = `File does not exist at path: ${absolutePath}\n\n<error_details>\nThe specified file could not be found. Please verify the file path and try again.\n</error_details>`
@@ -79,33 +83,20 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 				success: false,
 				error: "No diff strategy available",
 			}
+			const failures = diffResult.failParts?.filter((part) => !part.success) ?? []
 
 			if (!diffResult.success) {
+				callbacks.setResultMetadata?.({ status: "error" })
 				task.consecutiveMistakeCount++
 				const currentCount = (task.consecutiveMistakeCountForApplyDiff.get(relPath) || 0) + 1
 				task.consecutiveMistakeCountForApplyDiff.set(relPath, currentCount)
-				let formattedError = ""
 				TelemetryService.instance.captureDiffApplicationError(task.taskId, currentCount)
-
-				if (diffResult.failParts && diffResult.failParts.length > 0) {
-					for (const failPart of diffResult.failParts) {
-						if (failPart.success) {
-							continue
-						}
-
-						const errorDetails = failPart.details ? JSON.stringify(failPart.details, null, 2) : ""
-
-						formattedError = `<error_details>\n${
-							failPart.error
-						}${errorDetails ? `\n\nDetails:\n${errorDetails}` : ""}\n</error_details>`
-					}
-				} else {
-					const errorDetails = diffResult.details ? JSON.stringify(diffResult.details, null, 2) : ""
-
-					formattedError = `Unable to apply diff to file: ${absolutePath}\n\n<error_details>\n${
-						diffResult.error
-					}${errorDetails ? `\n\nDetails:\n${errorDetails}` : ""}\n</error_details>`
-				}
+				const formattedError = `Unable to apply diff to file: ${absolutePath}\n\n${(failures.length > 0
+					? failures
+					: [diffResult]
+				)
+					.map(formatDiffFailure)
+					.join("\n\n")}`
 
 				if (currentCount >= 2) {
 					await task.say("diff_error", formattedError)
@@ -136,11 +127,12 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 			)
 
 			// Check if file is write-protected
-			const isWriteProtected = task.rooProtectedController?.isWriteProtected(relPath) || false
+			const isWriteProtected = task.alphaProtectedController?.isWriteProtected(relPath) || false
 
-			const sharedMessageProps: ClineSayTool = {
+			const sharedMessageProps: AlphaSayTool = {
 				tool: "appliedDiff",
-				path: getReadablePath(task.cwd, relPath),
+				path: getTaskReadablePath(task, relPath),
+				isOutsideWorkspace: isTaskPathOutsideWorkspace(task, absolutePath),
 				diff: diffContent,
 			}
 
@@ -153,7 +145,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 					originalContent,
 					diffStats,
 					isProtected: isWriteProtected,
-				} satisfies ClineSayTool)
+				} satisfies AlphaSayTool)
 
 				let toolProgressStatus
 
@@ -170,6 +162,8 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 				const didApprove = await askApproval("tool", completeMessage, toolProgressStatus, isWriteProtected)
 
 				if (!didApprove) {
+					await task.diffViewProvider.reset()
+					this.resetPartialState()
 					return
 				}
 
@@ -182,12 +176,13 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 					false,
 					diagnosticsEnabled,
 					writeDelayMs,
+					{ exists: true, content: originalContent },
 				)
 			} else {
 				// Original behavior with diff view
 				// Show diff view before asking for approval
 				task.diffViewProvider.editType = "modify"
-				await task.diffViewProvider.open(relPath)
+				await task.diffViewProvider.open(relPath, { exists: true, content: originalContent })
 				await task.diffViewProvider.update(diffResult.content, true)
 				task.diffViewProvider.scrollToFirstDiff()
 
@@ -198,7 +193,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 					originalContent,
 					diffStats,
 					isProtected: isWriteProtected,
-				} satisfies ClineSayTool)
+				} satisfies AlphaSayTool)
 
 				let toolProgressStatus
 
@@ -216,6 +211,8 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 
 				if (!didApprove) {
 					await task.diffViewProvider.revertChanges()
+					await task.diffViewProvider.reset()
+					this.resetPartialState()
 					task.processQueuedMessages()
 					return
 				}
@@ -233,12 +230,21 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 			task.didEditFile = true
 			let partFailHint = ""
 
-			if (diffResult.failParts && diffResult.failParts.length > 0) {
-				partFailHint = `But unable to apply all diff parts to file: ${absolutePath}. Use the read_file tool to check the newest file version and re-apply diffs.\n`
+			if (failures.length > 0) {
+				partFailHint =
+					`Some SEARCH/REPLACE blocks were not applied to ${absolutePath}. ` +
+					`Successful blocks have been saved. Do not reapply successful blocks. ` +
+					`Omit unchanged blocks; read the current file before correcting the failed blocks.\n\n` +
+					failures.map(formatDiffFailure).join("\n\n") +
+					"\n"
+				callbacks.setResultMetadata?.({ status: "error" })
+				task.recordToolError("apply_diff", partFailHint)
 			}
 
 			// Get the formatted response message
-			const message = await task.diffViewProvider.pushToolWriteResult(task, task.cwd, !fileExists)
+			const message = await task.diffViewProvider.pushToolWriteResult(task, task.cwd, !fileExists, {
+				partial: failures.length > 0,
+			})
 
 			// Check for single SEARCH/REPLACE block warning
 			const searchBlocks = (diffContent.match(/<<<<<<< SEARCH/g) || []).length
@@ -278,9 +284,9 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 			return
 		}
 
-		const sharedMessageProps: ClineSayTool = {
+		const sharedMessageProps: AlphaSayTool = {
 			tool: "appliedDiff",
-			path: getReadablePath(task.cwd, relPath),
+			path: getTaskReadablePath(task, relPath),
 			diff: diffContent,
 		}
 

@@ -1,14 +1,14 @@
 import type { EventEmitter } from "events"
 import type { Socket } from "net"
 
-import type { RooCodeEvents } from "./events.js"
-import type { RooCodeSettings } from "./global-settings.js"
+import type { AlphaCodeEvents } from "./events.js"
+import type { AlphaCodeSettings } from "./global-settings.js"
 import type { ProviderSettingsEntry, ProviderSettings } from "./provider-settings.js"
 import type { IpcMessage, IpcServerEvents } from "./ipc.js"
 
-export type RooCodeAPIEvents = RooCodeEvents
+export type AlphaCodeAPIEvents = AlphaCodeEvents
 
-export interface RooCodeAPI extends EventEmitter<RooCodeAPIEvents> {
+export interface AlphaCodeAPI extends EventEmitter<AlphaCodeAPIEvents> {
 	/**
 	 * Starts a new task with an optional initial message and images.
 	 * @param task Optional initial task message.
@@ -21,7 +21,7 @@ export interface RooCodeAPI extends EventEmitter<RooCodeAPIEvents> {
 		images,
 		newTab,
 	}: {
-		configuration?: RooCodeSettings
+		configuration?: AlphaCodeSettings
 		text?: string
 		images?: string[]
 		newTab?: boolean
@@ -73,12 +73,12 @@ export interface RooCodeAPI extends EventEmitter<RooCodeAPIEvents> {
 	 * Returns the current configuration.
 	 * @returns The current configuration.
 	 */
-	getConfiguration(): RooCodeSettings
+	getConfiguration(): AlphaCodeSettings
 	/**
 	 * Sets the configuration for the current task.
 	 * @param values An object containing key-value pairs to set.
 	 */
-	setConfiguration(values: RooCodeSettings): Promise<void>
+	setConfiguration(values: AlphaCodeSettings): Promise<void>
 	/**
 	 * Returns a list of all configured profile names
 	 * @returns Array of profile names
@@ -135,10 +135,20 @@ export interface RooCodeAPI extends EventEmitter<RooCodeAPIEvents> {
 	setActiveProfile(name: string): Promise<string | undefined>
 }
 
-export interface RooCodeIpcServer extends EventEmitter<IpcServerEvents> {
+export interface AlphaCodeIpcServer extends EventEmitter<IpcServerEvents> {
 	listen(): void
+	dispose?(): void
 	broadcast(message: IpcMessage): void
 	send(client: string | Socket, message: IpcMessage): void
 	get socketPath(): string
 	get isListening(): boolean
 }
+
+/** @deprecated Use AlphaCodeAPIEvents. Retained for existing API consumers. */
+export type { AlphaCodeAPIEvents as RooCodeAPIEvents }
+
+/** @deprecated Use AlphaCodeAPI. Retained for existing API consumers. */
+export type { AlphaCodeAPI as RooCodeAPI }
+
+/** @deprecated Use AlphaCodeIpcServer. Retained for existing API consumers. */
+export type { AlphaCodeIpcServer as RooCodeIpcServer }

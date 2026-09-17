@@ -2,25 +2,28 @@ import { safeWriteJson } from "../../utils/safeWriteJson"
 import * as path from "path"
 import * as os from "os"
 import * as fs from "fs/promises"
-import { getRooDirectoriesForCwd } from "../../services/roo-config/index.js"
+import { getLegacyConfigDirectoriesForCwd } from "../../services/config-paths/index.js"
 import pWaitFor from "p-wait-for"
 import * as vscode from "vscode"
 
 import {
 	type Language,
 	type GlobalState,
-	type ClineMessage,
+	type AlphaMessage,
 	type TelemetrySetting,
 	type ModelRecord,
 	type Command as SlashCommand,
 	type WebviewMessage,
 	type EditQueuedMessagePayload,
 	type ReorderQueuedMessagePayload,
+	type ChatCommand,
+	type ChatCommandErrorCode,
 	TelemetryEventName,
-	RooCodeSettings,
+	AlphaCodeSettings,
 	ExperimentId,
 	checkoutDiffPayloadSchema,
 	checkoutRestorePayloadSchema,
+	scheduledTaskSkillsRequestSchema,
 } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -28,8 +31,8 @@ import { TelemetryService } from "@alpha-code/telemetry"
 import { type ApiMessage } from "../task-persistence/apiMessages"
 import { saveTaskMessages } from "../task-persistence"
 
-import { ClineProvider } from "./ClineProvider"
-import { handleCheckpointRestoreOperation } from "./checkpointRestoreHandler"
+import { AlphaProvider } from "./AlphaProvider"
+import { handleCheckpointRestoreOperation, restartTaskFromMessage } from "./checkpointRestoreHandler"
 import { generateErrorDiagnostics } from "./diagnosticsHandler"
 import {
 	handleRequestSkills,
@@ -49,6 +52,7 @@ import { checkExistKey } from "../../shared/checkExistApiConfig"
 import { experimentDefault } from "../../shared/experiments"
 import { Terminal } from "../../integrations/terminal/Terminal"
 import { openFile } from "../../integrations/misc/open-file"
+import { openHtmlDocumentLink } from "./html-document"
 import { openImage, saveImage } from "../../integrations/misc/image-handler"
 import { selectImages } from "../../integrations/misc/process-images"
 import { getTheme } from "../../integrations/theme/getTheme"
@@ -60,8 +64,10 @@ import { exportSettings, importSettingsWithFeedback } from "../config/importExpo
 import { getOpenAiModels } from "../../api/providers/openai"
 import { getVsCodeLmModels } from "../../api/providers/vscode-lm"
 import { openMention } from "../mentions"
+import { searchTicketMentions } from "../../services/tickets/TicketChat"
+import { ticketTargetSchema } from "@alpha-code/types"
 import { resolveImageMentions } from "../mentions/resolveImageMentions"
-import { RooIgnoreController } from "../ignore/RooIgnoreController"
+import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
 import { getWorkspacePath } from "../../utils/path"
 import { isPathOutsideWorkspace } from "../../utils/pathUtils"
 import { Mode, defaultModeSlug } from "../../shared/modes"
@@ -102,7 +108,7 @@ function sanitizeCommandList(commands: unknown): string[] {
 }
 
 function getTaskForMessage(
-	provider: ClineProvider,
+	provider: AlphaProvider,
 	message: WebviewMessage,
 	options: { allowActiveFallback?: boolean } = {},
 ) {
@@ -113,7 +119,7 @@ function getTaskForMessage(
 	return options.allowActiveFallback ? provider.getCurrentTask() : undefined
 }
 
-function getRequiredTaskForMessage(provider: ClineProvider, message: WebviewMessage, action: string) {
+function getRequiredTaskForMessage(provider: AlphaProvider, message: WebviewMessage, action: string) {
 	const task = getTaskForMessage(provider, message)
 	if (!task) {
 		provider.log(`[webviewMessageHandler] Ignoring ${action}: missing or unknown taskId`)
@@ -129,7 +135,7 @@ function getRequiredTaskForMessage(provider: ClineProvider, message: WebviewMess
 }
 
 export const webviewMessageHandler = async (
-	provider: ClineProvider,
+	provider: AlphaProvider,
 	message: WebviewMessage,
 	marketplaceManager?: MarketplaceManager,
 ) => {
@@ -199,7 +205,7 @@ export const webviewMessageHandler = async (
 			existingCommandNames.add(skill.name)
 			commandList.push({
 				name: skill.name,
-				source: skill.source,
+				source: skill.source === "builtin" ? "built-in" : skill.source,
 				filePath: skill.path,
 				description: skill.description,
 			})
@@ -212,20 +218,40 @@ export const webviewMessageHandler = async (
 	 * Resolves image file mentions in incoming messages.
 	 * Matches read_file behavior: respects size limits and model capabilities.
 	 */
-	const resolveIncomingImages = async (payload: { text?: string; images?: string[] }) => {
+	const resolveIncomingImages = async (payload: { text?: string; images?: string[]; taskId?: string }) => {
 		const text = payload.text ?? ""
 		const images = payload.images
-		const currentTask = provider.getCurrentTask()
+		const currentTask = payload.taskId ? provider.getLiveTask(payload.taskId) : provider.getCurrentTask()
 		const state = await provider.getState()
 		const resolved = await resolveImageMentions({
 			text,
 			images,
-			cwd: getCurrentCwd(),
-			rooIgnoreController: currentTask?.rooIgnoreController,
+			cwd: currentTask?.cwd ?? getCurrentCwd(),
+			alphaIgnoreController: currentTask?.alphaIgnoreController,
 			maxImageFileSize: state.maxImageFileSize,
 			maxTotalImageSize: state.maxTotalImageSize,
 		})
 		return resolved
+	}
+
+	const postChatCommandResult = async (
+		command: ChatCommand,
+		status: "accepted" | "rejected",
+		errorCode?: ChatCommandErrorCode,
+	) => {
+		if (!message.requestId) return
+		await provider.postMessageToWebview({
+			type: "chatCommandResult",
+			taskId: message.taskId,
+			requestId: message.requestId,
+			chatCommandResult: {
+				requestId: message.requestId,
+				taskId: message.taskId,
+				command,
+				status,
+				...(errorCode ? { errorCode } : {}),
+			},
+		})
 	}
 	/**
 	 * Shared utility to find message indices based on timestamp.
@@ -233,12 +259,12 @@ export const webviewMessageHandler = async (
 	 * this function prefers non-summary messages to ensure user operations
 	 * target the intended message rather than the summary.
 	 */
-	const findMessageIndices = (messageTs: number, currentCline: any) => {
+	const findMessageIndices = (messageTs: number, currentAlpha: any) => {
 		// Find the exact message by timestamp, not the first one after a cutoff
-		const messageIndex = currentCline.clineMessages.findIndex((msg: ClineMessage) => msg.ts === messageTs)
+		const messageIndex = currentAlpha.clineMessages.findIndex((msg: AlphaMessage) => msg.ts === messageTs)
 
 		// Find all matching API messages by timestamp
-		const allApiMatches = currentCline.apiConversationHistory
+		const allApiMatches = currentAlpha.apiConversationHistory
 			.map((msg: ApiMessage, idx: number) => ({ msg, idx }))
 			.filter(({ msg }: { msg: ApiMessage }) => msg.ts === messageTs)
 
@@ -253,9 +279,9 @@ export const webviewMessageHandler = async (
 	 * Fallback: find first API history index at or after a timestamp.
 	 * Used when the exact user message isn't present in apiConversationHistory (e.g., after condense).
 	 */
-	const findFirstApiIndexAtOrAfter = (ts: number, currentCline: any) => {
+	const findFirstApiIndexAtOrAfter = (ts: number, currentAlpha: any) => {
 		if (typeof ts !== "number") return -1
-		return currentCline.apiConversationHistory.findIndex(
+		return currentAlpha.apiConversationHistory.findIndex(
 			(msg: ApiMessage) => typeof msg?.ts === "number" && (msg.ts as number) >= ts,
 		)
 	}
@@ -265,19 +291,19 @@ export const webviewMessageHandler = async (
 	 */
 	const handleDeleteOperation = async (messageTs: number): Promise<void> => {
 		// Check if there's a checkpoint before this message
-		const currentCline = provider.getCurrentTask()
+		const currentAlpha = getTaskForMessage(provider, message, { allowActiveFallback: true })
 		let hasCheckpoint = false
 
-		if (!currentCline) {
+		if (!currentAlpha) {
 			await vscode.window.showErrorMessage(t("common:errors.message.no_active_task_to_delete"))
 			return
 		}
 
-		const { messageIndex } = findMessageIndices(messageTs, currentCline)
+		const { messageIndex } = findMessageIndices(messageTs, currentAlpha)
 
 		if (messageIndex !== -1) {
 			// Find the last checkpoint before this message
-			const checkpoints = currentCline.clineMessages.filter(
+			const checkpoints = currentAlpha.clineMessages.filter(
 				(msg) => msg.say === "checkpoint_saved" && msg.ts > messageTs,
 			)
 			hasCheckpoint = checkpoints.length > 0
@@ -286,6 +312,7 @@ export const webviewMessageHandler = async (
 		// Send message to webview to show delete confirmation dialog
 		await provider.postMessageToWebview({
 			type: "showDeleteMessageDialog",
+			taskId: currentAlpha?.taskId,
 			messageTs,
 			hasCheckpoint,
 		})
@@ -295,18 +322,18 @@ export const webviewMessageHandler = async (
 	 * Handles confirmed message deletion from webview dialog
 	 */
 	const handleDeleteMessageConfirm = async (messageTs: number, restoreCheckpoint?: boolean): Promise<void> => {
-		const currentCline = provider.getCurrentTask()
-		if (!currentCline) {
-			console.error("[handleDeleteMessageConfirm] No current cline available")
+		const currentAlpha = getTaskForMessage(provider, message, { allowActiveFallback: true })
+		if (!currentAlpha) {
+			console.error("[handleDeleteMessageConfirm] No current task available")
 			return
 		}
 
-		const { messageIndex, apiConversationHistoryIndex } = findMessageIndices(messageTs, currentCline)
+		const { messageIndex, apiConversationHistoryIndex } = findMessageIndices(messageTs, currentAlpha)
 		// Determine API truncation index with timestamp fallback if exact match not found
 		let apiIndexToUse = apiConversationHistoryIndex
-		const tsThreshold = currentCline.clineMessages[messageIndex]?.ts
+		const tsThreshold = currentAlpha.clineMessages[messageIndex]?.ts
 		if (apiIndexToUse === -1 && typeof tsThreshold === "number") {
-			apiIndexToUse = findFirstApiIndexAtOrAfter(tsThreshold, currentCline)
+			apiIndexToUse = findFirstApiIndexAtOrAfter(tsThreshold, currentAlpha)
 		}
 
 		if (messageIndex === -1) {
@@ -315,12 +342,12 @@ export const webviewMessageHandler = async (
 		}
 
 		try {
-			const targetMessage = currentCline.clineMessages[messageIndex]
+			const targetMessage = currentAlpha.clineMessages[messageIndex]
 
 			// If checkpoint restoration is requested, find and restore to the last checkpoint before this message
 			if (restoreCheckpoint) {
 				// Find the last checkpoint before this message
-				const checkpoints = currentCline.clineMessages.filter(
+				const checkpoints = currentAlpha.clineMessages.filter(
 					(msg) => msg.say === "checkpoint_saved" && msg.ts > messageTs,
 				)
 
@@ -329,7 +356,7 @@ export const webviewMessageHandler = async (
 				if (nextCheckpoint && nextCheckpoint.text) {
 					await handleCheckpointRestoreOperation({
 						provider,
-						currentCline,
+						currentAlpha,
 						messageTs: targetMessage.ts!,
 						messageIndex,
 						checkpoint: { hash: nextCheckpoint.text },
@@ -345,27 +372,27 @@ export const webviewMessageHandler = async (
 				// Store checkpoints from messages that will be preserved
 				const preservedCheckpoints = new Map<number, any>()
 				for (let i = 0; i < messageIndex; i++) {
-					const msg = currentCline.clineMessages[i]
+					const msg = currentAlpha.clineMessages[i]
 					if (msg?.checkpoint && msg.ts) {
 						preservedCheckpoints.set(msg.ts, msg.checkpoint)
 					}
 				}
 
 				// Delete this message and all subsequent messages using MessageManager
-				await currentCline.messageManager.rewindToTimestamp(targetMessage.ts!, { includeTargetMessage: false })
+				await currentAlpha.messageManager.rewindToTimestamp(targetMessage.ts!, { includeTargetMessage: false })
 
 				// Restore checkpoint associations for preserved messages
 				for (const [ts, checkpoint] of preservedCheckpoints) {
-					const msgIndex = currentCline.clineMessages.findIndex((msg) => msg.ts === ts)
+					const msgIndex = currentAlpha.clineMessages.findIndex((msg) => msg.ts === ts)
 					if (msgIndex !== -1) {
-						currentCline.clineMessages[msgIndex].checkpoint = checkpoint
+						currentAlpha.clineMessages[msgIndex].checkpoint = checkpoint
 					}
 				}
 
 				// Save the updated messages with restored checkpoints
 				await saveTaskMessages({
-					messages: currentCline.clineMessages,
-					taskId: currentCline.taskId,
+					messages: currentAlpha.clineMessages,
+					taskId: currentAlpha.taskId,
 					globalStoragePath: provider.contextProxy.globalStorageUri.fsPath,
 				})
 
@@ -387,27 +414,31 @@ export const webviewMessageHandler = async (
 	 */
 	const handleEditOperation = async (messageTs: number, editedContent: string, images?: string[]): Promise<void> => {
 		// Check if there's a checkpoint before this message
-		const currentCline = provider.getCurrentTask()
+		const currentAlpha = getTaskForMessage(provider, message, { allowActiveFallback: true })
 		let hasCheckpoint = false
-		if (currentCline) {
-			const { messageIndex } = findMessageIndices(messageTs, currentCline)
+		if (currentAlpha) {
+			const { messageIndex } = findMessageIndices(messageTs, currentAlpha)
 			if (messageIndex !== -1) {
 				// Find the last checkpoint before this message
-				const checkpoints = currentCline.clineMessages.filter(
+				const checkpoints = currentAlpha.clineMessages.filter(
 					(msg) => msg.say === "checkpoint_saved" && msg.ts > messageTs,
 				)
 
 				hasCheckpoint = checkpoints.length > 0
 			} else {
 				console.log("[webviewMessageHandler] Edit - Message not found in clineMessages!")
+				return
 			}
 		} else {
-			console.log("[webviewMessageHandler] Edit - No currentCline available!")
+			console.log("[webviewMessageHandler] Edit - No current task available!")
+			return
 		}
 
 		// Send message to webview to show edit confirmation dialog
 		await provider.postMessageToWebview({
 			type: "showEditMessageDialog",
+			taskId: currentAlpha?.taskId,
+			messageAction: message.messageAction,
 			messageTs,
 			text: editedContent,
 			hasCheckpoint,
@@ -424,14 +455,14 @@ export const webviewMessageHandler = async (
 		restoreCheckpoint?: boolean,
 		images?: string[],
 	): Promise<void> => {
-		const currentCline = provider.getCurrentTask()
-		if (!currentCline) {
-			console.error("[handleEditMessageConfirm] No current cline available")
+		const currentAlpha = getTaskForMessage(provider, message, { allowActiveFallback: true })
+		if (!currentAlpha) {
+			console.error("[handleEditMessageConfirm] No current task available")
 			return
 		}
 
 		// Use findMessageIndices to find messages based on timestamp
-		const { messageIndex, apiConversationHistoryIndex } = findMessageIndices(messageTs, currentCline)
+		const { messageIndex, apiConversationHistoryIndex } = findMessageIndices(messageTs, currentAlpha)
 
 		if (messageIndex === -1) {
 			const errorMessage = t("common:errors.message.message_not_found", { messageTs })
@@ -441,12 +472,23 @@ export const webviewMessageHandler = async (
 		}
 
 		try {
-			const targetMessage = currentCline.clineMessages[messageIndex]
+			// Older clients may address an assistant row. Replace its preceding prompt.
+			let targetMessage = currentAlpha.clineMessages[messageIndex]
+			for (let i = messageIndex; i >= 0; i--) {
+				const candidate = currentAlpha.clineMessages[i]
+				if (
+					candidate.type === "say" &&
+					(candidate.say === "user_feedback" || (i === 0 && candidate.say === "text"))
+				) {
+					targetMessage = candidate
+					break
+				}
+			}
 
 			// If checkpoint restoration is requested, find and restore to the last checkpoint before this message
 			if (restoreCheckpoint) {
 				// Find the last checkpoint before this message
-				const checkpoints = currentCline.clineMessages.filter(
+				const checkpoints = currentAlpha.clineMessages.filter(
 					(msg) => msg.say === "checkpoint_saved" && msg.ts > messageTs,
 				)
 
@@ -455,7 +497,7 @@ export const webviewMessageHandler = async (
 				if (nextCheckpoint && nextCheckpoint.text) {
 					await handleCheckpointRestoreOperation({
 						provider,
-						currentCline,
+						currentAlpha,
 						messageTs: targetMessage.ts!,
 						messageIndex,
 						checkpoint: { hash: nextCheckpoint.text },
@@ -466,8 +508,6 @@ export const webviewMessageHandler = async (
 							apiConversationHistoryIndex,
 						},
 					})
-					// The task will be cancelled and reinitialized by checkpointRestore
-					// The pending edit will be processed in the reinitialized task
 					return
 				} else {
 					// No checkpoint found before this message
@@ -477,72 +517,7 @@ export const webviewMessageHandler = async (
 				}
 			}
 
-			// For non-checkpoint edits, remove the ORIGINAL user message being edited and all subsequent messages
-			// Determine the correct starting index to delete from (prefer the last preceding user_feedback message)
-			let deleteFromMessageIndex = messageIndex
-			let deleteFromApiIndex = apiConversationHistoryIndex
-
-			// Find the nearest preceding user message to ensure we replace the original, not just the assistant reply
-			for (let i = messageIndex; i >= 0; i--) {
-				const m = currentCline.clineMessages[i]
-				if (m?.say === "user_feedback") {
-					deleteFromMessageIndex = i
-					// Align API history truncation to the same user message timestamp if present
-					const userTs = m.ts
-					if (typeof userTs === "number") {
-						const apiIdx = currentCline.apiConversationHistory.findIndex(
-							(am: ApiMessage) => am.ts === userTs,
-						)
-						if (apiIdx !== -1) {
-							deleteFromApiIndex = apiIdx
-						}
-					}
-					break
-				}
-			}
-
-			// Timestamp fallback for API history when exact user message isn't present
-			if (deleteFromApiIndex === -1) {
-				const tsThresholdForEdit = currentCline.clineMessages[deleteFromMessageIndex]?.ts
-				if (typeof tsThresholdForEdit === "number") {
-					deleteFromApiIndex = findFirstApiIndexAtOrAfter(tsThresholdForEdit, currentCline)
-				}
-			}
-
-			// Store checkpoints from messages that will be preserved
-			const preservedCheckpoints = new Map<number, any>()
-			for (let i = 0; i < deleteFromMessageIndex; i++) {
-				const msg = currentCline.clineMessages[i]
-				if (msg?.checkpoint && msg.ts) {
-					preservedCheckpoints.set(msg.ts, msg.checkpoint)
-				}
-			}
-
-			// Delete the original (user) message and all subsequent messages using MessageManager
-			const rewindTs = currentCline.clineMessages[deleteFromMessageIndex]?.ts
-			if (rewindTs) {
-				await currentCline.messageManager.rewindToTimestamp(rewindTs, { includeTargetMessage: false })
-			}
-
-			// Restore checkpoint associations for preserved messages
-			for (const [ts, checkpoint] of preservedCheckpoints) {
-				const msgIndex = currentCline.clineMessages.findIndex((msg) => msg.ts === ts)
-				if (msgIndex !== -1) {
-					currentCline.clineMessages[msgIndex].checkpoint = checkpoint
-				}
-			}
-
-			// Save the updated messages with restored checkpoints
-			await saveTaskMessages({
-				messages: currentCline.clineMessages,
-				taskId: currentCline.taskId,
-				globalStoragePath: provider.contextProxy.globalStorageUri.fsPath,
-			})
-
-			// Update the UI to reflect the deletion
-			await provider.postStateToWebview()
-
-			await currentCline.submitUserMessage(editedContent, images)
+			await restartTaskFromMessage(provider, currentAlpha, targetMessage.ts, editedContent, images)
 		} catch (error) {
 			console.error("Error in edit message:", error)
 			vscode.window.showErrorMessage(
@@ -568,8 +543,8 @@ export const webviewMessageHandler = async (
 	): Promise<void> => {
 		if (operation === "delete") {
 			await handleDeleteOperation(messageTs)
-		} else if (operation === "edit" && editedContent) {
-			await handleEditOperation(messageTs, editedContent, images)
+		} else if (operation === "edit" && (editedContent?.trim() || images?.length)) {
+			await handleEditOperation(messageTs, editedContent ?? "", images)
 		}
 	}
 
@@ -579,20 +554,30 @@ export const webviewMessageHandler = async (
 			const customModes = await provider.customModesManager.getCustomModes()
 			await updateGlobalState("customModes", customModes)
 
-			provider.postStateToWebview()
-			provider.workspaceTracker?.initializeFilePaths() // Don't await.
+			await provider.postStateToWebview()
+			void provider.workspaceTracker?.initializeFilePaths().catch((error) => {
+				provider.log(
+					`[webviewDidLaunch] Failed to initialize workspace file paths: ${error instanceof Error ? error.message : String(error)}`,
+				)
+			})
 
-			getTheme().then((theme) => provider.postMessageToWebview({ type: "theme", text: JSON.stringify(theme) }))
+			void getTheme()
+				.then((theme) => provider.postMessageToWebview({ type: "theme", text: JSON.stringify(theme) }))
+				.catch((error) => {
+					provider.log(
+						`[webviewDidLaunch] Failed to load theme: ${error instanceof Error ? error.message : String(error)}`,
+					)
+				})
 
 			// If MCP Hub is already initialized, update the webview with
 			// current server list.
 			const mcpHub = provider.getMcpHub()
 
 			if (mcpHub) {
-				provider.postMessageToWebview({ type: "mcpServers", mcpServers: mcpHub.getAllServers() })
+				await provider.postMessageToWebview({ type: "mcpServers", mcpServers: mcpHub.getAllServers() })
 			}
 
-			provider.providerSettingsManager
+			void provider.providerSettingsManager
 				.listConfig()
 				.then(async (listApiConfig) => {
 					if (!listApiConfig) {
@@ -607,7 +592,7 @@ export const webviewMessageHandler = async (
 							// Only save if the current configuration has meaningful settings
 							// (e.g., API keys). This prevents saving a default "anthropic"
 							// fallback when no real config exists, which can happen during
-							// CLI initialization before provider settings are applied.
+							// initialization before provider settings are applied.
 							if (checkExistKey(apiConfiguration)) {
 								await provider.providerSettingsManager.saveConfig(
 									listApiConfig[0].name ?? "default",
@@ -646,11 +631,18 @@ export const webviewMessageHandler = async (
 				)
 
 			// Enable telemetry by default (when unset) or when explicitly enabled
-			provider.getStateToPostToWebview().then((state) => {
-				const { telemetrySetting } = state
-				const isOptedIn = telemetrySetting !== "disabled"
-				TelemetryService.instance.updateTelemetryState(isOptedIn)
-			})
+			void provider
+				.getStateToPostToWebview()
+				.then((state) => {
+					const { telemetrySetting } = state
+					const isOptedIn = telemetrySetting !== "disabled"
+					TelemetryService.instance.updateTelemetryState(isOptedIn)
+				})
+				.catch((error) => {
+					provider.log(
+						`[webviewDidLaunch] Failed to initialize telemetry state: ${error instanceof Error ? error.message : String(error)}`,
+					)
+				})
 
 			provider.isViewLaunched = true
 			break
@@ -684,6 +676,36 @@ export const webviewMessageHandler = async (
 				vscode.window.showErrorMessage(
 					`Failed to create task: ${error instanceof Error ? error.message : String(error)}`,
 				)
+			}
+			break
+		case "resumeCompletedTask":
+			{
+				const restoreDraft = async (reason: string) => {
+					// The composer optimistically clears after submit. Restore the exact
+					// draft whenever the host cannot durably accept the continuation.
+					await provider.postMessageToWebview({
+						type: "invoke",
+						invoke: "setChatBoxMessage",
+						text: message.text,
+						images: message.images,
+					})
+					vscode.window.showErrorMessage(`Failed to continue task: ${reason}`)
+				}
+				const task = getTaskForMessage(provider, message)
+				if (!task) {
+					provider.log("[webviewMessageHandler] Ignoring resumeCompletedTask: missing or unknown taskId")
+					await restoreDraft("the completed task is no longer available")
+					break
+				}
+				try {
+					const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
+					await task.resumeCompletedTaskFollowup(resolved.text ?? "", resolved.images ?? [])
+				} catch (error) {
+					provider.log(
+						`[webviewMessageHandler] Failed to resume completed task ${message.taskId}: ${error instanceof Error ? error.message : String(error)}`,
+					)
+					await restoreDraft(error instanceof Error ? error.message : String(error))
+				}
 			}
 			break
 		case "startBlankTask":
@@ -766,6 +788,22 @@ export const webviewMessageHandler = async (
 					} else if (key === "maxConcurrentTasks") {
 						newValue = value ?? 3
 						provider.setMaxConcurrentTasks(newValue as number)
+					} else if (key === "subagentDefaultApiConfigId") {
+						newValue = typeof value === "string" && value.length > 0 ? value : undefined
+					} else if (key === "subagentApiConfigByRole") {
+						const roles = value as { explore?: unknown; review?: unknown; worker?: unknown } | undefined
+						const normalizedRoles = {
+							...(typeof roles?.explore === "string" && roles.explore.length > 0
+								? { explore: roles.explore }
+								: {}),
+							...(typeof roles?.review === "string" && roles.review.length > 0
+								? { review: roles.review }
+								: {}),
+							...(typeof roles?.worker === "string" && roles.worker.length > 0
+								? { worker: roles.worker }
+								: {}),
+						}
+						newValue = Object.keys(normalizedRoles).length > 0 ? normalizedRoles : undefined
 					} else if (key === "experiments") {
 						if (!value) {
 							continue
@@ -781,7 +819,7 @@ export const webviewMessageHandler = async (
 						}
 					}
 
-					await provider.contextProxy.setValue(key as keyof RooCodeSettings, newValue)
+					await provider.contextProxy.setValue(key as keyof AlphaCodeSettings, newValue)
 				}
 
 				await provider.postStateToWebview()
@@ -791,7 +829,7 @@ export const webviewMessageHandler = async (
 
 		case "terminalOperation":
 			if (message.terminalOperation) {
-				getRequiredTaskForMessage(provider, message, "terminalOperation")?.handleTerminalOperation(
+				await getRequiredTaskForMessage(provider, message, "terminalOperation")?.handleTerminalOperation(
 					message.terminalOperation,
 				)
 			}
@@ -819,17 +857,34 @@ export const webviewMessageHandler = async (
 		case "exportCurrentTask":
 			const currentTaskId = getTaskForMessage(provider, message, { allowActiveFallback: true })?.taskId
 			if (currentTaskId) {
-				provider.exportTaskWithId(currentTaskId)
+				await provider.exportTaskWithId(currentTaskId)
 			}
 			break
-		case "showTaskWithId":
-			provider.showTaskWithId(message.text!)
+		case "showTaskWithId": {
+			const taskId = message.text?.trim()
+			if (!taskId) {
+				await vscode.window.showWarningMessage("This task is not available yet. Wait a moment and try again.")
+				break
+			}
+			try {
+				await provider.showTaskWithId(taskId)
+			} catch (error) {
+				provider.log(
+					`[webviewMessageHandler] Could not show task ${taskId.slice(0, 128)}: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				)
+				await vscode.window.showWarningMessage(
+					"This task is not available yet. If it is still launching, wait a moment and try again.",
+				)
+			}
 			break
+		}
 		case "condenseTaskContextRequest":
-			provider.condenseTaskContext(message.text!)
+			await provider.condenseTaskContext(message.text!)
 			break
 		case "deleteTaskWithId":
-			provider.deleteTaskWithId(message.text!)
+			await provider.deleteTaskWithId(message.text!)
 			break
 		case "deleteMultipleTasksWithIds": {
 			const ids = message.ids
@@ -876,7 +931,7 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "exportTaskWithId":
-			provider.exportTaskWithId(message.text!)
+			await provider.exportTaskWithId(message.text!)
 			break
 		case "getTaskWithAggregatedCosts": {
 			try {
@@ -1162,6 +1217,9 @@ export const webviewMessageHandler = async (
 				}
 			}
 			break
+		case "openHtmlDocument":
+			await openHtmlDocumentLink(message.text)
+			break
 		case "openFile":
 			let filePath: string = message.text!
 			if (!path.isAbsolute(filePath)) {
@@ -1208,8 +1266,18 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "openMention":
-			openMention(getCurrentCwd(), message.text)
+			await openMention(getCurrentCwd(), message.text)
 			break
+		case "openTicket": {
+			const target = ticketTargetSchema.safeParse(message.ticketTarget)
+			if (target.success) await vscode.commands.executeCommand("alpha.openTickets", target.data)
+			break
+		}
+		case "searchTickets": {
+			const result = await searchTicketMentions(getCurrentCwd(), message)
+			if (result) await provider.postMessageToWebview({ type: "ticketSearchResults", ticketSearch: result })
+			break
+		}
 		case "openExternal":
 			if (message.url) {
 				vscode.env.openExternal(vscode.Uri.parse(message.url))
@@ -1232,7 +1300,7 @@ export const webviewMessageHandler = async (
 					break
 				}
 
-				await provider.cancelTask(message.taskId)
+				await provider.cancelTask(message.taskId, "checkpoint_restore")
 				const task = getRequiredTaskForMessage(provider, message, "checkpointRestore")
 
 				try {
@@ -1266,7 +1334,94 @@ export const webviewMessageHandler = async (
 				provider.log("[webviewMessageHandler] Ignoring cancelTask: missing taskId")
 				break
 			}
-			await provider.cancelTask(message.taskId)
+			await provider.cancelTask(message.taskId, "webview_stop")
+			break
+		case "cancelSubagentGroup":
+			if (!message.taskId || !message.groupId) {
+				provider.log("[webviewMessageHandler] Ignoring cancelSubagentGroup: missing taskId or groupId")
+				break
+			}
+			await provider.cancelSubagentGroup(message.taskId, message.groupId)
+			break
+		case "cancelSubagent":
+			if (!message.taskId || !message.groupId || !message.subagentTaskId) {
+				provider.log("[webviewMessageHandler] Ignoring cancelSubagent: missing task, group, or sub-agent id")
+				break
+			}
+			await provider.cancelSubagent(message.taskId, message.groupId, message.subagentTaskId)
+			break
+		case "steerSubagent":
+			if (!message.taskId || !message.groupId || !message.subagentTaskId || !message.text?.trim()) {
+				provider.log(
+					"[webviewMessageHandler] Ignoring steerSubagent: missing task, group, sub-agent id, or text",
+				)
+				break
+			}
+			await provider.steerSubagent(message.taskId, message.groupId, message.subagentTaskId, message.text)
+			break
+		case "respondToSubagentApproval":
+			if (
+				!message.taskId ||
+				!message.groupId ||
+				!message.subagentTaskId ||
+				!message.approvalId ||
+				message.approved === undefined
+			)
+				break
+			await provider.respondToSubagentApproval(
+				message.taskId,
+				message.groupId,
+				message.subagentTaskId,
+				message.approvalId,
+				message.approved,
+			)
+			break
+		case "openSubagentChangeSet":
+			if (message.taskId && message.groupId && message.changeSetId) {
+				await provider.openSubagentChangeSet(message.taskId, message.groupId, message.changeSetId)
+			}
+			break
+		case "requestSubagentChangeSetActionCapability":
+			if (message.taskId && message.groupId && message.changeSetId) {
+				const capability = await provider.getSubagentChangeSetActionCapability(
+					message.taskId,
+					message.groupId,
+					message.changeSetId,
+				)
+				await provider.postMessageToWebview({
+					type: "subagentChangeSetActionCapability",
+					requestId: message.requestId,
+					subagentChangeSetActionCapability: capability,
+				})
+			}
+			break
+		case "applySubagentChangeSet":
+			if (message.taskId && message.groupId && message.changeSetId) {
+				const result = await provider.applySubagentChangeSet(
+					message.taskId,
+					message.groupId,
+					message.changeSetId,
+				)
+				await provider.postMessageToWebview({
+					type: "subagentChangeSetActionResult",
+					requestId: message.requestId,
+					subagentChangeSetActionResult: result,
+				})
+			}
+			break
+		case "discardSubagentChangeSet":
+			if (message.taskId && message.groupId && message.changeSetId) {
+				const result = await provider.discardSubagentChangeSet(
+					message.taskId,
+					message.groupId,
+					message.changeSetId,
+				)
+				await provider.postMessageToWebview({
+					type: "subagentChangeSetActionResult",
+					requestId: message.requestId,
+					subagentChangeSetActionResult: result,
+				})
+			}
 			break
 		case "cancelAutoApproval":
 			// Cancel any pending auto-approval timeout for the current task
@@ -1323,11 +1478,11 @@ export const webviewMessageHandler = async (
 			}
 
 			const workspaceFolder = getCurrentCwd()
-			const rooDir = path.join(workspaceFolder, ".roo")
-			const mcpPath = path.join(rooDir, "mcp.json")
+			const legacyConfigDir = path.join(workspaceFolder, ".roo")
+			const mcpPath = path.join(legacyConfigDir, "mcp.json")
 
 			try {
-				await fs.mkdir(rooDir, { recursive: true })
+				await fs.mkdir(legacyConfigDir, { recursive: true })
 				const exists = await fileExistsAtPath(mcpPath)
 
 				if (!exists) {
@@ -1500,13 +1655,7 @@ export const webviewMessageHandler = async (
 				const existingPrompts = getGlobalState("customModePrompts") ?? {}
 				const updatedPrompts = { ...existingPrompts, [message.promptMode]: message.customPrompt }
 				await updateGlobalState("customModePrompts", updatedPrompts)
-				const currentState = await provider.getStateToPostToWebview()
-				const stateWithPrompts = {
-					...currentState,
-					customModePrompts: updatedPrompts,
-					hasOpenedModeSelector: currentState.hasOpenedModeSelector ?? false,
-				}
-				provider.postMessageToWebview({ type: "state", state: stateWithPrompts })
+				await provider.postStateToWebview()
 
 				if (TelemetryService.hasInstance()) {
 					// Determine which setting was changed by comparing objects
@@ -1525,7 +1674,7 @@ export const webviewMessageHandler = async (
 			}
 			break
 		case "deleteMessage": {
-			if (!provider.getCurrentTask()) {
+			if (!getTaskForMessage(provider, message, { allowActiveFallback: true })) {
 				await vscode.window.showErrorMessage(t("common:errors.message.no_active_task_to_delete"))
 				break
 			}
@@ -1540,10 +1689,10 @@ export const webviewMessageHandler = async (
 		}
 		case "submitEditedMessage": {
 			if (
-				provider.getCurrentTask() &&
+				getTaskForMessage(provider, message, { allowActiveFallback: true }) &&
 				typeof message.value === "number" &&
 				message.value &&
-				message.editedMessageContent
+				(message.editedMessageContent?.trim() || message.images?.length)
 			) {
 				await handleMessageModificationsOperation(
 					message.value,
@@ -1604,22 +1753,31 @@ export const webviewMessageHandler = async (
 						enhancementApiConfigId,
 						includeTaskHistoryInEnhance,
 					} = state
+					const enhancementApiConfigIdOverride = message.enhancementOptions?.apiConfigId
+					const includeTaskHistoryOverride = message.enhancementOptions?.includeTaskHistory
+					const supportPromptOverride = message.enhancementOptions?.supportPrompt
+					const effectiveCustomSupportPrompts =
+						supportPromptOverride === undefined
+							? customSupportPrompts
+							: { ...customSupportPrompts, ENHANCE: supportPromptOverride }
+					const effectiveEnhancementApiConfigId = enhancementApiConfigIdOverride ?? enhancementApiConfigId
+					const effectiveIncludeTaskHistory = includeTaskHistoryOverride ?? includeTaskHistoryInEnhance
 
-					const currentCline = provider.getCurrentTask()
+					const currentAlpha = provider.getCurrentTask()
 
 					const result = await MessageEnhancer.enhanceMessage({
 						text: message.text,
 						apiConfiguration,
-						customSupportPrompts,
+						customSupportPrompts: effectiveCustomSupportPrompts,
 						listApiConfigMeta,
-						enhancementApiConfigId,
-						includeTaskHistoryInEnhance,
-						currentClineMessages: currentCline?.clineMessages,
+						enhancementApiConfigId: effectiveEnhancementApiConfigId,
+						includeTaskHistoryInEnhance: effectiveIncludeTaskHistory,
+						currentAlphaMessages: currentAlpha?.clineMessages,
 						providerSettingsManager: provider.providerSettingsManager,
 					})
 
 					if (result.success && result.enhancedText) {
-						MessageEnhancer.captureTelemetry(currentCline?.taskId, includeTaskHistoryInEnhance)
+						MessageEnhancer.captureTelemetry(currentAlpha?.taskId, effectiveIncludeTaskHistory)
 						await provider.postMessageToWebview({ type: "enhancedPrompt", text: result.enhancedText })
 					} else {
 						throw new Error(result.error || "Unknown error")
@@ -1702,26 +1860,26 @@ export const webviewMessageHandler = async (
 					20, // Use default limit, as filtering is now done in the backend
 				)
 
-				// Get the RooIgnoreController from the current task, or create a new one
+				// Get the AlphaIgnoreController from the current task, or create a new one
 				const currentTask = provider.getCurrentTask()
-				let rooIgnoreController = currentTask?.rooIgnoreController
-				let tempController: RooIgnoreController | undefined
+				let alphaIgnoreController = currentTask?.alphaIgnoreController
+				let tempController: AlphaIgnoreController | undefined
 
 				// If no current task or no controller, create a temporary one
-				if (!rooIgnoreController) {
-					tempController = new RooIgnoreController(workspacePath)
+				if (!alphaIgnoreController) {
+					tempController = new AlphaIgnoreController(workspacePath)
 					await tempController.initialize()
-					rooIgnoreController = tempController
+					alphaIgnoreController = tempController
 				}
 
 				try {
 					// Get showRooIgnoredFiles setting from state
 					const { showRooIgnoredFiles = false } = (await provider.getState()) ?? {}
 
-					// Filter results using RooIgnoreController if showRooIgnoredFiles is false
+					// Filter results using AlphaIgnoreController if showRooIgnoredFiles is false
 					let filteredResults = results
-					if (!showRooIgnoredFiles && rooIgnoreController) {
-						const allowedPaths = rooIgnoreController.filterPaths(results.map((r) => r.path))
+					if (!showRooIgnoredFiles && alphaIgnoreController) {
+						const allowedPaths = alphaIgnoreController.filterPaths(results.map((r) => r.path))
 						filteredResults = results.filter((r) => allowedPaths.includes(r.path))
 					}
 
@@ -1749,16 +1907,13 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "updateTodoList": {
-			const payload = message.payload as { todos?: any[] }
-			const todos = payload?.todos
-			if (Array.isArray(todos)) {
-				await setPendingTodoList(todos)
-			}
+			const task = getRequiredTaskForMessage(provider, message, "updateTodoList")
+			if (task) setPendingTodoList(task, message.payload)
 			break
 		}
 		case "refreshCustomTools": {
 			try {
-				const toolDirs = getRooDirectoriesForCwd(getCurrentCwd()).map((dir) => path.join(dir, "tools"))
+				const toolDirs = getLegacyConfigDirectoriesForCwd(getCurrentCwd()).map((dir) => path.join(dir, "tools"))
 				await customToolRegistry.loadFromDirectories(toolDirs)
 
 				await provider.postMessageToWebview({
@@ -1861,10 +2016,10 @@ export const webviewMessageHandler = async (
 				}
 
 				const oldName = message.text
+				const profiles = await provider.providerSettingsManager.listConfig()
+				const deletedProfileId = profiles.find((profile) => profile.name === oldName)?.id
 
-				const newName = (await provider.providerSettingsManager.listConfig()).filter(
-					(c) => c.name !== oldName,
-				)[0]?.name
+				const newName = profiles.filter((c) => c.name !== oldName)[0]?.name
 
 				if (!newName) {
 					vscode.window.showErrorMessage(t("common:errors.delete_api_config"))
@@ -1873,6 +2028,7 @@ export const webviewMessageHandler = async (
 
 				try {
 					await provider.providerSettingsManager.deleteConfig(oldName)
+					if (deletedProfileId) await provider.clearSubagentProfileReferences(deletedProfileId)
 					await provider.activateProviderProfile({ name: newName })
 				} catch (error) {
 					provider.log(
@@ -1897,8 +2053,13 @@ export const webviewMessageHandler = async (
 			await handleDeleteMessageConfirm(message.messageTs, message.restoreCheckpoint)
 			break
 		case "editMessageConfirm":
-			if (message.messageTs && message.text) {
-				const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
+			if (message.messageTs && (message.text?.trim() || message.images?.length)) {
+				if (!getTaskForMessage(provider, message, { allowActiveFallback: true })) break
+				const resolved = await resolveIncomingImages({
+					text: message.text,
+					images: message.images,
+					taskId: message.taskId,
+				})
 				await handleEditMessageConfirm(
 					message.messageTs,
 					resolved.text,
@@ -2167,7 +2328,7 @@ export const webviewMessageHandler = async (
 					// Import the mode with the specified source level
 					const result = await provider.customModesManager.importModeWithRules(
 						yamlContent,
-						message.source || "project", // Default to project if not specified
+						message.source === "global" ? "global" : "project", // Mode imports support user sources only.
 					)
 
 					if (result.success) {
@@ -2834,6 +2995,20 @@ export const webviewMessageHandler = async (
 			}
 			break
 		}
+		case "requestScheduledTaskSkills": {
+			const request = scheduledTaskSkillsRequestSchema.safeParse(message.scheduledTaskSkillsRequest)
+			if (!request.success) break
+			const { requestId, workspace, mode } = request.data
+			const skills = await provider
+				.getScheduledTaskService()
+				?.getSkills(workspace, mode)
+				.catch(() => [])
+			await provider.postMessageToWebview({
+				type: "scheduledTaskSkills",
+				scheduledTaskSkills: { requestId, skills: skills ?? [] },
+			})
+			break
+		}
 		case "createScheduledTask": {
 			const service = provider.getScheduledTaskService()
 			if (!service || !message.scheduledTask) {
@@ -2907,69 +3082,6 @@ export const webviewMessageHandler = async (
 				break
 			}
 			await service.duplicateTask(message.scheduledTaskId)
-			break
-		}
-		case "createGoalSeekJob": {
-			const service = provider.getGoalSeekService()
-			if (!service || !message.goalSeekJob) {
-				vscode.window.showErrorMessage("Goal Seek service is not available.")
-				break
-			}
-			try {
-				await service.createJob(message.goalSeekJob)
-			} catch (error) {
-				vscode.window.showErrorMessage(
-					`Failed to create Goal Seek job: ${error instanceof Error ? error.message : String(error)}`,
-				)
-			}
-			break
-		}
-		case "updateGoalSeekJob": {
-			const service = provider.getGoalSeekService()
-			if (!service || !message.goalSeekJobId || !message.goalSeekJobUpdate) {
-				vscode.window.showErrorMessage("Goal Seek update is missing required data.")
-				break
-			}
-			try {
-				await service.updateJob(message.goalSeekJobId, message.goalSeekJobUpdate)
-			} catch (error) {
-				vscode.window.showErrorMessage(
-					`Failed to update Goal Seek job: ${error instanceof Error ? error.message : String(error)}`,
-				)
-			}
-			break
-		}
-		case "deleteGoalSeekJob": {
-			const service = provider.getGoalSeekService()
-			if (!service || !message.goalSeekJobId) {
-				vscode.window.showErrorMessage("Goal Seek delete is missing required data.")
-				break
-			}
-			await service.deleteJob(message.goalSeekJobId)
-			break
-		}
-		case "runGoalSeekJob": {
-			const service = provider.getGoalSeekService()
-			if (!service || !message.goalSeekJobId) {
-				vscode.window.showErrorMessage("Goal Seek run is missing required data.")
-				break
-			}
-			try {
-				await service.runJob(message.goalSeekJobId)
-			} catch (error) {
-				vscode.window.showErrorMessage(
-					`Failed to run Goal Seek job: ${error instanceof Error ? error.message : String(error)}`,
-				)
-			}
-			break
-		}
-		case "cancelGoalSeekRun": {
-			const service = provider.getGoalSeekService()
-			if (!service || !message.goalSeekRunId) {
-				vscode.window.showErrorMessage("Goal Seek cancel is missing required data.")
-				break
-			}
-			await service.cancelRun(message.goalSeekRunId)
 			break
 		}
 		case "requestCommands": {
@@ -3193,12 +3305,27 @@ export const webviewMessageHandler = async (
 		 */
 
 		case "queueMessage": {
-			const task = getRequiredTaskForMessage(provider, message, "queueMessage")
-			if (!task) {
+			let resolved: Awaited<ReturnType<typeof resolveIncomingImages>>
+			try {
+				resolved = await resolveIncomingImages({
+					text: message.text,
+					images: message.images,
+					taskId: message.taskId,
+				})
+			} catch (error) {
+				provider.log(
+					`[webviewMessageHandler] queueMessage image resolution failed: ${error instanceof Error ? error.message : String(error)}`,
+				)
+				await postChatCommandResult("queueMessage", "rejected", "image_resolution_failed")
 				break
 			}
-			const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
-			task.messageQueueService.addMessage(resolved.text, resolved.images)
+
+			if (!provider.queueMessageForTask(message.taskId, resolved.text, resolved.images)) {
+				provider.log(`[webviewMessageHandler] Ignoring queueMessage: missing, terminal, or unknown taskId`)
+				await postChatCommandResult("queueMessage", "rejected", "task_unavailable")
+				break
+			}
+			await postChatCommandResult("queueMessage", "accepted")
 			break
 		}
 		case "removeQueuedMessage": {
@@ -3210,13 +3337,38 @@ export const webviewMessageHandler = async (
 		case "steerQueuedMessage": {
 			const task = getRequiredTaskForMessage(provider, message, "steerQueuedMessage")
 			if (!task) {
+				await postChatCommandResult("steerQueuedMessage", "rejected", "task_unavailable")
 				break
 			}
 
-			const queued = task.messageQueueService.takeMessage(message.text ?? "")
+			// Keep the queue as the owner until the task accepts the handoff. If steering
+			// races another steer or a terminal transition, the message remains retryable.
+			const queued = task.messageQueueService.getMessage(message.text ?? "")
 
-			if (queued) {
+			if (!queued) {
+				await postChatCommandResult("steerQueuedMessage", "rejected", "message_not_found")
+				break
+			}
+			if (typeof task.canAcceptSteerMessage === "function" && !task.canAcceptSteerMessage()) {
+				await postChatCommandResult("steerQueuedMessage", "rejected", "steer_pending")
+				break
+			}
+
+			try {
 				await task.steerUserMessage(queued.text, queued.images)
+				task.messageQueueService.removeMessage(queued.id)
+				await postChatCommandResult("steerQueuedMessage", "accepted")
+			} catch (error) {
+				provider.log(
+					`[webviewMessageHandler] steerQueuedMessage failed for task ${task.taskId}: ${error instanceof Error ? error.message : String(error)}`,
+				)
+				await postChatCommandResult(
+					"steerQueuedMessage",
+					"rejected",
+					typeof task.hasPendingSteerMessage === "function" && task.hasPendingSteerMessage()
+						? "steer_pending"
+						: "unknown",
+				)
 			}
 
 			break
@@ -3285,7 +3437,7 @@ export const webviewMessageHandler = async (
 				try {
 					const tmpDir = os.tmpdir()
 					const timestamp = Date.now()
-					const tempFileName = `roo-preview-${timestamp}.md`
+					const tempFileName = `alpha-preview-${timestamp}.md`
 					const tempFilePath = path.join(tmpDir, tempFileName)
 
 					await fs.writeFile(tempFilePath, message.text, "utf8")
@@ -3373,7 +3525,7 @@ export const webviewMessageHandler = async (
 				// Create a temporary file
 				const tmpDir = os.tmpdir()
 				const timestamp = Date.now()
-				const tempFileName = `roo-debug-${message.type === "openDebugApiHistory" ? "api" : "ui"}-${currentTask.taskId.slice(0, 8)}-${timestamp}.json`
+				const tempFileName = `alpha-debug-${message.type === "openDebugApiHistory" ? "api" : "ui"}-${currentTask.taskId.slice(0, 8)}-${timestamp}.json`
 				const tempFilePath = path.join(tmpDir, tempFileName)
 
 				await fs.writeFile(tempFilePath, prettifiedContent, "utf8")
@@ -3400,6 +3552,8 @@ export const webviewMessageHandler = async (
 				taskId: currentTask.taskId,
 				globalStoragePath: provider.contextProxy.globalStorageUri.fsPath,
 				values: message.values,
+				extension: provider.context.extension,
+				getRuntimeDiagnostics: () => provider.getTaskSettlementDiagnostics(currentTask),
 				log: (msg) => provider.log(msg),
 			})
 			break

@@ -1,6 +1,7 @@
 import type OpenAI from "openai"
-import { McpHub } from "../../../../services/mcp/McpHub"
-import { buildMcpToolName } from "../../../../utils/mcp-name"
+import type { McpServer } from "@alpha-code/types"
+import type { McpHub } from "../../../../services/mcp/McpHub"
+import { buildMcpToolName, normalizeMcpToolName } from "../../../../utils/mcp-name"
 import { normalizeToolSchema, type JsonSchema } from "../../../../utils/json-schema"
 
 /**
@@ -12,20 +13,28 @@ import { normalizeToolSchema, type JsonSchema } from "../../../../utils/json-sch
  * @returns An array of OpenAI.Chat.ChatCompletionTool definitions.
  */
 export function getMcpServerTools(mcpHub?: McpHub): OpenAI.Chat.ChatCompletionTool[] {
-	if (!mcpHub) {
-		return []
-	}
+	return buildMcpServerTools(mcpHub?.getServers() ?? [])
+}
 
-	const servers = mcpHub.getServers()
+/** Build from one synchronous connection snapshot; historical provider supersets may retain disconnected schemas. */
+export function buildMcpServerTools(
+	servers: readonly McpServer[],
+	includeDisconnected = false,
+): OpenAI.Chat.ChatCompletionTool[] {
 	const tools: OpenAI.Chat.ChatCompletionTool[] = []
 	// Track seen tool names to prevent duplicates (e.g., when same server exists in both global and project configs)
 	const seenToolNames = new Set<string>()
 
-	for (const server of servers) {
-		if (!server.tools) {
+	// Historical schemas cannot shadow a connected tool with the same canonical function name.
+	const orderedServers = includeDisconnected
+		? [...servers].sort((a, b) => Number(b.status === "connected") - Number(a.status === "connected"))
+		: servers
+	for (const server of orderedServers) {
+		if (!server.tools || server.disabled || (!includeDisconnected && server.status !== "connected")) {
 			continue
 		}
-		for (const tool of server.tools) {
+		// Resolve sanitized-name collisions deterministically before capturing an executable target.
+		for (const tool of [...server.tools].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
 			// Filter tools where tool.enabledForPrompt is not explicitly false
 			if (tool.enabledForPrompt === false) {
 				continue
@@ -33,7 +42,7 @@ export function getMcpServerTools(mcpHub?: McpHub): OpenAI.Chat.ChatCompletionTo
 
 			// Build sanitized tool name for API compliance
 			// The name is sanitized to conform to API requirements (e.g., Gemini's function name restrictions)
-			const toolName = buildMcpToolName(server.name, tool.name)
+			const toolName = normalizeMcpToolName(buildMcpToolName(server.name, tool.name))
 
 			// Skip duplicate tool names - first occurrence wins (project servers come before global servers)
 			if (seenToolNames.has(toolName)) {
@@ -65,5 +74,9 @@ export function getMcpServerTools(mcpHub?: McpHub): OpenAI.Chat.ChatCompletionTo
 		}
 	}
 
-	return tools
+	return tools.sort((left, right) => {
+		const a = (left as OpenAI.Chat.ChatCompletionFunctionTool).function.name
+		const b = (right as OpenAI.Chat.ChatCompletionFunctionTool).function.name
+		return a < b ? -1 : a > b ? 1 : 0
+	})
 }

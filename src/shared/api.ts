@@ -68,6 +68,7 @@ export const shouldUseReasoningEffort = ({
 		| "medium"
 		| "high"
 		| "xhigh"
+		| "max"
 		| undefined
 
 	// "disable" explicitly omits reasoning
@@ -94,6 +95,7 @@ export const shouldUseReasoningEffort = ({
 		| "medium"
 		| "high"
 		| "xhigh"
+		| "max"
 		| undefined
 	return !!modelDefaultEffort
 }
@@ -156,6 +158,15 @@ export const getModelMaxOutputTokens = ({
 
 	// Default fallback
 	return ANTHROPIC_DEFAULT_MAX_TOKENS
+}
+
+/** Normalize output reservation once for context budgeting and its UI projection. */
+export function getModelReservedOutputTokens(options: Parameters<typeof getModelMaxOutputTokens>[0]): number {
+	if (options.model.contextWindowIncludesOutput === false) return 0
+	const tokens = getModelMaxOutputTokens(options)
+	return typeof tokens === "number" && Number.isFinite(tokens) && tokens > 0
+		? Math.ceil(tokens)
+		: ANTHROPIC_DEFAULT_MAX_TOKENS
 }
 
 // GetModelsOptions

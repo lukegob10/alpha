@@ -1,210 +1,73 @@
-import { vitest, describe, it, expect, beforeEach } from "vitest"
-import type { MockedClass } from "vitest"
+import { GoogleGenAI } from "@google/genai"
 import { GeminiEmbedder } from "../gemini"
-import { OpenAICompatibleEmbedder } from "../openai-compatible"
 
-// Mock the OpenAICompatibleEmbedder
-vitest.mock("../openai-compatible")
-
-// Mock TelemetryService
-vitest.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		instance: {
-			captureEvent: vitest.fn(),
-		},
-	},
-}))
-
-const MockedOpenAICompatibleEmbedder = OpenAICompatibleEmbedder as MockedClass<typeof OpenAICompatibleEmbedder>
+vi.mock("@google/genai", () => ({ GoogleGenAI: vi.fn() }))
+vi.mock("../../../../i18n", () => ({ t: (key: string) => key }))
 
 describe("GeminiEmbedder", () => {
-	let embedder: GeminiEmbedder
-
+	const embedContent = vi.fn()
 	beforeEach(() => {
-		vitest.clearAllMocks()
+		vi.clearAllMocks()
+		vi.mocked(GoogleGenAI).mockImplementation(() => ({ models: { embedContent } }) as unknown as GoogleGenAI)
+		embedContent.mockImplementation(async ({ contents }) => ({
+			embeddings: contents.map(() => ({ values: [0.1, 0.2] })),
+		}))
 	})
-
-	describe("constructor", () => {
-		it("should create an instance with default model when no model specified", () => {
-			// Arrange
-			const apiKey = "test-gemini-api-key"
-
-			// Act
-			embedder = new GeminiEmbedder(apiKey)
-
-			// Assert
-			expect(MockedOpenAICompatibleEmbedder).toHaveBeenCalledWith(
-				"https://generativelanguage.googleapis.com/v1beta/openai/",
-				apiKey,
-				"gemini-embedding-001",
-				2048,
-			)
+	it("requires credentials", () => expect(() => new GeminiEmbedder("")).toThrow())
+	it("migrates the retired model and keeps document/query roles distinct", async () => {
+		const embedder = new GeminiEmbedder("key", "text-embedding-004")
+		await embedder.createEmbeddings(["source"])
+		expect(embedContent).toHaveBeenLastCalledWith({
+			model: "gemini-embedding-001",
+			contents: ["source"],
+			config: { taskType: "RETRIEVAL_DOCUMENT" },
 		})
-
-		it("should create an instance with specified model", () => {
-			// Arrange
-			const apiKey = "test-gemini-api-key"
-			const modelId = "gemini-embedding-001"
-
-			// Act
-			embedder = new GeminiEmbedder(apiKey, modelId)
-
-			// Assert
-			expect(MockedOpenAICompatibleEmbedder).toHaveBeenCalledWith(
-				"https://generativelanguage.googleapis.com/v1beta/openai/",
-				apiKey,
-				"gemini-embedding-001",
-				2048,
-			)
-		})
-
-		it("should migrate deprecated text-embedding-004 to gemini-embedding-001", () => {
-			// Arrange
-			const apiKey = "test-gemini-api-key"
-			const deprecatedModelId = "text-embedding-004"
-
-			// Act
-			embedder = new GeminiEmbedder(apiKey, deprecatedModelId)
-
-			// Assert - should be migrated to gemini-embedding-001
-			expect(MockedOpenAICompatibleEmbedder).toHaveBeenCalledWith(
-				"https://generativelanguage.googleapis.com/v1beta/openai/",
-				apiKey,
-				"gemini-embedding-001",
-				2048,
-			)
-		})
-
-		it("should throw error when API key is not provided", () => {
-			// Act & Assert
-			expect(() => new GeminiEmbedder("")).toThrow("validation.apiKeyRequired")
-			expect(() => new GeminiEmbedder(null as any)).toThrow("validation.apiKeyRequired")
-			expect(() => new GeminiEmbedder(undefined as any)).toThrow("validation.apiKeyRequired")
+		await embedder.createEmbeddings(["find source"], undefined, "query")
+		expect(embedContent).toHaveBeenLastCalledWith({
+			model: "gemini-embedding-001",
+			contents: ["find source"],
+			config: { taskType: "CODE_RETRIEVAL_QUERY" },
 		})
 	})
-
-	describe("embedderInfo", () => {
-		it("should return correct embedder info", () => {
-			// Arrange
-			embedder = new GeminiEmbedder("test-api-key")
-
-			// Act
-			const info = embedder.embedderInfo
-
-			// Assert
-			expect(info).toEqual({
-				name: "gemini",
-			})
+	it("uses instructed inputs for Gemini 2 without unsupported taskType", async () => {
+		const embedder = new GeminiEmbedder("key", "gemini-embedding-2")
+		await embedder.createEmbeddings(["find source"], undefined, "query")
+		expect(embedContent).toHaveBeenLastCalledWith({
+			model: "gemini-embedding-2",
+			contents: [{ parts: [{ text: "task: code retrieval | query: find source" }] }],
+			config: {},
 		})
-
-		describe("createEmbeddings", () => {
-			let mockCreateEmbeddings: any
-
-			beforeEach(() => {
-				mockCreateEmbeddings = vitest.fn()
-				MockedOpenAICompatibleEmbedder.prototype.createEmbeddings = mockCreateEmbeddings
-			})
-
-			it("should use instance model when no model parameter provided", async () => {
-				// Arrange
-				embedder = new GeminiEmbedder("test-api-key")
-				const texts = ["test text 1", "test text 2"]
-				const mockResponse = {
-					embeddings: [
-						[0.1, 0.2],
-						[0.3, 0.4],
-					],
-				}
-				mockCreateEmbeddings.mockResolvedValue(mockResponse)
-
-				// Act
-				const result = await embedder.createEmbeddings(texts)
-
-				// Assert
-				expect(mockCreateEmbeddings).toHaveBeenCalledWith(texts, "gemini-embedding-001")
-				expect(result).toEqual(mockResponse)
-			})
-
-			it("should use provided model parameter when specified", async () => {
-				// Arrange - even with deprecated model in constructor, the runtime parameter takes precedence
-				embedder = new GeminiEmbedder("test-api-key", "gemini-embedding-001")
-				const texts = ["test text 1", "test text 2"]
-				const mockResponse = {
-					embeddings: [
-						[0.1, 0.2],
-						[0.3, 0.4],
-					],
-				}
-				mockCreateEmbeddings.mockResolvedValue(mockResponse)
-
-				// Act - specify a different model at runtime
-				const result = await embedder.createEmbeddings(texts, "gemini-embedding-001")
-
-				// Assert
-				expect(mockCreateEmbeddings).toHaveBeenCalledWith(texts, "gemini-embedding-001")
-				expect(result).toEqual(mockResponse)
-			})
-
-			it("should handle errors from OpenAICompatibleEmbedder", async () => {
-				// Arrange
-				embedder = new GeminiEmbedder("test-api-key")
-				const texts = ["test text"]
-				const error = new Error("Embedding failed")
-				mockCreateEmbeddings.mockRejectedValue(error)
-
-				// Act & Assert
-				await expect(embedder.createEmbeddings(texts)).rejects.toThrow("Embedding failed")
-			})
+		await embedder.createEmbeddings(["source"])
+		expect(embedContent).toHaveBeenLastCalledWith({
+			model: "gemini-embedding-2",
+			contents: [{ parts: [{ text: "title: none | text: source" }] }],
+			config: {},
 		})
 	})
-
-	describe("validateConfiguration", () => {
-		let mockValidateConfiguration: any
-
-		beforeEach(() => {
-			mockValidateConfiguration = vitest.fn()
-			MockedOpenAICompatibleEmbedder.prototype.validateConfiguration = mockValidateConfiguration
-		})
-
-		it("should delegate validation to OpenAICompatibleEmbedder", async () => {
-			// Arrange
-			embedder = new GeminiEmbedder("test-api-key")
-			mockValidateConfiguration.mockResolvedValue({ valid: true })
-
-			// Act
-			const result = await embedder.validateConfiguration()
-
-			// Assert
-			expect(mockValidateConfiguration).toHaveBeenCalled()
-			expect(result).toEqual({ valid: true })
-		})
-
-		it("should pass through validation errors from OpenAICompatibleEmbedder", async () => {
-			// Arrange
-			embedder = new GeminiEmbedder("test-api-key")
-			mockValidateConfiguration.mockResolvedValue({
-				valid: false,
-				error: "embeddings:validation.authenticationFailed",
-			})
-
-			// Act
-			const result = await embedder.validateConfiguration()
-
-			// Assert
-			expect(mockValidateConfiguration).toHaveBeenCalled()
-			expect(result).toEqual({
-				valid: false,
-				error: "embeddings:validation.authenticationFailed",
-			})
-		})
-
-		it("should handle validation exceptions", async () => {
-			// Arrange
-			embedder = new GeminiEmbedder("test-api-key")
-			mockValidateConfiguration.mockRejectedValue(new Error("Validation failed"))
-
-			// Act & Assert
-			await expect(embedder.validateConfiguration()).rejects.toThrow("Validation failed")
-		})
+	it("bounds batches and preserves cardinality and order", async () => {
+		embedContent.mockImplementation(async ({ contents }) => ({
+			embeddings: contents.map((text: string) => ({ values: [Number(text)] })),
+		}))
+		const result = await new GeminiEmbedder("key").createEmbeddings(
+			Array.from({ length: 65 }, (_, index) => String(index)),
+		)
+		expect(embedContent.mock.calls.map((call) => call[0].contents.length)).toEqual([32, 32, 1])
+		expect(result.embeddings).toEqual(Array.from({ length: 65 }, (_, index) => [index]))
+	})
+	it("rejects partial provider output instead of shifting vector-to-source assignments", async () => {
+		embedContent.mockResolvedValue({ embeddings: [{ values: [1, 2] }] })
+		await expect(new GeminiEmbedder("key").createEmbeddings(["a", "b"])).rejects.toThrow(
+			"incomplete or invalid batch",
+		)
+		expect(embedContent).toHaveBeenCalledTimes(1)
+	})
+	it("propagates permanent API errors without retry", async () => {
+		embedContent.mockRejectedValue(Object.assign(new Error("Invalid key"), { status: 401 }))
+		await expect(new GeminiEmbedder("key").createEmbeddings(["source"])).rejects.toThrow("Invalid key")
+		expect(embedContent).toHaveBeenCalledTimes(1)
+	})
+	it("does not call the provider for empty input", async () => {
+		expect((await new GeminiEmbedder("key").createEmbeddings([])).embeddings).toEqual([])
+		expect(embedContent).not.toHaveBeenCalled()
 	})
 })

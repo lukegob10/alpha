@@ -1,13 +1,14 @@
 import { Task } from "../task/Task"
-import { ClineProvider } from "./ClineProvider"
+import { AlphaProvider } from "./AlphaProvider"
 import { saveTaskMessages } from "../task-persistence"
 import * as vscode from "vscode"
 import pWaitFor from "p-wait-for"
 import { t } from "../../i18n"
+import { awaitTaskCancellationBoundary } from "./TaskCancellationBoundary"
 
 export interface CheckpointRestoreConfig {
-	provider: ClineProvider
-	currentCline: Task
+	provider: AlphaProvider
+	currentAlpha: Task
 	messageTs: number
 	messageIndex: number
 	checkpoint: { hash: string }
@@ -19,65 +20,104 @@ export interface CheckpointRestoreConfig {
 	}
 }
 
+const pendingRestarts = new WeakSet<Task>()
+
+/** Rewind only after the old task has stopped, then resume a fresh instance with the same identity. */
+export async function restartTaskFromMessage(
+	provider: AlphaProvider,
+	task: Task,
+	messageTs: number,
+	text: string,
+	images?: string[],
+	checkpoint?: { hash: string },
+): Promise<void> {
+	if (pendingRestarts.has(task)) return
+	if (!text.trim() && !images?.length) return
+	pendingRestarts.add(task)
+	try {
+		const abortResult = task.abort ? undefined : await task.abortTask()
+		await awaitTaskCancellationBoundary(task, abortResult)
+		const rewind = async () => {
+			if (provider.getLiveTask(task.taskId) !== task)
+				throw new Error("The task changed before the prompt could be restarted")
+			if (checkpoint) {
+				const restored = await task.checkpointRestore({
+					ts: messageTs,
+					commitHash: checkpoint.hash,
+					mode: "restore",
+					operation: "edit",
+				})
+				if (restored === false) throw new Error("The checkpoint is no longer available")
+			}
+			await task.messageManager.rewindToTimestamp(messageTs, { includeTargetMessage: false })
+		}
+		if (checkpoint) {
+			// Cancellation must join before taking the workspace gate: the old loop
+			// may itself need the gate to finish. This host restore outlives that loop.
+			await provider.runWorkspaceMutation(task, "restart from checkpoint", rewind, { allowStoppedTask: true })
+		} else {
+			await rewind()
+		}
+		const { historyItem } = await provider.getTaskWithId(task.taskId)
+		const resumedTask = await provider.createTaskWithHistoryItem(historyItem, {
+			startTask: false,
+			preserveExisting: true,
+			background: provider.getCurrentTask()?.taskId !== task.taskId,
+		})
+		await resumedTask.resumeWithEditedMessage(text, images)
+	} finally {
+		pendingRestarts.delete(task)
+	}
+}
+
 /**
  * Handles checkpoint restoration for both delete and edit operations.
  * This consolidates the common logic while handling operation-specific behavior.
  */
 export async function handleCheckpointRestoreOperation(config: CheckpointRestoreConfig): Promise<void> {
-	const { provider, currentCline, messageTs, checkpoint, operation, editData } = config
+	const { provider, currentAlpha, messageTs, checkpoint, operation, editData } = config
 
 	try {
+		if (operation === "edit") {
+			if (!editData) throw new Error("An edited prompt is required")
+			await restartTaskFromMessage(
+				provider,
+				currentAlpha,
+				messageTs,
+				editData.editedContent,
+				editData.images,
+				checkpoint,
+			)
+			return
+		}
 		// For delete operations, ensure the task is properly aborted to handle any pending ask operations
 		// This prevents "Current ask promise was ignored" errors
-		// For edit operations, we don't abort because the checkpoint restore will handle it
-		if (operation === "delete" && currentCline && !currentCline.abort) {
-			currentCline.abortTask()
-			// Wait a bit for the abort to complete
-			await pWaitFor(() => currentCline.abort === true, {
-				timeout: 1000,
-				interval: 50,
-			}).catch(() => {
-				// Continue even if timeout - the abort flag should be set
-			})
-		}
-
-		// For edit operations, set up pending edit data before restoration
-		if (operation === "edit" && editData) {
-			const operationId = `task-${currentCline.taskId}`
-			provider.setPendingEditOperation(operationId, {
-				messageTs,
-				editedContent: editData.editedContent,
-				images: editData.images,
-				messageIndex: config.messageIndex,
-				apiConversationHistoryIndex: editData.apiConversationHistoryIndex,
-			})
+		if (operation === "delete" && currentAlpha) {
+			const abortResult = currentAlpha.abort ? undefined : await currentAlpha.abortTask()
+			await awaitTaskCancellationBoundary(currentAlpha, abortResult)
 		}
 
 		// Perform the checkpoint restoration
-		await currentCline.checkpointRestore({
+		await currentAlpha.checkpointRestore({
 			ts: messageTs,
 			commitHash: checkpoint.hash,
 			mode: "restore",
 			operation,
 		})
 
-		// For delete operations, we need to save messages and reinitialize
-		// For edit operations, the reinitialization happens automatically
-		// and processes the pending edit
+		// Save messages and reload the stopped task after deletion.
 		if (operation === "delete") {
 			// Save the updated messages to disk after checkpoint restoration
 			await saveTaskMessages({
-				messages: currentCline.clineMessages,
-				taskId: currentCline.taskId,
+				messages: currentAlpha.clineMessages,
+				taskId: currentAlpha.taskId,
 				globalStoragePath: provider.contextProxy.globalStorageUri.fsPath,
 			})
 
 			// Get the updated history item and reinitialize
-			const { historyItem } = await provider.getTaskWithId(currentCline.taskId)
+			const { historyItem } = await provider.getTaskWithId(currentAlpha.taskId)
 			await provider.createTaskWithHistoryItem(historyItem)
 		}
-		// For edit operations, the task cancellation in checkpointRestore
-		// will trigger reinitialization, which will process pendingEditAfterRestore
 	} catch (error) {
 		console.error(`Error in checkpoint restore (${operation}):`, error)
 		vscode.window.showErrorMessage(
@@ -91,7 +131,7 @@ export async function handleCheckpointRestoreOperation(config: CheckpointRestore
  * Common checkpoint restore validation and initialization utility.
  * This can be used by any checkpoint restore flow that needs to wait for initialization.
  */
-export async function waitForClineInitialization(provider: ClineProvider, timeoutMs: number = 3000): Promise<boolean> {
+export async function waitForAlphaInitialization(provider: AlphaProvider, timeoutMs: number = 3000): Promise<boolean> {
 	try {
 		await pWaitFor(() => provider.getCurrentTask()?.isInitialized === true, {
 			timeout: timeoutMs,

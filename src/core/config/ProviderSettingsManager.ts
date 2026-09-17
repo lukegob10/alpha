@@ -43,6 +43,7 @@ export const providerProfilesSchema = z.object({
 export type ProviderProfiles = z.infer<typeof providerProfilesSchema>
 
 export class ProviderSettingsManager {
+	// Keep the existing SecretStorage namespace so a source rename cannot orphan saved profiles.
 	private static readonly SCOPE_PREFIX = "roo_cline_config_"
 	private readonly defaultConfigId = this.generateId()
 
@@ -499,7 +500,7 @@ export class ProviderSettingsManager {
 	public async export() {
 		try {
 			return await this.lock(async () => {
-				const profiles = providerProfilesSchema.parse(await this.load())
+				const profiles = await this.load()
 				const configs = profiles.apiConfigs
 				for (const name in configs) {
 					const apiProvider = configs[name].apiProvider

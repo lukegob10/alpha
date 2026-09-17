@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Checkbox } from "vscrui"
 import { VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
 
@@ -21,6 +21,10 @@ export const Anthropic = ({ apiConfiguration, setApiConfigurationField }: Anthro
 	const selectedModel = useSelectedModel(apiConfiguration)
 
 	const [anthropicBaseUrlSelected, setAnthropicBaseUrlSelected] = useState(!!apiConfiguration?.anthropicBaseUrl)
+
+	useEffect(() => {
+		setAnthropicBaseUrlSelected(!!apiConfiguration?.anthropicBaseUrl)
+	}, [apiConfiguration?.anthropicBaseUrl])
 
 	// Check if the current model supports 1M context beta
 	const supports1MContextBeta =

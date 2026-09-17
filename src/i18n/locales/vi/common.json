@@ -20,6 +20,12 @@
 		"delete_custom_mode_with_rules": "Bạn có chắc chắn muốn xóa chế độ {scope} này không?\n\nThao tác này cũng sẽ xóa thư mục quy tắc liên quan tại:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "Tác vụ vẫn chưa hoàn tất và chưa được xác minh: sau 30 giây vẫn thiếu bản ghi thay đổi trong không gian làm việc. Không có thao tác đang hoạt động nào được theo dõi cho bản ghi này. Thử hoàn tất hoặc xác minh lại sẽ không khắc phục được trạng thái này. Hãy dùng thông tin lỗi chi tiết để điều tra lỗi công cụ hoặc lưu trữ ban đầu trước khi tiếp tục.",
+		"task_recovery_lock_repair": "Alpha không thể xác minh chủ sở hữu khóa lưu trữ tác vụ dùng chung. Tiếp tục hoặc tải lại không thể sửa lỗi này an toàn. Đóng mọi cửa sổ VS Code và máy chủ thử nghiệm Alpha, rồi sao lưu và chỉ xóa agent_control.json.transaction.lock khỏi bộ nhớ toàn cục của Alpha trước khi mở lại. Không xóa khóa khi máy chủ đang chạy; giữ lịch sử tác vụ và agent_control.json.",
+		"task_recovery_failed": "Lượt đã dừng vì một thao tác thất bại. Bạn có thể tiếp tục tác vụ hoặc gửi hướng dẫn mới.",
+		"task_recovery_incomplete": "Lượt đã kết thúc trước khi tác vụ hoàn tất. Bạn có thể tiếp tục tác vụ hoặc gửi hướng dẫn mới.",
+		"task_recovery_exhausted": "Lượt đã dừng sau khi đạt giới hạn thử lại tự động. Bạn có thể tiếp tục tác vụ hoặc gửi hướng dẫn mới.",
+		"task_recovery_persistence": "Tác vụ đã tạm dừng vì không thể lưu dữ liệu cần thiết. Hãy kiểm tra dung lượng đĩa trống và quyền truy cập thư mục lưu trữ tác vụ, rồi tiếp tục hoặc gửi hướng dẫn mới.",
 		"invalid_data_uri": "Định dạng URI dữ liệu không hợp lệ",
 		"error_copying_image": "Lỗi khi sao chép hình ảnh: {{errorMessage}}",
 		"error_saving_image": "Lỗi khi lưu hình ảnh: {{errorMessage}}",
@@ -72,6 +78,10 @@
 		"url_fetch_failed": "Lỗi lấy nội dung URL: {{error}}",
 		"url_fetch_error_with_url": "Lỗi lấy nội dung cho {{url}}: {{error}}",
 		"command_timeout": "Thực thi lệnh đã hết thời gian chờ sau {{seconds}} giây",
+		"command_mutation_observation_incomplete": "Tác vụ vẫn chưa hoàn tất và chưa được xác minh vì không thể quan sát đầy đủ các thay đổi do lệnh tạo ra.",
+		"command_mutation_receipt_incomplete": "Tác vụ vẫn chưa hoàn tất và chưa được xác minh vì không thể hoàn tất biên nhận thay đổi của lệnh.",
+		"mutation_receipt_incomplete": "Tác vụ chưa hoàn tất vì không thể hoàn tất bản ghi thay đổi trong không gian làm việc. Hãy xem lại lỗi ban đầu của công cụ trước khi tiếp tục.",
+		"command_output_bookkeeping_incomplete": "Tác vụ vẫn chưa hoàn tất vì không thể hoàn tất đầu ra của lệnh đã chạy xong.",
 		"share_task_failed": "Không thể chia sẻ nhiệm vụ",
 		"share_no_active_task": "Không có nhiệm vụ hoạt động để chia sẻ",
 		"share_auth_required": "Cần xác thực. Vui lòng đăng nhập để chia sẻ nhiệm vụ.",
@@ -143,7 +153,7 @@
 	"warnings": {
 		"no_terminal_content": "Không có nội dung terminal được chọn",
 		"missing_task_files": "Các tệp của nhiệm vụ này bị thiếu. Bạn có muốn xóa nó khỏi danh sách nhiệm vụ không?",
-		"auto_import_failed": "Không thể tự động nhập cài đặt RooCode: {{error}}"
+		"auto_import_failed": "Không thể tự động nhập cài đặt Alpha: {{error}}"
 	},
 	"info": {
 		"no_changes": "Không tìm thấy thay đổi nào.",
@@ -152,7 +162,7 @@
 		"custom_storage_path_set": "Đã thiết lập đường dẫn lưu trữ tùy chỉnh: {{path}}",
 		"default_storage_path": "Đã quay lại sử dụng đường dẫn lưu trữ mặc định",
 		"settings_imported": "Cài đặt đã được nhập thành công.",
-		"auto_import_success": "Cài đặt RooCode đã được tự động nhập từ {{filename}}",
+		"auto_import_success": "Cài đặt Alpha đã được tự động nhập từ {{filename}}",
 		"share_link_copied": "Liên kết chia sẻ đã được sao chép vào clipboard",
 		"image_copied_to_clipboard": "URI dữ liệu hình ảnh đã được sao chép vào clipboard",
 		"image_saved": "Hình ảnh đã được lưu vào {{path}}",

@@ -1,10 +1,30 @@
 // npx vitest run packages/core/src/message-utils/__tests__/consolidateTokenUsage.spec.ts
 
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 
 import { consolidateTokenUsage, hasTokenUsageChanged, hasToolUsageChanged } from "../consolidateTokenUsage.js"
 
 describe("consolidateTokenUsage", () => {
+	it("counts synopsis usage without changing the agent context window size", () => {
+		const result = consolidateTokenUsage([
+			{ ts: 1, type: "say", say: "api_req_started", text: JSON.stringify({ tokensIn: 1000, tokensOut: 100 }) },
+			{
+				ts: 2,
+				type: "say",
+				say: "reasoning",
+				text: "Original reasoning",
+				reasoningSummary: "A synopsis.",
+				reasoningSummaryUsage: { tokensIn: 20, tokensOut: 10, cacheWrites: 0, cacheReads: 5, cost: 0.002 },
+			},
+		])
+		expect(result).toMatchObject({
+			totalTokensIn: 1020,
+			totalTokensOut: 110,
+			totalCacheReads: 5,
+			totalCost: 0.002,
+			contextTokens: 1100,
+		})
+	})
 	// Helper function to create a basic api_req_started message
 	const createApiReqMessage = (
 		ts: number,
@@ -15,7 +35,7 @@ describe("consolidateTokenUsage", () => {
 			cacheReads?: number
 			cost?: number
 		},
-	): ClineMessage => ({
+	): AlphaMessage => ({
 		ts,
 		type: "say",
 		say: "api_req_started",
@@ -24,7 +44,7 @@ describe("consolidateTokenUsage", () => {
 
 	describe("basic token accumulation", () => {
 		it("should accumulate tokens from a single message", () => {
-			const messages: ClineMessage[] = [createApiReqMessage(1000, { tokensIn: 100, tokensOut: 50, cost: 0.01 })]
+			const messages: AlphaMessage[] = [createApiReqMessage(1000, { tokensIn: 100, tokensOut: 50, cost: 0.01 })]
 
 			const result = consolidateTokenUsage(messages)
 
@@ -34,7 +54,7 @@ describe("consolidateTokenUsage", () => {
 		})
 
 		it("should accumulate tokens from multiple messages", () => {
-			const messages: ClineMessage[] = [
+			const messages: AlphaMessage[] = [
 				createApiReqMessage(1000, { tokensIn: 100, tokensOut: 50, cost: 0.01 }),
 				createApiReqMessage(1001, { tokensIn: 200, tokensOut: 100, cost: 0.02 }),
 			]
@@ -47,7 +67,7 @@ describe("consolidateTokenUsage", () => {
 		})
 
 		it("should handle cache writes and reads", () => {
-			const messages: ClineMessage[] = [
+			const messages: AlphaMessage[] = [
 				createApiReqMessage(1000, { tokensIn: 100, tokensOut: 50, cacheWrites: 500, cacheReads: 200 }),
 			]
 
@@ -69,7 +89,7 @@ describe("consolidateTokenUsage", () => {
 
 	describe("context tokens calculation", () => {
 		it("should calculate context tokens from the last API request", () => {
-			const messages: ClineMessage[] = [
+			const messages: AlphaMessage[] = [
 				createApiReqMessage(1000, { tokensIn: 100, tokensOut: 50 }),
 				createApiReqMessage(1001, { tokensIn: 200, tokensOut: 100 }),
 			]
@@ -81,14 +101,14 @@ describe("consolidateTokenUsage", () => {
 		})
 
 		it("should handle condense_context messages for context tokens", () => {
-			const messages: ClineMessage[] = [
+			const messages: AlphaMessage[] = [
 				createApiReqMessage(1000, { tokensIn: 100, tokensOut: 50 }),
 				{
 					ts: 1001,
 					type: "say",
 					say: "condense_context",
 					contextCondense: { newContextTokens: 5000, cost: 0.05 },
-				} as ClineMessage,
+				} as AlphaMessage,
 			]
 
 			const result = consolidateTokenUsage(messages)
@@ -100,7 +120,7 @@ describe("consolidateTokenUsage", () => {
 
 	describe("invalid data handling", () => {
 		it("should handle messages with invalid JSON", () => {
-			const messages: ClineMessage[] = [{ ts: 1000, type: "say", say: "api_req_started", text: "invalid json" }]
+			const messages: AlphaMessage[] = [{ ts: 1000, type: "say", say: "api_req_started", text: "invalid json" }]
 
 			// Should not throw
 			const result = consolidateTokenUsage(messages)
@@ -108,7 +128,7 @@ describe("consolidateTokenUsage", () => {
 		})
 
 		it("should skip non-api_req_started messages", () => {
-			const messages: ClineMessage[] = [
+			const messages: AlphaMessage[] = [
 				{ ts: 1000, type: "say", say: "text", text: "hello" },
 				createApiReqMessage(1001, { tokensIn: 100, tokensOut: 50 }),
 			]
@@ -120,7 +140,7 @@ describe("consolidateTokenUsage", () => {
 		})
 
 		it("should handle missing token values", () => {
-			const messages: ClineMessage[] = [createApiReqMessage(1000, { cost: 0.01 })]
+			const messages: AlphaMessage[] = [createApiReqMessage(1000, { cost: 0.01 })]
 
 			const result = consolidateTokenUsage(messages)
 

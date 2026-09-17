@@ -1,10 +1,10 @@
-import type { ClineSayTool } from "@alpha-code/types"
+import type { AlphaSayTool } from "@alpha-code/types"
 
-export function isWriteToolAction(tool: ClineSayTool): boolean {
+export function isWriteToolAction(tool: AlphaSayTool): boolean {
 	return ["editedExistingFile", "appliedDiff", "newFileCreated", "generateImage"].includes(tool.tool)
 }
 
-export function isReadOnlyToolAction(tool: ClineSayTool): boolean {
+export function isReadOnlyToolAction(tool: AlphaSayTool): boolean {
 	return [
 		"readFile",
 		"listFiles",

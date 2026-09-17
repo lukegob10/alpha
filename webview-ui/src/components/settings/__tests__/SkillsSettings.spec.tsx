@@ -34,9 +34,15 @@ vi.mock("@/utils/docLinks", () => ({
 
 // Mock modes
 vi.mock("@alpha/modes", () => ({
+	codeModeSlug: "code",
+	planModeSlug: "architect",
+	planMode: { slug: "architect", name: "Plan" },
 	getAllModes: () => [
-		{ slug: "code", name: "Code" },
 		{ slug: "architect", name: "Architect" },
+		{ slug: "code", name: "Code" },
+		{ slug: "ask", name: "Ask" },
+		{ slug: "debug", name: "Debug" },
+		{ slug: "orchestrator", name: "Orchestrator" },
 	],
 }))
 
@@ -166,7 +172,11 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 	useExtensionState: () => mockExtensionState,
 }))
 
-const renderSkillsSettings = (skills: SkillMetadata[] = mockSkills, cwd?: string) => {
+const renderSkillsSettings = (
+	skills: SkillMetadata[] = mockSkills,
+	cwd?: string,
+	props: { disabledBuiltinSkills?: string[]; onDisabledBuiltinSkillsChange?: (names: string[]) => void } = {},
+) => {
 	const queryClient = new QueryClient({
 		defaultOptions: {
 			queries: { retry: false },
@@ -184,7 +194,7 @@ const renderSkillsSettings = (skills: SkillMetadata[] = mockSkills, cwd?: string
 	return render(
 		<QueryClientProvider client={queryClient}>
 			<ExtensionStateContextProvider>
-				<SkillsSettings />
+				<SkillsSettings {...props} />
 			</ExtensionStateContextProvider>
 		</QueryClientProvider>,
 	)
@@ -193,6 +203,55 @@ const renderSkillsSettings = (skills: SkillMetadata[] = mockSkills, cwd?: string
 describe("SkillsSettings", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
+	})
+
+	const builtinSkill: SkillMetadata = {
+		name: "rich-documents",
+		description: "Create substantial HTML documents",
+		path: "/extension/assets/skills/rich-documents/SKILL.md",
+		source: "builtin",
+	}
+
+	it("offers inspection and enablement for bundled skills without edit, delete, or mode controls", () => {
+		renderSkillsSettings([builtinSkill], "")
+		expect(screen.getByText("settings:skills.builtinSkills")).toBeInTheDocument()
+		expect(screen.getByTestId("checkbox-builtin-rich-documents")).toBeChecked()
+		const buttons = screen.getAllByTestId("button")
+		expect(
+			buttons.some((button) => button.querySelector(".lucide-square-pen, .lucide-trash-2, .lucide-settings")),
+		).toBe(false)
+		fireEvent.click(screen.getByText("settings:skills.inspectSkill"))
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "openSkillFile",
+			skillName: "rich-documents",
+			source: "builtin",
+			skillMode: undefined,
+		})
+	})
+
+	it("reports disablement only through the buffered prop callback", () => {
+		const onChange = vi.fn()
+		renderSkillsSettings([builtinSkill], undefined, {
+			disabledBuiltinSkills: ["other-default"],
+			onDisabledBuiltinSkillsChange: onChange,
+		})
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(screen.getByTestId("checkbox-builtin-rich-documents"))
+		expect(onChange).toHaveBeenCalledWith(["other-default", "rich-documents"])
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		// The owner must supply the edited prop; the checkbox has no independent saved state.
+		expect(screen.getByTestId("checkbox-builtin-rich-documents")).toBeChecked()
+	})
+
+	it("re-enables only the selected bundled default", () => {
+		const onChange = vi.fn()
+		renderSkillsSettings([builtinSkill], undefined, {
+			disabledBuiltinSkills: ["other-default", "rich-documents"],
+			onDisabledBuiltinSkillsChange: onChange,
+		})
+		expect(screen.getByTestId("checkbox-builtin-rich-documents")).not.toBeChecked()
+		fireEvent.click(screen.getByTestId("checkbox-builtin-rich-documents"))
+		expect(onChange).toHaveBeenCalledWith(["other-default"])
 	})
 
 	it("renders section header", () => {
@@ -272,6 +331,51 @@ describe("SkillsSettings", () => {
 		fireEvent.click(addButton!)
 
 		expect(screen.getByTestId("create-skill-dialog")).toHaveAttribute("data-open", "true")
+	})
+
+	it.each(["ask", "retired-custom"])("keeps saved %s bindings visible and removable", (savedMode) => {
+		const legacySkills: SkillMetadata[] = [
+			{
+				name: "legacy-bound-skill",
+				description: "Uses saved legacy modes",
+				path: "/workspace/.alpha/skills/legacy-bound-skill/SKILL.md",
+				source: "project",
+				modeSlugs: [savedMode, "debug"],
+			},
+		]
+		renderSkillsSettings(legacySkills)
+
+		const configureButton = screen
+			.getAllByTestId("button")
+			.find((button) => button.querySelector(".lucide-settings"))
+		fireEvent.click(configureButton!)
+
+		expect(screen.getByTestId("checkbox-mode-architect")).toBeInTheDocument()
+		expect(screen.getByText("Plan")).toBeInTheDocument()
+		expect(screen.getByTestId("checkbox-mode-code")).toBeInTheDocument()
+		expect(screen.getByTestId(`checkbox-mode-${savedMode}`)).toBeChecked()
+		expect(screen.getByTestId("checkbox-mode-debug")).toBeChecked()
+		expect(screen.queryByTestId("checkbox-mode-orchestrator")).not.toBeInTheDocument()
+
+		fireEvent.click(screen.getByText("settings:skills.modeDialog.save"))
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "updateSkillModes",
+			skillName: "legacy-bound-skill",
+			source: "project",
+			newSkillModeSlugs: [savedMode, "debug"],
+		})
+
+		fireEvent.click(configureButton!)
+		fireEvent.click(screen.getByTestId(`checkbox-mode-${savedMode}`))
+		expect(screen.getByTestId(`checkbox-mode-${savedMode}`)).not.toBeChecked()
+		expect(screen.getByTestId("checkbox-mode-debug")).toBeChecked()
+		fireEvent.click(screen.getByText("settings:skills.modeDialog.save"))
+		expect(vscode.postMessage).toHaveBeenLastCalledWith({
+			type: "updateSkillModes",
+			skillName: "legacy-bound-skill",
+			source: "project",
+			newSkillModeSlugs: ["debug"],
+		})
 	})
 
 	it("opens delete confirmation dialog when delete button is clicked", () => {

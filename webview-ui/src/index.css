@@ -176,7 +176,64 @@
 		--chart-3: var(--vscode-charts-yellow);
 		--chart-4: var(--vscode-charts-orange);
 		--chart-5: var(--vscode-charts-green);
-		--radius: 0.5rem;
+		--radius: 0.75rem;
+		--alpha-brand-violet: var(--vscode-charts-purple, var(--vscode-button-background));
+		--alpha-brand-blue: var(--vscode-textLink-foreground);
+		--alpha-brand-teal: var(--vscode-charts-green);
+		--alpha-accent: var(--vscode-button-background);
+		--alpha-accent-hover: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+		--alpha-accent-contrast: var(--vscode-button-foreground);
+		--alpha-accent-soft: var(--vscode-list-hoverBackground);
+		--alpha-teal-soft: color-mix(in srgb, var(--vscode-charts-green) 8%, transparent);
+		--surface-raised: color-mix(in srgb, var(--vscode-editor-background) 95%, var(--vscode-foreground));
+		--surface-overlay: var(--vscode-menu-background, var(--surface-raised));
+		--surface-sunken: var(--vscode-input-background, var(--surface-raised));
+		--border-subtle: var(--vscode-panel-border, color-mix(in srgb, var(--vscode-foreground) 12%, transparent));
+		--border-accent: color-mix(in srgb, var(--vscode-foreground) 25%, transparent);
+		--shadow-raised: 0 8px 24px var(--vscode-widget-shadow, transparent);
+		--shadow-accent: none;
+		--control-primary-background: var(--vscode-foreground);
+		--control-primary-foreground: var(--vscode-editor-background);
+		--user-message-background: color-mix(in srgb, var(--alpha-brand-violet) 52%, var(--vscode-editor-background));
+		--user-message-foreground: var(--vscode-editor-foreground, var(--vscode-foreground));
+		--chat-background: var(--vscode-editor-background);
+		--chat-foreground: var(--vscode-editor-foreground, var(--vscode-foreground));
+		--chat-surface: var(--surface-raised);
+		--chat-link: var(--vscode-textLink-foreground);
+		--chat-content-width: 800px;
+	}
+
+	/* Keep the reference palette scoped to dark chat; accessible host themes retain their own colors. */
+	.vscode-dark {
+		--chat-background: #181818;
+		--chat-foreground: #ededed;
+		--chat-surface: #292929;
+		--chat-link: #a0a4ff;
+		--user-message-background: #313477;
+		--user-message-foreground: #f3f2ff;
+	}
+
+	.vscode-light {
+		--user-message-background: color-mix(in srgb, var(--alpha-brand-violet) 12%, var(--vscode-editor-background));
+	}
+
+	.vscode-high-contrast,
+	.vscode-high-contrast-light {
+		--alpha-accent: var(--vscode-focusBorder);
+		--alpha-accent-hover: var(--vscode-focusBorder);
+		--alpha-accent-soft: transparent;
+		--alpha-teal-soft: transparent;
+		--surface-raised: var(--vscode-editor-background);
+		--surface-overlay: var(--vscode-editor-background);
+		--surface-sunken: var(--vscode-editor-background);
+		--border-subtle: var(--vscode-contrastBorder, var(--vscode-panel-border));
+		--border-accent: var(--vscode-focusBorder);
+		--shadow-raised: none;
+		--shadow-accent: none;
+		--user-message-background: var(--vscode-editor-background);
+		--user-message-foreground: var(--vscode-foreground);
+		--control-primary-background: var(--vscode-button-background);
+		--control-primary-foreground: var(--vscode-button-foreground);
 	}
 
 	/* Higher specififty than VSCode's theme and root. */
@@ -184,6 +241,15 @@
 
 	body {
 		--vscode-input-border: var(--border);
+	}
+
+	:focus-visible {
+		outline-color: var(--vscode-focusBorder);
+		outline-offset: 2px;
+	}
+
+	::selection {
+		background: var(--vscode-editor-selectionBackground);
 	}
 }
 
@@ -232,6 +298,114 @@
 	.animate-smooth-bounce {
 		animation: smooth-bounce 1s ease-in-out infinite;
 	}
+
+	.surface-raised {
+		background: var(--surface-raised);
+		border: 1px solid var(--border-subtle);
+	}
+
+	.surface-overlay {
+		background: var(--surface-overlay);
+		border: 1px solid var(--border-subtle);
+		box-shadow: var(--shadow-raised);
+	}
+
+	.app-shell {
+		background: var(--chat-background);
+		color: var(--chat-foreground);
+	}
+
+	.chat-column {
+		box-sizing: border-box;
+		width: 100%;
+		max-width: var(--chat-content-width);
+		min-width: 0;
+		margin-inline: auto;
+	}
+
+	.chat-transcript {
+		--vscode-textLink-foreground: var(--chat-link);
+	}
+
+	.glass-header {
+		background: var(--vscode-editor-background);
+		border-color: var(--border-subtle);
+	}
+
+	.composer-control {
+		border: 1px solid var(--vscode-contrastBorder, transparent);
+		border-radius: 0.5rem;
+		background: transparent;
+		color: var(--vscode-descriptionForeground);
+		transition-property: color, background-color, border-color, opacity;
+		transition-duration: 150ms;
+	}
+
+	.composer-control:not(:disabled):hover,
+	.composer-control[data-state="open"] {
+		border-color: var(--border-accent);
+		background: var(--alpha-accent-soft);
+		color: var(--vscode-foreground);
+	}
+
+	.accent-chip {
+		border: 1px solid var(--border-subtle);
+		background: var(--surface-raised);
+		color: var(--vscode-descriptionForeground);
+	}
+
+	.task-context-card {
+		background: var(--chat-surface);
+		border: 1px solid var(--border-subtle);
+	}
+
+	.user-message {
+		box-sizing: border-box;
+		width: fit-content;
+		max-width: 92%;
+		margin-left: auto;
+		margin-right: 0;
+		text-align: start;
+		background: var(--user-message-background);
+		color: var(--user-message-foreground);
+		border: 1px solid var(--vscode-contrastBorder, transparent);
+		border-radius: 1.25rem;
+		line-height: 1.6;
+	}
+
+	.chat-composer {
+		background: var(--chat-surface);
+	}
+
+	.chat-composer:focus-within {
+		border-color: var(--vscode-focusBorder);
+	}
+
+	.hero-panel {
+		background: var(--chat-surface);
+		border: 1px solid var(--border-subtle);
+	}
+
+	.brand-title {
+		width: fit-content;
+		color: var(--vscode-foreground);
+		letter-spacing: -0.035em;
+	}
+
+	.vscode-light .brand-mark,
+	.vscode-high-contrast-light .brand-mark {
+		filter: brightness(0) saturate(100%) opacity(0.72);
+	}
+}
+
+@media (forced-colors: active) {
+	.app-shell,
+	.surface-raised,
+	.surface-overlay,
+	.task-context-card,
+	.hero-panel {
+		background: var(--vscode-editor-background);
+	}
 }
 
 /* Form Element Focus States */
@@ -258,6 +432,19 @@ html {
 body {
 	margin: 0;
 	line-height: 1.25;
+	background: var(--vscode-editor-background);
+	color: var(--vscode-foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		scroll-behavior: auto !important;
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+	}
 }
 
 body.scrollable,
@@ -379,6 +566,12 @@ body:focus-within .code-block-scrollable {
 }
 
 /* Fix scrollbar in dropdown */
+
+vscode-text-field,
+vscode-text-area,
+vscode-dropdown {
+	--corner-radius-round: 8;
+}
 
 vscode-dropdown::part(listbox) {
 	border-color: var(--vscode-scrollbarSlider-background);

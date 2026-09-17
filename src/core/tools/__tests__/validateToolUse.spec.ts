@@ -29,26 +29,109 @@ describe("mode-validator", () => {
 		})
 
 		describe("architect mode", () => {
-			it("allows configured tools", () => {
-				// Architect mode has read and mcp groups
-				const architectTools = [...TOOL_GROUPS.read.tools, ...TOOL_GROUPS.mcp.tools]
+			it("allows only read-only planning, conservative commands, and managed-agent tools", () => {
+				const architectTools = [
+					...TOOL_GROUPS.read.tools,
+					...TOOL_GROUPS.command.tools.filter((tool) => tool !== "manage_command"),
+					...TOOL_GROUPS.agents.tools,
+				]
 				architectTools.forEach((tool) => {
 					expect(isToolAllowedForMode(tool, architectMode, [])).toBe(true)
 				})
+				expect(isToolAllowedForMode("ask_followup_question", architectMode, [])).toBe(true)
+				expect(isToolAllowedForMode("attempt_completion", architectMode, [])).toBe(true)
+				expect(isToolAllowedForMode("write_to_file", architectMode, [])).toBe(false)
+				expect(isToolAllowedForMode("execute_command", architectMode, [])).toBe(true)
+				expect(isToolAllowedForMode("manage_command", architectMode, [])).toBe(false)
+				expect(isToolAllowedForMode("use_mcp_tool", architectMode, [])).toBe(false)
+				expect(isToolAllowedForMode("new_task", architectMode, [])).toBe(false)
+				expect(isToolAllowedForMode("switch_mode", architectMode, [])).toBe(false)
+				expect(isToolAllowedForMode("update_todo_list", architectMode, [])).toBe(false)
+				expect(isToolAllowedForMode("read_page", architectMode, [])).toBe(false)
+			})
+
+			it("enforces the Plan command classifier independently of auto-approval settings", () => {
+				expect(
+					isToolAllowedForMode("execute_command", architectMode, [], undefined, {
+						command: "pnpm --dir src exec vitest run shared/__tests__/plan-mode.spec.ts",
+						verification: null,
+					}),
+				).toBe(true)
+				for (const command of [
+					"pnpm install",
+					"eslint --fix .",
+					"eslint --fi\\x .",
+					"go test -coverprofile=coverage.out ./...",
+					"git status && git diff",
+				]) {
+					expect(
+						isToolAllowedForMode("execute_command", architectMode, [], undefined, {
+							command,
+							verification: null,
+						}),
+					).toBe(false)
+				}
+				expect(
+					isToolAllowedForMode("execute_command", architectMode, [], undefined, {
+						command: "pnpm exec tsc --noEmit",
+						verification: { change_set_ids: ["worker-change"] },
+					}),
+				).toBe(false)
+				for (const cwd of ["/tmp", "C:/outside", "../outside", "src/../../outside"]) {
+					expect(
+						isToolAllowedForMode("execute_command", architectMode, [], undefined, {
+							command: "pnpm exec tsc --noEmit",
+							cwd,
+							verification: null,
+						}),
+					).toBe(false)
+				}
+			})
+
+			it("rejects Worker authority at execution time", () => {
+				expect(
+					isToolAllowedForMode("spawn_agent", architectMode, [], undefined, {
+						agent_kind: "explore",
+						write_scope: null,
+					}),
+				).toBe(true)
+				expect(
+					isToolAllowedForMode("spawn_agent", architectMode, [], undefined, {
+						agent_kind: "worker",
+						write_scope: ["src"],
+					}),
+				).toBe(false)
+				expect(
+					isToolAllowedForMode("delegate_task", architectMode, [], undefined, {
+						tasks: [{ agent_kind: "review", write_scope: null }],
+					}),
+				).toBe(true)
+				expect(
+					isToolAllowedForMode("delegate_task", architectMode, [], undefined, {
+						tasks: [{ agent_kind: "worker", write_scope: ["src"] }],
+					}),
+				).toBe(false)
 			})
 		})
 
-		describe("ask mode", () => {
-			it("allows configured tools", () => {
-				// Ask mode has read and mcp groups
-				const askTools = [...TOOL_GROUPS.read.tools, ...TOOL_GROUPS.mcp.tools]
-				askTools.forEach((tool) => {
-					expect(isToolAllowedForMode(tool, askMode, [])).toBe(true)
-				})
-			})
-		})
+		it.each(["ask", "debug", "orchestrator"])(
+			"does not grant editing or command tools to retired %s mode",
+			(mode) => {
+				expect(isToolAllowedForMode("write_to_file", mode, [])).toBe(false)
+				expect(isToolAllowedForMode("execute_command", mode, [])).toBe(false)
+			},
+		)
 
 		describe("custom modes", () => {
+			const sourceOnlyMode: ModeConfig[] = [
+				{
+					slug: "source-only",
+					name: "Source Only",
+					roleDefinition: "Edit source files only",
+					groups: [["edit", { fileRegex: "^src/" }]],
+				},
+			]
+
 			it("allows tools from custom mode configuration", () => {
 				const customModes: ModeConfig[] = [
 					{
@@ -63,6 +146,21 @@ describe("mode-validator", () => {
 				expect(isToolAllowedForMode("write_to_file", "custom-mode", customModes)).toBe(true)
 				// Should not allow tools from other groups
 				expect(isToolAllowedForMode("execute_command", "custom-mode", customModes)).toBe(false)
+			})
+
+			it("allows browser tools only when a custom mode opts into the browser group", () => {
+				const customModes: ModeConfig[] = [
+					{
+						slug: "browser-mode",
+						name: "Browser Mode",
+						roleDefinition: "Inspect a running web application",
+						groups: ["read", "browser"],
+					},
+				]
+
+				expect(isToolAllowedForMode("read_page", "browser-mode", customModes)).toBe(true)
+				expect(isToolAllowedForMode("run_playwright_code", "browser-mode", customModes)).toBe(true)
+				expect(isToolAllowedForMode("read_page", "custom-mode", customModes)).toBe(false)
 			})
 
 			it("allows custom mode to override built-in mode", () => {
@@ -96,6 +194,55 @@ describe("mode-validator", () => {
 
 				// Should allow other edit tools
 				expect(isToolAllowedForMode("write_to_file", "custom-mode", customModes, requirements)).toBe(true)
+			})
+
+			it("enforces file restrictions for empty-content writes", () => {
+				expect(
+					isToolAllowedForMode("write_to_file", "source-only", sourceOnlyMode, undefined, {
+						path: "src/empty.ts",
+						content: "",
+					}),
+				).toBe(true)
+				expect(() =>
+					isToolAllowedForMode("write_to_file", "source-only", sourceOnlyMode, undefined, {
+						path: "docs/empty.md",
+						content: "",
+					}),
+				).toThrow()
+			})
+
+			it.each(["src/../package.json", "../src/escape.ts", "C:/workspace/src/absolute.ts"])(
+				"checks normalized workspace-relative paths before applying fileRegex: %s",
+				(filePath) => {
+					expect(() =>
+						isToolAllowedForMode("write_to_file", "source-only", sourceOnlyMode, undefined, {
+							path: filePath,
+							content: "changed",
+						}),
+					).toThrow()
+				},
+			)
+
+			it("validates apply_patch move destinations as well as source paths", () => {
+				const patch = `*** Begin Patch
+*** Update File: src/allowed.ts
+*** Move to: docs/disallowed.ts
+@@
+-old
++new
+*** End Patch`
+
+				expect(() =>
+					isToolAllowedForMode(
+						"apply_patch",
+						"source-only",
+						sourceOnlyMode,
+						undefined,
+						{ patch },
+						undefined,
+						["apply_patch"],
+					),
+				).toThrow()
 			})
 		})
 
@@ -161,7 +308,7 @@ describe("mode-validator", () => {
 			})
 
 			it("prioritizes requirements over ALWAYS_AVAILABLE_TOOLS", () => {
-				// Tools in ALWAYS_AVAILABLE_TOOLS (switch_mode, new_task, etc.) should still
+				// Always-available tools and stale retired names should still
 				// be blockable via toolRequirements / disabledTools
 				const requirements = { switch_mode: false, new_task: false, attempt_completion: false }
 				expect(isToolAllowedForMode("switch_mode", codeMode, [], requirements)).toBe(false)
@@ -180,14 +327,22 @@ describe("mode-validator", () => {
 		})
 
 		it("throws error for disallowed tools in architect mode", () => {
-			// execute_command is a valid tool but not allowed in architect mode
-			expect(() => validateToolUse("execute_command", "architect", [])).toThrow(
-				'Tool "execute_command" is not allowed in architect mode.',
-			)
+			expect(() =>
+				validateToolUse("execute_command", "architect", [], undefined, {
+					command: "pnpm install",
+					verification: null,
+				}),
+			).toThrow('Tool "execute_command" is not allowed in architect mode.')
 		})
 
 		it("does not throw for allowed tools in architect mode", () => {
 			expect(() => validateToolUse("read_file", "architect", [])).not.toThrow()
+			expect(() =>
+				validateToolUse("execute_command", "architect", [], undefined, {
+					command: "pnpm exec tsc --noEmit",
+					verification: null,
+				}),
+			).not.toThrow()
 		})
 
 		it("throws error when tool requirement is not met", () => {

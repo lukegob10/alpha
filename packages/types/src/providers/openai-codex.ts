@@ -16,7 +16,7 @@ import type { ModelInfo } from "../model.js"
 
 export type OpenAiCodexModelId = keyof typeof openAiCodexModels
 
-export const openAiCodexDefaultModelId: OpenAiCodexModelId = "gpt-5.3-codex"
+export const openAiCodexDefaultModelId: OpenAiCodexModelId = "gpt-5.6-sol"
 
 /**
  * Models available through the Codex OAuth flow.
@@ -24,6 +24,67 @@ export const openAiCodexDefaultModelId: OpenAiCodexModelId = "gpt-5.3-codex"
  * Costs are 0 as they are covered by the subscription.
  */
 export const openAiCodexModels = {
+	"gpt-5.6-sol": {
+		maxTokens: 128_000,
+		contextWindow: 272_000,
+		includedTools: ["apply_patch"],
+		excludedTools: ["apply_diff", "write_to_file"],
+		supportsImages: true,
+		supportsPromptCache: true,
+		supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
+		reasoningEffort: "low",
+		inputPrice: 0,
+		outputPrice: 0,
+		supportsVerbosity: true,
+		supportsTemperature: false,
+		description: "GPT-5.6 Sol: Latest frontier agentic coding model via ChatGPT subscription",
+	},
+	"gpt-5.6-terra": {
+		maxTokens: 128_000,
+		contextWindow: 272_000,
+		includedTools: ["apply_patch"],
+		excludedTools: ["apply_diff", "write_to_file"],
+		supportsImages: true,
+		supportsPromptCache: true,
+		supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
+		reasoningEffort: "medium",
+		inputPrice: 0,
+		outputPrice: 0,
+		supportsVerbosity: true,
+		supportsTemperature: false,
+		description: "GPT-5.6 Terra: Balanced agentic coding model for everyday work via ChatGPT subscription",
+	},
+	"gpt-5.6-luna": {
+		maxTokens: 128_000,
+		contextWindow: 272_000,
+		includedTools: ["apply_patch"],
+		excludedTools: ["apply_diff", "write_to_file"],
+		supportsImages: true,
+		supportsPromptCache: true,
+		supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
+		reasoningEffort: "medium",
+		inputPrice: 0,
+		outputPrice: 0,
+		supportsVerbosity: true,
+		supportsTemperature: false,
+		description: "GPT-5.6 Luna: Fast and affordable agentic coding model via ChatGPT subscription",
+	},
+	"gpt-5.5": {
+		maxTokens: 128_000,
+		contextWindow: 272_000,
+		includedTools: ["apply_patch"],
+		excludedTools: ["apply_diff", "write_to_file"],
+		supportsImages: true,
+		supportsPromptCache: true,
+		supportsReasoningEffort: ["low", "medium", "high", "xhigh"],
+		reasoningEffort: "medium",
+		inputPrice: 0,
+		outputPrice: 0,
+		supportsVerbosity: true,
+		supportsTemperature: false,
+		description:
+			"GPT-5.5: Frontier model for complex coding, research, and real-world work via ChatGPT subscription",
+	},
 	"gpt-5.1-codex-max": {
 		maxTokens: 128000,
 		contextWindow: 400000,
@@ -66,7 +127,8 @@ export const openAiCodexModels = {
 		inputPrice: 0,
 		outputPrice: 0,
 		supportsTemperature: false,
-		description: "GPT-5.3 Codex: OpenAI's flagship coding model via ChatGPT subscription",
+		deprecated: true,
+		description: "GPT-5.3 Codex: Deprecated for ChatGPT sign-in; use a GPT-5.6 model",
 	},
 	"gpt-5.3-codex-spark": {
 		maxTokens: 8192,
@@ -214,6 +276,7 @@ export const openAiCodexModels = {
 		inputPrice: 0,
 		outputPrice: 0,
 		supportsTemperature: false,
-		description: "GPT-5.2: Latest GPT model via ChatGPT subscription",
+		deprecated: true,
+		description: "GPT-5.2: Deprecated for ChatGPT sign-in; use a GPT-5.6 model",
 	},
 } as const satisfies Record<string, ModelInfo>

@@ -1,0 +1,145 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`custom instruction assembly discovery > does no recursive discovery when disabled 1`] = `
+"
+====
+
+USER'S CUSTOM INSTRUCTIONS
+
+The following additional instructions are provided by the user, and should be followed to the best of your ability.
+
+Global Instructions:
+global guidance
+
+Mode-specific Instructions:
+mode guidance
+
+Rules:
+
+# Rules from rules-code directories:
+
+# Rules from ../home/.alpha/rules-code/rule.md:
+global mode
+
+# Rules from .alpha/rules-code/rule.md:
+project mode
+
+# Agent Rules Standard (AGENTS.md):
+root agent
+
+# Agent Rules Local (AGENTS.local.md):
+root personal
+
+# Rules from .alpha directories:
+
+# Rules from ../home/.alpha/rules/rule.md:
+global generic
+
+# Rules from .alpha/rules/rule.md:
+project generic
+"
+`;
+
+exports[`custom instruction assembly discovery > preserves legacy fallback and disabled agent rules 1`] = `
+"
+====
+
+USER'S CUSTOM INSTRUCTIONS
+
+The following additional instructions are provided by the user, and should be followed to the best of your ability.
+
+Global Instructions:
+global guidance
+
+Mode-specific Instructions:
+mode guidance
+
+Rules:
+
+# Rules from legacy rules-code directories:
+
+# Rules from ../home/.roo/rules-code/rule.md:
+global legacy mode
+
+# Rules from .roo/rules-code/rule.md:
+project legacy mode
+
+# Rules from a/.roo/rules-code/rule.md:
+a legacy mode
+
+# Rules from z/.roo/rules-code/rule.md:
+z legacy mode
+
+# Rules from legacy .roo directories:
+
+# Rules from ../home/.roo/rules/rule.md:
+global legacy generic
+
+# Rules from .roo/rules/rule.md:
+project legacy generic
+
+# Rules from a/.roo/rules/rule.md:
+a legacy generic
+
+# Rules from z/.roo/rules/rule.md:
+z legacy generic
+"
+`;
+
+exports[`custom instruction assembly discovery > preserves the complete ordered prompt while discovering once per assembly 1`] = `
+"
+====
+
+USER'S CUSTOM INSTRUCTIONS
+
+The following additional instructions are provided by the user, and should be followed to the best of your ability.
+
+Global Instructions:
+global guidance
+
+Mode-specific Instructions:
+mode guidance
+
+Rules:
+
+# Rules from rules-code directories:
+
+# Rules from ../home/.alpha/rules-code/rule.md:
+global mode
+
+# Rules from .alpha/rules-code/rule.md:
+project mode
+
+# Rules from a/.alpha/rules-code/rule.md:
+a mode
+
+# Rules from z/.alpha/rules-code/rule.md:
+z mode
+
+# Agent Rules Standard (AGENTS.md):
+root agent
+
+# Agent Rules Local (AGENTS.local.md):
+root personal
+
+# Agent Rules Standard (AGENT.md) from a:
+a agent
+
+# Agent Rules Local (AGENTS.local.md) from z:
+z personal
+
+# Rules from .alpha directories:
+
+# Rules from ../home/.alpha/rules/rule.md:
+global generic
+
+# Rules from .alpha/rules/rule.md:
+project generic
+
+# Rules from a/.alpha/rules/rule.md:
+a generic
+
+# Rules from z/.alpha/rules/rule.md:
+z generic
+"
+`;

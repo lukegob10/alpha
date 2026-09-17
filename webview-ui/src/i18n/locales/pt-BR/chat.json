@@ -1,4 +1,18 @@
 {
+	"messageActions": {
+		"copy": "Copiar",
+		"copied": "Copiado",
+		"edit": "Editar e reenviar",
+		"restart": "Reiniciar a partir da solicitação anterior",
+		"restartWarning": "A solicitação anterior será executada novamente e todas as mensagens seguintes serão substituídas. Os arquivos do espaço de trabalho permanecerão como estão.",
+		"restartWithCheckpoint": "A solicitação anterior será executada novamente e todas as mensagens seguintes serão substituídas. Restaurar também os arquivos para o checkpoint correspondente?",
+		"restartOnly": "Reiniciar sem restaurar arquivos"
+	},
+	"activityTrace": {
+		"needsAttention": "Requer atenção",
+		"workedFor": "Trabalhou por {{duration}}"
+	},
+	"completionReport": "Relatório de conclusão",
 	"greeting": "Bem-vindo ao Alpha",
 	"task": {
 		"title": "Tarefa",
@@ -30,7 +44,9 @@
 	"unpin": "Desfixar",
 	"pin": "Fixar",
 	"fileChangesInConversation": {
-		"header": "{{count}} arquivo(s) alterado(s) nesta conversa"
+		"header": "Arquivos editados: {{count}}",
+		"linesChanged": "{{added}} linhas adicionadas, {{removed}} linhas removidas",
+		"openFile": "Abrir arquivo: {{path}}"
 	},
 	"tokenProgress": {
 		"availableSpace": "Espaço disponível: {{amount}} tokens",
@@ -213,18 +229,21 @@
 		"didViewTopLevel": "Alpha visualizou os arquivos de nível superior neste diretório",
 		"wantsToViewRecursive": "Alpha quer visualizar recursivamente todos os arquivos neste diretório",
 		"didViewRecursive": "Alpha visualizou recursivamente todos os arquivos neste diretório",
-		"wantsToSearch": "Alpha quer pesquisar neste diretório por <code>{{regex}}</code>",
-		"didSearch": "Alpha pesquisou neste diretório por <code>{{regex}}</code>",
-		"wantsToSearchOutsideWorkspace": "Alpha quer pesquisar neste diretório (fora do espaço de trabalho) por <code>{{regex}}</code>",
-		"didSearchOutsideWorkspace": "Alpha pesquisou neste diretório (fora do espaço de trabalho) por <code>{{regex}}</code>",
+		"wantsToSearch": "Alpha quer pesquisar em um diretório",
+		"didSearch": "Alpha pesquisou em um diretório",
+		"wantsToSearchOutsideWorkspace": "Alpha quer pesquisar em um diretório (fora do espaço de trabalho)",
+		"didSearchOutsideWorkspace": "Alpha pesquisou em um diretório (fora do espaço de trabalho)",
 		"wantsToViewTopLevelOutsideWorkspace": "Alpha quer visualizar os arquivos de nível superior neste diretório (fora do espaço de trabalho)",
 		"didViewTopLevelOutsideWorkspace": "Alpha visualizou os arquivos de nível superior neste diretório (fora do espaço de trabalho)",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha quer visualizar recursivamente todos os arquivos neste diretório (fora do espaço de trabalho)",
 		"didViewRecursiveOutsideWorkspace": "Alpha visualizou recursivamente todos os arquivos neste diretório (fora do espaço de trabalho)",
-		"wantsToViewMultipleDirectories": "Alpha quer visualizar vários diretórios"
+		"wantsToViewMultipleDirectories": "Alpha quer visualizar vários diretórios",
+		"wantsToSearchMultiple": "Alpha deseja executar pesquisas de arquivo {{count}}",
+		"didSearchMultiple": "Alpha executou pesquisas de arquivo {{count}}"
 	},
 	"commandOutput": "Saída do comando",
 	"commandExecution": {
+		"command": "Comando",
 		"running": "Executando",
 		"abort": "Interromper",
 		"pid": "PID: {{pid}}",
@@ -315,6 +334,7 @@
 	"contextManagement": {
 		"tokens": "tokens",
 		"condensation": {
+			"unchanged": "O contexto já está dentro do limite",
 			"title": "Contexto condensado",
 			"inProgress": "Condensando contexto...",
 			"errorHeader": "Falha ao condensar contexto"
@@ -347,8 +367,11 @@
 			"gpt54": "Provedor Poe: adicionamos o Poe como provedor de IA para você acessar os modelos do Poe diretamente no Alpha.",
 			"slashSkills": "Melhorias em xAI e MiniMax: migramos o provedor xAI para a Responses API, adicionamos utilitários de transformação reutilizáveis, atualizamos os padrões do Grok-4.20 e corrigimos as listagens de modelos do MiniMax e o tratamento da janela de contexto para uma configuração mais confiável.",
 			"geminiPro": "Suporte ao Gemini 3.1 Pro: Adicionado suporte ao modelo Gemini 3.1 Pro e definido como modelo Gemini padrão para melhor desempenho.",
-			"cliNdjson": "Protocolo NDJSON do CLI: Novo protocolo NDJSON via stdin, subcomandos de listagem e comando de execução modularizado para fluxos de trabalho CLI mais flexíveis.",
-			"cliRelease": "CLI v0.1.0: O CLI do Alpha alcança sua primeira versão oficial com uma interface de comandos estável."
+			"welcome": "O Alpha v{{version}} melhora a verificação, o controle de comandos e a continuidade das tarefas.",
+			"acceptanceChecks": "Reutilize verificações aprovadas enquanto as entradas declaradas permanecerem inalteradas.",
+			"commandControl": "Aguarde, envie entradas e interrompa comandos em segundo plano pertencentes à tarefa.",
+			"workflowContinuity": "Preserve as restrições da tarefa e o contexto das habilidades ao recarregar e compactar.",
+			"chatUpdates": "Use ações de chat mais claras e selecione um provedor após a conclusão da tarefa."
 		}
 	},
 	"costs": {
@@ -363,7 +386,6 @@
 			"copy_code": "Copiar código"
 		}
 	},
-	"profileViolationWarning": "O perfil atual não é compatível com as configurações da sua organização",
 	"shellIntegration": {
 		"title": "Aviso de execução de comando",
 		"description": "Seu comando está sendo executado sem a integração de shell do terminal VSCode. Para suprimir este aviso, você pode desativar a integração de shell na seção <strong>Terminal</strong> das <settingsLink>configurações do Alpha</settingsLink> ou solucionar problemas de integração do terminal VSCode usando o link abaixo.",
@@ -382,6 +404,7 @@
 		}
 	},
 	"codebaseSearch": {
+		"title": "Busca no código",
 		"wantsToSearch": "Alpha quer pesquisar na base de código por <code>{{query}}</code>",
 		"wantsToSearchWithPath": "Alpha quer pesquisar na base de código por <code>{{query}}</code> em <code>{{path}}</code>",
 		"didSearch_one": "Encontrado 1 resultado",
@@ -457,8 +480,19 @@
 	},
 	"queuedMessages": {
 		"title": "Mensagens na fila",
-		"clickToEdit": "Clique para editar a mensagem"
+		"clickToEdit": "Clique para editar a mensagem",
+		"steering": "Redirecionando…",
+		"queueFailed": "Não foi possível colocar a mensagem na fila. Seu rascunho continua no editor.",
+		"steerFailed": "Não foi possível iniciar o redirecionamento. A mensagem na fila continua disponível.",
+		"edit": "Editar",
+		"editTooltip": "Editar esta mensagem na fila",
+		"editing": "Edição no compositor",
+		"dragHandle": "Arraste a mensagem na fila",
+		"dragTooltip": "Arraste para reordenar esta mensagem na fila",
+		"steer": "Dirigir",
+		"steerTooltip": "Enviar esta mensagem na fila para a curva atual"
 	},
+	"modelResponseDelayed": "Aguardando a próxima atualização do modelo. Um raciocínio mais longo pode levar tempo.",
 	"slashCommand": {
 		"wantsToRun": "Alpha quer executar um comando slash",
 		"didRun": "Alpha executou um comando slash"
@@ -486,5 +520,38 @@
 		"title": "Provedor não é mais suportado",
 		"message": "Desculpe, este provedor não é mais suportado. Percebemos que muito poucos usuários do Alpha realmente o utilizavam e precisamos reduzir o escopo do nosso código para continuar entregando rápido e servindo bem nossa comunidade. Foi uma decisão muito difícil, mas nos permite focar no que mais importa para você. Sabemos que é chato.",
 		"openSettings": "Abrir configurações"
+	},
+	"githubActions": {
+		"request": "Solicitação",
+		"create_pull_request": "Criar pull request",
+		"get_pull_request": "Ver pull request",
+		"list_checks": "Listar verificações",
+		"merge_pull_request": "Mesclar pull request",
+		"comment": "Adicionar comentário"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "Inspecionar agentes",
+			"wait_agent": "Aguardar atualizações do agente",
+			"unknown": "Ação do agente"
+		},
+		"failed": "{{action}} falhou: {{error}}",
+		"list": {
+			"running": "Inspecionando agentes...",
+			"completed": "Agente {{count}} inspecionado",
+			"completed_other": "Agentes {{count}} inspecionados",
+			"mailbox": "Atualização da caixa de correio {{count}}",
+			"mailbox_other": "Atualizações da caixa de correio {{count}}"
+		},
+		"wait": {
+			"running": "Aguardando atualizações do agente...",
+			"noActiveAgents": "Nenhum agente ativo para aguardar",
+			"cancelled": "Espera do agente cancelada",
+			"timedOut": "Nenhuma atualização do agente antes do tempo limite",
+			"alreadyDelivered": "Nenhuma nova atualização; resultados já entregues",
+			"received": "Atualização do agente {{count}} recebida",
+			"received_other": "Atualizações do agente {{count}} recebidas",
+			"completed": "Espera do agente concluída"
+		}
 	}
 }

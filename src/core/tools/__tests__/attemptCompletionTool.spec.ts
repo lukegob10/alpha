@@ -1,4 +1,4 @@
-import { RooCodeEventName, TodoItem } from "@alpha-code/types"
+import { AlphaCodeEventName, TodoItem } from "@alpha-code/types"
 
 import { AttemptCompletionToolUse } from "../../../shared/tools"
 
@@ -50,6 +50,7 @@ describe("attemptCompletionTool", () => {
 	let mockToolDescription: ReturnType<typeof vi.fn>
 	let mockAskFinishSubTaskApproval: ReturnType<typeof vi.fn>
 	let mockGetConfiguration: ReturnType<typeof vi.fn>
+	let mockGetParentCompletionDecision: ReturnType<typeof vi.fn>
 
 	beforeEach(() => {
 		mockCaptureTaskCompleted.mockReset()
@@ -66,25 +67,174 @@ describe("attemptCompletionTool", () => {
 				return defaultValue
 			}),
 		}))
+		mockGetParentCompletionDecision = vi.fn().mockResolvedValue({ allowed: true })
 
 		// Setup vscode mock
 		vi.mocked(vscode.workspace.getConfiguration).mockImplementation(mockGetConfiguration)
 
 		mockTask = {
+			recordCompletionCandidate: vi.fn(),
+			recordCompletionRejection: vi.fn((decision) => decision),
+			waitForCompletionGateDecision: vi.fn(async () => {
+				const todos = mockTask.getOpenTodoCompletionDecision?.()
+				if (todos) return todos
+				return mockTask.getCompletionGateDecision!()
+			}),
 			consecutiveMistakeCount: 0,
 			recordToolError: vi.fn(),
 			todoList: undefined,
 			say: vi.fn().mockResolvedValue(undefined),
+			presentCompletionResult: vi.fn().mockResolvedValue(undefined),
+			retractCompletionResult: vi.fn().mockResolvedValue(undefined),
 			ask: vi.fn().mockResolvedValue({ response: "yesButtonClicked", text: "", images: [] }),
+			messageQueueService: {
+				dequeueMessage: vi.fn().mockReturnValue(undefined),
+			} as any,
+			suspendAfterCurrentTurn: vi.fn(),
+			pushToolResultToUserContent: vi.fn().mockReturnValue(true),
+			removePendingToolResult: vi.fn().mockReturnValue(true),
 			markCompleted: vi.fn(),
 			emitFinalTokenUsageUpdate: vi.fn(),
 			emit: vi.fn(),
 			getTokenUsage: vi.fn().mockReturnValue({}),
 			toolUsage: {},
+			taskKind: "primary",
+			hasActiveCommandExecutions: vi.fn().mockReturnValue(false),
+			getOpenTodoCompletionDecision: vi.fn(() => {
+				const enabled = vscode.workspace
+					.getConfiguration("alpha")
+					.get<boolean>("preventCompletionWithOpenTodos", false)
+				const hasIncompleteTodos = mockTask.todoList?.some((todo) => todo.status !== "completed") === true
+				return enabled && hasIncompleteTodos
+					? {
+							allowed: false,
+							modelCanResolveRejection: true,
+							message:
+								"Cannot complete task while there are incomplete todos. Please finish all todos before attempting completion.",
+						}
+					: undefined
+			}),
+			getCompletionGateDecision: vi.fn(async () => {
+				try {
+					return {
+						...(await mockGetParentCompletionDecision()),
+						modelCanResolveRejection: true,
+					}
+				} catch (error) {
+					return {
+						allowed: false,
+						modelCanResolveRejection: false,
+						message: `Cannot verify managed-agent completion obligations right now: ${error instanceof Error ? error.message : String(error)}`,
+					}
+				}
+			}),
+			providerRef: {
+				deref: () => ({ getParentCompletionDecision: mockGetParentCompletionDecision }),
+			} as any,
 			taskId: "task_1",
 			apiConfiguration: { apiProvider: "test" } as any,
 			api: { getModel: vi.fn().mockReturnValue({ id: "test-model", info: {} }) } as any,
 		}
+		mockTask.finalizeTaskCompletion = vi.fn().mockImplementation(async () => {
+			mockTask.markCompleted?.()
+			mockTask.emitFinalTokenUsageUpdate?.()
+			mockCaptureTaskCompleted("task_1")
+			;(mockTask.emit as any)?.(
+				AlphaCodeEventName.TaskCompleted,
+				"task_1",
+				mockTask.getTokenUsage?.() ?? {},
+				mockTask.toolUsage ?? {},
+			)
+			return true
+		})
+	})
+
+	it("prevents an editing worker from completing while a command is active", async () => {
+		;(mockTask as any).taskKind = "subagent"
+		;(mockTask as any).subagentRole = "worker"
+		mockTask.hasActiveCommandExecutions = vi.fn().mockReturnValue(true)
+		mockTask.waitForCompletionGateDecision = vi.fn().mockResolvedValue({
+			allowed: false,
+			classification: "blocked",
+			reasonCode: "runtime_timeout",
+			modelCanResolveRejection: false,
+			message: "The command is still running after the runtime settlement deadline.",
+		})
+		const callbacks: AttemptCompletionCallbacks = {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+		}
+		await attemptCompletionTool.execute({ result: "Verification passed." }, mockTask as Task, callbacks)
+
+		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("command is still running"))
+		expect(mockTask.presentCompletionResult).not.toHaveBeenCalled()
+		expect(mockTask.emit).not.toHaveBeenCalledWith(AlphaCodeEventName.TaskCompleted, expect.anything())
+	})
+
+	it.each(["pending", "failed"])(
+		"rejects attempt_completion at the production boundary while verification is %s",
+		async (status) => {
+			mockGetParentCompletionDecision.mockResolvedValue({
+				allowed: false,
+				message: `Worker verification is ${status}.`,
+			})
+			const callbacks: AttemptCompletionCallbacks = {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+				askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+				toolDescription: mockToolDescription,
+			}
+
+			await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
+
+			expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining(status))
+			expect(mockTask.presentCompletionResult).not.toHaveBeenCalled()
+			expect(mockTask.ask).not.toHaveBeenCalled()
+			expect(mockTask.markCompleted).not.toHaveBeenCalled()
+		},
+	)
+
+	it("rechecks verification immediately before the terminal transition", async () => {
+		mockGetParentCompletionDecision
+			.mockResolvedValueOnce({ allowed: true })
+			.mockResolvedValueOnce({ allowed: false, message: "A Worker verification obligation became pending." })
+		const callbacks: AttemptCompletionCallbacks = {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+		}
+
+		await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
+
+		expect(mockTask.presentCompletionResult).toHaveBeenCalledWith("Task complete.", undefined, false)
+		expect(mockTask.ask).toHaveBeenCalledWith("completion_result", "", false)
+		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("became pending"))
+		expect(mockTask.retractCompletionResult).toHaveBeenCalledOnce()
+		expect(mockTask.markCompleted).not.toHaveBeenCalled()
+	})
+
+	it("fails closed when the durable completion decision cannot be loaded", async () => {
+		mockGetParentCompletionDecision.mockRejectedValue(new Error("ledger unavailable"))
+		const callbacks: AttemptCompletionCallbacks = {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+		}
+
+		await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
+
+		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("ledger unavailable"))
+		expect(mockTask.markCompleted).not.toHaveBeenCalled()
+		expect(mockTask.consecutiveMistakeCount).toBe(0)
+		expect(mockTask.recordToolError).not.toHaveBeenCalled()
 	})
 
 	describe("todo list validation", () => {
@@ -426,6 +576,7 @@ describe("attemptCompletionTool", () => {
 			it("should prevent completion when a previous tool failed in the current turn", async () => {
 				const block: AttemptCompletionToolUse = {
 					type: "tool_use",
+					id: "managed-completion",
 					name: "attempt_completion",
 					params: { result: "Task completed successfully" },
 					nativeArgs: { result: "Task completed successfully" },
@@ -460,6 +611,7 @@ describe("attemptCompletionTool", () => {
 			it("should allow completion when no tools failed", async () => {
 				const block: AttemptCompletionToolUse = {
 					type: "tool_use",
+					id: "blocked-managed-completion",
 					name: "attempt_completion",
 					params: { result: "Task completed successfully" },
 					nativeArgs: { result: "Task completed successfully" },
@@ -485,9 +637,131 @@ describe("attemptCompletionTool", () => {
 		})
 
 		describe("completion lifecycle", () => {
+			it("completes a managed sub-agent without legacy parent reopen or user approval", async () => {
+				const block: AttemptCompletionToolUse = {
+					type: "tool_use",
+					id: "accepted-completion",
+					name: "attempt_completion",
+					params: { result: "Read-only findings" },
+					nativeArgs: { result: "Read-only findings" },
+					partial: false,
+				}
+				;(mockTask as any).taskKind = "subagent"
+				;(mockTask as any).parentTaskId = "parent"
+				mockTask.providerRef = {
+					deref: () => ({
+						reopenParentFromDelegation: vi.fn(),
+						getTaskWithId: vi.fn(),
+						getParentCompletionDecision: mockGetParentCompletionDecision,
+					}),
+				} as any
+
+				const callbacks: AttemptCompletionCallbacks = {
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+					askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+					toolDescription: mockToolDescription,
+				}
+				await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
+
+				expect(mockTask.ask).not.toHaveBeenCalled()
+				expect(mockAskFinishSubTaskApproval).not.toHaveBeenCalled()
+				expect(mockPushToolResult).toHaveBeenCalledWith("")
+				expect((mockTask as any).subagentCompletionOutcome).toBe("completed")
+				expect(mockTask.emit).toHaveBeenCalledWith(
+					AlphaCodeEventName.TaskCompleted,
+					"task_1",
+					expect.anything(),
+					expect.anything(),
+				)
+			})
+
+			it("fails closed when a legacy child cannot load its handoff state", async () => {
+				;(mockTask as any).parentTaskId = "parent"
+				mockTask.providerRef = {
+					deref: () => ({
+						getTaskWithId: vi.fn().mockRejectedValue(new Error("history unavailable")),
+						reopenParentFromDelegation: vi.fn(),
+					}),
+				} as any
+
+				await attemptCompletionTool.execute({ result: "Child result" }, mockTask as Task, {
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+					askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+					toolDescription: mockToolDescription,
+				})
+
+				expect(mockTask.retractCompletionResult).toHaveBeenCalledTimes(1)
+				expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("history unavailable"))
+				expect(mockTask.ask).not.toHaveBeenCalled()
+				expect(mockTask.finalizeTaskCompletion).not.toHaveBeenCalled()
+			})
+
+			it("fails closed when a legacy child has a non-returnable status", async () => {
+				;(mockTask as any).parentTaskId = "parent"
+				mockTask.providerRef = {
+					deref: () => ({
+						getTaskWithId: vi.fn().mockResolvedValue({ historyItem: { status: "delegated" } }),
+						reopenParentFromDelegation: vi.fn(),
+					}),
+				} as any
+
+				await attemptCompletionTool.execute({ result: "Child result" }, mockTask as Task, {
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+					askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+					toolDescription: mockToolDescription,
+				})
+
+				expect(mockTask.retractCompletionResult).toHaveBeenCalledTimes(1)
+				expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("status delegated"))
+				expect(mockTask.ask).not.toHaveBeenCalled()
+				expect(mockTask.finalizeTaskCompletion).not.toHaveBeenCalled()
+			})
+
+			it("records a blocked managed sub-agent outcome before completing its internal lifecycle", async () => {
+				const block: AttemptCompletionToolUse = {
+					type: "tool_use",
+					id: "blocked-managed-completion",
+					name: "attempt_completion",
+					params: {
+						result: "The assigned objective requires unavailable write authority.",
+						outcome: "blocked",
+					},
+					nativeArgs: {
+						result: "The assigned objective requires unavailable write authority.",
+						outcome: "blocked",
+					},
+					partial: false,
+				}
+				;(mockTask as any).taskKind = "subagent"
+
+				const callbacks: AttemptCompletionCallbacks = {
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+					askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+					toolDescription: mockToolDescription,
+				}
+				await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
+
+				expect((mockTask as any).subagentCompletionOutcome).toBe("blocked")
+				expect(mockTask.emit).toHaveBeenCalledWith(
+					AlphaCodeEventName.TaskCompleted,
+					"task_1",
+					expect.anything(),
+					expect.anything(),
+				)
+			})
+
 			it("emits TaskCompleted only when completion is accepted", async () => {
 				const block: AttemptCompletionToolUse = {
 					type: "tool_use",
+					id: "accepted-primary-completion",
 					name: "attempt_completion",
 					params: { result: "2" },
 					nativeArgs: { result: "2" },
@@ -507,51 +781,84 @@ describe("attemptCompletionTool", () => {
 				await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
 
 				expect(mockHandleError).not.toHaveBeenCalled()
+				expect(mockPushToolResult).toHaveBeenCalledWith("")
+				expect(mockTask.finalizeTaskCompletion).toHaveBeenCalledOnce()
+				expect(
+					(mockTask.finalizeTaskCompletion as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0],
+				).toBeLessThan(mockPushToolResult.mock.invocationCallOrder[0])
 				expect(mockTask.markCompleted).toHaveBeenCalled()
 				expect(mockCaptureTaskCompleted).toHaveBeenCalledWith("task_1")
 				expect(mockTask.emit).toHaveBeenCalledWith(
-					RooCodeEventName.TaskCompleted,
+					AlphaCodeEventName.TaskCompleted,
 					"task_1",
 					expect.anything(),
 					expect.anything(),
 				)
 			})
 
-			it("does not emit TaskCompleted when user provides follow-up feedback", async () => {
-				const block: AttemptCompletionToolUse = {
-					type: "tool_use",
-					name: "attempt_completion",
-					params: { result: "2" },
-					nativeArgs: { result: "2" },
-					partial: false,
-				}
+			it.each(["reply", "queue", "finalization"])(
+				"preserves the final answer without completing the task for a follow-up via %s",
+				async (delivery) => {
+					const block: AttemptCompletionToolUse = {
+						type: "tool_use",
+						name: "attempt_completion",
+						params: { result: "2" },
+						nativeArgs: { result: "2" },
+						partial: false,
+					}
 
-				mockTask.ask = vi.fn().mockResolvedValue({
-					response: "messageResponse",
-					text: "Different question now: what is 3+3?",
-					images: [],
-				})
+					mockTask.ask = vi.fn().mockResolvedValue({
+						response: "messageResponse",
+						text: delivery === "reply" ? "Different question now: what is 3+3?" : "",
+						images: [],
+					})
+					if (delivery === "queue") {
+						vi.mocked(mockTask.messageQueueService!.dequeueMessage).mockReturnValueOnce({
+							id: "queued",
+							text: "Different question now: what is 3+3?",
+							images: [],
+							timestamp: 1,
+						})
+					} else if (delivery === "finalization") {
+						vi.mocked(mockTask.finalizeTaskCompletion!).mockImplementationOnce(async () => {
+							vi.mocked(mockTask.messageQueueService!.dequeueMessage).mockReturnValueOnce({
+								id: "queued",
+								text: "Different question now: what is 3+3?",
+								images: [],
+								timestamp: 1,
+							})
+							return false
+						})
+					}
 
-				const callbacks: AttemptCompletionCallbacks = {
-					askApproval: mockAskApproval,
-					handleError: mockHandleError,
-					pushToolResult: mockPushToolResult,
-					askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
-					toolDescription: mockToolDescription,
-				}
+					const callbacks: AttemptCompletionCallbacks = {
+						askApproval: mockAskApproval,
+						handleError: mockHandleError,
+						pushToolResult: mockPushToolResult,
+						askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+						toolDescription: mockToolDescription,
+						toolCallId: "completion-followup",
+					}
 
-				await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
+					await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
 
-				expect(mockHandleError).not.toHaveBeenCalled()
-				expect(mockCaptureTaskCompleted).not.toHaveBeenCalled()
-				expect(mockTask.emit).not.toHaveBeenCalledWith(
-					RooCodeEventName.TaskCompleted,
-					expect.anything(),
-					expect.anything(),
-					expect.anything(),
-				)
-				expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("<user_message>"))
-			})
+					expect(mockHandleError).not.toHaveBeenCalled()
+					expect(mockCaptureTaskCompleted).not.toHaveBeenCalled()
+					expect(mockTask.emit).not.toHaveBeenCalledWith(
+						AlphaCodeEventName.TaskCompleted,
+						expect.anything(),
+						expect.anything(),
+						expect.anything(),
+					)
+					expect(mockTask.retractCompletionResult).not.toHaveBeenCalled()
+					expect(mockTask.say).toHaveBeenCalledWith(
+						"user_feedback",
+						"Different question now: what is 3+3?",
+						[],
+					)
+					expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("<user_message>"))
+				},
+			)
 		})
 	})
 })

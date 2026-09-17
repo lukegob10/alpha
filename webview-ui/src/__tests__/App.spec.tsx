@@ -1,7 +1,8 @@
 // npx vitest run src/__tests__/App.spec.tsx
 
 import React from "react"
-import { render, screen, act, cleanup } from "@/utils/test-utils"
+import { render, screen, act, cleanup, fireEvent } from "@/utils/test-utils"
+import { vscode } from "@src/utils/vscode"
 
 import AppWithProviders from "../App"
 
@@ -56,6 +57,12 @@ vi.mock("@src/components/history/HistoryView", () => ({
 			</div>
 		)
 	},
+}))
+
+vi.mock("@src/components/scheduled-tasks/ScheduledTasksView", () => ({
+	default: ({ targetTaskId }: { targetTaskId?: string }) => (
+		<div data-testid="scheduled-tasks-view" data-target={targetTaskId} />
+	),
 }))
 
 vi.mock("@src/components/mcp/McpView", () => ({
@@ -157,6 +164,60 @@ vi.mock("process.env", () => ({
 }))
 
 describe("App", () => {
+	it.each([false, true])("confirms a restart with its original task and images (checkpoint: %s)", (hasCheckpoint) => {
+		const { rerender } = render(<AppWithProviders />)
+		const images = ["data:image/png;base64,aGVsbG8="]
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "showEditMessageDialog",
+						messageTs: 10,
+						taskId: "original-task",
+						text: "",
+						images,
+						hasCheckpoint,
+						messageAction: "restart",
+					},
+				}),
+			),
+		)
+		expect(screen.getByRole("heading", { name: "chat:messageActions.restart" })).toBeInTheDocument()
+		mockUseExtensionState.mockReturnValue({ ...mockUseExtensionState(), currentTaskId: "different-task" })
+		rerender(<AppWithProviders />)
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: hasCheckpoint ? "common:confirmation.restoreToCheckpoint" : "common:confirmation.proceed",
+			}),
+		)
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "editMessageConfirm",
+			taskId: "original-task",
+			messageTs: 10,
+			text: "",
+			images,
+			...(hasCheckpoint ? { restoreCheckpoint: true } : {}),
+		})
+	})
+
+	it("can cancel restart without changing the task", () => {
+		render(<AppWithProviders />)
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "showEditMessageDialog",
+						messageTs: 10,
+						taskId: "original-task",
+						text: "Original prompt",
+						messageAction: "restart",
+					},
+				}),
+			),
+		)
+		fireEvent.click(screen.getByRole("button", { name: "common:answers.cancel" }))
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "editMessageConfirm" }))
+	})
 	beforeEach(() => {
 		vi.clearAllMocks()
 		window.removeEventListener("message", () => {})
@@ -205,6 +266,32 @@ describe("App", () => {
 		expect(chatView).toBeInTheDocument()
 		expect(chatView.getAttribute("data-hidden")).toBe("false")
 	}, 10000)
+
+	it.each(["goalSeek", "unknownTab"])("ignores an unavailable tab request for %s", (tab) => {
+		render(<AppWithProviders />)
+		act(() => {
+			window.dispatchEvent(new MessageEvent("message", { data: { type: "action", action: "switchTab", tab } }))
+		})
+		expect(screen.getByTestId("chat-view")).toHaveAttribute("data-hidden", "false")
+	})
+
+	it("still opens a targeted scheduled task through switchTab", async () => {
+		render(<AppWithProviders />)
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "action",
+						action: "switchTab",
+						tab: "scheduledTasks",
+						values: { scheduledTaskId: "saved-schedule" },
+					},
+				}),
+			)
+		})
+		expect(await screen.findByTestId("scheduled-tasks-view")).toHaveAttribute("data-target", "saved-schedule")
+		expect(screen.getByTestId("chat-view")).toHaveAttribute("data-hidden", "true")
+	})
 
 	it("switches to settings view when receiving settingsButtonClicked action", async () => {
 		render(<AppWithProviders />)

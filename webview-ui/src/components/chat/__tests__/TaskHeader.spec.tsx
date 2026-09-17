@@ -4,7 +4,12 @@ import React from "react"
 import { render, screen, fireEvent } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
-import type { ProviderSettings } from "@alpha-code/types"
+import type {
+	LiveTaskMetadata,
+	ProviderSettings,
+	SubagentChangeSetState,
+	SubagentModelRouteState,
+} from "@alpha-code/types"
 
 import TaskHeader, { TaskHeaderProps } from "../TaskHeader"
 
@@ -38,7 +43,16 @@ vi.mock("@vscode/webview-ui-toolkit/react", () => ({
 // Create a variable to hold the mock state
 let mockExtensionState: {
 	apiConfiguration: ProviderSettings
-	currentTaskItem: { id: string } | null
+	liveTasksById?: Record<string, Partial<LiveTaskMetadata>>
+	currentTaskItem: {
+		id: string
+		task?: string
+		subagentNickname?: string
+		subagentRole?: "explore" | "review" | "worker"
+		subagentWriteScope?: string[]
+		subagentModelRoute?: SubagentModelRouteState
+		subagentChangeSet?: SubagentChangeSetState
+	} | null
 	clineMessages: any[]
 } = {
 	apiConfiguration: {
@@ -105,15 +119,21 @@ vi.mock("@/components/ui/hooks/useSelectedModel", () => ({
 	}),
 }))
 
-// Mock getModelMaxOutputTokens from @alpha/api
+// Mock getModelReservedOutputTokens from @alpha/api
 let mockMaxOutputTokens = 0
 vi.mock("@alpha/api", () => ({
-	getModelMaxOutputTokens: () => mockMaxOutputTokens,
+	getModelReservedOutputTokens: () => mockMaxOutputTokens,
 }))
 
 describe("TaskHeader", () => {
+	it("keeps prompt copying on the message instead of in task metadata", () => {
+		mockExtensionState.currentTaskItem = { id: "test-task-id", task: "Original prompt" }
+		render(<TaskHeader {...defaultProps} />)
+		fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
+		expect(screen.getByRole("button", { name: "chat:task.export" })).toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: "history:copyPrompt" })).not.toBeInTheDocument()
+	})
 	const defaultProps: TaskHeaderProps = {
-		task: { type: "say", ts: Date.now(), text: "Test task", images: [] },
 		tokensIn: 100,
 		tokensOut: 50,
 		totalCost: 0.05,
@@ -132,8 +152,10 @@ describe("TaskHeader", () => {
 		)
 	}
 
-	it("should display cost when totalCost is greater than 0", () => {
+	it("keeps task metrics in the expandable details", () => {
 		renderTaskHeader()
+		expect(screen.queryByText("$0.05")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
 		expect(screen.getByText("$0.05")).toBeInTheDocument()
 	})
 
@@ -157,10 +179,46 @@ describe("TaskHeader", () => {
 		expect(screen.queryByText(/\$/)).not.toBeInTheDocument()
 	})
 
+	it("notifies the scroll lifecycle before toggling the task details", () => {
+		const onExpandedChange = vi.fn()
+		renderTaskHeader({ onExpandedChange })
+
+		fireEvent.click(screen.getByText("chat:task.title"))
+
+		expect(onExpandedChange).toHaveBeenCalledTimes(1)
+		expect(screen.getByText("chat:task.title")).toBeInTheDocument()
+	})
+
+	it("exposes expansion state on the keyboard control", () => {
+		renderTaskHeader()
+		const expandButton = screen.getByRole("button", { name: "chat:task.expand" })
+		expect(expandButton).toHaveAttribute("aria-expanded", "false")
+		const details = document.getElementById(expandButton.getAttribute("aria-controls")!)
+		expect(details).toBeInTheDocument()
+		expect(details).not.toBeVisible()
+
+		fireEvent.click(expandButton)
+
+		expect(screen.getByRole("button", { name: "chat:task.collapse" })).toHaveAttribute("aria-expanded", "true")
+		expect(details).toBeVisible()
+		fireEvent.click(screen.getByTestId("context-window-label"))
+		expect(details).toBeVisible()
+	})
+
+	it("keeps the metadata card visible when expanded and collapsed", () => {
+		const { container } = renderTaskHeader()
+		expect(screen.getByText("chat:task.title").closest(".task-context-card")).toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
+		expect(screen.getByTestId("context-window-label")).toBeVisible()
+		fireEvent.click(screen.getByRole("button", { name: "chat:task.collapse" }))
+		expect(screen.getByText("chat:task.title").closest(".task-context-card")).toBeInTheDocument()
+		expect(container.querySelector(".user-message")).not.toBeInTheDocument()
+	})
+
 	it("should render the condense context button when expanded", () => {
 		renderTaskHeader()
 		// First click to expand the task header
-		const taskHeader = screen.getByText("Test task")
+		const taskHeader = screen.getByText("chat:task.title")
 		fireEvent.click(taskHeader)
 
 		// Now find the condense button in the expanded state
@@ -175,7 +233,7 @@ describe("TaskHeader", () => {
 		renderTaskHeader({ handleCondenseContext })
 
 		// First click to expand the task header
-		const taskHeader = screen.getByText("Test task")
+		const taskHeader = screen.getByText("chat:task.title")
 		fireEvent.click(taskHeader)
 
 		// Find the button that contains the FoldVertical icon
@@ -191,7 +249,7 @@ describe("TaskHeader", () => {
 		renderTaskHeader({ buttonsDisabled: true, handleCondenseContext })
 
 		// First click to expand the task header
-		const taskHeader = screen.getByText("Test task")
+		const taskHeader = screen.getByText("chat:task.title")
 		fireEvent.click(taskHeader)
 
 		// Find the button that contains the FoldVertical icon
@@ -421,6 +479,57 @@ describe("TaskHeader", () => {
 			expect(backButton).toBeInTheDocument()
 			expect(backButton?.querySelector("svg.lucide-arrow-left")).toBeInTheDocument()
 		})
+
+		it("shows the immutable model route and parent fallback in a managed transcript", () => {
+			mockExtensionState.currentTaskItem = {
+				id: "child-1",
+				subagentNickname: "Maple",
+				subagentRole: "explore",
+				subagentModelRoute: {
+					source: "role",
+					resolution: "fallback",
+					profileId: "parent-id",
+					profileName: "Parent",
+					provider: "anthropic",
+					modelId: "parent-model",
+					requestedProfileId: "deleted-id",
+					fallbackReason: "missing",
+				},
+			}
+
+			renderTaskHeader({ parentTaskId: "parent-task-123", isManagedSubagent: true })
+
+			expect(screen.getByText("Maple · Explorer")).toBeInTheDocument()
+			expect(screen.getByRole("button", { name: "Return to parent" })).toBeInTheDocument()
+			expect(screen.getByText("Parent-managed read-only sub-agent")).toBeInTheDocument()
+			expect(screen.getByText("Parent · anthropic · parent-model")).toBeInTheDocument()
+			expect(screen.getByRole("status")).toHaveTextContent("Using parent profile because")
+			mockExtensionState.currentTaskItem = { id: "test-task-id" }
+		})
+
+		it("describes a captured worker proposal as a quarantined change set", () => {
+			mockExtensionState.currentTaskItem = {
+				id: "child-1",
+				subagentNickname: "Cinder",
+				subagentRole: "worker",
+				subagentWriteScope: ["docs/guide.md"],
+				subagentChangeSet: {
+					id: "change-set-1",
+					status: "pending_review",
+					changedFiles: ["docs/guide.md"],
+					createdAt: 1,
+					updatedAt: 2,
+				},
+			}
+
+			renderTaskHeader({ parentTaskId: "parent-task-123", isManagedSubagent: true })
+
+			expect(screen.getByText("Cinder · Worker")).toBeInTheDocument()
+			expect(screen.getByText("Parent-managed editing worker · quarantined change set")).toBeInTheDocument()
+			expect(screen.getByText("Write scope: docs/guide.md")).toBeInTheDocument()
+			expect(screen.queryByText(/editing worker · isolated worktree/)).not.toBeInTheDocument()
+			mockExtensionState.currentTaskItem = { id: "test-task-id" }
+		})
 	})
 
 	describe("Context window percentage calculation", () => {
@@ -432,7 +541,7 @@ describe("TaskHeader", () => {
 		beforeEach(() => {
 			// Set up mock model with known contextWindow
 			mockModelInfo = { contextWindow: 1000, maxTokens: 200 }
-			// Set up mock for getModelMaxOutputTokens to return reservedForOutput
+			// Set up mock for getModelReservedOutputTokens to return reservedForOutput
 			mockMaxOutputTokens = 200
 		})
 
@@ -440,6 +549,39 @@ describe("TaskHeader", () => {
 			// Reset mocks
 			mockModelInfo = undefined
 			mockMaxOutputTokens = 0
+			mockExtensionState.liveTasksById = undefined
+		})
+
+		it("uses the visible task's resolved context as live model limits change", () => {
+			mockModelInfo = { contextWindow: 200_000, maxTokens: 64_000 }
+			mockMaxOutputTokens = 0
+			const setLiveWindow = (contextWindow: number) => {
+				mockExtensionState.liveTasksById = {
+					"test-task-id": {
+						model: {
+							id: "copilot-claude-opus-4.7",
+							info: {
+								contextWindow,
+								maxTokens: 64_000,
+								supportsPromptCache: false,
+								contextWindowIncludesOutput: false,
+							},
+						},
+					},
+					"background-task": {
+						model: { id: "other-model", info: { contextWindow: 10_000, supportsPromptCache: false } },
+					},
+				}
+			}
+			setLiveWindow(935_793)
+			const { rerender } = renderTaskHeader({ contextTokens: 100_000 })
+			expect(screen.getByText("11%")).toBeVisible()
+			setLiveWindow(200_000)
+			rerender(<TaskHeader {...defaultProps} contextTokens={100_001} />)
+			expect(screen.getByText("50%")).toBeVisible()
+			setLiveWindow(935_793)
+			rerender(<TaskHeader {...defaultProps} contextTokens={100_002} />)
+			expect(screen.getByText("11%")).toBeVisible()
 		})
 
 		it("should calculate percentage based on available input space, not total context window", () => {
@@ -451,8 +593,10 @@ describe("TaskHeader", () => {
 			// Old (incorrect) formula would have been: (200 + 200) / 1000 * 100 = 40%
 
 			renderTaskHeader({ contextTokens: 200 })
+			expect(screen.getByText("25%")).toBeVisible()
+			fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
 
-			// The percentage should be rendered in the collapsed header state
+			// The percentage remains available in the expanded task details.
 			// Verify that 25% is displayed (correct formula) and NOT 40% (old incorrect formula)
 			expect(screen.getByText("25%")).toBeInTheDocument()
 			expect(screen.queryByText("40%")).not.toBeInTheDocument()
@@ -465,6 +609,7 @@ describe("TaskHeader", () => {
 			mockMaxOutputTokens = 200
 
 			renderTaskHeader({ contextTokens: 100 })
+			fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
 
 			// Should show 0% when available input space is 0
 			expect(screen.getByText("0%")).toBeInTheDocument()

@@ -15,7 +15,7 @@ interface CheckpointRestoreDialogProps {
 	open: boolean
 	onOpenChange: (open: boolean) => void
 	onConfirm: (restoreCheckpoint: boolean) => void
-	type: "edit" | "delete"
+	type: "edit" | "delete" | "restart"
 	hasCheckpoint: boolean
 }
 
@@ -29,10 +29,18 @@ export const CheckpointRestoreDialog: React.FC<CheckpointRestoreDialogProps> = (
 	const { t } = useAppTranslation()
 
 	const isEdit = type === "edit"
-	const title = isEdit ? t("common:confirmation.editMessage") : t("common:confirmation.deleteMessage")
-	const description = isEdit
-		? t("common:confirmation.editQuestionWithCheckpoint")
-		: t("common:confirmation.deleteQuestionWithCheckpoint")
+	const title =
+		type === "restart"
+			? t("chat:messageActions.restart")
+			: isEdit
+				? t("common:confirmation.editMessage")
+				: t("common:confirmation.deleteMessage")
+	const description =
+		type === "restart"
+			? t("chat:messageActions.restartWithCheckpoint")
+			: isEdit
+				? t("common:confirmation.editQuestionWithCheckpoint")
+				: t("common:confirmation.deleteQuestionWithCheckpoint")
 
 	const handleConfirmWithRestore = () => {
 		onConfirm(true)
@@ -58,7 +66,11 @@ export const CheckpointRestoreDialog: React.FC<CheckpointRestoreDialogProps> = (
 					<AlertDialogAction
 						onClick={handleConfirmWithoutRestore}
 						className="bg-vscode-button-background hover:bg-vscode-button-hoverBackground text-vscode-button-foreground border-vscode-button-border">
-						{isEdit ? t("common:confirmation.editOnly") : t("common:confirmation.deleteOnly")}
+						{type === "restart"
+							? t("chat:messageActions.restartOnly")
+							: isEdit
+								? t("common:confirmation.editOnly")
+								: t("common:confirmation.deleteOnly")}
 					</AlertDialogAction>
 					{hasCheckpoint && (
 						<AlertDialogAction

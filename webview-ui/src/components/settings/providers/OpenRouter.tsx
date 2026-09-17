@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Checkbox } from "vscrui"
 import { VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
 
@@ -41,6 +41,10 @@ export const OpenRouter = ({
 	const { t } = useAppTranslation()
 
 	const [openRouterBaseUrlSelected, setOpenRouterBaseUrlSelected] = useState(!!apiConfiguration?.openRouterBaseUrl)
+
+	useEffect(() => {
+		setOpenRouterBaseUrlSelected(!!apiConfiguration?.openRouterBaseUrl)
+	}, [apiConfiguration?.openRouterBaseUrl])
 
 	const handleInputChange = useCallback(
 		<K extends keyof ProviderSettings, E>(

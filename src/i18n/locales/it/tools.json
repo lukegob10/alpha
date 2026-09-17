@@ -16,6 +16,41 @@
 			"policy_restriction": "Impossibile creare una nuova attività a causa di restrizioni di policy."
 		}
 	},
+	"fileConflicts": {
+		"save": "Impossibile salvare '{{path}}': {{reason}}. Rileggi il file e riprova per preservare le modifiche dell'utente.",
+		"delete": "Impossibile eliminare '{{path}}': {{reason}}. Rileggi il file e riprova.",
+		"saveDestination": "Impossibile salvare '{{path}}': {{reason}}. Controlla la destinazione e riprova.",
+		"reasons": {
+			"fileUnsavedChanges": "il file contiene modifiche non salvate in un editor aperto",
+			"fileChangedDuringApproval": "il file è cambiato mentre l'approvazione era in attesa",
+			"editorChangedWhileChecked": "l'editor aperto è cambiato durante il controllo del file",
+			"destinationUnsavedChanges": "la destinazione contiene modifiche non salvate in un editor aperto",
+			"destinationNotRegularFile": "la destinazione non è un file normale",
+			"destinationChangedDuringInspection": "la destinazione è cambiata durante l'ispezione",
+			"destinationPathChanged": "la destinazione ora risolve a un percorso diverso",
+			"destinationCreatedAfterInspection": "la destinazione è stata creata dopo l'ispezione",
+			"destinationDeletedAfterInspection": "la destinazione è stata eliminata dopo l'ispezione",
+			"destinationChangedAfterInspection": "la destinazione è cambiata dopo l'ispezione"
+		}
+	},
+	"diffView": {
+		"editCancelled": "La modifica del file è stata annullata",
+		"applyContentFailed": "Impossibile applicare il contenuto all'editor delle differenze",
+		"previewChangedDuringEdit": "L'anteprima delle differenze è cambiata durante la modifica; le modifiche dell'utente sono state preservate",
+		"noEditAvailableToSave": "Nessuna modifica del file disponibile per il salvataggio",
+		"previewChangedAfterApproval": "L'anteprima delle differenze è cambiata dopo l'approvazione; controlla le modifiche e riprova",
+		"previewHasUserChanges": "L'anteprima delle differenze contiene modifiche dell'utente; controllale prima di riprovare la modifica",
+		"noFilePathForOpening": "Nessun percorso file impostato per aprire l'editor delle differenze",
+		"previewChangedWhileOpening": "L'anteprima delle differenze è cambiata durante l'apertura; le modifiche dell'utente sono state preservate",
+		"openFailed": "Impossibile aprire l'editor delle differenze per {{path}}: {{message}}",
+		"missingExpectedFileState": "Manca lo stato previsto del file prima dell'apertura dell'anteprima delle differenze"
+	},
+	"applyPatch": {
+		"deleteCancelled": "L'operazione di eliminazione è stata annullata."
+	},
+	"imageOutput": {
+		"writeIncomplete": "Impossibile completare la scrittura di '{{path}}'; il file potrebbe essere incompleto. {{cause}}"
+	},
 	"generateImage": {
 		"openRouterApiKeyRequired": "La chiave API OpenRouter è richiesta per la generazione di immagini con i modelli OpenRouter. Configurala nelle impostazioni sperimentali di Generazione Immagini.",
 		"failedWithStatus": "Generazione immagine fallita: {{status}} {{statusText}}",
@@ -24,6 +59,10 @@
 		"invalidImageData": "Dati immagine non validi nella risposta",
 		"invalidImageFormat": "Formato immagine non valido ricevuto",
 		"unknownError": "Si è verificato un errore sconosciuto",
+		"cancelledBeforeSave": "La generazione dell'immagine è stata annullata prima del salvataggio dell'immagine.",
+		"destinationUnavailableBeforeGeneration": "La destinazione dell'immagine non era accessibile prima della generazione. Riprova.",
+		"destinationPolicyChangedBeforeSave": "Il percorso o la politica di accesso della destinazione dell'immagine è cambiato prima del salvataggio. Riprova.",
+		"postSaveProcessingFailed": "{{path}}\nImmagine salvata, ma l'elaborazione successiva al salvataggio non è riuscita: {{message}}",
 		"roo": {}
 	}
 }

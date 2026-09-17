@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Checkbox } from "vscrui"
 import { VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
 
@@ -23,6 +23,10 @@ export const OpenAI = ({ apiConfiguration, setApiConfigurationField, selectedMod
 	const [openAiNativeBaseUrlSelected, setOpenAiNativeBaseUrlSelected] = useState(
 		!!apiConfiguration?.openAiNativeBaseUrl,
 	)
+
+	useEffect(() => {
+		setOpenAiNativeBaseUrlSelected(!!apiConfiguration?.openAiNativeBaseUrl)
+	}, [apiConfiguration?.openAiNativeBaseUrl])
 
 	const handleInputChange = useCallback(
 		<K extends keyof ProviderSettings, E>(

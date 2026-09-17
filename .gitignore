@@ -35,6 +35,10 @@ docs/_site/
 # Logging
 logs
 *.log
+/artifacts/certification/*.json
+/artifacts/core-confidence/
+/artifacts/certification/core-confidence.log
+/artifacts/certification/*.json.tmp-*
 
 # Vite development
 .vite-port
@@ -47,6 +51,7 @@ logs
 .qodo/
 .vercel
 .alpha/mcp.json
+.alpha/code-index/
 
 # Qdrant
 qdrant_storage/
@@ -54,4 +59,9 @@ qdrant_storage/
 # Architect plans
 plans/
 
-alpha-cli-*.tar.gz*
+# Frontier campaign run output
+.frontier-campaign/campaigns/*/attempts/
+
+# Local build remnants from retired products
+/apps/web-evals/
+/apps/vscode-nightly/

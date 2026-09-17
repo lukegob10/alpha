@@ -1,0 +1,15 @@
+{
+	"filter": "Filter rows",
+	"sort": "Sort by {column}",
+	"rows": "{visible} of {total} rows",
+	"unsupported": "This kit version is not supported. Open the source and use data-alpha-kit=\"1\".",
+	"invalidTable": "Table enhancement is unavailable. Use a rectangular table with one header row and at most 1,000 rows and 20 columns.",
+	"invalidChart": "Chart enhancement is unavailable. Check the data table: up to 120 rows, three series, one shared unit, and finite numeric values; leave missing values empty.",
+	"invalidTabs": "Tabs are unavailable. Give each section a unique ID and a tab label.",
+	"missing": "Missing",
+	"inspect": "Chart values are available in the data table. Focus a plotted value to inspect it.",
+	"sortAscending": "ascending",
+	"sortDescending": "descending",
+	"invalidDiagram": "Diagram unavailable. Use a three-column relationship table with at most 24 named nodes, 48 links, and no cycles. The table remains readable.",
+	"imageUnavailable": "Image unavailable. Check the workspace path and use a static PNG or JPEG within the documented size limits."
+}

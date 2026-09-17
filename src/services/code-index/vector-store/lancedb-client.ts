@@ -7,12 +7,24 @@ import { t } from "../../../i18n"
 import { DEFAULT_LOCAL_INDEX_PATH, DEFAULT_MAX_SEARCH_RESULTS, DEFAULT_SEARCH_MIN_SCORE } from "../constants"
 import { IVectorStore, Payload, PointStruct, VectorStoreSearchResult } from "../interfaces"
 
+import { codeTerms, lexicalText } from "../shared/lexical"
+import { CODE_INDEX_VERSION, relativeIndexPath } from "../shared/embedding-input"
+
 const TABLE_NAME = "code_blocks"
 const METADATA_ID = "__indexing_metadata__"
 const CODE_TYPE = "code"
 const METADATA_TYPE = "metadata"
 
 type LanceDbRecord = {
+	indexIdentity: string
+	context: string
+	identifier: string
+	chunkType: string
+	lexicalText: string
+	fileHash: string
+	startOffset: number
+	endOffset: number
+	tokenCount: number
 	id: string
 	type: string
 	filePath: string
@@ -30,12 +42,15 @@ type LanceDbRecord = {
 export class LanceDbVectorStore implements IVectorStore {
 	private db?: Connection
 	private table?: Table
+	private lexicalDirty = true
+	private lexicalRefresh?: Promise<void>
 	private readonly dbPath: string
 
 	constructor(
 		private readonly workspacePath: string,
 		localIndexPath: string | undefined,
 		private readonly vectorSize: number,
+		private readonly indexIdentity = "code-index-" + CODE_INDEX_VERSION,
 	) {
 		this.dbPath = path.isAbsolute(localIndexPath || "")
 			? path.normalize(localIndexPath!)
@@ -78,6 +93,15 @@ export class LanceDbVectorStore implements IVectorStore {
 
 		return {
 			id: METADATA_ID,
+			indexIdentity: this.indexIdentity,
+			context: "",
+			identifier: "",
+			chunkType: "",
+			lexicalText: "",
+			fileHash: "",
+			startOffset: -1,
+			endOffset: -1,
+			tokenCount: 0,
 			type: METADATA_TYPE,
 			filePath: "",
 			codeChunk: "",
@@ -95,6 +119,15 @@ export class LanceDbVectorStore implements IVectorStore {
 	private toRecord(point: PointStruct): LanceDbRecord {
 		return {
 			id: String(point.id),
+			indexIdentity: this.indexIdentity,
+			context: String(point.payload.context ?? ""),
+			identifier: String(point.payload.identifier ?? ""),
+			chunkType: String(point.payload.chunkType ?? ""),
+			lexicalText: codeTerms(lexicalText(point.payload)).join(" "),
+			fileHash: String(point.payload.fileHash ?? ""),
+			startOffset: Number(point.payload.startOffset ?? -1),
+			endOffset: Number(point.payload.endOffset ?? -1),
+			tokenCount: Number(point.payload.tokenCount ?? 0),
 			type: CODE_TYPE,
 			filePath: this.normalizeStoredPath(String(point.payload.filePath ?? "")),
 			codeChunk: String(point.payload.codeChunk ?? ""),
@@ -110,8 +143,7 @@ export class LanceDbVectorStore implements IVectorStore {
 	}
 
 	private normalizeStoredPath(filePath: string): string {
-		const relativePath = path.isAbsolute(filePath) ? path.relative(this.workspacePath, filePath) : filePath
-		return path.normalize(relativePath).replace(/\\/g, "/")
+		return relativeIndexPath(filePath, this.workspacePath)
 	}
 
 	private escapeSqlString(value: string): string {
@@ -133,10 +165,14 @@ export class LanceDbVectorStore implements IVectorStore {
 		}
 
 		this.table = await db.createTable(TABLE_NAME, [this.metadataRecord(false)], { mode: "overwrite" })
+		await this.table.createIndex("lexicalText", {
+			config: lancedb.Index.fts({ baseTokenizer: "whitespace", stem: false, removeStopWords: false }),
+		})
 	}
 
 	private async ensureVectorDimension(table: Table): Promise<boolean> {
 		const metadataRows = await table.query().where(`type = '${METADATA_TYPE}'`).limit(1).toArray()
+		if (metadataRows[0]?.indexIdentity !== this.indexIdentity) return false
 		const storedVectorSize = Number(metadataRows[0]?.vectorSize)
 
 		if (storedVectorSize > 0) {
@@ -186,6 +222,7 @@ export class LanceDbVectorStore implements IVectorStore {
 			.whenMatchedUpdateAll()
 			.whenNotMatchedInsertAll()
 			.execute(points.map((point) => this.toRecord(point)))
+		this.lexicalDirty = true
 	}
 
 	async search(
@@ -199,33 +236,19 @@ export class LanceDbVectorStore implements IVectorStore {
 			return []
 		}
 
-		const filters = [`type = '${CODE_TYPE}'`]
-		if (directoryPrefix) {
-			const normalizedPrefix = directoryPrefix.replace(/\\/g, "/").replace(/^\.\//, "")
-			if (normalizedPrefix && normalizedPrefix !== ".") {
-				const escapedPrefix = this.escapeSqlString(path.posix.normalize(normalizedPrefix))
-				filters.push(`(filePath = '${escapedPrefix}' OR filePath LIKE '${escapedPrefix}/%')`)
-			}
-		}
-
-		const rows = await (table.search(queryVector) as any)
+		const rows = await table
+			.vectorSearch(queryVector)
 			.distanceType("cosine")
-			.where(filters.join(" AND "))
+			.where(this.searchFilter(directoryPrefix))
 			.limit(maxResults ?? DEFAULT_MAX_SEARCH_RESULTS)
 			.toArray()
 
 		const scoreThreshold = minScore ?? DEFAULT_SEARCH_MIN_SCORE
 
 		return rows
-			.map((row: any): VectorStoreSearchResult => {
+			.map((row: Record<string, unknown>): VectorStoreSearchResult => {
 				const score = this.distanceToScore(row._distance ?? row._score)
-				const payload: Payload = {
-					filePath: String(row.filePath ?? ""),
-					codeChunk: String(row.codeChunk ?? ""),
-					startLine: Number(row.startLine ?? 0),
-					endLine: Number(row.endLine ?? 0),
-					segmentHash: String(row.segmentHash ?? ""),
-				}
+				const payload = this.toPayload(row)
 
 				return {
 					id: String(row.id),
@@ -234,6 +257,72 @@ export class LanceDbVectorStore implements IVectorStore {
 				}
 			})
 			.filter((result: VectorStoreSearchResult) => result.score >= scoreThreshold)
+	}
+
+	private toPayload(row: Record<string, unknown>): Payload {
+		return {
+			filePath: String(row.filePath ?? ""),
+			codeChunk: String(row.codeChunk ?? ""),
+			startLine: Number(row.startLine ?? 0),
+			endLine: Number(row.endLine ?? 0),
+			segmentHash: String(row.segmentHash ?? ""),
+			context: String(row.context ?? ""),
+			identifier: String(row.identifier ?? ""),
+			chunkType: String(row.chunkType ?? ""),
+			fileHash: String(row.fileHash ?? ""),
+			startOffset: Number(row.startOffset ?? -1),
+			endOffset: Number(row.endOffset ?? -1),
+			tokenCount: Number(row.tokenCount ?? 0),
+		}
+	}
+
+	private async refreshLexicalIndex(table: Table): Promise<void> {
+		if (this.lexicalRefresh) await this.lexicalRefresh
+		if (!this.lexicalDirty) return
+		this.lexicalDirty = false
+		this.lexicalRefresh = table
+			.optimize()
+			.then(() => {})
+			.catch((error) => {
+				this.lexicalDirty = true
+				throw error
+			})
+			.finally(() => {
+				this.lexicalRefresh = undefined
+			})
+		await this.lexicalRefresh
+	}
+
+	private searchFilter(directoryPrefix?: string): string {
+		const prefix = directoryPrefix ? relativeIndexPath(directoryPrefix, this.workspacePath).replace(/\/$/, "") : "."
+		const filter = "type = '" + CODE_TYPE + "'"
+		if (prefix === ".") return filter
+		const escaped = this.escapeSqlString(prefix)
+		return filter + " AND (filePath = '" + escaped + "' OR starts_with(filePath, '" + escaped + "/'))"
+	}
+
+	async searchLexical(
+		query: string,
+		directoryPrefix?: string,
+		maxResults: number = DEFAULT_MAX_SEARCH_RESULTS,
+	): Promise<VectorStoreSearchResult[]> {
+		const terms = [...new Set(codeTerms(query))].join(" ")
+		if (!terms) return []
+		const table = await this.getTable()
+		if (!table) return []
+		// LanceDB 0.27.2 can miss updated rows in filtered FTS until optimization.
+		await this.refreshLexicalIndex(table)
+		const rows = await table
+			.query()
+			.fullTextSearch(terms, { columns: ["lexicalText"] })
+			.where(this.searchFilter(directoryPrefix))
+			.limit(maxResults)
+			.toArray()
+		return rows.map((row) => ({
+			id: String(row.id),
+			score: Number(row._score),
+			payload: this.toPayload(row),
+		}))
 	}
 
 	async deletePointsByFilePath(filePath: string): Promise<void> {
@@ -254,6 +343,7 @@ export class LanceDbVectorStore implements IVectorStore {
 			(filePath) => `'${this.escapeSqlString(this.normalizeStoredPath(filePath))}'`,
 		)
 		await table.delete(`filePath IN (${normalizedPaths.join(", ")})`)
+		this.lexicalDirty = true
 	}
 
 	async clearCollection(): Promise<void> {
@@ -292,6 +382,8 @@ export class LanceDbVectorStore implements IVectorStore {
 	}
 
 	async markIndexingComplete(): Promise<void> {
+		const table = await this.getTable()
+		if (table) await this.refreshLexicalIndex(table)
 		await this.upsertMetadata(true)
 	}
 

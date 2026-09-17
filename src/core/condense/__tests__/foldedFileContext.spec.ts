@@ -265,7 +265,7 @@ describe("foldedFileContext", () => {
 
 			const messages: any[] = [
 				{ role: "user", content: "First message" },
-				{ role: "assistant", content: "Second message" },
+				{ role: "assistant", content: "Second message. ".repeat(1000) },
 				{ role: "user", content: "Third message" },
 				{ role: "assistant", content: "Fourth message" },
 				{ role: "user", content: "Fifth message" },
@@ -295,7 +295,7 @@ describe("foldedFileContext", () => {
 				characterCount: mockFoldedSections.join("\n").length,
 			})
 
-			const filesReadByRoo = ["src/user.ts", "src/api.ts"]
+			const filesReadByAlpha = ["src/user.ts", "src/api.ts"]
 			const cwd = "/test/project"
 
 			const result = await summarizeConversation({
@@ -304,14 +304,15 @@ describe("foldedFileContext", () => {
 				systemPrompt: "System prompt",
 				taskId,
 				isAutomaticTrigger: false,
-				filesReadByRoo,
+				filesReadByAlpha,
 				cwd,
 			})
 
 			// Verify generateFoldedFileContext was called with the right arguments
-			expect(mockedGenerateFoldedFileContext).toHaveBeenCalledWith(filesReadByRoo, {
+			expect(mockedGenerateFoldedFileContext).toHaveBeenCalledWith(filesReadByAlpha, {
+				maxCharacters: expect.any(Number),
 				cwd,
-				rooIgnoreController: undefined,
+				alphaIgnoreController: undefined,
 			})
 
 			// Verify the summary was created
@@ -344,7 +345,36 @@ describe("foldedFileContext", () => {
 			expect(apiFileBlock.text).toContain("fetchData")
 		})
 
-		it("should not include file context section when filesReadByRoo is empty", async () => {
+		it("omits optional file context that would exceed the measured summary budget", async () => {
+			const { summarizeConversation, getEffectiveApiHistory } = await import("../index")
+			const provider = new MockApiHandler()
+			const oversizedSection = "## File Context: /test/large.ts\n" + "definition ".repeat(1000)
+			mockedGenerateFoldedFileContext.mockResolvedValueOnce({
+				content: oversizedSection,
+				sections: [oversizedSection],
+				filesProcessed: 1,
+				filesSkipped: 0,
+				characterCount: oversizedSection.length,
+			})
+			const result = await summarizeConversation({
+				messages: [
+					{ role: "user", content: "Initial task" },
+					{ role: "assistant", content: "Older investigation. ".repeat(1000) },
+					{ role: "user", content: "Continue" },
+				],
+				apiHandler: provider,
+				systemPrompt: "System",
+				taskId: "bounded-files",
+				maxContextTokens: 100,
+				filesReadByAlpha: ["/test/large.ts"],
+				cwd: "/test",
+			})
+			expect(result.status).toBe("reduced")
+			expect(result.newContextTokens).toBeLessThanOrEqual(100)
+			expect(JSON.stringify(getEffectiveApiHistory(result.messages))).not.toContain("## File Context")
+		})
+
+		it("should not include file context section when filesReadByAlpha is empty", async () => {
 			const { summarizeConversation } = await import("../index")
 
 			const mockApiHandler = new MockApiHandler()
@@ -352,7 +382,7 @@ describe("foldedFileContext", () => {
 
 			const messages: any[] = [
 				{ role: "user", content: "First message" },
-				{ role: "assistant", content: "Second message" },
+				{ role: "assistant", content: "Second message. ".repeat(1000) },
 				{ role: "user", content: "Third message" },
 				{ role: "assistant", content: "Fourth message" },
 				{ role: "user", content: "Fifth message" },
@@ -369,11 +399,11 @@ describe("foldedFileContext", () => {
 				systemPrompt: "System prompt",
 				taskId,
 				isAutomaticTrigger: false,
-				filesReadByRoo: [],
+				filesReadByAlpha: [],
 				cwd: "/test/project",
 			})
 
-			// generateFoldedFileContext should NOT be called when filesReadByRoo is empty
+			// generateFoldedFileContext should NOT be called when filesReadByAlpha is empty
 			expect(mockedGenerateFoldedFileContext).not.toHaveBeenCalled()
 
 			// Find the summary message

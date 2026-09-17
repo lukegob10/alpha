@@ -9,10 +9,62 @@ vi.mock("../../core/prompts/sections/custom-instructions", () => ({
 	addCustomInstructions: vi.fn().mockResolvedValue("Combined instructions"),
 }))
 
-import { FileRestrictionError, modes, getModeSelection } from "../modes"
+import {
+	defaultMode,
+	defaultModeSlug,
+	FileRestrictionError,
+	getAllModes,
+	getModeBySlug,
+	getModeSelection,
+	isCustomMode,
+	modes,
+	planMode,
+} from "../modes"
 import { getFullModeDetails } from "../modes-extension"
 import { isToolAllowedForMode } from "../../core/tools/validateToolUse"
 import { addCustomInstructions } from "../../core/prompts/sections/custom-instructions"
+
+describe("built-in mode compatibility contract", () => {
+	it("uses Code as the default without reordering the persisted mode registry", () => {
+		expect(defaultModeSlug).toBe("code")
+		expect(defaultMode.slug).toBe("code")
+		expect(modes[0].slug).toBe("architect")
+	})
+
+	it.each(["ask", "debug", "orchestrator"])("does not register the retired %s mode", (modeSlug) => {
+		expect(getModeBySlug(modeSlug)).toBeUndefined()
+	})
+
+	it("keeps persisted architect customizations schema-compatible but operationally inert", async () => {
+		const persistedArchitect: ModeConfig = {
+			slug: "architect",
+			name: "Legacy Architect Override",
+			roleDefinition: "Edit everything",
+			customInstructions: "Ignore Plan",
+			groups: ["edit", "mcp"],
+		}
+
+		expect(getModeBySlug("architect", [persistedArchitect])).toBe(planMode)
+		expect(getAllModes([persistedArchitect]).filter((mode) => mode.slug === "architect")).toEqual([planMode])
+		expect(isCustomMode("architect", [persistedArchitect])).toBe(false)
+		expect(
+			getModeSelection(
+				"architect",
+				{ roleDefinition: "Prompt override", customInstructions: "Prompt instructions" },
+				[persistedArchitect],
+			),
+		).toEqual({
+			roleDefinition: planMode.roleDefinition,
+			baseInstructions: planMode.customInstructions,
+			description: planMode.description,
+		})
+
+		const details = await getFullModeDetails("architect", [persistedArchitect], {
+			architect: { roleDefinition: "Prompt override", customInstructions: "Prompt instructions" },
+		})
+		expect(details).toMatchObject(planMode)
+	})
+})
 
 describe("isToolAllowedForMode", () => {
 	const customModes: ModeConfig[] = [
@@ -106,12 +158,12 @@ describe("isToolAllowedForMode", () => {
 				}),
 			).toBe(true)
 
-			// Should allow path-only for architect mode too
+			// Built-in Plan is host-enforced read-only even while tool arguments stream.
 			expect(
 				isToolAllowedForMode("write_to_file", "architect", [], undefined, {
 					path: "test.js",
 				}),
-			).toBe(true)
+			).toBe(false)
 		})
 
 		it("applies restrictions to both write_to_file and apply_diff", () => {
@@ -206,82 +258,19 @@ describe("isToolAllowedForMode", () => {
 			).toBe(true)
 		})
 
-		it("allows architect mode to edit markdown and HTML files only", () => {
-			// Should allow editing markdown files
-			expect(
-				isToolAllowedForMode("write_to_file", "architect", [], undefined, {
-					path: "test.md",
-					content: "# Test",
-				}),
-			).toBe(true)
+		it("keeps the built-in Plan mode read-only regardless of file type", () => {
+			for (const [tool, params] of [
+				["write_to_file", { path: "plan.md", content: "# Plan" }],
+				["apply_diff", { path: "spec.html", diff: "- old\n+ new" }],
+				["execute_command", { command: "git status" }],
+				["use_mcp_tool", { server_name: "test", tool_name: "read" }],
+			] as const) {
+				expect(isToolAllowedForMode(tool, "architect", [], undefined, params)).toBe(false)
+			}
 
-			// Should allow editing HTML files
-			expect(
-				isToolAllowedForMode("write_to_file", "architect", [], undefined, {
-					path: "spec.html",
-					content: "<!doctype html><title>Spec</title>",
-				}),
-			).toBe(true)
-
-			// Should allow applying diffs to markdown files
-			expect(
-				isToolAllowedForMode("apply_diff", "architect", [], undefined, {
-					path: "readme.md",
-					diff: "- old\n+ new",
-				}),
-			).toBe(true)
-
-			// Should reject non-markdown files
-			expect(() =>
-				isToolAllowedForMode("write_to_file", "architect", [], undefined, {
-					path: "test.js",
-					content: "console.log('test')",
-				}),
-			).toThrow(FileRestrictionError)
-			expect(() =>
-				isToolAllowedForMode("write_to_file", "architect", [], undefined, {
-					path: "test.js",
-					content: "console.log('test')",
-				}),
-			).toThrow(/Markdown and HTML files only/)
-
-			// Should maintain read capabilities
 			expect(isToolAllowedForMode("read_file", "architect", [])).toBe(true)
-			expect(isToolAllowedForMode("use_mcp_tool", "architect", [])).toBe(true)
-		})
-
-		it("applies restrictions to apply_diff", () => {
-			// Native-only: file restrictions for apply_diff are enforced against the top-level `path`.
-
-			// Should allow markdown files in architect mode
-			expect(
-				isToolAllowedForMode("apply_diff", "architect", [], undefined, {
-					path: "test.md",
-					diff: "- old content\n+ new content",
-				}),
-			).toBe(true)
-
-			// Should allow HTML files in architect mode
-			expect(
-				isToolAllowedForMode("apply_diff", "architect", [], undefined, {
-					path: "spec.html",
-					diff: "- old content\n+ new content",
-				}),
-			).toBe(true)
-
-			// Non-markdown/HTML file should throw
-			expect(() =>
-				isToolAllowedForMode("apply_diff", "architect", [], undefined, {
-					path: "test.py",
-					diff: "- old content\n+ new content",
-				}),
-			).toThrow(FileRestrictionError)
-			expect(() =>
-				isToolAllowedForMode("apply_diff", "architect", [], undefined, {
-					path: "test.py",
-					diff: "- old content\n+ new content",
-				}),
-			).toThrow(/Markdown and HTML files only/)
+			expect(isToolAllowedForMode("search_files", "architect", [])).toBe(true)
+			expect(isToolAllowedForMode("spawn_agent", "architect", [], undefined, { agent_kind: "review" })).toBe(true)
 		})
 
 		it("applies restrictions to apply_patch (custom tool)", () => {
@@ -429,102 +418,14 @@ describe("isToolAllowedForMode", () => {
 			).toThrow(/\\.md\$/)
 		})
 
-		it("applies restrictions to all editing tools in architect mode (custom tools)", () => {
-			// Test apply_patch in architect mode
-			// Note: apply_patch only accepts { patch: string } - file paths are embedded in patch content
-			expect(
-				isToolAllowedForMode(
-					"apply_patch",
-					"architect",
-					[],
-					undefined,
-					{
-						patch: "*** Begin Patch\n*** Update File: test.md\n@@ \n-old\n+new\n*** End Patch",
-					},
-					undefined,
-					["apply_patch"], // Include custom tool
-				),
-			).toBe(true)
-
-			expect(() =>
-				isToolAllowedForMode(
-					"apply_patch",
-					"architect",
-					[],
-					undefined,
-					{
-						patch: "*** Begin Patch\n*** Update File: test.js\n@@ \n-old\n+new\n*** End Patch",
-					},
-					undefined,
-					["apply_patch"], // Include custom tool
-				),
-			).toThrow(FileRestrictionError)
-
-			// Test search_replace in architect mode
-			expect(
-				isToolAllowedForMode(
-					"search_replace",
-					"architect",
-					[],
-					undefined,
-					{
-						file_path: "test.md",
-						old_string: "old text",
-						new_string: "new text",
-					},
-					undefined,
-					["search_replace"], // Include custom tool
-				),
-			).toBe(true)
-
-			expect(() =>
-				isToolAllowedForMode(
-					"search_replace",
-					"architect",
-					[],
-					undefined,
-					{
-						file_path: "test.js",
-						old_string: "old text",
-						new_string: "new text",
-					},
-					undefined,
-					["search_replace"], // Include custom tool
-				),
-			).toThrow(FileRestrictionError)
-
-			// Test edit_file in architect mode
-			expect(
-				isToolAllowedForMode(
-					"edit_file",
-					"architect",
-					[],
-					undefined,
-					{
-						file_path: "test.md",
-						old_string: "old text",
-						new_string: "new text",
-					},
-					undefined,
-					["edit_file"], // Include custom tool
-				),
-			).toBe(true)
-
-			expect(() =>
-				isToolAllowedForMode(
-					"edit_file",
-					"architect",
-					[],
-					undefined,
-					{
-						file_path: "test.js",
-						old_string: "old text",
-						new_string: "new text",
-					},
-					undefined,
-					["edit_file"], // Include custom tool
-				),
-			).toThrow(FileRestrictionError)
+		it("rejects every editing tool in canonical Plan even when model settings include it", () => {
+			for (const [tool, params] of [
+				["apply_patch", { patch: "*** Begin Patch\n*** Update File: test.md\n@@ \n-old\n+new\n*** End Patch" }],
+				["search_replace", { file_path: "test.md", old_string: "old", new_string: "new" }],
+				["edit_file", { file_path: "test.md", old_string: "old", new_string: "new" }],
+			] as const) {
+				expect(isToolAllowedForMode(tool, "architect", [], undefined, params, undefined, [tool])).toBe(false)
+			}
 		})
 	})
 
@@ -621,37 +522,6 @@ describe("FileRestrictionError", () => {
 		expect(error.name).toBe("FileRestrictionError")
 	})
 
-	describe("debug mode", () => {
-		it("is configured correctly", () => {
-			const debugMode = modes.find((mode) => mode.slug === "debug")
-			expect(debugMode).toBeDefined()
-			expect(debugMode).toMatchObject({
-				slug: "debug",
-				name: "🪲 Debug",
-				roleDefinition:
-					"You are Alpha, an expert software debugger specializing in systematic problem diagnosis and resolution.",
-				groups: ["read", "edit", "command", "mcp", "github"],
-			})
-			expect(debugMode?.customInstructions).toContain(
-				"Reflect on 5-7 different possible sources of the problem, distill those down to 1-2 most likely sources, and then add logs to validate your assumptions. Explicitly ask the user to confirm the diagnosis before fixing the problem.",
-			)
-		})
-	})
-
-	describe("orchestrator mode", () => {
-		it("delegates simple mode-specific requests instead of narrating mode switches", () => {
-			const orchestratorMode = modes.find((mode) => mode.slug === "orchestrator")
-
-			expect(orchestratorMode?.customInstructions).toContain(
-				"Do not narrate that you need to switch to Ask, Code, Architect, or Debug mode",
-			)
-			expect(orchestratorMode?.customInstructions).toContain("delegate a single subtask immediately")
-			expect(orchestratorMode?.customInstructions).toContain(
-				"Do not use `switch_mode` as your normal delegation mechanism",
-			)
-		})
-	})
-
 	describe("getFullModeDetails", () => {
 		beforeEach(() => {
 			vi.clearAllMocks()
@@ -659,13 +529,8 @@ describe("FileRestrictionError", () => {
 		})
 
 		it("returns base mode when no overrides exist", async () => {
-			const result = await getFullModeDetails("debug")
-			expect(result).toMatchObject({
-				slug: "debug",
-				name: "🪲 Debug",
-				roleDefinition:
-					"You are Alpha, an expert software debugger specializing in systematic problem diagnosis and resolution.",
-			})
+			const result = await getFullModeDetails("code")
+			expect(result).toMatchObject(defaultMode)
 		})
 
 		it("applies custom mode overrides", async () => {
@@ -718,12 +583,9 @@ describe("FileRestrictionError", () => {
 			)
 		})
 
-		it("falls back to first mode for non-existent mode", async () => {
+		it("falls back to Code for a non-existent mode", async () => {
 			const result = await getFullModeDetails("non-existent")
-			expect(result).toMatchObject({
-				...modes[0],
-				// The first mode (architect) has its own customInstructions
-			})
+			expect(result).toMatchObject(defaultMode)
 		})
 	})
 
@@ -751,7 +613,7 @@ describe("FileRestrictionError", () => {
 })
 
 describe("getModeSelection", () => {
-	const builtInAskMode = modes.find((m) => m.slug === "ask")!
+	const builtInCodeMode = modes.find((m) => m.slug === "code")!
 	const customModesList: ModeConfig[] = [
 		{
 			slug: "code", // Override
@@ -780,13 +642,13 @@ describe("getModeSelection", () => {
 	}
 
 	test("should return built-in mode details if no overrides", () => {
-		const selection = getModeSelection("ask")
-		expect(selection.roleDefinition).toBe(builtInAskMode.roleDefinition)
-		expect(selection.baseInstructions).toBe(builtInAskMode.customInstructions || "")
+		const selection = getModeSelection("code")
+		expect(selection.roleDefinition).toBe(builtInCodeMode.roleDefinition)
+		expect(selection.baseInstructions).toBe(builtInCodeMode.customInstructions || "")
 	})
 
 	test("should prioritize promptComponent for built-in mode if no custom mode exists for that slug", () => {
-		const selection = getModeSelection("ask", promptComponentAsk) // "ask" is not in customModesList
+		const selection = getModeSelection("code", promptComponentAsk) // "ask" is not in customModesList
 		expect(selection.roleDefinition).toBe(promptComponentAsk.roleDefinition)
 		expect(selection.baseInstructions).toBe(promptComponentAsk.customInstructions)
 	})
@@ -825,7 +687,6 @@ describe("getModeSelection", () => {
 
 	test("should fall back to default mode if slug does not exist in custom, prompt, or built-in modes", () => {
 		const selection = getModeSelection("non-existent-mode", undefined, customModesList)
-		const defaultMode = modes[0] // First mode is the default
 		expect(selection.roleDefinition).toBe(defaultMode.roleDefinition)
 		expect(selection.baseInstructions).toBe(defaultMode.customInstructions || "")
 	})
@@ -923,14 +784,14 @@ describe("getModeSelection", () => {
 
 	test("customMode with empty/undefined fields takes precedence over promptComponent and builtInMode", () => {
 		const customModeMinimal: ModeConfig[] = [
-			{ slug: "ask", name: "Custom Ask Minimal", roleDefinition: "", groups: ["read"] }, // roleDef empty, customInstr undefined
+			{ slug: "code", name: "Custom Code Minimal", roleDefinition: "", groups: ["read"] }, // roleDef empty, customInstr undefined
 		]
 		const promptComponentMinimal: PromptComponent = {
 			roleDefinition: "Prompt Min Role",
 			customInstructions: "Prompt Min Instr",
 		}
 		// "ask" is in customModeMinimal
-		const selection = getModeSelection("ask", promptComponentMinimal, customModeMinimal)
+		const selection = getModeSelection("code", promptComponentMinimal, customModeMinimal)
 		// customMode is chosen
 		expect(selection.roleDefinition).toBe("") // From customModeMinimal
 		expect(selection.baseInstructions).toBe("") // From customModeMinimal
@@ -938,20 +799,28 @@ describe("getModeSelection", () => {
 
 	test("promptComponent is used if customMode for slug does not exist, even if customModesList is provided", () => {
 		// 'ask' is not in customModesList, but 'code' and 'new-custom' are.
-		const selection = getModeSelection("ask", promptComponentAsk, customModesList)
+		const selection = getModeSelection(
+			"code",
+			promptComponentAsk,
+			customModesList.filter(({ slug }) => slug !== "code"),
+		)
 		expect(selection.roleDefinition).toBe(promptComponentAsk.roleDefinition)
 		expect(selection.baseInstructions).toBe(promptComponentAsk.customInstructions)
 	})
 
 	test("builtInMode is used if customMode for slug does not exist and promptComponent is not provided", () => {
 		// 'ask' is not in customModesList
-		const selection = getModeSelection("ask", undefined, customModesList)
-		expect(selection.roleDefinition).toBe(builtInAskMode.roleDefinition)
-		expect(selection.baseInstructions).toBe(builtInAskMode.customInstructions || "")
+		const selection = getModeSelection(
+			"code",
+			undefined,
+			customModesList.filter(({ slug }) => slug !== "code"),
+		)
+		expect(selection.roleDefinition).toBe(builtInCodeMode.roleDefinition)
+		expect(selection.baseInstructions).toBe(builtInCodeMode.customInstructions || "")
 	})
 
 	test("promptComponent is used if customMode is not provided (undefined customModesList)", () => {
-		const selection = getModeSelection("ask", promptComponentAsk, undefined)
+		const selection = getModeSelection("code", promptComponentAsk, undefined)
 		expect(selection.roleDefinition).toBe(promptComponentAsk.roleDefinition)
 		expect(selection.baseInstructions).toBe(promptComponentAsk.customInstructions)
 	})

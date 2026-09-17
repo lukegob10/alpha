@@ -41,7 +41,9 @@
 		"experimental": "Экспериментальное",
 		"language": "Язык",
 		"about": "О Alpha",
-		"skills": "Skills"
+		"skills": "Skills",
+		"agents": "Агенты",
+		"github": "GitHub"
 	},
 	"about": {
 		"bugReport": {
@@ -209,7 +211,8 @@
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
 			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
 			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
-			"localIndexPathRequired": "Local index path is required"
+			"localIndexPathRequired": "Local index path is required",
+			"embeddingRateLimitSecondsRange": "Задержка запроса на внедрение должна составлять от 0,1 до 60 секунд."
 		},
 		"optional": "необязательно",
 		"advancedConfigLabel": "Расширенная конфигурация",
@@ -230,7 +233,9 @@
 		"localIndexPathLabel": "Local Index Path",
 		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
 		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
-		"savedSecretPlaceholder": "Saved value hidden"
+		"savedSecretPlaceholder": "Saved value hidden",
+		"embeddingRateLimitLabel": "Ограничить частоту запросов на встраивание",
+		"embeddingRateLimitDescription": "Добавляет задержку между внедрением запросов API во время индексации. Увеличьте это значение, если ваш поставщик внедрения ограничивает скорость индексации кодовой базы."
 	},
 	"autoApprove": {
 		"toggleShortcut": "Вы можете настроить глобальное сочетание клавиш для этого параметра <SettingsLink>в настройках вашей IDE</SettingsLink>.",
@@ -271,22 +276,29 @@
 			"label": "Подзадачи",
 			"description": "Разрешить создание и выполнение подзадач без необходимости одобрения"
 		},
+		"tickets": {
+			"label": "Тикеты Alpha",
+			"description": "Автоматически одобрять создание и обновление тикетов Alpha."
+		},
 		"followupQuestions": {
 			"label": "Вопрос",
 			"description": "Автоматически выбирать первый предложенный ответ на дополнительные вопросы после настроенного тайм-аута",
 			"timeoutLabel": "Время ожидания перед автоматическим выбором первого ответа"
 		},
 		"execute": {
-			"label": "Выполнение",
-			"description": "Автоматически выполнять разрешённые команды терминала без необходимости одобрения",
-			"allowedCommands": "Разрешённые авто-выполняемые команды",
-			"allowedCommandsDescription": "Префиксы команд, которые могут быть автоматически выполнены при включённом параметре \"Всегда одобрять выполнение операций\". Добавьте * для разрешения всех команд (используйте с осторожностью).",
+			"label": "Правила команд",
+			"description": "Автоматически разрешать команды в области записи задачи. Сеть включена. Запись за пределами области блокируется. Глобальная настройка сохраняется для всех проектов.",
+			"allowedCommands": "Разрешённые префиксы команд",
+			"allowedCommandsDescription": "Используйте *, чтобы автоматически одобрять команды, включая скрипты. Сохранённые правила действуют глобально. Обнаруженная запись вне корня задачи и неразрешённые пути записи требуют одобрения. Это проверка команд и путей, а не системная песочница.",
 			"deniedCommands": "Запрещенные команды",
 			"deniedCommandsDescription": "Префиксы команд, которые будут автоматически отклонены без запроса одобрения. В случае конфликтов с разрешенными командами, приоритет имеет самое длинное совпадение префикса. Добавьте * чтобы запретить все команды.",
 			"commandPlaceholder": "Введите префикс команды (например, 'git ')",
 			"deniedCommandPlaceholder": "Введите префикс команды для запрета (например, 'rm -rf')",
 			"addButton": "Добавить",
-			"autoDenied": "Команды с префиксом `{{prefix}}` были запрещены пользователем. Не обходи это ограничение, выполняя другую команду."
+			"autoDenied": "Команды с префиксом `{{prefix}}` были запрещены пользователем. Не обходи это ограничение, выполняя другую команду.",
+			"pathApprovalTitle": "Требуется одобрение путей файлов",
+			"pathApprovalDescription": "Эта команда может изменить файлы вне корня задачи. Одобрение действует только для этого запуска.",
+			"pathApprovalUnresolved": "Не удалось определить некоторые пути записи."
 		},
 		"apiRequestLimit": {
 			"title": "Максимум запросов",
@@ -299,6 +311,10 @@
 		},
 		"maxLimits": {
 			"description": "Автоматически выполнять запросы до указанных лимитов, прежде чем запрашивать разрешение на продолжение."
+		},
+		"subagents": {
+			"label": "Субагенты",
+			"description": "Разрешить Alpha запускать группы субагентов только для чтения без необходимости утверждения. Доступ для чтения также должен быть одобрен автоматически."
 		}
 	},
 	"providers": {
@@ -378,7 +394,8 @@
 			"hint": "Пожалуйста, откройте настройки заново, чтобы увидеть последние модели.",
 			"loading": "Обновление списка моделей...",
 			"success": "Список моделей успешно обновлен!",
-			"error": "Не удалось обновить список моделей. Пожалуйста, попробуйте снова."
+			"error": "Не удалось обновить список моделей. Пожалуйста, попробуйте снова.",
+			"missingConfig": "Введите необходимую конфигурацию поставщика перед обновлением моделей."
 		},
 		"getRequestyApiKey": "Получить Requesty API-ключ",
 		"getRequestyBaseUrl": "Базовый URL",
@@ -542,7 +559,8 @@
 			"high": "Высокие",
 			"xhigh": "Очень высокие",
 			"medium": "Средние",
-			"low": "Низкие"
+			"low": "Низкие",
+			"max": "Максимум"
 		},
 		"verbosity": {
 			"label": "Подробность вывода",
@@ -558,7 +576,55 @@
 			"placeholder": "По умолчанию: claude",
 			"maxTokensLabel": "Макс. выходных токенов",
 			"maxTokensDescription": "Максимальное количество выходных токенов для ответов Claude Code. По умолчанию 8000."
-		}
+		},
+		"vertexStreamingEnabledLabel": "Включить потоковую передачу ответов",
+		"vertexStreamingEnabledDescription": "Отключите эту функцию, если шлюз или модель не поддерживает потоковую передачу. Ответы появятся после завершения.",
+		"vscodeLmLoading": "Загрузка языковых моделей, доступных в этом окне VS Code...",
+		"vscodeLmNoModels": "В этом окне VS Code нет доступных языковых моделей. Войдите в GitHub Copilot здесь, включите нужные модели с помощью «Chat: Manage Language Models», а затем обновите.",
+		"vscodeLmRefresh": "Обновить модели",
+		"vscodeLmUnavailable": "Выбранная модель недоступна в этом окне VS Code. Выберите модель, возвращенную VS Code, или включите ее с помощью «Chat: Manage Language Models».",
+		"vscodeLmContextSize": {
+			"label": "Контекстное окно",
+			"default": "Стандартный (входные токены {{contextSize}})",
+			"extended": "Расширенный (входные токены {{contextSize}})",
+			"description": "Выберите бюджет входных токенов, отправляемый в GitHub Copilot для этой модели. Расширенный контекст может потреблять больше запросов премиум-класса."
+		},
+		"googleCloudProjectId": "Проект Google Cloud ID",
+		"googleCloudRegion": "Регион Google Cloud",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "Найдите или введите регион",
+			"noMatchFound": "Подходящий регион не найден",
+			"useCustomRegion": "Использовать собственный: {{region}}"
+		},
+		"googleCloudCredentials": "Учетные данные Google Cloud JSON",
+		"googleCloudKeyFile": "Файл ключей Google Cloud",
+		"googleCloudSetup": {
+			"title": "Настройка Google Cloud",
+			"step1": "Включение Vertex AI и доступа к модели",
+			"step2": "Настройка учетных данных приложения по умолчанию",
+			"step3": "Создайте ключ сервисного аккаунта"
+		},
+		"vertexGatewayBaseUrl": "Vertex База шлюза URL",
+		"vertexGatewayCaBundlePath": "Vertex Шлюз CA Путь пакета",
+		"vertexGatewayHelixCommand": "Vertex Шлюз Helix Команда",
+		"vertexGatewayHelixParseMode": "Vertex Шлюз Helix Режим анализа",
+		"vertexGatewayHelixParseModeRawStdout": "Необработанный стандартный вывод",
+		"vertexGatewayHelixParseModeJsonField": "Поле JSON",
+		"vertexGatewayHelixTokenKey": "Vertex Шлюз Helix Ключ токена",
+		"vertexGatewayTokenRefreshMinutes": "Vertex Время обновления токена шлюза",
+		"vertexGatewayModelRoutingMap": "Vertex Модель шлюза Карта маршрутизации",
+		"vertexGatewayModelRoutingMapDescription": "Объект JSON с ключом модели ID. Значения могут быть строками переопределения устаревшей модели или объектами с projectId, location, modelOverride и extraHeaders.",
+		"stellarDescription": "Подключается к внутреннему шлюзу Stellar OpenAI модели. Ключ API извлекается автоматически с помощью Helix и никогда не сохраняется.",
+		"stellarBaseUrl": "Stellar Базовый URL",
+		"stellarCaBundlePath": "Stellar PEM CA Путь пакета",
+		"stellarHelixCommand": "Stellar Helix Команда",
+		"stellarHelixParseMode": "Stellar Helix Режим анализа",
+		"stellarHelixParseModeRawStdout": "Необработанный стандартный вывод",
+		"stellarHelixParseModeJsonField": "Поле JSON",
+		"stellarHelixTokenKey": "Stellar Helix Ключ токена",
+		"stellarTokenRefreshMinutes": "Stellar Минуты обновления токена",
+		"stellarStreamingEnabledLabel": "Включить потоковую передачу ответов",
+		"stellarStreamingEnabledDescription": "Отключите это, если развертывание Stellar не поддерживает потоковую передачу. Ответы появятся после завершения."
 	},
 	"checkpoints": {
 		"timeout": {
@@ -898,7 +964,11 @@
 		"providerNotAllowed": "Провайдер '{{provider}}' не разрешен вашей организацией",
 		"modelNotAllowed": "Модель '{{model}}' не разрешена для провайдера '{{provider}}' вашей организацией",
 		"profileInvalid": "Этот профиль содержит провайдера или модель, которые не разрешены вашей организацией",
-		"qwenCodeOauthPath": "Вы должны указать допустимый путь к учетным данным OAuth"
+		"qwenCodeOauthPath": "Вы должны указать допустимый путь к учетным данным OAuth",
+		"googleCloud": "Вы должны предоставить проект Google Cloud ID и регион.",
+		"vertexGateway": "Шлюзу Vertex требуется базовый путь пакета URL, CA и команда Helix.",
+		"vertexGatewayModelRoutingMap": "Карта маршрутизации модели шлюза Vertex должна быть объектом JSON со строковыми идентификаторами модели.",
+		"stellar": "Для Stellar требуется действительный базовый путь пакета URL и PEM CA."
 	},
 	"placeholders": {
 		"apiKey": "Введите API-ключ...",
@@ -960,6 +1030,10 @@
 		"requireCtrlEnterToSend": {
 			"label": "Требовать {{primaryMod}}+Enter для отправки сообщений",
 			"description": "Если включено, необходимо нажать {{primaryMod}}+Enter для отправки сообщений вместо простого Enter"
+		},
+		"maxConcurrentTasks": {
+			"label": "Максимальное количество параллельных задач",
+			"description": "Число активных задач, которые могут выполняться одновременно. Невыполненные и выполненные задачи не учитываются в этом лимите."
 		}
 	},
 	"skills": {
@@ -1013,6 +1087,44 @@
 			"descriptionRequired": "Описание обязательно",
 			"descriptionTooLong": "Описание должно быть не более 1024 символов"
 		},
-		"footer": "Создавайте собственные навыки с режимом Skill Writer, доступным в <MarketplaceLink>Modes Marketplace</MarketplaceLink>."
+		"footer": "Создавайте собственные навыки с режимом Skill Writer, доступным в <MarketplaceLink>Modes Marketplace</MarketplaceLink>.",
+		"builtinSkills": "Встроенные",
+		"enabled": "Включён",
+		"inspectSkill": "Просмотреть",
+		"builtinDescription": "Входит в состав Alpha. Изменения применяются при сохранении настроек. Навыки рабочей области и личные навыки с тем же именем имеют приоритет; отключение встроенного навыка не отключает ваши замещающие версии."
+	},
+	"agents": {
+		"description": "Выберите, какие сохраненные профили провайдеров Alpha использует для субагентов. Переопределения ролей имеют приоритет над значениями по умолчанию, тогда наследуется родительская задача.",
+		"searchPlaceholder": "Поиск профилей поставщиков...",
+		"noProfilesFound": "Нет подходящих профилей поставщиков",
+		"unavailableProfile": "Недоступный профиль ({{id}})",
+		"staleWarning": "Этот сохраненный профиль недоступен. Новые субагенты будут использовать родительский профиль, пока вы не выберете другой профиль.",
+		"defaultProfile": {
+			"label": "Профиль субагента по умолчанию",
+			"inheritParent": "Наследовать родительский",
+			"description": "Используется, когда роль не имеет собственного переопределения профиля."
+		},
+		"roles": {
+			"title": "Переопределение ролей",
+			"description": "При необходимости направьте каждую роль агента через другой сохраненный профиль поставщика.",
+			"useDefault": "Использовать по умолчанию",
+			"explore": {
+				"label": "Профиль исследователя",
+				"description": "Необязательное переопределение профиля для агентов исследования репозитория."
+			},
+			"review": {
+				"label": "Профиль рецензента",
+				"description": "Необязательное переопределение профиля для агентов проверки."
+			},
+			"worker": {
+				"label": "Профиль работника",
+				"description": "Необязательное переопределение профиля для изолированных работников редактирования."
+			}
+		}
+	},
+	"github": {
+		"tokenLabel": "Токен GitHub",
+		"tokenPlaceholder": "ghp_...",
+		"tokenDescription": "Надежно хранится в секретном хранилище VS Code. Используется родным инструментом GitHub API для запросов на включение, проверок, комментариев и слияний."
 	}
 }

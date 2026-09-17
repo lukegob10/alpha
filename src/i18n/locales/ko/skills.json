@@ -11,6 +11,7 @@
 		"missing_update_modes_fields": "필수 필드 누락: skillName 또는 source",
 		"manager_unavailable": "스킬 관리자를 사용할 수 없습니다",
 		"missing_delete_fields": "필수 필드 누락: skillName 또는 source",
-		"skill_not_found": "스킬 \"{{name}}\"을(를) 찾을 수 없습니다"
+		"skill_not_found": "스킬 \"{{name}}\"을(를) 찾을 수 없습니다",
+		"builtin_read_only": "기본 제공 스킬은 읽기 전용입니다. 이를 대체하려면 개인 스킬이나 작업 영역 스킬을 만드세요."
 	}
 }

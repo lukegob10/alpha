@@ -34,10 +34,12 @@
 			"save": "Desar imatge",
 			"viewCode": "Veure codi",
 			"viewDiagram": "Veure diagrama",
-			"close": "Tancar"
+			"close": "Tancar",
+			"open": "Diagrama obert"
 		},
 		"modal": {
-			"codeTitle": "Codi Mermaid"
+			"codeTitle": "Codi Mermaid",
+			"title": "Diagrama de sirena"
 		},
 		"tabs": {
 			"diagram": "Diagrama",
@@ -110,5 +112,7 @@
 	"costs": {
 		"own": "Propi",
 		"subtasks": "Subtasques"
-	}
+	},
+	"dismiss": "Descartar",
+	"dismissAndDontShowAgain": "Descartar i no tornar a mostrar"
 }

@@ -10,7 +10,7 @@ describe("MessageManager", () => {
 		mockTask = {
 			clineMessages: [],
 			apiConversationHistory: [],
-			overwriteClineMessages: vi.fn(),
+			overwriteAlphaMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),
 		}
 		manager = new MessageManager(mockTask)
@@ -25,6 +25,20 @@ describe("MessageManager", () => {
 	})
 
 	describe("Basic rewind operations", () => {
+		it("clears legacy API records when replacing the opening prompt", async () => {
+			mockTask.clineMessages = [
+				{ ts: 100, type: "say", say: "text", text: "Original prompt" },
+				{ ts: 200, type: "say", say: "completion_result", text: "Original answer" },
+			]
+			mockTask.apiConversationHistory = [
+				{ role: "user", content: "Original prompt" },
+				{ role: "assistant", content: "Original answer" },
+			]
+			await manager.rewindToTimestamp(100)
+			expect(mockTask.overwriteAlphaMessages).toHaveBeenCalledWith([])
+			expect(mockTask.overwriteApiConversationHistory).toHaveBeenCalledWith([])
+		})
+
 		it("should remove messages at and after the target timestamp", async () => {
 			mockTask.clineMessages = [
 				{ ts: 100, say: "user", text: "First" },
@@ -43,7 +57,7 @@ describe("MessageManager", () => {
 			await manager.rewindToTimestamp(300)
 
 			// Should keep messages before ts=300
-			expect(mockTask.overwriteClineMessages).toHaveBeenCalledWith([
+			expect(mockTask.overwriteAlphaMessages).toHaveBeenCalledWith([
 				{ ts: 100, say: "user", text: "First" },
 				{ ts: 200, say: "assistant", text: "Response" },
 			])
@@ -71,7 +85,7 @@ describe("MessageManager", () => {
 			await manager.rewindToTimestamp(300, { includeTargetMessage: true })
 
 			// Should keep messages up to and including ts=300 in clineMessages
-			expect(mockTask.overwriteClineMessages).toHaveBeenCalledWith([
+			expect(mockTask.overwriteAlphaMessages).toHaveBeenCalledWith([
 				{ ts: 100, say: "user", text: "First" },
 				{ ts: 200, say: "assistant", text: "Response" },
 				{ ts: 300, say: "user", text: "Second" },
@@ -114,7 +128,7 @@ describe("MessageManager", () => {
 			await manager.rewindToIndex(2)
 
 			// Should keep messages [0, 2) - index 0 and 1
-			expect(mockTask.overwriteClineMessages).toHaveBeenCalledWith([
+			expect(mockTask.overwriteAlphaMessages).toHaveBeenCalledWith([
 				{ ts: 100, say: "user", text: "First" },
 				{ ts: 200, say: "assistant", text: "Response" },
 			])
@@ -460,8 +474,8 @@ describe("MessageManager", () => {
 			await manager.rewindToTimestamp(600, { includeTargetMessage: true })
 
 			// Since condense_context (ts=500) is BEFORE checkpoint, it should be preserved
-			const clineCall = mockTask.overwriteClineMessages.mock.calls[0][0]
-			const hasCondenseContext = clineCall.some((m: any) => m.say === "condense_context")
+			const alphaCall = mockTask.overwriteAlphaMessages.mock.calls[0][0]
+			const hasCondenseContext = alphaCall.some((m: any) => m.say === "condense_context")
 			expect(hasCondenseContext).toBe(true)
 
 			// And the Summary should still exist
@@ -502,8 +516,8 @@ describe("MessageManager", () => {
 			await manager.rewindToTimestamp(200, { includeTargetMessage: true })
 
 			// condense_context (ts=300) is AFTER checkpoint, so it should be removed
-			const clineCall = mockTask.overwriteClineMessages.mock.calls[0][0]
-			const hasCondenseContext = clineCall.some((m: any) => m.say === "condense_context")
+			const alphaCall = mockTask.overwriteAlphaMessages.mock.calls[0][0]
+			const hasCondenseContext = alphaCall.some((m: any) => m.say === "condense_context")
 			expect(hasCondenseContext).toBe(false)
 
 			// And the Summary should be removed too
@@ -538,8 +552,8 @@ describe("MessageManager", () => {
 			await manager.rewindToTimestamp(600, { includeTargetMessage: true })
 
 			// Truncation should be preserved
-			const clineCall = mockTask.overwriteClineMessages.mock.calls[0][0]
-			const hasTruncation = clineCall.some((m: any) => m.say === "sliding_window_truncation")
+			const alphaCall = mockTask.overwriteAlphaMessages.mock.calls[0][0]
+			const hasTruncation = alphaCall.some((m: any) => m.say === "sliding_window_truncation")
 			expect(hasTruncation).toBe(true)
 
 			// Marker should still exist
@@ -574,8 +588,8 @@ describe("MessageManager", () => {
 			await manager.rewindToTimestamp(200, { includeTargetMessage: true })
 
 			// Truncation should be removed
-			const clineCall = mockTask.overwriteClineMessages.mock.calls[0][0]
-			const hasTruncation = clineCall.some((m: any) => m.say === "sliding_window_truncation")
+			const alphaCall = mockTask.overwriteAlphaMessages.mock.calls[0][0]
+			const hasTruncation = alphaCall.some((m: any) => m.say === "sliding_window_truncation")
 			expect(hasTruncation).toBe(false)
 
 			// Marker should be removed
@@ -703,7 +717,7 @@ describe("MessageManager", () => {
 
 			await manager.rewindToIndex(0)
 
-			expect(mockTask.overwriteClineMessages).toHaveBeenCalledWith([])
+			expect(mockTask.overwriteAlphaMessages).toHaveBeenCalledWith([])
 			// API history write is skipped when nothing changed (optimization)
 			expect(mockTask.overwriteApiConversationHistory).not.toHaveBeenCalled()
 		})
@@ -773,6 +787,74 @@ describe("MessageManager", () => {
 			expect(apiCall[0].ts).toBe(50) // Initial user message preserved
 			expect(apiCall[1].ts).toBe(200) // Assistant message preserved (was incorrectly removed before fix)
 			expect(apiCall[1].role).toBe("assistant")
+		})
+
+		it("should ignore a future-dated Summary when selecting the race-condition cutoff", async () => {
+			mockTask.clineMessages = [
+				{ ts: 50, say: "user", text: "Initial request" },
+				{ ts: 100, say: "user_feedback", text: "Feedback" },
+			]
+
+			// NOR24 can insert the new summary before the verbatim original tail and
+			// give it a timestamp newer than every original message.
+			mockTask.apiConversationHistory = [
+				{ ts: 50, role: "user", content: [{ type: "text", text: "Initial request" }] },
+				{ ts: 201, role: "user", content: "Summary", isSummary: true, condenseId: "summary-1" },
+				{
+					ts: 150,
+					role: "assistant",
+					content: [{ type: "tool_use", id: "tool_1", name: "attempt_completion", input: {} }],
+				},
+				{
+					ts: 200,
+					role: "user",
+					content: [{ type: "tool_result", tool_use_id: "tool_1", content: "Feedback" }],
+				},
+			]
+
+			await manager.rewindToTimestamp(100)
+
+			// The UI cutoff has no exact API timestamp. The original user tail is the
+			// boundary; preserve the preceding assistant/tool-call context only.
+			const apiCall = mockTask.overwriteApiConversationHistory.mock.calls[0][0]
+			expect(apiCall.map((message: any) => message.ts)).toEqual([50, 150])
+			expect(apiCall.some((message: any) => message.isSummary)).toBe(false)
+		})
+
+		it("should ignore a future-dated truncation marker when selecting the race-condition cutoff", async () => {
+			mockTask.clineMessages = [
+				{ ts: 50, say: "user", text: "Initial request" },
+				{ ts: 100, say: "user_feedback", text: "Feedback" },
+			]
+
+			// Truncation markers may also be user-role entries. Model the same
+			// future-dated synthetic entry before the original assistant/user tail.
+			mockTask.apiConversationHistory = [
+				{ ts: 50, role: "user", content: [{ type: "text", text: "Initial request" }] },
+				{
+					ts: 201,
+					role: "user",
+					content: "[Sliding window truncation]",
+					isTruncationMarker: true,
+					truncationId: "truncation-1",
+				},
+				{
+					ts: 150,
+					role: "assistant",
+					content: [{ type: "tool_use", id: "tool_1", name: "attempt_completion", input: {} }],
+				},
+				{
+					ts: 200,
+					role: "user",
+					content: [{ type: "tool_result", tool_use_id: "tool_1", content: "Feedback" }],
+				},
+			]
+
+			await manager.rewindToTimestamp(100)
+
+			const apiCall = mockTask.overwriteApiConversationHistory.mock.calls[0][0]
+			expect(apiCall.map((message: any) => message.ts)).toEqual([50, 150])
+			expect(apiCall.some((message: any) => message.isTruncationMarker)).toBe(false)
 		})
 
 		it("should handle normal case where timestamps are properly ordered", async () => {

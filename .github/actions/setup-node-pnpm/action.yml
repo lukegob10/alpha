@@ -45,4 +45,4 @@ runs:
         - name: Install dependencies
           if: ${{ inputs.skip-install != 'true' }}
           shell: bash
-          run: pnpm install ${{ inputs.install-args }}
+          run: pnpm install --frozen-lockfile ${{ inputs.install-args }}

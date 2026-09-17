@@ -11,6 +11,7 @@
 		"missing_update_modes_fields": "必須フィールドが不足しています：skillNameまたはsource",
 		"manager_unavailable": "スキルマネージャーが利用できません",
 		"missing_delete_fields": "必須フィールドが不足しています：skillNameまたはsource",
-		"skill_not_found": "スキル「{{name}}」が見つかりません"
+		"skill_not_found": "スキル「{{name}}」が見つかりません",
+		"builtin_read_only": "組み込みスキルは読み取り専用です。上書きするには、個人スキルまたはワークスペーススキルを作成してください。"
 	}
 }

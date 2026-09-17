@@ -41,7 +41,9 @@
 		"experimental": "Thử nghiệm",
 		"language": "Ngôn ngữ",
 		"about": "Giới thiệu",
-		"skills": "Skills"
+		"skills": "Skills",
+		"agents": "Đại lý",
+		"github": "GitHub"
 	},
 	"about": {
 		"bugReport": {
@@ -209,7 +211,8 @@
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
 			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
 			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
-			"localIndexPathRequired": "Local index path is required"
+			"localIndexPathRequired": "Local index path is required",
+			"embeddingRateLimitSecondsRange": "Độ trễ yêu cầu nhúng phải trong khoảng từ 0,1 đến 60 giây"
 		},
 		"optional": "tùy chọn",
 		"advancedConfigLabel": "Cấu hình nâng cao",
@@ -230,7 +233,9 @@
 		"localIndexPathLabel": "Local Index Path",
 		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
 		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
-		"savedSecretPlaceholder": "Saved value hidden"
+		"savedSecretPlaceholder": "Saved value hidden",
+		"embeddingRateLimitLabel": "Giới hạn tỷ lệ yêu cầu nhúng",
+		"embeddingRateLimitDescription": "Thêm độ trễ giữa việc nhúng các yêu cầu API trong khi lập chỉ mục. Hãy tăng mức này nếu nhà cung cấp dịch vụ nhúng của bạn đang giới hạn tốc độ lập chỉ mục cơ sở mã."
 	},
 	"autoApprove": {
 		"toggleShortcut": "Bạn có thể định cấu hình một phím tắt chung cho cài đặt này <SettingsLink>trong tùy chọn IDE của bạn</SettingsLink>.",
@@ -271,22 +276,29 @@
 			"label": "Công việc phụ",
 			"description": "Cho phép tạo và hoàn thành các công việc phụ mà không cần phê duyệt"
 		},
+		"tickets": {
+			"label": "Phiếu Alpha",
+			"description": "Tự động phê duyệt việc tạo và cập nhật phiếu Alpha."
+		},
 		"followupQuestions": {
 			"label": "Câu hỏi",
 			"description": "Tự động chọn câu trả lời đầu tiên được đề xuất cho các câu hỏi tiếp theo sau thời gian chờ đã cấu hình",
 			"timeoutLabel": "Thời gian chờ trước khi tự động chọn câu trả lời đầu tiên"
 		},
 		"execute": {
-			"label": "Thực thi",
-			"description": "Tự động thực thi các lệnh terminal được phép mà không cần phê duyệt",
-			"allowedCommands": "Các lệnh tự động thực thi được phép",
-			"allowedCommandsDescription": "Tiền tố lệnh có thể được tự động thực thi khi \"Luôn phê duyệt các hoạt động thực thi\" được bật. Thêm * để cho phép tất cả các lệnh (sử dụng cẩn thận).",
+			"label": "Quy tắc lệnh",
+			"description": "Tự động phê duyệt lệnh trong phạm vi ghi của tác vụ. Cho phép mạng. Chặn ghi ngoài phạm vi. Thiết lập toàn cục được giữ giữa các dự án.",
+			"allowedCommands": "Tiền tố lệnh được phép",
+			"allowedCommandsDescription": "Dùng * để tự động phê duyệt lệnh, bao gồm tập lệnh. Quy tắc đã lưu áp dụng cho mọi dự án. Các thao tác ghi ngoài thư mục gốc được phát hiện và đường dẫn ghi chưa xác định vẫn cần phê duyệt. Đây là kiểm tra lệnh và đường dẫn, không phải vùng cách ly của hệ điều hành.",
 			"deniedCommands": "Lệnh bị từ chối",
 			"deniedCommandsDescription": "Tiền tố lệnh sẽ được tự động từ chối mà không yêu cầu phê duyệt. Trong trường hợp xung đột với lệnh được phép, khớp tiền tố dài nhất sẽ được ưu tiên. Thêm * để từ chối tất cả lệnh.",
 			"commandPlaceholder": "Nhập tiền tố lệnh (ví dụ: 'git ')",
 			"deniedCommandPlaceholder": "Nhập tiền tố lệnh để từ chối (ví dụ: 'rm -rf')",
 			"addButton": "Thêm",
-			"autoDenied": "Các lệnh có tiền tố `{{prefix}}` đã bị người dùng cấm. Đừng vượt qua hạn chế này bằng cách chạy lệnh khác."
+			"autoDenied": "Các lệnh có tiền tố `{{prefix}}` đã bị người dùng cấm. Đừng vượt qua hạn chế này bằng cách chạy lệnh khác.",
+			"pathApprovalTitle": "Đường dẫn tệp cần phê duyệt",
+			"pathApprovalDescription": "Lệnh này có thể thay đổi tệp ngoài thư mục gốc của tác vụ. Phê duyệt chỉ áp dụng cho lần chạy này.",
+			"pathApprovalUnresolved": "Không thể xác định một số đường dẫn ghi."
 		},
 		"apiRequestLimit": {
 			"title": "Số lượng yêu cầu tối đa",
@@ -299,6 +311,10 @@
 		},
 		"maxLimits": {
 			"description": "Tự động thực hiện các yêu cầu lên đến các giới hạn này trước khi xin phê duyệt để tiếp tục."
+		},
+		"subagents": {
+			"label": "Tác nhân phụ",
+			"description": "Cho phép Alpha khởi chạy các nhóm tác nhân phụ chỉ đọc mà không cần phê duyệt. Quyền truy cập đọc cũng phải được phê duyệt tự động."
 		}
 	},
 	"providers": {
@@ -378,7 +394,8 @@
 			"hint": "Vui lòng mở lại cài đặt để xem các mô hình mới nhất.",
 			"loading": "Đang làm mới danh sách mô hình...",
 			"success": "Danh sách mô hình đã được làm mới thành công!",
-			"error": "Không thể làm mới danh sách mô hình. Vui lòng thử lại."
+			"error": "Không thể làm mới danh sách mô hình. Vui lòng thử lại.",
+			"missingConfig": "Nhập cấu hình nhà cung cấp được yêu cầu trước khi làm mới mô hình."
 		},
 		"getRequestyApiKey": "Lấy khóa API Requesty",
 		"getRequestyBaseUrl": "URL cơ sở",
@@ -542,7 +559,8 @@
 			"high": "Cao",
 			"xhigh": "Rất cao",
 			"medium": "Trung bình",
-			"low": "Thấp"
+			"low": "Thấp",
+			"max": "Tối đa"
 		},
 		"verbosity": {
 			"label": "Mức độ chi tiết đầu ra",
@@ -558,7 +576,55 @@
 			"placeholder": "Mặc định: claude",
 			"maxTokensLabel": "Số token đầu ra tối đa",
 			"maxTokensDescription": "Số lượng token đầu ra tối đa cho các phản hồi của Claude Code. Mặc định là 8000."
-		}
+		},
+		"vertexStreamingEnabledLabel": "Bật phản hồi phát trực tuyến",
+		"vertexStreamingEnabledDescription": "Tắt tính năng này khi cổng hoặc kiểu máy không hỗ trợ truyền phát. Phản hồi sẽ xuất hiện sau khi hoàn thành.",
+		"vscodeLmLoading": "Đang tải các mô hình ngôn ngữ có sẵn trong cửa sổ VS Code này...",
+		"vscodeLmNoModels": "Không có mô hình ngôn ngữ nào có sẵn trong cửa sổ VS Code này. Đăng nhập vào GitHub Copilot tại đây, kích hoạt các kiểu máy bạn cần bằng 'Chat: Manage Language Models', sau đó làm mới.",
+		"vscodeLmRefresh": "Làm mới mô hình",
+		"vscodeLmUnavailable": "Mô hình đã chọn không có sẵn trong cửa sổ VS Code này. Chọn một mô hình được VS Code trả về hoặc kích hoạt mô hình đó bằng 'Chat: Manage Language Models'.",
+		"vscodeLmContextSize": {
+			"label": "Cửa sổ ngữ cảnh",
+			"default": "Tiêu chuẩn (Mã thông báo đầu vào {{contextSize}})",
+			"extended": "Mở rộng (Mã thông báo đầu vào {{contextSize}})",
+			"description": "Chọn ngân sách mã thông báo đầu vào được gửi tới GitHub Copilot cho mô hình này. Bối cảnh mở rộng có thể tiêu thụ nhiều yêu cầu cao cấp hơn."
+		},
+		"googleCloudProjectId": "Dự án Google Cloud ID",
+		"googleCloudRegion": "Khu vực Google Cloud",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "Tìm kiếm hoặc nhập một khu vực",
+			"noMatchFound": "Không tìm thấy khu vực phù hợp",
+			"useCustomRegion": "Sử dụng tùy chỉnh: {{region}}"
+		},
+		"googleCloudCredentials": "Thông tin xác thực Google Cloud JSON",
+		"googleCloudKeyFile": "Tệp Google Cloud Key",
+		"googleCloudSetup": {
+			"title": "Thiết lập Google Cloud",
+			"step1": "Bật Vertex AI và quyền truy cập mô hình",
+			"step2": "Thiết lập thông tin xác thực mặc định của ứng dụng",
+			"step3": "Tạo khóa tài khoản dịch vụ"
+		},
+		"vertexGatewayBaseUrl": "Cơ sở cổng Vertex URL",
+		"vertexGatewayCaBundlePath": "Đường dẫn gói Vertex cổng CA",
+		"vertexGatewayHelixCommand": "Lệnh Vertex cổng Helix",
+		"vertexGatewayHelixParseMode": "Chế độ phân tích cú pháp Cổng Vertex Helix",
+		"vertexGatewayHelixParseModeRawStdout": "Thiết bị xuất chuẩn thô",
+		"vertexGatewayHelixParseModeJsonField": "Trường JSON",
+		"vertexGatewayHelixTokenKey": "Khóa mã thông báo Vertex Cổng Helix",
+		"vertexGatewayTokenRefreshMinutes": "Số phút làm mới mã thông báo cổng Vertex",
+		"vertexGatewayModelRoutingMap": "Bản đồ định tuyến mô hình cổng Vertex",
+		"vertexGatewayModelRoutingMapDescription": "Đối tượng JSON được khóa theo mô hình ID. Các giá trị có thể là các chuỗi hoặc đối tượng ghi đè mô hình cũ với projectId, location, modelOverride và extraHeaders.",
+		"stellarDescription": "Kết nối với cổng mô hình tương thích Stellar OpenAI bên trong. Khóa API được truy xuất tự động bằng Helix và không bao giờ được lưu trữ.",
+		"stellarBaseUrl": "Stellar Cơ Sở URL",
+		"stellarCaBundlePath": "Đường dẫn gói Stellar PEM CA",
+		"stellarHelixCommand": "Lệnh Stellar Helix",
+		"stellarHelixParseMode": "Chế độ phân tích Stellar Helix",
+		"stellarHelixParseModeRawStdout": "Thiết bị xuất chuẩn thô",
+		"stellarHelixParseModeJsonField": "Trường JSON",
+		"stellarHelixTokenKey": "Khóa mã thông báo Stellar Helix",
+		"stellarTokenRefreshMinutes": "Số phút làm mới mã thông báo Stellar",
+		"stellarStreamingEnabledLabel": "Bật phản hồi phát trực tuyến",
+		"stellarStreamingEnabledDescription": "Tắt tính năng này nếu việc triển khai Stellar không hỗ trợ phát trực tuyến. Phản hồi sẽ xuất hiện sau khi hoàn thành."
 	},
 	"checkpoints": {
 		"timeout": {
@@ -898,7 +964,11 @@
 		"providerNotAllowed": "Nhà cung cấp '{{provider}}' không được phép bởi tổ chức của bạn",
 		"modelNotAllowed": "Mô hình '{{model}}' không được phép cho nhà cung cấp '{{provider}}' bởi tổ chức của bạn",
 		"profileInvalid": "Hồ sơ này chứa một nhà cung cấp hoặc mô hình không được phép bởi tổ chức của bạn",
-		"qwenCodeOauthPath": "Bạn phải cung cấp đường dẫn thông tin xác thực OAuth hợp lệ"
+		"qwenCodeOauthPath": "Bạn phải cung cấp đường dẫn thông tin xác thực OAuth hợp lệ",
+		"googleCloud": "Bạn phải cung cấp dự án Google Cloud ID và khu vực.",
+		"vertexGateway": "Cổng Vertex yêu cầu đường dẫn gói URL, CA cơ bản và lệnh Helix.",
+		"vertexGatewayModelRoutingMap": "Bản đồ định tuyến mô hình cổng Vertex phải là đối tượng JSON có ID mô hình chuỗi.",
+		"stellar": "Stellar yêu cầu đường dẫn gói URL và PEM CA cơ sở hợp lệ."
 	},
 	"placeholders": {
 		"apiKey": "Nhập khóa API...",
@@ -960,6 +1030,10 @@
 		"requireCtrlEnterToSend": {
 			"label": "Yêu cầu {{primaryMod}}+Enter để gửi tin nhắn",
 			"description": "Khi được bật, bạn phải nhấn {{primaryMod}}+Enter để gửi tin nhắn thay vì chỉ nhấn Enter"
+		},
+		"maxConcurrentTasks": {
+			"label": "Các tác vụ song song tối đa",
+			"description": "Số lượng tác vụ trực tiếp có thể chạy cùng lúc. Nhiệm vụ thất bại và hoàn thành không được tính vào giới hạn này."
 		}
 	},
 	"skills": {
@@ -1013,6 +1087,44 @@
 			"descriptionRequired": "Mô tả là bắt buộc",
 			"descriptionTooLong": "Mô tả phải có tối đa 1024 ký tự"
 		},
-		"footer": "Tạo các skill của riêng bạn với chế độ Skill Writer, có sẵn tại <MarketplaceLink>Modes Marketplace</MarketplaceLink>."
+		"footer": "Tạo các skill của riêng bạn với chế độ Skill Writer, có sẵn tại <MarketplaceLink>Modes Marketplace</MarketplaceLink>.",
+		"builtinSkills": "Tích hợp sẵn",
+		"enabled": "Đã bật",
+		"inspectSkill": "Xem nội dung",
+		"builtinDescription": "Đi kèm Alpha. Các thay đổi được áp dụng khi bạn lưu cài đặt. Kỹ năng trong không gian làm việc và kỹ năng cá nhân có cùng tên được ưu tiên; tắt kỹ năng tích hợp sẵn không tắt các phiên bản thay thế của bạn."
+	},
+	"agents": {
+		"description": "Chọn hồ sơ nhà cung cấp đã lưu mà Alpha sử dụng cho đại lý phụ. Ghi đè vai trò được ưu tiên hơn mặc định, sau đó nhiệm vụ chính sẽ được kế thừa.",
+		"searchPlaceholder": "Tìm kiếm hồ sơ nhà cung cấp...",
+		"noProfilesFound": "Không có hồ sơ nhà cung cấp phù hợp",
+		"unavailableProfile": "Hồ sơ không có sẵn ({{id}})",
+		"staleWarning": "Hồ sơ đã lưu này không có sẵn. Đại lý phụ mới sẽ sử dụng hồ sơ gốc cho đến khi bạn chọn hồ sơ khác.",
+		"defaultProfile": {
+			"label": "Hồ sơ tác nhân phụ mặc định",
+			"inheritParent": "Kế thừa cha mẹ",
+			"description": "Được sử dụng khi một vai trò không có ghi đè hồ sơ riêng."
+		},
+		"roles": {
+			"title": "Ghi đè vai trò",
+			"description": "Tùy chọn định tuyến từng vai trò đại lý thông qua hồ sơ nhà cung cấp đã lưu khác nhau.",
+			"useDefault": "Sử dụng mặc định",
+			"explore": {
+				"label": "Hồ sơ người khám phá",
+				"description": "Ghi đè hồ sơ tùy chọn cho các tác nhân khám phá kho lưu trữ."
+			},
+			"review": {
+				"label": "Hồ sơ người đánh giá",
+				"description": "Ghi đè hồ sơ tùy chọn cho các đại lý đánh giá."
+			},
+			"worker": {
+				"label": "Hồ sơ công nhân",
+				"description": "Ghi đè hồ sơ tùy chọn cho nhân viên chỉnh sửa bị cô lập."
+			}
+		}
+	},
+	"github": {
+		"tokenLabel": "Mã thông báo GitHub",
+		"tokenPlaceholder": "ghp_...",
+		"tokenDescription": "Được lưu trữ an toàn trong Kho lưu trữ bí mật VS Code. Được sử dụng bởi công cụ GitHub API gốc để kéo các yêu cầu, kiểm tra, nhận xét và hợp nhất."
 	}
 }

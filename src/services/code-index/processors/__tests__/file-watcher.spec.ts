@@ -4,6 +4,14 @@ import * as vscode from "vscode"
 
 import { FileWatcher } from "../file-watcher"
 
+const deferred = <T>() => {
+	let resolve!: (value: T) => void
+	const promise = new Promise<T>((resolvePromise) => {
+		resolve = resolvePromise
+	})
+	return { promise, resolve }
+}
+
 // Mock TelemetryService
 vi.mock("../../../../../packages/telemetry/src/TelemetryService", () => ({
 	TelemetryService: {
@@ -15,8 +23,8 @@ vi.mock("../../../../../packages/telemetry/src/TelemetryService", () => ({
 
 // Mock dependencies
 vi.mock("../../cache-manager")
-vi.mock("../../../core/ignore/RooIgnoreController", () => ({
-	RooIgnoreController: vi.fn().mockImplementation(() => ({
+vi.mock("../../../core/ignore/AlphaIgnoreController", () => ({
+	AlphaIgnoreController: vi.fn().mockImplementation(() => ({
 		validateAccess: vi.fn().mockReturnValue(true),
 	})),
 }))
@@ -277,12 +285,133 @@ describe("FileWatcher", () => {
 		})
 	})
 
-	describe("dispose", () => {
+	describe("lifecycle", () => {
+		it("does not replace an initialized native watcher", async () => {
+			const callsBeforeInitialize = vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length
+			await fileWatcher.initialize()
+			await fileWatcher.initialize()
+
+			expect(vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length - callsBeforeInitialize).toBe(
+				1,
+			)
+			expect(mockWatcher.dispose).not.toHaveBeenCalled()
+		})
+
 		it("should dispose of the watcher when disposed", async () => {
 			await fileWatcher.initialize()
 			fileWatcher.dispose()
 
 			expect(mockWatcher.dispose).toHaveBeenCalled()
 		})
+
+		it("recreates the native watcher after a restartable stop", async () => {
+			const callsBeforeInitialize = vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length
+			await fileWatcher.initialize()
+
+			fileWatcher.stop()
+			await fileWatcher.initialize()
+
+			expect(vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length - callsBeforeInitialize).toBe(
+				2,
+			)
+			expect(mockWatcher.dispose).toHaveBeenCalledTimes(1)
+		})
+
+		it("waits for accepted batches before restarting", async () => {
+			const callsBeforeInitialize = vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length
+			await fileWatcher.initialize()
+			fileWatcher.stop()
+			const batch = deferred<void>()
+			;(fileWatcher as unknown as { batchProcessingTail: Promise<void> }).batchProcessingTail = batch.promise
+
+			const restart = fileWatcher.initialize()
+			await Promise.resolve()
+			expect(vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length - callsBeforeInitialize).toBe(
+				1,
+			)
+
+			batch.resolve(undefined)
+			await restart
+			expect(vi.mocked(vscode.workspace.createFileSystemWatcher).mock.calls.length - callsBeforeInitialize).toBe(
+				2,
+			)
+		})
+
+		it("rejects initialization after terminal disposal", async () => {
+			await fileWatcher.initialize()
+			fileWatcher.dispose()
+
+			await expect(fileWatcher.initialize()).rejects.toThrow(/disposed/i)
+		})
+	})
+
+	describe("batch ordering", () => {
+		it("finishes an earlier change batch before processing a later delete", async () => {
+			const filePath = "/mock/workspace/src/file.ts"
+			const uri = { fsPath: filePath } as vscode.Uri
+			const upsertStarted = deferred<void>()
+			const releaseUpsert = deferred<void>()
+			const operations: string[] = []
+			const internals = fileWatcher as unknown as {
+				accumulatedEvents: Map<string, { uri: vscode.Uri; type: "create" | "change" | "delete" }>
+				triggerBatchProcessing(): Promise<void>
+			}
+			vi.spyOn(fileWatcher, "processFile").mockResolvedValue({
+				path: filePath,
+				status: "processed_for_batching",
+				newHash: "new-hash",
+				pointsToUpsert: [
+					{
+						id: "point-a",
+						vector: [0.1],
+						payload: { filePath: "src/file.ts", codeChunk: "code", startLine: 1, endLine: 1 },
+					},
+				],
+			})
+			mockVectorStore.deletePointsByMultipleFilePaths.mockImplementation(async () => {
+				operations.push("delete")
+			})
+			mockVectorStore.upsertPoints.mockImplementationOnce(async () => {
+				operations.push("upsert-start")
+				upsertStarted.resolve(undefined)
+				await releaseUpsert.promise
+				operations.push("upsert-end")
+			})
+			mockCacheManager.updateHash.mockImplementation(() => operations.push("cache-update"))
+			mockCacheManager.deleteHash.mockImplementation(() => operations.push("cache-delete"))
+
+			internals.accumulatedEvents.set(filePath, { uri, type: "change" })
+			const changeBatch = internals.triggerBatchProcessing()
+			await upsertStarted.promise
+
+			internals.accumulatedEvents.set(filePath, { uri, type: "delete" })
+			const deleteBatch = internals.triggerBatchProcessing()
+			await Promise.resolve()
+			const operationsBeforeRelease = [...operations]
+
+			releaseUpsert.resolve(undefined)
+			await Promise.all([changeBatch, deleteBatch])
+
+			expect(operationsBeforeRelease).toEqual(["delete", "upsert-start"])
+			expect(operations).toEqual([
+				"delete",
+				"upsert-start",
+				"upsert-end",
+				"cache-update",
+				"delete",
+				"cache-delete",
+			])
+		})
+	})
+	it("decodes VS Code Uint8Array snapshots as UTF-8 before parsing and hashing", async () => {
+		const { codeParser } = await import("../parser")
+		const content = "export const label = '数据😀'"
+		vi.mocked(vscode.workspace.fs.readFile).mockResolvedValueOnce(new TextEncoder().encode(content))
+		mockCacheManager.getHash.mockReturnValue(undefined)
+		await fileWatcher.processFile("/mock/workspace/state.ts")
+		expect(codeParser.parseFile).toHaveBeenCalledWith(
+			"/mock/workspace/state.ts",
+			expect.objectContaining({ content }),
+		)
 	})
 })

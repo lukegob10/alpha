@@ -26,9 +26,9 @@ vi.mock("../core/task/Task", () => ({
 	Task: taskMocks.MockTask,
 }))
 
-import { ClineProvider } from "../core/webview/ClineProvider"
+import { AlphaProvider } from "../core/webview/AlphaProvider"
 
-describe("ClineProvider.createTask start control", () => {
+describe("AlphaProvider.createTask start control", () => {
 	afterEach(() => {
 		taskMocks.instances.length = 0
 		taskMocks.start.mockClear()
@@ -37,7 +37,7 @@ describe("ClineProvider.createTask start control", () => {
 
 	const createProvider = () =>
 		({
-			clineStack: [],
+			taskStack: [],
 			taskSessions: { canCreateTask: vi.fn(() => true) },
 			customModesManager: { updateCustomMode: vi.fn() },
 			taskCreationCallback: undefined,
@@ -54,29 +54,73 @@ describe("ClineProvider.createTask start control", () => {
 				checkpointTimeout: 60,
 				experiments: {},
 			})),
-			removeClineFromStack: vi.fn(),
-			addClineToStack: vi.fn(async () => undefined),
+			getProviderSettingsSnapshot: vi.fn(() => ({
+				apiProvider: "openai-native",
+				apiModelId: "gpt-4.1",
+				consecutiveMistakeLimit: 3,
+			})),
+			contextProxy: {
+				getValues: vi.fn(() => ({
+					currentApiConfigName: "default",
+					enableCheckpoints: false,
+					checkpointTimeout: 60,
+					experiments: {},
+				})),
+				getValue: vi.fn(),
+			},
+			removeTaskFromStack: vi.fn(),
+			updateGlobalState: vi.fn(async () => undefined),
+			addTaskToStack: vi.fn(async () => undefined),
+			postTaskStateToWebview: vi.fn(async () => undefined),
 			postStateToWebviewWithoutTaskHistory: vi.fn(async () => undefined),
 			log: vi.fn(),
-		}) as unknown as ClineProvider
+		}) as unknown as AlphaProvider
 
 	it("does not start a task when startTask is false", async () => {
 		const provider = createProvider()
 
-		await ClineProvider.prototype.createTask.call(provider, "Child work", undefined, undefined, {
+		await AlphaProvider.prototype.createTask.call(provider, "Child work", undefined, undefined, {
 			startTask: false,
 		})
 
 		expect(taskMocks.instances).toHaveLength(1)
 		expect(taskMocks.start).not.toHaveBeenCalled()
+		expect((provider as any).updateGlobalState).toHaveBeenCalledWith("mode", "code")
 	})
 
 	it("starts a task by default", async () => {
 		const provider = createProvider()
 
-		await ClineProvider.prototype.createTask.call(provider, "Normal work")
+		await AlphaProvider.prototype.createTask.call(provider, "Normal work")
 
 		expect(taskMocks.instances).toHaveLength(1)
 		expect(taskMocks.start).toHaveBeenCalledTimes(1)
+		expect((provider as any).updateGlobalState).toHaveBeenCalledWith("mode", "code")
+	})
+
+	it("publishes and starts before slow mode persistence finishes", async () => {
+		let finishPersistence!: () => void
+		const provider = createProvider()
+		;(provider as any).updateGlobalState = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					finishPersistence = resolve
+				}),
+		)
+
+		let creationSettled = false
+		const creation = AlphaProvider.prototype.createTask.call(provider, "Normal work").then((task) => {
+			creationSettled = true
+			return task
+		})
+
+		await vi.waitFor(() => {
+			expect((provider as any).postTaskStateToWebview).toHaveBeenCalledTimes(1)
+			expect(taskMocks.start).toHaveBeenCalledTimes(1)
+		})
+		expect(creationSettled).toBe(false)
+
+		finishPersistence()
+		await creation
 	})
 })

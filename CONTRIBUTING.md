@@ -21,17 +21,23 @@ Thanks for helping improve Alpha. Keep contributions focused, easy to review, an
 
 ```sh
 pnpm install
+pnpm lint
+pnpm check-types
 pnpm bundle
 pnpm test
 ```
 
-For extension debugging, open the repo in VS Code and press `F5`.
+For the release-host contract, run `pnpm --filter @alpha-code/vscode-e2e test:smoke:1221` on VS Code 1.122.1.
+Optional evaluator coverage is explicit: `pnpm test:evals` or `pnpm test:evals:offline`. For all retained workspace
+checks, use `pnpm lint:all`, `pnpm check-types:all`, and `pnpm test:all`.
+
+For extension debugging, open the repo in VS Code and press `F5`. The repository uses Node.js 20.19.2 and pnpm 10.8.1.
 
 ## Standards
 
 - Follow the existing code style and TypeScript patterns.
 - Add or update tests when behavior changes.
-- Keep docs Alpha-branded and avoid old Roo community, support, or marketing links.
+- Keep docs Alpha-branded and avoid legacy community, support, or marketing links.
 - Follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License

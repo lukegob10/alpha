@@ -24,6 +24,12 @@ describe("copyRun", () => {
 			description: "Test run for copying",
 			concurrency: 4,
 			timeout: 5,
+			campaignTier: "t1",
+			campaignHardCapUsd: 0.5,
+			taskCostCapUsd: 0.05,
+			estimatedCostUsd: 0.305,
+			highCostApproved: false,
+			modelFallbackAllowed: false,
 		})
 
 		sourceRunId = run.id
@@ -73,6 +79,9 @@ describe("copyRun", () => {
 			passed: true,
 			startedAt: new Date("2023-01-01T10:00:00Z"),
 			finishedAt: new Date("2023-01-01T10:45:00Z"),
+			benchmarkTaskIdentity: "repo-cache-invalidation@1",
+			benchmarkPartition: "development",
+			iteration: 2,
 		})
 
 		sourceTaskIds.push(task1.id)
@@ -185,6 +194,14 @@ describe("copyRun", () => {
 		expect(copiedRun!.passed).toBe(2)
 		expect(copiedRun!.failed).toBe(1)
 		expect(copiedRun!.taskMetrics).toBeDefined()
+		expect(copiedRun).toMatchObject({
+			campaignTier: "t1",
+			campaignHardCapUsd: 0.5,
+			taskCostCapUsd: 0.05,
+			estimatedCostUsd: 0.305,
+			highCostApproved: false,
+			modelFallbackAllowed: false,
+		})
 
 		expect(copiedRun!.taskMetrics!.duration).toBe(120_000)
 		expect(copiedRun!.taskMetrics!.tokensIn).toBe(200_000)
@@ -205,6 +222,11 @@ describe("copyRun", () => {
 		expect(goTask.exercise).toBe("go/say")
 		expect(goTask.passed).toBe(true)
 		expect(goTask.taskMetrics).toBeDefined()
+		expect(goTask).toMatchObject({
+			benchmarkTaskIdentity: "repo-cache-invalidation@1",
+			benchmarkPartition: "development",
+			iteration: 2,
+		})
 		expect(goTask.taskMetrics!.duration).toBe(45_000)
 		expect(goTask.taskMetrics!.toolUsage).toEqual({
 			read_file: { attempts: 3, failures: 0 },

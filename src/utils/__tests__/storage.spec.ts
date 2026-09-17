@@ -1,4 +1,5 @@
 import * as vscode from "vscode"
+import * as path from "path"
 
 vi.mock("fs/promises", async () => {
 	const mod = await import("../../__mocks__/fs/promises")
@@ -151,5 +152,48 @@ describe("getStorageBasePath - customStoragePath", () => {
 
 		expect(result).toBe(defaultPath)
 		expect(showErrorSpy).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe("getTaskDirectoryPath", () => {
+	const defaultPath = "/test/global-storage"
+
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+			get: vi.fn().mockReturnValue(""),
+		} as any)
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	it("creates a valid single-component task directory under the tasks root", async () => {
+		const fsPromises = await import("fs/promises")
+		const { getTaskDirectoryPath } = await import("../storage")
+
+		const result = await getTaskDirectoryPath(defaultPath, "task-123")
+
+		expect(result).toBe(path.resolve(defaultPath, "tasks", "task-123"))
+		expect((fsPromises as any).mkdir).toHaveBeenCalledWith(result, { recursive: true })
+	})
+
+	it.each([
+		"",
+		".",
+		"..",
+		"../victim",
+		"..\\victim",
+		"../tasks-copy",
+		"/tmp/victim",
+		"C:\\victim",
+		"\\\\server\\share",
+	])("rejects an unsafe task ID before touching the filesystem: %s", async (taskId) => {
+		const fsPromises = await import("fs/promises")
+		const { getTaskDirectoryPath } = await import("../storage")
+
+		await expect(getTaskDirectoryPath(defaultPath, taskId)).rejects.toThrow("Invalid task ID")
+		expect((fsPromises as any).mkdir).not.toHaveBeenCalled()
 	})
 })

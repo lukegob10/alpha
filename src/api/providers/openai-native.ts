@@ -22,7 +22,23 @@ import type { ApiHandlerOptions } from "../../shared/api"
 
 import { calculateApiCostOpenAI } from "../../shared/cost"
 
-import { ApiStream, ApiStreamUsageChunk } from "../transform/stream"
+import {
+	ApiStream,
+	ApiStreamChunk,
+	ApiStreamUsageChunk,
+	createApiStreamError,
+	createApiStreamOutcome,
+	createLinkedAbortController,
+	getApiStreamErrorMessage,
+	isApiStreamAbortError,
+	isApiStreamSemanticChunk,
+	normalizeApiStreamErrorMetadata,
+	iterateApiStreamWithAbort,
+	raceApiStreamAbort,
+	type LinkedAbortController,
+	type ApiStreamError,
+} from "../transform/stream"
+import { getResponsesApiTerminal } from "../transform/responses-api-stream"
 import { getModelParams } from "../transform/model-params"
 
 import { BaseProvider } from "./base-provider"
@@ -32,19 +48,60 @@ import { sanitizeOpenAiCallId } from "../../utils/tool-id"
 
 export type OpenAiNativeModel = ReturnType<OpenAiNativeHandler["getModel"]>
 
+type PendingToolCallIdentity = {
+	callId: string
+	name?: string
+	outputIndex: number
+}
+
+type ProviderTerminalError = Error &
+	Partial<ApiStreamError> & {
+		reason?: string
+		terminal?: boolean
+		errorCode?: string
+	}
+
+/** Keep canonical provider failure metadata on the Error crossing the stream boundary. */
+function withTerminalFailureMetadata(
+	error: Error,
+	terminal: ApiStreamError | undefined,
+	reason?: string,
+): ProviderTerminalError {
+	if (!terminal) return error as ProviderTerminalError
+
+	const enriched = error as ProviderTerminalError
+	Object.assign(enriched, {
+		terminal: true,
+		reason: reason ?? terminal.message,
+		errorCode: terminal.error,
+		...(terminal.code !== undefined ? { code: terminal.code } : {}),
+		...(terminal.status !== undefined ? { status: terminal.status } : {}),
+		...(terminal.statusCode !== undefined ? { statusCode: terminal.statusCode } : {}),
+		...(terminal.retryable !== undefined ? { retryable: terminal.retryable } : {}),
+		...(terminal.phase !== undefined ? { phase: terminal.phase } : {}),
+		...(terminal.requestId !== undefined ? { requestId: terminal.requestId } : {}),
+		...(terminal.attemptId !== undefined ? { attemptId: terminal.attemptId } : {}),
+		...(terminal.semanticOutputObserved !== undefined
+			? { semanticOutputObserved: terminal.semanticOutputObserved }
+			: {}),
+		...(terminal.metadata !== undefined ? { metadata: terminal.metadata } : {}),
+	})
+	return enriched
+}
+
 export class OpenAiNativeHandler extends BaseProvider implements SingleCompletionHandler {
+	readonly streamCapabilities = { lifecycle: true, cancellation: true } as const
 	protected options: ApiHandlerOptions
 	private client: OpenAI
 	private readonly providerName = "OpenAI Native"
 	// Session ID for request tracking (persists for the lifetime of the handler)
 	private readonly sessionId: string
-	/**
-	 * Some Responses streams emit tool-call argument deltas without stable call id/name.
-	 * Track the last observed tool identity from output_item events so we can still
-	 * emit `tool_call_partial` chunks (tool-call-only streams).
-	 */
+	/** Last observed identity is retained only for legacy streams without correlation fields. */
 	private pendingToolCallId: string | undefined
 	private pendingToolCallName: string | undefined
+	/** Responses deltas identify calls by item_id/output_index, not call_id/name. */
+	private pendingToolCallsByItemId = new Map<string, PendingToolCallIdentity>()
+	private pendingToolCallsByOutputIndex = new Map<number, PendingToolCallIdentity>()
 	// Tracks whether this response already emitted text to avoid duplicate done-event rendering.
 	private sawTextOutputInCurrentResponse = false
 	// Tracks whether text arrived through delta events so content_part events can be treated as fallback-only.
@@ -59,6 +116,15 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 	private lastResponseId: string | undefined
 	// Abort controller for cancelling ongoing requests
 	private abortController?: AbortController
+	private requestControl?: LinkedAbortController
+	private responseTerminalSeen = false
+	private semanticOutputObserved = false
+	private responseAccepted = false
+	private currentMetadata?: ApiHandlerCreateMessageMetadata
+	private terminalErrorMessage?: string
+	private terminalFailureReason?: string
+	private terminalFailureError?: ApiStreamError
+	private terminalFailureSurfaced = false
 
 	// Event types handled by the shared event processor to avoid duplication
 	private readonly coreHandledEventTypes = new Set<string>([
@@ -81,6 +147,10 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 		"response.function_call_arguments.delta",
 		"response.tool_call_arguments.done",
 		"response.function_call_arguments.done",
+		"response.failed",
+		"response.incomplete",
+		"response.error",
+		"error",
 	])
 
 	constructor(options: ApiHandlerOptions) {
@@ -105,6 +175,60 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 				"User-Agent": userAgent,
 			},
 		})
+	}
+
+	private getToolCallOutputIndex(event: any): number | undefined {
+		if (typeof event?.output_index === "number") return event.output_index
+		if (typeof event?.index === "number") return event.index
+		return undefined
+	}
+
+	private rememberToolCallIdentity(event: any, item: any): void {
+		const callId = item?.call_id || item?.tool_call_id || item?.id
+		if (typeof callId !== "string" || callId.length === 0) return
+
+		const name = item?.name || item?.function?.name || item?.function_name
+		const outputIndex = this.getToolCallOutputIndex(event)
+		const identity: PendingToolCallIdentity = {
+			callId,
+			name: typeof name === "string" ? name : undefined,
+			outputIndex: outputIndex ?? 0,
+		}
+		const itemId = item?.id || event?.item_id
+		if (typeof itemId === "string" && itemId.length > 0) {
+			this.pendingToolCallsByItemId.set(itemId, identity)
+		}
+		if (outputIndex !== undefined) {
+			this.pendingToolCallsByOutputIndex.set(outputIndex, identity)
+		}
+		this.pendingToolCallId = callId
+		this.pendingToolCallName = identity.name
+	}
+
+	private resolveToolCallIdentity(event: any): PendingToolCallIdentity | undefined {
+		const outputIndex = this.getToolCallOutputIndex(event)
+		const itemId = event?.item_id
+		const hasCorrelationFields = (typeof itemId === "string" && itemId.length > 0) || outputIndex !== undefined
+		const correlated =
+			(typeof itemId === "string" ? this.pendingToolCallsByItemId.get(itemId) : undefined) ??
+			(outputIndex !== undefined ? this.pendingToolCallsByOutputIndex.get(outputIndex) : undefined)
+		const callId =
+			event?.call_id ||
+			event?.tool_call_id ||
+			correlated?.callId ||
+			(!hasCorrelationFields ? event?.id || this.pendingToolCallId : undefined)
+		const name =
+			event?.name ||
+			event?.function_name ||
+			correlated?.name ||
+			(!hasCorrelationFields ? this.pendingToolCallName : undefined)
+
+		if (typeof callId !== "string" || callId.length === 0) return undefined
+		return {
+			callId,
+			name: typeof name === "string" ? name : undefined,
+			outputIndex: outputIndex ?? correlated?.outputIndex ?? 0,
+		}
 	}
 
 	private normalizeUsage(usage: any, model: OpenAiNativeModel): ApiStreamUsageChunk | undefined {
@@ -195,9 +319,19 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 		// Reset pending tool identity for this request
 		this.pendingToolCallId = undefined
 		this.pendingToolCallName = undefined
+		this.pendingToolCallsByItemId.clear()
+		this.pendingToolCallsByOutputIndex.clear()
 		this.sawTextOutputInCurrentResponse = false
 		this.sawTextDeltaInCurrentResponse = false
 		this.streamedToolCallIds.clear()
+		this.responseTerminalSeen = false
+		this.semanticOutputObserved = false
+		this.responseAccepted = false
+		this.currentMetadata = metadata
+		this.terminalErrorMessage = undefined
+		this.terminalFailureReason = undefined
+		this.terminalFailureError = undefined
+		this.terminalFailureSurfaced = false
 
 		// Use Responses API for ALL models
 		const { verbosity, reasoning } = this.getModel()
@@ -230,44 +364,6 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 		reasoningEffort: ReasoningEffortExtended | undefined,
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): any {
-		// Ensure all properties are in the required array for OpenAI's strict mode
-		// This recursively processes nested objects and array items
-		const ensureAllRequired = (schema: any): any => {
-			if (!schema || typeof schema !== "object" || schema.type !== "object") {
-				return schema
-			}
-
-			const result = { ...schema }
-
-			// OpenAI Responses API requires additionalProperties: false on all object schemas
-			// Only add if not already set to false (to avoid unnecessary mutations)
-			if (result.additionalProperties !== false) {
-				result.additionalProperties = false
-			}
-
-			if (result.properties) {
-				const allKeys = Object.keys(result.properties)
-				result.required = allKeys
-
-				// Recursively process nested objects
-				const newProps = { ...result.properties }
-				for (const key of allKeys) {
-					const prop = newProps[key]
-					if (prop.type === "object") {
-						newProps[key] = ensureAllRequired(prop)
-					} else if (prop.type === "array" && prop.items?.type === "object") {
-						newProps[key] = {
-							...prop,
-							items: ensureAllRequired(prop.items),
-						}
-					}
-				}
-				result.properties = newProps
-			}
-
-			return result
-		}
-
 		// Adds additionalProperties: false to all object schemas recursively
 		// without modifying required array. Used for MCP tools with strict: false
 		// to comply with OpenAI Responses API requirements.
@@ -342,7 +438,7 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 		const body: ResponsesRequestBody = {
 			model: model.id,
 			input: formattedInput,
-			stream: true,
+			stream: model.info.supportsStreaming !== false,
 			// Always use stateless operation with encrypted reasoning
 			store: false,
 			// Always include instructions (system prompt) for Responses API.
@@ -387,7 +483,7 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 						description: tool.function.description,
 						parameters: isMcp
 							? ensureAdditionalPropertiesFalse(tool.function.parameters)
-							: ensureAllRequired(tool.function.parameters),
+							: this.convertToolSchemaForOpenAI(tool.function.parameters),
 						strict: !isMcp,
 					}
 				}),
@@ -403,6 +499,50 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 		return body
 	}
 
+	private observeStreamChunk(chunk: ApiStreamChunk): void {
+		if (isApiStreamSemanticChunk(chunk)) this.semanticOutputObserved = true
+	}
+
+	private createErrorChunk(
+		error: unknown,
+		metadata?: ApiHandlerCreateMessageMetadata,
+		phase = "request",
+		messageOverride?: string,
+	): ApiStreamError {
+		const normalized = normalizeApiStreamErrorMetadata(
+			error,
+			{ requestId: metadata?.requestId, attemptId: metadata?.attemptId },
+			{ phase, semanticOutputObserved: this.semanticOutputObserved },
+		)
+		return createApiStreamError({
+			message: messageOverride ?? getApiStreamErrorMessage(error),
+			error: normalized.code,
+			...normalized,
+			semanticOutputObserved: this.semanticOutputObserved,
+		})
+	}
+
+	private createTerminalFailureError(fallbackMessage?: string, cause?: unknown): ProviderTerminalError {
+		const message = this.terminalErrorMessage || fallbackMessage || "Responses API error"
+		const error = new Error(message, cause instanceof Error ? { cause } : undefined)
+		return withTerminalFailureMetadata(error, this.terminalFailureError, this.terminalFailureReason)
+	}
+
+	private async *emitCancelledOutcome(metadata?: ApiHandlerCreateMessageMetadata, phase = "request"): ApiStream {
+		if (this.responseTerminalSeen) return
+		this.responseTerminalSeen = true
+		yield createApiStreamOutcome({
+			status: "cancelled",
+			terminal: true,
+			semanticOutputObserved: this.semanticOutputObserved,
+			reason: getApiStreamErrorMessage(this.abortController?.signal.reason, "Request cancelled"),
+			retryable: false,
+			phase,
+			requestId: metadata?.requestId,
+			attemptId: metadata?.attemptId,
+		})
+	}
+
 	private async *executeRequest(
 		requestBody: any,
 		model: OpenAiNativeModel,
@@ -410,8 +550,11 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 		systemPrompt?: string,
 		messages?: Anthropic.Messages.MessageParam[],
 	): ApiStream {
-		// Create AbortController for cancellation
-		this.abortController = new AbortController()
+		// One controller is shared by SDK and manual SSE paths. Linking the
+		// caller's signal here prevents a stalled SDK iterator from being retried
+		// or leaving a fetch alive after cancellation/deadline.
+		this.requestControl = createLinkedAbortController(metadata)
+		this.abortController = this.requestControl.controller
 
 		// Build per-request headers using taskId when available, falling back to sessionId
 		const taskId = metadata?.taskId
@@ -420,36 +563,150 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 			originator: "alpha-code",
 			session_id: taskId || this.sessionId,
 			"User-Agent": userAgent,
+			...(metadata?.requestId ? { "x-alpha-request-id": metadata.requestId } : {}),
+			...(metadata?.attemptId ? { "x-alpha-attempt-id": metadata.attemptId } : {}),
 		}
 
 		try {
+			if (this.abortController.signal.aborted) {
+				if (metadata?.streamCapabilities?.lifecycle !== false) {
+					yield createApiStreamOutcome({
+						status: "cancelled",
+						terminal: true,
+						semanticOutputObserved: false,
+						reason: getApiStreamErrorMessage(this.abortController.signal.reason, "Request cancelled"),
+						retryable: false,
+						phase: "request",
+						requestId: metadata?.requestId,
+						attemptId: metadata?.attemptId,
+					})
+				}
+				return
+			}
+
 			// Use the official SDK with per-request headers
-			const stream = (await (this.client as any).responses.create(requestBody, {
+			const response = await (this.client as any).responses.create(requestBody, {
 				signal: this.abortController.signal,
 				headers: requestHeaders,
-			})) as AsyncIterable<any>
+			})
+
+			// Some higher-compute models only support non-streaming Responses API calls.
+			// Adapt their completed response into the same ApiStream chunks used by callers.
+			if (requestBody.stream === false) {
+				if (Array.isArray(response?.output)) {
+					for (const [outputIndex, item] of response.output.entries()) {
+						for await (const outChunk of this.processEvent(
+							{ type: "response.output_item.done", output_index: outputIndex, item },
+							model,
+						)) {
+							this.observeStreamChunk(outChunk)
+							yield outChunk
+						}
+					}
+				}
+
+				for await (const outChunk of this.processEvent({ type: "response.completed", response }, model)) {
+					this.observeStreamChunk(outChunk)
+					yield outChunk
+					if (outChunk.type === "outcome" && outChunk.status === "failed") {
+						if (metadata?.streamCapabilities?.lifecycle === true) return
+						throw this.createTerminalFailureError(outChunk.reason)
+					}
+				}
+				return
+			}
+
+			const stream = response as AsyncIterable<any>
 
 			if (typeof (stream as any)[Symbol.asyncIterator] !== "function") {
 				throw new Error(
 					"OpenAI SDK did not return an AsyncIterable for Responses API streaming. Falling back to SSE.",
 				)
 			}
+			this.responseAccepted = true
 
-			for await (const event of stream) {
+			for await (const event of iterateApiStreamWithAbort(stream, this.abortController.signal)) {
 				// Check if request was aborted
 				if (this.abortController.signal.aborted) {
 					break
 				}
 
 				for await (const outChunk of this.processEvent(event, model)) {
+					this.observeStreamChunk(outChunk)
 					yield outChunk
+					if (outChunk.type === "outcome" && outChunk.status === "failed") {
+						if (metadata?.streamCapabilities?.lifecycle === true) return
+						throw this.createTerminalFailureError(outChunk.reason)
+					}
 				}
 			}
+
+			if (this.abortController.signal.aborted) {
+				yield* this.emitCancelledOutcome(metadata, "stream")
+			} else if (!this.responseTerminalSeen) {
+				// An SDK stream that reaches EOF without response.done/completed is
+				// accepted but incomplete; never replay it through manual SSE.
+				yield createApiStreamOutcome({
+					status: "incomplete",
+					terminal: false,
+					semanticOutputObserved: this.semanticOutputObserved,
+					reason: "Responses API stream ended without a terminal event",
+					retryable: true,
+					phase: "stream",
+					requestId: metadata?.requestId,
+					attemptId: metadata?.attemptId,
+				})
+			}
 		} catch (sdkErr: any) {
-			// For errors, fallback to manual SSE via fetch
+			if (requestBody.stream === false) {
+				if (this.terminalFailureSurfaced) {
+					throw withTerminalFailureMetadata(
+						sdkErr instanceof Error ? sdkErr : new Error(String(sdkErr)),
+						this.terminalFailureError,
+						this.terminalFailureReason,
+					)
+				}
+				throw sdkErr
+			}
+
+			if (isApiStreamAbortError(sdkErr, this.abortController.signal)) {
+				yield* this.emitCancelledOutcome(metadata, "request")
+				return
+			}
+
+			// A resolved SDK stream is an accepted request. Once accepted—or once
+			// semantic output was seen—manual SSE would replay the logical request.
+			if (this.responseAccepted || this.semanticOutputObserved || this.responseTerminalSeen) {
+				if (this.terminalFailureSurfaced) {
+					throw withTerminalFailureMetadata(
+						sdkErr instanceof Error ? sdkErr : new Error(String(sdkErr)),
+						this.terminalFailureError,
+						this.terminalFailureReason,
+					)
+				}
+				const errorChunk = this.createErrorChunk(sdkErr, metadata, "stream")
+				yield errorChunk
+				yield createApiStreamOutcome({
+					status: "failed",
+					terminal: true,
+					semanticOutputObserved: this.semanticOutputObserved,
+					reason: errorChunk.message,
+					retryable: errorChunk.retryable,
+					phase: errorChunk.phase ?? "stream",
+					requestId: metadata?.requestId,
+					attemptId: metadata?.attemptId,
+				})
+				if (metadata?.streamCapabilities?.lifecycle === true) return
+				throw sdkErr
+			}
+
+			// SDK failed before yielding/accepting anything; this is the only point
+			// where manual SSE fallback is safe.
 			yield* this.makeResponsesApiRequest(requestBody, model, metadata, systemPrompt, messages)
 		} finally {
 			this.abortController = undefined
+			this.requestControl?.dispose()
+			this.requestControl = undefined
 		}
 	}
 
@@ -558,9 +815,6 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 		const baseUrl = this.options.openAiNativeBaseUrl || "https://api.openai.com"
 		const url = `${baseUrl}/v1/responses`
 
-		// Create AbortController for cancellation
-		this.abortController = new AbortController()
-
 		// Build per-request headers using taskId when available, falling back to sessionId
 		const taskId = metadata?.taskId
 		const userAgent = `alpha-code/${Package.version} (${os.platform()} ${os.release()}; ${os.arch()}) node/${process.version.slice(1)}`
@@ -574,9 +828,11 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 					originator: "alpha-code",
 					session_id: taskId || this.sessionId,
 					"User-Agent": userAgent,
+					...(metadata?.requestId ? { "x-alpha-request-id": metadata.requestId } : {}),
+					...(metadata?.attemptId ? { "x-alpha-attempt-id": metadata.attemptId } : {}),
 				},
 				body: JSON.stringify(requestBody),
-				signal: this.abortController.signal,
+				signal: this.abortController?.signal,
 			})
 
 			if (!response.ok) {
@@ -632,20 +888,59 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 					errorMessage += ` - ${errorDetails}`
 				}
 
-				throw new Error(errorMessage)
+				const requestError = new Error(errorMessage) as Error & {
+					status?: number
+					retryable?: boolean
+				}
+				requestError.status = response.status
+				requestError.retryable =
+					response.status === 408 ||
+					response.status === 409 ||
+					response.status === 425 ||
+					response.status === 429 ||
+					response.status >= 500
+				throw requestError
 			}
+
+			this.responseAccepted = true
 
 			if (!response.body) {
 				throw new Error("Responses API error: No response body")
 			}
 
 			// Handle streaming response
-			yield* this.handleStreamResponse(response.body, model)
+			yield* this.handleStreamResponse(response.body, model, metadata)
 		} catch (error) {
+			if (isApiStreamAbortError(error, this.abortController?.signal)) {
+				yield* this.emitCancelledOutcome(metadata, "request")
+				return
+			}
 			const model = this.getModel()
 			const errorMessage = error instanceof Error ? error.message : String(error)
 			const apiError = new ApiProviderError(errorMessage, this.providerName, model.id, "createMessage")
 			TelemetryService.instance.captureException(apiError)
+			if (this.terminalFailureSurfaced) {
+				throw withTerminalFailureMetadata(
+					error instanceof Error ? error : new Error(errorMessage),
+					this.terminalFailureError,
+					this.terminalFailureReason,
+				)
+			}
+			if (metadata?.streamCapabilities?.lifecycle !== false) {
+				const errorChunk = this.createErrorChunk(error, metadata, "request")
+				yield errorChunk
+				yield createApiStreamOutcome({
+					status: "failed",
+					terminal: true,
+					semanticOutputObserved: this.semanticOutputObserved,
+					reason: errorChunk.message,
+					retryable: errorChunk.retryable,
+					phase: "request",
+					requestId: metadata?.requestId,
+					attemptId: metadata?.attemptId,
+				})
+			}
+			if (metadata?.streamCapabilities?.lifecycle === true) return
 
 			if (error instanceof Error) {
 				// Re-throw with the original error message if it's already formatted
@@ -657,8 +952,6 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 			}
 			// Handle non-Error objects
 			throw new Error(`Unexpected error connecting to Responses API`)
-		} finally {
-			this.abortController = undefined
 		}
 	}
 
@@ -669,7 +962,11 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 	 * and yields structured data chunks (`ApiStream`). It handles a wide variety of event types,
 	 * including text deltas, reasoning, usage data, and various status/tool events.
 	 */
-	private async *handleStreamResponse(body: ReadableStream<Uint8Array>, model: OpenAiNativeModel): ApiStream {
+	private async *handleStreamResponse(
+		body: ReadableStream<Uint8Array>,
+		model: OpenAiNativeModel,
+		metadata?: ApiHandlerCreateMessageMetadata,
+	): ApiStream {
 		const reader = body.getReader()
 		const decoder = new TextDecoder()
 		let buffer = ""
@@ -684,7 +981,9 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 					break
 				}
 
-				const { done, value } = await reader.read()
+				const readResult = await raceApiStreamAbort(reader.read(), this.abortController?.signal)
+				if (!readResult) break
+				const { done, value } = readResult
 				if (done) break
 
 				buffer += decoder.decode(value, { stream: true })
@@ -718,6 +1017,7 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 							// This applies to both SDK and raw SSE fallback paths.
 							if (parsed?.type && this.coreHandledEventTypes.has(parsed.type)) {
 								for await (const outChunk of this.processEvent(parsed, model)) {
+									this.observeStreamChunk(outChunk)
 									// Track whether we've emitted any content so fallback handling can decide appropriately
 									// Include tool calls so tool-call-only responses aren't treated as empty
 									if (
@@ -729,6 +1029,10 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 										hasContent = true
 									}
 									yield outChunk
+									if (outChunk.type === "outcome" && outChunk.status === "failed") {
+										if (metadata?.streamCapabilities?.lifecycle === true) return
+										throw this.createTerminalFailureError(outChunk.reason)
+									}
 								}
 								continue
 							}
@@ -904,7 +1208,12 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 							) {
 								// Delegated to processEvent (handles accumulation and completion)
 								for await (const outChunk of this.processEvent(parsed, model)) {
+									this.observeStreamChunk(outChunk)
 									yield outChunk
+									if (outChunk.type === "outcome" && outChunk.status === "failed") {
+										if (metadata?.streamCapabilities?.lifecycle === true) return
+										throw this.createTerminalFailureError(outChunk.reason)
+									}
 								}
 							}
 							// Handle MCP (Model Context Protocol) tool events
@@ -1122,12 +1431,52 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 				}
 			}
 
-			// If we didn't get any content, don't throw - the API might have returned an empty response
-			// This can happen in certain edge cases and shouldn't break the flow
+			this.semanticOutputObserved ||= hasContent
+			if (this.abortController?.signal.aborted) {
+				yield* this.emitCancelledOutcome(metadata, "stream")
+			} else if (!this.responseTerminalSeen) {
+				yield createApiStreamOutcome({
+					status: "incomplete",
+					terminal: false,
+					semanticOutputObserved: this.semanticOutputObserved,
+					reason: "Responses API stream ended without a terminal event",
+					retryable: true,
+					phase: "stream",
+					requestId: metadata?.requestId,
+					attemptId: metadata?.attemptId,
+				})
+			}
 		} catch (error) {
+			if (isApiStreamAbortError(error, this.abortController?.signal)) {
+				yield* this.emitCancelledOutcome(metadata, "stream")
+				return
+			}
 			const errorMessage = error instanceof Error ? error.message : String(error)
 			const apiError = new ApiProviderError(errorMessage, this.providerName, model.id, "createMessage")
 			TelemetryService.instance.captureException(apiError)
+
+			if (this.terminalFailureSurfaced) {
+				throw withTerminalFailureMetadata(
+					error instanceof Error ? error : new Error(errorMessage),
+					this.terminalFailureError,
+					this.terminalFailureReason,
+				)
+			}
+			if (metadata?.streamCapabilities?.lifecycle === true) {
+				const errorChunk = this.createErrorChunk(error, metadata, "stream")
+				yield errorChunk
+				yield createApiStreamOutcome({
+					status: "failed",
+					terminal: true,
+					semanticOutputObserved: this.semanticOutputObserved,
+					reason: errorChunk.message,
+					retryable: errorChunk.retryable,
+					phase: errorChunk.phase ?? "stream",
+					requestId: metadata?.requestId,
+					attemptId: metadata?.attemptId,
+				})
+				return
+			}
 
 			if (error instanceof Error) {
 				throw new Error(`Error processing response stream: ${error.message}`)
@@ -1142,6 +1491,61 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 	 * Shared processor for Responses API events.
 	 */
 	private async *processEvent(event: any, model: OpenAiNativeModel): ApiStream {
+		// The first terminal event owns this response. Providers can occasionally
+		// repeat a done/completed marker (or deliver a late event after a terminal
+		// failure); ignore everything after the first terminal outcome so callers
+		// cannot observe a second status or upgrade a non-success response.
+		if (this.responseTerminalSeen) return
+
+		const terminal = getResponsesApiTerminal(event)
+		if (terminal?.status === "failed") {
+			this.responseTerminalSeen = true
+			this.terminalFailureSurfaced = true
+			this.terminalErrorMessage = `${terminal.eventType === "response.failed" ? "Response failed" : "Responses API error"}: ${terminal.reason || "Unknown error"}`
+			const errorChunk = this.createErrorChunk(
+				terminal.error && event && typeof event === "object"
+					? { ...event, ...(typeof terminal.error === "object" ? terminal.error : {}) }
+					: (terminal.error ?? event),
+				this.currentMetadata,
+				terminal.phase ?? "response",
+				terminal.reason,
+			)
+			this.terminalFailureReason = errorChunk.message
+			this.terminalFailureError = errorChunk
+			yield errorChunk
+			yield createApiStreamOutcome({
+				status: "failed",
+				terminal: true,
+				semanticOutputObserved: this.semanticOutputObserved,
+				reason: errorChunk.message,
+				retryable: errorChunk.retryable,
+				phase: errorChunk.phase ?? "response",
+				requestId: this.currentMetadata?.requestId,
+				attemptId: this.currentMetadata?.attemptId,
+			})
+			return
+		}
+
+		if (terminal) {
+			this.responseTerminalSeen = true
+		}
+
+		yield* this.processResponseEvent(event, model)
+
+		if (terminal) {
+			yield createApiStreamOutcome({
+				status: terminal.status,
+				terminal: true,
+				semanticOutputObserved: this.semanticOutputObserved,
+				reason: terminal.reason,
+				phase: terminal.phase ?? "response",
+				requestId: this.currentMetadata?.requestId,
+				attemptId: this.currentMetadata?.attemptId,
+			})
+		}
+	}
+
+	private async *processResponseEvent(event: any, model: OpenAiNativeModel): ApiStream {
 		// Capture resolved service tier when available
 		if (event?.response?.service_tier) {
 			this.lastServiceTier = event.response.service_tier as ServiceTier
@@ -1226,19 +1630,24 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 			event?.type === "response.tool_call_arguments.delta" ||
 			event?.type === "response.function_call_arguments.delta"
 		) {
-			// Some streams omit stable identity on delta events; fall back to the
-			// most recently observed tool identity from output_item events.
-			const callId = event.call_id || event.tool_call_id || event.id || this.pendingToolCallId || undefined
-			const name = event.name || event.function_name || this.pendingToolCallName || undefined
+			const identity = this.resolveToolCallIdentity(event)
+			const callId = identity?.callId
+			const name = identity?.name
 			const args = event.delta || event.arguments
 
 			// Avoid emitting incomplete tool_call_partial chunks; the downstream
 			// NativeToolCallParser needs a name to start a call.
-			if (typeof name === "string" && name.length > 0 && typeof callId === "string" && callId.length > 0) {
+			if (
+				identity &&
+				typeof name === "string" &&
+				name.length > 0 &&
+				typeof callId === "string" &&
+				callId.length > 0
+			) {
 				this.streamedToolCallIds.add(callId)
 				yield {
 					type: "tool_call_partial",
-					index: event.index ?? 0,
+					index: identity.outputIndex,
 					id: callId,
 					name,
 					arguments: args,
@@ -1262,12 +1671,7 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 			if (item) {
 				// Capture tool identity so subsequent argument deltas can be attributed.
 				if (item.type === "function_call" || item.type === "tool_call") {
-					const callId = item.call_id || item.tool_call_id || item.id
-					const name = item.name || item.function?.name || item.function_name
-					if (typeof callId === "string" && callId.length > 0) {
-						this.pendingToolCallId = callId
-						this.pendingToolCallName = typeof name === "string" ? name : undefined
-					}
+					this.rememberToolCallIdentity(event, item)
 				}
 
 				// For "added" events, yield text/reasoning content (streaming path).
@@ -1388,9 +1792,17 @@ export class OpenAiNativeHandler extends BaseProvider implements SingleCompletio
 	}
 
 	private getReasoningEffort(model: OpenAiNativeModel): ReasoningEffortExtended | undefined {
-		// Single source of truth: user setting overrides, else model default (from types).
-		const selected = (this.options.reasoningEffort as any) ?? (model.info.reasoningEffort as any)
-		return selected && selected !== "disable" ? (selected as any) : undefined
+		const selected = this.options.reasoningEffort ?? model.info.reasoningEffort
+		const supported = model.info.supportsReasoningEffort
+		// Required-reasoning models must not inherit unsupported efforts from saved settings.
+		if (
+			model.info.requiredReasoningEffort &&
+			Array.isArray(supported) &&
+			(!selected || !supported.includes(selected))
+		) {
+			return model.info.reasoningEffort
+		}
+		return selected && selected !== "disable" ? selected : undefined
 	}
 
 	/**

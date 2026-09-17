@@ -106,7 +106,8 @@
 		"goToModes": "转到模式设置",
 		"moreInfoMcp": "查看 {{name}} MCP 文档",
 		"validationRequired": "请为 {{paramName}} 提供值",
-		"prerequisites": "前置条件"
+		"prerequisites": "前置条件",
+		"installing": "正在安装..."
 	},
 	"sources": {
 		"title": "配置 Marketplace 源",

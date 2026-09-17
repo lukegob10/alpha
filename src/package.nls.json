@@ -8,7 +8,6 @@
 	"command.newTask.title": "New Task",
 	"command.history.title": "Task History",
 	"command.scheduledTasks.title": "Scheduled Tasks",
-	"command.goalSeek.title": "Goal Seek",
 	"command.marketplace.title": "Marketplace",
 	"command.openInEditor.title": "Open in Editor",
 	"command.settings.title": "Settings",
@@ -48,5 +47,7 @@
 	"settings.debug.description": "Enable debug mode to show additional buttons for viewing API conversation history and UI messages as prettified JSON in temporary files.",
 	"settings.debugProxy.enabled.description": "**Enable Debug Proxy** — Route all outbound network requests through a proxy for MITM debugging. Only active when running in debug mode (F5).",
 	"settings.debugProxy.serverUrl.description": "Proxy URL (e.g., `http://127.0.0.1:8888`). Only used when **Debug Proxy** is enabled.",
-	"settings.debugProxy.tlsInsecure.description": "Accept self-signed certificates from the proxy. **Required for MITM inspection.** ⚠️ Insecure — only use for local debugging."
+	"settings.debugProxy.tlsInsecure.description": "Accept self-signed certificates from the proxy. **Required for MITM inspection.** ⚠️ Insecure — only use for local debugging.",
+	"command.openTickets.title": "Alpha: Tickets",
+	"command.previewHtmlDocument.title": "Preview HTML Document"
 }

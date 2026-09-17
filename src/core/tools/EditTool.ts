@@ -1,10 +1,8 @@
 import fs from "fs/promises"
 import path from "path"
 
-import { type ClineSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
+import { type AlphaSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
 
-import { getReadablePath } from "../../utils/path"
-import { isPathOutsideWorkspace } from "../../utils/pathUtils"
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
@@ -14,6 +12,8 @@ import { sanitizeUnifiedDiff, computeDiffStats } from "../diff/stats"
 import type { ToolUse } from "../../shared/tools"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { fileEditContent, normalizeToLF } from "./fileEditContent"
+import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
 interface EditParams {
 	file_path: string
@@ -64,16 +64,16 @@ export class EditTool extends BaseTool<"edit"> {
 				return
 			}
 
-			const accessAllowed = task.rooIgnoreController?.validateAccess(relPath)
+			const accessAllowed = task.alphaIgnoreController?.validateAccess(relPath)
 
 			if (!accessAllowed) {
 				await task.say("rooignore_error", relPath)
-				pushToolResult(formatResponse.rooIgnoreError(relPath))
+				pushToolResult(formatResponse.alphaIgnoreError(relPath))
 				return
 			}
 
 			// Check if file is write-protected
-			const isWriteProtected = task.rooProtectedController?.isWriteProtected(relPath) || false
+			const isWriteProtected = task.alphaProtectedController?.isWriteProtected(relPath) || false
 
 			const absolutePath = path.resolve(task.cwd, relPath)
 
@@ -87,11 +87,9 @@ export class EditTool extends BaseTool<"edit"> {
 				return
 			}
 
-			let fileContent: string
+			let originalFileContent: string
 			try {
-				fileContent = await fs.readFile(absolutePath, "utf8")
-				// Normalize line endings to LF for consistent matching
-				fileContent = fileContent.replace(/\r\n/g, "\n")
+				originalFileContent = await fs.readFile(absolutePath, "utf8")
 			} catch (error) {
 				task.consecutiveMistakeCount++
 				task.recordToolError("edit")
@@ -101,9 +99,13 @@ export class EditTool extends BaseTool<"edit"> {
 				return
 			}
 
+			// Normalize line endings to LF for consistent matching
+			const projection = fileEditContent(originalFileContent)
+			const fileContent = projection.content
+
 			// Normalize line endings in old_string/new_string to match file content
-			const normalizedOld = oldString.replace(/\r\n/g, "\n")
-			const normalizedNew = newString.replace(/\r\n/g, "\n")
+			const normalizedOld = normalizeToLF(oldString)
+			const normalizedNew = normalizeToLF(newString)
 
 			// Count occurrences of old_string in file content
 			const matchCount = fileContent.split(normalizedOld).length - 1
@@ -142,8 +144,9 @@ export class EditTool extends BaseTool<"edit"> {
 				newContent = fileContent.replace(normalizedOld, () => normalizedNew)
 			}
 
+			newContent = projection.restore(newContent)
 			// Check if any changes were made
-			if (newContent === fileContent) {
+			if (newContent === originalFileContent) {
 				pushToolResult(`No changes needed for '${relPath}'`)
 				return
 			}
@@ -152,10 +155,10 @@ export class EditTool extends BaseTool<"edit"> {
 
 			// Initialize diff view
 			task.diffViewProvider.editType = "modify"
-			task.diffViewProvider.originalContent = fileContent
+			task.diffViewProvider.originalContent = originalFileContent
 
 			// Generate and validate diff
-			const diff = formatResponse.createPrettyPatch(relPath, fileContent, newContent)
+			const diff = formatResponse.createPrettyPatch(relPath, originalFileContent, newContent)
 			if (!diff) {
 				pushToolResult(`No changes needed for '${relPath}'`)
 				await task.diffViewProvider.reset()
@@ -174,11 +177,11 @@ export class EditTool extends BaseTool<"edit"> {
 
 			const sanitizedDiff = sanitizeUnifiedDiff(diff)
 			const diffStats = computeDiffStats(sanitizedDiff) || undefined
-			const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
+			const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
-			const sharedMessageProps: ClineSayTool = {
+			const sharedMessageProps: AlphaSayTool = {
 				tool: "appliedDiff",
-				path: getReadablePath(task.cwd, relPath),
+				path: getTaskReadablePath(task, relPath),
 				diff: sanitizedDiff,
 				isOutsideWorkspace,
 			}
@@ -188,11 +191,11 @@ export class EditTool extends BaseTool<"edit"> {
 				content: sanitizedDiff,
 				isProtected: isWriteProtected,
 				diffStats,
-			} satisfies ClineSayTool)
+			} satisfies AlphaSayTool)
 
 			// Show diff view if focus disruption prevention is disabled
 			if (!isPreventFocusDisruptionEnabled) {
-				await task.diffViewProvider.open(relPath)
+				await task.diffViewProvider.open(relPath, { exists: true, content: originalFileContent })
 				await task.diffViewProvider.update(newContent, true)
 				task.diffViewProvider.scrollToFirstDiff()
 			}
@@ -211,8 +214,12 @@ export class EditTool extends BaseTool<"edit"> {
 
 			// Save the changes
 			if (isPreventFocusDisruptionEnabled) {
-				// Direct file write without diff view or opening the file
-				await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs)
+				// Direct file write without diff view or opening the file. The raw
+				// content is the baseline; matching used a normalized projection.
+				await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs, {
+					exists: true,
+					content: originalFileContent,
+				})
 			} else {
 				// Call saveChanges to update the DiffViewProvider properties
 				await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)
@@ -253,11 +260,11 @@ export class EditTool extends BaseTool<"edit"> {
 
 		// relPath is guaranteed non-null after hasPathStabilized
 		const absolutePath = path.resolve(task.cwd, relPath!)
-		const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
+		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
-		const sharedMessageProps: ClineSayTool = {
+		const sharedMessageProps: AlphaSayTool = {
 			tool: "appliedDiff",
-			path: getReadablePath(task.cwd, relPath!),
+			path: getTaskReadablePath(task, relPath!),
 			diff: block.params.old_string ? "1 edit operation" : undefined,
 			isOutsideWorkspace,
 		}

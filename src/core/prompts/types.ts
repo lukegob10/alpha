@@ -9,4 +9,16 @@ export interface SystemPromptSettings {
 	newTaskRequireTodos: boolean
 	/** When true, model should hide vendor/company identity in responses */
 	isStealthModel?: boolean
+	/** Narrow child authority used to omit capabilities the child cannot call. */
+	subagentRole?: "explore" | "review" | "worker"
+	/** Whether the managed child received a frozen, mode-filtered skill catalog. */
+	subagentHasInheritedSkills?: boolean
+	/** Whether this managed child uses a frozen parent context package. */
+	subagentUsesFrozenContext?: boolean
+	/** Exact frozen parent instruction body, loaded from private task storage and never from current live settings. */
+	subagentFrozenInstructions?: string
+	/** Whether the child's frozen manifest grants bounded managed-descendant delegation. */
+	subagentCanDelegate?: boolean
+	/** Frozen effective policy governing any managed-descendant launch. */
+	subagentDelegationPolicy?: "explicit-only" | "proactive"
 }

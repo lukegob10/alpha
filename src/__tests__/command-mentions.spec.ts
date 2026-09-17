@@ -17,7 +17,7 @@ describe("Command Mentions", () => {
 			text,
 			"/test/cwd", // cwd
 			undefined, // fileContextTracker
-			undefined, // rooIgnoreController
+			undefined, // alphaIgnoreController
 			false, // showRooIgnoredFiles
 			true, // includeDiagnosticMessages
 			50, // maxDiagnosticMessages
@@ -25,6 +25,58 @@ describe("Command Mentions", () => {
 	}
 
 	describe("parseMentions with command support", () => {
+		it("treats a slash command after /plan as literal Plan prompt text", async () => {
+			mockGetCommand.mockResolvedValue({
+				name: "code-only-command",
+				content: "Mutating Code-mode instructions",
+				source: "project",
+				filePath: "/project/.alpha/commands/code-only-command.md",
+				mode: "code",
+			})
+
+			const result = await callParseMentions("/plan /code-only-command make changes")
+
+			expect(result).toMatchObject({
+				mode: "architect",
+				text: "/code-only-command make changes",
+				slashCommandHelp: undefined,
+			})
+			expect(mockGetCommand).not.toHaveBeenCalled()
+		})
+
+		it("does not inject a skill from the literal /plan prompt remainder", async () => {
+			mockGetCommand.mockResolvedValue(undefined)
+			const skillsManager = {
+				getSkillContent: vi.fn().mockResolvedValue({
+					name: "code-only-skill",
+					description: "Mutating Code-mode skill",
+					path: "/mock/.alpha/skills/code-only-skill/SKILL.md",
+					source: "project" as const,
+					instructions: "Write files",
+				}),
+			}
+
+			const result = await parseMentions(
+				"/plan /code-only-skill make changes",
+				"/test/cwd",
+				undefined,
+				undefined,
+				false,
+				true,
+				50,
+				skillsManager,
+				"code",
+			)
+
+			expect(result).toMatchObject({
+				mode: "architect",
+				text: "/code-only-skill make changes",
+				slashCommandHelp: undefined,
+			})
+			expect(mockGetCommand).not.toHaveBeenCalled()
+			expect(skillsManager.getSkillContent).not.toHaveBeenCalled()
+		})
+
 		it("should parse command mentions and include content", async () => {
 			const commandContent = "# Setup Environment\n\nRun the following commands:\n```bash\nnpm install\n```"
 			mockGetCommand.mockResolvedValue({
@@ -133,6 +185,8 @@ describe("Command Mentions", () => {
 			expect(result.slashCommandHelp).toContain("Skill: skill-only")
 			expect(result.slashCommandHelp).toContain("Description: Skill-generated command")
 			expect(result.slashCommandHelp).toContain("Source: project")
+			expect(result.slashCommandHelp).toContain("Skill file: /mock/.alpha/skills/skill-only/SKILL.md")
+			expect(result.slashCommandHelp).toContain("Base directory: /mock/.alpha/skills/skill-only")
 			expect(result.slashCommandHelp).toContain("--- Skill Instructions ---")
 			expect(result.slashCommandHelp).toContain("Use skill workflow")
 		})

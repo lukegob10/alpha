@@ -1,4 +1,18 @@
 {
+	"messageActions": {
+		"copy": "복사",
+		"copied": "복사됨",
+		"edit": "수정 후 다시 보내기",
+		"restart": "이전 요청부터 다시 시작",
+		"restartWarning": "이전 요청을 다시 실행하고 이후의 모든 메시지를 대체합니다. 워크스페이스 파일은 현재 상태로 유지됩니다.",
+		"restartWithCheckpoint": "이전 요청을 다시 실행하고 이후의 모든 메시지를 대체합니다. 파일도 해당 체크포인트로 복원하시겠습니까?",
+		"restartOnly": "파일을 복원하지 않고 다시 시작"
+	},
+	"activityTrace": {
+		"needsAttention": "확인 필요",
+		"workedFor": "작업 시간 {{duration}}"
+	},
+	"completionReport": "완료 보고서",
 	"greeting": "Alpha에 오신 것을 환영합니다",
 	"task": {
 		"title": "작업",
@@ -30,7 +44,9 @@
 	"unpin": "고정 해제하기",
 	"pin": "고정하기",
 	"fileChangesInConversation": {
-		"header": "이 대화에서 {{count}}개 파일이 변경됨"
+		"header": "수정한 파일: {{count}}개",
+		"linesChanged": "{{added}}줄 추가, {{removed}}줄 삭제",
+		"openFile": "파일 열기: {{path}}"
 	},
 	"tokenProgress": {
 		"availableSpace": "사용 가능한 공간: {{amount}} 토큰",
@@ -213,18 +229,21 @@
 		"didViewTopLevel": "Alpha가 이 디렉토리의 최상위 파일을 보았습니다",
 		"wantsToViewRecursive": "Alpha가 이 디렉토리의 모든 파일을 재귀적으로 보고 싶어합니다",
 		"didViewRecursive": "Alpha가 이 디렉토리의 모든 파일을 재귀적으로 보았습니다",
-		"wantsToSearch": "Alpha가 이 디렉토리에서 <code>{{regex}}</code>을(를) 검색하고 싶어합니다",
-		"didSearch": "Alpha가 이 디렉토리에서 <code>{{regex}}</code>을(를) 검색했습니다",
-		"wantsToSearchOutsideWorkspace": "Alpha가 이 디렉토리(워크스페이스 외부)에서 <code>{{regex}}</code>을(를) 검색하고 싶어합니다",
-		"didSearchOutsideWorkspace": "Alpha가 이 디렉토리(워크스페이스 외부)에서 <code>{{regex}}</code>을(를) 검색했습니다",
+		"wantsToSearch": "Alpha가 디렉터리를 검색하려고 합니다",
+		"didSearch": "Alpha가 디렉터리를 검색했습니다",
+		"wantsToSearchOutsideWorkspace": "Alpha가 디렉터리를 검색하려고 합니다 (워크스페이스 외부)",
+		"didSearchOutsideWorkspace": "Alpha가 디렉터리를 검색했습니다 (워크스페이스 외부)",
 		"wantsToViewTopLevelOutsideWorkspace": "Alpha가 이 디렉토리(워크스페이스 외부)의 최상위 파일을 보고 싶어합니다",
 		"didViewTopLevelOutsideWorkspace": "Alpha가 이 디렉토리(워크스페이스 외부)의 최상위 파일을 보았습니다",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha가 이 디렉토리(워크스페이스 외부)의 모든 파일을 재귀적으로 보고 싶어합니다",
 		"didViewRecursiveOutsideWorkspace": "Alpha가 이 디렉토리(워크스페이스 외부)의 모든 파일을 재귀적으로 보았습니다",
-		"wantsToViewMultipleDirectories": "Alpha가 여러 디렉토리를 보려고 합니다"
+		"wantsToViewMultipleDirectories": "Alpha가 여러 디렉토리를 보려고 합니다",
+		"wantsToSearchMultiple": "Alpha는 {{count}} 파일 검색을 실행하려고 합니다.",
+		"didSearchMultiple": "Alpha가 {{count}} 파일 검색을 실행했습니다."
 	},
 	"commandOutput": "명령 출력",
 	"commandExecution": {
+		"command": "명령",
 		"abort": "중단",
 		"running": "실행 중",
 		"pid": "PID: {{pid}}",
@@ -243,7 +262,7 @@
 	"response": "응답",
 	"arguments": "인수",
 	"text": {
-		"rooSaid": "루가 말했다"
+		"rooSaid": "Alpha가 말했다"
 	},
 	"feedback": {
 		"youSaid": "당신은 말했다"
@@ -315,6 +334,7 @@
 	"contextManagement": {
 		"tokens": "토큰",
 		"condensation": {
+			"unchanged": "컨텍스트가 이미 한도 내에 있습니다",
 			"title": "컨텍스트 요약됨",
 			"inProgress": "컨텍스트 압축 중...",
 			"errorHeader": "컨텍스트 압축 실패"
@@ -347,8 +367,11 @@
 			"gpt54": "Poe 제공업체: Poe를 AI 제공업체로 추가해 Alpha에서 Poe 모델에 직접 접근할 수 있게 했어요.",
 			"slashSkills": "xAI 및 MiniMax 개선: xAI 제공업체를 Responses API로 마이그레이션하고, 재사용 가능한 변환 유틸리티를 추가하고, Grok-4.20 기본값을 업데이트하고, MiniMax 모델 목록과 컨텍스트 윈도우 처리를 수정해 더 안정적인 설정을 제공해요.",
 			"geminiPro": "Gemini 3.1 Pro 지원: Gemini 3.1 Pro 모델 지원이 추가되었으며, 향상된 성능을 위해 기본 Gemini 모델로 설정되었습니다.",
-			"cliNdjson": "CLI NDJSON 프로토콜: 새로운 NDJSON stdin 프로토콜, list 하위 명령어, 더 유연한 CLI 워크플로를 위한 모듈화된 run 명령어.",
-			"cliRelease": "CLI v0.1.0: Alpha CLI가 안정적인 명령어 인터페이스로 첫 공식 릴리스에 도달했습니다."
+			"welcome": "Alpha v{{version}}에서는 검증, 명령 제어, 작업 연속성이 개선되었습니다.",
+			"acceptanceChecks": "선언된 입력이 변경되지 않는 동안 통과한 검사를 재사용합니다.",
+			"commandControl": "작업 소유의 백그라운드 명령을 기다리고, 입력을 보내고, 중지할 수 있습니다.",
+			"workflowContinuity": "다시 로드하거나 컨텍스트를 압축해도 작업 제약 조건과 스킬 컨텍스트를 유지합니다.",
+			"chatUpdates": "더 명확한 채팅 동작을 사용하고 작업 완료 후 공급자를 선택할 수 있습니다."
 		}
 	},
 	"costs": {
@@ -363,7 +386,6 @@
 			"copy_code": "코드 복사"
 		}
 	},
-	"profileViolationWarning": "현재 프로필이 조직 설정과 호환되지 않습니다",
 	"shellIntegration": {
 		"title": "명령 실행 경고",
 		"description": "명령이 VSCode 터미널 쉘 통합 없이 실행되고 있습니다. 이 경고를 숨기려면 <settingsLink>Alpha 설정</settingsLink>의 <strong>Terminal</strong> 섹션에서 쉘 통합을 비활성화하거나 아래 링크를 사용하여 VSCode 터미널 통합 문제를 해결하세요.",
@@ -382,6 +404,7 @@
 		}
 	},
 	"codebaseSearch": {
+		"title": "코드베이스 검색",
 		"wantsToSearch": "Alpha가 코드베이스에서 <code>{{query}}</code>을(를) 검색하고 싶어합니다",
 		"wantsToSearchWithPath": "Alpha가 <code>{{path}}</code>에서 <code>{{query}}</code>을(를) 검색하고 싶어합니다",
 		"didSearch_one": "1개의 결과를 찾았습니다",
@@ -457,8 +480,19 @@
 	},
 	"queuedMessages": {
 		"title": "대기열 메시지",
-		"clickToEdit": "클릭하여 메시지 편집"
+		"clickToEdit": "클릭하여 메시지 편집",
+		"steering": "방향 전환 중…",
+		"queueFailed": "메시지를 대기열에 추가하지 못했습니다. 초안은 작성기에 그대로 있습니다.",
+		"steerFailed": "방향 전환을 시작하지 못했습니다. 대기열 메시지는 계속 사용할 수 있습니다.",
+		"edit": "편집",
+		"editTooltip": "대기 중인 이 메시지 편집",
+		"editing": "작성기에서 편집 중",
+		"dragHandle": "대기 중인 메시지 드래그",
+		"dragTooltip": "대기 중인 이 메시지를 드래그하여 재정렬",
+		"steer": "조종",
+		"steerTooltip": "대기 중인 이 메시지를 현재 회전으로 보냅니다."
 	},
+	"modelResponseDelayed": "모델의 다음 업데이트를 기다리고 있습니다. 긴 추론에는 시간이 걸릴 수 있습니다.",
 	"slashCommand": {
 		"wantsToRun": "Alpha가 슬래시 명령어를 실행하려고 합니다",
 		"didRun": "Alpha가 슬래시 명령어를 실행했습니다"
@@ -486,5 +520,38 @@
 		"title": "공급자 지원 종료",
 		"message": "죄송합니다. 이 공급자는 더 이상 지원되지 않습니다. 실제로 사용하는 Alpha 사용자가 매우 적었고, 빠르게 개발하고 커뮤니티에 잘 봉사하기 위해 코드베이스의 범위를 줄여야 했습니다. 정말 어려운 결정이었지만, 당신에게 가장 중요한 것에 집중할 수 있게 해줍니다. 불편을 드려 죄송합니다.",
 		"openSettings": "설정 열기"
+	},
+	"githubActions": {
+		"request": "요청",
+		"create_pull_request": "풀 리퀘스트 만들기",
+		"get_pull_request": "풀 리퀘스트 보기",
+		"list_checks": "검사 목록 보기",
+		"merge_pull_request": "풀 리퀘스트 병합",
+		"comment": "댓글 추가"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "에이전트 검사",
+			"wait_agent": "에이전트 업데이트 대기",
+			"unknown": "에이전트 작업"
+		},
+		"failed": "{{action}} 실패: {{error}}",
+		"list": {
+			"running": "에이전트 검사 중...",
+			"completed": "{{count}} 에이전트 검사",
+			"completed_other": "검사된 {{count}} 에이전트",
+			"mailbox": "{{count}} 사서함 업데이트",
+			"mailbox_other": "{{count}} 사서함 업데이트"
+		},
+		"wait": {
+			"running": "에이전트 업데이트를 기다리는 중...",
+			"noActiveAgents": "대기할 활성 에이전트가 없습니다.",
+			"cancelled": "에이전트 대기가 취소되었습니다.",
+			"timedOut": "시간 초과 전에 에이전트 업데이트가 없습니다.",
+			"alreadyDelivered": "새 업데이트가 없습니다. 결과가 이미 전달되었습니다.",
+			"received": "{{count}} 에이전트 업데이트를 받았습니다.",
+			"received_other": "{{count}} 에이전트 업데이트를 받았습니다.",
+			"completed": "에이전트 대기가 완료되었습니다."
+		}
 	}
 }

@@ -3,7 +3,7 @@ Semantics for Reasoning Effort (ThinkingBudget)
 
 Capability surface:
 - modelInfo.supportsReasoningEffort:
-  boolean | Array&lt;"disable" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh"&gt;
+  boolean | Array&lt;"disable" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"&gt;
   - true  → UI shows ["low","medium","high"]
   - array → UI shows exactly the provided values
 
@@ -18,7 +18,7 @@ Selection behavior:
   - set enableReasoningEffort = true
   - persist reasoningEffort = "none"
   - request builders include reasoning with value "none"
-- "minimal" | "low" | "medium" | "high" | "xhigh":
+- "minimal" | "low" | "medium" | "high" | "xhigh" | "max":
   - set enableReasoningEffort = true
   - persist the selected value
   - request builders include reasoning with the selected effort
@@ -241,7 +241,7 @@ export const ThinkingBudget = ({ apiConfiguration, setApiConfigurationField, mod
 						setApiConfigurationField("enableReasoningEffort", false)
 						setApiConfigurationField("reasoningEffort", "disable")
 					} else {
-						// "none", "minimal", "low", "medium", "high", and "xhigh" all enable reasoning
+						// "none", "minimal", "low", "medium", "high", "xhigh", and "max" all enable reasoning
 						setApiConfigurationField("enableReasoningEffort", true)
 						setApiConfigurationField("reasoningEffort", value as ReasoningEffortExtended)
 					}

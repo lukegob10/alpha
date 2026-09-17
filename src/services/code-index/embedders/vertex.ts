@@ -1,3 +1,4 @@
+import { googleEmbeddingInput } from "../shared/google-embedding"
 import {
 	GoogleGenAI,
 	type EmbedContentConfig,
@@ -9,12 +10,14 @@ import { safeJsonParse } from "@alpha-code/core"
 import type { ProviderSettings } from "@alpha-code/types"
 import { TelemetryEventName } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
+import pLimit from "p-limit"
 
 import { t } from "../../../i18n"
 import { HelixTokenManager, type HelixParseMode } from "../../../api/providers/utils/helix-token-manager"
 import { configureVertexGatewayTransport } from "../../../api/providers/utils/vertex-gateway-transport"
 import { GEMINI_MAX_ITEM_TOKENS, INITIAL_RETRY_DELAY_MS, MAX_BATCH_RETRIES } from "../constants"
 import type { IEmbedder, EmbeddingResponse, EmbedderInfo } from "../interfaces/embedder"
+import { EmbeddingRateLimiter } from "../shared/embedding-rate-limiter"
 import { formatEmbeddingError, withValidationErrorHandling } from "../shared/validation-helpers"
 
 type VertexGatewayRouteTarget = {
@@ -56,8 +59,10 @@ type EmbedRequestContext = {
  */
 export class VertexGeminiEmbedder implements IEmbedder {
 	private static readonly DEFAULT_MODEL = "gemini-embedding-001"
-
 	private readonly client: GoogleGenAI
+	private readonly requestConcurrency: number
+	private readonly embeddingRequests: ReturnType<typeof pLimit>
+	private readonly embeddingRateLimiter: EmbeddingRateLimiter
 	private readonly modelId: string
 	private readonly options: ProviderSettings
 	private readonly vertexGatewaySettings?: VertexGatewaySettings
@@ -66,7 +71,7 @@ export class VertexGeminiEmbedder implements IEmbedder {
 	private readonly vertexGatewayAuthClient?: VertexGatewayAuthClient
 	private gatewayTransportSetupPromise?: Promise<void>
 
-	constructor(options: ProviderSettings, modelId?: string) {
+	constructor(options: ProviderSettings, modelId?: string, embeddingRateLimitSeconds?: number) {
 		if (
 			options.apiProvider !== "vertex" ||
 			!this.getConfiguredProjectId(options) ||
@@ -77,6 +82,11 @@ export class VertexGeminiEmbedder implements IEmbedder {
 
 		this.options = options
 		this.modelId = modelId || VertexGeminiEmbedder.DEFAULT_MODEL
+		// EmbedContent returns one vector per request. Overlap more independent Gemini 2
+		// requests while retaining a shared bound and the user's request-start spacing.
+		this.requestConcurrency = this.modelId === "gemini-embedding-2" ? 16 : 8
+		this.embeddingRequests = pLimit(this.requestConcurrency)
+		this.embeddingRateLimiter = new EmbeddingRateLimiter((embeddingRateLimitSeconds ?? 0) * 1000)
 		this.vertexGatewaySettings = this.resolveVertexGatewaySettings()
 
 		if (this.vertexGatewaySettings) {
@@ -122,7 +132,11 @@ export class VertexGeminiEmbedder implements IEmbedder {
 		}
 	}
 
-	async createEmbeddings(texts: string[], model?: string): Promise<EmbeddingResponse> {
+	async createEmbeddings(
+		texts: string[],
+		model?: string,
+		purpose: "document" | "query" = "document",
+	): Promise<EmbeddingResponse> {
 		const selectedModel = model || this.modelId
 		const maxItemTokens = this.getMaxItemTokens(selectedModel)
 		const validTexts: string[] = []
@@ -151,7 +165,44 @@ export class VertexGeminiEmbedder implements IEmbedder {
 			return { embeddings: [], usage: { promptTokens: 0, totalTokens: 0 } }
 		}
 
-		return this.embedBatchWithRetries(validTexts, estimatedTokenCounts, selectedModel)
+		// Gemini 001 predict and Gemini 2 embedContent accept one input per request.
+		// Share a request bound across concurrent scanner batches and preserve input order.
+		const responses: EmbeddingResponse[] = new Array(validTexts.length)
+		let nextIndex = 0
+		let failed = false
+		// Refill a free slot immediately instead of waiting for the slowest request in a wave.
+		// Bound queued work per caller as well as active requests across scanner batches and queries.
+		const workers = await Promise.allSettled(
+			Array.from({ length: Math.min(this.requestConcurrency, validTexts.length) }, async () => {
+				while (!failed && nextIndex < validTexts.length) {
+					const index = nextIndex++
+					try {
+						responses[index] = await this.embeddingRequests(() =>
+							this.embedBatchWithRetries(
+								[validTexts[index]],
+								[estimatedTokenCounts[index]],
+								selectedModel,
+								purpose,
+							),
+						)
+					} catch (error) {
+						failed = true
+						throw error
+					}
+				}
+			}),
+		)
+		// Drain accepted requests before surfacing a failure so a caller's retry cannot overlap them.
+		const failure = workers.find((worker) => worker.status === "rejected")
+		if (failure?.status === "rejected") throw failure.reason
+
+		const result: EmbeddingResponse = { embeddings: [], usage: { promptTokens: 0, totalTokens: 0 } }
+		for (const response of responses) {
+			result.embeddings.push(...response.embeddings)
+			result.usage!.promptTokens += response.usage?.promptTokens ?? 0
+			result.usage!.totalTokens += response.usage?.totalTokens ?? 0
+		}
+		return result
 	}
 
 	async validateConfiguration(): Promise<{ valid: boolean; error?: string }> {
@@ -181,6 +232,7 @@ export class VertexGeminiEmbedder implements IEmbedder {
 	get embedderInfo(): EmbedderInfo {
 		return {
 			name: "vertex",
+			preferredBatchSize: this.requestConcurrency,
 		}
 	}
 
@@ -510,19 +562,32 @@ export class VertexGeminiEmbedder implements IEmbedder {
 		texts: string[],
 		estimatedTokenCounts: number[],
 		selectedModel: string,
+		purpose: "document" | "query",
 	): Promise<EmbeddingResponse> {
 		let didRetryForGatewayAuth = false
 		let lastError: unknown
+		let requestAttempts = 0
 
 		for (let attempt = 0; attempt < MAX_BATCH_RETRIES; attempt++) {
 			const requestContext = await this.getRequestContext(selectedModel)
+			// Preserve the gateway's pre-2.1.34 predict payload, including opaque model aliases.
+			// Native Google task types/instructions are not part of that gateway contract.
+			const input = this.vertexGatewaySettings
+				? { contents: texts, config: {} }
+				: googleEmbeddingInput(texts, selectedModel, purpose)
 			const params: EmbedContentParameters = {
 				model: requestContext.model,
-				contents: texts,
-				...(requestContext.httpOptions ? { config: { httpOptions: requestContext.httpOptions } } : {}),
+				contents: input.contents,
+				config: {
+					...(requestContext.httpOptions ? { httpOptions: requestContext.httpOptions } : {}),
+					...input.config,
+				},
 			}
 
 			try {
+				// Scanner delays apply to whole batches; split requests and retries need their own shared bound.
+				await this.embeddingRateLimiter.wait()
+				requestAttempts++
 				const response = await requestContext.client.models.embedContent(params)
 				return this.createEmbeddingResponse(response, estimatedTokenCounts)
 			} catch (error) {
@@ -544,13 +609,13 @@ export class VertexGeminiEmbedder implements IEmbedder {
 					error: error instanceof Error ? error.message : String(error),
 					stack: error instanceof Error ? error.stack : undefined,
 					location: "VertexGeminiEmbedder:createEmbeddings",
-					attempt: attempt + 1,
+					attempt: requestAttempts,
 				})
-				throw formatEmbeddingError(error, MAX_BATCH_RETRIES)
+				throw formatEmbeddingError(error, requestAttempts)
 			}
 		}
 
-		throw formatEmbeddingError(lastError, MAX_BATCH_RETRIES)
+		throw formatEmbeddingError(lastError, requestAttempts)
 	}
 
 	private createEmbeddingResponse(response: EmbedContentResponse, estimatedTokenCounts: number[]): EmbeddingResponse {

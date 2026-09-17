@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest"
-import { TaskLifecycleState, TaskStatus } from "@alpha-code/types"
+import { describe, expect, it, vi } from "vitest"
+import {
+	agentLifecycleSnapshotSchema,
+	type AgentLifecycleSnapshot,
+	TaskLifecycleState,
+	TaskStatus,
+} from "@alpha-code/types"
 
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
 import type { Task } from "../../task/Task"
@@ -20,7 +25,51 @@ const createTask = (taskId: string, overrides: Partial<Task> = {}): Task =>
 		...overrides,
 	}) as Task
 
+const createLifecycleSnapshot = (
+	taskId: string,
+	overrides: Partial<AgentLifecycleSnapshot> = {},
+): AgentLifecycleSnapshot =>
+	agentLifecycleSnapshotSchema.parse({
+		version: 1,
+		taskId,
+		runId: `run-${taskId}`,
+		turnId: `turn-${taskId}`,
+		status: "in_progress",
+		phase: "working",
+		lastSequence: 0,
+		items: [],
+		steps: [],
+		acceptedToolCallIds: [],
+		terminalToolCallIds: [],
+		processedEvents: [],
+		...overrides,
+	})
+
 describe("TaskSessionRegistry", () => {
+	it("projects each task's current provider input budget independently", () => {
+		const registry = new TaskSessionRegistry(2)
+		const model = (contextWindow: number) => ({
+			id: "copilot-claude-opus-4.7",
+			info: { contextWindow, maxTokens: 64_000, supportsPromptCache: false, contextWindowIncludesOutput: false },
+		})
+		const getModel = vi.fn(() => model(935_793))
+		const task = createTask("extended", {
+			api: { getModel, createMessage: vi.fn(), countTokens: vi.fn() },
+		})
+		registry.register(task)
+		registry.register(
+			createTask("standard", {
+				api: { getModel: () => model(200_000), createMessage: vi.fn(), countTokens: vi.fn() },
+			}),
+		)
+		expect(registry.getMetadata().extended.model).toEqual(model(935_793))
+		expect(registry.getMetadata().standard.model).toEqual(model(200_000))
+		getModel.mockReturnValue(model(199_793))
+		expect(registry.getMetadata().extended.model).toEqual(model(199_793))
+		registry.focus("extended")
+		expect(registry.getMetadata().standard.model).toEqual(model(200_000))
+	})
+
 	it("tracks live tasks and explicit active focus", () => {
 		const registry = new TaskSessionRegistry(3)
 		const taskA = createTask("task-a")
@@ -60,6 +109,7 @@ describe("TaskSessionRegistry", () => {
 		expect(registry.canCreateTask()).toBe(true)
 		registry.register(createTask("task-a"))
 		expect(registry.canCreateTask()).toBe(false)
+		expect(registry.getAvailableTaskCapacity()).toBe(0)
 	})
 
 	it("updates the live task cap at runtime", () => {
@@ -87,7 +137,7 @@ describe("TaskSessionRegistry", () => {
 		})
 	})
 
-	it("treats completion-result waits as completed for live task capacity", () => {
+	it("keeps completion-result candidates live and waiting for review", () => {
 		const registry = new TaskSessionRegistry(1)
 
 		registry.register(
@@ -96,12 +146,32 @@ describe("TaskSessionRegistry", () => {
 				taskAsk: { ts: 101, type: "ask", ask: "completion_result" },
 			} as Partial<Task>),
 		)
-		registry.markLifecycle("task-a", TaskLifecycleState.Waiting, "idle")
+		registry.markLifecycle("task-a", TaskLifecycleState.Waiting, "completion")
 
-		expect(registry.getLiveTaskIds()).toEqual([])
+		expect(registry.getLiveTaskIds()).toEqual(["task-a"])
+		expect(registry.getLiveTaskCount()).toBe(1)
+		expect(registry.canCreateTask()).toBe(false)
+		expect(registry.canAcceptInput("task-a")).toBe(true)
+		expect(registry.getMetadata()["task-a"]).toMatchObject({
+			lifecycle: TaskLifecycleState.Waiting,
+			isWaitingForInput: true,
+			waitingReason: "completion",
+		})
+	})
+
+	it("keeps persisted resume-completed asks terminal", () => {
+		const registry = new TaskSessionRegistry(1)
+
+		registry.register(
+			createTask("task-a", {
+				isStreaming: false,
+				taskAsk: { ts: 101, type: "ask", ask: "resume_completed_task" },
+			} as Partial<Task>),
+		)
+		registry.markLifecycle("task-a", TaskLifecycleState.Waiting, "resumable")
+
 		expect(registry.getLiveTaskCount()).toBe(0)
 		expect(registry.canCreateTask()).toBe(true)
-		expect(registry.canAcceptInput("task-a")).toBe(true)
 		expect(registry.getMetadata()["task-a"]).toMatchObject({
 			lifecycle: TaskLifecycleState.Completed,
 			isWaitingForInput: false,
@@ -139,8 +209,8 @@ describe("TaskSessionRegistry", () => {
 		} as Partial<Task>)
 
 		registry.register(task)
-		registry.markLifecycle("task-a", TaskLifecycleState.Waiting, "idle")
-		expect(registry.canCreateTask()).toBe(true)
+		registry.markLifecycle("task-a", TaskLifecycleState.Waiting, "completion")
+		expect(registry.canCreateTask()).toBe(false)
 		;(task as any).taskAsk = undefined
 		registry.markLifecycle("task-a", TaskLifecycleState.Running)
 
@@ -171,6 +241,141 @@ describe("TaskSessionRegistry", () => {
 			waitingReason: "interactive",
 			queueCount: 2,
 		})
+	})
+
+	it("projects canonical waiting status instead of retaining a stale running task status", () => {
+		const registry = new TaskSessionRegistry(1)
+		registry.register(createTask("task-canonical-waiting"))
+		registry.markLifecycleSnapshot(
+			"task-canonical-waiting",
+			createLifecycleSnapshot("task-canonical-waiting", { phase: "awaiting_approval" }),
+		)
+
+		expect(registry.getMetadata()["task-canonical-waiting"]).toMatchObject({
+			status: TaskStatus.Interactive,
+			lifecycle: TaskLifecycleState.Waiting,
+			isWaitingForInput: true,
+			waitingReason: "awaiting_approval",
+		})
+	})
+
+	it("keeps a task live when only its current canonical turn has completed", () => {
+		const registry = new TaskSessionRegistry(1)
+		registry.register(createTask("task-canonical-complete"))
+		registry.markLifecycleSnapshot(
+			"task-canonical-complete",
+			createLifecycleSnapshot("task-canonical-complete", {
+				status: "completed",
+				phase: "finalizing",
+				lastSequence: 1,
+				terminalEventId: "complete-event",
+				terminalAt: 101,
+				processedEvents: [{ eventId: "complete-event", sequence: 1, fingerprint: "complete" }],
+			}),
+		)
+
+		expect(registry.getLiveTaskIds()).toEqual(["task-canonical-complete"])
+		expect(registry.canAcceptInput("task-canonical-complete")).toBe(true)
+		expect(registry.getMetadata()["task-canonical-complete"]).toMatchObject({
+			status: TaskStatus.Running,
+			lifecycle: TaskLifecycleState.Running,
+			isWaitingForInput: false,
+			waitingReason: undefined,
+		})
+
+		registry.markLifecycle("task-canonical-complete", TaskLifecycleState.Completed)
+		registry.markLifecycleSnapshot(
+			"task-canonical-complete",
+			createLifecycleSnapshot("task-canonical-complete", {
+				status: "completed",
+				phase: "finalizing",
+				lastSequence: 1,
+				terminalEventId: "complete-event",
+				terminalAt: 102,
+				processedEvents: [{ eventId: "complete-event", sequence: 1, fingerprint: "complete" }],
+			}),
+		)
+
+		expect(registry.getLiveTaskIds()).toEqual([])
+		expect(registry.getMetadata()["task-canonical-complete"].lifecycle).toBe(TaskLifecycleState.Completed)
+	})
+
+	it("accepts a completion follow-up when the transcript ask arrives after the turn terminal event", () => {
+		const registry = new TaskSessionRegistry(1)
+		const task = createTask("task-completion-race", {
+			isStreaming: false,
+			taskAsk: undefined,
+			clineMessages: [
+				{ ts: 100, type: "say", say: "text", text: "Answer" },
+				{ ts: 101, type: "ask", ask: "completion_result" },
+			],
+		} as Partial<Task>)
+		registry.register(task)
+		registry.markLifecycleSnapshot(
+			task.taskId,
+			createLifecycleSnapshot(task.taskId, {
+				status: "completed",
+				phase: "finalizing",
+				lastSequence: 1,
+				terminalEventId: "complete-event",
+				terminalAt: 101,
+				processedEvents: [{ eventId: "complete-event", sequence: 1, fingerprint: "complete" }],
+			}),
+		)
+
+		expect(registry.canAcceptInput(task.taskId)).toBe(true)
+		expect(registry.getLiveTaskIds()).toEqual([task.taskId])
+
+		registry.markLifecycle(task.taskId, TaskLifecycleState.Waiting, "completion")
+		registry.markLifecycleSnapshot(
+			task.taskId,
+			createLifecycleSnapshot(task.taskId, {
+				status: "completed",
+				phase: "finalizing",
+				lastSequence: 1,
+				terminalEventId: "complete-event",
+				terminalAt: 102,
+				processedEvents: [{ eventId: "complete-event", sequence: 1, fingerprint: "complete" }],
+			}),
+		)
+		expect(registry.getMetadata()[task.taskId]).toMatchObject({
+			lifecycle: TaskLifecycleState.Waiting,
+			isWaitingForInput: true,
+			waitingReason: "completion",
+		})
+	})
+
+	it("falls back to legacy task status while lifecycle persistence is degraded", () => {
+		const registry = new TaskSessionRegistry(1)
+		const task = createTask("task-degraded")
+		const completed = createLifecycleSnapshot("task-degraded", {
+			status: "completed",
+			phase: "finalizing",
+			lastSequence: 1,
+			terminalEventId: "complete-event",
+			terminalAt: 101,
+			processedEvents: [{ eventId: "complete-event", sequence: 1, fingerprint: "complete" }],
+		})
+
+		registry.register(task)
+		registry.markLifecycleSnapshot(task.taskId, completed)
+		registry.markLifecycleDegraded(task.taskId)
+
+		expect(registry.isLifecycleDegraded(task.taskId)).toBe(true)
+		expect(registry.getLiveTaskIds()).toEqual([task.taskId])
+		expect(registry.getMetadata()[task.taskId]).toMatchObject({
+			status: TaskStatus.Running,
+			lifecycle: TaskLifecycleState.Running,
+			isWaitingForInput: false,
+		})
+		// Keep the canonical snapshot available for recovery, but do not let it
+		// override the legacy projection until an authoritative resync succeeds.
+		expect(registry.getLifecycleSnapshot(task.taskId)?.status).toBe("completed")
+
+		registry.clearLifecycleDegraded(task.taskId)
+		expect(registry.isLifecycleDegraded(task.taskId)).toBe(false)
+		expect(registry.getLiveTaskIds()).toEqual([task.taskId])
+		expect(registry.getMetadata()[task.taskId].lifecycle).toBe(TaskLifecycleState.Running)
 	})
 
 	it("can clear focus without removing background tasks", () => {

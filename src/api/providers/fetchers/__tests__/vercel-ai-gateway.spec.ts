@@ -73,7 +73,12 @@ describe("Vercel AI Gateway Fetchers", () => {
 		}
 
 		it("fetches and parses models correctly", async () => {
-			mockedAxios.get.mockResolvedValueOnce(mockResponse)
+			const consoleErrorSpy = vitest.spyOn(console, "error").mockImplementation(() => {})
+			const consoleWarnSpy = vitest.spyOn(console, "warn").mockImplementation(() => {})
+			const response = structuredClone(mockResponse)
+			delete (response.data.data[2] as Partial<(typeof response.data.data)[number]>).context_window
+			delete (response.data.data[2] as Partial<(typeof response.data.data)[number]>).max_tokens
+			mockedAxios.get.mockResolvedValueOnce(response)
 
 			const models = await getVercelAiGatewayModels()
 
@@ -81,6 +86,38 @@ describe("Vercel AI Gateway Fetchers", () => {
 			expect(Object.keys(models)).toHaveLength(2) // Only language models
 			expect(models["anthropic/claude-sonnet-4"]).toBeDefined()
 			expect(models["anthropic/claude-3.5-haiku"]).toBeDefined()
+			expect(consoleErrorSpy).not.toHaveBeenCalled()
+			expect(consoleWarnSpy).not.toHaveBeenCalled()
+			consoleErrorSpy.mockRestore()
+			consoleWarnSpy.mockRestore()
+		})
+
+		it("skips language entries without usable token metadata using a compact warning", async () => {
+			const consoleErrorSpy = vitest.spyOn(console, "error").mockImplementation(() => {})
+			const consoleWarnSpy = vitest.spyOn(console, "warn").mockImplementation(() => {})
+			mockedAxios.get.mockResolvedValueOnce({
+				data: {
+					...mockResponse.data,
+					data: [
+						mockResponse.data.data[0],
+						{
+							...mockResponse.data.data[1],
+							context_window: undefined,
+							max_tokens: undefined,
+						},
+					],
+				},
+			})
+
+			const models = await getVercelAiGatewayModels()
+
+			expect(Object.keys(models)).toEqual(["anthropic/claude-sonnet-4"])
+			expect(consoleErrorSpy).not.toHaveBeenCalled()
+			expect(consoleWarnSpy).toHaveBeenCalledWith(
+				"Skipped 1 Vercel AI Gateway language model with incomplete token metadata",
+			)
+			consoleErrorSpy.mockRestore()
+			consoleWarnSpy.mockRestore()
 		})
 
 		it("handles API errors gracefully", async () => {
@@ -156,7 +193,7 @@ describe("Vercel AI Gateway Fetchers", () => {
 			description: "A test model",
 			context_window: 100000,
 			max_tokens: 8000,
-			type: "language",
+			type: "language" as const,
 			pricing: {
 				input: "2.50",
 				output: "10.00",

@@ -2,16 +2,17 @@ import * as vscode from "vscode"
 
 import type { SkillMetadata, WebviewMessage } from "@alpha-code/types"
 
-import type { ClineProvider } from "./ClineProvider"
+import type { AlphaProvider } from "./AlphaProvider"
 import { openFile } from "../../integrations/misc/open-file"
 import { t } from "../../i18n"
+import { builtinSkillInspectionUri } from "../../services/skills/builtinSkillInspection"
 
 type SkillSource = SkillMetadata["source"]
 
 /**
  * Handles the requestSkills message - returns all skills metadata
  */
-export async function handleRequestSkills(provider: ClineProvider): Promise<SkillMetadata[]> {
+export async function handleRequestSkills(provider: AlphaProvider): Promise<SkillMetadata[]> {
 	try {
 		const skillsManager = provider.getSkillsManager()
 		if (skillsManager) {
@@ -33,7 +34,7 @@ export async function handleRequestSkills(provider: ClineProvider): Promise<Skil
  * Handles the createSkill message - creates a new skill
  */
 export async function handleCreateSkill(
-	provider: ClineProvider,
+	provider: AlphaProvider,
 	message: WebviewMessage,
 ): Promise<SkillMetadata[] | undefined> {
 	try {
@@ -45,6 +46,10 @@ export async function handleCreateSkill(
 
 		if (!skillName || !source || !skillDescription) {
 			throw new Error(t("skills:errors.missing_create_fields"))
+		}
+
+		if (source !== "global" && source !== "project") {
+			throw new Error(t("skills:errors.builtin_read_only"))
 		}
 
 		const skillsManager = provider.getSkillsManager()
@@ -73,7 +78,7 @@ export async function handleCreateSkill(
  * Handles the deleteSkill message - deletes a skill
  */
 export async function handleDeleteSkill(
-	provider: ClineProvider,
+	provider: AlphaProvider,
 	message: WebviewMessage,
 ): Promise<SkillMetadata[] | undefined> {
 	try {
@@ -84,6 +89,10 @@ export async function handleDeleteSkill(
 
 		if (!skillName || !source) {
 			throw new Error(t("skills:errors.missing_delete_fields"))
+		}
+
+		if (source !== "global" && source !== "project") {
+			throw new Error(t("skills:errors.builtin_read_only"))
 		}
 
 		const skillsManager = provider.getSkillsManager()
@@ -109,7 +118,7 @@ export async function handleDeleteSkill(
  * Handles the moveSkill message - moves a skill to a different mode
  */
 export async function handleMoveSkill(
-	provider: ClineProvider,
+	provider: AlphaProvider,
 	message: WebviewMessage,
 ): Promise<SkillMetadata[] | undefined> {
 	try {
@@ -120,6 +129,10 @@ export async function handleMoveSkill(
 
 		if (!skillName || !source) {
 			throw new Error(t("skills:errors.missing_move_fields"))
+		}
+
+		if (source !== "global" && source !== "project") {
+			throw new Error(t("skills:errors.builtin_read_only"))
 		}
 
 		const skillsManager = provider.getSkillsManager()
@@ -145,7 +158,7 @@ export async function handleMoveSkill(
  * Handles the updateSkillModes message - updates the mode associations for a skill
  */
 export async function handleUpdateSkillModes(
-	provider: ClineProvider,
+	provider: AlphaProvider,
 	message: WebviewMessage,
 ): Promise<SkillMetadata[] | undefined> {
 	try {
@@ -155,6 +168,10 @@ export async function handleUpdateSkillModes(
 
 		if (!skillName || !source) {
 			throw new Error(t("skills:errors.missing_update_modes_fields"))
+		}
+
+		if (source !== "global" && source !== "project") {
+			throw new Error(t("skills:errors.builtin_read_only"))
 		}
 
 		const skillsManager = provider.getSkillsManager()
@@ -179,7 +196,7 @@ export async function handleUpdateSkillModes(
 /**
  * Handles the openSkillFile message - opens a skill file in the editor
  */
-export async function handleOpenSkillFile(provider: ClineProvider, message: WebviewMessage): Promise<void> {
+export async function handleOpenSkillFile(provider: AlphaProvider, message: WebviewMessage): Promise<void> {
 	try {
 		const skillName = message.skillName
 		const source = message.source as SkillSource
@@ -199,7 +216,13 @@ export async function handleOpenSkillFile(provider: ClineProvider, message: Webv
 			throw new Error(t("skills:errors.skill_not_found", { name: skillName }))
 		}
 
-		openFile(skill.path)
+		if (source === "builtin") {
+			const document = await vscode.workspace.openTextDocument(builtinSkillInspectionUri(skill.name))
+			await vscode.window.showTextDocument(document, { preview: true })
+		} else {
+			await skillsManager.assertSkillEditable(skill)
+			openFile(skill.path)
+		}
 	} catch (error) {
 		const errorMessage = error instanceof Error ? error.message : String(error)
 		provider.log(`Error opening skill file: ${errorMessage}`)

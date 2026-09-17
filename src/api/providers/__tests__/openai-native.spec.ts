@@ -64,6 +64,70 @@ describe("OpenAiNativeHandler", () => {
 		}
 	})
 
+	describe("GPT-6 Astra", () => {
+		it.each([
+			[undefined, "medium"],
+			["low", "low"],
+			["medium", "medium"],
+			["high", "high"],
+			["xhigh", "xhigh"],
+			["max", "max"],
+			["none", "medium"],
+			["minimal", "medium"],
+			["disable", "medium"],
+		] as const)("sends reasoning %s as %s through Responses", async (reasoningEffort, expectedEffort) => {
+			mockResponsesCreate.mockResolvedValue({
+				async *[Symbol.asyncIterator]() {
+					yield { type: "response.output_text.delta", delta: "Ready" }
+				},
+			})
+			const astra = new OpenAiNativeHandler({
+				...mockOptions,
+				apiModelId: "gpt-6-astra",
+				reasoningEffort,
+				modelTemperature: 0.2,
+			})
+			const chunks = []
+			for await (const chunk of astra.createMessage(systemPrompt, messages, {
+				taskId: "astra-reasoning-test",
+				tools: [{ type: "function", function: { name: "read_file", parameters: { type: "object" } } }],
+			})) {
+				chunks.push(chunk)
+			}
+
+			expect(chunks).toContainEqual({ type: "text", text: "Ready" })
+			const request = mockResponsesCreate.mock.calls[0][0]
+			expect(request).toMatchObject({
+				model: "gpt-6-astra",
+				stream: true,
+				store: false,
+				reasoning: { effort: expectedEffort },
+				include: ["reasoning.encrypted_content"],
+				tools: [expect.objectContaining({ type: "function", name: "read_file" })],
+			})
+			expect(request).not.toHaveProperty("temperature")
+			expect(request).not.toHaveProperty("prompt_cache_retention")
+		})
+
+		it("preserves Max reasoning for prompt completions", async () => {
+			mockResponsesCreate.mockResolvedValue({
+				output: [{ type: "message", content: [{ type: "output_text", text: "Ready" }] }],
+			})
+			const astra = new OpenAiNativeHandler({
+				...mockOptions,
+				apiModelId: "gpt-6-astra",
+				reasoningEffort: "max",
+			})
+
+			await expect(astra.completePrompt("Hello")).resolves.toBe("Ready")
+			expect(mockResponsesCreate.mock.calls[0][0]).toMatchObject({
+				model: "gpt-6-astra",
+				stream: false,
+				reasoning: { effort: "max" },
+			})
+		})
+	})
+
 	describe("constructor", () => {
 		it("should initialize with provided options", () => {
 			expect(handler).toBeInstanceOf(OpenAiNativeHandler)
@@ -160,6 +224,133 @@ describe("OpenAiNativeHandler", () => {
 					// Should not reach here
 				}
 			}).rejects.toThrow("OpenAI service error")
+		})
+
+		it("should adapt non-streaming GPT-5.5 Pro responses into stream chunks", async () => {
+			mockResponsesCreate.mockResolvedValue({
+				id: "resp_gpt55_pro",
+				output: [
+					{
+						type: "message",
+						content: [{ type: "output_text", text: "Completed response" }],
+					},
+				],
+				usage: { input_tokens: 12, output_tokens: 3 },
+			})
+
+			const proHandler = new OpenAiNativeHandler({
+				...mockOptions,
+				apiModelId: "gpt-5.5-pro",
+			})
+			const chunks: any[] = []
+
+			for await (const chunk of proHandler.createMessage(systemPrompt, messages)) {
+				chunks.push(chunk)
+			}
+
+			expect(mockResponsesCreate).toHaveBeenCalledWith(
+				expect.objectContaining({ model: "gpt-5.5-pro", stream: false }),
+				expect.anything(),
+			)
+			expect(chunks).toEqual(
+				expect.arrayContaining([
+					{ type: "text", text: "Completed response" },
+					expect.objectContaining({ type: "usage", inputTokens: 12, outputTokens: 3 }),
+				]),
+			)
+		})
+
+		it("returns a metadata-rich failed outcome without throwing for lifecycle callers", async () => {
+			mockResponsesCreate.mockResolvedValue({
+				async *[Symbol.asyncIterator]() {
+					yield {
+						type: "response.failed",
+						error: {
+							message: "Policy rejected",
+							code: "policy_rejected",
+							status: 400,
+							retryable: false,
+						},
+					}
+				},
+			})
+
+			const stream = handler.createMessage(systemPrompt, messages, {
+				requestId: "request-terminal-1",
+				attemptId: "attempt-terminal-1",
+				streamCapabilities: { lifecycle: true },
+			} as any)
+			const chunks: any[] = []
+			let thrown: any
+			try {
+				for await (const chunk of stream) chunks.push(chunk)
+			} catch (error) {
+				thrown = error
+			}
+
+			expect(chunks).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						type: "error",
+						retryable: false,
+						status: 400,
+						requestId: "request-terminal-1",
+						attemptId: "attempt-terminal-1",
+					}),
+					expect.objectContaining({ type: "outcome", status: "failed", retryable: false }),
+				]),
+			)
+			expect(thrown).toBeUndefined()
+		})
+
+		it.each([
+			{
+				label: "completed followed by done",
+				first: { type: "response.completed" },
+				second: { type: "response.done" },
+				expectedStatus: "completed",
+			},
+			{
+				label: "incomplete followed by completed",
+				first: {
+					type: "response.incomplete",
+					response: { incomplete_details: { reason: "max_output_tokens" } },
+				},
+				second: { type: "response.completed" },
+				expectedStatus: "incomplete",
+			},
+			{
+				label: "cancelled followed by completed",
+				first: { type: "response.done", response: { status: "cancelled" } },
+				second: { type: "response.completed" },
+				expectedStatus: "cancelled",
+			},
+		])("emits only the first terminal outcome for $label", async ({ first, second, expectedStatus }) => {
+			mockResponsesCreate.mockResolvedValue({
+				async *[Symbol.asyncIterator]() {
+					yield first
+					yield second
+				},
+			})
+
+			const chunks: any[] = []
+			for await (const chunk of handler.createMessage(systemPrompt, messages, {
+				requestId: "native-terminal-request",
+				attemptId: "native-terminal-attempt",
+				streamCapabilities: { lifecycle: true },
+			} as any)) {
+				chunks.push(chunk)
+			}
+
+			const outcomes = chunks.filter((chunk) => chunk.type === "outcome")
+			expect(outcomes).toHaveLength(1)
+			expect(outcomes[0]).toMatchObject({
+				type: "outcome",
+				status: expectedStatus,
+				terminal: true,
+				requestId: "native-terminal-request",
+				attemptId: "native-terminal-attempt",
+			})
 		})
 	})
 
@@ -302,6 +493,29 @@ describe("OpenAiNativeHandler", () => {
 				}),
 			])
 		})
+
+		it.each(["gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"])(
+			"should expose GPT-5.6 %s with all supported reasoning levels",
+			(modelId) => {
+				const gpt56Handler = new OpenAiNativeHandler({
+					...mockOptions,
+					apiModelId: modelId,
+				})
+
+				const modelInfo = gpt56Handler.getModel()
+
+				expect(modelInfo.id).toBe(modelId)
+				expect(modelInfo.info.supportsReasoningEffort).toEqual([
+					"none",
+					"low",
+					"medium",
+					"high",
+					"xhigh",
+					"max",
+				])
+				expect(modelInfo.info.reasoningEffort).toBe("medium")
+			},
+		)
 
 		it("should return GPT-5.3 Chat model info when selected", () => {
 			const chatHandler = new OpenAiNativeHandler({
@@ -716,6 +930,44 @@ describe("OpenAiNativeHandler", () => {
 				"https://api.openai.com/v1/responses",
 				expect.objectContaining({
 					body: expect.stringContaining('"effort":"xhigh"'),
+				}),
+			)
+		})
+
+		it("should support max reasoning effort for GPT-5.6 models", async () => {
+			const mockFetch = vitest.fn().mockResolvedValue({
+				ok: true,
+				body: new ReadableStream({
+					start(controller) {
+						controller.enqueue(
+							new TextEncoder().encode(
+								'data: {"type":"response.output_item.added","item":{"type":"text","text":"Max effort"}}\n\n',
+							),
+						)
+						controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"))
+						controller.close()
+					},
+				}),
+			})
+			global.fetch = mockFetch as any
+
+			mockResponsesCreate.mockRejectedValue(new Error("SDK not available"))
+
+			handler = new OpenAiNativeHandler({
+				...mockOptions,
+				apiModelId: "gpt-5.6-luna",
+				reasoningEffort: "max",
+			})
+
+			const stream = handler.createMessage(systemPrompt, messages)
+			for await (const _chunk of stream) {
+				// drain
+			}
+
+			expect(mockFetch).toHaveBeenCalledWith(
+				"https://api.openai.com/v1/responses",
+				expect.objectContaining({
+					body: expect.stringContaining('"effort":"max"'),
 				}),
 			)
 		})

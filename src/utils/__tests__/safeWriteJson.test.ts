@@ -122,6 +122,80 @@ describe("safeWriteJson", () => {
 		expect(content).toEqual(newData)
 	})
 
+	test("uses the external commit fence without touching an existing advisory lease", async () => {
+		const advisoryLockPath = `${currentTestFilePath}.lock`
+		await fs.mkdir(advisoryLockPath)
+		const commit = vi.fn((source: string, destination: string) => {
+			fsSyncActual.renameSync(source, destination)
+		})
+
+		await safeWriteJson(
+			currentTestFilePath,
+			{ committed: true },
+			{
+				externalTransaction: true,
+				atomicReplace: true,
+				commitTempFile: commit,
+			},
+		)
+
+		expect(commit).toHaveBeenCalledOnce()
+		expect(await readFileContent(currentTestFilePath)).toEqual({ committed: true })
+		expect(await fs.stat(advisoryLockPath)).toMatchObject({})
+		expect((await fs.readdir(tempDir)).sort()).toEqual(["test-file.json", "test-file.json.lock"])
+	})
+
+	test("still acquires the advisory lease for ordinary atomic writers", async () => {
+		await fs.mkdir(`${currentTestFilePath}.lock`)
+		const commit = vi.fn((source: string, destination: string) => {
+			fsSyncActual.renameSync(source, destination)
+		})
+
+		await expect(
+			safeWriteJson(currentTestFilePath, { committed: true }, { atomicReplace: true, commitTempFile: commit }),
+		).rejects.toMatchObject({ code: "ELOCKED" })
+
+		expect(commit).not.toHaveBeenCalled()
+		expect(await readFileContent(currentTestFilePath)).toEqual({ initial: "content" })
+	})
+
+	test("preserves the target and removes the temporary file when the external fence rejects", async () => {
+		const fenceError = new Error("External transaction ownership was lost")
+		const commit = vi.fn(() => {
+			throw fenceError
+		})
+
+		await expect(
+			safeWriteJson(
+				currentTestFilePath,
+				{ committed: true },
+				{
+					externalTransaction: true,
+					atomicReplace: true,
+					commitTempFile: commit,
+				},
+			),
+		).rejects.toBe(fenceError)
+
+		expect(commit).toHaveBeenCalledOnce()
+		expect(await readFileContent(currentTestFilePath)).toEqual({ initial: "content" })
+		expect(await fs.readdir(tempDir)).toEqual(["test-file.json"])
+	})
+
+	test("rejects external transactions without both an atomic replacement and a commit fence", async () => {
+		await expect(
+			safeWriteJson(currentTestFilePath, {}, { externalTransaction: true, atomicReplace: true }),
+		).rejects.toThrow()
+		const commit = vi.fn()
+		await expect(
+			safeWriteJson(currentTestFilePath, {}, { externalTransaction: true, commitTempFile: commit }),
+		).rejects.toThrow()
+
+		expect(commit).not.toHaveBeenCalled()
+		expect(await readFileContent(currentTestFilePath)).toEqual({ initial: "content" })
+		expect(await fs.readdir(tempDir)).toEqual(["test-file.json"])
+	})
+
 	// Failure Scenarios
 	test("should handle failure when writing to tempNewFilePath", async () => {
 		// currentTestFilePath exists due to beforeEach, allowing lock acquisition.
@@ -445,7 +519,7 @@ describe("safeWriteJson", () => {
 
 	// Test for rollback failure scenario
 	test("should log error and re-throw original if rollback fails", async () => {
-		const initialData = { message: "Initial, should be lost if rollback fails" }
+		const initialData = { message: "Initial content must remain recoverable" }
 		const newData = { message: "New content" }
 
 		await originalFsPromisesWriteFile(currentTestFilePath, JSON.stringify(initialData))
@@ -454,8 +528,12 @@ describe("safeWriteJson", () => {
 		const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {}) // Suppress console.error
 
 		let renameCallCount = 0
+		let backupPath: string | undefined
 		renameSpy.mockImplementation(async (oldPath, newPath) => {
 			renameCallCount++
+			if (renameCallCount === 1) {
+				backupPath = newPath.toString()
+			}
 			if (renameCallCount === 2) {
 				// Second call: tempNewFilePath -> filePath (fail)
 				throw new Error("Primary rename failed")
@@ -474,6 +552,9 @@ describe("safeWriteJson", () => {
 			expect.stringContaining("Failed to restore backup"),
 			expect.objectContaining({ message: "Rollback rename failed" }),
 		)
+		expect(backupPath).toBeDefined()
+		expect(await readFileContent(backupPath!)).toEqual(initialData)
+		expect(consoleErrorSpy).toHaveBeenCalledWith(expect.stringContaining("Preserved backup for manual recovery"))
 
 		consoleErrorSpy.mockRestore()
 	})

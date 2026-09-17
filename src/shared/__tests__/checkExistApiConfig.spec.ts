@@ -79,4 +79,14 @@ describe("checkExistKey", () => {
 		}
 		expect(checkExistKey(config)).toBe(true)
 	})
+
+	it("should return true for Stellar connection settings without a stored API key", () => {
+		const config: ProviderSettings = {
+			apiProvider: "stellar",
+			stellarBaseUrl: "https://gateway.example.com/stellar/v1",
+			stellarPemCaBundlePath: "C:\\certs\\corp.pem",
+		}
+
+		expect(checkExistKey(config)).toBe(true)
+	})
 })

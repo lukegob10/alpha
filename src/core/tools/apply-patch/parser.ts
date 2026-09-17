@@ -296,7 +296,8 @@ function parseOneHunk(lines: string[], lineNumber: number): { hunk: Hunk; linesC
  */
 export function parsePatch(patch: string): ApplyPatchArgs {
 	const trimmedPatch = patch.trim()
-	const lines = trimmedPatch.split("\n")
+	// Patch line separators are syntax; file line endings are restored when applying the hunks.
+	const lines = trimmedPatch.split(/\r?\n/)
 
 	// Handle heredoc-wrapped patches (lenient mode)
 	let effectiveLines = lines

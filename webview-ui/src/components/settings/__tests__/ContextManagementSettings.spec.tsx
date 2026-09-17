@@ -2,6 +2,7 @@
 
 import { render, screen, fireEvent, waitFor } from "@/utils/test-utils"
 import { ContextManagementSettings } from "../ContextManagementSettings"
+import { vscode } from "@/utils/vscode"
 
 // Mock the translation hook
 vi.mock("@/hooks/useAppTranslation", () => ({
@@ -47,8 +48,8 @@ vi.mock("@/components/ui", () => ({
 			{children}
 		</button>
 	),
-	Select: ({ children, ...props }: any) => (
-		<div role="combobox" {...props}>
+	Select: ({ children, onValueChange, ...props }: any) => (
+		<div role="combobox" onClick={() => onValueChange?.("profile-1")} {...props}>
 			{children}
 		</div>
 	),
@@ -201,6 +202,26 @@ describe("ContextManagementSettings", () => {
 		// Check for checkboxes
 		expect(screen.getByTestId("show-rooignored-files-checkbox")).toBeInTheDocument()
 		expect(screen.getByTestId("auto-condense-context-checkbox")).toBeInTheDocument()
+	})
+
+	it("buffers profile thresholds without persisting before Save", async () => {
+		const setCachedStateField = vi.fn()
+		render(
+			<ContextManagementSettings
+				{...defaultProps}
+				autoCondenseContext={true}
+				listApiConfigMeta={[{ id: "profile-1", name: "Profile 1" }]}
+				setCachedStateField={setCachedStateField}
+			/>,
+		)
+
+		fireEvent.click(screen.getByRole("combobox"))
+		fireEvent.change(screen.getByTestId("condense-threshold-slider"), { target: { value: "65" } })
+
+		await waitFor(() => {
+			expect(setCachedStateField).toHaveBeenCalledWith("profileThresholds", { "profile-1": 65 })
+		})
+		expect(vscode.postMessage).not.toHaveBeenCalled()
 	})
 
 	describe("Edge cases for maxDiagnosticMessages", () => {

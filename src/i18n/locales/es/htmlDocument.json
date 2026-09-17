@@ -1,0 +1,21 @@
+{
+	"title": "Documento",
+	"openSource": "Abrir fuente",
+	"loading": "Cargando documento…",
+	"referenceError": "No se pudo abrir la referencia de origen. Compruebe que el archivo esté en este espacio de trabajo.",
+	"openError": "No se puede abrir este documento. Use un archivo HTML local dentro de una carpeta abierta del espacio de trabajo.",
+	"chooseSource": "Abra un archivo fuente HTML y ejecute Vista previa de documento HTML.",
+	"reopenError": "No se pudo restaurar este documento. Vuelva a abrir su carpeta de trabajo y use el enlace guardado del documento.",
+	"stale": "La vista previa está desactualizada.",
+	"errors": {
+		"scope": "El documento está fuera del espacio de trabajo abierto. Vuelva a abrir su carpeta de trabajo original.",
+		"missing": "El archivo fuente no existe o no se puede leer. Restáurelo en la ruta original para recuperar esta vista previa.",
+		"path": "Use un archivo local .html o .htm dentro del espacio de trabajo.",
+		"size": "El documento supera los límites del visor (512 KiB, 12.000 elementos, 64 niveles o 32 widgets). Reduzca su tamaño. También puede haberse superado el tiempo límite de análisis.",
+		"version": "Este documento requiere alpha-document versión 1. Corrija el marcador de versión para recuperar la vista previa.",
+		"reference": "Una referencia de origen no es válida. Use una ruta relativa al espacio de trabajo y un número de línea positivo.",
+		"data": "Los datos de un widget contienen un número no válido. Corrija la fuente para recuperar la vista previa.",
+		"format": "El documento necesita un título y un único elemento main.alpha-doc con data-alpha-kit=\"1\". Corrija la fuente para recuperar la vista previa."
+	},
+	"panelLimit": "Cierre una vista previa de documento HTML antes de abrir otra. Puede haber hasta ocho vistas previas abiertas a la vez."
+}

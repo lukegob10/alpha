@@ -16,6 +16,41 @@
 			"policy_restriction": "Kan geen nieuwe taak aanmaken vanwege beleidsbeperkingen."
 		}
 	},
+	"fileConflicts": {
+		"save": "Kan '{{path}}' niet opslaan: {{reason}}. Lees het bestand opnieuw en probeer het opnieuw om de wijzigingen van de gebruiker te behouden.",
+		"delete": "Kan '{{path}}' niet verwijderen: {{reason}}. Lees het bestand opnieuw en probeer het opnieuw.",
+		"saveDestination": "Kan '{{path}}' niet opslaan: {{reason}}. Controleer de bestemming en probeer het opnieuw.",
+		"reasons": {
+			"fileUnsavedChanges": "het bestand heeft niet-opgeslagen wijzigingen in een geopende editor",
+			"fileChangedDuringApproval": "het bestand is gewijzigd terwijl goedkeuring in behandeling was",
+			"editorChangedWhileChecked": "de geopende editor is gewijzigd tijdens het controleren van het bestand",
+			"destinationUnsavedChanges": "de bestemming heeft niet-opgeslagen wijzigingen in een geopende editor",
+			"destinationNotRegularFile": "de bestemming is geen normaal bestand",
+			"destinationChangedDuringInspection": "de bestemming is tijdens de inspectie gewijzigd",
+			"destinationPathChanged": "de bestemming verwijst nu naar een ander pad",
+			"destinationCreatedAfterInspection": "de bestemming is na de inspectie aangemaakt",
+			"destinationDeletedAfterInspection": "de bestemming is na de inspectie verwijderd",
+			"destinationChangedAfterInspection": "de bestemming is na de inspectie gewijzigd"
+		}
+	},
+	"diffView": {
+		"editCancelled": "Het bewerken van het bestand is geannuleerd",
+		"applyContentFailed": "De inhoud kon niet op de diff-editor worden toegepast",
+		"previewChangedDuringEdit": "De diff-voorvertoning is tijdens het bewerken gewijzigd; de wijzigingen van de gebruiker zijn behouden",
+		"noEditAvailableToSave": "Er is geen bestandsbewerking beschikbaar om op te slaan",
+		"previewChangedAfterApproval": "De diff-voorvertoning is na goedkeuring gewijzigd; controleer de wijzigingen en probeer het opnieuw",
+		"previewHasUserChanges": "De diff-voorvertoning bevat wijzigingen van de gebruiker; controleer deze voordat je het bewerken opnieuw probeert",
+		"noFilePathForOpening": "Er is geen bestandspad ingesteld om de diff-editor te openen",
+		"previewChangedWhileOpening": "De diff-voorvertoning is tijdens het openen gewijzigd; de wijzigingen van de gebruiker zijn behouden",
+		"openFailed": "De diff-editor voor {{path}} kon niet worden geopend: {{message}}",
+		"missingExpectedFileState": "De verwachte bestandsstatus ontbreekt voordat de diff-voorvertoning wordt geopend"
+	},
+	"applyPatch": {
+		"deleteCancelled": "De verwijderbewerking is geannuleerd."
+	},
+	"imageOutput": {
+		"writeIncomplete": "Het schrijven van '{{path}}' kon niet worden voltooid; het bestand is mogelijk onvolledig. {{cause}}"
+	},
 	"generateImage": {
 		"openRouterApiKeyRequired": "OpenRouter API-sleutel is vereist voor het genereren van afbeeldingen met OpenRouter-modellen. Configureer deze in de Experimentele Instellingen voor Afbeeldingsgeneratie.",
 		"failedWithStatus": "Afbeelding genereren mislukt: {{status}} {{statusText}}",
@@ -24,6 +59,10 @@
 		"invalidImageData": "Ongeldige afbeeldingsgegevens in het antwoord",
 		"invalidImageFormat": "Ongeldig afbeeldingsformaat ontvangen",
 		"unknownError": "Er is een onbekende fout opgetreden",
+		"cancelledBeforeSave": "Het genereren van de afbeelding is geannuleerd voordat de afbeelding werd opgeslagen.",
+		"destinationUnavailableBeforeGeneration": "De afbeeldingsbestemming was vóór het genereren niet toegankelijk. Probeer het verzoek opnieuw.",
+		"destinationPolicyChangedBeforeSave": "Het pad of toegangsbeleid van de afbeeldingsbestemming is vóór het opslaan gewijzigd. Probeer het verzoek opnieuw.",
+		"postSaveProcessingFailed": "{{path}}\nAfbeelding opgeslagen, maar de verwerking na het opslaan is mislukt: {{message}}",
 		"roo": {}
 	}
 }

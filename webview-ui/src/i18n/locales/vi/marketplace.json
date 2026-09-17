@@ -106,7 +106,8 @@
 		"goToModes": "Đi đến Cài đặt Chế độ",
 		"moreInfoMcp": "Xem tài liệu MCP {{name}}",
 		"validationRequired": "Vui lòng cung cấp giá trị cho {{paramName}}",
-		"prerequisites": "Điều kiện tiên quyết"
+		"prerequisites": "Điều kiện tiên quyết",
+		"installing": "Đang cài đặt…"
 	},
 	"sources": {
 		"title": "Cấu hình Nguồn Marketplace",

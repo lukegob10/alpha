@@ -19,6 +19,41 @@
 			"policy_restriction": "Gagal membuat tugas baru karena pembatasan kebijakan."
 		}
 	},
+	"fileConflicts": {
+		"save": "Tidak dapat menyimpan '{{path}}': {{reason}}. Baca ulang file dan coba lagi agar perubahan pengguna tetap terjaga.",
+		"delete": "Tidak dapat menghapus '{{path}}': {{reason}}. Baca ulang file dan coba lagi.",
+		"saveDestination": "Tidak dapat menyimpan '{{path}}': {{reason}}. Tinjau tujuan dan coba lagi.",
+		"reasons": {
+			"fileUnsavedChanges": "file memiliki perubahan yang belum disimpan di editor yang terbuka",
+			"fileChangedDuringApproval": "file berubah saat persetujuan masih tertunda",
+			"editorChangedWhileChecked": "editor yang terbuka berubah saat file sedang diperiksa",
+			"destinationUnsavedChanges": "tujuan memiliki perubahan yang belum disimpan di editor yang terbuka",
+			"destinationNotRegularFile": "tujuan bukan file biasa",
+			"destinationChangedDuringInspection": "tujuan berubah saat sedang diperiksa",
+			"destinationPathChanged": "tujuan sekarang mengarah ke jalur yang berbeda",
+			"destinationCreatedAfterInspection": "tujuan dibuat setelah pemeriksaan",
+			"destinationDeletedAfterInspection": "tujuan dihapus setelah pemeriksaan",
+			"destinationChangedAfterInspection": "tujuan berubah setelah pemeriksaan"
+		}
+	},
+	"diffView": {
+		"editCancelled": "Pengeditan file dibatalkan",
+		"applyContentFailed": "Gagal menerapkan konten ke editor perbedaan",
+		"previewChangedDuringEdit": "Pratinjau perbedaan berubah selama pengeditan; perubahan pengguna dipertahankan",
+		"noEditAvailableToSave": "Tidak ada pengeditan file yang tersedia untuk disimpan",
+		"previewChangedAfterApproval": "Pratinjau perbedaan berubah setelah persetujuan; tinjau perubahan dan coba lagi",
+		"previewHasUserChanges": "Pratinjau perbedaan memiliki perubahan pengguna; tinjau sebelum mencoba kembali mengedit",
+		"noFilePathForOpening": "Tidak ada jalur file yang ditetapkan untuk membuka editor perbedaan",
+		"previewChangedWhileOpening": "Pratinjau perbedaan berubah saat dibuka; perubahan pengguna dipertahankan",
+		"openFailed": "Gagal membuka editor perbedaan untuk {{path}}: {{message}}",
+		"missingExpectedFileState": "Status file yang diharapkan tidak ada sebelum membuka pratinjau perbedaan"
+	},
+	"applyPatch": {
+		"deleteCancelled": "Operasi penghapusan dibatalkan."
+	},
+	"imageOutput": {
+		"writeIncomplete": "Gagal menyelesaikan penulisan '{{path}}'; file mungkin tidak lengkap. {{cause}}"
+	},
 	"generateImage": {
 		"openRouterApiKeyRequired": "Kunci API OpenRouter diperlukan untuk menghasilkan gambar dengan model OpenRouter. Silakan konfigurasikan di pengaturan eksperimental Pembuatan Gambar.",
 		"failedWithStatus": "Gagal menghasilkan gambar: {{status}} {{statusText}}",
@@ -27,6 +62,10 @@
 		"invalidImageData": "Data gambar tidak valid dalam respons",
 		"invalidImageFormat": "Format gambar tidak valid diterima",
 		"unknownError": "Terjadi kesalahan yang tidak diketahui",
+		"cancelledBeforeSave": "Pembuatan gambar dibatalkan sebelum gambar disimpan.",
+		"destinationUnavailableBeforeGeneration": "Tujuan gambar tidak dapat diakses sebelum pembuatan. Coba lagi.",
+		"destinationPolicyChangedBeforeSave": "Jalur atau kebijakan akses tujuan gambar berubah sebelum penyimpanan. Coba lagi.",
+		"postSaveProcessingFailed": "{{path}}\nGambar berhasil disimpan, tetapi pemrosesan setelah penyimpanan gagal: {{message}}",
 		"roo": {}
 	}
 }

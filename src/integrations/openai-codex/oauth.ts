@@ -341,6 +341,9 @@ export function isTokenExpired(credentials: OpenAiCodexCredentials): boolean {
 export class OpenAiCodexOAuthManager {
 	private context: ExtensionContext | null = null
 	private credentials: OpenAiCodexCredentials | null = null
+	private credentialsLoaded = false
+	private credentialsLoadPromise: Promise<OpenAiCodexCredentials | null> | null = null
+	private credentialsRevision = 0
 	private logFn: ((message: string) => void) | null = null
 	private refreshPromise: Promise<OpenAiCodexCredentials> | null = null
 	private pendingAuth: {
@@ -370,6 +373,16 @@ export class OpenAiCodexOAuthManager {
 	initialize(context: ExtensionContext, logFn?: (message: string) => void): void {
 		this.context = context
 		this.logFn = logFn ?? null
+		this.credentialsRevision += 1
+		this.credentials = null
+		this.credentialsLoaded = false
+		this.credentialsLoadPromise = null
+		this.refreshPromise = null
+
+		// SecretStorage can be slow in managed environments. Warm the in-memory
+		// credential state during activation so ordinary UI state publication never
+		// has to wait for the OS credential store.
+		void this.loadCredentials()
 	}
 
 	/**
@@ -424,19 +437,53 @@ export class OpenAiCodexOAuthManager {
 		if (!this.context) {
 			return null
 		}
+		if (this.credentialsLoaded) {
+			return this.credentials
+		}
+		if (this.credentialsLoadPromise) {
+			return this.credentialsLoadPromise
+		}
+		const context = this.context
+		const loadRevision = this.credentialsRevision
 
-		try {
-			const credentialsJson = await this.context.secrets.get(OPENAI_CODEX_CREDENTIALS_KEY)
-			if (!credentialsJson) {
+		const loadPromise = (async () => {
+			try {
+				const credentialsJson = await context.secrets.get(OPENAI_CODEX_CREDENTIALS_KEY)
+				if (this.credentialsRevision !== loadRevision) {
+					return this.credentials
+				}
+				if (!credentialsJson) {
+					this.credentials = null
+					this.credentialsLoaded = true
+					return null
+				}
+
+				const parsed = openAiCodexCredentialsSchema.parse(JSON.parse(credentialsJson))
+				if (this.credentialsRevision !== loadRevision) {
+					return this.credentials
+				}
+				this.credentials = parsed
+				this.credentialsLoaded = true
+				return this.credentials
+			} catch (error) {
+				// Leave credentialsLoaded false after a storage failure so an explicit
+				// provider request can retry. Missing credentials, by contrast, are a
+				// valid cached result and should not trigger repeated secret-store reads.
+				if (this.credentialsRevision === loadRevision) {
+					this.credentials = null
+				}
+				this.logError("[openai-codex-oauth] Failed to load credentials:", error)
 				return null
 			}
+		})()
+		this.credentialsLoadPromise = loadPromise
 
-			const parsed = JSON.parse(credentialsJson)
-			this.credentials = openAiCodexCredentialsSchema.parse(parsed)
-			return this.credentials
-		} catch (error) {
-			this.logError("[openai-codex-oauth] Failed to load credentials:", error)
-			return null
+		try {
+			return await loadPromise
+		} finally {
+			if (this.credentialsLoadPromise === loadPromise) {
+				this.credentialsLoadPromise = null
+			}
 		}
 	}
 
@@ -448,8 +495,12 @@ export class OpenAiCodexOAuthManager {
 			throw new Error("OAuth manager not initialized")
 		}
 
+		const saveRevision = ++this.credentialsRevision
 		await this.context.secrets.store(OPENAI_CODEX_CREDENTIALS_KEY, JSON.stringify(credentials))
-		this.credentials = credentials
+		if (this.credentialsRevision === saveRevision) {
+			this.credentials = credentials
+			this.credentialsLoaded = true
+		}
 	}
 
 	/**
@@ -460,8 +511,12 @@ export class OpenAiCodexOAuthManager {
 			return
 		}
 
+		const clearRevision = ++this.credentialsRevision
 		await this.context.secrets.delete(OPENAI_CODEX_CREDENTIALS_KEY)
-		this.credentials = null
+		if (this.credentialsRevision === clearRevision) {
+			this.credentials = null
+			this.credentialsLoaded = true
+		}
 	}
 
 	/**
@@ -544,6 +599,16 @@ export class OpenAiCodexOAuthManager {
 	async isAuthenticated(): Promise<boolean> {
 		const token = await this.getAccessToken()
 		return token !== null
+	}
+
+	/**
+	 * Return whether credentials are already present in memory without touching
+	 * SecretStorage or refreshing an access token. This is the appropriate check
+	 * for rendering generic extension state; token validation remains on the
+	 * actual OpenAI Codex request path.
+	 */
+	hasStoredCredentials(): boolean {
+		return this.credentials !== null
 	}
 
 	/**

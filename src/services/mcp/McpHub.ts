@@ -30,7 +30,7 @@ import type {
 
 import { t } from "../../i18n"
 
-import { ClineProvider } from "../../core/webview/ClineProvider"
+import { AlphaProvider } from "../../core/webview/AlphaProvider"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
 
@@ -84,6 +84,48 @@ const mixedFieldsErrorMessage =
 	"Cannot mix 'stdio' and ('sse' or 'streamable-http') fields. For 'stdio' use 'command', 'args', and 'env'. For 'sse'/'streamable-http' use 'url' and 'headers'"
 const missingFieldsErrorMessage =
 	"Server configuration must include either 'command' (for stdio) or 'url' (for sse/streamable-http) and a corresponding 'type' if 'url' is used."
+
+/**
+ * Dispatch an MCP request synchronously, forward cancellation to the SDK, and
+ * still settle promptly when a transport ignores that signal. The handlers on
+ * the request promise remain attached after cancellation so late settlement is
+ * observed without changing the cancelled caller's result.
+ */
+function requestWithAbort<T>(dispatch: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+	signal?.throwIfAborted()
+	const request = dispatch()
+
+	if (!signal) {
+		return request
+	}
+
+	return new Promise<T>((resolve, reject) => {
+		let settled = false
+		const cleanup = () => signal.removeEventListener("abort", onAbort)
+		const onAbort = () => {
+			if (settled) return
+			settled = true
+			cleanup()
+			reject(signal.reason)
+		}
+		const settle = (callback: () => void) => {
+			if (settled) return
+			settled = true
+			cleanup()
+			callback()
+		}
+
+		signal.addEventListener("abort", onAbort, { once: true })
+		if (signal.aborted) {
+			onAbort()
+		}
+
+		request.then(
+			(value) => settle(() => resolve(value)),
+			(error) => settle(() => reject(error)),
+		)
+	})
+}
 
 // Helper function to create a refined schema with better error messages
 const createServerTypeSchema = () => {
@@ -148,7 +190,7 @@ const McpSettingsSchema = z.object({
 })
 
 export class McpHub {
-	private providerRef: WeakRef<ClineProvider>
+	private providerRef: WeakRef<AlphaProvider>
 	private disposables: vscode.Disposable[] = []
 	private settingsWatcher?: vscode.FileSystemWatcher
 	private fileWatchers: Map<string, FSWatcher[]> = new Map()
@@ -163,7 +205,7 @@ export class McpHub {
 	private sanitizedNameRegistry: Map<string, string> = new Map()
 	private initializationPromise: Promise<void>
 
-	constructor(provider: ClineProvider) {
+	constructor(provider: AlphaProvider) {
 		this.providerRef = new WeakRef(provider)
 		this.watchMcpSettingsFile()
 		this.watchProjectMcpFile().catch(console.error)
@@ -174,6 +216,10 @@ export class McpHub {
 		]).then(() => {})
 	}
 
+	public get disposed(): boolean {
+		return this.isDisposed
+	}
+
 	/**
 	 * Waits until all MCP servers have finished their initial connection attempts.
 	 * Each server individually handles its own timeout, so this will not block indefinitely.
@@ -182,7 +228,7 @@ export class McpHub {
 		await this.initializationPromise
 	}
 	/**
-	 * Registers a client (e.g., ClineProvider) using this hub.
+	 * Registers a client (e.g., AlphaProvider) using this hub.
 	 * Increments the reference count.
 	 */
 	public registerClient(): void {
@@ -376,7 +422,7 @@ export class McpHub {
 		}
 
 		const workspaceFolder = this.providerRef.deref()?.cwd ?? getWorkspacePath()
-		const projectMcpPattern = new vscode.RelativePattern(workspaceFolder, ".alpha/mcp.json")
+		const projectMcpPattern = new vscode.RelativePattern(workspaceFolder, ".roo/mcp.json")
 
 		// Create a file system watcher for the project MCP file pattern
 		this.projectMcpWatcher = vscode.workspace.createFileSystemWatcher(projectMcpPattern)
@@ -1073,7 +1119,7 @@ export class McpHub {
 
 	async deleteConnection(name: string, source?: "global" | "project"): Promise<void> {
 		// Clean up file watchers for this server
-		this.removeFileWatchersForServer(name)
+		this.removeFileWatchersForServer(name, source)
 
 		// If source is provided, only delete connections from that source
 		const connections = source
@@ -1114,7 +1160,6 @@ export class McpHub {
 		if (manageConnectingState) {
 			this.isConnecting = true
 		}
-		this.removeAllFileWatchers()
 		// Filter connections by source
 		const currentConnections = this.connections.filter(
 			(conn) => conn.server.source === source || (!conn.server.source && source === "global"),
@@ -1146,10 +1191,6 @@ export class McpHub {
 			if (!currentConnection) {
 				// New server
 				try {
-					// Only setup file watcher for enabled servers
-					if (!validatedConfig.disabled) {
-						this.setupFileWatcher(name, validatedConfig, source)
-					}
 					await this.connectToServer(name, validatedConfig, source)
 				} catch (error) {
 					this.showErrorMessage(`Failed to connect to new MCP server ${name}`, error)
@@ -1157,10 +1198,6 @@ export class McpHub {
 			} else if (!deepEqual(JSON.parse(currentConnection.server.config), config)) {
 				// Existing server with changed config
 				try {
-					// Only setup file watcher for enabled servers
-					if (!validatedConfig.disabled) {
-						this.setupFileWatcher(name, validatedConfig, source)
-					}
 					await this.deleteConnection(name, source)
 					await this.connectToServer(name, validatedConfig, source)
 				} catch (error) {
@@ -1180,12 +1217,13 @@ export class McpHub {
 		config: z.infer<typeof ServerConfigSchema>,
 		source: "global" | "project" = "global",
 	) {
+		const watcherKey = `${source}:${name}`
 		// Initialize an empty array for this server if it doesn't exist
-		if (!this.fileWatchers.has(name)) {
-			this.fileWatchers.set(name, [])
+		if (!this.fileWatchers.has(watcherKey)) {
+			this.fileWatchers.set(watcherKey, [])
 		}
 
-		const watchers = this.fileWatchers.get(name) || []
+		const watchers = this.fileWatchers.get(watcherKey) || []
 
 		// Only stdio type has args
 		if (config.type === "stdio") {
@@ -1233,7 +1271,7 @@ export class McpHub {
 
 			// Update the fileWatchers map with all watchers for this server
 			if (watchers.length > 0) {
-				this.fileWatchers.set(name, watchers)
+				this.fileWatchers.set(watcherKey, watchers)
 			}
 		}
 	}
@@ -1243,11 +1281,14 @@ export class McpHub {
 		this.fileWatchers.clear()
 	}
 
-	private removeFileWatchersForServer(serverName: string) {
-		const watchers = this.fileWatchers.get(serverName)
-		if (watchers) {
-			watchers.forEach((watcher) => watcher.close())
-			this.fileWatchers.delete(serverName)
+	private removeFileWatchersForServer(serverName: string, source?: "global" | "project") {
+		const keys = source ? [`${source}:${serverName}`] : [`global:${serverName}`, `project:${serverName}`]
+		for (const key of keys) {
+			const watchers = this.fileWatchers.get(key)
+			if (watchers) {
+				watchers.forEach((watcher) => watcher.close())
+				this.fileWatchers.delete(key)
+			}
 		}
 	}
 
@@ -1405,7 +1446,7 @@ export class McpHub {
 		})
 
 		// Send sorted servers to webview
-		const targetProvider: ClineProvider | undefined = this.providerRef.deref()
+		const targetProvider: AlphaProvider | undefined = this.providerRef.deref()
 
 		if (targetProvider) {
 			const serversToSend = sortedConnections.map((connection) => connection.server)
@@ -1451,7 +1492,7 @@ export class McpHub {
 					// If disabling a connected server, disconnect it
 					if (disabled && connection.server.status === "connected") {
 						// Clean up file watchers when disabling
-						this.removeFileWatchersForServer(serverName)
+						this.removeFileWatchersForServer(serverName, serverSource)
 						await this.deleteConnection(serverName, serverSource)
 						// Re-add as a disabled connection
 						// Re-read config from file to get updated disabled state
@@ -1708,7 +1749,12 @@ export class McpHub {
 		}
 	}
 
-	async readResource(serverName: string, uri: string, source?: "global" | "project"): Promise<McpResourceResponse> {
+	async readResource(
+		serverName: string,
+		uri: string,
+		source?: "global" | "project",
+		signal?: AbortSignal,
+	): Promise<McpResourceResponse> {
 		const connection = this.findConnection(serverName, source)
 		if (!connection || connection.type !== "connected") {
 			throw new Error(`No connection found for server: ${serverName}${source ? ` with source ${source}` : ""}`)
@@ -1716,14 +1762,19 @@ export class McpHub {
 		if (connection.server.disabled) {
 			throw new Error(`Server "${serverName}" is disabled`)
 		}
-		return await connection.client.request(
-			{
-				method: "resources/read",
-				params: {
-					uri,
-				},
+		signal?.throwIfAborted()
+		const request = {
+			method: "resources/read" as const,
+			params: {
+				uri,
 			},
-			ReadResourceResultSchema,
+		}
+		return await requestWithAbort(
+			() =>
+				signal
+					? connection.client.request(request, ReadResourceResultSchema, { signal })
+					: connection.client.request(request, ReadResourceResultSchema),
+			signal,
 		)
 	}
 
@@ -1732,6 +1783,7 @@ export class McpHub {
 		toolName: string,
 		toolArguments?: Record<string, unknown>,
 		source?: "global" | "project",
+		signal?: AbortSignal,
 	): Promise<McpToolCallResponse> {
 		const connection = this.findConnection(serverName, source)
 		if (!connection || connection.type !== "connected") {
@@ -1752,19 +1804,22 @@ export class McpHub {
 			// Default to 60 seconds if parsing fails
 			timeout = 60 * 1000
 		}
+		signal?.throwIfAborted()
 
-		return await connection.client.request(
-			{
-				method: "tools/call",
-				params: {
-					name: toolName,
-					arguments: toolArguments,
-				},
-			},
-			CallToolResultSchema,
-			{
-				timeout,
-			},
+		return await requestWithAbort(
+			() =>
+				connection.client.request(
+					{
+						method: "tools/call",
+						params: {
+							name: toolName,
+							arguments: toolArguments,
+						},
+					},
+					CallToolResultSchema,
+					signal ? { timeout, signal } : { timeout },
+				),
+			signal,
 		)
 	}
 

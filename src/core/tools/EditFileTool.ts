@@ -1,10 +1,8 @@
 import fs from "fs/promises"
 import path from "path"
 
-import { type ClineSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
+import { type AlphaSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
 
-import { getReadablePath } from "../../utils/path"
-import { isPathOutsideWorkspace } from "../../utils/pathUtils"
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
@@ -12,8 +10,11 @@ import { fileExistsAtPath } from "../../utils/fs"
 import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { sanitizeUnifiedDiff, computeDiffStats } from "../diff/stats"
 import type { ToolUse } from "../../shared/tools"
+import type { ExpectedFileState } from "../../integrations/editor/DiffViewProvider"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { fileEditContent, normalizeToLF } from "./fileEditContent"
+import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
 
 interface EditFileParams {
 	file_path: string
@@ -21,8 +22,6 @@ interface EditFileParams {
 	new_string: string
 	expected_replacements?: number
 }
-
-type LineEnding = "\r\n" | "\n"
 
 /**
  * Count occurrences of a substring in a string.
@@ -39,45 +38,6 @@ function countOccurrences(str: string, substr: string): number {
 		pos = str.indexOf(substr, pos + substr.length)
 	}
 	return count
-}
-
-/**
- * Safely replace all occurrences of a literal string, handling $ escape sequences.
- * Standard String.replaceAll treats $ specially in the replacement string.
- * This function ensures literal replacement.
- *
- * @param str The original string
- * @param oldString The string to replace
- * @param newString The replacement string
- * @returns The string with all occurrences replaced
- */
-function safeLiteralReplace(str: string, oldString: string, newString: string): string {
-	if (oldString === "" || !str.includes(oldString)) {
-		return str
-	}
-
-	// If newString doesn't contain $, we can use replaceAll directly
-	if (!newString.includes("$")) {
-		return str.replaceAll(oldString, newString)
-	}
-
-	// Escape $ to prevent ECMAScript GetSubstitution issues
-	// $$ becomes a single $ in the output, so we double-escape
-	const escapedNewString = newString.replaceAll("$", "$$$$")
-	return str.replaceAll(oldString, escapedNewString)
-}
-
-function detectLineEnding(content: string): LineEnding {
-	return content.includes("\r\n") ? "\r\n" : "\n"
-}
-
-function normalizeToLF(content: string): string {
-	return content.replace(/\r\n/g, "\n")
-}
-
-function restoreLineEnding(contentLF: string, eol: LineEnding): string {
-	if (eol === "\n") return contentLF
-	return contentLF.replace(/\n/g, "\r\n")
 }
 
 function escapeRegExp(input: string): string {
@@ -157,11 +117,11 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 			}
 
 			const absolutePath = path.resolve(task.cwd, relPath)
-			const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
+			const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
-			const sharedMessageProps: ClineSayTool = {
+			const sharedMessageProps: AlphaSayTool = {
 				tool: "appliedDiff",
-				path: getReadablePath(task.cwd, relPath),
+				path: getTaskReadablePath(task, relPath),
 				diff: operationPreviewForErrorHandling,
 				isOutsideWorkspace,
 			}
@@ -206,35 +166,35 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 							return `replacing: "${preview}"`
 						})()
 
-			const accessAllowed = task.rooIgnoreController?.validateAccess(relPath)
+			const accessAllowed = task.alphaIgnoreController?.validateAccess(relPath)
 
 			if (!accessAllowed) {
 				// Finalize the partial tool preview before emitting any say() messages.
 				await finalizePartialToolAskIfNeeded(relPath)
 				task.didToolFailInCurrentTurn = true
 				await task.say("rooignore_error", relPath)
-				pushToolResult(formatResponse.rooIgnoreError(relPath))
+				pushToolResult(formatResponse.alphaIgnoreError(relPath))
 				return
 			}
 
 			// Check if file is write-protected
-			const isWriteProtected = task.rooProtectedController?.isWriteProtected(relPath) || false
+			const isWriteProtected = task.alphaProtectedController?.isWriteProtected(relPath) || false
 
 			const absolutePath = path.resolve(task.cwd, relPath)
 			const fileExists = await fileExistsAtPath(absolutePath)
 
 			let currentContent: string | null = null
 			let currentContentLF: string | null = null
-			let originalEol: LineEnding = "\n"
+			let projection: ReturnType<typeof fileEditContent> | undefined
 			let isNewFile = false
 
 			// Read file or determine if creating new
 			if (fileExists) {
 				try {
 					currentContent = await fs.readFile(absolutePath, "utf8")
-					originalEol = detectLineEnding(currentContent)
+					projection = fileEditContent(currentContent)
 					// Normalize line endings to LF for matching
-					currentContentLF = normalizeToLF(currentContent)
+					currentContentLF = projection.content
 				} catch (error) {
 					task.consecutiveMistakeCount++
 					task.didToolFailInCurrentTurn = true
@@ -303,7 +263,7 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 				const exactOccurrences = countOccurrences(currentContentLF, oldLF)
 				if (exactOccurrences === expectedReplacements) {
 					// Apply literal replacement on LF-normalized content
-					currentContentLF = safeLiteralReplace(currentContentLF, oldLF, newLF)
+					currentContentLF = currentContentLF.replaceAll(oldLF, () => newLF)
 				} else {
 					// Strategy 2: whitespace-tolerant regex
 					const wsOccurrences = countRegexMatches(currentContentLF, wsRegex)
@@ -354,9 +314,7 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 			}
 
 			// Apply the replacement
-			const newContent = isNewFile
-				? new_string
-				: restoreLineEnding(currentContentLF ?? currentContent ?? "", originalEol)
+			const newContent = isNewFile ? new_string : projection!.restore(currentContentLF ?? "")
 
 			// Check if any changes were made
 			if (!isNewFile && newContent === currentContent) {
@@ -375,6 +333,9 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 			// Initialize diff view
 			task.diffViewProvider.editType = isNewFile ? "create" : "modify"
 			task.diffViewProvider.originalContent = currentContent || ""
+			const expectedFileState: ExpectedFileState = isNewFile
+				? { exists: false }
+				: { exists: true, content: currentContent ?? "" }
 
 			// Generate and validate diff
 			const diff = formatResponse.createPrettyPatch(relPath, currentContent || "", newContent)
@@ -399,11 +360,11 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 
 			const sanitizedDiff = sanitizeUnifiedDiff(diff || "")
 			const diffStats = computeDiffStats(sanitizedDiff) || undefined
-			const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
+			const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
-			const sharedMessageProps: ClineSayTool = {
+			const sharedMessageProps: AlphaSayTool = {
 				tool: isNewFile ? "newFileCreated" : "appliedDiff",
-				path: getReadablePath(task.cwd, relPath),
+				path: getTaskReadablePath(task, relPath),
 				diff: sanitizedDiff,
 				isOutsideWorkspace,
 			}
@@ -413,11 +374,11 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 				content: sanitizedDiff,
 				isProtected: isWriteProtected,
 				diffStats,
-			} satisfies ClineSayTool)
+			} satisfies AlphaSayTool)
 
 			// Show diff view if focus disruption prevention is disabled
 			if (!isPreventFocusDisruptionEnabled) {
-				await task.diffViewProvider.open(relPath)
+				await task.diffViewProvider.open(relPath, expectedFileState)
 				await task.diffViewProvider.update(newContent, true)
 				task.diffViewProvider.scrollToFirstDiff()
 			}
@@ -440,9 +401,10 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 				await task.diffViewProvider.saveDirectly(
 					relPath,
 					newContent,
-					isNewFile,
+					false,
 					diagnosticsEnabled,
 					writeDelayMs,
+					expectedFileState,
 				)
 			} else {
 				// Call saveChanges to update the DiffViewProvider properties
@@ -512,11 +474,11 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 		this.partialToolAskRelPath = relPath
 
 		const absolutePath = path.resolve(task.cwd, relPath)
-		const isOutsideWorkspace = isPathOutsideWorkspace(absolutePath)
+		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
-		const sharedMessageProps: ClineSayTool = {
+		const sharedMessageProps: AlphaSayTool = {
 			tool: "appliedDiff",
-			path: getReadablePath(task.cwd, relPath),
+			path: getTaskReadablePath(task, relPath),
 			diff: operationPreview,
 			isOutsideWorkspace,
 		}

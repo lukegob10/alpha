@@ -1,12 +1,10 @@
 import * as path from "path"
+import fs from "fs/promises"
 
 import type { MockedFunction } from "vitest"
 
 import { fileExistsAtPath, createDirectoriesForFile } from "../../../utils/fs"
-import { isPathOutsideWorkspace } from "../../../utils/pathUtils"
 import { getReadablePath } from "../../../utils/path"
-import { unescapeHtmlEntities } from "../../../utils/text-normalization"
-import { everyLineHasLineNumbers, stripLineNumbers } from "../../../integrations/misc/extract-text"
 import { ToolUse, ToolResponse } from "../../../shared/tools"
 import { writeToFileTool } from "../WriteToFileTool"
 
@@ -26,6 +24,13 @@ vi.mock("delay", () => ({
 	default: vi.fn(),
 }))
 
+vi.mock("fs/promises", () => ({
+	default: {
+		readFile: vi.fn().mockResolvedValue("existing content"),
+		writeFile: vi.fn().mockResolvedValue(undefined),
+	},
+}))
+
 vi.mock("../../../utils/fs", () => ({
 	fileExistsAtPath: vi.fn().mockResolvedValue(false),
 	createDirectoriesForFile: vi.fn().mockResolvedValue([]),
@@ -34,32 +39,13 @@ vi.mock("../../../utils/fs", () => ({
 vi.mock("../../prompts/responses", () => ({
 	formatResponse: {
 		toolError: vi.fn((msg) => `Error: ${msg}`),
-		rooIgnoreError: vi.fn((path) => `Access denied: ${path}`),
+		alphaIgnoreError: vi.fn((path) => `Access denied: ${path}`),
 		createPrettyPatch: vi.fn(() => "mock-diff"),
 	},
 }))
 
-vi.mock("../../../utils/pathUtils", () => ({
-	isPathOutsideWorkspace: vi.fn().mockReturnValue(false),
-}))
-
 vi.mock("../../../utils/path", () => ({
 	getReadablePath: vi.fn().mockReturnValue("test/path.txt"),
-}))
-
-vi.mock("../../../utils/text-normalization", () => ({
-	unescapeHtmlEntities: vi.fn().mockImplementation((content) => content),
-}))
-
-vi.mock("../../../integrations/misc/extract-text", () => ({
-	everyLineHasLineNumbers: vi.fn().mockReturnValue(false),
-	stripLineNumbers: vi.fn().mockImplementation((content) => content),
-	addLineNumbers: vi.fn().mockImplementation((content: string) =>
-		content
-			.split("\n")
-			.map((line: string, i: number) => `${i + 1} | ${line}`)
-			.join("\n"),
-	),
 }))
 
 vi.mock("vscode", () => ({
@@ -74,8 +60,8 @@ vi.mock("vscode", () => ({
 	},
 }))
 
-vi.mock("../../ignore/RooIgnoreController", () => ({
-	RooIgnoreController: class {
+vi.mock("../../ignore/AlphaIgnoreController", () => ({
+	AlphaIgnoreController: class {
 		initialize() {
 			return Promise.resolve()
 		}
@@ -95,14 +81,13 @@ describe("writeToFileTool", () => {
 	// Mocked functions with correct types
 	const mockedFileExistsAtPath = fileExistsAtPath as MockedFunction<typeof fileExistsAtPath>
 	const mockedCreateDirectoriesForFile = createDirectoriesForFile as MockedFunction<typeof createDirectoriesForFile>
-	const mockedIsPathOutsideWorkspace = isPathOutsideWorkspace as MockedFunction<typeof isPathOutsideWorkspace>
 	const mockedGetReadablePath = getReadablePath as MockedFunction<typeof getReadablePath>
-	const mockedUnescapeHtmlEntities = unescapeHtmlEntities as MockedFunction<typeof unescapeHtmlEntities>
-	const mockedEveryLineHasLineNumbers = everyLineHasLineNumbers as MockedFunction<typeof everyLineHasLineNumbers>
-	const mockedStripLineNumbers = stripLineNumbers as MockedFunction<typeof stripLineNumbers>
 	const mockedPathResolve = path.resolve as MockedFunction<typeof path.resolve>
+	const mockedFsReadFile = fs.readFile as unknown as MockedFunction<
+		(path: string, encoding: string) => Promise<string>
+	>
 
-	const mockCline: any = {}
+	const mockAlphaTask: any = {}
 	let mockAskApproval: ReturnType<typeof vi.fn>
 	let mockHandleError: ReturnType<typeof vi.fn>
 	let mockPushToolResult: ReturnType<typeof vi.fn>
@@ -113,18 +98,15 @@ describe("writeToFileTool", () => {
 		writeToFileTool.resetPartialState()
 
 		mockedPathResolve.mockReturnValue(absoluteFilePath)
+		mockedFsReadFile.mockResolvedValue("existing content")
 		mockedFileExistsAtPath.mockResolvedValue(false)
-		mockedIsPathOutsideWorkspace.mockReturnValue(false)
 		mockedGetReadablePath.mockReturnValue("test/path.txt")
-		mockedUnescapeHtmlEntities.mockImplementation((content) => content)
-		mockedEveryLineHasLineNumbers.mockReturnValue(false)
-		mockedStripLineNumbers.mockImplementation((content) => content)
 
-		mockCline.cwd = "/"
-		mockCline.consecutiveMistakeCount = 0
-		mockCline.didEditFile = false
-		mockCline.diffStrategy = undefined
-		mockCline.providerRef = {
+		mockAlphaTask.cwd = "/"
+		mockAlphaTask.consecutiveMistakeCount = 0
+		mockAlphaTask.didEditFile = false
+		mockAlphaTask.diffStrategy = undefined
+		mockAlphaTask.providerRef = {
 			deref: vi.fn().mockReturnValue({
 				getState: vi.fn().mockResolvedValue({
 					diagnosticsEnabled: true,
@@ -132,10 +114,10 @@ describe("writeToFileTool", () => {
 				}),
 			}),
 		}
-		mockCline.rooIgnoreController = {
+		mockAlphaTask.alphaIgnoreController = {
 			validateAccess: vi.fn().mockReturnValue(true),
 		}
-		mockCline.diffViewProvider = {
+		mockAlphaTask.diffViewProvider = {
 			editType: undefined,
 			isEditing: false,
 			originalContent: "",
@@ -143,6 +125,11 @@ describe("writeToFileTool", () => {
 			update: vi.fn().mockResolvedValue(undefined),
 			reset: vi.fn().mockResolvedValue(undefined),
 			revertChanges: vi.fn().mockResolvedValue(undefined),
+			saveDirectly: vi.fn().mockResolvedValue({
+				newProblemsMessage: "",
+				userEdits: undefined,
+				finalContent: testContent,
+			}),
 			saveChanges: vi.fn().mockResolvedValue({
 				newProblemsMessage: "",
 				userEdits: null,
@@ -170,16 +157,17 @@ describe("writeToFileTool", () => {
 				return "Tool result message"
 			}),
 		}
-		mockCline.api = {
+		mockAlphaTask.api = {
 			getModel: vi.fn().mockReturnValue({ id: "claude-3" }),
 		}
-		mockCline.fileContextTracker = {
+		mockAlphaTask.fileContextTracker = {
 			trackFileContext: vi.fn().mockResolvedValue(undefined),
 		}
-		mockCline.say = vi.fn().mockResolvedValue(undefined)
-		mockCline.ask = vi.fn().mockResolvedValue(undefined)
-		mockCline.recordToolError = vi.fn()
-		mockCline.sayAndCreateMissingParamError = vi.fn().mockResolvedValue("Missing param error")
+		mockAlphaTask.say = vi.fn().mockResolvedValue(undefined)
+		mockAlphaTask.ask = vi.fn().mockResolvedValue(undefined)
+		mockAlphaTask.processQueuedMessages = vi.fn().mockResolvedValue(undefined)
+		mockAlphaTask.recordToolError = vi.fn()
+		mockAlphaTask.sayAndCreateMissingParamError = vi.fn().mockResolvedValue("Missing param error")
 
 		mockAskApproval = vi.fn().mockResolvedValue(true)
 		mockHandleError = vi.fn().mockResolvedValue(undefined)
@@ -194,6 +182,7 @@ describe("writeToFileTool", () => {
 		params: Partial<ToolUse["params"]> = {},
 		options: {
 			fileExists?: boolean
+			fileContent?: string
 			isPartial?: boolean
 			accessAllowed?: boolean
 		} = {},
@@ -204,7 +193,10 @@ describe("writeToFileTool", () => {
 		const accessAllowed = options.accessAllowed ?? true
 
 		mockedFileExistsAtPath.mockResolvedValue(fileExists)
-		mockCline.rooIgnoreController.validateAccess.mockReturnValue(accessAllowed)
+		if (options.fileContent !== undefined) {
+			mockedFsReadFile.mockResolvedValue(options.fileContent)
+		}
+		mockAlphaTask.alphaIgnoreController.validateAccess.mockReturnValue(accessAllowed)
 
 		// Create a tool use object
 		const toolUse: ToolUse = {
@@ -226,7 +218,7 @@ describe("writeToFileTool", () => {
 			toolResult = result
 		})
 
-		await writeToFileTool.handle(mockCline, toolUse as ToolUse<"write_to_file">, {
+		await writeToFileTool.handle(mockAlphaTask, toolUse as ToolUse<"write_to_file">, {
 			askApproval: mockAskApproval,
 			handleError: mockHandleError,
 			pushToolResult: mockPushToolResult,
@@ -236,11 +228,11 @@ describe("writeToFileTool", () => {
 	}
 
 	describe("access control", () => {
-		it("validates and allows access when rooIgnoreController permits", async () => {
+		it("validates and allows access when alphaIgnoreController permits", async () => {
 			await executeWriteFileTool({}, { accessAllowed: true })
 
-			expect(mockCline.rooIgnoreController.validateAccess).toHaveBeenCalledWith(testFilePath)
-			expect(mockCline.diffViewProvider.open).toHaveBeenCalledWith(testFilePath)
+			expect(mockAlphaTask.alphaIgnoreController.validateAccess).toHaveBeenCalledWith(testFilePath)
+			expect(mockAlphaTask.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, { exists: false })
 		})
 	})
 
@@ -249,18 +241,18 @@ describe("writeToFileTool", () => {
 			await executeWriteFileTool({}, { fileExists: true })
 
 			expect(mockedFileExistsAtPath).toHaveBeenCalledWith(absoluteFilePath)
-			expect(mockCline.diffViewProvider.editType).toBe("modify")
+			expect(mockAlphaTask.diffViewProvider.editType).toBe("modify")
 		})
 
 		it.skipIf(process.platform === "win32")("detects new file and sets editType to create", async () => {
 			await executeWriteFileTool({}, { fileExists: false })
 
 			expect(mockedFileExistsAtPath).toHaveBeenCalledWith(absoluteFilePath)
-			expect(mockCline.diffViewProvider.editType).toBe("create")
+			expect(mockAlphaTask.diffViewProvider.editType).toBe("create")
 		})
 
 		it("uses cached editType without filesystem check", async () => {
-			mockCline.diffViewProvider.editType = "modify"
+			mockAlphaTask.diffViewProvider.editType = "modify"
 
 			await executeWriteFileTool({})
 
@@ -270,16 +262,16 @@ describe("writeToFileTool", () => {
 
 	describe("directory creation for new files", () => {
 		it.skipIf(process.platform === "win32")(
-			"creates parent directories early when file does not exist (execute)",
+			"does not create parent directories before approval (execute)",
 			async () => {
 				await executeWriteFileTool({}, { fileExists: false })
 
-				expect(mockedCreateDirectoriesForFile).toHaveBeenCalledWith(absoluteFilePath)
+				expect(mockedCreateDirectoriesForFile).not.toHaveBeenCalled()
 			},
 		)
 
 		it.skipIf(process.platform === "win32")(
-			"creates parent directories when path has stabilized (partial)",
+			"does not create parent directories when path has stabilized (partial)",
 			async () => {
 				// First call - path not yet stabilized
 				await executeWriteFileTool({}, { fileExists: false, isPartial: true })
@@ -287,7 +279,7 @@ describe("writeToFileTool", () => {
 
 				// Second call with same path - path is now stabilized
 				await executeWriteFileTool({}, { fileExists: false, isPartial: true })
-				expect(mockedCreateDirectoriesForFile).toHaveBeenCalledWith(absoluteFilePath)
+				expect(mockedCreateDirectoriesForFile).not.toHaveBeenCalled()
 			},
 		)
 
@@ -298,61 +290,53 @@ describe("writeToFileTool", () => {
 		})
 
 		it("does not create directories when editType is cached as modify", async () => {
-			mockCline.diffViewProvider.editType = "modify"
+			mockAlphaTask.diffViewProvider.editType = "modify"
 
 			await executeWriteFileTool({})
 
 			expect(mockedCreateDirectoriesForFile).not.toHaveBeenCalled()
 		})
 
-		it.skipIf(process.platform === "win32")("creates directories when editType is cached as create", async () => {
-			mockCline.diffViewProvider.editType = "create"
+		it.skipIf(process.platform === "win32")(
+			"does not create directories when editType is cached as create",
+			async () => {
+				mockAlphaTask.diffViewProvider.editType = "create"
 
-			await executeWriteFileTool({})
+				await executeWriteFileTool({})
 
-			expect(mockedCreateDirectoriesForFile).toHaveBeenCalledWith(absoluteFilePath)
-		})
+				expect(mockedCreateDirectoriesForFile).not.toHaveBeenCalled()
+			},
+		)
 	})
 
 	describe("content preprocessing", () => {
-		it("removes markdown code block markers from content", async () => {
+		it("preserves markdown code block markers in native content", async () => {
 			await executeWriteFileTool({ content: testContentWithMarkdown })
 
-			expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith("Line 1\nLine 2", true)
+			expect(mockAlphaTask.diffViewProvider.update).toHaveBeenCalledWith(testContentWithMarkdown, true)
 		})
 
 		it("passes through empty content unchanged", async () => {
 			await executeWriteFileTool({ content: "" })
 
-			expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith("", true)
+			expect(mockAlphaTask.diffViewProvider.update).toHaveBeenCalledWith("", true)
 		})
 
-		it("unescapes HTML entities for non-Claude models", async () => {
-			mockCline.api.getModel.mockReturnValue({ id: "gpt-4" })
+		it.each(["gpt-4", "claude-3"])("preserves entities and Unicode for %s", async (modelId) => {
+			mockAlphaTask.api.getModel.mockReturnValue({ id: modelId })
+			const content = "<p>&lt;script&gt; &amp; — café 漢字</p>"
 
-			await executeWriteFileTool({ content: "&lt;test&gt;" })
+			await executeWriteFileTool({ content })
 
-			expect(mockedUnescapeHtmlEntities).toHaveBeenCalledWith("&lt;test&gt;")
+			expect(mockAlphaTask.diffViewProvider.update).toHaveBeenCalledWith(content, true)
 		})
 
-		it("skips HTML unescaping for Claude models", async () => {
-			mockCline.api.getModel.mockReturnValue({ id: "claude-3" })
-
-			await executeWriteFileTool({ content: "&lt;test&gt;" })
-
-			expect(mockedUnescapeHtmlEntities).not.toHaveBeenCalled()
-		})
-
-		it("strips line numbers from numbered content", async () => {
-			const contentWithLineNumbers = "1 | line one\n2 | line two"
-			mockedEveryLineHasLineNumbers.mockReturnValue(true)
-			mockedStripLineNumbers.mockReturnValue("line one\nline two")
+		it("preserves line numbers in native content", async () => {
+			const contentWithLineNumbers = "1 | line one\r\n2 | line two"
 
 			await executeWriteFileTool({ content: contentWithLineNumbers })
 
-			expect(mockedEveryLineHasLineNumbers).toHaveBeenCalledWith(contentWithLineNumbers)
-			expect(mockedStripLineNumbers).toHaveBeenCalledWith(contentWithLineNumbers)
-			expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith("line one\nline two", true)
+			expect(mockAlphaTask.diffViewProvider.update).toHaveBeenCalledWith(contentWithLineNumbers, true)
 		})
 	})
 
@@ -360,29 +344,96 @@ describe("writeToFileTool", () => {
 		it("successfully creates new files with full workflow", async () => {
 			await executeWriteFileTool({}, { fileExists: false })
 
-			expect(mockCline.consecutiveMistakeCount).toBe(0)
-			expect(mockCline.diffViewProvider.open).toHaveBeenCalledWith(testFilePath)
-			expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith(testContent, true)
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(0)
+			expect(mockAlphaTask.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, { exists: false })
+			expect(mockAlphaTask.diffViewProvider.update).toHaveBeenCalledWith(testContent, true)
 			expect(mockAskApproval).toHaveBeenCalled()
-			expect(mockCline.diffViewProvider.saveChanges).toHaveBeenCalled()
-			expect(mockCline.fileContextTracker.trackFileContext).toHaveBeenCalledWith(testFilePath, "roo_edited")
-			expect(mockCline.didEditFile).toBe(true)
+			expect(mockAlphaTask.diffViewProvider.saveChanges).toHaveBeenCalled()
+			expect(mockAlphaTask.fileContextTracker.trackFileContext).toHaveBeenCalledWith(testFilePath, "roo_edited")
+			expect(mockAlphaTask.didEditFile).toBe(true)
 		})
 
-		it("processes files outside workspace boundary", async () => {
-			mockedIsPathOutsideWorkspace.mockReturnValue(true)
+		it("passes the raw baseline to a diff preview before settings lookup", async () => {
+			const rawBaseline = "existing\r\ncontent\r\n"
+			const getState = mockAlphaTask.providerRef.deref().getState
+			getState.mockImplementation(async () => {
+				mockedFsReadFile.mockResolvedValue("changed after settings lookup")
+				return { diagnosticsEnabled: true, writeDelayMs: 1000 }
+			})
 
-			await executeWriteFileTool({})
+			await executeWriteFileTool({ content: "replacement" }, { fileExists: true, fileContent: rawBaseline })
 
-			expect(mockedIsPathOutsideWorkspace).toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, {
+				exists: true,
+				content: rawBaseline,
+			})
 		})
+
+		it.each([false, true])(
+			"marks outside-workspace writes in the approval payload (existing=%s)",
+			async (fileExists) => {
+				const actualPath = await vi.importActual<typeof import("path")>("path")
+				mockedPathResolve.mockImplementation(actualPath.resolve)
+				mockAlphaTask.cwd = path.join(path.parse(absoluteFilePath).root, "workspace", "project")
+
+				await executeWriteFileTool({ path: absoluteFilePath }, { fileExists })
+
+				expect(mockHandleError).not.toHaveBeenCalled()
+				expect(mockAskApproval).toHaveBeenCalledOnce()
+				expect(JSON.parse(mockAskApproval.mock.calls[0][1])).toMatchObject({
+					tool: fileExists ? "editedExistingFile" : "newFileCreated",
+					isOutsideWorkspace: true,
+				})
+			},
+		)
 
 		it("processes files with large content", async () => {
 			const largeContent = "Line\n".repeat(10000)
 			await executeWriteFileTool({ content: largeContent })
 
 			// Should process normally without issues
-			expect(mockCline.consecutiveMistakeCount).toBe(0)
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(0)
+		})
+
+		it("passes the captured existing baseline to direct saves", async () => {
+			const rawBaseline = "existing content\r\n"
+			const content = "literal &lt;value&gt; — café 漢字"
+			mockedFsReadFile.mockResolvedValue(rawBaseline)
+			mockAlphaTask.providerRef.deref().getState.mockResolvedValue({
+				diagnosticsEnabled: true,
+				writeDelayMs: 1000,
+				experiments: { preventFocusDisruption: true },
+			})
+
+			await executeWriteFileTool({ content }, { fileExists: true })
+
+			expect(mockAlphaTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+				testFilePath,
+				content,
+				false,
+				true,
+				1000,
+				{ exists: true, content: rawBaseline },
+			)
+		})
+
+		it("passes an expected-missing baseline to direct saves", async () => {
+			mockAlphaTask.providerRef.deref().getState.mockResolvedValue({
+				diagnosticsEnabled: true,
+				writeDelayMs: 1000,
+				experiments: { preventFocusDisruption: true },
+			})
+
+			await executeWriteFileTool({ content: "new file" }, { fileExists: false })
+
+			expect(mockAlphaTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+				testFilePath,
+				"new file",
+				false,
+				true,
+				1000,
+				{ exists: false },
+			)
 		})
 	})
 
@@ -390,26 +441,64 @@ describe("writeToFileTool", () => {
 		it("returns early when path is missing in partial block", async () => {
 			await executeWriteFileTool({ path: undefined }, { isPartial: true })
 
-			expect(mockCline.diffViewProvider.open).not.toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.open).not.toHaveBeenCalled()
 		})
 
 		it("returns early when content is undefined in partial block", async () => {
 			await executeWriteFileTool({ content: undefined }, { isPartial: true })
 
-			expect(mockCline.diffViewProvider.open).not.toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.open).not.toHaveBeenCalled()
 		})
 
 		it("streams content updates during partial execution after path stabilizes", async () => {
 			// First call - path not yet stabilized, early return (no file operations)
 			await executeWriteFileTool({}, { isPartial: true })
-			expect(mockCline.ask).not.toHaveBeenCalled()
-			expect(mockCline.diffViewProvider.open).not.toHaveBeenCalled()
+			expect(mockAlphaTask.ask).not.toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.open).not.toHaveBeenCalled()
 
 			// Second call with same path - path is now stabilized, file operations proceed
 			await executeWriteFileTool({}, { isPartial: true })
-			expect(mockCline.ask).toHaveBeenCalled()
-			expect(mockCline.diffViewProvider.open).toHaveBeenCalledWith(testFilePath)
-			expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith(testContent, false)
+			expect(mockAlphaTask.ask).toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, { exists: false })
+			expect(mockAlphaTask.diffViewProvider.update).toHaveBeenCalledWith(testContent, false)
+		})
+
+		it("retains the first partial raw baseline across streamed updates", async () => {
+			const rawBaseline = "existing\r\ncontent\r\n"
+			mockAlphaTask.ask.mockImplementation(async () => {
+				mockedFsReadFile.mockResolvedValue("changed after partial ask")
+			})
+			mockedFileExistsAtPath.mockResolvedValue(true)
+			mockAlphaTask.diffViewProvider.open.mockImplementation(async () => {
+				mockAlphaTask.diffViewProvider.isEditing = true
+			})
+
+			await executeWriteFileTool(
+				{ content: "first replacement" },
+				{ isPartial: true, fileExists: true, fileContent: rawBaseline },
+			)
+			await executeWriteFileTool(
+				{ content: "first replacement" },
+				{ isPartial: true, fileExists: true, fileContent: rawBaseline },
+			)
+			await executeWriteFileTool(
+				{ content: "later replacement" },
+				{ isPartial: true, fileExists: true, fileContent: "changed after preview opened" },
+			)
+
+			expect(mockAlphaTask.diffViewProvider.open).toHaveBeenCalledTimes(1)
+			expect(mockAlphaTask.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, {
+				exists: true,
+				content: rawBaseline,
+			})
+		})
+
+		it("does not read an ignored path while stabilizing a partial write", async () => {
+			await executeWriteFileTool({}, { isPartial: true, fileExists: true, accessAllowed: false })
+			await executeWriteFileTool({}, { isPartial: true, fileExists: true, accessAllowed: false })
+
+			expect(mockedFsReadFile).not.toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.open).not.toHaveBeenCalled()
 		})
 	})
 
@@ -419,23 +508,42 @@ describe("writeToFileTool", () => {
 
 			await executeWriteFileTool({})
 
-			expect(mockCline.diffViewProvider.revertChanges).toHaveBeenCalled()
-			expect(mockCline.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.revertChanges).toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.reset).toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+		})
+
+		it("cleans up a denied direct save before handling the next path", async () => {
+			mockAlphaTask.providerRef.deref().getState.mockResolvedValue({
+				diagnosticsEnabled: false,
+				writeDelayMs: 0,
+				experiments: { preventFocusDisruption: true },
+			})
+			mockAskApproval.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+
+			await executeWriteFileTool({ path: "first.txt" }, { fileExists: false })
+			await executeWriteFileTool({ path: "second.txt" }, { fileExists: false })
+
+			expect(mockAlphaTask.diffViewProvider.reset).toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.saveDirectly).toHaveBeenCalledTimes(1)
+			expect(mockAlphaTask.diffViewProvider.saveDirectly.mock.invocationCallOrder[0]).toBeGreaterThan(
+				mockAlphaTask.diffViewProvider.reset.mock.invocationCallOrder[0],
+			)
 		})
 
 		it("reports user edits with diff feedback", async () => {
 			const userEditsValue = "- old line\n+ new line"
-			mockCline.diffViewProvider.saveChanges.mockResolvedValue({
+			mockAlphaTask.diffViewProvider.saveChanges.mockResolvedValue({
 				newProblemsMessage: " with warnings",
 				userEdits: userEditsValue,
 				finalContent: "modified content",
 			})
 			// Set the userEdits property on the diffViewProvider mock to simulate user edits
-			mockCline.diffViewProvider.userEdits = userEditsValue
+			mockAlphaTask.diffViewProvider.userEdits = userEditsValue
 
 			await executeWriteFileTool({}, { fileExists: true })
 
-			expect(mockCline.say).toHaveBeenCalledWith(
+			expect(mockAlphaTask.say).toHaveBeenCalledWith(
 				"user_feedback_diff",
 				expect.stringContaining("editedExistingFile"),
 			)
@@ -444,16 +552,16 @@ describe("writeToFileTool", () => {
 
 	describe("error handling", () => {
 		it("handles general file operation errors", async () => {
-			mockCline.diffViewProvider.open.mockRejectedValue(new Error("General error"))
+			mockAlphaTask.diffViewProvider.open.mockRejectedValue(new Error("General error"))
 
 			await executeWriteFileTool({})
 
 			expect(mockHandleError).toHaveBeenCalledWith("writing file", expect.any(Error))
-			expect(mockCline.diffViewProvider.reset).toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.reset).toHaveBeenCalled()
 		})
 
 		it("handles partial streaming errors after path stabilizes", async () => {
-			mockCline.diffViewProvider.open.mockRejectedValue(new Error("Open failed"))
+			mockAlphaTask.diffViewProvider.open.mockRejectedValue(new Error("Open failed"))
 
 			// First call - path not yet stabilized, no error yet
 			await executeWriteFileTool({}, { isPartial: true })

@@ -39,7 +39,7 @@ vi.mock("../../../utils/fs", () => ({
 vi.mock("../../prompts/responses", () => ({
 	formatResponse: {
 		toolError: vi.fn((msg: string) => `Error: ${msg}`),
-		rooIgnoreError: vi.fn((filePath: string) => `Access denied: ${filePath}`),
+		alphaIgnoreError: vi.fn((filePath: string) => `Access denied: ${filePath}`),
 		createPrettyPatch: vi.fn(() => "mock-diff"),
 	},
 }))
@@ -113,10 +113,10 @@ describe("editTool", () => {
 				}),
 			}),
 		}
-		mockTask.rooIgnoreController = {
+		mockTask.alphaIgnoreController = {
 			validateAccess: vi.fn().mockReturnValue(true),
 		}
-		mockTask.rooProtectedController = {
+		mockTask.alphaProtectedController = {
 			isWriteProtected: vi.fn().mockReturnValue(false),
 		}
 		mockTask.diffViewProvider = {
@@ -176,7 +176,7 @@ describe("editTool", () => {
 
 		mockedFileExistsAtPath.mockResolvedValue(fileExists)
 		mockedFsReadFile.mockResolvedValue(fileContent)
-		mockTask.rooIgnoreController.validateAccess.mockReturnValue(accessAllowed)
+		mockTask.alphaIgnoreController.validateAccess.mockReturnValue(accessAllowed)
 
 		const defaultParams = {
 			file_path: testFilePath,
@@ -220,6 +220,28 @@ describe("editTool", () => {
 
 		return toolResult
 	}
+
+	it.each(["\n", "\r\n"])("preserves BOM and %j endings while replacing literal dollar text", async (eol) => {
+		const replacement = "$& $$ $' &amp;\nchanged"
+		await executeEditTool(
+			{ old_string: "Line 1\nLine 2", new_string: replacement },
+			{ fileContent: `\uFEFFLine 1${eol}Line 2${eol}Line 3` },
+		)
+		expect(mockTask.diffViewProvider.update).toHaveBeenCalledWith(
+			`\uFEFF$& $$ $' &amp;${eol}changed${eol}Line 3`,
+			true,
+		)
+	})
+
+	it("rejects mixed endings without requesting approval or saving", async () => {
+		await executeEditTool({}, { fileContent: "Line 1\r\nLine 2\nLine 3" })
+		expect(mockHandleError).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.objectContaining({ message: expect.stringMatching(/mixed line endings/i) }),
+		)
+		expect(mockAskApproval).not.toHaveBeenCalled()
+		expect(mockTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+	})
 
 	describe("basic replacement", () => {
 		it("replaces a single unique occurrence of old_string with new_string", async () => {
@@ -354,6 +376,73 @@ describe("editTool", () => {
 			expect(mockTask.diffViewProvider.revertChanges).toHaveBeenCalled()
 			expect(mockTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
 			expect(result).toContain("rejected")
+		})
+
+		it("passes the raw baseline to the diff preview", async () => {
+			const rawBaseline = "Line 1\r\nLine 2\r\nLine 3"
+
+			await executeEditTool({ old_string: "Line 2", new_string: "Changed" }, { fileContent: rawBaseline })
+
+			expect(mockTask.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, {
+				exists: true,
+				content: rawBaseline,
+			})
+		})
+
+		it("passes the raw baseline to direct saves after normalizing for matching", async () => {
+			const rawBaseline = "Line 1\r\nLine 2\r\nLine 3"
+			mockedFsReadFile.mockResolvedValue(rawBaseline)
+			mockTask.providerRef.deref().getState.mockResolvedValue({
+				diagnosticsEnabled: true,
+				writeDelayMs: 1000,
+				experiments: { preventFocusDisruption: true },
+			})
+
+			await executeEditTool({ old_string: "Line 2", new_string: "Changed" }, { fileContent: rawBaseline })
+
+			expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+				testFilePath,
+				"Line 1\r\nChanged\r\nLine 3",
+				false,
+				true,
+				1000,
+				{ exists: true, content: rawBaseline },
+			)
+		})
+
+		it("does not complete an edit when the baseline changed during approval", async () => {
+			mockTask.providerRef.deref().getState.mockResolvedValue({
+				diagnosticsEnabled: true,
+				writeDelayMs: 1000,
+				experiments: { preventFocusDisruption: true },
+			})
+			mockAskApproval.mockImplementation(async () => {
+				mockedFsReadFile.mockResolvedValue("Line 1\nLine 2\nconcurrent edit")
+				return true
+			})
+			mockTask.diffViewProvider.saveDirectly.mockImplementation(
+				async (
+					_path: string,
+					_content: string,
+					_openFile: boolean,
+					_diagnostics: boolean,
+					_delay: number,
+					expected: { exists: boolean; content?: string },
+				) => {
+					const current = await mockedFsReadFile(absoluteFilePath, "utf8")
+					if (current !== expected.content) {
+						throw new Error("Cannot save: the file changed while approval was pending")
+					}
+				},
+			)
+
+			await executeEditTool()
+
+			expect(mockHandleError).toHaveBeenCalledWith(
+				"edit",
+				expect.objectContaining({ message: expect.stringContaining("changed") }),
+			)
+			expect(mockTask.didEditFile).toBe(false)
 		})
 	})
 

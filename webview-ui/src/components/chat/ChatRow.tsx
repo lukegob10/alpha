@@ -1,16 +1,16 @@
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useSize } from "react-use"
+import React, { memo, useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslation, Trans } from "react-i18next"
 import deepEqual from "fast-deep-equal"
+import removeMd from "remove-markdown"
 import { VSCodeBadge } from "@vscode/webview-ui-toolkit/react"
 
 import type {
-	ClineMessage,
+	AlphaMessage,
 	FollowUpData,
 	SuggestionItem,
-	ClineApiReqInfo,
-	ClineAskUseMcpServer,
-	ClineSayTool,
+	AlphaApiReqInfo,
+	AlphaAskUseMcpServer,
+	AlphaSayTool,
 } from "@alpha-code/types"
 
 import { Mode } from "@alpha/modes"
@@ -18,7 +18,7 @@ import { Mode } from "@alpha/modes"
 import { COMMAND_OUTPUT_STRING } from "@alpha/combineCommandSequences"
 import { safeJsonParse } from "@alpha/core"
 
-import { useExtensionState } from "@src/context/ExtensionStateContext"
+import { type ExtensionStateContextType, useExtensionState } from "@src/context/ExtensionStateContext"
 import { findMatchingResourceOrTemplate } from "@src/utils/mcp"
 import { vscode } from "@src/utils/vscode"
 import { formatPathTooltip } from "@src/utils/formatPathTooltip"
@@ -36,10 +36,11 @@ import WarningRow from "./WarningRow"
 
 import McpResourceRow from "../mcp/McpResourceRow"
 
-import { Mention } from "./Mention"
+import { UserMessageText } from "./UserMessageText"
 import { CheckpointSaved } from "./checkpoints/CheckpointSaved"
 import { FollowUpSuggest } from "./FollowUpSuggest"
 import { BatchFilePermission } from "./BatchFilePermission"
+import { BatchListFilesPermission } from "./BatchListFilesPermission"
 import { BatchDiffApproval } from "./BatchDiffApproval"
 import { ProgressIndicator } from "./ProgressIndicator"
 import { Markdown } from "./Markdown"
@@ -47,7 +48,9 @@ import { CommandExecution } from "./CommandExecution"
 import { CommandExecutionError } from "./CommandExecutionError"
 import { AutoApprovedRequestLimitWarning } from "./AutoApprovedRequestLimitWarning"
 import { InProgressRow, CondensationResultRow, CondensationErrorRow, TruncationResultRow } from "./context-management"
-import CodebaseSearchResultsDisplay from "./CodebaseSearchResultsDisplay"
+import CodebaseSearchResultsDisplay, { type CodebaseSearchMatch } from "./CodebaseSearchResultsDisplay"
+import { CodebaseSearchActivity } from "./CodebaseSearchActivity"
+import { FileSearchBatch } from "./FileSearchBatch"
 import { appendImages } from "@src/utils/imageUtils"
 import { McpExecution } from "./McpExecution"
 import { ChatTextArea } from "./ChatTextArea"
@@ -57,9 +60,6 @@ import {
 	Eye,
 	FileDiff,
 	ListTree,
-	User,
-	Edit,
-	Trash2,
 	MessageCircleQuestionMark,
 	SquareArrowOutUpRight,
 	FileCode2,
@@ -71,13 +71,22 @@ import {
 	Split,
 	ArrowRight,
 	Check,
+	CircleAlert,
+	Clock3,
+	LoaderCircle,
+	Globe2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { PathTooltip } from "../ui/PathTooltip"
 import { OpenMarkdownPreviewButton } from "./OpenMarkdownPreviewButton"
+import { SubagentGroupCard } from "./SubagentGroupCard"
+import { TicketActivity } from "./TicketActivity"
+import { ActivityStep } from "./ActivityStep"
+import { MessageActions } from "./MessageActions"
+import { GitHubApiActivity } from "./GitHubApiActivity"
 
 // Helper function to get previous todos before a specific message
-function getPreviousTodos(messages: ClineMessage[], currentMessageTs: number): any[] {
+function getPreviousTodos(messages: AlphaMessage[], currentMessageTs: number): any[] {
 	// Find the previous updateTodoList message before the current one
 	const previousUpdateIndex = messages
 		.slice()
@@ -109,14 +118,32 @@ function getPreviousTodos(messages: ClineMessage[], currentMessageTs: number): a
 	return []
 }
 
+export interface ChatRowEnvironment
+	extends Pick<
+		ExtensionStateContextType,
+		| "mcpServers"
+		| "alwaysAllowMcp"
+		| "currentCheckpoint"
+		| "mode"
+		| "currentTaskItem"
+		| "currentTaskId"
+		| "reasoningBlockCollapsed"
+	> {
+	modelSupportsImages?: boolean
+	getAlphaMessages: () => AlphaMessage[]
+}
+
 interface ChatRowProps {
-	message: ClineMessage
-	lastModifiedMessage?: ClineMessage
+	message: AlphaMessage
+	/** The persisted opening prompt is say/text, but displays as a user message. */
+	isTaskPrompt?: boolean
+	environment: ChatRowEnvironment
+	lastModifiedMessage?: AlphaMessage
 	isExpanded: boolean
 	isLast: boolean
 	isStreaming: boolean
+	messageActionsDisabled?: boolean
 	onToggleExpand: (ts: number) => void
-	onHeightChange: (isTaller: boolean) => void
 	onSuggestionClick?: (suggestion: SuggestionItem, event?: React.MouseEvent) => void
 	onBatchFileResponse?: (response: { [key: string]: boolean }) => void
 	onFollowUpUnmount?: () => void
@@ -128,37 +155,30 @@ interface ChatRowProps {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-interface ChatRowContentProps extends Omit<ChatRowProps, "onHeightChange"> {}
+interface ChatRowContentProps extends Omit<ChatRowProps, "environment"> {}
+
+interface ChatRowContentInnerProps extends ChatRowContentProps {
+	environment: ChatRowEnvironment
+}
 
 const ChatRow = memo(
 	(props: ChatRowProps) => {
-		const { isLast, onHeightChange, message } = props
-		// Store the previous height to compare with the current height
-		// This allows us to detect changes without causing re-renders
-		const prevHeightRef = useRef(0)
-
-		const [chatrow, { height }] = useSize(
-			<div className="px-[15px] py-[10px] pr-[6px]">
-				<ChatRowContent {...props} />
-			</div>,
+		// ChatView filters non-rendered messages before constructing this row.
+		return (
+			<div
+				className={cn(
+					"px-[15px]",
+					props.isTaskPrompt ||
+						props.message.say === "user_feedback" ||
+						props.message.say === "completion_result" ||
+						props.message.ask === "completion_result" ||
+						props.message.ask === "followup"
+						? "py-4"
+						: "py-1",
+				)}>
+				<ChatRowContentInner {...props} />
+			</div>
 		)
-
-		useEffect(() => {
-			const isHeightValid = height !== 0 && height !== Infinity
-			// used for partials, command output, etc.
-			// NOTE: it's important we don't distinguish between partial or complete here since our scroll effects in chatview need to handle height change during partial -> complete
-			const isInitialRender = prevHeightRef.current === 0 // prevents scrolling when new element is added since we already scroll for that
-			// height starts off at Infinity
-			if (isLast && isHeightValid && height !== prevHeightRef.current) {
-				if (!isInitialRender) {
-					onHeightChange(height > prevHeightRef.current)
-				}
-				prevHeightRef.current = height
-			}
-		}, [height, isLast, onHeightChange, message])
-
-		// we cannot return null as virtuoso does not support it, so we use a separate visibleMessages array to filter out messages that should not be rendered
-		return chatrow
 	},
 	// memo does shallow comparison of props, so we need to do deep comparison of arrays/objects whose properties might change
 	deepEqual,
@@ -166,12 +186,36 @@ const ChatRow = memo(
 
 export default ChatRow
 
-export const ChatRowContent = ({
+// Compatibility wrapper for focused row tests and non-virtualized consumers.
+// ChatView passes a stable environment directly to ChatRow so streamed transcript
+// updates do not make every visible row subscribe to the root extension state.
+export const ChatRowContent = (props: ChatRowContentProps) => {
+	const extensionState = useExtensionState()
+	const { info: model } = useSelectedModel(extensionState.apiConfiguration)
+	const environment: ChatRowEnvironment = {
+		mcpServers: extensionState.mcpServers,
+		alwaysAllowMcp: extensionState.alwaysAllowMcp,
+		currentCheckpoint: extensionState.currentCheckpoint,
+		mode: extensionState.mode,
+		currentTaskItem: extensionState.currentTaskItem,
+		currentTaskId: extensionState.currentTaskId,
+		reasoningBlockCollapsed: extensionState.reasoningBlockCollapsed,
+		modelSupportsImages: model?.supportsImages,
+		getAlphaMessages: () => extensionState.clineMessages,
+	}
+
+	return <ChatRowContentInner {...props} environment={environment} />
+}
+
+const ChatRowContentInner = ({
 	message,
+	isTaskPrompt = false,
+	environment,
 	lastModifiedMessage,
 	isExpanded,
 	isLast,
 	isStreaming,
+	messageActionsDisabled = isStreaming,
 	onToggleExpand,
 	onSuggestionClick,
 	onFollowUpUnmount,
@@ -179,7 +223,7 @@ export const ChatRowContent = ({
 	isFollowUpAnswered,
 	isFollowUpAutoApprovalPaused,
 	onJumpToPreviousCheckpoint,
-}: ChatRowContentProps) => {
+}: ChatRowContentInnerProps) => {
 	const { t, i18n } = useTranslation()
 
 	const {
@@ -187,12 +231,15 @@ export const ChatRowContent = ({
 		alwaysAllowMcp,
 		currentCheckpoint,
 		mode,
-		apiConfiguration,
-		clineMessages,
 		currentTaskItem,
 		currentTaskId,
-	} = useExtensionState()
-	const { info: model } = useSelectedModel(apiConfiguration)
+		reasoningBlockCollapsed,
+		modelSupportsImages,
+		getAlphaMessages,
+	} = environment
+	// A completion report can survive an interrupted finalization; only the projected task status confirms success.
+	const isTaskCompleted = currentTaskItem?.id === currentTaskId && currentTaskItem?.status === "completed"
+	const clineMessages = getAlphaMessages()
 	const [isEditing, setIsEditing] = useState(false)
 	const [editedContent, setEditedContent] = useState("")
 	const [editMode, setEditMode] = useState<Mode>(mode || "code")
@@ -215,6 +262,7 @@ export const ChatRowContent = ({
 	const handleToggleExpand = useCallback(() => {
 		onToggleExpand(message.ts)
 	}, [onToggleExpand, message.ts])
+	const activityProps = { isExpanded, onToggleExpand: handleToggleExpand }
 
 	// Handle edit button click
 	const handleEditClick = useCallback(() => {
@@ -236,6 +284,7 @@ export const ChatRowContent = ({
 
 	// Handle save edit
 	const handleSaveEdit = useCallback(() => {
+		if (messageActionsDisabled) return
 		setIsEditing(false)
 		// Send edited message to backend
 		vscode.postMessage({
@@ -245,7 +294,27 @@ export const ChatRowContent = ({
 			images: editImages,
 			taskId: currentTaskId,
 		})
-	}, [message.ts, editedContent, editImages, currentTaskId])
+	}, [message.ts, editedContent, editImages, currentTaskId, messageActionsDisabled])
+
+	const handleRestartClick = useCallback(() => {
+		if (messageActionsDisabled || message.partial || !currentTaskId) return
+		const messages = getAlphaMessages()
+		const index = messages.findIndex((entry) => entry.ts === message.ts)
+		for (let i = index - 1; i >= 0; i--) {
+			const prompt = messages[i]
+			if (prompt.type === "say" && (prompt.say === "user_feedback" || (i === 0 && prompt.say === "text"))) {
+				vscode.postMessage({
+					type: "submitEditedMessage",
+					value: prompt.ts,
+					editedMessageContent: prompt.text || "",
+					images: prompt.images,
+					taskId: currentTaskId,
+					messageAction: "restart",
+				})
+				return
+			}
+		}
+	}, [currentTaskId, getAlphaMessages, messageActionsDisabled, message.partial, message.ts])
 
 	// Handle image selection for editing
 	const handleSelectImages = useCallback(() => {
@@ -254,7 +323,7 @@ export const ChatRowContent = ({
 
 	const [cost, apiReqCancelReason, apiReqStreamingFailedMessage] = useMemo(() => {
 		if (message.text !== null && message.text !== undefined && message.say === "api_req_started") {
-			const info = safeJsonParse<ClineApiReqInfo>(message.text)
+			const info = safeJsonParse<AlphaApiReqInfo>(message.text)
 			return [info?.cost, info?.cancelReason, info?.streamingFailedMessage]
 		}
 
@@ -293,12 +362,10 @@ export const ChatRowContent = ({
 					) : (
 						<TerminalSquare className="size-4" aria-label="Terminal icon" />
 					),
-					<span style={{ color: normalColor, fontWeight: "bold" }}>
-						{t("chat:commandExecution.running")}
-					</span>,
+					<span className="shrink-0 text-sm">{t("chat:commandExecution.command")}</span>,
 				]
 			case "use_mcp_server":
-				const mcpServerUse = safeJsonParse<ClineAskUseMcpServer>(message.text)
+				const mcpServerUse = safeJsonParse<AlphaAskUseMcpServer>(message.text)
 				if (mcpServerUse === undefined) {
 					return [null, null]
 				}
@@ -318,10 +385,16 @@ export const ChatRowContent = ({
 				]
 			case "completion_result":
 				return [
-					<span
-						className="codicon codicon-check"
-						style={{ color: successColor, marginBottom: "-1.5px" }}></span>,
-					<span style={{ color: successColor, fontWeight: "bold" }}>{t("chat:taskCompleted")}</span>,
+					isTaskCompleted ? (
+						<span
+							className="codicon codicon-check"
+							style={{ color: successColor, marginBottom: "-1.5px" }}></span>
+					) : (
+						<MessageCircle className="w-4 shrink-0" aria-hidden="true" />
+					),
+					<span style={{ color: isTaskCompleted ? successColor : normalColor, fontWeight: "bold" }}>
+						{t(isTaskCompleted ? "chat:taskCompleted" : "chat:completionReport")}
+					</span>,
 				]
 			case "api_req_rate_limit_wait":
 				return []
@@ -395,6 +468,7 @@ export const ChatRowContent = ({
 		apiRequestFailedMessage,
 		t,
 		isLast,
+		isTaskCompleted,
 	])
 
 	const headerStyle: React.CSSProperties = {
@@ -406,10 +480,21 @@ export const ChatRowContent = ({
 		wordBreak: "break-word",
 	}
 
-	const tool = useMemo(
-		() => (message.ask === "tool" ? safeJsonParse<ClineSayTool>(message.text) : null),
-		[message.ask, message.text],
-	)
+	const tool = useMemo(() => {
+		if (message.ask === "tool") {
+			return safeJsonParse<AlphaSayTool>(message.text)
+		}
+
+		if (message.type === "say" && message.say === "tool") {
+			const sayTool = safeJsonParse<AlphaSayTool>(message.text)
+			return sayTool &&
+				["listFilesTopLevel", "listFilesRecursive", "readFile", "searchFiles"].includes(sayTool.tool)
+				? sayTool
+				: null
+		}
+
+		return null
+	}, [message.type, message.ask, message.say, message.text])
 
 	// Unified diff content (provided by backend when relevant)
 	const unifiedDiff = useMemo(() => {
@@ -431,6 +516,18 @@ export const ChatRowContent = ({
 		}
 		return null
 	}, [message.type, message.ask, message.partial, message.text])
+	const renderError = (props: React.ComponentProps<typeof ErrorRow>) => (
+		<ActivityStep
+			{...activityProps}
+			summary={
+				<>
+					<CircleAlert className="size-4 shrink-0 text-vscode-errorForeground" />
+					<span>{props.title ?? t("chat:error")}</span>
+				</>
+			}>
+			<ErrorRow {...props} />
+		</ActivityStep>
+	)
 
 	if (tool) {
 		const toolIcon = (name: string) => (
@@ -438,6 +535,20 @@ export const ChatRowContent = ({
 				className={`codicon codicon-${name}`}
 				style={{ color: "var(--vscode-foreground)", marginBottom: "-1.5px" }}></span>
 		)
+		if (tool.batchDirs?.length) {
+			return (
+				<ActivityStep
+					{...activityProps}
+					summary={
+						<>
+							{toolIcon("list-tree")}
+							<span>{t("chat:directoryOperations.wantsToViewMultipleDirectories")}</span>
+						</>
+					}>
+					<BatchListFilesPermission dirs={tool.batchDirs} ts={message.ts} />
+				</ActivityStep>
+			)
+		}
 
 		switch (tool.tool as string) {
 			case "editedExistingFile":
@@ -453,38 +564,47 @@ export const ChatRowContent = ({
 				// Check if this is a batch diff request
 				if (message.type === "ask" && tool.batchDiffs && Array.isArray(tool.batchDiffs)) {
 					return (
-						<>
-							<div style={headerStyle}>
-								<FileDiff className="w-4 shrink-0" aria-label="Batch diff icon" />
-								<span style={{ fontWeight: "bold" }}>
-									{t("chat:fileOperations.wantsToApplyBatchChanges")}
-								</span>
-							</div>
+						<ActivityStep
+							{...activityProps}
+							summary={
+								<>
+									<FileDiff className="w-4 shrink-0" aria-label="Batch diff icon" />
+									<span style={{ fontWeight: "normal" }}>
+										{t("chat:fileOperations.wantsToApplyBatchChanges")}
+									</span>
+								</>
+							}>
 							<BatchDiffApproval files={tool.batchDiffs} ts={message.ts} />
-						</>
+						</ActivityStep>
 					)
 				}
 
 				// Regular single file diff
 				return (
-					<>
-						<div style={headerStyle}>
-							{tool.isProtected ? (
-								<span
-									className="codicon codicon-lock"
-									style={{ color: "var(--vscode-editorWarning-foreground)", marginBottom: "-1.5px" }}
-								/>
-							) : (
-								toolIcon("diff")
-							)}
-							<span style={{ fontWeight: "bold" }}>
-								{tool.isProtected
-									? t("chat:fileOperations.wantsToEditProtected")
-									: tool.isOutsideWorkspace
-										? t("chat:fileOperations.wantsToEditOutsideWorkspace")
-										: t("chat:fileOperations.wantsToEdit")}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								{tool.isProtected ? (
+									<span
+										className="codicon codicon-lock"
+										style={{
+											color: "var(--vscode-editorWarning-foreground)",
+											marginBottom: "-1.5px",
+										}}
+									/>
+								) : (
+									toolIcon("diff")
+								)}
+								<span style={{ fontWeight: "normal" }}>
+									{tool.isProtected
+										? t("chat:fileOperations.wantsToEditProtected")
+										: tool.isOutsideWorkspace
+											? t("chat:fileOperations.wantsToEditOutsideWorkspace")
+											: t("chat:fileOperations.wantsToEdit")}
+								</span>
+							</>
+						}>
 						<div className="pl-6">
 							<CodeAccordion
 								path={tool.path}
@@ -498,32 +618,38 @@ export const ChatRowContent = ({
 								diffStats={tool.diffStats}
 							/>
 						</div>
-					</>
+					</ActivityStep>
 				)
 			case "insertContent":
 				return (
-					<>
-						<div style={headerStyle}>
-							{tool.isProtected ? (
-								<span
-									className="codicon codicon-lock"
-									style={{ color: "var(--vscode-editorWarning-foreground)", marginBottom: "-1.5px" }}
-								/>
-							) : (
-								toolIcon("insert")
-							)}
-							<span style={{ fontWeight: "bold" }}>
-								{tool.isProtected
-									? t("chat:fileOperations.wantsToEditProtected")
-									: tool.isOutsideWorkspace
-										? t("chat:fileOperations.wantsToEditOutsideWorkspace")
-										: tool.lineNumber === 0
-											? t("chat:fileOperations.wantsToInsertAtEnd")
-											: t("chat:fileOperations.wantsToInsertWithLineNumber", {
-													lineNumber: tool.lineNumber,
-												})}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								{tool.isProtected ? (
+									<span
+										className="codicon codicon-lock"
+										style={{
+											color: "var(--vscode-editorWarning-foreground)",
+											marginBottom: "-1.5px",
+										}}
+									/>
+								) : (
+									toolIcon("insert")
+								)}
+								<span style={{ fontWeight: "normal" }}>
+									{tool.isProtected
+										? t("chat:fileOperations.wantsToEditProtected")
+										: tool.isOutsideWorkspace
+											? t("chat:fileOperations.wantsToEditOutsideWorkspace")
+											: tool.lineNumber === 0
+												? t("chat:fileOperations.wantsToInsertAtEnd")
+												: t("chat:fileOperations.wantsToInsertWithLineNumber", {
+														lineNumber: tool.lineNumber,
+													})}
+								</span>
+							</>
+						}>
 						<div className="pl-6">
 							<CodeAccordion
 								path={tool.path}
@@ -536,30 +662,15 @@ export const ChatRowContent = ({
 								diffStats={tool.diffStats}
 							/>
 						</div>
-					</>
+					</ActivityStep>
 				)
 			case "codebaseSearch": {
-				return (
-					<div style={headerStyle}>
-						{toolIcon("search")}
-						<span style={{ fontWeight: "bold" }}>
-							{tool.path ? (
-								<Trans
-									i18nKey="chat:codebaseSearch.wantsToSearchWithPath"
-									components={{ code: <code></code> }}
-									values={{ query: tool.query, path: tool.path }}
-								/>
-							) : (
-								<Trans
-									i18nKey="chat:codebaseSearch.wantsToSearch"
-									components={{ code: <code></code> }}
-									values={{ query: tool.query }}
-								/>
-							)}
-						</span>
-					</div>
-				)
+				return <CodebaseSearchActivity {...activityProps} query={tool.query} path={tool.path} />
 			}
+			case "ticket":
+				return <TicketActivity tool={tool} />
+			case "githubApi":
+				return <GitHubApiActivity request={tool.github ?? tool} />
 			case "updateTodoList" as any: {
 				const todos = (tool as any).todos || []
 				// Get previous todos from the latest todos in the task context
@@ -573,13 +684,16 @@ export const ChatRowContent = ({
 
 				if (isBatchRequest) {
 					return (
-						<>
-							<div style={headerStyle}>
-								<Eye className="w-4 shrink-0" aria-label="View files icon" />
-								<span style={{ fontWeight: "bold" }}>
-									{t("chat:fileOperations.wantsToReadMultiple")}
-								</span>
-							</div>
+						<ActivityStep
+							{...activityProps}
+							summary={
+								<>
+									<Eye className="w-4 shrink-0" aria-label="View files icon" />
+									<span style={{ fontWeight: "normal" }}>
+										{t("chat:fileOperations.wantsToReadMultiple")}
+									</span>
+								</>
+							}>
 							<BatchFilePermission
 								files={tool.batchFiles || []}
 								onPermissionResponse={(response) => {
@@ -587,27 +701,30 @@ export const ChatRowContent = ({
 								}}
 								ts={message?.ts}
 							/>
-						</>
+						</ActivityStep>
 					)
 				}
 
 				// Regular single file read request
 				return (
-					<>
-						<div style={headerStyle}>
-							<FileCode2 className="w-4 shrink-0" aria-label="Read file icon" />
-							<span style={{ fontWeight: "bold" }}>
-								{message.type === "ask"
-									? tool.isOutsideWorkspace
-										? t("chat:fileOperations.wantsToReadOutsideWorkspace")
-										: tool.additionalFileCount && tool.additionalFileCount > 0
-											? t("chat:fileOperations.wantsToReadAndXMore", {
-													count: tool.additionalFileCount,
-												})
-											: t("chat:fileOperations.wantsToRead")
-									: t("chat:fileOperations.didRead")}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								<FileCode2 className="w-4 shrink-0" aria-label="Read file icon" />
+								<span style={{ fontWeight: "normal" }}>
+									{message.type === "ask"
+										? tool.isOutsideWorkspace
+											? t("chat:fileOperations.wantsToReadOutsideWorkspace")
+											: tool.additionalFileCount && tool.additionalFileCount > 0
+												? t("chat:fileOperations.wantsToReadAndXMore", {
+														count: tool.additionalFileCount,
+													})
+												: t("chat:fileOperations.wantsToRead")
+										: t("chat:fileOperations.didRead")}
+								</span>
+							</>
+						}>
 						<div className="pl-6">
 							<ToolUseBlock>
 								<ToolUseBlockHeader
@@ -633,18 +750,21 @@ export const ChatRowContent = ({
 								</ToolUseBlockHeader>
 							</ToolUseBlock>
 						</div>
-					</>
+					</ActivityStep>
 				)
 			case "skill": {
 				const skillInfo = tool
 				return (
-					<>
-						<div style={headerStyle}>
-							{toolIcon("book")}
-							<span style={{ fontWeight: "bold" }}>
-								{message.type === "ask" ? t("chat:skill.wantsToLoad") : t("chat:skill.didLoad")}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								{toolIcon("book")}
+								<span style={{ fontWeight: "normal" }}>
+									{message.type === "ask" ? t("chat:skill.wantsToLoad") : t("chat:skill.didLoad")}
+								</span>
+							</>
+						}>
 						<div
 							style={{
 								marginTop: "4px",
@@ -701,24 +821,27 @@ export const ChatRowContent = ({
 								</div>
 							)}
 						</div>
-					</>
+					</ActivityStep>
 				)
 			}
 			case "listFilesTopLevel":
 				return (
-					<>
-						<div style={headerStyle}>
-							<ListTree className="w-4 shrink-0" aria-label="List files icon" />
-							<span style={{ fontWeight: "bold" }}>
-								{message.type === "ask"
-									? tool.isOutsideWorkspace
-										? t("chat:directoryOperations.wantsToViewTopLevelOutsideWorkspace")
-										: t("chat:directoryOperations.wantsToViewTopLevel")
-									: tool.isOutsideWorkspace
-										? t("chat:directoryOperations.didViewTopLevelOutsideWorkspace")
-										: t("chat:directoryOperations.didViewTopLevel")}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								<ListTree className="w-4 shrink-0" aria-label="List files icon" />
+								<span style={{ fontWeight: "normal" }}>
+									{message.type === "ask"
+										? tool.isOutsideWorkspace
+											? t("chat:directoryOperations.wantsToViewTopLevelOutsideWorkspace")
+											: t("chat:directoryOperations.wantsToViewTopLevel")
+										: tool.isOutsideWorkspace
+											? t("chat:directoryOperations.didViewTopLevelOutsideWorkspace")
+											: t("chat:directoryOperations.didViewTopLevel")}
+								</span>
+							</>
+						}>
 						<div className="pl-6">
 							<CodeAccordion
 								path={tool.path}
@@ -728,23 +851,26 @@ export const ChatRowContent = ({
 								onToggleExpand={handleToggleExpand}
 							/>
 						</div>
-					</>
+					</ActivityStep>
 				)
 			case "listFilesRecursive":
 				return (
-					<>
-						<div style={headerStyle}>
-							<FolderTree className="w-4 shrink-0" aria-label="Folder tree icon" />
-							<span style={{ fontWeight: "bold" }}>
-								{message.type === "ask"
-									? tool.isOutsideWorkspace
-										? t("chat:directoryOperations.wantsToViewRecursiveOutsideWorkspace")
-										: t("chat:directoryOperations.wantsToViewRecursive")
-									: tool.isOutsideWorkspace
-										? t("chat:directoryOperations.didViewRecursiveOutsideWorkspace")
-										: t("chat:directoryOperations.didViewRecursive")}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								<FolderTree className="w-4 shrink-0" aria-label="Folder tree icon" />
+								<span style={{ fontWeight: "normal" }}>
+									{message.type === "ask"
+										? tool.isOutsideWorkspace
+											? t("chat:directoryOperations.wantsToViewRecursiveOutsideWorkspace")
+											: t("chat:directoryOperations.wantsToViewRecursive")
+										: tool.isOutsideWorkspace
+											? t("chat:directoryOperations.didViewRecursiveOutsideWorkspace")
+											: t("chat:directoryOperations.didViewRecursive")}
+								</span>
+							</>
+						}>
 						<div className="pl-6">
 							<CodeAccordion
 								path={tool.path}
@@ -754,38 +880,45 @@ export const ChatRowContent = ({
 								onToggleExpand={handleToggleExpand}
 							/>
 						</div>
-					</>
+					</ActivityStep>
 				)
 			case "searchFiles":
+				if (tool.batchSearches?.length) {
+					return (
+						<FileSearchBatch
+							{...activityProps}
+							searches={tool.batchSearches}
+							label={t(
+								message.type === "ask"
+									? "chat:directoryOperations.wantsToSearchMultiple"
+									: "chat:directoryOperations.didSearchMultiple",
+								{ count: tool.batchSearches.length },
+							)}
+						/>
+					)
+				}
+
 				return (
-					<>
-						<div style={headerStyle}>
-							{toolIcon("search")}
-							<span style={{ fontWeight: "bold" }}>
-								{message.type === "ask" ? (
-									<Trans
-										i18nKey={
-											tool.isOutsideWorkspace
-												? "chat:directoryOperations.wantsToSearchOutsideWorkspace"
-												: "chat:directoryOperations.wantsToSearch"
-										}
-										components={{ code: <code className="font-medium">{tool.regex}</code> }}
-										values={{ regex: tool.regex }}
-									/>
-								) : (
-									<Trans
-										i18nKey={
-											tool.isOutsideWorkspace
-												? "chat:directoryOperations.didSearchOutsideWorkspace"
-												: "chat:directoryOperations.didSearch"
-										}
-										components={{ code: <code className="font-medium">{tool.regex}</code> }}
-										values={{ regex: tool.regex }}
-									/>
-								)}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								{toolIcon("search")}
+								<span style={{ fontWeight: "normal" }}>
+									{message.type === "ask"
+										? tool.isOutsideWorkspace
+											? t("chat:directoryOperations.wantsToSearchOutsideWorkspace")
+											: t("chat:directoryOperations.wantsToSearch")
+										: tool.isOutsideWorkspace
+											? t("chat:directoryOperations.didSearchOutsideWorkspace")
+											: t("chat:directoryOperations.didSearch")}
+								</span>
+							</>
+						}>
 						<div className="pl-6">
+							<code className="mb-2 block whitespace-pre-wrap break-words text-sm text-vscode-foreground [overflow-wrap:anywhere]">
+								{tool.regex}
+							</code>
 							<CodeAccordion
 								path={tool.path! + (tool.filePattern ? `/(${tool.filePattern})` : "")}
 								code={tool.content}
@@ -794,56 +927,68 @@ export const ChatRowContent = ({
 								onToggleExpand={handleToggleExpand}
 							/>
 						</div>
-					</>
+					</ActivityStep>
 				)
 			case "switchMode":
 				return (
-					<>
-						<div style={headerStyle}>
-							<PocketKnife className="w-4 shrink-0" aria-label="Switch mode icon" />
-							<span style={{ fontWeight: "bold" }}>
-								{message.type === "ask" ? (
-									<>
-										{tool.reason ? (
-											<Trans
-												i18nKey="chat:modes.wantsToSwitchWithReason"
-												components={{ code: <code className="font-medium">{tool.mode}</code> }}
-												values={{ mode: tool.mode, reason: tool.reason }}
-											/>
-										) : (
-											<Trans
-												i18nKey="chat:modes.wantsToSwitch"
-												components={{ code: <code className="font-medium">{tool.mode}</code> }}
-												values={{ mode: tool.mode }}
-											/>
-										)}
-									</>
-								) : (
-									<>
-										{tool.reason ? (
-											<Trans
-												i18nKey="chat:modes.didSwitchWithReason"
-												components={{ code: <code className="font-medium">{tool.mode}</code> }}
-												values={{ mode: tool.mode, reason: tool.reason }}
-											/>
-										) : (
-											<Trans
-												i18nKey="chat:modes.didSwitch"
-												components={{ code: <code className="font-medium">{tool.mode}</code> }}
-												values={{ mode: tool.mode }}
-											/>
-										)}
-									</>
-								)}
-							</span>
-						</div>
-					</>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								<PocketKnife className="w-4 shrink-0" aria-label="Switch mode icon" />
+								<span style={{ fontWeight: "bold" }}>
+									{message.type === "ask" ? (
+										<>
+											{tool.reason ? (
+												<Trans
+													i18nKey="chat:modes.wantsToSwitchWithReason"
+													components={{
+														code: <code className="font-medium">{tool.mode}</code>,
+													}}
+													values={{ mode: tool.mode, reason: tool.reason }}
+												/>
+											) : (
+												<Trans
+													i18nKey="chat:modes.wantsToSwitch"
+													components={{
+														code: <code className="font-medium">{tool.mode}</code>,
+													}}
+													values={{ mode: tool.mode }}
+												/>
+											)}
+										</>
+									) : (
+										<>
+											{tool.reason ? (
+												<Trans
+													i18nKey="chat:modes.didSwitchWithReason"
+													components={{
+														code: <code className="font-medium">{tool.mode}</code>,
+													}}
+													values={{ mode: tool.mode, reason: tool.reason }}
+												/>
+											) : (
+												<Trans
+													i18nKey="chat:modes.didSwitch"
+													components={{
+														code: <code className="font-medium">{tool.mode}</code>,
+													}}
+													values={{ mode: tool.mode }}
+												/>
+											)}
+										</>
+									)}
+								</span>
+							</>
+						}>
+						<div className="pl-6 whitespace-pre-wrap break-words">{tool.reason || tool.mode}</div>
+					</ActivityStep>
 				)
 			case "newTask":
 				// Find all newTask messages to determine which child task ID corresponds to this message
 				const newTaskMessages = clineMessages.filter((msg) => {
 					if (msg.type === "ask" && msg.ask === "tool") {
-						const t = safeJsonParse<ClineSayTool>(msg.text)
+						const t = safeJsonParse<AlphaSayTool>(msg.text)
 						return t?.tool === "newTask"
 					}
 					return false
@@ -865,17 +1010,20 @@ export const ChatRowContent = ({
 				const isFollowedBySubtaskResult = nextMessage?.type === "say" && nextMessage?.say === "subtask_result"
 
 				return (
-					<>
-						<div style={headerStyle}>
-							<Split className="size-4" />
-							<span style={{ fontWeight: "bold" }}>
-								<Trans
-									i18nKey="chat:subtasks.wantsToCreate"
-									components={{ code: <code>{tool.mode}</code> }}
-									values={{ mode: tool.mode }}
-								/>
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								<Split className="size-4" />
+								<span style={{ fontWeight: "normal" }}>
+									<Trans
+										i18nKey="chat:subtasks.wantsToCreate"
+										components={{ code: <code>{tool.mode}</code> }}
+										values={{ mode: tool.mode }}
+									/>
+								</span>
+							</>
+						}>
 						<div className="border-l border-muted-foreground/80 ml-2 pl-4 pb-1">
 							<MarkdownBlock markdown={tool.content} />
 							<div>
@@ -891,32 +1039,42 @@ export const ChatRowContent = ({
 								)}
 							</div>
 						</div>
-					</>
+					</ActivityStep>
 				)
+			case "delegateTask":
+				// The persisted inline SubagentGroupCard is the single presentation surface.
+				// ChatView still renders the standard approval controls for this ask.
+				return null
 			case "finishTask":
 				return (
-					<>
-						<div style={headerStyle}>
-							{toolIcon("check-all")}
-							<span style={{ fontWeight: "bold" }}>{t("chat:subtasks.wantsToFinish")}</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								{toolIcon("check-all")}
+								<span style={{ fontWeight: "normal" }}>{t("chat:subtasks.wantsToFinish")}</span>
+							</>
+						}>
 						<div className="text-muted-foreground pl-6">
 							<MarkdownBlock markdown={t("chat:subtasks.completionInstructions")} />
 						</div>
-					</>
+					</ActivityStep>
 				)
 			case "runSlashCommand": {
 				const slashCommandInfo = tool
 				return (
-					<>
-						<div style={headerStyle}>
-							{toolIcon("play")}
-							<span style={{ fontWeight: "bold" }}>
-								{message.type === "ask"
-									? t("chat:slashCommand.wantsToRun")
-									: t("chat:slashCommand.didRun")}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								{toolIcon("play")}
+								<span style={{ fontWeight: "normal" }}>
+									{message.type === "ask"
+										? t("chat:slashCommand.wantsToRun")
+										: t("chat:slashCommand.didRun")}
+								</span>
+							</>
+						}>
 						<div
 							style={{
 								marginTop: "4px",
@@ -973,31 +1131,37 @@ export const ChatRowContent = ({
 								</div>
 							)}
 						</div>
-					</>
+					</ActivityStep>
 				)
 			}
 			case "generateImage":
 				return (
-					<>
-						<div style={headerStyle}>
-							{tool.isProtected ? (
-								<span
-									className="codicon codicon-lock"
-									style={{ color: "var(--vscode-editorWarning-foreground)", marginBottom: "-1.5px" }}
-								/>
-							) : (
-								toolIcon("file-media")
-							)}
-							<span style={{ fontWeight: "bold" }}>
-								{message.type === "ask"
-									? tool.isProtected
-										? t("chat:fileOperations.wantsToGenerateImageProtected")
-										: tool.isOutsideWorkspace
-											? t("chat:fileOperations.wantsToGenerateImageOutsideWorkspace")
-											: t("chat:fileOperations.wantsToGenerateImage")
-									: t("chat:fileOperations.didGenerateImage")}
-							</span>
-						</div>
+					<ActivityStep
+						{...activityProps}
+						summary={
+							<>
+								{tool.isProtected ? (
+									<span
+										className="codicon codicon-lock"
+										style={{
+											color: "var(--vscode-editorWarning-foreground)",
+											marginBottom: "-1.5px",
+										}}
+									/>
+								) : (
+									toolIcon("file-media")
+								)}
+								<span style={{ fontWeight: "normal" }}>
+									{message.type === "ask"
+										? tool.isProtected
+											? t("chat:fileOperations.wantsToGenerateImageProtected")
+											: tool.isOutsideWorkspace
+												? t("chat:fileOperations.wantsToGenerateImageOutsideWorkspace")
+												: t("chat:fileOperations.wantsToGenerateImage")
+										: t("chat:fileOperations.didGenerateImage")}
+								</span>
+							</>
+						}>
 						{message.type === "ask" && (
 							<div className="pl-6">
 								<ToolUseBlock>
@@ -1010,7 +1174,7 @@ export const ChatRowContent = ({
 								</ToolUseBlock>
 							</div>
 						)}
-					</>
+					</ActivityStep>
 				)
 			default:
 				return null
@@ -1019,7 +1183,34 @@ export const ChatRowContent = ({
 
 	switch (message.type) {
 		case "say":
-			switch (message.say) {
+			switch (isTaskPrompt ? "user_feedback" : message.say) {
+				case "subagent_group":
+					return message.subagentGroup ? (
+						<ActivityStep
+							{...activityProps}
+							summary={
+								<>
+									<Split className="size-4 shrink-0" />
+									<span>
+										{t("common:costs.subtasks")} ({message.subagentGroup.agents.length})
+									</span>
+									{message.subagentGroup.agents.some(
+										(agent) =>
+											agent.pendingApproval ||
+											agent.parentVerification?.blocking ||
+											(agent.changeSet &&
+												["pending_review", "conflicted"].includes(agent.changeSet.status)),
+									) && (
+										<>
+											<CircleAlert className="size-4 shrink-0" aria-hidden="true" />
+											<span>{t("chat:activityTrace.needsAttention")}</span>
+										</>
+									)}
+								</>
+							}>
+							<SubagentGroupCard group={message.subagentGroup} parentTaskId={currentTaskId} />
+						</ActivityStep>
+					) : null
 				case "diff_error":
 					return (
 						<ErrorRow
@@ -1033,11 +1224,14 @@ export const ChatRowContent = ({
 					// Get the child task ID that produced this result
 					const completedChildTaskId = currentTaskItem?.completedByChildId
 					return (
-						<div className="border-l border-muted-foreground/80 ml-2 pl-4 pt-2 pb-1 -mt-5">
-							<div style={headerStyle}>
-								<span style={{ fontWeight: "bold" }}>{t("chat:subtasks.resultContent")}</span>
-								<Check className="size-3" />
-							</div>
+						<ActivityStep
+							{...activityProps}
+							summary={
+								<>
+									<span>{t("chat:subtasks.resultContent")}</span>
+									<Check className="size-3" />
+								</>
+							}>
 							<MarkdownBlock markdown={message.text} />
 							{completedChildTaskId && (
 								<button
@@ -1049,15 +1243,17 @@ export const ChatRowContent = ({
 									<ArrowRight className="size-3" />
 								</button>
 							)}
-						</div>
+						</ActivityStep>
 					)
 				case "reasoning":
 					return (
 						<ReasoningBlock
 							content={message.text || ""}
+							summary={message.reasoningSummary}
 							ts={message.ts}
 							isStreaming={isStreaming}
 							isLast={isLast}
+							collapsedByDefault={reasoningBlockCollapsed}
 						/>
 					)
 				case "api_req_started":
@@ -1191,52 +1387,62 @@ export const ChatRowContent = ({
 					return null // we should never see this message type
 				case "text":
 					return (
-						<div className="group">
-							<div style={headerStyle}>
-								<MessageCircle className="w-4 shrink-0" aria-label="Speech bubble icon" />
-								<span style={{ fontWeight: "bold" }}>{t("chat:text.rooSaid")}</span>
-								<div style={{ flexGrow: 1 }} />
-								<OpenMarkdownPreviewButton markdown={message.text} />
-							</div>
-							<div className="pl-6">
-								<Markdown markdown={message.text} partial={message.partial} />
-								{message.images && message.images.length > 0 && (
-									<div style={{ marginTop: "10px" }}>
-										{message.images.map((image, index) => (
-											<ImageBlock key={index} imageData={image} />
-										))}
-									</div>
-								)}
-							</div>
-						</div>
+						<ActivityStep
+							{...activityProps}
+							summary={
+								<>
+									<MessageCircle className="size-4 shrink-0" />
+									<span>
+										{removeMd((message.text || "").split(/\r?\n/, 1)[0]).trim() ||
+											t("chat:text.rooSaid")}
+									</span>
+								</>
+							}>
+							{isExpanded && (
+								<article className="group" aria-label={t("chat:text.rooSaid")}>
+									<Markdown
+										markdown={message.text}
+										partial={message.partial}
+										onRestart={handleRestartClick}
+										restartDisabled={messageActionsDisabled}
+										actions={<OpenMarkdownPreviewButton markdown={message.text} />}
+									/>
+									{message.images && message.images.length > 0 && (
+										<div style={{ marginTop: "10px" }}>
+											{message.images.map((image, index) => (
+												<ImageBlock key={index} imageData={image} />
+											))}
+										</div>
+									)}
+								</article>
+							)}
+						</ActivityStep>
 					)
 				case "user_feedback":
 					return (
-						<div className="group">
-							<div style={headerStyle}>
-								<User className="w-4 shrink-0" aria-label="User icon" />
-								<span style={{ fontWeight: "bold" }}>{t("chat:feedback.youSaid")}</span>
-							</div>
+						<article
+							className="group flex flex-col items-end gap-1"
+							aria-label={t("chat:feedback.youSaid")}>
 							<div
 								className={cn(
-									"ml-6 border rounded-sm overflow-hidden whitespace-pre-wrap",
+									"min-w-0 overflow-hidden whitespace-pre-wrap",
 									isEditing
-										? "bg-vscode-editor-background text-vscode-editor-foreground"
-										: "cursor-text p-1 bg-vscode-editor-foreground/70 text-vscode-editor-background",
+										? "w-full rounded-xl bg-vscode-editor-background text-vscode-editor-foreground"
+										: "user-message cursor-text px-4 py-3",
 								)}>
 								{isEditing ? (
 									<div className="flex flex-col gap-2">
 										<ChatTextArea
 											inputValue={editedContent}
 											setInputValue={setEditedContent}
-											sendingDisabled={false}
+											sendingDisabled={messageActionsDisabled}
 											selectApiConfigDisabled={true}
 											placeholderText={t("chat:editMessage.placeholder")}
 											selectedImages={editImages}
 											setSelectedImages={setEditImages}
 											onSend={handleSaveEdit}
 											onSelectImages={handleSelectImages}
-											shouldDisableImages={!model?.supportsImages}
+											shouldDisableImages={!modelSupportsImages}
 											mode={editMode}
 											setMode={setEditMode}
 											modeShortcutText=""
@@ -1245,52 +1451,38 @@ export const ChatRowContent = ({
 										/>
 									</div>
 								) : (
-									<div className="flex justify-between">
-										<div
-											className="flex-grow px-2 py-1 wrap-anywhere rounded-lg transition-colors"
-											onClick={(e) => {
-												e.stopPropagation()
-												if (!isStreaming) {
-													handleEditClick()
-												}
-											}}
-											title={t("chat:queuedMessages.clickToEdit")}>
-											<Mention text={message.text} withShadow />
-										</div>
-										<div className="flex gap-2 pr-1">
-											<div
-												className="cursor-pointer shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-												style={{ visibility: isStreaming ? "hidden" : "visible" }}
-												onClick={(e) => {
-													e.stopPropagation()
-													handleEditClick()
-												}}>
-												<Edit className="w-4 shrink-0" aria-label="Edit message icon" />
-											</div>
-											<div
-												className="cursor-pointer shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-												style={{ visibility: isStreaming ? "hidden" : "visible" }}
-												onClick={(e) => {
-													e.stopPropagation()
-													vscode.postMessage({
-														type: "deleteMessage",
-														value: message.ts,
-														taskId: currentTaskId,
-													})
-												}}>
-												<Trash2 className="w-4 shrink-0" aria-label="Delete message icon" />
-											</div>
-										</div>
-									</div>
+									<UserMessageText
+										text={message.text}
+										isExpanded={isExpanded}
+										onToggleExpand={handleToggleExpand}
+										onEdit={!messageActionsDisabled ? handleEditClick : undefined}
+									/>
 								)}
 								{!isEditing && message.images && message.images.length > 0 && (
 									<Thumbnails images={message.images} style={{ marginTop: "8px" }} />
 								)}
 							</div>
-						</div>
+							{!isEditing && (
+								<MessageActions
+									text={message.text || ""}
+									onEdit={handleEditClick}
+									disabled={messageActionsDisabled}
+									onDelete={
+										isTaskPrompt
+											? undefined
+											: () =>
+													vscode.postMessage({
+														type: "deleteMessage",
+														value: message.ts,
+														taskId: currentTaskId,
+													})
+									}
+								/>
+							)}
+						</article>
 					)
 				case "user_feedback_diff":
-					const tool = safeJsonParse<ClineSayTool>(message.text)
+					const tool = safeJsonParse<AlphaSayTool>(message.text)
 					return (
 						<div style={{ marginTop: -10, width: "100%" }}>
 							<CodeAccordion
@@ -1308,44 +1500,42 @@ export const ChatRowContent = ({
 					const isNoAssistantMessagesError = message.text === "MODEL_NO_ASSISTANT_MESSAGES"
 
 					if (isNoToolsUsedError) {
-						return (
-							<ErrorRow
-								type="error"
-								title={t("chat:modelResponseIncomplete")}
-								message={t("chat:modelResponseErrors.noToolsUsed")}
-								errorDetails={t("chat:modelResponseErrors.noToolsUsedDetails")}
-							/>
-						)
+						return renderError({
+							type: "error",
+							title: t("chat:modelResponseIncomplete"),
+							message: t("chat:modelResponseErrors.noToolsUsed"),
+							errorDetails: t("chat:modelResponseErrors.noToolsUsedDetails"),
+						})
 					}
 
 					if (isNoAssistantMessagesError) {
-						return (
-							<ErrorRow
-								type="error"
-								title={t("chat:modelResponseIncomplete")}
-								message={t("chat:modelResponseErrors.noAssistantMessages")}
-								errorDetails={t("chat:modelResponseErrors.noAssistantMessagesDetails")}
-							/>
-						)
+						return renderError({
+							type: "error",
+							title: t("chat:modelResponseIncomplete"),
+							message: t("chat:modelResponseErrors.noAssistantMessages"),
+							errorDetails: t("chat:modelResponseErrors.noAssistantMessagesDetails"),
+						})
 					}
 
 					// Fallback for generic errors
-					return (
-						<ErrorRow type="error" message={message.text || t("chat:error")} errorDetails={message.text} />
-					)
+					return renderError({
+						type: "error",
+						message: message.text || t("chat:error"),
+						errorDetails: message.text,
+					})
 				case "completion_result":
 					return (
-						<div className="group">
-							<div style={headerStyle}>
-								{icon}
-								{title}
-								<div style={{ flexGrow: 1 }} />
-								<OpenMarkdownPreviewButton markdown={message.text} />
-							</div>
-							<div className="border-l border-green-600/30 ml-2 pl-4 pb-1">
-								<Markdown markdown={message.text} />
-							</div>
-						</div>
+						<article
+							className="group"
+							aria-label={t(isTaskCompleted ? "chat:taskCompleted" : "chat:completionReport")}>
+							<Markdown
+								markdown={message.text}
+								partial={message.partial}
+								onRestart={handleRestartClick}
+								restartDisabled={messageActionsDisabled}
+								actions={<OpenMarkdownPreviewButton markdown={message.text} />}
+							/>
+						</article>
 					)
 				case "shell_integration_warning":
 					return <CommandExecutionError />
@@ -1385,13 +1575,7 @@ export const ChatRowContent = ({
 					let parsed: {
 						content: {
 							query: string
-							results: Array<{
-								filePath: string
-								score: number
-								startLine: number
-								endLine: number
-								codeChunk: string
-							}>
+							results: CodebaseSearchMatch[]
 						}
 					} | null = null
 
@@ -1410,28 +1594,82 @@ export const ChatRowContent = ({
 
 					const { results = [] } = parsed?.content || {}
 
-					return <CodebaseSearchResultsDisplay results={results} />
+					return <CodebaseSearchResultsDisplay results={results} {...activityProps} />
 				case "user_edit_todos":
 					return <UpdateTodoListToolBlock userEdited onChange={() => {}} />
 				case "tool" as any:
 					// Handle say tool messages
-					const sayTool = safeJsonParse<ClineSayTool>(message.text)
+					const sayTool = safeJsonParse<AlphaSayTool>(message.text)
 					if (!sayTool) return null
 
 					switch (sayTool.tool) {
+						case "ticket":
+							return <TicketActivity tool={sayTool} />
+						case "browserAction": {
+							const labels: Record<NonNullable<AlphaSayTool["action"]>, string> = {
+								open_browser_page: "Open browser page",
+								list_browser_pages: "List browser pages",
+								read_page: "Read browser page",
+								screenshot_page: "Capture browser page",
+								navigate_page: "Navigate browser page",
+								click_element: "Click browser element",
+								type_in_page: "Type in browser page",
+								hover_element: "Hover over browser element",
+								drag_element: "Drag browser element",
+								handle_dialog: "Handle browser dialog",
+								run_playwright_code: "Run browser automation",
+							}
+							const status = sayTool.status ?? "completed"
+							const label = sayTool.action ? labels[sayTool.action] : "Use integrated browser"
+							const detail = sayTool.url ?? sayTool.element ?? sayTool.pageId
+							const browserIcon =
+								status === "running" ? (
+									<LoaderCircle
+										className="size-4 shrink-0 animate-spin"
+										aria-label="Browser action in progress"
+									/>
+								) : status === "error" ? (
+									<CircleAlert
+										className="size-4 shrink-0 text-vscode-errorForeground"
+										aria-label="Browser action failed"
+									/>
+								) : (
+									<Globe2 className="size-4 shrink-0" aria-label="Integrated browser action" />
+								)
+
+							return (
+								<div data-testid="browser-action-status" style={headerStyle}>
+									{browserIcon}
+									<span style={{ fontWeight: "bold" }}>
+										{label}
+										{status === "cancelled" ? " cancelled" : status === "error" ? " failed" : ""}
+									</span>
+									{detail && (
+										<span className="truncate text-xs text-vscode-descriptionForeground">
+											· {detail}
+										</span>
+									)}
+								</div>
+							)
+						}
 						case "runSlashCommand": {
 							const slashCommandInfo = sayTool
 							return (
-								<>
-									<div style={headerStyle}>
-										<span
-											className="codicon codicon-terminal-cmd"
-											style={{
-												color: "var(--vscode-foreground)",
-												marginBottom: "-1.5px",
-											}}></span>
-										<span style={{ fontWeight: "bold" }}>{t("chat:slashCommand.didRun")}</span>
-									</div>
+								<ActivityStep
+									{...activityProps}
+									summary={
+										<>
+											<span
+												className="codicon codicon-terminal-cmd"
+												style={{
+													color: "var(--vscode-foreground)",
+													marginBottom: "-1.5px",
+												}}></span>
+											<span style={{ fontWeight: "normal" }}>
+												{t("chat:slashCommand.didRun")}
+											</span>
+										</>
+									}>
 									<div className="pl-6">
 										<ToolUseBlock>
 											<ToolUseBlockHeader
@@ -1486,7 +1724,7 @@ export const ChatRowContent = ({
 											</ToolUseBlockHeader>
 										</ToolUseBlock>
 									</div>
-								</>
+								</ActivityStep>
 							)
 						}
 						case "readCommandOutput": {
@@ -1530,6 +1768,70 @@ export const ChatRowContent = ({
 											style={{ color: "var(--vscode-descriptionForeground)" }}>
 											({infoText})
 										</span>
+									)}
+								</div>
+							)
+						}
+						case "agentLifecycle": {
+							const status = sayTool.lifecycleStatus
+							const action = sayTool.agentAction
+							let label: string
+							let detail: string | undefined
+
+							if (status === "error") {
+								label = t("chat:agentLifecycle.failed", {
+									action: t(`chat:agentLifecycle.actions.${action ?? "unknown"}`),
+									error: sayTool.content || t("chat:error"),
+								})
+							} else if (action === "list_agents") {
+								label =
+									status === "running"
+										? t("chat:agentLifecycle.list.running")
+										: t("chat:agentLifecycle.list.completed", { count: sayTool.agentCount ?? 0 })
+								if (status === "completed" && (sayTool.mailboxUnreadCount ?? 0) > 0) {
+									detail = t("chat:agentLifecycle.list.mailbox", {
+										count: sayTool.mailboxUnreadCount,
+									})
+								}
+							} else if (status === "running") {
+								label = t("chat:agentLifecycle.wait.running")
+							} else if (sayTool.noActiveAgents) {
+								label = t("chat:agentLifecycle.wait.noActiveAgents")
+							} else if (sayTool.cancelled) {
+								label = t("chat:agentLifecycle.wait.cancelled")
+							} else if (sayTool.timedOut) {
+								label = t("chat:agentLifecycle.wait.timedOut")
+							} else if (sayTool.alreadyDelivered) {
+								label = t("chat:agentLifecycle.wait.alreadyDelivered")
+							} else if ((sayTool.eventCount ?? 0) > 0) {
+								label = t("chat:agentLifecycle.wait.received", { count: sayTool.eventCount })
+							} else {
+								label = t("chat:agentLifecycle.wait.completed")
+							}
+
+							const lifecycleIcon =
+								status === "running" ? (
+									<LoaderCircle
+										className="size-4 shrink-0 animate-spin"
+										aria-label="Agent action in progress"
+									/>
+								) : status === "error" ? (
+									<CircleAlert
+										className="size-4 shrink-0 text-vscode-errorForeground"
+										aria-label="Agent action failed"
+									/>
+								) : action === "list_agents" ? (
+									<ListTree className="size-4 shrink-0" aria-label="Agent list inspected" />
+								) : (
+									<Clock3 className="size-4 shrink-0" aria-label="Agent wait completed" />
+								)
+
+							return (
+								<div data-testid="agent-lifecycle-status" style={headerStyle}>
+									{lifecycleIcon}
+									<span style={{ fontWeight: "bold" }}>{label}</span>
+									{detail && (
+										<span className="text-xs text-vscode-descriptionForeground">· {detail}</span>
 									)}
 								</div>
 							)
@@ -1598,6 +1900,9 @@ export const ChatRowContent = ({
 					return (
 						<CommandExecution
 							executionId={message.ts.toString()}
+							workingDirectory={message.progressStatus?.text}
+							pathApproval={message.progressStatus?.commandPathApproval}
+							onToggleExpand={handleToggleExpand}
 							text={message.text}
 							icon={icon}
 							title={title}
@@ -1611,7 +1916,7 @@ export const ChatRowContent = ({
 					const { response, ...mcpServerRequest } = messageJson
 
 					// Create the useMcpServer object with the response field
-					const useMcpServer: ClineAskUseMcpServer = {
+					const useMcpServer: AlphaAskUseMcpServer = {
 						...mcpServerRequest,
 						response,
 					}
@@ -1623,11 +1928,14 @@ export const ChatRowContent = ({
 					const server = mcpServers.find((server) => server.name === useMcpServer.serverName)
 
 					return (
-						<>
-							<div style={headerStyle}>
-								{icon}
-								{title}
-							</div>
+						<ActivityStep
+							{...activityProps}
+							summary={
+								<>
+									{icon}
+									{title}
+								</>
+							}>
 							<div className="w-full bg-vscode-editor-background border border-vscode-border rounded-xs p-2 mt-2">
 								{useMcpServer.type === "access_mcp_resource" && (
 									<McpResourceRow
@@ -1660,22 +1968,22 @@ export const ChatRowContent = ({
 									/>
 								)}
 							</div>
-						</>
+						</ActivityStep>
 					)
 				case "completion_result":
 					if (message.text) {
 						return (
-							<div className="group">
-								<div style={headerStyle}>
-									{icon}
-									{title}
-									<div style={{ flexGrow: 1 }} />
-									<OpenMarkdownPreviewButton markdown={message.text} />
-								</div>
-								<div style={{ color: "var(--vscode-charts-green)", paddingTop: 10 }}>
-									<Markdown markdown={message.text} partial={message.partial} />
-								</div>
-							</div>
+							<article
+								className="group"
+								aria-label={t(isTaskCompleted ? "chat:taskCompleted" : "chat:completionReport")}>
+								<Markdown
+									markdown={message.text}
+									partial={message.partial}
+									onRestart={handleRestartClick}
+									restartDisabled={messageActionsDisabled}
+									actions={<OpenMarkdownPreviewButton markdown={message.text} />}
+								/>
+							</article>
 						)
 					} else {
 						return null // Don't render anything when we get a completion_result ask without text
@@ -1692,6 +2000,9 @@ export const ChatRowContent = ({
 							<div className="flex flex-col gap-2 ml-6">
 								<Markdown
 									markdown={message.partial === true ? message?.text : followUpData?.question}
+									partial={message.partial}
+									onRestart={handleRestartClick}
+									restartDisabled={messageActionsDisabled}
 								/>
 								<FollowUpSuggest
 									suggestions={followUpData?.suggest}

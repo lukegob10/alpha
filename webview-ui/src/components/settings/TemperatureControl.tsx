@@ -1,7 +1,5 @@
 import { VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
-import { useEffect, useState } from "react"
 import { useAppTranslation } from "@/i18n/TranslationContext"
-import { useDebounce } from "react-use"
 
 import { Slider } from "@/components/ui"
 
@@ -14,17 +12,7 @@ interface TemperatureControlProps {
 
 export const TemperatureControl = ({ value, onChange, maxValue = 1, defaultValue }: TemperatureControlProps) => {
 	const { t } = useAppTranslation()
-	const [isCustomTemperature, setIsCustomTemperature] = useState(value !== undefined)
-	const [inputValue, setInputValue] = useState(value)
-
-	useDebounce(() => onChange(inputValue), 50, [onChange, inputValue])
-
-	// Sync internal state with prop changes when switching profiles.
-	useEffect(() => {
-		const hasCustomTemperature = value !== undefined && value !== null
-		setIsCustomTemperature(hasCustomTemperature)
-		setInputValue(value)
-	}, [value])
+	const isCustomTemperature = value !== undefined && value !== null
 
 	return (
 		<>
@@ -32,15 +20,7 @@ export const TemperatureControl = ({ value, onChange, maxValue = 1, defaultValue
 				<VSCodeCheckbox
 					checked={isCustomTemperature}
 					onChange={(e: any) => {
-						const isChecked = e.target.checked
-						setIsCustomTemperature(isChecked)
-
-						if (!isChecked) {
-							setInputValue(null) // Unset the temperature, note that undefined is unserializable.
-						} else {
-							// Use the value from apiConfiguration, or fallback to model's defaultTemperature, or finally to 0
-							setInputValue(value ?? defaultValue ?? 0)
-						}
+						onChange(e.target.checked ? (value ?? defaultValue ?? 0) : null)
 					}}>
 					<label className="block font-medium mb-1">{t("settings:temperature.useCustom")}</label>
 				</VSCodeCheckbox>
@@ -57,10 +37,10 @@ export const TemperatureControl = ({ value, onChange, maxValue = 1, defaultValue
 								min={0}
 								max={maxValue}
 								step={0.01}
-								value={[inputValue ?? 0]}
-								onValueChange={([value]) => setInputValue(value)}
+								value={[value ?? 0]}
+								onValueChange={([nextValue]) => onChange(nextValue)}
 							/>
-							<span className="w-10">{inputValue}</span>
+							<span className="w-10">{value}</span>
 						</div>
 						<div className="text-vscode-descriptionForeground text-sm mt-1">
 							{t("settings:temperature.rangeDescription")}

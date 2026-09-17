@@ -7,14 +7,16 @@ import * as vscode from "vscode"
 import pWaitFor from "p-wait-for"
 
 import {
-	type RooCodeAPI,
-	type RooCodeSettings,
-	type RooCodeEvents,
+	type AlphaCodeAPI,
+	type AlphaCodeSettings,
+	type AlphaCodeEvents,
 	type ProviderSettings,
 	type ProviderSettingsEntry,
 	type TaskEvent,
+	type TaskCommand,
 	type CreateTaskOptions,
-	RooCodeEventName,
+	AlphaCodeEventName,
+	assertPrimaryMode,
 	TaskCommandName,
 	isSecretStateKey,
 	IpcOrigin,
@@ -23,14 +25,14 @@ import {
 import { IpcServer } from "@alpha-code/ipc"
 
 import { Package } from "../shared/package"
-import { ClineProvider } from "../core/webview/ClineProvider"
-import { openClineInNewTab } from "../activate/registerCommands"
+import { AlphaProvider } from "../core/webview/AlphaProvider"
+import { openAlphaInNewTab } from "../activate/registerCommands"
 import { getCommands } from "../services/command/commands"
 import { getModels } from "../api/providers/fetchers/modelCache"
 
-export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
+export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 	private readonly outputChannel: vscode.OutputChannel
-	private readonly sidebarProvider: ClineProvider
+	private readonly sidebarProvider: AlphaProvider
 	private readonly context: vscode.ExtensionContext
 	private readonly ipc?: IpcServer
 	private readonly log: (...args: unknown[]) => void
@@ -38,7 +40,7 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 
 	constructor(
 		outputChannel: vscode.OutputChannel,
-		provider: ClineProvider,
+		provider: AlphaProvider,
 		socketPath?: string,
 		enableLogging = false,
 	) {
@@ -63,12 +65,13 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 
 		if (socketPath) {
 			const ipc = (this.ipc = new IpcServer(socketPath, this.log))
+			this.context.subscriptions.push(ipc)
 
 			ipc.listen()
 			this.log(`[API] ipc server started: socketPath=${socketPath}, pid=${process.pid}, ppid=${process.ppid}`)
 
-			ipc.on(IpcMessageType.TaskCommand, async (clientId, command) => {
-				const sendResponse = (eventName: RooCodeEventName, payload: unknown[]) => {
+			const handleTaskCommand = async (clientId: string, command: TaskCommand) => {
+				const sendResponse = (eventName: AlphaCodeEventName, payload: unknown[]) => {
 					ipc.send(clientId, {
 						type: IpcMessageType.TaskEvent,
 						origin: IpcOrigin.Server,
@@ -111,7 +114,7 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 						try {
 							const commands = await getCommands(this.sidebarProvider.cwd)
 
-							sendResponse(RooCodeEventName.CommandsResponse, [
+							sendResponse(AlphaCodeEventName.CommandsResponse, [
 								commands.map((cmd) => ({
 									name: cmd.name,
 									source: cmd.source,
@@ -121,16 +124,16 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 								})),
 							])
 						} catch (error) {
-							sendResponse(RooCodeEventName.CommandsResponse, [[]])
+							sendResponse(AlphaCodeEventName.CommandsResponse, [[]])
 						}
 
 						break
 					case TaskCommandName.GetModes:
 						try {
 							const modes = await this.sidebarProvider.getModes()
-							sendResponse(RooCodeEventName.ModesResponse, [modes])
+							sendResponse(AlphaCodeEventName.ModesResponse, [modes])
 						} catch (error) {
-							sendResponse(RooCodeEventName.ModesResponse, [[]])
+							sendResponse(AlphaCodeEventName.ModesResponse, [[]])
 						}
 
 						break
@@ -140,9 +143,9 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 								provider: "openrouter" as const,
 							})
 
-							sendResponse(RooCodeEventName.ModelsResponse, [models])
+							sendResponse(AlphaCodeEventName.ModelsResponse, [models])
 						} catch (error) {
-							sendResponse(RooCodeEventName.ModelsResponse, [{}])
+							sendResponse(AlphaCodeEventName.ModelsResponse, [{}])
 						}
 
 						break
@@ -156,15 +159,23 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 						}
 						break
 				}
+			}
+
+			ipc.on(IpcMessageType.TaskCommand, (clientId, command) => {
+				void handleTaskCommand(clientId, command).catch((error) => {
+					this.log(
+						`[API] ${command.commandName} failed: ${error instanceof Error ? error.message : String(error)}`,
+					)
+				})
 			})
 		}
 	}
 
-	public override emit<K extends keyof RooCodeEvents>(
+	public override emit<K extends keyof AlphaCodeEvents>(
 		eventName: K,
-		...args: K extends keyof RooCodeEvents ? RooCodeEvents[K] : never
+		...args: K extends keyof AlphaCodeEvents ? AlphaCodeEvents[K] : never
 	) {
-		const data = { eventName: eventName as RooCodeEventName, payload: args } as TaskEvent
+		const data = { eventName: eventName as AlphaCodeEventName, payload: args } as TaskEvent
 		this.ipc?.broadcast({ type: IpcMessageType.TaskEvent, origin: IpcOrigin.Server, data })
 		return super.emit(eventName, ...args)
 	}
@@ -175,18 +186,19 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 		images,
 		newTab,
 	}: {
-		configuration: RooCodeSettings
+		configuration: AlphaCodeSettings
 		text?: string
 		images?: string[]
 		newTab?: boolean
 	}) {
-		let provider: ClineProvider
+		if (configuration.mode !== undefined) assertPrimaryMode(configuration.mode)
+		let provider: AlphaProvider
 
 		if (newTab) {
 			await vscode.commands.executeCommand("workbench.action.files.revert")
 			await vscode.commands.executeCommand("workbench.action.closeAllEditors")
 
-			provider = await openClineInNewTab({ context: this.context, outputChannel: this.outputChannel })
+			provider = await openAlphaInNewTab({ context: this.context, outputChannel: this.outputChannel })
 			this.registerListeners(provider)
 		} else {
 			await vscode.commands.executeCommand(`${Package.name}.SidebarProvider.focus`)
@@ -194,13 +206,18 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 			provider = this.sidebarProvider
 		}
 
-		await provider.removeClineFromStack()
+		await provider.removeTaskFromStack()
 		await provider.postStateToWebview()
 		await provider.postMessageToWebview({ type: "action", action: "chatButtonClicked" })
 		await provider.postMessageToWebview({ type: "invoke", invoke: "newChat", text, images })
 
 		const options: CreateTaskOptions = {
 			consecutiveMistakeLimit: Number.MAX_SAFE_INTEGER,
+			// Keep the caller-supplied runtime configuration authoritative for this
+			// task. Persisting settings intentionally strips executable values such as
+			// FakeAI callbacks, so reading the configuration back from global state
+			// cannot faithfully reconstruct an in-process provider implementation.
+			apiConfiguration: configuration,
 		}
 
 		const task = await provider.createTask(text, images, undefined, options, configuration)
@@ -243,7 +260,7 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 
 	public async clearCurrentTask(_lastMessage?: string) {
 		// Legacy finishSubTask removed; clear current by closing active task instance.
-		await this.sidebarProvider.removeClineFromStack()
+		await this.sidebarProvider.removeTaskFromStack()
 		await this.sidebarProvider.postStateToWebview()
 	}
 
@@ -307,17 +324,17 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 		}
 	}
 
-	private registerListeners(provider: ClineProvider) {
-		provider.on(RooCodeEventName.TaskCreated, (task) => {
+	private registerListeners(provider: AlphaProvider) {
+		provider.on(AlphaCodeEventName.TaskCreated, (task) => {
 			// Task Lifecycle
 
-			task.on(RooCodeEventName.TaskStarted, async () => {
-				this.emit(RooCodeEventName.TaskStarted, task.taskId)
+			task.on(AlphaCodeEventName.TaskStarted, async () => {
+				this.emit(AlphaCodeEventName.TaskStarted, task.taskId)
 				await this.fileLog(`[${new Date().toISOString()}] taskStarted -> ${task.taskId}\n`)
 			})
 
-			task.on(RooCodeEventName.TaskCompleted, async (_, tokenUsage, toolUsage) => {
-				this.emit(RooCodeEventName.TaskCompleted, task.taskId, tokenUsage, toolUsage, {
+			task.on(AlphaCodeEventName.TaskCompleted, async (_, tokenUsage, toolUsage) => {
+				this.emit(AlphaCodeEventName.TaskCompleted, task.taskId, tokenUsage, toolUsage, {
 					isSubtask: !!task.parentTaskId,
 				})
 
@@ -326,95 +343,95 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 				)
 			})
 
-			task.on(RooCodeEventName.TaskAborted, () => {
-				this.emit(RooCodeEventName.TaskAborted, task.taskId)
+			task.on(AlphaCodeEventName.TaskAborted, () => {
+				this.emit(AlphaCodeEventName.TaskAborted, task.taskId)
 			})
 
-			task.on(RooCodeEventName.TaskFocused, () => {
-				this.emit(RooCodeEventName.TaskFocused, task.taskId)
+			task.on(AlphaCodeEventName.TaskFocused, () => {
+				this.emit(AlphaCodeEventName.TaskFocused, task.taskId)
 			})
 
-			task.on(RooCodeEventName.TaskUnfocused, () => {
-				this.emit(RooCodeEventName.TaskUnfocused, task.taskId)
+			task.on(AlphaCodeEventName.TaskUnfocused, () => {
+				this.emit(AlphaCodeEventName.TaskUnfocused, task.taskId)
 			})
 
-			task.on(RooCodeEventName.TaskActive, () => {
-				this.emit(RooCodeEventName.TaskActive, task.taskId)
+			task.on(AlphaCodeEventName.TaskActive, () => {
+				this.emit(AlphaCodeEventName.TaskActive, task.taskId)
 			})
 
-			task.on(RooCodeEventName.TaskInteractive, () => {
-				this.emit(RooCodeEventName.TaskInteractive, task.taskId)
+			task.on(AlphaCodeEventName.TaskInteractive, () => {
+				this.emit(AlphaCodeEventName.TaskInteractive, task.taskId)
 			})
 
-			task.on(RooCodeEventName.TaskResumable, () => {
-				this.emit(RooCodeEventName.TaskResumable, task.taskId)
+			task.on(AlphaCodeEventName.TaskResumable, () => {
+				this.emit(AlphaCodeEventName.TaskResumable, task.taskId)
 			})
 
-			task.on(RooCodeEventName.TaskIdle, () => {
-				this.emit(RooCodeEventName.TaskIdle, task.taskId)
+			task.on(AlphaCodeEventName.TaskIdle, () => {
+				this.emit(AlphaCodeEventName.TaskIdle, task.taskId)
 			})
 
 			// Subtask Lifecycle
 
-			task.on(RooCodeEventName.TaskPaused, () => {
-				this.emit(RooCodeEventName.TaskPaused, task.taskId)
+			task.on(AlphaCodeEventName.TaskPaused, () => {
+				this.emit(AlphaCodeEventName.TaskPaused, task.taskId)
 			})
 
-			task.on(RooCodeEventName.TaskUnpaused, () => {
-				this.emit(RooCodeEventName.TaskUnpaused, task.taskId)
+			task.on(AlphaCodeEventName.TaskUnpaused, () => {
+				this.emit(AlphaCodeEventName.TaskUnpaused, task.taskId)
 			})
 
-			task.on(RooCodeEventName.TaskSpawned, (childTaskId) => {
-				this.emit(RooCodeEventName.TaskSpawned, task.taskId, childTaskId)
+			task.on(AlphaCodeEventName.TaskSpawned, (childTaskId) => {
+				this.emit(AlphaCodeEventName.TaskSpawned, task.taskId, childTaskId)
 			})
 
-			task.on(RooCodeEventName.TaskDelegated as any, (childTaskId: string) => {
-				;(this.emit as any)(RooCodeEventName.TaskDelegated, task.taskId, childTaskId)
+			task.on(AlphaCodeEventName.TaskDelegated as any, (childTaskId: string) => {
+				;(this.emit as any)(AlphaCodeEventName.TaskDelegated, task.taskId, childTaskId)
 			})
 
-			task.on(RooCodeEventName.TaskDelegationCompleted as any, (childTaskId: string, summary: string) => {
-				;(this.emit as any)(RooCodeEventName.TaskDelegationCompleted, task.taskId, childTaskId, summary)
+			task.on(AlphaCodeEventName.TaskDelegationCompleted as any, (childTaskId: string, summary: string) => {
+				;(this.emit as any)(AlphaCodeEventName.TaskDelegationCompleted, task.taskId, childTaskId, summary)
 			})
 
-			task.on(RooCodeEventName.TaskDelegationResumed as any, (childTaskId: string) => {
-				;(this.emit as any)(RooCodeEventName.TaskDelegationResumed, task.taskId, childTaskId)
+			task.on(AlphaCodeEventName.TaskDelegationResumed as any, (childTaskId: string) => {
+				;(this.emit as any)(AlphaCodeEventName.TaskDelegationResumed, task.taskId, childTaskId)
 			})
 
 			// Task Execution
 
-			task.on(RooCodeEventName.Message, async (message) => {
-				this.emit(RooCodeEventName.Message, { taskId: task.taskId, ...message })
+			task.on(AlphaCodeEventName.Message, async (message) => {
+				this.emit(AlphaCodeEventName.Message, { taskId: task.taskId, ...message })
 
 				if (message.message.partial !== true) {
 					await this.fileLog(`[${new Date().toISOString()}] ${JSON.stringify(message.message, null, 2)}\n`)
 				}
 			})
 
-			task.on(RooCodeEventName.TaskModeSwitched, (taskId, mode) => {
-				this.emit(RooCodeEventName.TaskModeSwitched, taskId, mode)
+			task.on(AlphaCodeEventName.TaskModeSwitched, (taskId, mode) => {
+				this.emit(AlphaCodeEventName.TaskModeSwitched, taskId, mode)
 			})
 
-			task.on(RooCodeEventName.TaskAskResponded, () => {
-				this.emit(RooCodeEventName.TaskAskResponded, task.taskId)
+			task.on(AlphaCodeEventName.TaskAskResponded, () => {
+				this.emit(AlphaCodeEventName.TaskAskResponded, task.taskId)
 			})
 
-			task.on(RooCodeEventName.QueuedMessagesUpdated, (taskId, messages) => {
-				this.emit(RooCodeEventName.QueuedMessagesUpdated, taskId, messages)
+			task.on(AlphaCodeEventName.QueuedMessagesUpdated, (taskId, messages) => {
+				this.emit(AlphaCodeEventName.QueuedMessagesUpdated, taskId, messages)
 			})
 
 			// Task Analytics
 
-			task.on(RooCodeEventName.TaskToolFailed, (taskId, tool, error) => {
-				this.emit(RooCodeEventName.TaskToolFailed, taskId, tool, error)
+			task.on(AlphaCodeEventName.TaskToolFailed, (taskId, tool, error) => {
+				this.emit(AlphaCodeEventName.TaskToolFailed, taskId, tool, error)
 			})
 
-			task.on(RooCodeEventName.TaskTokenUsageUpdated, (_, tokenUsage, toolUsage) => {
-				this.emit(RooCodeEventName.TaskTokenUsageUpdated, task.taskId, tokenUsage, toolUsage)
+			task.on(AlphaCodeEventName.TaskTokenUsageUpdated, (_, tokenUsage, toolUsage) => {
+				this.emit(AlphaCodeEventName.TaskTokenUsageUpdated, task.taskId, tokenUsage, toolUsage)
 			})
 
 			// Let's go!
 
-			this.emit(RooCodeEventName.TaskCreated, task.taskId)
+			this.emit(AlphaCodeEventName.TaskCreated, task.taskId)
 		})
 	}
 
@@ -465,14 +482,14 @@ export class API extends EventEmitter<RooCodeEvents> implements RooCodeAPI {
 
 	// Global Settings Management
 
-	public getConfiguration(): RooCodeSettings {
+	public getConfiguration(): AlphaCodeSettings {
 		return Object.fromEntries(
 			Object.entries(this.sidebarProvider.getValues()).filter(([key]) => !isSecretStateKey(key)),
 		)
 	}
 
-	public async setConfiguration(values: RooCodeSettings) {
-		await this.sidebarProvider.contextProxy.setValues(values)
+	public async setConfiguration(values: AlphaCodeSettings) {
+		await this.sidebarProvider.setValues(values)
 		await this.sidebarProvider.providerSettingsManager.saveConfig(values.currentApiConfigName || "default", values)
 		await this.sidebarProvider.postStateToWebview()
 	}

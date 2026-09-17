@@ -1,11 +1,30 @@
+import type { CreateTicket, UpdateTicket, DeleteTicket } from "@alpha-code/types"
 import { Anthropic } from "@anthropic-ai/sdk"
 
-import type { ClineAsk, ToolProgressStatus, ToolGroup, ToolName, GenerateImageParams } from "@alpha-code/types"
+import type {
+	AlphaAsk,
+	ToolProgressStatus,
+	ToolGroup,
+	ToolName,
+	GenerateImageParams,
+	ListAgentsParams,
+	WaitAgentParams,
+	SendMessageParams,
+	ReportProgressParams,
+	FollowupTaskParams,
+	InterruptAgentParams,
+	CancelAgentParams,
+	CloseAgentParams,
+	SubagentForkTurns,
+	BrowserToolArgs,
+	DiscoverToolsParams,
+	SearchFilesParams,
+} from "@alpha-code/types"
 
 export type ToolResponse = string | Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam>
 
 export type AskApproval = (
-	type: ClineAsk,
+	type: AlphaAsk,
 	partialMessage?: string,
 	progressStatus?: ToolProgressStatus,
 	forceApproval?: boolean,
@@ -29,9 +48,35 @@ export const toolParamNames = [
 	"content",
 	"regex",
 	"file_pattern",
+	"output_mode",
+	"literal",
 	"recursive",
 	"action",
 	"url",
+	// VS Code integrated-browser parameters
+	"forceNew",
+	"pageId",
+	"ref",
+	"selector",
+	"element",
+	"scrollIntoViewIfNeeded",
+	"type",
+	"dblClick",
+	"button",
+	"submit",
+	"key",
+	"fromRef",
+	"fromSelector",
+	"fromElement",
+	"toRef",
+	"toSelector",
+	"toElement",
+	"acceptModal",
+	"promptText",
+	"selectFiles",
+	"code",
+	"deferredResultId",
+	"timeoutMs",
 	"coordinate",
 	"text",
 	"server_name",
@@ -40,8 +85,8 @@ export const toolParamNames = [
 	"uri",
 	"question",
 	"result",
+	"outcome",
 	"diff",
-	"mode_slug",
 	"reason",
 	"line",
 	"mode",
@@ -67,6 +112,7 @@ export const toolParamNames = [
 	"replace_all", // edit tool parameter for replacing all occurrences
 	"expected_replacements", // edit_file parameter for multiple occurrences
 	"timeout", // execute_command parameter
+	"verification", // execute_command verification scope
 	"artifact_id", // read_command_output parameter
 	"search", // read_command_output parameter for grep-like search
 	"offset", // read_command_output and read_file parameter
@@ -81,6 +127,8 @@ export const toolParamNames = [
 	// read_file legacy format parameter (backward compatibility)
 	"files",
 	"line_ranges",
+	// search_files bounded batch parameter
+	"queries",
 	// github_api parameters
 	"owner",
 	"repo",
@@ -92,6 +140,17 @@ export const toolParamNames = [
 	"body",
 	"sha",
 	"merge_method",
+	"tasks",
+	"task_name",
+	"fork_turns",
+	"objective",
+	"agent_kind",
+	"write_scope",
+	"expected_output",
+	"path_prefix",
+	"timeout_ms",
+	"until_terminal",
+	"target",
 ] as const
 
 export type ToolParamName = (typeof toolParamNames)[number]
@@ -100,12 +159,25 @@ export type ToolParamName = (typeof toolParamNames)[number]
  * Type map defining the native (typed) argument structure for each tool.
  * Tools not listed here will fall back to `any` for backward compatibility.
  */
-export type NativeToolArgs = {
+export type NativeToolArgs = BrowserToolArgs & {
 	access_mcp_resource: { server_name: string; uri: string }
+	discover_tools: DiscoverToolsParams
 	read_file: import("@alpha-code/types").ReadFileToolParams
 	read_command_output: { artifact_id: string; search?: string; offset?: number; limit?: number }
-	attempt_completion: { result: string }
-	execute_command: { command: string; cwd?: string; timeout?: number | null }
+	manage_command: {
+		execution_id: string
+		action: "wait" | "stop" | "input"
+		input?: string | null
+		timeout_ms?: number | null
+	}
+	attempt_completion: { result: string; outcome?: "completed" | "blocked" }
+	execute_command: {
+		command: string
+		cwd?: string | null
+		timeout?: number | null
+		/** Explicitly identifies applied Worker change sets this command validates. */
+		verification?: { change_set_ids: string[] } | null
+	}
 	apply_diff: { path: string; diff: string }
 	edit: { file_path: string; old_string: string; new_string: string; replace_all?: boolean }
 	search_and_replace: { file_path: string; old_string: string; new_string: string; replace_all?: boolean }
@@ -114,6 +186,49 @@ export type NativeToolArgs = {
 	apply_patch: { patch: string }
 	list_files: { path: string; recursive?: boolean }
 	new_task: { mode: string; message: string; todos?: string }
+	delegate_task: {
+		tasks: Array<
+			| {
+					objective: string
+					fork_turns: SubagentForkTurns
+					agent_kind: "explore" | "review"
+					write_scope?: string[] | null
+					expected_output?: string[] | null
+			  }
+			| {
+					objective: string
+					fork_turns: SubagentForkTurns
+					agent_kind: "worker"
+					write_scope: string[]
+					expected_output?: string[] | null
+			  }
+		>
+	}
+	spawn_agent:
+		| {
+				task_name: string
+				fork_turns: SubagentForkTurns
+				objective: string
+				agent_kind: "explore" | "review"
+				write_scope: null
+				expected_output: string[] | null
+		  }
+		| {
+				task_name: string
+				fork_turns: SubagentForkTurns
+				objective: string
+				agent_kind: "worker"
+				write_scope: string[]
+				expected_output: string[] | null
+		  }
+	list_agents: ListAgentsParams
+	wait_agent: WaitAgentParams
+	send_message: SendMessageParams
+	report_progress: ReportProgressParams
+	followup_task: FollowupTaskParams
+	interrupt_agent: InterruptAgentParams
+	cancel_agent: CancelAgentParams
+	close_agent: CloseAgentParams
 	ask_followup_question: {
 		question: string
 		follow_up: Array<{ text: string; mode?: string }>
@@ -122,9 +237,13 @@ export type NativeToolArgs = {
 	generate_image: GenerateImageParams
 	run_slash_command: { command: string; args?: string }
 	skill: { skill: string; args?: string }
-	search_files: { path: string; regex: string; file_pattern?: string | null }
-	switch_mode: { mode_slug: string; reason: string }
-	update_todo_list: { todos: string }
+	search_files: SearchFilesParams
+	list_tickets: { query?: string; status?: "backlog" | "in-progress" | "complete"; offset?: number; limit?: number }
+	read_ticket: { id: string }
+	create_ticket: CreateTicket
+	update_ticket: UpdateTicket
+	delete_ticket: DeleteTicket
+	update_todo_list: { todos: string; work_plan?: import("@alpha-code/types").TaskWorkPlan | null }
 	use_mcp_tool: { server_name: string; tool_name: string; arguments?: Record<string, unknown> }
 	write_to_file: { path: string; content: string }
 	github_api:
@@ -218,7 +337,7 @@ export interface McpToolUse {
 export interface ExecuteCommandToolUse extends ToolUse<"execute_command"> {
 	name: "execute_command"
 	// Pick<Record<ToolParamName, string>, "command"> makes "command" required, but Partial<> makes it optional
-	params: Partial<Pick<Record<ToolParamName, string>, "command" | "cwd" | "timeout">>
+	params: Partial<Pick<Record<ToolParamName, string>, "command" | "cwd" | "timeout" | "verification">>
 }
 
 export interface ReadFileToolUse extends ToolUse<"read_file"> {
@@ -254,7 +373,9 @@ export interface CodebaseSearchToolUse extends ToolUse<"codebase_search"> {
 
 export interface SearchFilesToolUse extends ToolUse<"search_files"> {
 	name: "search_files"
-	params: Partial<Pick<Record<ToolParamName, string>, "path" | "regex" | "file_pattern">>
+	params: Partial<
+		Pick<Record<ToolParamName, string>, "path" | "regex" | "file_pattern" | "queries" | "output_mode" | "literal">
+	>
 }
 
 export interface ListFilesToolUse extends ToolUse<"list_files"> {
@@ -279,12 +400,7 @@ export interface AskFollowupQuestionToolUse extends ToolUse<"ask_followup_questi
 
 export interface AttemptCompletionToolUse extends ToolUse<"attempt_completion"> {
 	name: "attempt_completion"
-	params: Partial<Pick<Record<ToolParamName, string>, "result">>
-}
-
-export interface SwitchModeToolUse extends ToolUse<"switch_mode"> {
-	name: "switch_mode"
-	params: Partial<Pick<Record<ToolParamName, string>, "mode_slug" | "reason">>
+	params: Partial<Pick<Record<ToolParamName, string>, "result" | "outcome">>
 }
 
 export interface NewTaskToolUse extends ToolUse<"new_task"> {
@@ -337,6 +453,7 @@ export type ToolGroupConfig = {
 
 export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	execute_command: "run commands",
+	manage_command: "control task commands",
 	read_file: "read files",
 	read_command_output: "read command output",
 	write_to_file: "write files",
@@ -350,40 +467,95 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	list_files: "list files",
 	use_mcp_tool: "use mcp tools",
 	access_mcp_resource: "access mcp resources",
+	discover_tools: "discover optional MCP tools",
 	ask_followup_question: "ask questions",
 	attempt_completion: "complete tasks",
-	switch_mode: "switch modes",
 	new_task: "create new task",
+	delegate_task: "delegate bounded tasks",
+	spawn_agent: "spawn a bounded agent",
+	list_agents: "list agents",
+	wait_agent: "wait for agent updates",
+	send_message: "message an agent",
+	report_progress: "report progress to the parent agent",
+	followup_task: "follow up with an agent",
+	interrupt_agent: "interrupt an agent",
+	cancel_agent: "cancel an agent",
+	close_agent: "close an agent",
 	codebase_search: "codebase search",
+	list_tickets: "list tickets",
+	read_ticket: "read a ticket",
+	create_ticket: "create a ticket",
+	update_ticket: "update a ticket",
+	delete_ticket: "delete a ticket",
 	update_todo_list: "update todo list",
 	run_slash_command: "run slash command",
 	skill: "load skill",
 	generate_image: "generate images",
 	github_api: "use GitHub API",
+	open_browser_page: "open an integrated browser page",
+	list_browser_pages: "list shared integrated browser pages",
+	read_page: "read an integrated browser page",
+	screenshot_page: "capture an integrated browser page",
+	navigate_page: "navigate an integrated browser page",
+	click_element: "click an integrated browser element",
+	type_in_page: "type in an integrated browser page",
+	hover_element: "hover over an integrated browser element",
+	drag_element: "drag an integrated browser element",
+	handle_dialog: "handle an integrated browser dialog",
+	run_playwright_code: "run Playwright against an integrated browser page",
 	custom_tool: "use custom tools",
 } as const
 
 // Define available tool groups.
 export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 	read: {
-		tools: ["read_file", "search_files", "list_files", "codebase_search"],
+		tools: ["read_file", "search_files", "list_files", "codebase_search", "list_tickets", "read_ticket"],
 	},
 	edit: {
-		tools: ["apply_diff", "write_to_file", "generate_image"],
+		tools: ["apply_diff", "write_to_file", "generate_image", "create_ticket", "update_ticket", "delete_ticket"],
 		customTools: ["edit", "search_replace", "edit_file", "apply_patch"],
 	},
 	command: {
-		tools: ["execute_command", "read_command_output"],
+		tools: ["execute_command", "read_command_output", "manage_command"],
 	},
 	mcp: {
-		tools: ["use_mcp_tool", "access_mcp_resource"],
+		tools: ["use_mcp_tool", "access_mcp_resource", "discover_tools"],
 	},
 	github: {
 		tools: ["github_api"],
 	},
 	modes: {
-		tools: ["switch_mode", "new_task"],
+		tools: ["new_task"],
 		alwaysAvailable: true,
+	},
+	agents: {
+		tools: [
+			"delegate_task",
+			"spawn_agent",
+			"list_agents",
+			"wait_agent",
+			"send_message",
+			"report_progress",
+			"followup_task",
+			"interrupt_agent",
+			"cancel_agent",
+			"close_agent",
+		],
+	},
+	browser: {
+		tools: [
+			"open_browser_page",
+			"list_browser_pages",
+			"read_page",
+			"screenshot_page",
+			"navigate_page",
+			"click_element",
+			"type_in_page",
+			"hover_element",
+			"drag_element",
+			"handle_dialog",
+			"run_playwright_code",
+		],
 	},
 }
 
@@ -391,7 +563,6 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 export const ALWAYS_AVAILABLE_TOOLS: ToolName[] = [
 	"ask_followup_question",
 	"attempt_completion",
-	"switch_mode",
 	"new_task",
 	"update_todo_list",
 	"run_slash_command",

@@ -1,6 +1,6 @@
 import * as assert from "assert"
 
-import { RooCodeEventName, type ClineMessage } from "@alpha-code/types"
+import { AlphaCodeEventName, type AlphaMessage } from "@alpha-code/types"
 
 import { waitUntilCompleted } from "./utils"
 import { setDefaultSuiteTimeout } from "./test-utils"
@@ -11,16 +11,16 @@ suite("Markdown List Rendering", function () {
 	test("Should render unordered lists with bullets in chat", async () => {
 		const api = globalThis.api
 
-		const messages: ClineMessage[] = []
+		const messages: AlphaMessage[] = []
 
-		api.on(RooCodeEventName.Message, ({ message }: { message: ClineMessage }) => {
+		api.on(AlphaCodeEventName.Message, ({ message }: { message: AlphaMessage }) => {
 			if (message.type === "say" && message.partial === false) {
 				messages.push(message)
 			}
 		})
 
 		const taskId = await api.startNewTask({
-			configuration: { mode: "ask", alwaysAllowModeSwitch: true, autoApprovalEnabled: true },
+			configuration: { mode: "code", autoApprovalEnabled: true },
 			text: "Please show me an example of an unordered list with the following items: Apple, Banana, Orange",
 		})
 
@@ -48,16 +48,16 @@ suite("Markdown List Rendering", function () {
 	test("Should render ordered lists with numbers in chat", async () => {
 		const api = globalThis.api
 
-		const messages: ClineMessage[] = []
+		const messages: AlphaMessage[] = []
 
-		api.on(RooCodeEventName.Message, ({ message }: { message: ClineMessage }) => {
+		api.on(AlphaCodeEventName.Message, ({ message }: { message: AlphaMessage }) => {
 			if (message.type === "say" && message.partial === false) {
 				messages.push(message)
 			}
 		})
 
 		const taskId = await api.startNewTask({
-			configuration: { mode: "ask", alwaysAllowModeSwitch: true, autoApprovalEnabled: true },
+			configuration: { mode: "code", autoApprovalEnabled: true },
 			text: "Please show me a numbered list with three steps: First step, Second step, Third step",
 		})
 
@@ -85,16 +85,16 @@ suite("Markdown List Rendering", function () {
 	test("Should render nested lists with proper hierarchy", async () => {
 		const api = globalThis.api
 
-		const messages: ClineMessage[] = []
+		const messages: AlphaMessage[] = []
 
-		api.on(RooCodeEventName.Message, ({ message }: { message: ClineMessage }) => {
+		api.on(AlphaCodeEventName.Message, ({ message }: { message: AlphaMessage }) => {
 			if (message.type === "say" && message.partial === false) {
 				messages.push(message)
 			}
 		})
 
 		const taskId = await api.startNewTask({
-			configuration: { mode: "ask", alwaysAllowModeSwitch: true, autoApprovalEnabled: true },
+			configuration: { mode: "code", autoApprovalEnabled: true },
 			text: "Please create a nested list with 'Main item' having two sub-items: 'Sub-item A' and 'Sub-item B'",
 		})
 
@@ -137,16 +137,16 @@ suite("Markdown List Rendering", function () {
 	test("Should render mixed ordered and unordered lists", async () => {
 		const api = globalThis.api
 
-		const messages: ClineMessage[] = []
+		const messages: AlphaMessage[] = []
 
-		api.on(RooCodeEventName.Message, ({ message }: { message: ClineMessage }) => {
+		api.on(AlphaCodeEventName.Message, ({ message }: { message: AlphaMessage }) => {
 			if (message.type === "say" && message.partial === false) {
 				messages.push(message)
 			}
 		})
 
 		const taskId = await api.startNewTask({
-			configuration: { mode: "ask", alwaysAllowModeSwitch: true, autoApprovalEnabled: true },
+			configuration: { mode: "code", autoApprovalEnabled: true },
 			text: "Please create a list that has both numbered items and bullet points, mixing ordered and unordered lists",
 		})
 

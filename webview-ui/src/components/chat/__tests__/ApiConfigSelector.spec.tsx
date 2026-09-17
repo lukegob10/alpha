@@ -72,8 +72,6 @@ describe("ApiConfigSelector", () => {
 		],
 		pinnedApiConfigs: { config1: true },
 		togglePinnedApiConfig: mockTogglePinnedApiConfig,
-		lockApiConfigAcrossModes: false,
-		onToggleLockApiConfig: vi.fn(),
 	}
 
 	beforeEach(() => {
@@ -86,6 +84,14 @@ describe("ApiConfigSelector", () => {
 		const trigger = screen.getByTestId("dropdown-trigger")
 		expect(trigger).toBeInTheDocument()
 		expect(trigger).toHaveTextContent("Config 1")
+	})
+
+	test("does not expose a provider lock toggle in the two-state workflow", () => {
+		render(<ApiConfigSelector {...defaultProps} />)
+
+		expect(screen.queryByRole("button", { name: "chat:lockApiConfigAcrossModes" })).not.toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: "chat:unlockApiConfigAcrossModes" })).not.toBeInTheDocument()
+		expect(document.querySelector(".codicon-lock, .codicon-unlock")).not.toBeInTheDocument()
 	})
 
 	test("handles disabled state correctly", () => {
@@ -236,11 +242,7 @@ describe("ApiConfigSelector", () => {
 
 		expect(searchInput.value).toBe("test")
 
-		// Find and click the X button
-		const clearButton = screen.getByTestId("popover-content").querySelector(".cursor-pointer")
-		if (clearButton) {
-			fireEvent.click(clearButton)
-		}
+		fireEvent.click(screen.getByRole("button", { name: "Clear search" }))
 
 		await waitFor(() => {
 			expect(searchInput.value).toBe("")
@@ -256,6 +258,22 @@ describe("ApiConfigSelector", () => {
 		const config2 = screen.getByText("Config 2")
 		fireEvent.click(config2)
 
+		expect(mockOnChange).toHaveBeenCalledWith("config2")
+	})
+
+	test("renders configuration and pin actions as native buttons", () => {
+		render(<ApiConfigSelector {...defaultProps} />)
+		fireEvent.click(screen.getByTestId("dropdown-trigger"))
+		const configButton = screen.getByRole("button", { name: /Config 2/ })
+		const pinButton = screen.getAllByRole("button", { name: "chat:pin" }).at(-1)!
+
+		expect(configButton.tagName).toBe("BUTTON")
+		expect(configButton).toHaveAttribute("type", "button")
+		expect(pinButton.tagName).toBe("BUTTON")
+
+		fireEvent.click(pinButton)
+		expect(mockTogglePinnedApiConfig).toHaveBeenCalled()
+		fireEvent.click(configButton)
 		expect(mockOnChange).toHaveBeenCalledWith("config2")
 	})
 
@@ -428,8 +446,8 @@ describe("ApiConfigSelector", () => {
 		fireEvent.change(searchInput, { target: { value: "Config" } })
 
 		// Pin a config
-		const config2Row = screen.getByText("Config 2").closest("div")
-		const pinButton = config2Row?.querySelector("button")
+		const config2Row = screen.getByText("Config 2").closest(".group")
+		const pinButton = config2Row?.querySelector("button:has(.codicon-pin)")
 		if (pinButton) {
 			fireEvent.click(pinButton)
 		}

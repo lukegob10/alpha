@@ -16,6 +16,41 @@
 			"policy_restriction": "由於政策限制，無法建立新工作。"
 		}
 	},
+	"fileConflicts": {
+		"save": "無法儲存「{{path}}」：{{reason}}。請重新讀取檔案並重試，以保留使用者的變更。",
+		"delete": "無法刪除「{{path}}」：{{reason}}。請重新讀取檔案並重試。",
+		"saveDestination": "無法儲存「{{path}}」：{{reason}}。請檢查目的地並重試。",
+		"reasons": {
+			"fileUnsavedChanges": "開啟的編輯器中有未儲存的檔案變更",
+			"fileChangedDuringApproval": "等待核准期間檔案發生變更",
+			"editorChangedWhileChecked": "檢查檔案期間開啟的編輯器發生變更",
+			"destinationUnsavedChanges": "開啟的編輯器中有未儲存的目的地變更",
+			"destinationNotRegularFile": "目的地不是一般檔案",
+			"destinationChangedDuringInspection": "檢查期間目的地發生變更",
+			"destinationPathChanged": "目的地現在解析到不同的路徑",
+			"destinationCreatedAfterInspection": "目的地在檢查後建立",
+			"destinationDeletedAfterInspection": "目的地在檢查後刪除",
+			"destinationChangedAfterInspection": "目的地在檢查後發生變更"
+		}
+	},
+	"diffView": {
+		"editCancelled": "檔案編輯已取消",
+		"applyContentFailed": "無法將內容套用至差異編輯器",
+		"previewChangedDuringEdit": "差異預覽在編輯期間發生變更；使用者的變更已保留",
+		"noEditAvailableToSave": "沒有可儲存的檔案編輯",
+		"previewChangedAfterApproval": "差異預覽在核准後發生變更；請檢查變更並重試",
+		"previewHasUserChanges": "差異預覽包含使用者變更；請在重試編輯前檢查這些變更",
+		"noFilePathForOpening": "未設定用於開啟差異編輯器的檔案路徑",
+		"previewChangedWhileOpening": "差異預覽在開啟期間發生變更；使用者的變更已保留",
+		"openFailed": "無法為 {{path}} 開啟差異編輯器：{{message}}",
+		"missingExpectedFileState": "開啟差異預覽前缺少預期的檔案狀態"
+	},
+	"applyPatch": {
+		"deleteCancelled": "刪除操作已取消。"
+	},
+	"imageOutput": {
+		"writeIncomplete": "無法完成寫入「{{path}}」；檔案可能不完整。{{cause}}"
+	},
 	"generateImage": {
 		"openRouterApiKeyRequired": "使用 OpenRouter 模型生成圖像需要 OpenRouter API 金鑰。請在圖像生成實驗設定中配置。",
 		"failedWithStatus": "圖像生成失敗：{{status}} {{statusText}}",
@@ -24,6 +59,10 @@
 		"invalidImageData": "回應中的圖像資料無效",
 		"invalidImageFormat": "收到的圖像格式無效",
 		"unknownError": "發生未知錯誤",
+		"cancelledBeforeSave": "圖像儲存前，圖像生成已取消。",
+		"destinationUnavailableBeforeGeneration": "生成前無法存取圖像目的地。請重試要求。",
+		"destinationPolicyChangedBeforeSave": "儲存前圖像目的地的路徑或存取政策發生變更。請重試要求。",
+		"postSaveProcessingFailed": "{{path}}\n圖像已儲存，但儲存後處理失敗：{{message}}",
 		"roo": {}
 	}
 }

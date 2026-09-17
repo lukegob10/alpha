@@ -41,7 +41,9 @@
 		"experimental": "Sperimentale",
 		"language": "Lingua",
 		"about": "Informazioni su Alpha",
-		"skills": "Skills"
+		"skills": "Skills",
+		"agents": "Agenti",
+		"github": "GitHub"
 	},
 	"about": {
 		"bugReport": {
@@ -209,7 +211,8 @@
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
 			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
 			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
-			"localIndexPathRequired": "Local index path is required"
+			"localIndexPathRequired": "Local index path is required",
+			"embeddingRateLimitSecondsRange": "Il ritardo della richiesta di incorporamento deve essere compreso tra 0,1 e 60 secondi"
 		},
 		"optional": "opzionale",
 		"advancedConfigLabel": "Configurazione avanzata",
@@ -230,7 +233,9 @@
 		"localIndexPathLabel": "Local Index Path",
 		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
 		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
-		"savedSecretPlaceholder": "Saved value hidden"
+		"savedSecretPlaceholder": "Saved value hidden",
+		"embeddingRateLimitLabel": "Limita la frequenza delle richieste di incorporamento",
+		"embeddingRateLimitDescription": "Aggiunge un ritardo tra l'incorporamento delle richieste API durante l'indicizzazione. Aumenta questo valore se il tuo provider di incorporamento limita la velocità di indicizzazione della codebase."
 	},
 	"autoApprove": {
 		"toggleShortcut": "Puoi configurare una scorciatoia globale per questa impostazione <SettingsLink>nelle preferenze del tuo IDE</SettingsLink>.",
@@ -271,22 +276,29 @@
 			"label": "Sottoattività",
 			"description": "Consenti la creazione e il completamento di attività secondarie senza richiedere approvazione"
 		},
+		"tickets": {
+			"label": "Ticket Alpha",
+			"description": "Approva automaticamente la creazione e l’aggiornamento dei ticket Alpha."
+		},
 		"followupQuestions": {
 			"label": "Domanda",
 			"description": "Seleziona automaticamente la prima risposta suggerita per le domande di follow-up dopo il timeout configurato",
 			"timeoutLabel": "Tempo di attesa prima di selezionare automaticamente la prima risposta"
 		},
 		"execute": {
-			"label": "Esegui",
-			"description": "Esegui automaticamente i comandi del terminale consentiti senza richiedere approvazione",
-			"allowedCommands": "Comandi di auto-esecuzione consentiti",
-			"allowedCommandsDescription": "Prefissi di comando che possono essere auto-eseguiti quando \"Approva sempre operazioni di esecuzione\" è abilitato. Aggiungi * per consentire tutti i comandi (usare con cautela).",
+			"label": "Regole dei comandi",
+			"description": "Approva automaticamente i comandi nell’ambito di scrittura dell’attività. La rete è abilitata. Le scritture esterne sono bloccate. La configurazione globale persiste tra i progetti.",
+			"allowedCommands": "Prefissi dei comandi consentiti",
+			"allowedCommandsDescription": "Usa * per approvare automaticamente i comandi, inclusi gli script. Le regole salvate sono globali. Le scritture rilevate fuori dalla radice e i percorsi di scrittura non risolti richiedono approvazione. È un controllo di comandi e percorsi, non una sandbox del sistema.",
 			"deniedCommands": "Comandi negati",
 			"deniedCommandsDescription": "Prefissi di comandi che verranno automaticamente negati senza richiedere approvazione. In caso di conflitti con comandi consentiti, la corrispondenza del prefisso più lungo ha la precedenza. Aggiungi * per negare tutti i comandi.",
 			"commandPlaceholder": "Inserisci prefisso comando (es. 'git ')",
 			"deniedCommandPlaceholder": "Inserisci prefisso comando da negare (es. 'rm -rf')",
 			"addButton": "Aggiungi",
-			"autoDenied": "I comandi con il prefisso `{{prefix}}` sono stati vietati dall'utente. Non aggirare questa restrizione eseguendo un altro comando."
+			"autoDenied": "I comandi con il prefisso `{{prefix}}` sono stati vietati dall'utente. Non aggirare questa restrizione eseguendo un altro comando.",
+			"pathApprovalTitle": "I percorsi dei file richiedono approvazione",
+			"pathApprovalDescription": "Questo comando può modificare file fuori dalla radice dell’attività. L’approvazione vale solo per questa esecuzione.",
+			"pathApprovalUnresolved": "Non è stato possibile risolvere alcuni percorsi di scrittura."
 		},
 		"apiRequestLimit": {
 			"title": "Richieste massime",
@@ -299,6 +311,10 @@
 		},
 		"maxLimits": {
 			"description": "Esegui automaticamente richieste fino a questi limiti prima di chiedere l'approvazione per continuare."
+		},
+		"subagents": {
+			"label": "Agenti secondari",
+			"description": "Consenti a Alpha di avviare gruppi di agenti secondari di sola lettura senza richiedere l'approvazione. Anche l'accesso in lettura deve essere approvato automaticamente."
 		}
 	},
 	"providers": {
@@ -378,7 +394,8 @@
 			"hint": "Riapri le impostazioni per vedere i modelli più recenti.",
 			"loading": "Aggiornamento dell'elenco dei modelli...",
 			"success": "Elenco dei modelli aggiornato con successo!",
-			"error": "Impossibile aggiornare l'elenco dei modelli. Riprova."
+			"error": "Impossibile aggiornare l'elenco dei modelli. Riprova.",
+			"missingConfig": "Immettere la configurazione del provider richiesta prima di aggiornare i modelli."
 		},
 		"getRequestyApiKey": "Ottieni chiave API Requesty",
 		"getRequestyBaseUrl": "URL base",
@@ -542,7 +559,8 @@
 			"high": "Alto",
 			"xhigh": "Molto alto",
 			"medium": "Medio",
-			"low": "Basso"
+			"low": "Basso",
+			"max": "Massimo"
 		},
 		"verbosity": {
 			"label": "Verbosity dell'output",
@@ -558,7 +576,55 @@
 			"placeholder": "Predefinito: claude",
 			"maxTokensLabel": "Token di output massimi",
 			"maxTokensDescription": "Numero massimo di token di output per le risposte di Claude Code. Il valore predefinito è 8000."
-		}
+		},
+		"vertexStreamingEnabledLabel": "Abilita risposte in streaming",
+		"vertexStreamingEnabledDescription": "Disabilitalo quando un gateway o un modello non supporta lo streaming. Le risposte verranno visualizzate dopo il completamento.",
+		"vscodeLmLoading": "Caricamento dei modelli linguistici disponibili in questa finestra VS Code...",
+		"vscodeLmNoModels": "Nessun modello linguistico disponibile in questa finestra VS Code. Accedi a GitHub Copilot qui, abilita i modelli che ti servono con \"Chat: Manage Language Models\", quindi aggiorna.",
+		"vscodeLmRefresh": "Aggiorna modelli",
+		"vscodeLmUnavailable": "Il modello selezionato non è disponibile in questa finestra VS Code. Scegli un modello restituito da VS Code o abilitalo con \"Chat: Manage Language Models\".",
+		"vscodeLmContextSize": {
+			"label": "Finestra contestuale",
+			"default": "Standard (token di input {{contextSize}})",
+			"extended": "Esteso (token di input {{contextSize}})",
+			"description": "Scegli il budget del token di input inviato a GitHub Copilot per questo modello. Il contesto esteso può consumare più richieste premium."
+		},
+		"googleCloudProjectId": "ID del progetto Google Cloud",
+		"googleCloudRegion": "Regione Google Cloud",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "Cerca o inserisci una regione",
+			"noMatchFound": "Nessuna regione corrispondente trovata",
+			"useCustomRegion": "Utilizza personalizzato: {{region}}"
+		},
+		"googleCloudCredentials": "Credenziali Google Cloud JSON",
+		"googleCloudKeyFile": "File chiave Google Cloud",
+		"googleCloudSetup": {
+			"title": "Configurazione di Google Cloud",
+			"step1": "Abilita Vertex AI e accesso al modello",
+			"step2": "Configura le credenziali predefinite dell'applicazione",
+			"step3": "Crea una chiave dell'account di servizio"
+		},
+		"vertexGatewayBaseUrl": "Vertex Base gateway URL",
+		"vertexGatewayCaBundlePath": "Vertex Gateway CA Percorso bundle",
+		"vertexGatewayHelixCommand": "Vertex Gateway Helix Comando",
+		"vertexGatewayHelixParseMode": "Vertex Gateway Helix Modalità di analisi",
+		"vertexGatewayHelixParseModeRawStdout": "stdout non elaborato",
+		"vertexGatewayHelixParseModeJsonField": "Campo JSON",
+		"vertexGatewayHelixTokenKey": "Vertex Gateway Helix Chiave token",
+		"vertexGatewayTokenRefreshMinutes": "Vertex Minuti di aggiornamento token gateway",
+		"vertexGatewayModelRoutingMap": "Vertex Mappa di routing del modello gateway",
+		"vertexGatewayModelRoutingMapDescription": "JSON Oggetto chiave dal modello ID. I valori possono essere stringhe di override del modello legacy o oggetti con projectId, location, modelOverride e extraHeaders.",
+		"stellarDescription": "Si collega al modello gateway interno compatibile con Stellar OpenAI. La chiave API viene recuperata automaticamente con Helix e non viene mai memorizzata.",
+		"stellarBaseUrl": "URL di base Stellar",
+		"stellarCaBundlePath": "Stellar PEM CA Percorso bundle",
+		"stellarHelixCommand": "Stellar Helix Comando",
+		"stellarHelixParseMode": "Stellar Helix Modalità di analisi",
+		"stellarHelixParseModeRawStdout": "stdout non elaborato",
+		"stellarHelixParseModeJsonField": "Campo JSON",
+		"stellarHelixTokenKey": "Stellar Helix Chiave token",
+		"stellarTokenRefreshMinutes": "Stellar Minuti aggiornamento token",
+		"stellarStreamingEnabledLabel": "Abilita risposte in streaming",
+		"stellarStreamingEnabledDescription": "Disabilitalo se la distribuzione Stellar non supporta lo streaming. Le risposte verranno visualizzate dopo il completamento."
 	},
 	"checkpoints": {
 		"timeout": {
@@ -898,7 +964,11 @@
 		"providerNotAllowed": "Il fornitore '{{provider}}' non è consentito dalla tua organizzazione",
 		"modelNotAllowed": "Il modello '{{model}}' non è consentito per il fornitore '{{provider}}' dalla tua organizzazione.",
 		"profileInvalid": "Questo profilo contiene un fornitore o un modello non consentito dalla tua organizzazione.",
-		"qwenCodeOauthPath": "Devi fornire un percorso valido per le credenziali OAuth"
+		"qwenCodeOauthPath": "Devi fornire un percorso valido per le credenziali OAuth",
+		"googleCloud": "Devi fornire un progetto Google Cloud ID e una regione.",
+		"vertexGateway": "Il gateway Vertex richiede un percorso del bundle URL di base, CA e il comando Helix.",
+		"vertexGatewayModelRoutingMap": "Vertex La mappa di routing del modello gateway deve essere un oggetto JSON con ID modello stringa.",
+		"stellar": "Stellar richiede un percorso del bundle base URL e PEM CA valido."
 	},
 	"placeholders": {
 		"apiKey": "Inserisci chiave API...",
@@ -960,6 +1030,10 @@
 		"requireCtrlEnterToSend": {
 			"label": "Richiedi {{primaryMod}}+Invio per inviare messaggi",
 			"description": "Quando abilitato, devi premere {{primaryMod}}+Invio per inviare messaggi invece di solo Invio"
+		},
+		"maxConcurrentTasks": {
+			"label": "Numero massimo di attività parallele",
+			"description": "Il numero di attività live che possono essere eseguite contemporaneamente. Le attività non riuscite e completate non vengono conteggiate ai fini di questo limite."
 		}
 	},
 	"skills": {
@@ -1013,6 +1087,44 @@
 			"descriptionRequired": "La descrizione è obbligatoria",
 			"descriptionTooLong": "La descrizione deve essere di massimo 1024 caratteri"
 		},
-		"footer": "Crea le tue skill con la modalità Skill Writer, disponibile in <MarketplaceLink>Modes Marketplace</MarketplaceLink>."
+		"footer": "Crea le tue skill con la modalità Skill Writer, disponibile in <MarketplaceLink>Modes Marketplace</MarketplaceLink>.",
+		"builtinSkills": "Integrate",
+		"enabled": "Abilitata",
+		"inspectSkill": "Esamina",
+		"builtinDescription": "Inclusa in Alpha. Le modifiche vengono applicate quando salvi le impostazioni. Le competenze dell'area di lavoro e personali con lo stesso nome hanno la precedenza; disabilitare una competenza integrata non disabilita le tue versioni personalizzate."
+	},
+	"agents": {
+		"description": "Scegli quali profili fornitore salvati Alpha utilizza per i sub-agenti. Le sostituzioni del ruolo hanno la precedenza su quello predefinito, quindi l'attività principale viene ereditata.",
+		"searchPlaceholder": "Cerca profili provider...",
+		"noProfilesFound": "Nessun profilo provider corrispondente",
+		"unavailableProfile": "Profilo non disponibile ({{id}})",
+		"staleWarning": "Questo profilo salvato non è disponibile. I nuovi agenti secondari utilizzeranno il profilo principale finché non sceglierai un altro profilo.",
+		"defaultProfile": {
+			"label": "Profilo agente secondario predefinito",
+			"inheritParent": "Eredita genitore",
+			"description": "Utilizzato quando un ruolo non dispone di un proprio profilo sovrascritto."
+		},
+		"roles": {
+			"title": "Sostituisce il ruolo",
+			"description": "Facoltativamente, instradare ciascun ruolo agente attraverso un diverso profilo provider salvato.",
+			"useDefault": "Utilizza il profilo predefinito",
+			"explore": {
+				"label": "Explorer",
+				"description": "Sostituzione del profilo opzionale per gli agenti di esplorazione del repository."
+			},
+			"review": {
+				"label": "Profilo del revisore",
+				"description": "Sostituzione facoltativa del profilo per gli agenti di revisione."
+			},
+			"worker": {
+				"label": "Profilo lavoratore",
+				"description": "Sostituzione facoltativa del profilo per lavoratori di modifica isolati."
+			}
+		}
+	},
+	"github": {
+		"tokenLabel": "Token GitHub",
+		"tokenPlaceholder": "ghp_...",
+		"tokenDescription": "Archiviato in modo sicuro nell'archivio segreto VS Code. Utilizzato dallo strumento nativo GitHub API per richieste pull, controlli, commenti e unioni."
 	}
 }

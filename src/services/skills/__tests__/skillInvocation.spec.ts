@@ -70,9 +70,55 @@ describe("skillInvocation", () => {
 			const result = buildSkillResult("deploy", "production", mockSkillContent)
 
 			expect(result).toBe(
-				`Skill: deploy\nDescription: A test skill\nProvided arguments: production\nSource: project\n\n--- Skill Instructions ---\n\nDo the thing`,
+				`Skill: deploy\nDescription: A test skill\nProvided arguments: production\nSource: project\nSkill file: /mock/.alpha/skills/test-skill/SKILL.md\nBase directory: /mock/.alpha/skills/test-skill\nResolve relative file references against this directory unless the skill explicitly specifies another base. Use absolute paths in file tools; do not guess a workspace-relative skills/ path.\n\n--- Skill Instructions ---\n\nDo the thing`,
 			)
 		})
+
+		it.each([
+			[
+				"project",
+				"C:\\Work Projects\\Personal PM\\.alpha\\skills\\evaluate-pulse-intakes\\SKILL.md",
+				"C:\\Work Projects\\Personal PM\\.alpha\\skills\\evaluate-pulse-intakes",
+			],
+			[
+				"global",
+				"/home/user/.agents/skills/evaluate-pulse-intakes/SKILL.md",
+				"/home/user/.agents/skills/evaluate-pulse-intakes",
+			],
+			[
+				"project",
+				"F:/shared-skills/skills-architect/evaluate-pulse-intakes/SKILL.md",
+				"F:/shared-skills/skills-architect/evaluate-pulse-intakes",
+			],
+			[
+				"global",
+				"\\\\server\\shared skills\\evaluate-pulse-intakes\\SKILL.md",
+				"\\\\server\\shared skills\\evaluate-pulse-intakes",
+			],
+			[
+				"project",
+				"\\\\?\\C:\\shared skills\\evaluate-pulse-intakes\\SKILL.md",
+				"\\\\?\\C:\\shared skills\\evaluate-pulse-intakes",
+			],
+		] as const)(
+			"keeps the exact %s skill location for linked references: %s",
+			(source, skillPath, baseDirectory) => {
+				const instructions = "Read references/evaluation-contract.md, then run scripts/evaluate.ts."
+				const result = buildSkillResult("evaluate-pulse-intakes", undefined, {
+					...mockSkillContent,
+					source,
+					path: skillPath,
+					instructions,
+				})
+
+				expect(result).toContain(`Skill file: ${skillPath}\nBase directory: ${baseDirectory}\n`)
+				expect(result).toContain("Resolve relative file references against this directory")
+				expect(result).toContain(
+					"Use absolute paths in file tools; do not guess a workspace-relative skills/ path.",
+				)
+				expect(result.endsWith(`--- Skill Instructions ---\n\n${instructions}`)).toBe(true)
+			},
+		)
 
 		it("omits description line when description is empty", () => {
 			const skillContent = { ...mockSkillContent, description: "" }
@@ -94,6 +140,7 @@ describe("skillInvocation", () => {
 		it("includes source and instructions in all cases", () => {
 			const result = buildSkillResult("minimal", undefined, {
 				source: "global",
+				path: "/home/user/.alpha/skills/minimal/SKILL.md",
 				description: "",
 				instructions: "Step 1: do stuff",
 			})

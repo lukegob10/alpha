@@ -106,7 +106,8 @@
 		"goToModes": "Przejdź do ustawień Trybów",
 		"moreInfoMcp": "Zobacz dokumentację MCP {{name}}",
 		"validationRequired": "Podaj wartość dla {{paramName}}",
-		"prerequisites": "Wymagania wstępne"
+		"prerequisites": "Wymagania wstępne",
+		"installing": "Instalowanie…"
 	},
 	"sources": {
 		"title": "Konfiguruj źródła marketplace",

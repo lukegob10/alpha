@@ -8,7 +8,7 @@ import { CodeIndexServiceFactory } from "./service-factory"
 import { CodeIndexSearchService } from "./search-service"
 import { CodeIndexOrchestrator } from "./orchestrator"
 import { CacheManager } from "./cache-manager"
-import { RooIgnoreController } from "../../core/ignore/RooIgnoreController"
+import { AlphaIgnoreController } from "../../core/ignore/AlphaIgnoreController"
 import fs from "fs/promises"
 import ignore from "ignore"
 import path from "path"
@@ -28,8 +28,7 @@ export class CodeIndexManager {
 	private _searchService: CodeIndexSearchService | undefined
 	private _cacheManager: CacheManager | undefined
 
-	// Flag to prevent race conditions during error recovery
-	private _isRecoveringFromError = false
+	private _serviceLifecycleTail: Promise<void> = Promise.resolve()
 
 	public static getInstance(context: vscode.ExtensionContext, workspacePath?: string): CodeIndexManager | undefined {
 		// Resolve the workspace folder to get both fsPath and the real URI
@@ -171,7 +170,8 @@ export class CodeIndexManager {
 		// 2. Check if feature is enabled
 		if (!this.isFeatureEnabled) {
 			if (this._orchestrator) {
-				this._orchestrator.stopWatcher()
+				this._orchestrator.stopIndexing()
+				await this._orchestrator.whenIdle()
 			}
 			return { requiresRestart }
 		}
@@ -275,14 +275,19 @@ export class CodeIndexManager {
 	 * - Service instances will be recreated on next initialize() call
 	 * - Prevents race conditions from multiple concurrent recovery attempts
 	 */
-	public async recoverFromError(): Promise<void> {
-		// Prevent race conditions from multiple rapid recovery attempts
-		if (this._isRecoveringFromError) {
-			return
-		}
+	public recoverFromError(): Promise<void> {
+		return this.enqueueServiceLifecycle(() => this.recoverFromErrorExclusive())
+	}
 
-		this._isRecoveringFromError = true
+	private async recoverFromErrorExclusive(): Promise<void> {
 		try {
+			if (this._orchestrator) {
+				try {
+					await this.retireOrchestrator(this._orchestrator)
+				} catch (error) {
+					console.error("Failed to retire code index services during recovery:", error)
+				}
+			}
 			// Clear error state
 			this._stateManager.setSystemState("Standby", "")
 		} catch (error) {
@@ -295,9 +300,6 @@ export class CodeIndexManager {
 			this._serviceFactory = undefined
 			this._orchestrator = undefined
 			this._searchService = undefined
-
-			// Reset the flag after recovery is complete
-			this._isRecoveringFromError = false
 		}
 	}
 
@@ -306,6 +308,7 @@ export class CodeIndexManager {
 	 */
 	public dispose(): void {
 		this.stopIndexing()
+		this._orchestrator?.dispose()
 		this._stateManager.dispose()
 	}
 
@@ -346,10 +349,28 @@ export class CodeIndexManager {
 	 * Private helper method to recreate services with current configuration.
 	 * Used by both initialize() and handleSettingsChange().
 	 */
-	private async _recreateServices(): Promise<void> {
-		// Stop watcher if it exists
+	private _recreateServices(): Promise<void> {
+		return this.enqueueServiceLifecycle(() => this.recreateServicesExclusive())
+	}
+
+	private enqueueServiceLifecycle(operation: () => Promise<void>): Promise<void> {
+		const result = this._serviceLifecycleTail.then(operation, operation)
+		this._serviceLifecycleTail = result.then(
+			() => undefined,
+			() => undefined,
+		)
+		return result
+	}
+
+	private async retireOrchestrator(orchestrator: CodeIndexOrchestrator): Promise<void> {
+		orchestrator.stopIndexing()
+		await orchestrator.whenIdle()
+		orchestrator.dispose()
+	}
+
+	private async recreateServicesExclusive(): Promise<void> {
 		if (this._orchestrator) {
-			this.stopWatcher()
+			await this.retireOrchestrator(this._orchestrator)
 		}
 		// Clear existing services to ensure clean state
 		this._orchestrator = undefined
@@ -386,16 +407,16 @@ export class CodeIndexManager {
 			})
 		}
 
-		// Create RooIgnoreController instance
-		const rooIgnoreController = new RooIgnoreController(workspacePath)
-		await rooIgnoreController.initialize()
+		// Create AlphaIgnoreController instance
+		const alphaIgnoreController = new AlphaIgnoreController(workspacePath)
+		await alphaIgnoreController.initialize()
 
 		// (Re)Create shared service instances
 		const { embedder, vectorStore, scanner, fileWatcher } = this._serviceFactory.createServices(
 			this.context,
 			this._cacheManager!,
 			ignoreInstance,
-			rooIgnoreController,
+			alphaIgnoreController,
 		)
 
 		// Validate embedder configuration before proceeding
@@ -423,6 +444,11 @@ export class CodeIndexManager {
 			this._stateManager,
 			embedder,
 			vectorStore,
+			{
+				workspacePath,
+				validateAccess: (filePath) =>
+					!ignoreInstance.ignores(filePath) && alphaIgnoreController.validateAccess(filePath),
+			},
 		)
 
 		// Clear any error state after successful recreation
@@ -444,7 +470,10 @@ export class CodeIndexManager {
 
 			// If feature is disabled, stop the service (including any active scan)
 			if (!isFeatureEnabled) {
-				this.stopIndexing()
+				if (this._orchestrator) {
+					this._orchestrator.stopIndexing()
+					await this._orchestrator.whenIdle()
+				}
 				this._stateManager.setSystemState("Standby", "Code indexing is disabled")
 				return
 			}
@@ -459,6 +488,11 @@ export class CodeIndexManager {
 
 					// Recreate services with new configuration
 					await this._recreateServices()
+					// The save handler sees the replacement services as initialized, so it will not call
+					// initialize() again. Start the replacement scan and watcher with the selected provider.
+					if (this.isFeatureEnabled && this.isFeatureConfigured && this.isWorkspaceEnabled) {
+						void this._orchestrator?.startIndexing()
+					}
 				} catch (error) {
 					// Error state already set in _recreateServices
 					console.error("Failed to recreate services:", error)

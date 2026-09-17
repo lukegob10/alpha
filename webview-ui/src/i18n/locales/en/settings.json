@@ -27,6 +27,7 @@
 	},
 	"sections": {
 		"providers": "Providers",
+		"agents": "Agents",
 		"modes": "Modes",
 		"mcp": "MCP Servers",
 		"github": "GitHub",
@@ -43,6 +44,35 @@
 		"experimental": "Experimental",
 		"language": "Language",
 		"about": "About Alpha"
+	},
+	"agents": {
+		"description": "Choose which saved provider profiles Alpha uses for sub-agents. Role overrides take precedence over the default, then the parent task is inherited.",
+		"searchPlaceholder": "Search provider profiles...",
+		"noProfilesFound": "No matching provider profiles",
+		"unavailableProfile": "Unavailable profile ({{id}})",
+		"staleWarning": "This saved profile is unavailable. New sub-agents will use the parent profile until you choose another profile.",
+		"defaultProfile": {
+			"label": "Default sub-agent profile",
+			"inheritParent": "Inherit parent",
+			"description": "Used when a role does not have its own profile override."
+		},
+		"roles": {
+			"title": "Role overrides",
+			"description": "Optionally route each agent role through a different saved provider profile.",
+			"useDefault": "Use default",
+			"explore": {
+				"label": "Explorer profile",
+				"description": "Optional profile override for repository exploration agents."
+			},
+			"review": {
+				"label": "Reviewer profile",
+				"description": "Optional profile override for review agents."
+			},
+			"worker": {
+				"label": "Worker profile",
+				"description": "Optional profile override for isolated editing workers."
+			}
+		}
 	},
 	"github": {
 		"tokenLabel": "GitHub token",
@@ -142,7 +172,11 @@
 			"descriptionRequired": "Description is required",
 			"descriptionTooLong": "Description must be 1024 characters or less"
 		},
-		"footer": "Create your own skills with the Skill Writer mode, available in the <MarketplaceLink>Modes Marketplace</MarketplaceLink>."
+		"footer": "Create your own skills with the Skill Writer mode, available in the <MarketplaceLink>Modes Marketplace</MarketplaceLink>.",
+		"builtinSkills": "Built-in",
+		"enabled": "Enabled",
+		"inspectSkill": "Inspect",
+		"builtinDescription": "Included with Alpha. Changes apply when you save settings. Workspace and personal skills with the same name take precedence; disabling a built-in does not disable your overrides."
 	},
 	"ui": {
 		"collapseThinking": {
@@ -328,22 +362,33 @@
 			"label": "Subtasks",
 			"description": "Allow creation and completion of subtasks without requiring approval"
 		},
+		"subagents": {
+			"label": "Sub-agents",
+			"description": "Allow Alpha to launch read-only sub-agent groups without requiring approval. Read access must also be auto-approved."
+		},
+		"tickets": {
+			"label": "Alpha Tickets",
+			"description": "Automatically approve creating and updating Alpha tickets."
+		},
 		"followupQuestions": {
 			"label": "Question",
 			"description": "Automatically select the first suggested answer for follow-up questions after the configured timeout",
 			"timeoutLabel": "Time to wait before auto-selecting the first answer"
 		},
 		"execute": {
-			"label": "Execute",
-			"description": "Automatically execute allowed terminal commands without requiring approval",
-			"allowedCommands": "Allowed Auto-Execute Commands",
-			"allowedCommandsDescription": "Command prefixes that can be auto-executed when \"Always approve execute operations\" is enabled. Add * to allow all commands (use with caution).",
+			"label": "Command rules",
+			"description": "Auto-approve commands within the task write scope. Network access is enabled. Writes outside that scope are blocked. Setup is global and persists across projects.",
+			"allowedCommands": "Allowed command prefixes",
+			"allowedCommandsDescription": "Use * to auto-approve commands, including scripts. Saved rules apply globally. Detected outside-root writes and unresolved write paths still require approval. This is a command/path check, not an OS sandbox.",
 			"deniedCommands": "Denied Commands",
 			"deniedCommandsDescription": "Command prefixes that will be automatically denied without asking for approval. In case of conflicts with allowed commands, the longest prefix match takes precedence. Add * to deny all commands.",
 			"commandPlaceholder": "Enter command prefix (e.g., 'git ')",
 			"deniedCommandPlaceholder": "Enter command prefix to deny (e.g., 'rm -rf')",
 			"addButton": "Add",
-			"autoDenied": "Commands with the prefix `{{prefix}}` have been forbidden by the user. Do not bypass this restriction by running another command."
+			"autoDenied": "Commands with the prefix `{{prefix}}` have been forbidden by the user. Do not bypass this restriction by running another command.",
+			"pathApprovalTitle": "File paths need approval",
+			"pathApprovalDescription": "This command may change files outside the task root. Approval applies only to this run.",
+			"pathApprovalUnresolved": "Some write paths could not be resolved."
 		},
 		"apiRequestLimit": {
 			"title": "Max Count",
@@ -383,7 +428,7 @@
 		"noProviderMatchFound": "No providers found",
 		"noMatchFound": "No matching profiles found",
 		"retiredProviderMessage": "Sorry, this provider is no longer supported. We saw very few Alpha users actually using it and we need to reduce the surface area of our codebase so we can keep shipping fast and serving our community well in this space. It was a really hard decision but it lets us focus on what matters most to you. It sucks, we know.",
-		"vscodeLmDescription": " The VS Code Language Model API allows you to run models provided by other VS Code extensions (including but not limited to GitHub Copilot). The easiest way to get started is to install the Copilot and Copilot Chat extensions from the VS Code Marketplace.",
+		"vscodeLmDescription": "The VS Code Language Model API lets Alpha use models made available by providers such as GitHub Copilot in this VS Code window.",
 		"awsCustomArnUse": "Enter a valid Amazon Bedrock ARN for the model you want to use. Format examples:",
 		"awsCustomArnDesc": "Make sure the region in the ARN matches your selected AWS Region above.",
 		"openRouterApiKey": "OpenRouter API Key",
@@ -437,7 +482,8 @@
 			"hint": "Please reopen the settings to see the latest models.",
 			"loading": "Refreshing models list...",
 			"success": "Models list refreshed successfully!",
-			"error": "Failed to refresh models list. Please try again."
+			"error": "Failed to refresh models list. Please try again.",
+			"missingConfig": "Enter the required provider configuration before refreshing models."
 		},
 		"getRequestyApiKey": "Create new Requesty API Key",
 		"getRequestyBaseUrl": "Base URL",
@@ -515,9 +561,24 @@
 		"enablePromptCachingTitle": "Enable prompt caching to improve performance and reduce costs for supported models.",
 		"cacheUsageNote": "Note: If you don't see cache usage, try selecting a different model and then selecting your desired model again.",
 		"vscodeLmModel": "Language Model",
-		"vscodeLmWarning": "Note: Models accessed via the VS Code Language Model API may be wrapped or fine-tuned by the provider, so behavior can differ from using the same model directly from a typical provider or router. To use a model from the Language Model dropdown, first switch to that model and then click Accept in the Copilot Chat prompt; otherwise you may see an error such as 400 \"The requested model is not supported\".",
+		"vscodeLmLoading": "Loading the language models available in this VS Code window...",
+		"vscodeLmNoModels": "No language models are available in this VS Code window. Sign in to GitHub Copilot here, enable the models you need with 'Chat: Manage Language Models', and then refresh.",
+		"vscodeLmRefresh": "Refresh models",
+		"vscodeLmUnavailable": "The selected model is not available in this VS Code window. Choose a model returned by VS Code, or enable it with 'Chat: Manage Language Models'.",
+		"vscodeLmContextSize": {
+			"label": "Context window",
+			"default": "Standard ({{contextSize}} input tokens)",
+			"extended": "Extended ({{contextSize}} input tokens)",
+			"description": "Choose the input-token budget sent to GitHub Copilot for this model. Extended context can consume more premium requests."
+		},
+		"vscodeLmWarning": "Alpha only lists models returned by the VS Code Language Model API for this window. GitHub Copilot availability depends on your sign-in, plan, organization policy, and the models enabled in 'Chat: Manage Language Models'. VS Code may ask you to approve model access when you first use one.",
 		"googleCloudProjectId": "Google Cloud Project ID",
 		"googleCloudRegion": "Google Cloud Region",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "Search or enter a region",
+			"noMatchFound": "No matching region found",
+			"useCustomRegion": "Use custom: {{region}}"
+		},
 		"googleCloudCredentials": "Google Cloud Credentials JSON",
 		"googleCloudKeyFile": "Google Cloud Key File",
 		"googleCloudSetup": {
@@ -536,6 +597,17 @@
 		"vertexGatewayTokenRefreshMinutes": "Vertex Gateway Token Refresh Minutes",
 		"vertexGatewayModelRoutingMap": "Vertex Gateway Model Routing Map",
 		"vertexGatewayModelRoutingMapDescription": "JSON object keyed by model ID. Values may be legacy model override strings or objects with projectId, location, modelOverride, and extraHeaders.",
+		"stellarDescription": "Connects to the internal Stellar OpenAI-compatible model gateway. The API key is retrieved automatically with Helix and is never stored.",
+		"stellarBaseUrl": "Stellar Base URL",
+		"stellarCaBundlePath": "Stellar PEM CA Bundle Path",
+		"stellarHelixCommand": "Stellar Helix Command",
+		"stellarHelixParseMode": "Stellar Helix Parse Mode",
+		"stellarHelixParseModeRawStdout": "Raw stdout",
+		"stellarHelixParseModeJsonField": "JSON field",
+		"stellarHelixTokenKey": "Stellar Helix Token Key",
+		"stellarTokenRefreshMinutes": "Stellar Token Refresh Minutes",
+		"stellarStreamingEnabledLabel": "Enable streaming responses",
+		"stellarStreamingEnabledDescription": "Disable this if the Stellar deployment does not support streaming. Responses will appear after completion.",
 		"lmStudio": {
 			"baseUrl": "Base URL (optional)",
 			"modelId": "Model ID",
@@ -608,7 +680,7 @@
 		},
 		"rateLimitSeconds": {
 			"label": "Rate limit",
-			"description": "Minimum time between API requests."
+			"description": "Minimum time between API requests using this provider profile, shared across parent and sub-agents."
 		},
 		"consecutiveMistakeLimit": {
 			"label": "Error & Repetition Limit",
@@ -623,7 +695,8 @@
 			"low": "Low",
 			"medium": "Medium",
 			"high": "High",
-			"xhigh": "Extra High"
+			"xhigh": "Extra High",
+			"max": "Maximum"
 		},
 		"verbosity": {
 			"label": "Output Verbosity",
@@ -970,6 +1043,7 @@
 		"googleCloud": "You must provide a Google Cloud project ID and region.",
 		"vertexGateway": "Vertex gateway requires a base URL, CA bundle path, and Helix command.",
 		"vertexGatewayModelRoutingMap": "Vertex Gateway Model Routing Map must be a JSON object with string model IDs.",
+		"stellar": "Stellar requires a valid base URL and PEM CA bundle path.",
 		"modelId": "You must provide a valid model ID.",
 		"modelSelector": "You must provide a valid model selector.",
 		"openAi": "You must provide a valid base URL, API key, and model ID.",

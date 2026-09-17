@@ -1,0 +1,705 @@
+.alpha-doc {
+	--doc-bg: var(--vscode-editor-background, #ffffff);
+	--doc-fg: var(--vscode-editor-foreground, #20252b);
+	--doc-muted: var(--vscode-descriptionForeground, #555e68);
+	--doc-border: var(--vscode-editorGroup-border, #c7cdd4);
+	--doc-accent: var(--vscode-textLink-foreground, #145cac);
+	--doc-focus: var(--vscode-focusBorder, #145cac);
+	--doc-chart-1: var(--vscode-charts-blue, #1768ad);
+	--doc-chart-2: var(--vscode-charts-orange, #a34b12);
+	--doc-chart-3: var(--vscode-charts-purple, #8754b3);
+	--doc-success: var(--vscode-testing-iconPassed, #187747);
+	--doc-warning: var(--vscode-editorWarning-foreground, #946600);
+	--doc-danger: var(--vscode-editorError-foreground, #bd3131);
+	--doc-surface: color-mix(in srgb, var(--doc-fg) 3%, var(--doc-bg));
+	--doc-surface-hover: color-mix(in srgb, var(--doc-fg) 6%, var(--doc-bg));
+	--doc-line: var(--vscode-contrastBorder, color-mix(in srgb, var(--doc-fg) 16%, var(--doc-bg)));
+	--doc-radius: 12px;
+	color: var(--doc-fg);
+	background: var(--doc-bg);
+	font-family: var(--vscode-font-family, system-ui, sans-serif);
+	font-size: max(14px, var(--vscode-font-size, 15px));
+	line-height: 1.6;
+	box-sizing: border-box;
+	width: 100%;
+	max-width: 104rem;
+	margin: auto;
+	padding: clamp(1.25rem, 4vw, 4rem);
+	overflow-wrap: anywhere;
+	color-scheme: light dark;
+}
+.alpha-doc *,
+.alpha-doc *::before,
+.alpha-doc *::after {
+	box-sizing: border-box;
+}
+.alpha-doc [hidden] {
+	display: none !important;
+}
+.alpha-doc h1,
+.alpha-doc h2,
+.alpha-doc h3 {
+	line-height: 1.2;
+	font-weight: 650;
+	letter-spacing: -0.02em;
+}
+.alpha-doc h1 {
+	font-size: clamp(1.65rem, 2.8vw, 2.5rem);
+	max-width: 42ch;
+	margin: 0.5em 0;
+	text-wrap: balance;
+}
+.alpha-doc h2 {
+	font-size: 1.3rem;
+	margin: 2em 0 0.8em;
+}
+.alpha-doc h3 {
+	font-size: 1.05rem;
+	margin: 1.5em 0 0.6em;
+}
+.alpha-doc p,
+.alpha-doc ul,
+.alpha-doc ol {
+	max-width: 110ch;
+}
+.alpha-doc a {
+	color: var(--doc-accent);
+	text-underline-offset: 0.2em;
+}
+.alpha-doc :focus-visible {
+	outline: 2px solid var(--doc-focus);
+	outline-offset: 4px;
+}
+.alpha-doc [id] {
+	scroll-margin-top: 5rem;
+}
+.alpha-doc .eyebrow {
+	font-size: 0.8em;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--doc-accent);
+	font-weight: 650;
+}
+.alpha-doc .lead {
+	font-size: 1.12em;
+	max-width: 100ch;
+}
+.alpha-doc .document-outline {
+	list-style: none;
+	padding: 0;
+	columns: 2 18rem;
+}
+.alpha-doc .document-outline li {
+	break-inside: avoid;
+	padding: 0.2rem 0;
+}
+.alpha-doc .document-outline .outline-child {
+	padding-left: 1.2rem;
+}
+.alpha-doc nav[data-alpha-toc] {
+	border-bottom: 1px solid var(--doc-border);
+	padding-bottom: 1rem;
+}
+.alpha-doc .metric-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+	gap: 1rem;
+}
+.alpha-doc .metric-card,
+.alpha-doc .evidence-card {
+	border: 1px solid var(--doc-border);
+	padding: 1.2rem;
+	min-width: 0;
+}
+.alpha-doc .metric-card h3,
+.alpha-doc .evidence-card h3 {
+	margin-top: 0;
+}
+.alpha-doc .metric-value {
+	font-size: clamp(1.6rem, 4vw, 2.3rem);
+	font-weight: 650;
+	font-variant-numeric: tabular-nums;
+	margin: 0.3rem 0;
+}
+.alpha-doc .metric-card dl,
+.alpha-doc .evidence-card dl {
+	margin-bottom: 0;
+}
+.alpha-doc dt {
+	font-weight: 650;
+}
+.alpha-doc dd {
+	margin: 0 0 0.7rem;
+}
+.alpha-doc .evidence-card {
+	margin: 1.2rem 0;
+}
+.alpha-doc .footnotes {
+	border-top: 1px solid var(--doc-border);
+	margin-top: 2rem;
+	padding-top: 1rem;
+}
+.alpha-doc .timeline {
+	list-style: none;
+	padding-left: 1.2rem;
+	border-left: 2px solid var(--doc-border);
+}
+.alpha-doc .timeline > li {
+	padding: 0 0 1.5rem 0.7rem;
+}
+.alpha-doc .timeline h3 {
+	margin-top: 0;
+}
+.alpha-doc img {
+	display: block;
+	max-width: 100%;
+	height: auto;
+	border: 1px solid var(--doc-border);
+}
+.alpha-doc .image-unavailable {
+	display: block;
+	border: 1px dashed var(--doc-border);
+	padding: 1rem;
+}
+.alpha-doc .diagram-scroll {
+	overflow: auto;
+	max-width: 100%;
+	margin-bottom: 1rem;
+}
+.alpha-doc .diagram-scroll svg {
+	display: block;
+	max-width: none;
+}
+.alpha-doc .diagram-edge {
+	stroke: var(--doc-accent);
+	stroke-width: 2;
+	fill: none;
+}
+.alpha-doc .diagram-node {
+	fill: var(--doc-bg);
+	stroke: var(--doc-border);
+	stroke-width: 2;
+}
+.alpha-doc .diagram-label {
+	fill: var(--doc-fg);
+	font-family: inherit;
+	font-size: 14px;
+}
+@media (forced-colors: active) {
+	.alpha-doc .diagram-edge,
+	.alpha-doc .diagram-node {
+		stroke: CanvasText;
+	}
+	.alpha-doc .diagram-node {
+		fill: Canvas;
+	}
+	.alpha-doc .diagram-label {
+		fill: CanvasText;
+	}
+}
+.alpha-doc .doc-header {
+	border-bottom: 1px solid var(--doc-line);
+	padding-bottom: 1.5rem;
+	margin-bottom: 1.75rem;
+}
+.alpha-doc .summary {
+	border: 1px solid color-mix(in srgb, var(--doc-accent) 32%, var(--doc-bg));
+	border-left: 3px solid var(--doc-accent);
+	border-radius: var(--doc-radius);
+	background: color-mix(in srgb, var(--doc-accent) 6%, var(--doc-bg));
+	padding: 1.25rem 1.5rem;
+	margin: 1.5rem 0;
+}
+.alpha-doc .summary h2 {
+	margin-top: 0;
+}
+.alpha-doc .grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+	gap: 1rem;
+}
+.alpha-doc .grid > * {
+	min-width: 0;
+}
+.alpha-doc .grid > .span-all {
+	grid-column: 1 / -1;
+}
+.alpha-doc .finding {
+	--status-color: var(--doc-accent);
+	border: 1px solid var(--doc-line);
+	border-left: 3px solid var(--status-color);
+	border-radius: var(--doc-radius);
+	background: var(--doc-surface);
+	padding: 1.3rem 1.5rem;
+	margin: 1rem 0;
+}
+.alpha-doc .finding[data-severity="high"] {
+	--status-color: var(--doc-danger);
+}
+.alpha-doc .finding[data-severity="medium"] {
+	--status-color: var(--doc-warning);
+}
+.alpha-doc .finding > h3 {
+	margin-top: 0;
+}
+.alpha-doc .finding > h3::before {
+	content: "";
+	display: inline-block;
+	width: 0.55em;
+	height: 0.55em;
+	border-radius: 50%;
+	background: var(--status-color);
+	box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-color) 12%, transparent);
+	margin-right: 0.8em;
+	vertical-align: 0.08em;
+}
+.alpha-doc .callout {
+	border: 1px solid var(--doc-line);
+	border-left: 3px solid var(--status-color, var(--doc-accent));
+	border-radius: var(--doc-radius);
+	background: color-mix(in srgb, var(--status-color, var(--doc-accent)) 5%, var(--doc-bg));
+	padding: 1rem 1.25rem;
+	margin: 1.5rem 0;
+}
+.alpha-doc .summary > :last-child,
+.alpha-doc .finding > :last-child,
+.alpha-doc .callout > :last-child,
+.alpha-doc .card > :last-child {
+	margin-bottom: 0;
+}
+.alpha-doc .callout > :first-child,
+.alpha-doc .card > :first-child {
+	margin-top: 0;
+}
+.alpha-doc .status-good {
+	--status-color: var(--doc-success);
+}
+.alpha-doc .status-warning {
+	--status-color: var(--doc-warning);
+}
+.alpha-doc .status-danger {
+	--status-color: var(--doc-danger);
+}
+.alpha-doc .status-info {
+	--status-color: var(--doc-accent);
+}
+.alpha-doc .status-neutral {
+	--status-color: var(--doc-muted);
+}
+.alpha-doc .badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5em;
+	max-width: 100%;
+	padding: 0.22em 0.7em;
+	border: 1px solid color-mix(in srgb, var(--status-color, var(--doc-muted)) 30%, var(--doc-bg));
+	border-radius: 999px;
+	color: var(--status-color, var(--doc-muted));
+	background: color-mix(in srgb, var(--status-color, var(--doc-muted)) 9%, var(--doc-bg));
+	font-size: 0.84em;
+	font-weight: 600;
+	line-height: 1.45;
+}
+.alpha-doc .badge::before {
+	content: "";
+	flex: 0 0 0.45em;
+	width: 0.45em;
+	height: 0.45em;
+	border-radius: 50%;
+	background: currentColor;
+}
+.alpha-doc .doc-meta,
+.alpha-doc .table-toolbar,
+.alpha-doc .section-heading {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 0.65rem 1rem;
+}
+.alpha-doc .doc-meta {
+	color: var(--doc-muted);
+	font-size: 0.9em;
+	margin: 1rem 0 0;
+}
+.alpha-doc .section-heading {
+	justify-content: space-between;
+	margin: 2rem 0 1rem;
+}
+.alpha-doc .section-heading > * {
+	margin: 0;
+}
+.alpha-doc .card,
+.alpha-doc .metric {
+	min-width: 0;
+	border: 1px solid var(--doc-line);
+	border-radius: var(--doc-radius);
+	background: var(--doc-surface);
+	padding: 1.25rem 1.5rem;
+}
+.alpha-doc .card-title {
+	font-size: 1.05em;
+	font-weight: 650;
+	margin: 0 0 0.5rem;
+}
+.alpha-doc .metrics {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+	gap: 1rem;
+	margin: 1.5rem 0;
+}
+.alpha-doc .metric-label {
+	color: var(--doc-muted);
+	font-size: 0.87em;
+	margin: 0 0 0.5rem;
+}
+.alpha-doc .metric-value {
+	font-size: clamp(1.5rem, 2vw, 2rem);
+	font-weight: 650;
+	letter-spacing: -0.035em;
+	font-variant-numeric: tabular-nums;
+	line-height: 1.15;
+	margin: 0;
+}
+.alpha-doc .metric-detail {
+	color: var(--doc-muted);
+	font-size: 0.85em;
+	margin: 0.65rem 0 0;
+}
+.alpha-doc .key-values {
+	display: grid;
+	grid-template-columns: minmax(7rem, 1fr) minmax(0, 3fr);
+	gap: 0.7rem 1rem;
+}
+.alpha-doc .key-values dt {
+	color: var(--doc-muted);
+}
+.alpha-doc .key-values dd {
+	margin: 0;
+}
+.alpha-doc .steps {
+	list-style: decimal-leading-zero;
+	padding-left: 2rem;
+}
+.alpha-doc .steps > li {
+	padding: 0.75rem 0 0.75rem 0.75rem;
+	border-bottom: 1px solid var(--doc-line);
+}
+.alpha-doc .steps > li::marker {
+	color: var(--doc-accent);
+	font-weight: 650;
+}
+.alpha-doc .toc {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	margin: 1.25rem 0;
+}
+.alpha-doc .toc a {
+	border: 1px solid var(--doc-line);
+	border-radius: 7px;
+	padding: 0.3rem 0.7rem;
+	font-size: 0.9em;
+	text-decoration: none;
+}
+.alpha-doc .toc a:hover {
+	background: var(--doc-surface-hover);
+}
+.alpha-doc .checklist {
+	list-style: none;
+	padding-left: 0;
+}
+.alpha-doc .checklist li {
+	border-bottom: 1px solid var(--doc-border);
+	padding: 0.6rem 0;
+}
+.alpha-doc figure {
+	margin: 1.5rem 0;
+	min-width: 0;
+}
+.alpha-doc figcaption {
+	font-weight: 400;
+	margin-bottom: 0.7rem;
+}
+.alpha-doc small,
+.alpha-doc .caption,
+.alpha-doc .kit-status {
+	color: var(--doc-muted);
+	font-size: 0.875em;
+}
+.alpha-doc .table-scroll,
+.alpha-doc pre {
+	overflow-x: auto;
+	max-width: 100%;
+}
+.alpha-doc .table-scroll {
+	border-radius: var(--doc-radius);
+	margin: 1rem 0;
+}
+.alpha-doc table {
+	width: 100%;
+	border-collapse: separate;
+	border-spacing: 0;
+	border: 1px solid var(--doc-line);
+	border-radius: var(--doc-radius);
+	background: var(--doc-bg);
+	font-variant-numeric: tabular-nums;
+	text-align: left;
+}
+.alpha-doc th,
+.alpha-doc td {
+	min-width: 6rem;
+	padding: 0.8rem 1rem;
+	border-bottom: 1px solid var(--doc-line);
+	vertical-align: top;
+}
+.alpha-doc th {
+	font-weight: 650;
+}
+.alpha-doc thead th {
+	background: var(--doc-surface-hover);
+	font-size: 0.86em;
+	vertical-align: middle;
+}
+.alpha-doc thead tr:first-child > :first-child {
+	border-top-left-radius: var(--doc-radius);
+}
+.alpha-doc thead tr:first-child > :last-child {
+	border-top-right-radius: var(--doc-radius);
+}
+.alpha-doc tbody tr:last-child > * {
+	border-bottom: 0;
+}
+.alpha-doc tbody tr:last-child > :first-child {
+	border-bottom-left-radius: var(--doc-radius);
+}
+.alpha-doc tbody tr:last-child > :last-child {
+	border-bottom-right-radius: var(--doc-radius);
+}
+.alpha-doc tbody tr:nth-child(even) {
+	background: var(--doc-surface);
+}
+.alpha-doc tbody tr:hover,
+.alpha-doc tbody tr:focus-within {
+	background: var(--doc-surface-hover);
+}
+.alpha-doc .table-toolbar {
+	justify-content: flex-end;
+	margin: 0.75rem 0;
+}
+.alpha-doc .table-toolbar > :first-child {
+	margin-right: auto;
+}
+.alpha-doc td[data-sort-value],
+.alpha-doc td[data-value] {
+	text-align: right;
+}
+.alpha-doc caption {
+	text-align: left;
+	color: var(--doc-muted);
+	padding: 0 0 0.75rem;
+	font-size: 0.9em;
+}
+.alpha-doc code,
+.alpha-doc pre {
+	font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+	font-size: 0.9em;
+}
+.alpha-doc pre {
+	border: 1px solid var(--doc-border);
+	border-radius: 8px;
+	background: var(--doc-bg);
+	padding: 1rem;
+	line-height: 1.55;
+	white-space: pre;
+	overflow-wrap: normal;
+}
+.alpha-doc pre code {
+	font-size: 1em;
+}
+.alpha-doc .diff-add {
+	background: var(--vscode-diffEditor-insertedTextBackground, #23863626);
+}
+.alpha-doc .diff-remove {
+	background: var(--vscode-diffEditor-removedTextBackground, #f8514926);
+}
+.alpha-doc details {
+	border: 1px solid var(--doc-line);
+	border-radius: 8px;
+	padding: 0.85rem 1rem;
+	margin: 0.8rem 0;
+}
+.alpha-doc summary {
+	cursor: pointer;
+	font-weight: 600;
+}
+.alpha-doc button,
+.alpha-doc input {
+	font: inherit;
+	color: inherit;
+	background: var(--doc-bg);
+	border: 1px solid var(--doc-border);
+	border-radius: 7px;
+	padding: 0.5em 0.8em;
+	max-width: 100%;
+}
+.alpha-doc button {
+	cursor: pointer;
+}
+.alpha-doc button:disabled,
+.alpha-doc input:disabled {
+	opacity: 0.65;
+	cursor: default;
+}
+.alpha-doc th button {
+	text-align: inherit;
+	border-color: transparent;
+	font-weight: inherit;
+	padding: 0.1em 0;
+}
+.alpha-doc th button::after {
+	content: "";
+	display: inline-block;
+	width: 0.4em;
+	height: 0.4em;
+	border-right: 1.5px solid currentColor;
+	border-bottom: 1.5px solid currentColor;
+	transform: rotate(45deg);
+	margin: 0 0.2em 0.2em 0.8em;
+	opacity: 0.5;
+}
+.alpha-doc th[aria-sort] button::after {
+	opacity: 1;
+	color: var(--doc-accent);
+}
+.alpha-doc th[aria-sort="ascending"] button::after {
+	transform: rotate(225deg);
+	margin-bottom: 0;
+}
+.alpha-doc input[data-alpha-filter] {
+	width: min(100%, 20rem);
+}
+.alpha-doc input:focus-visible,
+.alpha-doc button:focus-visible {
+	outline-offset: 2px;
+}
+.alpha-doc [role="tablist"] {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.4rem;
+	border-bottom: 1px solid var(--doc-line);
+	padding-bottom: 0.6rem;
+}
+.alpha-doc [aria-selected="true"] {
+	color: var(--doc-accent);
+	background: color-mix(in srgb, var(--doc-accent) 10%, var(--doc-bg));
+	border-color: var(--doc-accent);
+}
+.alpha-doc .kit-chart {
+	width: 100%;
+	min-width: 45em;
+	height: auto;
+	display: block;
+	margin: 1rem 0;
+	overflow: visible;
+}
+.alpha-doc .kit-chart-scroll {
+	max-width: 100%;
+	overflow-x: auto;
+}
+.alpha-doc .kit-chart text {
+	fill: var(--doc-fg);
+	font:
+		12px system-ui,
+		sans-serif;
+}
+.alpha-doc .kit-chart .axis {
+	stroke: var(--doc-border);
+}
+.alpha-doc .kit-chart .series-0 {
+	stroke: var(--doc-chart-1);
+	fill: var(--doc-chart-1);
+}
+.alpha-doc .kit-chart .series-1 {
+	stroke: var(--doc-chart-2);
+	fill: var(--doc-chart-2);
+}
+.alpha-doc .kit-chart .series-2 {
+	stroke: var(--doc-chart-3);
+	fill: var(--doc-chart-3);
+}
+.alpha-doc .kit-chart polyline[class] {
+	fill: none;
+	stroke-width: 2;
+}
+.alpha-doc .kit-chart :focus {
+	outline: none;
+	stroke: var(--doc-focus);
+	stroke-width: 4;
+}
+@media (prefers-color-scheme: dark) {
+	.alpha-doc {
+		--doc-bg: var(--vscode-editor-background, #1f2329);
+		--doc-fg: var(--vscode-editor-foreground, #e5e9ef);
+		--doc-muted: var(--vscode-descriptionForeground, #b0b8c2);
+		--doc-border: var(--vscode-editorGroup-border, #545d69);
+		--doc-accent: var(--vscode-textLink-foreground, #80bfff);
+		--doc-focus: var(--vscode-focusBorder, #80bfff);
+		--doc-chart-1: var(--vscode-charts-blue, #78bfff);
+		--doc-chart-2: var(--vscode-charts-orange, #efab71);
+		--doc-chart-3: var(--vscode-charts-purple, #c49af1);
+		--doc-success: var(--vscode-testing-iconPassed, #78c99a);
+		--doc-warning: var(--vscode-editorWarning-foreground, #e1ba68);
+		--doc-danger: var(--vscode-editorError-foreground, #f18c8c);
+	}
+}
+@media (max-width: 600px) {
+	.alpha-doc .finding,
+	.alpha-doc .summary,
+	.alpha-doc .card,
+	.alpha-doc .metric {
+		padding: 1rem;
+	}
+	.alpha-doc .key-values {
+		grid-template-columns: 1fr;
+		gap: 0.25rem;
+	}
+	.alpha-doc .key-values dd {
+		margin-bottom: 0.75rem;
+	}
+}
+@media (forced-colors: active) {
+	.alpha-doc {
+		--doc-bg: Canvas;
+		--doc-fg: CanvasText;
+		--doc-muted: CanvasText;
+		--doc-border: CanvasText;
+		--doc-accent: LinkText;
+		--doc-focus: Highlight;
+		--doc-line: CanvasText;
+		--doc-success: CanvasText;
+		--doc-warning: CanvasText;
+		--doc-danger: CanvasText;
+	}
+	.alpha-doc .kit-chart [class^="series-"] {
+		stroke: CanvasText;
+		fill: CanvasText;
+	}
+	.alpha-doc .kit-chart polyline[class] {
+		fill: none;
+	}
+}
+@media (max-width: 32rem) {
+	.alpha-doc th,
+	.alpha-doc td {
+		padding: 0.5rem;
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.alpha-doc *,
+	.alpha-doc *::before,
+	.alpha-doc *::after {
+		scroll-behavior: auto !important;
+		animation: none !important;
+		transition: none !important;
+	}
+}

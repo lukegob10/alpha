@@ -1,0 +1,15 @@
+{
+	"filter": "篩選列",
+	"sort": "依 {column} 排序",
+	"rows": "顯示 {visible} 列，共 {total} 列",
+	"unsupported": "不支援此工具組版本。請開啟原始檔並使用 data-alpha-kit=\"1\"。",
+	"invalidTable": "表格增強功能無法使用。請使用每列欄數相同的矩形表格，其中包含一列標題，且最多有 1,000 列和 20 欄。",
+	"invalidChart": "圖表增強功能無法使用。請檢查資料表：最多 120 列、三個數列、一個共用單位，且數值必須有限；缺漏值請留空。",
+	"invalidTabs": "分頁無法使用。請為每個區段指定唯一的 ID 和分頁標籤。",
+	"missing": "缺漏",
+	"inspect": "圖表數值可在資料表中查看。將焦點移至圖中某個值即可檢查。",
+	"sortAscending": "遞增",
+	"sortDescending": "遞減",
+	"invalidDiagram": "無法顯示關係圖。請使用三欄關係表，最多包含24個具名節點和48條連線，且不能有循環。表格仍可閱讀。",
+	"imageUnavailable": "無法顯示圖片。請檢查工作區路徑，並使用符合文件大小限制的靜態PNG或JPEG。"
+}

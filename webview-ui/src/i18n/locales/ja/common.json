@@ -34,10 +34,12 @@
 			"save": "画像を保存",
 			"viewCode": "コードを表示",
 			"viewDiagram": "ダイアグラムを表示",
-			"close": "閉じる"
+			"close": "閉じる",
+			"open": "ダイアグラムを開く"
 		},
 		"modal": {
-			"codeTitle": "Mermaidコード"
+			"codeTitle": "Mermaidコード",
+			"title": "マーメイドダイアグラム"
 		},
 		"tabs": {
 			"diagram": "ダイアグラム",
@@ -110,5 +112,7 @@
 	"costs": {
 		"own": "自身",
 		"subtasks": "サブタスク"
-	}
+	},
+	"dismiss": "却下",
+	"dismissAndDontShowAgain": "閉じて再度表示しない"
 }

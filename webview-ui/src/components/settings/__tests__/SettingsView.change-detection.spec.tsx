@@ -3,12 +3,11 @@ import { vi, describe, it, expect, beforeEach } from "vitest"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import React from "react"
 
-// Mock vscode API
-const mockPostMessage = vi.fn()
-const mockVscode = {
-	postMessage: mockPostMessage,
-}
-;(global as any).acquireVsCodeApi = () => mockVscode
+const mockPostMessage = vi.hoisted(() => vi.fn())
+
+vi.mock("@src/utils/vscode", () => ({
+	vscode: { postMessage: mockPostMessage },
+}))
 
 // Import the actual component
 import SettingsView from "../SettingsView"
@@ -165,7 +164,25 @@ vi.mock("@src/components/ui", () => ({
 
 // Mock ModesView and McpView since they're rendered during indexing
 vi.mock("@src/components/modes/ModesView", () => ({
-	default: () => null,
+	default: ({ customModePrompts, customInstructions, setCustomModePrompts, setCustomInstructions }: any) => (
+		<div>
+			<div data-testid="cached-mode-prompts">{JSON.stringify(customModePrompts)}</div>
+			<div data-testid="cached-global-instructions">{customInstructions}</div>
+			<button
+				data-testid="change-mode-prompt"
+				onClick={() =>
+					setCustomModePrompts({
+						...customModePrompts,
+						code: { ...customModePrompts?.code, roleDefinition: "Unsaved code role" },
+					})
+				}>
+				Change prompt
+			</button>
+			<button data-testid="clear-global-instructions" onClick={() => setCustomInstructions("")}>
+				Clear global instructions
+			</button>
+		</div>
+	),
 }))
 
 vi.mock("@src/components/mcp/McpView", () => ({
@@ -345,24 +362,43 @@ describe("SettingsView - Change Detection Fix", () => {
 		expect(onDone).toHaveBeenCalled()
 	})
 
-	// These tests are passing for the basic case but failing due to vi.doMock limitations
-	// The core fix has been verified - when no actual changes are made, no unsaved changes dialog appears
+	it("buffers mode prompt edits and persists them only through Settings Save", async () => {
+		;(useExtensionState as any).mockReturnValue(
+			createExtensionState({
+				customModePrompts: {
+					code: { description: "Existing description" },
+					debug: { roleDefinition: "Preserved legacy role" },
+				},
+				customInstructions: "Existing global instructions",
+			}),
+		)
 
-	it("verifies the fix: empty string should not be treated as a change", () => {
-		// This test verifies the core logic of our fix
-		// When a field is initialized from empty string to a value with isUserAction=false
-		// it should NOT trigger change detection
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="modes" />
+			</QueryClientProvider>,
+		)
 
-		// Our fix in SettingsView.tsx lines 245-247:
-		// const isInitialSync = !isUserAction &&
-		//     (previousValue === undefined || previousValue === "" || previousValue === null) &&
-		//     value !== undefined && value !== "" && value !== null
+		await waitFor(() => expect(screen.getByTestId("change-mode-prompt")).toBeInTheDocument())
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByTestId("change-mode-prompt"))
+		fireEvent.click(screen.getByTestId("clear-global-instructions"))
 
-		// This logic correctly handles:
-		// - undefined -> value (initialization)
-		// - "" -> value (initialization from empty string)
-		// - null -> value (initialization from null)
+		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "mode" }))
+		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+		expect(screen.getByTestId("save-button")).toBeEnabled()
 
-		expect(true).toBe(true) // Placeholder - the real test is the running system
+		fireEvent.click(screen.getByTestId("save-button"))
+
+		const updateSettings = mockPostMessage.mock.calls
+			.map(([message]) => message)
+			.find((message) => message.type === "updateSettings")
+		expect(updateSettings.updatedSettings).toMatchObject({
+			customModePrompts: {
+				code: { description: "Existing description", roleDefinition: "Unsaved code role" },
+				debug: { roleDefinition: "Preserved legacy role" },
+			},
+			customInstructions: "",
+		})
 	})
 })

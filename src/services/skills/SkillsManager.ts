@@ -4,10 +4,10 @@ import * as os from "os"
 import * as vscode from "vscode"
 import matter from "gray-matter"
 
-import type { ClineProvider } from "../../core/webview/ClineProvider"
-import { getGlobalAgentsDirectory, getProjectAgentsDirectoryForCwd } from "../roo-config"
-import { directoryExists, fileExists } from "../roo-config"
-import { SkillMetadata, SkillContent } from "../../shared/skills"
+import type { AlphaProvider } from "../../core/webview/AlphaProvider"
+import { getGlobalAgentsDirectory, getProjectAgentsDirectoryForCwd } from "../config-paths"
+import { directoryExists, fileExists } from "../config-paths"
+import { SkillMetadata, SkillContent, SkillSource } from "../../shared/skills"
 import { modes, getAllModes } from "../../shared/modes"
 import {
 	validateSkillName as validateSkillNameShared,
@@ -17,7 +17,7 @@ import {
 import { t } from "../../i18n"
 
 // Re-export for convenience
-export type { SkillMetadata, SkillContent }
+export type { SkillMetadata, SkillContent, SkillSource }
 
 const ALPHA_CONFIG_DIR = ".alpha"
 
@@ -31,11 +31,14 @@ function getProjectAlphaDirectoryForCwd(cwd: string): string {
 
 export class SkillsManager {
 	private skills: Map<string, SkillMetadata> = new Map()
-	private providerRef: WeakRef<ClineProvider>
+	private providerRef: WeakRef<AlphaProvider>
 	private disposables: vscode.Disposable[] = []
 	private isDisposed = false
 
-	constructor(provider: ClineProvider) {
+	constructor(
+		provider: AlphaProvider,
+		private readonly workspacePath?: string,
+	) {
 		this.providerRef = new WeakRef(provider)
 	}
 
@@ -76,7 +79,7 @@ export class SkillsManager {
 	 * 1. The skills directory itself is a symlink (resolved by directoryExists using realpath)
 	 * 2. Individual skill subdirectories are symlinks
 	 */
-	private async scanSkillsDirectory(dirPath: string, source: "global" | "project", mode?: string): Promise<void> {
+	private async scanSkillsDirectory(dirPath: string, source: SkillSource, mode?: string): Promise<void> {
 		if (!(await directoryExists(dirPath))) {
 			return
 		}
@@ -112,7 +115,7 @@ export class SkillsManager {
 	 */
 	private async loadSkillMetadata(
 		skillDir: string,
-		source: "global" | "project",
+		source: SkillSource,
 		mode?: string,
 		skillName?: string,
 	): Promise<void> {
@@ -206,6 +209,7 @@ export class SkillsManager {
 		const resolvedSkills = new Map<string, SkillMetadata>()
 
 		for (const skill of this.skills.values()) {
+			if (!this.isSkillEnabled(skill)) continue
 			// Check if skill is available in current mode:
 			// - modeSlugs undefined or empty = available in all modes ("Any mode")
 			// - modeSlugs array with values = available only if currentMode is in the array
@@ -250,6 +254,7 @@ export class SkillsManager {
 	private shouldOverrideSkill(existing: SkillMetadata, newSkill: SkillMetadata): boolean {
 		// Define source priority: project > global
 		const sourcePriority: Record<string, number> = {
+			builtin: 0,
 			project: 2,
 			global: 1,
 		}
@@ -272,6 +277,55 @@ export class SkillsManager {
 		return false
 	}
 
+	private isSkillEnabled(skill: SkillMetadata): boolean {
+		return (
+			skill.source !== "builtin" ||
+			!this.providerRef.deref()?.contextProxy?.getValue("disabledBuiltinSkills")?.includes(skill.name)
+		)
+	}
+
+	private assertWritableSource(source: SkillSource): void {
+		if (source !== "global" && source !== "project") {
+			throw new Error(t("skills:errors.builtin_read_only"))
+		}
+	}
+
+	async assertSkillEditable(skill: SkillMetadata): Promise<void> {
+		this.assertWritableSource(skill.source)
+		await this.assertWritablePath(skill.path)
+	}
+
+	/** Resolve existing symlinks even when the final destination has not been created yet. */
+	private async resolveMutationPath(candidate: string): Promise<string> {
+		try {
+			return await fs.realpath(candidate)
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+			const parent = path.dirname(candidate)
+			if (parent === candidate) throw error
+			return path.join(await this.resolveMutationPath(parent), path.basename(candidate))
+		}
+	}
+
+	private async assertWritablePath(candidate: string): Promise<void> {
+		const extensionPath = this.providerRef.deref()?.contextProxy?.extensionUri?.fsPath
+		if (!extensionPath) return
+		const bundledRoot = path.join(extensionPath, "assets", "skills")
+		const contains = (directory: string, target: string) => {
+			const relative = path.relative(directory, target)
+			return (
+				relative === "" ||
+				(!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`))
+			)
+		}
+		const resolvedCandidate = await this.resolveMutationPath(path.resolve(candidate))
+		const resolvedRoot = await this.resolveMutationPath(path.resolve(bundledRoot))
+		// Also protect parents from recursive deletion/moves and aliases of the installed root.
+		if (contains(resolvedRoot, resolvedCandidate) || contains(resolvedCandidate, resolvedRoot)) {
+			throw new Error(t("skills:errors.builtin_read_only"))
+		}
+	}
+
 	/**
 	 * Get all skills (for UI display, debugging, etc.)
 	 */
@@ -288,7 +342,13 @@ export class SkillsManager {
 			skill = modeSkills.find((s) => s.name === name)
 		} else {
 			// Fall back to any skill with this name
-			skill = Array.from(this.skills.values()).find((s) => s.name === name)
+			skill = Array.from(this.skills.values())
+				.filter((s) => s.name === name && this.isSkillEnabled(s))
+				.reduce<SkillMetadata | undefined>(
+					(selected, candidate) =>
+						!selected || this.shouldOverrideSkill(selected, candidate) ? candidate : selected,
+					undefined,
+				)
 		}
 
 		if (!skill) return null
@@ -303,6 +363,23 @@ export class SkillsManager {
 		}
 	}
 
+	/** Resolve a previously captured skill by its exact path, independent of mutable mode overrides. */
+	async getSkillContentByPath(name: string, capturedPath: string): Promise<SkillContent | null> {
+		const normalize = (candidate: string) => {
+			const resolved = path.resolve(candidate)
+			return process.platform === "win32" ? resolved.toLowerCase() : resolved
+		}
+		const expectedPath = normalize(capturedPath)
+		const skill = Array.from(this.skills.values()).find(
+			(candidate) => candidate.name === name && normalize(candidate.path) === expectedPath,
+		)
+		if (!skill) return null
+
+		const fileContent = await fs.readFile(skill.path, "utf-8")
+		const { content: body } = matter(fileContent)
+		return { ...skill, instructions: body.trim() }
+	}
+
 	/**
 	 * Get all skills metadata (for UI display)
 	 * Returns skills from all sources without content
@@ -314,7 +391,7 @@ export class SkillsManager {
 	/**
 	 * Get a skill by name, source, and optionally mode
 	 */
-	getSkill(name: string, source: "global" | "project", mode?: string): SkillMetadata | undefined {
+	getSkill(name: string, source: SkillSource, mode?: string): SkillMetadata | undefined {
 		const skillKey = this.getSkillKey(name, source, mode)
 		return this.skills.get(skillKey)
 	}
@@ -323,7 +400,7 @@ export class SkillsManager {
 	 * Find a skill by name and source (regardless of mode).
 	 * Useful for opening/editing skills where the exact mode key may vary.
 	 */
-	findSkillByNameAndSource(name: string, source: "global" | "project"): SkillMetadata | undefined {
+	findSkillByNameAndSource(name: string, source: SkillSource): SkillMetadata | undefined {
 		for (const skill of this.skills.values()) {
 			if (skill.name === name && skill.source === source) {
 				return skill
@@ -366,12 +443,8 @@ export class SkillsManager {
 	 * @param modeSlugs - Optional mode restrictions (undefined/empty = any mode)
 	 * @returns Path to created SKILL.md file
 	 */
-	async createSkill(
-		name: string,
-		source: "global" | "project",
-		description: string,
-		modeSlugs?: string[],
-	): Promise<string> {
+	async createSkill(name: string, source: SkillSource, description: string, modeSlugs?: string[]): Promise<string> {
+		this.assertWritableSource(source)
 		// Validate skill name
 		const validation = this.validateSkillName(name)
 		if (!validation.valid) {
@@ -402,6 +475,7 @@ export class SkillsManager {
 		const skillMdPath = path.join(skillDir, "SKILL.md")
 
 		// Check if skill already exists
+		await this.assertWritablePath(skillMdPath)
 		if (await fileExists(skillMdPath)) {
 			throw new Error(t("skills:errors.already_exists", { name, path: skillMdPath }))
 		}
@@ -450,7 +524,8 @@ Add your skill instructions here.
 	 * @param source - Where the skill is located
 	 * @param mode - Optional mode (to locate in skills-{mode}/ directory)
 	 */
-	async deleteSkill(name: string, source: "global" | "project", mode?: string): Promise<void> {
+	async deleteSkill(name: string, source: SkillSource, mode?: string): Promise<void> {
+		this.assertWritableSource(source)
 		// Find the skill
 		const skill = this.getSkill(name, source, mode)
 		if (!skill) {
@@ -462,6 +537,8 @@ Add your skill instructions here.
 		const skillDir = path.dirname(skill.path)
 
 		// Delete the entire skill directory
+		await this.assertWritablePath(skill.path)
+		await this.assertWritablePath(skillDir)
 		await fs.rm(skillDir, { recursive: true, force: true })
 
 		// Refresh skills list
@@ -477,10 +554,11 @@ Add your skill instructions here.
 	 */
 	async moveSkill(
 		name: string,
-		source: "global" | "project",
+		source: SkillSource,
 		currentMode: string | undefined,
 		newMode: string | undefined,
 	): Promise<void> {
+		this.assertWritableSource(source)
 		// Don't move if source and destination are the same
 		if (currentMode === newMode) {
 			return
@@ -514,6 +592,9 @@ Add your skill instructions here.
 		const destSkillMdPath = path.join(destDir, "SKILL.md")
 
 		// Check if skill already exists at destination
+		await this.assertWritablePath(skill.path)
+		await this.assertWritablePath(sourceDir)
+		await this.assertWritablePath(destDir)
 		if (await fileExists(destSkillMdPath)) {
 			throw new Error(t("skills:errors.already_exists", { name, path: destSkillMdPath }))
 		}
@@ -545,7 +626,8 @@ Add your skill instructions here.
 	 * @param source - Where the skill is located ("global" or "project")
 	 * @param newModeSlugs - New mode slugs (undefined/empty = any mode)
 	 */
-	async updateSkillModes(name: string, source: "global" | "project", newModeSlugs?: string[]): Promise<void> {
+	async updateSkillModes(name: string, source: SkillSource, newModeSlugs?: string[]): Promise<void> {
+		this.assertWritableSource(source)
 		// Find any skill with this name and source (regardless of current mode)
 		let skill: SkillMetadata | undefined
 		for (const s of this.skills.values()) {
@@ -559,6 +641,7 @@ Add your skill instructions here.
 			throw new Error(t("skills:errors.not_found", { name, source, modeInfo: "" }))
 		}
 
+		await this.assertWritablePath(skill.path)
 		// Read the current SKILL.md file
 		const fileContent = await fs.readFile(skill.path, "utf-8")
 		const { data: frontmatter, content: body } = matter(fileContent)
@@ -588,16 +671,21 @@ Add your skill instructions here.
 	private async getSkillsDirectories(): Promise<
 		Array<{
 			dir: string
-			source: "global" | "project"
+			source: SkillSource
 			mode?: string
 		}>
 	> {
-		const dirs: Array<{ dir: string; source: "global" | "project"; mode?: string }> = []
+		const dirs: Array<{ dir: string; source: SkillSource; mode?: string }> = []
 		const globalAlphaDir = getGlobalAlphaDirectory()
 		const globalAgentsDir = getGlobalAgentsDirectory()
 		const provider = this.providerRef.deref()
-		const projectAlphaDir = provider?.cwd ? getProjectAlphaDirectoryForCwd(provider.cwd) : null
-		const projectAgentsDir = provider?.cwd ? getProjectAgentsDirectoryForCwd(provider.cwd) : null
+		const extensionPath = provider?.contextProxy?.extensionUri?.fsPath
+		if (extensionPath) {
+			dirs.push({ dir: path.join(extensionPath, "assets", "skills"), source: "builtin" })
+		}
+		const cwd = this.workspacePath ?? provider?.cwd
+		const projectAlphaDir = cwd ? getProjectAlphaDirectoryForCwd(cwd) : null
+		const projectAgentsDir = cwd ? getProjectAgentsDirectoryForCwd(cwd) : null
 
 		// Get list of modes to check for mode-specific skills
 		const modesList = await this.getAvailableModes()

@@ -1,4 +1,7 @@
+import { registerBuiltinSkillInspection } from "./services/skills/builtinSkillInspection"
+import { TicketPanel } from "./services/tickets/TicketPanel"
 import * as vscode from "vscode"
+import { registerHtmlDocumentViewer } from "./core/webview/html-document"
 import * as dotenvx from "@dotenvx/dotenvx"
 import * as fs from "fs"
 import * as path from "path"
@@ -26,14 +29,14 @@ import { initializeNetworkProxy } from "./utils/networkProxy"
 import { Package } from "./shared/package"
 import { formatLanguage } from "./shared/language"
 import { ContextProxy } from "./core/config/ContextProxy"
-import { ClineProvider } from "./core/webview/ClineProvider"
+import { AgentControlStore } from "./core/agent/AgentControlStore"
+import { AlphaProvider } from "./core/webview/AlphaProvider"
 import { DIFF_VIEW_URI_SCHEME } from "./integrations/editor/DiffViewProvider"
 import { TerminalRegistry } from "./integrations/terminal/TerminalRegistry"
 import { openAiCodexOAuthManager } from "./integrations/openai-codex/oauth"
 import { McpServerManager } from "./services/mcp/McpServerManager"
 import { CodeIndexManager } from "./services/code-index/manager"
 import { ScheduledTaskService } from "./services/scheduled-tasks"
-import { GoalSeekService } from "./services/goal-seek"
 import { migrateSettings } from "./utils/migrateSettings"
 import { autoImportSettings } from "./utils/autoImportSettings"
 import { API } from "./extension/api"
@@ -58,6 +61,7 @@ import { initializeModelCacheRefresh } from "./api/providers/fetchers/modelCache
 
 let outputChannel: vscode.OutputChannel
 let extensionContext: vscode.ExtensionContext
+let sidebarProvider: AlphaProvider | undefined
 
 /**
  * Check if we should auto-open the Alpha sidebar after switching to a worktree.
@@ -111,6 +115,7 @@ async function checkWorktreeAutoOpen(
 // This method is called when your extension is activated.
 // Your extension is activated the very first time the command is executed.
 export async function activate(context: vscode.ExtensionContext) {
+	context.subscriptions.push(registerBuiltinSkillInspection(context.extensionUri))
 	extensionContext = context
 	outputChannel = vscode.window.createOutputChannel(Package.outputChannel)
 	context.subscriptions.push(outputChannel)
@@ -144,7 +149,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	// Initialize global state if not already set.
 	if (!context.globalState.get("allowedCommands")) {
-		context.globalState.update("allowedCommands", defaultCommands)
+		await context.globalState.update("allowedCommands", defaultCommands)
 	}
 
 	const contextProxy = await ContextProxy.getInstance(context)
@@ -172,7 +177,13 @@ export async function activate(context: vscode.ExtensionContext) {
 		}
 	}
 
-	const provider = new ClineProvider(context, outputChannel, "sidebar", contextProxy)
+	const provider = new AlphaProvider(context, outputChannel, "sidebar", contextProxy)
+	const ticketPanel = new TicketPanel(context, provider)
+	context.subscriptions.push(
+		ticketPanel,
+		vscode.commands.registerCommand("alpha.openTickets", (target?: unknown) => ticketPanel.open(target)),
+	)
+	sidebarProvider = provider
 	const scheduledTaskService = new ScheduledTaskService(context, provider, outputChannel)
 	provider.setScheduledTaskService(scheduledTaskService)
 	context.subscriptions.push(scheduledTaskService)
@@ -181,20 +192,12 @@ export async function activate(context: vscode.ExtensionContext) {
 			`[ScheduledTaskService] Error during initialization: ${error instanceof Error ? error.message : String(error)}`,
 		)
 	})
-	const goalSeekService = new GoalSeekService(context, provider, outputChannel)
-	provider.setGoalSeekService(goalSeekService)
-	context.subscriptions.push(goalSeekService)
-	void goalSeekService.initialize().catch((error) => {
-		outputChannel.appendLine(
-			`[GoalSeekService] Error during initialization: ${error instanceof Error ? error.message : String(error)}`,
-		)
-	})
 
 	// Finish initializing the provider.
 	TelemetryService.instance.setProvider(provider)
 
 	context.subscriptions.push(
-		vscode.window.registerWebviewViewProvider(ClineProvider.sideBarId, provider, {
+		vscode.window.registerWebviewViewProvider(AlphaProvider.sideBarId, provider, {
 			webviewOptions: { retainContextWhenHidden: true },
 		}),
 	)
@@ -216,6 +219,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	}
 
 	registerCommands({ context, outputChannel, provider })
+	registerHtmlDocumentViewer(context)
 
 	/**
 	 * We use the text document content provider API to show the left side for diff
@@ -243,7 +247,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		vscode.workspace.registerTextDocumentContentProvider(DIFF_VIEW_URI_SCHEME, diffContentProvider),
 	)
 
-	context.subscriptions.push(vscode.window.registerUriHandler({ handleUri }))
+	context.subscriptions.push(vscode.window.registerUriHandler({ handleUri: (uri) => handleUri(uri, provider) }))
 
 	// Register code actions provider.
 	context.subscriptions.push(
@@ -258,7 +262,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	// Allows other extensions to activate once Alpha is ready.
 	vscode.commands.executeCommand(`${Package.name}.activationCompleted`)
 
-	// Implements the `RooCodeAPI` interface.
+	// Implements the `AlphaCodeAPI` interface.
 	const socketPath = process.env.ROO_CODE_IPC_SOCKET_PATH
 	const enableLogging = typeof socketPath === "string"
 
@@ -323,6 +327,21 @@ export async function activate(context: vscode.ExtensionContext) {
 export async function deactivate() {
 	outputChannel.appendLine(`${Package.name} extension deactivated`)
 
+	const provider = sidebarProvider
+	sidebarProvider = undefined
+	if (provider) {
+		try {
+			await provider.dispose()
+		} catch (error) {
+			outputChannel.appendLine(`Failed to dispose sidebar provider: ${String(error)}`)
+		}
+	}
+
+	try {
+		await AgentControlStore.shutdownGlobalStores()
+	} catch (error) {
+		outputChannel.appendLine(`Failed to release managed-agent runtime ownership: ${String(error)}`)
+	}
 	await McpServerManager.cleanup(extensionContext)
 	TelemetryService.instance.shutdown()
 	TerminalRegistry.cleanup()

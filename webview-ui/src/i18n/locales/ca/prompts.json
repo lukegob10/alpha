@@ -26,7 +26,9 @@
 			"read": "Llegir fitxers",
 			"edit": "Editar fitxers",
 			"command": "Executar comandes",
-			"mcp": "Utilitzar MCP"
+			"mcp": "Utilitzar MCP",
+			"github": "Utilitzeu GitHub",
+			"browser": "Utilitzeu el navegador integrat"
 		},
 		"noTools": "Cap"
 	},
@@ -188,16 +190,7 @@
 		"buttons": {
 			"cancel": "Cancel·lar",
 			"create": "Crear mode"
-		},
-		"deleteMode": "Eliminar mode"
+		}
 	},
-	"allFiles": "tots els fitxers",
-	"deleteMode": {
-		"title": "Suprimeix el mode",
-		"message": "Estàs segur que vols suprimir el mode \"{{modeName}}\"?",
-		"rulesFolder": "Aquest mode té una carpeta de regles a {{folderPath}} que també se suprimirà.",
-		"descriptionNoRules": "Esteu segur que voleu suprimir aquest mode personalitzat?",
-		"confirm": "Suprimeix",
-		"cancel": "Cancel·la"
-	}
+	"allFiles": "tots els fitxers"
 }

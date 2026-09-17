@@ -18,8 +18,11 @@ import {
 	vscodeLlmModels,
 	vscodeLlmDefaultModelId,
 	getVscodeLlmModelInfo,
+	getVscodeLlmContextWindow,
 	openAiCodexModels,
 	sambaNovaModels,
+	stellarDefaultModelId,
+	stellarModels,
 	internationalZAiModels,
 	mainlandZAiModels,
 	fireworksModels,
@@ -303,11 +306,30 @@ function getSelectedModel({
 			const info = apiConfiguration?.vsCodeLmModelSelector
 				? getVscodeLlmModelInfo(apiConfiguration.vsCodeLmModelSelector)
 				: vscodeLlmModels[vscodeLlmDefaultModelId]
-			return { id, info: { ...openAiModelInfoSaneDefaults, ...info } }
+			return {
+				id,
+				info: {
+					...openAiModelInfoSaneDefaults,
+					...info,
+					contextWindow: getVscodeLlmContextWindow(
+						apiConfiguration.vsCodeLmModelSelector ?? {
+							vendor: "copilot",
+							family: vscodeLlmDefaultModelId,
+						},
+						apiConfiguration.vsCodeLmContextSize,
+					),
+					contextWindowIncludesOutput: false,
+				},
+			}
 		}
 		case "sambanova": {
 			const id = apiConfiguration.apiModelId ?? defaultModelId
 			const info = sambaNovaModels[id as keyof typeof sambaNovaModels]
+			return { id, info }
+		}
+		case "stellar": {
+			const id = apiConfiguration.apiModelId ?? defaultModelId
+			const info = stellarModels[id as keyof typeof stellarModels] ?? stellarModels[stellarDefaultModelId]
 			return { id, info }
 		}
 		case "fireworks": {

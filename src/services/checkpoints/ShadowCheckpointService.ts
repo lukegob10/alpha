@@ -1,4 +1,5 @@
 import fs from "fs/promises"
+import { realpathSync } from "fs"
 import os from "os"
 import * as path from "path"
 import crypto from "crypto"
@@ -22,6 +23,8 @@ type CheckpointSimpleGitOptions = Partial<SimpleGitOptions> & {
 		allowUnsafeTemplateDir?: boolean
 	}
 }
+
+const EXCLUDED_VENV_PATHSPECS = [":(glob).venv", ":(glob).venv/**", ":(glob)**/.venv", ":(glob)**/.venv/**"] as const
 
 /**
  * Creates a SimpleGit instance with sanitized environment variables to prevent
@@ -49,11 +52,13 @@ function createSanitizedGit(baseDir: string): SimpleGit {
 			key === "GIT_ALTERNATE_OBJECT_DIRECTORIES" ||
 			key === "GIT_CEILING_DIRECTORIES" ||
 			key === "GIT_TEMPLATE_DIR" ||
+			key === "GIT_PAGER" ||
+			key === "PAGER" ||
 			key === "GIT_CONFIG_COUNT" ||
 			key === "GIT_CONFIG_PARAMETERS" ||
 			/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)
 		) {
-			removedVars.push(`${key}=${value}`)
+			removedVars.push(key)
 			continue
 		}
 
@@ -103,6 +108,7 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 	protected git?: SimpleGit
 	protected readonly log: (message: string) => void
 	protected shadowGitConfigWorktree?: string
+	private checkpointOperationTail: Promise<void> = Promise.resolve()
 
 	public get baseHash() {
 		return this._baseHash
@@ -128,8 +134,25 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		const documentsPath = path.join(homedir, "Documents")
 		const downloadsPath = path.join(homedir, "Downloads")
 		const protectedPaths = [homedir, desktopPath, documentsPath, downloadsPath]
+		let canonicalWorkspaceDir: string
+		try {
+			canonicalWorkspaceDir = realpathSync.native(path.resolve(workspaceDir))
+		} catch {
+			throw new Error(`Cannot use checkpoints in ${workspaceDir}`)
+		}
+		const canonicalProtectedPaths = protectedPaths.map((protectedPath) => {
+			try {
+				return realpathSync.native(path.resolve(protectedPath))
+			} catch {
+				return path.resolve(protectedPath)
+			}
+		})
+		const filesystemRoot = path.parse(canonicalWorkspaceDir).root
 
-		if (protectedPaths.includes(workspaceDir)) {
+		if (
+			arePathsEqual(canonicalWorkspaceDir, filesystemRoot) ||
+			canonicalProtectedPaths.some((protectedPath) => arePathsEqual(protectedPath, canonicalWorkspaceDir))
+		) {
 			throw new Error(`Cannot use checkpoints in ${workspaceDir}`)
 		}
 
@@ -185,6 +208,7 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 			}
 
 			await this.writeExcludeFile()
+			await this.migrateTrackedExcludes(git)
 			this.baseHash = await git.revparse(["HEAD"])
 		} else {
 			this.log(`[${this.constructor.name}#initShadowGit] creating shadow git repo at ${this.checkpointsDir}`)
@@ -236,16 +260,59 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		try {
 			await git.add([".", "--ignore-errors"])
 		} catch (error) {
-			this.log(
-				`[${this.constructor.name}#stageAll] failed to add files to git: ${error instanceof Error ? error.message : String(error)}`,
+			const normalizedError = error instanceof Error ? error : new Error(String(error))
+			this.log(`[${this.constructor.name}#stageAll] failed to add files to git: ${normalizedError.message}`)
+			throw normalizedError
+		}
+	}
+
+	private async migrateTrackedExcludes(git: SimpleGit): Promise<void> {
+		// A failed add can leave this private index partially staged. Rebuild it
+		// from the last complete checkpoint before applying exclusion migrations.
+		await git.raw(["read-tree", "HEAD"])
+
+		const trackedVenvPaths = await git.raw(["ls-files", "-z", "--", ...EXCLUDED_VENV_PATHSPECS])
+		if (!trackedVenvPaths) {
+			return
+		}
+
+		// Remove dependency environments from the shadow index only. The user's
+		// workspace remains untouched and the new exclude prevents re-staging.
+		await git.raw(["rm", "-r", "-f", "--cached", "--ignore-unmatch", "--", ...EXCLUDED_VENV_PATHSPECS])
+
+		const stagedChanges = await git.diffSummary(["--cached"])
+		const unexpectedChanges = stagedChanges.files.filter(({ file }) => !file.split(/[\\/]/).includes(".venv"))
+		if (unexpectedChanges.length > 0) {
+			throw new Error(
+				`Checkpoint exclusion migration staged unexpected paths: ${unexpectedChanges
+					.map(({ file }) => file)
+					.join(", ")}`,
 			)
 		}
+
+		const { commit } = await git.commit("Update checkpoint exclusions")
+		if (!commit) {
+			throw new Error("Checkpoint exclusion migration did not create a commit")
+		}
+
+		this.log(
+			`[${this.constructor.name}#migrateTrackedExcludes] removed ${stagedChanges.files.length} tracked .venv path(s) from the shadow repository`,
+		)
 	}
 
 	private async getNestedGitRepository(): Promise<string | null> {
 		try {
 			// Find all .git/HEAD files that are not at the root level.
-			const args = ["--files", "--hidden", "--follow", "-g", "**/.git/HEAD", this.workspaceDir]
+			const args = [
+				"--files",
+				"--hidden",
+				"--follow",
+				"-g",
+				"**/.git/HEAD",
+				"-g",
+				"!**/.venv/**",
+				this.workspaceDir,
+			]
 
 			const gitPaths = await executeRipgrep({ args, workspacePath: this.workspaceDir })
 
@@ -288,8 +355,9 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 				`[${this.constructor.name}#getNestedGitRepository] failed to check for nested git repos: ${error instanceof Error ? error.message : String(error)}`,
 			)
 
-			// If we can't check, assume there are no nested repos to avoid blocking the feature.
-			return null
+			throw new Error("Unable to verify that the workspace contains no nested Git repositories", {
+				cause: error,
+			})
 		}
 	}
 
@@ -307,7 +375,23 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		return this.shadowGitConfigWorktree
 	}
 
-	public async saveCheckpoint(
+	private enqueueCheckpointOperation<T>(operation: () => Promise<T>): Promise<T> {
+		const result = this.checkpointOperationTail.then(operation, operation)
+		this.checkpointOperationTail = result.then(
+			() => undefined,
+			() => undefined,
+		)
+		return result
+	}
+
+	public saveCheckpoint(
+		message: string,
+		options?: { allowEmpty?: boolean; suppressMessage?: boolean },
+	): Promise<CheckpointResult | undefined> {
+		return this.enqueueCheckpointOperation(() => this.saveCheckpointTransaction(message, options))
+	}
+
+	private async saveCheckpointTransaction(
 		message: string,
 		options?: { allowEmpty?: boolean; suppressMessage?: boolean },
 	): Promise<CheckpointResult | undefined> {
@@ -322,14 +406,26 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 
 			const startTime = Date.now()
 			await this.stageAll(this.git)
+
+			if (!options?.allowEmpty) {
+				const stagedChanges = await this.git.diffSummary(["--cached"])
+				if (stagedChanges.files.length === 0) {
+					const duration = Date.now() - startTime
+					this.log(
+						`[${this.constructor.name}#saveCheckpoint] found no staged changes after ${duration}ms; skipping checkpoint commit`,
+					)
+					return undefined
+				}
+			}
+
 			const commitArgs = options?.allowEmpty ? { "--allow-empty": null } : undefined
 			const result = await this.git.commit(message, commitArgs)
 			const fromHash = this._checkpoints[this._checkpoints.length - 1] ?? this.baseHash!
 			const toHash = result.commit || fromHash
-			this._checkpoints.push(toHash)
 			const duration = Date.now() - startTime
 
 			if (result.commit) {
+				this._checkpoints.push(toHash)
 				this.emit("checkpoint", {
 					type: "checkpoint",
 					fromHash,
@@ -351,12 +447,16 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		} catch (e) {
 			const error = e instanceof Error ? e : new Error(String(e))
 			this.log(`[${this.constructor.name}#saveCheckpoint] failed to create checkpoint: ${error.message}`)
-			this.emit("error", { type: "error", error })
+			this.emitCheckpointError(error)
 			throw error
 		}
 	}
 
-	public async restoreCheckpoint(commitHash: string) {
+	public restoreCheckpoint(commitHash: string): Promise<void> {
+		return this.enqueueCheckpointOperation(() => this.restoreCheckpointTransaction(commitHash))
+	}
+
+	private async restoreCheckpointTransaction(commitHash: string) {
 		try {
 			this.log(`[${this.constructor.name}#restoreCheckpoint] starting checkpoint restore`)
 
@@ -381,12 +481,27 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		} catch (e) {
 			const error = e instanceof Error ? e : new Error(String(e))
 			this.log(`[${this.constructor.name}#restoreCheckpoint] failed to restore checkpoint: ${error.message}`)
-			this.emit("error", { type: "error", error })
+			this.emitCheckpointError(error)
 			throw error
 		}
 	}
 
-	public async getDiff({ from, to }: { from?: string; to?: string }): Promise<CheckpointDiff[]> {
+	public getDiff({ from, to }: { from?: string; to?: string }): Promise<CheckpointDiff[]> {
+		return this.enqueueCheckpointOperation(() => this.getDiffTransaction({ from, to }))
+	}
+
+	private async readCurrentDiffContent(git: SimpleGit, relativePath: string, absolutePath: string): Promise<string> {
+		try {
+			const stats = await fs.lstat(absolutePath)
+			return stats.isSymbolicLink()
+				? await git.show([`:${relativePath}`])
+				: await fs.readFile(absolutePath, "utf8")
+		} catch {
+			return ""
+		}
+	}
+
+	private async getDiffTransaction({ from, to }: { from?: string; to?: string }): Promise<CheckpointDiff[]> {
 		if (!this.git) {
 			throw new Error("Shadow git repo not initialized")
 		}
@@ -412,7 +527,7 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 
 			const after = to
 				? await this.git.show([`${to}:${relPath}`]).catch(() => "")
-				: await fs.readFile(absPath, "utf8").catch(() => "")
+				: await this.readCurrentDiffContent(this.git, relPath, absPath)
 
 			result.push({ paths: { relative: relPath, absolute: absPath }, content: { before, after } })
 		}
@@ -423,6 +538,14 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 	/**
 	 * EventEmitter
 	 */
+
+	private emitCheckpointError(error: Error): void {
+		// Node treats an unhandled "error" event as a new exception. Preserve the
+		// original Git error when the UI has not registered an observer yet.
+		if (this.listenerCount("error") > 0) {
+			this.emit("error", { type: "error", error })
+		}
+	}
 
 	override emit<K extends keyof CheckpointEventMap>(event: K, data: CheckpointEventMap[K]) {
 		return super.emit(event, data)

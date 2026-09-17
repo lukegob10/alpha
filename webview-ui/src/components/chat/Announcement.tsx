@@ -2,13 +2,14 @@ import { memo, useState } from "react"
 
 import { Package } from "@alpha/package"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@src/components/ui"
+import { useAppTranslation } from "@src/i18n/TranslationContext"
 
 interface AnnouncementProps {
 	hideAnnouncement: () => void
 }
 
 /**
- * You must update the `latestAnnouncementId` in ClineProvider for new
+ * You must update the `latestAnnouncementId` in AlphaProvider for new
  * announcements to show to users. This new id will be compared with what's in
  * state for the 'last announcement shown', and if it's different then the
  * announcement will render. As soon as an announcement is shown, the id will be
@@ -18,6 +19,7 @@ interface AnnouncementProps {
 
 const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 	const [open, setOpen] = useState(true)
+	const { t } = useAppTranslation()
 
 	return (
 		<Dialog
@@ -31,12 +33,16 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 			}}>
 			<DialogContent>
 				<DialogHeader>
-					<DialogTitle>Welcome to Alpha v{Package.version}</DialogTitle>
+					<DialogTitle>{t("chat:announcement.title", { version: Package.version })}</DialogTitle>
 				</DialogHeader>
-				<div>
-					<p className="text-sm">
-						Alpha v1 is here. Welcome to the first release of the Alpha-branded extension.
-					</p>
+				<div className="space-y-2 text-sm">
+					<p>{t("chat:announcement.release.welcome", { version: Package.version })}</p>
+					<ul className="list-disc space-y-1 pl-5">
+						<li>{t("chat:announcement.release.acceptanceChecks")}</li>
+						<li>{t("chat:announcement.release.commandControl")}</li>
+						<li>{t("chat:announcement.release.workflowContinuity")}</li>
+						<li>{t("chat:announcement.release.chatUpdates")}</li>
+					</ul>
 				</div>
 			</DialogContent>
 		</Dialog>

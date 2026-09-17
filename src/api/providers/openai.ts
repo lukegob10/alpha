@@ -16,7 +16,13 @@ import { TagMatcher } from "../../utils/tag-matcher"
 
 import { convertToOpenAiMessages } from "../transform/openai-format"
 import { convertToR1Format } from "../transform/r1-format"
-import { ApiStream, ApiStreamUsageChunk } from "../transform/stream"
+import {
+	ApiStream,
+	ApiStreamUsageChunk,
+	type ApiStreamCapabilities,
+	createLinkedAbortController,
+	iterateApiStreamWithAbort,
+} from "../transform/stream"
 import { getModelParams } from "../transform/model-params"
 
 import { DEFAULT_HEADERS } from "./constants"
@@ -29,6 +35,7 @@ import { handleOpenAIError } from "./utils/openai-error-handler"
 // `OpenAINativeHandler` can subclass from this, since it's obviously
 // compatible with the OpenAI API. We can also rename it to `OpenAIHandler`.
 export class OpenAiHandler extends BaseProvider implements SingleCompletionHandler {
+	readonly streamCapabilities: ApiStreamCapabilities = { cancellation: true }
 	protected options: ApiHandlerOptions
 	protected client: OpenAI
 	private readonly providerName = "OpenAI"
@@ -80,6 +87,29 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 	}
 
 	override async *createMessage(
+		systemPrompt: string,
+		messages: Anthropic.Messages.MessageParam[],
+		metadata?: ApiHandlerCreateMessageMetadata,
+	): ApiStream {
+		if (!metadata?.signal && !metadata?.deadline) {
+			yield* this.createMessageInternal(systemPrompt, messages, metadata)
+			return
+		}
+		const control = createLinkedAbortController(metadata)
+		try {
+			control.signal.throwIfAborted()
+			yield* iterateApiStreamWithAbort(
+				this.createMessageInternal(systemPrompt, messages, { ...metadata, signal: control.signal }),
+				control.signal,
+			)
+			control.signal.throwIfAborted()
+		} finally {
+			control.controller.abort()
+			control.dispose()
+		}
+	}
+
+	private async *createMessageInternal(
 		systemPrompt: string,
 		messages: Anthropic.Messages.MessageParam[],
 		metadata?: ApiHandlerCreateMessageMetadata,
@@ -169,10 +199,10 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 			let stream
 			try {
-				stream = await this.client.chat.completions.create(
-					requestOptions,
-					isAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {},
-				)
+				stream = await this.client.chat.completions.create(requestOptions, {
+					...(isAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
+					...(metadata?.signal ? { signal: metadata.signal } : {}),
+				})
 			} catch (error) {
 				throw handleOpenAIError(error, this.providerName)
 			}
@@ -199,12 +229,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					}
 				}
 
-				if ("reasoning_content" in delta && delta.reasoning_content) {
-					yield {
-						type: "reasoning",
-						text: (delta.reasoning_content as string | undefined) || "",
-					}
-				}
+				yield* this.readReasoning(delta)
 
 				yield* this.processToolCalls(delta, finishReason, activeToolCallIds)
 
@@ -237,15 +262,16 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 			let response
 			try {
-				response = await this.client.chat.completions.create(
-					requestOptions,
-					this._isAzureAiInference(modelUrl) ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {},
-				)
+				response = await this.client.chat.completions.create(requestOptions, {
+					...(this._isAzureAiInference(modelUrl) ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
+					...(metadata?.signal ? { signal: metadata.signal } : {}),
+				})
 			} catch (error) {
 				throw handleOpenAIError(error, this.providerName)
 			}
 
 			const message = response.choices?.[0]?.message
+			yield* this.readReasoning(message)
 
 			if (message?.tool_calls) {
 				for (const toolCall of message.tool_calls) {
@@ -277,6 +303,16 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			cacheWriteTokens: usage?.cache_creation_input_tokens || undefined,
 			cacheReadTokens: usage?.cache_read_input_tokens || undefined,
 		}
+	}
+
+	private *readReasoning(value: unknown): Generator<{ type: "reasoning"; text: string }> {
+		if (!value || typeof value !== "object") return
+		const record = value as Record<string, unknown>
+		const text =
+			typeof record.reasoning_content === "string" && record.reasoning_content
+				? record.reasoning_content
+				: record.reasoning
+		if (typeof text === "string" && text) yield { type: "reasoning", text }
 	}
 
 	override getModel() {
@@ -364,10 +400,10 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 			let stream
 			try {
-				stream = await this.client.chat.completions.create(
-					requestOptions,
-					methodIsAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {},
-				)
+				stream = await this.client.chat.completions.create(requestOptions, {
+					...(methodIsAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
+					...(metadata?.signal ? { signal: metadata.signal } : {}),
+				})
 			} catch (error) {
 				throw handleOpenAIError(error, this.providerName)
 			}
@@ -398,15 +434,16 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 			let response
 			try {
-				response = await this.client.chat.completions.create(
-					requestOptions,
-					methodIsAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {},
-				)
+				response = await this.client.chat.completions.create(requestOptions, {
+					...(methodIsAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
+					...(metadata?.signal ? { signal: metadata.signal } : {}),
+				})
 			} catch (error) {
 				throw handleOpenAIError(error, this.providerName)
 			}
 
 			const message = response.choices?.[0]?.message
+			yield* this.readReasoning(message)
 			if (message?.tool_calls) {
 				for (const toolCall of message.tool_calls) {
 					if (toolCall.type === "function") {
@@ -436,6 +473,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			const finishReason = chunk.choices?.[0]?.finish_reason
 
 			if (delta) {
+				yield* this.readReasoning(delta)
 				if (delta.content) {
 					yield {
 						type: "text",

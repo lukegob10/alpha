@@ -24,6 +24,12 @@
 		"delete_custom_mode_with_rules": "Tem certeza de que deseja excluir este modo {scope}?\n\nIsso também excluirá a pasta de regras associada em:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"mutation_receipt_orphaned": "A tarefa permanece incompleta e não verificada: após 30 segundos, ainda falta o registro de uma alteração no espaço de trabalho. Nenhuma operação ativa está sendo acompanhada para esse registro pendente. Repetir a conclusão ou a verificação não corrigirá esse estado. Use as informações detalhadas do erro para investigar o erro original da ferramenta ou do armazenamento antes de retomar.",
+		"task_recovery_lock_repair": "O Alpha não consegue verificar o proprietário do bloqueio compartilhado de tarefas. Retomar ou recarregar não o repara com segurança. Feche todas as janelas do VS Code e os hosts de teste do Alpha. Depois, faça backup e remova apenas agent_control.json.transaction.lock do armazenamento global do Alpha antes de reabrir. Nunca remova o bloqueio com um host em execução; preserve o histórico e agent_control.json.",
+		"task_recovery_failed": "O turno foi interrompido porque uma operação falhou. Você pode retomar a tarefa ou enviar novas orientações.",
+		"task_recovery_incomplete": "O turno terminou antes de a tarefa ser concluída. Você pode retomar a tarefa ou enviar novas orientações.",
+		"task_recovery_exhausted": "O turno foi interrompido ao atingir o limite de novas tentativas automáticas. Você pode retomar a tarefa ou enviar novas orientações.",
+		"task_recovery_persistence": "A tarefa foi pausada porque não foi possível salvar os dados necessários. Verifique o espaço livre em disco e o acesso à pasta de armazenamento de tarefas; depois, retome a tarefa ou envie novas orientações.",
 		"invalid_data_uri": "Formato de URI de dados inválido",
 		"error_copying_image": "Erro ao copiar imagem: {{errorMessage}}",
 		"error_saving_image": "Erro ao salvar imagem: {{errorMessage}}",
@@ -76,6 +82,10 @@
 		"url_fetch_failed": "Falha ao buscar conteúdo da URL: {{error}}",
 		"url_fetch_error_with_url": "Erro ao buscar conteúdo para {{url}}: {{error}}",
 		"command_timeout": "A execução do comando excedeu o tempo limite após {{seconds}} segundos",
+		"command_mutation_observation_incomplete": "A tarefa permanece incompleta e não verificada porque não foi possível observar totalmente as alterações feitas pelo comando.",
+		"command_mutation_receipt_incomplete": "A tarefa permanece incompleta e não verificada porque não foi possível finalizar o comprovante de alterações do comando.",
+		"mutation_receipt_incomplete": "A tarefa permanece incompleta porque não foi possível finalizar o registro de uma alteração no espaço de trabalho. Revise o erro original da ferramenta antes de retomar.",
+		"command_output_bookkeeping_incomplete": "A tarefa permanece incompleta porque não foi possível finalizar a saída do comando concluído.",
 		"share_task_failed": "Falha ao compartilhar tarefa",
 		"share_no_active_task": "Nenhuma tarefa ativa para compartilhar",
 		"share_auth_required": "Autenticação necessária. Faça login para compartilhar tarefas.",
@@ -147,7 +157,7 @@
 	"warnings": {
 		"no_terminal_content": "Nenhum conteúdo do terminal selecionado",
 		"missing_task_files": "Os arquivos desta tarefa estão faltando. Deseja removê-la da lista de tarefas?",
-		"auto_import_failed": "Falha ao importar automaticamente as configurações do RooCode: {{error}}"
+		"auto_import_failed": "Falha ao importar automaticamente as configurações do Alpha: {{error}}"
 	},
 	"info": {
 		"no_changes": "Nenhuma alteração encontrada.",
@@ -156,7 +166,7 @@
 		"custom_storage_path_set": "Caminho de armazenamento personalizado definido: {{path}}",
 		"default_storage_path": "Retornado ao caminho de armazenamento padrão",
 		"settings_imported": "Configurações importadas com sucesso.",
-		"auto_import_success": "Configurações do RooCode importadas automaticamente de {{filename}}",
+		"auto_import_success": "Configurações do Alpha importadas automaticamente de {{filename}}",
 		"share_link_copied": "Link de compartilhamento copiado para a área de transferência",
 		"image_copied_to_clipboard": "URI de dados da imagem copiada para a área de transferência",
 		"image_saved": "Imagem salva em {{path}}",

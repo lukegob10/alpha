@@ -1,3 +1,4 @@
+import { lexicalText, lexicalVector } from "../../shared/lexical"
 import { QdrantClient } from "@qdrant/js-client-rest"
 import { createHash } from "crypto"
 
@@ -32,6 +33,8 @@ vitest.mock("path", async () => {
 
 const mockQdrantClientInstance = {
 	getCollection: vitest.fn(),
+	retrieve: vitest.fn().mockResolvedValue([{ payload: { indexIdentity: "code-index-2" } }]),
+	updateCollection: vitest.fn().mockResolvedValue(true),
 	createCollection: vitest.fn(),
 	deleteCollection: vitest.fn(),
 	createPayloadIndex: vitest.fn(),
@@ -529,6 +532,7 @@ describe("QdrantVectorStore", () => {
 			expect(mockQdrantClientInstance.getCollection).toHaveBeenCalledWith(expectedCollectionName)
 			expect(mockQdrantClientInstance.createCollection).toHaveBeenCalledTimes(1)
 			expect(mockQdrantClientInstance.createCollection).toHaveBeenCalledWith(expectedCollectionName, {
+				sparse_vectors: { lexical: { modifier: "idf" } },
 				vectors: {
 					size: mockVectorSize,
 					distance: "Cosine", // Assuming 'Cosine' is the DISTANCE_METRIC
@@ -621,6 +625,7 @@ describe("QdrantVectorStore", () => {
 			expect(mockQdrantClientInstance.deleteCollection).toHaveBeenCalledWith(expectedCollectionName)
 			expect(mockQdrantClientInstance.createCollection).toHaveBeenCalledTimes(1)
 			expect(mockQdrantClientInstance.createCollection).toHaveBeenCalledWith(expectedCollectionName, {
+				sparse_vectors: { lexical: { modifier: "idf" } },
 				vectors: {
 					size: mockVectorSize, // Should use the new, correct vector size
 					distance: "Cosine",
@@ -929,6 +934,7 @@ describe("QdrantVectorStore", () => {
 			expect(mockQdrantClientInstance.getCollection).toHaveBeenCalledTimes(2)
 			expect(mockQdrantClientInstance.deleteCollection).toHaveBeenCalledTimes(1)
 			expect(mockQdrantClientInstance.createCollection).toHaveBeenCalledWith(expectedCollectionName, {
+				sparse_vectors: { lexical: { modifier: "idf" } },
 				vectors: {
 					size: newVectorSize, // Should create with new 768 dimensions
 					distance: "Cosine",
@@ -1022,6 +1028,37 @@ describe("QdrantVectorStore", () => {
 		)
 		;(console.warn as any).mockRestore()
 	})
+	describe("deletePointsByMultipleFilePaths", () => {
+		it("propagates collection lookup failures instead of reporting a successful deletion", async () => {
+			const lookupError = new Error("Qdrant unavailable")
+			mockQdrantClientInstance.getCollection.mockRejectedValue(lookupError)
+			const consoleErrorSpy = vitest.spyOn(console, "error").mockImplementation(() => {})
+
+			await expect(vectorStore.deletePointsByMultipleFilePaths(["src/test.ts"])).rejects.toThrow(lookupError)
+			expect(mockQdrantClientInstance.delete).not.toHaveBeenCalled()
+			consoleErrorSpy.mockRestore()
+		})
+
+		it("propagates delete failures so callers do not commit stale cache state", async () => {
+			const deleteError = new Error("Delete failed")
+			mockQdrantClientInstance.getCollection.mockResolvedValue({} as any)
+			mockQdrantClientInstance.delete.mockRejectedValue(deleteError)
+			const consoleErrorSpy = vitest.spyOn(console, "error").mockImplementation(() => {})
+
+			await expect(vectorStore.deletePointsByMultipleFilePaths(["src/test.ts"])).rejects.toThrow(deleteError)
+			expect(mockQdrantClientInstance.delete).toHaveBeenCalledTimes(1)
+			consoleErrorSpy.mockRestore()
+		})
+
+		it("keeps a missing collection as a successful no-op", async () => {
+			mockQdrantClientInstance.getCollection.mockRejectedValue({ response: { status: 404 } })
+			const consoleWarnSpy = vitest.spyOn(console, "warn").mockImplementation(() => {})
+
+			await expect(vectorStore.deletePointsByMultipleFilePaths(["src/test.ts"])).resolves.toBeUndefined()
+			expect(mockQdrantClientInstance.delete).not.toHaveBeenCalled()
+			consoleWarnSpy.mockRestore()
+		})
+	})
 	describe("deleteCollection", () => {
 		it("should delete collection when it exists", async () => {
 			// Mock collectionExists to return true
@@ -1097,7 +1134,10 @@ describe("QdrantVectorStore", () => {
 				points: [
 					{
 						id: "test-id-1",
-						vector: [0.1, 0.2, 0.3],
+						vector: {
+							"": [0.1, 0.2, 0.3],
+							lexical: { indices: expect.any(Array), values: expect.any(Array) },
+						},
 						payload: {
 							filePath: "src/components/Button.tsx",
 							content: "export const Button = () => {}",
@@ -1112,7 +1152,10 @@ describe("QdrantVectorStore", () => {
 					},
 					{
 						id: "test-id-2",
-						vector: [0.4, 0.5, 0.6],
+						vector: {
+							"": [0.4, 0.5, 0.6],
+							lexical: { indices: expect.any(Array), values: expect.any(Array) },
+						},
 						payload: {
 							filePath: "src/utils/helpers.ts",
 							content: "export function helper() {}",
@@ -1196,7 +1239,10 @@ describe("QdrantVectorStore", () => {
 				points: [
 					{
 						id: "test-id-1",
-						vector: [0.1, 0.2, 0.3],
+						vector: {
+							"": [0.1, 0.2, 0.3],
+							lexical: { indices: expect.any(Array), values: expect.any(Array) },
+						},
 						payload: {
 							filePath: "src/components/ui/forms/InputField.tsx",
 							content: "export const InputField = () => {}",
@@ -1287,7 +1333,21 @@ describe("QdrantVectorStore", () => {
 					exact: false,
 				},
 				with_payload: {
-					include: ["filePath", "codeChunk", "startLine", "endLine", "pathSegments"],
+					include: [
+						"filePath",
+						"codeChunk",
+						"startLine",
+						"endLine",
+						"pathSegments",
+						"context",
+						"identifier",
+						"chunkType",
+						"startOffset",
+						"endOffset",
+						"fileHash",
+						"tokenCount",
+						"segmentHash",
+					],
 				},
 			})
 			expect(callArgs.filter).toEqual({
@@ -1326,7 +1386,23 @@ describe("QdrantVectorStore", () => {
 				score_threshold: DEFAULT_SEARCH_MIN_SCORE,
 				limit: DEFAULT_MAX_SEARCH_RESULTS,
 				params: { hnsw_ef: 128, exact: false },
-				with_payload: { include: ["filePath", "codeChunk", "startLine", "endLine", "pathSegments"] },
+				with_payload: {
+					include: [
+						"filePath",
+						"codeChunk",
+						"startLine",
+						"endLine",
+						"pathSegments",
+						"context",
+						"identifier",
+						"chunkType",
+						"startOffset",
+						"endOffset",
+						"fileHash",
+						"tokenCount",
+						"segmentHash",
+					],
+				},
 			})
 			expect(callArgs2.filter).toEqual({
 				must: [
@@ -1358,7 +1434,21 @@ describe("QdrantVectorStore", () => {
 					exact: false,
 				},
 				with_payload: {
-					include: ["filePath", "codeChunk", "startLine", "endLine", "pathSegments"],
+					include: [
+						"filePath",
+						"codeChunk",
+						"startLine",
+						"endLine",
+						"pathSegments",
+						"context",
+						"identifier",
+						"chunkType",
+						"startOffset",
+						"endOffset",
+						"fileHash",
+						"tokenCount",
+						"segmentHash",
+					],
 				},
 			})
 			expect(callArgs3.filter).toEqual({
@@ -1385,7 +1475,21 @@ describe("QdrantVectorStore", () => {
 					exact: false,
 				},
 				with_payload: {
-					include: ["filePath", "codeChunk", "startLine", "endLine", "pathSegments"],
+					include: [
+						"filePath",
+						"codeChunk",
+						"startLine",
+						"endLine",
+						"pathSegments",
+						"context",
+						"identifier",
+						"chunkType",
+						"startOffset",
+						"endOffset",
+						"fileHash",
+						"tokenCount",
+						"segmentHash",
+					],
 				},
 			})
 			expect(callArgs4.filter).toEqual({
@@ -1516,7 +1620,21 @@ describe("QdrantVectorStore", () => {
 					exact: false,
 				},
 				with_payload: {
-					include: ["filePath", "codeChunk", "startLine", "endLine", "pathSegments"],
+					include: [
+						"filePath",
+						"codeChunk",
+						"startLine",
+						"endLine",
+						"pathSegments",
+						"context",
+						"identifier",
+						"chunkType",
+						"startOffset",
+						"endOffset",
+						"fileHash",
+						"tokenCount",
+						"segmentHash",
+					],
 				},
 			})
 			expect(callArgs5.filter).toEqual({
@@ -1590,7 +1708,21 @@ describe("QdrantVectorStore", () => {
 						exact: false,
 					},
 					with_payload: {
-						include: ["filePath", "codeChunk", "startLine", "endLine", "pathSegments"],
+						include: [
+							"filePath",
+							"codeChunk",
+							"startLine",
+							"endLine",
+							"pathSegments",
+							"context",
+							"identifier",
+							"chunkType",
+							"startOffset",
+							"endOffset",
+							"fileHash",
+							"tokenCount",
+							"segmentHash",
+						],
 					},
 				})
 				expect(callArgs7.filter).toEqual({
@@ -1619,7 +1751,21 @@ describe("QdrantVectorStore", () => {
 						exact: false,
 					},
 					with_payload: {
-						include: ["filePath", "codeChunk", "startLine", "endLine", "pathSegments"],
+						include: [
+							"filePath",
+							"codeChunk",
+							"startLine",
+							"endLine",
+							"pathSegments",
+							"context",
+							"identifier",
+							"chunkType",
+							"startOffset",
+							"endOffset",
+							"fileHash",
+							"tokenCount",
+							"segmentHash",
+						],
 					},
 				})
 				expect(callArgs6.filter).toEqual({
@@ -1646,7 +1792,21 @@ describe("QdrantVectorStore", () => {
 						exact: false,
 					},
 					with_payload: {
-						include: ["filePath", "codeChunk", "startLine", "endLine", "pathSegments"],
+						include: [
+							"filePath",
+							"codeChunk",
+							"startLine",
+							"endLine",
+							"pathSegments",
+							"context",
+							"identifier",
+							"chunkType",
+							"startOffset",
+							"endOffset",
+							"fileHash",
+							"tokenCount",
+							"segmentHash",
+						],
 					},
 				})
 				expect(callArgs8.filter).toEqual({
@@ -1673,7 +1833,21 @@ describe("QdrantVectorStore", () => {
 						exact: false,
 					},
 					with_payload: {
-						include: ["filePath", "codeChunk", "startLine", "endLine", "pathSegments"],
+						include: [
+							"filePath",
+							"codeChunk",
+							"startLine",
+							"endLine",
+							"pathSegments",
+							"context",
+							"identifier",
+							"chunkType",
+							"startOffset",
+							"endOffset",
+							"fileHash",
+							"tokenCount",
+							"segmentHash",
+						],
 					},
 				})
 				expect(callArgs9.filter).toEqual({
@@ -1700,7 +1874,21 @@ describe("QdrantVectorStore", () => {
 						exact: false,
 					},
 					with_payload: {
-						include: ["filePath", "codeChunk", "startLine", "endLine", "pathSegments"],
+						include: [
+							"filePath",
+							"codeChunk",
+							"startLine",
+							"endLine",
+							"pathSegments",
+							"context",
+							"identifier",
+							"chunkType",
+							"startOffset",
+							"endOffset",
+							"fileHash",
+							"tokenCount",
+							"segmentHash",
+						],
 					},
 				})
 				expect(callArgs10.filter).toEqual({
@@ -1727,7 +1915,21 @@ describe("QdrantVectorStore", () => {
 						exact: false,
 					},
 					with_payload: {
-						include: ["filePath", "codeChunk", "startLine", "endLine", "pathSegments"],
+						include: [
+							"filePath",
+							"codeChunk",
+							"startLine",
+							"endLine",
+							"pathSegments",
+							"context",
+							"identifier",
+							"chunkType",
+							"startOffset",
+							"endOffset",
+							"fileHash",
+							"tokenCount",
+							"segmentHash",
+						],
 					},
 				})
 				expect(callArgs11.filter).toEqual({
@@ -1760,7 +1962,21 @@ describe("QdrantVectorStore", () => {
 						exact: false,
 					},
 					with_payload: {
-						include: ["filePath", "codeChunk", "startLine", "endLine", "pathSegments"],
+						include: [
+							"filePath",
+							"codeChunk",
+							"startLine",
+							"endLine",
+							"pathSegments",
+							"context",
+							"identifier",
+							"chunkType",
+							"startOffset",
+							"endOffset",
+							"fileHash",
+							"tokenCount",
+							"segmentHash",
+						],
 					},
 				})
 				expect(callArgs12.filter).toEqual({
@@ -1773,6 +1989,43 @@ describe("QdrantVectorStore", () => {
 					must_not: [{ key: "type", match: { value: "metadata" } }],
 				}) // Should still create filter for regular paths
 			})
+		})
+	})
+	it("migrates a same-dimension legacy index before searching sparse vectors", async () => {
+		mockQdrantClientInstance.getCollection.mockResolvedValue({
+			config: { params: { vectors: { size: mockVectorSize } } },
+		})
+		mockQdrantClientInstance.retrieve.mockResolvedValueOnce([{ payload: { indexing_complete: true } }])
+		mockQdrantClientInstance.delete.mockResolvedValueOnce({})
+		expect(await vectorStore.initialize()).toBe(true)
+		expect(mockQdrantClientInstance.updateCollection).toHaveBeenCalledWith(expectedCollectionName, {
+			sparse_vectors: { lexical: { modifier: "idf" } },
+		})
+		expect(mockQdrantClientInstance.delete).toHaveBeenCalledWith(expectedCollectionName, {
+			filter: { must: [] },
+			wait: true,
+		})
+	})
+	it("queries the sparse lexical index with the same path scope and metadata exclusion", async () => {
+		mockQdrantClientInstance.query.mockResolvedValue({
+			points: [
+				{
+					id: "match",
+					score: 2,
+					payload: { filePath: "src/state.ts", codeChunk: "cancelDescendants()", startLine: 1, endLine: 1 },
+				},
+			],
+		})
+		expect((await vectorStore.searchLexical("cancelDescendants", "src", 40))[0].id).toBe("match")
+		expect(mockQdrantClientInstance.query).toHaveBeenCalledWith(expectedCollectionName, {
+			query: lexicalVector("cancelDescendants", true),
+			using: "lexical",
+			limit: 40,
+			with_payload: true,
+			filter: {
+				must: [{ key: "pathSegments.0", match: { value: "src" } }],
+				must_not: [{ key: "type", match: { value: "metadata" } }],
+			},
 		})
 	})
 })

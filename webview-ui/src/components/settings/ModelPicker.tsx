@@ -69,6 +69,10 @@ interface ModelPickerProps {
 	secondaryLabelTransform?: (modelId: string, modelInfo?: ModelInfo) => string | undefined
 	/** Callback when model changes - useful for side effects like clearing related fields */
 	onModelChange?: (modelId: string) => void
+	/** Prefer live provider metadata for the selected model over static registry metadata. */
+	selectedModelInfoOverride?: ModelInfo
+	/** Whether users may enter a model identifier that is not in the supplied model list. */
+	allowCustomModel?: boolean
 }
 
 export const ModelPicker = ({
@@ -89,6 +93,8 @@ export const ModelPicker = ({
 	labelTransform,
 	secondaryLabelTransform,
 	onModelChange,
+	selectedModelInfoOverride,
+	allowCustomModel = true,
 }: ModelPickerProps) => {
 	const { t } = useAppTranslation()
 
@@ -99,7 +105,7 @@ export const ModelPicker = ({
 	const selectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 	const closeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
-	const { id: selectedModelId, info: selectedModelInfo } = useSelectedModel(apiConfiguration)
+	const { id: selectedModelId, info: configuredSelectedModelInfo } = useSelectedModel(apiConfiguration)
 
 	// Get the display value for the current selection
 	// If displayTransform is provided, use it to convert the stored value to a display string
@@ -110,6 +116,8 @@ export const ModelPicker = ({
 		}
 		return selectedModelId
 	}, [displayTransform, apiConfiguration, modelIdKey, selectedModelId])
+	const selectedModelInfo =
+		selectedModelInfoOverride ?? (displayValue ? models?.[displayValue] : undefined) ?? configuredSelectedModelInfo
 
 	const displayLabel = useMemo(() => {
 		return displayValue ? (labelTransform?.(displayValue, selectedModelInfo) ?? displayValue) : undefined
@@ -192,13 +200,24 @@ export const ModelPicker = ({
 	}, [])
 
 	useEffect(() => {
-		if (!selectedModelId && !isInitialized.current) {
-			const initialValue = modelIds.includes(selectedModelId) ? selectedModelId : defaultModelId
-			setApiConfigurationField(modelIdKey, initialValue, false) // false = automatic initialization
+		if (isInitialized.current) {
+			return
 		}
 
+		if (displayValue) {
+			isInitialized.current = true
+			return
+		}
+
+		if (modelIds.length === 0) {
+			return
+		}
+
+		const initialModelId = modelIds.includes(defaultModelId) ? defaultModelId : modelIds[0]
+		const initialValue = valueTransform ? valueTransform(initialModelId) : initialModelId
+		setApiConfigurationField(modelIdKey, initialValue as ProviderSettings[ModelIdKey], false)
 		isInitialized.current = true
-	}, [modelIds, setApiConfigurationField, modelIdKey, selectedModelId, defaultModelId])
+	}, [defaultModelId, displayValue, modelIdKey, modelIds, setApiConfigurationField, valueTransform])
 
 	// Cleanup timeouts on unmount to prevent test flakiness
 	useEffect(() => {
@@ -288,7 +307,7 @@ export const ModelPicker = ({
 									))}
 								</CommandGroup>
 							</CommandList>
-							{searchValue && !modelIds.includes(searchValue) && (
+							{allowCustomModel && searchValue && !modelIds.includes(searchValue) && (
 								<div className="p-1 border-t border-vscode-input-border">
 									<CommandItem data-testid="use-custom-model" value={searchValue} onSelect={onSelect}>
 										{t("settings:modelPicker.useCustomModel", { modelId: searchValue })}
@@ -321,7 +340,7 @@ export const ModelPicker = ({
 							hidePricing={hidePricing}
 						/>
 					)}
-					{!hidePricing && (
+					{!hidePricing && serviceUrl && (
 						<div className="text-sm text-vscode-descriptionForeground">
 							<Trans
 								i18nKey="settings:modelPicker.automaticFetch"

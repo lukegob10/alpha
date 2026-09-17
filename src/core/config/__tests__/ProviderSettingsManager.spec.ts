@@ -766,7 +766,7 @@ describe("ProviderSettingsManager", () => {
 
 	describe("Export", () => {
 		it("should preserve retired provider profiles with full fields", async () => {
-			const existingConfig: ProviderProfiles = {
+			const existingConfig = {
 				currentApiConfigName: "retired",
 				apiConfigs: {
 					retired: {
@@ -777,9 +777,10 @@ describe("ProviderSettingsManager", () => {
 						openAiBaseUrl: "https://legacy.example/v1",
 						modelMaxTokens: 4096,
 						modelMaxThinkingTokens: 2048,
+						groqApiKey: "legacy-groq-key",
 					},
 				},
-			}
+			} as ProviderProfiles
 
 			mockSecrets.get.mockResolvedValue(JSON.stringify(existingConfig))
 
@@ -791,6 +792,7 @@ describe("ProviderSettingsManager", () => {
 			expect(exported.apiConfigs.retired.openAiBaseUrl).toBe("https://legacy.example/v1")
 			expect(exported.apiConfigs.retired.modelMaxTokens).toBe(4096)
 			expect(exported.apiConfigs.retired.modelMaxThinkingTokens).toBe(2048)
+			expect((exported.apiConfigs.retired as Record<string, unknown>).groqApiKey).toBe("legacy-groq-key")
 		})
 	})
 
