@@ -136,6 +136,15 @@ function parseArguments(args) {
 }
 
 function runSelfCheck() {
+	const pnpm = resolvePnpmInvocation()
+	const pnpmVersion = spawnSync(pnpm.command, [...pnpm.args, "--version"], {
+		encoding: "utf8",
+		shell: false,
+		windowsHide: true,
+	})
+	if (pnpmVersion.error || pnpmVersion.status !== 0 || !/^\d+\.\d+\.\d+\s*$/.test(pnpmVersion.stdout)) {
+		fail("Structured pnpm invocation self-check failed")
+	}
 	const checkedMatrix = loadMatrix()
 	prepareTracks(checkedMatrix.tracks)
 	const livePreflightMode = runLivePlaybookPreflightSelfCheck()
@@ -522,7 +531,7 @@ function printReadinessPreview(rows, resolvedTracks) {
 }
 
 function runTracks(resolvedTracks, strictMode) {
-	const pnpm = resolvePnpmExecutable()
+	const pnpm = resolvePnpmInvocation()
 	const childEnvironment = deterministicEnvironment()
 	const results = new Map()
 	const reportDirectory = mkdtempSync(path.join(tmpdir(), "alpha-managed-agent-certification-"))
@@ -533,8 +542,9 @@ function runTracks(resolvedTracks, strictMode) {
 			const reportPath = path.join(reportDirectory, `${track.id}.json`)
 			const startedAt = Date.now()
 			const result = spawnSync(
-				pnpm,
+				pnpm.command,
 				[
+					...pnpm.args,
 					"--dir",
 					track.packageDir,
 					"exec",
@@ -684,12 +694,12 @@ function removeReportDirectory(reportDirectory) {
 }
 
 function runPrerequisites(prerequisites) {
-	const pnpm = resolvePnpmExecutable()
+	const pnpm = resolvePnpmInvocation()
 	const childEnvironment = deterministicEnvironment()
 	return prerequisites.map((prerequisite) => {
 		console.log(`\n==> ${prerequisite.label} [${prerequisite.id}]`)
 		const startedAt = Date.now()
-		const result = spawnSync(pnpm, prerequisite.args, {
+		const result = spawnSync(pnpm.command, [...pnpm.args, ...prerequisite.args], {
 			cwd: repositoryRoot,
 			env: childEnvironment,
 			stdio: "inherit",
@@ -739,8 +749,13 @@ function deterministicEnvironment() {
 	return environment
 }
 
-function resolvePnpmExecutable() {
-	if (process.platform !== "win32") return "pnpm"
+function resolvePnpmInvocation() {
+	const cliPath = process.env.npm_execpath
+	if (cliPath && path.isAbsolute(cliPath) && existsSync(cliPath)) {
+		if (/\.[cm]?js$/i.test(cliPath)) return { command: process.execPath, args: [cliPath] }
+		if (/\.exe$/i.test(cliPath)) return { command: cliPath, args: [] }
+	}
+	if (process.platform !== "win32") return { command: "pnpm", args: [] }
 	const pnpmHome = process.env.PNPM_HOME
 	if (pnpmHome) {
 		const versionsRoot = path.join(pnpmHome, ".tools", "pnpm-exe")
@@ -749,10 +764,10 @@ function resolvePnpmExecutable() {
 				.sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))
 				.map((version) => path.join(versionsRoot, version, "pnpm.exe"))
 				.find(existsSync)
-			if (executable) return executable
+			if (executable) return { command: executable, args: [] }
 		}
 	}
-	return "pnpm.cmd"
+	throw new Error("Run certification through pnpm or configure PNPM_HOME with a pnpm executable")
 }
 
 function evaluateRow(row, resolvedTracks, trackResults, strictMode) {

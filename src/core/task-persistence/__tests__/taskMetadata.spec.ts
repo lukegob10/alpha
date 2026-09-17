@@ -3,6 +3,22 @@ import { createSubagentCommandApprovalPolicy } from "../../auto-approval/command
 import { captureSubagentContext } from "../../agent/SubagentContextCapture"
 
 describe("taskMetadata sub-agent routing", () => {
+	let storageRoot: string
+	let tempBase: string
+	let workspace: string
+
+	beforeEach(async () => {
+		tempBase = await fs.realpath(os.tmpdir())
+		storageRoot = await fs.mkdtemp(path.join(tempBase, "alpha-task-metadata-"))
+		workspace = path.join(storageRoot, "workspace")
+	})
+
+	afterEach(async () => {
+		expect(path.dirname(storageRoot)).toBe(tempBase)
+		expect(path.basename(storageRoot)).toMatch(/^alpha-task-metadata-/)
+		await fs.rm(storageRoot, { recursive: true, force: true })
+	})
+
 	it("persists only the credential-free route snapshot", async () => {
 		const route = {
 			source: "role" as const,
@@ -18,8 +34,8 @@ describe("taskMetadata sub-agent routing", () => {
 			parentTaskId: "parent-1",
 			taskNumber: 2,
 			messages: [],
-			globalStoragePath: "F:/storage",
-			workspace: "F:/workspace",
+			globalStoragePath: storageRoot,
+			workspace,
 			taskKind: "subagent",
 			subagentModelRoute: route,
 		})
@@ -44,11 +60,11 @@ describe("taskMetadata sub-agent routing", () => {
 			history: [{ role: "user", content: "private parent body" }],
 			instructions: {
 				effectiveText: "private frozen instructions",
-				sources: [{ kind: "agents", ref: "F:/workspace/AGENTS.md", text: "private AGENTS body" }],
+				sources: [{ kind: "agents", ref: path.join(workspace, "AGENTS.md"), text: "private AGENTS body" }],
 			},
 			skills: [],
-			cwd: "F:/workspace",
-			workspaceRoots: ["F:/workspace"],
+			cwd: workspace,
+			workspaceRoots: [workspace],
 			modelRoute: route,
 			runtimePolicy: {
 				role: "review",
@@ -60,7 +76,7 @@ describe("taskMetadata sub-agent routing", () => {
 				externalSideEffects: false,
 				requireApproval: false,
 				allowedTools: ["read_file", "attempt_completion"],
-				workspaceRoots: ["F:/workspace"],
+				workspaceRoots: [workspace],
 				autoApproval: {
 					autoApprovalEnabled: true,
 					alwaysAllowReadOnly: true,
@@ -80,8 +96,8 @@ describe("taskMetadata sub-agent routing", () => {
 			parentTaskId: "parent-1",
 			taskNumber: 2,
 			messages: [],
-			globalStoragePath: "F:/storage",
-			workspace: "F:/workspace",
+			globalStoragePath: storageRoot,
+			workspace,
 			taskKind: "subagent",
 			subagentContextManifest: manifest,
 			subagentInstructionPlacement: "system",
@@ -98,3 +114,6 @@ describe("taskMetadata sub-agent routing", () => {
 		expect(JSON.stringify(historyItem.subagentContextManifest)).not.toContain("private AGENTS body")
 	})
 })
+import fs from "fs/promises"
+import os from "os"
+import path from "path"

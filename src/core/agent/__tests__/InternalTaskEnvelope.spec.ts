@@ -16,12 +16,14 @@ const full: InternalTaskPolicy = {
 	externalSideEffects: false,
 	requireApproval: true,
 }
+const workspaceRoot = path.resolve("workspace")
+const outsideRoot = path.resolve("outside")
 const base = {
 	parentTaskId: "parent",
 	objective: "Inspect failures",
 	parentPolicy: full,
 	requestedPolicy: {},
-	workspaceRoots: ["F:/workspace"],
+	workspaceRoots: [workspaceRoot],
 	id: "child",
 }
 
@@ -35,7 +37,7 @@ describe("internal task envelopes", () => {
 		const implementation = buildInternalTaskEnvelope({
 			...base,
 			requestedPolicy: { network: false, externalSideEffects: false },
-			allowedPaths: ["F:/workspace/src"],
+			allowedPaths: [path.join(workspaceRoot, "src")],
 		})
 		const verification = buildInternalTaskEnvelope({
 			...base,
@@ -71,7 +73,7 @@ describe("internal task envelopes", () => {
 		["agent kind", { agentKind: "unknown" }],
 		["route", { modelRouteId: "unknown" }],
 		["skill", { skillIds: ["missing"] }],
-		["scope", { allowedPaths: ["F:/outside"] }],
+		["scope", { allowedPaths: [outsideRoot] }],
 	])("fails closed for unknown or invalid %s", (_label, override) => {
 		expect(() => buildInternalTaskEnvelope({ ...base, ...override } as any)).toThrow()
 	})
@@ -108,14 +110,14 @@ describe("internal task envelopes", () => {
 			...base,
 			agentKind: "worker",
 			requestedPolicy: { read: true, execute: true, mutate: true, delegate: false },
-			parentWorkspaceRoots: ["F:/workspace"],
+			parentWorkspaceRoots: [workspaceRoot],
 			parentAllowedPaths: ["src", "package.json"],
 			parentFileAllowedPaths: ["package.json"],
 			allowedPaths: ["src/task", "package.json"],
 		})
 		expect(worker.policy).toMatchObject({ execute: true, mutate: true, delegate: false })
 		expect(worker.scope.allowedPaths).toEqual(
-			[path.resolve("F:/workspace/package.json"), path.resolve("F:/workspace/src/task")].sort(),
+			[path.join(workspaceRoot, "package.json"), path.join(workspaceRoot, "src/task")].sort(),
 		)
 
 		expect(() =>
@@ -123,7 +125,7 @@ describe("internal task envelopes", () => {
 				...base,
 				agentKind: "worker",
 				requestedPolicy: { execute: true, mutate: true },
-				parentWorkspaceRoots: ["F:/workspace"],
+				parentWorkspaceRoots: [workspaceRoot],
 				parentAllowedPaths: ["package.json"],
 				parentFileAllowedPaths: ["package.json"],
 				allowedPaths: ["package.json/generated"],
@@ -134,8 +136,8 @@ describe("internal task envelopes", () => {
 				...base,
 				agentKind: "worker",
 				requestedPolicy: { execute: true, mutate: true },
-				workspaceRoots: ["F:/outside"],
-				parentWorkspaceRoots: ["F:/workspace"],
+				workspaceRoots: [outsideRoot],
+				parentWorkspaceRoots: [workspaceRoot],
 			}),
 		).toThrow("workspace root")
 	})

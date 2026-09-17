@@ -46,3 +46,7 @@ runs:
           if: ${{ inputs.skip-install != 'true' }}
           shell: bash
           run: pnpm install --frozen-lockfile ${{ inputs.install-args }}
+        - name: Restore bundled ripgrep executable
+          if: ${{ inputs.skip-install != 'true' }}
+          shell: bash
+          run: pnpm --dir src rebuild @vscode/ripgrep

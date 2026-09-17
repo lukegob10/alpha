@@ -45,6 +45,7 @@ jobs:
         name: platform-unit-test (${{ matrix.name }})
         runs-on: ${{ matrix.os }}
         strategy:
+            fail-fast: false
             matrix:
                 include:
                     - os: ubuntu-latest
@@ -56,8 +57,17 @@ jobs:
               uses: actions/checkout@v4
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
+            - name: Add bundled ripgrep to PATH
+              shell: pwsh
+              working-directory: src
+              run: node -e "console.log(require('node:path').dirname(require('@vscode/ripgrep').rgPath))" >> $env:GITHUB_PATH
             - name: Run unit tests
-              run: pnpm test
+              env:
+                  VITEST_MAX_FORKS: 2
+                  VITEST_MIN_FORKS: 1
+                  VITEST_MAX_THREADS: 2
+                  VITEST_MIN_THREADS: 1
+              run: pnpm test --env-mode=loose
             - name: Run repository tooling tests
               run: pnpm test:tooling
             - name: Run extension-host runner unit tests
@@ -72,6 +82,8 @@ jobs:
               uses: actions/checkout@v4
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
             - name: Run offline core confidence and exact-host contracts
               shell: pwsh
               run: |

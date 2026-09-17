@@ -11,6 +11,7 @@ guides. Check implementation details against current source and tests; dated mea
 | Code/Plan modes and saved-task compatibility        | [Mode retirement](mode-retirement.md)                                             |
 | Command approval and outside-workspace paths        | [Command and path approval](command-sandbox.md)                                   |
 | Context budgets and compaction                      | [Context compaction](context-compaction.md)                                       |
+| Completion checks and saved acceptance evidence     | [Completion evidence](completion-evidence.md)                                     |
 | Indexing, retrieval, and index compatibility        | [Code index retrieval](code-index-retrieval.md)                                   |
 | File-search arguments and results                   | [File search](search-files.md)                                                    |
 | HTML preview security, lifecycle, and limits        | [HTML documents](html-documents.md)                                               |

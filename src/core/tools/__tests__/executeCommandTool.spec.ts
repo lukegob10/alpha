@@ -531,16 +531,19 @@ describe("executeCommandTool", () => {
 			const result = await executeCommandInTerminalActual(mockAlphaTask as Task, {
 				executionId: "plan-cwd-absolute",
 				command: "pnpm exec tsc --noEmit",
-				customCwd: "C:\\outside",
+				customCwd: path.resolve("outside"),
 			})
 
 			expect(result).toEqual([false, "Plan commands may use only workspace-relative command directories."])
 		})
 
 		it("rejects a relative working directory whose realpath escapes through a symlink", async () => {
-			mockAlphaTask.cwd = "F:\\workspace"
+			mockAlphaTask.cwd = path.resolve("workspace")
 			mockAlphaTask.getTaskMode = vitest.fn().mockResolvedValue("architect")
-			vitest.mocked(fs.realpath).mockResolvedValueOnce("F:\\workspace").mockResolvedValueOnce("F:\\outside")
+			vitest
+				.mocked(fs.realpath)
+				.mockResolvedValueOnce(path.resolve("workspace"))
+				.mockResolvedValueOnce(path.resolve("outside"))
 
 			const result = await executeCommandInTerminalActual(mockAlphaTask as Task, {
 				executionId: "plan-cwd-symlink",

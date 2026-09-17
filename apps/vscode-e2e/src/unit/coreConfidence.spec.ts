@@ -5,6 +5,7 @@ import * as path from "node:path"
 import * as os from "node:os"
 import { runCoreConfidence } from "../runCoreConfidence"
 import type { ExtensionTestRunOptions } from "../runTest"
+import { isWithin } from "../evidence/paths"
 
 async function fixture(context: TestContext) {
 	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-core-confidence-unit-")))
@@ -102,9 +103,9 @@ test("core confidence composes offline owners and replays this run's completion 
 		path.join(run.hosts[1]!.artifactsDir!, "completion-idle.test", "completion-idle.json"),
 	)
 	assert.equal((await run.report()).status, "passed")
-	assert.ok(run.hosts.every((host) => path.relative(run.root, host.profileDir!).startsWith("..")))
-	assert.ok(run.hosts.every((host) => path.relative(run.root, host.workspace!).startsWith("..")))
-	assert.ok(run.hosts.every((host) => path.relative(run.root, host.artifactsDir!).startsWith("..")))
+	assert.ok(run.hosts.every((host) => !isWithin(run.root, host.profileDir!)))
+	assert.ok(run.hosts.every((host) => !isWithin(run.root, host.workspace!)))
+	assert.ok(run.hosts.every((host) => !isWithin(run.root, host.artifactsDir!)))
 	assert.ok(run.hosts.every((host) => /^[a-f0-9]{8}$/.test(path.basename(path.dirname(host.profileDir!)))))
 	assert.ok(run.hosts.every((host) => path.basename(host.profileDir!) === "p"))
 })

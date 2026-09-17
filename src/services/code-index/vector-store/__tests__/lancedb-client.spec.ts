@@ -50,7 +50,7 @@ const createSearchBuilder = (rows: any[]) => {
 }
 
 describe("LanceDbVectorStore", () => {
-	const workspacePath = path.join("C:", "workspace")
+	const workspacePath = path.resolve("workspace")
 	const vectorSize = 3
 
 	let mockConnection: any
