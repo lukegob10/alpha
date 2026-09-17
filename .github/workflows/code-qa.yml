@@ -58,7 +58,8 @@ jobs:
               uses: ./.github/actions/setup-node-pnpm
             - name: Add bundled ripgrep to PATH
               shell: pwsh
-              run: pnpm --dir src exec node -e "console.log(require('node:path').dirname(require('@vscode/ripgrep').rgPath))" >> $env:GITHUB_PATH
+              working-directory: src
+              run: node -e "console.log(require('node:path').dirname(require('@vscode/ripgrep').rgPath))" >> $env:GITHUB_PATH
             - name: Run unit tests
               run: pnpm test
             - name: Run repository tooling tests
