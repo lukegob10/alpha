@@ -38,6 +38,24 @@ Native Gemini 2 inputs have explicit Content boundaries so separate chunks recei
 
 Vertex prefers indexing groups matching its request concurrency while preserving whole-file groups, including files larger than that target. Embedding can start while later files are still parsing. This scheduling policy changes neither the embedding input nor vector dimensions and requires no index rebuild.
 
+### File discovery (2026-09-17)
+
+Initial and incremental indexing request files only from the existing `listFiles` helper. Ripgrep remains responsible for traversal, Git ignore handling, symlink behavior, and the file limit. Indexing previously waited for an additional serial JavaScript traversal to collect directory entries, then discarded those entries. That additional walk could also descend into Git-ignored folders. Other listing callers still receive directories by default.
+
+The scanner filters unsupported extensions and excluded paths before `.alphaignore` validation, while retaining symlink-aware policy checks for every remaining candidate. Discovery now forwards cancellation to ripgrep, waits for its process to close through the existing listing contract, and disposes the temporary ignore controller after filtering, including on initialization failure. Cancellation does not trigger deleted-file pruning.
+
+```sh
+pnpm --dir src exec vitest run services/glob/__tests__/list-files-discovery.benchmark.spec.ts --no-silent
+```
+
+The controlled discovery fixture contains 200 source files in 200 directories plus 1,000 Git-ignored generated directories. Ripgrep completes after 20 simulated milliseconds; each additional directory read costs 2 ms. Before the production change, discovery issued 1,203 extra directory reads and took 2,426 ms. With file-only discovery, it issues zero additional directory reads and takes 20 ms, returning exactly the same sorted source file set. This isolates redundant traversal costs; it is not an end-to-end indexing or user-workspace speed claim. Real-ripgrep coverage also compares the old and file-only paths with nested ignore rules and negation.
+
+After discovery, parsing deliberately pauses when the bounded embedding queue is full. A slowly growing discovered-block count during active embedding can therefore still reflect embedding throughput; this change removes work before parsing without unbounding the queue.
+
+Validation passed: `pnpm --dir src exec vitest run services/glob services/code-index core/ignore/__tests__/AlphaIgnoreController.spec.ts core/ignore/__tests__/AlphaIgnoreController.security.spec.ts --maxWorkers=4` (661 tests across 43 files, including real ripgrep), `pnpm --dir src check-types`, ESLint and Prettier checks on touched files, and `pnpm --filter @alpha-code/vscode-e2e test:smoke:1221` (actual VS Code 1.122.1).
+
+The [embedding improvement plan](code-index-improvement-plan.md) records the remaining opportunities and their acceptance criteria.
+
 ### Vertex scheduling check
 
 ```sh
@@ -57,6 +75,8 @@ The Gemini 2 concurrency change was measured on 2026-09-17 with Node 20.19.2 and
 The deterministic workload shows 49.6% less simulated elapsed time. Rate-limit delay and retries are disabled in this benchmark; there are no live network calls. Separate adapter tests cover shared bounds across batches and queries, out-of-order completion, failure draining, and request spacing across authentication and 429 retries. These checks do not establish live GCP throughput: quotas, gateway latency, configured spacing, parsing, and storage can dominate a real run. Higher concurrency may encounter more throttling on constrained projects or gateways; the existing per-request delay and retry backoff still apply.
 
 [Google's Gemini 2 request examples](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/embeddings/get-multimodal-embeddings) and [quotas](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/quotas), retrieved 2026-09-17, confirm the `embedContent` request shape and model quota accounting. Multiple parts in one content represent one embedding input; this change overlaps independent requests rather than concatenating source chunks. The installed Google GenAI SDK remains 1.47.0. The selected concurrency is an Alpha scheduling bound, not a claim about any user's available quota.
+
+Validation for the concurrency change passed: `pnpm --dir src exec vitest run services/code-index --maxWorkers=4` (558 tests), `pnpm --dir src check-types`, ESLint and Prettier checks on touched files, and `pnpm --filter @alpha-code/vscode-e2e test:smoke:1221` (actual VS Code 1.122.1).
 
 ### Hybrid retrieval
 

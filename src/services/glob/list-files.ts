@@ -22,6 +22,8 @@ interface ScanContext {
 }
 
 export interface ListFilesOptions {
+	/** Include directory entries by default; file-only consumers can skip the extra directory walk. */
+	includeDirectories?: boolean
 	/** Existing callers follow links; scoped parallel reads explicitly disable traversal. */
 	followSymlinks?: boolean
 	/** Reject incomplete scans instead of returning the legacy partial result. */
@@ -98,10 +100,14 @@ async function listFilesWithinBudget(
 	// Get ripgrep path
 	const rgPath = await getRipgrepPath()
 	signal?.throwIfAborted()
+	const files = await listFilesWithRipgrep(rgPath, dirPath, recursive, limit, signal, options)
+	signal?.throwIfAborted()
+	if (options.includeDirectories === false) {
+		return formatAndCombineResults(files, [], limit)
+	}
 
 	if (!recursive) {
 		// For non-recursive, use the existing approach
-		const files = await listFilesWithRipgrep(rgPath, dirPath, false, limit, signal, options)
 		const ignoreInstance = strictIgnore ?? (await createIgnoreInstance(dirPath, signal, options))
 		// Calculate remaining limit for directories
 		const remainingLimit = Math.max(0, limit - files.length)
@@ -118,7 +124,6 @@ async function listFilesWithinBudget(
 	}
 
 	// For recursive mode, use the original approach but ensure first-level directories are included
-	const files = await listFilesWithRipgrep(rgPath, dirPath, true, limit, signal, options)
 	const ignoreInstance = await createIgnoreInstance(dirPath, signal, options)
 	// Calculate remaining limit for directories
 	const remainingLimit = Math.max(0, limit - files.length)

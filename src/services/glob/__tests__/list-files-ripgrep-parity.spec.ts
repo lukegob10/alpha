@@ -15,7 +15,54 @@ if (!unavailable && (binary.error || binary.status !== 0)) {
 	throw binary.error ?? new Error(`Unable to execute ripgrep: ${binary.stderr}`)
 }
 
-describe("real ripgrep strict nonrecursive parity", () => {
+describe("real ripgrep listing parity", () => {
+	it.skipIf(unavailable)(
+		"preserves recursive file discovery and nested ignore rules without listing directories",
+		async () => {
+			vi.mocked(getBinPath).mockResolvedValue("rg")
+			const tempBase = await fs.realpath(os.tmpdir())
+			const workspaceRoot = await fs.mkdtemp(path.join(tempBase, "alpha-rg-discovery-"))
+			try {
+				for (const directory of [".git", "src", "generated", ".hidden", "node_modules"]) {
+					await fs.mkdir(path.join(workspaceRoot, directory))
+				}
+				await fs.writeFile(path.join(workspaceRoot, ".gitignore"), "generated/\n*.rootignored\n")
+				await fs.writeFile(path.join(workspaceRoot, "src", ".gitignore"), "*.ts\n!keep.ts\n")
+				for (const file of [
+					"root.ts",
+					"src/keep.ts",
+					"src/drop.ts",
+					"src/readme.md",
+					"generated/ignored.ts",
+					".hidden/hidden.ts",
+					"node_modules/dep.ts",
+					"ordinary.rootignored",
+				]) {
+					await fs.writeFile(path.join(workspaceRoot, file), "discovery fixture")
+				}
+
+				const legacy = await listFiles(workspaceRoot, true, 1000)
+				const filesOnly = await listFiles(workspaceRoot, true, 1000, undefined, { includeDirectories: false })
+				expect(filesOnly).toEqual([legacy[0].filter((entry) => !entry.endsWith("/")), false])
+				const names = filesOnly[0].map((entry) => path.relative(workspaceRoot, entry).replaceAll(path.sep, "/"))
+				expect(names).toEqual(expect.arrayContaining(["root.ts", "src/keep.ts", "src/readme.md"]))
+				for (const ignored of [
+					"src/drop.ts",
+					"generated/ignored.ts",
+					".hidden/hidden.ts",
+					"node_modules/dep.ts",
+					"ordinary.rootignored",
+				]) {
+					expect(names).not.toContain(ignored)
+				}
+			} finally {
+				expect(path.dirname(path.resolve(workspaceRoot))).toBe(tempBase)
+				expect(path.basename(workspaceRoot)).toMatch(/^alpha-rg-discovery-/)
+				await fs.rm(workspaceRoot, { recursive: true, force: true })
+			}
+		},
+	)
+
 	it.skipIf(unavailable)(
 		"preserves ordinary, hidden, and ignored entries with root and nested ignore files",
 		async () => {

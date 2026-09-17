@@ -83,27 +83,20 @@ export class DirectoryScanner implements IDirectoryScanner {
 		onFileParsed?: (fileBlockCount: number) => void,
 		signal?: AbortSignal,
 	): Promise<{ stats: { processed: number; skipped: number }; totalBlockCount: number }> {
+		if (signal?.aborted) return { stats: { processed: 0, skipped: 0 }, totalBlockCount: 0 }
 		const directoryPath = directory
 		// Capture workspace context at scan start
 		const scanWorkspace = getWorkspacePathForContext(directoryPath)
 
-		// Get all files recursively (handles .gitignore automatically)
-		const [allPaths, _] = await listFiles(directoryPath, true, MAX_LIST_FILES_LIMIT_CODE_INDEX)
+		// Ripgrep already traverses the tree and applies Git ignore rules. The indexer
+		// needs only files, so avoid the listing helper's second walk for directory entries.
+		const [filePaths] = await listFiles(directoryPath, true, MAX_LIST_FILES_LIMIT_CODE_INDEX, signal, {
+			includeDirectories: false,
+		})
 
-		// Filter out directories (marked with trailing '/')
-		const filePaths = allPaths.filter((p) => !p.endsWith("/"))
-
-		// Initialize AlphaIgnoreController if not provided
-		const ignoreController = new AlphaIgnoreController(directoryPath)
-
-		await ignoreController.initialize()
-
-		// Filter paths using .alphaignore
-		const allowedPaths = ignoreController.filterPaths(filePaths)
-
-		// Filter by supported extensions, ignore patterns, and excluded directories
-		const supportedPaths = allowedPaths.filter((filePath) => {
-			const ext = path.extname(filePath).toLowerCase()
+		// Reject unsupported paths before Alpha ignore validation resolves symlinks on disk.
+		const candidatePaths = filePaths.filter((filePath) => {
+			if (!scannerExtensions.includes(path.extname(filePath).toLowerCase())) return false
 			const relativeFilePath = generateRelativeFilePath(filePath, scanWorkspace)
 
 			// Check if file is in an ignored directory using the shared helper
@@ -112,8 +105,18 @@ export class DirectoryScanner implements IDirectoryScanner {
 				return false
 			}
 
-			return scannerExtensions.includes(ext) && !this.ignoreInstance.ignores(relativeFilePath)
+			return !this.ignoreInstance.ignores(relativeFilePath)
 		})
+		const ignoreController = new AlphaIgnoreController(directoryPath)
+		let supportedPaths: string[]
+		try {
+			await ignoreController.initialize()
+			signal?.throwIfAborted()
+			supportedPaths = ignoreController.filterPaths(candidatePaths)
+		} finally {
+			// This controller is used only for discovery; the file watcher owns ongoing policy updates.
+			ignoreController.dispose()
+		}
 
 		// Initialize tracking variables
 		const processedFiles = new Set<string>()

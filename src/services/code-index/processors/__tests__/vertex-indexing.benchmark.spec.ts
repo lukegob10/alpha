@@ -20,6 +20,7 @@ vi.mock("../../../../utils/path", async (importOriginal) => ({
 vi.mock("../../../../core/ignore/AlphaIgnoreController", () => ({
 	AlphaIgnoreController: class {
 		async initialize() {}
+		dispose() {}
 		filterPaths(paths: string[]) {
 			return paths
 		}

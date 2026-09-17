@@ -3,6 +3,8 @@
 import { DirectoryScanner } from "../scanner"
 import { stat } from "fs/promises"
 import * as vscode from "vscode"
+import { AlphaIgnoreController } from "../../../../core/ignore/AlphaIgnoreController"
+import { MAX_LIST_FILES_LIMIT_CODE_INDEX } from "../../constants"
 
 // Mock TelemetryService
 vi.mock("@alpha-code/telemetry", () => ({
@@ -157,6 +159,57 @@ describe("DirectoryScanner", () => {
 	})
 
 	describe("scanDirectory", () => {
+		afterEach(() => vi.restoreAllMocks())
+
+		it("discovers only supported candidates before checking Alpha ignore policy and disposes its watcher", async () => {
+			const { listFiles } = await import("../../../glob/list-files")
+			vi.mocked(listFiles).mockResolvedValue([
+				["test/allowed.ts", "test/blocked.ts", "test/image.png", "test/node_modules/vendor.ts"],
+				false,
+			])
+			const filter = vi
+				.spyOn(AlphaIgnoreController.prototype, "filterPaths")
+				.mockImplementation((paths) => paths.filter((filePath) => filePath !== "test/blocked.ts"))
+			const dispose = vi.spyOn(AlphaIgnoreController.prototype, "dispose")
+			const controller = new AbortController()
+			await scanner.scanDirectory("/test", undefined, undefined, undefined, controller.signal)
+
+			expect(listFiles).toHaveBeenCalledWith("/test", true, MAX_LIST_FILES_LIMIT_CODE_INDEX, controller.signal, {
+				includeDirectories: false,
+			})
+			expect(filter).toHaveBeenCalledWith(["test/allowed.ts", "test/blocked.ts"])
+			expect(vscode.workspace.fs.readFile).toHaveBeenCalledTimes(1)
+			expect(mockCodeParser.parseFile).toHaveBeenCalledWith("test/allowed.ts", expect.anything())
+			expect(dispose).toHaveBeenCalledOnce()
+		})
+
+		it("releases the discovery ignore watcher when initialization fails", async () => {
+			vi.spyOn(AlphaIgnoreController.prototype, "initialize").mockRejectedValueOnce(
+				new Error("ignore read failed"),
+			)
+			const dispose = vi.spyOn(AlphaIgnoreController.prototype, "dispose")
+			await expect(scanner.scanDirectory("/test")).rejects.toThrow("ignore read failed")
+			expect(dispose).toHaveBeenCalledOnce()
+			expect(vscode.workspace.fs.readFile).not.toHaveBeenCalled()
+		})
+
+		it("propagates discovery cancellation without pruning cached files", async () => {
+			const { listFiles } = await import("../../../glob/list-files")
+			const controller = new AbortController()
+			const reason = new DOMException("Discovery cancelled", "AbortError")
+			vi.mocked(listFiles).mockImplementationOnce(async (_directory, _recursive, _limit, signal) => {
+				expect(signal).toBe(controller.signal)
+				controller.abort(reason)
+				signal?.throwIfAborted()
+				return [[], false]
+			})
+			await expect(
+				scanner.scanDirectory("/test", undefined, undefined, undefined, controller.signal),
+			).rejects.toBe(reason)
+			expect(mockCacheManager.getAllHashes).not.toHaveBeenCalled()
+			expect(mockVectorStore.deletePointsByFilePath).not.toHaveBeenCalled()
+		})
+
 		it("should skip files larger than MAX_FILE_SIZE_BYTES", async () => {
 			const { listFiles } = await import("../../../glob/list-files")
 			vi.mocked(listFiles).mockResolvedValue([["test/file1.js"], false])

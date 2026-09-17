@@ -115,6 +115,23 @@ describe("listFiles cancellation and strict execution", () => {
 		vi.useRealTimers()
 	})
 
+	it.each([false, true])("lists only files without a second directory walk (recursive=%s)", async (recursive) => {
+		const ripgrep = createMockRipgrepProcess()
+		vi.mocked(childProcess.spawn).mockReturnValue(ripgrep.process as any)
+		const listing = listFiles("/test/project", recursive, 2, undefined, { includeDirectories: false })
+		await waitForRipgrepSpawn()
+		ripgrep.emitData("b.ts\na.ts\nc.ts\n")
+		ripgrep.emitClose(null, "SIGTERM")
+
+		await expect(listing).resolves.toEqual([
+			[path.resolve("/test/project", "a.ts"), path.resolve("/test/project", "b.ts")],
+			true,
+		])
+		expect(ripgrep.process.kill).toHaveBeenCalledOnce()
+		expect(fs.promises.readdir).not.toHaveBeenCalled()
+		expect(fs.promises.access).not.toHaveBeenCalled()
+	})
+
 	it("does not spawn ripgrep when the signal is already aborted", async () => {
 		const controller = new AbortController()
 		const reason = new Error("listing cancelled before start")
@@ -143,26 +160,29 @@ describe("listFiles cancellation and strict execution", () => {
 		expect(args).not.toContain("--follow")
 	})
 
-	it.each([false, true])("joins child close before settling cancellation (strict=%s)", async (rejectOnError) => {
-		const controller = new AbortController()
-		const reason = new Error("listing cancelled")
-		const ripgrep = createMockRipgrepProcess()
-		vi.mocked(childProcess.spawn).mockReturnValue(ripgrep.process as any)
-		const listing = listFiles("/test/project", false, 10, controller.signal, { rejectOnError })
-		const settled = vi.fn()
-		void listing.then(settled, settled)
-		const rejection = expect(listing).rejects.toBe(reason)
-		await waitForRipgrepSpawn()
+	it.each([{ rejectOnError: false }, { rejectOnError: true }, { rejectOnError: false, includeDirectories: false }])(
+		"joins child close before settling cancellation (%j)",
+		async (options) => {
+			const controller = new AbortController()
+			const reason = new Error("listing cancelled")
+			const ripgrep = createMockRipgrepProcess()
+			vi.mocked(childProcess.spawn).mockReturnValue(ripgrep.process as any)
+			const listing = listFiles("/test/project", false, 10, controller.signal, options)
+			const settled = vi.fn()
+			void listing.then(settled, settled)
+			const rejection = expect(listing).rejects.toBe(reason)
+			await waitForRipgrepSpawn()
 
-		controller.abort(reason)
-		await drainPromiseContinuations()
-		expect(ripgrep.process.kill).toHaveBeenCalledTimes(1)
-		expect(settled).not.toHaveBeenCalled()
-		expect(fs.promises.readdir).not.toHaveBeenCalled()
+			controller.abort(reason)
+			await drainPromiseContinuations()
+			expect(ripgrep.process.kill).toHaveBeenCalledTimes(1)
+			expect(settled).not.toHaveBeenCalled()
+			expect(fs.promises.readdir).not.toHaveBeenCalled()
 
-		ripgrep.emitClose(null, "SIGTERM")
-		await rejection
-	})
+			ripgrep.emitClose(null, "SIGTERM")
+			await rejection
+		},
+	)
 
 	it.each([false, true])(
 		"joins timeout termination and preserves strict failure status (strict=%s)",
