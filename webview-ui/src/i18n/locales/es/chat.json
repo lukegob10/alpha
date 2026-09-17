@@ -237,7 +237,9 @@
 		"didViewTopLevelOutsideWorkspace": "Alpha vio los archivos de nivel superior en este directorio (fuera del espacio de trabajo)",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha quiere ver recursivamente todos los archivos en este directorio (fuera del espacio de trabajo)",
 		"didViewRecursiveOutsideWorkspace": "Alpha vio recursivamente todos los archivos en este directorio (fuera del espacio de trabajo)",
-		"wantsToViewMultipleDirectories": "Alpha quiere ver varios directorios"
+		"wantsToViewMultipleDirectories": "Alpha quiere ver varios directorios",
+		"wantsToSearchMultiple": "Alpha quiere ejecutar búsquedas de archivos {{count}}",
+		"didSearchMultiple": "Alpha ejecutó búsquedas de archivos {{count}}"
 	},
 	"commandOutput": "Salida del comando",
 	"commandExecution": {
@@ -481,7 +483,14 @@
 		"clickToEdit": "Haz clic para editar el mensaje",
 		"steering": "Redirigiendo…",
 		"queueFailed": "No se pudo poner el mensaje en cola. El borrador sigue en el editor.",
-		"steerFailed": "No se pudo iniciar la redirección. El mensaje en cola sigue disponible."
+		"steerFailed": "No se pudo iniciar la redirección. El mensaje en cola sigue disponible.",
+		"edit": "Editar",
+		"editTooltip": "Editar este mensaje en cola",
+		"editing": "Editar en el compositor",
+		"dragHandle": "Arrastrar mensaje en cola",
+		"dragTooltip": "Arrastrar para reordenar este mensaje en cola",
+		"steer": "Girar",
+		"steerTooltip": "Enviar este mensaje en cola al giro actual"
 	},
 	"modelResponseDelayed": "Esperando la siguiente actualización del modelo. Un razonamiento más largo puede llevar tiempo.",
 	"slashCommand": {
@@ -519,5 +528,30 @@
 		"list_checks": "Listar comprobaciones",
 		"merge_pull_request": "Fusionar solicitud de extracción",
 		"comment": "Añadir comentario"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "Inspeccionar agentes",
+			"wait_agent": "Esperar actualizaciones del agente",
+			"unknown": "Acción del agente"
+		},
+		"failed": "{{action}} falló: {{error}}",
+		"list": {
+			"running": "Inspeccionando agentes...",
+			"completed": "Agente {{count}} inspeccionado",
+			"completed_other": "Agentes {{count}} inspeccionados",
+			"mailbox": "Actualización del buzón {{count}}",
+			"mailbox_other": "Actualizaciones del buzón {{count}}"
+		},
+		"wait": {
+			"running": "Esperando actualizaciones del agente...",
+			"noActiveAgents": "No hay agentes activos para esperar",
+			"cancelled": "Espera del agente cancelada",
+			"timedOut": "No hay actualizaciones del agente antes del tiempo de espera",
+			"alreadyDelivered": "No hay nuevas actualizaciones; resultados ya entregados",
+			"received": "Se recibió actualización del agente {{count}}",
+			"received_other": "Se recibieron actualizaciones del agente {{count}}",
+			"completed": "Espera del agente completada"
+		}
 	}
 }

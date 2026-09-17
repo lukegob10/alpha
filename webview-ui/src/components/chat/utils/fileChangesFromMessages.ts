@@ -1,7 +1,7 @@
-import type { ClineMessage, ClineSayTool } from "@alpha-code/types"
+import type { AlphaMessage, AlphaSayTool } from "@alpha-code/types"
 import { safeJsonParse } from "@alpha/core"
 
-/** File-edit tool names from ClineSayTool["tool"] plus compatibility aliases. */
+/** File-edit tool names from AlphaSayTool["tool"] plus compatibility aliases. */
 const FILE_EDIT_TOOLS = new Set<string>([
 	"editedExistingFile",
 	"appliedDiff",
@@ -29,7 +29,7 @@ export interface FileChangeTurn {
 	key: string
 	/** Index of the last rendered message in this turn. */
 	endIndex: number
-	messages: ClineMessage[]
+	messages: AlphaMessage[]
 }
 
 /**
@@ -38,7 +38,7 @@ export interface FileChangeTurn {
  * - type "say" + say "tool" (applied tool results, if any are ever pushed that way)
  * - type "ask" + ask "tool" (tool approval messages; after approval the message stays as ask, so this is where file edits appear in the UI)
  */
-export function fileChangesFromMessages(messages: ClineMessage[] | undefined): FileChangeEntry[] {
+export function fileChangesFromMessages(messages: AlphaMessage[] | undefined): FileChangeEntry[] {
 	if (!messages?.length) return []
 
 	const entries: FileChangeEntry[] = []
@@ -51,7 +51,7 @@ export function fileChangesFromMessages(messages: ClineMessage[] | undefined): F
 		// Only include ask "tool" file edits that the user (or auto-approval) has approved
 		if (isAskTool && !msg.isAnswered) continue
 
-		const tool = safeJsonParse<ClineSayTool>(msg.text)
+		const tool = safeJsonParse<AlphaSayTool>(msg.text)
 		if (!tool || !FILE_EDIT_TOOLS.has(tool.tool as string)) continue
 
 		// Batch diffs
@@ -92,7 +92,7 @@ export function fileChangesFromMessages(messages: ClineMessage[] | undefined): F
  * turn's summary directly below its response instead of aggregating all edits
  * at the bottom of the conversation.
  */
-export function fileChangeTurnsFromMessages(messages: ClineMessage[] | undefined, taskKey = "task"): FileChangeTurn[] {
+export function fileChangeTurnsFromMessages(messages: AlphaMessage[] | undefined, taskKey = "task"): FileChangeTurn[] {
 	if (!messages?.length) return []
 
 	const turns: FileChangeTurn[] = []

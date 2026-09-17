@@ -5,12 +5,12 @@ import removeMd from "remove-markdown"
 import { VSCodeBadge } from "@vscode/webview-ui-toolkit/react"
 
 import type {
-	ClineMessage,
+	AlphaMessage,
 	FollowUpData,
 	SuggestionItem,
-	ClineApiReqInfo,
-	ClineAskUseMcpServer,
-	ClineSayTool,
+	AlphaApiReqInfo,
+	AlphaAskUseMcpServer,
+	AlphaSayTool,
 } from "@alpha-code/types"
 
 import { Mode } from "@alpha/modes"
@@ -86,7 +86,7 @@ import { MessageActions } from "./MessageActions"
 import { GitHubApiActivity } from "./GitHubApiActivity"
 
 // Helper function to get previous todos before a specific message
-function getPreviousTodos(messages: ClineMessage[], currentMessageTs: number): any[] {
+function getPreviousTodos(messages: AlphaMessage[], currentMessageTs: number): any[] {
 	// Find the previous updateTodoList message before the current one
 	const previousUpdateIndex = messages
 		.slice()
@@ -130,15 +130,15 @@ export interface ChatRowEnvironment
 		| "reasoningBlockCollapsed"
 	> {
 	modelSupportsImages?: boolean
-	getClineMessages: () => ClineMessage[]
+	getAlphaMessages: () => AlphaMessage[]
 }
 
 interface ChatRowProps {
-	message: ClineMessage
+	message: AlphaMessage
 	/** The persisted opening prompt is say/text, but displays as a user message. */
 	isTaskPrompt?: boolean
 	environment: ChatRowEnvironment
-	lastModifiedMessage?: ClineMessage
+	lastModifiedMessage?: AlphaMessage
 	isExpanded: boolean
 	isLast: boolean
 	isStreaming: boolean
@@ -201,7 +201,7 @@ export const ChatRowContent = (props: ChatRowContentProps) => {
 		currentTaskId: extensionState.currentTaskId,
 		reasoningBlockCollapsed: extensionState.reasoningBlockCollapsed,
 		modelSupportsImages: model?.supportsImages,
-		getClineMessages: () => extensionState.clineMessages,
+		getAlphaMessages: () => extensionState.clineMessages,
 	}
 
 	return <ChatRowContentInner {...props} environment={environment} />
@@ -235,11 +235,11 @@ const ChatRowContentInner = ({
 		currentTaskId,
 		reasoningBlockCollapsed,
 		modelSupportsImages,
-		getClineMessages,
+		getAlphaMessages,
 	} = environment
 	// A completion report can survive an interrupted finalization; only the projected task status confirms success.
 	const isTaskCompleted = currentTaskItem?.id === currentTaskId && currentTaskItem?.status === "completed"
-	const clineMessages = getClineMessages()
+	const clineMessages = getAlphaMessages()
 	const [isEditing, setIsEditing] = useState(false)
 	const [editedContent, setEditedContent] = useState("")
 	const [editMode, setEditMode] = useState<Mode>(mode || "code")
@@ -298,7 +298,7 @@ const ChatRowContentInner = ({
 
 	const handleRestartClick = useCallback(() => {
 		if (messageActionsDisabled || message.partial || !currentTaskId) return
-		const messages = getClineMessages()
+		const messages = getAlphaMessages()
 		const index = messages.findIndex((entry) => entry.ts === message.ts)
 		for (let i = index - 1; i >= 0; i--) {
 			const prompt = messages[i]
@@ -314,7 +314,7 @@ const ChatRowContentInner = ({
 				return
 			}
 		}
-	}, [currentTaskId, getClineMessages, messageActionsDisabled, message.partial, message.ts])
+	}, [currentTaskId, getAlphaMessages, messageActionsDisabled, message.partial, message.ts])
 
 	// Handle image selection for editing
 	const handleSelectImages = useCallback(() => {
@@ -323,7 +323,7 @@ const ChatRowContentInner = ({
 
 	const [cost, apiReqCancelReason, apiReqStreamingFailedMessage] = useMemo(() => {
 		if (message.text !== null && message.text !== undefined && message.say === "api_req_started") {
-			const info = safeJsonParse<ClineApiReqInfo>(message.text)
+			const info = safeJsonParse<AlphaApiReqInfo>(message.text)
 			return [info?.cost, info?.cancelReason, info?.streamingFailedMessage]
 		}
 
@@ -365,7 +365,7 @@ const ChatRowContentInner = ({
 					<span className="shrink-0 text-sm">{t("chat:commandExecution.command")}</span>,
 				]
 			case "use_mcp_server":
-				const mcpServerUse = safeJsonParse<ClineAskUseMcpServer>(message.text)
+				const mcpServerUse = safeJsonParse<AlphaAskUseMcpServer>(message.text)
 				if (mcpServerUse === undefined) {
 					return [null, null]
 				}
@@ -482,11 +482,11 @@ const ChatRowContentInner = ({
 
 	const tool = useMemo(() => {
 		if (message.ask === "tool") {
-			return safeJsonParse<ClineSayTool>(message.text)
+			return safeJsonParse<AlphaSayTool>(message.text)
 		}
 
 		if (message.type === "say" && message.say === "tool") {
-			const sayTool = safeJsonParse<ClineSayTool>(message.text)
+			const sayTool = safeJsonParse<AlphaSayTool>(message.text)
 			return sayTool &&
 				["listFilesTopLevel", "listFilesRecursive", "readFile", "searchFiles"].includes(sayTool.tool)
 				? sayTool
@@ -988,7 +988,7 @@ const ChatRowContentInner = ({
 				// Find all newTask messages to determine which child task ID corresponds to this message
 				const newTaskMessages = clineMessages.filter((msg) => {
 					if (msg.type === "ask" && msg.ask === "tool") {
-						const t = safeJsonParse<ClineSayTool>(msg.text)
+						const t = safeJsonParse<AlphaSayTool>(msg.text)
 						return t?.tool === "newTask"
 					}
 					return false
@@ -1482,7 +1482,7 @@ const ChatRowContentInner = ({
 						</article>
 					)
 				case "user_feedback_diff":
-					const tool = safeJsonParse<ClineSayTool>(message.text)
+					const tool = safeJsonParse<AlphaSayTool>(message.text)
 					return (
 						<div style={{ marginTop: -10, width: "100%" }}>
 							<CodeAccordion
@@ -1599,14 +1599,14 @@ const ChatRowContentInner = ({
 					return <UpdateTodoListToolBlock userEdited onChange={() => {}} />
 				case "tool" as any:
 					// Handle say tool messages
-					const sayTool = safeJsonParse<ClineSayTool>(message.text)
+					const sayTool = safeJsonParse<AlphaSayTool>(message.text)
 					if (!sayTool) return null
 
 					switch (sayTool.tool) {
 						case "ticket":
 							return <TicketActivity tool={sayTool} />
 						case "browserAction": {
-							const labels: Record<NonNullable<ClineSayTool["action"]>, string> = {
+							const labels: Record<NonNullable<AlphaSayTool["action"]>, string> = {
 								open_browser_page: "Open browser page",
 								list_browser_pages: "List browser pages",
 								read_page: "Read browser page",
@@ -1916,7 +1916,7 @@ const ChatRowContentInner = ({
 					const { response, ...mcpServerRequest } = messageJson
 
 					// Create the useMcpServer object with the response field
-					const useMcpServer: ClineAskUseMcpServer = {
+					const useMcpServer: AlphaAskUseMcpServer = {
 						...mcpServerRequest,
 						response,
 					}

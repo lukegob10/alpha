@@ -46,7 +46,7 @@ describe("Task working record integration", () => {
 			pendingCommandVerificationCount: 0,
 			completionRuntimeRevision: 0,
 			providerRef: { deref: () => provider },
-			requireClineMessagesSaved: save,
+			requireAlphaMessagesSaved: save,
 			abort: false,
 		}) as Task
 	})

@@ -1,7 +1,7 @@
 const { createdHubs } = vi.hoisted(() => ({ createdHubs: [] as any[] }))
 
 vi.mock("vscode", () => ({}))
-vi.mock("../../../core/webview/ClineProvider", () => ({}))
+vi.mock("../../../core/webview/AlphaProvider", () => ({}))
 vi.mock("../McpHub", () => ({
 	McpHub: class MockMcpHub {
 		disposed = false

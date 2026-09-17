@@ -290,8 +290,11 @@ pnpm bundle
 pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
 ```
 
-`pnpm test` bundles the extension and runs workspace tests, so it is intentionally broader and slower than focused
-package tests. Run lint/typecheck for every touched package; run repository-wide equivalents for cross-cutting changes.
+`pnpm test` bundles the extension and runs extension/dependency unit tests. Default lint and type checks use the same
+extension-focused workspace boundary. Use `pnpm lint:all` and `pnpm check-types:all` for every retained workspace package.
+`pnpm test:all` also runs developer-tool and E2E-runner unit tests plus the complete evaluator suite; the latter requires
+configured Postgres/Redis services. `pnpm test:evals:offline` runs evaluator checks without those services. Run focused
+checks during development, then the affected-surface and exact-host gates before completion.
 
 ## Change hygiene and completion criteria
 

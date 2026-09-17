@@ -1,7 +1,7 @@
 import * as path from "path"
 import * as fs from "fs/promises"
 
-import { type ClineSayTool } from "@alpha-code/types"
+import { type AlphaSayTool } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
@@ -54,19 +54,19 @@ export class ListFilesTool extends BaseTool<"list_files"> {
 			return undefined
 
 		const relPath = args.path
-		const ignoreController = task.rooIgnoreController
-		const ignoreContent = ignoreController?.rooIgnoreContent
-		const protectedController = task.rooProtectedController
+		const ignoreController = task.alphaIgnoreController
+		const ignoreContent = ignoreController?.alphaIgnoreContent
+		const protectedController = task.alphaProtectedController
 		const absolutePath = path.resolve(grant.workspaceRoot, relPath)
 		if (!isInside(grant.workspaceRoot, absolutePath) || !isPathAllowed(policy, absolutePath, task.cwd))
 			return undefined
 		const pathIsAllowed = () =>
-			task.rooIgnoreController === ignoreController &&
-			ignoreController?.rooIgnoreContent === ignoreContent &&
-			task.rooProtectedController === protectedController &&
+			task.alphaIgnoreController === ignoreController &&
+			ignoreController?.alphaIgnoreContent === ignoreContent &&
+			task.alphaProtectedController === protectedController &&
 			!isTaskPathOutsideWorkspace(task, absolutePath) &&
-			task.rooIgnoreController?.validateAccess(absolutePath) !== false &&
-			task.rooProtectedController?.isWriteProtected(absolutePath) !== true
+			task.alphaIgnoreController?.validateAccess(absolutePath) !== false &&
+			task.alphaProtectedController?.isWriteProtected(absolutePath) !== true
 		if (!pathIsAllowed()) return undefined
 		const message = () => ({
 			tool: "listFilesTopLevel" as const,
@@ -180,12 +180,12 @@ export class ListFilesTool extends BaseTool<"list_files"> {
 						absolutePath,
 						files,
 						didHitLimit,
-						task.rooIgnoreController,
+						task.alphaIgnoreController,
 						grant.showIgnoredFiles && state?.showRooIgnoredFiles === true,
-						task.rooProtectedController,
+						task.alphaProtectedController,
 					)
 					task.consecutiveMistakeCount = 0
-					await task.say("tool", JSON.stringify({ ...message(), content: result } satisfies ClineSayTool))
+					await task.say("tool", JSON.stringify({ ...message(), content: result } satisfies AlphaSayTool))
 					await assertAuthorized(activeSignal)
 					return result
 				}
@@ -218,18 +218,18 @@ export class ListFilesTool extends BaseTool<"list_files"> {
 				absolutePath,
 				files,
 				didHitLimit,
-				task.rooIgnoreController,
+				task.alphaIgnoreController,
 				showRooIgnoredFiles,
-				task.rooProtectedController,
+				task.alphaProtectedController,
 			)
 
-			const sharedMessageProps: ClineSayTool = {
+			const sharedMessageProps: AlphaSayTool = {
 				tool: !recursive ? "listFilesTopLevel" : "listFilesRecursive",
 				path: getTaskReadablePath(task, relDirPath),
 				isOutsideWorkspace,
 			}
 
-			const completeMessage = JSON.stringify({ ...sharedMessageProps, content: result } satisfies ClineSayTool)
+			const completeMessage = JSON.stringify({ ...sharedMessageProps, content: result } satisfies AlphaSayTool)
 			const didApprove = await askApproval("tool", completeMessage)
 
 			if (!didApprove) {
@@ -250,13 +250,13 @@ export class ListFilesTool extends BaseTool<"list_files"> {
 		const absolutePath = relDirPath ? path.resolve(task.cwd, relDirPath) : task.cwd
 		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
-		const sharedMessageProps: ClineSayTool = {
+		const sharedMessageProps: AlphaSayTool = {
 			tool: !recursive ? "listFilesTopLevel" : "listFilesRecursive",
 			path: getTaskReadablePath(task, relDirPath ?? ""),
 			isOutsideWorkspace,
 		}
 
-		const partialMessage = JSON.stringify({ ...sharedMessageProps, content: "" } satisfies ClineSayTool)
+		const partialMessage = JSON.stringify({ ...sharedMessageProps, content: "" } satisfies AlphaSayTool)
 		await task.ask("tool", partialMessage, block.partial).catch(() => {})
 	}
 }

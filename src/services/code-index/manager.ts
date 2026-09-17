@@ -8,7 +8,7 @@ import { CodeIndexServiceFactory } from "./service-factory"
 import { CodeIndexSearchService } from "./search-service"
 import { CodeIndexOrchestrator } from "./orchestrator"
 import { CacheManager } from "./cache-manager"
-import { RooIgnoreController } from "../../core/ignore/RooIgnoreController"
+import { AlphaIgnoreController } from "../../core/ignore/AlphaIgnoreController"
 import fs from "fs/promises"
 import ignore from "ignore"
 import path from "path"
@@ -407,16 +407,16 @@ export class CodeIndexManager {
 			})
 		}
 
-		// Create RooIgnoreController instance
-		const rooIgnoreController = new RooIgnoreController(workspacePath)
-		await rooIgnoreController.initialize()
+		// Create AlphaIgnoreController instance
+		const alphaIgnoreController = new AlphaIgnoreController(workspacePath)
+		await alphaIgnoreController.initialize()
 
 		// (Re)Create shared service instances
 		const { embedder, vectorStore, scanner, fileWatcher } = this._serviceFactory.createServices(
 			this.context,
 			this._cacheManager!,
 			ignoreInstance,
-			rooIgnoreController,
+			alphaIgnoreController,
 		)
 
 		// Validate embedder configuration before proceeding
@@ -447,7 +447,7 @@ export class CodeIndexManager {
 			{
 				workspacePath,
 				validateAccess: (filePath) =>
-					!ignoreInstance.ignores(filePath) && rooIgnoreController.validateAccess(filePath),
+					!ignoreInstance.ignores(filePath) && alphaIgnoreController.validateAccess(filePath),
 			},
 		)
 

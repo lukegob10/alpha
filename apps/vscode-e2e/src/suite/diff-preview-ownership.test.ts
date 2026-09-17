@@ -4,7 +4,7 @@ import * as path from "path"
 import { randomUUID } from "crypto"
 import * as vscode from "vscode"
 
-import type { RooCodeSettings } from "@alpha-code/types"
+import type { AlphaCodeSettings } from "@alpha-code/types"
 
 import { waitFor } from "./utils"
 
@@ -246,7 +246,7 @@ suite("Diff preview ownership in the Extension Host", function () {
 
 		try {
 			await fs.writeFile(filePath, original, { encoding: "utf8", flag: "wx" })
-			const configuration: RooCodeSettings = {
+			const configuration: AlphaCodeSettings = {
 				...api.getConfiguration(),
 				apiProvider: "fake-ai",
 				fakeAi: scripted,

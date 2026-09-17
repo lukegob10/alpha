@@ -131,3 +131,26 @@ Both attempts are retained under `artifacts/cli-retirement-luna-1221-1` and
 `artifacts/cli-retirement-luna-1221-2` in the run directory. `validation/live-summary.json`
 records successes and the initial failure. Both test hosts exited, and server terminal
 outcomes were observed.
+
+## Remaining CLI cleanup
+
+The 2026-09-17 follow-up removed the retired packages' ignored build output,
+dependency links, and empty folders from the active checkout. Three older release
+worktrees nested under `bin/` also contained complete historical CLI/shim copies.
+They were moved intact with `git worktree move` to
+`F:/alpha-vscode-e2e-runs/cli-remnants-20260917/release-worktrees/`; each retained
+its original commit and clean Git state. This supersedes the earlier note that
+ignored CLI folders remained in the repository.
+
+The final code audit found one missed producer: benchmark model campaigns still
+created runs with the retired `cli` execution method. New campaigns now select
+`vscode`, using the existing evaluation runner and its per-task IPC socket.
+A focused regression demonstrated the old routing failure before this correction.
+Stale CLI-consumer comments and the unused CLI tarball ignore rule were removed.
+
+The evaluator command-line entrypoints, generic command-line coding fixtures,
+historical database values, retired-run rejection tests, and patch-plan denylist
+remain useful. They neither provide nor recreate a standalone Alpha agent.
+Core extension behavior, public message shapes, and extension/UX versions remain
+unchanged. Follow-up check results are recorded under
+`F:/alpha-vscode-e2e-runs/cli-remnants-20260917/`.

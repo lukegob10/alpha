@@ -7,7 +7,7 @@ import { isBundledSkillResource } from "../../services/skills/bundledSkillResour
 import { assessCommandPaths } from "../auto-approval/commandPathScope"
 import { unescapeHtmlEntities } from "../../utils/text-normalization"
 
-import type { ClineAsk, ClineAskResponse, ClineSay, ModeConfig, ToolProgressStatus } from "@alpha-code/types"
+import type { AlphaAsk, AlphaAskResponse, AlphaSay, ModeConfig, ToolProgressStatus } from "@alpha-code/types"
 
 import type { ToolResponse, ToolUse } from "../../shared/tools"
 import type { ToolApprovalResponse, ToolCallbacks, ToolResultMetadata } from "../tools/BaseTool"
@@ -82,23 +82,23 @@ export type ToolExecutionMode = "serial" | "selective-parallel"
 type ToolExecutionContent = Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam | Anthropic.ToolResultBlockParam>
 
 type ToolExecutionApproval = (
-	type: ClineAsk,
+	type: AlphaAsk,
 	partialMessage?: string,
 	progressStatus?: ToolProgressStatus,
 	forceApproval?: boolean,
 	requiresExplicitApproval?: boolean,
-) => Promise<{ response: ClineAskResponse; text?: string; images?: string[] }>
+) => Promise<{ response: AlphaAskResponse; text?: string; images?: string[] }>
 
-type ToolExecutionSay = (type: ClineSay, text?: string, images?: string[]) => Promise<unknown>
+type ToolExecutionSay = (type: AlphaSay, text?: string, images?: string[]) => Promise<unknown>
 
 type ToolExecutionHostAsk = (
-	type: ClineAsk,
+	type: AlphaAsk,
 	partialMessage?: string,
 	partial?: boolean,
 	progressStatus?: ToolProgressStatus,
 	isProtected?: boolean,
 	requiresExplicitApproval?: boolean,
-) => Promise<{ response: ClineAskResponse; text?: string; images?: string[] }>
+) => Promise<{ response: AlphaAskResponse; text?: string; images?: string[] }>
 
 /**
  * The small state and callback surface the scheduler needs from its host.

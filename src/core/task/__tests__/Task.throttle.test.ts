@@ -1,19 +1,19 @@
-import { RooCodeEventName, ProviderSettings, TokenUsage, ToolUsage } from "@alpha-code/types"
+import { AlphaCodeEventName, ProviderSettings, TokenUsage, ToolUsage } from "@alpha-code/types"
 
 import { Task } from "../Task"
-import { ClineProvider } from "../../webview/ClineProvider"
+import { AlphaProvider } from "../../webview/AlphaProvider"
 import { hasToolUsageChanged, hasTokenUsageChanged } from "../../../shared/getApiMetrics"
 
 // Mock dependencies
-vi.mock("../../webview/ClineProvider")
+vi.mock("../../webview/AlphaProvider")
 vi.mock("../../../integrations/terminal/TerminalRegistry", () => ({
 	TerminalRegistry: {
 		getTerminals: vi.fn(() => []),
 		releaseTerminalsForTask: vi.fn(),
 	},
 }))
-vi.mock("../../ignore/RooIgnoreController")
-vi.mock("../../protect/RooProtectedController")
+vi.mock("../../ignore/AlphaIgnoreController")
+vi.mock("../../protect/AlphaProtectedController")
 vi.mock("../../context-tracking/FileContextTracker")
 vi.mock("../../../integrations/editor/DiffViewProvider")
 vi.mock("../../tools/ToolRepetitionDetector")
@@ -90,7 +90,7 @@ describe("Task token usage throttling", () => {
 
 		// Create task instance without starting it
 		task = new Task({
-			provider: mockProvider as ClineProvider,
+			provider: mockProvider as AlphaProvider,
 			apiConfiguration: mockApiConfiguration,
 			startTask: false,
 		})
@@ -106,8 +106,8 @@ describe("Task token usage throttling", () => {
 	test("should emit TaskTokenUsageUpdated immediately on first change", async () => {
 		const emitSpy = vi.spyOn(task, "emit")
 
-		// Add a message to trigger saveClineMessages
-		await (task as any).addToClineMessages({
+		// Add a message to trigger saveAlphaMessages
+		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
 			type: "say",
 			say: "text",
@@ -116,7 +116,7 @@ describe("Task token usage throttling", () => {
 
 		// Should emit immediately on first change
 		expect(emitSpy).toHaveBeenCalledWith(
-			RooCodeEventName.TaskTokenUsageUpdated,
+			AlphaCodeEventName.TaskTokenUsageUpdated,
 			task.taskId,
 			expect.any(Object),
 			expect.any(Object),
@@ -154,7 +154,7 @@ describe("Task token usage throttling", () => {
 		const emitSpy = vi.spyOn(task, "emit")
 
 		// First message - should emit
-		await (task as any).addToClineMessages({
+		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
 			type: "say",
 			say: "text",
@@ -162,12 +162,12 @@ describe("Task token usage throttling", () => {
 		})
 
 		const firstEmitCount = emitSpy.mock.calls.filter(
-			(call) => call[0] === RooCodeEventName.TaskTokenUsageUpdated,
+			(call) => call[0] === AlphaCodeEventName.TaskTokenUsageUpdated,
 		).length
 
 		// Second message immediately after - should NOT emit due to throttle
 		vi.advanceTimersByTime(500) // Advance only 500ms
-		await (task as any).addToClineMessages({
+		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
 			type: "say",
 			say: "text",
@@ -175,7 +175,7 @@ describe("Task token usage throttling", () => {
 		})
 
 		const secondEmitCount = emitSpy.mock.calls.filter(
-			(call) => call[0] === RooCodeEventName.TaskTokenUsageUpdated,
+			(call) => call[0] === AlphaCodeEventName.TaskTokenUsageUpdated,
 		).length
 
 		// Should still be the same count (throttled)
@@ -183,7 +183,7 @@ describe("Task token usage throttling", () => {
 
 		// Third message after 2+ seconds - should emit
 		vi.advanceTimersByTime(1600) // Total time: 2100ms
-		await (task as any).addToClineMessages({
+		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
 			type: "say",
 			say: "text",
@@ -191,7 +191,7 @@ describe("Task token usage throttling", () => {
 		})
 
 		const thirdEmitCount = emitSpy.mock.calls.filter(
-			(call) => call[0] === RooCodeEventName.TaskTokenUsageUpdated,
+			(call) => call[0] === AlphaCodeEventName.TaskTokenUsageUpdated,
 		).length
 
 		// Should have emitted again after throttle period
@@ -208,7 +208,7 @@ describe("Task token usage throttling", () => {
 		}
 
 		// Add a message to trigger emission
-		await (task as any).addToClineMessages({
+		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
 			type: "say",
 			say: "text",
@@ -217,7 +217,7 @@ describe("Task token usage throttling", () => {
 
 		// Should emit with toolUsage as third parameter
 		expect(emitSpy).toHaveBeenCalledWith(
-			RooCodeEventName.TaskTokenUsageUpdated,
+			AlphaCodeEventName.TaskTokenUsageUpdated,
 			task.taskId,
 			expect.any(Object), // tokenUsage
 			task.toolUsage, // toolUsage
@@ -233,7 +233,7 @@ describe("Task token usage throttling", () => {
 		}
 
 		// Add a message first
-		await (task as any).addToClineMessages({
+		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
 			type: "say",
 			say: "text",
@@ -249,8 +249,8 @@ describe("Task token usage throttling", () => {
 
 		// Should have emitted TaskTokenUsageUpdated before TaskAborted
 		const calls = emitSpy.mock.calls
-		const tokenUsageUpdateIndex = calls.findIndex((call) => call[0] === RooCodeEventName.TaskTokenUsageUpdated)
-		const taskAbortedIndex = calls.findIndex((call) => call[0] === RooCodeEventName.TaskAborted)
+		const tokenUsageUpdateIndex = calls.findIndex((call) => call[0] === AlphaCodeEventName.TaskTokenUsageUpdated)
+		const taskAbortedIndex = calls.findIndex((call) => call[0] === AlphaCodeEventName.TaskAborted)
 
 		// Should have both events
 		expect(tokenUsageUpdateIndex).toBeGreaterThanOrEqual(0)
@@ -289,7 +289,7 @@ describe("Task token usage throttling", () => {
 		})
 
 		// Add initial message
-		await (task as any).addToClineMessages({
+		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
 			type: "say",
 			say: "text",
@@ -301,7 +301,7 @@ describe("Task token usage throttling", () => {
 
 		// Add another message within throttle window
 		vi.advanceTimersByTime(500)
-		await (task as any).addToClineMessages({
+		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
 			type: "say",
 			say: "text",
@@ -313,7 +313,7 @@ describe("Task token usage throttling", () => {
 
 		// Add message after throttle window
 		vi.advanceTimersByTime(1600) // Total: 2100ms
-		await (task as any).addToClineMessages({
+		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
 			type: "say",
 			say: "text",
@@ -355,7 +355,7 @@ describe("Task token usage throttling", () => {
 		const emitSpy = vi.spyOn(task, "emit")
 
 		// Add first message
-		await (task as any).addToClineMessages({
+		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
 			type: "say",
 			say: "text",
@@ -363,12 +363,12 @@ describe("Task token usage throttling", () => {
 		})
 
 		const firstEmitCount = emitSpy.mock.calls.filter(
-			(call) => call[0] === RooCodeEventName.TaskTokenUsageUpdated,
+			(call) => call[0] === AlphaCodeEventName.TaskTokenUsageUpdated,
 		).length
 
 		// Wait for throttle period and add another message
 		vi.advanceTimersByTime(2100)
-		await (task as any).addToClineMessages({
+		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
 			type: "say",
 			say: "text",
@@ -376,7 +376,7 @@ describe("Task token usage throttling", () => {
 		})
 
 		const secondEmitCount = emitSpy.mock.calls.filter(
-			(call) => call[0] === RooCodeEventName.TaskTokenUsageUpdated,
+			(call) => call[0] === AlphaCodeEventName.TaskTokenUsageUpdated,
 		).length
 
 		// Should not have emitted again since token usage didn't change
@@ -412,7 +412,7 @@ describe("Task token usage throttling", () => {
 		const emitSpy = vi.spyOn(task, "emit")
 
 		// Add first message - should emit
-		await (task as any).addToClineMessages({
+		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
 			type: "say",
 			say: "text",
@@ -420,7 +420,7 @@ describe("Task token usage throttling", () => {
 		})
 
 		const firstEmitCount = emitSpy.mock.calls.filter(
-			(call) => call[0] === RooCodeEventName.TaskTokenUsageUpdated,
+			(call) => call[0] === AlphaCodeEventName.TaskTokenUsageUpdated,
 		).length
 
 		// Wait for throttle period
@@ -432,7 +432,7 @@ describe("Task token usage throttling", () => {
 		}
 
 		// Add another message
-		await (task as any).addToClineMessages({
+		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
 			type: "say",
 			say: "text",
@@ -440,7 +440,7 @@ describe("Task token usage throttling", () => {
 		})
 
 		const secondEmitCount = emitSpy.mock.calls.filter(
-			(call) => call[0] === RooCodeEventName.TaskTokenUsageUpdated,
+			(call) => call[0] === AlphaCodeEventName.TaskTokenUsageUpdated,
 		).length
 
 		// Should have emitted because tool usage changed even though token usage didn't
@@ -449,7 +449,7 @@ describe("Task token usage throttling", () => {
 
 	test("should update toolUsageSnapshot when emission occurs", async () => {
 		// Add initial message
-		await (task as any).addToClineMessages({
+		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
 			type: "say",
 			say: "text",
@@ -471,7 +471,7 @@ describe("Task token usage throttling", () => {
 		}
 
 		// Add another message
-		await (task as any).addToClineMessages({
+		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
 			type: "say",
 			say: "text",
@@ -502,7 +502,7 @@ describe("Task token usage throttling", () => {
 
 		// Should emit due to tool usage change
 		expect(emitSpy).toHaveBeenCalledWith(
-			RooCodeEventName.TaskTokenUsageUpdated,
+			AlphaCodeEventName.TaskTokenUsageUpdated,
 			task.taskId,
 			expect.any(Object),
 			task.toolUsage,

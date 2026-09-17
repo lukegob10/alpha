@@ -1,11 +1,11 @@
 // npx vitest run __tests__/single-open-invariant.spec.ts
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { ClineProvider } from "../core/webview/ClineProvider"
+import { AlphaProvider } from "../core/webview/AlphaProvider"
 import { API } from "../extension/api"
 import * as ProfileValidatorMod from "../shared/ProfileValidator"
 
-// Mock Task class used by ClineProvider to avoid heavy startup
+// Mock Task class used by AlphaProvider to avoid heavy startup
 vi.mock("../core/task/Task", () => {
 	class TaskStub {
 		public taskId: string
@@ -36,12 +36,12 @@ describe("Single-open-task invariant", () => {
 		// Allow profile
 		vi.spyOn(ProfileValidatorMod.ProfileValidator, "isProfileAllowed").mockReturnValue(true)
 
-		const removeClineFromStack = vi.fn().mockResolvedValue(undefined)
-		const addClineToStack = vi.fn().mockResolvedValue(undefined)
+		const removeTaskFromStack = vi.fn().mockResolvedValue(undefined)
+		const addTaskToStack = vi.fn().mockResolvedValue(undefined)
 
 		const provider = {
 			// Simulate an existing task present in stack
-			clineStack: [{ taskId: "existing-1" }],
+			taskStack: [{ taskId: "existing-1" }],
 			setValues: vi.fn(),
 			getState: vi.fn().mockResolvedValue({
 				apiConfiguration: { apiProvider: "anthropic", consecutiveMistakeLimit: 0 },
@@ -50,9 +50,9 @@ describe("Single-open-task invariant", () => {
 				checkpointTimeout: 60,
 			}),
 			getProviderSettingsSnapshot: vi.fn(() => ({ apiProvider: "anthropic", consecutiveMistakeLimit: 0 })),
-			removeClineFromStack,
+			removeTaskFromStack,
 			updateGlobalState: vi.fn().mockResolvedValue(undefined),
-			addClineToStack,
+			addTaskToStack,
 			postTaskStateToWebview: vi.fn().mockResolvedValue(undefined),
 			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
 			setProviderProfile: vi.fn(),
@@ -73,22 +73,22 @@ describe("Single-open-task invariant", () => {
 				setProviderSettings: vi.fn(),
 				getProviderSettings: vi.fn(() => ({})),
 			},
-		} as unknown as ClineProvider
+		} as unknown as AlphaProvider
 
-		await (ClineProvider.prototype as any).createTask.call(provider, "New task")
+		await (AlphaProvider.prototype as any).createTask.call(provider, "New task")
 
-		expect(removeClineFromStack).toHaveBeenCalledTimes(1)
-		expect(addClineToStack).toHaveBeenCalledTimes(1)
+		expect(removeTaskFromStack).toHaveBeenCalledTimes(1)
+		expect(addTaskToStack).toHaveBeenCalledTimes(1)
 	})
 
 	it("Extension multi-session create: preserves existing live task", async () => {
 		vi.spyOn(ProfileValidatorMod.ProfileValidator, "isProfileAllowed").mockReturnValue(true)
 
-		const removeClineFromStack = vi.fn().mockResolvedValue(undefined)
-		const addClineToStack = vi.fn().mockResolvedValue(undefined)
+		const removeTaskFromStack = vi.fn().mockResolvedValue(undefined)
+		const addTaskToStack = vi.fn().mockResolvedValue(undefined)
 
 		const provider = {
-			clineStack: [{ taskId: "existing-1" }],
+			taskStack: [{ taskId: "existing-1" }],
 			taskSessions: { canCreateTask: vi.fn(() => true) },
 			finalizeActiveCompletionCandidate: vi.fn().mockResolvedValue(undefined),
 			setValues: vi.fn(),
@@ -99,9 +99,9 @@ describe("Single-open-task invariant", () => {
 				checkpointTimeout: 60,
 			}),
 			getProviderSettingsSnapshot: vi.fn(() => ({ apiProvider: "anthropic", consecutiveMistakeLimit: 0 })),
-			removeClineFromStack,
+			removeTaskFromStack,
 			updateGlobalState: vi.fn().mockResolvedValue(undefined),
-			addClineToStack,
+			addTaskToStack,
 			postTaskStateToWebview: vi.fn().mockResolvedValue(undefined),
 			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
 			setProviderProfile: vi.fn(),
@@ -121,22 +121,22 @@ describe("Single-open-task invariant", () => {
 				setProviderSettings: vi.fn(),
 				getProviderSettings: vi.fn(() => ({})),
 			},
-		} as unknown as ClineProvider
+		} as unknown as AlphaProvider
 
-		await (ClineProvider.prototype as any).createTask.call(provider, "New task", undefined, undefined, {
+		await (AlphaProvider.prototype as any).createTask.call(provider, "New task", undefined, undefined, {
 			preserveExisting: true,
 		})
 
-		expect(removeClineFromStack).not.toHaveBeenCalled()
-		expect(addClineToStack).toHaveBeenCalledTimes(1)
+		expect(removeTaskFromStack).not.toHaveBeenCalled()
+		expect(addTaskToStack).toHaveBeenCalledTimes(1)
 	})
 
 	it("Extension multi-session create: blocks when live task cap is reached", async () => {
 		vi.spyOn(ProfileValidatorMod.ProfileValidator, "isProfileAllowed").mockReturnValue(true)
-		const addClineToStack = vi.fn()
+		const addTaskToStack = vi.fn()
 
 		const provider = {
-			clineStack: [{ taskId: "existing-1" }],
+			taskStack: [{ taskId: "existing-1" }],
 			taskSessions: { canCreateTask: vi.fn(() => false) },
 			finalizeActiveCompletionCandidate: vi.fn().mockResolvedValue(undefined),
 			setValues: vi.fn(),
@@ -147,8 +147,8 @@ describe("Single-open-task invariant", () => {
 				checkpointTimeout: 60,
 			}),
 			getProviderSettingsSnapshot: vi.fn(() => ({ apiProvider: "anthropic", consecutiveMistakeLimit: 0 })),
-			removeClineFromStack: vi.fn(),
-			addClineToStack,
+			removeTaskFromStack: vi.fn(),
+			addTaskToStack,
 			setProviderProfile: vi.fn(),
 			log: vi.fn(),
 			providerSettingsManager: { getModeConfigId: vi.fn(), listConfig: vi.fn() },
@@ -166,14 +166,14 @@ describe("Single-open-task invariant", () => {
 				setProviderSettings: vi.fn(),
 				getProviderSettings: vi.fn(() => ({})),
 			},
-		} as unknown as ClineProvider
+		} as unknown as AlphaProvider
 
 		await expect(
-			(ClineProvider.prototype as any).createTask.call(provider, "New task", undefined, undefined, {
+			(AlphaProvider.prototype as any).createTask.call(provider, "New task", undefined, undefined, {
 				preserveExisting: true,
 			}),
 		).rejects.toThrow("Maximum live task limit reached")
-		expect(addClineToStack).not.toHaveBeenCalled()
+		expect(addTaskToStack).not.toHaveBeenCalled()
 	})
 
 	it("Extension blank task intent: backgrounds current task and resets chat UI", async () => {
@@ -193,9 +193,9 @@ describe("Single-open-task invariant", () => {
 			postStateToWebview,
 			postMessageToWebview,
 			log: vi.fn(),
-		} as unknown as ClineProvider
+		} as unknown as AlphaProvider
 
-		await (ClineProvider.prototype as any).startBlankTask.call(provider)
+		await (AlphaProvider.prototype as any).startBlankTask.call(provider)
 
 		expect(clearFocus).toHaveBeenCalledTimes(1)
 		expect(resetNewTaskDraftMode).toHaveBeenCalledTimes(1)
@@ -211,35 +211,35 @@ describe("Single-open-task invariant", () => {
 	})
 
 	it("History delete releases a background live task slot", async () => {
-		const removeClineFromStack = vi.fn().mockResolvedValue(undefined)
+		const removeTaskFromStack = vi.fn().mockResolvedValue(undefined)
 		const deleteFromHistory = vi.fn().mockResolvedValue(undefined)
 		const postStateToWebview = vi.fn().mockResolvedValue(undefined)
 
 		const provider = {
 			getLiveTask: vi.fn((taskId: string) => (taskId === "background-1" ? { taskId } : undefined)),
-			removeClineFromStack,
+			removeTaskFromStack,
 			taskHistoryStore: { delete: deleteFromHistory },
 			purgeDeletedAgentControlRoots: vi.fn().mockResolvedValue(undefined),
 			postStateToWebview,
-		} as unknown as ClineProvider
+		} as unknown as AlphaProvider
 
-		await (ClineProvider.prototype as any).deleteTaskFromState.call(provider, "background-1")
+		await (AlphaProvider.prototype as any).deleteTaskFromState.call(provider, "background-1")
 
-		expect(removeClineFromStack).toHaveBeenCalledWith({ taskId: "background-1" })
+		expect(removeTaskFromStack).toHaveBeenCalledWith({ taskId: "background-1" })
 		expect(deleteFromHistory).toHaveBeenCalledWith("background-1")
 		expect(postStateToWebview).toHaveBeenCalledTimes(1)
 	})
 
 	it("History resume path always closes current before rehydration (non-rehydrating case)", async () => {
-		const removeClineFromStack = vi.fn().mockResolvedValue(undefined)
-		const addClineToStack = vi.fn().mockResolvedValue(undefined)
+		const removeTaskFromStack = vi.fn().mockResolvedValue(undefined)
+		const addTaskToStack = vi.fn().mockResolvedValue(undefined)
 		const updateGlobalState = vi.fn().mockResolvedValue(undefined)
 
 		const provider = {
 			getCurrentTask: vi.fn(() => undefined), // ensure not rehydrating
 			getLiveTask: vi.fn(() => undefined),
-			removeClineFromStack,
-			addClineToStack,
+			removeTaskFromStack,
+			addTaskToStack,
 			updateGlobalState,
 			log: vi.fn(),
 			customModesManager: { getCustomModes: vi.fn().mockResolvedValue([]) },
@@ -268,7 +268,7 @@ describe("Single-open-task invariant", () => {
 				getProviderSettings: vi.fn(() => ({})),
 			},
 			postStateToWebview: vi.fn(),
-		} as unknown as ClineProvider
+		} as unknown as AlphaProvider
 
 		const historyItem = {
 			id: "hist-1",
@@ -281,18 +281,18 @@ describe("Single-open-task invariant", () => {
 			workspace: "/tmp",
 		}
 
-		const task = await (ClineProvider.prototype as any).createTaskWithHistoryItem.call(provider, historyItem)
+		const task = await (AlphaProvider.prototype as any).createTaskWithHistoryItem.call(provider, historyItem)
 		expect(task).toBeTruthy()
-		expect(removeClineFromStack).toHaveBeenCalledTimes(1)
-		expect(addClineToStack).toHaveBeenCalledTimes(1)
+		expect(removeTaskFromStack).toHaveBeenCalledTimes(1)
+		expect(addTaskToStack).toHaveBeenCalledTimes(1)
 	})
 
 	it("IPC StartNewTask path closes current before new task", async () => {
-		const removeClineFromStack = vi.fn().mockResolvedValue(undefined)
+		const removeTaskFromStack = vi.fn().mockResolvedValue(undefined)
 		const createTask = vi.fn().mockResolvedValue({ taskId: "ipc-1" })
 		const provider = {
 			context: {} as any,
-			removeClineFromStack,
+			removeTaskFromStack,
 			postStateToWebview: vi.fn(),
 			postMessageToWebview: vi.fn(),
 			createTask,
@@ -304,7 +304,7 @@ describe("Single-open-task invariant", () => {
 				}
 				return provider
 			}),
-		} as unknown as ClineProvider
+		} as unknown as AlphaProvider
 
 		const output = { appendLine: vi.fn() } as any
 		const api = new API(output, provider, undefined, false)
@@ -321,7 +321,7 @@ describe("Single-open-task invariant", () => {
 		})
 
 		expect(taskId).toBe("ipc-1")
-		expect(removeClineFromStack).toHaveBeenCalledTimes(1)
+		expect(removeTaskFromStack).toHaveBeenCalledTimes(1)
 		expect(createTask).toHaveBeenCalledWith(
 			"hello",
 			undefined,
@@ -337,10 +337,10 @@ describe("Single-open-task invariant", () => {
 		const provider = {
 			contextProxy: { setValues },
 			taskSessions: { setMaxLiveTasks },
-			setMaxConcurrentTasks: ClineProvider.prototype.setMaxConcurrentTasks,
+			setMaxConcurrentTasks: AlphaProvider.prototype.setMaxConcurrentTasks,
 		}
 
-		await (ClineProvider.prototype as any).setValues.call(provider, { maxConcurrentTasks: 6 })
+		await (AlphaProvider.prototype as any).setValues.call(provider, { maxConcurrentTasks: 6 })
 
 		expect(setValues).toHaveBeenCalledWith({ maxConcurrentTasks: 6 })
 		expect(setMaxLiveTasks).toHaveBeenCalledWith(6)

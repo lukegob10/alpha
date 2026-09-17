@@ -59,10 +59,9 @@ type EmbedRequestContext = {
  */
 export class VertexGeminiEmbedder implements IEmbedder {
 	private static readonly DEFAULT_MODEL = "gemini-embedding-001"
-	private static readonly REQUEST_CONCURRENCY = 8
-
 	private readonly client: GoogleGenAI
-	private readonly embeddingRequests = pLimit(VertexGeminiEmbedder.REQUEST_CONCURRENCY)
+	private readonly requestConcurrency: number
+	private readonly embeddingRequests: ReturnType<typeof pLimit>
 	private readonly embeddingRateLimiter: EmbeddingRateLimiter
 	private readonly modelId: string
 	private readonly options: ProviderSettings
@@ -83,6 +82,10 @@ export class VertexGeminiEmbedder implements IEmbedder {
 
 		this.options = options
 		this.modelId = modelId || VertexGeminiEmbedder.DEFAULT_MODEL
+		// EmbedContent returns one vector per request. Overlap more independent Gemini 2
+		// requests while retaining a shared bound and the user's request-start spacing.
+		this.requestConcurrency = this.modelId === "gemini-embedding-2" ? 16 : 8
+		this.embeddingRequests = pLimit(this.requestConcurrency)
 		this.embeddingRateLimiter = new EmbeddingRateLimiter((embeddingRateLimitSeconds ?? 0) * 1000)
 		this.vertexGatewaySettings = this.resolveVertexGatewaySettings()
 
@@ -170,7 +173,7 @@ export class VertexGeminiEmbedder implements IEmbedder {
 		// Refill a free slot immediately instead of waiting for the slowest request in a wave.
 		// Bound queued work per caller as well as active requests across scanner batches and queries.
 		const workers = await Promise.allSettled(
-			Array.from({ length: Math.min(VertexGeminiEmbedder.REQUEST_CONCURRENCY, validTexts.length) }, async () => {
+			Array.from({ length: Math.min(this.requestConcurrency, validTexts.length) }, async () => {
 				while (!failed && nextIndex < validTexts.length) {
 					const index = nextIndex++
 					try {
@@ -229,7 +232,7 @@ export class VertexGeminiEmbedder implements IEmbedder {
 	get embedderInfo(): EmbedderInfo {
 		return {
 			name: "vertex",
-			preferredBatchSize: VertexGeminiEmbedder.REQUEST_CONCURRENCY,
+			preferredBatchSize: this.requestConcurrency,
 		}
 	}
 

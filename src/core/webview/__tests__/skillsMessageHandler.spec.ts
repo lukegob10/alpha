@@ -1,7 +1,7 @@
 // npx vitest run src/core/webview/__tests__/skillsMessageHandler.spec.ts
 
 import type { SkillMetadata, WebviewMessage } from "@alpha-code/types"
-import type { ClineProvider } from "../ClineProvider"
+import type { AlphaProvider } from "../AlphaProvider"
 
 // Mock vscode first
 vi.mock("vscode", () => {
@@ -59,7 +59,7 @@ describe("skillsMessageHandler", () => {
 	const mockAssertSkillEditable = vi.fn()
 	const mockFindSkillByNameAndSource = vi.fn()
 
-	const createMockProvider = (hasSkillsManager: boolean = true): ClineProvider => {
+	const createMockProvider = (hasSkillsManager: boolean = true): AlphaProvider => {
 		const skillsManager = hasSkillsManager
 			? {
 					refreshSkills: mockRefreshSkills,
@@ -77,7 +77,7 @@ describe("skillsMessageHandler", () => {
 			log: mockLog,
 			postMessageToWebview: mockPostMessageToWebview,
 			getSkillsManager: () => skillsManager,
-		} as unknown as ClineProvider
+		} as unknown as AlphaProvider
 	}
 
 	const mockSkills: SkillMetadata[] = [

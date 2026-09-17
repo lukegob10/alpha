@@ -34,10 +34,12 @@
 			"save": "छवि सहेजें",
 			"viewCode": "कोड देखें",
 			"viewDiagram": "डायग्राम देखें",
-			"close": "बंद करें"
+			"close": "बंद करें",
+			"open": "आरेख खोलें"
 		},
 		"modal": {
-			"codeTitle": "मरमेड कोड"
+			"codeTitle": "मरमेड कोड",
+			"title": "जलपरी आरेख"
 		},
 		"tabs": {
 			"diagram": "डायग्राम",
@@ -110,5 +112,7 @@
 	"costs": {
 		"own": "स्वयं",
 		"subtasks": "उपकार्य"
-	}
+	},
+	"dismiss": "नकार देना",
+	"dismissAndDontShowAgain": "ख़ारिज करें और दोबारा न दिखाएं"
 }

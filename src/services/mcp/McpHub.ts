@@ -30,7 +30,7 @@ import type {
 
 import { t } from "../../i18n"
 
-import { ClineProvider } from "../../core/webview/ClineProvider"
+import { AlphaProvider } from "../../core/webview/AlphaProvider"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
 
@@ -190,7 +190,7 @@ const McpSettingsSchema = z.object({
 })
 
 export class McpHub {
-	private providerRef: WeakRef<ClineProvider>
+	private providerRef: WeakRef<AlphaProvider>
 	private disposables: vscode.Disposable[] = []
 	private settingsWatcher?: vscode.FileSystemWatcher
 	private fileWatchers: Map<string, FSWatcher[]> = new Map()
@@ -205,7 +205,7 @@ export class McpHub {
 	private sanitizedNameRegistry: Map<string, string> = new Map()
 	private initializationPromise: Promise<void>
 
-	constructor(provider: ClineProvider) {
+	constructor(provider: AlphaProvider) {
 		this.providerRef = new WeakRef(provider)
 		this.watchMcpSettingsFile()
 		this.watchProjectMcpFile().catch(console.error)
@@ -228,7 +228,7 @@ export class McpHub {
 		await this.initializationPromise
 	}
 	/**
-	 * Registers a client (e.g., ClineProvider) using this hub.
+	 * Registers a client (e.g., AlphaProvider) using this hub.
 	 * Increments the reference count.
 	 */
 	public registerClient(): void {
@@ -1446,7 +1446,7 @@ export class McpHub {
 		})
 
 		// Send sorted servers to webview
-		const targetProvider: ClineProvider | undefined = this.providerRef.deref()
+		const targetProvider: AlphaProvider | undefined = this.providerRef.deref()
 
 		if (targetProvider) {
 			const serversToSend = sortedConnections.map((connection) => connection.server)

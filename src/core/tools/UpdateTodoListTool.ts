@@ -146,57 +146,57 @@ export class UpdateTodoListTool extends BaseTool<"update_todo_list"> {
 	}
 }
 
-export function addTodoToTask(cline: Task, content: string, status: TodoStatus = "pending", id?: string): TodoItem {
+export function addTodoToTask(alphaTask: Task, content: string, status: TodoStatus = "pending", id?: string): TodoItem {
 	const todo: TodoItem = {
 		id: id ?? crypto.randomUUID(),
 		content,
 		status,
 	}
-	if (!cline.todoList) cline.todoList = []
-	cline.todoList.push(todo)
+	if (!alphaTask.todoList) alphaTask.todoList = []
+	alphaTask.todoList.push(todo)
 	return todo
 }
 
-export function updateTodoStatusForTask(cline: Task, id: string, nextStatus: TodoStatus): boolean {
-	if (!cline.todoList) return false
-	const idx = cline.todoList.findIndex((t) => t.id === id)
+export function updateTodoStatusForTask(alphaTask: Task, id: string, nextStatus: TodoStatus): boolean {
+	if (!alphaTask.todoList) return false
+	const idx = alphaTask.todoList.findIndex((t) => t.id === id)
 	if (idx === -1) return false
-	const current = cline.todoList[idx]
+	const current = alphaTask.todoList[idx]
 	if (
 		(current.status === "pending" && nextStatus === "in_progress") ||
 		(current.status === "in_progress" && nextStatus === "completed") ||
 		current.status === nextStatus
 	) {
-		cline.todoList[idx] = { ...current, status: nextStatus }
+		alphaTask.todoList[idx] = { ...current, status: nextStatus }
 		return true
 	}
 	return false
 }
 
-export function removeTodoFromTask(cline: Task, id: string): boolean {
-	if (!cline.todoList) return false
-	const idx = cline.todoList.findIndex((t) => t.id === id)
+export function removeTodoFromTask(alphaTask: Task, id: string): boolean {
+	if (!alphaTask.todoList) return false
+	const idx = alphaTask.todoList.findIndex((t) => t.id === id)
 	if (idx === -1) return false
-	cline.todoList.splice(idx, 1)
+	alphaTask.todoList.splice(idx, 1)
 	return true
 }
 
-export function getTodoListForTask(cline: Task): TodoItem[] | undefined {
-	return cline.todoList?.slice()
+export function getTodoListForTask(alphaTask: Task): TodoItem[] | undefined {
+	return alphaTask.todoList?.slice()
 }
 
-export async function setTodoListForTask(cline?: Task, todos?: TodoItem[]) {
-	if (cline === undefined) return
-	cline.todoList = Array.isArray(todos) ? todos : []
-	await cline.providerRef.deref()?.postTaskTodosToWebview?.(cline.taskId, cline.todoList)
+export async function setTodoListForTask(alphaTask?: Task, todos?: TodoItem[]) {
+	if (alphaTask === undefined) return
+	alphaTask.todoList = Array.isArray(todos) ? todos : []
+	await alphaTask.providerRef.deref()?.postTaskTodosToWebview?.(alphaTask.taskId, alphaTask.todoList)
 }
 
-export function restoreTodoListForTask(cline: Task, todoList?: TodoItem[]) {
+export function restoreTodoListForTask(alphaTask: Task, todoList?: TodoItem[]) {
 	if (todoList) {
-		cline.todoList = Array.isArray(todoList) ? todoList : []
+		alphaTask.todoList = Array.isArray(todoList) ? todoList : []
 		return
 	}
-	cline.todoList = getLatestTodo(cline.clineMessages)
+	alphaTask.todoList = getLatestTodo(alphaTask.clineMessages)
 }
 
 function todoListToMarkdown(todos: TodoItem[]): string {

@@ -30,7 +30,7 @@ import { Package } from "./shared/package"
 import { formatLanguage } from "./shared/language"
 import { ContextProxy } from "./core/config/ContextProxy"
 import { AgentControlStore } from "./core/agent/AgentControlStore"
-import { ClineProvider } from "./core/webview/ClineProvider"
+import { AlphaProvider } from "./core/webview/AlphaProvider"
 import { DIFF_VIEW_URI_SCHEME } from "./integrations/editor/DiffViewProvider"
 import { TerminalRegistry } from "./integrations/terminal/TerminalRegistry"
 import { openAiCodexOAuthManager } from "./integrations/openai-codex/oauth"
@@ -61,7 +61,7 @@ import { initializeModelCacheRefresh } from "./api/providers/fetchers/modelCache
 
 let outputChannel: vscode.OutputChannel
 let extensionContext: vscode.ExtensionContext
-let sidebarProvider: ClineProvider | undefined
+let sidebarProvider: AlphaProvider | undefined
 
 /**
  * Check if we should auto-open the Alpha sidebar after switching to a worktree.
@@ -177,7 +177,7 @@ export async function activate(context: vscode.ExtensionContext) {
 		}
 	}
 
-	const provider = new ClineProvider(context, outputChannel, "sidebar", contextProxy)
+	const provider = new AlphaProvider(context, outputChannel, "sidebar", contextProxy)
 	const ticketPanel = new TicketPanel(context, provider)
 	context.subscriptions.push(
 		ticketPanel,
@@ -197,7 +197,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	TelemetryService.instance.setProvider(provider)
 
 	context.subscriptions.push(
-		vscode.window.registerWebviewViewProvider(ClineProvider.sideBarId, provider, {
+		vscode.window.registerWebviewViewProvider(AlphaProvider.sideBarId, provider, {
 			webviewOptions: { retainContextWhenHidden: true },
 		}),
 	)
@@ -262,7 +262,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	// Allows other extensions to activate once Alpha is ready.
 	vscode.commands.executeCommand(`${Package.name}.activationCompleted`)
 
-	// Implements the `RooCodeAPI` interface.
+	// Implements the `AlphaCodeAPI` interface.
 	const socketPath = process.env.ROO_CODE_IPC_SOCKET_PATH
 	const enableLogging = typeof socketPath === "string"
 

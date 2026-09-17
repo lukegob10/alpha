@@ -4,7 +4,7 @@ import path from "path"
 import os from "os"
 import { TicketStore } from "../TicketStore"
 import { workOnTicket } from "../TicketTaskLink"
-import type { ClineProvider } from "../../../core/webview/ClineProvider"
+import type { AlphaProvider } from "../../../core/webview/AlphaProvider"
 
 describe("ticket task linkage", () => {
 	let home: string, store: TicketStore
@@ -12,7 +12,7 @@ describe("ticket task linkage", () => {
 		abortTask = vi.fn(),
 		createTask = vi.fn(),
 		showTaskWithId = vi.fn()
-	const provider = { createTask, showTaskWithId } as unknown as ClineProvider
+	const provider = { createTask, showTaskWithId } as unknown as AlphaProvider
 	beforeEach(async () => {
 		vi.clearAllMocks()
 		home = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-ticket-link-"))

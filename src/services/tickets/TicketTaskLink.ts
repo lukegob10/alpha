@@ -1,12 +1,12 @@
 import path from "path"
 import type { Ticket } from "@alpha-code/types"
-import type { ClineProvider } from "../../core/webview/ClineProvider"
+import type { AlphaProvider } from "../../core/webview/AlphaProvider"
 import { withFileLock } from "../../core/task-persistence/atomicWrite"
 import type { TicketStore } from "./TicketStore"
 
 export async function workOnTicket(
 	store: TicketStore,
-	provider: Pick<ClineProvider, "createTask" | "showTaskWithId">,
+	provider: Pick<AlphaProvider, "createTask" | "showTaskWithId">,
 	id: string,
 	revision: string,
 ): Promise<Ticket> {

@@ -46,5 +46,8 @@
 	"settings.debugProxy.serverUrl.description": "URL proxy (mis. `http://127.0.0.1:8888`). Hanya digunakan ketika **Debug Proxy** diaktifkan.",
 	"settings.debugProxy.tlsInsecure.description": "Terima sertifikat self-signed dari proxy. **Diperlukan untuk inspeksi MITM.** ⚠️ Tidak aman — gunakan hanya untuk debugging lokal.",
 	"command.openTickets.title": "Alpha: Tiket",
-	"command.previewHtmlDocument.title": "Pratinjau Dokumen HTML"
+	"command.previewHtmlDocument.title": "Pratinjau Dokumen HTML",
+	"command.scheduledTasks.title": "Tugas Terjadwal",
+	"settings.vsCodeLmModelSelector.version.description": "Versi model bahasa",
+	"settings.vsCodeLmModelSelector.id.description": "Pengidentifikasi unik model bahasa"
 }

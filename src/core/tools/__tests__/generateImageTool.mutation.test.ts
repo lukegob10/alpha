@@ -74,8 +74,8 @@ describe("generateImageTool output mutation safety", () => {
 			recordToolError: vi.fn(),
 			recordToolUsage: vi.fn(),
 			say: vi.fn(),
-			rooIgnoreController: { validateAccess: vi.fn().mockReturnValue(true) },
-			rooProtectedController: { isWriteProtected: vi.fn().mockReturnValue(false) },
+			alphaIgnoreController: { validateAccess: vi.fn().mockReturnValue(true) },
+			alphaProtectedController: { isWriteProtected: vi.fn().mockReturnValue(false) },
 			fileContextTracker: { trackFileContext: vi.fn() },
 			providerRef: {
 				deref: () => ({
@@ -211,7 +211,7 @@ describe("generateImageTool output mutation safety", () => {
 	})
 
 	it("checks ignore policy on the actual suffixed destination", async () => {
-		task.rooIgnoreController.validateAccess.mockImplementation((name: string) => name !== "output.png")
+		task.alphaIgnoreController.validateAccess.mockImplementation((name: string) => name !== "output.png")
 		await execute("output")
 		await expect(fs.stat(destination)).rejects.toMatchObject({ code: "ENOENT" })
 		expectNoWriteReceipt()
@@ -219,7 +219,7 @@ describe("generateImageTool output mutation safety", () => {
 	})
 
 	it("requires protected-path approval on the actual suffixed destination", async () => {
-		task.rooProtectedController.isWriteProtected.mockImplementation((name: string) => name === "output.png")
+		task.alphaProtectedController.isWriteProtected.mockImplementation((name: string) => name === "output.png")
 		callbacks.askApproval.mockImplementation(
 			(_type: string, _message: string, _progress: unknown, force: boolean) => !force,
 		)
@@ -360,8 +360,8 @@ describe("generateImageTool output mutation safety", () => {
 	for (const policy of ["ignore", "protected"] as const) {
 		it(`rechecks ${policy} policy after generation`, async () => {
 			generate.mockImplementationOnce(() => {
-				if (policy === "ignore") task.rooIgnoreController.validateAccess.mockReturnValue(false)
-				else task.rooProtectedController.isWriteProtected.mockReturnValue(true)
+				if (policy === "ignore") task.alphaIgnoreController.validateAccess.mockReturnValue(false)
+				else task.alphaProtectedController.isWriteProtected.mockReturnValue(true)
 				return { success: true, imageData: `data:image/png;base64,${generated.toString("base64")}` }
 			})
 			await execute()
@@ -476,7 +476,7 @@ describe("generateImageTool output mutation safety", () => {
 
 	it("does not create parent directories after output policy is revoked", async () => {
 		generate.mockImplementationOnce(() => {
-			task.rooProtectedController.isWriteProtected.mockReturnValue(true)
+			task.alphaProtectedController.isWriteProtected.mockReturnValue(true)
 			return { success: true, imageData: `data:image/png;base64,${generated.toString("base64")}` }
 		})
 		await execute("new/output.png")
@@ -493,7 +493,7 @@ describe("generateImageTool output mutation safety", () => {
 				// Creation is already committed; pause its completion to inject the change.
 				expect(await fs.readFile(destination)).toEqual(Buffer.alloc(0))
 				if (change === "cancel") controller.abort()
-				if (change === "policy") task.rooIgnoreController.validateAccess.mockReturnValue(false)
+				if (change === "policy") task.alphaIgnoreController.validateAccess.mockReturnValue(false)
 				if (change === "dirty") {
 					;(vscode.workspace as any).textDocuments = [{ uri: vscode.Uri.file(destination), isDirty: true }]
 				}

@@ -1,7 +1,7 @@
 import * as assert from "assert"
 import * as vscode from "vscode"
 
-import { RooCodeEventName, type RooCodeSettings } from "@alpha-code/types"
+import { AlphaCodeEventName, type AlphaCodeSettings } from "@alpha-code/types"
 
 import { setDefaultSuiteTimeout } from "./test-utils"
 import { sleep, waitFor } from "./utils"
@@ -73,7 +73,7 @@ const getFixture = async (): Promise<VsCodeLmFixtureControl> => {
 	return extension.isActive ? extension.exports : extension.activate()
 }
 
-const createConfiguration = (): RooCodeSettings => ({
+const createConfiguration = (): AlphaCodeSettings => ({
 	...globalThis.api.getConfiguration(),
 	apiProvider: "vscode-lm",
 	vsCodeLmModelSelector: {
@@ -236,7 +236,7 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 		fixture.reset("no-choices-recovery")
 		let completedCount = 0
 		const onTaskCompleted = () => completedCount++
-		globalThis.api.on(RooCodeEventName.TaskCompleted, onTaskCompleted)
+		globalThis.api.on(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
 		try {
 			const taskId = await globalThis.api.startNewTask({
 				configuration: { ...createConfiguration(), autoApprovalEnabled: false },
@@ -248,7 +248,7 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 			assert.ok(!provider.getLiveTask(taskId)?.clineMessages?.some(({ ask }) => ask === "api_req_failed"))
 			assert.deepStrictEqual(fixture.getRequests()[1]!.messages, fixture.getRequests()[0]!.messages)
 		} finally {
-			globalThis.api.off(RooCodeEventName.TaskCompleted, onTaskCompleted)
+			globalThis.api.off(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
 		}
 	})
 
@@ -257,7 +257,7 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 		fixture.reset("tool-followup", { holdRequestIndexes: [1] })
 		let completedCount = 0
 		const onTaskCompleted = () => completedCount++
-		globalThis.api.on(RooCodeEventName.TaskCompleted, onTaskCompleted)
+		globalThis.api.on(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
 
 		try {
 			const taskId = await globalThis.api.startNewTask({
@@ -316,7 +316,7 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 			)
 			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 2)
 		} finally {
-			globalThis.api.off(RooCodeEventName.TaskCompleted, onTaskCompleted)
+			globalThis.api.off(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
 		}
 	})
 
@@ -364,7 +364,7 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 			fixture.reset("completion")
 			let recoveryCompleted = 0
 			const onRecoveryCompleted = () => recoveryCompleted++
-			globalThis.api.on(RooCodeEventName.TaskCompleted, onRecoveryCompleted)
+			globalThis.api.on(AlphaCodeEventName.TaskCompleted, onRecoveryCompleted)
 			try {
 				const recoveryTaskId = await globalThis.api.startNewTask({
 					configuration: createConfiguration(),
@@ -374,7 +374,7 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 				await acceptCompletionBoundary(provider, fixture, recoveryTaskId, () => recoveryCompleted, 1)
 				assert.notEqual(recoveryTaskId, cancelledTaskId)
 			} finally {
-				globalThis.api.off(RooCodeEventName.TaskCompleted, onRecoveryCompleted)
+				globalThis.api.off(AlphaCodeEventName.TaskCompleted, onRecoveryCompleted)
 			}
 		} finally {
 			fixture.releaseAll()
@@ -386,7 +386,7 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 		fixture.reset("error-recovery")
 		let completedCount = 0
 		const onTaskCompleted = () => completedCount++
-		globalThis.api.on(RooCodeEventName.TaskCompleted, onTaskCompleted)
+		globalThis.api.on(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
 
 		try {
 			const taskId = await globalThis.api.startNewTask({
@@ -410,7 +410,7 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 			assert.strictEqual(provider.getLiveTask(taskId), initialTask)
 			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 1)
 		} finally {
-			globalThis.api.off(RooCodeEventName.TaskCompleted, onTaskCompleted)
+			globalThis.api.off(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
 		}
 	})
 })

@@ -5,9 +5,9 @@ import * as path from "path"
 import * as vscode from "vscode"
 
 import {
-	RooCodeEventName,
+	AlphaCodeEventName,
 	type ParentVerificationObligation,
-	type RooCodeSettings,
+	type AlphaCodeSettings,
 	type TokenUsage,
 } from "@alpha-code/types"
 
@@ -326,9 +326,9 @@ suite("Alpha proportional completion settlement measurements", function () {
 						if (observation.settledAt === undefined)
 							observation.recordFailure(new Error("Premature completion"))
 					}
-					globalThis.api.on(RooCodeEventName.TaskCompleted, onCompleted)
+					globalThis.api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
 					const report = await withFixtureCleanup(async () => {
-						const configuration: RooCodeSettings = {
+						const configuration: AlphaCodeSettings = {
 							...originalConfiguration,
 							apiProvider: "fake-ai",
 							fakeAi: scripted,
@@ -478,7 +478,7 @@ suite("Alpha proportional completion settlement measurements", function () {
 						}
 					}, [
 						() => observation.cleanup(() => globalThis.api.clearCurrentTask()),
-						() => globalThis.api.off(RooCodeEventName.TaskCompleted, onCompleted),
+						() => globalThis.api.off(AlphaCodeEventName.TaskCompleted, onCompleted),
 						() => scripted.removeFromCache?.(),
 					])
 					reports.push(report)

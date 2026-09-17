@@ -1,11 +1,11 @@
 import { useId, useState } from "react"
 import { ChevronRight, Search } from "lucide-react"
-import type { ClineSayTool } from "@alpha-code/types"
+import type { AlphaSayTool } from "@alpha-code/types"
 import { cn } from "@/lib/utils"
 import CodeBlock from "../common/CodeBlock"
 import { SearchResultsList } from "./SearchResultsList"
 
-type FileSearch = NonNullable<ClineSayTool["batchSearches"]>[number]
+type FileSearch = NonNullable<AlphaSayTool["batchSearches"]>[number]
 
 interface FileSearchBatchProps {
 	searches: FileSearch[]

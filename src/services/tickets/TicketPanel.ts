@@ -2,14 +2,14 @@ import * as vscode from "vscode"
 import path from "path"
 import { z } from "zod"
 import { ticketRequestSchema, ticketTargetSchema, type TicketResponse, type TicketTarget } from "@alpha-code/types"
-import type { ClineProvider } from "../../core/webview/ClineProvider"
+import type { AlphaProvider } from "../../core/webview/AlphaProvider"
 import { getNonce } from "../../core/webview/getNonce"
 import { workOnTicket } from "./TicketTaskLink"
 import { TicketStore } from "./TicketStore"
 
 const menuContextSchema = z.object({ preserveFocus: z.boolean() }).strict()
 
-/** Presentation adapter only: task execution remains owned by ClineProvider. */
+/** Presentation adapter only: task execution remains owned by AlphaProvider. */
 export class TicketPanel implements vscode.Disposable {
 	private panel?: vscode.WebviewPanel
 	private subscriptions: vscode.Disposable[] = []
@@ -21,7 +21,7 @@ export class TicketPanel implements vscode.Disposable {
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
-		private readonly provider: ClineProvider,
+		private readonly provider: AlphaProvider,
 	) {
 		const prepare = () => {
 			void this.prepareWorkspaceReferences().catch(() => {

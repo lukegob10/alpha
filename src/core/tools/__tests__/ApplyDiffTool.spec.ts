@@ -33,7 +33,7 @@ vi.mock("../../prompts/responses", () => ({
 	formatResponse: {
 		toolError: vi.fn((message: string) => `Error: ${message}`),
 		toolDenied: vi.fn(() => "The user denied this operation."),
-		rooIgnoreError: vi.fn((filePath: string) => `Access denied: ${filePath}`),
+		alphaIgnoreError: vi.fn((filePath: string) => `Access denied: ${filePath}`),
 		createPrettyPatch: vi.fn(() => "mock-diff"),
 	},
 }))
@@ -56,8 +56,8 @@ function createTask() {
 		didToolFailInCurrentTurn: false,
 		taskId: "task",
 		api: { getModel: vi.fn(() => ({ id: "claude-3" })) },
-		rooIgnoreController: { validateAccess: vi.fn(() => true) },
-		rooProtectedController: { isWriteProtected: vi.fn(() => false) },
+		alphaIgnoreController: { validateAccess: vi.fn(() => true) },
+		alphaProtectedController: { isWriteProtected: vi.fn(() => false) },
 		providerRef: {
 			deref: () => ({
 				runWorkspaceMutation: async (_task: unknown, _label: string, run: () => Promise<void>) => run(),
@@ -245,7 +245,7 @@ describe("ApplyDiffTool", () => {
 			const task = createTask()
 			const callbacks = createCallbacks()
 			if (scenario === "missing file") mockedFileExists.mockResolvedValue(false)
-			if (scenario === "ignored file") task.rooIgnoreController.validateAccess.mockReturnValue(false)
+			if (scenario === "ignored file") task.alphaIgnoreController.validateAccess.mockReturnValue(false)
 			await new ApplyDiffTool().execute(
 				{
 					path: scenario === "missing path" ? "" : "test.txt",

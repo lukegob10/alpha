@@ -5,8 +5,8 @@ import type OpenAI from "openai"
 import type { ProviderSettings, ModeConfig, ModelInfo, ToolName, McpServer } from "@alpha-code/types"
 import { customToolRegistry, formatNative } from "@alpha-code/core"
 
-import type { ClineProvider } from "../webview/ClineProvider"
-import { getRooDirectoriesForCwd } from "../../services/roo-config/index.js"
+import type { AlphaProvider } from "../webview/AlphaProvider"
+import { getLegacyConfigDirectoriesForCwd } from "../../services/config-paths/index.js"
 import { getAvailableVSCodeBrowserToolNames } from "../../services/browser/VSCodeBrowserTools"
 import { planModeSlug } from "../../shared/modes"
 
@@ -28,7 +28,7 @@ import { buildMcpToolName } from "../../utils/mcp-name"
 import { DISCOVERY_OUTPUT_LIMIT, type DiscoverTools, type TaskToolCatalogCache } from "./TaskToolCatalogCache"
 
 export interface BuildToolsOptions {
-	provider: ClineProvider
+	provider: AlphaProvider
 	cwd: string
 	mode: string | undefined
 	customModes: ModeConfig[] | undefined
@@ -146,7 +146,7 @@ function serverState(servers: readonly McpServer[], mcpHub?: McpHub, cache?: Tas
 }
 
 function captureMcpAvailability(
-	provider: ClineProvider,
+	provider: AlphaProvider,
 	servers: readonly McpServer[],
 	mcpHub: McpHub | undefined,
 	schemas: readonly OpenAI.Chat.ChatCompletionTool[],
@@ -266,7 +266,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 	const codeIndexManager = CodeIndexManager.getInstance(provider.context, cwd)
 	let customTools: NonNullable<ToolRegistryOptions["customTools"]> = []
 	if (experiments?.customTools && mode !== planModeSlug) {
-		const toolDirs = getRooDirectoriesForCwd(cwd).map((dir) => path.join(dir, "tools"))
+		const toolDirs = getLegacyConfigDirectoriesForCwd(cwd).map((dir) => path.join(dir, "tools"))
 		await awaitCatalogInput(customToolRegistry.loadFromDirectoriesIfStale(toolDirs), options.signal)
 		options.signal?.throwIfAborted()
 		const serialized = new Map(customToolRegistry.getAllSerialized().map((tool) => [tool.name, tool]))

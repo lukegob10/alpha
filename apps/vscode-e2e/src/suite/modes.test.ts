@@ -1,6 +1,6 @@
 import * as assert from "assert"
 
-import { RooCodeEventName, type RooCodeSettings } from "@alpha-code/types"
+import { AlphaCodeEventName, type AlphaCodeSettings } from "@alpha-code/types"
 
 import { setDefaultSuiteTimeout } from "./test-utils"
 import { waitFor } from "./utils"
@@ -111,7 +111,7 @@ interface ModeHostProvider {
 	getLiveTask(taskId: string):
 		| {
 				api: unknown
-				apiConfiguration: RooCodeSettings
+				apiConfiguration: AlphaCodeSettings
 				abort?: boolean
 				clineMessages?: Array<{ ask?: string; say?: string; text?: string; partial?: boolean }>
 				didComplete?: boolean
@@ -173,7 +173,7 @@ suite("Alpha Modes", function () {
 			if (switchedTaskId === taskId) switchedModes.push(mode)
 		}
 
-		globalThis.api.on(RooCodeEventName.TaskModeSwitched, onModeSwitched)
+		globalThis.api.on(AlphaCodeEventName.TaskModeSwitched, onModeSwitched)
 
 		try {
 			const registeredModes = await provider.getModes()
@@ -212,7 +212,7 @@ suite("Alpha Modes", function () {
 				assert.equal(await task.getTaskMode(), "code")
 			}
 		} finally {
-			globalThis.api.off(RooCodeEventName.TaskModeSwitched, onModeSwitched)
+			globalThis.api.off(AlphaCodeEventName.TaskModeSwitched, onModeSwitched)
 			await globalThis.api.clearCurrentTask().catch(() => undefined)
 		}
 	})
@@ -233,12 +233,12 @@ suite("Alpha Modes", function () {
 			if (switchedTaskId === taskId) localSwitchedModes.push(mode)
 		}
 
-		globalThis.api.on(RooCodeEventName.TaskCompleted, onTaskCompleted)
-		globalThis.api.on(RooCodeEventName.TaskModeSwitched, onModeSwitched)
+		globalThis.api.on(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
+		globalThis.api.on(AlphaCodeEventName.TaskModeSwitched, onModeSwitched)
 
 		try {
 			scriptedAI = new ModeSwitchScriptedAI()
-			const configuration: RooCodeSettings = {
+			const configuration: AlphaCodeSettings = {
 				...globalThis.api.getConfiguration(),
 				apiProvider: "fake-ai",
 				fakeAi: scriptedAI,
@@ -262,7 +262,7 @@ suite("Alpha Modes", function () {
 			})
 			initialTask = provider.getLiveTask(taskId)
 			assert.ok(initialTask, "The mode-switch task was not registered with the extension host")
-			initialTask.on(RooCodeEventName.TaskModeSwitched, onLocalModeSwitched)
+			initialTask.on(AlphaCodeEventName.TaskModeSwitched, onLocalModeSwitched)
 			const initialApi = initialTask.api
 			const initialApiConfiguration = initialTask.apiConfiguration
 			const initialApiConfigName = await initialTask.getTaskApiConfigName()
@@ -351,9 +351,9 @@ suite("Alpha Modes", function () {
 			assert.equal(state.mode, "code")
 		} finally {
 			scriptedAI?.allowModeSwitches()
-			initialTask?.off(RooCodeEventName.TaskModeSwitched, onLocalModeSwitched)
-			globalThis.api.off(RooCodeEventName.TaskCompleted, onTaskCompleted)
-			globalThis.api.off(RooCodeEventName.TaskModeSwitched, onModeSwitched)
+			initialTask?.off(AlphaCodeEventName.TaskModeSwitched, onLocalModeSwitched)
+			globalThis.api.off(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
+			globalThis.api.off(AlphaCodeEventName.TaskModeSwitched, onModeSwitched)
 			await globalThis.api.clearCurrentTask().catch(() => undefined)
 		}
 	})

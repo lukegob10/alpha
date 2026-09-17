@@ -2,7 +2,7 @@ import { z } from "zod"
 import { BaseTool, type ToolCallbacks } from "./BaseTool"
 import type { Task } from "../task/Task"
 import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
-import type { RooTerminalProcess } from "../../integrations/terminal/types"
+import type { AlphaTerminalProcess } from "../../integrations/terminal/types"
 import type { NativeToolArgs } from "../../shared/tools"
 
 const paramsSchema = z.object({
@@ -13,7 +13,7 @@ const paramsSchema = z.object({
 })
 
 export async function waitForCommand(
-	process: RooTerminalProcess,
+	process: AlphaTerminalProcess,
 	timeoutMs: number,
 	signal?: AbortSignal,
 ): Promise<void> {

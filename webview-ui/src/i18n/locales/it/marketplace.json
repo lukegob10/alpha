@@ -106,7 +106,8 @@
 		"goToModes": "Vai alle impostazioni Modalità",
 		"moreInfoMcp": "Visualizza documentazione MCP {{name}}",
 		"validationRequired": "Fornisci un valore per {{paramName}}",
-		"prerequisites": "Prerequisiti"
+		"prerequisites": "Prerequisiti",
+		"installing": "Installazione…"
 	},
 	"sources": {
 		"title": "Configura fonti del Marketplace",

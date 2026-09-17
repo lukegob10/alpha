@@ -5,7 +5,7 @@ import { promisify } from "util"
 import * as path from "path"
 
 import {
-	RooCodeEventName,
+	AlphaCodeEventName,
 	scheduledTaskExecutionSchema,
 	scheduledTaskProfileSchema,
 	type CreateScheduledTaskPayload,
@@ -18,7 +18,7 @@ import {
 	type UpdateScheduledTaskPayload,
 } from "@alpha-code/types"
 
-import type { ClineProvider } from "../../core/webview/ClineProvider"
+import type { AlphaProvider } from "../../core/webview/AlphaProvider"
 import { Package } from "../../shared/package"
 import { getWorkspacePath } from "../../utils/path"
 import { defaultModeSlug } from "../../shared/modes"
@@ -105,7 +105,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
-		private readonly provider: ClineProvider,
+		private readonly provider: AlphaProvider,
 		private readonly outputChannel: vscode.OutputChannel,
 		private readonly tickMs = DEFAULT_TICK_MS,
 	) {
@@ -114,8 +114,8 @@ export class ScheduledTaskService implements vscode.Disposable {
 
 	async initialize(): Promise<void> {
 		await this.store.initialize()
-		this.provider.on(RooCodeEventName.TaskCompleted, this.handleTaskCompleted)
-		this.provider.on(RooCodeEventName.TaskAborted, this.handleTaskAborted)
+		this.provider.on(AlphaCodeEventName.TaskCompleted, this.handleTaskCompleted)
+		this.provider.on(AlphaCodeEventName.TaskAborted, this.handleTaskAborted)
 		await this.recoverInterruptedRuns()
 		await this.detectMissedRuns()
 		await this.broadcast()
@@ -128,8 +128,8 @@ export class ScheduledTaskService implements vscode.Disposable {
 			clearTimeout(this.timer)
 			this.timer = undefined
 		}
-		this.provider.off(RooCodeEventName.TaskCompleted, this.handleTaskCompleted)
-		this.provider.off(RooCodeEventName.TaskAborted, this.handleTaskAborted)
+		this.provider.off(AlphaCodeEventName.TaskCompleted, this.handleTaskCompleted)
+		this.provider.off(AlphaCodeEventName.TaskAborted, this.handleTaskAborted)
 	}
 
 	getState(): ScheduledTaskState {

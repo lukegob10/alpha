@@ -1,8 +1,8 @@
 import { z } from "zod"
 
-import { RooCodeEventName } from "./events.js"
-import type { RooCodeSettings } from "./global-settings.js"
-import type { ClineMessage, QueuedMessage, TokenUsage } from "./message.js"
+import { AlphaCodeEventName } from "./events.js"
+import type { AlphaCodeSettings } from "./global-settings.js"
+import type { AlphaMessage, QueuedMessage, TokenUsage } from "./message.js"
 import type { ProviderSettings } from "./provider-settings.js"
 import type { SubagentModelRouteState } from "./subagent.js"
 import type { SubagentContextManifest } from "./subagent-context.js"
@@ -26,7 +26,7 @@ export interface TaskProviderLike {
 		images?: string[],
 		parentTask?: TaskLike,
 		options?: CreateTaskOptions,
-		configuration?: RooCodeSettings,
+		configuration?: AlphaCodeSettings,
 	): Promise<TaskLike>
 	cancelTask(): Promise<void>
 	clearTask(): Promise<void>
@@ -64,30 +64,30 @@ export interface TaskProviderLike {
 }
 
 export type TaskProviderEvents = {
-	[RooCodeEventName.TaskCreated]: [task: TaskLike]
-	[RooCodeEventName.TaskStarted]: [taskId: string]
-	[RooCodeEventName.TaskCompleted]: [taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage]
-	[RooCodeEventName.TaskAborted]: [taskId: string]
-	[RooCodeEventName.TaskFocused]: [taskId: string]
-	[RooCodeEventName.TaskUnfocused]: [taskId: string]
-	[RooCodeEventName.TaskActive]: [taskId: string]
-	[RooCodeEventName.TaskInteractive]: [taskId: string]
-	[RooCodeEventName.TaskResumable]: [taskId: string]
-	[RooCodeEventName.TaskIdle]: [taskId: string]
+	[AlphaCodeEventName.TaskCreated]: [task: TaskLike]
+	[AlphaCodeEventName.TaskStarted]: [taskId: string]
+	[AlphaCodeEventName.TaskCompleted]: [taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage]
+	[AlphaCodeEventName.TaskAborted]: [taskId: string]
+	[AlphaCodeEventName.TaskFocused]: [taskId: string]
+	[AlphaCodeEventName.TaskUnfocused]: [taskId: string]
+	[AlphaCodeEventName.TaskActive]: [taskId: string]
+	[AlphaCodeEventName.TaskInteractive]: [taskId: string]
+	[AlphaCodeEventName.TaskResumable]: [taskId: string]
+	[AlphaCodeEventName.TaskIdle]: [taskId: string]
 
-	[RooCodeEventName.TaskPaused]: [taskId: string]
-	[RooCodeEventName.TaskUnpaused]: [taskId: string]
-	[RooCodeEventName.TaskSpawned]: [taskId: string]
-	[RooCodeEventName.TaskDelegated]: [parentTaskId: string, childTaskId: string]
-	[RooCodeEventName.TaskDelegationCompleted]: [parentTaskId: string, childTaskId: string, summary: string]
-	[RooCodeEventName.TaskDelegationResumed]: [parentTaskId: string, childTaskId: string]
+	[AlphaCodeEventName.TaskPaused]: [taskId: string]
+	[AlphaCodeEventName.TaskUnpaused]: [taskId: string]
+	[AlphaCodeEventName.TaskSpawned]: [taskId: string]
+	[AlphaCodeEventName.TaskDelegated]: [parentTaskId: string, childTaskId: string]
+	[AlphaCodeEventName.TaskDelegationCompleted]: [parentTaskId: string, childTaskId: string, summary: string]
+	[AlphaCodeEventName.TaskDelegationResumed]: [parentTaskId: string, childTaskId: string]
 
-	[RooCodeEventName.TaskUserMessage]: [taskId: string]
+	[AlphaCodeEventName.TaskUserMessage]: [taskId: string]
 
-	[RooCodeEventName.TaskTokenUsageUpdated]: [taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage]
+	[AlphaCodeEventName.TaskTokenUsageUpdated]: [taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage]
 
-	[RooCodeEventName.ModeChanged]: [mode: string]
-	[RooCodeEventName.ProviderProfileChanged]: [config: { name: string; provider?: string }]
+	[AlphaCodeEventName.ModeChanged]: [mode: string]
+	[AlphaCodeEventName.ProviderProfileChanged]: [config: { name: string; provider?: string }]
 }
 
 /**
@@ -219,7 +219,7 @@ export interface TaskLike {
 	readonly childTaskId?: string
 	readonly metadata: TaskMetadata
 	readonly taskStatus: TaskStatus
-	readonly taskAsk: ClineMessage | undefined
+	readonly taskAsk: AlphaMessage | undefined
 	readonly queuedMessages: QueuedMessage[]
 	readonly tokenUsage: TokenUsage | undefined
 
@@ -234,29 +234,29 @@ export interface TaskLike {
 
 export type TaskEvents = {
 	// Task Lifecycle
-	[RooCodeEventName.TaskStarted]: []
-	[RooCodeEventName.TaskCompleted]: [taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage]
-	[RooCodeEventName.TaskAborted]: []
-	[RooCodeEventName.TaskFocused]: []
-	[RooCodeEventName.TaskUnfocused]: []
-	[RooCodeEventName.TaskActive]: [taskId: string]
-	[RooCodeEventName.TaskInteractive]: [taskId: string]
-	[RooCodeEventName.TaskResumable]: [taskId: string]
-	[RooCodeEventName.TaskIdle]: [taskId: string]
+	[AlphaCodeEventName.TaskStarted]: []
+	[AlphaCodeEventName.TaskCompleted]: [taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage]
+	[AlphaCodeEventName.TaskAborted]: []
+	[AlphaCodeEventName.TaskFocused]: []
+	[AlphaCodeEventName.TaskUnfocused]: []
+	[AlphaCodeEventName.TaskActive]: [taskId: string]
+	[AlphaCodeEventName.TaskInteractive]: [taskId: string]
+	[AlphaCodeEventName.TaskResumable]: [taskId: string]
+	[AlphaCodeEventName.TaskIdle]: [taskId: string]
 
 	// Subtask Lifecycle
-	[RooCodeEventName.TaskPaused]: [taskId: string]
-	[RooCodeEventName.TaskUnpaused]: [taskId: string]
-	[RooCodeEventName.TaskSpawned]: [taskId: string]
+	[AlphaCodeEventName.TaskPaused]: [taskId: string]
+	[AlphaCodeEventName.TaskUnpaused]: [taskId: string]
+	[AlphaCodeEventName.TaskSpawned]: [taskId: string]
 
 	// Task Execution
-	[RooCodeEventName.Message]: [{ action: "created" | "updated"; message: ClineMessage }]
-	[RooCodeEventName.TaskModeSwitched]: [taskId: string, mode: string]
-	[RooCodeEventName.TaskAskResponded]: []
-	[RooCodeEventName.TaskUserMessage]: [taskId: string]
-	[RooCodeEventName.QueuedMessagesUpdated]: [taskId: string, messages: QueuedMessage[]]
+	[AlphaCodeEventName.Message]: [{ action: "created" | "updated"; message: AlphaMessage }]
+	[AlphaCodeEventName.TaskModeSwitched]: [taskId: string, mode: string]
+	[AlphaCodeEventName.TaskAskResponded]: []
+	[AlphaCodeEventName.TaskUserMessage]: [taskId: string]
+	[AlphaCodeEventName.QueuedMessagesUpdated]: [taskId: string, messages: QueuedMessage[]]
 
 	// Task Analytics
-	[RooCodeEventName.TaskToolFailed]: [taskId: string, tool: ToolName, error: string]
-	[RooCodeEventName.TaskTokenUsageUpdated]: [taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage]
+	[AlphaCodeEventName.TaskToolFailed]: [taskId: string, tool: ToolName, error: string]
+	[AlphaCodeEventName.TaskTokenUsageUpdated]: [taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage]
 }

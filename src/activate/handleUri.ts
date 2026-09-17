@@ -1,11 +1,11 @@
 import * as vscode from "vscode"
 
-import { ClineProvider } from "../core/webview/ClineProvider"
+import { AlphaProvider } from "../core/webview/AlphaProvider"
 
-export const handleUri = async (uri: vscode.Uri, fallbackProvider?: ClineProvider) => {
+export const handleUri = async (uri: vscode.Uri, fallbackProvider?: AlphaProvider) => {
 	const path = uri.path
 	const query = new URLSearchParams(uri.query.replace(/\+/g, "%2B"))
-	const provider = ClineProvider.getVisibleInstance() ?? fallbackProvider
+	const provider = AlphaProvider.getVisibleInstance() ?? fallbackProvider
 
 	if (!provider) {
 		return

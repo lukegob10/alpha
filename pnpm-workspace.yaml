@@ -1,5 +1,5 @@
 packages:
-    - "src" # Should be apps/vscode
-    - "webview-ui" # Should be apps/vscode-webview
-    - "apps/*"
+    - "src"
+    - "webview-ui"
+    - "apps/vscode-e2e"
     - "packages/*"

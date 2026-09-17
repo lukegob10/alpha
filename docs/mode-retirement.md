@@ -57,6 +57,6 @@ completes" and "does not cross-drain queues between separate tasks". All four re
 `Task.ts` from the user's working tree; 190 other cases pass on the final implementation. This removal does not change
 that compaction logic or weaken those assertions.
 
-The subsequent [tool must-fix validation](tool-must-fix-validation-2026-09-14.md) corrected those four test fixtures:
+The subsequent validation on 2026-09-14 corrected those four test fixtures:
 they now model a measured context reduction and retain real history replacement. The acknowledged-context and
 per-task queue assertions pass without changing compaction runtime behavior.

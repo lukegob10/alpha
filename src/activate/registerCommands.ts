@@ -6,7 +6,7 @@ import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Package } from "../shared/package"
 import { getCommand } from "../utils/commands"
-import { ClineProvider } from "../core/webview/ClineProvider"
+import { AlphaProvider } from "../core/webview/AlphaProvider"
 import { ContextProxy } from "../core/config/ContextProxy"
 import { focusPanel } from "../utils/focusPanel"
 import { handleNewTask } from "./handleTask"
@@ -15,10 +15,10 @@ import { importSettingsWithFeedback } from "../core/config/importExport"
 import { t } from "../i18n"
 
 /**
- * Helper to get the visible ClineProvider instance or log if not found.
+ * Helper to get the visible AlphaProvider instance or log if not found.
  */
-export function getVisibleProviderOrLog(outputChannel: vscode.OutputChannel): ClineProvider | undefined {
-	const visibleProvider = ClineProvider.getVisibleInstance()
+export function getVisibleProviderOrLog(outputChannel: vscode.OutputChannel): AlphaProvider | undefined {
+	const visibleProvider = AlphaProvider.getVisibleInstance()
 	if (!visibleProvider) {
 		outputChannel.appendLine("Cannot find any visible Alpha instances.")
 		return undefined
@@ -55,7 +55,7 @@ export function setPanel(
 export type RegisterCommandOptions = {
 	context: vscode.ExtensionContext
 	outputChannel: vscode.OutputChannel
-	provider: ClineProvider
+	provider: AlphaProvider
 }
 
 export const registerCommands = (options: RegisterCommandOptions) => {
@@ -92,9 +92,9 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 	popoutButtonClicked: () => {
 		TelemetryService.instance.captureTitleButtonClicked("popout")
 
-		return openClineInNewTab({ context, outputChannel })
+		return openAlphaInNewTab({ context, outputChannel })
 	},
-	openInNewTab: () => openClineInNewTab({ context, outputChannel }),
+	openInNewTab: () => openAlphaInNewTab({ context, outputChannel }),
 	settingsButtonClicked: () => {
 		const visibleProvider = getVisibleProviderOrLog(outputChannel)
 
@@ -198,7 +198,7 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 	},
 })
 
-export const openClineInNewTab = async ({ context, outputChannel }: Omit<RegisterCommandOptions, "provider">) => {
+export const openAlphaInNewTab = async ({ context, outputChannel }: Omit<RegisterCommandOptions, "provider">) => {
 	// (This example uses webviewProvider activation event which is necessary to
 	// deserialize cached webview, but since we use retainContextWhenHidden, we
 	// don't need to use that event).
@@ -206,7 +206,7 @@ export const openClineInNewTab = async ({ context, outputChannel }: Omit<Registe
 	const contextProxy = await ContextProxy.getInstance(context)
 	const codeIndexManager = CodeIndexManager.getInstance(context)
 
-	const tabProvider = new ClineProvider(context, outputChannel, "editor", contextProxy)
+	const tabProvider = new AlphaProvider(context, outputChannel, "editor", contextProxy)
 	const lastCol = Math.max(...vscode.window.visibleTextEditors.map((editor) => editor.viewColumn || 0))
 
 	// Check if there are any visible text editors, otherwise open a new group
@@ -219,7 +219,7 @@ export const openClineInNewTab = async ({ context, outputChannel }: Omit<Registe
 
 	const targetCol = hasVisibleEditors ? Math.max(lastCol + 1, 1) : vscode.ViewColumn.Two
 
-	const newPanel = vscode.window.createWebviewPanel(ClineProvider.tabPanelId, "Alpha", targetCol, {
+	const newPanel = vscode.window.createWebviewPanel(AlphaProvider.tabPanelId, "Alpha", targetCol, {
 		enableScripts: true,
 		retainContextWhenHidden: true,
 		localResourceRoots: [context.extensionUri],

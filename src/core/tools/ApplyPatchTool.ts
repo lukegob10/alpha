@@ -2,7 +2,7 @@ import fs from "fs/promises"
 import path from "path"
 import * as vscode from "vscode"
 
-import { type ClineSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
+import { type AlphaSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
@@ -131,7 +131,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				try {
 					const paths = [hunk.path, hunk.type === "UpdateFile" ? hunk.movePath : undefined]
 					const ignored = paths.find(
-						(candidate) => candidate && !task.rooIgnoreController?.validateAccess(candidate),
+						(candidate) => candidate && !task.alphaIgnoreController?.validateAccess(candidate),
 					)
 					if (ignored) {
 						files[index].reason = `Access denied by .alphaignore: ${ignored}`
@@ -140,7 +140,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 						continue
 					}
 					const absolutePath = path.resolve(task.cwd, hunk.path)
-					const isWriteProtected = task.rooProtectedController?.isWriteProtected(hunk.path) || false
+					const isWriteProtected = task.alphaProtectedController?.isWriteProtected(hunk.path) || false
 					if (hunk.type === "AddFile" && (await fileExistsAtPath(absolutePath))) {
 						throw new Error(`File already exists: ${hunk.path}. Use Update File instead.`)
 					}
@@ -150,7 +150,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 						hunk.movePath &&
 						!arePathsEqual(absolutePath, path.resolve(task.cwd, hunk.movePath))
 					) {
-						if (task.rooProtectedController?.isWriteProtected(hunk.movePath)) {
+						if (task.alphaProtectedController?.isWriteProtected(hunk.movePath)) {
 							throw new Error(`Cannot move file to write-protected path: ${hunk.movePath}`)
 						}
 						const moveAbsolutePath = path.resolve(task.cwd, hunk.movePath)
@@ -184,7 +184,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				}
 				const { change, expectedMoveFileState } = entry
 				const isWriteProtected =
-					entry.isWriteProtected || task.rooProtectedController?.isWriteProtected(change.path) || false
+					entry.isWriteProtected || task.alphaProtectedController?.isWriteProtected(change.path) || false
 				const absolutePath = path.resolve(task.cwd, change.path)
 				const markApplied = () => {
 					file.status = "applied"
@@ -194,7 +194,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				try {
 					// Recheck access after earlier files' approval waits.
 					const deniedPath = [change.path, change.movePath].find(
-						(candidate) => candidate && !task.rooIgnoreController?.validateAccess(candidate),
+						(candidate) => candidate && !task.alphaIgnoreController?.validateAccess(candidate),
 					)
 					if (deniedPath) {
 						outcome = { status: "denied", result: `Access denied by .alphaignore: ${deniedPath}` }
@@ -314,7 +314,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		const sanitizedDiff = sanitizeUnifiedDiff(diff || "")
 		const diffStats = computeDiffStats(sanitizedDiff) || undefined
 
-		const sharedMessageProps: ClineSayTool = {
+		const sharedMessageProps: AlphaSayTool = {
 			tool: "appliedDiff",
 			path: getTaskReadablePath(task, relPath),
 			diff: sanitizedDiff,
@@ -326,7 +326,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			content: sanitizedDiff,
 			isProtected: isWriteProtected,
 			diffStats,
-		} satisfies ClineSayTool)
+		} satisfies AlphaSayTool)
 
 		// Show diff view if focus disruption prevention is disabled
 		if (!isPreventFocusDisruptionEnabled) {
@@ -414,7 +414,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			assertCanDelete()
 
 			const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
-			const sharedMessageProps: ClineSayTool = {
+			const sharedMessageProps: AlphaSayTool = {
 				tool: "appliedDiff",
 				path: getTaskReadablePath(task, relPath),
 				diff: `File will be deleted: ${relPath}`,
@@ -425,7 +425,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				...sharedMessageProps,
 				content: `Delete file: ${relPath}`,
 				isProtected: isWriteProtected,
-			} satisfies ClineSayTool)
+			} satisfies AlphaSayTool)
 
 			const didApprove = await askApproval("tool", completeMessage, undefined, isWriteProtected)
 
@@ -518,14 +518,14 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		// asking for approval. Both save paths re-check this snapshot before
 		// writing so an approval cannot authorize a changed destination.
 		if (effectiveMovePath && moveAbsolutePath) {
-			const moveAccessAllowed = task.rooIgnoreController?.validateAccess(effectiveMovePath)
+			const moveAccessAllowed = task.alphaIgnoreController?.validateAccess(effectiveMovePath)
 			if (!moveAccessAllowed) {
 				await task.say("rooignore_error", effectiveMovePath)
 				await task.diffViewProvider.reset()
-				return { status: "error", result: formatResponse.rooIgnoreError(effectiveMovePath) }
+				return { status: "error", result: formatResponse.alphaIgnoreError(effectiveMovePath) }
 			}
 
-			const isMovePathWriteProtected = task.rooProtectedController?.isWriteProtected(effectiveMovePath) || false
+			const isMovePathWriteProtected = task.alphaProtectedController?.isWriteProtected(effectiveMovePath) || false
 			if (isMovePathWriteProtected) {
 				task.consecutiveMistakeCount++
 				task.recordToolError("apply_patch")
@@ -567,7 +567,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		const sanitizedDiff = sanitizeUnifiedDiff(diff)
 		const diffStats = computeDiffStats(sanitizedDiff) || undefined
 
-		const sharedMessageProps: ClineSayTool = {
+		const sharedMessageProps: AlphaSayTool = {
 			tool: "appliedDiff",
 			path: getTaskReadablePath(task, relPath),
 			diff: sanitizedDiff,
@@ -583,7 +583,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			content: approvalContent,
 			isProtected: isWriteProtected,
 			diffStats,
-		} satisfies ClineSayTool)
+		} satisfies AlphaSayTool)
 
 		// Show diff view if focus disruption prevention is disabled
 		if (!isPreventFocusDisruptionEnabled) {
@@ -705,7 +705,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			patchPreview = lines.join("\n") + (patch.split("\n").length > 5 ? "\n..." : "")
 		}
 
-		const sharedMessageProps: ClineSayTool = {
+		const sharedMessageProps: AlphaSayTool = {
 			tool: "appliedDiff",
 			path: displayPath || path.basename(task.cwd) || "workspace",
 			diff: patchPreview || "Parsing patch...",

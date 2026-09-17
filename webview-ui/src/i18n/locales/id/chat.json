@@ -282,7 +282,9 @@
 		"didViewTopLevelOutsideWorkspace": "Alpha melihat file tingkat atas di direktori ini (di luar workspace)",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha ingin melihat semua file secara rekursif di direktori ini (di luar workspace)",
 		"didViewRecursiveOutsideWorkspace": "Alpha melihat semua file secara rekursif di direktori ini (di luar workspace)",
-		"wantsToViewMultipleDirectories": "Alpha ingin melihat beberapa direktori"
+		"wantsToViewMultipleDirectories": "Alpha ingin melihat beberapa direktori",
+		"wantsToSearchMultiple": "Alpha ingin menjalankan pencarian file {{count}}",
+		"didSearchMultiple": "Alpha menjalankan pencarian file {{count}}"
 	},
 	"codebaseSearch": {
 		"title": "Pencarian basis kode",
@@ -487,7 +489,14 @@
 		"clickToEdit": "Klik untuk mengedit pesan",
 		"steering": "Mengalihkan…",
 		"queueFailed": "Pesan tidak dapat dimasukkan ke antrean. Draf Anda tetap ada di penulis pesan.",
-		"steerFailed": "Pengalihan tidak dapat dimulai. Pesan dalam antrean masih tersedia."
+		"steerFailed": "Pengalihan tidak dapat dimulai. Pesan dalam antrean masih tersedia.",
+		"edit": "Edit",
+		"editTooltip": "Edit pesan antrean ini",
+		"editing": "Mengedit di komposer",
+		"dragHandle": "Tarik pesan antrean",
+		"dragTooltip": "Tarik untuk menyusun ulang pesan antrean ini",
+		"steer": "Arahkan",
+		"steerTooltip": "Kirim pesan antrian ini ke belokan saat ini"
 	},
 	"modelResponseDelayed": "Menunggu pembaruan berikutnya dari model. Penalaran yang lebih panjang dapat memerlukan waktu.",
 	"slashCommand": {
@@ -525,5 +534,30 @@
 		"list_checks": "Daftar pemeriksaan",
 		"merge_pull_request": "Gabungkan pull request",
 		"comment": "Tambahkan komentar"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "Periksa agen",
+			"wait_agent": "Tunggu pembaruan agen",
+			"unknown": "Tindakan agen"
+		},
+		"failed": "{{action}} gagal: {{error}}",
+		"list": {
+			"running": "Agen inspeksi...",
+			"completed": "Agen {{count}} yang diperiksa",
+			"completed_other": "Agen {{count}} yang diperiksa",
+			"mailbox": "Pembaruan kotak surat {{count}}",
+			"mailbox_other": "Pembaruan kotak surat {{count}}"
+		},
+		"wait": {
+			"running": "Menunggu pembaruan agen...",
+			"noActiveAgents": "Tidak ada agen aktif yang menunggu",
+			"cancelled": "Penantian agen dibatalkan",
+			"timedOut": "Tidak ada pembaruan agen sebelum batas waktu",
+			"alreadyDelivered": "Tidak ada pembaruan baru; hasil sudah dikirimkan",
+			"received": "Menerima pembaruan agen {{count}}",
+			"received_other": "Menerima pembaruan agen {{count}}",
+			"completed": "Tunggu agen selesai"
+		}
 	}
 }

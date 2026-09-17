@@ -39,7 +39,7 @@ const agentCriticalTests = [
 	"core/task/__tests__/flushPendingToolResultsToHistory.spec.ts",
 	"core/task/__tests__/validateToolResultIds.spec.ts",
 	"core/task/__tests__/WorkspaceMutationGate.spec.ts",
-	"core/webview/__tests__/ClineProvider.flicker-free-cancel.spec.ts",
+	"core/webview/__tests__/AlphaProvider.flicker-free-cancel.spec.ts",
 ]
 
 const settingsTests = [

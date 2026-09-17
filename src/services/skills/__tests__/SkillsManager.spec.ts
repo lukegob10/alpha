@@ -110,7 +110,7 @@ const GLOBAL_ALPHA_DIR = p(HOME_DIR, ".alpha")
 const GLOBAL_AGENTS_DIR = p(HOME_DIR, ".agents")
 
 // Mock config helpers
-vi.mock("../../roo-config", () => ({
+vi.mock("../../config-paths", () => ({
 	getGlobalAgentsDirectory: () => GLOBAL_AGENTS_DIR,
 	getProjectAgentsDirectoryForCwd: (cwd: string) => p(cwd, ".agents"),
 	directoryExists: mockDirectoryExists,
@@ -134,12 +134,12 @@ vi.mock("../../../i18n", () => ({
 }))
 
 import { SkillsManager } from "../SkillsManager"
-import type { ClineProvider } from "../../../core/webview/ClineProvider"
+import type { AlphaProvider } from "../../../core/webview/AlphaProvider"
 import { getSkillsSection } from "../../../core/prompts/sections/skills"
 
 describe("SkillsManager", () => {
 	let skillsManager: SkillsManager
-	let mockProvider: Partial<ClineProvider>
+	let mockProvider: Partial<AlphaProvider>
 
 	// Pre-computed paths for tests
 	const globalSkillsDir = p(GLOBAL_ALPHA_DIR, "skills")
@@ -167,7 +167,7 @@ describe("SkillsManager", () => {
 			} as any,
 		}
 
-		skillsManager = new SkillsManager(mockProvider as ClineProvider)
+		skillsManager = new SkillsManager(mockProvider as AlphaProvider)
 	})
 
 	afterEach(async () => {
@@ -196,7 +196,7 @@ describe("SkillsManager", () => {
 				value: {
 					extensionUri: { fsPath: extensionDir },
 					getValue: vi.fn((key: string) => (key === "disabledBuiltinSkills" ? disabled : undefined)),
-				} as unknown as ClineProvider["contextProxy"],
+				} as unknown as AlphaProvider["contextProxy"],
 			})
 			mockDirectoryExists.mockImplementation(async (directory: string) =>
 				[...files.keys()].some((file) => path.dirname(path.dirname(file)) === directory),
@@ -309,7 +309,7 @@ describe("SkillsManager", () => {
 
 		it("applies persisted disablement when a new manager starts", async () => {
 			disabled = ["rich-documents"]
-			const reloaded = new SkillsManager(mockProvider as ClineProvider)
+			const reloaded = new SkillsManager(mockProvider as AlphaProvider)
 			try {
 				await reloaded.initialize()
 				expect(reloaded.getSkillsForMode("code")).toEqual([])
@@ -439,7 +439,7 @@ describe("SkillsManager", () => {
 			mockReadFile.mockResolvedValue(
 				"---\nname: review\ndescription: Review work\nmodeSlugs: [architect]\n---\nUse the checklist.",
 			)
-			const scoped = new SkillsManager(mockProvider as ClineProvider, scheduledDir)
+			const scoped = new SkillsManager(mockProvider as AlphaProvider, scheduledDir)
 			await scoped.discoverSkills()
 			expect(scoped.getSkillsForMode("architect")).toEqual([
 				expect.objectContaining({ name: "review", path: p(skillDir, "SKILL.md") }),

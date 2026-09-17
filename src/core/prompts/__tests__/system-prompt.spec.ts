@@ -33,10 +33,6 @@ vi.mock("os", () => ({
 	userInfo: () => ({ username: "test", uid: 1000, gid: 1000, shell: "/bin/bash", homedir: "/home/user" }),
 }))
 
-vi.mock("default-shell", () => ({
-	default: "/bin/zsh",
-}))
-
 vi.mock("os-name", () => ({
 	default: () => "Linux",
 }))
@@ -79,7 +75,7 @@ __setMockImplementation(
 		globalCustomInstructions: string,
 		cwd: string,
 		mode: string,
-		options?: { language?: string; rooIgnoreInstructions?: string; settings?: Record<string, any> },
+		options?: { language?: string; alphaIgnoreInstructions?: string; settings?: Record<string, any> },
 	) => {
 		const sections = []
 
@@ -226,7 +222,7 @@ describe("SYSTEM_PROMPT", () => {
 			undefined, // globalCustomInstructions
 			experiments,
 			undefined, // language
-			undefined, // rooIgnoreInstructions
+			undefined, // alphaIgnoreInstructions
 		)
 
 		expect(prompt).toMatchFileSnapshot("./__snapshots__/system-prompt/consistent-system-prompt.snap")
@@ -247,7 +243,7 @@ describe("SYSTEM_PROMPT", () => {
 			undefined, // globalCustomInstructions
 			experiments,
 			undefined, // language
-			undefined, // rooIgnoreInstructions
+			undefined, // alphaIgnoreInstructions
 		)
 
 		expect(prompt).toMatchFileSnapshot("./__snapshots__/system-prompt/with-mcp-hub-provided.snap")
@@ -266,7 +262,7 @@ describe("SYSTEM_PROMPT", () => {
 			undefined, // globalCustomInstructions
 			experiments,
 			undefined, // language
-			undefined, // rooIgnoreInstructions
+			undefined, // alphaIgnoreInstructions
 		)
 
 		expect(prompt).toMatchFileSnapshot("./__snapshots__/system-prompt/with-undefined-mcp-hub.snap")
@@ -428,7 +424,7 @@ describe("SYSTEM_PROMPT", () => {
 			undefined, // globalCustomInstructions
 			undefined, // experiments
 			undefined, // language
-			undefined, // rooIgnoreInstructions
+			undefined, // alphaIgnoreInstructions
 		)
 
 		expect(prompt).toContain("Language Preference:")
@@ -485,7 +481,7 @@ describe("SYSTEM_PROMPT", () => {
 			"Global instructions", // globalCustomInstructions
 			experiments,
 			undefined, // language
-			undefined, // rooIgnoreInstructions
+			undefined, // alphaIgnoreInstructions
 		)
 
 		// Role definition should be at the top
@@ -519,7 +515,7 @@ describe("SYSTEM_PROMPT", () => {
 			undefined, // globalCustomInstructions
 			undefined, // experiments
 			undefined, // language
-			undefined, // rooIgnoreInstructions
+			undefined, // alphaIgnoreInstructions
 		)
 
 		// Role definition from promptComponent should be at the top
@@ -636,7 +632,7 @@ describe("SYSTEM_PROMPT", () => {
 			undefined, // globalCustomInstructions
 			undefined, // experiments
 			undefined, // language
-			undefined, // rooIgnoreInstructions
+			undefined, // alphaIgnoreInstructions
 		)
 
 		// Should use the default mode's role definition
@@ -662,7 +658,7 @@ describe("SYSTEM_PROMPT", () => {
 			undefined, // globalCustomInstructions
 			experiments,
 			undefined, // language
-			undefined, // rooIgnoreInstructions
+			undefined, // alphaIgnoreInstructions
 			settings, // settings
 		)
 
@@ -742,7 +738,7 @@ describe("SYSTEM_PROMPT", () => {
 			undefined, // globalCustomInstructions
 			experiments,
 			undefined, // language
-			undefined, // rooIgnoreInstructions
+			undefined, // alphaIgnoreInstructions
 			undefined, // settings
 		)
 
@@ -769,7 +765,7 @@ describe("SYSTEM_PROMPT", () => {
 			undefined, // globalCustomInstructions
 			experiments,
 			undefined, // language
-			undefined, // rooIgnoreInstructions
+			undefined, // alphaIgnoreInstructions
 			settings, // settings
 		)
 

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as vscode from "vscode"
 import { TicketPanel } from "../TicketPanel"
-import type { ClineProvider } from "../../../core/webview/ClineProvider"
+import type { AlphaProvider } from "../../../core/webview/AlphaProvider"
 import { TicketStore } from "../TicketStore"
 vi.mock("../TicketTaskLink", () => ({ workOnTicket: vi.fn() }))
 vi.mock("vscode", () => ({
@@ -79,7 +79,7 @@ function createPanel() {
 	vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(nativePanel as unknown as vscode.WebviewPanel)
 	const panel = new TicketPanel(
 		{ subscriptions: [], extensionUri: "extension" } as unknown as vscode.ExtensionContext,
-		{} as ClineProvider,
+		{} as AlphaProvider,
 	)
 	return { panel, webview, receive: (message: unknown) => receive(message), nativePanel }
 }
@@ -340,7 +340,7 @@ describe("ticket panel navigation", () => {
 		vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(nativePanel as unknown as vscode.WebviewPanel)
 		const panel = new TicketPanel(
 			{ subscriptions: [], extensionUri: "extension" } as unknown as vscode.ExtensionContext,
-			{} as ClineProvider,
+			{} as AlphaProvider,
 		)
 		const target = { project: "project", id: "a97392fe-59bf-4f80-8a10-51b2cb62a38f" }
 		await panel.open(target)

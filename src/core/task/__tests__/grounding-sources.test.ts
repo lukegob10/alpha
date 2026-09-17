@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import type { ClineProvider } from "../../webview/ClineProvider"
+import type { AlphaProvider } from "../../webview/AlphaProvider"
 import type { ProviderSettings } from "@alpha-code/types"
 
 // All vi.mock() calls are hoisted to the top of the file by Vitest
@@ -120,8 +120,8 @@ vi.mock("../../environment/getEnvironmentDetails", () => ({
 		.mockImplementation(async () => ({ details: "", commit: vi.fn(), release: vi.fn() })),
 }))
 
-// Mock RooIgnoreController
-vi.mock("../../ignore/RooIgnoreController")
+// Mock AlphaIgnoreController
+vi.mock("../../ignore/AlphaIgnoreController")
 
 // Mock condense
 vi.mock("../../condense", () => ({
@@ -152,7 +152,7 @@ vi.mock("../../../utils/fs", () => ({
 import { Task } from "../Task"
 
 describe("Task grounding sources handling", () => {
-	let mockProvider: Partial<ClineProvider>
+	let mockProvider: Partial<AlphaProvider>
 	let mockApiConfiguration: ProviderSettings
 
 	beforeEach(() => {
@@ -182,7 +182,7 @@ describe("Task grounding sources handling", () => {
 	it("should strip grounding sources from assistant message before persisting to API history", async () => {
 		// Create a task instance
 		const task = new Task({
-			provider: mockProvider as ClineProvider,
+			provider: mockProvider as AlphaProvider,
 			apiConfiguration: mockApiConfiguration,
 			task: "Test task",
 			startTask: false,
@@ -240,7 +240,7 @@ Sources: [1](https://example.com), [2](https://another.com)
 
 	it("should not modify assistant message when no grounding sources are present", async () => {
 		const task = new Task({
-			provider: mockProvider as ClineProvider,
+			provider: mockProvider as AlphaProvider,
 			apiConfiguration: mockApiConfiguration,
 			task: "Test task",
 			startTask: false,

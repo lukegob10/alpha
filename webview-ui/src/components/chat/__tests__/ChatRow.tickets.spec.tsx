@@ -1,6 +1,6 @@
 import React from "react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 import { render, screen, fireEvent } from "@/utils/test-utils"
 import { vscode } from "../../../utils/vscode"
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
@@ -13,7 +13,7 @@ vi.mock("react-i18next", () => ({
 }))
 
 function renderTicketRow(payload: Record<string, unknown>, type: "say" | "ask" = "say") {
-	const message: ClineMessage = {
+	const message: AlphaMessage = {
 		type,
 		ts: 1,
 		text: JSON.stringify({ tool: "ticket", ...payload }),

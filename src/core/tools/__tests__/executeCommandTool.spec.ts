@@ -48,7 +48,7 @@ const executeCommandInTerminalActual = executeCommandModule.executeCommandInTerm
 
 describe("executeCommandTool", () => {
 	// Setup common test variables
-	let mockCline: any & { consecutiveMistakeCount: number; didRejectTool: boolean }
+	let mockAlphaTask: any & { consecutiveMistakeCount: number; didRejectTool: boolean }
 	let mockAskApproval: any
 	let mockHandleError: any
 	let mockPushToolResult: any
@@ -63,7 +63,7 @@ describe("executeCommandTool", () => {
 		vitest.spyOn(executeCommandModule, "executeCommandInTerminal").mockResolvedValue([false, "Command executed"])
 
 		// Create mock implementations with eslint directives to handle the type issues
-		mockCline = {
+		mockAlphaTask = {
 			abort: false,
 			getTaskLifetimeCancellationSignal: vitest.fn(() => new AbortController().signal),
 			ask: vitest.fn().mockResolvedValue(undefined),
@@ -71,7 +71,7 @@ describe("executeCommandTool", () => {
 			sayAndCreateMissingParamError: vitest.fn().mockResolvedValue("Missing parameter error"),
 			consecutiveMistakeCount: 0,
 			didRejectTool: false,
-			rooIgnoreController: {
+			alphaIgnoreController: {
 				validateCommand: vitest.fn().mockReturnValue(null),
 			},
 			recordToolUsage: vitest.fn().mockReturnValue({} as ToolUsage),
@@ -157,7 +157,7 @@ describe("executeCommandTool", () => {
 		it("reports the supported GitHub API alternative without including command arguments in metadata", async () => {
 			const setResultMetadata = vitest.fn()
 			await executeCommandTool.handle(
-				mockCline,
+				mockAlphaTask,
 				{ ...mockToolUse, nativeArgs: { command: "gh pr create --body private-description" } },
 				{
 					askApproval: mockAskApproval,
@@ -184,7 +184,7 @@ describe("executeCommandTool", () => {
 				.mocked(TerminalRegistry.getOrCreateTerminal)
 				.mockRejectedValueOnce(new Error("private-terminal-error"))
 			const setResultMetadata = vitest.fn()
-			await executeCommandTool.handle(mockCline, mockToolUse, {
+			await executeCommandTool.handle(mockAlphaTask, mockToolUse, {
 				askApproval: mockAskApproval,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
@@ -210,7 +210,7 @@ describe("executeCommandTool", () => {
 				},
 			} as never)
 			const setResultMetadata = vitest.fn()
-			await executeCommandTool.handle(mockCline, mockToolUse, {
+			await executeCommandTool.handle(mockAlphaTask, mockToolUse, {
 				askApproval: mockAskApproval,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
@@ -232,7 +232,7 @@ describe("executeCommandTool", () => {
 			async (command) => {
 				mockToolUse.params.command = command
 				mockToolUse.nativeArgs = { command }
-				mockCline.getCommandExecutionEvidence = vitest.fn(() => [
+				mockAlphaTask.getCommandExecutionEvidence = vitest.fn(() => [
 					{
 						toolCallId: "inspection-call",
 						executionId: "inspection-execution",
@@ -240,12 +240,12 @@ describe("executeCommandTool", () => {
 						exitCode: 0,
 						startedAt: 1,
 						command,
-						cwd: mockCline.cwd,
+						cwd: mockAlphaTask.cwd,
 					},
 				])
 				const setResultMetadata = vitest.fn()
 
-				await executeCommandTool.handle(mockCline as unknown as Task, mockToolUse, {
+				await executeCommandTool.handle(mockAlphaTask as unknown as Task, mockToolUse, {
 					askApproval: mockAskApproval as unknown as AskApproval,
 					handleError: mockHandleError as unknown as HandleError,
 					pushToolResult: mockPushToolResult as unknown as PushToolResult,
@@ -272,7 +272,7 @@ describe("executeCommandTool", () => {
 			mockToolUse.nativeArgs = { command: "echo test" }
 
 			// Execute using the class-based handle method
-			await executeCommandTool.handle(mockCline as unknown as Task, mockToolUse, {
+			await executeCommandTool.handle(mockAlphaTask as unknown as Task, mockToolUse, {
 				askApproval: mockAskApproval as unknown as AskApproval,
 				handleError: mockHandleError as unknown as HandleError,
 				pushToolResult: mockPushToolResult as unknown as PushToolResult,
@@ -293,7 +293,7 @@ describe("executeCommandTool", () => {
 			mockToolUse.nativeArgs = { command: "echo test", cwd: "/custom/path" }
 
 			// Execute
-			await executeCommandTool.handle(mockCline as unknown as Task, mockToolUse, {
+			await executeCommandTool.handle(mockAlphaTask as unknown as Task, mockToolUse, {
 				askApproval: mockAskApproval as unknown as AskApproval,
 				handleError: mockHandleError as unknown as HandleError,
 				pushToolResult: mockPushToolResult as unknown as PushToolResult,
@@ -312,13 +312,13 @@ describe("executeCommandTool", () => {
 			mockToolUse.nativeArgs = { command: "gh pr create --fill" }
 			;(formatResponse.toolError as any).mockReturnValue("GitHub CLI disabled")
 
-			await executeCommandTool.handle(mockCline as unknown as Task, mockToolUse, {
+			await executeCommandTool.handle(mockAlphaTask as unknown as Task, mockToolUse, {
 				askApproval: mockAskApproval as unknown as AskApproval,
 				handleError: mockHandleError as unknown as HandleError,
 				pushToolResult: mockPushToolResult as unknown as PushToolResult,
 			})
 
-			expect(mockCline.recordToolError).toHaveBeenCalledWith("execute_command")
+			expect(mockAlphaTask.recordToolError).toHaveBeenCalledWith("execute_command")
 			expect(formatResponse.toolError).toHaveBeenCalledWith(
 				expect.stringContaining("GitHub CLI commands are disabled"),
 			)
@@ -331,7 +331,7 @@ describe("executeCommandTool", () => {
 			mockToolUse.params.command = "git push origin feature"
 			mockToolUse.nativeArgs = { command: "git push origin feature" }
 
-			await executeCommandTool.handle(mockCline as unknown as Task, mockToolUse, {
+			await executeCommandTool.handle(mockAlphaTask as unknown as Task, mockToolUse, {
 				askApproval: mockAskApproval as unknown as AskApproval,
 				handleError: mockHandleError as unknown as HandleError,
 				pushToolResult: mockPushToolResult as unknown as PushToolResult,
@@ -350,15 +350,15 @@ describe("executeCommandTool", () => {
 			mockToolUse.nativeArgs = { command: "" }
 
 			// Execute
-			await executeCommandTool.handle(mockCline as unknown as Task, mockToolUse, {
+			await executeCommandTool.handle(mockAlphaTask as unknown as Task, mockToolUse, {
 				askApproval: mockAskApproval as unknown as AskApproval,
 				handleError: mockHandleError as unknown as HandleError,
 				pushToolResult: mockPushToolResult as unknown as PushToolResult,
 			})
 
 			// Verify
-			expect(mockCline.consecutiveMistakeCount).toBe(1)
-			expect(mockCline.sayAndCreateMissingParamError).toHaveBeenCalledWith("execute_command", "command")
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(1)
+			expect(mockAlphaTask.sayAndCreateMissingParamError).toHaveBeenCalledWith("execute_command", "command")
 			expect(mockPushToolResult).toHaveBeenCalledWith("Missing parameter error")
 			expect(mockAskApproval).not.toHaveBeenCalled()
 			expect(executeCommandModule.executeCommandInTerminal).not.toHaveBeenCalled()
@@ -371,7 +371,7 @@ describe("executeCommandTool", () => {
 			mockToolUse.nativeArgs = { command: "echo test" }
 
 			// Execute
-			await executeCommandTool.handle(mockCline as unknown as Task, mockToolUse, {
+			await executeCommandTool.handle(mockAlphaTask as unknown as Task, mockToolUse, {
 				askApproval: mockAskApproval as unknown as AskApproval,
 				handleError: mockHandleError as unknown as HandleError,
 				pushToolResult: mockPushToolResult as unknown as PushToolResult,
@@ -389,15 +389,15 @@ describe("executeCommandTool", () => {
 			mockToolUse.nativeArgs = { command: "cat .env" }
 			// Override the validateCommand mock to return a filename
 			const validateCommandMock = vitest.fn().mockReturnValue(".env")
-			mockCline.rooIgnoreController = {
+			mockAlphaTask.alphaIgnoreController = {
 				validateCommand: validateCommandMock,
 			}
 
-			const mockRooIgnoreError = "RooIgnore error"
-			;(formatResponse.rooIgnoreError as any).mockReturnValue(mockRooIgnoreError)
+			const mockAlphaIgnoreError = "RooIgnore error"
+			;(formatResponse.alphaIgnoreError as any).mockReturnValue(mockAlphaIgnoreError)
 
 			// Execute
-			await executeCommandTool.handle(mockCline as unknown as Task, mockToolUse, {
+			await executeCommandTool.handle(mockAlphaTask as unknown as Task, mockToolUse, {
 				askApproval: mockAskApproval as unknown as AskApproval,
 				handleError: mockHandleError as unknown as HandleError,
 				pushToolResult: mockPushToolResult as unknown as PushToolResult,
@@ -405,9 +405,9 @@ describe("executeCommandTool", () => {
 
 			// Verify
 			expect(validateCommandMock).toHaveBeenCalledWith("cat .env")
-			expect(mockCline.say).toHaveBeenCalledWith("rooignore_error", ".env")
-			expect(formatResponse.rooIgnoreError).toHaveBeenCalledWith(".env")
-			expect(mockPushToolResult).toHaveBeenCalledWith(mockRooIgnoreError)
+			expect(mockAlphaTask.say).toHaveBeenCalledWith("rooignore_error", ".env")
+			expect(formatResponse.alphaIgnoreError).toHaveBeenCalledWith(".env")
+			expect(mockPushToolResult).toHaveBeenCalledWith(mockAlphaIgnoreError)
 			expect(mockAskApproval).not.toHaveBeenCalled()
 			// executeCommandInTerminal should not be called since alphaignore blocked it
 		})
@@ -459,18 +459,18 @@ describe("executeCommandTool", () => {
 		})
 
 		it("honors an explicit Worker background timeout and wires structured evidence by tool call id", async () => {
-			mockCline.taskKind = "subagent"
-			mockCline.subagentRole = "worker"
+			mockAlphaTask.taskKind = "subagent"
+			mockAlphaTask.subagentRole = "worker"
 			mockToolUse.nativeArgs = { command: "pnpm test", timeout: 30 }
 
-			await executeCommandTool.handle(mockCline as Task, mockToolUse, {
+			await executeCommandTool.handle(mockAlphaTask as Task, mockToolUse, {
 				askApproval: mockAskApproval,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
 				toolCallId: "worker-verification-1",
 			})
 
-			expect(mockCline.beginCommandExecution).toHaveBeenCalledWith(
+			expect(mockAlphaTask.beginCommandExecution).toHaveBeenCalledWith(
 				"worker-verification-1",
 				expect.any(String),
 				"pnpm test",
@@ -485,14 +485,14 @@ describe("executeCommandTool", () => {
 				verification: { change_set_ids: ["change-1", "change-2"] },
 			}
 
-			await executeCommandTool.handle(mockCline as Task, mockToolUse, {
+			await executeCommandTool.handle(mockAlphaTask as Task, mockToolUse, {
 				askApproval: mockAskApproval,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
 				toolCallId: "parent-verification-1",
 			})
 
-			expect(mockCline.beginCommandExecution).toHaveBeenCalledWith(
+			expect(mockAlphaTask.beginCommandExecution).toHaveBeenCalledWith(
 				"parent-verification-1",
 				expect.any(String),
 				"pnpm test",
@@ -509,24 +509,26 @@ describe("executeCommandTool", () => {
 				pushToolResult: mockPushToolResult,
 			}
 
-			await executeCommandTool.handle(mockCline as Task, mockToolUse, callbacks)
-			await executeCommandTool.handle(mockCline as Task, mockToolUse, callbacks)
+			await executeCommandTool.handle(mockAlphaTask as Task, mockToolUse, callbacks)
+			await executeCommandTool.handle(mockAlphaTask as Task, mockToolUse, callbacks)
 
-			const evidenceIds = mockCline.beginCommandExecution.mock.calls.map(([evidenceId]: [string]) => evidenceId)
+			const evidenceIds = mockAlphaTask.beginCommandExecution.mock.calls.map(
+				([evidenceId]: [string]) => evidenceId,
+			)
 			expect(evidenceIds).toHaveLength(2)
 			expect(evidenceIds[0]).not.toBe(evidenceIds[1])
 			expect(evidenceIds).toEqual([
-				expect.stringMatching(new RegExp(`^${mockCline.lastMessageTs}:legacy:`)),
-				expect.stringMatching(new RegExp(`^${mockCline.lastMessageTs}:legacy:`)),
+				expect.stringMatching(new RegExp(`^${mockAlphaTask.lastMessageTs}:legacy:`)),
+				expect.stringMatching(new RegExp(`^${mockAlphaTask.lastMessageTs}:legacy:`)),
 			])
 		})
 	})
 
 	describe("Plan command working-directory confinement", () => {
 		it("rejects an absolute working directory before opening a terminal", async () => {
-			mockCline.getTaskMode = vitest.fn().mockResolvedValue("architect")
+			mockAlphaTask.getTaskMode = vitest.fn().mockResolvedValue("architect")
 
-			const result = await executeCommandInTerminalActual(mockCline as Task, {
+			const result = await executeCommandInTerminalActual(mockAlphaTask as Task, {
 				executionId: "plan-cwd-absolute",
 				command: "pnpm exec tsc --noEmit",
 				customCwd: "C:\\outside",
@@ -536,11 +538,11 @@ describe("executeCommandTool", () => {
 		})
 
 		it("rejects a relative working directory whose realpath escapes through a symlink", async () => {
-			mockCline.cwd = "F:\\workspace"
-			mockCline.getTaskMode = vitest.fn().mockResolvedValue("architect")
+			mockAlphaTask.cwd = "F:\\workspace"
+			mockAlphaTask.getTaskMode = vitest.fn().mockResolvedValue("architect")
 			vitest.mocked(fs.realpath).mockResolvedValueOnce("F:\\workspace").mockResolvedValueOnce("F:\\outside")
 
-			const result = await executeCommandInTerminalActual(mockCline as Task, {
+			const result = await executeCommandInTerminalActual(mockAlphaTask as Task, {
 				executionId: "plan-cwd-symlink",
 				command: "pnpm exec tsc --noEmit",
 				customCwd: "linked-directory",

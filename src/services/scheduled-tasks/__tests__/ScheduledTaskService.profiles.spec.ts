@@ -4,13 +4,13 @@ import * as path from "path"
 import type * as vscode from "vscode"
 import { EventEmitter } from "events"
 import {
-	RooCodeEventName,
+	AlphaCodeEventName,
 	type CreateScheduledTaskPayload,
 	type ExtensionMessage,
 	type ScheduledTaskRun,
 } from "@alpha-code/types"
 
-import type { ClineProvider } from "../../../core/webview/ClineProvider"
+import type { AlphaProvider } from "../../../core/webview/AlphaProvider"
 import { ScheduledTaskService } from "../ScheduledTaskService"
 import { ScheduledTaskStore } from "../ScheduledTaskStore"
 import { SkillsManager } from "../../skills/SkillsManager"
@@ -38,7 +38,7 @@ describe("scheduled profiles and skills", () => {
 		return Object.assign(new EventEmitter(), {
 			cwd: path.join(tmpDir, "coding-workspace"),
 			currentApiConfigName: "Coding",
-			createTask: vi.fn(async (..._args: Parameters<ClineProvider["createTask"]>) => ({ taskId: "alpha-task" })),
+			createTask: vi.fn(async (..._args: Parameters<AlphaProvider["createTask"]>) => ({ taskId: "alpha-task" })),
 			setProviderProfile: vi.fn(),
 			providerSettingsManager: { getProfile: vi.fn().mockResolvedValue(profile) },
 			postMessageToWebview: vi.fn(async (message: ExtensionMessage) => {
@@ -76,7 +76,7 @@ describe("scheduled profiles and skills", () => {
 		provider = makeProvider()
 		service = new ScheduledTaskService(
 			{ globalStorageUri: { fsPath: tmpDir } } as vscode.ExtensionContext,
-			provider as unknown as ClineProvider,
+			provider as unknown as AlphaProvider,
 			{ appendLine: vi.fn() } as unknown as vscode.OutputChannel,
 		)
 		await service.initialize()
@@ -255,7 +255,7 @@ describe("scheduled profiles and skills", () => {
 		const completed = new Promise<ScheduledTaskRun>((resolve) => {
 			onRun = resolve
 		})
-		provider.emit(RooCodeEventName.TaskCompleted, "alpha-task")
+		provider.emit(AlphaCodeEventName.TaskCompleted, "alpha-task")
 		await completed
 		expect(service.getState().tasks[0]).toMatchObject({
 			prompt: "New prompt",

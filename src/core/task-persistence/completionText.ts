@@ -1,6 +1,6 @@
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 
-type CompletionMessage = Pick<ClineMessage, "type" | "ask" | "say" | "text" | "partial">
+type CompletionMessage = Pick<AlphaMessage, "type" | "ask" | "say" | "text" | "partial">
 
 const nonEmptyText = (message: CompletionMessage): string | undefined => {
 	if (message.partial === true || typeof message.text !== "string" || message.text.trim().length === 0) {

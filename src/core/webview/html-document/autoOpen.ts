@@ -1,7 +1,7 @@
 import {
 	HTML_DOCUMENT_LIMITS,
 	parseHtmlDocumentLink,
-	type ClineMessage,
+	type AlphaMessage,
 	type HtmlDocumentTarget,
 } from "@alpha-code/types"
 
@@ -11,7 +11,7 @@ export class HtmlDocumentAutoOpen {
 
 	constructor(private readonly open: (target: HtmlDocumentTarget, isCurrent: () => boolean) => Promise<void>) {}
 
-	async handle(owner: object, taskId: string, message: ClineMessage, isCurrent: () => boolean): Promise<void> {
+	async handle(owner: object, taskId: string, message: AlphaMessage, isCurrent: () => boolean): Promise<void> {
 		if (!isCurrent() || message.type !== "say" || message.say !== "completion_result" || message.partial === true)
 			return
 		const seen = this.delivered.get(owner) ?? new Set<string>()

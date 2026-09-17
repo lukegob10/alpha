@@ -5,7 +5,7 @@ import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { RooCodeEventName, type ClineMessage, type RooCodeAPI, type RooCodeSettings } from "@alpha-code/types"
+import { AlphaCodeEventName, type AlphaMessage, type AlphaCodeAPI, type AlphaCodeSettings } from "@alpha-code/types"
 
 import {
 	ExtensionWorkflowHost,
@@ -51,7 +51,7 @@ test("post-compaction reopen replaces the task instance and preserves the summar
 		cancelCurrentTask: async () => {},
 	})
 	const host = new ExtensionWorkflowHost(
-		api as unknown as RooCodeAPI,
+		api as unknown as AlphaCodeAPI,
 		workspace,
 		"live-copilot",
 		new WorkflowRequestBudget(10),
@@ -83,7 +83,7 @@ test("a rejected manual compaction is a failure rather than a timeout", async ()
 	const provider = Object.assign(new EventEmitter(), { getLiveTask: () => task })
 	const api = Object.assign(new EventEmitter(), { sidebarProvider: provider, getConfiguration: () => ({}) })
 	const host = new ExtensionWorkflowHost(
-		api as unknown as RooCodeAPI,
+		api as unknown as AlphaCodeAPI,
 		workspace,
 		"scripted",
 		new WorkflowRequestBudget(10),
@@ -119,7 +119,7 @@ test("late provider recovery waits for a new retry instead of counting earlier r
 	}
 	const provider = Object.assign(new EventEmitter(), { getLiveTask: () => task })
 	const api = Object.assign(new EventEmitter(), { sidebarProvider: provider, getConfiguration: () => ({}) })
-	const host = new ExtensionWorkflowHost(api as unknown as RooCodeAPI, workspace, "scripted", budget, 5_000)
+	const host = new ExtensionWorkflowHost(api as unknown as AlphaCodeAPI, workspace, "scripted", budget, 5_000)
 	try {
 		await host.recoverProviderError(task.taskId, 19)
 		assert.equal(approvals, 1)
@@ -139,13 +139,13 @@ const history = (command: string, cwd: unknown = workspace) => [
 test("completion review is observed without approval and rejects an already accepted completion", async () => {
 	const task = {
 		taskId: "review-task",
-		taskAsk: { ts: 1, type: "ask", ask: "completion_result" } as ClineMessage,
+		taskAsk: { ts: 1, type: "ask", ask: "completion_result" } as AlphaMessage,
 		approveAsk: () => assert.fail("review observation must not accept completion"),
 	}
 	const provider = Object.assign(new EventEmitter(), { getLiveTask: () => task })
 	const api = Object.assign(new EventEmitter(), { sidebarProvider: provider, getConfiguration: () => ({}) })
 	const host = new ExtensionWorkflowHost(
-		api as unknown as RooCodeAPI,
+		api as unknown as AlphaCodeAPI,
 		workspace,
 		"scripted",
 		new WorkflowRequestBudget(10),
@@ -153,7 +153,7 @@ test("completion review is observed without approval and rejects an already acce
 	)
 	try {
 		await host.complete(task.taskId, "review")
-		api.emit(RooCodeEventName.TaskCompleted, task.taskId)
+		api.emit(AlphaCodeEventName.TaskCompleted, task.taskId)
 		await assert.rejects(host.complete(task.taskId, "review"), /review_automatically_accepted/)
 	} finally {
 		await host.dispose()
@@ -164,14 +164,14 @@ test("blocked acceptance observes a resume boundary without approving it or acce
 	for (const boundary of ["resume_task", "completion_result", "api_req_failed"] as const) {
 		const task = {
 			taskId: "blocked-task",
-			taskAsk: { ts: 1, type: "ask", ask: boundary } as ClineMessage,
+			taskAsk: { ts: 1, type: "ask", ask: boundary } as AlphaMessage,
 			didComplete: false,
 			approveAsk: () => assert.fail("blocked acceptance must not approve a boundary"),
 		}
 		const provider = Object.assign(new EventEmitter(), { getLiveTask: () => task })
 		const api = Object.assign(new EventEmitter(), { sidebarProvider: provider, getConfiguration: () => ({}) })
 		const host = new ExtensionWorkflowHost(
-			api as unknown as RooCodeAPI,
+			api as unknown as AlphaCodeAPI,
 			workspace,
 			"scripted",
 			new WorkflowRequestBudget(10),
@@ -196,7 +196,7 @@ test("cancellation waits for an actual scoped command approval and never approve
 	for (const ask of ["command", "followup"] as const) {
 		const task = {
 			taskId: "pending-command-task",
-			taskAsk: { ts: 1, type: "ask", ask, text: WORKFLOW_COMMANDS.test } as ClineMessage,
+			taskAsk: { ts: 1, type: "ask", ask, text: WORKFLOW_COMMANDS.test } as AlphaMessage,
 			apiConversationHistory: history(WORKFLOW_COMMANDS.test),
 			approveAsk: () => assert.fail("cancellation must not approve the pending command"),
 		}
@@ -206,7 +206,7 @@ test("cancellation waits for an actual scoped command approval and never approve
 			getConfiguration: () => ({}),
 		})
 		const host = new ExtensionWorkflowHost(
-			api as unknown as RooCodeAPI,
+			api as unknown as AlphaCodeAPI,
 			workspace,
 			"scripted",
 			new WorkflowRequestBudget(10),
@@ -406,7 +406,7 @@ test("host joins the owned durability boundary and reports a duplicate terminal 
 		})
 		const api = Object.assign(new EventEmitter(), { sidebarProvider: provider, getConfiguration: () => ({}) })
 		const host = new ExtensionWorkflowHost(
-			api as unknown as RooCodeAPI,
+			api as unknown as AlphaCodeAPI,
 			directory,
 			"scripted",
 			new WorkflowRequestBudget(10),
@@ -433,8 +433,8 @@ test("resume retains its instance and waits for same-task guidance admission aft
 	const taskId = "retained-task"
 	const task = {
 		taskId,
-		taskAsk: { ts: 1, type: "ask", ask: "resume_task" } as ClineMessage | undefined,
-		clineMessages: [] as ClineMessage[],
+		taskAsk: { ts: 1, type: "ask", ask: "resume_task" } as AlphaMessage | undefined,
+		clineMessages: [] as AlphaMessage[],
 		didComplete: true,
 	}
 	let submissions = 0
@@ -464,7 +464,7 @@ test("resume retains its instance and waits for same-task guidance admission aft
 		},
 	})
 	const host = new ExtensionWorkflowHost(
-		api as unknown as RooCodeAPI,
+		api as unknown as AlphaCodeAPI,
 		workspace,
 		"scripted",
 		new WorkflowRequestBudget(10),
@@ -475,7 +475,7 @@ test("resume retains its instance and waits for same-task guidance admission aft
 		returned = true
 	})
 	const admit = (id = taskId, text = sentText) =>
-		api.emit(RooCodeEventName.Message, {
+		api.emit(AlphaCodeEventName.Message, {
 			taskId: id,
 			action: "created",
 			message: { ts: 2, type: "say", say: "user_feedback", text },
@@ -500,7 +500,7 @@ test("resume retains its instance and waits for same-task guidance admission aft
 		task.clineMessages.push({ ts: 3, type: "say", say: "user_feedback", text: sentText })
 		assert.equal(host.admissionsAreUnique(taskId), false, "duplicate admissions must fail acceptance")
 		assert.equal(provider.getLiveTask(taskId), task)
-		assert.equal(api.listenerCount(RooCodeEventName.Message), 0)
+		assert.equal(api.listenerCount(AlphaCodeEventName.Message), 0)
 	} finally {
 		task.taskAsk = undefined
 		admit()
@@ -513,8 +513,8 @@ test("reload applies scenario policy before saved-task construction and reports 
 	const taskId = "reload-task"
 	const task = {
 		taskId,
-		taskAsk: { ts: 1, type: "ask", ask: "resume_completed_task" } as ClineMessage,
-		clineMessages: [] as ClineMessage[],
+		taskAsk: { ts: 1, type: "ask", ask: "resume_completed_task" } as AlphaMessage,
+		clineMessages: [] as AlphaMessage[],
 		didComplete: true,
 	}
 	let live = false
@@ -532,7 +532,7 @@ test("reload applies scenario policy before saved-task construction and reports 
 	const api = Object.assign(new EventEmitter(), {
 		sidebarProvider: provider,
 		getConfiguration: () => ({ autoApprovalEnabled: false, enableCheckpoints: true }),
-		setConfiguration: async (configuration: RooCodeSettings) => {
+		setConfiguration: async (configuration: AlphaCodeSettings) => {
 			assert.equal(configuration.autoApprovalEnabled, true)
 			assert.equal(configuration.alwaysAllowReadOnly, true)
 			assert.equal(configuration.alwaysAllowWrite, true)
@@ -555,7 +555,7 @@ test("reload applies scenario policy before saved-task construction and reports 
 		},
 	})
 	const host = new ExtensionWorkflowHost(
-		api as unknown as RooCodeAPI,
+		api as unknown as AlphaCodeAPI,
 		workspace,
 		"scripted",
 		new WorkflowRequestBudget(10),
@@ -569,7 +569,7 @@ test("reload applies scenario policy before saved-task construction and reports 
 			assert.equal(error.message.includes("private"), false)
 			return true
 		})
-		assert.equal(api.listenerCount(RooCodeEventName.Message), 0)
+		assert.equal(api.listenerCount(AlphaCodeEventName.Message), 0)
 	} finally {
 		await host.dispose()
 	}

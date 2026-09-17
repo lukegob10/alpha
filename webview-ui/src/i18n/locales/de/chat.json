@@ -237,7 +237,9 @@
 		"didViewTopLevelOutsideWorkspace": "Alpha hat die Dateien auf oberster Ebene in diesem Verzeichnis (außerhalb des Arbeitsbereichs) angezeigt",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha möchte rekursiv alle Dateien in diesem Verzeichnis (außerhalb des Arbeitsbereichs) anzeigen",
 		"didViewRecursiveOutsideWorkspace": "Alpha hat rekursiv alle Dateien in diesem Verzeichnis (außerhalb des Arbeitsbereichs) angezeigt",
-		"wantsToViewMultipleDirectories": "Alpha möchte mehrere Verzeichnisse anzeigen"
+		"wantsToViewMultipleDirectories": "Alpha möchte mehrere Verzeichnisse anzeigen",
+		"wantsToSearchMultiple": "Alpha möchte {{count}}-Dateisuchen ausführen",
+		"didSearchMultiple": "Alpha hat {{count}}-Dateisuchen ausgeführt"
 	},
 	"commandOutput": "Befehlsausgabe",
 	"commandExecution": {
@@ -481,7 +483,14 @@
 		"clickToEdit": "Klicken zum Bearbeiten der Nachricht",
 		"steering": "Wird gesteuert…",
 		"queueFailed": "Die Nachricht konnte nicht eingereiht werden. Ihr Entwurf bleibt im Eingabefeld.",
-		"steerFailed": "Die Steuerung konnte nicht gestartet werden. Die Nachricht bleibt in der Warteschlange."
+		"steerFailed": "Die Steuerung konnte nicht gestartet werden. Die Nachricht bleibt in der Warteschlange.",
+		"edit": "Bearbeiten",
+		"editTooltip": "Diese Nachricht in der Warteschlange bearbeiten",
+		"editing": "Bearbeiten in Composer",
+		"dragHandle": "Nachricht in der Warteschlange ziehen",
+		"dragTooltip": "Ziehen, um diese Nachricht in der Warteschlange neu anzuordnen",
+		"steer": "Steuern",
+		"steerTooltip": "Diese Nachricht in der Warteschlange in die aktuelle Kurve senden"
 	},
 	"modelResponseDelayed": "Die nächste Rückmeldung des Modells wird erwartet. Ausführlicheres Nachdenken kann Zeit brauchen.",
 	"slashCommand": {
@@ -519,5 +528,30 @@
 		"list_checks": "Prüfungen auflisten",
 		"merge_pull_request": "Pull Request zusammenführen",
 		"comment": "Kommentar hinzufügen"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "Agenten prüfen",
+			"wait_agent": "Auf Agentenaktualisierungen warten",
+			"unknown": "Agentenaktion"
+		},
+		"failed": "{{action}} fehlgeschlagen: {{error}}",
+		"list": {
+			"running": "Agenten prüfen...",
+			"completed": "Inspizierter {{count}}-Agent",
+			"completed_other": "Inspizierte {{count}}-Agenten",
+			"mailbox": "{{count}}-Postfachaktualisierung",
+			"mailbox_other": "{{count}}-Postfachaktualisierungen"
+		},
+		"wait": {
+			"running": "Warten auf Agentenaktualisierungen...",
+			"noActiveAgents": "Keine aktiven Agenten zum Warten auf",
+			"cancelled": "Agentenwartezeit abgebrochen",
+			"timedOut": "Keine Agentenaktualisierungen vor Zeitüberschreitung",
+			"alreadyDelivered": "Keine neuen Aktualisierungen; Ergebnisse wurden bereits übermittelt",
+			"received": "{{count}}-Agentenaktualisierung erhalten",
+			"received_other": "{{count}}-Agentenaktualisierungen erhalten",
+			"completed": "Agentenwartezeit abgeschlossen"
+		}
 	}
 }

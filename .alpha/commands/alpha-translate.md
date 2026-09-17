@@ -1,7 +1,6 @@
 ---
 description: "Translate and localize strings in the Alpha extension"
 argument-hint: "[language-code or 'all'] [string-key or file-path]"
-mode: translate
 ---
 
 Perform translation and localization tasks for the Alpha extension. This command activates the translation workflow with comprehensive i18n guidelines.

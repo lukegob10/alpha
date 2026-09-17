@@ -5,9 +5,6 @@
 		"build": {
 			"inputs": ["src/**", "public/**", "index.html", "package.json", "tsconfig*.json", "vite.config.ts"],
 			"outputs": ["../src/webview-ui/**"]
-		},
-		"build:nightly": {
-			"outputs": ["../apps/vscode-nightly/build/webview-ui/**"]
 		}
 	}
 }

@@ -1,6 +1,6 @@
-import { ClineMessage } from "@alpha-code/types"
+import { AlphaMessage } from "@alpha-code/types"
 
-export function getLatestTodo(clineMessages: ClineMessage[]) {
+export function getLatestTodo(clineMessages: AlphaMessage[]) {
 	const todos = clineMessages
 		.filter(
 			(msg) =>

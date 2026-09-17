@@ -26,7 +26,9 @@
 			"read": "ファイルを読み込む",
 			"edit": "ファイルを編集",
 			"command": "コマンドを実行",
-			"mcp": "MCP を使用"
+			"mcp": "MCP を使用",
+			"github": "GitHub を使用する",
+			"browser": "統合ブラウザを使用する"
 		},
 		"noTools": "なし"
 	},

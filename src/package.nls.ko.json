@@ -46,5 +46,8 @@
 	"settings.debugProxy.serverUrl.description": "프록시 URL(예: `http://127.0.0.1:8888`). **Debug Proxy** 가 활성화된 경우에만 사용됩니다.",
 	"settings.debugProxy.tlsInsecure.description": "프록시의 self-signed 인증서를 허용합니다. **MITM 검사에 필요합니다.** ⚠️ 안전하지 않으므로 로컬 디버깅에만 사용하세요.",
 	"command.openTickets.title": "Alpha: 티켓",
-	"command.previewHtmlDocument.title": "HTML 문서 미리 보기"
+	"command.previewHtmlDocument.title": "HTML 문서 미리 보기",
+	"command.scheduledTasks.title": "예약된 작업",
+	"settings.vsCodeLmModelSelector.version.description": "언어 모델의 버전",
+	"settings.vsCodeLmModelSelector.id.description": "언어 모델의 고유 식별자"
 }

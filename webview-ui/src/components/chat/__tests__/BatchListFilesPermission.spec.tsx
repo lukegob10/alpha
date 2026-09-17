@@ -11,8 +11,8 @@ describe("BatchListFilesPermission", () => {
 			path: "apps/vscode-e2e",
 		},
 		{
-			key: "apps/web-evals",
-			path: "apps/web-evals",
+			key: "webview-ui",
+			path: "webview-ui",
 		},
 		{
 			key: "packages/core",
@@ -32,7 +32,7 @@ describe("BatchListFilesPermission", () => {
 		)
 
 		expect(screen.getByText("apps/vscode-e2e")).toBeInTheDocument()
-		expect(screen.getByText("apps/web-evals")).toBeInTheDocument()
+		expect(screen.getByText("webview-ui")).toBeInTheDocument()
 		expect(screen.getByText("packages/core")).toBeInTheDocument()
 	})
 

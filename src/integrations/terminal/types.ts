@@ -1,6 +1,6 @@
 import EventEmitter from "events"
 
-export type RooTerminalProvider = "vscode" | "execa"
+export type AlphaTerminalProvider = "vscode" | "execa"
 
 export const DEFAULT_TERMINAL_OUTPUT_RECEIPT_MAX_CHARACTERS = 50_000
 /** Maximum cleanup prefix carried into a later receipt's rendered output. */
@@ -12,33 +12,33 @@ export interface TerminalOutputReceipt {
 	release(): void
 }
 
-export interface RooTerminal {
-	provider: RooTerminalProvider
+export interface AlphaTerminal {
+	provider: AlphaTerminalProvider
 	id: number
 	busy: boolean
 	running: boolean
 	taskId?: string
-	process?: RooTerminalProcess
+	process?: AlphaTerminalProcess
 	getCurrentWorkingDirectory(): string
 	isClosed: () => boolean
-	runCommand: (command: string, callbacks: RooTerminalCallbacks) => RooTerminalProcessResultPromise
+	runCommand: (command: string, callbacks: AlphaTerminalCallbacks) => AlphaTerminalProcessResultPromise
 	setActiveStream(stream: AsyncIterable<string> | undefined, pid?: number): void
 	shellExecutionComplete(exitDetails: ExitCodeDetails): void
-	getProcessesWithOutput(): RooTerminalProcess[]
+	getProcessesWithOutput(): AlphaTerminalProcess[]
 	getUnretrievedOutput(): string
 	getLastCommand(): string
 	cleanCompletedProcessQueue(): void
 }
 
-export interface RooTerminalCallbacks {
-	onLine: (line: string, process: RooTerminalProcess) => void
-	onCompleted: (output: string | undefined, process: RooTerminalProcess) => void | Promise<void>
-	onShellExecutionStarted: (pid: number | undefined, process: RooTerminalProcess) => void
-	onShellExecutionComplete: (details: ExitCodeDetails, process: RooTerminalProcess) => void
-	onNoShellIntegration?: (message: string, process: RooTerminalProcess) => void
+export interface AlphaTerminalCallbacks {
+	onLine: (line: string, process: AlphaTerminalProcess) => void
+	onCompleted: (output: string | undefined, process: AlphaTerminalProcess) => void | Promise<void>
+	onShellExecutionStarted: (pid: number | undefined, process: AlphaTerminalProcess) => void
+	onShellExecutionComplete: (details: ExitCodeDetails, process: AlphaTerminalProcess) => void
+	onNoShellIntegration?: (message: string, process: AlphaTerminalProcess) => void
 }
 
-export interface RooTerminalProcess extends EventEmitter<RooTerminalProcessEvents> {
+export interface AlphaTerminalProcess extends EventEmitter<AlphaTerminalProcessEvents> {
 	executionId?: string
 	writeInput?: (input: string) => void | Promise<void>
 	command: string
@@ -59,9 +59,9 @@ export interface RooTerminalProcess extends EventEmitter<RooTerminalProcessEvent
 	trimRetrievedOutput: () => void
 }
 
-export type RooTerminalProcessResultPromise = RooTerminalProcess & Promise<void>
+export type AlphaTerminalProcessResultPromise = AlphaTerminalProcess & Promise<void>
 
-export interface RooTerminalProcessEvents {
+export interface AlphaTerminalProcessEvents {
 	output_available: []
 	line: [line: string]
 	continue: []

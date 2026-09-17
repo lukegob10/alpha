@@ -18,7 +18,7 @@ import {
 } from "../condense"
 import { ApiMessage } from "../task-persistence/apiMessages"
 import { ANTHROPIC_DEFAULT_MAX_TOKENS } from "@alpha-code/types"
-import { RooIgnoreController } from "../ignore/RooIgnoreController"
+import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
 import { checkContextWindowExceededError } from "../context/context-management/context-error-handling"
 import {
 	DEFAULT_MIN_REDUCTION_PERCENT,
@@ -364,11 +364,11 @@ export type ContextManagementOptions = {
 	/** Optional environment details string to include in the condensed summary */
 	environmentDetails?: string
 	/** Optional array of file paths read by Alpha during the task (will be folded via tree-sitter) */
-	filesReadByRoo?: string[]
-	/** Optional current working directory for resolving file paths (required if filesReadByRoo is provided) */
+	filesReadByAlpha?: string[]
+	/** Optional current working directory for resolving file paths (required if filesReadByAlpha is provided) */
 	cwd?: string
 	/** Optional controller for file access validation */
-	rooIgnoreController?: RooIgnoreController
+	alphaIgnoreController?: AlphaIgnoreController
 	recentTailTokenBudget?: number
 	/** The provider rejected this input even if the local token estimate is lower. */
 	forceCompaction?: boolean
@@ -411,9 +411,9 @@ export async function manageContext({
 	metadata,
 	prepareTools,
 	environmentDetails,
-	filesReadByRoo,
+	filesReadByAlpha,
 	cwd,
-	rooIgnoreController,
+	alphaIgnoreController,
 	recentTailTokenBudget,
 	forceCompaction = false,
 	countContext,
@@ -509,9 +509,9 @@ export async function manageContext({
 				customCondensingPrompt,
 				metadata,
 				environmentDetails,
-				filesReadByRoo,
+				filesReadByAlpha,
 				cwd,
-				rooIgnoreController,
+				alphaIgnoreController,
 				maxContextTokens: targetContextTokens,
 				recentTailTokenBudget,
 				countContext: operation,

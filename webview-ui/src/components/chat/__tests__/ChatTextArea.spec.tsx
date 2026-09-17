@@ -892,7 +892,7 @@ describe("ChatTextArea", () => {
 		})
 
 		describe("prompt history navigation", () => {
-			const mockClineMessages = [
+			const mockAlphaMessages = [
 				{ type: "say", say: "user_feedback", text: "First prompt", ts: 1000 },
 				{ type: "say", say: "user_feedback", text: "Second prompt", ts: 2000 },
 				{ type: "say", say: "user_feedback", text: "Third prompt", ts: 3000 },
@@ -906,7 +906,7 @@ describe("ChatTextArea", () => {
 						apiProvider: "anthropic",
 					},
 					taskHistory: [],
-					clineMessages: mockClineMessages,
+					clineMessages: mockAlphaMessages,
 					cwd: "/test/workspace",
 				})
 			})
@@ -1046,7 +1046,7 @@ describe("ChatTextArea", () => {
 			})
 
 			it("should filter history by current workspace", () => {
-				const mixedClineMessages = [
+				const mixedAlphaMessages = [
 					{ type: "say", say: "user_feedback", text: "Workspace 1 prompt", ts: 1000 },
 					{ type: "say", say: "user_feedback", text: "Other workspace prompt", ts: 2000 },
 					{ type: "say", say: "user_feedback", text: "Workspace 1 prompt 2", ts: 3000 },
@@ -1059,7 +1059,7 @@ describe("ChatTextArea", () => {
 						apiProvider: "anthropic",
 					},
 					taskHistory: [],
-					clineMessages: mixedClineMessages,
+					clineMessages: mixedAlphaMessages,
 					cwd: "/test/workspace",
 				})
 
@@ -1104,7 +1104,7 @@ describe("ChatTextArea", () => {
 			})
 
 			it("should ignore empty or whitespace-only messages", () => {
-				const clineMessagesWithEmpty = [
+				const alphaMessagesWithEmpty = [
 					{ type: "say", say: "user_feedback", text: "Valid prompt", ts: 1000 },
 					{ type: "say", say: "user_feedback", text: "", ts: 2000 },
 					{ type: "say", say: "user_feedback", text: "   ", ts: 3000 },
@@ -1118,7 +1118,7 @@ describe("ChatTextArea", () => {
 						apiProvider: "anthropic",
 					},
 					taskHistory: [],
-					clineMessages: clineMessagesWithEmpty,
+					clineMessages: alphaMessagesWithEmpty,
 					cwd: "/test/workspace",
 				})
 

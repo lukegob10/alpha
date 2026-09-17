@@ -1,7 +1,7 @@
 import pWaitFor from "p-wait-for"
 import * as vscode from "vscode"
 
-import type { ClineApiReqInfo } from "@alpha-code/types"
+import type { AlphaApiReqInfo } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../task/Task"
@@ -284,7 +284,7 @@ export async function checkpointRestore(
 
 			// The task is stopped; say() correctly rejects new agent output after abort.
 			// Persist the host's accounting row through the transcript owner instead.
-			await task.overwriteClineMessages([
+			await task.overwriteAlphaMessages([
 				...task.clineMessages,
 				{
 					ts: Math.max(Date.now(), (task.clineMessages.at(-1)?.ts ?? 0) + 1),
@@ -296,7 +296,7 @@ export async function checkpointRestore(
 						cacheWrites: totalCacheWrites,
 						cacheReads: totalCacheReads,
 						cost: totalCost,
-					} satisfies ClineApiReqInfo),
+					} satisfies AlphaApiReqInfo),
 				},
 			])
 			await provider?.postStateToWebview()

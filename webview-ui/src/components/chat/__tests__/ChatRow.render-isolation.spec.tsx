@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 import { render, screen } from "@/utils/test-utils"
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 
 import ChatRow, { type ChatRowEnvironment } from "../ChatRow"
 
@@ -25,7 +25,7 @@ describe("ChatRow render isolation", () => {
 	it.each(["interrupted", "blocked", "failed", undefined] as const)(
 		"does not label a completion report as task success when the task status is %s",
 		(status) => {
-			const message: ClineMessage = {
+			const message: AlphaMessage = {
 				ts: 2,
 				type: "say",
 				say: "completion_result",
@@ -48,7 +48,7 @@ describe("ChatRow render isolation", () => {
 					tokensOut: 0,
 					totalCost: 0,
 				},
-				getClineMessages: () => [message],
+				getAlphaMessages: () => [message],
 			}
 			const row = (nextEnvironment: ChatRowEnvironment) => (
 				<ChatRow
@@ -77,7 +77,7 @@ describe("ChatRow render isolation", () => {
 	)
 
 	it("renders from its stable environment without reading root transcript state", () => {
-		const message: ClineMessage = {
+		const message: AlphaMessage = {
 			ts: 1,
 			type: "say",
 			say: "text",
@@ -90,7 +90,7 @@ describe("ChatRow render isolation", () => {
 			mode: "code",
 			reasoningBlockCollapsed: true,
 			modelSupportsImages: true,
-			getClineMessages: () => [message],
+			getAlphaMessages: () => [message],
 		}
 
 		render(

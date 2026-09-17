@@ -1,4 +1,4 @@
-import type { ClineAskUseMcpServer, McpExecutionStatus } from "@alpha-code/types"
+import type { AlphaAskUseMcpServer, McpExecutionStatus } from "@alpha-code/types"
 import { createHash } from "crypto"
 import stringify from "safe-stable-stringify"
 
@@ -66,7 +66,7 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 				serverName,
 				toolName: resolvedToolName,
 				arguments: params.arguments ? JSON.stringify(params.arguments) : undefined,
-			} satisfies ClineAskUseMcpServer)
+			} satisfies AlphaAskUseMcpServer)
 
 			const executionId = task.lastMessageTs?.toString() ?? Date.now().toString()
 			const didApprove = await askApproval("use_mcp_server", completeMessage)
@@ -104,7 +104,7 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 			serverName: params.server_name ?? "",
 			toolName: params.tool_name ?? "",
 			arguments: params.arguments,
-		} satisfies ClineAskUseMcpServer)
+		} satisfies AlphaAskUseMcpServer)
 
 		await task.ask("use_mcp_server", partialMessage, true).catch(() => {})
 	}

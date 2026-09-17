@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { createInstance } from "i18next"
 import { I18nextProvider } from "react-i18next"
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 
 import { fireEvent, render, screen } from "@/utils/test-utils"
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
@@ -13,7 +13,7 @@ beforeAll(async () => {
 	await i18n.init({ lng: "en", resources: { en: { chat: english } }, interpolation: { escapeValue: false } })
 })
 
-function Row({ message }: { message: ClineMessage }) {
+function Row({ message }: { message: AlphaMessage }) {
 	const [expanded, setExpanded] = useState(false)
 	return (
 		<I18nextProvider i18n={i18n}>

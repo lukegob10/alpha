@@ -12,7 +12,7 @@ import { vscode } from "@src/utils/vscode"
 import ChatView, { ChatViewProps, isContextCondensationRequest } from "../ChatView"
 
 // Define minimal types needed for testing
-interface ClineMessage {
+interface AlphaMessage {
 	type: "say" | "ask"
 	say?: string
 	ask?: string
@@ -24,7 +24,7 @@ interface ClineMessage {
 
 interface ExtensionState {
 	version: string
-	clineMessages: ClineMessage[]
+	clineMessages: AlphaMessage[]
 	taskHistory: any[]
 	shouldShowAnnouncement: boolean
 	allowedCommands: string[]
@@ -54,7 +54,7 @@ vi.mock("../ChatRow", () => ({
 		isTaskPrompt,
 		onSuggestionClick,
 	}: {
-		message: ClineMessage
+		message: AlphaMessage
 		isTaskPrompt?: boolean
 		onSuggestionClick?: (suggestion: { answer: string; mode?: string }, event?: React.MouseEvent) => void
 	}) {
@@ -81,7 +81,7 @@ vi.mock("../ChatRow", () => ({
 }))
 
 vi.mock("../FileChangesPanel", () => ({
-	default: function MockFileChangesPanel({ clineMessages = [] }: { clineMessages?: ClineMessage[] }) {
+	default: function MockFileChangesPanel({ clineMessages = [] }: { clineMessages?: AlphaMessage[] }) {
 		const paths = clineMessages.flatMap((message) => {
 			if (!message.text) return []
 			try {
@@ -383,19 +383,19 @@ describe("ChatView activity trace", () => {
 
 	it("keeps each completed turn collapsed across follow-ups, lifecycle refreshes, and reload", async () => {
 		const taskId = "successive-traces"
-		const firstTurn: ClineMessage[] = [
+		const firstTurn: AlphaMessage[] = [
 			{ ts: 100, type: "say", say: "task", text: "Run the tests" },
 			{ ts: 1000, type: "say", say: "reasoning", text: "Inspecting tests" },
 			{ ts: 2000, type: "ask", ask: "command", text: "pnpm test" },
 			{ ts: 480000, type: "say", say: "completion_result", text: "First answer" },
 			{ ts: 481000, type: "ask", ask: "completion_result", text: "" },
 		]
-		const followup: ClineMessage[] = [
+		const followup: AlphaMessage[] = [
 			{ ts: 600000, type: "say", say: "user_feedback", text: "Now check the types" },
 			{ ts: 601000, type: "say", say: "reasoning", text: "Checking types" },
 			{ ts: 602000, type: "ask", ask: "command", text: "pnpm check-types" },
 		]
-		const publish = (clineMessages: ClineMessage[], lifecycle: "running" | "completed") =>
+		const publish = (clineMessages: AlphaMessage[], lifecycle: "running" | "completed") =>
 			mockPostMessage({
 				currentTaskId: taskId,
 				clineMessages,
@@ -437,7 +437,7 @@ describe("ChatView activity trace", () => {
 		expect(view.getByTestId("chat-message-3")).toBeVisible()
 		expect(view.getByTestId("chat-message-5")).toBeVisible()
 
-		const completedTurns: ClineMessage[] = [
+		const completedTurns: AlphaMessage[] = [
 			...firstTurn,
 			...followup,
 			{ ts: 720000, type: "say", say: "completion_result", text: "Second answer" },
@@ -467,7 +467,7 @@ describe("ChatView activity trace", () => {
 
 	it("shows live activity, folds it above the final response, and restores it on click", async () => {
 		const { getByTestId, getByRole, queryByRole } = renderChatView()
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			{ ts: 100, type: "say", say: "text", text: "Run the tests" },
 			{ ts: 1000, type: "say", say: "reasoning", text: "Checking the test suite" },
 			{ ts: 2000, type: "ask", ask: "command", text: "pnpm test" },
@@ -488,7 +488,7 @@ describe("ChatView activity trace", () => {
 		})
 		fireEvent.focus(getByTestId("chat-message-1"))
 
-		const completedMessages: ClineMessage[] = [
+		const completedMessages: AlphaMessage[] = [
 			...messages.slice(0, 3),
 			{ ...messages[3], say: "completion_result", partial: false },
 			{ ts: 5500, type: "ask", ask: "completion_result", text: "" },
@@ -531,14 +531,14 @@ describe("ChatView activity trace", () => {
 describe("ChatView file-change summaries", () => {
 	it("keeps each turn's applied edits below that turn instead of aggregating them", async () => {
 		const view = renderChatView()
-		const edit = (ts: number, path: string): ClineMessage => ({
+		const edit = (ts: number, path: string): AlphaMessage => ({
 			type: "ask",
 			ask: "tool",
 			ts,
 			isAnswered: true,
 			text: JSON.stringify({ tool: "appliedDiff", path, diff: `+${path}` }),
 		})
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			{ type: "say", say: "task", ts: 1, text: "Initial request" },
 			edit(2, "first.ts"),
 			{ type: "say", say: "completion_result", ts: 3, text: "First response" },
@@ -1375,7 +1375,7 @@ describe("ChatView - Managed agent monitor", () => {
 							},
 						],
 					},
-				} as ClineMessage,
+				} as AlphaMessage,
 			],
 			liveTasksById: {
 				"root-1": {
@@ -1608,7 +1608,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			{ id: "first", text: "First next-turn instruction", images: [] },
 			{ id: "second", text: "Second next-turn instruction", images: [] },
 		]
-		const followUp: ClineMessage = {
+		const followUp: AlphaMessage = {
 			type: "ask",
 			ask: "followup",
 			ts: 101,
@@ -1616,7 +1616,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			partial: false,
 			isAnswered: false,
 		}
-		const taskMessage: ClineMessage = { type: "say", say: "task", ts: 100, text: "Test follow-up" }
+		const taskMessage: AlphaMessage = { type: "say", say: "task", ts: 100, text: "Test follow-up" }
 		const waitingTask = {
 			id: "task-with-followup",
 			status: "interactive",
@@ -3995,12 +3995,12 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		// Wait for state to be updated - need to allow time for React effects to propagate
-		// (clineAsk state update -> clineAskRef.current update)
+		// (alphaAsk state update -> alphaAskRef.current update)
 		await waitFor(() => {
 			expect(getByTestId("chat-textarea")).toBeInTheDocument()
 		})
 
-		// Allow React effects to complete (clineAsk -> clineAskRef sync)
+		// Allow React effects to complete (alphaAsk -> alphaAskRef sync)
 		await act(async () => {
 			await new Promise((resolve) => setTimeout(resolve, 50))
 		})

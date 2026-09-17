@@ -60,7 +60,7 @@ jobs:
                   "vsix_name=$($vsix.Name)" >> $env:GITHUB_OUTPUT
 
             - name: Verify VSIX contents
-              run: node scripts/verify-vsix-contents.mjs "${{ steps.release.outputs.vsix_path }}"
+              run: node scripts/verify-vsix-contents.mjs "${{ steps.release.outputs.vsix_path }}" --check-source
 
             - name: Create GitHub prerelease
               env:

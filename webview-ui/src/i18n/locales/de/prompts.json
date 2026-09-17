@@ -26,7 +26,9 @@
 			"read": "Dateien lesen",
 			"edit": "Dateien bearbeiten",
 			"command": "Befehle ausführen",
-			"mcp": "MCP verwenden"
+			"mcp": "MCP verwenden",
+			"github": "GitHub verwenden",
+			"browser": "Integrierten Browser verwenden"
 		},
 		"noTools": "Keine"
 	},

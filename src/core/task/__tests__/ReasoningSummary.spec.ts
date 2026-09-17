@@ -1,4 +1,4 @@
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 import type { ApiHandler, ApiHandlerCreateMessageMetadata } from "../../../api"
 import type { ApiStream } from "../../../api/transform/stream"
 import { ReasoningSummary } from "../ReasoningSummary"
@@ -25,7 +25,7 @@ function harness(createMessage?: ApiHandler["createMessage"]) {
 	}
 	const publish = vi.fn(async () => {})
 	const summary = new ReasoningSummary("task-a", publish)
-	const message: ClineMessage = {
+	const message: AlphaMessage = {
 		ts: 1,
 		type: "say",
 		say: "reasoning",

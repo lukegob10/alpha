@@ -15,7 +15,7 @@ function harness(content: string, budget = 32_000) {
 	const task = {
 		cwd: "/workspace",
 		api: { getModel: () => ({ info: {} }) },
-		rooIgnoreController: { validateAccess: () => true },
+		alphaIgnoreController: { validateAccess: () => true },
 		fileContextTracker: { trackFileContext: vi.fn() },
 		providerRef: { deref: () => ({ getState: async () => ({}) }) },
 		say: vi.fn(),

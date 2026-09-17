@@ -7,7 +7,7 @@ import { StringDecoder } from "string_decoder"
 import * as vscode from "vscode"
 import type { SearchFilesOutputMode } from "@alpha-code/types"
 
-import { RooIgnoreController } from "../../core/ignore/RooIgnoreController"
+import { AlphaIgnoreController } from "../../core/ignore/AlphaIgnoreController"
 import { fileExistsAtPath } from "../../utils/fs"
 // All search modes share binary resolution, bounded JSON capture, and ignore filtering.
 // Content mode adds one context line on each side; files/count omit source snippets.
@@ -454,7 +454,7 @@ export async function regexSearchFiles(
 	directoryPath: string,
 	regex: string,
 	filePattern?: string,
-	rooIgnoreController?: RooIgnoreController,
+	alphaIgnoreController?: AlphaIgnoreController,
 	signal?: AbortSignal,
 	options: SearchFilesOptions = {},
 ): Promise<string> {
@@ -568,9 +568,9 @@ export async function regexSearchFiles(
 	}
 	if (currentFile) results.push(currentFile)
 
-	// Filter results using RooIgnoreController if provided
-	const filteredResults = rooIgnoreController
-		? results.filter((result) => rooIgnoreController.validateAccess(result.file))
+	// Filter results using AlphaIgnoreController if provided
+	const filteredResults = alphaIgnoreController
+		? results.filter((result) => alphaIgnoreController.validateAccess(result.file))
 		: results
 
 	return formatResults(filteredResults, cwd, truncated, outputMode)

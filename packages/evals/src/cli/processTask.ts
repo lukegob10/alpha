@@ -2,7 +2,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
-import { type TaskEvent, RooCodeEventName } from "@alpha-code/types"
+import { type TaskEvent, AlphaCodeEventName } from "@alpha-code/types"
 
 import { findBenchmarkTask, serveGraderRequest, type GraderBrokerRequest } from "../benchmark/index"
 import {
@@ -261,7 +261,7 @@ export const processTask = async ({
 		await transition({ type: "finalize", status })
 		logger.info(`task ${task.id} (${task.language}/${task.exercise}) -> ${status}`)
 		await publish({
-			eventName: status === "passed" ? RooCodeEventName.EvalPass : RooCodeEventName.EvalFail,
+			eventName: status === "passed" ? AlphaCodeEventName.EvalPass : AlphaCodeEventName.EvalFail,
 			taskId: task.id,
 		})
 		await settleTrialAfterRetries(task.id)

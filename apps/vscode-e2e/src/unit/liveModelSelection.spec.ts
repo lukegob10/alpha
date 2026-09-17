@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { LanguageModelChat } from "vscode"
-import type { RooCodeAPI } from "@alpha-code/types"
+import type { AlphaCodeAPI } from "@alpha-code/types"
 
 import {
 	buildLiveCopilotConfiguration,
@@ -50,7 +50,7 @@ test("cold discovery activates the installed Copilot provider before reading its
 	const api = {
 		getConfiguration: () => ({}),
 		setConfiguration: async () => configurations++,
-	} as unknown as RooCodeAPI
+	} as unknown as AlphaCodeAPI
 	const result = await configureLiveCopilot(
 		api,
 		{ modelId: gpt55.id },
@@ -67,7 +67,7 @@ test("cancelled setup cannot discover, probe, or configure the provider", async 
 	const api = {
 		getConfiguration: () => assert.fail("cancelled setup cannot inspect provider configuration"),
 		setConfiguration: () => assert.fail("cancelled setup cannot change provider configuration"),
-	} as unknown as RooCodeAPI
+	} as unknown as AlphaCodeAPI
 	await assert.rejects(
 		configureLiveCopilot(api, { modelId: gpt55.id, setup: true }, { signal: cancellation.signal }),
 		{ name: "AbortError" },

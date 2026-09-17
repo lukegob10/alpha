@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next"
 
 import {
 	type ExtensionMessage,
-	type ClineAskUseMcpServer,
+	type AlphaAskUseMcpServer,
 	type McpExecutionStatus,
 	mcpExecutionStatusSchema,
 } from "@alpha-code/types"
@@ -34,7 +34,7 @@ interface McpExecutionProps {
 		}>
 		source?: "global" | "project"
 	}
-	useMcpServer?: ClineAskUseMcpServer
+	useMcpServer?: AlphaAskUseMcpServer
 	alwaysAllowMcp?: boolean
 }
 

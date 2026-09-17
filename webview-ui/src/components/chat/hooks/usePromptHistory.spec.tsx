@@ -1,12 +1,12 @@
 import { act, renderHook } from "@testing-library/react"
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 
 import { usePromptHistory } from "./usePromptHistory"
 
 describe("usePromptHistory", () => {
 	it("preserves the saved draft across unrelated streaming transcript updates", () => {
 		const setInputValue = vi.fn()
-		const userMessage: ClineMessage = {
+		const userMessage: AlphaMessage = {
 			type: "say",
 			say: "user_feedback",
 			text: "previous prompt",
@@ -37,10 +37,7 @@ describe("usePromptHistory", () => {
 		expect(result.current.historyIndex).toBe(0)
 
 		rerender({
-			clineMessages: [
-				userMessage,
-				{ type: "say", say: "text", text: "streamed token", ts: 2, partial: true },
-			],
+			clineMessages: [userMessage, { type: "say", say: "text", text: "streamed token", ts: 2, partial: true }],
 			inputValue: "previous prompt",
 		})
 

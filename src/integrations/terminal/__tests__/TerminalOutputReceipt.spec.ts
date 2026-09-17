@@ -4,7 +4,7 @@ import { ExecaTerminalProcess } from "../ExecaTerminalProcess"
 import { Terminal } from "../Terminal"
 import { TerminalProcess } from "../TerminalProcess"
 import { MAX_TERMINAL_OUTPUT_RECEIPT_CARRY_CHARACTERS } from "../types"
-import type { RooTerminal } from "../types"
+import type { AlphaTerminal } from "../types"
 
 function makeVscodeProcess(): TerminalProcess {
 	const terminal = new Terminal(
@@ -26,7 +26,7 @@ function makeExecaProcess(): ExecaTerminalProcess {
 		running: false,
 		getCurrentWorkingDirectory: () => "/test",
 		isClosed: () => false,
-	} as unknown as RooTerminal
+	} as unknown as AlphaTerminal
 	return new ExecaTerminalProcess(terminal)
 }
 

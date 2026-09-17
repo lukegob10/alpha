@@ -90,7 +90,7 @@ vi.mock("../../prompts/responses", () => ({
 			(feedback?: string) =>
 				`The user approved this operation and responded with the message:\n<user_message>\n${feedback}\n</user_message>`,
 		),
-		rooIgnoreError: vi.fn(
+		alphaIgnoreError: vi.fn(
 			(filePath: string) =>
 				`Access to ${filePath} is blocked by the .alphaignore file settings. You must try to continue in the task without using this file, or ask the user to update the .alphaignore file.`,
 		),
@@ -136,13 +136,13 @@ const mockedProcessImageFile = vi.mocked(processImageFile)
 
 interface MockTaskOptions {
 	supportsImages?: boolean
-	rooIgnoreAllowed?: boolean
+	alphaIgnoreAllowed?: boolean
 	maxImageFileSize?: number
 	maxTotalImageSize?: number
 }
 
 function createMockTask(options: MockTaskOptions = {}) {
-	const { supportsImages = false, rooIgnoreAllowed = true, maxImageFileSize = 5, maxTotalImageSize = 20 } = options
+	const { supportsImages = false, alphaIgnoreAllowed = true, maxImageFileSize = 5, maxTotalImageSize = 20 } = options
 
 	return {
 		cwd: "/test/workspace",
@@ -158,8 +158,8 @@ function createMockTask(options: MockTaskOptions = {}) {
 		say: vi.fn().mockResolvedValue(undefined),
 		sayAndCreateMissingParamError: vi.fn().mockResolvedValue("Missing required parameter: path"),
 		recordToolError: vi.fn(),
-		rooIgnoreController: {
-			validateAccess: vi.fn().mockReturnValue(rooIgnoreAllowed),
+		alphaIgnoreController: {
+			validateAccess: vi.fn().mockReturnValue(alphaIgnoreAllowed),
 		},
 		fileContextTracker: {
 			trackFileContext: vi.fn().mockResolvedValue(undefined),
@@ -215,7 +215,7 @@ describe("ReadFileTool", () => {
 			expect(observations[0].scope).not.toBe(observations[1].scope)
 			expect(observations[0].stateFingerprint).toBe(observations[1].stateFingerprint)
 			callbacks.setResultMetadata.mockClear()
-			task.rooIgnoreController.validateAccess.mockReturnValueOnce(false)
+			task.alphaIgnoreController.validateAccess.mockReturnValueOnce(false)
 			await readFileTool.execute({ files: [{ path: "a.ts" }, { path: "b.ts" }] }, task as any, callbacks)
 			const merged = Object.assign({}, ...callbacks.setResultMetadata.mock.calls.map(([metadata]) => metadata))
 			expect(merged.status).toBe("denied")
@@ -371,13 +371,13 @@ describe("ReadFileTool", () => {
 
 	describe("RooIgnore handling", () => {
 		it("should block access to alphaignore-protected files", async () => {
-			const mockTask = createMockTask({ rooIgnoreAllowed: false })
+			const mockTask = createMockTask({ alphaIgnoreAllowed: false })
 			const callbacks = createMockCallbacks()
 
 			await readFileTool.execute({ path: "secret.env" }, mockTask as any, callbacks)
 
 			expect(mockTask.say).toHaveBeenCalledWith("rooignore_error", "secret.env")
-			expect(formatResponse.rooIgnoreError).toHaveBeenCalledWith("secret.env")
+			expect(formatResponse.alphaIgnoreError).toHaveBeenCalledWith("secret.env")
 			expect(callbacks.pushToolResult).toHaveBeenCalledWith(
 				expect.stringContaining("blocked by the .alphaignore"),
 			)
@@ -386,7 +386,7 @@ describe("ReadFileTool", () => {
 		it("should allow reads when no ignore controller is configured", async () => {
 			const mockTask = createMockTask()
 			const callbacks = createMockCallbacks()
-			;(mockTask as any).rooIgnoreController = undefined
+			;(mockTask as any).alphaIgnoreController = undefined
 
 			await readFileTool.execute({ path: "test.ts" }, mockTask as any, callbacks)
 

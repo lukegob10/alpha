@@ -295,7 +295,7 @@ describe("foldedFileContext", () => {
 				characterCount: mockFoldedSections.join("\n").length,
 			})
 
-			const filesReadByRoo = ["src/user.ts", "src/api.ts"]
+			const filesReadByAlpha = ["src/user.ts", "src/api.ts"]
 			const cwd = "/test/project"
 
 			const result = await summarizeConversation({
@@ -304,15 +304,15 @@ describe("foldedFileContext", () => {
 				systemPrompt: "System prompt",
 				taskId,
 				isAutomaticTrigger: false,
-				filesReadByRoo,
+				filesReadByAlpha,
 				cwd,
 			})
 
 			// Verify generateFoldedFileContext was called with the right arguments
-			expect(mockedGenerateFoldedFileContext).toHaveBeenCalledWith(filesReadByRoo, {
+			expect(mockedGenerateFoldedFileContext).toHaveBeenCalledWith(filesReadByAlpha, {
 				maxCharacters: expect.any(Number),
 				cwd,
-				rooIgnoreController: undefined,
+				alphaIgnoreController: undefined,
 			})
 
 			// Verify the summary was created
@@ -366,7 +366,7 @@ describe("foldedFileContext", () => {
 				systemPrompt: "System",
 				taskId: "bounded-files",
 				maxContextTokens: 100,
-				filesReadByRoo: ["/test/large.ts"],
+				filesReadByAlpha: ["/test/large.ts"],
 				cwd: "/test",
 			})
 			expect(result.status).toBe("reduced")
@@ -374,7 +374,7 @@ describe("foldedFileContext", () => {
 			expect(JSON.stringify(getEffectiveApiHistory(result.messages))).not.toContain("## File Context")
 		})
 
-		it("should not include file context section when filesReadByRoo is empty", async () => {
+		it("should not include file context section when filesReadByAlpha is empty", async () => {
 			const { summarizeConversation } = await import("../index")
 
 			const mockApiHandler = new MockApiHandler()
@@ -399,11 +399,11 @@ describe("foldedFileContext", () => {
 				systemPrompt: "System prompt",
 				taskId,
 				isAutomaticTrigger: false,
-				filesReadByRoo: [],
+				filesReadByAlpha: [],
 				cwd: "/test/project",
 			})
 
-			// generateFoldedFileContext should NOT be called when filesReadByRoo is empty
+			// generateFoldedFileContext should NOT be called when filesReadByAlpha is empty
 			expect(mockedGenerateFoldedFileContext).not.toHaveBeenCalled()
 
 			// Find the summary message

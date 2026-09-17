@@ -1,4 +1,4 @@
-import type { RooCodeAPI } from "@alpha-code/types"
+import type { AlphaCodeAPI } from "@alpha-code/types"
 import { TestRunError } from "../runFailure"
 
 import {
@@ -29,7 +29,7 @@ export function getLiveCopilotOptionsFromEnvironment(
 }
 
 export async function runLiveCopilotPreflight(
-	api: RooCodeAPI,
+	api: AlphaCodeAPI,
 	options: LiveCopilotOptions,
 	dependencies?: LiveCopilotAuthDependencies,
 ): Promise<LiveCopilotPreflightMetadata> {

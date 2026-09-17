@@ -31,7 +31,7 @@ describe("SearchFilesTool", () => {
 			sayAndCreateMissingParamError: vi.fn(
 				async (_tool: string, parameter: string) => `Missing required parameter: ${parameter}`,
 			),
-			rooIgnoreController: undefined,
+			alphaIgnoreController: undefined,
 		}) as unknown as Task
 
 	it("preserves valid searches when a batch contains an empty workspace path", async () => {

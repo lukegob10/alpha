@@ -14,7 +14,7 @@ Primary sources consulted on 2026-09-12:
 - [Qdrant sparse indexing and IDF](https://qdrant.tech/documentation/manage-data/indexing/#idf-modifier): indexed sparse retrieval with corpus IDF; the IDF modifier requires Qdrant 1.10 or later. Alpha's installed REST client is 1.14.0.
 - [LanceDB full-text search](https://docs.lancedb.com/search/full-text-search) and [reindexing](https://docs.lancedb.com/indexing/reindexing): native lexical indexing and updating changed data. Implementation and native regression tests use the installed 0.27.2 binding.
 - [Cohere on Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-embed-v4.html), [Nova embedding schema](https://docs.aws.amazon.com/nova/latest/userguide/embeddings-schema.html), and [Gemini embeddings](https://ai.google.dev/gemini-api/docs/embeddings): query/document configuration belongs in provider adapters.
-- [Vertex text embedding requests](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/embeddings/get-text-embeddings): Gemini 001 accepts one text per prediction request. The original Google adapter baseline and serialization regression test used Google GenAI SDK 1.29.1; the endpoint fix below records the subsequent SDK update.
+- [Vertex text embedding requests](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/embeddings/get-text-embeddings): Gemini 001 accepts one text per prediction request. The original Google adapter baseline and serialization regression test used Google GenAI SDK 1.29.1; the Embedding 2 endpoint fix below records the subsequent SDK update.
 
 ## Implemented contract
 
@@ -34,7 +34,17 @@ Cancellation skips a batch before its replacement transaction starts and waits f
 
 Search explicitly requests query embeddings. Cohere uses search-query input, Nova uses text-retrieval purpose, and known Nomic code-search prefixes apply only to queries. Native Gemini and direct Vertex use the documented 001 task types or Gemini 2 instructed inputs. Vertex gateways preserve their earlier raw-content prediction payload for both documents and queries, including opaque routed model aliases. Providers without a distinct query/document contract keep their normal inputs.
 
-Native Gemini 2 inputs have explicit Content boundaries so separate chunks receive separate embeddings. Vertex submits one input per request, with at most four active requests per embedder, bounded scheduling windows, and output restored to input order. This respects the Gemini 001 prediction limit and settles an accepted window before propagating failure. The configured embedding delay also applies to each Vertex request start, shared across batches, queries, and retries; the scanner's outer batch delay alone cannot enforce this after splitting a batch.
+Native Gemini 2 inputs have explicit Content boundaries so separate chunks receive separate embeddings. Vertex submits one input per request, with at most eight active requests shared across batches and queries on an embedder instance. Each caller queues at most eight tasks; free slots refill immediately and output retains input order. Failed calls stop scheduling new texts and drain accepted requests before rejecting. The configured embedding delay applies to each Vertex request start, including retries; eight slots do not override an enabled rate limit.
+
+Vertex prefers indexing groups of eight blocks while preserving whole-file groups, including files larger than that target. Embedding can start while later files are still parsing. This scheduling policy changes neither the embedding input nor vector dimensions and requires no index rebuild.
+
+### Vertex scheduling check
+
+```sh
+pnpm --dir src exec vitest run services/code-index/processors/__tests__/vertex-indexing.benchmark.spec.ts --no-silent
+```
+
+The benchmark uses the real scanner and Vertex adapter with mocked parsing, SDK responses, and vector writes. Its cold-index fixture has 85 files and 1,700 blocks, controlled request delays, and fake timers. It asserts eight peak requests, first stored results below three simulated seconds, and total time below 26 simulated seconds. Rate-limit delay and retries are disabled; there are no live network calls. These thresholds check scheduling behavior, not live GCP throughput: quotas, gateway latency, configured spacing, parsing, and storage can dominate a real run.
 
 ### Hybrid retrieval
 
@@ -82,9 +92,19 @@ Validation passed on Node 20.19.2 / pnpm 10.8.1: `pnpm --dir src test services/c
 
 ### Gemini Embedding 2 Vertex endpoint fix (2026-09-17)
 
-The Google GenAI SDK 1.29.1 serialized every Vertex embedding request as `:predict` with `instances`. Gemini Embedding 2 requires `:embedContent` with a `content` object and returns `embedding`. The adapter now uses Google GenAI SDK 1.47.0, which selects the model-specific Vertex endpoint while retaining Gemini 001's existing `:predict` and task-type contract. The supported `global` and `us` multi-regions are exercised by native SDK wire tests, and gateway requests retain routed model aliases, headers, and token refresh behavior.
+Alpha offered `gemini-embedding-2` with Google GenAI SDK 1.29.1, whose Vertex embedding serializer always called `:predict` with `instances`. Gemini Embedding 2 requires `:embedContent` with `content` and returns `embedding` instead of `predictions`. A real-SDK regression reproduced this mismatch independently of GCP credentials. The SDK is now resolved to 1.47.0: this retains the existing major version, includes Vertex Embedding 2 support introduced in 1.42.0, and includes the `us` multi-region endpoint correction introduced in 1.47.0. The manifest and lockfile change deliberately includes that SDK's transitive dependencies.
 
-Non-retryable failures report the actual number of HTTP requests, including a gateway authentication replay, instead of always reporting the configured retry ceiling. These tests stub Google HTTP responses and do not establish access, IAM permissions, or model availability in a particular GCP project.
+Primary sources checked on 2026-09-17:
+
+- [Google's Gemini Embedding 2 API examples](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/embeddings/get-multimodal-embeddings): `:embedContent`, instructed document/query inputs, and response handling.
+- [Google GenAI 1.47.0 source](https://github.com/googleapis/js-genai/blob/v1.47.0/src/models.ts) and [release history](https://github.com/googleapis/js-genai/blob/v1.47.0/CHANGELOG.md): model-dependent endpoint selection and multi-region routing.
+- [Embedding 2 model availability](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/embedding-2): `global`, `us`, and `eu` locations. Alpha's existing picker exposes `global` and `us`; use one of those for direct Embedding 2 requests. The fix does not silently change the user's selected location.
+
+Real-SDK HTTP tests cover validation, indexing, and queries against `global` and `us`, Gemini 001's existing prediction/task-type contract, and Gemini 2 gateway routing with certificate setup, extra headers, and a refreshed bearer token. Gateway inputs retain their existing raw-content representation; embedding dimensions and index fingerprints do not change. A non-retryable 404 now reports the actual number of requests, including any gateway authentication replay, instead of always reporting the configured maximum of three. Chat reasoning settings remain lowercase in saved configuration and are mapped to the newer SDK's explicit thinking-level enum at the provider transform boundary.
+
+Validation passed on Node 20.19.2 / pnpm 10.8.1: code-index, API transforms, Gemini/Vertex providers, task persistence, and `AgentTurnEngine` tests (1,190 passed, two skipped); `pnpm --dir src check-types`; ESLint on the changed TypeScript files; frozen-lockfile validation; and `pnpm --filter @alpha-code/vscode-e2e test:smoke:1221` (ten tests passed in actual host 1.122.1, including extension/webview builds).
+
+These tests use stubbed Google HTTP responses and do not establish access, IAM permissions, or model availability in a particular GCP project or private gateway.
 
 ## Recorded workload
 

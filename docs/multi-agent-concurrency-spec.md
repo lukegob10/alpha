@@ -29,7 +29,7 @@ for remaining real-host certification, compatibility retirement, and top-level t
 The extension now separates task runtime from chat selection.
 
 - `TaskSessionRegistry` is the source of truth for live task sessions.
-- `ClineProvider` owns `currentView`, which is either:
+- `AlphaProvider` owns `currentView`, which is either:
     - `{ type: "newTaskDraft" }`
     - `{ type: "task", taskId }`
 - `getCurrentTask()` returns the selected active task for compatibility, but task routing should prefer task-id-aware helpers.
@@ -42,7 +42,7 @@ The extension now separates task runtime from chat selection.
     - queue count
     - token and cost totals
 - `managedAgentTree` is the bounded, credential- and report-body-free projection of the selected orchestration root's durable registry. It carries nested identity, frozen policy/limits, lifecycle, stop reason, usage, capacity, budgets, attention, and recent mailbox activity.
-- `clineStack` still exists for compatibility with existing delegation and legacy task flows, but it is no longer the concurrency source of truth.
+- `taskStack` still exists for compatibility with existing delegation and legacy task flows, but it is no longer the concurrency source of truth.
 - Completed tasks remain reopenable through Recent Tasks and Task History, but they do not consume the live task pool.
 
 Current lifecycle states:
@@ -110,12 +110,12 @@ The Phase 1 architecture, lifecycle control plane, explicit context inheritance,
 
 ### Core model
 
-The old "current task is the top of `clineStack`" model has been replaced with two concepts:
+The old "current task is the top of `taskStack`" model has been replaced with two concepts:
 
 - `TaskSessionRegistry`: all currently live task sessions and their lifecycle metadata.
 - `currentView`: the chat pane state, either a selected task or a new-task draft.
 
-Keep `clineStack` temporarily for serialized subtask compatibility if needed, but stop using it as the only live task registry. Long term, either remove it or repurpose it as a focused navigation stack only.
+Keep `taskStack` temporarily for serialized subtask compatibility if needed, but stop using it as the only live task registry. Long term, either remove it or repurpose it as a focused navigation stack only.
 
 Provider methods and concepts:
 
@@ -355,7 +355,7 @@ metadata, expose details in the opened child, and surface actionable stalled or 
 
 Completed implementation items:
 
-1. Introduced `TaskSessionRegistry` and `currentView` in `ClineProvider`.
+1. Introduced `TaskSessionRegistry` and `currentView` in `AlphaProvider`.
 2. Kept `getCurrentTask()` as a compatibility wrapper over the selected active task.
 3. Added task-id-aware accessors and lifecycle methods.
 4. Changed top-level task creation so it can preserve existing sessions.
@@ -494,7 +494,7 @@ Milestone 3 was large and is complete at the original depth-one/live-certified b
 
 - Do not run multiple agents writing to the same files without a lock or worktree isolation.
 - Do not change Orchestrator behavior in the first milestone.
-- Do not remove `clineStack` immediately; use compatibility wrappers first.
+- Do not remove `taskStack` immediately; use compatibility wrappers first.
 - Do not make background tasks auto-approve actions invisibly. If user input is needed, mark the task as waiting.
 - Do not restore checkpoints while another task is live in the same workspace.
 - Do not allow unbounded swarm fan-out. Every parallel path needs a provider-enforced maximum before it ships.

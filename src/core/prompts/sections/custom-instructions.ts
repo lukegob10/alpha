@@ -9,10 +9,10 @@ import type { SystemPromptSettings } from "../types"
 
 import { LANGUAGES } from "../../../shared/language"
 import {
-	getAllRooDirectoriesForCwd,
+	getAllLegacyConfigDirectoriesForCwd,
 	getAgentsDirectoriesForCwd,
-	getGlobalRooDirectory,
-} from "../../../services/roo-config"
+	getLegacyGlobalConfigDirectory,
+} from "../../../services/config-paths"
 
 /**
  * Safely read a file and return its trimmed content
@@ -253,8 +253,8 @@ async function captureInstructionDirectories(
 ): Promise<InstructionDirectories> {
 	const alphaDirectories = getAlphaDirectoriesForCwd(cwd)
 	const legacyDirectories = enableSubfolderRules
-		? await getAllRooDirectoriesForCwd(cwd)
-		: [getGlobalRooDirectory(), path.join(cwd, ".roo")]
+		? await getAllLegacyConfigDirectoriesForCwd(cwd)
+		: [getLegacyGlobalConfigDirectory(), path.join(cwd, ".roo")]
 
 	const alphaSubfolders = legacyDirectories
 		.map((dir) => {
@@ -495,7 +495,7 @@ export async function addCustomInstructions(
 	mode: string,
 	options: {
 		language?: string
-		rooIgnoreInstructions?: string
+		alphaIgnoreInstructions?: string
 		settings?: SystemPromptSettings
 		/** Already captured sources avoid rereading mutable AGENTS files at a child-launch boundary. */
 		agentInstructionSources?: readonly { kind: "agents"; ref: string; text: string }[]
@@ -551,15 +551,15 @@ export async function addCustomInstructions(
 			usedRuleFile = `legacy rules-${mode} directories`
 		} else if (!modeRuleContent) {
 			// Fall back to existing behavior for legacy files
-			const rooModeRuleFile = `.alpharules-${mode}`
-			modeRuleContent = await safeReadFileWithinRoot(path.join(cwd, rooModeRuleFile), cwd)
+			const legacyRooModeRuleFile = `.alpharules-${mode}`
+			modeRuleContent = await safeReadFileWithinRoot(path.join(cwd, legacyRooModeRuleFile), cwd)
 			if (modeRuleContent) {
-				usedRuleFile = rooModeRuleFile
+				usedRuleFile = legacyRooModeRuleFile
 			} else {
-				const clineModeRuleFile = `.clinerules-${mode}`
-				modeRuleContent = await safeReadFileWithinRoot(path.join(cwd, clineModeRuleFile), cwd)
+				const legacyClineModeRuleFile = `.clinerules-${mode}`
+				modeRuleContent = await safeReadFileWithinRoot(path.join(cwd, legacyClineModeRuleFile), cwd)
 				if (modeRuleContent) {
-					usedRuleFile = clineModeRuleFile
+					usedRuleFile = legacyClineModeRuleFile
 				}
 			}
 		}
@@ -595,8 +595,8 @@ export async function addCustomInstructions(
 		}
 	}
 
-	if (options.rooIgnoreInstructions) {
-		rules.push(options.rooIgnoreInstructions)
+	if (options.alphaIgnoreInstructions) {
+		rules.push(options.alphaIgnoreInstructions)
 	}
 
 	// Add AGENTS.md content if enabled (default: true)

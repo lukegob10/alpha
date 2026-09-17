@@ -2,7 +2,7 @@ import { safeWriteJson } from "../../utils/safeWriteJson"
 import * as path from "path"
 import * as fs from "fs/promises"
 
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { getTaskDirectoryPath } from "../../utils/storage"
@@ -25,7 +25,7 @@ export async function readTaskMessages({
 	taskId,
 	globalStoragePath,
 	requireExisting = false,
-}: ReadTaskMessagesOptions): Promise<ClineMessage[]> {
+}: ReadTaskMessagesOptions): Promise<AlphaMessage[]> {
 	const taskDir = await getTaskDirectoryPath(globalStoragePath, taskId)
 	const filePath = path.join(taskDir, GlobalFileNames.uiMessages)
 	let contents: string
@@ -48,7 +48,7 @@ export async function readTaskMessages({
 }
 
 export type SaveTaskMessagesOptions = {
-	messages: ClineMessage[]
+	messages: AlphaMessage[]
 	taskId: string
 	globalStoragePath: string
 }

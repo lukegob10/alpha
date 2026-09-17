@@ -161,9 +161,9 @@ export async function prepareParallelCommand(
 	const cachedGitSupport = gitIsolationSupport.get(executable)
 	if (invocation.executable === "git" && cachedGitSupport?.identity === binaryIdentity && !cachedGitSupport.supported)
 		return undefined
-	const ignore = task.rooIgnoreController
-	const ignoreContent = ignore?.rooIgnoreContent
-	const protectedController = task.rooProtectedController
+	const ignore = task.alphaIgnoreController
+	const ignoreContent = ignore?.alphaIgnoreContent
+	const protectedController = task.alphaProtectedController
 	const mode = await task.getTaskMode()
 	const provider = task.providerRef.deref()
 	if (!provider || ignoreContent?.trim() || ignore?.validateCommand(command)) return undefined
@@ -187,9 +187,9 @@ export async function prepareParallelCommand(
 			isCommandDeniedByPolicy(policy, command) ||
 			current.disabledTools?.includes("execute_command") ||
 			getCommandDecision(command, current.allowedCommands ?? [], current.deniedCommands ?? []) === "auto_deny" ||
-			task.rooIgnoreController !== ignore ||
-			ignore?.rooIgnoreContent !== ignoreContent ||
-			task.rooProtectedController !== protectedController ||
+			task.alphaIgnoreController !== ignore ||
+			ignore?.alphaIgnoreContent !== ignoreContent ||
+			task.alphaProtectedController !== protectedController ||
 			ignore?.validateCommand(command) ||
 			(await fs.realpath(task.cwd)) !== root ||
 			(await fs.realpath(path.resolve(root, requestedCwd))) !== cwd ||

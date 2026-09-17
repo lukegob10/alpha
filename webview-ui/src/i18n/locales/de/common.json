@@ -34,10 +34,12 @@
 			"save": "Bild speichern",
 			"viewCode": "Code anzeigen",
 			"viewDiagram": "Diagramm anzeigen",
-			"close": "Schließen"
+			"close": "Schließen",
+			"open": "Diagramm öffnen"
 		},
 		"modal": {
-			"codeTitle": "Mermaid-Code"
+			"codeTitle": "Mermaid-Code",
+			"title": "Meerjungfrau-Diagramm"
 		},
 		"tabs": {
 			"diagram": "Diagramm",
@@ -110,5 +112,7 @@
 	"costs": {
 		"own": "Eigen",
 		"subtasks": "Unteraufgaben"
-	}
+	},
+	"dismiss": "Verwerfen",
+	"dismissAndDontShowAgain": "Verwerfen und nicht mehr anzeigen"
 }

@@ -1,16 +1,16 @@
 import { truncateOutput, applyRunLengthEncoding } from "../misc/extract-text"
 
 import type {
-	RooTerminalProvider,
-	RooTerminal,
-	RooTerminalCallbacks,
-	RooTerminalProcess,
-	RooTerminalProcessResultPromise,
+	AlphaTerminalProvider,
+	AlphaTerminal,
+	AlphaTerminalCallbacks,
+	AlphaTerminalProcess,
+	AlphaTerminalProcessResultPromise,
 	ExitCodeDetails,
 } from "./types"
 
-export abstract class BaseTerminal implements RooTerminal {
-	public readonly provider: RooTerminalProvider
+export abstract class BaseTerminal implements AlphaTerminal {
+	public readonly provider: AlphaTerminalProvider
 	public readonly id: number
 	public readonly initialCwd: string
 
@@ -19,10 +19,10 @@ export abstract class BaseTerminal implements RooTerminal {
 	protected streamClosed: boolean
 
 	public taskId?: string
-	public process?: RooTerminalProcess
-	public completedProcesses: RooTerminalProcess[] = []
+	public process?: AlphaTerminalProcess
+	public completedProcesses: AlphaTerminalProcess[] = []
 
-	constructor(provider: RooTerminalProvider, id: number, cwd: string) {
+	constructor(provider: AlphaTerminalProvider, id: number, cwd: string) {
 		this.provider = provider
 		this.id = id
 		this.initialCwd = cwd
@@ -37,7 +37,7 @@ export abstract class BaseTerminal implements RooTerminal {
 
 	abstract isClosed(): boolean
 
-	abstract runCommand(command: string, callbacks: RooTerminalCallbacks): RooTerminalProcessResultPromise
+	abstract runCommand(command: string, callbacks: AlphaTerminalCallbacks): AlphaTerminalProcessResultPromise
 
 	/**
 	 * Sets the active stream for this terminal and notifies the process
@@ -119,7 +119,7 @@ export abstract class BaseTerminal implements RooTerminal {
 	 * Gets all processes with unretrieved output
 	 * @returns Array of processes with unretrieved output
 	 */
-	public getProcessesWithOutput(): RooTerminalProcess[] {
+	public getProcessesWithOutput(): AlphaTerminalProcess[] {
 		// Clean the queue first to remove any processes without output
 		this.cleanCompletedProcessQueue()
 		return [...this.completedProcesses]

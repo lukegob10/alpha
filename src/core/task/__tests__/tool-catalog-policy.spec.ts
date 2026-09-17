@@ -8,7 +8,7 @@ vi.mock("../../../services/code-index/manager", () => ({
 
 import { createToolPolicySnapshot } from "../../agent/ToolPolicy"
 import { validateToolUse } from "../../tools/validateToolUse"
-import type { ClineProvider } from "../../webview/ClineProvider"
+import type { AlphaProvider } from "../../webview/AlphaProvider"
 import { buildNativeToolsArrayWithRestrictions } from "../build-tools"
 
 describe("effective tool catalog policy", () => {
@@ -21,7 +21,7 @@ describe("effective tool catalog policy", () => {
 	)
 
 	it("returns exactly the captured policy-filtered provider schemas", async () => {
-		const provider = { context: {}, getMcpHub: () => undefined } as unknown as ClineProvider
+		const provider = { context: {}, getMcpHub: () => undefined } as unknown as AlphaProvider
 		const result = await buildNativeToolsArrayWithRestrictions({
 			provider,
 			cwd: process.cwd(),

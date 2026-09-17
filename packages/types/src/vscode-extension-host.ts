@@ -1,12 +1,12 @@
 import { z } from "zod"
 
-import type { GlobalSettings, RooCodeSettings } from "./global-settings.js"
+import type { GlobalSettings, AlphaCodeSettings } from "./global-settings.js"
 import type { ProviderSettings, ProviderSettingsEntry } from "./provider-settings.js"
 import type { HistoryItem } from "./history.js"
 import type { ModeConfig, PromptComponent } from "./mode.js"
 import type { TelemetrySetting } from "./telemetry.js"
 import type { Experiments } from "./experiment.js"
-import type { ClineMessage, QueuedMessage } from "./message.js"
+import type { AlphaMessage, QueuedMessage } from "./message.js"
 import type { CurrentTaskView, LiveTaskMetadata } from "./task.js"
 import type { ManagedAgentTreeProjection } from "./managed-agent-tree.js"
 import {
@@ -271,7 +271,7 @@ export interface ChatCommandResult {
 
 /**
  * ExtensionMessage
- * Extension -> Webview | CLI
+ * Extension -> Webview
  */
 export interface ExtensionMessage {
 	type:
@@ -400,7 +400,7 @@ export interface ExtensionMessage {
 		isActive: boolean
 		path?: string
 	}>
-	clineMessage?: ClineMessage
+	clineMessage?: AlphaMessage
 	/** Transcript sequence shared with transcript snapshots for ordered incremental delivery. */
 	clineMessagesSeq?: number
 	routerModels?: RouterModels
@@ -598,7 +598,7 @@ export type ExtensionState = Pick<
 > & {
 	lockApiConfigAcrossModes?: boolean
 	version: string
-	clineMessages: ClineMessage[]
+	clineMessages: AlphaMessage[]
 	currentTaskId?: string
 	currentTaskItem?: HistoryItem
 	currentTaskTodos?: TodoItem[] // Initial todos for the current task
@@ -691,10 +691,10 @@ export interface Command {
 
 /**
  * WebviewMessage
- * Webview | CLI -> Extension
+ * Webview -> Extension
  */
 
-export type ClineAskResponse = "yesButtonClicked" | "noButtonClicked" | "messageResponse" | "objectResponse"
+export type AlphaAskResponse = "yesButtonClicked" | "noButtonClicked" | "messageResponse" | "objectResponse"
 
 export type AudioType = "notification" | "celebration" | "progress_loop"
 
@@ -907,7 +907,7 @@ interface WebviewMessageBase {
 	disabled?: boolean
 	context?: string
 	dataUri?: string
-	askResponse?: ClineAskResponse
+	askResponse?: AlphaAskResponse
 	apiConfiguration?: ProviderSettings
 	images?: string[]
 	bool?: boolean
@@ -1015,9 +1015,9 @@ interface WebviewMessageBase {
 		codebaseIndexVercelAiGatewayApiKey?: string
 		codebaseIndexOpenRouterApiKey?: string
 	}
-	updatedSettings?: RooCodeSettings
+	updatedSettings?: AlphaCodeSettings
 	/** Task configuration applied via `createTask()`. */
-	taskConfiguration?: RooCodeSettings
+	taskConfiguration?: AlphaCodeSettings
 	// Worktree properties
 	worktreePath?: string
 	worktreeBranch?: string
@@ -1107,7 +1107,7 @@ export interface LanguageModelChatSelector {
 	id?: string
 }
 
-export interface ClineSayTool {
+export interface AlphaSayTool {
 	ticketActivity?: TicketActivity
 	github?: GitHubToolApproval
 	tool:
@@ -1214,7 +1214,7 @@ export interface ClineSayTool {
 	noActiveAgents?: boolean
 }
 
-export interface ClineAskUseMcpServer {
+export interface AlphaAskUseMcpServer {
 	serverName: string
 	type: "use_mcp_tool" | "access_mcp_resource"
 	toolName?: string
@@ -1223,16 +1223,31 @@ export interface ClineAskUseMcpServer {
 	response?: string
 }
 
-export interface ClineApiReqInfo {
+export interface AlphaApiReqInfo {
 	request?: string
 	tokensIn?: number
 	tokensOut?: number
 	cacheWrites?: number
 	cacheReads?: number
 	cost?: number
-	cancelReason?: ClineApiReqCancelReason
+	cancelReason?: AlphaApiReqCancelReason
 	streamingFailedMessage?: string
 	apiProtocol?: "anthropic" | "openai"
 }
 
-export type ClineApiReqCancelReason = "streaming_failed" | "user_cancelled"
+export type AlphaApiReqCancelReason = "streaming_failed" | "user_cancelled"
+
+/** @deprecated Use AlphaAskResponse. Retained for existing API consumers. */
+export type { AlphaAskResponse as ClineAskResponse }
+
+/** @deprecated Use AlphaSayTool. Retained for existing API consumers. */
+export type { AlphaSayTool as ClineSayTool }
+
+/** @deprecated Use AlphaAskUseMcpServer. Retained for existing API consumers. */
+export type { AlphaAskUseMcpServer as ClineAskUseMcpServer }
+
+/** @deprecated Use AlphaApiReqInfo. Retained for existing API consumers. */
+export type { AlphaApiReqInfo as ClineApiReqInfo }
+
+/** @deprecated Use AlphaApiReqCancelReason. Retained for existing API consumers. */
+export type { AlphaApiReqCancelReason as ClineApiReqCancelReason }

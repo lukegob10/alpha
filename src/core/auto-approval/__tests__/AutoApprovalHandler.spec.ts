@@ -1,4 +1,4 @@
-import { GlobalState, ClineMessage } from "@alpha-code/types"
+import { GlobalState, AlphaMessage } from "@alpha-code/types"
 
 import { AutoApprovalHandler } from "../AutoApprovalHandler"
 
@@ -28,7 +28,7 @@ describe("AutoApprovalHandler", () => {
 		it("retains the newly approved request in the next allowance", async () => {
 			mockState.allowedMaxRequests = 1
 			mockAskForApproval.mockResolvedValue({ response: "yesButtonClicked" })
-			const messages: ClineMessage[] = [1, 2].map((ts) => ({
+			const messages: AlphaMessage[] = [1, 2].map((ts) => ({
 				type: "say",
 				say: "api_req_started",
 				text: "{}",
@@ -49,7 +49,7 @@ describe("AutoApprovalHandler", () => {
 		it("counts the current request once when the task already recorded its start", async () => {
 			mockState.allowedMaxRequests = 1
 			mockAskForApproval.mockResolvedValue({ response: "noButtonClicked" })
-			const messages: ClineMessage[] = [{ type: "say", say: "api_req_started", text: "{}", ts: 1 }]
+			const messages: AlphaMessage[] = [{ type: "say", say: "api_req_started", text: "{}", ts: 1 }]
 			expect(
 				await handler.checkAutoApprovalLimits(mockState, messages, mockAskForApproval, {
 					currentRequestRecorded: true,
@@ -65,7 +65,7 @@ describe("AutoApprovalHandler", () => {
 		})
 
 		it("should proceed when no limits are set", async () => {
-			const messages: ClineMessage[] = []
+			const messages: AlphaMessage[] = []
 			const result = await handler.checkAutoApprovalLimits(mockState, messages, mockAskForApproval)
 
 			expect(result.shouldProceed).toBe(true)
@@ -76,7 +76,7 @@ describe("AutoApprovalHandler", () => {
 		it("should check request limit before cost limit", async () => {
 			mockState.allowedMaxRequests = 1
 			mockState.allowedMaxCost = 10
-			const messages: ClineMessage[] = []
+			const messages: AlphaMessage[] = []
 
 			// First call should be under limit (count = 1)
 			const result1 = await handler.checkAutoApprovalLimits(mockState, messages, mockAskForApproval)
@@ -106,7 +106,7 @@ describe("AutoApprovalHandler", () => {
 		})
 
 		it("should calculate request count from messages", async () => {
-			const messages: ClineMessage[] = []
+			const messages: AlphaMessage[] = []
 
 			// First check - no messages yet, count should be 1 (for current request)
 			await handler.checkAutoApprovalLimits(mockState, messages, mockAskForApproval)
@@ -126,7 +126,7 @@ describe("AutoApprovalHandler", () => {
 		})
 
 		it("should ask for approval when limit is exceeded", async () => {
-			const messages: ClineMessage[] = []
+			const messages: AlphaMessage[] = []
 
 			// Add 3 API request messages (to simulate 3 requests made)
 			for (let i = 0; i < 3; i++) {
@@ -146,7 +146,7 @@ describe("AutoApprovalHandler", () => {
 		})
 
 		it("should reset count when user approves", async () => {
-			const messages: ClineMessage[] = []
+			const messages: AlphaMessage[] = []
 
 			// Add messages to exceed limit
 			for (let i = 0; i < 3; i++) {
@@ -169,7 +169,7 @@ describe("AutoApprovalHandler", () => {
 		})
 
 		it("should not proceed when user rejects", async () => {
-			const messages: ClineMessage[] = []
+			const messages: AlphaMessage[] = []
 
 			// Add messages to exceed limit
 			for (let i = 0; i < 3; i++) {
@@ -191,7 +191,7 @@ describe("AutoApprovalHandler", () => {
 		})
 
 		it("should calculate cost from messages", async () => {
-			const messages: ClineMessage[] = []
+			const messages: AlphaMessage[] = []
 
 			mockGetApiMetrics.mockReturnValue({ totalCost: 3.5 })
 			const result = await handler.checkAutoApprovalLimits(mockState, messages, mockAskForApproval)
@@ -202,7 +202,7 @@ describe("AutoApprovalHandler", () => {
 		})
 
 		it("should ask for approval when cost limit is exceeded", async () => {
-			const messages: ClineMessage[] = []
+			const messages: AlphaMessage[] = []
 
 			mockGetApiMetrics.mockReturnValue({ totalCost: 5.5 })
 			mockAskForApproval.mockResolvedValue({ response: "yesButtonClicked" })
@@ -219,7 +219,7 @@ describe("AutoApprovalHandler", () => {
 		})
 
 		it("should handle floating-point precision correctly", async () => {
-			const messages: ClineMessage[] = []
+			const messages: AlphaMessage[] = []
 
 			// Test edge case where cost is exactly at limit (should not trigger)
 			mockGetApiMetrics.mockReturnValue({ totalCost: 5.0 })
@@ -239,7 +239,7 @@ describe("AutoApprovalHandler", () => {
 		})
 
 		it("should reset cost tracking on approval", async () => {
-			const messages: ClineMessage[] = [
+			const messages: AlphaMessage[] = [
 				{ type: "say", say: "api_req_started", text: '{"cost": 3.0}', ts: 1000 },
 				{ type: "say", say: "api_req_started", text: '{"cost": 3.0}', ts: 2000 },
 			]
@@ -271,7 +271,7 @@ describe("AutoApprovalHandler", () => {
 		})
 
 		it("should track multiple cost resets correctly", async () => {
-			const messages: ClineMessage[] = []
+			const messages: AlphaMessage[] = []
 
 			// First cost limit hit
 			messages.push({ type: "say", say: "api_req_started", text: '{"cost": 6.0}', ts: 1000 })
@@ -306,7 +306,7 @@ describe("AutoApprovalHandler", () => {
 		it("should handle both request and cost limits", async () => {
 			mockState.allowedMaxRequests = 2
 			mockState.allowedMaxCost = 10.0
-			const messages: ClineMessage[] = []
+			const messages: AlphaMessage[] = []
 
 			mockGetApiMetrics.mockReturnValue({ totalCost: 3.0 })
 
@@ -340,7 +340,7 @@ describe("AutoApprovalHandler", () => {
 		it("should reset tracking", async () => {
 			mockState.allowedMaxRequests = 5
 			mockState.allowedMaxCost = 10.0
-			const messages: ClineMessage[] = []
+			const messages: AlphaMessage[] = []
 
 			// Add some messages
 			for (let i = 0; i < 3; i++) {

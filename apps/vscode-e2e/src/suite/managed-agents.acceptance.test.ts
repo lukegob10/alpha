@@ -6,12 +6,12 @@ import { promisify } from "util"
 
 import {
 	managedAgentTreeProjectionSchema,
-	RooCodeEventName,
-	type ClineMessage,
+	AlphaCodeEventName,
+	type AlphaMessage,
 	type LiveTaskMetadata,
 	type ManagedAgentTreeProjection,
-	type RooCodeAPI,
-	type RooCodeSettings,
+	type AlphaCodeAPI,
+	type AlphaCodeSettings,
 	type SubagentChangeSetActionCapability,
 	type SubagentChangeSetActionResult,
 	type SubagentGroupState,
@@ -374,7 +374,7 @@ interface ManagedAgentHostProvider {
 	showTaskWithId(taskId: string): Promise<void>
 	getLiveTask(taskId: string):
 		| {
-				taskAsk?: ClineMessage
+				taskAsk?: AlphaMessage
 				isInitialized?: boolean
 				isTaskLoopActive?: boolean
 				isWaitingForFirstChunk?: boolean
@@ -383,7 +383,7 @@ interface ManagedAgentHostProvider {
 				activeAsk?: { type: string; ts: number }
 				askResponse?: string
 				messageQueueService?: { isEmpty(): boolean }
-				clineMessages?: ClineMessage[]
+				clineMessages?: AlphaMessage[]
 				approveAsk(): void
 		  }
 		| undefined
@@ -394,7 +394,7 @@ type AgentTarget = {
 	agent: SubagentGroupState["agents"][number]
 }
 
-const getHostProvider = (api: RooCodeAPI): ManagedAgentHostProvider => {
+const getHostProvider = (api: AlphaCodeAPI): ManagedAgentHostProvider => {
 	const provider = (api as unknown as { sidebarProvider?: ManagedAgentHostProvider }).sidebarProvider
 	assert.ok(provider, "The extension API did not expose its host provider to the extension-host test")
 	return provider
@@ -540,7 +540,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 		}
 
 		const scriptedAI = new ManagedAgentScriptedAI()
-		const configuration: RooCodeSettings = {
+		const configuration: AlphaCodeSettings = {
 			apiProvider: "fake-ai",
 			fakeAi: scriptedAI,
 			currentApiConfigName: "managed-agent-scripted-e2e",
@@ -577,7 +577,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 		const completionPromptTasks = new Set<string>()
 		const toolFailures: string[] = []
 		const lastGroupStates = new Map<string, string>()
-		const onMessage = (event: { taskId: string; action: "created" | "updated"; message: ClineMessage }) => {
+		const onMessage = (event: { taskId: string; action: "created" | "updated"; message: AlphaMessage }) => {
 			if (event.message.type === "ask") {
 				console.log(
 					`[managed-agent-e2e] ask task=${event.taskId} kind=${event.message.ask ?? "unknown"} text=${JSON.stringify(event.message.text ?? "")}`,
@@ -622,10 +622,10 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			console.error(`[managed-agent-e2e] tool failure ${failure}`)
 		}
 
-		api.on(RooCodeEventName.Message, onMessage)
-		api.on(RooCodeEventName.TaskSpawned, onSpawned)
-		api.on(RooCodeEventName.TaskCompleted, onCompleted)
-		api.on(RooCodeEventName.TaskToolFailed, onToolFailed)
+		api.on(AlphaCodeEventName.Message, onMessage)
+		api.on(AlphaCodeEventName.TaskSpawned, onSpawned)
+		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		api.on(AlphaCodeEventName.TaskToolFailed, onToolFailed)
 
 		let rootTaskId: string | undefined
 		const previousPath = process.env.PATH
@@ -807,10 +807,10 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				interval: 50,
 			})
 		} finally {
-			api.off(RooCodeEventName.Message, onMessage)
-			api.off(RooCodeEventName.TaskSpawned, onSpawned)
-			api.off(RooCodeEventName.TaskCompleted, onCompleted)
-			api.off(RooCodeEventName.TaskToolFailed, onToolFailed)
+			api.off(AlphaCodeEventName.Message, onMessage)
+			api.off(AlphaCodeEventName.TaskSpawned, onSpawned)
+			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+			api.off(AlphaCodeEventName.TaskToolFailed, onToolFailed)
 			if (rootTaskId && !completed.has(rootTaskId)) {
 				await provider.showTaskWithId(rootTaskId).catch(() => undefined)
 				await api.cancelCurrentTask().catch(() => undefined)

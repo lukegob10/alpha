@@ -41,7 +41,9 @@
 		"experimental": "Experimentell",
 		"language": "Sprache",
 		"about": "Über Alpha",
-		"skills": "Skills"
+		"skills": "Skills",
+		"agents": "Agenten",
+		"github": "GitHub"
 	},
 	"about": {
 		"bugReport": {
@@ -209,7 +211,8 @@
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
 			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
 			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
-			"localIndexPathRequired": "Local index path is required"
+			"localIndexPathRequired": "Local index path is required",
+			"embeddingRateLimitSecondsRange": "Die Verzögerung der Einbettungsanfrage muss zwischen 0,1 und 60 Sekunden liegen."
 		},
 		"optional": "optional",
 		"advancedConfigLabel": "Erweiterte Konfiguration",
@@ -230,7 +233,9 @@
 		"localIndexPathLabel": "Local Index Path",
 		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
 		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
-		"savedSecretPlaceholder": "Saved value hidden"
+		"savedSecretPlaceholder": "Saved value hidden",
+		"embeddingRateLimitLabel": "Einbettungsanfragerate begrenzen",
+		"embeddingRateLimitDescription": "Fügt eine Verzögerung zwischen der Einbettung von API-Anfragen während der Indizierung hinzu. Erhöhen Sie diesen Wert, wenn Ihr Einbettungsanbieter eine ratenbegrenzende Codebasisindizierung vorsieht."
 	},
 	"autoApprove": {
 		"toggleShortcut": "Du kannst <SettingsLink>in deinen IDE-Einstellungen</SettingsLink> einen globalen Shortcut für diese Einstellung konfigurieren.",
@@ -306,6 +311,10 @@
 		},
 		"maxLimits": {
 			"description": "Anfragen bis zu diesen Grenzwerten automatisch stellen, bevor um Genehmigung zur Fortsetzung gebeten wird."
+		},
+		"subagents": {
+			"label": "Unteragenten",
+			"description": "Erlauben Sie Alpha, schreibgeschützte Unteragentengruppen zu starten, ohne dass eine Genehmigung erforderlich ist. Der Lesezugriff muss ebenfalls automatisch genehmigt werden."
 		}
 	},
 	"providers": {
@@ -385,7 +394,8 @@
 			"hint": "Bitte öffne die Einstellungen erneut, um die neuesten Modelle zu sehen.",
 			"loading": "Modellliste wird aktualisiert...",
 			"success": "Modellliste erfolgreich aktualisiert!",
-			"error": "Fehler beim Aktualisieren der Modellliste. Bitte versuche es erneut."
+			"error": "Fehler beim Aktualisieren der Modellliste. Bitte versuche es erneut.",
+			"missingConfig": "Geben Sie die erforderliche Anbieterkonfiguration ein, bevor Sie Modelle aktualisieren."
 		},
 		"getRequestyApiKey": "Requesty API-Schlüssel erhalten",
 		"getRequestyBaseUrl": "Basis-URL",
@@ -549,7 +559,8 @@
 			"high": "Hoch",
 			"xhigh": "Sehr hoch",
 			"medium": "Mittel",
-			"low": "Niedrig"
+			"low": "Niedrig",
+			"max": "Maximum"
 		},
 		"verbosity": {
 			"label": "Ausgabe-Ausführlichkeit",
@@ -565,7 +576,55 @@
 			"placeholder": "Standard: claude",
 			"maxTokensLabel": "Maximale Ausgabe-Tokens",
 			"maxTokensDescription": "Maximale Anzahl an Ausgabe-Tokens für Claude Code-Antworten. Standard ist 8000."
-		}
+		},
+		"vertexStreamingEnabledLabel": "Streaming-Antworten aktivieren",
+		"vertexStreamingEnabledDescription": "Deaktivieren Sie dies, wenn ein Gateway oder Modell kein Streaming unterstützt. Die Antworten werden nach Abschluss angezeigt.",
+		"vscodeLmLoading": "Die in diesem VS Code-Fenster verfügbaren Sprachmodelle werden geladen...",
+		"vscodeLmNoModels": "In diesem VS Code-Fenster sind keine Sprachmodelle verfügbar. Melden Sie sich hier bei GitHub Copilot an, aktivieren Sie die benötigten Modelle mit „Chat: Manage Language Models“ und aktualisieren Sie sie dann.",
+		"vscodeLmRefresh": "Modelle aktualisieren",
+		"vscodeLmUnavailable": "Das ausgewählte Modell ist in diesem VS Code-Fenster nicht verfügbar. Wählen Sie ein von VS Code zurückgegebenes Modell oder aktivieren Sie es mit „Chat: Manage Language Models“.",
+		"vscodeLmContextSize": {
+			"label": "Kontextfenster",
+			"default": "Standard ({{contextSize}}-Eingabe-Tokens)",
+			"extended": "Erweitert ({{contextSize}}-Eingabe-Tokens)",
+			"description": "Wählen Sie das Eingabe-Token-Budget aus, das für dieses Modell an GitHub Copilot gesendet wird. Erweiterter Kontext kann mehr Premium-Anfragen verbrauchen."
+		},
+		"googleCloudProjectId": "Google Cloud-Projekt-ID",
+		"googleCloudRegion": "Google Cloud-Region",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "Suchen oder geben Sie eine Region ein",
+			"noMatchFound": "Keine passende Region gefunden",
+			"useCustomRegion": "Benutzerdefiniert verwenden: {{region}}"
+		},
+		"googleCloudCredentials": "Google Cloud-Anmeldeinformationen JSON",
+		"googleCloudKeyFile": "Google Cloud-Schlüsseldatei",
+		"googleCloudSetup": {
+			"title": "Google Cloud-Setup",
+			"step1": "Vertex AI und Modellzugriff aktivieren",
+			"step2": "Standardanmeldeinformationen für die Anwendung einrichten",
+			"step3": "Erstellen Sie einen Dienstkontoschlüssel"
+		},
+		"vertexGatewayBaseUrl": "Vertex Gateway-Basis URL",
+		"vertexGatewayCaBundlePath": "Vertex Gateway CA Bündelpfad",
+		"vertexGatewayHelixCommand": "Vertex Gateway Helix Befehl",
+		"vertexGatewayHelixParseMode": "Vertex Gateway Helix Parse-Modus",
+		"vertexGatewayHelixParseModeRawStdout": "Raw stdout",
+		"vertexGatewayHelixParseModeJsonField": "JSON-Feld",
+		"vertexGatewayHelixTokenKey": "Vertex Gateway Helix Token-Schlüssel",
+		"vertexGatewayTokenRefreshMinutes": "Vertex Gateway-Token-Aktualisierungsminuten",
+		"vertexGatewayModelRoutingMap": "Vertex Gateway-Modell-Routing-Karte",
+		"vertexGatewayModelRoutingMapDescription": "JSON-Objekt, kodiert durch Modell ID. Bei den Werten kann es sich um Überschreibungszeichenfolgen oder Objekte für ältere Modelle mit projectId, location, modelOverride und extraHeaders handeln.",
+		"stellarDescription": "Stellt eine Verbindung zum internen Stellar OpenAI-kompatiblen Modell-Gateway her. Der API-Schlüssel wird mit Helix automatisch abgerufen und niemals gespeichert.",
+		"stellarBaseUrl": "Stellar Basis URL",
+		"stellarCaBundlePath": "Stellar PEM CA Bündelpfad",
+		"stellarHelixCommand": "Stellar Helix Befehl",
+		"stellarHelixParseMode": "Stellar Helix Analysemodus",
+		"stellarHelixParseModeRawStdout": "Raw stdout",
+		"stellarHelixParseModeJsonField": "JSON-Feld",
+		"stellarHelixTokenKey": "Stellar Helix Token-Schlüssel",
+		"stellarTokenRefreshMinutes": "Stellar Token-Aktualisierungsminuten",
+		"stellarStreamingEnabledLabel": "Streaming-Antworten aktivieren",
+		"stellarStreamingEnabledDescription": "Deaktivieren Sie dies, wenn die Stellar-Bereitstellung kein Streaming unterstützt. Die Antworten werden nach Abschluss angezeigt."
 	},
 	"checkpoints": {
 		"timeout": {
@@ -905,7 +964,11 @@
 		"providerNotAllowed": "Anbieter '{{provider}}' ist von deiner Organisation nicht erlaubt",
 		"modelNotAllowed": "Modell '{{model}}' ist für Anbieter '{{provider}}' von deiner Organisation nicht erlaubt",
 		"profileInvalid": "Dieses Profil enthält einen Anbieter oder ein Modell, das von deiner Organisation nicht erlaubt ist",
-		"qwenCodeOauthPath": "Du musst einen gültigen OAuth-Anmeldedaten-Pfad angeben"
+		"qwenCodeOauthPath": "Du musst einen gültigen OAuth-Anmeldedaten-Pfad angeben",
+		"googleCloud": "Sie müssen ein Google Cloud-Projekt ID und eine Region angeben.",
+		"vertexGateway": "Das Vertex-Gateway erfordert einen Basis-URL-, CA-Bundle-Pfad und einen Helix-Befehl.",
+		"vertexGatewayModelRoutingMap": "Vertex Gateway Model Routing Map muss ein JSON-Objekt mit String-Modell-IDs sein.",
+		"stellar": "Stellar erfordert einen gültigen Basis-Paketpfad URL und PEM CA."
 	},
 	"placeholders": {
 		"apiKey": "API-Schlüssel eingeben...",
@@ -967,6 +1030,10 @@
 		"requireCtrlEnterToSend": {
 			"label": "{{primaryMod}}+Enter zum Senden erfordern",
 			"description": "Wenn aktiviert, musst du {{primaryMod}}+Enter drücken, um Nachrichten zu senden, anstatt nur Enter"
+		},
+		"maxConcurrentTasks": {
+			"label": "Maximale parallele Aufgaben",
+			"description": "Die Anzahl der Live-Aufgaben, die gleichzeitig ausgeführt werden können. Fehlgeschlagene und abgeschlossene Aufgaben werden nicht auf dieses Limit angerechnet."
 		}
 	},
 	"skills": {
@@ -1025,5 +1092,39 @@
 		"enabled": "Aktiviert",
 		"inspectSkill": "Ansehen",
 		"builtinDescription": "In Alpha enthalten. Änderungen werden beim Speichern der Einstellungen übernommen. Gleichnamige Fähigkeiten im Arbeitsbereich und persönliche Fähigkeiten haben Vorrang; das Deaktivieren einer integrierten Fähigkeit deaktiviert deine eigenen Varianten nicht."
+	},
+	"agents": {
+		"description": "Wählen Sie aus, welche gespeicherten Anbieterprofile Alpha für Subagenten verwendet. Rollenüberschreibungen haben Vorrang vor der Standardaufgabe, dann wird die übergeordnete Aufgabe geerbt.",
+		"searchPlaceholder": "Anbieterprofile durchsuchen...",
+		"noProfilesFound": "Keine passenden Anbieterprofile",
+		"unavailableProfile": "Nicht verfügbares Profil ({{id}})",
+		"staleWarning": "Dieses gespeicherte Profil ist nicht verfügbar. Neue Unteragenten verwenden das übergeordnete Profil, bis Sie ein anderes Profil auswählen.",
+		"defaultProfile": {
+			"label": "Standard-Subagentenprofil",
+			"inheritParent": "Übergeordnetes Element erben",
+			"description": "Wird verwendet, wenn eine Rolle keine eigene Profilüberschreibung hat."
+		},
+		"roles": {
+			"title": "Rollenüberschreibungen",
+			"description": "Leiten Sie optional jede Agentenrolle über ein anderes gespeichertes Anbieterprofil weiter.",
+			"useDefault": "Standardmäßig verwenden",
+			"explore": {
+				"label": "Explorer-Profil",
+				"description": "Optionale Profilüberschreibung für Repository-Explorationsagenten."
+			},
+			"review": {
+				"label": "Prüferprofil",
+				"description": "Optionale Profilüberschreibung für Prüfer."
+			},
+			"worker": {
+				"label": "Arbeiterprofil",
+				"description": "Optionale Profilüberschreibung für isolierte Bearbeitungsarbeiter."
+			}
+		}
+	},
+	"github": {
+		"tokenLabel": "GitHub-Token",
+		"tokenPlaceholder": "ghp_...",
+		"tokenDescription": "Sicher im VS Code-Geheimspeicher gespeichert. Wird vom nativen Tool GitHub API für Pull-Requests, Prüfungen, Kommentare und Zusammenführungen verwendet."
 	}
 }

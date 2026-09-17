@@ -34,10 +34,12 @@
 			"save": "Lưu hình ảnh",
 			"viewCode": "Xem mã",
 			"viewDiagram": "Xem biểu đồ",
-			"close": "Đóng"
+			"close": "Đóng",
+			"open": "Mở sơ đồ"
 		},
 		"modal": {
-			"codeTitle": "Mã Mermaid"
+			"codeTitle": "Mã Mermaid",
+			"title": "sơ đồ nàng tiên cá"
 		},
 		"tabs": {
 			"diagram": "Biểu đồ",
@@ -110,5 +112,7 @@
 	"costs": {
 		"own": "Riêng",
 		"subtasks": "Nhiệm vụ con"
-	}
+	},
+	"dismiss": "Miễn nhiệm",
+	"dismissAndDontShowAgain": "Loại bỏ và không hiển thị lại"
 }

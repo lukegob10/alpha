@@ -28,10 +28,10 @@ import { execa } from "execa"
 import psTree from "ps-tree"
 import { ExecaTerminalProcess } from "../ExecaTerminalProcess"
 import { BaseTerminal } from "../BaseTerminal"
-import type { RooTerminal } from "../types"
+import type { AlphaTerminal } from "../types"
 
 describe("ExecaTerminalProcess", () => {
-	let mockTerminal: RooTerminal
+	let mockTerminal: AlphaTerminal
 	let terminalProcess: ExecaTerminalProcess
 	let originalEnv: NodeJS.ProcessEnv
 
@@ -59,7 +59,7 @@ describe("ExecaTerminalProcess", () => {
 			getUnretrievedOutput: vitest.fn().mockReturnValue(""),
 			getLastCommand: vitest.fn().mockReturnValue(""),
 			cleanCompletedProcessQueue: vitest.fn(),
-		} as unknown as RooTerminal
+		} as unknown as AlphaTerminal
 		terminalProcess = new ExecaTerminalProcess(mockTerminal)
 	})
 

@@ -1,4 +1,4 @@
-import { RooCodeEventName, TodoItem } from "@alpha-code/types"
+import { AlphaCodeEventName, TodoItem } from "@alpha-code/types"
 
 import { AttemptCompletionToolUse } from "../../../shared/tools"
 
@@ -140,7 +140,7 @@ describe("attemptCompletionTool", () => {
 			mockTask.emitFinalTokenUsageUpdate?.()
 			mockCaptureTaskCompleted("task_1")
 			;(mockTask.emit as any)?.(
-				RooCodeEventName.TaskCompleted,
+				AlphaCodeEventName.TaskCompleted,
 				"task_1",
 				mockTask.getTokenUsage?.() ?? {},
 				mockTask.toolUsage ?? {},
@@ -171,7 +171,7 @@ describe("attemptCompletionTool", () => {
 
 		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("command is still running"))
 		expect(mockTask.presentCompletionResult).not.toHaveBeenCalled()
-		expect(mockTask.emit).not.toHaveBeenCalledWith(RooCodeEventName.TaskCompleted, expect.anything())
+		expect(mockTask.emit).not.toHaveBeenCalledWith(AlphaCodeEventName.TaskCompleted, expect.anything())
 	})
 
 	it.each(["pending", "failed"])(
@@ -670,7 +670,7 @@ describe("attemptCompletionTool", () => {
 				expect(mockPushToolResult).toHaveBeenCalledWith("")
 				expect((mockTask as any).subagentCompletionOutcome).toBe("completed")
 				expect(mockTask.emit).toHaveBeenCalledWith(
-					RooCodeEventName.TaskCompleted,
+					AlphaCodeEventName.TaskCompleted,
 					"task_1",
 					expect.anything(),
 					expect.anything(),
@@ -751,7 +751,7 @@ describe("attemptCompletionTool", () => {
 
 				expect((mockTask as any).subagentCompletionOutcome).toBe("blocked")
 				expect(mockTask.emit).toHaveBeenCalledWith(
-					RooCodeEventName.TaskCompleted,
+					AlphaCodeEventName.TaskCompleted,
 					"task_1",
 					expect.anything(),
 					expect.anything(),
@@ -789,7 +789,7 @@ describe("attemptCompletionTool", () => {
 				expect(mockTask.markCompleted).toHaveBeenCalled()
 				expect(mockCaptureTaskCompleted).toHaveBeenCalledWith("task_1")
 				expect(mockTask.emit).toHaveBeenCalledWith(
-					RooCodeEventName.TaskCompleted,
+					AlphaCodeEventName.TaskCompleted,
 					"task_1",
 					expect.anything(),
 					expect.anything(),
@@ -845,7 +845,7 @@ describe("attemptCompletionTool", () => {
 					expect(mockHandleError).not.toHaveBeenCalled()
 					expect(mockCaptureTaskCompleted).not.toHaveBeenCalled()
 					expect(mockTask.emit).not.toHaveBeenCalledWith(
-						RooCodeEventName.TaskCompleted,
+						AlphaCodeEventName.TaskCompleted,
 						expect.anything(),
 						expect.anything(),
 						expect.anything(),

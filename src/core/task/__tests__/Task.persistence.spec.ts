@@ -15,7 +15,7 @@ import {
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../Task"
-import { ClineProvider } from "../../webview/ClineProvider"
+import { AlphaProvider } from "../../webview/AlphaProvider"
 import { ContextProxy } from "../../config/ContextProxy"
 import { createAgentLifecycleSnapshot, reduceAgentLifecycleEvent } from "../../agent/lifecycle/reducer"
 import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
@@ -255,7 +255,7 @@ vi.mock("../../environment/getEnvironmentDetails", () => ({
 		.mockImplementation(async () => ({ details: "", commit: vi.fn(), release: vi.fn() })),
 }))
 
-vi.mock("../../ignore/RooIgnoreController")
+vi.mock("../../ignore/AlphaIgnoreController")
 
 vi.mock("../../condense", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, unknown>
@@ -317,7 +317,7 @@ function createReadFileSurface(execute: ToolDescriptor["execute"]) {
 // ─── Test suite ──────────────────────────────────────────────────────────────
 
 describe("Task persistence", () => {
-	let mockProvider: ClineProvider & Record<string, any>
+	let mockProvider: AlphaProvider & Record<string, any>
 	let mockApiConfig: ProviderSettings
 	let mockOutputChannel: vscode.OutputChannel
 	let mockExtensionContext: vscode.ExtensionContext
@@ -361,12 +361,12 @@ describe("Task persistence", () => {
 			dispose: vi.fn(),
 		} as unknown as vscode.OutputChannel
 
-		mockProvider = new ClineProvider(
+		mockProvider = new AlphaProvider(
 			mockExtensionContext,
 			mockOutputChannel,
 			"sidebar",
 			new ContextProxy(mockExtensionContext),
-		) as ClineProvider & Record<string, any>
+		) as AlphaProvider & Record<string, any>
 
 		mockApiConfig = {
 			apiProvider: "anthropic",
@@ -475,7 +475,7 @@ describe("Task persistence", () => {
 			reasoningSummary: "Checking implementation against the docs.",
 			reasoningSummaryUsage: { tokensIn: 10, tokensOut: 5, cacheWrites: 0, cacheReads: 0, cost: 0.01 },
 		}
-		await task.overwriteClineMessages([message])
+		await task.overwriteAlphaMessages([message])
 		expect(mockSaveTaskMessages).toHaveBeenCalledWith(expect.objectContaining({ messages: [message] }))
 		expect(task.apiConversationHistory).toEqual([])
 		expect(mockSaveApiMessages).not.toHaveBeenCalled()
@@ -1730,9 +1730,9 @@ describe("Task persistence", () => {
 		})
 	})
 
-	// ── saveClineMessages ────────────────────────────────────────────────
+	// ── saveAlphaMessages ────────────────────────────────────────────────
 
-	describe("saveClineMessages", () => {
+	describe("saveAlphaMessages", () => {
 		it("returns true on success", async () => {
 			mockSaveTaskMessages.mockResolvedValueOnce(undefined)
 
@@ -1743,7 +1743,7 @@ describe("Task persistence", () => {
 				startTask: false,
 			})
 
-			const result = await (task as Record<string, any>).saveClineMessages()
+			const result = await (task as Record<string, any>).saveAlphaMessages()
 			expect(result).toBe(true)
 		})
 
@@ -1757,7 +1757,7 @@ describe("Task persistence", () => {
 				startTask: false,
 			})
 
-			const result = await (task as Record<string, any>).saveClineMessages()
+			const result = await (task as Record<string, any>).saveAlphaMessages()
 			expect(result).toBe(false)
 		})
 
@@ -1778,7 +1778,7 @@ describe("Task persistence", () => {
 				ts: Date.now(),
 			})
 
-			await (task as Record<string, any>).saveClineMessages()
+			await (task as Record<string, any>).saveAlphaMessages()
 
 			expect(mockSaveTaskMessages).toHaveBeenCalledTimes(1)
 
@@ -1816,7 +1816,7 @@ describe("Task persistence", () => {
 			})
 			task.clineMessages.push({ type: "say", say: "text", text: "working", ts: 1 })
 
-			const staleSave = (task as Record<string, any>).saveClineMessages()
+			const staleSave = (task as Record<string, any>).saveAlphaMessages()
 			await vi.waitFor(() => expect(mockSaveTaskMessages).toHaveBeenCalledTimes(1))
 
 			task.clineMessages.push({
@@ -1825,7 +1825,7 @@ describe("Task persistence", () => {
 				text: "terminal report",
 				ts: 2,
 			})
-			const terminalSave = (task as Record<string, any>).saveClineMessages()
+			const terminalSave = (task as Record<string, any>).saveAlphaMessages()
 			expect(mockSaveTaskMessages).toHaveBeenCalledTimes(1)
 
 			releaseFirst()
@@ -1940,8 +1940,8 @@ describe("Task persistence", () => {
 				workspacePath: cwd,
 				startTask: false,
 			})
-			task.rooIgnoreController = { validateAccess: vi.fn().mockReturnValue(true) } as any
-			task.rooProtectedController = { isWriteProtected: vi.fn().mockReturnValue(false) } as any
+			task.alphaIgnoreController = { validateAccess: vi.fn().mockReturnValue(true) } as any
+			task.alphaProtectedController = { isWriteProtected: vi.fn().mockReturnValue(false) } as any
 
 			const store = MockProviderTranscriptStore.mock.results.at(-1)?.value as TranscriptStoreFixture
 			let revision = 0

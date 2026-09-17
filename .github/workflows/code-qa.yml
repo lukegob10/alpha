@@ -58,6 +58,10 @@ jobs:
               uses: ./.github/actions/setup-node-pnpm
             - name: Run unit tests
               run: pnpm test
+            - name: Run repository tooling tests
+              run: pnpm test:tooling
+            - name: Run extension-host runner unit tests
+              run: pnpm --filter @alpha-code/vscode-e2e test:unit
 
     vscode-1221-smoke:
         name: VS Code 1.122.1 extension-host contract

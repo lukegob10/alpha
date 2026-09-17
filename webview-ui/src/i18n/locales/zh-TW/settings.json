@@ -41,7 +41,9 @@
 		"experimental": "實驗性",
 		"language": "語言",
 		"about": "關於 Alpha",
-		"skills": "Skills"
+		"skills": "Skills",
+		"agents": "代理商",
+		"github": "GitHub"
 	},
 	"about": {
 		"bugReport": {
@@ -110,6 +112,10 @@
 		"requireCtrlEnterToSend": {
 			"label": "需要 {{primaryMod}}+Enter 傳送訊息",
 			"description": "啟用後，必須按 {{primaryMod}}+Enter 傳送訊息，而不只是 Enter"
+		},
+		"maxConcurrentTasks": {
+			"label": "最大平行任務數",
+			"description": "可以同時執行的即時任務數。失敗和已完成的任務不計入此限制。"
 		}
 	},
 	"prompts": {
@@ -226,7 +232,8 @@
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
 			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
 			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
-			"localIndexPathRequired": "Local index path is required"
+			"localIndexPathRequired": "Local index path is required",
+			"embeddingRateLimitSecondsRange": "嵌入請求延遲必須介於 0.1 到 60 秒之間"
 		},
 		"optional": "選用",
 		"stopIndexingButton": "停止索引",
@@ -240,7 +247,9 @@
 		"localIndexPathLabel": "Local Index Path",
 		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
 		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
-		"savedSecretPlaceholder": "Saved value hidden"
+		"savedSecretPlaceholder": "Saved value hidden",
+		"embeddingRateLimitLabel": "限制嵌入請求率",
+		"embeddingRateLimitDescription": "在索引時嵌入 API 請求之間新增延遲。如果您的嵌入提供者對程式碼庫索引進行速率限制，請增加此值。"
 	},
 	"autoApprove": {
 		"description": "無需詢問許可即可執行下列動作。請僅在您完全信任且了解安全風險的情況下啟用此功能。",
@@ -316,7 +325,11 @@
 		},
 		"toggleAriaLabel": "切換自動核准狀態",
 		"disabledAriaLabel": "自動核准已停用 - 請先選取下方選項",
-		"selectOptionsFirst": "請先選取下方至少一個選項以啟用自動核准"
+		"selectOptionsFirst": "請先選取下方至少一個選項以啟用自動核准",
+		"subagents": {
+			"label": "子代理",
+			"description": "允許 Alpha 無需批准即可啟動唯讀子代理組。讀取存取權限也必須自動批准。"
+		}
 	},
 	"providers": {
 		"providerDocumentation": "{{provider}} 說明文件",
@@ -395,7 +408,8 @@
 			"hint": "請重新開啟設定以查看最新模型。",
 			"loading": "正在重新整理模型列表...",
 			"success": "模型列表重新整理成功！",
-			"error": "重新整理模型列表失敗。請再試一次。"
+			"error": "重新整理模型列表失敗。請再試一次。",
+			"missingConfig": "在刷新模型之前輸入所需的提供者配置。"
 		},
 		"getRequestyApiKey": "取得 Requesty API 金鑰",
 		"getRequestyBaseUrl": "基礎 URL",
@@ -559,7 +573,8 @@
 			"low": "低",
 			"medium": "中",
 			"high": "高",
-			"xhigh": "超高"
+			"xhigh": "超高",
+			"max": "最大值"
 		},
 		"verbosity": {
 			"label": "輸出詳細程度",
@@ -575,7 +590,55 @@
 			"placeholder": "預設：claude",
 			"maxTokensLabel": "最大輸出 Token",
 			"maxTokensDescription": "Claude Code 回應的最大輸出 Token 數量。預設為 8000。"
-		}
+		},
+		"vertexStreamingEnabledLabel": "啟用串流響應",
+		"vertexStreamingEnabledDescription": "當網關或模型不支援串流時停用此功能。完成後將出現回應。",
+		"vscodeLmLoading": "正在載入此 VS Code 視窗中可用的語言模型...",
+		"vscodeLmNoModels": "此 VS Code 視窗中沒有可用的語言模型。在此登入 GitHub Copilot，使用「Chat: Manage Language Models」啟用您需要的模型，然後重新整理。",
+		"vscodeLmRefresh": "刷新模型",
+		"vscodeLmUnavailable": "所選模型在此 VS Code 視窗中不可用。選擇 VS Code 返回的模型，或使用“Chat: Manage Language Models”啟用它。",
+		"vscodeLmContextSize": {
+			"label": "上下文視窗",
+			"default": "標準（{{contextSize}} 輸入標記）",
+			"extended": "擴展（{{contextSize}} 輸入標記）",
+			"description": "為此模型選擇發送到 GitHub Copilot 的輸入令牌預算。擴展上下文可能會消耗更多高級請求。"
+		},
+		"googleCloudProjectId": "谷歌雲端專案 ID",
+		"googleCloudRegion": "Google雲端區域",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "搜尋或輸入區域",
+			"noMatchFound": "未找到匹配區域",
+			"useCustomRegion": "使用自訂：{{region}}"
+		},
+		"googleCloudCredentials": "Google 雲端憑證 JSON",
+		"googleCloudKeyFile": "谷歌雲端密鑰文件",
+		"googleCloudSetup": {
+			"title": "谷歌雲端設定",
+			"step1": "啟用 Vertex AI 和模型訪問",
+			"step2": "設定應用程式預設憑證",
+			"step3": "建立服務帳戶金鑰"
+		},
+		"vertexGatewayBaseUrl": "Vertex 閘道底座 URL",
+		"vertexGatewayCaBundlePath": "Vertex 閘道 CA 捆綁路徑",
+		"vertexGatewayHelixCommand": "Vertex 閘道 Helix 指令",
+		"vertexGatewayHelixParseMode": "Vertex 閘道 Helix 解析模式",
+		"vertexGatewayHelixParseModeRawStdout": "原始標準輸出",
+		"vertexGatewayHelixParseModeJsonField": "JSON 字段",
+		"vertexGatewayHelixTokenKey": "Vertex 閘道 Helix 令牌金鑰",
+		"vertexGatewayTokenRefreshMinutes": "Vertex 閘道令牌刷新分鐘數",
+		"vertexGatewayModelRoutingMap": "Vertex 閘道型號路由圖",
+		"vertexGatewayModelRoutingMapDescription": "JSON 物件由模型 ID 鍵入。值可以是舊模型覆蓋字串或具有 projectId、location、modelOverride 和 extraHeaders 的物件。",
+		"stellarDescription": "连接到内部 Stellar OpenAI 兼容型号网关。 API 金鑰會透過 Helix 自動檢索，並且永遠不會儲存。",
+		"stellarBaseUrl": "Stellar 底座 URL",
+		"stellarCaBundlePath": "Stellar PEM CA 捆綁路徑",
+		"stellarHelixCommand": "Stellar Helix 指令",
+		"stellarHelixParseMode": "Stellar Helix 解析模式",
+		"stellarHelixParseModeRawStdout": "原始標準輸出",
+		"stellarHelixParseModeJsonField": "JSON 字段",
+		"stellarHelixTokenKey": "Stellar Helix 令牌金鑰",
+		"stellarTokenRefreshMinutes": "Stellar 令牌刷新分鐘數",
+		"stellarStreamingEnabledLabel": "啟用串流響應",
+		"stellarStreamingEnabledDescription": "如果 Stellar 部署不支援串流，請停用此選項。完成後將出現回應。"
 	},
 	"checkpoints": {
 		"timeout": {
@@ -915,7 +978,11 @@
 		"providerNotAllowed": "供應商 '{{provider}}' 不允許用於您的組織。",
 		"modelNotAllowed": "模型 '{{model}}' 不允許用於供應商 '{{provider}}'，此設定已被組織禁止",
 		"profileInvalid": "此設定檔包含您的組織不允許的供應商或模型",
-		"qwenCodeOauthPath": "您必須提供有效的 OAuth 憑證路徑"
+		"qwenCodeOauthPath": "您必須提供有效的 OAuth 憑證路徑",
+		"googleCloud": "您必須提供 Google Cloud 項目 ID 和區域。",
+		"vertexGateway": "Vertex 閘道需要基本 URL、CA 捆綁路徑和 Helix 指令。",
+		"vertexGatewayModelRoutingMap": "Vertex 閘道模型路由對映必須是具有字串模型 ID 的 JSON 物件。",
+		"stellar": "Stellar 需要有效的基本 URL 和 PEM CA 捆綁路徑。"
 	},
 	"placeholders": {
 		"apiKey": "請輸入 API 金鑰...",
@@ -1025,5 +1092,39 @@
 		"enabled": "已啟用",
 		"inspectSkill": "檢視內容",
 		"builtinDescription": "隨 Alpha 提供。儲存設定後變更生效。同名的工作區技能和個人技能優先；停用內建技能不會停用你提供的替代技能。"
+	},
+	"agents": {
+		"description": "選擇 Alpha 用於子代理程式的已儲存提供者設定檔。角色覆寫優先於預設角色，然後繼承父任務。",
+		"searchPlaceholder": "搜尋提供者設定檔...",
+		"noProfilesFound": "沒有相符的供應商設定檔",
+		"unavailableProfile": "不可用的設定檔 ({{id}})",
+		"staleWarning": "此儲存的設定檔不可用。新的子代理程式將使用父配置文件，直到您選擇另一個設定檔。",
+		"defaultProfile": {
+			"label": "預設子代理程式設定檔",
+			"inheritParent": "繼承父級",
+			"description": "當角色沒有自己的設定檔覆寫時使用。"
+		},
+		"roles": {
+			"title": "角色覆蓋",
+			"description": "可以選擇透過不同的已儲存提供者設定檔路由每個代理角色。",
+			"useDefault": "使用預設的",
+			"explore": {
+				"label": "Explorer 設定檔",
+				"description": "儲存庫探索代理程式的可選設定檔覆蓋。"
+			},
+			"review": {
+				"label": "審查者個人資料",
+				"description": "審閱代理人的可選個人資料覆蓋。"
+			},
+			"worker": {
+				"label": "工作人員設定檔",
+				"description": "獨立編輯工作人員的可選設定檔覆蓋。"
+			}
+		}
+	},
+	"github": {
+		"tokenLabel": "GitHub 令牌",
+		"tokenPlaceholder": "ghp_...",
+		"tokenDescription": "安全儲存在 VS Code 秘密儲存中。由本機 GitHub API 工具用於拉取請求、檢查、註解和合併。"
 	}
 }

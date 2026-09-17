@@ -1,7 +1,7 @@
 import { mkdir, rename, unlink, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
-import { getVscodeLlmModelInfo, type ModelInfo, type RooCodeAPI, type RooCodeSettings } from "@alpha-code/types"
+import { getVscodeLlmModelInfo, type ModelInfo, type AlphaCodeAPI, type AlphaCodeSettings } from "@alpha-code/types"
 
 import type { LanguageModelChat, LanguageModelChatResponse } from "vscode"
 
@@ -227,15 +227,15 @@ export function validateRequestedReasoningEffort(
 
 /** Build the exact Alpha settings patch only when the requested effort is safe to apply. */
 export function buildLiveCopilotConfiguration(
-	current: RooCodeSettings,
+	current: AlphaCodeSettings,
 	selector: LiveCopilotModelSelector,
 	reasoning: LiveCopilotReasoningValidation,
-): RooCodeSettings | undefined {
+): AlphaCodeSettings | undefined {
 	if (reasoning.status !== "not-requested" && reasoning.status !== "disabled" && reasoning.status !== "supported") {
 		return undefined
 	}
 
-	const configuration: RooCodeSettings = {
+	const configuration: AlphaCodeSettings = {
 		...current,
 		apiProvider: "vscode-lm",
 		vsCodeLmModelSelector: selector,
@@ -809,7 +809,7 @@ export async function discoverLiveCopilotModels(
  * It never includes prompts, response text, credentials, or provider errors.
  */
 export async function configureLiveCopilot(
-	api: RooCodeAPI,
+	api: AlphaCodeAPI,
 	options: LiveCopilotOptions,
 	dependencies: LiveCopilotAuthDependencies = {},
 ): Promise<LiveCopilotPreflightMetadata> {
@@ -884,7 +884,7 @@ export async function configureLiveCopilot(
 	dependencies.signal?.throwIfAborted()
 	metadata = { ...metadata, auth }
 
-	let currentConfiguration: RooCodeSettings
+	let currentConfiguration: AlphaCodeSettings
 	try {
 		currentConfiguration = api.getConfiguration()
 	} catch {

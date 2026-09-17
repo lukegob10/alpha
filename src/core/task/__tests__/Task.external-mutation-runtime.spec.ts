@@ -74,8 +74,8 @@ describe("Task external mutation runtime state", () => {
 			],
 			isAwaitingSubagentReview: false,
 			subagentReviewBarrier: undefined,
-			saveClineMessages: vi.fn(async () => true),
-			updateClineMessage: vi.fn(async () => undefined),
+			saveAlphaMessages: vi.fn(async () => true),
+			updateAlphaMessage: vi.fn(async () => undefined),
 		})
 
 		const waiting = (task as any).waitForPendingSubagentChangeSetReviews() as Promise<void>

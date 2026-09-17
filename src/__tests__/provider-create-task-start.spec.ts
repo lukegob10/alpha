@@ -26,9 +26,9 @@ vi.mock("../core/task/Task", () => ({
 	Task: taskMocks.MockTask,
 }))
 
-import { ClineProvider } from "../core/webview/ClineProvider"
+import { AlphaProvider } from "../core/webview/AlphaProvider"
 
-describe("ClineProvider.createTask start control", () => {
+describe("AlphaProvider.createTask start control", () => {
 	afterEach(() => {
 		taskMocks.instances.length = 0
 		taskMocks.start.mockClear()
@@ -37,7 +37,7 @@ describe("ClineProvider.createTask start control", () => {
 
 	const createProvider = () =>
 		({
-			clineStack: [],
+			taskStack: [],
 			taskSessions: { canCreateTask: vi.fn(() => true) },
 			customModesManager: { updateCustomMode: vi.fn() },
 			taskCreationCallback: undefined,
@@ -68,18 +68,18 @@ describe("ClineProvider.createTask start control", () => {
 				})),
 				getValue: vi.fn(),
 			},
-			removeClineFromStack: vi.fn(),
+			removeTaskFromStack: vi.fn(),
 			updateGlobalState: vi.fn(async () => undefined),
-			addClineToStack: vi.fn(async () => undefined),
+			addTaskToStack: vi.fn(async () => undefined),
 			postTaskStateToWebview: vi.fn(async () => undefined),
 			postStateToWebviewWithoutTaskHistory: vi.fn(async () => undefined),
 			log: vi.fn(),
-		}) as unknown as ClineProvider
+		}) as unknown as AlphaProvider
 
 	it("does not start a task when startTask is false", async () => {
 		const provider = createProvider()
 
-		await ClineProvider.prototype.createTask.call(provider, "Child work", undefined, undefined, {
+		await AlphaProvider.prototype.createTask.call(provider, "Child work", undefined, undefined, {
 			startTask: false,
 		})
 
@@ -91,7 +91,7 @@ describe("ClineProvider.createTask start control", () => {
 	it("starts a task by default", async () => {
 		const provider = createProvider()
 
-		await ClineProvider.prototype.createTask.call(provider, "Normal work")
+		await AlphaProvider.prototype.createTask.call(provider, "Normal work")
 
 		expect(taskMocks.instances).toHaveLength(1)
 		expect(taskMocks.start).toHaveBeenCalledTimes(1)
@@ -109,7 +109,7 @@ describe("ClineProvider.createTask start control", () => {
 		)
 
 		let creationSettled = false
-		const creation = ClineProvider.prototype.createTask.call(provider, "Normal work").then((task) => {
+		const creation = AlphaProvider.prototype.createTask.call(provider, "Normal work").then((task) => {
 			creationSettled = true
 			return task
 		})

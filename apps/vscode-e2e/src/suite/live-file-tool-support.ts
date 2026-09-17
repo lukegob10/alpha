@@ -3,7 +3,13 @@ import { createHash } from "node:crypto"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import * as vscode from "vscode"
-import { RooCodeEventName, toolNames, type ClineMessage, type ToolName, type TaskWorkContext } from "@alpha-code/types"
+import {
+	AlphaCodeEventName,
+	toolNames,
+	type AlphaMessage,
+	type ToolName,
+	type TaskWorkContext,
+} from "@alpha-code/types"
 
 import { readBoundedJson } from "../scenarios/extensionWorkflowHost"
 import { guardTaskApi, WorkflowRequestBudget } from "../scenarios/requestBudget"
@@ -18,8 +24,8 @@ export interface LiveTask {
 	api: unknown
 	didComplete?: boolean
 	abort?: boolean
-	taskAsk?: ClineMessage
-	clineMessages: ClineMessage[]
+	taskAsk?: AlphaMessage
+	clineMessages: AlphaMessage[]
 	approveAsk(): void
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
@@ -81,7 +87,7 @@ export async function runLiveCase(
 	prompt: string,
 	verify: (
 		calls: Transaction[],
-		messages: ClineMessage[],
+		messages: AlphaMessage[],
 		workspace: string,
 		answer: string,
 		task: LiveTask,
@@ -120,7 +126,7 @@ export async function runLiveCase(
 		if (taskId === task?.taskId) completed++
 	}
 	provider.on("taskCreated", onCreated)
-	api.on(RooCodeEventName.TaskCompleted, onCompleted)
+	api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
 	const allowed = new Set<ToolName>(["read_file", "attempt_completion", ...tools])
 	const startedAt = Date.now()
 	let calls: Transaction[] = []
@@ -262,7 +268,7 @@ export async function runLiveCase(
 	}, [
 		() => api.clearCurrentTask(),
 		() => provider.off("taskCreated", onCreated),
-		() => api.off(RooCodeEventName.TaskCompleted, onCompleted),
+		() => api.off(AlphaCodeEventName.TaskCompleted, onCompleted),
 		() => {
 			for (const release of releases.reverse()) release()
 		},

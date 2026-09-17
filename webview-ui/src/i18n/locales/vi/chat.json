@@ -237,7 +237,9 @@
 		"didViewTopLevelOutsideWorkspace": "Alpha đã xem các tệp cấp cao nhất trong thư mục này (ngoài không gian làm việc)",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha muốn xem đệ quy tất cả các tệp trong thư mục này (ngoài không gian làm việc)",
 		"didViewRecursiveOutsideWorkspace": "Alpha đã xem đệ quy tất cả các tệp trong thư mục này (ngoài không gian làm việc)",
-		"wantsToViewMultipleDirectories": "Alpha muốn xem nhiều thư mục"
+		"wantsToViewMultipleDirectories": "Alpha muốn xem nhiều thư mục",
+		"wantsToSearchMultiple": "Alpha muốn chạy tìm kiếm tệp {{count}}",
+		"didSearchMultiple": "Alpha chạy tìm kiếm tệp {{count}}"
 	},
 	"commandOutput": "Kết quả lệnh",
 	"commandExecution": {
@@ -482,7 +484,14 @@
 		"clickToEdit": "Nhấp để chỉnh sửa tin nhắn",
 		"steering": "Đang chuyển hướng…",
 		"queueFailed": "Không thể thêm tin nhắn vào hàng đợi. Bản nháp vẫn còn trong ô soạn thảo.",
-		"steerFailed": "Không thể bắt đầu chuyển hướng. Tin nhắn trong hàng đợi vẫn còn đó."
+		"steerFailed": "Không thể bắt đầu chuyển hướng. Tin nhắn trong hàng đợi vẫn còn đó.",
+		"edit": "Biên tập",
+		"editTooltip": "Chỉnh sửa tin nhắn được xếp hàng đợi này",
+		"editing": "Chỉnh sửa trong nhà soạn nhạc",
+		"dragHandle": "Kéo tin nhắn xếp hàng đợi",
+		"dragTooltip": "Kéo để sắp xếp lại thư đã xếp hàng đợi này",
+		"steer": "Chỉ đạo",
+		"steerTooltip": "Gửi tin nhắn được xếp hàng đợi này vào lượt hiện tại"
 	},
 	"modelResponseDelayed": "Đang chờ cập nhật tiếp theo từ mô hình. Quá trình suy luận dài hơn có thể mất thời gian.",
 	"slashCommand": {
@@ -520,5 +529,30 @@
 		"list_checks": "Liệt kê các kiểm tra",
 		"merge_pull_request": "Hợp nhất pull request",
 		"comment": "Thêm bình luận"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "Kiểm tra đại lý",
+			"wait_agent": "Chờ cập nhật đại lý",
+			"unknown": "Hành động của đại lý"
+		},
+		"failed": "{{action}} không thành công: {{error}}",
+		"list": {
+			"running": "Đại lý kiểm tra...",
+			"completed": "Đại lý {{count}} đã được kiểm tra",
+			"completed_other": "Đại lý {{count}} đã được kiểm tra",
+			"mailbox": "Cập nhật hộp thư {{count}}",
+			"mailbox_other": "Cập nhật hộp thư {{count}}"
+		},
+		"wait": {
+			"running": "Đang chờ cập nhật đại lý...",
+			"noActiveAgents": "Không có đại lý đang hoạt động nào để chờ",
+			"cancelled": "Đã hủy chờ đại lý",
+			"timedOut": "Không có cập nhật đại lý nào trước khi hết thời gian chờ",
+			"alreadyDelivered": "Không có bản cập nhật mới; kết quả đã được gửi",
+			"received": "Đã nhận được bản cập nhật tác nhân {{count}}",
+			"received_other": "Đã nhận được bản cập nhật tác nhân {{count}}",
+			"completed": "Đã hoàn tất chờ tác nhân"
+		}
 	}
 }

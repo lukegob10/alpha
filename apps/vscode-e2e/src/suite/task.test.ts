@@ -1,6 +1,6 @@
 import * as assert from "assert"
 
-import { RooCodeEventName, type ClineMessage } from "@alpha-code/types"
+import { AlphaCodeEventName, type AlphaMessage } from "@alpha-code/types"
 
 import { waitFor, waitUntilCompleted } from "./utils"
 import { setDefaultSuiteTimeout } from "./test-utils"
@@ -50,9 +50,9 @@ suite("Alpha Task", function () {
 		const provider = (api as unknown as { sidebarProvider?: TaskHostProvider }).sidebarProvider
 		assert.ok(provider, "The extension API did not expose its host provider to the task E2E test")
 
-		const messages: ClineMessage[] = []
+		const messages: AlphaMessage[] = []
 
-		api.on(RooCodeEventName.Message, ({ message }) => {
+		api.on(AlphaCodeEventName.Message, ({ message }) => {
 			if (message.type === "say" && message.partial === false) {
 				messages.push(message)
 			}

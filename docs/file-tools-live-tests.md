@@ -62,6 +62,12 @@ The three cases passed again with the shared reader and scheduler allowance chan
 on VS Code 1.136.1. The rerun used nine model requests (4/3/2) and is recorded under
 `F:/alpha-vscode-e2e-runs/read-evidence-20260916/artifacts/filetools-final`.
 
-The reusable runner is now in `live-file-tool-support.ts`. Four additional live read/repair/review probes and the
-deterministic continuation contract are documented in [read evidence tests](read-evidence-tests.md). The helper retains
-plain-text and tool-based completions, along with request counts, tool results, timing, and file hashes.
+The reusable runner is in
+[`live-file-tool-support.ts`](../apps/vscode-e2e/src/suite/live-file-tool-support.ts). The four additional
+[read/repair/review probes](../apps/vscode-e2e/src/suite/read-evidence-live.test.ts) cover named-function repair,
+batched selections, gap-free continuation, and access-control review. Use the profile command above with
+`--file read-evidence-live.test`, a fresh owned workspace, and a new run ID. The helper retains plain-text and tool-based
+completions, along with request counts, tool results, timing, and file hashes.
+
+The [pagination regression tests](../src/core/tools/__tests__/readFileTool.pagination.spec.ts) exercise the deterministic
+continuation contract through the reader and scheduler, including output limits, stale cursors, and Unicode fragments.

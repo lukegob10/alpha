@@ -1,17 +1,17 @@
 import { ProviderSettings } from "@alpha-code/types"
 
 import { Task } from "../Task"
-import { ClineProvider } from "../../webview/ClineProvider"
+import { AlphaProvider } from "../../webview/AlphaProvider"
 
 // Mock dependencies
-vi.mock("../../webview/ClineProvider")
+vi.mock("../../webview/AlphaProvider")
 vi.mock("../../../integrations/terminal/TerminalRegistry", () => ({
 	TerminalRegistry: {
 		releaseTerminalsForTask: vi.fn(),
 	},
 }))
-vi.mock("../../ignore/RooIgnoreController")
-vi.mock("../../protect/RooProtectedController")
+vi.mock("../../ignore/AlphaIgnoreController")
+vi.mock("../../protect/AlphaProtectedController")
 vi.mock("../../context-tracking/FileContextTracker")
 vi.mock("../../../integrations/editor/DiffViewProvider")
 vi.mock("../../tools/ToolRepetitionDetector")
@@ -57,7 +57,7 @@ describe("Task dispose method", () => {
 
 		// Create task instance without starting it
 		task = new Task({
-			provider: mockProvider as ClineProvider,
+			provider: mockProvider as AlphaProvider,
 			apiConfiguration: mockApiConfiguration,
 			startTask: false,
 		})

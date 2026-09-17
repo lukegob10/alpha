@@ -8,7 +8,7 @@ import type { GlobalState, ProviderSettings } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../Task"
-import { ClineProvider } from "../../webview/ClineProvider"
+import { AlphaProvider } from "../../webview/AlphaProvider"
 import { ContextProxy } from "../../config/ContextProxy"
 
 // Mock @alpha-code/core
@@ -180,7 +180,7 @@ vi.mock("../../environment/getEnvironmentDetails", () => ({
 		.mockImplementation(async () => ({ details: "", commit: vi.fn(), release: vi.fn() })),
 }))
 
-vi.mock("../../ignore/RooIgnoreController")
+vi.mock("../../ignore/AlphaIgnoreController")
 
 vi.mock("../../../utils/storage", () => ({
 	getTaskDirectoryPath: vi
@@ -246,7 +246,7 @@ describe("Grace Retry Error Handling", () => {
 			dispose: vi.fn(),
 		}
 
-		mockProvider = new ClineProvider(
+		mockProvider = new AlphaProvider(
 			mockExtensionContext,
 			mockOutputChannel,
 			"sidebar",

@@ -1,8 +1,8 @@
-import { ClineMessage, HistoryItem } from "@alpha-code/types"
+import { AlphaMessage, HistoryItem } from "@alpha-code/types"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 interface UsePromptHistoryProps {
-	clineMessages: ClineMessage[] | undefined
+	clineMessages: AlphaMessage[] | undefined
 	taskHistory: HistoryItem[] | undefined
 	cwd: string | undefined
 	inputValue: string

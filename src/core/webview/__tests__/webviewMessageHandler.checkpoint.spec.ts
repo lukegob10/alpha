@@ -18,13 +18,13 @@ vi.mock("vscode", () => ({
 
 describe("webviewMessageHandler - checkpoint operations", () => {
 	let mockProvider: any
-	let mockCline: any
+	let mockAlphaTask: any
 
 	beforeEach(() => {
 		vi.clearAllMocks()
 
 		// Setup mock Alpha instance
-		mockCline = {
+		mockAlphaTask = {
 			taskId: "test-task-123",
 			clineMessages: [
 				{ ts: 1, type: "user", say: "user", text: "First message" },
@@ -38,17 +38,17 @@ describe("webviewMessageHandler - checkpoint operations", () => {
 				{ ts: 4, role: "assistant", content: [{ type: "text", text: "After message" }] },
 			],
 			checkpointRestore: vi.fn(),
-			overwriteClineMessages: vi.fn(),
+			overwriteAlphaMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),
 		}
-		mockCline.messageManager = new MessageManager(mockCline)
+		mockAlphaTask.messageManager = new MessageManager(mockAlphaTask)
 
 		// Setup mock provider
 		mockProvider = {
-			getCurrentTask: vi.fn(() => mockCline),
+			getCurrentTask: vi.fn(() => mockAlphaTask),
 			postMessageToWebview: vi.fn(),
 			getTaskWithId: vi.fn(() => ({
-				historyItem: { id: "test-task-123", messages: mockCline.clineMessages },
+				historyItem: { id: "test-task-123", messages: mockAlphaTask.clineMessages },
 			})),
 			createTaskWithHistoryItem: vi.fn(),
 			setPendingEditOperation: vi.fn(),
@@ -77,7 +77,7 @@ describe("webviewMessageHandler - checkpoint operations", () => {
 			// Verify handleCheckpointRestoreOperation was called with correct parameters
 			expect(handleCheckpointRestoreOperation).toHaveBeenCalledWith({
 				provider: mockProvider,
-				currentCline: mockCline,
+				currentAlpha: mockAlphaTask,
 				messageTs: 1,
 				messageIndex: 0,
 				checkpoint: { hash: "abc123" },
@@ -101,7 +101,7 @@ describe("webviewMessageHandler - checkpoint operations", () => {
 			})
 
 			// Verify checkpoint restore was NOT called
-			expect(mockCline.checkpointRestore).not.toHaveBeenCalled()
+			expect(mockAlphaTask.checkpointRestore).not.toHaveBeenCalled()
 		})
 	})
 
@@ -121,7 +121,7 @@ describe("webviewMessageHandler - checkpoint operations", () => {
 			// Verify handleCheckpointRestoreOperation was called with correct parameters
 			expect(handleCheckpointRestoreOperation).toHaveBeenCalledWith({
 				provider: mockProvider,
-				currentCline: mockCline,
+				currentAlpha: mockAlphaTask,
 				messageTs: 1,
 				messageIndex: 0,
 				checkpoint: { hash: "abc123" },

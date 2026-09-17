@@ -2,7 +2,7 @@ import * as assert from "node:assert/strict"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import * as vscode from "vscode"
-import { RooCodeEventName, toolNames, type RooCodeAPI } from "@alpha-code/types"
+import { AlphaCodeEventName, toolNames, type AlphaCodeAPI } from "@alpha-code/types"
 
 import { assertRunnerAncestry } from "../hostOwnership"
 import { assertOwnedTestRoot } from "../testProfile"
@@ -74,7 +74,7 @@ export async function run(): Promise<void> {
 			workspaceFile,
 		})
 		stage = "activation"
-		const extension = vscode.extensions.getExtension<RooCodeAPI>(process.env.ALPHA_PAIR_EXTENSION_ID!)
+		const extension = vscode.extensions.getExtension<AlphaCodeAPI>(process.env.ALPHA_PAIR_EXTENSION_ID!)
 		assert.ok(extension)
 		const api = await extension.activate()
 		await vscode.commands.executeCommand("alpha.SidebarProvider.focus")
@@ -115,7 +115,7 @@ export async function run(): Promise<void> {
 		})
 		const completed = new Set<string>()
 		const onCompleted = (id: string) => completed.add(id)
-		api.on(RooCodeEventName.TaskCompleted, onCompleted)
+		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
 		try {
 			stage = "configuration"
 			const configuration = {
@@ -184,7 +184,7 @@ export async function run(): Promise<void> {
 				terminalCount: 1,
 			})
 		} finally {
-			api.off(RooCodeEventName.TaskCompleted, onCompleted)
+			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
 		}
 	} catch (error) {
 		if (directory && manifest && role) {

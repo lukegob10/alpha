@@ -1,4 +1,4 @@
-import type { ClineSayTool, ToolName } from "@alpha-code/types"
+import type { AlphaSayTool, ToolName } from "@alpha-code/types"
 
 import type { Task } from "../task/Task"
 
@@ -124,10 +124,10 @@ function optionalBoolean(record: Record<string, unknown>, key: string): boolean 
 
 function lifecyclePresentation(
 	name: VisibleAgentLifecycleToolName,
-	status: NonNullable<ClineSayTool["lifecycleStatus"]>,
+	status: NonNullable<AlphaSayTool["lifecycleStatus"]>,
 	result?: unknown,
 	error?: unknown,
-): ClineSayTool {
+): AlphaSayTool {
 	const record = isRecord(result) ? result : {}
 	const mailbox = isRecord(record.mailbox) ? record.mailbox : {}
 	const message = error instanceof Error ? error.message : error === undefined ? undefined : String(error)
@@ -158,7 +158,7 @@ function lifecyclePresentation(
 async function publishLifecyclePresentation(
 	name: AgentLifecycleToolName,
 	task: Task,
-	status: NonNullable<ClineSayTool["lifecycleStatus"]>,
+	status: NonNullable<AlphaSayTool["lifecycleStatus"]>,
 	partial: boolean,
 	result?: unknown,
 	error?: unknown,

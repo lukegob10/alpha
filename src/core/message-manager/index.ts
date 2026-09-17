@@ -1,6 +1,6 @@
 import * as path from "path"
 import { Task } from "../task/Task"
-import { ClineMessage } from "@alpha-code/types"
+import { AlphaMessage } from "@alpha-code/types"
 import { ApiMessage } from "../task-persistence/apiMessages"
 import { cleanupAfterTruncation } from "../condense"
 import { OutputInterceptor } from "../../integrations/terminal/OutputInterceptor"
@@ -49,13 +49,13 @@ export class MessageManager {
 		const { includeTargetMessage = false, skipCleanup = false } = options
 
 		// Find the index in clineMessages
-		const clineIndex = this.task.clineMessages.findIndex((m) => m.ts === ts)
-		if (clineIndex === -1) {
+		const alphaIndex = this.task.clineMessages.findIndex((m) => m.ts === ts)
+		if (alphaIndex === -1) {
 			throw new Error(`Message with timestamp ${ts} not found in clineMessages`)
 		}
 
 		// Calculate the actual cutoff index
-		const cutoffIndex = includeTargetMessage ? clineIndex + 1 : clineIndex
+		const cutoffIndex = includeTargetMessage ? alphaIndex + 1 : alphaIndex
 
 		await this.performRewind(cutoffIndex, ts, { skipCleanup })
 	}
@@ -85,7 +85,7 @@ export class MessageManager {
 		const removedIds = this.collectRemovedContextEventIds(toIndex)
 
 		// Step 2: Truncate clineMessages
-		await this.truncateClineMessages(toIndex)
+		await this.truncateAlphaMessages(toIndex)
 
 		// Step 3: Truncate and clean API history (combined with cleanup for efficiency)
 		await this.truncateApiHistoryWithCleanup(cutoffTs, removedIds, skipCleanup, replacesOpeningPrompt)
@@ -127,8 +127,8 @@ export class MessageManager {
 	/**
 	 * Truncate clineMessages to the specified index.
 	 */
-	private async truncateClineMessages(toIndex: number): Promise<void> {
-		await this.task.overwriteClineMessages(this.task.clineMessages.slice(0, toIndex))
+	private async truncateAlphaMessages(toIndex: number): Promise<void> {
+		await this.task.overwriteAlphaMessages(this.task.clineMessages.slice(0, toIndex))
 	}
 
 	/**

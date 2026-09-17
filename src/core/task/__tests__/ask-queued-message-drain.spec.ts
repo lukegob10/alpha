@@ -17,9 +17,9 @@ describe("Task.ask queued message drain", () => {
 
 		const { MessageQueueService } = await import("../../message-queue/MessageQueueService")
 		;(task as any).messageQueueService = new MessageQueueService()
-		;(task as any).addToClineMessages = vi.fn(async () => {})
-		;(task as any).saveClineMessages = vi.fn(async () => {})
-		;(task as any).updateClineMessage = vi.fn(async () => {})
+		;(task as any).addToAlphaMessages = vi.fn(async () => {})
+		;(task as any).saveAlphaMessages = vi.fn(async () => {})
+		;(task as any).updateAlphaMessage = vi.fn(async () => {})
 		;(task as any).cancelAutoApprovalTimeout = vi.fn(() => {})
 		;(task as any).checkpointSave = vi.fn(async () => {})
 		;(task as any).emit = vi.fn()
@@ -88,9 +88,9 @@ describe("Task.ask queued message drain", () => {
 		})
 		const autoApprove = vi.spyOn(task, "approveAsk")
 		const pending = task.ask("command", "node script.js", false, { text: "../outside" }, false, true)
-		await vi.waitFor(() => expect(task["addToClineMessages"]).toHaveBeenCalled())
+		await vi.waitFor(() => expect(task["addToAlphaMessages"]).toHaveBeenCalled())
 		expect(autoApprove).not.toHaveBeenCalled()
-		expect(task["addToClineMessages"]).toHaveBeenCalledWith(
+		expect(task["addToAlphaMessages"]).toHaveBeenCalledWith(
 			expect.objectContaining({ progressStatus: { text: "../outside" } }),
 		)
 		task.handleWebviewAskResponse("noButtonClicked")
@@ -114,7 +114,7 @@ describe("Task.ask queued message drain", () => {
 
 		const autoApprove = vi.spyOn(task, "approveAsk")
 		const pending = task.ask("command", "git diff", false, undefined, false, true)
-		await vi.waitFor(() => expect(task["addToClineMessages"]).toHaveBeenCalled())
+		await vi.waitFor(() => expect(task["addToAlphaMessages"]).toHaveBeenCalled())
 		expect(autoApprove).not.toHaveBeenCalled()
 		task.handleWebviewAskResponse("noButtonClicked")
 		await expect(pending).resolves.toMatchObject({

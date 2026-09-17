@@ -18,31 +18,6 @@ Alpha v2.1.46 adds reliable Vertex Gemini Embedding 2 indexing alongside reusabl
 - Chat includes improved edit and restart actions, reasoning summaries, and provider selection after completion
 - The standalone Alpha CLI is retired; Alpha continues as a VS Code extension
 
-<details>
-  <summary>🌐 Available languages</summary>
-
-- [English](README.md)
-- [Català](locales/ca/README.md)
-- [Deutsch](locales/de/README.md)
-- [Español](locales/es/README.md)
-- [Français](locales/fr/README.md)
-- [हिंदी](locales/hi/README.md)
-- [Bahasa Indonesia](locales/id/README.md)
-- [Italiano](locales/it/README.md)
-- [日本語](locales/ja/README.md)
-- [한국어](locales/ko/README.md)
-- [Nederlands](locales/nl/README.md)
-- [Polski](locales/pl/README.md)
-- [Português (BR)](locales/pt-BR/README.md)
-- [Русский](locales/ru/README.md)
-- [Türkçe](locales/tr/README.md)
-- [Tiếng Việt](locales/vi/README.md)
-- [简体中文](locales/zh-CN/README.md)
-- [繁體中文](locales/zh-TW/README.md)
-- ...
-
-</details>
-
 ---
 
 ## What Can Alpha Do For YOU?
@@ -72,8 +47,7 @@ Existing custom-mode, Ask, Debug, and Orchestrator tasks and stored configuratio
 ## Resources
 
 - **[Project Docs](docs/):** Local technical documentation for Alpha internals and planned work.
-- **[GitHub Issues](https://github.com/AlphaInc/Alpha/issues):** Report bugs and track development.
-- **[Feature Requests](https://github.com/AlphaInc/Alpha/discussions/categories/feature-requests?discussions_q=is%3Aopen+category%3A%22Feature+Requests%22+sort%3Atop):** Have an idea? Share it with the developers.
+- **[GitHub Issues](https://github.com/lukegob10/alpha/issues):** Report bugs, feature requests, and development questions.
 
 ---
 
@@ -81,14 +55,15 @@ Existing custom-mode, Ask, Debug, and Orchestrator tasks and stored configuratio
 
 ### Release Automation
 
-Pull requests now produce a VSIX artifact automatically in GitHub Actions, so reviewers can download the packaged extension from the PR workflow run instead of building or uploading one by hand.
-
-When a PR is merged into `main`, the release workflow creates a version bump PR. If the merged PR does not include a changeset, the workflow generates a patch changeset by default. Add a `v2` or `release:v2` label, or put `[v2]` or `release: v2` in the PR title, when the release should be a major version bump instead.
+The stable workflow runs on `main` and publishes a verified VSIX GitHub release after the exact VS Code 1.122.1 host gate,
+outside-path command checks, packaging, and source-asset verification. The V2 preview workflow runs on `main-v2`, creates
+a GitHub prerelease, and does not publish to the VS Code Marketplace. Both workflows are defined in
+[`.github/workflows`](.github/workflows/).
 
 1. **Clone** the repo:
 
 ```sh
-git clone https://github.com/AlphaInc/Alpha.git
+git clone https://github.com/lukegob10/alpha.git
 ```
 
 2. **Install dependencies**:
@@ -96,6 +71,8 @@ git clone https://github.com/AlphaInc/Alpha.git
 ```sh
 pnpm install
 ```
+
+The repository pins Node.js 20.19.2 and pnpm 10.8.1. Use those versions for reproducible builds and checks.
 
 3. **Run the extension**:
 
@@ -110,6 +87,33 @@ Press `F5` (or go to **Run** → **Start Debugging**) in VSCode. This will open 
 - Changes to the webview will appear immediately.
 - Changes to the core extension will also hot reload automatically.
 
+### Core checks
+
+The default checks cover the extension, webview, and VS Code E2E dependency graph:
+
+```sh
+pnpm lint
+pnpm check-types
+pnpm test
+```
+
+The release-host contract runs on VS Code 1.122.1:
+
+```sh
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
+```
+
+Optional retained workspace and evaluator checks are explicit:
+
+```sh
+pnpm lint:all
+pnpm check-types:all
+pnpm test:all
+```
+
+Use `pnpm test:evals` or `pnpm test:evals:offline` for the evaluator package. Evaluator runs execute the real Alpha
+extension through VS Code; see [`packages/evals/README.md`](packages/evals/README.md) for their service prerequisites.
+
 ### Automated VSIX Installation
 
 To build and install the extension as a VSIX package directly into VSCode:
@@ -121,7 +125,7 @@ pnpm install:vsix [-y] [--editor=<command>]
 This command will:
 
 - Ask which editor command to use (code/cursor/code-insiders) - defaults to 'code'
-- Uninstall any existing version of the extension.
+- Replace any installed copy of the same extension version with VS Code's `--force` install option.
 - Build the latest VSIX package.
 - Install the newly built VSIX.
 - Prompt you to restart VS Code for changes to take effect.

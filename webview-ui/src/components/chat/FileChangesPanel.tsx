@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next"
 import { ChevronDown, ChevronRight, FileDiff, ArrowUpRight } from "lucide-react"
 import { createTwoFilesPatch } from "diff"
 
-import type { ClineMessage, ExtensionMessage } from "@alpha-code/types"
+import type { AlphaMessage, ExtensionMessage } from "@alpha-code/types"
 
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui"
 import { cn } from "@/lib/utils"
@@ -13,7 +13,7 @@ import { fileChangesFromMessages, type FileChangeEntry } from "./utils/fileChang
 import DiffView from "../common/DiffView"
 
 interface FileChangesPanelProps {
-	clineMessages: ClineMessage[] | undefined
+	clineMessages: AlphaMessage[] | undefined
 	taskId?: string
 	className?: string
 	onExpandedChange?: () => void

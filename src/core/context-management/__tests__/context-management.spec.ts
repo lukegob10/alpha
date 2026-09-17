@@ -907,9 +907,9 @@ describe("Context Management", () => {
 	})
 
 	/**
-	 * Tests for filesReadByRoo being passed to summarizeConversation
+	 * Tests for filesReadByAlpha being passed to summarizeConversation
 	 */
-	describe("filesReadByRoo parameters", () => {
+	describe("filesReadByAlpha parameters", () => {
 		const createModelInfo = (contextWindow: number, maxTokens?: number): ModelInfo => ({
 			contextWindow,
 			supportsPromptCache: true,
@@ -924,7 +924,7 @@ describe("Context Management", () => {
 			{ role: "user", content: "Fifth message" },
 		]
 
-		it("should pass filesReadByRoo, cwd, and rooIgnoreController to summarizeConversation when provided", async () => {
+		it("should pass filesReadByAlpha, cwd, and alphaIgnoreController to summarizeConversation when provided", async () => {
 			// Mock the summarizeConversation function
 			const mockSummary = "Summary with folded context"
 			const mockCost = 0.05
@@ -950,11 +950,11 @@ describe("Context Management", () => {
 				{ ...messages[messages.length - 1], content: "" },
 			]
 
-			const filesReadByRoo = ["src/test.ts", "src/utils.ts"]
+			const filesReadByAlpha = ["src/test.ts", "src/utils.ts"]
 			const cwd = "/test/project"
-			const mockRooIgnoreController = {
+			const mockAlphaIgnoreController = {
 				filterPaths: vi.fn(),
-			} as unknown as import("../../ignore/RooIgnoreController").RooIgnoreController
+			} as unknown as import("../../ignore/AlphaIgnoreController").AlphaIgnoreController
 
 			const result = await manageContext({
 				messages: messagesWithSmallContent,
@@ -968,12 +968,12 @@ describe("Context Management", () => {
 				taskId,
 				profileThresholds: {},
 				currentProfileId: "default",
-				filesReadByRoo,
+				filesReadByAlpha,
 				cwd,
-				rooIgnoreController: mockRooIgnoreController,
+				alphaIgnoreController: mockAlphaIgnoreController,
 			})
 
-			// Verify summarizeConversation was called with filesReadByRoo, cwd, and rooIgnoreController
+			// Verify summarizeConversation was called with filesReadByAlpha, cwd, and alphaIgnoreController
 			expect(summarizeSpy).toHaveBeenCalledWith(
 				expect.objectContaining({
 					maxContextTokens: 15002,
@@ -982,9 +982,9 @@ describe("Context Management", () => {
 					systemPrompt: "System prompt",
 					taskId,
 					isAutomaticTrigger: true,
-					filesReadByRoo,
+					filesReadByAlpha,
 					cwd,
-					rooIgnoreController: mockRooIgnoreController,
+					alphaIgnoreController: mockAlphaIgnoreController,
 				}),
 			)
 
@@ -1000,7 +1000,7 @@ describe("Context Management", () => {
 			summarizeSpy.mockRestore()
 		})
 
-		it("should pass undefined filesReadByRoo parameters when not provided", async () => {
+		it("should pass undefined filesReadByAlpha parameters when not provided", async () => {
 			// Mock the summarizeConversation function
 			const mockSummary = "Summary without folded context"
 			const mockCost = 0.03
@@ -1038,7 +1038,7 @@ describe("Context Management", () => {
 				taskId,
 				profileThresholds: {},
 				currentProfileId: "default",
-				// filesReadByRoo, cwd, rooIgnoreController are NOT provided
+				// filesReadByAlpha, cwd, alphaIgnoreController are NOT provided
 			})
 
 			// Verify summarizeConversation was called with undefined parameters
@@ -1063,7 +1063,7 @@ describe("Context Management", () => {
 			summarizeSpy.mockRestore()
 		})
 
-		it("should pass empty array filesReadByRoo when provided as empty", async () => {
+		it("should pass empty array filesReadByAlpha when provided as empty", async () => {
 			// Mock the summarizeConversation function
 			const mockSummary = "Summary with empty file list"
 			const mockCost = 0.04
@@ -1101,7 +1101,7 @@ describe("Context Management", () => {
 				taskId,
 				profileThresholds: {},
 				currentProfileId: "default",
-				filesReadByRoo: [], // Empty array
+				filesReadByAlpha: [], // Empty array
 				cwd: "/test/project",
 			})
 
@@ -1114,7 +1114,7 @@ describe("Context Management", () => {
 					systemPrompt: "System prompt",
 					taskId,
 					isAutomaticTrigger: true,
-					filesReadByRoo: [],
+					filesReadByAlpha: [],
 					cwd: "/test/project",
 				}),
 			)

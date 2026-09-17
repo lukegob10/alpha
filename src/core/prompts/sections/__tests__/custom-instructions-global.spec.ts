@@ -8,10 +8,10 @@ const {
 	mockReaddir,
 	mockLstat,
 	mockRealpath,
-	mockGetRooDirectoriesForCwd,
-	mockGetAllRooDirectoriesForCwd,
+	mockGetLegacyConfigDirectoriesForCwd,
+	mockGetAllLegacyConfigDirectoriesForCwd,
 	mockGetAgentsDirectoriesForCwd,
-	mockGetGlobalRooDirectory,
+	mockGetLegacyGlobalConfigDirectory,
 } = vi.hoisted(() => ({
 	mockHomedir: vi.fn(),
 	mockStat: vi.fn(),
@@ -19,10 +19,10 @@ const {
 	mockReaddir: vi.fn(),
 	mockLstat: vi.fn(),
 	mockRealpath: vi.fn(),
-	mockGetRooDirectoriesForCwd: vi.fn(),
-	mockGetAllRooDirectoriesForCwd: vi.fn(),
+	mockGetLegacyConfigDirectoriesForCwd: vi.fn(),
+	mockGetAllLegacyConfigDirectoriesForCwd: vi.fn(),
 	mockGetAgentsDirectoriesForCwd: vi.fn(),
-	mockGetGlobalRooDirectory: vi.fn(),
+	mockGetLegacyGlobalConfigDirectory: vi.fn(),
 }))
 
 // Mock os module
@@ -45,11 +45,11 @@ vi.mock("fs/promises", () => ({
 }))
 
 // Mock the roo-config service
-vi.mock("../../../../services/roo-config", () => ({
-	getRooDirectoriesForCwd: mockGetRooDirectoriesForCwd,
-	getAllRooDirectoriesForCwd: mockGetAllRooDirectoriesForCwd,
+vi.mock("../../../../services/config-paths", () => ({
+	getLegacyConfigDirectoriesForCwd: mockGetLegacyConfigDirectoriesForCwd,
+	getAllLegacyConfigDirectoriesForCwd: mockGetAllLegacyConfigDirectoriesForCwd,
 	getAgentsDirectoriesForCwd: mockGetAgentsDirectoriesForCwd,
-	getGlobalRooDirectory: mockGetGlobalRooDirectory,
+	getLegacyGlobalConfigDirectory: mockGetLegacyGlobalConfigDirectory,
 }))
 
 import { loadRuleFiles, addCustomInstructions } from "../custom-instructions"
@@ -57,18 +57,18 @@ import { loadRuleFiles, addCustomInstructions } from "../custom-instructions"
 describe("custom-instructions global .roo support", () => {
 	const mockCwd = "/mock/project"
 	const mockHomeDir = "/mock/home"
-	const globalRooDir = path.join(mockHomeDir, ".roo")
-	const projectRooDir = path.join(mockCwd, ".roo")
+	const legacyGlobalConfigDir = path.join(mockHomeDir, ".roo")
+	const legacyProjectConfigDir = path.join(mockCwd, ".roo")
 
 	beforeEach(() => {
 		vi.clearAllMocks()
 		mockHomedir.mockReturnValue(mockHomeDir)
-		mockGetRooDirectoriesForCwd.mockReturnValue([globalRooDir, projectRooDir])
-		// getAllRooDirectoriesForCwd is now async and returns the same directories by default
-		mockGetAllRooDirectoriesForCwd.mockResolvedValue([globalRooDir, projectRooDir])
+		mockGetLegacyConfigDirectoriesForCwd.mockReturnValue([legacyGlobalConfigDir, legacyProjectConfigDir])
+		// getAllLegacyConfigDirectoriesForCwd is now async and returns the same directories by default
+		mockGetAllLegacyConfigDirectoriesForCwd.mockResolvedValue([legacyGlobalConfigDir, legacyProjectConfigDir])
 		// getAgentsDirectoriesForCwd returns parent directories (without .roo)
 		mockGetAgentsDirectoriesForCwd.mockResolvedValue([mockCwd])
-		mockGetGlobalRooDirectory.mockReturnValue(globalRooDir)
+		mockGetLegacyGlobalConfigDirectory.mockReturnValue(legacyGlobalConfigDir)
 		// Default lstat to reject (file not found)
 		mockLstat.mockRejectedValue(new Error("ENOENT"))
 		mockRealpath.mockImplementation(async (filePath) => filePath.toString())

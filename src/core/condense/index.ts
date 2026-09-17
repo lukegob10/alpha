@@ -11,7 +11,7 @@ import { ApiMessage } from "../task-persistence/apiMessages"
 import { maybeRemoveImageBlocks } from "../../api/transform/image-cleaning"
 import { findLast } from "../../shared/array"
 import { supportPrompt } from "../../shared/support-prompt"
-import { RooIgnoreController } from "../ignore/RooIgnoreController"
+import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
 import { generateFoldedFileContext } from "./foldedFileContext"
 import type { ContextRecoveryStatus } from "../context-management/recovery"
 import { evaluateCompactionProgress, getCompactionTargetTokens } from "../context-management/recovery"
@@ -639,9 +639,9 @@ export type SummarizeConversationOptions = {
 	customCondensingPrompt?: string
 	metadata?: ApiHandlerCreateMessageMetadata
 	environmentDetails?: string
-	filesReadByRoo?: string[]
+	filesReadByAlpha?: string[]
 	cwd?: string
-	rooIgnoreController?: RooIgnoreController
+	alphaIgnoreController?: AlphaIgnoreController
 	/** Hard input budget, including system prompt, tools, summary and exact tail. */
 	maxContextTokens?: number
 	/** Exact recent working set; clamped to the available input budget. */
@@ -696,7 +696,7 @@ export const getToolFreeRequestMetadata = getToolFreeMetadata
  *   message won't have fresh environment details injected.
  * - For MANUAL condensing (isAutomaticTrigger=false): Environment details are NOT included
  *   because fresh environment details will be injected on the very next turn via
- *   getEnvironmentDetails() in recursivelyMakeClineRequests().
+ *   getEnvironmentDetails() in runAgentRequests().
  */
 export async function summarizeConversation(options: SummarizeConversationOptions): Promise<SummarizeResponse> {
 	const {
@@ -708,9 +708,9 @@ export async function summarizeConversation(options: SummarizeConversationOption
 		customCondensingPrompt,
 		metadata,
 		environmentDetails,
-		filesReadByRoo,
+		filesReadByAlpha,
 		cwd,
-		rooIgnoreController,
+		alphaIgnoreController,
 	} = options
 	const signal = metadata?.signal
 	signal?.throwIfAborted()
@@ -1044,12 +1044,12 @@ ${commandBlocks}
 
 	// Generate and add folded file context (smart code folding) if file paths are provided
 	// Each file gets its own <system-reminder> block as a separate content block
-	if (filesReadByRoo && filesReadByRoo.length > 0 && cwd) {
+	if (filesReadByAlpha && filesReadByAlpha.length > 0 && cwd) {
 		try {
 			const foldedResult = await waitForOperation(
-				generateFoldedFileContext(filesReadByRoo, {
+				generateFoldedFileContext(filesReadByAlpha, {
 					cwd,
-					rooIgnoreController,
+					alphaIgnoreController,
 					maxCharacters: Math.min(50_000, summaryBudgetTokens),
 				}),
 				signal,

@@ -1,4 +1,4 @@
-import type { ClineAskUseMcpServer } from "@alpha-code/types"
+import type { AlphaAskUseMcpServer } from "@alpha-code/types"
 import { createHash } from "crypto"
 
 import type { ToolUse } from "../../shared/tools"
@@ -43,7 +43,7 @@ export class AccessMcpResourceTool extends BaseTool<"access_mcp_resource"> {
 				type: "access_mcp_resource",
 				serverName: server_name,
 				uri,
-			} satisfies ClineAskUseMcpServer)
+			} satisfies AlphaAskUseMcpServer)
 
 			const didApprove = await askApproval("use_mcp_server", completeMessage)
 
@@ -130,7 +130,7 @@ export class AccessMcpResourceTool extends BaseTool<"access_mcp_resource"> {
 			type: "access_mcp_resource",
 			serverName: server_name,
 			uri: uri,
-		} satisfies ClineAskUseMcpServer)
+		} satisfies AlphaAskUseMcpServer)
 
 		await task.ask("use_mcp_server", partialMessage, block.partial).catch(() => {})
 	}

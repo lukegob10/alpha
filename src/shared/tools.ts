@@ -2,7 +2,7 @@ import type { CreateTicket, UpdateTicket, DeleteTicket } from "@alpha-code/types
 import { Anthropic } from "@anthropic-ai/sdk"
 
 import type {
-	ClineAsk,
+	AlphaAsk,
 	ToolProgressStatus,
 	ToolGroup,
 	ToolName,
@@ -24,7 +24,7 @@ import type {
 export type ToolResponse = string | Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam>
 
 export type AskApproval = (
-	type: ClineAsk,
+	type: AlphaAsk,
 	partialMessage?: string,
 	progressStatus?: ToolProgressStatus,
 	forceApproval?: boolean,

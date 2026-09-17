@@ -2,7 +2,7 @@ import React, { useImperativeHandle } from "react"
 import { act, fireEvent, render, waitFor } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
 
@@ -12,7 +12,7 @@ interface ExtensionStateMessage {
 	type: "state"
 	state: {
 		version: string
-		clineMessages: ClineMessage[]
+		clineMessages: AlphaMessage[]
 		currentTaskId?: string
 		currentTaskItem?: { id: string; number: number; task: string; ts: number }
 		taskHistory: unknown[]
@@ -106,7 +106,7 @@ vi.mock("../ChatRow", () => ({
 		isExpanded,
 		onToggleExpand,
 	}: {
-		message: ClineMessage
+		message: AlphaMessage
 		isTaskPrompt?: boolean
 		isExpanded: boolean
 		onToggleExpand: (ts: number) => void
@@ -124,20 +124,20 @@ const props: ChatViewProps = {
 	hideAnnouncement: () => {},
 }
 
-const buildMessages = (baseTs: number): ClineMessage[] => [
+const buildMessages = (baseTs: number): AlphaMessage[] => [
 	{ type: "say", say: "text", ts: baseTs, text: "task" },
 	{ type: "say", say: "text", ts: baseTs + 1, text: "row-1" },
 	{ type: "say", say: "text", ts: baseTs + 2, text: "row-2" },
 ]
 
-const buildMessagesWithCheckpoint = (baseTs: number): ClineMessage[] => [
+const buildMessagesWithCheckpoint = (baseTs: number): AlphaMessage[] => [
 	{ type: "say", say: "text", ts: baseTs, text: "task" },
 	{ type: "say", say: "text", ts: baseTs + 1, text: "row-1" },
 	{ type: "say", say: "checkpoint_saved", ts: baseTs + 2, text: "checkpoint-1" },
 	{ type: "say", say: "text", ts: baseTs + 3, text: "row-2" },
 ]
 
-const postState = (clineMessages: ClineMessage[], taskId?: string) => {
+const postState = (clineMessages: AlphaMessage[], taskId?: string) => {
 	const message: ExtensionStateMessage = {
 		type: "state",
 		state: {
@@ -276,7 +276,7 @@ describe("ChatView native scroll behavior", () => {
 
 		try {
 			const baseTs = Date.now() - 10_000
-			const messages: ClineMessage[] = Array.from({ length: 1_001 }, (_, index) => ({
+			const messages: AlphaMessage[] = Array.from({ length: 1_001 }, (_, index) => ({
 				type: "say",
 				say: "text",
 				ts: baseTs + index,
@@ -325,7 +325,7 @@ describe("ChatView native scroll behavior", () => {
 
 		try {
 			const baseTs = Date.now() - 10_000
-			const messages: ClineMessage[] = Array.from({ length: 1_001 }, (_, index) => ({
+			const messages: AlphaMessage[] = Array.from({ length: 1_001 }, (_, index) => ({
 				type: "say",
 				say: "text",
 				ts: baseTs + index,

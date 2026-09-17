@@ -201,13 +201,13 @@ describe("sub-agent task authority", () => {
 
 	it("persists the exact terminal status after a managed child stops", async () => {
 		const updateTaskHistory = vi.fn(async () => undefined)
-		const saveClineMessages = vi.fn(async () => true)
+		const saveAlphaMessages = vi.fn(async () => true)
 		const child = Object.assign(Object.create(Task.prototype), {
 			taskId: "child-1",
 			taskKind: "subagent",
 			initialStatus: "active",
 			clineMessages: [],
-			saveClineMessages,
+			saveAlphaMessages,
 			providerRef: {
 				deref: () => ({
 					getTaskWithId: async () => ({
@@ -229,7 +229,7 @@ describe("sub-agent task authority", () => {
 
 		await child.finalizeSubagentHistory("timed_out", "Timed out after inspecting 4 files.")
 
-		expect(saveClineMessages).toHaveBeenCalledOnce()
+		expect(saveAlphaMessages).toHaveBeenCalledOnce()
 		expect((child as any).initialStatus).toBe("timed_out")
 		expect(updateTaskHistory).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -244,13 +244,13 @@ describe("sub-agent task authority", () => {
 
 	it("repairs a missing completed transcript before persisting terminal history", async () => {
 		const updateTaskHistory = vi.fn(async () => undefined)
-		const saveClineMessages = vi.fn(async () => true)
+		const saveAlphaMessages = vi.fn(async () => true)
 		const child = Object.assign(Object.create(Task.prototype), {
 			taskId: "child-2",
 			taskKind: "subagent",
 			initialStatus: "active",
 			clineMessages: [{ ts: 1, type: "say", say: "api_req_started", text: "{}" }],
-			saveClineMessages,
+			saveAlphaMessages,
 			providerRef: {
 				deref: () => ({
 					getTaskWithId: async () => ({
@@ -285,7 +285,7 @@ describe("sub-agent task authority", () => {
 	})
 
 	it("reconciles only nonterminal children after a reload", async () => {
-		const saveClineMessages = vi.fn(async () => true)
+		const saveAlphaMessages = vi.fn(async () => true)
 		const group: SubagentGroupState = {
 			groupId: "group-1",
 			parentTaskId: "parent-1",
@@ -316,7 +316,7 @@ describe("sub-agent task authority", () => {
 		}
 		const parent = Object.assign(Object.create(Task.prototype), {
 			clineMessages: [{ ts: 1, type: "say", say: "subagent_group", subagentGroup: group }],
-			saveClineMessages,
+			saveAlphaMessages,
 			providerRef: { deref: () => ({ getLiveTaskIds: () => [] }) },
 		}) as Task
 
@@ -326,11 +326,11 @@ describe("sub-agent task authority", () => {
 		expect(group.agents[0].status).toBe("completed")
 		expect(group.agents[1]).toMatchObject({ status: "interrupted" })
 		expect(group.agents[1]).not.toHaveProperty("phase")
-		expect(saveClineMessages).toHaveBeenCalledOnce()
+		expect(saveAlphaMessages).toHaveBeenCalledOnce()
 	})
 
 	it("marks a prepared but never launched group as cancelled after reload", async () => {
-		const saveClineMessages = vi.fn(async () => true)
+		const saveAlphaMessages = vi.fn(async () => true)
 		const group: SubagentGroupState = {
 			groupId: "group-awaiting-launch",
 			parentTaskId: "parent-1",
@@ -351,7 +351,7 @@ describe("sub-agent task authority", () => {
 		}
 		const parent = Object.assign(Object.create(Task.prototype), {
 			clineMessages: [{ ts: 1, type: "say", say: "subagent_group", subagentGroup: group }],
-			saveClineMessages,
+			saveAlphaMessages,
 			providerRef: { deref: () => ({ getLiveTaskIds: () => [] }) },
 		}) as Task
 
@@ -364,6 +364,6 @@ describe("sub-agent task authority", () => {
 			error: expect.stringContaining("never launched"),
 		})
 		expect(group.agents[0].error).not.toContain("resume")
-		expect(saveClineMessages).toHaveBeenCalledOnce()
+		expect(saveAlphaMessages).toHaveBeenCalledOnce()
 	})
 })

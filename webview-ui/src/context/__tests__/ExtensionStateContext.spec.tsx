@@ -4,7 +4,7 @@ import {
 	type ProviderSettings,
 	type ExperimentId,
 	type ExtensionState,
-	type ClineMessage,
+	type AlphaMessage,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	agentLifecycleDegradedSignalSchema,
 	agentLifecycleEventSchema,
@@ -24,7 +24,7 @@ const TicketApprovalTestComponent = () => {
 }
 
 const TestComponent = () => {
-	const { allowedCommands, setAllowedCommands, soundEnabled, showRooIgnoredFiles, setShowRooIgnoredFiles } =
+	const { allowedCommands, setAllowedCommands, soundEnabled, showRooIgnoredFiles, setShowAlphaIgnoredFiles } =
 		useExtensionState()
 
 	return (
@@ -37,7 +37,7 @@ const TestComponent = () => {
 			</button>
 			<button
 				data-testid="toggle-alphaignore-button"
-				onClick={() => setShowRooIgnoredFiles(!showRooIgnoredFiles)}>
+				onClick={() => setShowAlphaIgnoredFiles(!showRooIgnoredFiles)}>
 				Update Commands
 			</button>
 		</div>
@@ -211,7 +211,7 @@ describe("ExtensionStateContext", () => {
 		expect(JSON.parse(screen.getByTestId("show-rooignored-files").textContent!)).toBe(true)
 	})
 
-	it("updates showRooIgnoredFiles through setShowRooIgnoredFiles", () => {
+	it("updates showRooIgnoredFiles through setShowAlphaIgnoredFiles", () => {
 		render(
 			<ExtensionStateContextProvider>
 				<TestComponent />
@@ -450,7 +450,7 @@ describe("ExtensionStateContext", () => {
 		)
 		vi.stubGlobal("cancelAnimationFrame", vi.fn())
 
-		const baseMessage: ClineMessage = {
+		const baseMessage: AlphaMessage = {
 			ts: 1,
 			type: "say",
 			say: "text",
@@ -530,8 +530,8 @@ describe("ExtensionStateContext", () => {
 			}),
 		)
 		vi.stubGlobal("cancelAnimationFrame", vi.fn())
-		const first: ClineMessage = { ts: 1, type: "say", say: "reasoning", text: "first", partial: true }
-		const second: ClineMessage = { ts: 2, type: "say", say: "text", text: "second", partial: true }
+		const first: AlphaMessage = { ts: 1, type: "say", say: "reasoning", text: "first", partial: true }
+		const second: AlphaMessage = { ts: 2, type: "say", say: "text", text: "second", partial: true }
 
 		render(
 			<ExtensionStateContextProvider>
@@ -566,8 +566,8 @@ describe("ExtensionStateContext", () => {
 	})
 
 	it("appends new messages incrementally and rejects stale transcript snapshots", () => {
-		const baseMessage: ClineMessage = { ts: 1, type: "say", say: "text", text: "start" }
-		const createdMessage: ClineMessage = { ts: 2, type: "say", say: "text", text: "created" }
+		const baseMessage: AlphaMessage = { ts: 1, type: "say", say: "text", text: "start" }
+		const createdMessage: AlphaMessage = { ts: 2, type: "say", say: "text", text: "created" }
 
 		render(
 			<ExtensionStateContextProvider>
@@ -610,7 +610,7 @@ describe("ExtensionStateContext", () => {
 	})
 
 	it("updates background task activity without replacing the visible transcript", () => {
-		const foregroundMessage: ClineMessage = { ts: 1, type: "say", say: "text", text: "foreground" }
+		const foregroundMessage: AlphaMessage = { ts: 1, type: "say", say: "text", text: "foreground" }
 		render(
 			<ExtensionStateContextProvider>
 				<BackgroundActivityTestComponent />
@@ -662,7 +662,7 @@ describe("ExtensionStateContext", () => {
 	})
 
 	it("ignores stale incremental messages and replaces duplicate creations idempotently", () => {
-		const baseMessage: ClineMessage = { ts: 1, type: "say", say: "text", text: "current" }
+		const baseMessage: AlphaMessage = { ts: 1, type: "say", say: "text", text: "current" }
 
 		render(
 			<ExtensionStateContextProvider>
@@ -800,8 +800,8 @@ describe("mergeExtensionState", () => {
 			maxReadFileLine: -1,
 		}
 
-		const makeMessage = (ts: number, text: string): ClineMessage =>
-			({ ts, type: "say", say: "text", text }) as ClineMessage
+		const makeMessage = (ts: number, text: string): AlphaMessage =>
+			({ ts, type: "say", say: "text", text }) as AlphaMessage
 
 		it("rejects stale clineMessages when seq is not newer", () => {
 			const newerMessages = [makeMessage(1, "hello"), makeMessage(2, "world")]
@@ -824,7 +824,7 @@ describe("mergeExtensionState", () => {
 		})
 
 		it("does not reopen a completed task when its stale view snapshot arrives after a new-task draft", () => {
-			const draftMessages: ClineMessage[] = []
+			const draftMessages: AlphaMessage[] = []
 			const prevState: ExtensionState = {
 				...baseState,
 				clineMessages: draftMessages,
@@ -1209,7 +1209,7 @@ describe("mergeExtensionState", () => {
 			dispatchExtensionState({
 				currentTaskId: "lifecycle-task",
 				currentView: { type: "task", taskId: "lifecycle-task" },
-				clineMessages: [{ ts: 1, type: "say", say: "text", text: "legacy work" } as ClineMessage],
+				clineMessages: [{ ts: 1, type: "say", say: "text", text: "legacy work" } as AlphaMessage],
 				liveTaskIds: ["lifecycle-task"],
 				liveTasksById: {
 					"lifecycle-task": {

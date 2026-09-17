@@ -1,5 +1,5 @@
 import { Task } from "../task/Task"
-import { ClineProvider } from "./ClineProvider"
+import { AlphaProvider } from "./AlphaProvider"
 import { saveTaskMessages } from "../task-persistence"
 import * as vscode from "vscode"
 import pWaitFor from "p-wait-for"
@@ -7,8 +7,8 @@ import { t } from "../../i18n"
 import { awaitTaskCancellationBoundary } from "./TaskCancellationBoundary"
 
 export interface CheckpointRestoreConfig {
-	provider: ClineProvider
-	currentCline: Task
+	provider: AlphaProvider
+	currentAlpha: Task
 	messageTs: number
 	messageIndex: number
 	checkpoint: { hash: string }
@@ -24,7 +24,7 @@ const pendingRestarts = new WeakSet<Task>()
 
 /** Rewind only after the old task has stopped, then resume a fresh instance with the same identity. */
 export async function restartTaskFromMessage(
-	provider: ClineProvider,
+	provider: AlphaProvider,
 	task: Task,
 	messageTs: number,
 	text: string,
@@ -75,14 +75,14 @@ export async function restartTaskFromMessage(
  * This consolidates the common logic while handling operation-specific behavior.
  */
 export async function handleCheckpointRestoreOperation(config: CheckpointRestoreConfig): Promise<void> {
-	const { provider, currentCline, messageTs, checkpoint, operation, editData } = config
+	const { provider, currentAlpha, messageTs, checkpoint, operation, editData } = config
 
 	try {
 		if (operation === "edit") {
 			if (!editData) throw new Error("An edited prompt is required")
 			await restartTaskFromMessage(
 				provider,
-				currentCline,
+				currentAlpha,
 				messageTs,
 				editData.editedContent,
 				editData.images,
@@ -92,13 +92,13 @@ export async function handleCheckpointRestoreOperation(config: CheckpointRestore
 		}
 		// For delete operations, ensure the task is properly aborted to handle any pending ask operations
 		// This prevents "Current ask promise was ignored" errors
-		if (operation === "delete" && currentCline) {
-			const abortResult = currentCline.abort ? undefined : await currentCline.abortTask()
-			await awaitTaskCancellationBoundary(currentCline, abortResult)
+		if (operation === "delete" && currentAlpha) {
+			const abortResult = currentAlpha.abort ? undefined : await currentAlpha.abortTask()
+			await awaitTaskCancellationBoundary(currentAlpha, abortResult)
 		}
 
 		// Perform the checkpoint restoration
-		await currentCline.checkpointRestore({
+		await currentAlpha.checkpointRestore({
 			ts: messageTs,
 			commitHash: checkpoint.hash,
 			mode: "restore",
@@ -109,13 +109,13 @@ export async function handleCheckpointRestoreOperation(config: CheckpointRestore
 		if (operation === "delete") {
 			// Save the updated messages to disk after checkpoint restoration
 			await saveTaskMessages({
-				messages: currentCline.clineMessages,
-				taskId: currentCline.taskId,
+				messages: currentAlpha.clineMessages,
+				taskId: currentAlpha.taskId,
 				globalStoragePath: provider.contextProxy.globalStorageUri.fsPath,
 			})
 
 			// Get the updated history item and reinitialize
-			const { historyItem } = await provider.getTaskWithId(currentCline.taskId)
+			const { historyItem } = await provider.getTaskWithId(currentAlpha.taskId)
 			await provider.createTaskWithHistoryItem(historyItem)
 		}
 	} catch (error) {
@@ -131,7 +131,7 @@ export async function handleCheckpointRestoreOperation(config: CheckpointRestore
  * Common checkpoint restore validation and initialization utility.
  * This can be used by any checkpoint restore flow that needs to wait for initialization.
  */
-export async function waitForClineInitialization(provider: ClineProvider, timeoutMs: number = 3000): Promise<boolean> {
+export async function waitForAlphaInitialization(provider: AlphaProvider, timeoutMs: number = 3000): Promise<boolean> {
 	try {
 		await pWaitFor(() => provider.getCurrentTask()?.isInitialized === true, {
 			timeout: timeoutMs,

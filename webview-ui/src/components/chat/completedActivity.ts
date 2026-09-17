@@ -1,4 +1,4 @@
-import { TaskLifecycleState, type ClineMessage, type LiveTaskMetadata } from "@alpha-code/types"
+import { TaskLifecycleState, type AlphaMessage, type LiveTaskMetadata } from "@alpha-code/types"
 
 export interface CompletedActivity {
 	id: number
@@ -7,7 +7,7 @@ export interface CompletedActivity {
 	durationMs: number
 }
 
-const isFinalResponse = (message: ClineMessage) =>
+const isFinalResponse = (message: AlphaMessage) =>
 	(message.say === "completion_result" || message.ask === "completion_result") &&
 	message.partial !== true &&
 	Boolean(message.text?.trim() || message.images?.length)
@@ -19,12 +19,12 @@ const isFinalResponse = (message: ClineMessage) =>
  * timestamp; never use a render/reload timestamp for elapsed time.
  */
 export function getCompletedActivity(
-	messages: ClineMessage[],
-	sourceMessages: ClineMessage[],
+	messages: AlphaMessage[],
+	sourceMessages: AlphaMessage[],
 	liveTask?: LiveTaskMetadata,
 ): Map<number, CompletedActivity> {
 	const completed = new Map<number, number>()
-	let candidate: ClineMessage | undefined
+	let candidate: AlphaMessage | undefined
 	let endedAt: number | undefined
 	let hasReviewBoundary = false
 	const finish = (historical: boolean) => {

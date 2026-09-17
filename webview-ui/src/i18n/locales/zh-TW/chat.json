@@ -277,7 +277,9 @@
 		"didSearch": "Alpha 已搜尋一個目錄",
 		"wantsToSearchOutsideWorkspace": "Alpha 想要搜尋一個目錄（工作區外）",
 		"didSearchOutsideWorkspace": "Alpha 已搜尋一個目錄（工作區外）",
-		"wantsToViewMultipleDirectories": "Alpha 想要查看多個目錄"
+		"wantsToViewMultipleDirectories": "Alpha 想要查看多個目錄",
+		"wantsToSearchMultiple": "Alpha 想要執行 {{count}} 檔案搜索",
+		"didSearchMultiple": "Alpha 運行 {{count}} 文件搜索"
 	},
 	"codebaseSearch": {
 		"title": "程式碼庫搜尋",
@@ -475,7 +477,14 @@
 		"clickToEdit": "點選以編輯訊息",
 		"steering": "正在轉向…",
 		"queueFailed": "訊息無法加入佇列。草稿仍保留在輸入框中。",
-		"steerFailed": "無法開始轉向。佇列中的訊息仍然可用。"
+		"steerFailed": "無法開始轉向。佇列中的訊息仍然可用。",
+		"edit": "編輯",
+		"editTooltip": "編輯此排隊訊息",
+		"editing": "在作曲家中編輯",
+		"dragHandle": "拖曳排隊訊息",
+		"dragTooltip": "拖曳以重新排序此排隊訊息",
+		"steer": "轉向",
+		"steerTooltip": "將此排隊訊息發送到當前回合"
 	},
 	"modelResponseDelayed": "正在等待模型的下一次更新。較長的推理可能需要一些時間。",
 	"contextMenu": {
@@ -515,5 +524,30 @@
 		"list_checks": "列出檢查",
 		"merge_pull_request": "合併提取要求",
 		"comment": "新增留言"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "檢查代理",
+			"wait_agent": "等待代理更新",
+			"unknown": "代理行動"
+		},
+		"failed": "{{action}} 失敗：{{error}}",
+		"list": {
+			"running": "考察代理...",
+			"completed": "檢查{{count}}代理",
+			"completed_other": "檢查{{count}}代理商",
+			"mailbox": "{{count}}信箱更新",
+			"mailbox_other": "{{count}}信箱更新"
+		},
+		"wait": {
+			"running": "等待代理更新...",
+			"noActiveAgents": "沒有活躍的代理商等待",
+			"cancelled": "代理等待已取消",
+			"timedOut": "超時前沒有代理更新",
+			"alreadyDelivered": "沒有新的更新；結果已經交付",
+			"received": "收到 {{count}} 代理程式更新",
+			"received_other": "收到 {{count}} 代理程式更新",
+			"completed": "代理等待完成"
+		}
 	}
 }

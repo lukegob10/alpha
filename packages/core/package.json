@@ -15,7 +15,6 @@
 	},
 	"dependencies": {
 		"@alpha-code/types": "workspace:^",
-		"esbuild": "^0.25.0",
 		"execa": "^9.5.2",
 		"ignore": "^7.0.3",
 		"openai": "^5.12.2",

@@ -46,5 +46,8 @@
 	"settings.debugProxy.serverUrl.description": "URL du proxy (par ex. `http://127.0.0.1:8888`). Utilisée uniquement quand le **Debug Proxy** est activé.",
 	"settings.debugProxy.tlsInsecure.description": "Accepter les certificats auto-signés du proxy. **Requis pour l'inspection MITM.** ⚠️ Non sécurisé — à utiliser uniquement pour le debug local.",
 	"command.openTickets.title": "Alpha: Tickets",
-	"command.previewHtmlDocument.title": "Aperçu du document HTML"
+	"command.previewHtmlDocument.title": "Aperçu du document HTML",
+	"command.scheduledTasks.title": "Tâches planifiées",
+	"settings.vsCodeLmModelSelector.version.description": "La version du modèle de langage",
+	"settings.vsCodeLmModelSelector.id.description": "L'identifiant unique du modèle de langage"
 }

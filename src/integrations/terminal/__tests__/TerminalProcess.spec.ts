@@ -7,7 +7,7 @@ import { mergePromise } from "../mergePromise"
 import { TerminalProcess } from "../TerminalProcess"
 import { Terminal } from "../Terminal"
 import { TerminalRegistry } from "../TerminalRegistry"
-import type { RooTerminalCallbacks } from "../types"
+import type { AlphaTerminalCallbacks } from "../types"
 
 class TestTerminalProcess extends TerminalProcess {
 	public callTrimRetrievedOutput(): void {
@@ -203,7 +203,7 @@ describe("TerminalProcess", () => {
 	})
 
 	describe("terminal execution errors", () => {
-		const callbacks = (): RooTerminalCallbacks => ({
+		const callbacks = (): AlphaTerminalCallbacks => ({
 			onLine: vi.fn(),
 			onCompleted: vi.fn(),
 			onShellExecutionStarted: vi.fn(),

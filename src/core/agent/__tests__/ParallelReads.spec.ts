@@ -50,7 +50,7 @@ describe("audited production directory reads", () => {
 			showRooIgnoredFiles: false,
 			disabledTools: [] as string[],
 		}
-		const ignore = { rooIgnoreContent: undefined as string | undefined, validateAccess: () => true }
+		const ignore = { alphaIgnoreContent: undefined as string | undefined, validateAccess: () => true }
 		const provider = { getState: vi.fn(async () => ({ ...state })), getValues: vi.fn(() => ({ ...state })) }
 		const content: any[] = []
 		const task = {
@@ -59,8 +59,8 @@ describe("audited production directory reads", () => {
 			cwd: root,
 			abort: false,
 			providerRef: { deref: () => provider },
-			rooIgnoreController: ignore,
-			rooProtectedController: { isWriteProtected: () => false },
+			alphaIgnoreController: ignore,
+			alphaProtectedController: { isWriteProtected: () => false },
 			consecutiveMistakeCount: 3,
 			userMessageContent: content,
 			ask: vi.fn(async () => ({ response: "noButtonClicked" })),
@@ -162,7 +162,7 @@ describe("audited production directory reads", () => {
 			const run = scheduler.run(calls(1))
 			await started.promise
 			if (kind === "approval") state.alwaysAllowReadOnly = false
-			else if (kind === "ignore") ignore.rooIgnoreContent = "now-ignored"
+			else if (kind === "ignore") ignore.alphaIgnoreContent = "now-ignored"
 			else state.disabledTools = ["list_files"]
 			gate.resolve(listing(path.join(root, "dir-0")))
 			expect((await run).results[0].status).toBe("denied")

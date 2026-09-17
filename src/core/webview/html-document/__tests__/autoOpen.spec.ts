@@ -1,11 +1,11 @@
-import type { ClineMessage, HtmlDocumentTarget } from "@alpha-code/types"
+import type { AlphaMessage, HtmlDocumentTarget } from "@alpha-code/types"
 import { HtmlDocumentAutoOpen } from "../autoOpen"
 
 type OpenDocument = (target: HtmlDocumentTarget, isCurrent: () => boolean) => Promise<void>
 
 const link = (uri = "file:///workspace/review.html", task = "task-1") =>
 	`[Open document](alpha-document://open?uri=${encodeURIComponent(uri)}&task=${task})`
-const completion = (text = link()): ClineMessage => ({
+const completion = (text = link()): AlphaMessage => ({
 	ts: 1,
 	type: "say",
 	say: "completion_result",

@@ -37,7 +37,7 @@ const makeGroup = ({
 })
 
 const makeTask = (groups: SubagentGroupState[]) => {
-	const saveClineMessages = vi.fn(async () => true)
+	const saveAlphaMessages = vi.fn(async () => true)
 	const task = Object.assign(Object.create(Task.prototype), {
 		taskKind: "primary",
 		clineMessages: groups.map((subagentGroup) => ({
@@ -46,10 +46,10 @@ const makeTask = (groups: SubagentGroupState[]) => {
 			say: "subagent_group",
 			subagentGroup,
 		})),
-		saveClineMessages,
+		saveAlphaMessages,
 	}) as Task
 
-	return { task, saveClineMessages }
+	return { task, saveAlphaMessages }
 }
 
 describe("Task asynchronous sub-agent result delivery", () => {

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import * as vscode from "vscode"
-import type { ClineMessage, SkillMetadata } from "@alpha-code/types"
+import type { AlphaMessage, SkillMetadata } from "@alpha-code/types"
 
 import { readBoundedJson } from "../scenarios/extensionWorkflowHost"
 import { inspectToolTransactions } from "../scenarios/transactionAssertions"
@@ -12,8 +12,8 @@ import { waitFor } from "./utils"
 
 interface DocumentTask {
 	taskId: string
-	clineMessages: ClineMessage[]
-	taskAsk?: ClineMessage
+	clineMessages: AlphaMessage[]
+	taskAsk?: AlphaMessage
 	didComplete: boolean
 	approveAsk(): void
 	waitForTermination(): Promise<void>

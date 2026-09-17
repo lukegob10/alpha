@@ -19,9 +19,9 @@ import { getCostBreakdownIfNeeded } from "@src/utils/costFormatting"
 import { batchConsecutive } from "@src/utils/batchConsecutive"
 
 import type {
-	ClineAsk,
-	ClineSayTool,
-	ClineMessage,
+	AlphaAsk,
+	AlphaSayTool,
+	AlphaMessage,
 	ExtensionMessage,
 	AudioType,
 	QueuedMessage,
@@ -78,20 +78,20 @@ export interface ChatViewRef {
 
 export const MAX_IMAGES_PER_MESSAGE = 20 // This is the Anthropic limit.
 
-const messageResponseAskTypes = new Set<ClineAsk>([
+const messageResponseAskTypes = new Set<AlphaAsk>([
 	"followup",
 	"completion_result",
 	"resume_task",
 	"resume_completed_task",
 	"mistake_limit_reached",
 ])
-const completedTaskResponseAskTypes = new Set<ClineAsk>(["completion_result", "resume_completed_task"])
-const approvalAskTypes = new Set<ClineAsk>(["tool", "command", "use_mcp_server"])
+const completedTaskResponseAskTypes = new Set<AlphaAsk>(["completion_result", "resume_completed_task"])
+const approvalAskTypes = new Set<AlphaAsk>(["tool", "command", "use_mcp_server"])
 const MODEL_RESPONSE_DELAY_MS = 30_000
 
-const computeChatItemKey = (index: number, message: ClineMessage) => `${message.ts}:${index}`
+const computeChatItemKey = (index: number, message: AlphaMessage) => `${message.ts}:${index}`
 
-const isCompletedTaskResponseAsk = (ask: ClineAsk | undefined) => Boolean(ask && completedTaskResponseAskTypes.has(ask))
+const isCompletedTaskResponseAsk = (ask: AlphaAsk | undefined) => Boolean(ask && completedTaskResponseAskTypes.has(ask))
 
 /**
  * Recognizes an explicit user request to run context condensation without
@@ -192,7 +192,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	)
 	const messagesRef = useRef(activeMessages)
 	const isBlankTaskPendingRef = useRef(false)
-	const getClineMessages = useCallback(() => messagesRef.current, [])
+	const getAlphaMessages = useCallback(() => messagesRef.current, [])
 
 	// Interaction routing must observe the transcript that committed with the
 	// visible row, before passive ask-control effects can update their state.
@@ -305,7 +305,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	// let us know when an ask comes in and handle it, but by the time
 	// handleMessage is called, the last message might not be the ask anymore
 	// (it could be a say that followed).
-	const [clineAsk, setClineAsk] = useState<ClineAsk | undefined>(undefined)
+	const [alphaAsk, setAlphaAsk] = useState<AlphaAsk | undefined>(undefined)
 	const [enableButtons, setEnableButtons] = useState<boolean>(false)
 	const [primaryButtonText, setPrimaryButtonText] = useState<string | undefined>(undefined)
 	const [secondaryButtonText, setSecondaryButtonText] = useState<string | undefined>(undefined)
@@ -315,8 +315,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		visibleCurrentTaskId && pendingCompletedTaskResumeId === visibleCurrentTaskId,
 	)
 	const latestVisibleMessage = activeMessages.at(-1)
-	const completedTaskResponseAsk = isCompletedTaskResponseAsk(clineAsk)
-		? clineAsk
+	const completedTaskResponseAsk = isCompletedTaskResponseAsk(alphaAsk)
+		? alphaAsk
 		: latestVisibleMessage?.type === "ask" && isCompletedTaskResponseAsk(latestVisibleMessage.ask)
 			? latestVisibleMessage.ask
 			: undefined
@@ -339,7 +339,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		// controls that still apply.
 		if (isVisibleTaskLifecycleDegraded && !shouldClearTerminalControls) {
 			setSendingDisabled(false)
-			setClineAsk(undefined)
+			setAlphaAsk(undefined)
 			setEnableButtons(false)
 			setPrimaryButtonText(undefined)
 			setSecondaryButtonText(undefined)
@@ -347,7 +347,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 		if (!shouldClearTerminalControls) return
 		setSendingDisabled(true)
-		setClineAsk(undefined)
+		setAlphaAsk(undefined)
 		setEnableButtons(false)
 		setPrimaryButtonText(undefined)
 		setSecondaryButtonText(undefined)
@@ -392,10 +392,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		>
 	>(new Map())
 
-	const clineAskRef = useRef(clineAsk)
+	const alphaAskRef = useRef(alphaAsk)
 	useEffect(() => {
-		clineAskRef.current = clineAsk
-	}, [clineAsk])
+		alphaAskRef.current = alphaAsk
+	}, [alphaAsk])
 
 	// Keep inputValueRef in sync with inputValue state
 	useEffect(() => {
@@ -408,8 +408,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	// Compute whether auto-approval is paused (user is typing in a followup)
 	const isFollowUpAutoApprovalPaused = useMemo(() => {
-		return !!(inputValue && inputValue.trim().length > 0 && clineAsk === "followup")
-	}, [inputValue, clineAsk])
+		return !!(inputValue && inputValue.trim().length > 0 && alphaAsk === "followup")
+	}, [inputValue, alphaAsk])
 
 	// Cancel auto-approval timeout when user starts typing
 	useEffect(() => {
@@ -485,7 +485,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						case "api_req_failed":
 							playSound("progress_loop")
 							setSendingDisabled(true)
-							setClineAsk("api_req_failed")
+							setAlphaAsk("api_req_failed")
 							setEnableButtons(true)
 							setPrimaryButtonText(t("chat:retry.title"))
 							setSecondaryButtonText(t("chat:startNewTask.title"))
@@ -493,7 +493,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						case "mistake_limit_reached":
 							playSound("progress_loop")
 							setSendingDisabled(false)
-							setClineAsk("mistake_limit_reached")
+							setAlphaAsk("mistake_limit_reached")
 							setEnableButtons(true)
 							setPrimaryButtonText(t("chat:proceedAnyways.title"))
 							setSecondaryButtonText(t("chat:startNewTask.title"))
@@ -501,14 +501,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						case "followup":
 							if (lastMessage.isAnswered || isVisibleTaskCompleted) {
 								setSendingDisabled(false)
-								setClineAsk(undefined)
+								setAlphaAsk(undefined)
 								setEnableButtons(false)
 								setPrimaryButtonText(undefined)
 								setSecondaryButtonText(undefined)
 								break
 							}
 							setSendingDisabled(isPartial)
-							setClineAsk("followup")
+							setAlphaAsk("followup")
 							// setting enable buttons to `false` would trigger a focus grab when
 							// the text area is enabled which is undesirable.
 							// We have no buttons for this tool, so no problem having them "enabled"
@@ -519,9 +519,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							break
 						case "tool":
 							setSendingDisabled(isPartial)
-							setClineAsk("tool")
+							setAlphaAsk("tool")
 							setEnableButtons(!isPartial)
-							const tool = JSON.parse(lastMessage.text || "{}") as ClineSayTool
+							const tool = JSON.parse(lastMessage.text || "{}") as AlphaSayTool
 							switch (tool.tool) {
 								case "editedExistingFile":
 								case "appliedDiff":
@@ -569,21 +569,21 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							break
 						case "command":
 							setSendingDisabled(isPartial)
-							setClineAsk("command")
+							setAlphaAsk("command")
 							setEnableButtons(!isPartial)
 							setPrimaryButtonText(t("chat:runCommand.title"))
 							setSecondaryButtonText(t("chat:reject.title"))
 							break
 						case "command_output":
 							setSendingDisabled(false)
-							setClineAsk("command_output")
+							setAlphaAsk("command_output")
 							setEnableButtons(true)
 							setPrimaryButtonText(t("chat:proceedWhileRunning.title"))
 							setSecondaryButtonText(t("chat:killCommand.title"))
 							break
 						case "use_mcp_server":
 							setSendingDisabled(isPartial)
-							setClineAsk("use_mcp_server")
+							setAlphaAsk("use_mcp_server")
 							setEnableButtons(!isPartial)
 							setPrimaryButtonText(t("chat:approve.title"))
 							setSecondaryButtonText(t("chat:reject.title"))
@@ -596,14 +596,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 								playSound("celebration")
 							}
 							setSendingDisabled(isPartial)
-							setClineAsk("completion_result")
+							setAlphaAsk("completion_result")
 							setEnableButtons(!isPartial)
 							setPrimaryButtonText(t("chat:startNewTask.title"))
 							setSecondaryButtonText(undefined)
 							break
 						case "resume_task":
 							setSendingDisabled(false)
-							setClineAsk("resume_task")
+							setAlphaAsk("resume_task")
 							setEnableButtons(true)
 							// For completed subtasks, show "Start New Task" instead of "Resume"
 							// A subtask is considered completed if:
@@ -625,7 +625,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							break
 						case "resume_completed_task":
 							setSendingDisabled(false)
-							setClineAsk("resume_completed_task")
+							setAlphaAsk("resume_completed_task")
 							setEnableButtons(true)
 							setPrimaryButtonText(t("chat:startNewTask.title"))
 							setSecondaryButtonText(undefined)
@@ -650,7 +650,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							// images the user has pasted while the chat is in progress.
 							// Images are already cleared in the appropriate user-action
 							// handlers (handleSendMessage, handlePrimaryButtonClick, etc.).
-							setClineAsk(undefined)
+							setAlphaAsk(undefined)
 							setEnableButtons(false)
 							setPrimaryButtonText(undefined)
 							setSecondaryButtonText(undefined)
@@ -671,7 +671,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	// Update button text when messages change (e.g., completion_result is added) for subtasks in resume_task state
 	useEffect(() => {
-		if (clineAsk === "resume_task" && visibleCurrentTaskItem?.parentTaskId) {
+		if (alphaAsk === "resume_task" && visibleCurrentTaskItem?.parentTaskId) {
 			const hasCompletionResult = activeMessages.some(
 				(msg) => msg.ask === "completion_result" || msg.say === "completion_result",
 			)
@@ -680,12 +680,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				setSecondaryButtonText(undefined)
 			}
 		}
-	}, [clineAsk, visibleCurrentTaskItem?.parentTaskId, activeMessages, t])
+	}, [alphaAsk, visibleCurrentTaskItem?.parentTaskId, activeMessages, t])
 
 	useEffect(() => {
 		if (activeMessages.length === 0) {
 			setSendingDisabled(false)
-			setClineAsk(undefined)
+			setAlphaAsk(undefined)
 			setEnableButtons(false)
 			setPrimaryButtonText(undefined)
 			setSecondaryButtonText(undefined)
@@ -733,8 +733,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [])
 
 	const legacyIsStreaming = useMemo(() => {
-		// Checking clineAsk isn't enough since messages effect may be called
-		// again for a tool for example, set clineAsk to its value, and if the
+		// Checking alphaAsk isn't enough since messages effect may be called
+		// again for a tool for example, set alphaAsk to its value, and if the
 		// next message is not an ask then it doesn't reset. This is likely due
 		// to how much more often we're updating messages as compared to before,
 		// and should be resolved with optimizations as it's likely a rendering
@@ -743,7 +743,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		const isLastAsk = !!modifiedMessages.at(-1)?.ask
 
 		const isToolCurrentlyAsking =
-			isLastAsk && clineAsk !== undefined && enableButtons && primaryButtonText !== undefined
+			isLastAsk && alphaAsk !== undefined && enableButtons && primaryButtonText !== undefined
 
 		if (isToolCurrentlyAsking) {
 			return false
@@ -756,7 +756,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		} else {
 			const lastApiReqStarted = findLast(
 				modifiedMessages,
-				(message: ClineMessage) => message.say === "api_req_started",
+				(message: AlphaMessage) => message.say === "api_req_started",
 			)
 
 			if (
@@ -780,12 +780,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 
 		return false
-	}, [modifiedMessages, clineAsk, enableButtons, primaryButtonText])
+	}, [modifiedMessages, alphaAsk, enableButtons, primaryButtonText])
 	const isTurnActive =
 		effectiveVisibleLiveTask?.isTurnActive ?? effectiveVisibleLiveTask?.isStreaming ?? legacyIsStreaming
 	const isToolCurrentlyAsking =
 		Boolean(modifiedMessages.at(-1)?.ask) &&
-		clineAsk !== undefined &&
+		alphaAsk !== undefined &&
 		enableButtons &&
 		primaryButtonText !== undefined
 	const isStreaming = isTurnActive && !effectiveVisibleLiveTask?.isWaitingForInput && !isToolCurrentlyAsking
@@ -821,7 +821,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [visibleCurrentTaskId])
 
 	const markFollowUpAsAnswered = useCallback(() => {
-		const lastFollowUpMessage = messagesRef.current.findLast((msg: ClineMessage) => msg.ask === "followup")
+		const lastFollowUpMessage = messagesRef.current.findLast((msg: AlphaMessage) => msg.ask === "followup")
 		if (lastFollowUpMessage) {
 			setCurrentFollowUpTs(lastFollowUpMessage.ts)
 		}
@@ -840,7 +840,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setInputValue("")
 		setSendingDisabled(true)
 		setSelectedImages([])
-		setClineAsk(undefined)
+		setAlphaAsk(undefined)
 		setEnableButtons(false)
 		// Do not reset mode here as it should persist.
 		// setPrimaryButtonText(undefined)
@@ -967,8 +967,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					isTurnActive ||
 					visibleMessageQueue.length > 0 ||
 					isLastFollowUpAnswered ||
-					clineAskRef.current === "command_output" ||
-					(clineAskRef.current !== undefined && approvalAskTypes.has(clineAskRef.current))
+					alphaAskRef.current === "command_output" ||
+					(alphaAskRef.current !== undefined && approvalAskTypes.has(alphaAskRef.current))
 
 				// Match the CLI contract: mode commands do not become queued user
 				// messages while the current turn or an approval boundary is active.
@@ -1036,8 +1036,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				!isCurrentFollowUpResponse &&
 				(isTurnActive ||
 					visibleMessageQueue.length > 0 ||
-					clineAskRef.current === "command_output" ||
-					(clineAskRef.current !== undefined && approvalAskTypes.has(clineAskRef.current)))
+					alphaAskRef.current === "command_output" ||
+					(alphaAskRef.current !== undefined && approvalAskTypes.has(alphaAskRef.current)))
 
 			if (shouldQueueMessage) {
 				postQueuedMessage(text, images)
@@ -1052,8 +1052,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				vscode.postMessage({ type: "newTask", text, images })
 			} else if (
 				isCurrentFollowUpResponse ||
-				!clineAskRef.current ||
-				messageResponseAskTypes.has(clineAskRef.current)
+				!alphaAskRef.current ||
+				messageResponseAskTypes.has(alphaAskRef.current)
 			) {
 				if (isCurrentFollowUpResponse) {
 					// Claim synchronously: another invoke/click can precede the render or
@@ -1091,7 +1091,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			visibleCurrentTaskId,
 			mode,
 			setMode,
-		], // messagesRef and clineAskRef are stable
+		], // messagesRef and alphaAskRef are stable
 	)
 	const committedSendMessageRef = useRef(handleSendMessage)
 	useLayoutEffect(() => {
@@ -1105,7 +1105,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				pendingCompletedTaskResumeIdRef.current = undefined
 				setPendingCompletedTaskResumeId(undefined)
 				setSendingDisabled(false)
-				setClineAsk("completion_result")
+				setAlphaAsk("completion_result")
 				setEnableButtons(true)
 				setPrimaryButtonText(t("chat:startNewTask.title"))
 				setSecondaryButtonText(undefined)
@@ -1161,7 +1161,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setTimeout(() => textAreaRef.current?.focus(), 0)
 	}, [editingQueuedMessage])
 
-	// This logic depends on the useEffect[messages] above to set clineAsk,
+	// This logic depends on the useEffect[messages] above to set alphaAsk,
 	// after which buttons are shown and we then send an askResponse to the
 	// extension.
 	const handlePrimaryButtonClick = useCallback(
@@ -1176,12 +1176,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			userRespondedRef.current = true
 
 			const trimmedInput = text?.trim()
-			if (isCompletedTaskResponseAsk(clineAsk)) {
+			if (isCompletedTaskResponseAsk(alphaAsk)) {
 				startNewTask(trimmedInput, images)
 				return
 			}
 
-			switch (clineAsk) {
+			switch (alphaAsk) {
 				case "api_req_failed":
 				case "mistake_limit_reached":
 					// Only send text/images if they exist
@@ -1256,13 +1256,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 
 			setSendingDisabled(true)
-			setClineAsk(undefined)
+			setAlphaAsk(undefined)
 			setEnableButtons(false)
 			setPrimaryButtonText(undefined)
 			setSecondaryButtonText(undefined)
 		},
 		[
-			clineAsk,
+			alphaAsk,
 			visibleTaskPayload,
 			startNewTask,
 			visibleCurrentTaskItem?.parentTaskId,
@@ -1282,7 +1282,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			return
 		}
 
-		switch (clineAsk) {
+		switch (alphaAsk) {
 			case "api_req_failed":
 			case "mistake_limit_reached":
 			case "resume_task":
@@ -1307,9 +1307,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				break
 		}
 		setSendingDisabled(true)
-		setClineAsk(undefined)
+		setAlphaAsk(undefined)
 		setEnableButtons(false)
-	}, [clineAsk, visibleTaskPayload, startNewTask, isStreaming, setDidClickCancel, isVisibleTaskFailedOrClosed])
+	}, [alphaAsk, visibleTaskPayload, startNewTask, isStreaming, setDidClickCancel, isVisibleTaskFailedOrClosed])
 
 	const { info: model } = useSelectedModel(apiConfiguration)
 	const chatRowEnvironment = useMemo<ChatRowEnvironment>(
@@ -1322,7 +1322,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			currentTaskId: visibleCurrentTaskId,
 			reasoningBlockCollapsed,
 			modelSupportsImages: model?.supportsImages,
-			getClineMessages,
+			getAlphaMessages,
 		}),
 		[
 			mcpServers,
@@ -1333,7 +1333,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			visibleCurrentTaskId,
 			reasoningBlockCollapsed,
 			model?.supportsImages,
-			getClineMessages,
+			getAlphaMessages,
 		],
 	)
 
@@ -1511,7 +1511,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 
 			if (everVisibleMessagesTsRef.current.has(message.ts)) {
-				const alwaysHiddenOnceProcessedAsk: ClineAsk[] = [
+				const alwaysHiddenOnceProcessedAsk: AlphaAsk[] = [
 					"api_req_failed",
 					"resume_task",
 					"resume_completed_task",
@@ -1566,7 +1566,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		const viewportStart = Math.max(0, newVisibleMessages.length - 100)
 		newVisibleMessages
 			.slice(viewportStart)
-			.forEach((msg: ClineMessage) => everVisibleMessagesTsRef.current.set(msg.ts, true))
+			.forEach((msg: AlphaMessage) => everVisibleMessagesTsRef.current.set(msg.ts, true))
 
 		return newVisibleMessages
 	}, [modifiedMessages])
@@ -1574,9 +1574,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	useEffect(() => {
 		const cleanupInterval = setInterval(() => {
 			const cache = everVisibleMessagesTsRef.current
-			const currentMessageIds = new Set(modifiedMessages.map((m: ClineMessage) => m.ts))
+			const currentMessageIds = new Set(modifiedMessages.map((m: AlphaMessage) => m.ts))
 			const viewportMessages = visibleMessages.slice(Math.max(0, visibleMessages.length - 100))
-			const viewportMessageIds = new Set(viewportMessages.map((m: ClineMessage) => m.ts))
+			const viewportMessageIds = new Set(viewportMessages.map((m: AlphaMessage) => m.ts))
 
 			cache.forEach((_value: boolean, key: number) => {
 				if (!currentMessageIds.has(key) && !viewportMessageIds.has(key)) {
@@ -1632,10 +1632,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [isStreaming, lastMessage, wasStreaming, activeMessages.length])
 
 	const groupedMessages = useMemo(() => {
-		const filtered: ClineMessage[] = visibleMessages
+		const filtered: AlphaMessage[] = visibleMessages
 
 		// Helper to check if a message is a read_file ask that should be batched
-		const isReadFileAsk = (msg: ClineMessage): boolean => {
+		const isReadFileAsk = (msg: AlphaMessage): boolean => {
 			if (msg.type !== "ask" || msg.ask !== "tool") return false
 			try {
 				const tool = JSON.parse(msg.text || "{}")
@@ -1646,7 +1646,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 
 		// Helper to check if a message is a list_files ask that should be batched
-		const isListFilesAsk = (msg: ClineMessage): boolean => {
+		const isListFilesAsk = (msg: AlphaMessage): boolean => {
 			if (msg.type !== "ask" || msg.ask !== "tool") return false
 			try {
 				const tool = JSON.parse(msg.text || "{}")
@@ -1668,7 +1668,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		])
 
 		// Helper to check if a message is a file-edit ask that should be batched
-		const isEditFileAsk = (msg: ClineMessage): boolean => {
+		const isEditFileAsk = (msg: AlphaMessage): boolean => {
 			if (msg.type !== "ask" || msg.ask !== "tool") return false
 			try {
 				const tool = JSON.parse(msg.text || "{}")
@@ -1679,7 +1679,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 
 		// Synthesize a batch of consecutive read_file asks into a single message
-		const synthesizeReadFileBatch = (batch: ClineMessage[]): ClineMessage => {
+		const synthesizeReadFileBatch = (batch: AlphaMessage[]): AlphaMessage => {
 			const batchFiles = batch.map((batchMsg) => {
 				try {
 					const tool = JSON.parse(batchMsg.text || "{}")
@@ -1708,7 +1708,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 
 		// Synthesize a batch of consecutive list_files asks into a single message
-		const synthesizeListFilesBatch = (batch: ClineMessage[]): ClineMessage => {
+		const synthesizeListFilesBatch = (batch: AlphaMessage[]): AlphaMessage => {
 			const batchDirs = batch.map((batchMsg) => {
 				try {
 					const tool = JSON.parse(batchMsg.text || "{}")
@@ -1736,7 +1736,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 
 		// Synthesize a batch of consecutive file-edit asks into a single message
-		const synthesizeEditFileBatch = (batch: ClineMessage[]): ClineMessage => {
+		const synthesizeEditFileBatch = (batch: AlphaMessage[]): AlphaMessage => {
 			const batchDiffs = batch.map((batchMsg) => {
 				try {
 					const tool = JSON.parse(batchMsg.text || "{}")
@@ -1775,7 +1775,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				say: "condense_context",
 				ts: Date.now(),
 				partial: true,
-			} as ClineMessage)
+			} as AlphaMessage)
 		}
 		return result
 	}, [isCondensing, visibleMessages])
@@ -2065,7 +2065,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [renderedGroupedMessages.length, transcriptStartIndex, expandedTraces])
 
 	const itemContent = useCallback(
-		(index: number, messageOrGroup: ClineMessage) => {
+		(index: number, messageOrGroup: AlphaMessage) => {
 			const isLast = index === groupedMessages.length - 1
 
 			// regular message
@@ -2141,7 +2141,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 			// Special case: during command_output, queue the message instead of
 			// triggering the primary button action (which would lose the message)
-			if (clineAskRef.current === "command_output" && hasInput) {
+			if (alphaAskRef.current === "command_output" && hasInput) {
 				postQueuedMessage(inputValue.trim(), selectedImages)
 				return
 			}
@@ -2528,7 +2528,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							Boolean(pendingQueueRequest)
 						}
 						selectApiConfigDisabled={
-							isTurnActive && !isCompletedTaskResponseBoundary && clineAsk !== "api_req_failed"
+							isTurnActive && !isCompletedTaskResponseBoundary && alphaAsk !== "api_req_failed"
 						}
 						placeholderText={placeholderText}
 						selectedImages={selectedImages}

@@ -1,10 +1,10 @@
 // npx vitest run __tests__/provider-delegation.spec.ts
 
 import { describe, it, expect, vi } from "vitest"
-import { RooCodeEventName } from "@alpha-code/types"
-import { ClineProvider } from "../core/webview/ClineProvider"
+import { AlphaCodeEventName } from "@alpha-code/types"
+import { AlphaProvider } from "../core/webview/AlphaProvider"
 
-describe("ClineProvider.delegateParentAndOpenChild()", () => {
+describe("AlphaProvider.delegateParentAndOpenChild()", () => {
 	it("persists parent delegation metadata and emits TaskDelegated", async () => {
 		const providerEmit = vi.fn()
 		const parentTask = {
@@ -17,7 +17,7 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 
 		const childStart = vi.fn()
 		const updateTaskHistory = vi.fn()
-		const removeClineFromStack = vi.fn().mockResolvedValue(undefined)
+		const removeTaskFromStack = vi.fn().mockResolvedValue(undefined)
 		const createTask = vi.fn().mockResolvedValue({ taskId: "child-1", start: childStart })
 		const handleModeSwitch = vi.fn().mockResolvedValue(undefined)
 		const getTaskWithId = vi.fn().mockImplementation(async (id: string) => {
@@ -49,7 +49,7 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 			emit: providerEmit,
 			getCurrentTask: vi.fn(() => parentTask),
 			getLiveTask: vi.fn(() => parentTask),
-			removeClineFromStack,
+			removeTaskFromStack,
 			createTask,
 			getTaskWithId,
 			updateTaskHistory,
@@ -58,7 +58,7 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 			getProviderProfile: vi.fn().mockResolvedValue("default"),
 			isTaskOnScreen: vi.fn(() => true),
 			log: vi.fn(),
-		} as unknown as ClineProvider
+		} as unknown as AlphaProvider
 
 		const params = {
 			parentTaskId: "parent-1",
@@ -67,13 +67,13 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 			mode: "code",
 		}
 
-		const child = await (ClineProvider.prototype as any).delegateParentAndOpenChild.call(provider, params)
+		const child = await (AlphaProvider.prototype as any).delegateParentAndOpenChild.call(provider, params)
 
 		expect(child.taskId).toBe("child-1")
 
 		// Invariant: parent closed before child creation
-		expect(removeClineFromStack).toHaveBeenCalledTimes(1)
-		expect(removeClineFromStack).toHaveBeenCalledWith({ taskId: "parent-1", skipDelegationRepair: true })
+		expect(removeTaskFromStack).toHaveBeenCalledTimes(1)
+		expect(removeTaskFromStack).toHaveBeenCalledWith({ taskId: "parent-1", skipDelegationRepair: true })
 		// Child task is created with startTask: false and initialStatus: "active"
 		expect(createTask).toHaveBeenCalledWith("Do something", undefined, parentTask, {
 			initialTodos: [],
@@ -104,7 +104,7 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 		expect(childStart).toHaveBeenCalledTimes(1)
 
 		// Event emission (provider-level)
-		expect(providerEmit).toHaveBeenCalledWith(RooCodeEventName.TaskDelegated, "parent-1", "child-1")
+		expect(providerEmit).toHaveBeenCalledWith(AlphaCodeEventName.TaskDelegated, "parent-1", "child-1")
 
 		// Delegation must not mutate foreground mode while seeding the child task.
 		expect(handleModeSwitch).not.toHaveBeenCalled()
@@ -125,7 +125,7 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 		const updateTaskHistory = vi.fn(async () => {
 			callOrder.push("updateTaskHistory")
 		})
-		const removeClineFromStack = vi.fn().mockResolvedValue(undefined)
+		const removeTaskFromStack = vi.fn().mockResolvedValue(undefined)
 		const createTask = vi.fn(async () => {
 			callOrder.push("createTask")
 			return { taskId: "child-1", start: childStart }
@@ -146,7 +146,7 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 			emit: vi.fn(),
 			getCurrentTask: vi.fn(() => parentTask),
 			getLiveTask: vi.fn(() => parentTask),
-			removeClineFromStack,
+			removeTaskFromStack,
 			createTask,
 			getTaskWithId,
 			updateTaskHistory,
@@ -155,9 +155,9 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 			getProviderProfile: vi.fn().mockResolvedValue("default"),
 			isTaskOnScreen: vi.fn(() => true),
 			log: vi.fn(),
-		} as unknown as ClineProvider
+		} as unknown as AlphaProvider
 
-		await (ClineProvider.prototype as any).delegateParentAndOpenChild.call(provider, {
+		await (AlphaProvider.prototype as any).delegateParentAndOpenChild.call(provider, {
 			parentTaskId: "parent-1",
 			message: "Do something",
 			initialTodos: [],
@@ -185,7 +185,7 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 			emit: vi.fn(),
 			getCurrentTask: vi.fn(() => focusedTask),
 			getLiveTask: vi.fn((taskId: string) => (taskId === "parent-1" ? parentTask : undefined)),
-			removeClineFromStack: vi.fn().mockResolvedValue(undefined),
+			removeTaskFromStack: vi.fn().mockResolvedValue(undefined),
 			createTask,
 			getTaskWithId: vi.fn().mockResolvedValue({
 				historyItem: {
@@ -202,9 +202,9 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 			getProviderProfile: vi.fn().mockResolvedValue("default"),
 			isTaskOnScreen: vi.fn(() => false),
 			log: vi.fn(),
-		} as unknown as ClineProvider
+		} as unknown as AlphaProvider
 
-		await (ClineProvider.prototype as any).delegateParentAndOpenChild.call(provider, {
+		await (AlphaProvider.prototype as any).delegateParentAndOpenChild.call(provider, {
 			parentTaskId: "parent-1",
 			message: "Do something",
 			initialTodos: [],
@@ -217,7 +217,7 @@ describe("ClineProvider.delegateParentAndOpenChild()", () => {
 			parentTask,
 			expect.objectContaining({ taskMode: "code", taskApiConfigName: "profile-1", background: true }),
 		)
-		expect(provider.removeClineFromStack).toHaveBeenCalledWith({
+		expect(provider.removeTaskFromStack).toHaveBeenCalledWith({
 			taskId: "parent-1",
 			skipDelegationRepair: true,
 		})

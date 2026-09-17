@@ -237,7 +237,9 @@
 		"didViewTopLevelOutsideWorkspace": "Alphaはこのディレクトリ（ワークスペース外）のトップレベルファイルを表示しました",
 		"wantsToViewRecursiveOutsideWorkspace": "Alphaはこのディレクトリ（ワークスペース外）のすべてのファイルを再帰的に表示したい",
 		"didViewRecursiveOutsideWorkspace": "Alphaはこのディレクトリ（ワークスペース外）のすべてのファイルを再帰的に表示しました",
-		"wantsToViewMultipleDirectories": "Alpha は複数のディレクトリを表示したい"
+		"wantsToViewMultipleDirectories": "Alpha は複数のディレクトリを表示したい",
+		"wantsToSearchMultiple": "Alpha は {{count}} ファイル検索の実行を希望しています",
+		"didSearchMultiple": "Alpha は {{count}} ファイル検索を実行しました"
 	},
 	"commandOutput": "コマンド出力",
 	"commandExecution": {
@@ -481,7 +483,14 @@
 		"clickToEdit": "クリックしてメッセージを編集",
 		"steering": "方向転換中…",
 		"queueFailed": "メッセージをキューに追加できませんでした。下書きは入力欄に残っています。",
-		"steerFailed": "方向転換を開始できませんでした。キューのメッセージは引き続き利用できます。"
+		"steerFailed": "方向転換を開始できませんでした。キューのメッセージは引き続き利用できます。",
+		"edit": "編集",
+		"editTooltip": "このキューに入れられたメッセージを編集",
+		"editing": "コンポーザーで編集",
+		"dragHandle": "キューに入れられたメッセージをドラッグ",
+		"dragTooltip": "このキューに入れられたメッセージをドラッグして並べ替える",
+		"steer": "ステアリング",
+		"steerTooltip": "このキューに入れられたメッセージを現在のターンに送信"
 	},
 	"modelResponseDelayed": "モデルからの次の更新を待っています。長い推論には時間がかかることがあります。",
 	"slashCommand": {
@@ -519,5 +528,30 @@
 		"list_checks": "チェックを一覧表示",
 		"merge_pull_request": "プルリクエストをマージ",
 		"comment": "コメントを追加"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "エージェントを検査します",
+			"wait_agent": "エージェントの更新を待ちます",
+			"unknown": "エージェントのアクション"
+		},
+		"failed": "{{action}} が失敗しました: {{error}}",
+		"list": {
+			"running": "エージェントを検査しています...",
+			"completed": "{{count}} エージェントを検査しました",
+			"completed_other": "検査された {{count}} エージェント",
+			"mailbox": "{{count}} メールボックスの更新",
+			"mailbox_other": "{{count}} メールボックスの更新"
+		},
+		"wait": {
+			"running": "エージェントの更新を待機しています...",
+			"noActiveAgents": "待機するアクティブなエージェントがありません",
+			"cancelled": "エージェントの待機はキャンセルされました",
+			"timedOut": "タイムアウトになるまでエージェントの更新はありません",
+			"alreadyDelivered": "新しい更新はありません。結果はすでに配信されています",
+			"received": "{{count}} エージェントの更新を受信しました",
+			"received_other": "{{count}} エージェントの更新を受信しました",
+			"completed": "エージェントの待機が完了しました"
+		}
 	}
 }

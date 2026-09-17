@@ -1,4 +1,4 @@
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 
 import { safeJsonParse } from "./safeJsonParse.js"
 
@@ -14,11 +14,11 @@ export const COMMAND_OUTPUT_STRING = "Output:"
  * When such a sequence is found, it consolidates them into a single message, merging
  * their text contents.
  *
- * @param messages - An array of ClineMessage objects to process.
- * @returns A new array of ClineMessage objects with command and MCP sequences consolidated.
+ * @param messages - An array of AlphaMessage objects to process.
+ * @returns A new array of AlphaMessage objects with command and MCP sequences consolidated.
  *
  * @example
- * const messages: ClineMessage[] = [
+ * const messages: AlphaMessage[] = [
  *   { type: 'ask', ask: 'command', text: 'ls', ts: 1625097600000 },
  *   { type: 'ask', ask: 'command_output', text: 'file1.txt', ts: 1625097601000 },
  *   { type: 'ask', ask: 'command_output', text: 'file2.txt', ts: 1625097602000 }
@@ -26,10 +26,10 @@ export const COMMAND_OUTPUT_STRING = "Output:"
  * const result = consolidateCommands(messages);
  * // Result: [{ type: 'ask', ask: 'command', text: 'ls\nfile1.txt\nfile2.txt', ts: 1625097600000 }]
  */
-export function consolidateCommands(messages: ClineMessage[]): ClineMessage[] {
-	const consolidatedMessages = new Map<number, ClineMessage>()
+export function consolidateCommands(messages: AlphaMessage[]): AlphaMessage[] {
+	const consolidatedMessages = new Map<number, AlphaMessage>()
 	const processedIndices = new Set<number>()
-	const commandOutputs = new Map<string, Array<{ index: number; message: ClineMessage }>>()
+	const commandOutputs = new Map<string, Array<{ index: number; message: AlphaMessage }>>()
 	for (const [index, message] of messages.entries()) {
 		if (message?.commandExecutionId && (message.say === "command_output" || message.ask === "command_output")) {
 			const outputs = commandOutputs.get(message.commandExecutionId) ?? []
@@ -149,7 +149,7 @@ export function consolidateCommands(messages: ClineMessage[]): ClineMessage[] {
 	}
 
 	// Build final result: filter out processed messages and use consolidated versions
-	const result: ClineMessage[] = []
+	const result: AlphaMessage[] = []
 	for (let i = 0; i < messages.length; i++) {
 		const msg = messages[i]
 		if (!msg) continue

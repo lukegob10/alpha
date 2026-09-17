@@ -6,10 +6,10 @@ import pWaitFor from "p-wait-for"
 import { execa } from "execa"
 
 import {
-	type ClineSay,
+	type AlphaSay,
 	type ToolUsage,
 	TaskCommandName,
-	RooCodeEventName,
+	AlphaCodeEventName,
 	IpcMessageType,
 	EVALS_SETTINGS,
 } from "@alpha-code/types"
@@ -85,7 +85,7 @@ export const runTaskInVscode = async ({ run, task, publish, logger, jobToken, wo
 	let taskAbortedAt: number | undefined
 	let taskTimedOut: boolean = false
 	let taskMetricsId: number | undefined
-	let rooTaskId: string | undefined
+	let alphaTaskId: string | undefined
 	let isClientDisconnected = false
 	// Track accumulated tool usage across task instances (handles rehydration after abort)
 	const accumulatedToolUsage: ToolUsage = {}
@@ -97,12 +97,12 @@ export const runTaskInVscode = async ({ run, task, publish, logger, jobToken, wo
 		resolveTaskMetricsReady = resolve
 	})
 
-	const ignoreEvents: Record<"broadcast" | "log", RooCodeEventName[]> = {
-		broadcast: [RooCodeEventName.Message],
-		log: [RooCodeEventName.TaskTokenUsageUpdated, RooCodeEventName.TaskAskResponded],
+	const ignoreEvents: Record<"broadcast" | "log", AlphaCodeEventName[]> = {
+		broadcast: [AlphaCodeEventName.Message],
+		log: [AlphaCodeEventName.TaskTokenUsageUpdated, AlphaCodeEventName.TaskAskResponded],
 	}
 
-	const loggableSays: ClineSay[] = [
+	const loggableSays: AlphaSay[] = [
 		"error",
 		"command_output",
 		"rooignore_error",
@@ -121,7 +121,7 @@ export const runTaskInVscode = async ({ run, task, publish, logger, jobToken, wo
 		const { eventName, payload } = taskEvent
 
 		if (
-			eventName === RooCodeEventName.Message &&
+			eventName === AlphaCodeEventName.Message &&
 			payload[0].message.say &&
 			["api_req_retry_delayed", "api_req_retried"].includes(payload[0].message.say)
 		) {
@@ -137,12 +137,12 @@ export const runTaskInVscode = async ({ run, task, publish, logger, jobToken, wo
 		// For message events we only log non-partial messages.
 		if (
 			!ignoreEvents.log.includes(eventName) &&
-			(eventName !== RooCodeEventName.Message ||
+			(eventName !== AlphaCodeEventName.Message ||
 				(payload[0].message.say && loggableSays.includes(payload[0].message.say)) ||
 				payload[0].message.partial !== true)
 		) {
 			// Dedupe identical repeated message events (same message.ts + same payload)
-			if (eventName === RooCodeEventName.Message) {
+			if (eventName === AlphaCodeEventName.Message) {
 				const action = payload[0]?.action as string | undefined
 				const message = payload[0]?.message
 				if (!messageLogDeduper.shouldLog(action, message)) {
@@ -152,7 +152,7 @@ export const runTaskInVscode = async ({ run, task, publish, logger, jobToken, wo
 
 			// Extract tool name for tool-related messages for clearer logging
 			let logEventName: string = eventName
-			if (eventName === RooCodeEventName.Message && payload[0]?.message?.ask === "tool") {
+			if (eventName === AlphaCodeEventName.Message && payload[0]?.message?.ask === "tool") {
 				try {
 					const textJson = JSON.parse(payload[0].message.text ?? "{}")
 					if (textJson.tool) {
@@ -161,15 +161,15 @@ export const runTaskInVscode = async ({ run, task, publish, logger, jobToken, wo
 				} catch {
 					// If parsing fails, use the default event name
 				}
-			} else if (eventName === RooCodeEventName.Message && payload[0]?.message?.ask === "command") {
+			} else if (eventName === AlphaCodeEventName.Message && payload[0]?.message?.ask === "command") {
 				logEventName = `${eventName} (command)`
-			} else if (eventName === RooCodeEventName.Message && payload[0]?.message?.ask === "completion_result") {
+			} else if (eventName === AlphaCodeEventName.Message && payload[0]?.message?.ask === "completion_result") {
 				logEventName = `${eventName} (completion_result)`
 			}
 			logger.info(`${logEventName} ->`, payload)
 		}
 
-		if (eventName === RooCodeEventName.TaskStarted) {
+		if (eventName === AlphaCodeEventName.TaskStarted) {
 			taskStartedAt = Date.now()
 
 			const taskMetrics = await createTaskMetrics({
@@ -186,18 +186,18 @@ export const runTaskInVscode = async ({ run, task, publish, logger, jobToken, wo
 
 			taskStartedAt = Date.now()
 			taskMetricsId = taskMetrics.id
-			rooTaskId = payload[0]
+			alphaTaskId = payload[0]
 
 			// Signal that taskMetricsId is now ready for other handlers
 			resolveTaskMetricsReady()
 		}
 
-		if (eventName === RooCodeEventName.TaskToolFailed) {
+		if (eventName === AlphaCodeEventName.TaskToolFailed) {
 			const [_taskId, toolName, error] = payload
 			await createToolError({ taskId: task.id, toolName, error })
 		}
 
-		if (eventName === RooCodeEventName.TaskTokenUsageUpdated || eventName === RooCodeEventName.TaskCompleted) {
+		if (eventName === AlphaCodeEventName.TaskTokenUsageUpdated || eventName === AlphaCodeEventName.TaskCompleted) {
 			// Wait for taskMetricsId to be set by the TaskStarted handler.
 			// This prevents a race condition where these events arrive before
 			// the TaskStarted handler finishes its async database operations.
@@ -232,11 +232,11 @@ export const runTaskInVscode = async ({ run, task, publish, logger, jobToken, wo
 			})
 		}
 
-		if (eventName === RooCodeEventName.TaskAborted) {
+		if (eventName === AlphaCodeEventName.TaskAborted) {
 			taskAbortedAt = Date.now()
 		}
 
-		if (eventName === RooCodeEventName.TaskCompleted) {
+		if (eventName === AlphaCodeEventName.TaskCompleted) {
 			taskFinishedAt = Date.now()
 		}
 	})
@@ -272,7 +272,7 @@ export const runTaskInVscode = async ({ run, task, publish, logger, jobToken, wo
 		taskTimedOut = true
 		logger.error("time limit reached")
 
-		if (rooTaskId && !isClientDisconnected) {
+		if (alphaTaskId && !isClientDisconnected) {
 			logger.info("cancelling task")
 			client.sendCommand({ commandName: TaskCommandName.CancelTask })
 			await new Promise((resolve) => setTimeout(resolve, 5_000)) // Allow some time for the task to cancel.
@@ -291,7 +291,7 @@ export const runTaskInVscode = async ({ run, task, publish, logger, jobToken, wo
 	logger.info("setting task finished at")
 	await updateTask(task.id, { finishedAt: new Date() })
 
-	if (rooTaskId && !isClientDisconnected) {
+	if (alphaTaskId && !isClientDisconnected) {
 		logger.info("closing task")
 		client.sendCommand({ commandName: TaskCommandName.CloseTask })
 		await new Promise((resolve) => setTimeout(resolve, 2_000)) // Allow some time for the window to close.
@@ -309,9 +309,9 @@ export const runTaskInVscode = async ({ run, task, publish, logger, jobToken, wo
 
 	// Copy conversation history files from VS Code extension storage to the log directory
 	// for post-mortem analysis. Only do this in containerized mode where we have a known path.
-	if (containerized && rooTaskId) {
+	if (containerized && alphaTaskId) {
 		await copyConversationHistory({
-			rooTaskId,
+			alphaTaskId,
 			logDir,
 			language,
 			exercise,

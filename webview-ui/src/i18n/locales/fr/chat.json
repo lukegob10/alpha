@@ -237,7 +237,9 @@
 		"didViewTopLevelOutsideWorkspace": "Alpha a vu les fichiers de premier niveau dans ce répertoire (hors espace de travail)",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha veut voir récursivement tous les fichiers dans ce répertoire (hors espace de travail)",
 		"didViewRecursiveOutsideWorkspace": "Alpha a vu récursivement tous les fichiers dans ce répertoire (hors espace de travail)",
-		"wantsToViewMultipleDirectories": "Alpha veut voir plusieurs répertoires"
+		"wantsToViewMultipleDirectories": "Alpha veut voir plusieurs répertoires",
+		"wantsToSearchMultiple": "Alpha souhaite exécuter des recherches de fichiers {{count}}",
+		"didSearchMultiple": "Alpha a exécuté des recherches de fichiers {{count}}"
 	},
 	"commandOutput": "Sortie de la Commande",
 	"commandExecution": {
@@ -481,7 +483,14 @@
 		"clickToEdit": "Cliquez pour modifier le message",
 		"steering": "Redirection…",
 		"queueFailed": "Le message n'a pas pu être mis en file d'attente. Votre brouillon reste dans l'éditeur.",
-		"steerFailed": "La redirection n'a pas pu démarrer. Le message reste disponible dans la file d'attente."
+		"steerFailed": "La redirection n'a pas pu démarrer. Le message reste disponible dans la file d'attente.",
+		"edit": "Modifier",
+		"editTooltip": "Modifier ce message en file d'attente",
+		"editing": "Modification dans le compositeur",
+		"dragHandle": "Faites glisser le message en file d'attente",
+		"dragTooltip": "Faites glisser pour réorganiser ce message en file d'attente",
+		"steer": "Diriger",
+		"steerTooltip": "Envoyer ce message en file d'attente dans le tour en cours"
 	},
 	"modelResponseDelayed": "En attente de la prochaine réponse du modèle. Une réflexion approfondie peut prendre du temps.",
 	"slashCommand": {
@@ -519,5 +528,30 @@
 		"list_checks": "Lister les vérifications",
 		"merge_pull_request": "Fusionner la pull request",
 		"comment": "Ajouter un commentaire"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "Inspecter les agents",
+			"wait_agent": "Attendre les mises à jour de l'agent",
+			"unknown": "Action de l'agent"
+		},
+		"failed": "{{action}} a échoué : {{error}}",
+		"list": {
+			"running": "Inspection des agents...",
+			"completed": "Agent {{count}} inspecté",
+			"completed_other": "Agents {{count}} inspectés",
+			"mailbox": "Mise à jour de la boîte aux lettres {{count}}",
+			"mailbox_other": "Mises à jour de la boîte aux lettres {{count}}"
+		},
+		"wait": {
+			"running": "En attente des mises à jour de l'agent...",
+			"noActiveAgents": "Aucun agent actif à attendre",
+			"cancelled": "Attente de l'agent annulée",
+			"timedOut": "Aucune mise à jour de l'agent avant l'expiration du délai",
+			"alreadyDelivered": "Aucune nouvelle mise à jour ; résultats déjà livrés",
+			"received": "Mise à jour de l'agent {{count}} reçue",
+			"received_other": "Mises à jour de l'agent {{count}} reçues",
+			"completed": "Attente de l'agent terminée"
+		}
 	}
 }

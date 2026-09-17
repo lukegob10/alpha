@@ -237,7 +237,9 @@
 		"didViewTopLevelOutsideWorkspace": "已查看目录文件列表（工作区外）",
 		"wantsToViewRecursiveOutsideWorkspace": "需要查看目录所有文件（工作区外）",
 		"didViewRecursiveOutsideWorkspace": "已查看目录所有文件（工作区外）",
-		"wantsToViewMultipleDirectories": "Alpha 想要查看多个目录"
+		"wantsToViewMultipleDirectories": "Alpha 想要查看多个目录",
+		"wantsToSearchMultiple": "Alpha 想要运行 {{count}} 文件搜索",
+		"didSearchMultiple": "Alpha 运行 {{count}} 文件搜索"
 	},
 	"commandOutput": "命令输出",
 	"commandExecution": {
@@ -482,7 +484,14 @@
 		"clickToEdit": "点击编辑消息",
 		"steering": "正在转向…",
 		"queueFailed": "消息无法加入队列。草稿仍保留在输入框中。",
-		"steerFailed": "无法开始转向。队列中的消息仍然可用。"
+		"steerFailed": "无法开始转向。队列中的消息仍然可用。",
+		"edit": "编辑",
+		"editTooltip": "编辑此排队消息",
+		"editing": "在编辑器中编辑",
+		"dragHandle": "拖动排队消息",
+		"dragTooltip": "拖动以重新排序此排队消息",
+		"steer": "转向",
+		"steerTooltip": "将此排队消息发送到当前回合"
 	},
 	"modelResponseDelayed": "正在等待模型的下一次更新。较长的推理可能需要一些时间。",
 	"slashCommand": {
@@ -520,5 +529,30 @@
 		"list_checks": "列出检查",
 		"merge_pull_request": "合并拉取请求",
 		"comment": "添加评论"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "检查代理",
+			"wait_agent": "等待代理更新",
+			"unknown": "代理操作"
+		},
+		"failed": "{{action}} 失败：{{error}}",
+		"list": {
+			"running": "正在检查代理...",
+			"completed": "已检查 {{count}} 代理",
+			"completed_other": "检查 {{count}} 代理",
+			"mailbox": "{{count}} 邮箱更新",
+			"mailbox_other": "{{count}} 邮箱更新"
+		},
+		"wait": {
+			"running": "正在等待代理更新...",
+			"noActiveAgents": "没有活动代理等待",
+			"cancelled": "代理等待已取消",
+			"timedOut": "超时前没有代理更新",
+			"alreadyDelivered": "没有新更新；结果已交付",
+			"received": "已收到 {{count}} 代理更新",
+			"received_other": "已收到 {{count}} 代理更新",
+			"completed": "代理等待已完成"
+		}
 	}
 }

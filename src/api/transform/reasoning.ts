@@ -12,7 +12,7 @@ export type OpenRouterReasoningParams = {
 	exclude?: boolean
 }
 
-export type RooReasoningParams = {
+export type AlphaReasoningParams = {
 	enabled?: boolean
 	effort?: ReasoningEffortExtended
 }
@@ -53,11 +53,11 @@ export const getOpenRouterReasoning = ({
 				: undefined
 			: undefined
 
-export const getRooReasoning = ({
+export const getAlphaReasoning = ({
 	model,
 	reasoningEffort,
 	settings,
-}: GetModelReasoningOptions): RooReasoningParams | undefined => {
+}: GetModelReasoningOptions): AlphaReasoningParams | undefined => {
 	// Check if model supports reasoning effort
 	if (!model.supportsReasoningEffort) {
 		return undefined
@@ -163,7 +163,7 @@ export const getGeminiReasoning = ({
 		return undefined
 	}
 
-	// Settings retain their lowercase values; the SDK exposes the wire enum explicitly.
+	// Settings retain their lowercase values; the SDK now exposes the wire enum explicitly.
 	const thinkingLevels: Record<GeminiThinkingLevel, ThinkingLevel> = {
 		minimal: ThinkingLevel.MINIMAL,
 		low: ThinkingLevel.LOW,

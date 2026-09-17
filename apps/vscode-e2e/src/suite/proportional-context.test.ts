@@ -4,7 +4,7 @@ import * as fs from "fs/promises"
 import * as path from "path"
 import * as vscode from "vscode"
 
-import { RooCodeEventName, type RooCodeSettings } from "@alpha-code/types"
+import { AlphaCodeEventName, type AlphaCodeSettings } from "@alpha-code/types"
 
 import { setDefaultSuiteTimeout } from "./test-utils"
 import { waitFor } from "./utils"
@@ -188,9 +188,9 @@ suite("Alpha proportional context request measurements", function () {
 					const acknowledgeCompletionReview = createCompletionReviewAcknowledger()
 					const completed = new Set<string>()
 					const onCompleted = (taskId: string) => completed.add(taskId)
-					globalThis.api.on(RooCodeEventName.TaskCompleted, onCompleted)
+					globalThis.api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
 					await withFixtureCleanup(async () => {
-						const configuration: RooCodeSettings = {
+						const configuration: AlphaCodeSettings = {
 							...originalConfiguration,
 							apiProvider: "fake-ai",
 							fakeAi: scripted,
@@ -272,7 +272,7 @@ suite("Alpha proportional context request measurements", function () {
 							hostSampleIndex: currentHostSampleIndex,
 						})
 					}, [
-						() => globalThis.api.off(RooCodeEventName.TaskCompleted, onCompleted),
+						() => globalThis.api.off(AlphaCodeEventName.TaskCompleted, onCompleted),
 						() => globalThis.api.clearCurrentTask(),
 						() => scripted.removeFromCache?.(),
 					])

@@ -41,7 +41,9 @@
 		"experimental": "Eksperimental",
 		"language": "Bahasa",
 		"about": "Tentang Alpha",
-		"skills": "Skills"
+		"skills": "Skills",
+		"agents": "Agen",
+		"github": "GitHub"
 	},
 	"about": {
 		"bugReport": {
@@ -209,7 +211,8 @@
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
 			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
 			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
-			"localIndexPathRequired": "Local index path is required"
+			"localIndexPathRequired": "Local index path is required",
+			"embeddingRateLimitSecondsRange": "Penundaan permintaan penyematan harus antara 0,1 dan 60 detik"
 		},
 		"optional": "opsional",
 		"advancedConfigLabel": "Konfigurasi Lanjutan",
@@ -230,7 +233,9 @@
 		"localIndexPathLabel": "Local Index Path",
 		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
 		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
-		"savedSecretPlaceholder": "Saved value hidden"
+		"savedSecretPlaceholder": "Saved value hidden",
+		"embeddingRateLimitLabel": "Batasi tingkat permintaan penyematan",
+		"embeddingRateLimitDescription": "Menambahkan penundaan antara menyematkan permintaan API saat mengindeks. Tingkatkan ini jika penyedia penyematan Anda membatasi laju pengindeksan basis kode."
 	},
 	"autoApprove": {
 		"toggleShortcut": "Anda dapat mengonfigurasi pintasan global untuk pengaturan ini <SettingsLink>di preferensi IDE Anda</SettingsLink>.",
@@ -306,6 +311,10 @@
 		},
 		"maxLimits": {
 			"description": "Secara otomatis membuat permintaan hingga batas ini sebelum meminta persetujuan untuk melanjutkan."
+		},
+		"subagents": {
+			"label": "Sub-agen",
+			"description": "Izinkan Alpha meluncurkan grup sub-agen hanya baca tanpa memerlukan persetujuan. Akses baca juga harus disetujui secara otomatis."
 		}
 	},
 	"providers": {
@@ -385,7 +394,8 @@
 			"hint": "Silakan buka kembali pengaturan untuk melihat model terbaru.",
 			"loading": "Merefresh daftar model...",
 			"success": "Daftar model berhasil direfresh!",
-			"error": "Gagal merefresh daftar model. Silakan coba lagi."
+			"error": "Gagal merefresh daftar model. Silakan coba lagi.",
+			"missingConfig": "Masukkan konfigurasi penyedia yang diperlukan sebelum menyegarkan model."
 		},
 		"getRequestyApiKey": "Dapatkan Requesty API Key",
 		"getRequestyBaseUrl": "Base URL",
@@ -549,7 +559,8 @@
 			"high": "Tinggi",
 			"xhigh": "Sangat tinggi",
 			"medium": "Sedang",
-			"low": "Rendah"
+			"low": "Rendah",
+			"max": "Maksimum"
 		},
 		"verbosity": {
 			"label": "Verbositas Output",
@@ -565,7 +576,55 @@
 			"placeholder": "Default: claude",
 			"maxTokensLabel": "Token Output Maks",
 			"maxTokensDescription": "Jumlah maksimum token output untuk respons Claude Code. Default adalah 8000."
-		}
+		},
+		"vertexStreamingEnabledLabel": "Aktifkan respons streaming",
+		"vertexStreamingEnabledDescription": "Nonaktifkan ini ketika gateway atau model tidak mendukung streaming. Respons akan muncul setelah selesai.",
+		"vscodeLmLoading": "Memuat model bahasa yang tersedia di jendela VS Code ini...",
+		"vscodeLmNoModels": "Tidak ada model bahasa yang tersedia di jendela VS Code ini. Masuk ke GitHub Copilot di sini, aktifkan model yang Anda perlukan dengan 'Chat: Manage Language Models', lalu segarkan.",
+		"vscodeLmRefresh": "Refresh model",
+		"vscodeLmUnavailable": "Model yang dipilih tidak tersedia di jendela VS Code ini. Pilih model yang dikembalikan oleh VS Code, atau aktifkan dengan 'Chat: Manage Language Models'.",
+		"vscodeLmContextSize": {
+			"label": "Jendela konteks",
+			"default": "Standar (token masukan {{contextSize}})",
+			"extended": "Diperluas (token masukan {{contextSize}})",
+			"description": "Pilih anggaran token masukan yang dikirim ke GitHub Copilot untuk model ini. Konteks yang diperluas dapat menggunakan lebih banyak permintaan premium."
+		},
+		"googleCloudProjectId": "Proyek Google Cloud ID",
+		"googleCloudRegion": "Wilayah Google Cloud",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "Telusuri atau masukkan wilayah",
+			"noMatchFound": "Tidak ditemukan wilayah yang cocok",
+			"useCustomRegion": "Gunakan khusus: {{region}}"
+		},
+		"googleCloudCredentials": "Kredensial Google Cloud JSON",
+		"googleCloudKeyFile": "File Kunci Google Cloud",
+		"googleCloudSetup": {
+			"title": "Penyiapan Google Cloud",
+			"step1": "Mengaktifkan Vertex AI dan akses model",
+			"step2": "Menyiapkan Kredensial Default Aplikasi",
+			"step3": "Membuat kunci akun layanan"
+		},
+		"vertexGatewayBaseUrl": "URL Dasar Gateway Vertex",
+		"vertexGatewayCaBundlePath": "Vertex Gateway CA Jalur Paket",
+		"vertexGatewayHelixCommand": "Vertex Gateway Helix Perintah",
+		"vertexGatewayHelixParseMode": "Mode Parsing Vertex Gerbang Helix",
+		"vertexGatewayHelixParseModeRawStdout": "Stout mentah",
+		"vertexGatewayHelixParseModeJsonField": "bidang JSON",
+		"vertexGatewayHelixTokenKey": "Kunci Token Vertex Gerbang Helix",
+		"vertexGatewayTokenRefreshMinutes": "Menit Penyegaran Token Gerbang Vertex",
+		"vertexGatewayModelRoutingMap": "Peta Perutean Model Gerbang Vertex",
+		"vertexGatewayModelRoutingMapDescription": "Objek JSON dikunci oleh model ID. Nilai mungkin berupa string atau objek pengganti model lama dengan projectId, location, modelOverride, dan extraHeaders.",
+		"stellarDescription": "Menyambungkan ke gateway model internal yang kompatibel dengan Stellar OpenAI. Kunci API diambil secara otomatis dengan Helix dan tidak pernah disimpan.",
+		"stellarBaseUrl": "Stellar Basis URL",
+		"stellarCaBundlePath": "Stellar PEM CA Jalur Bundel",
+		"stellarHelixCommand": "Stellar Helix Perintah",
+		"stellarHelixParseMode": "Stellar Mode Parse Helix",
+		"stellarHelixParseModeRawStdout": "Stout mentah",
+		"stellarHelixParseModeJsonField": "bidang JSON",
+		"stellarHelixTokenKey": "Stellar Helix Kunci Token",
+		"stellarTokenRefreshMinutes": "Stellar Menit Penyegaran Token",
+		"stellarStreamingEnabledLabel": "Aktifkan respons streaming",
+		"stellarStreamingEnabledDescription": "Nonaktifkan ini jika penerapan Stellar tidak mendukung streaming. Respons akan muncul setelah selesai."
 	},
 	"checkpoints": {
 		"timeout": {
@@ -905,7 +964,11 @@
 		"providerNotAllowed": "Provider '{{provider}}' tidak diizinkan oleh organisasi kamu",
 		"modelNotAllowed": "Model '{{model}}' tidak diizinkan untuk provider '{{provider}}' oleh organisasi kamu",
 		"profileInvalid": "Profil ini berisi provider atau model yang tidak diizinkan oleh organisasi kamu",
-		"qwenCodeOauthPath": "Kamu harus memberikan jalur kredensial OAuth yang valid"
+		"qwenCodeOauthPath": "Kamu harus memberikan jalur kredensial OAuth yang valid",
+		"googleCloud": "Anda harus menyediakan project Google Cloud ID dan wilayahnya.",
+		"vertexGateway": "Gerbang Vertex memerlukan URL dasar, jalur bundel CA, dan perintah Helix.",
+		"vertexGatewayModelRoutingMap": "Peta Perutean Model Gerbang Vertex harus berupa objek JSON dengan ID model string.",
+		"stellar": "Stellar memerlukan jalur bundel URL dan PEM CA dasar yang valid."
 	},
 	"placeholders": {
 		"apiKey": "Masukkan API Key...",
@@ -967,6 +1030,10 @@
 		"requireCtrlEnterToSend": {
 			"label": "Memerlukan {{primaryMod}}+Enter untuk mengirim pesan",
 			"description": "Ketika diaktifkan, kamu harus menekan {{primaryMod}}+Enter untuk mengirim pesan alih-alih hanya Enter"
+		},
+		"maxConcurrentTasks": {
+			"label": "Tugas paralel maksimum",
+			"description": "Jumlah tugas langsung yang dapat dijalankan pada waktu yang sama. Tugas yang gagal dan diselesaikan tidak dihitung dalam batas ini."
 		}
 	},
 	"skills": {
@@ -1025,5 +1092,39 @@
 		"enabled": "Diaktifkan",
 		"inspectSkill": "Lihat",
 		"builtinDescription": "Disertakan dengan Alpha. Perubahan diterapkan saat Anda menyimpan pengaturan. Keterampilan ruang kerja dan pribadi dengan nama yang sama diprioritaskan; menonaktifkan keterampilan bawaan tidak menonaktifkan versi pengganti Anda."
+	},
+	"agents": {
+		"description": "Pilih profil penyedia tersimpan mana yang digunakan Alpha untuk sub-agen. Penggantian peran lebih diutamakan daripada default, lalu tugas induk diwarisi.",
+		"searchPlaceholder": "Cari profil penyedia...",
+		"noProfilesFound": "Tidak ada profil penyedia yang cocok",
+		"unavailableProfile": "Profil tidak tersedia ({{id}})",
+		"staleWarning": "Profil tersimpan ini tidak tersedia. Sub-agen baru akan menggunakan profil induk hingga Anda memilih profil lain.",
+		"defaultProfile": {
+			"label": "Profil sub-agen default",
+			"inheritParent": "Induk warisan",
+			"description": "Digunakan ketika suatu peran tidak memiliki profilnya sendiri yang diganti."
+		},
+		"roles": {
+			"title": "Penggantian peran",
+			"description": "Secara opsional merutekan setiap peran agen melalui profil penyedia tersimpan yang berbeda.",
+			"useDefault": "Gunakan default",
+			"explore": {
+				"label": "Profil penjelajah",
+				"description": "Penggantian profil opsional untuk agen eksplorasi repositori."
+			},
+			"review": {
+				"label": "Profil pengulas",
+				"description": "Penggantian profil opsional untuk agen ulasan."
+			},
+			"worker": {
+				"label": "Profil pekerja",
+				"description": "Penggantian profil opsional untuk pekerja pengeditan yang terisolasi."
+			}
+		}
+	},
+	"github": {
+		"tokenLabel": "Token GitHub",
+		"tokenPlaceholder": "ghp_...",
+		"tokenDescription": "Disimpan dengan aman di Penyimpanan Rahasia VS Code. Digunakan oleh alat GitHub API asli untuk permintaan penarikan, pemeriksaan, komentar, dan penggabungan."
 	}
 }

@@ -7,7 +7,7 @@ import { fileExistsAtPath } from "../../utils/fs"
 import fs from "fs/promises"
 import { ContextProxy } from "../config/ContextProxy"
 import type { FileMetadataEntry, RecordSource, TaskMetadata } from "./FileContextTrackerTypes"
-import { ClineProvider } from "../webview/ClineProvider"
+import { AlphaProvider } from "../webview/AlphaProvider"
 
 export interface RecentlyModifiedFilesReceipt {
 	readonly files: readonly string[]
@@ -27,17 +27,17 @@ export interface RecentlyModifiedFilesReceipt {
 // If a file is modified outside of Alpha, we detect and track this change to prevent stale context.
 export class FileContextTracker {
 	readonly taskId: string
-	private providerRef: WeakRef<ClineProvider>
+	private providerRef: WeakRef<AlphaProvider>
 
 	// File tracking and watching
 	private fileWatchers = new Map<string, vscode.FileSystemWatcher>()
 	private recentlyModifiedFiles = new Map<string, number>()
 	private recentlyModifiedFilesVersion = 0
-	private recentlyEditedByRoo = new Set<string>()
+	private recentlyEditedByAlpha = new Set<string>()
 	private checkpointPossibleFiles = new Set<string>()
 	private metadataUpdateQueue: Promise<void> = Promise.resolve()
 
-	constructor(provider: ClineProvider, taskId: string) {
+	constructor(provider: AlphaProvider, taskId: string) {
 		this.providerRef = new WeakRef(provider)
 		this.taskId = taskId
 	}
@@ -71,8 +71,8 @@ export class FileContextTracker {
 
 		// Track file changes
 		watcher.onDidChange(() => {
-			if (this.recentlyEditedByRoo.has(filePath)) {
-				this.recentlyEditedByRoo.delete(filePath) // This was an edit by Alpha, no need to inform Alpha
+			if (this.recentlyEditedByAlpha.has(filePath)) {
+				this.recentlyEditedByAlpha.delete(filePath) // This was an edit by Alpha, no need to inform Alpha
 			} else {
 				this.markRecentlyModifiedFile(filePath) // This was a user edit, we will inform Alpha
 				this.trackFileContext(filePath, "user_edited") // Update the task metadata with file tracking
@@ -104,7 +104,7 @@ export class FileContextTracker {
 	public getContextProxy(): ContextProxy | undefined {
 		const provider = this.providerRef.deref()
 		if (!provider) {
-			console.error("ClineProvider reference is no longer valid")
+			console.error("AlphaProvider reference is no longer valid")
 			return undefined
 		}
 		const context = provider.contextProxy
@@ -195,7 +195,7 @@ export class FileContextTracker {
 					newEntry.roo_read_date = now
 					newEntry.roo_edit_date = now
 					this.checkpointPossibleFiles.add(filePath)
-					this.markFileAsEditedByRoo(filePath)
+					this.markFileAsEditedByAlpha(filePath)
 					break
 
 				// read_tool/file_mentioned: Alpha has read the file via a tool or file mention
@@ -275,14 +275,14 @@ export class FileContextTracker {
 	 * @param sinceTimestamp - Optional timestamp to filter files read after this time
 	 * @returns Array of unique file paths that have been read, most recent first
 	 */
-	async getFilesReadByRoo(sinceTimestamp?: number): Promise<string[]> {
+	async getFilesReadByAlpha(sinceTimestamp?: number): Promise<string[]> {
 		try {
 			const metadata = await this.getTaskMetadata(this.taskId)
 
 			const readEntries = metadata.files_in_context.filter((entry) => {
 				// Only include files that were read by Alpha (not user edits)
-				const isReadByRoo = entry.record_source === "read_tool" || entry.record_source === "file_mentioned"
-				if (!isReadByRoo) {
+				const isReadByAlpha = entry.record_source === "read_tool" || entry.record_source === "file_mentioned"
+				if (!isReadByAlpha) {
 					return false
 				}
 
@@ -326,8 +326,8 @@ export class FileContextTracker {
 	}
 
 	// Marks a file as edited by Alpha to prevent false positives in file watchers
-	markFileAsEditedByRoo(filePath: string): void {
-		this.recentlyEditedByRoo.add(filePath)
+	markFileAsEditedByAlpha(filePath: string): void {
+		this.recentlyEditedByAlpha.add(filePath)
 	}
 
 	// Disposes all file watchers

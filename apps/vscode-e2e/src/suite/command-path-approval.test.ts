@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 import * as vscode from "vscode"
-import { type ClineMessage } from "@alpha-code/types"
+import { type AlphaMessage } from "@alpha-code/types"
 import { createCompletionReviewAcknowledger, withBoundedFixtureCleanup } from "./proportional-context-support"
 import { waitFor } from "./utils"
 
@@ -11,8 +11,8 @@ interface ApprovalTask {
 	taskId: string
 	didComplete: boolean
 	abort: boolean
-	taskAsk?: ClineMessage
-	clineMessages: ClineMessage[]
+	taskAsk?: AlphaMessage
+	clineMessages: AlphaMessage[]
 	approveAsk(): void
 	waitForTermination(): Promise<void>
 }

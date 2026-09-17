@@ -59,4 +59,9 @@ qdrant_storage/
 # Architect plans
 plans/
 
-alpha-cli-*.tar.gz*
+# Frontier campaign run output
+.frontier-campaign/campaigns/*/attempts/
+
+# Local build remnants from retired products
+/apps/web-evals/
+/apps/vscode-nightly/

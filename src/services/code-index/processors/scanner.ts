@@ -1,7 +1,7 @@
 import { createIndexPoint, getEmbeddingText, validateEmbeddingBatch } from "../shared/embedding-input"
 import { listFiles } from "../../glob/list-files"
 import { Ignore } from "ignore"
-import { RooIgnoreController } from "../../../core/ignore/RooIgnoreController"
+import { AlphaIgnoreController } from "../../../core/ignore/AlphaIgnoreController"
 import { stat } from "fs/promises"
 import * as path from "path"
 import { generateRelativeFilePath } from "../shared/get-relative-path"
@@ -71,7 +71,7 @@ export class DirectoryScanner implements IDirectoryScanner {
 	/**
 	 * Recursively scans a directory for code blocks in supported files.
 	 * @param directoryPath The directory to scan
-	 * @param rooIgnoreController Optional RooIgnoreController instance for filtering
+	 * @param alphaIgnoreController Optional AlphaIgnoreController instance for filtering
 	 * @param context VS Code ExtensionContext for cache storage
 	 * @param onError Optional error handler callback
 	 * @returns Promise<{codeBlocks: CodeBlock[], stats: {processed: number, skipped: number}}> Array of parsed code blocks and processing stats
@@ -93,8 +93,8 @@ export class DirectoryScanner implements IDirectoryScanner {
 		// Filter out directories (marked with trailing '/')
 		const filePaths = allPaths.filter((p) => !p.endsWith("/"))
 
-		// Initialize RooIgnoreController if not provided
-		const ignoreController = new RooIgnoreController(directoryPath)
+		// Initialize AlphaIgnoreController if not provided
+		const ignoreController = new AlphaIgnoreController(directoryPath)
 
 		await ignoreController.initialize()
 

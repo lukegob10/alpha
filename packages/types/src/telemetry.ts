@@ -1,7 +1,7 @@
 import { z } from "zod"
 
 import { providerNames } from "./provider-settings.js"
-import { clineMessageSchema } from "./message.js"
+import { alphaMessageSchema } from "./message.js"
 
 /**
  * TelemetrySetting
@@ -151,10 +151,10 @@ export type TelemetryEvent = {
 }
 
 /**
- * RooCodeTelemetryEvent
+ * AlphaCodeTelemetryEvent
  */
 
-export const rooCodeTelemetryEventSchema = z.discriminatedUnion("type", [
+export const alphaCodeTelemetryEventSchema = z.discriminatedUnion("type", [
 	z.object({
 		type: z.enum([
 			TelemetryEventName.TASK_CREATED,
@@ -214,7 +214,7 @@ export const rooCodeTelemetryEventSchema = z.discriminatedUnion("type", [
 		properties: z.object({
 			...telemetryPropertiesSchema.shape,
 			taskId: z.string(),
-			message: clineMessageSchema,
+			message: alphaMessageSchema,
 		}),
 	}),
 	z.object({
@@ -230,7 +230,7 @@ export const rooCodeTelemetryEventSchema = z.discriminatedUnion("type", [
 	}),
 ])
 
-export type RooCodeTelemetryEvent = z.infer<typeof rooCodeTelemetryEventSchema>
+export type AlphaCodeTelemetryEvent = z.infer<typeof alphaCodeTelemetryEventSchema>
 
 /**
  * TelemetryEventSubscription
@@ -526,3 +526,9 @@ export function extractConsecutiveMistakeErrorProperties(error: ConsecutiveMista
 		...(error.modelId !== undefined && { modelId: error.modelId }),
 	}
 }
+
+/** @deprecated Use alphaCodeTelemetryEventSchema. Retained for existing API consumers. */
+export { alphaCodeTelemetryEventSchema as rooCodeTelemetryEventSchema }
+
+/** @deprecated Use AlphaCodeTelemetryEvent. Retained for existing API consumers. */
+export type { AlphaCodeTelemetryEvent as RooCodeTelemetryEvent }

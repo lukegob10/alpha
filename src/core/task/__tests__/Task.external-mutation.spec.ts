@@ -20,7 +20,7 @@ const makeTask = (overrides: Record<string, unknown> = {}) =>
 		messageQueueService: { isEmpty: () => true },
 		clineMessages: [{ ts: 1, type: "ask", ask: "followup", text: "Review changes", isAnswered: false }],
 		checkpointSave: vi.fn(async () => undefined),
-		saveClineMessages: vi.fn(async () => undefined),
+		saveAlphaMessages: vi.fn(async () => undefined),
 		cancelAutoApprovalTimeout: vi.fn(),
 		...overrides,
 	}) as Task

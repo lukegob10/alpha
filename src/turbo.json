@@ -8,8 +8,7 @@
 		},
 		"vsix": {
 			"dependsOn": ["bundle"],
-			"inputs": ["dist/**"],
-			"outputs": ["../bin/**"]
+			"cache": false
 		},
 		"watch:bundle": {
 			"dependsOn": ["@alpha-code/build#build", "@alpha-code/types#build"],

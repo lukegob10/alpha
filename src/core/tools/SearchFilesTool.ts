@@ -1,6 +1,6 @@
 import path from "path"
 
-import type { ClineSayTool, SearchFilesOutputMode, SearchFilesQuery, SearchFilesQueryResult } from "@alpha-code/types"
+import type { AlphaSayTool, SearchFilesOutputMode, SearchFilesQuery, SearchFilesQueryResult } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
 import { regexSearchFiles } from "../../services/ripgrep"
@@ -64,7 +64,7 @@ function renderSearchResults(results: SearchFilesResult[]): string {
 				.join("\n\n---\n\n")
 }
 
-function createSearchMessage(results: SearchFilesResult[]): ClineSayTool {
+function createSearchMessage(results: SearchFilesResult[]): AlphaSayTool {
 	return results.length === 1
 		? { tool: "searchFiles", ...results[0] }
 		: {
@@ -199,7 +199,7 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 							absolutePath,
 							query.regex,
 							filePattern,
-							task.rooIgnoreController,
+							task.alphaIgnoreController,
 							callbacks.signal,
 							{ outputMode, literal },
 						)
@@ -217,7 +217,7 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 			callbacks.signal?.throwIfAborted()
 
 			const boundedResults = boundSearchResults(results)
-			const completeMessage: ClineSayTool = {
+			const completeMessage: AlphaSayTool = {
 				...createSearchMessage(boundedResults),
 				// Truncating displayed queries must not hide the full approval scope.
 				isOutsideWorkspace: results.some((result) => result.isOutsideWorkspace),
@@ -256,7 +256,7 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 		const absolutePath = relDirPath ? path.resolve(task.cwd, relDirPath) : task.cwd
 		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
-		const sharedMessageProps: ClineSayTool = {
+		const sharedMessageProps: AlphaSayTool = {
 			tool: "searchFiles",
 			path: getTaskReadablePath(task, relDirPath ?? ""),
 			regex: regex ?? "",
@@ -266,7 +266,7 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 			isOutsideWorkspace,
 		}
 
-		const partialMessage = JSON.stringify({ ...sharedMessageProps, content: "" } satisfies ClineSayTool)
+		const partialMessage = JSON.stringify({ ...sharedMessageProps, content: "" } satisfies AlphaSayTool)
 		await task.ask("tool", partialMessage, block.partial).catch(() => {})
 	}
 }

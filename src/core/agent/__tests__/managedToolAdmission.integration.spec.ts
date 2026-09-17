@@ -1,5 +1,5 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
-import type { ClineAskResponse } from "@alpha-code/types"
+import type { AlphaAskResponse } from "@alpha-code/types"
 import { describe, expect, it, vi } from "vitest"
 
 import type { Task } from "../../task/Task"
@@ -60,7 +60,7 @@ function fixture(name: AdmissionTool) {
 		providerRef: { deref: vi.fn<() => typeof provider | undefined>(() => provider) },
 		getTaskCancellationSignal: () => signal,
 		getTaskLifetimeCancellationSignal: () => signal,
-		ask: vi.fn(async (): Promise<{ response: ClineAskResponse }> => ({ response: "yesButtonClicked" })),
+		ask: vi.fn(async (): Promise<{ response: AlphaAskResponse }> => ({ response: "yesButtonClicked" })),
 		say: vi.fn(async () => {}),
 		recordToolUsage: vi.fn(),
 		recordToolError: vi.fn(),

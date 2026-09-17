@@ -1,4 +1,4 @@
-import { RooCodeEventName, type RooCodeAPI } from "@alpha-code/types"
+import { AlphaCodeEventName, type AlphaCodeAPI } from "@alpha-code/types"
 
 type WaitForOptions = {
 	timeout?: number
@@ -64,40 +64,40 @@ export const waitFor = async (
 }
 
 type WaitUntilAbortedOptions = WaitForOptions & {
-	api: RooCodeAPI
+	api: AlphaCodeAPI
 	taskId: string
 }
 
 export const waitUntilAborted = async ({ api, taskId, ...options }: WaitUntilAbortedOptions) => {
 	const set = new Set<string>()
 	const onTaskAborted = (abortedTaskId: string) => set.add(abortedTaskId)
-	api.on(RooCodeEventName.TaskAborted, onTaskAborted)
+	api.on(AlphaCodeEventName.TaskAborted, onTaskAborted)
 	try {
 		await waitFor(() => set.has(taskId), {
 			description: `task ${taskId} to abort`,
 			...options,
 		})
 	} finally {
-		api.off(RooCodeEventName.TaskAborted, onTaskAborted)
+		api.off(AlphaCodeEventName.TaskAborted, onTaskAborted)
 	}
 }
 
 type WaitUntilCompletedOptions = WaitForOptions & {
-	api: RooCodeAPI
+	api: AlphaCodeAPI
 	taskId: string
 }
 
 export const waitUntilCompleted = async ({ api, taskId, ...options }: WaitUntilCompletedOptions) => {
 	const set = new Set<string>()
 	const onTaskCompleted = (completedTaskId: string) => set.add(completedTaskId)
-	api.on(RooCodeEventName.TaskCompleted, onTaskCompleted)
+	api.on(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
 	try {
 		await waitFor(() => set.has(taskId), {
 			description: `task ${taskId} to complete`,
 			...options,
 		})
 	} finally {
-		api.off(RooCodeEventName.TaskCompleted, onTaskCompleted)
+		api.off(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
 	}
 }
 

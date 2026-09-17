@@ -106,7 +106,8 @@
 		"goToModes": "Перейти в настройки Режимов",
 		"moreInfoMcp": "Просмотреть документацию MCP {{name}}",
 		"validationRequired": "Пожалуйста, укажите значение для {{paramName}}",
-		"prerequisites": "Предварительные требования"
+		"prerequisites": "Предварительные требования",
+		"installing": "Установка…"
 	},
 	"sources": {
 		"title": "Настроить источники marketplace",

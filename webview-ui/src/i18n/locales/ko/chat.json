@@ -237,7 +237,9 @@
 		"didViewTopLevelOutsideWorkspace": "Alpha가 이 디렉토리(워크스페이스 외부)의 최상위 파일을 보았습니다",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha가 이 디렉토리(워크스페이스 외부)의 모든 파일을 재귀적으로 보고 싶어합니다",
 		"didViewRecursiveOutsideWorkspace": "Alpha가 이 디렉토리(워크스페이스 외부)의 모든 파일을 재귀적으로 보았습니다",
-		"wantsToViewMultipleDirectories": "Alpha가 여러 디렉토리를 보려고 합니다"
+		"wantsToViewMultipleDirectories": "Alpha가 여러 디렉토리를 보려고 합니다",
+		"wantsToSearchMultiple": "Alpha는 {{count}} 파일 검색을 실행하려고 합니다.",
+		"didSearchMultiple": "Alpha가 {{count}} 파일 검색을 실행했습니다."
 	},
 	"commandOutput": "명령 출력",
 	"commandExecution": {
@@ -260,7 +262,7 @@
 	"response": "응답",
 	"arguments": "인수",
 	"text": {
-		"rooSaid": "루가 말했다"
+		"rooSaid": "Alpha가 말했다"
 	},
 	"feedback": {
 		"youSaid": "당신은 말했다"
@@ -481,7 +483,14 @@
 		"clickToEdit": "클릭하여 메시지 편집",
 		"steering": "방향 전환 중…",
 		"queueFailed": "메시지를 대기열에 추가하지 못했습니다. 초안은 작성기에 그대로 있습니다.",
-		"steerFailed": "방향 전환을 시작하지 못했습니다. 대기열 메시지는 계속 사용할 수 있습니다."
+		"steerFailed": "방향 전환을 시작하지 못했습니다. 대기열 메시지는 계속 사용할 수 있습니다.",
+		"edit": "편집",
+		"editTooltip": "대기 중인 이 메시지 편집",
+		"editing": "작성기에서 편집 중",
+		"dragHandle": "대기 중인 메시지 드래그",
+		"dragTooltip": "대기 중인 이 메시지를 드래그하여 재정렬",
+		"steer": "조종",
+		"steerTooltip": "대기 중인 이 메시지를 현재 회전으로 보냅니다."
 	},
 	"modelResponseDelayed": "모델의 다음 업데이트를 기다리고 있습니다. 긴 추론에는 시간이 걸릴 수 있습니다.",
 	"slashCommand": {
@@ -519,5 +528,30 @@
 		"list_checks": "검사 목록 보기",
 		"merge_pull_request": "풀 리퀘스트 병합",
 		"comment": "댓글 추가"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "에이전트 검사",
+			"wait_agent": "에이전트 업데이트 대기",
+			"unknown": "에이전트 작업"
+		},
+		"failed": "{{action}} 실패: {{error}}",
+		"list": {
+			"running": "에이전트 검사 중...",
+			"completed": "{{count}} 에이전트 검사",
+			"completed_other": "검사된 {{count}} 에이전트",
+			"mailbox": "{{count}} 사서함 업데이트",
+			"mailbox_other": "{{count}} 사서함 업데이트"
+		},
+		"wait": {
+			"running": "에이전트 업데이트를 기다리는 중...",
+			"noActiveAgents": "대기할 활성 에이전트가 없습니다.",
+			"cancelled": "에이전트 대기가 취소되었습니다.",
+			"timedOut": "시간 초과 전에 에이전트 업데이트가 없습니다.",
+			"alreadyDelivered": "새 업데이트가 없습니다. 결과가 이미 전달되었습니다.",
+			"received": "{{count}} 에이전트 업데이트를 받았습니다.",
+			"received_other": "{{count}} 에이전트 업데이트를 받았습니다.",
+			"completed": "에이전트 대기가 완료되었습니다."
+		}
 	}
 }

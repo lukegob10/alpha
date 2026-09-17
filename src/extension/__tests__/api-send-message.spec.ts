@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 import * as vscode from "vscode"
 
 import { API } from "../api"
-import { ClineProvider } from "../../core/webview/ClineProvider"
+import { AlphaProvider } from "../../core/webview/AlphaProvider"
 import { TaskCommandName } from "@alpha-code/types"
 
 const ipcMock = vi.hoisted(() => ({
@@ -14,7 +14,7 @@ const ipcMock = vi.hoisted(() => ({
 }))
 
 vi.mock("vscode")
-vi.mock("../../core/webview/ClineProvider")
+vi.mock("../../core/webview/AlphaProvider")
 vi.mock("@alpha-code/ipc", () => ({
 	IpcServer: vi.fn().mockImplementation(() => ({
 		listen: ipcMock.listen,
@@ -30,7 +30,7 @@ vi.mock("@alpha-code/ipc", () => ({
 describe("API - SendMessage Command", () => {
 	let api: API
 	let mockOutputChannel: vscode.OutputChannel
-	let mockProvider: ClineProvider
+	let mockProvider: AlphaProvider
 	let mockPostMessageToWebview: ReturnType<typeof vi.fn>
 	let mockLog: ReturnType<typeof vi.fn>
 
@@ -51,7 +51,7 @@ describe("API - SendMessage Command", () => {
 			getCurrentTaskStack: vi.fn().mockReturnValue([]),
 			getCurrentTask: vi.fn().mockReturnValue(undefined),
 			viewLaunched: true,
-		} as unknown as ClineProvider
+		} as unknown as AlphaProvider
 
 		mockLog = vi.fn()
 

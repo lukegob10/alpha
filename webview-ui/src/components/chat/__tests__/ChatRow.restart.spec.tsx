@@ -1,26 +1,26 @@
 import { fireEvent, render, screen } from "@/utils/test-utils"
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
 import { vscode } from "@src/utils/vscode"
 import ChatRow, { type ChatRowEnvironment } from "../ChatRow"
 
 vi.mock("@src/utils/vscode", () => ({ vscode: { postMessage: vi.fn() } }))
 
-const opening: ClineMessage = {
+const opening: AlphaMessage = {
 	ts: 1,
 	type: "say",
 	say: "text",
 	text: "Original prompt",
 	images: ["data:image/png;base64,aGVsbG8="],
 }
-const followup: ClineMessage = { ts: 3, type: "say", say: "user_feedback", text: "Follow-up prompt" }
+const followup: AlphaMessage = { ts: 3, type: "say", say: "user_feedback", text: "Follow-up prompt" }
 const environment: ChatRowEnvironment = {
 	mcpServers: [],
 	alwaysAllowMcp: false,
 	mode: "code",
 	currentTaskId: "restart-task",
 	reasoningBlockCollapsed: true,
-	getClineMessages: () => [],
+	getAlphaMessages: () => [],
 }
 
 describe("reply restart actions", () => {
@@ -31,12 +31,12 @@ describe("reply restart actions", () => {
 		{ type: "ask", ask: "completion_result", text: "Assistant answer" },
 		{ type: "ask", ask: "followup", text: JSON.stringify({ question: "Which option?", suggest: [] }) },
 	] as const)("restarts $type/$say/$ask from the preceding prompt, never a later prompt", (reply) => {
-		const message: ClineMessage = { ...reply, ts: 2 }
+		const message: AlphaMessage = { ...reply, ts: 2 }
 		render(
 			<ExtensionStateContextProvider>
 				<ChatRow
 					message={message}
-					environment={{ ...environment, getClineMessages: () => [opening, message, followup] }}
+					environment={{ ...environment, getAlphaMessages: () => [opening, message, followup] }}
 					isExpanded
 					isLast={false}
 					isStreaming={false}
@@ -57,10 +57,10 @@ describe("reply restart actions", () => {
 	})
 
 	it("uses the nearest follow-up and disables restart while work is running", () => {
-		const message: ClineMessage = { ts: 4, type: "say", say: "completion_result", text: "Second answer" }
+		const message: AlphaMessage = { ts: 4, type: "say", say: "completion_result", text: "Second answer" }
 		const props = {
 			message,
-			environment: { ...environment, getClineMessages: () => [opening, followup, message] },
+			environment: { ...environment, getAlphaMessages: () => [opening, followup, message] },
 			isExpanded: true,
 			isLast: true,
 			onToggleExpand: () => {},

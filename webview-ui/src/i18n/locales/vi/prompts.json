@@ -26,7 +26,9 @@
 			"read": "Đọc tệp",
 			"edit": "Chỉnh sửa tệp",
 			"command": "Chạy lệnh",
-			"mcp": "Sử dụng MCP"
+			"mcp": "Sử dụng MCP",
+			"github": "Sử dụng GitHub",
+			"browser": "Sử dụng trình duyệt tích hợp"
 		},
 		"noTools": "Không có"
 	},

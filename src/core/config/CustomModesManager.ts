@@ -10,13 +10,13 @@ import { type ModeConfig, type PromptComponent, customModesSettingsSchema, modeC
 
 import { fileExistsAtPath } from "../../utils/fs"
 import { getWorkspacePath } from "../../utils/path"
-import { getGlobalRooDirectory } from "../../services/roo-config"
+import { getLegacyGlobalConfigDirectory } from "../../services/config-paths"
 import { logger } from "../../utils/logging"
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { ensureSettingsDirectoryExists } from "../../utils/globalContext"
 import { t } from "../../i18n"
 
-const ROOMODES_FILENAME = ".alphamodes"
+const ALPHAMODES_FILENAME = ".alphamodes"
 
 // Type definitions for import/export functionality
 interface RuleFile {
@@ -70,7 +70,7 @@ export class CustomModesManager {
 		return result
 	}
 
-	private async getWorkspaceRoomodes(): Promise<string | undefined> {
+	private async getWorkspaceAlphaModes(): Promise<string | undefined> {
 		const workspaceFolders = vscode.workspace.workspaceFolders
 
 		if (!workspaceFolders || workspaceFolders.length === 0) {
@@ -78,9 +78,9 @@ export class CustomModesManager {
 		}
 
 		const workspaceRoot = getWorkspacePath()
-		const roomodesPath = path.join(workspaceRoot, ROOMODES_FILENAME)
-		const exists = await fileExistsAtPath(roomodesPath)
-		return exists ? roomodesPath : undefined
+		const alphaModesPath = path.join(workspaceRoot, ALPHAMODES_FILENAME)
+		const exists = await fileExistsAtPath(alphaModesPath)
+		return exists ? alphaModesPath : undefined
 	}
 
 	/**
@@ -135,7 +135,7 @@ export class CustomModesManager {
 			return parsed ?? {}
 		} catch (yamlError) {
 			// For .alphamodes files, try JSON as fallback
-			if (filePath.endsWith(ROOMODES_FILENAME)) {
+			if (filePath.endsWith(ALPHAMODES_FILENAME)) {
 				try {
 					// Try parsing the original content as JSON (not the cleaned content)
 					return JSON.parse(content)
@@ -176,7 +176,7 @@ export class CustomModesManager {
 				console.error(`[CustomModesManager] Schema validation failed for ${filePath}:`, result.error)
 
 				// Show user-friendly error for .alphamodes files
-				if (filePath.endsWith(ROOMODES_FILENAME)) {
+				if (filePath.endsWith(ALPHAMODES_FILENAME)) {
 					const issues = result.error.issues
 						.map((issue) => `• ${issue.path.join(".")}: ${issue.message}`)
 						.join("\n")
@@ -188,8 +188,8 @@ export class CustomModesManager {
 			}
 
 			// Determine source based on file path
-			const isRoomodes = filePath.endsWith(ROOMODES_FILENAME)
-			const source = isRoomodes ? ("project" as const) : ("global" as const)
+			const isAlphaModes = filePath.endsWith(ALPHAMODES_FILENAME)
+			const source = isAlphaModes ? ("project" as const) : ("global" as const)
 
 			// Add source to each mode
 			return result.data.customModes.map((mode) => ({ ...mode, source }))
@@ -283,11 +283,11 @@ export class CustomModesManager {
 				}
 
 				// Get modes from .alphamodes if it exists (takes precedence)
-				const roomodesPath = await this.getWorkspaceRoomodes()
-				const roomodesModes = roomodesPath ? await this.loadModesFromFile(roomodesPath) : []
+				const alphaModesPath = await this.getWorkspaceAlphaModes()
+				const workspaceFileModes = alphaModesPath ? await this.loadModesFromFile(alphaModesPath) : []
 
 				// Merge modes from both sources (.alphamodes takes precedence)
-				const mergedModes = await this.mergeCustomModes(roomodesModes, result.data.customModes)
+				const mergedModes = await this.mergeCustomModes(workspaceFileModes, result.data.customModes)
 				await this.context.globalState.update("customModes", mergedModes)
 				this.clearCache()
 				await this.onUpdate()
@@ -305,15 +305,15 @@ export class CustomModesManager {
 		const workspaceFolders = vscode.workspace.workspaceFolders
 		if (workspaceFolders && workspaceFolders.length > 0) {
 			const workspaceRoot = getWorkspacePath()
-			const roomodesPath = path.join(workspaceRoot, ROOMODES_FILENAME)
-			const roomodesWatcher = vscode.workspace.createFileSystemWatcher(roomodesPath)
+			const alphaModesPath = path.join(workspaceRoot, ALPHAMODES_FILENAME)
+			const alphaModesWatcher = vscode.workspace.createFileSystemWatcher(alphaModesPath)
 
-			const handleRoomodesChange = async () => {
+			const handleAlphaModesChange = async () => {
 				try {
 					const settingsModes = await this.loadModesFromFile(settingsPath)
-					const roomodesModes = await this.loadModesFromFile(roomodesPath)
+					const workspaceFileModes = await this.loadModesFromFile(alphaModesPath)
 					// .alphamodes takes precedence
-					const mergedModes = await this.mergeCustomModes(roomodesModes, settingsModes)
+					const mergedModes = await this.mergeCustomModes(workspaceFileModes, settingsModes)
 					await this.context.globalState.update("customModes", mergedModes)
 					this.clearCache()
 					await this.onUpdate()
@@ -322,10 +322,10 @@ export class CustomModesManager {
 				}
 			}
 
-			this.disposables.push(roomodesWatcher.onDidChange(handleRoomodesChange))
-			this.disposables.push(roomodesWatcher.onDidCreate(handleRoomodesChange))
+			this.disposables.push(alphaModesWatcher.onDidChange(handleAlphaModesChange))
+			this.disposables.push(alphaModesWatcher.onDidCreate(handleAlphaModesChange))
 			this.disposables.push(
-				roomodesWatcher.onDidDelete(async () => {
+				alphaModesWatcher.onDidDelete(async () => {
 					// When .alphamodes is deleted, refresh with only settings modes
 					try {
 						const settingsModes = await this.loadModesFromFile(settingsPath)
@@ -337,7 +337,7 @@ export class CustomModesManager {
 					}
 				}),
 			)
-			this.disposables.push(roomodesWatcher)
+			this.disposables.push(alphaModesWatcher)
 		}
 	}
 
@@ -354,15 +354,15 @@ export class CustomModesManager {
 		const settingsModes = await this.loadModesFromFile(settingsPath)
 
 		// Get modes from .alphamodes if it exists.
-		const roomodesPath = await this.getWorkspaceRoomodes()
-		const roomodesModes = roomodesPath ? await this.loadModesFromFile(roomodesPath) : []
+		const alphaModesPath = await this.getWorkspaceAlphaModes()
+		const workspaceFileModes = alphaModesPath ? await this.loadModesFromFile(alphaModesPath) : []
 
 		// Create maps to store modes by source.
 		const projectModes = new Map<string, ModeConfig>()
 		const globalModes = new Map<string, ModeConfig>()
 
 		// Add project modes (they take precedence).
-		for (const mode of roomodesModes) {
+		for (const mode of workspaceFileModes) {
 			projectModes.set(mode.slug, { ...mode, source: "project" as const })
 		}
 
@@ -375,7 +375,7 @@ export class CustomModesManager {
 
 		// Combine modes in the correct order: project modes first, then global modes.
 		const mergedModes = [
-			...roomodesModes.map((mode) => ({ ...mode, source: "project" as const })),
+			...workspaceFileModes.map((mode) => ({ ...mode, source: "project" as const })),
 			...settingsModes
 				.filter((mode) => !projectModes.has(mode.slug))
 				.map((mode) => ({ ...mode, source: "global" as const })),
@@ -415,10 +415,10 @@ export class CustomModesManager {
 				}
 
 				const workspaceRoot = getWorkspacePath()
-				targetPath = path.join(workspaceRoot, ROOMODES_FILENAME)
+				targetPath = path.join(workspaceRoot, ALPHAMODES_FILENAME)
 				const exists = await fileExistsAtPath(targetPath)
 
-				logger.info(`${exists ? "Updating" : "Creating"} project mode in ${ROOMODES_FILENAME}`, {
+				logger.info(`${exists ? "Updating" : "Creating"} project mode in ${ALPHAMODES_FILENAME}`, {
 					slug,
 					workspace: workspaceRoot,
 				})
@@ -483,11 +483,11 @@ export class CustomModesManager {
 
 	private async refreshMergedState(): Promise<void> {
 		const settingsPath = await this.getCustomModesFilePath()
-		const roomodesPath = await this.getWorkspaceRoomodes()
+		const alphaModesPath = await this.getWorkspaceAlphaModes()
 
 		const settingsModes = await this.loadModesFromFile(settingsPath)
-		const roomodesModes = roomodesPath ? await this.loadModesFromFile(roomodesPath) : []
-		const mergedModes = await this.mergeCustomModes(roomodesModes, settingsModes)
+		const workspaceFileModes = alphaModesPath ? await this.loadModesFromFile(alphaModesPath) : []
+		const mergedModes = await this.mergeCustomModes(workspaceFileModes, settingsModes)
 
 		await this.context.globalState.update("customModes", mergedModes)
 
@@ -499,13 +499,13 @@ export class CustomModesManager {
 	public async deleteCustomMode(slug: string, fromMarketplace = false): Promise<void> {
 		try {
 			const settingsPath = await this.getCustomModesFilePath()
-			const roomodesPath = await this.getWorkspaceRoomodes()
+			const alphaModesPath = await this.getWorkspaceAlphaModes()
 
 			const settingsModes = await this.loadModesFromFile(settingsPath)
-			const roomodesModes = roomodesPath ? await this.loadModesFromFile(roomodesPath) : []
+			const workspaceFileModes = alphaModesPath ? await this.loadModesFromFile(alphaModesPath) : []
 
 			// Find the mode in either file
-			const projectMode = roomodesModes.find((m) => m.slug === slug)
+			const projectMode = workspaceFileModes.find((m) => m.slug === slug)
 			const globalMode = settingsModes.find((m) => m.slug === slug)
 
 			if (!projectMode && !globalMode) {
@@ -517,8 +517,8 @@ export class CustomModesManager {
 
 			await this.queueWrite(async () => {
 				// Delete from project first if it exists there
-				if (projectMode && roomodesPath) {
-					await this.updateModesInFile(roomodesPath, (modes) => modes.filter((m) => m.slug !== slug))
+				if (projectMode && alphaModesPath) {
+					await this.updateModesInFile(alphaModesPath, (modes) => modes.filter((m) => m.slug !== slug))
 				}
 
 				// Delete from global settings if it exists there
@@ -620,17 +620,17 @@ export class CustomModesManager {
 					return false
 				}
 
-				const roomodesPath = path.join(workspacePath, ROOMODES_FILENAME)
+				const alphaModesPath = path.join(workspacePath, ALPHAMODES_FILENAME)
 				try {
-					const roomodesExists = await fileExistsAtPath(roomodesPath)
-					if (roomodesExists) {
-						const roomodesContent = await fs.readFile(roomodesPath, "utf-8")
-						const roomodesData = yaml.parse(roomodesContent)
-						const roomodesModes = roomodesData?.customModes || []
+					const alphaModesExists = await fileExistsAtPath(alphaModesPath)
+					if (alphaModesExists) {
+						const alphaModesContent = await fs.readFile(alphaModesPath, "utf-8")
+						const alphaModesData = yaml.parse(alphaModesContent)
+						const workspaceFileModes = alphaModesData?.customModes || []
 
 						// Check if this specific mode exists in .alphamodes
-						const modeInRoomodes = roomodesModes.find((m: any) => m.slug === slug)
-						if (!modeInRoomodes) {
+						const modeInAlphaModes = workspaceFileModes.find((m: any) => m.slug === slug)
+						if (!modeInAlphaModes) {
 							return false // Mode not found anywhere
 						}
 					} else {
@@ -647,8 +647,8 @@ export class CustomModesManager {
 
 			if (isGlobalMode) {
 				// For global modes, check in global .roo directory
-				const globalRooDir = getGlobalRooDirectory()
-				modeRulesDir = path.join(globalRooDir, `rules-${slug}`)
+				const legacyGlobalConfigDir = getLegacyGlobalConfigDirectory()
+				modeRulesDir = path.join(legacyGlobalConfigDir, `rules-${slug}`)
 			} else {
 				// For project modes, check in workspace .roo directory
 				const workspacePath = getWorkspacePath()
@@ -715,16 +715,16 @@ export class CustomModesManager {
 				// Only check workspace-based modes if workspace is available
 				const workspacePath = getWorkspacePath()
 				if (workspacePath) {
-					const roomodesPath = path.join(workspacePath, ROOMODES_FILENAME)
+					const alphaModesPath = path.join(workspacePath, ALPHAMODES_FILENAME)
 					try {
-						const roomodesExists = await fileExistsAtPath(roomodesPath)
-						if (roomodesExists) {
-							const roomodesContent = await fs.readFile(roomodesPath, "utf-8")
-							const roomodesData = yaml.parse(roomodesContent)
-							const roomodesModes = roomodesData?.customModes || []
+						const alphaModesExists = await fileExistsAtPath(alphaModesPath)
+						if (alphaModesExists) {
+							const alphaModesContent = await fs.readFile(alphaModesPath, "utf-8")
+							const alphaModesData = yaml.parse(alphaModesContent)
+							const workspaceFileModes = alphaModesData?.customModes || []
 
 							// Find the mode in .alphamodes
-							mode = roomodesModes.find((m: any) => m.slug === slug)
+							mode = workspaceFileModes.find((m: any) => m.slug === slug)
 						}
 					} catch (error) {
 						// Continue to check built-in modes
@@ -748,7 +748,7 @@ export class CustomModesManager {
 			let baseDir: string
 			if (isGlobalMode) {
 				// For global modes, use the global .roo directory
-				baseDir = getGlobalRooDirectory()
+				baseDir = getLegacyGlobalConfigDirectory()
 			} else {
 				// For project modes, use the workspace directory
 				const workspacePath = getWorkspacePath()
@@ -841,7 +841,7 @@ export class CustomModesManager {
 		let rulesFolderPath: string
 
 		if (source === "global") {
-			baseDir = getGlobalRooDirectory()
+			baseDir = getLegacyGlobalConfigDirectory()
 			rulesFolderPath = path.join(baseDir, `rules-${importMode.slug}`)
 		} else {
 			const workspacePath = getWorkspacePath()

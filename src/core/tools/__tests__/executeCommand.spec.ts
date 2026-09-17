@@ -9,7 +9,7 @@ import { ExecuteCommandOptions } from "../ExecuteCommandTool"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
 import { Terminal } from "../../../integrations/terminal/Terminal"
 import { ExecaTerminal } from "../../../integrations/terminal/ExecaTerminal"
-import type { RooTerminalCallbacks } from "../../../integrations/terminal/types"
+import type { AlphaTerminalCallbacks } from "../../../integrations/terminal/types"
 
 const fsMocks = vitest.hoisted(() => ({ access: vitest.fn(), realpath: vitest.fn() }))
 
@@ -101,7 +101,7 @@ describe("executeCommand", () => {
 			mockTerminal.getCurrentWorkingDirectory.mockReturnValue(currentCwd)
 
 			// Mock the terminal process to complete successfully
-			mockTerminal.runCommand.mockImplementation((command: string, callbacks: RooTerminalCallbacks) => {
+			mockTerminal.runCommand.mockImplementation((command: string, callbacks: AlphaTerminalCallbacks) => {
 				// Simulate command completion
 				setTimeout(() => {
 					callbacks.onCompleted("Command output", mockProcess)
@@ -141,7 +141,7 @@ describe("executeCommand", () => {
 			mockVSCodeTerminal.getCurrentWorkingDirectory = vitest.fn().mockReturnValue("/test/project/changed-dir")
 			mockVSCodeTerminal.runCommand = vitest
 				.fn()
-				.mockImplementation((command: string, callbacks: RooTerminalCallbacks) => {
+				.mockImplementation((command: string, callbacks: AlphaTerminalCallbacks) => {
 					setTimeout(() => {
 						callbacks.onCompleted("Command output", mockProcess)
 						callbacks.onShellExecutionComplete({ exitCode: 0 }, mockProcess)
@@ -173,7 +173,7 @@ describe("executeCommand", () => {
 			mockExecaTerminal.getCurrentWorkingDirectory = vitest.fn().mockReturnValue("/test/project")
 			mockExecaTerminal.runCommand = vitest
 				.fn()
-				.mockImplementation((command: string, callbacks: RooTerminalCallbacks) => {
+				.mockImplementation((command: string, callbacks: AlphaTerminalCallbacks) => {
 					setTimeout(() => {
 						callbacks.onCompleted("Command output", mockProcess)
 						callbacks.onShellExecutionComplete({ exitCode: 0 }, mockProcess)
@@ -203,7 +203,7 @@ describe("executeCommand", () => {
 			const customCwd = "/custom/absolute/path"
 
 			mockTerminal.getCurrentWorkingDirectory.mockReturnValue(customCwd)
-			mockTerminal.runCommand.mockImplementation((command: string, callbacks: RooTerminalCallbacks) => {
+			mockTerminal.runCommand.mockImplementation((command: string, callbacks: AlphaTerminalCallbacks) => {
 				setTimeout(() => {
 					callbacks.onCompleted("Command output", mockProcess)
 					callbacks.onShellExecutionComplete({ exitCode: 0 }, mockProcess)
@@ -232,7 +232,7 @@ describe("executeCommand", () => {
 			const resolvedCwd = path.resolve(mockTask.cwd, relativeCwd)
 
 			mockTerminal.getCurrentWorkingDirectory.mockReturnValue(resolvedCwd)
-			mockTerminal.runCommand.mockImplementation((command: string, callbacks: RooTerminalCallbacks) => {
+			mockTerminal.runCommand.mockImplementation((command: string, callbacks: AlphaTerminalCallbacks) => {
 				setTimeout(() => {
 					callbacks.onCompleted("Command output", mockProcess)
 					callbacks.onShellExecutionComplete({ exitCode: 0 }, mockProcess)
@@ -281,7 +281,7 @@ describe("executeCommand", () => {
 
 	describe("Terminal Provider Selection", () => {
 		it("should use vscode provider when shell integration is enabled", async () => {
-			mockTerminal.runCommand.mockImplementation((command: string, callbacks: RooTerminalCallbacks) => {
+			mockTerminal.runCommand.mockImplementation((command: string, callbacks: AlphaTerminalCallbacks) => {
 				setTimeout(() => {
 					callbacks.onCompleted("Command output", mockProcess)
 					callbacks.onShellExecutionComplete({ exitCode: 0 }, mockProcess)
@@ -303,7 +303,7 @@ describe("executeCommand", () => {
 		})
 
 		it("should use execa provider when shell integration is disabled", async () => {
-			mockTerminal.runCommand.mockImplementation((command: string, callbacks: RooTerminalCallbacks) => {
+			mockTerminal.runCommand.mockImplementation((command: string, callbacks: AlphaTerminalCallbacks) => {
 				setTimeout(() => {
 					callbacks.onCompleted("Command output", mockProcess)
 					callbacks.onShellExecutionComplete({ exitCode: 0 }, mockProcess)
@@ -327,7 +327,7 @@ describe("executeCommand", () => {
 		it("forces managed workers to execa when shell integration is enabled", async () => {
 			mockTask.taskKind = "subagent"
 			mockTask.subagentRole = "worker"
-			mockTerminal.runCommand.mockImplementation((_command: string, callbacks: RooTerminalCallbacks) => {
+			mockTerminal.runCommand.mockImplementation((_command: string, callbacks: AlphaTerminalCallbacks) => {
 				setTimeout(() => {
 					callbacks.onCompleted("Command output", mockProcess)
 					callbacks.onShellExecutionComplete({ exitCode: 0 }, mockProcess)
@@ -394,7 +394,7 @@ describe("executeCommand", () => {
 			mockTerminal.busy = true
 			mockTerminal.taskId = mockTask.taskId
 			mockTerminal.process = backgroundProcess
-			mockTerminal.runCommand.mockImplementation((_command: string, callbacks: RooTerminalCallbacks) => {
+			mockTerminal.runCommand.mockImplementation((_command: string, callbacks: AlphaTerminalCallbacks) => {
 				void callbacks.onLine("PID_READY=12345\n", backgroundProcess)
 				return backgroundProcess
 			})
@@ -491,7 +491,7 @@ describe("executeCommand", () => {
 	describe("Command Execution States", () => {
 		it("should handle completed command with exit code 0", async () => {
 			mockTerminal.getCurrentWorkingDirectory.mockReturnValue("/test/project")
-			mockTerminal.runCommand.mockImplementation((command: string, callbacks: RooTerminalCallbacks) => {
+			mockTerminal.runCommand.mockImplementation((command: string, callbacks: AlphaTerminalCallbacks) => {
 				setTimeout(() => {
 					callbacks.onCompleted("Command completed successfully", mockProcess)
 					callbacks.onShellExecutionComplete({ exitCode: 0 }, mockProcess)
@@ -515,7 +515,7 @@ describe("executeCommand", () => {
 		})
 
 		it("records terminal exit evidence independently of model-facing output", async () => {
-			mockTerminal.runCommand.mockImplementation((_command: string, callbacks: RooTerminalCallbacks) => {
+			mockTerminal.runCommand.mockImplementation((_command: string, callbacks: AlphaTerminalCallbacks) => {
 				setTimeout(() => {
 					callbacks.onShellExecutionComplete({ exitCode: 0 }, mockProcess)
 					callbacks.onCompleted("output without an exit-code string", mockProcess)
@@ -540,7 +540,7 @@ describe("executeCommand", () => {
 
 		it("should handle completed command with non-zero exit code", async () => {
 			mockTerminal.getCurrentWorkingDirectory.mockReturnValue("/test/project")
-			mockTerminal.runCommand.mockImplementation((command: string, callbacks: RooTerminalCallbacks) => {
+			mockTerminal.runCommand.mockImplementation((command: string, callbacks: AlphaTerminalCallbacks) => {
 				setTimeout(() => {
 					callbacks.onCompleted("Command failed", mockProcess)
 					callbacks.onShellExecutionComplete({ exitCode: 1 }, mockProcess)
@@ -566,7 +566,7 @@ describe("executeCommand", () => {
 
 		it("should handle command terminated by signal", async () => {
 			mockTerminal.getCurrentWorkingDirectory.mockReturnValue("/test/project")
-			mockTerminal.runCommand.mockImplementation((command: string, callbacks: RooTerminalCallbacks) => {
+			mockTerminal.runCommand.mockImplementation((command: string, callbacks: AlphaTerminalCallbacks) => {
 				setTimeout(() => {
 					callbacks.onCompleted("Command interrupted", mockProcess)
 					callbacks.onShellExecutionComplete(
@@ -611,7 +611,7 @@ describe("executeCommand", () => {
 				...mockTerminal,
 				terminal: { show: vitest.fn() },
 				getCurrentWorkingDirectory: vitest.fn().mockReturnValue(updatedCwd),
-				runCommand: vitest.fn().mockImplementation((command: string, callbacks: RooTerminalCallbacks) => {
+				runCommand: vitest.fn().mockImplementation((command: string, callbacks: AlphaTerminalCallbacks) => {
 					setTimeout(() => {
 						callbacks.onCompleted("Directory changed", mockProcess)
 						callbacks.onShellExecutionComplete({ exitCode: 0 }, mockProcess)
@@ -646,7 +646,7 @@ describe("executeCommand", () => {
 		const backgroundProcess = new Promise<void>((resolve) => (resolveProcess = resolve)) as any
 		backgroundProcess.continue = vitest.fn()
 		mockTask.ask = vitest.fn().mockResolvedValue({ response: "messageResponse" })
-		mockTerminal.runCommand.mockImplementation((_command: string, callbacks: RooTerminalCallbacks) => {
+		mockTerminal.runCommand.mockImplementation((_command: string, callbacks: AlphaTerminalCallbacks) => {
 			setTimeout(async () => {
 				await callbacks.onLine("untracked output", backgroundProcess)
 				resolveProcess()

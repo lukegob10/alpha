@@ -15,12 +15,12 @@ import { listFiles } from "../../../services/glob/list-files"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
 import { Terminal } from "../../../integrations/terminal/Terminal"
 import { ExecaTerminalProcess } from "../../../integrations/terminal/ExecaTerminalProcess"
-import type { RooTerminalProcess } from "../../../integrations/terminal/types"
+import type { AlphaTerminalProcess } from "../../../integrations/terminal/types"
 import { arePathsEqual } from "../../../utils/path"
 import { FileContextTracker } from "../../context-tracking/FileContextTracker"
 import { ApiHandler } from "../../../api/index"
-import { ClineProvider } from "../../webview/ClineProvider"
-import { RooIgnoreController } from "../../ignore/RooIgnoreController"
+import { AlphaProvider } from "../../webview/AlphaProvider"
+import { AlphaIgnoreController } from "../../ignore/AlphaIgnoreController"
 import { formatResponse } from "../../prompts/responses"
 import { getGitStatus } from "../../../utils/git"
 import { Task } from "../../task/Task"
@@ -74,7 +74,7 @@ describe("getEnvironmentDetails", () => {
 		getCurrentWorkingDirectory: Mock
 	}
 
-	let mockCline: Partial<Task>
+	let mockAlphaTask: Partial<Task>
 	let mockProvider: any
 	let mockState: any
 
@@ -99,7 +99,7 @@ describe("getEnvironmentDetails", () => {
 			getState: vi.fn().mockResolvedValue(mockState),
 		}
 
-		mockCline = {
+		mockAlphaTask = {
 			cwd: mockCwd,
 			taskId: mockTaskId,
 			getTaskMode: vi.fn().mockResolvedValue("code"),
@@ -107,19 +107,19 @@ describe("getEnvironmentDetails", () => {
 			fileContextTracker: {
 				captureRecentlyModifiedFiles: vi.fn().mockReturnValue({ files: [], commit: vi.fn() }),
 			} as unknown as FileContextTracker,
-			rooIgnoreController: {
+			alphaIgnoreController: {
 				filterPaths: vi.fn((paths: string[]) => paths.join("\n")),
 				cwd: mockCwd,
 				ignoreInstance: {},
 				disposables: [],
-				rooIgnoreContent: "",
+				alphaIgnoreContent: "",
 				isPathIgnored: vi.fn(),
 				getIgnoreContent: vi.fn(),
 				updateIgnoreContent: vi.fn(),
 				addToIgnore: vi.fn(),
 				removeFromIgnore: vi.fn(),
 				dispose: vi.fn(),
-			} as unknown as RooIgnoreController,
+			} as unknown as AlphaIgnoreController,
 			clineMessages: [],
 			api: {
 				getModel: vi.fn().mockReturnValue({ id: "test-model", info: { contextWindow: 100000 } }),
@@ -129,7 +129,7 @@ describe("getEnvironmentDetails", () => {
 			providerRef: {
 				deref: vi.fn().mockReturnValue(mockProvider),
 				[Symbol.toStringTag]: "WeakRef",
-			} as unknown as WeakRef<ClineProvider>,
+			} as unknown as WeakRef<AlphaProvider>,
 		}
 
 		// Mock other dependencies.
@@ -149,7 +149,7 @@ describe("getEnvironmentDetails", () => {
 	})
 
 	it("should return basic environment details", async () => {
-		const result = await getEnvironmentDetails(mockCline as Task)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task)
 
 		expect(result).toContain("<environment_details>")
 		expect(result).toContain("</environment_details>")
@@ -164,25 +164,25 @@ describe("getEnvironmentDetails", () => {
 
 		expect(result).toContain("<name>Code</name>")
 
-		expect(getApiMetrics).toHaveBeenCalledWith(mockCline.clineMessages)
+		expect(getApiMetrics).toHaveBeenCalledWith(mockAlphaTask.clineMessages)
 	})
 
 	it("reuses the request state snapshot instead of re-reading provider state", async () => {
-		const result = await getEnvironmentDetails(mockCline as Task, false, mockState)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task, false, mockState)
 
 		expect(result).toContain("<name>Code</name>")
 		expect(mockProvider.getState).not.toHaveBeenCalled()
 	})
 
 	it("reports configured request pacing as performance data rather than an API error", async () => {
-		mockCline.getRequestPacingMetrics = vi.fn().mockReturnValue({
+		mockAlphaTask.getRequestPacingMetrics = vi.fn().mockReturnValue({
 			configuredIntervalSeconds: 10,
 			waitCount: 3,
 			totalWaitMs: 30_000,
 			scope: "provider_profile",
 		})
 
-		const result = await getEnvironmentDetails(mockCline as Task)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task)
 
 		expect(result).toContain("# Configured Request Pacing")
 		expect(result).toContain("Provider-profile interval: 10s")
@@ -191,21 +191,21 @@ describe("getEnvironmentDetails", () => {
 	})
 
 	it("omits configured request pacing when the provider-profile interval is zero", async () => {
-		mockCline.getRequestPacingMetrics = vi.fn().mockReturnValue({
+		mockAlphaTask.getRequestPacingMetrics = vi.fn().mockReturnValue({
 			configuredIntervalSeconds: 0,
 			waitCount: 0,
 			totalWaitMs: 0,
 			scope: "provider_profile",
 		})
 
-		const result = await getEnvironmentDetails(mockCline as Task)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task)
 
 		expect(result).not.toContain("# Configured Request Pacing")
 		expect(result).not.toContain("Provider-profile interval:")
 	})
 
 	it("should include file details when includeFileDetails is true", async () => {
-		const result = await getEnvironmentDetails(mockCline as Task, true)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task, true)
 		expect(result).toContain("# Current Workspace Directory")
 		expect(result).toContain("Files")
 
@@ -215,16 +215,16 @@ describe("getEnvironmentDetails", () => {
 			mockCwd,
 			["file1.ts", "file2.ts"],
 			false,
-			mockCline.rooIgnoreController,
+			mockAlphaTask.alphaIgnoreController,
 			false,
 		)
 	})
 
 	it("should keep sub-agent environment context compact", async () => {
-		;(mockCline as { taskKind?: "primary" | "subagent" }).taskKind = "subagent"
-		mockCline.getTaskMode = vi.fn().mockResolvedValue("code")
+		;(mockAlphaTask as { taskKind?: "primary" | "subagent" }).taskKind = "subagent"
+		mockAlphaTask.getTaskMode = vi.fn().mockResolvedValue("code")
 
-		const result = await getEnvironmentDetails(mockCline as Task, true)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task, true)
 
 		expect(result).toContain("# Sub-agent Context")
 		expect(result).toContain("# Current Workspace Directory\n.")
@@ -240,16 +240,16 @@ describe("getEnvironmentDetails", () => {
 	})
 
 	it("includes task-local pacing observations in compact sub-agent context", async () => {
-		;(mockCline as { taskKind?: "primary" | "subagent" }).taskKind = "subagent"
-		mockCline.getTaskMode = vi.fn().mockResolvedValue("code")
-		mockCline.getRequestPacingMetrics = vi.fn().mockReturnValue({
+		;(mockAlphaTask as { taskKind?: "primary" | "subagent" }).taskKind = "subagent"
+		mockAlphaTask.getTaskMode = vi.fn().mockResolvedValue("code")
+		mockAlphaTask.getRequestPacingMetrics = vi.fn().mockReturnValue({
 			configuredIntervalSeconds: 10,
 			waitCount: 2,
 			totalWaitMs: 20_000,
 			scope: "provider_profile",
 		})
 
-		const result = await getEnvironmentDetails(mockCline as Task)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task)
 
 		expect(result).toContain("# Configured Request Pacing")
 		expect(result).toContain("had waited 2 times for 20s total")
@@ -257,11 +257,11 @@ describe("getEnvironmentDetails", () => {
 
 	it("does not re-list unchanged workspace facts after committing a baseline", async () => {
 		const context = new EnvironmentContext()
-		const first = await captureEnvironmentDetails(mockCline as Task, true, mockState, { context })
+		const first = await captureEnvironmentDetails(mockAlphaTask as Task, true, mockState, { context })
 		first.commit()
 		vi.mocked(listFiles).mockClear()
 		vi.mocked(formatResponse.formatFilesList).mockClear()
-		const next = await captureEnvironmentDetails(mockCline as Task, false, mockState, { context })
+		const next = await captureEnvironmentDetails(mockAlphaTask as Task, false, mockState, { context })
 		expect(next.details).toBe("")
 		next.release()
 		expect(listFiles).not.toHaveBeenCalled()
@@ -269,22 +269,24 @@ describe("getEnvironmentDetails", () => {
 	})
 	it("restores the working record after compaction without repeating it on unchanged steps", async () => {
 		const context = new EnvironmentContext()
-		mockCline.getWorkContext = vi.fn(async () => "Preserve source inputs; loaded workflow skill; behavior: passed")
-		const first = await captureEnvironmentDetails(mockCline as Task, false, mockState, { context })
+		mockAlphaTask.getWorkContext = vi.fn(
+			async () => "Preserve source inputs; loaded workflow skill; behavior: passed",
+		)
+		const first = await captureEnvironmentDetails(mockAlphaTask as Task, false, mockState, { context })
 		expect(first.details).toContain("Preserve source inputs")
 		first.commit()
-		const unchanged = await captureEnvironmentDetails(mockCline as Task, false, mockState, { context })
+		const unchanged = await captureEnvironmentDetails(mockAlphaTask as Task, false, mockState, { context })
 		expect(unchanged.details).not.toContain("Preserve source inputs")
 		unchanged.commit()
 		context.reset()
-		const compacted = await captureEnvironmentDetails(mockCline as Task, false, mockState, { context })
+		const compacted = await captureEnvironmentDetails(mockAlphaTask as Task, false, mockState, { context })
 		expect(compacted.details).toContain("Preserve source inputs")
 		compacted.release()
 	})
 
 	it("should handle desktop directory specially", async () => {
 		;(arePathsEqual as Mock).mockReturnValue(true)
-		const result = await getEnvironmentDetails(mockCline as Task, true)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task, true)
 		expect(result).toContain("Desktop files not shown automatically")
 		expect(listFiles).not.toHaveBeenCalled()
 	})
@@ -295,7 +297,7 @@ describe("getEnvironmentDetails", () => {
 			maxWorkspaceFiles: 0,
 		})
 
-		const result = await getEnvironmentDetails(mockCline as Task, true)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task, true)
 
 		expect(listFiles).not.toHaveBeenCalled()
 		expect(result).toContain("Workspace files context disabled")
@@ -303,12 +305,12 @@ describe("getEnvironmentDetails", () => {
 	})
 
 	it("should include recently modified files if any", async () => {
-		;(mockCline.fileContextTracker!.captureRecentlyModifiedFiles as Mock).mockReturnValue({
+		;(mockAlphaTask.fileContextTracker!.captureRecentlyModifiedFiles as Mock).mockReturnValue({
 			files: ["modified1.ts", "modified2.ts"],
 			commit: vi.fn(),
 		})
 
-		const result = await getEnvironmentDetails(mockCline as Task)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task)
 
 		expect(result).toContain("# Recently Modified Files")
 		expect(result).toContain("modified1.ts")
@@ -331,7 +333,7 @@ describe("getEnvironmentDetails", () => {
 				{ input: new (vscode.TabInputText as any)({ fsPath: privateChangeSet }) },
 			],
 		})
-		;(mockCline.fileContextTracker!.captureRecentlyModifiedFiles as Mock).mockReturnValue({
+		;(mockAlphaTask.fileContextTracker!.captureRecentlyModifiedFiles as Mock).mockReturnValue({
 			files: [privateChangeSet, "src/recent.ts"],
 			commit: vi.fn(),
 		})
@@ -357,7 +359,7 @@ describe("getEnvironmentDetails", () => {
 			active ? [privateActiveTerminal] : [privateInactiveTerminal],
 		)
 
-		const result = await getEnvironmentDetails(mockCline as Task)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task)
 
 		expect(result).toContain("src/app.ts")
 		expect(result).toContain("src/recent.ts")
@@ -385,7 +387,7 @@ describe("getEnvironmentDetails", () => {
 		;(TerminalRegistry.getTerminals as Mock).mockReturnValue([mockActiveTerminal])
 		;(TerminalRegistry.getUnretrievedOutput as Mock).mockReturnValue("Test output")
 
-		const result = await getEnvironmentDetails(mockCline as Task)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task)
 
 		expect(result).toContain("# Terminals")
 		expect(result).toContain("Terminal terminal-1 (Active)")
@@ -393,8 +395,8 @@ describe("getEnvironmentDetails", () => {
 		expect(result).toContain("Original command: `npm test`")
 		expect(result).toContain("Test output")
 
-		mockCline.didEditFile = true
-		await getEnvironmentDetails(mockCline as Task)
+		mockAlphaTask.didEditFile = true
+		await getEnvironmentDetails(mockAlphaTask as Task)
 		expect(vi.mocked(delay)).not.toHaveBeenCalled()
 
 		expect(vi.mocked(pWaitFor)).not.toHaveBeenCalled()
@@ -421,7 +423,7 @@ describe("getEnvironmentDetails", () => {
 			active ? [] : [mockInactiveTerminal],
 		)
 
-		const result = await getEnvironmentDetails(mockCline as Task)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task)
 
 		expect(result).toContain("# Terminal terminal-2 New Output")
 		expect(result).toContain("Terminal terminal-2 (Inactive)")
@@ -462,7 +464,7 @@ describe("getEnvironmentDetails", () => {
 		)
 		;(TerminalRegistry.getUnretrievedOutput as Mock).mockReturnValue("Server started")
 
-		const result = await getEnvironmentDetails(mockCline as Task)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task)
 
 		// Check active terminal working directory
 		expect(result).toContain("Terminal terminal-1 (Active)")
@@ -480,20 +482,20 @@ describe("getEnvironmentDetails", () => {
 
 	it("should handle missing provider or state", async () => {
 		// Mock provider to return null.
-		mockCline.providerRef!.deref = vi.fn().mockReturnValue(null)
+		mockAlphaTask.providerRef!.deref = vi.fn().mockReturnValue(null)
 
-		const result = await getEnvironmentDetails(mockCline as Task)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task)
 
 		// Verify the function still returns a result.
 		expect(result).toContain("<environment_details>")
 		expect(result).toContain("</environment_details>")
 
 		// Mock provider to return null state.
-		mockCline.providerRef!.deref = vi.fn().mockReturnValue({
+		mockAlphaTask.providerRef!.deref = vi.fn().mockReturnValue({
 			getState: vi.fn().mockResolvedValue(null),
 		})
 
-		const result2 = await getEnvironmentDetails(mockCline as Task)
+		const result2 = await getEnvironmentDetails(mockAlphaTask as Task)
 
 		// Verify the function still returns a result.
 		expect(result2).toContain("<environment_details>")
@@ -512,31 +514,34 @@ describe("getEnvironmentDetails", () => {
 
 		;(TerminalRegistry.getTerminals as Mock).mockReturnValue([mockErrorTerminal])
 		;(TerminalRegistry.getBackgroundTerminals as Mock).mockReturnValue([])
-		;(mockCline.fileContextTracker!.captureRecentlyModifiedFiles as Mock).mockReturnValue({
+		;(mockAlphaTask.fileContextTracker!.captureRecentlyModifiedFiles as Mock).mockReturnValue({
 			files: [],
 			commit: vi.fn(),
 		})
 
-		await expect(getEnvironmentDetails(mockCline as Task)).resolves.not.toThrow()
+		await expect(getEnvironmentDetails(mockAlphaTask as Task)).resolves.not.toThrow()
 	})
 	it.each([undefined, []])("omits planning reminders when there is no checklist", async (todoList) => {
-		const result = await getEnvironmentDetails({ ...mockCline, todoList } as Task)
+		const result = await getEnvironmentDetails({ ...mockAlphaTask, todoList } as Task)
 		expect(result).not.toContain("# Reminders")
 		expect(result).not.toContain("update_todo_list")
 	})
 
 	it("retracts a cleared checklist from incremental context without asking to recreate it", async () => {
 		const context = new EnvironmentContext()
-		const cline = { ...mockCline, todoList: [{ id: "1", content: "Check behavior", status: "pending" }] } as Task
-		const first = await captureEnvironmentDetails(cline, false, mockState, { context })
+		const alphaTask = {
+			...mockAlphaTask,
+			todoList: [{ id: "1", content: "Check behavior", status: "pending" }],
+		} as Task
+		const first = await captureEnvironmentDetails(alphaTask, false, mockState, { context })
 		expect(first.details).toContain("Check behavior")
 		first.commit()
-		cline.todoList = []
-		const cleared = await captureEnvironmentDetails(cline, false, mockState, { context })
+		alphaTask.todoList = []
+		const cleared = await captureEnvironmentDetails(alphaTask, false, mockState, { context })
 		expect(cleared.details).toContain("# Reminders\n(none; previous value no longer applies)")
 		expect(cleared.details).not.toContain("update_todo_list")
 		cleared.commit()
-		const next = await captureEnvironmentDetails(cline, false, mockState, { context })
+		const next = await captureEnvironmentDetails(alphaTask, false, mockState, { context })
 		expect(next.details).not.toContain("# Reminders")
 	})
 
@@ -545,8 +550,8 @@ describe("getEnvironmentDetails", () => {
 			...mockState,
 			apiConfiguration: { todoListEnabled: true },
 		})
-		const cline = { ...mockCline, todoList: [{ content: "test", status: "pending" }] }
-		const result = await getEnvironmentDetails(cline as Task)
+		const alphaTask = { ...mockAlphaTask, todoList: [{ content: "test", status: "pending" }] }
+		const result = await getEnvironmentDetails(alphaTask as Task)
 		expect(result).toContain("REMINDERS")
 	})
 
@@ -555,8 +560,8 @@ describe("getEnvironmentDetails", () => {
 			...mockState,
 			apiConfiguration: { todoListEnabled: false },
 		})
-		const cline = { ...mockCline, todoList: [{ content: "test", status: "pending" }] }
-		const result = await getEnvironmentDetails(cline as Task)
+		const alphaTask = { ...mockAlphaTask, todoList: [{ content: "test", status: "pending" }] }
+		const result = await getEnvironmentDetails(alphaTask as Task)
 		expect(result).not.toContain("REMINDERS")
 	})
 
@@ -565,8 +570,8 @@ describe("getEnvironmentDetails", () => {
 			...mockState,
 			apiConfiguration: {},
 		})
-		const cline = { ...mockCline, todoList: [{ content: "test", status: "pending" }] }
-		const result = await getEnvironmentDetails(cline as Task)
+		const alphaTask = { ...mockAlphaTask, todoList: [{ content: "test", status: "pending" }] }
+		const result = await getEnvironmentDetails(alphaTask as Task)
 		expect(result).toContain("REMINDERS")
 	})
 	it("should include git status when maxGitStatusFiles > 0", async () => {
@@ -576,7 +581,7 @@ describe("getEnvironmentDetails", () => {
 			maxGitStatusFiles: 10,
 		})
 
-		const result = await getEnvironmentDetails(mockCline as Task)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task)
 
 		expect(result).toContain("# Git Status")
 		expect(result).toContain("## main")
@@ -589,7 +594,7 @@ describe("getEnvironmentDetails", () => {
 			maxGitStatusFiles: 0,
 		})
 
-		const result = await getEnvironmentDetails(mockCline as Task)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task)
 
 		expect(result).not.toContain("# Git Status")
 		expect(getGitStatus).not.toHaveBeenCalled()
@@ -601,7 +606,7 @@ describe("getEnvironmentDetails", () => {
 			maxGitStatusFiles: undefined,
 		})
 
-		const result = await getEnvironmentDetails(mockCline as Task)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task)
 
 		expect(result).not.toContain("# Git Status")
 		expect(getGitStatus).not.toHaveBeenCalled()
@@ -614,7 +619,7 @@ describe("getEnvironmentDetails", () => {
 			maxGitStatusFiles: 10,
 		})
 
-		const result = await getEnvironmentDetails(mockCline as Task)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task)
 
 		expect(result).not.toContain("# Git Status")
 		expect(getGitStatus).toHaveBeenCalledWith(mockCwd, 10, undefined)
@@ -627,14 +632,14 @@ describe("getEnvironmentDetails", () => {
 			maxGitStatusFiles: 5,
 		})
 
-		await getEnvironmentDetails(mockCline as Task)
+		await getEnvironmentDetails(mockAlphaTask as Task)
 
 		expect(getGitStatus).toHaveBeenCalledWith(mockCwd, 5, undefined)
 	})
 
 	it("uses the owning task mode even while another task is foreground", async () => {
 		mockState.mode = "architect"
-		const result = await getEnvironmentDetails(mockCline as Task, true, mockState)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task, true, mockState)
 		expect(result).toContain("<slug>code</slug>")
 		expect(result).not.toContain("<slug>architect</slug>")
 	})
@@ -643,18 +648,18 @@ describe("getEnvironmentDetails", () => {
 		const context = new EnvironmentContext()
 		const editors = vscode.window.visibleTextEditors as unknown as Array<{ document: { uri: { fsPath: string } } }>
 		editors.push({ document: { uri: { fsPath: path.join(mockCwd, "active.ts") } } })
-		;(await captureEnvironmentDetails(mockCline as Task, true, mockState, { context })).commit()
+		;(await captureEnvironmentDetails(mockAlphaTask as Task, true, mockState, { context })).commit()
 		editors.splice(0)
 		mockState.includeCurrentCost = false
-		vi.mocked(mockCline.getTaskMode!).mockResolvedValue("architect")
-		const changed = await captureEnvironmentDetails(mockCline as Task, false, mockState, { context })
+		vi.mocked(mockAlphaTask.getTaskMode!).mockResolvedValue("architect")
+		const changed = await captureEnvironmentDetails(mockAlphaTask as Task, false, mockState, { context })
 		expect(changed.details).toContain("Environment Changes")
 		expect(changed.details).toContain("# VSCode Visible Files\n(none)")
 		expect(changed.details).toContain("# Current Cost\n(none; previous value no longer applies)")
 		expect(changed.details).toContain("<slug>architect</slug>")
 		expect(changed.details).not.toContain("Workspace Files")
 		changed.commit()
-		const movedTask = { ...mockCline, cwd: "/different/workspace" } as Task
+		const movedTask = { ...mockAlphaTask, cwd: "/different/workspace" } as Task
 		const reset = await captureEnvironmentDetails(movedTask, false, mockState, { context })
 		expect(reset.details).toContain("Environment Snapshot")
 		expect(reset.details).toContain("Workspace Files")
@@ -673,11 +678,11 @@ describe("getEnvironmentDetails", () => {
 			cleanCompletedProcessQueue: vi.fn(),
 		}
 		vi.mocked(TerminalRegistry.getTerminals).mockReturnValue([terminal as never])
-		const result = await getEnvironmentDetails(mockCline as Task, true, mockState, { includeTransient: false })
+		const result = await getEnvironmentDetails(mockAlphaTask as Task, true, mockState, { includeTransient: false })
 		expect(result).toContain("build")
 		expect(process.captureUnretrievedOutput).not.toHaveBeenCalled()
 		expect(terminal.getProcessesWithOutput).not.toHaveBeenCalled()
-		expect(mockCline.fileContextTracker!.captureRecentlyModifiedFiles).not.toHaveBeenCalled()
+		expect(mockAlphaTask.fileContextTracker!.captureRecentlyModifiedFiles).not.toHaveBeenCalled()
 	})
 
 	it("releases reserved output when a later synchronous capture fails", async () => {
@@ -692,10 +697,10 @@ describe("getEnvironmentDetails", () => {
 			cleanCompletedProcessQueue: vi.fn(),
 		}
 		vi.mocked(TerminalRegistry.getTerminals).mockReturnValue([terminal as never])
-		vi.mocked(mockCline.fileContextTracker!.captureRecentlyModifiedFiles).mockImplementation(() => {
+		vi.mocked(mockAlphaTask.fileContextTracker!.captureRecentlyModifiedFiles).mockImplementation(() => {
 			throw new Error("capture failed")
 		})
-		await expect(captureEnvironmentDetails(mockCline as Task)).rejects.toThrow("capture failed")
+		await expect(captureEnvironmentDetails(mockAlphaTask as Task)).rejects.toThrow("capture failed")
 		expect(receipt.commit).not.toHaveBeenCalled()
 		expect(receipt.release).toHaveBeenCalledOnce()
 	})
@@ -713,7 +718,7 @@ describe("getEnvironmentDetails", () => {
 				const terminal = {
 					id: index + 1,
 					busy: false,
-					process: undefined as RooTerminalProcess | undefined,
+					process: undefined as AlphaTerminalProcess | undefined,
 					getCurrentWorkingDirectory: () => (index === 32 ? "/other-project" : mockCwd),
 					getLastCommand: () => "build",
 					getProcessesWithOutput: () => [],
@@ -731,7 +736,7 @@ describe("getEnvironmentDetails", () => {
 			let delivered = false
 			for (let step = 0; step < (continuing ? 33 : 1); step++) {
 				if (resetEvery > 0 && step % resetEvery === 0) context.reset()
-				const capture = await captureEnvironmentDetails(mockCline as Task, false, mockState, { context })
+				const capture = await captureEnvironmentDetails(mockAlphaTask as Task, false, mockState, { context })
 				if (capture.details.includes("important build failure")) {
 					expect(capture.details).toContain("# Terminal 33 New Output\nWorking Directory: `/other-project`")
 				}
@@ -756,7 +761,7 @@ describe("getEnvironmentDetails", () => {
 			})),
 		)
 		vi.mocked(formatResponse.formatFilesList).mockReturnValue("entry.ts\n".repeat(10000))
-		const result = await getEnvironmentDetails(mockCline as Task, true, mockState)
+		const result = await getEnvironmentDetails(mockAlphaTask as Task, true, mockState)
 		expect(result).toContain(`<slug>code</slug>`)
 		expect(result).toContain(`<model>test-model</model>`)
 		expect(result).toContain(`# Current Workspace Directory\n${mockCwd}`)

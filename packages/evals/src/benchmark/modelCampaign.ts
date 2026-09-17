@@ -1,4 +1,4 @@
-import { EVALS_SETTINGS, type RooCodeSettings } from "@alpha-code/types"
+import { EVALS_SETTINGS, type AlphaCodeSettings } from "@alpha-code/types"
 import fs from "node:fs/promises"
 import path from "node:path"
 
@@ -58,7 +58,7 @@ export async function runBenchmarkModelCampaign(options: {
 	}
 	if (selected.some(({ partition }) => partition === "holdout") && (options.concurrency ?? 1) !== 1)
 		throw new Error("Campaigns containing private holdouts require concurrency 1")
-	const settings: RooCodeSettings = {
+	const settings: AlphaCodeSettings = {
 		...EVALS_SETTINGS,
 		apiProvider: provider,
 		reasoningEffort: "high",
@@ -73,7 +73,7 @@ export async function runBenchmarkModelCampaign(options: {
 		description: `Governed ${options.modelRole} ${options.partition} benchmark campaign`,
 		settings,
 		socketPath: "",
-		executionMethod: "cli",
+		executionMethod: "vscode",
 		concurrency: options.concurrency ?? 1,
 		timeout: options.timeoutMinutes ?? 15,
 		campaignTier: options.campaignBudget?.tier,

@@ -1,7 +1,7 @@
-import { GlobalState, ClineMessage, ClineAsk } from "@alpha-code/types"
+import { GlobalState, AlphaMessage, AlphaAsk } from "@alpha-code/types"
 
 import { getApiMetrics } from "../../shared/getApiMetrics"
-import { ClineAskResponse } from "../../shared/WebviewMessage"
+import { AlphaAskResponse } from "../../shared/WebviewMessage"
 
 export interface AutoApprovalResult {
 	shouldProceed: boolean
@@ -20,11 +20,11 @@ export class AutoApprovalHandler {
 	 */
 	async checkAutoApprovalLimits(
 		state: GlobalState | undefined,
-		messages: ClineMessage[],
+		messages: AlphaMessage[],
 		askForApproval: (
-			type: ClineAsk,
+			type: AlphaAsk,
 			data: string,
-		) => Promise<{ response: ClineAskResponse; text?: string; images?: string[] }>,
+		) => Promise<{ response: AlphaAskResponse; text?: string; images?: string[] }>,
 		options: { currentRequestRecorded?: boolean } = {},
 	): Promise<AutoApprovalResult> {
 		// Check request count limit
@@ -48,11 +48,11 @@ export class AutoApprovalHandler {
 	 */
 	private async checkRequestLimit(
 		state: GlobalState | undefined,
-		messages: ClineMessage[],
+		messages: AlphaMessage[],
 		askForApproval: (
-			type: ClineAsk,
+			type: AlphaAsk,
 			data: string,
-		) => Promise<{ response: ClineAskResponse; text?: string; images?: string[] }>,
+		) => Promise<{ response: AlphaAskResponse; text?: string; images?: string[] }>,
 		currentRequestRecorded = false,
 	): Promise<AutoApprovalResult> {
 		const maxRequests = state?.allowedMaxRequests || Infinity
@@ -98,11 +98,11 @@ export class AutoApprovalHandler {
 	 */
 	private async checkCostLimit(
 		state: GlobalState | undefined,
-		messages: ClineMessage[],
+		messages: AlphaMessage[],
 		askForApproval: (
-			type: ClineAsk,
+			type: AlphaAsk,
 			data: string,
-		) => Promise<{ response: ClineAskResponse; text?: string; images?: string[] }>,
+		) => Promise<{ response: AlphaAskResponse; text?: string; images?: string[] }>,
 		currentRequestRecorded = false,
 	): Promise<AutoApprovalResult> {
 		const maxCost = state?.allowedMaxCost || Infinity
@@ -143,7 +143,7 @@ export class AutoApprovalHandler {
 		return { shouldProceed: true, requiresApproval: false }
 	}
 
-	private resetAllowance(messages: ClineMessage[], currentRequestRecorded: boolean): void {
+	private resetAllowance(messages: AlphaMessage[], currentRequestRecorded: boolean): void {
 		this.lastResetMessageIndex = messages.length
 		if (!currentRequestRecorded) return
 		// Preflight can publish messages after the request start. Retain that request

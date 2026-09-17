@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, within } from "@/utils/test-utils"
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
 import { vscode } from "@src/utils/vscode"
 
@@ -11,7 +11,7 @@ vi.mock("@src/utils/clipboard", () => ({
 	useCopyToClipboard: () => ({ copyWithFeedback, showCopyFeedback: false }),
 }))
 
-const message: ClineMessage = {
+const message: AlphaMessage = {
 	ts: 10,
 	type: "say",
 	say: "user_feedback",
@@ -25,7 +25,7 @@ const environment: ChatRowEnvironment = {
 	currentTaskId: "style-task",
 	reasoningBlockCollapsed: true,
 	modelSupportsImages: true,
-	getClineMessages: () => [message],
+	getAlphaMessages: () => [message],
 }
 
 function renderMessage(isStreaming = false, isTaskPrompt = false) {

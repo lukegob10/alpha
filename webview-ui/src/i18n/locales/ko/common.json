@@ -34,10 +34,12 @@
 			"save": "이미지 저장",
 			"viewCode": "코드 보기",
 			"viewDiagram": "다이어그램 보기",
-			"close": "닫기"
+			"close": "닫기",
+			"open": "다이어그램 열기"
 		},
 		"modal": {
-			"codeTitle": "머메이드 코드"
+			"codeTitle": "머메이드 코드",
+			"title": "인어 다이어그램"
 		},
 		"tabs": {
 			"diagram": "다이어그램",
@@ -110,5 +112,7 @@
 	"costs": {
 		"own": "자체",
 		"subtasks": "하위작업"
-	}
+	},
+	"dismiss": "해제",
+	"dismissAndDontShowAgain": "닫고 다시 표시하지 않음"
 }

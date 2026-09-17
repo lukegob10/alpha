@@ -237,7 +237,9 @@
 		"didViewTopLevelOutsideWorkspace": "Alpha ha vist els fitxers de nivell superior en aquest directori (fora de l'espai de treball)",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha vol veure recursivament tots els fitxers en aquest directori (fora de l'espai de treball)",
 		"didViewRecursiveOutsideWorkspace": "Alpha ha vist recursivament tots els fitxers en aquest directori (fora de l'espai de treball)",
-		"wantsToViewMultipleDirectories": "Alpha vol veure diversos directoris"
+		"wantsToViewMultipleDirectories": "Alpha vol veure diversos directoris",
+		"wantsToSearchMultiple": "Alpha vol executar cerques de fitxers {{count}}",
+		"didSearchMultiple": "Alpha va fer cerques de fitxers {{count}}"
 	},
 	"commandOutput": "Sortida de la comanda",
 	"commandExecution": {
@@ -475,7 +477,14 @@
 		"clickToEdit": "Feu clic per editar el missatge",
 		"steering": "Redirigint…",
 		"queueFailed": "No s'ha pogut posar el missatge a la cua. L'esborrany continua al redactor.",
-		"steerFailed": "No s'ha pogut iniciar la redirecció. El missatge en cua continua disponible."
+		"steerFailed": "No s'ha pogut iniciar la redirecció. El missatge en cua continua disponible.",
+		"edit": "Edita",
+		"editTooltip": "Editeu aquest missatge a la cua",
+		"editing": "Edició en compositor",
+		"dragHandle": "Arrossega el missatge a la cua",
+		"dragTooltip": "Arrossegueu per reordenar aquest missatge a la cua",
+		"steer": "Dirigeix",
+		"steerTooltip": "Envia aquest missatge a la cua al torn actual"
 	},
 	"modelResponseDelayed": "S'està esperant la propera resposta del model. Un raonament més llarg pot trigar.",
 	"slashCommand": {
@@ -519,5 +528,30 @@
 		"list_checks": "Llista les comprovacions",
 		"merge_pull_request": "Fusiona la sol·licitud d’extracció",
 		"comment": "Afegeix un comentari"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "Inspeccionar els agents",
+			"wait_agent": "Espereu actualitzacions de l'agent",
+			"unknown": "Acció de l'agent"
+		},
+		"failed": "{{action}} ha fallat: {{error}}",
+		"list": {
+			"running": "Agents d'inspecció...",
+			"completed": "Agent {{count}} inspeccionat",
+			"completed_other": "Agents {{count}} inspeccionats",
+			"mailbox": "Actualització de la bústia {{count}}",
+			"mailbox_other": "Actualitzacions de la bústia {{count}}"
+		},
+		"wait": {
+			"running": "Esperant actualitzacions de l'agent...",
+			"noActiveAgents": "No hi ha agents actius per esperar",
+			"cancelled": "S'ha cancel·lat l'espera de l'agent",
+			"timedOut": "No hi ha actualitzacions d'agent abans del temps d'espera",
+			"alreadyDelivered": "No hi ha actualitzacions noves; resultats ja lliurats",
+			"received": "S'ha rebut l'actualització de l'agent {{count}}",
+			"received_other": "S'han rebut actualitzacions de l'agent {{count}}",
+			"completed": "S'ha completat l'espera de l'agent"
+		}
 	}
 }

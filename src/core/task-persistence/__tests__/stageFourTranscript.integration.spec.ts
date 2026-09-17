@@ -466,7 +466,7 @@ describe("Stage Four real Task transcript persistence", () => {
 		Reflect.set(task, "emitFinalTokenUsageUpdate", vi.fn())
 		Reflect.set(
 			task,
-			"saveClineMessages",
+			"saveAlphaMessages",
 			vi.fn(async () => {
 				cleanup.push("save UI")
 				return true

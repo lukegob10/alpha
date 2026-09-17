@@ -1,7 +1,7 @@
 import type * as vscode from "vscode"
 import { scheduledTaskAutoApprovalSchema, scheduledTaskSchema } from "@alpha-code/types"
 
-import type { ClineProvider } from "../../../core/webview/ClineProvider"
+import type { AlphaProvider } from "../../../core/webview/AlphaProvider"
 import { ScheduledTaskService } from "../ScheduledTaskService"
 import { ScheduledTaskStore } from "../ScheduledTaskStore"
 
@@ -45,7 +45,7 @@ describe("scheduled task approval grants", () => {
 				},
 				postMessageToWebview: vi.fn().mockResolvedValue(undefined),
 				off: vi.fn(),
-			} as unknown as ClineProvider
+			} as unknown as AlphaProvider
 			const service = new ScheduledTaskService(
 				{ globalStorageUri: { fsPath: "test-storage" } } as vscode.ExtensionContext,
 				provider,

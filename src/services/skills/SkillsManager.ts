@@ -4,9 +4,9 @@ import * as os from "os"
 import * as vscode from "vscode"
 import matter from "gray-matter"
 
-import type { ClineProvider } from "../../core/webview/ClineProvider"
-import { getGlobalAgentsDirectory, getProjectAgentsDirectoryForCwd } from "../roo-config"
-import { directoryExists, fileExists } from "../roo-config"
+import type { AlphaProvider } from "../../core/webview/AlphaProvider"
+import { getGlobalAgentsDirectory, getProjectAgentsDirectoryForCwd } from "../config-paths"
+import { directoryExists, fileExists } from "../config-paths"
 import { SkillMetadata, SkillContent, SkillSource } from "../../shared/skills"
 import { modes, getAllModes } from "../../shared/modes"
 import {
@@ -31,12 +31,12 @@ function getProjectAlphaDirectoryForCwd(cwd: string): string {
 
 export class SkillsManager {
 	private skills: Map<string, SkillMetadata> = new Map()
-	private providerRef: WeakRef<ClineProvider>
+	private providerRef: WeakRef<AlphaProvider>
 	private disposables: vscode.Disposable[] = []
 	private isDisposed = false
 
 	constructor(
-		provider: ClineProvider,
+		provider: AlphaProvider,
 		private readonly workspacePath?: string,
 	) {
 		this.providerRef = new WeakRef(provider)

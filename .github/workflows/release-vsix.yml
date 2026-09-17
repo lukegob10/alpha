@@ -28,6 +28,12 @@ jobs:
             - name: Build workspace types
               run: pnpm --filter @alpha-code/types build
 
+            - name: Run exact VS Code 1.122.1 release gate
+              run: pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
+
+            - name: Verify command auto-approval and outside-path review
+              run: pnpm --filter @alpha-code/vscode-e2e test:command-paths:1221:run
+
             - name: Package extension
               run: pnpm vsix
 
@@ -38,7 +44,7 @@ jobs:
                   $version = node -p "require('./src/package.json').version"
                   $shortSha = "${{ github.sha }}".Substring(0, 7)
                   $tag = "vsix-v$version-$shortSha"
-                  $vsix = Get-ChildItem -Path bin -Filter "*.vsix" | Select-Object -First 1
+                  $vsix = Get-Item -LiteralPath "bin/alpha-$version.vsix" -ErrorAction Stop
 
                   if (-not $vsix) {
                     throw "No VSIX package found in bin."
@@ -51,7 +57,7 @@ jobs:
                   "vsix_name=$($vsix.Name)" >> $env:GITHUB_OUTPUT
 
             - name: Verify VSIX contents
-              run: node scripts/verify-vsix-contents.mjs "${{ steps.release.outputs.vsix_path }}"
+              run: node scripts/verify-vsix-contents.mjs "${{ steps.release.outputs.vsix_path }}" --check-source
 
             - name: Create GitHub release
               env:
@@ -75,8 +81,11 @@ jobs:
                   ````
                   "@
 
-                  if (gh release view "$tag" 2>$null) {
-                    gh release upload "$tag" "$vsix" --clobber
-                  } else {
-                    gh release create "$tag" "$vsix" --title "$releaseTitle" --notes "$notes" --target "${{ github.sha }}"
+                  gh release view "$tag" --json tagName 2>$null
+                  if ($LASTEXITCODE -eq 0) {
+                    throw "Release $tag already exists; refusing to overwrite its published artifact."
+                  }
+                  gh release create "$tag" "$vsix" --title "$releaseTitle" --notes "$notes" --target "${{ github.sha }}"
+                  if ($LASTEXITCODE -ne 0) {
+                    throw "Release creation failed."
                   }

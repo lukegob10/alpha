@@ -1,7 +1,6 @@
 ---
 description: "Resolve merge conflicts intelligently using git history analysis"
 argument-hint: "#PR-number"
-mode: merge-resolver
 ---
 
 Resolve merge conflicts for a specific pull request by analyzing git history, commit messages, and code changes to make intelligent resolution decisions.

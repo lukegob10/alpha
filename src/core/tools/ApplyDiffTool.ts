@@ -1,7 +1,7 @@
 import path from "path"
 import fs from "fs/promises"
 
-import { type ClineSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
+import { type AlphaSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../task/Task"
@@ -49,12 +49,12 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 				return
 			}
 
-			const accessAllowed = task.rooIgnoreController?.validateAccess(relPath)
+			const accessAllowed = task.alphaIgnoreController?.validateAccess(relPath)
 
 			if (!accessAllowed) {
 				callbacks.setResultMetadata?.({ status: "denied" })
 				await task.say("rooignore_error", relPath)
-				pushToolResult(formatResponse.rooIgnoreError(relPath))
+				pushToolResult(formatResponse.alphaIgnoreError(relPath))
 				return
 			}
 
@@ -127,9 +127,9 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 			)
 
 			// Check if file is write-protected
-			const isWriteProtected = task.rooProtectedController?.isWriteProtected(relPath) || false
+			const isWriteProtected = task.alphaProtectedController?.isWriteProtected(relPath) || false
 
-			const sharedMessageProps: ClineSayTool = {
+			const sharedMessageProps: AlphaSayTool = {
 				tool: "appliedDiff",
 				path: getTaskReadablePath(task, relPath),
 				isOutsideWorkspace: isTaskPathOutsideWorkspace(task, absolutePath),
@@ -145,7 +145,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 					originalContent,
 					diffStats,
 					isProtected: isWriteProtected,
-				} satisfies ClineSayTool)
+				} satisfies AlphaSayTool)
 
 				let toolProgressStatus
 
@@ -193,7 +193,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 					originalContent,
 					diffStats,
 					isProtected: isWriteProtected,
-				} satisfies ClineSayTool)
+				} satisfies AlphaSayTool)
 
 				let toolProgressStatus
 
@@ -284,7 +284,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 			return
 		}
 
-		const sharedMessageProps: ClineSayTool = {
+		const sharedMessageProps: AlphaSayTool = {
 			tool: "appliedDiff",
 			path: getTaskReadablePath(task, relPath),
 			diff: diffContent,

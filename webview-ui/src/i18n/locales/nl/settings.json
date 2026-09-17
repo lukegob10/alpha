@@ -41,7 +41,9 @@
 		"experimental": "Experimenteel",
 		"language": "Taal",
 		"about": "Over Alpha",
-		"skills": "Skills"
+		"skills": "Skills",
+		"agents": "Agents",
+		"github": "GitHub"
 	},
 	"about": {
 		"bugReport": {
@@ -209,7 +211,8 @@
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
 			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
 			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
-			"localIndexPathRequired": "Local index path is required"
+			"localIndexPathRequired": "Local index path is required",
+			"embeddingRateLimitSecondsRange": "De vertraging bij het insluiten van verzoeken moet tussen 0,1 en 60 seconden liggen."
 		},
 		"optional": "optioneel",
 		"advancedConfigLabel": "Geavanceerde configuratie",
@@ -230,7 +233,9 @@
 		"localIndexPathLabel": "Local Index Path",
 		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
 		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
-		"savedSecretPlaceholder": "Saved value hidden"
+		"savedSecretPlaceholder": "Saved value hidden",
+		"embeddingRateLimitLabel": "Aantal insluitverzoeken beperken",
+		"embeddingRateLimitDescription": "Voegt een vertraging toe tussen het insluiten van API-verzoeken tijdens het indexeren. Verhoog dit als uw insluitingsprovider de codebase-indexering beperkt."
 	},
 	"autoApprove": {
 		"toggleShortcut": "U kunt een globale sneltoets voor deze instelling configureren <SettingsLink>in de voorkeuren van uw IDE</SettingsLink>.",
@@ -306,6 +311,10 @@
 		},
 		"maxLimits": {
 			"description": "Automatisch verzoeken indienen tot aan deze limieten voordat om goedkeuring wordt gevraagd om door te gaan."
+		},
+		"subagents": {
+			"label": "Subagenten",
+			"description": "Sta Alpha toe om alleen-lezen subagentgroepen te starten zonder goedkeuring. Leestoegang moet ook automatisch worden goedgekeurd."
 		}
 	},
 	"providers": {
@@ -385,7 +394,8 @@
 			"hint": "Open de instellingen opnieuw om de nieuwste modellen te zien.",
 			"loading": "Modellenlijst wordt vernieuwd...",
 			"success": "Modellenlijst succesvol vernieuwd!",
-			"error": "Kan modellenlijst niet vernieuwen. Probeer het opnieuw."
+			"error": "Kan modellenlijst niet vernieuwen. Probeer het opnieuw.",
+			"missingConfig": "Voer de vereiste providerconfiguratie in voordat u de modellen vernieuwt."
 		},
 		"getRequestyApiKey": "Requesty API-sleutel ophalen",
 		"getRequestyBaseUrl": "Basis-URL",
@@ -549,7 +559,8 @@
 			"high": "Hoog",
 			"xhigh": "Zeer hoog",
 			"medium": "Middel",
-			"low": "Laag"
+			"low": "Laag",
+			"max": "Maximaal"
 		},
 		"verbosity": {
 			"label": "Uitvoerbaarheid",
@@ -565,7 +576,55 @@
 			"placeholder": "Standaard: claude",
 			"maxTokensLabel": "Max Output Tokens",
 			"maxTokensDescription": "Maximaal aantal output-tokens voor Claude Code-reacties. Standaard is 8000."
-		}
+		},
+		"vertexStreamingEnabledLabel": "Streamingreacties inschakelen",
+		"vertexStreamingEnabledDescription": "Schakel dit uit wanneer een gateway of model streaming niet ondersteunt. Reacties verschijnen na voltooiing.",
+		"vscodeLmLoading": "De taalmodellen laden die beschikbaar zijn in dit VS Code-venster...",
+		"vscodeLmNoModels": "Er zijn geen taalmodellen beschikbaar in dit VS Code-venster. Meld u hier aan bij GitHub Copilot, schakel de modellen die u nodig hebt in met 'Chat: Manage Language Models' en vernieuw vervolgens.",
+		"vscodeLmRefresh": "Modellen vernieuwen",
+		"vscodeLmUnavailable": "Het geselecteerde model is niet beschikbaar in dit VS Code-venster. Kies een model geretourneerd door VS Code, of schakel het in met 'Chat: Manage Language Models'.",
+		"vscodeLmContextSize": {
+			"label": "Contextvenster",
+			"default": "Standaard ({{contextSize}} invoertokens)",
+			"extended": "Uitgebreid ({{contextSize}} invoertokens)",
+			"description": "Kies het invoertokenbudget dat voor dit model naar GitHub Copilot wordt verzonden. Uitgebreide context kan meer premium-aanvragen verbruiken."
+		},
+		"googleCloudProjectId": "Google Cloud-project-ID",
+		"googleCloudRegion": "Google Cloud-regio",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "Zoek een regio of voer deze in",
+			"noMatchFound": "Geen overeenkomende regio gevonden",
+			"useCustomRegion": "Gebruik aangepast: {{region}}"
+		},
+		"googleCloudCredentials": "Google Cloud-inloggegevens JSON",
+		"googleCloudKeyFile": "Google Cloud-sleutelbestand",
+		"googleCloudSetup": {
+			"title": "Google Cloud-installatie",
+			"step1": "Vertex AI en modeltoegang inschakelen",
+			"step2": "Standaardgegevens voor applicaties instellen",
+			"step3": "Een serviceaccountsleutel maken"
+		},
+		"vertexGatewayBaseUrl": "Vertex Gatewaybasis URL",
+		"vertexGatewayCaBundlePath": "Vertex Gateway CA Bundelpad",
+		"vertexGatewayHelixCommand": "Vertex Gateway Helix Commando",
+		"vertexGatewayHelixParseMode": "Vertex Gateway Helix Parse-modus",
+		"vertexGatewayHelixParseModeRawStdout": "Ruwe stdout",
+		"vertexGatewayHelixParseModeJsonField": "JSON-veld",
+		"vertexGatewayHelixTokenKey": "Vertex Gateway Helix Tokensleutel",
+		"vertexGatewayTokenRefreshMinutes": "Vertex Gatewaytoken Vernieuwingsminuten",
+		"vertexGatewayModelRoutingMap": "Vertex Gateway-modelrouteringskaart",
+		"vertexGatewayModelRoutingMapDescription": "JSON-object gecodeerd door model ID. Waarden kunnen bestaande tekenreeksen voor modeloverschrijvingen zijn of objecten met projectId, location, modelOverride en extraHeaders.",
+		"stellarDescription": "Maakt verbinding met de interne Stellar OpenAI-compatibele modelgateway. De sleutel API wordt automatisch opgehaald met Helix en wordt nooit opgeslagen.",
+		"stellarBaseUrl": "Stellar Basis URL",
+		"stellarCaBundlePath": "Stellar PEM CA Bundelpad",
+		"stellarHelixCommand": "Stellar Helix Commando",
+		"stellarHelixParseMode": "Stellar Helix Parse-modus",
+		"stellarHelixParseModeRawStdout": "Ruwe stdout",
+		"stellarHelixParseModeJsonField": "JSON-veld",
+		"stellarHelixTokenKey": "Stellar Helix Tokensleutel",
+		"stellarTokenRefreshMinutes": "Stellar Tokenvernieuwingsminuten",
+		"stellarStreamingEnabledLabel": "Streamingreacties inschakelen",
+		"stellarStreamingEnabledDescription": "Schakel dit uit als de Stellar-implementatie streaming niet ondersteunt. Reacties verschijnen na voltooiing."
 	},
 	"checkpoints": {
 		"timeout": {
@@ -905,7 +964,11 @@
 		"providerNotAllowed": "Provider '{{provider}}' is niet toegestaan door je organisatie",
 		"modelNotAllowed": "Model '{{model}}' is niet toegestaan voor provider '{{provider}}' door je organisatie",
 		"profileInvalid": "Dit profiel bevat een provider of model dat niet is toegestaan door je organisatie",
-		"qwenCodeOauthPath": "Je moet een geldig OAuth-referentiepad opgeven"
+		"qwenCodeOauthPath": "Je moet een geldig OAuth-referentiepad opgeven",
+		"googleCloud": "U moet een Google Cloud-project ID en regio opgeven.",
+		"vertexGateway": "De Vertex-gateway vereist een basis URL-, CA-bundelpad en Helix-opdracht.",
+		"vertexGatewayModelRoutingMap": "Vertex Gateway Model Routing Map moet een JSON-object zijn met stringmodel-ID's.",
+		"stellar": "Stellar vereist een geldig basisbundelpad URL en PEM CA."
 	},
 	"placeholders": {
 		"apiKey": "Voer API-sleutel in...",
@@ -967,6 +1030,10 @@
 		"requireCtrlEnterToSend": {
 			"label": "Vereist {{primaryMod}}+Enter om berichten te versturen",
 			"description": "Wanneer ingeschakeld, moet je {{primaryMod}}+Enter indrukken om berichten te versturen in plaats van alleen Enter"
+		},
+		"maxConcurrentTasks": {
+			"label": "Maximaal aantal parallelle taken",
+			"description": "Het aantal live taken dat tegelijkertijd kan worden uitgevoerd. Mislukte en voltooide taken tellen niet mee voor deze limiet."
 		}
 	},
 	"skills": {
@@ -1025,5 +1092,39 @@
 		"enabled": "Ingeschakeld",
 		"inspectSkill": "Bekijken",
 		"builtinDescription": "Inbegrepen bij Alpha. Wijzigingen worden toegepast wanneer je de instellingen opslaat. Werkruimtevaardigheden en persoonlijke vaardigheden met dezelfde naam hebben voorrang; het uitschakelen van een ingebouwde vaardigheid schakelt je eigen vervangende versies niet uit."
+	},
+	"agents": {
+		"description": "Kies welke opgeslagen providerprofielen Alpha gebruikt voor subagenten. Roloverschrijvingen hebben voorrang op de standaardtaak, waarna de bovenliggende taak wordt overgenomen.",
+		"searchPlaceholder": "Zoekproviderprofielen...",
+		"noProfilesFound": "Geen overeenkomende providerprofielen",
+		"unavailableProfile": "Niet beschikbaar profiel ({{id}})",
+		"staleWarning": "Dit opgeslagen profiel is niet beschikbaar. Nieuwe subagenten zullen het bovenliggende profiel gebruiken totdat u een ander profiel kiest.",
+		"defaultProfile": {
+			"label": "Standaard subagentprofiel",
+			"inheritParent": "Bovenliggend profiel overnemen",
+			"description": "Wordt gebruikt wanneer een rol geen eigen profieloverschrijving heeft."
+		},
+		"roles": {
+			"title": "Roloverschrijvingen",
+			"description": "Leid optioneel elke agentrol via een ander opgeslagen providerprofiel.",
+			"useDefault": "Gebruik standaard",
+			"explore": {
+				"label": "Explorer-profiel",
+				"description": "Optionele profieloverschrijving voor repository-verkenningsagenten."
+			},
+			"review": {
+				"label": "Reviewerprofiel",
+				"description": "Optionele profieloverschrijving voor reviewagenten."
+			},
+			"worker": {
+				"label": "Werknemersprofiel",
+				"description": "Optionele profieloverschrijving voor geïsoleerde bewerkingswerkers."
+			}
+		}
+	},
+	"github": {
+		"tokenLabel": "GitHub-token",
+		"tokenPlaceholder": "ghp_...",
+		"tokenDescription": "Veilig opgeslagen in VS Code geheime opslag. Gebruikt door de native GitHub API-tool voor pull-aanvragen, controles, opmerkingen en samenvoegingen."
 	}
 }

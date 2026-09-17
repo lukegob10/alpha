@@ -47,7 +47,7 @@ describe("isolated command reads", () => {
 			completeCommandExecution: vi.fn(),
 			failCommandExecution: vi.fn(),
 			say: vi.fn(),
-			rooIgnoreController: { validateCommand: () => undefined },
+			alphaIgnoreController: { validateCommand: () => undefined },
 		} as unknown as Task
 		context = {
 			task,
@@ -201,7 +201,7 @@ describe("isolated command reads", () => {
 			if (change === "mode") Object.defineProperty(context.task, "taskMode", { value: "architect" })
 			if (change === "disabled") state.disabledTools.push("execute_command")
 			if (change === "rule") state.deniedCommands.push("git")
-			if (change === "ignore") context.task.rooIgnoreController = undefined
+			if (change === "ignore") context.task.alphaIgnoreController = undefined
 			await expect(read!.run!(context.callbacks)).rejects.toThrow("approval or read scope changed")
 			expect(execa).toHaveBeenCalledTimes(1)
 		},

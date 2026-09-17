@@ -237,7 +237,9 @@
 		"didViewTopLevelOutsideWorkspace": "Alpha zobaczył pliki najwyższego poziomu w tym katalogu (poza obszarem roboczym)",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha chce rekurencyjnie zobaczyć wszystkie pliki w tym katalogu (poza obszarem roboczym)",
 		"didViewRecursiveOutsideWorkspace": "Alpha rekurencyjnie zobaczył wszystkie pliki w tym katalogu (poza obszarem roboczym)",
-		"wantsToViewMultipleDirectories": "Alpha chce wyświetlić wiele katalogów"
+		"wantsToViewMultipleDirectories": "Alpha chce wyświetlić wiele katalogów",
+		"wantsToSearchMultiple": "Alpha chce uruchomić wyszukiwanie plików {{count}}",
+		"didSearchMultiple": "Alpha przeprowadził wyszukiwanie plików {{count}}"
 	},
 	"commandOutput": "Wyjście polecenia",
 	"commandExecution": {
@@ -481,7 +483,14 @@
 		"clickToEdit": "Kliknij, aby edytować wiadomość",
 		"steering": "Przekierowywanie…",
 		"queueFailed": "Nie udało się dodać wiadomości do kolejki. Wersja robocza nadal jest w edytorze.",
-		"steerFailed": "Nie udało się rozpocząć przekierowania. Wiadomość w kolejce jest nadal dostępna."
+		"steerFailed": "Nie udało się rozpocząć przekierowania. Wiadomość w kolejce jest nadal dostępna.",
+		"edit": "Edytuj",
+		"editTooltip": "Edytuj tę wiadomość w kolejce",
+		"editing": "Edycja w kompozytorze",
+		"dragHandle": "Przeciągnij wiadomość w kolejce",
+		"dragTooltip": "Przeciągnij, aby zmienić kolejność tej wiadomości w kolejce",
+		"steer": "Steruj",
+		"steerTooltip": "Wyślij tę wiadomość w kolejce do bieżącego zakrętu"
 	},
 	"modelResponseDelayed": "Oczekiwanie na kolejną odpowiedź modelu. Dłuższe rozumowanie może zająć trochę czasu.",
 	"slashCommand": {
@@ -519,5 +528,30 @@
 		"list_checks": "Wyświetl kontrole",
 		"merge_pull_request": "Scal pull request",
 		"comment": "Dodaj komentarz"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "Sprawdź agentów",
+			"wait_agent": "Czekaj na aktualizacje agenta",
+			"unknown": "Akcja agenta"
+		},
+		"failed": "{{action}} nie powiodła się: {{error}}",
+		"list": {
+			"running": "Sprawdzanie agentów...",
+			"completed": "Sprawdzony agent {{count}}",
+			"completed_other": "Sprawdzeni agenci {{count}}",
+			"mailbox": "Aktualizacja skrzynki pocztowej {{count}}",
+			"mailbox_other": "Aktualizacje skrzynki pocztowej {{count}}"
+		},
+		"wait": {
+			"running": "Oczekiwanie na aktualizacje agenta...",
+			"noActiveAgents": "Brak aktywnych agentów do oczekiwania na",
+			"cancelled": "Oczekiwanie agenta anulowane",
+			"timedOut": "Brak aktualizacji agenta przed upływem limitu czasu",
+			"alreadyDelivered": "Brak nowych aktualizacji; wyniki już dostarczone",
+			"received": "Otrzymano aktualizację agenta {{count}}",
+			"received_other": "Otrzymano aktualizacje agenta {{count}}",
+			"completed": "Zakończono oczekiwanie agenta"
+		}
 	}
 }

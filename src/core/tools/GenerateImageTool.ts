@@ -70,10 +70,10 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 			return
 		}
 
-		const accessAllowed = task.rooIgnoreController?.validateAccess(relPath)
+		const accessAllowed = task.alphaIgnoreController?.validateAccess(relPath)
 		if (!accessAllowed) {
 			await task.say("rooignore_error", relPath)
-			pushFailure(formatResponse.rooIgnoreError(relPath))
+			pushFailure(formatResponse.alphaIgnoreError(relPath))
 			return
 		}
 
@@ -90,10 +90,10 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 				return
 			}
 
-			const inputImageAccessAllowed = task.rooIgnoreController?.validateAccess(inputImagePath)
+			const inputImageAccessAllowed = task.alphaIgnoreController?.validateAccess(inputImagePath)
 			if (!inputImageAccessAllowed) {
 				await task.say("rooignore_error", inputImagePath)
-				pushFailure(formatResponse.rooIgnoreError(inputImagePath))
+				pushFailure(formatResponse.alphaIgnoreError(inputImagePath))
 				return
 			}
 
@@ -177,7 +177,7 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 			isOutsideWorkspace:
 				isTaskPathOutsideWorkspace(task, path.resolve(task.cwd, outputPath)) ||
 				isTaskPathOutsideWorkspace(task, resolvePathWithExistingAncestor(path.resolve(task.cwd, outputPath))),
-			isProtected: task.rooProtectedController?.isWriteProtected(outputPath) || false,
+			isProtected: task.alphaProtectedController?.isWriteProtected(outputPath) || false,
 		})
 		const approvePath = async (outputPath: string, policy: ReturnType<typeof pathPolicy>) => {
 			assertActive()
@@ -208,7 +208,7 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 			const candidates = getImageOutputPaths(relPath)
 			const outputStates = new Map<string, ImageOutputState | Error>()
 			for (const candidate of candidates) {
-				if (!task.rooIgnoreController?.validateAccess(candidate)) continue
+				if (!task.alphaIgnoreController?.validateAccess(candidate)) continue
 				try {
 					outputStates.set(
 						candidate,
@@ -262,9 +262,9 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 			const finalPath = candidates.length === 1 ? candidates[0] : candidates[imageFormat === "png" ? 0 : 1]
 
 			const imageBuffer = Buffer.from(base64Data, "base64")
-			if (!task.rooIgnoreController?.validateAccess(finalPath)) {
+			if (!task.alphaIgnoreController?.validateAccess(finalPath)) {
 				await task.say("rooignore_error", finalPath)
-				pushFailure(formatResponse.rooIgnoreError(finalPath))
+				pushFailure(formatResponse.alphaIgnoreError(finalPath))
 				return
 			}
 			const expectedState = outputStates.get(finalPath)
@@ -281,7 +281,7 @@ export class GenerateImageTool extends BaseTool<"generate_image"> {
 				assertActive()
 				const currentPolicy = pathPolicy(finalPath)
 				if (
-					!task.rooIgnoreController?.validateAccess(finalPath) ||
+					!task.alphaIgnoreController?.validateAccess(finalPath) ||
 					(currentPolicy.isProtected && !approvedPolicy.isProtected) ||
 					currentPolicy.isOutsideWorkspace !== approvedPolicy.isOutsideWorkspace ||
 					!arePathsEqual(expectedState.resolvedPath, resolvePathWithExistingAncestor(absolutePath))

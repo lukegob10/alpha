@@ -6,7 +6,7 @@ import {
 	deleteTicketSchema,
 	listTicketsSchema,
 	ticketLocatorSchema,
-	type ClineSayTool,
+	type AlphaSayTool,
 	type TicketActivity,
 	type Ticket,
 	type TicketList,
@@ -42,7 +42,7 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 	const publish = async (activity: TicketActivity) => {
 		// Presentation failure cannot change a completed operation into a retryable failure.
 		try {
-			await task.say("tool", JSON.stringify({ tool: "ticket", ticketActivity: activity } satisfies ClineSayTool))
+			await task.say("tool", JSON.stringify({ tool: "ticket", ticketActivity: activity } satisfies AlphaSayTool))
 		} catch {
 			console.error("[Tickets] Could not publish ticket activity")
 		}
@@ -66,7 +66,7 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 						name,
 						...(reference ? { reference } : {}),
 					},
-				} satisfies ClineSayTool),
+				} satisfies AlphaSayTool),
 			)
 			signal?.throwIfAborted()
 			if (task.abort) throw new Error("Ticket operation cancelled")

@@ -163,7 +163,7 @@ function serializeError(_key: string, value: unknown): unknown {
  * files for post-mortem analysis alongside the log files.
  */
 export async function copyConversationHistory({
-	rooTaskId,
+	alphaTaskId,
 	logDir,
 	language,
 	exercise,
@@ -171,7 +171,7 @@ export async function copyConversationHistory({
 	logger,
 	storageRoot = "/roo/.vscode/User/globalStorage/alphainc.alpha",
 }: {
-	rooTaskId: string
+	alphaTaskId: string
 	logDir: string
 	language: string
 	exercise: string
@@ -179,7 +179,7 @@ export async function copyConversationHistory({
 	logger: Logger
 	storageRoot?: string
 }): Promise<void> {
-	const taskStoragePath = path.join(storageRoot, "tasks", rooTaskId)
+	const taskStoragePath = path.join(storageRoot, "tasks", alphaTaskId)
 
 	const filesToCopy = ["api_conversation_history.json", "ui_messages.json", "agent_turn_events.jsonl"]
 

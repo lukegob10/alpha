@@ -4,7 +4,7 @@ import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
 
-import { RooIgnoreController } from "../../../core/ignore/RooIgnoreController"
+import { AlphaIgnoreController } from "../../../core/ignore/AlphaIgnoreController"
 import { clearRipgrepPathCache, regexSearchFiles, resolveRipgrepBinary, truncateLine } from "../index"
 
 vi.mock("vscode", async (importOriginal) => ({
@@ -411,7 +411,7 @@ describe("Ripgrep content search", () => {
 			for (const fileName of ["source.txt", "git-ignored.txt", "alpha-ignored.txt"]) {
 				await fs.writeFile(path.join(tempDir, fileName), "alpha\nbeta\n")
 			}
-			const ignoreController = new RooIgnoreController(tempDir)
+			const ignoreController = new AlphaIgnoreController(tempDir)
 			try {
 				await ignoreController.initialize()
 				const output = await regexSearchFiles(

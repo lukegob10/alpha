@@ -11,7 +11,7 @@ import { arePathsEqual } from "../../utils/path"
 import { formatResponse } from "../prompts/responses"
 import { getGitStatus } from "../../utils/git"
 import type { Task } from "../task/Task"
-import type { ClineProvider } from "../webview/ClineProvider"
+import type { AlphaProvider } from "../webview/AlphaProvider"
 import { formatReminderSection } from "./reminder"
 import {
 	EnvironmentContext,
@@ -21,7 +21,7 @@ import {
 	type TerminalOutputCursor,
 } from "./EnvironmentContext"
 
-type EnvironmentState = Awaited<ReturnType<ClineProvider["getState"]>>
+type EnvironmentState = Awaited<ReturnType<AlphaProvider["getState"]>>
 interface EnvironmentOptions {
 	context?: EnvironmentContext
 	signal?: AbortSignal
@@ -47,12 +47,12 @@ const isWithinPath = (root: string, candidate: string): boolean => {
 
 /** Full, non-consuming snapshot. Runtime summaries pass includeTransient:false. */
 export async function getEnvironmentDetails(
-	cline: Task,
+	alphaTask: Task,
 	includeFileDetails = false,
 	stateOverride?: EnvironmentState,
 	options: Omit<EnvironmentOptions, "context"> = {},
 ): Promise<string> {
-	const capture = await captureEnvironmentDetails(cline, includeFileDetails, stateOverride, options)
+	const capture = await captureEnvironmentDetails(alphaTask, includeFileDetails, stateOverride, options)
 	try {
 		return capture.details
 	} finally {
@@ -61,16 +61,16 @@ export async function getEnvironmentDetails(
 }
 
 export async function captureEnvironmentDetails(
-	cline: Task,
+	alphaTask: Task,
 	includeFileDetails = false,
 	stateOverride?: EnvironmentState,
 	{ context = new EnvironmentContext(), signal, includeTransient = true }: EnvironmentOptions = {},
 ) {
 	signal?.throwIfAborted()
-	const provider = cline.providerRef.deref()
+	const provider = alphaTask.providerRef.deref()
 	const state = stateOverride ?? (await awaitEnvironmentRead(Promise.resolve(provider?.getState()), signal))
-	const currentMode = (await awaitEnvironmentRead(cline.getTaskMode(), signal)) ?? defaultModeSlug
-	const modelId = cline.api.getModel().id
+	const currentMode = (await awaitEnvironmentRead(alphaTask.getTaskMode(), signal)) ?? defaultModeSlug
+	const modelId = alphaTask.api.getModel().id
 	const maxFiles = countLimit(state?.maxWorkspaceFiles, 200)
 	const maxTabs = countLimit(state?.maxOpenTabsContext, 20)
 	const storagePath = provider?.context?.globalStorageUri.fsPath
@@ -78,21 +78,21 @@ export async function captureEnvironmentDetails(
 		? [path.join(storagePath, "subagent-worktrees"), path.join(storagePath, "subagent-change-sets")]
 		: []
 	const isPrivate = (candidate: string) =>
-		privateRoots.some((root) => isWithinPath(root, path.resolve(cline.cwd, candidate)))
+		privateRoots.some((root) => isWithinPath(root, path.resolve(alphaTask.cwd, candidate)))
 	const workspaceRoots = (vscode.workspace?.workspaceFolders ?? [])
 		.map(({ uri }) => uri.fsPath)
 		.filter((root) => !isPrivate(root))
 		.slice(0, MAX_PATHS)
 	const identity = JSON.stringify([
-		cline.taskId,
-		cline.instanceId,
-		cline.taskKind,
-		cline.cwd,
+		alphaTask.taskId,
+		alphaTask.instanceId,
+		alphaTask.taskKind,
+		alphaTask.cwd,
 		workspaceRoots,
 		maxFiles,
 		maxTabs,
 		state?.showRooIgnoredFiles,
-		cline.rooIgnoreController?.rooIgnoreContent,
+		alphaTask.alphaIgnoreController?.alphaIgnoreContent,
 	])
 	const full = context.requiresFullSnapshot(identity)
 	const fields: EnvironmentField[] = []
@@ -103,22 +103,22 @@ export async function captureEnvironmentDetails(
 		fields.push({ name, value: text, comparison })
 	}
 	const verification = await awaitEnvironmentRead(
-		Promise.resolve(provider?.getParentVerificationContext?.(cline)),
+		Promise.resolve(provider?.getParentVerificationContext?.(alphaTask)),
 		signal,
 	)
 	if (verification) add("Workspace Verification", verification)
-	const commandOutcomes = cline.getBackgroundCommandContext?.()
+	const commandOutcomes = alphaTask.getBackgroundCommandContext?.()
 	if (commandOutcomes) add("Background Command Outcomes", commandOutcomes)
-	const workContext = await awaitEnvironmentRead(Promise.resolve(cline.getWorkContext?.()), signal)
+	const workContext = await awaitEnvironmentRead(Promise.resolve(alphaTask.getWorkContext?.()), signal)
 	if (workContext) add("Task Working Record", workContext)
-	const pacing = cline.getRequestPacingMetrics?.()
+	const pacing = alphaTask.getRequestPacingMetrics?.()
 	if (pacing && pacing.configuredIntervalSeconds > 0) {
 		add(
 			"Configured Request Pacing",
 			`Provider-profile interval: ${pacing.configuredIntervalSeconds}s (shared by the parent and sub-agents using this profile). Before this request, this task had waited ${pacing.waitCount} time${pacing.waitCount === 1 ? "" : "s"} for ${Math.round(pacing.totalWaitMs / 100) / 10}s total. A request_pacing_update block, when present, contains the authoritative total after the current request's wait. These are configured pacing waits, not provider errors; include them accurately in performance summaries.`,
 		)
 	}
-	if (cline.taskKind === "subagent") {
+	if (alphaTask.taskKind === "subagent") {
 		add("Current Workspace Directory", ".")
 		add("Current Mode", `<slug>${currentMode}</slug>\n<model>${modelId}</model>`)
 		add(
@@ -128,8 +128,8 @@ export async function captureEnvironmentDetails(
 		return context.prepare(identity, fields, "", [])
 	}
 	// Essential identity and clock facts precede bulk editor/listing fields.
-	add("Current Workspace Directory", cline.cwd.toPosix())
-	add("Workspace Roots", workspaceRoots.map((root) => root.toPosix()).join("\n") || cline.cwd.toPosix())
+	add("Current Workspace Directory", alphaTask.cwd.toPosix())
+	add("Workspace Roots", workspaceRoots.map((root) => root.toPosix()).join("\n") || alphaTask.cwd.toPosix())
 	const mode = getModeBySlug(currentMode, state?.customModes) ?? defaultMode
 	add(
 		"Current Mode",
@@ -147,19 +147,19 @@ export async function captureEnvironmentDetails(
 		)
 	}
 	if (state?.includeCurrentCost ?? true) {
-		const { totalCost } = getApiMetrics(cline.clineMessages)
+		const { totalCost } = getApiMetrics(alphaTask.clineMessages)
 		add("Current Cost", totalCost !== null ? `$${totalCost.toFixed(2)}` : "(Not available)")
 	}
 	if (state?.apiConfiguration?.todoListEnabled ?? true) {
-		const reminders = formatReminderSection(cline.todoList)
+		const reminders = formatReminderSection(alphaTask.todoList)
 		if (reminders) add("Reminders", reminders)
 	}
 
 	const allowedPaths = (paths: string[]) => {
 		const relative = paths
 			.filter((file) => !isPrivate(file))
-			.map((file) => path.relative(cline.cwd, file).toPosix())
-		const allowed = cline.rooIgnoreController?.filterPaths(relative) ?? relative
+			.map((file) => path.relative(alphaTask.cwd, file).toPosix())
+		const allowed = alphaTask.alphaIgnoreController?.filterPaths(relative) ?? relative
 		return Array.isArray(allowed) ? allowed.join("\n") : allowed
 	}
 	const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath
@@ -188,24 +188,27 @@ export async function captureEnvironmentDetails(
 	// Listings are bounded baseline facts. Re-list on root/visibility changes or a context reset.
 	let listing: string | undefined
 	if (includeFileDetails || full) {
-		if (arePathsEqual(cline.cwd, path.join(os.homedir(), "Desktop"))) {
+		if (arePathsEqual(alphaTask.cwd, path.join(os.homedir(), "Desktop"))) {
 			listing = "(Desktop files not shown automatically. Use list_files to explore if needed.)"
 		} else if (maxFiles === 0) {
 			listing = "(Workspace files context disabled. Use list_files to explore if needed.)"
 		} else {
-			const [files, hitLimit] = await awaitEnvironmentRead(listFiles(cline.cwd, true, maxFiles, signal), signal)
+			const [files, hitLimit] = await awaitEnvironmentRead(
+				listFiles(alphaTask.cwd, true, maxFiles, signal),
+				signal,
+			)
 			listing = formatResponse.formatFilesList(
-				cline.cwd,
+				alphaTask.cwd,
 				files.filter((file) => !isPrivate(file)),
 				hitLimit,
-				cline.rooIgnoreController,
+				alphaTask.alphaIgnoreController,
 				state?.showRooIgnoredFiles ?? false,
 			)
 		}
 	}
 	const gitLimit = countLimit(state?.maxGitStatusFiles, 0)
 	if (gitLimit > 0) {
-		const status = await awaitEnvironmentRead(getGitStatus(cline.cwd, gitLimit, signal), signal)
+		const status = await awaitEnvironmentRead(getGitStatus(alphaTask.cwd, gitLimit, signal), signal)
 		if (status) add("Git Status", status)
 	}
 
@@ -217,8 +220,8 @@ export async function captureEnvironmentDetails(
 	try {
 		const terminals = [
 			...new Set([
-				...TerminalRegistry.getTerminals(true, cline.taskId),
-				...TerminalRegistry.getTerminals(false, cline.taskId),
+				...TerminalRegistry.getTerminals(true, alphaTask.taskId),
+				...TerminalRegistry.getTerminals(false, alphaTask.taskId),
 				...TerminalRegistry.getBackgroundTerminals(true),
 				...TerminalRegistry.getBackgroundTerminals(false),
 			]),
@@ -283,7 +286,7 @@ export async function captureEnvironmentDetails(
 				}
 				if (captured) receipts.push({ commit: () => terminal.cleanCompletedProcessQueue() })
 			}
-			const modified = cline.fileContextTracker.captureRecentlyModifiedFiles(MAX_PATHS, MAX_FIELD_CHARACTERS)
+			const modified = alphaTask.fileContextTracker.captureRecentlyModifiedFiles(MAX_PATHS, MAX_FIELD_CHARACTERS)
 			receipts.push(modified)
 			const files = modified.files.filter((file) => !isPrivate(file))
 			if (files.length)

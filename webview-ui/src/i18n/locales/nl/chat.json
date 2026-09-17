@@ -232,7 +232,9 @@
 		"didViewTopLevelOutsideWorkspace": "Alpha heeft de bovenliggende bestanden in deze map (buiten werkruimte) bekeken",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha wil alle bestanden in deze map (buiten werkruimte) recursief bekijken",
 		"didViewRecursiveOutsideWorkspace": "Alpha heeft alle bestanden in deze map (buiten werkruimte) recursief bekeken",
-		"wantsToViewMultipleDirectories": "Alpha wil meerdere mappen bekijken"
+		"wantsToViewMultipleDirectories": "Alpha wil meerdere mappen bekijken",
+		"wantsToSearchMultiple": "Alpha wil {{count}}-bestandszoekopdrachten uitvoeren",
+		"didSearchMultiple": "Alpha heeft zoekopdrachten naar {{count}}-bestanden uitgevoerd"
 	},
 	"commandOutput": "Commando-uitvoer",
 	"commandExecution": {
@@ -481,7 +483,14 @@
 		"clickToEdit": "Klik om bericht te bewerken",
 		"steering": "Bijsturen…",
 		"queueFailed": "Het bericht kon niet in de wachtrij worden geplaatst. Je concept staat nog in het invoerveld.",
-		"steerFailed": "Bijsturen kon niet worden gestart. Het bericht in de wachtrij blijft beschikbaar."
+		"steerFailed": "Bijsturen kon niet worden gestart. Het bericht in de wachtrij blijft beschikbaar.",
+		"edit": "Bewerken",
+		"editTooltip": "Bewerk dit bericht in de wachtrij",
+		"editing": "Bewerken in de componist",
+		"dragHandle": "Sleep het bericht in de wachtrij",
+		"dragTooltip": "Sleep om dit bericht in de wachtrij opnieuw te ordenen",
+		"steer": "Stuur",
+		"steerTooltip": "Stuur dit bericht in de wachtrij naar de huidige beurt"
 	},
 	"modelResponseDelayed": "Wachten op de volgende update van het model. Uitgebreider nadenken kan tijd kosten.",
 	"slashCommand": {
@@ -519,5 +528,30 @@
 		"list_checks": "Controles weergeven",
 		"merge_pull_request": "Pull request samenvoegen",
 		"comment": "Reactie toevoegen"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "Agenten inspecteren",
+			"wait_agent": "Wachten op agentupdates",
+			"unknown": "Agentactie"
+		},
+		"failed": "{{action}} mislukt: {{error}}",
+		"list": {
+			"running": "Agenten inspecteren...",
+			"completed": "{{count}}-agent geïnspecteerd",
+			"completed_other": "Geïnspecteerde {{count}}-agenten",
+			"mailbox": "{{count}} mailbox-update",
+			"mailbox_other": "{{count}} mailbox-updates"
+		},
+		"wait": {
+			"running": "Wachten op agentupdates...",
+			"noActiveAgents": "Geen actieve agenten om op te wachten",
+			"cancelled": "Wachttijd agent geannuleerd",
+			"timedOut": "Geen agentupdates vóór time-out",
+			"alreadyDelivered": "Geen nieuwe updates; resultaten al geleverd",
+			"received": "{{count}} agentupdate ontvangen",
+			"received_other": "{{count}} agentupdates ontvangen",
+			"completed": "Wachttijd agent voltooid"
+		}
 	}
 }

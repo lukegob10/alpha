@@ -39,14 +39,14 @@ vi.mock("../checkpointRestoreHandler", async (importOriginal) => ({
 
 // Import after mocks
 import { webviewMessageHandler } from "../webviewMessageHandler"
-import type { ClineProvider } from "../ClineProvider"
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaProvider } from "../AlphaProvider"
+import type { AlphaMessage } from "@alpha-code/types"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { MessageManager } from "../../message-manager"
 import { handleCheckpointRestoreOperation } from "../checkpointRestoreHandler"
 
 describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
-	let mockClineProvider: ClineProvider
+	let mockAlphaProvider: AlphaProvider
 	let mockCurrentTask: any
 
 	it.each([false, true])(
@@ -62,14 +62,14 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 				{ ts: 1000, role: "user", content: [{ type: "text", text: "Original prompt" }] },
 			]
 			mockCurrentTask.submitUserMessage = vi.fn()
-			mockCurrentTask.overwriteClineMessages.mockImplementation(async (messages: ClineMessage[]) => {
+			mockCurrentTask.overwriteAlphaMessages.mockImplementation(async (messages: AlphaMessage[]) => {
 				mockCurrentTask.clineMessages = messages
 			})
-			mockClineProvider.postStateToWebview = vi.fn()
-			mockClineProvider.getLiveTask = vi.fn().mockReturnValue(mockCurrentTask)
+			mockAlphaProvider.postStateToWebview = vi.fn()
+			mockAlphaProvider.getLiveTask = vi.fn().mockReturnValue(mockCurrentTask)
 			const otherTask = { taskId: "different-task", clineMessages: [], apiConversationHistory: [] }
-			;(mockClineProvider.getCurrentTask as Mock).mockReturnValue(otherTask)
-			await webviewMessageHandler(mockClineProvider, {
+			;(mockAlphaProvider.getCurrentTask as Mock).mockReturnValue(otherTask)
+			await webviewMessageHandler(mockAlphaProvider, {
 				type: "submitEditedMessage",
 				taskId: mockCurrentTask.taskId,
 				value: 1000,
@@ -77,7 +77,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 				images,
 				messageAction: "restart",
 			})
-			expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+			expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
 				type: "showEditMessageDialog",
 				taskId: mockCurrentTask.taskId,
 				messageTs: 1000,
@@ -86,7 +86,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 				hasCheckpoint: true,
 				messageAction: "restart",
 			})
-			await webviewMessageHandler(mockClineProvider, {
+			await webviewMessageHandler(mockAlphaProvider, {
 				type: "editMessageConfirm",
 				taskId: mockCurrentTask.taskId,
 				messageTs: 1000,
@@ -97,16 +97,16 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 			if (restoreCheckpoint) {
 				expect(handleCheckpointRestoreOperation).toHaveBeenCalledWith(
 					expect.objectContaining({
-						currentCline: mockCurrentTask,
+						currentAlpha: mockCurrentTask,
 						messageTs: 1000,
 						checkpoint: { hash: "original-checkpoint" },
 						editData: expect.objectContaining({ editedContent: "", images }),
 					}),
 				)
 			} else {
-				expect(mockCurrentTask.overwriteClineMessages).toHaveBeenCalledWith([])
+				expect(mockCurrentTask.overwriteAlphaMessages).toHaveBeenCalledWith([])
 				expect(mockCurrentTask.overwriteApiConversationHistory).toHaveBeenCalledWith([])
-				const resumed = await vi.mocked(mockClineProvider.createTaskWithHistoryItem).mock.results[0].value
+				const resumed = await vi.mocked(mockAlphaProvider.createTaskWithHistoryItem).mock.results[0].value
 				expect(resumed.resumeWithEditedMessage).toHaveBeenCalledWith("", images)
 			}
 			expect(otherTask.clineMessages).toEqual([])
@@ -114,15 +114,15 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 	)
 
 	it("does not fall back to the foreground task for a stale task ID", async () => {
-		mockClineProvider.getLiveTask = vi.fn().mockReturnValue(undefined)
-		await webviewMessageHandler(mockClineProvider, {
+		mockAlphaProvider.getLiveTask = vi.fn().mockReturnValue(undefined)
+		await webviewMessageHandler(mockAlphaProvider, {
 			type: "editMessageConfirm",
 			taskId: "closed-task",
 			messageTs: 1000,
 			text: "Retry",
 		})
-		expect(mockCurrentTask.overwriteClineMessages).not.toHaveBeenCalled()
-		expect(mockClineProvider.getCurrentTask).not.toHaveBeenCalled()
+		expect(mockCurrentTask.overwriteAlphaMessages).not.toHaveBeenCalled()
+		expect(mockAlphaProvider.getCurrentTask).not.toHaveBeenCalled()
 	})
 
 	beforeEach(() => {
@@ -131,9 +131,9 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		// Create a mock task with messages
 		mockCurrentTask = {
 			taskId: "test-task-id",
-			clineMessages: [] as ClineMessage[],
+			clineMessages: [] as AlphaMessage[],
 			apiConversationHistory: [] as ApiMessage[],
-			overwriteClineMessages: vi.fn(),
+			overwriteAlphaMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),
 			handleWebviewAskResponse: vi.fn(),
 			abortTask: vi.fn(),
@@ -142,7 +142,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		mockCurrentTask.messageManager = new MessageManager(mockCurrentTask)
 
 		// Create mock provider
-		mockClineProvider = {
+		mockAlphaProvider = {
 			getCurrentTask: vi.fn().mockReturnValue(mockCurrentTask),
 			getLiveTask: vi.fn().mockImplementation(() => mockCurrentTask),
 			getTaskWithId: vi.fn().mockResolvedValue({ historyItem: { id: "test-task-id" } }),
@@ -161,7 +161,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 			getSubagentChangeSetActionCapability: vi.fn(),
 			applySubagentChangeSet: vi.fn(),
 			discardSubagentChangeSet: vi.fn(),
-		} as unknown as ClineProvider
+		} as unknown as AlphaProvider
 	})
 
 	it("should not modify API history when apiConversationHistoryIndex is -1", async () => {
@@ -177,13 +177,13 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 				type: "say",
 				say: "user_feedback",
 				text: "Hello",
-			} as ClineMessage,
+			} as AlphaMessage,
 			{
 				ts: completionMessageTs,
 				type: "say",
 				say: "completion_result",
 				text: "Task Completed!",
-			} as ClineMessage,
+			} as AlphaMessage,
 		]
 
 		// API conversation history - note the user message is missing (common scenario after condense)
@@ -215,7 +215,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		] as ApiMessage[]
 
 		// Trigger edit confirmation
-		await webviewMessageHandler(mockClineProvider, {
+		await webviewMessageHandler(mockAlphaProvider, {
 			type: "editMessageConfirm",
 			messageTs: userMessageTs,
 			text: "Hello World", // edited content
@@ -223,7 +223,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		})
 
 		// Verify that UI messages were truncated at the correct index
-		expect(mockCurrentTask.overwriteClineMessages).toHaveBeenCalledWith(
+		expect(mockCurrentTask.overwriteAlphaMessages).toHaveBeenCalledWith(
 			[], // All messages before index 0 (empty array)
 		)
 
@@ -243,19 +243,19 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 				type: "say",
 				say: "user_feedback",
 				text: "Earlier message",
-			} as ClineMessage,
+			} as AlphaMessage,
 			{
 				ts: userMessageTs,
 				type: "say",
 				say: "user_feedback",
 				text: "Hello",
-			} as ClineMessage,
+			} as AlphaMessage,
 			{
 				ts: assistantMessageTs,
 				type: "say",
 				say: "text",
 				text: "Response",
-			} as ClineMessage,
+			} as AlphaMessage,
 		]
 
 		// API history - missing the exact user message at ts=1000
@@ -272,7 +272,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 			},
 		] as ApiMessage[]
 
-		await webviewMessageHandler(mockClineProvider, {
+		await webviewMessageHandler(mockAlphaProvider, {
 			type: "editMessageConfirm",
 			messageTs: userMessageTs,
 			text: "Hello World",
@@ -280,7 +280,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		})
 
 		// Verify UI messages were truncated to preserve earlier message
-		expect(mockCurrentTask.overwriteClineMessages).toHaveBeenCalledWith([
+		expect(mockCurrentTask.overwriteAlphaMessages).toHaveBeenCalledWith([
 			{
 				ts: earlierMessageTs,
 				type: "say",
@@ -310,13 +310,13 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 				type: "say",
 				say: "user_feedback",
 				text: "Hello",
-			} as ClineMessage,
+			} as AlphaMessage,
 			{
 				ts: assistantMessageTs,
 				type: "say",
 				say: "text",
 				text: "Response",
-			} as ClineMessage,
+			} as AlphaMessage,
 		]
 
 		mockCurrentTask.apiConversationHistory = [
@@ -332,7 +332,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 			},
 		] as ApiMessage[]
 
-		await webviewMessageHandler(mockClineProvider, {
+		await webviewMessageHandler(mockAlphaProvider, {
 			type: "editMessageConfirm",
 			messageTs: userMessageTs,
 			text: "Hello World",
@@ -340,7 +340,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		})
 
 		// Both should be truncated at index 0
-		expect(mockCurrentTask.overwriteClineMessages).toHaveBeenCalledWith([])
+		expect(mockCurrentTask.overwriteAlphaMessages).toHaveBeenCalledWith([])
 		expect(mockCurrentTask.overwriteApiConversationHistory).toHaveBeenCalledWith([])
 	})
 
@@ -353,7 +353,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 				type: "say",
 				say: "user_feedback",
 				text: "Hello",
-			} as ClineMessage,
+			} as AlphaMessage,
 		]
 
 		// All API messages have timestamps before the edited message
@@ -370,7 +370,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 			},
 		] as ApiMessage[]
 
-		await webviewMessageHandler(mockClineProvider, {
+		await webviewMessageHandler(mockAlphaProvider, {
 			type: "editMessageConfirm",
 			messageTs: userMessageTs,
 			text: "Hello World",
@@ -378,7 +378,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		})
 
 		// UI messages truncated
-		expect(mockCurrentTask.overwriteClineMessages).toHaveBeenCalledWith([])
+		expect(mockCurrentTask.overwriteAlphaMessages).toHaveBeenCalledWith([])
 
 		// API history should not be modified when no API messages meet the timestamp criteria
 		expect(mockCurrentTask.overwriteApiConversationHistory).not.toHaveBeenCalled()
@@ -393,12 +393,12 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 				type: "say",
 				say: "user_feedback",
 				text: "Hello",
-			} as ClineMessage,
+			} as AlphaMessage,
 		]
 
 		mockCurrentTask.apiConversationHistory = []
 
-		await webviewMessageHandler(mockClineProvider, {
+		await webviewMessageHandler(mockAlphaProvider, {
 			type: "editMessageConfirm",
 			messageTs: userMessageTs,
 			text: "Hello World",
@@ -406,7 +406,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		})
 
 		// UI messages should be truncated
-		expect(mockCurrentTask.overwriteClineMessages).toHaveBeenCalledWith([])
+		expect(mockCurrentTask.overwriteAlphaMessages).toHaveBeenCalledWith([])
 
 		// API history should not be modified when message not found
 		expect(mockCurrentTask.overwriteApiConversationHistory).not.toHaveBeenCalled()
@@ -423,19 +423,19 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 				type: "say",
 				say: "user_feedback",
 				text: "Do something",
-			} as ClineMessage,
+			} as AlphaMessage,
 			{
 				ts: completionTs,
 				type: "say",
 				say: "completion_result",
 				text: "Task Completed!",
-			} as ClineMessage,
+			} as AlphaMessage,
 			{
 				ts: feedbackTs,
 				type: "say",
 				say: "user_feedback",
 				text: "Thanks",
-			} as ClineMessage,
+			} as AlphaMessage,
 		]
 
 		// API history with attempt_completion tool use (user message missing)
@@ -467,7 +467,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		] as ApiMessage[]
 
 		// Edit the first user message
-		await webviewMessageHandler(mockClineProvider, {
+		await webviewMessageHandler(mockAlphaProvider, {
 			type: "editMessageConfirm",
 			messageTs: userMessageTs,
 			text: "Do something else",
@@ -475,7 +475,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		})
 
 		// UI messages truncated at edited message
-		expect(mockCurrentTask.overwriteClineMessages).toHaveBeenCalledWith([])
+		expect(mockCurrentTask.overwriteAlphaMessages).toHaveBeenCalledWith([])
 
 		// API history should be truncated from first message at/after edited timestamp (fallback)
 		expect(mockCurrentTask.overwriteApiConversationHistory).toHaveBeenCalledWith([])
@@ -491,9 +491,9 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 			changeSetStatus: "applied" as const,
 			message: "Worker changes were applied.",
 		}
-		vi.mocked(mockClineProvider.applySubagentChangeSet).mockResolvedValue(result)
+		vi.mocked(mockAlphaProvider.applySubagentChangeSet).mockResolvedValue(result)
 
-		await webviewMessageHandler(mockClineProvider, {
+		await webviewMessageHandler(mockAlphaProvider, {
 			type: "applySubagentChangeSet",
 			taskId: "parent-1",
 			groupId: "group-1",
@@ -501,8 +501,8 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 			requestId: "request-1",
 		})
 
-		expect(mockClineProvider.applySubagentChangeSet).toHaveBeenCalledWith("parent-1", "group-1", "change-1")
-		expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
+		expect(mockAlphaProvider.applySubagentChangeSet).toHaveBeenCalledWith("parent-1", "group-1", "change-1")
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
 			type: "subagentChangeSetActionResult",
 			requestId: "request-1",
 			subagentChangeSetActionResult: result,

@@ -820,7 +820,7 @@ describe("ToolScheduler", () => {
 				cwd: workspace,
 				consecutiveMistakeCount: 0,
 				recordToolError: () => {},
-				rooIgnoreController: { validateAccess: () => true },
+				alphaIgnoreController: { validateAccess: () => true },
 			})
 			const events: any[] = []
 			const eventLog = new AgentTurnEventLog("stale-apply-patch", telemetryStorage)
@@ -1082,7 +1082,7 @@ describe("ToolScheduler", () => {
 			cwd: workspaceRoot,
 			api: { getModel: () => ({ info: { supportsImages: false } }) },
 			consecutiveMistakeCount: 0,
-			rooIgnoreController: { validateAccess: () => true },
+			alphaIgnoreController: { validateAccess: () => true },
 			fileContextTracker: { trackFileContext: async () => {} },
 			providerRef: { deref: () => ({ getState: async () => ({}) }) },
 			recordToolError: () => {},

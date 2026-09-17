@@ -34,10 +34,12 @@
 			"save": "Simpan Gambar",
 			"viewCode": "Lihat Kode",
 			"viewDiagram": "Lihat Diagram",
-			"close": "Tutup"
+			"close": "Tutup",
+			"open": "Buka diagram"
 		},
 		"modal": {
-			"codeTitle": "Kode Mermaid"
+			"codeTitle": "Kode Mermaid",
+			"title": "Diagram Mermaid"
 		},
 		"tabs": {
 			"diagram": "Diagram",
@@ -110,5 +112,7 @@
 	"costs": {
 		"own": "Sendiri",
 		"subtasks": "Subtugas"
-	}
+	},
+	"dismiss": "Tutup",
+	"dismissAndDontShowAgain": "Tutup dan jangan tampilkan lagi"
 }

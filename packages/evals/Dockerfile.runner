@@ -49,7 +49,7 @@ RUN curl https://mise.run | sh \
 ENV MISE_DATA_DIR="/root/.local/share/mise"
 ENV PATH="/root/.local/share/mise/shims:/root/.local/bin:$PATH"
 
-# Define language runtime versions (matching setup.sh)
+# Define pinned language runtime versions for evaluator exercises
 ARG NODE_VERSION=20.19.2
 ARG PYTHON_VERSION=3.13.2
 ARG GO_VERSION=1.24.2

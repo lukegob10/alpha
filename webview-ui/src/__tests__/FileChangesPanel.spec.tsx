@@ -1,6 +1,6 @@
 import React from "react"
 import { fireEvent, render, screen } from "@/utils/test-utils"
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 import { TranslationProvider } from "@/i18n/__mocks__/TranslationContext"
 import FileChangesPanel from "../components/chat/FileChangesPanel"
 
@@ -32,7 +32,7 @@ function createFileEditMessage(
 	path: string,
 	diff: string,
 	diffStats?: { added: number; removed: number },
-): ClineMessage {
+): AlphaMessage {
 	return {
 		type: "ask",
 		ask: "tool",
@@ -48,7 +48,7 @@ function createFileEditMessage(
 	}
 }
 
-function renderPanel(messages: ClineMessage[] | undefined, taskId?: string) {
+function renderPanel(messages: AlphaMessage[] | undefined, taskId?: string) {
 	return render(
 		<TranslationProvider>
 			<FileChangesPanel clineMessages={messages} taskId={taskId} />
@@ -72,7 +72,7 @@ describe("FileChangesPanel", () => {
 	})
 
 	it("renders nothing when there are no file-edit messages", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			{
 				type: "say",
 				say: "text",
@@ -93,7 +93,7 @@ describe("FileChangesPanel", () => {
 	})
 
 	it("renders nothing when file-edit ask tool is not approved (isAnswered false or missing)", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			{
 				type: "ask",
 				ask: "tool",
@@ -205,7 +205,7 @@ describe("FileChangesPanel", () => {
 	})
 })
 
-function edit(path: string, overrides: Partial<ClineMessage> = {}): ClineMessage {
+function edit(path: string, overrides: Partial<AlphaMessage> = {}): AlphaMessage {
 	return {
 		ts: 100,
 		type: "ask",

@@ -107,7 +107,7 @@ function harness() {
 		getTokenUsage: vi.fn(() => ({ contextTokens: 100 })),
 		getTaskAllowedToolNames: () => undefined,
 		shouldExposeAgentLifecycleTools: () => false,
-		getFilesReadByRooSafely: vi.fn(async () => undefined),
+		getFilesReadByAlphaSafely: vi.fn(async () => undefined),
 		autoApprovalHandler: { checkAutoApprovalLimits: vi.fn(async () => ({ shouldProceed: true })) },
 		ensureCanonicalLifecycleStepStarted: vi.fn(async () => {}),
 		environmentContext: { reset: vi.fn() },
@@ -380,8 +380,8 @@ describe("Task manual compaction boundary", () => {
 		await summary.started
 
 		try {
-			await expect(task.recursivelyMakeClineRequests([])).rejects.toThrow("Context compaction is in progress")
-			const runStep = vi.spyOn(task, "recursivelyMakeClineRequests").mockResolvedValue(true)
+			await expect(task.runAgentRequests([])).rejects.toThrow("Context compaction is in progress")
+			const runStep = vi.spyOn(task, "runAgentRequests").mockResolvedValue(true)
 			await expect(Reflect.get(task, "initiateTaskLoop").call(task, [])).rejects.toThrow(
 				"Context compaction is in progress",
 			)

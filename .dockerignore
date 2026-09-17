@@ -75,7 +75,6 @@ src/node_modules
 !pnpm-lock.yaml
 !pnpm-workspace.yaml
 !scripts/bootstrap.mjs
-!apps/web-evals/
 !src/
 !webview-ui/
 !packages/evals/.docker/entrypoints/runner.sh
@@ -87,5 +86,3 @@ src/node_modules
 !packages/ipc/
 !packages/telemetry/
 !packages/types/
-!packages/cloud/
-!locales/

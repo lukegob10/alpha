@@ -2,7 +2,7 @@ import * as vscode from "vscode"
 
 import type { SkillMetadata, WebviewMessage } from "@alpha-code/types"
 
-import type { ClineProvider } from "./ClineProvider"
+import type { AlphaProvider } from "./AlphaProvider"
 import { openFile } from "../../integrations/misc/open-file"
 import { t } from "../../i18n"
 import { builtinSkillInspectionUri } from "../../services/skills/builtinSkillInspection"
@@ -12,7 +12,7 @@ type SkillSource = SkillMetadata["source"]
 /**
  * Handles the requestSkills message - returns all skills metadata
  */
-export async function handleRequestSkills(provider: ClineProvider): Promise<SkillMetadata[]> {
+export async function handleRequestSkills(provider: AlphaProvider): Promise<SkillMetadata[]> {
 	try {
 		const skillsManager = provider.getSkillsManager()
 		if (skillsManager) {
@@ -34,7 +34,7 @@ export async function handleRequestSkills(provider: ClineProvider): Promise<Skil
  * Handles the createSkill message - creates a new skill
  */
 export async function handleCreateSkill(
-	provider: ClineProvider,
+	provider: AlphaProvider,
 	message: WebviewMessage,
 ): Promise<SkillMetadata[] | undefined> {
 	try {
@@ -78,7 +78,7 @@ export async function handleCreateSkill(
  * Handles the deleteSkill message - deletes a skill
  */
 export async function handleDeleteSkill(
-	provider: ClineProvider,
+	provider: AlphaProvider,
 	message: WebviewMessage,
 ): Promise<SkillMetadata[] | undefined> {
 	try {
@@ -118,7 +118,7 @@ export async function handleDeleteSkill(
  * Handles the moveSkill message - moves a skill to a different mode
  */
 export async function handleMoveSkill(
-	provider: ClineProvider,
+	provider: AlphaProvider,
 	message: WebviewMessage,
 ): Promise<SkillMetadata[] | undefined> {
 	try {
@@ -158,7 +158,7 @@ export async function handleMoveSkill(
  * Handles the updateSkillModes message - updates the mode associations for a skill
  */
 export async function handleUpdateSkillModes(
-	provider: ClineProvider,
+	provider: AlphaProvider,
 	message: WebviewMessage,
 ): Promise<SkillMetadata[] | undefined> {
 	try {
@@ -196,7 +196,7 @@ export async function handleUpdateSkillModes(
 /**
  * Handles the openSkillFile message - opens a skill file in the editor
  */
-export async function handleOpenSkillFile(provider: ClineProvider, message: WebviewMessage): Promise<void> {
+export async function handleOpenSkillFile(provider: AlphaProvider, message: WebviewMessage): Promise<void> {
 	try {
 		const skillName = message.skillName
 		const source = message.source as SkillSource

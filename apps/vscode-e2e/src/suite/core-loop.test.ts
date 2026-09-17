@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import * as vscode from "vscode"
-import { RooCodeEventName, TaskLifecycleState, type ClineMessage, type ExtensionState } from "@alpha-code/types"
+import { AlphaCodeEventName, TaskLifecycleState, type AlphaMessage, type ExtensionState } from "@alpha-code/types"
 
 import { readBoundedJson } from "../scenarios/extensionWorkflowHost"
 import { inspectTaskLifecycle, inspectToolTransactions } from "../scenarios/transactionAssertions"
@@ -13,8 +13,8 @@ interface SmallTask {
 	taskId: string
 	didComplete: boolean
 	abort: boolean
-	taskAsk?: ClineMessage
-	clineMessages: ClineMessage[]
+	taskAsk?: AlphaMessage
+	clineMessages: AlphaMessage[]
 	approveAsk(): void
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
@@ -89,7 +89,7 @@ suite("Core loop proportional completion", function () {
 			const onCompleted = (id: string) => {
 				if (id === observation.task?.taskId) completions++
 			}
-			globalThis.api.on(RooCodeEventName.TaskCompleted, onCompleted)
+			globalThis.api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
 			const acknowledge = createCompletionReviewAcknowledger()
 			await withBoundedFixtureCleanup(async () => {
 				await globalThis.api.startNewTask({
@@ -178,7 +178,7 @@ suite("Core loop proportional completion", function () {
 				)
 			}, [
 				() => globalThis.api.clearCurrentTask(),
-				() => globalThis.api.off(RooCodeEventName.TaskCompleted, onCompleted),
+				() => globalThis.api.off(AlphaCodeEventName.TaskCompleted, onCompleted),
 				() => scripted.removeFromCache?.(),
 				() => globalThis.api.setConfiguration(configuration),
 			])

@@ -1,4 +1,4 @@
-import type { ClineAsk, ClineAskResponse, ToolName, ToolProgressStatus } from "@alpha-code/types"
+import type { AlphaAsk, AlphaAskResponse, ToolName, ToolProgressStatus } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
 import type { ToolUse, HandleError, PushToolResult, AskApproval, NativeToolArgs } from "../../shared/tools"
@@ -15,13 +15,13 @@ export class ToolReadDeniedError extends Error {}
  * support objectResponse payloads keyed by each displayed file.
  */
 export interface ToolApprovalResponse {
-	response: ClineAskResponse
+	response: AlphaAskResponse
 	text?: string
 	images?: string[]
 }
 
 export type AskApprovalResponse = (
-	type: ClineAsk,
+	type: AlphaAsk,
 	partialMessage?: string,
 	progressStatus?: ToolProgressStatus,
 	forceApproval?: boolean,

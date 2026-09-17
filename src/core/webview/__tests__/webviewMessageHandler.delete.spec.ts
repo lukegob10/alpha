@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
 import { webviewMessageHandler } from "../webviewMessageHandler"
 import * as vscode from "vscode"
-import { ClineProvider } from "../ClineProvider"
+import { AlphaProvider } from "../AlphaProvider"
 import { MessageManager } from "../../message-manager"
 
 // Mock the saveTaskMessages function
@@ -60,7 +60,7 @@ describe("webviewMessageHandler delete functionality", () => {
 		getCurrentTaskMock = {
 			clineMessages: [],
 			apiConversationHistory: [],
-			overwriteClineMessages: vi.fn(async () => {}),
+			overwriteAlphaMessages: vi.fn(async () => {}),
 			overwriteApiConversationHistory: vi.fn(async () => {}),
 			taskId: "test-task-id",
 		}
@@ -112,7 +112,7 @@ describe("webviewMessageHandler delete functionality", () => {
 			})
 
 			// Verify that clineMessages was truncated at the correct index
-			expect(getCurrentTaskMock.overwriteClineMessages).toHaveBeenCalledWith([])
+			expect(getCurrentTaskMock.overwriteAlphaMessages).toHaveBeenCalledWith([])
 
 			// When message is not found in API history (index is -1),
 			// API history should be truncated from the first API message at/after the deleted timestamp (fallback)
@@ -142,7 +142,7 @@ describe("webviewMessageHandler delete functionality", () => {
 			})
 
 			// Verify truncation at correct indices
-			expect(getCurrentTaskMock.overwriteClineMessages).toHaveBeenCalledWith([
+			expect(getCurrentTaskMock.overwriteAlphaMessages).toHaveBeenCalledWith([
 				{ ts: 900, say: "user", text: "Previous message" },
 			])
 
@@ -166,7 +166,7 @@ describe("webviewMessageHandler delete functionality", () => {
 			expect(vscode.window.showErrorMessage).toHaveBeenCalledWith("common:errors.message.message_not_found")
 
 			// Verify no truncation occurred
-			expect(getCurrentTaskMock.overwriteClineMessages).not.toHaveBeenCalled()
+			expect(getCurrentTaskMock.overwriteAlphaMessages).not.toHaveBeenCalled()
 			expect(getCurrentTaskMock.overwriteApiConversationHistory).not.toHaveBeenCalled()
 		})
 
@@ -205,7 +205,7 @@ describe("webviewMessageHandler delete functionality", () => {
 			})
 
 			// Verify that clineMessages was truncated
-			expect(getCurrentTaskMock.overwriteClineMessages).toHaveBeenCalledWith([])
+			expect(getCurrentTaskMock.overwriteAlphaMessages).toHaveBeenCalledWith([])
 
 			// API history should be truncated from first message at/after deleted timestamp (fallback)
 			expect(getCurrentTaskMock.overwriteApiConversationHistory).toHaveBeenCalledWith([])
@@ -234,7 +234,7 @@ describe("webviewMessageHandler delete functionality", () => {
 			})
 
 			// Should preserve messages before the deleted one
-			expect(getCurrentTaskMock.overwriteClineMessages).toHaveBeenCalledWith([
+			expect(getCurrentTaskMock.overwriteAlphaMessages).toHaveBeenCalledWith([
 				{ ts: 1000, say: "user", text: "First message" },
 				{ ts: 1500, say: "assistant", text: "First response" },
 			])

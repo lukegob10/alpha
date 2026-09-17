@@ -2,12 +2,12 @@ import * as fs from "node:fs/promises"
 import * as path from "node:path"
 
 import {
-	RooCodeEventName,
+	AlphaCodeEventName,
 	toolNames,
 	type ToolName,
-	type ClineMessage,
-	type RooCodeAPI,
-	type RooCodeSettings,
+	type AlphaMessage,
+	type AlphaCodeAPI,
+	type AlphaCodeSettings,
 	type ExtensionState,
 } from "@alpha-code/types"
 
@@ -53,8 +53,8 @@ interface HostTask {
 	taskId: string
 	api: unknown
 	apiConversationHistory: unknown[]
-	clineMessages: ClineMessage[]
-	taskAsk?: ClineMessage
+	clineMessages: AlphaMessage[]
+	taskAsk?: AlphaMessage
 	didComplete?: boolean
 	approveAsk(): void
 	waitForTermination(): Promise<void>
@@ -67,8 +67,8 @@ interface HostProvider {
 		text: string,
 		images: undefined,
 		parent: undefined,
-		options: { preserveExisting: true; background: true; apiConfiguration: RooCodeSettings },
-		configuration: RooCodeSettings,
+		options: { preserveExisting: true; background: true; apiConfiguration: AlphaCodeSettings },
+		configuration: AlphaCodeSettings,
 	): Promise<HostTask>
 	closeTask(taskId: string): Promise<void>
 	viewLaunched: boolean
@@ -79,7 +79,7 @@ interface HostProvider {
 	getTaskWithId(taskId: string): Promise<{ historyItem: unknown; taskDirPath: string }>
 	createTaskWithHistoryItem(
 		historyItem: unknown,
-		options: { subagentRuntime: { apiConfiguration: RooCodeSettings } },
+		options: { subagentRuntime: { apiConfiguration: AlphaCodeSettings } },
 	): Promise<unknown>
 	on(event: "taskCreated", listener: (task: HostTask) => void): void
 	off(event: "taskCreated", listener: (task: HostTask) => void): void
@@ -122,7 +122,7 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
 		? (value as Record<string, unknown>)
 		: undefined
 
-function unexpectedAskFailure(ask: ClineMessage): WorkflowFailure {
+function unexpectedAskFailure(ask: AlphaMessage): WorkflowFailure {
 	if (ask.ask === "tool") {
 		let tool = ""
 		try {
@@ -196,7 +196,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 	private readonly cleanup: Array<() => void> = []
 	private readonly approvedAsks = new Set<number>()
 	private readonly scripted?: WorkflowScriptedAI
-	private readonly configuration: RooCodeSettings
+	private readonly configuration: AlphaCodeSettings
 	private readonly deadline: number
 	private currentId?: string
 	private readonly backgroundIds = new Set<string>()
@@ -210,7 +210,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 	}
 
 	constructor(
-		private readonly api: RooCodeAPI,
+		private readonly api: AlphaCodeAPI,
 		private readonly workspace: string,
 		providerMode: string,
 		readonly budget: WorkflowRequestBudget,
@@ -252,7 +252,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			enableCheckpoints: false,
 			terminalShellIntegrationDisabled: terminalProvider === "execa",
 		}
-		this.api.on(RooCodeEventName.TaskCompleted, this.onCompleted)
+		this.api.on(AlphaCodeEventName.TaskCompleted, this.onCompleted)
 		this.provider.on("taskCreated", this.onCreated)
 	}
 
@@ -311,7 +311,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		this.scripted?.setPhase(prompt, step)
 		this.expectedCompletions.set(taskId, (this.completions.get(taskId) ?? 0) + 1)
 		let admitted = false
-		const onFeedback = (event: { taskId: string; action: string; message: ClineMessage }) => {
+		const onFeedback = (event: { taskId: string; action: string; message: AlphaMessage }) => {
 			const message = event.message
 			if (
 				event.taskId === taskId &&
@@ -326,7 +326,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		}
 		// sendMessage acknowledges webview dispatch, not Task admission. Subscribe
 		// first so synchronous and delayed same-task admissions are both observed.
-		this.api.on(RooCodeEventName.Message, onFeedback)
+		this.api.on(AlphaCodeEventName.Message, onFeedback)
 		try {
 			this.admissions.push({ taskId, text: guidance, after: previousTimestamp })
 			await this.api.sendMessage(guidance)
@@ -346,7 +346,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 				30_000,
 			)
 		} finally {
-			this.api.off(RooCodeEventName.Message, onFeedback)
+			this.api.off(AlphaCodeEventName.Message, onFeedback)
 		}
 	}
 
@@ -710,7 +710,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 				await this.api.cancelCurrentTask()
 		} finally {
 			this.provider.off("taskCreated", this.onCreated)
-			this.api.off(RooCodeEventName.TaskCompleted, this.onCompleted)
+			this.api.off(AlphaCodeEventName.TaskCompleted, this.onCompleted)
 			for (const release of this.cleanup.reverse()) release()
 			this.scripted?.dispose()
 		}

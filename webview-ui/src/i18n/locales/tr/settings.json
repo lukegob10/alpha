@@ -41,7 +41,9 @@
 		"experimental": "Deneysel",
 		"language": "Dil",
 		"about": "Alpha Hakkında",
-		"skills": "Skills"
+		"skills": "Skills",
+		"agents": "Aracılar",
+		"github": "GitHub"
 	},
 	"about": {
 		"bugReport": {
@@ -209,7 +211,8 @@
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
 			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
 			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
-			"localIndexPathRequired": "Local index path is required"
+			"localIndexPathRequired": "Local index path is required",
+			"embeddingRateLimitSecondsRange": "Ekleme isteği gecikmesi 0,1 ile 60 saniye arasında olmalıdır"
 		},
 		"optional": "isteğe bağlı",
 		"advancedConfigLabel": "Gelişmiş Yapılandırma",
@@ -230,7 +233,9 @@
 		"localIndexPathLabel": "Local Index Path",
 		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
 		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
-		"savedSecretPlaceholder": "Saved value hidden"
+		"savedSecretPlaceholder": "Saved value hidden",
+		"embeddingRateLimitLabel": "Yerleştirme isteği oranını sınırla",
+		"embeddingRateLimitDescription": "Dizin oluşturma sırasında API isteklerinin yerleştirilmesi arasına bir gecikme ekler. Gömme sağlayıcınız kod tabanı indekslemeyi sınırlıyorsa bunu artırın."
 	},
 	"autoApprove": {
 		"toggleShortcut": "<SettingsLink>IDE tercihlerinizde</SettingsLink> bu ayar için genel bir kısayol yapılandırabilirsiniz.",
@@ -306,6 +311,10 @@
 		},
 		"maxLimits": {
 			"description": "Bu sınırlara ulaşana kadar otomatik olarak istekleri yap, sonrasında devam etmek için onay iste."
+		},
+		"subagents": {
+			"label": "Alt aracılar",
+			"description": "Alpha'nin onay gerektirmeden salt okunur alt aracı gruplarını başlatmasına izin ver. Okuma erişiminin de otomatik olarak onaylanması gerekir."
 		}
 	},
 	"providers": {
@@ -385,7 +394,8 @@
 			"hint": "En son modelleri görmek için lütfen ayarları yeniden açın.",
 			"loading": "Model listesi yenileniyor...",
 			"success": "Model listesi başarıyla yenilendi!",
-			"error": "Model listesi yenilenemedi. Lütfen tekrar deneyin."
+			"error": "Model listesi yenilenemedi. Lütfen tekrar deneyin.",
+			"missingConfig": "Modelleri yenilemeden önce gerekli sağlayıcı yapılandırmasını girin."
 		},
 		"getRequestyApiKey": "Requesty API Anahtarı Al",
 		"getRequestyBaseUrl": "Temel URL",
@@ -549,7 +559,8 @@
 			"high": "Yüksek",
 			"xhigh": "Çok yüksek",
 			"medium": "Orta",
-			"low": "Düşük"
+			"low": "Düşük",
+			"max": "Maksimum"
 		},
 		"verbosity": {
 			"label": "Çıktı Ayrıntı Düzeyi",
@@ -565,7 +576,55 @@
 			"placeholder": "Varsayılan: claude",
 			"maxTokensLabel": "Maksimum Çıktı Token sayısı",
 			"maxTokensDescription": "Claude Code yanıtları için maksimum çıktı token sayısı. Varsayılan 8000'dir."
-		}
+		},
+		"vertexStreamingEnabledLabel": "Akış yanıtlarını etkinleştirin",
+		"vertexStreamingEnabledDescription": "Bir ağ geçidi veya model akışı desteklemediğinde bunu devre dışı bırakın. Yanıtlar tamamlandıktan sonra görünecektir.",
+		"vscodeLmLoading": "Bu VS Code penceresinde mevcut olan dil modelleri yükleniyor...",
+		"vscodeLmNoModels": "Bu VS Code penceresinde hiçbir dil modeli mevcut değil. Buradan GitHub Copilot'de oturum açın, ihtiyacınız olan modelleri 'Chat: Manage Language Models' ile etkinleştirin ve ardından yenileyin.",
+		"vscodeLmRefresh": "Modelleri yenile",
+		"vscodeLmUnavailable": "Seçilen model bu VS Code penceresinde mevcut değil. VS Code tarafından döndürülen bir modeli seçin veya 'Chat: Manage Language Models' ile etkinleştirin.",
+		"vscodeLmContextSize": {
+			"label": "Bağlam penceresi",
+			"default": "Standart ({{contextSize}} giriş jetonları)",
+			"extended": "Genişletilmiş ({{contextSize}} giriş jetonları)",
+			"description": "Bu model için GitHub Copilot'ye gönderilen giriş jetonu bütçesini seçin. Genişletilmiş bağlam daha fazla premium isteği tüketebilir."
+		},
+		"googleCloudProjectId": "Google Cloud Projesi ID",
+		"googleCloudRegion": "Google Cloud Bölgesi",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "Bir bölge arayın veya girin",
+			"noMatchFound": "Eşleşen bölge bulunamadı",
+			"useCustomRegion": "Özel kullanın: {{region}}"
+		},
+		"googleCloudCredentials": "Google Cloud Kimlik Bilgileri JSON",
+		"googleCloudKeyFile": "Google Cloud Anahtar Dosyası",
+		"googleCloudSetup": {
+			"title": "Google Cloud kurulumu",
+			"step1": "Vertex AI ve model erişimini etkinleştirin",
+			"step2": "Uygulama Varsayılan Kimlik Bilgilerini Ayarlayın",
+			"step3": "Bir hizmet hesabı anahtarı oluşturun"
+		},
+		"vertexGatewayBaseUrl": "Vertex Ağ Geçidi Tabanı URL",
+		"vertexGatewayCaBundlePath": "Vertex Ağ Geçidi CA Paket Yolu",
+		"vertexGatewayHelixCommand": "Vertex Ağ Geçidi Helix Komutu",
+		"vertexGatewayHelixParseMode": "Vertex Ağ Geçidi Helix Ayrıştırma Modu",
+		"vertexGatewayHelixParseModeRawStdout": "Ham stdout",
+		"vertexGatewayHelixParseModeJsonField": "JSON alanı",
+		"vertexGatewayHelixTokenKey": "Vertex Ağ Geçidi Helix Belirteç Anahtarı",
+		"vertexGatewayTokenRefreshMinutes": "Vertex Ağ Geçidi Token Yenileme Dakikası",
+		"vertexGatewayModelRoutingMap": "Vertex Ağ Geçidi Modeli Yönlendirme Haritası",
+		"vertexGatewayModelRoutingMapDescription": "ID modeli tarafından anahtarlanan JSON nesnesi. Değerler eski model geçersiz kılma dizeleri veya projectId, location, modelOverride ve extraHeaders içeren nesneler olabilir.",
+		"stellarDescription": "Dahili Stellar OpenAI uyumlu model ağ geçidine bağlanır. API anahtarı, Helix ile otomatik olarak alınır ve hiçbir zaman saklanmaz.",
+		"stellarBaseUrl": "Stellar Taban URL",
+		"stellarCaBundlePath": "Stellar PEM CA Paket Yolu",
+		"stellarHelixCommand": "Stellar Helix Komut",
+		"stellarHelixParseMode": "Stellar Helix Ayrıştırma Modu",
+		"stellarHelixParseModeRawStdout": "Ham stdout",
+		"stellarHelixParseModeJsonField": "JSON alanı",
+		"stellarHelixTokenKey": "Stellar Helix Belirteç Anahtarı",
+		"stellarTokenRefreshMinutes": "Stellar Belirteç Yenileme Dakikaları",
+		"stellarStreamingEnabledLabel": "Akış yanıtlarını etkinleştirin",
+		"stellarStreamingEnabledDescription": "Stellar dağıtımı akışı desteklemiyorsa bunu devre dışı bırakın. Yanıtlar tamamlandıktan sonra görünecektir."
 	},
 	"checkpoints": {
 		"timeout": {
@@ -905,7 +964,11 @@
 		"providerNotAllowed": "Sağlayıcı '{{provider}}' kuruluşunuz tarafından izin verilmiyor",
 		"modelNotAllowed": "Model '{{model}}' sağlayıcı '{{provider}}' için kuruluşunuz tarafından izin verilmiyor",
 		"profileInvalid": "Bu profil, kuruluşunuz tarafından izin verilmeyen bir sağlayıcı veya model içeriyor",
-		"qwenCodeOauthPath": "Geçerli bir OAuth kimlik bilgileri yolu sağlamalısın"
+		"qwenCodeOauthPath": "Geçerli bir OAuth kimlik bilgileri yolu sağlamalısın",
+		"googleCloud": "Bir Google Cloud projesi ID ve bölgesini sağlamalısınız.",
+		"vertexGateway": "Vertex ağ geçidi, bir temel URL, CA paket yolu ve Helix komutu gerektirir.",
+		"vertexGatewayModelRoutingMap": "Vertex Ağ Geçidi Modeli Yönlendirme Haritası, dize modeli kimliklerine sahip bir JSON nesnesi olmalıdır.",
+		"stellar": "Stellar, geçerli bir temel URL ve PEM CA paket yolu gerektirir."
 	},
 	"placeholders": {
 		"apiKey": "API anahtarını girin...",
@@ -967,6 +1030,10 @@
 		"requireCtrlEnterToSend": {
 			"label": "Mesaj göndermek için {{primaryMod}}+Enter gerekli",
 			"description": "Etkinleştirildiğinde, sadece Enter yerine mesaj göndermek için {{primaryMod}}+Enter'a basmalısınız"
+		},
+		"maxConcurrentTasks": {
+			"label": "Maksimum paralel görevler",
+			"description": "Aynı anda çalıştırılabilen canlı görevlerin sayısı. Başarısız olan ve tamamlanan görevler bu sınıra dahil edilmez."
 		}
 	},
 	"skills": {
@@ -1025,5 +1092,39 @@
 		"enabled": "Etkin",
 		"inspectSkill": "İncele",
 		"builtinDescription": "Alpha ile birlikte gelir. Değişiklikler ayarları kaydettiğinizde uygulanır. Aynı ada sahip çalışma alanı ve kişisel beceriler önceliklidir; yerleşik bir beceriyi devre dışı bırakmak kendi alternatiflerinizi devre dışı bırakmaz."
+	},
+	"agents": {
+		"description": "Alpha'nin alt aracılar için hangi kayıtlı sağlayıcı profillerini kullanacağını seçin. Rol geçersiz kılmaları varsayılana göre önceliklidir, ardından üst görev devralınır.",
+		"searchPlaceholder": "Sağlayıcı profillerini arayın...",
+		"noProfilesFound": "Eşleşen sağlayıcı profili yok",
+		"unavailableProfile": "Kullanılamayan profil ({{id}})",
+		"staleWarning": "Bu kayıtlı profil kullanılamıyor. Yeni alt temsilciler, siz başka bir profil seçinceye kadar ana profili kullanacaktır.",
+		"defaultProfile": {
+			"label": "Varsayılan alt aracı profili",
+			"inheritParent": "Üst öğeyi devral",
+			"description": "Bir rolün kendi profil geçersiz kılma özelliği olmadığında kullanılır."
+		},
+		"roles": {
+			"title": "Rol geçersiz kılmaları",
+			"description": "İsteğe bağlı olarak her aracı rolünü farklı bir kayıtlı sağlayıcı profili aracılığıyla yönlendirin.",
+			"useDefault": "Varsayılanı kullan",
+			"explore": {
+				"label": "Gezgin profili",
+				"description": "Depo araştırma aracıları için isteğe bağlı profili geçersiz kılma."
+			},
+			"review": {
+				"label": "İnceleyen profili",
+				"description": "İnceleme aracıları için isteğe bağlı profil geçersiz kılma."
+			},
+			"worker": {
+				"label": "Çalışan profili",
+				"description": "Yalıtılmış düzenleme çalışanları için isteğe bağlı profili geçersiz kılma."
+			}
+		}
+	},
+	"github": {
+		"tokenLabel": "GitHub jetonu",
+		"tokenPlaceholder": "ghp_...",
+		"tokenDescription": "VS Code Gizli Deposunda güvenli bir şekilde saklanır. Yerel GitHub API aracı tarafından çekme istekleri, kontroller, yorumlar ve birleştirmeler için kullanılır."
 	}
 }

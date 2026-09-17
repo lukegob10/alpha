@@ -1,3 +1,3 @@
 export type { WebviewMessage, WebViewMessagePayload } from "@alpha-code/types"
 
-export type ClineAskResponse = "yesButtonClicked" | "noButtonClicked" | "messageResponse" | "objectResponse"
+export type AlphaAskResponse = "yesButtonClicked" | "noButtonClicked" | "messageResponse" | "objectResponse"

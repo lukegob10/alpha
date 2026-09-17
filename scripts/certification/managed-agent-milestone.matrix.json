@@ -51,7 +51,7 @@
 				"^core/task/__tests__/.*(?:agent|descendant|nested).*\\.spec\\.ts$",
 				"^core/prompts/tools/__tests__/build-tools-spawn-agent\\.spec\\.ts$",
 				"^core/tools/__tests__/(?:AgentLifecycleTools|SpawnAgentTool|ToolRegistry|nativeToolDispatchContract)\\.spec\\.ts$",
-				"^core/webview/__tests__/(?:ClineProvider\\.(?:flicker-free-cancel|.*(?:agent|delegat|nested|tree).*)|TaskSessionRegistry)\\.spec\\.ts$",
+				"^core/webview/__tests__/(?:AlphaProvider\\.(?:flicker-free-cancel|.*(?:agent|delegat|nested|tree).*)|TaskSessionRegistry)\\.spec\\.ts$",
 				"^__tests__/(?:delegation-events|history-resume-delegation|nested-delegation-resume|provider-delegation)\\.spec\\.ts$"
 			]
 		},
@@ -69,7 +69,7 @@
 			"minimumTestCount": 20,
 			"include": [
 				"^core/task-persistence/__tests__/compactTaskHistoryForGlobalState\\.spec\\.ts$",
-				"^core/webview/__tests__/ClineProvider\\.taskHistory\\.spec\\.ts$"
+				"^core/webview/__tests__/AlphaProvider\\.taskHistory\\.spec\\.ts$"
 			]
 		},
 		{
@@ -82,9 +82,9 @@
 				"^core/task/__tests__/WorkspaceMutationGate\\.spec\\.ts$",
 				"^core/task/__tests__/(?:stageThreeCompletion\\.integration|completionDiagnostics)\\.spec\\.ts$",
 				"^core/task-persistence/__tests__/stageThreeVerificationRecovery\\.integration\\.spec\\.ts$",
-				"^core/webview/__tests__/ClineProvider\\.primary-verification\\.spec\\.ts$",
+				"^core/webview/__tests__/AlphaProvider\\.primary-verification\\.spec\\.ts$",
 				"^core/tools/__tests__/(?:attemptCompletionTool|executeCommandTool)\\.spec\\.ts$",
-				"^core/webview/__tests__/(?:ClineProvider\\.change-set-actions|webviewMessageHandler\\.edit)\\.spec\\.ts$"
+				"^core/webview/__tests__/(?:AlphaProvider\\.change-set-actions|webviewMessageHandler\\.edit)\\.spec\\.ts$"
 			]
 		},
 		{

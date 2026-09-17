@@ -1,9 +1,9 @@
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 import { describe, expect, it } from "vitest"
 
 import { getLatestTaskCompletionText } from "../completionText"
 
-const message = (overrides: Partial<ClineMessage>): ClineMessage => ({
+const message = (overrides: Partial<AlphaMessage>): AlphaMessage => ({
 	ts: 1,
 	type: "say",
 	...overrides,

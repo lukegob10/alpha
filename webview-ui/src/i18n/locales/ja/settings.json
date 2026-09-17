@@ -41,7 +41,9 @@
 		"experimental": "実験的",
 		"language": "言語",
 		"about": "Alphaについて",
-		"skills": "Skills"
+		"skills": "Skills",
+		"agents": "エージェント",
+		"github": "GitHub"
 	},
 	"about": {
 		"bugReport": {
@@ -209,7 +211,8 @@
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
 			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
 			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
-			"localIndexPathRequired": "Local index path is required"
+			"localIndexPathRequired": "Local index path is required",
+			"embeddingRateLimitSecondsRange": "埋め込みリクエストの遅延は 0.1 ～ 60 秒である必要があります"
 		},
 		"optional": "オプション",
 		"advancedConfigLabel": "詳細設定",
@@ -230,7 +233,9 @@
 		"localIndexPathLabel": "Local Index Path",
 		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
 		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
-		"savedSecretPlaceholder": "Saved value hidden"
+		"savedSecretPlaceholder": "Saved value hidden",
+		"embeddingRateLimitLabel": "埋め込み要求レートの制限",
+		"embeddingRateLimitDescription": "インデックス作成中に API リクエストを埋め込む間に遅延を追加します。埋め込みプロバイダーがコードベースのインデックス作成をレート制限している場合は、この値を増やします。"
 	},
 	"autoApprove": {
 		"toggleShortcut": "<SettingsLink>IDEの環境設定</SettingsLink>で、この設定のグローバルショートカットを設定できます。",
@@ -306,6 +311,10 @@
 		},
 		"maxLimits": {
 			"description": "これらの上限まで自動的にリクエストを行い、その後継続の承認を求めます。"
+		},
+		"subagents": {
+			"label": "サブエージェント",
+			"description": "Alpha が承認を必要とせずに読み取り専用のサブエージェント グループを起動できるようにします。読み取りアクセスも自動承認される必要があります。"
 		}
 	},
 	"providers": {
@@ -385,7 +394,8 @@
 			"hint": "最新のモデルを表示するには設定を再度開いてください。",
 			"loading": "モデルリストを更新中...",
 			"success": "モデルリストが正常に更新されました！",
-			"error": "モデルリストの更新に失敗しました。もう一度お試しください。"
+			"error": "モデルリストの更新に失敗しました。もう一度お試しください。",
+			"missingConfig": "モデルを更新する前に、必要なプロバイダー構成を入力します。"
 		},
 		"getRequestyApiKey": "Requesty APIキーを取得",
 		"getRequestyBaseUrl": "ベースURL",
@@ -549,7 +559,8 @@
 			"high": "高",
 			"xhigh": "非常に高い",
 			"medium": "中",
-			"low": "低"
+			"low": "低",
+			"max": "最大値"
 		},
 		"verbosity": {
 			"label": "出力の冗長性",
@@ -565,7 +576,55 @@
 			"placeholder": "デフォルト：claude",
 			"maxTokensLabel": "最大出力トークン",
 			"maxTokensDescription": "Claude Codeレスポンスの最大出力トークン数。デフォルトは8000です。"
-		}
+		},
+		"vertexStreamingEnabledLabel": "ストリーミング応答を有効にする",
+		"vertexStreamingEnabledDescription": "ゲートウェイまたはモデルがストリーミングをサポートしていない場合は、これを無効にします。完了後に応答が表示されます。",
+		"vscodeLmLoading": "この VS Code ウィンドウで使用可能な言語モデルをロードしています...",
+		"vscodeLmNoModels": "この VS Code ウィンドウでは使用可能な言語モデルがありません。ここで GitHub Copilot にサインインし、「Chat: Manage Language Models」で必要なモデルを有効にしてから更新します。",
+		"vscodeLmRefresh": "モデルの更新",
+		"vscodeLmUnavailable": "選択したモデルは、この VS Code ウィンドウでは使用できません。 VS Code によって返されたモデルを選択するか、「Chat: Manage Language Models」で有効にします。",
+		"vscodeLmContextSize": {
+			"label": "コンテキストウィンドウ",
+			"default": "標準 ({{contextSize}} 入力トークン)",
+			"extended": "拡張 ({{contextSize}} 入力トークン)",
+			"description": "このモデルの GitHub Copilot に送信される入力トークン バジェットを選択します。拡張コンテキストでは、より多くのプレミアム リクエストが消費される可能性があります。"
+		},
+		"googleCloudProjectId": "Google Cloud プロジェクト ID",
+		"googleCloudRegion": "Google Cloud リージョン",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "リージョンを検索または入力します",
+			"noMatchFound": "一致するリージョンが見つかりません",
+			"useCustomRegion": "カスタムを使用します: {{region}}"
+		},
+		"googleCloudCredentials": "Google Cloud 認証情報 JSON",
+		"googleCloudKeyFile": "Google Cloud キー ファイル",
+		"googleCloudSetup": {
+			"title": "Google Cloud のセットアップ",
+			"step1": "Vertex AI とモデル アクセスを有効にする",
+			"step2": "アプリケーションのデフォルト認証情報を設定する",
+			"step3": "サービス アカウント キーを作成する"
+		},
+		"vertexGatewayBaseUrl": "Vertex ゲートウェイ ベース URL",
+		"vertexGatewayCaBundlePath": "Vertex ゲートウェイ CA バンドル パス",
+		"vertexGatewayHelixCommand": "Vertex ゲートウェイ Helix コマンド",
+		"vertexGatewayHelixParseMode": "Vertex ゲートウェイ Helix 解析モード",
+		"vertexGatewayHelixParseModeRawStdout": "Raw stdout",
+		"vertexGatewayHelixParseModeJsonField": "JSON フィールド",
+		"vertexGatewayHelixTokenKey": "Vertex ゲートウェイ Helix トークン キー",
+		"vertexGatewayTokenRefreshMinutes": "Vertex ゲートウェイ トークンの更新時間 (分)",
+		"vertexGatewayModelRoutingMap": "Vertex ゲートウェイ モデル ルーティング マップ",
+		"vertexGatewayModelRoutingMapDescription": "モデル ID をキーとする JSON オブジェクト。値は、projectId、location、modelOverride、extraHeaders のレガシー モデル オーバーライド文字列またはオブジェクトである場合があります。",
+		"stellarDescription": "内蔵 Stellar OpenAI 互換モデルのゲートウェイに接続します。 API キーは Helix を使用して自動的に取得され、保存されることはありません。",
+		"stellarBaseUrl": "Stellar ベース URL",
+		"stellarCaBundlePath": "Stellar PEM CA バンドル パス",
+		"stellarHelixCommand": "Stellar Helix コマンド",
+		"stellarHelixParseMode": "Stellar Helix 解析モード",
+		"stellarHelixParseModeRawStdout": "Raw stdout",
+		"stellarHelixParseModeJsonField": "JSON フィールド",
+		"stellarHelixTokenKey": "Stellar Helix トークン キー",
+		"stellarTokenRefreshMinutes": "Stellar トークン更新時間 (分)",
+		"stellarStreamingEnabledLabel": "ストリーミング応答を有効にする",
+		"stellarStreamingEnabledDescription": "Stellar デプロイメントがストリーミングをサポートしていない場合は、これを無効にします。完了後に応答が表示されます。"
 	},
 	"checkpoints": {
 		"timeout": {
@@ -905,7 +964,11 @@
 		"providerNotAllowed": "プロバイダー「{{provider}}」は組織によって許可されていません",
 		"modelNotAllowed": "モデル「{{model}}」はプロバイダー「{{provider}}」に対して組織によって許可されていません",
 		"profileInvalid": "このプロファイルには、組織によって許可されていないプロバイダーまたはモデルが含まれています",
-		"qwenCodeOauthPath": "有効なOAuth認証情報のパスを提供する必要があります"
+		"qwenCodeOauthPath": "有効なOAuth認証情報のパスを提供する必要があります",
+		"googleCloud": "Google Cloud プロジェクト ID とリージョンを指定する必要があります。",
+		"vertexGateway": "Vertex ゲートウェイには、ベース URL、CA バンドル パス、および Helix コマンドが必要です。",
+		"vertexGatewayModelRoutingMap": "Vertex ゲートウェイ モデル ルーティング マップは、文字列モデル ID を持つ JSON オブジェクトである必要があります。",
+		"stellar": "Stellar には、有効なベース URL および PEM CA バンドル パスが必要です。"
 	},
 	"placeholders": {
 		"apiKey": "API キーを入力...",
@@ -967,6 +1030,10 @@
 		"requireCtrlEnterToSend": {
 			"label": "メッセージを送信するには{{primaryMod}}+Enterが必要",
 			"description": "有効にすると、Enterだけでなく{{primaryMod}}+Enterを押してメッセージを送信する必要があります"
+		},
+		"maxConcurrentTasks": {
+			"label": "最大並列タスク数",
+			"description": "同時に実行できるライブタスクの数。失敗したタスクと完了したタスクは、この制限にはカウントされません。"
 		}
 	},
 	"skills": {
@@ -1025,5 +1092,39 @@
 		"enabled": "有効",
 		"inspectSkill": "内容を確認",
 		"builtinDescription": "Alpha に同梱されています。変更は設定の保存時に適用されます。同じ名前のワークスペーススキルと個人スキルが優先されます。組み込みスキルを無効にしても、上書き用のスキルは無効になりません。"
+	},
+	"agents": {
+		"description": "Alpha がサブエージェントに使用する保存済みプロバイダー プロファイルを選択します。ロールのオーバーライドはデフォルトよりも優先され、親タスクが継承されます。",
+		"searchPlaceholder": "プロバイダー プロファイルを検索します...",
+		"noProfilesFound": "一致するプロバイダー プロファイルがありません",
+		"unavailableProfile": "使用できないプロファイル ({{id}})",
+		"staleWarning": "この保存されたプロファイルは使用できません。別のプロファイルを選択するまで、新しいサブエージェントは親プロファイルを使用します。",
+		"defaultProfile": {
+			"label": "デフォルトのサブエージェント プロファイル",
+			"inheritParent": "親の継承",
+			"description": "ロールに独自のプロファイル オーバーライドがない場合に使用されます。"
+		},
+		"roles": {
+			"title": "ロールの上書き",
+			"description": "オプションで、保存されている異なるプロバイダー プロファイルを介して各エージェント ロールをルーティングします。",
+			"useDefault": "デフォルトを使用します",
+			"explore": {
+				"label": "Explorer プロファイル",
+				"description": "リポジトリ探索エージェントのオプションのプロファイル オーバーライド。"
+			},
+			"review": {
+				"label": "レビュー担当者のプロファイル",
+				"description": "レビュー エージェントのオプションのプロファイル オーバーライド。"
+			},
+			"worker": {
+				"label": "ワーカー プロファイル",
+				"description": "分離された編集ワーカーのオプションのプロファイル オーバーライド。"
+			}
+		}
+	},
+	"github": {
+		"tokenLabel": "GitHub トークン",
+		"tokenPlaceholder": "ghp_...",
+		"tokenDescription": "VS Code 秘密ストレージに安全に保管されます。プル リクエスト、チェック、コメント、マージのためにネイティブ GitHub API ツールによって使用されます。"
 	}
 }

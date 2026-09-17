@@ -12,7 +12,7 @@ import {
 import {
 	AgentLifecycleProjector,
 	projectAgentLifecycleSnapshot,
-	projectClineMessageStatus,
+	projectAlphaMessageStatus,
 } from "../AgentLifecycleProjection"
 
 const ids = { taskId: "task-projection", runId: "run-1", turnId: "turn-1" }
@@ -140,7 +140,7 @@ describe("AgentLifecycleProjector", () => {
 		expect(projector.getSnapshot(ids.taskId)?.phase).toBe("working")
 
 		const messages = [{ ts: 1, type: "say", say: "text", text: "stale transcript" }] as const
-		expect(projectClineMessageStatus(messages).source).toBe("legacy")
+		expect(projectAlphaMessageStatus(messages).source).toBe("legacy")
 	})
 })
 

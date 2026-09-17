@@ -5,7 +5,7 @@ import * as os from "os"
 import * as diff from "diff"
 import delay from "delay"
 
-import { type ClineSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
+import { type AlphaSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
 
 import { createDirectoriesForFile } from "../../utils/fs"
 import { arePathsEqual, getReadablePath } from "../../utils/path"
@@ -16,6 +16,7 @@ import { t } from "../../i18n"
 
 import { DecorationController } from "./DecorationController"
 
+// Preserve the URI scheme so existing or restored diff tabs still resolve after source renames.
 export const DIFF_VIEW_URI_SCHEME = "cline-diff"
 export const DIFF_VIEW_LABEL_CHANGES = "Original ↔ Alpha's Changes"
 
@@ -227,7 +228,7 @@ export class DiffViewProvider {
 		// Only send user_feedback_diff if userEdits exists
 		if (this.userEdits) {
 			// Create say object for UI feedback
-			const say: ClineSayTool = {
+			const say: AlphaSayTool = {
 				tool: isNewFile ? "newFileCreated" : "editedExistingFile",
 				path: getReadablePath(cwd, this.relPath),
 				diff: this.userEdits,

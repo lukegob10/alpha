@@ -26,7 +26,9 @@
 			"read": "讀取檔案",
 			"edit": "編輯檔案",
 			"command": "執行命令",
-			"mcp": "使用 MCP"
+			"mcp": "使用 MCP",
+			"github": "使用GitHub",
+			"browser": "使用整合式瀏覽器"
 		},
 		"noTools": "無"
 	},

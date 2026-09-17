@@ -26,7 +26,9 @@
 			"read": "파일 읽기",
 			"edit": "파일 편집",
 			"command": "명령 실행",
-			"mcp": "MCP 사용"
+			"mcp": "MCP 사용",
+			"github": "GitHub 사용",
+			"browser": "통합 브라우저 사용"
 		},
 		"noTools": "없음"
 	},

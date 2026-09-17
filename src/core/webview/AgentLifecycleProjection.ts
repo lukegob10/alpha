@@ -3,7 +3,7 @@ import {
 	agentLifecycleSnapshotSchema,
 	type AgentLifecycleEvent,
 	type AgentLifecycleSnapshot,
-	type ClineMessage,
+	type AlphaMessage,
 	TaskLifecycleState,
 	TaskStatus,
 	type HistoryItem,
@@ -178,7 +178,7 @@ function reducerErrorReason(error: AgentLifecycleReducerError): AgentLifecycleRe
 /**
  * Pure extension-side projector for the provider-neutral lifecycle stream.
  *
- * The projector never mutates a task's ClineMessage transcript. It keeps one
+ * The projector never mutates a task's AlphaMessage transcript. It keeps one
  * reducer snapshot per task, rejects gaps/conflicts, and asks its host for a
  * full snapshot when the incremental stream is no longer authoritative.
  */
@@ -460,7 +460,7 @@ export class AgentLifecycleProjector {
 
 export const AgentLifecycleProjection = AgentLifecycleProjector
 
-export interface ClineMessageStatusProjection {
+export interface AlphaMessageStatusProjection {
 	source: "lifecycle" | "legacy"
 	lifecycle: TaskLifecycleState
 	historyStatus: NonNullable<HistoryItem["status"]>
@@ -478,10 +478,10 @@ const terminalLifecycleStates = new Set<TaskLifecycleState>([
 ])
 
 function legacyProjection(
-	messages: readonly ClineMessage[] = [],
-	taskAsk?: ClineMessage,
+	messages: readonly AlphaMessage[] = [],
+	taskAsk?: AlphaMessage,
 	taskStatus?: TaskStatus,
-): ClineMessageStatusProjection {
+): AlphaMessageStatusProjection {
 	const latest = messages.at(-1)
 	const ask = taskAsk ?? [...messages].reverse().find((message) => message.type === "ask")
 	const askType = ask?.type === "ask" ? ask.ask : undefined
@@ -596,8 +596,8 @@ function legacyProjection(
  */
 export function projectAgentLifecycleSnapshot(
 	snapshot: AgentLifecycleSnapshot,
-	options: { taskAsk?: ClineMessage; messages?: readonly ClineMessage[] } = {},
-): ClineMessageStatusProjection {
+	options: { taskAsk?: AlphaMessage; messages?: readonly AlphaMessage[] } = {},
+): AlphaMessageStatusProjection {
 	if (snapshot.status !== "in_progress") {
 		return {
 			source: "lifecycle",
@@ -624,37 +624,37 @@ export function projectAgentLifecycleSnapshot(
 }
 
 /**
- * Pure status adapter. It accepts both a single ClineMessage and a transcript
+ * Pure status adapter. It accepts both a single AlphaMessage and a transcript
  * so callers can migrate incrementally without changing existing UI records.
  */
-export function projectClineMessageStatus(
+export function projectAlphaMessageStatus(
 	input:
-		| ClineMessage
-		| readonly ClineMessage[]
+		| AlphaMessage
+		| readonly AlphaMessage[]
 		| {
-				messages?: readonly ClineMessage[]
-				taskAsk?: ClineMessage
+				messages?: readonly AlphaMessage[]
+				taskAsk?: AlphaMessage
 				taskStatus?: TaskStatus
 				snapshot?: AgentLifecycleSnapshot
 		  },
 	options: {
-		taskAsk?: ClineMessage
+		taskAsk?: AlphaMessage
 		taskStatus?: TaskStatus
 		snapshot?: AgentLifecycleSnapshot
 	} = {},
-): ClineMessageStatusProjection {
-	let messages: readonly ClineMessage[] = []
+): AlphaMessageStatusProjection {
+	let messages: readonly AlphaMessage[] = []
 	let taskAsk = options.taskAsk
 	let taskStatus = options.taskStatus
 	let snapshot = options.snapshot
 
 	if (Array.isArray(input)) messages = input
 	else if (input && typeof input === "object" && !Array.isArray(input) && "ts" in input) {
-		messages = [input as ClineMessage]
+		messages = [input as AlphaMessage]
 	} else if (input && typeof input === "object" && !Array.isArray(input)) {
 		const optionsInput = input as {
-			messages?: readonly ClineMessage[]
-			taskAsk?: ClineMessage
+			messages?: readonly AlphaMessage[]
+			taskAsk?: AlphaMessage
 			taskStatus?: TaskStatus
 			snapshot?: AgentLifecycleSnapshot
 		}
@@ -671,7 +671,7 @@ export function projectClineMessageStatus(
 
 export function projectLifecycleSnapshotToTaskLifecycle(
 	snapshot: AgentLifecycleSnapshot,
-	taskAsk?: ClineMessage,
+	taskAsk?: AlphaMessage,
 ): TaskLifecycleState {
 	return projectAgentLifecycleSnapshot(snapshot, { taskAsk }).lifecycle
 }
@@ -683,12 +683,12 @@ export function projectLifecycleSnapshotToHistoryStatus(
 }
 
 export const projectLifecycleStatus = projectAgentLifecycleSnapshot
-export const projectTaskStatus = projectClineMessageStatus
+export const projectTaskStatus = projectAlphaMessageStatus
 export const toTaskLifecycleState = projectLifecycleSnapshotToTaskLifecycle
 export const toHistoryStatus = projectLifecycleSnapshotToHistoryStatus
 
 /** Return whether a projection has reached one of the legacy terminal states. */
-export function isProjectedTaskTerminal(projection: ClineMessageStatusProjection): boolean {
+export function isProjectedTaskTerminal(projection: AlphaMessageStatusProjection): boolean {
 	return projection.isTerminal || terminalLifecycleStates.has(projection.lifecycle)
 }
 

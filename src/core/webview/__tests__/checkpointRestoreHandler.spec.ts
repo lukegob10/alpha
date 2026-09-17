@@ -17,17 +17,17 @@ vi.mock("vscode", () => ({
 
 describe("checkpointRestoreHandler", () => {
 	let mockProvider: any
-	let mockCline: any
+	let mockAlphaTask: any
 
 	beforeEach(() => {
 		vi.clearAllMocks()
 
 		// Setup mock Alpha instance
-		mockCline = {
+		mockAlphaTask = {
 			taskId: "test-task-123",
 			abort: false,
 			abortTask: vi.fn(() => {
-				mockCline.abort = true
+				mockAlphaTask.abort = true
 			}),
 			waitForTermination: vi.fn(async () => undefined),
 			checkpointRestore: vi.fn(),
@@ -48,12 +48,12 @@ describe("checkpointRestoreHandler", () => {
 
 		// Setup mock provider
 		mockProvider = {
-			getCurrentTask: vi.fn(() => mockCline),
-			getLiveTask: vi.fn(() => mockCline),
+			getCurrentTask: vi.fn(() => mockAlphaTask),
+			getLiveTask: vi.fn(() => mockAlphaTask),
 			runWorkspaceMutation: vi.fn(async (_task, _label, run) => run()),
 			postMessageToWebview: vi.fn(),
 			getTaskWithId: vi.fn(() => ({
-				historyItem: { id: "test-task-123", messages: mockCline.clineMessages },
+				historyItem: { id: "test-task-123", messages: mockAlphaTask.clineMessages },
 			})),
 			createTaskWithHistoryItem: vi.fn().mockResolvedValue({ resumeWithEditedMessage: vi.fn() }),
 			contextProxy: {
@@ -71,47 +71,47 @@ describe("checkpointRestoreHandler", () => {
 	describe("handleCheckpointRestoreOperation", () => {
 		it("joins cancellation before rewinding and coalesces duplicate restarts", async () => {
 			let release!: () => void
-			mockCline.waitForTermination.mockReturnValue(
+			mockAlphaTask.waitForTermination.mockReturnValue(
 				new Promise<void>((resolve) => {
 					release = resolve
 				}),
 			)
-			const restart = restartTaskFromMessage(mockProvider, mockCline, 3, "Replacement")
-			await vi.waitFor(() => expect(mockCline.waitForTermination).toHaveBeenCalledOnce())
-			await restartTaskFromMessage(mockProvider, mockCline, 3, "Duplicate")
-			expect(mockCline.messageManager.rewindToTimestamp).not.toHaveBeenCalled()
+			const restart = restartTaskFromMessage(mockProvider, mockAlphaTask, 3, "Replacement")
+			await vi.waitFor(() => expect(mockAlphaTask.waitForTermination).toHaveBeenCalledOnce())
+			await restartTaskFromMessage(mockProvider, mockAlphaTask, 3, "Duplicate")
+			expect(mockAlphaTask.messageManager.rewindToTimestamp).not.toHaveBeenCalled()
 			expect(mockProvider.createTaskWithHistoryItem).not.toHaveBeenCalled()
 			release()
 			await restart
-			expect(mockCline.abortTask).toHaveBeenCalledOnce()
+			expect(mockAlphaTask.abortTask).toHaveBeenCalledOnce()
 			const resumed = await mockProvider.createTaskWithHistoryItem.mock.results[0].value
 			expect(resumed.resumeWithEditedMessage).toHaveBeenCalledExactlyOnceWith("Replacement", undefined)
 		})
 
 		it("leaves history intact if cancellation fails", async () => {
-			mockCline.waitForTermination.mockRejectedValue(new Error("Persistence failed"))
-			await expect(restartTaskFromMessage(mockProvider, mockCline, 3, "Replacement")).rejects.toThrow(
+			mockAlphaTask.waitForTermination.mockRejectedValue(new Error("Persistence failed"))
+			await expect(restartTaskFromMessage(mockProvider, mockAlphaTask, 3, "Replacement")).rejects.toThrow(
 				"Persistence failed",
 			)
-			expect(mockCline.messageManager.rewindToTimestamp).not.toHaveBeenCalled()
+			expect(mockAlphaTask.messageManager.rewindToTimestamp).not.toHaveBeenCalled()
 			expect(mockProvider.createTaskWithHistoryItem).not.toHaveBeenCalled()
 		})
 
 		it("rejects a replaced task before modifying its history", async () => {
-			mockProvider.getLiveTask.mockReturnValue({ taskId: mockCline.taskId })
-			await expect(restartTaskFromMessage(mockProvider, mockCline, 3, "Replacement")).rejects.toThrow(
+			mockProvider.getLiveTask.mockReturnValue({ taskId: mockAlphaTask.taskId })
+			await expect(restartTaskFromMessage(mockProvider, mockAlphaTask, 3, "Replacement")).rejects.toThrow(
 				"task changed",
 			)
-			expect(mockCline.messageManager.rewindToTimestamp).not.toHaveBeenCalled()
+			expect(mockAlphaTask.messageManager.rewindToTimestamp).not.toHaveBeenCalled()
 		})
 
 		it("should abort task before checkpoint restore for delete operations", async () => {
 			// Simulate a task that hasn't been aborted yet
-			mockCline.abort = false
+			mockAlphaTask.abort = false
 
 			await handleCheckpointRestoreOperation({
 				provider: mockProvider,
-				currentCline: mockCline,
+				currentAlpha: mockAlphaTask,
 				messageTs: 3,
 				messageIndex: 2,
 				checkpoint: { hash: "abc123" },
@@ -119,12 +119,12 @@ describe("checkpointRestoreHandler", () => {
 			})
 
 			// Verify abortTask was called before checkpointRestore
-			expect(mockCline.abortTask).toHaveBeenCalled()
-			expect(mockCline.checkpointRestore).toHaveBeenCalled()
+			expect(mockAlphaTask.abortTask).toHaveBeenCalled()
+			expect(mockAlphaTask.checkpointRestore).toHaveBeenCalled()
 
 			// Verify the order of operations
-			const abortOrder = mockCline.abortTask.mock.invocationCallOrder[0]
-			const restoreOrder = mockCline.checkpointRestore.mock.invocationCallOrder[0]
+			const abortOrder = mockAlphaTask.abortTask.mock.invocationCallOrder[0]
+			const restoreOrder = mockAlphaTask.checkpointRestore.mock.invocationCallOrder[0]
 			expect(abortOrder).toBeLessThan(restoreOrder)
 		})
 
@@ -133,31 +133,31 @@ describe("checkpointRestoreHandler", () => {
 			const termination = new Promise<void>((resolve) => {
 				releaseTermination = resolve
 			})
-			mockCline.waitForTermination.mockImplementation(async () => termination)
+			mockAlphaTask.waitForTermination.mockImplementation(async () => termination)
 
 			const restore = handleCheckpointRestoreOperation({
 				provider: mockProvider,
-				currentCline: mockCline,
+				currentAlpha: mockAlphaTask,
 				messageTs: 3,
 				messageIndex: 2,
 				checkpoint: { hash: "abc123" },
 				operation: "delete",
 			})
-			await vi.waitFor(() => expect(mockCline.waitForTermination).toHaveBeenCalledOnce())
-			expect(mockCline.checkpointRestore).not.toHaveBeenCalled()
+			await vi.waitFor(() => expect(mockAlphaTask.waitForTermination).toHaveBeenCalledOnce())
+			expect(mockAlphaTask.checkpointRestore).not.toHaveBeenCalled()
 
 			releaseTermination()
 			await restore
-			expect(mockCline.checkpointRestore).toHaveBeenCalledOnce()
+			expect(mockAlphaTask.checkpointRestore).toHaveBeenCalledOnce()
 		})
 
 		it("should not abort task if already aborted", async () => {
 			// Simulate a task that's already aborted
-			mockCline.abort = true
+			mockAlphaTask.abort = true
 
 			await handleCheckpointRestoreOperation({
 				provider: mockProvider,
-				currentCline: mockCline,
+				currentAlpha: mockAlphaTask,
 				messageTs: 3,
 				messageIndex: 2,
 				checkpoint: { hash: "abc123" },
@@ -165,8 +165,8 @@ describe("checkpointRestoreHandler", () => {
 			})
 
 			// Verify abortTask was not called
-			expect(mockCline.abortTask).not.toHaveBeenCalled()
-			expect(mockCline.checkpointRestore).toHaveBeenCalled()
+			expect(mockAlphaTask.abortTask).not.toHaveBeenCalled()
+			expect(mockAlphaTask.checkpointRestore).toHaveBeenCalled()
 		})
 
 		it("restores, rewinds, and resumes edits without a timed handoff", async () => {
@@ -178,7 +178,7 @@ describe("checkpointRestoreHandler", () => {
 
 			await handleCheckpointRestoreOperation({
 				provider: mockProvider,
-				currentCline: mockCline,
+				currentAlpha: mockAlphaTask,
 				messageTs: 3,
 				messageIndex: 2,
 				checkpoint: { hash: "abc123" },
@@ -186,17 +186,19 @@ describe("checkpointRestoreHandler", () => {
 				editData,
 			})
 
-			expect(mockCline.abortTask).toHaveBeenCalledOnce()
-			expect(mockCline.messageManager.rewindToTimestamp).toHaveBeenCalledWith(3, { includeTargetMessage: false })
+			expect(mockAlphaTask.abortTask).toHaveBeenCalledOnce()
+			expect(mockAlphaTask.messageManager.rewindToTimestamp).toHaveBeenCalledWith(3, {
+				includeTargetMessage: false,
+			})
 			expect(mockProvider.createTaskWithHistoryItem).toHaveBeenCalledWith(
-				expect.objectContaining({ id: mockCline.taskId }),
+				expect.objectContaining({ id: mockAlphaTask.taskId }),
 				{ startTask: false, preserveExisting: true, background: false },
 			)
 			const resumed = await mockProvider.createTaskWithHistoryItem.mock.results[0].value
 			expect(resumed.resumeWithEditedMessage).toHaveBeenCalledWith("Edited content", ["image1.png"])
 
 			// Verify checkpoint restore was called with edit operation
-			expect(mockCline.checkpointRestore).toHaveBeenCalledWith({
+			expect(mockAlphaTask.checkpointRestore).toHaveBeenCalledWith({
 				ts: 3,
 				commitHash: "abc123",
 				mode: "restore",
@@ -206,13 +208,13 @@ describe("checkpointRestoreHandler", () => {
 
 		it("should save messages after delete operation", async () => {
 			// Mock the checkpoint restore to simulate message deletion
-			mockCline.checkpointRestore.mockImplementation(async () => {
-				mockCline.clineMessages = mockCline.clineMessages.slice(0, 2)
+			mockAlphaTask.checkpointRestore.mockImplementation(async () => {
+				mockAlphaTask.clineMessages = mockAlphaTask.clineMessages.slice(0, 2)
 			})
 
 			await handleCheckpointRestoreOperation({
 				provider: mockProvider,
-				currentCline: mockCline,
+				currentAlpha: mockAlphaTask,
 				messageTs: 3,
 				messageIndex: 2,
 				checkpoint: { hash: "abc123" },
@@ -221,7 +223,7 @@ describe("checkpointRestoreHandler", () => {
 
 			// Verify saveTaskMessages was called
 			expect(saveTaskMessages).toHaveBeenCalledWith({
-				messages: mockCline.clineMessages,
+				messages: mockAlphaTask.clineMessages,
 				taskId: "test-task-123",
 				globalStoragePath: "/test/storage",
 			})
@@ -233,12 +235,12 @@ describe("checkpointRestoreHandler", () => {
 		it("should reinitialize task with correct history item after delete", async () => {
 			const expectedHistoryItem = {
 				id: "test-task-123",
-				messages: mockCline.clineMessages,
+				messages: mockAlphaTask.clineMessages,
 			}
 
 			await handleCheckpointRestoreOperation({
 				provider: mockProvider,
-				currentCline: mockCline,
+				currentAlpha: mockAlphaTask,
 				messageTs: 3,
 				messageIndex: 2,
 				checkpoint: { hash: "abc123" },
@@ -262,7 +264,7 @@ describe("checkpointRestoreHandler", () => {
 			mockProvider.getCurrentTask.mockReturnValue({ taskId: "another-task" })
 			await handleCheckpointRestoreOperation({
 				provider: mockProvider,
-				currentCline: mockCline,
+				currentAlpha: mockAlphaTask,
 				messageTs: 3,
 				messageIndex: 2,
 				checkpoint: { hash: "abc123" },
@@ -275,20 +277,20 @@ describe("checkpointRestoreHandler", () => {
 
 			// Rehydrate the addressed task without changing focus.
 			expect(mockProvider.createTaskWithHistoryItem).toHaveBeenCalledWith(
-				expect.objectContaining({ id: mockCline.taskId }),
+				expect.objectContaining({ id: mockAlphaTask.taskId }),
 				{ startTask: false, preserveExisting: true, background: true },
 			)
 		})
 
 		it("should handle errors gracefully", async () => {
 			// Mock checkpoint restore to throw an error
-			mockCline.checkpointRestore.mockRejectedValue(new Error("Checkpoint restore failed"))
+			mockAlphaTask.checkpointRestore.mockRejectedValue(new Error("Checkpoint restore failed"))
 
 			// The function should throw and show an error message
 			await expect(
 				handleCheckpointRestoreOperation({
 					provider: mockProvider,
-					currentCline: mockCline,
+					currentAlpha: mockAlphaTask,
 					messageTs: 3,
 					messageIndex: 2,
 					checkpoint: { hash: "abc123" },

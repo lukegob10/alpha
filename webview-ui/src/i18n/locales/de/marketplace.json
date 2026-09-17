@@ -108,7 +108,8 @@
 		"goToModes": "Zu den Modi-Einstellungen gehen",
 		"moreInfoMcp": "{{name}} MCP-Dokumentation anzeigen",
 		"validationRequired": "Bitte gib einen Wert für {{paramName}} an",
-		"prerequisites": "Voraussetzungen"
+		"prerequisites": "Voraussetzungen",
+		"installing": "Installieren…"
 	},
 	"sources": {
 		"title": "Marketplace-Quellen konfigurieren",

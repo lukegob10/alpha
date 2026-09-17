@@ -1,14 +1,14 @@
-import { TaskLifecycleState, TaskStatus, type ClineMessage, type LiveTaskMetadata } from "@alpha-code/types"
+import { TaskLifecycleState, TaskStatus, type AlphaMessage, type LiveTaskMetadata } from "@alpha-code/types"
 
 import { getCompletedActivity } from "../completedActivity"
 
-const activity: ClineMessage[] = [
+const activity: AlphaMessage[] = [
 	{ ts: 1000, type: "say", say: "api_req_started", text: "{}" },
 	{ ts: 2000, type: "say", say: "reasoning", text: "Inspect the code" },
 	{ ts: 3000, type: "ask", ask: "command", text: "pnpm test" },
 	{ ts: 4000, type: "say", say: "completion_result", text: "Tests passed", partial: false },
 ]
-const review: ClineMessage = { ts: 6500, type: "ask", ask: "completion_result", text: "", partial: false }
+const review: AlphaMessage = { ts: 6500, type: "ask", ask: "completion_result", text: "", partial: false }
 const liveTask = (lifecycle: TaskLifecycleState, waitingReason?: string): LiveTaskMetadata => ({
 	id: "task",
 	status: TaskStatus.Idle,
@@ -26,7 +26,7 @@ const liveTask = (lifecycle: TaskLifecycleState, waitingReason?: string): LiveTa
 
 describe("completed activity projection", () => {
 	it("includes preliminary completion reports and verification in the final trace", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			...activity,
 			{ ts: 5000, type: "ask", ask: "command", text: "pnpm check-types" },
 			{ ts: 6000, type: "say", say: "completion_result", text: "Verified the change" },
@@ -62,7 +62,7 @@ describe("completed activity projection", () => {
 			endIndex: 2,
 			durationMs: 5500,
 		})
-		const retracted: ClineMessage[] = [...activity.slice(0, 3), { ...activity[3], say: "text" }]
+		const retracted: AlphaMessage[] = [...activity.slice(0, 3), { ...activity[3], say: "text" }]
 		expect(getCompletedActivity(retracted, [...retracted, review], liveTask(TaskLifecycleState.Running)).size).toBe(
 			0,
 		)
@@ -73,20 +73,20 @@ describe("completed activity projection", () => {
 			{ ...activity[3], partial: true },
 			{ ts: 4000, type: "ask", ask: "followup", text: "Which file?" },
 			{ ts: 4000, type: "say", say: "error", text: "Command failed" },
-		] satisfies ClineMessage[]) {
+		] satisfies AlphaMessage[]) {
 			const messages = [...activity.slice(0, 3), last]
 			expect(getCompletedActivity(messages, messages).size).toBe(0)
 		}
 	})
 
 	it("reconstructs saved history without counting time spent away from the task", () => {
-		const source: ClineMessage[] = [...activity, review, { ts: 999_999, type: "ask", ask: "resume_completed_task" }]
+		const source: AlphaMessage[] = [...activity, review, { ts: 999_999, type: "ask", ask: "resume_completed_task" }]
 		expect(getCompletedActivity(activity, source).get(0)?.durationMs).toBe(5500)
 		expect(getCompletedActivity(activity, activity).get(0)?.durationMs).toBe(3000)
 	})
 
 	it("keeps previous turns collapsed while a follow-up runs and never hides user messages", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			...activity,
 			{ ts: 9000, type: "say", say: "user_feedback", text: "Now add a test" },
 			{ ts: 10000, type: "say", say: "text", text: "Adding the test" },
@@ -100,7 +100,7 @@ describe("completed activity projection", () => {
 	})
 
 	it("gives each completed response its own trace and keeps plain answers uncluttered", () => {
-		const messages: ClineMessage[] = [
+		const messages: AlphaMessage[] = [
 			...activity,
 			{ ts: 9000, type: "say", say: "user_feedback", text: "Next" },
 			...activity.map((message) => ({ ...message, ts: message.ts + 10000 })),
@@ -116,7 +116,7 @@ describe("completed activity projection", () => {
 		const messages = activity.map((message) => Object.freeze({ ...message }))
 		getCompletedActivity(messages, messages)
 		expect(messages).toEqual(activity)
-		const retracted: ClineMessage[] = [...activity.slice(0, 3), { ...activity[3], say: "text" }]
+		const retracted: AlphaMessage[] = [...activity.slice(0, 3), { ...activity[3], say: "text" }]
 		expect(getCompletedActivity(retracted, retracted).size).toBe(0)
 	})
 })

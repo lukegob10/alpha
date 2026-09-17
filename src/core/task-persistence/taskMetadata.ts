@@ -2,7 +2,7 @@ import NodeCache from "node-cache"
 import getFolderSize from "get-folder-size"
 
 import type {
-	ClineMessage,
+	AlphaMessage,
 	HistoryItem,
 	TaskWorkContext,
 	SubagentChangeSetState,
@@ -27,7 +27,7 @@ export type TaskMetadataOptions = {
 	rootTaskId?: string
 	parentTaskId?: string
 	taskNumber: number
-	messages: ClineMessage[]
+	messages: AlphaMessage[]
 	globalStoragePath: string
 	workspace: string
 	mode?: string
@@ -92,7 +92,7 @@ export async function taskMetadata({
 	let timestamp: number
 	let tokenUsage: ReturnType<typeof getApiMetrics>
 	let taskDirSize: number
-	let taskMessage: ClineMessage | undefined
+	let taskMessage: AlphaMessage | undefined
 
 	if (!hasMessages) {
 		// Handle no messages case

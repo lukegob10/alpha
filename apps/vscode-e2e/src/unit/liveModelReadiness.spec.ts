@@ -4,7 +4,7 @@ import { setImmediate as nextTurn } from "node:timers/promises"
 import test from "node:test"
 
 import type { LanguageModelChat } from "vscode"
-import type { RooCodeAPI } from "@alpha-code/types"
+import type { AlphaCodeAPI } from "@alpha-code/types"
 
 import {
 	configureLiveCopilot,
@@ -77,7 +77,7 @@ function fixture(
 	const api = {
 		getConfiguration: () => ({}),
 		setConfiguration: async () => configurations++,
-	} as unknown as RooCodeAPI
+	} as unknown as AlphaCodeAPI
 	return {
 		vscode,
 		api,

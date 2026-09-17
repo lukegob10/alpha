@@ -16,10 +16,10 @@ import { OutputInterceptor } from "../../../integrations/terminal/OutputIntercep
 import { Task } from "../Task"
 import type {
 	ExitCodeDetails,
-	RooTerminal,
-	RooTerminalCallbacks,
-	RooTerminalProcess,
-	RooTerminalProcessResultPromise,
+	AlphaTerminal,
+	AlphaTerminalCallbacks,
+	AlphaTerminalProcess,
+	AlphaTerminalProcessResultPromise,
 } from "../../../integrations/terminal/types"
 import { executeCommandInTerminal } from "../../tools/ExecuteCommandTool"
 
@@ -131,13 +131,13 @@ class ControlledProcess extends EventEmitter {
 	private readonly completion: Promise<void>
 	private resolveCompletion!: () => void
 	private rejectCompletion!: (error: unknown) => void
-	private readonly callbacks: RooTerminalCallbacks
+	private readonly callbacks: AlphaTerminalCallbacks
 	private completionStarted = false
 	private backgrounded = false
 	private aborted = false
 	private _isSettled = false
 
-	constructor(command: string, callbacks: RooTerminalCallbacks) {
+	constructor(command: string, callbacks: AlphaTerminalCallbacks) {
 		super()
 		this.command = command
 		this.callbacks = callbacks
@@ -190,8 +190,8 @@ class ControlledProcess extends EventEmitter {
 	): Promise<void> {
 		if (this.completionStarted) throw new Error("Controlled process completed more than once")
 		this.completionStarted = true
-		await this.callbacks.onCompleted(output, this as unknown as RooTerminalProcess)
-		this.callbacks.onShellExecutionComplete(details, this as unknown as RooTerminalProcess)
+		await this.callbacks.onCompleted(output, this as unknown as AlphaTerminalProcess)
+		this.callbacks.onShellExecutionComplete(details, this as unknown as AlphaTerminalProcess)
 		this._isSettled = true
 		this.emit("completed", output)
 		this.resolveCompletion()
@@ -203,9 +203,9 @@ class ControlledProcess extends EventEmitter {
 	): Promise<void> {
 		if (this.completionStarted) throw new Error("Controlled process completed more than once")
 		this.completionStarted = true
-		this.callbacks.onShellExecutionComplete(details, this as unknown as RooTerminalProcess)
+		this.callbacks.onShellExecutionComplete(details, this as unknown as AlphaTerminalProcess)
 		const outputCompletion = Promise.resolve(
-			this.callbacks.onCompleted(output, this as unknown as RooTerminalProcess),
+			this.callbacks.onCompleted(output, this as unknown as AlphaTerminalProcess),
 		)
 		this._isSettled = true
 		this.emit("completed", output)
@@ -216,7 +216,7 @@ class ControlledProcess extends EventEmitter {
 	completeWithoutOutputCallback(details: ExitCodeDetails): void {
 		if (this.completionStarted) throw new Error("Controlled process completed more than once")
 		this.completionStarted = true
-		this.callbacks.onShellExecutionComplete(details, this as unknown as RooTerminalProcess)
+		this.callbacks.onShellExecutionComplete(details, this as unknown as AlphaTerminalProcess)
 		this._isSettled = true
 		this.emit("completed", "")
 		this.resolveCompletion()
@@ -227,8 +227,8 @@ class ControlledProcess extends EventEmitter {
 		output = "late successful output after process failure",
 	): Promise<void> {
 		if (!this.completionStarted) throw new Error("Controlled process has not failed")
-		this.callbacks.onShellExecutionComplete(details, this as unknown as RooTerminalProcess)
-		await this.callbacks.onCompleted(output, this as unknown as RooTerminalProcess)
+		this.callbacks.onShellExecutionComplete(details, this as unknown as AlphaTerminalProcess)
+		await this.callbacks.onCompleted(output, this as unknown as AlphaTerminalProcess)
 	}
 
 	fail(error: Error): void {
@@ -247,7 +247,7 @@ class ControlledProcess extends EventEmitter {
 	}
 }
 
-type ControlledTerminal = Omit<RooTerminal, "runCommand"> & {
+type ControlledTerminal = Omit<AlphaTerminal, "runCommand"> & {
 	processForTest?: ControlledProcess
 	runStarted: CompletionGate
 	runCommand: ReturnType<typeof vi.fn>
@@ -255,7 +255,7 @@ type ControlledTerminal = Omit<RooTerminal, "runCommand"> & {
 
 function controlledTerminal(
 	workspacePath: string,
-	onRun?: (process: ControlledProcess, callbacks: RooTerminalCallbacks) => void,
+	onRun?: (process: ControlledProcess, callbacks: AlphaTerminalCallbacks) => void,
 ): ControlledTerminal {
 	const runStarted = completionGate()
 	const terminal = {
@@ -272,15 +272,15 @@ function controlledTerminal(
 		getLastCommand: vi.fn(() => ""),
 		cleanCompletedProcessQueue: vi.fn(),
 		runStarted,
-		runCommand: vi.fn((command: string, callbacks: RooTerminalCallbacks) => {
+		runCommand: vi.fn((command: string, callbacks: AlphaTerminalCallbacks) => {
 			const process = new ControlledProcess(command, callbacks)
 			terminal.processForTest = process
 			terminal.busy = true
 			terminal.running = true
-			callbacks.onShellExecutionStarted(1234, process as unknown as RooTerminalProcess)
+			callbacks.onShellExecutionStarted(1234, process as unknown as AlphaTerminalProcess)
 			runStarted.resolve()
 			onRun?.(process, callbacks)
-			return process as unknown as RooTerminalProcessResultPromise
+			return process as unknown as AlphaTerminalProcessResultPromise
 		}),
 	} as ControlledTerminal
 
@@ -340,7 +340,7 @@ async function createTask(approval: "approve" | "deny" = "approve"): Promise<Tas
 			pendingCommandVerification: Promise.resolve(),
 			checkpointSave: vi.fn(async () => undefined),
 			providerRef: new WeakRef(provider),
-			rooIgnoreController: { validateCommand: vi.fn(() => undefined) },
+			alphaIgnoreController: { validateCommand: vi.fn(() => undefined) },
 			getTaskMode: vi.fn(async () => "code"),
 			shouldStopRepeatedToolCall: vi.fn(() => false),
 			toolRepetitionDetector: {
@@ -372,7 +372,7 @@ async function createTask(approval: "approve" | "deny" = "approve"): Promise<Tas
 			emitFinalTokenUsageUpdate: vi.fn(),
 			emit: vi.fn(),
 			dispose: vi.fn(() => lifetimeController.abort()),
-			saveClineMessages: vi.fn(async () => undefined),
+			saveAlphaMessages: vi.fn(async () => undefined),
 			appendAgentTurnEvent: vi.fn(async () => undefined),
 			flushAgentTurnEvents: vi.fn(async () => undefined),
 			finishCanonicalLifecycleCancellation: vi.fn(async () => undefined),
@@ -534,7 +534,7 @@ describe("ordinary task tool contracts", () => {
 			await writeFile(path.join(harness.workspacePath, "second.txt"), "one\ntwo\nthree\n")
 			Object.assign(harness.task, {
 				api: { getModel: () => ({ info: {} }) },
-				rooIgnoreController: { validateAccess: () => true },
+				alphaIgnoreController: { validateAccess: () => true },
 				fileContextTracker: { trackFileContext: vi.fn().mockResolvedValue(undefined) },
 			})
 			const call = {
@@ -1348,19 +1348,19 @@ describe("Stage Three command outcome integration", () => {
 			// Produce output through the real ExecuteCommandTool callback path. The
 			// approval response for command output moves the process to the background
 			// without fabricating a terminal completion event.
-			terminal.runCommand.mockImplementation((command: string, callbacks: RooTerminalCallbacks) => {
+			terminal.runCommand.mockImplementation((command: string, callbacks: AlphaTerminalCallbacks) => {
 				const process = new ControlledProcess(command, callbacks)
 				terminal.processForTest = process
 				terminal.busy = true
 				terminal.running = true
-				callbacks.onShellExecutionStarted(1234, process as unknown as RooTerminalProcess)
+				callbacks.onShellExecutionStarted(1234, process as unknown as AlphaTerminalProcess)
 				terminal.runStarted.resolve()
 				void Promise.resolve(
-					callbacks.onLine("background output\n", process as unknown as RooTerminalProcess),
+					callbacks.onLine("background output\n", process as unknown as AlphaTerminalProcess),
 				).then(() => {
 					backgrounded.resolve()
 				})
-				return process as unknown as RooTerminalProcessResultPromise
+				return process as unknown as AlphaTerminalProcessResultPromise
 			})
 			installTerminal(terminal)
 
@@ -1391,17 +1391,17 @@ describe("Stage Three command outcome integration", () => {
 			const backgrounded = completionGate()
 			const bookkeepingHandled = completionGate()
 			const terminal = controlledTerminal(harness.workspacePath)
-			terminal.runCommand.mockImplementation((command: string, callbacks: RooTerminalCallbacks) => {
+			terminal.runCommand.mockImplementation((command: string, callbacks: AlphaTerminalCallbacks) => {
 				const process = new ControlledProcess(command, callbacks)
 				terminal.processForTest = process
 				terminal.busy = true
 				terminal.running = true
-				callbacks.onShellExecutionStarted(1234, process as unknown as RooTerminalProcess)
+				callbacks.onShellExecutionStarted(1234, process as unknown as AlphaTerminalProcess)
 				terminal.runStarted.resolve()
 				void Promise.resolve(
-					callbacks.onLine("background output\n", process as unknown as RooTerminalProcess),
+					callbacks.onLine("background output\n", process as unknown as AlphaTerminalProcess),
 				).then(() => backgrounded.resolve())
-				return process as unknown as RooTerminalProcessResultPromise
+				return process as unknown as AlphaTerminalProcessResultPromise
 			})
 			installTerminal(terminal)
 			const finalize = vi

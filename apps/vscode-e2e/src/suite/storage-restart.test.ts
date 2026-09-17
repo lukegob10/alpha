@@ -2,7 +2,7 @@ import * as assert from "assert"
 import * as fs from "fs/promises"
 import * as path from "path"
 import * as vscode from "vscode"
-import { agentLifecycleEventSchema, RooCodeEventName } from "@alpha-code/types"
+import { agentLifecycleEventSchema, AlphaCodeEventName } from "@alpha-code/types"
 
 import { isWithin, readBounded, rejectSymlinkComponents } from "../evidence/paths"
 import { AGENT_CONTROL_TRANSACTION_LOCK, OFFLINE_QUARANTINE_SUFFIX } from "../evidence/storageRecovery"
@@ -96,7 +96,7 @@ suite("Actual profile storage restart", function () {
 		const onCompleted = (taskId: string) => {
 			completed.add(taskId)
 		}
-		api.on(RooCodeEventName.TaskCompleted, onCompleted)
+		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
 		try {
 			const taskId = await api.startNewTask({
 				configuration: {
@@ -194,7 +194,7 @@ suite("Actual profile storage restart", function () {
 				mode: 0o600,
 			})
 		} finally {
-			api.off(RooCodeEventName.TaskCompleted, onCompleted)
+			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
 		}
 	})
 })

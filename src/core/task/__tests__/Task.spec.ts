@@ -7,12 +7,12 @@ import { EventEmitter } from "events"
 import * as vscode from "vscode"
 import { Anthropic } from "@anthropic-ai/sdk"
 
-import { RooCodeEventName, type GlobalState, type ProviderSettings, type ModelInfo } from "@alpha-code/types"
+import { AlphaCodeEventName, type GlobalState, type ProviderSettings, type ModelInfo } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../Task"
 import { AskIgnoredError } from "../AskIgnoredError"
-import { ClineProvider } from "../../webview/ClineProvider"
+import { AlphaProvider } from "../../webview/AlphaProvider"
 import { ApiStreamChunk } from "../../../api/transform/stream"
 import { maybeRemoveImageBlocks } from "../../../api/transform/image-cleaning"
 import { ContextProxy } from "../../config/ContextProxy"
@@ -172,7 +172,7 @@ vi.mock("../../environment/getEnvironmentDetails", () => ({
 		.mockImplementation(async () => ({ details: "", commit: vi.fn(), release: vi.fn() })),
 }))
 
-vi.mock("../../ignore/RooIgnoreController")
+vi.mock("../../ignore/AlphaIgnoreController")
 
 vi.mock("../../condense", async (importOriginal) => {
 	const actual = (await importOriginal()) as any
@@ -283,7 +283,7 @@ describe("Alpha", () => {
 		}
 
 		// Setup mock provider with output channel
-		mockProvider = new ClineProvider(
+		mockProvider = new AlphaProvider(
 			mockExtensionContext,
 			mockOutputChannel,
 			"sidebar",
@@ -338,7 +338,7 @@ describe("Alpha", () => {
 
 	describe("constructor", () => {
 		it("should always have diff strategy defined", async () => {
-			const cline = new Task({
+			const alphaTask = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				task: "test task",
@@ -346,22 +346,22 @@ describe("Alpha", () => {
 			})
 
 			// Diff is always enabled - diffStrategy should be defined
-			expect(cline.diffStrategy).toBeDefined()
+			expect(alphaTask.diffStrategy).toBeDefined()
 		})
 
 		it("should use default consecutiveMistakeLimit when not provided", () => {
-			const cline = new Task({
+			const alphaTask = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				task: "test task",
 				startTask: false,
 			})
 
-			expect(cline.consecutiveMistakeLimit).toBe(3)
+			expect(alphaTask.consecutiveMistakeLimit).toBe(3)
 		})
 
 		it("should respect provided consecutiveMistakeLimit", () => {
-			const cline = new Task({
+			const alphaTask = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				consecutiveMistakeLimit: 5,
@@ -369,11 +369,11 @@ describe("Alpha", () => {
 				startTask: false,
 			})
 
-			expect(cline.consecutiveMistakeLimit).toBe(5)
+			expect(alphaTask.consecutiveMistakeLimit).toBe(5)
 		})
 
 		it("should keep consecutiveMistakeLimit of 0 as 0 for unlimited", () => {
-			const cline = new Task({
+			const alphaTask = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				consecutiveMistakeLimit: 0,
@@ -381,11 +381,11 @@ describe("Alpha", () => {
 				startTask: false,
 			})
 
-			expect(cline.consecutiveMistakeLimit).toBe(0)
+			expect(alphaTask.consecutiveMistakeLimit).toBe(0)
 		})
 
 		it("should pass 0 to ToolRepetitionDetector for unlimited mode", () => {
-			const cline = new Task({
+			const alphaTask = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				consecutiveMistakeLimit: 0,
@@ -394,13 +394,13 @@ describe("Alpha", () => {
 			})
 
 			// The toolRepetitionDetector should be initialized with 0 for unlimited mode
-			expect(cline.toolRepetitionDetector).toBeDefined()
+			expect(alphaTask.toolRepetitionDetector).toBeDefined()
 			// Verify the limit remains as 0
-			expect(cline.consecutiveMistakeLimit).toBe(0)
+			expect(alphaTask.consecutiveMistakeLimit).toBe(0)
 		})
 
 		it("should pass consecutiveMistakeLimit to ToolRepetitionDetector", () => {
-			const cline = new Task({
+			const alphaTask = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				consecutiveMistakeLimit: 5,
@@ -409,23 +409,23 @@ describe("Alpha", () => {
 			})
 
 			// The toolRepetitionDetector should be initialized with the same limit
-			expect(cline.toolRepetitionDetector).toBeDefined()
-			expect(cline.consecutiveMistakeLimit).toBe(5)
+			expect(alphaTask.toolRepetitionDetector).toBeDefined()
+			expect(alphaTask.consecutiveMistakeLimit).toBe(5)
 		})
 
 		it("retains the concrete tool failure behind mistake-limit recovery", () => {
-			const cline = new Task({
+			const alphaTask = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				task: "test task",
 				startTask: false,
 			})
 
-			cline.recordToolError("attempt_completion", "Completion still needs verification")
-			cline.consecutiveMistakeLimit = 1
+			alphaTask.recordToolError("attempt_completion", "Completion still needs verification")
+			alphaTask.consecutiveMistakeLimit = 1
 
-			expect(cline.didToolFailInCurrentTurn).toBe(true)
-			const guidance = (cline as any).getMistakeLimitGuidance()
+			expect(alphaTask.didToolFailInCurrentTurn).toBe(true)
+			const guidance = (alphaTask as any).getMistakeLimitGuidance()
 			expect(guidance).toContain(
 				"Most recent tool failure: attempt_completion — Completion still needs verification",
 			)
@@ -473,7 +473,7 @@ describe("Alpha", () => {
 		})
 
 		it("does not wait for MCP initialization when counting startup tools", async () => {
-			const cline = new Task({
+			const alphaTask = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				task: "test task",
@@ -483,7 +483,7 @@ describe("Alpha", () => {
 			vi.spyOn(mockProvider, "getValue").mockReturnValue(true)
 			vi.spyOn(mockProvider, "getMcpHub").mockReturnValue(undefined)
 
-			await expect((cline as any).getEnabledMcpToolsCount()).resolves.toEqual({
+			await expect((alphaTask as any).getEnabledMcpToolsCount()).resolves.toEqual({
 				enabledToolCount: 0,
 				enabledServerCount: 0,
 			})
@@ -491,7 +491,7 @@ describe("Alpha", () => {
 		})
 
 		it("publishes the initial user message through the lightweight task snapshot", async () => {
-			const cline = new Task({
+			const alphaTask = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				task: "test task",
@@ -499,14 +499,14 @@ describe("Alpha", () => {
 			})
 			mockProvider.postTaskStateToWebview = vi.fn().mockResolvedValue(undefined)
 
-			await (cline as any).addToClineMessages({ ts: 1, type: "say", say: "text", text: "test task" }, "task")
+			await (alphaTask as any).addToAlphaMessages({ ts: 1, type: "say", say: "text", text: "test task" }, "task")
 
 			expect(mockProvider.postTaskStateToWebview).toHaveBeenCalledTimes(1)
 			expect(mockProvider.postStateToWebviewWithoutTaskHistory).not.toHaveBeenCalled()
 		})
 
 		it("publishes subsequent messages incrementally without rebuilding extension state", async () => {
-			const cline = new Task({
+			const alphaTask = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
 				task: "test task",
@@ -517,12 +517,12 @@ describe("Alpha", () => {
 			mockProvider.postTaskStateToWebview = vi.fn().mockResolvedValue(undefined)
 			mockProvider.postStateToWebviewWithoutTaskHistory.mockClear()
 
-			await (cline as any).addToClineMessages(message)
+			await (alphaTask as any).addToAlphaMessages(message)
 
 			expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith(
 				expect.objectContaining({
 					type: "messageCreated",
-					taskId: cline.taskId,
+					taskId: alphaTask.taskId,
 					clineMessage: message,
 					clineMessagesSeq: expect.any(Number),
 				}),
@@ -535,7 +535,7 @@ describe("Alpha", () => {
 	describe("getEnvironmentDetails", () => {
 		describe("API conversation handling", () => {
 			it("should clean conversation history before sending to API", () => {
-				const cline = new Task({
+				const alphaTask = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
 					task: "test task",
@@ -548,7 +548,7 @@ describe("Alpha", () => {
 					extraProp: "should be removed",
 				}
 
-				const history = (cline as any).buildCleanConversationHistory([messageWithExtra])
+				const history = (alphaTask as any).buildCleanConversationHistory([messageWithExtra])
 
 				expect(history).toEqual([
 					{
@@ -560,31 +560,31 @@ describe("Alpha", () => {
 			})
 
 			it("should persist VS Code LM stateful markers and only replay them to that provider", async () => {
-				const cline = new Task({
+				const alphaTask = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
 					task: "test task",
 					startTask: false,
 				})
 				const statefulMarker = "bW9kZWxcXHJlc3BvbnNl"
-				;(cline.api as any).getStatefulMarker = () => statefulMarker
-				vi.spyOn(cline as any, "saveApiConversationHistory").mockResolvedValue(true)
+				;(alphaTask.api as any).getStatefulMarker = () => statefulMarker
+				vi.spyOn(alphaTask as any, "saveApiConversationHistory").mockResolvedValue(true)
 
-				await (cline as any).addToApiConversationHistory({
+				await (alphaTask as any).addToApiConversationHistory({
 					role: "assistant" as const,
 					content: [{ type: "tool_use" as const, id: "call-1", name: "read_file", input: { path: "a.ts" } }],
 				})
-				const markerMessage = cline.apiConversationHistory.at(-1)!
+				const markerMessage = alphaTask.apiConversationHistory.at(-1)!
 				expect(markerMessage).toHaveProperty("vscodeLmStatefulMarker", statefulMarker)
 
-				const anthropicHistory = (cline as any).buildCleanConversationHistory([markerMessage])
+				const anthropicHistory = (alphaTask as any).buildCleanConversationHistory([markerMessage])
 				expect(anthropicHistory[0]).not.toHaveProperty("vscodeLmStatefulMarker")
 
-				cline.apiConfiguration = {
+				alphaTask.apiConfiguration = {
 					...mockApiConfig,
 					apiProvider: "vscode-lm",
 				} as ProviderSettings
-				const vscodeLmHistory = (cline as any).buildCleanConversationHistory([markerMessage])
+				const vscodeLmHistory = (alphaTask as any).buildCleanConversationHistory([markerMessage])
 
 				expect(vscodeLmHistory[0]).toMatchObject({
 					role: "assistant",
@@ -634,7 +634,7 @@ describe("Alpha", () => {
 				]
 
 				// Test with model that supports images
-				const clineWithImages = new Task({
+				const alphaWithImages = new Task({
 					provider: mockProvider,
 					apiConfiguration: configWithImages,
 					task: "test task",
@@ -642,7 +642,7 @@ describe("Alpha", () => {
 				})
 
 				// Mock the model info to indicate image support
-				vi.spyOn(clineWithImages.api, "getModel").mockReturnValue({
+				vi.spyOn(alphaWithImages.api, "getModel").mockReturnValue({
 					id: "claude-3-sonnet",
 					info: {
 						supportsImages: true,
@@ -655,7 +655,7 @@ describe("Alpha", () => {
 				})
 
 				// Test with model that doesn't support images
-				const clineWithoutImages = new Task({
+				const alphaWithoutImages = new Task({
 					provider: mockProvider,
 					apiConfiguration: configWithoutImages,
 					task: "test task",
@@ -663,7 +663,7 @@ describe("Alpha", () => {
 				})
 
 				// Mock the model info to indicate no image support
-				vi.spyOn(clineWithoutImages.api, "getModel").mockReturnValue({
+				vi.spyOn(alphaWithoutImages.api, "getModel").mockReturnValue({
 					id: "gpt-3.5-turbo",
 					info: {
 						supportsImages: false,
@@ -675,8 +675,8 @@ describe("Alpha", () => {
 					} as ModelInfo,
 				})
 
-				const preserved = maybeRemoveImageBlocks(conversationHistory as any, clineWithImages.api)
-				const converted = maybeRemoveImageBlocks(conversationHistory as any, clineWithoutImages.api)
+				const preserved = maybeRemoveImageBlocks(conversationHistory as any, alphaWithImages.api)
+				const converted = maybeRemoveImageBlocks(conversationHistory as any, alphaWithoutImages.api)
 
 				expect(preserved[0]?.content).toEqual(conversationHistory[0]?.content)
 				expect(converted[0]?.content).toEqual([
@@ -687,16 +687,16 @@ describe("Alpha", () => {
 
 			it("should cap the provider retry countdown to the policy-approved delay", async () => {
 				vi.useFakeTimers()
-				const cline = new Task({
+				const alphaTask = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
 					task: "test task",
 					startTask: false,
 				})
-				vi.spyOn(cline as any, "getSystemPrompt").mockResolvedValue("test instructions")
+				vi.spyOn(alphaTask as any, "getSystemPrompt").mockResolvedValue("test instructions")
 
 				// Mock say to track messages
-				const saySpy = vi.spyOn(cline, "say").mockResolvedValue(undefined)
+				const saySpy = vi.spyOn(alphaTask, "say").mockResolvedValue(undefined)
 
 				// Create a stream that fails on first chunk
 				const mockError = new Error("API Error")
@@ -740,7 +740,7 @@ describe("Alpha", () => {
 
 				// Mock createMessage to fail first then succeed
 				let firstAttempt = true
-				vi.spyOn(cline.api, "createMessage").mockImplementation(() => {
+				vi.spyOn(alphaTask.api, "createMessage").mockImplementation(() => {
 					if (firstAttempt) {
 						firstAttempt = false
 						return mockFailedStream
@@ -755,7 +755,7 @@ describe("Alpha", () => {
 				})
 
 				// Mock previous API request message
-				cline.clineMessages = [
+				alphaTask.clineMessages = [
 					{
 						ts: Date.now(),
 						type: "say",
@@ -770,7 +770,7 @@ describe("Alpha", () => {
 				]
 
 				// Trigger API request
-				const iterator = cline.attemptApiRequest(0)
+				const iterator = alphaTask.attemptApiRequest(0)
 				const request = iterator.next()
 				try {
 					await vi.waitFor(() =>
@@ -808,7 +808,7 @@ describe("Alpha", () => {
 			})
 
 			it("should honor an explicit zero-second API retry delay", async () => {
-				const cline = new Task({
+				const alphaTask = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
 					task: "test task",
@@ -816,12 +816,12 @@ describe("Alpha", () => {
 				})
 				const mockDelay = vi.fn().mockResolvedValue(undefined)
 				vi.spyOn(await import("delay"), "default").mockImplementation(mockDelay)
-				const saySpy = vi.spyOn(cline, "say").mockResolvedValue(undefined)
+				const saySpy = vi.spyOn(alphaTask, "say").mockResolvedValue(undefined)
 				mockProvider.getState = vi.fn().mockResolvedValue({
 					requestDelaySeconds: 0,
 				})
 
-				await (cline as any).backoffAndAnnounce(0, new Error("transient failure"))
+				await (alphaTask as any).backoffAndAnnounce(0, new Error("transient failure"))
 
 				expect(mockDelay).not.toHaveBeenCalled()
 				expect(saySpy).not.toHaveBeenCalledWith("api_req_retry_delayed", expect.anything())
@@ -829,16 +829,16 @@ describe("Alpha", () => {
 
 			it("should not apply retry delay twice", async () => {
 				vi.useFakeTimers()
-				const cline = new Task({
+				const alphaTask = new Task({
 					provider: mockProvider,
 					apiConfiguration: mockApiConfig,
 					task: "test task",
 					startTask: false,
 				})
-				vi.spyOn(cline as any, "getSystemPrompt").mockResolvedValue("test instructions")
+				vi.spyOn(alphaTask as any, "getSystemPrompt").mockResolvedValue("test instructions")
 
 				// Mock say to track messages
-				const saySpy = vi.spyOn(cline, "say").mockResolvedValue(undefined)
+				const saySpy = vi.spyOn(alphaTask, "say").mockResolvedValue(undefined)
 
 				// Create a stream that fails on first chunk
 				const mockError = new Error("API Error")
@@ -882,7 +882,7 @@ describe("Alpha", () => {
 
 				// Mock createMessage to fail first then succeed
 				let firstAttempt = true
-				vi.spyOn(cline.api, "createMessage").mockImplementation(() => {
+				vi.spyOn(alphaTask.api, "createMessage").mockImplementation(() => {
 					if (firstAttempt) {
 						firstAttempt = false
 						return mockFailedStream
@@ -897,7 +897,7 @@ describe("Alpha", () => {
 				})
 
 				// Mock previous API request message
-				cline.clineMessages = [
+				alphaTask.clineMessages = [
 					{
 						ts: Date.now(),
 						type: "say",
@@ -912,7 +912,7 @@ describe("Alpha", () => {
 				]
 
 				// Trigger API request
-				const iterator = cline.attemptApiRequest(0)
+				const iterator = alphaTask.attemptApiRequest(0)
 				const request = iterator.next()
 				try {
 					await vi.waitFor(() =>
@@ -954,7 +954,7 @@ describe("Alpha", () => {
 
 			describe("processUserContentMentions", () => {
 				it("should process mentions in user_message tags", async () => {
-					const [cline, task] = Task.create({
+					const [alphaTask, task] = Task.create({
 						provider: mockProvider,
 						apiConfiguration: mockApiConfig,
 						task: "test task",
@@ -993,8 +993,8 @@ describe("Alpha", () => {
 
 					const { content: processedContent } = await processUserContentMentions({
 						userContent,
-						cwd: cline.cwd,
-						fileContextTracker: cline.fileContextTracker,
+						cwd: alphaTask.cwd,
+						fileContextTracker: alphaTask.fileContextTracker,
 					})
 
 					// Regular text should not be processed
@@ -1023,7 +1023,7 @@ describe("Alpha", () => {
 						"Regular tool result with 'path' (see below for file content)",
 					)
 
-					await cline.abortTask(true)
+					await alphaTask.abortTask(true)
 					await task.catch(() => {})
 				})
 			})
@@ -1124,7 +1124,7 @@ describe("Alpha", () => {
 						),
 					).toBe(true)
 				})
-				const request = task.recursivelyMakeClineRequests(
+				const request = task.runAgentRequests(
 					[
 						{
 							type: "tool_result",
@@ -1171,7 +1171,7 @@ describe("Alpha", () => {
 				const onPersisted = vi.fn()
 
 				await expect(
-					task.recursivelyMakeClineRequests(
+					task.runAgentRequests(
 						[{ type: "text", text: "<user_message>steer me</user_message>" }],
 						false,
 						onPersisted,
@@ -1224,7 +1224,7 @@ describe("Alpha", () => {
 						return !(requests.length === 1 && restore === "failed")
 					})
 					vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("fixed system prompt")
-					vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(true)
+					vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
 					vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
 					vi.spyOn(task as any, "maybeWaitForProviderRateLimit").mockResolvedValue(undefined)
 					vi.spyOn(task as any, "waitForRetryDecision").mockImplementation(async () => {
@@ -1259,7 +1259,7 @@ describe("Alpha", () => {
 							id: "claude-3-5-sonnet-20241022",
 							info: { contextWindow: 200_000, maxTokens: 8192, supportsPromptCache: false },
 						})
-						vi.spyOn(task as any, "getFilesReadByRooSafely").mockResolvedValue([])
+						vi.spyOn(task as any, "getFilesReadByAlphaSafely").mockResolvedValue([])
 						vi.spyOn(contextManagement, "willManageContext").mockImplementation(() => !compacted)
 						vi.spyOn(contextManagement, "manageContext").mockImplementation(async ({ messages }) => {
 							if (compacted) return { messages, summary: "", cost: 0, prevContextTokens: 100 }
@@ -1308,7 +1308,7 @@ describe("Alpha", () => {
 							? [{ type: "text", text: "continue" }]
 							: [{ type: "tool_result", tool_use_id: "read-1", content: "file result" }]
 					const result = await task
-						.recursivelyMakeClineRequests(content, true)
+						.runAgentRequests(content, true)
 						.catch((error: Error) => ({ status: "thrown", error }))
 					if (restore === "failed" || restore === "cancelled") {
 						expect(requests).toHaveLength(1)
@@ -2435,7 +2435,7 @@ describe("Alpha", () => {
 						{ role: "user", content: [{ type: "text", text: "Earlier prompt" }], ts: 1 },
 						{ role: "assistant", content: [{ type: "text", text: "Earlier answer" }], ts: 2 },
 					]
-			vi.spyOn(task as any, "getSavedClineMessages").mockResolvedValue(
+			vi.spyOn(task as any, "getSavedAlphaMessages").mockResolvedValue(
 				opening
 					? []
 					: [
@@ -2475,7 +2475,7 @@ describe("Alpha", () => {
 			})
 			vi.spyOn(task as any, "resumeTaskFromHistory").mockRejectedValue(new Error("Persistence failed"))
 			const active = vi.fn()
-			task.on(RooCodeEventName.TaskActive, active)
+			task.on(AlphaCodeEventName.TaskActive, active)
 			await expect(task.resumeWithEditedMessage("Replacement")).rejects.toThrow("Persistence failed")
 			expect(active).not.toHaveBeenCalled()
 		})
@@ -2489,7 +2489,7 @@ describe("Alpha", () => {
 			})
 			;(task as any).didComplete = true
 			const active = vi.fn()
-			task.on(RooCodeEventName.TaskActive, active)
+			task.on(AlphaCodeEventName.TaskActive, active)
 			const resume = vi
 				.spyOn(task as any, "resumeTaskFromHistory")
 				.mockImplementation(async (...args: unknown[]) => {
@@ -2524,9 +2524,9 @@ describe("Alpha", () => {
 				{ role: "user", content: [{ type: "text", text: "initial task" }] },
 				{ role: "assistant", content: [{ type: "text", text: "done" }] },
 			] as any
-			const loadClineMessages = vi.spyOn(task as any, "getSavedClineMessages")
+			const loadAlphaMessages = vi.spyOn(task as any, "getSavedAlphaMessages")
 			const loadApiHistory = vi.spyOn(task as any, "getSavedApiConversationHistory")
-			const overwriteClineMessages = vi.spyOn(task, "overwriteClineMessages")
+			const overwriteAlphaMessages = vi.spyOn(task, "overwriteAlphaMessages")
 			const reconcileSubagents = vi.spyOn(task as any, "reconcileInterruptedSubagentGroups")
 			vi.spyOn(task as any, "flushApiConversationHistoryPersistence").mockResolvedValue(undefined)
 			vi.spyOn(task, "say").mockResolvedValue(undefined)
@@ -2540,9 +2540,9 @@ describe("Alpha", () => {
 
 			await task.resumeCompletedTaskFollowup("continue in place")
 
-			expect(loadClineMessages).not.toHaveBeenCalled()
+			expect(loadAlphaMessages).not.toHaveBeenCalled()
 			expect(loadApiHistory).not.toHaveBeenCalled()
-			expect(overwriteClineMessages).not.toHaveBeenCalled()
+			expect(overwriteAlphaMessages).not.toHaveBeenCalled()
 			expect(reconcileSubagents).not.toHaveBeenCalled()
 			expect(overwriteApiHistory).not.toHaveBeenCalled()
 			expect(continueLoop).toHaveBeenCalledWith(
@@ -2600,8 +2600,8 @@ describe("Alpha", () => {
 			;(task as any).didEmitTaskCompleted = true
 			const active = vi.fn()
 			const started = vi.fn()
-			task.on(RooCodeEventName.TaskActive, active)
-			task.on(RooCodeEventName.TaskStarted, started)
+			task.on(AlphaCodeEventName.TaskActive, active)
+			task.on(AlphaCodeEventName.TaskStarted, started)
 			vi.spyOn(task as any, "resumeTaskFromHistory").mockRejectedValue(new Error("durable write failed"))
 
 			await expect(task.resumeCompletedTaskFollowup("retain this draft")).rejects.toThrow("durable write failed")
@@ -2628,8 +2628,8 @@ describe("Alpha", () => {
 			})
 			const publicationOrder: string[] = []
 			const resume = vi.spyOn(task as any, "resumeTaskFromHistory")
-			task.on(RooCodeEventName.TaskUserMessage, () => publicationOrder.push("admitted"))
-			task.on(RooCodeEventName.TaskActive, () => publicationOrder.push("active"))
+			task.on(AlphaCodeEventName.TaskUserMessage, () => publicationOrder.push("admitted"))
+			task.on(AlphaCodeEventName.TaskActive, () => publicationOrder.push("active"))
 			resume.mockImplementation(async (...args: unknown[]) => {
 				publicationOrder.push("resume")
 				const onPersisted = args[1] as (() => Promise<void> | void) | undefined
@@ -2945,7 +2945,7 @@ describe("Alpha", () => {
 			})
 			Object.assign(task, { taskKind: "subagent", subagentRole: "worker", terminalProcess })
 			vi.spyOn(task, "dispose").mockImplementation(() => {})
-			vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(undefined)
 
 			let settled = false
 			const abort = task.abortTask().finally(() => (settled = true))
@@ -2974,7 +2974,7 @@ describe("Alpha", () => {
 			})
 			Object.assign(task, { taskKind: "subagent", subagentRole: "worker", terminalProcess })
 			vi.spyOn(task, "dispose").mockImplementation(() => {})
-			vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(undefined)
 
 			await expect(task.abortTask()).resolves.toBeUndefined()
 			expect(terminalProcess.abort).not.toHaveBeenCalled()
@@ -2990,7 +2990,7 @@ describe("Alpha", () => {
 			const emitSpy = vi.spyOn(task, "emit")
 			const disposeSpy = vi.spyOn(task, "dispose").mockImplementation(() => {})
 			let finishSave!: () => void
-			const saveSpy = vi.spyOn(task as any, "saveClineMessages").mockImplementation(
+			const saveSpy = vi.spyOn(task as any, "saveAlphaMessages").mockImplementation(
 				async () =>
 					await new Promise<void>((resolve) => {
 						finishSave = resolve
@@ -3027,7 +3027,7 @@ describe("Alpha", () => {
 			})
 			Object.assign(task, { taskKind: "subagent", subagentRole: "worker", terminalProcess })
 			const disposeSpy = vi.spyOn(task, "dispose").mockImplementation(() => {})
-			const saveSpy = vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(undefined)
+			const saveSpy = vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(undefined)
 
 			await expect(task.abortTask()).rejects.toThrow("tree cleanup failed")
 
@@ -3272,8 +3272,8 @@ describe("Alpha", () => {
 				startTask: false,
 				enableCheckpoints: false,
 			})
-			vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(true)
-			vi.spyOn(task as any, "enqueueClineMessagesSave").mockImplementation(async (...args: unknown[]) => {
+			vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
+			vi.spyOn(task as any, "enqueueAlphaMessagesSave").mockImplementation(async (...args: unknown[]) => {
 				const [createSnapshot, onPersisted] = args as [() => unknown, (() => void) | undefined]
 				createSnapshot()
 				onPersisted?.()
@@ -3359,7 +3359,7 @@ describe("Alpha", () => {
 			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
 			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
 			const completed = vi.fn()
-			task.on(RooCodeEventName.TaskCompleted, completed)
+			task.on(AlphaCodeEventName.TaskCompleted, completed)
 			const request = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
 				(async function* (): AsyncGenerator<ApiStreamChunk> {
 					if (request.mock.calls.length > 1) {
@@ -3415,9 +3415,9 @@ describe("Alpha", () => {
 						})(),
 					)
 
-				await expect(
-					task.recursivelyMakeClineRequests([{ type: "text", text: "start" }], false),
-				).resolves.toMatchObject({ status: "completed" })
+				await expect(task.runAgentRequests([{ type: "text", text: "start" }], false)).resolves.toMatchObject({
+					status: "completed",
+				})
 				expect(request).toHaveBeenCalledTimes(2)
 				expect(ask).not.toHaveBeenCalled()
 				expect(events).toHaveBeenCalledWith(expect.objectContaining({ type: "retry", attempt: 1 }))
@@ -3446,9 +3446,9 @@ describe("Alpha", () => {
 					})(),
 				)
 
-				await expect(
-					task.recursivelyMakeClineRequests([{ type: "text", text: "start" }], false),
-				).resolves.toMatchObject({ status: "failed" })
+				await expect(task.runAgentRequests([{ type: "text", text: "start" }], false)).resolves.toMatchObject({
+					status: "failed",
+				})
 				expect(request).toHaveBeenCalledTimes(retryable === true ? 2 : 1)
 				if (retryable === false) expect(ask).not.toHaveBeenCalled()
 				else expect(ask).toHaveBeenCalledExactlyOnceWith("api_req_failed", "Provider failure")
@@ -3496,7 +3496,7 @@ describe("Alpha", () => {
 						})(),
 					)
 
-					const pending = task.recursivelyMakeClineRequests([{ type: "text", text: "start" }], false)
+					const pending = task.runAgentRequests([{ type: "text", text: "start" }], false)
 					await retryAnnouncementStarted
 					await vi.advanceTimersByTimeAsync(100)
 					await expect(pending).resolves.toMatchObject({
@@ -3559,7 +3559,7 @@ describe("Alpha", () => {
 					})(),
 				)
 
-				await task.recursivelyMakeClineRequests([{ type: "text", text: "start" }], false)
+				await task.runAgentRequests([{ type: "text", text: "start" }], false)
 
 				expect(persist).toHaveBeenCalledOnce()
 				expect(execute).toHaveBeenCalledOnce()
@@ -3599,7 +3599,7 @@ describe("Alpha", () => {
 				...(isError ? { is_error: true } : {}),
 			}
 			const requestStep = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
+				.spyOn(task, "runAgentRequests")
 				.mockImplementationOnce(async () => {
 					task.userMessageContent = [toolResult]
 					return false
@@ -3861,7 +3861,7 @@ describe("Alpha", () => {
 				})()
 			})
 
-			const result = await task.recursivelyMakeClineRequests([{ type: "text", text: "start" }], false)
+			const result = await task.runAgentRequests([{ type: "text", text: "start" }], false)
 
 			expect(result).toMatchObject({
 				status: "failed",
@@ -3927,7 +3927,7 @@ describe("Alpha", () => {
 				})()
 			})
 
-			const result = await task.recursivelyMakeClineRequests([{ type: "text", text: "start" }], false)
+			const result = await task.runAgentRequests([{ type: "text", text: "start" }], false)
 
 			expect(result).toMatchObject({
 				status: "failed",
@@ -3953,8 +3953,8 @@ describe("Alpha", () => {
 			const say = vi.spyOn(task, "say")
 			const flush = vi.spyOn(task, "flushPendingToolResultsToHistory")
 			const completed = vi.fn()
-			task.on(RooCodeEventName.TaskCompleted, completed)
-			const requestStep = vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+			task.on(AlphaCodeEventName.TaskCompleted, completed)
+			const requestStep = vi.spyOn(task, "runAgentRequests").mockImplementationOnce(async () => {
 				await task.say("text", "The requested explanation.", undefined, false)
 				streamedMessageTs = task.clineMessages.at(-1)?.ts
 				task.assistantMessageContent = [{ type: "text", content: "The requested explanation.", partial: false }]
@@ -3998,7 +3998,7 @@ describe("Alpha", () => {
 				mockProvider.postTaskMessageToWebview = vi.fn().mockResolvedValue(undefined)
 				const privateReason =
 					"Authorization: Bearer test-secret\nPrivate prompt: do not publish\n at internalFrame"
-				const save = vi.mocked((task as any).saveClineMessages)
+				const save = vi.mocked((task as any).saveAlphaMessages)
 				const ask = vi.spyOn(task, "ask").mockImplementation(async () => {
 					const errors = task.clineMessages.filter((message) => message.say === "error")
 					expect(errors).toHaveLength(1)
@@ -4013,7 +4013,7 @@ describe("Alpha", () => {
 					return { response: "yesButtonClicked" }
 				})
 				const requestStep = vi
-					.spyOn(task, "recursivelyMakeClineRequests")
+					.spyOn(task, "runAgentRequests")
 					.mockResolvedValueOnce({ status, reason: privateReason })
 					.mockResolvedValueOnce(true)
 
@@ -4031,7 +4031,7 @@ describe("Alpha", () => {
 				const task = createTask()
 				const privateReason = "Private storage path and request content"
 				vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
-				vi.spyOn(task, "recursivelyMakeClineRequests")
+				vi.spyOn(task, "runAgentRequests")
 					.mockRejectedValueOnce(new AgentControlTransactionError(privateReason, code))
 					.mockResolvedValueOnce(true)
 
@@ -4048,7 +4048,7 @@ describe("Alpha", () => {
 		it("explains an unhandled pre-provider exception without copying private diagnostics", async () => {
 			const task = createTask()
 			vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
-			vi.spyOn(task, "recursivelyMakeClineRequests")
+			vi.spyOn(task, "runAgentRequests")
 				.mockRejectedValueOnce(new Error("Private request body with credentials and prompt"))
 				.mockResolvedValueOnce(true)
 
@@ -4091,7 +4091,7 @@ describe("Alpha", () => {
 			async (say, cancelReason) => {
 				const task = createTask()
 				vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
-				vi.spyOn(task, "recursivelyMakeClineRequests")
+				vi.spyOn(task, "runAgentRequests")
 					.mockImplementationOnce(async () => {
 						await task.say(
 							say,
@@ -4154,7 +4154,7 @@ describe("Alpha", () => {
 		it("does not let an earlier recovered step hide a new runtime failure", async () => {
 			const task = createTask()
 			vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
-			vi.spyOn(task, "recursivelyMakeClineRequests")
+			vi.spyOn(task, "runAgentRequests")
 				.mockImplementationOnce(async () => {
 					await task.say("error", "Earlier recoverable tool error.")
 					return { status: "completed", response: createAgentResponse([]) }
@@ -4171,15 +4171,15 @@ describe("Alpha", () => {
 
 		it("retains one recovery explanation when the task is loaded again", async () => {
 			const task = createTask()
-			vi.spyOn(task, "recursivelyMakeClineRequests")
+			vi.spyOn(task, "runAgentRequests")
 				.mockResolvedValueOnce({ status: "incomplete" })
 				.mockResolvedValueOnce(true)
 			vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
 			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 			let saved = structuredClone(task.clineMessages)
 			saved.push({ ts: Date.now() + 1, type: "ask", ask: "resume_task" })
-			vi.spyOn(task as any, "getSavedClineMessages").mockImplementation(async () => structuredClone(saved))
-			vi.spyOn(task as any, "overwriteClineMessages").mockImplementation(async (...args: unknown[]) => {
+			vi.spyOn(task as any, "getSavedAlphaMessages").mockImplementation(async () => structuredClone(saved))
+			vi.spyOn(task as any, "overwriteAlphaMessages").mockImplementation(async (...args: unknown[]) => {
 				saved = structuredClone(args[0] as typeof saved)
 				return true
 			})
@@ -4199,7 +4199,7 @@ describe("Alpha", () => {
 			// Hydration cleans the in-memory view; this mocked ask does not persist
 			// an interaction, so the original saved bytes must remain untouched.
 			expect(saved.some((message) => message.ask === "resume_task")).toBe(true)
-			expect(task.overwriteClineMessages).not.toHaveBeenCalled()
+			expect(task.overwriteAlphaMessages).not.toHaveBeenCalled()
 		})
 
 		it.each([true, false])(
@@ -4208,7 +4208,7 @@ describe("Alpha", () => {
 				const task = createTask()
 				const report = "Task remains incomplete: repeated search outcomes produced no new evidence."
 				vi.spyOn(task as any, "flushPendingToolResultsToHistory").mockResolvedValue(persisted)
-				const request = vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+				const request = vi.spyOn(task, "runAgentRequests").mockImplementationOnce(async () => {
 					task.suspendAfterCurrentTurn(report, "blocked")
 					return { status: "completed", response: createAgentResponse([]) }
 				})
@@ -4240,7 +4240,7 @@ describe("Alpha", () => {
 				})
 				const feedback = vi.spyOn(task, "say")
 				const requestStep = vi
-					.spyOn(task, "recursivelyMakeClineRequests")
+					.spyOn(task, "runAgentRequests")
 					.mockResolvedValueOnce({
 						status,
 						reason: `Provider turn ${status}.`,
@@ -4280,7 +4280,7 @@ describe("Alpha", () => {
 				images: undefined,
 			})
 			const requestStep = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
+				.spyOn(task, "runAgentRequests")
 				.mockResolvedValueOnce({ status: "incomplete", reason: "Stream ended before completion." })
 				.mockResolvedValueOnce(true)
 
@@ -4301,7 +4301,7 @@ describe("Alpha", () => {
 			})
 			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
 			const requestStep = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
+				.spyOn(task, "runAgentRequests")
 				.mockResolvedValueOnce({ status: "failed", reason: "Stream ended before completion." })
 
 			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
@@ -4321,7 +4321,7 @@ describe("Alpha", () => {
 			;(task as any).activeAsk = { type: "followup", ts: 42 }
 			const ask = vi.spyOn(task, "ask").mockRejectedValue(new AskIgnoredError("superseded"))
 			const requestStep = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
+				.spyOn(task, "runAgentRequests")
 				.mockResolvedValueOnce({ status: "failed", reason: "Stream ended before completion." })
 
 			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
@@ -4339,7 +4339,7 @@ describe("Alpha", () => {
 			const task = createTask()
 			const ask = vi.spyOn(task, "ask")
 			const requestStep = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
+				.spyOn(task, "runAgentRequests")
 				.mockResolvedValueOnce({ status: "aborted", reason: "The request was cancelled." })
 
 			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
@@ -4358,7 +4358,7 @@ describe("Alpha", () => {
 					text: "",
 					images: [],
 				})
-				vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+				vi.spyOn(task, "runAgentRequests").mockImplementationOnce(async () => {
 					task.assistantMessageContent = [{ type: "text", content: "Everything is done.", partial: false }]
 					return false
 				})
@@ -4380,7 +4380,7 @@ describe("Alpha", () => {
 			const task = createTask("subagent")
 			const ask = vi.spyOn(task, "ask")
 			const requestStep = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
+				.spyOn(task, "runAgentRequests")
 				.mockResolvedValueOnce({ status: "failed", reason: "Managed child failed." })
 
 			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
@@ -4403,7 +4403,7 @@ describe("Alpha", () => {
 				task.todoList = [{ id: "pending", content: "Finish the regression", status: "pending" }]
 				const ask = vi.spyOn(task, "ask")
 				const requestStep = vi
-					.spyOn(task, "recursivelyMakeClineRequests")
+					.spyOn(task, "runAgentRequests")
 					.mockImplementationOnce(async () => {
 						task.assistantMessageContent = [
 							{ type: "text", content: "Everything is done.", partial: false },
@@ -4443,7 +4443,7 @@ describe("Alpha", () => {
 				return { response: "yesButtonClicked", text: "", images: [] }
 			})
 			const requestStep = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
+				.spyOn(task, "runAgentRequests")
 				.mockImplementationOnce(async () => {
 					task.assistantMessageContent = [{ type: "text", content: "Everything is done.", partial: false }]
 					return false
@@ -4484,7 +4484,7 @@ describe("Alpha", () => {
 					text: "",
 					images: [],
 				})
-				vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+				vi.spyOn(task, "runAgentRequests").mockImplementationOnce(async () => {
 					task.assistantMessageContent = [
 						{ type: "text", content: "The requested work is complete.", partial: false },
 					]
@@ -4500,13 +4500,13 @@ describe("Alpha", () => {
 		it("does not expose a newly staged completion when every transcript write fails", async () => {
 			const task = createTask()
 			const stagedSnapshots: any[][] = []
-			vi.mocked((task as any).enqueueClineMessagesSave).mockImplementation(
+			vi.mocked((task as any).enqueueAlphaMessagesSave).mockImplementation(
 				async (createSnapshot: () => any[]) => {
 					stagedSnapshots.push(createSnapshot())
 					return false
 				},
 			)
-			const publish = vi.spyOn(task as any, "publishClineMessageCreated")
+			const publish = vi.spyOn(task as any, "publishAlphaMessageCreated")
 
 			await expect(task.presentCompletionResult("Durable final answer.")).rejects.toThrow(
 				"Unable to persist the completion result",
@@ -4536,13 +4536,13 @@ describe("Alpha", () => {
 			task.clineMessages = [completion]
 			;(task as any).currentAssistantResponseMessageTs = completion.ts
 			const stagedSnapshots: any[][] = []
-			vi.mocked((task as any).enqueueClineMessagesSave).mockImplementation(
+			vi.mocked((task as any).enqueueAlphaMessagesSave).mockImplementation(
 				async (createSnapshot: () => any[]) => {
 					stagedSnapshots.push(createSnapshot())
 					return false
 				},
 			)
-			const update = vi.spyOn(task as any, "updateClineMessage")
+			const update = vi.spyOn(task as any, "updateAlphaMessage")
 
 			await expect(task.retractCompletionResult()).rejects.toThrow(
 				"Unable to persist the rejected completion state",
@@ -4565,7 +4565,7 @@ describe("Alpha", () => {
 				})
 				const ask = vi.spyOn(task, "ask")
 				const requestStep = vi
-					.spyOn(task, "recursivelyMakeClineRequests")
+					.spyOn(task, "runAgentRequests")
 					.mockImplementationOnce(async () => {
 						await task.say("text", "Everything is finished.", undefined, false)
 						task.assistantMessageContent = [
@@ -4599,8 +4599,8 @@ describe("Alpha", () => {
 				startTask: false,
 				enableCheckpoints: false,
 			})
-			vi.spyOn(child as any, "saveClineMessages").mockResolvedValue(true)
-			vi.spyOn(child as any, "enqueueClineMessagesSave").mockImplementation(async (...args: unknown[]) => {
+			vi.spyOn(child as any, "saveAlphaMessages").mockResolvedValue(true)
+			vi.spyOn(child as any, "enqueueAlphaMessagesSave").mockImplementation(async (...args: unknown[]) => {
 				const [createSnapshot, onPersisted] = args as [() => unknown, (() => void) | undefined]
 				createSnapshot()
 				onPersisted?.()
@@ -4616,7 +4616,7 @@ describe("Alpha", () => {
 				images: [],
 			})
 			const finalize = vi.spyOn(child, "finalizeTaskCompletion").mockResolvedValue(true)
-			vi.spyOn(child, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+			vi.spyOn(child, "runAgentRequests").mockImplementationOnce(async () => {
 				child.assistantMessageContent = [{ type: "text", content: "Legacy review complete.", partial: false }]
 				return false
 			})
@@ -4655,7 +4655,7 @@ describe("Alpha", () => {
 					})
 				}
 				const requestStep = vi
-					.spyOn(task, "recursivelyMakeClineRequests")
+					.spyOn(task, "runAgentRequests")
 					.mockImplementationOnce(async () => {
 						task.assistantMessageContent = [{ type: "text", content: "Initial answer.", partial: false }]
 						return false
@@ -4691,7 +4691,7 @@ describe("Alpha", () => {
 				.mockResolvedValueOnce({ response: "yesButtonClicked", text: "", images: [] })
 			const say = vi.spyOn(task, "say")
 			const requestStep = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
+				.spyOn(task, "runAgentRequests")
 				.mockImplementationOnce(async () => {
 					task.assistantMessageContent = [{ type: "text", content: "First answer.", partial: false }]
 					return false
@@ -4722,7 +4722,7 @@ describe("Alpha", () => {
 		it("does not start another model turn when a rejected completion cannot be retracted durably", async () => {
 			const task = createTask()
 			let saveAttempt = 0
-			vi.mocked((task as any).enqueueClineMessagesSave).mockImplementation(
+			vi.mocked((task as any).enqueueAlphaMessagesSave).mockImplementation(
 				async (createSnapshot: () => unknown, onPersisted?: () => void) => {
 					createSnapshot()
 					saveAttempt++
@@ -4742,7 +4742,7 @@ describe("Alpha", () => {
 					message: "Verification failed.",
 				})
 			const say = vi.spyOn(task, "say")
-			const requestStep = vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+			const requestStep = vi.spyOn(task, "runAgentRequests").mockImplementationOnce(async () => {
 				task.assistantMessageContent = [{ type: "text", content: "Premature answer.", partial: false }]
 				return false
 			})
@@ -4765,7 +4765,7 @@ describe("Alpha", () => {
 				const task = createTask(kind)
 				const queuedUserContent = [{ type: "text" as const, text: "Please continue with this detail." }]
 				const requestStep = vi
-					.spyOn(task, "recursivelyMakeClineRequests")
+					.spyOn(task, "runAgentRequests")
 					.mockImplementationOnce(async () => {
 						task.assistantMessageContent = [
 							{ type: "text", content: "I can continue when that detail is available.", partial: false },
@@ -4790,7 +4790,7 @@ describe("Alpha", () => {
 			task.messageQueueService.addMessage("Keep this for later.", [secondImage])
 			const feedback = vi.spyOn(task, "say").mockResolvedValue(undefined)
 			const requestStep = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
+				.spyOn(task, "runAgentRequests")
 				.mockImplementationOnce(async () => {
 					task.assistantMessageContent = [
 						{ type: "text", content: "The first requested explanation.", partial: false },
@@ -4825,7 +4825,7 @@ describe("Alpha", () => {
 			const pendingContent = [{ type: "text" as const, text: "tool result continuation" }]
 			task.messageQueueService.addMessage("queued after tool results")
 			const requestStep = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
+				.spyOn(task, "runAgentRequests")
 				.mockImplementationOnce(async () => {
 					task.assistantMessageContent = [
 						{ type: "text", content: "I handled the previous step.", partial: false },
@@ -4845,7 +4845,7 @@ describe("Alpha", () => {
 			const task = createTask(kind)
 			task.messageQueueService.addMessage("queued after steering")
 			const requestStep = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
+				.spyOn(task, "runAgentRequests")
 				.mockImplementationOnce(async () => {
 					task.assistantMessageContent = [
 						{ type: "text", content: "I received the original request.", partial: false },
@@ -4869,8 +4869,8 @@ describe("Alpha", () => {
 			async (status) => {
 				const task = createTask("subagent")
 				const completed = vi.fn()
-				task.on(RooCodeEventName.TaskCompleted, completed)
-				const request = vi.spyOn(task, "recursivelyMakeClineRequests").mockResolvedValueOnce({
+				task.on(AlphaCodeEventName.TaskCompleted, completed)
+				const request = vi.spyOn(task, "runAgentRequests").mockResolvedValueOnce({
 					status,
 					response: createAgentResponse([{ type: "text", text: "Partial analysis before interruption." }]),
 				})
@@ -4893,7 +4893,7 @@ describe("Alpha", () => {
 					message: "Inspect the pending result.",
 				})
 				.mockResolvedValue({ allowed: true })
-			const request = vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementation(async () => {
+			const request = vi.spyOn(task, "runAgentRequests").mockImplementation(async () => {
 				task.userMessageContent = []
 				return {
 					status: "completed",
@@ -4901,7 +4901,7 @@ describe("Alpha", () => {
 				}
 			})
 			const completed = vi.fn()
-			task.on(RooCodeEventName.TaskCompleted, completed)
+			task.on(AlphaCodeEventName.TaskCompleted, completed)
 
 			await Reflect.get(task, "initiateTaskLoop").call(task, [{ type: "text", text: "Review." }])
 
@@ -4921,7 +4921,7 @@ describe("Alpha", () => {
 				task.messageQueueService.addMessage("Include the cancellation case.")
 			})
 			const request = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
+				.spyOn(task, "runAgentRequests")
 				.mockResolvedValueOnce({
 					status: "completed",
 					response: createAgentResponse([{ type: "text", text: "Initial review." }]),
@@ -4931,7 +4931,7 @@ describe("Alpha", () => {
 					response: createAgentResponse([{ type: "text", text: "Expanded review." }]),
 				})
 			const completed = vi.fn()
-			task.on(RooCodeEventName.TaskCompleted, completed)
+			task.on(AlphaCodeEventName.TaskCompleted, completed)
 
 			await Reflect.get(task, "initiateTaskLoop").call(task, [{ type: "text", text: "Review." }])
 
@@ -4947,7 +4947,7 @@ describe("Alpha", () => {
 
 		it("does not publish managed completion when persistence fails and can retry once it recovers", async () => {
 			const task = createTask("subagent")
-			vi.spyOn(task, "recursivelyMakeClineRequests").mockResolvedValue({
+			vi.spyOn(task, "runAgentRequests").mockResolvedValue({
 				status: "completed",
 				response: createAgentResponse([{ type: "text", text: "The durable report." }]),
 			})
@@ -4955,7 +4955,7 @@ describe("Alpha", () => {
 				new Error("Persistence unavailable"),
 			)
 			const completed = vi.fn()
-			task.on(RooCodeEventName.TaskCompleted, completed)
+			task.on(AlphaCodeEventName.TaskCompleted, completed)
 			const run = () => Reflect.get(task, "initiateTaskLoop").call(task, [{ type: "text", text: "Review." }])
 
 			await expect(run()).rejects.toThrow("Persistence unavailable")
@@ -4970,7 +4970,7 @@ describe("Alpha", () => {
 			const task = createTask("subagent")
 			task.messageQueueService.addMessage("Check the additional edge case.")
 			const requestStep = vi
-				.spyOn(task, "recursivelyMakeClineRequests")
+				.spyOn(task, "runAgentRequests")
 				.mockImplementationOnce(async () => {
 					task.assistantMessageContent = [
 						{ type: "text", content: "Managed child progress.", partial: false },
@@ -4992,7 +4992,7 @@ describe("Alpha", () => {
 
 		it("stops at the completion boundary without starting another request", async () => {
 			const task = createTask()
-			const requestStep = vi.spyOn(task, "recursivelyMakeClineRequests").mockImplementationOnce(async () => {
+			const requestStep = vi.spyOn(task, "runAgentRequests").mockImplementationOnce(async () => {
 				task.userMessageContent = [{ type: "text", text: "stale continuation" }]
 				task.markCompleted()
 				return false
@@ -5075,14 +5075,14 @@ describe("Alpha", () => {
 			const readStarted = new Promise<void>((resolve) => {
 				reachedRead = resolve
 			})
-			vi.spyOn(task as any, "getSavedClineMessages").mockImplementation(async () => structuredClone(savedUi))
+			vi.spyOn(task as any, "getSavedAlphaMessages").mockImplementation(async () => structuredClone(savedUi))
 			vi.spyOn(task as any, "getSavedApiConversationHistory").mockImplementation(async () => {
 				reachedRead()
 				await readBarrier
 				return savedApi
 			})
-			const overwrite = vi.spyOn(task, "overwriteClineMessages").mockResolvedValue(undefined)
-			const save = vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(true)
+			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(undefined)
+			const save = vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
 			vi.spyOn(task as any, "overwriteApiConversationHistory").mockResolvedValue(true)
 			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
 			vi.spyOn(task as any, "initiateTaskLoop").mockResolvedValue(undefined)
@@ -5104,15 +5104,15 @@ describe("Alpha", () => {
 			const task = createTask()
 			const failure = new Error("History read unavailable")
 			const uiRead = vi
-				.spyOn(task as any, "getSavedClineMessages")
+				.spyOn(task as any, "getSavedAlphaMessages")
 				.mockResolvedValue([{ ts: 1, type: "say", say: "text", text: "saved" }])
 			const apiRead = vi
 				.spyOn(task as any, "getSavedApiConversationHistory")
 				.mockResolvedValue([{ role: "user", content: "saved", ts: 1 }])
 			if (phase === "ui") uiRead.mockRejectedValue(failure)
 			else apiRead.mockRejectedValue(failure)
-			const overwrite = vi.spyOn(task, "overwriteClineMessages").mockResolvedValue(undefined)
-			const save = vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(true)
+			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(undefined)
+			const save = vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
 			const ask = vi.spyOn(task, "ask")
 			await expect((task as any).resumeTaskFromHistory()).rejects.toBe(failure)
 			expect(overwrite).not.toHaveBeenCalled()
@@ -5122,7 +5122,7 @@ describe("Alpha", () => {
 
 		it.each(["ui", "api"] as const)("abandons hydration after eviction during the %s read", async (phase) => {
 			const task = createTask()
-			vi.spyOn(task as any, "getSavedClineMessages").mockImplementation(async () => {
+			vi.spyOn(task as any, "getSavedAlphaMessages").mockImplementation(async () => {
 				if (phase === "ui") task.abandoned = true
 				return [{ ts: 1, type: "say", say: "text", text: "saved" }]
 			})
@@ -5130,8 +5130,8 @@ describe("Alpha", () => {
 				task.abandoned = true
 				return [{ role: "user", content: "saved", ts: 1 }]
 			})
-			const overwrite = vi.spyOn(task, "overwriteClineMessages").mockResolvedValue(undefined)
-			const save = vi.spyOn(task as any, "saveClineMessages").mockResolvedValue(true)
+			const overwrite = vi.spyOn(task, "overwriteAlphaMessages").mockResolvedValue(undefined)
+			const save = vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
 			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
 			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
 			vi.spyOn(task as any, "initiateTaskLoop").mockResolvedValue(undefined)
@@ -5145,7 +5145,7 @@ describe("Alpha", () => {
 
 		it("repairs an interrupted tool call when a root task resumes after reload", async () => {
 			const task = createTask()
-			const savedClineMessages = [{ ts: 1, type: "say", say: "text", text: "historical task" }]
+			const savedAlphaMessages = [{ ts: 1, type: "say", say: "text", text: "historical task" }]
 			const savedApiHistory = [
 				{ role: "user", content: [{ type: "text", text: "inspect" }], ts: 1 },
 				{
@@ -5154,8 +5154,8 @@ describe("Alpha", () => {
 					ts: 2,
 				},
 			]
-			vi.spyOn(task as any, "getSavedClineMessages").mockResolvedValue(savedClineMessages)
-			vi.spyOn(task as any, "overwriteClineMessages").mockResolvedValue(true)
+			vi.spyOn(task as any, "getSavedAlphaMessages").mockResolvedValue(savedAlphaMessages)
+			vi.spyOn(task as any, "overwriteAlphaMessages").mockResolvedValue(true)
 			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
 			const loadApiHistory = vi
 				.spyOn(task as any, "getSavedApiConversationHistory")
@@ -5234,7 +5234,7 @@ describe("Alpha", () => {
 describe("Plan completion presentation", () => {
 	it("normalizes a primary Plan response to one exact proposed-plan block", async () => {
 		const message = { ts: 1, type: "say", say: "text", text: "streamed draft", partial: true }
-		const commitClineMessageMutation = vi.fn(
+		const commitAlphaMessageMutation = vi.fn(
 			async (_timestamp: number, _context: string, mutate: (value: any) => any) => {
 				const committed = mutate(message)
 				Object.assign(message, committed)
@@ -5247,8 +5247,8 @@ describe("Plan completion presentation", () => {
 			getTaskMode: vi.fn().mockResolvedValue("architect"),
 			currentAssistantResponseMessageTs: 1,
 			findMessageByTimestamp: vi.fn().mockReturnValue(message),
-			commitClineMessageMutation,
-			updateClineMessage: vi.fn().mockResolvedValue(undefined),
+			commitAlphaMessageMutation,
+			updateAlphaMessage: vi.fn().mockResolvedValue(undefined),
 			say: vi.fn().mockResolvedValue(undefined),
 		} as unknown as Task
 
@@ -5308,7 +5308,7 @@ describe("Queued message processing after condense", () => {
 			dispose: vi.fn(),
 		}
 
-		const provider = new ClineProvider(ctx, output as any, "sidebar", new ContextProxy(ctx)) as any
+		const provider = new AlphaProvider(ctx, output as any, "sidebar", new ContextProxy(ctx)) as any
 		provider.postMessageToWebview = vi.fn().mockResolvedValue(undefined)
 		provider.postStateToWebview = vi.fn().mockResolvedValue(undefined)
 		provider.postStateToWebviewWithoutTaskHistory = vi.fn().mockResolvedValue(undefined)
@@ -5463,7 +5463,7 @@ describe("pushToolResultToUserContent", () => {
 			dispose: vi.fn(),
 		}
 
-		mockProvider = new ClineProvider(
+		mockProvider = new AlphaProvider(
 			mockExtensionContext,
 			mockOutputChannel,
 			"sidebar",

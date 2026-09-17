@@ -39,7 +39,7 @@ vi.mock("../../../utils/fs", () => ({
 vi.mock("../../prompts/responses", () => ({
 	formatResponse: {
 		toolError: vi.fn((msg) => `Error: ${msg}`),
-		rooIgnoreError: vi.fn((path) => `Access denied: ${path}`),
+		alphaIgnoreError: vi.fn((path) => `Access denied: ${path}`),
 		createPrettyPatch: vi.fn(() => "mock-diff"),
 	},
 }))
@@ -87,7 +87,7 @@ describe("searchReplaceTool", () => {
 	const mockedPathResolve = path.resolve as MockedFunction<typeof path.resolve>
 	const mockedPathIsAbsolute = path.isAbsolute as MockedFunction<typeof path.isAbsolute>
 
-	const mockCline: any = {}
+	const mockAlphaTask: any = {}
 	let mockAskApproval: ReturnType<typeof vi.fn>
 	let mockHandleError: ReturnType<typeof vi.fn>
 	let mockPushToolResult: ReturnType<typeof vi.fn>
@@ -103,10 +103,10 @@ describe("searchReplaceTool", () => {
 		mockedIsPathOutsideWorkspace.mockReturnValue(false)
 		mockedGetReadablePath.mockReturnValue("test/path.txt")
 
-		mockCline.cwd = "/"
-		mockCline.consecutiveMistakeCount = 0
-		mockCline.didEditFile = false
-		mockCline.providerRef = {
+		mockAlphaTask.cwd = "/"
+		mockAlphaTask.consecutiveMistakeCount = 0
+		mockAlphaTask.didEditFile = false
+		mockAlphaTask.providerRef = {
 			deref: vi.fn().mockReturnValue({
 				getState: vi.fn().mockResolvedValue({
 					diagnosticsEnabled: true,
@@ -115,13 +115,13 @@ describe("searchReplaceTool", () => {
 				}),
 			}),
 		}
-		mockCline.rooIgnoreController = {
+		mockAlphaTask.alphaIgnoreController = {
 			validateAccess: vi.fn().mockReturnValue(true),
 		}
-		mockCline.rooProtectedController = {
+		mockAlphaTask.alphaProtectedController = {
 			isWriteProtected: vi.fn().mockReturnValue(false),
 		}
-		mockCline.diffViewProvider = {
+		mockAlphaTask.diffViewProvider = {
 			editType: undefined,
 			isEditing: false,
 			originalContent: "",
@@ -138,15 +138,15 @@ describe("searchReplaceTool", () => {
 			scrollToFirstDiff: vi.fn(),
 			pushToolWriteResult: vi.fn().mockResolvedValue("Tool result message"),
 		}
-		mockCline.fileContextTracker = {
+		mockAlphaTask.fileContextTracker = {
 			trackFileContext: vi.fn().mockResolvedValue(undefined),
 		}
-		mockCline.say = vi.fn().mockResolvedValue(undefined)
-		mockCline.ask = vi.fn().mockResolvedValue(undefined)
-		mockCline.recordToolError = vi.fn()
-		mockCline.recordToolUsage = vi.fn()
-		mockCline.processQueuedMessages = vi.fn()
-		mockCline.sayAndCreateMissingParamError = vi.fn().mockResolvedValue("Missing param error")
+		mockAlphaTask.say = vi.fn().mockResolvedValue(undefined)
+		mockAlphaTask.ask = vi.fn().mockResolvedValue(undefined)
+		mockAlphaTask.recordToolError = vi.fn()
+		mockAlphaTask.recordToolUsage = vi.fn()
+		mockAlphaTask.processQueuedMessages = vi.fn()
+		mockAlphaTask.sayAndCreateMissingParamError = vi.fn().mockResolvedValue("Missing param error")
 
 		mockAskApproval = vi.fn().mockResolvedValue(true)
 		mockHandleError = vi.fn().mockResolvedValue(undefined)
@@ -173,7 +173,7 @@ describe("searchReplaceTool", () => {
 
 		mockedFileExistsAtPath.mockResolvedValue(fileExists)
 		mockedFsReadFile.mockResolvedValue(fileContent)
-		mockCline.rooIgnoreController.validateAccess.mockReturnValue(accessAllowed)
+		mockAlphaTask.alphaIgnoreController.validateAccess.mockReturnValue(accessAllowed)
 
 		const nativeArgs: Record<string, unknown> = {
 			file_path: testFilePath,
@@ -201,7 +201,7 @@ describe("searchReplaceTool", () => {
 			toolResult = result
 		})
 
-		await searchReplaceTool.handle(mockCline, toolUse as ToolUse<"search_replace">, {
+		await searchReplaceTool.handle(mockAlphaTask, toolUse as ToolUse<"search_replace">, {
 			askApproval: mockAskApproval,
 			handleError: mockHandleError,
 			pushToolResult: mockPushToolResult,
@@ -216,7 +216,7 @@ describe("searchReplaceTool", () => {
 			{ old_string: "Line 1\nLine 2", new_string: replacement },
 			{ fileContent: `\uFEFFLine 1${eol}Line 2${eol}Line 3` },
 		)
-		expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith(
+		expect(mockAlphaTask.diffViewProvider.update).toHaveBeenCalledWith(
 			`\uFEFF$& $$ $' &amp;${eol}changed${eol}Line 3`,
 			true,
 		)
@@ -229,7 +229,7 @@ describe("searchReplaceTool", () => {
 			expect.objectContaining({ message: expect.stringMatching(/mixed line endings/i) }),
 		)
 		expect(mockAskApproval).not.toHaveBeenCalled()
-		expect(mockCline.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+		expect(mockAlphaTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
 	})
 
 	describe("parameter validation", () => {
@@ -237,15 +237,15 @@ describe("searchReplaceTool", () => {
 			const result = await executeSearchReplaceTool({ file_path: undefined })
 
 			expect(result).toBe("Missing param error")
-			expect(mockCline.consecutiveMistakeCount).toBe(1)
-			expect(mockCline.recordToolError).toHaveBeenCalledWith("search_replace")
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(1)
+			expect(mockAlphaTask.recordToolError).toHaveBeenCalledWith("search_replace")
 		})
 
 		it("returns error when old_string is missing", async () => {
 			const result = await executeSearchReplaceTool({ old_string: undefined })
 
 			expect(result).toBe("Missing param error")
-			expect(mockCline.consecutiveMistakeCount).toBe(1)
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(1)
 		})
 
 		it("allows empty new_string for deletion", async () => {
@@ -266,7 +266,7 @@ describe("searchReplaceTool", () => {
 			})
 
 			expect(result).toContain("Error:")
-			expect(mockCline.consecutiveMistakeCount).toBe(1)
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(1)
 		})
 	})
 
@@ -276,7 +276,7 @@ describe("searchReplaceTool", () => {
 
 			expect(result).toContain("Error:")
 			expect(result).toContain("File not found")
-			expect(mockCline.consecutiveMistakeCount).toBe(1)
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(1)
 		})
 
 		it("returns error when access is denied", async () => {
@@ -289,7 +289,7 @@ describe("searchReplaceTool", () => {
 	describe("search and replace logic", () => {
 		describe.each([false, true])("literal replacements with direct save = %s", (directSave) => {
 			it.each(["$&", "$$", "$`", "$'", "$1", "$<name>"])("preserves %s in replacement text", async (token) => {
-				mockCline.providerRef.deref().getState.mockResolvedValue({
+				mockAlphaTask.providerRef.deref().getState.mockResolvedValue({
 					diagnosticsEnabled: true,
 					writeDelayMs: 1000,
 					experiments: { preventFocusDisruption: directSave },
@@ -304,9 +304,9 @@ describe("searchReplaceTool", () => {
 				)
 
 				expect(mockHandleError).not.toHaveBeenCalled()
-				expect(mockCline.didEditFile).toBe(true)
+				expect(mockAlphaTask.didEditFile).toBe(true)
 				if (directSave) {
-					expect(mockCline.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+					expect(mockAlphaTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
 						testFilePath,
 						expectedContent,
 						false,
@@ -315,8 +315,8 @@ describe("searchReplaceTool", () => {
 						{ exists: true, content: originalContent },
 					)
 				} else {
-					expect(mockCline.diffViewProvider.update).toHaveBeenCalledWith(expectedContent, true)
-					expect(mockCline.diffViewProvider.saveChanges).toHaveBeenCalled()
+					expect(mockAlphaTask.diffViewProvider.update).toHaveBeenCalledWith(expectedContent, true)
+					expect(mockAlphaTask.diffViewProvider.saveChanges).toHaveBeenCalled()
 				}
 			})
 		})
@@ -329,8 +329,8 @@ describe("searchReplaceTool", () => {
 
 			expect(result).toContain("Error:")
 			expect(result).toContain("No match found")
-			expect(mockCline.consecutiveMistakeCount).toBe(1)
-			expect(mockCline.recordToolError).toHaveBeenCalledWith("search_replace", "no_match")
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(1)
+			expect(mockAlphaTask.recordToolError).toHaveBeenCalledWith("search_replace", "no_match")
 		})
 
 		it("returns error when multiple matches are found", async () => {
@@ -341,8 +341,8 @@ describe("searchReplaceTool", () => {
 
 			expect(result).toContain("Error:")
 			expect(result).toContain("3 matches")
-			expect(mockCline.consecutiveMistakeCount).toBe(1)
-			expect(mockCline.recordToolError).toHaveBeenCalledWith("search_replace", "multiple_matches")
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(1)
+			expect(mockAlphaTask.recordToolError).toHaveBeenCalledWith("search_replace", "multiple_matches")
 		})
 
 		it("successfully replaces single unique match", async () => {
@@ -354,8 +354,8 @@ describe("searchReplaceTool", () => {
 				{ fileContent: "Line 1\nLine 2\nLine 3" },
 			)
 
-			expect(mockCline.consecutiveMistakeCount).toBe(0)
-			expect(mockCline.diffViewProvider.editType).toBe("modify")
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(0)
+			expect(mockAlphaTask.diffViewProvider.editType).toBe("modify")
 			expect(mockAskApproval).toHaveBeenCalled()
 		})
 	})
@@ -366,9 +366,9 @@ describe("searchReplaceTool", () => {
 
 			await executeSearchReplaceTool()
 
-			expect(mockCline.diffViewProvider.saveChanges).toHaveBeenCalled()
-			expect(mockCline.didEditFile).toBe(true)
-			expect(mockCline.recordToolUsage).toHaveBeenCalledWith("search_replace")
+			expect(mockAlphaTask.diffViewProvider.saveChanges).toHaveBeenCalled()
+			expect(mockAlphaTask.didEditFile).toBe(true)
+			expect(mockAlphaTask.recordToolUsage).toHaveBeenCalledWith("search_replace")
 		})
 
 		it("reverts changes when user rejects", async () => {
@@ -376,8 +376,8 @@ describe("searchReplaceTool", () => {
 
 			const result = await executeSearchReplaceTool()
 
-			expect(mockCline.diffViewProvider.revertChanges).toHaveBeenCalled()
-			expect(mockCline.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.revertChanges).toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
 			expect(result).toContain("rejected")
 		})
 
@@ -389,7 +389,7 @@ describe("searchReplaceTool", () => {
 				{ fileContent: rawBaseline },
 			)
 
-			expect(mockCline.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, {
+			expect(mockAlphaTask.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, {
 				exists: true,
 				content: rawBaseline,
 			})
@@ -403,7 +403,7 @@ describe("searchReplaceTool", () => {
 			await executeSearchReplaceTool({}, { isPartial: true })
 			await executeSearchReplaceTool({}, { isPartial: true })
 
-			expect(mockCline.ask).toHaveBeenCalled()
+			expect(mockAlphaTask.ask).toHaveBeenCalled()
 		})
 	})
 
@@ -433,7 +433,7 @@ describe("searchReplaceTool", () => {
 				capturedResult = result
 			})
 
-			await searchReplaceTool.handle(mockCline, toolUse as ToolUse<"search_replace">, {
+			await searchReplaceTool.handle(mockAlphaTask, toolUse as ToolUse<"search_replace">, {
 				askApproval: mockAskApproval,
 				handleError: mockHandleError,
 				pushToolResult: localPushToolResult,
@@ -441,16 +441,16 @@ describe("searchReplaceTool", () => {
 
 			expect(capturedResult).toContain("Error:")
 			expect(capturedResult).toContain("Failed to read file")
-			expect(mockCline.consecutiveMistakeCount).toBe(1)
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(1)
 		})
 
 		it("handles general errors and resets diff view", async () => {
-			mockCline.diffViewProvider.open.mockRejectedValueOnce(new Error("General error"))
+			mockAlphaTask.diffViewProvider.open.mockRejectedValueOnce(new Error("General error"))
 
 			await executeSearchReplaceTool()
 
 			expect(mockHandleError).toHaveBeenCalledWith("search and replace", expect.any(Error))
-			expect(mockCline.diffViewProvider.reset).toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.reset).toHaveBeenCalled()
 		})
 	})
 
@@ -458,7 +458,7 @@ describe("searchReplaceTool", () => {
 		it("tracks file context after successful edit", async () => {
 			await executeSearchReplaceTool()
 
-			expect(mockCline.fileContextTracker.trackFileContext).toHaveBeenCalledWith(testFilePath, "roo_edited")
+			expect(mockAlphaTask.fileContextTracker.trackFileContext).toHaveBeenCalledWith(testFilePath, "roo_edited")
 		})
 	})
 
@@ -471,7 +471,7 @@ describe("searchReplaceTool", () => {
 				{ fileContent: contentWithCRLF },
 			)
 
-			expect(mockCline.consecutiveMistakeCount).toBe(0)
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(0)
 			expect(mockAskApproval).toHaveBeenCalled()
 		})
 
@@ -486,7 +486,7 @@ describe("searchReplaceTool", () => {
 				{ fileContent: contentWithCRLF },
 			)
 
-			expect(mockCline.consecutiveMistakeCount).toBe(0)
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(0)
 			expect(mockAskApproval).toHaveBeenCalled()
 		})
 
@@ -501,13 +501,13 @@ describe("searchReplaceTool", () => {
 				{ fileContent: contentWithCRLF },
 			)
 
-			expect(mockCline.consecutiveMistakeCount).toBe(0)
+			expect(mockAlphaTask.consecutiveMistakeCount).toBe(0)
 			expect(mockAskApproval).toHaveBeenCalled()
 		})
 
 		it("passes the raw CRLF baseline to direct saves", async () => {
 			const rawBaseline = "Line 1\r\nLine 2\r\nLine 3"
-			mockCline.providerRef.deref().getState.mockResolvedValue({
+			mockAlphaTask.providerRef.deref().getState.mockResolvedValue({
 				diagnosticsEnabled: true,
 				writeDelayMs: 0,
 				experiments: { preventFocusDisruption: true },
@@ -518,7 +518,7 @@ describe("searchReplaceTool", () => {
 				{ fileContent: rawBaseline },
 			)
 
-			expect(mockCline.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+			expect(mockAlphaTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
 				testFilePath,
 				"Line 1\r\nModified Line 2\r\nLine 3",
 				false,
@@ -530,7 +530,7 @@ describe("searchReplaceTool", () => {
 
 		it("rejects a direct save when the raw baseline changes during approval", async () => {
 			const rawBaseline = "Line 1\r\nLine 2\r\nLine 3"
-			mockCline.providerRef.deref().getState.mockResolvedValue({
+			mockAlphaTask.providerRef.deref().getState.mockResolvedValue({
 				diagnosticsEnabled: true,
 				writeDelayMs: 0,
 				experiments: { preventFocusDisruption: true },
@@ -539,7 +539,7 @@ describe("searchReplaceTool", () => {
 				mockedFsReadFile.mockResolvedValue("Line 1\r\nLine 2\r\nconcurrent edit")
 				return true
 			})
-			mockCline.diffViewProvider.saveDirectly.mockImplementation(
+			mockAlphaTask.diffViewProvider.saveDirectly.mockImplementation(
 				async (
 					_path: string,
 					_content: string,
@@ -564,7 +564,7 @@ describe("searchReplaceTool", () => {
 				"search and replace",
 				expect.objectContaining({ message: expect.stringContaining("changed") }),
 			)
-			expect(mockCline.didEditFile).toBe(false)
+			expect(mockAlphaTask.didEditFile).toBe(false)
 		})
 	})
 })

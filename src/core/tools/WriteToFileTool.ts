@@ -2,7 +2,7 @@ import path from "path"
 import delay from "delay"
 import fs from "fs/promises"
 
-import { type ClineSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
+import { type AlphaSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
@@ -46,15 +46,15 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 			return
 		}
 
-		const accessAllowed = task.rooIgnoreController?.validateAccess(relPath)
+		const accessAllowed = task.alphaIgnoreController?.validateAccess(relPath)
 
 		if (!accessAllowed) {
 			await task.say("rooignore_error", relPath)
-			pushToolResult(formatResponse.rooIgnoreError(relPath))
+			pushToolResult(formatResponse.alphaIgnoreError(relPath))
 			return
 		}
 
-		const isWriteProtected = task.rooProtectedController?.isWriteProtected(relPath) || false
+		const isWriteProtected = task.alphaProtectedController?.isWriteProtected(relPath) || false
 
 		let fileExists: boolean
 		const absolutePath = path.resolve(task.cwd, relPath)
@@ -69,7 +69,7 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 		const fullPath = relPath ? path.resolve(task.cwd, relPath) : ""
 		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, fullPath)
 
-		const sharedMessageProps: ClineSayTool = {
+		const sharedMessageProps: AlphaSayTool = {
 			tool: fileExists ? "editedExistingFile" : "newFileCreated",
 			path: getTaskReadablePath(task, relPath),
 			content: newContent,
@@ -118,7 +118,7 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 					...sharedMessageProps,
 					content: unified,
 					diffStats: computeDiffStats(unified) || undefined,
-				} satisfies ClineSayTool)
+				} satisfies AlphaSayTool)
 
 				const didApprove = await askApproval("tool", completeMessage, undefined, isWriteProtected)
 
@@ -159,7 +159,7 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 					...sharedMessageProps,
 					content: unified,
 					diffStats: computeDiffStats(unified) || undefined,
-				} satisfies ClineSayTool)
+				} satisfies AlphaSayTool)
 
 				const didApprove = await askApproval("tool", completeMessage, undefined, isWriteProtected)
 
@@ -206,7 +206,7 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 			return
 		}
 
-		if (task.rooIgnoreController && !task.rooIgnoreController.validateAccess(relPath!)) {
+		if (task.alphaIgnoreController && !task.alphaIgnoreController.validateAccess(relPath!)) {
 			return
 		}
 
@@ -242,10 +242,10 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 				: { exists: false }
 		}
 
-		const isWriteProtected = task.rooProtectedController?.isWriteProtected(relPath!) || false
+		const isWriteProtected = task.alphaProtectedController?.isWriteProtected(relPath!) || false
 		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
 
-		const sharedMessageProps: ClineSayTool = {
+		const sharedMessageProps: AlphaSayTool = {
 			tool: fileExists ? "editedExistingFile" : "newFileCreated",
 			path: getTaskReadablePath(task, relPath!),
 			content: newContent || "",

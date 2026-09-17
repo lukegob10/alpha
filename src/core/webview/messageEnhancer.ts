@@ -1,9 +1,9 @@
-import { ProviderSettings, ClineMessage, GlobalState, TelemetryEventName } from "@alpha-code/types"
+import { ProviderSettings, AlphaMessage, GlobalState, TelemetryEventName } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 import { supportPrompt } from "../../shared/support-prompt"
 import { singleCompletionHandler } from "../../utils/single-completion-handler"
 import { ProviderSettingsManager } from "../config/ProviderSettingsManager"
-import { ClineProvider } from "./ClineProvider"
+import { AlphaProvider } from "./AlphaProvider"
 
 export interface MessageEnhancerOptions {
 	text: string
@@ -12,7 +12,7 @@ export interface MessageEnhancerOptions {
 	listApiConfigMeta: Array<{ id: string; name?: string }>
 	enhancementApiConfigId?: string
 	includeTaskHistoryInEnhance?: boolean
-	currentClineMessages?: ClineMessage[]
+	currentAlphaMessages?: AlphaMessage[]
 	providerSettingsManager: ProviderSettingsManager
 }
 
@@ -40,7 +40,7 @@ export class MessageEnhancer {
 				listApiConfigMeta,
 				enhancementApiConfigId,
 				includeTaskHistoryInEnhance,
-				currentClineMessages,
+				currentAlphaMessages,
 				providerSettingsManager,
 			} = options
 
@@ -62,8 +62,8 @@ export class MessageEnhancer {
 			let promptToEnhance = text
 
 			// Include task history if enabled and available
-			if (includeTaskHistoryInEnhance && currentClineMessages && currentClineMessages.length > 0) {
-				const taskHistory = this.extractTaskHistory(currentClineMessages)
+			if (includeTaskHistoryInEnhance && currentAlphaMessages && currentAlphaMessages.length > 0) {
+				const taskHistory = this.extractTaskHistory(currentAlphaMessages)
 				if (taskHistory) {
 					promptToEnhance = `${text}\n\nUse the following previous conversation context as needed:\n${taskHistory}`
 				}
@@ -96,7 +96,7 @@ export class MessageEnhancer {
 	 * @param messages Array of Alpha messages
 	 * @returns Formatted task history string
 	 */
-	private static extractTaskHistory(messages: ClineMessage[]): string {
+	private static extractTaskHistory(messages: AlphaMessage[]): string {
 		try {
 			const relevantMessages = messages
 				.filter((msg) => {

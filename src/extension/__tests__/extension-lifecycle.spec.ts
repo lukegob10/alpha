@@ -71,10 +71,10 @@ vi.mock("../../core/config/ContextProxy", () => ({
 vi.mock("../../core/agent/AgentControlStore", () => ({
 	AgentControlStore: { shutdownGlobalStores: mocks.shutdownGlobalStores },
 }))
-vi.mock("../../core/webview/ClineProvider", () => {
-	const ClineProvider = vi.fn(() => mocks.provider)
-	Object.assign(ClineProvider, { sideBarId: "alpha.SidebarProvider" })
-	return { ClineProvider }
+vi.mock("../../core/webview/AlphaProvider", () => {
+	const AlphaProvider = vi.fn(() => mocks.provider)
+	Object.assign(AlphaProvider, { sideBarId: "alpha.SidebarProvider" })
+	return { AlphaProvider }
 })
 vi.mock("../../integrations/editor/DiffViewProvider", () => ({ DIFF_VIEW_URI_SCHEME: "alpha-diff" }))
 vi.mock("../../integrations/terminal/TerminalRegistry", () => ({

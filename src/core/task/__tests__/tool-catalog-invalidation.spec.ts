@@ -24,7 +24,7 @@ vi.mock("../../../services/code-index/manager", () => ({
 
 import type { ToolCallbacks } from "../../tools/BaseTool"
 import type { TaskReadGrant, ToolDescriptor, ToolExecutionContext } from "../../tools/ToolRegistry"
-import type { ClineProvider } from "../../webview/ClineProvider"
+import type { AlphaProvider } from "../../webview/AlphaProvider"
 import type { Task } from "../Task"
 import { buildNativeToolsArrayWithRestrictions, type BuildToolsOptions } from "../build-tools"
 import { TaskToolCatalogCache } from "../TaskToolCatalogCache"
@@ -71,7 +71,7 @@ function createFixture() {
 		supportsImages: false,
 	}
 	const options: BuildToolsOptions = {
-		provider: provider as unknown as ClineProvider,
+		provider: provider as unknown as AlphaProvider,
 		cwd: "C:\\nor28-cache-fixture",
 		mode: "code",
 		customModes: undefined,

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 import type { Task } from "../../task/Task"
-import { ClineProvider } from "../../webview/ClineProvider"
+import { AlphaProvider } from "../../webview/AlphaProvider"
 import { EnvironmentContext } from "../EnvironmentContext"
 import { captureEnvironmentDetails } from "../getEnvironmentDetails"
 
@@ -21,7 +21,7 @@ describe("environment workspace verification context", () => {
 	const workspacePath = path.resolve("/verification-workspace")
 	let persistence: InMemoryAgentControlPersistence
 	let store: AgentControlStore
-	let provider: ClineProvider
+	let provider: AlphaProvider
 	let task: Task
 	let context: EnvironmentContext
 
@@ -30,7 +30,7 @@ describe("environment workspace verification context", () => {
 		store = new AgentControlStore(persistence, () => 1_000)
 		await store.initialize()
 		await store.ensureRoot({ taskId, objective: "Verify primary edits", status: "running" })
-		provider = Object.assign(Object.create(ClineProvider.prototype), {
+		provider = Object.assign(Object.create(AlphaProvider.prototype), {
 			agentControlStore: store,
 			agentControlStoreReady: Promise.resolve(),
 			getState: async () => ({
@@ -40,7 +40,7 @@ describe("environment workspace verification context", () => {
 				includeCurrentCost: false,
 				apiConfiguration: { todoListEnabled: false },
 			}),
-		}) as ClineProvider
+		}) as AlphaProvider
 		task = {
 			taskId,
 			instanceId: "verification-session",

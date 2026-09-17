@@ -1,7 +1,7 @@
 import { EventEmitter } from "events"
 import { manageCommandTool, waitForCommand } from "../ManageCommandTool"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
-import type { RooTerminalProcess } from "../../../integrations/terminal/types"
+import type { AlphaTerminalProcess } from "../../../integrations/terminal/types"
 import type { Task } from "../../task/Task"
 
 function harness() {
@@ -16,7 +16,7 @@ function harness() {
 			commit: vi.fn(),
 			release: vi.fn(),
 		})),
-	}) as unknown as RooTerminalProcess
+	}) as unknown as AlphaTerminalProcess
 	const terminal = { taskId: "task", process, running: true }
 	vi.spyOn(TerminalRegistry, "getTerminals").mockReturnValue([terminal as never])
 	const task = {

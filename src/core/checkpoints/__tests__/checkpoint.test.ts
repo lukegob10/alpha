@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach, Mock } from "vitest"
 import { Task } from "../../task/Task"
-import { ClineProvider } from "../../webview/ClineProvider"
+import { AlphaProvider } from "../../webview/AlphaProvider"
 import { checkpointSave, checkpointRestore, checkpointDiff, getCheckpointService } from "../index"
 import { MessageManager } from "../../message-manager"
 import * as vscode from "vscode"
@@ -102,7 +102,7 @@ describe("Checkpoint functionality", () => {
 			apiConversationHistory: [],
 			pendingUserMessageCheckpoint: undefined,
 			say: vi.fn().mockResolvedValue(undefined),
-			overwriteClineMessages: vi.fn(),
+			overwriteAlphaMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),
 			combineMessages: vi.fn().mockReturnValue([]),
 		}
@@ -220,7 +220,7 @@ describe("Checkpoint functionality", () => {
 			mockTask.say.mockImplementation(async () => {
 				if (mockTask.abort) throw new Error("Task aborted")
 			})
-			mockTask.overwriteClineMessages.mockImplementation(async (messages: unknown[]) => {
+			mockTask.overwriteAlphaMessages.mockImplementation(async (messages: unknown[]) => {
 				mockTask.clineMessages = messages
 			})
 			await checkpointRestore(mockTask, { ts: 2, commitHash: "abc123", mode: "restore", operation: "edit" })
@@ -256,7 +256,7 @@ describe("Checkpoint functionality", () => {
 			expect(mockTask.overwriteApiConversationHistory).toHaveBeenCalledWith([
 				{ ts: 1, role: "user", content: [{ type: "text", text: "Message 1" }] },
 			])
-			expect(mockTask.overwriteClineMessages).toHaveBeenCalledWith([{ ts: 1, say: "user", text: "Message 1" }])
+			expect(mockTask.overwriteAlphaMessages).toHaveBeenCalledWith([{ ts: 1, say: "user", text: "Message 1" }])
 			expect(mockProvider.cancelTask).not.toHaveBeenCalled()
 			expect(mockTask.abortTask).toHaveBeenCalledOnce()
 			expect(mockTask.waitForTermination).toHaveBeenCalledOnce()
@@ -275,7 +275,7 @@ describe("Checkpoint functionality", () => {
 				{ ts: 1, role: "user", content: [{ type: "text", text: "Message 1" }] },
 			])
 			// For edit operation, should include the message being edited
-			expect(mockTask.overwriteClineMessages).toHaveBeenCalledWith([
+			expect(mockTask.overwriteAlphaMessages).toHaveBeenCalledWith([
 				{ ts: 1, say: "user", text: "Message 1" },
 				{ ts: 2, say: "assistant", text: "Message 2" },
 			])
@@ -291,7 +291,7 @@ describe("Checkpoint functionality", () => {
 
 			expect(mockCheckpointService.restoreCheckpoint).toHaveBeenCalledWith("abc123")
 			expect(mockTask.overwriteApiConversationHistory).not.toHaveBeenCalled()
-			expect(mockTask.overwriteClineMessages).not.toHaveBeenCalled()
+			expect(mockTask.overwriteAlphaMessages).not.toHaveBeenCalled()
 			expect(mockProvider.cancelTask).not.toHaveBeenCalled()
 		})
 
@@ -359,7 +359,7 @@ describe("Checkpoint functionality", () => {
 			expect(mockTask.enableCheckpoints).toBe(false)
 			expect(mockProvider.log).toHaveBeenCalledWith("[checkpointRestore] disabling checkpoints for this task")
 			expect(mockTask.overwriteApiConversationHistory).not.toHaveBeenCalled()
-			expect(mockTask.overwriteClineMessages).not.toHaveBeenCalled()
+			expect(mockTask.overwriteAlphaMessages).not.toHaveBeenCalled()
 			expect(mockProvider.cancelTask).not.toHaveBeenCalled()
 		})
 	})

@@ -1,7 +1,7 @@
 import {
 	type AgentLifecycleSnapshot,
-	type ClineAsk,
-	type ClineMessage,
+	type AlphaAsk,
+	type AlphaMessage,
 	type LiveTaskMetadata,
 	TaskLifecycleState,
 	TaskStatus,
@@ -10,8 +10,8 @@ import {
 import type { Task } from "../task/Task"
 import {
 	projectAgentLifecycleSnapshot,
-	projectClineMessageStatus,
-	type ClineMessageStatusProjection,
+	projectAlphaMessageStatus,
+	type AlphaMessageStatusProjection,
 } from "./AgentLifecycleProjection"
 
 export const DEFAULT_MAX_LIVE_TASKS = 3
@@ -43,15 +43,15 @@ const terminalLifecycleStates = new Set<TaskLifecycleState>([
 
 // A fresh completion_result is still an open review/follow-up boundary. Only a
 // persisted resume_completed_task represents an already-terminal session.
-const terminalAskTypes = new Set<ClineAsk>(["resume_completed_task"])
+const terminalAskTypes = new Set<AlphaAsk>(["resume_completed_task"])
 
 const isTerminalLifecycle = (lifecycle: TaskLifecycleState) => terminalLifecycleStates.has(lifecycle)
 
-const isTerminalAsk = (ask: ClineAsk | undefined) => Boolean(ask && terminalAskTypes.has(ask))
+const isTerminalAsk = (ask: AlphaAsk | undefined) => Boolean(ask && terminalAskTypes.has(ask))
 
-const terminalInputAskTypes = new Set<ClineAsk>(["completion_result", "resume_task", "resume_completed_task"])
+const terminalInputAskTypes = new Set<AlphaAsk>(["completion_result", "resume_task", "resume_completed_task"])
 
-const canAcceptTerminalAskInput = (ask: ClineAsk | undefined) => Boolean(ask && terminalInputAskTypes.has(ask))
+const canAcceptTerminalAskInput = (ask: AlphaAsk | undefined) => Boolean(ask && terminalInputAskTypes.has(ask))
 
 export class TaskSessionRegistry {
 	private readonly sessions = new Map<string, TaskSession>()
@@ -128,7 +128,7 @@ export class TaskSessionRegistry {
 		this.sessions.set(task.taskId, {
 			task,
 			lifecycle: this.lifecycleDegradedTaskIds.has(task.taskId)
-				? projectClineMessageStatus({
+				? projectAlphaMessageStatus({
 						messages: task.clineMessages,
 						taskAsk: task.taskAsk,
 						taskStatus: task.taskStatus,
@@ -136,7 +136,7 @@ export class TaskSessionRegistry {
 				: (projection?.lifecycle ?? TaskLifecycleState.Initializing),
 			lastActivityAt: Date.now(),
 			waitingReason: this.lifecycleDegradedTaskIds.has(task.taskId)
-				? projectClineMessageStatus({
+				? projectAlphaMessageStatus({
 						messages: task.clineMessages,
 						taskAsk: task.taskAsk,
 						taskStatus: task.taskStatus,
@@ -213,7 +213,7 @@ export class TaskSessionRegistry {
 		const session = this.sessions.get(taskId)
 		if (!session) return
 
-		const legacy = projectClineMessageStatus({
+		const legacy = projectAlphaMessageStatus({
 			messages: session.task.clineMessages,
 			taskAsk: session.task.taskAsk,
 			taskStatus: session.task.taskStatus,
@@ -357,13 +357,13 @@ export class TaskSessionRegistry {
 			const lifecycle = this.getEffectiveLifecycle(session)
 			const taskAsk = task.taskAsk
 			const isTerminal = isTerminalLifecycle(lifecycle)
-			const projection: ClineMessageStatusProjection =
+			const projection: AlphaMessageStatusProjection =
 				session.lifecycleSnapshot && !this.lifecycleDegradedTaskIds.has(task.taskId)
 					? projectAgentLifecycleSnapshot(session.lifecycleSnapshot, {
 							taskAsk,
 							messages: task.clineMessages,
 						})
-					: projectClineMessageStatus({
+					: projectAlphaMessageStatus({
 							messages: task.clineMessages,
 							taskAsk,
 							taskStatus: task.taskStatus,

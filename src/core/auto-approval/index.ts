@@ -1,6 +1,6 @@
 import {
-	type ClineAsk,
-	type ClineSayTool,
+	type AlphaAsk,
+	type AlphaSayTool,
 	type McpServerUse,
 	type FollowUpData,
 	type ExtensionState,
@@ -8,7 +8,7 @@ import {
 	isNonBlockingAsk,
 } from "@alpha-code/types"
 
-import { ClineAskResponse } from "../../shared/WebviewMessage"
+import { AlphaAskResponse } from "../../shared/WebviewMessage"
 
 import { isWriteToolAction, isReadOnlyToolAction } from "./tools"
 import { isMcpToolAlwaysAllowed } from "./mcp"
@@ -43,12 +43,12 @@ export type CheckAutoApprovalResult =
 	| {
 			decision: "timeout"
 			timeout: number
-			fn: () => { askResponse: ClineAskResponse; text?: string; images?: string[] }
+			fn: () => { askResponse: AlphaAskResponse; text?: string; images?: string[] }
 	  }
 
 export interface CheckAutoApprovalInput {
 	state?: Pick<ExtensionState, AutoApprovalState | AutoApprovalStateOptions>
-	ask: ClineAsk
+	ask: AlphaAsk
 	text?: string
 	isProtected?: boolean
 	/** Trusted execution-boundary requirement; settings cannot turn this into automatic approval. */
@@ -138,7 +138,7 @@ export async function checkAutoApproval({
 
 	if (ask === "tool") {
 		if (requiresExplicitApproval) return { decision: "ask" }
-		let tool: ClineSayTool | undefined
+		let tool: AlphaSayTool | undefined
 
 		try {
 			tool = JSON.parse(text || "{}")
@@ -181,7 +181,7 @@ export async function checkAutoApproval({
 		}
 
 		const toolName: string = tool.tool
-		const subagentTool = tool as ClineSayTool & {
+		const subagentTool = tool as AlphaSayTool & {
 			agent?: { role?: string }
 			agents?: Array<{ role?: string }>
 		}

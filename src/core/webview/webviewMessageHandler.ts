@@ -2,14 +2,14 @@ import { safeWriteJson } from "../../utils/safeWriteJson"
 import * as path from "path"
 import * as os from "os"
 import * as fs from "fs/promises"
-import { getRooDirectoriesForCwd } from "../../services/roo-config/index.js"
+import { getLegacyConfigDirectoriesForCwd } from "../../services/config-paths/index.js"
 import pWaitFor from "p-wait-for"
 import * as vscode from "vscode"
 
 import {
 	type Language,
 	type GlobalState,
-	type ClineMessage,
+	type AlphaMessage,
 	type TelemetrySetting,
 	type ModelRecord,
 	type Command as SlashCommand,
@@ -19,7 +19,7 @@ import {
 	type ChatCommand,
 	type ChatCommandErrorCode,
 	TelemetryEventName,
-	RooCodeSettings,
+	AlphaCodeSettings,
 	ExperimentId,
 	checkoutDiffPayloadSchema,
 	checkoutRestorePayloadSchema,
@@ -31,7 +31,7 @@ import { TelemetryService } from "@alpha-code/telemetry"
 import { type ApiMessage } from "../task-persistence/apiMessages"
 import { saveTaskMessages } from "../task-persistence"
 
-import { ClineProvider } from "./ClineProvider"
+import { AlphaProvider } from "./AlphaProvider"
 import { handleCheckpointRestoreOperation, restartTaskFromMessage } from "./checkpointRestoreHandler"
 import { generateErrorDiagnostics } from "./diagnosticsHandler"
 import {
@@ -67,7 +67,7 @@ import { openMention } from "../mentions"
 import { searchTicketMentions } from "../../services/tickets/TicketChat"
 import { ticketTargetSchema } from "@alpha-code/types"
 import { resolveImageMentions } from "../mentions/resolveImageMentions"
-import { RooIgnoreController } from "../ignore/RooIgnoreController"
+import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
 import { getWorkspacePath } from "../../utils/path"
 import { isPathOutsideWorkspace } from "../../utils/pathUtils"
 import { Mode, defaultModeSlug } from "../../shared/modes"
@@ -108,7 +108,7 @@ function sanitizeCommandList(commands: unknown): string[] {
 }
 
 function getTaskForMessage(
-	provider: ClineProvider,
+	provider: AlphaProvider,
 	message: WebviewMessage,
 	options: { allowActiveFallback?: boolean } = {},
 ) {
@@ -119,7 +119,7 @@ function getTaskForMessage(
 	return options.allowActiveFallback ? provider.getCurrentTask() : undefined
 }
 
-function getRequiredTaskForMessage(provider: ClineProvider, message: WebviewMessage, action: string) {
+function getRequiredTaskForMessage(provider: AlphaProvider, message: WebviewMessage, action: string) {
 	const task = getTaskForMessage(provider, message)
 	if (!task) {
 		provider.log(`[webviewMessageHandler] Ignoring ${action}: missing or unknown taskId`)
@@ -135,7 +135,7 @@ function getRequiredTaskForMessage(provider: ClineProvider, message: WebviewMess
 }
 
 export const webviewMessageHandler = async (
-	provider: ClineProvider,
+	provider: AlphaProvider,
 	message: WebviewMessage,
 	marketplaceManager?: MarketplaceManager,
 ) => {
@@ -227,7 +227,7 @@ export const webviewMessageHandler = async (
 			text,
 			images,
 			cwd: currentTask?.cwd ?? getCurrentCwd(),
-			rooIgnoreController: currentTask?.rooIgnoreController,
+			alphaIgnoreController: currentTask?.alphaIgnoreController,
 			maxImageFileSize: state.maxImageFileSize,
 			maxTotalImageSize: state.maxTotalImageSize,
 		})
@@ -259,12 +259,12 @@ export const webviewMessageHandler = async (
 	 * this function prefers non-summary messages to ensure user operations
 	 * target the intended message rather than the summary.
 	 */
-	const findMessageIndices = (messageTs: number, currentCline: any) => {
+	const findMessageIndices = (messageTs: number, currentAlpha: any) => {
 		// Find the exact message by timestamp, not the first one after a cutoff
-		const messageIndex = currentCline.clineMessages.findIndex((msg: ClineMessage) => msg.ts === messageTs)
+		const messageIndex = currentAlpha.clineMessages.findIndex((msg: AlphaMessage) => msg.ts === messageTs)
 
 		// Find all matching API messages by timestamp
-		const allApiMatches = currentCline.apiConversationHistory
+		const allApiMatches = currentAlpha.apiConversationHistory
 			.map((msg: ApiMessage, idx: number) => ({ msg, idx }))
 			.filter(({ msg }: { msg: ApiMessage }) => msg.ts === messageTs)
 
@@ -279,9 +279,9 @@ export const webviewMessageHandler = async (
 	 * Fallback: find first API history index at or after a timestamp.
 	 * Used when the exact user message isn't present in apiConversationHistory (e.g., after condense).
 	 */
-	const findFirstApiIndexAtOrAfter = (ts: number, currentCline: any) => {
+	const findFirstApiIndexAtOrAfter = (ts: number, currentAlpha: any) => {
 		if (typeof ts !== "number") return -1
-		return currentCline.apiConversationHistory.findIndex(
+		return currentAlpha.apiConversationHistory.findIndex(
 			(msg: ApiMessage) => typeof msg?.ts === "number" && (msg.ts as number) >= ts,
 		)
 	}
@@ -291,19 +291,19 @@ export const webviewMessageHandler = async (
 	 */
 	const handleDeleteOperation = async (messageTs: number): Promise<void> => {
 		// Check if there's a checkpoint before this message
-		const currentCline = getTaskForMessage(provider, message, { allowActiveFallback: true })
+		const currentAlpha = getTaskForMessage(provider, message, { allowActiveFallback: true })
 		let hasCheckpoint = false
 
-		if (!currentCline) {
+		if (!currentAlpha) {
 			await vscode.window.showErrorMessage(t("common:errors.message.no_active_task_to_delete"))
 			return
 		}
 
-		const { messageIndex } = findMessageIndices(messageTs, currentCline)
+		const { messageIndex } = findMessageIndices(messageTs, currentAlpha)
 
 		if (messageIndex !== -1) {
 			// Find the last checkpoint before this message
-			const checkpoints = currentCline.clineMessages.filter(
+			const checkpoints = currentAlpha.clineMessages.filter(
 				(msg) => msg.say === "checkpoint_saved" && msg.ts > messageTs,
 			)
 			hasCheckpoint = checkpoints.length > 0
@@ -312,7 +312,7 @@ export const webviewMessageHandler = async (
 		// Send message to webview to show delete confirmation dialog
 		await provider.postMessageToWebview({
 			type: "showDeleteMessageDialog",
-			taskId: currentCline?.taskId,
+			taskId: currentAlpha?.taskId,
 			messageTs,
 			hasCheckpoint,
 		})
@@ -322,18 +322,18 @@ export const webviewMessageHandler = async (
 	 * Handles confirmed message deletion from webview dialog
 	 */
 	const handleDeleteMessageConfirm = async (messageTs: number, restoreCheckpoint?: boolean): Promise<void> => {
-		const currentCline = getTaskForMessage(provider, message, { allowActiveFallback: true })
-		if (!currentCline) {
-			console.error("[handleDeleteMessageConfirm] No current cline available")
+		const currentAlpha = getTaskForMessage(provider, message, { allowActiveFallback: true })
+		if (!currentAlpha) {
+			console.error("[handleDeleteMessageConfirm] No current task available")
 			return
 		}
 
-		const { messageIndex, apiConversationHistoryIndex } = findMessageIndices(messageTs, currentCline)
+		const { messageIndex, apiConversationHistoryIndex } = findMessageIndices(messageTs, currentAlpha)
 		// Determine API truncation index with timestamp fallback if exact match not found
 		let apiIndexToUse = apiConversationHistoryIndex
-		const tsThreshold = currentCline.clineMessages[messageIndex]?.ts
+		const tsThreshold = currentAlpha.clineMessages[messageIndex]?.ts
 		if (apiIndexToUse === -1 && typeof tsThreshold === "number") {
-			apiIndexToUse = findFirstApiIndexAtOrAfter(tsThreshold, currentCline)
+			apiIndexToUse = findFirstApiIndexAtOrAfter(tsThreshold, currentAlpha)
 		}
 
 		if (messageIndex === -1) {
@@ -342,12 +342,12 @@ export const webviewMessageHandler = async (
 		}
 
 		try {
-			const targetMessage = currentCline.clineMessages[messageIndex]
+			const targetMessage = currentAlpha.clineMessages[messageIndex]
 
 			// If checkpoint restoration is requested, find and restore to the last checkpoint before this message
 			if (restoreCheckpoint) {
 				// Find the last checkpoint before this message
-				const checkpoints = currentCline.clineMessages.filter(
+				const checkpoints = currentAlpha.clineMessages.filter(
 					(msg) => msg.say === "checkpoint_saved" && msg.ts > messageTs,
 				)
 
@@ -356,7 +356,7 @@ export const webviewMessageHandler = async (
 				if (nextCheckpoint && nextCheckpoint.text) {
 					await handleCheckpointRestoreOperation({
 						provider,
-						currentCline,
+						currentAlpha,
 						messageTs: targetMessage.ts!,
 						messageIndex,
 						checkpoint: { hash: nextCheckpoint.text },
@@ -372,27 +372,27 @@ export const webviewMessageHandler = async (
 				// Store checkpoints from messages that will be preserved
 				const preservedCheckpoints = new Map<number, any>()
 				for (let i = 0; i < messageIndex; i++) {
-					const msg = currentCline.clineMessages[i]
+					const msg = currentAlpha.clineMessages[i]
 					if (msg?.checkpoint && msg.ts) {
 						preservedCheckpoints.set(msg.ts, msg.checkpoint)
 					}
 				}
 
 				// Delete this message and all subsequent messages using MessageManager
-				await currentCline.messageManager.rewindToTimestamp(targetMessage.ts!, { includeTargetMessage: false })
+				await currentAlpha.messageManager.rewindToTimestamp(targetMessage.ts!, { includeTargetMessage: false })
 
 				// Restore checkpoint associations for preserved messages
 				for (const [ts, checkpoint] of preservedCheckpoints) {
-					const msgIndex = currentCline.clineMessages.findIndex((msg) => msg.ts === ts)
+					const msgIndex = currentAlpha.clineMessages.findIndex((msg) => msg.ts === ts)
 					if (msgIndex !== -1) {
-						currentCline.clineMessages[msgIndex].checkpoint = checkpoint
+						currentAlpha.clineMessages[msgIndex].checkpoint = checkpoint
 					}
 				}
 
 				// Save the updated messages with restored checkpoints
 				await saveTaskMessages({
-					messages: currentCline.clineMessages,
-					taskId: currentCline.taskId,
+					messages: currentAlpha.clineMessages,
+					taskId: currentAlpha.taskId,
 					globalStoragePath: provider.contextProxy.globalStorageUri.fsPath,
 				})
 
@@ -414,13 +414,13 @@ export const webviewMessageHandler = async (
 	 */
 	const handleEditOperation = async (messageTs: number, editedContent: string, images?: string[]): Promise<void> => {
 		// Check if there's a checkpoint before this message
-		const currentCline = getTaskForMessage(provider, message, { allowActiveFallback: true })
+		const currentAlpha = getTaskForMessage(provider, message, { allowActiveFallback: true })
 		let hasCheckpoint = false
-		if (currentCline) {
-			const { messageIndex } = findMessageIndices(messageTs, currentCline)
+		if (currentAlpha) {
+			const { messageIndex } = findMessageIndices(messageTs, currentAlpha)
 			if (messageIndex !== -1) {
 				// Find the last checkpoint before this message
-				const checkpoints = currentCline.clineMessages.filter(
+				const checkpoints = currentAlpha.clineMessages.filter(
 					(msg) => msg.say === "checkpoint_saved" && msg.ts > messageTs,
 				)
 
@@ -430,14 +430,14 @@ export const webviewMessageHandler = async (
 				return
 			}
 		} else {
-			console.log("[webviewMessageHandler] Edit - No currentCline available!")
+			console.log("[webviewMessageHandler] Edit - No current task available!")
 			return
 		}
 
 		// Send message to webview to show edit confirmation dialog
 		await provider.postMessageToWebview({
 			type: "showEditMessageDialog",
-			taskId: currentCline?.taskId,
+			taskId: currentAlpha?.taskId,
 			messageAction: message.messageAction,
 			messageTs,
 			text: editedContent,
@@ -455,14 +455,14 @@ export const webviewMessageHandler = async (
 		restoreCheckpoint?: boolean,
 		images?: string[],
 	): Promise<void> => {
-		const currentCline = getTaskForMessage(provider, message, { allowActiveFallback: true })
-		if (!currentCline) {
-			console.error("[handleEditMessageConfirm] No current cline available")
+		const currentAlpha = getTaskForMessage(provider, message, { allowActiveFallback: true })
+		if (!currentAlpha) {
+			console.error("[handleEditMessageConfirm] No current task available")
 			return
 		}
 
 		// Use findMessageIndices to find messages based on timestamp
-		const { messageIndex, apiConversationHistoryIndex } = findMessageIndices(messageTs, currentCline)
+		const { messageIndex, apiConversationHistoryIndex } = findMessageIndices(messageTs, currentAlpha)
 
 		if (messageIndex === -1) {
 			const errorMessage = t("common:errors.message.message_not_found", { messageTs })
@@ -473,9 +473,9 @@ export const webviewMessageHandler = async (
 
 		try {
 			// Older clients may address an assistant row. Replace its preceding prompt.
-			let targetMessage = currentCline.clineMessages[messageIndex]
+			let targetMessage = currentAlpha.clineMessages[messageIndex]
 			for (let i = messageIndex; i >= 0; i--) {
-				const candidate = currentCline.clineMessages[i]
+				const candidate = currentAlpha.clineMessages[i]
 				if (
 					candidate.type === "say" &&
 					(candidate.say === "user_feedback" || (i === 0 && candidate.say === "text"))
@@ -488,7 +488,7 @@ export const webviewMessageHandler = async (
 			// If checkpoint restoration is requested, find and restore to the last checkpoint before this message
 			if (restoreCheckpoint) {
 				// Find the last checkpoint before this message
-				const checkpoints = currentCline.clineMessages.filter(
+				const checkpoints = currentAlpha.clineMessages.filter(
 					(msg) => msg.say === "checkpoint_saved" && msg.ts > messageTs,
 				)
 
@@ -497,7 +497,7 @@ export const webviewMessageHandler = async (
 				if (nextCheckpoint && nextCheckpoint.text) {
 					await handleCheckpointRestoreOperation({
 						provider,
-						currentCline,
+						currentAlpha,
 						messageTs: targetMessage.ts!,
 						messageIndex,
 						checkpoint: { hash: nextCheckpoint.text },
@@ -517,7 +517,7 @@ export const webviewMessageHandler = async (
 				}
 			}
 
-			await restartTaskFromMessage(provider, currentCline, targetMessage.ts, editedContent, images)
+			await restartTaskFromMessage(provider, currentAlpha, targetMessage.ts, editedContent, images)
 		} catch (error) {
 			console.error("Error in edit message:", error)
 			vscode.window.showErrorMessage(
@@ -592,7 +592,7 @@ export const webviewMessageHandler = async (
 							// Only save if the current configuration has meaningful settings
 							// (e.g., API keys). This prevents saving a default "anthropic"
 							// fallback when no real config exists, which can happen during
-							// CLI initialization before provider settings are applied.
+							// initialization before provider settings are applied.
 							if (checkExistKey(apiConfiguration)) {
 								await provider.providerSettingsManager.saveConfig(
 									listApiConfig[0].name ?? "default",
@@ -819,7 +819,7 @@ export const webviewMessageHandler = async (
 						}
 					}
 
-					await provider.contextProxy.setValue(key as keyof RooCodeSettings, newValue)
+					await provider.contextProxy.setValue(key as keyof AlphaCodeSettings, newValue)
 				}
 
 				await provider.postStateToWebview()
@@ -1478,11 +1478,11 @@ export const webviewMessageHandler = async (
 			}
 
 			const workspaceFolder = getCurrentCwd()
-			const rooDir = path.join(workspaceFolder, ".roo")
-			const mcpPath = path.join(rooDir, "mcp.json")
+			const legacyConfigDir = path.join(workspaceFolder, ".roo")
+			const mcpPath = path.join(legacyConfigDir, "mcp.json")
 
 			try {
-				await fs.mkdir(rooDir, { recursive: true })
+				await fs.mkdir(legacyConfigDir, { recursive: true })
 				const exists = await fileExistsAtPath(mcpPath)
 
 				if (!exists) {
@@ -1763,7 +1763,7 @@ export const webviewMessageHandler = async (
 					const effectiveEnhancementApiConfigId = enhancementApiConfigIdOverride ?? enhancementApiConfigId
 					const effectiveIncludeTaskHistory = includeTaskHistoryOverride ?? includeTaskHistoryInEnhance
 
-					const currentCline = provider.getCurrentTask()
+					const currentAlpha = provider.getCurrentTask()
 
 					const result = await MessageEnhancer.enhanceMessage({
 						text: message.text,
@@ -1772,12 +1772,12 @@ export const webviewMessageHandler = async (
 						listApiConfigMeta,
 						enhancementApiConfigId: effectiveEnhancementApiConfigId,
 						includeTaskHistoryInEnhance: effectiveIncludeTaskHistory,
-						currentClineMessages: currentCline?.clineMessages,
+						currentAlphaMessages: currentAlpha?.clineMessages,
 						providerSettingsManager: provider.providerSettingsManager,
 					})
 
 					if (result.success && result.enhancedText) {
-						MessageEnhancer.captureTelemetry(currentCline?.taskId, effectiveIncludeTaskHistory)
+						MessageEnhancer.captureTelemetry(currentAlpha?.taskId, effectiveIncludeTaskHistory)
 						await provider.postMessageToWebview({ type: "enhancedPrompt", text: result.enhancedText })
 					} else {
 						throw new Error(result.error || "Unknown error")
@@ -1860,26 +1860,26 @@ export const webviewMessageHandler = async (
 					20, // Use default limit, as filtering is now done in the backend
 				)
 
-				// Get the RooIgnoreController from the current task, or create a new one
+				// Get the AlphaIgnoreController from the current task, or create a new one
 				const currentTask = provider.getCurrentTask()
-				let rooIgnoreController = currentTask?.rooIgnoreController
-				let tempController: RooIgnoreController | undefined
+				let alphaIgnoreController = currentTask?.alphaIgnoreController
+				let tempController: AlphaIgnoreController | undefined
 
 				// If no current task or no controller, create a temporary one
-				if (!rooIgnoreController) {
-					tempController = new RooIgnoreController(workspacePath)
+				if (!alphaIgnoreController) {
+					tempController = new AlphaIgnoreController(workspacePath)
 					await tempController.initialize()
-					rooIgnoreController = tempController
+					alphaIgnoreController = tempController
 				}
 
 				try {
 					// Get showRooIgnoredFiles setting from state
 					const { showRooIgnoredFiles = false } = (await provider.getState()) ?? {}
 
-					// Filter results using RooIgnoreController if showRooIgnoredFiles is false
+					// Filter results using AlphaIgnoreController if showRooIgnoredFiles is false
 					let filteredResults = results
-					if (!showRooIgnoredFiles && rooIgnoreController) {
-						const allowedPaths = rooIgnoreController.filterPaths(results.map((r) => r.path))
+					if (!showRooIgnoredFiles && alphaIgnoreController) {
+						const allowedPaths = alphaIgnoreController.filterPaths(results.map((r) => r.path))
 						filteredResults = results.filter((r) => allowedPaths.includes(r.path))
 					}
 
@@ -1913,7 +1913,7 @@ export const webviewMessageHandler = async (
 		}
 		case "refreshCustomTools": {
 			try {
-				const toolDirs = getRooDirectoriesForCwd(getCurrentCwd()).map((dir) => path.join(dir, "tools"))
+				const toolDirs = getLegacyConfigDirectoriesForCwd(getCurrentCwd()).map((dir) => path.join(dir, "tools"))
 				await customToolRegistry.loadFromDirectories(toolDirs)
 
 				await provider.postMessageToWebview({
@@ -3437,7 +3437,7 @@ export const webviewMessageHandler = async (
 				try {
 					const tmpDir = os.tmpdir()
 					const timestamp = Date.now()
-					const tempFileName = `roo-preview-${timestamp}.md`
+					const tempFileName = `alpha-preview-${timestamp}.md`
 					const tempFilePath = path.join(tmpDir, tempFileName)
 
 					await fs.writeFile(tempFilePath, message.text, "utf8")
@@ -3525,7 +3525,7 @@ export const webviewMessageHandler = async (
 				// Create a temporary file
 				const tmpDir = os.tmpdir()
 				const timestamp = Date.now()
-				const tempFileName = `roo-debug-${message.type === "openDebugApiHistory" ? "api" : "ui"}-${currentTask.taskId.slice(0, 8)}-${timestamp}.json`
+				const tempFileName = `alpha-debug-${message.type === "openDebugApiHistory" ? "api" : "ui"}-${currentTask.taskId.slice(0, 8)}-${timestamp}.json`
 				const tempFilePath = path.join(tmpDir, tempFileName)
 
 				await fs.writeFile(tempFilePath, prettifiedContent, "utf8")

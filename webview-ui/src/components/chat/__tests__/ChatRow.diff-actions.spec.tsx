@@ -1,7 +1,7 @@
 import React from "react"
 import { fireEvent, render, screen } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
 import { ChatRowContent } from "../ChatRow"
 
@@ -37,7 +37,7 @@ vi.mock("@src/components/common/CodeBlock", () => ({
 
 const queryClient = new QueryClient()
 
-function createToolAskMessage(toolPayload: Record<string, unknown>): ClineMessage {
+function createToolAskMessage(toolPayload: Record<string, unknown>): AlphaMessage {
 	return {
 		type: "ask",
 		ask: "tool",
@@ -47,7 +47,7 @@ function createToolAskMessage(toolPayload: Record<string, unknown>): ClineMessag
 	}
 }
 
-function renderChatRow(message: ClineMessage, isExpanded = false) {
+function renderChatRow(message: AlphaMessage, isExpanded = false) {
 	return render(
 		<ExtensionStateContextProvider>
 			<QueryClientProvider client={queryClient}>
@@ -74,7 +74,7 @@ describe("ChatRow - inline diff stats and actions", () => {
 	})
 
 	it("exposes sent-message actions as native buttons", () => {
-		const message: ClineMessage = {
+		const message: AlphaMessage = {
 			type: "say",
 			say: "user_feedback",
 			ts: 123,

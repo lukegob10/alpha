@@ -1,6 +1,6 @@
 import React, { useState } from "react"
 import { act, fireEvent, render, screen, within } from "@/utils/test-utils"
-import type { ClineMessage } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
 import { ChatRowContent } from "../ChatRow"
 
@@ -10,14 +10,14 @@ vi.mock("react-i18next", () => ({
 	initReactI18next: { type: "3rdParty", init: () => undefined },
 }))
 
-const toolMessage = (tool: Record<string, unknown>, ts = 1): ClineMessage => ({
+const toolMessage = (tool: Record<string, unknown>, ts = 1): AlphaMessage => ({
 	ts,
 	type: "ask",
 	ask: "tool",
 	text: JSON.stringify(tool),
 })
 
-function Row({ message }: { message: ClineMessage }) {
+function Row({ message }: { message: AlphaMessage }) {
 	const [expanded, setExpanded] = useState(false)
 	return (
 		<ChatRowContent
@@ -30,7 +30,7 @@ function Row({ message }: { message: ClineMessage }) {
 	)
 }
 
-function renderRows(messages: ClineMessage[]) {
+function renderRows(messages: AlphaMessage[]) {
 	return render(
 		<ExtensionStateContextProvider>
 			{messages.map((message) => (

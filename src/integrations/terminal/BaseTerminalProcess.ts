@@ -1,6 +1,6 @@
 import { EventEmitter } from "events"
 
-import type { RooTerminalProcess, RooTerminalProcessEvents, ExitCodeDetails, TerminalOutputReceipt } from "./types"
+import type { AlphaTerminalProcess, AlphaTerminalProcessEvents, ExitCodeDetails, TerminalOutputReceipt } from "./types"
 import { DEFAULT_TERMINAL_OUTPUT_RECEIPT_MAX_CHARACTERS } from "./types"
 
 type UnretrievedOutputRange = {
@@ -21,7 +21,10 @@ const EMPTY_TERMINAL_OUTPUT_RECEIPT: TerminalOutputReceipt = Object.freeze({
 	release: () => undefined,
 })
 
-export abstract class BaseTerminalProcess extends EventEmitter<RooTerminalProcessEvents> implements RooTerminalProcess {
+export abstract class BaseTerminalProcess
+	extends EventEmitter<AlphaTerminalProcessEvents>
+	implements AlphaTerminalProcess
+{
 	public executionId?: string
 	public command: string = ""
 

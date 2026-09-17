@@ -17,8 +17,8 @@ vi.mock("../../../../utils/path", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../../../utils/path")>()),
 	getWorkspacePathForContext: () => "/workspace",
 }))
-vi.mock("../../../../core/ignore/RooIgnoreController", () => ({
-	RooIgnoreController: class {
+vi.mock("../../../../core/ignore/AlphaIgnoreController", () => ({
+	AlphaIgnoreController: class {
 		async initialize() {}
 		filterPaths(paths: string[]) {
 			return paths
@@ -34,7 +34,7 @@ vi.mock("vscode", () => ({
 	Uri: { file: (filePath: string) => filePath },
 }))
 
-it("measures the Vertex indexing pipeline with 1,700 blocks and bounded requests", async () => {
+it.each(["gemini-embedding-001", "gemini-embedding-2"])("measures %s indexing with 1,700 blocks and bounded requests", async (model) => {
 	vi.useFakeTimers()
 	vi.setSystemTime(0)
 	try {
@@ -46,13 +46,14 @@ it("measures the Vertex indexing pipeline with 1,700 blocks and bounded requests
 		let firstIndexedMs: number | undefined
 		let parsingFinishedMs = 0
 		const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
-		embedContent.mockImplementation(async ({ contents }: { contents: string[] }) => {
+		embedContent.mockImplementation(async ({ contents }: { contents: Array<string | { parts: { text: string }[] }> }) => {
 			expect(contents).toHaveLength(1)
 			firstRequestMs ??= Date.now()
 			requests++
 			maxActive = Math.max(maxActive, ++active)
 			// Stable request costs depend on the input, not scheduling order.
-			const blockId = Number(contents[0].match(/block-(\d+)/)?.[1])
+			const text = typeof contents[0] === "string" ? contents[0] : contents[0].parts[0].text
+			const blockId = Number(text.match(/block-(\d+)/)?.[1])
 			await pause(blockId % 17 === 0 ? 400 : 100)
 			active--
 			return { embeddings: [{ values: [blockId, 1] }] }
@@ -89,8 +90,8 @@ it("measures the Vertex indexing pipeline with 1,700 blocks and bounded requests
 		const embedder = new VertexGeminiEmbedder({
 			apiProvider: "vertex",
 			projectId: "fixture",
-			location: "us-central1",
-		})
+			location: "global",
+		}, model)
 		const scanner = new DirectoryScanner(embedder, vectorStore, parser, cache, ignore(), 60)
 		const errors: Error[] = []
 		const run = scanner.scanDirectory(
@@ -106,6 +107,7 @@ it("measures the Vertex indexing pipeline with 1,700 blocks and bounded requests
 		console.info(
 			"VERTEX_INDEX_BENCHMARK",
 			JSON.stringify({
+				model,
 				blocks: indexed,
 				requests,
 				maxActive,
@@ -118,11 +120,11 @@ it("measures the Vertex indexing pipeline with 1,700 blocks and bounded requests
 		expect(errors).toEqual([])
 		expect(indexed).toBe(1700)
 		expect(requests).toBe(1700)
-		expect(maxActive).toBe(8)
+		expect(maxActive).toBe(model === "gemini-embedding-2" ? 16 : 8)
 		expect(firstRequestMs).toBeLessThan(parsingFinishedMs)
 		expect(firstIndexedMs).toBeLessThan(parsingFinishedMs)
-		expect(firstIndexedMs).toBeLessThan(3000)
-		expect(Date.now()).toBeLessThan(26000)
+		expect(firstIndexedMs).toBeLessThan(model === "gemini-embedding-2" ? 1800 : 3000)
+		expect(Date.now()).toBeLessThan(model === "gemini-embedding-2" ? 14000 : 26000)
 	} finally {
 		vi.useRealTimers()
 	}

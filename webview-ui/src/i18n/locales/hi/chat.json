@@ -237,7 +237,9 @@
 		"didViewTopLevelOutsideWorkspace": "Alpha ने इस निर्देशिका (कार्यक्षेत्र के बाहर) में शीर्ष स्तर की फ़ाइलें देखीं",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha इस निर्देशिका (कार्यक्षेत्र के बाहर) में सभी फ़ाइलों को पुनरावर्ती रूप से देखना चाहता है",
 		"didViewRecursiveOutsideWorkspace": "Alpha ने इस निर्देशिका (कार्यक्षेत्र के बाहर) में सभी फ़ाइलों को पुनरावर्ती रूप से देखा",
-		"wantsToViewMultipleDirectories": "Alpha कई डायरेक्ट्रीज़ देखना चाहता है"
+		"wantsToViewMultipleDirectories": "Alpha कई डायरेक्ट्रीज़ देखना चाहता है",
+		"wantsToSearchMultiple": "Alpha {{count}} फ़ाइल खोज चलाना चाहता है",
+		"didSearchMultiple": "Alpha ने {{count}} फ़ाइल खोज चलाई"
 	},
 	"commandOutput": "कमांड आउटपुट",
 	"commandExecution": {
@@ -260,7 +262,7 @@
 	"response": "प्रतिक्रिया",
 	"arguments": "आर्ग्युमेंट्स",
 	"text": {
-		"rooSaid": "रू ने कहा"
+		"rooSaid": "Alpha ने कहा"
 	},
 	"feedback": {
 		"youSaid": "आपने कहा"
@@ -481,7 +483,14 @@
 		"clickToEdit": "संदेश संपादित करने के लिए क्लिक करें",
 		"steering": "दिशा बदली जा रही है…",
 		"queueFailed": "संदेश कतार में नहीं जोड़ा जा सका। आपका ड्राफ़्ट अभी भी कंपोज़र में है।",
-		"steerFailed": "दिशा बदलना शुरू नहीं हो सका। कतार वाला संदेश अभी भी उपलब्ध है।"
+		"steerFailed": "दिशा बदलना शुरू नहीं हो सका। कतार वाला संदेश अभी भी उपलब्ध है।",
+		"edit": "संपादन करना",
+		"editTooltip": "इस पंक्तिबद्ध संदेश को संपादित करें",
+		"editing": "संगीतकार में संपादन",
+		"dragHandle": "पंक्तिबद्ध संदेश खींचें",
+		"dragTooltip": "इस पंक्तिबद्ध संदेश को पुन: व्यवस्थित करने के लिए खींचें",
+		"steer": "रास्ते पर लाना",
+		"steerTooltip": "इस कतारबद्ध संदेश को वर्तमान मोड़ में भेजें"
 	},
 	"modelResponseDelayed": "मॉडल के अगले अपडेट की प्रतीक्षा है। लंबे तर्क-विचार में समय लग सकता है।",
 	"slashCommand": {
@@ -519,5 +528,30 @@
 		"list_checks": "जाँचों की सूची देखें",
 		"merge_pull_request": "पुल अनुरोध मर्ज करें",
 		"comment": "टिप्पणी जोड़ें"
+	},
+	"agentLifecycle": {
+		"actions": {
+			"list_agents": "एजेंटों का निरीक्षण करें",
+			"wait_agent": "एजेंट अपडेट की प्रतीक्षा करें",
+			"unknown": "एजेंट कार्रवाई"
+		},
+		"failed": "{{action}} विफल: {{error}}",
+		"list": {
+			"running": "एजेंटों का निरीक्षण...",
+			"completed": "{{count}} एजेंट का निरीक्षण किया",
+			"completed_other": "{{count}} एजेंटों का निरीक्षण किया",
+			"mailbox": "{{count}} मेलबॉक्स अद्यतन",
+			"mailbox_other": "{{count}} मेलबॉक्स अद्यतन"
+		},
+		"wait": {
+			"running": "एजेंट अपडेट की प्रतीक्षा में...",
+			"noActiveAgents": "प्रतीक्षा करने के लिए कोई सक्रिय एजेंट नहीं है",
+			"cancelled": "एजेंट प्रतीक्षा रद्द कर दी गई",
+			"timedOut": "टाइमआउट से पहले कोई एजेंट अपडेट नहीं होता",
+			"alreadyDelivered": "कोई नया अपडेट नहीं; परिणाम पहले ही वितरित किये जा चुके हैं",
+			"received": "{{count}} एजेंट अपडेट प्राप्त हुआ",
+			"received_other": "{{count}} एजेंट अपडेट प्राप्त हुए",
+			"completed": "एजेंट का इंतजार पूरा हुआ"
+		}
 	}
 }

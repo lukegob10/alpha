@@ -76,14 +76,14 @@ vi.mock("../../../utils/path", () => {
 	}
 })
 
-// Mock fs/promises for RooIgnoreController
+// Mock fs/promises for AlphaIgnoreController
 vi.mock("fs/promises", () => ({
 	default: {
 		readFile: vi.fn().mockRejectedValue(new Error("File not found")), // Simulate no .gitignore/.alphaignore
 	},
 }))
 
-// Mock file utils for RooIgnoreController
+// Mock file utils for AlphaIgnoreController
 vi.mock("../../../utils/fs", () => ({
 	fileExistsAtPath: vi.fn().mockResolvedValue(false), // Simulate no .alphaignore file
 }))

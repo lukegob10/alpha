@@ -14,7 +14,7 @@ import { createHash } from "crypto"
 import { isBinaryFile } from "isbinaryfile"
 
 import type { ReadFileParams, ReadFileToolParams, FileEntry, LineRange } from "@alpha-code/types"
-import { isLegacyReadFileParams, type ClineSayTool } from "@alpha-code/types"
+import { isLegacyReadFileParams, type AlphaSayTool } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
@@ -206,10 +206,10 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				const relPath = fileResult.path
 
 				// RooIgnore validation
-				const accessAllowed = task.rooIgnoreController?.validateAccess(relPath)
+				const accessAllowed = task.alphaIgnoreController?.validateAccess(relPath)
 				if (accessAllowed === false) {
 					await task.say("rooignore_error", relPath)
-					const errorMsg = formatResponse.rooIgnoreError(relPath)
+					const errorMsg = formatResponse.alphaIgnoreError(relPath)
 					updateFileResult(fileResult, {
 						status: "blocked",
 						error: errorMsg,
@@ -559,7 +559,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				}
 			})
 
-			const completeMessage = JSON.stringify({ tool: "readFile", batchFiles } satisfies ClineSayTool)
+			const completeMessage = JSON.stringify({ tool: "readFile", batchFiles } satisfies AlphaSayTool)
 			// BatchFilePermission can return an objectResponse containing an
 			// independent decision for each displayed file. The normal approval
 			// callback intentionally reduces responses to a boolean, so use the
@@ -662,7 +662,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				content: getTaskDisplayPath(task, fullPath),
 				reason: lineSnippet,
 				startLine,
-			} satisfies ClineSayTool)
+			} satisfies AlphaSayTool)
 
 			const approval = await this.askForApproval(task, callbacks, completeMessage)
 			if (!approval || this.isCancelled(task, callbacks)) return false
@@ -834,7 +834,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		}
 
 		const fullPath = filePath ? path.resolve(task.cwd, filePath) : ""
-		const sharedMessageProps: ClineSayTool = {
+		const sharedMessageProps: AlphaSayTool = {
 			tool: "readFile",
 			path: getTaskReadablePath(task, filePath),
 			isOutsideWorkspace: filePath ? isTaskPathOutsideWorkspace(task, fullPath) : false,
@@ -842,7 +842,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		const partialMessage = JSON.stringify({
 			...sharedMessageProps,
 			content: undefined,
-		} satisfies ClineSayTool)
+		} satisfies AlphaSayTool)
 		await task.ask("tool", partialMessage, block.partial).catch(() => {})
 	}
 

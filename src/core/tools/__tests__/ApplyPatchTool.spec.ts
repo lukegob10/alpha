@@ -67,8 +67,8 @@ function createTask(
 		consecutiveMistakeCount: 0,
 		didEditFile: false,
 		didRejectTool: false,
-		rooIgnoreController: { validateAccess: vi.fn(validateAccess) },
-		rooProtectedController: { isWriteProtected: vi.fn(() => false) },
+		alphaIgnoreController: { validateAccess: vi.fn(validateAccess) },
+		alphaProtectedController: { isWriteProtected: vi.fn(() => false) },
 		providerRef: {
 			deref: () => ({
 				getState: vi.fn(async () => providerState),
@@ -808,7 +808,7 @@ describe("ApplyPatchTool deletion protection", () => {
 	})
 
 	it("deletes an unchanged file only after approval and preserves the protected approval flag", async () => {
-		vi.mocked(task.rooProtectedController!.isWriteProtected).mockReturnValue(true)
+		vi.mocked(task.alphaProtectedController!.isWriteProtected).mockReturnValue(true)
 		const approve = await waitForApproval()
 		expect(await realFs.readFile(target, "utf8")).toBe("approved content\n")
 		expect(mockedFs.unlink).not.toHaveBeenCalled()

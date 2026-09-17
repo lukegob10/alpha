@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
-import type { RooTerminal } from "../types"
+import type { AlphaTerminal } from "../types"
 import { ExecaTerminalProcess } from "../ExecaTerminalProcess"
 import { TerminalRegistry } from "../TerminalRegistry"
 import { executeCommandInTerminal } from "../../../core/tools/ExecuteCommandTool"
@@ -64,7 +64,7 @@ describe.skipIf(!supportedPlatform)("ExecaTerminalProcess process-tree integrati
 			getCurrentWorkingDirectory: () => path.dirname(fixturePath),
 			isClosed: () => false,
 			setActiveStream: () => undefined,
-		} as unknown as RooTerminal
+		} as unknown as AlphaTerminal
 		const terminalProcess = new ExecaTerminalProcess(terminal)
 		let fixturePids: FixturePids | undefined
 		let shellPid: number | undefined

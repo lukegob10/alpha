@@ -3,7 +3,7 @@ import psTree from "ps-tree"
 import process from "process"
 import { execFile, type ExecFileException } from "node:child_process"
 
-import type { RooTerminal } from "./types"
+import type { AlphaTerminal } from "./types"
 import { BaseTerminal } from "./BaseTerminal"
 import { BaseTerminalProcess } from "./BaseTerminalProcess"
 
@@ -11,14 +11,14 @@ const PROCESS_TERMINATION_TIMEOUT_MS = 5_000
 const PID_UPDATE_TIMEOUT_MS = 1_000
 
 export class ExecaTerminalProcess extends BaseTerminalProcess {
-	private terminalRef: WeakRef<RooTerminal>
+	private terminalRef: WeakRef<AlphaTerminal>
 	private aborted = false
 	private pid?: number
 	private subprocess?: ReturnType<typeof execa>
 	private pidUpdatePromise?: Promise<void>
 	private abortPromise?: Promise<void>
 
-	constructor(terminal: RooTerminal) {
+	constructor(terminal: AlphaTerminal) {
 		super()
 
 		this.terminalRef = new WeakRef(terminal)
@@ -28,7 +28,7 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 		})
 	}
 
-	public get terminal(): RooTerminal {
+	public get terminal(): AlphaTerminal {
 		const terminal = this.terminalRef.deref()
 
 		if (!terminal) {

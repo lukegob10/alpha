@@ -1,0 +1,4555 @@
+// pnpm --filter alpha test core/webview/__tests__/AlphaProvider.spec.ts
+
+import Anthropic from "@anthropic-ai/sdk"
+import EventEmitter from "events"
+import * as vscode from "vscode"
+import axios from "axios"
+import fs from "fs/promises"
+
+import {
+	type ProviderSettingsEntry,
+	type AlphaMessage,
+	type ExtensionMessage,
+	type ExtensionState,
+	agentLifecycleEventSchema,
+	agentLifecycleSnapshotSchema,
+	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
+	AlphaCodeEventName,
+	TaskLifecycleState,
+} from "@alpha-code/types"
+import { TelemetryService } from "@alpha-code/telemetry"
+
+import { defaultModeSlug } from "../../../shared/modes"
+import { experimentDefault } from "../../../shared/experiments"
+import { setTtsEnabled } from "../../../utils/tts"
+import { ContextProxy } from "../../config/ContextProxy"
+import { Task, TaskOptions } from "../../task/Task"
+import { safeWriteJson } from "../../../utils/safeWriteJson"
+import { openAiCodexOAuthManager } from "../../../integrations/openai-codex/oauth"
+
+import { AlphaProvider } from "../AlphaProvider"
+import { MessageManager } from "../../message-manager"
+
+// Mock setup must come before imports.
+vi.mock("../../prompts/sections/custom-instructions")
+
+vi.mock("p-wait-for", () => ({
+	__esModule: true,
+	default: vi.fn().mockResolvedValue(undefined),
+}))
+
+vi.mock("fs/promises", () => {
+	const transactionFiles = new Map<string, string>()
+	const transactionDirectories = new Set<string>()
+	const mockedFs = {
+		mkdir: vi.fn().mockImplementation(async (filePath: string) => {
+			if (filePath.includes(".transaction.lock")) transactionDirectories.add(filePath)
+		}),
+		writeFile: vi.fn().mockImplementation(async (filePath: string, data: unknown) => {
+			if (filePath.includes(".transaction.lock")) transactionFiles.set(filePath, String(data))
+		}),
+		readFile: vi.fn().mockImplementation((filePath: string) => {
+			if (transactionFiles.has(filePath)) return Promise.resolve(transactionFiles.get(filePath))
+			if (filePath.includes(".transaction.lock")) {
+				return Promise.reject(Object.assign(new Error("not found"), { code: "ENOENT" }))
+			}
+			return filePath.endsWith("agent_control.json")
+				? Promise.reject(Object.assign(new Error("not found"), { code: "ENOENT" }))
+				: Promise.resolve("")
+		}),
+		stat: vi.fn().mockImplementation(async (filePath: string) => {
+			if (!transactionDirectories.has(filePath)) {
+				throw Object.assign(new Error("not found"), { code: "ENOENT" })
+			}
+			return { isDirectory: () => true }
+		}),
+		rename: vi.fn().mockImplementation(async (sourcePath: string, destinationPath: string) => {
+			if (transactionDirectories.has(destinationPath)) {
+				throw Object.assign(new Error("not empty"), { code: "ENOTEMPTY" })
+			}
+			if (!transactionDirectories.delete(sourcePath)) {
+				throw Object.assign(new Error("not found"), { code: "ENOENT" })
+			}
+			transactionDirectories.add(destinationPath)
+			for (const [filePath, data] of [...transactionFiles]) {
+				if (!filePath.startsWith(sourcePath)) continue
+				transactionFiles.delete(filePath)
+				transactionFiles.set(`${destinationPath}${filePath.slice(sourcePath.length)}`, data)
+			}
+		}),
+		unlink: vi.fn().mockImplementation(async (filePath: string) => {
+			transactionFiles.delete(filePath)
+		}),
+		rmdir: vi.fn().mockImplementation(async (filePath: string) => {
+			transactionDirectories.delete(filePath)
+		}),
+	}
+	return { default: mockedFs, ...mockedFs }
+})
+
+// This suite replaces filesystem I/O with in-memory mocks. Keep the matching
+// cross-process lock boundary in-memory too; exercising the real lock against
+// the deliberately nonexistent test path would only test retry backoff.
+vi.mock("proper-lockfile", () => ({
+	lock: vi.fn().mockResolvedValue(vi.fn().mockResolvedValue(undefined)),
+	check: vi.fn().mockResolvedValue(true),
+}))
+
+vi.mock("axios", () => ({
+	default: {
+		get: vi.fn().mockResolvedValue({ data: { data: [] } }),
+		post: vi.fn(),
+	},
+	get: vi.fn().mockResolvedValue({ data: { data: [] } }),
+	post: vi.fn(),
+}))
+
+vi.mock("../../../utils/safeWriteJson")
+
+vi.mock("../../../utils/storage", () => ({
+	getSettingsDirectoryPath: vi.fn().mockResolvedValue("/test/settings/path"),
+	getTaskDirectoryPath: vi.fn().mockResolvedValue("/test/task/path"),
+	getGlobalStoragePath: vi.fn().mockResolvedValue("/test/storage/path"),
+}))
+
+vi.mock("@modelcontextprotocol/sdk/types.js", () => ({
+	CallToolResultSchema: {},
+	ListResourcesResultSchema: {},
+	ListResourceTemplatesResultSchema: {},
+	ListToolsResultSchema: {},
+	ReadResourceResultSchema: {},
+	ErrorCode: {
+		InvalidRequest: "InvalidRequest",
+		MethodNotFound: "MethodNotFound",
+		InternalError: "InternalError",
+	},
+	McpError: class McpError extends Error {
+		code: string
+		constructor(code: string, message: string) {
+			super(message)
+			this.code = code
+			this.name = "McpError"
+		}
+	},
+}))
+
+// Remove duplicate mock - it's already defined below.
+
+const mockAddCustomInstructions = vi.fn().mockResolvedValue("Combined instructions")
+
+;(vi.mocked(await import("../../prompts/sections/custom-instructions")) as any).addCustomInstructions =
+	mockAddCustomInstructions
+
+vi.mock("delay", () => {
+	const delayFn = (_ms: number) => Promise.resolve()
+	delayFn.createDelay = () => delayFn
+	delayFn.reject = () => Promise.reject(new Error("Delay rejected"))
+	delayFn.range = () => Promise.resolve()
+	return { default: delayFn }
+})
+
+// MCP-related modules are mocked once above (lines 87-109).
+
+vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
+	Client: vi.fn().mockImplementation(() => ({
+		connect: vi.fn().mockResolvedValue(undefined),
+		close: vi.fn().mockResolvedValue(undefined),
+		listTools: vi.fn().mockResolvedValue({ tools: [] }),
+		callTool: vi.fn().mockResolvedValue({ content: [] }),
+	})),
+}))
+
+vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => ({
+	StdioClientTransport: vi.fn().mockImplementation(() => ({
+		connect: vi.fn().mockResolvedValue(undefined),
+		close: vi.fn().mockResolvedValue(undefined),
+	})),
+}))
+
+vi.mock("vscode", () => ({
+	ExtensionContext: vi.fn(),
+	OutputChannel: vi.fn(),
+	WebviewView: vi.fn(),
+	Uri: {
+		joinPath: vi.fn(),
+		file: vi.fn(),
+	},
+	CodeActionKind: {
+		QuickFix: { value: "quickfix" },
+		RefactorRewrite: { value: "refactor.rewrite" },
+	},
+	commands: {
+		executeCommand: vi.fn().mockResolvedValue(undefined),
+	},
+	window: {
+		showInformationMessage: vi.fn(),
+		showWarningMessage: vi.fn(),
+		showErrorMessage: vi.fn(),
+		onDidChangeActiveTextEditor: vi.fn(() => ({ dispose: vi.fn() })),
+	},
+	workspace: {
+		getConfiguration: vi.fn().mockReturnValue({
+			get: vi.fn().mockReturnValue([]),
+			inspect: vi.fn().mockReturnValue({}),
+			update: vi.fn(),
+		}),
+		onDidChangeConfiguration: vi.fn().mockImplementation(() => ({
+			dispose: vi.fn(),
+		})),
+		onDidSaveTextDocument: vi.fn(() => ({ dispose: vi.fn() })),
+		onDidChangeTextDocument: vi.fn(() => ({ dispose: vi.fn() })),
+		onDidOpenTextDocument: vi.fn(() => ({ dispose: vi.fn() })),
+		onDidCloseTextDocument: vi.fn(() => ({ dispose: vi.fn() })),
+	},
+	env: {
+		uriScheme: "vscode",
+		language: "en",
+		appName: "Visual Studio Code",
+	},
+	ExtensionMode: {
+		Production: 1,
+		Development: 2,
+		Test: 3,
+	},
+	version: "1.85.0",
+}))
+
+vi.mock("../../../utils/tts", () => ({
+	setTtsEnabled: vi.fn(),
+	setTtsSpeed: vi.fn(),
+}))
+
+vi.mock("../../../api", () => ({
+	buildApiHandler: vi.fn(),
+}))
+
+vi.mock("../../prompts/system", () => ({
+	SYSTEM_PROMPT: vi.fn().mockImplementation(async () => "mocked system prompt"),
+	codeMode: "code",
+}))
+
+vi.mock("../../../integrations/workspace/WorkspaceTracker", () => {
+	return {
+		default: vi.fn().mockImplementation(() => ({
+			initializeFilePaths: vi.fn().mockResolvedValue(undefined),
+			dispose: vi.fn(),
+		})),
+	}
+})
+
+vi.mock("../../task/Task", () => ({
+	Task: vi.fn().mockImplementation((options: any) => ({
+		api: undefined,
+		abortTask: vi.fn(),
+		handleWebviewAskResponse: vi.fn(),
+		clineMessages: [],
+		apiConversationHistory: [],
+		overwriteAlphaMessages: vi.fn(),
+		overwriteApiConversationHistory: vi.fn(),
+		getTaskNumber: vi.fn().mockReturnValue(0),
+		setTaskNumber: vi.fn(),
+		setParentTask: vi.fn(),
+		setRootTask: vi.fn(),
+		taskId: options?.historyItem?.id || "test-task-id",
+		emit: vi.fn(),
+	})),
+}))
+
+vi.mock("../../../integrations/misc/extract-text", () => ({
+	extractTextFromFile: vi.fn().mockImplementation(async (_filePath: string) => {
+		const content = "const x = 1;\nconst y = 2;\nconst z = 3;"
+		const lines = content.split("\n")
+		return lines.map((line, index) => `${index + 1} | ${line}`).join("\n")
+	}),
+}))
+
+vi.mock("../../../api/providers/fetchers/modelCache", () => ({
+	getModels: vi.fn().mockResolvedValue({}),
+	flushModels: vi.fn(),
+	getModelsFromCache: vi.fn().mockReturnValue(undefined),
+}))
+
+vi.mock("../../../shared/modes", () => ({
+	modes: [
+		{
+			slug: "code",
+			name: "Code Mode",
+			roleDefinition: "You are a code assistant",
+			groups: ["read", "edit"],
+		},
+		{
+			slug: "architect",
+			name: "Architect Mode",
+			roleDefinition: "You are an architect",
+			groups: ["read", "edit"],
+		},
+		{
+			slug: "ask",
+			name: "Ask Mode",
+			roleDefinition: "You are a helpful assistant",
+			groups: ["read"],
+		},
+	],
+	getModeBySlug: vi.fn().mockReturnValue({
+		slug: "code",
+		name: "Code Mode",
+		roleDefinition: "You are a code assistant",
+		groups: ["read", "edit"],
+	}),
+	getGroupName: vi.fn().mockImplementation((group: string) => {
+		// Return appropriate group names for different tool groups
+		switch (group) {
+			case "read":
+				return "Read Tools"
+			case "edit":
+				return "Edit Tools"
+			case "mcp":
+				return "MCP Tools"
+			default:
+				return "General Tools"
+		}
+	}),
+	defaultModeSlug: "code",
+}))
+
+vi.mock("../../prompts/system", () => ({
+	SYSTEM_PROMPT: vi.fn().mockResolvedValue("mocked system prompt"),
+	codeMode: "code",
+}))
+
+vi.mock("../../../api", () => ({
+	buildApiHandler: vi.fn().mockReturnValue({
+		getModel: vi.fn().mockReturnValue({
+			id: "claude-3-sonnet",
+		}),
+	}),
+}))
+
+vi.mock("../../../integrations/misc/extract-text", () => ({
+	extractTextFromFile: vi.fn().mockImplementation(async (_filePath: string) => {
+		const content = "const x = 1;\nconst y = 2;\nconst z = 3;"
+		const lines = content.split("\n")
+		return lines.map((line, index) => `${index + 1} | ${line}`).join("\n")
+	}),
+}))
+
+vi.mock("../../../api/providers/fetchers/modelCache", () => ({
+	getModels: vi.fn().mockResolvedValue({}),
+	flushModels: vi.fn(),
+	getModelsFromCache: vi.fn().mockReturnValue(undefined),
+}))
+
+vi.mock("../diff/strategies/multi-search-replace", () => ({
+	MultiSearchReplaceDiffStrategy: vi.fn().mockImplementation(() => ({
+		getToolDescription: () => "test",
+		getName: () => "test-strategy",
+		applyDiff: vi.fn(),
+	})),
+}))
+
+afterAll(() => {
+	vi.restoreAllMocks()
+})
+
+describe("AlphaProvider", () => {
+	beforeAll(() => {
+		vi.mocked(Task).mockImplementation((options: any) => {
+			const task: any = {
+				api: undefined,
+				abortTask: vi.fn(),
+				handleWebviewAskResponse: vi.fn(),
+				clineMessages: [],
+				apiConversationHistory: [],
+				overwriteAlphaMessages: vi.fn(),
+				overwriteApiConversationHistory: vi.fn(),
+				getTaskNumber: vi.fn().mockReturnValue(0),
+				setTaskNumber: vi.fn(),
+				setParentTask: vi.fn(),
+				setRootTask: vi.fn(),
+				taskId: options?.historyItem?.id || "test-task-id",
+				emit: vi.fn(),
+			}
+
+			Object.defineProperty(task, "messageManager", {
+				get: () => new MessageManager(task),
+			})
+
+			return task
+		})
+	})
+
+	let defaultTaskOptions: TaskOptions
+
+	let provider: AlphaProvider
+	let mockContext: vscode.ExtensionContext
+	let mockOutputChannel: vscode.OutputChannel
+	let mockWebviewView: vscode.WebviewView
+	let mockPostMessage: any
+	let updateGlobalStateSpy: any
+
+	beforeEach(() => {
+		vi.clearAllMocks()
+
+		if (!TelemetryService.hasInstance()) {
+			TelemetryService.createInstance([])
+		}
+
+		const globalState: Record<string, string | undefined> = {
+			mode: "architect",
+			currentApiConfigName: "current-config",
+		}
+
+		const secrets: Record<string, string | undefined> = {}
+
+		mockContext = {
+			extensionPath: "/test/path",
+			extensionUri: {} as vscode.Uri,
+			globalState: {
+				get: vi.fn().mockImplementation((key: string) => globalState[key]),
+				update: vi
+					.fn()
+					.mockImplementation((key: string, value: string | undefined) => (globalState[key] = value)),
+				keys: vi.fn().mockImplementation(() => Object.keys(globalState)),
+			},
+			secrets: {
+				get: vi.fn().mockImplementation((key: string) => secrets[key]),
+				store: vi.fn().mockImplementation((key: string, value: string | undefined) => (secrets[key] = value)),
+				delete: vi.fn().mockImplementation((key: string) => delete secrets[key]),
+			},
+			workspaceState: {
+				get: vi.fn().mockReturnValue(undefined),
+				update: vi.fn().mockResolvedValue(undefined),
+				keys: vi.fn().mockReturnValue([]),
+			},
+			subscriptions: [],
+			extension: {
+				packageJSON: { version: "1.0.0" },
+			},
+			globalStorageUri: {
+				fsPath: "/test/storage/path",
+			},
+		} as unknown as vscode.ExtensionContext
+
+		// Mock CustomModesManager
+		const mockCustomModesManager = {
+			updateCustomMode: vi.fn().mockResolvedValue(undefined),
+			getCustomModes: vi.fn().mockResolvedValue([]),
+			dispose: vi.fn(),
+		}
+
+		// Mock output channel
+		mockOutputChannel = {
+			appendLine: vi.fn(),
+			clear: vi.fn(),
+			dispose: vi.fn(),
+		} as unknown as vscode.OutputChannel
+
+		// Mock webview
+		mockPostMessage = vi.fn()
+
+		mockWebviewView = {
+			webview: {
+				postMessage: mockPostMessage,
+				html: "",
+				options: {},
+				onDidReceiveMessage: vi.fn(),
+				asWebviewUri: vi.fn(),
+				cspSource: "vscode-webview://test-csp-source",
+			},
+			visible: true,
+			onDidDispose: vi.fn().mockImplementation((callback) => {
+				callback()
+				return { dispose: vi.fn() }
+			}),
+			onDidChangeVisibility: vi.fn().mockImplementation(() => ({ dispose: vi.fn() })),
+		} as unknown as vscode.WebviewView
+
+		provider = new AlphaProvider(mockContext, mockOutputChannel, "sidebar", new ContextProxy(mockContext))
+
+		defaultTaskOptions = {
+			provider,
+			apiConfiguration: {
+				apiProvider: "openrouter",
+			},
+		}
+
+		// @ts-ignore - Access private property for testing
+		updateGlobalStateSpy = vi.spyOn(provider.contextProxy, "setValue")
+
+		// @ts-ignore - Accessing private property for testing.
+		provider.customModesManager = mockCustomModesManager
+
+		// Mock getMcpHub method for generateSystemPrompt
+		provider.getMcpHub = vi.fn().mockReturnValue({
+			listTools: vi.fn().mockResolvedValue([]),
+			callTool: vi.fn().mockResolvedValue({ content: [] }),
+			listResources: vi.fn().mockResolvedValue([]),
+			readResource: vi.fn().mockResolvedValue({ contents: [] }),
+			getAllServers: vi.fn().mockReturnValue([]),
+		})
+	})
+
+	test("constructor initializes correctly", () => {
+		expect(provider).toBeInstanceOf(AlphaProvider)
+		// Since getVisibleInstance returns the last instance where view.visible is true
+		// @ts-ignore - accessing private property for testing
+		provider.view = mockWebviewView
+		expect(AlphaProvider.getVisibleInstance()).toBe(provider)
+	})
+
+	test("defers managed-child completion publication until the durable lifecycle acknowledgement", () => {
+		const child = Object.assign(new EventEmitter(), {
+			taskId: "managed-child",
+			taskKind: "subagent" as const,
+		}) as Task
+		const prepareRootCompletion = vi.spyOn(provider, "prepareTaskCompletionLifecycle")
+		const providerCompletion = vi.fn()
+		provider.on(AlphaCodeEventName.TaskCompleted, providerCompletion)
+		const tokenUsage = {
+			totalTokensIn: 3,
+			totalTokensOut: 0,
+			totalCost: 0,
+			contextTokens: 0,
+		}
+
+		;(provider as any).taskCreationCallback(child)
+		child.emit(AlphaCodeEventName.TaskCompleted, child.taskId, tokenUsage, {})
+
+		expect(prepareRootCompletion).not.toHaveBeenCalled()
+		expect(providerCompletion).not.toHaveBeenCalled()
+		expect((provider as any).pendingManagedTaskCompletions.get(child.taskId)).toEqual({
+			tokenUsage,
+			toolUsage: {},
+		})
+		;(provider as any).publishDurableManagedTaskCompletion(child.taskId)
+
+		expect(providerCompletion).toHaveBeenCalledWith(child.taskId, tokenUsage, {})
+	})
+
+	test("does not let an already-prepared completion overwrite an immediate primary-task resume", async () => {
+		const primary = Object.assign(new EventEmitter(), {
+			taskId: "completed-primary",
+			taskKind: "primary" as const,
+		}) as Task
+		const lifecycleOrder: TaskLifecycleState[] = []
+		let releaseDuplicateCompletion!: () => void
+		const duplicateCompletion = new Promise<void>((resolve) => {
+			releaseDuplicateCompletion = resolve
+		})
+		const prepareRootCompletion = vi
+			.spyOn(provider, "prepareTaskCompletionLifecycle")
+			.mockReturnValue(duplicateCompletion)
+		;(provider as any).markTaskLifecycle = vi.fn((_taskId: string, lifecycle: TaskLifecycleState) => {
+			lifecycleOrder.push(lifecycle)
+		})
+		;(provider as any).updateAgentControlRootStatus = vi.fn().mockResolvedValue(undefined)
+		;(provider as any).taskCreationCallback(primary)
+		primary.emit(
+			AlphaCodeEventName.TaskCompleted,
+			primary.taskId,
+			{ totalTokensIn: 1, totalTokensOut: 0, totalCost: 0, contextTokens: 1 },
+			{},
+		)
+		primary.emit(AlphaCodeEventName.TaskActive, primary.taskId)
+		releaseDuplicateCompletion()
+		await duplicateCompletion
+		await Promise.resolve()
+
+		expect(prepareRootCompletion).not.toHaveBeenCalled()
+		expect(lifecycleOrder).toEqual([TaskLifecycleState.Completed, TaskLifecycleState.Running])
+	})
+
+	test("serializes a delayed running write before the root completion barrier", async () => {
+		const taskId = "serialized-root-completion"
+		const writes: string[] = []
+		let releaseRunning!: () => void
+		const runningBlocked = new Promise<void>((resolve) => {
+			releaseRunning = resolve
+		})
+		vi.spyOn(provider as any, "persistAgentControlRootStatus").mockImplementation(async (...args: unknown[]) => {
+			const [candidateTaskId, status] = args as [string, string]
+			if (candidateTaskId === taskId && status === "running") await runningBlocked
+			writes.push(status)
+		})
+		vi.spyOn(provider as any, "prepareTaskCompletionLifecycleWrite").mockImplementation(async () => {
+			writes.push("completed")
+		})
+
+		const runningWrite = (provider as any).updateAgentControlRootStatus(taskId, "running")
+		const completionWrite = provider.prepareTaskCompletionLifecycle(taskId)
+		releaseRunning()
+		await Promise.all([runningWrite, completionWrite])
+
+		expect(writes).toEqual(["running", "completed"])
+	})
+
+	test("shows the v2.1.45 announcement once per installation", async () => {
+		const announcementId = "september-2026-v2.1.45-harness-quality-ux"
+
+		expect(provider.latestAnnouncementId).toBe(announcementId)
+
+		await provider.contextProxy.setValue("telemetrySetting", "enabled")
+		await provider.contextProxy.setValue("lastShownAnnouncementId", "july-2026-v2.0.7-chat-scroll-lifecycle")
+		expect((await provider.getStateToPostToWebview()).shouldShowAnnouncement).toBe(true)
+
+		await provider.contextProxy.setValue("lastShownAnnouncementId", announcementId)
+		expect((await provider.getStateToPostToWebview()).shouldShowAnnouncement).toBe(false)
+	})
+
+	test("resolveWebviewView sets up webview correctly", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+
+		expect(mockWebviewView.webview.options).toEqual({
+			enableScripts: true,
+			localResourceRoots: [mockContext.extensionUri],
+		})
+
+		expect(mockWebviewView.webview.html).toContain("<!DOCTYPE html>")
+	})
+
+	test("resolveWebviewView sets up webview correctly in development mode even if local server is not running", async () => {
+		provider = new AlphaProvider(
+			{ ...mockContext, extensionMode: vscode.ExtensionMode.Development },
+			mockOutputChannel,
+			"sidebar",
+			new ContextProxy(mockContext),
+		)
+		;(axios.get as any).mockRejectedValueOnce(new Error("Network error"))
+
+		await provider.resolveWebviewView(mockWebviewView)
+
+		expect(mockWebviewView.webview.options).toEqual({
+			enableScripts: true,
+			localResourceRoots: [mockContext.extensionUri],
+		})
+
+		expect(mockWebviewView.webview.html).toContain("<!DOCTYPE html>")
+
+		// Verify Content Security Policy contains the necessary PostHog domains
+		expect(mockWebviewView.webview.html).toContain(
+			"connect-src vscode-webview://test-csp-source https://openrouter.ai https://api.requesty.ai",
+		)
+
+		// Extract the script-src directive section and verify required security elements
+		const html = mockWebviewView.webview.html
+		const scriptSrcMatch = html.match(/script-src[^;]*;/)
+		expect(scriptSrcMatch).not.toBeNull()
+		expect(scriptSrcMatch![0]).toContain("'nonce-")
+		// Verify wasm-unsafe-eval is present for Shiki syntax highlighting
+		expect(scriptSrcMatch![0]).toContain("'wasm-unsafe-eval'")
+	})
+
+	test("postMessageToWebview sends message to webview", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+
+		const mockState: ExtensionState = {
+			version: "1.0.0",
+			clineMessages: [],
+			taskHistory: [],
+			shouldShowAnnouncement: false,
+			apiConfiguration: {
+				apiProvider: "openrouter",
+			},
+			customInstructions: undefined,
+			alwaysAllowReadOnly: false,
+			alwaysAllowReadOnlyOutsideWorkspace: false,
+			alwaysAllowWrite: false,
+			codebaseIndexConfig: {
+				codebaseIndexEnabled: true,
+				codebaseIndexQdrantUrl: "",
+				codebaseIndexEmbedderProvider: "openai",
+				codebaseIndexEmbedderBaseUrl: "",
+				codebaseIndexEmbedderModelId: "",
+			},
+			alwaysAllowWriteOutsideWorkspace: false,
+			alwaysAllowExecute: false,
+			alwaysAllowMcp: false,
+			uriScheme: "vscode",
+			soundEnabled: false,
+			ttsEnabled: false,
+			enableCheckpoints: false,
+			writeDelayMs: 1000,
+			mcpEnabled: true,
+			mode: defaultModeSlug,
+			customModes: [],
+			experiments: experimentDefault,
+			maxOpenTabsContext: 20,
+			maxWorkspaceFiles: 200,
+			maxConcurrentTasks: 1,
+			telemetrySetting: "unset",
+			showRooIgnoredFiles: false,
+			enableSubfolderRules: false,
+			renderContext: "sidebar",
+			maxImageFileSize: 5,
+			maxTotalImageSize: 20,
+			autoCondenseContext: true,
+			autoCondenseContextPercent: 100,
+			profileThresholds: {},
+			hasOpenedModeSelector: false,
+			diagnosticsEnabled: true,
+			openRouterImageApiKey: undefined,
+			openRouterImageGenerationSelectedModel: undefined,
+			checkpointTimeout: DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
+		}
+
+		const message: ExtensionMessage = {
+			type: "state",
+			state: mockState,
+		}
+		await provider.postMessageToWebview(message)
+
+		expect(mockPostMessage).toHaveBeenCalledWith(message)
+	})
+
+	test("postMessageToWebview does not throw when webview is disposed", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+
+		// Simulate postMessage throwing after webview disposal
+		mockPostMessage.mockRejectedValueOnce(new Error("Webview is disposed"))
+
+		const message: ExtensionMessage = { type: "action", action: "chatButtonClicked" }
+
+		// Should not throw
+		await expect(provider.postMessageToWebview(message)).resolves.toBeUndefined()
+	})
+
+	test("postMessageToWebview skips postMessage after dispose", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+
+		await provider.dispose()
+		mockPostMessage.mockClear()
+
+		const message: ExtensionMessage = { type: "action", action: "chatButtonClicked" }
+		await provider.postMessageToWebview(message)
+
+		expect(mockPostMessage).not.toHaveBeenCalled()
+	})
+
+	test("assigns state sequence numbers by invocation order and awaits delivery", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		mockPostMessage.mockClear()
+
+		let resolveFirstState!: (state: ExtensionState) => void
+		const firstState = new Promise<ExtensionState>((resolve) => {
+			resolveFirstState = resolve
+		})
+		const secondState = { clineMessages: [], taskHistory: [] } as unknown as ExtensionState
+		const firstSnapshot = { clineMessages: [], taskHistory: [] } as unknown as ExtensionState
+		vi.spyOn(provider, "getStateToPostToWebview").mockReturnValueOnce(firstState).mockResolvedValueOnce(secondState)
+
+		let releaseSecondDelivery!: () => void
+		const secondDelivery = new Promise<void>((resolve) => {
+			releaseSecondDelivery = resolve
+		})
+		mockPostMessage.mockImplementationOnce(() => secondDelivery)
+
+		const firstPost = provider.postStateToWebview()
+		const secondPost = provider.postStateToWebview()
+		let secondSettled = false
+		void secondPost.then(() => {
+			secondSettled = true
+		})
+
+		await vi.waitFor(() => expect(mockPostMessage).toHaveBeenCalledTimes(1))
+		expect(mockPostMessage.mock.calls[0][0].state.clineMessagesSeq).toBe(2)
+		expect(secondSettled).toBe(false)
+
+		releaseSecondDelivery()
+		await secondPost
+		resolveFirstState(firstSnapshot)
+		await firstPost
+
+		expect(mockPostMessage.mock.calls[1][0].state.clineMessagesSeq).toBe(1)
+	})
+
+	test("publishes a task transition without building full extension state", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		mockPostMessage.mockClear()
+		const getFullState = vi.spyOn(provider, "getStateToPostToWebview")
+
+		await provider.postTaskStateToWebview({ clearManagedAgentTree: true })
+
+		expect(getFullState).not.toHaveBeenCalled()
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "state",
+			state: expect.objectContaining({
+				currentView: { type: "newTaskDraft" },
+				clineMessages: [],
+				mode: "code",
+				managedAgentTree: undefined,
+			}),
+		})
+	})
+
+	test("acknowledges a live task switch before the full state refresh settles", async () => {
+		const firstTask = Object.assign(new Task(defaultTaskOptions), { taskId: "first-task" })
+		const secondTask = Object.assign(new Task(defaultTaskOptions), { taskId: "second-task" })
+		await provider.addTaskToStack(firstTask)
+		await provider.addTaskToStack(secondTask)
+
+		const postTaskState = vi.spyOn(provider, "postTaskStateToWebview").mockResolvedValue(undefined)
+		let releaseFullState!: () => void
+		const fullStatePending = new Promise<void>((resolve) => {
+			releaseFullState = resolve
+		})
+		const postTranscriptState = vi.spyOn(provider, "postStateToWebview")
+		const postBackgroundState = vi
+			.spyOn(provider, "postStateToWebviewWithoutAlphaMessages")
+			.mockReturnValue(fullStatePending)
+
+		await expect(provider.focusTask(firstTask.taskId)).resolves.toBe(true)
+
+		expect(provider.getActiveTask()).toBe(firstTask)
+		expect(postTaskState).toHaveBeenCalledWith({ clearManagedAgentTree: true })
+		expect(postBackgroundState).toHaveBeenCalledOnce()
+		expect(postTranscriptState).not.toHaveBeenCalled()
+
+		releaseFullState()
+		await fullStatePending
+	})
+
+	test("publishes incremental task messages and queues without building full extension state", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		mockPostMessage.mockClear()
+		const getFullState = vi.spyOn(provider, "getStateToPostToWebview")
+		const message = { ts: 1, type: "say", say: "text", text: "hello" } as const
+
+		await provider.postTaskMessageToWebview("messageCreated", "task-1", message)
+		vi.spyOn(provider, "isTaskOnScreen").mockReturnValue(true)
+		await provider.postTaskQueueToWebview("task-1", [
+			{ id: "queued-1", text: "continue", images: [], timestamp: 2 },
+		])
+		await provider.postTaskTodosToWebview("task-1", [
+			{ id: "todo-1", content: "Verify performance", status: "in_progress" },
+		])
+
+		expect(getFullState).not.toHaveBeenCalled()
+		expect(mockPostMessage).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({
+				type: "messageCreated",
+				taskId: "task-1",
+				clineMessage: message,
+				clineMessagesSeq: expect.any(Number),
+			}),
+		)
+		expect(mockPostMessage).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				type: "state",
+				state: expect.objectContaining({
+					currentTaskId: "task-1",
+					messageQueue: [expect.objectContaining({ text: "continue" })],
+					messageQueueSeq: expect.any(Number),
+				}),
+			}),
+		)
+		expect(mockPostMessage).toHaveBeenNthCalledWith(
+			3,
+			expect.objectContaining({
+				type: "state",
+				state: expect.objectContaining({
+					currentTaskId: "task-1",
+					currentTaskTodos: [expect.objectContaining({ content: "Verify performance" })],
+					currentTaskTodosSeq: expect.any(Number),
+				}),
+			}),
+		)
+	})
+
+	test("processes webview messages in arrival order", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		let releaseBlankTransition!: () => void
+		const blankTransition = new Promise<void>((resolve) => {
+			releaseBlankTransition = resolve
+		})
+		const startBlankTask = vi.spyOn(provider, "startBlankTask").mockReturnValue(blankTransition)
+		const createTask = vi.spyOn(provider, "createTask").mockResolvedValue({} as Task)
+
+		const firstMessage = messageHandler({ type: "startBlankTask" })
+		await vi.waitFor(() => expect(startBlankTask).toHaveBeenCalledOnce())
+		const secondMessage = messageHandler({ type: "newTask", text: "next task", images: [] })
+		await new Promise<void>((resolve) => setImmediate(resolve))
+
+		expect(createTask).not.toHaveBeenCalled()
+
+		releaseBlankTransition()
+		await Promise.all([firstMessage, secondMessage])
+		expect(createTask).toHaveBeenCalledWith(
+			"next task",
+			[],
+			undefined,
+			{
+				taskId: undefined,
+				preserveExisting: true,
+			},
+			undefined,
+		)
+	})
+
+	test("does not queue task cancellation behind a long-running global command", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+		let releaseCondense!: () => void
+		const condense = vi.spyOn(provider, "condenseTaskContext").mockReturnValue(
+			new Promise<void>((resolve) => {
+				releaseCondense = resolve
+			}),
+		)
+		const cancel = vi.spyOn(provider, "cancelTask").mockResolvedValue(undefined)
+
+		const condenseMessage = messageHandler({ type: "condenseTaskContextRequest", text: "task-1" })
+		await vi.waitFor(() => expect(condense).toHaveBeenCalledWith("task-1"))
+		const cancelMessage = messageHandler({ type: "cancelTask", taskId: "task-1" })
+		await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith("task-1", "webview_stop"))
+
+		releaseCondense()
+		await Promise.all([condenseMessage, cancelMessage])
+	})
+
+	test("waits for an accepted webview message before draining tasks during disposal", async () => {
+		let releaseMessage!: () => void
+		const task = new Task(defaultTaskOptions)
+		const acceptedMessage = new Promise<void>((resolve) => {
+			releaseMessage = resolve
+		}).then(() => provider.addTaskToStack(task))
+		;(provider as any).webviewMessageQueue = acceptedMessage
+
+		let disposed = false
+		const disposal = provider.dispose().then(() => {
+			disposed = true
+		})
+		await Promise.resolve()
+
+		expect(disposed).toBe(false)
+		releaseMessage()
+		await disposal
+
+		expect(task.abortTask).toHaveBeenCalled()
+		expect(provider.getTaskStackSize()).toBe(0)
+	})
+
+	test("waits for accepted task-control lanes during disposal", async () => {
+		let releaseControl!: () => void
+		const acceptedControl = new Promise<void>((resolve) => {
+			releaseControl = resolve
+		})
+		;(provider as any).taskControlMessageQueues.set("task-1", acceptedControl)
+
+		let disposed = false
+		const disposal = provider.dispose().then(() => {
+			disposed = true
+		})
+		await Promise.resolve()
+		expect(disposed).toBe(false)
+
+		releaseControl()
+		await disposal
+		expect(disposed).toBe(true)
+	})
+
+	test("does not cancel or close the active task for an unknown explicit task id", async () => {
+		const task = new Task(defaultTaskOptions)
+		await provider.addTaskToStack(task)
+		const removeTask = vi.spyOn(provider, "removeTaskFromStack")
+
+		await provider.cancelTask("missing-task", "webview_stop")
+		await provider.closeTask("missing-task")
+
+		expect(task.abortTask).not.toHaveBeenCalled()
+		expect(removeTask).not.toHaveBeenCalled()
+		expect(provider.getCurrentTask()).toBe(task)
+	})
+
+	const runLegacyHandoffWithBufferedGuidance = async (addMessage: ReturnType<typeof vi.fn>) => {
+		await Promise.all([
+			(provider as any).agentControlStoreReady.catch(() => undefined),
+			(provider as any).taskHistoryStoreReady.catch(() => undefined),
+		])
+
+		const parentTaskId = "legacy-parent"
+		const childTaskId = "legacy-child"
+		const historyItem = (id: string, task: string, extra: Record<string, unknown> = {}) => ({
+			id,
+			number: id === parentTaskId ? 1 : 2,
+			ts: id === parentTaskId ? 1 : 2,
+			task,
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+			workspace: "/test/workspace",
+			...extra,
+		})
+		const originalReadFile = (fs.readFile as any).getMockImplementation()
+		;(fs.readFile as any).mockImplementation(async (filePath: string) => {
+			if (filePath === "/legacy/ui.json" || filePath === "/legacy/api.json") return "[]"
+			return originalReadFile?.(filePath, "utf8")
+		})
+
+		let resolveChildStatus!: (value: any) => void
+		let childStatusPending!: () => void
+		const childStatusRequested = new Promise<void>((resolve) => {
+			childStatusPending = resolve
+		})
+		const childStatus = new Promise<any>((resolve) => {
+			resolveChildStatus = resolve
+		})
+		const parentInstance = {
+			taskId: parentTaskId,
+			messageQueueService: { addMessage },
+			overwriteAlphaMessages: vi.fn(),
+			overwriteApiConversationHistory: vi.fn(),
+			resumeAfterDelegation: vi.fn(),
+			say: vi.fn().mockResolvedValue(undefined),
+		} as any
+		const liveChild = {
+			taskId: childTaskId,
+			abort: false,
+			getCompletionGateDecision: vi.fn(async () => ({ allowed: true, modelCanResolveRejection: true })),
+			suspendAfterCurrentTurn: vi.fn(),
+			messageQueueService: {
+				on: vi.fn(),
+				off: vi.fn(),
+				isEmpty: vi.fn(() => true),
+			},
+		} as any
+
+		vi.spyOn(provider, "isTaskOnScreen").mockReturnValue(false)
+		vi.spyOn(provider, "getLiveTask").mockImplementation((taskId) => {
+			if (taskId === parentTaskId) return parentInstance
+			if (taskId === childTaskId) return liveChild
+			return undefined
+		})
+		vi.spyOn(provider, "getTaskWithId").mockImplementation(async (taskId) => {
+			if (taskId === parentTaskId) {
+				return {
+					historyItem: historyItem(parentTaskId, "parent", {
+						status: "delegated",
+						awaitingChildId: childTaskId,
+					}),
+					uiMessagesFilePath: "/legacy/ui.json",
+					apiConversationHistoryFilePath: "/legacy/api.json",
+				} as any
+			}
+
+			childStatusPending()
+			return childStatus
+		})
+		vi.spyOn(provider, "updateTaskHistory").mockResolvedValue([])
+		vi.spyOn(provider, "createTaskWithHistoryItem").mockResolvedValue(parentInstance)
+		vi.spyOn(provider, "removeTaskFromStack").mockImplementation(async () => {
+			provider.queueMessageForTask(childTaskId, "older guidance")
+		})
+
+		const reopening = provider.reopenParentFromDelegation({
+			parentTaskId,
+			childTaskId,
+			completionResultSummary: "done",
+		})
+		await childStatusRequested
+
+		return {
+			childTaskId,
+			reopening,
+			resolveChildStatus: () =>
+				resolveChildStatus({
+					historyItem: historyItem(childTaskId, "child"),
+				}),
+			restoreReadFile: () => (fs.readFile as any).mockImplementation(originalReadFile),
+		}
+	}
+
+	test("preserves FIFO order while forwarding guidance from a delegated child", async () => {
+		const queued: string[] = []
+		const addMessage = vi.fn((text: string) => {
+			queued.push(text)
+			return { id: text, timestamp: Date.now(), text }
+		})
+		const handoff = await runLegacyHandoffWithBufferedGuidance(addMessage)
+
+		provider.queueMessageForTask(handoff.childTaskId, "newer guidance")
+		handoff.resolveChildStatus()
+		await handoff.reopening
+		handoff.restoreReadFile()
+
+		expect(queued).toEqual(["older guidance", "newer guidance"])
+	})
+
+	test("retains buffered guidance until enqueue succeeds", async () => {
+		const queued: string[] = []
+		const addMessage = vi
+			.fn()
+			.mockImplementationOnce(() => {
+				throw new Error("queue unavailable")
+			})
+			.mockImplementation((text: string) => {
+				queued.push(text)
+				return { id: text, timestamp: Date.now(), text }
+			})
+		const handoff = await runLegacyHandoffWithBufferedGuidance(addMessage)
+
+		handoff.resolveChildStatus()
+		await handoff.reopening
+		handoff.restoreReadFile()
+
+		expect(addMessage).toHaveBeenCalledTimes(2)
+		expect(queued).toEqual(["older guidance"])
+	})
+
+	test("accepts a retained completion candidate before a foreground task transition", async () => {
+		const candidate = new Task(defaultTaskOptions)
+		Object.assign(candidate, {
+			taskAsk: { ts: 2, type: "ask", ask: "completion_result", text: "" },
+			clineMessages: [
+				{ ts: 1, type: "say", say: "completion_result", text: "Finished." },
+				{ ts: 2, type: "ask", ask: "completion_result", text: "" },
+			],
+			approveAsk: vi.fn(),
+		})
+		await provider.addTaskToStack(candidate)
+
+		await (provider as any).finalizeActiveCompletionCandidate()
+
+		expect(candidate.approveAsk).toHaveBeenCalledOnce()
+	})
+
+	test("waits for completion finalization before entering the blank-task view", async () => {
+		const candidate = new Task(defaultTaskOptions)
+		await provider.addTaskToStack(candidate)
+		let releaseFinalization!: () => void
+		const finalization = new Promise<void>((resolve) => {
+			releaseFinalization = resolve
+		})
+		const finalize = vi.spyOn(provider as any, "finalizeActiveCompletionCandidate").mockReturnValue(finalization)
+
+		const transition = provider.startBlankTask()
+		await vi.waitFor(() => expect(finalize).toHaveBeenCalledOnce())
+		expect(provider.getActiveTask()).toBe(candidate)
+
+		releaseFinalization()
+		await transition
+		expect(provider.getActiveTask()).toBeUndefined()
+	})
+
+	test("dispose is idempotent — second call is a no-op", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+
+		await provider.dispose()
+		await provider.dispose()
+
+		// dispose body runs only once: log "Disposing AlphaProvider..." appears once
+		const disposeCalls = (mockOutputChannel.appendLine as ReturnType<typeof vi.fn>).mock.calls.filter(
+			([msg]) => typeof msg === "string" && msg.includes("Disposing AlphaProvider..."),
+		)
+		expect(disposeCalls).toHaveLength(1)
+	})
+
+	test("dispose awaits the final compatibility write and absorbs its failure", async () => {
+		await (provider as any).taskHistoryStoreReady
+		let rejectWrite!: (error: Error) => void
+		const updateGlobalState = vi.spyOn(provider as any, "updateGlobalState").mockImplementation((key: unknown) =>
+			key === "taskHistory"
+				? new Promise<void>((_resolve, reject) => {
+						rejectWrite = reject
+					})
+				: Promise.resolve(),
+		)
+
+		let disposed = false
+		const disposing = provider.dispose().then(() => {
+			disposed = true
+		})
+		await vi.waitFor(() => expect(updateGlobalState).toHaveBeenCalledWith("taskHistory", expect.any(Array)))
+		expect(disposed).toBe(false)
+
+		rejectWrite(new Error("globalState unavailable"))
+		await expect(disposing).resolves.toBeUndefined()
+		expect(disposed).toBe(true)
+		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
+			expect.stringContaining("[flushGlobalStateWriteThrough] Failed: globalState unavailable"),
+		)
+	})
+
+	test("handles webviewDidLaunch message", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+
+		// Get the message handler from onDidReceiveMessage
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		// Simulate webviewDidLaunch message
+		await messageHandler({ type: "webviewDidLaunch" })
+
+		// Should post state and theme to webview
+		expect(mockPostMessage).toHaveBeenCalled()
+	})
+
+	test("tracks sidebar readiness across replacement launch and disposal", async () => {
+		let disposeView!: () => Promise<void>
+		const webviewView = {
+			...mockWebviewView,
+			visible: true,
+			onDidDispose: vi.fn().mockImplementation((callback) => {
+				disposeView = callback
+				return { dispose: vi.fn() }
+			}),
+		} as unknown as vscode.WebviewView
+
+		provider.isViewLaunched = true
+		await provider.resolveWebviewView(webviewView)
+		expect(provider.viewLaunched).toBe(false)
+
+		const messageHandler = (webviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+		await messageHandler({ type: "webviewDidLaunch" })
+		expect(provider.viewLaunched).toBe(true)
+
+		await disposeView()
+		expect(provider.viewLaunched).toBe(false)
+	})
+
+	test("does not report the webview ready before its initial state is delivered", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+		let finishInitialState!: () => void
+		const postInitialState = vi
+			.spyOn(provider, "postStateToWebview")
+			.mockImplementationOnce(() => new Promise<void>((resolve) => (finishInitialState = resolve)))
+
+		const launching = messageHandler({ type: "webviewDidLaunch" })
+		await vi.waitFor(() => expect(postInitialState).toHaveBeenCalledOnce())
+		expect(provider.viewLaunched).toBe(false)
+
+		finishInitialState()
+		await launching
+		expect(provider.viewLaunched).toBe(true)
+	})
+
+	test("contains background workspace initialization failures during webview launch", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+		vi.mocked(provider.workspaceTracker!.initializeFilePaths).mockRejectedValueOnce(
+			new Error("workspace scan failed"),
+		)
+
+		await messageHandler({ type: "webviewDidLaunch" })
+
+		await vi.waitFor(() =>
+			expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
+				expect.stringContaining("Failed to initialize workspace file paths: workspace scan failed"),
+			),
+		)
+	})
+
+	test("contains persisted terminal-setting hydration failures during view resolution", async () => {
+		vi.spyOn(provider, "getState").mockRejectedValueOnce(new Error("settings unavailable"))
+
+		await expect(provider.resolveWebviewView(mockWebviewView)).resolves.toBeUndefined()
+		await vi.waitFor(() =>
+			expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
+				expect.stringContaining("Failed to apply persisted terminal settings: settings unavailable"),
+			),
+		)
+	})
+
+	test("clearTask aborts current task", async () => {
+		// Setup Alpha instance with auto-mock from the top of the file
+		const mockAlphaTask = new Task(defaultTaskOptions) // Create a new mocked instance
+
+		// add the mock object to the stack
+		await provider.addTaskToStack(mockAlphaTask)
+
+		// get the stack size before the abort call
+		const stackSizeBeforeAbort = provider.getTaskStackSize()
+
+		// call the removeTaskFromStack method so it will call the current cline abort and remove it from the stack
+		await provider.removeTaskFromStack()
+
+		// get the stack size after the abort call
+		const stackSizeAfterAbort = provider.getTaskStackSize()
+
+		// check if the abort method was called
+		expect(mockAlphaTask.abortTask).toHaveBeenCalled()
+
+		// check if the stack size was decreased
+		expect(stackSizeBeforeAbort - stackSizeAfterAbort).toBe(1)
+	})
+
+	test("keeps a managed Worker registered when process cleanup cannot be confirmed", async () => {
+		const mockAlphaTask = new Task(defaultTaskOptions)
+		Object.assign(mockAlphaTask, {
+			instanceId: "worker-instance",
+			taskKind: "subagent",
+			subagentRole: "worker",
+		})
+		vi.mocked(mockAlphaTask.abortTask).mockRejectedValueOnce(new Error("process tree still alive"))
+
+		await provider.addTaskToStack(mockAlphaTask)
+		vi.mocked(mockAlphaTask.emit).mockClear()
+
+		await expect(provider.removeTaskFromStack()).rejects.toThrow("process tree still alive")
+		expect(provider.getTaskStackSize()).toBe(1)
+		expect(provider.getLiveTask(mockAlphaTask.taskId)).toBe(mockAlphaTask)
+		expect(mockAlphaTask.emit).not.toHaveBeenCalled()
+	})
+
+	describe("clearTask message handler", () => {
+		beforeEach(async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+		})
+
+		test("calls clearTask (delegation handled via metadata)", async () => {
+			// Setup a single task without parent
+			const mockAlphaTask = new Task(defaultTaskOptions)
+
+			// Mock the provider methods
+			const clearTaskSpy = vi.spyOn(provider, "clearTask").mockResolvedValue(undefined)
+			const postStateToWebviewSpy = vi.spyOn(provider, "postStateToWebview").mockResolvedValue(undefined)
+
+			// Add task to stack
+			await provider.addTaskToStack(mockAlphaTask)
+
+			// Get the message handler
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+			// Trigger clearTask message
+			await messageHandler({ type: "clearTask" })
+
+			// Verify clearTask was called
+			expect(clearTaskSpy).toHaveBeenCalled()
+			expect(postStateToWebviewSpy).toHaveBeenCalled()
+		})
+
+		test("calls clearTask even with parent task (delegation via metadata)", async () => {
+			// Setup parent and child tasks
+			const parentTask = new Task(defaultTaskOptions)
+			const childTask = new Task(defaultTaskOptions)
+
+			// Set up parent-child relationship
+			;(childTask as any).parentTask = parentTask
+			;(childTask as any).rootTask = parentTask
+
+			// Mock the provider methods
+			const clearTaskSpy = vi.spyOn(provider, "clearTask").mockResolvedValue(undefined)
+			const postStateToWebviewSpy = vi.spyOn(provider, "postStateToWebview").mockResolvedValue(undefined)
+
+			// Add both tasks to stack (parent first, then child)
+			await provider.addTaskToStack(parentTask)
+			await provider.addTaskToStack(childTask)
+
+			// Get the message handler
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+			// Trigger clearTask message
+			await messageHandler({ type: "clearTask" })
+
+			// Verify clearTask was called (delegation happens via metadata, not finishSubTask)
+			expect(clearTaskSpy).toHaveBeenCalled()
+			expect(postStateToWebviewSpy).toHaveBeenCalled()
+		})
+
+		test("handles case when no current task exists", async () => {
+			// Don't add any tasks to the stack
+
+			// Mock the provider methods
+			const clearTaskSpy = vi.spyOn(provider, "clearTask").mockResolvedValue(undefined)
+			const postStateToWebviewSpy = vi.spyOn(provider, "postStateToWebview").mockResolvedValue(undefined)
+
+			// Get the message handler
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+			// Trigger clearTask message
+			await messageHandler({ type: "clearTask" })
+
+			// When there's no current task, clearTask is still called (it handles the no-task case internally)
+			expect(clearTaskSpy).toHaveBeenCalled()
+			expect(postStateToWebviewSpy).toHaveBeenCalled()
+		})
+
+		test("correctly identifies task scenario for issue #4602", async () => {
+			// This test validates the fix for issue #4602
+			// where canceling during API retry correctly uses clearTask
+
+			const mockAlphaTask = new Task(defaultTaskOptions)
+
+			// Mock the provider methods
+			const clearTaskSpy = vi.spyOn(provider, "clearTask").mockResolvedValue(undefined)
+
+			// Add only one task to stack
+			await provider.addTaskToStack(mockAlphaTask)
+
+			// Verify stack size is 1
+			expect(provider.getTaskStackSize()).toBe(1)
+
+			// Get the message handler
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+			// Trigger clearTask message (simulating cancel during API retry)
+			await messageHandler({ type: "clearTask" })
+
+			// clearTask should be called (delegation handled via metadata)
+			expect(clearTaskSpy).toHaveBeenCalled()
+		})
+	})
+
+	test("addTaskToStack adds multiple Alpha instances to the stack", async () => {
+		// Setup Alpha instance with auto-mock from the top of the file
+		const mockAlpha1 = new Task(defaultTaskOptions) // Create a new mocked instance
+		const mockAlpha2 = new Task(defaultTaskOptions) // Create a new mocked instance
+		Object.defineProperty(mockAlpha1, "taskId", { value: "test-task-id-1", writable: true })
+		Object.defineProperty(mockAlpha2, "taskId", { value: "test-task-id-2", writable: true })
+
+		// add Alpha instances to the stack
+		await provider.addTaskToStack(mockAlpha1)
+		await provider.addTaskToStack(mockAlpha2)
+
+		// verify cline instances were added to the stack
+		expect(provider.getTaskStackSize()).toBe(2)
+
+		// verify current cline instance is the last one added
+		expect(provider.getCurrentTask()).toBe(mockAlpha2)
+	})
+
+	test("getState returns correct initial state", async () => {
+		const state = await provider.getState()
+
+		expect(state).toHaveProperty("apiConfiguration")
+		expect(state.apiConfiguration).toHaveProperty("apiProvider")
+		expect(state).toHaveProperty("customInstructions")
+		expect(state).toHaveProperty("alwaysAllowReadOnly")
+		expect(state).toHaveProperty("alwaysAllowWrite")
+		expect(state).toHaveProperty("alwaysAllowExecute")
+		expect(state).toHaveProperty("alwaysAllowSubagents")
+		expect(state.alwaysAllowTickets).toBe(false)
+		expect(state).toHaveProperty("taskHistory")
+		expect(state).toHaveProperty("soundEnabled")
+		expect(state).toHaveProperty("ttsEnabled")
+		expect(state).toHaveProperty("writeDelayMs")
+	})
+
+	test.each([true, false])(
+		"projects the saved ticket approval preference %s to runtime and webview",
+		async (value) => {
+			await provider.contextProxy.setValue("alwaysAllowTickets", value)
+			expect((await provider.getState()).alwaysAllowTickets).toBe(value)
+			expect((await provider.getStateToPostToWebview()).alwaysAllowTickets).toBe(value)
+		},
+	)
+
+	test("getState uses merged command lists for runtime auto-approval", async () => {
+		await provider.contextProxy.setValue("allowedCommands", ["git", "npm"])
+		await provider.contextProxy.setValue("deniedCommands", ["rm"])
+
+		const inspectConfigValue = vi.fn((key: string) => {
+			if (key === "allowedCommands") {
+				return { globalValue: [" * ", "npm"] }
+			}
+			if (key === "deniedCommands") {
+				return { workspaceValue: [" rm -rf "] }
+			}
+			return {}
+		})
+		vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+			get: vi.fn().mockReturnValue([]),
+			inspect: inspectConfigValue,
+			update: vi.fn(),
+		} as any)
+
+		try {
+			const state = await provider.getState()
+
+			expect(state.allowedCommands).toEqual(["git", "npm", "*"])
+			expect(state.deniedCommands).toEqual(["rm", "rm -rf"])
+		} finally {
+			vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+				get: vi.fn().mockReturnValue([]),
+				inspect: vi.fn().mockReturnValue({}),
+				update: vi.fn(),
+			} as any)
+		}
+	})
+
+	test("marks a visible legacy managed child as approval-restricted", async () => {
+		const child = new Task(defaultTaskOptions) as any
+		child.taskKind = "subagent"
+		child.subagentContextManifest = { runtimePolicy: {} }
+		child.getTaskMode = vi.fn(async () => "code")
+		child.getTaskApiConfigName = vi.fn(async () => "default")
+		await provider.addTaskToStack(child)
+
+		const webviewState = await provider.getStateToPostToWebview()
+
+		expect(webviewState.currentTaskAutoApprovalRestricted).toBe(true)
+	})
+
+	test("includes saved GitHub token in state posted to webview", async () => {
+		await provider.contextProxy.setValue("githubToken", "ghp-test-token")
+
+		const state = await provider.getState()
+		const webviewState = await provider.getStateToPostToWebview()
+
+		expect(state.githubToken).toBe("ghp-test-token")
+		expect(webviewState.githubToken).toBe("ghp-test-token")
+	})
+
+	test("builds webview state from cached OpenAI Codex credential presence without validating a token", async () => {
+		const cachedStatus = vi.spyOn(openAiCodexOAuthManager, "hasStoredCredentials").mockReturnValue(true)
+		const validateToken = vi
+			.spyOn(openAiCodexOAuthManager, "isAuthenticated")
+			.mockImplementation(() => new Promise<boolean>(() => {}))
+
+		try {
+			const webviewState = await provider.getStateToPostToWebview()
+
+			expect(webviewState.openAiCodexIsAuthenticated).toBe(true)
+			expect(validateToken).not.toHaveBeenCalled()
+		} finally {
+			cachedStatus.mockRestore()
+			validateToken.mockRestore()
+		}
+	})
+
+	test("getState preserves code index embedding rate limit settings", async () => {
+		await provider.contextProxy.setValue("codebaseIndexConfig", {
+			codebaseIndexEnabled: true,
+			codebaseIndexEmbedderProvider: "openai",
+			codebaseIndexEmbeddingRateLimitEnabled: true,
+			codebaseIndexEmbeddingRateLimitSeconds: 2.5,
+		})
+
+		const state = await provider.getState()
+
+		expect(state.codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitEnabled).toBe(true)
+		expect(state.codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitSeconds).toBe(2.5)
+	})
+
+	test("getState exposes saved sub-agent routing selections", async () => {
+		await provider.contextProxy.setValue("subagentDefaultApiConfigId", "default-id")
+		await provider.contextProxy.setValue("subagentApiConfigByRole", { review: "review-id" })
+
+		const state = await provider.getState()
+		const webviewState = await provider.getStateToPostToWebview()
+
+		expect(state.subagentDefaultApiConfigId).toBe("default-id")
+		expect(state.subagentApiConfigByRole).toEqual({ review: "review-id" })
+		expect(webviewState.subagentDefaultApiConfigId).toBe("default-id")
+		expect(webviewState.subagentApiConfigByRole).toEqual({ review: "review-id" })
+	})
+
+	test("getState exposes normalized saved sub-agent orchestration guardrails", async () => {
+		await provider.contextProxy.setValues({
+			maxConcurrentSubagents: 5,
+			subagentDelegationPolicy: "proactive",
+			subagentMaxDepth: 3,
+			subagentRoleTimeoutsMs: { review: 240_000 },
+			subagentMaxInputTokens: 32_000,
+			subagentMaxOutputTokens: 8_000,
+			subagentRootTokenBudget: 200_000,
+			subagentRootCostBudget: 25,
+		})
+
+		const state = await provider.getState()
+		const webviewState = await provider.getStateToPostToWebview()
+		const expected = {
+			maxConcurrentSubagents: 5,
+			subagentDelegationPolicy: "proactive",
+			subagentMaxDepth: 3,
+			subagentRoleTimeoutsMs: { explore: 120_000, review: 240_000, worker: 900_000 },
+			subagentMaxInputTokens: 32_000,
+			subagentMaxOutputTokens: 8_000,
+			subagentRootTokenBudget: 200_000,
+			subagentRootCostBudget: 25,
+		}
+
+		expect(state).toMatchObject(expected)
+		expect(webviewState).toMatchObject(expected)
+	})
+
+	test("posts the selected root's durable managed-agent projection to the webview", async () => {
+		const rootTask = new Task(defaultTaskOptions)
+		Object.defineProperty(rootTask, "taskId", { value: "bridge-root", writable: true })
+		await provider.addTaskToStack(rootTask)
+		const projection = {
+			version: 1 as const,
+			rootTaskId: "bridge-root",
+			observedAt: 10,
+			nodes: [
+				{
+					taskId: "bridge-root",
+					rootTaskId: "bridge-root",
+					path: "/root" as const,
+					nickname: "Bridge root",
+					role: "root" as const,
+					objective: "Project durable agents",
+					status: "running" as const,
+					createdAt: 1,
+					updatedAt: 10,
+					depth: 0,
+					usage: { durationMs: 9 },
+				},
+			],
+			activity: [],
+			capacity: { active: 0, queued: 0, terminal: 0, limit: 2 },
+			budgets: { tokenLimit: null, costLimit: null },
+			omittedNodeCount: 0,
+			omittedActivityCount: 0,
+		}
+		const buildProjection = vi
+			.spyOn(provider as any, "buildManagedAgentTreeProjection")
+			.mockResolvedValue(projection)
+
+		const webviewState = await provider.getStateToPostToWebview()
+
+		expect(buildProjection).toHaveBeenCalledWith(rootTask, expect.objectContaining({ maxConcurrentSubagents: 2 }))
+		expect(webviewState.managedAgentTree).toBe(projection)
+	})
+
+	test("language is set to VSCode language", async () => {
+		// Mock VSCode language as Spanish
+		;(vscode.env as any).language = "pt-BR"
+
+		const state = await provider.getState()
+		expect(state.language).toBe("pt-BR")
+	})
+
+	test("writeDelayMs defaults to 1000ms", async () => {
+		// Mock globalState.get to return undefined for writeDelayMs
+		;(mockContext.globalState.get as any).mockImplementation((key: string) =>
+			key === "writeDelayMs" ? undefined : null,
+		)
+
+		const state = await provider.getState()
+		expect(state.writeDelayMs).toBe(1000)
+	})
+
+	test("handles writeDelayMs message", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		await messageHandler({ type: "updateSettings", updatedSettings: { writeDelayMs: 2000 } })
+
+		expect(updateGlobalStateSpy).toHaveBeenCalledWith("writeDelayMs", 2000)
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("writeDelayMs", 2000)
+		expect(mockPostMessage).toHaveBeenCalled()
+	})
+
+	test("normalizes cleared sub-agent routing selections before persistence", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		await messageHandler({
+			type: "updateSettings",
+			updatedSettings: {
+				subagentDefaultApiConfigId: "",
+				subagentApiConfigByRole: { explore: "fast-id", review: "" },
+			},
+		})
+
+		expect(updateGlobalStateSpy).toHaveBeenCalledWith("subagentDefaultApiConfigId", undefined)
+		expect(updateGlobalStateSpy).toHaveBeenCalledWith("subagentApiConfigByRole", { explore: "fast-id" })
+	})
+
+	test("persists every sub-agent orchestration setting, including disabled root budgets", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+		const updatedSettings = {
+			maxConcurrentSubagents: 4,
+			subagentDelegationPolicy: "explicit-only",
+			subagentMaxDepth: 2,
+			subagentRoleTimeoutsMs: { explore: 90_000, review: 180_000, worker: 600_000 },
+			subagentMaxInputTokens: 24_000,
+			subagentMaxOutputTokens: 6_000,
+			subagentRootTokenBudget: null,
+			subagentRootCostBudget: null,
+		}
+
+		await messageHandler({ type: "updateSettings", updatedSettings })
+
+		for (const [key, value] of Object.entries(updatedSettings)) {
+			expect(updateGlobalStateSpy).toHaveBeenCalledWith(key, value)
+			expect(mockContext.globalState.update).toHaveBeenCalledWith(key, value)
+		}
+	})
+
+	test("keeps the interactive profile when creating a background task with its own profile", async () => {
+		await provider.contextProxy.setValue("currentApiConfigName", "Coding")
+		await provider.contextProxy.setValue("apiProvider", "anthropic")
+		const activate = vi.spyOn(provider, "setProviderProfile")
+		const addTask = vi.spyOn(provider, "addTaskToStack").mockResolvedValue(undefined)
+		vi.spyOn(provider, "postTaskStateToWebview").mockResolvedValue(undefined)
+		const apiConfiguration = { apiProvider: "openai" as const, openAiModelId: "internal-model" }
+		await provider.createTask("Scheduled prompt", undefined, undefined, {
+			preserveExisting: true,
+			background: true,
+			startTask: false,
+			taskApiConfigName: "Internal models",
+			apiConfiguration,
+			taskMode: "architect",
+		})
+		expect(vi.mocked(Task)).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				apiConfiguration,
+				taskApiConfigName: "Internal models",
+				taskMode: "architect",
+			}),
+		)
+		expect(addTask).toHaveBeenCalledWith(expect.anything(), { focus: false })
+		expect(activate).not.toHaveBeenCalled()
+		expect(provider.contextProxy.getValue("currentApiConfigName")).toBe("Coding")
+		expect(provider.contextProxy.getValue("apiProvider")).toBe("anthropic")
+	})
+
+	test("returns a skill catalog for the scheduled workspace and mode", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const getSkills = vi.fn().mockResolvedValue([])
+		vi.spyOn(provider, "getScheduledTaskService").mockReturnValue({ getSkills } as unknown as ReturnType<
+			AlphaProvider["getScheduledTaskService"]
+		>)
+		const messageHandler = vi.mocked(mockWebviewView.webview.onDidReceiveMessage).mock.calls[0][0]
+		await messageHandler({
+			type: "requestScheduledTaskSkills",
+			scheduledTaskSkillsRequest: { requestId: "catalog", workspace: "/scheduled", mode: "architect" },
+		})
+		expect(getSkills).toHaveBeenCalledWith("/scheduled", "architect")
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "scheduledTaskSkills",
+			scheduledTaskSkills: { requestId: "catalog", skills: [] },
+		})
+		getSkills.mockClear()
+		await messageHandler({ type: "requestScheduledTaskSkills", scheduledTaskSkillsRequest: { workspace: 42 } })
+		expect(getSkills).not.toHaveBeenCalled()
+	})
+
+	test("allows a root task policy override to narrow but never widen", async () => {
+		const getState = vi.spyOn(provider, "getState")
+		vi.spyOn(provider, "removeTaskFromStack").mockResolvedValue(undefined)
+		vi.spyOn(provider, "addTaskToStack").mockResolvedValue(undefined)
+		vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockResolvedValue(undefined)
+
+		getState.mockResolvedValue({
+			apiConfiguration: { apiProvider: "openrouter" },
+			currentApiConfigName: "current-config",
+			enableCheckpoints: false,
+			checkpointTimeout: 30,
+			experiments: {},
+			subagentDelegationPolicy: "proactive",
+		} as any)
+		await provider.createTask("narrow policy", undefined, undefined, {
+			startTask: false,
+			subagentDelegationPolicy: "explicit-only",
+		})
+
+		expect(vi.mocked(Task)).toHaveBeenLastCalledWith(
+			expect.objectContaining({ subagentDelegationPolicy: "explicit-only" }),
+		)
+
+		getState.mockResolvedValue({
+			apiConfiguration: { apiProvider: "openrouter" },
+			currentApiConfigName: "current-config",
+			enableCheckpoints: false,
+			checkpointTimeout: 30,
+			experiments: {},
+			subagentDelegationPolicy: "explicit-only",
+		} as any)
+		await expect(
+			provider.createTask("widen policy", undefined, undefined, {
+				startTask: false,
+				subagentDelegationPolicy: "proactive",
+				subagentDelegationExplicitlyEnabled: true,
+			}),
+		).rejects.toThrow("cannot widen")
+	})
+
+	test("updates sound utility when sound setting changes", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+
+		// Get the message handler from onDidReceiveMessage
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		// Simulate setting sound to enabled
+		await messageHandler({ type: "updateSettings", updatedSettings: { soundEnabled: true } })
+		expect(updateGlobalStateSpy).toHaveBeenCalledWith("soundEnabled", true)
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("soundEnabled", true)
+		expect(mockPostMessage).toHaveBeenCalled()
+
+		// Simulate setting sound to disabled
+		await messageHandler({ type: "updateSettings", updatedSettings: { soundEnabled: false } })
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("soundEnabled", false)
+		expect(mockPostMessage).toHaveBeenCalled()
+
+		// Simulate setting tts to enabled
+		await messageHandler({ type: "updateSettings", updatedSettings: { ttsEnabled: true } })
+		expect(setTtsEnabled).toHaveBeenCalledWith(true)
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("ttsEnabled", true)
+		expect(mockPostMessage).toHaveBeenCalled()
+
+		// Simulate setting tts to disabled
+		await messageHandler({ type: "updateSettings", updatedSettings: { ttsEnabled: false } })
+		expect(setTtsEnabled).toHaveBeenCalledWith(false)
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("ttsEnabled", false)
+		expect(mockPostMessage).toHaveBeenCalled()
+	})
+
+	test("autoCondenseContext defaults to true", async () => {
+		// Mock globalState.get to return undefined for autoCondenseContext
+		;(mockContext.globalState.get as any).mockImplementation((key: string) =>
+			key === "autoCondenseContext" ? undefined : null,
+		)
+		const state = await provider.getState()
+		expect(state.autoCondenseContext).toBe(true)
+	})
+
+	test("handles autoCondenseContext message", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+		await messageHandler({ type: "updateSettings", updatedSettings: { autoCondenseContext: false } })
+		expect(updateGlobalStateSpy).toHaveBeenCalledWith("autoCondenseContext", false)
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("autoCondenseContext", false)
+		expect(mockPostMessage).toHaveBeenCalled()
+	})
+
+	test("autoCondenseContextPercent defaults to 100", async () => {
+		// Mock globalState.get to return undefined for autoCondenseContextPercent
+		;(mockContext.globalState.get as any).mockImplementation((key: string) =>
+			key === "autoCondenseContextPercent" ? undefined : null,
+		)
+
+		const state = await provider.getState()
+		expect(state.autoCondenseContextPercent).toBe(100)
+	})
+
+	test("handles autoCondenseContextPercent message", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		await messageHandler({ type: "updateSettings", updatedSettings: { autoCondenseContextPercent: 75 } })
+
+		expect(updateGlobalStateSpy).toHaveBeenCalledWith("autoCondenseContextPercent", 75)
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("autoCondenseContextPercent", 75)
+		expect(mockPostMessage).toHaveBeenCalled()
+	})
+
+	it.each(["ask", "debug", "orchestrator"])("rejects a retired %s selection from the webview", async (mode) => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+		const lookup = vi.spyOn(provider.providerSettingsManager, "getModeConfigId")
+		const activate = vi.spyOn(provider, "activateProviderProfile")
+		const save = vi.spyOn(provider.providerSettingsManager, "setModeConfig")
+		vi.mocked(mockContext.globalState.update).mockClear()
+		await messageHandler({ type: "mode", text: mode })
+		expect(mockContext.globalState.update).not.toHaveBeenCalledWith("mode", mode)
+		expect(lookup).not.toHaveBeenCalled()
+		expect(activate).not.toHaveBeenCalled()
+		expect(save).not.toHaveBeenCalled()
+	})
+
+	it("saves config as default for current mode when loading config", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		const profile: ProviderSettingsEntry = { apiProvider: "anthropic", id: "new-id", name: "new-config" }
+
+		;(provider as any).providerSettingsManager = {
+			activateProfile: vi.fn().mockResolvedValue(profile),
+			listConfig: vi.fn().mockResolvedValue([profile]),
+			setModeConfig: vi.fn(),
+			getModeConfigId: vi.fn().mockResolvedValue(undefined),
+		} as any
+
+		// First set the mode
+		await messageHandler({ type: "mode", text: "architect" })
+
+		// Then load the config
+		await messageHandler({ type: "loadApiConfiguration", text: "new-config" })
+
+		// Should save new config as default for architect mode
+		expect(provider.providerSettingsManager.setModeConfig).toHaveBeenCalledWith("architect", "new-id")
+	})
+
+	it("load API configuration by ID works and updates mode config", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		const profile: ProviderSettingsEntry = {
+			name: "config-by-id",
+			id: "config-id-123",
+			apiProvider: "anthropic",
+		}
+
+		;(provider as any).providerSettingsManager = {
+			activateProfile: vi.fn().mockResolvedValue(profile),
+			listConfig: vi.fn().mockResolvedValue([profile]),
+			setModeConfig: vi.fn(),
+			getModeConfigId: vi.fn().mockResolvedValue(undefined),
+		} as any
+
+		// First set the mode
+		await messageHandler({ type: "mode", text: "architect" })
+
+		// Then load the config by ID
+		await messageHandler({ type: "loadApiConfigurationById", text: "config-id-123" })
+
+		// Should save new config as default for architect mode
+		expect(provider.providerSettingsManager.setModeConfig).toHaveBeenCalledWith("architect", "config-id-123")
+
+		// Ensure the `activateProfile` method was called with the correct ID
+		expect(provider.providerSettingsManager.activateProfile).toHaveBeenCalledWith({ id: "config-id-123" })
+	})
+
+	test("handles showRooIgnoredFiles setting", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		// Default value should be false
+		expect((await provider.getState()).showRooIgnoredFiles).toBe(false)
+
+		// Test showRooIgnoredFiles with true
+		await messageHandler({ type: "updateSettings", updatedSettings: { showRooIgnoredFiles: true } })
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("showRooIgnoredFiles", true)
+		expect(mockPostMessage).toHaveBeenCalled()
+		expect((await provider.getState()).showRooIgnoredFiles).toBe(true)
+
+		// Test showRooIgnoredFiles with false
+		await messageHandler({ type: "updateSettings", updatedSettings: { showRooIgnoredFiles: false } })
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("showRooIgnoredFiles", false)
+		expect(mockPostMessage).toHaveBeenCalled()
+		expect((await provider.getState()).showRooIgnoredFiles).toBe(false)
+	})
+
+	test("handles updatePrompt message correctly", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		// Mock existing prompts
+		const existingPrompts = {
+			code: {
+				roleDefinition: "existing code role",
+				customInstructions: "existing code prompt",
+			},
+			architect: {
+				roleDefinition: "existing architect role",
+				customInstructions: "existing architect prompt",
+			},
+		}
+
+		provider.setValue("customModePrompts", existingPrompts)
+
+		// Test updating a prompt
+		await messageHandler({
+			type: "updatePrompt",
+			promptMode: "code",
+			customPrompt: "new code prompt",
+		})
+
+		// Verify state was updated correctly
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("customModePrompts", {
+			...existingPrompts,
+			code: "new code prompt",
+		})
+
+		// Verify state was posted to webview
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "state",
+				state: expect.objectContaining({
+					customModePrompts: {
+						...existingPrompts,
+						code: "new code prompt",
+					},
+				}),
+			}),
+		)
+	})
+
+	test("customModePrompts defaults to empty object", async () => {
+		// Mock globalState.get to return undefined for customModePrompts
+		;(mockContext.globalState.get as any).mockImplementation((key: string) => {
+			if (key === "customModePrompts") {
+				return undefined
+			}
+			return null
+		})
+
+		const state = await provider.getState()
+		expect(state.customModePrompts).toEqual({})
+	})
+
+	test("handles maxWorkspaceFiles message", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		await messageHandler({ type: "updateSettings", updatedSettings: { maxWorkspaceFiles: 300 } })
+
+		expect(updateGlobalStateSpy).toHaveBeenCalledWith("maxWorkspaceFiles", 300)
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("maxWorkspaceFiles", 300)
+		expect(mockPostMessage).toHaveBeenCalled()
+	})
+
+	test("handles mode-specific custom instructions updates", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		// Mock existing prompts
+		const existingPrompts = {
+			code: {
+				roleDefinition: "Code role",
+				customInstructions: "Old instructions",
+			},
+		}
+		mockContext.globalState.get = vi.fn((key: string) => {
+			if (key === "customModePrompts") {
+				return existingPrompts
+			}
+			return undefined
+		})
+
+		// Update custom instructions for code mode
+		await messageHandler({
+			type: "updatePrompt",
+			promptMode: "code",
+			customPrompt: {
+				roleDefinition: "Code role",
+				customInstructions: "New instructions",
+			},
+		})
+
+		// Verify state was updated correctly
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("customModePrompts", {
+			code: {
+				roleDefinition: "Code role",
+				customInstructions: "New instructions",
+			},
+		})
+	})
+
+	it("saves mode config when updating API configuration", async () => {
+		// Setup mock context with mode and config name
+		mockContext = {
+			...mockContext,
+			globalState: {
+				...mockContext.globalState,
+				get: vi.fn((key: string) => {
+					if (key === "mode") {
+						return "code"
+					} else if (key === "currentApiConfigName") {
+						return "test-config"
+					}
+					return undefined
+				}),
+				update: vi.fn(),
+				keys: vi.fn().mockReturnValue([]),
+			},
+		} as unknown as vscode.ExtensionContext
+
+		// Create new provider with updated mock context
+		provider = new AlphaProvider(mockContext, mockOutputChannel, "sidebar", new ContextProxy(mockContext))
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		;(provider as any).providerSettingsManager = {
+			listConfig: vi.fn().mockResolvedValue([{ name: "test-config", id: "test-id", apiProvider: "anthropic" }]),
+			saveConfig: vi.fn().mockResolvedValue("test-id"),
+			setModeConfig: vi.fn(),
+		} as any
+
+		// Update API configuration
+		await messageHandler({
+			type: "upsertApiConfiguration",
+			text: "test-config",
+			apiConfiguration: { apiProvider: "anthropic" },
+		})
+
+		// Should save config as default for current mode
+		expect(provider.providerSettingsManager.setModeConfig).toHaveBeenCalledWith("code", "test-id")
+	})
+
+	test("file content includes line numbers", async () => {
+		const { extractTextFromFile } = await import("../../../integrations/misc/extract-text")
+		const result = await extractTextFromFile("test.js")
+		expect(result).toBe("1 | const x = 1;\n2 | const y = 2;\n3 | const z = 3;")
+	})
+
+	describe("deleteMessage", () => {
+		beforeEach(async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+		})
+
+		test("handles deletion with confirmation dialog", async () => {
+			// Setup mock messages
+			const mockMessages = [
+				{ ts: 1000, type: "say", say: "user_feedback" }, // User message 1
+				{ ts: 2000, type: "say", say: "tool" }, // Tool message
+				{ ts: 3000, type: "say", say: "text" }, // Message before delete
+				{ ts: 4000, type: "say", say: "tool" }, // Message to delete
+				{ ts: 5000, type: "say", say: "user_feedback" }, // Next user message
+				{ ts: 6000, type: "say", say: "user_feedback" }, // Final message
+			] as AlphaMessage[]
+
+			const mockApiHistory = [
+				{ ts: 1000 },
+				{ ts: 2000 },
+				{ ts: 3000 },
+				{ ts: 4000 },
+				{ ts: 5000 },
+				{ ts: 6000 },
+			] as (Anthropic.MessageParam & { ts?: number })[]
+
+			// Setup Task instance with auto-mock from the top of the file
+			const mockAlphaTask = new Task(defaultTaskOptions) // Create a new mocked instance
+			mockAlphaTask.clineMessages = mockMessages // Set test-specific messages
+			mockAlphaTask.apiConversationHistory = mockApiHistory // Set API history
+			await provider.addTaskToStack(mockAlphaTask) // Add the mocked instance to the stack
+
+			// Mock getTaskWithId
+			;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+				historyItem: { id: "test-task-id" },
+			})
+
+			// Mock createTaskWithHistoryItem
+			;(provider as any).createTaskWithHistoryItem = vi.fn()
+
+			// Trigger message deletion
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+			await messageHandler({ type: "deleteMessage", value: 4000 })
+
+			// Verify that the dialog message was sent to webview
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "showDeleteMessageDialog",
+				taskId: "test-task-id",
+				messageTs: 4000,
+				hasCheckpoint: false,
+			})
+
+			// Simulate user confirming deletion through the dialog
+			await messageHandler({ type: "deleteMessageConfirm", messageTs: 4000 })
+
+			// Verify only messages before the deleted message were kept
+			expect(mockAlphaTask.overwriteAlphaMessages).toHaveBeenCalledWith([
+				mockMessages[0],
+				mockMessages[1],
+				mockMessages[2],
+			])
+
+			// Verify only API messages before the deleted message were kept
+			expect(mockAlphaTask.overwriteApiConversationHistory).toHaveBeenCalledWith([
+				mockApiHistory[0],
+				mockApiHistory[1],
+				mockApiHistory[2],
+			])
+
+			// createTaskWithHistoryItem is only called when restoring checkpoints or aborting tasks
+			expect((provider as any).createTaskWithHistoryItem).not.toHaveBeenCalled()
+		})
+
+		test("handles case when no current task exists", async () => {
+			// Clear the cline stack
+			;(provider as any).taskStack = []
+
+			// Trigger message deletion
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+			await messageHandler({ type: "deleteMessage", value: 2000 })
+
+			// Verify no dialog was shown since there's no current cline
+			expect(mockPostMessage).not.toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "showDeleteMessageDialog",
+				}),
+			)
+		})
+	})
+
+	describe("editMessage", () => {
+		beforeEach(async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+		})
+
+		test("handles edit with confirmation dialog", async () => {
+			// Setup mock messages
+			const mockMessages = [
+				{ ts: 1000, type: "say", say: "user_feedback" }, // User message 1
+				{ ts: 2000, type: "say", say: "tool" }, // Tool message
+				{ ts: 3000, type: "say", say: "text" }, // Message before edit
+				{ ts: 4000, type: "say", say: "tool" }, // Message to edit
+				{ ts: 5000, type: "say", say: "user_feedback" }, // Next user message
+				{ ts: 6000, type: "say", say: "user_feedback" }, // Final message
+			] as AlphaMessage[]
+
+			const mockApiHistory = [
+				{ ts: 1000 },
+				{ ts: 2000 },
+				{ ts: 3000 },
+				{ ts: 4000 },
+				{ ts: 5000 },
+				{ ts: 6000 },
+			] as (Anthropic.MessageParam & { ts?: number })[]
+
+			// Setup Task instance with auto-mock from the top of the file
+			const mockAlphaTask = new Task(defaultTaskOptions) // Create a new mocked instance
+			mockAlphaTask.clineMessages = mockMessages // Set test-specific messages
+			mockAlphaTask.apiConversationHistory = mockApiHistory // Set API history
+
+			// Explicitly mock the overwrite methods since they're not being called in the tests
+			mockAlphaTask.overwriteAlphaMessages = vi.fn()
+			mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+			mockAlphaTask.handleWebviewAskResponse = vi.fn()
+
+			await provider.addTaskToStack(mockAlphaTask) // Add the mocked instance to the stack
+
+			// Mock getTaskWithId
+			;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+				historyItem: { id: "test-task-id" },
+			})
+
+			// Trigger message edit
+			// Get the message handler function that was registered with the webview
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+			// Call the message handler with a submitEditedMessage message
+			await messageHandler({
+				type: "submitEditedMessage",
+				value: 4000,
+				editedMessageContent: "Edited message content",
+			})
+
+			// Verify that the dialog message was sent to webview
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "showEditMessageDialog",
+				taskId: "test-task-id",
+				messageTs: 4000,
+				text: "Edited message content",
+				hasCheckpoint: false,
+				images: undefined,
+			})
+
+			// Simulate user confirming edit through the dialog
+			await messageHandler({
+				type: "editMessageConfirm",
+				messageTs: 4000,
+				text: "Edited message content",
+			})
+
+			// Verify correct messages were kept - delete from the preceding user message to truly replace it
+			expect(mockAlphaTask.overwriteAlphaMessages).toHaveBeenCalledWith([])
+
+			// Verify correct API messages were kept
+			expect(mockAlphaTask.overwriteApiConversationHistory).toHaveBeenCalledWith([])
+
+			// The new flow calls webviewMessageHandler recursively with askResponse
+			// We need to verify the recursive call happened by checking if the handler was called again
+			expect((mockWebviewView.webview.onDidReceiveMessage as any).mock.calls.length).toBeGreaterThanOrEqual(1)
+		})
+	})
+
+	describe("getSystemPrompt", () => {
+		beforeEach(async () => {
+			mockPostMessage.mockClear()
+			await provider.resolveWebviewView(mockWebviewView)
+			// Reset and setup mock
+			mockAddCustomInstructions.mockClear()
+			mockAddCustomInstructions.mockImplementation(
+				(modeInstructions: string, globalInstructions: string, _cwd: string) => {
+					return Promise.resolve(modeInstructions || globalInstructions || "")
+				},
+			)
+		})
+
+		const getMessageHandler = () => {
+			const mockCalls = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls
+			expect(mockCalls.length).toBeGreaterThan(0)
+			return mockCalls[0][0]
+		}
+
+		test("handles mcpEnabled setting correctly", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			const handler = getMessageHandler()
+			expect(typeof handler).toBe("function")
+
+			// Test with mcpEnabled: true
+			vi.spyOn(provider, "getState").mockResolvedValueOnce({
+				apiConfiguration: {
+					apiProvider: "openrouter" as const,
+				},
+				mcpEnabled: true,
+				mode: "code" as const,
+				experiments: experimentDefault,
+			} as any)
+
+			await handler({ type: "getSystemPrompt", mode: "code" })
+
+			// Verify system prompt was generated and sent
+			expect(mockPostMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "systemPrompt",
+					text: expect.any(String),
+					mode: "code",
+				}),
+			)
+
+			// Reset for second test
+			mockPostMessage.mockClear()
+
+			// Test with mcpEnabled: false
+			vi.spyOn(provider, "getState").mockResolvedValueOnce({
+				apiConfiguration: {
+					apiProvider: "openrouter" as const,
+				},
+				mcpEnabled: false,
+				mode: "code" as const,
+				experiments: experimentDefault,
+			} as any)
+
+			await handler({ type: "getSystemPrompt", mode: "code" })
+
+			// Verify system prompt was generated and sent
+			expect(mockPostMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "systemPrompt",
+					text: expect.any(String),
+					mode: "code",
+				}),
+			)
+		})
+
+		test("handles errors gracefully", async () => {
+			// Mock SYSTEM_PROMPT to throw an error
+			const { SYSTEM_PROMPT } = await import("../../prompts/system")
+			vi.mocked(SYSTEM_PROMPT).mockRejectedValueOnce(new Error("Test error"))
+
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+			await messageHandler({ type: "getSystemPrompt", mode: "code" })
+
+			expect(vscode.window.showErrorMessage).toHaveBeenCalledWith("errors.get_system_prompt")
+		})
+
+		test("uses code mode custom instructions", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			// Mock getState to return custom instructions for code mode
+			vi.spyOn(provider, "getState").mockResolvedValue({
+				apiConfiguration: {
+					apiProvider: "openrouter" as const,
+				},
+				customModePrompts: {
+					code: { customInstructions: "Code mode specific instructions" },
+				},
+				mode: "code" as const,
+				experiments: experimentDefault,
+			} as any)
+
+			// Trigger getSystemPrompt
+			const handler = getMessageHandler()
+			await handler({ type: "getSystemPrompt", mode: "code" })
+
+			// Verify system prompt was generated and sent
+			expect(mockPostMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "systemPrompt",
+					text: expect.any(String),
+					mode: "code",
+				}),
+			)
+		})
+
+		test("uses correct mode-specific instructions when mode is specified", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			// Mock getState to return architect mode instructions
+			vi.spyOn(provider, "getState").mockResolvedValue({
+				apiConfiguration: {
+					apiProvider: "openrouter",
+				},
+				customModePrompts: {
+					architect: { customInstructions: "Architect mode instructions" },
+				},
+				mode: "architect",
+				mcpEnabled: false,
+				experiments: experimentDefault,
+			} as any)
+
+			// Trigger getSystemPrompt for architect mode
+			const handler = getMessageHandler()
+			await handler({ type: "getSystemPrompt", mode: "architect" })
+
+			// Verify system prompt was generated and sent
+			expect(mockPostMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "systemPrompt",
+					text: expect.any(String),
+					mode: "architect",
+				}),
+			)
+		})
+	})
+
+	describe("handleModeSwitch", () => {
+		it.each(["ask", "debug", "orchestrator", "custom-mode"])(
+			"rejects %s before state or profile changes",
+			async (mode) => {
+				await provider.resolveWebviewView(mockWebviewView)
+				const lookup = vi.spyOn(provider.providerSettingsManager, "getModeConfigId")
+				vi.mocked(mockContext.globalState.update).mockClear()
+				await expect(provider.handleModeSwitch(mode)).rejects.toThrow("Only Code")
+				expect(mockContext.globalState.update).not.toHaveBeenCalledWith("mode", mode)
+				expect(lookup).not.toHaveBeenCalled()
+			},
+		)
+	})
+
+	describe("createTaskWithHistoryItem mode validation", () => {
+		test.each(["ask", "debug", "orchestrator", "non-existent-mode", "custom-mode"])(
+			"restores %s into Plan without mutating the supplied history",
+			async (mode) => {
+				await provider.resolveWebviewView(mockWebviewView)
+				;(provider as any).customModesManager = {
+					getCustomModes: vi
+						.fn()
+						.mockResolvedValue([
+							{ slug: "custom-mode", name: "Custom", roleDefinition: "Custom", groups: ["edit"] },
+						]),
+					dispose: vi.fn(),
+				}
+				;(provider as any).providerSettingsManager = {
+					getModeConfigId: vi.fn().mockResolvedValue(undefined),
+					listConfig: vi.fn().mockResolvedValue([]),
+				}
+				const historyItem = {
+					id: "test-id",
+					ts: Date.now(),
+					task: "Test task",
+					mode,
+					number: 1,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				}
+				await provider.createTaskWithHistoryItem(historyItem)
+				expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "architect")
+				expect(vi.mocked(Task)).toHaveBeenLastCalledWith(
+					expect.objectContaining({ historyItem: expect.objectContaining({ mode: "architect" }) }),
+				)
+				expect(historyItem.mode).toBe(mode)
+			},
+		)
+
+		test("preserves mode when it exists in built-in modes", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			// Mock no custom modes
+			const mockCustomModesManager = {
+				getCustomModes: vi.fn().mockResolvedValue([]),
+				dispose: vi.fn(),
+			}
+			;(provider as any).customModesManager = mockCustomModesManager
+
+			// Mock getModeBySlug to return built-in architect mode
+			const { getModeBySlug } = await import("../../../shared/modes")
+			vi.mocked(getModeBySlug).mockReturnValue({
+				slug: "architect",
+				name: "Architect Mode",
+				roleDefinition: "You are an architect",
+				groups: ["read", "edit"],
+			})
+
+			// Mock provider settings manager
+			;(provider as any).providerSettingsManager = {
+				getModeConfigId: vi.fn().mockResolvedValue(undefined),
+				listConfig: vi.fn().mockResolvedValue([]),
+			}
+
+			// Create history item with built-in mode
+			const historyItem = {
+				id: "test-id",
+				ts: Date.now(),
+				task: "Test task",
+				mode: "architect",
+				number: 1,
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			}
+
+			// Initialize with history item
+			await provider.createTaskWithHistoryItem(historyItem)
+
+			// Verify mode was preserved
+			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "architect")
+
+			// Verify history item mode was not changed
+			expect(historyItem.mode).toBe("architect")
+		})
+
+		test("handles history items without mode property", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			// Mock provider settings manager
+			;(provider as any).providerSettingsManager = {
+				getModeConfigId: vi.fn().mockResolvedValue(undefined),
+				listConfig: vi.fn().mockResolvedValue([]),
+			}
+
+			// Create history item without mode
+			const historyItem = {
+				id: "test-id",
+				ts: Date.now(),
+				task: "Test task",
+				// No mode property
+				number: 1,
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			}
+
+			// Initialize with history item
+			await provider.createTaskWithHistoryItem(historyItem)
+
+			// Verify no mode validation occurred (mode update not called)
+			expect(mockContext.globalState.update).not.toHaveBeenCalledWith("mode", expect.any(String))
+		})
+
+		test("settles retained automatic-result claims before constructing a replacement Task", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			let finishSettlement!: (count: number) => void
+			const retrySettlement = vi
+				.spyOn((provider as any).agentControlStore, "retryPendingMailboxClaimSettlements")
+				.mockImplementationOnce(() => new Promise<number>((resolve) => (finishSettlement = resolve)))
+			vi.mocked(Task).mockClear()
+
+			const restoring = provider.createTaskWithHistoryItem({
+				id: "replacement-task",
+				ts: Date.now(),
+				task: "Restore safely",
+				number: 1,
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			})
+			await vi.waitFor(() => expect(retrySettlement).toHaveBeenCalledWith("replacement-task"))
+			expect(Task).not.toHaveBeenCalled()
+
+			finishSettlement(1)
+			await restoring
+			expect(Task).toHaveBeenCalledOnce()
+		})
+
+		test("continues with task restoration even if mode config loading fails", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+
+			// Mock custom modes
+			const mockCustomModesManager = {
+				getCustomModes: vi.fn().mockResolvedValue([]),
+				dispose: vi.fn(),
+			}
+			;(provider as any).customModesManager = mockCustomModesManager
+
+			// Mock getModeBySlug to return built-in mode
+			const { getModeBySlug } = await import("../../../shared/modes")
+			vi.mocked(getModeBySlug).mockReturnValue({
+				slug: "code",
+				name: "Code Mode",
+				roleDefinition: "You are a code assistant",
+				groups: ["read", "edit"],
+			})
+
+			// Mock provider settings manager to throw error
+			;(provider as any).providerSettingsManager = {
+				getModeConfigId: vi.fn().mockResolvedValue("config-id"),
+				listConfig: vi
+					.fn()
+					.mockResolvedValue([{ name: "test-config", id: "config-id", apiProvider: "anthropic" }]),
+				activateProfile: vi.fn().mockRejectedValue(new Error("Failed to load config")),
+			}
+
+			// Spy on log method
+			const logSpy = vi.spyOn(provider, "log")
+
+			// Create history item
+			const historyItem = {
+				id: "test-id",
+				ts: Date.now(),
+				task: "Test task",
+				mode: "code",
+				number: 1,
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			}
+
+			// Initialize with history item - should not throw
+			await expect(provider.createTaskWithHistoryItem(historyItem)).resolves.not.toThrow()
+
+			// Verify error was logged but task restoration continued
+			expect(logSpy).toHaveBeenCalledWith(
+				expect.stringContaining("Failed to restore API configuration for mode 'code'"),
+			)
+		})
+	})
+
+	describe("updateCustomMode", () => {
+		test("updates both file and state when updating custom mode", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+			// Mock CustomModesManager methods
+			;(provider as any).customModesManager = {
+				updateCustomMode: vi.fn().mockResolvedValue(undefined),
+				getCustomModes: vi.fn().mockResolvedValue([
+					{
+						slug: "test-mode",
+						name: "Test Mode",
+						roleDefinition: "Updated role definition",
+						groups: ["read"] as const,
+					},
+				]),
+				dispose: vi.fn(),
+			} as any
+
+			// Test updating a custom mode
+			await messageHandler({
+				type: "updateCustomMode",
+				modeConfig: {
+					slug: "test-mode",
+					name: "Test Mode",
+					roleDefinition: "Updated role definition",
+					groups: ["read"] as const,
+				},
+			})
+
+			// Verify CustomModesManager.updateCustomMode was called
+			expect(provider.customModesManager.updateCustomMode).toHaveBeenCalledWith(
+				"test-mode",
+				expect.objectContaining({
+					slug: "test-mode",
+					roleDefinition: "Updated role definition",
+				}),
+			)
+
+			// Verify state was updated
+			expect(mockContext.globalState.update).toHaveBeenCalledWith("customModes", [
+				{ groups: ["read"], name: "Test Mode", roleDefinition: "Updated role definition", slug: "test-mode" },
+			])
+
+			// Verify state was posted to webview
+			// Verify state was posted to webview with correct format
+			expect(mockPostMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "state",
+					state: expect.objectContaining({
+						customModes: [
+							expect.objectContaining({
+								slug: "test-mode",
+								roleDefinition: "Updated role definition",
+							}),
+						],
+					}),
+				}),
+			)
+		})
+	})
+
+	describe("upsertApiConfiguration", () => {
+		test("handles error in upsertApiConfiguration gracefully", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+			;(provider as any).providerSettingsManager = {
+				setModeConfig: vi.fn().mockRejectedValue(new Error("Failed to update mode config")),
+				listConfig: vi
+					.fn()
+					.mockResolvedValue([{ name: "test-config", id: "test-id", apiProvider: "anthropic" }]),
+			} as any
+
+			// Mock getState to provide necessary data
+			vi.spyOn(provider, "getState").mockResolvedValue({
+				mode: "code",
+				currentApiConfigName: "test-config",
+			} as any)
+
+			// Trigger upsertApiConfiguration
+			await messageHandler({
+				type: "upsertApiConfiguration",
+				text: "test-config",
+				apiConfiguration: { apiProvider: "anthropic", apiKey: "test-key" },
+			})
+
+			// Verify error was logged and user was notified
+			expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
+				expect.stringContaining("Error create new api configuration"),
+			)
+			expect(vscode.window.showErrorMessage).toHaveBeenCalledWith("errors.create_api_config")
+		})
+
+		test("handles successful upsertApiConfiguration", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+			;(provider as any).providerSettingsManager = {
+				setModeConfig: vi.fn(),
+				saveConfig: vi.fn().mockResolvedValue(undefined),
+				listConfig: vi
+					.fn()
+					.mockResolvedValue([{ name: "test-config", id: "test-id", apiProvider: "anthropic" }]),
+			} as any
+
+			const testApiConfig = {
+				apiProvider: "anthropic" as const,
+				apiKey: "test-key",
+			}
+
+			// Trigger upsertApiConfiguration
+			await messageHandler({
+				type: "upsertApiConfiguration",
+				text: "test-config",
+				apiConfiguration: testApiConfig,
+			})
+
+			// Verify config was saved
+			expect(provider.providerSettingsManager.saveConfig).toHaveBeenCalledWith("test-config", testApiConfig)
+
+			// Verify state updates
+			expect(mockContext.globalState.update).toHaveBeenCalledWith("listApiConfigMeta", [
+				{ name: "test-config", id: "test-id", apiProvider: "anthropic" },
+			])
+			expect(mockContext.globalState.update).toHaveBeenCalledWith("currentApiConfigName", "test-config")
+
+			// Verify state was posted to webview
+			expect(mockPostMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "state" }))
+		})
+
+		test("handles buildApiHandler error in updateApiConfiguration", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+			// Mock buildApiHandler to throw an error
+			const { buildApiHandler } = await import("../../../api")
+
+			;(buildApiHandler as any).mockImplementationOnce(() => {
+				throw new Error("API handler error")
+			})
+			;(provider as any).providerSettingsManager = {
+				setModeConfig: vi.fn(),
+				saveConfig: vi.fn().mockResolvedValue(undefined),
+				listConfig: vi
+					.fn()
+					.mockResolvedValue([{ name: "test-config", id: "test-id", apiProvider: "anthropic" }]),
+			} as any
+
+			// Setup Task instance with auto-mock from the top of the file
+			const mockAlphaTask = new Task(defaultTaskOptions) // Create a new mocked instance
+			await provider.addTaskToStack(mockAlphaTask)
+
+			const testApiConfig = {
+				apiProvider: "anthropic" as const,
+				apiKey: "test-key",
+			}
+
+			// Trigger upsertApiConfiguration
+			await messageHandler({
+				type: "upsertApiConfiguration",
+				text: "test-config",
+				apiConfiguration: testApiConfig,
+			})
+
+			// Verify error handling
+			expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
+				expect.stringContaining("Error create new api configuration"),
+			)
+			expect(vscode.window.showErrorMessage).toHaveBeenCalledWith("errors.create_api_config")
+
+			// Verify state was still updated
+			expect(mockContext.globalState.update).toHaveBeenCalledWith("listApiConfigMeta", [
+				{ name: "test-config", id: "test-id", apiProvider: "anthropic" },
+			])
+			expect(mockContext.globalState.update).toHaveBeenCalledWith("currentApiConfigName", "test-config")
+		})
+
+		test("handles successful saveApiConfiguration", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+			;(provider as any).providerSettingsManager = {
+				setModeConfig: vi.fn(),
+				saveConfig: vi.fn().mockResolvedValue(undefined),
+				listConfig: vi
+					.fn()
+					.mockResolvedValue([{ name: "test-config", id: "test-id", apiProvider: "anthropic" }]),
+			} as any
+
+			const testApiConfig = {
+				apiProvider: "anthropic" as const,
+				apiKey: "test-key",
+			}
+
+			// Trigger upsertApiConfiguration
+			await messageHandler({
+				type: "saveApiConfiguration",
+				text: "test-config",
+				apiConfiguration: testApiConfig,
+			})
+
+			// Verify config was saved
+			expect(provider.providerSettingsManager.saveConfig).toHaveBeenCalledWith("test-config", testApiConfig)
+
+			// Verify state updates
+			expect(mockContext.globalState.update).toHaveBeenCalledWith("listApiConfigMeta", [
+				{ name: "test-config", id: "test-id", apiProvider: "anthropic" },
+			])
+			expect(updateGlobalStateSpy).toHaveBeenCalledWith("listApiConfigMeta", [
+				{ name: "test-config", id: "test-id", apiProvider: "anthropic" },
+			])
+		})
+	})
+})
+
+describe("Project MCP Settings", () => {
+	let provider: AlphaProvider
+	let mockContext: vscode.ExtensionContext
+	let mockOutputChannel: vscode.OutputChannel
+	let mockWebviewView: vscode.WebviewView
+	let mockPostMessage: any
+
+	beforeEach(() => {
+		vi.clearAllMocks()
+
+		mockContext = {
+			extensionPath: "/test/path",
+			extensionUri: {} as vscode.Uri,
+			globalState: {
+				get: vi.fn(),
+				update: vi.fn(),
+				keys: vi.fn().mockReturnValue([]),
+			},
+			secrets: {
+				get: vi.fn(),
+				store: vi.fn(),
+				delete: vi.fn(),
+			},
+			workspaceState: {
+				get: vi.fn().mockReturnValue(undefined),
+				update: vi.fn().mockResolvedValue(undefined),
+				keys: vi.fn().mockReturnValue([]),
+			},
+			subscriptions: [],
+			extension: {
+				packageJSON: { version: "1.0.0" },
+			},
+			globalStorageUri: {
+				fsPath: "/test/storage/path",
+			},
+		} as unknown as vscode.ExtensionContext
+
+		mockOutputChannel = {
+			appendLine: vi.fn(),
+			clear: vi.fn(),
+			dispose: vi.fn(),
+		} as unknown as vscode.OutputChannel
+
+		mockPostMessage = vi.fn()
+		mockWebviewView = {
+			webview: {
+				postMessage: mockPostMessage,
+				html: "",
+				options: {},
+				onDidReceiveMessage: vi.fn(),
+				asWebviewUri: vi.fn(),
+				cspSource: "vscode-webview://test-csp-source",
+			},
+			visible: true,
+			onDidDispose: vi.fn(),
+			onDidChangeVisibility: vi.fn(),
+		} as unknown as vscode.WebviewView
+
+		provider = new AlphaProvider(mockContext, mockOutputChannel, "sidebar", new ContextProxy(mockContext))
+	})
+
+	test.skip("handles openProjectMcpSettings message", async () => {
+		// Mock workspace folders first
+		;(vscode.workspace as any).workspaceFolders = [{ uri: { fsPath: "/test/workspace" } }]
+
+		// Mock fs functions
+		const fs = await import("fs/promises")
+		const mockedFs = vi.mocked(fs)
+		mockedFs.mkdir.mockClear()
+		mockedFs.mkdir.mockResolvedValue(undefined)
+		mockedFs.writeFile.mockClear()
+		mockedFs.writeFile.mockResolvedValue(undefined)
+
+		// Mock fileExistsAtPath to return false (file doesn't exist)
+		const fsUtils = await import("../../../utils/fs")
+		vi.spyOn(fsUtils, "fileExistsAtPath").mockResolvedValue(false)
+
+		// Mock openFile
+		const openFileModule = await import("../../../integrations/misc/open-file")
+		const openFileSpy = vi.spyOn(openFileModule, "openFile").mockClear().mockResolvedValue(undefined)
+
+		// Set up the webview
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		// Ensure the message handler is properly set up
+		expect(messageHandler).toBeDefined()
+		expect(typeof messageHandler).toBe("function")
+
+		// Trigger openProjectMcpSettings through the message handler
+		await messageHandler({
+			type: "openProjectMcpSettings",
+		})
+
+		// Check that fs.mkdir was called with the correct path
+		expect(mockedFs.mkdir).toHaveBeenCalledWith("/test/workspace/.roo", { recursive: true })
+
+		// Verify file was created with default content
+		expect(safeWriteJson).toHaveBeenCalledWith("/test/workspace/.alpha/mcp.json", { mcpServers: {} })
+
+		// Check that openFile was called
+		expect(openFileSpy).toHaveBeenCalledWith("/test/workspace/.alpha/mcp.json")
+	})
+
+	test("handles openProjectMcpSettings when workspace is not open", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		// Mock no workspace folders
+		;(vscode.workspace as any).workspaceFolders = []
+
+		// Trigger openProjectMcpSettings
+		await messageHandler({ type: "openProjectMcpSettings" })
+
+		// Verify error message was shown
+		expect(vscode.window.showErrorMessage).toHaveBeenCalledWith("errors.no_workspace")
+	})
+
+	test.skip("handles openProjectMcpSettings file creation error", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		// Mock workspace folders
+		;(vscode.workspace as any).workspaceFolders = [{ uri: { fsPath: "/test/workspace" } }]
+
+		// Mock fs functions to fail
+		const fs = require("fs/promises")
+		fs.mkdir.mockRejectedValue(new Error("Failed to create directory"))
+
+		// Trigger openProjectMcpSettings
+		await messageHandler({
+			type: "openProjectMcpSettings",
+		})
+
+		// Verify error message was shown
+		expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
+			expect.stringContaining("Failed to create or open .alpha/mcp.json"),
+		)
+	})
+})
+
+describe.skip("ContextProxy integration", () => {
+	let provider: AlphaProvider
+	let mockContext: vscode.ExtensionContext
+	let mockOutputChannel: vscode.OutputChannel
+	let mockContextProxy: any
+
+	beforeEach(() => {
+		// Reset mocks
+		vi.clearAllMocks()
+
+		// Setup basic mocks
+		mockContext = {
+			globalState: {
+				get: vi.fn(),
+				update: vi.fn(),
+				keys: vi.fn().mockReturnValue([]),
+			},
+			workspaceState: {
+				get: vi.fn().mockReturnValue(undefined),
+				update: vi.fn().mockResolvedValue(undefined),
+				keys: vi.fn().mockReturnValue([]),
+			},
+			secrets: { get: vi.fn(), store: vi.fn(), delete: vi.fn() },
+			extensionUri: {} as vscode.Uri,
+			globalStorageUri: { fsPath: "/test/path" },
+			extension: { packageJSON: { version: "1.0.0" } },
+		} as unknown as vscode.ExtensionContext
+
+		mockOutputChannel = { appendLine: vi.fn() } as unknown as vscode.OutputChannel
+		mockContextProxy = new ContextProxy(mockContext)
+		provider = new AlphaProvider(mockContext, mockOutputChannel, "sidebar", mockContextProxy)
+	})
+
+	test("updateGlobalState uses contextProxy", async () => {
+		await provider.setValue("currentApiConfigName", "testValue")
+		expect(mockContextProxy.updateGlobalState).toHaveBeenCalledWith("currentApiConfigName", "testValue")
+	})
+
+	test("getGlobalState uses contextProxy", async () => {
+		mockContextProxy.getGlobalState.mockResolvedValueOnce("testValue")
+		const result = await provider.getValue("currentApiConfigName")
+		expect(mockContextProxy.getGlobalState).toHaveBeenCalledWith("currentApiConfigName")
+		expect(result).toBe("testValue")
+	})
+
+	test("storeSecret uses contextProxy", async () => {
+		await provider.setValue("apiKey", "test-secret")
+		expect(mockContextProxy.storeSecret).toHaveBeenCalledWith("apiKey", "test-secret")
+	})
+
+	test("contextProxy methods are available", () => {
+		// Verify the contextProxy has all the required methods
+		expect(mockContextProxy.getGlobalState).toBeDefined()
+		expect(mockContextProxy.updateGlobalState).toBeDefined()
+		expect(mockContextProxy.storeSecret).toBeDefined()
+		expect(mockContextProxy.setValue).toBeDefined()
+		expect(mockContextProxy.setValues).toBeDefined()
+	})
+})
+
+describe("getTelemetryProperties", () => {
+	let defaultTaskOptions: TaskOptions
+	let provider: AlphaProvider
+	let mockContext: vscode.ExtensionContext
+	let mockOutputChannel: vscode.OutputChannel
+	let mockAlphaTask: any
+
+	beforeEach(() => {
+		// Reset mocks
+		vi.clearAllMocks()
+
+		// Initialize TelemetryService if not already initialized
+		if (!TelemetryService.hasInstance()) {
+			TelemetryService.createInstance([])
+		}
+
+		// Setup basic mocks
+		mockContext = {
+			globalState: {
+				get: vi.fn().mockImplementation((key: string) => {
+					if (key === "mode") return "code"
+					if (key === "apiProvider") return "anthropic"
+					return undefined
+				}),
+				update: vi.fn(),
+				keys: vi.fn().mockReturnValue([]),
+			},
+			workspaceState: {
+				get: vi.fn().mockReturnValue(undefined),
+				update: vi.fn().mockResolvedValue(undefined),
+				keys: vi.fn().mockReturnValue([]),
+			},
+			secrets: { get: vi.fn(), store: vi.fn(), delete: vi.fn() },
+			extensionUri: {} as vscode.Uri,
+			globalStorageUri: { fsPath: "/test/path" },
+			extension: { packageJSON: { version: "1.0.0" } },
+		} as unknown as vscode.ExtensionContext
+
+		mockOutputChannel = { appendLine: vi.fn() } as unknown as vscode.OutputChannel
+		provider = new AlphaProvider(mockContext, mockOutputChannel, "sidebar", new ContextProxy(mockContext))
+
+		defaultTaskOptions = {
+			provider,
+			apiConfiguration: {
+				apiProvider: "openrouter",
+			},
+		}
+
+		// Setup Task instance with mocked getModel method
+		mockAlphaTask = new Task(defaultTaskOptions)
+		mockAlphaTask.api = {
+			getModel: vi.fn().mockReturnValue({
+				id: "claude-sonnet-4-20250514",
+				info: { contextWindow: 200000 },
+			}),
+		}
+		;(mockAlphaTask as any).getTaskMode = vi.fn().mockResolvedValue("code")
+	})
+
+	test("includes basic properties in telemetry", async () => {
+		const properties = await provider.getTelemetryProperties()
+
+		expect(properties).toHaveProperty("vscodeVersion")
+		expect(properties).toHaveProperty("platform")
+		expect(properties).toHaveProperty("appVersion", "1.0.0")
+	})
+
+	test("includes model ID from current Alpha instance if available", async () => {
+		// Add mock Alpha to stack
+		await provider.addTaskToStack(mockAlphaTask)
+
+		const properties = await provider.getTelemetryProperties()
+
+		expect(properties).toHaveProperty("modelId", "claude-sonnet-4-20250514")
+	})
+})
+
+describe("AlphaProvider - Router Models", () => {
+	let provider: AlphaProvider
+	let mockContext: vscode.ExtensionContext
+	let mockOutputChannel: vscode.OutputChannel
+	let mockWebviewView: vscode.WebviewView
+	let mockPostMessage: any
+
+	beforeEach(() => {
+		vi.clearAllMocks()
+
+		const globalState: Record<string, string | undefined> = {}
+		const secrets: Record<string, string | undefined> = {}
+
+		mockContext = {
+			extensionPath: "/test/path",
+			extensionUri: {} as vscode.Uri,
+			globalState: {
+				get: vi.fn().mockImplementation((key: string) => globalState[key]),
+				update: vi
+					.fn()
+					.mockImplementation((key: string, value: string | undefined) => (globalState[key] = value)),
+				keys: vi.fn().mockImplementation(() => Object.keys(globalState)),
+			},
+			secrets: {
+				get: vi.fn().mockImplementation((key: string) => secrets[key]),
+				store: vi.fn().mockImplementation((key: string, value: string | undefined) => (secrets[key] = value)),
+				delete: vi.fn().mockImplementation((key: string) => delete secrets[key]),
+			},
+			workspaceState: {
+				get: vi.fn().mockReturnValue(undefined),
+				update: vi.fn().mockResolvedValue(undefined),
+				keys: vi.fn().mockReturnValue([]),
+			},
+			subscriptions: [],
+			extension: {
+				packageJSON: { version: "1.0.0" },
+			},
+			globalStorageUri: {
+				fsPath: "/test/storage/path",
+			},
+		} as unknown as vscode.ExtensionContext
+
+		mockOutputChannel = {
+			appendLine: vi.fn(),
+			clear: vi.fn(),
+			dispose: vi.fn(),
+		} as unknown as vscode.OutputChannel
+
+		mockPostMessage = vi.fn()
+		mockWebviewView = {
+			webview: {
+				postMessage: mockPostMessage,
+				html: "",
+				options: {},
+				onDidReceiveMessage: vi.fn(),
+				asWebviewUri: vi.fn(),
+			},
+			visible: true,
+			onDidDispose: vi.fn().mockImplementation((callback) => {
+				callback()
+				return { dispose: vi.fn() }
+			}),
+			onDidChangeVisibility: vi.fn().mockImplementation(() => ({ dispose: vi.fn() })),
+		} as unknown as vscode.WebviewView
+
+		if (!TelemetryService.hasInstance()) {
+			TelemetryService.createInstance([])
+		}
+
+		provider = new AlphaProvider(mockContext, mockOutputChannel, "sidebar", new ContextProxy(mockContext))
+	})
+
+	test("handles requestRouterModels with successful responses", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		// Mock getState to return API configuration
+		vi.spyOn(provider, "getState").mockResolvedValue({
+			apiConfiguration: {
+				openRouterApiKey: "openrouter-key",
+				requestyApiKey: "requesty-key",
+				litellmApiKey: "litellm-key",
+				litellmBaseUrl: "http://localhost:4000",
+			},
+		} as any)
+
+		const mockModels = {
+			"model-1": {
+				maxTokens: 4096,
+				contextWindow: 8192,
+				description: "Test model 1",
+				supportsPromptCache: false,
+			},
+			"model-2": {
+				maxTokens: 8192,
+				contextWindow: 16384,
+				description: "Test model 2",
+				supportsPromptCache: false,
+			},
+		}
+
+		const { getModels } = await import("../../../api/providers/fetchers/modelCache")
+		vi.mocked(getModels).mockResolvedValue(mockModels)
+
+		await messageHandler({ type: "requestRouterModels" })
+
+		// Verify getModels was called for each provider with correct options
+		expect(getModels).toHaveBeenCalledWith({ provider: "openrouter" })
+		expect(getModels).toHaveBeenCalledWith({ provider: "requesty", apiKey: "requesty-key" })
+		expect(getModels).toHaveBeenCalledWith({ provider: "unbound" })
+		expect(getModels).toHaveBeenCalledWith({ provider: "vercel-ai-gateway" })
+		expect(getModels).toHaveBeenCalledWith({
+			provider: "litellm",
+			apiKey: "litellm-key",
+			baseUrl: "http://localhost:4000",
+		})
+
+		// Verify response was sent
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "routerModels",
+			routerModels: {
+				openrouter: mockModels,
+				requesty: mockModels,
+				unbound: mockModels,
+				litellm: mockModels,
+				ollama: {},
+				lmstudio: {},
+				"vercel-ai-gateway": mockModels,
+				poe: {},
+			},
+			values: undefined,
+		})
+	})
+
+	test("handles requestRouterModels with individual provider failures", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		vi.spyOn(provider, "getState").mockResolvedValue({
+			apiConfiguration: {
+				openRouterApiKey: "openrouter-key",
+				requestyApiKey: "requesty-key",
+				litellmApiKey: "litellm-key",
+				litellmBaseUrl: "http://localhost:4000",
+			},
+		} as any)
+
+		const mockModels = {
+			"model-1": { maxTokens: 4096, contextWindow: 8192, description: "Test model", supportsPromptCache: false },
+		}
+		const { getModels } = await import("../../../api/providers/fetchers/modelCache")
+
+		// Mock some providers to succeed and others to fail
+		vi.mocked(getModels)
+			.mockResolvedValueOnce(mockModels) // openrouter success
+			.mockRejectedValueOnce(new Error("Requesty API error")) // requesty fail
+			.mockResolvedValueOnce(mockModels) // unbound success
+			.mockResolvedValueOnce(mockModels) // vercel-ai-gateway success
+			.mockRejectedValueOnce(new Error("LiteLLM connection failed")) // litellm fail
+
+		await messageHandler({ type: "requestRouterModels" })
+
+		// Verify main response includes successful providers and empty objects for failed ones
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "routerModels",
+			routerModels: {
+				openrouter: mockModels,
+				requesty: {},
+				unbound: mockModels,
+				ollama: {},
+				lmstudio: {},
+				litellm: {},
+				"vercel-ai-gateway": mockModels,
+				poe: {},
+			},
+			values: undefined,
+		})
+
+		// Verify error messages were sent for failed providers
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "singleRouterModelFetchResponse",
+			success: false,
+			error: "Requesty API error",
+			values: { provider: "requesty" },
+		})
+
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "singleRouterModelFetchResponse",
+			success: false,
+			error: "LiteLLM connection failed",
+			values: { provider: "litellm" },
+		})
+	})
+
+	test("handles requestRouterModels with LiteLLM values from message", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		// Mock state without LiteLLM config
+		vi.spyOn(provider, "getState").mockResolvedValue({
+			apiConfiguration: {
+				openRouterApiKey: "openrouter-key",
+				requestyApiKey: "requesty-key",
+				// No litellm config
+			},
+		} as any)
+
+		const mockModels = {
+			"model-1": { maxTokens: 4096, contextWindow: 8192, description: "Test model", supportsPromptCache: false },
+		}
+		const { getModels } = await import("../../../api/providers/fetchers/modelCache")
+		vi.mocked(getModels).mockResolvedValue(mockModels)
+
+		await messageHandler({
+			type: "requestRouterModels",
+			values: {
+				litellmApiKey: "message-litellm-key",
+				litellmBaseUrl: "http://message-url:4000",
+			},
+		})
+
+		// Verify LiteLLM was called with values from message
+		expect(getModels).toHaveBeenCalledWith({
+			provider: "litellm",
+			apiKey: "message-litellm-key",
+			baseUrl: "http://message-url:4000",
+		})
+	})
+
+	test("skips LiteLLM when neither config nor message values are provided", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		vi.spyOn(provider, "getState").mockResolvedValue({
+			apiConfiguration: {
+				openRouterApiKey: "openrouter-key",
+				requestyApiKey: "requesty-key",
+				// No litellm config
+			},
+		} as any)
+
+		const mockModels = {
+			"model-1": { maxTokens: 4096, contextWindow: 8192, description: "Test model", supportsPromptCache: false },
+		}
+		const { getModels } = await import("../../../api/providers/fetchers/modelCache")
+		vi.mocked(getModels).mockResolvedValue(mockModels)
+
+		await messageHandler({ type: "requestRouterModels" })
+
+		// Verify LiteLLM was NOT called
+		expect(getModels).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				provider: "litellm",
+			}),
+		)
+
+		// Verify response includes empty object for LiteLLM
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "routerModels",
+			routerModels: {
+				openrouter: mockModels,
+				requesty: mockModels,
+				unbound: mockModels,
+				litellm: {},
+				ollama: {},
+				lmstudio: {},
+				"vercel-ai-gateway": mockModels,
+				poe: {},
+			},
+			values: undefined,
+		})
+	})
+
+	test("handles requestLmStudioModels with proper response", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+		vi.spyOn(provider, "getState").mockResolvedValue({
+			apiConfiguration: {
+				lmStudioModelId: "model-1",
+				lmStudioBaseUrl: "http://localhost:1234",
+			},
+		} as any)
+
+		const mockModels = {
+			"model-1": { maxTokens: 4096, contextWindow: 8192, description: "Test model", supportsPromptCache: false },
+		}
+		const { getModels } = await import("../../../api/providers/fetchers/modelCache")
+		vi.mocked(getModels).mockResolvedValue(mockModels)
+
+		await messageHandler({
+			type: "requestLmStudioModels",
+		})
+
+		expect(getModels).toHaveBeenCalledWith({
+			provider: "lmstudio",
+			baseUrl: "http://localhost:1234",
+		})
+	})
+})
+
+describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
+	let provider: AlphaProvider
+	let mockContext: vscode.ExtensionContext
+	let mockOutputChannel: vscode.OutputChannel
+	let mockWebviewView: vscode.WebviewView
+	let mockPostMessage: any
+	let defaultTaskOptions: TaskOptions
+
+	beforeEach(() => {
+		vi.clearAllMocks()
+
+		if (!TelemetryService.hasInstance()) {
+			TelemetryService.createInstance([])
+		}
+
+		const globalState: Record<string, string | undefined> = {
+			mode: "code",
+			currentApiConfigName: "current-config",
+		}
+
+		const secrets: Record<string, string | undefined> = {}
+
+		mockContext = {
+			extensionPath: "/test/path",
+			extensionUri: {} as vscode.Uri,
+			globalState: {
+				get: vi.fn().mockImplementation((key: string) => globalState[key]),
+				update: vi
+					.fn()
+					.mockImplementation((key: string, value: string | undefined) => (globalState[key] = value)),
+				keys: vi.fn().mockImplementation(() => Object.keys(globalState)),
+			},
+			secrets: {
+				get: vi.fn().mockImplementation((key: string) => secrets[key]),
+				store: vi.fn().mockImplementation((key: string, value: string | undefined) => (secrets[key] = value)),
+				delete: vi.fn().mockImplementation((key: string) => delete secrets[key]),
+			},
+			workspaceState: {
+				get: vi.fn().mockReturnValue(undefined),
+				update: vi.fn().mockResolvedValue(undefined),
+				keys: vi.fn().mockReturnValue([]),
+			},
+			subscriptions: [],
+			extension: {
+				packageJSON: { version: "1.0.0" },
+			},
+			globalStorageUri: {
+				fsPath: "/test/storage/path",
+			},
+		} as unknown as vscode.ExtensionContext
+
+		mockOutputChannel = {
+			appendLine: vi.fn(),
+			clear: vi.fn(),
+			dispose: vi.fn(),
+		} as unknown as vscode.OutputChannel
+
+		mockPostMessage = vi.fn()
+
+		mockWebviewView = {
+			webview: {
+				postMessage: mockPostMessage,
+				html: "",
+				options: {},
+				onDidReceiveMessage: vi.fn(),
+				asWebviewUri: vi.fn(),
+			},
+			visible: true,
+			onDidDispose: vi.fn().mockImplementation((callback) => {
+				callback()
+				return { dispose: vi.fn() }
+			}),
+			onDidChangeVisibility: vi.fn().mockImplementation(() => ({ dispose: vi.fn() })),
+		} as unknown as vscode.WebviewView
+
+		provider = new AlphaProvider(mockContext, mockOutputChannel, "sidebar", new ContextProxy(mockContext))
+
+		defaultTaskOptions = {
+			provider,
+			apiConfiguration: {
+				apiProvider: "openrouter",
+			},
+		}
+
+		// Mock getMcpHub method
+		provider.getMcpHub = vi.fn().mockReturnValue({
+			listTools: vi.fn().mockResolvedValue([]),
+			callTool: vi.fn().mockResolvedValue({ content: [] }),
+			listResources: vi.fn().mockResolvedValue([]),
+			readResource: vi.fn().mockResolvedValue({ contents: [] }),
+			getAllServers: vi.fn().mockReturnValue([]),
+		})
+	})
+
+	describe("Edit Messages with Images and Attachments", () => {
+		beforeEach(async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+		})
+
+		test("handles editing messages containing images", async () => {
+			const mockMessages = [
+				{ ts: 1000, type: "say", say: "user_feedback", text: "Original message" },
+				{
+					ts: 2000,
+					type: "say",
+					say: "user_feedback",
+					text: "Message with image",
+					images: [
+						"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==",
+					],
+					value: 3000,
+				},
+				{ ts: 3000, type: "say", say: "text", text: "AI response" },
+			] as AlphaMessage[]
+
+			const mockAlphaTask = new Task(defaultTaskOptions)
+			mockAlphaTask.clineMessages = mockMessages
+			mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }, { ts: 3000 }] as any[]
+			mockAlphaTask.overwriteAlphaMessages = vi.fn()
+			mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+			const resumeWithEditedMessage = vi.fn()
+			vi.spyOn(provider, "createTaskWithHistoryItem").mockResolvedValue({
+				resumeWithEditedMessage,
+			} as unknown as Task)
+
+			await provider.addTaskToStack(mockAlphaTask)
+			;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+				historyItem: { id: "test-task-id" },
+			})
+
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+			await messageHandler({
+				type: "submitEditedMessage",
+				value: 3000,
+				editedMessageContent: "Edited message with preserved images",
+			})
+
+			// Verify dialog was shown
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "showEditMessageDialog",
+				taskId: "test-task-id",
+				messageTs: 3000,
+				text: "Edited message with preserved images",
+				hasCheckpoint: false,
+				images: undefined,
+			})
+
+			// Simulate confirmation
+			await messageHandler({
+				type: "editMessageConfirm",
+				messageTs: 3000,
+				text: "Edited message with preserved images",
+			})
+
+			// Verify messages were edited correctly - the ORIGINAL user message and all subsequent messages are removed
+			expect(mockAlphaTask.overwriteAlphaMessages).toHaveBeenCalledWith([mockMessages[0]])
+			expect(mockAlphaTask.overwriteApiConversationHistory).toHaveBeenCalledWith([{ ts: 1000 }])
+			// The fresh instance admits the edited content after rewind.
+			expect(resumeWithEditedMessage).toHaveBeenCalledWith("Edited message with preserved images", [])
+		})
+
+		test("handles editing messages with file attachments", async () => {
+			const mockMessages = [
+				{ ts: 1000, type: "say", say: "user_feedback", text: "Original message" },
+				{
+					ts: 2000,
+					type: "say",
+					say: "user_feedback",
+					text: "Message with file",
+					attachments: [{ path: "/path/to/file.txt", type: "file" }],
+					value: 3000,
+				},
+				{ ts: 3000, type: "say", say: "text", text: "AI response" },
+			] as AlphaMessage[]
+
+			const mockAlphaTask = new Task(defaultTaskOptions)
+			mockAlphaTask.clineMessages = mockMessages
+			mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }, { ts: 3000 }] as any[]
+			mockAlphaTask.overwriteAlphaMessages = vi.fn()
+			mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+			const resumeWithEditedMessage = vi.fn()
+			vi.spyOn(provider, "createTaskWithHistoryItem").mockResolvedValue({
+				resumeWithEditedMessage,
+			} as unknown as Task)
+
+			await provider.addTaskToStack(mockAlphaTask)
+			;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+				historyItem: { id: "test-task-id" },
+			})
+
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+			await messageHandler({
+				type: "submitEditedMessage",
+				value: 3000,
+				editedMessageContent: "Edited message with file attachment",
+			})
+
+			// Verify dialog was shown
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "showEditMessageDialog",
+				taskId: "test-task-id",
+				messageTs: 3000,
+				text: "Edited message with file attachment",
+				hasCheckpoint: false,
+				images: undefined,
+			})
+
+			// Simulate user confirming the edit
+			await messageHandler({
+				type: "editMessageConfirm",
+				messageTs: 3000,
+				text: "Edited message with file attachment",
+			})
+
+			expect(mockAlphaTask.overwriteAlphaMessages).toHaveBeenCalled()
+			expect(resumeWithEditedMessage).toHaveBeenCalledWith("Edited message with file attachment", [])
+		})
+	})
+
+	describe("Network Failure Scenarios", () => {
+		beforeEach(async () => {
+			;(vscode.window.showInformationMessage as any) = vi.fn()
+			await provider.resolveWebviewView(mockWebviewView)
+		})
+
+		test("handles network timeout during edit submission", async () => {
+			const mockAlphaTask = new Task(defaultTaskOptions)
+			mockAlphaTask.clineMessages = [
+				{ ts: 1000, type: "say", say: "user_feedback", text: "Original message", value: 2000 },
+				{ ts: 2000, type: "say", say: "text", text: "AI response" },
+			] as AlphaMessage[]
+			mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }] as any[]
+			mockAlphaTask.overwriteAlphaMessages = vi.fn()
+			mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+			mockAlphaTask.handleWebviewAskResponse = vi.fn().mockRejectedValue(new Error("Network timeout"))
+
+			await provider.addTaskToStack(mockAlphaTask)
+			;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+				historyItem: { id: "test-task-id" },
+			})
+
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+			// Should not throw error, but handle gracefully
+			await expect(
+				messageHandler({
+					type: "submitEditedMessage",
+					value: 2000,
+					editedMessageContent: "Edited message",
+				}),
+			).resolves.toBeUndefined()
+
+			// Verify dialog was shown
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "showEditMessageDialog",
+				taskId: "test-task-id",
+				messageTs: 2000,
+				text: "Edited message",
+				hasCheckpoint: false,
+				images: undefined,
+			})
+
+			// Simulate user confirming the edit
+			await messageHandler({ type: "editMessageConfirm", messageTs: 2000, text: "Edited message" })
+
+			expect(mockAlphaTask.overwriteAlphaMessages).toHaveBeenCalled()
+		})
+
+		test("handles connection drops during edit operation", async () => {
+			const mockAlphaTask = new Task(defaultTaskOptions)
+			mockAlphaTask.clineMessages = [
+				{ ts: 1000, type: "say", say: "user_feedback", text: "Original message", value: 2000 },
+				{ ts: 2000, type: "say", say: "text", text: "AI response" },
+			] as AlphaMessage[]
+			mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }] as any[]
+			mockAlphaTask.overwriteAlphaMessages = vi.fn().mockRejectedValue(new Error("Connection lost"))
+			mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+			mockAlphaTask.handleWebviewAskResponse = vi.fn()
+
+			await provider.addTaskToStack(mockAlphaTask)
+			;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+				historyItem: { id: "test-task-id" },
+			})
+
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+			// Should handle connection error gracefully
+			await expect(
+				messageHandler({
+					type: "submitEditedMessage",
+					value: 2000,
+					editedMessageContent: "Edited message",
+				}),
+			).resolves.toBeUndefined()
+
+			// Verify dialog was shown
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "showEditMessageDialog",
+				taskId: "test-task-id",
+				messageTs: 2000,
+				text: "Edited message",
+				hasCheckpoint: false,
+				images: undefined,
+			})
+
+			// Simulate user confirming the edit
+			await messageHandler({ type: "editMessageConfirm", messageTs: 2000, text: "Edited message" })
+
+			// The error should be caught and shown
+			expect(vscode.window.showErrorMessage).toHaveBeenCalledWith("errors.message.error_editing_message")
+		})
+	})
+
+	describe("Concurrent Edit Operations", () => {
+		beforeEach(async () => {
+			;(vscode.window.showInformationMessage as any) = vi.fn()
+			await provider.resolveWebviewView(mockWebviewView)
+		})
+
+		test("handles race conditions with simultaneous edits", async () => {
+			const mockAlphaTask = new Task(defaultTaskOptions)
+			mockAlphaTask.clineMessages = [
+				{ ts: 1000, type: "say", say: "user_feedback", text: "Message 1", value: 2000 },
+				{ ts: 2000, type: "say", say: "text", text: "AI response 1" },
+				{ ts: 3000, type: "say", say: "user_feedback", text: "Message 2", value: 4000 },
+				{ ts: 4000, type: "say", say: "text", text: "AI response 2" },
+			] as AlphaMessage[]
+			mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }, { ts: 3000 }, { ts: 4000 }] as any[]
+			mockAlphaTask.overwriteAlphaMessages = vi.fn()
+			mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+			mockAlphaTask.handleWebviewAskResponse = vi.fn()
+
+			await provider.addTaskToStack(mockAlphaTask)
+			;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+				historyItem: { id: "test-task-id" },
+			})
+
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+			// Simulate concurrent edit operations
+			const edit1Promise = messageHandler({
+				type: "submitEditedMessage",
+				value: 2000,
+				editedMessageContent: "Edited message 1",
+			})
+
+			const edit2Promise = messageHandler({
+				type: "submitEditedMessage",
+				value: 4000,
+				editedMessageContent: "Edited message 2",
+			})
+
+			await Promise.all([edit1Promise, edit2Promise])
+
+			// Verify dialogs were shown for both edits
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "showEditMessageDialog",
+				taskId: "test-task-id",
+				messageTs: 2000,
+				text: "Edited message 1",
+				hasCheckpoint: false,
+				images: undefined,
+			})
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "showEditMessageDialog",
+				taskId: "test-task-id",
+				messageTs: 4000,
+				text: "Edited message 2",
+				hasCheckpoint: false,
+				images: undefined,
+			})
+
+			// Simulate user confirming both edits
+			await messageHandler({ type: "editMessageConfirm", messageTs: 2000, text: "Edited message 1" })
+			await messageHandler({ type: "editMessageConfirm", messageTs: 4000, text: "Edited message 2" })
+
+			// Both operations should complete without throwing
+			expect(mockAlphaTask.overwriteAlphaMessages).toHaveBeenCalled()
+		})
+	})
+
+	describe("Edit Permissions and Authorization", () => {
+		beforeEach(async () => {
+			;(vscode.window.showInformationMessage as any) = vi.fn()
+			await provider.resolveWebviewView(mockWebviewView)
+		})
+
+		test("handles edit permission failures", async () => {
+			// Mock no current cline (simulating permission failure)
+			vi.spyOn(provider, "getCurrentTask").mockReturnValue(undefined)
+
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+			await messageHandler({
+				type: "submitEditedMessage",
+				value: 2000,
+				editedMessageContent: "Edited message",
+			})
+
+			// Should not show confirmation dialog when no current cline
+			expect(vscode.window.showInformationMessage).not.toHaveBeenCalled()
+		})
+
+		test("handles authorization failures during edit", async () => {
+			const mockAlphaTask = new Task(defaultTaskOptions)
+			mockAlphaTask.clineMessages = [
+				{ ts: 1000, type: "say", say: "user_feedback", text: "Original message", value: 2000 },
+				{ ts: 2000, type: "say", say: "text", text: "AI response" },
+			] as AlphaMessage[]
+			mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }] as any[]
+			mockAlphaTask.overwriteAlphaMessages = vi.fn().mockRejectedValue(new Error("Unauthorized"))
+			mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+			mockAlphaTask.handleWebviewAskResponse = vi.fn()
+
+			await provider.addTaskToStack(mockAlphaTask)
+			;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+				historyItem: { id: "test-task-id" },
+			})
+
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+			await messageHandler({
+				type: "submitEditedMessage",
+				value: 2000,
+				editedMessageContent: "Edited message",
+			})
+
+			// Simulate confirmation
+			await messageHandler({
+				type: "editMessageConfirm",
+				messageTs: 2000,
+				text: "Edited message",
+			})
+
+			expect(vscode.window.showErrorMessage).toHaveBeenCalledWith("errors.message.error_editing_message")
+		})
+
+		describe("Malformed Requests and Invalid Formats", () => {
+			beforeEach(async () => {
+				await provider.resolveWebviewView(mockWebviewView)
+			})
+
+			test("handles malformed edit requests", async () => {
+				const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+				// Test with missing value
+				await messageHandler({
+					type: "submitEditedMessage",
+					editedMessageContent: "Edited message",
+				})
+
+				// Test with invalid value type
+				await messageHandler({
+					type: "submitEditedMessage",
+					value: "invalid",
+					editedMessageContent: "Edited message",
+				})
+
+				// Test with missing editedMessageContent
+				await messageHandler({
+					type: "submitEditedMessage",
+					value: 2000,
+				})
+
+				// Should not show confirmation dialog for malformed requests
+				expect(vscode.window.showInformationMessage).not.toHaveBeenCalled()
+			})
+
+			test("handles invalid message formats", async () => {
+				const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+				// Malformed webview input is untrusted and must not reject the listener queue.
+				await expect(messageHandler(null)).resolves.toBeUndefined()
+
+				await expect(messageHandler(undefined)).resolves.toBeUndefined()
+
+				// Test with message missing type
+				await expect(
+					messageHandler({
+						value: 2000,
+						editedMessageContent: "Edited message",
+					}),
+				).resolves.toBeUndefined()
+
+				expect(vscode.window.showInformationMessage).not.toHaveBeenCalled()
+			})
+
+			test("handles invalid timestamp values", async () => {
+				;(vscode.window.showInformationMessage as any) = vi.fn()
+
+				const mockAlphaTask = new Task(defaultTaskOptions)
+				mockAlphaTask.clineMessages = [
+					{ ts: 1000, type: "say", say: "user_feedback", text: "Original message" },
+					{ ts: 2000, type: "say", say: "text", text: "AI response" },
+				] as AlphaMessage[]
+				mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }] as any[]
+
+				await provider.addTaskToStack(mockAlphaTask)
+
+				const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+				// Test with negative timestamp
+				await messageHandler({
+					type: "deleteMessage",
+					value: -1000,
+				})
+
+				// Test with zero timestamp
+				await messageHandler({
+					type: "deleteMessage",
+					value: 0,
+				})
+
+				// Invalid timestamps may still trigger confirmation dialog
+				// This is expected behavior as the system tries to process the message
+			})
+		})
+
+		describe("Operations on Deleted or Non-existent Messages", () => {
+			beforeEach(async () => {
+				;(vscode.window.showInformationMessage as any) = vi.fn()
+				await provider.resolveWebviewView(mockWebviewView)
+			})
+
+			test("handles edit operations on deleted messages", async () => {
+				const mockAlphaTask = new Task(defaultTaskOptions)
+				mockAlphaTask.clineMessages = [
+					{ ts: 1000, type: "say", say: "user_feedback", text: "Existing message" },
+				] as AlphaMessage[]
+				mockAlphaTask.apiConversationHistory = [{ ts: 1000 }] as any[]
+				mockAlphaTask.overwriteAlphaMessages = vi.fn()
+				mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+				mockAlphaTask.handleWebviewAskResponse = vi.fn()
+
+				await provider.addTaskToStack(mockAlphaTask)
+				;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+					historyItem: { id: "test-task-id" },
+				})
+
+				const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+				// Try to edit a message that doesn't exist (timestamp 5000)
+				await messageHandler({
+					type: "submitEditedMessage",
+					value: 5000,
+					editedMessageContent: "Edited non-existent message",
+				})
+
+				expect(mockPostMessage).not.toHaveBeenCalledWith(
+					expect.objectContaining({ type: "showEditMessageDialog" }),
+				)
+
+				// Simulate user confirming the edit
+				await messageHandler({
+					type: "editMessageConfirm",
+					messageTs: 5000,
+					text: "Edited non-existent message",
+				})
+
+				// Should not perform any operations since message doesn't exist
+				expect(mockAlphaTask.overwriteAlphaMessages).not.toHaveBeenCalled()
+				expect(mockAlphaTask.handleWebviewAskResponse).not.toHaveBeenCalled()
+			})
+
+			test("handles delete operations on non-existent messages", async () => {
+				const mockAlphaTask = new Task(defaultTaskOptions)
+				mockAlphaTask.clineMessages = [
+					{ ts: 1000, type: "say", say: "user_feedback", text: "Existing message" },
+				] as AlphaMessage[]
+				mockAlphaTask.apiConversationHistory = [{ ts: 1000 }] as any[]
+				mockAlphaTask.overwriteAlphaMessages = vi.fn()
+				mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+
+				await provider.addTaskToStack(mockAlphaTask)
+				;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+					historyItem: { id: "test-task-id" },
+				})
+
+				const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+				// Try to delete a message that doesn't exist (timestamp 5000)
+				await messageHandler({
+					type: "deleteMessage",
+					value: 5000,
+				})
+
+				// Should show delete dialog
+				expect(mockPostMessage).toHaveBeenCalledWith({
+					type: "showDeleteMessageDialog",
+					taskId: "test-task-id",
+					messageTs: 5000,
+					hasCheckpoint: false,
+				})
+
+				// Simulate user confirming the delete
+				await messageHandler({ type: "deleteMessageConfirm", messageTs: 5000 })
+
+				// Should not perform any operations since message doesn't exist
+				expect(mockAlphaTask.overwriteAlphaMessages).not.toHaveBeenCalled()
+			})
+		})
+
+		describe("Resource Cleanup During Failed Operations", () => {
+			beforeEach(async () => {
+				;(vscode.window.showInformationMessage as any) = vi.fn()
+				await provider.resolveWebviewView(mockWebviewView)
+			})
+
+			test("validates proper cleanup during failed edit operations", async () => {
+				const mockAlphaTask = new Task(defaultTaskOptions)
+				mockAlphaTask.clineMessages = [
+					{ ts: 1000, type: "say", say: "user_feedback", text: "Original message", value: 2000 },
+					{ ts: 2000, type: "say", say: "text", text: "AI response" },
+				] as AlphaMessage[]
+				mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }] as any[]
+
+				// Mock cleanup tracking
+				const cleanupSpy = vi.fn()
+				mockAlphaTask.overwriteAlphaMessages = vi.fn().mockImplementation(() => {
+					cleanupSpy()
+					throw new Error("Operation failed")
+				})
+				mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+				mockAlphaTask.handleWebviewAskResponse = vi.fn()
+
+				await provider.addTaskToStack(mockAlphaTask)
+				;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+					historyItem: { id: "test-task-id" },
+				})
+
+				const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+				await messageHandler({
+					type: "submitEditedMessage",
+					value: 2000,
+					editedMessageContent: "Edited message",
+				})
+
+				// Should show edit dialog
+				expect(mockPostMessage).toHaveBeenCalledWith({
+					type: "showEditMessageDialog",
+					taskId: "test-task-id",
+					messageTs: 2000,
+					text: "Edited message",
+					hasCheckpoint: false,
+					images: undefined,
+				})
+
+				// Simulate user confirming the edit
+				await messageHandler({ type: "editMessageConfirm", messageTs: 2000, text: "Edited message" })
+
+				// Verify cleanup was attempted before failure
+				expect(cleanupSpy).toHaveBeenCalled()
+				expect(vscode.window.showErrorMessage).toHaveBeenCalledWith("errors.message.error_editing_message")
+			})
+
+			test("validates proper cleanup during failed delete operations", async () => {
+				const mockAlphaTask = new Task(defaultTaskOptions)
+				mockAlphaTask.clineMessages = [
+					{ ts: 1000, type: "say", say: "user_feedback", text: "Message to delete" },
+					{ ts: 2000, type: "say", say: "text", text: "AI response" },
+				] as AlphaMessage[]
+				mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }] as any[]
+
+				// Mock cleanup tracking
+				const cleanupSpy = vi.fn()
+				mockAlphaTask.overwriteAlphaMessages = vi.fn().mockImplementation(() => {
+					cleanupSpy()
+					throw new Error("Delete operation failed")
+				})
+				mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+
+				await provider.addTaskToStack(mockAlphaTask)
+				;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+					historyItem: { id: "test-task-id" },
+				})
+
+				const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+				await messageHandler({ type: "deleteMessage", value: 2000 })
+
+				// Should show delete dialog
+				expect(mockPostMessage).toHaveBeenCalledWith({
+					type: "showDeleteMessageDialog",
+					taskId: "test-task-id",
+					messageTs: 2000,
+					hasCheckpoint: false,
+				})
+
+				// Simulate user confirming the delete
+				await messageHandler({ type: "deleteMessageConfirm", messageTs: 2000 })
+
+				// Verify cleanup was attempted before failure
+				expect(cleanupSpy).toHaveBeenCalled()
+				expect(vscode.window.showErrorMessage).toHaveBeenCalledWith("errors.message.error_deleting_message")
+			})
+		})
+
+		describe("Large Message Payloads", () => {
+			beforeEach(async () => {
+				;(vscode.window.showInformationMessage as any) = vi.fn()
+				await provider.resolveWebviewView(mockWebviewView)
+			})
+
+			test("handles editing messages with large text content", async () => {
+				// Create a large message (10KB of text)
+				const largeText = "A".repeat(10000)
+				const mockMessages = [
+					{ ts: 1000, type: "say", say: "user_feedback", text: largeText, value: 2000 },
+					{ ts: 2000, type: "say", say: "text", text: "AI response" },
+				] as AlphaMessage[]
+
+				const mockAlphaTask = new Task(defaultTaskOptions)
+				mockAlphaTask.clineMessages = mockMessages
+				mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }] as any[]
+				mockAlphaTask.overwriteAlphaMessages = vi.fn()
+				mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+				const resumeWithEditedMessage = vi.fn()
+				vi.spyOn(provider, "createTaskWithHistoryItem").mockResolvedValue({
+					resumeWithEditedMessage,
+				} as unknown as Task)
+
+				await provider.addTaskToStack(mockAlphaTask)
+				;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+					historyItem: { id: "test-task-id" },
+				})
+
+				const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+				const largeEditedContent = "B".repeat(15000)
+				await messageHandler({
+					type: "submitEditedMessage",
+					value: 2000,
+					editedMessageContent: largeEditedContent,
+				})
+
+				// Should show edit dialog
+				expect(mockPostMessage).toHaveBeenCalledWith({
+					type: "showEditMessageDialog",
+					taskId: "test-task-id",
+					messageTs: 2000,
+					text: largeEditedContent,
+					hasCheckpoint: false,
+					images: undefined,
+				})
+
+				// Simulate user confirming the edit
+				await messageHandler({ type: "editMessageConfirm", messageTs: 2000, text: largeEditedContent })
+
+				expect(mockAlphaTask.overwriteAlphaMessages).toHaveBeenCalled()
+				expect(resumeWithEditedMessage).toHaveBeenCalledWith(largeEditedContent, [])
+			})
+
+			test("handles deleting messages with large payloads", async () => {
+				// Create messages with large payloads
+				const largeText = "X".repeat(50000)
+				const mockMessages = [
+					{ ts: 1000, type: "say", say: "user_feedback", text: "Small message" },
+					{ ts: 2000, type: "say", say: "user_feedback", text: largeText },
+					{ ts: 3000, type: "say", say: "text", text: "AI response" },
+					{ ts: 4000, type: "say", say: "user_feedback", text: "Another large message: " + largeText },
+				] as AlphaMessage[]
+
+				const mockAlphaTask = new Task(defaultTaskOptions)
+				mockAlphaTask.clineMessages = mockMessages
+				mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }, { ts: 3000 }, { ts: 4000 }] as any[]
+				mockAlphaTask.overwriteAlphaMessages = vi.fn()
+				mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+
+				await provider.addTaskToStack(mockAlphaTask)
+				;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+					historyItem: { id: "test-task-id" },
+				})
+
+				const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+				await messageHandler({ type: "deleteMessage", value: 3000 })
+
+				// Should show delete dialog
+				expect(mockPostMessage).toHaveBeenCalledWith({
+					type: "showDeleteMessageDialog",
+					taskId: "test-task-id",
+					messageTs: 3000,
+					hasCheckpoint: false,
+				})
+
+				// Simulate user confirming the delete
+				await messageHandler({ type: "deleteMessageConfirm", messageTs: 3000 })
+
+				// Should handle large payloads without issues - keeps messages before the deleted one
+				expect(mockAlphaTask.overwriteAlphaMessages).toHaveBeenCalledWith([mockMessages[0], mockMessages[1]])
+				expect(mockAlphaTask.overwriteApiConversationHistory).toHaveBeenCalledWith([{ ts: 1000 }, { ts: 2000 }])
+			})
+		})
+
+		describe("Error Messaging and User Feedback", () => {
+			beforeEach(async () => {
+				await provider.resolveWebviewView(mockWebviewView)
+			})
+
+			// Note: Error messaging test removed as the implementation may not have proper error handling in place
+
+			test("provides user feedback for successful operations", async () => {
+				const mockAlphaTask = new Task(defaultTaskOptions)
+				mockAlphaTask.clineMessages = [
+					{ ts: 1000, type: "say", say: "user_feedback", text: "Message to delete" },
+					{ ts: 2000, type: "say", say: "text", text: "AI response" },
+				] as AlphaMessage[]
+				mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }] as any[]
+				mockAlphaTask.overwriteAlphaMessages = vi.fn()
+				mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+
+				await provider.addTaskToStack(mockAlphaTask)
+				;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+					historyItem: { id: "test-task-id" },
+				})
+				;(provider as any).createTaskWithHistoryItem = vi.fn()
+
+				const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+				await messageHandler({ type: "deleteMessage", value: 2000 })
+
+				// Should show delete dialog
+				expect(mockPostMessage).toHaveBeenCalledWith({
+					type: "showDeleteMessageDialog",
+					taskId: "test-task-id",
+					messageTs: 2000,
+					hasCheckpoint: false,
+				})
+
+				// Simulate user confirming the delete
+				await messageHandler({ type: "deleteMessageConfirm", messageTs: 2000 })
+
+				// Verify successful operation completed
+				expect(mockAlphaTask.overwriteAlphaMessages).toHaveBeenCalled()
+				// createTaskWithHistoryItem is only called when restoring checkpoints or aborting tasks
+				expect(vscode.window.showErrorMessage).not.toHaveBeenCalled()
+			})
+
+			test("handles user cancellation gracefully", async () => {
+				// Test cancellation by not sending confirmation
+
+				const mockAlphaTask = new Task(defaultTaskOptions)
+				mockAlphaTask.clineMessages = [
+					{ ts: 1000, type: "say", say: "user_feedback", text: "Message to edit" },
+					{ ts: 2000, type: "say", say: "text", text: "AI response" },
+				] as AlphaMessage[]
+				mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }] as any[]
+				mockAlphaTask.overwriteAlphaMessages = vi.fn()
+				mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+				mockAlphaTask.handleWebviewAskResponse = vi.fn()
+
+				await provider.addTaskToStack(mockAlphaTask)
+
+				const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+				await messageHandler({
+					type: "submitEditedMessage",
+					value: 2000,
+					editedMessageContent: "Edited message",
+				})
+
+				// Verify no operations were performed when user canceled
+				expect(mockAlphaTask.overwriteAlphaMessages).not.toHaveBeenCalled()
+				expect(mockAlphaTask.overwriteApiConversationHistory).not.toHaveBeenCalled()
+				expect(mockAlphaTask.handleWebviewAskResponse).not.toHaveBeenCalled()
+				expect(vscode.window.showErrorMessage).not.toHaveBeenCalled()
+			})
+		})
+
+		describe("Edge Cases with Message Timestamps", () => {
+			beforeEach(async () => {
+				;(vscode.window.showInformationMessage as any) = vi.fn()
+				await provider.resolveWebviewView(mockWebviewView)
+			})
+
+			test("handles messages with identical timestamps", async () => {
+				const mockAlphaTask = new Task(defaultTaskOptions)
+				mockAlphaTask.clineMessages = [
+					{ ts: 1000, type: "say", say: "user_feedback", text: "Message 1" },
+					{ ts: 1000, type: "say", say: "text", text: "Message 2 (same timestamp)" },
+					{ ts: 1000, type: "say", say: "user_feedback", text: "Message 3 (same timestamp)" },
+					{ ts: 2000, type: "say", say: "text", text: "Message 4" },
+				] as AlphaMessage[]
+				mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 1000 }, { ts: 1000 }, { ts: 2000 }] as any[]
+				mockAlphaTask.overwriteAlphaMessages = vi.fn()
+				mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+
+				await provider.addTaskToStack(mockAlphaTask)
+				;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+					historyItem: { id: "test-task-id" },
+				})
+
+				const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+				await messageHandler({ type: "deleteMessage", value: 1000 })
+
+				// Should show delete dialog
+				expect(mockPostMessage).toHaveBeenCalledWith({
+					type: "showDeleteMessageDialog",
+					taskId: "test-task-id",
+					messageTs: 1000,
+					hasCheckpoint: false,
+				})
+
+				// Simulate user confirming the delete
+				await messageHandler({ type: "deleteMessageConfirm", messageTs: 1000 })
+
+				// Should handle identical timestamps gracefully
+				expect(mockAlphaTask.overwriteAlphaMessages).toHaveBeenCalled()
+			})
+
+			test("handles messages with future timestamps", async () => {
+				const futureTimestamp = Date.now() + 100000 // Future timestamp
+				const mockAlphaTask = new Task(defaultTaskOptions)
+				mockAlphaTask.clineMessages = [
+					{ ts: 1000, type: "say", say: "user_feedback", text: "Past message" },
+					{
+						ts: futureTimestamp,
+						type: "say",
+						say: "user_feedback",
+						text: "Future message",
+						value: futureTimestamp + 1000,
+					},
+					{ ts: futureTimestamp + 1000, type: "say", say: "text", text: "AI response" },
+				] as AlphaMessage[]
+				mockAlphaTask.apiConversationHistory = [
+					{ ts: 1000 },
+					{ ts: futureTimestamp },
+					{ ts: futureTimestamp + 1000 },
+				] as any[]
+				mockAlphaTask.overwriteAlphaMessages = vi.fn()
+				mockAlphaTask.overwriteApiConversationHistory = vi.fn()
+				const resumeWithEditedMessage = vi.fn()
+				vi.spyOn(provider, "createTaskWithHistoryItem").mockResolvedValue({
+					resumeWithEditedMessage,
+				} as unknown as Task)
+
+				await provider.addTaskToStack(mockAlphaTask)
+				;(provider as any).getTaskWithId = vi.fn().mockResolvedValue({
+					historyItem: { id: "test-task-id" },
+				})
+
+				const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+
+				await messageHandler({
+					type: "submitEditedMessage",
+					value: futureTimestamp + 1000,
+					editedMessageContent: "Edited future message",
+				})
+
+				// Should show edit dialog
+				expect(mockPostMessage).toHaveBeenCalledWith({
+					type: "showEditMessageDialog",
+					taskId: "test-task-id",
+					messageTs: futureTimestamp + 1000,
+					text: "Edited future message",
+					hasCheckpoint: false,
+					images: undefined,
+				})
+
+				// Simulate user confirming the edit
+				await messageHandler({
+					type: "editMessageConfirm",
+					messageTs: futureTimestamp + 1000,
+					text: "Edited future message",
+				})
+
+				// Should handle future timestamps correctly
+				expect(mockAlphaTask.overwriteAlphaMessages).toHaveBeenCalled()
+				expect(resumeWithEditedMessage).toHaveBeenCalled()
+			})
+		})
+	})
+
+	describe("canonical lifecycle degraded fallback", () => {
+		const taskId = "lifecycle-degraded-task"
+		const runId = "lifecycle-degraded-run"
+		const turnId = "lifecycle-degraded-turn"
+
+		const makeEvent = (eventId: string, sequence: number, type: "turn_started" | "turn_terminal") =>
+			agentLifecycleEventSchema.parse({
+				version: 1,
+				eventId,
+				sequence,
+				taskId,
+				runId,
+				turnId,
+				occurredAt: sequence,
+				type,
+				payload:
+					type === "turn_started" ? { phase: "starting" } : { status: "failed", reason: "append failed" },
+			})
+
+		const makeSnapshot = (overrides: Record<string, unknown> = {}) =>
+			agentLifecycleSnapshotSchema.parse({
+				version: 1,
+				taskId,
+				runId,
+				turnId,
+				status: "in_progress",
+				phase: "starting",
+				lastSequence: 1,
+				items: [],
+				steps: [],
+				acceptedToolCallIds: [],
+				terminalToolCallIds: [],
+				processedEvents: [{ eventId: "turn-started", sequence: 1, fingerprint: "turn-started" }],
+				...overrides,
+			})
+
+		const installJournal = (journal: object) => {
+			vi.spyOn(provider as any, "getAgentLifecycleJournal").mockResolvedValue(journal)
+			vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
+			vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockResolvedValue(undefined)
+		}
+
+		it("persists terminal history only from the task lifecycle, not a terminal turn snapshot", async () => {
+			const completedTurn = makeSnapshot({
+				status: "completed",
+				phase: "finalizing",
+				lastSequence: 2,
+				terminalEventId: "turn-terminal",
+				terminalAt: 2,
+				processedEvents: [
+					{ eventId: "turn-started", sequence: 1, fingerprint: "turn-started" },
+					{ eventId: "turn-terminal", sequence: 2, fingerprint: "turn-terminal" },
+				],
+			})
+			vi.spyOn(provider.taskHistoryStore, "get").mockReturnValue({
+				id: taskId,
+				number: 0,
+				task: "Lifecycle task",
+				ts: 1,
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				status: "active",
+			})
+			const updateHistory = vi.spyOn(provider, "updateTaskHistory").mockResolvedValue([])
+			vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockResolvedValue(undefined)
+			;(provider as any).handleAgentLifecycleSnapshotUpdated(completedTurn)
+			await Promise.resolve()
+			expect(updateHistory).not.toHaveBeenCalled()
+			;(provider as any).markTaskLifecycle(taskId, TaskLifecycleState.Completed)
+			await vi.waitFor(() =>
+				expect(updateHistory).toHaveBeenCalledWith(
+					expect.objectContaining({ id: taskId, status: "completed" }),
+				),
+			)
+		})
+
+		it("signals degradation when a turn_started append is rejected", async () => {
+			const error = new Error("turn_started append failed")
+			const journal = { append: vi.fn().mockRejectedValue(error) }
+			installJournal(journal)
+
+			const result = await provider.publishAgentLifecycleEvent(makeEvent("turn-started", 1, "turn_started"))
+
+			expect(result).toMatchObject({ kind: "invalid", accepted: false, taskId })
+			expect(provider.getAgentLifecycleDegraded()).toMatchObject({
+				[taskId]: {
+					degraded: true,
+					reason: "append_rejected",
+					error: error.message,
+				},
+			})
+			expect(provider.postMessageToWebview).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "agentLifecycleDegraded",
+					payload: expect.objectContaining({ taskId, degraded: true }),
+				}),
+			)
+		})
+
+		it("keeps terminal append failures degraded until a successful resync", async () => {
+			const startEvent = makeEvent("turn-started", 1, "turn_started")
+			const terminalEvent = makeEvent("turn-terminal", 2, "turn_terminal")
+			const error = new Error("turn_terminal append failed")
+			const journal = {
+				append: vi
+					.fn()
+					.mockResolvedValueOnce({
+						event: startEvent,
+						snapshot: makeSnapshot(),
+						sequence: 1,
+						snapshotWritten: false,
+						replayed: false,
+					})
+					.mockRejectedValueOnce(error),
+			}
+			installJournal(journal)
+
+			expect((await provider.publishAgentLifecycleEvent(startEvent)).accepted).toBe(true)
+			const failed = await provider.publishAgentLifecycleEvent(terminalEvent)
+			expect(failed).toMatchObject({ kind: "invalid", accepted: false, taskId })
+			expect(provider.isAgentLifecycleDegraded(taskId)).toBe(true)
+
+			const resynced = provider.ingestAgentLifecycleSnapshot(
+				makeSnapshot({
+					status: "completed",
+					phase: "finalizing",
+					lastSequence: 2,
+					terminalEventId: terminalEvent.eventId,
+					terminalAt: 2,
+					processedEvents: [
+						{ eventId: startEvent.eventId, sequence: 1, fingerprint: "turn-started" },
+						{ eventId: terminalEvent.eventId, sequence: 2, fingerprint: "turn-terminal" },
+					],
+				}),
+			)
+
+			expect(resynced.kind).toBe("snapshot_applied")
+			expect(provider.isAgentLifecycleDegraded(taskId)).toBe(false)
+			await vi.waitFor(() =>
+				expect(provider.postMessageToWebview).toHaveBeenCalledWith(
+					expect.objectContaining({
+						type: "agentLifecycleDegraded",
+						payload: expect.objectContaining({ taskId, degraded: false, reason: "resynced" }),
+					}),
+				),
+			)
+		})
+	})
+
+	describe("getTaskWithId", () => {
+		it("returns empty apiConversationHistory when file is missing", async () => {
+			const historyItem = { id: "missing-api-file-task", task: "test task", ts: Date.now() }
+			vi.mocked(mockContext.globalState.get).mockImplementation((key: string) => {
+				if (key === "taskHistory") {
+					return [historyItem]
+				}
+				return undefined
+			})
+
+			const deleteTaskSpy = vi.spyOn(provider, "deleteTaskFromState")
+
+			const result = await (provider as any).getTaskWithId("missing-api-file-task")
+
+			expect(result.historyItem).toEqual(historyItem)
+			expect(result.apiConversationHistory).toEqual([])
+			expect(deleteTaskSpy).not.toHaveBeenCalled()
+		})
+
+		it("returns empty apiConversationHistory when file contains invalid JSON", async () => {
+			const historyItem = { id: "corrupt-api-task", task: "test task", ts: Date.now() }
+			vi.mocked(mockContext.globalState.get).mockImplementation((key: string) => {
+				if (key === "taskHistory") {
+					return [historyItem]
+				}
+				return undefined
+			})
+
+			// Make fileExistsAtPath return true so the read path is exercised
+			const fsUtils = await import("../../../utils/fs")
+			vi.spyOn(fsUtils, "fileExistsAtPath").mockResolvedValue(true)
+
+			// Make readFile return corrupted JSON
+			const fsp = await import("fs/promises")
+			vi.mocked(fsp.readFile).mockResolvedValueOnce("{not valid json!!!" as never)
+
+			const deleteTaskSpy = vi.spyOn(provider, "deleteTaskFromState")
+
+			const result = await (provider as any).getTaskWithId("corrupt-api-task")
+
+			expect(result.historyItem).toEqual(historyItem)
+			expect(result.apiConversationHistory).toEqual([])
+			expect(deleteTaskSpy).not.toHaveBeenCalled()
+
+			// Restore the spy
+			vi.mocked(fsUtils.fileExistsAtPath).mockRestore()
+		})
+	})
+})

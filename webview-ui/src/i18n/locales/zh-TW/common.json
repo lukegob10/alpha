@@ -34,10 +34,12 @@
 			"save": "儲存圖片",
 			"viewCode": "檢視程式碼",
 			"viewDiagram": "檢視圖表",
-			"close": "關閉"
+			"close": "關閉",
+			"open": "打開圖"
 		},
 		"modal": {
-			"codeTitle": "Mermaid 程式碼"
+			"codeTitle": "Mermaid 程式碼",
+			"title": "美人魚圖"
 		},
 		"tabs": {
 			"diagram": "圖表",
@@ -110,5 +112,7 @@
 	"costs": {
 		"own": "自身",
 		"subtasks": "子工作"
-	}
+	},
+	"dismiss": "解僱",
+	"dismissAndDontShowAgain": "關閉並不再顯示"
 }

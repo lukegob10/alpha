@@ -33,7 +33,6 @@ The key principle is that the tests define the contract - if all tests pass, the
 The evals system consists of several key components:
 
 - **Exercises Repository**: [`Alpha-Evals`](https://github.com/AlphaInc/Alpha-Evals) - Contains all exercise definitions
-- **Web Interface**: [`apps/web-evals`](../apps/web-evals) - Management interface for creating and monitoring evaluation runs
 - **Evals Package**: [`packages/evals`](../packages/evals) - Contains both controller logic for orchestrating evaluation runs and runner container code for executing individual tasks
 - **Docker Configuration**: Container definitions for the `controller` and `runner` as well as a Docker Compose file that provisions Postgres and Redis instances required for eval runs.
 

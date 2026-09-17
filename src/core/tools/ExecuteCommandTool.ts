@@ -16,9 +16,9 @@ import { defaultModeSlug, planModeSlug } from "../../shared/modes"
 import { unescapeHtmlEntities } from "../../utils/text-normalization"
 import {
 	ExitCodeDetails,
-	RooTerminal,
-	RooTerminalCallbacks,
-	RooTerminalProcess,
+	AlphaTerminal,
+	AlphaTerminalCallbacks,
+	AlphaTerminalProcess,
 } from "../../integrations/terminal/types"
 import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
 import { Terminal } from "../../integrations/terminal/Terminal"
@@ -225,7 +225,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				return
 			}
 
-			const ignoredFileAttemptedToAccess = task.rooIgnoreController?.validateCommand(canonicalCommand)
+			const ignoredFileAttemptedToAccess = task.alphaIgnoreController?.validateCommand(canonicalCommand)
 
 			if (ignoredFileAttemptedToAccess) {
 				preLaunchFailure("policy_denied", { kind: "user-action" }, [
@@ -235,7 +235,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				callbacks.setResultMetadata?.({ status: "denied" })
 				task.failCommandExecution?.(commandEvidenceId, "denied")
 				await task.say("rooignore_error", ignoredFileAttemptedToAccess)
-				pushToolResult(formatResponse.rooIgnoreError(ignoredFileAttemptedToAccess))
+				pushToolResult(formatResponse.alphaIgnoreError(ignoredFileAttemptedToAccess))
 				return
 			}
 
@@ -756,8 +756,8 @@ export async function executeCommandInTerminal(
 		}, 0)
 	}
 
-	const callbacks: RooTerminalCallbacks = {
-		onLine: async (lines: string, process: RooTerminalProcess) => {
+	const callbacks: AlphaTerminalCallbacks = {
+		onLine: async (lines: string, process: AlphaTerminalProcess) => {
 			accumulatedOutput += lines
 
 			// Trim accumulated output to prevent unbounded memory growth
@@ -924,7 +924,7 @@ export async function executeCommandInTerminal(
 		await releaseMutationReservationBeforeLaunch(new Error("Command admission was cancelled"))
 		return cancellationResult()
 	}
-	let process: ReturnType<RooTerminal["runCommand"]>
+	let process: ReturnType<AlphaTerminal["runCommand"]>
 	try {
 		onExecutionState?.("unknown")
 		process = terminal.runCommand(command, callbacks)

@@ -41,7 +41,9 @@
 		"experimental": "Expérimental",
 		"language": "Langue",
 		"about": "À propos de Alpha",
-		"skills": "Skills"
+		"skills": "Skills",
+		"agents": "Agents",
+		"github": "GitHub"
 	},
 	"about": {
 		"bugReport": {
@@ -209,7 +211,8 @@
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
 			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
 			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
-			"localIndexPathRequired": "Local index path is required"
+			"localIndexPathRequired": "Local index path is required",
+			"embeddingRateLimitSecondsRange": "Le délai de demande d'intégration doit être compris entre 0,1 et 60 secondes"
 		},
 		"optional": "optionnel",
 		"advancedConfigLabel": "Configuration avancée",
@@ -230,7 +233,9 @@
 		"localIndexPathLabel": "Local Index Path",
 		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
 		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
-		"savedSecretPlaceholder": "Saved value hidden"
+		"savedSecretPlaceholder": "Saved value hidden",
+		"embeddingRateLimitLabel": "Limiter le taux de demandes d'intégration",
+		"embeddingRateLimitDescription": "Ajoute un délai entre l'intégration des requêtes API lors de l'indexation. Augmentez ce chiffre si votre fournisseur d'intégration limite le débit de l'indexation de la base de code."
 	},
 	"autoApprove": {
 		"toggleShortcut": "Vous pouvez configurer un raccourci global pour ce paramètre <SettingsLink>dans les préférences de votre IDE</SettingsLink>.",
@@ -306,6 +311,10 @@
 		},
 		"maxLimits": {
 			"description": "Effectuer automatiquement des requêtes jusqu'à ces limites avant de demander une autorisation pour continuer."
+		},
+		"subagents": {
+			"label": "Sous-agents",
+			"description": "Autoriser Alpha à lancer des groupes de sous-agents en lecture seule sans nécessiter d'approbation. L'accès en lecture doit également être approuvé automatiquement."
 		}
 	},
 	"providers": {
@@ -385,7 +394,8 @@
 			"hint": "Veuillez rouvrir les paramètres pour voir les modèles les plus récents.",
 			"loading": "Actualisation de la liste des modèles...",
 			"success": "Liste des modèles actualisée avec succès !",
-			"error": "Échec de l'actualisation de la liste des modèles. Veuillez réessayer."
+			"error": "Échec de l'actualisation de la liste des modèles. Veuillez réessayer.",
+			"missingConfig": "Entrez la configuration du fournisseur requise avant d'actualiser les modèles."
 		},
 		"getRequestyApiKey": "Obtenir la clé API Requesty",
 		"getRequestyBaseUrl": "URL de base",
@@ -549,7 +559,8 @@
 			"high": "Élevé",
 			"xhigh": "Très élevé",
 			"medium": "Moyen",
-			"low": "Faible"
+			"low": "Faible",
+			"max": "Maximum"
 		},
 		"verbosity": {
 			"label": "Verbosité de la sortie",
@@ -565,7 +576,55 @@
 			"placeholder": "Défaut : claude",
 			"maxTokensLabel": "Jetons de sortie max",
 			"maxTokensDescription": "Nombre maximum de jetons de sortie pour les réponses de Claude Code. La valeur par défaut est 8000."
-		}
+		},
+		"vertexStreamingEnabledLabel": "Activer les réponses en streaming",
+		"vertexStreamingEnabledDescription": "Désactivez cette option lorsqu'une passerelle ou un modèle ne prend pas en charge le streaming. Les réponses apparaîtront une fois terminé.",
+		"vscodeLmLoading": "Chargement des modèles de langue disponibles dans cette fenêtre VS Code...",
+		"vscodeLmNoModels": "Aucun modèle de langue n'est disponible dans cette fenêtre VS Code. Connectez-vous à GitHub Copilot ici, activez les modèles dont vous avez besoin avec « Chat: Manage Language Models », puis actualisez.",
+		"vscodeLmRefresh": "Actualiser les modèles",
+		"vscodeLmUnavailable": "Le modèle sélectionné n'est pas disponible dans cette fenêtre VS Code. Choisissez un modèle renvoyé par VS Code, ou activez-le avec 'Chat: Manage Language Models'.",
+		"vscodeLmContextSize": {
+			"label": "Fenêtre contextuelle",
+			"default": "Standard (jetons d'entrée {{contextSize}})",
+			"extended": "Étendu (jetons d'entrée {{contextSize}})",
+			"description": "Choisissez le budget de jetons d'entrée envoyé à GitHub Copilot pour ce modèle. Le contexte étendu peut consommer davantage de requêtes premium."
+		},
+		"googleCloudProjectId": "Projet Google Cloud ID",
+		"googleCloudRegion": "Région Google Cloud",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "Rechercher ou saisir une région",
+			"noMatchFound": "Aucune région correspondante trouvée",
+			"useCustomRegion": "Utiliser la personnalisation : {{region}}"
+		},
+		"googleCloudCredentials": "Informations d'identification Google Cloud JSON",
+		"googleCloudKeyFile": "Fichier de clé Google Cloud",
+		"googleCloudSetup": {
+			"title": "Configuration de Google Cloud",
+			"step1": "Activer Vertex AI et l'accès au modèle",
+			"step2": "Configurer les informations d'identification par défaut de l'application",
+			"step3": "Créer une clé de compte de service"
+		},
+		"vertexGatewayBaseUrl": "Base de passerelle Vertex URL",
+		"vertexGatewayCaBundlePath": "Chemin du bundle CA de la passerelle Vertex",
+		"vertexGatewayHelixCommand": "Commande Helix de la passerelle Vertex",
+		"vertexGatewayHelixParseMode": "Mode d'analyse de la passerelle Vertex Helix",
+		"vertexGatewayHelixParseModeRawStdout": "Sortie standard brute",
+		"vertexGatewayHelixParseModeJsonField": "Champ JSON",
+		"vertexGatewayHelixTokenKey": "Clé de jeton Helix de la passerelle Vertex",
+		"vertexGatewayTokenRefreshMinutes": "Minutes d'actualisation du jeton de la passerelle Vertex",
+		"vertexGatewayModelRoutingMap": "Carte de routage du modèle de passerelle Vertex",
+		"vertexGatewayModelRoutingMapDescription": "Objet JSON saisi par le modèle ID. Les valeurs peuvent être des chaînes de remplacement de modèle hérité ou des objets avec projectId, location, modelOverride et extraHeaders.",
+		"stellarDescription": "Se connecte à la passerelle de modèle interne compatible Stellar OpenAI. La clé API est récupérée automatiquement avec Helix et n'est jamais stockée.",
+		"stellarBaseUrl": "URL de base de Stellar",
+		"stellarCaBundlePath": "Stellar PEM CA Chemin du bundle",
+		"stellarHelixCommand": "Stellar Helix Commande",
+		"stellarHelixParseMode": "Stellar Helix Mode d'analyse",
+		"stellarHelixParseModeRawStdout": "Sortie standard brute",
+		"stellarHelixParseModeJsonField": "Champ JSON",
+		"stellarHelixTokenKey": "Clé de jeton Stellar Helix",
+		"stellarTokenRefreshMinutes": "Minutes d'actualisation du jeton Stellar",
+		"stellarStreamingEnabledLabel": "Activer les réponses en streaming",
+		"stellarStreamingEnabledDescription": "Désactivez cette option si le déploiement Stellar ne prend pas en charge le streaming. Les réponses apparaîtront une fois terminé."
 	},
 	"checkpoints": {
 		"timeout": {
@@ -905,7 +964,11 @@
 		"providerNotAllowed": "Le fournisseur '{{provider}}' n'est pas autorisé par votre organisation",
 		"modelNotAllowed": "Le modèle '{{model}}' n'est pas autorisé pour le fournisseur '{{provider}}' par votre organisation",
 		"profileInvalid": "Ce profil contient un fournisseur ou un modèle qui n'est pas autorisé par votre organisation",
-		"qwenCodeOauthPath": "Tu dois fournir un chemin valide pour les identifiants OAuth"
+		"qwenCodeOauthPath": "Tu dois fournir un chemin valide pour les identifiants OAuth",
+		"googleCloud": "Vous devez fournir un projet Google Cloud ID et une région.",
+		"vertexGateway": "La passerelle Vertex nécessite un chemin de base URL, un chemin d'accès au bundle CA et une commande Helix.",
+		"vertexGatewayModelRoutingMap": "La carte de routage du modèle de passerelle Vertex doit être un objet JSON avec des ID de modèle de chaîne.",
+		"stellar": "Stellar nécessite un chemin de bundle de base valide URL et PEM CA."
 	},
 	"placeholders": {
 		"apiKey": "Saisissez la clé API...",
@@ -967,6 +1030,10 @@
 		"requireCtrlEnterToSend": {
 			"label": "Exiger {{primaryMod}}+Entrée pour envoyer les messages",
 			"description": "Lorsqu'activé, tu dois appuyer sur {{primaryMod}}+Entrée pour envoyer des messages au lieu de simplement Entrée"
+		},
+		"maxConcurrentTasks": {
+			"label": "Nombre maximal de tâches parallèles",
+			"description": "Nombre de tâches actives pouvant s'exécuter en même temps. Les tâches échouées et terminées ne sont pas prises en compte dans cette limite."
 		}
 	},
 	"skills": {
@@ -1025,5 +1092,39 @@
 		"enabled": "Activée",
 		"inspectSkill": "Consulter",
 		"builtinDescription": "Incluse avec Alpha. Les modifications s'appliquent lorsque vous enregistrez les paramètres. Les compétences de l'espace de travail et personnelles portant le même nom sont prioritaires ; désactiver une compétence intégrée ne désactive pas vos versions personnalisées."
+	},
+	"agents": {
+		"description": "Choisissez les profils de fournisseur enregistrés que Alpha utilise pour les sous-agents. Les remplacements de rôle ont priorité sur les rôles par défaut, puis la tâche parent est héritée.",
+		"searchPlaceholder": "Rechercher des profils de fournisseur...",
+		"noProfilesFound": "Aucun profil de fournisseur correspondant",
+		"unavailableProfile": "Profil indisponible ({{id}})",
+		"staleWarning": "Ce profil enregistré n'est pas disponible. Les nouveaux sous-agents utiliseront le profil parent jusqu'à ce que vous choisissiez un autre profil.",
+		"defaultProfile": {
+			"label": "Profil de sous-agent par défaut",
+			"inheritParent": "Hériter du parent",
+			"description": "Utilisé lorsqu'un rôle n'a pas son propre remplacement de profil."
+		},
+		"roles": {
+			"title": "Remplacements de rôle",
+			"description": "Acheminez éventuellement chaque rôle d'agent via un profil de fournisseur enregistré différent.",
+			"useDefault": "Utiliser la valeur par défaut",
+			"explore": {
+				"label": "Profil d'explorateur",
+				"description": "Remplacement de profil facultatif pour les agents d'exploration de référentiel."
+			},
+			"review": {
+				"label": "Profil du réviseur",
+				"description": "Remplacement facultatif du profil pour les agents de révision."
+			},
+			"worker": {
+				"label": "Profil de travailleur",
+				"description": "Remplacement de profil facultatif pour les travailleurs d'édition isolés."
+			}
+		}
+	},
+	"github": {
+		"tokenLabel": "Jeton GitHub",
+		"tokenPlaceholder": "ghp_...",
+		"tokenDescription": "Stocké en toute sécurité dans le stockage secret VS Code. Utilisé par l'outil natif GitHub API pour les demandes d'extraction, les vérifications, les commentaires et les fusions."
 	}
 }

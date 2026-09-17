@@ -1,11 +1,11 @@
 import { Check, Search, Ticket, TriangleAlert } from "lucide-react"
 import { useTranslation } from "react-i18next"
-import { ticketActivitySchema, type ClineSayTool } from "@alpha-code/types"
+import { ticketActivitySchema, type AlphaSayTool } from "@alpha-code/types"
 import { vscode } from "../../utils/vscode"
 import { useState } from "react"
 import { ActivityStep } from "./ActivityStep"
 
-export function TicketActivity({ tool }: { tool: ClineSayTool }) {
+export function TicketActivity({ tool }: { tool: AlphaSayTool }) {
 	const { t } = useTranslation("tickets")
 	const [isExpanded, setIsExpanded] = useState(false)
 	let parsed = ticketActivitySchema.safeParse(tool.ticketActivity)

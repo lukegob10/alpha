@@ -41,7 +41,9 @@
 		"experimental": "Experimental",
 		"language": "Idioma",
 		"about": "Sobre Alpha",
-		"skills": "Skills"
+		"skills": "Skills",
+		"agents": "Agents",
+		"github": "GitHub"
 	},
 	"about": {
 		"bugReport": {
@@ -209,7 +211,8 @@
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
 			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
 			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
-			"localIndexPathRequired": "Local index path is required"
+			"localIndexPathRequired": "Local index path is required",
+			"embeddingRateLimitSecondsRange": "El retard de la sol·licitud d'inserció ha d'estar entre 0,1 i 60 segons"
 		},
 		"optional": "opcional",
 		"advancedConfigLabel": "Configuració avançada",
@@ -230,7 +233,9 @@
 		"localIndexPathLabel": "Local Index Path",
 		"localIndexPathPlaceholder": ".alpha/code-index/lancedb",
 		"localIndexPathDescription": "Stored inside this workspace when a relative path is used.",
-		"savedSecretPlaceholder": "Saved value hidden"
+		"savedSecretPlaceholder": "Saved value hidden",
+		"embeddingRateLimitLabel": "Limitar el percentatge de sol·licituds d'inserció",
+		"embeddingRateLimitDescription": "Afegeix un retard entre la inserció de sol·licituds API durant la indexació. Augmenteu-ho si el vostre proveïdor d'inserció limita la taxa d'indexació de la base de codis."
 	},
 	"autoApprove": {
 		"toggleShortcut": "Pots configurar una drecera global per a aquesta configuració <SettingsLink>a les preferències del teu IDE</SettingsLink>.",
@@ -306,6 +311,10 @@
 		},
 		"maxLimits": {
 			"description": "Fes sol·licituds automàticament fins a aquests límits abans de demanar aprovació per continuar."
+		},
+		"subagents": {
+			"label": "Subagents",
+			"description": "Permet que Alpha iniciï grups de subagents de només lectura sense necessitat d'aprovació. L'accés de lectura també s'ha d'aprovar automàticament."
 		}
 	},
 	"providers": {
@@ -385,7 +394,8 @@
 			"hint": "Si us plau, torneu a obrir la configuració per veure els models més recents.",
 			"loading": "Actualitzant la llista de models...",
 			"success": "Llista de models actualitzada correctament!",
-			"error": "No s'ha pogut actualitzar la llista de models. Si us plau, torneu-ho a provar."
+			"error": "No s'ha pogut actualitzar la llista de models. Si us plau, torneu-ho a provar.",
+			"missingConfig": "Introduïu la configuració necessària del proveïdor abans d'actualitzar els models."
 		},
 		"getRequestyApiKey": "Obtenir clau API de Requesty",
 		"getRequestyBaseUrl": "URL base",
@@ -549,7 +559,8 @@
 			"high": "Alt",
 			"xhigh": "Molt alt",
 			"medium": "Mitjà",
-			"low": "Baix"
+			"low": "Baix",
+			"max": "Màxim"
 		},
 		"verbosity": {
 			"label": "Verbositat de la sortida",
@@ -565,7 +576,55 @@
 			"placeholder": "Per defecte: claude",
 			"maxTokensLabel": "Tokens màxims de sortida",
 			"maxTokensDescription": "Nombre màxim de tokens de sortida per a les respostes de Claude Code. El valor per defecte és 8000."
-		}
+		},
+		"vertexStreamingEnabledLabel": "Activa les respostes en temps real",
+		"vertexStreamingEnabledDescription": "Desactiveu-ho quan una passarel·la o un model no admet la transmissió en temps real. Les respostes apareixeran després de la finalització.",
+		"vscodeLmLoading": "S'estan carregant els models d'idioma disponibles en aquesta finestra VS Code...",
+		"vscodeLmNoModels": "No hi ha cap model d'idioma disponible en aquesta finestra VS Code. Inicieu la sessió a GitHub Copilot aquí, activeu els models que necessiteu amb \"Chat: Manage Language Models\" i, a continuació, actualitzeu-los.",
+		"vscodeLmRefresh": "Actualitza models",
+		"vscodeLmUnavailable": "El model seleccionat no està disponible en aquesta finestra VS Code. Trieu un model retornat per VS Code o activeu-lo amb \"Chat: Manage Language Models\".",
+		"vscodeLmContextSize": {
+			"label": "Finestra contextual",
+			"default": "Estàndard (indicadors d'entrada {{contextSize}})",
+			"extended": "Ampliat (indicadors d'entrada {{contextSize}})",
+			"description": "Trieu el pressupost del testimoni d'entrada enviat a GitHub Copilot per a aquest model. El context estès pot consumir més sol·licituds premium."
+		},
+		"googleCloudProjectId": "Projecte Google Cloud ID",
+		"googleCloudRegion": "Regió de Google Cloud",
+		"googleCloudRegionPicker": {
+			"searchPlaceholder": "Cerqueu o introduïu una regió",
+			"noMatchFound": "No s'ha trobat cap regió que coincideixi",
+			"useCustomRegion": "Utilitzeu personalitzat: {{region}}"
+		},
+		"googleCloudCredentials": "Credencials de Google Cloud JSON",
+		"googleCloudKeyFile": "Fitxer de claus de Google Cloud",
+		"googleCloudSetup": {
+			"title": "Configuració de Google Cloud",
+			"step1": "Activeu Vertex AI i l'accés al model",
+			"step2": "Configureu les credencials predeterminades de l'aplicació",
+			"step3": "Creeu una clau de compte de servei"
+		},
+		"vertexGatewayBaseUrl": "URL base de la passarel·la Vertex",
+		"vertexGatewayCaBundlePath": "Camí del paquet CA de la passarel·la Vertex",
+		"vertexGatewayHelixCommand": "Comandament Vertex Gateway Helix",
+		"vertexGatewayHelixParseMode": "Vertex Gateway Helix Mode d'anàlisi",
+		"vertexGatewayHelixParseModeRawStdout": "Stdout cru",
+		"vertexGatewayHelixParseModeJsonField": "camp JSON",
+		"vertexGatewayHelixTokenKey": "Clau del token Helix de la passarel·la Vertex",
+		"vertexGatewayTokenRefreshMinutes": "Vertex Gateway Token Minuts d'actualització",
+		"vertexGatewayModelRoutingMap": "Vertex Mapa d'encaminament del model de passarel·la",
+		"vertexGatewayModelRoutingMapDescription": "Objecte JSON teclejat pel model ID. Els valors poden ser cadenes de substitució de models heretats o objectes amb projectId, location, modelOverride i extraHeaders.",
+		"stellarDescription": "Es connecta a la passarel·la interna del model Stellar OpenAI compatible. La clau API es recupera automàticament amb Helix i mai s'emmagatzema.",
+		"stellarBaseUrl": "URL base de Stellar",
+		"stellarCaBundlePath": "Stellar PEM CA Camí del paquet",
+		"stellarHelixCommand": "Stellar Helix Comandament",
+		"stellarHelixParseMode": "Stellar Helix Mode d'anàlisi",
+		"stellarHelixParseModeRawStdout": "Stdout cru",
+		"stellarHelixParseModeJsonField": "camp JSON",
+		"stellarHelixTokenKey": "Clau del token Stellar Helix",
+		"stellarTokenRefreshMinutes": "Stellar Minuts d'actualització de fitxes",
+		"stellarStreamingEnabledLabel": "Activa les respostes en temps real",
+		"stellarStreamingEnabledDescription": "Desactiveu-ho si el desplegament de Stellar no admet la transmissió en temps real. Les respostes apareixeran després de la finalització."
 	},
 	"checkpoints": {
 		"timeout": {
@@ -905,7 +964,11 @@
 		"providerNotAllowed": "El proveïdor '{{provider}}' no està permès per la vostra organització",
 		"modelNotAllowed": "El model '{{model}}' no està permès per al proveïdor '{{provider}}' per la vostra organització",
 		"profileInvalid": "Aquest perfil conté un proveïdor o model que no està permès per la vostra organització",
-		"qwenCodeOauthPath": "Has de proporcionar una ruta vàlida de credencials OAuth"
+		"qwenCodeOauthPath": "Has de proporcionar una ruta vàlida de credencials OAuth",
+		"googleCloud": "Heu de proporcionar un projecte de Google Cloud ID i una regió.",
+		"vertexGateway": "La passarel·la Vertex requereix una base URL, un camí de paquet CA i una ordre Helix.",
+		"vertexGatewayModelRoutingMap": "Vertex El mapa d'encaminament del model de passarel·la ha de ser un objecte JSON amb identificadors de model de cadena.",
+		"stellar": "Stellar requereix un camí de paquet base vàlid URL i PEM CA."
 	},
 	"placeholders": {
 		"apiKey": "Introduïu la clau API...",
@@ -967,6 +1030,10 @@
 		"requireCtrlEnterToSend": {
 			"label": "Requereix {{primaryMod}}+Intro per enviar missatges",
 			"description": "Quan estigui activat, has de prémer {{primaryMod}}+Intro per enviar missatges en lloc de només Intro"
+		},
+		"maxConcurrentTasks": {
+			"label": "Màxim de tasques paral·leles",
+			"description": "El nombre de tasques en directe que es poden executar al mateix temps. Les tasques fallides i completades no compten en aquest límit."
 		}
 	},
 	"skills": {
@@ -1025,5 +1092,39 @@
 		"enabled": "Activada",
 		"inspectSkill": "Inspecciona",
 		"builtinDescription": "Inclosa amb Alpha. Els canvis s'apliquen quan deses la configuració. Les habilitats de l'espai de treball i les personals amb el mateix nom tenen prioritat; desactivar una habilitat integrada no desactiva les teves alternatives."
+	},
+	"agents": {
+		"description": "Trieu quins perfils de proveïdor desats utilitza Alpha per als subagents. Les substitucions de rol tenen prioritat sobre la predeterminada i, a continuació, s'hereta la tasca principal.",
+		"searchPlaceholder": "Cerca perfils de proveïdor...",
+		"noProfilesFound": "No hi ha cap perfil de proveïdor coincident",
+		"unavailableProfile": "Perfil no disponible ({{id}})",
+		"staleWarning": "Aquest perfil desat no està disponible. Els nous subagents utilitzaran el perfil principal fins que trieu un altre perfil.",
+		"defaultProfile": {
+			"label": "Perfil de subagent predeterminat",
+			"inheritParent": "Hereta el pare",
+			"description": "S'utilitza quan un rol no té la seva pròpia substitució de perfil."
+		},
+		"roles": {
+			"title": "Substitucions de rols",
+			"description": "De manera opcional, encamineu cada rol d'agent a través d'un perfil de proveïdor desat diferent.",
+			"useDefault": "Utilitza per defecte",
+			"explore": {
+				"label": "Perfil de l'explorador",
+				"description": "Anulació de perfil opcional per als agents d'exploració del dipòsit."
+			},
+			"review": {
+				"label": "Perfil del revisor",
+				"description": "Substitució opcional del perfil per als agents de revisió."
+			},
+			"worker": {
+				"label": "Perfil de treballador",
+				"description": "Anulació de perfil opcional per a treballadors d'edició aïllats."
+			}
+		}
+	},
+	"github": {
+		"tokenLabel": "Fitxa GitHub",
+		"tokenPlaceholder": "ghp_...",
+		"tokenDescription": "Emmagatzemat de manera segura a l'emmagatzematge secret VS Code. Utilitzat per l'eina nativa GitHub API per a sol·licituds d'extracció, comprovacions, comentaris i combinacions."
 	}
 }

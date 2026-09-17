@@ -1,7 +1,7 @@
 // npx vitest run __tests__/nested-delegation-resume.spec.ts
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { RooCodeEventName } from "@alpha-code/types"
+import { AlphaCodeEventName } from "@alpha-code/types"
 
 // Mock safe-stable-stringify to avoid runtime error
 vi.mock("safe-stable-stringify", () => ({
@@ -50,7 +50,7 @@ vi.mock("../core/task-persistence", () => ({
 }))
 
 import { attemptCompletionTool } from "../core/tools/AttemptCompletionTool"
-import { ClineProvider } from "../core/webview/ClineProvider"
+import { AlphaProvider } from "../core/webview/AlphaProvider"
 import type { Task } from "../core/task/Task"
 import { readTaskMessages } from "../core/task-persistence/taskMessages"
 import { readApiMessages, saveApiMessages, saveTaskMessages } from "../core/task-persistence"
@@ -112,7 +112,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 		}
 
 		const emitSpy = vi.fn()
-		const removeClineFromStack = vi.fn().mockImplementation(async (options?: { taskId?: string }) => {
+		const removeTaskFromStack = vi.fn().mockImplementation(async (options?: { taskId?: string }) => {
 			const taskId = options?.taskId ?? currentActiveId
 			if (taskId) liveTasks.delete(taskId)
 			if (currentActiveId === taskId) currentActiveId = undefined
@@ -126,7 +126,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 					taskId: historyItem.id,
 					messageQueueService: { addMessage: vi.fn(() => true) },
 					resumeAfterDelegation: vi.fn().mockResolvedValue(undefined),
-					overwriteClineMessages: vi.fn().mockResolvedValue(undefined),
+					overwriteAlphaMessages: vi.fn().mockResolvedValue(undefined),
 					overwriteApiConversationHistory: vi.fn().mockResolvedValue(undefined),
 				}
 				liveTasks.set(historyItem.id, instance)
@@ -160,21 +160,21 @@ describe("Nested delegation resume (A → B → C)", () => {
 			}),
 			getParentCompletionDecision: vi.fn(async () => ({ allowed: true })),
 			runWorkspaceMutation: vi.fn(async (_task: unknown, _label: string, run: () => Promise<unknown>) => run()),
-			removeClineFromStack,
+			removeTaskFromStack,
 			createTaskWithHistoryItem,
 			updateTaskHistory,
 			// Wire through provider method so attemptCompletionTool can call it
 			reopenParentFromDelegation: vi.fn(async (params: any) => {
-				return await (ClineProvider.prototype as any).reopenParentFromDelegation.call(provider, params)
+				return await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(provider, params)
 			}),
-		} as unknown as ClineProvider
+		} as unknown as AlphaProvider
 
 		// Empty histories for simplicity
 		vi.mocked(readTaskMessages).mockResolvedValue([])
 		vi.mocked(readApiMessages).mockResolvedValue([])
 
 		// Step 1: C completes -> should reopen B automatically
-		const clineC = {
+		const alphaC = {
 			taskId: "C",
 			parentTask: undefined, // parent ref may or may not exist; metadata path should still work
 			parentTaskId: "B",
@@ -209,7 +209,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 			suspendAfterCurrentTurn: vi.fn(),
 			recordToolError: vi.fn(),
 		} as unknown as Task
-		liveTasks.set("C", clineC)
+		liveTasks.set("C", alphaC)
 
 		const blockC = {
 			id: "attempt-completion-c",
@@ -226,7 +226,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 			throw err
 		})
 
-		await attemptCompletionTool.handle(clineC, blockC, {
+		await attemptCompletionTool.handle(alphaC, blockC, {
 			askApproval: vi.fn(),
 			handleError,
 			pushToolResult: vi.fn(),
@@ -239,11 +239,11 @@ describe("Nested delegation resume (A → B → C)", () => {
 
 		// Events emitted: C -> B hop
 		const eventNamesAfterC = emitSpy.mock.calls.map((c: any[]) => c[0])
-		expect(eventNamesAfterC).toContain(RooCodeEventName.TaskDelegationCompleted)
-		expect(eventNamesAfterC).toContain(RooCodeEventName.TaskDelegationResumed)
+		expect(eventNamesAfterC).toContain(AlphaCodeEventName.TaskDelegationCompleted)
+		expect(eventNamesAfterC).toContain(AlphaCodeEventName.TaskDelegationResumed)
 
 		// Step 2: B completes -> should reopen A automatically (parent reference missing, must use parentTaskId path)
-		const clineB = {
+		const alphaB = {
 			taskId: "B",
 			parentTask: undefined, // simulate missing live parent reference
 			parentTaskId: "A", // persisted parent id
@@ -278,7 +278,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 			suspendAfterCurrentTurn: vi.fn(),
 			recordToolError: vi.fn(),
 		} as unknown as Task
-		liveTasks.set("B", clineB)
+		liveTasks.set("B", alphaB)
 
 		const blockB = {
 			id: "attempt-completion-b",
@@ -289,7 +289,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 			partial: false,
 		} as any
 
-		await attemptCompletionTool.handle(clineB, blockB, {
+		await attemptCompletionTool.handle(alphaB, blockB, {
 			askApproval: vi.fn(),
 			handleError,
 			pushToolResult: vi.fn(),
@@ -307,9 +307,9 @@ describe("Nested delegation resume (A → B → C)", () => {
 
 		// Provider emitted TaskDelegationCompleted/Resumed twice across both hops
 		const completedEvents = emitSpy.mock.calls.filter(
-			(c: any[]) => c[0] === RooCodeEventName.TaskDelegationCompleted,
+			(c: any[]) => c[0] === AlphaCodeEventName.TaskDelegationCompleted,
 		)
-		const resumedEvents = emitSpy.mock.calls.filter((c: any[]) => c[0] === RooCodeEventName.TaskDelegationResumed)
+		const resumedEvents = emitSpy.mock.calls.filter((c: any[]) => c[0] === AlphaCodeEventName.TaskDelegationResumed)
 		expect(completedEvents.length).toBeGreaterThanOrEqual(2)
 		expect(resumedEvents.length).toBeGreaterThanOrEqual(2)
 

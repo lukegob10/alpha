@@ -26,11 +26,11 @@ describe("Task retained sub-agent follow-up", () => {
 			isInitialized: false,
 			abort: false,
 			abandoned: false,
-			getSavedClineMessages: vi.fn(async () => [
+			getSavedAlphaMessages: vi.fn(async () => [
 				{ ts: 1, type: "say", say: "text", text: "Inspect the parser" },
 				{ ts: 2, type: "say", say: "completion_result", text: "Initial report" },
 			]),
-			overwriteClineMessages: vi.fn(async () => undefined),
+			overwriteAlphaMessages: vi.fn(async () => undefined),
 			reconcileInterruptedSubagentGroups: vi.fn(async () => undefined),
 			getSavedApiConversationHistory: vi.fn(async () => [
 				{ role: "user", content: [{ type: "text", text: "Inspect the parser" }] },
@@ -90,11 +90,11 @@ describe("Task retained sub-agent follow-up", () => {
 			isInitialized: false,
 			abort: false,
 			abandoned: false,
-			getSavedClineMessages: vi.fn(async () => [
+			getSavedAlphaMessages: vi.fn(async () => [
 				{ ts: 1, type: "say", say: "text", text: "Initial task" },
 				{ ts: 2, type: "say", say: "user_feedback", text: "PING_BEFORE_INTERRUPT=25428" },
 			]),
-			overwriteClineMessages: vi.fn(async () => undefined),
+			overwriteAlphaMessages: vi.fn(async () => undefined),
 			reconcileInterruptedSubagentGroups: vi.fn(async () => undefined),
 			getSavedApiConversationHistory: vi.fn(async () => [
 				initialUserMessage,

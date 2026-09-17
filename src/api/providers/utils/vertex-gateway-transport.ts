@@ -18,7 +18,7 @@ export async function configurePemCaTransport(pemCaBundlePath: string, providerN
 	// Runtime fallback. Note that Node typically reads this at process start.
 	process.env.NODE_EXTRA_CA_CERTS = resolvedPemPath
 
-	// Respect debug proxy mode if already configured by Roo's network proxy helper.
+	// Respect debug proxy mode if already configured by Alpha's network proxy helper.
 	if (process.env.GLOBAL_AGENT_HTTP_PROXY || process.env.GLOBAL_AGENT_HTTPS_PROXY) {
 		configuredPemPath = resolvedPemPath
 		return resolvedPemPath

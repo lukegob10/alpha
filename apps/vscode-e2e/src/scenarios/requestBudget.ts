@@ -107,7 +107,7 @@ export function guardVsCodeLmHandler(handler: unknown, budget: WorkflowRequestBu
 	}
 }
 
-/** Install from ClineProvider's synchronous taskCreated event, before Task.start/resume. */
+/** Install from AlphaProvider's synchronous taskCreated event, before Task.start/resume. */
 export function guardTaskApi(task: { api: unknown }, budget: WorkflowRequestBudget): () => void {
 	const descriptor = Object.getOwnPropertyDescriptor(task, "api")
 	if (!descriptor || !descriptor.configurable || !("value" in descriptor)) {

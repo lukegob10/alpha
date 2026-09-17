@@ -2,7 +2,7 @@ import React from "react"
 import { render, screen, fireEvent } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { ChatRowContent } from "../ChatRow"
-import type { HistoryItem, ClineMessage } from "@alpha-code/types"
+import type { HistoryItem, AlphaMessage } from "@alpha-code/types"
 
 // Mock vscode API
 const mockPostMessage = vi.fn()
@@ -31,7 +31,7 @@ vi.mock("react-i18next", () => ({
 
 // Mock extension state context
 let mockCurrentTaskItem: Partial<HistoryItem> | undefined = undefined
-let mockClineMessages: ClineMessage[] = []
+let mockAlphaMessages: AlphaMessage[] = []
 
 vi.mock("@src/context/ExtensionStateContext", () => ({
 	useExtensionState: () => ({
@@ -40,7 +40,7 @@ vi.mock("@src/context/ExtensionStateContext", () => ({
 		currentCheckpoint: null,
 		mode: "code",
 		apiConfiguration: {},
-		clineMessages: mockClineMessages,
+		clineMessages: mockAlphaMessages,
 		currentTaskItem: mockCurrentTaskItem,
 	}),
 }))
@@ -52,9 +52,9 @@ vi.mock("@src/components/ui/hooks/useSelectedModel", () => ({
 
 const queryClient = new QueryClient()
 
-function renderChatRow(message: any, currentTaskItem?: Partial<HistoryItem>, clineMessages?: ClineMessage[]) {
+function renderChatRow(message: any, currentTaskItem?: Partial<HistoryItem>, clineMessages?: AlphaMessage[]) {
 	mockCurrentTaskItem = currentTaskItem
-	mockClineMessages = clineMessages || [message]
+	mockAlphaMessages = clineMessages || [message]
 
 	return render(
 		<QueryClientProvider client={queryClient}>
@@ -178,7 +178,7 @@ describe("ChatRow - subtask links", () => {
 			renderChatRow(newTaskMessage, { delegatedToId: "child-task-123" }, [
 				newTaskMessage,
 				subtaskResultMessage,
-			] as ClineMessage[])
+			] as AlphaMessage[])
 
 			// Button should be hidden because next message is subtask_result
 			const goToSubtaskButton = screen.queryByText("Go to subtask")

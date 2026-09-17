@@ -1,34 +1,55 @@
 {
 	"$schema": "https://unpkg.com/knip@latest/schema.json",
-	"ignore": [
-		"**/__tests__/**",
-		"apps/vscode-e2e/**",
-		"evals/**",
-		"src/extension/api.ts",
-		"src/activate/**",
-		"src/workers/countTokens.ts",
-		"src/extension.ts",
-		"scripts/**"
-	],
 	"workspaces": {
+		".": {
+			"entry": ["scripts/**/*.{js,mjs,cjs,ts,tsx}"],
+			"project": ["scripts/**/*.{js,mjs,cjs,ts,tsx}"]
+		},
 		"src": {
 			"entry": [
 				"extension.ts",
+				"workers/countTokens.ts",
 				"workers/sanitizeDocument.ts",
-				"core/agent/benchmarks/AgentControlStore.benchmark.ts"
+				"core/agent/benchmarks/AgentControlStore.benchmark.ts",
+				"**/__tests__/**/*.ts"
 			],
 			"project": ["**/*.ts"]
 		},
 		"webview-ui": {
-			"entry": ["src/index.tsx"],
+			"entry": ["src/index.tsx", "src/**/__tests__/**/*.{ts,tsx}"],
 			"project": ["src/**/*.{ts,tsx}", "../src/shared/*.ts"]
+		},
+		"apps/vscode-e2e": {
+			"entry": [
+				"src/runCampaign.ts",
+				"src/runCoreConfidence.ts",
+				"src/runEvidence.ts",
+				"src/runFailure.ts",
+				"src/runTest.ts",
+				"src/runUnitTests.ts",
+				"src/suite/**/*.test.ts",
+				"src/scenarios/**/*.spec.ts",
+				"src/evidence/**/*.spec.ts",
+				"src/suite/shared-storage.entry.ts",
+				"src/unit/**/*.spec.ts",
+				"src/**/__tests__/**/*.ts"
+			],
+			"project": ["src/**/*.ts"]
+		},
+		"packages/core": {
+			"entry": ["src/**/__tests__/**/*.ts"],
+			"project": ["src/**/*.ts"]
 		},
 		"packages/evals": {
 			"entry": ["src/certification/cli.ts", "src/evidence/cli.ts"],
 			"project": ["src/**/*.ts"]
 		},
-		"packages/{build,cloud,ipc,telemetry,types}": {
+		"packages/{build,ipc,telemetry,types}": {
 			"project": ["src/**/*.ts"]
+		},
+		"evals": {
+			"entry": ["**/test/**/*.{js,cjs,mjs}"],
+			"project": ["**/*.{js,cjs,mjs}"]
 		}
 	}
 }

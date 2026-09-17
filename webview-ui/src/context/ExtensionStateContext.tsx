@@ -10,7 +10,7 @@ import {
 	type TelemetrySetting,
 	type ExtensionMessage,
 	type ExtensionState,
-	type ClineMessage,
+	type AlphaMessage,
 	type LiveTaskMetadata,
 	type MarketplaceInstalledMetadata,
 	type SkillMetadata,
@@ -71,7 +71,7 @@ export interface ExtensionStateContextType extends ExtensionState {
 	setAlwaysAllowSubtasks: (value: boolean) => void
 	setAlwaysAllowSubagents: (value: boolean) => void
 	setAlwaysAllowTickets: (value: boolean) => void
-	setShowRooIgnoredFiles: (value: boolean) => void
+	setShowAlphaIgnoredFiles: (value: boolean) => void
 	setEnableSubfolderRules: (value: boolean) => void
 	setShowAnnouncement: (value: boolean) => void
 	setAllowedCommands: (value: string[]) => void
@@ -350,7 +350,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const latestTaskTodosSeqRef = useRef<number>()
 	type IncrementalMessage = {
 		taskId?: string
-		clineMessage: ClineMessage
+		clineMessage: AlphaMessage
 		clineMessagesSeq?: number
 		liveTask?: LiveTaskMetadata
 	}
@@ -479,7 +479,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const queuePartialMessageUpdate = useCallback(
 		(
 			taskId: string | undefined,
-			clineMessage: ClineMessage,
+			clineMessage: AlphaMessage,
 			clineMessagesSeq?: number,
 			liveTask?: LiveTaskMetadata,
 		) => {
@@ -834,7 +834,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		setMaxOpenTabsContext: (value) => setState((prevState) => ({ ...prevState, maxOpenTabsContext: value })),
 		setMaxWorkspaceFiles: (value) => setState((prevState) => ({ ...prevState, maxWorkspaceFiles: value })),
 		setTelemetrySetting: (value) => setState((prevState) => ({ ...prevState, telemetrySetting: value })),
-		setShowRooIgnoredFiles: (value) => setState((prevState) => ({ ...prevState, showRooIgnoredFiles: value })),
+		setShowAlphaIgnoredFiles: (value) => setState((prevState) => ({ ...prevState, showRooIgnoredFiles: value })),
 		setEnableSubfolderRules: (value) => setState((prevState) => ({ ...prevState, enableSubfolderRules: value })),
 		setAwsUsePromptCache: (value) => setState((prevState) => ({ ...prevState, awsUsePromptCache: value })),
 		setMaxImageFileSize: (value) => setState((prevState) => ({ ...prevState, maxImageFileSize: value })),

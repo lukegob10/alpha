@@ -4,7 +4,7 @@ import Mocha from "mocha"
 import { glob } from "glob"
 import * as vscode from "vscode"
 
-import type { RooCodeAPI } from "@alpha-code/types"
+import type { AlphaCodeAPI } from "@alpha-code/types"
 
 import { waitFor } from "./utils"
 import { createSerializedJsonWriter, summarizeMochaFailure, type MochaFailureDiagnostic } from "./preflightEvidence"
@@ -177,7 +177,7 @@ export async function run() {
 	await recordPreflight("passed")
 	const extensionId = process.env.ALPHA_E2E_EXTENSION_ID
 	if (!extensionId) throw new Error("ALPHA_E2E_EXTENSION_ID was not provided by the E2E runner")
-	const extension = vscode.extensions.getExtension<RooCodeAPI>(extensionId)
+	const extension = vscode.extensions.getExtension<AlphaCodeAPI>(extensionId)
 
 	if (!extension) {
 		throw new Error(`Development extension ${extensionId} was not found`)

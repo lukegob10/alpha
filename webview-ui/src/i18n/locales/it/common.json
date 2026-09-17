@@ -34,10 +34,12 @@
 			"save": "Salva immagine",
 			"viewCode": "Visualizza codice",
 			"viewDiagram": "Visualizza diagramma",
-			"close": "Chiudi"
+			"close": "Chiudi",
+			"open": "Apri il diagramma"
 		},
 		"modal": {
-			"codeTitle": "Codice Mermaid"
+			"codeTitle": "Codice Mermaid",
+			"title": "Diagramma della sirena"
 		},
 		"tabs": {
 			"diagram": "Diagramma",
@@ -110,5 +112,7 @@
 	"costs": {
 		"own": "Proprio",
 		"subtasks": "Sottoattività"
-	}
+	},
+	"dismiss": "Ignora",
+	"dismissAndDontShowAgain": "Ignora e non mostrare più"
 }

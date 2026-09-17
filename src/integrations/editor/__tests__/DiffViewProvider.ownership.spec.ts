@@ -347,8 +347,8 @@ function createProvider(options: {
 		consecutiveMistakeCount: 0,
 		didEditFile: false,
 		didRejectTool: false,
-		rooIgnoreController: { validateAccess: vi.fn().mockReturnValue(true) },
-		rooProtectedController: { isWriteProtected: vi.fn().mockReturnValue(false) },
+		alphaIgnoreController: { validateAccess: vi.fn().mockReturnValue(true) },
+		alphaProtectedController: { isWriteProtected: vi.fn().mockReturnValue(false) },
 		providerRef: {
 			deref: vi.fn().mockReturnValue({
 				getState: vi.fn().mockResolvedValue({

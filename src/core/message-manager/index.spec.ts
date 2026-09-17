@@ -10,7 +10,7 @@ describe("MessageManager", () => {
 		mockTask = {
 			clineMessages: [],
 			apiConversationHistory: [],
-			overwriteClineMessages: vi.fn(),
+			overwriteAlphaMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),
 		}
 		manager = new MessageManager(mockTask)
@@ -35,7 +35,7 @@ describe("MessageManager", () => {
 				{ role: "assistant", content: "Original answer" },
 			]
 			await manager.rewindToTimestamp(100)
-			expect(mockTask.overwriteClineMessages).toHaveBeenCalledWith([])
+			expect(mockTask.overwriteAlphaMessages).toHaveBeenCalledWith([])
 			expect(mockTask.overwriteApiConversationHistory).toHaveBeenCalledWith([])
 		})
 
@@ -57,7 +57,7 @@ describe("MessageManager", () => {
 			await manager.rewindToTimestamp(300)
 
 			// Should keep messages before ts=300
-			expect(mockTask.overwriteClineMessages).toHaveBeenCalledWith([
+			expect(mockTask.overwriteAlphaMessages).toHaveBeenCalledWith([
 				{ ts: 100, say: "user", text: "First" },
 				{ ts: 200, say: "assistant", text: "Response" },
 			])
@@ -85,7 +85,7 @@ describe("MessageManager", () => {
 			await manager.rewindToTimestamp(300, { includeTargetMessage: true })
 
 			// Should keep messages up to and including ts=300 in clineMessages
-			expect(mockTask.overwriteClineMessages).toHaveBeenCalledWith([
+			expect(mockTask.overwriteAlphaMessages).toHaveBeenCalledWith([
 				{ ts: 100, say: "user", text: "First" },
 				{ ts: 200, say: "assistant", text: "Response" },
 				{ ts: 300, say: "user", text: "Second" },
@@ -128,7 +128,7 @@ describe("MessageManager", () => {
 			await manager.rewindToIndex(2)
 
 			// Should keep messages [0, 2) - index 0 and 1
-			expect(mockTask.overwriteClineMessages).toHaveBeenCalledWith([
+			expect(mockTask.overwriteAlphaMessages).toHaveBeenCalledWith([
 				{ ts: 100, say: "user", text: "First" },
 				{ ts: 200, say: "assistant", text: "Response" },
 			])
@@ -474,8 +474,8 @@ describe("MessageManager", () => {
 			await manager.rewindToTimestamp(600, { includeTargetMessage: true })
 
 			// Since condense_context (ts=500) is BEFORE checkpoint, it should be preserved
-			const clineCall = mockTask.overwriteClineMessages.mock.calls[0][0]
-			const hasCondenseContext = clineCall.some((m: any) => m.say === "condense_context")
+			const alphaCall = mockTask.overwriteAlphaMessages.mock.calls[0][0]
+			const hasCondenseContext = alphaCall.some((m: any) => m.say === "condense_context")
 			expect(hasCondenseContext).toBe(true)
 
 			// And the Summary should still exist
@@ -516,8 +516,8 @@ describe("MessageManager", () => {
 			await manager.rewindToTimestamp(200, { includeTargetMessage: true })
 
 			// condense_context (ts=300) is AFTER checkpoint, so it should be removed
-			const clineCall = mockTask.overwriteClineMessages.mock.calls[0][0]
-			const hasCondenseContext = clineCall.some((m: any) => m.say === "condense_context")
+			const alphaCall = mockTask.overwriteAlphaMessages.mock.calls[0][0]
+			const hasCondenseContext = alphaCall.some((m: any) => m.say === "condense_context")
 			expect(hasCondenseContext).toBe(false)
 
 			// And the Summary should be removed too
@@ -552,8 +552,8 @@ describe("MessageManager", () => {
 			await manager.rewindToTimestamp(600, { includeTargetMessage: true })
 
 			// Truncation should be preserved
-			const clineCall = mockTask.overwriteClineMessages.mock.calls[0][0]
-			const hasTruncation = clineCall.some((m: any) => m.say === "sliding_window_truncation")
+			const alphaCall = mockTask.overwriteAlphaMessages.mock.calls[0][0]
+			const hasTruncation = alphaCall.some((m: any) => m.say === "sliding_window_truncation")
 			expect(hasTruncation).toBe(true)
 
 			// Marker should still exist
@@ -588,8 +588,8 @@ describe("MessageManager", () => {
 			await manager.rewindToTimestamp(200, { includeTargetMessage: true })
 
 			// Truncation should be removed
-			const clineCall = mockTask.overwriteClineMessages.mock.calls[0][0]
-			const hasTruncation = clineCall.some((m: any) => m.say === "sliding_window_truncation")
+			const alphaCall = mockTask.overwriteAlphaMessages.mock.calls[0][0]
+			const hasTruncation = alphaCall.some((m: any) => m.say === "sliding_window_truncation")
 			expect(hasTruncation).toBe(false)
 
 			// Marker should be removed
@@ -717,7 +717,7 @@ describe("MessageManager", () => {
 
 			await manager.rewindToIndex(0)
 
-			expect(mockTask.overwriteClineMessages).toHaveBeenCalledWith([])
+			expect(mockTask.overwriteAlphaMessages).toHaveBeenCalledWith([])
 			// API history write is skipped when nothing changed (optimization)
 			expect(mockTask.overwriteApiConversationHistory).not.toHaveBeenCalled()
 		})

@@ -3,9 +3,9 @@ import * as os from "os"
 import * as path from "path"
 
 import {
-	type ClineMessage,
+	type AlphaMessage,
 	type HistoryItem,
-	RooCodeEventName,
+	AlphaCodeEventName,
 	agentControlStateSchema,
 	historyItemSchema,
 } from "@alpha-code/types"
@@ -22,7 +22,7 @@ import { ProviderTranscriptStore } from "../../task-persistence/ProviderTranscri
 import { readTaskMessages } from "../../task-persistence/taskMessages"
 import { Task } from "../../task/Task"
 import { WorkspaceMutationGate } from "../../task/WorkspaceMutationGate"
-import { ClineProvider } from "../ClineProvider"
+import { AlphaProvider } from "../AlphaProvider"
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
 
 const PARENT_ID = "stage-three-legacy-parent"
@@ -74,7 +74,7 @@ async function createHarness() {
 		status: "completed",
 	})
 
-	const originalUi: ClineMessage[] = [
+	const originalUi: AlphaMessage[] = [
 		{ type: "say", say: "text", text: "Parent requested a delegated change.", ts: 100 },
 	]
 	const originalApi: ApiMessage[] = [
@@ -123,7 +123,7 @@ async function createHarness() {
 		if (!item) throw new Error(`Fixture history is missing ${taskId}`)
 		return item
 	}
-	const updateHistory = vi.fn<ClineProvider["updateTaskHistory"]>(async (item) => {
+	const updateHistory = vi.fn<AlphaProvider["updateTaskHistory"]>(async (item) => {
 		const items = (await readHistory()).map((current) => (current.id === item.id ? structuredClone(item) : current))
 		await safeWriteJson(historyPath, items)
 		return items
@@ -137,7 +137,7 @@ async function createHarness() {
 	const ownerGenerations = Reflect.get(Task, "apiConversationHistoryOwnerGenerations") as Map<string, number>
 	const persistenceKeys: string[] = []
 	const emit = vi.fn<(event: string, ...args: unknown[]) => boolean>(() => true)
-	let provider!: ClineProvider
+	let provider!: AlphaProvider
 
 	const makeTask = (taskId: string) => {
 		const persistenceKey = `${path.resolve(storagePath)}\u0000${taskId}`
@@ -172,7 +172,7 @@ async function createHarness() {
 			task.abort = true
 			await task.flushApiConversationHistoryPersistence()
 		})
-		task.overwriteClineMessages = vi.fn<Task["overwriteClineMessages"]>(async (messages) => {
+		task.overwriteAlphaMessages = vi.fn<Task["overwriteAlphaMessages"]>(async (messages) => {
 			task.clineMessages = structuredClone(messages)
 			await saveTaskMessages({ messages, taskId, globalStoragePath: storagePath })
 		})
@@ -180,35 +180,35 @@ async function createHarness() {
 	}
 	const parent = makeTask(PARENT_ID)
 	const child = makeTask(CHILD_ID)
-	await parent.overwriteClineMessages(originalUi)
+	await parent.overwriteAlphaMessages(originalUi)
 	if (!(await parent.overwriteApiConversationHistory(originalApi)))
 		throw new Error("Initial parent persistence failed")
-	await child.overwriteClineMessages([])
+	await child.overwriteAlphaMessages([])
 	if (!(await child.overwriteApiConversationHistory([{ role: "user", content: "Implement the child change." }]))) {
 		throw new Error("Initial child persistence failed")
 	}
 
 	const stageParent = async () => {
 		sessions.register(parent, { focus: false })
-		const stack = Reflect.get(provider, "clineStack") as Task[]
+		const stack = Reflect.get(provider, "taskStack") as Task[]
 		if (!stack.includes(parent)) stack.push(parent)
 		return parent
 	}
-	const createParent = vi.fn<ClineProvider["createTaskWithHistoryItem"]>(stageParent)
+	const createParent = vi.fn<AlphaProvider["createTaskWithHistoryItem"]>(stageParent)
 	const getDecision = vi.fn(async (task: Task) => ledger.getParentCompletionDecision(task.taskId, CHILD_ID))
 	// Preserve the provider handoff/removal/mutation gate, session registry, child
 	// Task gate, and parent's serialized legacy+sidecar persistence. Only host
 	// construction, metadata indexing, UI/resume, and abort/join endpoints vary.
-	provider = Object.assign(Object.create(ClineProvider.prototype), {
+	provider = Object.assign(Object.create(AlphaProvider.prototype), {
 		contextProxy: { globalStorageUri: { fsPath: storagePath } },
 		taskSessions: sessions,
 		workspaceMutationGate: gate,
 		legacyHandoffInputBuffers: buffers,
 		taskEventListeners: new WeakMap(),
-		clineStack: [child],
+		taskStack: [child],
 		currentView: { type: "task", taskId: CHILD_ID },
 		getParentCompletionDecision: getDecision,
-		getTaskWithId: vi.fn<ClineProvider["getTaskWithId"]>(async (taskId) => {
+		getTaskWithId: vi.fn<AlphaProvider["getTaskWithId"]>(async (taskId) => {
 			const taskDirPath = await getTaskDirectoryPath(storagePath, taskId)
 			return {
 				historyItem: await history(taskId),
@@ -226,9 +226,9 @@ async function createHarness() {
 		resetNewTaskDraftMode: vi.fn(),
 		emit,
 		log: vi.fn(),
-	}) as ClineProvider
+	}) as AlphaProvider
 	sessions.register(child)
-	const remove = vi.spyOn(provider, "removeClineFromStack")
+	const remove = vi.spyOn(provider, "removeTaskFromStack")
 	const completionGate = vi.spyOn(child, "getCompletionGateDecision")
 	const handoff = () =>
 		provider.reopenParentFromDelegation({
@@ -273,7 +273,7 @@ async function createHarness() {
 		await expect(gate.runIfIdle(CHILD_ID, "rollback release probe", async () => "released")).resolves.toBe(
 			"released",
 		)
-		expect(emit.mock.calls.some(([name]) => name === RooCodeEventName.TaskDelegationCompleted)).toBe(false)
+		expect(emit.mock.calls.some(([name]) => name === AlphaCodeEventName.TaskDelegationCompleted)).toBe(false)
 	}
 	return {
 		provider,
@@ -520,7 +520,7 @@ describe("Stage Three legacy delegated handoff integration", () => {
 			await release.promise
 		})
 		const operation = observe(
-			harness.provider.removeClineFromStack({
+			harness.provider.removeTaskFromStack({
 				taskId: CHILD_ID,
 				skipDelegationRepair: true,
 				requireAbortSuccess: true,
@@ -551,7 +551,7 @@ describe("Stage Three legacy delegated handoff integration", () => {
 			if (scenario === "managed worker")
 				Object.assign(harness.child, { taskKind: "subagent", subagentRole: "worker" })
 			await expect(
-				harness.provider.removeClineFromStack({
+				harness.provider.removeTaskFromStack({
 					taskId: CHILD_ID,
 					skipDelegationRepair: scenario !== "repair enabled",
 					ownedDelegationHandoff: true,
