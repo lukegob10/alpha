@@ -32,7 +32,7 @@ describe("mode-validator", () => {
 			it("allows only read-only planning, conservative commands, and managed-agent tools", () => {
 				const architectTools = [
 					...TOOL_GROUPS.read.tools,
-					...TOOL_GROUPS.command.tools,
+					...TOOL_GROUPS.command.tools.filter((tool) => tool !== "manage_command"),
 					...TOOL_GROUPS.agents.tools,
 				]
 				architectTools.forEach((tool) => {
@@ -42,6 +42,7 @@ describe("mode-validator", () => {
 				expect(isToolAllowedForMode("attempt_completion", architectMode, [])).toBe(true)
 				expect(isToolAllowedForMode("write_to_file", architectMode, [])).toBe(false)
 				expect(isToolAllowedForMode("execute_command", architectMode, [])).toBe(true)
+				expect(isToolAllowedForMode("manage_command", architectMode, [])).toBe(false)
 				expect(isToolAllowedForMode("use_mcp_tool", architectMode, [])).toBe(false)
 				expect(isToolAllowedForMode("new_task", architectMode, [])).toBe(false)
 				expect(isToolAllowedForMode("switch_mode", architectMode, [])).toBe(false)

@@ -20,7 +20,19 @@ export interface FileReadContent {
 }
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex")
-const encode = (cursor: Cursor) => Buffer.from(JSON.stringify(cursor)).toString("base64url")
+// Shorter copyable cursors with an integrity check distinguish model transcription
+// errors from a real file change. Legacy v1 cursors remain readable below.
+const encode = (cursor: Cursor) => {
+	const body = [
+		"r2",
+		Buffer.from(cursor.file, "hex").toString("base64url"),
+		Buffer.from(cursor.version, "hex").toString("base64url"),
+		cursor.limit,
+		cursor.column,
+		cursor.ranges.map(([start, end]) => `${start}-${end}`).join(","),
+	].join(".")
+	return `${body}.${hash(body).slice(0, 16)}`
+}
 const positive = (value: unknown): value is number =>
 	typeof value === "number" && Number.isSafeInteger(value) && value > 0
 
@@ -28,15 +40,31 @@ function decode(value: string): Cursor {
 	if (value.length > 8192) throw new Error("Invalid read continuation: too large.")
 	let cursor: Cursor
 	try {
-		cursor = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Cursor
+		if (value.startsWith("r2.")) {
+			const [format, file, version, limit, column, ranges, checksum, ...extra] = value.split(".")
+			const body = [format, file, version, limit, column, ranges].join(".")
+			if (extra.length || checksum !== hash(body).slice(0, 16)) throw new Error("Invalid checksum")
+			cursor = {
+				v: 1,
+				file: Buffer.from(file!, "base64url").toString("hex"),
+				version: Buffer.from(version!, "base64url").toString("hex"),
+				limit: Number(limit),
+				column: Number(column),
+				ranges: ranges!.split(",").map((range) => range.split("-").map(Number) as Range),
+			}
+		} else {
+			cursor = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Cursor
+		}
 	} catch {
-		throw new Error("Invalid read continuation.")
+		throw new Error("Invalid read continuation. Copy the complete continuation exactly from the previous result.")
 	}
 	if (
 		!cursor ||
 		cursor.v !== 1 ||
 		typeof cursor.file !== "string" ||
 		typeof cursor.version !== "string" ||
+		!/^[a-f0-9]{64}$/.test(cursor.file) ||
+		!/^[a-f0-9]{64}$/.test(cursor.version) ||
 		!positive(cursor.limit) ||
 		!Number.isSafeInteger(cursor.column) ||
 		cursor.column < 0 ||

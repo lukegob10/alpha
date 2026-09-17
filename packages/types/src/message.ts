@@ -453,6 +453,17 @@ export const clineMessageSchema = z.object({
 	images: z.array(z.string()).optional(),
 	partial: z.boolean().optional(),
 	reasoning: z.string().optional(),
+	/** Presentation-only synopsis of provider-visible reasoning; never sent back as provider history. */
+	reasoningSummary: z.string().max(280).optional(),
+	reasoningSummaryUsage: z
+		.object({
+			tokensIn: z.number().nonnegative(),
+			tokensOut: z.number().nonnegative(),
+			cacheWrites: z.number().nonnegative(),
+			cacheReads: z.number().nonnegative(),
+			cost: z.number().nonnegative(),
+		})
+		.optional(),
 	conversationHistoryIndex: z.number().optional(),
 	checkpoint: z.record(z.string(), z.unknown()).optional(),
 	progressStatus: toolProgressStatusSchema.optional(),

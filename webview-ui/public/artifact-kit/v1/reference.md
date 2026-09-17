@@ -7,6 +7,12 @@ The source directory is `webview-ui/public/artifact-kit/v1/`. Standalone example
 in with `<script defer data-alpha-standalone src="../kit.js"></script>`; this is a
 gallery harness, not permission for authored executable code in the viewer.
 
+Preview authored documents only in Alpha's built-in HTML previewer using the
+`alpha-document://open` chat action from the rich-documents skill. Do not open or
+validate them with browser tools, an external browser, or a localhost server.
+When direct preview inspection is unavailable, validate the HTML source and
+deliver the document link without claiming visual verification.
+
 ```html
 <!doctype html>
 <html lang="en">
@@ -166,13 +172,21 @@ no inputs, persistent approval state, or background actions.
 </figure>
 ```
 
-The path is relative to the document's workspace root, just like source references.
-Use real workspace assets, not URLs, absolute paths, traversal, or base64 in the
-authored file. Alt text is required. The host resolves the path, reads bounded bytes,
-checks static PNG/JPEG headers and dimensions, then embeds a data image. It does not
-grant the webview access to the workspace. Authored `src`, `srcset`, SVG, animation,
-event handlers and remote images remain unsupported. Missing, invalid, inaccessible
-or oversized assets show an explanation alongside the rest of the document.
+The `data-image` path is relative to the document's workspace root, just like source
+references. Existing documents keep that behavior. Ordinary local PNG/JPEG `src`
+paths are also supported and resolve relative to the HTML file. For example,
+`reports/analysis.html` can use `<img src="plots/fit.png" alt="Model fit">` for
+`reports/plots/fit.png`. This works for Matplotlib charts and other saved raster
+figures. Relative `./` and `../` segments and URL-encoded spaces are supported for
+`src`, provided the resolved asset stays inside the document's workspace root.
+When both attributes exist, `data-image` wins.
+
+Use real workspace assets and descriptive alt text. The host resolves the path,
+reads bounded bytes, checks static PNG/JPEG headers and dimensions, then embeds a
+data image. It does not grant the webview access to the workspace. Absolute paths,
+file URLs, authored base64, `srcset`, SVG, animation, event handlers and remote
+images remain unsupported. Missing, invalid, inaccessible or oversized local
+assets show an explanation alongside the rest of the document.
 
 Limits: 8 images, 1 MiB per image, 4 MiB combined encoded bytes, 8,388,608 combined
 pixels, and 4,096 pixels per dimension. Keep images appropriately sized for a document.

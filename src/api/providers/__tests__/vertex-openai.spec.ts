@@ -81,6 +81,7 @@ describe("VertexOpenAiHandler", () => {
 		})
 
 		expect(handler).toBeInstanceOf(VertexOpenAiHandler)
+		expect(handler.streamCapabilities?.cancellation).toBe(false)
 	})
 
 	it("calls the Vertex OpenAI endpoint with PEM trust and the cached Helix token", async () => {

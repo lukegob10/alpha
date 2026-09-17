@@ -34,6 +34,36 @@ describe("SearchFilesTool", () => {
 			rooIgnoreController: undefined,
 		}) as unknown as Task
 
+	it("preserves valid searches when a batch contains an empty workspace path", async () => {
+		const callbacks = {
+			askApproval: vi.fn().mockResolvedValue(true),
+			handleError: vi.fn(),
+			pushToolResult: vi.fn(),
+			setResultMetadata: vi.fn(),
+		}
+		const call = NativeToolCallParser.parseToolCall({
+			id: "pulse-search",
+			name: "search_files",
+			arguments: JSON.stringify({
+				path: "src",
+				regex: "brand",
+				queries: [
+					{ path: "src", regex: "brand" },
+					{ path: "", regex: "PULSE" },
+				],
+			}),
+		})!
+		if (call.type !== "tool_use") throw new Error("Expected search_files call")
+		await new SearchFilesTool().handle(createTask(), call, callbacks)
+		expect(regexSearchFilesMock).toHaveBeenCalledOnce()
+		expect(callbacks.pushToolResult.mock.calls[0][0]).toContain("results for brand")
+		expect(callbacks.pushToolResult.mock.calls[0][0]).toContain('Use "." for the workspace root')
+		expect(JSON.parse(callbacks.askApproval.mock.calls[0][1]).batchSearches).toMatchObject([
+			{ searchStatus: "success" },
+			{ searchStatus: "error" },
+		])
+	})
+
 	it.each(["content", "files", "count", null] as const)(
 		"carries native mode %s and literal through parsing and execution",
 		async (output_mode) => {

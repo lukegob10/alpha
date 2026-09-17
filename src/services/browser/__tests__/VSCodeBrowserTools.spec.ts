@@ -215,6 +215,17 @@ describe("VSCodeBrowserTools", () => {
 		})
 
 		it.each([
+			"file:///workspace/.alpha/documents/review.html",
+			"C:\\project\\docs\\report.htm",
+			"alpha-document://open?uri=file%3A%2F%2F%2Fworkspace%2Freview.html&task=task-1",
+		])("directs document target %j to the HTML previewer without opening a browser", async (url) => {
+			await expect(invoke(url)).rejects.toThrow(/HTML previewer.*alpha-document:\/\/open/)
+			expect(vscodeMock.invokeTool).not.toHaveBeenCalled()
+			expect(vscodeMock.cancellationTokens).toHaveLength(0)
+			expect(vscodeMock.executeCommand).not.toHaveBeenCalled()
+		})
+
+		it.each([
 			"https://example.com/docs?q=Dockerfile#build",
 			"http://example.com",
 			"http://localhost:3000",

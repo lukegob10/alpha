@@ -1,5 +1,6 @@
 import React from "react"
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen } from "@/utils/test-utils"
+import "@/i18n/setup"
 
 import { Markdown } from "../Markdown"
 
@@ -13,10 +14,6 @@ vi.mock("@src/utils/clipboard", () => ({
 	useCopyToClipboard: () => ({ copyWithFeedback, showCopyFeedback: false }),
 }))
 
-vi.mock("@src/components/ui", () => ({
-	StandardTooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-}))
-
 describe("Markdown proposed-plan rendering", () => {
 	it("shows response actions after the answer completes", () => {
 		const actions = <button>Preview answer</button>
@@ -24,8 +21,8 @@ describe("Markdown proposed-plan rendering", () => {
 		expect(screen.queryByRole("button", { name: "Preview answer" })).not.toBeInTheDocument()
 		rerender(<Markdown markdown="Answer" actions={actions} />)
 		expect(screen.getByRole("button", { name: "Preview answer" })).toBeInTheDocument()
-		fireEvent.click(screen.getByRole("button", { name: "Copy as markdown" }))
-		expect(copyWithFeedback).toHaveBeenCalledWith("Answer")
+		fireEvent.click(screen.getByRole("button", { name: "Copy" }))
+		expect(copyWithFeedback).toHaveBeenCalledWith("Answer", expect.anything())
 	})
 	it("renders an exact proposed-plan block as a dedicated surface without exposing protocol tags", () => {
 		render(<Markdown markdown={"<proposed_plan>\n# Provider plan\n- Update selection\n</proposed_plan>"} />)
@@ -47,10 +44,10 @@ describe("Markdown proposed-plan rendering", () => {
 
 	it("keeps the markdown copy action keyboard-accessible without hover", () => {
 		render(<Markdown markdown="# Copy me" />)
-		const copyButton = screen.getByRole("button", { name: "Copy as markdown" })
+		const copyButton = screen.getByRole("button", { name: "Copy" })
 
 		fireEvent.click(copyButton)
 
-		expect(copyWithFeedback).toHaveBeenCalledWith("# Copy me")
+		expect(copyWithFeedback).toHaveBeenCalledWith("# Copy me", expect.anything())
 	})
 })

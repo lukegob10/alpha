@@ -4,6 +4,7 @@ import getFolderSize from "get-folder-size"
 import type {
 	ClineMessage,
 	HistoryItem,
+	TaskWorkContext,
 	SubagentChangeSetState,
 	SubagentContextManifest,
 	SubagentDelegationPolicy,
@@ -32,6 +33,7 @@ export type TaskMetadataOptions = {
 	mode?: string
 	/** Provider profile name for the task (sticky profile feature) */
 	apiConfigName?: string
+	workContext?: TaskWorkContext
 	/** Initial status for the task (e.g., "active" for child tasks) */
 	initialStatus?:
 		| "active"
@@ -66,6 +68,7 @@ export async function taskMetadata({
 	workspace,
 	mode,
 	apiConfigName,
+	workContext,
 	initialStatus,
 	taskKind,
 	subagentGroupId,
@@ -150,6 +153,7 @@ export async function taskMetadata({
 		totalCost: tokenUsage.totalCost,
 		size: taskDirSize,
 		workspace,
+		...(workContext && { workContext: structuredClone(workContext) }),
 		mode,
 		...(typeof apiConfigName === "string" && apiConfigName.length > 0 ? { apiConfigName } : {}),
 		...(initialStatus && { status: initialStatus }),

@@ -1,4 +1,13 @@
 {
+	"messageActions": {
+		"copy": "Copia",
+		"copied": "Copiat",
+		"edit": "Edita i torna a enviar",
+		"restart": "Reinicia des de la petició anterior",
+		"restartWarning": "Es tornarà a executar la petició anterior i se substituiran tots els missatges posteriors. Els fitxers de l’espai de treball es mantindran com estan.",
+		"restartWithCheckpoint": "Es tornarà a executar la petició anterior i se substituiran tots els missatges posteriors. Vols restaurar també els fitxers al seu punt de control?",
+		"restartOnly": "Reinicia sense restaurar fitxers"
+	},
 	"activityTrace": {
 		"needsAttention": "Cal atenció",
 		"workedFor": "Ha treballat durant {{duration}}"
@@ -220,10 +229,10 @@
 		"didViewTopLevel": "Alpha ha vist els fitxers de nivell superior en aquest directori",
 		"wantsToViewRecursive": "Alpha vol veure recursivament tots els fitxers en aquest directori",
 		"didViewRecursive": "Alpha ha vist recursivament tots els fitxers en aquest directori",
-		"wantsToSearch": "Alpha vol cercar en aquest directori <code>{{regex}}</code>",
-		"didSearch": "Alpha ha cercat en aquest directori <code>{{regex}}</code>",
-		"wantsToSearchOutsideWorkspace": "Alpha vol cercar en aquest directori (fora de l'espai de treball) <code>{{regex}}</code>",
-		"didSearchOutsideWorkspace": "Alpha ha cercat en aquest directori (fora de l'espai de treball) <code>{{regex}}</code>",
+		"wantsToSearch": "Alpha vol cercar en un directori",
+		"didSearch": "Alpha ha cercat en un directori",
+		"wantsToSearchOutsideWorkspace": "Alpha vol cercar en un directori (fora de l'espai de treball)",
+		"didSearchOutsideWorkspace": "Alpha ha cercat en un directori (fora de l'espai de treball)",
 		"wantsToViewTopLevelOutsideWorkspace": "Alpha vol veure els fitxers de nivell superior en aquest directori (fora de l'espai de treball)",
 		"didViewTopLevelOutsideWorkspace": "Alpha ha vist els fitxers de nivell superior en aquest directori (fora de l'espai de treball)",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha vol veure recursivament tots els fitxers en aquest directori (fora de l'espai de treball)",
@@ -356,8 +365,11 @@
 			"gpt54": "Proveïdor Poe: S'ha afegit Poe com a proveïdor d’IA perquè puguis accedir directament als models de Poe a Alpha.",
 			"slashSkills": "Millores a xAI i MiniMax: S'ha migrat el proveïdor xAI a la Responses API, s'hi han afegit utilitats de transformació reutilitzables, s'han actualitzat els valors per defecte de Grok-4.20 i s'han corregit els llistats de models de MiniMax i la gestió de la finestra de context per oferir una configuració més fiable.",
 			"geminiPro": "Suport per Gemini 3.1 Pro: S'ha afegit el suport per al model Gemini 3.1 Pro i s'ha establert com a model Gemini per defecte per a un millor rendiment.",
-			"cliNdjson": "Protocol NDJSON del CLI: Nou protocol NDJSON via stdin, subcomandes de llistat i comanda d'execució modularitzada per a fluxos de treball CLI més flexibles.",
-			"cliRelease": "CLI v0.1.0: El CLI de Alpha arriba a la seva primera versió oficial amb una interfície de comandes estable."
+			"welcome": "Alpha v{{version}} millora la verificació, el control d’ordres i la continuïtat de les tasques.",
+			"acceptanceChecks": "Reutilitza les comprovacions superades mentre les entrades declarades no canviïn.",
+			"commandControl": "Espera, envia dades i atura les ordres en segon pla de la tasca.",
+			"workflowContinuity": "Conserva les restriccions de la tasca i el context de les habilitats després de recarregar i compactar.",
+			"chatUpdates": "Utilitza accions de xat més clares i selecciona un proveïdor quan la tasca s’hagi completat."
 		}
 	},
 	"costs": {

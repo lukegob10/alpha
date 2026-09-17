@@ -3,7 +3,7 @@ import { createHash } from "node:crypto"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import * as vscode from "vscode"
-import { RooCodeEventName, toolNames, type ClineMessage, type ToolName } from "@alpha-code/types"
+import { RooCodeEventName, toolNames, type ClineMessage, type ToolName, type TaskWorkContext } from "@alpha-code/types"
 
 import { readBoundedJson } from "../scenarios/extensionWorkflowHost"
 import { guardTaskApi, WorkflowRequestBudget } from "../scenarios/requestBudget"
@@ -12,7 +12,8 @@ import { assertOwnedTestRoot } from "../testProfile"
 import { createCompletionReviewAcknowledger, withBoundedFixtureCleanup } from "./proportional-context-support"
 import { waitFor } from "./utils"
 
-interface LiveTask {
+export interface LiveTask {
+	workContext?: TaskWorkContext
 	taskId: string
 	api: unknown
 	didComplete?: boolean
@@ -25,9 +26,10 @@ interface LiveTask {
 }
 
 interface LiveProvider {
+	getSkillsManager?(): { refreshSkills(): Promise<unknown> } | undefined
 	on(event: "taskCreated", listener: (task: LiveTask) => void): void
 	off(event: "taskCreated", listener: (task: LiveTask) => void): void
-	getTaskWithId(id: string): Promise<{ taskDirPath: string }>
+	getTaskWithId(id: string): Promise<{ taskDirPath: string; historyItem: { workContext?: TaskWorkContext } }>
 }
 
 type JsonRecord = Record<string, unknown>
@@ -77,8 +79,14 @@ export async function runLiveCase(
 	tools: ToolName[],
 	files: Record<string, string>,
 	prompt: string,
-	verify: (calls: Transaction[], messages: ClineMessage[], workspace: string, answer: string) => Promise<void>,
-	options: { scope?: string } = {},
+	verify: (
+		calls: Transaction[],
+		messages: ClineMessage[],
+		workspace: string,
+		answer: string,
+		task: LiveTask,
+	) => Promise<void>,
+	options: { scope?: string; commands?: string[]; requestLimit?: number; timeoutMs?: number } = {},
 ) {
 	assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "live-copilot", "This suite requires a real Copilot model")
 	const workspace = process.env.ALPHA_E2E_WORKSPACE!
@@ -89,9 +97,18 @@ export async function runLiveCase(
 		await fs.writeFile(target, content, { flag: "wx" })
 	}
 	const api = globalThis.api
+	const extension = vscode.extensions.getExtension(process.env.ALPHA_E2E_EXTENSION_ID!)
+	assert.ok(extension?.isActive)
+	assert.equal(extension.exports, api)
+	if (process.env.ALPHA_E2E_INSTALLED_EXTENSION_DIR)
+		assert.equal(
+			await fs.realpath(extension.extensionPath),
+			await fs.realpath(process.env.ALPHA_E2E_INSTALLED_EXTENSION_DIR),
+		)
 	const original = api.getConfiguration()
 	const provider = (api as unknown as { sidebarProvider: LiveProvider }).sidebarProvider
-	const budget = new WorkflowRequestBudget(12, process.env.ALPHA_E2E_ACTUAL_MODEL_ID)
+	if (tools.includes("skill")) await provider.getSkillsManager?.()?.refreshSkills()
+	const budget = new WorkflowRequestBudget(options.requestLimit ?? 12, process.env.ALPHA_E2E_ACTUAL_MODEL_ID)
 	const releases: Array<() => void> = []
 	let task: LiveTask | undefined
 	let completed = 0
@@ -124,7 +141,9 @@ export async function runLiveCase(
 					alwaysAllowWrite: true,
 					alwaysAllowWriteOutsideWorkspace: false,
 					alwaysAllowWriteProtected: false,
-					alwaysAllowExecute: false,
+					alwaysAllowExecute: Boolean(options.commands?.length),
+					commandExecutionTimeout: options.commands?.length ? 300 : original.commandExecutionTimeout,
+					...(options.commands ? { allowedCommands: options.commands } : {}),
 					alwaysAllowMcp: false,
 					mcpEnabled: false,
 					alwaysAllowSubagents: false,
@@ -142,12 +161,27 @@ export async function runLiveCase(
 					if (budget.failure) throw budget.failure
 					assert.equal(budget.exhausted, false, "Live request budget exhausted")
 					const ask = task?.taskAsk
-					if (ask && !ask.partial && !task?.didComplete)
-						assert.equal(ask.ask, "completion_result", `Unexpected boundary: ${ask.ask}`)
+					if (ask && !ask.partial && !task?.didComplete) {
+						if (ask.ask === "tool" && ask.text) {
+							const approval = record(JSON.parse(ask.text))
+							assert.notEqual(
+								approval.isOutsideWorkspace,
+								true,
+								"Fixture requested outside-workspace access",
+							)
+						}
+						// Auto-approval is asynchronous. Observing its transient prompt does not
+						// mean the task needs user intervention; keep the overall bounded wait.
+						const autoApprovalPending =
+							ask.ask === "tool" ||
+							((ask.ask === "command" || ask.ask === "command_output") && options.commands?.length)
+						if (!autoApprovalPending)
+							assert.equal(ask.ask, "completion_result", `Unexpected boundary: ${ask.ask}`)
+					}
 					acknowledge(task)
 					return completed > 0
 				},
-				{ timeout: 180_000, interval: 100, description: `${id} live completion` },
+				{ timeout: options.timeoutMs ?? 180_000, interval: 100, description: `${id} live completion` },
 			)
 			assert.ok(task)
 			await waitFor(
@@ -158,7 +192,13 @@ export async function runLiveCase(
 				},
 				{ timeout: 15_000, description: "file-tool evidence durability" },
 			)
-			const { taskDirPath } = await provider.getTaskWithId(task.taskId)
+			const { taskDirPath, historyItem } = await provider.getTaskWithId(task.taskId)
+			if (task.workContext)
+				assert.deepEqual(
+					historyItem.workContext,
+					JSON.parse(JSON.stringify(task.workContext)),
+					"The working record must survive in saved task metadata",
+				)
 			const history = await readBoundedJson(path.join(taskDirPath, "api_conversation_history.json"))
 			assert.deepEqual(inspectToolTransactions(history).errors, [])
 			calls = transactions(history)
@@ -179,7 +219,7 @@ export async function runLiveCase(
 				calls.every((call) => allowed.has(call.name as ToolName)),
 				"No alternate tool may bypass the probe",
 			)
-			await verify(calls, task.clineMessages, workspace, answer)
+			await verify(calls, task.clineMessages, workspace, answer, task)
 			passed = true
 		} catch (error) {
 			failure = error instanceof Error ? error.message : String(error)
@@ -198,6 +238,7 @@ export async function runLiveCase(
 						passed,
 						failure,
 						hostVersion: vscode.version,
+						extensionPath: extension.extensionPath,
 						provider: "live-copilot",
 						model: budget.model,
 						effort: process.env.ALPHA_E2E_ACTUAL_REASONING_EFFORT,
@@ -207,6 +248,7 @@ export async function runLiveCase(
 						answer,
 						requestLimit: budget.limit,
 						taskId: task?.taskId,
+						workContext: task?.workContext,
 						completed,
 						calls,
 						fileHashes,

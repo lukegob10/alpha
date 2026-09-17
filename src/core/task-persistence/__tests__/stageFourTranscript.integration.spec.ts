@@ -454,7 +454,7 @@ describe("Stage Four real Task transcript persistence", () => {
 		// constructor-free fixture substitutes only resource/UI cleanup endpoints.
 		Reflect.set(
 			task,
-			"stopActiveWorkerCommand",
+			"stopActiveTaskCommands",
 			vi.fn(async () => {
 				cleanup.push("stop process")
 			}),

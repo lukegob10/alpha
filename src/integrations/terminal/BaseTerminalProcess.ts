@@ -22,6 +22,7 @@ const EMPTY_TERMINAL_OUTPUT_RECEIPT: TerminalOutputReceipt = Object.freeze({
 })
 
 export abstract class BaseTerminalProcess extends EventEmitter<RooTerminalProcessEvents> implements RooTerminalProcess {
+	public executionId?: string
 	public command: string = ""
 
 	public isHot: boolean = false

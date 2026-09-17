@@ -635,6 +635,7 @@ function buildVsCodeLmModelInfo(
  * ```
  */
 export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHandler {
+	readonly streamCapabilities = { cancellation: true } as const
 	protected options: ApiHandlerOptions
 	private client: vscode.LanguageModelChat | null
 	/** A model-catalog refresh applies at the next new step, not between capture and dispatch/retry. */

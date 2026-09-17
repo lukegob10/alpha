@@ -1,4 +1,13 @@
 {
+	"messageActions": {
+		"copy": "Kopiuj",
+		"copied": "Skopiowano",
+		"edit": "Edytuj i wyślij ponownie",
+		"restart": "Zacznij ponownie od poprzedniego polecenia",
+		"restartWarning": "Poprzednie polecenie zostanie wykonane ponownie, a wszystkie późniejsze wiadomości zostaną zastąpione. Pliki obszaru roboczego pozostaną bez zmian.",
+		"restartWithCheckpoint": "Poprzednie polecenie zostanie wykonane ponownie, a wszystkie późniejsze wiadomości zostaną zastąpione. Przywrócić także pliki do powiązanego punktu kontrolnego?",
+		"restartOnly": "Uruchom ponownie bez przywracania plików"
+	},
 	"activityTrace": {
 		"needsAttention": "Wymaga uwagi",
 		"workedFor": "Czas pracy: {{duration}}"
@@ -220,10 +229,10 @@
 		"didViewTopLevel": "Alpha zobaczył pliki najwyższego poziomu w tym katalogu",
 		"wantsToViewRecursive": "Alpha chce rekurencyjnie zobaczyć wszystkie pliki w tym katalogu",
 		"didViewRecursive": "Alpha rekurencyjnie zobaczył wszystkie pliki w tym katalogu",
-		"wantsToSearch": "Alpha chce przeszukać ten katalog w poszukiwaniu <code>{{regex}}</code>",
-		"didSearch": "Alpha przeszukał ten katalog w poszukiwaniu <code>{{regex}}</code>",
-		"wantsToSearchOutsideWorkspace": "Alpha chce przeszukać ten katalog (poza obszarem roboczym) w poszukiwaniu <code>{{regex}}</code>",
-		"didSearchOutsideWorkspace": "Alpha przeszukał ten katalog (poza obszarem roboczym) w poszukiwaniu <code>{{regex}}</code>",
+		"wantsToSearch": "Alpha chce przeszukać katalog",
+		"didSearch": "Alpha przeszukał katalog",
+		"wantsToSearchOutsideWorkspace": "Alpha chce przeszukać katalog (poza obszarem roboczym)",
+		"didSearchOutsideWorkspace": "Alpha przeszukał katalog (poza obszarem roboczym)",
 		"wantsToViewTopLevelOutsideWorkspace": "Alpha chce zobaczyć pliki najwyższego poziomu w tym katalogu (poza obszarem roboczym)",
 		"didViewTopLevelOutsideWorkspace": "Alpha zobaczył pliki najwyższego poziomu w tym katalogu (poza obszarem roboczym)",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha chce rekurencyjnie zobaczyć wszystkie pliki w tym katalogu (poza obszarem roboczym)",
@@ -356,8 +365,11 @@
 			"gpt54": "Dostawca Poe: Dodano Poe jako dostawcę AI, żebyś mógł bezpośrednio uzyskać dostęp do modeli Poe w Alpha.",
 			"slashSkills": "Usprawnienia xAI i MiniMax: Przeniesiono dostawcę xAI do Responses API, dodano narzędzia transformacji wielokrotnego użytku, zaktualizowano domyślne ustawienia Grok-4.20 oraz naprawiono listy modeli MiniMax i obsługę okna kontekstu, żeby konfiguracja była bardziej niezawodna.",
 			"geminiPro": "Wsparcie dla Gemini 3.1 Pro: Dodano wsparcie dla modelu Gemini 3.1 Pro i ustawiono go jako domyślny model Gemini dla lepszej wydajności.",
-			"cliNdjson": "Protokół NDJSON w CLI: Nowy protokół NDJSON przez stdin, podkomendy list oraz zmodularyzowana komenda run dla bardziej elastycznych przepływów pracy CLI.",
-			"cliRelease": "CLI v0.1.0: CLI Alpha osiąga swoją pierwszą oficjalną wersję ze stabilnym interfejsem poleceń."
+			"welcome": "Alpha v{{version}} usprawnia weryfikację, sterowanie poleceniami i ciągłość zadań.",
+			"acceptanceChecks": "Wykorzystuj ponownie zaliczone kontrole, dopóki zadeklarowane dane wejściowe się nie zmienią.",
+			"commandControl": "Czekaj na polecenia w tle należące do zadania, wysyłaj do nich dane i zatrzymuj je.",
+			"workflowContinuity": "Zachowuj ograniczenia zadania i kontekst umiejętności po przeładowaniu i kompresji kontekstu.",
+			"chatUpdates": "Korzystaj z czytelniejszych akcji czatu i wybieraj dostawcę po zakończeniu zadania."
 		}
 	},
 	"costs": {

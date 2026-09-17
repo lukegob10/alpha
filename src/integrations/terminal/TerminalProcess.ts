@@ -217,6 +217,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 			// filtering here: fullOutput cannot change in length (see getUnretrievedOutput),
 			// and chunks may not be complete so you cannot rely on detecting or removing escape sequences mid-stream.
 			this.fullOutput += data
+			this.emit("output_available")
 
 			// For non-immediately returning commands we want to show loading spinner
 			// right away but this wouldn't happen until it emits a line break, so
@@ -294,10 +295,16 @@ export class TerminalProcess extends BaseTerminalProcess {
 		// A failed output reader settles its promise while the shell can still run.
 		if (this.aborted || (this.isSettled && !this.terminal.running)) return
 		this.aborted = true
-		if (this.commandSubmitted && this.isListening) {
+		if (this.commandSubmitted && this.terminal.process === this) {
 			// Send SIGINT using CTRL+C
 			this.terminal.terminal.sendText("\x03")
 		}
+	}
+
+	public writeInput(input: string): void {
+		if (!this.commandSubmitted || this.isSettled || this.terminal.process !== this)
+			throw new Error("Command is no longer accepting input")
+		this.terminal.terminal.sendText(input, false)
 	}
 
 	private completeCancellationBeforeLaunch(): boolean {

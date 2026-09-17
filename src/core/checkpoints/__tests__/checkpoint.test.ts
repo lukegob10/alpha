@@ -213,6 +213,24 @@ describe("Checkpoint functionality", () => {
 	})
 
 	describe("checkpointRestore", () => {
+		it("persists deleted usage after abort without calling the agent output path", async () => {
+			mockTask.abortTask.mockImplementation(async () => {
+				mockTask.abort = true
+			})
+			mockTask.say.mockImplementation(async () => {
+				if (mockTask.abort) throw new Error("Task aborted")
+			})
+			mockTask.overwriteClineMessages.mockImplementation(async (messages: unknown[]) => {
+				mockTask.clineMessages = messages
+			})
+			await checkpointRestore(mockTask, { ts: 2, commitHash: "abc123", mode: "restore", operation: "edit" })
+			expect(mockTask.say).not.toHaveBeenCalled()
+			expect(mockTask.clineMessages.at(-1)).toEqual(
+				expect.objectContaining({ type: "say", say: "api_req_deleted" }),
+			)
+			expect(mockTask.enableCheckpoints).toBe(true)
+		})
+
 		beforeEach(() => {
 			mockTask.clineMessages = [
 				{ ts: 1, say: "user", text: "Message 1" },

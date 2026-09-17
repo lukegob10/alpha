@@ -1,5 +1,5 @@
 import { Worker } from "node:worker_threads"
-import type { SanitizedDocument } from "./sanitize"
+import type { DocumentParseRequest, SanitizedDocument } from "./sanitize"
 import { HTML_DOCUMENT_LIMITS } from "@alpha-code/types"
 
 /** Untrusted HTML parsing never runs on the extension event loop. One job per panel. */
@@ -8,7 +8,7 @@ export class DocumentParser {
 	private worker?: Worker
 	constructor(private readonly workerPath: string) {}
 
-	parse(source: string): Promise<SanitizedDocument> {
+	parse(source: string, documentDirectory = ""): Promise<SanitizedDocument> {
 		this.cancelPending()
 		if (Buffer.byteLength(source, "utf8") > HTML_DOCUMENT_LIMITS.bytes) return Promise.reject(new Error("size"))
 		return new Promise((resolve, reject) => {
@@ -43,7 +43,7 @@ export class DocumentParser {
 			worker.once("message", onMessage)
 			worker.once("error", onError)
 			worker.once("exit", onExit)
-			worker.postMessage(source)
+			worker.postMessage({ source, documentDirectory } satisfies DocumentParseRequest)
 		})
 	}
 

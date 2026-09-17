@@ -154,7 +154,7 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 		}
 
 		const missingPath = queries.find((query) => !query.path)
-		if (missingPath) {
+		if (queries.length === 1 && missingPath) {
 			callbacks.setResultMetadata?.({ status: "error" })
 			task.consecutiveMistakeCount++
 			task.recordToolError("search_files")
@@ -164,7 +164,7 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 		}
 
 		const missingRegex = queries.find((query) => !query.regex)
-		if (missingRegex) {
+		if (queries.length === 1 && missingRegex) {
 			callbacks.setResultMetadata?.({ status: "error" })
 			task.consecutiveMistakeCount++
 			task.recordToolError("search_files")
@@ -192,6 +192,8 @@ export class SearchFilesTool extends BaseTool<"search_files"> {
 						literal,
 					}
 					try {
+						if (!query.path.trim()) throw new Error('Missing path. Use "." for the workspace root.')
+						if (!query.regex) throw new Error("Missing regex. Supply a search pattern for this query.")
 						const content = await regexSearchFiles(
 							task.cwd,
 							absolutePath,

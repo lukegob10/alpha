@@ -118,7 +118,8 @@ describe("executeCommandTool", () => {
 	})
 
 	afterEach(() => {
-		process.env.ROO_CLI_RUNTIME = originalCliRuntime
+		if (originalCliRuntime === undefined) delete process.env.ROO_CLI_RUNTIME
+		else process.env.ROO_CLI_RUNTIME = originalCliRuntime
 	})
 
 	/**
@@ -447,12 +448,12 @@ describe("executeCommandTool", () => {
 			expect(mockOptions.commandExecutionTimeout).toBeDefined()
 		})
 
-		it("should ignore model timeout in CLI runtime", () => {
+		it("honors model timeout even when the retired CLI environment flag is inherited", () => {
 			process.env.ROO_CLI_RUNTIME = "1"
-			expect(executeCommandModule.resolveAgentTimeoutMs(30)).toBe(0)
+			expect(executeCommandModule.resolveAgentTimeoutMs(30)).toBe(30_000)
 		})
 
-		it("should honor model timeout outside CLI runtime", () => {
+		it("honors model timeout in the normal extension environment", () => {
 			delete process.env.ROO_CLI_RUNTIME
 			expect(executeCommandModule.resolveAgentTimeoutMs(30)).toBe(30_000)
 		})

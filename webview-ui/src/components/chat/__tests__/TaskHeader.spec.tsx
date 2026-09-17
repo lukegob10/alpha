@@ -46,6 +46,7 @@ let mockExtensionState: {
 	liveTasksById?: Record<string, Partial<LiveTaskMetadata>>
 	currentTaskItem: {
 		id: string
+		task?: string
 		subagentNickname?: string
 		subagentRole?: "explore" | "review" | "worker"
 		subagentWriteScope?: string[]
@@ -125,6 +126,13 @@ vi.mock("@alpha/api", () => ({
 }))
 
 describe("TaskHeader", () => {
+	it("keeps prompt copying on the message instead of in task metadata", () => {
+		mockExtensionState.currentTaskItem = { id: "test-task-id", task: "Original prompt" }
+		render(<TaskHeader {...defaultProps} />)
+		fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
+		expect(screen.getByRole("button", { name: "chat:task.export" })).toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: "history:copyPrompt" })).not.toBeInTheDocument()
+	})
 	const defaultProps: TaskHeaderProps = {
 		tokensIn: 100,
 		tokensOut: 50,

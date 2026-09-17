@@ -8,7 +8,7 @@ Use path/regex for one search, or queries for 1 to 8 independent searches with t
 
 Example: { "queries": [{ "path": "src", "regex": "foo(.bar", "literal": true, "output_mode": "files" }, { "path": "tests", "regex": "TODO|FIXME", "output_mode": "count" }] }`
 
-const PATH_PARAMETER_DESCRIPTION = `Absolute directory path or path relative to the task workspace, searched recursively`
+const PATH_PARAMETER_DESCRIPTION = `Absolute directory path or path relative to the task workspace, searched recursively. Use "." for the workspace root; never an empty string.`
 
 const REGEX_PARAMETER_DESCRIPTION = `Rust regex, or exact text when literal=true`
 
@@ -52,6 +52,7 @@ export default {
 							literal: LITERAL_PARAMETER,
 							path: {
 								type: "string",
+								minLength: 1,
 								maxLength: SEARCH_FILES_INPUT_LIMITS.path,
 								description: PATH_PARAMETER_DESCRIPTION,
 							},
@@ -74,6 +75,7 @@ export default {
 				literal: LITERAL_PARAMETER,
 				path: {
 					type: "string",
+					minLength: 1,
 					maxLength: SEARCH_FILES_INPUT_LIMITS.path,
 					description: PATH_PARAMETER_DESCRIPTION,
 				},

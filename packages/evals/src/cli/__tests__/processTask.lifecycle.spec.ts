@@ -19,7 +19,6 @@ const mocks = vi.hoisted(() => ({
 	deregisterRunner: vi.fn(),
 	publish: vi.fn(),
 	runUnitTest: vi.fn(),
-	runTaskWithCli: vi.fn(),
 	runTaskInVscode: vi.fn(),
 	processRun: vi.fn(),
 	persistEvalEvent: vi.fn(),
@@ -75,14 +74,13 @@ vi.mock("../redis", () => ({
 	getPubSubKey: vi.fn(() => "eval:test"),
 }))
 vi.mock("../runUnitTest", () => ({ runUnitTest: mocks.runUnitTest }))
-vi.mock("../runTaskInCli", () => ({ runTaskWithCli: mocks.runTaskWithCli }))
 vi.mock("../runTaskInVscode", () => ({ runTaskInVscode: mocks.runTaskInVscode }))
 
 import { normalizeApiConversationTrace, processTask, processTaskInContainer } from "../processTask"
 import type { Logger } from "../utils"
 
 const task = { id: 41, runId: 7, language: "javascript", exercise: "lifecycle", iteration: 1 }
-const run = { id: 7, executionMethod: "cli", timeout: 5 }
+const run = { id: 7, executionMethod: "vscode", timeout: 5 }
 const logger = {
 	info: vi.fn(),
 	error: vi.fn(),
@@ -167,7 +165,7 @@ beforeEach(() => {
 	}))
 	mocks.registerRunner.mockResolvedValue(undefined)
 	mocks.deregisterRunner.mockResolvedValue(undefined)
-	mocks.runTaskWithCli.mockResolvedValue(undefined)
+	mocks.runTaskInVscode.mockResolvedValue(undefined)
 	mocks.runUnitTest.mockResolvedValue({ decision: "passed", results: [] })
 	mocks.processRun.mockResolvedValue({
 		exitCode: 0,
@@ -265,6 +263,26 @@ describe("processTaskInContainer lifecycle integration", () => {
 })
 
 describe("processTask lifecycle integration", () => {
+	it.each(["local", "container"])(
+		"rejects a retired CLI run before %s execution without changing historical data",
+		async (surface) => {
+			const historicalRun = Object.freeze({ ...run, executionMethod: "cli" })
+			mocks.findRun.mockResolvedValue(historicalRun)
+			const execute = surface === "local" ? processTask : processTaskInContainer
+			await expect(execute({ taskId: task.id, jobToken: null, logger, processRunner })).rejects.toThrow(
+				"The Alpha CLI is retired. Create a new VS Code evaluation run",
+			)
+			expect(state).toMatchObject({ phase: "setup", terminalStatus: "infrastructure_error" })
+			expect(mocks.applyAttemptEvent.mock.calls.filter(([, event]) => event.type === "finalize")).toHaveLength(1)
+			expect(mocks.settleTrialAfterRetries).toHaveBeenCalledOnce()
+			expect(mocks.registerRunner).not.toHaveBeenCalled()
+			expect(mocks.processRun).not.toHaveBeenCalled()
+			expect(mocks.runTaskInVscode).not.toHaveBeenCalled()
+			expect(mocks.runUnitTest).not.toHaveBeenCalled()
+			expect(historicalRun.executionMethod).toBe("cli")
+		},
+	)
+
 	it("moves a successful task through every phase and finalizes passed", async () => {
 		await processTask({ taskId: task.id, jobToken: null, logger })
 
@@ -277,6 +295,9 @@ describe("processTask lifecycle integration", () => {
 			{ type: "finalize", status: "passed" },
 		])
 		expect(state.terminalStatus).toBe("passed")
+		expect(mocks.runTaskInVscode).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ run, task, jobToken: null, publish: expect.any(Function) }),
+		)
 		expect(mocks.settleTrialAfterRetries).toHaveBeenCalledWith(task.id)
 		expect(mocks.deregisterRunner).toHaveBeenCalledOnce()
 	})
@@ -289,7 +310,7 @@ describe("processTask lifecycle integration", () => {
 		})
 		await processTask({ taskId: task.id, jobToken: null, logger, processRunner })
 
-		const execution = mocks.runTaskWithCli.mock.calls[0]![0]
+		const execution = mocks.runTaskInVscode.mock.calls[0]![0]
 		const grading = mocks.runUnitTest.mock.calls[0]![0]
 		expect(execution.workspaceRoot).toMatch(/[\\/]task-sandboxes[\\/]101[\\/]agent-workspace$/)
 		expect(grading.workspaceRoot).toBe(execution.workspaceRoot)
@@ -316,7 +337,7 @@ describe("processTask lifecycle integration", () => {
 	})
 
 	it("classifies runner execution exceptions as agent errors", async () => {
-		mocks.runTaskWithCli.mockRejectedValue(new Error("provider disconnected"))
+		mocks.runTaskInVscode.mockRejectedValue(new Error("provider disconnected"))
 		await expect(processTask({ taskId: task.id, jobToken: null, logger })).rejects.toThrow("provider disconnected")
 		expect(state).toMatchObject({
 			phase: "agent_execution",
@@ -354,20 +375,20 @@ describe("processTask lifecycle integration", () => {
 	})
 
 	it("preserves an explicit agent cancellation after collecting and grading evidence", async () => {
-		mocks.runTaskWithCli.mockResolvedValue("cancelled")
+		mocks.runTaskInVscode.mockResolvedValue("cancelled")
 		await processTask({ taskId: task.id, jobToken: null, logger })
 		expect(state).toMatchObject({ phase: "grading", terminalStatus: "cancelled" })
 		expect(mocks.runUnitTest).toHaveBeenCalledOnce()
 	})
 
 	it("classifies wall-budget termination separately from safety and outcome failures", async () => {
-		mocks.runTaskWithCli.mockResolvedValue("budget_exhausted")
+		mocks.runTaskInVscode.mockResolvedValue("budget_exhausted")
 		await processTask({ taskId: task.id, jobToken: null, logger })
 		expect(state).toMatchObject({ phase: "grading", terminalStatus: "budget_exhausted" })
 	})
 
 	it("classifies an agent wall-clock timeout as an agent error", async () => {
-		mocks.runTaskWithCli.mockResolvedValue("agent_error")
+		mocks.runTaskInVscode.mockResolvedValue("agent_error")
 		await processTask({ taskId: task.id, jobToken: null, logger })
 		expect(state).toMatchObject({ phase: "grading", terminalStatus: "agent_error" })
 	})
@@ -405,11 +426,11 @@ describe("processTask lifecycle integration", () => {
 		state = { phase: "grading", terminalStatus: "passed", version: 5 }
 		await processTask({ taskId: task.id, jobToken: null, logger })
 		expect(mocks.registerRunner).not.toHaveBeenCalled()
-		expect(mocks.runTaskWithCli).not.toHaveBeenCalled()
+		expect(mocks.runTaskInVscode).not.toHaveBeenCalled()
 	})
 })
 
-describe("CLI conversation trace fallback", () => {
+describe("Persisted conversation trace fallback", () => {
 	it("classifies command completion as a verification result", () => {
 		expect(
 			normalizeApiConversationTrace([

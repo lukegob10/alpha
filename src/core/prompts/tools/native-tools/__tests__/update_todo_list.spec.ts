@@ -15,7 +15,8 @@ describe("update_todo_list native tool", () => {
 		expect(updateTodoList.function.description).toContain(
 			"Keep all unfinished tasks unless explicitly instructed to remove",
 		)
-		expect(updateTodoList.function.parameters.required).toEqual(["todos"])
+		expect(updateTodoList.function.parameters.required).toEqual(["todos", "work_plan"])
+		expect(updateTodoList.function.parameters.properties.work_plan.type).toEqual(["object", "null"])
 		expect(updateTodoList.function.parameters.additionalProperties).toBe(false)
 	})
 })

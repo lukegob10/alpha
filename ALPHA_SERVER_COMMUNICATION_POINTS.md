@@ -310,30 +310,6 @@ Behavior:
 - It does not call Roo servers directly.
 - It can require cloud auth and a specific organization, which indirectly forces use of `CloudService`.
 
-## CLI Cloud/Auth Paths
-
-Implementation:
-
-- `apps/cli/src/types/constants.ts`
-- `apps/cli/src/commands/auth/login.ts`
-- `apps/cli/src/commands/auth/logout.ts`
-- `apps/cli/src/lib/sdk/client.ts`
-- `apps/cli/src/commands/cli/run.ts`
-
-Endpoints:
-
-| Action                               | Endpoint                              |
-| ------------------------------------ | ------------------------------------- |
-| CLI sign-in browser flow             | `https://app.roocode.com/cli/sign-in` |
-| CLI SDK TRPC                         | `https://cloud-api.roocode.com/trpc`  |
-| CLI Roo provider proxy in dev script | `https://api.roocode.com/proxy`       |
-
-Behavior:
-
-- CLI login starts a localhost callback server and opens Roo cloud auth in the browser.
-- It stores a returned token locally through CLI storage.
-- CLI run code can create a TRPC client against `SDK_BASE_URL`.
-
 ## Cloud Agent / Evals Environment Hooks
 
 Implementation:
@@ -351,7 +327,7 @@ Environment variables:
 
 Behavior:
 
-- Evals tooling passes `ROO_CODE_CLOUD_TOKEN` into VS Code/CLI task runs.
+- Evals tooling passes `ROO_CODE_CLOUD_TOKEN` into VS Code task runs.
 - Static token auth is still a cloud identity mechanism; it avoids browser login but not cloud/account semantics.
 
 ## Local Storage Related To Roo Cloud
@@ -376,8 +352,7 @@ To remove account/cloud behavior, the highest-impact surfaces are:
 6. Marketplace remote catalog fetching in `src/services/marketplace/RemoteConfigLoader.ts`.
 7. PostHog telemetry clients in `packages/telemetry/src/PostHogTelemetryClient.ts` and `webview-ui/src/utils/TelemetryClient.ts`.
 8. Cloud telemetry and retry queue in `packages/cloud/src/TelemetryClient.ts` and `packages/cloud/src/retry-queue/RetryQueue.ts`.
-9. CLI cloud auth and SDK defaults in `apps/cli/src/types/constants.ts`, `apps/cli/src/commands/auth/login.ts`, and `apps/cli/src/lib/sdk/client.ts`.
-10. MDM cloud-auth enforcement in `src/services/mdm/MdmService.ts`.
+9. MDM cloud-auth enforcement in `src/services/mdm/MdmService.ts`.
 
 ## Not Counted As Roo Server Communication
 

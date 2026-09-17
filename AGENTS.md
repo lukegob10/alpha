@@ -67,10 +67,10 @@ Before finishing:
 
 ## Scope boundary
 
-The command-line application and its VS Code compatibility shim are outside the scope of extension development. Do not
-edit `apps/cli/` or `packages/vscode-shim/`, including their source, tests, manifests, documentation, builds, or public
-contracts, unless the user explicitly asks to change this restriction. If extension work exposes an incompatibility in
-either protected subtree, report it as a residual risk instead of modifying those files.
+Alpha is a VS Code extension. The standalone application in `apps/cli/` and its exclusive
+`packages/vscode-shim/` were retired; do not recreate a parallel agent runtime. Development and evaluation command-line
+tools remain supported and execute the real extension through VS Code. Preserve historical task and evaluation data;
+see `docs/cli-retirement.md` for the removal and compatibility contract.
 
 ## VS Code 1.122.1 is the compatibility contract
 

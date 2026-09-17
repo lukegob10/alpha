@@ -35,6 +35,8 @@ type VertexOpenAiSettings = {
  * `endpoints/openapi/chat/completions` endpoint (for example, xAI Grok).
  */
 export class VertexOpenAiHandler extends OpenAiHandler {
+	// Credential setup before the shared transport is not yet cancellable.
+	override readonly streamCapabilities = { cancellation: false } as const
 	private readonly vertexSettings: VertexOpenAiSettings
 	private readonly helixTokenManager: HelixTokenManager
 	private transportSetupPromise?: Promise<void>

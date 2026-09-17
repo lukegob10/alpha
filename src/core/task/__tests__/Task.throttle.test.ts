@@ -8,6 +8,7 @@ import { hasToolUsageChanged, hasTokenUsageChanged } from "../../../shared/getAp
 vi.mock("../../webview/ClineProvider")
 vi.mock("../../../integrations/terminal/TerminalRegistry", () => ({
 	TerminalRegistry: {
+		getTerminals: vi.fn(() => []),
 		releaseTerminalsForTask: vi.fn(),
 	},
 }))

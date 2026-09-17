@@ -1,4 +1,5 @@
 import { load } from "cheerio"
+import { posix } from "node:path"
 import { HTML_DOCUMENT_LIMITS, HTML_DOCUMENT_VERSION, type HtmlDocumentReference } from "@alpha-code/types"
 
 const tags = new Set(
@@ -14,6 +15,7 @@ const attributes = new Set(
 const forbidden =
 	"script,style,iframe,frame,frameset,object,embed,svg,math,template,form,link,meta,base,audio,video,canvas,source,textarea,select,button"
 export type DocumentImage = { path: string; alt: string }
+export type DocumentParseRequest = { source: string; documentDirectory: string }
 export interface SanitizedDocument {
 	title: string
 	html: string
@@ -21,8 +23,28 @@ export interface SanitizedDocument {
 	images: Map<string, DocumentImage>
 }
 
+/** Convert an ordinary relative image URL to the existing workspace-scoped image contract. */
+function localImagePath(src: string | undefined, documentDirectory: string): string | undefined {
+	if (!src || src.length > 2048 || /[?#]/.test(src)) return undefined
+	try {
+		const decoded = decodeURIComponent(src)
+		if (
+			/[\\:]/.test(decoded) ||
+			decoded.startsWith("/") ||
+			[...decoded].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) ||
+			!/\.(png|jpe?g)$/i.test(decoded)
+		)
+			return undefined
+		const relative = posix.normalize(posix.join(documentDirectory, decoded))
+		if (relative === ".." || relative.startsWith("../")) return undefined
+		return relative
+	} catch {
+		return undefined
+	}
+}
+
 /** Parse and reconstruct an allowlist. CSP is defense in depth, not the sanitizer. */
-export function sanitizeDocument(source: string): SanitizedDocument {
+export function sanitizeDocument(source: string, documentDirectory = ""): SanitizedDocument {
 	if (Buffer.byteLength(source, "utf8") > HTML_DOCUMENT_LIMITS.bytes) throw new Error("size")
 	const $ = load(source)
 	const markers = $('meta[name="alpha-document"]')
@@ -56,8 +78,9 @@ export function sanitizeDocument(source: string): SanitizedDocument {
 		const sourcePath = node.attr("data-source")
 		const line = node.attr("data-line") ?? "1"
 		const href = node.attr("href")
-		const imagePath = node.attr("data-image")
-		const alt = node.attr("alt")?.trim()
+		const declaredImagePath = node.attr("data-image")
+		const imagePath = declaredImagePath ?? localImagePath(node.attr("src"), documentDirectory)
+		const alt = node.attr("alt")?.trim() ?? ""
 		for (const [name, value] of Object.entries(element.attribs)) {
 			if (!attributes.has(name) || value.length > 2048) node.removeAttr(name)
 		}
@@ -67,9 +90,9 @@ export function sanitizeDocument(source: string): SanitizedDocument {
 			else ids.add(id)
 		}
 		if (element.name === "img") {
-			// Authored src/srcset/data URLs never reach the renderer. Only the host
-			// may hydrate these opaque slots with scoped, bounded raster bytes.
-			if (!imagePath || !alt) {
+			// Local src URLs become scoped image slots; authored URLs never reach
+			// the renderer. Only the host may hydrate bounded raster bytes.
+			if (!imagePath || (declaredImagePath !== undefined && !alt)) {
 				node.remove()
 				continue
 			}

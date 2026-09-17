@@ -2079,6 +2079,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					lastModifiedMessage={isLast ? modifiedMessages.at(-1) : undefined}
 					isLast={isLast}
 					isStreaming={isStreaming}
+					messageActionsDisabled={isTurnActive}
 					onSuggestionClick={handleSuggestionClickInRow} // This was already stabilized
 					onBatchFileResponse={handleBatchFileResponse}
 					onFollowUpUnmount={handleFollowUpUnmount}
@@ -2115,6 +2116,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			modifiedMessages,
 			groupedMessages.length,
 			isStreaming,
+			isTurnActive,
 			handleSuggestionClickInRow,
 			handleBatchFileResponse,
 			handleFollowUpUnmount,
@@ -2284,6 +2286,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 									isExpanded={expandedRows[task.ts] || false}
 									isLast={false}
 									isStreaming={isStreaming}
+									messageActionsDisabled={isTurnActive}
 									onToggleExpand={toggleRowExpansion}
 								/>
 							)}

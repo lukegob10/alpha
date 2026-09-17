@@ -53,10 +53,15 @@ imports, remote resources and command URIs are not supported. Code examples use
 escaped text inside `pre > code`. The CSP denies network, frames, forms, objects,
 base URLs and untrusted scripts. The document never receives the VS Code API.
 
-Workspace images use `<img data-image="images/screen.png" alt="Descriptive evidence">`.
-The sanitizer replaces these with opaque slots; the host alone resolves and reads
+Workspace images use `<img data-image="images/screen.png" alt="Descriptive evidence">`
+with a workspace-root-relative path, or ordinary `<img src="plots/fit.png" alt="Model fit">`
+with a path relative to the HTML file. This includes PNG charts saved by Matplotlib.
+Local `src` URLs support `./`, `../`, and percent-encoded filenames while staying
+inside the document's workspace root. `data-image` takes precedence if both exist.
+The sanitizer replaces accepted images with opaque slots; the host alone resolves and reads
 static PNG/JPEG bytes, validates dimensions, and supplies data images. Authored
-`src` and `srcset` never survive. CSP permits data images only; local resource roots
+URLs and `srcset` never survive. Remote/file URLs, absolute paths, embedded base64
+and workspace-escaping paths are unsupported. CSP permits host-supplied data images only; local resource roots
 remain restricted to extension assets. Referenced image files accompany the HTML
 when moved. Missing or rejected images have readable recovery text and do not hide
 the document. Image file watchers refresh the same panel and are disposed when

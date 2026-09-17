@@ -164,6 +164,12 @@ export type NativeToolArgs = BrowserToolArgs & {
 	discover_tools: DiscoverToolsParams
 	read_file: import("@alpha-code/types").ReadFileToolParams
 	read_command_output: { artifact_id: string; search?: string; offset?: number; limit?: number }
+	manage_command: {
+		execution_id: string
+		action: "wait" | "stop" | "input"
+		input?: string | null
+		timeout_ms?: number | null
+	}
 	attempt_completion: { result: string; outcome?: "completed" | "blocked" }
 	execute_command: {
 		command: string
@@ -237,7 +243,7 @@ export type NativeToolArgs = BrowserToolArgs & {
 	create_ticket: CreateTicket
 	update_ticket: UpdateTicket
 	delete_ticket: DeleteTicket
-	update_todo_list: { todos: string }
+	update_todo_list: { todos: string; work_plan?: import("@alpha-code/types").TaskWorkPlan | null }
 	use_mcp_tool: { server_name: string; tool_name: string; arguments?: Record<string, unknown> }
 	write_to_file: { path: string; content: string }
 	github_api:
@@ -447,6 +453,7 @@ export type ToolGroupConfig = {
 
 export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	execute_command: "run commands",
+	manage_command: "control task commands",
 	read_file: "read files",
 	read_command_output: "read command output",
 	write_to_file: "write files",
@@ -509,7 +516,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 		customTools: ["edit", "search_replace", "edit_file", "apply_patch"],
 	},
 	command: {
-		tools: ["execute_command", "read_command_output"],
+		tools: ["execute_command", "read_command_output", "manage_command"],
 	},
 	mcp: {
 		tools: ["use_mcp_tool", "access_mcp_resource", "discover_tools"],

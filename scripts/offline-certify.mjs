@@ -63,14 +63,6 @@ const phases = full
 				"run",
 				...agentCriticalTests,
 			]),
-			phase("CLI cancellation tests", pnpm, [
-				"--filter",
-				"@alpha-code/cli",
-				"exec",
-				"vitest",
-				"run",
-				"src/commands/cli/__tests__/cancellation.test.ts",
-			]),
 			phase("Settings buffering tests", pnpm, [
 				"--filter",
 				"@alpha-code/vscode-webview",

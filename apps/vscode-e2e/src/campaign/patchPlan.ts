@@ -183,6 +183,7 @@ function validateSourcePath(relativePath: string): void {
 	const fileName = keys[keys.length - 1] ?? ""
 
 	if ((keys[0] === "apps" && keys[1] === "cli") || (keys[0] === "packages" && keys[1] === "vscode-shim")) {
+		// Retired runtimes must not be recreated by automated extension maintenance.
 		throw patchError(`protected source path: ${relativePath}`)
 	}
 	if (

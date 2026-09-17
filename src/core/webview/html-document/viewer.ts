@@ -215,7 +215,8 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 		try {
 			const source = await this.read(entry)
 			if (entry.closed || entry.revision !== revision) return
-			const document = await entry.parser.parse(source)
+			const documentDirectory = path.relative(entry.root, path.dirname(entry.fsPath)).split(path.sep).join("/")
+			const document = await entry.parser.parse(source, documentDirectory)
 			if (entry.closed || entry.revision !== revision) return
 			await this.watchImages(entry, document, revision)
 			const html = await hydrateDocumentImages(

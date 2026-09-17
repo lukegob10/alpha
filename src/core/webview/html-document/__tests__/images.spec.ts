@@ -50,13 +50,16 @@ describe("bounded document image hydration", () => {
 		try {
 			await fs.writeFile(path.join(outside, "private.png"), png)
 			await fs.symlink(outside, path.join(root, "escape"), process.platform === "win32" ? "junction" : "dir")
-			const source = document('<img data-image="escape/private.png" alt="Private">')
-			expect(await hydrateDocumentImages(source, root, async () => true, "Unavailable")).not.toContain(
-				"data:image",
-			)
-			await expect(hydrateDocumentImages(source, root, async () => false, "Unavailable")).rejects.toThrow(
-				"cancelled",
-			)
+			for (const attribute of ["data-image", "src"]) {
+				const source = document(`<img ${attribute}="escape/private.png" alt="Private">`)
+				expect(source.images.size).toBe(1)
+				expect(await hydrateDocumentImages(source, root, async () => true, "Unavailable")).not.toContain(
+					"data:image",
+				)
+				await expect(hydrateDocumentImages(source, root, async () => false, "Unavailable")).rejects.toThrow(
+					"cancelled",
+				)
+			}
 		} finally {
 			await fs.rm(outside, { recursive: true, force: true })
 		}

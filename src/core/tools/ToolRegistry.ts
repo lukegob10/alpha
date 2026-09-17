@@ -46,6 +46,7 @@ import { listAgentsTool } from "./ListAgentsTool"
 import { listFilesTool } from "./ListFilesTool"
 import { newTaskTool } from "./NewTaskTool"
 import { readCommandOutputTool } from "./ReadCommandOutputTool"
+import { manageCommandTool } from "./ManageCommandTool"
 import { readFileTool } from "./ReadFileTool"
 import { runSlashCommandTool } from "./RunSlashCommandTool"
 import { searchFilesTool } from "./SearchFilesTool"
@@ -269,6 +270,7 @@ function cloneAndFreeze<T>(value: T): T {
 }
 
 const TOOL_NAMES = [
+	"manage_command",
 	"access_mcp_resource",
 	"apply_diff",
 	"apply_patch",
@@ -359,20 +361,21 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 			? "parallel"
 			: "serial"
 
-	const sideEffects: ToolSideEffects = WORKSPACE_TOOLS.has(name)
-		? "workspace"
-		: TASK_TOOLS.has(name)
-			? "task"
-			: name === "create_ticket" ||
-				  name === "update_ticket" ||
-				  name === "delete_ticket" ||
-				  name === "github_api" ||
-				  name === "use_mcp_tool" ||
-				  name.startsWith("mcp") ||
-				  name === "custom_tool" ||
-				  BROWSER_TOOLS.has(name)
-				? "external"
-				: "none"
+	const sideEffects: ToolSideEffects =
+		WORKSPACE_TOOLS.has(name) || name === "manage_command"
+			? "workspace"
+			: TASK_TOOLS.has(name)
+				? "task"
+				: name === "create_ticket" ||
+					  name === "update_ticket" ||
+					  name === "delete_ticket" ||
+					  name === "github_api" ||
+					  name === "use_mcp_tool" ||
+					  name.startsWith("mcp") ||
+					  name === "custom_tool" ||
+					  BROWSER_TOOLS.has(name)
+					? "external"
+					: "none"
 
 	return {
 		concurrency,
@@ -586,6 +589,7 @@ export class ToolRegistry {
 		}
 		this.registerBuiltIn("access_mcp_resource", accessMcpResourceTool, schemas)
 		this.registerBuiltIn("apply_diff", applyDiffTool, schemas)
+		this.registerBuiltIn("manage_command", manageCommandTool, schemas)
 		this.registerBuiltIn("apply_patch", applyPatchTool, schemas)
 		this.registerBuiltIn("ask_followup_question", askFollowupQuestionTool, schemas)
 		this.registerBuiltIn("attempt_completion", attemptCompletionTool, schemas, async (context) => {

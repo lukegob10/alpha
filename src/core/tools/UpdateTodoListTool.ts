@@ -4,11 +4,19 @@ import { BaseTool, ToolCallbacks } from "./BaseTool"
 import type { ToolUse } from "../../shared/tools"
 import cloneDeep from "clone-deep"
 import crypto from "crypto"
-import { TodoItem, TodoStatus, todoStatusSchema, todoApprovalEditSchema } from "@alpha-code/types"
+import {
+	TodoItem,
+	TodoStatus,
+	todoStatusSchema,
+	todoApprovalEditSchema,
+	taskWorkPlanSchema,
+	type TaskWorkPlan,
+} from "@alpha-code/types"
 import { getLatestTodo } from "../../shared/todo"
 
 interface UpdateTodoListParams {
 	todos: string
+	work_plan?: TaskWorkPlan | null
 }
 
 interface PendingTodoApproval {
@@ -35,6 +43,7 @@ export class UpdateTodoListTool extends BaseTool<"update_todo_list"> {
 
 		try {
 			assertActive()
+			const workPlan = params.work_plan == null ? undefined : taskWorkPlanSchema.parse(params.work_plan)
 			const todosRaw = params.todos
 
 			let todos: TodoItem[]
@@ -95,6 +104,7 @@ export class UpdateTodoListTool extends BaseTool<"update_todo_list"> {
 			}
 
 			assertActive()
+			if (workPlan) await task.updateWorkPlan(workPlan)
 			await setTodoListForTask(task, normalizedTodos)
 
 			if (isTodoListChanged) {

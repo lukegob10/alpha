@@ -448,6 +448,7 @@ export interface ExtensionMessage {
 	settings?: any // eslint-disable-line @typescript-eslint/no-explicit-any
 	messageTs?: number
 	hasCheckpoint?: boolean
+	messageAction?: "restart"
 	context?: string
 	commands?: Command[]
 	queuedMessages?: QueuedMessage[]
@@ -954,6 +955,7 @@ interface WebviewMessageBase {
 	terminalOperation?: "continue" | "abort"
 	messageTs?: number
 	restoreCheckpoint?: boolean
+	messageAction?: "restart"
 	historyPreviewCollapsed?: boolean
 	filters?: { type?: string; search?: string; tags?: string[] }
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any

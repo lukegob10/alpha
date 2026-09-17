@@ -1200,7 +1200,7 @@ describe("webviewMessageHandler - message dialog preferences", () => {
 		vi.mocked(mockClineProvider.getCurrentTask).mockReturnValue({
 			taskId: "test-task-id",
 			apiConversationHistory: [],
-			clineMessages: [],
+			clineMessages: [{ ts: 123456789, type: "say", say: "user_feedback", text: "Original prompt" }],
 		} as any)
 		// Reset getValue mock
 		vi.mocked(mockClineProvider.contextProxy.getValue).mockReturnValue(false)
@@ -1209,7 +1209,8 @@ describe("webviewMessageHandler - message dialog preferences", () => {
 	describe("deleteMessage", () => {
 		it("should always show dialog for delete confirmation", async () => {
 			vi.mocked(mockClineProvider.getCurrentTask).mockReturnValue({
-				clineMessages: [],
+				taskId: "test-task-id",
+				clineMessages: [{ ts: 123456789, type: "say", say: "user_feedback", text: "Original prompt" }],
 				apiConversationHistory: [],
 			} as any) // Mock current cline with proper structure
 
@@ -1220,6 +1221,7 @@ describe("webviewMessageHandler - message dialog preferences", () => {
 
 			expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
 				type: "showDeleteMessageDialog",
+				taskId: "test-task-id",
 				messageTs: 123456789,
 				hasCheckpoint: false,
 			})
@@ -1229,7 +1231,8 @@ describe("webviewMessageHandler - message dialog preferences", () => {
 	describe("submitEditedMessage", () => {
 		it("should always show dialog for edit confirmation", async () => {
 			vi.mocked(mockClineProvider.getCurrentTask).mockReturnValue({
-				clineMessages: [],
+				taskId: "test-task-id",
+				clineMessages: [{ ts: 123456789, type: "say", say: "user_feedback", text: "Original prompt" }],
 				apiConversationHistory: [],
 			} as any) // Mock current cline with proper structure
 
@@ -1241,6 +1244,7 @@ describe("webviewMessageHandler - message dialog preferences", () => {
 
 			expect(mockClineProvider.postMessageToWebview).toHaveBeenCalledWith({
 				type: "showEditMessageDialog",
+				taskId: "test-task-id",
 				messageTs: 123456789,
 				text: "edited content",
 				hasCheckpoint: false,

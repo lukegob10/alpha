@@ -2422,6 +2422,64 @@ describe("Alpha", () => {
 			expect((task as any).automaticMistakeRecoveryCount).toBe(0)
 		})
 
+		it.each([false, true])("starts an edited prompt from saved history (opening prompt: %s)", async (opening) => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "original",
+				startTask: false,
+			})
+			const prefix: ApiMessage[] = opening
+				? []
+				: [
+						{ role: "user", content: [{ type: "text", text: "Earlier prompt" }], ts: 1 },
+						{ role: "assistant", content: [{ type: "text", text: "Earlier answer" }], ts: 2 },
+					]
+			vi.spyOn(task as any, "getSavedClineMessages").mockResolvedValue(
+				opening
+					? []
+					: [
+							{ ts: 1, type: "say", say: "text", text: "Earlier prompt" },
+							{ ts: 2, type: "say", say: "text", text: "Earlier answer" },
+						],
+			)
+			vi.spyOn(task as any, "getSavedApiConversationHistory").mockResolvedValue(prefix)
+			vi.spyOn(task as any, "flushApiConversationHistoryPersistence").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
+			const say = vi.spyOn(task, "say").mockResolvedValue(undefined)
+			const overwrite = vi.spyOn(task, "overwriteApiConversationHistory").mockResolvedValue(true)
+			const images = ["data:image/png;base64,aGVsbG8="]
+			const loop = vi.spyOn(task as any, "initiateTaskLoop").mockImplementation(async (...args: unknown[]) => {
+				await (args[1] as () => void)()
+			})
+			await task.resumeWithEditedMessage("Replacement", images)
+			expect(say).toHaveBeenCalledWith(opening ? "text" : "user_feedback", "Replacement", images)
+			expect(overwrite).toHaveBeenCalledWith(prefix)
+			expect(loop).toHaveBeenCalledWith(
+				[
+					{ type: "text", text: "<user_message>\nReplacement\n</user_message>" },
+					...formatResponse.imageBlocks(images),
+				],
+				expect.any(Function),
+				{ deferTaskStartedUntilInitialUserContentPersisted: true },
+			)
+			await expect(task.resumeWithEditedMessage("Duplicate")).rejects.toThrow("already started")
+		})
+
+		it("reports an edited prompt persistence failure without activating the task", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "original",
+				startTask: false,
+			})
+			vi.spyOn(task as any, "resumeTaskFromHistory").mockRejectedValue(new Error("Persistence failed"))
+			const active = vi.fn()
+			task.on(RooCodeEventName.TaskActive, active)
+			await expect(task.resumeWithEditedMessage("Replacement")).rejects.toThrow("Persistence failed")
+			expect(active).not.toHaveBeenCalled()
+		})
+
 		it("resumes a completed primary task with the same task identity", async () => {
 			const task = new Task({
 				provider: mockProvider,

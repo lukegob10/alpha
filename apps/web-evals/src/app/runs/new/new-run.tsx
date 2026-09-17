@@ -7,18 +7,7 @@ import { useQuery } from "@tanstack/react-query"
 import { useForm, FormProvider } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { toast } from "sonner"
-import {
-	X,
-	Rocket,
-	Check,
-	ChevronsUpDown,
-	SlidersHorizontal,
-	Info,
-	Plus,
-	Minus,
-	Terminal,
-	MonitorPlay,
-} from "lucide-react"
+import { X, Rocket, Check, ChevronsUpDown, SlidersHorizontal, Info, Plus, Minus } from "lucide-react"
 
 import {
 	type ProviderSettings,
@@ -34,7 +23,6 @@ import { getExercises } from "@/actions/exercises"
 
 import {
 	type CreateRun,
-	type ExecutionMethod,
 	createRunSchema,
 	CONCURRENCY_MIN,
 	CONCURRENCY_MAX,
@@ -106,7 +94,6 @@ export function NewRun() {
 	const modelValueByProviderRef = useRef<Record<string, string>>({})
 
 	const [provider, setModelSource] = useState<"openrouter" | "other">("other")
-	const [executionMethod, setExecutionMethod] = useState<ExecutionMethod>("vscode")
 	const [commandExecutionTimeout, setCommandExecutionTimeout] = useState(20)
 	const [terminalShellIntegrationTimeout, setTerminalShellIntegrationTimeout] = useState(30) // seconds
 
@@ -926,36 +913,6 @@ export function NewRun() {
 							</div>
 						</FormItem>
 					</div>
-
-					{/* Execution Method */}
-					<FormField
-						control={form.control}
-						name="executionMethod"
-						render={() => (
-							<FormItem>
-								<FormLabel>Execution Method</FormLabel>
-								<Tabs
-									value={executionMethod}
-									onValueChange={(value) => {
-										const newExecutionMethod = value as ExecutionMethod
-										setExecutionMethod(newExecutionMethod)
-										setValue("executionMethod", newExecutionMethod)
-									}}>
-									<TabsList>
-										<TabsTrigger value="vscode" className="flex items-center gap-2">
-											<MonitorPlay className="size-4" />
-											VSCode
-										</TabsTrigger>
-										<TabsTrigger value="cli" className="flex items-center gap-2">
-											<Terminal className="size-4" />
-											CLI
-										</TabsTrigger>
-									</TabsList>
-								</Tabs>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
 
 					<FormField
 						control={form.control}

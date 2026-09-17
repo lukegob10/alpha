@@ -1,4 +1,13 @@
 {
+	"messageActions": {
+		"copy": "複製",
+		"copied": "已複製",
+		"edit": "編輯並重新傳送",
+		"restart": "從上一則請求重新開始",
+		"restartWarning": "將重新執行上一則請求，並取代其後的所有訊息。工作區檔案將維持現狀。",
+		"restartWithCheckpoint": "將重新執行上一則請求，並取代其後的所有訊息。是否同時將檔案還原至對應的檢查點？",
+		"restartOnly": "重新開始但不還原檔案"
+	},
 	"activityTrace": {
 		"needsAttention": "需要處理",
 		"workedFor": "工作用時 {{duration}}"
@@ -264,10 +273,10 @@
 		"didViewRecursive": "Alpha 已遞迴檢視此目錄中的所有檔案",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha 想要遞迴檢視此目錄（工作區外）中的所有檔案",
 		"didViewRecursiveOutsideWorkspace": "Alpha 已遞迴檢視此目錄（工作區外）中的所有檔案",
-		"wantsToSearch": "Alpha 想要在此目錄中搜尋 <code>{{regex}}</code>",
-		"didSearch": "Alpha 已在此目錄中搜尋 <code>{{regex}}</code>",
-		"wantsToSearchOutsideWorkspace": "Alpha 想要在此目錄（工作區外）中搜尋 <code>{{regex}}</code>",
-		"didSearchOutsideWorkspace": "Alpha 已在此目錄（工作區外）中搜尋 <code>{{regex}}</code>",
+		"wantsToSearch": "Alpha 想要搜尋一個目錄",
+		"didSearch": "Alpha 已搜尋一個目錄",
+		"wantsToSearchOutsideWorkspace": "Alpha 想要搜尋一個目錄（工作區外）",
+		"didSearchOutsideWorkspace": "Alpha 已搜尋一個目錄（工作區外）",
 		"wantsToViewMultipleDirectories": "Alpha 想要查看多個目錄"
 	},
 	"codebaseSearch": {
@@ -379,8 +388,11 @@
 			"gpt54": "Poe 供應商：已將 Poe 新增為 AI 供應商，讓你可以在 Alpha 中直接存取 Poe 模型。",
 			"slashSkills": "xAI 與 MiniMax 改進：已將 xAI 供應商遷移至 Responses API，加入可重複使用的轉換工具，更新了 Grok-4.20 預設值，並修正 MiniMax 模型清單和上下文視窗處理方式，讓設定更加可靠。",
 			"geminiPro": "Gemini 3.1 Pro 支援：新增 Gemini 3.1 Pro 模型支援，並設為預設 Gemini 模型以提升效能。",
-			"cliNdjson": "CLI NDJSON 協定：新增 NDJSON stdin 協定、list 子指令，以及模組化的 run 指令，提供更彈性的 CLI 工作流程。",
-			"cliRelease": "CLI v0.1.0：Alpha CLI 以穩定的指令介面達成首個正式版本。"
+			"welcome": "Alpha v{{version}} 改善了驗證、命令控制和任務連續性。",
+			"acceptanceChecks": "只要宣告的輸入保持不變，就可重用已通過的檢查。",
+			"commandControl": "等待、傳送輸入並停止屬於目前任務的背景命令。",
+			"workflowContinuity": "重新載入和壓縮上下文後，保留任務限制和技能上下文。",
+			"chatUpdates": "使用更清楚的聊天操作，並在任務完成後選擇提供者。"
 		}
 	},
 	"reasoning": {

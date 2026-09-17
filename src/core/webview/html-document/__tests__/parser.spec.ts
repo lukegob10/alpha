@@ -35,6 +35,12 @@ describe("DocumentParser built worker", () => {
 		await expect(parser.parse("x".repeat(HTML_DOCUMENT_LIMITS.bytes + 1))).rejects.toThrow("size")
 	})
 
+	it("carries the document directory across the worker boundary for local PNG charts", async () => {
+		const result = await parser.parse(html('<img src="plots/fit%20chart.png" alt="Fit">'), "reports")
+		expect(result.images.get("image-0")).toEqual({ path: "reports/plots/fit chart.png", alt: "Fit" })
+		expect(result.html).not.toContain("src=")
+	})
+
 	it("reuses a warm worker for consecutive successful parses and preserves its message listeners", async () => {
 		for (const content of ["First", "Second", "Third"]) {
 			const result = await parser.parse(html(`<p>${content}</p><a data-source="src/${content}.ts">Source</a>`))

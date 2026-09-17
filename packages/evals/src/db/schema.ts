@@ -20,6 +20,7 @@ import type { AttemptPhase, TrialTerminalStatus } from "../lifecycle/index"
  * ExecutionMethod
  */
 
+// Keep historical CLI results readable; execution only supports VS Code.
 export type ExecutionMethod = "vscode" | "cli"
 
 /**

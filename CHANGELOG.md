@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.1.45
+
+### Patch Changes
+
+- Add optional acceptance checks with reusable evidence, owned background command controls, and durable task and skill context.
+- Restore provider selection after task completion and improve chat message editing, restart actions, reasoning summaries, and search output.
+- Improve rich HTML document rendering and file-read continuation while preserving the existing extension workflow.
+- Retire the standalone Alpha CLI and its VS Code shim; new evaluation runs use the VS Code extension while historical results remain readable.
+- Add exact-host and unattended live Copilot coverage for check repair, command and browser sessions, and composed skills.
+
 ## 2.1.44
 
 ### Patch Changes

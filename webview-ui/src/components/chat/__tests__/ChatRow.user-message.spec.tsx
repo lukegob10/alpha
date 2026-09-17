@@ -6,6 +6,10 @@ import { vscode } from "@src/utils/vscode"
 import ChatRow, { type ChatRowEnvironment } from "../ChatRow"
 
 vi.mock("@src/utils/vscode", () => ({ vscode: { postMessage: vi.fn() } }))
+const copyWithFeedback = vi.hoisted(() => vi.fn())
+vi.mock("@src/utils/clipboard", () => ({
+	useCopyToClipboard: () => ({ copyWithFeedback, showCopyFeedback: false }),
+}))
 
 const message: ClineMessage = {
 	ts: 10,
@@ -45,16 +49,27 @@ function renderMessage(isStreaming = false, isTaskPrompt = false) {
 describe("user message bubbles", () => {
 	beforeEach(() => vi.clearAllMocks())
 
-	it("renders the opening prompt and attachments as a user bubble without adding message editing actions", () => {
+	it("lets the opening prompt be copied, edited and resent with its attachments", () => {
 		const { container } = renderMessage(false, true)
 		const article = screen.getByRole("article", { name: "You said" })
 		expect(article).toHaveClass("items-end")
 		expect(container.querySelector(".user-message")).toHaveTextContent("Keep paragraphs easy to scan.")
 		expect(within(article).getByRole("img")).toHaveAttribute("src", "data:image/png;base64,aGVsbG8=")
-		expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument()
+		fireEvent.click(within(article).getByRole("button", { name: "Copy" }))
+		expect(copyWithFeedback).toHaveBeenCalledWith(message.text, expect.anything())
+		fireEvent.click(within(article).getByRole("button", { name: "Edit and resend" }))
 		expect(screen.queryByRole("button", { name: "Delete Message" })).not.toBeInTheDocument()
-		fireEvent.click(screen.getByText(/Keep paragraphs easy to scan/))
-		expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
+		const editor = screen.getByRole("textbox", { name: "Edit your message..." })
+		expect(editor).toHaveValue(message.text)
+		fireEvent.change(editor, { target: { value: "A revised opening prompt" } })
+		fireEvent.click(screen.getByRole("button", { name: "chat:pressToSend" }))
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "submitEditedMessage",
+			value: 10,
+			taskId: "style-task",
+			editedMessageContent: "A revised opening prompt",
+			images: ["data:image/png;base64,aGVsbG8="],
+		})
 	})
 
 	it("right-aligns the message and its actions without losing their labels or task routing", () => {
@@ -63,7 +78,9 @@ describe("user message bubbles", () => {
 		const bubble = container.querySelector(".user-message")!
 		expect(article).toHaveClass("items-end")
 		expect(bubble.textContent).toBe(message.text)
-		const edit = within(article).getByRole("button", { name: "Edit" })
+		const edit = within(article).getByRole("button", { name: "Edit and resend" })
+		fireEvent.click(within(article).getByRole("button", { name: "Copy" }))
+		expect(copyWithFeedback).toHaveBeenCalledWith(message.text, expect.anything())
 		const remove = within(article).getByRole("button", { name: "Delete Message" })
 		expect(bubble).not.toContainElement(edit)
 		expect(bubble).not.toContainElement(remove)
@@ -73,7 +90,7 @@ describe("user message bubbles", () => {
 
 	it("opens the message edit buffer and restores the bubble when editing is cancelled", () => {
 		const { container } = renderMessage()
-		fireEvent.click(screen.getByRole("button", { name: "Edit" }))
+		fireEvent.click(screen.getByRole("button", { name: "Edit and resend" }))
 		const editor = screen.getByRole("textbox", { name: "Edit your message..." })
 		expect(editor).toHaveValue(message.text)
 		expect(container.querySelector(".user-message")).not.toBeInTheDocument()
@@ -85,8 +102,9 @@ describe("user message bubbles", () => {
 
 	it("keeps edit and delete unavailable while streaming", () => {
 		renderMessage(true)
-		expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument()
-		expect(screen.queryByRole("button", { name: "Delete Message" })).not.toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "Edit and resend" })).toBeDisabled()
+		expect(screen.getByRole("button", { name: "Delete Message" })).toBeDisabled()
+		expect(screen.getByRole("button", { name: "Copy" })).toBeEnabled()
 		fireEvent.click(screen.getByText(/Keep paragraphs easy to scan/))
 		expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
 	})

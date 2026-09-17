@@ -26,6 +26,8 @@ type StellarSettings = {
 }
 
 export class StellarHandler extends OpenAiHandler {
+	// Credential setup before the shared transport is not yet cancellable.
+	override readonly streamCapabilities = { cancellation: false } as const
 	private readonly stellarSettings: StellarSettings
 	private readonly helixTokenManager: HelixTokenManager
 	private transportSetupPromise?: Promise<void>

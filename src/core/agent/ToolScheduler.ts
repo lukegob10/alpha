@@ -1379,7 +1379,6 @@ export class ToolScheduler {
 		}
 		prepared.requiresExplicitApproval =
 			!!prepared.commandPathApproval ||
-			(canonicalName === "execute_command" && process.env.ROO_CLI_RUNTIME === "1") ||
 			(canonicalName !== "execute_command" &&
 				outsideAccess &&
 				descriptor.capabilities.sideEffects !== "none" &&

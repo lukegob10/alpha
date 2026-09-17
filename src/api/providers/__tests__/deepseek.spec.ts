@@ -145,6 +145,7 @@ describe("DeepSeekHandler", () => {
 	describe("constructor", () => {
 		it("should initialize with provided options", () => {
 			expect(handler).toBeInstanceOf(DeepSeekHandler)
+			expect(handler.streamCapabilities.cancellation).toBe(false)
 			expect(handler.getModel().id).toBe(mockOptions.apiModelId)
 		})
 

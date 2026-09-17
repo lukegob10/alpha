@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { handleCheckpointRestoreOperation } from "../checkpointRestoreHandler"
+import { handleCheckpointRestoreOperation, restartTaskFromMessage } from "../checkpointRestoreHandler"
 import { saveTaskMessages } from "../../task-persistence"
 import pWaitFor from "p-wait-for"
 import * as vscode from "vscode"
@@ -31,6 +31,7 @@ describe("checkpointRestoreHandler", () => {
 			}),
 			waitForTermination: vi.fn(async () => undefined),
 			checkpointRestore: vi.fn(),
+			messageManager: { rewindToTimestamp: vi.fn() },
 			clineMessages: [
 				{ ts: 1, type: "user", say: "user", text: "First message" },
 				{ ts: 2, type: "assistant", say: "assistant", text: "Response" },
@@ -48,12 +49,13 @@ describe("checkpointRestoreHandler", () => {
 		// Setup mock provider
 		mockProvider = {
 			getCurrentTask: vi.fn(() => mockCline),
+			getLiveTask: vi.fn(() => mockCline),
+			runWorkspaceMutation: vi.fn(async (_task, _label, run) => run()),
 			postMessageToWebview: vi.fn(),
 			getTaskWithId: vi.fn(() => ({
 				historyItem: { id: "test-task-123", messages: mockCline.clineMessages },
 			})),
-			createTaskWithHistoryItem: vi.fn(),
-			setPendingEditOperation: vi.fn(),
+			createTaskWithHistoryItem: vi.fn().mockResolvedValue({ resumeWithEditedMessage: vi.fn() }),
 			contextProxy: {
 				globalStorageUri: { fsPath: "/test/storage" },
 			},
@@ -67,6 +69,42 @@ describe("checkpointRestoreHandler", () => {
 	})
 
 	describe("handleCheckpointRestoreOperation", () => {
+		it("joins cancellation before rewinding and coalesces duplicate restarts", async () => {
+			let release!: () => void
+			mockCline.waitForTermination.mockReturnValue(
+				new Promise<void>((resolve) => {
+					release = resolve
+				}),
+			)
+			const restart = restartTaskFromMessage(mockProvider, mockCline, 3, "Replacement")
+			await vi.waitFor(() => expect(mockCline.waitForTermination).toHaveBeenCalledOnce())
+			await restartTaskFromMessage(mockProvider, mockCline, 3, "Duplicate")
+			expect(mockCline.messageManager.rewindToTimestamp).not.toHaveBeenCalled()
+			expect(mockProvider.createTaskWithHistoryItem).not.toHaveBeenCalled()
+			release()
+			await restart
+			expect(mockCline.abortTask).toHaveBeenCalledOnce()
+			const resumed = await mockProvider.createTaskWithHistoryItem.mock.results[0].value
+			expect(resumed.resumeWithEditedMessage).toHaveBeenCalledExactlyOnceWith("Replacement", undefined)
+		})
+
+		it("leaves history intact if cancellation fails", async () => {
+			mockCline.waitForTermination.mockRejectedValue(new Error("Persistence failed"))
+			await expect(restartTaskFromMessage(mockProvider, mockCline, 3, "Replacement")).rejects.toThrow(
+				"Persistence failed",
+			)
+			expect(mockCline.messageManager.rewindToTimestamp).not.toHaveBeenCalled()
+			expect(mockProvider.createTaskWithHistoryItem).not.toHaveBeenCalled()
+		})
+
+		it("rejects a replaced task before modifying its history", async () => {
+			mockProvider.getLiveTask.mockReturnValue({ taskId: mockCline.taskId })
+			await expect(restartTaskFromMessage(mockProvider, mockCline, 3, "Replacement")).rejects.toThrow(
+				"task changed",
+			)
+			expect(mockCline.messageManager.rewindToTimestamp).not.toHaveBeenCalled()
+		})
+
 		it("should abort task before checkpoint restore for delete operations", async () => {
 			// Simulate a task that hasn't been aborted yet
 			mockCline.abort = false
@@ -131,7 +169,7 @@ describe("checkpointRestoreHandler", () => {
 			expect(mockCline.checkpointRestore).toHaveBeenCalled()
 		})
 
-		it("should handle edit operations with pending edit data", async () => {
+		it("restores, rewinds, and resumes edits without a timed handoff", async () => {
 			const editData = {
 				editedContent: "Edited content",
 				images: ["image1.png"],
@@ -148,17 +186,14 @@ describe("checkpointRestoreHandler", () => {
 				editData,
 			})
 
-			// Verify abortTask was NOT called for edit operations
-			expect(mockCline.abortTask).not.toHaveBeenCalled()
-
-			// Verify pending edit operation was set
-			expect(mockProvider.setPendingEditOperation).toHaveBeenCalledWith("task-test-task-123", {
-				messageTs: 3,
-				editedContent: "Edited content",
-				images: ["image1.png"],
-				messageIndex: 2,
-				apiConversationHistoryIndex: 2,
-			})
+			expect(mockCline.abortTask).toHaveBeenCalledOnce()
+			expect(mockCline.messageManager.rewindToTimestamp).toHaveBeenCalledWith(3, { includeTargetMessage: false })
+			expect(mockProvider.createTaskWithHistoryItem).toHaveBeenCalledWith(
+				expect.objectContaining({ id: mockCline.taskId }),
+				{ startTask: false, preserveExisting: true, background: false },
+			)
+			const resumed = await mockProvider.createTaskWithHistoryItem.mock.results[0].value
+			expect(resumed.resumeWithEditedMessage).toHaveBeenCalledWith("Edited content", ["image1.png"])
 
 			// Verify checkpoint restore was called with edit operation
 			expect(mockCline.checkpointRestore).toHaveBeenCalledWith({
@@ -217,13 +252,14 @@ describe("checkpointRestoreHandler", () => {
 			expect(mockProvider.createTaskWithHistoryItem).toHaveBeenCalledWith(expectedHistoryItem)
 		})
 
-		it("should not save messages or reinitialize for edit operation", async () => {
+		it("preserves the foreground task when restarting a background conversation", async () => {
 			const editData = {
 				editedContent: "Edited content",
 				images: [],
 				apiConversationHistoryIndex: 2,
 			}
 
+			mockProvider.getCurrentTask.mockReturnValue({ taskId: "another-task" })
 			await handleCheckpointRestoreOperation({
 				provider: mockProvider,
 				currentCline: mockCline,
@@ -237,8 +273,11 @@ describe("checkpointRestoreHandler", () => {
 			// Verify saveTaskMessages was NOT called for edit operation
 			expect(saveTaskMessages).not.toHaveBeenCalled()
 
-			// Verify createTaskWithHistoryItem was NOT called for edit operation
-			expect(mockProvider.createTaskWithHistoryItem).not.toHaveBeenCalled()
+			// Rehydrate the addressed task without changing focus.
+			expect(mockProvider.createTaskWithHistoryItem).toHaveBeenCalledWith(
+				expect.objectContaining({ id: mockCline.taskId }),
+				{ startTask: false, preserveExisting: true, background: true },
+			)
 		})
 
 		it("should handle errors gracefully", async () => {

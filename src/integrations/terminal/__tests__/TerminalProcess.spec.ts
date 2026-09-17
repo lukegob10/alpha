@@ -289,6 +289,35 @@ describe("TerminalProcess", () => {
 			running.abort()
 			expect(mockTerminal.sendText).not.toHaveBeenCalled()
 		})
+
+		it("can send input and stop after a command is backgrounded", async () => {
+			let release!: () => void
+			const gate = new Promise<void>((resolve) => {
+				release = resolve
+			})
+			mockTerminal.shellIntegration.executeCommand.mockImplementationOnce(() => {
+				mockTerminalInfo.setActiveStream(
+					(async function* () {
+						yield "\x1b]633;C\x07server ready\n"
+						await gate
+					})(),
+				)
+			})
+			const running = mockTerminalInfo.runCommand("node server.cjs", callbacks())
+			await vi.waitFor(() => expect(mockTerminal.shellIntegration.executeCommand).toHaveBeenCalled())
+			running.continue()
+			await running
+			try {
+				expect(running.isSettled).toBe(false)
+				running.writeInput!("hello\n")
+				running.abort()
+				expect(mockTerminal.sendText).toHaveBeenNthCalledWith(1, "hello\n", false)
+				expect(mockTerminal.sendText).toHaveBeenNthCalledWith(2, "\x03")
+			} finally {
+				mockTerminalInfo.shellExecutionComplete({ exitCode: 130, signalName: "SIGINT" })
+				release()
+			}
+		})
 	})
 
 	describe("continue", () => {

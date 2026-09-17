@@ -24,6 +24,7 @@ import { interrupt_agent as interruptAgent } from "./interrupt_agent"
 import { cancel_agent as cancelAgent } from "./cancel_agent"
 import { close_agent as closeAgent } from "./close_agent"
 import readCommandOutput from "./read_command_output"
+import manageCommand from "./manage_command"
 import { createReadFileTool, type ReadFileToolOptions } from "./read_file"
 import runSlashCommand from "./run_slash_command"
 import skill from "./skill"
@@ -105,6 +106,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		cancelAgent,
 		closeAgent,
 		readCommandOutput,
+		...(!planMode ? [manageCommand] : []),
 		createReadFileTool(readFileOptions),
 		runSlashCommand,
 		skill,

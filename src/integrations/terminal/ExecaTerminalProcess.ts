@@ -96,6 +96,7 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				}
 
 				this.fullOutput += line
+				this.emit("output_available")
 
 				const now = Date.now()
 

@@ -49,7 +49,7 @@ describe("sub-agent task authority", () => {
 			terminalProcess.emit("completed")
 		})
 
-		await (child as any).stopActiveWorkerCommand()
+		await (child as any).stopActiveTaskCommands()
 
 		expect(child.getCommandExecutionEvidence()).toEqual([
 			expect.objectContaining({ toolCallId: "call-1", status: "cancelled" }),
@@ -71,7 +71,7 @@ describe("sub-agent task authority", () => {
 		child.beginCommandExecution("call-1", "execution-1")
 
 		try {
-			await (child as any).stopActiveWorkerCommand()
+			await (child as any).stopActiveTaskCommands()
 		} finally {
 			getTerminals.mockRestore()
 		}
@@ -93,7 +93,7 @@ describe("sub-agent task authority", () => {
 		child.beginCommandExecution("call-starting", "execution-starting")
 
 		try {
-			await (child as any).stopActiveWorkerCommand()
+			await (child as any).stopActiveTaskCommands()
 		} finally {
 			getTerminals.mockRestore()
 		}
@@ -122,7 +122,7 @@ describe("sub-agent task authority", () => {
 		}) as Task
 
 		let settled = false
-		const stopping = (child as any).stopActiveWorkerCommand().then(() => {
+		const stopping = (child as any).stopActiveTaskCommands().then(() => {
 			settled = true
 		})
 		await vi.waitFor(() => expect(terminalProcess.abort).toHaveBeenCalledOnce())
@@ -176,6 +176,7 @@ describe("sub-agent task authority", () => {
 
 		expect(child.isToolAllowedForTask("apply_patch")).toBe(true)
 		expect(child.isToolAllowedForTask("execute_command")).toBe(true)
+		expect(child.isToolAllowedForTask("manage_command")).toBe(true)
 		expect(child.isToolAllowedForTask("delegate_task")).toBe(false)
 		expect(child.isToolAllowedForTask("use_mcp_tool")).toBe(false)
 		expect(child.getTaskToolDenialReason("edit", { file_path: "core/task/Task.ts" })).toBeUndefined()

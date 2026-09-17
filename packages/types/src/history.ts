@@ -3,6 +3,7 @@ import { z } from "zod"
 import { subagentChangeSetStateSchema, subagentModelRouteStateSchema, subagentRoleSchema } from "./subagent.js"
 import { subagentContextManifestSchema } from "./subagent-context.js"
 import { subagentDelegationPolicySchema, subagentStopReasonSchema } from "./subagent-orchestration.js"
+import { taskWorkContextSchema } from "./task-work-context.js"
 
 /**
  * HistoryItem
@@ -24,6 +25,7 @@ export const historyItemSchema = z.object({
 	workspace: z.string().optional(),
 	mode: z.string().optional(),
 	apiConfigName: z.string().optional(), // Provider profile name for sticky profile feature
+	workContext: taskWorkContextSchema.optional(),
 	status: z
 		.enum(["active", "completed", "blocked", "delegated", "failed", "cancelled", "timed_out", "interrupted"])
 		.optional(),

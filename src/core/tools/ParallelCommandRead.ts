@@ -129,6 +129,8 @@ export async function prepareParallelCommand(
 		return undefined
 	const requestedCwd = typeof args.cwd === "string" ? args.cwd : "."
 	const command = unescapeHtmlEntities(args.command)
+	// Acceptance checks need the ordinary command path's before/after observations.
+	if (task.workContext?.plan?.checks.some((check) => check.command === command)) return undefined
 	const root = await fs.realpath(task.cwd)
 	const cwd = await fs.realpath(path.resolve(root, requestedCwd))
 	if (!isPathWithinRoot(root, cwd) || !isPathAllowed(policy, cwd, root)) return undefined

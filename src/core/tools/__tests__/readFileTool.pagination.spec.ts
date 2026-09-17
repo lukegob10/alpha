@@ -46,6 +46,34 @@ function continuation(text: string): ReadFileToolParams {
 }
 
 describe("read_file delivered evidence", () => {
+	it("rejects altered cursors as invalid rather than reporting a file change", async () => {
+		const { read } = harness("one\ntwo\nthree")
+		const next = continuation(await read({ path: "one.ts", limit: 1 }))
+		const cursor = next.continuation!
+		expect(cursor.length).toBeLessThan(160)
+		expect(
+			await read({ ...next, continuation: cursor.slice(0, -1) + (cursor.endsWith("a") ? "b" : "a") }),
+		).toContain("Invalid read continuation. Copy the complete continuation exactly")
+		expect(await read(next)).toContain("2 | two")
+	})
+
+	it("continues legacy v1 cursors from saved tool results", async () => {
+		const { createHash } = await import("crypto")
+		const path = await import("path")
+		const hash = (value: string) => createHash("sha256").update(value).digest("hex")
+		const { read } = harness("one\ntwo\nthree")
+		const cursor = Buffer.from(
+			JSON.stringify({
+				v: 1,
+				file: hash(path.resolve("/workspace", "one.ts")),
+				version: hash("one\ntwo\nthree"),
+				ranges: [[2, 3]],
+				column: 0,
+				limit: 2,
+			}),
+		).toString("base64url")
+		expect(await read({ path: "one.ts", continuation: cursor })).toBe("File: one.ts\n2 | two\n3 | three")
+	})
 	it("reports an invalid indentation anchor as an error rather than an empty successful read", async () => {
 		const { read, callbacks } = harness("one\ntwo")
 		const result = await read({ path: "short.ts", mode: "indentation", indentation: { anchor_line: 10 } })

@@ -130,8 +130,8 @@ vi.mock("../parser", async () => {
 	const { sanitizeDocument } = await import("../sanitize")
 	return {
 		DocumentParser: class {
-			async parse(source: string) {
-				return sanitizeDocument(source)
+			async parse(source: string, documentDirectory?: string) {
+				return sanitizeDocument(source, documentDirectory)
 			}
 			cancelPending() {}
 			dispose() {}
@@ -213,6 +213,34 @@ describe("HTML document viewer lifecycle through host boundaries", () => {
 		expect(imageWatcher.change.listeners.size).toBe(0)
 		panel.dispose()
 		expect(panel.webview.html).toContain("img-src data:")
+	})
+
+	it("renders relative PNG chart files and refreshes their images in a nested document", async () => {
+		await fs.mkdir(path.join(root, "reports", "plots"), { recursive: true })
+		const panel = await open(
+			"reports/report.html",
+			"Analysis",
+			'<figure><img src="plots/fit%20chart.png" alt="Matplotlib fit"><figcaption>Fit evidence</figcaption></figure>',
+		)
+		expect(latest(panel).html).toContain("image-unavailable")
+		expect(host.watchers).toHaveLength(2)
+		const imageWatcher = host.watchers[1]
+		expect(vscode.workspace.createFileSystemWatcher).toHaveBeenLastCalledWith(
+			expect.objectContaining({ base: path.join(root, "reports", "plots"), pattern: "fit chart.png" }),
+		)
+		await fs.writeFile(
+			path.join(root, "reports", "plots", "fit chart.png"),
+			Buffer.from(
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1cAAAAASUVORK5CYII=",
+				"base64",
+			),
+		)
+		await refresh(panel, () => imageWatcher.create.fire())
+		expect(latest(panel).html).toContain('src="data:image/png;base64,')
+		expect(latest(panel).html).toContain('alt="Matplotlib fit"')
+		expect(vscode.env.openExternal).not.toHaveBeenCalled()
+		panel.dispose()
+		expect(imageWatcher.dispose).toHaveBeenCalledOnce()
 	})
 
 	beforeEach(async () => {

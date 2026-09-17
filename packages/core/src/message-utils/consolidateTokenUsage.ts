@@ -38,6 +38,14 @@ export function consolidateTokenUsage(messages: ClineMessage[]): TokenUsage {
 
 	// Calculate running totals.
 	messages.forEach((message) => {
+		if (message.type === "say" && message.say === "reasoning" && message.reasoningSummaryUsage) {
+			const usage = message.reasoningSummaryUsage
+			result.totalTokensIn += usage.tokensIn
+			result.totalTokensOut += usage.tokensOut
+			result.totalCacheWrites = (result.totalCacheWrites ?? 0) + usage.cacheWrites
+			result.totalCacheReads = (result.totalCacheReads ?? 0) + usage.cacheReads
+			result.totalCost += usage.cost
+		}
 		if (message.type === "say" && message.say === "api_req_started" && message.text) {
 			try {
 				const parsedText: ParsedApiReqStartedTextType = JSON.parse(message.text)

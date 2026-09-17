@@ -15,7 +15,7 @@ interface MessageModificationConfirmationDialogProps {
 	open: boolean
 	onOpenChange: (open: boolean) => void
 	onConfirm: () => void
-	type: "edit" | "delete"
+	type: "edit" | "delete" | "restart"
 }
 
 export const MessageModificationConfirmationDialog: React.FC<MessageModificationConfirmationDialogProps> = ({
@@ -27,8 +27,18 @@ export const MessageModificationConfirmationDialog: React.FC<MessageModification
 	const { t } = useAppTranslation()
 
 	const isEdit = type === "edit"
-	const title = isEdit ? t("common:confirmation.editMessage") : t("common:confirmation.deleteMessage")
-	const description = isEdit ? t("common:confirmation.editWarning") : t("common:confirmation.deleteWarning")
+	const title =
+		type === "restart"
+			? t("chat:messageActions.restart")
+			: isEdit
+				? t("common:confirmation.editMessage")
+				: t("common:confirmation.deleteMessage")
+	const description =
+		type === "restart"
+			? t("chat:messageActions.restartWarning")
+			: isEdit
+				? t("common:confirmation.editWarning")
+				: t("common:confirmation.deleteWarning")
 
 	return (
 		<AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -53,9 +63,9 @@ export const MessageModificationConfirmationDialog: React.FC<MessageModification
 }
 
 // Export convenience components for backward compatibility
-export const EditMessageDialog: React.FC<Omit<MessageModificationConfirmationDialogProps, "type">> = (props) => (
-	<MessageModificationConfirmationDialog {...props} type="edit" />
-)
+export const EditMessageDialog: React.FC<
+	Omit<MessageModificationConfirmationDialogProps, "type"> & { type?: "edit" | "restart" }
+> = ({ type = "edit", ...props }) => <MessageModificationConfirmationDialog {...props} type={type} />
 
 export const DeleteMessageDialog: React.FC<Omit<MessageModificationConfirmationDialogProps, "type">> = (props) => (
 	<MessageModificationConfirmationDialog {...props} type="delete" />

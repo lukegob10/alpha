@@ -1,6 +1,8 @@
 import React from "react"
 
 import { render, screen } from "@/utils/test-utils"
+import { TranslationContext } from "@src/i18n/TranslationContext"
+import i18n from "@src/i18n/setup"
 
 import Announcement from "../Announcement"
 
@@ -12,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "2.1.44",
+		version: "2.1.45",
 	},
 }))
 
@@ -24,37 +26,53 @@ vi.mock("@vscode/webview-ui-toolkit/react", () => ({
 	),
 }))
 
-vi.mock("react-i18next", () => ({
-	Trans: ({ i18nKey }: { i18nKey: string }) => <span>{i18nKey}</span>,
-}))
+const renderAnnouncement = (language = "en") =>
+	render(
+		<TranslationContext.Provider value={{ i18n, t: (key, options) => i18n.t(key, { ...options, lng: language }) }}>
+			<Announcement hideAnnouncement={vi.fn()} />
+		</TranslationContext.Provider>,
+	)
 
 describe("Announcement", () => {
 	it("renders the current release announcement", () => {
-		render(<Announcement hideAnnouncement={vi.fn()} />)
+		renderAnnouncement()
 
-		expect(screen.getByText("Welcome to Alpha v2.1.44")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v2.1.45")).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Alpha v2.1.44 makes background editing safer and calmer while preserving the proven Code loop.",
-			),
+			screen.getByText("Alpha v2.1.45 improves verification, command control, and task continuity."),
 		).toBeInTheDocument()
 	})
 
 	it("renders the release highlights", () => {
-		render(<Announcement hideAnnouncement={vi.fn()} />)
+		renderAnnouncement()
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
-			screen.getByText("Background edits keep your focus, open tabs, cursor, and unsaved typing in place."),
+			screen.getByText("Reuse passing checks while their declared inputs remain unchanged."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Cancelled or abandoned saves stop before a late write can change the workspace."),
+			screen.getByText("Wait for, send input to, and stop background commands owned by the task."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Directory reads explain how to continue with the list-files tool."),
+			screen.getByText("Preserve task constraints and skill context across reload and compaction."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Background command results now report their actual exit status to the next model step."),
+			screen.getByText("Use clearer chat actions and select a provider after task completion."),
+		).toBeInTheDocument()
+	})
+
+	it("uses localized release text with the current package version", () => {
+		renderAnnouncement("de")
+
+		expect(
+			screen.getByText(
+				"Alpha v2.1.45 verbessert die Überprüfung, die Befehlssteuerung und die Fortführung von Aufgaben.",
+			),
+		).toBeInTheDocument()
+		expect(
+			screen.getByText(
+				"Erfolgreiche Prüfungen wiederverwenden, solange ihre angegebenen Eingaben unverändert bleiben.",
+			),
 		).toBeInTheDocument()
 	})
 })

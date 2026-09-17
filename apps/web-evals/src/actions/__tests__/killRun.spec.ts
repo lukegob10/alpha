@@ -33,9 +33,28 @@ vi.mock("@alpha-code/evals", () => ({
 vi.useFakeTimers()
 
 // Import after mocks
-import { killRun } from "../runs"
+import { createRun, killRun } from "../runs"
+import { createRun as persistRun, createTask } from "@alpha-code/evals"
+import type { CreateRun } from "../../lib/schemas"
 
 const mockExecFileSync = execFileSync as ReturnType<typeof vi.fn>
+
+describe("createRun execution boundary", () => {
+	it("rejects a stale CLI request before writing any run or task", async () => {
+		vi.clearAllMocks()
+		const request = {
+			model: "test-model",
+			suite: "full",
+			concurrency: 1,
+			timeout: 5,
+			iterations: 1,
+			executionMethod: "cli",
+		}
+		await expect(createRun(request as unknown as CreateRun)).rejects.toThrow()
+		expect(persistRun).not.toHaveBeenCalled()
+		expect(createTask).not.toHaveBeenCalled()
+	})
+})
 
 describe("killRun", () => {
 	beforeEach(() => {

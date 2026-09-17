@@ -60,8 +60,6 @@ import {
 	Eye,
 	FileDiff,
 	ListTree,
-	Edit,
-	Trash2,
 	MessageCircleQuestionMark,
 	SquareArrowOutUpRight,
 	FileCode2,
@@ -84,6 +82,7 @@ import { OpenMarkdownPreviewButton } from "./OpenMarkdownPreviewButton"
 import { SubagentGroupCard } from "./SubagentGroupCard"
 import { TicketActivity } from "./TicketActivity"
 import { ActivityStep } from "./ActivityStep"
+import { MessageActions } from "./MessageActions"
 import { GitHubApiActivity } from "./GitHubApiActivity"
 
 // Helper function to get previous todos before a specific message
@@ -143,6 +142,7 @@ interface ChatRowProps {
 	isExpanded: boolean
 	isLast: boolean
 	isStreaming: boolean
+	messageActionsDisabled?: boolean
 	onToggleExpand: (ts: number) => void
 	onSuggestionClick?: (suggestion: SuggestionItem, event?: React.MouseEvent) => void
 	onBatchFileResponse?: (response: { [key: string]: boolean }) => void
@@ -215,6 +215,7 @@ const ChatRowContentInner = ({
 	isExpanded,
 	isLast,
 	isStreaming,
+	messageActionsDisabled = isStreaming,
 	onToggleExpand,
 	onSuggestionClick,
 	onFollowUpUnmount,
@@ -283,6 +284,7 @@ const ChatRowContentInner = ({
 
 	// Handle save edit
 	const handleSaveEdit = useCallback(() => {
+		if (messageActionsDisabled) return
 		setIsEditing(false)
 		// Send edited message to backend
 		vscode.postMessage({
@@ -292,7 +294,27 @@ const ChatRowContentInner = ({
 			images: editImages,
 			taskId: currentTaskId,
 		})
-	}, [message.ts, editedContent, editImages, currentTaskId])
+	}, [message.ts, editedContent, editImages, currentTaskId, messageActionsDisabled])
+
+	const handleRestartClick = useCallback(() => {
+		if (messageActionsDisabled || message.partial || !currentTaskId) return
+		const messages = getClineMessages()
+		const index = messages.findIndex((entry) => entry.ts === message.ts)
+		for (let i = index - 1; i >= 0; i--) {
+			const prompt = messages[i]
+			if (prompt.type === "say" && (prompt.say === "user_feedback" || (i === 0 && prompt.say === "text"))) {
+				vscode.postMessage({
+					type: "submitEditedMessage",
+					value: prompt.ts,
+					editedMessageContent: prompt.text || "",
+					images: prompt.images,
+					taskId: currentTaskId,
+					messageAction: "restart",
+				})
+				return
+			}
+		}
+	}, [currentTaskId, getClineMessages, messageActionsDisabled, message.partial, message.ts])
 
 	// Handle image selection for editing
 	const handleSelectImages = useCallback(() => {
@@ -883,43 +905,20 @@ const ChatRowContentInner = ({
 							<>
 								{toolIcon("search")}
 								<span style={{ fontWeight: "normal" }}>
-									{message.type === "ask" ? (
-										<Trans
-											i18nKey={
-												tool.isOutsideWorkspace
-													? "chat:directoryOperations.wantsToSearchOutsideWorkspace"
-													: "chat:directoryOperations.wantsToSearch"
-											}
-											components={{
-												code: (
-													<code className="font-medium" style={{ color: normalColor }}>
-														{tool.regex}
-													</code>
-												),
-											}}
-											values={{ regex: tool.regex }}
-										/>
-									) : (
-										<Trans
-											i18nKey={
-												tool.isOutsideWorkspace
-													? "chat:directoryOperations.didSearchOutsideWorkspace"
-													: "chat:directoryOperations.didSearch"
-											}
-											components={{
-												code: (
-													<code className="font-medium" style={{ color: normalColor }}>
-														{tool.regex}
-													</code>
-												),
-											}}
-											values={{ regex: tool.regex }}
-										/>
-									)}
+									{message.type === "ask"
+										? tool.isOutsideWorkspace
+											? t("chat:directoryOperations.wantsToSearchOutsideWorkspace")
+											: t("chat:directoryOperations.wantsToSearch")
+										: tool.isOutsideWorkspace
+											? t("chat:directoryOperations.didSearchOutsideWorkspace")
+											: t("chat:directoryOperations.didSearch")}
 								</span>
 							</>
 						}>
 						<div className="pl-6">
+							<code className="mb-2 block whitespace-pre-wrap break-words text-sm text-vscode-foreground [overflow-wrap:anywhere]">
+								{tool.regex}
+							</code>
 							<CodeAccordion
 								path={tool.path! + (tool.filePattern ? `/(${tool.filePattern})` : "")}
 								code={tool.content}
@@ -1250,6 +1249,7 @@ const ChatRowContentInner = ({
 					return (
 						<ReasoningBlock
 							content={message.text || ""}
+							summary={message.reasoningSummary}
 							ts={message.ts}
 							isStreaming={isStreaming}
 							isLast={isLast}
@@ -1403,6 +1403,8 @@ const ChatRowContentInner = ({
 									<Markdown
 										markdown={message.text}
 										partial={message.partial}
+										onRestart={handleRestartClick}
+										restartDisabled={messageActionsDisabled}
 										actions={<OpenMarkdownPreviewButton markdown={message.text} />}
 									/>
 									{message.images && message.images.length > 0 && (
@@ -1433,7 +1435,7 @@ const ChatRowContentInner = ({
 										<ChatTextArea
 											inputValue={editedContent}
 											setInputValue={setEditedContent}
-											sendingDisabled={false}
+											sendingDisabled={messageActionsDisabled}
 											selectApiConfigDisabled={true}
 											placeholderText={t("chat:editMessage.placeholder")}
 											selectedImages={editImages}
@@ -1453,42 +1455,29 @@ const ChatRowContentInner = ({
 										text={message.text}
 										isExpanded={isExpanded}
 										onToggleExpand={handleToggleExpand}
-										onEdit={!isTaskPrompt && !isStreaming ? handleEditClick : undefined}
+										onEdit={!messageActionsDisabled ? handleEditClick : undefined}
 									/>
 								)}
 								{!isEditing && message.images && message.images.length > 0 && (
 									<Thumbnails images={message.images} style={{ marginTop: "8px" }} />
 								)}
 							</div>
-							{!isTaskPrompt && !isEditing && (
-								<div className="flex h-6 items-center gap-3 text-vscode-descriptionForeground">
-									<button
-										type="button"
-										aria-label={t("chat:queuedMessages.edit")}
-										className="cursor-pointer shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity bg-transparent border-0 p-0"
-										style={{ visibility: isStreaming ? "hidden" : "visible" }}
-										onClick={(e) => {
-											e.stopPropagation()
-											handleEditClick()
-										}}>
-										<Edit className="w-4 shrink-0" aria-hidden="true" />
-									</button>
-									<button
-										type="button"
-										aria-label={t("common:confirmation.deleteMessage")}
-										className="cursor-pointer shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity bg-transparent border-0 p-0"
-										style={{ visibility: isStreaming ? "hidden" : "visible" }}
-										onClick={(e) => {
-											e.stopPropagation()
-											vscode.postMessage({
-												type: "deleteMessage",
-												value: message.ts,
-												taskId: currentTaskId,
-											})
-										}}>
-										<Trash2 className="w-4 shrink-0" aria-hidden="true" />
-									</button>
-								</div>
+							{!isEditing && (
+								<MessageActions
+									text={message.text || ""}
+									onEdit={handleEditClick}
+									disabled={messageActionsDisabled}
+									onDelete={
+										isTaskPrompt
+											? undefined
+											: () =>
+													vscode.postMessage({
+														type: "deleteMessage",
+														value: message.ts,
+														taskId: currentTaskId,
+													})
+									}
+								/>
 							)}
 						</article>
 					)
@@ -1542,6 +1531,8 @@ const ChatRowContentInner = ({
 							<Markdown
 								markdown={message.text}
 								partial={message.partial}
+								onRestart={handleRestartClick}
+								restartDisabled={messageActionsDisabled}
 								actions={<OpenMarkdownPreviewButton markdown={message.text} />}
 							/>
 						</article>
@@ -1988,6 +1979,8 @@ const ChatRowContentInner = ({
 								<Markdown
 									markdown={message.text}
 									partial={message.partial}
+									onRestart={handleRestartClick}
+									restartDisabled={messageActionsDisabled}
 									actions={<OpenMarkdownPreviewButton markdown={message.text} />}
 								/>
 							</article>
@@ -2007,6 +2000,9 @@ const ChatRowContentInner = ({
 							<div className="flex flex-col gap-2 ml-6">
 								<Markdown
 									markdown={message.partial === true ? message?.text : followUpData?.question}
+									partial={message.partial}
+									onRestart={handleRestartClick}
+									restartDisabled={messageActionsDisabled}
 								/>
 								<FollowUpSuggest
 									suggestions={followUpData?.suggest}

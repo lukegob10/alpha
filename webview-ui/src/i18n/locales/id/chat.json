@@ -1,4 +1,13 @@
 {
+	"messageActions": {
+		"copy": "Salin",
+		"copied": "Disalin",
+		"edit": "Edit dan kirim ulang",
+		"restart": "Mulai ulang dari permintaan sebelumnya",
+		"restartWarning": "Permintaan sebelumnya akan dijalankan ulang dan semua pesan setelahnya akan diganti. File workspace akan tetap seperti sekarang.",
+		"restartWithCheckpoint": "Permintaan sebelumnya akan dijalankan ulang dan semua pesan setelahnya akan diganti. Pulihkan juga file ke checkpoint terkait?",
+		"restartOnly": "Mulai ulang tanpa memulihkan file"
+	},
 	"activityTrace": {
 		"needsAttention": "Perlu perhatian",
 		"workedFor": "Bekerja selama {{duration}}"
@@ -265,10 +274,10 @@
 		"didViewTopLevel": "Alpha melihat file tingkat atas di direktori ini",
 		"wantsToViewRecursive": "Alpha ingin melihat semua file secara rekursif di direktori ini",
 		"didViewRecursive": "Alpha melihat semua file secara rekursif di direktori ini",
-		"wantsToSearch": "Alpha ingin mencari direktori ini untuk <code>{{regex}}</code>",
-		"didSearch": "Alpha mencari direktori ini untuk <code>{{regex}}</code>",
-		"wantsToSearchOutsideWorkspace": "Alpha ingin mencari direktori ini (di luar workspace) untuk <code>{{regex}}</code>",
-		"didSearchOutsideWorkspace": "Alpha mencari direktori ini (di luar workspace) untuk <code>{{regex}}</code>",
+		"wantsToSearch": "Alpha ingin mencari dalam direktori",
+		"didSearch": "Alpha mencari dalam direktori",
+		"wantsToSearchOutsideWorkspace": "Alpha ingin mencari dalam direktori (di luar workspace)",
+		"didSearchOutsideWorkspace": "Alpha mencari dalam direktori (di luar workspace)",
 		"wantsToViewTopLevelOutsideWorkspace": "Alpha ingin melihat file tingkat atas di direktori ini (di luar workspace)",
 		"didViewTopLevelOutsideWorkspace": "Alpha melihat file tingkat atas di direktori ini (di luar workspace)",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha ingin melihat semua file secara rekursif di direktori ini (di luar workspace)",
@@ -386,8 +395,11 @@
 			"gpt54": "Provider Poe: Poe ditambahkan sebagai provider AI agar kamu bisa langsung mengakses model Poe di Alpha.",
 			"slashSkills": "Peningkatan xAI dan MiniMax: Provider xAI dimigrasikan ke Responses API, utilitas transformasi yang bisa dipakai ulang ditambahkan, default Grok-4.20 diperbarui, dan daftar model MiniMax serta penanganan context window diperbaiki agar setup lebih andal.",
 			"geminiPro": "Dukungan Gemini 3.1 Pro: Dukungan model Gemini 3.1 Pro telah ditambahkan dan ditetapkan sebagai model Gemini default untuk performa yang lebih baik.",
-			"cliNdjson": "Protokol NDJSON CLI: Protokol NDJSON stdin baru, subperintah list, dan perintah run yang dimodularisasi untuk alur kerja CLI yang lebih fleksibel.",
-			"cliRelease": "CLI v0.1.0: CLI Alpha mencapai rilis resmi pertamanya dengan antarmuka perintah yang stabil."
+			"welcome": "Alpha v{{version}} meningkatkan verifikasi, kontrol perintah, dan kesinambungan tugas.",
+			"acceptanceChecks": "Gunakan kembali pemeriksaan yang lulus selama masukan yang dinyatakan tidak berubah.",
+			"commandControl": "Tunggu, kirim masukan, dan hentikan perintah latar belakang milik tugas.",
+			"workflowContinuity": "Pertahankan batasan tugas dan konteks keterampilan saat memuat ulang dan memadatkan konteks.",
+			"chatUpdates": "Gunakan tindakan chat yang lebih jelas dan pilih penyedia setelah tugas selesai."
 		}
 	},
 	"reasoning": {

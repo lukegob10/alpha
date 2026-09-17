@@ -1,4 +1,13 @@
 {
+	"messageActions": {
+		"copy": "Kopyala",
+		"copied": "Kopyalandı",
+		"edit": "Düzenle ve yeniden gönder",
+		"restart": "Önceki istekten yeniden başlat",
+		"restartWarning": "Önceki istek yeniden çalıştırılacak ve sonraki tüm mesajlar değiştirilecek. Çalışma alanındaki dosyalar olduğu gibi kalacak.",
+		"restartWithCheckpoint": "Önceki istek yeniden çalıştırılacak ve sonraki tüm mesajlar değiştirilecek. Dosyalar da ilgili kontrol noktasına geri yüklensin mi?",
+		"restartOnly": "Dosyaları geri yüklemeden yeniden başlat"
+	},
 	"activityTrace": {
 		"needsAttention": "İlgilenilmesi gerekiyor",
 		"workedFor": "{{duration}} boyunca çalıştı"
@@ -220,10 +229,10 @@
 		"didViewTopLevel": "Alpha bu dizindeki üst düzey dosyaları görüntüledi",
 		"wantsToViewRecursive": "Alpha bu dizindeki tüm dosyaları özyinelemeli olarak görüntülemek istiyor",
 		"didViewRecursive": "Alpha bu dizindeki tüm dosyaları özyinelemeli olarak görüntüledi",
-		"wantsToSearch": "Alpha bu dizinde <code>{{regex}}</code> için arama yapmak istiyor",
-		"didSearch": "Alpha bu dizinde <code>{{regex}}</code> için arama yaptı",
-		"wantsToSearchOutsideWorkspace": "Alpha bu dizinde (çalışma alanı dışında) <code>{{regex}}</code> için arama yapmak istiyor",
-		"didSearchOutsideWorkspace": "Alpha bu dizinde (çalışma alanı dışında) <code>{{regex}}</code> için arama yaptı",
+		"wantsToSearch": "Alpha bir dizinde arama yapmak istiyor",
+		"didSearch": "Alpha bir dizinde arama yaptı",
+		"wantsToSearchOutsideWorkspace": "Alpha bir dizinde arama yapmak istiyor (çalışma alanı dışında)",
+		"didSearchOutsideWorkspace": "Alpha bir dizinde arama yaptı (çalışma alanı dışında)",
 		"wantsToViewTopLevelOutsideWorkspace": "Alpha bu dizindeki (çalışma alanı dışında) üst düzey dosyaları görüntülemek istiyor",
 		"didViewTopLevelOutsideWorkspace": "Alpha bu dizindeki (çalışma alanı dışında) üst düzey dosyaları görüntüledi",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha bu dizindeki (çalışma alanı dışında) tüm dosyaları özyinelemeli olarak görüntülemek istiyor",
@@ -357,8 +366,11 @@
 			"gpt54": "Poe Sağlayıcısı: Poe, Alpha içinde Poe modellerine doğrudan erişebilmen için bir AI sağlayıcısı olarak eklendi.",
 			"slashSkills": "xAI ve MiniMax İyileştirmeleri: xAI sağlayıcısı Responses API'ye taşındı, yeniden kullanılabilir dönüştürme yardımcıları eklendi, Grok-4.20 varsayılanları güncellendi ve daha güvenilir bir kurulum için MiniMax model listeleriyle context window işleme düzeltildi.",
 			"geminiPro": "Gemini 3.1 Pro Desteği: Gemini 3.1 Pro model desteği eklendi ve daha iyi performans için varsayılan Gemini modeli olarak ayarlandı.",
-			"cliNdjson": "CLI NDJSON Protokolü: Yeni NDJSON stdin protokolü, list alt komutları ve daha esnek CLI iş akışları için modüler run komutu.",
-			"cliRelease": "CLI v0.1.0: Alpha CLI, kararlı bir komut arayüzüyle ilk resmi sürümüne ulaştı."
+			"welcome": "Alpha v{{version}} doğrulamayı, komut denetimini ve görev sürekliliğini iyileştirir.",
+			"acceptanceChecks": "Belirtilen girdileri değişmediği sürece başarılı kontrolleri yeniden kullanın.",
+			"commandControl": "Göreve ait arka plan komutlarını bekleyin, bu komutlara girdi gönderin ve onları durdurun.",
+			"workflowContinuity": "Yeniden yükleme ve bağlam sıkıştırma sırasında görev kısıtlarını ve beceri bağlamını koruyun.",
+			"chatUpdates": "Daha anlaşılır sohbet eylemlerini kullanın ve görev tamamlandıktan sonra sağlayıcı seçin."
 		}
 	},
 	"costs": {

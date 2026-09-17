@@ -2,6 +2,7 @@ import { memo, useState } from "react"
 
 import { Package } from "@alpha/package"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@src/components/ui"
+import { useAppTranslation } from "@src/i18n/TranslationContext"
 
 interface AnnouncementProps {
 	hideAnnouncement: () => void
@@ -18,6 +19,7 @@ interface AnnouncementProps {
 
 const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 	const [open, setOpen] = useState(true)
+	const { t } = useAppTranslation()
 
 	return (
 		<Dialog
@@ -31,18 +33,15 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 			}}>
 			<DialogContent>
 				<DialogHeader>
-					<DialogTitle>Welcome to Alpha v{Package.version}</DialogTitle>
+					<DialogTitle>{t("chat:announcement.title", { version: Package.version })}</DialogTitle>
 				</DialogHeader>
 				<div className="space-y-2 text-sm">
-					<p>
-						Alpha v{Package.version} makes background editing safer and calmer while preserving the proven
-						Code loop.
-					</p>
+					<p>{t("chat:announcement.release.welcome", { version: Package.version })}</p>
 					<ul className="list-disc space-y-1 pl-5">
-						<li>Background edits keep your focus, open tabs, cursor, and unsaved typing in place.</li>
-						<li>Cancelled or abandoned saves stop before a late write can change the workspace.</li>
-						<li>Directory reads explain how to continue with the list-files tool.</li>
-						<li>Background command results now report their actual exit status to the next model step.</li>
+						<li>{t("chat:announcement.release.acceptanceChecks")}</li>
+						<li>{t("chat:announcement.release.commandControl")}</li>
+						<li>{t("chat:announcement.release.workflowContinuity")}</li>
+						<li>{t("chat:announcement.release.chatUpdates")}</li>
 					</ul>
 				</div>
 			</DialogContent>

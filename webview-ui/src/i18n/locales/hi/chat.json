@@ -1,4 +1,13 @@
 {
+	"messageActions": {
+		"copy": "कॉपी करें",
+		"copied": "कॉपी किया गया",
+		"edit": "संपादित करके फिर भेजें",
+		"restart": "पिछले अनुरोध से फिर शुरू करें",
+		"restartWarning": "पिछला अनुरोध फिर चलाया जाएगा और उसके बाद के सभी संदेश बदल दिए जाएंगे। कार्यक्षेत्र की फ़ाइलें जैसी हैं वैसी रहेंगी।",
+		"restartWithCheckpoint": "पिछला अनुरोध फिर चलाया जाएगा और उसके बाद के सभी संदेश बदल दिए जाएंगे। क्या फ़ाइलों को भी उसके चेकपॉइंट पर पुनर्स्थापित करें?",
+		"restartOnly": "फ़ाइलें पुनर्स्थापित किए बिना फिर शुरू करें"
+	},
 	"activityTrace": {
 		"needsAttention": "ध्यान देने की आवश्यकता है",
 		"workedFor": "{{duration}} तक काम किया"
@@ -220,10 +229,10 @@
 		"didViewTopLevel": "Alpha ने इस निर्देशिका में शीर्ष स्तर की फ़ाइलें देखीं",
 		"wantsToViewRecursive": "Alpha इस निर्देशिका में सभी फ़ाइलों को पुनरावर्ती रूप से देखना चाहता है",
 		"didViewRecursive": "Alpha ने इस निर्देशिका में सभी फ़ाइलों को पुनरावर्ती रूप से देखा",
-		"wantsToSearch": "Alpha इस निर्देशिका में <code>{{regex}}</code> के लिए खोज करना चाहता है",
-		"didSearch": "Alpha ने इस निर्देशिका में <code>{{regex}}</code> के लिए खोज की",
-		"wantsToSearchOutsideWorkspace": "Alpha इस निर्देशिका (कार्यक्षेत्र के बाहर) में <code>{{regex}}</code> के लिए खोज करना चाहता है",
-		"didSearchOutsideWorkspace": "Alpha ने इस निर्देशिका (कार्यक्षेत्र के बाहर) में <code>{{regex}}</code> के लिए खोज की",
+		"wantsToSearch": "Alpha एक निर्देशिका में खोज करना चाहता है",
+		"didSearch": "Alpha ने एक निर्देशिका में खोज की",
+		"wantsToSearchOutsideWorkspace": "Alpha एक निर्देशिका में खोज करना चाहता है (कार्यक्षेत्र के बाहर)",
+		"didSearchOutsideWorkspace": "Alpha ने एक निर्देशिका में खोज की (कार्यक्षेत्र के बाहर)",
 		"wantsToViewTopLevelOutsideWorkspace": "Alpha इस निर्देशिका (कार्यक्षेत्र के बाहर) में शीर्ष स्तर की फ़ाइलें देखना चाहता है",
 		"didViewTopLevelOutsideWorkspace": "Alpha ने इस निर्देशिका (कार्यक्षेत्र के बाहर) में शीर्ष स्तर की फ़ाइलें देखीं",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha इस निर्देशिका (कार्यक्षेत्र के बाहर) में सभी फ़ाइलों को पुनरावर्ती रूप से देखना चाहता है",
@@ -356,8 +365,11 @@
 			"gpt54": "Poe provider: Poe को AI provider के रूप में जोड़ा गया है, ताकि आप Alpha में सीधे Poe models तक पहुँच सकें।",
 			"slashSkills": "xAI और MiniMax में सुधार: xAI provider को Responses API पर migrate किया गया है, reusable transform utilities जोड़ी गई हैं, Grok-4.20 defaults अपडेट किए गए हैं, और ज़्यादा भरोसेमंद setup के लिए MiniMax model listings व context window handling को ठीक किया गया है।",
 			"geminiPro": "Gemini 3.1 Pro सपोर्ट: Gemini 3.1 Pro मॉडल का सपोर्ट जोड़ा गया और बेहतर प्रदर्शन के लिए इसे डिफ़ॉल्ट Gemini मॉडल के रूप में सेट किया गया।",
-			"cliNdjson": "CLI NDJSON प्रोटोकॉल: नया NDJSON stdin प्रोटोकॉल, list सबकमांड, और अधिक लचीले CLI वर्कफ़्लो के लिए मॉड्यूलर run कमांड।",
-			"cliRelease": "CLI v0.1.0: Alpha CLI एक स्थिर कमांड इंटरफ़ेस के साथ अपनी पहली आधिकारिक रिलीज़ तक पहुँचा।"
+			"welcome": "Alpha v{{version}} सत्यापन, कमांड नियंत्रण और कार्य की निरंतरता को बेहतर बनाता है।",
+			"acceptanceChecks": "घोषित इनपुट अपरिवर्तित रहने तक सफल जाँचों का पुनः उपयोग करें।",
+			"commandControl": "कार्य की अपनी बैकग्राउंड कमांड की प्रतीक्षा करें, उन्हें इनपुट भेजें और रोकें।",
+			"workflowContinuity": "रीलोड और संक्षेपण के बाद भी कार्य की सीमाएँ और स्किल का संदर्भ बनाए रखें।",
+			"chatUpdates": "अधिक स्पष्ट चैट क्रियाओं का उपयोग करें और कार्य पूरा होने के बाद प्रदाता चुनें।"
 		}
 	},
 	"costs": {

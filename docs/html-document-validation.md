@@ -5,7 +5,28 @@ baseline `bc66591b605f9ffa77ae40b210c074b525210e4d` (Alpha 2.1.36). Main viewer
 implementation: `d36a646fc45fa8d00d009a905f31494b7d8990af`. Kit and skill integration
 commits remain separate so consumers can cherry-pick the bounded viewer change.
 
-## Deterministic checks
+## September 16, 2026: local PNG chart compatibility
+
+Ordinary `<img src="plots/fit.png">` elements were removed because only `data-image`
+was recognized. A failing sanitizer test and nested-document viewer test reproduced
+the silent loss. Local PNG/JPEG `src` paths now resolve from the HTML file's directory
+and enter the existing bounded image hydration/watch pipeline. Workspace-root-relative
+`data-image` keeps its original meaning and precedence. Remote/file URLs, embedded
+base64, and paths or symlinks escaping the workspace remain unsupported; image budgets are unchanged.
+
+Validation: 118 HTML-document tests passed, including the actual rebuilt parser
+worker, encoded filenames, parent paths within the workspace, image creation/refresh,
+legacy references, cancellation and scope checks. Extension typecheck, lint and
+touched-file formatting passed. The extension bundled using its existing
+`node esbuild.mjs` script. Installed workspace binaries ran the checks because the
+pnpm launcher failed with `EPERM` while resolving the user-profile directory.
+`pnpm --filter @alpha-code/vscode-e2e test:smoke:1221` was blocked by that error;
+a direct compiled `html-document.test` runner attempt returned `invalid-options`
+before launching a host. No exact-host or visual pass is claimed for this change.
+The reported Matplotlib HTML/PNG files were not supplied, so their specific image
+encoding, paths and dimensions remain unverified. No extension installation was performed.
+
+## Original deterministic checks
 
 - 77 extension tests: real Windows workspace/junction boundaries, canonical alias
   handling, most-specific multi-root selection, malformed/script/URL injection,

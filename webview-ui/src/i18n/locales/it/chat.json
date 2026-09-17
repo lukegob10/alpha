@@ -1,4 +1,13 @@
 {
+	"messageActions": {
+		"copy": "Copia",
+		"copied": "Copiato",
+		"edit": "Modifica e invia di nuovo",
+		"restart": "Riparti dalla richiesta precedente",
+		"restartWarning": "La richiesta precedente verrà eseguita di nuovo e tutti i messaggi successivi verranno sostituiti. I file dell’area di lavoro resteranno invariati.",
+		"restartWithCheckpoint": "La richiesta precedente verrà eseguita di nuovo e tutti i messaggi successivi verranno sostituiti. Ripristinare anche i file al relativo checkpoint?",
+		"restartOnly": "Riavvia senza ripristinare i file"
+	},
 	"activityTrace": {
 		"needsAttention": "Richiede attenzione",
 		"workedFor": "Ha lavorato per {{duration}}"
@@ -220,10 +229,10 @@
 		"didViewTopLevel": "Alpha ha visualizzato i file di primo livello in questa directory",
 		"wantsToViewRecursive": "Alpha vuole visualizzare ricorsivamente tutti i file in questa directory",
 		"didViewRecursive": "Alpha ha visualizzato ricorsivamente tutti i file in questa directory",
-		"wantsToSearch": "Alpha vuole cercare in questa directory <code>{{regex}}</code>",
-		"didSearch": "Alpha ha cercato in questa directory <code>{{regex}}</code>",
-		"wantsToSearchOutsideWorkspace": "Alpha vuole cercare in questa directory (fuori dall'area di lavoro) <code>{{regex}}</code>",
-		"didSearchOutsideWorkspace": "Alpha ha cercato in questa directory (fuori dall'area di lavoro) <code>{{regex}}</code>",
+		"wantsToSearch": "Alpha vuole cercare in una directory",
+		"didSearch": "Alpha ha cercato in una directory",
+		"wantsToSearchOutsideWorkspace": "Alpha vuole cercare in una directory (fuori dall'area di lavoro)",
+		"didSearchOutsideWorkspace": "Alpha ha cercato in una directory (fuori dall'area di lavoro)",
 		"wantsToViewTopLevelOutsideWorkspace": "Alpha vuole visualizzare i file di primo livello in questa directory (fuori dall'area di lavoro)",
 		"didViewTopLevelOutsideWorkspace": "Alpha ha visualizzato i file di primo livello in questa directory (fuori dall'area di lavoro)",
 		"wantsToViewRecursiveOutsideWorkspace": "Alpha vuole visualizzare ricorsivamente tutti i file in questa directory (fuori dall'area di lavoro)",
@@ -356,8 +365,11 @@
 			"gpt54": "Provider Poe: abbiamo aggiunto Poe come provider AI così puoi accedere direttamente ai modelli Poe in Alpha.",
 			"slashSkills": "Miglioramenti per xAI e MiniMax: il provider xAI è stato migrato alla Responses API, sono state aggiunte utility di trasformazione riutilizzabili, sono stati aggiornati i valori predefiniti di Grok-4.20 e sono stati corretti gli elenchi dei modelli MiniMax e la gestione della finestra di contesto per una configurazione più affidabile.",
 			"geminiPro": "Supporto Gemini 3.1 Pro: Aggiunto il supporto per il modello Gemini 3.1 Pro e impostato come modello Gemini predefinito per prestazioni migliori.",
-			"cliNdjson": "Protocollo NDJSON del CLI: Nuovo protocollo NDJSON via stdin, sottocomandi di elenco e comando di esecuzione modularizzato per flussi di lavoro CLI più flessibili.",
-			"cliRelease": "CLI v0.1.0: Il CLI di Alpha raggiunge la sua prima release ufficiale con un'interfaccia di comandi stabile."
+			"welcome": "Alpha v{{version}} migliora la verifica, il controllo dei comandi e la continuità delle attività.",
+			"acceptanceChecks": "Riutilizza i controlli superati finché gli input dichiarati rimangono invariati.",
+			"commandControl": "Attendi, invia input e interrompi i comandi in background appartenenti all’attività.",
+			"workflowContinuity": "Mantieni i vincoli dell’attività e il contesto delle competenze dopo ricaricamento e compattazione.",
+			"chatUpdates": "Usa azioni di chat più chiare e seleziona un fornitore al termine dell’attività."
 		}
 	},
 	"costs": {

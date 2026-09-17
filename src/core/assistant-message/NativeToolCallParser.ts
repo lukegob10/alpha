@@ -128,9 +128,7 @@ export class NativeToolCallParser {
 		const query = value as Record<string, unknown>
 		return (
 			typeof query.path === "string" &&
-			query.path.length > 0 &&
 			typeof query.regex === "string" &&
-			query.regex.length > 0 &&
 			(query.file_pattern === undefined ||
 				query.file_pattern === null ||
 				typeof query.file_pattern === "string") &&
@@ -1270,8 +1268,13 @@ export class NativeToolCallParser {
 					if (args.todos !== undefined) {
 						nativeArgs = {
 							todos: args.todos,
+							work_plan: args.work_plan,
 						} as NativeArgsFor<TName>
 					}
+					break
+
+				case "manage_command":
+					nativeArgs = args as NativeArgsFor<TName>
 					break
 
 				case "read_command_output":

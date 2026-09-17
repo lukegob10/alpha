@@ -78,7 +78,7 @@ export function convertVSCodeToolResult(result: vscode.LanguageModelToolResult):
 
 function validateWebsiteUrl(url: unknown): void {
 	const message =
-		"The integrated browser only supports absolute HTTP or HTTPS website URLs. Use read_file for local or workspace files such as Dockerfile."
+		"The integrated browser only supports absolute HTTP or HTTPS website URLs. Use read_file for local or workspace files such as Dockerfile. For rich HTML documents, use Alpha's HTML previewer: return [Open document](alpha-document://open?uri=<percent-encoded-absolute-file-URI>) in the final response. Do not retry with browser tools or start a localhost server to preview the document."
 	// Require an explicit web URL; URL parsing alone repairs inputs such as https:example.com or https:///Dockerfile.
 	if (typeof url !== "string" || !/^https?:\/\/[^/\\]/i.test(url)) {
 		throw new Error(message)
