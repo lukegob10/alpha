@@ -33,6 +33,22 @@ const orchestration: SubagentManifestOrchestration = {
 }
 
 describe("taskMetadata orchestration persistence", () => {
+	let storageRoot: string
+	let tempBase: string
+	let workspace: string
+
+	beforeEach(async () => {
+		tempBase = await fs.realpath(os.tmpdir())
+		storageRoot = await fs.mkdtemp(path.join(tempBase, "alpha-task-orchestration-"))
+		workspace = path.join(storageRoot, "workspace")
+	})
+
+	afterEach(async () => {
+		expect(path.dirname(storageRoot)).toBe(tempBase)
+		expect(path.basename(storageRoot)).toMatch(/^alpha-task-orchestration-/)
+		await fs.rm(storageRoot, { recursive: true, force: true })
+	})
+
 	it("round-trips frozen ancestry, policy, limits, opt-in, and stop reason without re-resolving defaults", async () => {
 		const { manifest } = captureSubagentContext({
 			parentTaskId: "parent-1",
@@ -41,11 +57,11 @@ describe("taskMetadata orchestration persistence", () => {
 			history: [],
 			instructions: {
 				effectiveText: "frozen instructions",
-				sources: [{ kind: "agents", ref: "F:/workspace/AGENTS.md", text: "frozen instructions" }],
+				sources: [{ kind: "agents", ref: path.join(workspace, "AGENTS.md"), text: "frozen instructions" }],
 			},
 			skills: [],
-			cwd: "F:/workspace",
-			workspaceRoots: ["F:/workspace"],
+			cwd: workspace,
+			workspaceRoots: [workspace],
 			modelRoute: {
 				source: "parent",
 				resolution: "selected",
@@ -63,7 +79,7 @@ describe("taskMetadata orchestration persistence", () => {
 				externalSideEffects: false,
 				requireApproval: false,
 				allowedTools: ["read_file", "spawn_agent", "attempt_completion"],
-				workspaceRoots: ["F:/workspace"],
+				workspaceRoots: [workspace],
 			},
 			orchestration,
 		})
@@ -74,8 +90,8 @@ describe("taskMetadata orchestration persistence", () => {
 			parentTaskId: "parent-1",
 			taskNumber: 3,
 			messages: [],
-			globalStoragePath: "F:/storage",
-			workspace: "F:/workspace",
+			globalStoragePath: storageRoot,
+			workspace,
 			taskKind: "subagent",
 			subagentContextManifest: manifest,
 			subagentInstructionPlacement: "system",
@@ -102,3 +118,6 @@ describe("taskMetadata orchestration persistence", () => {
 		expect(reloaded.subagentContextManifest).not.toBe(manifest)
 	})
 })
+import fs from "fs/promises"
+import os from "os"
+import path from "path"
