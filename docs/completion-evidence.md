@@ -6,6 +6,37 @@ Missing evidence produces the `Declared acceptance checks need attention` diagno
 attempts against the same unresolved obligation reach the bounded recovery stop and expose Continue. A visible
 assistant answer by itself does not establish that this gate accepted completion.
 
+## Resuming after a no-progress stop
+
+The tool-progress detector stops an attempt after repeated outcomes provide no new state or evidence. Its stopped
+state remains latched for that attempt, including across compaction. Continue or a typed response to the recovery
+prompt starts a fresh progress window, without removing declared acceptance checks or their recorded evidence.
+Automatic tool-result feedback does not renew this window, so another unchanged attempt remains bounded.
+
+Previously, recovery resumed inside the existing task loop and bypassed the detector reset at loop entry. Every
+subsequent tool result inherited the old stop, even when it read a new file. The task-loop regressions reproduce
+this for both Continue and typed guidance and verify that fresh work can complete, while repeated work eventually
+pauses again. Recovery also renews known-failure allowances; operations with unknown effects retain their replay
+blocks because user resumption does not establish what happened.
+
+Long conversations also reuse that loop for normal follow-ups and steering. Consuming a new user-feedback message
+renews the progress window for all of those paths, including queued messages. A deterministic regression performs
+200 useful reads before eight follow-ups revisit the same files. Previously, both typed and queued follow-ups
+hit the no-progress stop at step 216; they now reach the final answer at step 233. Automatic mistake recovery uses
+the same feedback presentation but is explicitly marked automatic: it neither renews the user attempt nor
+invalidates non-reusable acceptance receipts. Compaction alone retains the progress window.
+
+## Acceptance checks as progress
+
+Declared acceptance checks used to participate in completion gating without contributing to tool-progress evidence.
+After a long investigation, a sequence of distinct passing checks could therefore trigger the no-progress stop.
+The regression reproduces this after 200 reads followed by 16 declared checks, without any user follow-up.
+
+The detector now observes each passed acceptance receipt independently, using its check contract and captured
+input fingerprints. Execution IDs, timestamps, receipt ordering, removals, and unchanged reruns provide no novelty.
+Running, failed, stale, unavailable, and mismatched receipts provide no credit. This progress observation does not
+grant completion: the completion gate still rechecks the declared input bytes and remaining requirements.
+
 ## Receipt identity
 
 Acceptance receipts identify the check by ID and fingerprint its command, working directory, input-file set, and
@@ -26,6 +57,7 @@ invalidate evidence; changed file bytes, failures, ignored inputs, and interrupt
 
 ```sh
 pnpm --dir src test -- core/agent/__tests__/TaskWorkContext.spec.ts core/task/__tests__/Task.work-context.spec.ts core/task/__tests__/stageThreeCompletion.integration.spec.ts
+pnpm --dir src test -- core/task/__tests__/Task.spec.ts core/tools/__tests__/ToolRepetitionDetector.progress.spec.ts core/tools/__tests__/ToolRepetitionDetector.failures.spec.ts
 pnpm --dir src check-types
 pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
 ```

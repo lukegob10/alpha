@@ -11,6 +11,7 @@ import {
 	captureAcceptanceChecks,
 	settleAcceptanceChecks,
 	getOutstandingAcceptanceChecks,
+	getAcceptanceEvidenceFingerprints,
 	replaceWorkPlan,
 	restoreWorkContext,
 	formatWorkContext,
@@ -4218,7 +4219,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.automaticMistakeRecoveryCount++
 			const text = this.getAutomaticMistakeLimitGuidance()
 			currentUserContent.push({ type: "text", text: formatResponse.tooManyMistakes(text) })
-			await this.say("user_feedback", text)
+			await this.say("user_feedback", text, undefined, undefined, undefined, undefined, {
+				feedbackSource: "automatic",
+			})
 			// Keep the bounded automatic-attempt count, but give that attempt a
 			// clean consecutive-error window. Retaining the no-tool counter here
 			// caused one recovery response to immediately reopen the same dialog.
@@ -6507,6 +6510,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			commandExecutionId?: string
 			stateUpdate?: "full" | "task"
 			previewEpoch?: number
+			/** Automatic retry guidance shares the feedback presentation, not the user-request boundary. */
+			feedbackSource?: "user" | "automatic"
 		} = {},
 		contextCondense?: ContextCondense,
 		contextTruncation?: ContextTruncation,
@@ -6518,12 +6523,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			throw new Error(`[Task#say] task ${this.taskId}.${this.instanceId} aborted`)
 		}
 		if (text !== undefined) text = redactTaskPrivatePaths(this, text)
-		if (type === "user_feedback" && !partial && this.workContext) {
-			// External state is reusable only within the current user request.
-			await this.enqueueCommandEvidence(async () => {
-				this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
-				if (this.workContext) this.workContext = restoreWorkContext(this.workContext)
-			})
+		if (
+			type === "user_feedback" &&
+			!partial &&
+			options.feedbackSource !== "automatic" &&
+			(text?.trim() || images?.length)
+		) {
+			// Ask replies, queued follow-ups, and steering converge here when consumed.
+			// Renew the attempt at this boundary; arrival alone can precede a still-running step.
+			this.toolRepetitionDetector?.resetProgress()
+			this.resetCompletionRecoveryState()
+			if (this.workContext) {
+				// External state is reusable only within the current user request.
+				await this.enqueueCommandEvidence(async () => {
+					this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
+					if (this.workContext) this.workContext = restoreWorkContext(this.workContext)
+				})
+			}
 		}
 
 		if (partial !== undefined) {
@@ -7944,6 +7960,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 
 			const feedbackText = recovery.text ?? ""
+			// This resumes inside the same loop, bypassing its initial reset. A user
+			// retry needs a fresh progress window before the next tool is observed.
+			this.toolRepetitionDetector?.resetProgress()
 			this.resetCompletionRecoveryState()
 			const feedbackImages = recovery.images ?? []
 			if (feedbackText.trim() || feedbackImages.length > 0) {
@@ -12088,6 +12107,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			scope: trustedExploration?.scope ?? this.cwd,
 			stateFingerprint: state?.stateFingerprint,
 			evidenceFingerprint: state?.evidenceFingerprint,
+			evidenceFingerprints: getAcceptanceEvidenceFingerprints(this.workContext),
 			...(trustedExploration ? { explorationFingerprint: trustedExploration.semanticFingerprint } : {}),
 			...(result?.trustedProgress ? { trustedProgress: result.trustedProgress } : {}),
 			...(result?.opaqueResultFingerprint ? { opaqueResultFingerprint: result.opaqueResultFingerprint } : {}),

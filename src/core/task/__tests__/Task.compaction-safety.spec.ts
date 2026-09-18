@@ -254,6 +254,26 @@ describe("Task proportional context preflight", () => {
 })
 
 describe("Task manual compaction boundary", () => {
+	it("keeps useful exploration running across long history and compaction while retaining the repetition bound", async () => {
+		const { task, save } = harness()
+		const detector = task.toolRepetitionDetector
+		const suspend = vi.spyOn(task, "suspendAfterCurrentTurn").mockImplementation(() => {})
+		for (let index = 0; index < 200; index++) {
+			await task.recordToolCallForStopping("read_file", { path: `file-${index}.ts` }, "success")
+		}
+		await task.condenseContext()
+		expect(save).toHaveBeenCalledOnce()
+		expect(task.toolRepetitionDetector).toBe(detector)
+		for (let index = 200; index < 240; index++) {
+			await task.recordToolCallForStopping("read_file", { path: `file-${index}.ts` }, "success")
+		}
+		expect(suspend).not.toHaveBeenCalled()
+		for (let index = 0; index < 12; index++) {
+			await task.recordToolCallForStopping("read_file", { path: "file-239.ts" }, "success")
+		}
+		expect(suspend).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("repeated tool outcomes"), "blocked")
+	})
+
 	it("uses the selected profile threshold and effective output reservation for manual compaction", async () => {
 		const { task, provider } = harness()
 		provider.getState.mockResolvedValue({ autoCondenseContextPercent: 5, profileThresholds: { default: 20 } })

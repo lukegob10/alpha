@@ -17,6 +17,8 @@ export interface ToolProgressObservation {
 	stateFingerprint?: string
 	/** Admitted validation evidence or scoped read evidence, excluding execution IDs and timestamps. */
 	evidenceFingerprint?: string
+	/** Independently admitted checks; removing or reordering other receipts must not manufacture novelty. */
+	evidenceFingerprints?: readonly string[]
 	/** Host-issued semantic identity for a supported shell inspection. */
 	explorationFingerprint?: string
 	/** Confirmed resource state, independent of repository verification evidence. */
@@ -177,9 +179,6 @@ export class ToolRepetitionDetector {
 			),
 			scope: digest(observation.scope),
 			...(observation.stateFingerprint !== undefined ? { state: digest(observation.stateFingerprint) } : {}),
-			...(observation.status === "success" && observation.evidenceFingerprint !== undefined
-				? { evidence: digest(observation.evidenceFingerprint) }
-				: {}),
 		}
 		const stateScopeWasSeen = this.seenStateScopes.has(outcome.scope)
 		const freshState =
@@ -189,12 +188,19 @@ export class ToolRepetitionDetector {
 			this.rememberNovelty(this.seenStateScopes, outcome.scope)
 		}
 		const stateChanged = freshState && stateScopeWasSeen
-		const freshEvidence =
-			outcome.evidence !== undefined &&
-			this.rememberNovelty(
-				this.seenEvidenceIdentities,
-				digest({ scope: outcome.scope, evidence: outcome.evidence }),
-			)
+		let freshEvidence = false
+		if (observation.status === "success") {
+			for (const evidence of [observation.evidenceFingerprint, ...(observation.evidenceFingerprints ?? [])]) {
+				if (evidence !== undefined) {
+					// Visit every receipt even after finding progress, so regrouping cannot create novelty.
+					freshEvidence =
+						this.rememberNovelty(
+							this.seenEvidenceIdentities,
+							digest({ scope: outcome.scope, evidence: digest(evidence) }),
+						) || freshEvidence
+				}
+			}
+		}
 		const freshRead =
 			observation.status === "success" &&
 			observation.kind === "read" &&
@@ -237,8 +243,12 @@ export class ToolRepetitionDetector {
 	}
 
 	public resetProgress(): void {
-		this.failureCapacity = undefined
-		this.failureAllowances.clear()
+		// User recovery renews the attempt budget, but does not establish whether
+		// an uncertain effect happened. Resumption alone cannot clear its replay block.
+		if (this.failureCapacity?.outcome !== "unknown") this.failureCapacity = undefined
+		for (const [key, allowance] of this.failureAllowances) {
+			if (allowance.failure.outcome !== "unknown") this.failureAllowances.delete(key)
+		}
 		this.seenReadIdentities.clear()
 		this.seenStateIdentities.clear()
 		this.seenStateScopes.clear()

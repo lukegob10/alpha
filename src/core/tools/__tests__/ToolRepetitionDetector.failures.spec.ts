@@ -102,6 +102,34 @@ describe("trusted tool failure recovery", () => {
 		expect(detector.getRetryBlock(rejected.toolName, rejected.args)).toEqual(unknown)
 	})
 
+	it("renews known failures on user recovery while preserving uncertain effects", () => {
+		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 1 })
+		detector.recordOutcome(rejected)
+		detector.recordOutcome(rejected)
+		const unknown = {
+			...failure,
+			affectedScope: { ...failure.affectedScope, fingerprint: "b".repeat(64) },
+			outcome: "unknown" as const,
+			effectsStarted: "unknown" as const,
+			recovery: { kind: "verify-outcome" as const },
+		}
+		const args = { command: "publish-artifact" }
+		detector.recordOutcome({ ...rejected, args, failure: unknown })
+
+		detector.resetProgress()
+
+		expect(detector.getRetryBlock(rejected.toolName, rejected.args)).toBeUndefined()
+		expect(detector.getRetryBlock(rejected.toolName, args)).toEqual(unknown)
+		expect(
+			detector.recordOutcome({
+				toolName: "inspect-artifact",
+				status: "success",
+				kind: "read",
+				scope: "/artifact",
+			}).action,
+		).toBe("continue")
+	})
+
 	it("does not count a still-running handler as successful recovery", () => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 1 })
 		detector.recordOutcome(rejected)
@@ -142,6 +170,8 @@ describe("trusted tool failure recovery", () => {
 				failure: unknown,
 			})
 			expect(outcome).toMatchObject({ action: "stop", reason: "failure-capacity", failure: unknown })
+			expect(detector.getRetryBlock("execute_command", { command: "overflowing-operation" })).toEqual(unknown)
+			detector.resetProgress()
 			expect(detector.getRetryBlock("execute_command", { command: "overflowing-operation" })).toEqual(unknown)
 		},
 	)
