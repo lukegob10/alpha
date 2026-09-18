@@ -9,6 +9,7 @@
 - Record the turn-completion investigation and release a new in-app announcement for the compaction and file-reading fixes.
 - Reset stale no-progress state when a long-running task receives explicit recovery, steering, or queued follow-up guidance, while keeping automatic recovery bounded.
 - Treat newly passing declared acceptance checks as progress without allowing repeated unchanged checks to bypass the repetition guard.
+- Allow managed-command waits up to five minutes so long-running commands do not fail schema validation when the model requests a bounded wait beyond 30 seconds.
 - Update the extension and release-announcement version to 2.1.48.
 
 ## 2.1.47

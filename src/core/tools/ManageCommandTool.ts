@@ -4,12 +4,13 @@ import type { Task } from "../task/Task"
 import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
 import type { AlphaTerminalProcess } from "../../integrations/terminal/types"
 import type { NativeToolArgs } from "../../shared/tools"
+import { MANAGE_COMMAND_MAX_TIMEOUT_MS } from "./commandTimeouts"
 
 const paramsSchema = z.object({
 	execution_id: z.string().min(1).max(256),
 	action: z.enum(["wait", "stop", "input"]),
 	input: z.string().max(16_384).nullish(),
-	timeout_ms: z.number().int().min(0).max(30_000).nullish(),
+	timeout_ms: z.number().int().min(0).max(MANAGE_COMMAND_MAX_TIMEOUT_MS).nullish(),
 })
 
 export async function waitForCommand(
