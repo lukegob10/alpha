@@ -158,6 +158,15 @@ export function restoreWorkContext(context: TaskWorkContext): TaskWorkContext {
 	}
 }
 
+/** Progress identities describe admitted evidence, excluding retries, timestamps, and presentation order. */
+export function getAcceptanceEvidenceFingerprints(context: TaskWorkContext | undefined): string[] {
+	return (context?.plan?.checks ?? []).flatMap((check) => {
+		const receipt = context?.receipts.find((item) => matchesDefinition(item, check))
+		if (receipt?.status !== "passed" || !receipt.files) return []
+		return [digestValue({ checkId: check.id, definition: checkDefinitionDigest(check), files: receipt.files })]
+	})
+}
+
 export function formatWorkContext(context: TaskWorkContext): string {
 	const projection = {
 		plan: context.plan,

@@ -74,6 +74,14 @@ it("does not require a model poll or approval for a bounded wait", async () => {
 	expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining('"status":"running"'))
 })
 
+it("accepts long managed-command waits within the host limit", async () => {
+	const { task, callbacks, process } = harness()
+	process.hasUnretrievedOutput = vi.fn(() => true)
+	await manageCommandTool.execute({ execution_id: "execution", action: "wait", timeout_ms: 300_000 }, task, callbacks)
+	expect(callbacks.handleError).not.toHaveBeenCalled()
+	expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining('"status":"running"'))
+})
+
 it("cannot operate another task's command", async () => {
 	const { task, callbacks, process } = harness()
 	await manageCommandTool.execute({ execution_id: "other", action: "stop" }, task, callbacks)

@@ -199,6 +199,7 @@ describe("Task trusted exploration progress", () => {
 			scope: "/workspace",
 			stateFingerprint: "unchanged-workspace",
 			evidenceFingerprint: "unchanged-verification-evidence",
+			evidenceFingerprints: [],
 			explorationFingerprint: "trusted-shell-inspection",
 		})
 	})

@@ -6,6 +6,7 @@ import { Task } from "../Task"
 import { EventEmitter } from "events"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
 import * as workContext from "../../agent/TaskWorkContext"
+import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 
 describe("Task working record integration", () => {
 	let root: string
@@ -112,6 +113,39 @@ describe("Task working record integration", () => {
 			classification: "waiting",
 			reasonCode: "command_running",
 		})
+	})
+	it("recognizes distinct passing acceptance checks at the end of a long task", async () => {
+		Object.assign(task, {
+			toolRepetitionDetector: new ToolRepetitionDetector(3),
+			taskCancellationController: new AbortController(),
+			userMessageContent: [],
+		})
+		const suspend = vi.spyOn(task, "suspendAfterCurrentTurn").mockImplementation(() => {})
+		const checks = Array.from({ length: 16 }, (_, index) => ({
+			...plan.checks[0],
+			id: `case-${index}`,
+			command: `node app.js --case=${index}`,
+		}))
+		await task.updateWorkPlan({ ...plan, checks })
+		for (let index = 0; index < 200; index++) {
+			await task.recordToolCallForStopping("read_file", { path: `file-${index}.ts` }, "success")
+		}
+		for (const check of checks) {
+			await task.admitCommandExecution(check.id, check.id, check.command, root)
+			task.completeCommandExecution(check.id, { exitCode: 0 }, check.id)
+			await task.recordToolCallForStopping("execute_command", { command: check.command }, "success")
+			expect(suspend).not.toHaveBeenCalled()
+		}
+		expect(await task.getCompletionGateDecision()).toMatchObject({ allowed: true })
+		// New execution IDs and receipt ordering cannot make an unchanged rerun useful again.
+		for (let index = 0; index < 12; index++) {
+			const check = checks[index % 2]
+			const id = `repeat-${index}`
+			await task.admitCommandExecution(id, id, check.command, root)
+			task.completeCommandExecution(id, { exitCode: 0 }, id)
+			await task.recordToolCallForStopping("execute_command", { command: check.command }, "success")
+		}
+		expect(suspend).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("repeated tool outcomes"), "blocked")
 	})
 	it("serializes a background result with admission of another acceptance check", async () => {
 		await task.updateWorkPlan({

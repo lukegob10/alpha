@@ -234,6 +234,18 @@ describe("outcome-aware tool progress", () => {
 		expect(detector.recordOutcome(passingCheck).action).toBe("change-strategy")
 	})
 
+	it("tracks independent check receipts without crediting removals, reordering, or failed batches", () => {
+		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
+		const observe = (evidenceFingerprints: string[], status: "success" | "error" = "success") =>
+			detector.recordOutcome({ ...failedCheck, status, evidenceFingerprints })
+		expect(observe(["a", "b"]).stagnantCalls).toBe(0)
+		expect(observe(["b"]).stagnantCalls).toBe(1)
+		expect(observe(["b", "a"]).action).toBe("change-strategy")
+		expect(observe(["a", "c"]).stagnantCalls).toBe(0)
+		expect(observe(["new-failure"], "error").stagnantCalls).toBe(1)
+		expect(observe(["c", "b", "a"]).action).toBe("change-strategy")
+	})
+
 	it("requires a content delta and detects returning to previously observed states", () => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
 		const mutation: ToolProgressObservation = {

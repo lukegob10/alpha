@@ -1,4 +1,5 @@
 import type OpenAI from "openai"
+import { MANAGE_COMMAND_MAX_TIMEOUT_MS } from "../../../tools/commandTimeouts"
 
 export default {
 	type: "function",
@@ -19,8 +20,9 @@ export default {
 				timeout_ms: {
 					type: ["integer", "null"],
 					minimum: 0,
-					maximum: 30000,
-					description: "Maximum wait in milliseconds; default 10000.",
+					maximum: MANAGE_COMMAND_MAX_TIMEOUT_MS,
+					description:
+						"Maximum wait in milliseconds; returns early on output, completion, or cancellation. Default 10000.",
 				},
 			},
 			required: ["execution_id", "action", "input", "timeout_ms"],

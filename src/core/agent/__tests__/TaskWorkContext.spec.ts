@@ -10,6 +10,7 @@ import {
 	replaceWorkPlan,
 	restoreWorkContext,
 	formatWorkContext,
+	getAcceptanceEvidenceFingerprints,
 } from "../TaskWorkContext"
 
 describe("task acceptance evidence", () => {
@@ -57,6 +58,27 @@ describe("task acceptance evidence", () => {
 		expect(await getOutstandingAcceptanceChecks(repaired, root)).toEqual([])
 		expect(repaired.receipts).toHaveLength(1)
 	})
+	it("identifies acceptance progress by the check contract and captured inputs", async () => {
+		const context = await run()
+		const fingerprints = getAcceptanceEvidenceFingerprints(context)
+		expect(fingerprints).toHaveLength(1)
+		context.receipts[0].executionId = "another-execution"
+		context.receipts[0].observedAt++
+		context.plan!.checks[0].description = "Reworded check"
+		expect(getAcceptanceEvidenceFingerprints(context)).toEqual(fingerprints)
+		context.receipts[0].files!["app.py"] = "new-content"
+		expect(getAcceptanceEvidenceFingerprints(context)).not.toEqual(fingerprints)
+		context.plan!.checks[0].command = "python other.py"
+		expect(getAcceptanceEvidenceFingerprints(context)).toEqual([])
+	})
+	it.each(["running", "failed", "stale", "unavailable"] as const)(
+		"does not admit %s acceptance receipts as progress",
+		async (status) => {
+			const context = await run()
+			context.receipts[0].status = status
+			expect(getAcceptanceEvidenceFingerprints(context)).toEqual([])
+		},
+	)
 	it.each([true, false])(
 		"preserves observed evidence through descriptive plan updates (passed=%s)",
 		async (passed) => {

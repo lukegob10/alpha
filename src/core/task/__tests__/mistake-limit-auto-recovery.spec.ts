@@ -52,7 +52,15 @@ describe("Task mistake-limit recovery", () => {
 		await (task as any).handleConsecutiveMistakeLimit(userContent)
 
 		expect((task as any).ask).not.toHaveBeenCalled()
-		expect((task as any).say).toHaveBeenCalledWith("user_feedback", expect.stringContaining("Automatic recovery"))
+		expect((task as any).say).toHaveBeenCalledWith(
+			"user_feedback",
+			expect.stringContaining("Automatic recovery"),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{ feedbackSource: "automatic" },
+		)
 		expect((task as any).consecutiveMistakeCount).toBe(0)
 		expect((task as any).consecutiveNoToolUseCount).toBe(0)
 		expect((task as any).consecutiveNoAssistantMessagesCount).toBe(0)
