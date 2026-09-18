@@ -7882,9 +7882,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const message =
 				decision.message ??
 				"Cannot complete while managed-agent results or parent verification obligations remain unresolved."
-			if (decision.modelCanResolveRejection) this.consecutiveMistakeCount++
-			await this.say("error", message)
-			if (!decision.modelCanResolveRejection) return undefined
+			if (!decision.modelCanResolveRejection) {
+				await this.say("error", message)
+				return undefined
+			}
+			// As with attempt_completion, feed repairable rejection back to the model.
+			// A visible error belongs to a stopped task, not an ongoing repair turn.
+			this.consecutiveMistakeCount++
 			return {
 				userContent: [{ type: "text", text: formatResponse.toolError(message) }],
 				includeFileDetails: false,

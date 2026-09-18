@@ -5082,6 +5082,82 @@ describe("Alpha", () => {
 			},
 		)
 
+		it.each(["primary", "subagent"] as const)(
+			"repairs a %s text completion without presenting a terminal error or premature completion",
+			async (kind) => {
+				const task = createTask(kind)
+				const message = "Declared acceptance checks need attention: catalog-validation: unavailable."
+				vi.spyOn(task, "waitForCompletionGateDecision")
+					.mockResolvedValueOnce({
+						allowed: false,
+						classification: "repairable",
+						reasonCode: "verification_missing",
+						modelCanResolveRejection: true,
+						message,
+					})
+					.mockResolvedValue({ allowed: true, modelCanResolveRejection: true })
+				vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+				const completed = vi.fn()
+				task.on(AlphaCodeEventName.TaskCompleted, completed)
+				const request = vi
+					.spyOn(task, "runAgentRequests")
+					.mockResolvedValueOnce({
+						status: "completed",
+						response: createAgentResponse([{ type: "text", text: "Destination catalog complete." }]),
+					})
+					.mockImplementationOnce(async () => {
+						expect(completed).not.toHaveBeenCalled()
+						expect(task.clineMessages.some((row) => row.say === "completion_result")).toBe(false)
+						return {
+							status: "completed",
+							response: createAgentResponse([{ type: "text", text: "Catalog validation verified." }]),
+						}
+					})
+
+				await task["initiateTaskLoop"]([{ type: "text", text: "Build the catalog." }])
+
+				expect(request).toHaveBeenCalledTimes(2)
+				expect(request.mock.calls[1]?.[0]).toEqual([
+					expect.objectContaining({ text: expect.stringContaining(message) }),
+				])
+				expect(task.clineMessages.some((row) => row.say === "error")).toBe(false)
+				expect(completed).toHaveBeenCalledOnce()
+			},
+		)
+
+		it("shows one error and stops when the completion repair allowance is exhausted", async () => {
+			const task = createTask()
+			vi.spyOn(task, "waitForCompletionGateDecision").mockResolvedValue({
+				allowed: false,
+				classification: "repairable",
+				reasonCode: "verification_missing",
+				modelCanResolveRejection: true,
+				message: "catalog-validation: unavailable",
+			})
+			const request = vi.spyOn(task, "runAgentRequests").mockResolvedValue({
+				status: "completed",
+				response: createAgentResponse([{ type: "text", text: "Destination catalog complete." }]),
+			})
+			const completed = vi.fn()
+			task.on(AlphaCodeEventName.TaskCompleted, completed)
+			vi.spyOn(task, "ask").mockImplementation(async (type) => {
+				expect(type).toBe("resume_task")
+				task.abort = true
+				return { response: "noButtonClicked" }
+			})
+
+			await task["initiateTaskLoop"]([{ type: "text", text: "Build the catalog." }])
+
+			expect(request).toHaveBeenCalledTimes(3)
+			expect(completed).not.toHaveBeenCalled()
+			expect(task.clineMessages.filter((row) => row.say === "error")).toEqual([
+				expect.objectContaining({
+					text: expect.stringContaining("incomplete and unverified after repeated attempts"),
+				}),
+			])
+			expect(task.clineMessages.some((row) => row.say === "completion_result")).toBe(false)
+		})
+
 		it("allows a managed final answer after a recoverable completion rejection", async () => {
 			const task = createTask("subagent")
 			mockProvider.getParentCompletionDecision

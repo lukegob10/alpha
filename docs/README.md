@@ -6,6 +6,7 @@ guides. Check implementation details against current source and tests; dated mea
 
 | Area                                                | Guide                                                                             |
 | --------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Corporate migration and harness development         | [Migration roadmap](corporate-migration-roadmap.md)                               |
 | Agent architecture and certification requirements   | [Multi-agent concurrency](multi-agent-concurrency-spec.md)                        |
 | Retired CLI and historical evaluation compatibility | [CLI retirement](cli-retirement.md)                                               |
 | Code/Plan modes and saved-task compatibility        | [Mode retirement](mode-retirement.md)                                             |

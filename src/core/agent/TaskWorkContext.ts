@@ -2,7 +2,7 @@ import path from "path"
 import fs from "fs/promises"
 import type { AcceptanceCheck, AcceptanceReceipt, TaskWorkContext, TaskWorkPlan } from "@alpha-code/types"
 import { digestValue } from "./StepContext"
-import { captureVerificationContent } from "./VerificationScope"
+import { captureVerificationContent, VerificationScopeError } from "./VerificationScope"
 
 type CanRead = (file: string) => boolean
 
@@ -25,8 +25,14 @@ function matchesDefinition(receipt: AcceptanceReceipt, check: AcceptanceCheck): 
 
 async function captureInputs(workspace: string, paths: string[], canRead?: CanRead) {
 	if (paths.some((file) => canRead && !canRead(path.resolve(workspace, file))))
-		throw new Error("Check input is ignored")
+		throw new VerificationScopeError("Check input is ignored")
 	return captureVerificationContent(workspace, paths)
+}
+
+function inputDiagnostic(error: unknown): string {
+	// Native filesystem errors may contain private paths. Only our bounded,
+	// host-authored verification errors are safe to retain in task evidence.
+	return error instanceof VerificationScopeError ? error.message.slice(0, 500) : "Check inputs could not be read"
 }
 
 export function replaceWorkPlan(context: TaskWorkContext | undefined, plan: TaskWorkPlan): TaskWorkContext {
@@ -78,8 +84,9 @@ export async function captureAcceptanceChecks(
 		}
 		try {
 			receipt.files = await captureInputs(workspace, check.paths, canRead)
-		} catch {
+		} catch (error) {
 			receipt.status = "unavailable"
+			receipt.diagnostic = inputDiagnostic(error)
 		}
 		receipts.push(receipt)
 	}
@@ -102,14 +109,16 @@ export async function settleAcceptanceChecks(
 		// A new request or execution supersedes this physical command's evidence.
 		if (latest && (latest.executionId !== captured.executionId || latest.status === "stale")) continue
 		let status: AcceptanceReceipt["status"] = succeeded ? "passed" : "failed"
+		let diagnostic = captured.diagnostic
 		try {
 			const current = await captureInputs(workspace, check.paths, canRead)
 			if (!captured.files) status = "unavailable"
 			else if (digestValue(current) !== digestValue(captured.files)) status = "stale"
-		} catch {
+		} catch (error) {
 			status = "unavailable"
+			diagnostic = inputDiagnostic(error)
 		}
-		settled.push({ ...captured, status, exitCode, observedAt: Date.now() })
+		settled.push({ ...captured, status, diagnostic, exitCode, observedAt: Date.now() })
 	}
 	return {
 		...context,
@@ -130,13 +139,15 @@ export async function getOutstandingAcceptanceChecks(
 	for (const check of context.plan?.checks ?? []) {
 		const receipt = context.receipts.find((item) => matchesDefinition(item, check))
 		let reason: string | undefined
-		if (!receipt || receipt.status !== "passed") reason = receipt?.status ?? "not run"
-		else {
+		if (!receipt || receipt.status !== "passed") {
+			reason = receipt?.status ?? "not run"
+			if (receipt?.diagnostic) reason += ` (${receipt.diagnostic})`
+		} else {
 			try {
 				if (digestValue(await captureInputs(workspace, check.paths, canRead)) !== digestValue(receipt.files))
 					reason = "inputs changed"
-			} catch {
-				reason = "inputs unavailable"
+			} catch (error) {
+				reason = `inputs unavailable (${inputDiagnostic(error)})`
 			}
 		}
 		if (reason) outstanding.push(`${check.id}: ${reason}`)
@@ -170,7 +181,12 @@ export function getAcceptanceEvidenceFingerprints(context: TaskWorkContext | und
 export function formatWorkContext(context: TaskWorkContext): string {
 	const projection = {
 		plan: context.plan,
-		receipts: context.receipts.map(({ checkId, status, exitCode }) => ({ checkId, status, exitCode })),
+		receipts: context.receipts.map(({ checkId, status, exitCode, diagnostic }) => ({
+			checkId,
+			status,
+			exitCode,
+			diagnostic,
+		})),
 	}
 	const skills: TaskWorkContext["skills"] = []
 	for (const skill of [...context.skills].reverse()) {

@@ -50,7 +50,14 @@ export default {
 									description: { type: "string", maxLength: 2000 },
 									command: { type: "string", maxLength: 4096 },
 									cwd: { type: ["string", "null"] },
-									paths: { type: "array", minItems: 1, maxItems: 64, items: { type: "string" } },
+									paths: {
+										type: "array",
+										description:
+											"Individual input files within the workspace; directories and glob patterns are not supported.",
+										minItems: 1,
+										maxItems: 64,
+										items: { type: "string" },
+									},
 									reusable: { type: "boolean" },
 								},
 								required: ["id", "description", "command", "cwd", "paths", "reusable"],

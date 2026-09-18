@@ -449,6 +449,75 @@ describe("Stage Three durable completion integration", () => {
 		return { running }
 	}
 
+	it.each(["text", "explicit"] as const)(
+		"reaches %s completion after sixteen distinct successful commands without semantic progress metadata",
+		async (kind) => {
+			const harness = await setup(kind)
+			const { task } = harness
+			const completeStep = task.runAgentRequests
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			registry.register({
+				...new ToolRegistry().resolve("execute_command")!,
+				capabilities: {
+					concurrency: "serial",
+					sideEffects: "workspace",
+					controlFlow: false,
+					requiresApproval: false,
+				},
+				async execute({ call, callbacks }) {
+					const command =
+						call.nativeArgs && "command" in call.nativeArgs ? call.nativeArgs.command : undefined
+					if (!call.id || typeof command !== "string") throw new Error("Missing fixture command")
+					task.beginCommandExecution(call.id, call.id, command)
+					task.completeCommandExecution(call.id, { exitCode: 0 }, call.id)
+					// Match ExecuteCommandTool's successful process receipt, without claiming
+					// a supported Git/rg inspection or crediting any acceptance check.
+					callbacks.setResultMetadata?.({ status: "success", exitCode: 0 })
+					callbacks.pushToolResult("Command exited with code 0.")
+				},
+			})
+			task.runAgentRequests = vi.fn<Task["runAgentRequests"]>(async (input, includeFileDetails, onPersisted) => {
+				if (harness.requests.length === 16) return completeStep(input, includeFileDetails, onPersisted)
+				harness.requests.push(structuredClone(input))
+				task.userMessageContent = []
+				const response = createAgentResponse([
+					{
+						type: "tool_call",
+						id: `inspection-${harness.requests.length}`,
+						name: "execute_command",
+						arguments: {
+							command: `Get-Content file-${harness.requests.length}.ts | Select-Object -First 20`,
+							cwd: harness.storagePath,
+							timeout: null,
+						},
+					},
+				])
+				await new ToolScheduler({
+					task,
+					registry,
+					mode: "code",
+					onEvent: (event) => {
+						harness.events.push(event)
+					},
+				}).run(response)
+				return { status: "completed", response }
+			})
+
+			await harness.run()
+
+			expect(harness.requests).toHaveLength(17)
+			expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+			expect(
+				harness.events.filter((event) => event.type === "tool_result" && event.name === "execute_command"),
+			).toHaveLength(16)
+			expect(harness.presentCompletionResult).toHaveBeenCalledOnce()
+			expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(
+				1,
+			)
+			expect(Reflect.get(task, "didComplete")).toBe(true)
+		},
+	)
+
 	it.each(["ready", "verification-pending", "earlier-tool-error"] as const)(
 		"hands off a blocked result normally with %s without completing the task",
 		async (condition) => {
