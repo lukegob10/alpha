@@ -3,6 +3,7 @@ import os from "os"
 import path from "path"
 import { taskWorkPlanSchema, historyItemSchema, type TaskWorkPlan } from "@alpha-code/types"
 import { digestValue } from "../StepContext"
+import * as verificationScope from "../VerificationScope"
 import {
 	captureAcceptanceChecks,
 	settleAcceptanceChecks,
@@ -37,6 +38,7 @@ describe("task acceptance evidence", () => {
 		}
 	})
 	afterEach(async () => {
+		vi.restoreAllMocks()
 		await fs.rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
 	})
 	async function run(succeeded = true) {
@@ -152,12 +154,43 @@ describe("task acceptance evidence", () => {
 	it("does not grant evidence to outside paths or unavailable content", async () => {
 		plan.checks[0].paths = ["../outside"]
 		const context = await run()
-		expect(await getOutstandingAcceptanceChecks(context, root)).toEqual(["behavior: unavailable"])
+		expect(await getOutstandingAcceptanceChecks(context, root)).toEqual([
+			"behavior: unavailable (Verification path is outside the workspace)",
+		])
+	})
+	it("retains actionable input diagnostics before completion and across reload", async () => {
+		await fs.mkdir(path.join(root, "catalog"))
+		plan.checks[0].paths = ["catalog"]
+		const context = restoreWorkContext(await run())
+		expect(context.receipts[0]).toMatchObject({
+			status: "unavailable",
+			diagnostic: "Verification content is not a bounded regular file",
+		})
+		expect(formatWorkContext(context)).toContain("Verification content is not a bounded regular file")
+		expect(await getOutstandingAcceptanceChecks(context, root)).toEqual([
+			"behavior: unavailable (Verification content is not a bounded regular file)",
+		])
+	})
+	it("does not persist raw filesystem errors and clears diagnostics after a successful rerun", async () => {
+		const capture = vi
+			.spyOn(verificationScope, "captureVerificationContent")
+			.mockRejectedValueOnce(new Error("EACCES: private path and file contents"))
+		const context = await run()
+		expect(context.receipts[0]).toMatchObject({
+			status: "unavailable",
+			diagnostic: "Check inputs could not be read",
+		})
+		expect(JSON.stringify(context)).not.toContain("private path")
+		capture.mockRestore()
+		const captured = await captureAcceptanceChecks(context, root, "python app.py", root, "repair")
+		const repaired = await settleAcceptanceChecks({ ...context, receipts: captured }, root, captured, true, 0)
+		expect(repaired.receipts[0].diagnostic).toBeUndefined()
+		expect(await getOutstandingAcceptanceChecks(repaired, root)).toEqual([])
 	})
 	it("respects ignored inputs both during admission and when reusing old evidence", async () => {
 		const context = await run()
 		expect(await getOutstandingAcceptanceChecks(context, root, () => false)).toEqual([
-			"behavior: inputs unavailable",
+			"behavior: inputs unavailable (Check input is ignored)",
 		])
 		const captured = await captureAcceptanceChecks(context, root, "python app.py", root, "ignored", () => false)
 		expect(captured[0].status).toBe("unavailable")

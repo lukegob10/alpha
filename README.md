@@ -6,17 +6,17 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.48
+## Welcome to Alpha v2.1.49
 
-Alpha v2.1.48 keeps automatic compaction within the configured resume budget and lets the model recover from stale or out-of-range file-read selections without turning them into task-level errors.
+Alpha v2.1.49 prevents false no-progress stops during successful command work and improves recovery when task verification needs attention.
 
-- One-million-token contexts at 30–35% compaction profiles now finish within the configured resume budget
+- Distinct successful commands can continue even when their purpose falls outside the supported Git and ripgrep inspection grammar
 
-- Invalid file offsets return actionable tool feedback so the model can correct the read and continue
+- Repairable completion checks return feedback to the model without displaying a premature terminal error
 
-- Rewording a check or reordering its unchanged input files preserves passing evidence so finished tasks can complete
+- Unavailable acceptance-check inputs include bounded diagnostics so the model can address the cause
 
-- Vertex Gemini Embedding 2 requests use the model's `:embedContent` endpoint while Gemini 001 keeps its existing contract
+- Repeated operations remain bounded, and completion still requires the existing verification checks
 
 - Optional acceptance checks reuse passing evidence while their declared inputs remain unchanged
 - Tasks can wait for, send input to, and stop their own background commands under existing approval rules

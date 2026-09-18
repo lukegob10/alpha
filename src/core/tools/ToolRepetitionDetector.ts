@@ -90,6 +90,7 @@ export class ToolRepetitionDetector {
 	private readonly seenEvidenceIdentities = new Set<string>()
 	private readonly seenResourceStates = new Set<string>()
 	private readonly seenOpaqueResults = new Set<string>()
+	private readonly seenUnclassifiedCommands = new Set<string>()
 	private stopReason: "no-progress" | "unconfirmed-progress" = "no-progress"
 	private retainedOutcomeCount = 0
 	private stagnantCalls = 0
@@ -215,9 +216,22 @@ export class ToolRepetitionDetector {
 			observation.executionStatus !== "running" &&
 			observation.opaqueResultFingerprint !== undefined
 		const freshOpaque = opaque && this.rememberNovelty(this.seenOpaqueResults, observation.opaqueResultFingerprint!)
+		const freshUnclassifiedCommand =
+			observation.toolName === "execute_command" &&
+			observation.status === "success" &&
+			observation.executionStatus === "success" &&
+			observation.explorationFingerprint === undefined &&
+			observation.trustedProgress === undefined &&
+			observation.opaqueResultFingerprint === undefined &&
+			this.rememberNovelty(this.seenUnclassifiedCommands, digest({ scope: outcome.scope, operation }))
 		// Missing external semantics are uncertainty, not demonstrated stagnation. Keep prior strikes
 		// and independent request/deadline budgets; only an unchanged opaque result consumes recovery.
 		if (freshOpaque && !progressed) return this.progressDecision("continue")
+		// Shell inspection recognition is deliberately partial. A new completed command
+		// outside that grammar is not proof of a stall (for example a PowerShell read
+		// or a project script). Remember its operation, not volatile stdout, so repeats
+		// remain bounded without granting verification credit or clearing prior strikes.
+		if (freshUnclassifiedCommand && !progressed) return this.progressDecision("continue")
 		if (observation.kind === "poll" && observation.status === "success" && !progressed) {
 			return this.progressDecision("continue")
 		}
@@ -255,6 +269,7 @@ export class ToolRepetitionDetector {
 		this.seenEvidenceIdentities.clear()
 		this.seenResourceStates.clear()
 		this.seenOpaqueResults.clear()
+		this.seenUnclassifiedCommands.clear()
 		this.stopReason = "no-progress"
 		this.retainedOutcomeCount = 0
 		this.stagnantCalls = 0

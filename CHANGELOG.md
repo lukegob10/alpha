@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.1.49
+
+### Patch Changes
+
+- Prevent false no-progress stops for distinct successful commands outside the supported shell-inspection grammar while keeping repeated operations and failed recovery bounded.
+- Return repairable final-answer verification feedback to the model without showing a terminal error before the task has stopped.
+- Preserve bounded diagnostics for unavailable acceptance-check inputs across saved task reloads and clarify that check inputs must be individual workspace files.
+- Add regression coverage for command progress, completion recovery, and saved receipt diagnostics, plus the corporate migration roadmap and completion investigation.
+- Update the extension version, in-app version display, and release-announcement identity to 2.1.49.
+
 ## 2.1.48
 
 ### Patch Changes
