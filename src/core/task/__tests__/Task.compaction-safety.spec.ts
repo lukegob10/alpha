@@ -509,6 +509,111 @@ describe("Task manual compaction boundary", () => {
 })
 
 describe("Task context recovery admission", () => {
+	it.each([
+		["manual", 30],
+		["automatic", 30],
+		["forced", 30],
+		["manual", 35],
+		["automatic", 35],
+		["forced", 35],
+	] as const)(
+		"resumes %s compaction below a %i%% working limit after refreshing environment",
+		async (trigger, threshold) => {
+			const { task, api, provider, history, save } = harness()
+			api.getModel = () => ({
+				id: "million-token-model",
+				info: { contextWindow: 1_000_000, maxTokens: 4096, supportsPromptCache: false },
+			})
+			provider.getState.mockResolvedValue({ autoCondenseContextPercent: threshold })
+			api.countTokens.mockImplementation(async (blocks) => {
+				const text = JSON.stringify(blocks)
+				if (text.includes("Original request")) return 400_000
+				if (text.includes("Earlier conversation")) return 70_000
+				if (text.includes("Fresh environment")) return 20_000
+				return 1_000
+			})
+			const result = {
+				...compactedResult(history),
+				prevContextTokens: 403_000,
+				status: "reduced" as const,
+				targetContextTokens: (threshold * 10_000) / 4,
+			}
+			vi.mocked(summarizeConversation).mockResolvedValueOnce(result)
+			vi.mocked(manageContext).mockResolvedValueOnce(result)
+			vi.mocked(Reflect.get(task, "refreshEnvironmentContext")).mockImplementation(async () => {
+				task.apiConversationHistory.push({ role: "user", content: "Fresh environment", ts: 20 })
+			})
+
+			await runRecovery(task, trigger)
+
+			expect(save).toHaveBeenCalledOnce()
+			expect(task.say).toHaveBeenCalledWith(
+				"condense_context",
+				undefined,
+				undefined,
+				false,
+				undefined,
+				undefined,
+				{ isNonInteractive: true },
+				expect.objectContaining({ newContextTokens: 93_000 }),
+			)
+			if (trigger === "automatic") expect(api.createMessage).toHaveBeenCalledOnce()
+		},
+	)
+
+	it("reports successful automatic fallback without a contradictory compaction failure", async () => {
+		const { task, api, history } = harness()
+		vi.mocked(manageContext).mockResolvedValueOnce({
+			...compactedResult(history),
+			summary: "",
+			prevContextTokens: 100,
+			targetContextTokens: 80,
+			status: "reduced",
+			truncationId: "fallback-1",
+			messagesRemoved: 1,
+			error: "Summary provider failed",
+		})
+
+		await runRecovery(task, "automatic")
+
+		expect(api.createMessage).toHaveBeenCalledOnce()
+		expect(vi.mocked(task.say).mock.calls.map(([type]) => type)).toContain("sliding_window_truncation")
+		expect(vi.mocked(task.say).mock.calls.map(([type]) => type)).not.toContain("condense_context_error")
+	})
+
+	it.each(["manual", "automatic", "forced"] as const)(
+		"stops %s recovery at the profile's working limit even when input is smaller",
+		async (trigger) => {
+			const { task, api, provider, history } = harness()
+			api.getModel = () => ({
+				id: "million-token-model",
+				info: { contextWindow: 1_000_000, maxTokens: 4096, supportsPromptCache: false },
+			})
+			provider.getState.mockResolvedValue({ autoCondenseContextPercent: 35, profileThresholds: { default: 30 } })
+			api.countTokens.mockImplementation(async (blocks) => {
+				const text = JSON.stringify(blocks)
+				if (text.includes("Original request")) return 400_000
+				if (text.includes("Fresh environment")) return 296_000
+				return 1_000
+			})
+			const result = {
+				...compactedResult(history),
+				prevContextTokens: 403_000,
+				targetContextTokens: 75_000,
+				status: "reduced" as const,
+			}
+			vi.mocked(summarizeConversation).mockResolvedValueOnce(result)
+			vi.mocked(manageContext).mockResolvedValueOnce(result)
+			vi.mocked(Reflect.get(task, "refreshEnvironmentContext")).mockImplementation(async () => {
+				task.apiConversationHistory.push({ role: "user", content: "Fresh environment", ts: 20 })
+			})
+
+			await expect(runRecovery(task, trigger)).rejects.toMatchObject({ name: "ContextRecoveryExhaustedError" })
+			expect(api.createMessage).not.toHaveBeenCalled()
+			expect(task.say).not.toHaveBeenCalled()
+		},
+	)
+
 	it.each(["manual", "automatic", "forced"] as const)(
 		"validates active context while preserving a large rewind archive during %s compaction",
 		async (trigger) => {

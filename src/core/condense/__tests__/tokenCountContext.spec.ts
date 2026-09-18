@@ -68,7 +68,7 @@ describe("operation-scoped context token counting", () => {
 		expect(vi.getTimerCount()).toBe(0)
 	})
 
-	it("passes one absolute deadline to every healthy count and preserves exact results", async () => {
+	it("preserves exact results within one shared allowance for healthy counts", async () => {
 		vi.useFakeTimers()
 		vi.setSystemTime(TEST_START)
 		const countTokens = vi.fn(
@@ -87,6 +87,88 @@ describe("operation-scoped context token counting", () => {
 		expect(countTokens).toHaveBeenCalledTimes(121)
 		const deadlines = new Set(countTokens.mock.calls.map((call) => call[1]?.remoteDeadline))
 		expect(deadlines).toEqual(new Set([TEST_START.getTime() + 5_000]))
+	})
+
+	it.each([30, 35])(
+		"counts a slow summary accurately at a %i%% threshold on a million-token model",
+		async (threshold) => {
+			vi.useFakeTimers()
+			vi.setSystemTime(TEST_START)
+			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
+			const countTokens = vi.fn(async (content: Anthropic.Messages.ContentBlockParam[]) =>
+				Math.ceil(JSON.stringify(content).length / 4),
+			)
+			const handler = createHandler(countTokens)
+			handler.getModel = () => ({
+				id: "million-token-model",
+				info: { contextWindow: 1_000_000, maxTokens: 4096, supportsPromptCache: false },
+			})
+			handler.createMessage = async function* () {
+				// Generation time must not consume the allowance for tokenizing its result.
+				vi.setSystemTime(TEST_START.getTime() + 60_000)
+				yield { type: "text", text: "summary ".repeat(12_500) }
+			}
+			const result = await manageContext({
+				messages: [
+					{ role: "user", content: "Original request", ts: 1 },
+					{ role: "assistant", content: "prior work ".repeat(50_000), ts: 2 },
+					{ role: "user", content: "Continue", ts: 3 },
+				],
+				totalTokens: threshold * 10_000,
+				contextWindow: 1_000_000,
+				maxTokens: 4096,
+				apiHandler: handler,
+				autoCondenseContext: true,
+				autoCondenseContextPercent: threshold,
+				systemPrompt: "system",
+				taskId: "task",
+				profileThresholds: {},
+				currentProfileId: "default",
+			})
+
+			expect(result.status).toBe("reduced")
+			expect(result.summary).toBe("summary ".repeat(12_500).trim())
+			expect(result.truncationId).toBeUndefined()
+			expect(result.error).toBeUndefined()
+			expect(result.newContextTokens).toBeLessThan(30_000)
+		},
+	)
+
+	it("charges only active tokenizer work while retaining one cumulative allowance", async () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(TEST_START)
+		const countTokens = vi
+			.fn<ApiHandler["countTokens"]>()
+			.mockImplementationOnce(async () => {
+				vi.setSystemTime(TEST_START.getTime() + 2_000)
+				return 7
+			})
+			.mockImplementationOnce(() => new Promise<number>(() => undefined))
+		const handler = createHandler(countTokens)
+		const context = createTokenCountContext(handler)
+		expect(await context.countTokens([{ type: "text", text: "before summary" }])).toBe(7)
+		vi.setSystemTime(TEST_START.getTime() + 62_000)
+		const pending = context.countTokens([{ type: "text", text: "after summary" }])
+		await vi.advanceTimersByTimeAsync(3_000)
+		await expect(pending).resolves.toBeGreaterThan(7)
+		expect(countTokens).toHaveBeenCalledTimes(2)
+		expect(countTokens.mock.calls[1][1]?.remoteDeadline).toBe(TEST_START.getTime() + 65_000)
+		await context.countTokens([{ type: "text", text: "after exhaustion" }])
+		expect(countTokens).toHaveBeenCalledTimes(2)
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
+	it("does not extend the request deadline across summary generation", async () => {
+		vi.useFakeTimers()
+		vi.setSystemTime(TEST_START)
+		const countTokens = vi.fn(async () => 7)
+		const context = createTokenCountContext(createHandler(countTokens), {
+			remoteDeadline: TEST_START.getTime() + 100,
+		})
+		expect(await context.countTokens([{ type: "text", text: "before summary" }])).toBe(7)
+		vi.setSystemTime(TEST_START.getTime() + 101)
+		expect(await context.countTokens([{ type: "text", text: "after summary" }])).toBeGreaterThan(7)
+		expect(countTokens).toHaveBeenCalledOnce()
 	})
 
 	it("cancels a pending count promptly, removes its timer, and makes no further calls", async () => {

@@ -46,8 +46,47 @@ function continuation(text: string): ReadFileToolParams {
 }
 
 describe("read_file delivered evidence", () => {
+	it("returns an out-of-bounds offset to the model for repair without an extension diagnostic", async () => {
+		const { read, task, callbacks } = harness(
+			Array.from({ length: 72 }, (_, index) => `line ${index + 1}`).join("\n"),
+		)
+		const file = ".agents/skills/skill-builder/templates/skill/SKILL.template.md"
+		const result = await read({ path: file, offset: 180 })
+		expect(result).toContain("offset 180 is beyond file end (72 lines)")
+		expect(result).toContain("1-72")
+		expect(result).toContain("omit offset")
+		expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
+		expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+		expect(task.say).not.toHaveBeenCalledWith("error", expect.anything())
+		expect(task.fileContextTracker.trackFileContext).not.toHaveBeenCalled()
+
+		callbacks.setResultMetadata.mockClear()
+		const corrected = await read({ path: file, offset: 60 })
+		expect(corrected).toContain("60 | line 60")
+		expect(corrected).toContain("72 | line 72")
+		expect(callbacks.setResultMetadata).toHaveBeenCalledWith(expect.objectContaining({ status: "success" }))
+		expect(task.say).not.toHaveBeenCalledWith("error", expect.anything())
+	})
+
+	it("keeps valid batch reads when another file has an out-of-bounds offset", async () => {
+		const { read, task, callbacks } = harness("first\nsecond")
+		const result = await read({
+			files: [
+				{ path: "short.md", offset: 180 },
+				{ path: "valid.md", offset: 2 },
+			],
+		})
+		expect(result).toContain("offset 180 is beyond file end (2 lines)")
+		expect(result).toContain("File: valid.md\n2 | second")
+		expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
+		const metadata = Object.assign({}, ...callbacks.setResultMetadata.mock.calls.map(([value]) => value))
+		expect(metadata.status).toBe("error")
+		expect(metadata.trustedProgress).toHaveLength(1)
+		expect(task.say).not.toHaveBeenCalledWith("error", expect.anything())
+	})
+
 	it("rejects altered cursors as invalid rather than reporting a file change", async () => {
-		const { read } = harness("one\ntwo\nthree")
+		const { read, task } = harness("one\ntwo\nthree")
 		const next = continuation(await read({ path: "one.ts", limit: 1 }))
 		const cursor = next.continuation!
 		expect(cursor.length).toBeLessThan(160)
@@ -55,6 +94,7 @@ describe("read_file delivered evidence", () => {
 			await read({ ...next, continuation: cursor.slice(0, -1) + (cursor.endsWith("a") ? "b" : "a") }),
 		).toContain("Invalid read continuation. Copy the complete continuation exactly")
 		expect(await read(next)).toContain("2 | two")
+		expect(task.say).not.toHaveBeenCalledWith("error", expect.anything())
 	})
 
 	it("continues legacy v1 cursors from saved tool results", async () => {
@@ -75,10 +115,12 @@ describe("read_file delivered evidence", () => {
 		expect(await read({ path: "one.ts", continuation: cursor })).toBe("File: one.ts\n2 | two\n3 | three")
 	})
 	it("reports an invalid indentation anchor as an error rather than an empty successful read", async () => {
-		const { read, callbacks } = harness("one\ntwo")
+		const { read, task, callbacks } = harness("one\ntwo")
 		const result = await read({ path: "short.ts", mode: "indentation", indentation: { anchor_line: 10 } })
 		expect(result).toContain("anchor_line 10 is out of range")
 		expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+		expect(result).toContain("Read a valid anchor")
+		expect(task.say).not.toHaveBeenCalledWith("error", expect.anything())
 	})
 
 	it.each([[[2, 2]], ["2-2"]])("reads saved range formats after parser normalization: %j", async (range) => {
@@ -134,6 +176,56 @@ describe("read_file delivered evidence", () => {
 		expect(host.userMessageContent).toHaveLength(1)
 	})
 
+	it("delivers one failed read result and allows a corrected request through the scheduler", async () => {
+		const { task } = harness(Array.from({ length: 72 }, (_, index) => `line ${index + 1}`).join("\n"))
+		const host: ToolExecutionHost = {
+			taskId: "read-recovery",
+			cwd: task.cwd,
+			userMessageContent: [],
+			say: async () => {},
+			recordToolUsage: () => {},
+			askApproval: async () => ({ response: "yesButtonClicked" }),
+			pushToolResultToUserContent: (result) => {
+				host.userMessageContent.push(result)
+				return true
+			},
+		}
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register({
+			...new ToolRegistry().resolve("read_file")!,
+			execute: async ({ call, callbacks }) =>
+				readFileTool.execute(call.nativeArgs as ReadFileToolParams, task as unknown as Task, callbacks),
+		})
+		const scheduler = new ToolScheduler({ executionHost: host, registry, mode: "code", validateCall: () => {} })
+		const first = await scheduler.run([
+			{ type: "tool_call", id: "bad-read", name: "read_file", arguments: { path: "template.md", offset: 180 } },
+		])
+		expect(first.results[0]).toMatchObject({ status: "error", content: expect.stringContaining("1-72") })
+		expect(first.results[0].trustedProgress).toBeUndefined()
+		expect(host.userMessageContent).toHaveLength(1)
+		expect(host.userMessageContent[0]).toMatchObject({
+			type: "tool_result",
+			tool_use_id: "bad-read",
+			is_error: true,
+		})
+		const corrected = await scheduler.run([
+			{
+				type: "tool_call",
+				id: "corrected-read",
+				name: "read_file",
+				arguments: { path: "template.md", offset: 60 },
+			},
+		])
+		expect(corrected.results[0]).toMatchObject({
+			status: "success",
+			content: expect.stringContaining("72 | line 72"),
+		})
+		expect(corrected.results[0].trustedProgress).toBeDefined()
+		expect(host.userMessageContent).toHaveLength(2)
+		expect(host.userMessageContent[1]).toMatchObject({ type: "tool_result", tool_use_id: "corrected-read" })
+		expect(task.say).not.toHaveBeenCalledWith("error", expect.anything())
+	})
+
 	it("preserves the complete structural selection across pages", async () => {
 		const { read } = harness(
 			'import x from "x"\n\nfunction selected() {\n  first()\n  second()\n}\n\nfunction unrelated() {}',
@@ -166,8 +258,9 @@ describe("read_file delivered evidence", () => {
 	it.each(["not-a-cursor", Buffer.from(JSON.stringify({ v: 1, ranges: [[1, 0]] })).toString("base64url")])(
 		"rejects malformed cursors: %s",
 		async (cursor) => {
-			const { read } = harness("source")
+			const { read, task } = harness("source")
 			expect(await read({ path: "one.ts", continuation: cursor })).toContain("Invalid read continuation")
+			expect(task.say).not.toHaveBeenCalledWith("error", expect.anything())
 		},
 	)
 	it("round-trips an oversized Unicode line without dropping its tail", async () => {
@@ -187,16 +280,18 @@ describe("read_file delivered evidence", () => {
 	})
 
 	it("rejects a continuation after the underlying content changes", async () => {
-		const { read } = harness("first\nsecond\nthird")
+		const { read, task } = harness("first\nsecond\nthird")
 		const next = continuation(await read({ path: "changed.ts", limit: 1 }))
 		vi.mocked(fs.readFile).mockResolvedValue(Buffer.from("external change\nsecond\nthird"))
 		expect(await read(next)).toContain("File changed since the previous read")
+		expect(task.say).not.toHaveBeenCalledWith("error", expect.anything())
 	})
 
 	it("rejects using a continuation for another path", async () => {
-		const { read } = harness("first\nsecond")
+		const { read, task } = harness("first\nsecond")
 		const next = continuation(await read({ path: "one.ts", limit: 1 }))
 		expect(await read({ ...next, path: "other.ts" })).toContain("belongs to a different file")
+		expect(task.say).not.toHaveBeenCalledWith("error", expect.anything())
 	})
 
 	it("continues disjoint selected ranges without claiming the gap was read", async () => {

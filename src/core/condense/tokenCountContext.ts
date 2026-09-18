@@ -9,7 +9,7 @@ export const DEFAULT_TOKEN_COUNT_CACHE_ENTRIES = 512
 
 export type CreateTokenCountContextOptions = {
 	signal?: AbortSignal
-	/** Absolute deadline for remote/native tokenizer work. Clamped to the operation maximum. */
+	/** Absolute request deadline, independent of the cumulative tokenizer allowance. */
 	remoteDeadline?: number | Date
 	/** Primarily injectable for deterministic tests; never exceeds the production maximum. */
 	remoteAllowanceMs?: number
@@ -17,7 +17,8 @@ export type CreateTokenCountContextOptions = {
 }
 
 /**
- * One context-preparation operation owns one remote-tokenizer allowance. Exact
+ * One context-preparation operation owns one cumulative remote-tokenizer allowance.
+ * Time spent generating a summary or collecting environment facts does not use it. Exact
  * counts are cached by model and a hash of the exact blocks, while raw prompt
  * content is never retained by the cache.
  */
@@ -34,10 +35,10 @@ function normalizeRemoteAllowance(value: number | undefined): number {
 	return Math.min(DEFAULT_REMOTE_TOKENIZER_ALLOWANCE_MS, Math.max(0, value))
 }
 
-function normalizeRemoteDeadline(value: number | Date | undefined, latestDeadline: number): number {
-	if (value === undefined) return latestDeadline
+function normalizeRemoteDeadline(value: number | Date | undefined): number {
+	if (value === undefined) return Infinity
 	const numeric = value instanceof Date ? value.getTime() : value
-	return Number.isFinite(numeric) ? Math.min(numeric, latestDeadline) : latestDeadline
+	return Number.isFinite(numeric) ? numeric : Infinity
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
@@ -101,7 +102,9 @@ function getConservativeLocalCount(
 
 class OperationTokenCountContext implements TokenCountContext {
 	readonly signal?: AbortSignal
-	readonly remoteDeadline: number
+	private readonly requestDeadline: number
+	private remainingRemoteMs: number
+	private activeRemoteDeadline?: number
 
 	private readonly cache = new Map<string, number>()
 	private readonly handlerIds = new WeakMap<ApiHandler, number>()
@@ -114,12 +117,15 @@ class OperationTokenCountContext implements TokenCountContext {
 	constructor(apiHandler: ApiHandler, options: CreateTokenCountContextOptions) {
 		this.defaultApiHandler = apiHandler
 		this.signal = options.signal
-		const now = Date.now()
-		const latestDeadline = now + normalizeRemoteAllowance(options.remoteAllowanceMs)
-		this.remoteDeadline = normalizeRemoteDeadline(options.remoteDeadline, latestDeadline)
+		this.remainingRemoteMs = normalizeRemoteAllowance(options.remoteAllowanceMs)
+		this.requestDeadline = normalizeRemoteDeadline(options.remoteDeadline)
 		this.maxCacheEntries = Number.isFinite(options.maxCacheEntries)
 			? Math.min(DEFAULT_TOKEN_COUNT_CACHE_ENTRIES, Math.max(0, Math.floor(options.maxCacheEntries ?? 0)))
 			: DEFAULT_TOKEN_COUNT_CACHE_ENTRIES
+	}
+
+	get remoteDeadline(): number {
+		return Math.min(this.requestDeadline, this.activeRemoteDeadline ?? Date.now() + this.remainingRemoteMs)
 	}
 
 	async countTokens(
@@ -147,7 +153,7 @@ class OperationTokenCountContext implements TokenCountContext {
 			return cached
 		}
 
-		if (this.remoteAllowanceExhausted || Date.now() >= this.remoteDeadline) {
+		if (this.remoteAllowanceExhausted || this.remainingRemoteMs <= 0 || Date.now() >= this.requestDeadline) {
 			this.remoteAllowanceExhausted = true
 			const fallback = getConservativeLocalCount(stableContent, apiHandler, serializedContent)
 			throwIfAborted(this.signal)
@@ -164,20 +170,29 @@ class OperationTokenCountContext implements TokenCountContext {
 			const queuedCached = this.getCached(cacheKey)
 			if (queuedCached !== undefined) return queuedCached
 
-			if (this.remoteAllowanceExhausted || Date.now() >= this.remoteDeadline) {
+			if (this.remoteAllowanceExhausted || this.remainingRemoteMs <= 0 || Date.now() >= this.requestDeadline) {
 				this.remoteAllowanceExhausted = true
 				return getConservativeLocalCount(stableContent, apiHandler, serializedContent)
 			}
 
+			const startedAt = Date.now()
+			const deadline = this.remoteDeadline
 			const metadata: ApiHandlerCountTokensMetadata = {
 				signal: this.signal,
-				remoteDeadline: this.remoteDeadline,
+				remoteDeadline: deadline,
 			}
 			throwIfAborted(this.signal)
-			const result = await this.waitForProviderCount(apiHandler.countTokens(stableContent, metadata))
+			this.activeRemoteDeadline = deadline
+			let result: number | typeof REMOTE_COUNT_TIMED_OUT
+			try {
+				result = await this.waitForProviderCount(apiHandler.countTokens(stableContent, metadata), deadline)
+			} finally {
+				this.remainingRemoteMs = Math.max(0, this.remainingRemoteMs - Math.max(0, Date.now() - startedAt))
+				this.activeRemoteDeadline = undefined
+			}
 			throwIfAborted(this.signal)
 
-			if (result === REMOTE_COUNT_TIMED_OUT || Date.now() >= this.remoteDeadline) {
+			if (result === REMOTE_COUNT_TIMED_OUT || Date.now() >= deadline) {
 				this.remoteAllowanceExhausted = true
 				return getConservativeLocalCount(stableContent, apiHandler, serializedContent)
 			}
@@ -244,8 +259,11 @@ class OperationTokenCountContext implements TokenCountContext {
 		return scheduled
 	}
 
-	private waitForProviderCount(providerCount: Promise<number>): Promise<number | typeof REMOTE_COUNT_TIMED_OUT> {
-		const remaining = Math.max(0, this.remoteDeadline - Date.now())
+	private waitForProviderCount(
+		providerCount: Promise<number>,
+		deadline: number,
+	): Promise<number | typeof REMOTE_COUNT_TIMED_OUT> {
+		const remaining = Math.max(0, deadline - Date.now())
 		if (remaining === 0) {
 			providerCount.catch(() => undefined)
 			return Promise.resolve(REMOTE_COUNT_TIMED_OUT)

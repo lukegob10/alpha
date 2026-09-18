@@ -4,6 +4,15 @@ import { readWithIndentation } from "../../integrations/misc/indentation-reader"
 import { DEFAULT_LINE_LIMIT } from "../prompts/tools/native-tools/read_file"
 
 type Range = [number, number]
+
+/** A model-supplied selection needs repair; the file reader itself has not failed. */
+export class FileReadSelectionError extends Error {
+	constructor(message: string) {
+		super(message)
+		this.name = "FileReadSelectionError"
+	}
+}
+
 interface Cursor {
 	v: 1
 	file: string
@@ -37,7 +46,10 @@ const positive = (value: unknown): value is number =>
 	typeof value === "number" && Number.isSafeInteger(value) && value > 0
 
 function decode(value: string): Cursor {
-	if (value.length > 8192) throw new Error("Invalid read continuation: too large.")
+	if (value.length > 8192)
+		throw new FileReadSelectionError(
+			"Invalid read continuation: too large. Copy the supplied continuation exactly.",
+		)
 	let cursor: Cursor
 	try {
 		if (value.startsWith("r2.")) {
@@ -56,7 +68,9 @@ function decode(value: string): Cursor {
 			cursor = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Cursor
 		}
 	} catch {
-		throw new Error("Invalid read continuation. Copy the complete continuation exactly from the previous result.")
+		throw new FileReadSelectionError(
+			"Invalid read continuation. Copy the complete continuation exactly from the previous result.",
+		)
 	}
 	if (
 		!cursor ||
@@ -81,7 +95,9 @@ function decode(value: string): Cursor {
 				(i > 0 && range[0] <= cursor.ranges[i - 1]![1]),
 		)
 	) {
-		throw new Error("Invalid read continuation.")
+		throw new FileReadSelectionError(
+			"Invalid read continuation. Copy the complete continuation exactly from the previous result.",
+		)
 	}
 	return cursor
 }
@@ -94,16 +110,21 @@ export function prepareFileRead(content: string, identity: string, entry: FileEn
 	const file = hash(identity)
 	if (entry.continuation) {
 		const cursor = decode(entry.continuation)
-		if (cursor.file !== file) throw new Error("This read continuation belongs to a different file.")
+		if (cursor.file !== file)
+			throw new FileReadSelectionError(
+				"This read continuation belongs to a different file. Use its original path, or read this file again without the continuation.",
+			)
 		if (cursor.version !== version)
-			throw new Error(
+			throw new FileReadSelectionError(
 				"File changed since the previous read. Read the relevant section again without the continuation.",
 			)
 		if (
 			cursor.ranges.some(([, end]) => end > lines.length) ||
 			cursor.column > lines[cursor.ranges[0]![0] - 1]!.length
 		)
-			throw new Error("Invalid read continuation position.")
+			throw new FileReadSelectionError(
+				"Invalid read continuation position. Read the relevant section again without the continuation.",
+			)
 		return { path: entry.path, lines, cursor }
 	}
 	let ranges: Range[]
@@ -122,7 +143,10 @@ export function prepareFileRead(content: string, identity: string, entry: FileEn
 		ranges = merged
 	} else if (entry.mode === "indentation" && lines.length) {
 		const anchorLine = entry.indentation?.anchor_line ?? entry.offset ?? 1
-		if (anchorLine > lines.length) throw new Error(`anchor_line ${anchorLine} is out of range (1-${lines.length}).`)
+		if (anchorLine > lines.length)
+			throw new FileReadSelectionError(
+				`anchor_line ${anchorLine} is out of range (1-${lines.length}). Read a valid anchor within that range, or use mode 'slice' with offset 1 to start at the beginning.`,
+			)
 		const result = readWithIndentation(content, {
 			anchorLine,
 			maxLevels: entry.indentation?.max_levels,
@@ -135,7 +159,9 @@ export function prepareFileRead(content: string, identity: string, entry: FileEn
 	} else {
 		const offset = entry.offset ?? 1
 		if (lines.length && offset > lines.length)
-			throw new Error(`offset ${offset} is beyond file end (${lines.length} lines).`)
+			throw new FileReadSelectionError(
+				`offset ${offset} is beyond file end (${lines.length} lines). Read a valid line (1-${lines.length}), or omit offset to read from the beginning. Do not continue beyond the end of the file.`,
+			)
 		ranges = lines.length ? [[offset, lines.length]] : []
 	}
 	return {

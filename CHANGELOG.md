@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.48
+
+### Patch Changes
+
+- Keep automatic compaction within the configured resume budget, including the 30–35% profiles used with one-million-token context windows, and charge the tokenizer allowance only for active tokenizer work.
+- Treat stale or out-of-range file-read selections as recoverable tool feedback so the model can correct the request without producing a task-level extension error.
+- Record the turn-completion investigation and release a new in-app announcement for the compaction and file-reading fixes.
+- Update the extension and release-announcement version to 2.1.48.
+
 ## 2.1.47
 
 ### Patch Changes

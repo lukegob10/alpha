@@ -6468,7 +6468,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			apiHandler,
 			systemPrompt,
 			metadata,
-			targetContextTokens,
+			// The summary meets its target before fresh context is added. Resume
+			// within the configured working window, leaving room before the trigger.
+			Math.max(0, triggerTokens - 1),
 			getEffectiveApiHistory(this.apiConversationHistory),
 			countContext,
 		)
@@ -10339,6 +10341,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Get the current profile ID using the helper method
 		const currentProfileId = await waitForBoundedRecovery(this.getCurrentProfileId(state))
 		assertRecoveryWithinBudget()
+		const { triggerTokens } = getContextLimits(
+			contextWindow,
+			maxTokens,
+			resolveCondenseThreshold(state?.autoCondenseContextPercent ?? 100, profileThresholds, currentProfileId),
+		)
 
 		// Log the context window error for debugging
 		console.warn(
@@ -10465,7 +10472,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						apiHandler,
 						systemPrompt,
 						metadata,
-						truncateResult.targetContextTokens,
+						Math.max(0, triggerTokens - 1),
 						getEffectiveApiHistory(this.apiConversationHistory),
 						countContext,
 					),
@@ -10787,7 +10794,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			))
 		assertPreflightWithinBudget()
 		const { contextTokens } = this.getTokenUsage()
-		let compactedContextTarget: number | undefined
+		let compactedContextLimit: number | undefined
+		let contextTokensBeforeCompaction: number | undefined
 		let contextCount: TokenCountContext | undefined
 
 		// A retained transport attempt must not compact or reinterpret a different
@@ -10811,6 +10819,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			// Get the current profile ID using the helper method
 			const currentProfileId = await waitForBoundedPreflight(this.getCurrentProfileId(state))
+			const { allowedTokens, triggerTokens } = getContextLimits(
+				contextWindow,
+				maxTokens,
+				resolveCondenseThreshold(autoCondenseContextPercent, profileThresholds, currentProfileId),
+			)
+			const resumeLimit = autoCondenseContext ? Math.max(0, triggerTokens - 1) : allowedTokens
 			contextCount = createTokenCountContext(apiHandler, {
 				signal: stepInterruptionSignal,
 				remoteDeadline: contextManagementDeadline,
@@ -10986,7 +11000,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							apiHandler,
 							systemPrompt,
 							contextMgmtMetadata,
-							truncateResult.targetContextTokens,
+							resumeLimit,
 							getEffectiveApiHistory(this.apiConversationHistory),
 							contextCount,
 						),
@@ -10994,9 +11008,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					if (tokens >= truncateResult.prevContextTokens) throw new ContextRecoveryExhaustedError()
 					truncateResult.newContextTokens = tokens
 					truncateResult.newContextTokensAfterTruncation = tokens
-					compactedContextTarget = truncateResult.targetContextTokens
+					compactedContextLimit = resumeLimit
+					contextTokensBeforeCompaction = truncateResult.prevContextTokens
 				}
-				if (truncateResult.error) {
+				if (truncateResult.error && truncateResult.status !== "reduced") {
 					await waitForBoundedPreflight(this.say("condense_context_error", truncateResult.error))
 					assertPreflightWithinBudget()
 				}
@@ -11189,19 +11204,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				: {}),
 		}
 
-		if (compactedContextTarget !== undefined) {
+		if (compactedContextLimit !== undefined) {
 			// Final schemas and provider conversion can differ from the compaction input.
 			// Gate the actual new request before capturing it or admitting the provider.
-			await waitForBoundedPreflight(
+			const tokens = await waitForBoundedPreflight(
 				this.measureCompactedContext(
 					requestHandler,
 					systemPrompt,
 					{ ...metadata, signal: stepInterruptionSignal },
-					compactedContextTarget,
+					compactedContextLimit,
 					cleanConversationHistory,
 					contextCount,
 				),
 			)
+			if (contextTokensBeforeCompaction !== undefined && tokens >= contextTokensBeforeCompaction) {
+				throw new ContextRecoveryExhaustedError()
+			}
 		}
 		assertPreflightWithinBudget()
 
