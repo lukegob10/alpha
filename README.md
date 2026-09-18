@@ -6,9 +6,13 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.47
+## Welcome to Alpha v2.1.48
 
-Alpha v2.1.47 fixes false completion rejections by preserving valid acceptance-check evidence through harmless task-plan updates, alongside reliable Vertex Gemini Embedding 2 indexing and the existing background command controls.
+Alpha v2.1.48 keeps automatic compaction within the configured resume budget and lets the model recover from stale or out-of-range file-read selections without turning them into task-level errors.
+
+- One-million-token contexts at 30–35% compaction profiles now finish within the configured resume budget
+
+- Invalid file offsets return actionable tool feedback so the model can correct the read and continue
 
 - Rewording a check or reordering its unchanged input files preserves passing evidence so finished tasks can complete
 

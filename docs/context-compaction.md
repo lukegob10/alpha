@@ -46,8 +46,17 @@ supplies custom condensing instructions.
 Historical provider usage can trigger an attempt, but successful summaries and fallback truncations compare active input
 before and after with the same operation-scoped token counter. Saved rewind records do not count toward active input.
 Equal, larger, negative, missing, or non-finite candidate counts cannot be reported as reductions. Task integration checks
-the candidate and checks again after fresh environment content is persisted; an oversized or non-reducing final request
-does not produce a success receipt or provider dispatch.
+the candidate against the summary/truncation target before persistence. Fresh environment content and final tool schemas
+can use the remaining headroom below the configured trigger (or the physical input allowance when automatic compaction
+is disabled). They must still leave the complete input smaller than before compaction. The generation target is not a
+second context-window limit: for a 1M window at 30%, a 73K candidate plus 20K of fresh environment facts fits below the
+300K trigger even though it exceeds the 75K summary target. Final provider input is checked before dispatch.
+
+Token counting shares a five-second cumulative allowance across the operation, charging only time spent waiting on the
+tokenizer. Summary generation, environment collection, and persistence do not consume that allowance. An explicit
+request deadline still caps every count. Exact counts are cached; exhausted or stalled tokenizers retain the conservative
+local fallback. This avoids comparing accurately counted old history with inflated fallback counts solely because a
+summary took longer than five seconds to generate.
 
 There is no time-based cooldown. A repeated manual request with no useful older material to summarize returns
 `unchanged` when the active context already fits. A generated candidate that cannot improve an already-fitting context
@@ -60,6 +69,9 @@ step and a recent complete suffix, using F plus 75% of the remaining working bud
 whole steps a chance to fit while staying below the next trigger. With automatic condensation disabled, fallback uses
 the allowed physical input budget. If mandatory content or the minimum complete suffix cannot fit, recovery reports
 exhaustion instead of splitting tool transactions or retrying unchanged input indefinitely.
+
+A successful automatic fallback reports the truncation result. Its original summarization diagnostic remains available
+for investigation, but the UI does not also display a compaction-failed message after recovery succeeded.
 
 Existing non-destructive history tags, rewind readers, lifecycle completion, cancellation, and provider metadata
 preservation remain in use. The optional `ContextCondense.outcome` field is backward compatible: saved events without
@@ -83,6 +95,13 @@ provider-neutral path. This change does not add native encrypted compaction endp
 provider capability, transport, persisted-state, and replay contracts, and should be evaluated separately.
 
 ## Verification and limits
+
+The 2026-09-17 regression cases reproduce slow summary generation at 30% and 35% of a 1M window, refreshed environment
+content above the summary target but below the working limit across all three entry points, and contradictory automatic
+fallback reporting. Additional cases retain the cumulative tokenizer cap, absolute request deadline, profile threshold,
+and actual reduction requirement. These are deterministic reproductions; no trace from the reported incident was available.
+Validation for that correction passed 546 affected regression tests (one existing skipped test), the final 88-test focused
+rerun, extension type checking, lint on changed TypeScript files, formatting, and all 10 VS Code 1.122.1 smoke checks.
 
 Validation on 2026-09-14 passed: 614 extension tests (one existing skipped test), 293 shared-type tests, 63 webview tests,
 and six task/webview compaction-routing tests. Repository-wide lint and type checks, formatting with existing line

@@ -71,3 +71,23 @@ completions, along with request counts, tool results, timing, and file hashes.
 
 The [pagination regression tests](../src/core/tools/__tests__/readFileTool.pagination.spec.ts) exercise the deterministic
 continuation contract through the reader and scheduler, including output limits, stale cursors, and Unicode fragments.
+
+## Recoverable read selections
+
+In 2.1.47, reading from offset 180 in a 72-line file correctly rejected the selection, but the generic exception was
+also presented as an extension error. The shared reader now identifies invalid offsets, indentation anchors, and
+invalid or stale continuation tokens as `FileReadSelectionError`. The tool returns a failed result with correction
+guidance to the model without publishing an extension error card, matching existing missing-file recovery.
+
+This does not clamp the range, claim unread content was observed, or automatically retry. The model must correct the
+selection; the scheduler still delivers exactly one error result for the invalid call. Other valid files in a batch
+remain available, and unexpected I/O or permission errors retain extension diagnostics. Continuation file identity,
+content-version checks, approval, and `.alphaignore` enforcement are unchanged.
+
+Deterministic coverage reproduces the 180/72 mismatch, corrects the subsequent read, checks mixed batch results, and
+exercises failure/recovery through the real scheduler. Existing tests retain genuine I/O diagnostics, cancellation,
+output budgets, Unicode pagination, and saved cursor compatibility. These checks do not establish why a particular
+model chose an invalid offset; the reported error only establishes that the requested line did not exist at read time.
+
+Validation passed 222 reader/parser/scheduler tests, the final 22-test pagination rerun, extension type checking,
+lint on changed TypeScript files, and all 10 smoke checks on VS Code 1.122.1. No live-model reliability claim is made.

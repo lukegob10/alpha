@@ -440,7 +440,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "september-2026-v2.1.47-completion-evidence"
+	public readonly latestAnnouncementId = "september-2026-v2.1.48-compaction-and-file-reading"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 

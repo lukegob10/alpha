@@ -20,7 +20,7 @@ import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
 import { extractTextFromFile, getSupportedBinaryFormats } from "../../integrations/misc/extract-text"
-import { prepareFileRead, renderFileRead, type FileReadContent } from "./readFileContent"
+import { FileReadSelectionError, prepareFileRead, renderFileRead, type FileReadContent } from "./readFileContent"
 import { DEFAULT_TOOL_OUTPUT_LIMIT } from "../agent/ToolPolicy"
 import { DEFAULT_LINE_LIMIT } from "../prompts/tools/native-tools/read_file"
 import type { ToolUse } from "../../shared/tools"
@@ -82,6 +82,11 @@ interface FileReadFailure {
 }
 
 function describeFileReadFailure(error: unknown): FileReadFailure {
+	// Bad offsets and stale/invalid cursors are tool-call errors the model can
+	// repair. Keep the failed result, without presenting an extension failure.
+	if (error instanceof FileReadSelectionError) {
+		return { message: error.message, shouldShowDiagnostic: false }
+	}
 	const rawMessage = error instanceof Error ? error.message : String(error)
 	const code =
 		error && typeof error === "object" && "code" in error && typeof error.code === "string"
