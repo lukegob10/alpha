@@ -50,7 +50,9 @@ ENV MISE_DATA_DIR="/root/.local/share/mise"
 ENV PATH="/root/.local/share/mise/shims:/root/.local/bin:$PATH"
 
 # Define pinned language runtime versions for evaluator exercises
-ARG NODE_VERSION=20.19.2
+ARG NODE_VERSION=24.14.1
+ARG NPM_VERSION=11.11.0
+ARG PNPM_VERSION=11.24.0
 ARG PYTHON_VERSION=3.13.2
 ARG GO_VERSION=1.24.2
 ARG RUST_VERSION=1.85.1
@@ -72,7 +74,10 @@ RUN node --version && python --version && go version && rustc --version && java 
 # Install pnpm (after node is available from mise)
 ENV PNPM_HOME="/root/.local/share/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
-RUN npm install -g pnpm npm-run-all
+RUN npm install --global "npm@${NPM_VERSION}" "pnpm@${PNPM_VERSION}" npm-run-all \
+  && test "$(node --version)" = "v${NODE_VERSION}" \
+  && test "$(npm --version)" = "${NPM_VERSION}" \
+  && test "$(pnpm --version)" = "${PNPM_VERSION}"
 
 # Install VS Code extensions
 ARG GOLANG_EXT_VERSION=0.46.1
@@ -134,7 +139,7 @@ COPY ./packages/types/package.json             ./packages/types/
 COPY ./src/package.json                        ./src/
 COPY ./webview-ui/package.json                 ./webview-ui/
 
-RUN pnpm install
+RUN pnpm install --frozen-lockfile
 
 # Copy source code
 COPY . ./

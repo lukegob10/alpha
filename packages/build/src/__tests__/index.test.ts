@@ -1,4 +1,4 @@
-// npx vitest run src/__tests__/index.test.ts
+// pnpm exec vitest run src/__tests__/index.test.ts
 
 import { generatePackageJson } from "../index.js"
 

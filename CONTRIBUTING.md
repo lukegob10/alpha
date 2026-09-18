@@ -31,7 +31,8 @@ For the release-host contract, run `pnpm --filter @alpha-code/vscode-e2e test:sm
 Optional evaluator coverage is explicit: `pnpm test:evals` or `pnpm test:evals:offline`. For all retained workspace
 checks, use `pnpm lint:all`, `pnpm check-types:all`, and `pnpm test:all`.
 
-For extension debugging, open the repo in VS Code and press `F5`. The repository uses Node.js 20.19.2 and pnpm 10.8.1.
+For extension debugging, open the repo in VS Code and press `F5`. The repository uses Node.js 24.14.1, npm 11.11.0,
+and pnpm 11.24.0. The extension remains compatible with the VS Code 1.122.1 release host.
 
 ## Standards
 

@@ -162,7 +162,7 @@ function preflight(candidate = false) {
 		benchmark: "nor36-production-request-preflight",
 		revision: (candidate ? "b" : "a").repeat(40),
 		workingTree: "clean",
-		node: "v20.19.2",
+		node: "v24.14.1",
 		harnessDigest: hash,
 		fixtureDigest: hash,
 		configuration: "fixture-profile",

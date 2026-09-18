@@ -20,8 +20,8 @@ const report = (candidate = false) => ({
 	version: 1,
 	sourceIdentity: Object.fromEntries(sourcePaths.map((source) => [source, "a".repeat(64)])),
 	runtime: {
-		node: "v20.19.2",
-		packageManager: "pnpm/10.8.1",
+		node: "v24.14.1",
+		packageManager: "pnpm/11.24.0",
 		platform: "win32",
 		arch: "x64",
 		os: "test-os",

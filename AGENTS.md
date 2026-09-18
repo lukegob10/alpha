@@ -54,8 +54,9 @@ Before finishing:
 
 ## Runtime and toolchain baseline
 
-- Package manager: `pnpm@10.8.1`. Use pnpm only; do not create npm or Yarn lockfiles.
-- Development Node.js: `20.19.2`, as declared in the root and extension manifests.
+- Package manager: `pnpm@11.24.0`. Use pnpm only; do not create npm or Yarn lockfiles.
+- Development Node.js: `24.14.1`, as declared in the root and extension manifests. The extension's VS Code host
+  compatibility contract remains `1.122.1`.
 - TypeScript: `5.8.3` through the workspace configuration.
 - Formatting: tabs, width 4, 120-column print width, and no semicolons; see `.prettierrc.json`.
 - Build orchestration: Turborepo. Prefer existing root or package scripts over hand-built command sequences.
@@ -274,10 +275,13 @@ Use the smallest relevant checks during development and the full affected-surfac
 Useful focused commands:
 
 ```sh
-pnpm --dir src test -- core/agent/__tests__/AgentTurnEngine.spec.ts
-pnpm --dir webview-ui test -- src/path/to/component.spec.tsx
-pnpm --filter @alpha-code/core test -- path/to/spec.ts
+pnpm --dir src test core/agent/__tests__/AgentTurnEngine.spec.ts
+pnpm --dir webview-ui test src/path/to/component.spec.tsx
+pnpm --filter @alpha-code/core test path/to/spec.ts
 ```
+
+Pass Vitest file filters directly after `test`; do not insert a standalone `--`. With the pinned pnpm version,
+that separator reaches Vitest and can cause a focused command to run the entire suite.
 
 Repository-wide gates, used when risk and scope justify them:
 

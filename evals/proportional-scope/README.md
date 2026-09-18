@@ -29,7 +29,7 @@ seven fixed engine scripts or claim unmeasured provider-token savings.
 
 ## Run
 
-From the repository root with Node 20.19.2 and pnpm 10.8.1:
+From the repository root with Node 24.14.1, npm 11.11.0, and pnpm 11.24.0:
 
 ```sh
 node --test scripts/evals/proportional-scope-report.test.mjs

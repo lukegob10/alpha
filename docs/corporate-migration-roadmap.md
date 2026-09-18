@@ -6,11 +6,19 @@ We want to keep developing Alpha in the new environment and have a reliable way 
 
 ## 1. Find out what the new environment allows
 
+**Status: complete for planning.** You confirmed VS Code, repository access, Artifactory, debugging, GitHub Copilot,
+API access, and the ability to run automated tests. The repository can move to the specified tool versions.
+Longer-term extension sharing can be arranged during steps 9–10.
+
 Confirm which software, package downloads, AI providers, and automated tests we can use. Find out how we will install and share the extension.
 
 **Finished when:** we have a short list of what is available and what still needs to be arranged.
 
 ## 2. Find out what works today
+
+**Status: complete — results recorded on 2026-09-18.** Alpha 2.1.49 is our starting point.
+The release and several major checks passed, but the final Windows test run failed and a local managed-agent check
+rejected a skipped UI test. Those remain follow-up work. See [the saved results](migration-starting-point.md).
 
 Run the existing tests and build the extension before changing anything. Save the results and list any existing problems, so we can tell whether later changes caused a new problem.
 
@@ -23,6 +31,10 @@ Use Node **24.14.1**, pnpm **11.24.0**, and npm **11.11.0**. Update the setup fi
 Keep pnpm as the package manager and keep testing the extension in **VS Code 1.122.1**.
 
 **Finished when:** a fresh copy of the repo installs, builds, and passes the required checks using those versions.
+
+**Status (2026-09-18):** Implemented on `codex/toolchain-migration`; see [the durable migration record](toolchain-migration-step-3.md).
+Frozen installation, the full root test suite, lint, type checking, the VS Code 1.122.1 smoke gate, and VSIX content
+verification passed. Corporate registry/authentication and external evaluator or Docker runs were not attempted here.
 
 ## 4. Clean up the repo
 
@@ -40,6 +52,10 @@ Look at what each test actually checks. Work out which of these questions it ans
 - Did our change improve the result, speed, or model usage?
 
 **Finished when:** we have a clear list of useful tests, weak or duplicate tests, and missing tests.
+
+**Known follow-up:** the toolchain review saw a 20-second timeout in `Task.ticket-progress.spec.ts` with default
+worker settings. Its focused rerun and the full suite with CI worker limits passed. Investigate that test's reliability;
+see [the migration review record](toolchain-migration-step-3.md#follow-up-review).
 
 ## 6. Improve the tests and the information they give us
 
@@ -87,4 +103,4 @@ Then repeat step 8 for new research and ideas. Turn real bugs into tests so they
 
 Steps 3–5 can be investigated separately, but coordinate edits to shared files. Run the required checks from [AGENTS.md](../AGENTS.md) on the combined changes. A test we could not run is still untested.
 
-This is the plan. The migration work has not been carried out as part of writing it.
+Steps 1–2 are recorded above. Step 3 is implemented on `codex/toolchain-migration`; cleanup and the corporate move remain.

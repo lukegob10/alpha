@@ -6,11 +6,23 @@ inputs:
     node-version:
         description: "Node.js version to use"
         required: false
-        default: "20.19.2"
+        default: "24.14.1"
+    npm-version:
+        description: "npm version to use"
+        required: false
+        default: "11.11.0"
     pnpm-version:
         description: "pnpm version to use"
         required: false
-        default: "10.8.1"
+        default: "11.24.0"
+    registry-url:
+        description: "Optional package registry URL for actions/setup-node authentication"
+        required: false
+        default: ""
+    scope:
+        description: "Optional package scope for actions/setup-node authentication"
+        required: false
+        default: ""
     skip-install:
         description: "Skip dependency installation"
         required: false
@@ -23,10 +35,25 @@ inputs:
 runs:
     using: "composite"
     steps:
+        - name: Setup Node.js
+          uses: actions/setup-node@v4
+          with:
+              node-version: ${{ inputs.node-version }}
+              registry-url: ${{ inputs.registry-url }}
+              scope: ${{ inputs.scope }}
+        - name: Install exact npm
+          shell: bash
+          run: npm install --global "npm@${{ inputs.npm-version }}"
         - name: Install pnpm
           uses: pnpm/action-setup@v4
           with:
               version: ${{ inputs.pnpm-version }}
+        - name: Verify toolchain
+          shell: bash
+          run: |
+              test "$(node --version)" = "v${{ inputs.node-version }}"
+              test "$(npm --version)" = "${{ inputs.npm-version }}"
+              test "$(pnpm --version)" = "${{ inputs.pnpm-version }}"
         - name: Get pnpm store directory
           shell: bash
           run: |
@@ -38,10 +65,6 @@ runs:
               key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
               restore-keys: |
                   ${{ runner.os }}-pnpm-store-
-        - name: Setup Node.js
-          uses: actions/setup-node@v4
-          with:
-              node-version: ${{ inputs.node-version }}
         - name: Install dependencies
           if: ${{ inputs.skip-install != 'true' }}
           shell: bash
