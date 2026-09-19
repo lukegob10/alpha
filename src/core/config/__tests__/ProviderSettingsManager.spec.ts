@@ -2,7 +2,7 @@
 
 import { ExtensionContext } from "vscode"
 
-import type { ProviderSettings } from "@alpha-code/types"
+import { retiredProviderNames, type ProviderSettings } from "@alpha-code/types"
 
 import { ProviderSettingsManager, ProviderProfiles } from "../ProviderSettingsManager"
 
@@ -37,6 +37,24 @@ describe("ProviderSettingsManager", () => {
 
 		providerSettingsManager = new ProviderSettingsManager(mockContext)
 	})
+
+	it.each([...retiredProviderNames, "future-provider"])(
+		"loads and exports saved %s settings without losing legacy data",
+		async (apiProvider) => {
+			const profile = { id: "legacy-id", apiProvider, apiModelId: "legacy-model", legacyApiKey: "test-only-key" }
+			mockSecrets.get.mockResolvedValue(
+				JSON.stringify({
+					currentApiConfigName: "legacy",
+					apiConfigs: { legacy: profile },
+					modeApiConfigs: {},
+					migrations: { rateLimitSecondsMigrated: true, openAiHeadersMigrated: true },
+				}),
+			)
+			await expect(providerSettingsManager.initialize()).resolves.not.toThrow()
+			expect(await providerSettingsManager.getProfile({ name: "legacy" })).toMatchObject(profile)
+			expect((await providerSettingsManager.export()).apiConfigs.legacy).toMatchObject(profile)
+		},
+	)
 
 	describe("initialize", () => {
 		it("should not write to storage when secrets.get returns null", async () => {

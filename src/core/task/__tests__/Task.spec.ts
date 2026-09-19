@@ -343,6 +343,18 @@ describe("Alpha", () => {
 		}))
 	})
 
+	it("keeps the working handler and configuration when a legacy provider is rejected", () => {
+		const apiConfiguration: ProviderSettings = { apiProvider: "openai", openAiModelId: "working" }
+		const api = { getModel: vi.fn() }
+		const task = { apiConfiguration, api } as unknown as Task
+
+		expect(() => Task.prototype.updateApiConfiguration.call(task, { apiProvider: "openrouter" })).toThrow(
+			"Unsupported API provider: openrouter",
+		)
+		expect(task.apiConfiguration).toBe(apiConfiguration)
+		expect(task.api).toBe(api)
+	})
+
 	describe("constructor", () => {
 		it("should always have diff strategy defined", async () => {
 			const alphaTask = new Task({

@@ -13,6 +13,7 @@ import {
 	VsCodeLmHandler,
 	StellarHandler,
 } from "./providers"
+import { assertSupportedApiProvider } from "../shared/api"
 import { FakeAIHandler } from "./providers/fake-ai"
 
 export interface SingleCompletionHandler {
@@ -110,6 +111,7 @@ export interface ApiHandler {
 
 export function buildApiHandler(configuration: ProviderSettings): ApiHandler {
 	const { apiProvider, ...options } = configuration
+	assertSupportedApiProvider(apiProvider)
 
 	// A missing provider is the only configuration that gets a default. Persisted
 	// provider identifiers must never silently fall through to a different

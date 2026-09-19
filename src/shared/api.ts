@@ -1,4 +1,21 @@
-import { type ModelInfo, type ProviderSettings, ANTHROPIC_DEFAULT_MAX_TOKENS } from "@alpha-code/types"
+import {
+	isProviderName,
+	isFauxProvider,
+	type ModelInfo,
+	type ProviderSettings,
+	ANTHROPIC_DEFAULT_MAX_TOKENS,
+} from "@alpha-code/types"
+
+/** Reject saved unsupported IDs before changing task lifecycle or provider state. */
+export function assertSupportedApiProvider(provider: unknown): void {
+	if (
+		provider === undefined ||
+		isProviderName(provider) ||
+		(typeof provider === "string" && isFauxProvider(provider))
+	)
+		return
+	throw new Error(`Unsupported API provider: ${String(provider)}`)
+}
 
 // ApiHandlerOptions
 // Extend ProviderSettings (minus apiProvider) with handler-specific toggles.

@@ -1,3 +1,4 @@
+import { assertSupportedApiProvider } from "../shared/api"
 import { EventEmitter } from "events"
 import fs from "fs/promises"
 import * as path from "path"
@@ -200,6 +201,7 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 		newTab?: boolean
 	}) {
 		if (configuration.mode !== undefined) assertPrimaryMode(configuration.mode)
+		assertSupportedApiProvider(configuration.apiProvider)
 		let provider: AlphaProvider
 
 		if (newTab) {

@@ -6007,9 +6007,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * @param newApiConfiguration - The new API configuration to use
 	 */
 	public updateApiConfiguration(newApiConfiguration: ProviderSettings): void {
-		// Update the configuration and rebuild the API handler
+		// Build first so a rejected profile cannot leave the old handler paired with new settings.
+		const api = buildApiHandler(newApiConfiguration)
 		this.apiConfiguration = newApiConfiguration
-		this.api = buildApiHandler(this.apiConfiguration)
+		this.api = api
 	}
 
 	public async submitUserMessage(

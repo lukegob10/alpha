@@ -26,6 +26,8 @@ vi.mock("../core/task/Task", () => ({
 	Task: taskMocks.MockTask,
 }))
 
+import { retiredProviderNames, type ProviderSettings, type HistoryItem } from "@alpha-code/types"
+
 import { AlphaProvider } from "../core/webview/AlphaProvider"
 
 describe("AlphaProvider.createTask start control", () => {
@@ -38,6 +40,7 @@ describe("AlphaProvider.createTask start control", () => {
 	const createProvider = () =>
 		({
 			taskStack: [],
+			getLiveTask: vi.fn(),
 			taskSessions: { canCreateTask: vi.fn(() => true) },
 			customModesManager: { updateCustomMode: vi.fn() },
 			taskCreationCallback: undefined,
@@ -75,6 +78,36 @@ describe("AlphaProvider.createTask start control", () => {
 			postStateToWebviewWithoutTaskHistory: vi.fn(async () => undefined),
 			log: vi.fn(),
 		}) as unknown as AlphaProvider
+
+	it.each([...retiredProviderNames, "future-provider"])(
+		"rejects %s before closing the current task",
+		async (apiProvider) => {
+			const provider = createProvider()
+			vi.mocked(provider["getProviderSettingsSnapshot"]).mockReturnValue({
+				apiProvider: apiProvider as ProviderSettings["apiProvider"],
+			})
+			await expect(AlphaProvider.prototype.createTask.call(provider, "New work")).rejects.toThrow(
+				`Unsupported API provider: ${apiProvider}`,
+			)
+			expect(provider.removeTaskFromStack).not.toHaveBeenCalled()
+			expect(taskMocks.instances).toHaveLength(0)
+		},
+	)
+
+	it.each([...retiredProviderNames, "future-provider"])(
+		"rejects restored %s before closing the current task",
+		async (apiProvider) => {
+			const provider = createProvider()
+			vi.mocked(provider.getState).mockResolvedValue({ apiConfiguration: { apiProvider } } as Awaited<
+				ReturnType<AlphaProvider["getState"]>
+			>)
+			await expect(
+				AlphaProvider.prototype.createTaskWithHistoryItem.call(provider, { id: "saved-task" } as HistoryItem),
+			).rejects.toThrow(`Unsupported API provider: ${apiProvider}`)
+			expect(provider.removeTaskFromStack).not.toHaveBeenCalled()
+			expect(taskMocks.instances).toHaveLength(0)
+		},
+	)
 
 	it("does not start a task when startTask is false", async () => {
 		const provider = createProvider()

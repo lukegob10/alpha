@@ -134,6 +134,7 @@ import { setPanel } from "../../activate/registerCommands"
 
 import { t } from "../../i18n"
 
+import { assertSupportedApiProvider } from "../../shared/api"
 import { buildApiHandler } from "../../api"
 
 import { ContextProxy } from "../config/ContextProxy"
@@ -1175,10 +1176,6 @@ export class AlphaProvider
 		const isRehydratingCurrentTask = Boolean(existingTask)
 		const shouldFocus = !options?.background
 
-		if (!isRehydratingCurrentTask && !options?.preserveExisting) {
-			await this.removeTaskFromStack()
-		}
-
 		// If the history item has a saved mode, restore it and its associated API configuration.
 		if (historyItem.mode) {
 			// Retired/custom modes cannot silently gain Code permissions on restoration.
@@ -1264,6 +1261,12 @@ export class AlphaProvider
 		} = await this.getState()
 		const apiConfiguration =
 			options?.subagentRuntime?.apiConfiguration ?? restoredApiConfiguration ?? currentApiConfiguration
+
+		assertSupportedApiProvider(apiConfiguration.apiProvider)
+
+		if (!isRehydratingCurrentTask && !options?.preserveExisting) {
+			await this.removeTaskFromStack()
+		}
 
 		let rehydrationStackIndex = -1
 		let rehydratedOldTask: Task | undefined
@@ -4403,10 +4406,6 @@ export class AlphaProvider
 		if (options.taskMode !== undefined) assertPrimaryMode(options.taskMode)
 		if (configuration.mode !== undefined) assertPrimaryMode(configuration.mode)
 
-		if (!parentTask && options.preserveExisting && !options.background) {
-			await this.finalizeActiveCompletionCandidate()
-		}
-
 		const topLevelTaskMode = !parentTask
 			? (options.taskMode ?? configuration.mode ?? this.newTaskDraftMode)
 			: options.taskMode
@@ -4468,6 +4467,11 @@ export class AlphaProvider
 		}).delegationPolicy
 		const apiConfiguration = options.apiConfiguration ?? currentApiConfiguration
 		const taskApiConfigName = options.taskApiConfigName ?? currentApiConfigName ?? "default"
+		assertSupportedApiProvider(apiConfiguration.apiProvider)
+
+		if (!parentTask && options.preserveExisting && !options.background) {
+			await this.finalizeActiveCompletionCandidate()
+		}
 
 		// Single-open-task invariant: always enforce for user-initiated top-level tasks
 		if (!parentTask && !options.preserveExisting) {
