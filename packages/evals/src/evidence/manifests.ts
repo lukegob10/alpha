@@ -9,6 +9,7 @@ export const taskManifestSchema = z.object({
 	id: z.string().min(1),
 	version: z.number().int().positive(),
 	fixtureDigest: digest,
+	workspaceCommit: z.string().optional(),
 	capabilities: z.array(z.string().min(1)).min(1),
 	risk: z.enum(["low", "medium", "high", "critical"]),
 	network: z.enum(["disabled", "restricted", "enabled"]),
@@ -24,6 +25,8 @@ export const variantManifestSchema = z.object({
 	promptDigest: digest,
 	toolSchemaDigest: digest,
 	runnerImageDigest: digest,
+	identityStatus: z.enum(["verified", "executed_harness_unavailable"]).optional(),
+	settingsDigest: digest.optional(),
 })
 
 export type TaskManifest = z.infer<typeof taskManifestSchema>

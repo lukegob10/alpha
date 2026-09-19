@@ -5,7 +5,7 @@ import * as path from "path"
 import { promisify } from "util"
 
 import { classifyFailure, knownFailureCode } from "./classification"
-import { projectJournalSource, readTaskSource, TaskSourceError } from "./journalProjection"
+import { joinProjectedEvidence, projectJournalSource, readTaskSource, TaskSourceError } from "./journalProjection"
 import {
 	assertSafeRoot,
 	ensureEvidenceRoot,
@@ -50,6 +50,15 @@ const OUTCOMES = new Set(["passed", "failed", "cancelled", "blocked", "timed_out
 const EVENT_TYPES = new Set([
 	"turn_started",
 	"phase_changed",
+	"step_started",
+	"step_status_changed",
+	"item_added",
+	"item_updated",
+	"tool_call_accepted",
+	"tool_result_recorded",
+	"approval_requested",
+	"approval_resolved",
+	"turn_status_changed",
 	"turn_terminal",
 	"assistant_committed",
 	"response_terminal",
@@ -70,10 +79,17 @@ const EVENT_TYPES = new Set([
 	"compaction_completed",
 	"verification_result",
 	"cancelled",
+	"turn_interrupted",
+	"turn_cancelled",
 	"internal_task_started",
 	"internal_task_completed",
+	"progress",
+	"context_refreshed",
+	"policy_snapshot",
+	"profile_resolved",
 ])
 const STATUSES = new Set([
+	"in_progress",
 	"starting",
 	"running",
 	"finalizing",
@@ -92,6 +108,20 @@ const STATUSES = new Set([
 	"pending",
 	"interrupted",
 ])
+const PHASES = new Set([
+	"queued",
+	"starting",
+	"planning",
+	"working",
+	"executing",
+	"waiting",
+	"awaiting_approval",
+	"steering",
+	"compacting",
+	"reporting",
+	"finalizing",
+])
+const DECISIONS = new Set(["approved", "denied", "cancelled"])
 
 const sha256 = (content: Buffer | string): string => createHash("sha256").update(content).digest("hex")
 
@@ -291,8 +321,26 @@ function projectJournalEvent(value: unknown): unknown {
 	const raw = object(value)
 	const event = object(raw?.event) ?? raw
 	const payload = object(event?.payload) ?? event
+	// Unknown event types are counted and represented as a dropped row by the
+	// journal projector; this preserves the byte/event budget boundary while
+	// marking the semantic projection incomplete.
 	if (!event || typeof event.type !== "string" || !EVENT_TYPES.has(event.type)) return undefined
 	const projected: Record<string, unknown> = { type: event.type }
+	for (const key of [
+		"eventId",
+		"taskId",
+		"runId",
+		"turnId",
+		"stepId",
+		"requestId",
+		"attemptId",
+		"correlationId",
+		"causationId",
+	] as const) {
+		const candidate = raw?.[key] ?? event?.[key] ?? payload?.[key]
+		if (typeof candidate === "string" && candidate.length > 0 && candidate.length <= 256)
+			projected[`${key}Sha256`] = sha256(candidate)
+	}
 	for (const key of [
 		"sequence",
 		"occurredAt",
@@ -308,9 +356,15 @@ function projectJournalEvent(value: unknown): unknown {
 		const value = raw?.[key] ?? payload?.[key]
 		if (typeof value === "number" && Number.isFinite(value)) projected[key] = value
 	}
-	for (const key of ["status", "phase", "decision"]) {
+	for (const key of ["status", "phase", "decision"] as const) {
 		const value = payload?.[key]
-		if (typeof value === "string" && STATUSES.has(value)) projected[key] = value
+		if (
+			typeof value === "string" &&
+			((key === "status" && STATUSES.has(value)) ||
+				(key === "phase" && PHASES.has(value)) ||
+				(key === "decision" && DECISIONS.has(value)))
+		)
+			projected[key] = value
 	}
 	const callId = payload?.callId
 	if (typeof callId === "string") projected.callIdSha256 = sha256(callId)
@@ -384,6 +438,15 @@ export async function captureRunEvidence(options: CaptureRunEvidenceOptions): Pr
 		taskEvidence: [],
 	}
 	let written = 0
+	const taskProjections = new Map<
+		string,
+		{
+			lifecycle?: unknown[]
+			eventLog?: unknown[]
+			lifecycleValidation?: string
+			eventLogValidation?: string
+		}
+	>()
 	const warn = (code: string) => {
 		manifest.captureComplete = false
 		if (!manifest.warnings.includes(code)) manifest.warnings.push(code)
@@ -445,6 +508,8 @@ export async function captureRunEvidence(options: CaptureRunEvidenceOptions): Pr
 			}
 		}
 		for (const taskId of metadata.taskIds) {
+			const taskProjection = taskProjections.get(taskId) ?? {}
+			taskProjections.set(taskId, taskProjection)
 			for (const fileName of [
 				"agent_lifecycle_events.jsonl",
 				"agent_turn_events.jsonl",
@@ -462,6 +527,7 @@ export async function captureRunEvidence(options: CaptureRunEvidenceOptions): Pr
 								maxEvents: limits.maxJournalEvents,
 							},
 							projectJournalEvent,
+							fileName === "agent_lifecycle_events.jsonl" ? "turn" : "run",
 						)
 					} else {
 						const content = await readTaskSource(filePath, limits.maxTaskSourceBytes)
@@ -472,6 +538,28 @@ export async function captureRunEvidence(options: CaptureRunEvidenceOptions): Pr
 						}
 					}
 					const captured = await write(`${taskId}-${fileName}.projection.json`, projected)
+					if (fileName === "agent_lifecycle_events.jsonl") {
+						const projection = object(projected)?.projection
+						taskProjection.lifecycleValidation =
+							typeof object(projection)?.validationStatus === "string"
+								? (object(projection)?.validationStatus as string)
+								: undefined
+						taskProjection.lifecycle = Array.isArray(object(projection)?.events)
+							? (object(projection)?.events as unknown[])
+							: undefined
+					}
+					if (fileName === "agent_turn_events.jsonl") {
+						const projection = object(projected)?.projection
+						taskProjection.eventLogValidation =
+							typeof object(projection)?.validationStatus === "string"
+								? (object(projection)?.validationStatus as string)
+								: undefined
+						taskProjection.eventLog = Array.isArray(object(projection)?.events)
+							? (object(projection)?.events as unknown[])
+							: undefined
+					}
+					if (object(object(projected)?.projection)?.validationStatus === "incomplete")
+						warn("TASK_EVIDENCE_INCOMPLETE")
 					manifest.taskEvidence.push({
 						taskId,
 						file: fileName,
@@ -485,6 +573,22 @@ export async function captureRunEvidence(options: CaptureRunEvidenceOptions): Pr
 					if (!absent || fileName !== "api_conversation_history.json") warn("TASK_EVIDENCE_INCOMPLETE")
 				}
 			}
+			const join = joinProjectedEvidence(taskProjection)
+			const validation = {
+				lifecycle: taskProjection.lifecycleValidation ?? "absent",
+				eventLog: taskProjection.eventLogValidation ?? "absent",
+			}
+			const joinCaptured = await write(`${taskId}-evidence-join.json`, {
+				status:
+					validation.lifecycle === "validated" &&
+					validation.eventLog === "validated" &&
+					join.records.some((record) => record.status === "joined")
+						? "captured"
+						: "incomplete",
+				validation,
+				...join,
+			})
+			if (!joinCaptured && join.records.length > 0) warn("TASK_EVIDENCE_INCOMPLETE")
 		}
 		try {
 			const lock = path.join(storage.path, "agent_control.json.transaction.lock")

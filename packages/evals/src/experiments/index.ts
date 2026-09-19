@@ -1,4 +1,6 @@
 export * from "./identity"
+export * from "./campaign"
+export * from "./hostCampaign"
 export * from "./pairing"
 export * from "./policy"
 export * from "./reporting"

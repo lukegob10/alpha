@@ -108,8 +108,23 @@ export interface CampaignAttempt {
 	evidenceFailed?: true
 }
 
+export interface CampaignEvaluationIdentity {
+	extensionCommit: string | null
+	workingTreeDigest: string | null
+	extensionBuildDigest: string | null
+	harnessDigest: string | null
+	configDigest: string
+	taskSetDigest: string | null
+	sourceComponentsDigest: string | null
+	unchanged: boolean
+	missing: string[]
+}
+
 export interface CampaignReport {
 	version: 1
+	/** Projection of source/build receipts; absent in legacy reports, never inferred from fixture HEAD. */
+	evaluationIdentity?: CampaignEvaluationIdentity
+	evaluationPlan?: { scenarioIds: string[]; hostVersions: HostVersion[]; samples: number }
 	id: string
 	mode: "report-only" | "reviewed-patch"
 	requestedProvider: CampaignConfig["provider"]

@@ -24,10 +24,10 @@ async function resetTestDatabase() {
 			await db.execute(sql`TRUNCATE TABLE "${sql.raw(tableName)}" CASCADE;`)
 		}
 
-		console.log(`[${process.env.DATABASE_URL}] TRUNCATE ${tableNames.join(", ")}`)
-	} catch (error) {
-		console.error("Error resetting database:", error)
-		throw error
+		console.log(`Reset isolated evaluator test database (${tableNames.length} tables)`)
+	} catch {
+		// Vitest prints thrown errors, including driver messages that may contain connection details.
+		throw new Error("Unable to reset isolated evaluator test database; check service readiness and migrations")
 	}
 }
 

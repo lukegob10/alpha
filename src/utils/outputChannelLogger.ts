@@ -2,6 +2,38 @@ import * as vscode from "vscode"
 
 export type LogFunction = (...args: unknown[]) => void
 
+/** VS Code may close diagnostic channels before invoking extension deactivation. */
+export function createLifecycleSafeOutputChannel(channel: vscode.OutputChannel): vscode.OutputChannel {
+	let closed = false
+	const write = (operation: () => void) => {
+		if (closed) return
+		try {
+			operation()
+		} catch (error) {
+			if (!(error instanceof Error) || error.message !== "Channel has been closed") throw error
+			closed = true
+		}
+	}
+	return {
+		get name() {
+			return channel.name
+		},
+		append: (value) => write(() => channel.append(value)),
+		appendLine: (value) => write(() => channel.appendLine(value)),
+		replace: (value) => write(() => channel.replace(value)),
+		clear: () => write(() => channel.clear()),
+		show: ((columnOrFocus?: vscode.ViewColumn | boolean, preserveFocus?: boolean) => {
+			if (typeof columnOrFocus === "number") channel.show(columnOrFocus, preserveFocus)
+			else channel.show(columnOrFocus)
+		}) as vscode.OutputChannel["show"],
+		hide: () => channel.hide(),
+		dispose: () => {
+			closed = true
+			channel.dispose()
+		},
+	}
+}
+
 /**
  * Creates a logging function that writes to a VSCode output channel
  * Based on the outputChannelLog implementation from src/extension/api.ts

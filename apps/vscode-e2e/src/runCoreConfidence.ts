@@ -4,7 +4,7 @@ import * as os from "node:os"
 import { randomUUID } from "node:crypto"
 
 import { prepareLiveGate, fingerprintGateArtifacts } from "./campaign/liveGate"
-import { runOwnedProcess } from "./campaign/ownedProcess"
+import { pnpmCommand, runOwnedProcess } from "./campaign/ownedProcess"
 import { createReportStore, openCampaignRoot } from "./campaign/reportStore"
 import { runExtensionTests, type ExtensionTestRunResult } from "./runTest"
 import { readBounded } from "./evidence/paths"
@@ -97,8 +97,7 @@ export async function runCoreConfidence(
 		const certificationSignal = AbortSignal.any([signal, AbortSignal.timeout(15 * 60_000)])
 		const certification = await dependencies.runOwnedProcess(
 			{
-				executable: process.execPath,
-				args: [pnpmCliPath, "certify:managed-agents"],
+				...pnpmCommand(pnpmCliPath, ["certify:managed-agents"]),
 				cwd: repositoryRoot,
 				env: { ...process.env, ALPHA_COMPLETION_IDLE_EVIDENCE: completionEvidence },
 			},

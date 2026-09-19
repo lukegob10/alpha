@@ -1,3 +1,5 @@
+import * as vscode from "vscode"
+import { uiFixtureBarrier } from "../ui/fixtureBarrier"
 import * as assert from "assert"
 import { execFile as execFileCallback } from "child_process"
 import * as fs from "fs/promises"
@@ -73,6 +75,17 @@ class ManagedAgentScriptedAI {
 	private readonly waitRetriesByTask = new Map<string, number>()
 	private readonly rolesByTask = new Map<string, ScriptRole>()
 	private readonly verificationChangeSetsByRole = new Map<ScriptRole, string[]>()
+	private releaseDiscardGate?: () => void
+	private readonly discardGate = process.env.ALPHA_UI_ACCEPTANCE_NONCE
+		? new Promise<void>((resolve) => {
+				this.releaseDiscardGate = resolve
+			})
+		: undefined
+	heldDiscardTaskId?: string
+
+	releaseDiscard(): void {
+		this.releaseDiscardGate?.()
+	}
 
 	registerTaskRole(taskId: string, nickname: string): void {
 		const rolesByNickname: Record<string, ScriptRole> = {
@@ -116,6 +129,10 @@ class ManagedAgentScriptedAI {
 		console.log(`[managed-agent-e2e] model task=${taskId} role=${role} turn=${turn}`)
 		this.turnsByTask.set(taskId, turn + 1)
 		const call = await this.getToolCall(role, turn)
+		if (role === "discard" && call.name === "attempt_completion" && this.discardGate) {
+			this.heldDiscardTaskId = taskId
+			await this.discardGate
+		}
 		this.previousCallsByTask.set(taskId, call)
 		const requestIndex = this.requestCountsByTask.get(taskId) ?? 0
 		this.requestCountsByTask.set(taskId, requestIndex + 1)
@@ -345,6 +362,7 @@ class ManagedAgentScriptedAI {
 }
 
 interface ManagedAgentHostProvider {
+	postStateToWebview(): Promise<void>
 	getTaskWithId(taskId: string): Promise<{
 		apiConversationHistory: Array<{
 			role: string
@@ -523,10 +541,11 @@ const initializeFixtureRepository = async (workspace: string): Promise<void> => 
 }
 
 suite("Managed-agent deterministic Extension Host acceptance", function () {
-	this.timeout(3 * 60_000)
+	this.timeout((process.env.ALPHA_UI_ACCEPTANCE_NONCE ? 6 : 3) * 60_000)
 
 	test("runs nested Apply, discard, verification, projection, and navigation without manual input", async () => {
 		const api = globalThis.api
+		const renderedUi = !!process.env.ALPHA_UI_ACCEPTANCE_NONCE
 		const provider = getHostProvider(api)
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace, "ALPHA_E2E_WORKSPACE was not provided by the isolated test runner")
@@ -634,6 +653,16 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				.filter((entry): entry is string => entry !== undefined && entry.length > 0)
 				.join(path.delimiter)
 			await api.setConfiguration(configuration)
+			if (renderedUi) {
+				await provider.postStateToWebview()
+				await vscode.commands.executeCommand("alpha.settingsButtonClicked")
+				await uiFixtureBarrier("settings-edit", { version: vscode.version })
+				await provider.postStateToWebview()
+				await provider.postStateToWebview()
+				await uiFixtureBarrier("settings-refresh-discard")
+				assert.equal(api.getConfiguration().maxConcurrentSubagents, 3)
+			}
+
 			rootTaskId = await api.startNewTask({
 				configuration,
 				text: "Run the deterministic managed-agent acceptance scenario exactly as scripted.",
@@ -657,14 +686,51 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			)
 
 			const nestedChangeSet = await waitForPendingChangeSet(groups, outerTaskId, NESTED_OBJECTIVE)
+			if (renderedUi) {
+				await waitFor(() => scriptedAI.heldDiscardTaskId === discardTaskId, { timeout: 30000 })
+				const heldSibling = provider.getLiveTask(discardTaskId)
+				assert.ok(heldSibling)
+				await provider.showTaskWithId(rootTaskId)
+				await provider.postStateToWebview()
+				for (const [stage, expectedTaskId] of [
+					["live-navigate-nested", nestedTaskId],
+					["live-navigate-outer", outerTaskId],
+					["live-navigate-root", rootTaskId],
+				] as const) {
+					await uiFixtureBarrier(stage, {
+						nickname: nestedTarget.agent.nickname,
+						siblingTaskId: discardTaskId,
+					})
+					await waitFor(
+						async () => (await provider.getStateToPostToWebview()).currentTaskId === expectedTaskId,
+						{ timeout: 10000 },
+					)
+					assert.strictEqual(provider.getLiveTask(discardTaskId), heldSibling)
+					const live = (await provider.getStateToPostToWebview()).liveTasksById?.[discardTaskId]
+					assert.equal(live?.id, discardTaskId)
+					assert.equal(live?.status, "running")
+					assert.equal(completed.has(discardTaskId), false)
+				}
+				scriptedAI.releaseDiscard()
+			}
 			await waitForAvailableCapability(provider, nestedChangeSet, "apply")
-			const nestedApply = await provider.applySubagentChangeSet(
-				nestedChangeSet.taskId,
-				nestedChangeSet.groupId,
-				nestedChangeSet.changeSetId,
-			)
-			assert.equal(nestedApply.success, true, nestedApply.message)
-			assert.equal(nestedApply.changeSetStatus, "applied")
+			if (renderedUi) {
+				await provider.showTaskWithId(outerTaskId)
+				await provider.postStateToWebview()
+				await uiFixtureBarrier("nested-apply", { nickname: nestedTarget.agent.nickname })
+				await waitFor(
+					() => findAgent(groups, outerTaskId, NESTED_OBJECTIVE)?.agent.changeSet?.status === "applied",
+					{ timeout: 10000 },
+				)
+			} else {
+				const nestedApply = await provider.applySubagentChangeSet(
+					nestedChangeSet.taskId,
+					nestedChangeSet.groupId,
+					nestedChangeSet.changeSetId,
+				)
+				assert.equal(nestedApply.success, true, nestedApply.message)
+				assert.equal(nestedApply.changeSetStatus, "applied")
+			}
 			scriptedAI.setVerificationChangeSets("outer", [nestedChangeSet.changeSetId])
 			// The inherited vitest rule must approve verification without a harness response.
 
@@ -673,22 +739,42 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				waitForPendingChangeSet(groups, rootTaskId, DISCARD_OBJECTIVE),
 			])
 			await waitForAvailableCapability(provider, discardChangeSet, "discard")
-			const discarded = await provider.discardSubagentChangeSet(
-				discardChangeSet.taskId,
-				discardChangeSet.groupId,
-				discardChangeSet.changeSetId,
-			)
-			assert.equal(discarded.success, true, discarded.message)
-			assert.equal(discarded.changeSetStatus, "discarded")
+			if (renderedUi) {
+				await provider.showTaskWithId(rootTaskId)
+				await provider.postStateToWebview()
+				await uiFixtureBarrier("discard-discard", { nickname: discardTarget.agent.nickname })
+				await waitFor(
+					() => findAgent(groups, rootTaskId!, DISCARD_OBJECTIVE)?.agent.changeSet?.status === "discarded",
+					{ timeout: 10000 },
+				)
+			} else {
+				const discarded = await provider.discardSubagentChangeSet(
+					discardChangeSet.taskId,
+					discardChangeSet.groupId,
+					discardChangeSet.changeSetId,
+				)
+				assert.equal(discarded.success, true, discarded.message)
+				assert.equal(discarded.changeSetStatus, "discarded")
+			}
 
 			await waitForAvailableCapability(provider, outerChangeSet, "apply")
-			const outerApply = await provider.applySubagentChangeSet(
-				outerChangeSet.taskId,
-				outerChangeSet.groupId,
-				outerChangeSet.changeSetId,
-			)
-			assert.equal(outerApply.success, true, outerApply.message)
-			assert.equal(outerApply.changeSetStatus, "applied")
+			if (renderedUi) {
+				await provider.showTaskWithId(rootTaskId)
+				await provider.postStateToWebview()
+				await uiFixtureBarrier("outer-apply", { nickname: outerTarget.agent.nickname })
+				await waitFor(
+					() => findAgent(groups, rootTaskId!, OUTER_OBJECTIVE)?.agent.changeSet?.status === "applied",
+					{ timeout: 10000 },
+				)
+			} else {
+				const outerApply = await provider.applySubagentChangeSet(
+					outerChangeSet.taskId,
+					outerChangeSet.groupId,
+					outerChangeSet.changeSetId,
+				)
+				assert.equal(outerApply.success, true, outerApply.message)
+				assert.equal(outerApply.changeSetStatus, "applied")
+			}
 			scriptedAI.setVerificationChangeSets("root", [outerChangeSet.changeSetId])
 			await waitFor(() => followupTasks.has(rootTaskId!), { timeout: 60_000, interval: 50 })
 
@@ -791,22 +877,34 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				verified: false,
 			})
 
-			await provider.showTaskWithId(nestedTaskId)
+			if (renderedUi) await uiFixtureBarrier("navigate-nested", { nickname: nestedTarget.agent.nickname })
+			else await provider.showTaskWithId(nestedTaskId)
 			await waitFor(async () => (await provider.getStateToPostToWebview()).currentTaskId === nestedTaskId, {
 				timeout: 30_000,
 				interval: 50,
 			})
-			await provider.showTaskWithId(outerTaskId)
+			if (renderedUi) await uiFixtureBarrier("navigate-outer")
+			else await provider.showTaskWithId(outerTaskId)
 			await waitFor(async () => (await provider.getStateToPostToWebview()).currentTaskId === outerTaskId, {
 				timeout: 30_000,
 				interval: 50,
 			})
-			await provider.showTaskWithId(rootTaskId)
+			if (renderedUi) await uiFixtureBarrier("navigate-root")
+			else await provider.showTaskWithId(rootTaskId)
 			await waitFor(async () => (await provider.getStateToPostToWebview()).currentTaskId === rootTaskId, {
 				timeout: 30_000,
 				interval: 50,
 			})
+			if (renderedUi) {
+				const finalTree = managedAgentTreeProjectionSchema.parse(
+					(await provider.getStateToPostToWebview()).managedAgentTree,
+				)
+				assert.equal(finalTree.nodes.length, 4)
+				assert.equal(finalTree.capacity.terminal, 3)
+				await uiFixtureBarrier("complete")
+			}
 		} finally {
+			scriptedAI.releaseDiscard()
 			api.off(AlphaCodeEventName.Message, onMessage)
 			api.off(AlphaCodeEventName.TaskSpawned, onSpawned)
 			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)

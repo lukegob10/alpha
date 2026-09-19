@@ -8,10 +8,15 @@ import { assertRunnerAncestry } from "../hostOwnership"
 import { assertOwnedTestRoot } from "../testProfile"
 import { readBounded, requireEvidenceRun, rejectSymlinkComponents } from "../evidence/paths"
 import { inspectTaskLifecycle, inspectToolTransactions } from "../scenarios/transactionAssertions"
+import { exerciseSharedMailbox, type MailboxStore } from "../scenarios/sharedStorageMailbox"
 import { PairedScriptedAI } from "../scenarios/sharedStorageScriptedAI"
+import { exerciseSharedHistoryChurn } from "../scenarios/sharedHistoryChurn"
+import { exerciseSharedWorkerMailbox, type SharedWorkerProvider } from "../scenarios/sharedWorkerMailbox"
+import type { TaskHistoryChurnProvider } from "../scenarios/taskHistoryChurn"
 import {
 	validateManifest,
 	failureCode,
+	failureSite,
 	ROLES,
 	publish,
 	readOptional,
@@ -31,7 +36,7 @@ interface Task {
 interface Provider {
 	contextProxy: { globalStorageUri: vscode.Uri }
 	agentControlStoreReady: Promise<void>
-	agentControlStore: { persistence: { filePath: string } }
+	agentControlStore: MailboxStore & { persistence: { filePath: string } }
 	getLiveTask(taskId: string): Task | undefined
 	getTaskWithId(taskId: string): Promise<{ taskDirPath: string }>
 	getAgentLifecycleSnapshot(taskId: string): { status: string } | undefined
@@ -183,8 +188,35 @@ export async function run(): Promise<void> {
 				requests: model.requests,
 				terminalCount: 1,
 			})
+			stage = "mailbox_claim_race"
+			await exerciseSharedMailbox(provider.agentControlStore, directory, manifest, identity, waitPhase)
 		} finally {
 			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+		}
+		if (manifest.sharedWorkerMailbox) {
+			stage = "shared_worker_mailbox"
+			await exerciseSharedWorkerMailbox({
+				api,
+				provider: provider as unknown as SharedWorkerProvider,
+				manifest,
+				identity,
+				directory,
+				waitPhase,
+			})
+		}
+		if (manifest.taskHistoryChurn) {
+			stage = "task_history_churn"
+			await waitPhase("churn-start")
+			const context = (api as unknown as { context: vscode.ExtensionContext }).context
+			assert.ok(context.globalState)
+			await exerciseSharedHistoryChurn({
+				api,
+				provider: provider as unknown as TaskHistoryChurnProvider,
+				globalState: context.globalState,
+				manifest,
+				identity,
+				directory,
+			})
 		}
 	} catch (error) {
 		if (directory && manifest && role) {
@@ -194,6 +226,7 @@ export async function run(): Promise<void> {
 				role,
 				stage,
 				code: failureCode(error),
+				site: failureSite(error),
 				requests: model?.requests ?? 0,
 			})
 		} else {

@@ -5,6 +5,8 @@
 	"type": "module",
 	"exports": "./src/index.ts",
 	"scripts": {
+		"benchmark:campaign-paired-report": "tsx src/benchmark/cli.ts campaign-paired-report",
+		"benchmark:export-host-campaign": "tsx src/benchmark/cli.ts export-host-campaign",
 		"lint": "eslint src --ext=ts --max-warnings=0",
 		"check-types": "tsc --noEmit",
 		"benchmark:run-model": "dotenvx run -f .env.development .env.local -- tsx src/benchmark/cli.ts run-model",
@@ -24,8 +26,8 @@
 		"test:integration": "dotenvx run -f .env.test -- vitest run --config vitest.integration.config.ts",
 		"test:contract": "dotenvx run -f .env.test -- vitest run --config vitest.contract.config.ts",
 		"test:certification": "dotenvx run -f .env.test -- vitest run --config vitest.certification.config.ts",
-		"test:infrastructure": "dotenvx run -f .env.test -- vitest run --config vitest.infrastructure.config.ts",
-		"test:all": "pnpm test:unit && pnpm test:integration && pnpm test:contract && pnpm test:certification && pnpm test:infrastructure",
+		"test:infrastructure": "pnpm test:redis && pnpm test:docker",
+		"test:all": "pnpm test:unit && pnpm test:services && pnpm test:contract && pnpm test:certification && pnpm test:docker",
 		"clean": "rimraf dist .turbo",
 		"cli": "dotenvx run -f .env.development .env.local -- tsx src/cli/index.ts",
 		"drizzle-kit": "dotenvx run -f .env.development -- tsx node_modules/drizzle-kit/bin.cjs",
@@ -43,7 +45,14 @@
 		"redis:up": "dotenvx run -f .env.development .env.local -- docker compose up -d redis",
 		"redis:down": "dotenvx run -f .env.development .env.local -- docker compose down redis",
 		"services:up": "dotenvx run -f .env.development .env.local -- docker compose up -d db redis",
-		"services:down": "dotenvx run -f .env.development .env.local -- docker compose down db redis"
+		"services:down": "dotenvx run -f .env.development .env.local -- docker compose down db redis",
+		"docker:prepare": "docker compose build runner && docker compose up -d db redis && node ../../scripts/evals/docker-readiness.mjs && docker compose run --rm runner pnpm --filter @alpha-code/evals db:migrate",
+		"docker:campaign": "docker compose run --rm runner pnpm --filter @alpha-code/evals cli --ci",
+		"docker:stop": "docker compose down --remove-orphans",
+		"services:check": "dotenvx run -f .env.test -- tsx src/infrastructure/serviceReadiness.ts",
+		"test:redis": "dotenvx run -f .env.test -- vitest run --config vitest.services.config.ts",
+		"test:services": "pnpm services:check && pnpm test:integration && pnpm test:redis",
+		"test:docker": "dotenvx run -f .env.test -- vitest run --config vitest.infrastructure.config.ts"
 	},
 	"dependencies": {
 		"@alpha-code/ipc": "workspace:^",

@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 
 const mocks = vi.hoisted(() => ({
 	createRun: vi.fn(),
@@ -68,5 +71,40 @@ describe("runBenchmarkModelCampaign", () => {
 			}),
 		)
 		expect(mocks.runEvals).toHaveBeenCalledWith(42)
+	})
+	it("exports available lifecycle evidence but cannot attest an installed extension from fixture identity", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "campaign-export-"))
+		try {
+			await runBenchmarkModelCampaign({
+				publicRoot: "benchmarks",
+				partition: "development",
+				modelRole: "luna-high",
+				modelId: "gpt-5.6-luna",
+				evidenceOutput: directory,
+			})
+			const receipt = JSON.parse(await fs.readFile(path.join(directory, "run-42", "campaign.json"), "utf8"))
+			expect(receipt.variant).toBeNull()
+			expect(receipt.incomplete[0].reason).toContain("executed_harness_unavailable")
+			expect(
+				JSON.parse(await fs.readFile(path.join(directory, "run-42", "lifecycle.json"), "utf8")),
+			).toMatchObject({ runId: 42, model: "gpt-5.6-luna", trials: [] })
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+	it("retains both the execution failure and evidence export failure", async () => {
+		const execution = new Error("execution failed")
+		const evidence = new Error("evidence failed")
+		mocks.runEvals.mockRejectedValueOnce(execution)
+		mocks.getTasks.mockRejectedValueOnce(evidence)
+		await expect(
+			runBenchmarkModelCampaign({
+				publicRoot: "benchmarks",
+				partition: "development",
+				modelRole: "luna-high",
+				modelId: "gpt-5.6-luna",
+				evidenceOutput: "unused",
+			}),
+		).rejects.toMatchObject({ errors: [execution, evidence] })
 	})
 })

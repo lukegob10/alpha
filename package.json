@@ -6,6 +6,8 @@
 		"npm": "11.11.0"
 	},
 	"scripts": {
+		"harness": "node scripts/harness/run.mjs",
+		"harness:acceptance": "node scripts/harness/local-acceptance.mjs",
 		"preinstall": "node scripts/bootstrap.mjs",
 		"prepare": "husky",
 		"install": "node scripts/bootstrap.mjs",
@@ -41,8 +43,10 @@
 		"build:all": "turbo build --log-order grouped --output-logs new-only",
 		"test:all": "pnpm test && pnpm test:tooling && pnpm --filter @alpha-code/vscode-e2e test:unit && pnpm test:evals",
 		"test:evals": "pnpm --filter @alpha-code/evals test:all",
+		"test:evals:services": "pnpm --filter @alpha-code/evals test:services",
+		"test:evals:infrastructure": "pnpm --filter @alpha-code/evals test:docker",
 		"test:evals:offline": "pnpm --filter @alpha-code/evals test:unit && pnpm --filter @alpha-code/evals test:contract && pnpm --filter @alpha-code/evals test:certification",
-		"test:tooling": "node --test scripts/install-vsix.test.js scripts/bootstrap.test.mjs"
+		"test:tooling": "node --test scripts/install-vsix.test.js scripts/bootstrap.test.mjs scripts/harness/*.test.mjs scripts/evals/*.test.mjs"
 	},
 	"devDependencies": {
 		"@changesets/cli": "^2.27.10",

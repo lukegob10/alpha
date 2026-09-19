@@ -2,6 +2,9 @@ import { drizzle } from "drizzle-orm/postgres-js"
 import postgres from "postgres"
 
 import * as schema from "./schema"
+import { assertIsolatedTestDatabase } from "./testDatabaseTarget"
+
+if (process.env.NODE_ENV === "test") assertIsolatedTestDatabase(process.env.DATABASE_URL)
 
 const pgClient = postgres(process.env.DATABASE_URL!, { prepare: false })
 const client = drizzle({ client: pgClient, schema })
@@ -9,10 +12,6 @@ const client = drizzle({ client: pgClient, schema })
 let testDb: typeof client | undefined = undefined
 
 if (process.env.NODE_ENV === "test") {
-	if (!process.env.DATABASE_URL!.includes("test") || !process.env.DATABASE_URL!.includes("localhost")) {
-		throw new Error("DATABASE_URL is not a test database")
-	}
-
 	testDb = client
 }
 

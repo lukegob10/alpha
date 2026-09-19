@@ -5,6 +5,8 @@ import { createHash, randomUUID } from "node:crypto"
 import { performance } from "node:perf_hooks"
 
 import { runOwnedProcess, type OwnedProcessResult } from "./ownedProcess"
+import { runSharedWorkerMailboxController } from "./sharedWorkerMailboxController"
+import { validateSharedWorkerControl, type SharedWorkerMailboxReport } from "../evidence/sharedWorkerMailbox"
 import { openCampaignRoot } from "./reportStore"
 import { HOST_VERSIONS, type CampaignHost } from "./types"
 import { acquireProfileLease, assertRunnerAncestry } from "../hostOwnership"
@@ -13,7 +15,15 @@ import { captureRunEvidence } from "../evidence/capture"
 import { auditRetainedStorage, type RetainedStorageBudgetResult } from "../evidence/retainedStorageBudget"
 import { isWithin, prepareEvidenceRun, readBounded, rejectSymlinkComponents } from "../evidence/paths"
 import {
+	assertTaskHistoryChurnPair,
+	parseTaskHistoryChurnReceipt,
+	type TaskHistoryChurnReceipt,
+} from "../evidence/taskHistoryChurn"
+import {
 	failureCode,
+	mailboxEventId,
+	validateMailboxClaims,
+	validateMailboxVerification,
 	ROLES,
 	publish,
 	readOptional,
@@ -34,9 +44,14 @@ export interface SharedStorageCampaignOptions {
 	fixtureRoot: string
 	host: CampaignHost
 	signal?: AbortSignal
+	taskHistoryChurn?: PairManifest["taskHistoryChurn"]
+	sharedWorkerMailbox?: boolean
+	/** Only reuse an owned profile beneath this campaign root, after its preceding family has exited. */
+	reuseProfileRoot?: string
 }
 export interface SharedStorageCampaignReport {
 	schemaVersion: 1
+	execution: "extension-host" | "test-seam"
 	runId: string
 	hostVersion: CampaignHost["version"]
 	status: "passed" | "failed" | "blocked" | "cancelled" | "timed_out"
@@ -45,6 +60,7 @@ export interface SharedStorageCampaignReport {
 	storageAdmission: RetainedStorageBudgetResult | null
 	cleanupVerified: boolean
 	leaseReleased: boolean
+	mailboxClaimsVerified?: boolean
 	identitiesVerified: boolean
 	readyHostCount: number
 	doneHostCount: number
@@ -56,6 +72,10 @@ export interface SharedStorageCampaignReport {
 	captureComplete: boolean
 	retention: "held"
 	reportPath: string
+	profileRoot?: string
+	taskHistoryChurn?: TaskHistoryChurnReceipt[]
+	sharedWorkerMailbox?: SharedWorkerMailboxReport
+	sharedWorkerMailboxVerified?: boolean
 }
 interface SharedStorageDependencies {
 	runProcess?: typeof runOwnedProcess
@@ -77,6 +97,7 @@ export async function runSharedStorageCampaign(
 	dependencies: SharedStorageDependencies = {},
 ): Promise<SharedStorageCampaignReport> {
 	assert.ok(HOST_VERSIONS.includes(options.host.version), "unsupported_host")
+	assert.ok(options.sharedWorkerMailbox === undefined || typeof options.sharedWorkerMailbox === "boolean")
 	const executable = options.host.executable
 	assert.ok(executable && path.isAbsolute(executable) && !executable.includes("\0"), "explicit_host_required")
 	const extensionPath = dependencies.extensionPath ?? path.resolve(__dirname, "../../../../src")
@@ -91,12 +112,14 @@ export async function runSharedStorageCampaign(
 	const reportName = `shared-storage-${runId}.json`
 	const report: SharedStorageCampaignReport = {
 		schemaVersion: 1,
+		execution: Object.keys(dependencies).length ? "test-seam" : "extension-host",
 		runId,
 		hostVersion: options.host.version,
 		status: "blocked",
 		storageAdmission: null,
 		cleanupVerified: false,
 		leaseReleased: false,
+		mailboxClaimsVerified: false,
 		identitiesVerified: false,
 		readyHostCount: 0,
 		doneHostCount: 0,
@@ -109,7 +132,12 @@ export async function runSharedStorageCampaign(
 		reportPath: path.join(root, reportName),
 	}
 	const now = dependencies.monotonicNow ?? (() => performance.now())
-	const deadline = now() + RUNTIME_BUDGET_MS
+	const runtimeBudgetMs = options.taskHistoryChurn
+		? 600_000
+		: options.sharedWorkerMailbox
+			? 300_000
+			: RUNTIME_BUDGET_MS
+	const deadline = now() + runtimeBudgetMs
 	let budgetExceeded = false
 	const abort = new AbortController()
 	const onAbort = () => abort.abort()
@@ -118,14 +146,15 @@ export async function runSharedStorageCampaign(
 	const timer = setTimeout(() => {
 		budgetExceeded = true
 		onAbort()
-	}, RUNTIME_BUDGET_MS)
+	}, runtimeBudgetMs)
 	const checkBudget = () => {
 		if (options.signal?.aborted) throw new Error("runtime_closed")
 		if (abort.signal.aborted || now() >= deadline) throw new Error("controller_timeout")
 	}
 	const startedAt = new Date().toISOString()
 	const runRoot = path.join(root, `shared-storage-${runId}`)
-	const profileRoot = path.join(runRoot, "profile")
+	const profileRoot = options.reuseProfileRoot ?? path.join(runRoot, "profile")
+	report.profileRoot = profileRoot
 	const artifactsRoot = path.join(runRoot, "artifacts")
 	const bundlePath = path.join(extensionPath, "dist", "extension.js")
 	let releaseLease: (() => Promise<void>) | undefined
@@ -143,6 +172,11 @@ export async function runSharedStorageCampaign(
 	}
 	try {
 		checkBudget()
+		if (options.reuseProfileRoot) {
+			assert.ok(isWithin(root, profileRoot) && profileRoot !== root, "profile_outside_campaign")
+			await rejectSymlinkComponents(profileRoot)
+			await assertOwnedTestRoot(profileRoot, "profile")
+		}
 		report.bundleHashBefore = await bundleHash(bundlePath)
 		const extension = record(
 			JSON.parse((await readBounded(path.join(extensionPath, "package.json"), 1_048_576)).toString()),
@@ -184,6 +218,9 @@ export async function runSharedStorageCampaign(
 		}
 		checkBudget()
 		manifest = {
+			mailboxClaimRace: 1,
+			...(options.sharedWorkerMailbox ? { sharedWorkerMailbox: 1 as const } : {}),
+			...(options.taskHistoryChurn ? { taskHistoryChurn: options.taskHistoryChurn } : {}),
 			runId,
 			nonce: randomUUID(),
 			hostVersion: options.host.version,
@@ -303,6 +340,74 @@ export async function runSharedStorageCampaign(
 		done = receipts.map((value, index) => validateDone(value, pair, ROLES[index]!, report.taskIds[index]!))
 		report.requests = done.reduce((sum, item) => sum + item.requests, 0)
 		await verifyLive()
+		stage = "mailbox_claim_race"
+		await publish(directory, "mailbox-start.json", { runId, nonce: pair.nonce })
+		const mailboxReady = await awaitPair("mailbox-ready")
+		assert.deepEqual(validateIdentities(mailboxReady, pair), identities)
+		for (const value of mailboxReady) {
+			const receipt = requireNonce(value, pair)
+			assert.equal(receipt.mailboxClaimRace, 1)
+			assert.equal(receipt.recipientTaskId, report.taskIds[0])
+			assert.equal(receipt.eventId, mailboxEventId(pair))
+		}
+		await publish(directory, "mailbox-claim.json", { runId, nonce: pair.nonce })
+		const claims = validateMailboxClaims(await awaitPair("mailbox-claimed"), pair, report.taskIds[0]!)
+		assert.deepEqual(validateIdentities(claims, pair), identities)
+		const winner = claims.find((claim) => claim.outcome === "claimed")!.role
+		await publish(directory, "mailbox-ack.json", { runId, nonce: pair.nonce })
+		const verified = (await awaitPair("mailbox-verified")).map((value, index) =>
+			validateMailboxVerification(value, pair, ROLES[index]!, report.taskIds[0]!, winner),
+		)
+		assert.deepEqual(verified, identities)
+		await verifyLive()
+		if (pair.sharedWorkerMailbox) {
+			stage = "shared_worker_mailbox"
+			report.sharedWorkerMailboxVerified = false
+			try {
+				report.sharedWorkerMailbox = await runSharedWorkerMailboxController({
+					manifest: pair,
+					identities,
+					directory,
+					awaitPair,
+					verifyLive,
+				})
+				report.requests = (report.requests ?? 0) + report.sharedWorkerMailbox.requests
+			} catch (error) {
+				report.requests = null
+				throw error
+			}
+		}
+		if (pair.taskHistoryChurn) {
+			stage = "task_history_churn"
+			await publish(directory, "churn-start.json", { runId, nonce: pair.nonce })
+			const values = await awaitPair("churn")
+			report.taskHistoryChurn = values.map((value, index) => {
+				const envelope = requireNonce(value, pair)
+				const receipt = parseTaskHistoryChurnReceipt(envelope.receipt, {
+					runId,
+					hostVersion: options.host.version,
+					phase: pair.taskHistoryChurn!.phase,
+				})
+				assert.equal(receipt.extensionHostPid, identities[index]!.pid)
+				assert.equal(receipt.storagePath, identities[index]!.storagePath)
+				assert.equal(receipt.windowRole, ROLES[index])
+				assert.equal(receipt.windowCount, 2)
+				assert.equal(receipt.requests, 64)
+				return receipt
+			})
+			const ids = report.taskHistoryChurn.flatMap((receipt) => [
+				...receipt.rootTaskIds,
+				...receipt.managedChildTaskIds,
+			])
+			assertTaskHistoryChurnPair(report.taskHistoryChurn, {
+				storagePath: identities[0]!.storagePath,
+				hostVersion: options.host.version,
+				phase: pair.taskHistoryChurn.phase,
+			})
+			report.taskIds.push(...ids)
+			report.requests! += report.taskHistoryChurn.reduce((sum, receipt) => sum + receipt.requests!, 0)
+			await verifyLive()
+		}
 	} catch (error) {
 		fail(failureCode(error))
 	} finally {
@@ -342,11 +447,39 @@ export async function runSharedStorageCampaign(
 		if (report.cleanupVerified) {
 			stage = "shared_control"
 			if (!report.failure) {
-				const control = record(JSON.parse((await readBounded(done[0]!.persistenceFile, 1_048_576)).toString()))
+				// Churn intentionally retains both generations of root/child records.
+				const controlLimit = manifest!.taskHistoryChurn ? 4 * 1_024 * 1_024 : 1_048_576
+				const control = record(
+					JSON.parse((await readBounded(done[0]!.persistenceFile, controlLimit)).toString()),
+				)
 				assert.ok(Array.isArray(control.agents))
 				const agents = control.agents.map(record)
 				for (const receipt of done)
 					assert.equal(agents.find((agent) => agent.taskId === receipt.taskId)?.status, "completed")
+				assert.ok(Array.isArray(control.mailbox))
+				const events = control.mailbox
+					.map(record)
+					.filter((event) => event.eventId === mailboxEventId(manifest!))
+				assert.equal(events.length, 1)
+				const event = events[0]!
+				assert.equal(event.recipientTaskId, report.taskIds[0])
+				assert.equal(event.rootTaskId, report.taskIds[0])
+				assert.ok(typeof event.acknowledgedAt === "number" && Number.isFinite(event.acknowledgedAt))
+				assert.equal(event.deliveredAt, event.acknowledgedAt)
+				const claims = validateMailboxClaims(
+					await Promise.all(
+						ROLES.map((role) => readOptional(report.artifactDirectory!, `mailbox-claimed-${role}.json`)),
+					),
+					manifest!,
+					report.taskIds[0]!,
+				)
+				assert.equal(event.claimId, claims.find((claim) => claim.outcome === "claimed")!.claimId)
+				report.mailboxClaimsVerified = true
+				if (manifest!.sharedWorkerMailbox) {
+					assert.ok(report.sharedWorkerMailbox)
+					validateSharedWorkerControl(control, report.sharedWorkerMailbox)
+					report.sharedWorkerMailboxVerified = true
+				}
 			}
 		}
 	} catch (error) {
@@ -366,6 +499,7 @@ export async function runSharedStorageCampaign(
 		if (report.cleanupVerified && report.artifactDirectory && profile) {
 			stage = "capture"
 			const captured = await (dependencies.capture ?? captureRunEvidence)({
+				...(manifest?.taskHistoryChurn ? { limits: { maxTaskIds: 100 } } : {}),
 				artifactsRoot,
 				runId,
 				bundlePath,
@@ -375,7 +509,7 @@ export async function runSharedStorageCampaign(
 					requestedHostVersion: options.host.version,
 					provider: "scripted",
 					modelId: "paired-host-scripted",
-					taskIds: report.taskIds,
+					taskIds: [...report.taskIds, ...(report.sharedWorkerMailbox?.taskIds ?? [])],
 					startedAt,
 					finishedAt: new Date().toISOString(),
 					outcome: report.status,

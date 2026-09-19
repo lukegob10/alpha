@@ -13,6 +13,24 @@ export interface AgentTurnFailure {
 }
 
 /**
+ * Optional identity carried beside an additive event-log record.
+ *
+ * These identifiers are deliberately separate from the event union.  The
+ * union describes what happened; the envelope joins that observation to the
+ * owning Task step.  Keeping the envelope optional preserves readability of
+ * older JSONL records and keeps the event log additive to the canonical
+ * lifecycle journal.
+ */
+export interface AgentTurnEventIdentity {
+	turnId?: string
+	stepId?: string
+	requestId?: string
+	attemptId?: string
+	correlationId?: string
+	causationId?: string
+}
+
+/**
  * Internal lifecycle records for the harness. These are not UI messages,
  * persisted API history, or extension IPC records.
  */
@@ -66,6 +84,10 @@ export type AgentTurnEvent =
 			inputTokens: number
 			outputTokens: number
 			cacheReadTokens: number
+			cacheWriteTokens?: number
+			reasoningTokens?: number
+			totalCost?: number
+			lateCollection?: boolean
 	  }
 	| {
 			type: "context_refreshed"

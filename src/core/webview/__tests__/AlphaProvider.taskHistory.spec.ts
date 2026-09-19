@@ -1,7 +1,7 @@
 // pnpm --filter alpha test core/webview/__tests__/AlphaProvider.taskHistory.spec.ts
 
 import * as vscode from "vscode"
-import type { HistoryItem, ExtensionMessage } from "@alpha-code/types"
+import { TaskLifecycleState, type HistoryItem, type ExtensionMessage } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { ContextProxy } from "../../config/ContextProxy"
@@ -411,6 +411,24 @@ describe("AlphaProvider Task History Synchronization", () => {
 		finishRecovery()
 		await expect(pendingState).resolves.toBeDefined()
 		expect(getState).toHaveBeenCalledOnce()
+	})
+
+	it.each(["completed", "failed"] as const)("preserves %s history when its runtime closes", async (status) => {
+		const task = createHistoryItem({ id: "terminal-close", task: "Preserve the terminal outcome", status })
+		await provider.updateTaskHistory(task, { broadcast: false })
+		const lifecycle = provider as unknown as {
+			queueTaskLifecycleHistoryStatus(id: string, state: TaskLifecycleState): void
+			taskLifecycleHistoryWrites: Map<string, Promise<void>>
+		}
+		lifecycle.queueTaskLifecycleHistoryStatus(task.id, TaskLifecycleState.Closed)
+		await lifecycle.taskLifecycleHistoryWrites.get(task.id)
+		expect(provider.taskHistoryStore.get(task.id)?.status).toBe(status)
+
+		// A new running turn reopens the task, so cancelling that turn must persist.
+		lifecycle.queueTaskLifecycleHistoryStatus(task.id, TaskLifecycleState.Running)
+		lifecycle.queueTaskLifecycleHistoryStatus(task.id, TaskLifecycleState.Closed)
+		await lifecycle.taskLifecycleHistoryWrites.get(task.id)
+		expect(provider.taskHistoryStore.get(task.id)?.status).toBe("interrupted")
 	})
 
 	describe("getTaskWithAggregatedCosts", () => {

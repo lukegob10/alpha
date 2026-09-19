@@ -37,16 +37,12 @@ export async function createRuntimeIdentities(input: {
 	const fixtureDigest = await digestWorkspaceTree({ workspace: input.workspace, processRunner: input.processRunner })
 	const prompt = await readFirst(input.promptFiles)
 	const commit = await gitValue(input.processRunner, input.workspace, ["rev-parse", "HEAD"])
-	const status = await gitValue(input.processRunner, input.workspace, [
-		"status",
-		"--porcelain=v1",
-		"--untracked-files=all",
-	])
 	const taskManifest = taskManifestSchema.parse({
 		schemaVersion: 1,
 		id: input.taskManifest?.id ?? input.taskId,
 		version: input.taskManifest?.version ?? 1,
 		fixtureDigest,
+		workspaceCommit: commit || undefined,
 		capabilities: input.taskManifest?.capabilities ?? ["coding", "workspace_editing", "validation"],
 		risk: input.taskManifest?.risk ?? "medium",
 		network: input.network,
@@ -55,11 +51,15 @@ export async function createRuntimeIdentities(input: {
 	const variantManifest = variantManifestSchema.parse({
 		schemaVersion: 1,
 		id: `runtime-${input.model}`,
-		extensionCommit: commit || "working-tree",
-		workingTreeDigest: sha256(canonicalJson({ commit, status })),
+		// The installed extension used by the legacy evaluator is not attested by
+		// the task repository's HEAD. Preserve identity incompleteness explicitly.
+		extensionCommit: "unavailable:executed-harness",
+		workingTreeDigest: sha256("unavailable:executed-harness"),
+		identityStatus: "executed_harness_unavailable",
 		model: input.model,
 		promptDigest: sha256(prompt),
-		toolSchemaDigest: sha256(canonicalJson(input.settings ?? {})),
+		toolSchemaDigest: sha256("unavailable:executed-tool-schema"),
+		settingsDigest: sha256(canonicalJson(input.settings ?? {})),
 		runnerImageDigest: normalizeDigest(process.env.EVALS_RUNNER_IMAGE_ID ?? "local-process"),
 	})
 	return {

@@ -1,4 +1,5 @@
 export * from "./types"
+export * from "./controls"
 export * from "./aggregate"
 export * from "./boundary"
 export * from "./evidence"

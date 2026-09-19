@@ -6,16 +6,6 @@ import { afterAll, describe, expect, it } from "vitest"
 
 import { ExecaHarnessProcessRunner } from "../../orchestration/index"
 import {
-	deregisterRunner,
-	disconnectRedis,
-	getRunnersKey,
-	isHeartbeatActive,
-	redisClient,
-	registerRunner,
-	startHeartbeat,
-	stopHeartbeat,
-} from "../../cli/redis"
-import {
 	assertNoContainerLeaks,
 	collectInfrastructureManifest,
 	DockerCliAdapter,
@@ -45,24 +35,9 @@ function spec(suffix: string, overrides: Partial<ContainerSpec> = {}): Container
 afterAll(async () => {
 	for (const container of await docker.list({ runId: campaign })) await docker.remove(container.id)
 	await assertNoContainerLeaks(docker, { runId: campaign })
-	await disconnectRedis()
 })
 
 describe("real Docker certification", () => {
-	it("maintains and removes real Redis runner leases and controller heartbeats", async () => {
-		process.env.REDIS_URL = "redis://localhost:6380"
-		const runId = Math.abs(campaign.split("").reduce((value, character) => value + character.charCodeAt(0), 0))
-		await registerRunner({ runId, taskId: 901, timeoutSeconds: 10 })
-		const client = await redisClient()
-		expect(await client.sCard(getRunnersKey(runId))).toBe(1)
-		const heartbeat = await startHeartbeat(runId, 4)
-		expect(await isHeartbeatActive(runId)).toBe(true)
-		await deregisterRunner({ runId, taskId: 901 })
-		expect(await client.sCard(getRunnersKey(runId))).toBe(0)
-		await stopHeartbeat(runId, heartbeat)
-		expect(await isHeartbeatActive(runId)).toBe(false)
-	})
-
 	it.each([
 		{
 			service: "redis",

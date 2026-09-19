@@ -10,6 +10,8 @@ import type { BenchmarkPartition } from "./publicTypes"
 import { loadBenchmarkCatalog } from "./loader"
 import { mergeModelCalibration, type ModelCalibrationTrial } from "./modelCalibration"
 import { assertCampaignBudgetAuthorized, type TierBudget } from "./budgets"
+import { sealCampaignExport } from "../experiments/campaign"
+import { canonicalJson, sha256 } from "../evidence/canonical"
 
 export type ModelCampaignPartition = Extract<BenchmarkPartition, "smoke" | "development" | "regression" | "holdout">
 export type ModelCampaignProvider = "openai-native" | "openrouter"
@@ -27,6 +29,7 @@ export async function runBenchmarkModelCampaign(options: {
 	taskIds?: string[]
 	campaignBudget?: TierBudget
 	highCostApproved?: boolean
+	evidenceOutput?: string
 }): Promise<number> {
 	if (!options.modelId.trim()) throw new Error("A concrete provider model id is required")
 	const provider = options.provider ?? "openai-native"
@@ -99,7 +102,84 @@ export async function runBenchmarkModelCampaign(options: {
 			})
 		}
 	}
-	await runEvals(run.id)
+	let executionFailure: { error: unknown } | undefined
+	try {
+		await runEvals(run.id)
+	} catch (error) {
+		executionFailure = { error }
+	}
+	try {
+		if (options.evidenceOutput) {
+			const rows = await getTasks(run.id)
+			const lifecycle = []
+			for (const row of rows) {
+				const trial = await findTrialForTask(row.id)
+				lifecycle.push({
+					taskId: row.id,
+					benchmarkTaskIdentity: row.benchmarkTaskIdentity,
+					repetition: row.iteration,
+					trialId: trial?.id ?? null,
+					status: trial?.status ?? "missing",
+					firstAttemptStatus: trial?.firstAttemptStatus ?? null,
+					retryAssisted: trial?.retryAssisted ?? null,
+					attemptCount: trial?.attemptCount ?? null,
+					taskDefinitionIdentity: trial?.taskDefinitionIdentity ?? null,
+					runtimeVariantIdentity: trial?.variantIdentity ?? null,
+				})
+			}
+			const receipt = sealCampaignExport({
+				schemaVersion: 1,
+				runId: String(run.id),
+				executionFidelity: "actual-host",
+				decisionSource: "live",
+				variant: null,
+				taskSet: {
+					schemaVersion: 1,
+					id: "benchmark-campaign",
+					version: 1,
+					tasks: selected.map((task) => ({
+						id: task.id,
+						version: task.version,
+						digest: sha256(canonicalJson(task)),
+					})),
+				},
+				observations: [],
+				incomplete: [
+					{
+						reason: "executed_harness_unavailable: legacy installed-extension runner does not attest the executed bundle; lifecycle.json preserves available trial evidence",
+					},
+				],
+			})
+			const directory = path.join(options.evidenceOutput, `run-${run.id}`)
+			await fs.mkdir(directory, { recursive: true })
+			await fs.writeFile(path.join(directory, "campaign.json"), JSON.stringify(receipt, null, 2) + "\n", {
+				flag: "wx",
+				mode: 0o600,
+			})
+			await fs.writeFile(
+				path.join(directory, "lifecycle.json"),
+				JSON.stringify(
+					{
+						runId: run.id,
+						model: options.modelId,
+						configurationDigest: sha256(canonicalJson(settings)),
+						trials: lifecycle,
+					},
+					null,
+					2,
+				) + "\n",
+				{ flag: "wx", mode: 0o600 },
+			)
+		}
+	} catch (error) {
+		if (executionFailure)
+			throw new AggregateError(
+				[executionFailure.error, error],
+				"Campaign execution and evidence export both failed",
+			)
+		throw error
+	}
+	if (executionFailure) throw executionFailure.error
 	await ingestModelCampaign({
 		runId: run.id,
 		modelRole: options.modelRole,

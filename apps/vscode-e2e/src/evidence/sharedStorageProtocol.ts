@@ -27,6 +27,9 @@ export function failureCode(error: unknown): string {
 }
 
 export interface PairManifest {
+	sharedWorkerMailbox?: 1
+	mailboxClaimRace?: 1
+	taskHistoryChurn?: { phase: "populate" | "reload"; priorReceipts?: Record<Role, string> }
 	runId: string
 	nonce: string
 	controllerPid: number
@@ -103,6 +106,23 @@ function roleManifest(value: unknown): { workspace: string; workspaceFile: strin
 
 export function validateManifest(value: unknown): PairManifest {
 	const item = recordValue(value)
+	assert.ok(item.mailboxClaimRace === undefined || item.mailboxClaimRace === 1)
+	assert.ok(item.sharedWorkerMailbox === undefined || item.sharedWorkerMailbox === 1)
+	let taskHistoryChurn: PairManifest["taskHistoryChurn"]
+	if (item.taskHistoryChurn !== undefined) {
+		const churn = recordValue(item.taskHistoryChurn)
+		assert.ok(churn.phase === "populate" || churn.phase === "reload")
+		if (churn.phase === "reload") {
+			const prior = recordValue(churn.priorReceipts)
+			taskHistoryChurn = {
+				phase: "reload",
+				priorReceipts: { a: absoluteNormalizedPath(prior.a), b: absoluteNormalizedPath(prior.b) },
+			}
+		} else {
+			assert.equal(churn.priorReceipts, undefined)
+			taskHistoryChurn = { phase: "populate" }
+		}
+	}
 	const runId = safeToken(item.runId)
 	const nonce = safeToken(item.nonce)
 	const controllerPid = positiveInteger(item.controllerPid)
@@ -115,6 +135,9 @@ export function validateManifest(value: unknown): PairManifest {
 	assert.notEqual(validatedRoles.a.workspace, validatedRoles.b.workspace)
 	assert.notEqual(validatedRoles.a.workspaceFile, validatedRoles.b.workspaceFile)
 	return {
+		...(item.sharedWorkerMailbox === 1 ? { sharedWorkerMailbox: 1 as const } : {}),
+		...(item.mailboxClaimRace === 1 ? { mailboxClaimRace: 1 as const } : {}),
+		...(taskHistoryChurn ? { taskHistoryChurn } : {}),
 		runId,
 		nonce,
 		controllerPid,
@@ -124,6 +147,47 @@ export function validateManifest(value: unknown): PairManifest {
 		hostVersion: hostVersionValue,
 		roles: validatedRoles,
 	}
+}
+
+export function mailboxEventId(manifest: PairManifest): string {
+	return `pair-mailbox-${manifest.nonce}`
+}
+
+export function validateMailboxClaim(value: unknown, manifest: PairManifest, role: Role, recipientTaskId: string) {
+	const identity = validateIdentity(value, manifest, role)
+	const item = requireNonce(value, manifest)
+	assert.equal(manifest.mailboxClaimRace, 1)
+	assert.equal(item.mailboxClaimRace, 1)
+	assert.equal(item.recipientTaskId, recipientTaskId)
+	assert.equal(item.eventId, mailboxEventId(manifest))
+	assert.equal(item.claimId, `${manifest.nonce}-${role}`)
+	assert.ok(item.outcome === "claimed" || item.outcome === "ownership_denied" || item.outcome === "empty")
+	assert.deepEqual(item.claimedEventIds, item.outcome === "claimed" ? [item.eventId] : [])
+	return { ...identity, claimId: item.claimId as string, outcome: item.outcome }
+}
+
+export function validateMailboxClaims(values: unknown[], manifest: PairManifest, recipientTaskId: string) {
+	assert.equal(values.length, 2)
+	const claims = ROLES.map((role, index) => validateMailboxClaim(values[index], manifest, role, recipientTaskId))
+	assert.equal(claims.filter((claim) => claim.outcome === "claimed").length, 1)
+	return claims
+}
+
+export function validateMailboxVerification(
+	value: unknown,
+	manifest: PairManifest,
+	role: Role,
+	recipientTaskId: string,
+	winner: Role,
+) {
+	const identity = validateIdentity(value, manifest, role)
+	const item = requireNonce(value, manifest)
+	assert.equal(item.mailboxClaimRace, 1)
+	assert.equal(item.eventId, mailboxEventId(manifest))
+	assert.equal(item.recipientTaskId, recipientTaskId)
+	assert.equal(item.acknowledged, role === winner)
+	assert.equal(item.retryCount, 0)
+	return identity
 }
 
 async function unlinkCandidate(candidate: string): Promise<void> {
@@ -232,6 +296,15 @@ export function validateIdentities(values: unknown[], manifest: PairManifest): H
 	assert.equal(first.storagePath, second.storagePath)
 	assert.equal(first.persistenceFile, second.persistenceFile)
 	return identities
+}
+
+/** Retain only an allowlisted fixture basename and numeric position, never paths or error messages. */
+export function failureSite(error: unknown): string | undefined {
+	if (!(error instanceof Error)) return undefined
+	const match = error.stack?.match(
+		/\b(sharedWorkerMailbox|sharedHistoryChurn|shared-storage\.entry|taskHistoryChurn)\.(?:js|ts):(\d{1,7}):(\d{1,7})\)?(?:\r?\n|$)/,
+	)
+	return match ? `${match[1]}.js:${match[2]}:${match[3]}` : undefined
 }
 
 export async function waitUntil(

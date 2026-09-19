@@ -25,6 +25,7 @@ import { customToolRegistry } from "@alpha-code/core"
 
 import "./utils/path" // Necessary to have access to String.prototype.toPosix.
 import { initializeNetworkProxy } from "./utils/networkProxy"
+import { createLifecycleSafeOutputChannel } from "./utils/outputChannelLogger"
 
 import { Package } from "./shared/package"
 import { formatLanguage } from "./shared/language"
@@ -117,7 +118,7 @@ async function checkWorktreeAutoOpen(
 export async function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(registerBuiltinSkillInspection(context.extensionUri))
 	extensionContext = context
-	outputChannel = vscode.window.createOutputChannel(Package.outputChannel)
+	outputChannel = createLifecycleSafeOutputChannel(vscode.window.createOutputChannel(Package.outputChannel))
 	context.subscriptions.push(outputChannel)
 	outputChannel.appendLine(`${Package.name} extension activated - ${JSON.stringify(Package)}`)
 

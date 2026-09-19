@@ -1,12 +1,14 @@
-import * as path from "path"
-import * as os from "os"
 import * as fs from "fs/promises"
+import * as os from "os"
+import * as path from "path"
 import * as vscode from "vscode"
 
-import { getTaskDirectoryPath } from "../../utils/storage"
-import { fileExistsAtPath } from "../../utils/fs"
 import { Package } from "../../shared/package"
+import { getTaskDirectoryPath } from "../../utils/storage"
 import type { settlementDiagnostics } from "../agent/SettlementDiagnostics"
+import { collectDiagnosticsEvidence, projectErrorDetails, projectRuntimeDiagnostics } from "./diagnosticsEvidence"
+
+const MAX_REPORT_BYTES = 8 * 1_024 * 1_024
 
 export interface ErrorDiagnosticsValues {
 	timestamp?: string
@@ -33,38 +35,32 @@ export interface GenerateDiagnosticsResult {
 }
 
 /**
- * Generates an error diagnostics file containing error metadata and API conversation history.
+ * Generates an error diagnostics file containing error metadata and bounded,
+ * privacy-aware evidence projections. Provider conversation contents are never
+ * included; the `history` field remains a shape-only compatibility view.
  * The file is created in the system temp directory and opened in VS Code for the user to review
- * before sharing with support.
+ * before sharing it with support.
  */
 export async function generateErrorDiagnostics(params: GenerateDiagnosticsParams): Promise<GenerateDiagnosticsResult> {
 	const { taskId, globalStoragePath, values, log } = params
 
 	try {
 		const taskDirPath = await getTaskDirectoryPath(globalStoragePath, taskId)
+		const collected = await collectDiagnosticsEvidence(taskDirPath, taskId)
+		if (collected.historyParseFailed) {
+			vscode.window.showErrorMessage("Failed to parse api_conversation_history.json")
+		}
 
-		// Load API conversation history from the same file used by openDebugApiHistory
-		const apiHistoryPath = path.join(taskDirPath, "api_conversation_history.json")
-		let history: unknown = []
-
-		if (await fileExistsAtPath(apiHistoryPath)) {
-			const content = await fs.readFile(apiHistoryPath, "utf8")
-			try {
-				history = JSON.parse(content)
-			} catch {
-				// If parsing fails, fall back to empty history but still generate diagnostics file
-				vscode.window.showErrorMessage("Failed to parse api_conversation_history.json")
-			}
+		let runtime: unknown
+		try {
+			runtime = projectRuntimeDiagnostics(params.getRuntimeDiagnostics?.())
+		} catch {
+			runtime = { unavailable: true }
 		}
 
 		const diagnostics = {
-			runtime: (() => {
-				try {
-					return params.getRuntimeDiagnostics?.()
-				} catch {
-					return { unavailable: true }
-				}
-			})(),
+			schemaVersion: 2,
+			runtime,
 			installation: {
 				vscodeVersion: vscode.version,
 				runtimeVersion: Package.version,
@@ -79,27 +75,27 @@ export async function generateErrorDiagnostics(params: GenerateDiagnosticsParams
 				version: values?.version ?? "",
 				provider: values?.provider ?? "",
 				model: values?.model ?? "",
-				details: values?.details ?? "",
+				details: projectErrorDetails(values?.details),
 			},
-			history,
+			history: collected.history,
+			evidence: collected.evidence,
 		}
 
-		// Prepend human-readable guidance comments before the JSON payload
+		// Prepend human-readable guidance comments before the JSON payload. The
+		// compatibility `history` field contains role/tool shape only; prompts,
+		// arguments, outputs, and provider payloads are intentionally omitted.
 		const headerComment =
-			"// Please share this file with Alpha Support (support@alpha.invalid) to diagnose the issue faster\n" +
-			"// Just make sure you're OK sharing the contents of the conversation below.\n\n"
-		const jsonContent = JSON.stringify(diagnostics, null, 2)
-		const fullContent = headerComment + jsonContent
+			"// Please review this bounded report before sharing it with Alpha Support (support@alpha.invalid).\n" +
+			"// Provider prompts, tool arguments, outputs, and raw conversation history are omitted by default.\n\n"
+		const fullContent = headerComment + JSON.stringify(diagnostics, null, 2)
+		if (Buffer.byteLength(fullContent, "utf8") > MAX_REPORT_BYTES) {
+			throw new Error("Diagnostics report exceeds the bounded report limit")
+		}
 
-		// Create a temporary diagnostics file
-		const tmpDir = os.tmpdir()
-		const timestamp = Date.now()
-		const tempFileName = `alpha-diagnostics-${taskId.slice(0, 8)}-${timestamp}.json`
-		const tempFilePath = path.join(tmpDir, tempFileName)
+		const tempFileName = `alpha-diagnostics-${taskId.slice(0, 8)}-${Date.now()}.json`
+		const tempFilePath = path.join(os.tmpdir(), tempFileName)
+		await fs.writeFile(tempFilePath, fullContent, { encoding: "utf8", mode: 0o600, flag: "wx" })
 
-		await fs.writeFile(tempFilePath, fullContent, "utf8")
-
-		// Open the diagnostics file in VS Code
 		const doc = await vscode.workspace.openTextDocument(tempFilePath)
 		await vscode.window.showTextDocument(doc, { preview: true })
 

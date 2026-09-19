@@ -1,3 +1,5 @@
+import os from "node:os"
+import path from "node:path"
 import PQueue from "p-queue"
 
 import {
@@ -44,39 +46,48 @@ export const runEvals = async (runId: number) => {
 	}
 
 	const containerized = isDockerContainer()
+	const benchmarkTasks = tasks.filter((task) => task.benchmarkTaskIdentity)
+	if (benchmarkTasks.length > 0 && benchmarkTasks.length !== tasks.length) {
+		throw new Error("Benchmark and legacy tasks must use separate runs")
+	}
+	const managesLegacyCheckout = !containerized && benchmarkTasks.length === 0
 
 	const logger = new Logger({
-		logDir: containerized ? `/var/log/evals/runs/${run.id}` : `/tmp/evals/runs/${run.id}`,
+		logDir: containerized
+			? `/var/log/evals/runs/${run.id}`
+			: path.join(os.tmpdir(), "evals", "runs", String(run.id)),
 		filename: `controller.log`,
 		tag: getTag("runEvals", { run }),
 	})
 
-	logger.info(`running ${tasks.length} task(s)`)
-
-	if (!containerized) {
-		await resetEvalsRepo({ run, cwd: EVALS_REPO_PATH })
-	}
-
-	const heartbeat = await startHeartbeat(run.id)
-	const queue = new PQueue({ concurrency: run.concurrency })
-
-	const STAGGER_DELAY_MS = 5000
-	const filteredTasks = tasks.filter((task) => task.finishedAt === null)
-
-	const createTaskRunner = (task: (typeof filteredTasks)[number]) => async () => {
-		try {
-			if (task.benchmarkPartition === "holdout") await assertVisibleGatePassed(run.id)
-			if (containerized) {
-				await processTaskInContainer({ taskId: task.id, jobToken: run.jobToken, logger })
-			} else {
-				await processTask({ taskId: task.id, jobToken: run.jobToken, logger })
-			}
-		} catch (error) {
-			logger.error("error processing task", error)
-		}
-	}
-
+	let heartbeat: Awaited<ReturnType<typeof startHeartbeat>> | undefined
+	let failure: { error: unknown } | undefined
 	try {
+		logger.info(`running ${tasks.length} task(s)`)
+
+		if (managesLegacyCheckout) {
+			await resetEvalsRepo({ run, cwd: EVALS_REPO_PATH })
+		}
+
+		heartbeat = await startHeartbeat(run.id)
+		const queue = new PQueue({ concurrency: run.concurrency })
+
+		const STAGGER_DELAY_MS = 5000
+		const filteredTasks = tasks.filter((task) => task.finishedAt === null)
+
+		const createTaskRunner = (task: (typeof filteredTasks)[number]) => async () => {
+			try {
+				if (task.benchmarkPartition === "holdout") await assertVisibleGatePassed(run.id)
+				if (containerized) {
+					await processTaskInContainer({ taskId: task.id, jobToken: run.jobToken, logger })
+				} else {
+					await processTask({ taskId: task.id, jobToken: run.jobToken, logger })
+				}
+			} catch (error) {
+				logger.error("error processing task", error)
+			}
+		}
+
 		if (run.campaignHardCapUsd !== null && run.taskCostCapUsd !== null) {
 			const ledger = new CampaignCostLedger(run.campaignHardCapUsd)
 			for (const completed of tasks.filter(({ finishedAt }) => finishedAt !== null))
@@ -118,14 +129,26 @@ export const runEvals = async (runId: number) => {
 		// There's no need to commit the changes in the container since they
 		// will lost when the container is destroyed. I think we should
 		// store the diffs in the database instead.
-		if (!containerized) {
+		if (managesLegacyCheckout) {
 			await commitEvalsRepoChanges({ run, cwd: EVALS_REPO_PATH })
 		}
+	} catch (error) {
+		failure = { error }
 	} finally {
-		logger.info("cleaning up")
-		stopHeartbeat(run.id, heartbeat)
-		logger.close()
+		try {
+			logger.info("cleaning up")
+			if (heartbeat !== undefined) await stopHeartbeat(run.id, heartbeat)
+		} catch (error) {
+			if (!failure) failure = { error }
+		} finally {
+			try {
+				logger.close()
+			} catch (error) {
+				if (!failure) failure = { error }
+			}
+		}
 	}
+	if (failure) throw failure.error
 }
 
 async function finalizeCampaignBudgetExhausted(tasks: Array<{ id: number }>): Promise<void> {

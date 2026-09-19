@@ -6,7 +6,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, beforeEach, mock, test } from "node:test"
 
-import { projectJournalSource, readTaskSource, TaskSourceError } from "./journalProjection"
+import { joinProjectedEvidence, projectJournalSource, readTaskSource, TaskSourceError } from "./journalProjection"
 
 let root: string
 let file: string
@@ -56,7 +56,13 @@ test("streams arbitrary short reads, split UTF-8, CRLF, blank lines and final un
 	const result = await projectJournalSource(file, limits, project)
 	assert.equal(result.sourceBytes, Buffer.byteLength(content))
 	assert.equal(result.sourceSha256, createHash("sha256").update(content).digest("hex"))
-	assert.deepEqual(result.projection, { events: [{ value: "é🍋" }, { status: "completed" }], complete: true })
+	assert.deepEqual(result.projection, {
+		events: [{ value: "é🍋" }, { status: "completed" }],
+		captureStatus: "captured",
+		validationStatus: "unverified",
+		warnings: ["JOURNAL_VALIDATION_UNVERIFIED"],
+		complete: false,
+	})
 	assert.equal((await readTaskSource(file, limits.maxSourceBytes)).toString("utf8"), content)
 	assert.deepEqual(handles(), { opened: 2, closed: 2 })
 })
@@ -68,7 +74,7 @@ test("enforces exact source and line byte boundaries without treating a prefix a
 	assert.equal(
 		(await projectJournalSource(file, { ...limits, maxSourceBytes: bytes, maxLineBytes: bytes }, project))
 			.projection.complete,
-		true,
+		false,
 	)
 	const handles = observeHandles()
 	await assert.rejects(
@@ -270,4 +276,103 @@ test("closes a source handle when reading fails or projection rejects a record",
 		(error) => error === failure,
 	)
 	assert.deepEqual(projectionHandles(), { opened: 1, closed: 1 })
+})
+
+test("validates lifecycle sequence resets per turn while additive logs stay per run", async () => {
+	const rows = [
+		{ runIdSha256: "run", turnIdSha256: "turn-a", sequence: 1, type: "turn_started" },
+		{ runIdSha256: "run", turnIdSha256: "turn-a", sequence: 2, type: "turn_terminal" },
+		{ runIdSha256: "run", turnIdSha256: "turn-b", sequence: 1, type: "turn_started" },
+		{ runIdSha256: "run", turnIdSha256: "turn-b", sequence: 2, type: "turn_terminal" },
+	]
+	await fs.writeFile(file, rows.map((row) => JSON.stringify(row)).join("\n"))
+	const lifecycle = await projectJournalSource(file, limits, (row) => row, "turn")
+	assert.equal(lifecycle.projection.validationStatus, "validated")
+	assert.equal(lifecycle.projection.complete, true)
+	const additive = await projectJournalSource(file, limits, (row) => row)
+	assert.equal(additive.projection.validationStatus, "incomplete")
+	assert.equal(additive.projection.complete, false)
+})
+
+test("joins hashed lifecycle and additive identities while preserving missing markers", () => {
+	const lifecycle = {
+		taskIdSha256: "task",
+		runIdSha256: "run",
+		turnIdSha256: "turn",
+		stepIdSha256: "step",
+		sequence: 2,
+		type: "turn_terminal",
+	}
+	const eventLog = {
+		taskIdSha256: "task",
+		runIdSha256: "run",
+		turnIdSha256: "turn",
+		stepIdSha256: "step",
+		requestIdSha256: "request",
+		attemptIdSha256: "attempt",
+		sequence: 7,
+		type: "response_terminal",
+	}
+	const result = joinProjectedEvidence({ lifecycle: [lifecycle], eventLog: [eventLog] })
+	assert.deepEqual(result.missing, ["lifecycle:attemptIdSha256", "lifecycle:requestIdSha256"])
+	assert.deepEqual(result.records, [
+		{
+			identity: {
+				taskIdSha256: "task",
+				runIdSha256: "run",
+				turnIdSha256: "turn",
+				stepIdSha256: "step",
+				requestIdSha256: "request",
+				attemptIdSha256: "attempt",
+			},
+			lifecycleSequences: [2],
+			eventLogSequences: [7],
+			eventTypes: ["turn_terminal", "response_terminal"],
+			identityConflicts: [],
+			status: "joined",
+		},
+	])
+})
+
+test("retains an identity conflict marker after contradictory optional IDs", () => {
+	const base = { taskIdSha256: "task", runIdSha256: "run", turnIdSha256: "turn", stepIdSha256: "step" }
+	const result = joinProjectedEvidence({
+		lifecycle: [
+			{ ...base, requestIdSha256: "request-a", sequence: 1, type: "turn_started" },
+			{ ...base, requestIdSha256: "request-b", sequence: 2, type: "phase_changed" },
+		],
+		eventLog: [{ ...base, requestIdSha256: "request-a", sequence: 1, type: "progress" }],
+	})
+	assert.deepEqual(result.records[0]?.identityConflicts, ["requestIdSha256"])
+	assert.equal(result.records[0]?.identity.requestIdSha256, undefined)
+})
+
+test("keeps rows without stable task-step identity partial", () => {
+	const result = joinProjectedEvidence({
+		lifecycle: [{ sequence: 1, type: "turn_started" }],
+		eventLog: [{ sequence: 1, type: "progress" }],
+	})
+	assert.equal(result.records[0]?.status, "partial")
+	assert.ok(result.missing.includes("lifecycle:taskIdSha256"))
+	assert.ok(result.missing.includes("eventLog:stepIdSha256"))
+})
+
+test("marks dropped rows and sequence gaps incomplete despite a stable byte capture", async () => {
+	await fs.writeFile(
+		file,
+		[
+			JSON.stringify({ runIdSha256: "run", sequence: 1, type: "turn_started" }),
+			JSON.stringify({ runIdSha256: "run", sequence: 3, type: "turn_terminal" }),
+			JSON.stringify({ runIdSha256: "run", sequence: 3, type: "turn_terminal" }),
+			JSON.stringify({ runIdSha256: "run", sequence: 99, type: "progress" }),
+		].join("\n"),
+	)
+	const result = await projectJournalSource(file, limits, (raw) => {
+		if ((raw as { sequence?: number }).sequence === 99) return undefined
+		return raw
+	})
+	assert.equal(result.sourceBytes > 0, true)
+	assert.equal(result.projection.complete, false)
+	assert.equal(result.projection.validationStatus, "incomplete")
+	assert.deepEqual(result.projection.warnings, ["JOURNAL_EVENT_DROPPED", "JOURNAL_SEQUENCE_INVALID"])
 })

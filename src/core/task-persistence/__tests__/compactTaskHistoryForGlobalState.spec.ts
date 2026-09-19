@@ -17,6 +17,10 @@ const item = (overrides: Partial<HistoryItem> = {}): HistoryItem => ({
 })
 
 describe("compactTaskHistoryForGlobalState", () => {
+	it("keeps the compatibility mirror budget explicit for host evidence", () => {
+		expect(TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES).toBe(192 * 1024)
+	})
+
 	it("keeps a bounded root-only downgrade mirror without managed-child payloads", () => {
 		const root = item({
 			id: "root",

@@ -6,7 +6,7 @@ import { createReadStream } from "node:fs"
 import { WORKFLOW_SCENARIO_IDS } from "../scenarios/contracts"
 import { isReliabilityScenario, RELIABILITY_ACCEPTANCE_SCENARIO_IDS } from "../scenarios/reliabilityCatalog"
 import { rejectSymlinkComponents } from "../evidence/paths"
-import { runOwnedProcess } from "./ownedProcess"
+import { pnpmCommand, runOwnedProcess } from "./ownedProcess"
 import { CORE_SCENARIO_IDS } from "./developmentSuites"
 import type { CampaignConfig, CampaignReport } from "./types"
 
@@ -129,6 +129,18 @@ export async function fingerprintGateArtifacts(
 	repositoryRoot: string,
 	includeCompletionReplay = false,
 ): Promise<string> {
+	return fingerprintArtifactPaths(repositoryRoot, [
+		"src/package.json",
+		"src/dist/extension.js",
+		"src/webview-ui/build",
+		"apps/vscode-e2e/out",
+		...(includeCompletionReplay
+			? ["webview-ui/src", "webview-ui/vitest.config.ts", "webview-ui/tsconfig.json", "packages/types/dist"]
+			: []),
+	])
+}
+
+export async function fingerprintArtifactPaths(repositoryRoot: string, relatives: string[]): Promise<string> {
 	const hash = createHash("sha256")
 	let entries = 0
 	let bytes = 0
@@ -147,16 +159,7 @@ export async function fingerprintGateArtifacts(
 			for await (const chunk of createReadStream(absolute)) hash.update(chunk)
 		} else throw new Error("Invalid gate artifact")
 	}
-	for (const relative of ["src/package.json", "src/dist/extension.js", "src/webview-ui/build", "apps/vscode-e2e/out"])
-		await visit(relative)
-	if (includeCompletionReplay)
-		for (const relative of [
-			"webview-ui/src",
-			"webview-ui/vitest.config.ts",
-			"webview-ui/tsconfig.json",
-			"packages/types/dist",
-		])
-			await visit(relative)
+	for (const relative of relatives) await visit(relative)
 	return hash.digest("hex")
 }
 
@@ -185,8 +188,7 @@ export async function prepareLiveGate(
 		try {
 			const result = await runProcess(
 				{
-					executable: process.execPath,
-					args: [pnpmCliPath, "--dir", "apps/vscode-e2e", script],
+					...pnpmCommand(pnpmCliPath, ["--dir", "apps/vscode-e2e", script]),
 					cwd: repositoryRoot,
 				},
 				{ signal: abort.signal },

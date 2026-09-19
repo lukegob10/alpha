@@ -36,10 +36,8 @@ jobs:
               uses: actions/checkout@v4
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
-            - name: Lint
-              run: pnpm lint
-            - name: Check types
-              run: pnpm check-types
+            - name: Lint and check types through the local harness
+              run: pnpm harness run static
 
     unit-test:
         name: platform-unit-test (${{ matrix.name }})
@@ -62,16 +60,29 @@ jobs:
               working-directory: src
               run: node -e "console.log(require('node:path').dirname(require('@vscode/ripgrep').rgPath))" >> $env:GITHUB_PATH
             - name: Run unit tests
-              env:
-                  VITEST_MAX_FORKS: 2
-                  VITEST_MIN_FORKS: 1
-                  VITEST_MAX_THREADS: 2
-                  VITEST_MIN_THREADS: 1
-              run: pnpm test --env-mode=loose
-            - name: Run repository tooling tests
-              run: pnpm test:tooling
-            - name: Run extension-host runner unit tests
-              run: pnpm --filter @alpha-code/vscode-e2e test:unit
+              run: pnpm harness run unit
+            - name: Run repository and host-runner tooling tests
+              run: pnpm harness run tooling
+            - name: Retain local command reports
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: local-harness-${{ matrix.name }}
+                  path: artifacts/harness/
+                  retention-days: 14
+
+    offline-evaluator:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: ./.github/actions/setup-node-pnpm
+            - run: pnpm harness run offline
+            - uses: actions/upload-artifact@v4
+              if: always()
+              with:
+                  name: offline-evaluator
+                  path: artifacts/harness/
+                  retention-days: 14
 
     vscode-1221-smoke:
         name: VS Code 1.122.1 extension-host contract
@@ -82,13 +93,11 @@ jobs:
               uses: actions/checkout@v4
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
-            - name: Build workspace types
-              run: pnpm --filter @alpha-code/types build
             - name: Run offline core confidence and exact-host contracts
               shell: pwsh
               run: |
                   New-Item -ItemType Directory -Force artifacts/certification | Out-Null
-                  pnpm test:core:confidence 2>&1 | Tee-Object -FilePath artifacts/certification/core-confidence.log
+                  pnpm harness run confidence 2>&1 | Tee-Object -FilePath artifacts/certification/core-confidence.log
                   exit $LASTEXITCODE
             - name: Retain confidence results and failure diagnostics
               if: always()
@@ -96,6 +105,7 @@ jobs:
               with:
                   name: core-confidence-${{ github.run_id }}-${{ github.run_attempt }}
                   path: |
+                      artifacts/harness/
                       artifacts/certification/managed-agent-milestone-evidence.json
                       artifacts/certification/core-confidence.log
                       artifacts/core-confidence/*/gate-result.json

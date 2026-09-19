@@ -197,7 +197,7 @@ import {
 	type ToolSchedulerResult,
 } from "../agent/ToolScheduler"
 import type { TaskToolSurface } from "../tools/TaskToolSurface"
-import type { AgentTurnEvent } from "../agent/AgentTurnEvents"
+import type { AgentTurnEvent, AgentTurnEventIdentity } from "../agent/AgentTurnEvents"
 import type { StepContext } from "../agent/StepContext"
 import {
 	getCompactionTargetTokens,
@@ -3041,9 +3041,34 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		await this.providerTranscriptStore.assertCommitReceipt(receipt)
 	}
 
-	private async appendAgentTurnEvent(event: AgentTurnEvent, context?: StepContext): Promise<void> {
+	private async appendAgentTurnEvent(
+		event: AgentTurnEvent,
+		context?: StepContext,
+		identity?: AgentTurnEventIdentity,
+	): Promise<void> {
 		try {
-			await this.agentTurnEventLog.append(event, context ?? this.currentAgentStep?.snapshot.context)
+			const step = this.currentAgentStep
+			const resolvedContext = context ?? step?.snapshot.context
+			const contextBelongsToActiveStep =
+				step !== undefined &&
+				resolvedContext !== undefined &&
+				resolvedContext.contextId === step.snapshot.context.contextId
+			const activeStepIdentity =
+				!context || contextBelongsToActiveStep
+					? step
+						? {
+								turnId: step.turnId,
+								stepId: step.stepId,
+								requestId: step.requestId,
+								attemptId: step.attemptId,
+								correlationId: step.stepId ?? step.turnId,
+							}
+						: undefined
+					: undefined
+			await this.agentTurnEventLog.append(event, resolvedContext, {
+				...(activeStepIdentity ?? {}),
+				...(identity ?? {}),
+			})
 		} catch (error) {
 			// Event telemetry is additive to the legacy task contract. A telemetry
 			// write must not turn a successful provider/tool step into a task failure.
@@ -3096,6 +3121,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				occurredAt: Date.now(),
 				type,
 				...(stepId ? { stepId } : {}),
+				correlationId: stepId ?? turnId,
 				payload,
 			} as AgentLifecycleEventInput
 			const result = await provider.publishAgentLifecycleEvent(event)
@@ -8767,6 +8793,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 										inputTokens: chunk.inputTokens,
 										outputTokens: chunk.outputTokens,
 										cacheReadTokens: chunk.cacheReadTokens ?? 0,
+										cacheWriteTokens: chunk.cacheWriteTokens ?? 0,
+										totalCost: chunk.totalCost,
 									})
 									break
 								case "grounding":
