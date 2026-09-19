@@ -1,4 +1,4 @@
-// npx vitest run packages/core/src/message-utils/__tests__/consolidateCommands.spec.ts
+// pnpm exec vitest run packages/core/src/message-utils/__tests__/consolidateCommands.spec.ts
 
 import type { AlphaMessage } from "@alpha-code/types"
 

@@ -42,7 +42,7 @@ vi.mock("../../../services/code-index/manager", () => ({
 afterEach(() => vi.restoreAllMocks())
 
 /**
- * Focused run: `pnpm --dir src test -- core/task/__tests__/tool-catalog-measurement.spec.ts --no-silent`.
+ * Focused run: `pnpm --dir src test core/task/__tests__/tool-catalog-measurement.spec.ts --no-silent`.
  */
 
 type FunctionTool = OpenAI.Chat.ChatCompletionFunctionTool

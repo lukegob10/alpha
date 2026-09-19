@@ -1,4 +1,4 @@
-// npx vitest run src/db/queries/__tests__/copyRun.spec.ts
+// pnpm exec vitest run src/db/queries/__tests__/copyRun.spec.ts
 
 import { eq } from "drizzle-orm"
 

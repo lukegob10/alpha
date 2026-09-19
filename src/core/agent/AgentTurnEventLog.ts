@@ -3,12 +3,56 @@ import * as fs from "fs/promises"
 import * as path from "path"
 
 import type { StepContext } from "./StepContext"
-import type { AgentTurnEvent } from "./AgentTurnEvents"
+import type { AgentTurnEvent, AgentTurnEventIdentity } from "./AgentTurnEvents"
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { getTaskDirectoryPath } from "../../utils/storage"
 
 const MAX_EVENT_VALUE_LENGTH = 8_000
 const REDACTED_VALUE = "[redacted]"
+
+const PROJECTED_EVENT_TYPES = new Set([
+	"assistant_committed",
+	"response_terminal",
+	"tool_result",
+	"tool_batch_started",
+	"tool_batch_finished",
+	"approval_request",
+	"approval_result",
+	"progress",
+	"retry",
+	"model_request_started",
+	"request_usage",
+	"context_refreshed",
+	"policy_snapshot",
+	"profile_resolved",
+	"turn_completed",
+	"task_completed",
+	"turn_failed",
+	"task_failed",
+	"turn_incomplete",
+	"task_incomplete",
+	"compaction_completed",
+	"verification_result",
+	"cancelled",
+	"internal_task_started",
+	"internal_task_completed",
+])
+const PROJECTED_STATUSES = new Set([
+	"completed",
+	"incomplete",
+	"failed",
+	"cancelled",
+	"aborted",
+	"success",
+	"error",
+	"denied",
+	"approved",
+	"blocked",
+	"timed_out",
+])
+const PROJECTED_DECISIONS = new Set(["approved", "denied", "cancelled"])
+const PROJECTED_COMMAND_CATEGORIES = new Set(["test", "build", "lint", "typecheck"])
+const PROJECTED_RESPONSE_ITEM_TYPES = new Set(["text", "reasoning", "tool_call", "usage", "grounding", "error"])
 
 /** Optional construction hooks kept separate from the persisted event shape. */
 export interface AgentTurnEventLogOptions {
@@ -25,7 +69,47 @@ export interface PersistedAgentTurnEvent {
 	timestamp: number
 	stepContextId?: string
 	stepContextParentId?: string
+	/** Optional stable joins added after the original JSONL contract. */
+	turnId?: string
+	stepId?: string
+	requestId?: string
+	attemptId?: string
+	correlationId?: string
+	causationId?: string
 	event: AgentTurnEvent
+}
+
+type PersistedIdentityKey = keyof AgentTurnEventIdentity
+
+const IDENTITY_KEYS: readonly PersistedIdentityKey[] = [
+	"turnId",
+	"stepId",
+	"requestId",
+	"attemptId",
+	"correlationId",
+	"causationId",
+]
+
+function boundedIdentity(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim().length > 0 && value.length <= 256 ? value : undefined
+}
+
+function identityFromContext(context: StepContext | undefined): AgentTurnEventIdentity {
+	const metadata = context?.request?.metadata as Record<string, unknown> | undefined
+	return {
+		requestId: boundedIdentity(metadata?.requestId),
+		attemptId: boundedIdentity(metadata?.attemptId),
+	}
+}
+
+function sanitizeIdentity(identity: AgentTurnEventIdentity | undefined): AgentTurnEventIdentity {
+	if (!identity) return {}
+	const result: AgentTurnEventIdentity = {}
+	for (const key of IDENTITY_KEYS) {
+		const value = boundedIdentity(identity[key])
+		if (value !== undefined) result[key] = value
+	}
+	return result
 }
 
 /**
@@ -158,6 +242,130 @@ export function redactAgentTurnEvent(event: AgentTurnEvent, maxValueLength = MAX
 	return boundValue(event, maxValueLength) as AgentTurnEvent
 }
 
+/** Stable, one-way identifier used by local diagnosis and E2E evidence. */
+export function hashAgentTurnEvidenceId(value: string): string {
+	return crypto.createHash("sha256").update(value, "utf8").digest("hex")
+}
+
+export interface ProjectedAgentTurnEvent {
+	sequence: number
+	timestamp: number
+	taskIdSha256: string
+	runIdSha256: string
+	turnIdSha256?: string
+	stepIdSha256?: string
+	requestIdSha256?: string
+	attemptIdSha256?: string
+	correlationIdSha256?: string
+	causationIdSha256?: string
+	event: Record<string, unknown>
+}
+
+function projectString(value: unknown): string | undefined {
+	return typeof value === "string" && value.length <= 256 ? value : undefined
+}
+
+function projectEvent(event: AgentTurnEvent): Record<string, unknown> {
+	const source = event as unknown as Record<string, unknown>
+	const rawType = projectString(source.type)
+	const projected: Record<string, unknown> = {
+		type: rawType && PROJECTED_EVENT_TYPES.has(rawType) ? rawType : "unknown",
+	}
+	for (const key of ["status", "decision", "commandCategory"] as const) {
+		const value = projectString(source[key])
+		if (
+			value !== undefined &&
+			((key === "status" && PROJECTED_STATUSES.has(value)) ||
+				(key === "decision" && PROJECTED_DECISIONS.has(value)) ||
+				(key === "commandCategory" && PROJECTED_COMMAND_CATEGORIES.has(value)))
+		)
+			projected[key] = value
+	}
+	for (const [key, output] of [
+		["name", "nameSha256"],
+		["toolName", "toolNameSha256"],
+	] as const) {
+		const value = projectString(source[key])
+		if (value !== undefined) projected[output] = hashAgentTurnEvidenceId(value)
+	}
+	for (const key of [
+		"attempt",
+		"requestIndex",
+		"inputTokens",
+		"outputTokens",
+		"cacheReadTokens",
+		"cacheWriteTokens",
+		"reasoningTokens",
+		"batchSize",
+		"parallelBatchCount",
+		"parallelToolCount",
+		"durationMs",
+		"truncatedResultCount",
+		"delayMs",
+		"exitCode",
+		"totalCost",
+	] as const) {
+		const value = source[key]
+		if (typeof value === "number" && Number.isFinite(value)) projected[key] = value
+	}
+	for (const key of ["retry", "truncated", "timedOut", "lateCollection", "retryable"] as const) {
+		const value = source[key]
+		if (typeof value === "boolean") projected[key] = value
+	}
+
+	for (const [field, output] of [
+		["callId", "callIdSha256"],
+		["requestId", "requestIdSha256"],
+		["envelopeId", "envelopeIdSha256"],
+		["childTaskId", "childTaskIdSha256"],
+	] as const) {
+		const value = projectString(source[field])
+		if (value !== undefined) projected[output] = hashAgentTurnEvidenceId(value)
+	}
+
+	for (const key of ["reason", "message", "error", "text"] as const) {
+		if (source[key] !== undefined) projected[`${key}Present`] = true
+	}
+
+	if (source.type === "assistant_committed") {
+		const response = source.response as { items?: unknown[]; toolCalls?: unknown[]; outcome?: unknown } | undefined
+		if (response && typeof response === "object") {
+			if (Array.isArray(response.items)) {
+				projected.responseItemTypes = response.items.flatMap((item) => {
+					const type = (item as { type?: unknown })?.type
+					return typeof type === "string"
+						? [PROJECTED_RESPONSE_ITEM_TYPES.has(type) ? type : "unknown"]
+						: ["unknown"]
+				})
+				projected.responseItemCount = response.items.length
+			}
+			if (Array.isArray(response.toolCalls)) projected.toolCallCount = response.toolCalls.length
+		}
+	}
+
+	return projected
+}
+
+/**
+ * Project an additive record without exposing prompts, tool arguments, output,
+ * provider payloads, or raw cross-layer IDs.  Missing envelope fields remain
+ * absent so callers can distinguish an old record from a joined observation.
+ */
+export function projectPersistedAgentTurnEvent(record: PersistedAgentTurnEvent): ProjectedAgentTurnEvent {
+	const projection: ProjectedAgentTurnEvent = {
+		sequence: record.sequence,
+		timestamp: record.timestamp,
+		taskIdSha256: hashAgentTurnEvidenceId(record.taskId),
+		runIdSha256: hashAgentTurnEvidenceId(record.runId),
+		event: projectEvent(record.event),
+	}
+	for (const key of ["turnId", "stepId", "requestId", "attemptId", "correlationId", "causationId"] as const) {
+		const value = projectString(record[key])
+		if (value !== undefined) Object.assign(projection, { [`${key}Sha256`]: hashAgentTurnEvidenceId(value) })
+	}
+	return projection
+}
+
 type EventLogState = "open" | "closing" | "closed"
 
 interface PendingWriteFailure {
@@ -196,12 +404,23 @@ export class AgentTurnEventLog {
 		return this.runId
 	}
 
-	append(event: AgentTurnEvent, context?: StepContext): Promise<void> {
+	append(event: AgentTurnEvent, context?: StepContext, identity?: AgentTurnEventIdentity): Promise<void> {
+		return this.appendWithIdentity(event, context, identity)
+	}
+
+	/**
+	 * Append an event with an explicit identity snapshot.  Task normally has a
+	 * live StepContext from which request/attempt IDs can be recovered, but
+	 * explicit identity is needed for late drains and other asynchronous work
+	 * whose active step may already have changed.
+	 */
+	appendWithIdentity(event: AgentTurnEvent, context?: StepContext, identity?: AgentTurnEventIdentity): Promise<void> {
 		if (this.state !== "open") {
 			return Promise.reject(new Error(`Cannot append to a ${this.state} agent turn event log.`))
 		}
 
 		const sequence = ++this.sequence
+		const resolvedIdentity = sanitizeIdentity({ ...identityFromContext(context), ...identity })
 		const record: PersistedAgentTurnEvent = {
 			taskId: this.taskId,
 			runId: this.runId,
@@ -209,6 +428,7 @@ export class AgentTurnEventLog {
 			timestamp: Date.now(),
 			stepContextId: context?.contextId,
 			stepContextParentId: context?.parentContextId,
+			...resolvedIdentity,
 			event: redactAgentTurnEvent(event, this.maxValueLength),
 		}
 
@@ -318,6 +538,12 @@ function parsePersistedAgentTurnEvent(line: string, lineNumber: number, taskId: 
 		typeof (record.event as { type?: unknown }).type !== "string"
 	) {
 		throw new Error(`Invalid agent turn event at line ${lineNumber}`)
+	}
+	for (const key of IDENTITY_KEYS) {
+		const value = record[key]
+		if (value !== undefined && boundedIdentity(value) === undefined) {
+			throw new Error(`Invalid agent turn event at line ${lineNumber}`)
+		}
 	}
 	return record as PersistedAgentTurnEvent
 }

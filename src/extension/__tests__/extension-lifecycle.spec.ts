@@ -196,4 +196,24 @@ describe("extension lifecycle", () => {
 		expect(mocks.shutdownTelemetry).toHaveBeenCalledOnce()
 		expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
 	})
+
+	it("finishes cleanup when the host has already closed its output channel", async () => {
+		const context = {
+			extensionPath: "/extension",
+			extensionUri: {},
+			globalStorageUri: { fsPath: "/storage" },
+			globalState: { get: vi.fn(), update: vi.fn().mockResolvedValue(undefined) },
+			subscriptions: [],
+		} as unknown as vscode.ExtensionContext
+		await activate(context)
+		mocks.outputChannel.appendLine.mockImplementationOnce(() => {
+			throw new Error("Channel has been closed")
+		})
+		await expect(deactivate()).resolves.toBeUndefined()
+		expect(mocks.provider.dispose).toHaveBeenCalledOnce()
+		expect(mocks.shutdownGlobalStores).toHaveBeenCalledOnce()
+		expect(mocks.cleanupMcp).toHaveBeenCalledWith(context)
+		expect(mocks.shutdownTelemetry).toHaveBeenCalledOnce()
+		expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
+	})
 })

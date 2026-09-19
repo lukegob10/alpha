@@ -122,9 +122,9 @@ is claimed from these measurements.
 Useful validation commands:
 
 ```sh
-pnpm --dir src test -- core/context-management core/condense core/task/__tests__/Task.compaction-safety.spec.ts shared/__tests__/context-output-reservation.spec.ts shared/__tests__/api.spec.ts api/providers/__tests__/vscode-lm.spec.ts core/task-persistence core/agent/__tests__/AgentTurnEngine.spec.ts
+pnpm --dir src test core/context-management core/condense core/task/__tests__/Task.compaction-safety.spec.ts shared/__tests__/context-output-reservation.spec.ts shared/__tests__/api.spec.ts api/providers/__tests__/vscode-lm.spec.ts core/task-persistence core/agent/__tests__/AgentTurnEngine.spec.ts
 pnpm --filter @alpha-code/types test
-pnpm --dir webview-ui test -- src/components/chat/context-management/__tests__/CondensationResultRow.spec.tsx src/components/chat/__tests__/TaskHeader.spec.tsx src/components/settings/providers/__tests__/VSCodeLM.spec.tsx src/__tests__/ContextWindowProgress.spec.tsx src/__tests__/ContextWindowProgressLogic.spec.ts
+pnpm --dir webview-ui test src/components/chat/context-management/__tests__/CondensationResultRow.spec.tsx src/components/chat/__tests__/TaskHeader.spec.tsx src/components/settings/providers/__tests__/VSCodeLM.spec.tsx src/__tests__/ContextWindowProgress.spec.tsx src/__tests__/ContextWindowProgressLogic.spec.ts
 pnpm lint
 pnpm check-types
 pnpm --filter @alpha-code/vscode-e2e test:smoke:1221

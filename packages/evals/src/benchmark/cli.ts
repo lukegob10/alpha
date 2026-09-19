@@ -6,7 +6,13 @@ import { stringify } from "yaml"
 
 import { EVALS_REPO_PATH } from "../exercises/index"
 import { findRun, findTrialForTask, getTasks } from "../db/index"
-import { buildPairedExperimentReport } from "../experiments/index"
+import {
+	buildPairedExperimentReport,
+	reportCampaignPair,
+	renderCampaignPair,
+	exportHostCampaign,
+	declareCampaignPair,
+} from "../experiments/index"
 import { evaluateAdmission } from "./admission"
 import { runKeylessCalibration, syncVisibleKeylessReports } from "./calibration"
 import { mergeModelCalibration, type ModelCalibrationTrial } from "./modelCalibration"
@@ -24,6 +30,16 @@ import { certifyInitialFixtureStates } from "./fixtures"
 
 async function main() {
 	const [command, ...args] = process.argv.slice(2)
+	if (command === "export-host-campaign") {
+		const campaign = JSON.parse(await fs.readFile(path.resolve(valueAfter(args, "--input")), "utf8")) as unknown
+		const receipt = exportHostCampaign(campaign, { timeWindow: valueAfter(args, "--pair-window") })
+		const output = path.resolve(valueAfter(args, "--output"))
+		await writeJsonAtomic(output, receipt)
+		console.log(
+			JSON.stringify({ output, observations: receipt.observations.length, digest: receipt.digest }, null, 2),
+		)
+		return
+	}
 	if (command === "estimate") {
 		const tier = valueAfter(args, "--tier") as CampaignTier
 		if (!["t0", "t1", "t2", "t3", "t4", "t5"].includes(tier))
@@ -305,6 +321,27 @@ async function main() {
 		)
 		return
 	}
+	if (command === "campaign-paired-report") {
+		const readJson = async (flag: string) =>
+			JSON.parse(await fs.readFile(path.resolve(valueAfter(args, flag)), "utf8")) as never
+		const control = await readJson("--control")
+		const candidate = await readJson("--candidate")
+		const manifest = optionalValueAfter(args, "--experiment")
+			? await readJson("--experiment")
+			: declareCampaignPair(control, candidate, {
+					id: valueAfter(args, "--id"),
+					template: valueAfter(args, "--template"),
+					independentUnit: valueAfter(args, "--independent-unit"),
+					allowedDifferenceFields: valueAfter(args, "--allowed-differences").split(","),
+				})
+		const report = reportCampaignPair(control, candidate, manifest)
+		const output = path.resolve(valueAfter(args, "--output"))
+		await writeJsonAtomic(output, report)
+		await writeJsonAtomic(`${output}.experiment.json`, manifest)
+		await fs.writeFile(`${output}.md`, renderCampaignPair(report))
+		console.log(JSON.stringify({ output, pairCount: report.pairCount, digest: report.digest }, null, 2))
+		return
+	}
 	if (command === "paired-report") {
 		const control = JSON.parse(await fs.readFile(path.resolve(valueAfter(args, "--control")), "utf8")) as unknown
 		const candidate = JSON.parse(
@@ -446,6 +483,9 @@ async function main() {
 			concurrency: optionalNumberAfter(args, "--concurrency"),
 			campaignBudget: budget,
 			highCostApproved: args.includes("--approve-high-cost"),
+			evidenceOutput: path.resolve(
+				optionalValueAfter(args, "--evidence-output") ?? path.join("artifacts", "campaigns"),
+			),
 		})
 		console.log(JSON.stringify({ runId, role, tier, budget }, null, 2))
 		return

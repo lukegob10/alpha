@@ -12,7 +12,12 @@ vi.mock("../../../utils/storage", () => ({
 }))
 
 import { GlobalFileNames } from "../../../shared/globalFileNames"
-import { AgentTurnEventLog, readAgentTurnEvents } from "../AgentTurnEventLog"
+import {
+	AgentTurnEventLog,
+	projectPersistedAgentTurnEvent,
+	readAgentTurnEvents,
+	type PersistedAgentTurnEvent,
+} from "../AgentTurnEventLog"
 
 describe("AgentTurnEventLog", () => {
 	it("writes ordered bounded and redacted task events", async () => {
@@ -44,6 +49,103 @@ describe("AgentTurnEventLog", () => {
 		expect(records.map((record) => record.sequence)).toEqual([1, 2, 3])
 		expect(records[1].event.output?.apiKey).toBe("[redacted]")
 		expect(records[2].event.text).toContain("[truncated]")
+	})
+
+	it("persists optional step/request joins while keeping the event payload contract additive", async () => {
+		const storagePath = await fs.mkdtemp(path.join(tmpdir(), "agent-turn-events-identity-"))
+		const log = new AgentTurnEventLog("task-identity", storagePath, { runId: "run-identity" })
+		await log.append(
+			{
+				type: "request_usage",
+				requestIndex: 4,
+				retry: true,
+				inputTokens: 10,
+				outputTokens: 6,
+				cacheReadTokens: 2,
+				cacheWriteTokens: 1,
+				totalCost: 0.04,
+			},
+			undefined,
+			{
+				turnId: "turn-1",
+				stepId: "step-2",
+				requestId: "request-3",
+				attemptId: "attempt-4",
+				correlationId: "event-parent",
+				causationId: "event-cause",
+			},
+		)
+		await log.flush()
+
+		const record = (await readAgentTurnEvents("task-identity", storagePath))[0]
+		expect(record).toMatchObject({
+			taskId: "task-identity",
+			runId: "run-identity",
+			turnId: "turn-1",
+			stepId: "step-2",
+			requestId: "request-3",
+			attemptId: "attempt-4",
+			correlationId: "event-parent",
+			causationId: "event-cause",
+		})
+		const projected = projectPersistedAgentTurnEvent(record)
+		expect(projected).toMatchObject({
+			taskIdSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+			runIdSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+			turnIdSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+			stepIdSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+			requestIdSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+			event: {
+				type: "request_usage",
+				inputTokens: 10,
+				cacheWriteTokens: 1,
+				totalCost: 0.04,
+			},
+		})
+	})
+
+	it("recovers old records without identity fields", async () => {
+		const storagePath = await fs.mkdtemp(path.join(tmpdir(), "agent-turn-events-legacy-"))
+		const taskId = "task-legacy"
+		const eventsPath = path.join(storagePath, taskId, GlobalFileNames.agentTurnEvents)
+		await fs.mkdir(path.dirname(eventsPath), { recursive: true })
+		await fs.writeFile(
+			eventsPath,
+			JSON.stringify({
+				taskId,
+				runId: "run-legacy",
+				sequence: 1,
+				timestamp: 1,
+				event: { type: "progress", text: "legacy" },
+			}),
+			"utf8",
+		)
+		const [record] = await readAgentTurnEvents(taskId, storagePath)
+		expect(record).toBeDefined()
+		expect(record.turnId).toBeUndefined()
+		expect(projectPersistedAgentTurnEvent(record)).not.toHaveProperty("turnIdSha256")
+	})
+
+	it("projects untrusted event labels through closed values and hashed names", () => {
+		const projected = projectPersistedAgentTurnEvent({
+			taskId: "task-safe",
+			runId: "run-safe",
+			sequence: 1,
+			timestamp: 1,
+			event: {
+				type: "provider-secret-event",
+				status: "provider-secret-status",
+				name: "private-tool-name",
+				toolName: "private-tool-name",
+				commandCategory: "private-category",
+			},
+		} as unknown as PersistedAgentTurnEvent)
+		expect(projected.event).toMatchObject({ type: "unknown" })
+		expect(projected.event).not.toHaveProperty("status")
+		expect(projected.event).not.toHaveProperty("commandCategory")
+		expect(JSON.stringify(projected.event)).not.toContain("private-tool-name")
+		expect(projected.event.nameSha256).toMatch(/^[a-f0-9]{64}$/)
+		expect(projected.event.toolNameSha256).toMatch(/^[a-f0-9]{64}$/)
 	})
 
 	it("supports an explicit idempotent close and redacts inline secrets without hiding usage", async () => {

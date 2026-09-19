@@ -1,10 +1,13 @@
 {
 	"name": "alpha",
-	"packageManager": "pnpm@10.8.1",
+	"packageManager": "pnpm@11.24.0",
 	"engines": {
-		"node": "20.19.2"
+		"node": "24.14.1",
+		"npm": "11.11.0"
 	},
 	"scripts": {
+		"harness": "node scripts/harness/run.mjs",
+		"harness:acceptance": "node scripts/harness/local-acceptance.mjs",
 		"preinstall": "node scripts/bootstrap.mjs",
 		"prepare": "husky",
 		"install": "node scripts/bootstrap.mjs",
@@ -40,8 +43,10 @@
 		"build:all": "turbo build --log-order grouped --output-logs new-only",
 		"test:all": "pnpm test && pnpm test:tooling && pnpm --filter @alpha-code/vscode-e2e test:unit && pnpm test:evals",
 		"test:evals": "pnpm --filter @alpha-code/evals test:all",
+		"test:evals:services": "pnpm --filter @alpha-code/evals test:services",
+		"test:evals:infrastructure": "pnpm --filter @alpha-code/evals test:docker",
 		"test:evals:offline": "pnpm --filter @alpha-code/evals test:unit && pnpm --filter @alpha-code/evals test:contract && pnpm --filter @alpha-code/evals test:certification",
-		"test:tooling": "node --test scripts/install-vsix.test.js"
+		"test:tooling": "node --test scripts/install-vsix.test.js scripts/bootstrap.test.mjs scripts/harness/*.test.mjs scripts/evals/*.test.mjs"
 	},
 	"devDependencies": {
 		"@changesets/cli": "^2.27.10",
@@ -63,28 +68,6 @@
 		"*.{js,jsx,ts,tsx,json,css,md}": [
 			"prettier --write"
 		]
-	},
-	"pnpm": {
-		"onlyBuiltDependencies": [
-			"@vscode/ripgrep"
-		],
-		"overrides": {
-			"tar-fs": ">=3.1.1",
-			"tar": "7.5.22",
-			"esbuild": ">=0.25.0",
-			"undici": ">=5.29.0",
-			"basic-ftp": "5.3.1",
-			"fast-xml-parser": "5.5.6",
-			"shell-quote": "1.9.0",
-			"simple-git": "3.36.0",
-			"brace-expansion": "2.1.4",
-			"form-data": "4.0.6",
-			"bluebird": ">=3.7.2",
-			"glob": ">=11.1.0",
-			"@types/react": "^18.3.23",
-			"@types/react-dom": "^18.3.5",
-			"zod": "3.25.76"
-		}
 	},
 	"private": true
 }

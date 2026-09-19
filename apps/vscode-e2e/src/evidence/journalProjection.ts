@@ -10,6 +10,8 @@ type TaskSourceWarning =
 	| "JOURNAL_LINE_LIMIT"
 	| "JOURNAL_EVENT_LIMIT"
 	| "JOURNAL_MALFORMED"
+	| "JOURNAL_EVENT_DROPPED"
+	| "JOURNAL_SEQUENCE_INVALID"
 
 /** Closed codes only: never publish filesystem errors or offending record contents. */
 export class TaskSourceError extends Error {
@@ -86,11 +88,15 @@ export async function projectJournalSource(
 	filePath: string,
 	limits: { maxSourceBytes: number; maxLineBytes: number; maxEvents: number },
 	project: (raw: unknown) => unknown,
+	sequencePartition: "run" | "turn" = "run",
 ) {
 	bounded(limits.maxLineBytes, 4 * 1_024 * 1_024)
 	bounded(limits.maxEvents, 10_000)
 	const events: unknown[] = []
+	const sequencesByPartition = new Map<string, number[]>()
 	let records = 0
+	let dropped = false
+	let unverified = false
 	let pending: Buffer = Buffer.alloc(0)
 	const decode = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
 	const consume = (line: Buffer) => {
@@ -106,7 +112,32 @@ export async function projectJournalSource(
 			throw new TaskSourceError("JOURNAL_MALFORMED")
 		}
 		const value = project(raw)
-		if (value !== undefined) events.push(value)
+		if (value === undefined) {
+			dropped = true
+			return
+		}
+		events.push(value)
+		if (value === null || typeof value !== "object" || Array.isArray(value)) {
+			unverified = true
+			return
+		}
+		const projected = value as Record<string, unknown>
+		const sequence = projected.sequence
+		const runId = projected.runIdSha256
+		const turnId = projected.turnIdSha256
+		if (
+			!Number.isInteger(sequence) ||
+			(sequence as number) <= 0 ||
+			typeof runId !== "string" ||
+			(sequencePartition === "turn" && typeof turnId !== "string")
+		) {
+			unverified = true
+			return
+		}
+		const partition = sequencePartition === "turn" ? `${runId}:${turnId as string}` : runId
+		const partitionSequences = sequencesByPartition.get(partition) ?? []
+		partitionSequences.push(sequence as number)
+		sequencesByPartition.set(partition, partitionSequences)
 	}
 	const source = await visitSource(filePath, limits.maxSourceBytes, (chunk) => {
 		const data = pending.length ? Buffer.concat([pending, chunk]) : chunk
@@ -120,5 +151,119 @@ export async function projectJournalSource(
 		pending = Buffer.from(data.subarray(start))
 	})
 	if (pending.length) consume(pending)
-	return { ...source, projection: { events, complete: true } }
+	const sequenceInvalid = [...sequencesByPartition.values()].some((sequences) =>
+		sequences.some((sequence, index) => sequence !== index + 1),
+	)
+	const validationStatus: JournalValidationStatus =
+		dropped || sequenceInvalid
+			? "incomplete"
+			: unverified || sequencesByPartition.size === 0
+				? "unverified"
+				: "validated"
+	const warnings = [
+		...(dropped ? (["JOURNAL_EVENT_DROPPED"] as const) : []),
+		...(sequenceInvalid ? (["JOURNAL_SEQUENCE_INVALID"] as const) : []),
+		...(validationStatus === "unverified" ? (["JOURNAL_VALIDATION_UNVERIFIED"] as const) : []),
+	]
+	return {
+		...source,
+		projection: {
+			events,
+			captureStatus: "captured" as const,
+			validationStatus,
+			warnings,
+			// Kept for older consumers; true now means sequence validation passed.
+			complete: validationStatus === "validated",
+		},
+	}
+}
+
+export type JournalValidationStatus = "validated" | "unverified" | "incomplete"
+
+export interface EvidenceJoinProjection {
+	records: Array<{
+		identity: Record<string, string | undefined>
+		lifecycleSequences: number[]
+		eventLogSequences: number[]
+		eventTypes: string[]
+		identityConflicts: string[]
+		status: "joined" | "partial"
+	}>
+	missing: string[]
+}
+
+/**
+ * Join the privacy-safe projections of the canonical journal and additive
+ * event log. Inputs contain only hashed identities; this helper never sees or
+ * reconstructs raw task/provider content.
+ */
+export function joinProjectedEvidence(input: {
+	lifecycle?: readonly unknown[]
+	eventLog?: readonly unknown[]
+}): EvidenceJoinProjection {
+	const identityFields = [
+		"taskIdSha256",
+		"runIdSha256",
+		"turnIdSha256",
+		"stepIdSha256",
+		"requestIdSha256",
+		"attemptIdSha256",
+	] as const
+	const groups = new Map<string, EvidenceJoinProjection["records"][number]>()
+	const conflictsByGroup = new Map<string, Set<string>>()
+	const missing = new Set<string>()
+	const add = (source: "lifecycle" | "eventLog", value: unknown) => {
+		if (value === null || typeof value !== "object" || Array.isArray(value)) return
+		const record = value as Record<string, unknown>
+		for (const field of identityFields) {
+			if (typeof record[field] !== "string") missing.add(`${source}:${field}`)
+		}
+		// Scope the join by the common task/run/turn/step boundary. Request and
+		// attempt IDs were added later and may be absent on one side of an old
+		// record; including them in the key would manufacture two partial joins.
+		const key = identityFields
+			.slice(0, 4)
+			.map((field) => String(record[field] ?? "?"))
+			.join(":")
+		const existing =
+			groups.get(key) ??
+			({
+				identity: Object.fromEntries(
+					identityFields.map((field) => [field, record[field] as string | undefined]),
+				),
+				lifecycleSequences: [],
+				eventLogSequences: [],
+				eventTypes: [],
+				identityConflicts: [],
+				status: "partial",
+			} satisfies EvidenceJoinProjection["records"][number])
+		const conflicts = conflictsByGroup.get(key) ?? new Set<string>()
+		const hasStableIdentity = identityFields
+			.slice(0, 4)
+			.every((field) => typeof existing.identity[field] === "string")
+		const sequence = record.sequence
+		for (const field of identityFields.slice(4)) {
+			const value = record[field]
+			if (typeof value !== "string" || conflicts.has(field)) continue
+			if (existing.identity[field] === undefined) existing.identity[field] = value
+			else if (existing.identity[field] !== value) {
+				delete existing.identity[field]
+				conflicts.add(field)
+				existing.identityConflicts.push(field)
+			}
+		}
+		if (typeof sequence === "number" && Number.isFinite(sequence)) {
+			if (source === "lifecycle") existing.lifecycleSequences.push(sequence)
+			else existing.eventLogSequences.push(sequence)
+		}
+		const type = typeof record.type === "string" ? record.type : undefined
+		if (type && !existing.eventTypes.includes(type)) existing.eventTypes.push(type)
+		if (hasStableIdentity && existing.lifecycleSequences.length > 0 && existing.eventLogSequences.length > 0)
+			existing.status = "joined"
+		conflictsByGroup.set(key, conflicts)
+		groups.set(key, existing)
+	}
+	input.lifecycle?.forEach((record) => add("lifecycle", record))
+	input.eventLog?.forEach((record) => add("eventLog", record))
+	return { records: [...groups.values()], missing: [...missing].sort() }
 }

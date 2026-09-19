@@ -73,6 +73,10 @@ describe("M4 evidence contracts", () => {
 				processRunner: runner,
 				network: "disabled",
 			})
+			expect(base.taskManifest.workspaceCommit).toMatch(/^[a-f0-9]{40}$/)
+			expect(base.variantManifest.extensionCommit).toBe("unavailable:executed-harness")
+			expect(base.variantManifest.identityStatus).toBe("executed_harness_unavailable")
+			expect(base.variantManifest.settingsDigest).toBeDefined()
 			await fs.writeFile(prompt, "prompt-v2")
 			const promptChanged = await createRuntimeIdentities({
 				...baseInput(root, prompt, runner),

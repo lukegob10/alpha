@@ -23,12 +23,20 @@ export const isDockerContainer = () => {
 	}
 }
 
+async function assertDedicatedEvalsCheckout(cwd: string) {
+	const { stdout } = await execa("git", ["rev-parse", "--show-toplevel"], { cwd })
+	if ((await fsp.realpath(stdout.trim())) !== (await fsp.realpath(cwd))) {
+		throw new Error("Legacy evaluation reset/commit requires a dedicated repository root")
+	}
+}
+
 export const resetEvalsRepo = async ({ run, cwd }: { run: Run; cwd: string }) => {
 	// The versioned benchmark catalog is intentionally not a Git working tree.
 	// Never run the legacy repository reset against it: `git clean -fd` would
 	// delete public manifests and generated task fixtures before the campaign.
 	if (process.env.ALPHA_EVALS_REPO_PATH && path.resolve(cwd) === path.resolve(process.env.ALPHA_EVALS_REPO_PATH))
 		return
+	await assertDedicatedEvalsCheckout(cwd)
 	await execa({ cwd })`git config user.name "Alpha"`
 	await execa({ cwd })`git config user.email "support@alpha.invalid"`
 	await execa({ cwd })`git checkout -f`
@@ -39,6 +47,7 @@ export const resetEvalsRepo = async ({ run, cwd }: { run: Run; cwd: string }) =>
 export const commitEvalsRepoChanges = async ({ run, cwd }: { run: Run; cwd: string }) => {
 	if (process.env.ALPHA_EVALS_REPO_PATH && path.resolve(cwd) === path.resolve(process.env.ALPHA_EVALS_REPO_PATH))
 		return
+	await assertDedicatedEvalsCheckout(cwd)
 	await execa({ cwd })`git add .`
 	await execa({ cwd })`git commit -m ${`Run #${run.id}`} --no-verify`
 }
@@ -245,10 +254,13 @@ export async function waitForSubprocessWithTimeout({
 	timeoutMs?: number
 	logger: Logger
 }): Promise<void> {
+	let timer: NodeJS.Timeout | undefined
 	try {
 		await Promise.race([
 			subprocess,
-			new Promise((_, reject) => setTimeout(() => reject(new SubprocessTimeoutError(timeoutMs)), timeoutMs)),
+			new Promise((_, reject) => {
+				timer = setTimeout(() => reject(new SubprocessTimeoutError(timeoutMs)), timeoutMs)
+			}),
 		])
 
 		logger.info("subprocess finished gracefully")
@@ -265,8 +277,9 @@ export async function waitForSubprocessWithTimeout({
 			} catch (killError) {
 				logger.error("subprocess.kill(SIGKILL) failed:", killError)
 			}
-		} else {
-			throw error
 		}
+		throw error
+	} finally {
+		clearTimeout(timer)
 	}
 }

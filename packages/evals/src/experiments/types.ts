@@ -60,6 +60,8 @@ export const experimentManifestSchema = z.object({
 				"extensionBuildDigest",
 				"model",
 				"modelSettingsDigest",
+				"promptDigest",
+				"toolSchemaDigest",
 				"toolImplementationDigest",
 				"skillBundleDigest",
 				"policyDigest",
@@ -68,6 +70,7 @@ export const experimentManifestSchema = z.object({
 		)
 		.min(1)
 		.optional(),
+	independentUnit: z.enum(["task", "repository", "attempt"]).optional(),
 })
 
 export type ExperimentTemplate = z.infer<typeof experimentTemplateSchema>
@@ -93,7 +96,9 @@ export const trialObservationSchema = pairKeySchema.extend({
 	status: observationStatusSchema,
 	firstAttemptStatus: observationStatusSchema,
 	retryAssisted: z.boolean(),
-	cost: z.number().nonnegative(),
+	cost: z.number().finite().nonnegative().nullable(),
+	tokens: z.number().int().nonnegative().nullable().optional(),
+	repository: z.string().min(1).optional(),
 	latencyMs: z.number().nonnegative(),
 	capabilities: z.array(z.string().min(1)).min(1),
 	risk: z.enum(["low", "medium", "high", "critical"]),

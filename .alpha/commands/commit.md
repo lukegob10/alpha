@@ -74,7 +74,7 @@ mode: code
 
 **Common hook failures and fixes:**
 
-- **Linter errors**: Run the project's linter (e.g., `npm run lint` or `pnpm lint`) to see all issues, then fix them
-- **Type checking errors**: Run type checker (e.g., `npx tsc --noEmit`) to identify type issues
-- **Test failures**: Run tests (e.g., `npm test` or `pnpm test`) to identify failing tests and fix them
-- **Format issues**: Run formatter (e.g., `npm run format` or `pnpm format`) to auto-fix formatting
+- **Linter errors**: Run the project's linter with `pnpm lint` to see all issues, then fix them
+- **Type checking errors**: Run type checker (e.g., `pnpm exec tsc --noEmit`) to identify type issues
+- **Test failures**: Run tests with `pnpm test` to identify failing tests and fix them
+- **Format issues**: Run the formatter with `pnpm format` to auto-fix formatting

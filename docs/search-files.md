@@ -101,8 +101,8 @@ excludes provider framing, and is not billed usage. This is schema-size evidence
 claim. Shortening the existing description offsets the new option schemas.
 
 ```sh
-pnpm --dir src test -- core/tools/__tests__/SearchFilesTool.spec.ts services/ripgrep/__tests__/index.spec.ts services/ripgrep/__tests__/execution.spec.ts
-pnpm --dir src test -- core/task/__tests__/tool-catalog-measurement.spec.ts -t "records no-MCP" --no-silent
+pnpm --dir src test core/tools/__tests__/SearchFilesTool.spec.ts services/ripgrep/__tests__/index.spec.ts services/ripgrep/__tests__/execution.spec.ts
+pnpm --dir src test core/task/__tests__/tool-catalog-measurement.spec.ts -t "records no-MCP" --no-silent
 pnpm --dir src check-types
 pnpm --dir src lint
 pnpm --filter @alpha-code/types test

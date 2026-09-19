@@ -147,7 +147,7 @@ Use Node 20.19.2 and pnpm 10.8.1. Frozen dependency installation and the existin
 
 ```sh
 node --test scripts/evals/proportional-scope-report.test.mjs scripts/evals/proportional-scope-compare.test.mjs
-pnpm --dir src test -- core/agent/__tests__/proportionalScope.integration.spec.ts
+pnpm --dir src test core/agent/__tests__/proportionalScope.integration.spec.ts
 pnpm --dir src exec vitest run --config ../scripts/benchmarks/nor36-request-preflight.config.ts
 pnpm --dir src exec tsc --noEmit --project ../scripts/benchmarks/nor36-request-preflight.tsconfig.json
 pnpm exec eslint --config src/eslint.config.mjs scripts/benchmarks/nor36-request-preflight.spec.ts scripts/benchmarks/nor36-request-preflight.config.ts scripts/evals/proportional-scope-compare.mjs scripts/evals/proportional-scope-compare.test.mjs --max-warnings=0

@@ -6,7 +6,13 @@ import { agentLifecycleEventSchema, AlphaCodeEventName } from "@alpha-code/types
 
 import { isWithin, readBounded, rejectSymlinkComponents } from "../evidence/paths"
 import { AGENT_CONTROL_TRANSACTION_LOCK, OFFLINE_QUARANTINE_SUFFIX } from "../evidence/storageRecovery"
-import { STORAGE_RESTART_RECEIPT, type StorageRestartPhaseReceipt } from "../evidence/storageRestart"
+import {
+	measureTaskHistoryMirror,
+	STORAGE_RESTART_RECEIPT,
+	TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES,
+	type StorageRestartPhaseReceipt,
+	type TaskHistoryMirrorReceipt,
+} from "../evidence/storageRestart"
 import { waitFor } from "./utils"
 
 class StorageRestartAI {
@@ -72,6 +78,13 @@ suite("Actual profile storage restart", function () {
 		assert.equal(path.dirname(path.resolve(scenarioResultPath)), path.resolve(artifactsDir))
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider: StorageRestartProvider }).sidebarProvider
+		const context = (api as unknown as { context: vscode.ExtensionContext }).context
+		assert.ok(context?.globalState, "Alpha must expose its real extension context")
+		const taskHistoryStoreReady = (provider as unknown as { taskHistoryStoreReady?: Promise<void> })
+			.taskHistoryStoreReady
+		if (!taskHistoryStoreReady) throw new Error("The task-history store was not initialized")
+		await taskHistoryStoreReady
+		const taskHistoryBefore = measureTaskHistoryMirror(context.globalState)
 		const persistence = provider.agentControlStore.persistence
 		await rejectSymlinkComponents(persistence.filePath)
 		const storagePath = await fs.realpath(path.dirname(persistence.filePath))
@@ -160,6 +173,27 @@ suite("Actual profile storage restart", function () {
 					"The healthy task must persist its provider history",
 				)
 			}
+			const flushGlobalStateWriteThrough = (
+				provider as unknown as {
+					flushGlobalStateWriteThrough?: () => Promise<void>
+				}
+			).flushGlobalStateWriteThrough
+			if (!flushGlobalStateWriteThrough) throw new Error("The task-history global-state flush is unavailable")
+			await flushGlobalStateWriteThrough.call(provider)
+			const taskHistoryAfter = measureTaskHistoryMirror(context.globalState)
+			assert.equal(
+				taskHistoryBefore.withinBudget && taskHistoryAfter.withinBudget,
+				true,
+				`The taskHistory global-state mirror must remain within ${TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES} bytes`,
+			)
+			const taskHistoryMirror: TaskHistoryMirrorReceipt = {
+				key: "taskHistory",
+				budgetBytes: TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES,
+				before: taskHistoryBefore,
+				after: taskHistoryAfter,
+				maxBytes: Math.max(taskHistoryBefore.bytes, taskHistoryAfter.bytes),
+				withinBudget: true,
+			}
 			const journal = await readBounded(
 				path.join(storagePath, "tasks", taskId, "agent_lifecycle_events.jsonl"),
 				256 * 1_024,
@@ -188,6 +222,7 @@ suite("Actual profile storage restart", function () {
 				terminalCount: 1,
 				status: phase === "fault" ? "failed" : "completed",
 				code: phase === "fault" ? "ELOCKOWNER" : "OK",
+				taskHistoryMirror,
 			}
 			await fs.writeFile(path.join(artifactsDir, STORAGE_RESTART_RECEIPT), JSON.stringify(receipt, null, 2), {
 				flag: "wx",

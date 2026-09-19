@@ -11,7 +11,7 @@
 	},
 	"engines": {
 		"vscode": "^1.122.1",
-		"node": "20.19.2"
+		"node": "24.14.1"
 	},
 	"author": {
 		"name": "Alpha"

@@ -37,6 +37,8 @@ logs
 *.log
 /artifacts/certification/*.json
 /artifacts/core-confidence/
+/artifacts/harness/
+/packages/evals/artifacts/campaigns/
 /artifacts/certification/core-confidence.log
 /artifacts/certification/*.json.tmp-*
 

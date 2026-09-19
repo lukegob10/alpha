@@ -4,7 +4,7 @@ import { createHash } from "node:crypto"
 
 import { TEST_RUN_FAILURE_CODES } from "../runFailure"
 import { assertWorkflowResult, MAX_WORKFLOW_RESULT_BYTES } from "../scenarios/contracts"
-import { runOwnedProcess } from "./ownedProcess"
+import { pnpmCommand, runOwnedProcess } from "./ownedProcess"
 import { applyPatchPlan } from "./patchPlan"
 import { auditRetainedStorage } from "../evidence/retainedStorageBudget"
 import { markRunRetentionEligible } from "../evidence/retention"
@@ -478,8 +478,7 @@ export function createExtensionCampaignOperations(
 						if (!options.pnpmCliPath || !path.isAbsolute(options.pnpmCliPath)) return false
 						const result = await runProcess(
 							{
-								executable: process.execPath,
-								args: [options.pnpmCliPath, "-w", "bundle"],
+								...pnpmCommand(options.pnpmCliPath, ["-w", "bundle"]),
 								cwd: options.repositoryRoot,
 							},
 							{ signal },

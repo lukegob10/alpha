@@ -4125,6 +4125,14 @@ export class AlphaProvider
 				await this.taskHistoryStoreReady
 				const current = this.taskHistoryStore.get(taskId)
 				if (!current || current.status === historyStatus) return
+				// Disposing a terminal runtime is not an interrupted turn. A resumed
+				// turn queues "active" first, so its later interruption still persists.
+				if (
+					historyStatus === "interrupted" &&
+					(current.status === "completed" || current.status === "failed")
+				) {
+					return
+				}
 				await this.updateTaskHistory({ ...current, status: historyStatus })
 			})
 		const settled = write.catch((error) => {

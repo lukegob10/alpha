@@ -48,6 +48,17 @@ test("bounds each output stream in bytes while continuing to drain the child", a
 	assert.equal(result.cleanupVerified, process.platform !== "win32")
 })
 
+test("terminal output mode retains no child output in the result", async () => {
+	const root = await makeRoot()
+	const result = await runOwnedProcess(nodeCommand(root, 'process.stdout.write("inherited-output-fixture\\n")'), {
+		output: "inherit",
+	})
+	assert.equal(result.exitCode, 0)
+	assert.equal(result.stdout, "")
+	assert.equal(result.stderr, "")
+	assert.equal(result.outputTruncated, false)
+})
+
 test("rejects without spawning when already aborted", async () => {
 	const root = await makeRoot()
 	const readyFile = path.join(root, "must-not-start")
@@ -64,40 +75,42 @@ test("rejects without spawning when already aborted", async () => {
 	await assert.rejects(() => access(readyFile), { code: "ENOENT" })
 })
 
-test("aborts a live child, escalates after the grace period, and verifies cleanup", async () => {
-	const root = await makeRoot()
-	const readyFile = path.join(root, "ready")
-	const pidFile = path.join(root, "pid")
-	const descendantPidFile = path.join(root, "descendant-pid")
-	const controller = new AbortController()
-	const running = runOwnedProcess(
-		nodeCommand(
-			root,
-			[
-				'const fs = require("node:fs")',
-				'const { spawn } = require("node:child_process")',
-				'const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], { detached: false, stdio: "ignore" })',
-				`fs.writeFileSync(${JSON.stringify(descendantPidFile)}, String(descendant.pid))`,
-				`fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))`,
-				`fs.writeFileSync(${JSON.stringify(readyFile)}, "ready")`,
-				'process.on("SIGTERM", () => {})',
-				"setInterval(() => {}, 1_000)",
-			].join(";"),
-		),
-		{ signal: controller.signal, killGraceMs: 25 },
-	)
+for (const output of ["capture", "inherit"] as const) {
+	test(`aborts a live child, escalates and verifies descendant cleanup with ${output} output`, async () => {
+		const root = await makeRoot()
+		const readyFile = path.join(root, "ready")
+		const pidFile = path.join(root, "pid")
+		const descendantPidFile = path.join(root, "descendant-pid")
+		const controller = new AbortController()
+		const running = runOwnedProcess(
+			nodeCommand(
+				root,
+				[
+					'const fs = require("node:fs")',
+					'const { spawn } = require("node:child_process")',
+					'const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], { detached: false, stdio: "ignore" })',
+					`fs.writeFileSync(${JSON.stringify(descendantPidFile)}, String(descendant.pid))`,
+					`fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))`,
+					`fs.writeFileSync(${JSON.stringify(readyFile)}, "ready")`,
+					'process.on("SIGTERM", () => {})',
+					"setInterval(() => {}, 1_000)",
+				].join(";"),
+			),
+			{ signal: controller.signal, killGraceMs: 25, output },
+		)
 
-	await waitForFile(readyFile)
-	controller.abort()
-	const result = await running
+		await waitForFile(readyFile)
+		controller.abort()
+		const result = await running
 
-	if (process.platform !== "win32") assert.equal(result.exitCode, null)
-	assert.equal(result.cleanupVerified, true)
-	if (process.platform === "win32") assert.equal(result.signal, null)
-	else assert.equal(result.signal, "SIGKILL")
-	assert.equal(await isLive(Number(await readFile(pidFile, "utf8"))), false)
-	assert.equal(await isLive(Number(await readFile(descendantPidFile, "utf8"))), false)
-})
+		if (process.platform !== "win32") assert.equal(result.exitCode, null)
+		assert.equal(result.cleanupVerified, true)
+		if (process.platform === "win32") assert.equal(result.signal, null)
+		else assert.equal(result.signal, "SIGKILL")
+		assert.equal(await isLive(Number(await readFile(pidFile, "utf8"))), false)
+		assert.equal(await isLive(Number(await readFile(descendantPidFile, "utf8"))), false)
+	})
+}
 
 test("does not terminate an unrelated disposable child", async () => {
 	const root = await makeRoot()

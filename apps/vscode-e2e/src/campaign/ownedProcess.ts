@@ -1,5 +1,15 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import process from "node:process"
+import * as path from "node:path"
+
+/** pnpm can expose either a JS entrypoint or a native executable through npm_execpath. */
+export function pnpmCommand(cliPath: string, args: string[]): Pick<OwnedProcessCommand, "executable" | "args"> {
+	if (!path.isAbsolute(cliPath) || !/pnpm/i.test(path.basename(cliPath)) || /\.(cmd|bat)$/i.test(cliPath))
+		throw new Error("Expected an absolute pnpm executable or JavaScript entrypoint")
+	return /\.(c?js|mjs)$/i.test(cliPath)
+		? { executable: process.execPath, args: [cliPath, ...args] }
+		: { executable: cliPath, args }
+}
 
 export interface OwnedProcessCommand {
 	executable: string
@@ -21,6 +31,8 @@ interface OwnedProcessOptions {
 	signal?: AbortSignal
 	maxOutputBytes?: number
 	killGraceMs?: number
+	/** CLI callers can stream directly to their terminal without retaining raw logs. */
+	output?: "capture" | "inherit"
 }
 
 const DEFAULT_MAX_OUTPUT_BYTES = 1_048_576
@@ -62,7 +74,11 @@ export async function runOwnedProcess(
 		shell: false,
 		windowsHide: true,
 		detached: process.platform !== "win32",
-		stdio: ["ignore", "pipe", "pipe"],
+		stdio: [
+			"ignore",
+			options.output === "inherit" ? "inherit" : "pipe",
+			options.output === "inherit" ? "inherit" : "pipe",
+		],
 	}
 	if (command.env !== undefined) spawnOptions.env = { ...command.env }
 

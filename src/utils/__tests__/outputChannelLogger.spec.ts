@@ -1,6 +1,6 @@
 import * as vscode from "vscode"
 
-import { createOutputChannelLogger, createDualLogger } from "../outputChannelLogger"
+import { createOutputChannelLogger, createDualLogger, createLifecycleSafeOutputChannel } from "../outputChannelLogger"
 
 // Mock VSCode output channel
 const mockOutputChannel = {
@@ -8,6 +8,43 @@ const mockOutputChannel = {
 } as unknown as vscode.OutputChannel
 
 describe("outputChannelLogger", () => {
+	it("ignores closed host channel writes across all consumers", () => {
+		const raw = {
+			appendLine: vitest.fn(() => {
+				throw new Error("Channel has been closed")
+			}),
+			append: vitest.fn(),
+			replace: vitest.fn(),
+			clear: vitest.fn(),
+		} as unknown as vscode.OutputChannel
+		const channel = createLifecycleSafeOutputChannel(raw)
+		expect(() => channel.appendLine("shutdown")).not.toThrow()
+		channel.append("later")
+		channel.replace("later")
+		channel.clear()
+		expect(raw.append).not.toHaveBeenCalled()
+		expect(raw.replace).not.toHaveBeenCalled()
+		expect(raw.clear).not.toHaveBeenCalled()
+	})
+
+	it("preserves unexpected logging failures", () => {
+		const raw = {
+			appendLine: vitest.fn(() => {
+				throw new Error("unexpected")
+			}),
+		} as unknown as vscode.OutputChannel
+		expect(() => createLifecycleSafeOutputChannel(raw).appendLine("message")).toThrow("unexpected")
+	})
+
+	it("stops writes after explicit disposal", () => {
+		const raw = { appendLine: vitest.fn(), dispose: vitest.fn() } as unknown as vscode.OutputChannel
+		const channel = createLifecycleSafeOutputChannel(raw)
+		channel.appendLine("before")
+		channel.dispose()
+		channel.appendLine("after")
+		expect(raw.appendLine).toHaveBeenCalledExactlyOnceWith("before")
+		expect(raw.dispose).toHaveBeenCalledOnce()
+	})
 	beforeEach(() => {
 		vitest.clearAllMocks()
 		// Clear console.log mock if it exists

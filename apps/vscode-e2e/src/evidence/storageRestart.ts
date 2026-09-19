@@ -6,6 +6,28 @@ import { StorageRecoverySafetyError, type RecoveryHostRecord } from "./storageRe
 
 export const STORAGE_RESTART_RECEIPT = "storage-restart-phase.json"
 
+// Keep this mirror-only probe aligned with the production compatibility budget in
+// src/core/task-persistence/compactTaskHistoryForGlobalState.ts. The E2E package
+// cannot import extension-core source without turning the host fixture into a
+// second production dependency.
+export const TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES = 192 * 1024
+
+export interface TaskHistoryMirrorObservation {
+	bytes: number
+	items: number
+	withinBudget: boolean
+}
+
+export interface TaskHistoryMirrorReceipt {
+	key: "taskHistory"
+	budgetBytes: typeof TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES
+	before: TaskHistoryMirrorObservation
+	after: TaskHistoryMirrorObservation
+	samples?: TaskHistoryMirrorObservation[]
+	maxBytes: number
+	withinBudget: true
+}
+
 export interface StorageRestartPhaseReceipt {
 	schemaVersion: 1
 	scenarioId: "storage-restart"
@@ -19,6 +41,30 @@ export interface StorageRestartPhaseReceipt {
 	terminalCount: 1
 	status: "failed" | "completed"
 	code: "ELOCKOWNER" | "OK"
+	taskHistoryMirror?: TaskHistoryMirrorReceipt
+}
+
+interface GlobalStateReader {
+	get<T>(key: string): T | undefined
+}
+
+/** Measure only the serialized compatibility mirror; never return its contents. */
+export function measureTaskHistoryMirror(globalState: GlobalStateReader): TaskHistoryMirrorObservation {
+	const value = globalState.get<unknown>("taskHistory")
+	if (value !== undefined && !Array.isArray(value)) {
+		throw new StorageRecoverySafetyError("The taskHistory global-state value is not an array")
+	}
+	const items = value ?? []
+	const serialized = JSON.stringify(items)
+	if (typeof serialized !== "string") {
+		throw new StorageRecoverySafetyError("The taskHistory global-state value is not JSON serializable")
+	}
+	const bytes = Buffer.byteLength(serialized, "utf8")
+	return {
+		bytes,
+		items: items.length,
+		withinBudget: bytes <= TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES,
+	}
 }
 
 /** Narrow structural input from the existing runner, not a second host-launch API. */
@@ -47,6 +93,61 @@ function record(value: unknown): Record<string, unknown> {
 
 function validPid(value: unknown): value is number {
 	return Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= 2_147_483_647
+}
+
+function validMirrorObservation(value: unknown): value is TaskHistoryMirrorObservation {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false
+	const observation = value as Record<string, unknown>
+	const withinBudget = Number(observation.bytes) <= TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES
+	return (
+		Number.isSafeInteger(observation.bytes) &&
+		Number(observation.bytes) >= 0 &&
+		Number.isSafeInteger(observation.items) &&
+		Number(observation.items) >= 0 &&
+		typeof observation.withinBudget === "boolean" &&
+		observation.withinBudget === withinBudget
+	)
+}
+
+function parseTaskHistoryMirror(value: unknown): TaskHistoryMirrorReceipt | undefined {
+	if (value === undefined) return undefined
+	if (!value || typeof value !== "object" || Array.isArray(value)) fail("Invalid taskHistory mirror evidence")
+	const mirror = value as Record<string, unknown>
+	const before = mirror.before
+	const after = mirror.after
+	const samples = mirror.samples ?? []
+	if (!Array.isArray(samples) || samples.length > 64 || !samples.every(validMirrorObservation))
+		fail("Invalid taskHistory mirror samples")
+	if (
+		mirror.key !== "taskHistory" ||
+		mirror.budgetBytes !== TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES ||
+		!validMirrorObservation(before) ||
+		!validMirrorObservation(after) ||
+		!Number.isSafeInteger(mirror.maxBytes) ||
+		Number(mirror.maxBytes) !== Math.max(before.bytes, after.bytes, ...samples.map((sample) => sample.bytes)) ||
+		Number(mirror.maxBytes) < before.bytes ||
+		Number(mirror.maxBytes) < after.bytes ||
+		Number(mirror.maxBytes) > TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES ||
+		mirror.withinBudget !== true ||
+		before.withinBudget !== true ||
+		after.withinBudget !== true
+	)
+		fail("Invalid taskHistory mirror evidence")
+	return {
+		key: "taskHistory",
+		budgetBytes: TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES,
+		before,
+		after,
+		...(mirror.samples === undefined ? {} : { samples }),
+		maxBytes: Number(mirror.maxBytes),
+		withinBudget: true,
+	}
+}
+
+export function parseTaskHistoryMirrorReceipt(value: unknown): TaskHistoryMirrorReceipt {
+	const parsed = parseTaskHistoryMirror(value)
+	if (!parsed) fail("Missing taskHistory mirror evidence")
+	return parsed
 }
 
 export async function readStorageRestartPhaseReceipt(
@@ -87,6 +188,9 @@ export async function readStorageRestartPhaseReceipt(
 		terminalCount: 1,
 		status: expected.phase === "fault" ? "failed" : "completed",
 		code: expected.phase === "fault" ? "ELOCKOWNER" : "OK",
+		...(value.taskHistoryMirror === undefined
+			? {}
+			: { taskHistoryMirror: parseTaskHistoryMirror(value.taskHistoryMirror) }),
 	}
 }
 

@@ -16,9 +16,19 @@ const barrier = () => {
 	return { promise, resolve }
 }
 
+const controlledAdmissionTimeoutMs = 75
+
+class QueueDiagnosticsPersistence extends FileAgentControlPersistence {
+	declare transactionWaitTimeoutMs: number
+
+	useControlledAdmissionTimeout(timeoutMs: number): void {
+		this.transactionWaitTimeoutMs = timeoutMs
+	}
+}
+
 describe("AgentControlStore queue diagnostics", () => {
 	let directory: string
-	let persistence: FileAgentControlPersistence
+	let persistence: QueueDiagnosticsPersistence
 	let store: AgentControlStore
 	let diagnostics: AgentControlTransactionDiagnostic[]
 	let release: ReturnType<typeof barrier>
@@ -28,14 +38,17 @@ describe("AgentControlStore queue diagnostics", () => {
 	beforeEach(async () => {
 		directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-control-queue-diagnostics-"))
 		diagnostics = []
-		persistence = new FileAgentControlPersistence(directory, {
-			transactionWaitTimeoutMs: 75,
+		// Keep setup on the base production deadline. The test-only subclass narrows
+		// the inherited value only after initialization and root creation.
+		persistence = new QueueDiagnosticsPersistence(directory, {
 			maxPendingTransactions: 1,
 			onTransactionDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
 		})
 		store = new AgentControlStore(persistence)
 		await store.initialize()
 		await store.ensureRoot({ taskId: "root", status: "running" })
+		persistence.useControlledAdmissionTimeout(controlledAdmissionTimeoutMs)
+		expect(persistence.transactionWaitTimeoutMs).toBe(controlledAdmissionTimeoutMs)
 		diagnostics.length = 0
 		release = barrier()
 		holding = undefined
@@ -94,8 +107,8 @@ describe("AgentControlStore queue diagnostics", () => {
 			failure = error
 		})
 		try {
-			await vi.advanceTimersByTimeAsync(75)
-			expectQueueFailure(failure, "ELOCKED", "error", 75)
+			await vi.advanceTimersByTimeAsync(controlledAdmissionTimeoutMs)
+			expectQueueFailure(failure, "ELOCKED", "error", controlledAdmissionTimeoutMs)
 			expect(store.getVerificationObligations()).toEqual([])
 		} finally {
 			cancellation.abort()
@@ -211,7 +224,7 @@ describe("AgentControlStore queue diagnostics", () => {
 			admissionError = error
 		})
 		try {
-			await vi.advanceTimersByTimeAsync(100)
+			await vi.advanceTimersByTimeAsync(controlledAdmissionTimeoutMs + 25)
 			expect(shutdownError).toBeUndefined()
 			expect(shutdownCompleted).toBe(false)
 			expect(releaseLease).not.toHaveBeenCalled()

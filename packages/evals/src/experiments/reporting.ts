@@ -17,6 +17,7 @@ import { diffVariants, validateDeclaredVariantDiff, validateTemplateDiff, type V
 
 export type PairedExperimentReport = {
 	schemaVersion: 1
+	statisticsVersion: 2
 	controlVariantIdentity: string
 	candidateVariantIdentity: string
 	fullyPaired: true
@@ -54,6 +55,20 @@ export function buildPairedExperimentReport(
 		pairs.map(({ key }) => key),
 		control,
 	)
+	for (const [label, observations, variant] of [
+		["Control", control, context.controlVariant],
+		["Candidate", candidate, context.candidateVariant],
+	] as const) {
+		for (const field of [
+			"resourceProfileDigest",
+			"permissionDigest",
+			"networkMode",
+			"retryPolicyDigest",
+		] as const) {
+			if (observations.some((observation) => observation[field] !== variant[field]))
+				throw new Error(`${label} observation ${field} does not match its variant manifest`)
+		}
+	}
 	const variantDifferences = diffVariants(context.controlVariant, context.candidateVariant)
 	validateTemplateDiff(context.manifest.template, variantDifferences)
 	if (!context.manifest.allowedDifferenceFields?.length)
@@ -61,12 +76,13 @@ export function buildPairedExperimentReport(
 	validateDeclaredVariantDiff(variantDifferences, context.manifest.allowedDifferenceFields)
 	const body = {
 		schemaVersion: 1 as const,
+		statisticsVersion: 2 as const,
 		controlVariantIdentity,
 		candidateVariantIdentity,
 		fullyPaired: true as const,
 		pairCount: pairs.length,
-		control: segmentExperiment(control, pairs),
-		candidate: segmentExperiment(candidate, pairs),
+		control: segmentExperiment(control, pairs, { independentUnit: context.manifest.independentUnit }),
+		candidate: segmentExperiment(candidate, pairs, { independentUnit: context.manifest.independentUnit }),
 		safetyFailures: candidate.filter(({ status }) => status === "safety_failed").length,
 		highRiskRegressions: pairs.filter(
 			({ control: baseline, candidate: changed }) =>
@@ -107,6 +123,8 @@ function validateContext(
 	if (context.manifest.taskSetIdentity !== immutableIdentity(context.taskSet))
 		throw new Error("Experiment manifest task-set identity does not match its manifest")
 	const declaredPairs = new Set(context.manifest.pairs.map((pair) => canonicalJson(pair)))
+	if (declaredPairs.size !== context.manifest.pairs.length)
+		throw new Error("Experiment manifest contains duplicate pairs")
 	const observedPairs = new Set(
 		pairKeys.map((pair) =>
 			canonicalJson({
@@ -131,7 +149,13 @@ function validateContext(
 
 function parseObservations(value: unknown, label: string): TrialObservation[] {
 	const observations = trialObservationSchema.array().min(1).parse(value)
-	if (new Set(observations.map(({ taskId, repetition }) => `${taskId}@${repetition}`)).size !== observations.length)
+	if (
+		new Set(
+			observations.map(({ taskId, taskVersion, seed, repetition }) =>
+				JSON.stringify([taskId, taskVersion, seed, repetition]),
+			),
+		).size !== observations.length
+	)
 		throw new Error(`${label} observations contain duplicate task repetitions`)
 	return observations
 }

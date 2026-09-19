@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => ({
 	applyAttemptEvent: vi.fn(),
 	settleTrialAfterRetries: vi.fn(),
 	updateTask: vi.fn(),
+	stopHeartbeat: vi.fn(),
+	startHeartbeat: vi.fn(),
+	closeLogger: vi.fn(),
 }))
 
 vi.mock("../../db/index", () => ({
@@ -16,12 +19,14 @@ vi.mock("../../db/index", () => ({
 	findTrialForTask: vi.fn(),
 }))
 vi.mock("../processTask", () => ({ processTask: mocks.processTask, processTaskInContainer: vi.fn() }))
-vi.mock("../redis", () => ({ startHeartbeat: vi.fn(async () => 1), stopHeartbeat: vi.fn() }))
+vi.mock("../redis", () => ({ startHeartbeat: mocks.startHeartbeat, stopHeartbeat: mocks.stopHeartbeat }))
 vi.mock("../utils", () => ({
 	Logger: class {
 		info() {}
 		error() {}
-		close() {}
+		close() {
+			mocks.closeLogger()
+		}
 	},
 	getTag: vi.fn(() => "test"),
 	isDockerContainer: vi.fn(() => false),
@@ -29,11 +34,14 @@ vi.mock("../utils", () => ({
 	commitEvalsRepoChanges: vi.fn(),
 }))
 
+import { resetEvalsRepo, commitEvalsRepoChanges } from "../utils"
+
 import { runEvals } from "../runEvals"
 
 describe("governed production scheduling", () => {
 	type FakeTask = {
 		id: number
+		benchmarkTaskIdentity?: string
 		finishedAt: Date | null
 		benchmarkPartition: "development"
 		taskMetrics: { cost: number } | null
@@ -52,6 +60,7 @@ describe("governed production scheduling", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
+		mocks.startHeartbeat.mockResolvedValue(1)
 		tasks = [1, 2, 3].map((id) => ({
 			id,
 			finishedAt: null,
@@ -86,6 +95,51 @@ describe("governed production scheduling", () => {
 		)
 		expect(mocks.settleTrialAfterRetries).toHaveBeenCalledWith(3)
 		expect(mocks.finishRun).toHaveBeenCalledWith(run.id)
+	})
+
+	it("never resets or commits the source checkout for disposable benchmark tasks", async () => {
+		for (const task of tasks) task.benchmarkTaskIdentity = `task-${task.id}`
+		await runEvals(run.id)
+		expect(resetEvalsRepo).not.toHaveBeenCalled()
+		expect(commitEvalsRepoChanges).not.toHaveBeenCalled()
+	})
+
+	it("rejects mixed checkout ownership before reset", async () => {
+		tasks[0]!.benchmarkTaskIdentity = "task-1"
+		await expect(runEvals(run.id)).rejects.toThrow("separate runs")
+		expect(resetEvalsRepo).not.toHaveBeenCalled()
+	})
+
+	it("closes the logger when checkout validation rejects before heartbeat startup", async () => {
+		const error = new Error("unsafe checkout")
+		vi.mocked(resetEvalsRepo).mockRejectedValueOnce(error)
+		await expect(runEvals(run.id)).rejects.toBe(error)
+		expect(mocks.startHeartbeat).not.toHaveBeenCalled()
+		expect(mocks.stopHeartbeat).not.toHaveBeenCalled()
+		expect(mocks.closeLogger).toHaveBeenCalledOnce()
+	})
+
+	it("closes the logger when heartbeat startup rejects without stopping an unowned heartbeat", async () => {
+		const error = new Error("startup failed")
+		mocks.startHeartbeat.mockRejectedValueOnce(error)
+		await expect(runEvals(run.id)).rejects.toBe(error)
+		expect(mocks.stopHeartbeat).not.toHaveBeenCalled()
+		expect(mocks.closeLogger).toHaveBeenCalledOnce()
+	})
+
+	it("preserves the run failure and closes the logger when heartbeat cleanup rejects", async () => {
+		const primary = new Error("run failed")
+		mocks.finishRun.mockRejectedValueOnce(primary)
+		mocks.stopHeartbeat.mockRejectedValueOnce(new Error("cleanup failed"))
+		await expect(runEvals(run.id)).rejects.toBe(primary)
+		expect(mocks.closeLogger).toHaveBeenCalledOnce()
+	})
+
+	it("reports cleanup failure after a successful run and still closes the logger", async () => {
+		const cleanup = new Error("cleanup failed")
+		mocks.stopHeartbeat.mockRejectedValueOnce(cleanup)
+		await expect(runEvals(run.id)).rejects.toBe(cleanup)
+		expect(mocks.closeLogger).toHaveBeenCalledOnce()
 	})
 
 	it("rejects concurrent governed execution", async () => {

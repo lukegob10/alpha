@@ -26,6 +26,8 @@ import { validateLiveSetupTimeout } from "./suite/liveCopilot"
 export type ProviderMode = "live" | "scripted" | "vscode-lm-fixture" | "live-copilot"
 
 export interface ExtensionTestRunOptions {
+	/** Programmatic rendered-UI tests only. Chromium selects an ephemeral loopback debugging port. */
+	rendererDebuggingPort?: 0
 	/** Programmatic cancellation of the owned host. It does not authorize terminating unrelated descendants. */
 	signal?: AbortSignal
 	providerMode: ProviderMode
@@ -262,6 +264,18 @@ export async function runExtensionTests(
 	dependencies: ExtensionTestRunDependencies = {},
 ): Promise<ExtensionTestRunResult> {
 	if (!providerModes.includes(options.providerMode)) throw new Error("Unsupported E2E provider mode")
+	if (
+		options.rendererDebuggingPort !== undefined &&
+		(options.rendererDebuggingPort !== 0 ||
+			options.providerMode !== "scripted" ||
+			!options.profileDir ||
+			!["rendered-ui-probe.test", "managed-agents.acceptance.test"].includes(options.testFile ?? ""))
+	) {
+		throw new TestRunError(
+			"invalid-options",
+			"Renderer debugging requires the scripted rendered-UI fixture and an owned profile",
+		)
+	}
 	if (options.installedExtensionPath && (!options.profileDir || !path.isAbsolute(options.installedExtensionPath))) {
 		throw new TestRunError(
 			"invalid-options",
@@ -399,6 +413,7 @@ export async function runExtensionTests(
 				: { launchKind: "extension-test" as const, extensionTestsPath }),
 			reuseMachineInstall: false,
 			launchArgs: [
+				...(options.rendererDebuggingPort === 0 ? ["--remote-debugging-port=0"] : []),
 				profile.workspace,
 				`--user-data-dir=${profile.userDataDir}`,
 				`--extensions-dir=${profile.extensionsDir}`,

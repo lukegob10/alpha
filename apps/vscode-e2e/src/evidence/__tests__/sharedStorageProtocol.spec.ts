@@ -7,6 +7,9 @@ import { test } from "node:test"
 import { HOST_VERSIONS, type HostVersion } from "../../campaign/types"
 import {
 	failureCode,
+	failureSite,
+	mailboxEventId,
+	validateMailboxClaims,
 	publish,
 	readOptional,
 	validateDone,
@@ -20,6 +23,14 @@ import {
 } from "../sharedStorageProtocol"
 
 const root = path.resolve(os.tmpdir(), "alpha-shared-storage")
+test("failure sites retain only known fixture basename and position", () => {
+	const error = new Error("secret")
+	error.stack = "Error: secret\n    at run (C:\\private\\sharedWorkerMailbox.js:123:45)\n"
+	assert.equal(failureSite(error), "sharedWorkerMailbox.js:123:45")
+	error.stack = "Error: secret\n    at run (C:\\private\\credentials.js:123:45)\n"
+	assert.equal(failureSite(error), undefined)
+	assert.equal(failureSite("sharedWorkerMailbox.js:123:45"), undefined)
+})
 const manifest: PairManifest = {
 	runId: "sample",
 	nonce: "nonce-123",
@@ -42,6 +53,24 @@ const identity = (role: Role) => ({
 	workspaceFile: manifest.roles[role].workspaceFile,
 	storagePath: path.join(manifest.profileRoot, "storage"),
 	persistenceFile: path.join(manifest.profileRoot, "storage", "agent_control.json"),
+})
+
+test("churn protocol preserves explicit generation and rejects missing or unsafe prior receipts", () => {
+	assert.deepEqual(validateManifest({ ...manifest, taskHistoryChurn: { phase: "populate" } }).taskHistoryChurn, {
+		phase: "populate",
+	})
+	const priorReceipts = { a: path.join(root, "prior-a.json"), b: path.join(root, "prior-b.json") }
+	assert.deepEqual(
+		validateManifest({ ...manifest, taskHistoryChurn: { phase: "reload", priorReceipts } }).taskHistoryChurn,
+		{ phase: "reload", priorReceipts },
+	)
+	for (const taskHistoryChurn of [
+		{ phase: "unknown" },
+		{ phase: "reload" },
+		{ phase: "reload", priorReceipts: { a: "relative", b: priorReceipts.b } },
+		{ phase: "populate", priorReceipts },
+	])
+		assert.throws(() => validateManifest({ ...manifest, taskHistoryChurn }))
 })
 
 test("failure diagnostics use only closed codes", () => {
@@ -124,4 +153,30 @@ test("checks the monotonic deadline after an async condition", async () => {
 		),
 	)
 	assert.equal(calls, 1)
+})
+
+test("mailbox protocol rejects replayed, duplicate, or missing-capability receipts", () => {
+	const pair = { ...manifest, mailboxClaimRace: 1 as const }
+	const claim = (role: Role) => ({
+		...identity(role),
+		mailboxClaimRace: 1,
+		recipientTaskId: "task-1",
+		eventId: mailboxEventId(pair),
+		claimId: `${pair.nonce}-${role}`,
+		outcome: role === "a" ? "claimed" : "ownership_denied",
+		claimedEventIds: role === "a" ? [mailboxEventId(pair)] : [],
+	})
+	assert.equal(validateMailboxClaims([claim("a"), claim("b")], pair, "task-1").length, 2)
+	assert.throws(() => validateMailboxClaims([claim("a"), claim("a")], pair, "task-1"))
+	assert.throws(() => validateMailboxClaims([{ ...claim("a"), nonce: "old" }, claim("b")], pair, "task-1"))
+	assert.throws(() =>
+		validateMailboxClaims([{ ...claim("a"), mailboxClaimRace: undefined }, claim("b")], pair, "task-1"),
+	)
+	assert.throws(() =>
+		validateMailboxClaims(
+			[{ ...claim("a"), claimedEventIds: [mailboxEventId(pair), mailboxEventId(pair)] }, claim("b")],
+			pair,
+			"task-1",
+		),
+	)
 })

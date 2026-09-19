@@ -32,6 +32,11 @@ export function assertPairCompatible(control: TrialObservation, candidate: Trial
 	for (const field of keyFields) {
 		if (control[field] !== candidate[field]) throw new Error(`Pair mismatch in ${field}`)
 	}
+	for (const field of ["repository", "risk", "family", "difficulty"] as const) {
+		if (control[field] !== candidate[field]) throw new Error(`Pair metadata mismatch in ${field}`)
+	}
+	if (canonicalJson([...control.capabilities].sort()) !== canonicalJson([...candidate.capabilities].sort()))
+		throw new Error("Pair metadata mismatch in capabilities")
 }
 
 function pairIdentity(value: PairKey): string {

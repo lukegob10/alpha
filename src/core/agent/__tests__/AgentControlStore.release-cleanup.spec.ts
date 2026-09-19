@@ -39,7 +39,6 @@ describe("FileAgentControlPersistence released-directory cleanup", () => {
 	let persistence: FileAgentControlPersistence
 	let actualFs: typeof import("fs/promises")
 	let platform: PropertyDescriptor
-	let nativeWindows: boolean
 	let heldOwner: fs.FileHandle | undefined
 	let diagnostics: AgentControlTransactionDiagnostic[]
 
@@ -49,7 +48,6 @@ describe("FileAgentControlPersistence released-directory cleanup", () => {
 		vi.mocked(fs.unlink).mockImplementation(actualFs.unlink)
 		vi.mocked(fs.unlink).mockClear()
 		platform = Object.getOwnPropertyDescriptor(process, "platform")!
-		nativeWindows = process.platform === "win32"
 		Object.defineProperty(process, "platform", { ...platform, value: "win32" })
 		directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-control-release-cleanup-"))
 		diagnostics = []
@@ -91,15 +89,14 @@ describe("FileAgentControlPersistence released-directory cleanup", () => {
 			if (filename === releasePath) {
 				attempts++
 				if (attempts === 1) {
-					try {
-						if (nativeWindows) return await actualFs.rmdir(filename, options)
-						throw Object.assign(new Error("Released owner deletion remains pending"), { code: "ENOTEMPTY" })
-					} catch (error) {
-						cleanupError = error
-						throw error
-					} finally {
-						firstCleanup.resolve()
-					}
+					// Model Windows' deferred delete explicitly. Node versions differ in
+					// whether rmdir succeeds while the read handle is still open, but this
+					// test targets the retry protocol rather than that OS implementation detail.
+					cleanupError = Object.assign(new Error("Released owner deletion remains pending"), {
+						code: "ENOTEMPTY",
+					})
+					firstCleanup.resolve()
+					throw cleanupError
 				}
 			}
 			return actualFs.rmdir(filename, options)

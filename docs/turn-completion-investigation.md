@@ -61,8 +61,8 @@ undesired behavior as an acceptance contract. This investigation adds no product
 Useful existing checks:
 
 ```sh
-pnpm --dir src test -- core/agent/__tests__/AgentTurnEngine.spec.ts core/task/__tests__/stageThreeCompletion.integration.spec.ts core/task/__tests__/completionDiagnostics.spec.ts core/task/__tests__/Task.spec.ts
-pnpm --dir webview-ui test -- src/components/chat/__tests__/completedActivity.spec.ts src/components/chat/__tests__/ChatView.spec.tsx src/context/__tests__/ExtensionStateContext.spec.tsx
+pnpm --dir src test core/agent/__tests__/AgentTurnEngine.spec.ts core/task/__tests__/stageThreeCompletion.integration.spec.ts core/task/__tests__/completionDiagnostics.spec.ts core/task/__tests__/Task.spec.ts
+pnpm --dir webview-ui test src/components/chat/__tests__/completedActivity.spec.ts src/components/chat/__tests__/ChatView.spec.tsx src/context/__tests__/ExtensionStateContext.spec.tsx
 ```
 
 The earlier 2.1.47 receipt-identity repair remains valid: descriptive work-plan updates retain command evidence.

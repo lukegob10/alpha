@@ -1,0 +1,38 @@
+{
+	"schemaVersion": 1,
+	"name": "smoke-v1-representative-controls",
+	"tasks": [
+		{
+			"id": "smoke-read-edit",
+			"fixture": "javascript/smoke-read-edit",
+			"role": "regression",
+			"grader": "visible-tests",
+			"controls": [
+				{
+					"id": "smoke-read-edit-reference",
+					"kind": "reference",
+					"expectedDecision": "passed",
+					"changedPaths": ["src/workflow.js"]
+				},
+				{
+					"id": "smoke-read-edit-alternative-correct",
+					"kind": "alternative-correct",
+					"expectedDecision": "passed",
+					"changedPaths": ["src/workflow.js"]
+				},
+				{
+					"id": "smoke-read-edit-broken",
+					"kind": "broken",
+					"expectedDecision": "outcome_failed",
+					"changedPaths": ["src/workflow.js"]
+				},
+				{
+					"id": "smoke-read-edit-negative-no-op",
+					"kind": "negative",
+					"expectedDecision": "outcome_failed",
+					"changedPaths": []
+				}
+			]
+		}
+	]
+}

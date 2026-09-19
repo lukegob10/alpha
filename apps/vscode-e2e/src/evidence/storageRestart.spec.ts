@@ -6,8 +6,11 @@ import { afterEach, beforeEach, test } from "node:test"
 
 import {
 	assertStorageRestartQuiescence,
+	measureTaskHistoryMirror,
+	parseTaskHistoryMirrorReceipt,
 	readStorageRestartPhaseReceipt,
 	STORAGE_RESTART_RECEIPT,
+	TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES,
 	type StorageRestartPhaseReceipt,
 	type StorageRestartRunProof,
 } from "./storageRestart"
@@ -15,6 +18,36 @@ import {
 let root: string
 let proof: StorageRestartRunProof
 let receipt: StorageRestartPhaseReceipt
+
+test("mirror samples retain a peak between the before and after boundaries", () => {
+	const observation = (bytes: number) => ({ bytes, items: 1, withinBudget: true })
+	const mirror = {
+		key: "taskHistory",
+		budgetBytes: TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES,
+		before: observation(2),
+		after: observation(30),
+		samples: [observation(100), observation(30)],
+		maxBytes: 100,
+		withinBudget: true,
+	}
+	assert.equal(parseTaskHistoryMirrorReceipt(mirror).maxBytes, 100)
+	assert.throws(() => parseTaskHistoryMirrorReceipt({ ...mirror, maxBytes: 30 }))
+	assert.throws(() =>
+		parseTaskHistoryMirrorReceipt({
+			...mirror,
+			samples: [observation(TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES + 1)],
+		}),
+	)
+})
+
+test("keeps the host probe budget aligned with the production compatibility contract", async () => {
+	const source = await fs.readFile(
+		path.resolve(__dirname, "../../../../src/core/task-persistence/compactTaskHistoryForGlobalState.ts"),
+		"utf8",
+	)
+	assert.match(source, /export const TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES = 192 \* 1024\b/)
+	assert.equal(TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES, 192 * 1024)
+})
 
 beforeEach(async () => {
 	root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-restart-proof-")))
@@ -93,6 +126,72 @@ test("matches durable phase identity and probes every known relevant process", a
 		hosts,
 		probed.map((pid) => ({ pid })),
 	)
+})
+
+test("measures only the serialized taskHistory mirror and preserves a bounded receipt", async () => {
+	const taskHistory = [
+		{ id: "root", title: "café" },
+		{ id: "child", title: "child" },
+	]
+	const parsed = measureTaskHistoryMirror({
+		get<T>(key: string) {
+			assert.equal(key, "taskHistory")
+			return taskHistory as T
+		},
+	})
+	assert.deepEqual(parsed, {
+		bytes: Buffer.byteLength(JSON.stringify(taskHistory), "utf8"),
+		items: 2,
+		withinBudget: true,
+	})
+	const mirrorReceipt = {
+		key: "taskHistory" as const,
+		budgetBytes: TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES,
+		before: parsed,
+		after: { ...parsed, items: 3 },
+		maxBytes: parsed.bytes,
+		withinBudget: true as const,
+	}
+	await fs.writeFile(
+		path.join(proof.artifactsDir, STORAGE_RESTART_RECEIPT),
+		JSON.stringify({ ...receipt, taskHistoryMirror: mirrorReceipt }),
+	)
+	const withMirror = await readStorageRestartPhaseReceipt(proof.artifactsDir, expected())
+	assert.deepEqual(withMirror.taskHistoryMirror, mirrorReceipt)
+})
+
+test("fails closed when taskHistory is not the production mirror shape", () => {
+	assert.throws(() =>
+		measureTaskHistoryMirror({
+			get<T>() {
+				return { prompt: "private" } as T
+			},
+		}),
+	)
+})
+
+test("rejects over-budget or forged taskHistory mirror facts", async () => {
+	const valid = {
+		key: "taskHistory" as const,
+		budgetBytes: TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES,
+		before: { bytes: 2, items: 0, withinBudget: true },
+		after: { bytes: 2, items: 0, withinBudget: true },
+		maxBytes: 2,
+		withinBudget: true as const,
+	}
+	for (const taskHistoryMirror of [
+		{ ...valid, budgetBytes: TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES + 1 },
+		{ ...valid, after: { bytes: TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES + 1, items: 1, withinBudget: false } },
+		{ ...valid, withinBudget: false },
+		{ ...valid, maxBytes: 3 },
+		{ ...valid, maxBytes: TASK_HISTORY_GLOBAL_STATE_BUDGET_BYTES + 1 },
+	]) {
+		await fs.writeFile(
+			path.join(proof.artifactsDir, STORAGE_RESTART_RECEIPT),
+			JSON.stringify({ ...receipt, taskHistoryMirror }),
+		)
+		await assert.rejects(readStorageRestartPhaseReceipt(proof.artifactsDir, expected()))
+	}
 })
 
 test("rejects missing identity, test seams, version mismatch, and unobserved close before probing", async () => {

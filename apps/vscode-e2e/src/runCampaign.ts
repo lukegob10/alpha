@@ -9,10 +9,12 @@ import { createExtensionCampaignOperations } from "./campaign/extensionAdapter"
 import { createReportStore, openCampaignRoot } from "./campaign/reportStore"
 import { runStorageRecoveryCampaign } from "./campaign/storageRecoveryCampaign"
 import { runSharedStorageCampaign } from "./campaign/sharedStorageCampaign"
+import { runNestedRestartCampaign } from "./campaign/nestedRestartCampaign"
 import { assertLiveGateConfig, evaluateLiveGate, fingerprintGateArtifacts, prepareLiveGate } from "./campaign/liveGate"
 import { HOST_VERSIONS, type CampaignConfig, type CampaignHost, type CampaignReport } from "./campaign/types"
 import { assertSafeRoot, readBounded } from "./evidence/paths"
 import { prepareLiveSidecar } from "./liveHostProtocol"
+import { captureCampaignEvaluationIdentity, finishCampaignEvaluationIdentity } from "./campaign/evaluationIdentity"
 
 export function campaignExitCode(report: CampaignReport): number {
 	if (report.stopReason !== "completed") return 2
@@ -62,6 +64,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 				"--profile-dir",
 				"--storage-recovery-root",
 				"--shared-storage-root",
+				"--nested-restart-root",
 				"--vscode-version",
 				"--vscode-executable",
 				"--max-requests",
@@ -75,6 +78,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 	}
 	const recoveryRoot = values.get("--storage-recovery-root")
 	const sharedRoot = values.get("--shared-storage-root")
+	const nestedRoot = values.get("--nested-restart-root")
 	const suite = values.get("--suite")
 	const gate = flags.has("--gate")
 	if (
@@ -91,13 +95,35 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 		return Number(value)
 	}
 	if (
-		(recoveryRoot || sharedRoot || values.has("--config")) &&
+		(recoveryRoot || sharedRoot || nestedRoot || values.has("--config")) &&
 		(suite || suiteOptions.some((key) => values.has(key)))
 	)
 		throw new Error("Conflicting campaign modes")
 	if (!suite && suiteOptions.some((key) => values.has(key))) throw new Error("Suite options require --suite")
 	if (!suite && flags.has("--dry-run")) throw new Error("Dry run requires --suite")
 	if (suite && flags.has("--enable-reviewed-patches")) throw new Error("Suites are report-only")
+	if (nestedRoot) {
+		if (
+			recoveryRoot ||
+			sharedRoot ||
+			flags.size ||
+			values.has("--config") ||
+			values.has("--root") ||
+			values.has("--profile-dir")
+		)
+			throw new Error("Conflicting campaign modes")
+		const version = values.get("--vscode-version") ?? "1.122.1"
+		if (version !== "1.122.1") throw new Error("Nested restart requires the exact reference host")
+		const report = await withProcessSignals((signal) =>
+			runNestedRestartCampaign({
+				fixtureRoot: nestedRoot,
+				host: { version, executable: values.get("--vscode-executable") },
+				signal,
+			}),
+		)
+		process.stdout.write(JSON.stringify(report) + "\n")
+		return report.status === "passed" ? 0 : 2
+	}
 	if (sharedRoot) {
 		if (recoveryRoot || flags.size || values.has("--config") || values.has("--root") || values.has("--profile-dir"))
 			throw new Error("Conflicting campaign modes")
@@ -268,7 +294,23 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 				},
 			)
 		}
+		const identityBefore = await captureCampaignEvaluationIdentity(repositoryRoot, config)
+		await fs.writeFile(
+			path.join(store.directory, "evaluation-identity-before.json"),
+			JSON.stringify(identityBefore) + "\n",
+			{ flag: "wx", mode: 0o600 },
+		)
 		const report = await runCampaign(config, operations, signal, { reproduceFailures: !gate })
+		report.evaluationIdentity = finishCampaignEvaluationIdentity(
+			identityBefore,
+			await captureCampaignEvaluationIdentity(repositoryRoot, config),
+		)
+		report.evaluationPlan = {
+			scenarioIds: config.scenarioIds,
+			hostVersions: config.hosts.map((host) => host.version),
+			samples: config.samples,
+		}
+		await store.persistReport(report)
 		if (gate) {
 			const verdict = evaluateLiveGate(config, report)
 			const artifactsUnchanged = await fingerprintGateArtifacts(

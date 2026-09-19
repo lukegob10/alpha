@@ -35,7 +35,7 @@ const manifest = {
   id: "frontier-v1-graders",
   version: 1,
   digest: contentDigest,
-  runtimeImageDigest: sha256("node:20.19.2-private-grader"),
+  runtimeImageDigest: sha256("node:24.14.1-private-grader"),
   readOnly: true,
   graders: entries,
 }

@@ -1,76 +1,82 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "child_process"
-import { existsSync, writeFileSync } from "fs"
+
+const REQUIRED_PNPM_VERSION = "11.24.0"
 
 if (process.env.BOOTSTRAP_IN_PROGRESS) {
 	console.log("⏭️  Bootstrap already in progress, continuing with normal installation...")
 	process.exit(0)
 }
 
-// If we're already using pnpm, just exit normally.
-if (process.env.npm_execpath && process.env.npm_execpath.includes("pnpm")) {
+const invokedByPnpmVersion = process.env.npm_config_user_agent?.match(/(?:^|\s)pnpm\/([^\s]+)/)?.[1]
+if (invokedByPnpmVersion === REQUIRED_PNPM_VERSION) {
 	process.exit(0)
 }
 
-console.log("🚀 Bootstrapping to pnpm...")
+console.log(`🚀 Bootstrapping to pnpm@${REQUIRED_PNPM_VERSION}...`)
 
-/**
- * Run pnpm install with bootstrap environment variable.
- */
-function runPnpmInstall(pnpmCommand) {
-	return spawnSync(pnpmCommand, ["install"], {
+function getPnpmVersion() {
+	const result = spawnSync("pnpm", ["--version"], {
+		encoding: "utf8",
+		shell: true,
+	})
+
+	if (result.status !== 0) {
+		return undefined
+	}
+
+	return result.stdout.trim()
+}
+
+function runPnpmInstall(command, args) {
+	return spawnSync(command, args, {
 		stdio: "inherit",
 		shell: true,
 		env: {
 			...process.env,
-			BOOTSTRAP_IN_PROGRESS: "1", // Set environment variable to indicate bootstrapping
+			BOOTSTRAP_IN_PROGRESS: "1",
 		},
 	})
 }
 
-/**
- * Create a temporary package.json if it doesn't exist.
- */
-function ensurePackageJson() {
-	if (!existsSync("package.json")) {
-		console.log("📦 Creating temporary package.json...")
-		writeFileSync("package.json", JSON.stringify({ name: "temp", private: true }, null, 2))
-	}
-}
-
 try {
-	// Check if pnpm is installed globally.
-	const pnpmCheck = spawnSync("pnpm", ["-v"], { shell: true })
+	const installedPnpmVersion = getPnpmVersion()
 
-	let pnpmInstall
+	if (installedPnpmVersion === REQUIRED_PNPM_VERSION) {
+		console.log(`✨ Found pnpm@${REQUIRED_PNPM_VERSION}`)
+		const pnpmInstall = runPnpmInstall("pnpm", ["install", "--frozen-lockfile"])
 
-	if (pnpmCheck.status === 0) {
-		console.log("✨ Found pnpm")
-		pnpmInstall = runPnpmInstall("pnpm")
-	} else {
-		console.log("⚠️  Unable to find pnpm, installing it temporarily...")
-		ensurePackageJson()
-
-		console.log("📥 Installing pnpm locally...")
-
-		const npmInstall = spawnSync("npm", ["install", "--no-save", "pnpm"], {
-			stdio: "inherit",
-			shell: true,
-		})
-
-		if (npmInstall.status !== 0) {
-			console.error("❌ Failed to install pnpm locally")
-			process.exit(1)
+		if (pnpmInstall.status !== 0) {
+			console.error("❌ pnpm install failed")
+			process.exit(pnpmInstall.status ?? 1)
 		}
 
-		console.log("🔧 Running pnpm install with local installation...")
-		pnpmInstall = runPnpmInstall("node_modules/.bin/pnpm")
+		console.log("🎉 Bootstrap completed successfully!")
+		process.exit(0)
 	}
+
+	if (installedPnpmVersion) {
+		console.log(
+			`⚠️  Found pnpm@${installedPnpmVersion}; using the required pnpm@${REQUIRED_PNPM_VERSION} instead...`,
+		)
+	} else {
+		console.log("⚠️  Unable to find pnpm; fetching the required version temporarily...")
+	}
+
+	const pnpmInstall = runPnpmInstall("npm", [
+		"exec",
+		"--yes",
+		`--package=pnpm@${REQUIRED_PNPM_VERSION}`,
+		"--",
+		"pnpm",
+		"install",
+		"--frozen-lockfile",
+	])
 
 	if (pnpmInstall.status !== 0) {
 		console.error("❌ pnpm install failed")
-		process.exit(pnpmInstall.status)
+		process.exit(pnpmInstall.status ?? 1)
 	}
 
 	console.log("🎉 Bootstrap completed successfully!")

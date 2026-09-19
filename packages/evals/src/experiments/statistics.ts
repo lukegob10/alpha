@@ -17,6 +17,25 @@ export type ExperimentStatistics = {
 	graderErrorRate: number
 	firstAttemptReliability: number
 	retryAssistedCapability: number | null
+	coverage?: {
+		observations: number
+		scoreable: number
+		pairedScoreable: number
+		pairedExcluded: number
+		knownCost: number
+		knownTokens: number
+		retryAssisted: number
+	}
+	uncertainty?: {
+		independentUnit: "task" | "repository" | "attempt"
+		clusters: number
+		mean: number | null
+		bootstrap95: [number, number] | null
+		binaryWilson95: [number, number] | null
+		pairedClusters: number
+		pairedDelta: number | null
+		pairedBootstrap95: [number, number] | null
+	}
 }
 
 export type SegmentedExperimentStatistics = {
@@ -32,20 +51,98 @@ const scored = new Set(["passed", "outcome_failed", "safety_failed", "agent_erro
 export function summarizeExperiment(
 	observations: TrialObservation[],
 	pairs: PairedTrial[],
-	options: { bootstrapSamples?: number; bootstrapSeed?: number; consistencyK?: number; passK?: number } = {},
+	options: {
+		bootstrapSamples?: number
+		bootstrapSeed?: number
+		consistencyK?: number
+		passK?: number
+		independentUnit?: "task" | "repository" | "attempt"
+	} = {},
 ): ExperimentStatistics {
 	const eligible = observations.filter(({ status }) => scored.has(status))
 	const values: number[] = eligible.map(({ status }) => (status === "passed" ? 1 : 0))
 	const successes = values.reduce((sum, value) => sum + value, 0)
 	const paired = { wins: 0, losses: 0, ties: 0 }
-	for (const pair of pairs) {
+	const eligiblePairs = pairs.filter(
+		({ control, candidate }) => scored.has(control.status) && scored.has(candidate.status),
+	)
+	for (const pair of eligiblePairs) {
 		const control = pair.control.status === "passed"
 		const candidate = pair.candidate.status === "passed"
 		if (candidate === control) paired.ties++
 		else if (candidate) paired.wins++
 		else paired.losses++
 	}
+	const retryAssisted = eligible.filter((value) => value.retryAssisted)
+	const independentUnit = options.independentUnit ?? "task"
+	const clusterKey = (value: TrialObservation) => {
+		if (independentUnit === "repository") {
+			if (!value.repository)
+				throw new Error("Repository uncertainty requires repository identity on every observation")
+			return value.repository
+		}
+		return JSON.stringify([
+			value.repository ?? null,
+			value.taskId,
+			value.taskVersion,
+			...(independentUnit === "attempt" ? [value.seed, value.repetition] : []),
+		])
+	}
+	const clusterMeans = (rows: { observation: TrialObservation; value: number }[]) => {
+		const groups = new Map<string, Map<string, number[]>>()
+		for (const row of rows) {
+			const key = clusterKey(row.observation)
+			const tasks = groups.get(key) ?? new Map<string, number[]>()
+			const task = JSON.stringify([row.observation.taskId, row.observation.taskVersion])
+			tasks.set(task, [...(tasks.get(task) ?? []), row.value])
+			groups.set(key, tasks)
+		}
+		return [...groups.values()].map((tasks) => {
+			const means = [...tasks.values()].map(
+				(values) => values.reduce((sum, value) => sum + value, 0) / values.length,
+			)
+			return means.reduce((sum, value) => sum + value, 0) / means.length
+		})
+	}
+	const clusters = clusterMeans(
+		eligible.map((observation) => ({ observation, value: Number(observation.status === "passed") })),
+	)
+	const deltas = clusterMeans(
+		eligiblePairs.map(({ control, candidate }) => ({
+			observation: candidate,
+			value: Number(candidate.status === "passed") - Number(control.status === "passed"),
+		})),
+	)
+	const mean = (values: number[]) =>
+		values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null
+	const interval = (values: number[]) =>
+		values.length ? bootstrapMean95(values, options.bootstrapSamples ?? 2_000, options.bootstrapSeed ?? 9412) : null
 	return {
+		coverage: {
+			observations: observations.length,
+			scoreable: eligible.length,
+			pairedScoreable: eligiblePairs.length,
+			pairedExcluded: pairs.length - eligiblePairs.length,
+			knownCost: observations.filter(({ cost }) => cost !== null).length,
+			knownTokens: observations.filter(({ tokens }) => tokens != null).length,
+			retryAssisted: retryAssisted.length,
+		},
+		uncertainty: {
+			independentUnit,
+			clusters: clusters.length,
+			mean: mean(clusters),
+			bootstrap95: interval(clusters),
+			binaryWilson95:
+				clusters.length === eligible.length
+					? wilson95(
+							clusters.reduce<number>((sum, value) => sum + value, 0),
+							clusters.length,
+						)
+					: null,
+			pairedClusters: deltas.length,
+			pairedDelta: mean(deltas),
+			pairedBootstrap95: interval(deltas),
+		},
 		outcome: {
 			successes,
 			failures: eligible.length - successes,
@@ -58,7 +155,10 @@ export function summarizeExperiment(
 		paired,
 		consistencyAtK: consistencyAtK(observations, options.consistencyK ?? 3),
 		passAtK: passAtK(observations, options.passK ?? 1),
-		costPerSuccess: successes ? observations.reduce((sum, { cost }) => sum + cost, 0) / successes : null,
+		costPerSuccess:
+			successes && observations.every(({ cost }) => cost !== null)
+				? observations.reduce((sum, { cost }) => sum + (cost ?? 0), 0) / successes
+				: null,
 		latencyMs: {
 			p50: quantile(
 				observations.map(({ latencyMs }) => latencyMs),
@@ -72,7 +172,9 @@ export function summarizeExperiment(
 		infrastructureErrorRate: fraction(observations, ({ status }) => status === "infrastructure_error"),
 		graderErrorRate: fraction(observations, ({ status }) => status === "grader_error"),
 		firstAttemptReliability: fraction(observations, ({ firstAttemptStatus }) => firstAttemptStatus === "passed"),
-		retryAssistedCapability: eligible.length ? fraction(eligible, ({ status }) => status === "passed") : null,
+		retryAssistedCapability: retryAssisted.length
+			? fraction(retryAssisted, ({ status }) => status === "passed")
+			: null,
 	}
 }
 
@@ -165,7 +267,10 @@ export function passAtK(values: TrialObservation[], k: number): number | null {
 
 function groupByTask(values: TrialObservation[]): TrialObservation[][] {
 	const groups = new Map<string, TrialObservation[]>()
-	for (const value of values) groups.set(value.taskId, [...(groups.get(value.taskId) ?? []), value])
+	for (const value of values) {
+		const key = JSON.stringify([value.repository ?? null, value.taskId, value.taskVersion])
+		groups.set(key, [...(groups.get(key) ?? []), value])
+	}
 	return [...groups.values()].map((group) => group.sort((left, right) => left.repetition - right.repetition))
 }
 
@@ -174,6 +279,17 @@ function combination(n: number, k: number): number {
 	let value = 1
 	for (let index = 1; index <= k; index++) value = (value * (n - index + 1)) / index
 	return value
+}
+
+/** Binary independent-unit interval; repeated attempts are not independent task samples. */
+export function wilson95(successes: number, total: number): [number, number] | null {
+	if (!total) return null
+	const z = 1.959963984540054
+	const rate = successes / total
+	const denominator = 1 + (z * z) / total
+	const center = (rate + (z * z) / (2 * total)) / denominator
+	const radius = (z * Math.sqrt((rate * (1 - rate)) / total + (z * z) / (4 * total * total))) / denominator
+	return [Math.max(0, center - radius), Math.min(1, center + radius)]
 }
 
 function fraction<T>(values: T[], predicate: (value: T) => boolean): number {

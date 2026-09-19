@@ -15,6 +15,8 @@ import {
 	quantile,
 	summarizeExperiment,
 	segmentExperiment,
+	sealCampaignExport,
+	reportCampaignPair,
 	validateTemplateDiff,
 	type ExperimentStatistics,
 	type ExperimentVariant,
@@ -67,10 +69,10 @@ const variant: ExperimentVariant = {
 	policyDigest: digest("8"),
 	compactionDigest: digest("9"),
 	runnerImageDigest: digest("a"),
-	resourceProfileDigest: digest("b"),
-	permissionDigest: digest("c"),
+	resourceProfileDigest: key.resourceProfileDigest,
+	permissionDigest: key.permissionDigest,
 	networkMode: "disabled",
-	retryPolicyDigest: digest("d"),
+	retryPolicyDigest: key.retryPolicyDigest,
 }
 
 describe("immutable experiment manifests and pairing", () => {
@@ -139,6 +141,52 @@ describe("variant confounder diff", () => {
 })
 
 describe("reference statistics", () => {
+	it("keeps missing metrics unknown and excludes unscoreable pairs rather than treating them as losses", () => {
+		const control = observation({ variantIdentity: "control" })
+		const candidate = observation({ variantIdentity: "candidate", cost: null, status: "infrastructure_error" })
+		const report = summarizeExperiment([candidate], pairTrials([control], [candidate]))
+		expect(report.costPerSuccess).toBeNull()
+		expect(report.coverage).toMatchObject({ knownCost: 0, knownTokens: 0, pairedScoreable: 0, pairedExcluded: 1 })
+		expect(report.paired).toEqual({ wins: 0, losses: 0, ties: 0 })
+		expect(report.uncertainty?.pairedDelta).toBeNull()
+	})
+
+	it("conditions retry-assisted success on retries and uses task clusters instead of repeated attempt weight", () => {
+		const rows = [
+			...Array.from({ length: 9 }, (_, repetition) => observation({ taskId: "easy", repetition })),
+			observation({
+				taskId: "hard",
+				retryAssisted: true,
+				firstAttemptStatus: "outcome_failed",
+				status: "outcome_failed",
+			}),
+		]
+		const report = summarizeExperiment(rows, [])
+		expect(report.outcome.rate).toBe(0.9)
+		expect(report.retryAssistedCapability).toBe(0)
+		expect(report.uncertainty).toMatchObject({ clusters: 2, mean: 0.5 })
+		expect(report.uncertainty?.binaryWilson95).toBeNull()
+		expect(summarizeExperiment([observation()], []).uncertainty?.binaryWilson95?.[0]).toBeLessThan(1)
+		expect(() => summarizeExperiment(rows, [], { independentUnit: "repository" })).toThrow("repository identity")
+		expect(
+			summarizeExperiment(
+				rows.map((row) => ({ ...row, repository: "same" })),
+				[],
+				{ independentUnit: "repository" },
+			).uncertainty?.clusters,
+		).toBe(1)
+		expect(
+			summarizeExperiment(
+				rows.map((row) => ({ ...row, repository: "same" })),
+				[],
+				{ independentUnit: "repository" },
+			).uncertainty?.mean,
+		).toBe(0.5)
+	})
+
+	it("does not combine different task versions for pass at k", () => {
+		expect(passAtK([observation(), observation({ taskVersion: 2, repetition: 1 })], 2)).toBeNull()
+	})
 	it("matches fixed vectors and excludes infrastructure/grader errors from outcomes", () => {
 		const observations = [
 			observation({ taskId: "a", repetition: 0, status: "passed", cost: 2, latencyMs: 100 }),
@@ -233,6 +281,45 @@ describe("reference statistics", () => {
 		const control = [observation({ variantIdentity: controlIdentity, risk: "high" })]
 		const candidate = [observation({ variantIdentity: candidateIdentity, risk: "high", status: "safety_failed" })]
 		const report = buildPairedExperimentReport(control, candidate, context)
+		const changedProfile = digest("0")
+		expect(() =>
+			buildPairedExperimentReport(
+				control.map((row) => ({ ...row, permissionDigest: changedProfile })),
+				candidate.map((row) => ({ ...row, permissionDigest: changedProfile })),
+				{
+					...context,
+					manifest: { ...context.manifest, pairs: [{ ...key, permissionDigest: changedProfile }] },
+				},
+			),
+		).toThrow("permissionDigest")
+		const campaign = (variantValue: ExperimentVariant, observations: TrialObservation[]) =>
+			sealCampaignExport({
+				schemaVersion: 1,
+				runId: "run",
+				executionFidelity: "actual-host",
+				decisionSource: "scripted",
+				variant: variantValue,
+				taskSet,
+				observations,
+				incomplete: [],
+			})
+		const controlReceipt = campaign(controlVariant, control)
+		const candidateReceipt = campaign(candidateVariant, candidate)
+		expect(reportCampaignPair(controlReceipt, candidateReceipt, context.manifest).pairCount).toBe(1)
+		expect(() =>
+			reportCampaignPair({ ...controlReceipt, runId: "tampered" }, candidateReceipt, context.manifest),
+		).toThrow("digest mismatch")
+		expect(() =>
+			reportCampaignPair(
+				sealCampaignExport({
+					...controlReceipt,
+					variant: null,
+					incomplete: [{ reason: "missing executed harness" }],
+				}),
+				candidateReceipt,
+				context.manifest,
+			),
+		).toThrow("incomplete")
 		expect(report).toMatchObject({
 			fullyPaired: true,
 			pairCount: 1,

@@ -8,6 +8,7 @@ import { openCampaignRoot } from "../reportStore"
 import { auditRetainedStorage } from "../../evidence/retainedStorageBudget"
 import {
 	ROLES,
+	mailboxEventId,
 	publish,
 	readOptional,
 	validateManifest,
@@ -19,6 +20,10 @@ import type { CampaignHost } from "../types"
 import { main } from "../../runCampaign"
 
 type Fault =
+	| "mailbox-duplicate"
+	| "mailbox-replay"
+	| "mailbox-unacknowledged"
+	| "mailbox-capability"
 	| "none"
 	| "missing-host"
 	| "stale-nonce"
@@ -221,6 +226,45 @@ async function exercise(fault: Fault, version: CampaignHost["version"] = "1.122.
 								requests: fault === "request-limit" ? 2 : 1,
 								terminalCount: 1,
 							})
+						await waitPhase("mailbox-start")
+						const mailboxReceipt = (identity: HostIdentity) => ({
+							...identity,
+							mailboxClaimRace: fault === "mailbox-capability" ? undefined : 1,
+							recipientTaskId: "task-a",
+							eventId: mailboxEventId(manifest),
+						})
+						for (const identity of identities)
+							await publish(directory, `mailbox-ready-${identity.role}.json`, mailboxReceipt(identity))
+						await waitPhase("mailbox-claim")
+						for (const identity of identities) {
+							const claimed = identity.role === "a" || fault === "mailbox-duplicate"
+							await publish(directory, `mailbox-claimed-${identity.role}.json`, {
+								...mailboxReceipt(identity),
+								nonce: fault === "mailbox-replay" ? "old-nonce" : manifest.nonce,
+								claimId: `${manifest.nonce}-${identity.role}`,
+								outcome: claimed ? "claimed" : "ownership_denied",
+								claimedEventIds: claimed ? [mailboxEventId(manifest)] : [],
+							})
+						}
+						await waitPhase("mailbox-ack")
+						const control = JSON.parse(await fs.readFile(identities[0]!.persistenceFile, "utf8"))
+						control.mailbox = [
+							{
+								eventId: mailboxEventId(manifest),
+								recipientTaskId: "task-a",
+								rootTaskId: "task-a",
+								claimId: `${manifest.nonce}-a`,
+								deliveredAt: 1,
+								acknowledgedAt: fault === "mailbox-unacknowledged" ? undefined : 1,
+							},
+						]
+						await fs.writeFile(identities[0]!.persistenceFile, JSON.stringify(control))
+						for (const identity of identities)
+							await publish(directory, `mailbox-verified-${identity.role}.json`, {
+								...mailboxReceipt(identity),
+								acknowledged: identity.role === "a",
+								retryCount: 0,
+							})
 						await stopped
 					} catch (error) {
 						if (!options.signal.aborted) throw error
@@ -274,10 +318,12 @@ for (const version of ["1.122.1", "1.136.1"] as const)
 	test(`controller succeeds only after both durable receipts and cleanup (${version})`, async () => {
 		const { report, capture, leaseRetained } = await exercise("none", version)
 		assert.equal(report.status, "passed")
+		assert.equal(report.execution, "test-seam")
 		assert.equal(report.requests, 2)
 		assert.equal(report.readyHostCount, 2)
 		assert.equal(report.doneHostCount, 2)
 		assert.equal(report.identitiesVerified, true)
+		assert.equal(report.mailboxClaimsVerified, true)
 		assert.equal(report.cleanupVerified, true)
 		assert.equal(report.leaseReleased, true)
 		assert.equal(leaseRetained, false)
@@ -387,3 +433,12 @@ test("specialized CLI modes reject mixed settings and unsupported hosts before l
 		/Invalid campaign option/,
 	)
 })
+
+for (const fault of ["mailbox-duplicate", "mailbox-replay", "mailbox-unacknowledged", "mailbox-capability"] as const) {
+	test(`rejects ${fault} without claiming mailbox verification`, async () => {
+		const { report } = await exercise(fault)
+		assert.equal(report.status, "failed")
+		assert.equal(report.mailboxClaimsVerified, false)
+		assert.equal(report.failure?.code, "assertion_failed")
+	})
+}
