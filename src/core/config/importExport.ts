@@ -9,6 +9,7 @@ import { z, ZodError } from "zod"
 import {
 	globalSettingsSchema,
 	providerSettingsWithIdSchema,
+	persistedProviderSettingsWithIdSchema,
 	isProviderName,
 	isRetiredProvider,
 	type ProviderSettingsWithId,
@@ -38,28 +39,23 @@ type ImportWithProviderOptions = ImportOptions & {
 	}
 }
 
-/**
- * Sanitizes a provider config by resetting invalid/removed apiProvider values.
- * Returns the sanitized config and a warning message if the provider was invalid.
- */
+/** Preserve unsupported provider IDs so imports remain recoverable. */
 function sanitizeProviderConfig(configName: string, apiConfig: unknown): { config: unknown; warning?: string } {
 	if (typeof apiConfig !== "object" || apiConfig === null) {
 		return { config: apiConfig }
 	}
 
 	const config = apiConfig as Record<string, unknown>
-	const isKnownProvider =
+	const isUnsupportedProvider =
 		typeof config.apiProvider === "string" &&
-		(isProviderName(config.apiProvider) || isRetiredProvider(config.apiProvider))
+		!isProviderName(config.apiProvider) &&
+		!isRetiredProvider(config.apiProvider) &&
+		config.apiProvider !== "fake-ai"
 
-	// Check if apiProvider is set and if it's still valid
-	if (config.apiProvider !== undefined && !isKnownProvider) {
-		const invalidProvider = config.apiProvider
-		// Return a new config object without the invalid apiProvider
-		const { apiProvider, ...restConfig } = config
+	if (isUnsupportedProvider) {
 		return {
-			config: restConfig,
-			warning: `Profile "${configName}": Invalid provider "${invalidProvider}" was removed. Please reconfigure this profile.`,
+			config: apiConfig,
+			warning: `Profile "${configName}": Unsupported provider "${config.apiProvider}" was retained. Reconfigure this profile before use.`,
 		}
 	}
 
@@ -72,7 +68,7 @@ function sanitizeProviderConfig(configName: string, apiConfig: unknown): { confi
  * and automatic settings importing.
  *
  * Uses lenient parsing to handle invalid/removed providers gracefully:
- * - Invalid apiProvider values are removed (profile is kept but needs reconfiguration)
+ * - Unsupported apiProvider values are retained (profile is kept but needs reconfiguration)
  * - Completely invalid profiles are skipped
  * - Warnings are returned for any issues encountered
  */
@@ -113,13 +109,21 @@ export async function importSettingsFromPath(
 				typeof sanitizedConfig === "object" && sanitizedConfig !== null && "apiProvider" in sanitizedConfig
 					? (sanitizedConfig as Record<string, unknown>).apiProvider
 					: undefined
-			const schema =
-				typeof providerValue === "string" && isRetiredProvider(providerValue)
+			const isUnsupportedProvider =
+				typeof providerValue === "string" &&
+				!isProviderName(providerValue) &&
+				!isRetiredProvider(providerValue) &&
+				providerValue !== "fake-ai"
+			const schema = isUnsupportedProvider
+				? persistedProviderSettingsWithIdSchema
+				: typeof providerValue === "string" && isRetiredProvider(providerValue)
 					? providerSettingsWithIdSchema.passthrough()
 					: providerSettingsWithIdSchema
 			const result = schema.safeParse(sanitizedConfig)
 			if (result.success) {
-				validApiConfigs[configName] = result.data
+				// The persisted reader intentionally accepts retired/unknown provider IDs;
+				// runtime validation reports those IDs before a handler is built.
+				validApiConfigs[configName] = result.data as ProviderSettingsWithId
 			} else {
 				// Profile is completely invalid - skip it
 				const issues = result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join(", ")

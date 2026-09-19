@@ -11,9 +11,9 @@ import type { JWTInput } from "google-auth-library"
 
 import {
 	type ModelInfo,
-	type GeminiModelId,
-	geminiDefaultModelId,
-	geminiModels,
+	type VertexModelId,
+	vertexDefaultModelId,
+	vertexModels,
 	ApiProviderError,
 } from "@alpha-code/types"
 import { safeJsonParse } from "@alpha-code/core"
@@ -31,10 +31,6 @@ import { BaseProvider } from "./base-provider"
 import { HelixTokenManager, type HelixParseMode } from "./utils/helix-token-manager"
 import { getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
 import { configureVertexGatewayTransport } from "./utils/vertex-gateway-transport"
-
-type GeminiHandlerOptions = ApiHandlerOptions & {
-	isVertex?: boolean
-}
 
 type VertexGatewayRouteTarget = {
 	projectId?: string
@@ -65,11 +61,17 @@ type VertexGatewayAuthClient = {
 	getRequestHeaders: (url?: string | URL) => Promise<Iterable<[string, string]>>
 }
 
-export class GeminiHandler extends BaseProvider implements SingleCompletionHandler {
+/**
+ * Internal Vertex Gemini transport shared by the Vertex provider adapter.
+ *
+ * Direct Gemini API authentication was intentionally removed. Keeping the
+ * transport Vertex-scoped prevents a stale provider identifier from selecting
+ * a Google API-key path while preserving Vertex's native Gemini behavior.
+ */
+export abstract class VertexGeminiHandler extends BaseProvider implements SingleCompletionHandler {
 	protected options: ApiHandlerOptions
 
 	private client: GoogleGenAI
-	private readonly isVertex: boolean
 	private readonly vertexGatewaySettings?: VertexGatewaySettings
 	private readonly vertexGatewayClients = new Map<string, GoogleGenAI>()
 	private readonly helixTokenManager?: HelixTokenManager
@@ -77,18 +79,18 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 	private gatewayTransportSetupPromise?: Promise<void>
 	private lastThoughtSignature?: string
 	private lastResponseId?: string
+	// Keep the transport's established error label while the public provider ID
+	// remains `vertex`; this class is only an internal Vertex Gemini transport.
 	private readonly providerName = "Gemini"
 
-	constructor({ isVertex, ...options }: GeminiHandlerOptions) {
+	constructor(options: ApiHandlerOptions) {
 		super()
 
 		this.options = options
-		this.isVertex = Boolean(isVertex)
-		this.vertexGatewaySettings = this.isVertex ? this.resolveVertexGatewaySettings() : undefined
+		this.vertexGatewaySettings = this.resolveVertexGatewaySettings()
 
 		const project = this.getConfiguredProjectId() ?? "not-provided"
 		const location = this.getConfiguredLocation() ?? "not-provided"
-		const apiKey = this.options.geminiApiKey ?? "not-provided"
 
 		if (this.vertexGatewaySettings) {
 			this.vertexGatewayAuthClient = {
@@ -125,9 +127,7 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 						location,
 						googleAuthOptions: { keyFile: this.options.vertexKeyFile },
 					})
-				: this.isVertex
-					? new GoogleGenAI({ vertexai: true, project, location })
-					: new GoogleGenAI({ apiKey })
+				: new GoogleGenAI({ vertexai: true, project, location })
 	}
 
 	private getConfiguredProjectId(): string | undefined {
@@ -617,7 +617,6 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 
 		const config: GenerateContentConfig = {
 			systemInstruction,
-			httpOptions: this.options.googleGeminiBaseUrl ? { baseUrl: this.options.googleGeminiBaseUrl } : undefined,
 			thinkingConfig,
 			maxOutputTokens,
 			temperature: temperatureConfig,
@@ -691,7 +690,7 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 			let emittedAnyStreamChunk = false
 
 			try {
-				if (this.isVertex && this.options.vertexStreamingEnabled === false) {
+				if (this.options.vertexStreamingEnabled === false) {
 					const result = await withApiRequestTimeout(
 						requestContext.client.models.generateContent(params),
 						`${this.providerName} request for ${requestContext.model}`,
@@ -970,13 +969,13 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 
 	override getModel() {
 		const modelId = this.options.apiModelId
-		let id: string = modelId && modelId in geminiModels ? (modelId as GeminiModelId) : geminiDefaultModelId
-		let info: ModelInfo = geminiModels[id as GeminiModelId]
+		let id: string = modelId && modelId in vertexModels ? (modelId as VertexModelId) : vertexDefaultModelId
+		let info: ModelInfo = vertexModels[id as VertexModelId]
 
 		// Keep newly-released Gemini model IDs usable before the static model catalog is updated.
-		if (modelId?.startsWith("gemini-") && !(modelId in geminiModels)) {
+		if (modelId?.startsWith("gemini-") && !(modelId in vertexModels)) {
 			id = modelId
-			info = geminiModels["gemini-3-flash-preview"]
+			info = vertexModels["gemini-3.7-flash"]
 		}
 
 		const params = getModelParams({
@@ -1051,10 +1050,7 @@ export class GeminiHandler extends BaseProvider implements SingleCompletionHandl
 
 			const promptConfig: GenerateContentConfig = {
 				httpOptions: this.mergeHttpOptions(
-					this.mergeHttpOptions(
-						this.options.googleGeminiBaseUrl ? { baseUrl: this.options.googleGeminiBaseUrl } : undefined,
-						requestContext.httpOptions,
-					),
+					requestContext.httpOptions,
 					requestTimeoutMs ? { timeout: requestTimeoutMs } : undefined,
 				),
 				...(requestAbortController ? { abortSignal: requestAbortController.signal } : {}),

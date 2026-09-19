@@ -47,22 +47,5 @@
 	},
 	"applyPatch": {
 		"deleteCancelled": "Операция удаления отменена."
-	},
-	"imageOutput": {
-		"writeIncomplete": "Не удалось завершить запись '{{path}}'; файл может быть неполным. {{cause}}"
-	},
-	"generateImage": {
-		"openRouterApiKeyRequired": "Для генерации изображений с моделями OpenRouter требуется API-ключ OpenRouter. Настройте его в экспериментальных настройках генерации изображений.",
-		"failedWithStatus": "Не удалось сгенерировать изображение: {{status}} {{statusText}}",
-		"failedWithMessage": "Не удалось сгенерировать изображение: {{message}}",
-		"noImageGenerated": "В ответе не было сгенерировано изображение",
-		"invalidImageData": "Недопустимые данные изображения в ответе",
-		"invalidImageFormat": "Получен недопустимый формат изображения",
-		"unknownError": "Произошла неизвестная ошибка",
-		"cancelledBeforeSave": "Генерация изображения отменена до сохранения изображения.",
-		"destinationUnavailableBeforeGeneration": "Место назначения изображения было недоступно до генерации. Повторите запрос.",
-		"destinationPolicyChangedBeforeSave": "Путь или политика доступа к месту назначения изображения изменились до сохранения. Повторите запрос.",
-		"postSaveProcessingFailed": "{{path}}\nИзображение сохранено, но последующая обработка завершилась ошибкой: {{message}}",
-		"roo": {}
 	}
 }

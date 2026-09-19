@@ -394,8 +394,6 @@
 		},
 		"release": {
 			"heading": "Yang Baru:",
-			"gpt54": "Provider Poe: Poe ditambahkan sebagai provider AI agar kamu bisa langsung mengakses model Poe di Alpha.",
-			"slashSkills": "Peningkatan xAI dan MiniMax: Provider xAI dimigrasikan ke Responses API, utilitas transformasi yang bisa dipakai ulang ditambahkan, default Grok-4.20 diperbarui, dan daftar model MiniMax serta penanganan context window diperbaiki agar setup lebih andal.",
 			"geminiPro": "Dukungan Gemini 3.1 Pro: Dukungan model Gemini 3.1 Pro telah ditambahkan dan ditetapkan sebagai model Gemini default untuk performa yang lebih baik.",
 			"welcome": "Alpha v{{version}} meningkatkan verifikasi, kontrol perintah, dan kesinambungan tugas.",
 			"acceptanceChecks": "Gunakan kembali pemeriksaan yang lulus selama masukan yang dinyatakan tidak berubah.",
@@ -524,7 +522,7 @@
 	},
 	"retiredProvider": {
 		"title": "Penyedia tidak lagi didukung",
-		"message": "Maaf, penyedia ini tidak lagi didukung. Kami melihat sangat sedikit pengguna Alpha yang benar-benar menggunakannya dan kami perlu mengurangi cakupan kode kami agar bisa terus bergerak cepat dan melayani komunitas kami dengan baik. Ini adalah keputusan yang sangat sulit, tapi ini memungkinkan kami fokus pada apa yang paling penting bagimu. Memang menyebalkan, kami tahu.",
+		"message": "Penyedia yang tersimpan ini tidak lagi didukung. Pilih GCP Vertex AI, VS Code LM API, Stellar, atau OpenAI Compatible di Pengaturan.",
 		"openSettings": "Buka Pengaturan"
 	},
 	"githubActions": {

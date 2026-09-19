@@ -1,13 +1,4 @@
 {
-	"routers": {
-		"requesty": {
-			"description": "El teu encaminador LLM optimitzat",
-			"incentive": "Crèdit gratuït de $1"
-		},
-		"openrouter": {
-			"description": "Una interfície unificada per als LLM"
-		}
-	},
 	"landing": {
 		"greeting": "Benvingut a Alpha!",
 		"introduction": "Amb una gamma de Modes integrats i ampliables, Alpha et permet planificar, arquitectar, codificar, depurar i augmentar la teva productivitat com mai abans.",
@@ -23,7 +14,6 @@
 		"goBack": "Enrere",
 		"finish": "Finalitza"
 	},
-	"startRouter": "Recomanem utilitzar un encaminador LLM:",
 	"startCustom": "O pots portar la teva pròpia clau API:",
 	"telemetry": {
 		"helpImprove": "Ajuda a millorar Alpha",

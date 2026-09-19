@@ -96,7 +96,7 @@ import {
 	TodoItem,
 	getApiProtocol,
 	getModelId,
-	isRetiredProvider,
+	isProviderName,
 	isIdleAsk,
 	isInteractiveAsk,
 	isResumableAsk,
@@ -1966,7 +1966,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const apiProvider = this.apiConfiguration.apiProvider
 			const apiProtocol =
 				responseStep?.snapshot.context.provider.apiProtocol ??
-				getApiProtocol(apiProvider && !isRetiredProvider(apiProvider) ? apiProvider : undefined, modelId)
+				getApiProtocol(isProviderName(apiProvider) ? apiProvider : undefined, modelId)
 			const isAnthropicProtocol = apiProtocol === "anthropic"
 
 			// Start from the original assistant message
@@ -3657,9 +3657,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				provider: {
 					apiProvider: apiConfiguration.apiProvider,
 					apiProtocol: getApiProtocol(
-						apiConfiguration.apiProvider && !isRetiredProvider(apiConfiguration.apiProvider)
-							? apiConfiguration.apiProvider
-							: undefined,
+						isProviderName(apiConfiguration.apiProvider) ? apiConfiguration.apiProvider : undefined,
 						apiHandler.getModel().id,
 					),
 					modelId: apiHandler.getModel().id,
@@ -6362,8 +6360,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				apiConfiguration,
 				disabledTools: state?.disabledTools,
 				modelInfo,
-				includeAllToolsWithRestrictions:
-					apiConfiguration.apiProvider === "gemini" || apiConfiguration.apiProvider === "vertex",
+				includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
 				catalogCache: this.toolCatalogCache,
 				discoveryHistory: history,
 				signal,
@@ -8325,10 +8322,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// Determine API protocol based on provider and model
 				const modelId = getModelId(this.apiConfiguration)
 				const apiProvider = this.apiConfiguration.apiProvider
-				const apiProtocol = getApiProtocol(
-					apiProvider && !isRetiredProvider(apiProvider) ? apiProvider : undefined,
-					modelId,
-				)
+				const apiProtocol = getApiProtocol(isProviderName(apiProvider) ? apiProvider : undefined, modelId)
 
 				const provider = this.providerRef.deref()
 				let state = provider ? await provider.getState() : undefined
@@ -10430,8 +10424,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						apiConfiguration,
 						disabledTools: state?.disabledTools,
 						modelInfo,
-						includeAllToolsWithRestrictions:
-							apiConfiguration.apiProvider === "gemini" || apiConfiguration.apiProvider === "vertex",
+						includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
 						catalogCache: this.toolCatalogCache,
 						discoveryHistory: this.apiConversationHistory,
 						signal,
@@ -10947,9 +10940,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								apiConfiguration,
 								disabledTools: state?.disabledTools,
 								modelInfo,
-								includeAllToolsWithRestrictions:
-									apiConfiguration.apiProvider === "gemini" ||
-									apiConfiguration.apiProvider === "vertex",
+								includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
 								catalogCache: this.toolCatalogCache,
 								discoveryHistory: this.apiConversationHistory,
 								signal: stepInterruptionSignal,
@@ -11178,13 +11169,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let allowedFunctionNames: string[] | undefined
 		let taskToolSurface: TaskToolSurface | undefined
 
-		// Gemini requires all tool definitions to be present for history compatibility,
+		// Vertex requires all tool definitions to be present for history compatibility,
 		// but uses allowedFunctionNames to restrict which tools can be called.
-		// Vertex Gemini uses the same GenAI request format and validation rules.
-		// Other providers (Anthropic, OpenAI, etc.) don't support this feature yet,
+		// Other supported providers do not use this restriction field,
 		// so they continue to receive only the filtered tools for the current mode.
-		const supportsAllowedFunctionNames =
-			apiConfiguration?.apiProvider === "gemini" || apiConfiguration?.apiProvider === "vertex"
+		const supportsAllowedFunctionNames = apiConfiguration?.apiProvider === "vertex"
 
 		if (
 			(options.retryCategory === "transport" || options.retryCategory === "rate-limit") &&

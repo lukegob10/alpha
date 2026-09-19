@@ -1,29 +1,27 @@
-import { ApiHandlerOptions } from "../../shared/api"
 import { ContextProxy } from "../../core/config/ContextProxy"
-import { EmbedderProvider } from "./interfaces/manager"
-import { CodeIndexConfig, PreviousConfigSnapshot, VectorStoreProvider } from "./interfaces/config"
-import { DEFAULT_LOCAL_INDEX_PATH, DEFAULT_SEARCH_MIN_SCORE, DEFAULT_MAX_SEARCH_RESULTS } from "./constants"
-import { getDefaultModelId, getModelDimension, getModelScoreThreshold } from "../../shared/embeddingModels"
+import { t } from "../../i18n"
 import type { ProviderSettings } from "@alpha-code/types"
+import { isSupportedCodebaseIndexEmbedderProvider } from "@alpha-code/types"
+import type { EmbedderProvider } from "./interfaces/manager"
+import type { CodeIndexConfig, PreviousConfigSnapshot, VectorStoreProvider } from "./interfaces/config"
+import { DEFAULT_LOCAL_INDEX_PATH, DEFAULT_MAX_SEARCH_RESULTS, DEFAULT_SEARCH_MIN_SCORE } from "./constants"
+import { getDefaultModelId, getModelDimension, getModelScoreThreshold } from "../../shared/embeddingModels"
 
 /**
- * Manages configuration state and validation for the code indexing feature.
- * Handles loading, validating, and providing access to configuration values.
+ * Owns persisted code-index settings and the Vertex-only embedding contract.
+ *
+ * Legacy provider strings are intentionally retained in `legacyEmbedderProvider`
+ * instead of being mapped to Vertex. This keeps old settings readable while
+ * preventing an old index from being queried or rewritten with a different
+ * embedding space without an explicit user change.
  */
 export class CodeIndexConfigManager {
-	private codebaseIndexEnabled: boolean = false
-	private embedderProvider: EmbedderProvider = "openai"
+	private codebaseIndexEnabled = false
+	private embedderProvider: EmbedderProvider = "vertex"
+	private legacyEmbedderProvider?: string
 	private modelId?: string
 	private modelDimension?: number
-	private openAiOptions?: ApiHandlerOptions
-	private ollamaOptions?: ApiHandlerOptions
-	private openAiCompatibleOptions?: { baseUrl: string; apiKey: string }
-	private geminiOptions?: { apiKey: string }
 	private vertexOptions?: ProviderSettings
-	private mistralOptions?: { apiKey: string }
-	private vercelAiGatewayOptions?: { apiKey: string }
-	private bedrockOptions?: { region: string; profile?: string }
-	private openRouterOptions?: { apiKey: string; specificProvider?: string }
 	private vectorStoreProvider: VectorStoreProvider = "lancedb"
 	private qdrantUrl?: string = "http://localhost:6333"
 	private qdrantApiKey?: string
@@ -33,19 +31,15 @@ export class CodeIndexConfigManager {
 	private embeddingRateLimitSeconds?: number
 
 	constructor(private readonly contextProxy: ContextProxy) {
-		// Initialize with current configuration to avoid false restart triggers
 		this._loadAndSetConfiguration()
 	}
 
-	/**
-	 * Gets the context proxy instance
-	 */
 	public getContextProxy(): ContextProxy {
 		return this.contextProxy
 	}
 
 	private resolveVertexOptions(
-		codebaseIndexConfig: Record<string, any>,
+		codebaseIndexConfig: Record<string, unknown>,
 		activeVertexOptions?: ProviderSettings,
 		vertexJsonCredentials?: string,
 	): ProviderSettings | undefined {
@@ -78,29 +72,6 @@ export class CodeIndexConfigManager {
 			activeVertexOptions?.modelRoutingMap ||
 			activeVertexOptions?.vertexGatewayModelRoutingMap
 
-		const resolved: ProviderSettings = {
-			...(activeVertexOptions ?? {}),
-			apiProvider: "vertex",
-			projectId,
-			location,
-			vertexProjectId: projectId,
-			vertexRegion: location,
-			vertexKeyFile: codebaseIndexConfig.codebaseIndexVertexKeyFile || activeVertexOptions?.vertexKeyFile,
-			vertexJsonCredentials: vertexJsonCredentials || activeVertexOptions?.vertexJsonCredentials,
-			gatewayBaseUrl,
-			pemCaBundlePath,
-			helixCommand,
-			helixParseMode: activeVertexOptions?.helixParseMode,
-			helixTokenKey: activeVertexOptions?.helixTokenKey,
-			refreshIntervalMinutes,
-			modelRoutingMap,
-			vertexGatewayBaseUrl: gatewayBaseUrl,
-			vertexGatewayCaBundlePath: pemCaBundlePath,
-			vertexGatewayHelixCommand: helixCommand,
-			vertexGatewayTokenRefreshMinutes: refreshIntervalMinutes,
-			vertexGatewayModelRoutingMap: typeof modelRoutingMap === "string" ? modelRoutingMap : undefined,
-		}
-
 		const hasCodeIndexVertexSettings = [
 			codebaseIndexConfig.codebaseIndexVertexProjectId,
 			codebaseIndexConfig.codebaseIndexVertexRegion,
@@ -113,45 +84,71 @@ export class CodeIndexConfigManager {
 			codebaseIndexConfig.codebaseIndexVertexGatewayModelRoutingMap,
 		].some((value) => value !== undefined && value !== "")
 
-		return activeVertexOptions || hasCodeIndexVertexSettings ? resolved : undefined
+		if (!activeVertexOptions && !hasCodeIndexVertexSettings) {
+			return undefined
+		}
+
+		return {
+			...(activeVertexOptions ?? {}),
+			apiProvider: "vertex",
+			projectId: typeof projectId === "string" ? projectId : undefined,
+			location: typeof location === "string" ? location : undefined,
+			vertexProjectId: typeof projectId === "string" ? projectId : undefined,
+			vertexRegion: typeof location === "string" ? location : undefined,
+			vertexKeyFile:
+				typeof codebaseIndexConfig.codebaseIndexVertexKeyFile === "string"
+					? codebaseIndexConfig.codebaseIndexVertexKeyFile
+					: activeVertexOptions?.vertexKeyFile,
+			vertexJsonCredentials: vertexJsonCredentials || activeVertexOptions?.vertexJsonCredentials,
+			gatewayBaseUrl: typeof gatewayBaseUrl === "string" ? gatewayBaseUrl : undefined,
+			pemCaBundlePath: typeof pemCaBundlePath === "string" ? pemCaBundlePath : undefined,
+			helixCommand: typeof helixCommand === "string" ? helixCommand : undefined,
+			helixParseMode: activeVertexOptions?.helixParseMode,
+			helixTokenKey: activeVertexOptions?.helixTokenKey,
+			refreshIntervalMinutes: typeof refreshIntervalMinutes === "number" ? refreshIntervalMinutes : undefined,
+			modelRoutingMap:
+				typeof modelRoutingMap === "string" || (modelRoutingMap !== null && typeof modelRoutingMap === "object")
+					? (modelRoutingMap as string | Record<string, unknown>)
+					: undefined,
+			vertexGatewayBaseUrl: typeof gatewayBaseUrl === "string" ? gatewayBaseUrl : undefined,
+			vertexGatewayCaBundlePath: typeof pemCaBundlePath === "string" ? pemCaBundlePath : undefined,
+			vertexGatewayHelixCommand: typeof helixCommand === "string" ? helixCommand : undefined,
+			vertexGatewayTokenRefreshMinutes:
+				typeof refreshIntervalMinutes === "number" ? refreshIntervalMinutes : undefined,
+			vertexGatewayModelRoutingMap: typeof modelRoutingMap === "string" ? modelRoutingMap : undefined,
+		}
 	}
 
 	private resolveVectorStoreProvider(
-		codebaseIndexConfig: Record<string, any>,
+		codebaseIndexConfig: Record<string, unknown>,
 		qdrantApiKey?: string,
 	): VectorStoreProvider {
 		const configuredProvider = codebaseIndexConfig.codebaseIndexVectorStoreProvider
 		if (configuredProvider === "qdrant" || configuredProvider === "lancedb") {
 			return configuredProvider
 		}
-
 		if (codebaseIndexConfig.codebaseIndexQdrantUrl || qdrantApiKey) {
 			return "qdrant"
 		}
-
 		return "lancedb"
 	}
 
-	/**
-	 * Private method that handles loading configuration from storage and updating instance variables.
-	 * This eliminates code duplication between initializeWithCurrentConfig() and loadConfiguration().
-	 */
 	private _loadAndSetConfiguration(): void {
-		// Load configuration from storage
-		const codebaseIndexConfig = this.contextProxy?.getGlobalState("codebaseIndexConfig") ?? {
+		const persistedConfig = this.contextProxy?.getGlobalState("codebaseIndexConfig") as
+			| (Record<string, unknown> & { codebaseIndexEmbedderProvider?: unknown })
+			| undefined
+		const hasPersistedConfig = persistedConfig !== undefined && persistedConfig !== null
+		const codebaseIndexConfig: Record<string, unknown> = persistedConfig ?? {
 			codebaseIndexEnabled: false,
 			codebaseIndexVectorStoreProvider: "lancedb",
 			codebaseIndexLocalIndexPath: DEFAULT_LOCAL_INDEX_PATH,
 			codebaseIndexQdrantUrl: "http://localhost:6333",
-			codebaseIndexEmbedderProvider: "openai",
-			codebaseIndexEmbedderBaseUrl: "",
+			codebaseIndexEmbedderProvider: "vertex",
 			codebaseIndexEmbedderModelId: "",
 			codebaseIndexSearchMinScore: undefined,
 			codebaseIndexSearchMaxResults: undefined,
 			codebaseIndexEmbeddingRateLimitEnabled: false,
 			codebaseIndexEmbeddingRateLimitSeconds: undefined,
-			codebaseIndexBedrockRegion: "us-east-1",
-			codebaseIndexBedrockProfile: "",
 			codebaseIndexVertexProjectId: "",
 			codebaseIndexVertexRegion: "",
 			codebaseIndexVertexKeyFile: "",
@@ -161,119 +158,60 @@ export class CodeIndexConfigManager {
 			codebaseIndexVertexGatewayTokenRefreshMinutes: undefined,
 			codebaseIndexVertexGatewayModelRoutingMap: "",
 		}
+
+		const rawProvider = codebaseIndexConfig.codebaseIndexEmbedderProvider
+		if (isSupportedCodebaseIndexEmbedderProvider(rawProvider)) {
+			this.legacyEmbedderProvider = undefined
+		} else if (!hasPersistedConfig && rawProvider === undefined) {
+			this.legacyEmbedderProvider = undefined
+		} else {
+			this.legacyEmbedderProvider =
+				typeof rawProvider === "string" && rawProvider.length > 0 ? rawProvider : "<missing>"
+		}
+		this.embedderProvider = "vertex"
+
 		const providerSettings = this.contextProxy?.getProviderSettings?.()
 		const activeVertexOptions = providerSettings?.apiProvider === "vertex" ? providerSettings : undefined
-
-		const {
-			codebaseIndexEnabled,
-			codebaseIndexQdrantUrl,
-			codebaseIndexEmbedderProvider,
-			codebaseIndexEmbedderBaseUrl,
-			codebaseIndexEmbedderModelId,
-			codebaseIndexSearchMinScore,
-			codebaseIndexSearchMaxResults,
-			codebaseIndexEmbeddingRateLimitEnabled,
-			codebaseIndexEmbeddingRateLimitSeconds,
-		} = codebaseIndexConfig
-
-		const openAiKey = this.contextProxy?.getSecret("codeIndexOpenAiKey") ?? ""
 		const qdrantApiKey = this.contextProxy?.getSecret("codeIndexQdrantApiKey") ?? ""
-		const vectorStoreProvider = this.resolveVectorStoreProvider(codebaseIndexConfig, qdrantApiKey)
-		const localIndexPath = codebaseIndexConfig.codebaseIndexLocalIndexPath || DEFAULT_LOCAL_INDEX_PATH
-		// Fix: Read OpenAI Compatible settings from the correct location within codebaseIndexConfig
-		const openAiCompatibleBaseUrl = codebaseIndexConfig.codebaseIndexOpenAiCompatibleBaseUrl ?? ""
-		const openAiCompatibleApiKey = this.contextProxy?.getSecret("codebaseIndexOpenAiCompatibleApiKey") ?? ""
-		const geminiApiKey = this.contextProxy?.getSecret("codebaseIndexGeminiApiKey") ?? ""
 		const vertexJsonCredentials = this.contextProxy?.getSecret("codebaseIndexVertexJsonCredentials") ?? ""
-		const mistralApiKey = this.contextProxy?.getSecret("codebaseIndexMistralApiKey") ?? ""
-		const vercelAiGatewayApiKey = this.contextProxy?.getSecret("codebaseIndexVercelAiGatewayApiKey") ?? ""
-		const bedrockRegion = codebaseIndexConfig.codebaseIndexBedrockRegion ?? "us-east-1"
-		const bedrockProfile = codebaseIndexConfig.codebaseIndexBedrockProfile ?? ""
-		const openRouterApiKey = this.contextProxy?.getSecret("codebaseIndexOpenRouterApiKey") ?? ""
-		const openRouterSpecificProvider = codebaseIndexConfig.codebaseIndexOpenRouterSpecificProvider ?? ""
 
-		// Update instance variables with configuration
-		this.codebaseIndexEnabled = codebaseIndexEnabled ?? false
-		this.vectorStoreProvider = vectorStoreProvider
-		this.qdrantUrl = codebaseIndexQdrantUrl
-		this.qdrantApiKey = qdrantApiKey ?? ""
-		this.localIndexPath = localIndexPath
-		this.searchMinScore = codebaseIndexSearchMinScore
-		this.searchMaxResults = codebaseIndexSearchMaxResults
+		this.codebaseIndexEnabled = codebaseIndexConfig.codebaseIndexEnabled === true
+		this.vectorStoreProvider = this.resolveVectorStoreProvider(codebaseIndexConfig, qdrantApiKey)
+		this.qdrantUrl =
+			typeof codebaseIndexConfig.codebaseIndexQdrantUrl === "string"
+				? codebaseIndexConfig.codebaseIndexQdrantUrl
+				: undefined
+		this.qdrantApiKey = qdrantApiKey
+		this.localIndexPath =
+			typeof codebaseIndexConfig.codebaseIndexLocalIndexPath === "string" &&
+			codebaseIndexConfig.codebaseIndexLocalIndexPath
+				? codebaseIndexConfig.codebaseIndexLocalIndexPath
+				: DEFAULT_LOCAL_INDEX_PATH
+		this.searchMinScore =
+			typeof codebaseIndexConfig.codebaseIndexSearchMinScore === "number"
+				? codebaseIndexConfig.codebaseIndexSearchMinScore
+				: undefined
+		this.searchMaxResults =
+			typeof codebaseIndexConfig.codebaseIndexSearchMaxResults === "number"
+				? codebaseIndexConfig.codebaseIndexSearchMaxResults
+				: undefined
 		this.embeddingRateLimitSeconds =
-			codebaseIndexEmbeddingRateLimitEnabled && typeof codebaseIndexEmbeddingRateLimitSeconds === "number"
-				? codebaseIndexEmbeddingRateLimitSeconds
+			codebaseIndexConfig.codebaseIndexEmbeddingRateLimitEnabled === true &&
+			typeof codebaseIndexConfig.codebaseIndexEmbeddingRateLimitSeconds === "number"
+				? codebaseIndexConfig.codebaseIndexEmbeddingRateLimitSeconds
 				: undefined
 
-		// Validate and set model dimension
 		const rawDimension = codebaseIndexConfig.codebaseIndexEmbedderModelDimension
-		if (rawDimension !== undefined && rawDimension !== null) {
-			const dimension = Number(rawDimension)
-			if (!isNaN(dimension) && dimension > 0) {
-				this.modelDimension = dimension
-			} else {
-				console.warn(
-					`Invalid codebaseIndexEmbedderModelDimension value: ${rawDimension}. Must be a positive number.`,
-				)
-				this.modelDimension = undefined
-			}
-		} else {
-			this.modelDimension = undefined
-		}
-
-		this.openAiOptions = { openAiNativeApiKey: openAiKey }
-		this.vertexOptions = this.resolveVertexOptions(codebaseIndexConfig, activeVertexOptions, vertexJsonCredentials)
-
-		// Set embedder provider with support for openai-compatible
-		if (codebaseIndexEmbedderProvider === "ollama") {
-			this.embedderProvider = "ollama"
-		} else if (codebaseIndexEmbedderProvider === "openai-compatible") {
-			this.embedderProvider = "openai-compatible"
-		} else if (codebaseIndexEmbedderProvider === "gemini") {
-			this.embedderProvider = "gemini"
-		} else if (codebaseIndexEmbedderProvider === "vertex") {
-			this.embedderProvider = "vertex"
-		} else if (codebaseIndexEmbedderProvider === "mistral") {
-			this.embedderProvider = "mistral"
-		} else if (codebaseIndexEmbedderProvider === "vercel-ai-gateway") {
-			this.embedderProvider = "vercel-ai-gateway"
-		} else if ((codebaseIndexEmbedderProvider as string) === "bedrock") {
-			this.embedderProvider = "bedrock"
-		} else if (codebaseIndexEmbedderProvider === "openrouter") {
-			this.embedderProvider = "openrouter"
-		} else {
-			this.embedderProvider = "openai"
-		}
-
-		this.modelId = codebaseIndexEmbedderModelId || undefined
-
-		this.ollamaOptions = {
-			ollamaBaseUrl: codebaseIndexEmbedderBaseUrl,
-		}
-
-		this.openAiCompatibleOptions =
-			openAiCompatibleBaseUrl && openAiCompatibleApiKey
-				? {
-						baseUrl: openAiCompatibleBaseUrl,
-						apiKey: openAiCompatibleApiKey,
-					}
+		const numericDimension = typeof rawDimension === "number" ? rawDimension : Number(rawDimension)
+		this.modelDimension = Number.isFinite(numericDimension) && numericDimension > 0 ? numericDimension : undefined
+		this.modelId =
+			typeof codebaseIndexConfig.codebaseIndexEmbedderModelId === "string" &&
+			codebaseIndexConfig.codebaseIndexEmbedderModelId.length > 0
+				? codebaseIndexConfig.codebaseIndexEmbedderModelId
 				: undefined
-
-		this.geminiOptions = geminiApiKey ? { apiKey: geminiApiKey } : undefined
-		this.mistralOptions = mistralApiKey ? { apiKey: mistralApiKey } : undefined
-		this.vercelAiGatewayOptions = vercelAiGatewayApiKey ? { apiKey: vercelAiGatewayApiKey } : undefined
-		this.openRouterOptions = openRouterApiKey
-			? { apiKey: openRouterApiKey, specificProvider: openRouterSpecificProvider || undefined }
-			: undefined
-		// Set bedrockOptions if region is provided (profile is optional)
-		this.bedrockOptions = bedrockRegion
-			? { region: bedrockRegion, profile: bedrockProfile || undefined }
-			: undefined
+		this.vertexOptions = this.resolveVertexOptions(codebaseIndexConfig, activeVertexOptions, vertexJsonCredentials)
 	}
 
-	/**
-	 * Loads persisted configuration from globalState.
-	 */
 	public async loadConfiguration(): Promise<{
 		configSnapshot: PreviousConfigSnapshot
 		currentConfig: {
@@ -282,15 +220,7 @@ export class CodeIndexConfigManager {
 			vectorStoreProvider?: VectorStoreProvider
 			modelId?: string
 			modelDimension?: number
-			openAiOptions?: ApiHandlerOptions
-			ollamaOptions?: ApiHandlerOptions
-			openAiCompatibleOptions?: { baseUrl: string; apiKey: string }
-			geminiOptions?: { apiKey: string }
 			vertexOptions?: ProviderSettings
-			mistralOptions?: { apiKey: string }
-			vercelAiGatewayOptions?: { apiKey: string }
-			bedrockOptions?: { region: string; profile?: string }
-			openRouterOptions?: { apiKey: string }
 			qdrantUrl?: string
 			qdrantApiKey?: string
 			localIndexPath?: string
@@ -300,19 +230,14 @@ export class CodeIndexConfigManager {
 		}
 		requiresRestart: boolean
 	}> {
-		// Capture the ACTUAL previous state before loading new configuration
 		const previousConfigSnapshot: PreviousConfigSnapshot = {
 			enabled: this.codebaseIndexEnabled,
 			configured: this.isConfigured(),
 			embedderProvider: this.embedderProvider,
+			legacyEmbedderProvider: this.legacyEmbedderProvider,
 			vectorStoreProvider: this.vectorStoreProvider,
 			modelId: this.modelId,
 			modelDimension: this.modelDimension,
-			openAiKey: this.openAiOptions?.openAiNativeApiKey ?? "",
-			ollamaBaseUrl: this.ollamaOptions?.ollamaBaseUrl ?? "",
-			openAiCompatibleBaseUrl: this.openAiCompatibleOptions?.baseUrl ?? "",
-			openAiCompatibleApiKey: this.openAiCompatibleOptions?.apiKey ?? "",
-			geminiApiKey: this.geminiOptions?.apiKey ?? "",
 			vertexProjectId: this.vertexOptions?.projectId ?? this.vertexOptions?.vertexProjectId ?? "",
 			vertexRegion: this.vertexOptions?.location ?? this.vertexOptions?.vertexRegion ?? "",
 			vertexKeyFile: this.vertexOptions?.vertexKeyFile ?? "",
@@ -324,30 +249,15 @@ export class CodeIndexConfigManager {
 				this.vertexOptions?.helixCommand ?? this.vertexOptions?.vertexGatewayHelixCommand ?? "",
 			vertexGatewayTokenRefreshMinutes:
 				this.vertexOptions?.refreshIntervalMinutes ?? this.vertexOptions?.vertexGatewayTokenRefreshMinutes,
-			vertexGatewayModelRoutingMap:
-				typeof this.vertexOptions?.modelRoutingMap === "string"
-					? this.vertexOptions.modelRoutingMap
-					: this.vertexOptions?.modelRoutingMap
-						? JSON.stringify(this.vertexOptions.modelRoutingMap)
-						: (this.vertexOptions?.vertexGatewayModelRoutingMap ?? ""),
-			mistralApiKey: this.mistralOptions?.apiKey ?? "",
-			vercelAiGatewayApiKey: this.vercelAiGatewayOptions?.apiKey ?? "",
-			bedrockRegion: this.bedrockOptions?.region ?? "",
-			bedrockProfile: this.bedrockOptions?.profile ?? "",
-			openRouterApiKey: this.openRouterOptions?.apiKey ?? "",
-			openRouterSpecificProvider: this.openRouterOptions?.specificProvider ?? "",
+			vertexGatewayModelRoutingMap: this.serializeModelRoutingMap(this.vertexOptions),
 			qdrantUrl: this.qdrantUrl ?? "",
 			qdrantApiKey: this.qdrantApiKey ?? "",
 			localIndexPath: this.localIndexPath ?? DEFAULT_LOCAL_INDEX_PATH,
 			embeddingRateLimitSeconds: this.embeddingRateLimitSeconds,
 		}
 
-		// Refresh secrets from VSCode storage to ensure we have the latest values
 		await this.contextProxy.refreshSecrets()
-
-		// Load new configuration from storage and update instance variables
 		this._loadAndSetConfiguration()
-
 		const requiresRestart = this.doesConfigChangeRequireRestart(previousConfigSnapshot)
 
 		return {
@@ -358,15 +268,7 @@ export class CodeIndexConfigManager {
 				vectorStoreProvider: this.vectorStoreProvider,
 				modelId: this.modelId,
 				modelDimension: this.modelDimension,
-				openAiOptions: this.openAiOptions,
-				ollamaOptions: this.ollamaOptions,
-				openAiCompatibleOptions: this.openAiCompatibleOptions,
-				geminiOptions: this.geminiOptions,
 				vertexOptions: this.vertexOptions,
-				mistralOptions: this.mistralOptions,
-				vercelAiGatewayOptions: this.vercelAiGatewayOptions,
-				bedrockOptions: this.bedrockOptions,
-				openRouterOptions: this.openRouterOptions,
 				qdrantUrl: this.qdrantUrl,
 				qdrantApiKey: this.qdrantApiKey,
 				localIndexPath: this.localIndexPath,
@@ -378,287 +280,108 @@ export class CodeIndexConfigManager {
 		}
 	}
 
-	/**
-	 * Checks if the service is properly configured based on the embedder type.
-	 */
 	public isConfigured(): boolean {
-		const hasVectorStore = this.isVectorStoreConfigured()
-
-		if (this.embedderProvider === "openai") {
-			const openAiKey = this.openAiOptions?.openAiNativeApiKey
-			return !!(openAiKey && hasVectorStore)
-		} else if (this.embedderProvider === "ollama") {
-			// Ollama model ID has a default, so only base URL is strictly required for config
-			const ollamaBaseUrl = this.ollamaOptions?.ollamaBaseUrl
-			return !!(ollamaBaseUrl && hasVectorStore)
-		} else if (this.embedderProvider === "openai-compatible") {
-			const baseUrl = this.openAiCompatibleOptions?.baseUrl
-			const apiKey = this.openAiCompatibleOptions?.apiKey
-			const isConfigured = !!(baseUrl && apiKey && hasVectorStore)
-			return isConfigured
-		} else if (this.embedderProvider === "gemini") {
-			const apiKey = this.geminiOptions?.apiKey
-			const isConfigured = !!(apiKey && hasVectorStore)
-			return isConfigured
-		} else if (this.embedderProvider === "vertex") {
-			const isConfigured = !!(
-				this.vertexOptions?.apiProvider === "vertex" &&
-				(this.vertexOptions.projectId || this.vertexOptions.vertexProjectId) &&
-				(this.vertexOptions.location || this.vertexOptions.vertexRegion) &&
-				hasVectorStore
-			)
-			return isConfigured
-		} else if (this.embedderProvider === "mistral") {
-			const apiKey = this.mistralOptions?.apiKey
-			const isConfigured = !!(apiKey && hasVectorStore)
-			return isConfigured
-		} else if (this.embedderProvider === "vercel-ai-gateway") {
-			const apiKey = this.vercelAiGatewayOptions?.apiKey
-			const isConfigured = !!(apiKey && hasVectorStore)
-			return isConfigured
-		} else if (this.embedderProvider === "bedrock") {
-			// Only region is required for Bedrock (profile is optional)
-			const region = this.bedrockOptions?.region
-			const isConfigured = !!(region && hasVectorStore)
-			return isConfigured
-		} else if (this.embedderProvider === "openrouter") {
-			const apiKey = this.openRouterOptions?.apiKey
-			const isConfigured = !!(apiKey && hasVectorStore)
-			return isConfigured
-		}
-		return false // Should not happen if embedderProvider is always set correctly
+		return (
+			this.legacyEmbedderProvider === undefined &&
+			this.vertexOptions?.apiProvider === "vertex" &&
+			Boolean(this.getConfiguredProjectId(this.vertexOptions)) &&
+			Boolean(this.getConfiguredLocation(this.vertexOptions)) &&
+			this.isVectorStoreConfigured()
+		)
 	}
 
 	private isVectorStoreConfigured(): boolean {
-		if (this.vectorStoreProvider === "qdrant") {
-			return !!this.qdrantUrl
-		}
-
-		return !!this.localIndexPath
+		return this.vectorStoreProvider === "qdrant" ? Boolean(this.qdrantUrl) : Boolean(this.localIndexPath)
 	}
 
-	/**
-	 * Determines if a configuration change requires restarting the indexing process.
-	 * Simplified logic: only restart for critical changes that affect service functionality.
-	 *
-	 * CRITICAL CHANGES (require restart):
-	 * - Provider changes (openai -> ollama, etc.)
-	 * - Authentication changes (API keys, base URLs)
-	 * - Vector dimension changes (model changes that affect embedding size)
-	 * - Qdrant connection changes (URL, API key)
-	 * - Feature enable/disable transitions
-	 *
-	 * MINOR CHANGES (no restart needed):
-	 * - Search minimum score adjustments
-	 * - UI-only settings
-	 * - Non-functional configuration tweaks
-	 */
-	doesConfigChangeRequireRestart(prev: PreviousConfigSnapshot): boolean {
-		const nowConfigured = this.isConfigured()
+	private getConfiguredProjectId(options?: ProviderSettings): string | undefined {
+		return options?.projectId || options?.vertexProjectId
+	}
 
-		// Handle null/undefined values safely
+	private getConfiguredLocation(options?: ProviderSettings): string | undefined {
+		return options?.location || options?.vertexRegion
+	}
+
+	private serializeModelRoutingMap(options?: ProviderSettings): string {
+		const routes = options?.modelRoutingMap ?? options?.vertexGatewayModelRoutingMap
+		return typeof routes === "string" ? routes : routes ? JSON.stringify(routes) : ""
+	}
+
+	public get configurationError(): string | undefined {
+		if (this.legacyEmbedderProvider !== undefined) {
+			return t("embeddings:serviceFactory.invalidEmbedderType", {
+				embedderProvider: this.legacyEmbedderProvider,
+			})
+		}
+		if (
+			!this.vertexOptions ||
+			!this.getConfiguredProjectId(this.vertexOptions) ||
+			!this.getConfiguredLocation(this.vertexOptions)
+		) {
+			return t("embeddings:serviceFactory.vertexConfigMissing")
+		}
+		if (!this.isVectorStoreConfigured()) {
+			return t("embeddings:serviceFactory.codeIndexingNotConfigured")
+		}
+		return undefined
+	}
+
+	public doesConfigChangeRequireRestart(prev: PreviousConfigSnapshot): boolean {
+		const nowConfigured = this.isConfigured()
 		const prevEnabled = prev?.enabled ?? false
 		const prevConfigured = prev?.configured ?? false
-		const prevProvider = prev?.embedderProvider ?? "openai"
-		const prevVectorStoreProvider = prev?.vectorStoreProvider ?? "qdrant"
-		const prevOpenAiKey = prev?.openAiKey ?? ""
-		const prevOllamaBaseUrl = prev?.ollamaBaseUrl ?? ""
-		const prevOpenAiCompatibleBaseUrl = prev?.openAiCompatibleBaseUrl ?? ""
-		const prevOpenAiCompatibleApiKey = prev?.openAiCompatibleApiKey ?? ""
-		const prevModelDimension = prev?.modelDimension
-		const prevGeminiApiKey = prev?.geminiApiKey ?? ""
-		const prevVertexProjectId = prev?.vertexProjectId ?? ""
-		const prevVertexRegion = prev?.vertexRegion ?? ""
-		const prevVertexKeyFile = prev?.vertexKeyFile ?? ""
-		const prevVertexJsonCredentials = prev?.vertexJsonCredentials ?? ""
-		const prevVertexGatewayBaseUrl = prev?.vertexGatewayBaseUrl ?? ""
-		const prevVertexGatewayCaBundlePath = prev?.vertexGatewayCaBundlePath ?? ""
-		const prevVertexGatewayHelixCommand = prev?.vertexGatewayHelixCommand ?? ""
-		const prevVertexGatewayTokenRefreshMinutes = prev?.vertexGatewayTokenRefreshMinutes
-		const prevVertexGatewayModelRoutingMap = prev?.vertexGatewayModelRoutingMap ?? ""
-		const prevMistralApiKey = prev?.mistralApiKey ?? ""
-		const prevVercelAiGatewayApiKey = prev?.vercelAiGatewayApiKey ?? ""
-		const prevBedrockRegion = prev?.bedrockRegion ?? ""
-		const prevBedrockProfile = prev?.bedrockProfile ?? ""
-		const prevOpenRouterApiKey = prev?.openRouterApiKey ?? ""
-		const prevOpenRouterSpecificProvider = prev?.openRouterSpecificProvider ?? ""
-		const prevQdrantUrl = prev?.qdrantUrl ?? ""
-		const prevQdrantApiKey = prev?.qdrantApiKey ?? ""
-		const prevLocalIndexPath = prev?.localIndexPath ?? DEFAULT_LOCAL_INDEX_PATH
-		const prevEmbeddingRateLimitSeconds = prev?.embeddingRateLimitSeconds
 
-		// 1. Transition from disabled/unconfigured to enabled/configured
-		if ((!prevEnabled || !prevConfigured) && this.codebaseIndexEnabled && nowConfigured) {
-			return true
-		}
+		if ((!prevEnabled || !prevConfigured) && this.codebaseIndexEnabled && nowConfigured) return true
+		if (prevEnabled && !this.codebaseIndexEnabled) return true
+		if ((!prevEnabled || !prevConfigured) && (!this.codebaseIndexEnabled || !nowConfigured)) return false
+		if (!this.codebaseIndexEnabled) return false
 
-		// 2. Transition from enabled to disabled
-		if (prevEnabled && !this.codebaseIndexEnabled) {
-			return true
-		}
+		if (prev.legacyEmbedderProvider !== this.legacyEmbedderProvider) return true
+		if (prev.embedderProvider !== this.embedderProvider) return true
+		if (prev.vectorStoreProvider !== this.vectorStoreProvider) return true
+		if ((prev.modelId ?? getDefaultModelId("vertex")) !== (this.modelId ?? getDefaultModelId("vertex"))) return true
+		if (prev.modelDimension !== this.modelDimension) return true
 
-		// 3. If wasn't ready before and isn't ready now, no restart needed
-		if ((!prevEnabled || !prevConfigured) && (!this.codebaseIndexEnabled || !nowConfigured)) {
-			return false
-		}
-
-		// 4. CRITICAL CHANGES - Always restart for these
-		// Only check for critical changes if feature is enabled
-		if (!this.codebaseIndexEnabled) {
-			return false
-		}
-
-		// Provider change
-		if (prevProvider !== this.embedderProvider) {
-			return true
-		}
-
-		if (prevVectorStoreProvider !== this.vectorStoreProvider) {
-			return true
-		}
-
-		// Authentication changes (API keys)
-		const currentOpenAiKey = this.openAiOptions?.openAiNativeApiKey ?? ""
-		const currentOllamaBaseUrl = this.ollamaOptions?.ollamaBaseUrl ?? ""
-		const currentOpenAiCompatibleBaseUrl = this.openAiCompatibleOptions?.baseUrl ?? ""
-		const currentOpenAiCompatibleApiKey = this.openAiCompatibleOptions?.apiKey ?? ""
-		const currentModelDimension = this.modelDimension
-		const currentGeminiApiKey = this.geminiOptions?.apiKey ?? ""
-		const currentVertexProjectId = this.vertexOptions?.projectId ?? this.vertexOptions?.vertexProjectId ?? ""
-		const currentVertexRegion = this.vertexOptions?.location ?? this.vertexOptions?.vertexRegion ?? ""
-		const currentVertexKeyFile = this.vertexOptions?.vertexKeyFile ?? ""
-		const currentVertexJsonCredentials = this.vertexOptions?.vertexJsonCredentials ?? ""
-		const currentVertexGatewayBaseUrl =
+		const currentProjectId = this.vertexOptions?.projectId ?? this.vertexOptions?.vertexProjectId ?? ""
+		const currentRegion = this.vertexOptions?.location ?? this.vertexOptions?.vertexRegion ?? ""
+		const currentKeyFile = this.vertexOptions?.vertexKeyFile ?? ""
+		const currentJsonCredentials = this.vertexOptions?.vertexJsonCredentials ?? ""
+		const currentGatewayBaseUrl =
 			this.vertexOptions?.gatewayBaseUrl ?? this.vertexOptions?.vertexGatewayBaseUrl ?? ""
-		const currentVertexGatewayCaBundlePath =
+		const currentGatewayCaBundlePath =
 			this.vertexOptions?.pemCaBundlePath ?? this.vertexOptions?.vertexGatewayCaBundlePath ?? ""
-		const currentVertexGatewayHelixCommand =
+		const currentGatewayHelixCommand =
 			this.vertexOptions?.helixCommand ?? this.vertexOptions?.vertexGatewayHelixCommand ?? ""
-		const currentVertexGatewayTokenRefreshMinutes =
+		const currentGatewayTokenRefreshMinutes =
 			this.vertexOptions?.refreshIntervalMinutes ?? this.vertexOptions?.vertexGatewayTokenRefreshMinutes
-		const currentVertexGatewayModelRoutingMap =
-			typeof this.vertexOptions?.modelRoutingMap === "string"
-				? this.vertexOptions.modelRoutingMap
-				: this.vertexOptions?.modelRoutingMap
-					? JSON.stringify(this.vertexOptions.modelRoutingMap)
-					: (this.vertexOptions?.vertexGatewayModelRoutingMap ?? "")
-		const currentMistralApiKey = this.mistralOptions?.apiKey ?? ""
-		const currentVercelAiGatewayApiKey = this.vercelAiGatewayOptions?.apiKey ?? ""
-		const currentBedrockRegion = this.bedrockOptions?.region ?? ""
-		const currentBedrockProfile = this.bedrockOptions?.profile ?? ""
-		const currentOpenRouterApiKey = this.openRouterOptions?.apiKey ?? ""
-		const currentOpenRouterSpecificProvider = this.openRouterOptions?.specificProvider ?? ""
-		const currentQdrantUrl = this.qdrantUrl ?? ""
-		const currentQdrantApiKey = this.qdrantApiKey ?? ""
-		const currentLocalIndexPath = this.localIndexPath ?? DEFAULT_LOCAL_INDEX_PATH
-		const currentEmbeddingRateLimitSeconds = this.embeddingRateLimitSeconds
-
-		if (prevOpenAiKey !== currentOpenAiKey) {
-			return true
-		}
-
-		if (prevOllamaBaseUrl !== currentOllamaBaseUrl) {
-			return true
-		}
+		const currentGatewayModelRoutingMap = this.serializeModelRoutingMap(this.vertexOptions)
 
 		if (
-			prevOpenAiCompatibleBaseUrl !== currentOpenAiCompatibleBaseUrl ||
-			prevOpenAiCompatibleApiKey !== currentOpenAiCompatibleApiKey
-		) {
-			return true
-		}
-
-		if (prevGeminiApiKey !== currentGeminiApiKey) {
-			return true
-		}
-
-		if (
-			this.embedderProvider === "vertex" &&
-			(prevVertexProjectId !== currentVertexProjectId ||
-				prevVertexRegion !== currentVertexRegion ||
-				prevVertexKeyFile !== currentVertexKeyFile ||
-				prevVertexJsonCredentials !== currentVertexJsonCredentials ||
-				prevVertexGatewayBaseUrl !== currentVertexGatewayBaseUrl ||
-				prevVertexGatewayCaBundlePath !== currentVertexGatewayCaBundlePath ||
-				prevVertexGatewayHelixCommand !== currentVertexGatewayHelixCommand ||
-				prevVertexGatewayTokenRefreshMinutes !== currentVertexGatewayTokenRefreshMinutes ||
-				prevVertexGatewayModelRoutingMap !== currentVertexGatewayModelRoutingMap)
+			prev.vertexProjectId !== currentProjectId ||
+			prev.vertexRegion !== currentRegion ||
+			prev.vertexKeyFile !== currentKeyFile ||
+			prev.vertexJsonCredentials !== currentJsonCredentials ||
+			prev.vertexGatewayBaseUrl !== currentGatewayBaseUrl ||
+			prev.vertexGatewayCaBundlePath !== currentGatewayCaBundlePath ||
+			prev.vertexGatewayHelixCommand !== currentGatewayHelixCommand ||
+			prev.vertexGatewayTokenRefreshMinutes !== currentGatewayTokenRefreshMinutes ||
+			prev.vertexGatewayModelRoutingMap !== currentGatewayModelRoutingMap
 		) {
 			return true
 		}
 
 		if (
-			this.embedderProvider === "vertex" &&
-			(prev?.modelId ?? getDefaultModelId("vertex")) !== (this.modelId ?? getDefaultModelId("vertex"))
+			(prev.qdrantUrl ?? "") !== (this.qdrantUrl ?? "") ||
+			(prev.qdrantApiKey ?? "") !== (this.qdrantApiKey ?? "") ||
+			(prev.localIndexPath ?? DEFAULT_LOCAL_INDEX_PATH) !== (this.localIndexPath ?? DEFAULT_LOCAL_INDEX_PATH) ||
+			prev.embeddingRateLimitSeconds !== this.embeddingRateLimitSeconds
 		) {
-			return true
-		}
-
-		if (prevMistralApiKey !== currentMistralApiKey) {
-			return true
-		}
-
-		if (prevVercelAiGatewayApiKey !== currentVercelAiGatewayApiKey) {
-			return true
-		}
-
-		if (prevBedrockRegion !== currentBedrockRegion || prevBedrockProfile !== currentBedrockProfile) {
-			return true
-		}
-
-		if (prevOpenRouterApiKey !== currentOpenRouterApiKey) {
-			return true
-		}
-
-		// OpenRouter specific provider change
-		if (prevOpenRouterSpecificProvider !== currentOpenRouterSpecificProvider) {
-			return true
-		}
-
-		// Check for model dimension changes (generic for all providers)
-		if (prevModelDimension !== currentModelDimension) {
-			return true
-		}
-
-		if (prevQdrantUrl !== currentQdrantUrl || prevQdrantApiKey !== currentQdrantApiKey) {
-			return true
-		}
-
-		if (prevLocalIndexPath !== currentLocalIndexPath) {
-			return true
-		}
-
-		if (prevEmbeddingRateLimitSeconds !== currentEmbeddingRateLimitSeconds) {
-			return true
-		}
-
-		if (this._hasEmbeddingModelChanged(prevProvider, prev?.modelId)) {
 			return true
 		}
 
 		return false
 	}
 
-	/**
-	 * Different embedding spaces require restart regardless of their vector dimensions.
-	 */
-	private _hasEmbeddingModelChanged(prevProvider: EmbedderProvider, prevModelId?: string): boolean {
-		const currentProvider = this.embedderProvider
-		const currentModelId = this.modelId ?? getDefaultModelId(currentProvider)
-		const resolvedPrevModelId = prevModelId ?? getDefaultModelId(prevProvider)
-
-		// Resolve defaults before comparing model identity.
-		if (prevProvider === currentProvider && resolvedPrevModelId === currentModelId) {
-			return false
-		}
-
-		// Embeddings from different models cannot share an index, even with equal dimensions.
-		return true
-	}
-
-	/**
-	 * Gets the current configuration state.
-	 */
 	public getConfig(): CodeIndexConfig {
 		return {
 			isConfigured: this.isConfigured(),
@@ -666,15 +389,7 @@ export class CodeIndexConfigManager {
 			vectorStoreProvider: this.vectorStoreProvider,
 			modelId: this.modelId,
 			modelDimension: this.modelDimension,
-			openAiOptions: this.openAiOptions,
-			ollamaOptions: this.ollamaOptions,
-			openAiCompatibleOptions: this.openAiCompatibleOptions,
-			geminiOptions: this.geminiOptions,
 			vertexOptions: this.vertexOptions,
-			mistralOptions: this.mistralOptions,
-			vercelAiGatewayOptions: this.vercelAiGatewayOptions,
-			bedrockOptions: this.bedrockOptions,
-			openRouterOptions: this.openRouterOptions,
 			qdrantUrl: this.qdrantUrl,
 			qdrantApiKey: this.qdrantApiKey,
 			localIndexPath: this.localIndexPath,
@@ -684,88 +399,46 @@ export class CodeIndexConfigManager {
 		}
 	}
 
-	/**
-	 * Gets whether the code indexing feature is enabled
-	 */
 	public get isFeatureEnabled(): boolean {
 		return this.codebaseIndexEnabled
 	}
 
-	/**
-	 * Gets whether the code indexing feature is properly configured
-	 */
 	public get isFeatureConfigured(): boolean {
 		return this.isConfigured()
 	}
 
-	/**
-	 * Gets the current embedder type (openai or ollama)
-	 */
 	public get currentEmbedderProvider(): EmbedderProvider {
 		return this.embedderProvider
 	}
 
-	/**
-	 * Gets the current Qdrant configuration
-	 */
+	public get legacyProvider(): string | undefined {
+		return this.legacyEmbedderProvider
+	}
+
 	public get qdrantConfig(): { url?: string; apiKey?: string } {
-		return {
-			url: this.qdrantUrl,
-			apiKey: this.qdrantApiKey,
-		}
+		return { url: this.qdrantUrl, apiKey: this.qdrantApiKey }
 	}
 
 	public get vectorStoreConfig(): { provider: VectorStoreProvider; localIndexPath?: string } {
-		return {
-			provider: this.vectorStoreProvider,
-			localIndexPath: this.localIndexPath,
-		}
+		return { provider: this.vectorStoreProvider, localIndexPath: this.localIndexPath }
 	}
 
-	/**
-	 * Gets the current model ID being used for embeddings.
-	 */
 	public get currentModelId(): string | undefined {
 		return this.modelId
 	}
 
-	/**
-	 * Gets the current model dimension being used for embeddings.
-	 * Returns the model's built-in dimension if available, otherwise falls back to custom dimension.
-	 */
 	public get currentModelDimension(): number | undefined {
-		// First try to get the model-specific dimension
-		const modelId = this.modelId ?? getDefaultModelId(this.embedderProvider)
-		const modelDimension = getModelDimension(this.embedderProvider, modelId)
-
-		// Only use custom dimension if model doesn't have a built-in dimension
-		if (!modelDimension && this.modelDimension && this.modelDimension > 0) {
-			return this.modelDimension
-		}
-
-		return modelDimension
+		const modelId = this.modelId ?? getDefaultModelId("vertex")
+		const modelDimension = getModelDimension("vertex", modelId)
+		return modelDimension ?? (this.modelDimension && this.modelDimension > 0 ? this.modelDimension : undefined)
 	}
 
-	/**
-	 * Gets the configured minimum search score based on user setting, model-specific threshold, or fallback.
-	 * Priority: 1) User setting, 2) Model-specific threshold, 3) Default DEFAULT_SEARCH_MIN_SCORE constant.
-	 */
 	public get currentSearchMinScore(): number {
-		// First check if user has configured a custom score threshold
-		if (this.searchMinScore !== undefined) {
-			return this.searchMinScore
-		}
-
-		// Fall back to model-specific threshold
-		const currentModelId = this.modelId ?? getDefaultModelId(this.embedderProvider)
-		const modelSpecificThreshold = getModelScoreThreshold(this.embedderProvider, currentModelId)
-		return modelSpecificThreshold ?? DEFAULT_SEARCH_MIN_SCORE
+		if (this.searchMinScore !== undefined) return this.searchMinScore
+		const modelId = this.modelId ?? getDefaultModelId("vertex")
+		return getModelScoreThreshold("vertex", modelId) ?? DEFAULT_SEARCH_MIN_SCORE
 	}
 
-	/**
-	 * Gets the configured maximum search results.
-	 * Returns user setting if configured, otherwise returns default.
-	 */
 	public get currentSearchMaxResults(): number {
 		return this.searchMaxResults ?? DEFAULT_MAX_SEARCH_RESULTS
 	}

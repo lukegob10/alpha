@@ -30,8 +30,8 @@ for (const name of providerSecrets) delete childEnvironment[name]
 const agentCriticalTests = [
 	"__tests__/history-resume-delegation.spec.ts",
 	"__tests__/nested-delegation-resume.spec.ts",
-	"api/providers/__tests__/base-openai-compatible-provider-timeout.spec.ts",
-	"api/providers/__tests__/openai-native-usage.spec.ts",
+	"api/providers/__tests__/openai.spec.ts",
+	"api/providers/__tests__/vscode-lm.spec.ts",
 	"core/agent/__tests__/ToolPolicy.spec.ts",
 	"core/agent/__tests__/ToolScheduler.spec.ts",
 	"core/context-management/__tests__/context-management.spec.ts",

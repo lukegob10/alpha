@@ -287,11 +287,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 	const cache = options.catalogCache
 	const providerName = apiConfiguration?.apiProvider
 	const canDiscover =
-		!!cache &&
-		!includeAllToolsWithRestrictions &&
-		providerName !== "gemini" &&
-		providerName !== "vertex" &&
-		providerName !== "vscode-lm"
+		!!cache && !includeAllToolsWithRestrictions && providerName !== "vertex" && providerName !== "vscode-lm"
 	const key = cache
 		? digestValue({
 				schemaVersion: TOOL_CATALOG_SCHEMA_VERSION,

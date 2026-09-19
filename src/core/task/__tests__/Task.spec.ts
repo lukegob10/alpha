@@ -7,7 +7,13 @@ import { EventEmitter } from "events"
 import * as vscode from "vscode"
 import { Anthropic } from "@anthropic-ai/sdk"
 
-import { AlphaCodeEventName, type GlobalState, type ProviderSettings, type ModelInfo } from "@alpha-code/types"
+import {
+	AlphaCodeEventName,
+	getApiProtocol,
+	type GlobalState,
+	type ProviderSettings,
+	type ModelInfo,
+} from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../Task"
@@ -293,9 +299,9 @@ describe("Alpha", () => {
 
 		// Setup mock API configuration
 		mockApiConfig = {
-			apiProvider: "anthropic",
-			apiModelId: "claude-3-5-sonnet-20241022",
-			apiKey: "test-api-key", // Add API key to mock config
+			apiProvider: "openai",
+			openAiModelId: "claude-3-5-sonnet-20241022",
+			openAiApiKey: "test-api-key", // Add API key to mock config
 		}
 
 		// Mock provider methods
@@ -597,11 +603,11 @@ describe("Alpha", () => {
 				// Create two configurations - one with image support, one without
 				const configWithImages = {
 					...mockApiConfig,
-					apiModelId: "claude-3-sonnet",
+					openAiModelId: "claude-3-sonnet",
 				}
 				const configWithoutImages = {
 					...mockApiConfig,
-					apiModelId: "gpt-3.5-turbo",
+					openAiModelId: "gpt-3.5-turbo",
 				}
 
 				// Create test conversation history with mixed content
@@ -1041,8 +1047,8 @@ describe("Alpha", () => {
 				Task.resetGlobalApiRequestTime()
 
 				mockApiConfig = {
-					apiProvider: "anthropic",
-					apiKey: "test-key",
+					apiProvider: "openai",
+					openAiApiKey: "test-key",
 					rateLimitSeconds: 5,
 				}
 
@@ -1521,7 +1527,7 @@ describe("Alpha", () => {
 					resolution: "selected" as const,
 					profileId: "shared-profile-id",
 					profileName: "Shared profile",
-					provider: "anthropic",
+					provider: "vertex",
 					modelId: "claude-test",
 				}
 				const first = new Task({
@@ -1554,7 +1560,7 @@ describe("Alpha", () => {
 					resolution: "selected" as const,
 					profileId: "shared-profile-id",
 					profileName: "Shared profile",
-					provider: "anthropic",
+					provider: "vertex",
 					modelId: "claude-test",
 				}
 				const first = new Task({
@@ -1625,7 +1631,7 @@ describe("Alpha", () => {
 							resolution: "selected",
 							profileId,
 							profileName: profileId,
-							provider: "anthropic",
+							provider: "vertex",
 							modelId: "claude-test",
 						},
 					})
@@ -2011,8 +2017,8 @@ describe("Alpha", () => {
 				vi.clearAllMocks()
 
 				mockApiConfig = {
-					apiProvider: "anthropic",
-					apiKey: "test-key",
+					apiProvider: "openai",
+					openAiApiKey: "test-key",
 				}
 
 				mockProvider = {
@@ -2061,97 +2067,16 @@ describe("Alpha", () => {
 		})
 
 		describe("getApiProtocol", () => {
-			it("should determine API protocol based on provider and model", async () => {
-				// Test with Anthropic provider
-				const anthropicConfig = {
-					...mockApiConfig,
-					apiProvider: "anthropic" as const,
-					apiModelId: "gpt-4",
-				}
-				const anthropicTask = new Task({
-					provider: mockProvider,
-					apiConfiguration: anthropicConfig,
-					task: "test task",
-					startTask: false,
-				})
-				// Should use anthropic protocol even with non-claude model
-				expect(anthropicTask.apiConfiguration.apiProvider).toBe("anthropic")
-
-				// Test with OpenRouter provider and Claude model
-				const openrouterClaudeConfig = {
-					apiProvider: "openrouter" as const,
-					openRouterModelId: "anthropic/claude-3-opus",
-				}
-				const openrouterClaudeTask = new Task({
-					provider: mockProvider,
-					apiConfiguration: openrouterClaudeConfig,
-					task: "test task",
-					startTask: false,
-				})
-				expect(openrouterClaudeTask.apiConfiguration.apiProvider).toBe("openrouter")
-
-				// Test with OpenRouter provider and non-Claude model
-				const openrouterGptConfig = {
-					apiProvider: "openrouter" as const,
-					openRouterModelId: "openai/gpt-4",
-				}
-				const openrouterGptTask = new Task({
-					provider: mockProvider,
-					apiConfiguration: openrouterGptConfig,
-					task: "test task",
-					startTask: false,
-				})
-				expect(openrouterGptTask.apiConfiguration.apiProvider).toBe("openrouter")
-
-				// Test with various Claude model formats
-				const claudeModelFormats = [
-					"claude-3-opus",
-					"Claude-3-Sonnet",
-					"CLAUDE-instant",
-					"anthropic/claude-3-haiku",
-					"some-provider/claude-model",
-				]
-
-				for (const modelId of claudeModelFormats) {
-					const config = {
-						apiProvider: "openai" as const,
-						openAiModelId: modelId,
-					}
-					const task = new Task({
-						provider: mockProvider,
-						apiConfiguration: config,
-						task: "test task",
-						startTask: false,
-					})
-					// Verify the model ID contains claude (case-insensitive)
-					expect(modelId.toLowerCase()).toContain("claude")
-				}
+			it("selects the retained connection's wire protocol", () => {
+				expect(getApiProtocol("vertex", "claude-3-opus")).toBe("anthropic")
+				expect(getApiProtocol("vertex", "gemini-3.7-flash")).toBe("openai")
+				expect(getApiProtocol("openai", "anthropic/claude-3-opus")).toBe("openai")
+				expect(getApiProtocol("vscode-lm", "claude-3-opus")).toBe("openai")
 			})
 
-			it("should handle edge cases for API protocol detection", async () => {
-				// Test with undefined provider
-				const undefinedProviderConfig = {
-					apiModelId: "claude-3-opus",
-				}
-				const undefinedProviderTask = new Task({
-					provider: mockProvider,
-					apiConfiguration: undefinedProviderConfig,
-					task: "test task",
-					startTask: false,
-				})
-				expect(undefinedProviderTask.apiConfiguration.apiProvider).toBeUndefined()
-
-				// Test with no model ID
-				const noModelConfig = {
-					apiProvider: "openai" as const,
-				}
-				const noModelTask = new Task({
-					provider: mockProvider,
-					apiConfiguration: noModelConfig,
-					task: "test task",
-					startTask: false,
-				})
-				expect(noModelTask.apiConfiguration.apiProvider).toBe("openai")
+			it("handles an absent provider or model", () => {
+				expect(getApiProtocol(undefined, "claude-3-opus")).toBe("openai")
+				expect(getApiProtocol("openai")).toBe("openai")
 			})
 		})
 
@@ -5591,9 +5516,9 @@ describe("Queued message processing after condense", () => {
 	}
 
 	const apiConfig: ProviderSettings = {
-		apiProvider: "anthropic",
-		apiModelId: "claude-3-5-sonnet-20241022",
-		apiKey: "test-api-key",
+		apiProvider: "openai",
+		openAiModelId: "claude-3-5-sonnet-20241022",
+		openAiApiKey: "test-api-key",
 	} as any
 
 	it("keeps queued message after condense completes", async () => {
@@ -5699,9 +5624,9 @@ describe("pushToolResultToUserContent", () => {
 
 	beforeEach(() => {
 		mockApiConfig = {
-			apiProvider: "anthropic",
-			apiModelId: "claude-3-5-sonnet-20241022",
-			apiKey: "test-api-key",
+			apiProvider: "openai",
+			openAiModelId: "claude-3-5-sonnet-20241022",
+			openAiApiKey: "test-api-key",
 		}
 
 		const storageUri = { fsPath: path.join(os.tmpdir(), "test-storage") }

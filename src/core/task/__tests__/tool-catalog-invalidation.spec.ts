@@ -76,7 +76,7 @@ function createFixture() {
 		mode: "code",
 		customModes: undefined,
 		experiments: {},
-		apiConfiguration: { apiProvider: "anthropic" },
+		apiConfiguration: { apiProvider: "vertex" },
 		modelInfo,
 		catalogCache: new TaskToolCatalogCache(),
 	}

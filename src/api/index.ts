@@ -1,42 +1,19 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 
-import { isRetiredProvider, type ProviderSettings, type ModelInfo, vertexDefaultModelId } from "@alpha-code/types"
+import { type ProviderSettings, type ModelInfo, vertexDefaultModelId } from "@alpha-code/types"
 
 import { ApiStream, type ApiStreamCapabilities, type ApiStreamRequestMetadata } from "./transform/stream"
 
 import {
-	AnthropicHandler,
-	AwsBedrockHandler,
-	OpenRouterHandler,
-	PoeHandler,
 	VertexHandler,
 	AnthropicVertexHandler,
 	VertexOpenAiHandler,
 	OpenAiHandler,
-	OpenAiCodexHandler,
-	LmStudioHandler,
-	GeminiHandler,
-	OpenAiNativeHandler,
-	DeepSeekHandler,
-	MoonshotHandler,
-	MistralHandler,
 	VsCodeLmHandler,
-	RequestyHandler,
-	UnboundHandler,
-	FakeAIHandler,
-	XAIHandler,
-	LiteLLMHandler,
-	QwenCodeHandler,
-	SambaNovaHandler,
 	StellarHandler,
-	ZAiHandler,
-	FireworksHandler,
-	VercelAiGatewayHandler,
-	MiniMaxHandler,
-	BasetenHandler,
 } from "./providers"
-import { NativeOllamaHandler } from "./providers/native-ollama"
+import { FakeAIHandler } from "./providers/fake-ai"
 
 export interface SingleCompletionHandler {
 	completePrompt(prompt: string): Promise<string>
@@ -44,15 +21,10 @@ export interface SingleCompletionHandler {
 
 export interface ApiHandlerCreateMessageMetadata extends ApiStreamRequestMetadata {
 	/**
-	 * Task ID used for tracking and provider-specific features:
-	 * - Alpha: Sent as X-Alpha-Task-ID header
-	 * - Requesty: Sent as trace_id
+	 * Task ID used for tracking and provider-specific features.
 	 */
 	taskId: string
-	/**
-	 * Current mode slug for provider-specific tracking:
-	 * - Requesty: Sent in extra metadata
-	 */
+	/** Current mode slug for provider-specific tracking. */
 	mode?: string
 	suppressPreviousResponseId?: boolean
 	/**
@@ -139,19 +111,10 @@ export interface ApiHandler {
 export function buildApiHandler(configuration: ProviderSettings): ApiHandler {
 	const { apiProvider, ...options } = configuration
 
-	if (apiProvider && isRetiredProvider(apiProvider)) {
-		throw new Error(
-			`Sorry, this provider is no longer supported. We saw very few Alpha users actually using it and we need to reduce the surface area of our codebase so we can keep shipping fast and serving our community well in this space. It was a really hard decision but it lets us focus on what matters most to you. It sucks, we know.\n\nPlease select a different provider in your API profile settings.`,
-		)
-	}
-
-	switch (apiProvider) {
-		case "anthropic":
-			return new AnthropicHandler(options)
-		case "openrouter":
-			return new OpenRouterHandler(options)
-		case "bedrock":
-			return new AwsBedrockHandler(options)
+	// A missing provider is the only configuration that gets a default. Persisted
+	// provider identifiers must never silently fall through to a different
+	// adapter: doing so can send credentials or requests to an unintended service.
+	switch (apiProvider ?? "vertex") {
 		case "vertex": {
 			const vertexModelId = (options.apiModelId?.trim() || vertexDefaultModelId).toLowerCase()
 			if (vertexModelId.includes("claude")) {
@@ -164,53 +127,13 @@ export function buildApiHandler(configuration: ProviderSettings): ApiHandler {
 		}
 		case "openai":
 			return new OpenAiHandler(options)
-		case "ollama":
-			return new NativeOllamaHandler(options)
-		case "lmstudio":
-			return new LmStudioHandler(options)
-		case "gemini":
-			return new GeminiHandler(options)
-		case "openai-codex":
-			return new OpenAiCodexHandler(options)
-		case "openai-native":
-			return new OpenAiNativeHandler(options)
-		case "deepseek":
-			return new DeepSeekHandler(options)
-		case "qwen-code":
-			return new QwenCodeHandler(options)
-		case "moonshot":
-			return new MoonshotHandler(options)
 		case "vscode-lm":
 			return new VsCodeLmHandler(options)
-		case "mistral":
-			return new MistralHandler(options)
-		case "requesty":
-			return new RequestyHandler(options)
-		case "unbound":
-			return new UnboundHandler(options)
 		case "fake-ai":
 			return new FakeAIHandler(options)
-		case "xai":
-			return new XAIHandler(options)
-		case "litellm":
-			return new LiteLLMHandler(options)
-		case "sambanova":
-			return new SambaNovaHandler(options)
 		case "stellar":
 			return new StellarHandler(options)
-		case "zai":
-			return new ZAiHandler(options)
-		case "fireworks":
-			return new FireworksHandler(options)
-		case "vercel-ai-gateway":
-			return new VercelAiGatewayHandler(options)
-		case "minimax":
-			return new MiniMaxHandler(options)
-		case "baseten":
-			return new BasetenHandler(options)
-		case "poe":
-			return new PoeHandler(options)
 		default:
-			return new AnthropicHandler(options)
+			throw new Error(`Unsupported API provider: ${String(apiProvider)}`)
 	}
 }

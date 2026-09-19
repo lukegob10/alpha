@@ -4,7 +4,7 @@
 
 Improve code discovery and the context returned to extension agents, independently of the chat model. This change targets source coverage, retrieval recall, useful context per token, and deterministic indexing. End-to-end Luna task success has not been measured.
 
-The initial parser/scanner/watcher/vector-store/Bedrock baseline passed 162 tests, despite dropping a valid 41-character function and losing the parent identity when splitting long functions. New regression tests reproduced those gaps before the parser changed.
+The historical parser/scanner/watcher/vector-store/Bedrock baseline (before provider reduction) passed 162 tests, despite dropping a valid 41-character function and losing the parent identity when splitting long functions. New regression tests reproduced those gaps before the parser changed.
 
 Primary sources consulted on 2026-09-12:
 
@@ -13,7 +13,6 @@ Primary sources consulted on 2026-09-12:
 - [CoREB v1, 2026-05-06](https://arxiv.org/html/2605.04615v1): general rerankers can regress strong code embeddings, while code-finetuned reranking merits evaluation. Competitive-programming and offline-search results have limited transfer to agent tasks.
 - [Qdrant sparse indexing and IDF](https://qdrant.tech/documentation/manage-data/indexing/#idf-modifier): indexed sparse retrieval with corpus IDF; the IDF modifier requires Qdrant 1.10 or later. Alpha's installed REST client is 1.14.0.
 - [LanceDB full-text search](https://docs.lancedb.com/search/full-text-search) and [reindexing](https://docs.lancedb.com/indexing/reindexing): native lexical indexing and updating changed data. Implementation and native regression tests use the installed 0.27.2 binding.
-- [Cohere on Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-embed-v4.html), [Nova embedding schema](https://docs.aws.amazon.com/nova/latest/userguide/embeddings-schema.html), and [Gemini embeddings](https://ai.google.dev/gemini-api/docs/embeddings): query/document configuration belongs in provider adapters.
 - [Vertex text embedding requests](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/embeddings/get-text-embeddings): Gemini 001 accepts one text per prediction request. The original Google adapter baseline and serialization regression test used Google GenAI SDK 1.29.1; the Embedding 2 endpoint fix below records the subsequent SDK update.
 
 ## Implemented contract
@@ -32,9 +31,9 @@ Initial scanning and filesystem updates share contextual input construction, poi
 
 Cancellation skips a batch before its replacement transaction starts and waits for already accepted work to settle. Once replacement has begun, the existing write sequence finishes before teardown. Existing provider calls may still need to finish before cancellation settles; this change does not add transport abort support to every provider.
 
-Search explicitly requests query embeddings. Cohere uses search-query input, Nova uses text-retrieval purpose, and known Nomic code-search prefixes apply only to queries. Native Gemini and direct Vertex use the documented 001 task types or Gemini 2 instructed inputs. Vertex gateways preserve their earlier raw-content prediction payload for both documents and queries, including opaque routed model aliases. Providers without a distinct query/document contract keep their normal inputs.
+Search explicitly requests query embeddings. GCP Vertex AI is the only supported embedding provider. Direct Vertex uses the documented 001 task types or Gemini 2 instructed inputs. Vertex gateways preserve their earlier raw-content prediction payload for both documents and queries, including opaque routed model aliases.
 
-Native Gemini 2 inputs have explicit Content boundaries so separate chunks receive separate embeddings. Vertex submits one input per request, with at most 16 active requests for a configured `gemini-embedding-2` model and eight for other models, shared across batches and queries on an embedder instance. Each caller queues at most that many tasks; free slots refill immediately and output retains input order. Failed calls stop scheduling new texts and drain accepted requests before rejecting. The configured embedding delay applies to each Vertex request start, including retries; concurrency does not override an enabled rate limit.
+Vertex submits one input per request, with at most 16 active requests for a configured `gemini-embedding-2` model and eight for other models, shared across batches and queries on an embedder instance. Each caller queues at most that many tasks; free slots refill immediately and output retains input order. Failed calls stop scheduling new texts and drain accepted requests before rejecting. The configured embedding delay applies to each Vertex request start, including retries; concurrency does not override an enabled rate limit.
 
 Vertex prefers indexing groups matching its request concurrency while preserving whole-file groups, including files larger than that target. Embedding can start while later files are still parsing. This scheduling policy changes neither the embedding input nor vector dimensions and requires no index rebuild.
 

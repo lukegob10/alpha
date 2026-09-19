@@ -1,13 +1,10 @@
-export type EmbedderProvider =
-	| "openai"
-	| "ollama"
-	| "openai-compatible"
-	| "gemini"
-	| "vertex"
-	| "mistral"
-	| "vercel-ai-gateway"
-	| "bedrock"
-	| "openrouter" // Add other providers as needed.
+/**
+ * Provider used to create code-index embeddings.
+ *
+ * Chat provider selection is independent from this contract. Code indexing
+ * uses the GCP Vertex AI embedding API exclusively.
+ */
+export type EmbedderProvider = "vertex"
 
 export interface EmbeddingModelProfile {
 	dimension: number

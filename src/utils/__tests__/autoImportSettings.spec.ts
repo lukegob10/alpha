@@ -191,8 +191,8 @@ describe("autoImportSettings", () => {
 				currentApiConfigName: "test-config",
 				apiConfigs: {
 					"test-config": {
-						apiProvider: "anthropic",
-						anthropicApiKey: "test-key",
+						apiProvider: "vertex",
+						openAiApiKey: "test-key",
 					},
 				},
 			},

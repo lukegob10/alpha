@@ -21,7 +21,6 @@ const mocks = vi.hoisted(() => {
 		shutdownTelemetry: vi.fn(),
 		cleanupTerminal: vi.fn(),
 		getContextProxy: vi.fn().mockResolvedValue(provider.contextProxy),
-		handleUri: vi.fn().mockResolvedValue(undefined),
 		registerUriHandler: vi.fn((_handler: { handleUri: (uri: unknown) => unknown }) => ({
 			dispose: vi.fn(),
 		})),
@@ -80,9 +79,6 @@ vi.mock("../../integrations/editor/DiffViewProvider", () => ({ DIFF_VIEW_URI_SCH
 vi.mock("../../integrations/terminal/TerminalRegistry", () => ({
 	TerminalRegistry: { initialize: vi.fn(), cleanup: mocks.cleanupTerminal },
 }))
-vi.mock("../../integrations/openai-codex/oauth", () => ({
-	openAiCodexOAuthManager: { initialize: vi.fn() },
-}))
 vi.mock("../../services/mcp/McpServerManager", () => ({
 	McpServerManager: { cleanup: mocks.cleanupMcp },
 }))
@@ -102,7 +98,6 @@ vi.mock("../../activate", () => {
 	const CodeActionProvider = vi.fn()
 	Object.assign(CodeActionProvider, { providedCodeActionKinds: [] })
 	return {
-		handleUri: mocks.handleUri,
 		registerCommands: vi.fn(),
 		registerCodeActions: vi.fn(),
 		registerTerminalActions: vi.fn(),
@@ -110,9 +105,6 @@ vi.mock("../../activate", () => {
 	}
 })
 vi.mock("../../i18n", () => ({ initializeI18n: vi.fn() }))
-vi.mock("../../api/providers/fetchers/modelCache", () => ({
-	initializeModelCacheRefresh: vi.fn().mockResolvedValue(undefined),
-}))
 
 import type * as vscode from "vscode"
 import { activate, deactivate } from "../../extension"
@@ -145,7 +137,7 @@ describe("extension lifecycle", () => {
 		await deactivate()
 	})
 
-	it("binds URI callbacks to the activation-owned sidebar provider", async () => {
+	it("does not register retired provider OAuth callbacks", async () => {
 		const context = {
 			extensionPath: "/extension",
 			extensionUri: {},
@@ -156,13 +148,8 @@ describe("extension lifecycle", () => {
 			},
 			subscriptions: [],
 		} as unknown as vscode.ExtensionContext
-		const callbackUri = { path: "/openrouter", query: "code=callback" } as vscode.Uri
-
 		await activate(context)
-		const uriHandler = mocks.registerUriHandler.mock.calls[0]![0]
-		await uriHandler.handleUri(callbackUri)
-
-		expect(mocks.handleUri).toHaveBeenCalledWith(callbackUri, mocks.provider)
+		expect(mocks.registerUriHandler).not.toHaveBeenCalled()
 		await deactivate()
 	})
 

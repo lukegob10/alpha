@@ -51,7 +51,7 @@ describe("Task dispose method", () => {
 
 		// Mock API configuration
 		mockApiConfiguration = {
-			apiProvider: "anthropic",
+			apiProvider: "vertex",
 			apiKey: "test-key",
 		} as ProviderSettings
 

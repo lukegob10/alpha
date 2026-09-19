@@ -41,11 +41,7 @@ export function getIndexIdentity(config: CodeIndexConfig): string {
 				provider: config.embedderProvider,
 				model: config.modelId ?? getDefaultModelId(config.embedderProvider),
 				dimension: config.modelDimension,
-				endpoint:
-					config.openAiCompatibleOptions?.baseUrl ??
-					config.ollamaOptions?.ollamaBaseUrl ??
-					vertex?.gatewayBaseUrl ??
-					vertex?.vertexGatewayBaseUrl,
+				endpoint: vertex?.gatewayBaseUrl ?? vertex?.vertexGatewayBaseUrl,
 				vertexModelRouting: modelRoutes,
 				// Rebuild only gateway indexes when restoring their original embedding inputs.
 				vertexGatewayInput:

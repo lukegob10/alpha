@@ -14,7 +14,18 @@ export const runCi = async ({
 } = {}) => {
 	console.log("Running evals in CI mode.")
 
-	const run = await createRun({ model: "anthropic/claude-sonnet-4", socketPath: "", concurrency })
+	const model = process.env.EVALS_MODEL_ID?.trim()
+	if (!model) throw new Error("EVALS_MODEL_ID is required for CI evaluation")
+	const run = await createRun({
+		model,
+		settings: {
+			apiProvider: "openai",
+			openAiModelId: model,
+			openAiBaseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+		},
+		socketPath: "",
+		concurrency,
+	})
 
 	for (const language of exerciseLanguages) {
 		let exercises = await getExercisesForLanguage(EVALS_REPO_PATH, language)

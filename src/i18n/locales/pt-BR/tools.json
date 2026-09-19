@@ -47,22 +47,5 @@
 	},
 	"applyPatch": {
 		"deleteCancelled": "A operação de exclusão foi cancelada."
-	},
-	"imageOutput": {
-		"writeIncomplete": "Não foi possível concluir a gravação de '{{path}}'; o arquivo pode estar incompleto. {{cause}}"
-	},
-	"generateImage": {
-		"openRouterApiKeyRequired": "A chave API do OpenRouter é necessária para geração de imagens com modelos OpenRouter. Configure-a nas configurações experimentais de Geração de Imagens.",
-		"failedWithStatus": "Falha ao gerar imagem: {{status}} {{statusText}}",
-		"failedWithMessage": "Falha ao gerar imagem: {{message}}",
-		"noImageGenerated": "Nenhuma imagem foi gerada na resposta",
-		"invalidImageData": "Dados de imagem inválidos na resposta",
-		"invalidImageFormat": "Formato de imagem inválido recebido",
-		"unknownError": "Ocorreu um erro desconhecido",
-		"cancelledBeforeSave": "A geração da imagem foi cancelada antes de salvar a imagem.",
-		"destinationUnavailableBeforeGeneration": "O destino da imagem não estava acessível antes da geração. Tente novamente.",
-		"destinationPolicyChangedBeforeSave": "O caminho ou a política de acesso do destino da imagem mudou antes do salvamento. Tente novamente.",
-		"postSaveProcessingFailed": "{{path}}\nImagem salva, mas o processamento pós-salvamento falhou: {{message}}",
-		"roo": {}
 	}
 }

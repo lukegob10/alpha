@@ -52,7 +52,7 @@ function fixture(count = 12) {
 		mode: "code",
 		customModes: undefined,
 		experiments: {},
-		apiConfiguration: { apiProvider: "anthropic" },
+		apiConfiguration: { apiProvider: "openai" },
 		catalogCache: new TaskToolCatalogCache(),
 		discoveryHistory: [],
 	}
@@ -253,7 +253,7 @@ describe("TaskToolCatalogCache", () => {
 
 	it("keeps existing Vertex and other provider catalogs unchanged", async () => {
 		const { options } = fixture(0)
-		for (const apiProvider of ["vertex", "anthropic", "openrouter"] as const) {
+		for (const apiProvider of ["vertex", "stellar", "openai"] as const) {
 			const existing = await capture({
 				...options,
 				apiConfiguration: { apiProvider },
@@ -575,7 +575,7 @@ describe("TaskToolCatalogCache", () => {
 		const { executionHost, requests } = realMcpHost(options, [offline, server])
 		const surface = await capture({
 			...options,
-			apiConfiguration: { apiProvider: "gemini" },
+			apiConfiguration: { apiProvider: "vertex" },
 			includeAllToolsWithRestrictions: true,
 		})
 		const name = "mcp--calendar_place--lookup_00"
@@ -597,7 +597,7 @@ describe("TaskToolCatalogCache", () => {
 		const gemini = await capture({
 			...options,
 			includeAllToolsWithRestrictions: true,
-			apiConfiguration: { apiProvider: "gemini" },
+			apiConfiguration: { apiProvider: "vertex" },
 		})
 		expect(gemini.registry.has(target)).toBe(true)
 		expect(gemini.schemas.some((schema) => schema.type === "function" && schema.function.name === target)).toBe(
@@ -607,7 +607,7 @@ describe("TaskToolCatalogCache", () => {
 		expect(gemini.allowedFunctionNames).not.toContain(target)
 	})
 
-	it.each(["gemini", "vertex", "vscode-lm"] as const)(
+	it.each(["vertex", "vscode-lm"] as const)(
 		"keeps ordinary eager schemas for the %s fallback",
 		async (apiProvider) => {
 			const { options } = fixture()
@@ -622,7 +622,7 @@ describe("TaskToolCatalogCache", () => {
 		},
 	)
 
-	it.each(["gemini", "vertex"] as const)(
+	it.each(["vertex"] as const)(
 		"retains discovery history declarations after switching to %s without enabling discovery",
 		async (apiProvider) => {
 			const { options } = fixture()

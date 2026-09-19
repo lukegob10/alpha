@@ -1,23 +1,5 @@
 import type { ProviderName, ModelInfo, ProviderSettings } from "@alpha-code/types"
-import {
-	anthropicDefaultModelId,
-	bedrockDefaultModelId,
-	deepSeekDefaultModelId,
-	moonshotDefaultModelId,
-	geminiDefaultModelId,
-	mistralDefaultModelId,
-	openAiNativeDefaultModelId,
-	qwenCodeDefaultModelId,
-	vertexDefaultModelId,
-	xaiDefaultModelId,
-	sambaNovaDefaultModelId,
-	stellarDefaultModelId,
-	internationalZAiDefaultModelId,
-	mainlandZAiDefaultModelId,
-	fireworksDefaultModelId,
-	minimaxDefaultModelId,
-	basetenDefaultModelId,
-} from "@alpha-code/types"
+import { vertexDefaultModelId, stellarDefaultModelId } from "@alpha-code/types"
 
 import { MODELS_BY_PROVIDER } from "../constants"
 
@@ -27,24 +9,9 @@ export interface ProviderServiceConfig {
 }
 
 export const PROVIDER_SERVICE_CONFIG: Partial<Record<ProviderName, ProviderServiceConfig>> = {
-	anthropic: { serviceName: "Anthropic", serviceUrl: "https://console.anthropic.com" },
-	bedrock: { serviceName: "Amazon Bedrock", serviceUrl: "https://aws.amazon.com/bedrock" },
-	deepseek: { serviceName: "DeepSeek", serviceUrl: "https://platform.deepseek.com" },
-	moonshot: { serviceName: "Moonshot", serviceUrl: "https://platform.moonshot.cn" },
-	gemini: { serviceName: "Google Gemini", serviceUrl: "https://ai.google.dev" },
-	mistral: { serviceName: "Mistral", serviceUrl: "https://console.mistral.ai" },
-	"openai-native": { serviceName: "OpenAI", serviceUrl: "https://platform.openai.com" },
-	"qwen-code": { serviceName: "Qwen Code", serviceUrl: "https://dashscope.console.aliyun.com" },
 	vertex: { serviceName: "GCP Vertex AI", serviceUrl: "https://console.cloud.google.com/vertex-ai" },
-	xai: { serviceName: "xAI", serviceUrl: "https://x.ai" },
-	sambanova: { serviceName: "SambaNova", serviceUrl: "https://sambanova.ai" },
 	stellar: { serviceName: "Stellar", serviceUrl: "" },
-	zai: { serviceName: "Z.ai", serviceUrl: "https://z.ai" },
-	fireworks: { serviceName: "Fireworks AI", serviceUrl: "https://fireworks.ai" },
-	minimax: { serviceName: "MiniMax", serviceUrl: "https://minimax.chat" },
-	baseten: { serviceName: "Baseten", serviceUrl: "https://baseten.co" },
-	ollama: { serviceName: "Ollama", serviceUrl: "https://ollama.ai" },
-	lmstudio: { serviceName: "LM Studio", serviceUrl: "https://lmstudio.ai/docs" },
+	openai: { serviceName: "OpenAI Compatible", serviceUrl: "https://platform.openai.com/docs" },
 	"vscode-lm": {
 		serviceName: "VS Code LM",
 		serviceUrl: "https://code.visualstudio.com/api/extension-guides/language-model",
@@ -52,57 +19,23 @@ export const PROVIDER_SERVICE_CONFIG: Partial<Record<ProviderName, ProviderServi
 }
 
 export const PROVIDER_DEFAULT_MODEL_IDS: Partial<Record<ProviderName, string>> = {
-	anthropic: anthropicDefaultModelId,
-	bedrock: bedrockDefaultModelId,
-	deepseek: deepSeekDefaultModelId,
-	moonshot: moonshotDefaultModelId,
-	gemini: geminiDefaultModelId,
-	mistral: mistralDefaultModelId,
-	"openai-native": openAiNativeDefaultModelId,
-	"qwen-code": qwenCodeDefaultModelId,
 	vertex: vertexDefaultModelId,
-	xai: xaiDefaultModelId,
-	sambanova: sambaNovaDefaultModelId,
 	stellar: stellarDefaultModelId,
-	zai: internationalZAiDefaultModelId,
-	fireworks: fireworksDefaultModelId,
-	minimax: minimaxDefaultModelId,
-	baseten: basetenDefaultModelId,
 }
 
 export const getProviderServiceConfig = (provider: ProviderName): ProviderServiceConfig => {
 	return PROVIDER_SERVICE_CONFIG[provider] ?? { serviceName: provider, serviceUrl: "" }
 }
 
-export const getDefaultModelIdForProvider = (provider: ProviderName, apiConfiguration?: ProviderSettings): string => {
-	// Handle Z.ai's China/International entrypoint distinction
-	if (provider === "zai" && apiConfiguration) {
-		return apiConfiguration.zaiApiLine === "china_coding"
-			? mainlandZAiDefaultModelId
-			: internationalZAiDefaultModelId
-	}
-
+export const getDefaultModelIdForProvider = (provider: ProviderName, _apiConfiguration?: ProviderSettings): string => {
 	return PROVIDER_DEFAULT_MODEL_IDS[provider] ?? ""
 }
 
 export const getStaticModelsForProvider = (
 	provider: ProviderName,
-	customArnLabel?: string,
+	_customArnLabel?: string,
 ): Record<string, ModelInfo> => {
 	const models = MODELS_BY_PROVIDER[provider] ?? {}
-
-	// Add custom-arn option for Bedrock
-	if (provider === "bedrock") {
-		return {
-			...models,
-			"custom-arn": {
-				maxTokens: 0,
-				contextWindow: 0,
-				supportsPromptCache: false,
-				description: customArnLabel ?? "Use Custom ARN",
-			},
-		}
-	}
 
 	return models
 }
@@ -119,15 +52,7 @@ export const isStaticModelProvider = (provider: ProviderName): boolean => {
  * and should not use the generic ModelPicker in ApiOptions
  */
 export const PROVIDERS_WITH_CUSTOM_MODEL_UI: ProviderName[] = [
-	"openrouter",
-	"requesty",
-	"unbound",
 	"openai", // OpenAI Compatible
-	"openai-codex", // OpenAI Codex has custom UI with auth and rate limits
-	"litellm",
-	"vercel-ai-gateway",
-	"ollama",
-	"lmstudio",
 	"vscode-lm",
 ]
 
@@ -143,15 +68,10 @@ export const shouldUseGenericModelPicker = (provider: ProviderName): boolean => 
  * Centralizes provider-specific logic to keep it out of the ApiOptions template.
  */
 export const handleModelChangeSideEffects = <K extends keyof ProviderSettings>(
-	provider: ProviderName,
-	modelId: string,
+	_provider: ProviderName,
+	_modelId: string,
 	setApiConfigurationField: (field: K, value: ProviderSettings[K]) => void,
 ): void => {
-	// Bedrock: Clear custom ARN if not using custom ARN option
-	if (provider === "bedrock" && modelId !== "custom-arn") {
-		setApiConfigurationField("awsCustomArn" as K, "" as ProviderSettings[K])
-	}
-
 	// All providers: Clear reasoning settings when switching models to allow
 	// the new model's defaults to take effect. Different models within the
 	// same provider can have different reasoning defaults/options.

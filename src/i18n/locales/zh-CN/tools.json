@@ -47,22 +47,5 @@
 	},
 	"applyPatch": {
 		"deleteCancelled": "删除操作已取消。"
-	},
-	"imageOutput": {
-		"writeIncomplete": "无法完成写入“{{path}}”；文件可能不完整。{{cause}}"
-	},
-	"generateImage": {
-		"openRouterApiKeyRequired": "使用 OpenRouter 模型生成图像需要 OpenRouter API 密钥。请在图像生成实验设置中配置。",
-		"failedWithStatus": "图像生成失败：{{status}} {{statusText}}",
-		"failedWithMessage": "图像生成失败：{{message}}",
-		"noImageGenerated": "响应中未生成图像",
-		"invalidImageData": "响应中的图像数据无效",
-		"invalidImageFormat": "收到的图像格式无效",
-		"unknownError": "发生未知错误",
-		"cancelledBeforeSave": "图像保存前，图像生成已取消。",
-		"destinationUnavailableBeforeGeneration": "生成前无法访问图像目标。请重试请求。",
-		"destinationPolicyChangedBeforeSave": "保存前图像目标的路径或访问策略发生了更改。请重试请求。",
-		"postSaveProcessingFailed": "{{path}}\n图像已保存，但保存后的处理失败：{{message}}",
-		"roo": {}
 	}
 }

@@ -186,16 +186,17 @@ export async function run() {
 	const api = extension.isActive ? extension.exports : await extension.activate()
 	const providerMode = process.env.ALPHA_E2E_PROVIDER_MODE ?? "live"
 	if (providerMode === "live") {
-		const openRouterApiKey = process.env.OPENROUTER_API_KEY
-		if (!openRouterApiKey) {
+		const openAiApiKey = process.env.OPENAI_API_KEY
+		if (!openAiApiKey) {
 			throw new Error(
-				"OPENROUTER_API_KEY is required for live E2E tests. Use --provider scripted for deterministic tests.",
+				"OPENAI_API_KEY is required for live E2E tests. Use --provider scripted for deterministic tests.",
 			)
 		}
 		await api.setConfiguration({
-			apiProvider: "openrouter" as const,
-			openRouterApiKey,
-			openRouterModelId: "openai/gpt-4.1",
+			apiProvider: "openai" as const,
+			openAiApiKey,
+			openAiModelId: process.env.ALPHA_E2E_MODEL_ID || "gpt-4.1",
+			openAiBaseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
 		})
 	} else if (providerMode === "live-copilot") {
 		try {

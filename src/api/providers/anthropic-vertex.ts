@@ -15,7 +15,7 @@ import { safeJsonParse } from "@alpha-code/core"
 import { ApiHandlerOptions } from "../../shared/api"
 import { logger } from "../../utils/logging"
 
-import { ApiStream } from "../transform/stream"
+import { ApiStream, isApiStreamAbortError } from "../transform/stream"
 import { addCacheBreakpoints } from "../transform/caching/vertex"
 import { getModelParams } from "../transform/model-params"
 import { filterNonAnthropicBlocks } from "../transform/anthropic-filter"
@@ -66,7 +66,8 @@ type VertexGatewayGoogleAuth = {
 // https://docs.anthropic.com/en/api/claude-on-vertex-ai
 export class AnthropicVertexHandler extends BaseProvider implements SingleCompletionHandler {
 	protected options: ApiHandlerOptions
-	private client: AnthropicVertex
+	private client?: AnthropicVertex
+	private directClient?: AnthropicVertex
 	private readonly vertexGatewaySettings?: VertexGatewaySettings
 	private readonly vertexGatewayClients = new Map<string, AnthropicVertex>()
 	private readonly helixTokenManager?: HelixTokenManager
@@ -79,10 +80,6 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 
 		this.options = options
 		this.vertexGatewaySettings = this.resolveVertexGatewaySettings()
-
-		// https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/use-claude#regions
-		const projectId = this.getConfiguredProjectId() ?? "not-provided"
-		const region = this.getConfiguredLocation() ?? "us-east5"
 
 		if (this.vertexGatewaySettings) {
 			this.vertexGatewayGoogleAuth = this.createGatewayGoogleAuth()
@@ -102,8 +99,21 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 			return
 		}
 
+		// The Vertex SDK resolves Application Default Credentials while constructing
+		// a direct client. Leave the client unset so creating the default provider
+		// does not fail extension activation in an unconfigured environment.
+	}
+
+	private getOrCreateDirectClient(): AnthropicVertex {
+		if (this.directClient) {
+			return this.directClient
+		}
+
+		const projectId = this.getConfiguredProjectId() ?? "not-provided"
+		const region = this.getConfiguredLocation() ?? "us-east5"
+
 		if (this.options.vertexJsonCredentials) {
-			this.client = new AnthropicVertex({
+			this.directClient = new AnthropicVertex({
 				projectId,
 				region,
 				googleAuth: new GoogleAuth({
@@ -112,7 +122,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 				}),
 			})
 		} else if (this.options.vertexKeyFile) {
-			this.client = new AnthropicVertex({
+			this.directClient = new AnthropicVertex({
 				projectId,
 				region,
 				googleAuth: new GoogleAuth({
@@ -121,8 +131,10 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 				}),
 			})
 		} else {
-			this.client = new AnthropicVertex({ projectId, region })
+			this.directClient = new AnthropicVertex({ projectId, region })
 		}
+
+		return this.directClient
 	}
 
 	private getConfiguredProjectId(): string | undefined {
@@ -398,7 +410,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 
 	private async getRequestContext(model: string): Promise<AnthropicRequestContext> {
 		if (!this.vertexGatewaySettings) {
-			return { client: this.client, model }
+			return { client: this.getOrCreateDirectClient(), model }
 		}
 
 		await this.ensureGatewayTransportConfigured()
@@ -417,6 +429,10 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 			routedLocation === this.vertexGatewaySettings.location
 				? this.client
 				: this.getOrCreateVertexGatewayClient(routedProjectId, routedLocation)
+
+		if (!client) {
+			throw new Error("Vertex gateway client is not initialized.")
+		}
 
 		const requestOptions: Anthropic.RequestOptions = {
 			headers: {
@@ -514,8 +530,9 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 	private mergeRequestOptions(
 		baseRequestOptions: Anthropic.RequestOptions | undefined,
 		overrideRequestOptions: Anthropic.RequestOptions | undefined,
+		signal?: AbortSignal,
 	): Anthropic.RequestOptions | undefined {
-		if (!baseRequestOptions && !overrideRequestOptions) {
+		if (!baseRequestOptions && !overrideRequestOptions && !signal) {
 			return undefined
 		}
 
@@ -531,6 +548,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 			...(baseRequestOptions ?? {}),
 			...(overrideRequestOptions ?? {}),
 			...(mergedHeaders ? { headers: mergedHeaders } : {}),
+			...(signal ? { signal } : {}),
 		}
 	}
 
@@ -681,7 +699,11 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 				model: requestContext.model,
 				stream: this.options.vertexStreamingEnabled !== false,
 			}
-			const requestOptions = this.mergeRequestOptions(betaRequestOptions, requestContext.requestOptions)
+			const requestOptions = this.mergeRequestOptions(
+				betaRequestOptions,
+				requestContext.requestOptions,
+				metadata?.signal,
+			)
 			let emittedAnyStreamChunk = false
 			const activeToolUseBlocks = new Map<
 				number,
@@ -874,6 +896,10 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 
 				return
 			} catch (error) {
+				if (isApiStreamAbortError(error, metadata?.signal)) {
+					throw error
+				}
+
 				if (
 					!didRetryForGatewayAuth &&
 					!emittedAnyStreamChunk &&

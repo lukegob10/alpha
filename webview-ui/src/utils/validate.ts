@@ -4,11 +4,8 @@ import {
 	type ProviderSettings,
 	type OrganizationAllowList,
 	type ProviderName,
-	type RouterModels,
 	modelIdKeysByProvider,
 	isProviderName,
-	isRetiredProvider,
-	isDynamicProvider,
 	isFauxProvider,
 	isCustomProvider,
 } from "@alpha-code/types"
@@ -18,7 +15,7 @@ const VERTEX_GATEWAY_TRIGGER_FIELDS = [...VERTEX_GATEWAY_REQUIRED_FIELDS] as con
 
 export function validateApiConfiguration(
 	apiConfiguration: ProviderSettings,
-	routerModels?: RouterModels,
+	_routerModels?: unknown,
 	organizationAllowList?: OrganizationAllowList,
 ): string | undefined {
 	const keysAndIdsPresentErrorMessage = validateModelsAndKeysProvided(apiConfiguration)
@@ -36,41 +33,11 @@ export function validateApiConfiguration(
 		return organizationAllowListError.message
 	}
 
-	return validateDynamicProviderModelId(apiConfiguration, routerModels)
+	return undefined
 }
 
 function validateModelsAndKeysProvided(apiConfiguration: ProviderSettings): string | undefined {
 	switch (apiConfiguration.apiProvider) {
-		case "openrouter":
-			if (!apiConfiguration.openRouterApiKey) {
-				return i18next.t("settings:validation.apiKey")
-			}
-			break
-		case "requesty":
-			if (!apiConfiguration.requestyApiKey) {
-				return i18next.t("settings:validation.apiKey")
-			}
-			break
-		case "unbound":
-			if (!apiConfiguration.unboundApiKey) {
-				return i18next.t("settings:validation.apiKey")
-			}
-			break
-		case "litellm":
-			if (!apiConfiguration.litellmApiKey) {
-				return i18next.t("settings:validation.apiKey")
-			}
-			break
-		case "anthropic":
-			if (!apiConfiguration.apiKey) {
-				return i18next.t("settings:validation.apiKey")
-			}
-			break
-		case "bedrock":
-			if (!apiConfiguration.awsRegion) {
-				return i18next.t("settings:validation.awsRegion")
-			}
-			break
 		case "vertex":
 			if (!hasVertexProjectAndLocation(apiConfiguration)) {
 				return i18next.t("settings:validation.googleCloud")
@@ -91,34 +58,9 @@ function validateModelsAndKeysProvided(apiConfiguration: ProviderSettings): stri
 				return i18next.t("settings:validation.stellar")
 			}
 			break
-		case "gemini":
-			if (!apiConfiguration.geminiApiKey) {
-				return i18next.t("settings:validation.apiKey")
-			}
-			break
-		case "openai-native":
-			if (!apiConfiguration.openAiNativeApiKey) {
-				return i18next.t("settings:validation.apiKey")
-			}
-			break
-		case "mistral":
-			if (!apiConfiguration.mistralApiKey) {
-				return i18next.t("settings:validation.apiKey")
-			}
-			break
 		case "openai":
 			if (!apiConfiguration.openAiBaseUrl || !apiConfiguration.openAiApiKey || !apiConfiguration.openAiModelId) {
 				return i18next.t("settings:validation.openAi")
-			}
-			break
-		case "ollama":
-			if (!apiConfiguration.ollamaModelId) {
-				return i18next.t("settings:validation.modelId")
-			}
-			break
-		case "lmstudio":
-			if (!apiConfiguration.lmStudioModelId) {
-				return i18next.t("settings:validation.modelId")
 			}
 			break
 		case "vscode-lm":
@@ -126,26 +68,12 @@ function validateModelsAndKeysProvided(apiConfiguration: ProviderSettings): stri
 				return i18next.t("settings:validation.modelSelector")
 			}
 			break
-		case "fireworks":
-			if (!apiConfiguration.fireworksApiKey) {
-				return i18next.t("settings:validation.apiKey")
-			}
+		case "fake-ai":
 			break
-		case "qwen-code":
-			if (!apiConfiguration.qwenCodeOauthPath) {
-				return i18next.t("settings:validation.qwenCodeOauthPath")
+		default:
+			if (apiConfiguration.apiProvider) {
+				return i18next.t("settings:providers.retiredProviderMessage")
 			}
-			break
-		case "vercel-ai-gateway":
-			if (!apiConfiguration.vercelAiGatewayApiKey) {
-				return i18next.t("settings:validation.apiKey")
-			}
-			break
-		case "baseten":
-			if (!apiConfiguration.basetenApiKey) {
-				return i18next.t("settings:validation.apiKey")
-			}
-			break
 	}
 
 	return undefined
@@ -177,7 +105,7 @@ function validateProviderAgainstOrganizationSettings(
 		}
 
 		if (!providerConfig.allowAll) {
-			const activeProvider = isRetiredProvider(provider) ? undefined : provider
+			const activeProvider = isProviderName(provider) ? provider : undefined
 			const modelId = activeProvider ? getModelIdForProvider(apiConfiguration, activeProvider) : undefined
 			const allowedModels = providerConfig.models || []
 
@@ -281,70 +209,15 @@ function getModelIdForProvider(apiConfiguration: ProviderSettings, provider: Pro
 		return apiConfiguration.vsCodeLmModelSelector?.id
 	}
 
-	if (isCustomProvider(provider) || isFauxProvider(provider)) {
+	if (isCustomProvider(provider)) {
+		return apiConfiguration.openAiModelId
+	}
+
+	if (isFauxProvider(provider)) {
 		return apiConfiguration.apiModelId
 	}
 
 	return apiConfiguration[modelIdKeysByProvider[provider]]
-}
-
-/**
- * Validates an Amazon Bedrock ARN and optionally checks if the region in
- * the ARN matches the provided region.
- *
- * Note: This function does not perform strict format validation on the ARN.
- * Users entering custom ARNs are advanced users who should be trusted to
- * provide valid ARNs without restriction. See issue #10108.
- *
- * @param arn The ARN string to validate
- * @param region Optional region to check against the ARN's region
- * @returns An object with validation results: { isValid, arnRegion, errorMessage }
- */
-export function validateBedrockArn(arn: string, region?: string) {
-	// Try to extract region from ARN for region mismatch warning.
-	// This is a permissive regex that attempts to find the region component
-	// without enforcing strict ARN format validation.
-	const regionMatch = arn.match(/^arn:[^:]+:[^:]+:([^:]+):/)
-	const arnRegion = regionMatch?.[1]
-
-	// Check if region in ARN matches provided region (if specified).
-	if (region && arnRegion && arnRegion !== region) {
-		return {
-			isValid: true,
-			arnRegion,
-			errorMessage: i18next.t("settings:validation.arn.regionMismatch", { arnRegion, region }),
-		}
-	}
-
-	// ARN is always considered valid - trust the user to enter valid ARNs.
-	return { isValid: true, arnRegion, errorMessage: undefined }
-}
-
-function validateDynamicProviderModelId(
-	apiConfiguration: ProviderSettings,
-	routerModels?: RouterModels,
-): string | undefined {
-	const provider = apiConfiguration.apiProvider ?? ""
-
-	// We only validate model ids from dynamic providers.
-	if (!isDynamicProvider(provider)) {
-		return undefined
-	}
-
-	const modelId = getModelIdForProvider(apiConfiguration, provider)
-
-	if (!modelId) {
-		return i18next.t("settings:validation.modelId")
-	}
-
-	const models = routerModels?.[provider]
-	const modelIds = models ? Object.keys(models) : []
-
-	if (modelIds.length > 0 && !modelIds.includes(modelId)) {
-		return i18next.t("settings:validation.modelAvailability", { modelId })
-	}
-
-	return undefined
 }
 
 /**
@@ -353,7 +226,7 @@ function validateDynamicProviderModelId(
  */
 export function getModelValidationError(
 	apiConfiguration: ProviderSettings,
-	routerModels?: RouterModels,
+	_routerModels?: unknown,
 	organizationAllowList?: OrganizationAllowList,
 ): string | undefined {
 	const modelId = isProviderName(apiConfiguration.apiProvider)
@@ -371,7 +244,7 @@ export function getModelValidationError(
 		return orgError.message
 	}
 
-	return validateDynamicProviderModelId(configWithModelId, routerModels)
+	return undefined
 }
 
 /**
@@ -381,7 +254,7 @@ export function getModelValidationError(
  */
 export function validateApiConfigurationExcludingModelErrors(
 	apiConfiguration: ProviderSettings,
-	_routerModels?: RouterModels, // Keeping this for compatibility with the old function.
+	_routerModels?: unknown, // Kept for compatibility with callers that still pass a model catalog.
 	organizationAllowList?: OrganizationAllowList,
 ): string | undefined {
 	const keysAndIdsPresentErrorMessage = validateModelsAndKeysProvided(apiConfiguration)

@@ -14,6 +14,11 @@ function schema(name: string) {
 }
 
 describe("ToolRegistry", () => {
+	it("does not advertise or execute the retired image-generation provider", () => {
+		const registry = new ToolRegistry()
+		expect(registry.resolve("generate_image")).toBeUndefined()
+		expect(registry.getSchema("generate_image")).toBeUndefined()
+	})
 	it("retires model mode switching while retaining both delegation mechanisms", () => {
 		const registry = new ToolRegistry()
 		expect(registry.resolve("switch_mode")).toBeUndefined()

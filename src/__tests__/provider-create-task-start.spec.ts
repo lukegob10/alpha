@@ -44,7 +44,7 @@ describe("AlphaProvider.createTask start control", () => {
 			setValues: vi.fn(),
 			getState: vi.fn(async () => ({
 				apiConfiguration: {
-					apiProvider: "openai-native",
+					apiProvider: "openai",
 					apiModelId: "gpt-4.1",
 					consecutiveMistakeLimit: 3,
 				},
@@ -55,7 +55,7 @@ describe("AlphaProvider.createTask start control", () => {
 				experiments: {},
 			})),
 			getProviderSettingsSnapshot: vi.fn(() => ({
-				apiProvider: "openai-native",
+				apiProvider: "openai",
 				apiModelId: "gpt-4.1",
 				consecutiveMistakeLimit: 3,
 			})),

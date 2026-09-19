@@ -188,9 +188,8 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				isFeatureEnabled: true,
 				getConfig: vi.fn().mockReturnValue({
 					isConfigured: true,
-					embedderProvider: "openai",
-					modelId: "text-embedding-3-small",
-					openAiOptions: { openAiNativeApiKey: "test-key" },
+					embedderProvider: "vertex",
+					modelId: "gemini-embedding-001",
 					qdrantUrl: "http://localhost:6333",
 					qdrantApiKey: "test-key",
 					searchMinScore: 0.4,
@@ -214,7 +213,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				configManager: mockConfigManager,
 				workspacePath: testWorkspacePath,
 				cacheManager: mockCacheManager,
-				createEmbedder: vi.fn().mockReturnValue({ embedderInfo: { name: "openai" } }),
+				createEmbedder: vi.fn().mockReturnValue({ embedderInfo: { name: "vertex" } }),
 				createVectorStore: vi.fn().mockReturnValue({}),
 				createDirectoryScanner: vi.fn().mockReturnValue({}),
 				createFileWatcher: vi.fn().mockReturnValue({
@@ -226,7 +225,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 					dispose: vi.fn(),
 				}),
 				createServices: vi.fn().mockReturnValue({
-					embedder: { embedderInfo: { name: "openai" } },
+					embedder: { embedderInfo: { name: "vertex" } },
 					vectorStore: {},
 					scanner: {},
 					fileWatcher: {
@@ -257,9 +256,8 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				isFeatureEnabled: true,
 				getConfig: vi.fn().mockReturnValue({
 					isConfigured: true,
-					embedderProvider: "openai",
-					modelId: "text-embedding-3-small",
-					openAiOptions: { openAiNativeApiKey: "test-key" },
+					embedderProvider: "vertex",
+					modelId: "gemini-embedding-001",
 					qdrantUrl: "http://localhost:6333",
 					qdrantApiKey: "test-key",
 					searchMinScore: 0.4,
@@ -295,7 +293,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				configManager: mockConfigManager,
 				workspacePath: testWorkspacePath,
 				cacheManager: mockCacheManager,
-				createEmbedder: vi.fn().mockReturnValue({ embedderInfo: { name: "openai" } }),
+				createEmbedder: vi.fn().mockReturnValue({ embedderInfo: { name: "vertex" } }),
 				createVectorStore: vi.fn().mockReturnValue({}),
 				createDirectoryScanner: vi.fn().mockReturnValue({}),
 				createFileWatcher: vi.fn().mockReturnValue({
@@ -307,7 +305,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 					dispose: vi.fn(),
 				}),
 				createServices: vi.fn().mockReturnValue({
-					embedder: { embedderInfo: { name: "openai" } },
+					embedder: { embedderInfo: { name: "vertex" } },
 					vectorStore: {},
 					scanner: {},
 					fileWatcher: {
@@ -342,6 +340,54 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 			// This should not throw an error
 			await expect(manager.handleSettingsChange()).resolves.not.toThrow()
 		})
+
+		it("retires active services before returning for an invalid provider configuration", async () => {
+			const idle = deferred<void>()
+			const idleStarted = deferred<void>()
+			const oldOrchestrator = {
+				stopIndexing: vi.fn(),
+				whenIdle: vi.fn(() => {
+					idleStarted.resolve(undefined)
+					return idle.promise
+				}),
+				dispose: vi.fn(),
+			}
+			;(manager as any)._orchestrator = oldOrchestrator
+			;(manager as any)._searchService = {}
+			;(manager as any)._serviceFactory = {}
+			;(manager as any)._cacheManager = {}
+
+			const configurationError = "Unsupported legacy embedding provider"
+			const mockConfigManager = {
+				loadConfiguration: vi.fn().mockResolvedValue({ requiresRestart: true }),
+				isFeatureConfigured: false,
+				isFeatureEnabled: true,
+				configurationError,
+			}
+			;(manager as any)._configManager = mockConfigManager
+			const setSystemState = vi.spyOn((manager as any)._stateManager, "setSystemState")
+
+			let settled = false
+			const transition = manager.handleSettingsChange().then(() => {
+				settled = true
+			})
+
+			await idleStarted.promise
+			expect(oldOrchestrator.stopIndexing).toHaveBeenCalledOnce()
+			expect(oldOrchestrator.whenIdle).toHaveBeenCalledOnce()
+			expect(oldOrchestrator.dispose).not.toHaveBeenCalled()
+			expect(settled).toBe(false)
+			expect((manager as any)._orchestrator).toBeUndefined()
+			expect((manager as any)._searchService).toBeUndefined()
+			expect((manager as any)._serviceFactory).toBeUndefined()
+
+			idle.resolve(undefined)
+			await transition
+
+			expect(oldOrchestrator.dispose).toHaveBeenCalledOnce()
+			expect(setSystemState).toHaveBeenCalledWith("Error", configurationError)
+			await expect(manager.searchIndex("stale vector query")).rejects.toThrow("not initialized")
+		})
 	})
 
 	describe("embedder validation integration", () => {
@@ -354,7 +400,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 
 		beforeEach(() => {
 			// Mock service factory objects
-			mockEmbedder = { embedderInfo: { name: "openai" } }
+			mockEmbedder = { embedderInfo: { name: "vertex" } }
 			mockVectorStore = {}
 			mockScanner = {}
 			mockFileWatcher = {
@@ -391,9 +437,8 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				isFeatureEnabled: true,
 				getConfig: vitest.fn().mockReturnValue({
 					isConfigured: true,
-					embedderProvider: "openai",
-					modelId: "text-embedding-3-small",
-					openAiOptions: { openAiNativeApiKey: "test-key" },
+					embedderProvider: "vertex",
+					modelId: "gemini-embedding-001",
 					qdrantUrl: "http://localhost:6333",
 					qdrantApiKey: "test-key",
 					searchMinScore: 0.4,
@@ -505,9 +550,8 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				isFeatureEnabled: true,
 				getConfig: vi.fn().mockReturnValue({
 					isConfigured: true,
-					embedderProvider: "openai",
-					modelId: "text-embedding-3-small",
-					openAiOptions: { openAiNativeApiKey: "test-key" },
+					embedderProvider: "vertex",
+					modelId: "gemini-embedding-001",
 					qdrantUrl: "http://localhost:6333",
 					qdrantApiKey: "test-key",
 					searchMinScore: 0.4,
@@ -661,7 +705,7 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 			// Setup mock for re-initialization
 			const mockServiceFactoryInstance = {
 				createServices: vi.fn().mockReturnValue({
-					embedder: { embedderInfo: { name: "openai" } },
+					embedder: { embedderInfo: { name: "vertex" } },
 					vectorStore: {},
 					scanner: {},
 					fileWatcher: {
@@ -693,9 +737,11 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				getGlobalState: vi.fn().mockReturnValue({
 					codebaseIndexEnabled: true,
 					codebaseIndexQdrantUrl: "http://localhost:6333",
-					codebaseIndexEmbedderProvider: "openai",
-					codebaseIndexEmbedderModelId: "text-embedding-3-small",
+					codebaseIndexEmbedderProvider: "vertex",
+					codebaseIndexEmbedderModelId: "gemini-embedding-001",
 					codebaseIndexEmbedderModelDimension: 1536,
+					codebaseIndexVertexProjectId: "project",
+					codebaseIndexVertexRegion: "global",
 					codebaseIndexSearchMaxResults: 10,
 					codebaseIndexSearchMinScore: 0.4,
 				}),

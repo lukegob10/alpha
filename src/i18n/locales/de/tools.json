@@ -47,22 +47,5 @@
 	},
 	"applyPatch": {
 		"deleteCancelled": "Der Löschvorgang wurde abgebrochen."
-	},
-	"imageOutput": {
-		"writeIncomplete": "Das Schreiben von '{{path}}' konnte nicht abgeschlossen werden; die Datei ist möglicherweise unvollständig. {{cause}}"
-	},
-	"generateImage": {
-		"openRouterApiKeyRequired": "OpenRouter API-Schlüssel ist für die Bildgenerierung mit OpenRouter-Modellen erforderlich. Bitte konfiguriere ihn in den Experimentellen Einstellungen für Bildgenerierung.",
-		"failedWithStatus": "Bildgenerierung fehlgeschlagen: {{status}} {{statusText}}",
-		"failedWithMessage": "Bildgenerierung fehlgeschlagen: {{message}}",
-		"noImageGenerated": "In der Antwort wurde kein Bild generiert",
-		"invalidImageData": "Ungültige Bilddaten in der Antwort",
-		"invalidImageFormat": "Ungültiges Bildformat erhalten",
-		"unknownError": "Unbekannter Fehler aufgetreten",
-		"cancelledBeforeSave": "Die Bildgenerierung wurde vor dem Speichern des Bildes abgebrochen.",
-		"destinationUnavailableBeforeGeneration": "Das Bildziel war vor Beginn der Generierung nicht zugänglich. Wiederhole die Anfrage.",
-		"destinationPolicyChangedBeforeSave": "Der Pfad oder die Zugriffsrichtlinie des Bildziels wurde vor dem Speichern geändert. Wiederhole die Anfrage.",
-		"postSaveProcessingFailed": "{{path}}\nBild gespeichert, aber die Nachbearbeitung nach dem Speichern ist fehlgeschlagen: {{message}}",
-		"roo": {}
 	}
 }

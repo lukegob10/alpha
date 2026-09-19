@@ -34,7 +34,6 @@ import { AgentControlStore } from "./core/agent/AgentControlStore"
 import { AlphaProvider } from "./core/webview/AlphaProvider"
 import { DIFF_VIEW_URI_SCHEME } from "./integrations/editor/DiffViewProvider"
 import { TerminalRegistry } from "./integrations/terminal/TerminalRegistry"
-import { openAiCodexOAuthManager } from "./integrations/openai-codex/oauth"
 import { McpServerManager } from "./services/mcp/McpServerManager"
 import { CodeIndexManager } from "./services/code-index/manager"
 import { ScheduledTaskService } from "./services/scheduled-tasks"
@@ -42,15 +41,8 @@ import { migrateSettings } from "./utils/migrateSettings"
 import { autoImportSettings } from "./utils/autoImportSettings"
 import { API } from "./extension/api"
 
-import {
-	handleUri,
-	registerCommands,
-	registerCodeActions,
-	registerTerminalActions,
-	CodeActionProvider,
-} from "./activate"
+import { registerCommands, registerCodeActions, registerTerminalActions, CodeActionProvider } from "./activate"
 import { initializeI18n } from "./i18n"
-import { initializeModelCacheRefresh } from "./api/providers/fetchers/modelCache"
 
 /**
  * Built using https://github.com/microsoft/vscode-webview-ui-toolkit
@@ -141,9 +133,6 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	// Initialize terminal shell execution handlers.
 	TerminalRegistry.initialize()
-
-	// Initialize OpenAI Codex OAuth manager for ChatGPT subscription-based access.
-	openAiCodexOAuthManager.initialize(context, (message) => outputChannel.appendLine(message))
 
 	// Get default commands from configuration.
 	const defaultCommands = vscode.workspace.getConfiguration(Package.name).get<string[]>("allowedCommands") || []
@@ -247,9 +236,6 @@ export async function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.workspace.registerTextDocumentContentProvider(DIFF_VIEW_URI_SCHEME, diffContentProvider),
 	)
-
-	context.subscriptions.push(vscode.window.registerUriHandler({ handleUri: (uri) => handleUri(uri, provider) }))
-
 	// Register code actions provider.
 	context.subscriptions.push(
 		vscode.languages.registerCodeActionsProvider({ pattern: "**/*" }, new CodeActionProvider(), {
@@ -317,9 +303,6 @@ export async function activate(context: vscode.ExtensionContext) {
 			},
 		})
 	}
-
-	// Initialize background model cache refresh
-	initializeModelCacheRefresh()
 
 	return new API(outputChannel, provider, socketPath, enableLogging)
 }

@@ -1,13 +1,4 @@
 {
-	"routers": {
-		"requesty": {
-			"description": "Seu roteador LLM otimizado",
-			"incentive": "Crédito grátis de $1"
-		},
-		"openrouter": {
-			"description": "Uma interface unificada para LLMs"
-		}
-	},
 	"landing": {
 		"greeting": "Bem-vindo ao Alpha!",
 		"introduction": "Com uma variedade de Modos integrados e extensíveis, o Alpha permite que você planeje, arquitete, codifique, depure e aumente sua produtividade como nunca antes.",
@@ -23,7 +14,6 @@
 		"goBack": "Voltar",
 		"finish": "Concluir"
 	},
-	"startRouter": "Recomendamos usar um roteador LLM:",
 	"startCustom": "Ou você pode trazer sua própria chave API:",
 	"telemetry": {
 		"helpImprove": "Ajude a melhorar o Alpha",

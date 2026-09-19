@@ -365,8 +365,6 @@
 		},
 		"release": {
 			"heading": "Yenilikler:",
-			"gpt54": "Poe Sağlayıcısı: Poe, Alpha içinde Poe modellerine doğrudan erişebilmen için bir AI sağlayıcısı olarak eklendi.",
-			"slashSkills": "xAI ve MiniMax İyileştirmeleri: xAI sağlayıcısı Responses API'ye taşındı, yeniden kullanılabilir dönüştürme yardımcıları eklendi, Grok-4.20 varsayılanları güncellendi ve daha güvenilir bir kurulum için MiniMax model listeleriyle context window işleme düzeltildi.",
 			"geminiPro": "Gemini 3.1 Pro Desteği: Gemini 3.1 Pro model desteği eklendi ve daha iyi performans için varsayılan Gemini modeli olarak ayarlandı.",
 			"welcome": "Alpha v{{version}} doğrulamayı, komut denetimini ve görev sürekliliğini iyileştirir.",
 			"acceptanceChecks": "Belirtilen girdileri değişmediği sürece başarılı kontrolleri yeniden kullanın.",
@@ -519,7 +517,7 @@
 	},
 	"retiredProvider": {
 		"title": "Sağlayıcı artık desteklenmiyor",
-		"message": "Üzgünüz, bu sağlayıcı artık desteklenmiyor. Çok az Alpha kullanıcısının bunu gerçekten kullandığını gördük ve hızlı gelişmeye devam edip topluluğumuza iyi hizmet verebilmek için kod tabanımızın kapsamını daraltmamız gerekiyor. Gerçekten zor bir karardı ama senin için en önemli olana odaklanmamızı sağlıyor. Bunun can sıkıcı olduğunu biliyoruz.",
+		"message": "Kaydedilmiş bu sağlayıcı artık desteklenmiyor. Ayarlar’da GCP Vertex AI, VS Code LM API, Stellar veya OpenAI Compatible seçin.",
 		"openSettings": "Ayarları aç"
 	},
 	"githubActions": {

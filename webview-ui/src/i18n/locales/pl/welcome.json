@@ -1,13 +1,4 @@
 {
-	"routers": {
-		"requesty": {
-			"description": "Twój zoptymalizowany router LLM",
-			"incentive": "Bezpłatny kredyt w wysokości $1"
-		},
-		"openrouter": {
-			"description": "Ujednolicony interfejs dla LLM"
-		}
-	},
 	"landing": {
 		"greeting": "Witaj w Alpha!",
 		"introduction": "Dzięki szerokiej gamie wbudowanych i rozszerzalnych Trybów, Alpha pozwala planować, projektować architekturę, kodować, debugować i zwiększać produktywność jak nigdy dotąd.",
@@ -23,7 +14,6 @@
 		"goBack": "Wróć",
 		"finish": "Zakończ"
 	},
-	"startRouter": "Rekomendujemy użycie routera LLM:",
 	"startCustom": "Lub możesz przynieść swój własny klucz API:",
 	"telemetry": {
 		"helpImprove": "Pomóż ulepszyć Alpha",

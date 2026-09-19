@@ -187,7 +187,7 @@ interface WorkflowMeasurement {
 		initialToolCallable: boolean
 	}
 	fallback: {
-		provider: "gemini"
+		provider: "vertex"
 		effectiveSchema: WorkflowPayloadMeasurement
 		result: WorkflowPayloadMeasurement
 		wallTimeMs: number
@@ -584,7 +584,7 @@ async function measureCoreWorkflowSeries(
 	effectPayloads: unknown[],
 ): Promise<CoreWorkflowSeries> {
 	const options = buildOptions(servers, {
-		apiConfiguration: { apiProvider: "anthropic" },
+		apiConfiguration: { apiProvider: "openai" },
 		...(useCache ? { catalogCache: new TaskToolCatalogCache(), discoveryHistory: [] } : {}),
 	})
 	const samples: WorkflowSampleMeasurement[] = []
@@ -665,7 +665,7 @@ async function measureEagerWorkflow(
 	servers: readonly import("@alpha-code/types").McpServer[],
 	effectPayloads: unknown[],
 ): Promise<WorkflowSampleMeasurement[]> {
-	const options = buildOptions(servers, { apiConfiguration: { apiProvider: "anthropic" } })
+	const options = buildOptions(servers, { apiConfiguration: { apiProvider: "openai" } })
 	const samples: WorkflowSampleMeasurement[] = []
 
 	for (const phase of ["cold", "warm"] as const) {
@@ -695,7 +695,7 @@ async function measureDeferredWorkflow(
 	effectPayloads: unknown[],
 ): Promise<WorkflowSampleMeasurement[]> {
 	const options = buildOptions(servers, {
-		apiConfiguration: { apiProvider: "anthropic" },
+		apiConfiguration: { apiProvider: "openai" },
 		catalogCache: new TaskToolCatalogCache(),
 		discoveryHistory: [],
 	})
@@ -765,7 +765,7 @@ async function measureWorkflowComparison(
 
 	effectPayloads.splice(0)
 	const deniedOptions = buildOptions(servers, {
-		apiConfiguration: { apiProvider: "anthropic" },
+		apiConfiguration: { apiProvider: "openai" },
 		catalogCache: new TaskToolCatalogCache(),
 		discoveryHistory: [],
 	})
@@ -783,7 +783,7 @@ async function measureWorkflowComparison(
 
 	effectPayloads.splice(0)
 	const fallbackOptions = buildOptions(servers, {
-		apiConfiguration: { apiProvider: "gemini" },
+		apiConfiguration: { apiProvider: "vertex" },
 		catalogCache: new TaskToolCatalogCache(),
 		includeAllToolsWithRestrictions: true,
 	})
@@ -815,7 +815,7 @@ async function measureWorkflowComparison(
 			initialToolCallable: deniedBuild.result.surface.isCallable(NOR28_WORKFLOW_TOOL),
 		},
 		fallback: {
-			provider: "gemini",
+			provider: "vertex",
 			effectiveSchema: fallbackSchema,
 			result: fallbackResult,
 			wallTimeMs: fallbackWallTimeMs,

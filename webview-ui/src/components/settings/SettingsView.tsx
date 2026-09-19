@@ -38,7 +38,6 @@ import {
 	type ExperimentId,
 	type TelemetrySetting,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
-	ImageGenerationProvider,
 } from "@alpha-code/types"
 
 import { vscode } from "@src/utils/vscode"
@@ -219,10 +218,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		maxDiagnosticMessages,
 		includeTaskHistoryInEnhance,
 		enhancementApiConfigId,
-		imageGenerationProvider,
-		openRouterImageApiKey,
 		githubToken,
-		openRouterImageGenerationSelectedModel,
 		reasoningBlockCollapsed,
 		enterBehavior,
 		maxConcurrentTasks,
@@ -390,26 +386,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		})
 	}, [])
 
-	const setImageGenerationProvider = useCallback((provider: ImageGenerationProvider) => {
-		setCachedState((prevState) => {
-			if (prevState.imageGenerationProvider !== provider) {
-				setChangeDetected(true)
-			}
-
-			return { ...prevState, imageGenerationProvider: provider }
-		})
-	}, [])
-
-	const setOpenRouterImageApiKey = useCallback((apiKey: string) => {
-		setCachedState((prevState) => {
-			if (prevState.openRouterImageApiKey !== apiKey) {
-				setChangeDetected(true)
-			}
-
-			return { ...prevState, openRouterImageApiKey: apiKey }
-		})
-	}, [])
-
 	const setGithubToken = useCallback((token: string) => {
 		setCachedState((prevState) => {
 			if (prevState.githubToken !== token) {
@@ -417,16 +393,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			}
 
 			return { ...prevState, githubToken: token }
-		})
-	}, [])
-
-	const setImageGenerationSelectedModel = useCallback((model: string) => {
-		setCachedState((prevState) => {
-			if (prevState.openRouterImageGenerationSelectedModel !== model) {
-				setChangeDetected(true)
-			}
-
-			return { ...prevState, openRouterImageGenerationSelectedModel: model }
 		})
 	}, [])
 
@@ -518,10 +484,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					maxGitStatusFiles: maxGitStatusFiles ?? 0,
 					showWorktreesInHomeScreen,
 					profileThresholds,
-					imageGenerationProvider,
-					openRouterImageApiKey,
 					githubToken,
-					openRouterImageGenerationSelectedModel,
 					experiments,
 					customModePrompts,
 					customInstructions,
@@ -1093,14 +1056,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 								experiments={experiments}
 								apiConfiguration={apiConfiguration}
 								setApiConfigurationField={setApiConfigurationField}
-								imageGenerationProvider={imageGenerationProvider}
-								openRouterImageApiKey={openRouterImageApiKey as string | undefined}
-								openRouterImageGenerationSelectedModel={
-									openRouterImageGenerationSelectedModel as string | undefined
-								}
-								setImageGenerationProvider={setImageGenerationProvider}
-								setOpenRouterImageApiKey={setOpenRouterImageApiKey}
-								setImageGenerationSelectedModel={setImageGenerationSelectedModel}
 							/>
 						)}
 

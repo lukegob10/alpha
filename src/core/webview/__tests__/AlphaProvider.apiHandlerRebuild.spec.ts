@@ -157,7 +157,7 @@ vi.mock("../../task/Task", () => ({
 		}
 		// Define apiConfiguration as a property so tests can read it
 		Object.defineProperty(mockTask, "apiConfiguration", {
-			value: options?.apiConfiguration || { apiProvider: "openrouter", openRouterModelId: "openai/gpt-4" },
+			value: options?.apiConfiguration || { apiProvider: "openai", openAiModelId: "openai/gpt-4" },
 			writable: true,
 			configurable: true,
 		})
@@ -247,20 +247,20 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			listConfig: vi
 				.fn()
 				.mockResolvedValue([
-					{ name: "test-config", id: "test-id", apiProvider: "openrouter", modelId: "openai/gpt-4" },
+					{ name: "test-config", id: "test-id", apiProvider: "openai", modelId: "openai/gpt-4" },
 				]),
 			setModeConfig: vi.fn(),
 			activateProfile: vi.fn().mockResolvedValue({
 				name: "test-config",
 				id: "test-id",
-				apiProvider: "openrouter",
-				openRouterModelId: "openai/gpt-4",
+				apiProvider: "openai",
+				openAiModelId: "openai/gpt-4",
 			}),
 			getProfile: vi.fn().mockResolvedValue({
 				name: "test-config",
 				id: "test-id",
-				apiProvider: "openrouter",
-				openRouterModelId: "openai/gpt-4",
+				apiProvider: "openai",
+				openAiModelId: "openai/gpt-4",
 			}),
 		}
 
@@ -279,8 +279,8 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 		defaultTaskOptions = {
 			provider,
 			apiConfiguration: {
-				apiProvider: "openrouter",
-				openRouterModelId: "openai/gpt-4",
+				apiProvider: "openai",
+				openAiModelId: "openai/gpt-4",
 			},
 		}
 
@@ -293,8 +293,8 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			const mockTask = new Task({
 				...defaultTaskOptions,
 				apiConfiguration: {
-					apiProvider: "openrouter",
-					openRouterModelId: "openai/gpt-4",
+					apiProvider: "openai",
+					openAiModelId: "openai/gpt-4",
 				},
 			})
 			mockTask.api = {
@@ -310,8 +310,8 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			await provider.upsertProviderProfile(
 				"test-config",
 				{
-					apiProvider: "openrouter",
-					openRouterModelId: "openai/gpt-4",
+					apiProvider: "openai",
+					openAiModelId: "openai/gpt-4",
 					// Other settings that might change
 					rateLimitSeconds: 5,
 					modelTemperature: 0.7,
@@ -322,14 +322,14 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			// Verify updateApiConfiguration was called because we force rebuild on explicit save/switch
 			expect(mockTask.updateApiConfiguration).toHaveBeenCalledWith(
 				expect.objectContaining({
-					apiProvider: "openrouter",
-					openRouterModelId: "openai/gpt-4",
+					apiProvider: "openai",
+					openAiModelId: "openai/gpt-4",
 					rateLimitSeconds: 5,
 					modelTemperature: 0.7,
 				}),
 			)
 			// Verify task.apiConfiguration was synchronized
-			expect((mockTask as any).apiConfiguration.openRouterModelId).toBe("openai/gpt-4")
+			expect((mockTask as any).apiConfiguration.openAiModelId).toBe("openai/gpt-4")
 			expect((mockTask as any).apiConfiguration.rateLimitSeconds).toBe(5)
 			expect((mockTask as any).apiConfiguration.modelTemperature).toBe(0.7)
 		})
@@ -338,8 +338,8 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			const mockTask = new Task({
 				...defaultTaskOptions,
 				apiConfiguration: {
-					apiProvider: "openrouter",
-					openRouterModelId: "openai/gpt-4",
+					apiProvider: "openai",
+					openAiModelId: "openai/gpt-4",
 				},
 			})
 			mockTask.api = {
@@ -351,11 +351,11 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 
 			await provider.addTaskToStack(mockTask)
 
-			// Change provider to anthropic
+			// Change provider to vertex
 			await provider.upsertProviderProfile(
 				"test-config",
 				{
-					apiProvider: "anthropic",
+					apiProvider: "vertex",
 					apiModelId: "claude-3-5-sonnet-20241022",
 				},
 				true,
@@ -364,7 +364,7 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			// Verify updateApiConfiguration was called since provider changed
 			expect(mockTask.updateApiConfiguration).toHaveBeenCalledWith(
 				expect.objectContaining({
-					apiProvider: "anthropic",
+					apiProvider: "vertex",
 					apiModelId: "claude-3-5-sonnet-20241022",
 				}),
 			)
@@ -374,8 +374,8 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			const mockTask = new Task({
 				...defaultTaskOptions,
 				apiConfiguration: {
-					apiProvider: "openrouter",
-					openRouterModelId: "openai/gpt-4",
+					apiProvider: "openai",
+					openAiModelId: "openai/gpt-4",
 				},
 			})
 			mockTask.api = {
@@ -391,8 +391,8 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			await provider.upsertProviderProfile(
 				"test-config",
 				{
-					apiProvider: "openrouter",
-					openRouterModelId: "anthropic/claude-3-5-sonnet-20241022",
+					apiProvider: "openai",
+					openAiModelId: "vertex/claude-3-5-sonnet-20241022",
 				},
 				true,
 			)
@@ -400,8 +400,8 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			// Verify updateApiConfiguration was called since model changed
 			expect(mockTask.updateApiConfiguration).toHaveBeenCalledWith(
 				expect.objectContaining({
-					apiProvider: "openrouter",
-					openRouterModelId: "anthropic/claude-3-5-sonnet-20241022",
+					apiProvider: "openai",
+					openAiModelId: "vertex/claude-3-5-sonnet-20241022",
 				}),
 			)
 		})
@@ -413,8 +413,8 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			await provider.upsertProviderProfile(
 				"test-config",
 				{
-					apiProvider: "openrouter",
-					openRouterModelId: "openai/gpt-4",
+					apiProvider: "openai",
+					openAiModelId: "openai/gpt-4",
 				},
 				true,
 			)
@@ -429,8 +429,8 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			const mockTask = new Task({
 				...defaultTaskOptions,
 				apiConfiguration: {
-					apiProvider: "openrouter",
-					openRouterModelId: "openai/gpt-4",
+					apiProvider: "openai",
+					openAiModelId: "openai/gpt-4",
 					modelTemperature: 0.3,
 				},
 			})
@@ -447,8 +447,8 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			;(provider as any).providerSettingsManager.activateProfile = vi.fn().mockResolvedValue({
 				name: "test-config",
 				id: "test-id",
-				apiProvider: "openrouter",
-				openRouterModelId: "openai/gpt-4",
+				apiProvider: "openai",
+				openAiModelId: "openai/gpt-4",
 				modelTemperature: 0.9,
 				rateLimitSeconds: 7,
 			})
@@ -458,12 +458,12 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			// Verify updateApiConfiguration was called due to forced rebuild on explicit switch
 			expect(mockTask.updateApiConfiguration).toHaveBeenCalledWith(
 				expect.objectContaining({
-					apiProvider: "openrouter",
-					openRouterModelId: "openai/gpt-4",
+					apiProvider: "openai",
+					openAiModelId: "openai/gpt-4",
 				}),
 			)
 			// Verify task.apiConfiguration was synchronized
-			expect((mockTask as any).apiConfiguration.openRouterModelId).toBe("openai/gpt-4")
+			expect((mockTask as any).apiConfiguration.openAiModelId).toBe("openai/gpt-4")
 			expect((mockTask as any).apiConfiguration.modelTemperature).toBe(0.9)
 			expect((mockTask as any).apiConfiguration.rateLimitSeconds).toBe(7)
 		})
@@ -472,8 +472,8 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			const mockTask = new Task({
 				...defaultTaskOptions,
 				apiConfiguration: {
-					apiProvider: "openrouter",
-					openRouterModelId: "openai/gpt-4",
+					apiProvider: "openai",
+					openAiModelId: "openai/gpt-4",
 				},
 			})
 			mockTask.api = {
@@ -487,23 +487,23 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 
 			// Mock activateProfile to return different provider
 			;(provider as any).providerSettingsManager.activateProfile = vi.fn().mockResolvedValue({
-				name: "anthropic-config",
-				id: "anthropic-id",
-				apiProvider: "anthropic",
+				name: "vertex-config",
+				id: "vertex-id",
+				apiProvider: "vertex",
 				apiModelId: "claude-3-5-sonnet-20241022",
 			})
 
-			await provider.activateProviderProfile({ name: "anthropic-config" })
+			await provider.activateProviderProfile({ name: "vertex-config" })
 
 			// Verify updateApiConfiguration was called
 			expect(mockTask.updateApiConfiguration).toHaveBeenCalledWith(
 				expect.objectContaining({
-					apiProvider: "anthropic",
+					apiProvider: "vertex",
 					apiModelId: "claude-3-5-sonnet-20241022",
 				}),
 			)
 			// And task.apiConfiguration synced
-			expect((mockTask as any).apiConfiguration.apiProvider).toBe("anthropic")
+			expect((mockTask as any).apiConfiguration.apiProvider).toBe("vertex")
 			expect((mockTask as any).apiConfiguration.apiModelId).toBe("claude-3-5-sonnet-20241022")
 		})
 
@@ -511,8 +511,8 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			const mockTask = new Task({
 				...defaultTaskOptions,
 				apiConfiguration: {
-					apiProvider: "openrouter",
-					openRouterModelId: "openai/gpt-4",
+					apiProvider: "openai",
+					openAiModelId: "openai/gpt-4",
 				},
 			})
 			mockTask.api = {
@@ -528,8 +528,8 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			;(provider as any).providerSettingsManager.activateProfile = vi.fn().mockResolvedValue({
 				name: "test-config",
 				id: "test-id",
-				apiProvider: "openrouter",
-				openRouterModelId: "anthropic/claude-3-5-sonnet-20241022",
+				apiProvider: "openai",
+				openAiModelId: "vertex/claude-3-5-sonnet-20241022",
 			})
 
 			await provider.activateProviderProfile({ name: "test-config" })
@@ -537,13 +537,13 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			// Verify updateApiConfiguration was called
 			expect(mockTask.updateApiConfiguration).toHaveBeenCalledWith(
 				expect.objectContaining({
-					apiProvider: "openrouter",
-					openRouterModelId: "anthropic/claude-3-5-sonnet-20241022",
+					apiProvider: "openai",
+					openAiModelId: "vertex/claude-3-5-sonnet-20241022",
 				}),
 			)
 			// And task.apiConfiguration synced
-			expect((mockTask as any).apiConfiguration.apiProvider).toBe("openrouter")
-			expect((mockTask as any).apiConfiguration.openRouterModelId).toBe("anthropic/claude-3-5-sonnet-20241022")
+			expect((mockTask as any).apiConfiguration.apiProvider).toBe("openai")
+			expect((mockTask as any).apiConfiguration.openAiModelId).toBe("vertex/claude-3-5-sonnet-20241022")
 		})
 	})
 
@@ -552,8 +552,8 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 			const mockTask = new Task({
 				...defaultTaskOptions,
 				apiConfiguration: {
-					apiProvider: "openrouter",
-					openRouterModelId: "openai/gpt-4",
+					apiProvider: "openai",
+					openAiModelId: "openai/gpt-4",
 				},
 			})
 			mockTask.api = {
@@ -565,50 +565,48 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 
 			await provider.addTaskToStack(mockTask)
 
-			// First switch: A -> B (openrouter -> anthropic)
+			// First switch: A -> B (openai -> vertex)
 			;(provider as any).providerSettingsManager.activateProfile = vi.fn().mockResolvedValue({
-				name: "anthropic-config",
-				id: "anthropic-id",
-				apiProvider: "anthropic",
+				name: "vertex-config",
+				id: "vertex-id",
+				apiProvider: "vertex",
 				apiModelId: "claude-3-5-sonnet-20241022",
 			})
-			await provider.activateProviderProfile({ name: "anthropic-config" })
+			await provider.activateProviderProfile({ name: "vertex-config" })
 
 			expect(mockTask.updateApiConfiguration).toHaveBeenCalled()
-			expect((mockTask as any).apiConfiguration.apiProvider).toBe("anthropic")
+			expect((mockTask as any).apiConfiguration.apiProvider).toBe("vertex")
 			expect((mockTask as any).apiConfiguration.apiModelId).toBe("claude-3-5-sonnet-20241022")
 
-			// Second switch: B -> A (anthropic -> openrouter gpt-4)
+			// Second switch: B -> A (vertex -> openai gpt-4)
 			;(mockTask.updateApiConfiguration as any).mockClear()
 			;(provider as any).providerSettingsManager.activateProfile = vi.fn().mockResolvedValue({
 				name: "test-config",
 				id: "test-id",
-				apiProvider: "openrouter",
-				openRouterModelId: "openai/gpt-4",
+				apiProvider: "openai",
+				openAiModelId: "openai/gpt-4",
 			})
 			await provider.activateProviderProfile({ name: "test-config" })
 
 			// updateApiConfiguration called again, and apiConfiguration must be updated
 			expect(mockTask.updateApiConfiguration).toHaveBeenCalled()
-			expect((mockTask as any).apiConfiguration.apiProvider).toBe("openrouter")
-			expect((mockTask as any).apiConfiguration.openRouterModelId).toBe("openai/gpt-4")
+			expect((mockTask as any).apiConfiguration.apiProvider).toBe("openai")
+			expect((mockTask as any).apiConfiguration.openAiModelId).toBe("openai/gpt-4")
 		})
 	})
 
 	describe("getModelId helper", () => {
 		test("correctly extracts model ID from different provider configurations", () => {
-			expect(getModelId({ apiProvider: "openrouter", openRouterModelId: "openai/gpt-4" })).toBe("openai/gpt-4")
-			expect(getModelId({ apiProvider: "anthropic", apiModelId: "claude-3-5-sonnet-20241022" })).toBe(
+			expect(getModelId({ apiProvider: "openai", openAiModelId: "openai/gpt-4" })).toBe("openai/gpt-4")
+			expect(getModelId({ apiProvider: "vertex", apiModelId: "claude-3-5-sonnet-20241022" })).toBe(
 				"claude-3-5-sonnet-20241022",
 			)
 			expect(getModelId({ apiProvider: "openai", openAiModelId: "gpt-4-turbo" })).toBe("gpt-4-turbo")
-			expect(getModelId({ apiProvider: "bedrock", apiModelId: "anthropic.claude-v2" })).toBe(
-				"anthropic.claude-v2",
-			)
+			expect(getModelId({ apiProvider: "stellar", apiModelId: "vertex.claude-v2" })).toBe("vertex.claude-v2")
 		})
 
 		test("returns undefined when no model ID is present", () => {
-			expect(getModelId({ apiProvider: "anthropic" })).toBeUndefined()
+			expect(getModelId({ apiProvider: "vertex" })).toBeUndefined()
 			expect(getModelId({})).toBeUndefined()
 		})
 	})

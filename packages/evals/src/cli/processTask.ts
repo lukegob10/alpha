@@ -762,26 +762,13 @@ function parseAttemptNumber(raw: string | undefined): number {
 }
 
 function secretValues(jobToken: string | null): string[] {
-	return [
-		jobToken,
-		process.env.OPENROUTER_API_KEY,
-		process.env.ANTHROPIC_API_KEY,
-		process.env.OPENAI_API_KEY,
-		process.env.GOOGLE_API_KEY,
-		process.env.DEEPSEEK_API_KEY,
-		process.env.MISTRAL_API_KEY,
-	].filter((value): value is string => Boolean(value))
+	return [jobToken, process.env.OPENAI_API_KEY].filter((value): value is string => Boolean(value))
 }
 
 function inheritedSecretEnvironment(jobToken: string | null): Record<string, string> {
 	const values: Record<string, string | undefined> = {
 		ROO_CODE_CLOUD_TOKEN: jobToken ?? undefined,
-		OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
-		ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
 		OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-		GOOGLE_API_KEY: process.env.GOOGLE_API_KEY,
-		DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
-		MISTRAL_API_KEY: process.env.MISTRAL_API_KEY,
 	}
 	return Object.fromEntries(Object.entries(values).filter((entry): entry is [string, string] => Boolean(entry[1])))
 }

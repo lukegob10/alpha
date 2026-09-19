@@ -38,7 +38,6 @@ import { editFileTool } from "./EditFileTool"
 import { editTool } from "./EditTool"
 import { executeCommandTool } from "./ExecuteCommandTool"
 import { prepareParallelCommand } from "./ParallelCommandRead"
-import { generateImageTool } from "./GenerateImageTool"
 import { githubApiTool } from "./GitHubApiTool"
 import { followupTaskTool } from "./FollowupTaskTool"
 import { interruptAgentTool } from "./InterruptAgentTool"
@@ -183,18 +182,9 @@ const WORKSPACE_TOOLS = new Set([
 	"edit_file",
 	"apply_patch",
 	"execute_command",
-	"generate_image",
 ])
 
-const CHECKPOINT_TOOLS = new Set([
-	"write_to_file",
-	"apply_diff",
-	"edit",
-	"search_replace",
-	"edit_file",
-	"apply_patch",
-	"generate_image",
-])
+const CHECKPOINT_TOOLS = new Set(["write_to_file", "apply_diff", "edit", "search_replace", "edit_file", "apply_patch"])
 
 const TASK_TOOLS = new Set([
 	"update_todo_list",
@@ -290,7 +280,6 @@ const TOOL_NAMES = [
 	"edit",
 	"edit_file",
 	"execute_command",
-	"generate_image",
 	"github_api",
 	...browserToolNames,
 	"list_files",
@@ -615,7 +604,6 @@ export class ToolRegistry {
 		this.registerBuiltIn("edit", editTool, schemas)
 		this.registerBuiltIn("edit_file", editFileTool, schemas)
 		this.registerBuiltIn("execute_command", executeCommandTool, schemas)
-		this.registerBuiltIn("generate_image", generateImageTool, schemas)
 		this.registerBuiltIn("github_api", githubApiTool, schemas)
 		this.registerBuiltIn("open_browser_page", openBrowserPageTool, schemas)
 		this.registerBuiltIn("list_browser_pages", listBrowserPagesTool, schemas)

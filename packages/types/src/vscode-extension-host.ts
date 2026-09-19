@@ -21,13 +21,12 @@ import type { TicketActivity, TicketSearchResponse, TicketTarget } from "./ticke
 import type { SerializedCustomToolDefinition } from "./custom-tool.js"
 import type { GitCommit } from "./git.js"
 import type { McpServer } from "./mcp.js"
-import type { ModelRecord, RouterModels } from "./model.js"
-import type { OpenAiCodexRateLimitInfo } from "./providers/openai-codex-rate-limits.js"
 import type { SkillMetadata } from "./skills.js"
 import type { WorktreeIncludeStatus } from "./worktree.js"
 import type { SubagentChangeSetActionCapability, SubagentChangeSetActionResult } from "./subagent.js"
 import type { BrowserToolName } from "./browser.js"
 import type { SearchFilesOutputMode, SearchFilesQueryResult } from "./tool-params.js"
+import type { CodebaseIndexEmbedderProvider } from "./codebase-index.js"
 import type {
 	CreateScheduledTaskPayload,
 	ScheduledTask,
@@ -293,10 +292,7 @@ export interface ExtensionMessage {
 		| "enhancedPrompt"
 		| "commitSearchResults"
 		| "listApiConfig"
-		| "routerModels"
 		| "openAiModels"
-		| "ollamaModels"
-		| "lmStudioModels"
 		| "vsCodeLmModels"
 		| "vsCodeLmApiAvailable"
 		| "updatePrompt"
@@ -322,7 +318,6 @@ export interface ExtensionMessage {
 		| "vsCodeSetting"
 		| "condenseTaskContextStarted"
 		| "condenseTaskContextResponse"
-		| "singleRouterModelFetchResponse"
 		| "indexingStatusUpdate"
 		| "indexCleared"
 		| "codebaseIndexConfig"
@@ -340,7 +335,6 @@ export interface ExtensionMessage {
 		| "customToolsResult"
 		| "modes"
 		| "taskWithAggregatedCosts"
-		| "openAiCodexRateLimits"
 		// Worktree response types
 		| "worktreeList"
 		| "worktreeResult"
@@ -403,10 +397,7 @@ export interface ExtensionMessage {
 	clineMessage?: AlphaMessage
 	/** Transcript sequence shared with transcript snapshots for ordered incremental delivery. */
 	clineMessagesSeq?: number
-	routerModels?: RouterModels
 	openAiModels?: string[]
-	ollamaModels?: ModelRecord
-	lmStudioModels?: ModelRecord
 	vsCodeLmModels?: {
 		vendor?: string
 		family?: string
@@ -515,12 +506,6 @@ export interface ExtensionMessage {
 	path?: string
 }
 
-export interface OpenAiCodexRateLimitsMessage {
-	type: "openAiCodexRateLimits"
-	values?: OpenAiCodexRateLimitInfo
-	error?: string
-}
-
 export type ExtensionState = Pick<
 	GlobalSettings,
 	| "currentApiConfigName"
@@ -584,8 +569,6 @@ export type ExtensionState = Pick<
 	| "profileThresholds"
 	| "includeDiagnosticMessages"
 	| "maxDiagnosticMessages"
-	| "imageGenerationProvider"
-	| "openRouterImageGenerationSelectedModel"
 	| "includeTaskHistoryInEnhance"
 	| "reasoningBlockCollapsed"
 	| "enterBehavior"
@@ -656,7 +639,6 @@ export type ExtensionState = Pick<
 	marketplaceInstalledMetadata?: { project: Record<string, any>; global: Record<string, any> }
 	profileThresholds: Record<string, number>
 	hasOpenedModeSelector: boolean
-	openRouterImageApiKey?: string
 	githubToken?: string
 	messageQueue?: QueuedMessage[]
 	lastShownAnnouncementId?: string
@@ -664,7 +646,6 @@ export type ExtensionState = Pick<
 	mcpServers?: McpServer[]
 	scheduledTasks?: ScheduledTask[]
 	scheduledTaskRuns?: ScheduledTaskRun[]
-	openAiCodexIsAuthenticated?: boolean
 	debug?: boolean
 
 	/**
@@ -735,11 +716,7 @@ interface WebviewMessageBase {
 		| "importSettings"
 		| "exportSettings"
 		| "resetState"
-		| "flushRouterModels"
-		| "requestRouterModels"
 		| "requestOpenAiModels"
-		| "requestOllamaModels"
-		| "requestLmStudioModels"
 		| "requestVsCodeLmModels"
 		| "openImage"
 		| "saveImage"
@@ -807,8 +784,6 @@ interface WebviewMessageBase {
 		| "toggleApiConfigPin"
 		| "hasOpenedModeSelector"
 		| "lockApiConfigAcrossModes"
-		| "openAiCodexSignIn"
-		| "openAiCodexSignOut"
 		| "condenseTaskContextRequest"
 		| "requestIndexingStatus"
 		| "startIndexing"
@@ -842,7 +817,6 @@ interface WebviewMessageBase {
 		| "deleteCommand"
 		| "createCommand"
 		| "insertTextIntoTextarea"
-		| "imageGenerationSettings"
 		| "queueMessage"
 		| "removeQueuedMessage"
 		| "editQueuedMessage"
@@ -858,7 +832,6 @@ interface WebviewMessageBase {
 		| "openDebugApiHistory"
 		| "openDebugUiHistory"
 		| "downloadErrorDiagnostics"
-		| "requestOpenAiCodexRateLimits"
 		| "refreshCustomTools"
 		| "requestModes"
 		| "switchMode"
@@ -975,22 +948,9 @@ interface WebviewMessageBase {
 		codebaseIndexVectorStoreProvider?: "qdrant" | "lancedb"
 		codebaseIndexLocalIndexPath?: string
 		codebaseIndexQdrantUrl: string
-		codebaseIndexEmbedderProvider:
-			| "openai"
-			| "ollama"
-			| "openai-compatible"
-			| "gemini"
-			| "vertex"
-			| "mistral"
-			| "vercel-ai-gateway"
-			| "bedrock"
-			| "openrouter"
-		codebaseIndexEmbedderBaseUrl?: string
+		codebaseIndexEmbedderProvider: CodebaseIndexEmbedderProvider
 		codebaseIndexEmbedderModelId: string
-		codebaseIndexEmbedderModelDimension?: number // Generic dimension for all providers
-		codebaseIndexOpenAiCompatibleBaseUrl?: string
-		codebaseIndexBedrockRegion?: string
-		codebaseIndexBedrockProfile?: string
+		codebaseIndexEmbedderModelDimension?: number
 		codebaseIndexVertexProjectId?: string
 		codebaseIndexVertexRegion?: string
 		codebaseIndexVertexKeyFile?: string
@@ -1003,17 +963,9 @@ interface WebviewMessageBase {
 		codebaseIndexSearchMinScore?: number
 		codebaseIndexEmbeddingRateLimitEnabled?: boolean
 		codebaseIndexEmbeddingRateLimitSeconds?: number
-		codebaseIndexOpenRouterSpecificProvider?: string // OpenRouter provider routing
 
-		// Secret settings
-		codeIndexOpenAiKey?: string
 		codeIndexQdrantApiKey?: string
-		codebaseIndexOpenAiCompatibleApiKey?: string
-		codebaseIndexGeminiApiKey?: string
 		codebaseIndexVertexJsonCredentials?: string
-		codebaseIndexMistralApiKey?: string
-		codebaseIndexVercelAiGatewayApiKey?: string
-		codebaseIndexOpenRouterApiKey?: string
 	}
 	updatedSettings?: AlphaCodeSettings
 	/** Task configuration applied via `createTask()`. */
@@ -1033,10 +985,6 @@ export type WebviewMessage =
 	| (Omit<WebviewMessageBase, "type"> & {
 			type: Exclude<WebviewMessageBase["type"], "updateVSCodeSetting">
 	  })
-
-export interface RequestOpenAiCodexRateLimitsMessage {
-	type: "requestOpenAiCodexRateLimits"
-}
 
 export const checkoutDiffPayloadSchema = z.object({
 	ts: z.number().optional(),

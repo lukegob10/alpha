@@ -26,11 +26,6 @@ vi.mock("@src/components/ui/hooks/useAlphaPortal", () => ({
 
 vi.mock("@src/hooks/useEscapeKey", () => ({ useEscapeKey: vi.fn() }))
 
-vi.mock("@src/components/ui/hooks/useOpenRouterModelProviders", () => ({
-	OPENROUTER_DEFAULT_PROVIDER_NAME: "OpenRouter",
-	useOpenRouterModelProviders: () => ({ data: undefined }),
-}))
-
 const indexingStatus: IndexingStatus = {
 	systemStatus: "Standby",
 	processedItems: 0,

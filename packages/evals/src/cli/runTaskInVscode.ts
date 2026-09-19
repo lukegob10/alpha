@@ -278,8 +278,9 @@ export const runTaskInVscode = async ({ run, task, publish, logger, jobToken, wo
 			data: {
 				configuration: {
 					...EVALS_SETTINGS,
-					openRouterApiKey: process.env.OPENROUTER_API_KEY,
-					...run.settings, // Allow the provided settings to override `openRouterApiKey`.
+					openAiApiKey: process.env.OPENAI_API_KEY,
+					openAiBaseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+					...run.settings, // Allow the provided settings to override the default connection settings.
 				},
 				text: prompt,
 			},

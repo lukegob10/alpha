@@ -21,6 +21,9 @@ import {
 	isSecretStateKey,
 	IpcOrigin,
 	IpcMessageType,
+	vertexModels,
+	stellarModels,
+	vscodeLlmModels,
 } from "@alpha-code/types"
 import { IpcServer } from "@alpha-code/ipc"
 
@@ -28,7 +31,6 @@ import { Package } from "../shared/package"
 import { AlphaProvider } from "../core/webview/AlphaProvider"
 import { openAlphaInNewTab } from "../activate/registerCommands"
 import { getCommands } from "../services/command/commands"
-import { getModels } from "../api/providers/fetchers/modelCache"
 
 export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 	private readonly outputChannel: vscode.OutputChannel
@@ -139,9 +141,15 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 						break
 					case TaskCommandName.GetModels:
 						try {
-							const models = await getModels({
-								provider: "openrouter" as const,
-							})
+							const { apiConfiguration } = await this.sidebarProvider.getState()
+							const models =
+								apiConfiguration.apiProvider === "vertex"
+									? vertexModels
+									: apiConfiguration.apiProvider === "stellar"
+										? stellarModels
+										: apiConfiguration.apiProvider === "vscode-lm"
+											? vscodeLlmModels
+											: {}
 
 							sendResponse(AlphaCodeEventName.ModelsResponse, [models])
 						} catch (error) {

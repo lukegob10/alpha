@@ -1,394 +1,137 @@
-/**
- * Tests for the auto-population feature in CodeIndexPopover
- *
- * Feature: When switching to Bedrock provider in code indexing configuration,
- * automatically populate Region and Profile fields from main API configuration
- * if the main API is also configured for Bedrock.
- *
- * Implementation location: CodeIndexPopover.tsx lines 737-752
- *
- * These tests verify the core logic of the auto-population feature by directly
- * testing the onValueChange handler behavior.
- */
+import type { IndexingStatus } from "@alpha-code/types"
 
-// Type for API configuration used in tests
-type TestApiConfiguration = {
-	apiProvider: string
-	apiKey?: string
-	awsRegion?: string
-	awsProfile?: string
-	vertexProjectId?: string
-	vertexRegion?: string
-	vertexGatewayBaseUrl?: string
-	vertexGatewayHelixCommand?: string
+import { fireEvent, render, screen } from "@src/utils/test-utils"
+import { PopoverTrigger } from "@src/components/ui"
+import { useExtensionState } from "@src/context/ExtensionStateContext"
+import { vscode } from "@src/utils/vscode"
+
+import { CodeIndexPopover } from "../CodeIndexPopover"
+
+vi.mock("@src/context/ExtensionStateContext", () => ({
+	useExtensionState: vi.fn(),
+}))
+
+vi.mock("@src/i18n/TranslationContext", () => ({
+	useAppTranslation: () => ({ t: (key: string) => key }),
+}))
+
+vi.mock("@src/utils/vscode", () => ({
+	vscode: { postMessage: vi.fn() },
+}))
+
+vi.mock("@src/components/ui/hooks/useAlphaPortal", () => ({
+	useAlphaPortal: () => document.body,
+}))
+
+vi.mock("@src/hooks/useEscapeKey", () => ({ useEscapeKey: vi.fn() }))
+
+const indexingStatus: IndexingStatus = {
+	systemStatus: "Standby",
+	processedItems: 0,
+	totalItems: 0,
 }
 
-describe("CodeIndexPopover - Auto-population Feature Logic", () => {
-	/**
-	 * Test 1: Happy Path - Auto-population works
-	 * Main API provider is Bedrock with region "us-west-2" and profile "my-profile"
-	 * Code indexing fields are empty
-	 * User switches provider to "bedrock"
-	 * Expected: updateSetting is called to populate Region and Profile
-	 */
-	test("auto-populates Region and Profile when switching to Bedrock and main API is Bedrock", () => {
-		const mockUpdateSetting = vi.fn()
-		const currentSettings = {
-			codebaseIndexBedrockRegion: "",
-			codebaseIndexBedrockProfile: "",
-		}
-		const apiConfiguration = {
-			apiProvider: "bedrock",
-			awsRegion: "us-west-2",
-			awsProfile: "my-profile",
-		}
+const vertexModels = {
+	"gemini-embedding-001": { dimension: 3072 },
+}
 
-		// Simulate the onValueChange logic from lines 737-752
-		const value = "bedrock"
-
-		// Clear model selection
-		mockUpdateSetting("codebaseIndexEmbedderModelId", "")
-
-		// Auto-populate Region and Profile when switching to Bedrock
-		if (value === "bedrock" && apiConfiguration?.apiProvider === "bedrock") {
-			if (!currentSettings.codebaseIndexBedrockRegion && apiConfiguration.awsRegion) {
-				mockUpdateSetting("codebaseIndexBedrockRegion", apiConfiguration.awsRegion)
-			}
-			if (!currentSettings.codebaseIndexBedrockProfile && apiConfiguration.awsProfile) {
-				mockUpdateSetting("codebaseIndexBedrockProfile", apiConfiguration.awsProfile)
-			}
-		}
-
-		// Verify updateSetting was called correctly
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexEmbedderModelId", "")
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexBedrockRegion", "us-west-2")
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexBedrockProfile", "my-profile")
-		expect(mockUpdateSetting).toHaveBeenCalledTimes(3)
+function renderPopover(
+	apiConfiguration: Record<string, unknown> | undefined,
+	codebaseIndexConfig: Record<string, unknown> = {
+		codebaseIndexEnabled: true,
+		codebaseIndexEmbedderProvider: "legacy-embedding-provider",
+	},
+) {
+	vi.mocked(useExtensionState, { partial: true }).mockReturnValue({
+		codebaseIndexConfig,
+		codebaseIndexModels: { vertex: vertexModels },
+		cwd: "/workspace",
+		apiConfiguration,
 	})
 
-	/**
-	 * Test 2: Main API is not Bedrock
-	 * Main API provider is "openai" (not Bedrock)
-	 * User switches code indexing provider to "bedrock"
-	 * Expected: Only model is cleared, no auto-population
-	 */
-	test("does not auto-populate when main API provider is not Bedrock", () => {
-		const mockUpdateSetting = vi.fn()
-		const currentSettings = {
-			codebaseIndexBedrockRegion: "",
-			codebaseIndexBedrockProfile: "",
-		}
-		const apiConfiguration: TestApiConfiguration = {
-			apiProvider: "openai",
-			apiKey: "test-key",
-		}
+	render(
+		<CodeIndexPopover indexingStatus={indexingStatus}>
+			<PopoverTrigger asChild>
+				<button type="button">Open code index</button>
+			</PopoverTrigger>
+		</CodeIndexPopover>,
+	)
 
-		// Simulate the onValueChange logic
-		const value = "bedrock"
+	fireEvent.click(screen.getByRole("button", { name: "Open code index" }))
+	return screen.findByRole("button", { name: "settings:codeIndex.setupConfigLabel" })
+}
 
-		mockUpdateSetting("codebaseIndexEmbedderModelId", "")
-
-		if (value === "bedrock" && apiConfiguration?.apiProvider === "bedrock") {
-			if (!currentSettings.codebaseIndexBedrockRegion && apiConfiguration.awsRegion) {
-				mockUpdateSetting("codebaseIndexBedrockRegion", apiConfiguration.awsRegion)
-			}
-			if (!currentSettings.codebaseIndexBedrockProfile && apiConfiguration.awsProfile) {
-				mockUpdateSetting("codebaseIndexBedrockProfile", apiConfiguration.awsProfile)
-			}
-		}
-
-		// Verify only model was cleared, no auto-population
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexEmbedderModelId", "")
-		expect(mockUpdateSetting).toHaveBeenCalledTimes(1)
-		expect(mockUpdateSetting).not.toHaveBeenCalledWith("codebaseIndexBedrockRegion", expect.anything())
-		expect(mockUpdateSetting).not.toHaveBeenCalledWith("codebaseIndexBedrockProfile", expect.anything())
+describe("CodeIndexPopover Vertex configuration", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
 	})
 
-	/**
-	 * Test 3: Existing values not overwritten
-	 * Code indexing already has Region "eu-west-1" configured
-	 * Main API has Region "us-west-2"
-	 * User switches provider to "bedrock"
-	 * Expected: Region is NOT updated (existing value preserved)
-	 */
-	test("does not overwrite existing Region value when switching to Bedrock", () => {
-		const mockUpdateSetting = vi.fn()
-		const currentSettings = {
-			codebaseIndexBedrockRegion: "eu-west-1",
-			codebaseIndexBedrockProfile: "",
-		}
-		const apiConfiguration = {
-			apiProvider: "bedrock",
-			awsRegion: "us-west-2",
-			awsProfile: "default",
-		}
-
-		// Simulate the onValueChange logic
-		const value = "bedrock"
-
-		mockUpdateSetting("codebaseIndexEmbedderModelId", "")
-
-		if (value === "bedrock" && apiConfiguration?.apiProvider === "bedrock") {
-			if (!currentSettings.codebaseIndexBedrockRegion && apiConfiguration.awsRegion) {
-				mockUpdateSetting("codebaseIndexBedrockRegion", apiConfiguration.awsRegion)
-			}
-			if (!currentSettings.codebaseIndexBedrockProfile && apiConfiguration.awsProfile) {
-				mockUpdateSetting("codebaseIndexBedrockProfile", apiConfiguration.awsProfile)
-			}
-		}
-
-		// Verify Region was NOT updated (it already had a value)
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexEmbedderModelId", "")
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexBedrockProfile", "default")
-		expect(mockUpdateSetting).not.toHaveBeenCalledWith("codebaseIndexBedrockRegion", expect.anything())
-		expect(mockUpdateSetting).toHaveBeenCalledTimes(2)
-	})
-
-	/**
-	 * Test 4: Partial population
-	 * Main API has Region but no Profile
-	 * Code indexing fields are empty
-	 * User switches to "bedrock"
-	 * Expected: Only Region is populated, Profile is not
-	 */
-	test("only populates Region when Profile is not configured in main API", () => {
-		const mockUpdateSetting = vi.fn()
-		const currentSettings = {
-			codebaseIndexBedrockRegion: "",
-			codebaseIndexBedrockProfile: "",
-		}
-		const apiConfiguration: TestApiConfiguration = {
-			apiProvider: "bedrock",
-			awsRegion: "ap-southeast-1",
-			// No awsProfile configured
-		}
-
-		// Simulate the onValueChange logic
-		const value = "bedrock"
-
-		mockUpdateSetting("codebaseIndexEmbedderModelId", "")
-
-		if (value === "bedrock" && apiConfiguration?.apiProvider === "bedrock") {
-			if (!currentSettings.codebaseIndexBedrockRegion && apiConfiguration.awsRegion) {
-				mockUpdateSetting("codebaseIndexBedrockRegion", apiConfiguration.awsRegion)
-			}
-			if (!currentSettings.codebaseIndexBedrockProfile && apiConfiguration.awsProfile) {
-				mockUpdateSetting("codebaseIndexBedrockProfile", apiConfiguration.awsProfile)
-			}
-		}
-
-		// Verify only Region was populated
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexEmbedderModelId", "")
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexBedrockRegion", "ap-southeast-1")
-		expect(mockUpdateSetting).not.toHaveBeenCalledWith("codebaseIndexBedrockProfile", expect.anything())
-		expect(mockUpdateSetting).toHaveBeenCalledTimes(2)
-	})
-
-	/**
-	 * Test 5: Empty main API config
-	 * Main API provider is Bedrock but has no region/profile configured
-	 * User switches code indexing to "bedrock"
-	 * Expected: No auto-population (nothing to populate from)
-	 */
-	test("does not populate when main API Bedrock config is empty", () => {
-		const mockUpdateSetting = vi.fn()
-		const currentSettings = {
-			codebaseIndexBedrockRegion: "",
-			codebaseIndexBedrockProfile: "",
-		}
-		const apiConfiguration: TestApiConfiguration = {
-			apiProvider: "bedrock",
-			// No awsRegion or awsProfile configured
-		}
-
-		// Simulate the onValueChange logic
-		const value = "bedrock"
-
-		mockUpdateSetting("codebaseIndexEmbedderModelId", "")
-
-		if (value === "bedrock" && apiConfiguration?.apiProvider === "bedrock") {
-			if (!currentSettings.codebaseIndexBedrockRegion && apiConfiguration.awsRegion) {
-				mockUpdateSetting("codebaseIndexBedrockRegion", apiConfiguration.awsRegion)
-			}
-			if (!currentSettings.codebaseIndexBedrockProfile && apiConfiguration.awsProfile) {
-				mockUpdateSetting("codebaseIndexBedrockProfile", apiConfiguration.awsProfile)
-			}
-		}
-
-		// Verify only model was cleared, no auto-population
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexEmbedderModelId", "")
-		expect(mockUpdateSetting).toHaveBeenCalledTimes(1)
-		expect(mockUpdateSetting).not.toHaveBeenCalledWith("codebaseIndexBedrockRegion", expect.anything())
-		expect(mockUpdateSetting).not.toHaveBeenCalledWith("codebaseIndexBedrockProfile", expect.anything())
-	})
-
-	/**
-	 * Test 6: Verify Profile can be empty while Region is populated
-	 * This tests that auto-population handles undefined/null Profile correctly
-	 */
-	test("handles undefined Profile in main API config gracefully", () => {
-		const mockUpdateSetting = vi.fn()
-		const currentSettings = {
-			codebaseIndexBedrockRegion: "",
-			codebaseIndexBedrockProfile: "",
-		}
-		const apiConfiguration = {
-			apiProvider: "bedrock",
-			awsRegion: "us-east-1",
-			awsProfile: undefined, // Explicitly undefined
-		}
-
-		// Simulate the onValueChange logic
-		const value = "bedrock"
-
-		mockUpdateSetting("codebaseIndexEmbedderModelId", "")
-
-		if (value === "bedrock" && apiConfiguration?.apiProvider === "bedrock") {
-			if (!currentSettings.codebaseIndexBedrockRegion && apiConfiguration.awsRegion) {
-				mockUpdateSetting("codebaseIndexBedrockRegion", apiConfiguration.awsRegion)
-			}
-			if (!currentSettings.codebaseIndexBedrockProfile && apiConfiguration.awsProfile) {
-				mockUpdateSetting("codebaseIndexBedrockProfile", apiConfiguration.awsProfile)
-			}
-		}
-
-		// Verify only Region was populated (Profile is undefined)
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexEmbedderModelId", "")
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexBedrockRegion", "us-east-1")
-		expect(mockUpdateSetting).not.toHaveBeenCalledWith("codebaseIndexBedrockProfile", expect.anything())
-		expect(mockUpdateSetting).toHaveBeenCalledTimes(2)
-	})
-
-	/**
-	 * Test 7: Does not populate when switching TO other providers
-	 * This ensures the feature only works when switching TO Bedrock specifically
-	 */
-	test("does not trigger auto-population when switching to non-Bedrock provider", () => {
-		const mockUpdateSetting = vi.fn()
-		const currentSettings = {
-			codebaseIndexBedrockRegion: "",
-			codebaseIndexBedrockProfile: "",
-		}
-		const apiConfiguration = {
-			apiProvider: "bedrock",
-			awsRegion: "us-west-2",
-			awsProfile: "my-profile",
-		}
-
-		// Simulate switching to openai instead of bedrock
-		const value: string = "openai"
-
-		mockUpdateSetting("codebaseIndexEmbedderModelId", "")
-
-		// The condition intentionally won't match since value is "openai"
-		if (value === "bedrock" && apiConfiguration?.apiProvider === "bedrock") {
-			if (!currentSettings.codebaseIndexBedrockRegion && apiConfiguration.awsRegion) {
-				mockUpdateSetting("codebaseIndexBedrockRegion", apiConfiguration.awsRegion)
-			}
-			if (!currentSettings.codebaseIndexBedrockProfile && apiConfiguration.awsProfile) {
-				mockUpdateSetting("codebaseIndexBedrockProfile", apiConfiguration.awsProfile)
-			}
-		}
-
-		// Verify only model was cleared, no auto-population
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexEmbedderModelId", "")
-		expect(mockUpdateSetting).toHaveBeenCalledTimes(1)
-		expect(mockUpdateSetting).not.toHaveBeenCalledWith("codebaseIndexBedrockRegion", expect.anything())
-		expect(mockUpdateSetting).not.toHaveBeenCalledWith("codebaseIndexBedrockProfile", expect.anything())
-	})
-
-	/**
-	 * Test 8: Both fields have existing values
-	 * Neither field should be auto-populated if both already have values
-	 */
-	test("does not overwrite when both Region and Profile already have values", () => {
-		const mockUpdateSetting = vi.fn()
-		const currentSettings = {
-			codebaseIndexBedrockRegion: "eu-central-1",
-			codebaseIndexBedrockProfile: "production",
-		}
-		const apiConfiguration = {
-			apiProvider: "bedrock",
-			awsRegion: "us-west-2",
-			awsProfile: "default",
-		}
-
-		// Simulate the onValueChange logic
-		const value = "bedrock"
-
-		mockUpdateSetting("codebaseIndexEmbedderModelId", "")
-
-		if (value === "bedrock" && apiConfiguration?.apiProvider === "bedrock") {
-			if (!currentSettings.codebaseIndexBedrockRegion && apiConfiguration.awsRegion) {
-				mockUpdateSetting("codebaseIndexBedrockRegion", apiConfiguration.awsRegion)
-			}
-			if (!currentSettings.codebaseIndexBedrockProfile && apiConfiguration.awsProfile) {
-				mockUpdateSetting("codebaseIndexBedrockProfile", apiConfiguration.awsProfile)
-			}
-		}
-
-		// Verify neither field was updated (both already had values)
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexEmbedderModelId", "")
-		expect(mockUpdateSetting).not.toHaveBeenCalledWith("codebaseIndexBedrockRegion", expect.anything())
-		expect(mockUpdateSetting).not.toHaveBeenCalledWith("codebaseIndexBedrockProfile", expect.anything())
-		expect(mockUpdateSetting).toHaveBeenCalledTimes(1)
-	})
-
-	test("defaults model selection when switching to Vertex provider", () => {
-		const mockUpdateSetting = vi.fn()
-		const value = "vertex"
-
-		mockUpdateSetting("codebaseIndexEmbedderModelId", value === "vertex" ? "gemini-embedding-001" : "")
-
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexEmbedderModelId", "gemini-embedding-001")
-		expect(mockUpdateSetting).toHaveBeenCalledTimes(1)
-	})
-
-	test("auto-populates Vertex gateway settings when switching to Vertex and main API is Vertex", () => {
-		const mockUpdateSetting = vi.fn()
-		const currentSettings = {
-			codebaseIndexVertexProjectId: "",
-			codebaseIndexVertexRegion: "",
-			codebaseIndexVertexGatewayBaseUrl: "",
-			codebaseIndexVertexGatewayHelixCommand: "",
-		}
-		const apiConfiguration: TestApiConfiguration = {
+	it("offers only Vertex embedding settings and populates them from active Vertex chat settings", async () => {
+		await renderPopover({
 			apiProvider: "vertex",
-			vertexProjectId: "test-project",
-			vertexRegion: "global",
-			vertexGatewayBaseUrl: "https://gateway.example.com/vertex",
-			vertexGatewayHelixCommand: "helix auth access-token print -a",
-		}
-		const value = "vertex"
+			projectId: "index-project",
+			location: "global",
+			gatewayBaseUrl: "https://gateway.example.com/vertex",
+			helixCommand: "helix auth access-token print -a",
+		})
 
-		mockUpdateSetting("codebaseIndexEmbedderModelId", value === "vertex" ? "gemini-embedding-001" : "")
+		fireEvent.click(await screen.findByRole("button", { name: "settings:codeIndex.setupConfigLabel" }))
+		const providerSelect = screen.getAllByRole("combobox")[1]
+		fireEvent.keyDown(providerSelect, { key: "ArrowDown" })
+		fireEvent.click(await screen.findByRole("option", { name: "settings:codeIndex.vertexProvider" }))
 
-		if (value === "vertex" && apiConfiguration?.apiProvider === "vertex") {
-			const vertexFallbacks = {
-				codebaseIndexVertexProjectId: apiConfiguration.vertexProjectId,
-				codebaseIndexVertexRegion: apiConfiguration.vertexRegion,
-				codebaseIndexVertexGatewayBaseUrl: apiConfiguration.vertexGatewayBaseUrl,
-				codebaseIndexVertexGatewayHelixCommand: apiConfiguration.vertexGatewayHelixCommand,
-			}
-
-			Object.entries(vertexFallbacks).forEach(([key, fallbackValue]) => {
-				if (!currentSettings[key as keyof typeof currentSettings] && fallbackValue) {
-					mockUpdateSetting(key, fallbackValue)
-				}
-			})
-		}
-
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexEmbedderModelId", "gemini-embedding-001")
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexVertexProjectId", "test-project")
-		expect(mockUpdateSetting).toHaveBeenCalledWith("codebaseIndexVertexRegion", "global")
-		expect(mockUpdateSetting).toHaveBeenCalledWith(
-			"codebaseIndexVertexGatewayBaseUrl",
+		expect(screen.getByPlaceholderText("settings:placeholders.projectId")).toHaveValue("index-project")
+		expect(screen.getByPlaceholderText("settings:placeholders.baseUrl")).toHaveValue(
 			"https://gateway.example.com/vertex",
 		)
-		expect(mockUpdateSetting).toHaveBeenCalledWith(
-			"codebaseIndexVertexGatewayHelixCommand",
-			"helix auth access-token print -a",
+		expect(screen.getByPlaceholderText("helix auth access-token print -a")).toBeInTheDocument()
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "requestCodeIndexSecretStatus" })
+	})
+
+	it("does not copy non-Vertex chat settings into Vertex index settings", async () => {
+		await renderPopover({
+			apiProvider: "openai",
+			openAiBaseUrl: "https://openai.example.com/v1",
+		})
+
+		fireEvent.click(await screen.findByRole("button", { name: "settings:codeIndex.setupConfigLabel" }))
+		const providerSelect = screen.getAllByRole("combobox")[1]
+		fireEvent.keyDown(providerSelect, { key: "ArrowDown" })
+		fireEvent.click(await screen.findByRole("option", { name: "settings:codeIndex.vertexProvider" }))
+
+		expect(screen.getByPlaceholderText("settings:placeholders.projectId")).toHaveValue("")
+		expect(screen.getByPlaceholderText("settings:placeholders.baseUrl")).toHaveValue("")
+	})
+
+	it("clears a legacy embedding dimension when migrating to Vertex", async () => {
+		await renderPopover(
+			{
+				apiProvider: "vertex",
+				projectId: "index-project",
+				location: "global",
+			},
+			{
+				codebaseIndexEnabled: true,
+				codebaseIndexEmbedderProvider: "legacy-embedding-provider",
+				codebaseIndexEmbedderModelId: "legacy-model",
+				codebaseIndexEmbedderModelDimension: 1536,
+			},
 		)
-		expect(mockUpdateSetting).toHaveBeenCalledTimes(5)
+
+		fireEvent.click(await screen.findByRole("button", { name: "settings:codeIndex.setupConfigLabel" }))
+		const providerSelect = screen.getAllByRole("combobox")[1]
+		fireEvent.keyDown(providerSelect, { key: "ArrowDown" })
+		fireEvent.click(await screen.findByRole("option", { name: "settings:codeIndex.vertexProvider" }))
+		fireEvent.click(screen.getByRole("button", { name: "settings:codeIndex.saveSettings" }))
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "saveCodeIndexSettingsAtomic",
+			codeIndexSettings: expect.objectContaining({
+				codebaseIndexEmbedderProvider: "vertex",
+				codebaseIndexEmbedderModelId: "gemini-embedding-001",
+				codebaseIndexEmbedderModelDimension: undefined,
+			}),
+		})
 	})
 })

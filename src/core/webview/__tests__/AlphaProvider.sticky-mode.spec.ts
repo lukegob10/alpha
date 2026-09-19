@@ -375,7 +375,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 		it("projects the visible task mode instead of the global default mode", async () => {
 			const task = new Task({
 				provider,
-				apiConfiguration: { apiProvider: "openrouter", openRouterModelId: "lane-model" },
+				apiConfiguration: { apiProvider: "openai", openAiModelId: "lane-model" },
 				taskMode: "architect",
 				taskApiConfigName: "lane-profile",
 			})
@@ -386,15 +386,15 @@ describe("AlphaProvider - Sticky Mode", () => {
 
 			expect(state.mode).toBe("architect")
 			expect(state.currentApiConfigName).toBe("lane-profile")
-			expect(state.apiConfiguration.apiProvider).toBe("openrouter")
-			expect(state.apiConfiguration.openRouterModelId).toBe("lane-model")
+			expect(state.apiConfiguration.apiProvider).toBe("openai")
+			expect(state.apiConfiguration.openAiModelId).toBe("lane-model")
 		})
 
 		it("refreshes visible state after a task-local mode switch", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
 			const task = new Task({
 				provider,
-				apiConfiguration: { apiProvider: "openrouter" },
+				apiConfiguration: { apiProvider: "openai" },
 				taskMode: "orchestrator",
 				taskApiConfigName: "lane-profile",
 			})
@@ -420,8 +420,8 @@ describe("AlphaProvider - Sticky Mode", () => {
 			"retains the exact task provider and conversation for a %s to %s task-local switch",
 			async (currentMode, newMode) => {
 				const apiConfiguration = {
-					apiProvider: "openrouter" as const,
-					openRouterModelId: "anthropic/claude-sonnet-4.6",
+					apiProvider: "openai" as const,
+					openAiModelId: "anthropic/claude-sonnet-4.6",
 				}
 				const task = new Task({
 					provider,
@@ -454,7 +454,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 		it.each(["ask", "debug", "orchestrator", "custom-mode"])(
 			"rejects %s before task or profile mutation",
 			async (mode) => {
-				const task = new Task({ provider, apiConfiguration: { apiProvider: "anthropic" }, taskMode: "code" })
+				const task = new Task({ provider, apiConfiguration: { apiProvider: "vertex" }, taskMode: "code" })
 				await provider.addTaskToStack(task as any)
 				const updateHistory = vi.spyOn(provider, "updateTaskHistory")
 				const profileLookup = vi.spyOn(provider.providerSettingsManager, "getModeConfigId")
@@ -473,7 +473,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 
 			const task = new Task({
 				provider,
-				apiConfiguration: { apiProvider: "anthropic" },
+				apiConfiguration: { apiProvider: "vertex" },
 				taskMode: "orchestrator",
 				taskApiConfigName: "orchestrator-profile",
 			})
@@ -485,14 +485,14 @@ describe("AlphaProvider - Sticky Mode", () => {
 
 			expect((task as any)._taskMode).toBe("code")
 			expect(await (task as any).getTaskApiConfigName()).toBe("orchestrator-profile")
-			expect((task as any).apiConfiguration).toMatchObject({ apiProvider: "anthropic" })
+			expect((task as any).apiConfiguration).toMatchObject({ apiProvider: "vertex" })
 			expect(getModeConfigIdSpy).not.toHaveBeenCalled()
 		})
 
 		it("creates delegated child tasks with the provider profile mapped to the child mode", async () => {
 			const parentTask = new Task({
 				provider,
-				apiConfiguration: { apiProvider: "anthropic" },
+				apiConfiguration: { apiProvider: "vertex" },
 				taskMode: "orchestrator",
 				taskApiConfigName: "orchestrator-profile",
 			})
@@ -503,13 +503,13 @@ describe("AlphaProvider - Sticky Mode", () => {
 
 			vi.spyOn(provider.providerSettingsManager, "getModeConfigId").mockResolvedValue("code-profile-id")
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "code-profile", id: "code-profile-id", apiProvider: "openrouter" },
+				{ name: "code-profile", id: "code-profile-id", apiProvider: "openai" },
 			])
 			vi.spyOn(provider.providerSettingsManager, "getProfile").mockResolvedValue({
 				name: "code-profile",
 				id: "code-profile-id",
-				apiProvider: "openrouter",
-				openRouterModelId: "anthropic/claude-sonnet-4.6",
+				apiProvider: "openai",
+				openAiModelId: "anthropic/claude-sonnet-4.6",
 			} as any)
 			vi.spyOn(provider, "getTaskWithId").mockResolvedValue({
 				historyItem: {
@@ -548,8 +548,8 @@ describe("AlphaProvider - Sticky Mode", () => {
 					taskMode: "code",
 					taskApiConfigName: "code-profile",
 					apiConfiguration: expect.objectContaining({
-						apiProvider: "openrouter",
-						openRouterModelId: "anthropic/claude-sonnet-4.6",
+						apiProvider: "openai",
+						openAiModelId: "anthropic/claude-sonnet-4.6",
 					}),
 				}),
 			)
@@ -560,8 +560,8 @@ describe("AlphaProvider - Sticky Mode", () => {
 	describe("New task mode boundary", () => {
 		it("resets a blank draft to Code without changing the active provider lane", async () => {
 			const apiConfiguration = {
-				apiProvider: "openrouter" as const,
-				openRouterModelId: "anthropic/claude-sonnet-4.6",
+				apiProvider: "openai" as const,
+				openAiModelId: "anthropic/claude-sonnet-4.6",
 			}
 			const task = new Task({
 				provider,
@@ -588,8 +588,8 @@ describe("AlphaProvider - Sticky Mode", () => {
 
 		it("defaults an immediate top-level task created from a Plan task to Code", async () => {
 			const apiConfiguration = {
-				apiProvider: "openrouter" as const,
-				openRouterModelId: "anthropic/claude-sonnet-4.6",
+				apiProvider: "openai" as const,
+				openAiModelId: "anthropic/claude-sonnet-4.6",
 			}
 			const planTask = new Task({
 				provider,
@@ -612,8 +612,8 @@ describe("AlphaProvider - Sticky Mode", () => {
 
 		it("honors an explicit Plan selection made after opening a blank draft", async () => {
 			const apiConfiguration = {
-				apiProvider: "openrouter" as const,
-				openRouterModelId: "anthropic/claude-sonnet-4.6",
+				apiProvider: "openai" as const,
+				openAiModelId: "anthropic/claude-sonnet-4.6",
 			}
 			const previousTask = new Task({
 				provider,
@@ -663,8 +663,8 @@ describe("AlphaProvider - Sticky Mode", () => {
 			["architect", "code"],
 		])("does not load or create a provider profile for a %s to %s switch", async (currentMode, newMode) => {
 			const apiConfiguration = {
-				apiProvider: "openrouter" as const,
-				openRouterModelId: "anthropic/claude-sonnet-4.6",
+				apiProvider: "openai" as const,
+				openAiModelId: "anthropic/claude-sonnet-4.6",
 			}
 			const task = new Task({
 				provider,
@@ -695,7 +695,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 			// Create a mock task
 			const mockTask = new Task({
 				provider,
-				apiConfiguration: { apiProvider: "openrouter" },
+				apiConfiguration: { apiProvider: "openai" },
 			})
 
 			// Get the actual taskId from the mock
@@ -786,7 +786,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 			// Create a mock task with history
 			const mockTask = new Task({
 				provider,
-				apiConfiguration: { apiProvider: "openrouter" },
+				apiConfiguration: { apiProvider: "openai" },
 			})
 
 			// Get the actual taskId from the mock
@@ -909,7 +909,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 			// Create a mock task
 			const mockTask = new Task({
 				provider,
-				apiConfiguration: { apiProvider: "openrouter" },
+				apiConfiguration: { apiProvider: "openai" },
 			})
 
 			// Get the actual taskId from the mock
@@ -962,7 +962,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 			// Create parent task
 			const parentTask = new Task({
 				provider,
-				apiConfiguration: { apiProvider: "openrouter" },
+				apiConfiguration: { apiProvider: "openai" },
 			})
 
 			// Get the actual taskId from the mock
@@ -1011,7 +1011,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 			// Create a subtask (simulating new_task tool behavior)
 			const subtask = new Task({
 				provider,
-				apiConfiguration: { apiProvider: "openrouter" },
+				apiConfiguration: { apiProvider: "openai" },
 				parentTask: parentTask,
 			})
 			const subtaskId = (subtask as any).taskId || "subtask-id"
@@ -1047,7 +1047,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 			// Create a mock task that throws on save
 			const mockTask = new Task({
 				provider,
-				apiConfiguration: { apiProvider: "openrouter" },
+				apiConfiguration: { apiProvider: "openai" },
 			})
 			vi.spyOn(mockTask as any, "saveAlphaMessages").mockRejectedValue(new Error("Save failed"))
 
@@ -1099,7 +1099,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 
 		it("should restore API configuration when restoring task from history with mode", async () => {
 			// Setup: Configure different API configs for different modes
-			const codeApiConfig = { apiProvider: "anthropic" as ProviderName, anthropicApiKey: "code-key" }
+			const codeApiConfig = { apiProvider: "vertex" as ProviderName, vertexJsonCredentials: "code-key" }
 			const architectApiConfig = { apiProvider: "openai" as ProviderName, openAiApiKey: "architect-key" }
 
 			// Save API configs

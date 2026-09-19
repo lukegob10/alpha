@@ -93,7 +93,7 @@ function harness() {
 		persistedToolResultIds: new Set<string>(),
 		toolRepetitionDetector: new ToolRepetitionDetector(3),
 		api,
-		apiConfiguration: { apiProvider: "anthropic" } satisfies ProviderSettings,
+		apiConfiguration: { apiProvider: "vertex" } satisfies ProviderSettings,
 		providerRef: { deref: () => provider },
 		apiConversationHistory: history,
 		agentTurnStep: 0,
@@ -950,7 +950,7 @@ describe("Task context recovery admission", () => {
 			refreshEnvironmentContext: vi.fn(async () => {
 				task.apiConversationHistory.push({ role: "user", content: "Fresh environment", ts: 11 })
 				task.api = replacement
-				task.apiConfiguration = { apiProvider: "gemini", apiModelId: "narrow-model" }
+				task.apiConfiguration = { apiProvider: "vertex", apiModelId: "narrow-model" }
 			}),
 		})
 		vi.mocked(manageContext).mockImplementation(async ({ prepareTools }) => {
@@ -1046,7 +1046,7 @@ describe("Task context recovery admission", () => {
 		const { task, api, provider } = harness()
 		const model = api.getModel()
 		vi.spyOn(api, "getModel").mockReturnValue({ ...model, info: { ...model.info, isStealthModel: false } })
-		const configuration: ProviderSettings = { apiProvider: "anthropic", todoListEnabled: true }
+		const configuration: ProviderSettings = { apiProvider: "vertex", todoListEnabled: true }
 		task.apiConfiguration = configuration
 		Object.assign(provider, { context: {}, getSkillsManager: () => undefined })
 		Reflect.set(
@@ -1057,7 +1057,7 @@ describe("Task context recovery admission", () => {
 					...api,
 					getModel: () => ({ id: "replacement-model", info: { ...model.info, isStealthModel: true } }),
 				}
-				task.apiConfiguration = { apiProvider: "gemini", todoListEnabled: false }
+				task.apiConfiguration = { apiProvider: "vertex", todoListEnabled: false }
 				return "code"
 			}),
 		)
@@ -1174,9 +1174,9 @@ describe("Task context recovery admission", () => {
 	})
 
 	it.each([
-		["manual", "gemini"],
+		["manual", "vertex"],
 		["automatic", "vertex"],
-		["forced", "anthropic"],
+		["forced", "openai"],
 	] as const)("uses the task catalog for %s compaction on %s", async (trigger, apiProvider) => {
 		const { task, api, history } = harness()
 		task.apiConfiguration = { apiProvider }
@@ -1186,7 +1186,7 @@ describe("Task context recovery admission", () => {
 				function: { name: "read_file", description: "Visible task tool", parameters: { type: "object" } },
 			},
 		]
-		const allowedFunctionNames = apiProvider === "anthropic" ? undefined : ["read_file"]
+		const allowedFunctionNames = apiProvider === "openai" ? undefined : ["read_file"]
 		vi.mocked(buildNativeToolsArrayWithRestrictions).mockResolvedValue({
 			tools,
 			allowedFunctionNames,
@@ -1223,7 +1223,7 @@ describe("Task context recovery admission", () => {
 			expect.objectContaining({
 				catalogCache: Reflect.get(task, "toolCatalogCache"),
 				discoveryHistory: history,
-				includeAllToolsWithRestrictions: apiProvider !== "anthropic",
+				includeAllToolsWithRestrictions: apiProvider !== "openai",
 			}),
 		)
 		const options =

@@ -39,6 +39,10 @@ Alpha v2.1.49 prevents false no-progress stops during successful command work an
 
 Developer note: the implementation and future swarm plan are documented in [Multi-Agent Concurrency Spec](docs/multi-agent-concurrency-spec.md).
 
+Supported chat providers are GCP Vertex AI, VS Code LM API, Stellar, and OpenAI Compatible.
+Code indexing uses GCP Vertex AI embeddings. See [provider compatibility and recovery](docs/provider-reduction.md)
+for saved configurations that reference a removed provider.
+
 ## Modes
 
 Alpha keeps the normal chat workflow focused:

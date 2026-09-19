@@ -364,8 +364,6 @@
 		},
 		"release": {
 			"heading": "Què hi ha de nou:",
-			"gpt54": "Proveïdor Poe: S'ha afegit Poe com a proveïdor d’IA perquè puguis accedir directament als models de Poe a Alpha.",
-			"slashSkills": "Millores a xAI i MiniMax: S'ha migrat el proveïdor xAI a la Responses API, s'hi han afegit utilitats de transformació reutilitzables, s'han actualitzat els valors per defecte de Grok-4.20 i s'han corregit els llistats de models de MiniMax i la gestió de la finestra de context per oferir una configuració més fiable.",
 			"geminiPro": "Suport per Gemini 3.1 Pro: S'ha afegit el suport per al model Gemini 3.1 Pro i s'ha establert com a model Gemini per defecte per a un millor rendiment.",
 			"welcome": "Alpha v{{version}} millora la verificació, el control d’ordres i la continuïtat de les tasques.",
 			"acceptanceChecks": "Reutilitza les comprovacions superades mentre les entrades declarades no canviïn.",
@@ -518,7 +516,7 @@
 	},
 	"retiredProvider": {
 		"title": "Proveïdor ja no compatible",
-		"message": "Ho sentim, aquest proveïdor ja no és compatible. Hem vist molt pocs usuaris de Alpha que realment l'utilitzaven i necessitem reduir l'abast del nostre codi per poder seguir avançant ràpidament i servir bé la nostra comunitat en aquest espai. Va ser una decisió molt difícil, però ens permet centrar-nos en el que més t'importa. Ho sabem, és una llàstima.",
+		"message": "Aquest proveïdor desat ja no és compatible. Seleccioneu GCP Vertex AI, VS Code LM API, Stellar o OpenAI Compatible a Configuració.",
 		"openSettings": "Obrir configuració"
 	},
 	"githubActions": {

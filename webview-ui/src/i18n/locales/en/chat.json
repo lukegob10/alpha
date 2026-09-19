@@ -410,8 +410,6 @@
 		"release": {
 			"heading": "Welcome:",
 			"welcome": "Alpha v{{version}} improves verification, command control, and task continuity.",
-			"gpt54": "Poe Provider: Added Poe as an AI provider so you can access Poe models directly in Alpha.",
-			"slashSkills": "xAI and MiniMax Improvements: Migrated the xAI provider to the Responses API, added Grok-4.20 defaults, and fixed MiniMax model listings and context window handling for a more reliable setup.",
 			"acceptanceChecks": "Reuse passing checks while their declared inputs remain unchanged.",
 			"commandControl": "Wait for, send input to, and stop background commands owned by the task.",
 			"workflowContinuity": "Preserve task constraints and skill context across reload and compaction.",
@@ -535,7 +533,7 @@
 	},
 	"retiredProvider": {
 		"title": "Provider no longer supported",
-		"message": "Sorry, this provider is no longer supported. We saw very few Alpha users actually using it and we need to reduce the surface area of our codebase so we can keep shipping fast and serving our community well in this space. It was a really hard decision but it lets us focus on what matters most to you. It sucks, we know.",
+		"message": "This saved provider is no longer supported. Select GCP Vertex AI, VS Code LM API, Stellar, or OpenAI Compatible in Settings.",
 		"openSettings": "Open Settings"
 	},
 	"githubActions": {

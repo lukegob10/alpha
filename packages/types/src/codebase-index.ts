@@ -1,5 +1,22 @@
 import { z } from "zod"
 
+/** The only provider supported by the code index. */
+export const CODEBASE_INDEX_EMBEDDER_PROVIDER = "vertex" as const
+
+/**
+ * Persisted code-index settings intentionally accept arbitrary strings here.
+ * Older settings files contain provider names that are no longer executable;
+ * keeping the value readable lets the config manager report a deterministic
+ * migration error instead of silently selecting Vertex.
+ */
+export type CodebaseIndexEmbedderProvider = string
+
+export function isSupportedCodebaseIndexEmbedderProvider(
+	value: unknown,
+): value is typeof CODEBASE_INDEX_EMBEDDER_PROVIDER {
+	return value === CODEBASE_INDEX_EMBEDDER_PROVIDER
+}
+
 /**
  * Codebase Index Constants
  */
@@ -22,57 +39,42 @@ export const CODEBASE_INDEX_DEFAULTS = {
  * CodebaseIndexConfig
  */
 
-export const codebaseIndexConfigSchema = z.object({
-	codebaseIndexEnabled: z.boolean().optional(),
-	codebaseIndexVectorStoreProvider: z.enum(["qdrant", "lancedb"]).optional(),
-	codebaseIndexLocalIndexPath: z.string().optional(),
-	codebaseIndexQdrantUrl: z.string().optional(),
-	codebaseIndexEmbedderProvider: z
-		.enum([
-			"openai",
-			"ollama",
-			"openai-compatible",
-			"gemini",
-			"vertex",
-			"mistral",
-			"vercel-ai-gateway",
-			"bedrock",
-			"openrouter",
-		])
-		.optional(),
-	codebaseIndexEmbedderBaseUrl: z.string().optional(),
-	codebaseIndexEmbedderModelId: z.string().optional(),
-	codebaseIndexEmbedderModelDimension: z.number().optional(),
-	codebaseIndexSearchMinScore: z.number().min(0).max(1).optional(),
-	codebaseIndexSearchMaxResults: z
-		.number()
-		.min(CODEBASE_INDEX_DEFAULTS.MIN_SEARCH_RESULTS)
-		.max(CODEBASE_INDEX_DEFAULTS.MAX_SEARCH_RESULTS)
-		.optional(),
-	codebaseIndexEmbeddingRateLimitEnabled: z.boolean().optional(),
-	codebaseIndexEmbeddingRateLimitSeconds: z
-		.number()
-		.min(CODEBASE_INDEX_DEFAULTS.MIN_EMBEDDING_RATE_LIMIT_SECONDS)
-		.max(CODEBASE_INDEX_DEFAULTS.MAX_EMBEDDING_RATE_LIMIT_SECONDS)
-		.optional(),
-	// OpenAI Compatible specific fields
-	codebaseIndexOpenAiCompatibleBaseUrl: z.string().optional(),
-	codebaseIndexOpenAiCompatibleModelDimension: z.number().optional(),
-	// Bedrock specific fields
-	codebaseIndexBedrockRegion: z.string().optional(),
-	codebaseIndexBedrockProfile: z.string().optional(),
-	// Vertex specific fields
-	codebaseIndexVertexProjectId: z.string().optional(),
-	codebaseIndexVertexRegion: z.string().optional(),
-	codebaseIndexVertexKeyFile: z.string().optional(),
-	codebaseIndexVertexGatewayBaseUrl: z.string().optional(),
-	codebaseIndexVertexGatewayCaBundlePath: z.string().optional(),
-	codebaseIndexVertexGatewayHelixCommand: z.string().optional(),
-	codebaseIndexVertexGatewayTokenRefreshMinutes: z.number().int().positive().optional(),
-	codebaseIndexVertexGatewayModelRoutingMap: z.string().optional(),
-	// OpenRouter specific fields
-	codebaseIndexOpenRouterSpecificProvider: z.string().optional(),
-})
+export const codebaseIndexConfigSchema = z
+	.object({
+		codebaseIndexEnabled: z.boolean().optional(),
+		codebaseIndexVectorStoreProvider: z.enum(["qdrant", "lancedb"]).optional(),
+		codebaseIndexLocalIndexPath: z.string().optional(),
+		codebaseIndexQdrantUrl: z.string().optional(),
+		// Deliberately broad for backward-compatible imports. Unsupported legacy
+		// values are rejected by CodeIndexConfigManager before indexing starts.
+		codebaseIndexEmbedderProvider: z.string().optional(),
+		codebaseIndexEmbedderModelId: z.string().optional(),
+		codebaseIndexEmbedderModelDimension: z.number().optional(),
+		codebaseIndexSearchMinScore: z.number().min(0).max(1).optional(),
+		codebaseIndexSearchMaxResults: z
+			.number()
+			.min(CODEBASE_INDEX_DEFAULTS.MIN_SEARCH_RESULTS)
+			.max(CODEBASE_INDEX_DEFAULTS.MAX_SEARCH_RESULTS)
+			.optional(),
+		codebaseIndexEmbeddingRateLimitEnabled: z.boolean().optional(),
+		codebaseIndexEmbeddingRateLimitSeconds: z
+			.number()
+			.min(CODEBASE_INDEX_DEFAULTS.MIN_EMBEDDING_RATE_LIMIT_SECONDS)
+			.max(CODEBASE_INDEX_DEFAULTS.MAX_EMBEDDING_RATE_LIMIT_SECONDS)
+			.optional(),
+		// Vertex specific fields
+		codebaseIndexVertexProjectId: z.string().optional(),
+		codebaseIndexVertexRegion: z.string().optional(),
+		codebaseIndexVertexKeyFile: z.string().optional(),
+		codebaseIndexVertexGatewayBaseUrl: z.string().optional(),
+		codebaseIndexVertexGatewayCaBundlePath: z.string().optional(),
+		codebaseIndexVertexGatewayHelixCommand: z.string().optional(),
+		codebaseIndexVertexGatewayTokenRefreshMinutes: z.number().int().positive().optional(),
+		codebaseIndexVertexGatewayModelRoutingMap: z.string().optional(),
+	})
+	// Keep removed provider fields readable during import/startup. The runtime
+	// only consumes the fields above and rejects a legacy provider string.
+	.passthrough()
 
 export type CodebaseIndexConfig = z.infer<typeof codebaseIndexConfigSchema>
 
@@ -80,17 +82,13 @@ export type CodebaseIndexConfig = z.infer<typeof codebaseIndexConfigSchema>
  * CodebaseIndexModels
  */
 
-export const codebaseIndexModelsSchema = z.object({
-	openai: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
-	ollama: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
-	"openai-compatible": z.record(z.string(), z.object({ dimension: z.number() })).optional(),
-	gemini: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
-	vertex: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
-	mistral: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
-	"vercel-ai-gateway": z.record(z.string(), z.object({ dimension: z.number() })).optional(),
-	openrouter: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
-	bedrock: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
-})
+export const codebaseIndexModelsSchema = z
+	.object({
+		vertex: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
+	})
+	// Preserve legacy provider model maps while they are being migrated. They
+	// are never selected by the Vertex-only runtime.
+	.passthrough()
 
 export type CodebaseIndexModels = z.infer<typeof codebaseIndexModelsSchema>
 
@@ -99,16 +97,8 @@ export type CodebaseIndexModels = z.infer<typeof codebaseIndexModelsSchema>
  */
 
 export const codebaseIndexProviderSchema = z.object({
-	codeIndexOpenAiKey: z.string().optional(),
 	codeIndexQdrantApiKey: z.string().optional(),
-	codebaseIndexOpenAiCompatibleBaseUrl: z.string().optional(),
-	codebaseIndexOpenAiCompatibleApiKey: z.string().optional(),
-	codebaseIndexOpenAiCompatibleModelDimension: z.number().optional(),
-	codebaseIndexGeminiApiKey: z.string().optional(),
 	codebaseIndexVertexJsonCredentials: z.string().optional(),
-	codebaseIndexMistralApiKey: z.string().optional(),
-	codebaseIndexVercelAiGatewayApiKey: z.string().optional(),
-	codebaseIndexOpenRouterApiKey: z.string().optional(),
 })
 
 export type CodebaseIndexProvider = z.infer<typeof codebaseIndexProviderSchema>

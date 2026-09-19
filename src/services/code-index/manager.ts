@@ -176,6 +176,27 @@ export class CodeIndexManager {
 			return { requiresRestart }
 		}
 
+		// Legacy embedding providers remain readable for settings import/export,
+		// but they must never fall through to Vertex or reuse their old vectors.
+		// Keep the feature disabled until the user explicitly selects Vertex.
+		if (!this.isFeatureConfigured) {
+			await this.enqueueServiceLifecycle(async () => {
+				const currentOrchestrator = this._orchestrator
+				this._orchestrator = undefined
+				this._searchService = undefined
+				this._serviceFactory = undefined
+
+				if (currentOrchestrator) {
+					await this.retireOrchestrator(currentOrchestrator)
+				}
+			})
+			this._stateManager.setSystemState(
+				"Error",
+				this._configManager.configurationError ?? t("embeddings:serviceFactory.codeIndexingNotConfigured"),
+			)
+			return { requiresRestart }
+		}
+
 		// 3. Check if workspace is available
 		const workspacePath = this.workspacePath
 		if (!workspacePath) {
@@ -475,6 +496,24 @@ export class CodeIndexManager {
 					await this._orchestrator.whenIdle()
 				}
 				this._stateManager.setSystemState("Standby", "Code indexing is disabled")
+				return
+			}
+
+			if (!isFeatureConfigured) {
+				await this.enqueueServiceLifecycle(async () => {
+					const currentOrchestrator = this._orchestrator
+					this._orchestrator = undefined
+					this._searchService = undefined
+					this._serviceFactory = undefined
+
+					if (currentOrchestrator) {
+						await this.retireOrchestrator(currentOrchestrator)
+					}
+				})
+				this._stateManager.setSystemState(
+					"Error",
+					this._configManager.configurationError ?? t("embeddings:serviceFactory.codeIndexingNotConfigured"),
+				)
 				return
 			}
 

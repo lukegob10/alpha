@@ -100,11 +100,6 @@ export const globalSettingsSchema = z.object({
 	taskHistory: z.array(historyItemSchema).optional(),
 	dismissedUpsells: z.array(z.string()).optional(),
 
-	// Image generation settings (experimental) - flattened for simplicity
-	imageGenerationProvider: z.enum(["openrouter"]).optional(),
-	openRouterImageApiKey: z.string().optional(),
-	openRouterImageGenerationSelectedModel: z.string().optional(),
-
 	// GitHub integration settings
 	githubToken: z.string().optional(),
 
@@ -294,42 +289,13 @@ export type AlphaCodeSettings = GlobalSettings & ProviderSettings
  * SecretState
  */
 export const SECRET_STATE_KEYS = [
-	"apiKey",
-	"openRouterApiKey",
-	"awsAccessKey",
-	"awsApiKey",
-	"awsSecretKey",
-	"awsSessionToken",
 	"openAiApiKey",
-	"ollamaApiKey",
-	"geminiApiKey",
-	"openAiNativeApiKey",
-	"deepSeekApiKey",
-	"moonshotApiKey",
-	"mistralApiKey",
-	"minimaxApiKey",
-	"requestyApiKey",
-	"unboundApiKey",
-	"xaiApiKey",
-	"litellmApiKey",
-	"codeIndexOpenAiKey",
 	"codeIndexQdrantApiKey",
-	"codebaseIndexOpenAiCompatibleApiKey",
-	"codebaseIndexGeminiApiKey",
 	"codebaseIndexVertexJsonCredentials",
-	"codebaseIndexMistralApiKey",
-	"codebaseIndexVercelAiGatewayApiKey",
-	"codebaseIndexOpenRouterApiKey",
-	"sambaNovaApiKey",
-	"zaiApiKey",
-	"fireworksApiKey",
-	"vercelAiGatewayApiKey",
-	"basetenApiKey",
 ] as const
 
 // Global secrets that are part of GlobalSettings (not ProviderSettings)
 export const GLOBAL_SECRET_KEYS = [
-	"openRouterImageApiKey", // For image generation
 	"githubToken", // For native GitHub API tool
 ] as const
 
@@ -364,7 +330,7 @@ export const isGlobalStateKey = (key: string): key is Keys<GlobalState> =>
 
 // Default settings when running evals (unless overridden).
 export const EVALS_SETTINGS: AlphaCodeSettings = {
-	apiProvider: "openrouter",
+	apiProvider: "openai",
 
 	lastShownAnnouncementId: "jul-09-2025-3-23-0",
 

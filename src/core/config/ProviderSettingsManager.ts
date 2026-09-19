@@ -9,6 +9,7 @@ import {
 	DEFAULT_CONSECUTIVE_MISTAKE_LIMIT,
 	getModelId,
 	type ProviderName,
+	persistedProviderSettingsWithIdSchema,
 	isProviderName,
 	isRetiredProvider,
 } from "@alpha-code/types"
@@ -353,11 +354,18 @@ export class ProviderSettingsManager {
 				// For retired providers, preserve full profile fields (including legacy
 				// provider-specific keys) to avoid data loss — passthrough() keeps
 				// unknown keys that strict parse() would strip.
-				const filteredConfig =
-					typeof config.apiProvider === "string" && isRetiredProvider(config.apiProvider)
+				const providerValue = config.apiProvider
+				const isUnsupportedProvider =
+					typeof providerValue === "string" &&
+					!isProviderName(providerValue) &&
+					!isRetiredProvider(providerValue) &&
+					providerValue !== "fake-ai"
+				const filteredConfig = isUnsupportedProvider
+					? persistedProviderSettingsWithIdSchema.parse(config)
+					: typeof providerValue === "string" && isRetiredProvider(providerValue)
 						? providerSettingsWithIdSchema.passthrough().parse(config)
 						: discriminatedProviderSettingsWithIdSchema.parse(config)
-				providerProfiles.apiConfigs[name] = { ...filteredConfig, id }
+				providerProfiles.apiConfigs[name] = { ...filteredConfig, id } as ProviderSettingsWithId
 				await this.store(providerProfiles)
 				return id
 			})
@@ -505,7 +513,10 @@ export class ProviderSettingsManager {
 				for (const name in configs) {
 					const apiProvider = configs[name].apiProvider
 
-					if (typeof apiProvider === "string" && isRetiredProvider(apiProvider)) {
+					if (
+						typeof apiProvider === "string" &&
+						(!isProviderName(apiProvider) || isRetiredProvider(apiProvider))
+					) {
 						// Preserve retired-provider profiles as-is to prevent dropping legacy fields.
 						continue
 					}
@@ -582,25 +593,10 @@ export class ProviderSettingsManager {
 
 			const apiConfigs = Object.entries(providerProfiles.apiConfigs).reduce(
 				(acc, [key, apiConfig]) => {
-					// First, sanitize invalid apiProvider values before parsing
-					// This handles removed providers (like "glama") gracefully
-					const sanitizedConfig = this.sanitizeProviderConfig(apiConfig)
-
-					// For retired providers, use passthrough() to preserve legacy
-					// provider-specific fields (e.g. groqApiKey, deepInfraModelId)
-					// that strict parse() would strip.
-					const providerValue =
-						typeof sanitizedConfig === "object" &&
-						sanitizedConfig !== null &&
-						"apiProvider" in sanitizedConfig
-							? (sanitizedConfig as Record<string, unknown>).apiProvider
-							: undefined
-					const schema =
-						typeof providerValue === "string" && isRetiredProvider(providerValue)
-							? providerSettingsWithIdSchema.passthrough()
-							: providerSettingsWithIdSchema
-					const result = schema.safeParse(sanitizedConfig)
-					return result.success ? { ...acc, [key]: result.data } : acc
+					// Persisted readers accept unknown provider IDs and retain the full
+					// profile so callers can report the exact unsupported identifier.
+					const result = persistedProviderSettingsWithIdSchema.safeParse(apiConfig)
+					return result.success ? { ...acc, [key]: result.data as ProviderSettingsWithId } : acc
 				},
 				{} as Record<string, ProviderSettingsWithId>,
 			)
@@ -621,38 +617,6 @@ export class ProviderSettingsManager {
 
 			throw new Error(`Failed to read provider profiles from secrets: ${error}`)
 		}
-	}
-
-	/**
-	 * Sanitizes a provider config by resetting unknown apiProvider values.
-	 * Retired providers are preserved.
-	 * This handles cases where a user had a provider selected that was later removed
-	 * from the extension (e.g., "glama").
-	 */
-	private sanitizeProviderConfig(apiConfig: unknown): unknown {
-		if (typeof apiConfig !== "object" || apiConfig === null) {
-			return apiConfig
-		}
-
-		const config = apiConfig as Record<string, unknown>
-
-		const apiProvider = config.apiProvider
-
-		// Check if apiProvider is set and if it's still recognized (active or retired)
-		if (
-			apiProvider !== undefined &&
-			(typeof apiProvider !== "string" || (!isProviderName(apiProvider) && !isRetiredProvider(apiProvider)))
-		) {
-			console.log(
-				`[ProviderSettingsManager] Sanitizing unknown provider "${config.apiProvider}" - resetting to undefined`,
-			)
-			// Return a new config object without the invalid apiProvider
-			// This effectively resets the profile so the user can select a valid provider
-			const { apiProvider, ...restConfig } = config
-			return restConfig
-		}
-
-		return apiConfig
 	}
 
 	private async store(providerProfiles: ProviderProfiles) {

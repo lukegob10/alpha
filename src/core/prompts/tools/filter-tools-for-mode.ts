@@ -308,10 +308,8 @@ export function filterNativeToolsForMode(
 		allowedToolNames.delete("update_todo_list")
 	}
 
-	// Conditionally exclude generate_image if experiment is not enabled
-	if (!experiments?.imageGeneration) {
-		allowedToolNames.delete("generate_image")
-	}
+	// Historical transcripts may contain the retired image-generation tool.
+	allowedToolNames.delete("generate_image")
 
 	// Conditionally exclude run_slash_command if experiment is not enabled
 	if (!experiments?.runSlashCommand) {
@@ -415,7 +413,7 @@ export function isToolAllowedInMode(
 			return settings?.todoListEnabled !== false
 		}
 		if (toolName === "generate_image") {
-			return experiments?.imageGeneration === true
+			return false
 		}
 		if (toolName === "run_slash_command") {
 			return experiments?.runSlashCommand === true

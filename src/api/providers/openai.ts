@@ -6,7 +6,6 @@ import {
 	type ModelInfo,
 	azureOpenAiDefaultApiVersion,
 	openAiModelInfoSaneDefaults,
-	DEEP_SEEK_DEFAULT_TEMPERATURE,
 	OPENAI_AZURE_AI_INFERENCE_PATH,
 } from "@alpha-code/types"
 
@@ -30,6 +29,11 @@ import { BaseProvider } from "./base-provider"
 import type { SingleCompletionHandler, ApiHandlerCreateMessageMetadata } from "../index"
 import { getApiRequestTimeout } from "./utils/timeout-config"
 import { handleOpenAIError } from "./utils/openai-error-handler"
+
+// OpenAI-compatible endpoints may expose DeepSeek reasoning models. Keep this
+// protocol default local to the generic adapter; the retired DeepSeek catalog
+// and provider remain removed.
+const DEEP_SEEK_DEFAULT_TEMPERATURE = 0.3
 
 // TODO: Rename this to OpenAICompatibleHandler. Also, I think the
 // `OpenAINativeHandler` can subclass from this, since it's obviously
@@ -154,7 +158,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				convertedMessages = [systemMessage, ...convertToOpenAiMessages(messages)]
 
 				if (modelInfo.supportsPromptCache) {
-					// Note: the following logic is copied from openrouter:
+					// Keep the compatibility normalization local to the OpenAI-compatible adapter:
 					// Add cache_control to the last two user messages
 					// (note: this works because we only ever add one user message at a time, but if we added multiple we'd need to mark the user message before the last assistant message)
 					const lastTwoUserMessages = convertedMessages.filter((msg) => msg.role === "user").slice(-2)

@@ -29,6 +29,8 @@
 				"src/runUnitTests.ts",
 				"src/suite/**/*.test.ts",
 				"src/scenarios/**/*.spec.ts",
+				"src/campaign/**/*.spec.ts",
+				"src/ui/**/*.spec.ts",
 				"src/evidence/**/*.spec.ts",
 				"src/suite/shared-storage.entry.ts",
 				"src/unit/**/*.spec.ts",

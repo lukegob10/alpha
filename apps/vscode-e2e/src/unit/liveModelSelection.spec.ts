@@ -142,7 +142,7 @@ test("sanitizeLiveCopilotModelMetadata keeps bounded safe fields only", () => {
 
 test("configuration uses only the existing Alpha provider and selector fields", () => {
 	const configuration = buildLiveCopilotConfiguration(
-		{ apiProvider: "openrouter", openRouterApiKey: "not persisted here" },
+		{ apiProvider: "openai", openAiApiKey: "not persisted here" },
 		{ vendor: "copilot", id: gpt55.id, family: gpt55.family },
 		{
 			status: "supported",
@@ -154,7 +154,7 @@ test("configuration uses only the existing Alpha provider and selector fields", 
 
 	assert.deepEqual(configuration, {
 		apiProvider: "vscode-lm",
-		openRouterApiKey: "not persisted here",
+		openAiApiKey: "not persisted here",
 		vsCodeLmModelSelector: { vendor: "copilot", id: gpt55.id, family: gpt55.family },
 		enableReasoningEffort: true,
 		reasoningEffort: "high",

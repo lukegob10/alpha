@@ -1,13 +1,4 @@
 {
-	"routers": {
-		"requesty": {
-			"description": "Dein optimierter LLM-Router",
-			"incentive": "$1 Guthaben gratis"
-		},
-		"openrouter": {
-			"description": "Eine einheitliche Schnittstelle für LLMs"
-		}
-	},
 	"landing": {
 		"greeting": "Willkommen bei Alpha!",
 		"introduction": "Mit einer Reihe von integrierten und erweiterbaren Modi ermöglicht dir Alpha, zu planen, zu architektieren, zu coden, zu debuggen und deine Produktivität wie nie zuvor zu steigern.",
@@ -23,7 +14,6 @@
 		"goBack": "Zurück",
 		"finish": "Beenden"
 	},
-	"startRouter": "Wir empfehlen die Verwendung eines LLM-Routers:",
 	"startCustom": "Oder du kannst deinen eigenen API-Schlüssel verwenden:",
 	"telemetry": {
 		"helpImprove": "Hilf, Alpha zu verbessern",

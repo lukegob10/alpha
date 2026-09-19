@@ -1,13 +1,4 @@
 {
-	"routers": {
-		"requesty": {
-			"description": "Bộ định tuyến LLM được tối ưu hóa của bạn",
-			"incentive": "Tín dụng miễn phí $1"
-		},
-		"openrouter": {
-			"description": "Giao diện thống nhất cho LLM"
-		}
-	},
 	"landing": {
 		"greeting": "Chào mừng đến với Alpha!",
 		"introduction": "Với nhiều Chế độ tích hợp và có thể mở rộng, Alpha cho phép bạn lập kế hoạch, thiết kế kiến trúc, viết mã, gỡ lỗi và tăng năng suất như chưa từng có trước đây.",
@@ -23,7 +14,6 @@
 		"goBack": "Quay lại",
 		"finish": "Hoàn thành"
 	},
-	"startRouter": "Chúng tôi khuyên bạn nên sử dụng bộ định tuyến LLM:",
 	"startCustom": "Hoặc bạn có thể mang theo khóa API của riêng mình:",
 	"telemetry": {
 		"helpImprove": "Giúp cải thiện Alpha",

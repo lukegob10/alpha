@@ -388,12 +388,12 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 			vi.spyOn(provider.providerSettingsManager, "activateProfile").mockResolvedValue({
 				name: "new-profile",
 				id: "new-profile-id",
-				apiProvider: "anthropic",
+				apiProvider: "vertex",
 			})
 
 			// Mock providerSettingsManager.listConfig
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "new-profile", id: "new-profile-id", apiProvider: "anthropic" },
+				{ name: "new-profile", id: "new-profile-id", apiProvider: "vertex" },
 			])
 
 			// Switch provider profile
@@ -451,12 +451,12 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 			vi.spyOn(provider.providerSettingsManager, "activateProfile").mockResolvedValue({
 				name: "new-profile",
 				id: "new-profile-id",
-				apiProvider: "openrouter",
+				apiProvider: "openai",
 			})
 
 			// Mock providerSettingsManager.listConfig
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "new-profile", id: "new-profile-id", apiProvider: "openrouter" },
+				{ name: "new-profile", id: "new-profile-id", apiProvider: "openai" },
 			])
 
 			// Switch provider profile
@@ -494,11 +494,11 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 			vi.spyOn(provider.providerSettingsManager, "activateProfile").mockResolvedValue({
 				name: "new-profile",
 				id: "new-profile-id",
-				apiProvider: "openrouter",
+				apiProvider: "openai",
 			})
 
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "new-profile", id: "new-profile-id", apiProvider: "openrouter" },
+				{ name: "new-profile", id: "new-profile-id", apiProvider: "openai" },
 			])
 
 			await provider.activateProviderProfile({ name: "new-profile" })
@@ -536,13 +536,13 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 
 			// Mock providerSettingsManager.listConfig
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "saved-profile", id: "saved-profile-id", apiProvider: "anthropic" },
+				{ name: "saved-profile", id: "saved-profile-id", apiProvider: "vertex" },
 			])
 			vi.spyOn(provider.providerSettingsManager, "getProfile").mockResolvedValue({
 				name: "saved-profile",
 				id: "saved-profile-id",
-				apiProvider: "anthropic",
-				anthropicApiKey: "saved-key",
+				apiProvider: "vertex",
+				vertexJsonCredentials: "saved-key",
 			} as any)
 
 			// Initialize task with history item
@@ -554,8 +554,8 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 					historyItem: expect.objectContaining({ mode: "architect" }),
 					taskApiConfigName: "saved-profile",
 					apiConfiguration: expect.objectContaining({
-						apiProvider: "anthropic",
-						anthropicApiKey: "saved-key",
+						apiProvider: "vertex",
+						vertexJsonCredentials: "saved-key",
 					}),
 				}),
 			)
@@ -582,13 +582,13 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 				.spyOn(provider, "activateProviderProfile")
 				.mockResolvedValue(undefined)
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "saved-profile", id: "saved-profile-id", apiProvider: "anthropic" },
+				{ name: "saved-profile", id: "saved-profile-id", apiProvider: "vertex" },
 			])
 			vi.spyOn(provider.providerSettingsManager, "getProfile").mockResolvedValue({
 				name: "saved-profile",
 				id: "saved-profile-id",
-				apiProvider: "anthropic",
-				apiKey: "saved-key",
+				apiProvider: "vertex",
+				vertexJsonCredentials: "saved-key",
 			})
 
 			await provider.createTaskWithHistoryItem(historyItem)
@@ -598,8 +598,8 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 				expect.objectContaining({
 					taskApiConfigName: "saved-profile",
 					apiConfiguration: expect.objectContaining({
-						apiProvider: "anthropic",
-						apiKey: "saved-key",
+						apiProvider: "vertex",
+						vertexJsonCredentials: "saved-key",
 					}),
 				}),
 			)
@@ -628,13 +628,13 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 
 			vi.spyOn(provider.providerSettingsManager, "getModeConfigId").mockResolvedValue("mode-config-id")
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "mode-profile", id: "mode-config-id", apiProvider: "anthropic" },
+				{ name: "mode-profile", id: "mode-config-id", apiProvider: "vertex" },
 			])
 			vi.spyOn(provider.providerSettingsManager, "getProfile").mockResolvedValue({
 				name: "mode-profile",
 				id: "mode-config-id",
-				apiProvider: "anthropic",
-				apiKey: "mode-key",
+				apiProvider: "vertex",
+				vertexJsonCredentials: "mode-key",
 			})
 
 			await provider.createTaskWithHistoryItem(historyItem)
@@ -700,7 +700,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 			// Mock providerSettingsManager methods
 			vi.spyOn(provider.providerSettingsManager, "getModeConfigId").mockResolvedValue("mode-config-id")
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "mode-preferred-profile", id: "mode-config-id", apiProvider: "anthropic" },
+				{ name: "mode-preferred-profile", id: "mode-config-id", apiProvider: "vertex" },
 				{ name: "task-specific-profile", id: "task-profile-id", apiProvider: "openai" },
 			])
 			vi.spyOn(provider.providerSettingsManager, "getProfile").mockResolvedValue({
@@ -800,12 +800,12 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 			vi.spyOn(provider.providerSettingsManager, "activateProfile").mockResolvedValue({
 				name: "new-profile",
 				id: "new-profile-id",
-				apiProvider: "anthropic",
+				apiProvider: "vertex",
 			})
 
 			// Mock providerSettingsManager.listConfig
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "new-profile", id: "new-profile-id", apiProvider: "anthropic" },
+				{ name: "new-profile", id: "new-profile-id", apiProvider: "vertex" },
 			])
 
 			// Trigger a profile switch
@@ -901,14 +901,14 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 			vi.spyOn(provider.providerSettingsManager, "activateProfile").mockResolvedValue({
 				name: "profile-c",
 				id: "profile-c-id",
-				apiProvider: "anthropic",
+				apiProvider: "vertex",
 			})
 
 			// Mock providerSettingsManager.listConfig
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "profile-a", id: "profile-a-id", apiProvider: "anthropic" },
+				{ name: "profile-a", id: "profile-a-id", apiProvider: "vertex" },
 				{ name: "profile-b", id: "profile-b-id", apiProvider: "openai" },
-				{ name: "profile-c", id: "profile-c-id", apiProvider: "anthropic" },
+				{ name: "profile-c", id: "profile-c-id", apiProvider: "vertex" },
 			])
 
 			// Switch task 1's profile to profile C
@@ -960,12 +960,12 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 			vi.spyOn(provider.providerSettingsManager, "activateProfile").mockResolvedValue({
 				name: "new-profile",
 				id: "new-profile-id",
-				apiProvider: "anthropic",
+				apiProvider: "vertex",
 			})
 
 			// Mock providerSettingsManager.listConfig
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "new-profile", id: "new-profile-id", apiProvider: "anthropic" },
+				{ name: "new-profile", id: "new-profile-id", apiProvider: "vertex" },
 			])
 
 			// Mock log to verify error is logged
@@ -1028,7 +1028,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 
 			// Mock providerSettingsManager.listConfig to return the profile
 			vi.spyOn(provider.providerSettingsManager, "listConfig").mockResolvedValue([
-				{ name: "failing-profile", id: "failing-profile-id", apiProvider: "anthropic" },
+				{ name: "failing-profile", id: "failing-profile-id", apiProvider: "vertex" },
 			])
 
 			// Mock activateProviderProfile to throw error

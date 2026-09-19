@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { openAiModelInfoSaneDefaults } from "@alpha-code/types"
 
-import { applyCopilotToolPreferences, applyRouterToolPreferences } from "../router-tool-preferences"
+import { applyCopilotToolPreferences } from "../router-tool-preferences"
 
 describe("Copilot edit-tool preferences", () => {
 	it.each([
@@ -68,12 +68,5 @@ describe("Copilot edit-tool preferences", () => {
 			excludedTools: ["execute_command", "apply_diff"],
 		})
 		expect(original.includedTools).toEqual(["browser"])
-	})
-
-	it("preserves the existing native OpenAI router contract", () => {
-		expect(applyRouterToolPreferences("openai/gpt-5.5", openAiModelInfoSaneDefaults)).toMatchObject({
-			includedTools: ["apply_patch"],
-			excludedTools: ["apply_diff", "write_to_file"],
-		})
 	})
 })

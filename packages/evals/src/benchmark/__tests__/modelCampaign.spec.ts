@@ -68,9 +68,22 @@ describe("runBenchmarkModelCampaign", () => {
 			expect.objectContaining({
 				executionMethod: "vscode",
 				socketPath: "",
+				settings: expect.objectContaining({ apiProvider: "openai", openAiModelId: "gpt-5.6-luna" }),
 			}),
 		)
 		expect(mocks.runEvals).toHaveBeenCalledWith(42)
+	})
+	it("rejects a retired provider before creating a campaign", async () => {
+		await expect(
+			runBenchmarkModelCampaign({
+				publicRoot: "benchmarks",
+				partition: "development",
+				modelRole: "luna-high",
+				modelId: "test-model",
+				provider: "openrouter" as never,
+			}),
+		).rejects.toThrow("Unsupported campaign provider: openrouter")
+		expect(mocks.createRun).not.toHaveBeenCalled()
 	})
 	it("exports available lifecycle evidence but cannot attest an installed extension from fixture identity", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "campaign-export-"))

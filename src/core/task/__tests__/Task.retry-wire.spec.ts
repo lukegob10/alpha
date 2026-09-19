@@ -90,7 +90,7 @@ function harness() {
 		workspacePath: process.cwd(),
 		abort: false,
 		api: originalHandler,
-		apiConfiguration: { apiProvider: "gemini", apiModelId: "original-model" } satisfies ProviderSettings,
+		apiConfiguration: { apiProvider: "vertex", apiModelId: "original-model" } satisfies ProviderSettings,
 		providerRef: { deref: () => provider },
 		apiConversationHistory: history,
 		clineMessages: [],
@@ -245,7 +245,7 @@ describe("Task retained retry wire inputs", () => {
 			}
 		}
 		const fakeAi = new ScriptedAI()
-		task.apiConfiguration = { apiProvider: "fake-ai", fakeAi, apiKey: "diagnostic credential fixture" }
+		task.apiConfiguration = { apiProvider: "fake-ai", fakeAi, openAiApiKey: "diagnostic credential fixture" }
 		task.api = new FakeAIHandler(task.apiConfiguration)
 		const runtimeHandler = task.api
 		scripted.createMessage.mockImplementationOnce(() =>
@@ -259,7 +259,7 @@ describe("Task retained retry wire inputs", () => {
 			const first = capturedStep(task)
 			expect(first.snapshot.runtime.getHandler()).toBe(runtimeHandler)
 			expect(first.snapshot.context.provider.options).not.toHaveProperty("fakeAi")
-			expect(first.snapshot.context.provider.options?.apiKey).toBe("[redacted]")
+			expect(first.snapshot.context.provider.options?.openAiApiKey).toBe("[redacted]")
 			expect(task.apiConfiguration.fakeAi).toBe(fakeAi)
 			const firstCall = scripted.createMessage.mock.calls[0]
 			expect(firstCall[2]).toMatchObject({ taskId: task.taskId, mode: "code" })
@@ -353,7 +353,7 @@ describe("Task retained retry wire inputs", () => {
 				expect(capturedStep(task).snapshot.context.contextId).toBe(firstStep.snapshot.context.contextId)
 				expect(capturedStep(task).snapshot.context.retryAttempt).toBe(1)
 				expect(capturedStep(task).snapshot.context.provider.modelId).toBe("original-model")
-				expect(capturedStep(task).snapshot.context.provider.apiProvider).toBe("gemini")
+				expect(capturedStep(task).snapshot.context.provider.apiProvider).toBe("vertex")
 				expect(Reflect.get(task, "currentTaskToolSurface")).toBe(firstSurface)
 				expect(retryMetadata.streamCapabilities).toEqual({ lifecycle: false, cancellation: true })
 				expect(retryMetadata.requestId).toBe(initialMetadata.requestId)
@@ -975,7 +975,7 @@ describe("Task retained retry wire inputs", () => {
 
 			const replacementHandler = handler("recovery-model")
 			task.api = replacementHandler
-			task.apiConfiguration = { apiProvider: "gemini", apiModelId: "recovery-model" }
+			task.apiConfiguration = { apiProvider: "vertex", apiModelId: "recovery-model" }
 			const recovery = task.attemptApiRequest(2, {
 				skipProviderRateLimit: true,
 				ownerHandlesRetry: true,
@@ -1000,7 +1000,7 @@ describe("Task retained retry wire inputs", () => {
 		},
 	)
 
-	it.each(["openai-native", "gemini", "vscode-lm"] as const)(
+	it.each(["openai", "vertex", "vscode-lm"] as const)(
 		"retains recent %s provider state through real compaction and a transport retry",
 		async (apiProvider) => {
 			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
@@ -1028,7 +1028,7 @@ describe("Task retained retry wire inputs", () => {
 			const assistant = {
 				role: "assistant" as const,
 				content: [toolCall],
-				...(apiProvider === "gemini"
+				...(apiProvider === "vertex"
 					? {
 							reasoning_details: [
 								{
@@ -1064,7 +1064,7 @@ describe("Task retained retry wire inputs", () => {
 				{ role: "user", content: "superseded request ".repeat(512) },
 				{ role: "assistant", content: "obsolete investigation ".repeat(512) },
 				{ role: "user", content: "Use the recent read and preserve my correction." },
-				...(apiProvider === "openai-native"
+				...(apiProvider === "openai"
 					? [{ role: "assistant" as const, content: [], ...encryptedReasoning }]
 					: []),
 				assistant,
@@ -1092,7 +1092,7 @@ describe("Task retained retry wire inputs", () => {
 			const firstStep = capturedStep(task)
 			const firstCall = originalHandler.createMessage.mock.calls[0]
 			const expectedRequest = logicalRequest(firstCall)
-			const wireTail = [...(apiProvider === "openai-native" ? [encryptedReasoning] : []), assistant, result]
+			const wireTail = [...(apiProvider === "openai" ? [encryptedReasoning] : []), assistant, result]
 			expect(expectedRequest.messages.slice(-wireTail.length)).toEqual(wireTail)
 			expect(getEffectiveApiHistory(compacted.messages)).toContainEqual(assistant)
 			expect(JSON.stringify(expectedRequest.messages)).not.toContain("obsolete investigation")
@@ -1114,7 +1114,7 @@ describe("Task retained retry wire inputs", () => {
 			live.surface = surface("list_files")
 			const replacementHandler = handler("replacement-model")
 			task.api = replacementHandler
-			task.apiConfiguration = { apiProvider: "anthropic", apiModelId: "replacement-model" }
+			task.apiConfiguration = { apiProvider: "vertex", apiModelId: "replacement-model" }
 			const retry = task.attemptApiRequest(1, {
 				skipProviderRateLimit: true,
 				ownerHandlesRetry: true,
@@ -1483,18 +1483,24 @@ describe("Task retained retry wire inputs", () => {
 		},
 	)
 
-	it.each(["anthropic", "gemini", "openai-native", "vscode-lm", "summary"] as const)(
+	it.each(["anthropic", "gemini", "openai", "vscode-lm", "summary"] as const)(
 		"persists a successful retry's %s response state from the captured handler and protocol",
 		async (kind) => {
 			const { task, originalHandler } = harness()
-			task.apiConfiguration = { apiProvider: kind === "summary" ? "openai" : kind, apiModelId: "original-model" }
+			const modelId = kind === "anthropic" ? "claude-original-model" : "original-model"
+			originalHandler.getModel = handler(modelId).getModel
+			task.apiConfiguration = {
+				apiProvider:
+					kind === "anthropic" || kind === "gemini" ? "vertex" : kind === "summary" ? "openai" : kind,
+				apiModelId: modelId,
+			}
 			const hasSignature = kind === "anthropic" || kind === "gemini"
 			const reasoning = kind === "anthropic" || kind === "summary" ? "captured reasoning" : undefined
 			Object.assign(originalHandler, {
 				getResponseId: () => "original-response",
 				getThoughtSignature: () => (hasSignature ? "original-signature" : undefined),
 				getEncryptedContent: () =>
-					kind === "openai-native"
+					kind === "openai"
 						? { encrypted_content: "original-encrypted", id: "original-reasoning" }
 						: undefined,
 				getSummary: () => (kind === "summary" ? [{ text: "original-summary" }] : undefined),
@@ -1518,7 +1524,7 @@ describe("Task retained retry wire inputs", () => {
 			}
 			task.api = Object.assign(handler("replacement-model"), replacementMetadata)
 			task.apiConfiguration = {
-				apiProvider: kind === "anthropic" ? "gemini" : "anthropic",
+				apiProvider: kind === "anthropic" ? "openai" : "vertex",
 				apiModelId: "replacement-model",
 			}
 			const request = task.attemptApiRequest(1, {
@@ -1552,7 +1558,7 @@ describe("Task retained retry wire inputs", () => {
 					text,
 					{ type: "thoughtSignature", thoughtSignature: "original-signature" },
 				])
-			} else if (kind === "openai-native") {
+			} else if (kind === "openai") {
 				expect(persisted!.content).toEqual([
 					{
 						type: "reasoning",

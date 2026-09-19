@@ -98,9 +98,9 @@ describe("enhancePrompt", () => {
 
 	it("uses appropriate model based on provider", async () => {
 		const openRouterConfig: ProviderSettings = {
-			apiProvider: "openrouter",
-			openRouterApiKey: "test-key",
-			openRouterModelId: "test-model",
+			apiProvider: "openai",
+			openAiApiKey: "test-key",
+			openAiModelId: "test-model",
 			enableReasoningEffort: false,
 		}
 

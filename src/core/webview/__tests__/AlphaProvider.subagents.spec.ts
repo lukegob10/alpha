@@ -130,7 +130,7 @@ const makeParent = () => ({
 	apiConversationHistory: [] as any[],
 	cwd: "F:/workspace",
 	historyWorkspacePath: "F:/workspace",
-	apiConfiguration: { apiProvider: "openai", apiModelId: "alpha-model" },
+	apiConfiguration: { apiProvider: "openai", openAiModelId: "alpha-model" },
 	getTaskMode: vi.fn(async () => "code"),
 	getTaskApiConfigName: vi.fn(async () => "Parent"),
 	captureEffectiveInheritedInstructions: vi.fn(async () => ({
@@ -779,16 +779,16 @@ If complete, use attempt_completion.
 				{
 					id: "explore-id",
 					name: "Fast Explorer",
-					apiProvider: "openrouter",
-					openRouterModelId: "fast/model",
-					openRouterApiKey: "explore-secret",
+					apiProvider: "openai",
+					openAiModelId: "fast/model",
+					openAiApiKey: "explore-secret",
 				},
 				{
 					id: "review-id",
 					name: "Deep Reviewer",
-					apiProvider: "anthropic",
+					apiProvider: "vertex",
 					apiModelId: "review-model",
-					apiKey: "review-secret",
+					vertexJsonCredentials: "review-secret",
 				},
 			],
 		)
@@ -801,8 +801,8 @@ If complete, use attempt_completion.
 		])
 
 		expect(prepared.envelopes.map((envelope) => envelope.modelRoute)).toEqual([
-			expect.objectContaining({ provider: "openrouter", model: "fast/model" }),
-			expect.objectContaining({ provider: "anthropic", model: "review-model" }),
+			expect.objectContaining({ provider: "openai", model: "fast/model" }),
+			expect.objectContaining({ provider: "vertex", model: "review-model" }),
 		])
 		expect(prepared.group.agents.map((agent) => agent.modelRoute)).toEqual([
 			expect.objectContaining({ source: "role", profileId: "explore-id", profileName: "Fast Explorer" }),
@@ -835,16 +835,16 @@ If complete, use attempt_completion.
 				{
 					id: "explore-id",
 					name: "Fast Explorer",
-					apiProvider: "openrouter",
-					openRouterModelId: "fast/model",
-					openRouterApiKey: "explore-secret",
+					apiProvider: "openai",
+					openAiModelId: "fast/model",
+					openAiApiKey: "explore-secret",
 				},
 				{
 					id: "review-id",
 					name: "Deep Reviewer",
-					apiProvider: "anthropic",
+					apiProvider: "vertex",
 					apiModelId: "review-model",
-					apiKey: "review-secret",
+					vertexJsonCredentials: "review-secret",
 				},
 			],
 		)
@@ -904,12 +904,12 @@ If complete, use attempt_completion.
 		expect(launchOptions).toHaveLength(2)
 		expect(launchOptions.find((options) => options.subagentRole === "explore")).toMatchObject({
 			taskApiConfigName: "Fast Explorer",
-			apiConfiguration: { openRouterApiKey: "explore-secret", openRouterModelId: "fast/model" },
+			apiConfiguration: { openAiApiKey: "explore-secret", openAiModelId: "fast/model" },
 			subagentModelRoute: { profileId: "explore-id", modelId: "fast/model" },
 		})
 		expect(launchOptions.find((options) => options.subagentRole === "review")).toMatchObject({
 			taskApiConfigName: "Deep Reviewer",
-			apiConfiguration: { apiKey: "review-secret", apiModelId: "review-model" },
+			apiConfiguration: { vertexJsonCredentials: "review-secret", apiModelId: "review-model" },
 			subagentModelRoute: { profileId: "review-id", modelId: "review-model" },
 		})
 		expect(parent.apiConfiguration).toEqual(parentSnapshot)

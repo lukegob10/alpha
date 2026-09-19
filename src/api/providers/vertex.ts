@@ -4,12 +4,12 @@ import type { ApiHandlerOptions } from "../../shared/api"
 
 import { getModelParams } from "../transform/model-params"
 
-import { GeminiHandler } from "./gemini"
+import { VertexGeminiHandler } from "./gemini"
 import { SingleCompletionHandler } from "../index"
 
-export class VertexHandler extends GeminiHandler implements SingleCompletionHandler {
+export class VertexHandler extends VertexGeminiHandler implements SingleCompletionHandler {
 	constructor(options: ApiHandlerOptions) {
-		super({ ...options, isVertex: true })
+		super(options)
 	}
 
 	override getModel() {

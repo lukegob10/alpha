@@ -47,22 +47,5 @@
 	},
 	"applyPatch": {
 		"deleteCancelled": "De verwijderbewerking is geannuleerd."
-	},
-	"imageOutput": {
-		"writeIncomplete": "Het schrijven van '{{path}}' kon niet worden voltooid; het bestand is mogelijk onvolledig. {{cause}}"
-	},
-	"generateImage": {
-		"openRouterApiKeyRequired": "OpenRouter API-sleutel is vereist voor het genereren van afbeeldingen met OpenRouter-modellen. Configureer deze in de Experimentele Instellingen voor Afbeeldingsgeneratie.",
-		"failedWithStatus": "Afbeelding genereren mislukt: {{status}} {{statusText}}",
-		"failedWithMessage": "Afbeelding genereren mislukt: {{message}}",
-		"noImageGenerated": "Er is geen afbeelding gegenereerd in het antwoord",
-		"invalidImageData": "Ongeldige afbeeldingsgegevens in het antwoord",
-		"invalidImageFormat": "Ongeldig afbeeldingsformaat ontvangen",
-		"unknownError": "Er is een onbekende fout opgetreden",
-		"cancelledBeforeSave": "Het genereren van de afbeelding is geannuleerd voordat de afbeelding werd opgeslagen.",
-		"destinationUnavailableBeforeGeneration": "De afbeeldingsbestemming was vóór het genereren niet toegankelijk. Probeer het verzoek opnieuw.",
-		"destinationPolicyChangedBeforeSave": "Het pad of toegangsbeleid van de afbeeldingsbestemming is vóór het opslaan gewijzigd. Probeer het verzoek opnieuw.",
-		"postSaveProcessingFailed": "{{path}}\nAfbeelding opgeslagen, maar de verwerking na het opslaan is mislukt: {{message}}",
-		"roo": {}
 	}
 }

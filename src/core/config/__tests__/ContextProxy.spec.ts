@@ -95,16 +95,12 @@ describe("ContextProxy", () => {
 
 	describe("constructor", () => {
 		it("should initialize state cache with all global state keys", () => {
-			// +3 for the migration checks:
-			// 1. openRouterImageGenerationSettings
-			// 2. customCondensingPrompt
-			// 3. customSupportPrompts (for migrateOldDefaultCondensingPrompt)
-			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 3)
+			// +2 for the legacy condensing-prompt migration checks.
+			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 2)
 			for (const key of GLOBAL_STATE_KEYS) {
 				expect(mockGlobalState.get).toHaveBeenCalledWith(key)
 			}
 			// Also check for migration calls
-			expect(mockGlobalState.get).toHaveBeenCalledWith("openRouterImageGenerationSettings")
 			expect(mockGlobalState.get).toHaveBeenCalledWith("customCondensingPrompt")
 			expect(mockGlobalState.get).toHaveBeenCalledWith("customSupportPrompts")
 		})
@@ -130,7 +126,7 @@ describe("ContextProxy", () => {
 			expect(result).toBe("deepseek")
 
 			// Original context should be called once during updateGlobalState (+3 for migration checks)
-			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 3) // From initialization + migration checks
+			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 2) // From initialization + migration checks
 		})
 
 		it("should handle default values correctly", async () => {
@@ -218,34 +214,34 @@ describe("ContextProxy", () => {
 	describe("getSecret", () => {
 		it("should return value from cache when it exists", async () => {
 			// Manually set a value in the cache
-			await proxy.storeSecret("apiKey", "cached-secret")
+			await proxy.storeSecret("openAiApiKey", "cached-secret")
 
 			// Should return the cached value
-			const result = proxy.getSecret("apiKey")
+			const result = proxy.getSecret("openAiApiKey")
 			expect(result).toBe("cached-secret")
 		})
 	})
 
 	describe("storeSecret", () => {
 		it("should store secret directly in original context", async () => {
-			await proxy.storeSecret("apiKey", "new-secret")
+			await proxy.storeSecret("openAiApiKey", "new-secret")
 
 			// Should have called original context
-			expect(mockSecrets.store).toHaveBeenCalledWith("apiKey", "new-secret")
+			expect(mockSecrets.store).toHaveBeenCalledWith("openAiApiKey", "new-secret")
 
 			// Should have stored the value in cache
-			const storedValue = await proxy.getSecret("apiKey")
+			const storedValue = await proxy.getSecret("openAiApiKey")
 			expect(storedValue).toBe("new-secret")
 		})
 
 		it("should handle undefined value for secret deletion", async () => {
-			await proxy.storeSecret("apiKey", undefined)
+			await proxy.storeSecret("openAiApiKey", undefined)
 
 			// Should have called delete on original context
-			expect(mockSecrets.delete).toHaveBeenCalledWith("apiKey")
+			expect(mockSecrets.delete).toHaveBeenCalledWith("openAiApiKey")
 
 			// Should have stored undefined in cache
-			const storedValue = await proxy.getSecret("apiKey")
+			const storedValue = await proxy.getSecret("openAiApiKey")
 			expect(storedValue).toBeUndefined()
 		})
 	})
@@ -435,7 +431,6 @@ describe("ContextProxy", () => {
 
 		it("should delete all secrets", async () => {
 			// Setup initial secrets
-			await proxy.storeSecret("apiKey", "test-api-key")
 			await proxy.storeSecret("openAiApiKey", "test-openai-key")
 
 			// Reset all state
@@ -466,7 +461,7 @@ describe("ContextProxy", () => {
 	})
 
 	describe("invalid apiProvider migration", () => {
-		it("should clear invalid apiProvider from storage during initialization", async () => {
+		it("should preserve invalid apiProvider in storage during initialization", async () => {
 			// Reset and create a new proxy with invalid provider in state
 			vi.clearAllMocks()
 			mockGlobalState.get.mockImplementation((key: string) => {
@@ -479,8 +474,8 @@ describe("ContextProxy", () => {
 			const proxyWithInvalidProvider = new ContextProxy(mockContext)
 			await proxyWithInvalidProvider.initialize()
 
-			// Should have cleared the invalid apiProvider
-			expect(mockGlobalState.update).toHaveBeenCalledWith("apiProvider", undefined)
+			// Unsupported providers remain identifiable for an explicit runtime error.
+			expect(mockGlobalState.update).not.toHaveBeenCalledWith("apiProvider", undefined)
 		})
 
 		it("should not clear retired apiProvider from storage during initialization", async () => {
@@ -541,8 +536,8 @@ describe("ContextProxy", () => {
 
 			const settings = proxyWithInvalidProvider.getProviderSettings()
 
-			// The invalid apiProvider should be sanitized (removed)
-			expect(settings.apiProvider).toBeUndefined()
+			// Invalid providers remain visible so the provider layer can report an explicit error.
+			expect(settings.apiProvider).toBe("invalid-removed-provider")
 			// Other settings should still be present
 			expect(settings.apiModelId).toBe("some-model")
 		})
@@ -552,15 +547,15 @@ describe("ContextProxy", () => {
 				apiProvider: "groq",
 				apiModelId: "llama3-70b",
 				openAiBaseUrl: "https://api.retired-provider.example/v1",
-				apiKey: "retired-provider-key",
-			})
+				openAiApiKey: "retired-provider-key",
+			} as unknown as Parameters<ContextProxy["setValues"]>[0])
 
 			const settings = proxy.getProviderSettings()
 
 			expect(settings.apiProvider).toBe("groq")
 			expect(settings.apiModelId).toBe("llama3-70b")
 			expect(settings.openAiBaseUrl).toBe("https://api.retired-provider.example/v1")
-			expect(settings.apiKey).toBe("retired-provider-key")
+			expect(settings.openAiApiKey).toBe("retired-provider-key")
 		})
 
 		it("should pass through valid apiProvider", async () => {

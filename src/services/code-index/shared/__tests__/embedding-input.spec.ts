@@ -31,16 +31,22 @@ describe("index representation", () => {
 	it("changes index identity with the model even when dimensions match, but excludes credentials", () => {
 		const config: CodeIndexConfig = {
 			isConfigured: true,
-			embedderProvider: "openai-compatible",
+			embedderProvider: "vertex",
 			modelId: "model-a",
 			modelDimension: 3,
-			openAiCompatibleOptions: { baseUrl: "https://example.com", apiKey: "first" },
+			vertexOptions: {
+				apiProvider: "vertex",
+				projectId: "project",
+				location: "global",
+				gatewayBaseUrl: "https://example.com",
+				vertexJsonCredentials: "first",
+			},
 		}
 		expect(getIndexIdentity(config)).not.toBe(getIndexIdentity({ ...config, modelId: "model-b" }))
 		expect(getIndexIdentity(config)).toBe(
 			getIndexIdentity({
 				...config,
-				openAiCompatibleOptions: { ...config.openAiCompatibleOptions!, apiKey: "second" },
+				vertexOptions: { ...config.vertexOptions!, vertexJsonCredentials: "second" },
 			}),
 		)
 	})

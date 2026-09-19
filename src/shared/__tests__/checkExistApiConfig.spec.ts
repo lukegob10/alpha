@@ -1,92 +1,34 @@
-// npx vitest run src/shared/__tests__/checkExistApiConfig.spec.ts
-
 import type { ProviderSettings } from "@alpha-code/types"
-
 import { checkExistKey } from "../checkExistApiConfig"
 
 describe("checkExistKey", () => {
-	it("should return false for undefined config", () => {
+	it("rejects absent and unconfigured connections", () => {
 		expect(checkExistKey(undefined)).toBe(false)
+		expect(checkExistKey({})).toBe(false)
+		expect(checkExistKey({ apiProvider: "openai", openAiApiKey: undefined })).toBe(false)
 	})
 
-	it("should return false for empty config", () => {
-		const config: ProviderSettings = {}
-		expect(checkExistKey(config)).toBe(false)
-	})
-
-	it("should return true when one key is defined", () => {
-		const config: ProviderSettings = {
-			apiKey: "test-key",
-		}
-		expect(checkExistKey(config)).toBe(true)
-	})
-
-	it("should return true when multiple keys are defined", () => {
-		const config: ProviderSettings = {
-			apiKey: "test-key",
-			openRouterApiKey: "openrouter-key",
-		}
-		expect(checkExistKey(config)).toBe(true)
-	})
-
-	it("should return true when only non-key fields are undefined", () => {
-		const config: ProviderSettings = {
-			apiKey: "test-key",
-			apiProvider: undefined,
-			anthropicBaseUrl: undefined,
-			modelMaxThinkingTokens: undefined,
-		}
-		expect(checkExistKey(config)).toBe(true)
-	})
-
-	it("should return false when all key fields are undefined", () => {
-		const config: ProviderSettings = {
-			apiKey: undefined,
-			openRouterApiKey: undefined,
-			awsRegion: undefined,
-			vertexProjectId: undefined,
-			openAiApiKey: undefined,
-			ollamaModelId: undefined,
-			lmStudioModelId: undefined,
-			geminiApiKey: undefined,
-			openAiNativeApiKey: undefined,
-			deepSeekApiKey: undefined,
-			moonshotApiKey: undefined,
-			mistralApiKey: undefined,
-			vsCodeLmModelSelector: undefined,
-			requestyApiKey: undefined,
-		}
-		expect(checkExistKey(config)).toBe(false)
-	})
-
-	it("should return true for fake-ai provider without API key", () => {
-		const config: ProviderSettings = {
-			apiProvider: "fake-ai",
-		}
-		expect(checkExistKey(config)).toBe(true)
-	})
-
-	it("should return true for openai-codex provider without API key", () => {
-		const config: ProviderSettings = {
-			apiProvider: "openai-codex",
-		}
-		expect(checkExistKey(config)).toBe(true)
-	})
-
-	it("should return true for qwen-code provider without API key", () => {
-		const config: ProviderSettings = {
-			apiProvider: "qwen-code",
-		}
-		expect(checkExistKey(config)).toBe(true)
-	})
-
-	it("should return true for Stellar connection settings without a stored API key", () => {
-		const config: ProviderSettings = {
+	it.each<ProviderSettings>([
+		{ apiProvider: "openai", openAiApiKey: "test-key" },
+		{ apiProvider: "vertex", vertexProjectId: "test-project" },
+		{ apiProvider: "vscode-lm", vsCodeLmModelSelector: { id: "test-model" } },
+		{
 			apiProvider: "stellar",
 			stellarBaseUrl: "https://gateway.example.com/stellar/v1",
 			stellarPemCaBundlePath: "C:\\certs\\corp.pem",
-		}
-
+		},
+	])("recognizes configured retained provider $apiProvider", (config) => {
 		expect(checkExistKey(config)).toBe(true)
 	})
+
+	it("allows the process-local scripted harness seam", () => {
+		expect(checkExistKey({ apiProvider: "fake-ai" })).toBe(true)
+	})
+
+	it.each(["openai-codex", "qwen-code", "openrouter"] as const)(
+		"rejects retired %s even with unrelated credentials",
+		(apiProvider) => {
+			expect(checkExistKey({ apiProvider, openAiApiKey: "test-key" })).toBe(false)
+		},
+	)
 })
