@@ -2,7 +2,14 @@ import path from "path"
 
 import type OpenAI from "openai"
 
-import type { ProviderSettings, ModeConfig, ModelInfo, ToolName, McpServer } from "@alpha-code/types"
+import {
+	openAiModelInfoSaneDefaults,
+	type ProviderSettings,
+	type ModeConfig,
+	type ModelInfo,
+	type ToolName,
+	type McpServer,
+} from "@alpha-code/types"
 import { customToolRegistry, formatNative } from "@alpha-code/core"
 
 import type { AlphaProvider } from "../webview/AlphaProvider"
@@ -26,6 +33,11 @@ import type { ApiMessage } from "../task-persistence/apiMessages"
 import type { McpHub } from "../../services/mcp/McpHub"
 import { buildMcpToolName } from "../../utils/mcp-name"
 import { DISCOVERY_OUTPUT_LIMIT, type DiscoverTools, type TaskToolCatalogCache } from "./TaskToolCatalogCache"
+import {
+	applyModelToolPreferences,
+	getModelSurgicalEditTool,
+	type ModelToolIdentity,
+} from "../../api/providers/utils/router-tool-preferences"
 
 export interface BuildToolsOptions {
 	provider: AlphaProvider
@@ -36,6 +48,8 @@ export interface BuildToolsOptions {
 	apiConfiguration: ProviderSettings | undefined
 	disabledTools?: string[]
 	modelInfo?: ModelInfo
+	/** Resolved provider/model identity used to gate host-specific schemas. */
+	modelIdentity?: ModelToolIdentity
 	/**
 	 * If true, returns all tools without mode filtering, but also includes
 	 * the list of allowed tool names for use with allowedFunctionNames.
@@ -89,23 +103,26 @@ function getToolName(tool: OpenAI.Chat.ChatCompletionTool): string {
 	return (tool as OpenAI.Chat.ChatCompletionFunctionTool).function.name
 }
 
-const AGENT_LIFECYCLE_TOOLS = new Set([
-	"list_agents",
-	"wait_agent",
-	"send_message",
-	"followup_task",
-	"interrupt_agent",
-	"cancel_agent",
-	"close_agent",
-])
+const AGENT_LIFECYCLE_TOOLS = new Set(["list_agents", "wait_agent", "send_message", "followup_task", "close_agent"])
 
-const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", "report_progress", ...AGENT_LIFECYCLE_TOOLS])
+const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", ...AGENT_LIFECYCLE_TOOLS])
 
 // Bump when native schemas or provider projection rules change. Dynamic schemas are fingerprinted below.
-const TOOL_CATALOG_SCHEMA_VERSION = 1
+const TOOL_CATALOG_SCHEMA_VERSION = 2
 
 const orderedNames = (names: readonly string[] | undefined) =>
 	names ? [...new Set(names.map(canonicalizeToolName))].sort() : undefined
+
+export function createModelToolIdentity(
+	apiConfiguration: ProviderSettings | undefined,
+	model: { id: string; toolIdentity?: ModelToolIdentity },
+): ModelToolIdentity {
+	if (model.toolIdentity) return model.toolIdentity
+	return {
+		provider: apiConfiguration?.apiProvider,
+		id: model.id,
+	}
+}
 
 async function awaitCatalogInput<T>(input: Promise<T>, signal?: AbortSignal): Promise<T> {
 	if (!signal) return input
@@ -252,12 +269,19 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		experiments,
 		apiConfiguration,
 		disabledTools: requestedDisabledTools,
-		modelInfo,
+		modelInfo: rawModelInfo,
 		includeAllToolsWithRestrictions,
 		allowedToolNames,
 		taskKind = "primary",
 		enableAgentLifecycleTools = taskKind === "primary",
 	} = options
+	const modelIdentity = options.modelIdentity ?? { provider: apiConfiguration?.apiProvider }
+	const modelPreference = getModelSurgicalEditTool(modelIdentity)
+	const modelInfo = rawModelInfo
+		? applyModelToolPreferences(modelIdentity, rawModelInfo)
+		: modelPreference === "apply_patch"
+			? applyModelToolPreferences(modelIdentity, openAiModelInfoSaneDefaults)
+			: undefined
 	const disabledTools = orderedNames([...(requestedDisabledTools ?? []), ...(options.policy?.disabledTools ?? [])])!
 
 	// Get CodeIndexManager for feature checking.
@@ -310,6 +334,8 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 					includedTools: orderedNames(modelInfo?.includedTools),
 					excludedTools: orderedNames(modelInfo?.excludedTools),
 				},
+				modelIdentity,
+				modelPreference,
 				autoApprovalEnabled: options.autoApprovalEnabled,
 				readGrant: options.readGrant,
 				policy: options.policy,
@@ -346,12 +372,12 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			taskKind,
 			agentKinds: mode === planModeSlug ? ["explore", "review"] : undefined,
 			planMode: mode === planModeSlug,
+			includeApplyPatch: modelPreference === "apply_patch",
 		})
 		// Restricted provider supersets retain definitions used by earlier ordinary-provider history.
 		if (canDiscover || includeAllToolsWithRestrictions) nativeTools.push(discoverTools)
 		// Managed child lanes provide a frozen authority allow-list. Retain only the
-		// orchestration schemas explicitly granted there; report_progress is the one
-		// host-safe upward capability added to legacy managed-child grants by Task.
+		// orchestration schemas explicitly granted there.
 		const explicitlyAllowedTools = allowedToolNames
 			? new Set(allowedToolNames.map((name) => resolveToolAlias(name)))
 			: undefined
@@ -360,10 +386,8 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			if (explicitlyAllowedTools) {
 				return !CHILD_SCOPED_AGENT_TOOLS.has(name) || explicitlyAllowedTools.has(name)
 			}
-			// Upward progress reporting is meaningful only for a managed child. Keep a
-			// stable primary lifecycle catalog so transcript compaction or reload cannot
+			// Keep a stable primary lifecycle catalog so transcript compaction or reload cannot
 			// hide controls for descendants and mailbox state retained by the host.
-			if (name === "report_progress") return false
 			if (AGENT_LIFECYCLE_TOOLS.has(name)) return enableAgentLifecycleTools
 			return true
 		})

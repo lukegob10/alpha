@@ -7,17 +7,15 @@ import { createTaskToolSurface } from "../TaskToolSurface"
 import { isValidToolName } from "../validateToolUse"
 
 const lifecycleToolNames = [
-	"delegate_task",
 	"spawn_agent",
 	"list_agents",
 	"wait_agent",
 	"send_message",
-	"report_progress",
 	"followup_task",
-	"interrupt_agent",
-	"cancel_agent",
 	"close_agent",
 ] as const
+
+const retiredAgentToolNames = ["delegate_task", "report_progress", "interrupt_agent", "cancel_agent"] as const
 
 describe("native tool production dispatch contract", () => {
 	it("exposes native schemas through the captured executable registry", () => {
@@ -30,6 +28,7 @@ describe("native tool production dispatch contract", () => {
 		const exposedNames = schemas.flatMap((tool) => (tool.type === "function" ? [tool.function.name] : []))
 
 		expect(exposedNames).toEqual(expect.arrayContaining([...lifecycleToolNames]))
+		expect(exposedNames).not.toEqual(expect.arrayContaining([...retiredAgentToolNames]))
 		for (const name of exposedNames) {
 			expect(surface.isCallable(name), name).toBe(true)
 			expect(surface.resolve(name)?.execute, name).toBeTypeOf("function")
@@ -38,6 +37,29 @@ describe("native tool production dispatch contract", () => {
 			expect(isValidToolName(name), name).toBe(true)
 			expect(ALWAYS_AVAILABLE_TOOLS).not.toContain(name)
 			expect(Object.values(TOOL_GROUPS).flatMap((group) => group.tools)).toContain(name)
+		}
+		for (const name of retiredAgentToolNames) {
+			expect(isValidToolName(name), name).toBe(true)
+			expect(Object.values(TOOL_GROUPS).flatMap((group) => group.tools)).not.toContain(name)
+		}
+	})
+
+	it("keeps retired agent executors available only through explicit historical schemas", () => {
+		const schemas = retiredAgentToolNames.map((name) => ({
+			type: "function" as const,
+			function: {
+				name,
+				description: `${name} historical fixture`,
+				parameters: { type: "object", properties: {}, additionalProperties: false },
+			},
+		}))
+		const registry = new ToolRegistry({ nativeTools: schemas })
+
+		for (const name of retiredAgentToolNames) {
+			expect(registry.resolve(name)?.execute, name).toBeTypeOf("function")
+			expect(registry.getSchemas().some((tool) => tool.type === "function" && tool.function.name === name)).toBe(
+				true,
+			)
 		}
 	})
 

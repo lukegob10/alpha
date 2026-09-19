@@ -31,8 +31,10 @@ const workflowTools = new Set<ToolName>([
 	"read_file",
 	"list_files",
 	"search_files",
-	"read_command_output",
+	"shell",
 	"execute_command",
+	"manage_command",
+	"read_command_output",
 	"write_to_file",
 	"apply_diff",
 	"edit",
@@ -44,6 +46,8 @@ const workflowTools = new Set<ToolName>([
 	"update_todo_list",
 	"ask_followup_question",
 ])
+
+const WORKFLOW_COMMAND_TOOL_NAMES = new Set(["shell", "execute_command"])
 
 // A closed scenario surface prevents unrelated browser, GitHub, MCP, image and
 // delegation calls from relying on a model's obedience to the fixture prompt.
@@ -166,7 +170,7 @@ export function isApprovedWorkflowCommand(
 		if (!Array.isArray(content)) continue
 		const calls = content
 			.map(record)
-			.filter((block) => block?.type === "tool_use" && block.name === "execute_command")
+			.filter((block) => block?.type === "tool_use" && WORKFLOW_COMMAND_TOOL_NAMES.has(String(block.name)))
 		if (message?.role !== "assistant") {
 			if (calls.length > 0) return false
 			continue

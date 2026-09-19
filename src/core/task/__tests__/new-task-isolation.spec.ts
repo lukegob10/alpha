@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest"
 
 import { createAgentResponse, type AgentToolCall } from "../../agent/AgentResponse"
 import { getToolBatchIsolationError, ToolScheduler, type ToolExecutionHost } from "../../agent/ToolScheduler"
+import { delegate_task } from "../../prompts/tools/native-tools/delegate_task"
+import { getNativeTools } from "../../prompts/tools/native-tools"
 import { ToolRegistry } from "../../tools/ToolRegistry"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
 
@@ -31,6 +33,9 @@ function createHost() {
 
 function createRegistry() {
 	return new ToolRegistry({
+		// The barrier matrix intentionally covers the retired delegate_task
+		// descriptor; preserve it as an explicit historical fixture.
+		nativeTools: [...getNativeTools(), delegate_task],
 		mcpTools: [
 			{
 				type: "function",

@@ -302,7 +302,7 @@ const developmentScope = (commands: readonly string[]): string =>
 		"Do not use network services, remotes, push, dependency installation, delegation, global Git configuration, or deletion of unknown directories.",
 		"Do not edit .alpha-e2e-owned.json, .alpha-development-fixture.json, .alpha-development-state.json, .alphaignore, or any file outside the workspace.",
 		"A successful test command must execute the listed tests with no skipped or todo cases.",
-		"Submit each terminal command as a separate execute_command call. Do not combine commands or add prefixes, shell operators, pipelines, or command substitution.",
+		"Submit each terminal command as a separate shell call. Do not combine commands or add prefixes, shell operators, pipelines, or command substitution.",
 		"Use Alpha file tools for file inspection and edits. The host permits only these exact terminal commands with the workspace as cwd:",
 		...commands,
 	].join("\n")
@@ -531,7 +531,7 @@ export function developmentScript(phase: DevelopmentPhaseId, workspace: string):
 		arguments: { path: file, content },
 	})
 	const command = (value: string): DevelopmentToolCall => ({
-		name: "execute_command",
+		name: "shell",
 		arguments: { command: value, cwd: workspace, timeout: 30 },
 	})
 

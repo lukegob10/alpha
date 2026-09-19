@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { ToolRegistry } from "../ToolRegistry"
+import { getToolCapabilities, ToolRegistry } from "../ToolRegistry"
 
 function schema(name: string) {
 	return {
@@ -73,19 +73,16 @@ describe("ToolRegistry", () => {
 			sideEffects: "task",
 			controlFlow: true,
 		})
-		for (const name of ["send_message", "followup_task", "interrupt_agent", "cancel_agent", "close_agent"]) {
+		for (const name of ["send_message", "followup_task", "close_agent"]) {
 			expect(registry.resolve(name)?.capabilities).toMatchObject({
 				concurrency: "serial",
 				sideEffects: "task",
 				controlFlow: false,
 			})
 		}
-		expect(registry.resolve("report_progress")?.capabilities).toMatchObject({
-			concurrency: "serial",
-			sideEffects: "task",
-			controlFlow: false,
-			requiresApproval: false,
-		})
+		for (const name of ["delegate_task", "report_progress", "interrupt_agent", "cancel_agent"]) {
+			expect(registry.resolve(name)).toBeUndefined()
+		}
 		expect(registry.resolve("open_browser_page")?.capabilities).toMatchObject({
 			concurrency: "serial",
 			sideEffects: "external",
@@ -102,7 +99,46 @@ describe("ToolRegistry", () => {
 
 		expect(registry.resolve("search_and_replace")?.name).toBe("edit")
 		expect(registry.resolve("write_file")?.name).toBe("write_to_file")
+		expect(registry.resolve("execute_command")?.name).toBe("shell")
+		expect(registry.resolve("read_command_output")?.name).toBe("manage_command")
+		expect(registry.resolve("shell")?.schema).toMatchObject({
+			function: { name: "shell" },
+		})
+		expect(registry.getSchema("read_command_output")).toMatchObject({
+			function: { name: "manage_command" },
+		})
 		expect(registry.canonicalName("search_and_replace")).toBe("edit")
+		expect(registry.canonicalName("execute_command")).toBe("shell")
+		expect(registry.canonicalName("read_command_output")).toBe("manage_command")
+		expect(registry.getSchema("execute_command")).toMatchObject({
+			function: { name: "shell" },
+		})
+		expect(getToolCapabilities("execute_command")).toEqual(getToolCapabilities("shell"))
+		expect(getToolCapabilities("read_command_output")).toEqual(getToolCapabilities("manage_command"))
+		expect(
+			registry
+				.getSchemas()
+				.some((tool) => tool.type === "function" && tool.function.name === "read_command_output"),
+		).toBe(false)
+	})
+
+	it("registers retired agent executors only when historical schemas are explicit", () => {
+		const historicalNames = ["delegate_task", "report_progress", "interrupt_agent", "cancel_agent"]
+		const registry = new ToolRegistry({
+			nativeTools: historicalNames.map((name) => ({
+				type: "function" as const,
+				function: {
+					name,
+					description: `${name} historical fixture`,
+					parameters: { type: "object", properties: {}, additionalProperties: false },
+				},
+			})),
+		})
+
+		for (const name of historicalNames) {
+			expect(registry.resolve(name)?.name).toBe(name)
+			expect(registry.resolve(name)?.execute).toBeTypeOf("function")
+		}
 	})
 
 	it("rejects unknown tools without inventing a descriptor", () => {

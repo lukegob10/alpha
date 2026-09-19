@@ -619,21 +619,24 @@ export function normalizeApiConversationTrace(value: unknown): EvalTraceEvent[] 
 					sequence: events.length + 1,
 					timestamp,
 					type:
-						content.name === "execute_command" ? "agent.turn.verification_started" : "agent.turn.tool_call",
+						content.name === "shell" || content.name === "execute_command"
+							? "agent.turn.verification_started"
+							: "agent.turn.tool_call",
 					payload: { tool: content.name },
 				})
 			}
 			if (content.type === "tool_result" && typeof content.tool_use_id === "string") {
 				const tool = toolNames.get(content.tool_use_id) ?? "unknown"
+				const isCommand = tool === "shell" || tool === "execute_command"
 				const result =
 					typeof content.content === "string" ? content.content : JSON.stringify(content.content ?? "")
 				events.push({
 					sequence: events.length + 1,
 					timestamp,
-					type: tool === "execute_command" ? "agent.turn.verification_result" : "agent.turn.tool_result",
+					type: isCommand ? "agent.turn.verification_result" : "agent.turn.tool_result",
 					payload: {
 						tool,
-						...(tool === "execute_command" ? { ok: /exit code:\s*0\b/i.test(result) } : {}),
+						...(isCommand ? { ok: /exit code:\s*0\b/i.test(result) } : {}),
 					},
 				})
 			}

@@ -2130,7 +2130,13 @@ describe("VsCodeLmHandler", () => {
 			const model = handler.getModel()
 			expect(model.id).toBe("opaque-selected-id")
 			expect(model.info.includedTools).toEqual([tool])
-			expect(model.info.excludedTools).toEqual(["apply_diff"])
+			expect(model.info.excludedTools).toBeUndefined()
+			expect(model.toolIdentity).toEqual({
+				provider: "vscode-lm",
+				vendor: "copilot",
+				family,
+				id: "opaque-selected-id",
+			})
 		})
 
 		it("should return model info when client exists", async () => {

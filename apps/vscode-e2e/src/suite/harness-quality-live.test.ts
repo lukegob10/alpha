@@ -42,7 +42,7 @@ suite("Live Copilot harness quality", function () {
 		}
 		await runLiveCase(
 			"acceptance-repair",
-			["update_todo_list", "execute_command", "apply_patch", "manage_command"],
+			["update_todo_list", "shell", "apply_patch", "manage_command"],
 			{
 				"live-acceptance/invoice.cjs":
 					"exports.total = items => items.reduce((sum, item) => sum + item.cents, 0)\n",
@@ -50,7 +50,7 @@ suite("Live Copilot harness quality", function () {
 			},
 			`Use update_todo_list to record this work_plan: ${JSON.stringify(workPlan)}. Run its command once to demonstrate the existing failure, fix only invoice.cjs using apply_patch, rerun the same check, and finish. Preserve the oracle. Do not run an additional successful verification command when the evidence already passes.`,
 			async (calls, _messages, workspace, _answer, task) => {
-				const commands = calls.filter((call) => call.name === "execute_command")
+				const commands = calls.filter((call) => call.name === "shell")
 				assert.equal(commands.length, 2, "One failing baseline and one passing repair check")
 				assert.ok(commands.every((call) => call.input.command === command))
 				assert.equal(task.workContext?.receipts[0]?.status, "passed")
@@ -85,13 +85,13 @@ suite("Live Copilot harness quality", function () {
 		await runLiveCase(
 			browser ? "browser-session" : "command-session",
 			browser
-				? ["execute_command", "manage_command", "open_browser_page", "click_element", "read_page"]
-				: ["execute_command", "manage_command"],
+				? ["shell", "manage_command", "open_browser_page", "click_element", "read_page"]
+				: ["shell", "manage_command"],
 			{
 				[`${directory}/server.cjs`]: `const fs=require('node:fs'); const http=require('node:http'); const server=http.createServer((req,res)=>res.writeHead(200,{'Content-Type':'text/html'}).end('<h1>ALPHA_READY</h1><button onclick="this.textContent=String.fromCharCode(67,111,117,110,116,49)">Count0</button>')); setTimeout(()=>server.listen(0,'127.0.0.1',()=>{const url='http://127.0.0.1:'+server.address().port; fs.writeFileSync('${directory}/url.txt',url); console.log('READY '+url)}),1800);\n`,
 				[`${directory}/check.cjs`]: `const fs=require('node:fs'); const assert=require('node:assert/strict'); fetch(fs.readFileSync('${directory}/url.txt','utf8')).then(r=>r.text()).then(body=>{assert.ok(body.includes('ALPHA_READY')); console.log('HTTP behavior passed')}).catch(e=>{console.error(e);process.exitCode=1});\n`,
 			},
-			`Start ${startCommand} using execute_command with timeout 1. Use manage_command with its returned execution_id to wait until READY is observed. Run ${checkCommand} once. ${browser ? "Open the observed URL with open_browser_page, click the Count0 button, and read_page to verify Count1. " : ""}Then stop the original server using manage_command and observe its terminal outcome. Do not edit files, start duplicate servers, or kill by PID.`,
+			`Start ${startCommand} using shell with timeout 1. Use manage_command with its returned execution_id to wait until READY is observed. Run ${checkCommand} once. ${browser ? "Open the observed URL with open_browser_page, click the Count0 button, and read_page to verify Count1. " : ""}Then stop the original server using manage_command and observe its terminal outcome. Do not edit files, start duplicate servers, or kill by PID.`,
 			async (calls) => {
 				if (browser)
 					assert.ok(
@@ -99,9 +99,7 @@ suite("Live Copilot harness quality", function () {
 							(call) => call.name === "read_page" && !call.isError && call.result.includes("Count1"),
 						),
 					)
-				const launches = calls.filter(
-					(call) => call.name === "execute_command" && call.input.command === startCommand,
-				)
+				const launches = calls.filter((call) => call.name === "shell" && call.input.command === startCommand)
 				assert.equal(launches.length, 1)
 				assert.ok(launches[0])
 				const executionId = /execution_id: ([\w:-]+)\./.exec(launches[0].result)?.[1]
@@ -127,11 +125,7 @@ suite("Live Copilot harness quality", function () {
 						(call) => call.name === "manage_command" && call.input.action === "stop" && !call.isError,
 					),
 				)
-				assert.ok(
-					calls.some(
-						(call) => call.name === "execute_command" && call.result.includes("HTTP behavior passed"),
-					),
-				)
+				assert.ok(calls.some((call) => call.name === "shell" && call.result.includes("HTTP behavior passed")))
 			},
 			{
 				scope: "Control only commands started in this fixture. These test commands and stopping your own server are authorized. Do not load any skills for this explicit contract probe.",

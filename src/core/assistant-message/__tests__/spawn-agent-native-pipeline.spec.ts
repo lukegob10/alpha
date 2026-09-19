@@ -7,8 +7,11 @@ import { collectAgentResponse } from "../../agent/AgentResponseAccumulator"
 import { ToolScheduler } from "../../agent/ToolScheduler"
 import { Task } from "../../task/Task"
 import { AskIgnoredError } from "../../task/AskIgnoredError"
+import { cancel_agent } from "../../prompts/tools/native-tools/cancel_agent"
+import { getNativeTools } from "../../prompts/tools/native-tools"
 import { ToolRegistry } from "../../tools/ToolRegistry"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
+import { validateToolUse } from "../../tools/validateToolUse"
 import { NativeToolCallParser, type ToolCallStreamEvent } from "../NativeToolCallParser"
 import { presentAssistantMessage } from "../presentAssistantMessage"
 
@@ -66,14 +69,52 @@ function createTask() {
 	}
 }
 
-function scheduler(task: ReturnType<typeof createTask>, mode = "code", signal?: AbortSignal) {
-	const surface = createTaskToolSurface({ registry: new ToolRegistry(), mode })
+function scheduler(
+	task: ReturnType<typeof createTask>,
+	mode = "code",
+	signal?: AbortSignal,
+	includeHistoricalCancel = false,
+) {
+	const registry = includeHistoricalCancel
+		? new ToolRegistry({ nativeTools: [...getNativeTools(), cancel_agent] })
+		: new ToolRegistry()
+	const surface = includeHistoricalCancel
+		? (() => {
+				const capturedNames = registry
+					.getSchemas()
+					.flatMap((schema) => (schema.type === "function" ? [schema.function.name] : []))
+				return createTaskToolSurface({
+					registry,
+					mode,
+					visibleToolNames: capturedNames,
+					allowedToolNames: capturedNames,
+				})
+			})()
+		: createTaskToolSurface({ registry, mode })
 	return new ToolScheduler({
 		task: task as unknown as Task,
 		registry: surface.registry,
 		policy: surface.policy,
 		mode,
 		signal,
+		...(includeHistoricalCancel
+			? {
+					// Retired control coverage is intentionally explicit. Keep the
+					// production validator for living names and exempt only the
+					// historical cancel_agent call.
+					validateCall: (call, toolCall) => {
+						if (call.name === "cancel_agent") return
+						validateToolUse(
+							call.name as never,
+							mode,
+							[],
+							undefined,
+							(toolCall.nativeArgs ?? {}) as Record<string, unknown>,
+							{},
+						)
+					},
+				}
+			: {}),
 		preserveAbortedResults: true,
 		executionMode: "serial",
 	})
@@ -301,7 +342,7 @@ describe("native streaming through the captured scheduler/registry surface", () 
 			call("send", "send_message", { target: "backend_review", message: "Prioritize cancellation." }),
 			call("cancel", "cancel_agent", { target: "backend_review" }),
 		]
-		await scheduler(task).run(createAgentResponse(calls))
+		await scheduler(task, "code", undefined, true).run(createAgentResponse(calls))
 		expect(order).toEqual(calls.map((item) => item.name))
 		expect(resultIds(task)).toEqual(calls.map((item) => item.id))
 	})

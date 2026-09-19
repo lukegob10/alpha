@@ -90,7 +90,7 @@ export function applyExecutionProfile(
 		if (profile.id === "work") return true
 		const capability = policy.capabilities[canonical]
 		return (
-			canonical !== "execute_command" &&
+			canonical !== "shell" &&
 			canonical !== "new_task" &&
 			capability?.sideEffects === "none" &&
 			!capability.controlFlow

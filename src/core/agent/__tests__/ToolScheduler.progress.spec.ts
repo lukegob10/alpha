@@ -374,11 +374,11 @@ describe("ToolScheduler progress observation", () => {
 			validateCall: () => {},
 		}).run(calls("fixture_command_alias", 1))
 		expect(execute).not.toHaveBeenCalled()
-		expect(host.getToolRetryBlock).toHaveBeenCalledWith("execute_command", expect.any(Object))
+		expect(host.getToolRetryBlock).toHaveBeenCalledWith("shell", expect.any(Object))
 		expect(outcome.results[0]).toMatchObject({ status: "error", failure })
 		expect(outcome.results[0].content).toContain("before repeating")
 		expect(host.recordToolCallForStopping).toHaveBeenCalledWith(
-			"execute_command",
+			"shell",
 			expect.any(Object),
 			"error",
 			undefined,

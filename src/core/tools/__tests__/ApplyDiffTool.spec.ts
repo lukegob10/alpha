@@ -6,6 +6,7 @@ import { ApplyDiffTool } from "../ApplyDiffTool"
 import { MultiSearchReplaceDiffStrategy } from "../../diff/strategies/multi-search-replace"
 import { DiffViewProvider } from "../../../integrations/editor/DiffViewProvider"
 import { ToolRegistry } from "../ToolRegistry"
+import { apply_diff as legacyDiffSchema } from "../../prompts/tools/native-tools/apply_diff"
 import { ToolScheduler } from "../../agent/ToolScheduler"
 import type { AgentTurnEvent } from "../../agent/AgentTurnEvents"
 
@@ -126,7 +127,8 @@ async function runScheduledDiff(task: ReturnType<typeof createTask>, diff: strin
 	}
 	const outcome = await new ToolScheduler({
 		task,
-		registry: new ToolRegistry(),
+		// Replay coverage explicitly supplies the retired schema; new catalogs omit it.
+		registry: new ToolRegistry({ nativeTools: [legacyDiffSchema] }),
 		mode: "code",
 		validateCall: () => {},
 		onEvent: (event) => {

@@ -7,6 +7,8 @@ describe("update_todo_list native tool", () => {
 		expect(description).toContain("Optional tracking")
 		expect(description).toContain("not a prerequisite")
 		expect(description).toContain("requested coverage or a concrete dependency")
+		expect(description).toContain("successful shell call")
+		expect(description).not.toContain("execute_command")
 		expect(description).not.toContain("Add new actionable items as they're discovered")
 	})
 

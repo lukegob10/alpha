@@ -1271,7 +1271,7 @@ function formatPersistedOutput(
 		"Preview:",
 		result.preview,
 		"",
-		"Use read_command_output tool to view full output if needed.",
+		'In Code mode, use manage_command with action "read" and this artifact_id to view more output.',
 	].join("\n")
 }
 

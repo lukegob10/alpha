@@ -13,7 +13,7 @@ Core Principles:
 - Only mark a task as completed when evidence establishes it is fully accomplished
 - Keep all unfinished tasks unless explicitly instructed to remove
 - For complex work, work_plan optionally preserves the objective, constraints, resource/evidence notes, and a few executable acceptance checks across compaction and reload. Null preserves the existing plan. Do not create a plan for a trivial edit.
-- A declared check is satisfied only by an observed successful execute_command with the exact command and working directory. Include all relevant source, test, config, and dependency files in paths; use reusable=false for external/live state. Results are supplied automatically. Do not repeat a passing check without changed inputs or another concrete reason. Failed or stale declared checks prevent a completed outcome; use a blocked outcome when they cannot be resolved.
+- A declared check is satisfied only by an observed successful shell call with the exact command and working directory. Include all relevant source, test, config, and dependency files in paths; use reusable=false for external/live state. Results are supplied automatically. Do not repeat a passing check without changed inputs or another concrete reason. Failed or stale declared checks prevent a completed outcome; use a blocked outcome when they cannot be resolved.
 - Replace the plan only for an actual change of scope; never remove a failing check to manufacture completion. Notes should retain artifact/resource references, unresolved failures, and external operations requiring reconciliation, without secrets.
 
 Example:

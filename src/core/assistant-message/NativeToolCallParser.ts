@@ -717,6 +717,7 @@ export class NativeToolCallParser {
 				}
 				break
 
+			case "shell":
 			case "execute_command":
 				if (partialArgs.command) {
 					nativeArgs = {
@@ -813,6 +814,22 @@ export class NativeToolCallParser {
 					nativeArgs = {
 						todos: partialArgs.todos,
 					}
+				}
+				break
+
+			case "manage_command":
+				if (originalName === "read_command_output" || partialArgs.action === "read") {
+					if (partialArgs.artifact_id !== undefined) {
+						nativeArgs = {
+							action: "read",
+							artifact_id: partialArgs.artifact_id,
+							search: partialArgs.search,
+							offset: partialArgs.offset,
+							limit: partialArgs.limit,
+						}
+					}
+				} else {
+					nativeArgs = partialArgs
 				}
 				break
 
@@ -1155,6 +1172,7 @@ export class NativeToolCallParser {
 					}
 					break
 
+				case "shell":
 				case "execute_command":
 					if (args.command) {
 						nativeArgs = {
@@ -1274,7 +1292,19 @@ export class NativeToolCallParser {
 					break
 
 				case "manage_command":
-					nativeArgs = args as NativeArgsFor<TName>
+					if (toolCall.name === "read_command_output" || args.action === "read") {
+						if (args.artifact_id !== undefined) {
+							nativeArgs = {
+								action: "read",
+								artifact_id: args.artifact_id,
+								search: args.search,
+								offset: args.offset,
+								limit: args.limit,
+							} as NativeArgsFor<TName>
+						}
+					} else {
+						nativeArgs = args as NativeArgsFor<TName>
+					}
 					break
 
 				case "read_command_output":

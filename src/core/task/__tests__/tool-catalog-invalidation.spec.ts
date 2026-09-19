@@ -199,11 +199,14 @@ describe("TaskToolCatalogCache effective input invalidation", () => {
 
 		const included = await capture({
 			...options,
-			modelInfo: { ...baseModel, includedTools: ["edit"] },
+			modelIdentity: { provider: "vertex", id: "gpt-5.5" },
+			modelInfo: { ...baseModel, includedTools: ["apply_patch"] },
 		})
 		expect(included).not.toBe(imageCapable)
 		expect(included.isCallable("edit")).toBe(true)
-		expect(first.isCallable("edit")).toBe(false)
+		expect(first.isCallable("edit")).toBe(true)
+		expect(included.isCallable("apply_patch")).toBe(true)
+		expect(first.isCallable("apply_patch")).toBe(false)
 
 		const excluded = await capture({
 			...options,

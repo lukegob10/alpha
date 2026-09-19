@@ -21,17 +21,12 @@ const PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 	"codebase_search",
 	"ask_followup_question",
 	"attempt_completion",
-	"execute_command",
-	"read_command_output",
-	"delegate_task",
+	"shell",
 	"spawn_agent",
 	"list_agents",
 	"wait_agent",
 	"send_message",
-	"report_progress",
 	"followup_task",
-	"interrupt_agent",
-	"cancel_agent",
 	"close_agent",
 ])
 
@@ -200,15 +195,7 @@ export function isToolAllowedForMode(
 		if (toolParams?.write_scope != null) return false
 	}
 
-	if (modeSlug === planModeSlug && resolvedTool === "delegate_task" && Array.isArray(toolParams?.tasks)) {
-		for (const task of toolParams.tasks) {
-			if (!task || typeof task !== "object") continue
-			if (task.agent_kind && !["explore", "review"].includes(task.agent_kind)) return false
-			if (task.write_scope != null) return false
-		}
-	}
-
-	if (modeSlug === planModeSlug && resolvedTool === "execute_command" && toolParams) {
+	if (modeSlug === planModeSlug && resolvedTool === "shell" && toolParams) {
 		if (typeof toolParams.command !== "string" || !isPlanCommandAllowed(toolParams.command)) return false
 		if (!isPlanCommandCwdAllowed(toolParams.cwd)) return false
 		if (toolParams.verification != null) return false

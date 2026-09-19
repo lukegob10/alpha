@@ -2,9 +2,9 @@ import { strict as assert } from "node:assert"
 import { test } from "node:test"
 import { inspectWorkflowTrace } from "./workflowTrace"
 
-const call = (id: string, command: string) => ({
+const call = (id: string, command: string, name: "shell" | "execute_command" = "execute_command") => ({
 	role: "assistant",
-	content: [{ type: "tool_use", name: "execute_command", id, input: { command } }],
+	content: [{ type: "tool_use", name, id, input: { command } }],
 })
 const receipt = (id: string, is_error?: unknown) => ({
 	role: "user",
@@ -24,6 +24,14 @@ test("trace checks require actual matching receipts, never assistant claims or m
 		["node --test", "git status --short"],
 	)
 	assert.deepEqual(inspected, { commandReceipts: { "node --test": 1, "git status --short": 0 }, errorResults: 0 })
+})
+
+test("trace readers accept canonical shell calls and historical command calls", () => {
+	const inspected = inspectWorkflowTrace(
+		[call("shell-call", "node --test", "shell"), receipt("shell-call")],
+		["node --test"],
+	)
+	assert.deepEqual(inspected, { commandReceipts: { "node --test": 1 }, errorResults: 0 })
 })
 
 test("failed or malformed command receipts never count as successful; raw data is not projected", () => {

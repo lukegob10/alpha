@@ -38,8 +38,8 @@ describe("getSharedToolUseSection", () => {
 	it("keeps primary delegation guidance bounded to entry points", () => {
 		const section = getSharedToolUseSection()
 
-		expect(section).toContain("new_task and delegate_task are blocking delegation boundaries")
-		expect(section).toContain("must each be called alone")
+		expect(section).toContain("new_task is a blocking delegation boundary")
+		expect(section).toContain("must be called alone")
 		expect(section).toContain("Independent spawn_agent calls may be batched together")
 		for (const lifecycleTool of [
 			"list_agents",
@@ -49,6 +49,7 @@ describe("getSharedToolUseSection", () => {
 			"interrupt_agent",
 			"cancel_agent",
 			"close_agent",
+			"delegate_task",
 		]) {
 			expect(section).not.toContain(lifecycleTool)
 		}

@@ -33,7 +33,7 @@ import {
 
 import { BaseProvider } from "./base-provider"
 import { getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
-import { applyCopilotToolPreferences } from "./utils/router-tool-preferences"
+import { applyCopilotToolPreferences, type ModelToolIdentity } from "./utils/router-tool-preferences"
 import type { SingleCompletionHandler, ApiHandlerCountTokensMetadata, ApiHandlerCreateMessageMetadata } from "../index"
 
 /**
@@ -1339,7 +1339,11 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 	}
 
 	// Return model information based on the current client state
-	override getModel(): { id: string; info: ModelInfo } {
+	override getModel(): {
+		id: string
+		info: ModelInfo
+		toolIdentity?: ModelToolIdentity
+	} {
 		const client = this.preparedClient ?? this.client
 		if (client) {
 			// Validate client properties
@@ -1365,7 +1369,11 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 
 			const modelInfo = buildVsCodeLmModelInfo(client, this.options.vsCodeLmContextSize)
 
-			return { id: modelId, info: modelInfo }
+			return {
+				id: modelId,
+				info: modelInfo,
+				toolIdentity: { provider: "vscode-lm", vendor: client.vendor, family: client.family, id: client.id },
+			}
 		}
 
 		// Fallback when no client is available
@@ -1375,9 +1383,9 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 
 		console.debug("Alpha <Language Model API>: No client available, using fallback model info")
 
-		return {
-			id: fallbackId,
-			info: {
+		const info = applyCopilotToolPreferences(
+			{ id: fallbackId },
+			{
 				...openAiModelInfoSaneDefaults,
 				...getVscodeLlmModelInfo(this.options.vsCodeLmModelSelector ?? {}),
 				contextWindow: getVscodeLlmContextWindow(
@@ -1387,6 +1395,12 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				contextWindowIncludesOutput: false,
 				description: `VSCode Language Model (Fallback): ${fallbackId}`,
 			},
+		)
+
+		return {
+			id: fallbackId,
+			info,
+			toolIdentity: { provider: "vscode-lm", id: fallbackId },
 		}
 	}
 

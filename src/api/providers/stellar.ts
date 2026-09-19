@@ -13,6 +13,7 @@ import { OpenAiHandler } from "./openai"
 import { HelixTokenManager, type HelixParseMode } from "./utils/helix-token-manager"
 import { getApiRequestTimeout } from "./utils/timeout-config"
 import { configurePemCaTransport } from "./utils/vertex-gateway-transport"
+import { applyModelToolPreferences } from "./utils/router-tool-preferences"
 
 export const DEFAULT_STELLAR_HELIX_COMMAND = "helix auth access-token print -a"
 
@@ -61,7 +62,7 @@ export class StellarHandler extends OpenAiHandler {
 
 	override getModel() {
 		const id = this.options.openAiModelId?.trim() || stellarDefaultModelId
-		const info = getStellarModelInfo(id)
+		const info = applyModelToolPreferences({ provider: "stellar", id }, getStellarModelInfo(id))
 		const params = getModelParams({
 			format: "openai",
 			modelId: id,
@@ -70,7 +71,7 @@ export class StellarHandler extends OpenAiHandler {
 			defaultTemperature: info.defaultTemperature ?? 0.7,
 		})
 
-		return { id, info, ...params }
+		return { id, info, ...params, toolIdentity: { provider: "stellar", id } }
 	}
 
 	override async *createMessage(

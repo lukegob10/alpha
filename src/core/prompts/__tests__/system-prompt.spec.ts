@@ -312,10 +312,10 @@ describe("SYSTEM_PROMPT", () => {
 
 			if (subagentRole === "worker") {
 				expect(prompt).toContain("approved write scope")
-				expect(prompt).toContain("execute_command")
+				expect(prompt).toContain("shell")
 			} else {
 				expect(prompt).toContain("read-only child task")
-				expect(prompt).not.toContain("execute_command")
+				expect(prompt).not.toContain("shell")
 			}
 		},
 	)
@@ -784,7 +784,7 @@ describe("SYSTEM_PROMPT", () => {
 		// Should NOT contain a tool catalog / XML examples
 		expect(prompt).not.toContain("# Tools")
 		expect(prompt).not.toContain("## read_file")
-		expect(prompt).not.toContain("## execute_command")
+		expect(prompt).not.toContain("## shell")
 		expect(prompt).not.toContain("<read_file>")
 		expect(prompt).not.toContain("<path>")
 		expect(prompt).not.toContain("Usage:")

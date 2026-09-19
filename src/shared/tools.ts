@@ -164,11 +164,26 @@ export type NativeToolArgs = BrowserToolArgs & {
 	discover_tools: DiscoverToolsParams
 	read_file: import("@alpha-code/types").ReadFileToolParams
 	read_command_output: { artifact_id: string; search?: string; offset?: number; limit?: number }
-	manage_command: {
-		execution_id: string
-		action: "wait" | "stop" | "input"
-		input?: string | null
-		timeout_ms?: number | null
+	manage_command:
+		| {
+				execution_id: string
+				action: "wait" | "stop" | "input"
+				input?: string | null
+				timeout_ms?: number | null
+		  }
+		| {
+				action: "read"
+				artifact_id: string
+				search?: string
+				offset?: number
+				limit?: number
+		  }
+	shell: {
+		command: string
+		cwd?: string | null
+		timeout?: number | null
+		/** Internal and historical verification metadata; omitted from the model-facing schema. */
+		verification?: { change_set_ids: string[] } | null
 	}
 	attempt_completion: { result: string; outcome?: "completed" | "blocked" }
 	execute_command: {
@@ -341,6 +356,11 @@ export interface ExecuteCommandToolUse extends ToolUse<"execute_command"> {
 	params: Partial<Pick<Record<ToolParamName, string>, "command" | "cwd" | "timeout" | "verification">>
 }
 
+export interface ShellToolUse extends ToolUse<"shell"> {
+	name: "shell"
+	params: Partial<Pick<Record<ToolParamName, string>, "command" | "cwd" | "timeout">>
+}
+
 export interface ReadFileToolUse extends ToolUse<"read_file"> {
 	name: "read_file"
 	params: Partial<
@@ -454,6 +474,7 @@ export type ToolGroupConfig = {
 }
 
 export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
+	shell: "run commands",
 	execute_command: "run commands",
 	manage_command: "control task commands",
 	read_file: "read files",
@@ -515,11 +536,11 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 		tools: ["read_file", "search_files", "list_files", "codebase_search", "list_tickets", "read_ticket"],
 	},
 	edit: {
-		tools: ["apply_diff", "write_to_file", "generate_image", "create_ticket", "update_ticket", "delete_ticket"],
-		customTools: ["edit", "search_replace", "edit_file", "apply_patch"],
+		tools: ["edit", "write_to_file", "create_ticket", "update_ticket", "delete_ticket"],
+		customTools: ["edit", "apply_patch"],
 	},
 	command: {
-		tools: ["execute_command", "read_command_output", "manage_command"],
+		tools: ["shell", "manage_command"],
 	},
 	mcp: {
 		tools: ["use_mcp_tool", "access_mcp_resource", "discover_tools"],
@@ -529,18 +550,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 		alwaysAvailable: true,
 	},
 	agents: {
-		tools: [
-			"delegate_task",
-			"spawn_agent",
-			"list_agents",
-			"wait_agent",
-			"send_message",
-			"report_progress",
-			"followup_task",
-			"interrupt_agent",
-			"cancel_agent",
-			"close_agent",
-		],
+		tools: ["spawn_agent", "wait_agent", "send_message", "followup_task", "list_agents", "close_agent"],
 	},
 	browser: {
 		tools: [
@@ -580,6 +590,8 @@ export const ALWAYS_AVAILABLE_TOOLS: ToolName[] = [
  * To add a new alias, simply add an entry here. No other files need to be modified.
  */
 export const TOOL_ALIASES: Record<string, ToolName> = {
+	execute_command: "shell",
+	read_command_output: "manage_command",
 	write_file: "write_to_file",
 	search_and_replace: "edit",
 } as const

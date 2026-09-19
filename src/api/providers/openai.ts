@@ -23,6 +23,7 @@ import {
 	iterateApiStreamWithAbort,
 } from "../transform/stream"
 import { getModelParams } from "../transform/model-params"
+import { applyModelToolPreferences } from "./utils/router-tool-preferences"
 
 import { DEFAULT_HEADERS } from "./constants"
 import { BaseProvider } from "./base-provider"
@@ -321,7 +322,10 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 	override getModel() {
 		const id = this.options.openAiModelId ?? ""
-		const info: ModelInfo = this.options.openAiCustomModelInfo ?? openAiModelInfoSaneDefaults
+		const info: ModelInfo = applyModelToolPreferences(
+			{ provider: "openai", id },
+			this.options.openAiCustomModelInfo ?? openAiModelInfoSaneDefaults,
+		)
 		const params = getModelParams({
 			format: "openai",
 			modelId: id,
@@ -329,7 +333,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			settings: this.options,
 			defaultTemperature: 0,
 		})
-		return { id, info, ...params }
+		return { id, info, ...params, toolIdentity: { provider: "openai", id } }
 	}
 
 	async completePrompt(prompt: string): Promise<string> {

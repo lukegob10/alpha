@@ -129,10 +129,10 @@ test("late provider recovery waits for a new retry instead of counting earlier r
 	}
 })
 
-const history = (command: string, cwd: unknown = workspace) => [
+const history = (command: string, cwd: unknown = workspace, name: "shell" | "execute_command" = "execute_command") => [
 	{
 		role: "assistant",
-		content: [{ type: "tool_use", id: "command-1", name: "execute_command", input: { command, cwd } }],
+		content: [{ type: "tool_use", id: "command-1", name, input: { command, cwd } }],
 	},
 ]
 
@@ -238,11 +238,22 @@ test("scenario policy excludes unrelated external and delegation tools", () => {
 		assert.ok(WORKFLOW_DISABLED_TOOLS.includes(name))
 	}
 	assert.equal(WORKFLOW_DISABLED_TOOLS.includes("write_to_file"), false)
+	assert.equal(WORKFLOW_DISABLED_TOOLS.includes("shell"), false)
+	assert.equal(WORKFLOW_DISABLED_TOOLS.includes("manage_command"), false)
 	assert.equal(WORKFLOW_DISABLED_TOOLS.includes("execute_command"), false)
+	assert.equal(WORKFLOW_DISABLED_TOOLS.includes("read_command_output"), false)
 })
 
 test("command approval requires exact allowlisted text and matching structured workspace scope", () => {
 	assert.equal(isApprovedWorkflowCommand(WORKFLOW_COMMANDS.test, history(WORKFLOW_COMMANDS.test), workspace), true)
+	assert.equal(
+		isApprovedWorkflowCommand(
+			WORKFLOW_COMMANDS.test,
+			history(WORKFLOW_COMMANDS.test, workspace, "shell"),
+			workspace,
+		),
+		true,
+	)
 	for (const command of [
 		"git push",
 		"gh pr list",

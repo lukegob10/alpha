@@ -1,6 +1,6 @@
 # GitHub CLI
 
-Alpha uses `gh` through `execute_command` for GitHub work. Install the
+Alpha uses `gh` through `shell` for GitHub work. Install the
 [GitHub CLI](https://cli.github.com/) on the machine or remote environment running
 the extension, then authenticate interactively:
 

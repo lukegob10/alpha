@@ -137,6 +137,110 @@ describe("NativeToolCallParser", () => {
 			}
 		})
 
+		it("parses the canonical shell name with omitted optional arguments", () => {
+			const result = NativeToolCallParser.parseToolCall({
+				id: "shell-command",
+				name: "shell",
+				arguments: JSON.stringify({ command: "pnpm test" }),
+			})
+
+			expect(result).toMatchObject({
+				type: "tool_use",
+				name: "shell",
+				nativeArgs: { command: "pnpm test" },
+			})
+			expect(result).not.toHaveProperty("originalName")
+		})
+
+		it("preserves internal verification metadata for shell without advertising it", () => {
+			const args = { command: "pnpm test", verification: { change_set_ids: ["change-1"] } }
+			const result = NativeToolCallParser.parseToolCall({
+				id: "scoped-shell-command",
+				name: "shell",
+				arguments: JSON.stringify(args),
+			})
+			expect(result).toMatchObject({ name: "shell", nativeArgs: args })
+			NativeToolCallParser.startStreamingToolCall("scoped-shell-stream", "shell")
+			const partial = NativeToolCallParser.processStreamingChunk("scoped-shell-stream", JSON.stringify(args))
+			expect(partial).toMatchObject({ name: "shell", nativeArgs: args })
+			NativeToolCallParser.finalizeStreamingToolCall("scoped-shell-stream")
+		})
+
+		it("dispatches a legacy execute-command alias to shell without dropping verification", () => {
+			const result = NativeToolCallParser.parseToolCall({
+				id: "legacy-shell-command",
+				name: "execute_command",
+				arguments: JSON.stringify({
+					command: "pnpm test",
+					verification: { change_set_ids: ["change-1"] },
+				}),
+			})
+
+			expect(result).toMatchObject({
+				type: "tool_use",
+				name: "shell",
+				originalName: "execute_command",
+				nativeArgs: {
+					command: "pnpm test",
+					verification: { change_set_ids: ["change-1"] },
+				},
+			})
+		})
+
+		it("keeps canonical and legacy shell names through streaming finalization", () => {
+			const canonicalId = "streamed-shell-command"
+			NativeToolCallParser.startStreamingToolCall(canonicalId, "shell")
+			const canonical = NativeToolCallParser.processStreamingChunk(
+				canonicalId,
+				JSON.stringify({ command: "pnpm test" }),
+			)
+			expect(canonical).toMatchObject({ name: "shell", nativeArgs: { command: "pnpm test" } })
+			NativeToolCallParser.finalizeStreamingToolCall(canonicalId)
+
+			const legacyId = "streamed-legacy-shell-command"
+			NativeToolCallParser.startStreamingToolCall(legacyId, "execute_command")
+			const legacy = NativeToolCallParser.processStreamingChunk(
+				legacyId,
+				JSON.stringify({ command: "pnpm test", verification: { change_set_ids: ["change-1"] } }),
+			)
+			expect(legacy).toMatchObject({
+				name: "shell",
+				originalName: "execute_command",
+				nativeArgs: { command: "pnpm test", verification: { change_set_ids: ["change-1"] } },
+			})
+			NativeToolCallParser.finalizeStreamingToolCall(legacyId)
+		})
+
+		it("parses canonical manage-command artifact reads", () => {
+			const result = NativeToolCallParser.parseToolCall({
+				id: "manage-read",
+				name: "manage_command",
+				arguments: JSON.stringify({ action: "read", artifact_id: "cmd-1706119234567.txt", offset: 512 }),
+			})
+
+			expect(result).toMatchObject({
+				type: "tool_use",
+				name: "manage_command",
+				nativeArgs: { action: "read", artifact_id: "cmd-1706119234567.txt", offset: 512 },
+			})
+			expect(result).not.toHaveProperty("originalName")
+		})
+
+		it("adapts the historical read-command-output alias to a manage read", () => {
+			const result = NativeToolCallParser.parseToolCall({
+				id: "legacy-manage-read",
+				name: "read_command_output",
+				arguments: JSON.stringify({ artifact_id: "cmd-1706119234567.txt", search: "error" }),
+			})
+
+			expect(result).toMatchObject({
+				type: "tool_use",
+				name: "manage_command",
+				originalName: "read_command_output",
+				nativeArgs: { action: "read", artifact_id: "cmd-1706119234567.txt", search: "error" },
+			})
+		})
+
 		it("rejects an unknown completion outcome instead of treating it as success", () => {
 			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
 			const result = NativeToolCallParser.parseToolCall({

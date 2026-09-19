@@ -62,11 +62,56 @@ describe("VertexOpenAiHandler", () => {
 		})
 
 	it("exposes the Grok 4.6 Vertex catalog metadata", () => {
-		expect(createHandler().getModel()).toMatchObject({
+		const model = createHandler().getModel()
+
+		expect(model).toMatchObject({
 			id: "xai/grok-4.6",
-			info: vertexModels["xai/grok-4.6"],
 			temperature: 0,
 		})
+		expect(model.info).toMatchObject({
+			maxTokens: vertexModels["xai/grok-4.6"].maxTokens,
+			contextWindow: vertexModels["xai/grok-4.6"].contextWindow,
+			description: vertexModels["xai/grok-4.6"].description,
+			includedTools: ["edit"],
+		})
+		expect(model.info.excludedTools ?? []).not.toContain("apply_diff")
+	})
+
+	it("keeps patch editing for a selected GPT model routed to an opaque model ID", () => {
+		const handler = createHandler({
+			apiModelId: "gpt-5.5",
+			modelRoutingMap: {
+				"gpt-5.5": { modelOverride: "provider-owned-route-id" },
+			},
+		})
+
+		const model = handler.getModel()
+
+		expect(model.id).toBe("provider-owned-route-id")
+		expect(model.toolIdentity).toEqual({
+			provider: "vertex",
+			family: "gpt-5.5",
+			id: "provider-owned-route-id",
+		})
+		expect(model.info.includedTools).toEqual(["apply_patch"])
+		expect(model.info.excludedTools).toBeUndefined()
+	})
+
+	it("fails closed when recognized selected and routed model identities conflict", () => {
+		const handler = createHandler({
+			apiModelId: "gpt-5.5",
+			modelRoutingMap: {
+				"gpt-5.5": { modelOverride: "claude-opus-5" },
+			},
+		})
+
+		const model = handler.getModel()
+
+		expect(model.toolIdentity).toEqual({ provider: "vertex", family: "gpt-5.5", id: "claude-opus-5" })
+		expect(model.info.includedTools ?? []).not.toContain("apply_patch")
+		expect(model.info.includedTools ?? []).not.toContain("edit")
+		expect(model.info.excludedTools ?? []).not.toContain("apply_patch")
+		expect(model.info.excludedTools ?? []).not.toContain("edit")
 	})
 
 	it("is selected by the Vertex provider factory for Grok models", () => {

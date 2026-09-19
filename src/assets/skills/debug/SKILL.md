@@ -20,8 +20,8 @@ This is a skill used through Alpha's ordinary skill tool, not an execution mode.
 Use only tools exposed in the current task:
 
 - Inspect the relevant source and nearby tests through the file/search tools. Establish the working-tree state before edits and identify the layer that owns the broken behavior.
-- Run existing, focused reproduction or test commands with `execute_command`, adapting to the repository's scripts, package manager, shell, and working directory. An exit code alone is not proof that the intended scenario ran.
-- If command output provides an artifact ID, use `read_command_output` to search or page the relevant evidence. Retain the returned cursor. It reads output immediately; it does not wait for completion. A command timeout may leave the process running, so do not launch duplicate reproductions or assume termination.
+- Run existing, focused reproduction or test commands with `shell`, adapting to the repository's scripts, package manager, shell, and working directory. An exit code alone is not proof that the intended scenario ran.
+- If command output provides an artifact ID, use `manage_command` with its `read` action to search or page the relevant evidence. Retain the returned cursor. It reads output immediately; it does not wait for completion. A command timeout may leave the process running, so do not launch duplicate reproductions or assume termination.
 - For a UI failure, use the integrated browser tools only when available and the affected page is accessible. Reuse an appropriate shared page and obtain current page state before interacting. Otherwise use a test harness or ask the user for the smallest manual reproduction.
 - Use `ask_followup_question` when progress needs an action or observation only the user can provide. State the exact steps and the evidence needed; do not repeatedly ask whether to continue work already requested.
 

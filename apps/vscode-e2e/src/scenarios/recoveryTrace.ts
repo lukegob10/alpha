@@ -15,6 +15,8 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
 		? (value as Record<string, unknown>)
 		: undefined
 
+const COMMAND_TOOL_NAMES = new Set(["shell", "execute_command"])
+
 function textContent(value: unknown): string {
 	if (typeof value === "string") return value
 	if (!Array.isArray(value)) return ""
@@ -73,7 +75,7 @@ export function inspectRecoveryTrace(history: unknown, ui: unknown, phase: Recov
 	const commandResults = (command: string) =>
 		[...calls].flatMap(([id, call]) => {
 			const receipt = receipts.get(id)
-			return call.name === "execute_command" && call.input.command === command && receipt ? [receipt] : []
+			return COMMAND_TOOL_NAMES.has(call.name) && call.input.command === command && receipt ? [receipt] : []
 		})
 	const exited = (command: string, exitCode: number) =>
 		commandResults(command).some((result) => new RegExp(`Exit code: ${exitCode}(?:\\r?\\n|$)`).test(result.text))
@@ -94,7 +96,7 @@ export function inspectRecoveryTrace(history: unknown, ui: unknown, phase: Recov
 			passed: [
 				...new Set(
 					[...calls.values()]
-						.filter((call) => call.name === "execute_command")
+						.filter((call) => COMMAND_TOOL_NAMES.has(call.name))
 						.map((call) => call.input.command),
 				),
 			].every((command) => typeof command === "string" && commandResults(command).length <= 2),
@@ -104,7 +106,8 @@ export function inspectRecoveryTrace(history: unknown, ui: unknown, phase: Recov
 			passed: [...receipts].every(
 				([id, receipt]) =>
 					!receipt.error ||
-					(calls.get(id)?.name === "execute_command" &&
+					(calls.get(id) !== undefined &&
+						COMMAND_TOOL_NAMES.has(calls.get(id)!.name) &&
 						allowedErrors.has(String(calls.get(id)?.input.command)) &&
 						(calls.get(id)?.input.command === RECOVERY_COMMANDS.rg
 							? /Exit code: (?:1|127)(?:\r?\n|$)/.test(receipt.text)

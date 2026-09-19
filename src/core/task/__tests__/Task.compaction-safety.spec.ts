@@ -17,7 +17,10 @@ import { buildNativeToolsArrayWithRestrictions } from "../build-tools"
 import { Task } from "../Task"
 import { TaskToolCatalogCache } from "../TaskToolCatalogCache"
 
-vi.mock("../build-tools", () => ({ buildNativeToolsArrayWithRestrictions: vi.fn() }))
+vi.mock("../build-tools", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../build-tools")>()),
+	buildNativeToolsArrayWithRestrictions: vi.fn(),
+}))
 vi.mock("../../environment/getEnvironmentDetails", () => ({ getEnvironmentDetails: vi.fn(async () => "") }))
 vi.mock("../../prompts/system", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../prompts/system")>()),

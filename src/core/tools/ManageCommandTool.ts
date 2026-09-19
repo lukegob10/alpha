@@ -5,13 +5,23 @@ import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
 import type { AlphaTerminalProcess } from "../../integrations/terminal/types"
 import type { NativeToolArgs } from "../../shared/tools"
 import { MANAGE_COMMAND_MAX_TIMEOUT_MS } from "./commandTimeouts"
+import { readCommandOutputTool } from "./ReadCommandOutputTool"
 
-const paramsSchema = z.object({
-	execution_id: z.string().min(1).max(256),
-	action: z.enum(["wait", "stop", "input"]),
-	input: z.string().max(16_384).nullish(),
-	timeout_ms: z.number().int().min(0).max(MANAGE_COMMAND_MAX_TIMEOUT_MS).nullish(),
-})
+const paramsSchema = z.discriminatedUnion("action", [
+	z.object({
+		execution_id: z.string().min(1).max(256),
+		action: z.enum(["wait", "stop", "input"]),
+		input: z.string().max(16_384).nullish(),
+		timeout_ms: z.number().int().min(0).max(MANAGE_COMMAND_MAX_TIMEOUT_MS).nullish(),
+	}),
+	z.object({
+		action: z.literal("read"),
+		artifact_id: z.string().min(1),
+		search: z.string().min(1).optional(),
+		offset: z.number().int().min(0).optional(),
+		limit: z.number().int().min(1).optional(),
+	}),
+])
 
 export async function waitForCommand(
 	process: AlphaTerminalProcess,
@@ -56,6 +66,10 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 				if (task.abort) throw new Error("Task was cancelled")
 			}
 			assertActive()
+			if (params.action === "read") {
+				await readCommandOutputTool.execute(params, task, callbacks)
+				return
+			}
 			const evidence = () =>
 				task.getCommandExecutionEvidence().find((item) => item.executionId === params.execution_id)
 			if (!evidence()) throw new Error("Command does not belong to this task instance or is no longer retained")

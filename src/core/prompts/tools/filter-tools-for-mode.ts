@@ -45,52 +45,12 @@ for (const [canonical, aliases] of CANONICAL_TO_ALIASES.entries()) {
 	}
 }
 
-/**
- * Cache for renamed tool definitions.
- * Maps "canonicalName:aliasName" to the pre-built tool definition.
- * This avoids creating new objects via spread operators on every assistant message.
- */
-const RENAMED_TOOL_CACHE: Map<string, OpenAI.Chat.ChatCompletionTool> = new Map()
-
 function resolveEffectiveMode(
 	mode: string | undefined,
 	customModes: ModeConfig[] | undefined,
 ): { modeSlug: string; modeConfig: ModeConfig } {
 	const modeSlug = restoreTaskMode(mode)
 	return { modeSlug, modeConfig: getModeBySlug(modeSlug, customModes)! }
-}
-
-/**
- * Gets or creates a renamed tool definition with the alias name.
- * Uses RENAMED_TOOL_CACHE to avoid repeated object allocation.
- *
- * @param tool - The original tool definition
- * @param aliasName - The alias name to use
- * @returns Cached or newly created renamed tool definition
- */
-function getOrCreateRenamedTool(
-	tool: OpenAI.Chat.ChatCompletionTool,
-	aliasName: string,
-): OpenAI.Chat.ChatCompletionTool {
-	if (!("function" in tool) || !tool.function) {
-		return tool
-	}
-
-	const cacheKey = `${tool.function.name}:${aliasName}`
-	let renamedTool = RENAMED_TOOL_CACHE.get(cacheKey)
-
-	if (!renamedTool) {
-		renamedTool = {
-			...tool,
-			function: {
-				...tool.function,
-				name: aliasName,
-			},
-		}
-		RENAMED_TOOL_CACHE.set(cacheKey, renamedTool)
-	}
-
-	return renamedTool
 }
 
 /**
@@ -135,6 +95,11 @@ export function getToolAliasGroup(toolName: string): readonly string[] {
 	return ALIAS_GROUPS.get(toolName) ?? [toolName]
 }
 
+/** Result of applying model tool customization. */
+interface ModelToolCustomizationResult {
+	allowedTools: Set<string>
+}
+
 /**
  * Apply model-specific tool customization to a set of allowed tools.
  *
@@ -147,27 +112,16 @@ export function getToolAliasGroup(toolName: string): readonly string[] {
  * @param modelInfo - Model configuration with tool customization
  * @returns Modified set of tools after applying model customization
  */
-/**
- * Result of applying model tool customization.
- * Contains the set of allowed tools and any alias renames to apply.
- */
-interface ModelToolCustomizationResult {
-	allowedTools: Set<string>
-	/** Maps canonical tool name to alias name for tools that should be renamed */
-	aliasRenames: Map<string, string>
-}
-
 export function applyModelToolCustomization(
 	allowedTools: Set<string>,
 	modeConfig: ModeConfig,
 	modelInfo?: ModelInfo,
 ): ModelToolCustomizationResult {
 	if (!modelInfo) {
-		return { allowedTools, aliasRenames: new Map() }
+		return { allowedTools }
 	}
 
 	const result = new Set(allowedTools)
-	const aliasRenames = new Map<string, string>()
 
 	// Apply excluded tools (remove from allowed set)
 	if (modelInfo.excludedTools && modelInfo.excludedTools.length > 0) {
@@ -199,22 +153,17 @@ export function applyModelToolCustomization(
 			modeConfig.groups.map((groupEntry) => (Array.isArray(groupEntry) ? groupEntry[0] : groupEntry)),
 		)
 
-		// Add included tools only if they belong to an allowed group
-		// If the tool was specified as an alias, track the rename
+		// Add included tools only if they belong to an allowed group.
 		modelInfo.includedTools.forEach((tool) => {
 			const resolvedTool = resolveToolAlias(tool)
 			const toolGroup = toolToGroup.get(resolvedTool)
 			if (toolGroup && allowedGroups.has(toolGroup)) {
 				result.add(resolvedTool)
-				// If the tool was specified as an alias, rename it in the API
-				if (tool !== resolvedTool) {
-					aliasRenames.set(resolvedTool, tool)
-				}
 			}
 		})
 	}
 
-	return { allowedTools: result, aliasRenames }
+	return { allowedTools: result }
 }
 
 /**
@@ -269,11 +218,7 @@ export function filterNativeToolsForMode(
 
 	// Apply model-specific tool customization
 	const modelInfo = settings?.modelInfo as ModelInfo | undefined
-	const { allowedTools: customizedTools, aliasRenames } = applyModelToolCustomization(
-		allowedToolNames,
-		modeConfig,
-		modelInfo,
-	)
+	const { allowedTools: customizedTools } = applyModelToolCustomization(allowedToolNames, modeConfig, modelInfo)
 	allowedToolNames = customizedTools
 
 	// The primary Code workflow and strict Plan workflow both use the managed
@@ -285,10 +230,7 @@ export function filterNativeToolsForMode(
 			"list_agents",
 			"wait_agent",
 			"send_message",
-			"report_progress",
 			"followup_task",
-			"interrupt_agent",
-			"cancel_agent",
 			"close_agent",
 		] as const) {
 			allowedToolNames.delete(tool)
@@ -331,7 +273,8 @@ export function filterNativeToolsForMode(
 		allowedToolNames.delete("access_mcp_resource")
 	}
 
-	// Filter native tools based on allowed tool names and apply alias renames
+	// Filter native tools based on canonical allowed names. Historical aliases
+	// remain accepted at dispatch, but are never re-advertised as schemas.
 	const filteredTools: OpenAI.Chat.ChatCompletionTool[] = []
 
 	for (const tool of nativeTools) {
@@ -339,14 +282,7 @@ export function filterNativeToolsForMode(
 		if ("function" in tool && tool.function) {
 			const toolName = tool.function.name
 			if (allowedToolNames.has(toolName)) {
-				// Check if this tool should be renamed to an alias
-				const aliasName = aliasRenames.get(toolName)
-				if (aliasName) {
-					// Use cached renamed tool definition to avoid per-message object allocation
-					filteredTools.push(getOrCreateRenamedTool(tool, aliasName))
-				} else {
-					filteredTools.push(tool)
-				}
+				filteredTools.push(tool)
 			}
 		}
 	}

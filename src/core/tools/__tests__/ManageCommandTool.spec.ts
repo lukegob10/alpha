@@ -1,5 +1,6 @@
 import { EventEmitter } from "events"
 import { manageCommandTool, waitForCommand } from "../ManageCommandTool"
+import { readCommandOutputTool } from "../ReadCommandOutputTool"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
 import type { AlphaTerminalProcess } from "../../../integrations/terminal/types"
 import type { Task } from "../../task/Task"
@@ -72,6 +73,56 @@ it("does not require a model poll or approval for a bounded wait", async () => {
 	await manageCommandTool.execute({ execution_id: "execution", action: "wait", timeout_ms: 0 }, task, callbacks)
 	expect(callbacks.askApproval).not.toHaveBeenCalled()
 	expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining('"status":"running"'))
+})
+
+it("delegates artifact reads through the manage command host", async () => {
+	const { task, callbacks } = harness()
+	const read = vi.spyOn(readCommandOutputTool, "execute").mockResolvedValue(undefined)
+	const params = {
+		action: "read" as const,
+		artifact_id: "cmd-1706119234567.txt",
+		search: "error",
+		offset: 512,
+		limit: 2048,
+	}
+
+	await manageCommandTool.execute(params, task, callbacks)
+
+	expect(read).toHaveBeenCalledWith(params, task, callbacks)
+	expect(callbacks.askApproval).not.toHaveBeenCalled()
+})
+
+it("checks cancellation before dispatching an artifact read", async () => {
+	const { task, callbacks } = harness()
+	const read = vi.spyOn(readCommandOutputTool, "execute").mockResolvedValue(undefined)
+	const controller = new AbortController()
+	controller.abort(new Error("cancelled before read"))
+
+	await expect(
+		manageCommandTool.execute({ action: "read", artifact_id: "cmd-1706119234567.txt" }, task, {
+			...callbacks,
+			signal: controller.signal,
+		}),
+	).rejects.toThrow("cancelled before read")
+	expect(read).not.toHaveBeenCalled()
+})
+
+it("rejects null optional artifact read fields before dispatch", async () => {
+	const { task, callbacks } = harness()
+	const read = vi.spyOn(readCommandOutputTool, "execute").mockResolvedValue(undefined)
+
+	await manageCommandTool.execute(
+		{
+			action: "read",
+			artifact_id: "cmd-1706119234567.txt",
+			offset: null,
+		} as never,
+		task,
+		callbacks,
+	)
+
+	expect(read).not.toHaveBeenCalled()
+	expect(callbacks.handleError).toHaveBeenCalledWith("controlling command", expect.any(Error))
 })
 
 it("accepts long managed-command waits within the host limit", async () => {

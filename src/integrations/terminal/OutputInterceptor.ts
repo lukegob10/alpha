@@ -23,8 +23,8 @@ export interface OutputInterceptorOptions {
  * OutputInterceptor buffers terminal command output and spills to disk when threshold exceeded.
  *
  * This implements a "persisted output" pattern where large command outputs are saved to disk
- * files, with only a preview shown to the LLM. The LLM can then use the `read_command_output`
- * tool to retrieve full contents or search through the output.
+ * files, with only a preview shown to the LLM. The LLM can then use the `manage_command` read action
+ * to retrieve full contents or search through the output.
  *
  * The interceptor uses a **head/tail buffer** strategy (inspired by Codex):
  * - 50% of the preview budget is allocated to the "head" (beginning of output)

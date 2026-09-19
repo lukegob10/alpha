@@ -28,6 +28,8 @@ import { formatResponse } from "../../prompts/responses"
 import { createAgentResponse } from "../../agent/AgentResponse"
 import { AgentRetryPolicy } from "../../agent/AgentRetryPolicy"
 import { AgentControlTransactionError } from "../../agent/AgentControlTransaction"
+import { delegate_task } from "../../prompts/tools/native-tools/delegate_task"
+import { getNativeTools } from "../../prompts/tools/native-tools"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
 import { ToolRegistry } from "../../tools/ToolRegistry"
 import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
@@ -3465,6 +3467,9 @@ describe("Alpha", () => {
 				const usage = vi.spyOn(task, "recordToolUsage")
 				const surface = createTaskToolSurface({
 					registry: new ToolRegistry({
+						// This mixed-batch matrix retains a historical delegate_task
+						// barrier as an explicit schema fixture.
+						nativeTools: [...getNativeTools(), delegate_task],
 						mcpTools: [
 							{
 								type: "function",

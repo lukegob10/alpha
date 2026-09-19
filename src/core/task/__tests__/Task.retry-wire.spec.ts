@@ -16,7 +16,10 @@ import { ToolRegistry } from "../../tools/ToolRegistry"
 import { buildNativeToolsArrayWithRestrictions } from "../build-tools"
 import { Task } from "../Task"
 
-vi.mock("../build-tools", () => ({ buildNativeToolsArrayWithRestrictions: vi.fn() }))
+vi.mock("../build-tools", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../build-tools")>()),
+	buildNativeToolsArrayWithRestrictions: vi.fn(),
+}))
 vi.mock("../../context-management", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../context-management")>()),
 	manageContext: vi.fn(),

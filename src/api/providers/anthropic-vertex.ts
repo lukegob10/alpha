@@ -28,6 +28,7 @@ import { BaseProvider } from "./base-provider"
 import type { SingleCompletionHandler, ApiHandlerCreateMessageMetadata } from "../index"
 import { HelixTokenManager, type HelixParseMode } from "./utils/helix-token-manager"
 import { configureVertexGatewayTransport } from "./utils/vertex-gateway-transport"
+import { applyModelToolPreferences } from "./utils/router-tool-preferences"
 
 type VertexGatewayRouteTarget = {
 	projectId?: string
@@ -946,6 +947,8 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 			}
 		}
 
+		info = applyModelToolPreferences({ provider: "vertex", id }, info)
+
 		const params = getModelParams({
 			format: "anthropic",
 			modelId: id,
@@ -966,10 +969,12 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 		// reasoning model and that reasoning is required to be enabled.
 		// The actual model ID honored by Anthropic's API does not have this
 		// suffix.
+		const resolvedId = id.endsWith(":thinking") ? id.replace(":thinking", "") : id
 		return {
-			id: id.endsWith(":thinking") ? id.replace(":thinking", "") : id,
+			id: resolvedId,
 			info,
 			betas: betas.length > 0 ? betas : undefined,
+			toolIdentity: { provider: "vertex", id: resolvedId },
 			...params,
 		}
 	}

@@ -257,7 +257,9 @@ class ManagedAgentScriptedAI {
 					},
 				},
 				{
-					name: "execute_command",
+					// The scripted harness injects internal verification metadata after the
+					// thin public shell schema is selected.
+					name: "shell",
 					arguments: {
 						command: "vitest run --maxWorkers=2",
 						cwd: ROOT_VERIFY_CWD,
@@ -292,7 +294,9 @@ class ManagedAgentScriptedAI {
 					},
 				},
 				{
-					name: "execute_command",
+					// Internal scripted verification metadata is attached after the canonical
+					// shell call is selected; it is not part of the model-facing schema.
+					name: "shell",
 					arguments: {
 						command: "vitest run --maxWorkers=2",
 						cwd: OUTER_VERIFY_CWD,
@@ -343,7 +347,7 @@ class ManagedAgentScriptedAI {
 
 		const call = scripts[role][turn]
 		if (!call) throw new Error(`Unexpected ${role} model turn ${turn + 1}`)
-		if (call.name === "execute_command") {
+		if (call.name === "shell") {
 			await waitFor(() => (this.verificationChangeSetsByRole.get(role)?.length ?? 0) > 0, {
 				timeout: 60_000,
 				interval: 25,

@@ -29,6 +29,7 @@ export const toolNames = [
 	"create_ticket",
 	"update_ticket",
 	"delete_ticket",
+	"shell",
 	"execute_command",
 	"manage_command",
 	"read_file",

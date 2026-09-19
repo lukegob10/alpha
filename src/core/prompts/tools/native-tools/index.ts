@@ -1,33 +1,26 @@
 import { ticketTools } from "./tickets"
 import type OpenAI from "openai"
 import accessMcpResource from "./access_mcp_resource"
-import { apply_diff } from "./apply_diff"
 import applyPatch from "./apply_patch"
 import askFollowupQuestion from "./ask_followup_question"
 import { createAttemptCompletionTool } from "./attempt_completion"
 import codebaseSearch from "./codebase_search"
 import editTool from "./edit"
-import { createExecuteCommandTool } from "./execute_command"
+import { createShellTool } from "./execute_command"
 import { browserTools } from "./browser"
 import listFiles from "./list_files"
 import newTask from "./new_task"
-import { createDelegateTaskTool, type ManagedAgentKind } from "./delegate_task"
+import type { ManagedAgentKind } from "./delegate_task"
 import { createSpawnAgentTool } from "./spawn_agent"
 import { list_agents as listAgents } from "./list_agents"
 import { wait_agent as waitAgent } from "./wait_agent"
 import { send_message as sendMessage } from "./send_message"
-import { report_progress as reportProgress } from "./report_progress"
 import { followup_task as followupTask } from "./followup_task"
-import { interrupt_agent as interruptAgent } from "./interrupt_agent"
-import { cancel_agent as cancelAgent } from "./cancel_agent"
 import { close_agent as closeAgent } from "./close_agent"
-import readCommandOutput from "./read_command_output"
 import manageCommand from "./manage_command"
 import { createReadFileTool, type ReadFileToolOptions } from "./read_file"
 import runSlashCommand from "./run_slash_command"
 import skill from "./skill"
-import searchReplace from "./search_replace"
-import edit_file from "./edit_file"
 import searchFiles from "./search_files"
 import updateTodoList from "./update_todo_list"
 import writeToFile from "./write_to_file"
@@ -50,6 +43,8 @@ export interface NativeToolsOptions {
 	agentKinds?: readonly ManagedAgentKind[]
 	/** Advertise the host-enforced non-mutating command contract used by strict Plan mode. */
 	planMode?: boolean
+	/** Include the GPT-family structured patch schema in this request's eager catalog. */
+	includeApplyPatch?: boolean
 }
 
 /**
@@ -65,6 +60,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		taskKind = "primary",
 		agentKinds,
 		planMode = false,
+		includeApplyPatch = true,
 	} = options
 
 	const readFileOptions: ReadFileToolOptions = {
@@ -82,32 +78,24 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 	return [
 		...ticketTools,
 		accessMcpResource,
-		apply_diff,
-		applyPatch,
+		...(includeApplyPatch ? [applyPatch] : []),
 		askFollowupQuestion,
 		createAttemptCompletionTool(taskKind),
 		codebaseSearch,
-		createExecuteCommandTool(planMode),
+		createShellTool(planMode),
 		...availableBrowserTools,
 		listFiles,
 		newTask,
-		createDelegateTaskTool(agentKinds),
 		createSpawnAgentTool(agentKinds),
 		listAgents,
 		waitAgent,
 		sendMessage,
-		reportProgress,
 		followupTask,
-		interruptAgent,
-		cancelAgent,
 		closeAgent,
-		readCommandOutput,
 		...(!planMode ? [manageCommand] : []),
 		createReadFileTool(readFileOptions),
 		runSlashCommand,
 		skill,
-		searchReplace,
-		edit_file,
 		editTool,
 		searchFiles,
 		updateTodoList,

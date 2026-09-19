@@ -15,6 +15,7 @@ import {
 } from "./providers"
 import { assertSupportedApiProvider } from "../shared/api"
 import { FakeAIHandler } from "./providers/fake-ai"
+import type { ModelToolIdentity } from "./providers/utils/router-tool-preferences"
 
 export interface SingleCompletionHandler {
 	completePrompt(prompt: string): Promise<string>
@@ -90,7 +91,12 @@ export interface ApiHandler {
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): ApiStream
 
-	getModel(): { id: string; info: ModelInfo }
+	getModel(): {
+		id: string
+		info: ModelInfo
+		/** Provider-resolved identity used for host-specific tool preferences. */
+		toolIdentity?: ModelToolIdentity
+	}
 
 	/** Resolve and retain a dynamic model before a new step captures capabilities and tools. Retries reuse it. */
 	prepareModel?(metadata?: ApiStreamRequestMetadata): Promise<void>

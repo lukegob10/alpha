@@ -90,7 +90,7 @@ async function applyDevelopmentScript(workspace: string, phase: DevelopmentPhase
 				await fs.writeFile(filePath, args.content, "utf8")
 				break
 			}
-			case "execute_command": {
+			case "shell": {
 				if (typeof args.command !== "string" || args.cwd !== workspace || args.timeout !== 30) {
 					throw new Error("scripted command arguments are outside the development harness")
 				}
@@ -184,7 +184,7 @@ test("keeps the development catalog typed, bounded, and scriptable", () => {
 		assert.ok(requiredCommands.every((command) => phase.prompt.includes(command)))
 		const calls = developmentScript(phaseId, path.join(tmpdir(), "alpha-code-development-script-preview"))
 		const scriptCommands: string[] = calls
-			.filter((call) => call.name === "execute_command")
+			.filter((call) => call.name === "shell")
 			.map((call) => {
 				if (typeof call.arguments.command !== "string") throw new Error("script command must be a string")
 				return call.arguments.command

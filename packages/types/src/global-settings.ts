@@ -39,7 +39,7 @@ export const MAX_MAX_CONCURRENT_TASKS = 50
  * Terminal output preview size options for persisted command output.
  *
  * Controls how much command output is kept in memory as a "preview" before
- * the LLM decides to retrieve more via `read_command_output`. Larger previews
+ * the LLM decides to retrieve more via the `manage_command` read action. Larger previews
  * mean more immediate context but consume more of the context window.
  *
  * - `small`: 5KB preview - Best for long-running commands with verbose output
@@ -56,7 +56,7 @@ export type TerminalOutputPreviewSize = "small" | "medium" | "large"
  *
  * Maps preview size names to their corresponding byte thresholds.
  * When command output exceeds these thresholds, the excess is persisted
- * to disk and made available via the `read_command_output` tool.
+ * to disk and made available via the `manage_command` read action.
  */
 export const TERMINAL_PREVIEW_BYTES: Record<TerminalOutputPreviewSize, number> = {
 	small: 5 * 1024, // 5KB
