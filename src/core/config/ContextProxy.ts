@@ -6,7 +6,6 @@ import {
 	GLOBAL_SETTINGS_KEYS,
 	SECRET_STATE_KEYS,
 	GLOBAL_STATE_KEYS,
-	GLOBAL_SECRET_KEYS,
 	type ProviderSettings,
 	type GlobalSettings,
 	type SecretState,
@@ -29,6 +28,7 @@ type SecretStateKey = keyof SecretState
 type AlphaCodeSettingsKey = keyof AlphaCodeSettings
 
 const PASS_THROUGH_STATE_KEYS = ["taskHistory"]
+const LEGACY_GITHUB_TOKEN_KEY = "githubToken"
 
 export const isPassThroughStateKey = (key: string) => PASS_THROUGH_STATE_KEYS.includes(key)
 
@@ -76,18 +76,14 @@ export class ContextProxy {
 					)
 				}
 			}),
-			...GLOBAL_SECRET_KEYS.map(async (key) => {
-				try {
-					this.secretCache[key] = await this.originalContext.secrets.get(key)
-				} catch (error) {
-					logger.error(
-						`Error loading global secret ${key}: ${error instanceof Error ? error.message : String(error)}`,
-					)
-				}
-			}),
 		]
 
 		await Promise.all(promises)
+
+		// Remove the retired native GitHub API token from both VS Code storage
+		// locations. This is intentionally explicit so importing or restoring an
+		// old settings file cannot make the obsolete secret active again.
+		await this.migrateLegacyGitHubToken()
 
 		// Migration: inspect invalid/removed API providers without changing the saved value
 		await this.migrateInvalidApiProvider()
@@ -99,6 +95,26 @@ export class ContextProxy {
 		await this.migrateOldDefaultCondensingPrompt()
 
 		this._isInitialized = true
+	}
+
+	private async migrateLegacyGitHubToken(): Promise<void> {
+		try {
+			const legacyGlobalState = this.originalContext.globalState.get<unknown>(LEGACY_GITHUB_TOKEN_KEY)
+			if (legacyGlobalState !== undefined) {
+				await this.originalContext.globalState.update(LEGACY_GITHUB_TOKEN_KEY, undefined)
+			}
+		} catch {
+			logger.error("[ContextProxy] Could not remove the retired GitHub token from global state")
+		}
+
+		try {
+			const legacySecret = await this.originalContext.secrets.get(LEGACY_GITHUB_TOKEN_KEY)
+			if (legacySecret !== undefined) {
+				await this.originalContext.secrets.delete(LEGACY_GITHUB_TOKEN_KEY)
+			}
+		} catch {
+			logger.error("[ContextProxy] Could not remove the retired GitHub token from secret storage")
+		}
 	}
 
 	/**
@@ -329,24 +345,12 @@ export class ContextProxy {
 					)
 				}
 			}),
-			...GLOBAL_SECRET_KEYS.map(async (key) => {
-				try {
-					this.secretCache[key] = await this.originalContext.secrets.get(key)
-				} catch (error) {
-					logger.error(
-						`Error refreshing global secret ${key}: ${error instanceof Error ? error.message : String(error)}`,
-					)
-				}
-			}),
 		]
 		await Promise.all(promises)
 	}
 
 	private getAllSecretState(): SecretState {
-		return Object.fromEntries([
-			...SECRET_STATE_KEYS.map((key) => [key, this.getSecret(key as SecretStateKey)]),
-			...GLOBAL_SECRET_KEYS.map((key) => [key, this.getSecret(key as SecretStateKey)]),
-		])
+		return Object.fromEntries([...SECRET_STATE_KEYS.map((key) => [key, this.getSecret(key as SecretStateKey)])])
 	}
 
 	/**
@@ -449,6 +453,14 @@ export class ContextProxy {
 	 */
 
 	public async setValue<K extends AlphaCodeSettingsKey>(key: K, value: AlphaCodeSettings[K]) {
+		// Keep runtime callers that still send the removed key from recreating it
+		// in global state. TypeScript callers no longer see this key in
+		// AlphaCodeSettings, but imported or stale webview payloads are untrusted.
+		if ((key as string) === LEGACY_GITHUB_TOKEN_KEY) {
+			await this.migrateLegacyGitHubToken()
+			return
+		}
+
 		return isSecretStateKey(key)
 			? this.storeSecret(key as SecretStateKey, value as string)
 			: this.updateGlobalState(key as GlobalStateKey, value)
@@ -507,7 +519,6 @@ export class ContextProxy {
 		await Promise.all([
 			...GLOBAL_STATE_KEYS.map((key) => this.originalContext.globalState.update(key, undefined)),
 			...SECRET_STATE_KEYS.map((key) => this.originalContext.secrets.delete(key)),
-			...GLOBAL_SECRET_KEYS.map((key) => this.originalContext.secrets.delete(key)),
 		])
 
 		await this.initialize()

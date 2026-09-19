@@ -42,8 +42,7 @@
 		"language": "Idioma",
 		"about": "Acerca de Alpha",
 		"skills": "Skills",
-		"agents": "Agentes",
-		"github": "GitHub"
+		"agents": "Agentes"
 	},
 	"about": {
 		"bugReport": {
@@ -895,10 +894,5 @@
 				"description": "Anulación de perfil opcional para trabajadores de edición aislados."
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "Token de GitHub",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "Almacenado de forma segura en el almacenamiento secreto VS Code. Utilizado por la herramienta nativa GitHub API para solicitudes de extracción, comprobaciones, comentarios y fusiones."
 	}
 }

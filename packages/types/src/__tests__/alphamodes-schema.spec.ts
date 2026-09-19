@@ -124,6 +124,23 @@ describe("alphamodes JSON schema", () => {
 		expect(valid).toBe(true)
 	})
 
+	it("should accept the retired GitHub group for legacy mode files", () => {
+		const config = {
+			customModes: [
+				{
+					slug: "legacy-github",
+					name: "Legacy GitHub",
+					roleDefinition: "A historical mode.",
+					groups: ["read", "github"],
+				},
+			],
+		}
+
+		const valid = validate(config)
+		expect(validate.errors).toBeNull()
+		expect(valid).toBe(true)
+	})
+
 	it("should accept the modes tool group", () => {
 		const config = {
 			customModes: [

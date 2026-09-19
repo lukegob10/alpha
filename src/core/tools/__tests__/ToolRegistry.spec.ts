@@ -19,6 +19,14 @@ describe("ToolRegistry", () => {
 		expect(registry.resolve("generate_image")).toBeUndefined()
 		expect(registry.getSchema("generate_image")).toBeUndefined()
 	})
+	it("does not advertise or execute the retired native GitHub API", () => {
+		const registry = new ToolRegistry()
+		expect(registry.resolve("github_api")).toBeUndefined()
+		expect(registry.getSchema("github_api")).toBeUndefined()
+		expect(
+			registry.getSchemas().some((tool) => tool.type === "function" && tool.function.name === "github_api"),
+		).toBe(false)
+	})
 	it("retires model mode switching while retaining both delegation mechanisms", () => {
 		const registry = new ToolRegistry()
 		expect(registry.resolve("switch_mode")).toBeUndefined()

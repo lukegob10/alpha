@@ -115,6 +115,36 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 		expect(toolResults(harness)).toHaveLength(1)
 	})
 
+	it("rejects a retired native GitHub API call with one terminal result", async () => {
+		const registry = new ToolRegistry({ nativeTools: getNativeTools() })
+		const surface = capturedSurface(registry)
+		const harness = makeExecutionHost()
+
+		const outcome = await runToolCalls(harness, surface, [
+			{
+				id: "github-retired-1",
+				name: "github_api",
+				arguments: { action: "get_pull_request", owner: "org", repo: "repo", pull_number: 1 },
+			},
+		])
+
+		expect(outcome.results).toHaveLength(1)
+		expect(outcome.results[0]).toMatchObject({
+			callId: "github-retired-1",
+			name: "github_api",
+			status: "error",
+		})
+		expect(JSON.parse(String(outcome.results[0].content))).toMatchObject({
+			error: 'Unknown tool "github_api". This tool is not registered.',
+		})
+		expect(toolResults(harness)).toHaveLength(1)
+		expect(toolResults(harness)[0]).toMatchObject({
+			tool_use_id: "github-retired-1",
+			is_error: true,
+		})
+		expect(harness.host.recordToolUsage).not.toHaveBeenCalled()
+	})
+
 	it("normalizes production aliases at the surface policy boundary", async () => {
 		const schemas = getNativeTools()
 		const registry = new ToolRegistry({ nativeTools: schemas })

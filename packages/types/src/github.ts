@@ -1,6 +1,9 @@
 import { z } from "zod"
 
-/** Reviewable fields shared by GitHub tool approvals and their webview projection. */
+/**
+ * Historical fields retained for GitHub tool approval transcripts and their webview projection.
+ * Native GitHub API execution is retired; this contract remains readable for saved history.
+ */
 export const githubToolApprovalSchema = z.object({
 	action: z
 		.enum(["create_pull_request", "get_pull_request", "list_checks", "merge_pull_request", "comment"])

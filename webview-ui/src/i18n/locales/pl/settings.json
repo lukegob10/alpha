@@ -42,8 +42,7 @@
 		"language": "Język",
 		"about": "O Alpha",
 		"skills": "Skills",
-		"agents": "Agenci",
-		"github": "GitHub"
+		"agents": "Agenci"
 	},
 	"about": {
 		"bugReport": {
@@ -895,10 +894,5 @@
 				"description": "Opcjonalne zastąpienie profilu dla izolowanych pracowników edytujących."
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "Token GitHub",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "Bezpiecznie przechowywany w tajnym magazynie VS Code. Używane przez natywne narzędzie GitHub API do żądań ściągnięcia, kontroli, komentarzy i scalania."
 	}
 }

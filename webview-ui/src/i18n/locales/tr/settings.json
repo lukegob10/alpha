@@ -42,8 +42,7 @@
 		"language": "Dil",
 		"about": "Alpha Hakkında",
 		"skills": "Skills",
-		"agents": "Aracılar",
-		"github": "GitHub"
+		"agents": "Aracılar"
 	},
 	"about": {
 		"bugReport": {
@@ -895,10 +894,5 @@
 				"description": "Yalıtılmış düzenleme çalışanları için isteğe bağlı profili geçersiz kılma."
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "GitHub jetonu",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "VS Code Gizli Deposunda güvenli bir şekilde saklanır. Yerel GitHub API aracı tarafından çekme istekleri, kontroller, yorumlar ve birleştirmeler için kullanılır."
 	}
 }

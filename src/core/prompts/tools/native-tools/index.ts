@@ -8,7 +8,6 @@ import { createAttemptCompletionTool } from "./attempt_completion"
 import codebaseSearch from "./codebase_search"
 import editTool from "./edit"
 import { createExecuteCommandTool } from "./execute_command"
-import githubApi from "./github_api"
 import { browserTools } from "./browser"
 import listFiles from "./list_files"
 import newTask from "./new_task"
@@ -89,7 +88,6 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		createAttemptCompletionTool(taskKind),
 		codebaseSearch,
 		createExecuteCommandTool(planMode),
-		githubApi,
 		...availableBrowserTools,
 		listFiles,
 		newTask,

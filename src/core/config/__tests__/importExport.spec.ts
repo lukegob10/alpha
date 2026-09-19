@@ -168,7 +168,12 @@ describe("importExport", () => {
 						test: { apiProvider: "openai" as ProviderName, openAiApiKey: "test-key", id: "test-id" },
 					},
 				},
-				globalSettings: { mode: "code", autoApprovalEnabled: true, alwaysAllowTickets },
+				globalSettings: {
+					mode: "code",
+					autoApprovalEnabled: true,
+					alwaysAllowTickets,
+					githubToken: "legacy-token-that-must-be-dropped",
+				},
 			})
 
 			;(fs.readFile as Mock).mockResolvedValue(mockFileContent)

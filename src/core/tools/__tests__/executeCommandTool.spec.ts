@@ -154,31 +154,6 @@ describe("executeCommandTool", () => {
 
 	// Now we can run these tests
 	describe("Basic functionality", () => {
-		it("reports the supported GitHub API alternative without including command arguments in metadata", async () => {
-			const setResultMetadata = vitest.fn()
-			await executeCommandTool.handle(
-				mockAlphaTask,
-				{ ...mockToolUse, nativeArgs: { command: "gh pr create --body private-description" } },
-				{
-					askApproval: mockAskApproval,
-					handleError: mockHandleError,
-					pushToolResult: mockPushToolResult,
-					setResultMetadata,
-				},
-			)
-			expect(setResultMetadata).toHaveBeenCalledWith(
-				expect.objectContaining({
-					failure: expect.objectContaining({
-						reason: "capability_unavailable",
-						effectsStarted: "no",
-						outcome: "known",
-						recovery: { kind: "alternative", toolName: "github_api" },
-					}),
-				}),
-			)
-			expect(JSON.stringify(setResultMetadata.mock.calls)).not.toContain("private-description")
-		})
-
 		it("distinguishes a terminal capability failure before process launch", async () => {
 			vitest
 				.mocked(TerminalRegistry.getOrCreateTerminal)
@@ -307,24 +282,42 @@ describe("executeCommandTool", () => {
 			expect(result).toContain("/custom/path")
 		})
 
-		it("should not execute GitHub CLI commands", async () => {
-			mockToolUse.params.command = "gh pr create --fill"
-			mockToolUse.nativeArgs = { command: "gh pr create --fill" }
-			;(formatResponse.toolError as any).mockReturnValue("GitHub CLI disabled")
-
-			await executeCommandTool.handle(mockAlphaTask as unknown as Task, mockToolUse, {
-				askApproval: mockAskApproval as unknown as AskApproval,
-				handleError: mockHandleError as unknown as HandleError,
-				pushToolResult: mockPushToolResult as unknown as PushToolResult,
-			})
-
-			expect(mockAlphaTask.recordToolError).toHaveBeenCalledWith("execute_command")
-			expect(formatResponse.toolError).toHaveBeenCalledWith(
-				expect.stringContaining("GitHub CLI commands are disabled"),
+		it.each([
+			"gh pr list",
+			"gh pr create --fill",
+			"gh api repos/owner/repo/issues -f title=test",
+			"gh alias set shortcut '!echo changed'",
+			"gh extension exec custom",
+		])("runs %s through ordinary command approval", async (command) => {
+			await executeCommandTool.handle(
+				mockAlphaTask,
+				{ ...mockToolUse, nativeArgs: { command } },
+				{
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+				},
 			)
-			expect(mockPushToolResult).toHaveBeenCalledWith("GitHub CLI disabled")
-			expect(mockAskApproval).not.toHaveBeenCalled()
-			expect(executeCommandModule.executeCommandInTerminal).not.toHaveBeenCalled()
+			expect(mockAskApproval).toHaveBeenCalledExactlyOnceWith("command", command)
+			expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledOnce()
+			expect(mockPushToolResult).toHaveBeenCalledOnce()
+		})
+
+		it("does not launch gh when command approval is denied", async () => {
+			mockAskApproval.mockResolvedValue(false)
+			const command = "gh pr merge 123 --merge"
+			await executeCommandTool.handle(
+				mockAlphaTask,
+				{ ...mockToolUse, nativeArgs: { command } },
+				{
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+				},
+			)
+			expect(mockAskApproval).toHaveBeenCalledExactlyOnceWith("command", command)
+			expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+			expect(mockAlphaTask.failCommandExecution).toHaveBeenCalledWith(expect.any(String), "denied")
 		})
 
 		it("should still allow local git commands", async () => {

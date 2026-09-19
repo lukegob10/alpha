@@ -42,8 +42,7 @@
 		"language": "言語",
 		"about": "Alphaについて",
 		"skills": "Skills",
-		"agents": "エージェント",
-		"github": "GitHub"
+		"agents": "エージェント"
 	},
 	"about": {
 		"bugReport": {
@@ -895,10 +894,5 @@
 				"description": "分離された編集ワーカーのオプションのプロファイル オーバーライド。"
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "GitHub トークン",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "VS Code 秘密ストレージに安全に保管されます。プル リクエスト、チェック、コメント、マージのためにネイティブ GitHub API ツールによって使用されます。"
 	}
 }

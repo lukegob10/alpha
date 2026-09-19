@@ -12,7 +12,6 @@ import React, {
 import {
 	CheckCheck,
 	GitBranch,
-	Github,
 	Bell,
 	Database,
 	SquareTerminal,
@@ -80,7 +79,6 @@ import { SlashCommandsSettings } from "./SlashCommandsSettings"
 import { SkillsSettings } from "./SkillsSettings"
 import { UISettings } from "./UISettings"
 import { AgentsSettings } from "./AgentsSettings"
-import { GitHubSettings } from "./GitHubSettings"
 import ModesView from "../modes/ModesView"
 import McpView from "../mcp/McpView"
 import { WorktreesView } from "../worktrees/WorktreesView"
@@ -115,7 +113,6 @@ export const sectionNames = [
 	"terminal",
 	"modes",
 	"mcp",
-	"github",
 	"worktrees",
 	"prompts",
 	"ui",
@@ -218,7 +215,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		maxDiagnosticMessages,
 		includeTaskHistoryInEnhance,
 		enhancementApiConfigId,
-		githubToken,
 		reasoningBlockCollapsed,
 		enterBehavior,
 		maxConcurrentTasks,
@@ -386,16 +382,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		})
 	}, [])
 
-	const setGithubToken = useCallback((token: string) => {
-		setCachedState((prevState) => {
-			if (prevState.githubToken !== token) {
-				setChangeDetected(true)
-			}
-
-			return { ...prevState, githubToken: token }
-		})
-	}, [])
-
 	const setCustomSupportPromptsField = useCallback((prompts: Record<string, string | undefined>) => {
 		setCachedState((prevState) => {
 			const previousStr = JSON.stringify(prevState.customSupportPrompts)
@@ -484,7 +470,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					maxGitStatusFiles: maxGitStatusFiles ?? 0,
 					showWorktreesInHomeScreen,
 					profileThresholds,
-					githubToken,
 					experiments,
 					customModePrompts,
 					customInstructions,
@@ -593,7 +578,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			{ id: "slashCommands", icon: SquareSlash },
 			{ id: "autoApprove", icon: CheckCheck },
 			{ id: "mcp", icon: Server },
-			{ id: "github", icon: Github },
 			{ id: "checkpoints", icon: GitCommitVertical },
 			{ id: "notifications", icon: Bell },
 			{ id: "contextManagement", icon: Database },
@@ -1002,14 +986,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 							<McpView
 								mcpEnabled={mcpEnabled}
 								onMcpEnabledChange={(value) => setCachedStateField("mcpEnabled", value)}
-							/>
-						)}
-
-						{/* GitHub Section */}
-						{renderTab === "github" && (
-							<GitHubSettings
-								githubToken={githubToken as string | undefined}
-								setGithubToken={setGithubToken}
 							/>
 						)}
 

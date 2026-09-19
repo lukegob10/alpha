@@ -3349,7 +3349,6 @@ export class AlphaProvider
 			includeCurrentTime,
 			includeCurrentCost,
 			maxGitStatusFiles,
-			githubToken,
 			lockApiConfigAcrossModes,
 		} = await this.getState()
 
@@ -3547,7 +3546,6 @@ export class AlphaProvider
 			includeCurrentTime: includeCurrentTime ?? true,
 			includeCurrentCost: includeCurrentCost ?? true,
 			maxGitStatusFiles: maxGitStatusFiles ?? 0,
-			githubToken,
 			debug: vscode.workspace.getConfiguration(Package.name).get<boolean>("debug", false),
 		}
 	}
@@ -3714,7 +3712,6 @@ export class AlphaProvider
 			includeCurrentTime: stateValues.includeCurrentTime ?? true,
 			includeCurrentCost: stateValues.includeCurrentCost ?? true,
 			maxGitStatusFiles: stateValues.maxGitStatusFiles ?? 0,
-			githubToken: stateValues.githubToken,
 		}
 	}
 

@@ -30,7 +30,6 @@
 		"agents": "Agents",
 		"modes": "Modes",
 		"mcp": "MCP Servers",
-		"github": "GitHub",
 		"worktrees": "Worktrees",
 		"skills": "Skills",
 		"autoApprove": "Auto-Approve",
@@ -73,11 +72,6 @@
 				"description": "Optional profile override for isolated editing workers."
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "GitHub token",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "Stored securely in VS Code Secret Storage. Used by the native GitHub API tool for pull requests, checks, comments, and merges."
 	},
 	"about": {
 		"manageSettings": "Manage Settings",

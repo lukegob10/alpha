@@ -100,9 +100,6 @@ export const globalSettingsSchema = z.object({
 	taskHistory: z.array(historyItemSchema).optional(),
 	dismissedUpsells: z.array(z.string()).optional(),
 
-	// GitHub integration settings
-	githubToken: z.string().optional(),
-
 	customCondensingPrompt: z.string().optional(),
 
 	autoApprovalEnabled: z.boolean().optional(),
@@ -294,10 +291,10 @@ export const SECRET_STATE_KEYS = [
 	"codebaseIndexVertexJsonCredentials",
 ] as const
 
-// Global secrets that are part of GlobalSettings (not ProviderSettings)
-export const GLOBAL_SECRET_KEYS = [
-	"githubToken", // For native GitHub API tool
-] as const
+// Kept as an empty compatibility surface for callers that iterate global
+// secrets. Obsolete GitHub token storage is migrated and deleted by
+// ContextProxy; it is no longer part of the active settings schema.
+export const GLOBAL_SECRET_KEYS = [] as const
 
 // Type for the actual secret storage keys
 type ProviderSecretKey = (typeof SECRET_STATE_KEYS)[number]

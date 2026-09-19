@@ -42,8 +42,7 @@
 		"language": "Ngôn ngữ",
 		"about": "Giới thiệu",
 		"skills": "Skills",
-		"agents": "Đại lý",
-		"github": "GitHub"
+		"agents": "Đại lý"
 	},
 	"about": {
 		"bugReport": {
@@ -895,10 +894,5 @@
 				"description": "Ghi đè hồ sơ tùy chọn cho nhân viên chỉnh sửa bị cô lập."
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "Mã thông báo GitHub",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "Được lưu trữ an toàn trong Kho lưu trữ bí mật VS Code. Được sử dụng bởi công cụ GitHub API gốc để kéo các yêu cầu, kiểm tra, nhận xét và hợp nhất."
 	}
 }

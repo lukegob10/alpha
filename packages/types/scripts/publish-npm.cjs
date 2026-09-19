@@ -2,7 +2,7 @@
 
 const fs = require("fs")
 const path = require("path")
-const { execSync } = require("child_process")
+const { execFileSync, execSync } = require("child_process")
 const readline = require("readline")
 
 const PACKAGE_NAME = "@alpha-code/types"
@@ -86,8 +86,8 @@ function commitVersionChanges(version) {
 
 function checkGitHubCLI() {
 	try {
-		execSync("gh --version", { stdio: "pipe" })
-		execSync("gh auth status", { stdio: "pipe" })
+		execFileSync("gh", ["--version"], { stdio: "pipe" })
+		execFileSync("gh", ["auth", "status"], { stdio: "pipe" })
 		return true
 	} catch (_error) {
 		return false
@@ -125,9 +125,10 @@ This PR contains the version bump for the SDK release v${version}.
 
 		try {
 			// Create the pull request
-			const prUrl = execSync(
-				`gh pr create --base "${baseBranch}" --head "${branchName}" --title "${title}" --body "${body}"`,
-				{ encoding: "utf8", stdio: "pipe" },
+			const prUrl = execFileSync(
+				"gh",
+				["pr", "create", "--base", baseBranch, "--head", branchName, "--title", title, "--body-file", "-"],
+				{ encoding: "utf8", stdio: "pipe", input: body },
 			).trim()
 
 			console.log(`  ✅ Pull request created: ${prUrl}`)

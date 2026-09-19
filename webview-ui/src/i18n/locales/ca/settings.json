@@ -42,8 +42,7 @@
 		"language": "Idioma",
 		"about": "Sobre Alpha",
 		"skills": "Skills",
-		"agents": "Agents",
-		"github": "GitHub"
+		"agents": "Agents"
 	},
 	"about": {
 		"bugReport": {
@@ -895,10 +894,5 @@
 				"description": "Anulació de perfil opcional per a treballadors d'edició aïllats."
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "Fitxa GitHub",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "Emmagatzemat de manera segura a l'emmagatzematge secret VS Code. Utilitzat per l'eina nativa GitHub API per a sol·licituds d'extracció, comprovacions, comentaris i combinacions."
 	}
 }

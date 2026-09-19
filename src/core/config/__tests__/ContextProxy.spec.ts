@@ -2,9 +2,10 @@
 
 import * as vscode from "vscode"
 
-import { GLOBAL_STATE_KEYS, SECRET_STATE_KEYS, GLOBAL_SECRET_KEYS } from "@alpha-code/types"
+import { GLOBAL_STATE_KEYS, SECRET_STATE_KEYS, GLOBAL_SECRET_KEYS, type AlphaCodeSettings } from "@alpha-code/types"
 
 import { ContextProxy } from "../ContextProxy"
+import { logger } from "../../../utils/logging"
 
 vi.mock("vscode", () => ({
 	Uri: {
@@ -35,7 +36,9 @@ describe("ContextProxy", () => {
 
 		// Mock secrets
 		mockSecrets = {
-			get: vi.fn().mockResolvedValue("test-secret"),
+			get: vi
+				.fn()
+				.mockImplementation(async (key: string) => (key === "openAiApiKey" ? "test-secret" : undefined)),
 			store: vi.fn().mockResolvedValue(undefined),
 			delete: vi.fn().mockResolvedValue(undefined),
 		}
@@ -95,8 +98,8 @@ describe("ContextProxy", () => {
 
 	describe("constructor", () => {
 		it("should initialize state cache with all global state keys", () => {
-			// +2 for the legacy condensing-prompt migration checks.
-			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 2)
+			// +3 for the retired GitHub token and condensing-prompt migration checks.
+			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 3)
 			for (const key of GLOBAL_STATE_KEYS) {
 				expect(mockGlobalState.get).toHaveBeenCalledWith(key)
 			}
@@ -106,13 +109,85 @@ describe("ContextProxy", () => {
 		})
 
 		it("should initialize secret cache with all secret keys", () => {
-			expect(mockSecrets.get).toHaveBeenCalledTimes(SECRET_STATE_KEYS.length + GLOBAL_SECRET_KEYS.length)
+			expect(mockSecrets.get).toHaveBeenCalledTimes(SECRET_STATE_KEYS.length + GLOBAL_SECRET_KEYS.length + 1)
 			for (const key of SECRET_STATE_KEYS) {
 				expect(mockSecrets.get).toHaveBeenCalledWith(key)
 			}
 			for (const key of GLOBAL_SECRET_KEYS) {
 				expect(mockSecrets.get).toHaveBeenCalledWith(key)
 			}
+		})
+	})
+
+	describe("retired GitHub token migration", () => {
+		it("deletes the legacy token from both storage locations without exposing it", async () => {
+			vi.clearAllMocks()
+			mockGlobalState.get.mockImplementation((key: string) =>
+				key === "githubToken" ? "legacy-global-token" : undefined,
+			)
+			mockSecrets.get.mockImplementation(async (key: string) =>
+				key === "githubToken" ? "legacy-secret-token" : undefined,
+			)
+
+			const migratedProxy = new ContextProxy(mockContext)
+			await migratedProxy.initialize()
+
+			expect(mockGlobalState.update).toHaveBeenCalledWith("githubToken", undefined)
+			expect(mockSecrets.delete).toHaveBeenCalledWith("githubToken")
+			expect(migratedProxy.getValues()).not.toHaveProperty("githubToken")
+			expect(await migratedProxy.export()).not.toHaveProperty("githubToken")
+
+			vi.clearAllMocks()
+			mockGlobalState.get.mockReturnValue(undefined)
+			mockSecrets.get.mockResolvedValue(undefined)
+			await migratedProxy.initialize()
+			expect(mockGlobalState.update).not.toHaveBeenCalledWith("githubToken", undefined)
+			expect(mockSecrets.delete).not.toHaveBeenCalledWith("githubToken")
+		})
+
+		it("continues activation when legacy token cleanup fails", async () => {
+			vi.clearAllMocks()
+			mockGlobalState.get.mockImplementation((key: string) =>
+				key === "githubToken" ? "legacy-global-token" : undefined,
+			)
+			mockGlobalState.update.mockImplementation(async (key: string) => {
+				if (key === "githubToken") throw new Error("legacy token value must not be logged")
+			})
+			mockSecrets.get.mockImplementation(async (key: string) =>
+				key === "githubToken" ? "legacy-secret-token" : undefined,
+			)
+			mockSecrets.delete.mockRejectedValue(new Error("legacy token value must not be logged"))
+
+			const migratedProxy = new ContextProxy(mockContext)
+			const loggerErrorSpy = vi.spyOn(logger, "error").mockImplementation(() => {})
+			try {
+				await expect(migratedProxy.initialize()).resolves.toBeUndefined()
+				expect(migratedProxy.isInitialized).toBe(true)
+				expect(migratedProxy.getValues()).not.toHaveProperty("githubToken")
+				expect(loggerErrorSpy).toHaveBeenCalledWith(
+					"[ContextProxy] Could not remove the retired GitHub token from global state",
+				)
+				expect(loggerErrorSpy).toHaveBeenCalledWith(
+					"[ContextProxy] Could not remove the retired GitHub token from secret storage",
+				)
+				expect(loggerErrorSpy.mock.calls.flat().join(" ")).not.toContain("legacy token value")
+			} finally {
+				loggerErrorSpy.mockRestore()
+			}
+		})
+
+		it("ignores stale setValue and setValues payloads for the removed key", async () => {
+			const updateGlobalStateSpy = vi.spyOn(proxy, "updateGlobalState")
+			const storeSecretSpy = vi.spyOn(proxy, "storeSecret")
+			const staleKey = "githubToken" as unknown as keyof AlphaCodeSettings
+			const staleValues = { githubToken: "stale-token" } as unknown as AlphaCodeSettings
+
+			await proxy.setValue(staleKey, "stale-token" as never)
+			await proxy.setValues(staleValues)
+
+			expect(updateGlobalStateSpy).not.toHaveBeenCalledWith("githubToken", expect.anything())
+			expect(storeSecretSpy).not.toHaveBeenCalledWith("githubToken", expect.anything())
+			expect(proxy.getValues()).not.toHaveProperty("githubToken")
 		})
 	})
 
@@ -126,7 +201,7 @@ describe("ContextProxy", () => {
 			expect(result).toBe("deepseek")
 
 			// Original context should be called once during updateGlobalState (+3 for migration checks)
-			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 2) // From initialization + migration checks
+			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 3) // From initialization + migration checks
 		})
 
 		it("should handle default values correctly", async () => {

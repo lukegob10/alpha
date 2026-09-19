@@ -42,8 +42,7 @@
 		"language": "Idioma",
 		"about": "Sobre",
 		"skills": "Skills",
-		"agents": "Agentes",
-		"github": "GitHub"
+		"agents": "Agentes"
 	},
 	"about": {
 		"bugReport": {
@@ -895,10 +894,5 @@
 				"description": "Substituição de perfil opcional para trabalhadores de edição isolados."
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "Token GitHub",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "Armazenado com segurança no armazenamento secreto VS Code. Usado pela ferramenta nativa GitHub API para pull requests, verificações, comentários e mesclagens."
 	}
 }

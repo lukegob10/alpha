@@ -42,8 +42,7 @@
 		"language": "Lingua",
 		"about": "Informazioni su Alpha",
 		"skills": "Skills",
-		"agents": "Agenti",
-		"github": "GitHub"
+		"agents": "Agenti"
 	},
 	"about": {
 		"bugReport": {
@@ -895,10 +894,5 @@
 				"description": "Sostituzione facoltativa del profilo per lavoratori di modifica isolati."
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "Token GitHub",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "Archiviato in modo sicuro nell'archivio segreto VS Code. Utilizzato dallo strumento nativo GitHub API per richieste pull, controlli, commenti e unioni."
 	}
 }

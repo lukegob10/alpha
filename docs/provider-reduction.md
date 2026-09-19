@@ -30,6 +30,13 @@ provider. Historical transcripts and evaluation records remain readable. Existin
 index identities continue to separate providers, models, dimensions, and gateway
 configuration, preventing old vectors from being treated as Vertex vectors.
 
+Task creation and history resume validate the provider before changing the active
+task lifecycle. Replacing a running task's API configuration constructs the new
+handler before committing the change, so an unsupported saved setup leaves the
+current handler intact. The exact VS Code 1.122.1 smoke gate checks that every
+retired provider and an unknown provider reject execution while the extension
+stays active and can return to a supported connection.
+
 The process-local scripted `fake-ai` implementation remains an internal testing
 seam for the real extension harness. It is absent from public provider choices and
 requires a live implementation or a registered process-local ID. A saved profile

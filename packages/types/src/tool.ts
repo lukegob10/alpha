@@ -6,7 +6,7 @@ import { browserToolNames } from "./browser.js"
  * ToolGroup
  */
 
-export const toolGroups = ["read", "edit", "command", "mcp", "github", "modes", "agents", "browser"] as const
+export const toolGroups = ["read", "edit", "command", "mcp", "modes", "agents", "browser"] as const
 
 export const toolGroupsSchema = z.enum(toolGroups)
 
@@ -15,7 +15,7 @@ export const toolGroupsSchema = z.enum(toolGroups)
  * Used by schema preprocessing to silently strip these before validation,
  * preventing errors for users with older configs.
  */
-export const deprecatedToolGroups: readonly string[] = []
+export const deprecatedToolGroups: readonly string[] = ["github"]
 
 export type ToolGroup = z.infer<typeof toolGroupsSchema>
 
@@ -63,6 +63,7 @@ export const toolNames = [
 	"run_slash_command",
 	"skill",
 	"generate_image",
+	// Retained so historical settings and tool usage records remain readable.
 	"github_api",
 	...browserToolNames,
 	"custom_tool",

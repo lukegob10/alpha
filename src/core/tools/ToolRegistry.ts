@@ -38,7 +38,6 @@ import { editFileTool } from "./EditFileTool"
 import { editTool } from "./EditTool"
 import { executeCommandTool } from "./ExecuteCommandTool"
 import { prepareParallelCommand } from "./ParallelCommandRead"
-import { githubApiTool } from "./GitHubApiTool"
 import { followupTaskTool } from "./FollowupTaskTool"
 import { interruptAgentTool } from "./InterruptAgentTool"
 import { listAgentsTool } from "./ListAgentsTool"
@@ -280,7 +279,6 @@ const TOOL_NAMES = [
 	"edit",
 	"edit_file",
 	"execute_command",
-	"github_api",
 	...browserToolNames,
 	"list_files",
 	"new_task",
@@ -358,7 +356,6 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 				: name === "create_ticket" ||
 					  name === "update_ticket" ||
 					  name === "delete_ticket" ||
-					  name === "github_api" ||
 					  name === "use_mcp_tool" ||
 					  name.startsWith("mcp") ||
 					  name === "custom_tool" ||
@@ -604,7 +601,6 @@ export class ToolRegistry {
 		this.registerBuiltIn("edit", editTool, schemas)
 		this.registerBuiltIn("edit_file", editFileTool, schemas)
 		this.registerBuiltIn("execute_command", executeCommandTool, schemas)
-		this.registerBuiltIn("github_api", githubApiTool, schemas)
 		this.registerBuiltIn("open_browser_page", openBrowserPageTool, schemas)
 		this.registerBuiltIn("list_browser_pages", listBrowserPagesTool, schemas)
 		this.registerBuiltIn("read_page", readPageTool, schemas)

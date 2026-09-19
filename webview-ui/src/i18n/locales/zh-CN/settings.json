@@ -42,8 +42,7 @@
 		"language": "语言",
 		"about": "关于 Alpha",
 		"skills": "Skills",
-		"agents": "代理",
-		"github": "GitHub"
+		"agents": "代理"
 	},
 	"about": {
 		"bugReport": {
@@ -895,10 +894,5 @@
 				"description": "独立编辑工作人员的可选配置文件覆盖。"
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "GitHub 令牌",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "安全存储在 VS Code 秘密存储中。由本机 GitHub API 工具用于拉取请求、检查、注释和合并。"
 	}
 }

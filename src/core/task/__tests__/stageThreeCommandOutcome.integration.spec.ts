@@ -437,35 +437,35 @@ function verificationEvents(events: AgentTurnEvent[]) {
 }
 
 describe("ordinary task tool contracts", () => {
-	it("retains capability failure allowance through the real command, scheduler, and Task path", async () => {
+	it("retains pre-launch failure allowance through the real command, scheduler, and Task path", async () => {
 		await withTaskHarness(async (harness) => {
 			Reflect.set(harness.task, "toolRepetitionDetector", new ToolRepetitionDetector(3, { noProgressLimit: 2 }))
 			const events: AgentTurnEvent[] = []
 			const suspend = vi.spyOn(harness.task, "suspendAfterCurrentTurn")
 			const terminal = controlledTerminal(harness.workspacePath)
-			installTerminal(terminal)
+			terminalRegistryMock.getOrCreateTerminal.mockRejectedValue(new Error("terminal unavailable"))
 
 			for (let index = 0; index < 4; index++) {
 				const outcome = await createScheduler(harness, events).run(
-					response(`unavailable-${index}`, "gh repo view"),
+					response(`unavailable-${index}`, "node --version"),
 				)
 				expect(outcome.results[0]).toMatchObject({
 					status: "error",
 					failure: {
-						reason: "capability_unavailable",
+						reason: "pre_launch_rejected",
 						effectsStarted: "no",
 						outcome: "known",
-						recovery: { kind: "alternative", toolName: "github_api" },
+						recovery: { kind: "repair" },
 					},
 				})
 				await harness.task.recordToolCallForStopping("read_file", { path: `unrelated-${index}.ts` }, "success")
 			}
 			expect(suspend).not.toHaveBeenCalled()
-			expect(harness.task.getToolRetryBlock("github_api", { operation: "repository" })).toBeUndefined()
+			expect(harness.task.getToolRetryBlock("list_files", { path: "/repository" })).toBeUndefined()
 
-			const blocked = await createScheduler(harness, events).run(response("unavailable-repeat", "gh repo view"))
-			expect(blocked.results[0]).toMatchObject({ status: "error", failure: { reason: "capability_unavailable" } })
-			expect(blocked.results[0]?.content).toEqual(expect.stringContaining("github_api"))
+			const blocked = await createScheduler(harness, events).run(response("unavailable-repeat", "node --version"))
+			expect(blocked.results[0]).toMatchObject({ status: "error", failure: { reason: "pre_launch_rejected" } })
+			expect(blocked.results[0]?.content).toEqual(expect.stringContaining("Correct the reported prerequisite"))
 			expect(suspend).toHaveBeenCalledOnce()
 			expect(terminal.runCommand).not.toHaveBeenCalled()
 			const receipts = harness.toolResults().filter((receipt) => receipt.type === "tool_result")

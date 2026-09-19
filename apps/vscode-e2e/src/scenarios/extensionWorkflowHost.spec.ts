@@ -245,6 +245,9 @@ test("command approval requires exact allowlisted text and matching structured w
 	assert.equal(isApprovedWorkflowCommand(WORKFLOW_COMMANDS.test, history(WORKFLOW_COMMANDS.test), workspace), true)
 	for (const command of [
 		"git push",
+		"gh pr list",
+		"gh pr create --title test --body test",
+		"gh api repos/owner/repo/issues",
 		`${WORKFLOW_COMMANDS.test}; git push`,
 		`echo hi && ${WORKFLOW_COMMANDS.test}`,
 		"node --test",

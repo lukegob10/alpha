@@ -669,6 +669,7 @@ const ChatRowContentInner = ({
 			}
 			case "ticket":
 				return <TicketActivity tool={tool} />
+			// Historical transcript projection; native GitHub API execution is retired.
 			case "githubApi":
 				return <GitHubApiActivity request={tool.github ?? tool} />
 			case "updateTodoList" as any: {

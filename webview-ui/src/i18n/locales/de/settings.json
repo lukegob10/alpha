@@ -42,8 +42,7 @@
 		"language": "Sprache",
 		"about": "Über Alpha",
 		"skills": "Skills",
-		"agents": "Agenten",
-		"github": "GitHub"
+		"agents": "Agenten"
 	},
 	"about": {
 		"bugReport": {
@@ -895,10 +894,5 @@
 				"description": "Optionale Profilüberschreibung für isolierte Bearbeitungsarbeiter."
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "GitHub-Token",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "Sicher im VS Code-Geheimspeicher gespeichert. Wird vom nativen Tool GitHub API für Pull-Requests, Prüfungen, Kommentare und Zusammenführungen verwendet."
 	}
 }

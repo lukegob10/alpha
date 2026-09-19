@@ -42,8 +42,7 @@
 		"language": "भाषा",
 		"about": "परिचय",
 		"skills": "Skills",
-		"agents": "एजेंटों",
-		"github": "GitHub"
+		"agents": "एजेंटों"
 	},
 	"about": {
 		"bugReport": {
@@ -895,10 +894,5 @@
 				"description": "पृथक संपादन कर्मियों के लिए वैकल्पिक प्रोफ़ाइल ओवरराइड।"
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "GitHub टोकन",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "VS Code गुप्त भंडारण में सुरक्षित रूप से संग्रहीत। पुल अनुरोधों, जांचों, टिप्पणियों और विलयों के लिए मूल GitHub API टूल द्वारा उपयोग किया जाता है।"
 	}
 }

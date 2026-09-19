@@ -63,6 +63,12 @@ Existing custom-mode, Ask, Debug, and Orchestrator tasks and stored configuratio
 
 ## Local Setup & Development
 
+### GitHub access
+
+Alpha uses the GitHub CLI (`gh`) through its normal command tool. Install and authenticate `gh` in the environment
+where the extension runs; see [GitHub CLI setup and compatibility](docs/github-cli.md). Command approvals and workspace
+restrictions still apply.
+
 ### Release Automation
 
 The stable workflow runs on `main` and publishes a verified VSIX GitHub release after the exact VS Code 1.122.1 host gate,

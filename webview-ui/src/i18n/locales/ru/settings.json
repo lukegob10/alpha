@@ -42,8 +42,7 @@
 		"language": "Язык",
 		"about": "О Alpha",
 		"skills": "Skills",
-		"agents": "Агенты",
-		"github": "GitHub"
+		"agents": "Агенты"
 	},
 	"about": {
 		"bugReport": {
@@ -895,10 +894,5 @@
 				"description": "Необязательное переопределение профиля для изолированных работников редактирования."
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "Токен GitHub",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "Надежно хранится в секретном хранилище VS Code. Используется родным инструментом GitHub API для запросов на включение, проверок, комментариев и слияний."
 	}
 }

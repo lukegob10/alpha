@@ -129,7 +129,7 @@ export const toolParamNames = [
 	"line_ranges",
 	// search_files bounded batch parameter
 	"queries",
-	// github_api parameters
+	// Legacy github_api parameters retained for historical transcript replay only.
 	"owner",
 	"repo",
 	"pull_number",
@@ -246,6 +246,7 @@ export type NativeToolArgs = BrowserToolArgs & {
 	update_todo_list: { todos: string; work_plan?: import("@alpha-code/types").TaskWorkPlan | null }
 	use_mcp_tool: { server_name: string; tool_name: string; arguments?: Record<string, unknown> }
 	write_to_file: { path: string; content: string }
+	// Retained for typed replay of historical calls; no executable registry descriptor exists.
 	github_api:
 		| {
 				action: "create_pull_request"
@@ -423,6 +424,7 @@ export interface GenerateImageToolUse extends ToolUse<"generate_image"> {
 	params: Partial<Pick<Record<ToolParamName, string>, "prompt" | "path" | "image">>
 }
 
+/** Historical GitHub API tool calls remain representable when replaying saved transcripts. */
 export interface GitHubApiToolUse extends ToolUse<"github_api"> {
 	name: "github_api"
 	params: Partial<
@@ -491,6 +493,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	run_slash_command: "run slash command",
 	skill: "load skill",
 	generate_image: "generate images",
+	// Historical display label for saved GitHub API tool calls; this name is not advertised.
 	github_api: "use GitHub API",
 	open_browser_page: "open an integrated browser page",
 	list_browser_pages: "list shared integrated browser pages",
@@ -520,9 +523,6 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 	},
 	mcp: {
 		tools: ["use_mcp_tool", "access_mcp_resource", "discover_tools"],
-	},
-	github: {
-		tools: ["github_api"],
 	},
 	modes: {
 		tools: ["new_task"],

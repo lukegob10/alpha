@@ -42,8 +42,7 @@
 		"language": "Langue",
 		"about": "À propos de Alpha",
 		"skills": "Skills",
-		"agents": "Agents",
-		"github": "GitHub"
+		"agents": "Agents"
 	},
 	"about": {
 		"bugReport": {
@@ -895,10 +894,5 @@
 				"description": "Remplacement de profil facultatif pour les travailleurs d'édition isolés."
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "Jeton GitHub",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "Stocké en toute sécurité dans le stockage secret VS Code. Utilisé par l'outil natif GitHub API pour les demandes d'extraction, les vérifications, les commentaires et les fusions."
 	}
 }

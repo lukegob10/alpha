@@ -42,8 +42,7 @@
 		"language": "언어",
 		"about": "Alpha 정보",
 		"skills": "Skills",
-		"agents": "에이전트",
-		"github": "GitHub"
+		"agents": "에이전트"
 	},
 	"about": {
 		"bugReport": {
@@ -895,10 +894,5 @@
 				"description": "격리된 편집 작업자에 대한 선택적 프로필 재정의."
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "GitHub 토큰",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "VS Code 비밀 저장소에 안전하게 저장됩니다. 풀 요청, 확인, 댓글 및 병합을 위해 기본 GitHub API 도구에서 사용됩니다."
 	}
 }
