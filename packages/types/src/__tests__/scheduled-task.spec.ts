@@ -31,6 +31,7 @@ describe("scheduled setup contracts", () => {
 		const task = {
 			...legacy,
 			apiConfig: { id: "internal", name: "Internal" },
+			reasoningPreference: { kind: "effort", effort: "high" },
 			execution: {
 				type: "skill",
 				skillName: "review",
@@ -41,11 +42,29 @@ describe("scheduled setup contracts", () => {
 		}
 		expect(scheduledTaskSchema.parse(task)).toMatchObject(task)
 	})
+	it("round trips a queued reasoning preference independently of the profile", () => {
+		const run = {
+			id: "run",
+			taskId: "schedule",
+			status: "queued" as const,
+			trigger: "manual" as const,
+			scheduledFor: 1,
+			prompt: legacy.prompt,
+			reasoningPreference: { kind: "off" as const },
+		}
+		expect(scheduledTaskRunSchema.parse(run)).toMatchObject(run)
+	})
 	it("rejects malformed profile identities instead of discarding them", () => {
 		expect(scheduledTaskSchema.safeParse({ ...legacy, apiConfig: { name: "Internal" } }).success).toBe(false)
 		expect(scheduledTaskSchema.safeParse({ ...legacy, apiConfig: { id: "", name: "Internal" } }).success).toBe(
 			false,
 		)
+	})
+	it("rejects malformed reasoning preferences instead of silently falling back", () => {
+		expect(
+			scheduledTaskSchema.safeParse({ ...legacy, reasoningPreference: { kind: "effort", effort: "turbo" } })
+				.success,
+		).toBe(false)
 	})
 	it("drops stale skill fields from prompt execution", () => {
 		expect(scheduledTaskExecutionSchema.parse({ type: "prompt", skillName: "review", arguments: "old" })).toEqual({

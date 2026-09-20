@@ -1,7 +1,13 @@
 import * as fs from "fs/promises"
 import * as path from "path"
 
-import type { ScheduledTask, ScheduledTaskRun, ScheduledTaskState } from "@alpha-code/types"
+import {
+	taskReasoningPreferenceSchema,
+	taskReasoningStateSchema,
+	type ScheduledTask,
+	type ScheduledTaskRun,
+	type ScheduledTaskState,
+} from "@alpha-code/types"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { safeWriteJson } from "../../utils/safeWriteJson"
@@ -38,38 +44,74 @@ export class ScheduledTaskStore {
 
 	async upsertTask(task: ScheduledTask): Promise<ScheduledTaskState> {
 		return this.withLock(async () => {
-			this.tasks.set(task.id, task)
-			await this.writeTasks()
+			const normalizedTask = this.normalizeTask(task)
+			const candidate = new Map(this.tasks)
+			candidate.set(normalizedTask.id, normalizedTask)
+			try {
+				await this.writeTasks(candidate)
+			} catch (error) {
+				await this.writeTasks(this.tasks).catch(() => undefined)
+				throw error
+			}
+			this.tasks = candidate
 			return this.getState()
 		})
 	}
 
 	async deleteTask(taskId: string): Promise<ScheduledTaskState> {
 		return this.withLock(async () => {
-			this.tasks.delete(taskId)
-			for (const run of this.runs.values()) {
+			const candidateTasks = new Map(this.tasks)
+			const candidateRuns = new Map(this.runs)
+			candidateTasks.delete(taskId)
+			for (const run of candidateRuns.values()) {
 				if (run.taskId === taskId) {
-					this.runs.delete(run.id)
+					candidateRuns.delete(run.id)
 				}
 			}
-			await Promise.all([this.writeTasks(), this.writeRuns()])
+			const results = await Promise.allSettled([this.writeTasks(candidateTasks), this.writeRuns(candidateRuns)])
+			const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected")
+			if (failure) {
+				await Promise.allSettled([this.writeTasks(this.tasks), this.writeRuns(this.runs)])
+				throw failure.reason
+			}
+			this.tasks = candidateTasks
+			this.runs = candidateRuns
 			return this.getState()
 		})
 	}
 
 	async upsertRun(run: ScheduledTaskRun): Promise<ScheduledTaskState> {
 		return this.withLock(async () => {
-			this.runs.set(run.id, run)
-			await this.writeRuns()
+			const normalizedRun = this.normalizeRun(run)
+			const candidate = new Map(this.runs)
+			candidate.set(normalizedRun.id, normalizedRun)
+			try {
+				await this.writeRuns(candidate)
+			} catch (error) {
+				await this.writeRuns(this.runs).catch(() => undefined)
+				throw error
+			}
+			this.runs = candidate
 			return this.getState()
 		})
 	}
 
 	async updateTaskAndRun(task: ScheduledTask, run: ScheduledTaskRun): Promise<ScheduledTaskState> {
 		return this.withLock(async () => {
-			this.tasks.set(task.id, task)
-			this.runs.set(run.id, run)
-			await Promise.all([this.writeTasks(), this.writeRuns()])
+			const normalizedTask = this.normalizeTask(task)
+			const normalizedRun = this.normalizeRun(run)
+			const candidateTasks = new Map(this.tasks)
+			const candidateRuns = new Map(this.runs)
+			candidateTasks.set(normalizedTask.id, normalizedTask)
+			candidateRuns.set(normalizedRun.id, normalizedRun)
+			const results = await Promise.allSettled([this.writeTasks(candidateTasks), this.writeRuns(candidateRuns)])
+			const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected")
+			if (failure) {
+				await Promise.allSettled([this.writeTasks(this.tasks), this.writeRuns(this.runs)])
+				throw failure.reason
+			}
+			this.tasks = candidateTasks
+			this.runs = candidateRuns
 			return this.getState()
 		})
 	}
@@ -81,7 +123,7 @@ export class ScheduledTaskStore {
 			const tasks = Array.isArray(parsed) ? parsed : parsed.tasks
 			for (const item of tasks ?? []) {
 				if (this.isScheduledTask(item)) {
-					this.tasks.set(item.id, item)
+					this.tasks.set(item.id, this.normalizeTask(item))
 				}
 			}
 		} catch {
@@ -96,7 +138,7 @@ export class ScheduledTaskStore {
 			const runs = Array.isArray(parsed) ? parsed : parsed.runs
 			for (const item of runs ?? []) {
 				if (this.isScheduledTaskRun(item)) {
-					this.runs.set(item.id, item)
+					this.runs.set(item.id, this.normalizeRun(item))
 				}
 			}
 		} catch {
@@ -104,12 +146,18 @@ export class ScheduledTaskStore {
 		}
 	}
 
-	private async writeTasks(): Promise<void> {
-		await safeWriteJson(await this.getTasksPath(), this.getState().tasks)
+	private async writeTasks(tasks: ReadonlyMap<string, ScheduledTask> = this.tasks): Promise<void> {
+		await safeWriteJson(
+			await this.getTasksPath(),
+			Array.from(tasks.values()).sort((a, b) => a.name.localeCompare(b.name)),
+		)
 	}
 
-	private async writeRuns(): Promise<void> {
-		await safeWriteJson(await this.getRunsPath(), this.getState().runs)
+	private async writeRuns(runs: ReadonlyMap<string, ScheduledTaskRun> = this.runs): Promise<void> {
+		await safeWriteJson(
+			await this.getRunsPath(),
+			Array.from(runs.values()).sort((a, b) => b.scheduledFor - a.scheduledFor),
+		)
 	}
 
 	private isScheduledTask(value: unknown): value is ScheduledTask {
@@ -123,6 +171,14 @@ export class ScheduledTaskStore {
 		)
 	}
 
+	private normalizeTask(task: ScheduledTask): ScheduledTask {
+		const parsed = taskReasoningPreferenceSchema.safeParse(task.reasoningPreference ?? { kind: "default" })
+		if (parsed.success) {
+			return { ...task, reasoningPreference: parsed.data }
+		}
+		return { ...task, reasoningPreference: { kind: "default" } }
+	}
+
 	private isScheduledTaskRun(value: unknown): value is ScheduledTaskRun {
 		const run = value as Partial<ScheduledTaskRun>
 		return (
@@ -133,6 +189,19 @@ export class ScheduledTaskStore {
 			typeof run.scheduledFor === "number" &&
 			typeof run.prompt === "string"
 		)
+	}
+
+	private normalizeRun(run: ScheduledTaskRun): ScheduledTaskRun {
+		const preferenceResult = taskReasoningPreferenceSchema.safeParse(run.reasoningPreference ?? { kind: "default" })
+		const stateResult =
+			run.reasoningState === undefined ? undefined : taskReasoningStateSchema.safeParse(run.reasoningState)
+		const reasoningPreference = preferenceResult.success ? preferenceResult.data : { kind: "default" as const }
+		const reasoningState = stateResult?.success ? stateResult.data : undefined
+		return {
+			...run,
+			reasoningPreference,
+			...(reasoningState ? { reasoningState } : { reasoningState: undefined }),
+		}
 	}
 
 	private withLock<T>(fn: () => Promise<T>): Promise<T> {

@@ -327,11 +327,41 @@
 		"triggerLabel_zero": "0 được tự động phê duyệt",
 		"triggerLabel_one": "1 được tự động phê duyệt",
 		"triggerLabel_other": "{{count}} được tự động phê duyệt",
-		"triggerLabelAll": "BRRR"
+		"triggerLabelAll": "Tất cả"
 	},
 	"reasoning": {
 		"thinking": "Đang suy nghĩ",
-		"seconds": "{{count}} giây"
+		"seconds": "{{count}} giây",
+		"label": "Suy luận: {{value}}",
+		"title": "Suy luận",
+		"loading": "Đang tải…",
+		"unavailable": "Không khả dụng",
+		"default": "Mặc định",
+		"off": "Tắt",
+		"on": "Bật",
+		"none": "Không có",
+		"help": "Mặc định sử dụng cài đặt hồ sơ. Tắt sẽ vô hiệu hóa hoặc bỏ qua suy luận tùy chọn. Không có sẽ gửi mức none rõ ràng của nhà cung cấp.",
+		"budget": "{{tokens}} token suy nghĩ",
+		"advanced": "Cài đặt hồ sơ nâng cao",
+		"custom": "Token suy luận tùy chỉnh",
+		"customHelp": "Chỉ sử dụng token được mô hình lưu trữ này chấp nhận: 1–32 chữ thường, chữ số, dấu gạch dưới hoặc dấu gạch ngang. Không giả định hỗ trợ theo họ mô hình.",
+		"apply": "Áp dụng",
+		"invalidCustom": "Token không hợp lệ. Suy luận sẽ bị bỏ qua.",
+		"saving": "Đang lưu…",
+		"nextStep": "Bước tiếp theo",
+		"current": "Yêu cầu hiện tại: {{value}}",
+		"fallback": "Đã yêu cầu {{requested}}; đang dùng {{effective}}.",
+		"saveFailed": "Không thể lưu suy luận. Lựa chọn đã chấp nhận của bạn không thay đổi.",
+		"unavailableHelp": "Mô hình này không có khả năng suy luận có thể điều chỉnh đã được xác minh.",
+		"profileDefault": "Mặc định của hồ sơ / suy luận nâng cao. Điều khiển tác vụ có thể ghi đè mà không lưu hồ sơ.",
+		"scheduleHelp": "Thay đổi lịch ảnh hưởng đến các lần chạy sau; các lần chạy đang xếp hàng giữ nguyên ảnh chụp của chúng.",
+		"reasons": {
+			"unsupported": "Giá trị được yêu cầu không được mô hình này hỗ trợ.",
+			"unavailable": "Các khả năng suy luận không khả dụng cho mô hình này.",
+			"required": "Mô hình này yêu cầu suy luận.",
+			"budget-only": "Mô hình này dùng ngân sách token thay vì các mức nỗ lực có tên.",
+			"invalid-custom": "Token tùy chỉnh không hợp lệ."
+		}
 	},
 	"contextManagement": {
 		"tokens": "token",

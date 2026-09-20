@@ -35,7 +35,12 @@ describe("scheduled task approval grants", () => {
 				if (run.alphaTaskId) finishRun()
 				return { tasks: [task], runs: [run] }
 			})
-			const createTask = vi.fn().mockResolvedValue({ taskId: "alpha-task-1" })
+			const createTask = vi.fn().mockResolvedValue({
+				taskId: "alpha-task-1",
+				prepareReasoningForAdmission: vi.fn().mockResolvedValue(undefined),
+				start: vi.fn(),
+				abortTask: vi.fn().mockResolvedValue(undefined),
+			})
 			const provider = {
 				createTask,
 				providerSettingsManager: {

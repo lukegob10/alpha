@@ -95,6 +95,8 @@ export type TaskProviderEvents = {
  */
 
 export interface CreateTaskOptions {
+	/** Independent task preference; callers such as schedules supply their own snapshot. */
+	reasoningPreference?: import("./task-reasoning.js").TaskReasoningPreference
 	taskId?: string
 	/** Create the task without making it the active foreground task. */
 	background?: boolean

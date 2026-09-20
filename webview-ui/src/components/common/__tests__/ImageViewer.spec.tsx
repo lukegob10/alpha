@@ -4,6 +4,11 @@ import { render, fireEvent, screen } from "@/utils/test-utils"
 import { describe, it, expect, vi } from "vitest"
 import { ImageViewer } from "../ImageViewer"
 
+vi.mock("@/i18n/TranslationContext", async () => {
+	const { default: i18n } = await import("@/i18n/setup")
+	return { useAppTranslation: () => ({ t: (key: string) => key, i18n }) }
+})
+
 // Mock vscode API
 vi.mock("@src/utils/vscode", () => ({
 	vscode: {

@@ -864,6 +864,33 @@ describe("mergeExtensionState", () => {
 			expect(result.clineMessagesSeq).toBe(5)
 		})
 
+		it("keeps reasoning scoped to the accepted task sequence and clears it when an older host switches tasks", () => {
+			const previous: ExtensionState = {
+				...baseState,
+				currentTaskId: "b",
+				taskStateSeq: 5,
+				taskReasoning: {
+					taskId: "b",
+					requested: { kind: "effort", effort: "high" },
+					effective: { kind: "effort", effort: "high" },
+					capabilities: { kind: "effort", efforts: ["low", "high"], canDisable: true },
+				},
+			}
+			const stale = mergeExtensionState(previous, {
+				taskStateSeq: 4,
+				currentTaskId: "a",
+				taskReasoning: {
+					taskId: "a",
+					requested: { kind: "off" },
+					effective: { kind: "off" },
+					capabilities: { kind: "unavailable", canDisable: false },
+				},
+			})
+			expect(stale.taskReasoning).toEqual(previous.taskReasoning)
+			const switched = mergeExtensionState(previous, { taskStateSeq: 6, currentTaskId: "a" })
+			expect(switched.taskReasoning).toBeUndefined()
+		})
+
 		it("rejects clineMessages when seq equals current (not strictly greater)", () => {
 			const currentMessages = [makeMessage(1, "hello"), makeMessage(2, "world")]
 			const sameSeqMessages = [makeMessage(1, "hello")]

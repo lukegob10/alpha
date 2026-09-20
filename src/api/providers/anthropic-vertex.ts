@@ -64,6 +64,16 @@ type VertexGatewayGoogleAuth = {
 	getClient: () => Promise<VertexGatewayAuthClient>
 }
 
+// A model ID supplied by the gateway may be newer than the static catalog. Keep
+// the opaque ID usable while withholding reasoning capabilities until the model
+// has an explicitly verified entry in the catalog.
+const UNKNOWN_VERTEX_CLAUDE_MODEL_INFO: ModelInfo = {
+	maxTokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
+	contextWindow: 200_000,
+	supportsImages: true,
+	supportsPromptCache: true,
+}
+
 // https://docs.anthropic.com/en/api/claude-on-vertex-ai
 export class AnthropicVertexHandler extends BaseProvider implements SingleCompletionHandler {
 	protected options: ApiHandlerOptions
@@ -922,9 +932,10 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 	}
 
 	getModel() {
-		const modelId = this.options.apiModelId
-		let id = modelId && modelId in vertexModels ? (modelId as VertexModelId) : vertexDefaultModelId
-		let info: ModelInfo = vertexModels[id]
+		const modelId = this.options.apiModelId?.trim() || vertexDefaultModelId
+		const isKnownModel = Object.prototype.hasOwnProperty.call(vertexModels, modelId)
+		let id = modelId
+		let info: ModelInfo = isKnownModel ? vertexModels[id as VertexModelId] : UNKNOWN_VERTEX_CLAUDE_MODEL_INFO
 
 		// Check if 1M context beta should be enabled for supported models
 		const supports1MContext = VERTEX_1M_CONTEXT_MODEL_IDS.includes(

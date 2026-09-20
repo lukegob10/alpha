@@ -350,7 +350,15 @@ describe("Alpha", () => {
 	it("keeps the working handler and configuration when a legacy provider is rejected", () => {
 		const apiConfiguration: ProviderSettings = { apiProvider: "openai", openAiModelId: "working" }
 		const api = { getModel: vi.fn() }
-		const task = { apiConfiguration, api } as unknown as Task
+		const task = Object.assign(Object.create(Task.prototype), {
+			apiConfiguration,
+			effectiveApiConfiguration: { ...apiConfiguration },
+			api,
+			reasoningPreference: { kind: "default" },
+			reasoningByHandler: new WeakMap(),
+			retainedReasoningHandlers: new Set(),
+			reasoningHandlerUsers: new Map(),
+		}) as Task
 
 		expect(() => Task.prototype.updateApiConfiguration.call(task, { apiProvider: "openrouter" })).toThrow(
 			"Unsupported API provider: openrouter",
@@ -607,6 +615,7 @@ describe("Alpha", () => {
 					...mockApiConfig,
 					apiProvider: "vscode-lm",
 				} as ProviderSettings
+				Reflect.set(alphaTask, "effectiveApiConfiguration", { ...alphaTask.apiConfiguration })
 				const vscodeLmHistory = (alphaTask as any).buildCleanConversationHistory([markerMessage])
 
 				expect(vscodeLmHistory[0]).toMatchObject({

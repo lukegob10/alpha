@@ -51,6 +51,9 @@ const mockAlphaProvider = {
 	log: vi.fn(),
 	handleImplementPlan: vi.fn(),
 	handleModeSwitch: vi.fn(),
+	setTaskReasoningPreference: vi.fn(),
+	getReasoningCapabilities: vi.fn(),
+	activateProviderProfile: vi.fn(),
 	postStateToWebview: vi.fn(),
 	getCurrentTask: vi.fn(),
 	getLiveTask: vi.fn(),
@@ -72,6 +75,97 @@ const mockAlphaProvider = {
 	getCurrentWorkspaceCodeIndexManager: vi.fn(),
 	cwd: "/mock/workspace",
 } as unknown as AlphaProvider
+
+describe("task reasoning messages", () => {
+	const state = {
+		requested: { kind: "effort", effort: "high" },
+		effective: { kind: "effort", effort: "high" },
+		capabilities: { kind: "effort", efforts: ["low", "high"], canDisable: false },
+	} as const
+
+	beforeEach(() => vi.clearAllMocks())
+
+	it("reposts accepted state after a rejected composer profile switch", async () => {
+		vi.mocked(mockAlphaProvider.activateProviderProfile).mockRejectedValueOnce(new Error("profile unavailable"))
+		await webviewMessageHandler(mockAlphaProvider, { type: "loadApiConfigurationById", text: "missing-profile" })
+		expect(mockAlphaProvider.activateProviderProfile).toHaveBeenCalledWith({ id: "missing-profile" })
+		expect(mockAlphaProvider.postStateToWebview).toHaveBeenCalledTimes(1)
+	})
+
+	it("addresses the task and correlates an acknowledgement only after the write succeeds", async () => {
+		let accept!: () => void
+		vi.mocked(mockAlphaProvider.setTaskReasoningPreference).mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					accept = () => resolve(structuredClone(state) as never)
+				}),
+		)
+		const pending = webviewMessageHandler(mockAlphaProvider, {
+			type: "setTaskReasoningPreference",
+			taskReasoningUpdate: {
+				requestId: "r1",
+				taskId: "background",
+				preference: { kind: "effort", effort: "high" },
+			},
+		})
+		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()
+		accept()
+		await pending
+		expect(mockAlphaProvider.setTaskReasoningPreference).toHaveBeenCalledWith(
+			"background",
+			{
+				kind: "effort",
+				effort: "high",
+			},
+			{ rememberForNewTasks: true },
+		)
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "taskReasoningUpdated",
+			taskReasoningResponse: { requestId: "r1", taskId: "background", state },
+		})
+	})
+
+	it("rejects malformed preferences without calling the runtime", async () => {
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "setTaskReasoningPreference",
+			taskReasoningUpdate: { requestId: "r2", preference: { kind: "custom", value: "bad token" } },
+		})
+		expect(mockAlphaProvider.setTaskReasoningPreference).not.toHaveBeenCalled()
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "taskReasoningUpdated",
+			taskReasoningResponse: { requestId: "r2", error: "invalid" },
+		})
+	})
+
+	it("correlates invalid preferences with the addressed existing task", async () => {
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "setTaskReasoningPreference",
+			taskReasoningUpdate: {
+				requestId: "invalid-existing",
+				taskId: "background",
+				preference: { kind: "custom", value: "bad token" },
+			},
+		})
+
+		expect(mockAlphaProvider.setTaskReasoningPreference).not.toHaveBeenCalled()
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "taskReasoningUpdated",
+			taskReasoningResponse: { requestId: "invalid-existing", taskId: "background", error: "invalid" },
+		})
+	})
+
+	it("reports rejected writes without exposing sensitive error text", async () => {
+		vi.mocked(mockAlphaProvider.setTaskReasoningPreference).mockRejectedValueOnce(new Error("private storage path"))
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "setTaskReasoningPreference",
+			taskReasoningUpdate: { requestId: "r3", preference: { kind: "default" } },
+		})
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "taskReasoningUpdated",
+			taskReasoningResponse: { requestId: "r3", taskId: undefined, error: "saveFailed" },
+		})
+	})
+})
 
 import { t } from "../../../i18n"
 

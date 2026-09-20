@@ -326,11 +326,41 @@
 		"triggerLabel_zero": "0 automatisch genehmigt",
 		"triggerLabel_one": "1 automatisch genehmigt",
 		"triggerLabel_other": "{{count}} automatisch genehmigt",
-		"triggerLabelAll": "BRRR"
+		"triggerLabelAll": "Alle"
 	},
 	"reasoning": {
 		"thinking": "Denke nach",
-		"seconds": "{{count}}s"
+		"seconds": "{{count}}s",
+		"label": "Schlussfolgern: {{value}}",
+		"title": "Schlussfolgern",
+		"loading": "Wird geladen…",
+		"unavailable": "Nicht verfügbar",
+		"default": "Standard",
+		"off": "Aus",
+		"on": "Ein",
+		"none": "Keine",
+		"help": "Der Standard verwendet die Profileinstellung. Aus deaktiviert oder unterdrückt optionales Schlussfolgern. Keine sendet die explizite none-Stufe des Anbieters.",
+		"budget": "{{tokens}} Denk-Tokens",
+		"advanced": "Erweiterte Profileinstellungen",
+		"custom": "Benutzerdefiniertes Schlussfolgerungs-Token",
+		"customHelp": "Verwenden Sie nur ein von diesem gehosteten Modell akzeptiertes Token: 1–32 Kleinbuchstaben, Ziffern, Unterstriche oder Bindestriche. Es wird keine Unterstützung für eine Modellfamilie vorausgesetzt.",
+		"apply": "Anwenden",
+		"invalidCustom": "Ungültiges Token. Schlussfolgern wird weggelassen.",
+		"saving": "Wird gespeichert…",
+		"nextStep": "Nächster Schritt",
+		"current": "Aktuelle Anfrage: {{value}}",
+		"fallback": "Angefordert: {{requested}}; verwendet wird {{effective}}.",
+		"saveFailed": "Schlussfolgern konnte nicht gespeichert werden. Ihre akzeptierte Auswahl bleibt unverändert.",
+		"unavailableHelp": "Für dieses Modell ist keine verifizierte anpassbare Schlussfolgerungsfähigkeit verfügbar.",
+		"profileDefault": "Profilstandard / erweitertes Schlussfolgern. Die Aufgabensteuerung kann dies überschreiben, ohne das Profil zu speichern.",
+		"scheduleHelp": "Zeitplanänderungen wirken sich auf zukünftige Ausführungen aus; eingereihte Ausführungen behalten ihre Momentaufnahme.",
+		"reasons": {
+			"unsupported": "Der angeforderte Wert wird von diesem Modell nicht unterstützt.",
+			"unavailable": "Schlussfolgerungsfunktionen sind für dieses Modell nicht verfügbar.",
+			"required": "Dieses Modell erfordert Schlussfolgern.",
+			"budget-only": "Dieses Modell verwendet ein Token-Budget statt benannter Aufwandsstufen.",
+			"invalid-custom": "Das benutzerdefinierte Token ist ungültig."
+		}
 	},
 	"contextManagement": {
 		"tokens": "Tokens",

@@ -195,6 +195,24 @@ describe("VertexOpenAiHandler", () => {
 		expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ model: "xai/internal-grok-4.6" }), {})
 	})
 
+	it("sends Grok reasoning effort on the routed wire model", async () => {
+		mocks.create.mockResolvedValueOnce(createAsyncStream([{ choices: [{ delta: { content: "reasoned" } }] }]))
+		const handler = createHandler({
+			enableReasoningEffort: true,
+			reasoningEffort: "high",
+			modelRoutingMap: {
+				"xai/grok-4.6": { modelOverride: "gateway-grok-4.6" },
+			},
+		})
+
+		await handler.createMessage("system", []).next()
+
+		expect(mocks.create).toHaveBeenCalledWith(
+			expect.objectContaining({ model: "gateway-grok-4.6", reasoning_effort: "high" }),
+			{},
+		)
+	})
+
 	it("forces one Helix refresh and retries an authentication failure", async () => {
 		const unauthorized = Object.assign(new Error("Unauthorized"), { status: 401 })
 		mocks.create

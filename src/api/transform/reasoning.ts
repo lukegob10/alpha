@@ -114,6 +114,17 @@ export const getGeminiReasoning = ({
 		return { thinkingBudget: reasoningBudget!, includeThoughts: true }
 	}
 
+	// A selected profile value is not proof that an unknown Gemini model accepts
+	// effort-based thinking. Only catalogued capabilities (or an explicit
+	// provider declaration) may produce a thinkingLevel payload.
+	const effortCapability = model.supportsReasoningEffort
+	if (
+		effortCapability !== true &&
+		(!Array.isArray(effortCapability) || !effortCapability.some((effort) => effort !== "disable"))
+	) {
+		return undefined
+	}
+
 	// For effort-based Gemini models, rely directly on the selected effort value.
 	// We intentionally ignore enableReasoningEffort here so that explicitly chosen
 	// efforts in the UI (e.g. "High" for gemini-3-pro-preview) always translate

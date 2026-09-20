@@ -200,6 +200,7 @@ export const mergeExtensionState = (prevState: ExtensionState, newState: Partial
 	const patchHasNoTaskStateSequence = hasDedicatedDomainSequence && incomingTaskStateSeq === undefined
 	if (taskStateIsStale || patchHasNoTaskStateSequence) {
 		rest.currentTaskId = prevState.currentTaskId
+		rest.taskReasoning = prevState.taskReasoning
 		rest.currentTaskItem = prevState.currentTaskItem
 		rest.currentView = prevState.currentView
 		rest.currentTaskAutoApprovalRestricted = prevState.currentTaskAutoApprovalRestricted
@@ -212,6 +213,15 @@ export const mergeExtensionState = (prevState: ExtensionState, newState: Partial
 
 	const targetsDifferentTask =
 		newState.currentTaskId !== undefined && newState.currentTaskId !== prevState.currentTaskId
+	if (
+		!taskStateIsStale &&
+		!patchHasNoTaskStateSequence &&
+		"currentTaskId" in newState &&
+		newState.currentTaskId !== prevState.currentTaskId &&
+		!("taskReasoning" in newState)
+	) {
+		rest.taskReasoning = undefined
+	}
 	const rejectScopedDomains = targetsDifferentTask && (taskStateIsStale || patchHasNoTaskStateSequence)
 	if (rejectScopedDomains || isStale(incomingQueueSeq, previousQueueSeq)) {
 		rest.messageQueue = prevState.messageQueue

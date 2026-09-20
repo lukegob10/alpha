@@ -8,7 +8,8 @@ export const TranslationContext = createContext<{
 	t: (key: string, options?: Record<string, any>) => string
 	i18n: typeof i18next
 }>({
-	t: (key: string) => key,
+	// Detached consumers must still resolve the eagerly bundled locale resources.
+	t: (key, options) => i18next.t(key, options),
 	i18n: i18next,
 })
 

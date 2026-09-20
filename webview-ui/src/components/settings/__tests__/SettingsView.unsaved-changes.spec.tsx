@@ -538,6 +538,166 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		)
 	})
 
+	it("keeps dirty cached edits across a live refresh and discards against the latest state", async () => {
+		const onDone = vi.fn()
+		let liveState = {
+			...defaultExtensionState,
+			apiConfiguration: { ...defaultExtensionState.apiConfiguration },
+		}
+		;(useExtensionState as any).mockImplementation(() => liveState)
+		vi.mocked(ApiOptions).mockImplementation(({ apiConfiguration, setApiConfigurationField }) => (
+			<div data-testid="api-options">
+				<span data-testid="cached-model">{apiConfiguration.apiModelId}</span>
+				<button onClick={() => setApiConfigurationField("apiModelId", "buffered-model")}>Edit model</button>
+			</div>
+		))
+
+		const { rerender } = render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={onDone} />
+			</QueryClientProvider>,
+		)
+
+		await waitFor(() => expect(screen.getByText("Edit model")).toBeInTheDocument())
+		fireEvent.click(screen.getByText("Edit model"))
+		expect(screen.getByTestId("cached-model")).toHaveTextContent("buffered-model")
+
+		liveState = {
+			...liveState,
+			apiConfiguration: { ...liveState.apiConfiguration, apiModelId: "refreshed-model" },
+		}
+		rerender(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={onDone} />
+			</QueryClientProvider>,
+		)
+
+		await waitFor(() => expect(screen.getByTestId("cached-model")).toHaveTextContent("buffered-model"))
+		fireEvent.click(screen.getByText("settings:common.done"))
+		expect(screen.getByText("settings:unsavedChangesDialog.title")).toBeInTheDocument()
+
+		fireEvent.click(screen.getByText("settings:unsavedChangesDialog.cancelButton"))
+		expect(screen.getByTestId("cached-model")).toHaveTextContent("buffered-model")
+		expect(onDone).not.toHaveBeenCalled()
+
+		fireEvent.click(screen.getByText("settings:common.done"))
+		fireEvent.click(screen.getByText("settings:unsavedChangesDialog.discardButton"))
+		await waitFor(() => expect(onDone).toHaveBeenCalledOnce())
+		expect(screen.getByTestId("cached-model")).toHaveTextContent("refreshed-model")
+	})
+
+	it("saves the cached value after a live refresh without adopting the refreshed value", async () => {
+		let liveState = {
+			...defaultExtensionState,
+			apiConfiguration: { ...defaultExtensionState.apiConfiguration },
+		}
+		;(useExtensionState as any).mockImplementation(() => liveState)
+		vi.mocked(ApiOptions).mockImplementation(({ apiConfiguration, setApiConfigurationField }) => (
+			<div data-testid="api-options">
+				<span data-testid="cached-model">{apiConfiguration.apiModelId}</span>
+				<button onClick={() => setApiConfigurationField("apiModelId", "buffered-model")}>Edit model</button>
+			</div>
+		))
+
+		const { rerender } = render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} />
+			</QueryClientProvider>,
+		)
+
+		await waitFor(() => expect(screen.getByText("Edit model")).toBeInTheDocument())
+		fireEvent.click(screen.getByText("Edit model"))
+		liveState = {
+			...liveState,
+			apiConfiguration: { ...liveState.apiConfiguration, apiModelId: "refreshed-model" },
+		}
+		rerender(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} />
+			</QueryClientProvider>,
+		)
+
+		await waitFor(() => expect(screen.getByTestId("cached-model")).toHaveTextContent("buffered-model"))
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByTestId("save-button"))
+
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "upsertApiConfiguration",
+				apiConfiguration: expect.objectContaining({ apiModelId: "buffered-model" }),
+			}),
+		)
+		expect(liveState.apiConfiguration.apiModelId).toBe("refreshed-model")
+	})
+
+	it.each(["save", "discard"] as const)(
+		"keeps a quick reasoning update separate from Settings %s",
+		async (action) => {
+			const onDone = vi.fn()
+			let liveState = {
+				...defaultExtensionState,
+				apiConfiguration: { ...defaultExtensionState.apiConfiguration, reasoningEffort: "medium" },
+				taskReasoning: {
+					taskId: "task-a",
+					requested: { kind: "effort", effort: "medium" },
+					effective: { kind: "effort", effort: "medium" },
+					capabilities: { kind: "effort", efforts: ["low", "medium", "high"], canDisable: true },
+				},
+			}
+			;(useExtensionState as any).mockImplementation(() => liveState)
+			vi.mocked(ApiOptions).mockImplementation(({ apiConfiguration, setApiConfigurationField }) => (
+				<div data-testid="api-options">
+					<span data-testid="cached-reasoning">{apiConfiguration.reasoningEffort}</span>
+					<button onClick={() => setApiConfigurationField("reasoningEffort", "low")}>
+						Edit default reasoning
+					</button>
+				</div>
+			))
+			const view = () => (
+				<QueryClientProvider client={queryClient}>
+					<SettingsView onDone={onDone} />
+				</QueryClientProvider>
+			)
+			const { rerender } = render(view())
+			await waitFor(() => expect(screen.getByText("Edit default reasoning")).toBeInTheDocument())
+			fireEvent.click(screen.getByText("Edit default reasoning"))
+
+			liveState = {
+				...liveState,
+				taskReasoning: {
+					...liveState.taskReasoning,
+					requested: { kind: "effort", effort: "high" },
+					effective: { kind: "effort", effort: "high" },
+				},
+			}
+			rerender(view())
+			expect(screen.getByTestId("cached-reasoning")).toHaveTextContent("low")
+			mockPostMessage.mockClear()
+
+			if (action === "save") {
+				fireEvent.click(screen.getByTestId("save-button"))
+				expect(mockPostMessage).toHaveBeenCalledWith(
+					expect.objectContaining({
+						type: "upsertApiConfiguration",
+						apiConfiguration: expect.objectContaining({ reasoningEffort: "low" }),
+					}),
+				)
+			} else {
+				fireEvent.click(screen.getByText("settings:common.done"))
+				fireEvent.click(screen.getByText("settings:unsavedChangesDialog.discardButton"))
+				await waitFor(() => expect(onDone).toHaveBeenCalledOnce())
+				expect(screen.getByTestId("cached-reasoning")).toHaveTextContent("medium")
+				expect(mockPostMessage).not.toHaveBeenCalledWith(
+					expect.objectContaining({ type: "upsertApiConfiguration" }),
+				)
+			}
+			expect(liveState.taskReasoning.requested.effort).toBe("high")
+			expect(mockPostMessage).not.toHaveBeenCalledWith(
+				expect.objectContaining({ type: "setTaskReasoningPreference" }),
+			)
+		},
+	)
+
 	it("keeps non-provider settings isolated from live extension state until Save", async () => {
 		const liveState = { ...defaultExtensionState, soundEnabled: false }
 		;(useExtensionState as any).mockReturnValue(liveState)

@@ -8,6 +8,11 @@ import { ExtensionStateContextProvider } from "@/context/ExtensionStateContext"
 
 import SettingsView from "../SettingsView"
 
+vi.mock("@/i18n/TranslationContext", async () => {
+	const { default: i18n } = await import("@/i18n/setup")
+	return { useAppTranslation: () => ({ t: (key: string) => key, i18n }) }
+})
+
 vi.mock("@src/utils/vscode", () => ({ vscode: { postMessage: vi.fn() } }))
 
 vi.mock("../ApiConfigManager", () => ({

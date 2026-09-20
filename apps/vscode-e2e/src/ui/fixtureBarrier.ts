@@ -2,6 +2,7 @@ import * as assert from "node:assert/strict"
 import * as path from "node:path"
 import * as fs from "node:fs/promises"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
+import { writeJsonAtomically } from "../suite/preflightEvidence"
 
 /** Optional coordination in the existing fixture; only the external renderer driver acknowledges a stage. */
 export async function uiFixtureBarrier(stage: string, detail: Record<string, unknown> = {}): Promise<void> {
@@ -11,9 +12,12 @@ export async function uiFixtureBarrier(stage: string, detail: Record<string, unk
 	assert.match(stage, /^[a-z-]+$/)
 	const directory = process.env.ALPHA_E2E_ARTIFACTS_DIR!
 	assert.ok(directory)
-	await fs.writeFile(path.join(directory, `ui-stage-${stage}.json`), JSON.stringify({ ...detail, nonce, stage }), {
-		flag: "wx",
-	})
+	// The renderer polls concurrently; publish the complete receipt without replacing an existing stage.
+	await writeJsonAtomically(
+		path.join(directory, `ui-stage-${stage}.json`),
+		{ ...detail, nonce, stage },
+		{ rename: fs.link },
+	)
 	await waitUntil(
 		async () => {
 			try {

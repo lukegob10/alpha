@@ -38,7 +38,12 @@ describe("scheduled profiles and skills", () => {
 		return Object.assign(new EventEmitter(), {
 			cwd: path.join(tmpDir, "coding-workspace"),
 			currentApiConfigName: "Coding",
-			createTask: vi.fn(async (..._args: Parameters<AlphaProvider["createTask"]>) => ({ taskId: "alpha-task" })),
+			createTask: vi.fn(async (..._args: Parameters<AlphaProvider["createTask"]>) => ({
+				taskId: "alpha-task",
+				prepareReasoningForAdmission: vi.fn(async () => undefined),
+				start: vi.fn(),
+				abortTask: vi.fn(async () => undefined),
+			})),
 			setProviderProfile: vi.fn(),
 			providerSettingsManager: { getProfile: vi.fn().mockResolvedValue(profile) },
 			postMessageToWebview: vi.fn(async (message: ExtensionMessage) => {
@@ -108,6 +113,23 @@ describe("scheduled profiles and skills", () => {
 		}
 	})
 
+	it("persists an independent reasoning preference through update, duplication, and reload", async () => {
+		const reasoningPreference = { kind: "effort" as const, effort: "high" as const }
+		const task = await service.createTask(payload({ reasoningPreference }))
+		await service.updateTask(task.id, { reasoningPreference: { kind: "off" } })
+		await service.duplicateTask(task.id)
+
+		const reloaded = new ScheduledTaskStore(tmpDir)
+		await reloaded.initialize()
+		expect(reloaded.getState().tasks).toHaveLength(2)
+		expect(reloaded.getState().tasks).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ reasoningPreference: { kind: "off" } }),
+				expect.objectContaining({ reasoningPreference: { kind: "off" } }),
+			]),
+		)
+	})
+
 	it("launches a prompt on the selected profile and records its resolved identity", async () => {
 		const task = await service.createTask(payload())
 		const run = await runNow(task.id)
@@ -132,6 +154,68 @@ describe("scheduled profiles and skills", () => {
 		const reloaded = new ScheduledTaskStore(tmpDir)
 		await reloaded.initialize()
 		expect(reloaded.getState().runs[0].resolvedApiConfig).toEqual(apiConfig)
+		expect(reloaded.getState().runs[0].reasoningPreference).toEqual({ kind: "default" })
+	})
+
+	it("passes the queued preference to the task and records its admitted reasoning state", async () => {
+		const reasoningPreference = { kind: "effort" as const, effort: "high" as const }
+		const reasoningState = {
+			requested: reasoningPreference,
+			effective: reasoningPreference,
+			capabilities: { kind: "effort" as const, efforts: ["low", "medium", "high"] as const, canDisable: true },
+		}
+		provider.createTask.mockImplementationOnce(
+			async () =>
+				({
+					taskId: "alpha-task",
+					prepareReasoningForAdmission: vi.fn(async () => undefined),
+					getReasoningState: () => reasoningState,
+					start: vi.fn(),
+					abortTask: vi.fn(async () => undefined),
+				}) as never,
+		)
+		const task = await service.createTask(payload({ reasoningPreference }))
+		const run = await runNow(task.id)
+
+		expect(provider.createTask).toHaveBeenCalledWith(
+			expect.any(String),
+			undefined,
+			undefined,
+			expect.objectContaining({ reasoningPreference, startTask: false }),
+			expect.anything(),
+		)
+		expect(run).toMatchObject({ reasoningPreference, reasoningState })
+		const createdTask = (await provider.createTask.mock.results[0]?.value) as {
+			prepareReasoningForAdmission: ReturnType<typeof vi.fn>
+			start: ReturnType<typeof vi.fn>
+		}
+		expect(createdTask.prepareReasoningForAdmission).toHaveBeenCalledOnce()
+		expect(createdTask.start).toHaveBeenCalledOnce()
+	})
+
+	it("cleans up a task when reasoning admission fails before launch", async () => {
+		const abortTask = vi.fn(async () => undefined)
+		const prepareReasoningForAdmission = vi.fn(async () => {
+			throw new Error("live model unavailable")
+		})
+		const start = vi.fn()
+		provider.createTask.mockImplementationOnce(
+			async () =>
+				({
+					taskId: "alpha-task",
+					prepareReasoningForAdmission,
+					start,
+					abortTask,
+				}) as never,
+		)
+
+		const task = await service.createTask(payload())
+		const run = await runNow(task.id)
+
+		expect(run).toMatchObject({ status: "failed", error: "live model unavailable" })
+		expect(prepareReasoningForAdmission).toHaveBeenCalledOnce()
+		expect(start).not.toHaveBeenCalled()
+		expect(abortTask).toHaveBeenCalledOnce()
 	})
 
 	it.each(["hello world", "Review the code.\n\nKeep this paragraph separate."])(
@@ -176,7 +260,7 @@ describe("scheduled profiles and skills", () => {
 
 	it("loads legacy prompt schedules, fails until a profile is selected, then runs them", async () => {
 		const saved = await service.createTask(payload())
-		const legacy = { ...saved, apiConfig: undefined, execution: undefined }
+		const legacy = { ...saved, apiConfig: undefined, execution: undefined, reasoningPreference: undefined }
 		const lookup = vi
 			.spyOn(ScheduledTaskStore.prototype, "getTask")
 			.mockImplementation((id) => (id === legacy.id ? legacy : undefined))
@@ -185,7 +269,9 @@ describe("scheduled profiles and skills", () => {
 		expect(provider.createTask).not.toHaveBeenCalled()
 		lookup.mockRestore()
 		await service.updateTask(saved.id, { apiConfig })
-		expect((await runNow(saved.id)).resolvedApiConfig).toEqual(apiConfig)
+		const resumed = await runNow(saved.id)
+		expect(resumed.resolvedApiConfig).toEqual(apiConfig)
+		expect(resumed.reasoningPreference).toEqual({ kind: "default" })
 	})
 
 	it("requires an explicit profile on save but leaves command setup independent", async () => {
@@ -277,8 +363,15 @@ describe("scheduled profiles and skills", () => {
 			profileRequested()
 			return blockedProfile
 		})
+		const queuedReasoningPreference = { kind: "effort" as const, effort: "high" as const }
 		const first = await service.createTask(payload())
-		const second = await service.createTask(payload({ name: "Queued review", prompt: "Original prompt" }))
+		const second = await service.createTask(
+			payload({
+				name: "Queued review",
+				prompt: "Original prompt",
+				reasoningPreference: queuedReasoningPreference,
+			}),
+		)
 		await service.runNow(first.id)
 		await requested
 		const admitted = new Promise<ScheduledTaskRun>((resolve) => {
@@ -292,6 +385,7 @@ describe("scheduled profiles and skills", () => {
 			prompt: "Changed prompt",
 			mode: "code",
 			workspace: provider.cwd,
+			reasoningPreference: { kind: "off" },
 		})
 		releaseProfile(profile)
 		const run = await admitted
@@ -310,8 +404,10 @@ describe("scheduled profiles and skills", () => {
 				taskApiConfigName: apiConfig.name,
 				taskMode: "architect",
 				workspacePath: second.workspace,
+				reasoningPreference: queuedReasoningPreference,
 			}),
 			expect.anything(),
 		)
+		expect(run.reasoningPreference).toEqual(queuedReasoningPreference)
 	})
 })

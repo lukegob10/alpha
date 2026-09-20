@@ -11,6 +11,11 @@ import { vscode } from "@src/utils/vscode"
 
 import ChatView, { ChatViewProps, isContextCondensationRequest } from "../ChatView"
 
+vi.mock("@/i18n/TranslationContext", async () => {
+	const { default: i18n } = await import("@/i18n/setup")
+	return { useAppTranslation: () => ({ t: (key: string) => key, i18n }) }
+})
+
 // Define minimal types needed for testing
 interface AlphaMessage {
 	type: "say" | "ask"

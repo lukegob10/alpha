@@ -2548,8 +2548,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					/>
 				)}
 			</div>
-
-			<div id="alpha-portal" />
 		</div>
 	)
 }

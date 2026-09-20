@@ -326,11 +326,41 @@
 		"triggerLabel_zero": "0 aprobaciones automáticas",
 		"triggerLabel_one": "1 aprobación automática",
 		"triggerLabel_other": "{{count}} aprobaciones automáticas",
-		"triggerLabelAll": "BRRR"
+		"triggerLabelAll": "Todos"
 	},
 	"reasoning": {
 		"thinking": "Pensando",
-		"seconds": "{{count}}s"
+		"seconds": "{{count}}s",
+		"label": "Razonamiento: {{value}}",
+		"title": "Razonamiento",
+		"loading": "Cargando…",
+		"unavailable": "No disponible",
+		"default": "Predeterminado",
+		"off": "Desactivado",
+		"on": "Activado",
+		"none": "Ninguno",
+		"help": "El valor predeterminado usa la configuración del perfil. Desactivado deshabilita u omite el razonamiento opcional. Ninguno envía el nivel none explícito del proveedor.",
+		"budget": "{{tokens}} tokens de razonamiento",
+		"advanced": "Configuración avanzada del perfil",
+		"custom": "Token de razonamiento personalizado",
+		"customHelp": "Usa solo un token aceptado por este modelo alojado: 1–32 letras minúsculas, dígitos, guiones bajos o guiones. No se presupone compatibilidad con una familia de modelos.",
+		"apply": "Aplicar",
+		"invalidCustom": "Token no válido. Se omitirá el razonamiento.",
+		"saving": "Guardando…",
+		"nextStep": "Siguiente paso",
+		"current": "Solicitud actual: {{value}}",
+		"fallback": "Se solicitó {{requested}}; se usará {{effective}}.",
+		"saveFailed": "No se pudo guardar el razonamiento. Tu selección aceptada no ha cambiado.",
+		"unavailableHelp": "Este modelo no tiene una capacidad de razonamiento ajustable verificada.",
+		"profileDefault": "Valor predeterminado del perfil / razonamiento avanzado. El control de la tarea puede anularlo sin guardar el perfil.",
+		"scheduleHelp": "Los cambios de programación afectan a futuras ejecuciones; las ejecuciones en cola conservan su instantánea.",
+		"reasons": {
+			"unsupported": "El valor solicitado no es compatible con este modelo.",
+			"unavailable": "Las capacidades de razonamiento no están disponibles para este modelo.",
+			"required": "Este modelo requiere razonamiento.",
+			"budget-only": "Este modelo usa un presupuesto de tokens, no niveles de esfuerzo con nombre.",
+			"invalid-custom": "El token personalizado no es válido."
+		}
 	},
 	"contextManagement": {
 		"tokens": "tokens",

@@ -18,6 +18,7 @@
 		"test:ci": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm test:run",
 		"test:run": "rimraf out && tsc -p tsconfig.json && pnpm exec dotenvx run -f .env.local -- node ./out/runTest.js",
 		"test:smoke:1221": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm test:smoke:1221:run",
+		"test:reasoning:1221": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runReasoningUi.js",
 		"test:core:1221": "pnpm test:smoke:1221 && pnpm test:core:1221:run",
 		"test:core:1221:run": "pnpm compile && node ./out/runTest.js --vscode-version 1.122.1 --provider scripted --file core-loop.test && node ./out/runTest.js --vscode-version 1.122.1 --provider scripted --file completion-idle.test && node ./out/runTest.js --vscode-version 1.122.1 --provider scripted --file managed-agents.acceptance.test",
 		"test:smoke:1221:run": "rimraf out && tsc -p tsconfig.json && node ./out/runTest.js --vscode-version 1.122.1 --provider scripted --file extension.test && node ./out/runTest.js --vscode-version 1.122.1 --provider scripted --file modes.test && node ./out/runTest.js --vscode-version 1.122.1 --provider vscode-lm-fixture --file vscode-lm-contract.test",

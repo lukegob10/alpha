@@ -7,6 +7,7 @@ import OpenAI from "openai"
 import { openAiModelInfoSaneDefaults } from "@alpha-code/types"
 import { Package } from "../../../shared/package"
 import axios from "axios"
+import { resolveTaskReasoning } from "../../../core/agent/TaskReasoning"
 
 const mockCreate = vitest.fn()
 
@@ -456,6 +457,35 @@ describe("OpenAiHandler", () => {
 			expect(callArgs.reasoning_effort).toBe("high")
 		})
 
+		it.each([true, false])("sends task overrides for a legacy custom profile (stream=%s)", async (streaming) => {
+			const profile: ApiHandlerOptions = {
+				...mockOptions,
+				openAiStreamingEnabled: streaming,
+				enableReasoningEffort: true,
+				openAiCustomModelInfo: { contextWindow: 128_000, supportsPromptCache: false, reasoningEffort: "low" },
+			}
+			const before = structuredClone(profile)
+			for (const preference of [
+				{ kind: "effort", effort: "high" },
+				{ kind: "effort", effort: "low" },
+				{ kind: "default" },
+				{ kind: "off" },
+			] as const) {
+				const resolution = resolveTaskReasoning(profile, preference, new OpenAiHandler(profile).getModel())
+				const requestHandler = new OpenAiHandler(resolution.configuration)
+				for await (const _chunk of requestHandler.createMessage(systemPrompt, messages)) {
+					/* consume */
+				}
+			}
+			expect(mockCreate.mock.calls.map(([request]) => request.reasoning_effort)).toEqual([
+				"high",
+				"low",
+				"low",
+				undefined,
+			])
+			expect(profile).toEqual(before)
+		})
+
 		it("should not include reasoning_effort when reasoning effort is disabled", async () => {
 			const noReasoningOptions: ApiHandlerOptions = {
 				...mockOptions,
@@ -885,6 +915,27 @@ describe("OpenAiHandler", () => {
 					max_completion_tokens: 32000,
 				}),
 				{},
+			)
+		})
+
+		it("uses the task-selected effort instead of the custom model default", async () => {
+			const o3Handler = new OpenAiHandler({
+				...o3Options,
+				enableReasoningEffort: true,
+				reasoningEffort: "high",
+				openAiCustomModelInfo: {
+					...o3Options.openAiCustomModelInfo,
+					reasoningEffort: "low",
+				},
+			})
+
+			for await (const _chunk of o3Handler.createMessage("system", [])) {
+				// Consume the stream so the request is dispatched.
+			}
+
+			expect(mockCreate).toHaveBeenCalledWith(
+				expect.objectContaining({ reasoning_effort: "high" }),
+				expect.anything(),
 			)
 		})
 

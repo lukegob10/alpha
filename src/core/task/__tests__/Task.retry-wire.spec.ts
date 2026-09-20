@@ -59,6 +59,7 @@ async function* failBeforeFirstChunk(error: Error): ApiStream {
 
 function harness() {
 	const originalHandler = handler("original-model")
+	const apiConfiguration: ProviderSettings = { apiProvider: "vertex", apiModelId: "original-model" }
 	const live = {
 		mode: "code",
 		prompt: "Original system prompt",
@@ -93,7 +94,17 @@ function harness() {
 		workspacePath: process.cwd(),
 		abort: false,
 		api: originalHandler,
-		apiConfiguration: { apiProvider: "vertex", apiModelId: "original-model" } satisfies ProviderSettings,
+		apiConfiguration,
+		effectiveApiConfiguration: { ...apiConfiguration },
+		reasoningPreference: { kind: "default" },
+		reasoningState: {
+			requested: { kind: "default" },
+			effective: { kind: "default" },
+			capabilities: { kind: "unavailable", canDisable: false },
+		},
+		reasoningByHandler: new WeakMap(),
+		retainedReasoningHandlers: new Set(),
+		reasoningHandlerUsers: new Map(),
 		providerRef: { deref: () => provider },
 		apiConversationHistory: history,
 		clineMessages: [],
@@ -249,6 +260,7 @@ describe("Task retained retry wire inputs", () => {
 		}
 		const fakeAi = new ScriptedAI()
 		task.apiConfiguration = { apiProvider: "fake-ai", fakeAi, openAiApiKey: "diagnostic credential fixture" }
+		Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 		task.api = new FakeAIHandler(task.apiConfiguration)
 		const runtimeHandler = task.api
 		scripted.createMessage.mockImplementationOnce(() =>
@@ -320,6 +332,7 @@ describe("Task retained retry wire inputs", () => {
 			live.surface = surface("mcp--new--tool")
 			live.allowedFunctionNames = ["mcp--new--tool"]
 			task.apiConfiguration = { apiProvider: "openai", apiModelId: "replacement-model" }
+			Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 			const replacementHandler = handler("replacement-model")
 			Object.assign(replacementHandler.streamCapabilities, { cancellation: false })
 			Object.assign(originalHandler.streamCapabilities, { lifecycle: false })
@@ -860,6 +873,7 @@ describe("Task retained retry wire inputs", () => {
 			vi.spyOn(performance, "now").mockReturnValue(0)
 			const { task, originalHandler } = harness()
 			task.apiConfiguration = { ...task.apiConfiguration, rateLimitSeconds: 1 }
+			Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 			Object.assign(task, { getProviderRateLimitLaneKey: vi.fn(async () => "deadline-lane") })
 			const lanes = Reflect.get(Task, "providerRateLimitLanes") as Map<
 				string,
@@ -894,6 +908,7 @@ describe("Task retained retry wire inputs", () => {
 		vi.spyOn(performance, "now").mockImplementation(() => now)
 		const { task, originalHandler } = harness()
 		task.apiConfiguration = { ...task.apiConfiguration, rateLimitSeconds: 1 }
+		Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 		Object.assign(task, { getProviderRateLimitLaneKey: vi.fn(async () => "cleanup-lane") })
 		const lanes = Reflect.get(Task, "providerRateLimitLanes") as Map<
 			string,
@@ -979,6 +994,7 @@ describe("Task retained retry wire inputs", () => {
 			const replacementHandler = handler("recovery-model")
 			task.api = replacementHandler
 			task.apiConfiguration = { apiProvider: "vertex", apiModelId: "recovery-model" }
+			Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 			const recovery = task.attemptApiRequest(2, {
 				skipProviderRateLimit: true,
 				ownerHandlesRetry: true,
@@ -1009,6 +1025,7 @@ describe("Task retained retry wire inputs", () => {
 			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 			const { task, live, originalHandler } = harness()
 			task.apiConfiguration = { apiProvider, apiModelId: "original-model" }
+			Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 			const execute = live.surface.registry.resolve("read_file")!.execute
 			const toolCall = {
 				type: "tool_use" as const,
@@ -1118,6 +1135,7 @@ describe("Task retained retry wire inputs", () => {
 			const replacementHandler = handler("replacement-model")
 			task.api = replacementHandler
 			task.apiConfiguration = { apiProvider: "vertex", apiModelId: "replacement-model" }
+			Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 			const retry = task.attemptApiRequest(1, {
 				skipProviderRateLimit: true,
 				ownerHandlesRetry: true,
@@ -1497,6 +1515,7 @@ describe("Task retained retry wire inputs", () => {
 					kind === "anthropic" || kind === "gemini" ? "vertex" : kind === "summary" ? "openai" : kind,
 				apiModelId: modelId,
 			}
+			Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 			const hasSignature = kind === "anthropic" || kind === "gemini"
 			const reasoning = kind === "anthropic" || kind === "summary" ? "captured reasoning" : undefined
 			Object.assign(originalHandler, {
@@ -1530,6 +1549,7 @@ describe("Task retained retry wire inputs", () => {
 				apiProvider: kind === "anthropic" ? "openai" : "vertex",
 				apiModelId: "replacement-model",
 			}
+			Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 			const request = task.attemptApiRequest(1, {
 				skipProviderRateLimit: true,
 				ownerHandlesRetry: true,

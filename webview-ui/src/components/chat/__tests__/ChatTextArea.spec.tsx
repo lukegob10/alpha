@@ -469,6 +469,47 @@ describe("ChatTextArea", () => {
 		})
 	})
 
+	describe("reasoning control integration", () => {
+		it("preserves a draft, mentions, image attachments, and keyboard send behavior", () => {
+			const onSend = vi.fn()
+			const draft = "Review @/src/feature.ts before sending"
+			const selectedImages = ["data:image/png;base64,test-image"]
+			;(useExtensionState as ReturnType<typeof vi.fn>).mockReturnValue({
+				filePaths: [],
+				openedTabs: [],
+				apiConfiguration: { apiProvider: "openai", apiModelId: "gpt-5" },
+				currentApiConfigName: "default",
+				currentTaskId: "task-1",
+				taskReasoning: {
+					taskId: "task-1",
+					requested: { kind: "effort", effort: "medium" },
+					effective: { kind: "effort", effort: "medium" },
+					capabilities: { kind: "effort", efforts: ["low", "medium", "high"], canDisable: true },
+				},
+				taskHistory: [],
+				clineMessages: [],
+				cwd: "/test/workspace",
+			})
+
+			const { container } = render(
+				<ChatTextArea {...defaultProps} inputValue={draft} selectedImages={selectedImages} onSend={onSend} />,
+			)
+
+			const textarea = container.querySelector("textarea")!
+			expect(textarea).toHaveValue(draft)
+			expect(screen.getByAltText("Thumbnail 1")).toHaveAttribute("src", selectedImages[0])
+			expect(screen.getByTestId("reasoning-trigger")).toBeInTheDocument()
+
+			const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })
+			fireEvent(textarea, enter)
+
+			expect(enter.defaultPrevented).toBe(true)
+			expect(onSend).toHaveBeenCalledTimes(1)
+			expect(textarea).toHaveValue(draft)
+			expect(screen.getByAltText("Thumbnail 1")).toBeInTheDocument()
+		})
+	})
+
 	describe("enhanced prompt response", () => {
 		it("should update input value using native browser methods when receiving enhanced prompt", () => {
 			const setInputValue = vi.fn()

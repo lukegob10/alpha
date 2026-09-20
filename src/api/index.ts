@@ -13,7 +13,7 @@ import {
 	VsCodeLmHandler,
 	StellarHandler,
 } from "./providers"
-import { assertSupportedApiProvider } from "../shared/api"
+import { assertSupportedApiProvider, type TaskReasoningRuntimeOptions } from "../shared/api"
 import { FakeAIHandler } from "./providers/fake-ai"
 import type { ModelToolIdentity } from "./providers/utils/router-tool-preferences"
 
@@ -82,6 +82,8 @@ export interface ApiHandlerCountTokensMetadata {
 }
 
 export interface ApiHandler {
+	/** Release adapter listeners after all captured requests using it have finished. */
+	dispose?(): void
 	/** Additive capability declaration; absent means legacy stream semantics. */
 	readonly streamCapabilities?: ApiStreamCapabilities
 
@@ -100,6 +102,8 @@ export interface ApiHandler {
 
 	/** Resolve and retain a dynamic model before a new step captures capabilities and tools. Retries reuse it. */
 	prepareModel?(metadata?: ApiStreamRequestMetadata): Promise<void>
+	/** Apply resolved reasoning after dynamic model selection, before dispatch. Never changes model identity. */
+	setReasoningOptions?(settings: Pick<ProviderSettings, "enableReasoningEffort" | "reasoningEffort">): void
 
 	/**
 	 * Counts tokens for content blocks
@@ -115,7 +119,7 @@ export interface ApiHandler {
 	): Promise<number>
 }
 
-export function buildApiHandler(configuration: ProviderSettings): ApiHandler {
+export function buildApiHandler(configuration: ProviderSettings & TaskReasoningRuntimeOptions): ApiHandler {
 	const { apiProvider, ...options } = configuration
 	assertSupportedApiProvider(apiProvider)
 

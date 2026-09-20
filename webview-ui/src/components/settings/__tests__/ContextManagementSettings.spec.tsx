@@ -5,15 +5,9 @@ import { ContextManagementSettings } from "../ContextManagementSettings"
 import { vscode } from "@/utils/vscode"
 
 // Mock the translation hook
-vi.mock("@/hooks/useAppTranslation", () => ({
+vi.mock("@/i18n/TranslationContext", () => ({
 	useAppTranslation: () => ({
-		t: (key: string) => {
-			// Return specific translations for our test cases
-			if (key === "settings:contextManagement.diagnostics.maxMessages.unlimitedLabel") {
-				return "Unlimited"
-			}
-			return key
-		},
+		t: (key: string) => key,
 	}),
 }))
 

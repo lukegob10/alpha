@@ -23,7 +23,17 @@ export class VertexHandler extends VertexGeminiHandler implements SingleCompleti
 		// with a Claude model name, which Vertex rejects as an invalid request.
 		if (modelId?.startsWith("gemini-") && !(modelId in vertexModels)) {
 			id = modelId
-			info = vertexModels["gemini-3.7-flash"]
+			// Keep the catalog row's conservative transport/context metadata, but
+			// never clone its reasoning contract onto an unknown model. A newly
+			// released Gemini ID must be treated as reasoning-unavailable until its
+			// wire capabilities are verified and added to the catalog.
+			info = { ...vertexModels["gemini-3.7-flash"] }
+			delete info.supportsReasoningEffort
+			delete info.reasoningEffort
+			delete info.supportsReasoningBudget
+			delete info.requiredReasoningBudget
+			delete info.supportsReasoningBinary
+			delete info.requiredReasoningEffort
 		}
 
 		const params = getModelParams({

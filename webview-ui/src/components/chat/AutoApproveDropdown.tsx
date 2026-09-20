@@ -1,5 +1,5 @@
 import React from "react"
-import { ListChecks, LayoutList, Settings, CheckCheck, X } from "lucide-react"
+import { ListChecks, LayoutList, Settings, ChevronDown } from "lucide-react"
 
 import { vscode } from "@/utils/vscode"
 
@@ -167,7 +167,30 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		Object.keys(autoApproveSettingsConfig).forEach((key) => {
 			onAutoApproveToggle(key as AutoApproveSetting, false)
 		})
-	}, [onAutoApproveToggle])
+
+		// These permissions are prerequisites for full approval but are not shown as
+		// compact-menu buttons. Clear them too so Select None leaves no approval
+		// grant behind if the user enables a visible option again later.
+		vscode.postMessage({
+			type: "updateSettings",
+			updatedSettings: {
+				alwaysAllowReadOnlyOutsideWorkspace: false,
+				alwaysAllowWriteOutsideWorkspace: false,
+				alwaysAllowWriteProtected: false,
+				allowedCommands: [],
+			},
+		})
+		setAlwaysAllowReadOnlyOutsideWorkspace(false)
+		setAlwaysAllowWriteOutsideWorkspace(false)
+		setAlwaysAllowWriteProtected(false)
+		setAllowedCommands([])
+	}, [
+		onAutoApproveToggle,
+		setAlwaysAllowReadOnlyOutsideWorkspace,
+		setAlwaysAllowWriteOutsideWorkspace,
+		setAlwaysAllowWriteProtected,
+		setAllowedCommands,
+	])
 
 	const handleOpenSettings = React.useCallback(
 		() =>
@@ -239,35 +262,22 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 				<PopoverTrigger
 					disabled={disabled}
 					data-testid="auto-approve-dropdown-trigger"
-					className={cn(
-						"inline-flex items-center gap-1.5 relative whitespace-nowrap px-1.5 py-1 text-xs",
-						"composer-control text-vscode-foreground",
-						"transition-all duration-150 focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder focus-visible:ring-inset",
-						"max-[300px]:shrink-0",
-						disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer opacity-90 hover:opacity-100",
-						effectiveAutoApprovalEnabled && "text-[var(--alpha-brand-teal)]",
-						triggerClassName,
-					)}>
-					{!effectiveAutoApprovalEnabled ? (
-						<X className="size-3 flex-shrink-0" />
-					) : (
-						<CheckCheck className="size-3 flex-shrink-0" />
-					)}
-
-					<span className="hidden min-[300px]:inline truncate min-w-0">
+					className={cn("composer-control composer-selector", "max-[300px]:shrink-0", triggerClassName)}>
+					<span className="hidden min-[420px]:inline truncate min-w-0">
 						{!effectiveAutoApprovalEnabled
 							? t("chat:autoApprove.triggerLabelOff")
 							: hasFullAutoApproval
 								? t("chat:autoApprove.triggerLabelAll")
 								: t("chat:autoApprove.triggerLabel", { count: enabledCount })}
 					</span>
-					<span className="inline min-[300px]:hidden min-w-0">
+					<span className="inline min-[420px]:hidden min-w-0">
 						{!effectiveAutoApprovalEnabled
 							? t("chat:autoApprove.triggerLabelOffShort")
 							: hasFullAutoApproval
 								? t("chat:autoApprove.triggerLabelAll")
 								: enabledCount}
 					</span>
+					<ChevronDown className="size-3 shrink-0" aria-hidden="true" />
 				</PopoverTrigger>
 			</StandardTooltip>
 			<PopoverContent

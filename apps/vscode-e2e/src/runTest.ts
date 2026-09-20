@@ -269,7 +269,9 @@ export async function runExtensionTests(
 		(options.rendererDebuggingPort !== 0 ||
 			options.providerMode !== "scripted" ||
 			!options.profileDir ||
-			!["rendered-ui-probe.test", "managed-agents.acceptance.test"].includes(options.testFile ?? ""))
+			!["rendered-ui-probe.test", "managed-agents.acceptance.test", "reasoning-ui.test"].includes(
+				options.testFile ?? "",
+			))
 	) {
 		throw new TestRunError(
 			"invalid-options",

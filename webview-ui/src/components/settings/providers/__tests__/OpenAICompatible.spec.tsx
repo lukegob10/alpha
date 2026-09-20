@@ -3,6 +3,8 @@ import { render, screen, fireEvent } from "@/utils/test-utils"
 import { OpenAICompatible } from "../OpenAICompatible"
 import { ProviderSettings } from "@alpha-code/types"
 
+const { thinkingBudgetProps } = vi.hoisted(() => ({ thinkingBudgetProps: [] as any[] }))
+
 // Mock the vscrui Checkbox component
 vi.mock("vscrui", () => ({
 	Checkbox: ({ children, checked, onChange }: any) => (
@@ -77,7 +79,10 @@ vi.mock("../../R1FormatSetting", () => ({
 }))
 
 vi.mock("../../ThinkingBudget", () => ({
-	ThinkingBudget: () => <div data-testid="thinking-budget">Thinking Budget</div>,
+	ThinkingBudget: (props: any) => {
+		thinkingBudgetProps.push(props)
+		return <div data-testid="thinking-budget">Thinking Budget</div>
+	},
 }))
 
 // Mock react-use
@@ -94,6 +99,36 @@ describe("OpenAICompatible Component - includeMaxTokens checkbox", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
+		thinkingBudgetProps.length = 0
+	})
+
+	it("keeps the custom model effort editor as the profile default and capability declaration", () => {
+		render(
+			<OpenAICompatible
+				apiConfiguration={{ apiProvider: "openai", enableReasoningEffort: true }}
+				setApiConfigurationField={mockSetApiConfigurationField}
+				organizationAllowList={mockOrganizationAllowList}
+			/>,
+		)
+
+		expect(thinkingBudgetProps.at(-1)).toMatchObject({ showReasoningEffort: true })
+	})
+
+	it("persists declared reasoning capabilities in the settings edit buffer when enabled", () => {
+		render(
+			<OpenAICompatible
+				apiConfiguration={{ apiProvider: "openai", enableReasoningEffort: false }}
+				setApiConfigurationField={mockSetApiConfigurationField}
+				organizationAllowList={mockOrganizationAllowList}
+			/>,
+		)
+		fireEvent.click(screen.getByTestId("checkbox-input-settings:providers.setreasoninglevel"))
+		expect(mockSetApiConfigurationField).toHaveBeenCalledWith(
+			"openAiCustomModelInfo",
+			expect.objectContaining({
+				supportsReasoningEffort: ["low", "medium", "high", "xhigh"],
+			}),
+		)
 	})
 
 	describe("Checkbox Rendering", () => {

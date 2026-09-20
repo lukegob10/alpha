@@ -42,7 +42,7 @@ vi.mock("@/i18n/TranslationContext", () => ({
 }))
 
 vi.mock("@/components/ui/hooks/useAlphaPortal", () => ({
-	useAlphaPortal: () => undefined,
+	useAlphaPortal: (id: string) => document.getElementById(id) ?? undefined,
 }))
 
 vi.mock("@/context/ExtensionStateContext", () => ({
@@ -171,6 +171,43 @@ describe("AutoApproveDropdown", () => {
 		expect(mockSetters.setAlwaysAllowTickets).toHaveBeenCalledWith(false)
 	})
 
+	it("clears hidden approval prerequisites and command grants with Select None", () => {
+		mockState = {
+			...mockState,
+			autoApprovalEnabled: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowReadOnlyOutsideWorkspace: true,
+			alwaysAllowWrite: true,
+			alwaysAllowWriteOutsideWorkspace: true,
+			alwaysAllowWriteProtected: true,
+			alwaysAllowExecute: true,
+			alwaysAllowMcp: true,
+			alwaysAllowSubtasks: true,
+			alwaysAllowSubagents: true,
+			alwaysAllowTickets: true,
+			alwaysAllowFollowupQuestions: true,
+			allowedCommands: ["*"],
+		}
+
+		render(<AutoApproveDropdown />)
+		fireEvent.click(screen.getByTestId("auto-approve-dropdown-trigger"))
+		fireEvent.click(screen.getByRole("button", { name: "chat:autoApprove.selectNone" }))
+
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "updateSettings",
+			updatedSettings: {
+				alwaysAllowReadOnlyOutsideWorkspace: false,
+				alwaysAllowWriteOutsideWorkspace: false,
+				alwaysAllowWriteProtected: false,
+				allowedCommands: [],
+			},
+		})
+		expect(mockSetters.setAlwaysAllowReadOnlyOutsideWorkspace).toHaveBeenCalledWith(false)
+		expect(mockSetters.setAlwaysAllowWriteOutsideWorkspace).toHaveBeenCalledWith(false)
+		expect(mockSetters.setAlwaysAllowWriteProtected).toHaveBeenCalledWith(false)
+		expect(mockSetters.setAllowedCommands).toHaveBeenCalledWith([])
+	})
+
 	it("does not label a restricted command allowlist as full auto-approval", () => {
 		mockState = {
 			...mockState,
@@ -271,5 +308,21 @@ describe("AutoApproveDropdown", () => {
 
 		expect(screen.queryAllByText("chat:autoApprove.triggerLabelAll")).toHaveLength(0)
 		expect(screen.getAllByText("8 auto-approved").length).toBeGreaterThan(0)
+	})
+
+	it("renders the popover in the shared portal container", () => {
+		const portal = document.createElement("div")
+		portal.id = "alpha-portal"
+		document.body.appendChild(portal)
+
+		try {
+			render(<AutoApproveDropdown />)
+			fireEvent.click(screen.getByTestId("auto-approve-dropdown-trigger"))
+
+			expect(portal.querySelector('[role="dialog"]')).toBeInTheDocument()
+			expect(portal.querySelector('[data-testid="auto-approve-alwaysAllowReadOnly"]')).toBeInTheDocument()
+		} finally {
+			portal.remove()
+		}
 	})
 })

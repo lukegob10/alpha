@@ -19,14 +19,21 @@ export function assertSupportedApiProvider(provider: unknown): void {
 
 // ApiHandlerOptions
 // Extend ProviderSettings (minus apiProvider) with handler-specific toggles.
-export type ApiHandlerOptions = Omit<ProviderSettings, "apiProvider"> & {
-	/**
-	 * When true and using OpenAI Responses API models that support reasoning summaries,
-	 * include reasoning.summary: "auto" so the API returns summaries (we already parse
-	 * and surface them). Defaults to true; set to false to disable summaries.
-	 */
-	enableResponsesReasoningSummary?: boolean
+// Task-level reasoning overrides are runtime-only and are deliberately not part
+// of ProviderSettings, which is persisted as a provider profile.
+export type TaskReasoningRuntimeOptions = {
+	taskReasoningCustomEffort?: string
 }
+
+export type ApiHandlerOptions = Omit<ProviderSettings, "apiProvider"> &
+	TaskReasoningRuntimeOptions & {
+		/**
+		 * When true and using OpenAI Responses API models that support reasoning summaries,
+		 * include reasoning.summary: "auto" so the API returns summaries (we already parse
+		 * and surface them). Defaults to true; set to false to disable summaries.
+		 */
+		enableResponsesReasoningSummary?: boolean
+	}
 
 // Reasoning
 

@@ -384,7 +384,7 @@
 		"triggerLabel_zero": "0 disetujui otomatis",
 		"triggerLabel_one": "1 disetujui otomatis",
 		"triggerLabel_other": "{{count}} disetujui otomatis",
-		"triggerLabelAll": "BRRR"
+		"triggerLabelAll": "Semua"
 	},
 	"announcement": {
 		"title": "Alpha {{version}} Dirilis",
@@ -405,7 +405,37 @@
 	},
 	"reasoning": {
 		"thinking": "Berpikir",
-		"seconds": "{{count}}d"
+		"seconds": "{{count}}d",
+		"label": "Penalaran: {{value}}",
+		"title": "Penalaran",
+		"loading": "Memuat…",
+		"unavailable": "Tidak tersedia",
+		"default": "Bawaan",
+		"off": "Nonaktif",
+		"on": "Aktif",
+		"none": "Tidak ada",
+		"help": "Bawaan menggunakan pengaturan profil. Nonaktif menonaktifkan atau menghilangkan penalaran opsional. Tidak ada mengirim tingkat none eksplisit dari penyedia.",
+		"budget": "{{tokens}} token berpikir",
+		"advanced": "Pengaturan profil lanjutan",
+		"custom": "Token penalaran khusus",
+		"customHelp": "Gunakan hanya token yang diterima model yang di-host ini: 1–32 huruf kecil, angka, garis bawah, atau tanda hubung. Dukungan untuk keluarga model tidak diasumsikan.",
+		"apply": "Terapkan",
+		"invalidCustom": "Token tidak valid. Penalaran akan dihilangkan.",
+		"saving": "Menyimpan…",
+		"nextStep": "Langkah berikutnya",
+		"current": "Permintaan saat ini: {{value}}",
+		"fallback": "Meminta {{requested}}; menggunakan {{effective}}.",
+		"saveFailed": "Penalaran tidak dapat disimpan. Pilihan yang diterima tetap tidak berubah.",
+		"unavailableHelp": "Model ini tidak memiliki kemampuan penalaran yang dapat disesuaikan dan telah diverifikasi.",
+		"profileDefault": "Bawaan profil / penalaran lanjutan. Kontrol tugas dapat menggantinya tanpa menyimpan profil.",
+		"scheduleHelp": "Perubahan jadwal memengaruhi proses mendatang; proses yang mengantre mempertahankan snapshot-nya.",
+		"reasons": {
+			"unsupported": "Nilai yang diminta tidak didukung oleh model ini.",
+			"unavailable": "Kemampuan penalaran tidak tersedia untuk model ini.",
+			"required": "Model ini memerlukan penalaran.",
+			"budget-only": "Model ini menggunakan anggaran token, bukan tingkat usaha bernama.",
+			"invalid-custom": "Token khusus tidak valid."
+		}
 	},
 	"followUpSuggest": {
 		"copyToInput": "Salin ke input (sama dengan shift + klik)",

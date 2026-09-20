@@ -119,11 +119,19 @@ import { TelemetryService } from "@alpha-code/telemetry"
 // api
 import { ApiHandler, ApiHandlerCreateMessageMetadata, buildApiHandler } from "../../api"
 import {
+	type TaskReasoningPreference,
+	type TaskReasoningState,
+	type TaskReasoningProjection,
+	taskReasoningPreferenceSchema,
+} from "@alpha-code/types"
+import { resolveTaskReasoning } from "../agent/TaskReasoning"
+import {
 	ApiStreamDeadlineError,
 	ApiStream,
 	GroundingSource,
 	type ApiStreamChunk,
 	type ApiStreamOutcomeChunk,
+	type ApiStreamRequestMetadata,
 	isApiStreamAbortError,
 	isApiStreamSemanticChunk,
 } from "../../api/transform/stream"
@@ -416,7 +424,28 @@ function throwIfAbsoluteDeadlineExceeded(absoluteDeadline: number | undefined): 
 }
 
 type TaskRequestState = Awaited<ReturnType<AlphaProvider["getState"]>>
-type CapturedTaskProvider = { apiHandler: ApiHandler; apiConfiguration: ProviderSettings }
+type CapturedTaskProvider = {
+	apiHandler: ApiHandler
+	apiConfiguration: ProviderSettings
+	profileConfiguration?: ProviderSettings
+}
+
+type TaskRequestOptions = {
+	skipProviderRateLimit?: boolean
+	state?: TaskRequestState
+	retryCategory?: AgentRetryCategory
+	/** Remaining absolute budget for a policy-approved automatic retry. */
+	retryDeadline?: number
+	/** The live Task loop owns policy decisions; omit for legacy direct callers. */
+	ownerHandlesRetry?: boolean
+	/**
+	 * Interrupts read-only/cancellable preflight, provider admission, and retry
+	 * waits. Atomic transcript writes finish on their owning queue and are
+	 * rechecked against this signal/deadline before provider dispatch.
+	 */
+	interruptionSignal?: AbortSignal
+}
+
 type CanonicalLifecycleEventGuard = () => boolean
 
 type BackgroundUsageDrainOwner = {
@@ -449,6 +478,7 @@ interface CurrentAgentStep {
 		metadata: Omit<ApiHandlerCreateMessageMetadata, "signal" | "deadline" | "streamCapabilities">
 	}
 	releaseRequest: () => void
+	hasRetainedRequest?: () => boolean
 	turnId: string
 	stepId: string
 	requestId: string
@@ -793,6 +823,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	// API
 	apiConfiguration: ProviderSettings
 	api: ApiHandler
+	/** Profile settings stay untouched; only this derived snapshot enters requests. */
+	private effectiveApiConfiguration: ProviderSettings
+	public reasoningPreference: TaskReasoningPreference
+	private reasoningState: TaskReasoningState
+	private readonly reasoningByHandler = new WeakMap<ApiHandler, TaskReasoningState>()
+	private readonly retainedReasoningHandlers = new Set<ApiHandler>()
+	private readonly reasoningHandlerUsers = new Map<ApiHandler, number>()
+	private reasoningDisposed = false
 	private static providerRateLimitLanes = new Map<string, ProviderRateLimitLane>()
 	/**
 	 * Transcript writes are shared by every live/re-hydrated Task instance for a
@@ -1347,6 +1385,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	constructor({
 		provider,
 		apiConfiguration,
+		reasoningPreference,
 		enableCheckpoints = true,
 		checkpointTimeout = DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 		consecutiveMistakeLimit = DEFAULT_CONSECUTIVE_MISTAKE_LIMIT,
@@ -1473,7 +1512,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		})
 
 		this.apiConfiguration = apiConfiguration
-		this.api = buildApiHandler(this.apiConfiguration)
+		this.reasoningPreference = taskReasoningPreferenceSchema.parse(
+			historyItem
+				? (historyItem.reasoningPreference ?? { kind: "default" })
+				: (reasoningPreference ?? parentTask?.reasoningPreference ?? { kind: "default" }),
+		)
+		const initialReasoning = this.prepareReasoningConfiguration(apiConfiguration, this.reasoningPreference)
+		this.api = initialReasoning.api
+		this.effectiveApiConfiguration = initialReasoning.configuration
+		this.reasoningState = initialReasoning.state
 		this.autoApprovalHandler = new AutoApprovalHandler()
 
 		this.consecutiveMistakeLimit = consecutiveMistakeLimit ?? DEFAULT_CONSECUTIVE_MISTAKE_LIMIT
@@ -3636,7 +3683,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		const apiHandler = capturedProvider?.apiHandler ?? this.api
-		const apiConfiguration = capturedProvider?.apiConfiguration ?? this.apiConfiguration
+		const apiConfiguration = capturedProvider?.apiConfiguration ?? this.effectiveApiConfiguration
 		this.agentTurnStep += 1
 		const {
 			signal: _requestSignal,
@@ -3750,7 +3797,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			},
 			releaseRequest: () => {
 				capturedRequest = undefined
+				this.retireReasoningHandler(apiHandler)
 			},
+			hasRetainedRequest: () => capturedRequest !== undefined,
 			turnId,
 			stepId: `${turnId}:step-${this.agentTurnStep}`,
 			requestId,
@@ -3915,6 +3964,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		createSnapshot: () => AlphaMessage[] = () => structuredClone(this.clineMessages),
 		onPersisted?: () => void,
 		designHandoff?: TaskDesignHandoff,
+		reasoning?: { preference: TaskReasoningPreference; state: TaskReasoningState },
 	): Promise<boolean> {
 		const save = this.alphaMessagesSaveQueue.then(async () => {
 			try {
@@ -3941,6 +3991,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					workspace: this.historyWorkspacePath,
 					mode: this._taskMode || defaultModeSlug, // Use the task's own mode, not the current provider mode.
 					apiConfigName: this._taskApiConfigName, // Use the task's own provider profile, not the current provider profile.
+					reasoningPreference: reasoning?.preference ?? this.reasoningPreference,
+					reasoningState: reasoning?.state ?? this.reasoningState,
 					workContext: this.workContext,
 					designHandoff: designHandoff ?? this.designHandoff,
 					initialStatus: this.initialStatus,
@@ -3965,7 +4017,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// - Final state is emitted when updates stop (trailing: true)
 				this.debouncedEmitTokenUsage(tokenUsage, this.toolUsage)
 
-				await this.providerRef.deref()?.updateTaskHistory(historyItem)
+				await this.providerRef
+					.deref()
+					?.updateTaskHistory(historyItem, reasoning ? { broadcast: false } : undefined)
 				onPersisted?.()
 				return true
 			} catch (error) {
@@ -6032,9 +6086,129 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 */
 	public updateApiConfiguration(newApiConfiguration: ProviderSettings): void {
 		// Build first so a rejected profile cannot leave the old handler paired with new settings.
-		const api = buildApiHandler(newApiConfiguration)
+		const prepared = this.prepareReasoningConfiguration(newApiConfiguration, this.reasoningPreference)
+		const previous = this.api
 		this.apiConfiguration = newApiConfiguration
-		this.api = api
+		this.api = prepared.api
+		this.effectiveApiConfiguration = prepared.configuration
+		this.reasoningState = prepared.state
+		this.retireReasoningHandler(previous)
+	}
+
+	private prepareReasoningConfiguration(configuration: ProviderSettings, preference: TaskReasoningPreference) {
+		const baseHandler = buildApiHandler(configuration)
+		try {
+			const resolved = resolveTaskReasoning(configuration, preference, baseHandler.getModel())
+			const api = resolved.configuration === configuration ? baseHandler : buildApiHandler(resolved.configuration)
+			if (api !== baseHandler) baseHandler.dispose?.()
+			this.reasoningByHandler.set(api, resolved.state)
+			return { ...resolved, api }
+		} catch (error) {
+			baseHandler.dispose?.()
+			throw error
+		}
+	}
+
+	/** Scheduled runs persist this resolved admission before starting their first request. */
+	public async prepareReasoningForAdmission(): Promise<void> {
+		if (this.abort || this.abandoned || this.reasoningDisposed) throw new Error("Task is unavailable")
+		const handler = this.api
+		this.reasoningHandlerUsers.set(handler, (this.reasoningHandlerUsers.get(handler) ?? 0) + 1)
+		try {
+			await this.prepareCapturedReasoning(
+				{
+					apiHandler: handler,
+					apiConfiguration: this.effectiveApiConfiguration,
+					profileConfiguration: this.apiConfiguration,
+				},
+				{ signal: this.getTaskLifetimeCancellationSignal() },
+			)
+		} finally {
+			const users = (this.reasoningHandlerUsers.get(handler) ?? 1) - 1
+			if (users) this.reasoningHandlerUsers.set(handler, users)
+			else this.reasoningHandlerUsers.delete(handler)
+			this.retireReasoningHandler(handler)
+		}
+	}
+
+	private async prepareCapturedReasoning(
+		captured: CapturedTaskProvider,
+		metadata?: ApiStreamRequestMetadata,
+	): Promise<void> {
+		const handler = captured.apiHandler
+		await handler.prepareModel?.(metadata)
+		metadata?.signal?.throwIfAborted()
+		const previous = this.reasoningByHandler.get(handler)
+		if (!previous || !handler.setReasoningOptions) return
+		const resolved = resolveTaskReasoning(
+			captured.profileConfiguration ?? captured.apiConfiguration,
+			previous.requested,
+			handler.getModel(),
+		)
+		handler.setReasoningOptions(resolved.configuration)
+		captured.apiConfiguration = resolved.configuration
+		this.reasoningByHandler.set(handler, resolved.state)
+		if (handler === this.api) {
+			this.effectiveApiConfiguration = resolved.configuration
+			this.reasoningState = resolved.state
+		}
+	}
+
+	private retireReasoningHandler(handler: ApiHandler): void {
+		if (handler === this.api) return
+		if (
+			this.reasoningHandlerUsers.has(handler) ||
+			(handler === this.currentAgentStep?.snapshot.runtime.getHandler() &&
+				this.currentAgentStep?.hasRetainedRequest?.() !== false)
+		) {
+			this.retainedReasoningHandlers.add(handler)
+		} else {
+			handler.dispose?.()
+			this.retainedReasoningHandlers.delete(handler)
+		}
+	}
+
+	public getReasoningState(): TaskReasoningProjection {
+		const handler =
+			this.reasoningHandlerUsers.keys().next().value ??
+			(this.isStreaming ? this.currentAgentStep?.snapshot.runtime.getHandler() : undefined)
+		const current = handler ? this.reasoningByHandler.get(handler) : undefined
+		return {
+			...structuredClone(this.reasoningState),
+			taskId: this.taskId,
+			pending: Boolean(current && JSON.stringify(current) !== JSON.stringify(this.reasoningState)),
+			...(current ? { current: structuredClone(current) } : {}),
+		}
+	}
+
+	/** Called within the provider configuration queue; publish only after durable history succeeds. */
+	public async updateReasoningPreference(input: TaskReasoningPreference): Promise<void> {
+		if (this.abort || this.abandoned || this.reasoningDisposed) throw new Error("Task is unavailable")
+		const preference = taskReasoningPreferenceSchema.parse(input)
+		const prepared = this.prepareReasoningConfiguration(this.apiConfiguration, preference)
+		let committed = false
+		try {
+			const saved = await this.enqueueAlphaMessagesSave(
+				undefined,
+				() => {
+					if (this.abort || this.abandoned || this.reasoningDisposed) throw new Error("Task is unavailable")
+					const previous = this.api
+					this.reasoningPreference = preference
+					this.reasoningState = prepared.state
+					this.effectiveApiConfiguration = prepared.configuration
+					this.api = prepared.api
+					this.retireReasoningHandler(previous)
+					committed = true
+				},
+				undefined,
+				{ preference, state: prepared.state },
+			)
+			if (!saved) {
+				throw new Error("Unable to persist task reasoning preference")
+			}
+		} finally {
+			if (!committed) prepared.api.dispose?.()
+		}
 	}
 
 	public async submitUserMessage(
@@ -6341,16 +6515,31 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (taskSignal.aborted) abortFromTask()
 		else taskSignal.addEventListener("abort", abortFromTask, { once: true })
 
+		const capturedProvider: CapturedTaskProvider = {
+			apiHandler: this.api,
+			apiConfiguration: this.effectiveApiConfiguration,
+			profileConfiguration: this.apiConfiguration,
+		}
+		this.reasoningHandlerUsers.set(
+			capturedProvider.apiHandler,
+			(this.reasoningHandlerUsers.get(capturedProvider.apiHandler) ?? 0) + 1,
+		)
 		try {
-			await this.condenseContextWithSignal(controller.signal)
+			await this.prepareCapturedReasoning(capturedProvider, { signal: controller.signal })
+			await this.condenseContextWithSignal(controller.signal, capturedProvider)
 		} finally {
+			this.reasoningHandlerUsers.delete(capturedProvider.apiHandler)
+			this.retireReasoningHandler(capturedProvider.apiHandler)
 			taskSignal.removeEventListener("abort", abortFromTask)
 			if (this.contextCondenseAbortController === controller) this.contextCondenseAbortController = undefined
 		}
 		this.processQueuedMessages()
 	}
 
-	private async condenseContextWithSignal(signal: AbortSignal): Promise<void> {
+	private async condenseContextWithSignal(
+		signal: AbortSignal,
+		capturedProvider: CapturedTaskProvider,
+	): Promise<void> {
 		this.throwIfStepInterrupted(signal)
 		// CRITICAL: Flush any pending tool results before condensing
 		// to ensure tool_use/tool_result pairs are complete in history
@@ -6360,8 +6549,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.throwIfStepInterrupted(signal)
 		const history = this.apiConversationHistory
 		const historyDigest = digestProviderTranscript(history)
-		const apiHandler = this.api
-		const apiConfiguration = this.apiConfiguration
+		const { apiHandler, apiConfiguration } = capturedProvider
 
 		// Get condensing configuration
 		const state = await this.providerRef.deref()?.getState()
@@ -7558,6 +7746,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public dispose(): void {
+		this.reasoningDisposed = true
+		for (const handler of this.retainedReasoningHandlers) handler.dispose?.()
+		this.retainedReasoningHandlers.clear()
+		this.api.dispose?.()
 		this.reasoningSummaries?.dispose()
 		console.log(`[Task#dispose] disposing task ${this.taskId}.${this.instanceId}`)
 		this.releaseSubagentReviewBarrierIfSettled(true)
@@ -10297,7 +10489,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		modeOverride?: string,
 	): Promise<string> {
 		const apiHandler = capturedProvider?.apiHandler ?? this.api
-		const apiConfiguration = capturedProvider?.apiConfiguration ?? this.apiConfiguration
+		const apiConfiguration = capturedProvider?.apiConfiguration ?? this.effectiveApiConfiguration
 		const state = stateOverride ?? (await this.providerRef.deref()?.getState())
 		const { mcpEnabled } = state ?? {}
 		const isSubagent = this.taskKind === "subagent"
@@ -10421,7 +10613,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.waitForRequestControl(operation, signal, contextRecoveryDeadline)
 		assertRecoveryWithinBudget()
 		const apiHandler = this.api
-		const apiConfiguration = this.apiConfiguration
+		const apiConfiguration = this.effectiveApiConfiguration
 		const pendingState = this.providerRef.deref()?.getState()
 		const state = pendingState ? await waitForBoundedRecovery(pendingState) : undefined
 		assertRecoveryWithinBudget()
@@ -10823,23 +11015,29 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return Math.ceil(Math.min(rateLimitSeconds, Math.max(0, rateLimitSeconds * 1000 - elapsed) / 1000))
 	}
 
-	public async *attemptApiRequest(
-		retryAttempt: number = 0,
-		options: {
-			skipProviderRateLimit?: boolean
-			state?: TaskRequestState
-			retryCategory?: AgentRetryCategory
-			/** Remaining absolute budget for a policy-approved automatic retry. */
-			retryDeadline?: number
-			/** The live Task loop owns policy decisions; omit for legacy direct callers. */
-			ownerHandlesRetry?: boolean
-			/**
-			 * Interrupts read-only/cancellable preflight, provider admission, and retry
-			 * waits. Atomic transcript writes finish on their owning queue and are
-			 * rechecked against this signal/deadline before provider dispatch.
-			 */
-			interruptionSignal?: AbortSignal
-		} = {},
+	public async *attemptApiRequest(retryAttempt = 0, options: TaskRequestOptions = {}): ApiStream {
+		const retained = options.retryCategory === "transport" || options.retryCategory === "rate-limit"
+		const requestHandler = retained ? (this.currentAgentStep?.snapshot.runtime.getHandler() ?? this.api) : this.api
+		const apiConfiguration = this.effectiveApiConfiguration
+		this.reasoningHandlerUsers.set(requestHandler, (this.reasoningHandlerUsers.get(requestHandler) ?? 0) + 1)
+		try {
+			yield* this.attemptCapturedApiRequest(retryAttempt, options, {
+				apiHandler: requestHandler,
+				apiConfiguration,
+				profileConfiguration: this.apiConfiguration,
+			})
+		} finally {
+			const users = (this.reasoningHandlerUsers.get(requestHandler) ?? 1) - 1
+			if (users) this.reasoningHandlerUsers.set(requestHandler, users)
+			else this.reasoningHandlerUsers.delete(requestHandler)
+			for (const handler of this.retainedReasoningHandlers) this.retireReasoningHandler(handler)
+		}
+	}
+
+	private async *attemptCapturedApiRequest(
+		retryAttempt: number,
+		options: TaskRequestOptions,
+		capturedProvider: CapturedTaskProvider,
 	): ApiStream {
 		const stepInterruptionSignal = options.interruptionSignal
 		this.throwIfStepInterrupted(stepInterruptionSignal)
@@ -10871,10 +11069,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		assertPreflightWithinBudget()
 		const capturedDesignHandoff =
 			this.taskKind === "primary" && mode === defaultModeSlug ? structuredClone(this.designHandoff) : undefined
-		const apiConfiguration = this.apiConfiguration
-		// Preflight can await compaction or approval while the selected profile changes.
-		// Dispatch and capture the same handler whose capabilities and budget we measured.
-		const requestHandler = retainedStep ? retainedStep.snapshot.runtime.getHandler() : this.api
+		const { apiHandler: requestHandler } = capturedProvider
+		// Preflight, dispatch and retries use the handler captured at admission.
 		if (!requestHandler) {
 			throw new Error("A captured provider handler is required to retry an agent step.")
 		}
@@ -10888,10 +11084,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		assertPreflightWithinBudget()
 		if (!retainedStep && requestHandler.prepareModel) {
 			await waitForBoundedPreflight(
-				requestHandler.prepareModel({ signal: stepInterruptionSignal, deadline: options.retryDeadline }),
+				this.prepareCapturedReasoning(capturedProvider, {
+					signal: stepInterruptionSignal,
+					deadline: options.retryDeadline,
+				}),
 			)
 			assertPreflightWithinBudget()
 		}
+		const { apiConfiguration } = capturedProvider
 		const systemPrompt =
 			retainedRequest?.systemPrompt ??
 			(await waitForBoundedPreflight(
@@ -11828,7 +12028,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		Anthropic.Messages.MessageParam | { type: "reasoning"; encrypted_content: string; id?: string; summary?: any[] }
 	> {
 		const apiHandler = capturedProvider?.apiHandler ?? this.api
-		const apiConfiguration = capturedProvider?.apiConfiguration ?? this.apiConfiguration
+		const apiConfiguration = capturedProvider?.apiConfiguration ?? this.effectiveApiConfiguration
 		type ReasoningItemForRequest = {
 			type: "reasoning"
 			encrypted_content: string

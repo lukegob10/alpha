@@ -68,6 +68,7 @@ function harness() {
 		),
 		createMessage: vi.fn<ApiHandler["createMessage"]>(async function* () {}),
 	} satisfies ApiHandler
+	const apiConfiguration: ProviderSettings = { apiProvider: "vertex" }
 	const provider = {
 		getState: vi.fn(async () => ({})),
 		postMessageToWebview: vi.fn(async () => {}),
@@ -100,7 +101,19 @@ function harness() {
 		persistedToolResultIds: new Set<string>(),
 		toolRepetitionDetector: new ToolRepetitionDetector(3),
 		api,
-		apiConfiguration: { apiProvider: "vertex" } satisfies ProviderSettings,
+		apiConfiguration,
+		// Captured provider requests use the effective snapshot. Keep this fixture's
+		// initial effective profile aligned with its base profile.
+		effectiveApiConfiguration: { ...apiConfiguration },
+		reasoningPreference: { kind: "default" },
+		reasoningState: {
+			requested: { kind: "default" },
+			effective: { kind: "default" },
+			capabilities: { kind: "unavailable", canDisable: false },
+		},
+		reasoningByHandler: new WeakMap(),
+		retainedReasoningHandlers: new Set(),
+		reasoningHandlerUsers: new Map(),
 		providerRef: { deref: () => provider },
 		apiConversationHistory: history,
 		agentTurnStep: 0,
@@ -1027,6 +1040,7 @@ describe("Task context recovery admission", () => {
 			info: { ...model.info, supportsImages: true, preserveReasoning: true },
 		})
 		task.apiConfiguration = { apiProvider: "vscode-lm", apiModelId: "test-model" }
+		Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 		const reasoning = { type: "reasoning", text: "Exact continuation reasoning" }
 		Object.assign(history[1], {
 			content: [reasoning, { type: "text", text: "Recent answer" }],
@@ -1052,6 +1066,7 @@ describe("Task context recovery admission", () => {
 				task.apiConversationHistory.push({ role: "user", content: "Fresh environment", ts: 11 })
 				task.api = replacement
 				task.apiConfiguration = { apiProvider: "vertex", apiModelId: "narrow-model" }
+				Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 			}),
 		})
 		vi.mocked(manageContext).mockImplementation(async ({ prepareTools }) => {
@@ -1149,6 +1164,7 @@ describe("Task context recovery admission", () => {
 		vi.spyOn(api, "getModel").mockReturnValue({ ...model, info: { ...model.info, isStealthModel: false } })
 		const configuration: ProviderSettings = { apiProvider: "vertex", todoListEnabled: true }
 		task.apiConfiguration = configuration
+		Reflect.set(task, "effectiveApiConfiguration", { ...configuration })
 		Object.assign(provider, { context: {}, getSkillsManager: () => undefined })
 		Reflect.set(
 			task,
@@ -1159,6 +1175,7 @@ describe("Task context recovery admission", () => {
 					getModel: () => ({ id: "replacement-model", info: { ...model.info, isStealthModel: true } }),
 				}
 				task.apiConfiguration = { apiProvider: "vertex", todoListEnabled: false }
+				Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 				return "code"
 			}),
 		)
@@ -1281,6 +1298,7 @@ describe("Task context recovery admission", () => {
 	] as const)("uses the task catalog for %s compaction on %s", async (trigger, apiProvider) => {
 		const { task, api, history } = harness()
 		task.apiConfiguration = { apiProvider }
+		Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 		const tools = [
 			{
 				type: "function" as const,

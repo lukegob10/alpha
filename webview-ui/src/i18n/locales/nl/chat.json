@@ -326,7 +326,7 @@
 		"triggerLabel_zero": "0 automatisch goedgekeurd",
 		"triggerLabel_one": "1 automatisch goedgekeurd",
 		"triggerLabel_other": "{{count}} automatisch goedgekeurd",
-		"triggerLabelAll": "BRRR"
+		"triggerLabelAll": "Alles"
 	},
 	"announcement": {
 		"title": "Alpha {{version}} uitgebracht",
@@ -347,7 +347,37 @@
 	},
 	"reasoning": {
 		"thinking": "Denkt na",
-		"seconds": "{{count}}s"
+		"seconds": "{{count}}s",
+		"label": "Redeneren: {{value}}",
+		"title": "Redeneren",
+		"loading": "Laden…",
+		"unavailable": "Niet beschikbaar",
+		"default": "Standaard",
+		"off": "Uit",
+		"on": "Aan",
+		"none": "Geen",
+		"help": "Standaard gebruikt de profielinstelling. Uit schakelt optioneel redeneren uit of laat het weg. Geen stuurt het expliciete none-niveau van de provider.",
+		"budget": "{{tokens}} denktokens",
+		"advanced": "Geavanceerde profielinstellingen",
+		"custom": "Aangepast redeneertoken",
+		"customHelp": "Gebruik alleen een token dat door dit gehoste model wordt geaccepteerd: 1–32 kleine letters, cijfers, underscores of koppeltekens. Ondersteuning voor een modelfamilie wordt niet verondersteld.",
+		"apply": "Toepassen",
+		"invalidCustom": "Ongeldig token. Redeneren wordt weggelaten.",
+		"saving": "Opslaan…",
+		"nextStep": "Volgende stap",
+		"current": "Huidige aanvraag: {{value}}",
+		"fallback": "Aangevraagd: {{requested}}; {{effective}} wordt gebruikt.",
+		"saveFailed": "Redeneren kon niet worden opgeslagen. Je geaccepteerde keuze is ongewijzigd.",
+		"unavailableHelp": "Dit model heeft geen geverifieerde instelbare redeneercapaciteit.",
+		"profileDefault": "Profielstandaard / geavanceerd redeneren. De taakinstelling kan dit overschrijven zonder het profiel op te slaan.",
+		"scheduleHelp": "Wijzigingen in de planning gelden voor toekomstige uitvoeringen; uitvoeringen in de wachtrij behouden hun momentopname.",
+		"reasons": {
+			"unsupported": "De aangevraagde waarde wordt niet ondersteund door dit model.",
+			"unavailable": "Redeneercapaciteiten zijn niet beschikbaar voor dit model.",
+			"required": "Dit model vereist redeneren.",
+			"budget-only": "Dit model gebruikt een tokenbudget, geen benoemde inspanningsniveaus.",
+			"invalid-custom": "Het aangepaste token is ongeldig."
+		}
 	},
 	"contextManagement": {
 		"tokens": "tokens",

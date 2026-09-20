@@ -1,4 +1,24 @@
 import { z } from "zod"
+import { taskReasoningPreferenceSchema, type TaskReasoningState } from "./task-reasoning.js"
+
+export const taskReasoningUpdateSchema = z.object({
+	requestId: z.string().min(1).max(128),
+	taskId: z.string().min(1).optional(),
+	preference: taskReasoningPreferenceSchema,
+})
+
+export interface TaskReasoningProjection extends TaskReasoningState {
+	taskId?: string
+	pending?: boolean
+	current?: TaskReasoningState
+}
+
+export interface TaskReasoningResponse {
+	requestId: string
+	taskId?: string
+	state?: TaskReasoningProjection
+	error?: "invalid" | "unavailable" | "saveFailed"
+}
 
 import type { GlobalSettings, AlphaCodeSettings } from "./global-settings.js"
 import type { ProviderSettings, ProviderSettingsEntry } from "./provider-settings.js"
@@ -348,6 +368,8 @@ export interface ExtensionMessage {
 		| "fileContent"
 		| "scheduledTasksUpdated"
 		| "scheduledTaskSkills"
+		| "taskReasoningUpdated"
+		| "reasoningCapabilities"
 		| "subagentChangeSetActionCapability"
 		| "subagentChangeSetActionResult"
 	text?: string
@@ -361,6 +383,7 @@ export interface ExtensionMessage {
 	scheduledTaskRuns?: ScheduledTaskRun[]
 	scheduledTaskState?: ScheduledTaskState
 	scheduledTaskSkills?: ScheduledTaskSkillsResponse
+	taskReasoningResponse?: TaskReasoningResponse
 	/** Canonical lifecycle event payload for extension -> webview rollout. */
 	agentLifecycleEvent?: AgentLifecycleEvent
 	/** Canonical lifecycle snapshot payload for extension -> webview rollout. */
@@ -645,6 +668,7 @@ export type ExtensionState = Pick<
 	mcpServers?: McpServer[]
 	scheduledTasks?: ScheduledTask[]
 	scheduledTaskRuns?: ScheduledTaskRun[]
+	taskReasoning?: TaskReasoningProjection
 	debug?: boolean
 
 	/**
@@ -696,6 +720,8 @@ interface WebviewMessageBase {
 		| "deleteApiConfiguration"
 		| "loadApiConfiguration"
 		| "loadApiConfigurationById"
+		| "setTaskReasoningPreference"
+		| "getReasoningCapabilities"
 		| "renameApiConfiguration"
 		| "getListApiConfiguration"
 		| "customInstructions"
@@ -877,6 +903,9 @@ interface WebviewMessageBase {
 	scheduledTask?: CreateScheduledTaskPayload
 	scheduledTaskUpdate?: UpdateScheduledTaskPayload
 	scheduledTaskSkillsRequest?: ScheduledTaskSkillsRequest
+	taskReasoningUpdate?: z.infer<typeof taskReasoningUpdateSchema>
+	reasoningProfileId?: string
+	reasoningPreference?: z.infer<typeof taskReasoningPreferenceSchema>
 	editedMessageContent?: string
 	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "marketplace" | "scheduledTasks"
 	disabled?: boolean

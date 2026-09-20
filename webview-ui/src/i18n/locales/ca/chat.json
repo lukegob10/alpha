@@ -326,11 +326,41 @@
 		"triggerLabel_zero": "0 aprovacions automàtiques",
 		"triggerLabel_one": "1 aprovació automàtica",
 		"triggerLabel_other": "{{count}} aprovacions automàtiques",
-		"triggerLabelAll": "BRRR"
+		"triggerLabelAll": "Tots"
 	},
 	"reasoning": {
 		"thinking": "Pensant",
-		"seconds": "{{count}}s"
+		"seconds": "{{count}}s",
+		"label": "Raonament: {{value}}",
+		"title": "Raonament",
+		"loading": "Carregant…",
+		"unavailable": "No disponible",
+		"default": "Predeterminat",
+		"off": "Desactivat",
+		"on": "Activat",
+		"none": "Cap",
+		"help": "El valor predeterminat utilitza la configuració del perfil. Desactivat impedeix o omet el raonament opcional. Cap envia el nivell explícit none del proveïdor.",
+		"budget": "{{tokens}} tokens de pensament",
+		"advanced": "Configuració avançada del perfil",
+		"custom": "Token de raonament personalitzat",
+		"customHelp": "Utilitza només un token acceptat per aquest model allotjat: 1–32 lletres minúscules, dígits, guions baixos o guionets. No se suposa compatibilitat amb cap família de models.",
+		"apply": "Aplica",
+		"invalidCustom": "Token no vàlid. S'ometrà el raonament.",
+		"saving": "Desant…",
+		"nextStep": "Pas següent",
+		"current": "Petició actual: {{value}}",
+		"fallback": "S'ha sol·licitat {{requested}}; s'utilitzarà {{effective}}.",
+		"saveFailed": "No s'ha pogut desar el raonament. La selecció acceptada no ha canviat.",
+		"unavailableHelp": "Aquest model no té cap capacitat de raonament ajustable verificada.",
+		"profileDefault": "Predeterminat del perfil / raonament avançat. El control de la tasca pot substituir-ho sense desar el perfil.",
+		"scheduleHelp": "Els canvis de programació afecten les execucions futures; les execucions en cua conserven la seva instantània.",
+		"reasons": {
+			"unsupported": "El valor sol·licitat no és compatible amb aquest model.",
+			"unavailable": "Les capacitats de raonament no estan disponibles per a aquest model.",
+			"required": "Aquest model requereix raonament.",
+			"budget-only": "Aquest model utilitza un pressupost de tokens, no nivells d'esforç amb nom.",
+			"invalid-custom": "El token personalitzat no és vàlid."
+		}
 	},
 	"contextManagement": {
 		"tokens": "tokens",
