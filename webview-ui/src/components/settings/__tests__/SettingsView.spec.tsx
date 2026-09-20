@@ -314,14 +314,14 @@ const mockPostMessage = (state: any) => {
 	)
 }
 
-const renderSettingsView = () => {
+const renderSettingsView = (targetSection?: string) => {
 	const onDone = vi.fn()
 	const queryClient = new QueryClient()
 
 	const result = render(
 		<ExtensionStateContextProvider>
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={onDone} />
+				<SettingsView onDone={onDone} targetSection={targetSection} />
 			</QueryClientProvider>
 		</ExtensionStateContextProvider>,
 	)
@@ -347,6 +347,17 @@ const renderSettingsView = () => {
 
 	return { onDone, activateTab, getSettingsContent }
 }
+
+describe("SettingsView - Startup rendering", () => {
+	it("keeps the selected section visible while the search index warms in the background", () => {
+		const { getSettingsContent } = renderSettingsView("agents")
+		const visibleContent = getSettingsContent()
+
+		expect(visibleContent.textContent).toContain("settings:sections.agents")
+		expect(screen.getByTestId("settings-indexing-content")).toBeInTheDocument()
+		expect(screen.getByTestId("settings-indexing-content")).not.toContainElement(visibleContent)
+	})
+})
 
 describe("SettingsView - Built-in Skills", () => {
 	beforeEach(() => vi.clearAllMocks())

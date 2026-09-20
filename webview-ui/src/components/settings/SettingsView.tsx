@@ -638,13 +638,12 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 	// Track which tabs have been indexed (visited at least once)
 	const [indexingTabIndex, setIndexingTabIndex] = useState(0)
-	const initialTab = useRef<SectionName>(activeTab)
 	const isIndexing = indexingTabIndex < sectionNames.length
 	const isIndexingComplete = !isIndexing
 	const tabTitlesRegistered = useRef(false)
 
-	// Index all tabs by cycling through them on mount
-	useLayoutEffect(() => {
+	// Index all tabs in the background so the selected tab can paint immediately
+	useEffect(() => {
 		if (indexingTabIndex >= sectionNames.length) {
 			// All tabs indexed, now register tab titles as searchable items
 			if (!tabTitlesRegistered.current && searchContextValue) {
@@ -659,18 +658,16 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					})
 				})
 				tabTitlesRegistered.current = true
-				// Return to initial tab
-				setActiveTab(initialTab.current)
 			}
 			return
 		}
 
-		// Move to the next tab on next render
-		setIndexingTabIndex((prev) => prev + 1)
+		// Give the selected tab a frame to paint before mounting the next indexing tab.
+		const frameId = requestAnimationFrame(() => setIndexingTabIndex((prev) => prev + 1))
+		return () => cancelAnimationFrame(frameId)
 	}, [indexingTabIndex, searchContextValue, sections, t])
 
-	// Determine which tab content to render (for indexing or active display)
-	const renderTab = isIndexing ? sectionNames[indexingTabIndex] : activeTab
+	const indexingSection = isIndexing ? sectionNames[indexingTabIndex] : undefined
 
 	// Handle search navigation - switch to the correct tab and scroll to the element
 	const handleSearchNavigate = useCallback(
@@ -695,6 +692,259 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			})
 		},
 		[handleTabChange],
+	)
+
+	const renderSettingsSection = (section: SectionName) => (
+		<>
+			{/* Providers Section */}
+			{section === "providers" && (
+				<div>
+					<SectionHeader>{t("settings:sections.providers")}</SectionHeader>
+
+					<Section>
+						<ApiConfigManager
+							currentApiConfigName={currentApiConfigName}
+							listApiConfigMeta={listApiConfigMeta}
+							onSelectConfig={(configName: string) =>
+								checkUnsaveChanges(() =>
+									vscode.postMessage({ type: "loadApiConfiguration", text: configName }),
+								)
+							}
+							onDeleteConfig={(configName: string) =>
+								checkUnsaveChanges(() =>
+									vscode.postMessage({
+										type: "deleteApiConfiguration",
+										text: configName,
+									}),
+								)
+							}
+							onRenameConfig={(oldName: string, newName: string) => {
+								vscode.postMessage({
+									type: "renameApiConfiguration",
+									values: { oldName, newName },
+									apiConfiguration,
+								})
+								prevApiConfigName.current = newName
+							}}
+							onUpsertConfig={(configName: string) => {
+								const hadUnsavedChanges = isChangeDetected
+								checkUnsaveChanges(() =>
+									vscode.postMessage({
+										type: "upsertApiConfiguration",
+										text: configName,
+										apiConfiguration: hadUnsavedChanges
+											? (latestExtensionState.current.apiConfiguration ?? {})
+											: apiConfiguration,
+									}),
+								)
+							}}
+						/>
+						<ApiOptions
+							uriScheme={uriScheme}
+							apiConfiguration={apiConfiguration}
+							setApiConfigurationField={setApiConfigurationField}
+							errorMessage={errorMessage}
+							setErrorMessage={setErrorMessage}
+						/>
+					</Section>
+				</div>
+			)}
+
+			{/* Agents Section */}
+			{section === "agents" && (
+				<AgentsSettings
+					profiles={cachedState.listApiConfigMeta ?? []}
+					defaultProfileId={subagentDefaultApiConfigId}
+					profileByRole={subagentApiConfigByRole}
+					managedAgentSettings={{
+						maxConcurrentSubagents,
+						subagentDelegationPolicy,
+						subagentMaxDepth,
+						subagentRoleTimeoutsMs,
+						subagentMaxInputTokens,
+						subagentMaxOutputTokens,
+						subagentRootTokenBudget,
+						subagentRootCostBudget,
+					}}
+					setCachedStateField={setCachedStateField}
+				/>
+			)}
+
+			{/* Auto-Approve Section */}
+			{section === "autoApprove" && (
+				<AutoApproveSettings
+					alwaysAllowReadOnly={alwaysAllowReadOnly}
+					alwaysAllowReadOnlyOutsideWorkspace={alwaysAllowReadOnlyOutsideWorkspace}
+					alwaysAllowWrite={alwaysAllowWrite}
+					alwaysAllowWriteOutsideWorkspace={alwaysAllowWriteOutsideWorkspace}
+					alwaysAllowWriteProtected={alwaysAllowWriteProtected}
+					alwaysAllowMcp={alwaysAllowMcp}
+					alwaysAllowSubtasks={alwaysAllowSubtasks}
+					alwaysAllowSubagents={alwaysAllowSubagents}
+					alwaysAllowTickets={alwaysAllowTickets}
+					alwaysAllowExecute={alwaysAllowExecute}
+					alwaysAllowFollowupQuestions={alwaysAllowFollowupQuestions}
+					autoApprovalEnabled={autoApprovalEnabled}
+					followupAutoApproveTimeoutMs={followupAutoApproveTimeoutMs}
+					allowedCommands={allowedCommands}
+					allowedMaxRequests={allowedMaxRequests ?? undefined}
+					allowedMaxCost={allowedMaxCost ?? undefined}
+					deniedCommands={deniedCommands}
+					setCachedStateField={setCachedStateField}
+				/>
+			)}
+
+			{/* Slash Commands Section */}
+			{section === "slashCommands" && <SlashCommandsSettings />}
+
+			{/* Skills Section */}
+			{section === "skills" && (
+				<SkillsSettings
+					disabledBuiltinSkills={cachedState.disabledBuiltinSkills ?? []}
+					onDisabledBuiltinSkillsChange={(value) => setCachedStateField("disabledBuiltinSkills", value)}
+				/>
+			)}
+
+			{/* Checkpoints Section */}
+			{section === "checkpoints" && (
+				<CheckpointSettings
+					enableCheckpoints={enableCheckpoints}
+					checkpointTimeout={checkpointTimeout}
+					setCachedStateField={setCachedStateField}
+				/>
+			)}
+
+			{/* Notifications Section */}
+			{section === "notifications" && (
+				<NotificationSettings
+					ttsEnabled={ttsEnabled}
+					ttsSpeed={ttsSpeed}
+					soundEnabled={soundEnabled}
+					soundVolume={soundVolume}
+					setCachedStateField={setCachedStateField}
+				/>
+			)}
+
+			{/* Context Management Section */}
+			{section === "contextManagement" && (
+				<ContextManagementSettings
+					autoCondenseContext={autoCondenseContext}
+					autoCondenseContextPercent={autoCondenseContextPercent}
+					listApiConfigMeta={listApiConfigMeta ?? []}
+					maxOpenTabsContext={maxOpenTabsContext}
+					maxWorkspaceFiles={maxWorkspaceFiles ?? 200}
+					showRooIgnoredFiles={showRooIgnoredFiles}
+					enableSubfolderRules={enableSubfolderRules}
+					maxImageFileSize={maxImageFileSize}
+					maxTotalImageSize={maxTotalImageSize}
+					profileThresholds={profileThresholds}
+					includeDiagnosticMessages={includeDiagnosticMessages}
+					maxDiagnosticMessages={maxDiagnosticMessages}
+					writeDelayMs={writeDelayMs}
+					includeCurrentTime={includeCurrentTime}
+					includeCurrentCost={includeCurrentCost}
+					maxGitStatusFiles={maxGitStatusFiles}
+					customSupportPrompts={customSupportPrompts || {}}
+					setCustomSupportPrompts={setCustomSupportPromptsField}
+					setCachedStateField={setCachedStateField}
+				/>
+			)}
+
+			{/* Terminal Section */}
+			{section === "terminal" && (
+				<TerminalSettings
+					terminalOutputPreviewSize={terminalOutputPreviewSize}
+					terminalShellIntegrationTimeout={terminalShellIntegrationTimeout}
+					terminalShellIntegrationDisabled={terminalShellIntegrationDisabled}
+					terminalCommandDelay={terminalCommandDelay}
+					terminalPowershellCounter={terminalPowershellCounter}
+					terminalZshClearEolMark={terminalZshClearEolMark}
+					terminalZshOhMy={terminalZshOhMy}
+					terminalZshP10k={terminalZshP10k}
+					terminalZdotdir={terminalZdotdir}
+					terminalInheritEnv={terminalInheritEnv}
+					onTerminalInheritEnvLoaded={handleTerminalInheritEnvLoaded}
+					setCachedStateField={setCachedStateField}
+				/>
+			)}
+
+			{/* Modes Section */}
+			{section === "modes" && (
+				<ModesView
+					customModePrompts={customModePrompts}
+					customInstructions={customInstructions}
+					setCustomModePrompts={(value) => setCachedStateField("customModePrompts", value)}
+					setCustomInstructions={(value) => setCachedStateField("customInstructions", value)}
+				/>
+			)}
+
+			{/* MCP Section */}
+			{section === "mcp" && (
+				<McpView
+					mcpEnabled={mcpEnabled}
+					onMcpEnabledChange={(value) => setCachedStateField("mcpEnabled", value)}
+				/>
+			)}
+
+			{/* Worktrees Section */}
+			{section === "worktrees" && (
+				<WorktreesView
+					showWorktreesInHomeScreen={showWorktreesInHomeScreen}
+					onShowWorktreesInHomeScreenChange={(value) =>
+						setCachedStateField("showWorktreesInHomeScreen", value)
+					}
+				/>
+			)}
+
+			{/* Prompts Section */}
+			{section === "prompts" && (
+				<PromptsSettings
+					customSupportPrompts={customSupportPrompts || {}}
+					setCustomSupportPrompts={setCustomSupportPromptsField}
+					includeTaskHistoryInEnhance={includeTaskHistoryInEnhance ?? true}
+					setIncludeTaskHistoryInEnhance={(value) =>
+						setCachedStateField("includeTaskHistoryInEnhance", value)
+					}
+					enhancementApiConfigId={enhancementApiConfigId}
+					setEnhancementApiConfigId={(value) => setCachedStateField("enhancementApiConfigId", value)}
+				/>
+			)}
+
+			{/* UI Section */}
+			{section === "ui" && (
+				<UISettings
+					reasoningBlockCollapsed={reasoningBlockCollapsed ?? true}
+					enterBehavior={enterBehavior ?? "send"}
+					maxConcurrentTasks={maxConcurrentTasks ?? 3}
+					setCachedStateField={setCachedStateField}
+				/>
+			)}
+
+			{/* Experimental Section */}
+			{section === "experimental" && (
+				<ExperimentalSettings
+					setExperimentEnabled={setExperimentEnabled}
+					experiments={experiments}
+					apiConfiguration={apiConfiguration}
+					setApiConfigurationField={setApiConfigurationField}
+				/>
+			)}
+
+			{/* Language Section */}
+			{section === "language" && (
+				<LanguageSettings language={language || "en"} setCachedStateField={setCachedStateField} />
+			)}
+
+			{/* About Section */}
+			{section === "about" && (
+				<About
+					telemetrySetting={telemetrySetting}
+					setTelemetrySetting={setTelemetrySetting}
+					debug={cachedState.debug}
+					setDebug={setDebug}
+				/>
+			)}
+		</>
 	)
 
 	return (
@@ -791,266 +1041,20 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					})}
 				</TabList>
 
-				{/* Content area - renders only the active tab (or indexing tab during initial indexing) */}
-				<TabContent
-					ref={contentRef}
-					className={cn("p-0 min-h-0 flex-1 overflow-auto", isIndexing && "opacity-0")}
-					data-testid="settings-content">
-					<SearchIndexProvider value={searchContextValue}>
-						{/* Providers Section */}
-						{renderTab === "providers" && (
-							<div>
-								<SectionHeader>{t("settings:sections.providers")}</SectionHeader>
-
-								<Section>
-									<ApiConfigManager
-										currentApiConfigName={currentApiConfigName}
-										listApiConfigMeta={listApiConfigMeta}
-										onSelectConfig={(configName: string) =>
-											checkUnsaveChanges(() =>
-												vscode.postMessage({ type: "loadApiConfiguration", text: configName }),
-											)
-										}
-										onDeleteConfig={(configName: string) =>
-											checkUnsaveChanges(() =>
-												vscode.postMessage({
-													type: "deleteApiConfiguration",
-													text: configName,
-												}),
-											)
-										}
-										onRenameConfig={(oldName: string, newName: string) => {
-											vscode.postMessage({
-												type: "renameApiConfiguration",
-												values: { oldName, newName },
-												apiConfiguration,
-											})
-											prevApiConfigName.current = newName
-										}}
-										onUpsertConfig={(configName: string) => {
-											const hadUnsavedChanges = isChangeDetected
-											checkUnsaveChanges(() =>
-												vscode.postMessage({
-													type: "upsertApiConfiguration",
-													text: configName,
-													apiConfiguration: hadUnsavedChanges
-														? (latestExtensionState.current.apiConfiguration ?? {})
-														: apiConfiguration,
-												}),
-											)
-										}}
-									/>
-									<ApiOptions
-										uriScheme={uriScheme}
-										apiConfiguration={apiConfiguration}
-										setApiConfigurationField={setApiConfigurationField}
-										errorMessage={errorMessage}
-										setErrorMessage={setErrorMessage}
-									/>
-								</Section>
-							</div>
-						)}
-
-						{/* Agents Section */}
-						{renderTab === "agents" && (
-							<AgentsSettings
-								profiles={cachedState.listApiConfigMeta ?? []}
-								defaultProfileId={subagentDefaultApiConfigId}
-								profileByRole={subagentApiConfigByRole}
-								managedAgentSettings={{
-									maxConcurrentSubagents,
-									subagentDelegationPolicy,
-									subagentMaxDepth,
-									subagentRoleTimeoutsMs,
-									subagentMaxInputTokens,
-									subagentMaxOutputTokens,
-									subagentRootTokenBudget,
-									subagentRootCostBudget,
-								}}
-								setCachedStateField={setCachedStateField}
-							/>
-						)}
-
-						{/* Auto-Approve Section */}
-						{renderTab === "autoApprove" && (
-							<AutoApproveSettings
-								alwaysAllowReadOnly={alwaysAllowReadOnly}
-								alwaysAllowReadOnlyOutsideWorkspace={alwaysAllowReadOnlyOutsideWorkspace}
-								alwaysAllowWrite={alwaysAllowWrite}
-								alwaysAllowWriteOutsideWorkspace={alwaysAllowWriteOutsideWorkspace}
-								alwaysAllowWriteProtected={alwaysAllowWriteProtected}
-								alwaysAllowMcp={alwaysAllowMcp}
-								alwaysAllowSubtasks={alwaysAllowSubtasks}
-								alwaysAllowSubagents={alwaysAllowSubagents}
-								alwaysAllowTickets={alwaysAllowTickets}
-								alwaysAllowExecute={alwaysAllowExecute}
-								alwaysAllowFollowupQuestions={alwaysAllowFollowupQuestions}
-								autoApprovalEnabled={autoApprovalEnabled}
-								followupAutoApproveTimeoutMs={followupAutoApproveTimeoutMs}
-								allowedCommands={allowedCommands}
-								allowedMaxRequests={allowedMaxRequests ?? undefined}
-								allowedMaxCost={allowedMaxCost ?? undefined}
-								deniedCommands={deniedCommands}
-								setCachedStateField={setCachedStateField}
-							/>
-						)}
-
-						{/* Slash Commands Section */}
-						{renderTab === "slashCommands" && <SlashCommandsSettings />}
-
-						{/* Skills Section */}
-						{renderTab === "skills" && (
-							<SkillsSettings
-								disabledBuiltinSkills={cachedState.disabledBuiltinSkills ?? []}
-								onDisabledBuiltinSkillsChange={(value) =>
-									setCachedStateField("disabledBuiltinSkills", value)
-								}
-							/>
-						)}
-
-						{/* Checkpoints Section */}
-						{renderTab === "checkpoints" && (
-							<CheckpointSettings
-								enableCheckpoints={enableCheckpoints}
-								checkpointTimeout={checkpointTimeout}
-								setCachedStateField={setCachedStateField}
-							/>
-						)}
-
-						{/* Notifications Section */}
-						{renderTab === "notifications" && (
-							<NotificationSettings
-								ttsEnabled={ttsEnabled}
-								ttsSpeed={ttsSpeed}
-								soundEnabled={soundEnabled}
-								soundVolume={soundVolume}
-								setCachedStateField={setCachedStateField}
-							/>
-						)}
-
-						{/* Context Management Section */}
-						{renderTab === "contextManagement" && (
-							<ContextManagementSettings
-								autoCondenseContext={autoCondenseContext}
-								autoCondenseContextPercent={autoCondenseContextPercent}
-								listApiConfigMeta={listApiConfigMeta ?? []}
-								maxOpenTabsContext={maxOpenTabsContext}
-								maxWorkspaceFiles={maxWorkspaceFiles ?? 200}
-								showRooIgnoredFiles={showRooIgnoredFiles}
-								enableSubfolderRules={enableSubfolderRules}
-								maxImageFileSize={maxImageFileSize}
-								maxTotalImageSize={maxTotalImageSize}
-								profileThresholds={profileThresholds}
-								includeDiagnosticMessages={includeDiagnosticMessages}
-								maxDiagnosticMessages={maxDiagnosticMessages}
-								writeDelayMs={writeDelayMs}
-								includeCurrentTime={includeCurrentTime}
-								includeCurrentCost={includeCurrentCost}
-								maxGitStatusFiles={maxGitStatusFiles}
-								customSupportPrompts={customSupportPrompts || {}}
-								setCustomSupportPrompts={setCustomSupportPromptsField}
-								setCachedStateField={setCachedStateField}
-							/>
-						)}
-
-						{/* Terminal Section */}
-						{renderTab === "terminal" && (
-							<TerminalSettings
-								terminalOutputPreviewSize={terminalOutputPreviewSize}
-								terminalShellIntegrationTimeout={terminalShellIntegrationTimeout}
-								terminalShellIntegrationDisabled={terminalShellIntegrationDisabled}
-								terminalCommandDelay={terminalCommandDelay}
-								terminalPowershellCounter={terminalPowershellCounter}
-								terminalZshClearEolMark={terminalZshClearEolMark}
-								terminalZshOhMy={terminalZshOhMy}
-								terminalZshP10k={terminalZshP10k}
-								terminalZdotdir={terminalZdotdir}
-								terminalInheritEnv={terminalInheritEnv}
-								onTerminalInheritEnvLoaded={handleTerminalInheritEnvLoaded}
-								setCachedStateField={setCachedStateField}
-							/>
-						)}
-
-						{/* Modes Section */}
-						{renderTab === "modes" && (
-							<ModesView
-								customModePrompts={customModePrompts}
-								customInstructions={customInstructions}
-								setCustomModePrompts={(value) => setCachedStateField("customModePrompts", value)}
-								setCustomInstructions={(value) => setCachedStateField("customInstructions", value)}
-							/>
-						)}
-
-						{/* MCP Section */}
-						{renderTab === "mcp" && (
-							<McpView
-								mcpEnabled={mcpEnabled}
-								onMcpEnabledChange={(value) => setCachedStateField("mcpEnabled", value)}
-							/>
-						)}
-
-						{/* Worktrees Section */}
-						{renderTab === "worktrees" && (
-							<WorktreesView
-								showWorktreesInHomeScreen={showWorktreesInHomeScreen}
-								onShowWorktreesInHomeScreenChange={(value) =>
-									setCachedStateField("showWorktreesInHomeScreen", value)
-								}
-							/>
-						)}
-
-						{/* Prompts Section */}
-						{renderTab === "prompts" && (
-							<PromptsSettings
-								customSupportPrompts={customSupportPrompts || {}}
-								setCustomSupportPrompts={setCustomSupportPromptsField}
-								includeTaskHistoryInEnhance={includeTaskHistoryInEnhance ?? true}
-								setIncludeTaskHistoryInEnhance={(value) =>
-									setCachedStateField("includeTaskHistoryInEnhance", value)
-								}
-								enhancementApiConfigId={enhancementApiConfigId}
-								setEnhancementApiConfigId={(value) =>
-									setCachedStateField("enhancementApiConfigId", value)
-								}
-							/>
-						)}
-
-						{/* UI Section */}
-						{renderTab === "ui" && (
-							<UISettings
-								reasoningBlockCollapsed={reasoningBlockCollapsed ?? true}
-								enterBehavior={enterBehavior ?? "send"}
-								maxConcurrentTasks={maxConcurrentTasks ?? 3}
-								setCachedStateField={setCachedStateField}
-							/>
-						)}
-
-						{/* Experimental Section */}
-						{renderTab === "experimental" && (
-							<ExperimentalSettings
-								setExperimentEnabled={setExperimentEnabled}
-								experiments={experiments}
-								apiConfiguration={apiConfiguration}
-								setApiConfigurationField={setApiConfigurationField}
-							/>
-						)}
-
-						{/* Language Section */}
-						{renderTab === "language" && (
-							<LanguageSettings language={language || "en"} setCachedStateField={setCachedStateField} />
-						)}
-
-						{/* About Section */}
-						{renderTab === "about" && (
-							<About
-								telemetrySetting={telemetrySetting}
-								setTelemetrySetting={setTelemetrySetting}
-								debug={cachedState.debug}
-								setDebug={setDebug}
-							/>
-						)}
-					</SearchIndexProvider>
-				</TabContent>
+				{/* Content area - renders the active tab while indexing runs in a hidden container */}
+				<SearchIndexProvider value={searchContextValue}>
+					<TabContent
+						ref={contentRef}
+						className="p-0 min-h-0 flex-1 overflow-auto"
+						data-testid="settings-content">
+						{renderSettingsSection(activeTab)}
+					</TabContent>
+					{isIndexing && indexingSection && indexingSection !== activeTab && (
+						<div aria-hidden="true" className="hidden" data-testid="settings-indexing-content">
+							{renderSettingsSection(indexingSection)}
+						</div>
+					)}
+				</SearchIndexProvider>
 			</div>
 
 			<AlertDialog open={isDiscardDialogShow} onOpenChange={setDiscardDialogShow}>

@@ -478,7 +478,7 @@
 		"vsix": "mkdirp ../bin && vsce package --no-dependencies --out ../bin",
 		"publish:marketplace": "vsce publish --no-dependencies && ovsx publish --no-dependencies",
 		"watch:bundle": "pnpm bundle --watch",
-		"watch:tsc": "cd .. && tsc --noEmit --watch --project src/tsconfig.json",
+		"watch:tsc": "node ../node_modules/typescript/lib/tsc.js --noEmit --watch --project tsconfig.dev-watch.json",
 		"clean": "rimraf README.md CHANGELOG.md LICENSE dist logs mock .turbo"
 	},
 	"dependencies": {
