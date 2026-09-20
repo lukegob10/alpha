@@ -228,11 +228,9 @@ export const openAlphaInNewTab = async ({ context, outputChannel }: Omit<Registe
 	// Save as tab type panel.
 	setPanel(newPanel, "tab")
 
-	// TODO: Use better svg icon with light and dark variants (see
-	// https://stackoverflow.com/questions/58365687/vscode-extension-iconpath).
 	newPanel.iconPath = {
-		light: vscode.Uri.joinPath(context.extensionUri, "assets", "icons", "panel_light.png"),
-		dark: vscode.Uri.joinPath(context.extensionUri, "assets", "icons", "panel_dark.png"),
+		light: vscode.Uri.joinPath(context.extensionUri, "assets", "icons", "panel-light.svg"),
+		dark: vscode.Uri.joinPath(context.extensionUri, "assets", "icons", "panel-dark.svg"),
 	}
 
 	await tabProvider.resolveWebviewView(newPanel)
