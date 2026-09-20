@@ -2,6 +2,7 @@
 
 import * as os from "os"
 import * as path from "path"
+import * as fsSync from "fs"
 import { EventEmitter } from "events"
 
 import * as vscode from "vscode"
@@ -28,6 +29,7 @@ import { formatResponse } from "../../prompts/responses"
 import { createAgentResponse } from "../../agent/AgentResponse"
 import { AgentRetryPolicy } from "../../agent/AgentRetryPolicy"
 import { AgentControlTransactionError } from "../../agent/AgentControlTransaction"
+import { parseProposedPlan } from "../../../shared/plan-mode"
 import { delegate_task } from "../../prompts/tools/native-tools/delegate_task"
 import { getNativeTools } from "../../prompts/tools/native-tools"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
@@ -5400,6 +5402,135 @@ describe("Alpha", () => {
 				],
 				undefined,
 			)
+		})
+	})
+
+	describe("design handoff persistence", () => {
+		const createPlanTask = (overrides: Record<string, unknown> = {}) =>
+			new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "design handoff task",
+				taskId: "primary-plan-task",
+				taskMode: "architect",
+				taskApiConfigName: "default",
+				startTask: false,
+				enableCheckpoints: false,
+				...overrides,
+			} as any)
+
+		const firstPlan = "<proposed_plan>\n# First design\n\n- Preserve the parser contract.\n</proposed_plan>"
+		const secondPlan = "<proposed_plan>\n# Revised design\n\n- Persist the current handoff.\n</proposed_plan>"
+
+		beforeEach(() => {
+			mockProvider.updateTaskHistory.mockClear()
+			mockProvider.updateTaskHistory.mockResolvedValue([])
+			fsSync.mkdirSync(path.join(mockExtensionContext.globalStorageUri.fsPath, "tasks", "primary-plan-task"), {
+				recursive: true,
+			})
+		})
+
+		it("persists a complete plan body from the parsed completion and restores the latest revision", async () => {
+			const task = createPlanTask()
+
+			await task.presentCompletionResult(firstPlan)
+			const firstHistory = mockProvider.updateTaskHistory.mock.lastCall?.[0]
+			const firstBody = parseProposedPlan(firstPlan)?.content
+
+			expect(firstBody).toBeDefined()
+			expect(firstHistory).toEqual(
+				expect.objectContaining({
+					id: task.taskId,
+					designHandoff: expect.objectContaining({
+						markdown: firstBody,
+						sourceTaskId: task.taskId,
+					}),
+				}),
+			)
+			expect(task.designHandoff?.markdown).toBe(firstBody)
+
+			await task.presentCompletionResult(secondPlan)
+			const latestHistory = mockProvider.updateTaskHistory.mock.lastCall?.[0]
+			const secondBody = parseProposedPlan(secondPlan)?.content
+
+			expect(latestHistory?.designHandoff).toEqual(task.designHandoff)
+			expect(latestHistory?.designHandoff?.markdown).toBe(secondBody)
+			expect(latestHistory?.designHandoff?.markdown).not.toBe(firstBody)
+
+			const reloaded = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				historyItem: latestHistory,
+				startTask: false,
+				enableCheckpoints: false,
+			} as any)
+
+			expect(reloaded.designHandoff).toEqual(latestHistory?.designHandoff)
+		})
+
+		it("does not replace a complete handoff while the next plan is partial or incomplete", async () => {
+			const task = createPlanTask()
+			await task.presentCompletionResult(firstPlan)
+			const persisted = structuredClone(task.designHandoff)
+
+			await task.presentCompletionResult("<proposed_plan>\n# Streaming revision", [], true)
+			expect(task.designHandoff).toEqual(persisted)
+
+			await task.presentCompletionResult("<proposed_plan>\n# Incomplete revision")
+			const exactIncompleteRow = task.clineMessages
+				.filter((message) => message.type === "say" && message.say === "completion_result")
+				.at(-1)
+			expect(
+				parseProposedPlan(exactIncompleteRow?.type === "say" ? (exactIncompleteRow.text ?? "") : "")?.complete,
+			).not.toBe(true)
+
+			await task.presentCompletionResult("Draft:\n<proposed_plan>\n# Preamble leaves this incomplete")
+			const preambleIncompleteRow = task.clineMessages
+				.filter((message) => message.type === "say" && message.say === "completion_result")
+				.at(-1)
+			const latestHistory = mockProvider.updateTaskHistory.mock.lastCall?.[0]
+
+			expect(
+				parseProposedPlan(preambleIncompleteRow?.type === "say" ? (preambleIncompleteRow.text ?? "") : "")
+					?.complete,
+			).not.toBe(true)
+			expect(task.designHandoff).toEqual(persisted)
+			expect(latestHistory?.designHandoff).toEqual(persisted)
+		})
+
+		it("does not publish a plan in memory when completion persistence fails", async () => {
+			const task = createPlanTask()
+			mockProvider.updateTaskHistory.mockRejectedValue(new Error("history unavailable"))
+
+			await expect(task.presentCompletionResult(firstPlan)).rejects.toThrow(
+				"Unable to persist the completion result",
+			)
+
+			expect(task.designHandoff).toBeUndefined()
+			expect(task.clineMessages).not.toContainEqual(expect.objectContaining({ say: "completion_result" }))
+		})
+
+		it("does not let a child completion author or replace the parent handoff", async () => {
+			const parent = createPlanTask()
+			await parent.presentCompletionResult(firstPlan)
+			const persisted = structuredClone(parent.designHandoff)
+			mockProvider.updateTaskHistory.mockClear()
+			fsSync.mkdirSync(path.join(mockExtensionContext.globalStorageUri.fsPath, "tasks", "child-plan-task"), {
+				recursive: true,
+			})
+
+			const child = createPlanTask({
+				taskId: "child-plan-task",
+				task: "child design handoff task",
+				taskKind: "subagent",
+				parentTask: parent,
+				rootTask: parent,
+			})
+			await child.presentCompletionResult(secondPlan)
+
+			expect(parent.designHandoff).toEqual(persisted)
+			expect(child.designHandoff).toBeUndefined()
+			expect(mockProvider.updateTaskHistory.mock.lastCall?.[0]?.designHandoff).toBeUndefined()
 		})
 	})
 

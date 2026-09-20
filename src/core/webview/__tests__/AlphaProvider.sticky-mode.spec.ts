@@ -74,6 +74,7 @@ vi.mock("../../task/Task", () => ({
 			retrySaveApiConversationHistory: vi.fn().mockResolvedValue(true),
 			start: vi.fn(),
 			handleWebviewAskResponse: vi.fn(),
+			resumeCompletedTaskFollowup: vi.fn().mockResolvedValue(undefined),
 			getTaskNumber: vi.fn().mockReturnValue(0),
 			setTaskNumber: vi.fn(),
 			setParentTask: vi.fn(),
@@ -639,6 +640,227 @@ describe("AlphaProvider - Sticky Mode", () => {
 	describe("handleModeSwitch", () => {
 		beforeEach(async () => {
 			await provider.resolveWebviewView(mockWebviewView)
+		})
+
+		const createPlanHandoffTask = (taskId = "plan-handoff-task", overrides: Record<string, unknown> = {}) => {
+			const apiConfiguration = {
+				apiProvider: "openai" as const,
+				openAiModelId: "anthropic/claude-sonnet-4.6",
+			}
+			const task = new Task({
+				provider,
+				apiConfiguration,
+				taskId,
+				taskMode: "architect",
+				taskApiConfigName: "sticky-plan-profile",
+				...overrides,
+			}) as any
+			const handoff = {
+				markdown: "# Current plan\n\n- Keep the provider profile.",
+				sourceTaskId: taskId,
+				digest: "a".repeat(64),
+				updatedAt: 1,
+			}
+			Object.assign(task, {
+				taskKind: "primary",
+				designHandoff: handoff,
+				clineMessages: [
+					{
+						type: "ask",
+						ask: "completion_result",
+						text: `<proposed_plan>\n${handoff.markdown}\n</proposed_plan>`,
+					},
+				],
+				hasPendingAsk: vi.fn().mockReturnValue(true),
+				isTurnActive: vi.fn().mockReturnValue(true),
+				hasActiveCommandExecutions: vi.fn().mockReturnValue(false),
+				hasPendingSteerMessage: vi.fn().mockReturnValue(false),
+				abort: false,
+				abandoned: false,
+				isStreaming: false,
+				isWaitingForFirstChunk: false,
+			})
+			return { task, handoff, apiConfiguration }
+		}
+
+		it("switches to Code before submitting the implementation instruction to the review ask", async () => {
+			const { task, handoff, apiConfiguration } = createPlanHandoffTask()
+			await provider.addTaskToStack(task)
+			vi.spyOn(provider, "updateTaskHistory").mockResolvedValue([])
+			task.handleWebviewAskResponse.mockImplementation(() => {
+				expect(task._taskMode).toBe("code")
+			})
+
+			await provider.handleImplementPlan(task.taskId, handoff.digest)
+
+			expect(task._taskMode).toBe("code")
+			expect(task.apiConfiguration).toBe(apiConfiguration)
+			expect(await task.getTaskApiConfigName()).toBe("sticky-plan-profile")
+			expect(task.handleWebviewAskResponse).toHaveBeenCalledWith("messageResponse", expect.any(String))
+			expect(task.resumeCompletedTaskFollowup).not.toHaveBeenCalled()
+			expect(task.clineMessages).toHaveLength(1)
+		})
+
+		it("resumes a completed plan and admits only one continuation for duplicate clicks", async () => {
+			const { task, handoff } = createPlanHandoffTask()
+			task.hasPendingAsk.mockReturnValue(false)
+			task.isTurnActive.mockReturnValue(false)
+			await provider.addTaskToStack(task)
+			vi.spyOn(provider, "updateTaskHistory").mockResolvedValue([])
+			task.resumeCompletedTaskFollowup.mockImplementation(async () => {
+				expect(task._taskMode).toBe("code")
+			})
+
+			const results = await Promise.allSettled([
+				provider.handleImplementPlan(task.taskId, handoff.digest),
+				provider.handleImplementPlan(task.taskId, handoff.digest),
+			])
+
+			expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected"])
+			expect(task.resumeCompletedTaskFollowup).toHaveBeenCalledExactlyOnceWith(expect.any(String))
+			expect(task.handleWebviewAskResponse).not.toHaveBeenCalled()
+		})
+
+		it.each(["resume_task", "resume_completed_task"])("continues a reloaded plan at %s", async (ask) => {
+			const { task, handoff } = createPlanHandoffTask()
+			task.clineMessages = [{ type: "ask", ask }]
+			await provider.addTaskToStack(task)
+			vi.spyOn(provider, "updateTaskHistory").mockResolvedValue([])
+
+			await provider.handleImplementPlan(task.taskId, handoff.digest)
+
+			expect(task.handleWebviewAskResponse).toHaveBeenCalledWith("messageResponse", expect.any(String))
+			expect(task.resumeCompletedTaskFollowup).not.toHaveBeenCalled()
+		})
+
+		it.each(["completion_result", "resume_task", "resume_completed_task"])(
+			"can return a Code task waiting at %s to Plan and implement its saved plan",
+			async (ask) => {
+				const { task, handoff } = createPlanHandoffTask()
+				task._taskMode = "code"
+				task.clineMessages = [{ type: "ask", ask }]
+				await provider.addTaskToStack(task)
+
+				await provider.handleModeSwitch("architect")
+				expect(task._taskMode).toBe("architect")
+				expect(task.handleWebviewAskResponse).not.toHaveBeenCalled()
+
+				await provider.handleImplementPlan(task.taskId, handoff.digest)
+				expect(task._taskMode).toBe("code")
+				expect(task.handleWebviewAskResponse).toHaveBeenCalledExactlyOnceWith(
+					"messageResponse",
+					expect.any(String),
+				)
+			},
+		)
+
+		it.each(["tool", "command", "followup"])("still rejects entering Plan at a pending %s ask", async (ask) => {
+			const { task } = createPlanHandoffTask()
+			task._taskMode = "code"
+			task.taskAsk = { type: "ask", ask }
+			await provider.addTaskToStack(task)
+
+			await expect(provider.handleModeSwitch("architect")).rejects.toThrow("unresolved")
+			expect(task._taskMode).toBe("code")
+			expect(task.handleWebviewAskResponse).not.toHaveBeenCalled()
+		})
+
+		it("restores the Plan action when completed-task admission fails", async () => {
+			const { task, handoff } = createPlanHandoffTask()
+			task.hasPendingAsk.mockReturnValue(false)
+			task.isTurnActive.mockReturnValue(false)
+			task.resumeCompletedTaskFollowup.mockRejectedValue(new Error("durable write failed"))
+			await provider.addTaskToStack(task)
+			vi.spyOn(provider, "updateTaskHistory").mockResolvedValue([])
+
+			await expect(provider.handleImplementPlan(task.taskId, handoff.digest)).rejects.toThrow(
+				"durable write failed",
+			)
+
+			expect(task._taskMode).toBe("architect")
+			expect(task.handleWebviewAskResponse).not.toHaveBeenCalled()
+		})
+
+		it("does not answer an unrelated approval even with a historical completion row", async () => {
+			const { task, handoff } = createPlanHandoffTask()
+			task.taskAsk = { type: "ask", ask: "tool" }
+			await provider.addTaskToStack(task)
+
+			await expect(provider.handleImplementPlan(task.taskId, handoff.digest)).rejects.toThrow(
+				"Wait for the Plan result",
+			)
+
+			expect(task._taskMode).toBe("architect")
+			expect(task.handleWebviewAskResponse).not.toHaveBeenCalled()
+		})
+
+		it("does not continue if cancellation arrives during mode persistence", async () => {
+			const { task, handoff } = createPlanHandoffTask()
+			await provider.addTaskToStack(task)
+			vi.spyOn(provider, "postStateToWebview").mockImplementationOnce(async () => {
+				task.abort = true
+			})
+
+			await expect(provider.handleImplementPlan(task.taskId, handoff.digest)).rejects.toThrow(
+				"Wait for the Plan result",
+			)
+
+			expect(task.handleWebviewAskResponse).not.toHaveBeenCalled()
+			expect(task.resumeCompletedTaskFollowup).not.toHaveBeenCalled()
+		})
+
+		it("rejects a missing handoff and a streamed completion before switching mode", async () => {
+			const missing = createPlanHandoffTask("missing-handoff")
+			missing.task.designHandoff = undefined
+			await provider.addTaskToStack(missing.task)
+			await expect(provider.handleImplementPlan(missing.task.taskId, missing.handoff.digest)).rejects.toThrow(
+				"no longer current",
+			)
+			expect(missing.task._taskMode).toBe("architect")
+
+			const streamed = createPlanHandoffTask("streamed-handoff")
+			streamed.task.clineMessages[0].partial = true
+			await provider.addTaskToStack(streamed.task)
+			await expect(provider.handleImplementPlan(streamed.task.taskId, streamed.handoff.digest)).rejects.toThrow(
+				"Wait for the Plan result",
+			)
+			expect(streamed.task._taskMode).toBe("architect")
+			expect(streamed.task.handleWebviewAskResponse).not.toHaveBeenCalled()
+		})
+
+		it("revalidates the digest at the serialized execution boundary", async () => {
+			const { task, handoff } = createPlanHandoffTask("stale-digest")
+			await provider.addTaskToStack(task)
+			let releaseQueue!: () => void
+			;(provider as any).modeSwitchQueue = new Promise<void>((resolve) => {
+				releaseQueue = resolve
+			})
+
+			const implementation = provider.handleImplementPlan(task.taskId, handoff.digest)
+			task.designHandoff = { ...handoff, digest: "b".repeat(64) }
+			releaseQueue()
+
+			await expect(implementation).rejects.toThrow("no longer current")
+			expect(task._taskMode).toBe("architect")
+		})
+
+		it("revalidates the visible task at the serialized execution boundary", async () => {
+			const { task, handoff } = createPlanHandoffTask("stale-focus")
+			await provider.addTaskToStack(task)
+			let releaseQueue!: () => void
+			;(provider as any).modeSwitchQueue = new Promise<void>((resolve) => {
+				releaseQueue = resolve
+			})
+
+			const implementation = provider.handleImplementPlan(task.taskId, handoff.digest)
+			const other = createPlanHandoffTask("other-focused-task")
+			other.task._taskMode = "code"
+			await provider.addTaskToStack(other.task)
+			releaseQueue()
+
+			await expect(implementation).rejects.toThrow("visible primary task")
+			expect(task._taskMode).toBe("architect")
+			expect(other.task._taskMode).toBe("code")
 		})
 
 		it("treats an unset fresh-install mode as Code when switching to Plan before the first task", async () => {

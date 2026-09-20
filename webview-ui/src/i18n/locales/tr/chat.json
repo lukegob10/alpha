@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "Kopyala",
 		"copied": "Kopyalandı",
+		"implementPlan": "Planı uygula",
 		"edit": "Düzenle ve yeniden gönder",
 		"restart": "Önceki istekten yeniden başlat",
 		"restartWarning": "Önceki istek yeniden çalıştırılacak ve sonraki tüm mesajlar değiştirilecek. Çalışma alanındaki dosyalar olduğu gibi kalacak.",

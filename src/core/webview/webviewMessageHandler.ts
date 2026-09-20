@@ -1455,7 +1455,27 @@ export const webviewMessageHandler = async (
 			break
 
 		case "mode":
-			await provider.handleModeSwitch(message.text as Mode)
+			try {
+				await provider.handleModeSwitch(message.text as Mode)
+			} catch (error) {
+				// The selector updates optimistically. Restore the host's actual mode
+				// when policy or persistence rejects the change.
+				await provider.postStateToWebview()
+				throw error
+			}
+			break
+		case "implementPlan":
+			if (!message.taskId || !message.planDigest) {
+				provider.log("[webviewMessageHandler] Ignoring implementPlan: missing taskId or planDigest")
+				break
+			}
+			try {
+				await provider.handleImplementPlan(message.taskId, message.planDigest)
+			} catch (error) {
+				provider.log(`[implementPlan] ${error instanceof Error ? error.message : String(error)}`)
+				await provider.postStateToWebview()
+				vscode.window.showErrorMessage(t("common:planHandoff.implementFailed"))
+			}
 			break
 		case "updatePrompt":
 			if (message.promptMode && message.customPrompt !== undefined) {

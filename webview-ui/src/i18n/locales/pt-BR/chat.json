@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "Copiar",
 		"copied": "Copiado",
+		"implementPlan": "Implementar plano",
 		"edit": "Editar e reenviar",
 		"restart": "Reiniciar a partir da solicitação anterior",
 		"restartWarning": "A solicitação anterior será executada novamente e todas as mensagens seguintes serão substituídas. Os arquivos do espaço de trabalho permanecerão como estão.",

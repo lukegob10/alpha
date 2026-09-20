@@ -14,6 +14,7 @@ import type {
 } from "@alpha-code/types"
 
 import { Mode } from "@alpha/modes"
+import { parseProposedPlan } from "@alpha/plan-mode"
 
 import { COMMAND_OUTPUT_STRING } from "@alpha/combineCommandSequences"
 import { safeJsonParse } from "@alpha/core"
@@ -244,6 +245,28 @@ const ChatRowContentInner = ({
 	const [editedContent, setEditedContent] = useState("")
 	const [editMode, setEditMode] = useState<Mode>(mode || "code")
 	const [editImages, setEditImages] = useState<string[]>([])
+	const storedDesignHandoff = currentTaskItem?.designHandoff
+	const isCompletionResult = message.type === "say" && message.say === "completion_result" && message.partial !== true
+	const proposedPlan = isCompletionResult ? parseProposedPlan(message.text ?? "", false) : undefined
+	const isCurrentStoredPlan = Boolean(
+		isCompletionResult &&
+			!isTaskPrompt &&
+			mode === "architect" &&
+			currentTaskId &&
+			currentTaskItem?.id === currentTaskId &&
+			(currentTaskItem?.taskKind ?? "primary") === "primary" &&
+			storedDesignHandoff?.sourceTaskId === currentTaskId &&
+			proposedPlan?.complete &&
+			proposedPlan.content === storedDesignHandoff?.markdown,
+	)
+	const handleImplementPlan = useCallback(() => {
+		if (!isCurrentStoredPlan || messageActionsDisabled || !currentTaskId || !storedDesignHandoff) return
+		vscode.postMessage({
+			type: "implementPlan",
+			taskId: currentTaskId,
+			planDigest: storedDesignHandoff.digest,
+		})
+	}, [currentTaskId, isCurrentStoredPlan, messageActionsDisabled, storedDesignHandoff])
 
 	// Handle message events for image selection during edit mode
 	useEffect(() => {
@@ -1532,6 +1555,7 @@ const ChatRowContentInner = ({
 							<Markdown
 								markdown={message.text}
 								partial={message.partial}
+								onImplementPlan={isCurrentStoredPlan ? handleImplementPlan : undefined}
 								onRestart={handleRestartClick}
 								restartDisabled={messageActionsDisabled}
 								actions={<OpenMarkdownPreviewButton markdown={message.text} />}

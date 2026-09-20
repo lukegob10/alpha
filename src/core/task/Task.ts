@@ -3,6 +3,9 @@ import {
 	restoreTaskMode,
 	taskWorkContextSchema,
 	taskWorkPlanSchema,
+	taskDesignHandoffSchema,
+	MAX_DESIGN_HANDOFF_CHARS,
+	type TaskDesignHandoff,
 	type TaskWorkContext,
 	type TaskWorkPlan,
 	type AcceptanceReceipt,
@@ -138,7 +141,13 @@ import { AlphaAskResponse } from "../../shared/WebviewMessage"
 import { defaultModeSlug, getModeBySlug, getModeSelection, planModeSlug } from "../../shared/modes"
 import { DiffStrategy, type ToolUse, type ToolParamName, toolParamNames } from "../../shared/tools"
 import { getModelMaxOutputTokens, getModelReservedOutputTokens } from "../../shared/api"
-import { ensureProposedPlanBlock } from "../../shared/plan-mode"
+import {
+	ensureProposedPlanBlock,
+	parseProposedPlan,
+	PROPOSED_PLAN_OPEN_TAG,
+	PROPOSED_PLAN_CLOSE_TAG,
+} from "../../shared/plan-mode"
+import { createDesignHandoff } from "../task-persistence/designHandoff"
 
 // services
 import { McpHub } from "../../services/mcp/McpHub"
@@ -162,6 +171,11 @@ import { getTaskDirectoryPath } from "../../utils/storage"
 import { formatResponse } from "../prompts/responses"
 import { SYSTEM_PROMPT, getPromptComponent } from "../prompts/system"
 import { addCustomInstructions, loadApplicableAgentInstructionSources } from "../prompts/sections"
+import {
+	getDesignHandoffPrompt,
+	getDesignHandoffSource,
+	MAX_DESIGN_HANDOFF_PROMPT_CHARS,
+} from "../prompts/sections/design-handoff"
 import { buildNativeToolsArrayWithRestrictions, createModelToolIdentity } from "./build-tools"
 import { TaskToolCatalogCache } from "./TaskToolCatalogCache"
 
@@ -583,6 +597,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	todoList?: TodoItem[]
 	workContext?: TaskWorkContext
+	designHandoff?: TaskDesignHandoff
 
 	readonly rootTask: Task | undefined
 	readonly parentTask: Task | undefined = undefined
@@ -1410,6 +1425,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.subagentContextManifest = structuredClone(contextManifest)
 		const restoredWork = taskWorkContextSchema.safeParse(historyItem?.workContext)
 		if (restoredWork.success) this.workContext = restoreWorkContext(restoredWork.data)
+		const restoredDesign = taskDesignHandoffSchema.safeParse(historyItem?.designHandoff)
+		if (this.taskKind === "primary" && restoredDesign.success && restoredDesign.data.sourceTaskId === this.taskId) {
+			this.designHandoff = structuredClone(restoredDesign.data)
+		}
 		this.subagentInstructionPlacement = historyItem?.subagentInstructionPlacement ?? subagentInstructionPlacement
 		this.subagentDelegationPolicy = historyItem?.subagentDelegationPolicy ?? subagentDelegationPolicy
 		this.subagentDelegationExplicitlyEnabled =
@@ -3594,6 +3613,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		surface: TaskToolSurface | undefined,
 		retainedStep?: CurrentAgentStep,
 		capturedProvider?: CapturedTaskProvider,
+		designHandoffOverride?: TaskDesignHandoff | null,
 	): CurrentAgentStep {
 		if (!surface) {
 			throw new Error("A unified tool surface is required to capture an agent step.")
@@ -3636,6 +3656,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// FakeAI is an in-process executable, not serializable provider configuration.
 		// Retain it through the runtime handler without copying callbacks into diagnostics.
 		const { fakeAi: _fakeAi, ...diagnosticProviderOptions } = apiConfiguration ?? {}
+		const designHandoffSource =
+			this.taskKind === "primary" && mode === defaultModeSlug
+				? getDesignHandoffSource(
+						designHandoffOverride === null ? undefined : (designHandoffOverride ?? this.designHandoff),
+						this.taskId,
+					)
+				: undefined
 		const snapshot = this.agentStepContextBuilder.build(
 			{
 				kind: "agent",
@@ -3659,7 +3686,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				},
 				instructions: {
 					systemPrompt,
-					sources: [],
+					sources: designHandoffSource ? [designHandoffSource] : [],
 				},
 				environment: { roots: [this.cwd], capabilities: [] },
 				transcript: {
@@ -3887,6 +3914,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async enqueueAlphaMessagesSave(
 		createSnapshot: () => AlphaMessage[] = () => structuredClone(this.clineMessages),
 		onPersisted?: () => void,
+		designHandoff?: TaskDesignHandoff,
 	): Promise<boolean> {
 		const save = this.alphaMessagesSaveQueue.then(async () => {
 			try {
@@ -3914,6 +3942,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					mode: this._taskMode || defaultModeSlug, // Use the task's own mode, not the current provider mode.
 					apiConfigName: this._taskApiConfigName, // Use the task's own provider profile, not the current provider profile.
 					workContext: this.workContext,
+					designHandoff: designHandoff ?? this.designHandoff,
 					initialStatus: this.initialStatus,
 					taskKind: this.taskKind,
 					subagentGroupId: this.subagentGroupId,
@@ -3964,6 +3993,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		timestamp: number,
 		context: string,
 		mutate: (message: AlphaMessage | undefined) => AlphaMessage | undefined,
+		designHandoff?: TaskDesignHandoff,
 	): Promise<{ message: AlphaMessage; created: boolean } | undefined> {
 		for (const retryDelayMs of [0, 50, 200]) {
 			if (retryDelayMs > 0) await delay(retryDelayMs)
@@ -3984,11 +4014,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				},
 				() => {
 					if (!stagedMessage) return
+					if (designHandoff) this.designHandoff = structuredClone(designHandoff)
 					const liveIndex = this.clineMessages.findIndex((message) => message.ts === timestamp)
 					committedMessage = structuredClone(stagedMessage)
 					if (liveIndex >= 0) this.clineMessages[liveIndex] = committedMessage
 					else this.clineMessages.push(committedMessage)
 				},
+				designHandoff,
 			)
 
 			if (saved) {
@@ -6689,8 +6721,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 */
 	public async presentCompletionResult(text: string, images?: string[], partial: boolean = false): Promise<void> {
 		const mode = await this.getTaskMode()
+		const planOpenIndex = text.indexOf(PROPOSED_PLAN_OPEN_TAG)
+		const hasUnclosedPlan =
+			planOpenIndex >= 0 &&
+			text.indexOf(PROPOSED_PLAN_CLOSE_TAG, planOpenIndex + PROPOSED_PLAN_OPEN_TAG.length) < 0
 		const normalizedText =
-			this.taskKind === "primary" && mode === planModeSlug && !partial ? ensureProposedPlanBlock(text) : text
+			this.taskKind === "primary" && mode === planModeSlug && !partial && !hasUnclosedPlan
+				? ensureProposedPlanBlock(text)
+				: text
 		const completionText = redactTaskPrivatePaths(this, normalizedText)
 		// Stream an in-progress completion as ordinary assistant text. Terminal
 		// styling is reserved for the durable final boundary below.
@@ -6698,6 +6736,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await this.say("text", completionText, images, true)
 			return
 		}
+		const canStoreDesign = this.taskKind === "primary" && mode === planModeSlug && !hasUnclosedPlan
+		const designHandoff = canStoreDesign ? createDesignHandoff(completionText, this.taskId) : undefined
+		const oversizedDesign =
+			canStoreDesign && (parseProposedPlan(completionText)?.content.length ?? 0) > MAX_DESIGN_HANDOFF_CHARS
 
 		const currentMessage = this.currentAssistantResponseMessageTs
 			? this.findMessageByTimestamp(this.currentAssistantResponseMessageTs)
@@ -6706,19 +6748,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			currentMessage?.type === "say" &&
 			(currentMessage.say === "text" || currentMessage.say === "completion_result")
 		const completionTs = canPromoteCurrent ? currentMessage.ts : Date.now()
-		const committed = await this.commitAlphaMessageMutation(completionTs, "the completion result", (message) => ({
-			...(message?.type === "say" ? message : { ts: completionTs, type: "say" as const }),
-			say: "completion_result",
-			text: completionText,
-			images,
-			partial: false,
-		}))
+		const committed = await this.commitAlphaMessageMutation(
+			completionTs,
+			"the completion result",
+			(message) => ({
+				...(message?.type === "say" ? message : { ts: completionTs, type: "say" as const }),
+				say: "completion_result",
+				text: completionText,
+				images,
+				partial: false,
+			}),
+			designHandoff,
+		)
 		if (!committed) throw new Error("Unable to stage the completion result.")
 
 		this.lastMessageTs = committed.message.ts
 		this.currentAssistantResponseMessageTs = committed.message.ts
 		if (committed.created) await this.publishAlphaMessageCreated(committed.message)
 		else await this.updateAlphaMessage(committed.message)
+		if (oversizedDesign) await this.say("error", t("common:planHandoff.tooLarge"))
 	}
 
 	/** Remove terminal styling when a final verification gate rejects a candidate. */
@@ -10245,6 +10293,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async getSystemPrompt(
 		stateOverride?: TaskRequestState,
 		capturedProvider?: CapturedTaskProvider,
+		designHandoffOverride?: TaskDesignHandoff | null,
+		modeOverride?: string,
 	): Promise<string> {
 		const apiHandler = capturedProvider?.apiHandler ?? this.api
 		const apiConfiguration = capturedProvider?.apiConfiguration ?? this.apiConfiguration
@@ -10269,7 +10319,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		const { customModes, customModePrompts, customInstructions, experiments, language, enableSubfolderRules } =
 			state ?? {}
-		const mode = await this.getTaskMode()
+		const mode = modeOverride ?? (await this.getTaskMode())
 		const subagentAncestry = this.subagentContextManifest?.orchestration?.ancestry
 		const effectiveSubagentDelegationPolicy = resolveSubagentDelegationPolicy({
 			settingsPolicy: state?.subagentDelegationPolicy,
@@ -10336,7 +10386,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			)
 		})()
 
-		return redactTaskPrivatePaths(this, systemPrompt)
+		const modelContextWindow = apiHandler.getModel().info.contextWindow
+		const designHandoff = designHandoffOverride === null ? undefined : (designHandoffOverride ?? this.designHandoff)
+		const handoffPrompt =
+			this.taskKind === "primary" && mode === defaultModeSlug
+				? getDesignHandoffPrompt(designHandoff, {
+						taskId: this.taskId,
+						maxChars: Math.min(
+							MAX_DESIGN_HANDOFF_PROMPT_CHARS,
+							Math.max(4_096, Math.floor((modelContextWindow ?? 0) * 0.5)),
+						),
+					})
+				: undefined
+		return redactTaskPrivatePaths(this, handoffPrompt ? `${systemPrompt}\n\n${handoffPrompt.text}` : systemPrompt)
 	}
 
 	private async getCurrentProfileId(state: any): Promise<string> {
@@ -10807,6 +10869,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		} = state ?? {}
 		const mode = retainedStep?.snapshot.context.mode.slug ?? (await waitForBoundedPreflight(this.getTaskMode()))
 		assertPreflightWithinBudget()
+		const capturedDesignHandoff =
+			this.taskKind === "primary" && mode === defaultModeSlug ? structuredClone(this.designHandoff) : undefined
 		const apiConfiguration = this.apiConfiguration
 		// Preflight can await compaction or approval while the selected profile changes.
 		// Dispatch and capture the same handler whose capabilities and budget we measured.
@@ -10831,7 +10895,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const systemPrompt =
 			retainedRequest?.systemPrompt ??
 			(await waitForBoundedPreflight(
-				this.getSystemPrompt(state, { apiHandler: requestHandler, apiConfiguration }),
+				this.getSystemPrompt(
+					state,
+					{ apiHandler: requestHandler, apiConfiguration },
+					capturedDesignHandoff ?? null,
+					mode,
+				),
 			))
 		assertPreflightWithinBudget()
 		const { contextTokens } = this.getTokenUsage()
@@ -11302,6 +11371,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			taskToolSurface,
 			retainedStep,
 			{ apiHandler: requestHandler, apiConfiguration },
+			capturedDesignHandoff ?? null,
 		)
 		const request = retainedRequest ?? step.getRequest()
 		const requestMetadata: ApiHandlerCreateMessageMetadata = { ...request.metadata, ...attemptMetadata }

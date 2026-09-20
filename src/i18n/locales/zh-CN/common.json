@@ -160,6 +160,11 @@
 		"missing_task_files": "此任务的文件丢失。您想从任务列表中删除它吗？",
 		"auto_import_failed": "自动导入 Alpha 设置失败：{{error}}"
 	},
+	"planHandoff": {
+		"tooLarge": "提议的计划过大，无法保存（最多 100,000 个字符）。已保留之前的计划。",
+		"implementInstruction": "实施当前提出的计划。",
+		"implementFailed": "无法开始实施计划。请检查当前任务和计划，然后重试。"
+	},
 	"info": {
 		"no_changes": "未找到更改。",
 		"clipboard_copy": "系统消息已成功复制到剪贴板",

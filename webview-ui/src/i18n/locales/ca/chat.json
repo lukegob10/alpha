@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "Copia",
 		"copied": "Copiat",
+		"implementPlan": "Implementar el pla",
 		"edit": "Edita i torna a enviar",
 		"restart": "Reinicia des de la petició anterior",
 		"restartWarning": "Es tornarà a executar la petició anterior i se substituiran tots els missatges posteriors. Els fitxers de l’espai de treball es mantindran com estan.",

@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "Salin",
 		"copied": "Disalin",
+		"implementPlan": "Terapkan rencana",
 		"edit": "Edit dan kirim ulang",
 		"restart": "Mulai ulang dari permintaan sebelumnya",
 		"restartWarning": "Permintaan sebelumnya akan dijalankan ulang dan semua pesan setelahnya akan diganti. File workspace akan tetap seperti sekarang.",

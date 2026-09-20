@@ -1,4 +1,6 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react"
+import React, { useCallback, useContext, useEffect, useRef, useState } from "react"
+
+import { ExtensionStateContext } from "./ExtensionStateContextStore"
 
 import {
 	type ProviderSettings,
@@ -144,7 +146,7 @@ export interface ExtensionStateContextType extends ExtensionState {
 	skills?: SkillMetadata[]
 }
 
-export const ExtensionStateContext = createContext<ExtensionStateContextType | undefined>(undefined)
+export { ExtensionStateContext }
 
 export const mergeExtensionState = (prevState: ExtensionState, newState: Partial<ExtensionState>) => {
 	const { customModePrompts: prevCustomModePrompts, experiments: prevExperiments, ...prevRest } = prevState

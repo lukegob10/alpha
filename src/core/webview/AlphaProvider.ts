@@ -257,6 +257,18 @@ const getTaskModeForSwitch = async (task: Task): Promise<string | undefined> => 
 	return taskWithLegacyModeShape._taskMode ?? taskWithLegacyModeShape.taskMode
 }
 
+// Completion and reload prompts wait for the next user instruction, not tool
+// authorization. Changing mode here leaves the prompt and transcript intact.
+const isTaskAwaitingContinuation = (task: Task): boolean => {
+	if (!task.hasPendingAsk?.()) return false
+	const ask = task.taskAsk ?? task.clineMessages.at(-1)
+	return (
+		ask?.type === "ask" &&
+		ask.partial !== true &&
+		(ask.ask === "completion_result" || ask.ask === "resume_completed_task" || ask.ask === "resume_task")
+	)
+}
+
 interface WaitForAgentOptions {
 	target?: string
 	untilTerminal?: boolean
@@ -1560,6 +1572,7 @@ export class AlphaProvider
 			"terminalOperation",
 			"cancelAutoApproval",
 			"resumeCompletedTask",
+			"implementPlan",
 		])
 		const immediateControlTypes = new Set<WebviewMessage["type"]>([
 			"cancelTask",
@@ -1622,6 +1635,82 @@ export class AlphaProvider
 		)
 		this.modeSwitchQueue = operation.catch(() => undefined)
 		return operation
+	}
+
+	/**
+	 * Continue a visible primary Plan task in Code from the explicit Implement plan
+	 * control. The digest and task identity make stale cards unable to switch a
+	 * different task or an already-replaced handoff.
+	 */
+	public handleImplementPlan(taskId: string, planDigest: string): Promise<void> {
+		const operation = (this.modeSwitchQueue ?? Promise.resolve()).then(() =>
+			this.handleImplementPlanForTask(taskId, planDigest),
+		)
+		this.modeSwitchQueue = operation.catch(() => undefined)
+		return operation
+	}
+
+	private async handleImplementPlanForTask(taskId: string, planDigest: string): Promise<void> {
+		const task = this.getLiveTask(taskId)
+		if (
+			!task ||
+			task.taskKind !== "primary" ||
+			!this.isTaskOnScreen(taskId) ||
+			this.getCurrentTask()?.taskId !== taskId
+		) {
+			throw new Error("Implement plan is only available for the visible primary task.")
+		}
+
+		const handoff = task.designHandoff
+		if (!handoff || handoff.sourceTaskId !== taskId || handoff.digest !== planDigest) {
+			throw new Error("The proposed plan is no longer current. Review the latest Plan result and try again.")
+		}
+
+		const currentMode = await getTaskModeForSwitch(task)
+		if (currentMode !== planModeSlug) {
+			throw new Error("Implement plan is only available while this task is in Plan mode.")
+		}
+
+		const checkContinuation = () => {
+			if (this.getCurrentTask() !== task || task.designHandoff?.digest !== planDigest) {
+				throw new Error("The proposed plan is no longer current. Review the latest Plan result and try again.")
+			}
+			const hasPendingAsk = task.hasPendingAsk?.() === true
+			const canAnswerReview = isTaskAwaitingContinuation(task)
+			if (
+				task.abort ||
+				task.abandoned ||
+				task.isStreaming ||
+				task.isWaitingForFirstChunk ||
+				task.hasActiveCommandExecutions?.() ||
+				task.hasPendingSteerMessage?.() ||
+				((hasPendingAsk || task.isTurnActive?.() === true) && !canAnswerReview)
+			) {
+				throw new Error("Wait for the Plan result to finish before implementing it.")
+			}
+			return canAnswerReview
+		}
+
+		checkContinuation()
+		await this.handleModeSwitchForTask("code", task)
+		// Recheck after mode persistence: cancellation or completion may have settled
+		// during the await. A user instruction resumes the existing loop without
+		// approving any tool call or creating a replacement task.
+		const instruction = t("common:planHandoff.implementInstruction")
+		if (checkContinuation()) {
+			task.handleWebviewAskResponse("messageResponse", instruction)
+		} else {
+			try {
+				await task.resumeCompletedTaskFollowup(instruction)
+			} catch (error) {
+				// Failed admission leaves the completed task unchanged. Restore Plan
+				// so its action remains retryable, unless another turn has taken over.
+				if (this.getCurrentTask() === task && !task.isTurnActive() && !task.hasPendingAsk() && !task.abort) {
+					await this.handleModeSwitchForTask(planModeSlug, task)
+				}
+				throw error
+			}
+		}
 	}
 
 	private async handleModeSwitchForTask(newMode: Mode, task: Task | undefined): Promise<void> {
@@ -1808,7 +1897,7 @@ export class AlphaProvider
 		if (task.hasActiveCommandExecutions?.()) {
 			throw new Error("Cannot enter Plan mode while a command is still active. Stop or wait for it, then retry.")
 		}
-		if (task.hasPendingAsk?.()) {
+		if (task.hasPendingAsk?.() && !isTaskAwaitingContinuation(task)) {
 			throw new Error("Cannot enter Plan mode while an approval or other task prompt is unresolved.")
 		}
 

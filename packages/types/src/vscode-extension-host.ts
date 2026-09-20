@@ -833,6 +833,7 @@ interface WebviewMessageBase {
 		| "downloadErrorDiagnostics"
 		| "refreshCustomTools"
 		| "requestModes"
+		| "implementPlan"
 		| "switchMode"
 		| "debugSetting"
 		// Worktree messages
@@ -864,6 +865,8 @@ interface WebviewMessageBase {
 		| "requestScheduledTaskSkills"
 	text?: string
 	taskId?: string
+	/** Digest of the current host-owned design handoff for Implement plan. */
+	planDigest?: string
 	groupId?: string
 	ticketTarget?: TicketTarget
 	subagentTaskId?: string

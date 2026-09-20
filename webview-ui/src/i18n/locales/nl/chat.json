@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "Kopiëren",
 		"copied": "Gekopieerd",
+		"implementPlan": "Plan implementeren",
 		"edit": "Bewerken en opnieuw verzenden",
 		"restart": "Opnieuw starten vanaf de vorige opdracht",
 		"restartWarning": "De vorige opdracht wordt opnieuw uitgevoerd en alle volgende berichten worden vervangen. De bestanden in de werkruimte blijven zoals ze zijn.",

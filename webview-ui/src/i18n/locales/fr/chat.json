@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "Copier",
 		"copied": "Copié",
+		"implementPlan": "Implémenter le plan",
 		"edit": "Modifier et renvoyer",
 		"restart": "Repartir de la demande précédente",
 		"restartWarning": "La demande précédente sera relancée et tous les messages suivants seront remplacés. Les fichiers de l’espace de travail resteront en l’état.",

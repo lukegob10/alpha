@@ -155,6 +155,11 @@
 		"missing_task_files": "Les fichiers de cette tâche sont introuvables. Souhaitez-vous la supprimer de la liste des tâches ?",
 		"auto_import_failed": "Échec de l'importation automatique des paramètres Alpha : {{error}}"
 	},
+	"planHandoff": {
+		"tooLarge": "Le plan proposé est trop volumineux pour être enregistré (100 000 caractères maximum). Le plan précédent a été conservé.",
+		"implementInstruction": "Mets en œuvre le plan proposé actuel.",
+		"implementFailed": "Impossible de démarrer la mise en œuvre du plan. Vérifiez la tâche et le plan actuels, puis réessayez."
+	},
 	"info": {
 		"no_changes": "Aucun changement trouvé.",
 		"clipboard_copy": "Prompt système copié dans le presse-papiers",

@@ -155,6 +155,11 @@
 		"missing_task_files": "Bu görevin dosyaları eksik. Görev listesinden kaldırmak istiyor musunuz?",
 		"auto_import_failed": "Alpha ayarları otomatik olarak içe aktarılamadı: {{error}}"
 	},
+	"planHandoff": {
+		"tooLarge": "Önerilen plan kaydedilemeyecek kadar büyük (en fazla 100.000 karakter). Önceki plan korundu.",
+		"implementInstruction": "Mevcut önerilen planı uygula.",
+		"implementFailed": "Plan uygulaması başlatılamadı. Mevcut görevi ve planı gözden geçirip tekrar deneyin."
+	},
 	"info": {
 		"no_changes": "Değişiklik bulunamadı.",
 		"clipboard_copy": "Sistem istemi panoya başarıyla kopyalandı",

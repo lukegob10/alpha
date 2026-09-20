@@ -155,6 +155,11 @@
 		"missing_task_files": "Pliki tego zadania są brakujące. Czy chcesz usunąć je z listy zadań?",
 		"auto_import_failed": "Nie udało się automatycznie zaimportować ustawień Alpha: {{error}}"
 	},
+	"planHandoff": {
+		"tooLarge": "Zaproponowany plan jest zbyt duży, aby go zapisać (maksymalnie 100 000 znaków). Zachowano poprzedni plan.",
+		"implementInstruction": "Zrealizuj bieżący proponowany plan.",
+		"implementFailed": "Nie udało się rozpocząć realizacji planu. Sprawdź bieżące zadanie i plan, a następnie spróbuj ponownie."
+	},
 	"info": {
 		"no_changes": "Nie znaleziono zmian.",
 		"clipboard_copy": "Komunikat systemowy został pomyślnie skopiowany do schowka",

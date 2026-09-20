@@ -155,6 +155,11 @@
 		"missing_task_files": "Các tệp của nhiệm vụ này bị thiếu. Bạn có muốn xóa nó khỏi danh sách nhiệm vụ không?",
 		"auto_import_failed": "Không thể tự động nhập cài đặt Alpha: {{error}}"
 	},
+	"planHandoff": {
+		"tooLarge": "Kế hoạch được đề xuất quá lớn để lưu (tối đa 100.000 ký tự). Kế hoạch trước đó đã được giữ lại.",
+		"implementInstruction": "Triển khai kế hoạch được đề xuất hiện tại.",
+		"implementFailed": "Không thể bắt đầu triển khai kế hoạch. Hãy xem lại tác vụ và kế hoạch hiện tại rồi thử lại."
+	},
 	"info": {
 		"no_changes": "Không tìm thấy thay đổi nào.",
 		"clipboard_copy": "Lời nhắc hệ thống đã được sao chép thành công vào clipboard",

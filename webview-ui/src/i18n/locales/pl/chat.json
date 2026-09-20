@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "Kopiuj",
 		"copied": "Skopiowano",
+		"implementPlan": "Wdróż plan",
 		"edit": "Edytuj i wyślij ponownie",
 		"restart": "Zacznij ponownie od poprzedniego polecenia",
 		"restartWarning": "Poprzednie polecenie zostanie wykonane ponownie, a wszystkie późniejsze wiadomości zostaną zastąpione. Pliki obszaru roboczego pozostaną bez zmian.",

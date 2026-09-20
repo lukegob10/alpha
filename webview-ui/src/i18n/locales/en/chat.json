@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "Copy",
 		"copied": "Copied",
+		"implementPlan": "Implement plan",
 		"edit": "Edit and resend",
 		"restart": "Restart from previous prompt",
 		"restartWarning": "This will rerun the preceding prompt and replace all messages after it. Workspace files will stay as they are.",

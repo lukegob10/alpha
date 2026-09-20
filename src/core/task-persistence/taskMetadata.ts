@@ -5,6 +5,7 @@ import type {
 	AlphaMessage,
 	HistoryItem,
 	TaskWorkContext,
+	TaskDesignHandoff,
 	SubagentChangeSetState,
 	SubagentContextManifest,
 	SubagentDelegationPolicy,
@@ -34,6 +35,7 @@ export type TaskMetadataOptions = {
 	/** Provider profile name for the task (sticky profile feature) */
 	apiConfigName?: string
 	workContext?: TaskWorkContext
+	designHandoff?: TaskDesignHandoff
 	/** Initial status for the task (e.g., "active" for child tasks) */
 	initialStatus?:
 		| "active"
@@ -69,6 +71,7 @@ export async function taskMetadata({
 	mode,
 	apiConfigName,
 	workContext,
+	designHandoff,
 	initialStatus,
 	taskKind,
 	subagentGroupId,
@@ -154,6 +157,7 @@ export async function taskMetadata({
 		size: taskDirSize,
 		workspace,
 		...(workContext && { workContext: structuredClone(workContext) }),
+		...(designHandoff && { designHandoff: structuredClone(designHandoff) }),
 		mode,
 		...(typeof apiConfigName === "string" && apiConfigName.length > 0 ? { apiConfigName } : {}),
 		...(initialStatus && { status: initialStatus }),

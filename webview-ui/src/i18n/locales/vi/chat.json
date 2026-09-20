@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "Sao chép",
 		"copied": "Đã sao chép",
+		"implementPlan": "Triển khai kế hoạch",
 		"edit": "Chỉnh sửa và gửi lại",
 		"restart": "Bắt đầu lại từ yêu cầu trước",
 		"restartWarning": "Yêu cầu trước sẽ được chạy lại và tất cả tin nhắn sau đó sẽ được thay thế. Các tệp trong không gian làm việc sẽ giữ nguyên.",

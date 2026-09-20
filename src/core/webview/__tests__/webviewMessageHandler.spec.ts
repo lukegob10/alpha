@@ -49,6 +49,8 @@ const mockAlphaProvider = {
 		storeSecret: vi.fn(),
 	},
 	log: vi.fn(),
+	handleImplementPlan: vi.fn(),
+	handleModeSwitch: vi.fn(),
 	postStateToWebview: vi.fn(),
 	getCurrentTask: vi.fn(),
 	getLiveTask: vi.fn(),
@@ -157,6 +159,39 @@ import { resolveImageMentions } from "../../mentions/resolveImageMentions"
 
 beforeEach(() => {
 	vi.mocked(mockAlphaProvider.canAcceptTaskInput).mockReturnValue(true)
+})
+
+describe("webviewMessageHandler - implement plan", () => {
+	it("restores authoritative state when an optimistic mode switch fails", async () => {
+		vi.mocked(mockAlphaProvider.postStateToWebview).mockClear()
+		vi.mocked(mockAlphaProvider.handleModeSwitch).mockRejectedValueOnce(new Error("unresolved approval"))
+		await expect(webviewMessageHandler(mockAlphaProvider, { type: "mode", text: "architect" })).rejects.toThrow(
+			"unresolved approval",
+		)
+		expect(mockAlphaProvider.postStateToWebview).toHaveBeenCalledExactlyOnceWith()
+	})
+	it("routes the task and plan identity to the host", async () => {
+		vi.mocked(mockAlphaProvider.handleImplementPlan).mockResolvedValue(undefined)
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "implementPlan",
+			taskId: "plan-task",
+			planDigest: "digest",
+		})
+		expect(mockAlphaProvider.handleImplementPlan).toHaveBeenCalledWith("plan-task", "digest")
+	})
+
+	it("shows a localized error when implementation cannot start", async () => {
+		vi.mocked(mockAlphaProvider.postStateToWebview).mockClear()
+		vi.mocked(mockAlphaProvider.handleImplementPlan).mockRejectedValueOnce(new Error("stale plan"))
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "implementPlan",
+			taskId: "plan-task",
+			planDigest: "digest",
+		})
+		expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(t("common:planHandoff.implementFailed"))
+		expect(mockAlphaProvider.log).toHaveBeenCalledWith("[implementPlan] stale plan")
+		expect(mockAlphaProvider.postStateToWebview).toHaveBeenCalledExactlyOnceWith()
+	})
 })
 
 describe("webviewMessageHandler - pending TODO approval routing", () => {

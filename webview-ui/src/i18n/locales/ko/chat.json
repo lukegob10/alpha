@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "복사",
 		"copied": "복사됨",
+		"implementPlan": "계획 구현",
 		"edit": "수정 후 다시 보내기",
 		"restart": "이전 요청부터 다시 시작",
 		"restartWarning": "이전 요청을 다시 실행하고 이후의 모든 메시지를 대체합니다. 워크스페이스 파일은 현재 상태로 유지됩니다.",

@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "Copia",
 		"copied": "Copiato",
+		"implementPlan": "Implementa il piano",
 		"edit": "Modifica e invia di nuovo",
 		"restart": "Riparti dalla richiesta precedente",
 		"restartWarning": "La richiesta precedente verrà eseguita di nuovo e tutti i messaggi successivi verranno sostituiti. I file dell’area di lavoro resteranno invariati.",

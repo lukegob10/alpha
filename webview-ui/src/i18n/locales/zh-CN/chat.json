@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "复制",
 		"copied": "已复制",
+		"implementPlan": "实施计划",
 		"edit": "编辑并重新发送",
 		"restart": "从上一条请求重新开始",
 		"restartWarning": "将重新执行上一条请求，并替换其后的所有消息。工作区文件将保持现状。",

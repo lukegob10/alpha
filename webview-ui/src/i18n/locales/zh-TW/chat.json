@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "複製",
 		"copied": "已複製",
+		"implementPlan": "實作計畫",
 		"edit": "編輯並重新傳送",
 		"restart": "從上一則請求重新開始",
 		"restartWarning": "將重新執行上一則請求，並取代其後的所有訊息。工作區檔案將維持現狀。",
