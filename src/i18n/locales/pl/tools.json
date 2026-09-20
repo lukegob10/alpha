@@ -47,22 +47,5 @@
 	},
 	"applyPatch": {
 		"deleteCancelled": "Operacja usuwania została anulowana."
-	},
-	"imageOutput": {
-		"writeIncomplete": "Nie udało się dokończyć zapisu '{{path}}'; plik może być niekompletny. {{cause}}"
-	},
-	"generateImage": {
-		"openRouterApiKeyRequired": "Klucz API OpenRouter jest wymagany do generowania obrazów z modelami OpenRouter. Skonfiguruj go w eksperymentalnych ustawieniach generowania obrazów.",
-		"failedWithStatus": "Nie udało się wygenerować obrazu: {{status}} {{statusText}}",
-		"failedWithMessage": "Nie udało się wygenerować obrazu: {{message}}",
-		"noImageGenerated": "W odpowiedzi nie wygenerowano żadnego obrazu",
-		"invalidImageData": "Nieprawidłowe dane obrazu w odpowiedzi",
-		"invalidImageFormat": "Otrzymano nieprawidłowy format obrazu",
-		"unknownError": "Wystąpił nieznany błąd",
-		"cancelledBeforeSave": "Generowanie obrazu anulowano przed zapisaniem obrazu.",
-		"destinationUnavailableBeforeGeneration": "Miejsce docelowe obrazu było niedostępne przed generowaniem. Spróbuj ponownie.",
-		"destinationPolicyChangedBeforeSave": "Ścieżka lub zasady dostępu do miejsca docelowego obrazu zmieniły się przed zapisem. Spróbuj ponownie.",
-		"postSaveProcessingFailed": "{{path}}\nObraz zapisano, ale przetwarzanie po zapisie nie powiodło się: {{message}}",
-		"roo": {}
 	}
 }

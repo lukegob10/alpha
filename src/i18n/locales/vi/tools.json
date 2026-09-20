@@ -47,22 +47,5 @@
 	},
 	"applyPatch": {
 		"deleteCancelled": "Đã hủy thao tác xóa."
-	},
-	"imageOutput": {
-		"writeIncomplete": "Không thể hoàn tất việc ghi '{{path}}'; tệp có thể chưa hoàn chỉnh. {{cause}}"
-	},
-	"generateImage": {
-		"openRouterApiKeyRequired": "Yêu cầu khóa API OpenRouter để tạo hình ảnh với các mô hình OpenRouter. Vui lòng cấu hình trong cài đặt thử nghiệm Tạo hình ảnh.",
-		"failedWithStatus": "Tạo hình ảnh thất bại: {{status}} {{statusText}}",
-		"failedWithMessage": "Tạo hình ảnh thất bại: {{message}}",
-		"noImageGenerated": "Không có hình ảnh nào được tạo trong phản hồi",
-		"invalidImageData": "Dữ liệu hình ảnh không hợp lệ trong phản hồi",
-		"invalidImageFormat": "Nhận được định dạng hình ảnh không hợp lệ",
-		"unknownError": "Đã xảy ra lỗi không xác định",
-		"cancelledBeforeSave": "Đã hủy tạo hình ảnh trước khi lưu hình ảnh.",
-		"destinationUnavailableBeforeGeneration": "Không thể truy cập đích hình ảnh trước khi tạo. Hãy thử lại yêu cầu.",
-		"destinationPolicyChangedBeforeSave": "Đường dẫn hoặc chính sách truy cập của đích hình ảnh đã thay đổi trước khi lưu. Hãy thử lại yêu cầu.",
-		"postSaveProcessingFailed": "{{path}}\nĐã lưu hình ảnh nhưng xử lý sau khi lưu không thành công: {{message}}",
-		"roo": {}
 	}
 }

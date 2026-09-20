@@ -9,15 +9,15 @@ import { sendMessageTool } from "../SendMessageTool"
 import { waitAgentTool } from "../WaitAgentTool"
 
 const lifecycleNames = [
+	"spawn_agent",
 	"list_agents",
 	"wait_agent",
 	"send_message",
-	"report_progress",
 	"followup_task",
-	"interrupt_agent",
-	"cancel_agent",
 	"close_agent",
 ] as const
+
+const retiredLifecycleNames = ["delegate_task", "report_progress", "interrupt_agent", "cancel_agent"] as const
 
 function harness() {
 	const provider = {
@@ -60,16 +60,18 @@ describe("agent lifecycle tools", () => {
 		const definitions = getNativeTools().flatMap((tool) =>
 			tool.type === "function" && lifecycleNames.includes(tool.function.name as any) ? [tool.function] : [],
 		)
+		const advertisedNames = getNativeTools().flatMap((tool) =>
+			tool.type === "function" && retiredLifecycleNames.includes(tool.function.name as any)
+				? [tool.function.name]
+				: [],
+		)
 
 		expect(definitions.map((definition) => definition.name)).toEqual(lifecycleNames)
+		expect(advertisedNames).toEqual([])
 		for (const definition of definitions) {
 			expect(definition.strict).toBe(true)
 			expect(definition.parameters).toMatchObject({ type: "object", additionalProperties: false })
 		}
-		expect(definitions.find((definition) => definition.name === "report_progress")?.parameters).toMatchObject({
-			required: ["message"],
-			properties: { message: { type: "string", minLength: 1, maxLength: 2_000 } },
-		})
 		expect(definitions.find((definition) => definition.name === "wait_agent")?.parameters).toMatchObject({
 			required: ["timeout_ms", "target", "until_terminal"],
 			properties: {

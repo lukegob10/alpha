@@ -99,6 +99,12 @@ describe("isolated command reads", () => {
 
 	it.each([
 		"git reset --hard",
+		"gh pr list",
+		"gh pr create --fill",
+		"gh api repos/owner/repo/issues",
+		"gh api graphql -f query=mutation",
+		"gh alias set shortcut '!echo changed'",
+		"gh extension exec custom",
 		"git pull",
 		"git diff --output=out.txt",
 		"git -c alias.status=anything status",

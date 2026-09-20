@@ -8,12 +8,7 @@ for (const [format, entrypoint] of [
 	["CommonJS", commonJs],
 	["ES module", esModule],
 ]) {
-	for (const exportName of [
-		"AlphaCodeEventName",
-		"RooCodeEventName",
-		"poeDefaultModelId",
-		"getPoeDefaultModelInfo",
-	]) {
+	for (const exportName of ["AlphaCodeEventName", "RooCodeEventName", "providerNames", "vertexDefaultModelId"]) {
 		if (!(exportName in entrypoint)) {
 			throw new Error(`${format} @alpha-code/types entrypoint is missing ${exportName}`)
 		}

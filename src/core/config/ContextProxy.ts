@@ -6,13 +6,13 @@ import {
 	GLOBAL_SETTINGS_KEYS,
 	SECRET_STATE_KEYS,
 	GLOBAL_STATE_KEYS,
-	GLOBAL_SECRET_KEYS,
 	type ProviderSettings,
 	type GlobalSettings,
 	type SecretState,
 	type GlobalState,
 	type AlphaCodeSettings,
 	providerSettingsSchema,
+	persistedProviderSettingsSchema,
 	globalSettingsSchema,
 	isSecretStateKey,
 	isProviderName,
@@ -28,6 +28,7 @@ type SecretStateKey = keyof SecretState
 type AlphaCodeSettingsKey = keyof AlphaCodeSettings
 
 const PASS_THROUGH_STATE_KEYS = ["taskHistory"]
+const LEGACY_GITHUB_TOKEN_KEY = "githubToken"
 
 export const isPassThroughStateKey = (key: string) => PASS_THROUGH_STATE_KEYS.includes(key)
 
@@ -75,23 +76,16 @@ export class ContextProxy {
 					)
 				}
 			}),
-			...GLOBAL_SECRET_KEYS.map(async (key) => {
-				try {
-					this.secretCache[key] = await this.originalContext.secrets.get(key)
-				} catch (error) {
-					logger.error(
-						`Error loading global secret ${key}: ${error instanceof Error ? error.message : String(error)}`,
-					)
-				}
-			}),
 		]
 
 		await Promise.all(promises)
 
-		// Migration: Check for old nested image generation settings and migrate them
-		await this.migrateImageGenerationSettings()
+		// Remove the retired native GitHub API token from both VS Code storage
+		// locations. This is intentionally explicit so importing or restoring an
+		// old settings file cannot make the obsolete secret active again.
+		await this.migrateLegacyGitHubToken()
 
-		// Migration: Sanitize invalid/removed API providers
+		// Migration: inspect invalid/removed API providers without changing the saved value
 		await this.migrateInvalidApiProvider()
 
 		// Migration: Move legacy customCondensingPrompt to customSupportPrompts
@@ -101,6 +95,26 @@ export class ContextProxy {
 		await this.migrateOldDefaultCondensingPrompt()
 
 		this._isInitialized = true
+	}
+
+	private async migrateLegacyGitHubToken(): Promise<void> {
+		try {
+			const legacyGlobalState = this.originalContext.globalState.get<unknown>(LEGACY_GITHUB_TOKEN_KEY)
+			if (legacyGlobalState !== undefined) {
+				await this.originalContext.globalState.update(LEGACY_GITHUB_TOKEN_KEY, undefined)
+			}
+		} catch {
+			logger.error("[ContextProxy] Could not remove the retired GitHub token from global state")
+		}
+
+		try {
+			const legacySecret = await this.originalContext.secrets.get(LEGACY_GITHUB_TOKEN_KEY)
+			if (legacySecret !== undefined) {
+				await this.originalContext.secrets.delete(LEGACY_GITHUB_TOKEN_KEY)
+			}
+		} catch {
+			logger.error("[ContextProxy] Could not remove the retired GitHub token from secret storage")
+		}
 	}
 
 	/**
@@ -224,8 +238,8 @@ export class ContextProxy {
 	}
 
 	/**
-	 * Migrates unknown apiProvider values by clearing them from storage.
-	 * Retired providers are preserved so users can keep historical configuration.
+	 * Records unknown apiProvider values for diagnostics while preserving them
+	 * so the provider layer can surface an explicit unsupported-provider error.
 	 */
 	private async migrateInvalidApiProvider() {
 		try {
@@ -234,56 +248,11 @@ export class ContextProxy {
 				typeof apiProvider === "string" && (isProviderName(apiProvider) || isRetiredProvider(apiProvider))
 
 			if (apiProvider !== undefined && !isKnownProvider) {
-				logger.info(`[ContextProxy] Found invalid provider "${apiProvider}" in storage - clearing it`)
-				// Clear the invalid provider from both cache and storage
-				this.stateCache.apiProvider = undefined
-				await this.originalContext.globalState.update("apiProvider", undefined)
+				logger.warn(`[ContextProxy] Found unsupported provider "${apiProvider}" in storage; preserving it`)
 			}
 		} catch (error) {
 			logger.error(
 				`Error during invalid API provider migration: ${error instanceof Error ? error.message : String(error)}`,
-			)
-		}
-	}
-
-	/**
-	 * Migrates old nested openRouterImageGenerationSettings to the new flattened structure
-	 */
-	private async migrateImageGenerationSettings() {
-		try {
-			// Check if there's an old nested structure
-			const oldNestedSettings = this.originalContext.globalState.get<any>("openRouterImageGenerationSettings")
-
-			if (oldNestedSettings && typeof oldNestedSettings === "object") {
-				logger.info("Migrating old nested image generation settings to flattened structure")
-
-				// Migrate the API key if it exists and we don't already have one
-				if (oldNestedSettings.openRouterApiKey && !this.secretCache.openRouterImageApiKey) {
-					await this.originalContext.secrets.store(
-						"openRouterImageApiKey",
-						oldNestedSettings.openRouterApiKey,
-					)
-					this.secretCache.openRouterImageApiKey = oldNestedSettings.openRouterApiKey
-					logger.info("Migrated openRouterImageApiKey to secrets")
-				}
-
-				// Migrate the selected model if it exists and we don't already have one
-				if (oldNestedSettings.selectedModel && !this.stateCache.openRouterImageGenerationSelectedModel) {
-					await this.originalContext.globalState.update(
-						"openRouterImageGenerationSelectedModel",
-						oldNestedSettings.selectedModel,
-					)
-					this.stateCache.openRouterImageGenerationSelectedModel = oldNestedSettings.selectedModel
-					logger.info("Migrated openRouterImageGenerationSelectedModel to global state")
-				}
-
-				// Clean up the old nested structure
-				await this.originalContext.globalState.update("openRouterImageGenerationSettings", undefined)
-				logger.info("Removed old nested openRouterImageGenerationSettings")
-			}
-		} catch (error) {
-			logger.error(
-				`Error during image generation settings migration: ${error instanceof Error ? error.message : String(error)}`,
 			)
 		}
 	}
@@ -376,24 +345,12 @@ export class ContextProxy {
 					)
 				}
 			}),
-			...GLOBAL_SECRET_KEYS.map(async (key) => {
-				try {
-					this.secretCache[key] = await this.originalContext.secrets.get(key)
-				} catch (error) {
-					logger.error(
-						`Error refreshing global secret ${key}: ${error instanceof Error ? error.message : String(error)}`,
-					)
-				}
-			}),
 		]
 		await Promise.all(promises)
 	}
 
 	private getAllSecretState(): SecretState {
-		return Object.fromEntries([
-			...SECRET_STATE_KEYS.map((key) => [key, this.getSecret(key as SecretStateKey)]),
-			...GLOBAL_SECRET_KEYS.map((key) => [key, this.getSecret(key as SecretStateKey)]),
-		])
+		return Object.fromEntries([...SECRET_STATE_KEYS.map((key) => [key, this.getSecret(key as SecretStateKey)])])
 	}
 
 	/**
@@ -421,29 +378,27 @@ export class ContextProxy {
 	public getProviderSettings(): ProviderSettings {
 		const values = this.getValues()
 
-		// Sanitize invalid/removed apiProvider values before parsing
-		// This handles cases where a user had a provider selected that was later removed
-		// from the extension (e.g., "glama"). We sanitize here to avoid repeated
-		// schema validation errors that can cause infinite loops in telemetry.
-		const sanitizedValues = this.sanitizeProviderValues(values)
+		// Keep unsupported apiProvider values intact. The provider layer owns the
+		// explicit unsupported-provider error and needs the original identifier.
+		const preservedValues = this.sanitizeProviderValues(values)
+		const providerValue = preservedValues.apiProvider
+		const usePersistedSchema =
+			typeof providerValue === "string" && (!isProviderName(providerValue) || isRetiredProvider(providerValue))
+		const schema = usePersistedSchema ? persistedProviderSettingsSchema : providerSettingsSchema
 
 		try {
-			return providerSettingsSchema.parse(sanitizedValues)
+			return schema.parse(preservedValues) as ProviderSettings
 		} catch (error) {
 			if (error instanceof ZodError) {
 				TelemetryService.instance.captureSchemaValidationError({ schemaName: "ProviderSettings", error })
 			}
 
-			return PROVIDER_SETTINGS_KEYS.reduce(
-				(acc, key) => ({ ...acc, [key]: sanitizedValues[key] }),
-				{} as ProviderSettings,
-			)
+			return { ...preservedValues } as ProviderSettings
 		}
 	}
 
 	/**
-	 * Sanitizes provider values by resetting unknown apiProvider values.
-	 * Active and retired providers are preserved.
+	 * Removes retired CLI-only fields while preserving unknown apiProvider values.
 	 */
 	private sanitizeProviderValues(values: AlphaCodeSettings): AlphaCodeSettings {
 		// Remove legacy Claude Code CLI wrapper keys that may still exist in global state.
@@ -459,15 +414,12 @@ export class ContextProxy {
 			}
 		}
 
-		const isKnownProvider =
+		if (
 			typeof values.apiProvider === "string" &&
-			(isProviderName(values.apiProvider) || isRetiredProvider(values.apiProvider))
-
-		if (values.apiProvider !== undefined && !isKnownProvider) {
-			logger.info(`[ContextProxy] Sanitizing invalid provider "${values.apiProvider}" - resetting to undefined`)
-			// Return a new values object without the invalid apiProvider
-			const { apiProvider, ...restValues } = sanitizedValues
-			return restValues as AlphaCodeSettings
+			!isProviderName(values.apiProvider) &&
+			!isRetiredProvider(values.apiProvider)
+		) {
+			logger.warn(`[ContextProxy] Preserving unsupported provider "${values.apiProvider}" in settings cache`)
 		}
 		return sanitizedValues
 	}
@@ -501,6 +453,14 @@ export class ContextProxy {
 	 */
 
 	public async setValue<K extends AlphaCodeSettingsKey>(key: K, value: AlphaCodeSettings[K]) {
+		// Keep runtime callers that still send the removed key from recreating it
+		// in global state. TypeScript callers no longer see this key in
+		// AlphaCodeSettings, but imported or stale webview payloads are untrusted.
+		if ((key as string) === LEGACY_GITHUB_TOKEN_KEY) {
+			await this.migrateLegacyGitHubToken()
+			return
+		}
+
 		return isSecretStateKey(key)
 			? this.storeSecret(key as SecretStateKey, value as string)
 			: this.updateGlobalState(key as GlobalStateKey, value)
@@ -559,7 +519,6 @@ export class ContextProxy {
 		await Promise.all([
 			...GLOBAL_STATE_KEYS.map((key) => this.originalContext.globalState.update(key, undefined)),
 			...SECRET_STATE_KEYS.map((key) => this.originalContext.secrets.delete(key)),
-			...GLOBAL_SECRET_KEYS.map((key) => this.originalContext.secrets.delete(key)),
 		])
 
 		await this.initialize()

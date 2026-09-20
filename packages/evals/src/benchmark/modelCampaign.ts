@@ -14,7 +14,7 @@ import { sealCampaignExport } from "../experiments/campaign"
 import { canonicalJson, sha256 } from "../evidence/canonical"
 
 export type ModelCampaignPartition = Extract<BenchmarkPartition, "smoke" | "development" | "regression" | "holdout">
-export type ModelCampaignProvider = "openai-native" | "openrouter"
+export type ModelCampaignProvider = "openai"
 
 export async function runBenchmarkModelCampaign(options: {
 	publicRoot: string
@@ -32,8 +32,9 @@ export async function runBenchmarkModelCampaign(options: {
 	evidenceOutput?: string
 }): Promise<number> {
 	if (!options.modelId.trim()) throw new Error("A concrete provider model id is required")
-	const provider = options.provider ?? "openai-native"
-	const apiKeyVariable = provider === "openai-native" ? "OPENAI_API_KEY" : "OPENROUTER_API_KEY"
+	const provider = options.provider ?? "openai"
+	if (provider !== "openai") throw new Error(`Unsupported campaign provider: ${provider}`)
+	const apiKeyVariable = "OPENAI_API_KEY"
 	if (!process.env[apiKeyVariable]?.trim()) throw new Error(`${apiKeyVariable} is required for provider ${provider}`)
 	const catalog = await loadBenchmarkCatalog(options.publicRoot)
 	const selected = [...catalog.tasks.values()]
@@ -65,7 +66,8 @@ export async function runBenchmarkModelCampaign(options: {
 		...EVALS_SETTINGS,
 		apiProvider: provider,
 		reasoningEffort: "high",
-		...(provider === "openrouter" ? { openRouterModelId: options.modelId } : { apiModelId: options.modelId }),
+		openAiModelId: options.modelId,
+		openAiBaseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
 	}
 	const run = await createRun({
 		model: options.modelId,

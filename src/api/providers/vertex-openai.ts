@@ -12,6 +12,7 @@ import { OpenAiHandler } from "./openai"
 import { HelixTokenManager, type HelixParseMode } from "./utils/helix-token-manager"
 import { getApiRequestTimeout } from "./utils/timeout-config"
 import { configureVertexGatewayTransport } from "./utils/vertex-gateway-transport"
+import { applyModelToolPreferences } from "./utils/router-tool-preferences"
 
 type VertexGatewayRouteTarget = {
 	projectId?: string
@@ -37,6 +38,7 @@ type VertexOpenAiSettings = {
 export class VertexOpenAiHandler extends OpenAiHandler {
 	// Credential setup before the shared transport is not yet cancellable.
 	override readonly streamCapabilities = { cancellation: false } as const
+	private readonly selectedModelId: string
 	private readonly vertexSettings: VertexOpenAiSettings
 	private readonly helixTokenManager: HelixTokenManager
 	private transportSetupPromise?: Promise<void>
@@ -65,6 +67,7 @@ export class VertexOpenAiHandler extends OpenAiHandler {
 			openAiCustomModelInfo: modelInfo,
 			openAiStreamingEnabled: options.vertexStreamingEnabled ?? true,
 		})
+		this.selectedModelId = selectedModelId
 
 		this.vertexSettings = settings
 		this.helixTokenManager = HelixTokenManager.getOrCreate({
@@ -73,6 +76,16 @@ export class VertexOpenAiHandler extends OpenAiHandler {
 			helixTokenKey: settings.helixTokenKey,
 			refreshIntervalMinutes: settings.refreshIntervalMinutes,
 		})
+	}
+
+	override getModel() {
+		const model = super.getModel()
+		const toolIdentity = { provider: "vertex", family: this.selectedModelId, id: model.id }
+		return {
+			...model,
+			info: applyModelToolPreferences(toolIdentity, model.info),
+			toolIdentity,
+		}
 	}
 
 	override async *createMessage(

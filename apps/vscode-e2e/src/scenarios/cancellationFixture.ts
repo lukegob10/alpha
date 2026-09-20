@@ -154,7 +154,7 @@ export class CancellationStreamAI {
 			yield {
 				type: "tool_call",
 				id: `cancellation-process-${taskId}`,
-				name: "execute_command",
+				name: "shell",
 				arguments: JSON.stringify({ command: this.processCommand, timeout: 120 }),
 			}
 			yield { type: "usage", inputTokens: 10, outputTokens: 5, totalCost: 0 }

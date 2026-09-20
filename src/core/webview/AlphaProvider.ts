@@ -75,8 +75,6 @@ import {
 	type MarketplaceInstalledMetadata,
 	TaskLifecycleState,
 	AlphaCodeEventName,
-	requestyDefaultModelId,
-	openRouterDefaultModelId,
 	DEFAULT_WRITE_DELAY_MS,
 	DEFAULT_MAX_CONCURRENT_TASKS,
 	DEFAULT_SUBAGENT_DELEGATION_POLICY,
@@ -85,7 +83,7 @@ import {
 	DEFAULT_MODES,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	getModelId,
-	isRetiredProvider,
+	isProviderName,
 	createSubagentEffectiveLimits,
 	finalizedSubagentContextManifestSchema,
 	finalizeSubagentDelegationPolicy,
@@ -116,7 +114,6 @@ import { autoOpenHtmlDocument } from "./html-document"
 import { resolveDefaultSaveUri, saveLastExportPath } from "../../utils/export"
 import { getTheme } from "../../integrations/theme/getTheme"
 import WorkspaceTracker from "../../integrations/workspace/WorkspaceTracker"
-import { openAiCodexOAuthManager } from "../../integrations/openai-codex/oauth"
 
 import { McpHub } from "../../services/mcp/McpHub"
 import { McpServerManager } from "../../services/mcp/McpServerManager"
@@ -137,8 +134,8 @@ import { setPanel } from "../../activate/registerCommands"
 
 import { t } from "../../i18n"
 
+import { assertSupportedApiProvider } from "../../shared/api"
 import { buildApiHandler } from "../../api"
-import { forceFullModelDetailsLoad, hasLoadedFullDetails } from "../../api/providers/fetchers/lmstudio"
 
 import { ContextProxy } from "../config/ContextProxy"
 import { ProviderSettingsManager } from "../config/ProviderSettingsManager"
@@ -207,7 +204,6 @@ import {
 import { readTaskMessages } from "../task-persistence/taskMessages"
 import { getNonce } from "./getNonce"
 import { getUri } from "./getUri"
-import { REQUESTY_BASE_URL } from "../../shared/utils/requesty"
 import { validateAndFixToolResultIds } from "../task/validateToolResultIds"
 import { normalizeMaxLiveTasks, TaskSessionRegistry } from "./TaskSessionRegistry"
 import {
@@ -695,33 +691,12 @@ export class AlphaProvider
 			task.emit(AlphaCodeEventName.TaskFocused)
 		}
 
-		// Perform special setup provider specific tasks.
-		await this.performPreparationTasks(task)
-
 		// The task already owns its frozen mode. Reading the entire provider state
 		// here performs unrelated file I/O on every task launch.
 		const taskMode = (await getTaskModeForSwitch(task)) ?? this.contextProxy.getValue("mode") ?? defaultModeSlug
 
 		if (typeof taskMode !== "string") {
 			throw new Error(t("common:errors.retrieve_current_mode"))
-		}
-	}
-
-	async performPreparationTasks(alphaTask: Task) {
-		// LMStudio: We need to force model loading in order to read its context
-		// size; we do it now since we're starting a task with that model selected.
-		if (alphaTask.apiConfiguration && alphaTask.apiConfiguration.apiProvider === "lmstudio") {
-			try {
-				if (!hasLoadedFullDetails(alphaTask.apiConfiguration.lmStudioModelId!)) {
-					await forceFullModelDetailsLoad(
-						alphaTask.apiConfiguration.lmStudioBaseUrl ?? "http://localhost:1234",
-						alphaTask.apiConfiguration.lmStudioModelId!,
-					)
-				}
-			} catch (error) {
-				this.log(`Failed to load full model details for LM Studio: ${error}`)
-				vscode.window.showErrorMessage(error.message)
-			}
 		}
 	}
 
@@ -1201,10 +1176,6 @@ export class AlphaProvider
 		const isRehydratingCurrentTask = Boolean(existingTask)
 		const shouldFocus = !options?.background
 
-		if (!isRehydratingCurrentTask && !options?.preserveExisting) {
-			await this.removeTaskFromStack()
-		}
-
 		// If the history item has a saved mode, restore it and its associated API configuration.
 		if (historyItem.mode) {
 			// Retired/custom modes cannot silently gain Code permissions on restoration.
@@ -1291,6 +1262,12 @@ export class AlphaProvider
 		const apiConfiguration =
 			options?.subagentRuntime?.apiConfiguration ?? restoredApiConfiguration ?? currentApiConfiguration
 
+		assertSupportedApiProvider(apiConfiguration.apiProvider)
+
+		if (!isRehydratingCurrentTask && !options?.preserveExisting) {
+			await this.removeTaskFromStack()
+		}
+
 		let rehydrationStackIndex = -1
 		let rehydratedOldTask: Task | undefined
 		if (isRehydratingCurrentTask) {
@@ -1371,9 +1348,6 @@ export class AlphaProvider
 				this.taskSessions.clearFocus()
 			}
 
-			// Perform preparation tasks and set up event listeners
-			await this.performPreparationTasks(task)
-
 			this.log(
 				`[createTaskWithHistoryItem] rehydrated task ${task.taskId}.${task.instanceId} in-place (flicker-free)`,
 			)
@@ -1432,12 +1406,6 @@ export class AlphaProvider
 
 		const nonce = getNonce()
 
-		// Get the OpenRouter base URL from configuration
-		const { apiConfiguration } = await this.getState()
-		const openRouterBaseUrl = apiConfiguration.openRouterBaseUrl || "https://openrouter.ai"
-		// Extract the domain for CSP
-		const openRouterDomain = openRouterBaseUrl.match(/^(https?:\/\/[^\/]+)/)?.[1] || "https://openrouter.ai"
-
 		const stylesUri = getUri(webview, this.contextProxy.extensionUri, [
 			"webview-ui",
 			"build",
@@ -1474,7 +1442,7 @@ export class AlphaProvider
 			`img-src ${webview.cspSource} https://storage.googleapis.com https://img.clerk.com data:`,
 			`media-src ${webview.cspSource}`,
 			`script-src 'unsafe-eval' ${webview.cspSource} https://* https://*.posthog.com http://${localServerUrl} http://0.0.0.0:${localPort} 'nonce-${nonce}'`,
-			`connect-src ${webview.cspSource} ${openRouterDomain} https://* https://*.posthog.com ws://${localServerUrl} ws://0.0.0.0:${localPort} http://${localServerUrl} http://0.0.0.0:${localPort}`,
+			`connect-src ${webview.cspSource} https://* https://*.posthog.com ws://${localServerUrl} ws://0.0.0.0:${localPort} http://${localServerUrl} http://0.0.0.0:${localPort}`,
 		]
 
 		return /*html*/ `
@@ -1548,12 +1516,6 @@ export class AlphaProvider
 		*/
 		const nonce = getNonce()
 
-		// Get the OpenRouter base URL from configuration
-		const { apiConfiguration } = await this.getState()
-		const openRouterBaseUrl = apiConfiguration.openRouterBaseUrl || "https://openrouter.ai"
-		// Extract the domain for CSP
-		const openRouterDomain = openRouterBaseUrl.match(/^(https?:\/\/[^\/]+)/)?.[1] || "https://openrouter.ai"
-
 		// Tip: Install the es6-string-html VS Code extension to enable code highlighting below
 		return /*html*/ `
         <!DOCTYPE html>
@@ -1562,7 +1524,7 @@ export class AlphaProvider
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width,initial-scale=1,shrink-to-fit=no">
             <meta name="theme-color" content="#000000">
-            <meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} https://storage.googleapis.com data:; media-src ${webview.cspSource}; script-src ${webview.cspSource} 'wasm-unsafe-eval' 'nonce-${nonce}' 'strict-dynamic'; connect-src ${webview.cspSource} ${openRouterDomain} https://api.requesty.ai;">
+            <meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} https://storage.googleapis.com data:; media-src ${webview.cspSource}; script-src ${webview.cspSource} 'wasm-unsafe-eval' 'nonce-${nonce}' 'strict-dynamic'; connect-src ${webview.cspSource};">
             <link rel="stylesheet" type="text/css" href="${stylesUri}">
 			<link href="${codiconsUri}" rel="stylesheet" />
 			<script nonce="${nonce}">
@@ -2142,66 +2104,6 @@ export class AlphaProvider
 		const { getSettingsDirectoryPath } = await import("../../utils/storage")
 		const globalStoragePath = this.contextProxy.globalStorageUri.fsPath
 		return getSettingsDirectoryPath(globalStoragePath)
-	}
-
-	// OpenRouter
-
-	async handleOpenRouterCallback(code: string) {
-		let { apiConfiguration, currentApiConfigName = "default" } = await this.getState()
-
-		let apiKey: string
-
-		try {
-			const baseUrl = apiConfiguration.openRouterBaseUrl || "https://openrouter.ai/api/v1"
-			// Extract the base domain for the auth endpoint.
-			const baseUrlDomain = baseUrl.match(/^(https?:\/\/[^\/]+)/)?.[1] || "https://openrouter.ai"
-			const response = await axios.post(`${baseUrlDomain}/api/v1/auth/keys`, { code })
-
-			if (response.data && response.data.key) {
-				apiKey = response.data.key
-			} else {
-				throw new Error("Invalid response from OpenRouter API")
-			}
-		} catch (error) {
-			this.log(
-				`Error exchanging code for API key: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
-			)
-
-			throw error
-		}
-
-		const newConfiguration: ProviderSettings = {
-			...apiConfiguration,
-			apiProvider: "openrouter",
-			openRouterApiKey: apiKey,
-			openRouterModelId: apiConfiguration?.openRouterModelId || openRouterDefaultModelId,
-		}
-
-		await this.upsertProviderProfile(currentApiConfigName, newConfiguration)
-	}
-
-	// Requesty
-
-	async handleRequestyCallback(code: string, baseUrl: string | null) {
-		let { apiConfiguration } = await this.getState()
-
-		const newConfiguration: ProviderSettings = {
-			...apiConfiguration,
-			apiProvider: "requesty",
-			requestyApiKey: code,
-			requestyModelId: apiConfiguration?.requestyModelId || requestyDefaultModelId,
-		}
-
-		// set baseUrl as undefined if we don't provide one
-		// or if it is the default requesty url
-		if (!baseUrl || baseUrl === REQUESTY_BASE_URL) {
-			newConfiguration.requestyBaseUrl = undefined
-		} else {
-			newConfiguration.requestyBaseUrl = baseUrl
-		}
-
-		const profileName = `Requesty (${new Date().toLocaleString()})`
-		await this.upsertProviderProfile(profileName, newConfiguration)
 	}
 
 	// Task history
@@ -3447,10 +3349,6 @@ export class AlphaProvider
 			includeCurrentTime,
 			includeCurrentCost,
 			maxGitStatusFiles,
-			imageGenerationProvider,
-			openRouterImageApiKey,
-			githubToken,
-			openRouterImageGenerationSelectedModel,
 			lockApiConfigAcrossModes,
 		} = await this.getState()
 
@@ -3620,17 +3518,13 @@ export class AlphaProvider
 				codebaseIndexLocalIndexPath:
 					codebaseIndexConfig?.codebaseIndexLocalIndexPath ?? ".alpha/code-index/lancedb",
 				codebaseIndexQdrantUrl: codebaseIndexConfig?.codebaseIndexQdrantUrl ?? "http://localhost:6333",
-				codebaseIndexEmbedderProvider: codebaseIndexConfig?.codebaseIndexEmbedderProvider ?? "openai",
-				codebaseIndexEmbedderBaseUrl: codebaseIndexConfig?.codebaseIndexEmbedderBaseUrl ?? "",
+				codebaseIndexEmbedderProvider: codebaseIndexConfig?.codebaseIndexEmbedderProvider ?? "vertex",
 				codebaseIndexEmbedderModelId: codebaseIndexConfig?.codebaseIndexEmbedderModelId ?? "",
-				codebaseIndexEmbedderModelDimension: codebaseIndexConfig?.codebaseIndexEmbedderModelDimension ?? 1536,
-				codebaseIndexOpenAiCompatibleBaseUrl: codebaseIndexConfig?.codebaseIndexOpenAiCompatibleBaseUrl,
+				codebaseIndexEmbedderModelDimension: codebaseIndexConfig?.codebaseIndexEmbedderModelDimension,
 				codebaseIndexSearchMaxResults: codebaseIndexConfig?.codebaseIndexSearchMaxResults,
 				codebaseIndexSearchMinScore: codebaseIndexConfig?.codebaseIndexSearchMinScore,
 				codebaseIndexEmbeddingRateLimitEnabled: codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitEnabled,
 				codebaseIndexEmbeddingRateLimitSeconds: codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitSeconds,
-				codebaseIndexBedrockRegion: codebaseIndexConfig?.codebaseIndexBedrockRegion,
-				codebaseIndexBedrockProfile: codebaseIndexConfig?.codebaseIndexBedrockProfile,
 				codebaseIndexVertexProjectId: codebaseIndexConfig?.codebaseIndexVertexProjectId,
 				codebaseIndexVertexRegion: codebaseIndexConfig?.codebaseIndexVertexRegion,
 				codebaseIndexVertexKeyFile: codebaseIndexConfig?.codebaseIndexVertexKeyFile,
@@ -3641,7 +3535,6 @@ export class AlphaProvider
 					codebaseIndexConfig?.codebaseIndexVertexGatewayTokenRefreshMinutes,
 				codebaseIndexVertexGatewayModelRoutingMap:
 					codebaseIndexConfig?.codebaseIndexVertexGatewayModelRoutingMap,
-				codebaseIndexOpenRouterSpecificProvider: codebaseIndexConfig?.codebaseIndexOpenRouterSpecificProvider,
 			},
 			hasOpenedModeSelector: this.getGlobalState("hasOpenedModeSelector") ?? false,
 			lockApiConfigAcrossModes: lockApiConfigAcrossModes ?? false,
@@ -3653,14 +3546,6 @@ export class AlphaProvider
 			includeCurrentTime: includeCurrentTime ?? true,
 			includeCurrentCost: includeCurrentCost ?? true,
 			maxGitStatusFiles: maxGitStatusFiles ?? 0,
-			imageGenerationProvider,
-			openRouterImageApiKey,
-			githubToken,
-			openRouterImageGenerationSelectedModel,
-			// Rendering generic extension state must never refresh an OAuth token.
-			// Secret loading is warmed during activation and actual token validation
-			// remains on OpenAI Codex request paths.
-			openAiCodexIsAuthenticated: openAiCodexOAuthManager.hasStoredCredentials(),
 			debug: vscode.workspace.getConfiguration(Package.name).get<boolean>("debug", false),
 		}
 	}
@@ -3676,10 +3561,7 @@ export class AlphaProvider
 		const providerSettings = this.contextProxy.getProviderSettings()
 
 		if (!providerSettings.apiProvider) {
-			providerSettings.apiProvider =
-				stateValues.apiProvider && !isRetiredProvider(stateValues.apiProvider)
-					? stateValues.apiProvider
-					: "anthropic"
+			providerSettings.apiProvider = stateValues.apiProvider ?? "vertex"
 		}
 
 		return providerSettings
@@ -3799,21 +3681,16 @@ export class AlphaProvider
 				codebaseIndexQdrantUrl:
 					stateValues.codebaseIndexConfig?.codebaseIndexQdrantUrl ?? "http://localhost:6333",
 				codebaseIndexEmbedderProvider:
-					stateValues.codebaseIndexConfig?.codebaseIndexEmbedderProvider ?? "openai",
-				codebaseIndexEmbedderBaseUrl: stateValues.codebaseIndexConfig?.codebaseIndexEmbedderBaseUrl ?? "",
+					stateValues.codebaseIndexConfig?.codebaseIndexEmbedderProvider ?? "vertex",
 				codebaseIndexEmbedderModelId: stateValues.codebaseIndexConfig?.codebaseIndexEmbedderModelId ?? "",
 				codebaseIndexEmbedderModelDimension:
 					stateValues.codebaseIndexConfig?.codebaseIndexEmbedderModelDimension,
-				codebaseIndexOpenAiCompatibleBaseUrl:
-					stateValues.codebaseIndexConfig?.codebaseIndexOpenAiCompatibleBaseUrl,
 				codebaseIndexSearchMaxResults: stateValues.codebaseIndexConfig?.codebaseIndexSearchMaxResults,
 				codebaseIndexSearchMinScore: stateValues.codebaseIndexConfig?.codebaseIndexSearchMinScore,
 				codebaseIndexEmbeddingRateLimitEnabled:
 					stateValues.codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitEnabled,
 				codebaseIndexEmbeddingRateLimitSeconds:
 					stateValues.codebaseIndexConfig?.codebaseIndexEmbeddingRateLimitSeconds,
-				codebaseIndexBedrockRegion: stateValues.codebaseIndexConfig?.codebaseIndexBedrockRegion,
-				codebaseIndexBedrockProfile: stateValues.codebaseIndexConfig?.codebaseIndexBedrockProfile,
 				codebaseIndexVertexProjectId: stateValues.codebaseIndexConfig?.codebaseIndexVertexProjectId,
 				codebaseIndexVertexRegion: stateValues.codebaseIndexConfig?.codebaseIndexVertexRegion,
 				codebaseIndexVertexKeyFile: stateValues.codebaseIndexConfig?.codebaseIndexVertexKeyFile,
@@ -3826,8 +3703,6 @@ export class AlphaProvider
 					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayTokenRefreshMinutes,
 				codebaseIndexVertexGatewayModelRoutingMap:
 					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayModelRoutingMap,
-				codebaseIndexOpenRouterSpecificProvider:
-					stateValues.codebaseIndexConfig?.codebaseIndexOpenRouterSpecificProvider,
 			},
 			profileThresholds: stateValues.profileThresholds ?? {},
 			lockApiConfigAcrossModes: this.context.workspaceState.get("lockApiConfigAcrossModes", false),
@@ -3837,10 +3712,6 @@ export class AlphaProvider
 			includeCurrentTime: stateValues.includeCurrentTime ?? true,
 			includeCurrentCost: stateValues.includeCurrentCost ?? true,
 			maxGitStatusFiles: stateValues.maxGitStatusFiles ?? 0,
-			imageGenerationProvider: stateValues.imageGenerationProvider,
-			openRouterImageApiKey: stateValues.openRouterImageApiKey,
-			githubToken: stateValues.githubToken,
-			openRouterImageGenerationSelectedModel: stateValues.openRouterImageGenerationSelectedModel,
 		}
 	}
 
@@ -4532,10 +4403,6 @@ export class AlphaProvider
 		if (options.taskMode !== undefined) assertPrimaryMode(options.taskMode)
 		if (configuration.mode !== undefined) assertPrimaryMode(configuration.mode)
 
-		if (!parentTask && options.preserveExisting && !options.background) {
-			await this.finalizeActiveCompletionCandidate()
-		}
-
 		const topLevelTaskMode = !parentTask
 			? (options.taskMode ?? configuration.mode ?? this.newTaskDraftMode)
 			: options.taskMode
@@ -4597,6 +4464,11 @@ export class AlphaProvider
 		}).delegationPolicy
 		const apiConfiguration = options.apiConfiguration ?? currentApiConfiguration
 		const taskApiConfigName = options.taskApiConfigName ?? currentApiConfigName ?? "default"
+		assertSupportedApiProvider(apiConfiguration.apiProvider)
+
+		if (!parentTask && options.preserveExisting && !options.background) {
+			await this.finalizeActiveCompletionCandidate()
+		}
 
 		// Single-open-task invariant: always enforce for user-initiated top-level tasks
 		if (!parentTask && !options.preserveExisting) {
@@ -4943,7 +4815,7 @@ export class AlphaProvider
 			mode: taskMode,
 			taskId: task?.taskId,
 			parentTaskId: task?.parentTaskId,
-			apiProvider: apiProvider && !isRetiredProvider(apiProvider) ? apiProvider : undefined,
+			apiProvider: isProviderName(apiProvider) ? apiProvider : undefined,
 			modelId: task?.api?.getModel().id,
 			diffStrategy: task?.diffStrategy?.getName(),
 			isSubtask: task ? !!task.parentTaskId : undefined,

@@ -34,9 +34,9 @@ describe("ModelPicker", () => {
 	}
 
 	const defaultProps = {
-		apiConfiguration: {},
+		apiConfiguration: { apiProvider: "openai" as const },
 		defaultModelId: "model1",
-		modelIdKey: "openRouterModelId" as const,
+		modelIdKey: "openAiModelId" as const,
 		serviceName: "Test Service",
 		serviceUrl: "https://test.service",
 		recommendedModel: "recommended-model",

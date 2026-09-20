@@ -15,7 +15,7 @@ describe("MessageEnhancer", () => {
 
 	const mockApiConfiguration: ProviderSettings = {
 		apiProvider: "openai",
-		apiKey: "test-key",
+		openAiApiKey: "test-key",
 		apiModelId: "gpt-4",
 	}
 
@@ -32,8 +32,8 @@ describe("MessageEnhancer", () => {
 		mockProviderSettingsManager = {
 			getProfile: vi.fn().mockResolvedValue({
 				name: "Enhancement Config",
-				apiProvider: "anthropic",
-				apiKey: "enhancement-key",
+				apiProvider: "vertex",
+				vertexJsonCredentials: "enhancement-key",
 				apiModelId: "claude-3",
 			}),
 		} as any
@@ -92,8 +92,8 @@ describe("MessageEnhancer", () => {
 
 			// Verify the enhancement config was used instead of default
 			const expectedConfig = {
-				apiProvider: "anthropic",
-				apiKey: "enhancement-key",
+				apiProvider: "vertex",
+				vertexJsonCredentials: "enhancement-key",
 				apiModelId: "claude-3",
 			}
 			expect(mockSingleCompletionHandler).toHaveBeenCalledWith(expectedConfig, expect.any(String))

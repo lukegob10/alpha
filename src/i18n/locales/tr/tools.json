@@ -47,22 +47,5 @@
 	},
 	"applyPatch": {
 		"deleteCancelled": "Silme işlemi iptal edildi."
-	},
-	"imageOutput": {
-		"writeIncomplete": "'{{path}}' yazma işlemi tamamlanamadı; dosya eksik olabilir. {{cause}}"
-	},
-	"generateImage": {
-		"openRouterApiKeyRequired": "OpenRouter modelleriyle görüntü oluşturma için OpenRouter API anahtarı gereklidir. Lütfen Görüntü Oluşturma deneysel ayarlarında yapılandırın.",
-		"failedWithStatus": "Görüntü oluşturma başarısız: {{status}} {{statusText}}",
-		"failedWithMessage": "Görüntü oluşturma başarısız: {{message}}",
-		"noImageGenerated": "Yanıtta görüntü oluşturulmadı",
-		"invalidImageData": "Yanıtta geçersiz görüntü verisi",
-		"invalidImageFormat": "Geçersiz görüntü formatı alındı",
-		"unknownError": "Bilinmeyen bir hata oluştu",
-		"cancelledBeforeSave": "Görüntü kaydedilmeden önce görüntü oluşturma iptal edildi.",
-		"destinationUnavailableBeforeGeneration": "Görüntü hedefi oluşturma öncesinde erişilebilir değildi. İsteği yeniden deneyin.",
-		"destinationPolicyChangedBeforeSave": "Görüntü hedefinin yolu veya erişim politikası kaydetmeden önce değişti. İsteği yeniden deneyin.",
-		"postSaveProcessingFailed": "{{path}}\nGörüntü kaydedildi, ancak kaydetme sonrası işleme başarısız oldu: {{message}}",
-		"roo": {}
 	}
 }

@@ -146,8 +146,7 @@ export const vertexModels = {
 		outputPrice: 6.0,
 		description:
 			"Grok 4.6 on Vertex AI (Preview): xAI's model for coding, agentic tasks, and knowledge work; available through the global endpoint",
-		includedTools: ["search_replace"],
-		excludedTools: ["apply_diff"],
+		includedTools: ["edit"],
 	},
 	"claude-fable-5": {
 		maxTokens: 128_000,

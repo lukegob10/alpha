@@ -1,13 +1,4 @@
 {
-	"routers": {
-		"requesty": {
-			"description": "Router LLM yang dioptimalkan",
-			"incentive": "Kredit gratis $1"
-		},
-		"openrouter": {
-			"description": "Antarmuka terpadu untuk LLM"
-		}
-	},
 	"landing": {
 		"greeting": "Selamat datang di Alpha!",
 		"introduction": "Dengan berbagai Mode bawaan dan dapat diperluas, Alpha memungkinkan Anda merencanakan, merancang, coding, debug, dan meningkatkan produktivitas seperti yang belum pernah terjadi sebelumnya.",
@@ -23,7 +14,6 @@
 		"goBack": "Kembali",
 		"finish": "Selesai"
 	},
-	"startRouter": "Kami merekomendasikan menggunakan router LLM:",
 	"startCustom": "Atau Anda dapat membawa kunci API Anda sendiri:",
 	"telemetry": {
 		"helpImprove": "Bantu Tingkatkan Alpha",

@@ -1,13 +1,4 @@
 {
-	"routers": {
-		"requesty": {
-			"description": "最適化されたLLMルーター",
-			"incentive": "無料の$1クレジット"
-		},
-		"openrouter": {
-			"description": "LLM向けの統一インターフェース"
-		}
-	},
 	"landing": {
 		"greeting": "Alphaへようこそ！",
 		"introduction": "組み込みおよび拡張可能なモードを備えたAlphaは、計画、アーキテクチャ設計、コーディング、デバッグ、そして今までにない生産性向上を可能にします。",
@@ -23,7 +14,6 @@
 		"goBack": "戻る",
 		"finish": "完了"
 	},
-	"startRouter": "LLMルーターの使用をお勧めします:",
 	"startCustom": "または、独自のAPIキーを持ってくることもできます:",
 	"telemetry": {
 		"helpImprove": "Alphaの改善にご協力ください",

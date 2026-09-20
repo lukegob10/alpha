@@ -42,8 +42,7 @@
 		"language": "भाषा",
 		"about": "परिचय",
 		"skills": "Skills",
-		"agents": "एजेंटों",
-		"github": "GitHub"
+		"agents": "एजेंटों"
 	},
 	"about": {
 		"bugReport": {
@@ -113,42 +112,10 @@
 		"enableDescription": "बेहतर खोज और संदर्भ समझने के लिए कोड इंडेक्सिंग सक्षम करें",
 		"providerLabel": "एम्बेडिंग प्रदाता",
 		"selectProviderPlaceholder": "प्रदाता चुनें",
-		"openaiProvider": "OpenAI",
-		"ollamaProvider": "Ollama",
-		"geminiProvider": "Gemini",
 		"vertexProvider": "GCP Vertex AI",
-		"geminiApiKeyLabel": "API कुंजी:",
-		"geminiApiKeyPlaceholder": "अपना जेमिनी एपीआई कुंजी दर्ज करें",
-		"vercelAiGatewayProvider": "Vercel AI Gateway",
-		"vercelAiGatewayApiKeyLabel": "API कुंजी",
-		"vercelAiGatewayApiKeyPlaceholder": "अपनी Vercel AI Gateway API कुंजी दर्ज करें",
-		"bedrockProvider": "Amazon Bedrock",
-		"bedrockRegionLabel": "AWS क्षेत्र",
-		"bedrockRegionPlaceholder": "us-east-1",
-		"bedrockProfileLabel": "AWS प्रोफ़ाइल",
-		"bedrockProfilePlaceholder": "default",
-		"bedrockProfileDescription": "~/.aws/credentials से AWS प्रोफ़ाइल नाम (आवश्यक)।",
-		"openRouterProvider": "ओपनराउटर",
-		"openRouterApiKeyLabel": "ओपनराउटर एपीआई कुंजी",
-		"openRouterApiKeyPlaceholder": "अपनी ओपनराउटर एपीआई कुंजी दर्ज करें",
-		"openRouterProviderRoutingLabel": "OpenRouter प्रदाता रूटिंग",
-		"openRouterProviderRoutingDescription": "OpenRouter आपके एम्बेडिंग मॉडल के लिए सर्वोत्तम उपलब्ध प्रदाताओं को अनुरोध भेजता है। डिफ़ॉल्ट रूप से, अपटाइम को अधिकतम करने के लिए अनुरोधों को शीर्ष प्रदाताओं के बीच संतुलित किया जाता है। हालांकि, आप इस मॉडल के लिए उपयोग करने के लिए एक विशिष्ट प्रदाता चुन सकते हैं।",
-		"mistralProvider": "Mistral",
-		"mistralApiKeyLabel": "API कुंजी:",
-		"mistralApiKeyPlaceholder": "अपनी मिस्ट्रल एपीआई कुंजी दर्ज करें",
-		"openaiCompatibleProvider": "OpenAI संगत",
-		"openAiKeyLabel": "OpenAI API कुंजी",
-		"openAiKeyPlaceholder": "अपना OpenAI API कुंजी दर्ज करें",
-		"openAiCompatibleBaseUrlLabel": "आधार URL",
-		"openAiCompatibleApiKeyLabel": "API कुंजी",
-		"openAiCompatibleApiKeyPlaceholder": "अपना API कुंजी दर्ज करें",
-		"openAiCompatibleModelDimensionLabel": "एम्बेडिंग आयाम:",
 		"modelDimensionLabel": "मॉडल आयाम",
-		"openAiCompatibleModelDimensionPlaceholder": "उदा., 1536",
-		"openAiCompatibleModelDimensionDescription": "आपके मॉडल के लिए एम्बेडिंग आयाम (आउटपुट साइज)। इस मान के लिए अपने प्रदाता के दस्तावेज़ीकरण की जांच करें। सामान्य मान: 384, 768, 1536, 3072।",
 		"modelLabel": "मॉडल",
 		"selectModelPlaceholder": "मॉडल चुनें",
-		"ollamaUrlLabel": "Ollama URL:",
 		"qdrantUrlLabel": "Qdrant URL",
 		"qdrantKeyLabel": "Qdrant कुंजी:",
 		"startIndexingButton": "शुरू करें",
@@ -167,12 +134,9 @@
 		"embedderProviderLabel": "एम्बेडर प्रदाता",
 		"modelPlaceholder": "मॉडल नाम दर्ज करें",
 		"selectModel": "एक मॉडल चुनें",
-		"ollamaBaseUrlLabel": "Ollama आधार URL",
 		"qdrantApiKeyLabel": "Qdrant API कुंजी",
 		"qdrantApiKeyPlaceholder": "अपनी Qdrant API कुंजी दर्ज करें (वैकल्पिक)",
 		"setupConfigLabel": "सेटअप",
-		"ollamaUrlPlaceholder": "http://localhost:11434",
-		"openAiCompatibleBaseUrlPlaceholder": "https://api.example.com",
 		"modelDimensionPlaceholder": "1536",
 		"qdrantUrlPlaceholder": "http://localhost:6333",
 		"saveError": "सेटिंग्स सहेजने में विफल",
@@ -189,23 +153,14 @@
 		"close": "बंद करें",
 		"validation": {
 			"invalidQdrantUrl": "अमान्य Qdrant URL",
-			"invalidOllamaUrl": "अमान्य Ollama URL",
 			"invalidBaseUrl": "अमान्य बेस URL",
 			"qdrantUrlRequired": "Qdrant URL आवश्यक है",
-			"openaiApiKeyRequired": "OpenAI API कुंजी आवश्यक है",
 			"modelSelectionRequired": "मॉडल चयन आवश्यक है",
 			"apiKeyRequired": "API कुंजी आवश्यक है",
 			"modelIdRequired": "मॉडल आईडी आवश्यक है",
 			"modelDimensionRequired": "मॉडल आयाम आवश्यक है",
-			"geminiApiKeyRequired": "Gemini API कुंजी आवश्यक है",
-			"mistralApiKeyRequired": "मिस्ट्रल एपीआई कुंजी आवश्यक है",
-			"vercelAiGatewayApiKeyRequired": "Vercel AI Gateway API कुंजी आवश्यक है",
-			"bedrockRegionRequired": "AWS क्षेत्र आवश्यक है",
-			"bedrockProfileRequired": "AWS प्रोफ़ाइल आवश्यक है",
-			"ollamaBaseUrlRequired": "Ollama आधार URL आवश्यक है",
 			"baseUrlRequired": "आधार URL आवश्यक है",
 			"modelDimensionMinValue": "मॉडल आयाम 0 से बड़ा होना चाहिए",
-			"openRouterApiKeyRequired": "OpenRouter API कुंजी आवश्यक है",
 			"vertexProjectIdRequired": "Google Cloud project ID is required",
 			"vertexRegionRequired": "Google Cloud region is required",
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
@@ -327,7 +282,6 @@
 		"nameEmpty": "नाम खाली नहीं हो सकता",
 		"nameExists": "इस नाम वाला प्रोफ़ाइल पहले से मौजूद है",
 		"deleteProfile": "प्रोफ़ाइल हटाएं",
-		"invalidArnFormat": "अमान्य ARN प्रारूप। कृपया ऊपर दिए गए उदाहरण देखें।",
 		"enterNewName": "नया नाम दर्ज करें",
 		"addProfile": "प्रोफ़ाइल जोड़ें",
 		"renameProfile": "प्रोफ़ाइल का नाम बदलें",
@@ -339,46 +293,9 @@
 		"searchProviderPlaceholder": "प्रदाता खोजें",
 		"noProviderMatchFound": "कोई प्रदाता नहीं मिला",
 		"noMatchFound": "कोई मिलान प्रोफ़ाइल नहीं मिला",
-		"retiredProviderMessage": "क्षमा करें, यह प्रदाता अब समर्थित नहीं है। हमने देखा कि बहुत कम Alpha उपयोगकर्ता वास्तव में इसका उपयोग कर रहे थे और हमें अपने कोडबेस का दायरा कम करने की आवश्यकता है ताकि हम तेज़ी से काम करना और अपने समुदाय की अच्छी सेवा करना जारी रख सकें। यह वाकई एक कठिन निर्णय था, लेकिन इससे हम उस पर ध्यान केंद्रित कर सकते हैं जो तुम्हारे लिए सबसे ज़्यादा मायने रखता है। हम जानते हैं, यह बुरा लगता है।",
+		"retiredProviderMessage": "यह सहेजा गया प्रदाता अब समर्थित नहीं है। सेटिंग्स में GCP Vertex AI, VS Code LM API, Stellar या OpenAI Compatible चुनें।",
 		"vscodeLmDescription": "VS कोड भाषा मॉडल API आपको अन्य VS कोड एक्सटेंशन (जैसे GitHub Copilot) द्वारा प्रदान किए गए मॉडल चलाने की अनुमति देता है। शुरू करने का सबसे आसान तरीका VS कोड मार्केटप्लेस से Copilot और Copilot चैट एक्सटेंशन इंस्टॉल करना है।",
-		"awsCustomArnUse": "आप जिस मॉडल का उपयोग करना चाहते हैं, उसके लिए एक वैध Amazon बेडरॉक ARN दर्ज करें। प्रारूप उदाहरण:",
-		"awsCustomArnDesc": "सुनिश्चित करें कि ARN में क्षेत्र ऊपर चयनित AWS क्षेत्र से मेल खाता है।",
-		"openRouterApiKey": "OpenRouter API कुंजी",
-		"getOpenRouterApiKey": "OpenRouter API कुंजी प्राप्त करें",
-		"vercelAiGatewayApiKey": "Vercel AI Gateway API कुंजी",
-		"getVercelAiGatewayApiKey": "Vercel AI Gateway API कुंजी प्राप्त करें",
 		"apiKeyStorageNotice": "API कुंजियाँ VSCode के सुरक्षित स्टोरेज में सुरक्षित रूप से संग्रहीत हैं",
-		"openAiCodexRateLimits": {
-			"title": "Usage Limits for Codex{{planLabel}}",
-			"loading": "Loading usage limits...",
-			"loadError": "Failed to load usage limits",
-			"retry": "Retry",
-			"usedPercent": "{{percent}}% used",
-			"resetsIn": "Resets in {{time}}",
-			"plan": {
-				"default": "",
-				"withType": " ({{planType}})"
-			},
-			"time": {
-				"now": "Now",
-				"notAvailable": "N/A"
-			},
-			"duration": {
-				"daysHours": "{{days}}d {{hours}}h",
-				"hoursMinutes": "{{hours}}h {{minutes}}m",
-				"minutes": "{{minutes}}m"
-			},
-			"window": {
-				"usage": "Usage",
-				"fiveHour": "5h limit",
-				"oneHour": "1h limit",
-				"daily": "Daily limit",
-				"weekly": "Weekly limit",
-				"days": "{{days}}d limit",
-				"hours": "{{hours}}h limit",
-				"minutes": "{{minutes}}m limit"
-			}
-		},
 		"useCustomBaseUrl": "कस्टम बेस URL का उपयोग करें",
 		"useReasoning": "तर्क सक्षम करें",
 		"useHostHeader": "कस्टम होस्ट हेडर का उपयोग करें",
@@ -386,9 +303,6 @@
 		"headerName": "हेडर नाम",
 		"headerValue": "हेडर मूल्य",
 		"noCustomHeaders": "कोई कस्टम हेडर परिभाषित नहीं है। एक जोड़ने के लिए + बटन पर क्लिक करें।",
-		"unboundApiKey": "Unbound API कुंजी",
-		"getUnboundApiKey": "Unbound API कुंजी प्राप्त करें",
-		"requestyApiKey": "Requesty API कुंजी",
 		"refreshModels": {
 			"label": "मॉडल रिफ्रेश करें",
 			"hint": "नवीनतम मॉडल देखने के लिए कृपया सेटिंग्स को फिर से खोलें।",
@@ -397,109 +311,14 @@
 			"error": "मॉडल सूची अपडेट करने में विफल। कृपया पुनः प्रयास करें।",
 			"missingConfig": "मॉडलों को ताज़ा करने से पहले आवश्यक प्रदाता कॉन्फ़िगरेशन दर्ज करें।"
 		},
-		"getRequestyApiKey": "Requesty API कुंजी प्राप्त करें",
-		"getRequestyBaseUrl": "बेस URL",
-		"requestyUseCustomBaseUrl": "कस्टम बेस URL का उपयोग करें",
-		"anthropicApiKey": "Anthropic API कुंजी",
-		"getAnthropicApiKey": "Anthropic API कुंजी प्राप्त करें",
-		"anthropicUseAuthToken": "X-Api-Key के बजाय Anthropic API कुंजी को Authorization हेडर के रूप में पास करें",
-		"anthropic1MContextBetaLabel": "1M संदर्भ विंडो सक्षम करें (बीटा)",
-		"anthropic1MContextBetaDescription": "Claude Sonnet 4.x / Claude Opus 4.6 के लिए संदर्भ विंडो को 1 मिलियन टोकन तक बढ़ाता है",
-		"awsBedrock1MContextBetaLabel": "1M संदर्भ विंडो सक्षम करें (बीटा)",
-		"awsBedrock1MContextBetaDescription": "Claude Sonnet 4.x / Claude Opus 4.6 के लिए संदर्भ विंडो को 1 मिलियन टोकन तक बढ़ाता है",
 		"vertex1MContextBetaLabel": "1M संदर्भ विंडो सक्षम करें (बीटा)",
 		"vertex1MContextBetaDescription": "Claude Sonnet 4.x / Claude Opus 4.6 के लिए संदर्भ विंडो को 1 मिलियन टोकन तक बढ़ाता है",
-		"basetenApiKey": "Baseten API कुंजी",
-		"getBasetenApiKey": "Baseten API कुंजी प्राप्त करें",
-		"poeApiKey": "Poe API कुंजी",
-		"getPoeApiKey": "Poe API कुंजी प्राप्त करें",
-		"poeBaseUrl": "Poe बेस URL",
-		"fireworksApiKey": "Fireworks API कुंजी",
-		"getFireworksApiKey": "Fireworks API कुंजी प्राप्त करें",
-		"deepSeekApiKey": "DeepSeek API कुंजी",
-		"getDeepSeekApiKey": "DeepSeek API कुंजी प्राप्त करें",
-		"moonshotApiKey": "Moonshot API कुंजी",
-		"getMoonshotApiKey": "Moonshot API कुंजी प्राप्त करें",
-		"moonshotBaseUrl": "Moonshot प्रवेश बिंदु",
-		"zaiApiKey": "Z AI API कुंजी",
-		"getZaiApiKey": "Z AI API कुंजी प्राप्त करें",
-		"zaiEntrypoint": "Z AI प्रवेश बिंदु",
-		"zaiEntrypointDescription": "कृपया अपने स्थान के आधार पर उपयुक्त API प्रवेश बिंदु का चयन करें। यदि आप चीन में हैं, तो open.bigmodel.cn चुनें। अन्यथा, api.z.ai चुनें।",
-		"minimaxApiKey": "MiniMax API कुंजी",
-		"getMiniMaxApiKey": "MiniMax API कुंजी प्राप्त करें",
-		"minimaxBaseUrl": "MiniMax प्रवेश बिंदु",
-		"geminiApiKey": "Gemini API कुंजी",
-		"getSambaNovaApiKey": "SambaNova API कुंजी प्राप्त करें",
-		"sambaNovaApiKey": "SambaNova API कुंजी",
-		"getGeminiApiKey": "Gemini API कुंजी प्राप्त करें",
 		"openAiApiKey": "OpenAI API कुंजी",
 		"apiKey": "API कुंजी",
 		"openAiBaseUrl": "बेस URL",
 		"getOpenAiApiKey": "OpenAI API कुंजी प्राप्त करें",
-		"mistralApiKey": "Mistral API कुंजी",
-		"getMistralApiKey": "Mistral / Codestral API कुंजी प्राप्त करें",
-		"codestralBaseUrl": "Codestral बेस URL (वैकल्पिक)",
-		"codestralBaseUrlDesc": "Codestral मॉडल के लिए वैकल्पिक URL सेट करें।",
-		"xaiApiKey": "xAI API कुंजी",
-		"getXaiApiKey": "xAI API कुंजी प्राप्त करें",
-		"litellmApiKey": "LiteLLM API कुंजी",
-		"litellmBaseUrl": "LiteLLM आधार URL",
-		"awsCredentials": "AWS क्रेडेंशियल्स",
-		"awsProfile": "AWS प्रोफाइल",
-		"awsApiKey": "Amazon बेडरॉक API कुंजी",
-		"awsProfileName": "AWS प्रोफाइल नाम",
-		"awsAccessKey": "AWS एक्सेस कुंजी",
-		"awsSecretKey": "AWS सीक्रेट कुंजी",
-		"awsSessionToken": "AWS सत्र टोकन",
-		"awsRegion": "AWS क्षेत्र",
-		"awsCrossRegion": "क्रॉस-क्षेत्र अनुमान का उपयोग करें",
-		"awsGlobalInference": "वैश्विक अनुमान का उपयोग करें (स्वचालित रूप से श्रेष्ठ AWS क्षेत्र चुनें)",
-		"awsServiceTier": "सेवा स्तर",
-		"awsServiceTierStandard": "Standard",
-		"awsServiceTierStandardDesc": "संतुलित प्रदर्शन और लागत",
-		"awsServiceTierFlex": "Flex (50% छूट)",
-		"awsServiceTierFlexDesc": "कम लागत, गैर-महत्वपूर्ण कार्यों के लिए उच्च विलंबता",
-		"awsServiceTierPriority": "Priority (75% प्रीमियम)",
-		"awsServiceTierPriorityDesc": "मिशन-क्रिटिकल एप्लिकेशन के लिए सबसे तेज़ प्रदर्शन",
-		"awsServiceTierNote": "सेवा स्तर मूल्य निर्धारण और प्रदर्शन को प्रभावित करते हैं। Flex 50% छूट के साथ उच्च विलंबता प्रदान करता है, Priority 75% प्रीमियम के साथ 25% बेहतर प्रदर्शन प्रदान करता है।",
-		"awsBedrockVpc": {
-			"useCustomVpcEndpoint": "कस्टम VPC एंडपॉइंट का उपयोग करें",
-			"vpcEndpointUrlPlaceholder": "VPC एंडपॉइंट URL दर्ज करें (वैकल्पिक)",
-			"examples": "उदाहरण:"
-		},
-		"enablePromptCaching": "प्रॉम्प्ट कैशिंग सक्षम करें",
-		"enablePromptCachingTitle": "समर्थित मॉडल के लिए प्रदर्शन में सुधार और लागत को कम करने के लिए प्रॉम्प्ट कैशिंग सक्षम करें।",
-		"cacheUsageNote": "नोट: यदि आप कैश उपयोग नहीं देखते हैं, तो एक अलग मॉडल चुनने का प्रयास करें और फिर अपने वांछित मॉडल को पुनः चुनें।",
 		"vscodeLmModel": "भाषा मॉडल",
 		"vscodeLmWarning": "नोट: VS Code Language Model API के माध्यम से उपलब्ध मॉडल प्रदाता द्वारा रैप या फाइन‑ट्यून किए जा सकते हैं, इसलिए इनका व्यवहार किसी सामान्य प्रदाता या राउटर से सीधे उसी मॉडल का उपयोग करने की तुलना में अलग हो सकता है। «Language Model» ड्रॉपडाउन से मॉडल उपयोग करने के लिए पहले उसी मॉडल पर स्विच करें और फिर Copilot Chat प्रॉम्प्ट में «Accept» पर क्लिक करें; अन्यथा 400 \"The requested model is not supported\" जैसी त्रुटि दिखाई दे सकती है।",
-		"lmStudio": {
-			"baseUrl": "बेस URL (वैकल्पिक)",
-			"modelId": "मॉडल ID",
-			"speculativeDecoding": "स्पेक्युलेटिव डिकोडिंग सक्षम करें",
-			"draftModelId": "ड्राफ्ट मॉडल ID",
-			"draftModelDesc": "स्पेक्युलेटिव डिकोडिंग के सही काम करने के लिए ड्राफ्ट मॉडल को समान मॉडल परिवार से होना चाहिए।",
-			"selectDraftModel": "ड्राफ्ट मॉडल चुनें",
-			"noModelsFound": "कोई ड्राफ्ट मॉडल नहीं मिला। कृपया सुनिश्चित करें कि LM Studio सर्वर मोड सक्षम के साथ चल रहा है।",
-			"description": "LM Studio आपको अपने कंप्यूटर पर स्थानीय रूप से मॉडल चलाने की अनुमति देता है। आरंभ करने के निर्देशों के लिए, उनकी <a>क्विकस्टार्ट गाइड</a> देखें। आपको इस एक्सटेंशन के साथ उपयोग करने के लिए LM Studio की <b>स्थानीय सर्वर</b> सुविधा भी शुरू करनी होगी। <span>नोट:</span> Alpha जटिल प्रॉम्प्ट्स का उपयोग करता है और Claude मॉडल के साथ सबसे अच्छा काम करता है। कम क्षमता वाले मॉडल अपेक्षित रूप से काम नहीं कर सकते हैं।"
-		},
-		"ollama": {
-			"baseUrl": "बेस URL (वैकल्पिक)",
-			"modelId": "मॉडल ID",
-			"apiKey": "Ollama API Key",
-			"apiKeyHelp": "प्रमाणित Ollama इंस्टेंसेस या क्लाउड सेवाओं के लिए वैकल्पिक API key। स्थानीय इंस्टॉलेशन के लिए खाली छोड़ें।",
-			"numCtx": "संदर्भ विंडो आकार (num_ctx)",
-			"numCtxHelp": "मॉडल के डिफ़ॉल्ट संदर्भ विंडो आकार को ओवरराइड करें। मॉडल की मॉडलफ़ाइल कॉन्फ़िगरेशन का उपयोग करने के लिए खाली छोड़ दें। न्यूनतम मान 128 है।",
-			"description": "Ollama आपको अपने कंप्यूटर पर स्थानीय रूप से मॉडल चलाने की अनुमति देता है। आरंभ करने के निर्देशों के लिए, उनकी क्विकस्टार्ट गाइड देखें।",
-			"warning": "नोट: Alpha जटिल प्रॉम्प्ट्स का उपयोग करता है और Claude मॉडल के साथ सबसे अच्छा काम करता है। कम क्षमता वाले मॉडल अपेक्षित रूप से काम नहीं कर सकते हैं।"
-		},
-		"roo": {},
-		"openRouter": {
-			"providerRouting": {
-				"title": "OpenRouter प्रदाता रूटिंग",
-				"description": "OpenRouter आपके मॉडल के लिए सर्वोत्तम उपलब्ध प्रदाताओं को अनुरोध भेजता है। डिफ़ॉल्ट रूप से, अपटाइम को अधिकतम करने के लिए अनुरोधों को शीर्ष प्रदाताओं के बीच संतुलित किया जाता है। हालांकि, आप इस मॉडल के लिए उपयोग करने के लिए एक विशिष्ट प्रदाता चुन सकते हैं।",
-				"learnMore": "प्रदाता रूटिंग के बारे में अधिक जानें"
-			}
-		},
 		"customModel": {
 			"capabilities": "अपने कस्टम OpenAI-संगत मॉडल के लिए क्षमताओं और मूल्य निर्धारण को कॉन्फ़िगर करें। मॉडल क्षमताओं को निर्दिष्ट करते समय सावधान रहें, क्योंकि वे Alpha के प्रदर्शन को प्रभावित कर सकती हैं।",
 			"maxTokens": {
@@ -570,13 +389,6 @@
 			"description": "मॉडल की प्रतिक्रियाएं कितनी विस्तृत हैं, इसे नियंत्रित करता है। कम वर्बोसिटी संक्षिप्त उत्तर देती है, जबकि उच्च वर्बोसिटी विस्तृत स्पष्टीकरण प्रदान करती है।"
 		},
 		"setReasoningLevel": "तर्क प्रयास सक्षम करें",
-		"claudeCode": {
-			"pathLabel": "क्लाउड कोड पथ",
-			"description": "आपके क्लाउड कोड सीएलआई का वैकल्पिक पथ। यदि सेट नहीं है तो डिफ़ॉल्ट 'claude' है।",
-			"placeholder": "डिफ़ॉल्ट: claude",
-			"maxTokensLabel": "अधिकतम आउटपुट टोकन",
-			"maxTokensDescription": "Claude Code प्रतिक्रियाओं के लिए आउटपुट टोकन की अधिकतम संख्या। डिफ़ॉल्ट 8000 है।"
-		},
 		"vertexStreamingEnabledLabel": "स्ट्रीमिंग प्रतिक्रियाएँ सक्षम करें",
 		"vertexStreamingEnabledDescription": "जब कोई गेटवे या मॉडल स्ट्रीमिंग का समर्थन नहीं करता है तो इसे अक्षम करें। प्रतिक्रियाएँ पूर्ण होने के बाद दिखाई देंगी.",
 		"vscodeLmLoading": "इस VS Code विंडो में उपलब्ध भाषा मॉडल लोड हो रहा है...",
@@ -866,19 +678,6 @@
 			"name": "नए कार्यों के लिए 'todos' सूची की आवश्यकता है",
 			"description": "जब सक्षम किया जाता है, तो new_task टूल को todos पैरामीटर प्रदान करने की आवश्यकता होगी। यह सुनिश्चित करता है कि सभी नए कार्य स्पष्ट उद्देश्यों की सूची के साथ शुरू हों। जब अक्षम किया जाता है (डिफ़ॉल्ट), तो todos पैरामीटर पिछड़े संगतता के लिए वैकल्पिक रहता है।"
 		},
-		"IMAGE_GENERATION": {
-			"providerLabel": "प्रदाता",
-			"providerDescription": "छवि निर्माण के लिए प्रदाता चुनें।",
-			"name": "AI छवि निर्माण सक्षम करें",
-			"description": "जब सक्षम किया जाता है, तो Alpha OpenRouter के छवि निर्माण मॉडल का उपयोग करके टेक्स्ट प्रॉम्प्ट से छवियां उत्पन्न कर सकता है। एक कॉन्फ़िगर किए गए OpenRouter API कुंजी की आवश्यकता होती है।",
-			"openRouterApiKeyLabel": "OpenRouter API कुंजी",
-			"openRouterApiKeyPlaceholder": "अपनी OpenRouter API कुंजी दर्ज करें",
-			"getApiKeyText": "अपनी API कुंजी प्राप्त करें",
-			"modelSelectionLabel": "छवि निर्माण मॉडल",
-			"modelSelectionDescription": "छवि निर्माण के लिए उपयोग करने वाला मॉडल चुनें",
-			"warningMissingKey": "⚠️ छवि निर्माण के लिए OpenRouter API कुंजी आवश्यक है। कृपया इसे ऊपर कॉन्फ़िगर करें।",
-			"successConfigured": "✓ छवि निर्माण कॉन्फ़िगर है और उपयोग के लिए तैयार है"
-		},
 		"RUN_SLASH_COMMAND": {
 			"name": "मॉडल द्वारा शुरू किए गए स्लैश कमांड सक्षम करें",
 			"description": "जब सक्षम होता है, Alpha वर्कफ़्लो चलाने के लिए आपके स्लैश कमांड चला सकता है।"
@@ -919,12 +718,7 @@
 		"enableR1Format": "R1 मॉडल पैरामीटर सक्षम करें",
 		"enableR1FormatTips": "QWQ जैसी R1 मॉडलों का उपयोग करते समय इसे सक्षम करना आवश्यक है, ताकि 400 त्रुटि से बचा जा सके",
 		"useAzure": "Azure का उपयोग करें",
-		"azureApiVersion": "Azure API संस्करण सेट करें",
-		"gemini": {
-			"freeRequests": "* प्रति मिनट {{count}} अनुरोधों तक मुफ्त। उसके बाद, बिलिंग प्रॉम्प्ट आकार पर निर्भर करती है।",
-			"pricingDetails": "अधिक जानकारी के लिए, मूल्य निर्धारण विवरण देखें।",
-			"billingEstimate": "* बिलिंग एक अनुमान है - सटीक लागत प्रॉम्प्ट आकार पर निर्भर करती है।"
-		}
+		"azureApiVersion": "Azure API संस्करण सेट करें"
 	},
 	"modelPicker": {
 		"automaticFetch": "एक्सटेंशन <serviceLink>{{serviceName}}</serviceLink> पर उपलब्ध मॉडलों की नवीनतम सूची स्वचालित रूप से प्राप्त करता है। यदि आप अनिश्चित हैं कि कौन सा मॉडल चुनना है, तो Alpha <defaultModelLink>{{defaultModelId}}</defaultModelLink> के साथ सबसे अच्छा काम करता है। आप वर्तमान में उपलब्ध निःशुल्क विकल्पों के लिए \"free\" भी खोज सकते हैं।",
@@ -951,20 +745,14 @@
 	},
 	"validation": {
 		"apiKey": "आपको एक मान्य API कुंजी प्रदान करनी होगी।",
-		"awsRegion": "Amazon Bedrock का उपयोग करने के लिए आपको एक क्षेत्र चुनना होगा।",
 		"modelId": "आपको एक मान्य मॉडल ID प्रदान करनी होगी।",
 		"modelSelector": "आपको एक मान्य मॉडल चयनकर्ता प्रदान करना होगा।",
 		"openAi": "आपको एक मान्य बेस URL, API कुंजी और मॉडल ID प्रदान करनी होगी।",
-		"arn": {
-			"invalidFormat": "अमान्य ARN प्रारूप। कृपया प्रारूप आवश्यकताएं जांचें।",
-			"regionMismatch": "चेतावनी: आपके ARN में क्षेत्र ({{arnRegion}}) आपके चयनित क्षेत्र ({{region}}) से मेल नहीं खाता। इससे पहुंच संबंधी समस्याएं हो सकती हैं। प्रदाता ARN से क्षेत्र का उपयोग करेगा।"
-		},
 		"modelAvailability": "आपके द्वारा प्रदान की गई मॉडल ID ({{modelId}}) उपलब्ध नहीं है। कृपया कोई अन्य मॉडल चुनें।",
 		"modelDeprecated": "यह मॉडल अब उपलब्ध नहीं है। कृपया कोई अन्य मॉडल चुनें।",
 		"providerNotAllowed": "प्रदाता '{{provider}}' आपके संगठन द्वारा अनुमत नहीं है",
 		"modelNotAllowed": "मॉडल '{{model}}' प्रदाता '{{provider}}' के लिए आपके संगठन द्वारा अनुमत नहीं है",
 		"profileInvalid": "इस प्रोफ़ाइल में एक प्रदाता या मॉडल शामिल है जो आपके संगठन द्वारा अनुमत नहीं है",
-		"qwenCodeOauthPath": "आपको एक वैध OAuth क्रेडेंशियल पथ प्रदान करना होगा",
 		"googleCloud": "आपको एक Google क्लाउड प्रोजेक्ट ID और क्षेत्र प्रदान करना होगा।",
 		"vertexGateway": "Vertex गेटवे के लिए आधार URL, CA बंडल पथ और Helix कमांड की आवश्यकता होती है।",
 		"vertexGatewayModelRoutingMap": "Vertex गेटवे मॉडल रूटिंग मैप स्ट्रिंग मॉडल आईडी के साथ एक JSON ऑब्जेक्ट होना चाहिए।",
@@ -973,19 +761,11 @@
 	"placeholders": {
 		"apiKey": "API कुंजी दर्ज करें...",
 		"profileName": "प्रोफ़ाइल नाम दर्ज करें",
-		"accessKey": "एक्सेस कुंजी दर्ज करें...",
-		"secretKey": "गुप्त कुंजी दर्ज करें...",
-		"sessionToken": "सत्र टोकन दर्ज करें...",
 		"credentialsJson": "क्रेडेंशियल्स JSON दर्ज करें...",
 		"keyFilePath": "कुंजी फ़ाइल पथ दर्ज करें...",
 		"projectId": "प्रोजेक्ट ID दर्ज करें...",
-		"customArn": "ARN दर्ज करें (उदा. arn:aws:bedrock:us-east-1:123456789012:foundation-model/my-model)",
 		"baseUrl": "बेस URL दर्ज करें...",
-		"modelId": {
-			"lmStudio": "उदा. meta-llama-3.1-8b-instruct",
-			"lmStudioDraft": "उदा. lmstudio-community/llama-3.2-1b-instruct",
-			"ollama": "उदा. llama3.1"
-		},
+		"modelId": {},
 		"numbers": {
 			"maxTokens": "उदा. 4096",
 			"contextWindow": "उदा. 128000",
@@ -994,15 +774,8 @@
 			"cacheWritePrice": "उदा. 0.00005"
 		}
 	},
-	"defaults": {
-		"ollamaUrl": "डिफ़ॉल्ट: http://localhost:11434",
-		"lmStudioUrl": "डिफ़ॉल्ट: http://localhost:1234",
-		"geminiUrl": "डिफ़ॉल्ट: https://generativelanguage.googleapis.com"
-	},
-	"labels": {
-		"customArn": "कस्टम ARN",
-		"useCustomArn": "कस्टम ARN का उपयोग करें..."
-	},
+	"defaults": {},
+	"labels": {},
 	"includeMaxOutputTokens": "अधिकतम आउटपुट टोकन शामिल करें",
 	"includeMaxOutputTokensDescription": "API अनुरोधों में अधिकतम आउटपुट टोकन पैरामीटर भेजें। कुछ प्रदाता इसका समर्थन नहीं कर सकते हैं।",
 	"limitMaxTokensDescription": "प्रतिक्रिया में टोकन की अधिकतम संख्या सीमित करें",
@@ -1121,10 +894,5 @@
 				"description": "पृथक संपादन कर्मियों के लिए वैकल्पिक प्रोफ़ाइल ओवरराइड।"
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "GitHub टोकन",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "VS Code गुप्त भंडारण में सुरक्षित रूप से संग्रहीत। पुल अनुरोधों, जांचों, टिप्पणियों और विलयों के लिए मूल GitHub API टूल द्वारा उपयोग किया जाता है।"
 	}
 }

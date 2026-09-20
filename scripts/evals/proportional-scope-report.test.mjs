@@ -26,6 +26,30 @@ const event = (sequence, type, payload = {}) => ({
 	payload,
 })
 
+test("classifies current tools while retaining historical command evidence", () => {
+	const names = [
+		"shell",
+		"execute_command",
+		"manage_command",
+		"read_command_output",
+		"edit",
+		"apply_patch",
+		"write_to_file",
+		"spawn_agent",
+		"wait_agent",
+		"send_message",
+		"followup_task",
+		"list_agents",
+		"close_agent",
+	]
+	const report = buildReport(input({ trace: names.map((name, index) => event(index + 1, "tool_result", { name })) }))
+	assert.equal(report.observedTotal.commandCount.value, 2)
+	assert.equal(report.observedTotal.toolCategories.terminal.value, 4)
+	assert.equal(report.observedTotal.toolCategories.mutation.value, 3)
+	assert.equal(report.observedTotal.toolCategories.delegation.value, 6)
+	assert.equal(report.observedTotal.toolCategories.other.value, 0)
+})
+
 test("attributes all four phases without inferring phase from tool names", () => {
 	const trace = [
 		event(1, "tool_result", { name: "read_file", output: "é" }),

@@ -42,8 +42,7 @@
 		"language": "Taal",
 		"about": "Over Alpha",
 		"skills": "Skills",
-		"agents": "Agents",
-		"github": "GitHub"
+		"agents": "Agents"
 	},
 	"about": {
 		"bugReport": {
@@ -113,42 +112,10 @@
 		"enableDescription": "Code-indexering inschakelen voor verbeterde zoekresultaten en contextbegrip",
 		"providerLabel": "Embeddings provider",
 		"selectProviderPlaceholder": "Selecteer provider",
-		"openaiProvider": "OpenAI",
-		"ollamaProvider": "Ollama",
-		"geminiProvider": "Gemini",
 		"vertexProvider": "GCP Vertex AI",
-		"geminiApiKeyLabel": "API-sleutel:",
-		"geminiApiKeyPlaceholder": "Voer uw Gemini API-sleutel in",
-		"vercelAiGatewayProvider": "Vercel AI Gateway",
-		"vercelAiGatewayApiKeyLabel": "API-sleutel",
-		"vercelAiGatewayApiKeyPlaceholder": "Voer uw Vercel AI Gateway API-sleutel in",
-		"bedrockProvider": "Amazon Bedrock",
-		"bedrockRegionLabel": "AWS-regio",
-		"bedrockRegionPlaceholder": "us-east-1",
-		"bedrockProfileLabel": "AWS-profiel",
-		"bedrockProfilePlaceholder": "default",
-		"bedrockProfileDescription": "AWS-profielnaam uit ~/.aws/credentials (vereist).",
-		"openRouterProvider": "OpenRouter",
-		"openRouterApiKeyLabel": "OpenRouter API-sleutel",
-		"openRouterApiKeyPlaceholder": "Voer uw OpenRouter API-sleutel in",
-		"openRouterProviderRoutingLabel": "OpenRouter Provider Routing",
-		"openRouterProviderRoutingDescription": "OpenRouter stuurt verzoeken naar de best beschikbare providers voor uw embedding model. Standaard worden verzoeken verdeeld over de beste providers om de uptime te maximaliseren. U kunt echter een specifieke provider kiezen om voor dit model te gebruiken.",
-		"mistralProvider": "Mistral",
-		"mistralApiKeyLabel": "API-sleutel:",
-		"mistralApiKeyPlaceholder": "Voer uw Mistral API-sleutel in",
-		"openaiCompatibleProvider": "OpenAI-compatibel",
-		"openAiKeyLabel": "OpenAI API-sleutel",
-		"openAiKeyPlaceholder": "Voer uw OpenAI API-sleutel in",
-		"openAiCompatibleBaseUrlLabel": "Basis-URL",
-		"openAiCompatibleApiKeyLabel": "API-sleutel",
-		"openAiCompatibleApiKeyPlaceholder": "Voer uw API-sleutel in",
-		"openAiCompatibleModelDimensionLabel": "Embedding Dimensie:",
 		"modelDimensionLabel": "Model Dimensie",
-		"openAiCompatibleModelDimensionPlaceholder": "bijv., 1536",
-		"openAiCompatibleModelDimensionDescription": "De embedding dimensie (uitvoergrootte) voor uw model. Controleer de documentatie van uw provider voor deze waarde. Veelvoorkomende waarden: 384, 768, 1536, 3072.",
 		"modelLabel": "Model",
 		"selectModelPlaceholder": "Selecteer model",
-		"ollamaUrlLabel": "Ollama URL:",
 		"qdrantUrlLabel": "Qdrant URL",
 		"qdrantKeyLabel": "Qdrant-sleutel:",
 		"startIndexingButton": "Start",
@@ -167,12 +134,9 @@
 		"embedderProviderLabel": "Embedder Provider",
 		"modelPlaceholder": "Voer modelnaam in",
 		"selectModel": "Selecteer een model",
-		"ollamaBaseUrlLabel": "Ollama Basis-URL",
 		"qdrantApiKeyLabel": "Qdrant API-sleutel",
 		"qdrantApiKeyPlaceholder": "Voer je Qdrant API-sleutel in (optioneel)",
 		"setupConfigLabel": "Instellen",
-		"ollamaUrlPlaceholder": "http://localhost:11434",
-		"openAiCompatibleBaseUrlPlaceholder": "https://api.example.com",
 		"modelDimensionPlaceholder": "1536",
 		"qdrantUrlPlaceholder": "http://localhost:6333",
 		"saveError": "Kan instellingen niet opslaan",
@@ -189,23 +153,14 @@
 		"close": "Sluiten",
 		"validation": {
 			"invalidQdrantUrl": "Ongeldige Qdrant URL",
-			"invalidOllamaUrl": "Ongeldige Ollama URL",
 			"invalidBaseUrl": "Ongeldige basis-URL",
 			"qdrantUrlRequired": "Qdrant URL is vereist",
-			"openaiApiKeyRequired": "OpenAI API-sleutel is vereist",
 			"modelSelectionRequired": "Modelselectie is vereist",
 			"apiKeyRequired": "API-sleutel is vereist",
 			"modelIdRequired": "Model-ID is vereist",
 			"modelDimensionRequired": "Modelafmeting is vereist",
-			"geminiApiKeyRequired": "Gemini API-sleutel is vereist",
-			"mistralApiKeyRequired": "Mistral API-sleutel is vereist",
-			"vercelAiGatewayApiKeyRequired": "Vercel AI Gateway API-sleutel is vereist",
-			"bedrockRegionRequired": "AWS-regio is vereist",
-			"bedrockProfileRequired": "AWS-profiel is vereist",
-			"ollamaBaseUrlRequired": "Ollama basis-URL is vereist",
 			"baseUrlRequired": "Basis-URL is vereist",
 			"modelDimensionMinValue": "Modelafmeting moet groter zijn dan 0",
-			"openRouterApiKeyRequired": "OpenRouter API-sleutel is vereist",
 			"vertexProjectIdRequired": "Google Cloud project ID is required",
 			"vertexRegionRequired": "Google Cloud region is required",
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
@@ -327,7 +282,6 @@
 		"nameEmpty": "Naam mag niet leeg zijn",
 		"nameExists": "Er bestaat al een profiel met deze naam",
 		"deleteProfile": "Profiel verwijderen",
-		"invalidArnFormat": "Ongeldig ARN-formaat. Controleer de bovenstaande voorbeelden.",
 		"enterNewName": "Voer een nieuwe naam in",
 		"addProfile": "Profiel toevoegen",
 		"renameProfile": "Profiel hernoemen",
@@ -339,46 +293,9 @@
 		"searchProviderPlaceholder": "Zoek providers",
 		"noProviderMatchFound": "Geen providers gevonden",
 		"noMatchFound": "Geen overeenkomende profielen gevonden",
-		"retiredProviderMessage": "Sorry, deze provider wordt niet meer ondersteund. We zagen dat heel weinig Alpha-gebruikers het daadwerkelijk gebruikten en we moeten de omvang van onze codebase verkleinen zodat we snel kunnen blijven leveren en onze community goed kunnen blijven bedienen. Het was een heel moeilijke beslissing, maar het stelt ons in staat om ons te richten op wat het belangrijkst voor je is. Het is vervelend, dat weten we.",
+		"retiredProviderMessage": "Deze opgeslagen provider wordt niet meer ondersteund. Selecteer GCP Vertex AI, VS Code LM API, Stellar of OpenAI Compatible in Instellingen.",
 		"vscodeLmDescription": "De VS Code Language Model API stelt je in staat modellen te draaien die door andere VS Code-extensies worden geleverd (waaronder GitHub Copilot). De eenvoudigste manier om te beginnen is door de Copilot- en Copilot Chat-extensies te installeren vanuit de VS Code Marketplace.",
-		"awsCustomArnUse": "Voer een geldige Amazon Bedrock ARN in voor het model dat je wilt gebruiken. Voorbeeldformaten:",
-		"awsCustomArnDesc": "Zorg ervoor dat de regio in de ARN overeenkomt met je geselecteerde AWS-regio hierboven.",
-		"openRouterApiKey": "OpenRouter API-sleutel",
-		"getOpenRouterApiKey": "OpenRouter API-sleutel ophalen",
-		"vercelAiGatewayApiKey": "Vercel AI Gateway API-sleutel",
-		"getVercelAiGatewayApiKey": "Vercel AI Gateway API-sleutel ophalen",
 		"apiKeyStorageNotice": "API-sleutels worden veilig opgeslagen in de geheime opslag van VSCode",
-		"openAiCodexRateLimits": {
-			"title": "Usage Limits for Codex{{planLabel}}",
-			"loading": "Loading usage limits...",
-			"loadError": "Failed to load usage limits",
-			"retry": "Retry",
-			"usedPercent": "{{percent}}% used",
-			"resetsIn": "Resets in {{time}}",
-			"plan": {
-				"default": "",
-				"withType": " ({{planType}})"
-			},
-			"time": {
-				"now": "Now",
-				"notAvailable": "N/A"
-			},
-			"duration": {
-				"daysHours": "{{days}}d {{hours}}h",
-				"hoursMinutes": "{{hours}}h {{minutes}}m",
-				"minutes": "{{minutes}}m"
-			},
-			"window": {
-				"usage": "Usage",
-				"fiveHour": "5h limit",
-				"oneHour": "1h limit",
-				"daily": "Daily limit",
-				"weekly": "Weekly limit",
-				"days": "{{days}}d limit",
-				"hours": "{{hours}}h limit",
-				"minutes": "{{minutes}}m limit"
-			}
-		},
 		"useCustomBaseUrl": "Aangepaste basis-URL gebruiken",
 		"useReasoning": "Redenering inschakelen",
 		"useHostHeader": "Aangepaste Host-header gebruiken",
@@ -386,9 +303,6 @@
 		"headerName": "Headernaam",
 		"headerValue": "Headerwaarde",
 		"noCustomHeaders": "Geen aangepaste headers gedefinieerd. Klik op de + knop om er een toe te voegen.",
-		"unboundApiKey": "Unbound API sleutel",
-		"getUnboundApiKey": "Unbound API-sleutel ophalen",
-		"requestyApiKey": "Requesty API-sleutel",
 		"refreshModels": {
 			"label": "Modellen verversen",
 			"hint": "Open de instellingen opnieuw om de nieuwste modellen te zien.",
@@ -397,109 +311,14 @@
 			"error": "Kan modellenlijst niet vernieuwen. Probeer het opnieuw.",
 			"missingConfig": "Voer de vereiste providerconfiguratie in voordat u de modellen vernieuwt."
 		},
-		"getRequestyApiKey": "Requesty API-sleutel ophalen",
-		"getRequestyBaseUrl": "Basis-URL",
-		"requestyUseCustomBaseUrl": "Gebruik aangepaste basis-URL",
-		"anthropicApiKey": "Anthropic API-sleutel",
-		"getAnthropicApiKey": "Anthropic API-sleutel ophalen",
-		"anthropicUseAuthToken": "Anthropic API-sleutel als Authorization-header doorgeven in plaats van X-Api-Key",
-		"anthropic1MContextBetaLabel": "1M contextvenster inschakelen (bèta)",
-		"anthropic1MContextBetaDescription": "Breidt het contextvenster uit tot 1 miljoen tokens voor Claude Sonnet 4.x / Claude Opus 4.6",
-		"awsBedrock1MContextBetaLabel": "1M contextvenster inschakelen (bèta)",
-		"awsBedrock1MContextBetaDescription": "Breidt het contextvenster uit tot 1 miljoen tokens voor Claude Sonnet 4.x / Claude Opus 4.6",
 		"vertex1MContextBetaLabel": "1M contextvenster inschakelen (bèta)",
 		"vertex1MContextBetaDescription": "Breidt het contextvenster uit tot 1 miljoen tokens voor Claude Sonnet 4.x / Claude Opus 4.6",
-		"basetenApiKey": "Baseten API-sleutel",
-		"getBasetenApiKey": "Baseten API-sleutel verkrijgen",
-		"poeApiKey": "Poe API-sleutel",
-		"getPoeApiKey": "Poe API-sleutel verkrijgen",
-		"poeBaseUrl": "Poe Basis-URL",
-		"fireworksApiKey": "Fireworks API-sleutel",
-		"getFireworksApiKey": "Fireworks API-sleutel ophalen",
-		"deepSeekApiKey": "DeepSeek API-sleutel",
-		"getDeepSeekApiKey": "DeepSeek API-sleutel ophalen",
-		"moonshotApiKey": "Moonshot API-sleutel",
-		"getMoonshotApiKey": "Moonshot API-sleutel ophalen",
-		"moonshotBaseUrl": "Moonshot-ingangspunt",
-		"zaiApiKey": "Z AI API-sleutel",
-		"getZaiApiKey": "Z AI API-sleutel ophalen",
-		"zaiEntrypoint": "Z AI-ingangspunt",
-		"zaiEntrypointDescription": "Selecteer het juiste API-ingangspunt op basis van uw locatie. Als u zich in China bevindt, kies dan open.bigmodel.cn. Anders kiest u api.z.ai.",
-		"minimaxApiKey": "MiniMax API-sleutel",
-		"getMiniMaxApiKey": "MiniMax API-sleutel ophalen",
-		"minimaxBaseUrl": "MiniMax-ingangspunt",
-		"geminiApiKey": "Gemini API-sleutel",
-		"getSambaNovaApiKey": "SambaNova API-sleutel ophalen",
-		"sambaNovaApiKey": "SambaNova API-sleutel",
-		"getGeminiApiKey": "Gemini API-sleutel ophalen",
 		"apiKey": "API-sleutel",
 		"openAiApiKey": "OpenAI API-sleutel",
 		"openAiBaseUrl": "Basis-URL",
 		"getOpenAiApiKey": "OpenAI API-sleutel ophalen",
-		"mistralApiKey": "Mistral API-sleutel",
-		"getMistralApiKey": "Mistral / Codestral API-sleutel ophalen",
-		"codestralBaseUrl": "Codestral basis-URL (optioneel)",
-		"codestralBaseUrlDesc": "Stel een alternatieve URL in voor het Codestral-model.",
-		"xaiApiKey": "xAI API-sleutel",
-		"getXaiApiKey": "xAI API-sleutel ophalen",
-		"litellmApiKey": "LiteLLM API-sleutel",
-		"litellmBaseUrl": "LiteLLM basis-URL",
-		"awsCredentials": "AWS-inloggegevens",
-		"awsProfile": "AWS-profiel",
-		"awsApiKey": "Amazon Bedrock API-sleutel",
-		"awsProfileName": "AWS-profielnaam",
-		"awsAccessKey": "AWS-toegangssleutel",
-		"awsSecretKey": "AWS-geheime sleutel",
-		"awsSessionToken": "AWS-sessietoken",
-		"awsRegion": "AWS-regio",
-		"awsCrossRegion": "Gebruik cross-region inference",
-		"awsGlobalInference": "Gebruik wereldwijde inferentie (automatische selectie van optimale AWS-regio)",
-		"awsServiceTier": "Servicelaag",
-		"awsServiceTierStandard": "Standard",
-		"awsServiceTierStandardDesc": "Gebalanceerde prestaties en kosten",
-		"awsServiceTierFlex": "Flex (50% korting)",
-		"awsServiceTierFlexDesc": "Lagere kosten, hogere latency voor niet-kritieke taken",
-		"awsServiceTierPriority": "Priority (75% premie)",
-		"awsServiceTierPriorityDesc": "Snelste prestaties voor kritieke toepassingen",
-		"awsServiceTierNote": "Servicelagen beïnvloeden prijzen en prestaties. Flex biedt 50% korting met hogere latency, Priority biedt 25% betere prestaties met 75% premie.",
-		"awsBedrockVpc": {
-			"useCustomVpcEndpoint": "Aangepast VPC-eindpunt gebruiken",
-			"vpcEndpointUrlPlaceholder": "Voer VPC-eindpunt URL in (optioneel)",
-			"examples": "Voorbeelden:"
-		},
-		"enablePromptCaching": "Prompt caching inschakelen",
-		"enablePromptCachingTitle": "Schakel prompt caching in om de prestaties te verbeteren en de kosten te verlagen voor ondersteunde modellen.",
-		"cacheUsageNote": "Let op: als je geen cachegebruik ziet, probeer dan een ander model te selecteren en vervolgens weer je gewenste model.",
 		"vscodeLmModel": "Taalmodel",
 		"vscodeLmWarning": "Let op: Modellen die via de VS Code Language Model API worden benaderd kunnen door de provider worden verpakt of fijn‑afgesteld, waardoor het gedrag kan afwijken van het rechtstreeks gebruiken van hetzelfde model bij een typische provider of router. Om een model uit de keuzelijst ‘Language Model’ te gebruiken, schakel eerst naar dat model en klik vervolgens op ‘Accepteren’ in de Copilot Chat‑prompt; anders kun je een fout zien zoals 400 ‘The requested model is not supported’.",
-		"lmStudio": {
-			"baseUrl": "Basis-URL (optioneel)",
-			"modelId": "Model-ID",
-			"speculativeDecoding": "Speculatieve decodering inschakelen",
-			"draftModelId": "Draft Model-ID",
-			"draftModelDesc": "Draft-model moet uit dezelfde modelfamilie komen voor correcte speculatieve decodering.",
-			"selectDraftModel": "Selecteer draft-model",
-			"noModelsFound": "Geen draft-modellen gevonden. Zorg dat LM Studio draait met Server Mode ingeschakeld.",
-			"description": "LM Studio laat je modellen lokaal op je computer draaien. Zie hun <a>quickstart-gids</a> voor instructies. Je moet ook de <b>lokale server</b>-functie van LM Studio starten om het met deze extensie te gebruiken. <span>Let op:</span> Alpha gebruikt complexe prompts en werkt het beste met Claude-modellen. Minder krachtige modellen werken mogelijk niet zoals verwacht."
-		},
-		"ollama": {
-			"baseUrl": "Basis-URL (optioneel)",
-			"modelId": "Model-ID",
-			"apiKey": "Ollama API-sleutel",
-			"apiKeyHelp": "Optionele API-sleutel voor geauthenticeerde Ollama-instanties of cloudservices. Laat leeg voor lokale installaties.",
-			"numCtx": "Contextvenstergrootte (num_ctx)",
-			"numCtxHelp": "Overschrijft de standaard contextvenstergrootte van het model. Laat leeg om de Modelfile-configuratie van het model te gebruiken. De minimumwaarde is 128.",
-			"description": "Ollama laat je modellen lokaal op je computer draaien. Zie hun quickstart-gids voor instructies.",
-			"warning": "Let op: Alpha gebruikt complexe prompts en werkt het beste met Claude-modellen. Minder krachtige modellen werken mogelijk niet zoals verwacht."
-		},
-		"roo": {},
-		"openRouter": {
-			"providerRouting": {
-				"title": "OpenRouter-providerroutering",
-				"description": "OpenRouter stuurt verzoeken naar de best beschikbare providers voor je model. Standaard worden verzoeken gebalanceerd over de beste providers voor maximale uptime. Je kunt echter een specifieke provider kiezen voor dit model.",
-				"learnMore": "Meer informatie over providerroutering"
-			}
-		},
 		"customModel": {
 			"capabilities": "Stel de mogelijkheden en prijzen in voor je aangepaste OpenAI-compatibele model. Wees voorzichtig met het opgeven van de modelmogelijkheden, want deze kunnen de prestaties van Alpha beïnvloeden.",
 			"maxTokens": {
@@ -570,13 +389,6 @@
 			"description": "Bepaalt hoe gedetailleerd de reacties van het model zijn. Lage uitvoerbaarheid levert beknopte antwoorden op, terwijl hoge uitvoerbaarheid uitgebreide uitleg geeft."
 		},
 		"setReasoningLevel": "Redeneervermogen inschakelen",
-		"claudeCode": {
-			"pathLabel": "Claude Code Pad",
-			"description": "Optioneel pad naar uw Claude Code CLI. Standaard 'claude' als niet ingesteld.",
-			"placeholder": "Standaard: claude",
-			"maxTokensLabel": "Max Output Tokens",
-			"maxTokensDescription": "Maximaal aantal output-tokens voor Claude Code-reacties. Standaard is 8000."
-		},
 		"vertexStreamingEnabledLabel": "Streamingreacties inschakelen",
 		"vertexStreamingEnabledDescription": "Schakel dit uit wanneer een gateway of model streaming niet ondersteunt. Reacties verschijnen na voltooiing.",
 		"vscodeLmLoading": "De taalmodellen laden die beschikbaar zijn in dit VS Code-venster...",
@@ -866,19 +678,6 @@
 			"name": "'todos'-lijst vereisen voor nieuwe taken",
 			"description": "Wanneer ingeschakeld, vereist de new_task-tool dat een todos-parameter wordt opgegeven. Dit zorgt ervoor dat alle nieuwe taken beginnen met een duidelijke lijst met doelstellingen. Wanneer uitgeschakeld (standaard), blijft de todos-parameter optioneel voor achterwaartse compatibiliteit."
 		},
-		"IMAGE_GENERATION": {
-			"providerLabel": "Provider",
-			"providerDescription": "Selecteer de provider voor het genereren van afbeeldingen.",
-			"name": "AI-afbeeldingsgeneratie inschakelen",
-			"description": "Wanneer ingeschakeld, kan Alpha afbeeldingen genereren van tekstprompts met behulp van OpenRouter's afbeeldingsgeneratiemodellen. Vereist een geconfigureerde OpenRouter API-sleutel.",
-			"openRouterApiKeyLabel": "OpenRouter API-sleutel",
-			"openRouterApiKeyPlaceholder": "Voer je OpenRouter API-sleutel in",
-			"getApiKeyText": "Haal je API-sleutel op van",
-			"modelSelectionLabel": "Afbeeldingsgeneratiemodel",
-			"modelSelectionDescription": "Selecteer het model voor afbeeldingsgeneratie",
-			"warningMissingKey": "⚠️ OpenRouter API-sleutel is vereist voor afbeeldingsgeneratie. Configureer deze hierboven.",
-			"successConfigured": "✓ Afbeeldingsgeneratie is geconfigureerd en klaar voor gebruik"
-		},
 		"RUN_SLASH_COMMAND": {
 			"name": "Model-geïnitieerde slash-commando's inschakelen",
 			"description": "Wanneer ingeschakeld, kan Alpha je slash-commando's uitvoeren om workflows uit te voeren."
@@ -919,12 +718,7 @@
 		"enableR1Format": "R1-modelparameters inschakelen",
 		"enableR1FormatTips": "Moet ingeschakeld zijn bij gebruik van R1-modellen zoals QWQ om 400-fouten te voorkomen",
 		"useAzure": "Azure gebruiken",
-		"azureApiVersion": "Azure API-versie instellen",
-		"gemini": {
-			"freeRequests": "* Gratis tot {{count}} verzoeken per minuut. Daarna is de prijs afhankelijk van de promptgrootte.",
-			"pricingDetails": "Zie prijsdetails voor meer info.",
-			"billingEstimate": "* Facturering is een schatting - de exacte kosten hangen af van de promptgrootte."
-		}
+		"azureApiVersion": "Azure API-versie instellen"
 	},
 	"modelPicker": {
 		"automaticFetch": "De extensie haalt automatisch de nieuwste lijst met modellen op van <serviceLink>{{serviceName}}</serviceLink>. Weet je niet welk model je moet kiezen? Alpha werkt het beste met <defaultModelLink>{{defaultModelId}}</defaultModelLink>. Je kunt ook zoeken op 'free' voor gratis opties die nu beschikbaar zijn.",
@@ -951,20 +745,14 @@
 	},
 	"validation": {
 		"apiKey": "Je moet een geldige API-sleutel opgeven.",
-		"awsRegion": "Je moet een regio kiezen om Amazon Bedrock te gebruiken.",
 		"modelId": "Je moet een geldig model-ID opgeven.",
 		"modelSelector": "Je moet een geldige modelselector opgeven.",
 		"openAi": "Je moet een geldige basis-URL, API-sleutel en model-ID opgeven.",
-		"arn": {
-			"invalidFormat": "Ongeldig ARN-formaat. Controleer de formaatvereisten.",
-			"regionMismatch": "Waarschuwing: De regio in je ARN ({{arnRegion}}) komt niet overeen met je geselecteerde regio ({{region}}). Dit kan toegangsfouten veroorzaken. De provider gebruikt de regio uit de ARN."
-		},
 		"modelAvailability": "Het opgegeven model-ID ({{modelId}}) is niet beschikbaar. Kies een ander model.",
 		"modelDeprecated": "Dit model is niet meer beschikbaar. Kies een ander model.",
 		"providerNotAllowed": "Provider '{{provider}}' is niet toegestaan door je organisatie",
 		"modelNotAllowed": "Model '{{model}}' is niet toegestaan voor provider '{{provider}}' door je organisatie",
 		"profileInvalid": "Dit profiel bevat een provider of model dat niet is toegestaan door je organisatie",
-		"qwenCodeOauthPath": "Je moet een geldig OAuth-referentiepad opgeven",
 		"googleCloud": "U moet een Google Cloud-project ID en regio opgeven.",
 		"vertexGateway": "De Vertex-gateway vereist een basis URL-, CA-bundelpad en Helix-opdracht.",
 		"vertexGatewayModelRoutingMap": "Vertex Gateway Model Routing Map moet een JSON-object zijn met stringmodel-ID's.",
@@ -973,19 +761,11 @@
 	"placeholders": {
 		"apiKey": "Voer API-sleutel in...",
 		"profileName": "Voer profielnaam in",
-		"accessKey": "Voer toegangssleutel in...",
-		"secretKey": "Voer geheime sleutel in...",
-		"sessionToken": "Voer sessietoken in...",
 		"credentialsJson": "Voer Credentials JSON in...",
 		"keyFilePath": "Voer pad naar sleutelbestand in...",
 		"projectId": "Voer project-ID in...",
-		"customArn": "Voer ARN in (bijv. arn:aws:bedrock:us-east-1:123456789012:foundation-model/my-model)",
 		"baseUrl": "Voer basis-URL in...",
-		"modelId": {
-			"lmStudio": "bijv. meta-llama-3.1-8b-instruct",
-			"lmStudioDraft": "bijv. lmstudio-community/llama-3.2-1b-instruct",
-			"ollama": "bijv. llama3.1"
-		},
+		"modelId": {},
 		"numbers": {
 			"maxTokens": "bijv. 4096",
 			"contextWindow": "bijv. 128000",
@@ -994,15 +774,8 @@
 			"cacheWritePrice": "bijv. 0.00005"
 		}
 	},
-	"defaults": {
-		"ollamaUrl": "Standaard: http://localhost:11434",
-		"lmStudioUrl": "Standaard: http://localhost:1234",
-		"geminiUrl": "Standaard: https://generativelanguage.googleapis.com"
-	},
-	"labels": {
-		"customArn": "Aangepaste ARN",
-		"useCustomArn": "Aangepaste ARN gebruiken..."
-	},
+	"defaults": {},
+	"labels": {},
 	"includeMaxOutputTokens": "Maximale output tokens opnemen",
 	"includeMaxOutputTokensDescription": "Stuur maximale output tokens parameter in API-verzoeken. Sommige providers ondersteunen dit mogelijk niet.",
 	"limitMaxTokensDescription": "Beperk het maximale aantal tokens in het antwoord",
@@ -1121,10 +894,5 @@
 				"description": "Optionele profieloverschrijving voor geïsoleerde bewerkingswerkers."
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "GitHub-token",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "Veilig opgeslagen in VS Code geheime opslag. Gebruikt door de native GitHub API-tool voor pull-aanvragen, controles, opmerkingen en samenvoegingen."
 	}
 }

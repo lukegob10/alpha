@@ -7,7 +7,7 @@ import { WORKFLOW_COMMANDS, workflowPrompt } from "./prompts"
 test("cancellation submits a tool call to the pending approval boundary, not a conversational question", () => {
 	const prompt = workflowPrompt("hold")
 	assert.ok(prompt.includes(WORKFLOW_COMMANDS.test))
-	assert.ok(prompt.includes("execute_command"), "the test must request tool submission before approval")
+	assert.ok(prompt.includes("shell"), "the test must request tool submission before approval")
 	assert.ok(prompt.includes("ask_followup_question"), "distinguish the conversational approval boundary")
 })
 
@@ -20,7 +20,7 @@ test("bootstrap discloses the controller-file ignore requirement enforced by the
 
 test("development prompts describe the exact per-call command boundary", () => {
 	for (const phase of Object.values(DEVELOPMENT_PHASES)) {
-		assert.ok(phase.prompt.includes("separate execute_command call"))
+		assert.ok(phase.prompt.includes("separate shell call"))
 		assert.ok(phase.prompt.includes("shell operators"))
 	}
 })

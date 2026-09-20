@@ -36,6 +36,15 @@ describe("containsDangerousSubstitution", () => {
 })
 
 describe("getCommandDecision", () => {
+	it.each(["gh pr list", "gh pr create --fill", "gh api repos/owner/repo/issues -f title=test"])(
+		"uses configured approval rules for %s",
+		(command) => {
+			expect(getCommandDecision(command, [])).toBe("ask_user")
+			expect(getCommandDecision(command, ["git"])).toBe("ask_user")
+			expect(getCommandDecision(command, ["gh"], ["gh"])).toBe("auto_deny")
+			expect(getCommandDecision(command, ["gh"])).toBe("auto_approve")
+		},
+	)
 	it.each(['echo "$(date)"', 'echo "${var@P}"', 'node -e "console.log(1)"'])(
 		"honors explicit global wildcard approval for dynamic commands: %s",
 		(command) => {

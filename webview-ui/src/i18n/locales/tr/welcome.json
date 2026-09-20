@@ -1,13 +1,4 @@
 {
-	"routers": {
-		"requesty": {
-			"description": "Optimize edilmiş LLM yönlendiriciniz",
-			"incentive": "$1 ücretsiz kredi"
-		},
-		"openrouter": {
-			"description": "LLM'ler için birleşik bir arayüz"
-		}
-	},
 	"landing": {
 		"greeting": "Alpha'a Hoş Geldin!",
 		"introduction": "Yerleşik ve genişletilebilir Modlar yelpazesiyle Alpha, daha önce hiç olmadığı gibi planlama, mimari tasarım, kodlama, hata ayıklama ve üretkenliğini artırmanı sağlar.",
@@ -23,7 +14,6 @@
 		"goBack": "Geri",
 		"finish": "Bitir"
 	},
-	"startRouter": "Bir LLM yönlendiricisi kullanmanızı öneririz:",
 	"startCustom": "Veya kendi API anahtarınızı getirebilirsiniz:",
 	"telemetry": {
 		"helpImprove": "Alpha'u iyileştirmeye yardımcı ol",

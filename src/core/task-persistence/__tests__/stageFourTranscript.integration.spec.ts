@@ -114,7 +114,7 @@ async function createHarness() {
 			globalStoragePath: storagePath,
 			abort: false,
 			api: {},
-			apiConfiguration: { apiProvider: "openai-native", apiModelId: "gpt-4.1" },
+			apiConfiguration: { apiProvider: "openai", apiModelId: "gpt-4.1" },
 			apiConversationHistory: [],
 			apiConversationHistorySaveQueue: Promise.resolve(),
 			apiConversationHistoryFailureGeneration: 0,

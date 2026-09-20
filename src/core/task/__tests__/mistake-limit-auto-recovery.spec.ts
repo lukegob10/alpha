@@ -19,7 +19,7 @@ describe("Task mistake-limit recovery", () => {
 		;(task as any)._taskMode = "code"
 		;(task as any)._taskApiConfigName = "5.4 nano"
 		;(task as any).apiConfiguration = {
-			apiProvider: "openai-native",
+			apiProvider: "openai",
 			openAiModelId: "gpt-5.4-nano",
 		}
 		;(task as any).consecutiveMistakeCount = 5

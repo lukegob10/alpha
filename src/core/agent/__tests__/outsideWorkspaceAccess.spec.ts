@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { checkAutoApproval } from "../../auto-approval"
 import type { Task } from "../../task/Task"
+import { getNativeTools } from "../../prompts/tools/native-tools"
 import { ToolRegistry } from "../../tools/ToolRegistry"
 import { writeToFileTool } from "../../tools/WriteToFileTool"
 import { applyPatchTool } from "../../tools/ApplyPatchTool"
@@ -249,7 +250,10 @@ describe("outside workspace execution", () => {
 				callbacks.pushToolResult("written")
 			}
 		})
-		expect((await fixture.run(new ToolRegistry())).results[0].status).toBe("success")
+		expect(
+			(await fixture.run(new ToolRegistry({ nativeTools: getNativeTools({ includeApplyPatch: true }) }))).results[0]
+				.status,
+		).toBe("success")
 		expect(fixture.prompt).toHaveBeenCalledOnce()
 		expect(fixture.provider.recordPrimaryMutation).toHaveBeenCalledWith(
 			expect.anything(),

@@ -66,16 +66,19 @@ describe("Native Tools Filtering by Mode", () => {
 			})
 			ALWAYS_AVAILABLE_TOOLS.forEach((tool) => codeAllowedTools.add(tool))
 
-			// Code SHOULD have edit tools
+			// Code SHOULD have the regular edit tools. apply_patch is a model opt-in
+			// custom editor and must not be granted by the group alone.
 			expect(codeAllowedTools.has("write_to_file")).toBe(true)
-			expect(codeAllowedTools.has("apply_diff")).toBe(true)
+			expect(codeAllowedTools.has("edit")).toBe(true)
+			expect(codeAllowedTools.has("apply_patch")).toBe(false)
 
 			// Code SHOULD have read tools
 			expect(codeAllowedTools.has("read_file")).toBe(true)
 			expect(codeAllowedTools.has("list_files")).toBe(true)
 
 			// Code SHOULD have command tools
-			expect(codeAllowedTools.has("execute_command")).toBe(true)
+			expect(codeAllowedTools.has("shell")).toBe(true)
+			expect(codeAllowedTools.has("manage_command")).toBe(true)
 		})
 
 		it("should filter MCP tools based on use_mcp_tool permission", async () => {

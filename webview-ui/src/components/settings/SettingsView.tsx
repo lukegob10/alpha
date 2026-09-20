@@ -12,7 +12,6 @@ import React, {
 import {
 	CheckCheck,
 	GitBranch,
-	Github,
 	Bell,
 	Database,
 	SquareTerminal,
@@ -38,7 +37,6 @@ import {
 	type ExperimentId,
 	type TelemetrySetting,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
-	ImageGenerationProvider,
 } from "@alpha-code/types"
 
 import { vscode } from "@src/utils/vscode"
@@ -81,7 +79,6 @@ import { SlashCommandsSettings } from "./SlashCommandsSettings"
 import { SkillsSettings } from "./SkillsSettings"
 import { UISettings } from "./UISettings"
 import { AgentsSettings } from "./AgentsSettings"
-import { GitHubSettings } from "./GitHubSettings"
 import ModesView from "../modes/ModesView"
 import McpView from "../mcp/McpView"
 import { WorktreesView } from "../worktrees/WorktreesView"
@@ -116,7 +113,6 @@ export const sectionNames = [
 	"terminal",
 	"modes",
 	"mcp",
-	"github",
 	"worktrees",
 	"prompts",
 	"ui",
@@ -219,10 +215,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		maxDiagnosticMessages,
 		includeTaskHistoryInEnhance,
 		enhancementApiConfigId,
-		imageGenerationProvider,
-		openRouterImageApiKey,
-		githubToken,
-		openRouterImageGenerationSelectedModel,
 		reasoningBlockCollapsed,
 		enterBehavior,
 		maxConcurrentTasks,
@@ -390,46 +382,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		})
 	}, [])
 
-	const setImageGenerationProvider = useCallback((provider: ImageGenerationProvider) => {
-		setCachedState((prevState) => {
-			if (prevState.imageGenerationProvider !== provider) {
-				setChangeDetected(true)
-			}
-
-			return { ...prevState, imageGenerationProvider: provider }
-		})
-	}, [])
-
-	const setOpenRouterImageApiKey = useCallback((apiKey: string) => {
-		setCachedState((prevState) => {
-			if (prevState.openRouterImageApiKey !== apiKey) {
-				setChangeDetected(true)
-			}
-
-			return { ...prevState, openRouterImageApiKey: apiKey }
-		})
-	}, [])
-
-	const setGithubToken = useCallback((token: string) => {
-		setCachedState((prevState) => {
-			if (prevState.githubToken !== token) {
-				setChangeDetected(true)
-			}
-
-			return { ...prevState, githubToken: token }
-		})
-	}, [])
-
-	const setImageGenerationSelectedModel = useCallback((model: string) => {
-		setCachedState((prevState) => {
-			if (prevState.openRouterImageGenerationSelectedModel !== model) {
-				setChangeDetected(true)
-			}
-
-			return { ...prevState, openRouterImageGenerationSelectedModel: model }
-		})
-	}, [])
-
 	const setCustomSupportPromptsField = useCallback((prompts: Record<string, string | undefined>) => {
 		setCachedState((prevState) => {
 			const previousStr = JSON.stringify(prevState.customSupportPrompts)
@@ -518,10 +470,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					maxGitStatusFiles: maxGitStatusFiles ?? 0,
 					showWorktreesInHomeScreen,
 					profileThresholds,
-					imageGenerationProvider,
-					openRouterImageApiKey,
-					githubToken,
-					openRouterImageGenerationSelectedModel,
 					experiments,
 					customModePrompts,
 					customInstructions,
@@ -630,7 +578,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			{ id: "slashCommands", icon: SquareSlash },
 			{ id: "autoApprove", icon: CheckCheck },
 			{ id: "mcp", icon: Server },
-			{ id: "github", icon: Github },
 			{ id: "checkpoints", icon: GitCommitVertical },
 			{ id: "notifications", icon: Bell },
 			{ id: "contextManagement", icon: Database },
@@ -1042,14 +989,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 							/>
 						)}
 
-						{/* GitHub Section */}
-						{renderTab === "github" && (
-							<GitHubSettings
-								githubToken={githubToken as string | undefined}
-								setGithubToken={setGithubToken}
-							/>
-						)}
-
 						{/* Worktrees Section */}
 						{renderTab === "worktrees" && (
 							<WorktreesView
@@ -1093,14 +1032,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 								experiments={experiments}
 								apiConfiguration={apiConfiguration}
 								setApiConfigurationField={setApiConfigurationField}
-								imageGenerationProvider={imageGenerationProvider}
-								openRouterImageApiKey={openRouterImageApiKey as string | undefined}
-								openRouterImageGenerationSelectedModel={
-									openRouterImageGenerationSelectedModel as string | undefined
-								}
-								setImageGenerationProvider={setImageGenerationProvider}
-								setOpenRouterImageApiKey={setOpenRouterImageApiKey}
-								setImageGenerationSelectedModel={setImageGenerationSelectedModel}
 							/>
 						)}
 

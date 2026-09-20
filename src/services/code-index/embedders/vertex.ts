@@ -213,7 +213,7 @@ export class VertexGeminiEmbedder implements IEmbedder {
 				if (!response.embeddings.length) {
 					return {
 						valid: false,
-						error: t("embeddings:openai.invalidResponseFormat"),
+						error: t("embeddings:validation.invalidResponse"),
 					}
 				}
 
@@ -623,7 +623,7 @@ export class VertexGeminiEmbedder implements IEmbedder {
 		const embeddings = responseEmbeddings.map((embedding) => embedding.values ?? [])
 
 		if (embeddings.length !== estimatedTokenCounts.length || embeddings.some((values) => values.length === 0)) {
-			throw new Error(t("embeddings:openai.invalidResponseFormat"))
+			throw new Error(t("embeddings:validation.invalidResponse"))
 		}
 
 		const promptTokens = responseEmbeddings.reduce(

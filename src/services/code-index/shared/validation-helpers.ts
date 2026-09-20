@@ -66,15 +66,13 @@ export interface ValidationError {
 /**
  * Maps HTTP status codes to appropriate error messages
  */
-export function getErrorMessageForStatus(status: number | undefined, embedderType: string): string | undefined {
+export function getErrorMessageForStatus(status: number | undefined, _embedderType: string): string | undefined {
 	switch (status) {
 		case 401:
 		case 403:
 			return t("embeddings:validation.authenticationFailed")
 		case 404:
-			return embedderType === "openai"
-				? t("embeddings:validation.modelNotAvailable")
-				: t("embeddings:validation.invalidEndpoint")
+			return t("embeddings:validation.invalidEndpoint")
 		case 429:
 			return t("embeddings:validation.serviceUnavailable")
 		default:

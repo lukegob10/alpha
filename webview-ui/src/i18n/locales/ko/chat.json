@@ -364,8 +364,6 @@
 		},
 		"release": {
 			"heading": "새로운 기능:",
-			"gpt54": "Poe 제공업체: Poe를 AI 제공업체로 추가해 Alpha에서 Poe 모델에 직접 접근할 수 있게 했어요.",
-			"slashSkills": "xAI 및 MiniMax 개선: xAI 제공업체를 Responses API로 마이그레이션하고, 재사용 가능한 변환 유틸리티를 추가하고, Grok-4.20 기본값을 업데이트하고, MiniMax 모델 목록과 컨텍스트 윈도우 처리를 수정해 더 안정적인 설정을 제공해요.",
 			"geminiPro": "Gemini 3.1 Pro 지원: Gemini 3.1 Pro 모델 지원이 추가되었으며, 향상된 성능을 위해 기본 Gemini 모델로 설정되었습니다.",
 			"welcome": "Alpha v{{version}}에서는 검증, 명령 제어, 작업 연속성이 개선되었습니다.",
 			"acceptanceChecks": "선언된 입력이 변경되지 않는 동안 통과한 검사를 재사용합니다.",
@@ -518,7 +516,7 @@
 	},
 	"retiredProvider": {
 		"title": "공급자 지원 종료",
-		"message": "죄송합니다. 이 공급자는 더 이상 지원되지 않습니다. 실제로 사용하는 Alpha 사용자가 매우 적었고, 빠르게 개발하고 커뮤니티에 잘 봉사하기 위해 코드베이스의 범위를 줄여야 했습니다. 정말 어려운 결정이었지만, 당신에게 가장 중요한 것에 집중할 수 있게 해줍니다. 불편을 드려 죄송합니다.",
+		"message": "저장된 이 제공업체는 더 이상 지원되지 않습니다. 설정에서 GCP Vertex AI, VS Code LM API, Stellar 또는 OpenAI Compatible을 선택하세요.",
 		"openSettings": "설정 열기"
 	},
 	"githubActions": {

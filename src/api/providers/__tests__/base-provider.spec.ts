@@ -4,6 +4,8 @@ import type { ModelInfo } from "@alpha-code/types"
 
 import { BaseProvider } from "../base-provider"
 import type { ApiStream } from "../../transform/stream"
+import { createShellTool } from "../../../core/prompts/tools/native-tools/execute_command"
+import manageCommand from "../../../core/prompts/tools/native-tools/manage_command"
 
 // Create a concrete implementation for testing
 class TestProvider extends BaseProvider {
@@ -270,6 +272,21 @@ describe("BaseProvider", () => {
 
 			expect(result?.[0].function.parameters.additionalProperties).toBe(false)
 			expect(result?.[0].function.parameters.required).toEqual(["path"])
+		})
+
+		it("should preserve explicit non-strict native command schemas", () => {
+			const shell = createShellTool()
+			if (shell.type !== "function" || manageCommand.type !== "function") {
+				throw new Error("native command schemas must be function tools")
+			}
+			const result = provider.testConvertToolsForOpenAI([shell, manageCommand])
+
+			expect(result?.[0].function.strict).toBe(false)
+			expect(result?.[0].function.parameters.required).toEqual(["command"])
+			expect(result?.[0].function.parameters.properties).toEqual(shell.function.parameters?.properties)
+			expect(result?.[1].function.strict).toBe(false)
+			expect(result?.[1].function.parameters.required).toEqual(["action"])
+			expect(result?.[1].function.parameters.properties).toEqual(manageCommand.function.parameters?.properties)
 		})
 
 		it("should not apply schema conversion to MCP tools in base-provider", () => {

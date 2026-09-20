@@ -10,6 +10,9 @@ import { formatResponse } from "../../prompts/responses"
 import { ToolUse, AskApproval, HandleError, PushToolResult } from "../../../shared/tools"
 import { unescapeHtmlEntities } from "../../../utils/text-normalization"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
+import { createAgentResponse } from "../../agent/AgentResponse"
+import { ToolScheduler, type ToolExecutionHost } from "../../agent/ToolScheduler"
+import { ToolRegistry } from "../ToolRegistry"
 
 // Mock dependencies
 vitest.mock("execa", () => ({
@@ -154,31 +157,6 @@ describe("executeCommandTool", () => {
 
 	// Now we can run these tests
 	describe("Basic functionality", () => {
-		it("reports the supported GitHub API alternative without including command arguments in metadata", async () => {
-			const setResultMetadata = vitest.fn()
-			await executeCommandTool.handle(
-				mockAlphaTask,
-				{ ...mockToolUse, nativeArgs: { command: "gh pr create --body private-description" } },
-				{
-					askApproval: mockAskApproval,
-					handleError: mockHandleError,
-					pushToolResult: mockPushToolResult,
-					setResultMetadata,
-				},
-			)
-			expect(setResultMetadata).toHaveBeenCalledWith(
-				expect.objectContaining({
-					failure: expect.objectContaining({
-						reason: "capability_unavailable",
-						effectsStarted: "no",
-						outcome: "known",
-						recovery: { kind: "alternative", toolName: "github_api" },
-					}),
-				}),
-			)
-			expect(JSON.stringify(setResultMetadata.mock.calls)).not.toContain("private-description")
-		})
-
 		it("distinguishes a terminal capability failure before process launch", async () => {
 			vitest
 				.mocked(TerminalRegistry.getOrCreateTerminal)
@@ -286,6 +264,65 @@ describe("executeCommandTool", () => {
 			expect(result).toContain("Command")
 		})
 
+		it("routes a canonical shell call through the scheduler to the legacy command host", async () => {
+			const registry = new ToolRegistry()
+			const provider = {
+				getState: vitest.fn().mockResolvedValue({ terminalShellIntegrationDisabled: true }),
+				postMessageToWebview: vitest.fn(),
+				runWorkspaceMutation: vitest.fn(async (_task: Task, _label: string, run: () => Promise<void>) => run()),
+			}
+			const task = {
+				...mockAlphaTask,
+				taskId: "shell-scheduler-task",
+				providerRef: { deref: vitest.fn(() => provider) },
+			} as unknown as Task
+			const userMessageContent: ToolExecutionHost["userMessageContent"] = []
+			const call = {
+				type: "tool_call" as const,
+				id: "shell-scheduler-call",
+				name: "shell",
+				arguments: { command: "echo test" },
+			}
+			const host: ToolExecutionHost = {
+				taskId: "shell-scheduler-task",
+				cwd: "/test/workspace",
+				userMessageContent,
+				askApproval: vitest.fn().mockResolvedValue({ response: "yesButtonClicked" }),
+				say: vitest.fn().mockResolvedValue(undefined),
+				recordToolUsage: vitest.fn(),
+				pushToolResultToUserContent: vitest.fn(() => true),
+				taskFacade: task,
+			}
+			;(host.pushToolResultToUserContent as ReturnType<typeof vitest.fn>).mockImplementation(
+				(result: Parameters<ToolExecutionHost["pushToolResultToUserContent"]>[0]) => {
+					userMessageContent.push(result)
+					return true
+				},
+			)
+
+			const outcome = await new ToolScheduler({
+				executionHost: host,
+				registry,
+				mode: "code",
+				validateCall: () => {},
+			}).run(createAgentResponse([call]))
+
+			expect(outcome.results[0]).toMatchObject({
+				name: "shell",
+				status: "success",
+				content: expect.stringContaining("Command is still running"),
+			})
+			expect(host.recordToolUsage).toHaveBeenCalledWith("shell")
+			expect(host.askApproval).toHaveBeenCalledWith("command", "echo test", undefined, false)
+			expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledWith(
+				"/test/workspace",
+				"shell-scheduler-task",
+				"execa",
+			)
+			expect(userMessageContent).toHaveLength(1)
+			expect(userMessageContent[0]).toMatchObject({ type: "tool_result", tool_use_id: "shell-scheduler-call" })
+		})
+
 		it("should pass along custom working directory if provided", async () => {
 			// Setup
 			mockToolUse.params.command = "echo test"
@@ -307,24 +344,42 @@ describe("executeCommandTool", () => {
 			expect(result).toContain("/custom/path")
 		})
 
-		it("should not execute GitHub CLI commands", async () => {
-			mockToolUse.params.command = "gh pr create --fill"
-			mockToolUse.nativeArgs = { command: "gh pr create --fill" }
-			;(formatResponse.toolError as any).mockReturnValue("GitHub CLI disabled")
-
-			await executeCommandTool.handle(mockAlphaTask as unknown as Task, mockToolUse, {
-				askApproval: mockAskApproval as unknown as AskApproval,
-				handleError: mockHandleError as unknown as HandleError,
-				pushToolResult: mockPushToolResult as unknown as PushToolResult,
-			})
-
-			expect(mockAlphaTask.recordToolError).toHaveBeenCalledWith("execute_command")
-			expect(formatResponse.toolError).toHaveBeenCalledWith(
-				expect.stringContaining("GitHub CLI commands are disabled"),
+		it.each([
+			"gh pr list",
+			"gh pr create --fill",
+			"gh api repos/owner/repo/issues -f title=test",
+			"gh alias set shortcut '!echo changed'",
+			"gh extension exec custom",
+		])("runs %s through ordinary command approval", async (command) => {
+			await executeCommandTool.handle(
+				mockAlphaTask,
+				{ ...mockToolUse, nativeArgs: { command } },
+				{
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+				},
 			)
-			expect(mockPushToolResult).toHaveBeenCalledWith("GitHub CLI disabled")
-			expect(mockAskApproval).not.toHaveBeenCalled()
-			expect(executeCommandModule.executeCommandInTerminal).not.toHaveBeenCalled()
+			expect(mockAskApproval).toHaveBeenCalledExactlyOnceWith("command", command)
+			expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledOnce()
+			expect(mockPushToolResult).toHaveBeenCalledOnce()
+		})
+
+		it("does not launch gh when command approval is denied", async () => {
+			mockAskApproval.mockResolvedValue(false)
+			const command = "gh pr merge 123 --merge"
+			await executeCommandTool.handle(
+				mockAlphaTask,
+				{ ...mockToolUse, nativeArgs: { command } },
+				{
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+				},
+			)
+			expect(mockAskApproval).toHaveBeenCalledExactlyOnceWith("command", command)
+			expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+			expect(mockAlphaTask.failCommandExecution).toHaveBeenCalledWith(expect.any(String), "denied")
 		})
 
 		it("should still allow local git commands", async () => {

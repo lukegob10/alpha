@@ -84,7 +84,7 @@ describe("Task token usage throttling", () => {
 
 		// Mock API configuration
 		mockApiConfiguration = {
-			apiProvider: "anthropic",
+			apiProvider: "vertex",
 			apiKey: "test-key",
 		} as ProviderSettings
 

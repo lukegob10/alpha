@@ -398,9 +398,8 @@ async function main() {
 		if (role !== "luna-high") throw new Error("frontier-v1 model campaigns require --role luna-high")
 		const provider = (optionalValueAfter(args, "--provider") ??
 			process.env.EVALS_MODEL_PROVIDER ??
-			"openai-native") as ModelCampaignProvider
-		if (provider !== "openai-native" && provider !== "openrouter")
-			throw new Error("--provider must be openai-native or openrouter")
+			"openai") as ModelCampaignProvider
+		if (provider !== "openai") throw new Error("--provider must be openai (OpenAI Compatible)")
 		const modelEnvironment = "EVALS_LUNA_HIGH_MODEL"
 		const modelId = optionalValueAfter(args, "--model-id") ?? process.env[modelEnvironment]
 		if (!modelId) throw new Error(`--model-id or ${modelEnvironment} is required`)

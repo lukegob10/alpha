@@ -12,7 +12,7 @@ describe("AlphaProvider.delegateParentAndOpenChild()", () => {
 			emit: vi.fn(),
 			flushPendingToolResultsToHistory: vi.fn().mockResolvedValue(true),
 			getTaskApiConfigName: vi.fn().mockResolvedValue("profile-1"),
-			apiConfiguration: { apiProvider: "anthropic" },
+			apiConfiguration: { apiProvider: "vertex" },
 		} as any
 
 		const childStart = vi.fn()
@@ -118,7 +118,7 @@ describe("AlphaProvider.delegateParentAndOpenChild()", () => {
 			emit: vi.fn(),
 			flushPendingToolResultsToHistory: vi.fn().mockResolvedValue(true),
 			getTaskApiConfigName: vi.fn().mockResolvedValue("profile-1"),
-			apiConfiguration: { apiProvider: "anthropic" },
+			apiConfiguration: { apiProvider: "vertex" },
 		} as any
 		const childStart = vi.fn(() => callOrder.push("child.start"))
 
@@ -174,7 +174,7 @@ describe("AlphaProvider.delegateParentAndOpenChild()", () => {
 			emit: vi.fn(),
 			flushPendingToolResultsToHistory: vi.fn().mockResolvedValue(true),
 			getTaskApiConfigName: vi.fn().mockResolvedValue("profile-1"),
-			apiConfiguration: { apiProvider: "anthropic" },
+			apiConfiguration: { apiProvider: "vertex" },
 		} as any
 		const focusedTask = { taskId: "focused-1" } as any
 

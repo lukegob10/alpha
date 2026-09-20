@@ -47,22 +47,5 @@
 	},
 	"applyPatch": {
 		"deleteCancelled": "S'ha cancel·lat l'operació de supressió."
-	},
-	"imageOutput": {
-		"writeIncomplete": "No s'ha pogut acabar d'escriure '{{path}}'; el fitxer pot estar incomplet. {{cause}}"
-	},
-	"generateImage": {
-		"openRouterApiKeyRequired": "Es requereix la clau API d'OpenRouter per a la generació d'imatges amb models d'OpenRouter. Configura-la a la configuració experimental de Generació d'Imatges.",
-		"failedWithStatus": "Error en generar imatge: {{status}} {{statusText}}",
-		"failedWithMessage": "Error en generar imatge: {{message}}",
-		"noImageGenerated": "No s'ha generat cap imatge en la resposta",
-		"invalidImageData": "Dades d'imatge no vàlides en la resposta",
-		"invalidImageFormat": "Format d'imatge no vàlid rebut",
-		"unknownError": "S'ha produït un error desconegut",
-		"cancelledBeforeSave": "La generació de la imatge s'ha cancel·lat abans de desar-la.",
-		"destinationUnavailableBeforeGeneration": "La destinació de la imatge no estava disponible abans de la generació. Torna a intentar-ho.",
-		"destinationPolicyChangedBeforeSave": "El camí o la política d'accés de la destinació de la imatge ha canviat abans de desar-la. Torna a intentar-ho.",
-		"postSaveProcessingFailed": "{{path}}\nLa imatge s'ha desat, però el processament posterior al desament ha fallat: {{message}}",
-		"roo": {}
 	}
 }

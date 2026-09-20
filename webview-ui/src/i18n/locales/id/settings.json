@@ -42,8 +42,7 @@
 		"language": "Bahasa",
 		"about": "Tentang Alpha",
 		"skills": "Skills",
-		"agents": "Agen",
-		"github": "GitHub"
+		"agents": "Agen"
 	},
 	"about": {
 		"bugReport": {
@@ -113,42 +112,10 @@
 		"enableDescription": "Aktifkan pengindeksan kode untuk pencarian dan pemahaman konteks yang lebih baik",
 		"providerLabel": "Provider Embeddings",
 		"selectProviderPlaceholder": "Pilih provider",
-		"openaiProvider": "OpenAI",
-		"ollamaProvider": "Ollama",
-		"geminiProvider": "Gemini",
 		"vertexProvider": "GCP Vertex AI",
-		"geminiApiKeyLabel": "API Key:",
-		"geminiApiKeyPlaceholder": "Masukkan kunci API Gemini Anda",
-		"vercelAiGatewayProvider": "Vercel AI Gateway",
-		"vercelAiGatewayApiKeyLabel": "API Key",
-		"vercelAiGatewayApiKeyPlaceholder": "Masukkan kunci API Vercel AI Gateway Anda",
-		"bedrockProvider": "Amazon Bedrock",
-		"bedrockRegionLabel": "Wilayah AWS",
-		"bedrockRegionPlaceholder": "us-east-1",
-		"bedrockProfileLabel": "Profil AWS",
-		"bedrockProfilePlaceholder": "default",
-		"bedrockProfileDescription": "Nama profil AWS dari ~/.aws/credentials (wajib).",
-		"openRouterProvider": "OpenRouter",
-		"openRouterApiKeyLabel": "Kunci API OpenRouter",
-		"openRouterApiKeyPlaceholder": "Masukkan kunci API OpenRouter Anda",
-		"openRouterProviderRoutingLabel": "Perutean Provider OpenRouter",
-		"openRouterProviderRoutingDescription": "OpenRouter mengarahkan permintaan ke provider terbaik yang tersedia untuk model embedding Anda. Secara default, permintaan diseimbangkan beban di seluruh provider teratas untuk memaksimalkan uptime. Namun, Anda dapat memilih provider spesifik untuk digunakan untuk model ini.",
-		"mistralProvider": "Mistral",
-		"mistralApiKeyLabel": "Kunci API:",
-		"mistralApiKeyPlaceholder": "Masukkan kunci API Mistral Anda",
-		"openaiCompatibleProvider": "OpenAI Compatible",
-		"openAiKeyLabel": "OpenAI API Key",
-		"openAiKeyPlaceholder": "Masukkan kunci API OpenAI kamu",
-		"openAiCompatibleBaseUrlLabel": "Base URL",
-		"openAiCompatibleApiKeyLabel": "API Key",
-		"openAiCompatibleApiKeyPlaceholder": "Masukkan kunci API kamu",
-		"openAiCompatibleModelDimensionLabel": "Dimensi Embedding:",
 		"modelDimensionLabel": "Dimensi Model",
-		"openAiCompatibleModelDimensionPlaceholder": "misalnya, 1536",
-		"openAiCompatibleModelDimensionDescription": "Dimensi embedding (ukuran output) untuk model kamu. Periksa dokumentasi provider kamu untuk nilai ini. Nilai umum: 384, 768, 1536, 3072.",
 		"modelLabel": "Model",
 		"selectModelPlaceholder": "Pilih model",
-		"ollamaUrlLabel": "Ollama URL:",
 		"qdrantUrlLabel": "Qdrant URL",
 		"qdrantKeyLabel": "Qdrant Key:",
 		"startIndexingButton": "Mulai",
@@ -167,12 +134,9 @@
 		"embedderProviderLabel": "Provider Embedder",
 		"modelPlaceholder": "Masukkan nama model",
 		"selectModel": "Pilih model",
-		"ollamaBaseUrlLabel": "URL Dasar Ollama",
 		"qdrantApiKeyLabel": "Kunci API Qdrant",
 		"qdrantApiKeyPlaceholder": "Masukkan kunci API Qdrant kamu (opsional)",
 		"setupConfigLabel": "Pengaturan",
-		"ollamaUrlPlaceholder": "http://localhost:11434",
-		"openAiCompatibleBaseUrlPlaceholder": "https://api.example.com",
 		"modelDimensionPlaceholder": "1536",
 		"qdrantUrlPlaceholder": "http://localhost:6333",
 		"saveError": "Gagal menyimpan pengaturan",
@@ -189,23 +153,14 @@
 		"close": "Tutup",
 		"validation": {
 			"invalidQdrantUrl": "URL Qdrant tidak valid",
-			"invalidOllamaUrl": "URL Ollama tidak valid",
 			"invalidBaseUrl": "URL dasar tidak valid",
 			"qdrantUrlRequired": "URL Qdrant diperlukan",
-			"openaiApiKeyRequired": "Kunci API OpenAI diperlukan",
 			"modelSelectionRequired": "Pemilihan model diperlukan",
 			"apiKeyRequired": "Kunci API diperlukan",
 			"modelIdRequired": "ID Model diperlukan",
 			"modelDimensionRequired": "Dimensi model diperlukan",
-			"geminiApiKeyRequired": "Kunci API Gemini diperlukan",
-			"mistralApiKeyRequired": "Kunci API Mistral diperlukan",
-			"vercelAiGatewayApiKeyRequired": "Kunci API Vercel AI Gateway diperlukan",
-			"bedrockRegionRequired": "Wilayah AWS diperlukan",
-			"bedrockProfileRequired": "Profil AWS diperlukan",
-			"ollamaBaseUrlRequired": "URL dasar Ollama diperlukan",
 			"baseUrlRequired": "URL dasar diperlukan",
 			"modelDimensionMinValue": "Dimensi model harus lebih besar dari 0",
-			"openRouterApiKeyRequired": "Kunci API OpenRouter diperlukan",
 			"vertexProjectIdRequired": "Google Cloud project ID is required",
 			"vertexRegionRequired": "Google Cloud region is required",
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
@@ -327,7 +282,6 @@
 		"nameEmpty": "Nama tidak boleh kosong",
 		"nameExists": "Profil dengan nama ini sudah ada",
 		"deleteProfile": "Hapus Profil",
-		"invalidArnFormat": "Format ARN tidak valid. Silakan periksa contoh di atas.",
 		"enterNewName": "Masukkan nama baru",
 		"addProfile": "Tambah Profil",
 		"renameProfile": "Ganti Nama Profil",
@@ -339,46 +293,9 @@
 		"searchProviderPlaceholder": "Cari penyedia",
 		"noProviderMatchFound": "Tidak ada penyedia ditemukan",
 		"noMatchFound": "Tidak ada profil yang cocok ditemukan",
-		"retiredProviderMessage": "Maaf, penyedia ini tidak lagi didukung. Kami melihat sangat sedikit pengguna Alpha yang benar-benar menggunakannya dan kami perlu mengurangi cakupan kode kami agar bisa terus bergerak cepat dan melayani komunitas kami dengan baik. Ini adalah keputusan yang sangat sulit, tapi ini memungkinkan kami fokus pada apa yang paling penting bagimu. Memang menyebalkan, kami tahu.",
+		"retiredProviderMessage": "Penyedia yang tersimpan ini tidak lagi didukung. Pilih GCP Vertex AI, VS Code LM API, Stellar, atau OpenAI Compatible di Pengaturan.",
 		"vscodeLmDescription": " API Model Bahasa VS Code memungkinkan kamu menjalankan model yang disediakan oleh ekstensi VS Code lainnya (termasuk namun tidak terbatas pada GitHub Copilot). Cara termudah untuk memulai adalah menginstal ekstensi Copilot dan Copilot Chat dari VS Code Marketplace.",
-		"awsCustomArnUse": "Masukkan ARN Amazon Bedrock yang valid untuk model yang ingin kamu gunakan. Contoh format:",
-		"awsCustomArnDesc": "Pastikan region di ARN cocok dengan AWS Region yang kamu pilih di atas.",
-		"openRouterApiKey": "OpenRouter API Key",
-		"getOpenRouterApiKey": "Dapatkan OpenRouter API Key",
-		"vercelAiGatewayApiKey": "Vercel AI Gateway API Key",
-		"getVercelAiGatewayApiKey": "Dapatkan Vercel AI Gateway API Key",
 		"apiKeyStorageNotice": "API key disimpan dengan aman di Secret Storage VSCode",
-		"openAiCodexRateLimits": {
-			"title": "Usage Limits for Codex{{planLabel}}",
-			"loading": "Loading usage limits...",
-			"loadError": "Failed to load usage limits",
-			"retry": "Retry",
-			"usedPercent": "{{percent}}% used",
-			"resetsIn": "Resets in {{time}}",
-			"plan": {
-				"default": "",
-				"withType": " ({{planType}})"
-			},
-			"time": {
-				"now": "Now",
-				"notAvailable": "N/A"
-			},
-			"duration": {
-				"daysHours": "{{days}}d {{hours}}h",
-				"hoursMinutes": "{{hours}}h {{minutes}}m",
-				"minutes": "{{minutes}}m"
-			},
-			"window": {
-				"usage": "Usage",
-				"fiveHour": "5h limit",
-				"oneHour": "1h limit",
-				"daily": "Daily limit",
-				"weekly": "Weekly limit",
-				"days": "{{days}}d limit",
-				"hours": "{{hours}}h limit",
-				"minutes": "{{minutes}}m limit"
-			}
-		},
 		"useCustomBaseUrl": "Gunakan base URL kustom",
 		"useReasoning": "Aktifkan reasoning",
 		"useHostHeader": "Gunakan Host header kustom",
@@ -386,9 +303,6 @@
 		"headerName": "Nama header",
 		"headerValue": "Nilai header",
 		"noCustomHeaders": "Tidak ada header kustom yang didefinisikan. Klik tombol + untuk menambahkan satu.",
-		"unboundApiKey": "Unbound API Key",
-		"getUnboundApiKey": "Dapatkan Unbound API Key",
-		"requestyApiKey": "Requesty API Key",
 		"refreshModels": {
 			"label": "Refresh Model",
 			"hint": "Silakan buka kembali pengaturan untuk melihat model terbaru.",
@@ -397,109 +311,14 @@
 			"error": "Gagal merefresh daftar model. Silakan coba lagi.",
 			"missingConfig": "Masukkan konfigurasi penyedia yang diperlukan sebelum menyegarkan model."
 		},
-		"getRequestyApiKey": "Dapatkan Requesty API Key",
-		"getRequestyBaseUrl": "Base URL",
-		"requestyUseCustomBaseUrl": "Gunakan URL dasar khusus",
-		"anthropicApiKey": "Anthropic API Key",
-		"getAnthropicApiKey": "Dapatkan Anthropic API Key",
-		"anthropicUseAuthToken": "Kirim Anthropic API Key sebagai Authorization header alih-alih X-Api-Key",
-		"anthropic1MContextBetaLabel": "Aktifkan jendela konteks 1M (Beta)",
-		"anthropic1MContextBetaDescription": "Memperluas jendela konteks menjadi 1 juta token untuk Claude Sonnet 4.x / Claude Opus 4.6",
-		"awsBedrock1MContextBetaLabel": "Aktifkan jendela konteks 1M (Beta)",
-		"awsBedrock1MContextBetaDescription": "Memperluas jendela konteks menjadi 1 juta token untuk Claude Sonnet 4.x / Claude Opus 4.6",
 		"vertex1MContextBetaLabel": "Aktifkan jendela konteks 1M (Beta)",
 		"vertex1MContextBetaDescription": "Memperluas jendela konteks menjadi 1 juta token untuk Claude Sonnet 4.x / Claude Opus 4.6",
-		"basetenApiKey": "Baseten API Key",
-		"getBasetenApiKey": "Dapatkan Baseten API Key",
-		"poeApiKey": "Poe API Key",
-		"getPoeApiKey": "Dapatkan Poe API Key",
-		"poeBaseUrl": "Poe Base URL",
-		"fireworksApiKey": "Fireworks API Key",
-		"getFireworksApiKey": "Dapatkan Fireworks API Key",
-		"deepSeekApiKey": "DeepSeek API Key",
-		"getDeepSeekApiKey": "Dapatkan DeepSeek API Key",
-		"moonshotApiKey": "Kunci API Moonshot",
-		"getMoonshotApiKey": "Dapatkan Kunci API Moonshot",
-		"moonshotBaseUrl": "Titik Masuk Moonshot",
-		"zaiApiKey": "Kunci API Z AI",
-		"getZaiApiKey": "Dapatkan Kunci API Z AI",
-		"zaiEntrypoint": "Titik Masuk Z AI",
-		"zaiEntrypointDescription": "Silakan pilih titik masuk API yang sesuai berdasarkan lokasi Anda. Jika Anda berada di China, pilih open.bigmodel.cn. Jika tidak, pilih api.z.ai.",
-		"minimaxApiKey": "Kunci API MiniMax",
-		"getMiniMaxApiKey": "Dapatkan Kunci API MiniMax",
-		"minimaxBaseUrl": "Titik Masuk MiniMax",
-		"geminiApiKey": "Gemini API Key",
-		"getSambaNovaApiKey": "Dapatkan SambaNova API Key",
-		"sambaNovaApiKey": "SambaNova API Key",
-		"getGeminiApiKey": "Dapatkan Gemini API Key",
 		"openAiApiKey": "OpenAI API Key",
 		"apiKey": "API Key",
 		"openAiBaseUrl": "Base URL",
 		"getOpenAiApiKey": "Dapatkan OpenAI API Key",
-		"mistralApiKey": "Mistral API Key",
-		"getMistralApiKey": "Dapatkan Mistral / Codestral API Key",
-		"codestralBaseUrl": "Codestral Base URL (Opsional)",
-		"codestralBaseUrlDesc": "Atur URL alternatif untuk model Codestral.",
-		"xaiApiKey": "xAI API Key",
-		"getXaiApiKey": "Dapatkan xAI API Key",
-		"litellmApiKey": "LiteLLM API Key",
-		"litellmBaseUrl": "LiteLLM Base URL",
-		"awsCredentials": "AWS Credentials",
-		"awsProfile": "AWS Profile",
-		"awsApiKey": "Kunci API Amazon Bedrock",
-		"awsProfileName": "Nama AWS Profile",
-		"awsAccessKey": "AWS Access Key",
-		"awsSecretKey": "AWS Secret Key",
-		"awsSessionToken": "AWS Session Token",
-		"awsRegion": "AWS Region",
-		"awsCrossRegion": "Gunakan cross-region inference",
-		"awsGlobalInference": "Gunakan inferensi Global (pilih Wilayah AWS optimal secara otomatis)",
-		"awsServiceTier": "Tingkat Layanan",
-		"awsServiceTierStandard": "Standard",
-		"awsServiceTierStandardDesc": "Performa dan biaya yang seimbang",
-		"awsServiceTierFlex": "Flex (diskon 50%)",
-		"awsServiceTierFlexDesc": "Biaya lebih rendah, latensi lebih tinggi untuk tugas non-kritikal",
-		"awsServiceTierPriority": "Priority (premium 75%)",
-		"awsServiceTierPriorityDesc": "Performa tercepat untuk aplikasi mission-critical",
-		"awsServiceTierNote": "Tingkat layanan memengaruhi harga dan performa. Flex menawarkan diskon 50% dengan latensi lebih tinggi, Priority menawarkan performa 25% lebih baik dengan premium 75%.",
-		"awsBedrockVpc": {
-			"useCustomVpcEndpoint": "Gunakan VPC endpoint kustom",
-			"vpcEndpointUrlPlaceholder": "Masukkan VPC Endpoint URL (opsional)",
-			"examples": "Contoh:"
-		},
-		"enablePromptCaching": "Aktifkan prompt caching",
-		"enablePromptCachingTitle": "Aktifkan prompt caching untuk meningkatkan performa dan mengurangi biaya untuk model yang didukung.",
-		"cacheUsageNote": "Catatan: Jika kamu tidak melihat penggunaan cache, coba pilih model yang berbeda lalu pilih model yang kamu inginkan lagi.",
 		"vscodeLmModel": "Model Bahasa",
 		"vscodeLmWarning": "Catatan: Model yang diakses melalui VS Code Language Model API dapat dibungkus atau disetel‑halus oleh penyedia, sehingga perilakunya dapat berbeda dibandingkan menggunakan model yang sama secara langsung dari penyedia atau router tipikal. Untuk menggunakan model dari menu tarik‑turun «Language Model», pertama beralihlah ke model tersebut lalu klik «Terima» pada prompt Copilot Chat; jika tidak, Anda mungkin melihat kesalahan seperti 400 «The requested model is not supported».",
-		"lmStudio": {
-			"baseUrl": "Base URL (opsional)",
-			"modelId": "Model ID",
-			"speculativeDecoding": "Aktifkan Speculative Decoding",
-			"draftModelId": "Draft Model ID",
-			"draftModelDesc": "Draft model harus dari keluarga model yang sama agar speculative decoding bekerja dengan benar.",
-			"selectDraftModel": "Pilih Draft Model",
-			"noModelsFound": "Tidak ada draft model ditemukan. Pastikan LM Studio berjalan dengan Server Mode diaktifkan.",
-			"description": "LM Studio memungkinkan kamu menjalankan model secara lokal di komputer. Untuk instruksi cara memulai, lihat <a>panduan quickstart</a> mereka. Kamu juga perlu memulai fitur <b>local server</b> LM Studio untuk menggunakannya dengan ekstensi ini. <span>Catatan:</span> Alpha menggunakan prompt kompleks dan bekerja terbaik dengan model Claude. Model yang kurang mampu mungkin tidak bekerja seperti yang diharapkan."
-		},
-		"ollama": {
-			"baseUrl": "Base URL (opsional)",
-			"modelId": "Model ID",
-			"apiKey": "Ollama API Key",
-			"apiKeyHelp": "API key opsional untuk instance Ollama yang terautentikasi atau layanan cloud. Biarkan kosong untuk instalasi lokal.",
-			"numCtx": "Ukuran Jendela Konteks (num_ctx)",
-			"numCtxHelp": "Ganti ukuran jendela konteks default model. Biarkan kosong untuk menggunakan konfigurasi Modelfile model. Nilai minimum adalah 128.",
-			"description": "Ollama memungkinkan kamu menjalankan model secara lokal di komputer. Untuk instruksi cara memulai, lihat panduan quickstart mereka.",
-			"warning": "Catatan: Alpha menggunakan prompt kompleks dan bekerja terbaik dengan model Claude. Model yang kurang mampu mungkin tidak bekerja seperti yang diharapkan."
-		},
-		"roo": {},
-		"openRouter": {
-			"providerRouting": {
-				"title": "OpenRouter Provider Routing",
-				"description": "OpenRouter mengarahkan permintaan ke provider terbaik yang tersedia untuk model kamu. Secara default, permintaan diseimbangkan beban di seluruh provider teratas untuk memaksimalkan uptime. Namun, kamu dapat memilih provider spesifik untuk digunakan untuk model ini.",
-				"learnMore": "Pelajari lebih lanjut tentang provider routing"
-			}
-		},
 		"customModel": {
 			"capabilities": "Konfigurasi kemampuan dan harga untuk model kustom yang kompatibel dengan OpenAI. Hati-hati saat menentukan kemampuan model, karena dapat mempengaruhi performa Alpha.",
 			"maxTokens": {
@@ -570,13 +389,6 @@
 			"description": "Mengontrol seberapa detail respons model. Verbositas rendah menghasilkan jawaban singkat, sedangkan verbositas tinggi memberikan penjelasan menyeluruh."
 		},
 		"setReasoningLevel": "Aktifkan Upaya Reasoning",
-		"claudeCode": {
-			"pathLabel": "Jalur Kode Claude",
-			"description": "Jalur opsional ke Claude Code CLI Anda. Defaultnya adalah 'claude' jika tidak diatur.",
-			"placeholder": "Default: claude",
-			"maxTokensLabel": "Token Output Maks",
-			"maxTokensDescription": "Jumlah maksimum token output untuk respons Claude Code. Default adalah 8000."
-		},
 		"vertexStreamingEnabledLabel": "Aktifkan respons streaming",
 		"vertexStreamingEnabledDescription": "Nonaktifkan ini ketika gateway atau model tidak mendukung streaming. Respons akan muncul setelah selesai.",
 		"vscodeLmLoading": "Memuat model bahasa yang tersedia di jendela VS Code ini...",
@@ -866,19 +678,6 @@
 			"name": "Membutuhkan daftar 'todos' untuk tugas baru",
 			"description": "Ketika diaktifkan, alat new_task akan membutuhkan parameter todos untuk disediakan. Ini memastikan semua tugas baru dimulai dengan daftar tujuan yang jelas. Ketika dinonaktifkan (default), parameter todos tetap opsional untuk kompatibilitas mundur."
 		},
-		"IMAGE_GENERATION": {
-			"name": "Aktifkan pembuatan gambar AI",
-			"description": "Ketika diaktifkan, Alpha dapat menghasilkan gambar dari prompt teks menggunakan model pembuatan gambar.",
-			"providerLabel": "Penyedia",
-			"providerDescription": "Pilih penyedia untuk menghasilkan gambar.",
-			"openRouterApiKeyLabel": "Kunci API OpenRouter",
-			"openRouterApiKeyPlaceholder": "Masukkan kunci API OpenRouter Anda",
-			"getApiKeyText": "Dapatkan kunci API Anda dari",
-			"modelSelectionLabel": "Model Pembuatan Gambar",
-			"modelSelectionDescription": "Pilih model untuk pembuatan gambar",
-			"warningMissingKey": "⚠️ Kunci API OpenRouter diperlukan untuk pembuatan gambar. Silakan konfigurasi di atas.",
-			"successConfigured": "✓ Pembuatan gambar dikonfigurasi dan siap digunakan"
-		},
 		"RUN_SLASH_COMMAND": {
 			"name": "Aktifkan perintah slash yang dimulai model",
 			"description": "Ketika diaktifkan, Alpha dapat menjalankan perintah slash Anda untuk mengeksekusi alur kerja."
@@ -919,12 +718,7 @@
 		"enableR1Format": "Aktifkan parameter model R1",
 		"enableR1FormatTips": "Harus diaktifkan saat menggunakan model R1 seperti QWQ untuk mencegah error 400",
 		"useAzure": "Gunakan Azure",
-		"azureApiVersion": "Atur versi API Azure",
-		"gemini": {
-			"freeRequests": "* Gratis hingga {{count}} permintaan per menit. Setelah itu, penagihan tergantung pada ukuran prompt.",
-			"pricingDetails": "Untuk info lebih lanjut, lihat detail harga.",
-			"billingEstimate": "* Penagihan adalah estimasi - biaya sebenarnya tergantung pada ukuran prompt."
-		}
+		"azureApiVersion": "Atur versi API Azure"
 	},
 	"modelPicker": {
 		"automaticFetch": "Ekstensi secara otomatis mengambil daftar model terbaru yang tersedia di <serviceLink>{{serviceName}}</serviceLink>. Jika kamu tidak yakin model mana yang harus dipilih, Alpha bekerja terbaik dengan <defaultModelLink>{{defaultModelId}}</defaultModelLink>. Kamu juga dapat mencoba mencari \"free\" untuk opsi tanpa biaya yang saat ini tersedia.",
@@ -951,20 +745,14 @@
 	},
 	"validation": {
 		"apiKey": "Kamu harus menyediakan API key yang valid.",
-		"awsRegion": "Kamu harus memilih region untuk digunakan dengan Amazon Bedrock.",
 		"modelId": "Kamu harus menyediakan model ID yang valid.",
 		"modelSelector": "Kamu harus menyediakan model selector yang valid.",
 		"openAi": "Kamu harus menyediakan base URL, API key, dan model ID yang valid.",
-		"arn": {
-			"invalidFormat": "Format ARN tidak valid. Silakan periksa persyaratan format.",
-			"regionMismatch": "Peringatan: Region di ARN kamu ({{arnRegion}}) tidak cocok dengan region yang kamu pilih ({{region}}). Ini dapat menyebabkan masalah akses. Provider akan menggunakan region dari ARN."
-		},
 		"modelAvailability": "Model ID ({{modelId}}) yang kamu berikan tidak tersedia. Silakan pilih model yang berbeda.",
 		"modelDeprecated": "Model ini tidak lagi tersedia. Silakan pilih model yang berbeda.",
 		"providerNotAllowed": "Provider '{{provider}}' tidak diizinkan oleh organisasi kamu",
 		"modelNotAllowed": "Model '{{model}}' tidak diizinkan untuk provider '{{provider}}' oleh organisasi kamu",
 		"profileInvalid": "Profil ini berisi provider atau model yang tidak diizinkan oleh organisasi kamu",
-		"qwenCodeOauthPath": "Kamu harus memberikan jalur kredensial OAuth yang valid",
 		"googleCloud": "Anda harus menyediakan project Google Cloud ID dan wilayahnya.",
 		"vertexGateway": "Gerbang Vertex memerlukan URL dasar, jalur bundel CA, dan perintah Helix.",
 		"vertexGatewayModelRoutingMap": "Peta Perutean Model Gerbang Vertex harus berupa objek JSON dengan ID model string.",
@@ -973,19 +761,11 @@
 	"placeholders": {
 		"apiKey": "Masukkan API Key...",
 		"profileName": "Masukkan nama profil",
-		"accessKey": "Masukkan Access Key...",
-		"secretKey": "Masukkan Secret Key...",
-		"sessionToken": "Masukkan Session Token...",
 		"credentialsJson": "Masukkan Credentials JSON...",
 		"keyFilePath": "Masukkan Path File Key...",
 		"projectId": "Masukkan Project ID...",
-		"customArn": "Masukkan ARN (misalnya arn:aws:bedrock:us-east-1:123456789012:foundation-model/my-model)",
 		"baseUrl": "Masukkan base URL...",
-		"modelId": {
-			"lmStudio": "misalnya meta-llama-3.1-8b-instruct",
-			"lmStudioDraft": "misalnya lmstudio-community/llama-3.2-1b-instruct",
-			"ollama": "misalnya llama3.1"
-		},
+		"modelId": {},
 		"numbers": {
 			"maxTokens": "misalnya 4096",
 			"contextWindow": "misalnya 128000",
@@ -994,15 +774,8 @@
 			"cacheWritePrice": "misalnya 0.00005"
 		}
 	},
-	"defaults": {
-		"ollamaUrl": "Default: http://localhost:11434",
-		"lmStudioUrl": "Default: http://localhost:1234",
-		"geminiUrl": "Default: https://generativelanguage.googleapis.com"
-	},
-	"labels": {
-		"customArn": "ARN Kustom",
-		"useCustomArn": "Gunakan ARN kustom..."
-	},
+	"defaults": {},
+	"labels": {},
 	"includeMaxOutputTokens": "Sertakan token output maksimum",
 	"includeMaxOutputTokensDescription": "Kirim parameter token output maksimum dalam permintaan API. Beberapa provider mungkin tidak mendukung ini.",
 	"limitMaxTokensDescription": "Batasi jumlah maksimum token dalam respons",
@@ -1121,10 +894,5 @@
 				"description": "Penggantian profil opsional untuk pekerja pengeditan yang terisolasi."
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "Token GitHub",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "Disimpan dengan aman di Penyimpanan Rahasia VS Code. Digunakan oleh alat GitHub API asli untuk permintaan penarikan, pemeriksaan, komentar, dan penggabungan."
 	}
 }

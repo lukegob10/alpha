@@ -17,7 +17,7 @@ function makeTool(name: string): OpenAI.Chat.ChatCompletionTool {
 
 describe("filterNativeToolsForMode - disabledTools", () => {
 	const nativeTools: OpenAI.Chat.ChatCompletionTool[] = [
-		makeTool("execute_command"),
+		makeTool("shell"),
 		makeTool("read_file"),
 		makeTool("write_to_file"),
 		makeTool("apply_diff"),
@@ -32,10 +32,10 @@ describe("filterNativeToolsForMode - disabledTools", () => {
 		const result = filterNativeToolsForMode(nativeTools, "code", undefined, undefined, undefined, settings)
 
 		const resultNames = result.map((t) => (t as any).function.name)
-		expect(resultNames).not.toContain("execute_command")
+		expect(resultNames).not.toContain("shell")
 		expect(resultNames).toContain("read_file")
 		expect(resultNames).toContain("write_to_file")
-		expect(resultNames).toContain("apply_diff")
+		expect(resultNames).not.toContain("apply_diff")
 	})
 
 	it("does not remove any tools when disabledTools is empty", () => {
@@ -46,10 +46,10 @@ describe("filterNativeToolsForMode - disabledTools", () => {
 		const result = filterNativeToolsForMode(nativeTools, "code", undefined, undefined, undefined, settings)
 
 		const resultNames = result.map((t) => (t as any).function.name)
-		expect(resultNames).toContain("execute_command")
+		expect(resultNames).toContain("shell")
 		expect(resultNames).toContain("read_file")
 		expect(resultNames).toContain("write_to_file")
-		expect(resultNames).toContain("apply_diff")
+		expect(resultNames).not.toContain("apply_diff")
 	})
 
 	it("does not remove any tools when disabledTools is undefined", () => {
@@ -58,7 +58,7 @@ describe("filterNativeToolsForMode - disabledTools", () => {
 		const result = filterNativeToolsForMode(nativeTools, "code", undefined, undefined, undefined, settings)
 
 		const resultNames = result.map((t) => (t as any).function.name)
-		expect(resultNames).toContain("execute_command")
+		expect(resultNames).toContain("shell")
 		expect(resultNames).toContain("read_file")
 	})
 
@@ -70,7 +70,7 @@ describe("filterNativeToolsForMode - disabledTools", () => {
 		const result = filterNativeToolsForMode(nativeTools, "code", undefined, undefined, undefined, settings)
 
 		const resultNames = result.map((t) => (t as any).function.name)
-		expect(resultNames).not.toContain("execute_command")
+		expect(resultNames).not.toContain("shell")
 		expect(resultNames).toContain("read_file")
 	})
 
@@ -88,13 +88,23 @@ describe("filterNativeToolsForMode - disabledTools", () => {
 		expect(resultNames).not.toContain("search_and_replace")
 		expect(resultNames).not.toContain("edit")
 	})
+
+	it("keeps canonical schemas when model metadata uses historical aliases", () => {
+		const tools = [makeTool("edit"), makeTool("write_to_file")]
+		const result = filterNativeToolsForMode(tools, "code", undefined, undefined, undefined, {
+			modelInfo: { includedTools: ["search_and_replace", "write_file"] },
+		})
+		const resultNames = result.map((tool) => (tool as any).function.name)
+		expect(resultNames).toEqual(["edit", "write_to_file"])
+		expect(resultNames).not.toEqual(expect.arrayContaining(["search_and_replace", "write_file"]))
+	})
 })
 
 describe("tool filtering - invalid mode fallback", () => {
 	const nativeTools: OpenAI.Chat.ChatCompletionTool[] = [
 		makeTool("read_file"),
 		makeTool("write_to_file"),
-		makeTool("execute_command"),
+		makeTool("shell"),
 	]
 	const mcpTools: OpenAI.Chat.ChatCompletionTool[] = [makeTool("mcp_server_tool")]
 
@@ -126,18 +136,14 @@ describe("filterNativeToolsForMode - Code delegation", () => {
 })
 
 describe("filterNativeToolsForMode - bounded sub-agents", () => {
-	const lifecycleTools = [
-		"list_agents",
-		"wait_agent",
-		"send_message",
-		"followup_task",
-		"interrupt_agent",
-		"cancel_agent",
-		"close_agent",
-	]
+	const lifecycleTools = ["spawn_agent", "list_agents", "wait_agent", "send_message", "followup_task", "close_agent"]
 	const nativeTools: OpenAI.Chat.ChatCompletionTool[] = [
+		// Retained only as explicit historical fixtures; these must never be
+		// re-advertised by the production mode filter.
 		makeTool("delegate_task"),
-		makeTool("spawn_agent"),
+		makeTool("report_progress"),
+		makeTool("interrupt_agent"),
+		makeTool("cancel_agent"),
 		...lifecycleTools.map(makeTool),
 		makeTool("read_file"),
 	]
@@ -150,12 +156,14 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 			(tool) => (tool as any).function.name,
 		)
 
-		expect(codeNames).toContain("delegate_task")
-		expect(codeNames).toContain("spawn_agent")
 		expect(codeNames).toEqual(expect.arrayContaining(lifecycleTools))
-		expect(askNames).toContain("delegate_task")
-		expect(askNames).toContain("spawn_agent")
 		expect(askNames).toEqual(expect.arrayContaining(lifecycleTools))
+		expect(codeNames).not.toEqual(
+			expect.arrayContaining(["delegate_task", "report_progress", "interrupt_agent", "cancel_agent"]),
+		)
+		expect(askNames).not.toEqual(
+			expect.arrayContaining(["delegate_task", "report_progress", "interrupt_agent", "cancel_agent"]),
+		)
 	})
 
 	it("exposes read-only managed orchestration but no legacy or mutating tools in Plan mode", () => {
@@ -166,8 +174,8 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 			makeTool("new_task"),
 			makeTool("switch_mode"),
 			makeTool("update_todo_list"),
-			makeTool("execute_command"),
-			makeTool("read_command_output"),
+			makeTool("shell"),
+			makeTool("manage_command"),
 			makeTool("write_to_file"),
 			makeTool("use_mcp_tool"),
 		]
@@ -178,12 +186,10 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 		expect(names).toEqual(
 			expect.arrayContaining([
 				"read_file",
-				"delegate_task",
 				"spawn_agent",
 				"ask_followup_question",
 				"attempt_completion",
-				"execute_command",
-				"read_command_output",
+				"shell",
 				...lifecycleTools,
 			]),
 		)
@@ -203,7 +209,7 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 		] as any
 		const candidates = [
 			makeTool("read_file"),
-			makeTool("execute_command"),
+			makeTool("shell"),
 			makeTool("write_to_file"),
 			makeTool("use_mcp_tool"),
 		]
@@ -212,7 +218,7 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 			(tool) => (tool as any).function.name,
 		)
 
-		expect(names).toEqual(["read_file", "execute_command"])
+		expect(names).toEqual(["read_file", "shell"])
 	})
 
 	it("respects the existing disabled-tool configuration", () => {
@@ -223,13 +229,13 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 		expect(names).not.toContain("delegate_task")
 	})
 
-	it("can disable asynchronous spawning without disabling legacy delegation", () => {
+	it("can disable asynchronous spawning while preserving the remaining lifecycle tools", () => {
 		const names = filterNativeToolsForMode(nativeTools, "code", undefined, undefined, undefined, {
 			disabledTools: ["spawn_agent"],
 		}).map((tool) => (tool as any).function.name)
 
 		expect(names).not.toContain("spawn_agent")
-		expect(names).toContain("delegate_task")
+		expect(names).toEqual(expect.arrayContaining(lifecycleTools.filter((tool) => tool !== "spawn_agent")))
 	})
 
 	it("restores a custom execution mode to the canonical Plan tool policy", () => {
@@ -248,6 +254,6 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 
 		expect(names).toContain("spawn_agent")
 		expect(names).toEqual(expect.arrayContaining(lifecycleTools))
-		expect(names).toContain("delegate_task")
+		expect(names).not.toContain("delegate_task")
 	})
 })

@@ -96,7 +96,7 @@ import {
 	TodoItem,
 	getApiProtocol,
 	getModelId,
-	isRetiredProvider,
+	isProviderName,
 	isIdleAsk,
 	isInteractiveAsk,
 	isResumableAsk,
@@ -162,11 +162,12 @@ import { getTaskDirectoryPath } from "../../utils/storage"
 import { formatResponse } from "../prompts/responses"
 import { SYSTEM_PROMPT, getPromptComponent } from "../prompts/system"
 import { addCustomInstructions, loadApplicableAgentInstructionSources } from "../prompts/sections"
-import { buildNativeToolsArrayWithRestrictions } from "./build-tools"
+import { buildNativeToolsArrayWithRestrictions, createModelToolIdentity } from "./build-tools"
 import { TaskToolCatalogCache } from "./TaskToolCatalogCache"
 
 // core modules
 import { ToolRepetitionDetector } from "../tools/ToolRepetitionDetector"
+import { canonicalizeToolName } from "../tools/ToolRegistry"
 import { formatToolFailureGuidance, normalizeToolFailure, type ToolFailureMetadata } from "../tools/ToolFailure"
 import type { ParentCommandVerificationEvidence } from "../agent/AgentControlStore"
 import { AgentControlTransactionError } from "../agent/AgentControlTransaction"
@@ -530,19 +531,13 @@ export function getSubagentAllowedToolNames(
 					"list_files",
 					"codebase_search",
 					"write_to_file",
-					"apply_diff",
 					"edit",
-					"search_and_replace",
-					"search_replace",
-					"edit_file",
 					"apply_patch",
-					"execute_command",
+					"shell",
 					"manage_command",
-					"read_command_output",
 					"attempt_completion",
 				]
 			: ["read_file", "search_files", "list_files", "codebase_search", "attempt_completion"]
-	tools.splice(tools.length - 1, 0, "report_progress")
 	if (hasInheritedSkills) tools.splice(tools.length - 1, 0, "skill")
 	if (allowDelegation) {
 		tools.splice(
@@ -553,8 +548,6 @@ export function getSubagentAllowedToolNames(
 			"wait_agent",
 			"send_message",
 			"followup_task",
-			"interrupt_agent",
-			"cancel_agent",
 			"close_agent",
 		)
 	}
@@ -1966,7 +1959,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const apiProvider = this.apiConfiguration.apiProvider
 			const apiProtocol =
 				responseStep?.snapshot.context.provider.apiProtocol ??
-				getApiProtocol(apiProvider && !isRetiredProvider(apiProvider) ? apiProvider : undefined, modelId)
+				getApiProtocol(isProviderName(apiProvider) ? apiProvider : undefined, modelId)
 			const isAnthropicProtocol = apiProtocol === "anthropic"
 
 			// Start from the original assistant message
@@ -3657,9 +3650,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				provider: {
 					apiProvider: apiConfiguration.apiProvider,
 					apiProtocol: getApiProtocol(
-						apiConfiguration.apiProvider && !isRetiredProvider(apiConfiguration.apiProvider)
-							? apiConfiguration.apiProvider
-							: undefined,
+						isProviderName(apiConfiguration.apiProvider) ? apiConfiguration.apiProvider : undefined,
 						apiHandler.getModel().id,
 					),
 					modelId: apiHandler.getModel().id,
@@ -5600,20 +5591,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		)
 		const capturedGrant = this.subagentContextManifest?.runtimePolicy.allowedTools
 		if (!capturedGrant) return hardCeiling
-		const granted = new Set(capturedGrant)
-		// Progress reporting is a host-safe upward-only capability. Include it for
-		// legacy managed children whose frozen manifests predate this tool.
-		return hardCeiling.filter((tool) => tool === "report_progress" || granted.has(tool))
+		// Preserve equivalent renamed capabilities in saved manifests. An artifact-read
+		// grant alone must not become authority to stop or send input to commands.
+		const granted = new Set(
+			capturedGrant.map((tool) => (tool === "read_command_output" ? tool : canonicalizeToolName(tool))),
+		)
+		return hardCeiling.filter((tool) => granted.has(tool))
 	}
 
 	private shouldExposeAgentLifecycleTools(): boolean {
-		if (this.taskKind !== "primary") return false
-		if (this.clineMessages.some((message) => message.say === "subagent_group")) return true
-
-		// A legacy new_task child is still a primary task even though it carries
-		// blocking-handoff lineage. Its managed-agent control plane is rooted here,
-		// not at the legacy ancestor.
-		return this.providerRef?.deref()?.hasManagedAgentLifecycleState?.(this.taskId) ?? true
+		// Primary catalogs stay eager across idle, active, and reloaded sessions.
+		// Managed children are narrowed separately by their frozen authority grants.
+		return this.taskKind === "primary"
 	}
 
 	public getInheritedSubagentSkill(name: string) {
@@ -5634,6 +5623,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public getTaskToolDenialReason(toolName: string, params?: Record<string, unknown>): string | undefined {
+		toolName = canonicalizeToolName(toolName)
 		const allowed = this.getTaskAllowedToolNames()
 		if (allowed && !(allowed as readonly string[]).includes(toolName)) {
 			return `Tool "${toolName}" is not allowed for this parent-managed ${this.subagentRole === "worker" ? "editing worker" : "read-only sub-agent"}.`
@@ -6009,9 +5999,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * @param newApiConfiguration - The new API configuration to use
 	 */
 	public updateApiConfiguration(newApiConfiguration: ProviderSettings): void {
-		// Update the configuration and rebuild the API handler
+		// Build first so a rejected profile cannot leave the old handler paired with new settings.
+		const api = buildApiHandler(newApiConfiguration)
 		this.apiConfiguration = newApiConfiguration
-		this.api = buildApiHandler(this.apiConfiguration)
+		this.api = api
 	}
 
 	public async submitUserMessage(
@@ -6352,7 +6343,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let allTools: import("openai").default.Chat.ChatCompletionTool[] = []
 		let allowedFunctionNames: string[] | undefined
 		if (provider) {
-			const modelInfo = apiHandler.getModel().info
+			const model = apiHandler.getModel()
+			const modelInfo = model.info
 			const toolsResult = await buildNativeToolsArrayWithRestrictions({
 				provider,
 				cwd: this.cwd,
@@ -6362,8 +6354,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				apiConfiguration,
 				disabledTools: state?.disabledTools,
 				modelInfo,
-				includeAllToolsWithRestrictions:
-					apiConfiguration.apiProvider === "gemini" || apiConfiguration.apiProvider === "vertex",
+				modelIdentity: createModelToolIdentity(apiConfiguration, model),
+				includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
 				catalogCache: this.toolCatalogCache,
 				discoveryHistory: history,
 				signal,
@@ -8325,10 +8317,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// Determine API protocol based on provider and model
 				const modelId = getModelId(this.apiConfiguration)
 				const apiProvider = this.apiConfiguration.apiProvider
-				const apiProtocol = getApiProtocol(
-					apiProvider && !isRetiredProvider(apiProvider) ? apiProvider : undefined,
-					modelId,
-				)
+				const apiProtocol = getApiProtocol(isProviderName(apiProvider) ? apiProvider : undefined, modelId)
 
 				const provider = this.providerRef.deref()
 				let state = provider ? await provider.getState() : undefined
@@ -10379,10 +10368,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		assertRecoveryWithinBudget()
 
 		const { contextTokens } = this.getTokenUsage()
-		const modelInfo = apiHandler.getModel().info
+		const model = apiHandler.getModel()
+		const modelInfo = model.info
 
 		const maxTokens = getModelReservedOutputTokens({
-			modelId: apiHandler.getModel().id,
+			modelId: model.id,
 			model: modelInfo,
 			settings: apiConfiguration,
 		})
@@ -10430,8 +10420,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						apiConfiguration,
 						disabledTools: state?.disabledTools,
 						modelInfo,
-						includeAllToolsWithRestrictions:
-							apiConfiguration.apiProvider === "gemini" || apiConfiguration.apiProvider === "vertex",
+						modelIdentity: createModelToolIdentity(apiConfiguration, model),
+						includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
 						catalogCache: this.toolCatalogCache,
 						discoveryHistory: this.apiConversationHistory,
 						signal,
@@ -10853,7 +10843,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// live transcript under the old logical identity. Recovery captures a new step.
 		if (contextTokens && !retainedStep) {
 			const apiHandler = requestHandler
-			const modelInfo = apiHandler.getModel().info
+			const model = apiHandler.getModel()
+			const modelInfo = model.info
 			const contextManagementTimeoutMs = getApiRequestTimeout()
 			const contextManagementDeadline = getBoundedRequestDeadline(
 				contextManagementTimeoutMs,
@@ -10947,9 +10938,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								apiConfiguration,
 								disabledTools: state?.disabledTools,
 								modelInfo,
-								includeAllToolsWithRestrictions:
-									apiConfiguration.apiProvider === "gemini" ||
-									apiConfiguration.apiProvider === "vertex",
+								modelIdentity: createModelToolIdentity(apiConfiguration, model),
+								includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
 								catalogCache: this.toolCatalogCache,
 								discoveryHistory: this.apiConversationHistory,
 								signal: stepInterruptionSignal,
@@ -11167,7 +11157,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		// Whether we include tools is determined by whether we have any tools to send.
-		const modelInfo = requestHandler.getModel().info
+		const model = requestHandler.getModel()
+		const modelInfo = model.info
 
 		// Build complete tools array: native tools + dynamic MCP tools
 		// When includeAllToolsWithRestrictions is true, returns all tools but provides
@@ -11178,13 +11169,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let allowedFunctionNames: string[] | undefined
 		let taskToolSurface: TaskToolSurface | undefined
 
-		// Gemini requires all tool definitions to be present for history compatibility,
+		// Vertex requires all tool definitions to be present for history compatibility,
 		// but uses allowedFunctionNames to restrict which tools can be called.
-		// Vertex Gemini uses the same GenAI request format and validation rules.
-		// Other providers (Anthropic, OpenAI, etc.) don't support this feature yet,
+		// Other supported providers do not use this restriction field,
 		// so they continue to receive only the filtered tools for the current mode.
-		const supportsAllowedFunctionNames =
-			apiConfiguration?.apiProvider === "gemini" || apiConfiguration?.apiProvider === "vertex"
+		const supportsAllowedFunctionNames = apiConfiguration?.apiProvider === "vertex"
 
 		if (
 			(options.retryCategory === "transport" || options.retryCategory === "rate-limit") &&
@@ -11212,6 +11201,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					apiConfiguration,
 					disabledTools: state?.disabledTools,
 					modelInfo,
+					modelIdentity: createModelToolIdentity(apiConfiguration, model),
 					includeAllToolsWithRestrictions: supportsAllowedFunctionNames,
 					catalogCache: this.toolCatalogCache,
 					discoveryHistory: this.apiConversationHistory,
@@ -12043,10 +12033,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			throw error
 		}
 		if (this.abort) return
+		const canonicalName = canonicalizeToolName(name)
 		const failure = status === "success" ? undefined : normalizeToolFailure(result?.failure)
 		const retryWasBlocked = failure ? this.getToolRetryBlock(name, args) : undefined
 		const idleAgentWait = name === "wait_agent" && result?.waitOutcome === "idle"
-		const commandRead = name === "read_command_output"
+		const argumentRecord =
+			args !== null && typeof args === "object" && !Array.isArray(args)
+				? (args as Record<string, unknown>)
+				: undefined
+		const commandRead =
+			canonicalName === "manage_command" &&
+			(argumentRecord?.action === "read" ||
+				(name === "read_command_output" && Object.hasOwn(argumentRecord ?? {}, "artifact_id")))
 		const evidence = result?.callId ? this.commandExecutionEvidence.get(result.callId) : undefined
 		const scopes = Object.entries(evidence?.verificationVersions ?? {}).map(([changeSetId, scope]) => ({
 			changeSetId,
@@ -12054,7 +12052,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			kind: scope.kind,
 		}))
 		const scopedCheckFailure =
-			name === "execute_command" &&
+			canonicalName === "shell" &&
 			failure?.reason === "execution_failed" &&
 			failure.outcome === "known" &&
 			evidence?.status === "failed" &&
@@ -12102,7 +12100,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// operation-only budget would block a check even after its relevant inputs were repaired.
 				failureOwnedByCompletion = scopedCheckFailure
 				const exhausted =
-					name === "execute_command" &&
+					canonicalName === "shell" &&
 					(this.completionRecovery ??= new CompletionRecovery()).recordCheck(
 						completionDecision,
 						scopes.length > 0 ? scopes : associatedIds.map((changeSetId) => ({ changeSetId })),
@@ -12119,11 +12117,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		}
 		const polling = name === "wait_agent" && result?.waitOutcome === "active"
-		const read = ["read_file", "list_files", "search_files", "codebase_search", "read_command_output"].includes(
-			name,
-		)
+		const read = ["read_file", "list_files", "search_files", "codebase_search"].includes(name) || commandRead
 		const trustedExploration =
-			name === "execute_command" && status === "success" ? result?.trustedExploration : undefined
+			canonicalName === "shell" && status === "success" ? result?.trustedExploration : undefined
 		const state = this.providerRef?.deref()?.getVerificationProgressState?.(this)
 		const decision = this.toolRepetitionDetector.recordOutcome({
 			toolName: name,
@@ -12133,7 +12129,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				? "poll"
 				: read || trustedExploration
 					? "read"
-					: name === "execute_command"
+					: canonicalName === "shell"
 						? "check"
 						: "other",
 			scope: trustedExploration?.scope ?? this.cwd,

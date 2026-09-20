@@ -42,8 +42,7 @@
 		"language": "語言",
 		"about": "關於 Alpha",
 		"skills": "Skills",
-		"agents": "代理商",
-		"github": "GitHub"
+		"agents": "代理商"
 	},
 	"about": {
 		"bugReport": {
@@ -132,45 +131,12 @@
 		"providerLabel": "嵌入供應商",
 		"embedderProviderLabel": "嵌入器供應商",
 		"selectProviderPlaceholder": "選擇供應商",
-		"openaiProvider": "OpenAI",
-		"ollamaProvider": "Ollama",
-		"geminiProvider": "Gemini",
 		"vertexProvider": "GCP Vertex AI",
-		"geminiApiKeyLabel": "API 金鑰：",
-		"geminiApiKeyPlaceholder": "輸入您的 Gemini API 金鑰",
-		"mistralProvider": "Mistral",
-		"mistralApiKeyLabel": "API 金鑰：",
-		"mistralApiKeyPlaceholder": "輸入您的 Mistral API 金鑰",
-		"vercelAiGatewayProvider": "Vercel AI Gateway",
-		"vercelAiGatewayApiKeyLabel": "API 金鑰",
-		"vercelAiGatewayApiKeyPlaceholder": "輸入您的 Vercel AI Gateway API 金鑰",
-		"bedrockProvider": "Amazon Bedrock",
-		"bedrockRegionLabel": "AWS 區域",
-		"bedrockRegionPlaceholder": "us-east-1",
-		"bedrockProfileLabel": "AWS Profile",
-		"bedrockProfilePlaceholder": "default",
-		"bedrockProfileDescription": "來自 ~/.aws/credentials 的 AWS Profile 名稱（必需）。",
-		"openRouterProvider": "OpenRouter",
-		"openRouterApiKeyLabel": "OpenRouter API 金鑰",
-		"openRouterApiKeyPlaceholder": "輸入您的 OpenRouter API 金鑰",
-		"openRouterProviderRoutingLabel": "OpenRouter 供應商路由",
-		"openRouterProviderRoutingDescription": "OpenRouter 會將請求路由到適合您嵌入模型的最佳可用供應商。預設情況下，請求會在頂尖供應商之間進行負載平衡以最大化正常運作時間。您也可以為此模型選擇特定的供應商。",
-		"openaiCompatibleProvider": "OpenAI 相容",
-		"openAiKeyLabel": "OpenAI API 金鑰",
-		"openAiKeyPlaceholder": "輸入您的 OpenAI API 金鑰",
-		"openAiCompatibleBaseUrlLabel": "基礎 URL",
-		"openAiCompatibleApiKeyLabel": "API 金鑰",
-		"openAiCompatibleApiKeyPlaceholder": "輸入您的 API 金鑰",
-		"openAiCompatibleModelDimensionLabel": "嵌入維度：",
 		"modelDimensionLabel": "模型維度",
-		"openAiCompatibleModelDimensionPlaceholder": "例如，1536",
-		"openAiCompatibleModelDimensionDescription": "模型的嵌入維度（輸出大小）。請查閱供應商說明文件以取得此值。常見值：384、768、1536、3072。",
 		"modelLabel": "模型",
 		"modelPlaceholder": "輸入模型名稱",
 		"selectModel": "選擇模型",
 		"selectModelPlaceholder": "選擇模型",
-		"ollamaUrlLabel": "Ollama URL:",
-		"ollamaBaseUrlLabel": "Ollama 基礎 URL",
 		"qdrantUrlLabel": "Qdrant URL",
 		"qdrantKeyLabel": "Qdrant 金鑰：",
 		"qdrantApiKeyLabel": "Qdrant API 金鑰",
@@ -192,8 +158,6 @@
 			"cancelButton": "取消",
 			"confirmButton": "清除資料"
 		},
-		"ollamaUrlPlaceholder": "http://localhost:11434",
-		"openAiCompatibleBaseUrlPlaceholder": "https://api.example.com",
 		"modelDimensionPlaceholder": "1536",
 		"qdrantUrlPlaceholder": "http://localhost:6333",
 		"saveError": "無法儲存設定",
@@ -211,20 +175,11 @@
 		"validation": {
 			"qdrantUrlRequired": "需要 Qdrant URL",
 			"invalidQdrantUrl": "無效的 Qdrant URL",
-			"invalidOllamaUrl": "無效的 Ollama URL",
 			"invalidBaseUrl": "無效的基礎 URL",
-			"openaiApiKeyRequired": "需要 OpenAI API 金鑰",
 			"modelSelectionRequired": "需要選擇模型",
 			"apiKeyRequired": "需要 API 金鑰",
 			"modelIdRequired": "需要模型 ID",
 			"modelDimensionRequired": "需要模型維度",
-			"geminiApiKeyRequired": "需要 Gemini API 金鑰",
-			"mistralApiKeyRequired": "需要 Mistral API 金鑰",
-			"vercelAiGatewayApiKeyRequired": "需要 Vercel AI Gateway API 金鑰",
-			"bedrockRegionRequired": "AWS 區域必填",
-			"bedrockProfileRequired": "AWS Profile 必填",
-			"openRouterApiKeyRequired": "OpenRouter API 金鑰必填",
-			"ollamaBaseUrlRequired": "需要 Ollama 基礎 URL",
 			"baseUrlRequired": "需要基礎 URL",
 			"modelDimensionMinValue": "模型維度必須大於 0",
 			"vertexProjectIdRequired": "Google Cloud project ID is required",
@@ -341,7 +296,6 @@
 		"nameEmpty": "名稱不能為空",
 		"nameExists": "已存在同名的設定檔",
 		"deleteProfile": "刪除設定檔",
-		"invalidArnFormat": "ARN 格式無效。請檢查上方範例。",
 		"enterNewName": "輸入新名稱",
 		"addProfile": "新增設定檔",
 		"renameProfile": "重新命名設定檔",
@@ -353,46 +307,9 @@
 		"searchProviderPlaceholder": "搜尋供應商",
 		"noProviderMatchFound": "找不到供應商",
 		"noMatchFound": "找不到符合的設定檔",
-		"retiredProviderMessage": "抱歉，此供應商已不再受支援。我們發現實際使用它的 Alpha 使用者非常少，我們需要縮減程式碼庫的範圍，以便繼續快速交付並更好地服務社群。這是一個非常艱難的決定，但它能讓我們專注於對你最重要的事情。我們知道這很遺憾。",
+		"retiredProviderMessage": "此已儲存的供應商不再受支援。請在設定中選擇 GCP Vertex AI、VS Code LM API、Stellar 或 OpenAI Compatible。",
 		"vscodeLmDescription": "VS Code 語言模型 API 可以讓您使用其他擴充功能（如 GitHub Copilot）提供的模型。最簡單的方式是從 VS Code Marketplace 安裝 Copilot 和 Copilot Chat 擴充套件。",
-		"awsCustomArnUse": "輸入您要使用的模型的有效 Amazon Bedrock ARN。格式範例：",
-		"awsCustomArnDesc": "確保 ARN 中的區域與您上面選擇的 AWS 區域相符。",
-		"openRouterApiKey": "OpenRouter API 金鑰",
-		"getOpenRouterApiKey": "取得 OpenRouter API 金鑰",
-		"vercelAiGatewayApiKey": "Vercel AI Gateway API 金鑰",
-		"getVercelAiGatewayApiKey": "取得 Vercel AI Gateway API 金鑰",
 		"apiKeyStorageNotice": "API 金鑰會安全地儲存在 VS Code 的 Secret Storage 中",
-		"openAiCodexRateLimits": {
-			"title": "Codex 用量限制{{planLabel}}",
-			"loading": "正在載入用量限制...",
-			"loadError": "無法載入用量限制",
-			"retry": "重試",
-			"usedPercent": "已使用 {{percent}}%",
-			"resetsIn": "{{time}} 後重設",
-			"plan": {
-				"default": "",
-				"withType": " ({{planType}})"
-			},
-			"time": {
-				"now": "立即",
-				"notAvailable": "無法取得"
-			},
-			"duration": {
-				"daysHours": "{{days}} 天 {{hours}} 小時",
-				"hoursMinutes": "{{hours}} 小時 {{minutes}} 分鐘",
-				"minutes": "{{minutes}} 分鐘"
-			},
-			"window": {
-				"usage": "用量",
-				"fiveHour": "5 小時限制",
-				"oneHour": "1 小時限制",
-				"daily": "每日限制",
-				"weekly": "每週限制",
-				"days": "{{days}} 天限制",
-				"hours": "{{hours}} 小時限制",
-				"minutes": "{{minutes}} 分鐘限制"
-			}
-		},
 		"useCustomBaseUrl": "使用自訂基礎 URL",
 		"useReasoning": "啟用推理",
 		"useHostHeader": "使用自訂 Host 標頭",
@@ -400,9 +317,6 @@
 		"headerName": "標頭名稱",
 		"headerValue": "標頭值",
 		"noCustomHeaders": "尚未定義自訂標頭。點選 + 按鈕以新增。",
-		"unboundApiKey": "Unbound API 金鑰",
-		"getUnboundApiKey": "取得 Unbound API 金鑰",
-		"requestyApiKey": "Requesty API 金鑰",
 		"refreshModels": {
 			"label": "重新整理模型",
 			"hint": "請重新開啟設定以查看最新模型。",
@@ -411,109 +325,14 @@
 			"error": "重新整理模型列表失敗。請再試一次。",
 			"missingConfig": "在刷新模型之前輸入所需的提供者配置。"
 		},
-		"getRequestyApiKey": "取得 Requesty API 金鑰",
-		"getRequestyBaseUrl": "基礎 URL",
-		"requestyUseCustomBaseUrl": "使用自訂基礎 URL",
-		"anthropicApiKey": "Anthropic API 金鑰",
-		"getAnthropicApiKey": "取得 Anthropic API 金鑰",
-		"anthropicUseAuthToken": "將 Anthropic API 金鑰作為 Authorization 標頭傳遞，而非使用 X-Api-Key",
-		"anthropic1MContextBetaLabel": "啟用 1M 上下文視窗 (Beta)",
-		"anthropic1MContextBetaDescription": "為 Claude Sonnet 4.x / Claude Opus 4.6 將上下文視窗擴展至 100 萬個 token",
-		"awsBedrock1MContextBetaLabel": "啟用 1M 上下文視窗 (Beta)",
-		"awsBedrock1MContextBetaDescription": "為 Claude Sonnet 4.x / Claude Opus 4.6 將上下文視窗擴展至 100 萬個 token",
 		"vertex1MContextBetaLabel": "啟用 1M 上下文視窗 (Beta)",
 		"vertex1MContextBetaDescription": "為 Claude Sonnet 4.x / Claude Opus 4.6 將上下文視窗擴展至 100 萬個 token",
-		"basetenApiKey": "Baseten API 金鑰",
-		"getBasetenApiKey": "取得 Baseten API 金鑰",
-		"poeApiKey": "Poe API 金鑰",
-		"getPoeApiKey": "取得 Poe API 金鑰",
-		"poeBaseUrl": "Poe 基礎 URL",
-		"fireworksApiKey": "Fireworks API 金鑰",
-		"getFireworksApiKey": "取得 Fireworks API 金鑰",
-		"deepSeekApiKey": "DeepSeek API 金鑰",
-		"getDeepSeekApiKey": "取得 DeepSeek API 金鑰",
-		"moonshotApiKey": "Moonshot API 金鑰",
-		"getMoonshotApiKey": "取得 Moonshot API 金鑰",
-		"moonshotBaseUrl": "Moonshot 服務端點",
-		"minimaxApiKey": "MiniMax API 金鑰",
-		"getMiniMaxApiKey": "取得 MiniMax API 金鑰",
-		"minimaxBaseUrl": "MiniMax 服務端點",
-		"zaiApiKey": "Z AI API 金鑰",
-		"getZaiApiKey": "取得 Z AI API 金鑰",
-		"zaiEntrypoint": "Z AI 服務端點",
-		"zaiEntrypointDescription": "請根據您的位置選擇適當的 API 服務端點。如果您在中國，請選擇 open.bigmodel.cn。否則，請選擇 api.z.ai。",
-		"geminiApiKey": "Gemini API 金鑰",
-		"getSambaNovaApiKey": "取得 SambaNova API 金鑰",
-		"sambaNovaApiKey": "SambaNova API 金鑰",
-		"getGeminiApiKey": "取得 Gemini API 金鑰",
 		"openAiApiKey": "OpenAI API 金鑰",
 		"apiKey": "API 金鑰",
 		"openAiBaseUrl": "基礎 URL",
 		"getOpenAiApiKey": "取得 OpenAI API 金鑰",
-		"mistralApiKey": "Mistral API 金鑰",
-		"getMistralApiKey": "取得 Mistral/Codestral API 金鑰",
-		"codestralBaseUrl": "Codestral 基礎 URL（選用）",
-		"codestralBaseUrlDesc": "設定 Codestral 模型的替代 URL。",
-		"xaiApiKey": "xAI API 金鑰",
-		"getXaiApiKey": "取得 xAI API 金鑰",
-		"litellmApiKey": "LiteLLM API 金鑰",
-		"litellmBaseUrl": "LiteLLM 基礎 URL",
-		"awsCredentials": "AWS 認證",
-		"awsProfile": "AWS Profile",
-		"awsApiKey": "Amazon Bedrock API 金鑰",
-		"awsProfileName": "AWS Profile 名稱",
-		"awsAccessKey": "AWS 存取金鑰",
-		"awsSecretKey": "AWS 秘密金鑰",
-		"awsSessionToken": "AWS 工作階段權杖",
-		"awsRegion": "AWS 區域",
-		"awsCrossRegion": "使用跨區域推論",
-		"awsGlobalInference": "使用全域推論（自動選取最佳 AWS 區域）",
-		"awsServiceTier": "服務層級",
-		"awsServiceTierStandard": "Standard",
-		"awsServiceTierStandardDesc": "效能和成本均衡",
-		"awsServiceTierFlex": "Flex（50% 折扣）",
-		"awsServiceTierFlexDesc": "低成本，非關鍵工作的延遲較高",
-		"awsServiceTierPriority": "Priority（75% 溢價）",
-		"awsServiceTierPriorityDesc": "為關鍵業務應用提供最快效能",
-		"awsServiceTierNote": "服務層級會影響定價和效能。Flex 提供 50% 折扣但延遲較高，Priority 提供 25% 更好的效能但費用溢價 75%。",
-		"awsBedrockVpc": {
-			"useCustomVpcEndpoint": "使用自訂 VPC 端點",
-			"vpcEndpointUrlPlaceholder": "輸入 VPC 端點 URL（選填）",
-			"examples": "範例："
-		},
-		"enablePromptCaching": "啟用提示快取",
-		"enablePromptCachingTitle": "啟用提示快取以提升支援的模型效能並降低成本。",
-		"cacheUsageNote": "注意：如果您沒有看到快取使用情況，請嘗試選擇其他模型，然後重新選擇您想要的模型。",
 		"vscodeLmModel": "語言模型",
 		"vscodeLmWarning": "注意：透過 VS Code Language Model API 存取的模型可能由供應商封裝或微調，因此其行為可能與直接從一般供應商或路由器使用相同模型時不同。要使用「Language Model」下拉式選單中的模型，請先切換到該模型，然後在 Copilot Chat 提示中點選「接受」；否則可能會出現 400「The requested model is not supported」等錯誤。",
-		"lmStudio": {
-			"baseUrl": "基礎 URL（選用）",
-			"modelId": "模型 ID",
-			"speculativeDecoding": "啟用預測性解碼",
-			"draftModelId": "草稿模型 ID",
-			"draftModelDesc": "草稿模型必須來自相同模型系列才能正確運作。",
-			"selectDraftModel": "選擇草稿模型",
-			"noModelsFound": "未找到草稿模型。請確保 LM Studio 以伺服器模式執行。",
-			"description": "LM Studio 允許您在本機電腦執行模型。詳細資訊請參閱快速入門指南。您需要啟動 LM Studio 的本機伺服器功能才能與此擴充功能搭配使用。<span>注意：</span> Alpha 使用複雜提示詞，與 Claude 模型搭配最佳。功能較弱的模型可能無法正常運作。"
-		},
-		"ollama": {
-			"baseUrl": "基礎 URL（選用）",
-			"modelId": "模型 ID",
-			"apiKey": "Ollama API 金鑰",
-			"apiKeyHelp": "用於已驗證 Ollama 執行個體或雲端服務的選用 API 金鑰。本機安裝請留空。",
-			"numCtx": "上下文視窗大小（num_ctx）",
-			"numCtxHelp": "覆寫模型的預設上下文視窗大小。留空以使用模型的 Modelfile 設定。最小值為 128。",
-			"description": "Ollama 允許您在本機電腦執行模型。請參閱快速入門指南。",
-			"warning": "注意：Alpha 使用複雜提示詞，與 Claude 模型搭配最佳。功能較弱的模型可能無法正常運作。"
-		},
-		"roo": {},
-		"openRouter": {
-			"providerRouting": {
-				"title": "OpenRouter 供應商路由",
-				"description": "OpenRouter 會將請求路由到適合您模型的最佳可用供應商。預設情況下，請求會在頂尖供應商之間進行負載平衡以最大化正常運作時間。您也可以為此模型選擇特定的供應商。",
-				"learnMore": "了解更多關於供應商路由的資訊"
-			}
-		},
 		"customModel": {
 			"capabilities": "設定自訂 OpenAI 相容模型的功能和定價。請謹慎設定模型功能，因為這會影響 Alpha 的運作方式。",
 			"maxTokens": {
@@ -584,13 +403,6 @@
 			"description": "控制模型回應的詳細程度。低詳細度產生簡潔的回答，而高詳細度提供詳盡的解釋。"
 		},
 		"setReasoningLevel": "啟用推理強度",
-		"claudeCode": {
-			"pathLabel": "Claude Code 路徑",
-			"description": "選用的 Claude Code CLI 路徑。若未設定，預設為 'claude'。",
-			"placeholder": "預設：claude",
-			"maxTokensLabel": "最大輸出 Token",
-			"maxTokensDescription": "Claude Code 回應的最大輸出 Token 數量。預設為 8000。"
-		},
 		"vertexStreamingEnabledLabel": "啟用串流響應",
 		"vertexStreamingEnabledDescription": "當網關或模型不支援串流時停用此功能。完成後將出現回應。",
 		"vscodeLmLoading": "正在載入此 VS Code 視窗中可用的語言模型...",
@@ -880,19 +692,6 @@
 			"name": "要求新工作提供 'todos' 清單",
 			"description": "啟用後，new_task 工具將需要提供 todos 參數。這可以確保所有新工作都以明確的目標列表開始。停用時（預設），todos 參數保持可選，以實現向後相容。"
 		},
-		"IMAGE_GENERATION": {
-			"name": "啟用 AI 影像生成",
-			"description": "啟用後，Alpha 可以使用 OpenRouter 的影像生成模型，從文字提示產生影像。需要設定 OpenRouter API 金鑰。",
-			"providerLabel": "供應商",
-			"providerDescription": "選擇用於影像生成的供應商。",
-			"openRouterApiKeyLabel": "OpenRouter API 金鑰",
-			"openRouterApiKeyPlaceholder": "輸入您的 OpenRouter API 金鑰",
-			"getApiKeyText": "取得 API 金鑰請前往",
-			"modelSelectionLabel": "影像生成模型",
-			"modelSelectionDescription": "選擇用於影像生成的模型",
-			"warningMissingKey": "⚠️ 影像生成需要 OpenRouter API 金鑰。請在上方設定。",
-			"successConfigured": "✓ 影像生成已設定完成並準備使用"
-		},
 		"RUN_SLASH_COMMAND": {
 			"name": "啟用模型啟動的斜線命令",
 			"description": "啟用時，Alpha 可以執行您的斜線命令來執行工作流程。"
@@ -933,12 +732,7 @@
 		"enableR1Format": "啟用 R1 模型參數",
 		"enableR1FormatTips": "使用 QWQ 等 R1 模型時必須啟用，以避免發生 400 錯誤",
 		"useAzure": "使用 Azure",
-		"azureApiVersion": "設定 Azure API 版本",
-		"gemini": {
-			"freeRequests": "* 每分鐘可免費使用 {{count}} 次請求，超過後將依提示詞大小計費。",
-			"pricingDetails": "詳細資訊請參閱定價說明。",
-			"billingEstimate": "* 費用為估算值 - 實際費用取決於提示大小。"
-		}
+		"azureApiVersion": "設定 Azure API 版本"
 	},
 	"modelPicker": {
 		"automaticFetch": "此擴充功能會自動從 <serviceLink>{{serviceName}}</serviceLink> 取得最新的可用模型清單。如果不確定要選哪個模型，建議使用 <defaultModelLink>{{defaultModelId}}</defaultModelLink>，這是與 Alpha 最佳搭配的模型。您也可以搜尋「free」來檢視目前可用的免費選項。",
@@ -965,20 +759,14 @@
 	},
 	"validation": {
 		"apiKey": "請提供有效的 API 金鑰。",
-		"awsRegion": "請選擇要用於 Amazon Bedrock 的區域。",
 		"modelId": "請提供有效的模型 ID。",
 		"modelSelector": "請提供有效的模型選擇器。",
 		"openAi": "請提供有效的基礎 URL、API 金鑰和模型 ID。",
-		"arn": {
-			"invalidFormat": "ARN 格式無效，請檢查格式要求。",
-			"regionMismatch": "警告：您 ARN 中的區域 ({{arnRegion}}) 與您選擇的區域 ({{region}}) 不符，可能導致存取問題。系統將使用 ARN 中指定的區域。"
-		},
 		"modelAvailability": "您指定的模型 ID ({{modelId}}) 目前無法使用，請選擇其他模型。",
 		"modelDeprecated": "此模型已停用，請選擇其他模型。",
 		"providerNotAllowed": "供應商 '{{provider}}' 不允許用於您的組織。",
 		"modelNotAllowed": "模型 '{{model}}' 不允許用於供應商 '{{provider}}'，此設定已被組織禁止",
 		"profileInvalid": "此設定檔包含您的組織不允許的供應商或模型",
-		"qwenCodeOauthPath": "您必須提供有效的 OAuth 憑證路徑",
 		"googleCloud": "您必須提供 Google Cloud 項目 ID 和區域。",
 		"vertexGateway": "Vertex 閘道需要基本 URL、CA 捆綁路徑和 Helix 指令。",
 		"vertexGatewayModelRoutingMap": "Vertex 閘道模型路由對映必須是具有字串模型 ID 的 JSON 物件。",
@@ -987,19 +775,11 @@
 	"placeholders": {
 		"apiKey": "請輸入 API 金鑰...",
 		"profileName": "請輸入設定檔名稱",
-		"accessKey": "請輸入存取金鑰...",
-		"secretKey": "請輸入秘密金鑰...",
-		"sessionToken": "請輸入工作階段權杖...",
 		"credentialsJson": "請輸入憑證 JSON...",
 		"keyFilePath": "請輸入金鑰檔案路徑...",
 		"projectId": "請輸入專案 ID...",
-		"customArn": "請輸入 ARN（例：arn:aws:bedrock:us-east-1:123456789012:foundation-model/my-model）",
 		"baseUrl": "請輸入基礎 URL...",
-		"modelId": {
-			"lmStudio": "例：meta-llama-3.1-8b-instruct",
-			"lmStudioDraft": "例：lmstudio-community/llama-3.2-1b-instruct",
-			"ollama": "例：llama3.1"
-		},
+		"modelId": {},
 		"numbers": {
 			"maxTokens": "例：4096",
 			"contextWindow": "例：128000",
@@ -1008,15 +788,8 @@
 			"cacheWritePrice": "例：0.00005"
 		}
 	},
-	"defaults": {
-		"ollamaUrl": "預設：http://localhost:11434",
-		"lmStudioUrl": "預設：http://localhost:1234",
-		"geminiUrl": "預設：https://generativelanguage.googleapis.com"
-	},
-	"labels": {
-		"customArn": "自訂 ARN",
-		"useCustomArn": "使用自訂 ARN..."
-	},
+	"defaults": {},
+	"labels": {},
 	"includeMaxOutputTokens": "包含最大輸出 Token 數",
 	"includeMaxOutputTokensDescription": "在 API 請求中傳送最大輸出 Token 參數。某些供應商可能不支援此功能。",
 	"limitMaxTokensDescription": "限制回應中的最大 Token 數量",
@@ -1121,10 +894,5 @@
 				"description": "獨立編輯工作人員的可選設定檔覆蓋。"
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "GitHub 令牌",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "安全儲存在 VS Code 秘密儲存中。由本機 GitHub API 工具用於拉取請求、檢查、註解和合併。"
 	}
 }

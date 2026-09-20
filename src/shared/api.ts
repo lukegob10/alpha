@@ -1,12 +1,21 @@
 import {
+	isProviderName,
+	isFauxProvider,
 	type ModelInfo,
 	type ProviderSettings,
-	type DynamicProvider,
-	type LocalProvider,
 	ANTHROPIC_DEFAULT_MAX_TOKENS,
-	isDynamicProvider,
-	isLocalProvider,
 } from "@alpha-code/types"
+
+/** Reject saved unsupported IDs before changing task lifecycle or provider state. */
+export function assertSupportedApiProvider(provider: unknown): void {
+	if (
+		provider === undefined ||
+		isProviderName(provider) ||
+		(typeof provider === "string" && isFauxProvider(provider))
+	)
+		return
+	throw new Error(`Unsupported API provider: ${String(provider)}`)
+}
 
 // ApiHandlerOptions
 // Extend ProviderSettings (minus apiProvider) with handler-specific toggles.
@@ -17,26 +26,6 @@ export type ApiHandlerOptions = Omit<ProviderSettings, "apiProvider"> & {
 	 * and surface them). Defaults to true; set to false to disable summaries.
 	 */
 	enableResponsesReasoningSummary?: boolean
-	/**
-	 * Optional override for Ollama's num_ctx parameter.
-	 * When set, this value will be used in Ollama chat requests.
-	 * When undefined, Ollama will use the model's default num_ctx from the Modelfile.
-	 */
-	ollamaNumCtx?: number
-}
-
-// RouterName
-
-export type RouterName = DynamicProvider | LocalProvider
-
-export const isRouterName = (value: string): value is RouterName => isDynamicProvider(value) || isLocalProvider(value)
-
-export function toRouterName(value?: string): RouterName {
-	if (value && isRouterName(value)) {
-		return value
-	}
-
-	throw new Error(`Invalid router name: ${value}`)
 }
 
 // Reasoning
@@ -115,16 +104,13 @@ export const getModelMaxOutputTokens = ({
 	modelId: string
 	model: ModelInfo
 	settings?: ProviderSettings
-	format?: "anthropic" | "openai" | "gemini" | "openrouter"
+	format?: "anthropic" | "openai" | "gemini"
 }): number | undefined => {
 	if (shouldUseReasoningBudget({ model, settings })) {
 		return settings?.modelMaxTokens || DEFAULT_HYBRID_REASONING_MODEL_MAX_TOKENS
 	}
 
-	const isAnthropicContext =
-		modelId.includes("claude") ||
-		format === "anthropic" ||
-		(format === "openrouter" && modelId.startsWith("anthropic/"))
+	const isAnthropicContext = modelId.includes("claude") || format === "anthropic"
 
 	// For "Hybrid" reasoning models, discard the model's actual maxTokens for Anthropic contexts
 	if (model.supportsReasoningBudget && isAnthropicContext) {
@@ -168,32 +154,3 @@ export function getModelReservedOutputTokens(options: Parameters<typeof getModel
 		? Math.ceil(tokens)
 		: ANTHROPIC_DEFAULT_MAX_TOKENS
 }
-
-// GetModelsOptions
-
-// Allow callers to always pass apiKey/baseUrl without excess property errors,
-// while still enforcing required fields per provider where applicable.
-type CommonFetchParams = {
-	apiKey?: string
-	baseUrl?: string
-}
-
-// Exhaustive, value-level map for all dynamic providers.
-// If a new dynamic provider is added in packages/types, this will fail to compile
-// until a corresponding entry is added here.
-const dynamicProviderExtras = {
-	openrouter: {} as {}, // eslint-disable-line @typescript-eslint/no-empty-object-type
-	"vercel-ai-gateway": {} as {}, // eslint-disable-line @typescript-eslint/no-empty-object-type
-	litellm: {} as { apiKey: string; baseUrl: string },
-	requesty: {} as { apiKey?: string; baseUrl?: string },
-	unbound: {} as { apiKey?: string },
-	ollama: {} as {}, // eslint-disable-line @typescript-eslint/no-empty-object-type
-	lmstudio: {} as {}, // eslint-disable-line @typescript-eslint/no-empty-object-type
-	poe: {} as { apiKey?: string; baseUrl?: string },
-} as const satisfies Record<RouterName, object>
-
-// Build the dynamic options union from the map, intersected with CommonFetchParams
-// so extra fields are always allowed while required ones are enforced.
-export type GetModelsOptions = {
-	[P in keyof typeof dynamicProviderExtras]: ({ provider: P } & (typeof dynamicProviderExtras)[P]) & CommonFetchParams
-}[RouterName]

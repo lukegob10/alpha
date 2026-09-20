@@ -128,6 +128,9 @@ export async function runLiveCase(
 	provider.on("taskCreated", onCreated)
 	api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
 	const allowed = new Set<ToolName>(["read_file", "attempt_completion", ...tools])
+	const policyAllowed = new Set(allowed)
+	if (allowed.has("shell")) policyAllowed.add("execute_command")
+	if (allowed.has("manage_command")) policyAllowed.add("read_command_output")
 	const startedAt = Date.now()
 	let calls: Transaction[] = []
 	let answer = ""
@@ -140,7 +143,7 @@ export async function runLiveCase(
 				configuration: {
 					...original,
 					mode: "code",
-					disabledTools: toolNames.filter((name) => !allowed.has(name)),
+					disabledTools: toolNames.filter((name) => !policyAllowed.has(name)),
 					autoApprovalEnabled: true,
 					alwaysAllowReadOnly: true,
 					alwaysAllowReadOnlyOutsideWorkspace: false,

@@ -47,22 +47,5 @@
 	},
 	"applyPatch": {
 		"deleteCancelled": "Delete operation was cancelled."
-	},
-	"imageOutput": {
-		"writeIncomplete": "Failed to finish writing '{{path}}'; the file may be incomplete. {{cause}}"
-	},
-	"generateImage": {
-		"openRouterApiKeyRequired": "OpenRouter API key is required for image generation with OpenRouter models. Please configure it in the Image Generation experimental settings.",
-		"failedWithStatus": "Failed to generate image: {{status}} {{statusText}}",
-		"failedWithMessage": "Failed to generate image: {{message}}",
-		"noImageGenerated": "No image was generated in the response",
-		"invalidImageData": "Invalid image data in response",
-		"invalidImageFormat": "Invalid image format received",
-		"unknownError": "Unknown error occurred",
-		"cancelledBeforeSave": "Image generation was cancelled before saving the image.",
-		"destinationUnavailableBeforeGeneration": "The image destination was not accessible before generation. Retry the request.",
-		"destinationPolicyChangedBeforeSave": "The image destination's path or access policy changed before saving. Retry the request.",
-		"postSaveProcessingFailed": "{{path}}\nImage saved, but post-save processing failed: {{message}}",
-		"roo": {}
 	}
 }

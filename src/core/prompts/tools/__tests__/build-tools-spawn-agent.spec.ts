@@ -23,8 +23,6 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		"wait_agent",
 		"send_message",
 		"followup_task",
-		"interrupt_agent",
-		"cancel_agent",
 		"close_agent",
 	]
 	const provider = {
@@ -59,8 +57,8 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		})
 
 		expect(names(result.tools as any)).toContain("spawn_agent")
-		expect(names(result.tools as any)).toContain("delegate_task")
 		expect(names(result.tools as any)).not.toContain("report_progress")
+		expect(names(result.tools as any)).not.toContain("delegate_task")
 		expect(result.allowedFunctionNames).toContain("spawn_agent")
 		expect(result.allowedFunctionNames).not.toContain("report_progress")
 		for (const tool of orchestrationTools) {
@@ -88,18 +86,6 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		)
 		expect(spawnTool?.function?.parameters?.required).toEqual(expect.arrayContaining(["task_name", "fork_turns"]))
 		expect(spawnTool?.function?.parameters?.properties).toHaveProperty("fork_turns")
-		const delegateTool = nativeTools.find((tool) => tool.function?.name === "delegate_task")
-		expect(delegateTool?.function?.description).toContain("one blocking delegation group")
-		expect(delegateTool?.function?.description).toContain("one structured group result")
-		expect(delegateTool?.function?.description).toContain("quarantined proposal")
-		expect(delegateTool?.function?.description).not.toContain("handle immediately")
-		const delegateTask = (delegateTool?.function?.parameters as any)?.properties?.tasks?.items
-		expect(delegateTask?.required).toEqual(expect.arrayContaining(["objective", "fork_turns", "agent_kind"]))
-		expect(delegateTask?.properties?.fork_turns).toMatchObject({
-			pattern: "^(?:none|all|[1-9][0-9]*)$",
-			maxLength: 16,
-		})
-
 		const completionTool = nativeTools.find((tool) => tool.function?.name === "attempt_completion")
 		expect(completionTool?.function?.parameters?.properties).toHaveProperty("outcome")
 		expect(completionTool?.function?.description).not.toContain("sub-agents only")
@@ -109,7 +95,7 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		expect(names(result.tools as any)).not.toContain("report_progress")
 	})
 
-	it("keeps delegation entry points while trimming idle lifecycle controls", async () => {
+	it("keeps the spawn entry point while trimming idle lifecycle controls", async () => {
 		const result = await buildNativeToolsArrayWithRestrictions({
 			provider,
 			cwd: "F:/workspace",
@@ -123,7 +109,7 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		})
 
 		expect(names(result.tools as any)).toContain("spawn_agent")
-		expect(names(result.tools as any)).toContain("delegate_task")
+		expect(names(result.tools as any)).not.toContain("delegate_task")
 		for (const tool of orchestrationTools.filter((tool) => tool !== "spawn_agent")) {
 			expect(names(result.tools as any)).not.toContain(tool)
 			expect(result.allowedFunctionNames).not.toContain(tool)
@@ -149,9 +135,7 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 				"list_files",
 				"ask_followup_question",
 				"attempt_completion",
-				"execute_command",
-				"read_command_output",
-				"delegate_task",
+				"shell",
 				...orchestrationTools,
 			]),
 		)
@@ -160,21 +144,17 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		}
 
 		const planTools = result.tools as any[]
-		const executeCommand = planTools.find((tool) => tool.function?.name === "execute_command")
-		expect(executeCommand.function.description).toContain("host-classified")
-		expect(executeCommand.function.description).toContain("Shell chaining")
-		expect(executeCommand.function.parameters.properties.verification).toMatchObject({ type: "null" })
-		expect(executeCommand.function.description).not.toContain("npm run dev")
+		const shell = planTools.find((tool) => tool.function?.name === "shell")
+		expect(shell.function.description).toContain("host-classified")
+		expect(shell.function.description).toContain("Shell chaining")
+		expect(shell.function.parameters.properties.verification).toBeUndefined()
+		expect(shell.function.description).not.toContain("npm run dev")
 		const spawnAgent = planTools.find((tool) => tool.function?.name === "spawn_agent")
 		expect(spawnAgent.function.description).not.toMatch(/worker|quarantined/i)
 		expect(spawnAgent.function.parameters.properties.agent_kind.enum).toEqual(["explore", "review"])
 		expect(spawnAgent.function.parameters.properties.write_scope).toMatchObject({ type: "null" })
 
-		const delegateTask = planTools.find((tool) => tool.function?.name === "delegate_task")
-		const delegatedItem = delegateTask.function.parameters.properties.tasks.items
-		expect(delegateTask.function.description).not.toMatch(/worker|quarantined/i)
-		expect(delegatedItem.properties.agent_kind.enum).toEqual(["explore", "review"])
-		expect(delegatedItem.properties.write_scope).toMatchObject({ type: "null" })
+		expect(planTools.find((tool) => tool.function?.name === "delegate_task")).toBeUndefined()
 	})
 
 	it("ignores persisted architect groups when building the Plan catalog", async () => {
@@ -195,9 +175,7 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 			taskKind: "primary",
 		})
 
-		expect(names(result.tools as any)).toEqual(
-			expect.arrayContaining(["read_file", "execute_command", "read_command_output", "spawn_agent"]),
-		)
+		expect(names(result.tools as any)).toEqual(expect.arrayContaining(["read_file", "shell", "spawn_agent"]))
 		expect(names(result.tools as any)).not.toEqual(
 			expect.arrayContaining(["write_to_file", "apply_diff", "use_mcp_tool"]),
 		)
@@ -231,7 +209,7 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 	it("does not let the stable primary default override a managed child's frozen authority", async () => {
 		const allowedToolNames = managedChildAllowedTools(false)
 		expect(allowedToolNames).not.toContain("spawn_agent")
-		expect(allowedToolNames).toContain("report_progress")
+		expect(allowedToolNames).not.toContain("report_progress")
 
 		const result = await buildNativeToolsArrayWithRestrictions({
 			provider,
@@ -249,7 +227,7 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 			expect(names(result.tools as any)).not.toContain(tool)
 			expect(result.allowedFunctionNames).not.toContain(tool)
 		}
-		expect(names(result.tools as any)).toContain("report_progress")
-		expect(result.allowedFunctionNames).toContain("report_progress")
+		expect(names(result.tools as any)).not.toContain("report_progress")
+		expect(result.allowedFunctionNames).not.toContain("report_progress")
 	})
 })

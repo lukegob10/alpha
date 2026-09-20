@@ -14,6 +14,7 @@ guides. Check implementation details against current source and tests; dated mea
 | Agent architecture and certification requirements   | [Multi-agent concurrency](multi-agent-concurrency-spec.md)                                                                           |
 | Retired CLI and historical evaluation compatibility | [CLI retirement](cli-retirement.md)                                                                                                  |
 | Code/Plan modes and saved-task compatibility        | [Mode retirement](mode-retirement.md)                                                                                                |
+| Model tool catalogs and historical aliases          | [Tool surface refactor](tool-surface-refactor.md), [implementation checks](tool-surface-refactor-validation.md)                      |
 | Command approval and outside-workspace paths        | [Command and path approval](command-sandbox.md)                                                                                      |
 | Context budgets and compaction                      | [Context compaction](context-compaction.md)                                                                                          |
 | Completion checks and saved acceptance evidence     | [Completion evidence](completion-evidence.md)                                                                                        |

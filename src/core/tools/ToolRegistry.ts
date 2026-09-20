@@ -12,7 +12,7 @@ import {
 	type DiscoverToolsParams,
 } from "@alpha-code/types"
 
-import type { ToolResponse, ToolUse } from "../../shared/tools"
+import type { NativeToolArgs, ToolResponse, ToolUse } from "../../shared/tools"
 import type { ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { captureVerificationContent, extractMutationPaths } from "../agent/VerificationScope"
 import path from "path"
@@ -38,14 +38,11 @@ import { editFileTool } from "./EditFileTool"
 import { editTool } from "./EditTool"
 import { executeCommandTool } from "./ExecuteCommandTool"
 import { prepareParallelCommand } from "./ParallelCommandRead"
-import { generateImageTool } from "./GenerateImageTool"
-import { githubApiTool } from "./GitHubApiTool"
 import { followupTaskTool } from "./FollowupTaskTool"
 import { interruptAgentTool } from "./InterruptAgentTool"
 import { listAgentsTool } from "./ListAgentsTool"
 import { listFilesTool } from "./ListFilesTool"
 import { newTaskTool } from "./NewTaskTool"
-import { readCommandOutputTool } from "./ReadCommandOutputTool"
 import { manageCommandTool } from "./ManageCommandTool"
 import { readFileTool } from "./ReadFileTool"
 import { runSlashCommandTool } from "./RunSlashCommandTool"
@@ -166,14 +163,7 @@ const BARRIER_TOOLS = new Set([
 
 // Read-like metadata alone never grants parallel execution. The scheduler also
 // requires an explicit independent scope and an approval-free execution path.
-const PARALLEL_READ_TOOLS = new Set([
-	"read_file",
-	"list_files",
-	"search_files",
-	"codebase_search",
-	"read_command_output",
-	"list_agents",
-])
+const PARALLEL_READ_TOOLS = new Set(["read_file", "list_files", "search_files", "codebase_search", "list_agents"])
 
 const WORKSPACE_TOOLS = new Set([
 	"write_to_file",
@@ -182,19 +172,10 @@ const WORKSPACE_TOOLS = new Set([
 	"search_replace",
 	"edit_file",
 	"apply_patch",
-	"execute_command",
-	"generate_image",
+	"shell",
 ])
 
-const CHECKPOINT_TOOLS = new Set([
-	"write_to_file",
-	"apply_diff",
-	"edit",
-	"search_replace",
-	"edit_file",
-	"apply_patch",
-	"generate_image",
-])
+const CHECKPOINT_TOOLS = new Set(["write_to_file", "apply_diff", "edit", "search_replace", "edit_file", "apply_patch"])
 
 const TASK_TOOLS = new Set([
 	"update_todo_list",
@@ -213,6 +194,30 @@ const TASK_TOOLS = new Set([
 ])
 
 const BROWSER_TOOLS = new Set<string>(browserToolNames)
+
+/**
+ * The terminal host still lives in ExecuteCommandTool for lifecycle and
+ * compatibility reasons. The registry exposes it through the canonical shell
+ * name without changing that host's implementation name or behavior.
+ */
+class ShellCommandToolAdapter extends BaseTool<"shell"> {
+	readonly name = "shell" as const
+
+	constructor(private readonly legacyTool: typeof executeCommandTool) {
+		super()
+	}
+
+	async execute(params: NativeToolArgs["shell"], task: Task, callbacks: ToolCallbacks): Promise<void> {
+		await this.legacyTool.execute(params, task, callbacks)
+	}
+
+	override async handlePartial(task: Task, block: ToolUse<"shell">): Promise<void> {
+		const legacyBlock: ToolUse<"execute_command"> = { ...block, name: "execute_command" }
+		await this.legacyTool.handlePartial(task, legacyBlock)
+	}
+}
+
+const shellCommandTool = new ShellCommandToolAdapter(executeCommandTool)
 
 /**
  * Canonicalize a model-facing name before it enters any policy or dispatch
@@ -289,9 +294,8 @@ const TOOL_NAMES = [
 	"close_agent",
 	"edit",
 	"edit_file",
+	"shell",
 	"execute_command",
-	"generate_image",
-	"github_api",
 	...browserToolNames,
 	"list_files",
 	"new_task",
@@ -355,6 +359,7 @@ export interface ToolCapabilityOptions {
  * the legacy handler; audited read admission is a separate captured contract.
  */
 export function getToolCapabilities(name: string, options: ToolCapabilityOptions = {}): ToolCapabilities {
+	name = canonicalizeToolName(name)
 	const concurrency: ToolConcurrency = BARRIER_TOOLS.has(name)
 		? "barrier"
 		: PARALLEL_READ_TOOLS.has(name) && options.parallelExecutionEnabled !== false
@@ -369,7 +374,6 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 				: name === "create_ticket" ||
 					  name === "update_ticket" ||
 					  name === "delete_ticket" ||
-					  name === "github_api" ||
 					  name === "use_mcp_tool" ||
 					  name.startsWith("mcp") ||
 					  name === "custom_tool" ||
@@ -380,9 +384,7 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 	return {
 		concurrency,
 		sideEffects,
-		...(name === "execute_command" && options.parallelExecutionEnabled !== false
-			? { parallelCommandRead: true }
-			: {}),
+		...(name === "shell" && options.parallelExecutionEnabled !== false ? { parallelCommandRead: true } : {}),
 		controlFlow: BARRIER_TOOLS.has(name) || name === "run_slash_command" || name === "skill",
 		// Individual tool handlers own the exact approval prompt. This flag is
 		// metadata for scheduling and future policy decisions, not a second prompt.
@@ -395,6 +397,7 @@ function getToolDescription(call: ToolUse): string {
 	const value = (key: string) => (params as Record<string, unknown>)[key]
 
 	switch (call.name) {
+		case "shell":
 		case "execute_command":
 			return `[${call.name} for '${value("command") ?? ""}']`
 		case "read_file":
@@ -614,9 +617,7 @@ export class ToolRegistry {
 		this.registerBuiltIn("close_agent", closeAgentTool, schemas)
 		this.registerBuiltIn("edit", editTool, schemas)
 		this.registerBuiltIn("edit_file", editFileTool, schemas)
-		this.registerBuiltIn("execute_command", executeCommandTool, schemas)
-		this.registerBuiltIn("generate_image", generateImageTool, schemas)
-		this.registerBuiltIn("github_api", githubApiTool, schemas)
+		this.registerBuiltIn("shell", shellCommandTool, schemas)
 		this.registerBuiltIn("open_browser_page", openBrowserPageTool, schemas)
 		this.registerBuiltIn("list_browser_pages", listBrowserPagesTool, schemas)
 		this.registerBuiltIn("read_page", readPageTool, schemas)
@@ -630,7 +631,6 @@ export class ToolRegistry {
 		this.registerBuiltIn("run_playwright_code", runPlaywrightCodeTool, schemas)
 		this.registerBuiltIn("list_files", listFilesTool, schemas)
 		this.registerBuiltIn("new_task", newTaskTool, schemas)
-		this.registerBuiltIn("read_command_output", readCommandOutputTool, schemas)
 		this.registerBuiltIn("read_file", readFileTool, schemas)
 		this.registerBuiltIn("run_slash_command", runSlashCommandTool, schemas)
 		this.registerBuiltIn("search_files", searchFilesTool, schemas)
@@ -786,7 +786,7 @@ export class ToolRegistry {
 			...(name === "list_files"
 				? { prepareParallelRead: listFilesTool.prepareParallelRead.bind(listFilesTool) }
 				: {}),
-			...(name === "execute_command" ? { prepareParallelCommand } : {}),
+			...(name === "shell" ? { prepareParallelCommand } : {}),
 			execute: customExecute ?? executeBaseTool(tool, name),
 		})
 	}

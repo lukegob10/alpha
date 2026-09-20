@@ -153,8 +153,8 @@ describe("isToolAllowedForMode", () => {
 			).toBe(true)
 
 			expect(
-				isToolAllowedForMode("apply_diff", "markdown-editor", customModes, undefined, {
-					path: "test.js",
+				isToolAllowedForMode("edit", "markdown-editor", customModes, undefined, {
+					file_path: "test.js",
 				}),
 			).toBe(true)
 
@@ -166,7 +166,7 @@ describe("isToolAllowedForMode", () => {
 			).toBe(false)
 		})
 
-		it("applies restrictions to both write_to_file and apply_diff", () => {
+		it("applies restrictions to both write_to_file and edit", () => {
 			// Test write_to_file
 			const writeResult = isToolAllowedForMode("write_to_file", "markdown-editor", customModes, undefined, {
 				path: "test.md",
@@ -174,12 +174,13 @@ describe("isToolAllowedForMode", () => {
 			})
 			expect(writeResult).toBe(true)
 
-			// Test apply_diff
-			const diffResult = isToolAllowedForMode("apply_diff", "markdown-editor", customModes, undefined, {
-				path: "test.md",
-				diff: "- old\n+ new",
+			// Test portable edit
+			const editResult = isToolAllowedForMode("edit", "markdown-editor", customModes, undefined, {
+				file_path: "test.md",
+				old_string: "old",
+				new_string: "new",
 			})
-			expect(diffResult).toBe(true)
+			expect(editResult).toBe(true)
 
 			// Test both with non-matching file
 			expect(() =>
@@ -190,9 +191,10 @@ describe("isToolAllowedForMode", () => {
 			).toThrow(FileRestrictionError)
 
 			expect(() =>
-				isToolAllowedForMode("apply_diff", "markdown-editor", customModes, undefined, {
-					path: "test.js",
-					diff: "- old\n+ new",
+				isToolAllowedForMode("edit", "markdown-editor", customModes, undefined, {
+					file_path: "test.js",
+					old_string: "old",
+					new_string: "new",
 				}),
 			).toThrow(FileRestrictionError)
 		})
@@ -221,17 +223,19 @@ describe("isToolAllowedForMode", () => {
 				}),
 			).toThrow(/Documentation files only/)
 
-			// Test apply_diff with non-matching file
+			// Test portable edit with non-matching file
 			expect(() =>
-				isToolAllowedForMode("apply_diff", "docs-editor", customModesWithDescription, undefined, {
-					path: "test.js",
-					diff: "- old\n+ new",
+				isToolAllowedForMode("edit", "docs-editor", customModesWithDescription, undefined, {
+					file_path: "test.js",
+					old_string: "old",
+					new_string: "new",
 				}),
 			).toThrow(FileRestrictionError)
 			expect(() =>
-				isToolAllowedForMode("apply_diff", "docs-editor", customModesWithDescription, undefined, {
-					path: "test.js",
-					diff: "- old\n+ new",
+				isToolAllowedForMode("edit", "docs-editor", customModesWithDescription, undefined, {
+					file_path: "test.js",
+					old_string: "old",
+					new_string: "new",
 				}),
 			).toThrow(/Documentation files only/)
 
@@ -318,106 +322,24 @@ describe("isToolAllowedForMode", () => {
 			).toThrow(/\\.md\$/)
 		})
 
-		it("applies restrictions to search_replace (custom tool)", () => {
-			// Test that search_replace respects file restrictions when included
-			const searchReplaceResult = isToolAllowedForMode(
-				"search_replace",
-				"markdown-editor",
-				customModes,
-				undefined,
-				{
-					file_path: "test.md",
-					old_string: "old text",
-					new_string: "new text",
-				},
-				undefined,
-				["search_replace"], // Include custom tool
-			)
-			expect(searchReplaceResult).toBe(true)
-
-			// Test search_replace with non-matching file
-			expect(() =>
-				isToolAllowedForMode(
-					"search_replace",
-					"markdown-editor",
-					customModes,
-					undefined,
-					{
-						file_path: "test.js",
-						old_string: "old text",
-						new_string: "new text",
-					},
-					undefined,
-					["search_replace"], // Include custom tool
-				),
-			).toThrow(FileRestrictionError)
-			expect(() =>
-				isToolAllowedForMode(
-					"search_replace",
-					"markdown-editor",
-					customModes,
-					undefined,
-					{
-						file_path: "test.js",
-						old_string: "old text",
-						new_string: "new text",
-					},
-					undefined,
-					["search_replace"], // Include custom tool
-				),
-			).toThrow(/\\.md\$/)
-		})
-
-		it("applies restrictions to edit_file (custom tool)", () => {
-			// Test that edit_file respects file restrictions when included
-			const editFileResult = isToolAllowedForMode(
-				"edit_file",
-				"markdown-editor",
-				customModes,
-				undefined,
-				{
-					file_path: "test.md",
-					old_string: "old text",
-					new_string: "new text",
-				},
-				undefined,
-				["edit_file"], // Include custom tool
-			)
-			expect(editFileResult).toBe(true)
-
-			// Test edit_file with non-matching file
-			expect(() =>
-				isToolAllowedForMode(
-					"edit_file",
-					"markdown-editor",
-					customModes,
-					undefined,
-					{
-						file_path: "test.js",
-						old_string: "old text",
-						new_string: "new text",
-					},
-					undefined,
-					["edit_file"], // Include custom tool
-				),
-			).toThrow(FileRestrictionError)
-			expect(() =>
-				isToolAllowedForMode(
-					"edit_file",
-					"markdown-editor",
-					customModes,
-					undefined,
-					{
-						file_path: "test.js",
-						old_string: "old text",
-						new_string: "new text",
-					},
-					undefined,
-					["edit_file"], // Include custom tool
-				),
-			).toThrow(/\\.md\$/)
-		})
-
+		it.each(["apply_diff", "search_replace", "edit_file"])(
+			"does not restore retired %s through model opt-in settings",
+			(tool) => {
+				for (const file_path of ["test.md", "test.js"]) {
+					expect(
+						isToolAllowedForMode(
+							tool,
+							"markdown-editor",
+							customModes,
+							undefined,
+							{ file_path, old_string: "old", new_string: "new" },
+							undefined,
+							[tool],
+						),
+					).toBe(false)
+				}
+			},
+		)
 		it("rejects every editing tool in canonical Plan even when model settings include it", () => {
 			for (const [tool, params] of [
 				["apply_patch", { patch: "*** Begin Patch\n*** Update File: test.md\n@@ \n-old\n+new\n*** End Patch" }],
@@ -451,24 +373,22 @@ describe("isToolAllowedForMode", () => {
 			},
 		]
 
-		it("disallows customTools by default (not in includedTools)", () => {
-			// search_and_replace is a customTool in the edit group, should be disallowed by default
-			expect(isToolAllowedForMode("search_and_replace", "test-custom-tools", customModesWithEditGroup)).toBe(
-				false,
-			)
+		it("disallows apply_patch by default (not in includedTools)", () => {
+			// Structured patch remains opt-in; the portable editor is available by default.
+			expect(isToolAllowedForMode("apply_patch", "test-custom-tools", customModesWithEditGroup)).toBe(false)
 		})
 
 		it("allows customTools when included in includedTools", () => {
-			// search_and_replace should be allowed when explicitly included
+			// Structured patch requires explicit inclusion in an available edit group.
 			expect(
 				isToolAllowedForMode(
-					"search_and_replace",
+					"apply_patch",
 					"test-custom-tools",
 					customModesWithEditGroup,
 					undefined,
 					undefined,
 					undefined,
-					["search_and_replace"],
+					["apply_patch"],
 				),
 			).toBe(true)
 		})
@@ -486,20 +406,20 @@ describe("isToolAllowedForMode", () => {
 			// Even if included, should be disallowed because the mode doesn't have edit group
 			expect(
 				isToolAllowedForMode(
-					"search_and_replace",
+					"apply_patch",
 					"no-edit-mode",
 					customModesWithoutEdit,
 					undefined,
 					undefined,
 					undefined,
-					["search_and_replace"],
+					["apply_patch"],
 				),
 			).toBe(false)
 		})
 
 		it("allows regular tools in the same group as customTools", () => {
-			// apply_diff (regular tool) should be allowed even without includedTools
-			expect(isToolAllowedForMode("apply_diff", "test-custom-tools", customModesWithEditGroup)).toBe(true)
+			// The portable editor is a regular tool and does not require model opt-in.
+			expect(isToolAllowedForMode("edit", "test-custom-tools", customModesWithEditGroup)).toBe(true)
 			expect(isToolAllowedForMode("write_to_file", "test-custom-tools", customModesWithEditGroup)).toBe(true)
 		})
 	})

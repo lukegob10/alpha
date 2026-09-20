@@ -23,7 +23,7 @@ export abstract class BaseProvider implements ApiHandler {
 	/**
 	 * Converts an array of tools to be compatible with OpenAI's strict mode.
 	 * Filters for function tools, applies schema conversion to their parameters,
-	 * and ensures all tools have consistent strict: true values.
+	 * and defaults native function tools to strict mode unless they opt out.
 	 */
 	protected convertToolsForOpenAI(tools: any[] | undefined): any[] | undefined {
 		if (!tools) {
@@ -38,15 +38,16 @@ export abstract class BaseProvider implements ApiHandler {
 			// MCP tools use the 'mcp--' prefix - disable strict mode for them
 			// to preserve optional parameters from the MCP server schema
 			const isMcp = isMcpTool(tool.function.name)
+			const strict = isMcp ? false : (tool.function.strict ?? true)
 
 			return {
 				...tool,
 				function: {
 					...tool.function,
-					strict: !isMcp,
-					parameters: isMcp
-						? tool.function.parameters
-						: this.convertToolSchemaForOpenAI(tool.function.parameters),
+					strict,
+					parameters: strict
+						? this.convertToolSchemaForOpenAI(tool.function.parameters)
+						: tool.function.parameters,
 				},
 			}
 		})

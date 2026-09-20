@@ -3,7 +3,7 @@ import { VSCodeLink } from "@vscode/webview-ui-toolkit/react"
 import { Trans } from "react-i18next"
 import { ChevronsUpDown, Check, X, Info } from "lucide-react"
 
-import { type ProviderSettings, type ModelInfo, type OrganizationAllowList, isRetiredProvider } from "@alpha-code/types"
+import { type ProviderSettings, type ModelInfo, type OrganizationAllowList, isProviderName } from "@alpha-code/types"
 
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { useSelectedModel } from "@/components/ui/hooks/useSelectedModel"
@@ -26,20 +26,7 @@ import { useEscapeKey } from "@src/hooks/useEscapeKey"
 import { ModelInfoView } from "./ModelInfoView"
 import { ApiErrorMessage } from "./ApiErrorMessage"
 
-type ModelIdKey = keyof Pick<
-	ProviderSettings,
-	| "openRouterModelId"
-	| "requestyModelId"
-	| "unboundModelId"
-	| "openAiModelId"
-	| "litellmModelId"
-	| "vercelAiGatewayModelId"
-	| "apiModelId"
-	| "ollamaModelId"
-	| "lmStudioModelId"
-	| "lmStudioDraftModelId"
-	| "vsCodeLmModelSelector"
->
+type ModelIdKey = keyof Pick<ProviderSettings, "openAiModelId" | "apiModelId" | "vsCodeLmModelSelector">
 
 interface ModelPickerProps {
 	defaultModelId: string
@@ -123,10 +110,7 @@ export const ModelPicker = ({
 		return displayValue ? (labelTransform?.(displayValue, selectedModelInfo) ?? displayValue) : undefined
 	}, [displayValue, labelTransform, selectedModelInfo])
 
-	const activeProvider =
-		apiConfiguration.apiProvider && isRetiredProvider(apiConfiguration.apiProvider)
-			? undefined
-			: apiConfiguration.apiProvider
+	const activeProvider = isProviderName(apiConfiguration.apiProvider) ? apiConfiguration.apiProvider : undefined
 
 	const modelIds = useMemo(() => {
 		const filteredModels = filterModels(models, activeProvider, organizationAllowList)
@@ -332,8 +316,6 @@ export const ModelPicker = ({
 				<div>
 					{selectedModelId && selectedModelInfo && !selectedModelInfo.deprecated && (
 						<ModelInfoView
-							apiProvider={apiConfiguration.apiProvider}
-							selectedModelId={selectedModelId}
 							modelInfo={selectedModelInfo}
 							isDescriptionExpanded={isDescriptionExpanded}
 							setIsDescriptionExpanded={setIsDescriptionExpanded}

@@ -105,7 +105,7 @@ export function assertSubagentTaskAuthorities(drafts: readonly SubagentTaskDraft
 		const prefix = `Sub-agent task ${index + 1} declares read-only role "${draft.agent_kind}", but its objective explicitly requests ${mismatch}.`
 		if (mismatch === "repository changes") {
 			throw new Error(
-				`${prefix} Correction required for tasks[${index}]: set agent_kind to "worker" and provide write_scope with only user-approved workspace-relative paths. Submit one corrected delegate_task call; do not resubmit the rejected payload unchanged.`,
+				`${prefix} Correction required for tasks[${index}]: set agent_kind to "worker" and provide write_scope with only user-approved workspace-relative paths. Submit a corrected delegation request; do not resubmit the rejected payload unchanged.`,
 			)
 		}
 		throw new Error(
@@ -226,16 +226,12 @@ export function buildSubagentPrompt({
 				"You may control only descendants in your own managed subtree. Observe results through the mailbox and return a self-contained report to your direct parent.",
 			].join(" ")
 		: "Do not create tasks or delegate."
-	const progressGuidance =
-		"Use report_progress for a concise update to your immediate parent when useful; report each distinct update once because it cannot address ancestors, siblings, or other agents. If you must remain active while awaiting immediate-parent control, make one bounded wait_agent call at a time instead of repeating progress, polling, messaging ancestors, or attempting completion."
-
 	if (role === "worker") {
 		return [
 			`You are ${nickname}, an Alpha editing Worker sub-agent managed by a parent task.`,
 			`Objective: ${objective}`,
 			`Authorized write scope:\n${(writeScope ?? []).map((item) => `- ${item}`).join("\n")}`,
 			`Work directly in your isolated Git worktree. You may read repository files broadly, but may edit only the authorized paths above. Do not modify .git, escape the workspace, access the network or MCP, ask the user questions, or switch modes. ${delegationGuidance}`,
-			progressGuidance,
 			"Work toward the objective and make the smallest complete change when a change is needed. Do not create changes merely to demonstrate progress; a complete objective may conclude that no repository change is needed, which should be reported clearly.",
 			"Use repository tools and commands as useful for the objective. Command and protected-write approvals remain separately governed; choose verification proportionate to the work and report checks run, skipped checks, and any limitations.",
 			"Do not commit, stage, create branches, or change remotes.",
@@ -249,11 +245,10 @@ export function buildSubagentPrompt({
 		`You are ${nickname}, an Alpha read-only ${roleLabel} sub-agent managed by a parent task.`,
 		`Objective: ${objective}`,
 		`Inspect the repository independently and report evidence. You may only read, list, search, use codebase search, and use any explicitly granted managed-agent lifecycle tools. Do not edit files, run commands, access the network or MCP, ask the user questions, or switch modes. ${delegationGuidance}`,
-		progressGuidance,
 		"Stay within the assigned evidence scope. If a requested location or source is missing, say so explicitly; do not silently substitute a different scope. Use nearby evidence only when clearly labeled as supplemental, and report blocked when the requested deliverable cannot be supported.",
 		"If the assigned objective requires an edit or command despite these limits, state that authority mismatch explicitly and finish with outcome blocked.",
 		"Use read, list, search, and codebase tools as appropriate for the objective, adapting discovery to named and unnamed targets. Tool results may be bounded, missing, or truncated; do not infer absence from incomplete output, and report the limitation or obtain direct evidence when it matters.",
-		"Once the evidence is sufficient for the objective, synthesize it. A named file can be read directly without semantic discovery. Expand only for an unresolved requirement, dependency, or contradiction. If material findings are established but further investigation is needed, report those findings and evidence locations once through report_progress so the parent can retain them if this task is interrupted. Further delegation needs a distinct question and useful independent deliverable, not just available capacity. If the available evidence cannot support the requested conclusion, report the uncertainty or constraint explicitly instead of inventing certainty.",
+		"Once the evidence is sufficient for the objective, synthesize it. A named file can be read directly without semantic discovery. Expand only for an unresolved requirement, dependency, or contradiction. If material findings are established but further investigation is needed, include those findings and evidence locations in the synthesis. Further delegation needs a distinct question and useful independent deliverable, not just available capacity. If the available evidence cannot support the requested conclusion, report the uncertainty or constraint explicitly instead of inventing certainty.",
 		`Keep the final report proportional to the objective and under ${SUBAGENT_REPORT_WORD_BUDGET} words unless extra detail is required for correctness. Prioritize requested deliverables, evidence, uncertainty, and actionable conclusions; do not repeat file contents or narrate the research process.`,
 		"When the objective and required checks are complete, provide a concise, self-contained final answer or use attempt_completion. Use attempt_completion with outcome blocked if a constraint prevented the objective. Include concrete file references where useful.",
 		deliverables,

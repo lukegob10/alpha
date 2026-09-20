@@ -33,7 +33,9 @@ jobs:
             - name: Create environment
               run: |
                   cat > .env.local << EOF
-                  OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY || 'test-key-for-build' }}
+                  OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY || 'test-key-for-build' }}
+                  OPENAI_BASE_URL=${{ vars.OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
+                  EVALS_MODEL_ID=${{ vars.EVALS_MODEL_ID || 'gpt-4.1' }}
                   EOF
 
                   cat > .env.development << EOF

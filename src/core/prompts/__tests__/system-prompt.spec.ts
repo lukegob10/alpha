@@ -312,10 +312,10 @@ describe("SYSTEM_PROMPT", () => {
 
 			if (subagentRole === "worker") {
 				expect(prompt).toContain("approved write scope")
-				expect(prompt).toContain("execute_command")
+				expect(prompt).toContain("shell")
 			} else {
 				expect(prompt).toContain("read-only child task")
-				expect(prompt).not.toContain("execute_command")
+				expect(prompt).not.toContain("shell")
 			}
 		},
 	)
@@ -693,6 +693,8 @@ describe("SYSTEM_PROMPT", () => {
 		expect(prompt.trim().endsWith(PLAN_MODE_INSTRUCTIONS)).toBe(true)
 		expect(prompt).toContain("non-mutating repository inspection only")
 		expect(prompt).toContain("host-classified inspection or verification commands")
+		expect(prompt).not.toContain("artifact reader")
+		expect(prompt).not.toContain("manage_command")
 		expect(prompt).toContain("exactly one non-empty <proposed_plan> block")
 		expect(prompt).not.toContain("You have access to tools that let you execute CLI commands")
 		expect(prompt.split("\n").some((line) => line.startsWith("\t"))).toBe(false)
@@ -784,7 +786,7 @@ describe("SYSTEM_PROMPT", () => {
 		// Should NOT contain a tool catalog / XML examples
 		expect(prompt).not.toContain("# Tools")
 		expect(prompt).not.toContain("## read_file")
-		expect(prompt).not.toContain("## execute_command")
+		expect(prompt).not.toContain("## shell")
 		expect(prompt).not.toContain("<read_file>")
 		expect(prompt).not.toContain("<path>")
 		expect(prompt).not.toContain("Usage:")

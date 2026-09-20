@@ -1,22 +1,5 @@
 // npx vitest core/webview/__tests__/webviewMessageHandler.spec.ts
 
-import type { Mock } from "vitest"
-
-// Mock dependencies - must come before imports
-vi.mock("../../../api/providers/fetchers/modelCache")
-
-vi.mock("../../../integrations/openai-codex/oauth", () => ({
-	openAiCodexOAuthManager: {
-		getAccessToken: vi.fn(),
-		getAccountId: vi.fn(),
-		hasStoredCredentials: vi.fn(() => false),
-	},
-}))
-
-vi.mock("../../../integrations/openai-codex/rate-limits", () => ({
-	fetchOpenAiCodexRateLimitInfo: vi.fn(),
-}))
-
 vi.mock("../../../services/command/commands", () => ({
 	getCommands: vi.fn(),
 }))
@@ -29,30 +12,19 @@ vi.mock("google-auth-library", () => ({
 	GoogleAuth: vi.fn(),
 }))
 
-vi.mock("ollama", () => ({
-	Ollama: vi.fn(),
-}))
-
 // Mock the diagnosticsHandler module
 vi.mock("../diagnosticsHandler", () => ({
 	generateErrorDiagnostics: vi.fn().mockResolvedValue({ success: true, filePath: "/tmp/diagnostics.json" }),
 }))
 
-import type { ModelRecord, WebviewMessage } from "@alpha-code/types"
+import type { WebviewMessage } from "@alpha-code/types"
 
 import { webviewMessageHandler } from "../webviewMessageHandler"
 import * as todoTools from "../../tools/UpdateTodoListTool"
 import type { AlphaProvider } from "../AlphaProvider"
-import { getModels } from "../../../api/providers/fetchers/modelCache"
 import { getCommands } from "../../../services/command/commands"
-const { openAiCodexOAuthManager } = await import("../../../integrations/openai-codex/oauth")
-const { fetchOpenAiCodexRateLimitInfo } = await import("../../../integrations/openai-codex/rate-limits")
 
-const mockGetModels = getModels as Mock<typeof getModels>
 const mockGetCommands = vi.mocked(getCommands)
-const mockGetAccessToken = vi.mocked(openAiCodexOAuthManager.getAccessToken)
-const mockGetAccountId = vi.mocked(openAiCodexOAuthManager.getAccountId)
-const mockFetchOpenAiCodexRateLimitInfo = vi.mocked(fetchOpenAiCodexRateLimitInfo)
 
 // Mock AlphaProvider
 const mockAlphaProvider = {
@@ -65,6 +37,7 @@ const mockAlphaProvider = {
 	context: {
 		extensionPath: "/mock/extension/path",
 		globalStorageUri: { fsPath: "/mock/global/storage" },
+		secrets: { get: vi.fn() },
 	},
 	contextProxy: {
 		context: {
@@ -73,6 +46,7 @@ const mockAlphaProvider = {
 		},
 		setValue: vi.fn(),
 		getValue: vi.fn(),
+		storeSecret: vi.fn(),
 	},
 	log: vi.fn(),
 	postStateToWebview: vi.fn(),
@@ -93,6 +67,7 @@ const mockAlphaProvider = {
 	condenseTaskContext: vi.fn(),
 	deleteTaskWithId: vi.fn(),
 	getSkillsManager: vi.fn(),
+	getCurrentWorkspaceCodeIndexManager: vi.fn(),
 	cwd: "/mock/workspace",
 } as unknown as AlphaProvider
 
@@ -314,44 +289,93 @@ describe("webviewMessageHandler - terminalOperation", () => {
 	})
 })
 
-describe("webviewMessageHandler - requestLmStudioModels", () => {
-	beforeEach(() => {
-		vi.clearAllMocks()
-		mockAlphaProvider.getState = vi.fn().mockResolvedValue({
-			apiConfiguration: {
-				lmStudioModelId: "model-1",
-				lmStudioBaseUrl: "http://localhost:1234",
-			},
-		})
+describe("webviewMessageHandler - Vertex code index settings", () => {
+	const createVertexSettings = () => ({
+		codebaseIndexEnabled: false,
+		codebaseIndexVectorStoreProvider: "lancedb",
+		codebaseIndexLocalIndexPath: ".alpha/code-index/lancedb",
+		codebaseIndexQdrantUrl: "http://localhost:6333",
+		codebaseIndexEmbedderProvider: "vertex",
+		codebaseIndexEmbedderModelId: "text-embedding-005",
+		codebaseIndexEmbedderModelDimension: 768,
+		codebaseIndexVertexProjectId: "test-project",
+		codebaseIndexVertexRegion: "us-central1",
+		codebaseIndexVertexKeyFile: "",
+		codebaseIndexVertexGatewayBaseUrl: "",
+		codebaseIndexVertexGatewayCaBundlePath: "",
+		codebaseIndexVertexGatewayHelixCommand: "",
+		codebaseIndexVertexGatewayTokenRefreshMinutes: undefined,
+		codebaseIndexVertexGatewayModelRoutingMap: "",
+		codebaseIndexSearchMaxResults: 50,
+		codebaseIndexSearchMinScore: 0.4,
+		codebaseIndexEmbeddingRateLimitEnabled: false,
+		codebaseIndexEmbeddingRateLimitSeconds: 1,
+		codeIndexQdrantApiKey: "qdrant-secret",
+		codebaseIndexVertexJsonCredentials: '{"project_id":"test-project"}',
 	})
 
-	it("successfully fetches models from LMStudio", async () => {
-		const mockModels: ModelRecord = {
-			"model-1": {
-				maxTokens: 4096,
-				contextWindow: 8192,
-				supportsPromptCache: false,
-				description: "Test model 1",
-			},
-			"model-2": {
-				maxTokens: 8192,
-				contextWindow: 16384,
-				supportsPromptCache: false,
-				description: "Test model 2",
-			},
-		}
+	beforeEach(() => {
+		vi.clearAllMocks()
+		const contextProxy = mockAlphaProvider.contextProxy as any
+		contextProxy.getValue.mockReturnValue(undefined)
+		contextProxy.setValue.mockResolvedValue(undefined)
+		contextProxy.storeSecret.mockResolvedValue(undefined)
+		;(mockAlphaProvider as any).getCurrentWorkspaceCodeIndexManager.mockReturnValue(undefined)
+		;(mockAlphaProvider.context as any).secrets.get.mockResolvedValue(undefined)
+	})
 
-		mockGetModels.mockResolvedValue(mockModels)
+	it("saves Vertex settings and only the active embedding secrets", async () => {
+		const settings = createVertexSettings()
 
 		await webviewMessageHandler(mockAlphaProvider, {
-			type: "requestLmStudioModels",
-		})
+			type: "saveCodeIndexSettingsAtomic",
+			codeIndexSettings: settings,
+		} as any)
 
-		expect(mockGetModels).toHaveBeenCalledWith({ provider: "lmstudio", baseUrl: "http://localhost:1234" })
+		const contextProxy = mockAlphaProvider.contextProxy as any
+		expect(contextProxy.setValue).toHaveBeenCalledWith(
+			"codebaseIndexConfig",
+			expect.objectContaining({
+				codebaseIndexEmbedderProvider: "vertex",
+				codebaseIndexEmbedderModelId: "text-embedding-005",
+				codebaseIndexEmbedderModelDimension: 768,
+				codebaseIndexVertexProjectId: "test-project",
+			}),
+		)
+		expect(contextProxy.storeSecret).toHaveBeenNthCalledWith(1, "codeIndexQdrantApiKey", "qdrant-secret")
+		expect(contextProxy.storeSecret).toHaveBeenNthCalledWith(
+			2,
+			"codebaseIndexVertexJsonCredentials",
+			'{"project_id":"test-project"}',
+		)
+		expect(contextProxy.storeSecret).toHaveBeenCalledTimes(2)
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "codeIndexSettingsSaved", success: true }),
+		)
+	})
 
+	it("reports only Vertex and vector-store secret status", async () => {
+		const secrets = (mockAlphaProvider.context as any).secrets.get
+		secrets.mockImplementation(async (key: string) =>
+			key === "codeIndexQdrantApiKey"
+				? "qdrant-secret"
+				: key === "codebaseIndexVertexJsonCredentials"
+					? "{}"
+					: undefined,
+		)
+
+		await webviewMessageHandler(mockAlphaProvider, { type: "requestCodeIndexSecretStatus" })
+
+		expect(secrets.mock.calls.map(([key]: [string]) => key)).toEqual([
+			"codeIndexQdrantApiKey",
+			"codebaseIndexVertexJsonCredentials",
+		])
 		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "lmStudioModels",
-			lmStudioModels: mockModels,
+			type: "codeIndexSecretStatus",
+			values: {
+				hasQdrantApiKey: true,
+				hasVertexJsonCredentials: true,
+			},
 		})
 	})
 })
@@ -720,362 +744,6 @@ describe("webviewMessageHandler - newTask", () => {
 		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
 			type: "invoke",
 			invoke: "newChat",
-		})
-	})
-})
-
-describe("webviewMessageHandler - requestOllamaModels", () => {
-	beforeEach(() => {
-		vi.clearAllMocks()
-		mockAlphaProvider.getState = vi.fn().mockResolvedValue({
-			apiConfiguration: {
-				ollamaModelId: "model-1",
-				ollamaBaseUrl: "http://localhost:1234",
-			},
-		})
-	})
-
-	it("successfully fetches models from Ollama", async () => {
-		const mockModels: ModelRecord = {
-			"model-1": {
-				maxTokens: 4096,
-				contextWindow: 8192,
-				supportsPromptCache: false,
-				description: "Test model 1",
-			},
-			"model-2": {
-				maxTokens: 8192,
-				contextWindow: 16384,
-				supportsPromptCache: false,
-				description: "Test model 2",
-			},
-		}
-
-		mockGetModels.mockResolvedValue(mockModels)
-
-		await webviewMessageHandler(mockAlphaProvider, {
-			type: "requestOllamaModels",
-		})
-
-		expect(mockGetModels).toHaveBeenCalledWith({ provider: "ollama", baseUrl: "http://localhost:1234" })
-
-		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "ollamaModels",
-			ollamaModels: mockModels,
-		})
-	})
-})
-
-describe("webviewMessageHandler - requestRouterModels", () => {
-	beforeEach(() => {
-		vi.clearAllMocks()
-		mockAlphaProvider.getState = vi.fn().mockResolvedValue({
-			apiConfiguration: {
-				openRouterApiKey: "openrouter-key",
-				requestyApiKey: "requesty-key",
-				litellmApiKey: "litellm-key",
-				litellmBaseUrl: "http://localhost:4000",
-			},
-		})
-	})
-
-	it("successfully fetches models from all providers", async () => {
-		const mockModels: ModelRecord = {
-			"model-1": {
-				maxTokens: 4096,
-				contextWindow: 8192,
-				supportsPromptCache: false,
-				description: "Test model 1",
-			},
-			"model-2": {
-				maxTokens: 8192,
-				contextWindow: 16384,
-				supportsPromptCache: false,
-				description: "Test model 2",
-			},
-		}
-
-		mockGetModels.mockResolvedValue(mockModels)
-
-		await webviewMessageHandler(mockAlphaProvider, {
-			type: "requestRouterModels",
-		})
-
-		// Verify getModels was called for each provider
-		expect(mockGetModels).toHaveBeenCalledWith({ provider: "openrouter" })
-		expect(mockGetModels).toHaveBeenCalledWith({ provider: "requesty", apiKey: "requesty-key" })
-		expect(mockGetModels).toHaveBeenCalledWith(
-			expect.objectContaining({
-				provider: "unbound",
-			}),
-		)
-		expect(mockGetModels).toHaveBeenCalledWith({ provider: "vercel-ai-gateway" })
-		expect(mockGetModels).toHaveBeenCalledWith({
-			provider: "litellm",
-			apiKey: "litellm-key",
-			baseUrl: "http://localhost:4000",
-		})
-
-		// Verify response was sent
-		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "routerModels",
-			routerModels: {
-				openrouter: mockModels,
-				requesty: mockModels,
-				unbound: mockModels,
-				litellm: mockModels,
-				ollama: {},
-				lmstudio: {},
-				"vercel-ai-gateway": mockModels,
-				poe: {},
-			},
-			values: undefined,
-		})
-	})
-
-	it("handles LiteLLM models with values from message when config is missing", async () => {
-		mockAlphaProvider.getState = vi.fn().mockResolvedValue({
-			apiConfiguration: {
-				openRouterApiKey: "openrouter-key",
-				requestyApiKey: "requesty-key",
-				// Missing litellm config
-			},
-		})
-
-		const mockModels: ModelRecord = {
-			"model-1": {
-				maxTokens: 4096,
-				contextWindow: 8192,
-				supportsPromptCache: false,
-				description: "Test model 1",
-			},
-		}
-
-		mockGetModels.mockResolvedValue(mockModels)
-
-		await webviewMessageHandler(mockAlphaProvider, {
-			type: "requestRouterModels",
-			values: {
-				litellmApiKey: "message-litellm-key",
-				litellmBaseUrl: "http://message-url:4000",
-			},
-		})
-
-		// Verify LiteLLM was called with values from message
-		expect(mockGetModels).toHaveBeenCalledWith({
-			provider: "litellm",
-			apiKey: "message-litellm-key",
-			baseUrl: "http://message-url:4000",
-		})
-	})
-
-	it("skips LiteLLM when both config and message values are missing", async () => {
-		mockAlphaProvider.getState = vi.fn().mockResolvedValue({
-			apiConfiguration: {
-				openRouterApiKey: "openrouter-key",
-				requestyApiKey: "requesty-key",
-				// Missing litellm config
-			},
-		})
-
-		const mockModels: ModelRecord = {
-			"model-1": {
-				maxTokens: 4096,
-				contextWindow: 8192,
-				supportsPromptCache: false,
-				description: "Test model 1",
-			},
-		}
-
-		mockGetModels.mockResolvedValue(mockModels)
-
-		await webviewMessageHandler(mockAlphaProvider, {
-			type: "requestRouterModels",
-			// No values provided
-		})
-
-		// Verify LiteLLM was NOT called
-		expect(mockGetModels).not.toHaveBeenCalledWith(
-			expect.objectContaining({
-				provider: "litellm",
-			}),
-		)
-
-		// Verify response includes empty object for LiteLLM
-		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "routerModels",
-			routerModels: {
-				openrouter: mockModels,
-				requesty: mockModels,
-				unbound: mockModels,
-				litellm: {},
-				ollama: {},
-				lmstudio: {},
-				"vercel-ai-gateway": mockModels,
-				poe: {},
-			},
-			values: undefined,
-		})
-	})
-
-	it("handles individual provider failures gracefully", async () => {
-		const mockModels: ModelRecord = {
-			"model-1": {
-				maxTokens: 4096,
-				contextWindow: 8192,
-				supportsPromptCache: false,
-				description: "Test model 1",
-			},
-		}
-
-		// Mock some providers to succeed and others to fail
-		mockGetModels
-			.mockResolvedValueOnce(mockModels) // openrouter
-			.mockRejectedValueOnce(new Error("Requesty API error")) // requesty
-			.mockResolvedValueOnce(mockModels) // unbound
-			.mockResolvedValueOnce(mockModels) // vercel-ai-gateway
-			.mockRejectedValueOnce(new Error("LiteLLM connection failed")) // litellm
-
-		await webviewMessageHandler(mockAlphaProvider, {
-			type: "requestRouterModels",
-		})
-
-		// Verify error messages were sent for failed providers (these come first)
-		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "singleRouterModelFetchResponse",
-			success: false,
-			error: "Requesty API error",
-			values: { provider: "requesty" },
-		})
-
-		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "singleRouterModelFetchResponse",
-			success: false,
-			error: "LiteLLM connection failed",
-			values: { provider: "litellm" },
-		})
-
-		// Verify final routerModels response includes successful providers and empty objects for failed ones
-		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "routerModels",
-			routerModels: {
-				openrouter: mockModels,
-				requesty: {},
-				unbound: mockModels,
-				litellm: {},
-				ollama: {},
-				lmstudio: {},
-				"vercel-ai-gateway": mockModels,
-				poe: {},
-			},
-			values: undefined,
-		})
-	})
-
-	it("handles Error objects and string errors correctly", async () => {
-		// Mock providers to fail with different error types
-		mockGetModels
-			.mockRejectedValueOnce(new Error("Structured error message")) // openrouter
-			.mockRejectedValueOnce(new Error("Requesty API error")) // requesty
-			.mockRejectedValueOnce(new Error("Unbound error")) // unbound
-			.mockRejectedValueOnce(new Error("Vercel AI Gateway error")) // vercel-ai-gateway
-			.mockRejectedValueOnce(new Error("LiteLLM connection failed")) // litellm
-
-		await webviewMessageHandler(mockAlphaProvider, {
-			type: "requestRouterModels",
-		})
-
-		// Verify error handling for different error types
-		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "singleRouterModelFetchResponse",
-			success: false,
-			error: "Structured error message",
-			values: { provider: "openrouter" },
-		})
-
-		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "singleRouterModelFetchResponse",
-			success: false,
-			error: "Requesty API error",
-			values: { provider: "requesty" },
-		})
-
-		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "singleRouterModelFetchResponse",
-			success: false,
-			error: "Unbound error",
-			values: { provider: "unbound" },
-		})
-
-		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "singleRouterModelFetchResponse",
-			success: false,
-			error: "Vercel AI Gateway error",
-			values: { provider: "vercel-ai-gateway" },
-		})
-
-		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "singleRouterModelFetchResponse",
-			success: false,
-			error: "LiteLLM connection failed",
-			values: { provider: "litellm" },
-		})
-	})
-
-	it("prefers config values over message values for LiteLLM", async () => {
-		const mockModels: ModelRecord = {}
-		mockGetModels.mockResolvedValue(mockModels)
-
-		await webviewMessageHandler(mockAlphaProvider, {
-			type: "requestRouterModels",
-			values: {
-				litellmApiKey: "message-key",
-				litellmBaseUrl: "http://message-url",
-			},
-		})
-
-		// Verify config values are used over message values
-		expect(mockGetModels).toHaveBeenCalledWith({
-			provider: "litellm",
-			apiKey: "litellm-key", // From config
-			baseUrl: "http://localhost:4000", // From config
-		})
-	})
-})
-
-describe("webviewMessageHandler - requestOpenAiCodexRateLimits", () => {
-	beforeEach(() => {
-		vi.clearAllMocks()
-		mockGetAccessToken.mockResolvedValue(null)
-		mockGetAccountId.mockResolvedValue(null)
-	})
-
-	it("posts error when not authenticated", async () => {
-		await webviewMessageHandler(mockAlphaProvider, { type: "requestOpenAiCodexRateLimits" } as any)
-
-		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "openAiCodexRateLimits",
-			error: "Not authenticated with OpenAI Codex",
-		})
-	})
-
-	it("posts values when authenticated", async () => {
-		mockGetAccessToken.mockResolvedValue("token")
-		mockGetAccountId.mockResolvedValue("acct_123")
-		mockFetchOpenAiCodexRateLimitInfo.mockResolvedValue({
-			primary: { usedPercent: 10, resetsAt: 1700000000000 },
-			fetchedAt: 1700000000000,
-		})
-
-		await webviewMessageHandler(mockAlphaProvider, { type: "requestOpenAiCodexRateLimits" } as any)
-
-		expect(mockFetchOpenAiCodexRateLimitInfo).toHaveBeenCalledWith("token", { accountId: "acct_123" })
-		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "openAiCodexRateLimits",
-			values: {
-				primary: { usedPercent: 10, resetsAt: 1700000000000 },
-				fetchedAt: 1700000000000,
-			},
 		})
 	})
 })

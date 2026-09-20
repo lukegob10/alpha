@@ -98,7 +98,7 @@ export class ManagedAgentBudgetAI {
 			yield {
 				type: "tool_call",
 				id: `budget-process-${taskId}`,
-				name: "execute_command",
+				name: "shell",
 				arguments: JSON.stringify({ command: this.processCommand, timeout: 120 }),
 			}
 			observation.usageEmitted = true

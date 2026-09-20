@@ -15,7 +15,7 @@ pnpm bundle
 
 The committed `.env.development` and `.env.test` files define local service defaults.
 For live provider runs, create an ignored `.env.local` and supply only the provider
-credentials needed for that run (for example, `OPENAI_API_KEY` for `openai-native`). The old interactive machine-wide setup
+credentials needed for that run (for example, `OPENAI_API_KEY` for `openai` (OpenAI Compatible)). The old interactive machine-wide setup
 script is retired; extension setup does not install global language runtimes or reset
 another checkout.
 

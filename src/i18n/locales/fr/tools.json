@@ -47,22 +47,5 @@
 	},
 	"applyPatch": {
 		"deleteCancelled": "L'opération de suppression a été annulée."
-	},
-	"imageOutput": {
-		"writeIncomplete": "Impossible de terminer l'écriture de '{{path}}' ; le fichier est peut-être incomplet. {{cause}}"
-	},
-	"generateImage": {
-		"openRouterApiKeyRequired": "La clé API OpenRouter est requise pour la génération d'images avec les modèles OpenRouter. Veuillez la configurer dans les paramètres expérimentaux de Génération d'Images.",
-		"failedWithStatus": "Échec de génération de l'image : {{status}} {{statusText}}",
-		"failedWithMessage": "Échec de génération de l'image : {{message}}",
-		"noImageGenerated": "Aucune image n'a été générée dans la réponse",
-		"invalidImageData": "Données d'image non valides dans la réponse",
-		"invalidImageFormat": "Format d'image non valide reçu",
-		"unknownError": "Une erreur inconnue s'est produite",
-		"cancelledBeforeSave": "La génération de l'image a été annulée avant l'enregistrement de l'image.",
-		"destinationUnavailableBeforeGeneration": "La destination de l'image n'était pas accessible avant la génération. Réessayez.",
-		"destinationPolicyChangedBeforeSave": "Le chemin ou la politique d'accès de la destination de l'image a changé avant l'enregistrement. Réessayez.",
-		"postSaveProcessingFailed": "{{path}}\nImage enregistrée, mais le traitement après enregistrement a échoué : {{message}}",
-		"roo": {}
 	}
 }

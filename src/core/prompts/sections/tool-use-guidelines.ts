@@ -18,7 +18,7 @@ export function getToolUseGuidelinesSection(
 		return `# Tool Use Guidelines
 
 1. Begin with the request and repository evidence already available.
-2. Use the narrowest read-only repository tool that resolves the next material uncertainty. Prefer repository tools; use execute_command only for a host-approved inspection or verification that those tools cannot supply as well.
+2. Use the narrowest read-only repository tool that resolves the next material uncertainty. Prefer repository tools; use shell only for a host-approved inspection or verification that those tools cannot supply as well.
 3. Group independent reads; serialize dependent investigation and agent coordination. ${inspectionGuidance}
 4. Treat returned results as evidence of what ran; distinguish verified facts from assumptions. Missing or incomplete output does not establish success.`
 	}

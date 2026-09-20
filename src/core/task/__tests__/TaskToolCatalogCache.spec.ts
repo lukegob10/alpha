@@ -52,7 +52,7 @@ function fixture(count = 12) {
 		mode: "code",
 		customModes: undefined,
 		experiments: {},
-		apiConfiguration: { apiProvider: "anthropic" },
+		apiConfiguration: { apiProvider: "openai" },
 		catalogCache: new TaskToolCatalogCache(),
 		discoveryHistory: [],
 	}
@@ -179,10 +179,11 @@ describe("TaskToolCatalogCache", () => {
 			const { options } = fixture(0)
 			Object.assign(options, { taskKind, apiConfiguration: { apiProvider: "vscode-lm" } })
 			for (const [family, preferred, hidden] of [
-				["gpt-5.5", "apply_patch", "edit"],
+				["gpt-5.5", "apply_patch", "apply_diff"],
 				["claude-opus-4.7", "edit", "apply_patch"],
 				["gemini-3.1-pro", "edit", "apply_patch"],
 			]) {
+				options.modelIdentity = { provider: "vscode-lm", vendor: "copilot", family }
 				options.modelInfo = applyCopilotToolPreferences(
 					{ vendor: "copilot", family },
 					openAiModelInfoSaneDefaults,
@@ -191,7 +192,9 @@ describe("TaskToolCatalogCache", () => {
 				const names = current.schemas.map((schema) => schema.type === "function" && schema.function.name)
 				expect(names).toContain(preferred)
 				expect(current.resolve(preferred)).toBeDefined()
-				for (const name of [hidden, "apply_diff", "search_replace", "edit_file"]) {
+				if (preferred === "apply_patch") expect(names).toContain("edit")
+				if (preferred === "edit") expect(names).not.toContain("apply_patch")
+				for (const name of [hidden, "search_replace", "edit_file"]) {
 					expect(names).not.toContain(name)
 					expect(current.isCallable(name)).toBe(false)
 				}
@@ -220,6 +223,7 @@ describe("TaskToolCatalogCache", () => {
 	it("invalidates the next catalog for model preferences while retaining the prior surface", async () => {
 		const { options } = fixture(0)
 		options.apiConfiguration = { apiProvider: "vscode-lm" }
+		options.modelIdentity = { provider: "vscode-lm", vendor: "copilot", family: "gpt-5.5" }
 		options.modelInfo = applyCopilotToolPreferences(
 			{ vendor: "copilot", family: "gpt-5.5" },
 			openAiModelInfoSaneDefaults,
@@ -229,46 +233,78 @@ describe("TaskToolCatalogCache", () => {
 			{ vendor: "copilot", family: "claude-opus-4.7" },
 			openAiModelInfoSaneDefaults,
 		)
+		options.modelIdentity = { provider: "vscode-lm", vendor: "copilot", family: "claude-opus-4.7" }
 		const next = await capture(options)
 		expect(original.isCallable("apply_patch")).toBe(true)
-		expect(original.isCallable("edit")).toBe(false)
+		expect(original.isCallable("edit")).toBe(true)
 		expect(next.isCallable("apply_patch")).toBe(false)
 		expect(next.isCallable("edit")).toBe(true)
 		expect(next.digest).not.toBe(original.digest)
 	})
 
 	it.each(["search_replace", "edit_file"])(
-		"retains the explicit %s editor in the Copilot catalog",
+		"does not re-advertise the retired %s editor in the Copilot catalog",
 		async (preferred) => {
 			const { options } = fixture(0)
+			options.modelIdentity = { provider: "vscode-lm", vendor: "copilot", family: "gpt-5.5" }
 			options.modelInfo = applyCopilotToolPreferences(
 				{ vendor: "copilot", family: "gpt-5.5" },
 				{ ...openAiModelInfoSaneDefaults, includedTools: [preferred], excludedTools: ["apply_diff"] },
 			)
 			const current = await capture(options)
-			expect(current.isCallable(preferred)).toBe(true)
-			expect(current.isCallable("apply_patch")).toBe(false)
+			expect(current.isCallable(preferred)).toBe(false)
+			expect(current.isCallable("apply_patch")).toBe(true)
+			expect(current.isCallable("edit")).toBe(true)
 		},
 	)
 
-	it("keeps existing Vertex and other provider catalogs unchanged", async () => {
+	it("keeps portable edit for non-GPT providers and gates patch by verified identity", async () => {
 		const { options } = fixture(0)
-		for (const apiProvider of ["vertex", "anthropic", "openrouter"] as const) {
+		for (const [apiProvider, modelIdentity, patchExpected] of [
+			["vertex", { provider: "vertex", id: "gemini-3.7-flash" }, false],
+			["stellar", { provider: "stellar", id: "Meta-Llama-3.3-70B-Instruct" }, false],
+			["openai", { provider: "openai", id: "gpt-5.5" }, true],
+		] as const) {
 			const existing = await capture({
 				...options,
 				apiConfiguration: { apiProvider },
+				modelIdentity,
 				modelInfo: openAiModelInfoSaneDefaults,
 			})
-			expect(existing.isCallable("apply_diff")).toBe(true)
-			expect(existing.isCallable("apply_patch")).toBe(false)
-			expect(existing.isCallable("edit")).toBe(false)
+			expect(existing.isCallable("apply_diff")).toBe(false)
+			expect(existing.isCallable("apply_patch")).toBe(patchExpected)
+			expect(existing.isCallable("edit")).toBe(true)
 		}
-		const existingVertexModels: ModelInfo[] = Object.values(vertexModels)
-		for (const modelInfo of existingVertexModels.filter((model) => model.includedTools?.length)) {
-			const existing = await capture({ ...options, apiConfiguration: { apiProvider: "vertex" }, modelInfo })
-			for (const included of modelInfo.includedTools ?? []) expect(existing.isCallable(included)).toBe(true)
-			for (const excluded of modelInfo.excludedTools ?? []) expect(existing.isCallable(excluded)).toBe(false)
+		for (const [modelId, model] of Object.entries(vertexModels)) {
+			const modelInfo = model as ModelInfo
+			if (!modelInfo.includedTools?.length && !modelInfo.excludedTools?.length) continue
+			const existing = await capture({
+				...options,
+				apiConfiguration: { apiProvider: "vertex" },
+				modelIdentity: { provider: "vertex", id: modelId },
+				modelInfo,
+			})
+			expect(existing.isCallable("apply_diff")).toBe(false)
+			expect(existing.isCallable("search_replace")).toBe(false)
+			expect(existing.isCallable("edit_file")).toBe(false)
+			expect(existing.isCallable("edit")).toBe(true)
 		}
+	})
+
+	it("removes stale patch metadata before a non-GPT provider superset is built", async () => {
+		const { options } = fixture(0)
+		const result = await capture({
+			...options,
+			apiConfiguration: { apiProvider: "vertex" },
+			modelIdentity: { provider: "vertex", id: "gemini-3.7-flash" },
+			modelInfo: { ...openAiModelInfoSaneDefaults, includedTools: ["apply_patch"] },
+			includeAllToolsWithRestrictions: true,
+		})
+		const names = result.schemas.flatMap((schema) => (schema.type === "function" ? [schema.function.name] : []))
+		expect(names).not.toContain("apply_patch")
+		expect(names).toContain("edit")
+		expect(result.isCallable("apply_patch")).toBe(false)
+		expect(result.isCallable("edit")).toBe(true)
 	})
 
 	it("reuses deterministic frozen schemas and a sealed registry for equivalent inputs", async () => {
@@ -575,7 +611,7 @@ describe("TaskToolCatalogCache", () => {
 		const { executionHost, requests } = realMcpHost(options, [offline, server])
 		const surface = await capture({
 			...options,
-			apiConfiguration: { apiProvider: "gemini" },
+			apiConfiguration: { apiProvider: "vertex" },
 			includeAllToolsWithRestrictions: true,
 		})
 		const name = "mcp--calendar_place--lookup_00"
@@ -597,7 +633,7 @@ describe("TaskToolCatalogCache", () => {
 		const gemini = await capture({
 			...options,
 			includeAllToolsWithRestrictions: true,
-			apiConfiguration: { apiProvider: "gemini" },
+			apiConfiguration: { apiProvider: "vertex" },
 		})
 		expect(gemini.registry.has(target)).toBe(true)
 		expect(gemini.schemas.some((schema) => schema.type === "function" && schema.function.name === target)).toBe(
@@ -607,7 +643,7 @@ describe("TaskToolCatalogCache", () => {
 		expect(gemini.allowedFunctionNames).not.toContain(target)
 	})
 
-	it.each(["gemini", "vertex", "vscode-lm"] as const)(
+	it.each(["vertex", "vscode-lm"] as const)(
 		"keeps ordinary eager schemas for the %s fallback",
 		async (apiProvider) => {
 			const { options } = fixture()
@@ -622,7 +658,7 @@ describe("TaskToolCatalogCache", () => {
 		},
 	)
 
-	it.each(["gemini", "vertex"] as const)(
+	it.each(["vertex"] as const)(
 		"retains discovery history declarations after switching to %s without enabling discovery",
 		async (apiProvider) => {
 			const { options } = fixture()

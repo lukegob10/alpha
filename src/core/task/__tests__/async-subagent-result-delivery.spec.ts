@@ -73,7 +73,7 @@ describe("Task asynchronous sub-agent result delivery", () => {
 		expect((active as any).shouldExposeAgentLifecycleTools()).toBe(false)
 	})
 
-	it("omits idle lifecycle controls when the durable store confirms there are no managed agents", () => {
+	it("keeps lifecycle controls eager when the durable store contains no managed agents", () => {
 		const idle = makeTask([]).task
 		Object.assign(idle, {
 			providerRef: {
@@ -81,7 +81,7 @@ describe("Task asynchronous sub-agent result delivery", () => {
 			},
 		})
 
-		expect((idle as any).shouldExposeAgentLifecycleTools()).toBe(false)
+		expect((idle as any).shouldExposeAgentLifecycleTools()).toBe(true)
 
 		idle.clineMessages = makeTask([
 			makeGroup({ groupId: "known-group", executionMode: "async", summary: "Known result." }),
@@ -89,7 +89,7 @@ describe("Task asynchronous sub-agent result delivery", () => {
 		expect((idle as any).shouldExposeAgentLifecycleTools()).toBe(true)
 	})
 
-	it("queries a legacy primary handoff child by its own managed root", () => {
+	it("keeps a legacy primary handoff child's lifecycle catalog independent of retained activity", () => {
 		const legacyChild = makeTask([]).task
 		const hasManagedAgentLifecycleState = vi.fn(() => false)
 		Object.assign(legacyChild, {
@@ -98,8 +98,8 @@ describe("Task asynchronous sub-agent result delivery", () => {
 			providerRef: { deref: () => ({ hasManagedAgentLifecycleState }) },
 		})
 
-		expect((legacyChild as any).shouldExposeAgentLifecycleTools()).toBe(false)
-		expect(hasManagedAgentLifecycleState).toHaveBeenCalledWith("legacy-child")
+		expect((legacyChild as any).shouldExposeAgentLifecycleTools()).toBe(true)
+		expect(hasManagedAgentLifecycleState).not.toHaveBeenCalled()
 	})
 
 	it("keeps durable descendants and mailbox results reachable after transcript compaction and reload", async () => {

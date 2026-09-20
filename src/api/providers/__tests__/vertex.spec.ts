@@ -453,7 +453,7 @@ describe("VertexHandler", () => {
 			},
 		)
 
-		it("should exclude apply_diff and include edit in tool preferences", () => {
+		it("prefers portable edit without retaining retired editor metadata", () => {
 			const testHandler = new VertexHandler({
 				apiModelId: "gemini-3.1-flash-lite",
 				vertexProjectId: "test-project",
@@ -461,7 +461,7 @@ describe("VertexHandler", () => {
 			})
 
 			const modelInfo = testHandler.getModel()
-			expect(modelInfo.info.excludedTools).toContain("apply_diff")
+			expect(modelInfo.info.excludedTools ?? []).not.toContain("apply_diff")
 			expect(modelInfo.info.includedTools).toContain("edit")
 		})
 
@@ -473,9 +473,9 @@ describe("VertexHandler", () => {
 			})
 
 			const modelInfo = testHandler.getModel()
-			const excludedCount = modelInfo.info.excludedTools!.filter((t: string) => t === "apply_diff").length
+			const excludedCount = modelInfo.info.excludedTools?.filter((t: string) => t === "apply_diff").length ?? 0
 			const includedCount = modelInfo.info.includedTools!.filter((t: string) => t === "edit").length
-			expect(excludedCount).toBe(1)
+			expect(excludedCount).toBe(0)
 			expect(includedCount).toBe(1)
 		})
 

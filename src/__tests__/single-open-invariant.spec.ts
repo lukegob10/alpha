@@ -16,7 +16,7 @@ vi.mock("../core/task/Task", () => {
 		constructor(opts: any) {
 			this.taskId = opts.historyItem?.id ?? `task-${Math.random().toString(36).slice(2, 8)}`
 			this.parentTask = opts.parentTask
-			this.apiConfiguration = opts.apiConfiguration ?? { apiProvider: "anthropic" }
+			this.apiConfiguration = opts.apiConfiguration ?? { apiProvider: "vertex" }
 			opts.onCreated?.(this)
 		}
 		start() {}
@@ -44,12 +44,12 @@ describe("Single-open-task invariant", () => {
 			taskStack: [{ taskId: "existing-1" }],
 			setValues: vi.fn(),
 			getState: vi.fn().mockResolvedValue({
-				apiConfiguration: { apiProvider: "anthropic", consecutiveMistakeLimit: 0 },
+				apiConfiguration: { apiProvider: "vertex", consecutiveMistakeLimit: 0 },
 				organizationAllowList: "*",
 				enableCheckpoints: true,
 				checkpointTimeout: 60,
 			}),
-			getProviderSettingsSnapshot: vi.fn(() => ({ apiProvider: "anthropic", consecutiveMistakeLimit: 0 })),
+			getProviderSettingsSnapshot: vi.fn(() => ({ apiProvider: "vertex", consecutiveMistakeLimit: 0 })),
 			removeTaskFromStack,
 			updateGlobalState: vi.fn().mockResolvedValue(undefined),
 			addTaskToStack,
@@ -93,12 +93,12 @@ describe("Single-open-task invariant", () => {
 			finalizeActiveCompletionCandidate: vi.fn().mockResolvedValue(undefined),
 			setValues: vi.fn(),
 			getState: vi.fn().mockResolvedValue({
-				apiConfiguration: { apiProvider: "anthropic", consecutiveMistakeLimit: 0 },
+				apiConfiguration: { apiProvider: "vertex", consecutiveMistakeLimit: 0 },
 				organizationAllowList: "*",
 				enableCheckpoints: true,
 				checkpointTimeout: 60,
 			}),
-			getProviderSettingsSnapshot: vi.fn(() => ({ apiProvider: "anthropic", consecutiveMistakeLimit: 0 })),
+			getProviderSettingsSnapshot: vi.fn(() => ({ apiProvider: "vertex", consecutiveMistakeLimit: 0 })),
 			removeTaskFromStack,
 			updateGlobalState: vi.fn().mockResolvedValue(undefined),
 			addTaskToStack,
@@ -141,12 +141,12 @@ describe("Single-open-task invariant", () => {
 			finalizeActiveCompletionCandidate: vi.fn().mockResolvedValue(undefined),
 			setValues: vi.fn(),
 			getState: vi.fn().mockResolvedValue({
-				apiConfiguration: { apiProvider: "anthropic", consecutiveMistakeLimit: 0 },
+				apiConfiguration: { apiProvider: "vertex", consecutiveMistakeLimit: 0 },
 				organizationAllowList: "*",
 				enableCheckpoints: true,
 				checkpointTimeout: 60,
 			}),
-			getProviderSettingsSnapshot: vi.fn(() => ({ apiProvider: "anthropic", consecutiveMistakeLimit: 0 })),
+			getProviderSettingsSnapshot: vi.fn(() => ({ apiProvider: "vertex", consecutiveMistakeLimit: 0 })),
 			removeTaskFromStack: vi.fn(),
 			addTaskToStack,
 			setProviderProfile: vi.fn(),
@@ -251,7 +251,7 @@ describe("Single-open-task invariant", () => {
 				retryPendingMailboxClaimSettlements: vi.fn().mockResolvedValue(undefined),
 			},
 			getState: vi.fn().mockResolvedValue({
-				apiConfiguration: { apiProvider: "anthropic", consecutiveMistakeLimit: 0 },
+				apiConfiguration: { apiProvider: "vertex", consecutiveMistakeLimit: 0 },
 				enableCheckpoints: true,
 				checkpointTimeout: 60,
 				experiments: {},

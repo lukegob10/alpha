@@ -4,12 +4,13 @@ import type { ApiHandlerOptions } from "../../shared/api"
 
 import { getModelParams } from "../transform/model-params"
 
-import { GeminiHandler } from "./gemini"
+import { VertexGeminiHandler } from "./gemini"
 import { SingleCompletionHandler } from "../index"
+import { applyModelToolPreferences } from "./utils/router-tool-preferences"
 
-export class VertexHandler extends GeminiHandler implements SingleCompletionHandler {
+export class VertexHandler extends VertexGeminiHandler implements SingleCompletionHandler {
 	constructor(options: ApiHandlerOptions) {
-		super({ ...options, isVertex: true })
+		super(options)
 	}
 
 	override getModel() {
@@ -33,17 +34,13 @@ export class VertexHandler extends GeminiHandler implements SingleCompletionHand
 			defaultTemperature: info.defaultTemperature ?? 1,
 		})
 
-		// Vertex Gemini models perform better with the edit tool instead of apply_diff.
-		info = {
-			...info,
-			excludedTools: [...new Set([...(info.excludedTools || []), "apply_diff"])],
-			includedTools: [...new Set([...(info.includedTools || []), "edit"])],
-		}
+		info = applyModelToolPreferences({ provider: "vertex", id }, info)
 
 		// The `:thinking` suffix indicates that the model is a "Hybrid"
 		// reasoning model and that reasoning is required to be enabled.
 		// The actual model ID honored by Gemini's API does not have this
 		// suffix.
-		return { id: id.endsWith(":thinking") ? id.replace(":thinking", "") : id, info, ...params }
+		const resolvedId = id.endsWith(":thinking") ? id.replace(":thinking", "") : id
+		return { id: resolvedId, info, ...params, toolIdentity: { provider: "vertex", id: resolvedId } }
 	}
 }

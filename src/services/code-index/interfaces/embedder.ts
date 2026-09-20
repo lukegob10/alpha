@@ -29,16 +29,7 @@ export interface EmbeddingResponse {
 	}
 }
 
-export type AvailableEmbedders =
-	| "openai"
-	| "ollama"
-	| "openai-compatible"
-	| "gemini"
-	| "vertex"
-	| "mistral"
-	| "vercel-ai-gateway"
-	| "bedrock"
-	| "openrouter"
+export type AvailableEmbedders = "vertex"
 
 export interface EmbedderInfo {
 	name: AvailableEmbedders

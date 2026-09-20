@@ -619,21 +619,24 @@ export function normalizeApiConversationTrace(value: unknown): EvalTraceEvent[] 
 					sequence: events.length + 1,
 					timestamp,
 					type:
-						content.name === "execute_command" ? "agent.turn.verification_started" : "agent.turn.tool_call",
+						content.name === "shell" || content.name === "execute_command"
+							? "agent.turn.verification_started"
+							: "agent.turn.tool_call",
 					payload: { tool: content.name },
 				})
 			}
 			if (content.type === "tool_result" && typeof content.tool_use_id === "string") {
 				const tool = toolNames.get(content.tool_use_id) ?? "unknown"
+				const isCommand = tool === "shell" || tool === "execute_command"
 				const result =
 					typeof content.content === "string" ? content.content : JSON.stringify(content.content ?? "")
 				events.push({
 					sequence: events.length + 1,
 					timestamp,
-					type: tool === "execute_command" ? "agent.turn.verification_result" : "agent.turn.tool_result",
+					type: isCommand ? "agent.turn.verification_result" : "agent.turn.tool_result",
 					payload: {
 						tool,
-						...(tool === "execute_command" ? { ok: /exit code:\s*0\b/i.test(result) } : {}),
+						...(isCommand ? { ok: /exit code:\s*0\b/i.test(result) } : {}),
 					},
 				})
 			}
@@ -762,26 +765,13 @@ function parseAttemptNumber(raw: string | undefined): number {
 }
 
 function secretValues(jobToken: string | null): string[] {
-	return [
-		jobToken,
-		process.env.OPENROUTER_API_KEY,
-		process.env.ANTHROPIC_API_KEY,
-		process.env.OPENAI_API_KEY,
-		process.env.GOOGLE_API_KEY,
-		process.env.DEEPSEEK_API_KEY,
-		process.env.MISTRAL_API_KEY,
-	].filter((value): value is string => Boolean(value))
+	return [jobToken, process.env.OPENAI_API_KEY].filter((value): value is string => Boolean(value))
 }
 
 function inheritedSecretEnvironment(jobToken: string | null): Record<string, string> {
 	const values: Record<string, string | undefined> = {
 		ROO_CODE_CLOUD_TOKEN: jobToken ?? undefined,
-		OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
-		ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
 		OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-		GOOGLE_API_KEY: process.env.GOOGLE_API_KEY,
-		DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
-		MISTRAL_API_KEY: process.env.MISTRAL_API_KEY,
 	}
 	return Object.fromEntries(Object.entries(values).filter((entry): entry is [string, string] => Boolean(entry[1])))
 }

@@ -37,7 +37,7 @@
 							"anyOf": [
 								{
 									"type": "string",
-									"enum": ["read", "edit", "command", "mcp", "github", "modes", "agents", "browser"]
+									"enum": ["read", "edit", "command", "mcp", "modes", "agents", "browser", "github"]
 								},
 								{
 									"type": "array",
@@ -51,10 +51,10 @@
 												"edit",
 												"command",
 												"mcp",
-												"github",
 												"modes",
 												"agents",
-												"browser"
+												"browser",
+												"github"
 											]
 										},
 										{

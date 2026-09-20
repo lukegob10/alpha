@@ -25,7 +25,6 @@ import { setTtsEnabled } from "../../../utils/tts"
 import { ContextProxy } from "../../config/ContextProxy"
 import { Task, TaskOptions } from "../../task/Task"
 import { safeWriteJson } from "../../../utils/safeWriteJson"
-import { openAiCodexOAuthManager } from "../../../integrations/openai-codex/oauth"
 
 import { AlphaProvider } from "../AlphaProvider"
 import { MessageManager } from "../../message-manager"
@@ -263,12 +262,6 @@ vi.mock("../../../integrations/misc/extract-text", () => ({
 	}),
 }))
 
-vi.mock("../../../api/providers/fetchers/modelCache", () => ({
-	getModels: vi.fn().mockResolvedValue({}),
-	flushModels: vi.fn(),
-	getModelsFromCache: vi.fn().mockReturnValue(undefined),
-}))
-
 vi.mock("../../../shared/modes", () => ({
 	modes: [
 		{
@@ -331,12 +324,6 @@ vi.mock("../../../integrations/misc/extract-text", () => ({
 		const lines = content.split("\n")
 		return lines.map((line, index) => `${index + 1} | ${line}`).join("\n")
 	}),
-}))
-
-vi.mock("../../../api/providers/fetchers/modelCache", () => ({
-	getModels: vi.fn().mockResolvedValue({}),
-	flushModels: vi.fn(),
-	getModelsFromCache: vi.fn().mockReturnValue(undefined),
 }))
 
 vi.mock("../diff/strategies/multi-search-replace", () => ({
@@ -469,7 +456,7 @@ describe("AlphaProvider", () => {
 		defaultTaskOptions = {
 			provider,
 			apiConfiguration: {
-				apiProvider: "openrouter",
+				apiProvider: "openai",
 			},
 		}
 
@@ -629,9 +616,7 @@ describe("AlphaProvider", () => {
 		expect(mockWebviewView.webview.html).toContain("<!DOCTYPE html>")
 
 		// Verify Content Security Policy contains the necessary PostHog domains
-		expect(mockWebviewView.webview.html).toContain(
-			"connect-src vscode-webview://test-csp-source https://openrouter.ai https://api.requesty.ai",
-		)
+		expect(mockWebviewView.webview.html).toContain("connect-src vscode-webview://test-csp-source")
 
 		// Extract the script-src directive section and verify required security elements
 		const html = mockWebviewView.webview.html
@@ -651,7 +636,7 @@ describe("AlphaProvider", () => {
 			taskHistory: [],
 			shouldShowAnnouncement: false,
 			apiConfiguration: {
-				apiProvider: "openrouter",
+				apiProvider: "openai",
 			},
 			customInstructions: undefined,
 			alwaysAllowReadOnly: false,
@@ -690,8 +675,6 @@ describe("AlphaProvider", () => {
 			profileThresholds: {},
 			hasOpenedModeSelector: false,
 			diagnosticsEnabled: true,
-			openRouterImageApiKey: undefined,
-			openRouterImageGenerationSelectedModel: undefined,
 			checkpointTimeout: DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 		}
 
@@ -1485,33 +1468,6 @@ describe("AlphaProvider", () => {
 		expect(webviewState.currentTaskAutoApprovalRestricted).toBe(true)
 	})
 
-	test("includes saved GitHub token in state posted to webview", async () => {
-		await provider.contextProxy.setValue("githubToken", "ghp-test-token")
-
-		const state = await provider.getState()
-		const webviewState = await provider.getStateToPostToWebview()
-
-		expect(state.githubToken).toBe("ghp-test-token")
-		expect(webviewState.githubToken).toBe("ghp-test-token")
-	})
-
-	test("builds webview state from cached OpenAI Codex credential presence without validating a token", async () => {
-		const cachedStatus = vi.spyOn(openAiCodexOAuthManager, "hasStoredCredentials").mockReturnValue(true)
-		const validateToken = vi
-			.spyOn(openAiCodexOAuthManager, "isAuthenticated")
-			.mockImplementation(() => new Promise<boolean>(() => {}))
-
-		try {
-			const webviewState = await provider.getStateToPostToWebview()
-
-			expect(webviewState.openAiCodexIsAuthenticated).toBe(true)
-			expect(validateToken).not.toHaveBeenCalled()
-		} finally {
-			cachedStatus.mockRestore()
-			validateToken.mockRestore()
-		}
-	})
-
 	test("getState preserves code index embedding rate limit settings", async () => {
 		await provider.contextProxy.setValue("codebaseIndexConfig", {
 			codebaseIndexEnabled: true,
@@ -1730,7 +1686,7 @@ describe("AlphaProvider", () => {
 		vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockResolvedValue(undefined)
 
 		getState.mockResolvedValue({
-			apiConfiguration: { apiProvider: "openrouter" },
+			apiConfiguration: { apiProvider: "openai" },
 			currentApiConfigName: "current-config",
 			enableCheckpoints: false,
 			checkpointTimeout: 30,
@@ -1747,7 +1703,7 @@ describe("AlphaProvider", () => {
 		)
 
 		getState.mockResolvedValue({
-			apiConfiguration: { apiProvider: "openrouter" },
+			apiConfiguration: { apiProvider: "openai" },
 			currentApiConfigName: "current-config",
 			enableCheckpoints: false,
 			checkpointTimeout: 30,
@@ -1850,7 +1806,7 @@ describe("AlphaProvider", () => {
 		await provider.resolveWebviewView(mockWebviewView)
 		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
 
-		const profile: ProviderSettingsEntry = { apiProvider: "anthropic", id: "new-id", name: "new-config" }
+		const profile: ProviderSettingsEntry = { apiProvider: "openai", id: "new-id", name: "new-config" }
 
 		;(provider as any).providerSettingsManager = {
 			activateProfile: vi.fn().mockResolvedValue(profile),
@@ -1876,7 +1832,7 @@ describe("AlphaProvider", () => {
 		const profile: ProviderSettingsEntry = {
 			name: "config-by-id",
 			id: "config-id-123",
-			apiProvider: "anthropic",
+			apiProvider: "openai",
 		}
 
 		;(provider as any).providerSettingsManager = {
@@ -2050,7 +2006,7 @@ describe("AlphaProvider", () => {
 		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
 
 		;(provider as any).providerSettingsManager = {
-			listConfig: vi.fn().mockResolvedValue([{ name: "test-config", id: "test-id", apiProvider: "anthropic" }]),
+			listConfig: vi.fn().mockResolvedValue([{ name: "test-config", id: "test-id", apiProvider: "openai" }]),
 			saveConfig: vi.fn().mockResolvedValue("test-id"),
 			setModeConfig: vi.fn(),
 		} as any
@@ -2059,7 +2015,7 @@ describe("AlphaProvider", () => {
 		await messageHandler({
 			type: "upsertApiConfiguration",
 			text: "test-config",
-			apiConfiguration: { apiProvider: "anthropic" },
+			apiConfiguration: { apiProvider: "openai" },
 		})
 
 		// Should save config as default for current mode
@@ -2270,7 +2226,7 @@ describe("AlphaProvider", () => {
 			// Test with mcpEnabled: true
 			vi.spyOn(provider, "getState").mockResolvedValueOnce({
 				apiConfiguration: {
-					apiProvider: "openrouter" as const,
+					apiProvider: "openai" as const,
 				},
 				mcpEnabled: true,
 				mode: "code" as const,
@@ -2294,7 +2250,7 @@ describe("AlphaProvider", () => {
 			// Test with mcpEnabled: false
 			vi.spyOn(provider, "getState").mockResolvedValueOnce({
 				apiConfiguration: {
-					apiProvider: "openrouter" as const,
+					apiProvider: "openai" as const,
 				},
 				mcpEnabled: false,
 				mode: "code" as const,
@@ -2330,7 +2286,7 @@ describe("AlphaProvider", () => {
 			// Mock getState to return custom instructions for code mode
 			vi.spyOn(provider, "getState").mockResolvedValue({
 				apiConfiguration: {
-					apiProvider: "openrouter" as const,
+					apiProvider: "openai" as const,
 				},
 				customModePrompts: {
 					code: { customInstructions: "Code mode specific instructions" },
@@ -2359,7 +2315,7 @@ describe("AlphaProvider", () => {
 			// Mock getState to return architect mode instructions
 			vi.spyOn(provider, "getState").mockResolvedValue({
 				apiConfiguration: {
-					apiProvider: "openrouter",
+					apiProvider: "openai",
 				},
 				customModePrompts: {
 					architect: { customInstructions: "Architect mode instructions" },
@@ -2558,7 +2514,7 @@ describe("AlphaProvider", () => {
 				getModeConfigId: vi.fn().mockResolvedValue("config-id"),
 				listConfig: vi
 					.fn()
-					.mockResolvedValue([{ name: "test-config", id: "config-id", apiProvider: "anthropic" }]),
+					.mockResolvedValue([{ name: "test-config", id: "config-id", apiProvider: "openai" }]),
 				activateProfile: vi.fn().mockRejectedValue(new Error("Failed to load config")),
 			}
 
@@ -2656,9 +2612,7 @@ describe("AlphaProvider", () => {
 
 			;(provider as any).providerSettingsManager = {
 				setModeConfig: vi.fn().mockRejectedValue(new Error("Failed to update mode config")),
-				listConfig: vi
-					.fn()
-					.mockResolvedValue([{ name: "test-config", id: "test-id", apiProvider: "anthropic" }]),
+				listConfig: vi.fn().mockResolvedValue([{ name: "test-config", id: "test-id", apiProvider: "openai" }]),
 			} as any
 
 			// Mock getState to provide necessary data
@@ -2671,7 +2625,7 @@ describe("AlphaProvider", () => {
 			await messageHandler({
 				type: "upsertApiConfiguration",
 				text: "test-config",
-				apiConfiguration: { apiProvider: "anthropic", apiKey: "test-key" },
+				apiConfiguration: { apiProvider: "openai", openAiApiKey: "test-key" },
 			})
 
 			// Verify error was logged and user was notified
@@ -2688,14 +2642,12 @@ describe("AlphaProvider", () => {
 			;(provider as any).providerSettingsManager = {
 				setModeConfig: vi.fn(),
 				saveConfig: vi.fn().mockResolvedValue(undefined),
-				listConfig: vi
-					.fn()
-					.mockResolvedValue([{ name: "test-config", id: "test-id", apiProvider: "anthropic" }]),
+				listConfig: vi.fn().mockResolvedValue([{ name: "test-config", id: "test-id", apiProvider: "openai" }]),
 			} as any
 
 			const testApiConfig = {
-				apiProvider: "anthropic" as const,
-				apiKey: "test-key",
+				apiProvider: "openai" as const,
+				openAiApiKey: "test-key",
 			}
 
 			// Trigger upsertApiConfiguration
@@ -2710,7 +2662,7 @@ describe("AlphaProvider", () => {
 
 			// Verify state updates
 			expect(mockContext.globalState.update).toHaveBeenCalledWith("listApiConfigMeta", [
-				{ name: "test-config", id: "test-id", apiProvider: "anthropic" },
+				{ name: "test-config", id: "test-id", apiProvider: "openai" },
 			])
 			expect(mockContext.globalState.update).toHaveBeenCalledWith("currentApiConfigName", "test-config")
 
@@ -2731,9 +2683,7 @@ describe("AlphaProvider", () => {
 			;(provider as any).providerSettingsManager = {
 				setModeConfig: vi.fn(),
 				saveConfig: vi.fn().mockResolvedValue(undefined),
-				listConfig: vi
-					.fn()
-					.mockResolvedValue([{ name: "test-config", id: "test-id", apiProvider: "anthropic" }]),
+				listConfig: vi.fn().mockResolvedValue([{ name: "test-config", id: "test-id", apiProvider: "openai" }]),
 			} as any
 
 			// Setup Task instance with auto-mock from the top of the file
@@ -2741,8 +2691,8 @@ describe("AlphaProvider", () => {
 			await provider.addTaskToStack(mockAlphaTask)
 
 			const testApiConfig = {
-				apiProvider: "anthropic" as const,
-				apiKey: "test-key",
+				apiProvider: "openai" as const,
+				openAiApiKey: "test-key",
 			}
 
 			// Trigger upsertApiConfiguration
@@ -2760,7 +2710,7 @@ describe("AlphaProvider", () => {
 
 			// Verify state was still updated
 			expect(mockContext.globalState.update).toHaveBeenCalledWith("listApiConfigMeta", [
-				{ name: "test-config", id: "test-id", apiProvider: "anthropic" },
+				{ name: "test-config", id: "test-id", apiProvider: "openai" },
 			])
 			expect(mockContext.globalState.update).toHaveBeenCalledWith("currentApiConfigName", "test-config")
 		})
@@ -2772,14 +2722,12 @@ describe("AlphaProvider", () => {
 			;(provider as any).providerSettingsManager = {
 				setModeConfig: vi.fn(),
 				saveConfig: vi.fn().mockResolvedValue(undefined),
-				listConfig: vi
-					.fn()
-					.mockResolvedValue([{ name: "test-config", id: "test-id", apiProvider: "anthropic" }]),
+				listConfig: vi.fn().mockResolvedValue([{ name: "test-config", id: "test-id", apiProvider: "openai" }]),
 			} as any
 
 			const testApiConfig = {
-				apiProvider: "anthropic" as const,
-				apiKey: "test-key",
+				apiProvider: "openai" as const,
+				openAiApiKey: "test-key",
 			}
 
 			// Trigger upsertApiConfiguration
@@ -2794,10 +2742,10 @@ describe("AlphaProvider", () => {
 
 			// Verify state updates
 			expect(mockContext.globalState.update).toHaveBeenCalledWith("listApiConfigMeta", [
-				{ name: "test-config", id: "test-id", apiProvider: "anthropic" },
+				{ name: "test-config", id: "test-id", apiProvider: "openai" },
 			])
 			expect(updateGlobalStateSpy).toHaveBeenCalledWith("listApiConfigMeta", [
-				{ name: "test-config", id: "test-id", apiProvider: "anthropic" },
+				{ name: "test-config", id: "test-id", apiProvider: "openai" },
 			])
 		})
 	})
@@ -2990,8 +2938,8 @@ describe.skip("ContextProxy integration", () => {
 	})
 
 	test("storeSecret uses contextProxy", async () => {
-		await provider.setValue("apiKey", "test-secret")
-		expect(mockContextProxy.storeSecret).toHaveBeenCalledWith("apiKey", "test-secret")
+		await provider.setValue("openAiApiKey", "test-secret")
+		expect(mockContextProxy.storeSecret).toHaveBeenCalledWith("openAiApiKey", "test-secret")
 	})
 
 	test("contextProxy methods are available", () => {
@@ -3048,7 +2996,7 @@ describe("getTelemetryProperties", () => {
 		defaultTaskOptions = {
 			provider,
 			apiConfiguration: {
-				apiProvider: "openrouter",
+				apiProvider: "openai",
 			},
 		}
 
@@ -3078,307 +3026,6 @@ describe("getTelemetryProperties", () => {
 		const properties = await provider.getTelemetryProperties()
 
 		expect(properties).toHaveProperty("modelId", "claude-sonnet-4-20250514")
-	})
-})
-
-describe("AlphaProvider - Router Models", () => {
-	let provider: AlphaProvider
-	let mockContext: vscode.ExtensionContext
-	let mockOutputChannel: vscode.OutputChannel
-	let mockWebviewView: vscode.WebviewView
-	let mockPostMessage: any
-
-	beforeEach(() => {
-		vi.clearAllMocks()
-
-		const globalState: Record<string, string | undefined> = {}
-		const secrets: Record<string, string | undefined> = {}
-
-		mockContext = {
-			extensionPath: "/test/path",
-			extensionUri: {} as vscode.Uri,
-			globalState: {
-				get: vi.fn().mockImplementation((key: string) => globalState[key]),
-				update: vi
-					.fn()
-					.mockImplementation((key: string, value: string | undefined) => (globalState[key] = value)),
-				keys: vi.fn().mockImplementation(() => Object.keys(globalState)),
-			},
-			secrets: {
-				get: vi.fn().mockImplementation((key: string) => secrets[key]),
-				store: vi.fn().mockImplementation((key: string, value: string | undefined) => (secrets[key] = value)),
-				delete: vi.fn().mockImplementation((key: string) => delete secrets[key]),
-			},
-			workspaceState: {
-				get: vi.fn().mockReturnValue(undefined),
-				update: vi.fn().mockResolvedValue(undefined),
-				keys: vi.fn().mockReturnValue([]),
-			},
-			subscriptions: [],
-			extension: {
-				packageJSON: { version: "1.0.0" },
-			},
-			globalStorageUri: {
-				fsPath: "/test/storage/path",
-			},
-		} as unknown as vscode.ExtensionContext
-
-		mockOutputChannel = {
-			appendLine: vi.fn(),
-			clear: vi.fn(),
-			dispose: vi.fn(),
-		} as unknown as vscode.OutputChannel
-
-		mockPostMessage = vi.fn()
-		mockWebviewView = {
-			webview: {
-				postMessage: mockPostMessage,
-				html: "",
-				options: {},
-				onDidReceiveMessage: vi.fn(),
-				asWebviewUri: vi.fn(),
-			},
-			visible: true,
-			onDidDispose: vi.fn().mockImplementation((callback) => {
-				callback()
-				return { dispose: vi.fn() }
-			}),
-			onDidChangeVisibility: vi.fn().mockImplementation(() => ({ dispose: vi.fn() })),
-		} as unknown as vscode.WebviewView
-
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
-
-		provider = new AlphaProvider(mockContext, mockOutputChannel, "sidebar", new ContextProxy(mockContext))
-	})
-
-	test("handles requestRouterModels with successful responses", async () => {
-		await provider.resolveWebviewView(mockWebviewView)
-		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
-
-		// Mock getState to return API configuration
-		vi.spyOn(provider, "getState").mockResolvedValue({
-			apiConfiguration: {
-				openRouterApiKey: "openrouter-key",
-				requestyApiKey: "requesty-key",
-				litellmApiKey: "litellm-key",
-				litellmBaseUrl: "http://localhost:4000",
-			},
-		} as any)
-
-		const mockModels = {
-			"model-1": {
-				maxTokens: 4096,
-				contextWindow: 8192,
-				description: "Test model 1",
-				supportsPromptCache: false,
-			},
-			"model-2": {
-				maxTokens: 8192,
-				contextWindow: 16384,
-				description: "Test model 2",
-				supportsPromptCache: false,
-			},
-		}
-
-		const { getModels } = await import("../../../api/providers/fetchers/modelCache")
-		vi.mocked(getModels).mockResolvedValue(mockModels)
-
-		await messageHandler({ type: "requestRouterModels" })
-
-		// Verify getModels was called for each provider with correct options
-		expect(getModels).toHaveBeenCalledWith({ provider: "openrouter" })
-		expect(getModels).toHaveBeenCalledWith({ provider: "requesty", apiKey: "requesty-key" })
-		expect(getModels).toHaveBeenCalledWith({ provider: "unbound" })
-		expect(getModels).toHaveBeenCalledWith({ provider: "vercel-ai-gateway" })
-		expect(getModels).toHaveBeenCalledWith({
-			provider: "litellm",
-			apiKey: "litellm-key",
-			baseUrl: "http://localhost:4000",
-		})
-
-		// Verify response was sent
-		expect(mockPostMessage).toHaveBeenCalledWith({
-			type: "routerModels",
-			routerModels: {
-				openrouter: mockModels,
-				requesty: mockModels,
-				unbound: mockModels,
-				litellm: mockModels,
-				ollama: {},
-				lmstudio: {},
-				"vercel-ai-gateway": mockModels,
-				poe: {},
-			},
-			values: undefined,
-		})
-	})
-
-	test("handles requestRouterModels with individual provider failures", async () => {
-		await provider.resolveWebviewView(mockWebviewView)
-		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
-
-		vi.spyOn(provider, "getState").mockResolvedValue({
-			apiConfiguration: {
-				openRouterApiKey: "openrouter-key",
-				requestyApiKey: "requesty-key",
-				litellmApiKey: "litellm-key",
-				litellmBaseUrl: "http://localhost:4000",
-			},
-		} as any)
-
-		const mockModels = {
-			"model-1": { maxTokens: 4096, contextWindow: 8192, description: "Test model", supportsPromptCache: false },
-		}
-		const { getModels } = await import("../../../api/providers/fetchers/modelCache")
-
-		// Mock some providers to succeed and others to fail
-		vi.mocked(getModels)
-			.mockResolvedValueOnce(mockModels) // openrouter success
-			.mockRejectedValueOnce(new Error("Requesty API error")) // requesty fail
-			.mockResolvedValueOnce(mockModels) // unbound success
-			.mockResolvedValueOnce(mockModels) // vercel-ai-gateway success
-			.mockRejectedValueOnce(new Error("LiteLLM connection failed")) // litellm fail
-
-		await messageHandler({ type: "requestRouterModels" })
-
-		// Verify main response includes successful providers and empty objects for failed ones
-		expect(mockPostMessage).toHaveBeenCalledWith({
-			type: "routerModels",
-			routerModels: {
-				openrouter: mockModels,
-				requesty: {},
-				unbound: mockModels,
-				ollama: {},
-				lmstudio: {},
-				litellm: {},
-				"vercel-ai-gateway": mockModels,
-				poe: {},
-			},
-			values: undefined,
-		})
-
-		// Verify error messages were sent for failed providers
-		expect(mockPostMessage).toHaveBeenCalledWith({
-			type: "singleRouterModelFetchResponse",
-			success: false,
-			error: "Requesty API error",
-			values: { provider: "requesty" },
-		})
-
-		expect(mockPostMessage).toHaveBeenCalledWith({
-			type: "singleRouterModelFetchResponse",
-			success: false,
-			error: "LiteLLM connection failed",
-			values: { provider: "litellm" },
-		})
-	})
-
-	test("handles requestRouterModels with LiteLLM values from message", async () => {
-		await provider.resolveWebviewView(mockWebviewView)
-		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
-
-		// Mock state without LiteLLM config
-		vi.spyOn(provider, "getState").mockResolvedValue({
-			apiConfiguration: {
-				openRouterApiKey: "openrouter-key",
-				requestyApiKey: "requesty-key",
-				// No litellm config
-			},
-		} as any)
-
-		const mockModels = {
-			"model-1": { maxTokens: 4096, contextWindow: 8192, description: "Test model", supportsPromptCache: false },
-		}
-		const { getModels } = await import("../../../api/providers/fetchers/modelCache")
-		vi.mocked(getModels).mockResolvedValue(mockModels)
-
-		await messageHandler({
-			type: "requestRouterModels",
-			values: {
-				litellmApiKey: "message-litellm-key",
-				litellmBaseUrl: "http://message-url:4000",
-			},
-		})
-
-		// Verify LiteLLM was called with values from message
-		expect(getModels).toHaveBeenCalledWith({
-			provider: "litellm",
-			apiKey: "message-litellm-key",
-			baseUrl: "http://message-url:4000",
-		})
-	})
-
-	test("skips LiteLLM when neither config nor message values are provided", async () => {
-		await provider.resolveWebviewView(mockWebviewView)
-		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
-
-		vi.spyOn(provider, "getState").mockResolvedValue({
-			apiConfiguration: {
-				openRouterApiKey: "openrouter-key",
-				requestyApiKey: "requesty-key",
-				// No litellm config
-			},
-		} as any)
-
-		const mockModels = {
-			"model-1": { maxTokens: 4096, contextWindow: 8192, description: "Test model", supportsPromptCache: false },
-		}
-		const { getModels } = await import("../../../api/providers/fetchers/modelCache")
-		vi.mocked(getModels).mockResolvedValue(mockModels)
-
-		await messageHandler({ type: "requestRouterModels" })
-
-		// Verify LiteLLM was NOT called
-		expect(getModels).not.toHaveBeenCalledWith(
-			expect.objectContaining({
-				provider: "litellm",
-			}),
-		)
-
-		// Verify response includes empty object for LiteLLM
-		expect(mockPostMessage).toHaveBeenCalledWith({
-			type: "routerModels",
-			routerModels: {
-				openrouter: mockModels,
-				requesty: mockModels,
-				unbound: mockModels,
-				litellm: {},
-				ollama: {},
-				lmstudio: {},
-				"vercel-ai-gateway": mockModels,
-				poe: {},
-			},
-			values: undefined,
-		})
-	})
-
-	test("handles requestLmStudioModels with proper response", async () => {
-		await provider.resolveWebviewView(mockWebviewView)
-		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
-
-		vi.spyOn(provider, "getState").mockResolvedValue({
-			apiConfiguration: {
-				lmStudioModelId: "model-1",
-				lmStudioBaseUrl: "http://localhost:1234",
-			},
-		} as any)
-
-		const mockModels = {
-			"model-1": { maxTokens: 4096, contextWindow: 8192, description: "Test model", supportsPromptCache: false },
-		}
-		const { getModels } = await import("../../../api/providers/fetchers/modelCache")
-		vi.mocked(getModels).mockResolvedValue(mockModels)
-
-		await messageHandler({
-			type: "requestLmStudioModels",
-		})
-
-		expect(getModels).toHaveBeenCalledWith({
-			provider: "lmstudio",
-			baseUrl: "http://localhost:1234",
-		})
 	})
 })
 
@@ -3462,7 +3109,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 		defaultTaskOptions = {
 			provider,
 			apiConfiguration: {
-				apiProvider: "openrouter",
+				apiProvider: "openai",
 			},
 		}
 

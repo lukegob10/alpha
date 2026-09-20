@@ -165,10 +165,15 @@ describe("importExport", () => {
 				providerProfiles: {
 					currentApiConfigName: "test",
 					apiConfigs: {
-						test: { apiProvider: "openai" as ProviderName, apiKey: "test-key", id: "test-id" },
+						test: { apiProvider: "openai" as ProviderName, openAiApiKey: "test-key", id: "test-id" },
 					},
 				},
-				globalSettings: { mode: "code", autoApprovalEnabled: true, alwaysAllowTickets },
+				globalSettings: {
+					mode: "code",
+					autoApprovalEnabled: true,
+					alwaysAllowTickets,
+					githubToken: "legacy-token-that-must-be-dropped",
+				},
 			})
 
 			;(fs.readFile as Mock).mockResolvedValue(mockFileContent)
@@ -201,7 +206,7 @@ describe("importExport", () => {
 				currentApiConfigName: "test",
 				apiConfigs: {
 					default: { apiProvider: "anthropic" as ProviderName, id: "default-id" },
-					test: { apiProvider: "openai" as ProviderName, apiKey: "test-key", id: "test-id" },
+					test: { apiProvider: "openai" as ProviderName, openAiApiKey: "test-key", id: "test-id" },
 				},
 				modeApiConfigs: {},
 			})
@@ -286,7 +291,9 @@ describe("importExport", () => {
 			const mockFileContent = JSON.stringify({
 				providerProfiles: {
 					currentApiConfigName: "test",
-					apiConfigs: { test: { apiProvider: "openai" as ProviderName, apiKey: "test-key", id: "test-id" } },
+					apiConfigs: {
+						test: { apiProvider: "openai" as ProviderName, openAiApiKey: "test-key", id: "test-id" },
+					},
 				},
 			})
 
@@ -319,7 +326,7 @@ describe("importExport", () => {
 				currentApiConfigName: "test",
 				apiConfigs: {
 					default: { apiProvider: "anthropic" as ProviderName, id: "default-id" },
-					test: { apiProvider: "openai" as ProviderName, apiKey: "test-key", id: "test-id" },
+					test: { apiProvider: "openai" as ProviderName, openAiApiKey: "test-key", id: "test-id" },
 				},
 				modeApiConfigs: {},
 			})
@@ -443,7 +450,9 @@ describe("importExport", () => {
 			const mockFileContent = JSON.stringify({
 				providerProfiles: {
 					currentApiConfigName: "test",
-					apiConfigs: { test: { apiProvider: "openai" as ProviderName, apiKey: "test-key", id: "test-id" } },
+					apiConfigs: {
+						test: { apiProvider: "openai" as ProviderName, openAiApiKey: "test-key", id: "test-id" },
+					},
 				},
 				globalSettings: { mode: "code", autoApprovalEnabled: true },
 			})
@@ -479,7 +488,7 @@ describe("importExport", () => {
 				currentApiConfigName: "test",
 				apiConfigs: {
 					default: { apiProvider: "anthropic" as ProviderName, id: "default-id" },
-					test: { apiProvider: "openai" as ProviderName, apiKey: "test-key", id: "test-id" },
+					test: { apiProvider: "openai" as ProviderName, openAiApiKey: "test-key", id: "test-id" },
 				},
 				modeApiConfigs: {},
 			})
@@ -533,7 +542,7 @@ describe("importExport", () => {
 							apiProvider: "openai" as ProviderName,
 							apiModelId: "gpt-4",
 							id: "openai-id",
-							apiKey: "test-key",
+							openAiApiKey: "test-key",
 							// No modelMaxTokens or modelMaxThinkingTokens fields
 						},
 					},
@@ -573,7 +582,7 @@ describe("importExport", () => {
 					"openai-provider": {
 						apiProvider: "openai" as ProviderName,
 						apiModelId: "gpt-4",
-						apiKey: "test-key",
+						openAiApiKey: "test-key",
 						id: "openai-id",
 					},
 				},
@@ -627,7 +636,7 @@ describe("importExport", () => {
 				)
 			})
 
-			it("should sanitize profiles with invalid apiProvider and return warnings", async () => {
+			it("should preserve profiles with invalid apiProvider and return warnings", async () => {
 				// Test importing a profile with a removed/invalid provider like "claude-code"
 				;(vscode.window.showOpenDialog as Mock).mockResolvedValue([{ fsPath: "/mock/path/settings.json" }])
 
@@ -637,12 +646,12 @@ describe("importExport", () => {
 						apiConfigs: {
 							"valid-profile": {
 								apiProvider: "openai" as ProviderName,
-								apiKey: "test-key",
+								openAiApiKey: "test-key",
 								id: "valid-id",
 							},
 							"invalid-profile": {
 								apiProvider: "claude-code", // Invalid/removed provider
-								apiKey: "some-key",
+								openAiApiKey: "some-key",
 								id: "invalid-id",
 							},
 						},
@@ -683,9 +692,9 @@ describe("importExport", () => {
 				expect(importedProfiles.apiConfigs["valid-profile"]).toBeDefined()
 				expect(importedProfiles.apiConfigs["valid-profile"].apiProvider).toBe("openai")
 
-				// The invalid profile should still be imported but without apiProvider
+				// The invalid profile remains identifiable for explicit unsupported-provider handling.
 				expect(importedProfiles.apiConfigs["invalid-profile"]).toBeDefined()
-				expect(importedProfiles.apiConfigs["invalid-profile"].apiProvider).toBeUndefined()
+				expect(importedProfiles.apiConfigs["invalid-profile"].apiProvider).toBe("claude-code")
 			})
 
 			it("should skip completely invalid profiles and return warnings", async () => {
@@ -697,7 +706,7 @@ describe("importExport", () => {
 						apiConfigs: {
 							"valid-profile": {
 								apiProvider: "openai" as ProviderName,
-								apiKey: "test-key",
+								openAiApiKey: "test-key",
 								id: "valid-id",
 							},
 							"type-invalid": {
@@ -793,12 +802,12 @@ describe("importExport", () => {
 						apiConfigs: {
 							"valid-profile": {
 								apiProvider: "openai" as ProviderName,
-								apiKey: "test-key",
+								openAiApiKey: "test-key",
 								id: "valid-id",
 							},
 							"problematic-profile": {
 								apiProvider: "removed-provider", // Invalid provider
-								apiKey: "some-key",
+								openAiApiKey: "some-key",
 								id: "problematic-id",
 							},
 						},
@@ -875,17 +884,17 @@ describe("importExport", () => {
 							},
 							"openai-profile": {
 								apiProvider: "openai" as ProviderName,
-								apiKey: "key-2",
+								openAiApiKey: "key-2",
 								id: "openai-id",
 							},
 							"old-claude-profile": {
 								apiProvider: "claude-code", // Removed provider
-								apiKey: "key-3",
+								openAiApiKey: "key-3",
 								id: "claude-id",
 							},
 							"another-invalid": {
 								apiProvider: "some-old-provider", // Another removed provider
-								apiKey: "key-4",
+								openAiApiKey: "key-4",
 								id: "another-id",
 							},
 						},
@@ -924,9 +933,9 @@ describe("importExport", () => {
 				expect(importedProfiles.apiConfigs["anthropic-profile"].apiProvider).toBe("anthropic")
 				expect(importedProfiles.apiConfigs["openai-profile"].apiProvider).toBe("openai")
 
-				// Invalid provider profiles should have apiProvider removed
-				expect(importedProfiles.apiConfigs["old-claude-profile"].apiProvider).toBeUndefined()
-				expect(importedProfiles.apiConfigs["another-invalid"].apiProvider).toBeUndefined()
+				// Invalid provider profiles remain identifiable for explicit unsupported-provider handling.
+				expect(importedProfiles.apiConfigs["old-claude-profile"].apiProvider).toBe("claude-code")
+				expect(importedProfiles.apiConfigs["another-invalid"].apiProvider).toBe("some-old-provider")
 			})
 
 			it("should fallback currentApiConfigName when the imported current profile was skipped", async () => {
@@ -944,7 +953,7 @@ describe("importExport", () => {
 							},
 							"valid-fallback-profile": {
 								apiProvider: "openai" as ProviderName,
-								apiKey: "test-key",
+								openAiApiKey: "test-key",
 								id: "fallback-id",
 							},
 						},
@@ -1042,17 +1051,17 @@ describe("importExport", () => {
 						apiConfigs: {
 							"valid-profile": {
 								apiProvider: "openai" as ProviderName,
-								apiKey: "test-key",
+								openAiApiKey: "test-key",
 								id: "valid-id",
 							},
 							"problematic-profile-1": {
 								apiProvider: "removed-provider-1",
-								apiKey: "key-1",
+								openAiApiKey: "key-1",
 								id: "problematic-id-1",
 							},
 							"problematic-profile-2": {
 								apiProvider: "removed-provider-2",
-								apiKey: "key-2",
+								openAiApiKey: "key-2",
 								id: "problematic-id-2",
 							},
 						},
@@ -1628,13 +1637,16 @@ describe("importExport", () => {
 					}),
 				)
 
-				// Provider profiles are imported as-is
+				// Removed embedding provider fields are dropped from executable profiles.
 				const importedProviderProfiles = mockProviderSettingsManager.import.mock.calls[0][0]
 				const importedProvider = importedProviderProfiles.apiConfigs["openai-compatible-provider"]
 
-				// Provider still has its own settings (not modified by import)
-				expect(importedProvider.codebaseIndexOpenAiCompatibleBaseUrl).toBe("https://old-url.example.com/v1")
-				expect(importedProvider.codebaseIndexOpenAiCompatibleModelDimension).toBe(512)
+				expect(
+					(importedProvider as Record<string, unknown>).codebaseIndexOpenAiCompatibleBaseUrl,
+				).toBeUndefined()
+				expect(
+					(importedProvider as Record<string, unknown>).codebaseIndexOpenAiCompatibleModelDimension,
+				).toBeUndefined()
 			})
 
 			it("should handle missing OpenAI Compatible settings gracefully during import", async () => {
@@ -1738,8 +1750,12 @@ describe("importExport", () => {
 				const importedProviderProfiles = mockProviderSettingsManager.import.mock.calls[0][0]
 				const importedProvider = importedProviderProfiles.apiConfigs["anthropic-provider"]
 
-				expect(importedProvider.codebaseIndexOpenAiCompatibleBaseUrl).toBeUndefined()
-				expect(importedProvider.codebaseIndexOpenAiCompatibleModelDimension).toBeUndefined()
+				expect(
+					(importedProvider as Record<string, unknown>).codebaseIndexOpenAiCompatibleBaseUrl,
+				).toBeUndefined()
+				expect(
+					(importedProvider as Record<string, unknown>).codebaseIndexOpenAiCompatibleModelDimension,
+				).toBeUndefined()
 			})
 		})
 
@@ -2043,13 +2059,13 @@ describe("importExport", () => {
 			const providerA = importedProviderProfiles.apiConfigs["provider-a"]
 			const providerB = importedProviderProfiles.apiConfigs["provider-b"]
 
-			// This should pass but might fail due to the bug
-			expect(providerA.codebaseIndexOpenAiCompatibleModelDimension).toBe(1536)
-			expect(providerA.codebaseIndexOpenAiCompatibleBaseUrl).toBe("https://api-a.example.com/v1")
+			// Removed embedding provider fields are not copied into provider profiles.
+			expect((providerA as Record<string, unknown>).codebaseIndexOpenAiCompatibleModelDimension).toBeUndefined()
+			expect((providerA as Record<string, unknown>).codebaseIndexOpenAiCompatibleBaseUrl).toBeUndefined()
 
 			// Provider B should not have OpenAI Compatible settings
-			expect(providerB.codebaseIndexOpenAiCompatibleModelDimension).toBeUndefined()
-			expect(providerB.codebaseIndexOpenAiCompatibleBaseUrl).toBeUndefined()
+			expect((providerB as Record<string, unknown>).codebaseIndexOpenAiCompatibleModelDimension).toBeUndefined()
+			expect((providerB as Record<string, unknown>).codebaseIndexOpenAiCompatibleBaseUrl).toBeUndefined()
 		})
 
 		it("should NOT copy OpenAI Compatible settings to provider profiles - FIXED BEHAVIOR", async () => {
@@ -2130,10 +2146,16 @@ describe("importExport", () => {
 			const anthropicProvider = importedProviderProfiles.apiConfigs["anthropic-provider"]
 
 			// Neither provider should have OpenAI Compatible settings
-			expect(openaiCompatibleProvider.codebaseIndexOpenAiCompatibleBaseUrl).toBeUndefined()
-			expect(openaiCompatibleProvider.codebaseIndexOpenAiCompatibleModelDimension).toBeUndefined()
-			expect(anthropicProvider.codebaseIndexOpenAiCompatibleBaseUrl).toBeUndefined()
-			expect(anthropicProvider.codebaseIndexOpenAiCompatibleModelDimension).toBeUndefined()
+			expect(
+				(openaiCompatibleProvider as Record<string, unknown>).codebaseIndexOpenAiCompatibleBaseUrl,
+			).toBeUndefined()
+			expect(
+				(openaiCompatibleProvider as Record<string, unknown>).codebaseIndexOpenAiCompatibleModelDimension,
+			).toBeUndefined()
+			expect((anthropicProvider as Record<string, unknown>).codebaseIndexOpenAiCompatibleBaseUrl).toBeUndefined()
+			expect(
+				(anthropicProvider as Record<string, unknown>).codebaseIndexOpenAiCompatibleModelDimension,
+			).toBeUndefined()
 		})
 
 		it("should keep OpenAI Compatible settings in global state only - FIXED BEHAVIOR", async () => {
@@ -2216,10 +2238,16 @@ describe("importExport", () => {
 			const openaiCompatibleProvider = importedProviderProfiles.apiConfigs["openai-compatible-provider"]
 
 			// Neither provider should have OpenAI Compatible settings
-			expect(anthropicProvider.codebaseIndexOpenAiCompatibleBaseUrl).toBeUndefined()
-			expect(anthropicProvider.codebaseIndexOpenAiCompatibleModelDimension).toBeUndefined()
-			expect(openaiCompatibleProvider.codebaseIndexOpenAiCompatibleBaseUrl).toBeUndefined()
-			expect(openaiCompatibleProvider.codebaseIndexOpenAiCompatibleModelDimension).toBeUndefined()
+			expect((anthropicProvider as Record<string, unknown>).codebaseIndexOpenAiCompatibleBaseUrl).toBeUndefined()
+			expect(
+				(anthropicProvider as Record<string, unknown>).codebaseIndexOpenAiCompatibleModelDimension,
+			).toBeUndefined()
+			expect(
+				(openaiCompatibleProvider as Record<string, unknown>).codebaseIndexOpenAiCompatibleBaseUrl,
+			).toBeUndefined()
+			expect(
+				(openaiCompatibleProvider as Record<string, unknown>).codebaseIndexOpenAiCompatibleModelDimension,
+			).toBeUndefined()
 		})
 
 		it("should export OpenAI Compatible settings from global state when provider is openai-compatible", async () => {
@@ -2280,78 +2308,5 @@ describe("importExport", () => {
 				"https://custom-api.example.com/v1",
 			)
 		})
-
-		it.each([
-			{
-				testCase: "supportsReasoningBudget is false",
-				providerName: "deepseek-provider",
-				modelId: "deepseek-chat",
-				providerId: "deepseek-id",
-			},
-			{
-				testCase: "requiredReasoningBudget is false",
-				providerName: "deepseek-provider-2",
-				modelId: "deepseek-coder",
-				providerId: "deepseek-id-2",
-			},
-			{
-				testCase: "both supportsReasoningBudget and requiredReasoningBudget are false",
-				providerName: "deepseek-provider-3",
-				modelId: "deepseek-reasoner",
-				providerId: "deepseek-id-3",
-			},
-		])(
-			"should exclude modelMaxTokens and modelMaxThinkingTokens when $testCase",
-			async ({ providerName, modelId, providerId }) => {
-				// This test verifies that token fields are excluded when model doesn't support reasoning budget
-				// Using deepseek provider which uses apiModelId and has supportsReasoningBudget: false
-
-				;(vscode.window.showSaveDialog as Mock).mockResolvedValue({
-					fsPath: "/mock/path/alpha-code-settings.json",
-				})
-
-				// Use a real ProviderSettingsManager instance to test the actual filtering logic
-				const realProviderSettingsManager = new ProviderSettingsManager(mockExtensionContext)
-
-				// Wait for initialization to complete
-				await realProviderSettingsManager.initialize()
-
-				// Save a deepseek provider config with token fields
-				await realProviderSettingsManager.saveConfig(providerName, {
-					apiProvider: "deepseek" as ProviderName,
-					apiModelId: modelId,
-					id: providerId,
-					deepSeekApiKey: "test-key",
-					modelMaxTokens: 4096, // This should be removed during export
-					modelMaxThinkingTokens: 2048, // This should be removed during export
-				})
-
-				// Set this as the current provider
-				await realProviderSettingsManager.activateProfile({ name: providerName })
-
-				const mockGlobalSettings = {
-					mode: "code",
-					autoApprovalEnabled: true,
-				}
-
-				mockContextProxy.export.mockResolvedValue(mockGlobalSettings)
-				;(fs.mkdir as Mock).mockResolvedValue(undefined)
-
-				await exportSettings({
-					providerSettingsManager: realProviderSettingsManager,
-					contextProxy: mockContextProxy,
-				})
-
-				// Get the exported data
-				const exportedData = (safeWriteJson as Mock).mock.calls[0][1]
-
-				// Verify that token fields were excluded because reasoning budget is not supported/required
-				const provider = exportedData.providerProfiles.apiConfigs[providerName]
-				expect(provider).toBeDefined()
-				expect(provider.apiModelId).toBe(modelId)
-				expect("modelMaxTokens" in provider).toBe(false) // Should be excluded
-				expect("modelMaxThinkingTokens" in provider).toBe(false) // Should be excluded
-			},
-		)
 	})
 })

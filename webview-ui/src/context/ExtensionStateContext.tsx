@@ -16,7 +16,6 @@ import {
 	type SkillMetadata,
 	type Command,
 	type McpServer,
-	RouterModels,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 } from "@alpha-code/types"
 
@@ -130,7 +129,6 @@ export interface ExtensionStateContextType extends ExtensionState {
 	setAutoCondenseContext: (value: boolean) => void
 	autoCondenseContextPercent: number
 	setAutoCondenseContextPercent: (value: number) => void
-	routerModels?: RouterModels
 	includeDiagnosticMessages?: boolean
 	setIncludeDiagnosticMessages: (value: boolean) => void
 	maxDiagnosticMessages?: number
@@ -299,7 +297,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 			codebaseIndexVectorStoreProvider: "lancedb",
 			codebaseIndexLocalIndexPath: ".alpha/code-index/lancedb",
 			codebaseIndexQdrantUrl: "http://localhost:6333",
-			codebaseIndexEmbedderProvider: "openai",
+			codebaseIndexEmbedderProvider: "vertex",
 			codebaseIndexEmbedderBaseUrl: "",
 			codebaseIndexEmbedderModelId: "",
 			codebaseIndexSearchMaxResults: undefined,
@@ -313,12 +311,9 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 			codebaseIndexVertexGatewayTokenRefreshMinutes: undefined,
 			codebaseIndexVertexGatewayModelRoutingMap: "",
 		},
-		codebaseIndexModels: { ollama: {}, openai: {}, vertex: {} },
+		codebaseIndexModels: { vertex: {} },
 		includeDiagnosticMessages: true,
 		maxDiagnosticMessages: 50,
-		openRouterImageApiKey: "",
-		githubToken: "",
-		openRouterImageGenerationSelectedModel: "",
 		includeCurrentTime: true,
 		includeCurrentCost: true,
 		lockApiConfigAcrossModes: false,
@@ -333,7 +328,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const [commands, setCommands] = useState<Command[]>([])
 	const [mcpServers, setMcpServers] = useState<McpServer[]>([])
 	const [currentCheckpoint, setCurrentCheckpoint] = useState<string>()
-	const [extensionRouterModels, setExtensionRouterModels] = useState<RouterModels | undefined>(undefined)
 	const [marketplaceItems, setMarketplaceItems] = useState<any[]>([])
 	const [alwaysAllowFollowupQuestions, setAlwaysAllowFollowupQuestions] = useState(false) // Add state for follow-up questions auto-approve
 	const [followupAutoApproveTimeoutMs, setFollowupAutoApproveTimeoutMs] = useState<number | undefined>(undefined) // Will be set from global settings
@@ -670,10 +664,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					setListApiConfigMeta(message.listApiConfig ?? [])
 					break
 				}
-				case "routerModels": {
-					setExtensionRouterModels(message.routerModels)
-					break
-				}
 				case "marketplaceData": {
 					if (message.marketplaceItems !== undefined) {
 						setMarketplaceItems(message.marketplaceItems)
@@ -776,7 +766,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		soundVolume: state.soundVolume,
 		ttsSpeed: state.ttsSpeed,
 		writeDelayMs: state.writeDelayMs,
-		routerModels: extensionRouterModels,
 		marketplaceItems,
 		marketplaceInstalledMetadata,
 		profileThresholds: state.profileThresholds ?? {},

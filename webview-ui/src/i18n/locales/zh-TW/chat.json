@@ -387,8 +387,6 @@
 		},
 		"release": {
 			"heading": "新增功能：",
-			"gpt54": "Poe 供應商：已將 Poe 新增為 AI 供應商，讓你可以在 Alpha 中直接存取 Poe 模型。",
-			"slashSkills": "xAI 與 MiniMax 改進：已將 xAI 供應商遷移至 Responses API，加入可重複使用的轉換工具，更新了 Grok-4.20 預設值，並修正 MiniMax 模型清單和上下文視窗處理方式，讓設定更加可靠。",
 			"geminiPro": "Gemini 3.1 Pro 支援：新增 Gemini 3.1 Pro 模型支援，並設為預設 Gemini 模型以提升效能。",
 			"welcome": "Alpha v{{version}} 改善了驗證、命令控制和任務連續性。",
 			"acceptanceChecks": "只要宣告的輸入保持不變，就可重用已通過的檢查。",
@@ -514,7 +512,7 @@
 	},
 	"retiredProvider": {
 		"title": "供應商不再受支援",
-		"message": "抱歉，此供應商已不再受支援。我們發現實際使用它的 Alpha 使用者非常少，我們需要縮減程式碼庫的範圍，以便繼續快速交付並更好地服務社群。這是一個非常艱難的決定，但它能讓我們專注於對你最重要的事情。我們知道這很遺憾。",
+		"message": "此已儲存的供應商不再受支援。請在設定中選擇 GCP Vertex AI、VS Code LM API、Stellar 或 OpenAI Compatible。",
 		"openSettings": "開啟設定"
 	},
 	"githubActions": {

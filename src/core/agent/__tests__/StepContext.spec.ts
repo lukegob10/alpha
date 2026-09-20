@@ -31,7 +31,7 @@ function makeContext(overrides: Partial<{ systemPrompt: string; retryAttempt: nu
 		task: { taskId: "task-1", cwd: "F:/workspace" },
 		mode: { slug: "code", profileName: "Luna" },
 		provider: {
-			apiProvider: "openai-native",
+			apiProvider: "openai",
 			apiProtocol: "openai-responses",
 			modelId: "gpt-5.6-luna",
 			modelInfo,

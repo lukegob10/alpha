@@ -431,7 +431,7 @@ describe("processTask lifecycle integration", () => {
 })
 
 describe("Persisted conversation trace fallback", () => {
-	it("classifies command completion as a verification result", () => {
+	it.each(["shell", "execute_command"])("classifies %s completion as a verification result", (tool) => {
 		expect(
 			normalizeApiConversationTrace([
 				{
@@ -444,7 +444,7 @@ describe("Persisted conversation trace fallback", () => {
 				},
 				{
 					ts: 1_750_000_000_002,
-					content: [{ type: "tool_use", id: "test", name: "execute_command" }],
+					content: [{ type: "tool_use", id: "test", name: tool }],
 				},
 				{
 					ts: 1_750_000_000_003,
@@ -454,10 +454,10 @@ describe("Persisted conversation trace fallback", () => {
 		).toEqual([
 			expect.objectContaining({ type: "agent.turn.tool_call", payload: { tool: "read_file" } }),
 			expect.objectContaining({ type: "agent.turn.tool_result", payload: { tool: "read_file" } }),
-			expect.objectContaining({ type: "agent.turn.verification_started", payload: { tool: "execute_command" } }),
+			expect.objectContaining({ type: "agent.turn.verification_started", payload: { tool } }),
 			expect.objectContaining({
 				type: "agent.turn.verification_result",
-				payload: { tool: "execute_command", ok: true },
+				payload: { tool, ok: true },
 			}),
 		])
 	})

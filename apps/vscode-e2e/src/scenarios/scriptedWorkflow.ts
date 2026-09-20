@@ -101,7 +101,7 @@ export class WorkflowScriptedAI {
 			arguments: { path: file, content },
 		})
 		const command = (value: string): ScriptTool => ({
-			name: "execute_command",
+			name: "shell",
 			arguments: { command: value, cwd: this.workspace, timeout: 30 },
 		})
 		switch (phase) {

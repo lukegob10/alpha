@@ -6,23 +6,23 @@ const profiles: Array<ProviderSettingsWithId & { name: string }> = [
 	{
 		id: "parent-id",
 		name: "Parent",
-		apiProvider: "openai-native",
+		apiProvider: "openai",
 		openAiModelId: "parent-model",
 		openAiApiKey: "parent-secret",
 	},
 	{
 		id: "default-id",
 		name: "Default Agent",
-		apiProvider: "openrouter",
-		openRouterModelId: "default-model",
-		openRouterApiKey: "default-secret",
+		apiProvider: "openai",
+		openAiModelId: "default-model",
+		openAiApiKey: "default-secret",
 	},
 	{
 		id: "explore-id",
 		name: "Explorer Renamed",
-		apiProvider: "anthropic",
+		apiProvider: "vertex",
 		apiModelId: "explore-model",
-		apiKey: "explore-secret",
+		vertexJsonCredentials: "explore-secret",
 	},
 	{ id: "unconfigured-id", name: "Incomplete" },
 ]
@@ -66,7 +66,7 @@ describe("resolveSubagentModelRoute", () => {
 			resolution: "selected",
 			profileId: "explore-id",
 			profileName: "Explorer Renamed",
-			provider: "anthropic",
+			provider: "vertex",
 			modelId: "explore-model",
 		})
 		expect(defaultRoute.route).toMatchObject({

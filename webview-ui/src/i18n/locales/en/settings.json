@@ -30,7 +30,6 @@
 		"agents": "Agents",
 		"modes": "Modes",
 		"mcp": "MCP Servers",
-		"github": "GitHub",
 		"worktrees": "Worktrees",
 		"skills": "Skills",
 		"autoApprove": "Auto-Approve",
@@ -73,11 +72,6 @@
 				"description": "Optional profile override for isolated editing workers."
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "GitHub token",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "Stored securely in VS Code Secret Storage. Used by the native GitHub API tool for pull requests, checks, comments, and merges."
 	},
 	"about": {
 		"manageSettings": "Manage Settings",
@@ -206,45 +200,12 @@
 		"providerLabel": "Embeddings Provider",
 		"embedderProviderLabel": "Embedder Provider",
 		"selectProviderPlaceholder": "Select provider",
-		"openaiProvider": "OpenAI",
-		"ollamaProvider": "Ollama",
-		"geminiProvider": "Gemini",
 		"vertexProvider": "GCP Vertex AI",
-		"geminiApiKeyLabel": "API Key:",
-		"geminiApiKeyPlaceholder": "Enter your Gemini API key",
-		"mistralProvider": "Mistral",
-		"mistralApiKeyLabel": "API Key:",
-		"mistralApiKeyPlaceholder": "Enter your Mistral API key",
-		"vercelAiGatewayProvider": "Vercel AI Gateway",
-		"vercelAiGatewayApiKeyLabel": "API Key",
-		"vercelAiGatewayApiKeyPlaceholder": "Enter your Vercel AI Gateway API key",
-		"bedrockProvider": "Amazon Bedrock",
-		"bedrockRegionLabel": "AWS Region",
-		"bedrockRegionPlaceholder": "us-east-1",
-		"bedrockProfileLabel": "AWS Profile",
-		"bedrockProfilePlaceholder": "default",
-		"bedrockProfileDescription": "AWS profile name from ~/.aws/credentials (required).",
-		"openRouterProvider": "OpenRouter",
-		"openRouterApiKeyLabel": "OpenRouter API Key",
-		"openRouterApiKeyPlaceholder": "Enter your OpenRouter API key",
-		"openRouterProviderRoutingLabel": "OpenRouter Provider Routing",
-		"openRouterProviderRoutingDescription": "OpenRouter routes requests to the best available providers for your embedding model. By default, requests are load balanced across the top providers to maximize uptime. However, you can choose a specific provider to use for this model.",
-		"openaiCompatibleProvider": "OpenAI Compatible",
-		"openAiKeyLabel": "OpenAI API Key",
-		"openAiKeyPlaceholder": "Enter your OpenAI API key",
-		"openAiCompatibleBaseUrlLabel": "Base URL",
-		"openAiCompatibleApiKeyLabel": "API Key",
-		"openAiCompatibleApiKeyPlaceholder": "Enter your API key",
-		"openAiCompatibleModelDimensionLabel": "Embedding Dimension:",
 		"modelDimensionLabel": "Model Dimension",
-		"openAiCompatibleModelDimensionPlaceholder": "e.g., 1536",
-		"openAiCompatibleModelDimensionDescription": "The embedding dimension (output size) for your model. Check your provider's documentation for this value. Common values: 384, 768, 1536, 3072.",
 		"modelLabel": "Model",
 		"modelPlaceholder": "Enter model name",
 		"selectModel": "Select a model",
 		"selectModelPlaceholder": "Select model",
-		"ollamaUrlLabel": "Ollama URL:",
-		"ollamaBaseUrlLabel": "Ollama Base URL",
 		"qdrantUrlLabel": "Qdrant URL",
 		"qdrantKeyLabel": "Qdrant Key:",
 		"qdrantApiKeyLabel": "Qdrant API Key",
@@ -268,8 +229,6 @@
 			"cancelButton": "Cancel",
 			"confirmButton": "Clear Data"
 		},
-		"ollamaUrlPlaceholder": "http://localhost:11434",
-		"openAiCompatibleBaseUrlPlaceholder": "https://api.example.com",
 		"modelDimensionPlaceholder": "1536",
 		"qdrantUrlPlaceholder": "http://localhost:6333",
 		"saveError": "Failed to save settings",
@@ -287,20 +246,11 @@
 		"validation": {
 			"qdrantUrlRequired": "Qdrant URL is required",
 			"invalidQdrantUrl": "Invalid Qdrant URL",
-			"invalidOllamaUrl": "Invalid Ollama URL",
 			"invalidBaseUrl": "Invalid base URL",
-			"openaiApiKeyRequired": "OpenAI API key is required",
 			"modelSelectionRequired": "Model selection is required",
 			"apiKeyRequired": "API key is required",
 			"modelIdRequired": "Model ID is required",
 			"modelDimensionRequired": "Model dimension is required",
-			"geminiApiKeyRequired": "Gemini API key is required",
-			"mistralApiKeyRequired": "Mistral API key is required",
-			"vercelAiGatewayApiKeyRequired": "Vercel AI Gateway API key is required",
-			"bedrockRegionRequired": "AWS region is required",
-			"bedrockProfileRequired": "AWS profile is required",
-			"openRouterApiKeyRequired": "OpenRouter API key is required",
-			"ollamaBaseUrlRequired": "Ollama base URL is required",
 			"baseUrlRequired": "Base URL is required",
 			"modelDimensionMinValue": "Model dimension must be greater than 0",
 			"vertexProjectIdRequired": "Google Cloud project ID is required",
@@ -415,7 +365,6 @@
 		"nameEmpty": "Name cannot be empty",
 		"nameExists": "A profile with this name already exists",
 		"deleteProfile": "Delete Profile",
-		"invalidArnFormat": "Invalid ARN format. Please check the examples above.",
 		"enterNewName": "Enter new name",
 		"addProfile": "Add Profile",
 		"renameProfile": "Rename Profile",
@@ -427,46 +376,9 @@
 		"searchProviderPlaceholder": "Search providers",
 		"noProviderMatchFound": "No providers found",
 		"noMatchFound": "No matching profiles found",
-		"retiredProviderMessage": "Sorry, this provider is no longer supported. We saw very few Alpha users actually using it and we need to reduce the surface area of our codebase so we can keep shipping fast and serving our community well in this space. It was a really hard decision but it lets us focus on what matters most to you. It sucks, we know.",
+		"retiredProviderMessage": "This saved provider is no longer supported. Select GCP Vertex AI, VS Code LM API, Stellar, or OpenAI Compatible in Settings.",
 		"vscodeLmDescription": "The VS Code Language Model API lets Alpha use models made available by providers such as GitHub Copilot in this VS Code window.",
-		"awsCustomArnUse": "Enter a valid Amazon Bedrock ARN for the model you want to use. Format examples:",
-		"awsCustomArnDesc": "Make sure the region in the ARN matches your selected AWS Region above.",
-		"openRouterApiKey": "OpenRouter API Key",
-		"getOpenRouterApiKey": "Get OpenRouter API Key",
-		"vercelAiGatewayApiKey": "Vercel AI Gateway API Key",
-		"getVercelAiGatewayApiKey": "Get Vercel AI Gateway API Key",
 		"apiKeyStorageNotice": "API keys are stored securely in VSCode's Secret Storage",
-		"openAiCodexRateLimits": {
-			"title": "Usage Limits for Codex{{planLabel}}",
-			"loading": "Loading usage limits...",
-			"loadError": "Failed to load usage limits",
-			"retry": "Retry",
-			"usedPercent": "{{percent}}% used",
-			"resetsIn": "Resets in {{time}}",
-			"plan": {
-				"default": "",
-				"withType": " ({{planType}})"
-			},
-			"time": {
-				"now": "Now",
-				"notAvailable": "N/A"
-			},
-			"duration": {
-				"daysHours": "{{days}}d {{hours}}h",
-				"hoursMinutes": "{{hours}}h {{minutes}}m",
-				"minutes": "{{minutes}}m"
-			},
-			"window": {
-				"usage": "Usage",
-				"fiveHour": "5h limit",
-				"oneHour": "1h limit",
-				"daily": "Daily limit",
-				"weekly": "Weekly limit",
-				"days": "{{days}}d limit",
-				"hours": "{{hours}}h limit",
-				"minutes": "{{minutes}}m limit"
-			}
-		},
 		"useCustomBaseUrl": "Use custom base URL",
 		"useReasoning": "Enable reasoning",
 		"useHostHeader": "Use custom Host header",
@@ -474,9 +386,6 @@
 		"headerName": "Header name",
 		"headerValue": "Header value",
 		"noCustomHeaders": "No custom headers defined. Click the + button to add one.",
-		"unboundApiKey": "Unbound API Key",
-		"getUnboundApiKey": "Get Unbound API Key",
-		"requestyApiKey": "Requesty API Key",
 		"refreshModels": {
 			"label": "Refresh Models",
 			"hint": "Please reopen the settings to see the latest models.",
@@ -485,81 +394,14 @@
 			"error": "Failed to refresh models list. Please try again.",
 			"missingConfig": "Enter the required provider configuration before refreshing models."
 		},
-		"getRequestyApiKey": "Create new Requesty API Key",
-		"getRequestyBaseUrl": "Base URL",
-		"requestyUseCustomBaseUrl": "Use custom base URL",
-		"anthropicApiKey": "Anthropic API Key",
-		"getAnthropicApiKey": "Get Anthropic API Key",
-		"anthropicUseAuthToken": "Pass Anthropic API Key as Authorization header instead of X-Api-Key",
-		"anthropic1MContextBetaLabel": "Enable 1M context window (Beta)",
-		"anthropic1MContextBetaDescription": "Extends context window to 1 million tokens for Claude Sonnet 4.x / Claude Opus 4.6",
-		"awsBedrock1MContextBetaLabel": "Enable 1M context window (Beta)",
-		"awsBedrock1MContextBetaDescription": "Extends context window to 1 million tokens for Claude Sonnet 4.x / Claude Opus 4.6",
 		"vertexStreamingEnabledLabel": "Enable streaming responses",
 		"vertexStreamingEnabledDescription": "Disable this when a gateway or model does not support streaming. Responses will appear after completion.",
 		"vertex1MContextBetaLabel": "Enable 1M context window (Beta)",
 		"vertex1MContextBetaDescription": "Extends context window to 1 million tokens for Claude Sonnet 4.x / Claude Opus 4.6",
-		"basetenApiKey": "Baseten API Key",
-		"getBasetenApiKey": "Get Baseten API Key",
-		"poeApiKey": "Poe API Key",
-		"getPoeApiKey": "Get Poe API Key",
-		"poeBaseUrl": "Poe Base URL",
-		"fireworksApiKey": "Fireworks API Key",
-		"getFireworksApiKey": "Get Fireworks API Key",
-		"deepSeekApiKey": "DeepSeek API Key",
-		"getDeepSeekApiKey": "Get DeepSeek API Key",
-		"moonshotApiKey": "Moonshot API Key",
-		"getMoonshotApiKey": "Get Moonshot API Key",
-		"moonshotBaseUrl": "Moonshot Entrypoint",
-		"minimaxApiKey": "MiniMax API Key",
-		"getMiniMaxApiKey": "Get MiniMax API Key",
-		"minimaxBaseUrl": "MiniMax Entrypoint",
-		"zaiApiKey": "Z AI API Key",
-		"getZaiApiKey": "Get Z AI API Key",
-		"zaiEntrypoint": "Z AI Entrypoint",
-		"zaiEntrypointDescription": "Please select the appropriate API entrypoint based on your location. If you are in China, choose open.bigmodel.cn. Otherwise, choose api.z.ai.",
-		"geminiApiKey": "Gemini API Key",
-		"getSambaNovaApiKey": "Get SambaNova API Key",
-		"sambaNovaApiKey": "SambaNova API Key",
-		"getGeminiApiKey": "Get Gemini API Key",
 		"openAiApiKey": "OpenAI API Key",
 		"apiKey": "API Key",
 		"openAiBaseUrl": "Base URL",
 		"getOpenAiApiKey": "Get OpenAI API Key",
-		"mistralApiKey": "Mistral API Key",
-		"getMistralApiKey": "Get Mistral / Codestral API Key",
-		"codestralBaseUrl": "Codestral Base URL (Optional)",
-		"codestralBaseUrlDesc": "Set an alternative URL for the Codestral model.",
-		"xaiApiKey": "xAI API Key",
-		"getXaiApiKey": "Get xAI API Key",
-		"litellmApiKey": "LiteLLM API Key",
-		"litellmBaseUrl": "LiteLLM Base URL",
-		"awsCredentials": "AWS Credentials",
-		"awsProfile": "AWS Profile",
-		"awsApiKey": "Amazon Bedrock API Key",
-		"awsProfileName": "AWS Profile Name",
-		"awsAccessKey": "AWS Access Key",
-		"awsSecretKey": "AWS Secret Key",
-		"awsSessionToken": "AWS Session Token",
-		"awsRegion": "AWS Region",
-		"awsCrossRegion": "Use cross-region inference",
-		"awsGlobalInference": "Use Global inference (auto-select optimal AWS Region)",
-		"awsServiceTier": "Service Tier",
-		"awsServiceTierStandard": "Standard",
-		"awsServiceTierStandardDesc": "Balanced performance and cost",
-		"awsServiceTierFlex": "Flex (50% discount)",
-		"awsServiceTierFlexDesc": "Lower cost, higher latency for non-critical tasks",
-		"awsServiceTierPriority": "Priority (75% premium)",
-		"awsServiceTierPriorityDesc": "Fastest performance for mission-critical applications",
-		"awsServiceTierNote": "Service tiers affect pricing and performance. Flex offers 50% discount with higher latency, Priority offers 25% better performance with 75% premium.",
-		"awsBedrockVpc": {
-			"useCustomVpcEndpoint": "Use custom VPC endpoint",
-			"vpcEndpointUrlPlaceholder": "Enter VPC Endpoint URL (optional)",
-			"examples": "Examples:"
-		},
-		"enablePromptCaching": "Enable prompt caching",
-		"enablePromptCachingTitle": "Enable prompt caching to improve performance and reduce costs for supported models.",
-		"cacheUsageNote": "Note: If you don't see cache usage, try selecting a different model and then selecting your desired model again.",
 		"vscodeLmModel": "Language Model",
 		"vscodeLmLoading": "Loading the language models available in this VS Code window...",
 		"vscodeLmNoModels": "No language models are available in this VS Code window. Sign in to GitHub Copilot here, enable the models you need with 'Chat: Manage Language Models', and then refresh.",
@@ -608,34 +450,6 @@
 		"stellarTokenRefreshMinutes": "Stellar Token Refresh Minutes",
 		"stellarStreamingEnabledLabel": "Enable streaming responses",
 		"stellarStreamingEnabledDescription": "Disable this if the Stellar deployment does not support streaming. Responses will appear after completion.",
-		"lmStudio": {
-			"baseUrl": "Base URL (optional)",
-			"modelId": "Model ID",
-			"speculativeDecoding": "Enable Speculative Decoding",
-			"draftModelId": "Draft Model ID",
-			"draftModelDesc": "Draft model must be from the same model family for speculative decoding to work correctly.",
-			"selectDraftModel": "Select Draft Model",
-			"noModelsFound": "No draft models found. Please ensure LM Studio is running with Server Mode enabled.",
-			"description": "LM Studio allows you to run models locally on your computer. For instructions on how to get started, see their <a>quickstart guide</a>. You will also need to start LM Studio's <b>local server</b> feature to use it with this extension. <span>Note:</span> Alpha uses complex prompts and works best with Claude models. Less capable models may not work as expected."
-		},
-		"ollama": {
-			"baseUrl": "Base URL (optional)",
-			"modelId": "Model ID",
-			"apiKey": "Ollama API Key",
-			"apiKeyHelp": "Optional API key for authenticated Ollama instances or cloud services. Leave empty for local installations.",
-			"numCtx": "Context Window Size (num_ctx)",
-			"numCtxHelp": "Override the model's default context window size. Leave empty to use the model's Modelfile configuration. Minimum value is 128.",
-			"description": "Ollama allows you to run models locally on your computer. For instructions on how to get started, see their quickstart guide.",
-			"warning": "Note: Alpha uses complex prompts and works best with Claude models. Less capable models may not work as expected."
-		},
-		"roo": {},
-		"openRouter": {
-			"providerRouting": {
-				"title": "OpenRouter Provider Routing",
-				"description": "OpenRouter routes requests to the best available providers for your model. By default, requests are load balanced across the top providers to maximize uptime. However, you can choose a specific provider to use for this model.",
-				"learnMore": "Learn more about provider routing"
-			}
-		},
 		"customModel": {
 			"capabilities": "Configure the capabilities and pricing for your custom OpenAI-compatible model. Be careful when specifying the model capabilities, as they can affect how Alpha performs.",
 			"maxTokens": {
@@ -705,14 +519,7 @@
 			"low": "Low",
 			"description": "Controls how detailed the model's responses are. Low verbosity produces concise answers, while high verbosity provides thorough explanations."
 		},
-		"setReasoningLevel": "Enable Reasoning Effort",
-		"claudeCode": {
-			"pathLabel": "Claude Code Path",
-			"description": "Optional path to your Claude Code CLI. Defaults to 'claude' if not set.",
-			"placeholder": "Default: claude",
-			"maxTokensLabel": "Max Output Tokens",
-			"maxTokensDescription": "Maximum number of output tokens for Claude Code responses. Default is 8000."
-		}
+		"setReasoningLevel": "Enable Reasoning Effort"
 	},
 	"checkpoints": {
 		"timeout": {
@@ -954,19 +761,6 @@
 			"name": "Require 'todos' list for new tasks",
 			"description": "When enabled, the new_task tool will require a todos parameter to be provided. This ensures all new tasks start with a clear list of objectives. When disabled (default), the todos parameter remains optional for backward compatibility."
 		},
-		"IMAGE_GENERATION": {
-			"name": "Enable AI image generation",
-			"description": "When enabled, Alpha can generate images from text prompts using image generation models.",
-			"providerLabel": "Provider",
-			"providerDescription": "Select which provider to use for image generation.",
-			"openRouterApiKeyLabel": "OpenRouter API Key",
-			"openRouterApiKeyPlaceholder": "Enter your OpenRouter API key",
-			"getApiKeyText": "Get your API key from",
-			"modelSelectionLabel": "Image Generation Model",
-			"modelSelectionDescription": "Select the model to use for image generation",
-			"warningMissingKey": "⚠️ OpenRouter API key is required for OpenRouter image generation. Please configure it above.",
-			"successConfigured": "✓ Image generation is configured and ready to use"
-		},
 		"RUN_SLASH_COMMAND": {
 			"name": "Enable model-initiated slash commands",
 			"description": "When enabled, Alpha can run your slash commands to execute workflows."
@@ -1007,12 +801,7 @@
 		"enableR1Format": "Enable R1 model parameters",
 		"enableR1FormatTips": "Must be enabled when using R1 models such as QWQ to prevent 400 errors",
 		"useAzure": "Use Azure",
-		"azureApiVersion": "Set Azure API version",
-		"gemini": {
-			"freeRequests": "* Free up to {{count}} requests per minute. After that, billing depends on prompt size.",
-			"pricingDetails": "For more info, see pricing details.",
-			"billingEstimate": "* Billing is an estimate - exact cost depends on prompt size."
-		}
+		"azureApiVersion": "Set Azure API version"
 	},
 	"modelPicker": {
 		"automaticFetch": "The extension automatically fetches the latest list of models available on <serviceLink>{{serviceName}}</serviceLink>. If you're unsure which model to choose, Alpha works best with <defaultModelLink>{{defaultModelId}}</defaultModelLink>. You can also try searching \"free\" for no-cost options currently available.",
@@ -1039,7 +828,6 @@
 	},
 	"validation": {
 		"apiKey": "You must provide a valid API key.",
-		"awsRegion": "You must choose a region to use with Amazon Bedrock.",
 		"googleCloud": "You must provide a Google Cloud project ID and region.",
 		"vertexGateway": "Vertex gateway requires a base URL, CA bundle path, and Helix command.",
 		"vertexGatewayModelRoutingMap": "Vertex Gateway Model Routing Map must be a JSON object with string model IDs.",
@@ -1047,33 +835,20 @@
 		"modelId": "You must provide a valid model ID.",
 		"modelSelector": "You must provide a valid model selector.",
 		"openAi": "You must provide a valid base URL, API key, and model ID.",
-		"arn": {
-			"invalidFormat": "Invalid ARN format. Please check the format requirements.",
-			"regionMismatch": "Warning: The region in your ARN ({{arnRegion}}) does not match your selected region ({{region}}). This may cause access issues. The provider will use the region from the ARN."
-		},
 		"modelAvailability": "The model ID ({{modelId}}) you provided is not available. Please choose a different model.",
 		"modelDeprecated": "This model is no longer available. Please select a different model.",
 		"providerNotAllowed": "Provider '{{provider}}' is not allowed by your organization",
 		"modelNotAllowed": "Model '{{model}}' is not allowed for provider '{{provider}}' by your organization",
-		"profileInvalid": "This profile contains a provider or model that is not allowed by your organization",
-		"qwenCodeOauthPath": "You must provide a valid OAuth credentials path."
+		"profileInvalid": "This profile contains a provider or model that is not allowed by your organization"
 	},
 	"placeholders": {
 		"apiKey": "Enter API Key...",
 		"profileName": "Enter profile name",
-		"accessKey": "Enter Access Key...",
-		"secretKey": "Enter Secret Key...",
-		"sessionToken": "Enter Session Token...",
 		"credentialsJson": "Enter Credentials JSON...",
 		"keyFilePath": "Enter Key File Path...",
 		"projectId": "Enter Project ID...",
-		"customArn": "Enter ARN (e.g. arn:aws:bedrock:us-east-1:123456789012:foundation-model/my-model)",
 		"baseUrl": "Enter base URL...",
-		"modelId": {
-			"lmStudio": "e.g. meta-llama-3.1-8b-instruct",
-			"lmStudioDraft": "e.g. lmstudio-community/llama-3.2-1b-instruct",
-			"ollama": "e.g. llama3.1"
-		},
+		"modelId": {},
 		"numbers": {
 			"maxTokens": "e.g. 4096",
 			"contextWindow": "e.g. 128000",
@@ -1082,15 +857,8 @@
 			"cacheWritePrice": "e.g. 0.00005"
 		}
 	},
-	"defaults": {
-		"ollamaUrl": "Default: http://localhost:11434",
-		"lmStudioUrl": "Default: http://localhost:1234",
-		"geminiUrl": "Default: https://generativelanguage.googleapis.com"
-	},
-	"labels": {
-		"customArn": "Custom ARN",
-		"useCustomArn": "Use custom ARN..."
-	},
+	"defaults": {},
+	"labels": {},
 	"includeMaxOutputTokens": "Include max output tokens",
 	"includeMaxOutputTokensDescription": "Send max output tokens parameter in API requests. Some providers may not support this.",
 	"limitMaxTokensDescription": "Limit the maximum number of tokens in the response",

@@ -717,6 +717,7 @@ export class NativeToolCallParser {
 				}
 				break
 
+			case "shell":
 			case "execute_command":
 				if (partialArgs.command) {
 					nativeArgs = {
@@ -813,6 +814,22 @@ export class NativeToolCallParser {
 					nativeArgs = {
 						todos: partialArgs.todos,
 					}
+				}
+				break
+
+			case "manage_command":
+				if (originalName === "read_command_output" || partialArgs.action === "read") {
+					if (partialArgs.artifact_id !== undefined) {
+						nativeArgs = {
+							action: "read",
+							artifact_id: partialArgs.artifact_id,
+							search: partialArgs.search,
+							offset: partialArgs.offset,
+							limit: partialArgs.limit,
+						}
+					}
+				} else {
+					nativeArgs = partialArgs
 				}
 				break
 
@@ -1155,6 +1172,7 @@ export class NativeToolCallParser {
 					}
 					break
 
+				case "shell":
 				case "execute_command":
 					if (args.command) {
 						nativeArgs = {
@@ -1274,7 +1292,19 @@ export class NativeToolCallParser {
 					break
 
 				case "manage_command":
-					nativeArgs = args as NativeArgsFor<TName>
+					if (toolCall.name === "read_command_output" || args.action === "read") {
+						if (args.artifact_id !== undefined) {
+							nativeArgs = {
+								action: "read",
+								artifact_id: args.artifact_id,
+								search: args.search,
+								offset: args.offset,
+								limit: args.limit,
+							} as NativeArgsFor<TName>
+						}
+					} else {
+						nativeArgs = args as NativeArgsFor<TName>
+					}
 					break
 
 				case "read_command_output":
@@ -1306,93 +1336,6 @@ export class NativeToolCallParser {
 						} as NativeArgsFor<TName>
 					}
 					break
-
-				case "github_api": {
-					const baseParamsAreValid =
-						typeof args.action === "string" &&
-						typeof args.owner === "string" &&
-						typeof args.repo === "string"
-
-					if (!baseParamsAreValid) {
-						break
-					}
-
-					switch (args.action) {
-						case "create_pull_request":
-							if (
-								typeof args.head === "string" &&
-								typeof args.base === "string" &&
-								typeof args.title === "string"
-							) {
-								nativeArgs = {
-									action: args.action,
-									owner: args.owner,
-									repo: args.repo,
-									head: args.head,
-									base: args.base,
-									title: args.title,
-									body: typeof args.body === "string" || args.body === null ? args.body : undefined,
-								} as NativeArgsFor<TName>
-							}
-							break
-						case "get_pull_request":
-							if (typeof args.pull_number === "number") {
-								nativeArgs = {
-									action: args.action,
-									owner: args.owner,
-									repo: args.repo,
-									pull_number: args.pull_number,
-								} as NativeArgsFor<TName>
-							}
-							break
-						case "list_checks":
-							if (typeof args.sha === "string") {
-								nativeArgs = {
-									action: args.action,
-									owner: args.owner,
-									repo: args.repo,
-									sha: args.sha,
-								} as NativeArgsFor<TName>
-							}
-							break
-						case "merge_pull_request":
-							if (typeof args.pull_number === "number") {
-								nativeArgs = {
-									action: args.action,
-									owner: args.owner,
-									repo: args.repo,
-									pull_number: args.pull_number,
-									merge_method:
-										args.merge_method === "merge" ||
-										args.merge_method === "squash" ||
-										args.merge_method === "rebase" ||
-										args.merge_method === null
-											? args.merge_method
-											: undefined,
-									title:
-										typeof args.title === "string" || args.title === null ? args.title : undefined,
-									message:
-										typeof args.message === "string" || args.message === null
-											? args.message
-											: undefined,
-								} as NativeArgsFor<TName>
-							}
-							break
-						case "comment":
-							if (typeof args.issue_number === "number" && typeof args.body === "string") {
-								nativeArgs = {
-									action: args.action,
-									owner: args.owner,
-									repo: args.repo,
-									issue_number: args.issue_number,
-									body: args.body,
-								} as NativeArgsFor<TName>
-							}
-							break
-					}
-
-					break
-				}
 
 				case "access_mcp_resource":
 					if (args.server_name !== undefined && args.uri !== undefined) {

@@ -3,7 +3,7 @@ import { test } from "node:test"
 import { RECOVERY_COMMANDS } from "./developmentCatalog"
 import { inspectRecoveryTrace, type RecoveryPhase } from "./recoveryTrace"
 
-function trace(phase: RecoveryPhase) {
+function trace(phase: RecoveryPhase, commandToolName: "shell" | "execute_command" = "execute_command") {
 	const marker =
 		phase === "devSearchScope"
 			? "search-scope"
@@ -17,7 +17,7 @@ function trace(phase: RecoveryPhase) {
 		const id = `call-${nextId++}`
 		history.push({
 			role: "assistant",
-			content: [{ type: "tool_use", id, name: "execute_command", input: { command: text } }],
+			content: [{ type: "tool_use", id, name: commandToolName, input: { command: text } }],
 		})
 		history.push({
 			role: "user",
@@ -58,6 +58,11 @@ function trace(phase: RecoveryPhase) {
 	}
 	return { history, ui, command }
 }
+
+test("recovery trace accepts canonical shell receipts", () => {
+	const { history, ui } = trace("devSearchAbsent", "shell")
+	assert.deepEqual(failures(history, ui, "devSearchAbsent"), [])
+})
 
 function failures(history: unknown, ui: unknown, phase: RecoveryPhase) {
 	return inspectRecoveryTrace(history, ui, phase)

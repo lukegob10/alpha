@@ -12,10 +12,21 @@ const toolCategories = new Map([
 	["search_files", "search"],
 	["codebase_search", "search"],
 	["apply_diff", "mutation"],
+	["apply_patch", "mutation"],
+	["edit", "mutation"],
 	["write_to_file", "mutation"],
 	["edit_file", "mutation"],
 	["execute_command", "terminal"],
+	["shell", "terminal"],
+	["manage_command", "terminal"],
+	["read_command_output", "terminal"],
 	["new_task", "delegation"],
+	["spawn_agent", "delegation"],
+	["wait_agent", "delegation"],
+	["send_message", "delegation"],
+	["followup_task", "delegation"],
+	["list_agents", "delegation"],
+	["close_agent", "delegation"],
 ])
 
 function count(value, coverage = "complete") {
@@ -154,7 +165,8 @@ export function buildReport(input) {
 			commandCount: count(
 				tools.filter((event) => {
 					const payload = record(event.payload)
-					return (payload.name ?? payload.tool) === "execute_command"
+					const tool = payload.name ?? payload.tool
+					return tool === "shell" || tool === "execute_command"
 				}).length,
 				metricCoverage,
 			),

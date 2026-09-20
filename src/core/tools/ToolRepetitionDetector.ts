@@ -4,6 +4,7 @@ import type { ToolUse } from "../../shared/tools"
 import { t } from "../../i18n"
 import { normalizeToolFailure, type ToolFailureMetadata } from "./ToolFailure"
 import type { ToolResultMetadata } from "./BaseTool"
+import { canonicalizeToolName } from "./ToolRegistry"
 
 export interface ToolProgressObservation {
 	toolName: string
@@ -57,14 +58,19 @@ function digest(value: unknown): string {
 }
 
 function operationIdentity(toolName: string, args: unknown): string {
-	if (toolName === "execute_command" && args && typeof args === "object" && "command" in args) {
+	const canonicalName = canonicalizeToolName(toolName)
+	if (toolName === "read_command_output" && args && typeof args === "object" && !Array.isArray(args)) {
+		// Observations use the living tool's action; admission still receives the historical payload.
+		args = { ...args, action: "read" }
+	}
+	if (canonicalName === "shell" && args && typeof args === "object" && "command" in args) {
 		const command = typeof args.command === "string" ? args.command.trim() : args.command
 		const cwd = "cwd" in args ? (args.cwd ?? undefined) : undefined
 		// Timeout and verification association do not change the requested effect.
 		// Preserve whitespace inside shell strings, which can change their meaning.
-		return digest({ toolName, command, cwd })
+		return digest({ toolName: canonicalName, command, cwd })
 	}
-	return digest({ toolName, args })
+	return digest({ toolName: canonicalName, args })
 }
 
 interface FailureAllowance {
@@ -217,7 +223,7 @@ export class ToolRepetitionDetector {
 			observation.opaqueResultFingerprint !== undefined
 		const freshOpaque = opaque && this.rememberNovelty(this.seenOpaqueResults, observation.opaqueResultFingerprint!)
 		const freshUnclassifiedCommand =
-			observation.toolName === "execute_command" &&
+			canonicalizeToolName(observation.toolName) === "shell" &&
 			observation.status === "success" &&
 			observation.executionStatus === "success" &&
 			observation.explorationFingerprint === undefined &&

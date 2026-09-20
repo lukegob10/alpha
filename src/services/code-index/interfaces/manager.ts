@@ -1,5 +1,6 @@
 import { VectorStoreSearchResult } from "./vector-store"
 import * as vscode from "vscode"
+import type { EmbedderProvider } from "@alpha-code/types"
 
 /**
  * Interface for the code index manager
@@ -75,16 +76,7 @@ export interface ICodeIndexManager {
 }
 
 export type IndexingState = "Standby" | "Indexing" | "Indexed" | "Error" | "Stopping"
-export type EmbedderProvider =
-	| "openai"
-	| "ollama"
-	| "openai-compatible"
-	| "gemini"
-	| "vertex"
-	| "mistral"
-	| "vercel-ai-gateway"
-	| "bedrock"
-	| "openrouter"
+export type { EmbedderProvider }
 
 export interface IndexProgressUpdate {
 	systemStatus: IndexingState

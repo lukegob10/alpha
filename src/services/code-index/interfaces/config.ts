@@ -1,5 +1,4 @@
-import { ApiHandlerOptions } from "../../../shared/api" // Adjust path if needed
-import { EmbedderProvider } from "./manager"
+import type { EmbedderProvider } from "./manager"
 import type { ProviderSettings } from "@alpha-code/types"
 
 export type VectorStoreProvider = "qdrant" | "lancedb"
@@ -12,16 +11,8 @@ export interface CodeIndexConfig {
 	embedderProvider: EmbedderProvider
 	vectorStoreProvider?: VectorStoreProvider
 	modelId?: string
-	modelDimension?: number // Generic dimension property for all providers
-	openAiOptions?: ApiHandlerOptions
-	ollamaOptions?: ApiHandlerOptions
-	openAiCompatibleOptions?: { baseUrl: string; apiKey: string }
-	geminiOptions?: { apiKey: string }
+	modelDimension?: number // Optional override for custom Vertex models
 	vertexOptions?: ProviderSettings
-	mistralOptions?: { apiKey: string }
-	vercelAiGatewayOptions?: { apiKey: string }
-	bedrockOptions?: { region: string; profile?: string }
-	openRouterOptions?: { apiKey: string; specificProvider?: string }
 	qdrantUrl?: string
 	qdrantApiKey?: string
 	localIndexPath?: string
@@ -37,14 +28,10 @@ export type PreviousConfigSnapshot = {
 	enabled: boolean
 	configured: boolean
 	embedderProvider: EmbedderProvider
+	legacyEmbedderProvider?: string
 	vectorStoreProvider?: VectorStoreProvider
 	modelId?: string
-	modelDimension?: number // Generic dimension property
-	openAiKey?: string
-	ollamaBaseUrl?: string
-	openAiCompatibleBaseUrl?: string
-	openAiCompatibleApiKey?: string
-	geminiApiKey?: string
+	modelDimension?: number
 	vertexProjectId?: string
 	vertexRegion?: string
 	vertexKeyFile?: string
@@ -54,12 +41,6 @@ export type PreviousConfigSnapshot = {
 	vertexGatewayHelixCommand?: string
 	vertexGatewayTokenRefreshMinutes?: number
 	vertexGatewayModelRoutingMap?: string
-	mistralApiKey?: string
-	vercelAiGatewayApiKey?: string
-	bedrockRegion?: string
-	bedrockProfile?: string
-	openRouterApiKey?: string
-	openRouterSpecificProvider?: string
 	qdrantUrl?: string
 	qdrantApiKey?: string
 	localIndexPath?: string

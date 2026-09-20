@@ -9,7 +9,7 @@ import { OutputInterceptor } from "../../integrations/terminal/OutputInterceptor
 import { unescapeHtmlEntities } from "../../utils/text-normalization"
 import { getTaskDirectoryPath } from "../../utils/storage"
 import { ToolReadDeniedError } from "./BaseTool"
-import type { PreparedCommandRead, ToolExecutionContext } from "./ToolRegistry"
+import { canonicalizeToolName, type PreparedCommandRead, type ToolExecutionContext } from "./ToolRegistry"
 import { canonicalRgInspection, getTrustedCommandExploration, tokenizeSingleCommand } from "./CommandExploration"
 import { isPathWithinRoot } from "./pathSafety"
 import { isToolAllowedForMode } from "./validateToolUse"
@@ -118,7 +118,7 @@ export async function prepareParallelCommand(
 ): Promise<PreparedCommandRead | undefined> {
 	const args: Record<string, unknown> = { ...call.nativeArgs }
 	if (
-		call.name !== "execute_command" ||
+		canonicalizeToolName(call.name) !== "shell" ||
 		typeof args.command !== "string" ||
 		task.taskKind !== "primary" ||
 		args.verification != null ||
@@ -182,10 +182,10 @@ export async function prepareParallelCommand(
 			task.abort ||
 			task.taskMode !== mode ||
 			task.providerRef.deref() !== provider ||
-			!isToolAllowedForMode("execute_command", task.taskMode, [], undefined, args) ||
-			!isToolAllowed(policy, "execute_command") ||
+			!isToolAllowedForMode("shell", task.taskMode, [], undefined, args) ||
+			!isToolAllowed(policy, "shell") ||
 			isCommandDeniedByPolicy(policy, command) ||
-			current.disabledTools?.includes("execute_command") ||
+			current.disabledTools?.some((name) => canonicalizeToolName(name) === "shell") ||
 			getCommandDecision(command, current.allowedCommands ?? [], current.deniedCommands ?? []) === "auto_deny" ||
 			task.alphaIgnoreController !== ignore ||
 			ignore?.alphaIgnoreContent !== ignoreContent ||
@@ -311,7 +311,7 @@ export async function prepareParallelCommand(
 				const persisted = await interceptor.finalize()
 				preview = persisted.preview
 				if (persisted.artifactPath)
-					artifact = `\nArtifact ID: ${path.basename(persisted.artifactPath)}; use read_command_output for full output.`
+					artifact = `\nArtifact ID: ${path.basename(persisted.artifactPath)}; in Code mode, use manage_command with action "read" and this artifact_id for full output.`
 			}
 			resultCallbacks.pushToolResult(`${details}${artifact}\n${preview}`)
 			return async () => {

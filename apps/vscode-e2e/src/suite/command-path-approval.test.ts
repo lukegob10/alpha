@@ -41,7 +41,7 @@ class CommandPathAI {
 			yield {
 				type: "tool_call" as const,
 				id: `path-command-${index}`,
-				name: "execute_command",
+				name: "shell",
 				arguments: JSON.stringify({ command: observation.commands[index], timeout: 90 }),
 			}
 		} else {

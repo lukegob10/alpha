@@ -6,12 +6,6 @@ import type { ModelInfo, ProviderSettings, ReasoningEffortExtended } from "@alph
 
 import { shouldUseReasoningBudget, shouldUseReasoningEffort } from "../../shared/api"
 
-export type OpenRouterReasoningParams = {
-	effort?: ReasoningEffortExtended
-	max_tokens?: number
-	exclude?: boolean
-}
-
 export type AlphaReasoningParams = {
 	enabled?: boolean
 	effort?: ReasoningEffortExtended
@@ -38,20 +32,6 @@ export type GetModelReasoningOptions = {
 	reasoningEffort: ReasoningEffortExtended | "disable" | undefined
 	settings: ProviderSettings
 }
-
-export const getOpenRouterReasoning = ({
-	model,
-	reasoningBudget,
-	reasoningEffort,
-	settings,
-}: GetModelReasoningOptions): OpenRouterReasoningParams | undefined =>
-	shouldUseReasoningBudget({ model, settings })
-		? { max_tokens: reasoningBudget }
-		: shouldUseReasoningEffort({ model, settings })
-			? reasoningEffort && reasoningEffort !== "disable"
-				? { effort: reasoningEffort as ReasoningEffortExtended }
-				: undefined
-			: undefined
 
 export const getAlphaReasoning = ({
 	model,

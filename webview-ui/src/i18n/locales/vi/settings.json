@@ -42,8 +42,7 @@
 		"language": "Ngôn ngữ",
 		"about": "Giới thiệu",
 		"skills": "Skills",
-		"agents": "Đại lý",
-		"github": "GitHub"
+		"agents": "Đại lý"
 	},
 	"about": {
 		"bugReport": {
@@ -113,42 +112,10 @@
 		"enableDescription": "Bật lập chỉ mục mã để cải thiện tìm kiếm và sự hiểu biết về ngữ cảnh",
 		"providerLabel": "Nhà cung cấp nhúng",
 		"selectProviderPlaceholder": "Chọn nhà cung cấp",
-		"openaiProvider": "OpenAI",
-		"ollamaProvider": "Ollama",
-		"geminiProvider": "Gemini",
 		"vertexProvider": "GCP Vertex AI",
-		"geminiApiKeyLabel": "Khóa API:",
-		"geminiApiKeyPlaceholder": "Nhập khóa API Gemini của bạn",
-		"mistralProvider": "Mistral",
-		"mistralApiKeyLabel": "Khóa API:",
-		"mistralApiKeyPlaceholder": "Nhập khóa API Mistral của bạn",
-		"vercelAiGatewayProvider": "Vercel AI Gateway",
-		"vercelAiGatewayApiKeyLabel": "Khóa API",
-		"vercelAiGatewayApiKeyPlaceholder": "Nhập khóa API Vercel AI Gateway của bạn",
-		"bedrockProvider": "Amazon Bedrock",
-		"bedrockRegionLabel": "Vùng AWS",
-		"bedrockRegionPlaceholder": "us-east-1",
-		"bedrockProfileLabel": "Hồ sơ AWS",
-		"bedrockProfilePlaceholder": "default",
-		"bedrockProfileDescription": "Tên hồ sơ AWS từ ~/.aws/credentials (bắt buộc).",
-		"openRouterProvider": "OpenRouter",
-		"openRouterApiKeyLabel": "Khóa API OpenRouter",
-		"openRouterApiKeyPlaceholder": "Nhập khóa API OpenRouter của bạn",
-		"openRouterProviderRoutingLabel": "Định tuyến nhà cung cấp OpenRouter",
-		"openRouterProviderRoutingDescription": "OpenRouter chuyển hướng yêu cầu đến các nhà cung cấp tốt nhất hiện có cho mô hình nhúng của bạn. Theo mặc định, các yêu cầu được cân bằng giữa các nhà cung cấp hàng đầu để tối đa hóa thời gian hoạt động. Tuy nhiên, bạn có thể chọn một nhà cung cấp cụ thể để sử dụng cho mô hình này.",
-		"openaiCompatibleProvider": "Tương thích OpenAI",
-		"openAiKeyLabel": "Khóa API OpenAI",
-		"openAiKeyPlaceholder": "Nhập khóa API OpenAI của bạn",
-		"openAiCompatibleBaseUrlLabel": "URL cơ sở",
-		"openAiCompatibleApiKeyLabel": "Khóa API",
-		"openAiCompatibleApiKeyPlaceholder": "Nhập khóa API của bạn",
-		"openAiCompatibleModelDimensionLabel": "Kích thước Embedding:",
 		"modelDimensionLabel": "Kích thước mô hình",
-		"openAiCompatibleModelDimensionPlaceholder": "vd., 1536",
-		"openAiCompatibleModelDimensionDescription": "Kích thước embedding (kích thước đầu ra) cho mô hình của bạn. Kiểm tra tài liệu của nhà cung cấp để biết giá trị này. Giá trị phổ biến: 384, 768, 1536, 3072.",
 		"modelLabel": "Mô hình",
 		"selectModelPlaceholder": "Chọn mô hình",
-		"ollamaUrlLabel": "URL Ollama:",
 		"qdrantUrlLabel": "URL Qdrant",
 		"qdrantKeyLabel": "Khóa Qdrant:",
 		"startIndexingButton": "Bắt đầu",
@@ -167,12 +134,9 @@
 		"embedderProviderLabel": "Nhà cung cấp Embedder",
 		"modelPlaceholder": "Nhập tên mô hình",
 		"selectModel": "Chọn một mô hình",
-		"ollamaBaseUrlLabel": "URL cơ sở Ollama",
 		"qdrantApiKeyLabel": "Khóa API Qdrant",
 		"qdrantApiKeyPlaceholder": "Nhập khóa API Qdrant của bạn (tùy chọn)",
 		"setupConfigLabel": "Cài đặt",
-		"ollamaUrlPlaceholder": "http://localhost:11434",
-		"openAiCompatibleBaseUrlPlaceholder": "https://api.example.com",
 		"modelDimensionPlaceholder": "1536",
 		"qdrantUrlPlaceholder": "http://localhost:6333",
 		"saveError": "Không thể lưu cài đặt",
@@ -189,23 +153,14 @@
 		"close": "Đóng",
 		"validation": {
 			"invalidQdrantUrl": "URL Qdrant không hợp lệ",
-			"invalidOllamaUrl": "URL Ollama không hợp lệ",
 			"invalidBaseUrl": "URL cơ sở không hợp lệ",
 			"qdrantUrlRequired": "Yêu cầu URL Qdrant",
-			"openaiApiKeyRequired": "Yêu cầu khóa API OpenAI",
 			"modelSelectionRequired": "Yêu cầu chọn mô hình",
 			"apiKeyRequired": "Yêu cầu khóa API",
 			"modelIdRequired": "Yêu cầu ID mô hình",
 			"modelDimensionRequired": "Yêu cầu kích thước mô hình",
-			"geminiApiKeyRequired": "Yêu cầu khóa API Gemini",
-			"mistralApiKeyRequired": "Cần có khóa API của Mistral",
-			"vercelAiGatewayApiKeyRequired": "Cần có khóa API Vercel AI Gateway",
-			"bedrockRegionRequired": "Vùng AWS là bắt buộc",
-			"bedrockProfileRequired": "Hồ sơ AWS là bắt buộc",
-			"ollamaBaseUrlRequired": "Yêu cầu URL cơ sở Ollama",
 			"baseUrlRequired": "Yêu cầu URL cơ sở",
 			"modelDimensionMinValue": "Kích thước mô hình phải lớn hơn 0",
-			"openRouterApiKeyRequired": "Yêu cầu khóa API OpenRouter",
 			"vertexProjectIdRequired": "Google Cloud project ID is required",
 			"vertexRegionRequired": "Google Cloud region is required",
 			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
@@ -327,7 +282,6 @@
 		"nameEmpty": "Tên không được để trống",
 		"nameExists": "Đã tồn tại một hồ sơ với tên này",
 		"deleteProfile": "Xóa hồ sơ",
-		"invalidArnFormat": "Định dạng ARN không hợp lệ. Vui lòng kiểm tra các ví dụ ở trên.",
 		"enterNewName": "Nhập tên mới",
 		"addProfile": "Thêm hồ sơ",
 		"renameProfile": "Đổi tên hồ sơ",
@@ -339,46 +293,9 @@
 		"searchProviderPlaceholder": "Tìm kiếm nhà cung cấp",
 		"noProviderMatchFound": "Không tìm thấy nhà cung cấp",
 		"noMatchFound": "Không tìm thấy hồ sơ phù hợp",
-		"retiredProviderMessage": "Xin lỗi, nhà cung cấp này không còn được hỗ trợ. Chúng tôi nhận thấy rất ít người dùng Alpha thực sự sử dụng nó và chúng tôi cần thu hẹp phạm vi mã nguồn để tiếp tục phát triển nhanh và phục vụ tốt cộng đồng. Đây là một quyết định thực sự khó khăn nhưng nó cho phép chúng tôi tập trung vào điều quan trọng nhất với bạn. Chúng tôi biết điều này thật phiền, xin thông cảm.",
+		"retiredProviderMessage": "Nhà cung cấp đã lưu này không còn được hỗ trợ. Chọn GCP Vertex AI, VS Code LM API, Stellar hoặc OpenAI Compatible trong Cài đặt.",
 		"vscodeLmDescription": "API Mô hình Ngôn ngữ VS Code cho phép bạn chạy các mô hình được cung cấp bởi các tiện ích mở rộng khác của VS Code (bao gồm nhưng không giới hạn ở GitHub Copilot). Cách dễ nhất để bắt đầu là cài đặt các tiện ích mở rộng Copilot và Copilot Chat từ VS Code Marketplace.",
-		"awsCustomArnUse": "Nhập một ARN Amazon Bedrock hợp lệ cho mô hình bạn muốn sử dụng. Ví dụ về định dạng:",
-		"awsCustomArnDesc": "Đảm bảo rằng vùng trong ARN khớp với vùng AWS đã chọn ở trên.",
-		"openRouterApiKey": "Khóa API OpenRouter",
-		"getOpenRouterApiKey": "Lấy khóa API OpenRouter",
-		"vercelAiGatewayApiKey": "Khóa API Vercel AI Gateway",
-		"getVercelAiGatewayApiKey": "Lấy khóa API Vercel AI Gateway",
 		"apiKeyStorageNotice": "Khóa API được lưu trữ an toàn trong Bộ lưu trữ bí mật của VSCode",
-		"openAiCodexRateLimits": {
-			"title": "Usage Limits for Codex{{planLabel}}",
-			"loading": "Loading usage limits...",
-			"loadError": "Failed to load usage limits",
-			"retry": "Retry",
-			"usedPercent": "{{percent}}% used",
-			"resetsIn": "Resets in {{time}}",
-			"plan": {
-				"default": "",
-				"withType": " ({{planType}})"
-			},
-			"time": {
-				"now": "Now",
-				"notAvailable": "N/A"
-			},
-			"duration": {
-				"daysHours": "{{days}}d {{hours}}h",
-				"hoursMinutes": "{{hours}}h {{minutes}}m",
-				"minutes": "{{minutes}}m"
-			},
-			"window": {
-				"usage": "Usage",
-				"fiveHour": "5h limit",
-				"oneHour": "1h limit",
-				"daily": "Daily limit",
-				"weekly": "Weekly limit",
-				"days": "{{days}}d limit",
-				"hours": "{{hours}}h limit",
-				"minutes": "{{minutes}}m limit"
-			}
-		},
 		"useCustomBaseUrl": "Sử dụng URL cơ sở tùy chỉnh",
 		"useReasoning": "Bật lý luận",
 		"useHostHeader": "Sử dụng tiêu đề Host tùy chỉnh",
@@ -386,9 +303,6 @@
 		"headerName": "Tên tiêu đề",
 		"headerValue": "Giá trị tiêu đề",
 		"noCustomHeaders": "Chưa có tiêu đề tùy chỉnh nào được định nghĩa. Nhấp vào nút + để thêm.",
-		"unboundApiKey": "Khóa API Unbound",
-		"getUnboundApiKey": "Lấy khóa API Unbound",
-		"requestyApiKey": "Khóa API Requesty",
 		"refreshModels": {
 			"label": "Làm mới mô hình",
 			"hint": "Vui lòng mở lại cài đặt để xem các mô hình mới nhất.",
@@ -397,109 +311,14 @@
 			"error": "Không thể làm mới danh sách mô hình. Vui lòng thử lại.",
 			"missingConfig": "Nhập cấu hình nhà cung cấp được yêu cầu trước khi làm mới mô hình."
 		},
-		"getRequestyApiKey": "Lấy khóa API Requesty",
-		"getRequestyBaseUrl": "URL cơ sở",
-		"requestyUseCustomBaseUrl": "Sử dụng URL cơ sở tùy chỉnh",
-		"anthropicApiKey": "Khóa API Anthropic",
-		"getAnthropicApiKey": "Lấy khóa API Anthropic",
-		"anthropicUseAuthToken": "Truyền khóa API Anthropic dưới dạng tiêu đề Authorization thay vì X-Api-Key",
-		"anthropic1MContextBetaLabel": "Bật cửa sổ ngữ cảnh 1M (Beta)",
-		"anthropic1MContextBetaDescription": "Mở rộng cửa sổ ngữ cảnh lên 1 triệu token cho Claude Sonnet 4.x / Claude Opus 4.6",
-		"awsBedrock1MContextBetaLabel": "Bật cửa sổ ngữ cảnh 1M (Beta)",
-		"awsBedrock1MContextBetaDescription": "Mở rộng cửa sổ ngữ cảnh lên 1 triệu token cho Claude Sonnet 4.x / Claude Opus 4.6",
 		"vertex1MContextBetaLabel": "Bật cửa sổ ngữ cảnh 1M (Beta)",
 		"vertex1MContextBetaDescription": "Mở rộng cửa sổ ngữ cảnh lên 1 triệu token cho Claude Sonnet 4.x / Claude Opus 4.6",
-		"basetenApiKey": "Khóa API Baseten",
-		"getBasetenApiKey": "Lấy khóa API Baseten",
-		"poeApiKey": "Khóa API Poe",
-		"getPoeApiKey": "Lấy khóa API Poe",
-		"poeBaseUrl": "URL cơ sở Poe",
-		"fireworksApiKey": "Khóa API Fireworks",
-		"getFireworksApiKey": "Lấy khóa API Fireworks",
-		"deepSeekApiKey": "Khóa API DeepSeek",
-		"getDeepSeekApiKey": "Lấy khóa API DeepSeek",
-		"moonshotApiKey": "Khóa API Moonshot",
-		"getMoonshotApiKey": "Lấy khóa API Moonshot",
-		"moonshotBaseUrl": "Điểm vào Moonshot",
-		"zaiApiKey": "Khóa API Z AI",
-		"getZaiApiKey": "Lấy khóa API Z AI",
-		"zaiEntrypoint": "Điểm vào Z AI",
-		"zaiEntrypointDescription": "Vui lòng chọn điểm vào API phù hợp dựa trên vị trí của bạn. Nếu bạn ở Trung Quốc, hãy chọn open.bigmodel.cn. Ngược lại, hãy chọn api.z.ai.",
-		"minimaxApiKey": "Khóa API MiniMax",
-		"getMiniMaxApiKey": "Lấy khóa API MiniMax",
-		"minimaxBaseUrl": "Điểm vào MiniMax",
-		"geminiApiKey": "Khóa API Gemini",
-		"getSambaNovaApiKey": "Lấy khóa API SambaNova",
-		"sambaNovaApiKey": "Khóa API SambaNova",
-		"getGeminiApiKey": "Lấy khóa API Gemini",
 		"openAiApiKey": "Khóa API OpenAI",
 		"apiKey": "Khóa API",
 		"openAiBaseUrl": "URL cơ sở",
 		"getOpenAiApiKey": "Lấy khóa API OpenAI",
-		"mistralApiKey": "Khóa API Mistral",
-		"getMistralApiKey": "Lấy khóa API Mistral / Codestral",
-		"codestralBaseUrl": "URL cơ sở Codestral (Tùy chọn)",
-		"codestralBaseUrlDesc": "Đặt URL thay thế cho mô hình Codestral.",
-		"xaiApiKey": "Khóa API xAI",
-		"getXaiApiKey": "Lấy khóa API xAI",
-		"litellmApiKey": "Khóa API LiteLLM",
-		"litellmBaseUrl": "URL cơ sở LiteLLM",
-		"awsCredentials": "Thông tin xác thực AWS",
-		"awsProfile": "Hồ sơ AWS",
-		"awsApiKey": "Khóa API Amazon Bedrock",
-		"awsProfileName": "Tên hồ sơ AWS",
-		"awsAccessKey": "Khóa truy cập AWS",
-		"awsSecretKey": "Khóa bí mật AWS",
-		"awsSessionToken": "Token phiên AWS",
-		"awsRegion": "Vùng AWS",
-		"awsCrossRegion": "Sử dụng suy luận liên vùng",
-		"awsGlobalInference": "Sử dụng suy luận toàn cầu (tự động chọn Khu vực AWS tối ưu)",
-		"awsServiceTier": "Cấp độ dịch vụ",
-		"awsServiceTierStandard": "Tiêu chuẩn",
-		"awsServiceTierStandardDesc": "Hiệu suất và chi phí cân bằng",
-		"awsServiceTierFlex": "Linh hoạt (giảm giá 50%)",
-		"awsServiceTierFlexDesc": "Chi phí thấp hơn, độ trễ cao hơn cho các tác vụ không quan trọng",
-		"awsServiceTierPriority": "Ưu tiên (Phí thêm 75%)",
-		"awsServiceTierPriorityDesc": "Hiệu suất nhanh nhất cho các ứng dụng quan trọng",
-		"awsServiceTierNote": "Các cấp độ dịch vụ ảnh hưởng đến giá và hiệu suất. Linh hoạt cung cấp giảm giá 50% với độ trễ cao hơn, Ưu tiên cung cấp hiệu suất tốt hơn 25% với phí thêm 75%.",
-		"awsBedrockVpc": {
-			"useCustomVpcEndpoint": "Sử dụng điểm cuối VPC tùy chỉnh",
-			"vpcEndpointUrlPlaceholder": "Nhập URL điểm cuối VPC (tùy chọn)",
-			"examples": "Ví dụ:"
-		},
-		"enablePromptCaching": "Bật bộ nhớ đệm lời nhắc",
-		"enablePromptCachingTitle": "Bật bộ nhớ đệm lời nhắc để cải thiện hiệu suất và giảm chi phí cho các mô hình được hỗ trợ.",
-		"cacheUsageNote": "Lưu ý: Nếu bạn không thấy việc sử dụng bộ nhớ đệm, hãy thử chọn một mô hình khác và sau đó chọn lại mô hình mong muốn của bạn.",
 		"vscodeLmModel": "Mô hình ngôn ngữ",
 		"vscodeLmWarning": "Lưu ý: Các mô hình truy cập qua VS Code Language Model API có thể được nhà cung cấp bao bọc hoặc tinh chỉnh, vì vậy hành vi có thể khác so với khi dùng trực tiếp cùng mô hình từ nhà cung cấp hoặc router thông thường. Để dùng một mô hình trong menu «Language Model», trước tiên hãy chuyển sang mô hình đó rồi nhấp «Chấp nhận» trong lời nhắc Copilot Chat; nếu không bạn có thể gặp lỗi như 400 «The requested model is not supported».",
-		"lmStudio": {
-			"baseUrl": "URL cơ sở (tùy chọn)",
-			"modelId": "ID mô hình",
-			"speculativeDecoding": "Bật giải mã suy đoán",
-			"draftModelId": "ID mô hình nháp",
-			"draftModelDesc": "Mô hình nháp phải từ cùng một họ mô hình để giải mã suy đoán hoạt động chính xác.",
-			"selectDraftModel": "Chọn mô hình nháp",
-			"noModelsFound": "Không tìm thấy mô hình nháp nào. Vui lòng đảm bảo LM Studio đang chạy với chế độ máy chủ được bật.",
-			"description": "LM Studio cho phép bạn chạy các mô hình cục bộ trên máy tính của bạn. Để biết hướng dẫn về cách bắt đầu, xem <a>hướng dẫn nhanh</a> của họ. Bạn cũng sẽ cần khởi động tính năng <b>máy chủ cục bộ</b> của LM Studio để sử dụng nó với tiện ích mở rộng này. <span>Lưu ý:</span> Alpha sử dụng các lời nhắc phức tạp và hoạt động tốt nhất với các mô hình Claude. Các mô hình kém mạnh hơn có thể không hoạt động như mong đợi."
-		},
-		"ollama": {
-			"baseUrl": "URL cơ sở (tùy chọn)",
-			"modelId": "ID mô hình",
-			"apiKey": "Khóa API Ollama",
-			"apiKeyHelp": "Khóa API tùy chọn cho các phiên bản Ollama đã xác thực hoặc dịch vụ đám mây. Để trống cho cài đặt cục bộ.",
-			"numCtx": "Kích thước cửa sổ ngữ cảnh (num_ctx)",
-			"numCtxHelp": "Ghi đè kích thước cửa sổ ngữ cảnh mặc định của mô hình. Để trống để sử dụng cấu hình Modelfile của mô hình. Giá trị tối thiểu là 128.",
-			"description": "Ollama cho phép bạn chạy các mô hình cục bộ trên máy tính của bạn. Để biết hướng dẫn về cách bắt đầu, xem hướng dẫn nhanh của họ.",
-			"warning": "Lưu ý: Alpha sử dụng các lời nhắc phức tạp và hoạt động tốt nhất với các mô hình Claude. Các mô hình kém mạnh hơn có thể không hoạt động như mong đợi."
-		},
-		"roo": {},
-		"openRouter": {
-			"providerRouting": {
-				"title": "Định tuyến nhà cung cấp OpenRouter",
-				"description": "OpenRouter chuyển hướng yêu cầu đến các nhà cung cấp tốt nhất hiện có cho mô hình của bạn. Theo mặc định, các yêu cầu được cân bằng giữa các nhà cung cấp hàng đầu để tối đa hóa thời gian hoạt động. Tuy nhiên, bạn có thể chọn một nhà cung cấp cụ thể để sử dụng cho mô hình này.",
-				"learnMore": "Tìm hiểu thêm về định tuyến nhà cung cấp"
-			}
-		},
 		"customModel": {
 			"capabilities": "Cấu hình các khả năng và giá cả cho mô hình tương thích OpenAI tùy chỉnh của bạn. Hãy cẩn thận khi chỉ định khả năng của mô hình, vì chúng có thể ảnh hưởng đến cách Alpha hoạt động.",
 			"maxTokens": {
@@ -570,13 +389,6 @@
 			"description": "Kiểm soát mức độ chi tiết của các câu trả lời của mô hình. Mức độ chi tiết thấp tạo ra các câu trả lời ngắn gọn, trong khi mức độ chi tiết cao cung cấp giải thích kỹ lưỡng."
 		},
 		"setReasoningLevel": "Kích hoạt nỗ lực suy luận",
-		"claudeCode": {
-			"pathLabel": "Đường dẫn Claude Code",
-			"description": "Đường dẫn tùy chọn đến Claude Code CLI của bạn. Mặc định là 'claude' nếu không được đặt.",
-			"placeholder": "Mặc định: claude",
-			"maxTokensLabel": "Số token đầu ra tối đa",
-			"maxTokensDescription": "Số lượng token đầu ra tối đa cho các phản hồi của Claude Code. Mặc định là 8000."
-		},
 		"vertexStreamingEnabledLabel": "Bật phản hồi phát trực tuyến",
 		"vertexStreamingEnabledDescription": "Tắt tính năng này khi cổng hoặc kiểu máy không hỗ trợ truyền phát. Phản hồi sẽ xuất hiện sau khi hoàn thành.",
 		"vscodeLmLoading": "Đang tải các mô hình ngôn ngữ có sẵn trong cửa sổ VS Code này...",
@@ -866,19 +678,6 @@
 			"name": "Yêu cầu danh sách 'todos' cho các nhiệm vụ mới",
 			"description": "Khi được bật, công cụ new_task sẽ yêu cầu cung cấp tham số todos. Điều này đảm bảo tất cả các nhiệm vụ mới bắt đầu với một danh sách mục tiêu rõ ràng. Khi bị tắt (mặc định), tham số todos vẫn là tùy chọn để tương thích ngược."
 		},
-		"IMAGE_GENERATION": {
-			"providerLabel": "Nhà cung cấp",
-			"providerDescription": "Chọn nhà cung cấp để tạo hình ảnh.",
-			"name": "Bật tạo hình ảnh AI",
-			"description": "Khi được bật, Alpha có thể tạo hình ảnh từ lời nhắc văn bản bằng các mô hình tạo hình ảnh của OpenRouter. Yêu cầu khóa API OpenRouter được cấu hình.",
-			"openRouterApiKeyLabel": "Khóa API OpenRouter",
-			"openRouterApiKeyPlaceholder": "Nhập khóa API OpenRouter của bạn",
-			"getApiKeyText": "Lấy khóa API của bạn từ",
-			"modelSelectionLabel": "Mô hình tạo hình ảnh",
-			"modelSelectionDescription": "Chọn mô hình để sử dụng cho việc tạo hình ảnh",
-			"warningMissingKey": "⚠️ Khóa API OpenRouter là bắt buộc để tạo hình ảnh. Vui lòng cấu hình ở trên.",
-			"successConfigured": "✓ Tạo hình ảnh đã được cấu hình và sẵn sàng sử dụng"
-		},
 		"RUN_SLASH_COMMAND": {
 			"name": "Bật lệnh slash do mô hình khởi tạo",
 			"description": "Khi được bật, Alpha có thể chạy các lệnh slash của bạn để thực hiện các quy trình làm việc."
@@ -919,12 +718,7 @@
 		"enableR1Format": "Kích hoạt tham số mô hình R1",
 		"enableR1FormatTips": "Cần kích hoạt khi sử dụng các mô hình R1 như QWQ, để tránh lỗi 400",
 		"useAzure": "Sử dụng Azure",
-		"azureApiVersion": "Đặt phiên bản API Azure",
-		"gemini": {
-			"freeRequests": "* Miễn phí đến {{count}} yêu cầu mỗi phút. Sau đó, thanh toán phụ thuộc vào kích thước lời nhắc.",
-			"pricingDetails": "Để biết thêm thông tin, xem chi tiết giá.",
-			"billingEstimate": "* Thanh toán là ước tính - chi phí chính xác phụ thuộc vào kích thước lời nhắc."
-		}
+		"azureApiVersion": "Đặt phiên bản API Azure"
 	},
 	"modelPicker": {
 		"automaticFetch": "Tiện ích mở rộng tự động lấy danh sách mới nhất các mô hình có sẵn trên <serviceLink>{{serviceName}}</serviceLink>. Nếu bạn không chắc chắn nên chọn mô hình nào, Alpha hoạt động tốt nhất với <defaultModelLink>{{defaultModelId}}</defaultModelLink>. Bạn cũng có thể thử tìm kiếm \"free\" cho các tùy chọn miễn phí hiện có.",
@@ -951,20 +745,14 @@
 	},
 	"validation": {
 		"apiKey": "Bạn phải cung cấp khóa API hợp lệ.",
-		"awsRegion": "Bạn phải chọn một vùng để sử dụng Amazon Bedrock.",
 		"modelId": "Bạn phải cung cấp ID mô hình hợp lệ.",
 		"modelSelector": "Bạn phải cung cấp bộ chọn mô hình hợp lệ.",
 		"openAi": "Bạn phải cung cấp URL cơ sở, khóa API và ID mô hình hợp lệ.",
-		"arn": {
-			"invalidFormat": "Định dạng ARN không hợp lệ. Vui lòng kiểm tra yêu cầu về định dạng.",
-			"regionMismatch": "Cảnh báo: Vùng trong ARN của bạn ({{arnRegion}}) không khớp với vùng bạn đã chọn ({{region}}). Điều này có thể gây ra vấn đề truy cập. Nhà cung cấp sẽ sử dụng vùng từ ARN."
-		},
 		"modelAvailability": "ID mô hình ({{modelId}}) bạn đã cung cấp không khả dụng. Vui lòng chọn một mô hình khác.",
 		"modelDeprecated": "Mô hình này không còn khả dụng. Vui lòng chọn một mô hình khác.",
 		"providerNotAllowed": "Nhà cung cấp '{{provider}}' không được phép bởi tổ chức của bạn",
 		"modelNotAllowed": "Mô hình '{{model}}' không được phép cho nhà cung cấp '{{provider}}' bởi tổ chức của bạn",
 		"profileInvalid": "Hồ sơ này chứa một nhà cung cấp hoặc mô hình không được phép bởi tổ chức của bạn",
-		"qwenCodeOauthPath": "Bạn phải cung cấp đường dẫn thông tin xác thực OAuth hợp lệ",
 		"googleCloud": "Bạn phải cung cấp dự án Google Cloud ID và khu vực.",
 		"vertexGateway": "Cổng Vertex yêu cầu đường dẫn gói URL, CA cơ bản và lệnh Helix.",
 		"vertexGatewayModelRoutingMap": "Bản đồ định tuyến mô hình cổng Vertex phải là đối tượng JSON có ID mô hình chuỗi.",
@@ -973,19 +761,11 @@
 	"placeholders": {
 		"apiKey": "Nhập khóa API...",
 		"profileName": "Nhập tên hồ sơ",
-		"accessKey": "Nhập khóa truy cập...",
-		"secretKey": "Nhập khóa bí mật...",
-		"sessionToken": "Nhập token phiên...",
 		"credentialsJson": "Nhập JSON thông tin xác thực...",
 		"keyFilePath": "Nhập đường dẫn tệp khóa...",
 		"projectId": "Nhập ID dự án...",
-		"customArn": "Nhập ARN (vd: arn:aws:bedrock:us-east-1:123456789012:foundation-model/my-model)",
 		"baseUrl": "Nhập URL cơ sở...",
-		"modelId": {
-			"lmStudio": "vd: meta-llama-3.1-8b-instruct",
-			"lmStudioDraft": "vd: lmstudio-community/llama-3.2-1b-instruct",
-			"ollama": "vd: llama3.1"
-		},
+		"modelId": {},
 		"numbers": {
 			"maxTokens": "vd: 4096",
 			"contextWindow": "vd: 128000",
@@ -994,15 +774,8 @@
 			"cacheWritePrice": "vd: 0.00005"
 		}
 	},
-	"defaults": {
-		"ollamaUrl": "Mặc định: http://localhost:11434",
-		"lmStudioUrl": "Mặc định: http://localhost:1234",
-		"geminiUrl": "Mặc định: https://generativelanguage.googleapis.com"
-	},
-	"labels": {
-		"customArn": "ARN tùy chỉnh",
-		"useCustomArn": "Sử dụng ARN tùy chỉnh..."
-	},
+	"defaults": {},
+	"labels": {},
 	"includeMaxOutputTokens": "Bao gồm token đầu ra tối đa",
 	"includeMaxOutputTokensDescription": "Gửi tham số token đầu ra tối đa trong các yêu cầu API. Một số nhà cung cấp có thể không hỗ trợ điều này.",
 	"limitMaxTokensDescription": "Giới hạn số lượng token tối đa trong phản hồi",
@@ -1121,10 +894,5 @@
 				"description": "Ghi đè hồ sơ tùy chọn cho nhân viên chỉnh sửa bị cô lập."
 			}
 		}
-	},
-	"github": {
-		"tokenLabel": "Mã thông báo GitHub",
-		"tokenPlaceholder": "ghp_...",
-		"tokenDescription": "Được lưu trữ an toàn trong Kho lưu trữ bí mật VS Code. Được sử dụng bởi công cụ GitHub API gốc để kéo các yêu cầu, kiểm tra, nhận xét và hợp nhất."
 	}
 }

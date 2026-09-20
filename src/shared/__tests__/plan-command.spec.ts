@@ -19,6 +19,12 @@ describe("strict Plan command policy", () => {
 
 	it.each([
 		"git status --short",
+		"gh pr list",
+		"gh pr merge 123 --merge",
+		"gh api repos/owner/repo/issues",
+		"gh api graphql -f query=mutation",
+		"gh alias set shortcut '!echo changed'",
+		"gh extension exec custom",
 		"git --no-pager diff --stat",
 		"git --no-pager diff --no-ext-diff --no-textconv --ext-diff",
 		"git --no-pager grep -Osh secret",

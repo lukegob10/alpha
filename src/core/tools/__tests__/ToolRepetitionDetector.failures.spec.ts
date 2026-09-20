@@ -38,9 +38,9 @@ describe("trusted tool failure recovery", () => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 1 })
 		detector.recordOutcome(rejected)
 		detector.recordOutcome(rejected)
-		expect(detector.getRetryBlock("github_api", { operation: "get_repository" })).toBeUndefined()
+		expect(detector.getRetryBlock("list_files", { path: "/repository" })).toBeUndefined()
 		expect(
-			detector.recordOutcome({ toolName: "github_api", status: "success", kind: "read", scope: "/repository" })
+			detector.recordOutcome({ toolName: "list_files", status: "success", kind: "read", scope: "/repository" })
 				.action,
 		).toBe("continue")
 		expect(detector.getRetryBlock(rejected.toolName, rejected.args)).toEqual(failure)

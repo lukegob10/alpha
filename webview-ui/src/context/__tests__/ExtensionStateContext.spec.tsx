@@ -52,7 +52,7 @@ const ApiConfigTestComponent = () => {
 			<div data-testid="api-configuration">{JSON.stringify(apiConfiguration)}</div>
 			<button
 				data-testid="update-api-config-button"
-				onClick={() => setApiConfiguration({ apiModelId: "new-model", apiProvider: "anthropic" })}>
+				onClick={() => setApiConfiguration({ apiModelId: "new-model", apiProvider: "vertex" })}>
 				Update API Config
 			</button>
 			<button data-testid="partial-update-button" onClick={() => setApiConfiguration({ modelTemperature: 0.7 })}>
@@ -271,7 +271,7 @@ describe("ExtensionStateContext", () => {
 		expect(updatedConfig).toEqual(
 			expect.objectContaining({
 				apiModelId: "new-model",
-				apiProvider: "anthropic",
+				apiProvider: "vertex",
 			}),
 		)
 	})
@@ -294,7 +294,7 @@ describe("ExtensionStateContext", () => {
 		expect(initialConfig).toEqual(
 			expect.objectContaining({
 				apiModelId: "new-model",
-				apiProvider: "anthropic",
+				apiProvider: "vertex",
 			}),
 		)
 
@@ -309,7 +309,7 @@ describe("ExtensionStateContext", () => {
 		expect(updatedConfig).toEqual(
 			expect.objectContaining({
 				apiModelId: "new-model", // Should retain this from previous update
-				apiProvider: "anthropic", // Should retain this from previous update
+				apiProvider: "vertex", // Should retain this from previous update
 				modelTemperature: 0.7, // Should add this from partial update
 			}),
 		)
@@ -324,7 +324,7 @@ describe("ExtensionStateContext", () => {
 
 		act(() => {
 			dispatchExtensionState({
-				apiConfiguration: { apiProvider: "openai-codex" },
+				apiConfiguration: { apiProvider: "vscode-lm", vsCodeLmModelSelector: { id: "fixture-model" } },
 				currentTaskId: "task-1",
 				currentView: { type: "task", taskId: "task-1" },
 				taskStateSeq: 1,
@@ -377,6 +377,13 @@ describe("ExtensionStateContext", () => {
 
 		act(() => {
 			dispatchExtensionState({ apiConfiguration: { apiProvider: "openai-codex" } })
+		})
+		expect(screen.getByTestId("show-welcome")).toHaveTextContent("true")
+
+		act(() => {
+			dispatchExtensionState({
+				apiConfiguration: { apiProvider: "vscode-lm", vsCodeLmModelSelector: { id: "fixture-model" } },
+			})
 		})
 
 		expect(screen.getByTestId("show-welcome")).toHaveTextContent("false")
@@ -721,7 +728,7 @@ describe("mergeExtensionState", () => {
 			customModes: [],
 			maxOpenTabsContext: 20,
 			maxWorkspaceFiles: 100,
-			apiConfiguration: { providerId: "openrouter" } as ProviderSettings,
+			apiConfiguration: { apiProvider: "openai" } as ProviderSettings,
 			telemetrySetting: "unset",
 			showRooIgnoredFiles: true,
 			enableSubfolderRules: false,

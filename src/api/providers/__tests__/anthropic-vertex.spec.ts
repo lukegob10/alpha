@@ -74,23 +74,50 @@ describe("VertexHandler", () => {
 		restoreEnv("USER", originalUser)
 	})
 
+	function setDirectClientCreate(targetHandler: AnthropicVertexHandler, mockCreate: unknown) {
+		;(targetHandler as any)["directClient"] = { messages: { create: mockCreate } }
+	}
+
+	function setGatewayClientCreate(targetHandler: AnthropicVertexHandler, mockCreate: unknown) {
+		;(targetHandler as any)["client"].messages.create = mockCreate
+	}
+
 	afterAll(() => {
 		restoreEnv("USERNAME", originalUsername)
 		restoreEnv("USER", originalUser)
 	})
 
 	describe("constructor", () => {
-		it("should initialize with provided config for Claude", () => {
+		it("should defer direct client initialization until the first request", async () => {
 			handler = new AnthropicVertexHandler({
 				apiModelId: "claude-3-5-sonnet-v2@20241022",
 				vertexProjectId: "test-project",
 				vertexRegion: "us-central1",
 			})
 
+			expect(AnthropicVertex).not.toHaveBeenCalled()
+			await handler.completePrompt("initialize direct client")
 			expect(AnthropicVertex).toHaveBeenCalledWith({
 				projectId: "test-project",
 				region: "us-central1",
 			})
+		})
+
+		it("reports default credential failures through the awaited request", async () => {
+			;(AnthropicVertex as any).mockImplementationOnce(() => {
+				throw new Error("Could not load default credentials")
+			})
+
+			handler = new AnthropicVertexHandler({
+				apiModelId: "claude-3-5-sonnet-v2@20241022",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+			})
+
+			expect(AnthropicVertex).not.toHaveBeenCalled()
+			await expect(handler.completePrompt("request credentials")).rejects.toThrow(
+				"Could not load default credentials",
+			)
 		})
 
 		it("should initialize with Vertex gateway config for Claude", () => {
@@ -118,7 +145,7 @@ describe("VertexHandler", () => {
 			})
 		})
 
-		it("should preserve JSON credentials auth when gateway is not configured", () => {
+		it("should preserve JSON credentials auth when gateway is not configured", async () => {
 			handler = new AnthropicVertexHandler({
 				apiModelId: "claude-3-5-sonnet-v2@20241022",
 				vertexProjectId: "test-project",
@@ -126,6 +153,7 @@ describe("VertexHandler", () => {
 				vertexJsonCredentials: '{"client_email":"test@example.com","private_key":"key"}',
 			})
 
+			await handler.completePrompt("initialize JSON credentials")
 			expect(AnthropicVertex).toHaveBeenCalledWith({
 				projectId: "test-project",
 				region: "us-central1",
@@ -133,7 +161,7 @@ describe("VertexHandler", () => {
 			})
 		})
 
-		it("should preserve key file auth when gateway is not configured", () => {
+		it("should preserve key file auth when gateway is not configured", async () => {
 			handler = new AnthropicVertexHandler({
 				apiModelId: "claude-3-5-sonnet-v2@20241022",
 				vertexProjectId: "test-project",
@@ -141,6 +169,7 @@ describe("VertexHandler", () => {
 				vertexKeyFile: "/path/to/key.json",
 			})
 
+			await handler.completePrompt("initialize key file auth")
 			expect(AnthropicVertex).toHaveBeenCalledWith({
 				projectId: "test-project",
 				region: "us-central1",
@@ -162,6 +191,80 @@ describe("VertexHandler", () => {
 		]
 
 		const systemPrompt = "You are a helpful assistant"
+
+		it.each([
+			{ label: "streaming", streaming: true },
+			{ label: "non-streaming", streaming: false },
+		])("passes the request signal to the Anthropic SDK for $label requests", async ({ streaming }) => {
+			handler = new AnthropicVertexHandler({
+				apiModelId: "claude-sonnet-4-6",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+				vertexStreamingEnabled: streaming,
+			})
+
+			const controller = new AbortController()
+			const mockCreate = vitest
+				.fn()
+				.mockImplementation(async (request: { stream?: boolean }, options?: Anthropic.RequestOptions) => {
+					expect(options?.signal).toBe(controller.signal)
+					if (request.stream) {
+						return { async *[Symbol.asyncIterator]() {} }
+					}
+
+					return { content: [] }
+				})
+			setDirectClientCreate(handler, mockCreate)
+
+			for await (const _chunk of handler.createMessage(systemPrompt, mockMessages, {
+				taskId: "signal-propagation",
+				signal: controller.signal,
+			})) {
+				// Consume the stream to trigger the SDK call.
+			}
+
+			expect(mockCreate).toHaveBeenCalledOnce()
+			expect(mockCreate.mock.calls[0]?.[1]).toEqual({ signal: controller.signal })
+		})
+
+		it("does not retry an aborted gateway request as an authentication failure", async () => {
+			handler = new AnthropicVertexHandler({
+				apiModelId: "claude-sonnet-4-6",
+				vertexProjectId: "test-project",
+				vertexRegion: "global",
+				vertexGatewayBaseUrl: "https://gateway.example.com/vertex/v1/",
+				vertexGatewayCaBundlePath: "C:\\certs\\gateway.pem",
+				vertexGatewayHelixCommand: "helix auth access-token print -a",
+			})
+
+			vitest.spyOn(handler as any, "ensureGatewayTransportConfigured").mockResolvedValue(undefined)
+			const ensureGatewayAccessToken = vitest
+				.spyOn(handler as any, "ensureGatewayAccessToken")
+				.mockResolvedValue("test-token")
+			const controller = new AbortController()
+			const abortedAuthError = Object.assign(new Error("Request was aborted."), {
+				name: "AbortError",
+				status: 401,
+			})
+			const mockCreate = vitest
+				.fn()
+				.mockImplementation(async (_request: unknown, options?: Anthropic.RequestOptions) => {
+					expect(options?.signal).toBe(controller.signal)
+					controller.abort()
+					throw abortedAuthError
+				})
+			setGatewayClientCreate(handler, mockCreate)
+
+			const stream = handler.createMessage(systemPrompt, mockMessages, {
+				taskId: "gateway-abort",
+				signal: controller.signal,
+			})
+
+			await expect(stream.next()).rejects.toBe(abortedAuthError)
+			expect(mockCreate).toHaveBeenCalledOnce()
+			expect(ensureGatewayAccessToken).toHaveBeenCalledOnce()
+			expect(ensureGatewayAccessToken).toHaveBeenCalledWith(false)
+		})
 
 		it("should handle streaming responses correctly for Claude", async () => {
 			handler = new AnthropicVertexHandler({
@@ -213,7 +316,7 @@ describe("VertexHandler", () => {
 			}
 
 			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const stream = handler.createMessage(systemPrompt, mockMessages)
 			const chunks: ApiStreamChunk[] = []
@@ -303,7 +406,7 @@ describe("VertexHandler", () => {
 					cache_read_input_tokens: 4,
 				},
 			})
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const chunks: ApiStreamChunk[] = []
 			for await (const chunk of handler.createMessage(systemPrompt, mockMessages)) {
@@ -364,7 +467,7 @@ describe("VertexHandler", () => {
 			}
 
 			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const stream = handler.createMessage(systemPrompt, mockMessages)
 			const chunks: ApiStreamChunk[] = []
@@ -397,7 +500,7 @@ describe("VertexHandler", () => {
 
 			const mockError = new Error("Vertex API error")
 			const mockCreate = vitest.fn().mockRejectedValue(mockError)
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const stream = handler.createMessage(systemPrompt, mockMessages)
 
@@ -459,7 +562,7 @@ describe("VertexHandler", () => {
 			}
 
 			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const stream = handler.createMessage(systemPrompt, [
 				{
@@ -582,7 +685,7 @@ describe("VertexHandler", () => {
 			}
 
 			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const stream = handler.createMessage(systemPrompt, mockMessages)
 			const chunks: ApiStreamChunk[] = []
@@ -661,7 +764,7 @@ describe("VertexHandler", () => {
 			}
 
 			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const stream = handler.createMessage(systemPrompt, mockMessages)
 			const chunks: ApiStreamChunk[] = []
@@ -718,7 +821,7 @@ describe("VertexHandler", () => {
 			}
 
 			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const stream = handler.createMessage(systemPrompt, mockMessages)
 			const chunks: ApiStreamChunk[] = []
@@ -772,7 +875,7 @@ describe("VertexHandler", () => {
 					},
 				}
 			})
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			// Messages with internal reasoning blocks (from stored conversation history)
 			const messagesWithReasoning: Anthropic.Messages.MessageParam[] = [
@@ -846,7 +949,7 @@ describe("VertexHandler", () => {
 					},
 				}
 			})
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			// Message with only reasoning content (should be completely filtered)
 			const messagesWithOnlyReasoning: Anthropic.Messages.MessageParam[] = [
@@ -893,7 +996,8 @@ describe("VertexHandler", () => {
 
 			const result = await handler.completePrompt("Test prompt")
 			expect(result).toBe("Test response")
-			expect(handler["client"].messages.create).toHaveBeenCalledWith(
+			const client = (AnthropicVertex as any).mock.results.at(-1).value
+			expect(client.messages.create).toHaveBeenCalledWith(
 				expect.objectContaining({
 					model: "claude-sonnet-4-6",
 					max_tokens: 8192,
@@ -919,7 +1023,7 @@ describe("VertexHandler", () => {
 
 			const mockError = new Error("Vertex API error")
 			const mockCreate = vitest.fn().mockRejectedValue(mockError)
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			await expect(handler.completePrompt("Test prompt")).rejects.toThrow(
 				"Vertex completion error: Vertex API error",
@@ -936,7 +1040,7 @@ describe("VertexHandler", () => {
 			const mockCreate = vitest.fn().mockResolvedValue({
 				content: [{ type: "image" }],
 			})
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const result = await handler.completePrompt("Test prompt")
 			expect(result).toBe("")
@@ -952,7 +1056,7 @@ describe("VertexHandler", () => {
 			const mockCreate = vitest.fn().mockResolvedValue({
 				content: [{ type: "text", text: "" }],
 			})
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const result = await handler.completePrompt("Test prompt")
 			expect(result).toBe("")
@@ -976,7 +1080,6 @@ describe("VertexHandler", () => {
 
 		it("honors custom maxTokens for thinking models", () => {
 			const handler = new AnthropicVertexHandler({
-				apiKey: "test-api-key",
 				apiModelId: "claude-sonnet-4-6",
 				enableReasoningEffort: true,
 				modelMaxTokens: 32_768,
@@ -991,7 +1094,6 @@ describe("VertexHandler", () => {
 
 		it("does not honor custom maxTokens for non-thinking models", () => {
 			const handler = new AnthropicVertexHandler({
-				apiKey: "test-api-key",
 				apiModelId: "claude-opus-4-8",
 				modelMaxTokens: 32_768,
 				modelMaxThinkingTokens: 16_384,
@@ -1163,7 +1265,7 @@ describe("VertexHandler", () => {
 			}
 
 			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const stream = handler.createMessage(systemPrompt, mockMessages)
 
@@ -1209,7 +1311,7 @@ describe("VertexHandler", () => {
 			}
 
 			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const stream = handler.createMessage(systemPrompt, mockMessages)
 
@@ -1302,7 +1404,7 @@ describe("VertexHandler", () => {
 					},
 				}
 			})
-			;(thinkingHandler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(thinkingHandler, mockCreate)
 
 			await thinkingHandler
 				.createMessage("You are a helpful assistant", [{ role: "user", content: "Hello" }])
@@ -1372,7 +1474,7 @@ describe("VertexHandler", () => {
 			}
 
 			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const stream = handler.createMessage(systemPrompt, messages, {
 				taskId: "test-task",
@@ -1432,7 +1534,7 @@ describe("VertexHandler", () => {
 			}
 
 			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
-			;(handler["client"].messages as any).create = mockCreate
+			setGatewayClientCreate(handler, mockCreate)
 
 			const stream = handler.createMessage(systemPrompt, messages, {
 				taskId: "test-task",
@@ -1484,7 +1586,7 @@ describe("VertexHandler", () => {
 			}
 
 			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const stream = handler.createMessage(systemPrompt, messages, {
 				taskId: "test-task",
@@ -1546,7 +1648,7 @@ describe("VertexHandler", () => {
 			}
 
 			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const stream = handler.createMessage(systemPrompt, messages, {
 				taskId: "test-task",
@@ -1627,7 +1729,7 @@ describe("VertexHandler", () => {
 			}
 
 			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const stream = handler.createMessage(systemPrompt, messages, {
 				taskId: "test-task",
@@ -1712,7 +1814,7 @@ describe("VertexHandler", () => {
 			}
 
 			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
-			;(handler["client"].messages as any).create = mockCreate
+			setDirectClientCreate(handler, mockCreate)
 
 			const stream = handler.createMessage(systemPrompt, messages, {
 				taskId: "test-task",

@@ -57,10 +57,10 @@ test("settlement workload bounds revisions and backgrounds only the exact approv
 	assert.equal(settlementRevisions("12").length, 12)
 	for (const revision of [1, 2, 3]) {
 		const plan = settlementScript(revision, "/workspace")
-		const commands = plan.filter((call) => call.name === "execute_command")
+		const commands = plan.filter((call) => call.name === "shell")
 		assert.deepEqual(commands, [
 			{
-				name: "execute_command",
+				name: "shell",
 				arguments: { command: `node .alpha-receipt-oracle.cjs ${revision}`, cwd: "/workspace", timeout: 1 },
 			},
 		])

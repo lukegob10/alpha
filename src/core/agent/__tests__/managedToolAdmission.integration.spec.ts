@@ -70,6 +70,29 @@ function fixture(name: AdmissionTool) {
 		},
 	}
 	const events: AgentTurnEvent[] = []
+	// delegate_task is retired from the production catalog but remains a
+	// replay-compatible executor. Supply its historical schema explicitly and
+	// bypass the current model-mode catalog check for this admission fixture.
+	const registry =
+		name === "delegate_task"
+			? new ToolRegistry({
+					nativeTools: [
+						{
+							type: "function" as const,
+							function: {
+								name: "delegate_task",
+								description: "Historical delegation fixture",
+								parameters: {
+									type: "object",
+									properties: { tasks: { type: "array" } },
+									required: ["tasks"],
+									additionalProperties: false,
+								},
+							},
+						},
+					],
+				})
+			: new ToolRegistry()
 	const run = async (args: Record<string, unknown> = draft) => {
 		const call = {
 			type: "tool_call" as const,
@@ -79,10 +102,11 @@ function fixture(name: AdmissionTool) {
 		}
 		return new ToolScheduler({
 			task: task as unknown as Task,
-			registry: new ToolRegistry(),
+			registry,
 			mode: "code",
 			preserveAbortedResults: true,
 			policy: createToolPolicySnapshot({ visibleTools: [name] }),
+			...(name === "delegate_task" ? { validateCall: () => {} } : {}),
 			onEvent: (event) => {
 				events.push(event)
 			},

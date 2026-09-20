@@ -1,6 +1,8 @@
 import * as assert from "assert"
 import * as vscode from "vscode"
 
+import { retiredProviderNames, type AlphaCodeSettings } from "@alpha-code/types"
+
 import { setDefaultSuiteTimeout } from "./test-utils"
 
 suite("Alpha Extension", function () {
@@ -41,6 +43,31 @@ suite("Alpha Extension", function () {
 		const tabs = ticketTabs()
 		assert.equal(tabs.length, 1)
 		await vscode.window.tabGroups.close(tabs)
+	})
+
+	test("legacy provider setups remain readable and reject execution without disrupting the host", async () => {
+		const api = globalThis.api
+		const original = api.getConfiguration()
+		const stack = api.getCurrentTaskStack()
+		try {
+			await api.setConfiguration({ apiProvider: "openrouter" })
+			assert.equal(api.getConfiguration().apiProvider, "openrouter")
+			for (const provider of [...retiredProviderNames, "future-provider"]) {
+				await assert.rejects(
+					api.startNewTask({
+						configuration: { apiProvider: provider } as AlphaCodeSettings,
+						text: "This legacy configuration must not execute.",
+					}),
+					{ message: `Unsupported API provider: ${provider}` },
+				)
+				assert.deepEqual(api.getCurrentTaskStack(), stack)
+			}
+			await api.setConfiguration({ apiProvider: "vscode-lm" })
+			assert.equal(api.getConfiguration().apiProvider, "vscode-lm")
+			assert.ok(vscode.extensions.getExtension(process.env.ALPHA_E2E_EXTENSION_ID!)?.isActive)
+		} finally {
+			await api.setConfiguration(original)
+		}
 	})
 
 	test("Commands should be registered", async () => {

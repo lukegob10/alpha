@@ -9,6 +9,8 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
 		? (value as Record<string, unknown>)
 		: undefined
 
+const COMMAND_TOOL_NAMES = new Set(["shell", "execute_command"])
+
 export function inspectWorkflowTrace(history: unknown, commands: readonly string[]): WorkflowTrace {
 	const commandReceipts: Record<string, number> = Object.fromEntries(commands.map((command) => [command, 0]))
 	let errorResults = 0
@@ -21,7 +23,7 @@ export function inspectWorkflowTrace(history: unknown, commands: readonly string
 		for (const value of entry.content) {
 			const block = record(value)
 			if (!block) continue
-			if (entry.role === "assistant" && block.type === "tool_use" && block.name === "execute_command") {
+			if (entry.role === "assistant" && block.type === "tool_use" && COMMAND_TOOL_NAMES.has(String(block.name))) {
 				const command = record(block.input)?.command
 				if (typeof block.id === "string" && typeof command === "string" && commands.includes(command))
 					calls.set(block.id, command)

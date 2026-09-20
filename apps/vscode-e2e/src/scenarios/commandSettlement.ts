@@ -42,7 +42,7 @@ export function settlementScript(revision: number, workspace: string) {
 	return [
 		...Object.entries(files).map(([path, content]) => ({ name: "write_to_file", arguments: { path, content } })),
 		{
-			name: "execute_command",
+			name: "shell",
 			arguments: { command: SETTLEMENT_COMMANDS[revision - 1], cwd: workspace, timeout: 1 },
 		},
 		{

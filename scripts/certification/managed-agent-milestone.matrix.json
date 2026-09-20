@@ -93,8 +93,8 @@
 			"packageDir": "src",
 			"minimumTestCount": 118,
 			"include": [
-				"^api/providers/__tests__/(?:openai-codex-native-tool-calls|openai-native-tools)\\.spec\\.ts$",
-				"^api/transform/__tests__/responses-api-stream\\.spec\\.ts$",
+				"^api/providers/__tests__/(?:openai|vscode-lm)\\.spec\\.ts$",
+				"^api/transform/__tests__/openai-format\\.spec\\.ts$",
 				"^core/assistant-message/__tests__/(?:NativeToolCallParser|spawn-agent-native-pipeline)\\.spec\\.ts$"
 			]
 		},

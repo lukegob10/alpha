@@ -47,22 +47,5 @@
 	},
 	"applyPatch": {
 		"deleteCancelled": "हटाने की कार्रवाई रद्द कर दी गई।"
-	},
-	"imageOutput": {
-		"writeIncomplete": "'{{path}}' लिखना पूरा नहीं हो सका; फ़ाइल अधूरी हो सकती है। {{cause}}"
-	},
-	"generateImage": {
-		"openRouterApiKeyRequired": "OpenRouter मॉडल के साथ छवि निर्माण के लिए OpenRouter API कुंजी आवश्यक है। कृपया इसे छवि निर्माण प्रयोगात्मक सेटिंग में कॉन्फ़िगर करें।",
-		"failedWithStatus": "छवि निर्माण विफल: {{status}} {{statusText}}",
-		"failedWithMessage": "छवि निर्माण विफल: {{message}}",
-		"noImageGenerated": "प्रतिक्रिया में कोई छवि उत्पन्न नहीं हुई",
-		"invalidImageData": "प्रतिक्रिया में अमान्य छवि डेटा",
-		"invalidImageFormat": "अमान्य छवि प्रारूप प्राप्त हुआ",
-		"unknownError": "एक अज्ञात त्रुटि हुई",
-		"cancelledBeforeSave": "छवि सहेजने से पहले छवि निर्माण रद्द कर दिया गया।",
-		"destinationUnavailableBeforeGeneration": "निर्माण से पहले छवि गंतव्य उपलब्ध नहीं था। अनुरोध फिर से आज़माएँ।",
-		"destinationPolicyChangedBeforeSave": "सहेजने से पहले छवि गंतव्य का पथ या पहुँच नीति बदल गई। अनुरोध फिर से आज़माएँ।",
-		"postSaveProcessingFailed": "{{path}}\nछवि सहेजी गई, लेकिन सहेजने के बाद की प्रक्रिया विफल रही: {{message}}",
-		"roo": {}
 	}
 }

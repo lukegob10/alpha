@@ -36,6 +36,7 @@ import type {
 	ToolDescriptor,
 	ToolRegistry,
 } from "../tools/ToolRegistry"
+import { canonicalizeToolName } from "../tools/ToolRegistry"
 import {
 	getToolOutputLimit,
 	isCommandDeniedByPolicy,
@@ -371,7 +372,7 @@ function limitToolResponse(
 }
 
 function getVerificationCategory(call: AgentToolCall): "test" | "build" | "lint" | "typecheck" | undefined {
-	if (call.name !== "execute_command") {
+	if (canonicalizeToolName(call.name) !== "shell") {
 		return undefined
 	}
 
@@ -428,7 +429,7 @@ function trustedExplorationForResult(
 	const observation = metadata.trustedExploration
 	const executionStatus = metadata.executionStatus ?? metadata.status
 	if (
-		toolName !== "execute_command" ||
+		canonicalizeToolName(toolName) !== "shell" ||
 		status !== "success" ||
 		executionStatus !== "success" ||
 		metadata.exitCode !== 0 ||
@@ -601,7 +602,7 @@ const OUTSIDE_WORKSPACE_TOOLS = new Set([
 	"edit_file",
 	"search_replace",
 	"generate_image",
-	"execute_command",
+	"shell",
 ])
 
 function assertPathIdentities(prepared: PreparedCall): void {
@@ -752,9 +753,18 @@ export class ToolScheduler {
 			)
 				return
 			this.observedToolCallIds.add(callId)
+			const canonicalName = this.options.registry.canonicalName(result.name)
+			const legacyReadArguments =
+				call.name === "read_command_output" &&
+				call.arguments !== null &&
+				typeof call.arguments === "object" &&
+				!Array.isArray(call.arguments)
+			const argumentsForStopping = legacyReadArguments
+				? { ...(call.arguments as Record<string, unknown>), action: "read" }
+				: call.arguments
 			await this.executionHost.recordToolCallForStopping(
-				this.options.registry.canonicalName(result.name),
-				call.arguments,
+				canonicalName,
+				argumentsForStopping,
 				result.status,
 				getVerificationCategory(call),
 				result,
@@ -1331,13 +1341,18 @@ export class ToolScheduler {
 			return prepared
 		}
 
-		const argumentsValue = call.arguments === undefined ? {} : call.arguments
-		if (argumentsValue === null || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) {
+		const rawArgumentsValue = call.arguments === undefined ? {} : call.arguments
+		if (rawArgumentsValue === null || typeof rawArgumentsValue !== "object" || Array.isArray(rawArgumentsValue)) {
 			prepared.validationError = `Invalid arguments for tool "${call.name}".`
 			reject("invalid_arguments")
 			prepared.descriptor = descriptor
 			return prepared
 		}
+		const rawArguments = rawArgumentsValue as Record<string, unknown>
+		const argumentsValue =
+			canonicalName === "manage_command" && call.name === "read_command_output"
+				? { ...rawArguments, action: "read" }
+				: rawArgumentsValue
 
 		let pathArguments: string[]
 		try {
@@ -1352,7 +1367,7 @@ export class ToolScheduler {
 		}
 		const outsideAccess =
 			this.options.policy?.execution.outsideWorkspace === "approval" && OUTSIDE_WORKSPACE_TOOLS.has(canonicalName)
-		if (canonicalName === "execute_command") {
+		if (canonicalName === "shell") {
 			const args = argumentsValue as Record<string, unknown>
 			if (typeof args.command === "string") {
 				const taskRoot = this.executionHost.cwd ?? ""
@@ -1379,7 +1394,7 @@ export class ToolScheduler {
 		}
 		prepared.requiresExplicitApproval =
 			!!prepared.commandPathApproval ||
-			(canonicalName !== "execute_command" &&
+			(canonicalName !== "shell" &&
 				outsideAccess &&
 				descriptor.capabilities.sideEffects !== "none" &&
 				pathArguments.some(
@@ -1405,7 +1420,7 @@ export class ToolScheduler {
 			}
 		}
 
-		if (canonicalName === "execute_command") {
+		if (canonicalName === "shell") {
 			const command = (argumentsValue as Record<string, unknown>).command
 			if (typeof command === "string" && isCommandDeniedByPolicy(this.options.policy, command)) {
 				prepared.validationError = "This command is denied by the current execution policy."

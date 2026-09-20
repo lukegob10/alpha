@@ -39,7 +39,7 @@ export const MAX_MAX_CONCURRENT_TASKS = 50
  * Terminal output preview size options for persisted command output.
  *
  * Controls how much command output is kept in memory as a "preview" before
- * the LLM decides to retrieve more via `read_command_output`. Larger previews
+ * the LLM decides to retrieve more via the `manage_command` read action. Larger previews
  * mean more immediate context but consume more of the context window.
  *
  * - `small`: 5KB preview - Best for long-running commands with verbose output
@@ -56,7 +56,7 @@ export type TerminalOutputPreviewSize = "small" | "medium" | "large"
  *
  * Maps preview size names to their corresponding byte thresholds.
  * When command output exceeds these thresholds, the excess is persisted
- * to disk and made available via the `read_command_output` tool.
+ * to disk and made available via the `manage_command` read action.
  */
 export const TERMINAL_PREVIEW_BYTES: Record<TerminalOutputPreviewSize, number> = {
 	small: 5 * 1024, // 5KB
@@ -99,14 +99,6 @@ export const globalSettingsSchema = z.object({
 	customInstructions: z.string().optional(),
 	taskHistory: z.array(historyItemSchema).optional(),
 	dismissedUpsells: z.array(z.string()).optional(),
-
-	// Image generation settings (experimental) - flattened for simplicity
-	imageGenerationProvider: z.enum(["openrouter"]).optional(),
-	openRouterImageApiKey: z.string().optional(),
-	openRouterImageGenerationSelectedModel: z.string().optional(),
-
-	// GitHub integration settings
-	githubToken: z.string().optional(),
 
 	customCondensingPrompt: z.string().optional(),
 
@@ -294,44 +286,15 @@ export type AlphaCodeSettings = GlobalSettings & ProviderSettings
  * SecretState
  */
 export const SECRET_STATE_KEYS = [
-	"apiKey",
-	"openRouterApiKey",
-	"awsAccessKey",
-	"awsApiKey",
-	"awsSecretKey",
-	"awsSessionToken",
 	"openAiApiKey",
-	"ollamaApiKey",
-	"geminiApiKey",
-	"openAiNativeApiKey",
-	"deepSeekApiKey",
-	"moonshotApiKey",
-	"mistralApiKey",
-	"minimaxApiKey",
-	"requestyApiKey",
-	"unboundApiKey",
-	"xaiApiKey",
-	"litellmApiKey",
-	"codeIndexOpenAiKey",
 	"codeIndexQdrantApiKey",
-	"codebaseIndexOpenAiCompatibleApiKey",
-	"codebaseIndexGeminiApiKey",
 	"codebaseIndexVertexJsonCredentials",
-	"codebaseIndexMistralApiKey",
-	"codebaseIndexVercelAiGatewayApiKey",
-	"codebaseIndexOpenRouterApiKey",
-	"sambaNovaApiKey",
-	"zaiApiKey",
-	"fireworksApiKey",
-	"vercelAiGatewayApiKey",
-	"basetenApiKey",
 ] as const
 
-// Global secrets that are part of GlobalSettings (not ProviderSettings)
-export const GLOBAL_SECRET_KEYS = [
-	"openRouterImageApiKey", // For image generation
-	"githubToken", // For native GitHub API tool
-] as const
+// Kept as an empty compatibility surface for callers that iterate global
+// secrets. Obsolete GitHub token storage is migrated and deleted by
+// ContextProxy; it is no longer part of the active settings schema.
+export const GLOBAL_SECRET_KEYS = [] as const
 
 // Type for the actual secret storage keys
 type ProviderSecretKey = (typeof SECRET_STATE_KEYS)[number]
@@ -364,7 +327,7 @@ export const isGlobalStateKey = (key: string): key is Keys<GlobalState> =>
 
 // Default settings when running evals (unless overridden).
 export const EVALS_SETTINGS: AlphaCodeSettings = {
-	apiProvider: "openrouter",
+	apiProvider: "openai",
 
 	lastShownAnnouncementId: "jul-09-2025-3-23-0",
 

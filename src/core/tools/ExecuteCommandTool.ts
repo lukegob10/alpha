@@ -149,11 +149,6 @@ export function resolveAgentTimeoutMs(timeoutSeconds: number | null | undefined)
 	return typeof timeoutSeconds === "number" && timeoutSeconds > 0 ? timeoutSeconds * 1000 : 0
 }
 
-export function isGitHubCliCommand(command: string): boolean {
-	const normalized = command.trim().toLowerCase()
-	return /(?:^|[;&|]\s*)(?:gh|github)\b/.test(normalized)
-}
-
 export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 	readonly name = "execute_command" as const
 
@@ -207,23 +202,6 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			const executionId = task.lastMessageTs?.toString() ?? Date.now().toString()
 			commandEvidenceId = callbacks.toolCallId ?? `${executionId}:legacy:${randomUUID()}`
 			task.beginCommandExecution?.(commandEvidenceId, executionId, canonicalCommand, verification?.change_set_ids)
-
-			if (isGitHubCliCommand(canonicalCommand)) {
-				preLaunchFailure(
-					"capability_unavailable",
-					{ kind: "alternative", toolName: "github_api" },
-					"github-cli",
-				)
-				callbacks.setResultMetadata?.({ status: "error" })
-				task.failCommandExecution?.(commandEvidenceId)
-				task.recordToolError("execute_command")
-				pushToolResult(
-					formatResponse.toolError(
-						"GitHub CLI commands are disabled in Alpha. Use the native github_api tool for pull request, check, merge, and comment operations. Use local git commands only for clone, pull, commit, and push.",
-					),
-				)
-				return
-			}
 
 			const ignoredFileAttemptedToAccess = task.alphaIgnoreController?.validateCommand(canonicalCommand)
 
@@ -1293,7 +1271,7 @@ function formatPersistedOutput(
 		"Preview:",
 		result.preview,
 		"",
-		"Use read_command_output tool to view full output if needed.",
+		'In Code mode, use manage_command with action "read" and this artifact_id to view more output.',
 	].join("\n")
 }
 

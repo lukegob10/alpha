@@ -1,13 +1,4 @@
 {
-	"routers": {
-		"requesty": {
-			"description": "您优化的 LLM 路由器",
-			"incentive": "$1 免费额度"
-		},
-		"openrouter": {
-			"description": "LLM 统一接口"
-		}
-	},
 	"landing": {
 		"greeting": "欢迎使用 Alpha！",
 		"introduction": "通过一系列内置和可扩展的模式，Alpha 让你能够以前所未有的方式进行规划、架构设计、编码、调试并提升工作效率。",
@@ -23,7 +14,6 @@
 		"goBack": "返回",
 		"finish": "完成"
 	},
-	"startRouter": "我们建议使用 LLM 路由器：",
 	"startCustom": "或者你可以带上自己的 API 密钥：",
 	"telemetry": {
 		"helpImprove": "帮助改进 Alpha",
