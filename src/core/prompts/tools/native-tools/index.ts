@@ -60,7 +60,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		taskKind = "primary",
 		agentKinds,
 		planMode = false,
-		includeApplyPatch = true,
+		includeApplyPatch = false,
 	} = options
 
 	const readFileOptions: ReadFileToolOptions = {

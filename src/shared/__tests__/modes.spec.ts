@@ -379,16 +379,16 @@ describe("isToolAllowedForMode", () => {
 		})
 
 		it("allows customTools when included in includedTools", () => {
-			// search_and_replace should be allowed when explicitly included
+			// Structured patch requires explicit inclusion in an available edit group.
 			expect(
 				isToolAllowedForMode(
-					"search_and_replace",
+					"apply_patch",
 					"test-custom-tools",
 					customModesWithEditGroup,
 					undefined,
 					undefined,
 					undefined,
-					["search_and_replace"],
+					["apply_patch"],
 				),
 			).toBe(true)
 		})
@@ -406,13 +406,13 @@ describe("isToolAllowedForMode", () => {
 			// Even if included, should be disallowed because the mode doesn't have edit group
 			expect(
 				isToolAllowedForMode(
-					"search_and_replace",
+					"apply_patch",
 					"no-edit-mode",
 					customModesWithoutEdit,
 					undefined,
 					undefined,
 					undefined,
-					["search_and_replace"],
+					["apply_patch"],
 				),
 			).toBe(false)
 		})

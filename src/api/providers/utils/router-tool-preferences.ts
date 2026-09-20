@@ -32,7 +32,7 @@ function classifyIdentifier(identifier: string | undefined): SurgicalEditTool | 
 		.reverse()
 
 	for (const candidate of candidates) {
-		if (/^(?:gpt(?:[-_.]\d|$)|o\d(?:[-_.]|$)|codex(?:[-_.]|$))/.test(candidate)) {
+		if (/^(?:gpt(?:[-_.]\d|[-_.]oss(?:[-_.]|$)|$)|o\d(?:[-_.]|$)|codex(?:[-_.]|$))/.test(candidate)) {
 			return "apply_patch"
 		}
 		if (/(?:^|[-_])(?:claude|gemini|grok|llama)(?:[-_.]|$)/.test(candidate)) {

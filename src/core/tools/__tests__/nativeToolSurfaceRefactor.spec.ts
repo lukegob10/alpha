@@ -4,10 +4,11 @@ import { describe, expect, it, vi } from "vitest"
 import { openAiModelInfoSaneDefaults, toolNames, toolUsageSchema, type McpServer } from "@alpha-code/types"
 
 import { filterNativeToolsForMode } from "../../prompts/tools/filter-tools-for-mode"
-import { getNativeTools } from "../../prompts/tools/native-tools"
+import { getNativeTools, nativeTools } from "../../prompts/tools/native-tools"
 import { TOOL_ALIASES, TOOL_DISPLAY_NAMES, TOOL_GROUPS, type NativeToolArgs } from "../../../shared/tools"
 import { createAgentResponse, type AgentToolCall } from "../../agent/AgentResponse"
 import { ToolScheduler, type ToolExecutionHost } from "../../agent/ToolScheduler"
+import { ToolRegistry } from "../ToolRegistry"
 import type { CodeIndexManager } from "../../../services/code-index/manager"
 import type { Task } from "../../task/Task"
 import { buildNativeToolsArrayWithRestrictions, type BuildToolsOptions } from "../../task/build-tools"
@@ -107,6 +108,7 @@ describe("native tool-surface refactor contract", () => {
 					getNativeTools({
 						supportsImages: true,
 						availableBrowserToolNames: liveBrowserToolNames,
+						includeApplyPatch: true,
 					}),
 					"code",
 					undefined,
@@ -193,9 +195,72 @@ describe("native tool-surface refactor contract", () => {
 			expect(names).toContain("shell")
 			expect(names).toContain("edit")
 			expect(names).toContain("write_to_file")
+			expect(names).not.toContain("apply_patch")
 			for (const name of retiredAdvertisedNames) {
 				expect(names).not.toContain(name)
 			}
+		})
+
+		it("keeps apply_patch opt-in at native catalog and registry boundaries", () => {
+			expect(namesOf(getNativeTools())).not.toContain("apply_patch")
+			expect(namesOf(nativeTools)).not.toContain("apply_patch")
+			expect(namesOf(getNativeTools({ includeApplyPatch: true }))).toContain("apply_patch")
+			expect(new ToolRegistry().getSchema("apply_patch")).toBeUndefined()
+			expect(
+				new ToolRegistry({ nativeTools: getNativeTools({ includeApplyPatch: true }) }).getSchema("apply_patch"),
+			).toBeDefined()
+		})
+
+		it("does not let includedTools invent a schema missing from the native catalog", () => {
+			const names = namesOf(
+				filterNativeToolsForMode(
+					getNativeTools({ availableBrowserToolNames: [] }),
+					"code",
+					undefined,
+					{},
+					undefined,
+					{ modelInfo: { ...openAiModelInfoSaneDefaults, includedTools: ["apply_patch"] } },
+				),
+			)
+
+			expect(names).not.toContain("apply_patch")
+		})
+
+		it.each([
+			["openai", { provider: "openai", id: "gpt-5.5" }, true],
+			["openai gpt-oss", { provider: "openai", id: "gpt-oss-120b" }, true],
+			["vertex", { provider: "vertex", id: "o3" }, true],
+			["vertex gpt-oss", { provider: "vertex", id: "gpt-oss" }, true],
+			["vscode-lm", { provider: "vscode-lm", vendor: "copilot", family: "gpt-5.5" }, true],
+			[
+				"vscode-lm gpt-oss",
+				{ provider: "vscode-lm", vendor: "copilot", family: "gpt-oss-120b" },
+				true,
+			],
+			["codex", { provider: "openai", id: "codex" }, true],
+			["claude", { provider: "openai", id: "claude-opus-4.7" }, false],
+			["gemini", { provider: "openai", id: "gemini-3.1-pro" }, false],
+			["grok", { provider: "openai", id: "xai/grok-4.6" }, false],
+			["llama", { provider: "openai", id: "Meta-Llama-3.3-70B-Instruct" }, false],
+		] as const)("gates patch schema for the verified %s identity", async (_name, modelIdentity, patchExpected) => {
+			const provider = {
+				context: {},
+				getMcpHub: () => ({ getServers: () => [] }),
+			}
+			const result = await buildNativeToolsArrayWithRestrictions({
+				provider: provider as unknown as BuildToolsOptions["provider"],
+				cwd: process.cwd(),
+				mode: "code",
+				customModes: undefined,
+				experiments: {},
+				apiConfiguration: { apiProvider: modelIdentity.provider },
+				modelIdentity,
+			})
+			const names = namesOf(result.tools)
+
+			expect(names).toContain("edit")
+			expect(names).toContain("write_to_file")
+			expect(names.includes("apply_patch")).toBe(patchExpected)
 		})
 
 		it("keeps Plan read-only and excludes command management, editors, and ticket writes", () => {
@@ -313,7 +378,7 @@ describe("native tool-surface refactor contract", () => {
 				"update_ticket",
 				"delete_ticket",
 			])
-			expect(TOOL_GROUPS.edit.customTools).toEqual(["edit", "apply_patch"])
+			expect(TOOL_GROUPS.edit.customTools).toEqual(["apply_patch"])
 			expect(TOOL_GROUPS.agents.tools).toEqual([
 				"spawn_agent",
 				"wait_agent",

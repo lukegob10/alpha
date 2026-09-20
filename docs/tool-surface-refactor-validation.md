@@ -156,3 +156,46 @@ Historical editor schemas and executors remain available to explicit compatibili
 entries or interchangeable edit-payload aliases. The retained live managed-agent playbook contains historical lifecycle
 calls and is marked as requiring adaptation before live execution. This refactor does not claim live-provider quality
 or performance improvements.
+
+## Locked follow-up
+
+Base commit: `faa38315` on `codex/tool-surface-refactor`.
+The caller inventory confirms `build-tools.ts` is the sole production `includeApplyPatch` opt-in,
+derived from the verified model preference. Default catalog and registry construction must omit the
+patch schema; mode filtering cannot create a missing schema from `includedTools`.
+
+- Default-off catalog/registry contracts: 22 passed; production dispatch contracts: 3 passed.
+  The two fixtures that dispatch real patches now explicitly supply the patch schema.
+- Plan prompt regression failed on the stale artifact-reader sentence before its removal.
+  System prompt: 23 passed; custom instructions: 17 passed. Five live snapshots changed only
+  by deleting that sentence. The five unused computer-use/diff/viewport snapshots were deleted
+  after checking every live file-snapshot reference; system prompt tests passed again afterward.
+- GPT-OSS preference regressions failed before extending the anchored detector. The final detector
+  keeps provider admission and conflicting family/ID handling unchanged.
+- The locked group assertion failed with `edit` in `customTools`, then passed with only `apply_patch`.
+  Mode opt-in tests now exercise the actual custom tool while retaining regular `edit` coverage.
+
+Final focused validation (Node 24.14.1, pnpm 11.24.0):
+
+| Command | Result |
+| --- | --- |
+| `pnpm --dir src test core/tools/__tests__/nativeToolSurfaceRefactor.spec.ts` | 25 passed |
+| `pnpm --dir src test core/tools/__tests__/nativeToolDispatchContract.spec.ts` | 3 passed |
+| `pnpm --dir src test api/providers/utils/__tests__/copilot-tool-preferences.spec.ts` | 41 passed |
+| `pnpm --dir src test core/task/__tests__/native-tools-filtering.spec.ts` | 3 passed |
+| `pnpm --dir src test core/prompts/__tests__/system-prompt.spec.ts` | 23 passed |
+| `pnpm --dir src test core/prompts/__tests__/add-custom-instructions.spec.ts` | 17 passed |
+| `pnpm --dir src test shared/__tests__/modes.spec.ts` | 49 passed |
+| `pnpm --dir src test core/prompts/tools/__tests__/filter-tools-for-mode.spec.ts` | 14 passed |
+| `pnpm --dir src test core/task/__tests__/TaskToolCatalogCache.spec.ts` | 61 passed |
+| `pnpm --dir src check-types` | Passed |
+
+The two conditional caller checks are included because the catalog contract tests call filtering and
+the production builder. Total: 236 tests passed. `git diff --check` passed. No full suite or VS Code
+host gate was run: these catalog, routing, group, and prompt changes are directly observable in the
+specified focused tests, as required by the follow-up scope. The two adjusted patch-executor fixtures
+were typechecked but their separate suites were not run under that bounded validation instruction.
+No scheduler capability, alias, Plan tool policy, provider admission, or production caller changed.
+The pre-existing `docs/README.md` change remains outside this implementation.
+The commit hook's repository-wide lint is skipped for this commit to honor the explicitly bounded
+validation commands; no repository hook configuration is changed.

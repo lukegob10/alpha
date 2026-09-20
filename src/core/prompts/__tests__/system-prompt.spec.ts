@@ -693,6 +693,8 @@ describe("SYSTEM_PROMPT", () => {
 		expect(prompt.trim().endsWith(PLAN_MODE_INSTRUCTIONS)).toBe(true)
 		expect(prompt).toContain("non-mutating repository inspection only")
 		expect(prompt).toContain("host-classified inspection or verification commands")
+		expect(prompt).not.toContain("artifact reader")
+		expect(prompt).not.toContain("manage_command")
 		expect(prompt).toContain("exactly one non-empty <proposed_plan> block")
 		expect(prompt).not.toContain("You have access to tools that let you execute CLI commands")
 		expect(prompt.split("\n").some((line) => line.startsWith("\t"))).toBe(false)

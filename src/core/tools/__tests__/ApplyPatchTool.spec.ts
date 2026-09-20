@@ -8,6 +8,7 @@ import { experiments } from "../../../shared/experiments"
 import type { Task } from "../../task/Task"
 import { ApplyPatchTool } from "../ApplyPatchTool"
 import { DiffViewProvider } from "../../../integrations/editor/DiffViewProvider"
+import { getNativeTools } from "../../prompts/tools/native-tools"
 import { ToolRegistry } from "../ToolRegistry"
 import { ToolScheduler } from "../../agent/ToolScheduler"
 
@@ -237,7 +238,7 @@ describe("ApplyPatchTool", () => {
 			}
 			const outcome = await new ToolScheduler({
 				task,
-				registry: new ToolRegistry(),
+				registry: new ToolRegistry({ nativeTools: getNativeTools({ includeApplyPatch: true }) }),
 				mode: "code",
 				preserveAbortedResults: true,
 				validateCall: () => {},

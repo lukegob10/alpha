@@ -537,7 +537,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 	},
 	edit: {
 		tools: ["edit", "write_to_file", "create_ticket", "update_ticket", "delete_ticket"],
-		customTools: ["edit", "apply_patch"],
+		customTools: ["apply_patch"],
 	},
 	command: {
 		tools: ["shell", "manage_command"],
