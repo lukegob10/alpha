@@ -1,10 +1,10 @@
 import type OpenAI from "openai"
 
-const SEARCH_FILES_DESCRIPTION = `Search file contents recursively with Rust regex syntax, or literal text when literal=true. Regex searches are line-oriented; explicit newline matches automatically enable multiline search.
+const SEARCH_FILES_DESCRIPTION = `First tool for exact text, symbols, and filenames. Search file contents recursively with Rust regex syntax, or literal text when literal=true. Regex searches are line-oriented; explicit newline matches automatically enable multiline search.
 
 Choose output_mode="content" (default) for numbered snippets with context, "files" for unique matching paths, or "count" for per-file match counts without snippets. Counts are occurrences, not matching lines; truncated counts are partial lower bounds. Ignore rules and output limits apply in every mode.
 
-Use path/regex for one search, or queries for 1 to 8 independent searches with their own options. Batch results retain each query's success or error; one failed query does not discard successful searches. Never concatenate root JSON objects.
+Use path/regex for one search, or queries for 1 to 8 independent searches with their own options in one round. Batch results retain each query's success or error; one failed query does not discard successful searches. Never concatenate root JSON objects. If a search misses, follow with one narrowed search_files or one codebase_search, not recursive listing or shell search.
 
 Example: { "queries": [{ "path": "src", "regex": "foo(.bar", "literal": true, "output_mode": "files" }, { "path": "tests", "regex": "TODO|FIXME", "output_mode": "count" }] }`
 

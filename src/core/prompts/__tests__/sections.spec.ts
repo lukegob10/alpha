@@ -1,3 +1,4 @@
+import type OpenAI from "openai"
 import { addCustomInstructions } from "../sections/custom-instructions"
 import { getCapabilitiesSection } from "../sections/capabilities"
 import { getSystemInfoSection } from "../sections/system-info"
@@ -6,6 +7,16 @@ import { getObjectiveSection } from "../sections/objective"
 import { getToolUseGuidelinesSection } from "../sections/tool-use-guidelines"
 import { McpHub } from "../../../services/mcp/McpHub"
 import * as shellUtils from "../../../utils/shell"
+import searchFiles from "../tools/native-tools/search_files"
+import listFiles from "../tools/native-tools/list_files"
+import { createShellTool } from "../tools/native-tools/execute_command"
+
+function toolDescription(tool: OpenAI.Chat.ChatCompletionTool): string {
+	if (tool.type !== "function") {
+		throw new Error("expected function tool")
+	}
+	return tool.function.description ?? ""
+}
 
 describe("addCustomInstructions", () => {
 	it("adds vscode language to custom instructions", async () => {
@@ -103,6 +114,14 @@ describe("getRulesSection", () => {
 			"Serialize dependent actions, workspace mutations, approvals, and control-flow operations",
 		)
 		expect(result).not.toContain("MCP operations should be used one at a time")
+	})
+
+	it("makes search_files the first search path for Code and Plan", () => {
+		expect(getToolUseGuidelinesSection()).toContain("start with search_files")
+		expect(getToolUseGuidelinesSection(undefined, true)).toContain("start with search_files")
+		expect(getToolUseGuidelinesSection("explore")).not.toContain("start with search_files")
+		expect(getToolUseGuidelinesSection("review")).not.toContain("start with search_files")
+		expect(getToolUseGuidelinesSection("worker")).not.toContain("start with search_files")
 	})
 
 	it("includes vendor confidentiality section when isStealthModel is true", () => {
@@ -257,10 +276,12 @@ describe("getRulesSection shell-aware command chaining", () => {
 		)
 		const result = getRulesSection(cwd)
 
-		expect(result).toContain("IMPORTANT: When using PowerShell, avoid Unix-specific utilities")
+		expect(result).toContain("Prefer `search_files` for content and path search")
+		expect(result).toContain("For mutations, avoid Unix-specific utilities")
 		expect(result).toContain("`sed`, `grep`, `awk`, `cat`, `rm`, `cp`, `mv`")
-		expect(result).toContain("`Select-String` for grep")
-		expect(result).toContain("`Get-Content` for cat")
+		expect(result).not.toContain("`Select-String` for grep")
+		expect(result).toContain("`Remove-Item` for rm")
+		expect(result).toContain("`Copy-Item` for cp")
 		expect(result).toContain("PowerShell's `-replace` operator")
 	})
 
@@ -278,20 +299,22 @@ describe("getRulesSection shell-aware command chaining", () => {
 		vi.spyOn(shellUtils, "getShell").mockReturnValue("C:\\Windows\\System32\\cmd.exe")
 		const result = getRulesSection(cwd)
 
-		expect(result).toContain("IMPORTANT: When using cmd.exe, avoid Unix-specific utilities")
+		expect(result).toContain("Prefer `search_files` for content and path search")
+		expect(result).toContain("For mutations, avoid Unix-specific utilities")
 		expect(result).toContain("`sed`, `grep`, `awk`, `cat`, `rm`, `cp`, `mv`")
-		expect(result).toContain("`type` for cat")
 		expect(result).toContain("`del` for rm")
-		expect(result).toContain("`find`/`findstr` for grep")
+		expect(result).not.toContain("`type` for cat")
+		expect(result).not.toContain("`find`/`findstr` for grep")
 	})
 
 	it("does not include Unix utility guidance for Unix shells", () => {
 		vi.spyOn(shellUtils, "getShell").mockReturnValue("/bin/bash")
 		const result = getRulesSection(cwd)
 
-		expect(result).not.toContain("IMPORTANT: When using PowerShell")
-		expect(result).not.toContain("IMPORTANT: When using cmd.exe")
+		expect(result).not.toContain("When using PowerShell")
+		expect(result).not.toContain("When using cmd.exe")
 		expect(result).not.toContain("`Select-String` for grep")
+		expect(result).not.toContain("Select-String")
 	})
 
 	it("does not include note for Unix shells", () => {
@@ -299,5 +322,28 @@ describe("getRulesSection shell-aware command chaining", () => {
 		const result = getRulesSection(cwd)
 
 		expect(result).not.toContain("Note: Using")
+	})
+
+	it("does not emit shell or recursive listing as the first search for a definition lookup", () => {
+		vi.spyOn(shellUtils, "getShell").mockReturnValue(
+			"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+		)
+		const question = "Where is retryLimit defined?"
+		const combined = [
+			question,
+			getRulesSection(cwd),
+			getToolUseGuidelinesSection(),
+			toolDescription(searchFiles),
+			toolDescription(listFiles),
+			toolDescription(createShellTool()),
+		].join("\n")
+
+		expect(combined).toContain("start with search_files")
+		expect(combined).toContain("Not a search fallback when search_files can run")
+		expect(combined).toContain("Do not start a lookup or workspace hunt with recursive listing")
+		expect(combined).not.toContain("`Select-String` for grep")
+		expect(combined).not.toContain("`find`/`findstr` for grep")
+		expect(combined.indexOf("start with search_files")).toBeGreaterThanOrEqual(0)
+		expect(combined.indexOf("Not a search fallback when search_files can run")).toBeGreaterThanOrEqual(0)
 	})
 })

@@ -29,6 +29,8 @@ import { buildTaskToolSurface as captureTaskToolSurface, type TaskToolSurface } 
 import { canonicalizeToolName, ToolRegistry, type ToolRegistryOptions, type TaskReadGrant } from "../tools/ToolRegistry"
 import type { ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { digestValue } from "../agent/StepContext"
+import { classifyRequestWorkClass, type RequestWorkClassDecision } from "../agent/requestWorkClass"
+import { requestWorkClassCacheKey, resolveLookupToolNames } from "../agent/lookupToolCatalog"
 import type { ApiMessage } from "../task-persistence/apiMessages"
 import type { McpHub } from "../../services/mcp/McpHub"
 import { buildMcpToolName } from "../../utils/mcp-name"
@@ -73,6 +75,11 @@ export interface BuildToolsOptions {
 	discoveryHistory?: readonly ApiMessage[]
 	/** Cancels this caller's wait without cancelling shared custom-tool loading. */
 	signal?: AbortSignal
+	/**
+	 * Latest user request text used to classify lookup vs full catalogs.
+	 * Uncertain or omitted text keeps the full authorized surface.
+	 */
+	userRequestText?: string
 }
 
 export interface BuildToolsResult {
@@ -108,7 +115,7 @@ const AGENT_LIFECYCLE_TOOLS = new Set(["list_agents", "wait_agent", "send_messag
 const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", ...AGENT_LIFECYCLE_TOOLS])
 
 // Bump when native schemas or provider projection rules change. Dynamic schemas are fingerprinted below.
-const TOOL_CATALOG_SCHEMA_VERSION = 2
+const TOOL_CATALOG_SCHEMA_VERSION = 3
 
 const orderedNames = (names: readonly string[] | undefined) =>
 	names ? [...new Set(names.map(canonicalizeToolName))].sort() : undefined
@@ -283,6 +290,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			? applyModelToolPreferences(modelIdentity, openAiModelInfoSaneDefaults)
 			: undefined
 	const disabledTools = orderedNames([...(requestedDisabledTools ?? []), ...(options.policy?.disabledTools ?? [])])!
+	const requestWorkClass = requestWorkClassCacheKey(options.userRequestText, taskKind)
 
 	// Get CodeIndexManager for feature checking.
 	const { CodeIndexManager } = await awaitCatalogInput(import("../../services/code-index/manager"), options.signal)
@@ -339,6 +347,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				autoApprovalEnabled: options.autoApprovalEnabled,
 				readGrant: options.readGrant,
 				policy: options.policy,
+				requestWorkClass,
 				availableBrowserToolNames,
 				codeIndex: [
 					codeIndexManager?.isFeatureEnabled,
@@ -413,8 +422,11 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 
 		// Combine filtered tools (for backward compatibility and for allowedFunctionNames)
 		const taskAllowedNames = allowedToolNames ? new Set(allowedToolNames.map(canonicalizeToolName)) : undefined
-		const filteredTools = [...filteredNativeTools, ...filteredMcpTools, ...nativeCustomTools].filter(
-			(tool) => !taskAllowedNames || taskAllowedNames.has(canonicalizeToolName(getToolName(tool))),
+		const filteredTools = applyLookupCatalogNarrowing(
+			[...filteredNativeTools, ...filteredMcpTools, ...nativeCustomTools].filter(
+				(tool) => !taskAllowedNames || taskAllowedNames.has(canonicalizeToolName(getToolName(tool))),
+			),
+			classifyRequestWorkClass(options.userRequestText, { taskKind }),
 		)
 		const mcpCapture = captureMcpAvailability(provider, servers, mcpHub, connectedMcpTools)
 		const registry = new ToolRegistry({
@@ -470,6 +482,15 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		digest: surface.digest,
 		surface,
 	}
+}
+
+function applyLookupCatalogNarrowing(
+	tools: OpenAI.Chat.ChatCompletionTool[],
+	decision: RequestWorkClassDecision,
+): OpenAI.Chat.ChatCompletionTool[] {
+	const allowed = resolveLookupToolNames(decision)
+	if (!allowed) return tools
+	return tools.filter((tool) => allowed.has(canonicalizeToolName(getToolName(tool))))
 }
 
 function createCapturedToolSurface(input: {

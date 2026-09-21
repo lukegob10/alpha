@@ -813,6 +813,7 @@ export class NativeToolCallParser {
 				if (partialArgs.todos !== undefined) {
 					nativeArgs = {
 						todos: partialArgs.todos,
+						...(partialArgs.work_plan !== undefined ? { work_plan: partialArgs.work_plan } : {}),
 					}
 				}
 				break
@@ -1286,7 +1287,7 @@ export class NativeToolCallParser {
 					if (args.todos !== undefined) {
 						nativeArgs = {
 							todos: args.todos,
-							work_plan: args.work_plan,
+							...(args.work_plan !== undefined ? { work_plan: args.work_plan } : {}),
 						} as NativeArgsFor<TName>
 					}
 					break

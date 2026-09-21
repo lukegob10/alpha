@@ -207,6 +207,7 @@ import { AlphaProtectedController } from "../protect/AlphaProtectedController"
 import { type AssistantMessageContent, presentAssistantMessage } from "../assistant-message"
 import { NativeToolCallParser, type ToolCallStreamEvent } from "../assistant-message/NativeToolCallParser"
 import { AgentResponseAccumulator } from "../agent/AgentResponseAccumulator"
+import { classifyRequestWorkClass, extractUserRequestText } from "../agent/requestWorkClass"
 import {
 	AgentRetryPolicy,
 	delayWithAbort,
@@ -5100,7 +5101,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private getPendingCompletionRuntimeDecision(): CompletionGateDecision | undefined {
-		const commandRunning = this.hasActiveCommandExecutions()
+		const commandRunning = this.shouldWaitForCommandCompletion()
 		if (!commandRunning && !(this.pendingCommandVerificationCount > 0)) return undefined
 		return {
 			allowed: false,
@@ -5111,6 +5112,32 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				? "A command or its content receipt is still running. The runtime is waiting for its terminal outcome; do not rerun the command."
 				: "The command has ended and its verification evidence is being persisted. The runtime is waiting for that receipt; do not rerun verification.",
 		}
+	}
+
+	private shouldWaitForCommandCompletion(): boolean {
+		const running = [...(this.commandExecutionEvidence?.values() ?? [])].filter(
+			(evidence) => evidence.status === "running",
+		)
+		if (running.length === 0) return false
+		if (!this.isLookupStyleCompletionTurn()) return true
+		return running.some((evidence) => !this.isAbandonedInspectionCommand(evidence))
+	}
+
+	private isAbandonedInspectionCommand(evidence: CommandExecutionEvidence): boolean {
+		return (
+			evidence.status === "running" &&
+			evidence.returnedInBackground === true &&
+			!evidence.verificationChangeSetIds?.length &&
+			!evidence.acceptanceChecks?.length
+		)
+	}
+
+	private isLookupStyleCompletionTurn(): boolean {
+		if (this.taskKind !== "primary") return false
+		return (
+			classifyRequestWorkClass(this.getUserRequestTextForCatalog(), { taskKind: this.taskKind }).class ===
+			"lookup"
+		)
 	}
 
 	/** Wait outside the workspace mutation gate: receipt publishers need that gate to settle. */
@@ -5692,6 +5719,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Primary catalogs stay eager across idle, active, and reloaded sessions.
 		// Managed children are narrowed separately by their frozen authority grants.
 		return this.taskKind === "primary"
+	}
+
+	private getUserRequestTextForCatalog(): string | undefined {
+		return extractUserRequestText(this.apiConversationHistory, this.metadata?.task)
 	}
 
 	public getInheritedSubagentSkill(name: string) {
@@ -6575,6 +6606,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				allowedToolNames: this.getTaskAllowedToolNames(),
 				taskKind: this.taskKind,
 				enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
+				userRequestText: this.getUserRequestTextForCatalog(),
 			})
 			allTools = toolsResult.tools
 			allowedFunctionNames = toolsResult.allowedFunctionNames
@@ -10675,6 +10707,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						allowedToolNames: this.getTaskAllowedToolNames(),
 						taskKind: this.taskKind,
 						enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
+						userRequestText: this.getUserRequestTextForCatalog(),
 					}),
 				)
 				allTools = toolsResult.tools
@@ -11208,6 +11241,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								allowedToolNames: this.getTaskAllowedToolNames(),
 								taskKind: this.taskKind,
 								enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
+								userRequestText: this.getUserRequestTextForCatalog(),
 							}),
 						)
 						contextMgmtTools = toolsResult.tools
@@ -11480,6 +11514,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					allowedToolNames: this.getTaskAllowedToolNames(),
 					taskKind: this.taskKind,
 					enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
+					userRequestText: this.getUserRequestTextForCatalog(),
 				}),
 			)
 			allTools = toolsResult.tools

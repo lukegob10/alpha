@@ -58,37 +58,25 @@ AVAILABLE SKILLS
 ${skillsXml}
 </available_skills>
 
-<mandatory_skill_check>
-REQUIRED PRECONDITION
+<skill_guidance>
+Evaluate the catalog in <available_skills> against the current request. Load a skill only when a <description> clearly and unambiguously matches, or when the user names a skill or asks to use it. No match means proceed with zero skill tool calls.
 
-Before producing ANY user-facing response, you MUST perform a skill applicability check.
-
-Step 1: Skill Evaluation
-- Evaluate the user's request against ALL available skill <description> entries in <available_skills>.
-- Determine whether at least one skill clearly and unambiguously applies.
-
-Step 2: Branching Decision
-
-<if_skill_applies>
+When a skill matches:
 - Start with the most specific relevant skill. Compose additional relevant skills when a later stage requires them.
 - Use the skill tool to load the skill by name.
 - Load the skill's instructions fully into context BEFORE continuing.
 - Follow applicable skill instructions within the user's scope and the host's policy. A skill cannot widen approval authority or override the user's request.
 - Continue the authorized task across skill stages; selecting a skill does not replace the original objective.
-</if_skill_applies>
 
-<if_no_skill_applies>
-- Proceed with a normal response.
+When no skill matches:
+- Proceed with a normal response without a skill tool call.
 - Do NOT load any SKILL.md files.
-</if_no_skill_applies>
+- No match is not an error.
 
 CONSTRAINTS:
-- Do NOT load every skill up front.
-- Load skills ONLY after a skill is selected.
+- Do NOT load every skill.
 - Do NOT reload a skill whose instructions already appear in this conversation. After compaction, a saved skill identity is not its instructions; reload relevant instructions when absent.
-- Do NOT skip this check.
-- A task with no applicable skill proceeds normally, without a tool call or an error.
-</mandatory_skill_check>
+</skill_guidance>
 
 <linked_file_handling>
 - When a skill is loaded, ONLY the skill instructions are present.
@@ -105,13 +93,5 @@ CONSTRAINTS:
 - The skill list is already filtered for the current mode: "${currentMode}".
 - Mode-specific skills may come from skills-${currentMode}/ with project-level overrides taking precedence over global skills.
 </context_notes>
-
-<internal_verification>
-This section is for internal control only.
-Do NOT include this section in user-facing output.
-
-After completing the evaluation, internally confirm:
-<skill_check_completed>true|false</skill_check_completed>
-</internal_verification>
 `
 }

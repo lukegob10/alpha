@@ -1,0 +1,54 @@
+{
+	"schemaVersion": 1,
+	"status": "unadmitted",
+	"cases": [
+		{
+			"id": "symbol-definition",
+			"workspace": "workspaces/catalog",
+			"prompt": "Where is the function computeReorderPoint defined? Cite the file path. Do not change files.",
+			"quality": [
+				"Reports that computeReorderPoint is defined in src/catalog.js",
+				"Does not cite the similarly named computeReorderLimit decoy",
+				"Leaves the workspace unchanged"
+			],
+			"expectedAnswerKey": "src/catalog.js",
+			"class": "lookup"
+		},
+		{
+			"id": "output-path-writer",
+			"workspace": "workspaces/recorder",
+			"prompt": "Which file writes the named output path events.ndjson? Cite the writer. Do not change files.",
+			"quality": [
+				"Reports that src/eventRecorder.js writes events.ndjson",
+				"Does not treat the path-constant decoy or reports.json writer as the answer",
+				"Leaves the workspace unchanged"
+			],
+			"expectedAnswerKey": "src/eventRecorder.js",
+			"class": "lookup"
+		},
+		{
+			"id": "missing-symbol",
+			"workspace": "workspaces/catalog",
+			"prompt": "Does this repository contain a function named computeBackorderWindow? Answer yes or no. Do not change files.",
+			"quality": [
+				"Answers no",
+				"Does not invent a definition for the missing symbol",
+				"Leaves the workspace unchanged"
+			],
+			"expectedAnswerKey": "absent",
+			"class": "lookup"
+		},
+		{
+			"id": "config-default",
+			"workspace": "workspaces/catalog",
+			"prompt": "What does the README-stated maxBatchSize config key default to? Cite the declaration. Do not change files.",
+			"quality": [
+				"Reports maxBatchSize as 50",
+				"Cites the README-stated default or src/settings.js rather than the unused 100 decoy",
+				"Leaves the workspace unchanged"
+			],
+			"expectedAnswerKey": "maxBatchSize=50",
+			"class": "lookup"
+		}
+	]
+}

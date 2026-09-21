@@ -1,6 +1,6 @@
 import type OpenAI from "openai"
 
-const LIST_FILES_DESCRIPTION = `Request to list files and directories within the specified directory. If recursive is true, it will list all files and directories recursively. If recursive is false or not provided, it will only list the top-level contents. Do not use this tool to confirm the existence of files you may have created, as the user will let you know if the files were created successfully or not.
+const LIST_FILES_DESCRIPTION = `List the children of a known directory. Do not start a lookup or workspace hunt with recursive listing; use search_files for names and content. If recursive is true, it will list all files and directories under that known path. If recursive is false or not provided, it will only list the top-level contents. Do not use this tool to confirm the existence of files you may have created, as the user will let you know if the files were created successfully or not.
 
 Parameters:
 - path: (required) Absolute directory path or path relative to the task workspace

@@ -2,7 +2,7 @@ import type OpenAI from "openai"
 
 const CODEBASE_SEARCH_DESCRIPTION = `Find files most relevant to the search query using semantic search. Searches based on meaning rather than exact text matches. By default searches entire workspace. Reuse the user's exact wording unless there's a clear reason not to - their phrasing often helps semantic search. Queries MUST be in English (translate if needed).
 
-Use semantic search when the implementation's location is unknown and a concept-based query will help locate it. When a relevant path or line is already known, read it directly; use search_files for exact names or text. Reuse relevant evidence already obtained. Search another area only to resolve a material unanswered question, dependency, or contradiction in the requested task.
+Use only when the implementation location is unknown and one semantic query will help locate it. Not the first hop for a known token, symbol, or filename; use search_files for those. When a relevant path or line is already known, read it directly. Reuse relevant evidence already obtained. Search another area only to resolve a material unanswered question, dependency, or contradiction in the requested task.
 
 Parameters:
 - query: (required) The search query. Reuse the user's exact wording/question format unless there's a clear reason not to.
