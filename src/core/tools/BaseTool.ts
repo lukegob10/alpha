@@ -25,6 +25,7 @@ export type AskApprovalResponse = (
 	partialMessage?: string,
 	progressStatus?: ToolProgressStatus,
 	forceApproval?: boolean,
+	requiresExplicitApproval?: boolean,
 ) => Promise<ToolApprovalResponse | undefined>
 
 /**

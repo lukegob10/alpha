@@ -123,6 +123,7 @@ describe("SpawnAgentTool", () => {
 			"tool",
 			expect.stringContaining('"tool":"spawnAgent"'),
 			undefined,
+			undefined,
 			true,
 		)
 		expect(provider.launchPreparedSubagentGroup).toHaveBeenCalledAfter(askApproval)

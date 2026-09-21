@@ -270,7 +270,24 @@
 		"subagents": {
 			"label": "하위 에이전트",
 			"description": "Alpha가 승인 없이 읽기 전용 하위 에이전트 그룹을 시작할 수 있도록 허용합니다. 읽기 액세스도 자동 승인되어야 합니다."
-		}
+		},
+		"mode": {
+			"label": "Approval mode",
+			"description": "Ask, Auto, or Full Access. Auto is the default. The opened workspace is the trust boundary.",
+			"ask": "Ask",
+			"auto": "Auto",
+			"bypass": "전체 액세스",
+			"askDescription": "Auto-approve workspace reads. Ask before writes, commands, spawn, tickets, MCP, and outside paths.",
+			"autoDescription": "Auto-approve in-workspace edits, spawn, tickets, and commands. Ask for true-outside paths, protected files, and denied commands.",
+			"bypassDescription": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
+		},
+		"bypassWarning": {
+			"title": "Enable Full Access?",
+			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands.",
+			"confirm": "Enable Full Access",
+			"cancel": "Cancel"
+		},
+		"advancedMcp": "Advanced MCP auto-approval"
 	},
 	"providers": {
 		"providerDocumentation": "{{provider}} 문서",

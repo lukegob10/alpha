@@ -77,7 +77,9 @@ function createSanitizedGit(baseDir: string): SimpleGit {
 
 	const options: CheckpointSimpleGitOptions = {
 		baseDir,
-		config: [],
+		// Checkpoints must observe edits even when user Git settings favor cached
+		// metadata, and the task's index must remain self-contained.
+		config: ["core.ignorestat=false", "core.splitIndex=false"],
 		unsafe: {
 			allowUnsafeConfigEnvCount: true,
 			allowUnsafeTemplateDir: true,
@@ -512,8 +514,11 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 			from = (await this.git.raw(["rev-list", "--max-parents=0", "HEAD"])).trim()
 		}
 
-		// Stage all changes so that untracked files appear in diff summary.
-		await this.stageAll(this.git)
+		// Only live-workspace comparisons need staging to include untracked files.
+		// Historical comparisons read immutable commits and must not touch the index.
+		if (!to) {
+			await this.stageAll(this.git)
+		}
 
 		this.log(`[${this.constructor.name}#getDiff] diffing ${to ? `${from}..${to}` : `${from}..HEAD`}`)
 		const { files } = to ? await this.git.diffSummary([`${from}..${to}`]) : await this.git.diffSummary([from])

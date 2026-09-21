@@ -15,13 +15,52 @@ vi.mock("@vscode/webview-ui-toolkit/react", async (importOriginal) => ({
 	),
 }))
 
-describe("outside workspace approval settings", () => {
+describe("AutoApproveSettings session dial", () => {
+	it("shows Ask / Auto / Full Access and nested command rules without leftover chips", () => {
+		const setCachedStateField = vi.fn()
+		render(
+			<AutoApproveSettings
+				approvalMode="auto"
+				alwaysAllowWriteProtected={false}
+				allowedCommands={[]}
+				deniedCommands={[]}
+				setCachedStateField={setCachedStateField}
+			/>,
+		)
+
+		expect(screen.getByTestId("approval-mode-ask")).toBeInTheDocument()
+		expect(screen.getByTestId("approval-mode-auto")).toBeInTheDocument()
+		expect(screen.getByTestId("approval-mode-bypass")).toBeInTheDocument()
+		expect(screen.getByTestId("always-allow-write-protected-checkbox")).toBeInTheDocument()
+		expect(screen.getByTestId("denied-commands-heading")).toBeInTheDocument()
+		expect(screen.getByTestId("allowed-commands-heading")).toBeInTheDocument()
+		expect(screen.queryByTestId("always-allow-write-toggle")).not.toBeInTheDocument()
+		expect(screen.queryByTestId("always-allow-tickets-toggle")).not.toBeInTheDocument()
+		expect(screen.queryByTestId("always-allow-write-outside-workspace-checkbox")).not.toBeInTheDocument()
+	})
+
+	it("writes the selected mode and derived chips into the settings edit buffer", () => {
+		const setCachedStateField = vi.fn()
+		render(
+			<AutoApproveSettings
+				approvalMode="ask"
+				allowedCommands={[]}
+				deniedCommands={[]}
+				setCachedStateField={setCachedStateField}
+			/>,
+		)
+		fireEvent.click(screen.getByTestId("approval-mode-auto"))
+		expect(setCachedStateField).toHaveBeenCalledWith("approvalMode", "auto")
+		expect(setCachedStateField).toHaveBeenCalledWith("alwaysAllowWrite", true)
+		expect(setCachedStateField).toHaveBeenCalledWith("alwaysAllowWriteOutsideWorkspace", false)
+		expect(setCachedStateField).toHaveBeenCalledWith("alwaysAllowTickets", true)
+	})
+
 	it("labels command inputs and adds a wildcard to the local edit buffer with Enter", () => {
 		const setCachedStateField = vi.fn()
 		render(
 			<AutoApproveSettings
-				autoApprovalEnabled
-				alwaysAllowExecute
+				approvalMode="auto"
 				allowedCommands={[]}
 				deniedCommands={[]}
 				setCachedStateField={setCachedStateField}
@@ -32,28 +71,7 @@ describe("outside workspace approval settings", () => {
 		expect(allowed).not.toBe(denied)
 		fireEvent.change(allowed, { target: { value: " * " } })
 		fireEvent.keyDown(allowed, { key: "Enter" })
-		expect(setCachedStateField).toHaveBeenCalledTimes(1)
 		expect(setCachedStateField).toHaveBeenCalledWith("allowedCommands", ["*"])
 		expect(allowed).toHaveValue("")
-	})
-
-	it("keeps the outside read edit buffer and removes legacy outside write auto-approval", () => {
-		const setCachedStateField = vi.fn()
-		const props = {
-			autoApprovalEnabled: true,
-			alwaysAllowReadOnly: true,
-			alwaysAllowReadOnlyOutsideWorkspace: true,
-			alwaysAllowWrite: true,
-			alwaysAllowWriteOutsideWorkspace: true,
-			setCachedStateField,
-		}
-		const { rerender } = render(<AutoApproveSettings {...props} />)
-		const read = screen.getByTestId("always-allow-readonly-outside-workspace-checkbox")
-		expect(read).toBeChecked()
-		expect(screen.queryByTestId("always-allow-write-outside-workspace-checkbox")).not.toBeInTheDocument()
-		fireEvent.click(read)
-		expect(setCachedStateField).toHaveBeenCalledWith("alwaysAllowReadOnlyOutsideWorkspace", false)
-		rerender(<AutoApproveSettings {...props} alwaysAllowReadOnlyOutsideWorkspace={false} />)
-		expect(screen.getByTestId("always-allow-readonly-outside-workspace-checkbox")).not.toBeChecked()
 	})
 })

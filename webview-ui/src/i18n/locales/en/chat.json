@@ -387,10 +387,11 @@
 	"autoApprove": {
 		"tooltipManage": "Manage auto-approval settings",
 		"tooltipStatus": "Auto-approval enabled for: {{toggles}}",
+		"tooltipMode": "Approval mode: {{mode}}",
 		"title": "Auto-approve",
 		"all": "All",
 		"none": "None",
-		"description": "Run these actions without asking for permission. Only enable for actions you fully trust.",
+		"description": "Ask, Auto, or Full Access. Auto is the default. The opened workspace is the trust boundary.",
 		"selectOptionsFirst": "Select at least one option below to enable auto-approval",
 		"toggleAriaLabel": "Toggle auto-approval",
 		"disabledAriaLabel": "Auto-approval disabled - select options first",
@@ -399,7 +400,23 @@
 		"triggerLabel_zero": "0 auto-approve",
 		"triggerLabel_one": "1 auto-approved",
 		"triggerLabel_other": "{{count}} auto-approved",
-		"triggerLabelAll": "All"
+		"triggerLabelAll": "All",
+		"modes": {
+			"ask": "Ask",
+			"auto": "Auto",
+			"bypass": "Full Access"
+		},
+		"modeDescription": {
+			"ask": "Auto-approve workspace reads. Ask before writes, commands, spawn, tickets, MCP, and outside paths.",
+			"auto": "Auto-approve in-workspace edits, spawn, tickets, and commands. Ask for true-outside paths, protected files, and denied commands.",
+			"bypass": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
+		},
+		"bypassWarning": {
+			"title": "Enable Full Access?",
+			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands.",
+			"confirm": "Enable Full Access",
+			"cancel": "Cancel"
+		}
 	},
 	"announcement": {
 		"title": "Welcome to Alpha v{{version}}",

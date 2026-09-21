@@ -158,15 +158,15 @@ describe("ExtensionStateContext", () => {
 		vi.unstubAllGlobals()
 	})
 
-	it("defaults missing ticket approval off and hydrates, toggles, and reloads saved ticket approval", () => {
+	it("defaults new-install Auto ticket approval on and hydrates leftover off, toggles, and reloads", () => {
 		const view = (
 			<ExtensionStateContextProvider>
 				<TicketApprovalTestComponent />
 			</ExtensionStateContextProvider>
 		)
 		const { unmount } = render(view)
-		expect(screen.getByRole("button")).toHaveTextContent("false")
-		act(() => dispatchExtensionState({ autoApprovalEnabled: true }))
+		expect(screen.getByRole("button")).toHaveTextContent("true")
+		act(() => dispatchExtensionState({ alwaysAllowTickets: false }))
 		expect(screen.getByRole("button")).toHaveTextContent("false")
 		act(() => dispatchExtensionState({ alwaysAllowTickets: true }))
 		expect(screen.getByRole("button")).toHaveTextContent("true")

@@ -326,7 +326,24 @@
 		"triggerLabel_zero": "0 स्वतः-अनुमोदन",
 		"triggerLabel_one": "1 स्वतः-अनुमोदित",
 		"triggerLabel_other": "{{count}} स्वतः-अनुमोदित",
-		"triggerLabelAll": "सभी"
+		"triggerLabelAll": "सभी",
+		"tooltipMode": "Approval mode: {{mode}}",
+		"modes": {
+			"ask": "Ask",
+			"auto": "Auto",
+			"bypass": "पूर्ण पहुँच"
+		},
+		"modeDescription": {
+			"ask": "Auto-approve workspace reads. Ask before writes, commands, spawn, tickets, MCP, and outside paths.",
+			"auto": "Auto-approve in-workspace edits, spawn, tickets, and commands. Ask for true-outside paths, protected files, and denied commands.",
+			"bypass": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
+		},
+		"bypassWarning": {
+			"title": "Enable Full Access?",
+			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands.",
+			"confirm": "Enable Full Access",
+			"cancel": "Cancel"
+		}
 	},
 	"reasoning": {
 		"thinking": "विचार कर रहा है",

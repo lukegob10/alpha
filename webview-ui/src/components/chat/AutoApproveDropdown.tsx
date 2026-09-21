@@ -1,196 +1,133 @@
 import React from "react"
-import { ListChecks, LayoutList, Settings, ChevronDown } from "lucide-react"
+import { Settings, ChevronDown } from "lucide-react"
+import { type ApprovalMode, migrateApprovalMode, settingsForApprovalMode } from "@alpha-code/types"
 
 import { vscode } from "@/utils/vscode"
-
 import { cn } from "@/lib/utils"
-
 import { useExtensionState } from "@/context/ExtensionStateContext"
-
 import { useAppTranslation } from "@/i18n/TranslationContext"
-
-import { useAutoApprovalToggles } from "@/hooks/useAutoApprovalToggles"
-import { useAutoApprovalState } from "@/hooks/useAutoApprovalState"
-
 import { useAlphaPortal } from "@/components/ui/hooks/useAlphaPortal"
-
-import { Popover, PopoverContent, PopoverTrigger, StandardTooltip, ToggleSwitch, Button } from "@/components/ui"
-
-import { AutoApproveSetting, autoApproveSettingsConfig } from "../settings/AutoApproveToggle"
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { Popover, PopoverContent, PopoverTrigger, StandardTooltip, Button } from "@/components/ui"
 
 interface AutoApproveDropdownProps {
 	disabled?: boolean
 	triggerClassName?: string
 }
 
+const MODES: ApprovalMode[] = ["ask", "auto", "bypass"]
+
 export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }: AutoApproveDropdownProps) => {
 	const [open, setOpen] = React.useState(false)
+	const [bypassWarningOpen, setBypassWarningOpen] = React.useState(false)
 	const portalContainer = useAlphaPortal("alpha-portal")
 	const { t } = useAppTranslation()
-
+	const state = useExtensionState()
 	const {
+		approvalMode,
+		approvalModeBypassAcknowledged,
 		autoApprovalEnabled,
-		allowedCommands,
-		deniedCommands,
-		currentTaskAutoApprovalRestricted,
-		alwaysAllowReadOnlyOutsideWorkspace,
+		alwaysAllowWrite,
 		alwaysAllowWriteOutsideWorkspace,
 		alwaysAllowWriteProtected,
-		setAutoApprovalEnabled,
-		setAlwaysAllowReadOnly,
-		setAlwaysAllowReadOnlyOutsideWorkspace,
-		setAlwaysAllowWrite,
-		setAlwaysAllowWriteOutsideWorkspace,
-		setAlwaysAllowWriteProtected,
-		setAlwaysAllowExecute,
-		setAlwaysAllowMcp,
-		setAlwaysAllowSubtasks,
-		setAlwaysAllowSubagents,
-		setAlwaysAllowTickets,
-		setAlwaysAllowFollowupQuestions,
-		setAllowedCommands,
-	} = useExtensionState()
-
-	const toggles = useAutoApprovalToggles()
-
-	const enableAllAutoApproval = React.useCallback(() => {
-		const nextAllowedCommands = allowedCommands?.includes("*") ? allowedCommands : [...(allowedCommands ?? []), "*"]
-		const updatedSettings = {
-			alwaysAllowReadOnly: true,
-			alwaysAllowReadOnlyOutsideWorkspace: true,
-			alwaysAllowWrite: true,
-			alwaysAllowWriteOutsideWorkspace: true,
-			alwaysAllowWriteProtected: true,
-			alwaysAllowExecute: true,
-			alwaysAllowMcp: true,
-			alwaysAllowSubtasks: true,
-			alwaysAllowSubagents: true,
-			alwaysAllowTickets: true,
-			alwaysAllowFollowupQuestions: true,
-			allowedCommands: nextAllowedCommands,
-		}
-
-		vscode.postMessage({ type: "updateSettings", updatedSettings })
-
-		setAlwaysAllowReadOnly(true)
-		setAlwaysAllowReadOnlyOutsideWorkspace(true)
-		setAlwaysAllowWrite(true)
-		setAlwaysAllowWriteOutsideWorkspace(true)
-		setAlwaysAllowWriteProtected(true)
-		setAlwaysAllowExecute(true)
-		setAlwaysAllowMcp(true)
-		setAlwaysAllowSubtasks(true)
-		setAlwaysAllowSubagents(true)
-		setAlwaysAllowTickets(true)
-		setAlwaysAllowFollowupQuestions(true)
-		setAllowedCommands(nextAllowedCommands)
-
-		if (!autoApprovalEnabled) {
-			setAutoApprovalEnabled(true)
-			vscode.postMessage({ type: "autoApprovalEnabled", bool: true })
-		}
-	}, [
+		alwaysAllowExecute,
+		alwaysAllowTickets,
+		alwaysAllowMcp,
+		alwaysAllowSubagents,
 		allowedCommands,
-		autoApprovalEnabled,
-		setAllowedCommands,
-		setAlwaysAllowExecute,
-		setAlwaysAllowFollowupQuestions,
-		setAlwaysAllowMcp,
+		setApprovalMode,
+		setApprovalModeBypassAcknowledged,
+		setAutoApprovalEnabled,
 		setAlwaysAllowReadOnly,
 		setAlwaysAllowReadOnlyOutsideWorkspace,
-		setAlwaysAllowSubtasks,
-		setAlwaysAllowSubagents,
-		setAlwaysAllowTickets,
 		setAlwaysAllowWrite,
 		setAlwaysAllowWriteOutsideWorkspace,
 		setAlwaysAllowWriteProtected,
-		setAutoApprovalEnabled,
-	])
+		setAlwaysAllowExecute,
+		setAlwaysAllowMcp,
+		setAlwaysAllowSubtasks,
+		setAlwaysAllowSubagents,
+		setAlwaysAllowTickets,
+		setAlwaysAllowFollowupQuestions,
+	} = state
 
-	const onAutoApproveToggle = React.useCallback(
-		(key: AutoApproveSetting, value: boolean) => {
-			vscode.postMessage({ type: "updateSettings", updatedSettings: { [key]: value } })
+	const mode = migrateApprovalMode({
+		approvalMode,
+		autoApprovalEnabled,
+		alwaysAllowWrite,
+		alwaysAllowWriteOutsideWorkspace,
+		alwaysAllowWriteProtected,
+		alwaysAllowExecute,
+		alwaysAllowTickets,
+		alwaysAllowMcp,
+		alwaysAllowSubagents,
+		allowedCommands,
+	})
 
-			switch (key) {
-				case "alwaysAllowReadOnly":
-					setAlwaysAllowReadOnly(value)
-					break
-				case "alwaysAllowWrite":
-					setAlwaysAllowWrite(value)
-					break
-				case "alwaysAllowExecute":
-					setAlwaysAllowExecute(value)
-					break
-				case "alwaysAllowMcp":
-					setAlwaysAllowMcp(value)
-					break
-				case "alwaysAllowSubtasks":
-					setAlwaysAllowSubtasks(value)
-					break
-				case "alwaysAllowSubagents":
-					setAlwaysAllowSubagents(value)
-					break
-				case "alwaysAllowTickets":
-					setAlwaysAllowTickets(value)
-					break
-				case "alwaysAllowFollowupQuestions":
-					setAlwaysAllowFollowupQuestions(value)
-					break
-			}
-
-			// If enabling any option, ensure autoApprovalEnabled is true.
-			if (value && !autoApprovalEnabled) {
-				setAutoApprovalEnabled(true)
-				vscode.postMessage({ type: "autoApprovalEnabled", bool: true })
-			}
+	const applyMode = React.useCallback(
+		(next: ApprovalMode, acknowledged = approvalModeBypassAcknowledged === true) => {
+			const settings = settingsForApprovalMode(next, {
+				alwaysAllowWriteProtected: next === "auto" ? alwaysAllowWriteProtected === true : undefined,
+				alwaysAllowMcp: next !== "bypass" ? alwaysAllowMcp === true : undefined,
+				approvalModeBypassAcknowledged: next === "bypass" ? true : acknowledged,
+			})
+			vscode.postMessage({ type: "updateSettings", updatedSettings: settings })
+			setApprovalMode(settings.approvalMode)
+			setApprovalModeBypassAcknowledged(settings.approvalModeBypassAcknowledged === true)
+			setAutoApprovalEnabled(settings.autoApprovalEnabled)
+			setAlwaysAllowReadOnly(settings.alwaysAllowReadOnly)
+			setAlwaysAllowReadOnlyOutsideWorkspace(settings.alwaysAllowReadOnlyOutsideWorkspace)
+			setAlwaysAllowWrite(settings.alwaysAllowWrite)
+			setAlwaysAllowWriteOutsideWorkspace(settings.alwaysAllowWriteOutsideWorkspace)
+			setAlwaysAllowWriteProtected(settings.alwaysAllowWriteProtected)
+			setAlwaysAllowExecute(settings.alwaysAllowExecute)
+			setAlwaysAllowMcp(settings.alwaysAllowMcp)
+			setAlwaysAllowSubtasks(settings.alwaysAllowSubtasks)
+			setAlwaysAllowSubagents(settings.alwaysAllowSubagents)
+			setAlwaysAllowTickets(settings.alwaysAllowTickets)
+			setAlwaysAllowFollowupQuestions(settings.alwaysAllowFollowupQuestions)
 		},
 		[
-			autoApprovalEnabled,
-			setAlwaysAllowReadOnly,
-			setAlwaysAllowWrite,
+			alwaysAllowMcp,
+			alwaysAllowWriteProtected,
+			approvalModeBypassAcknowledged,
 			setAlwaysAllowExecute,
-			setAlwaysAllowMcp,
-			setAlwaysAllowSubtasks,
-			setAlwaysAllowSubagents,
-			setAlwaysAllowTickets,
 			setAlwaysAllowFollowupQuestions,
+			setAlwaysAllowMcp,
+			setAlwaysAllowReadOnly,
+			setAlwaysAllowReadOnlyOutsideWorkspace,
+			setAlwaysAllowSubagents,
+			setAlwaysAllowSubtasks,
+			setAlwaysAllowTickets,
+			setAlwaysAllowWrite,
+			setAlwaysAllowWriteOutsideWorkspace,
+			setAlwaysAllowWriteProtected,
+			setApprovalMode,
+			setApprovalModeBypassAcknowledged,
 			setAutoApprovalEnabled,
 		],
 	)
 
-	const handleSelectAll = React.useCallback(() => {
-		enableAllAutoApproval()
-	}, [enableAllAutoApproval])
-
-	const handleSelectNone = React.useCallback(() => {
-		// Disable all options
-		Object.keys(autoApproveSettingsConfig).forEach((key) => {
-			onAutoApproveToggle(key as AutoApproveSetting, false)
-		})
-
-		// These permissions are prerequisites for full approval but are not shown as
-		// compact-menu buttons. Clear them too so Select None leaves no approval
-		// grant behind if the user enables a visible option again later.
-		vscode.postMessage({
-			type: "updateSettings",
-			updatedSettings: {
-				alwaysAllowReadOnlyOutsideWorkspace: false,
-				alwaysAllowWriteOutsideWorkspace: false,
-				alwaysAllowWriteProtected: false,
-				allowedCommands: [],
-			},
-		})
-		setAlwaysAllowReadOnlyOutsideWorkspace(false)
-		setAlwaysAllowWriteOutsideWorkspace(false)
-		setAlwaysAllowWriteProtected(false)
-		setAllowedCommands([])
-	}, [
-		onAutoApproveToggle,
-		setAlwaysAllowReadOnlyOutsideWorkspace,
-		setAlwaysAllowWriteOutsideWorkspace,
-		setAlwaysAllowWriteProtected,
-		setAllowedCommands,
-	])
+	const selectMode = React.useCallback(
+		(next: ApprovalMode) => {
+			if (next === "bypass" && approvalModeBypassAcknowledged !== true) {
+				setBypassWarningOpen(true)
+				return
+			}
+			applyMode(next)
+			setOpen(false)
+		},
+		[applyMode, approvalModeBypassAcknowledged],
+	)
 
 	const handleOpenSettings = React.useCallback(
 		() =>
@@ -198,186 +135,78 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		[],
 	)
 
-	// Handle the main auto-approval toggle
-	const handleAutoApprovalToggle = React.useCallback(() => {
-		const newValue = !(autoApprovalEnabled ?? false)
-		if (newValue) {
-			enableAllAutoApproval()
-			return
-		}
-
-		setAutoApprovalEnabled(newValue)
-		vscode.postMessage({ type: "autoApprovalEnabled", bool: newValue })
-	}, [autoApprovalEnabled, enableAllAutoApproval, setAutoApprovalEnabled])
-
-	// Calculate enabled and total counts as separate properties
-	const settingsArray = Object.values(autoApproveSettingsConfig)
-
-	const enabledCount = React.useMemo(() => {
-		return Object.values(toggles).filter((value) => !!value).length
-	}, [toggles])
-
-	const totalCount = React.useMemo(() => {
-		return Object.keys(toggles).length
-	}, [toggles])
-
-	const hasFullAutoApproval = React.useMemo(
-		() =>
-			enabledCount === totalCount &&
-			alwaysAllowReadOnlyOutsideWorkspace &&
-			alwaysAllowWriteOutsideWorkspace &&
-			alwaysAllowWriteProtected &&
-			!currentTaskAutoApprovalRestricted &&
-			(!toggles.alwaysAllowExecute ||
-				(allowedCommands?.some((command) => command.trim() === "*") === true &&
-					deniedCommands?.some((command) => command.trim().length > 0) !== true)),
-		[
-			allowedCommands,
-			alwaysAllowReadOnlyOutsideWorkspace,
-			alwaysAllowWriteOutsideWorkspace,
-			alwaysAllowWriteProtected,
-			currentTaskAutoApprovalRestricted,
-			deniedCommands,
-			enabledCount,
-			toggles.alwaysAllowExecute,
-			totalCount,
-		],
-	)
-
-	const { effectiveAutoApprovalEnabled } = useAutoApprovalState(toggles, autoApprovalEnabled)
-
-	const tooltipText =
-		!effectiveAutoApprovalEnabled || enabledCount === 0
-			? t("chat:autoApprove.tooltipManage")
-			: t("chat:autoApprove.tooltipStatus", {
-					toggles: settingsArray
-						.filter((setting) => toggles[setting.key])
-						.map((setting) => t(setting.labelKey))
-						.join(", "),
-				})
-
 	return (
-		<Popover open={open} onOpenChange={setOpen} data-testid="auto-approve-dropdown-root">
-			<StandardTooltip content={tooltipText}>
-				<PopoverTrigger
-					disabled={disabled}
-					data-testid="auto-approve-dropdown-trigger"
-					className={cn("composer-control composer-selector", "max-[300px]:shrink-0", triggerClassName)}>
-					<span className="hidden min-[420px]:inline truncate min-w-0">
-						{!effectiveAutoApprovalEnabled
-							? t("chat:autoApprove.triggerLabelOff")
-							: hasFullAutoApproval
-								? t("chat:autoApprove.triggerLabelAll")
-								: t("chat:autoApprove.triggerLabel", { count: enabledCount })}
-					</span>
-					<span className="inline min-[420px]:hidden min-w-0">
-						{!effectiveAutoApprovalEnabled
-							? t("chat:autoApprove.triggerLabelOffShort")
-							: hasFullAutoApproval
-								? t("chat:autoApprove.triggerLabelAll")
-								: enabledCount}
-					</span>
-					<ChevronDown className="size-3 shrink-0" aria-hidden="true" />
-				</PopoverTrigger>
-			</StandardTooltip>
-			<PopoverContent
-				align="start"
-				sideOffset={4}
-				container={portalContainer}
-				className="p-0 overflow-hidden w-[min(440px,calc(100vw-2rem))]"
-				onOpenAutoFocus={(e) => e.preventDefault()}>
-				<div className="flex flex-col w-full">
-					{/* Header with description */}
-					<div className="p-3 border-b border-vscode-dropdown-border">
-						<div className="flex items-center justify-between gap-1 pr-1 pb-2">
-							<h4 className="m-0 font-bold text-base text-vscode-foreground">
-								{t("chat:autoApprove.title")}
-							</h4>
-							<Settings
-								className="inline mb-0.5 mr-1 size-4 cursor-pointer"
-								onClick={handleOpenSettings}
-							/>
+		<>
+			<Popover open={open} onOpenChange={setOpen} data-testid="auto-approve-dropdown-root">
+				<StandardTooltip
+					content={t("chat:autoApprove.tooltipMode", { mode: t(`chat:autoApprove.modes.${mode}`) })}>
+					<PopoverTrigger
+						disabled={disabled}
+						data-testid="auto-approve-dropdown-trigger"
+						className={cn("composer-control composer-selector", "max-[300px]:shrink-0", triggerClassName)}>
+						<span className="truncate min-w-0">{t(`chat:autoApprove.modes.${mode}`)}</span>
+						<ChevronDown className="size-3 shrink-0" aria-hidden="true" />
+					</PopoverTrigger>
+				</StandardTooltip>
+				<PopoverContent
+					align="start"
+					sideOffset={4}
+					container={portalContainer}
+					className="p-0 overflow-hidden w-[min(320px,calc(100vw-2rem))]"
+					onOpenAutoFocus={(e) => e.preventDefault()}>
+					<div className="flex flex-col w-full">
+						<div className="p-3 border-b border-vscode-dropdown-border">
+							<div className="flex items-center justify-between gap-1 pr-1 pb-2">
+								<h4 className="m-0 font-bold text-base text-vscode-foreground">
+									{t("chat:autoApprove.title")}
+								</h4>
+								<Settings
+									className="inline mb-0.5 mr-1 size-4 cursor-pointer"
+									onClick={handleOpenSettings}
+								/>
+							</div>
+							<p className="m-0 text-xs text-vscode-descriptionForeground">
+								{t("chat:autoApprove.description")}
+							</p>
 						</div>
-						<p className="m-0 text-xs text-vscode-descriptionForeground">
-							{t("chat:autoApprove.description")}
-						</p>
-					</div>
-					<div className="grid grid-cols-1 min-[340px]:grid-cols-2 gap-x-2 gap-y-2 p-3">
-						{settingsArray.map(({ key, labelKey, descriptionKey, icon }) => {
-							const isEnabled = toggles[key]
-							return (
-								<StandardTooltip key={key} content={t(descriptionKey)}>
+						<div className="flex flex-col gap-1 p-3">
+							{MODES.map((candidate) => (
+								<StandardTooltip
+									key={candidate}
+									content={t(`chat:autoApprove.modeDescription.${candidate}`)}>
 									<Button
-										variant={isEnabled ? "primary" : "secondary"}
-										onClick={() => onAutoApproveToggle(key, !isEnabled)}
-										className={cn(
-											"flex items-center gap-2 px-2 py-2 text-sm text-left justify-start h-auto",
-											"transition-all duration-150",
-											!effectiveAutoApprovalEnabled &&
-												"opacity-50 cursor-not-allowed hover:opacity-50",
-											!isEnabled && "bg-vscode-button-background/15",
-										)}
-										disabled={!effectiveAutoApprovalEnabled}
-										data-testid={`auto-approve-${key}`}>
-										<span className={`codicon codicon-${icon} text-sm flex-shrink-0`} />
-										<span className="flex-1 truncate">{t(labelKey)}</span>
+										variant={mode === candidate ? "primary" : "secondary"}
+										onClick={() => selectMode(candidate)}
+										aria-pressed={mode === candidate}
+										data-testid={`approval-mode-${candidate}`}
+										className="justify-start h-auto px-2 py-2 text-sm">
+										<span className="font-bold">{t(`chat:autoApprove.modes.${candidate}`)}</span>
 									</Button>
 								</StandardTooltip>
-							)
-						})}
-					</div>
-
-					{/* Bottom bar with Select All/None buttons */}
-					<div className="flex flex-row items-center justify-between px-2 py-2 border-t border-vscode-dropdown-border">
-						<div className="flex flex-row gap-1">
-							<Button
-								variant="ghost"
-								size="sm"
-								aria-label={t("chat:autoApprove.selectAll")}
-								onClick={handleSelectAll}
-								disabled={!effectiveAutoApprovalEnabled}
-								className={cn(
-									"gap-1 px-2 py-1 text-base font-bold h-auto",
-									!effectiveAutoApprovalEnabled && "opacity-50 hover:opacity-50 cursor-not-allowed",
-								)}>
-								<ListChecks className="w-3.5 h-3.5" />
-								<span>{t("chat:autoApprove.all")}</span>
-							</Button>
-							<Button
-								variant="ghost"
-								size="sm"
-								aria-label={t("chat:autoApprove.selectNone")}
-								onClick={handleSelectNone}
-								disabled={!effectiveAutoApprovalEnabled}
-								className={cn(
-									"gap-1 px-2 py-1 text-base font-bold h-auto",
-									!effectiveAutoApprovalEnabled && "opacity-50 hover:opacity-50 cursor-not-allowed",
-								)}>
-								<LayoutList className="w-3.5 h-3.5" />
-								<span>{t("chat:autoApprove.none")}</span>
-							</Button>
+							))}
 						</div>
-
-						<label
-							className="flex items-center gap-2 pr-2 cursor-pointer"
-							onClick={(e) => {
-								// Prevent label click when clicking on the toggle switch itself
-								if ((e.target as HTMLElement).closest('[role="switch"]')) {
-									e.preventDefault()
-									return
-								}
-								handleAutoApprovalToggle()
-							}}>
-							<ToggleSwitch
-								checked={effectiveAutoApprovalEnabled}
-								aria-label="Toggle auto-approval"
-								onChange={handleAutoApprovalToggle}
-							/>
-							<span className={cn("text-sm font-bold select-none")}>Enabled</span>
-						</label>
 					</div>
-				</div>
-			</PopoverContent>
-		</Popover>
+				</PopoverContent>
+			</Popover>
+			<AlertDialog open={bypassWarningOpen} onOpenChange={setBypassWarningOpen}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>{t("chat:autoApprove.bypassWarning.title")}</AlertDialogTitle>
+						<AlertDialogDescription>{t("chat:autoApprove.bypassWarning.body")}</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel>{t("chat:autoApprove.bypassWarning.cancel")}</AlertDialogCancel>
+						<AlertDialogAction
+							data-testid="approval-mode-bypass-confirm"
+							onClick={() => {
+								applyMode("bypass", true)
+								setOpen(false)
+							}}>
+							{t("chat:autoApprove.bypassWarning.confirm")}
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+		</>
 	)
 }

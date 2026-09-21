@@ -196,7 +196,10 @@ import { AgentControlTransactionError } from "../agent/AgentControlTransaction"
 import type { CommandVerificationDiagnostic } from "../agent/VerificationScope"
 import { formatBackgroundCommandContext } from "../agent/CommandOutcomeContext"
 import { CompletionRecovery } from "../agent/CompletionRecovery"
-import { redactTaskPrivatePaths } from "../tools/taskPathPresentation"
+import {
+	isWorkerWritePathAllowed as isScopedWorkerWritePathAllowed,
+	redactTaskPrivatePaths,
+} from "../tools/taskPathPresentation"
 import { restoreTodoListForTask } from "../tools/UpdateTodoListTool"
 import { FileContextTracker } from "../context-tracking/FileContextTracker"
 import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
@@ -5761,31 +5764,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private isWorkerWritePathAllowed(candidate: string): boolean {
-		if (!this.subagentWriteScope || path.isAbsolute(candidate)) return false
-		const resolved = path.resolve(this.cwd, candidate)
-		const relative = path.relative(this.cwd, resolved).split(path.sep).join("/")
-		if (!relative || relative.startsWith("../") || path.isAbsolute(relative)) return false
-		const fileScopes =
-			this.subagentAuthority?.role === "worker" ? (this.subagentAuthority.fileWriteScope ?? []) : []
-		const allowed = this.subagentWriteScope.some(
-			(scope) => relative === scope || (!fileScopes.includes(scope) && relative.startsWith(`${scope}/`)),
+		return isScopedWorkerWritePathAllowed(
+			{
+				taskKind: this.taskKind,
+				subagentRole: this.subagentRole,
+				cwd: this.cwd,
+				historyWorkspacePath: this.historyWorkspacePath,
+				subagentPrivateWorkspaceRoot: this.subagentPrivateWorkspaceRoot,
+				subagentWriteScope: this.subagentWriteScope,
+				subagentAuthority:
+					this.subagentAuthority?.role === "worker"
+						? { role: "worker", fileWriteScope: this.subagentAuthority.fileWriteScope }
+						: undefined,
+			},
+			candidate,
 		)
-		if (!allowed) return false
-
-		let existing = resolved
-		while (!fsSync.existsSync(existing)) {
-			const parent = path.dirname(existing)
-			if (parent === existing) return false
-			existing = parent
-		}
-		try {
-			const realWorkspace = fsSync.realpathSync(this.cwd)
-			const realExisting = fsSync.realpathSync(existing)
-			const realRelative = path.relative(realWorkspace, realExisting)
-			return realRelative === "" || (!realRelative.startsWith("..") && !path.isAbsolute(realRelative))
-		} catch {
-			return false
-		}
 	}
 
 	public setSubagentChangeSet(changeSet: SubagentChangeSetState): void {

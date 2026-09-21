@@ -5,6 +5,10 @@ import {
 	type FollowUpData,
 	type ExtensionState,
 	type SubagentAutoApprovalPolicy,
+	type ApprovalMode,
+	deriveAutoApprovalFlags,
+	effectiveCommandAllowlistForMode,
+	isApprovalMode,
 	isNonBlockingAsk,
 } from "@alpha-code/types"
 
@@ -28,6 +32,7 @@ export type AutoApprovalState =
 // Some of these actions have additional settings associated with them.
 export type AutoApprovalStateOptions =
 	| "autoApprovalEnabled"
+	| "approvalMode"
 	| "alwaysAllowReadOnlyOutsideWorkspace" // For `alwaysAllowReadOnly`.
 	| "alwaysAllowWriteOutsideWorkspace" // For `alwaysAllowWrite`.
 	| "alwaysAllowWriteProtected"
@@ -35,6 +40,42 @@ export type AutoApprovalStateOptions =
 	| "mcpServers" // For `alwaysAllowMcp`.
 	| "allowedCommands" // For `alwaysAllowExecute`.
 	| "deniedCommands"
+
+function resolveApprovalMode(
+	state?: Pick<ExtensionState, AutoApprovalState | AutoApprovalStateOptions>,
+): ApprovalMode | undefined {
+	return state && isApprovalMode(state.approvalMode) ? state.approvalMode : undefined
+}
+
+function flagsFromState(
+	state: Pick<ExtensionState, AutoApprovalState | AutoApprovalStateOptions>,
+	mode: ApprovalMode | undefined,
+) {
+	if (mode) {
+		return deriveAutoApprovalFlags(mode, {
+			alwaysAllowWriteProtected: state.alwaysAllowWriteProtected === true,
+			alwaysAllowMcp: state.alwaysAllowMcp === true,
+		})
+	}
+	return {
+		autoApprovalEnabled: state.autoApprovalEnabled === true,
+		alwaysAllowReadOnly: state.alwaysAllowReadOnly === true,
+		alwaysAllowReadOnlyOutsideWorkspace: state.alwaysAllowReadOnlyOutsideWorkspace === true,
+		alwaysAllowWrite: state.alwaysAllowWrite === true,
+		alwaysAllowWriteOutsideWorkspace: state.alwaysAllowWriteOutsideWorkspace === true,
+		alwaysAllowWriteProtected: state.alwaysAllowWriteProtected === true,
+		alwaysAllowTickets: state.alwaysAllowTickets === true,
+		alwaysAllowMcp: state.alwaysAllowMcp === true,
+		alwaysAllowSubtasks: state.alwaysAllowSubtasks === true,
+		alwaysAllowSubagents: state.alwaysAllowSubagents === true,
+		alwaysAllowExecute: state.alwaysAllowExecute === true,
+		alwaysAllowFollowupQuestions: state.alwaysAllowFollowupQuestions === true,
+	}
+}
+
+function effectiveCommandAllowlist(mode: ApprovalMode | undefined, allowedCommands: string[]): string[] {
+	return mode ? effectiveCommandAllowlistForMode(mode, allowedCommands) : allowedCommands
+}
 
 export type CheckAutoApprovalResult =
 	| { decision: "approve" }
@@ -66,34 +107,40 @@ export async function checkAutoApproval({
 		return { decision: "approve" }
 	}
 
-	if (!state || !state.autoApprovalEnabled) {
+	if (!state) {
+		return { decision: "ask" }
+	}
+
+	const mode = resolveApprovalMode(state)
+	const flags = flagsFromState(state, mode)
+	if (!mode && !flags.autoApprovalEnabled) {
 		return { decision: "ask" }
 	}
 
 	if (ask === "followup") {
-		if (state.alwaysAllowFollowupQuestions === true) {
+		if (flags.alwaysAllowFollowupQuestions) {
 			try {
 				const suggestion = (JSON.parse(text || "{}") as FollowUpData).suggest?.[0]
+				const timeout =
+					typeof state.followupAutoApproveTimeoutMs === "number" && state.followupAutoApproveTimeoutMs > 0
+						? state.followupAutoApproveTimeoutMs
+						: mode === "bypass"
+							? 1
+							: 0
 
-				if (
-					suggestion &&
-					typeof state.followupAutoApproveTimeoutMs === "number" &&
-					state.followupAutoApproveTimeoutMs > 0
-				) {
+				if (suggestion && timeout > 0) {
 					return {
 						decision: "timeout",
-						timeout: state.followupAutoApproveTimeoutMs,
+						timeout,
 						fn: () => ({ askResponse: "messageResponse", text: suggestion.answer }),
 					}
-				} else {
-					return { decision: "ask" }
 				}
-			} catch (error) {
+				return { decision: "ask" }
+			} catch {
 				return { decision: "ask" }
 			}
-		} else {
-			return { decision: "ask" }
 		}
+		return { decision: "ask" }
 	}
 
 	if (ask === "use_mcp_server") {
@@ -105,13 +152,14 @@ export async function checkAutoApproval({
 			const mcpServerUse = JSON.parse(text) as McpServerUse
 
 			if (mcpServerUse.type === "use_mcp_tool") {
-				return state.alwaysAllowMcp === true && isMcpToolAlwaysAllowed(mcpServerUse, state.mcpServers)
+				return mode === "bypass" ||
+					(flags.alwaysAllowMcp && isMcpToolAlwaysAllowed(mcpServerUse, state.mcpServers))
 					? { decision: "approve" }
 					: { decision: "ask" }
 			} else if (mcpServerUse.type === "access_mcp_resource") {
-				return state.alwaysAllowMcp === true ? { decision: "approve" } : { decision: "ask" }
+				return flags.alwaysAllowMcp ? { decision: "approve" } : { decision: "ask" }
 			}
-		} catch (error) {
+		} catch {
 			return { decision: "ask" }
 		}
 
@@ -123,21 +171,35 @@ export async function checkAutoApproval({
 			return { decision: "ask" }
 		}
 
-		if (state.alwaysAllowExecute === true) {
-			const decision = getCommandDecision(text, state.allowedCommands || [], state.deniedCommands || [])
-
-			if (decision === "auto_approve" && !requiresExplicitApproval) {
-				return { decision: "approve" }
-			} else if (decision === "auto_deny") {
-				return { decision: "deny" }
-			} else {
-				return { decision: "ask" }
-			}
+		const decision = getCommandDecision(
+			text,
+			effectiveCommandAllowlist(mode, state.allowedCommands || []),
+			state.deniedCommands || [],
+		)
+		if (decision === "auto_deny") {
+			return { decision: "deny" }
 		}
+		if (mode === "ask") {
+			return decision === "auto_approve" &&
+				(state.allowedCommands || []).some((command) => command.trim() !== "*") &&
+				!requiresExplicitApproval
+				? { decision: "approve" }
+				: { decision: "ask" }
+		}
+		if (mode === "auto") {
+			return decision === "auto_approve" && !requiresExplicitApproval
+				? { decision: "approve" }
+				: { decision: "ask" }
+		}
+		if (mode === "bypass") {
+			return decision === "auto_approve" ? { decision: "approve" } : { decision: "ask" }
+		}
+		return flags.alwaysAllowExecute && decision === "auto_approve" && !requiresExplicitApproval
+			? { decision: "approve" }
+			: { decision: "ask" }
 	}
 
 	if (ask === "tool") {
-		if (requiresExplicitApproval) return { decision: "ask" }
 		let tool: AlphaSayTool | undefined
 
 		try {
@@ -150,13 +212,22 @@ export async function checkAutoApproval({
 			return { decision: "ask" }
 		}
 
+		const toolName: string = tool.tool
+		if (toolName === "delegateTask" || toolName === "spawnAgent") {
+			return !requiresExplicitApproval && flags.alwaysAllowSubagents
+				? { decision: "approve" }
+				: { decision: "ask" }
+		}
+
+		if (requiresExplicitApproval && mode !== "bypass") return { decision: "ask" }
+
 		if (tool.tool === "updateTodoList") {
 			return { decision: "approve" }
 		}
 
 		if (tool.tool === "ticket") {
 			const activity = tool.ticketActivity
-			return state.alwaysAllowTickets === true &&
+			return flags.alwaysAllowTickets &&
 				activity?.state === "pending" &&
 				(activity.operation === "create" || activity.operation === "update")
 				? { decision: "approve" }
@@ -164,42 +235,16 @@ export async function checkAutoApproval({
 		}
 
 		// The skill tool only loads pre-defined instructions from global or project skills.
-		// It does not read arbitrary files - skills must be explicitly installed/defined by the user.
-		// Auto-approval is intentional to provide a seamless experience when loading task instructions.
 		if (tool.tool === "skill") {
 			return { decision: "approve" }
 		}
 
 		if (tool?.tool === "switchMode") {
-			// Historical pending prompts cannot authorize a retired tool.
 			return { decision: "deny" }
 		}
 
-		// Delegated tasks still enforce their own read/write/command approvals.
 		if (["newTask", "finishTask"].includes(tool?.tool)) {
 			return { decision: "approve" }
-		}
-
-		const toolName: string = tool.tool
-		const subagentTool = tool as AlphaSayTool & {
-			agent?: { role?: string }
-			agents?: Array<{ role?: string }>
-		}
-		if (toolName === "delegateTask" || toolName === "spawnAgent") {
-			const agents =
-				toolName === "spawnAgent"
-					? subagentTool.agent
-						? [subagentTool.agent]
-						: []
-					: Array.isArray(subagentTool.agents)
-						? subagentTool.agents
-						: []
-			const hasWorker = agents.some((agent) => agent.role === "worker")
-			return state.alwaysAllowSubagents === true &&
-				state.alwaysAllowReadOnly === true &&
-				(!hasWorker || state.alwaysAllowWrite === true)
-				? { decision: "approve" }
-				: { decision: "ask" }
 		}
 
 		const isOutsideWorkspace =
@@ -207,16 +252,16 @@ export async function checkAutoApproval({
 			(Array.isArray(tool.batchFiles) && tool.batchFiles.some((file) => file.isOutsideWorkspace))
 
 		if (isReadOnlyToolAction(tool)) {
-			return state.alwaysAllowReadOnly === true &&
-				(!isOutsideWorkspace || state.alwaysAllowReadOnlyOutsideWorkspace === true)
+			return flags.alwaysAllowReadOnly && (!isOutsideWorkspace || flags.alwaysAllowReadOnlyOutsideWorkspace)
 				? { decision: "approve" }
 				: { decision: "ask" }
 		}
 
 		if (isWriteToolAction(tool)) {
-			return state.alwaysAllowWrite === true &&
-				!isOutsideWorkspace &&
-				(!isProtected || state.alwaysAllowWriteProtected === true)
+			if (isOutsideWorkspace) {
+				return mode === "bypass" ? { decision: "approve" } : { decision: "ask" }
+			}
+			return flags.alwaysAllowWrite && (!isProtected || flags.alwaysAllowWriteProtected)
 				? { decision: "approve" }
 				: { decision: "ask" }
 		}

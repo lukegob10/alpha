@@ -757,61 +757,55 @@ describe("SettingsView - API Configuration", () => {
 	})
 })
 
-describe("SettingsView - Ticket Auto Approval", () => {
+describe("SettingsView - Approval Mode", () => {
 	beforeEach(() => vi.clearAllMocks())
 
 	const dispatchSettings = (state: Record<string, unknown>) => {
 		act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "state", state } })))
 	}
 
-	it("keeps ticket approval buffered through live refreshes and saves both enabled and disabled values", () => {
+	it("keeps the session dial buffered through live refreshes and saves mode with derived chips", () => {
 		const { activateTab, getSettingsContent } = renderSettingsView()
-		dispatchSettings({ settingsImportedAt: 1, alwaysAllowTickets: false })
+		dispatchSettings({ settingsImportedAt: 1, approvalMode: "ask" })
 		activateTab("autoApprove")
-		const toggle = within(getSettingsContent()).getByTestId("always-allow-tickets-toggle")
+		const auto = within(getSettingsContent()).getByTestId("approval-mode-auto")
 
-		expect(toggle).toHaveAttribute("aria-pressed", "false")
-		fireEvent.click(toggle)
-		expect(toggle).toHaveAttribute("aria-pressed", "true")
+		expect(within(getSettingsContent()).getByTestId("approval-mode-ask")).toHaveAttribute("aria-pressed", "true")
+		fireEvent.click(auto)
+		expect(auto).toHaveAttribute("aria-pressed", "true")
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
 
-		dispatchSettings({ alwaysAllowTickets: false, liveTaskIds: ["background-task"] })
-		expect(toggle).toHaveAttribute("aria-pressed", "true")
+		dispatchSettings({ approvalMode: "ask", liveTaskIds: ["background-task"] })
+		expect(auto).toHaveAttribute("aria-pressed", "true")
 		fireEvent.click(screen.getByTestId("save-button"))
 		expect(vscode.postMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "updateSettings",
-				updatedSettings: expect.objectContaining({ alwaysAllowTickets: true }),
-			}),
-		)
-
-		vi.mocked(vscode.postMessage).mockClear()
-		fireEvent.click(toggle)
-		fireEvent.click(screen.getByTestId("save-button"))
-		expect(vscode.postMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				type: "updateSettings",
-				updatedSettings: expect.objectContaining({ alwaysAllowTickets: false }),
+				updatedSettings: expect.objectContaining({
+					approvalMode: "auto",
+					alwaysAllowWrite: true,
+					alwaysAllowWriteOutsideWorkspace: false,
+					alwaysAllowTickets: true,
+				}),
 			}),
 		)
 	})
 
-	it("preserves ticket edits on Cancel and resets them on Discard", () => {
+	it("preserves approval-mode edits on Cancel and resets them on Discard", () => {
 		const { activateTab, getSettingsContent, onDone } = renderSettingsView()
-		dispatchSettings({ settingsImportedAt: 1 })
+		dispatchSettings({ settingsImportedAt: 1, approvalMode: "ask" })
 		activateTab("autoApprove")
-		const toggle = within(getSettingsContent()).getByTestId("always-allow-tickets-toggle")
+		const auto = within(getSettingsContent()).getByTestId("approval-mode-auto")
 
-		expect(toggle).toHaveAttribute("aria-pressed", "false")
-		fireEvent.click(toggle)
+		fireEvent.click(auto)
 		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
 		fireEvent.click(screen.getByTestId("alert-dialog-cancel"))
-		expect(toggle).toHaveAttribute("aria-pressed", "true")
+		expect(auto).toHaveAttribute("aria-pressed", "true")
 		expect(onDone).not.toHaveBeenCalled()
 
 		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
 		fireEvent.click(screen.getByTestId("alert-dialog-action"))
-		expect(toggle).toHaveAttribute("aria-pressed", "false")
+		expect(within(getSettingsContent()).getByTestId("approval-mode-ask")).toHaveAttribute("aria-pressed", "true")
 		expect(onDone).toHaveBeenCalledTimes(1)
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
 	})
@@ -822,45 +816,22 @@ describe("SettingsView - Allowed Commands", () => {
 		vi.clearAllMocks()
 	})
 
-	it("shows allowed commands section when alwaysAllowExecute is enabled", () => {
-		// Render once and get the activateTab helper
+	it("shows allowed commands section for the session dial", () => {
 		const { activateTab, getSettingsContent } = renderSettingsView()
-
-		// Activate the autoApprove tab
 		activateTab("autoApprove")
-
 		const content = getSettingsContent()
-		// Enable always allow execute
-		const executeCheckbox = within(content).getByTestId("always-allow-execute-toggle")
-		fireEvent.click(executeCheckbox)
-		// Verify allowed commands section appears
 		expect(within(content).getByTestId("allowed-commands-heading")).toBeInTheDocument()
 		expect(within(content).getByTestId("command-input")).toBeInTheDocument()
 	})
 
 	it("adds new command to the list", () => {
-		// Render once and get the activateTab helper
 		const { activateTab, getSettingsContent } = renderSettingsView()
-
-		// Activate the autoApprove tab
 		activateTab("autoApprove")
-
 		const content = getSettingsContent()
-		// Enable always allow execute
-		const executeCheckbox = within(content).getByTestId("always-allow-execute-toggle")
-		fireEvent.click(executeCheckbox)
-
-		// Add a new command
 		const input = within(content).getByTestId("command-input")
 		fireEvent.change(input, { target: { value: "npm test" } })
-
-		const addButton = within(content).getByTestId("add-command-button")
-		fireEvent.click(addButton)
-
-		// Verify command was added
+		fireEvent.click(within(content).getByTestId("add-command-button"))
 		expect(within(content).getByText("npm test")).toBeInTheDocument()
-
-		// SettingsView buffers edits until Save.
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "updateSettings",
@@ -872,31 +843,14 @@ describe("SettingsView - Allowed Commands", () => {
 	})
 
 	it("removes command from the list", () => {
-		// Render once and get the activateTab helper
 		const { activateTab, getSettingsContent } = renderSettingsView()
-
-		// Activate the autoApprove tab
 		activateTab("autoApprove")
-
 		const content = getSettingsContent()
-		// Enable always allow execute
-		const executeCheckbox = within(content).getByTestId("always-allow-execute-toggle")
-		fireEvent.click(executeCheckbox)
-
-		// Add a command
 		const input = within(content).getByTestId("command-input")
 		fireEvent.change(input, { target: { value: "npm test" } })
-		const addButton = within(content).getByTestId("add-command-button")
-		fireEvent.click(addButton)
-
-		// Remove the command
-		const removeButton = within(content).getByTestId("remove-command-0")
-		fireEvent.click(removeButton)
-
-		// Verify command was removed
+		fireEvent.click(within(content).getByTestId("add-command-button"))
+		fireEvent.click(within(content).getByTestId("remove-command-0"))
 		expect(within(content).queryByText("npm test")).not.toBeInTheDocument()
-
-		// SettingsView buffers edits until Save.
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "updateSettings",
@@ -958,11 +912,6 @@ describe("SettingsView - Duplicate Commands", () => {
 		activateTab("autoApprove")
 
 		const content = getSettingsContent()
-		// Enable always allow execute
-		const executeCheckbox = within(content).getByTestId("always-allow-execute-toggle")
-		fireEvent.click(executeCheckbox)
-
-		// Add a command twice
 		const input = within(content).getByTestId("command-input")
 		const addButton = within(content).getByTestId("add-command-button")
 
@@ -987,19 +936,10 @@ describe("SettingsView - Duplicate Commands", () => {
 		activateTab("autoApprove")
 
 		const content = getSettingsContent()
-		// Enable always allow execute
-		const executeCheckbox = within(content).getByTestId("always-allow-execute-toggle")
-		fireEvent.click(executeCheckbox)
-
-		// Add a command
 		const input = within(content).getByTestId("command-input")
 		fireEvent.change(input, { target: { value: "npm test" } })
-		const addButton = within(content).getByTestId("add-command-button")
-		fireEvent.click(addButton)
-
-		// Click Save
-		const saveButton = screen.getByTestId("save-button")
-		fireEvent.click(saveButton)
+		fireEvent.click(within(content).getByTestId("add-command-button"))
+		fireEvent.click(screen.getByTestId("save-button"))
 
 		// Verify VSCode messages were sent
 		expect(vscode.postMessage).toHaveBeenCalledWith(
@@ -1012,39 +952,24 @@ describe("SettingsView - Duplicate Commands", () => {
 		)
 	})
 
-	it("saves auto-approval master, execute, and sub-agent toggles together", () => {
+	it("saves the session dial and derived chips together", () => {
 		const { activateTab, getSettingsContent } = renderSettingsView()
-
 		activateTab("autoApprove")
-
 		const content = getSettingsContent()
-		const autoApproveCheckbox = within(content)
-			.getByText("settings:autoApprove.enabled")
-			.closest("label")
-			?.querySelector("input")
-		if (!autoApproveCheckbox) {
-			throw new Error("Missing auto-approve checkbox")
-		}
-		fireEvent.click(autoApproveCheckbox)
-
-		const executeCheckbox = within(content).getByTestId("always-allow-execute-toggle")
-		fireEvent.click(executeCheckbox)
-		const subagentCheckbox = within(content).getByTestId("always-allow-subagents-toggle")
-		fireEvent.click(subagentCheckbox)
-
+		fireEvent.click(within(content).getByTestId("approval-mode-auto"))
 		const input = within(content).getByTestId("command-input")
 		fireEvent.change(input, { target: { value: " * " } })
 		fireEvent.click(within(content).getByTestId("add-command-button"))
-
 		fireEvent.click(screen.getByTestId("save-button"))
-
 		expect(vscode.postMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "updateSettings",
 				updatedSettings: expect.objectContaining({
+					approvalMode: "auto",
 					autoApprovalEnabled: true,
 					alwaysAllowExecute: true,
 					alwaysAllowSubagents: true,
+					alwaysAllowWriteOutsideWorkspace: false,
 					allowedCommands: ["*"],
 				}),
 			}),

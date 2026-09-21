@@ -1,5 +1,6 @@
 import { addCustomInstructions } from "../sections/custom-instructions"
 import { getCapabilitiesSection } from "../sections/capabilities"
+import { getSystemInfoSection } from "../sections/system-info"
 import { getRulesSection, getCommandChainOperator } from "../sections/rules"
 import { getObjectiveSection } from "../sections/objective"
 import { getToolUseGuidelinesSection } from "../sections/tool-use-guidelines"
@@ -77,6 +78,11 @@ describe("getRulesSection", () => {
 		expect(result).toContain("bounded follow-up")
 		expect(result).not.toContain("assume the terminal executed the command successfully")
 		expect(result).not.toContain("wait for the user's response after each tool use")
+	})
+
+	it("does not invite Desktop-class exploration outside the workspace", () => {
+		expect(getCapabilitiesSection(cwd)).not.toContain("Desktop")
+		expect(getSystemInfoSection(cwd)).not.toContain("Desktop")
 	})
 
 	it("keeps primary rules free of fixed conversation and discovery recipes", () => {

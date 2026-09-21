@@ -276,6 +276,23 @@
 		"savedSecretPlaceholder": "Saved value hidden"
 	},
 	"autoApprove": {
+		"mode": {
+			"label": "Approval mode",
+			"description": "Ask, Auto, or Full Access. Auto is the default. The opened workspace is the trust boundary.",
+			"ask": "Ask",
+			"auto": "Auto",
+			"bypass": "Full Access",
+			"askDescription": "Auto-approve workspace reads. Ask before writes, commands, spawn, tickets, MCP, and outside paths.",
+			"autoDescription": "Auto-approve in-workspace edits, spawn, tickets, and commands. Ask for true-outside paths, protected files, and denied commands.",
+			"bypassDescription": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
+		},
+		"bypassWarning": {
+			"title": "Enable Full Access?",
+			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands.",
+			"confirm": "Enable Full Access",
+			"cancel": "Cancel"
+		},
+		"advancedMcp": "Advanced MCP auto-approval",
 		"description": "Run these actions without asking for permission. Only enable for actions you fully trust and if you understand the security risks.",
 		"toggleShortcut": "You can configure a keyboard shortcut for this setting <SettingsLink>in your IDE preferences</SettingsLink>.",
 		"enabled": "Auto-Approve Enabled",

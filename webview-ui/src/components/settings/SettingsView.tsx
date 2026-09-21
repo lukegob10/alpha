@@ -209,6 +209,8 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		customSupportPrompts,
 		profileThresholds,
 		autoApprovalEnabled,
+		approvalMode,
+		approvalModeBypassAcknowledged,
 		alwaysAllowFollowupQuestions,
 		followupAutoApproveTimeoutMs,
 		includeDiagnosticMessages,
@@ -410,6 +412,8 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					alwaysAllowWriteOutsideWorkspace: alwaysAllowWriteOutsideWorkspace ?? undefined,
 					alwaysAllowWriteProtected: alwaysAllowWriteProtected ?? undefined,
 					alwaysAllowExecute: alwaysAllowExecute ?? undefined,
+					approvalMode,
+					approvalModeBypassAcknowledged: approvalModeBypassAcknowledged === true,
 					autoApprovalEnabled: autoApprovalEnabled ?? false,
 					disabledBuiltinSkills: cachedState.disabledBuiltinSkills ?? [],
 					alwaysAllowMcp,
@@ -773,19 +777,18 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			{/* Auto-Approve Section */}
 			{section === "autoApprove" && (
 				<AutoApproveSettings
+					approvalMode={approvalMode}
+					approvalModeBypassAcknowledged={approvalModeBypassAcknowledged}
 					alwaysAllowReadOnly={alwaysAllowReadOnly}
 					alwaysAllowReadOnlyOutsideWorkspace={alwaysAllowReadOnlyOutsideWorkspace}
 					alwaysAllowWrite={alwaysAllowWrite}
 					alwaysAllowWriteOutsideWorkspace={alwaysAllowWriteOutsideWorkspace}
 					alwaysAllowWriteProtected={alwaysAllowWriteProtected}
 					alwaysAllowMcp={alwaysAllowMcp}
-					alwaysAllowSubtasks={alwaysAllowSubtasks}
 					alwaysAllowSubagents={alwaysAllowSubagents}
 					alwaysAllowTickets={alwaysAllowTickets}
 					alwaysAllowExecute={alwaysAllowExecute}
-					alwaysAllowFollowupQuestions={alwaysAllowFollowupQuestions}
 					autoApprovalEnabled={autoApprovalEnabled}
-					followupAutoApproveTimeoutMs={followupAutoApproveTimeoutMs}
 					allowedCommands={allowedCommands}
 					allowedMaxRequests={allowedMaxRequests ?? undefined}
 					allowedMaxCost={allowedMaxCost ?? undefined}

@@ -28,6 +28,7 @@ export type AskApproval = (
 	partialMessage?: string,
 	progressStatus?: ToolProgressStatus,
 	forceApproval?: boolean,
+	requiresExplicitApproval?: boolean,
 ) => Promise<boolean>
 
 export type HandleError = (action: string, error: Error) => Promise<void>

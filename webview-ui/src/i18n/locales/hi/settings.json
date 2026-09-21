@@ -270,7 +270,24 @@
 		"subagents": {
 			"label": "उप-एजेंटों",
 			"description": "Alpha को अनुमोदन की आवश्यकता के बिना केवल पढ़ने योग्य उप-एजेंट समूह लॉन्च करने की अनुमति दें। पढ़ने की पहुंच भी स्वतः स्वीकृत होनी चाहिए।"
-		}
+		},
+		"mode": {
+			"label": "Approval mode",
+			"description": "Ask, Auto, or Full Access. Auto is the default. The opened workspace is the trust boundary.",
+			"ask": "Ask",
+			"auto": "Auto",
+			"bypass": "पूर्ण पहुँच",
+			"askDescription": "Auto-approve workspace reads. Ask before writes, commands, spawn, tickets, MCP, and outside paths.",
+			"autoDescription": "Auto-approve in-workspace edits, spawn, tickets, and commands. Ask for true-outside paths, protected files, and denied commands.",
+			"bypassDescription": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
+		},
+		"bypassWarning": {
+			"title": "Enable Full Access?",
+			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands.",
+			"confirm": "Enable Full Access",
+			"cancel": "Cancel"
+		},
+		"advancedMcp": "Advanced MCP auto-approval"
 	},
 	"providers": {
 		"providerDocumentation": "{{provider}} दस्तावेज़ीकरण",

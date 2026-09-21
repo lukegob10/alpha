@@ -2,6 +2,8 @@ import * as fs from "fs/promises"
 import path from "path"
 
 const resources = new Set([
+	"assets/skills/skill-builder/references/evaluation.md",
+	"assets/skills/skill-builder/references/standard-and-hosts.md",
 	"webview-ui/build/artifact-kit/v1/reference.md",
 	"webview-ui/build/artifact-kit/v1/examples/review.html",
 	"webview-ui/build/artifact-kit/v1/examples/spec.html",

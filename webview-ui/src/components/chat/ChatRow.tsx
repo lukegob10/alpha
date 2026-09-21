@@ -1065,9 +1065,9 @@ const ChatRowContentInner = ({
 						</div>
 					</ActivityStep>
 				)
+			case "spawnAgent":
 			case "delegateTask":
-				// The persisted inline SubagentGroupCard is the single presentation surface.
-				// ChatView still renders the standard approval controls for this ask.
+				// Ask-mode spawn approval lives on SubagentGroupCard only.
 				return null
 			case "finishTask":
 				return (

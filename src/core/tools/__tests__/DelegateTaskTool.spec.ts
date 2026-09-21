@@ -106,6 +106,7 @@ describe("DelegateTaskTool", () => {
 			"tool",
 			expect.stringContaining('"tool":"delegateTask"'),
 			undefined,
+			undefined,
 			true,
 		)
 		expect(provider.runSubagentGroup).toHaveBeenCalledWith(task, batch, expect.any(AbortSignal))

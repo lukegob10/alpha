@@ -537,6 +537,8 @@ export type ExtensionState = Pick<
 	| "customInstructions"
 	| "dismissedUpsells"
 	| "autoApprovalEnabled"
+	| "approvalMode"
+	| "approvalModeBypassAcknowledged"
 	| "disabledBuiltinSkills"
 	| "maxConcurrentTasks"
 	| "maxConcurrentSubagents"

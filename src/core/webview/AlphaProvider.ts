@@ -105,6 +105,11 @@ import {
 	managedAgentTreeProjectionSchema,
 	subagentUsageSchema,
 	disabledSubagentAutoApprovalPolicy,
+	effectiveCommandAllowlistForMode,
+	isSubagentApprovalNarrowerThanParent,
+	migrateApprovalMode,
+	resolveApprovalFlags,
+	shouldDeriveApprovalFlags,
 } from "@alpha-code/types"
 import { aggregateTaskCostsRecursive, type AggregatedCosts } from "./aggregateTaskCosts"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -563,7 +568,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "september-2026-v2.1.49-task-progress-and-completion"
+	public readonly latestAnnouncementId = "september-2026-v3.0.0-approval-and-performance"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -3232,39 +3237,24 @@ export class AlphaProvider
 
 	/** Capture the effective approval grant without persisting plaintext command rules. */
 	private snapshotSubagentAutoApprovalPolicy(settings: AlphaCodeSettings): SubagentAutoApprovalPolicy {
+		const flags = resolveApprovalFlags(settings)
 		const allowedCommands = this.mergeAllowedCommands(settings.allowedCommands)
 		const deniedCommands = this.mergeDeniedCommands(settings.deniedCommands)
+		const allowlist = shouldDeriveApprovalFlags(settings)
+			? effectiveCommandAllowlistForMode(migrateApprovalMode(settings), allowedCommands)
+			: allowedCommands
 		return {
-			autoApprovalEnabled: settings.autoApprovalEnabled === true,
-			alwaysAllowReadOnly: settings.alwaysAllowReadOnly === true,
-			alwaysAllowReadOnlyOutsideWorkspace: settings.alwaysAllowReadOnlyOutsideWorkspace === true,
-			alwaysAllowWrite: settings.alwaysAllowWrite === true,
-			alwaysAllowWriteOutsideWorkspace: settings.alwaysAllowWriteOutsideWorkspace === true,
-			alwaysAllowWriteProtected: settings.alwaysAllowWriteProtected === true,
-			alwaysAllowTickets: settings.alwaysAllowTickets === true,
-			alwaysAllowExecute: settings.alwaysAllowExecute === true,
-			alwaysAllowSubagents: settings.alwaysAllowSubagents === true,
-			commandApproval: createSubagentCommandApprovalPolicy(allowedCommands, deniedCommands),
+			...flags,
+			commandApproval: createSubagentCommandApprovalPolicy(allowlist, deniedCommands),
 		}
 	}
 
-	private isFullSubagentAutoApprovalPolicy(policy: SubagentAutoApprovalPolicy): boolean {
-		const commandPolicies = [policy.commandApproval, ...(policy.commandApprovalCeilings ?? [])]
-		return (
-			policy.autoApprovalEnabled &&
-			policy.alwaysAllowReadOnly &&
-			policy.alwaysAllowReadOnlyOutsideWorkspace &&
-			policy.alwaysAllowWrite &&
-			policy.alwaysAllowWriteOutsideWorkspace &&
-			policy.alwaysAllowWriteProtected &&
-			policy.alwaysAllowTickets === true &&
-			policy.alwaysAllowExecute &&
-			policy.alwaysAllowSubagents &&
-			commandPolicies.every(
-				(commandPolicy) =>
-					commandPolicy.allowAll && !commandPolicy.denyAll && commandPolicy.denied.length === 0,
-			)
-		)
+	private projectApprovalSettings(settings: AlphaCodeSettings) {
+		return {
+			approvalMode: shouldDeriveApprovalFlags(settings) ? migrateApprovalMode(settings) : undefined,
+			approvalModeBypassAcknowledged: settings.approvalModeBypassAcknowledged === true,
+			...resolveApprovalFlags(settings),
+		}
 	}
 
 	/** Freeze the effective nested grant without recovering or persisting plaintext command prefixes. */
@@ -3558,6 +3548,8 @@ export class AlphaProvider
 			customSupportPrompts,
 			enhancementApiConfigId,
 			autoApprovalEnabled,
+			approvalMode,
+			approvalModeBypassAcknowledged,
 			customModes,
 			experiments,
 			maxOpenTabsContext,
@@ -3595,9 +3587,10 @@ export class AlphaProvider
 		const currentTask = this.currentView.type === "task" ? this.getLiveTask(this.currentView.taskId) : undefined
 		const currentTaskAutoApprovalRestricted =
 			currentTask?.taskKind === "subagent"
-				? !this.isFullSubagentAutoApprovalPolicy(
+				? isSubagentApprovalNarrowerThanParent(
 						currentTask.subagentContextManifest?.runtimePolicy.autoApproval ??
 							disabledSubagentAutoApprovalPolicy,
+						approvalMode ?? migrateApprovalMode({ autoApprovalEnabled }),
 					)
 				: false
 		let currentTaskMode: string | undefined
@@ -3653,6 +3646,8 @@ export class AlphaProvider
 			apiConfiguration: currentTaskApiConfiguration,
 			customInstructions,
 			profileThresholds: profileThresholds ?? {},
+			approvalMode,
+			approvalModeBypassAcknowledged: approvalModeBypassAcknowledged ?? false,
 			alwaysAllowReadOnly: alwaysAllowReadOnly ?? false,
 			alwaysAllowReadOnlyOutsideWorkspace: alwaysAllowReadOnlyOutsideWorkspace ?? false,
 			alwaysAllowWrite: alwaysAllowWrite ?? false,
@@ -3814,6 +3809,7 @@ export class AlphaProvider
 
 		// Build the apiConfiguration object combining state values and secrets.
 		const providerSettings = this.getProviderSettingsSnapshot()
+		const approval = this.projectApprovalSettings(stateValues)
 		const orchestrationSettings = resolveSubagentOrchestrationSettings({
 			maxConcurrentSubagents: stateValues.maxConcurrentSubagents,
 			subagentDelegationPolicy: stateValues.subagentDelegationPolicy,
@@ -3831,16 +3827,18 @@ export class AlphaProvider
 			lastShownAnnouncementId: stateValues.lastShownAnnouncementId,
 			customInstructions: stateValues.customInstructions,
 			apiModelId: stateValues.apiModelId,
-			alwaysAllowReadOnly: stateValues.alwaysAllowReadOnly ?? false,
-			alwaysAllowReadOnlyOutsideWorkspace: stateValues.alwaysAllowReadOnlyOutsideWorkspace ?? false,
-			alwaysAllowWrite: stateValues.alwaysAllowWrite ?? false,
-			alwaysAllowWriteOutsideWorkspace: stateValues.alwaysAllowWriteOutsideWorkspace ?? false,
-			alwaysAllowWriteProtected: stateValues.alwaysAllowWriteProtected ?? false,
-			alwaysAllowExecute: stateValues.alwaysAllowExecute ?? false,
-			alwaysAllowMcp: stateValues.alwaysAllowMcp ?? false,
-			alwaysAllowSubtasks: stateValues.alwaysAllowSubtasks ?? false,
-			alwaysAllowSubagents: stateValues.alwaysAllowSubagents ?? false,
-			alwaysAllowTickets: stateValues.alwaysAllowTickets ?? false,
+			approvalMode: approval.approvalMode,
+			approvalModeBypassAcknowledged: approval.approvalModeBypassAcknowledged,
+			alwaysAllowReadOnly: approval.alwaysAllowReadOnly,
+			alwaysAllowReadOnlyOutsideWorkspace: approval.alwaysAllowReadOnlyOutsideWorkspace,
+			alwaysAllowWrite: approval.alwaysAllowWrite,
+			alwaysAllowWriteOutsideWorkspace: approval.alwaysAllowWriteOutsideWorkspace,
+			alwaysAllowWriteProtected: approval.alwaysAllowWriteProtected,
+			alwaysAllowExecute: approval.alwaysAllowExecute,
+			alwaysAllowMcp: approval.alwaysAllowMcp,
+			alwaysAllowSubtasks: approval.alwaysAllowSubtasks,
+			alwaysAllowSubagents: approval.alwaysAllowSubagents,
+			alwaysAllowTickets: approval.alwaysAllowTickets,
 			maxConcurrentTasks: this.getConfiguredMaxConcurrentTasks(),
 			maxConcurrentSubagents: orchestrationSettings.maxConcurrentSubagents,
 			subagentDelegationPolicy: orchestrationSettings.delegationPolicy,
@@ -3852,7 +3850,7 @@ export class AlphaProvider
 			subagentRootCostBudget: orchestrationSettings.rootCostBudget,
 			subagentDefaultApiConfigId: stateValues.subagentDefaultApiConfigId,
 			subagentApiConfigByRole: stateValues.subagentApiConfigByRole,
-			alwaysAllowFollowupQuestions: stateValues.alwaysAllowFollowupQuestions ?? false,
+			alwaysAllowFollowupQuestions: approval.alwaysAllowFollowupQuestions,
 			followupAutoApproveTimeoutMs: stateValues.followupAutoApproveTimeoutMs ?? 60000,
 			diagnosticsEnabled: stateValues.diagnosticsEnabled ?? true,
 			allowedMaxRequests: stateValues.allowedMaxRequests,
@@ -3892,7 +3890,7 @@ export class AlphaProvider
 			customSupportPrompts: stateValues.customSupportPrompts ?? {},
 			enhancementApiConfigId: stateValues.enhancementApiConfigId,
 			experiments: stateValues.experiments ?? experimentDefault,
-			autoApprovalEnabled: stateValues.autoApprovalEnabled ?? false,
+			autoApprovalEnabled: approval.autoApprovalEnabled,
 			disabledBuiltinSkills: stateValues.disabledBuiltinSkills ?? [],
 			customModes,
 			maxOpenTabsContext: stateValues.maxOpenTabsContext ?? 20,
@@ -5285,9 +5283,11 @@ export class AlphaProvider
 			policy.alwaysAllowReadOnly &&
 			normalizedDrafts.every((draft) => draft.agent_kind !== "worker" || policy.alwaysAllowWrite)
 		const autoEligible = isAutoEligibleFor(liveAutoApprovalPolicy) && isAutoEligibleFor(inheritedAutoApprovalPolicy)
-		const requiresExplicitApproval =
-			!autoEligible ||
-			provisionalDelegationPolicies.some((decision) => decision.authorization === "pending-approval")
+		const approvalMode = migrateApprovalMode(settings)
+		const pendingExplicitOnly = provisionalDelegationPolicies.some(
+			(decision) => decision.policy === "explicit-only" && decision.authorization === "pending-approval",
+		)
+		const requiresExplicitApproval = approvalMode === "ask" || !autoEligible || pendingExplicitOnly
 		const orchestrations: SubagentManifestOrchestration[] = orchestrationBases.map((base, index) => ({
 			...base,
 			delegationPolicy: provisionalDelegationPolicies[index],

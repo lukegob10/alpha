@@ -75,6 +75,7 @@ export class SpawnAgentTool extends BaseTool<"spawn_agent"> {
 					},
 				}),
 				undefined,
+				undefined,
 				prepared.requiresExplicitApproval === true,
 			)
 		} catch (error) {

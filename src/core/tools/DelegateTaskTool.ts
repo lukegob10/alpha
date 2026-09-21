@@ -69,6 +69,7 @@ export class DelegateTaskTool extends BaseTool<"delegate_task"> {
 					})),
 				}),
 				undefined,
+				undefined,
 				prepared.requiresExplicitApproval === true,
 			)
 		} catch (error) {
