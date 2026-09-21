@@ -242,36 +242,40 @@ test("unknown tools collapse to other and never leak their names", () => {
 	assert.doesNotMatch(JSON.stringify(report), /private|secret/)
 })
 
+const failureModeTrace = () => [
+	event(1, "model_request_started", { attempt: 0 }),
+	event(2, "tool_result", { name: "skill" }),
+	event(3, "model_request_started", { attempt: 0 }),
+	event(4, "tool_result", { name: "spawn_agent" }),
+	event(5, "model_request_started", { attempt: 0 }),
+	event(6, "tool_result", { name: "update_todo_list" }),
+	event(7, "model_request_started", { attempt: 0 }),
+	event(8, "tool_result", { name: "list_tickets" }),
+	event(9, "model_request_started", { attempt: 0 }),
+	event(10, "tool_result", {
+		name: "shell",
+		arguments: { command: "Select-String -Path * -Pattern computeReorderPoint" },
+	}),
+	event(11, "model_request_started", { attempt: 0 }),
+	event(12, "tool_result", { name: "list_files" }),
+	event(13, "model_request_started", { attempt: 0 }),
+	event(14, "tool_result", { name: "attempt_completion" }),
+	event(15, "model_request_started", { attempt: 0 }),
+]
+
+const failureModeStage = () => ({
+	candidateCount: 2,
+	rejectionCount: 1,
+	lastReasonCode: "command_running",
+	backgroundedCommandsAtFirstAnswer: 1,
+})
+
 test("failure-mode trace is flagged against the predeclared bar and is not a live measurement", () => {
 	const report = buildReport(
 		input({
 			measurementKind: "reporter-contract-test",
-			trace: [
-				event(1, "model_request_started", { attempt: 0 }),
-				event(2, "tool_result", { name: "skill" }),
-				event(3, "model_request_started", { attempt: 0 }),
-				event(4, "tool_result", { name: "spawn_agent" }),
-				event(5, "model_request_started", { attempt: 0 }),
-				event(6, "tool_result", { name: "update_todo_list" }),
-				event(7, "model_request_started", { attempt: 0 }),
-				event(8, "tool_result", { name: "list_tickets" }),
-				event(9, "model_request_started", { attempt: 0 }),
-				event(10, "tool_result", {
-					name: "shell",
-					arguments: { command: "Select-String -Path * -Pattern computeReorderPoint" },
-				}),
-				event(11, "model_request_started", { attempt: 0 }),
-				event(12, "tool_result", { name: "list_files" }),
-				event(13, "model_request_started", { attempt: 0 }),
-				event(14, "tool_result", { name: "attempt_completion" }),
-				event(15, "model_request_started", { attempt: 0 }),
-			],
-			completionStage: {
-				candidateCount: 2,
-				rejectionCount: 1,
-				lastReasonCode: "command_running",
-				backgroundedCommandsAtFirstAnswer: 1,
-			},
+			trace: failureModeTrace(),
+			completionStage: failureModeStage(),
 		}),
 	)
 	assert.equal(report.providerRequests.value, 8)
@@ -379,10 +383,7 @@ test("pairing helper rejects a missing candidate sample", () => {
 		promptIds.map((id) => sampleReport(id, 0, { declaredSampleCount: 2 })),
 		{ declaredSampleCount: 2 },
 	)
-	assert.throws(
-		() => pairReports(reference, candidate, { declaredSampleCount: 2, promptIds }),
-		/missing candidate/,
-	)
+	assert.throws(() => pairReports(reference, candidate, { declaredSampleCount: 2, promptIds }), /missing candidate/)
 })
 
 test("pairing keeps unavailable usage unavailable rather than inventing a zero delta", () => {
@@ -399,6 +400,103 @@ test("pairing keeps unavailable usage unavailable rather than inventing a zero d
 	assert.equal(paired.samples[0].delta.providerRequests.value, null)
 	assert.equal(paired.samples[0].delta.providerRequests.coverage, "unavailable")
 	assert.equal(paired.medians.referenceProviderRequests.value, null)
+})
+
+test("pairing reports a real delta from a failure-mode reference to a lookup-shaped candidate", () => {
+	const reference = runEnvelope(
+		promptIds.map((id) =>
+			sampleReport(id, 0, {
+				measurementKind: "scripted-harness",
+				trace: failureModeTrace(),
+				completionStage: failureModeStage(),
+			}),
+		),
+	)
+	const candidate = runEnvelope(
+		promptIds.map((id) =>
+			sampleReport(id, 0, {
+				measurementKind: "scripted-harness",
+				revision: "b".repeat(40),
+			}),
+		),
+	)
+	const paired = pairReports(reference, candidate, { declaredSampleCount: 1, promptIds })
+	assert.equal(paired.admitted, true)
+	assert.equal(paired.liveMeasurement, false)
+	assert.equal(paired.samples.length, 4)
+	assert.deepEqual(paired.promptIds, promptIds)
+	assert.equal(paired.medians.referenceProviderRequests.value, 8)
+	assert.equal(paired.medians.candidateProviderRequests.value, 3)
+	assert.equal(paired.medians.referenceToolResults.value, 7)
+	assert.equal(paired.medians.candidateToolResults.value, 2)
+	for (const sample of paired.samples) {
+		assert.equal(sample.delta.providerRequests.delta, -5)
+		assert.equal(sample.delta.toolResults.delta, -5)
+		assert.equal(sample.reference.barPassed, false)
+		assert.equal(sample.candidate.barPassed, true)
+		assert.equal(sample.candidate.firstTool.value, "search_files")
+		assert.equal(sample.candidate.workflowTools.skill.value, 0)
+		assert.equal(sample.candidate.workflowTools.ticket.value, 0)
+		assert.equal(sample.candidate.workflowTools.spawn.value, 0)
+		assert.equal(sample.candidate.workflowTools.todo.value, 0)
+		assert.equal(sample.candidate.workflowTools.attemptCompletion.value, 0)
+		assert.equal(sample.reference.firstTool.value, "skill")
+	}
+	assert.match(paired.interpretation, /Scripted traces prove reporter\/contract/)
+	assert.doesNotMatch(JSON.stringify(paired), /Select-String|computeReorderPoint|general quality/)
+})
+
+test("pair CLI writes an admitted comparison of the frozen prompt set", async () => {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "lookup-efficiency-pair-"))
+	try {
+		const referenceFile = path.join(directory, "reference-run.json")
+		const candidateFile = path.join(directory, "candidate-run.json")
+		const pairFile = path.join(directory, "pair.json")
+		await fs.writeFile(
+			referenceFile,
+			`${JSON.stringify(
+				runEnvelope(
+					promptIds.map((id) =>
+						sampleReport(id, 0, {
+							measurementKind: "scripted-harness",
+							trace: failureModeTrace(),
+							completionStage: failureModeStage(),
+						}),
+					),
+				),
+			)}\n`,
+		)
+		await fs.writeFile(
+			candidateFile,
+			`${JSON.stringify(
+				runEnvelope(
+					promptIds.map((id) =>
+						sampleReport(id, 0, {
+							measurementKind: "scripted-harness",
+							revision: "b".repeat(40),
+						}),
+					),
+				),
+			)}\n`,
+		)
+		await executeFile(
+			process.execPath,
+			[
+				fileURLToPath(new URL("./lookup-efficiency-pair.mjs", import.meta.url)),
+				referenceFile,
+				candidateFile,
+				pairFile,
+			],
+			{ timeout: 10_000 },
+		)
+		const paired = JSON.parse(await fs.readFile(pairFile, "utf8"))
+		assert.equal(paired.admitted, true)
+		assert.equal(paired.samples.length, 4)
+		assert.equal(paired.liveMeasurement, false)
+		assert.equal(paired.medians.candidateProviderRequests.value, 3)
+	} finally {
+		await fs.rm(directory, { recursive: true, force: true })
+	}
 })
 
 test("frozen cases, subset, and decoy workspaces exist", async () => {
