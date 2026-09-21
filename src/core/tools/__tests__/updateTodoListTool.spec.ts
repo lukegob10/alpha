@@ -5,7 +5,7 @@ import {
 	setPendingTodoList,
 	updateTodoListTool,
 } from "../UpdateTodoListTool"
-import { TodoItem } from "@alpha-code/types"
+import { TodoItem, type TaskWorkPlan } from "@alpha-code/types"
 import type { Task } from "../../task/Task"
 import type { ToolCallbacks } from "../BaseTool"
 
@@ -115,6 +115,76 @@ describe("TODO approval isolation", () => {
 		expect(callbacks.handleError).not.toHaveBeenCalled()
 		expect(first.todoList?.map((todo) => todo.content)).toEqual(["First task work"])
 		expect(second.todoList?.map((todo) => todo.content)).toEqual(["Second task work"])
+	})
+})
+
+describe("optional work_plan", () => {
+	const workPlan: TaskWorkPlan = {
+		objective: "Implement the change",
+		constraints: ["Preserve public API"],
+		notes: [],
+		checks: [
+			{
+				id: "behavior",
+				description: "Run the focused unit test",
+				command: "pnpm --dir src test src/core/tools/__tests__/updateTodoListTool.spec.ts",
+				cwd: null,
+				paths: ["src/core/tools/UpdateTodoListTool.ts"],
+				reusable: true,
+			},
+		],
+	}
+
+	function harness() {
+		const task = {
+			taskId: "task",
+			todoList: [],
+			say: vi.fn(),
+			providerRef: { deref: () => undefined },
+			updateWorkPlan: vi.fn().mockResolvedValue(undefined),
+		} as unknown as Task
+		const callbacks = {
+			askApproval: vi.fn<ToolCallbacks["askApproval"]>().mockResolvedValue(true),
+			pushToolResult: vi.fn(),
+			handleError: vi.fn(),
+			setResultMetadata: vi.fn(),
+		}
+		return { task, callbacks }
+	}
+
+	it("does not set a work plan or acceptance checks when called with todos only", async () => {
+		const { task, callbacks } = harness()
+
+		await updateTodoListTool.execute({ todos: "[ ] Look up the handler" }, task, callbacks)
+
+		expect(task.updateWorkPlan).not.toHaveBeenCalled()
+		expect(task.todoList?.map((todo) => todo.content)).toEqual(["Look up the handler"])
+		expect(callbacks.handleError).not.toHaveBeenCalled()
+	})
+
+	it("does not set a work plan when work_plan is null", async () => {
+		const { task, callbacks } = harness()
+
+		await updateTodoListTool.execute({ todos: "[ ] Look up the handler", work_plan: null }, task, callbacks)
+
+		expect(task.updateWorkPlan).not.toHaveBeenCalled()
+		expect(task.todoList?.map((todo) => todo.content)).toEqual(["Look up the handler"])
+	})
+
+	it("still records a work plan with acceptance checks when supplied", async () => {
+		const { task, callbacks } = harness()
+
+		await updateTodoListTool.execute(
+			{
+				todos: "[-] Implement the change\n[ ] Run required checks",
+				work_plan: workPlan,
+			},
+			task,
+			callbacks,
+		)
+
+		expect(task.updateWorkPlan).toHaveBeenCalledExactlyOnceWith(workPlan)
+		expect(task.todoList?.map((todo) => todo.content)).toEqual(["Implement the change", "Run required checks"])
 	})
 })
 

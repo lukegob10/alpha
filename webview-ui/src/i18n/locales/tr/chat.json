@@ -167,6 +167,7 @@
 		"cancelled": "API İsteği İptal Edildi",
 		"streamingFailed": "API Akışı Başarısız",
 		"rateLimitWait": "Hız sınırlaması",
+		"completionWait": "Görev tamamlanmadan önce bekleniyor",
 		"errorTitle": "Sağlayıcı Hatası {{code}}",
 		"errorMessage": {
 			"400": "Sağlayıcı isteği bu şekilde işleyemedi. Görevi durdur ve farklı bir yaklaşım dene.",

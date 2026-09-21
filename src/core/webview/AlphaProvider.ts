@@ -568,7 +568,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "september-2026-v3.0.0-approval-and-performance"
+	public readonly latestAnnouncementId = "september-2026-v3.0.1-lookup-efficiency"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -4206,6 +4206,11 @@ export class AlphaProvider
 		this.log(`[task-session] ${taskId}: ${lifecycle}${waitingReason ? ` (${waitingReason})` : ""}`)
 		this.queueTaskLifecycleHistoryStatus(taskId, lifecycle, waitingReason)
 		void this.postStateToWebviewWithoutTaskHistory()
+	}
+
+	/** Keep the task Running so cancel still works, but name the completion-gate wait. */
+	public markCompletionWait(taskId: string, reasonCode?: string): void {
+		this.markTaskLifecycle(taskId, TaskLifecycleState.Running, reasonCode)
 	}
 
 	private queueTaskLifecycleHistoryStatus(

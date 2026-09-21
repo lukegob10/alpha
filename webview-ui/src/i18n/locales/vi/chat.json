@@ -167,6 +167,7 @@
 		"cancelled": "Yêu cầu API đã hủy",
 		"streamingFailed": "Streaming API thất bại",
 		"rateLimitWait": "Giới hạn tốc độ",
+		"completionWait": "Đang chờ trước khi hoàn tất tác vụ",
 		"errorTitle": "Lỗi nhà cung cấp {{code}}",
 		"errorMessage": {
 			"400": "Nhà cung cấp không thể xử lý yêu cầu theo cách này. Hãy dừng nhiệm vụ và thử một cách tiếp cận khác.",

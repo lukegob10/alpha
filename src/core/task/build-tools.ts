@@ -29,6 +29,12 @@ import { buildTaskToolSurface as captureTaskToolSurface, type TaskToolSurface } 
 import { canonicalizeToolName, ToolRegistry, type ToolRegistryOptions, type TaskReadGrant } from "../tools/ToolRegistry"
 import type { ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { digestValue } from "../agent/StepContext"
+import { classifyRequestWorkClass, type RequestWorkClassDecision } from "../agent/requestWorkClass"
+import {
+	requestWorkClassCacheKey,
+	resolveLookupToolNames,
+	toolNamesReferencedInHistory,
+} from "../agent/lookupToolCatalog"
 import type { ApiMessage } from "../task-persistence/apiMessages"
 import type { McpHub } from "../../services/mcp/McpHub"
 import { buildMcpToolName } from "../../utils/mcp-name"
@@ -51,10 +57,8 @@ export interface BuildToolsOptions {
 	/** Resolved provider/model identity used to gate host-specific schemas. */
 	modelIdentity?: ModelToolIdentity
 	/**
-	 * If true, returns all tools without mode filtering, but also includes
-	 * the list of allowed tool names for use with allowedFunctionNames.
-	 * This enables providers that support function call restrictions (e.g., Gemini)
-	 * to pass all tool definitions while restricting callable tools.
+	 * If true, returns a history-compatible schema superset plus allowedFunctionNames.
+	 * Lookup steps still omit unused workflow names so Vertex/Gemini cannot see them.
 	 */
 	includeAllToolsWithRestrictions?: boolean
 	/** Optional task-lane authority cap applied after mode filtering. */
@@ -73,13 +77,18 @@ export interface BuildToolsOptions {
 	discoveryHistory?: readonly ApiMessage[]
 	/** Cancels this caller's wait without cancelling shared custom-tool loading. */
 	signal?: AbortSignal
+	/**
+	 * Latest user request text used to classify lookup vs full catalogs.
+	 * Uncertain or omitted text keeps the full authorized surface.
+	 */
+	userRequestText?: string
 }
 
 export interface BuildToolsResult {
 	/**
 	 * The tools to pass to the model.
-	 * If includeAllToolsWithRestrictions is true, this includes ALL tools.
-	 * Otherwise, it includes only mode-filtered tools.
+	 * Provider-facing schemas. Restricted providers send a history-compatible
+	 * superset; lookup steps still omit unused workflow names.
 	 */
 	tools: OpenAI.Chat.ChatCompletionTool[]
 	/**
@@ -108,7 +117,7 @@ const AGENT_LIFECYCLE_TOOLS = new Set(["list_agents", "wait_agent", "send_messag
 const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", ...AGENT_LIFECYCLE_TOOLS])
 
 // Bump when native schemas or provider projection rules change. Dynamic schemas are fingerprinted below.
-const TOOL_CATALOG_SCHEMA_VERSION = 2
+const TOOL_CATALOG_SCHEMA_VERSION = 4
 
 const orderedNames = (names: readonly string[] | undefined) =>
 	names ? [...new Set(names.map(canonicalizeToolName))].sort() : undefined
@@ -283,6 +292,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			? applyModelToolPreferences(modelIdentity, openAiModelInfoSaneDefaults)
 			: undefined
 	const disabledTools = orderedNames([...(requestedDisabledTools ?? []), ...(options.policy?.disabledTools ?? [])])!
+	const requestWorkClass = requestWorkClassCacheKey(options.userRequestText, taskKind)
 
 	// Get CodeIndexManager for feature checking.
 	const { CodeIndexManager } = await awaitCatalogInput(import("../../services/code-index/manager"), options.signal)
@@ -339,6 +349,8 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				autoApprovalEnabled: options.autoApprovalEnabled,
 				readGrant: options.readGrant,
 				policy: options.policy,
+				requestWorkClass,
+				historicalToolNames: toolNamesReferencedInHistory(options.discoveryHistory),
 				availableBrowserToolNames,
 				codeIndex: [
 					codeIndexManager?.isFeatureEnabled,
@@ -413,8 +425,12 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 
 		// Combine filtered tools (for backward compatibility and for allowedFunctionNames)
 		const taskAllowedNames = allowedToolNames ? new Set(allowedToolNames.map(canonicalizeToolName)) : undefined
-		const filteredTools = [...filteredNativeTools, ...filteredMcpTools, ...nativeCustomTools].filter(
-			(tool) => !taskAllowedNames || taskAllowedNames.has(canonicalizeToolName(getToolName(tool))),
+		const requestClass = classifyRequestWorkClass(options.userRequestText, { taskKind })
+		const filteredTools = applyLookupCatalogNarrowing(
+			[...filteredNativeTools, ...filteredMcpTools, ...nativeCustomTools].filter(
+				(tool) => !taskAllowedNames || taskAllowedNames.has(canonicalizeToolName(getToolName(tool))),
+			),
+			requestClass,
 		)
 		const mcpCapture = captureMcpAvailability(provider, servers, mcpHub, connectedMcpTools)
 		const registry = new ToolRegistry({
@@ -428,23 +444,17 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				: {}),
 		})
 
-		// If includeAllToolsWithRestrictions is true, return ALL tools but provide
-		// allowed names based on mode filtering
+		// Restricted providers keep historical declarations callable-only via
+		// allowedFunctionNames. Lookup steps still omit unused workflow names.
 		if (includeAllToolsWithRestrictions) {
-			// Combine ALL tools (unfiltered native + all MCP + custom)
 			const allTools = [...taskNativeTools, ...mcpTools, ...nativeCustomTools]
-
-			// Extract names of tools that are allowed based on mode filtering.
-			// Resolve any alias names to canonical names to ensure consistency with allTools
-			// (which uses canonical names). This prevents Gemini errors when tools are renamed
-			// to aliases in filteredTools but allTools contains the original canonical names.
 			const allowedFunctionNames = filteredTools.map((tool) => resolveToolAlias(getToolName(tool)))
 
 			return createCapturedToolSurface({
 				options,
 				disabledTools,
 				registry,
-				schemas: allTools,
+				schemas: advertiseRestrictedCatalog(allTools, filteredTools, requestClass, options.discoveryHistory),
 				allowedFunctionNames,
 				includeAllToolsWithRestrictions: true,
 			})
@@ -470,6 +480,27 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		digest: surface.digest,
 		surface,
 	}
+}
+
+function applyLookupCatalogNarrowing(
+	tools: OpenAI.Chat.ChatCompletionTool[],
+	decision: RequestWorkClassDecision,
+): OpenAI.Chat.ChatCompletionTool[] {
+	const allowed = resolveLookupToolNames(decision)
+	if (!allowed) return tools
+	return tools.filter((tool) => allowed.has(canonicalizeToolName(getToolName(tool))))
+}
+
+function advertiseRestrictedCatalog(
+	allTools: OpenAI.Chat.ChatCompletionTool[],
+	filteredTools: OpenAI.Chat.ChatCompletionTool[],
+	decision: RequestWorkClassDecision,
+	history: readonly ApiMessage[] | undefined,
+): OpenAI.Chat.ChatCompletionTool[] {
+	if (decision.class !== "lookup") return allTools
+	const advertised = new Set(filteredTools.map((tool) => canonicalizeToolName(getToolName(tool))))
+	for (const name of toolNamesReferencedInHistory(history)) advertised.add(name)
+	return allTools.filter((tool) => advertised.has(canonicalizeToolName(getToolName(tool))))
 }
 
 function createCapturedToolSurface(input: {

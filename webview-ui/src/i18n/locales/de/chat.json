@@ -167,6 +167,7 @@
 		"cancelled": "API-Anfrage abgebrochen",
 		"streamingFailed": "API-Streaming fehlgeschlagen",
 		"rateLimitWait": "Ratenbegrenzung",
+		"completionWait": "Wartet, bis die Aufgabe abgeschlossen werden kann",
 		"errorTitle": "Anbieter-Fehler {{code}}",
 		"errorMessage": {
 			"400": "Der Anbieter konnte die Anfrage nicht wie gestellt verarbeiten. Beende die Aufgabe und versuche einen anderen Ansatz.",

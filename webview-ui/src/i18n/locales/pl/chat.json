@@ -167,6 +167,7 @@
 		"cancelled": "Zapytanie API anulowane",
 		"streamingFailed": "Strumieniowanie API nie powiodło się",
 		"rateLimitWait": "Ograniczenie szybkości",
+		"completionWait": "Oczekiwanie na możliwość zakończenia zadania",
 		"errorTitle": "Błąd dostawcy {{code}}",
 		"errorMessage": {
 			"400": "Dostawca nie mógł przetworzyć żądania. Zatrzymaj zadanie i spróbuj innego podejścia.",

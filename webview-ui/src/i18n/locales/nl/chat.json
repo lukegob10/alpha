@@ -162,6 +162,7 @@
 		"cancelled": "API-verzoek geannuleerd",
 		"streamingFailed": "API-streaming mislukt",
 		"rateLimitWait": "Snelheidsbeperking",
+		"completionWait": "Wacht tot de taak kan worden afgerond",
 		"errorTitle": "Fout van provider {{code}}",
 		"errorMessage": {
 			"400": "De provider kon het verzoek niet verwerken zoals ingediend. Stop de taak en probeer een ander benadering.",

@@ -1,6 +1,6 @@
 import type OpenAI from "openai"
 
-const UPDATE_TODO_LIST_DESCRIPTION = `Optional tracking for work with independently verifiable stages; not a prerequisite for starting work or completing a task. Replace the entire TODO list with the current checklist. Always provide the full list; the system will overwrite the previous one.
+const UPDATE_TODO_LIST_DESCRIPTION = `Optional tracking for work with independently verifiable stages; not a prerequisite for starting work or completing a task. Do not call this tool for questions, lookups, or single-file/single-step edits unless the user asked for a plan. Do not use plans for simple or single-step queries that you can just do or answer immediately. Never attach acceptance checks to a lookup. Replace the entire TODO list with the current checklist. Always provide the full list; the system will overwrite the previous one.
 
 Checklist Format:
 - Use a single-level markdown checklist (no nesting or subtasks)
@@ -12,7 +12,7 @@ Core Principles:
 - Add items only for requested coverage or a concrete dependency, contradiction, material risk, or user scope change
 - Only mark a task as completed when evidence establishes it is fully accomplished
 - Keep all unfinished tasks unless explicitly instructed to remove
-- For complex work, work_plan optionally preserves the objective, constraints, resource/evidence notes, and a few executable acceptance checks across compaction and reload. Null preserves the existing plan. Do not create a plan for a trivial edit.
+- For complex multi-step work, work_plan optionally preserves the objective, constraints, resource/evidence notes, and a few executable acceptance checks across compaction and reload. Null or omitted preserves the existing plan and does not add checks. Do not create a plan for a trivial edit.
 - A declared check is satisfied only by an observed successful shell call with the exact command and working directory. Include all relevant source, test, config, and dependency files in paths; use reusable=false for external/live state. Results are supplied automatically. Do not repeat a passing check without changed inputs or another concrete reason. Failed or stale declared checks prevent a completed outcome; use a blocked outcome when they cannot be resolved.
 - Replace the plan only for an actual change of scope; never remove a failing check to manufacture completion. Notes should retain artifact/resource references, unresolved failures, and external operations requiring reconciliation, without secrets.
 
@@ -36,6 +36,8 @@ export default {
 				},
 				work_plan: {
 					type: ["object", "null"],
+					description:
+						"Optional. Omit or pass null for todo-only updates. Never attach acceptance checks to a lookup.",
 					properties: {
 						objective: { type: "string", maxLength: 2000 },
 						constraints: { type: "array", maxItems: 16, items: { type: "string", maxLength: 2000 } },
@@ -69,7 +71,9 @@ export default {
 					additionalProperties: false,
 				},
 			},
-			required: ["todos", "work_plan"],
+			// Native calls may omit work_plan. OpenAI strict conversion still lists every
+			// property as required, so work_plan stays ["object","null"] rather than dummy checks.
+			required: ["todos"],
 			additionalProperties: false,
 		},
 	},

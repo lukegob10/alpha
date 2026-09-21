@@ -167,6 +167,7 @@
 		"cancelled": "Solicitud API cancelada",
 		"streamingFailed": "Transmisión API falló",
 		"rateLimitWait": "Limitación de tasa",
+		"completionWait": "Esperando para poder finalizar la tarea",
 		"errorTitle": "Error del proveedor {{code}}",
 		"errorMessage": {
 			"400": "El proveedor no pudo procesar la solicitud tal como se hizo. Detén la tarea e intenta un enfoque diferente.",

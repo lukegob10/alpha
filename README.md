@@ -6,9 +6,11 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v3.0.0
+## Welcome to Alpha v3.0.1
 
-Alpha v3.0.0 adds clearer approval modes, safer outside-workspace reviews, and faster checkpoint history comparisons.
+Alpha v3.0.1 makes ordinary lookup and Q&A turns more direct while adding privacy-safe lookup-efficiency measurement.
+
+- Ordinary lookup and Q&A turns avoid redundant search, skill, todo, and mutation-shaped completion work
 
 - Distinct successful commands can continue even when their purpose falls outside the supported Git and ripgrep inspection grammar
 

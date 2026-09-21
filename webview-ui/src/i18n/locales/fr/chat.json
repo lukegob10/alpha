@@ -167,6 +167,7 @@
 		"cancelled": "Requête API annulée",
 		"streamingFailed": "Échec du streaming API",
 		"rateLimitWait": "Limitation du débit",
+		"completionWait": "En attente avant de pouvoir terminer la tâche",
 		"errorTitle": "Erreur du fournisseur {{code}}",
 		"errorMessage": {
 			"400": "Le fournisseur n'a pas pu traiter la demande telle que présentée. Arrête la tâche et essaie une approche différente.",

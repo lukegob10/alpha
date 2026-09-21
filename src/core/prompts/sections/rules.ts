@@ -35,12 +35,12 @@ function getCommandChainNote(): string {
 
 	// Check for PowerShell
 	if (shell.includes("powershell") || shell.includes("pwsh")) {
-		return "Note: Using `;` for PowerShell command chaining. For bash/zsh use `&&`, for cmd.exe use `&&`. IMPORTANT: When using PowerShell, avoid Unix-specific utilities like `sed`, `grep`, `awk`, `cat`, `rm`, `cp`, `mv`. Instead use PowerShell equivalents: `Select-String` for grep, `Get-Content` for cat, `Remove-Item` for rm, `Copy-Item` for cp, `Move-Item` for mv, and PowerShell's `-replace` operator or `[regex]` for sed. For waits/delays in PowerShell, use `Start-Sleep -Seconds N`; do not use cmd-specific forms like `timeout /t N > nul`."
+		return "Note: Using `;` for PowerShell command chaining. For bash/zsh use `&&`, for cmd.exe use `&&`. Prefer `search_files` for content and path search on every OS, then `read_file` on a hit; do not use `Select-String`, `grep`, or recursive `Get-ChildItem` as a repository-search substitute. For mutations, avoid Unix-specific utilities like `sed`, `grep`, `awk`, `cat`, `rm`, `cp`, `mv`; use PowerShell equivalents: `Remove-Item` for rm, `Copy-Item` for cp, `Move-Item` for mv, and PowerShell's `-replace` operator or `[regex]` for sed. For waits/delays in PowerShell, use `Start-Sleep -Seconds N`; do not use cmd-specific forms like `timeout /t N > nul`."
 	}
 
 	// Check for cmd.exe
 	if (shell.includes("cmd.exe")) {
-		return "Note: Using `&&` for cmd.exe command chaining (conditional execution). For bash/zsh use `&&`, for PowerShell use `;`. IMPORTANT: When using cmd.exe, avoid Unix-specific utilities like `sed`, `grep`, `awk`, `cat`, `rm`, `cp`, `mv`. Use built-in commands like `type` for cat, `del` for rm, `copy` for cp, `move` for mv, `find`/`findstr` for grep, or consider using PowerShell commands instead."
+		return "Note: Using `&&` for cmd.exe command chaining (conditional execution). For bash/zsh use `&&`, for PowerShell use `;`. Prefer `search_files` for content and path search on every OS, then `read_file` on a hit; do not use `find`, `findstr`, or `grep` as a repository-search substitute. For mutations, avoid Unix-specific utilities like `sed`, `grep`, `awk`, `cat`, `rm`, `cp`, `mv`; use built-in commands like `del` for rm, `copy` for cp, and `move` for mv."
 	}
 
 	// Unix shells

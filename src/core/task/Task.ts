@@ -207,6 +207,7 @@ import { AlphaProtectedController } from "../protect/AlphaProtectedController"
 import { type AssistantMessageContent, presentAssistantMessage } from "../assistant-message"
 import { NativeToolCallParser, type ToolCallStreamEvent } from "../assistant-message/NativeToolCallParser"
 import { AgentResponseAccumulator } from "../agent/AgentResponseAccumulator"
+import { classifyRequestWorkClass, extractUserRequestText } from "../agent/requestWorkClass"
 import {
 	AgentRetryPolicy,
 	delayWithAbort,
@@ -4969,13 +4970,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		try {
 			await this.pendingCommandVerification
 			const runtimeRevision = this.completionRuntimeRevision
-			const outstanding = this.workContext?.plan
-				? await getOutstandingAcceptanceChecks(
-						this.workContext,
-						this.cwd,
-						(file) => this.alphaIgnoreController?.validateAccess(file) ?? true,
-					)
-				: []
+			const outstanding =
+				this.workContext?.plan && !this.isLookupStyleCompletionTurn()
+					? await getOutstandingAcceptanceChecks(
+							this.workContext,
+							this.cwd,
+							(file) => this.alphaIgnoreController?.validateAccess(file) ?? true,
+						)
+					: []
 			const decision = await provider.getParentCompletionDecision(this)
 			// Commands and evidence publication can start while the durable snapshot is read.
 			const lateRuntimeDecision = this.getPendingCompletionRuntimeDecision()
@@ -5100,7 +5102,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private getPendingCompletionRuntimeDecision(): CompletionGateDecision | undefined {
-		const commandRunning = this.hasActiveCommandExecutions()
+		const commandRunning = this.shouldWaitForCommandCompletion()
 		if (!commandRunning && !(this.pendingCommandVerificationCount > 0)) return undefined
 		return {
 			allowed: false,
@@ -5113,6 +5115,32 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	private shouldWaitForCommandCompletion(): boolean {
+		const running = [...(this.commandExecutionEvidence?.values() ?? [])].filter(
+			(evidence) => evidence.status === "running",
+		)
+		if (running.length === 0) return false
+		if (!this.isLookupStyleCompletionTurn()) return true
+		return running.some((evidence) => !this.isAbandonedInspectionCommand(evidence))
+	}
+
+	private isAbandonedInspectionCommand(evidence: CommandExecutionEvidence): boolean {
+		return (
+			evidence.status === "running" &&
+			evidence.returnedInBackground === true &&
+			!evidence.verificationChangeSetIds?.length &&
+			!evidence.acceptanceChecks?.length
+		)
+	}
+
+	private isLookupStyleCompletionTurn(): boolean {
+		if (this.taskKind !== "primary") return false
+		return (
+			classifyRequestWorkClass(this.getUserRequestTextForCatalog(), { taskKind: this.taskKind }).class ===
+			"lookup"
+		)
+	}
+
 	/** Wait outside the workspace mutation gate: receipt publishers need that gate to settle. */
 	public async waitForCompletionGateDecision(): Promise<CompletionGateDecision> {
 		const lease = this.beginAgentWait()
@@ -5121,6 +5149,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let orphanReceiptTimedOut = false
 		let timedOut = false
 		let waited = false
+		let publishedWait = false
 		let lastDecision: CompletionGateDecision | undefined
 		try {
 			while (true) {
@@ -5136,6 +5165,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 				if (lastDecision.classification !== "waiting") return lastDecision
 				waited = true
+				if (!publishedWait) {
+					await this.publishCompletionWaitStatus(lastDecision, true)
+					publishedWait = true
+				}
 				if (lastDecision.reasonCode === "receipt_pending") {
 					orphanReceiptDeadline ??= Date.now() + 30_000
 					if (Date.now() >= orphanReceiptDeadline) {
@@ -5175,7 +5208,31 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		} finally {
 			lease.dispose()
+			if (publishedWait) await this.publishCompletionWaitStatus(undefined, false)
 			if (waited) this.getMutableCompletionStageMetrics().runtimeWaitMs += Math.max(0, Date.now() - startedAt)
+		}
+	}
+
+	private async publishCompletionWaitStatus(
+		decision: CompletionGateDecision | undefined,
+		active: boolean,
+	): Promise<void> {
+		try {
+			this.providerRef.deref()?.markCompletionWait?.(this.taskId, active ? decision?.reasonCode : undefined)
+			if (typeof this.say !== "function" || !Array.isArray(this.clineMessages)) return
+			if (!active) {
+				await this.say("api_req_rate_limit_wait", undefined, undefined, false)
+				return
+			}
+			if (decision?.classification !== "waiting") return
+			await this.say(
+				"api_req_rate_limit_wait",
+				JSON.stringify({ kind: "completion", reason: decision.reasonCode ?? "command_running" }),
+				undefined,
+				true,
+			)
+		} catch {
+			// Chat/lifecycle wait status is best-effort and must not change the gate decision.
 		}
 	}
 	private getMutableCompletionStageMetrics(): CompletionStageMetrics {
@@ -5692,6 +5749,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Primary catalogs stay eager across idle, active, and reloaded sessions.
 		// Managed children are narrowed separately by their frozen authority grants.
 		return this.taskKind === "primary"
+	}
+
+	private getUserRequestTextForCatalog(): string | undefined {
+		return extractUserRequestText(this.apiConversationHistory, this.metadata?.task)
 	}
 
 	public getInheritedSubagentSkill(name: string) {
@@ -6575,6 +6636,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				allowedToolNames: this.getTaskAllowedToolNames(),
 				taskKind: this.taskKind,
 				enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
+				userRequestText: this.getUserRequestTextForCatalog(),
 			})
 			allTools = toolsResult.tools
 			allowedFunctionNames = toolsResult.allowedFunctionNames
@@ -10675,6 +10737,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						allowedToolNames: this.getTaskAllowedToolNames(),
 						taskKind: this.taskKind,
 						enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
+						userRequestText: this.getUserRequestTextForCatalog(),
 					}),
 				)
 				allTools = toolsResult.tools
@@ -11208,6 +11271,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								allowedToolNames: this.getTaskAllowedToolNames(),
 								taskKind: this.taskKind,
 								enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
+								userRequestText: this.getUserRequestTextForCatalog(),
 							}),
 						)
 						contextMgmtTools = toolsResult.tools
@@ -11480,6 +11544,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					allowedToolNames: this.getTaskAllowedToolNames(),
 					taskKind: this.taskKind,
 					enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
+					userRequestText: this.getUserRequestTextForCatalog(),
 				}),
 			)
 			allTools = toolsResult.tools

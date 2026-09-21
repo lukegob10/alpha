@@ -167,6 +167,7 @@
 		"cancelled": "Requisição API cancelada",
 		"streamingFailed": "Streaming API falhou",
 		"rateLimitWait": "Limitação de taxa",
+		"completionWait": "Aguardando para concluir a tarefa",
 		"errorTitle": "Erro do provedor {{code}}",
 		"errorMessage": {
 			"400": "O provedor não conseguiu processar a solicitação conforme feita. Interrompa a tarefa e tente uma abordagem diferente.",

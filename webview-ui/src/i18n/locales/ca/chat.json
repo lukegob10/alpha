@@ -167,6 +167,7 @@
 		"cancelled": "Sol·licitud API cancel·lada",
 		"streamingFailed": "Transmissió API ha fallat",
 		"rateLimitWait": "Limitació de taxa",
+		"completionWait": "Esperant per poder finalitzar la tasca",
 		"errorTitle": "Error de proveïdor {{code}}",
 		"errorMessage": {
 			"400": "El proveïdor no ha pogut processar la sol·licitud tal com es va fer. Interromp la tasca i prova una abordatge diferent.",

@@ -11,6 +11,7 @@ vi.mock("react-i18next", () => ({
 		t: (key: string) => {
 			const map: Record<string, string> = {
 				"chat:apiRequest.rateLimitWait": "Rate limiting",
+				"chat:apiRequest.completionWait": "Waiting before the task can finish",
 			}
 			return map[key] ?? key
 		},
@@ -74,5 +75,21 @@ describe("ChatRow - rate limit wait", () => {
 		expect(screen.queryByText("Rate limiting")).toBeNull()
 		// Nothing should be rendered
 		expect(container.firstChild).toBeNull()
+	})
+
+	it("renders a non-error progress row for a completion-gate wait", () => {
+		const message: any = {
+			type: "say",
+			say: "api_req_rate_limit_wait",
+			ts: Date.now(),
+			partial: true,
+			text: JSON.stringify({ kind: "completion", reason: "command_running" }),
+		}
+
+		renderChatRow(message)
+
+		expect(screen.getByText("Waiting before the task can finish")).toBeInTheDocument()
+		expect(screen.queryByText("Details")).toBeNull()
+		expect(screen.queryByText("1s")).toBeNull()
 	})
 })
