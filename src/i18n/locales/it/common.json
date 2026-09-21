@@ -155,6 +155,11 @@
 		"missing_task_files": "I file di questa attività sono mancanti. Vuoi rimuoverla dall'elenco delle attività?",
 		"auto_import_failed": "Importazione automatica delle impostazioni Alpha fallita: {{error}}"
 	},
+	"planHandoff": {
+		"tooLarge": "Il piano proposto è troppo grande per essere salvato (massimo 100.000 caratteri). Il piano precedente è stato mantenuto.",
+		"implementInstruction": "Implementa il piano proposto attuale.",
+		"implementFailed": "Impossibile avviare l’implementazione del piano. Controlla l’attività e il piano attuali, quindi riprova."
+	},
 	"info": {
 		"no_changes": "Nessuna modifica trovata.",
 		"clipboard_copy": "Messaggio di sistema copiato con successo negli appunti",

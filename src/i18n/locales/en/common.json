@@ -155,6 +155,11 @@
 		"missing_task_files": "This task's files are missing. Would you like to remove it from the task list?",
 		"auto_import_failed": "Failed to auto-import Alpha settings: {{error}}"
 	},
+	"planHandoff": {
+		"tooLarge": "The proposed plan is too large to save (maximum 100,000 characters). The previous plan was retained.",
+		"implementInstruction": "Implement the current proposed plan.",
+		"implementFailed": "Could not start plan implementation. Review the current task and plan, then try again."
+	},
 	"info": {
 		"no_changes": "No changes found.",
 		"clipboard_copy": "System prompt successfully copied to clipboard",

@@ -723,6 +723,14 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			control.dispose()
 		}
 	}
+
+	setReasoningOptions(settings: Pick<ProviderSettings, "enableReasoningEffort" | "reasoningEffort">): void {
+		this.options = {
+			...this.options,
+			enableReasoningEffort: settings.enableReasoningEffort,
+			reasoningEffort: settings.reasoningEffort,
+		}
+	}
 	/**
 	 * Creates a language model chat client based on the provided selector.
 	 *

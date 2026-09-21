@@ -25,6 +25,8 @@ import type {
 	ScheduledTaskExecution,
 	ScheduledTaskNotificationPreference,
 	ScheduledTaskSchedule,
+	TaskReasoningPreference,
+	TaskReasoningProjection,
 } from "@alpha-code/types"
 import { getAllModes } from "@alpha/modes"
 
@@ -52,6 +54,7 @@ import {
 	SelectValue,
 	Textarea,
 } from "@/components/ui"
+import { ReasoningSelector, ReasoningSummary } from "@/components/reasoning/ReasoningSelector"
 
 import { Tab, TabContent, TabHeader } from "../common/Tab"
 
@@ -139,6 +142,8 @@ const defaultAutoApproval: ScheduledTaskAutoApproval = {
 	deniedCommands: [],
 }
 
+const defaultReasoningPreference: TaskReasoningPreference = { kind: "default" }
+
 const normalizeAutoApproval = (autoApproval?: ScheduledTaskAutoApproval): ScheduledTaskAutoApproval => ({
 	...defaultAutoApproval,
 	...autoApproval,
@@ -194,6 +199,11 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 	const [skillName, setSkillName] = useState("")
 	const [skillPath, setSkillPath] = useState<string | undefined>()
 	const [apiConfig, setApiConfig] = useState<ScheduledTask["apiConfig"]>()
+	const [reasoningPreference, setReasoningPreference] = useState<TaskReasoningPreference>(defaultReasoningPreference)
+	const [reasoningState, setReasoningState] = useState<TaskReasoningProjection>()
+	const [reasoningStateScopeKey, setReasoningStateScopeKey] = useState<string>()
+	const [reasoningLoading, setReasoningLoading] = useState(false)
+	const [reasoningError, setReasoningError] = useState(false)
 	const [workspace, setWorkspace] = useState(cwd)
 	const [skills, setSkills] = useState<SkillMetadata[]>([])
 	const [pluginName, setPluginName] = useState("")
@@ -208,10 +218,64 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 		useState<ScheduledTaskNotificationPreference>("on_failure")
 	const handledTargetId = useRef<string>()
 	const hydratedDefaultTask = useRef(false)
+	const reasoningRequestSequence = useRef(0)
 	const availableProfile = listApiConfigMeta.find(
 		(profile) => profile.id === apiConfig?.id && profile.name === apiConfig.name,
 	)
+	const availableProfileKey = availableProfile
+		? [availableProfile.id, availableProfile.name, availableProfile.apiProvider, availableProfile.modelId].join(
+				"\u0000",
+			)
+		: undefined
+	const reasoningScopeKey = JSON.stringify([
+		selectedId ?? "new",
+		executionType,
+		apiConfig?.id ?? null,
+		apiConfig?.name ?? null,
+		availableProfileKey ?? null,
+		reasoningPreference,
+	])
+	const hasReasoningProfile = executionType !== "command" && Boolean(apiConfig?.id && availableProfileKey)
+	const displayedReasoningState = reasoningStateScopeKey === reasoningScopeKey ? reasoningState : undefined
+	const displayedReasoningLoading =
+		hasReasoningProfile && (reasoningLoading || reasoningStateScopeKey !== reasoningScopeKey)
 	const availableSkill = skills.find((skill) => skill.name === skillName && (!skillPath || skill.path === skillPath))
+
+	useEffect(() => {
+		const sequence = ++reasoningRequestSequence.current
+		const requestScopeKey = reasoningScopeKey
+		setReasoningState(undefined)
+		setReasoningStateScopeKey(undefined)
+		setReasoningError(false)
+
+		if (executionType === "command" || !apiConfig?.id || !availableProfileKey) {
+			setReasoningLoading(false)
+			setReasoningStateScopeKey(requestScopeKey)
+			return
+		}
+
+		const requestId = crypto.randomUUID()
+		setReasoningLoading(true)
+		const handleMessage = (event: MessageEvent<ExtensionMessage>) => {
+			if (event.data.type !== "reasoningCapabilities") return
+			const response = event.data.taskReasoningResponse
+			if (!response || response.requestId !== requestId || reasoningRequestSequence.current !== sequence) return
+			setReasoningLoading(false)
+			setReasoningError(Boolean(response.error) || !response.state)
+			setReasoningState(response.state)
+			setReasoningStateScopeKey(requestScopeKey)
+		}
+		window.addEventListener("message", handleMessage)
+		vscode.postMessage({
+			type: "getReasoningCapabilities",
+			requestId,
+			reasoningProfileId: apiConfig.id,
+			reasoningPreference,
+		})
+		return () => {
+			window.removeEventListener("message", handleMessage)
+		}
+	}, [apiConfig?.id, apiConfig?.name, availableProfileKey, executionType, reasoningPreference, reasoningScopeKey])
 
 	useEffect(() => {
 		setSkills([])
@@ -246,6 +310,10 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 		setSkillName("")
 		setSkillPath(undefined)
 		setApiConfig(undefined)
+		setReasoningPreference(defaultReasoningPreference)
+		setReasoningState(undefined)
+		setReasoningError(false)
+		setReasoningLoading(false)
 		setWorkspace(cwd)
 		setPluginName("")
 		setExecutionArguments("")
@@ -272,6 +340,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 			setSkillName(execution.type === "skill" ? execution.skillName : "")
 			setSkillPath(execution.type === "skill" ? execution.skillPath : undefined)
 			setApiConfig(task.apiConfig)
+			setReasoningPreference(task.reasoningPreference ?? defaultReasoningPreference)
 			setWorkspace(task.workspace ?? cwd)
 			setPluginName(execution.type === "plugin" ? execution.pluginName : "")
 			setExecutionArguments(
@@ -350,6 +419,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 			apiConfig,
 			execution,
 			mode: taskMode,
+			...(executionType !== "command" ? { reasoningPreference } : {}),
 			autoApproval:
 				executionType === "command"
 					? { ...autoApproval, autoApprovalEnabled: true, alwaysAllowExecute: true }
@@ -608,6 +678,27 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 											</Select>
 										</label>
 									</div>
+									{executionType !== "command" && (
+										<div className="flex min-w-0 flex-col gap-2">
+											<ReasoningSelector
+												state={displayedReasoningState}
+												loading={displayedReasoningLoading}
+												error={reasoningError}
+												onChange={setReasoningPreference}
+												onOpenAdvanced={() =>
+													window.postMessage({
+														type: "action",
+														action: "settingsButtonClicked",
+														values: { section: "providers" },
+													})
+												}
+												scopeKey={reasoningScopeKey}
+											/>
+											<p className="m-0 text-xs text-vscode-descriptionForeground">
+												{t("chat:reasoning.scheduleHelp")}
+											</p>
+										</div>
+									)}
 									{executionType === "command" && (
 										<div className="grid grid-cols-1 gap-4 @min-[420px]:grid-cols-[minmax(0,1fr)_140px]">
 											<label className="flex min-w-0 flex-col gap-2 text-sm">
@@ -911,6 +1002,9 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 															{run.resolvedApiConfig &&
 																" · " + run.resolvedApiConfig.name}
 														</span>
+														{run.reasoningState && (
+															<ReasoningSummary state={run.reasoningState} />
+														)}
 														<p className="m-0 whitespace-pre-wrap break-words">
 															{run.summary ?? run.error ?? run.skipReason}
 														</p>

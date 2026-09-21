@@ -21,10 +21,12 @@ guides. Check implementation details against current source and tests; dated mea
 | Turn completion lifecycle diagnosis                 | [Turn completion investigation](turn-completion-investigation.md)                                                                    |
 | Indexing, retrieval, and index compatibility        | [Code index retrieval](code-index-retrieval.md)                                                                                      |
 | File-search arguments and results                   | [File search](search-files.md)                                                                                                       |
+| Native tool-surface refactor (implementing prompt)  | [Tool surface refactor](tool-surface-refactor.md)                                                                                    |
 | HTML preview security, lifecycle, and limits        | [HTML documents](html-documents.md)                                                                                                  |
 | Scripted core-loop checks and bounded live checks   | [Core confidence](core-confidence.md)                                                                                                |
 | Owned VS Code test profiles and runner options      | [Live-test profiles](vscode-live-test-profiles.md)                                                                                   |
 | Focused Copilot file-edit and read probes           | [File-tool live tests](file-tools-live-tests.md)                                                                                     |
+| Dated frontier comparison (19 Sep 2026)             | [Alpha vs Copilot / Claude / Codex](frontier-harness-scorecard-2026-09-19.md) — reviewer snapshot, not a spec                        |
 | Managed-agent deterministic release gate            | [Milestone certification](certification/managed-agent-milestone-certification.md)                                                    |
 | Managed-agent integration procedures                | [Live acceptance](certification/managed-agent-live-acceptance.md)                                                                    |
 | Proportional-scope evaluation contract and evidence | [Efficiency acceptance](nor36-efficiency-acceptance.md)                                                                              |

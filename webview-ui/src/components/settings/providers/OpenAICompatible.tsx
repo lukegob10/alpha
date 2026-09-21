@@ -11,6 +11,8 @@ import {
 	type ExtensionMessage,
 	azureOpenAiDefaultApiVersion,
 	openAiModelInfoSaneDefaults,
+	openAiCustomReasoningEfforts,
+	resolveOpenAiCustomModelInfo,
 } from "@alpha-code/types"
 
 import { useAppTranslation } from "@src/i18n/TranslationContext"
@@ -243,10 +245,20 @@ export const OpenAICompatible = ({
 					checked={apiConfiguration.enableReasoningEffort ?? false}
 					onChange={(checked: boolean) => {
 						setApiConfigurationField("enableReasoningEffort", checked)
+						if (checked) {
+							const info = apiConfiguration.openAiCustomModelInfo || openAiModelInfoSaneDefaults
+							setApiConfigurationField("openAiCustomModelInfo", {
+								...info,
+								supportsReasoningEffort: info.supportsReasoningEffort ?? [
+									...openAiCustomReasoningEfforts,
+								],
+							})
+						}
 
 						if (!checked) {
-							const { reasoningEffort: _, ...openAiCustomModelInfo } =
-								apiConfiguration.openAiCustomModelInfo || openAiModelInfoSaneDefaults
+							const { reasoningEffort: _, ...openAiCustomModelInfo } = resolveOpenAiCustomModelInfo(
+								apiConfiguration.openAiCustomModelInfo || openAiModelInfoSaneDefaults,
+							)
 
 							setApiConfigurationField("openAiCustomModelInfo", openAiCustomModelInfo)
 						}
@@ -267,13 +279,18 @@ export const OpenAICompatible = ({
 								setApiConfigurationField("openAiCustomModelInfo", {
 									...openAiCustomModelInfo,
 									reasoningEffort: value as ReasoningEffort,
+									supportsReasoningEffort: openAiCustomModelInfo.supportsReasoningEffort ?? [
+										...openAiCustomReasoningEfforts,
+									],
 								})
 							}
 						}}
 						modelInfo={{
 							...(apiConfiguration.openAiCustomModelInfo || openAiModelInfoSaneDefaults),
-							supportsReasoningEffort: ["low", "medium", "high", "xhigh"],
+							supportsReasoningEffort: apiConfiguration.openAiCustomModelInfo
+								?.supportsReasoningEffort ?? [...openAiCustomReasoningEfforts],
 						}}
+						showReasoningEffort
 					/>
 				)}
 			</div>

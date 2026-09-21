@@ -162,6 +162,40 @@ describe("VertexHandler", () => {
 			])
 		})
 
+		it("omits unverified thinking configuration for an unknown Gemini model ID", async () => {
+			const unknownModelId = "gemini-new-preview-model"
+			const generateContentStream = vitest.fn().mockResolvedValue({
+				async *[Symbol.asyncIterator]() {
+					yield {
+						candidates: [{ content: { parts: [{ text: "Unknown model response" }] } }],
+					}
+				},
+			})
+			const unknownHandler = new VertexHandler({
+				apiModelId: unknownModelId,
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+				enableReasoningEffort: true,
+				reasoningEffort: "high",
+			})
+			unknownHandler["client"] = {
+				models: {
+					generateContentStream,
+					generateContent: vitest.fn(),
+					getGenerativeModel: vitest.fn(),
+				},
+			} as any
+
+			for await (const _chunk of unknownHandler.createMessage(systemPrompt, mockMessages)) {
+				// consume stream
+			}
+
+			const request = generateContentStream.mock.calls[0]?.[0]
+			expect(request.model).toBe(unknownModelId)
+			expect(request.config.thinkingConfig).toBeUndefined()
+			expect(JSON.parse(JSON.stringify(request.config))).not.toHaveProperty("thinkingConfig")
+		})
+
 		it("should use non-streaming responses when Vertex streaming is disabled for Gemini", async () => {
 			handler = new VertexHandler({
 				apiModelId: "gemini-3.1-flash-lite",
@@ -490,7 +524,7 @@ describe("VertexHandler", () => {
 			expect(testHandler.getModel().id).toBe("gemini-3.7-flash")
 		})
 
-		it("should pass through unknown Vertex Gemini model IDs with Gemini defaults", () => {
+		it("should pass through unknown Vertex Gemini model IDs without cloning reasoning capabilities", () => {
 			const testHandler = new VertexHandler({
 				apiModelId: "gemini-new-preview-model",
 				vertexProjectId: "test-project",
@@ -501,6 +535,9 @@ describe("VertexHandler", () => {
 
 			expect(modelInfo.id).toBe("gemini-new-preview-model")
 			expect(modelInfo.info.maxTokens).toBeDefined()
+			expect(modelInfo.info.supportsReasoningEffort).toBeUndefined()
+			expect(modelInfo.info.reasoningEffort).toBeUndefined()
+			expect(modelInfo.info.supportsReasoningBudget).toBeUndefined()
 		})
 	})
 

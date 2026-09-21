@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "复制",
 		"copied": "已复制",
+		"implementPlan": "实施计划",
 		"edit": "编辑并重新发送",
 		"restart": "从上一条请求重新开始",
 		"restartWarning": "将重新执行上一条请求，并替换其后的所有消息。工作区文件将保持现状。",
@@ -326,11 +327,58 @@
 		"triggerLabel_zero": "0 个自动批准",
 		"triggerLabel_one": "1 个自动批准",
 		"triggerLabel_other": "{{count}} 个自动批准",
-		"triggerLabelAll": "BRRR"
+		"triggerLabelAll": "全部",
+		"tooltipMode": "Approval mode: {{mode}}",
+		"modes": {
+			"ask": "Ask",
+			"auto": "Auto",
+			"bypass": "完全访问"
+		},
+		"modeDescription": {
+			"ask": "Auto-approve workspace reads. Ask before writes, commands, spawn, tickets, MCP, and outside paths.",
+			"auto": "Auto-approve in-workspace edits, spawn, tickets, and commands. Ask for true-outside paths, protected files, and denied commands.",
+			"bypass": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
+		},
+		"bypassWarning": {
+			"title": "Enable Full Access?",
+			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands.",
+			"confirm": "Enable Full Access",
+			"cancel": "Cancel"
+		}
 	},
 	"reasoning": {
 		"thinking": "思考中",
-		"seconds": "{{count}}秒"
+		"seconds": "{{count}}秒",
+		"label": "推理：{{value}}",
+		"title": "推理",
+		"loading": "加载中…",
+		"unavailable": "不可用",
+		"default": "默认",
+		"off": "关闭",
+		"on": "开启",
+		"none": "无",
+		"help": "默认使用配置文件中的设置。关闭会禁用或省略可选推理。无会发送提供商明确的 none 级别。",
+		"budget": "{{tokens}} 个思考令牌",
+		"advanced": "高级配置文件设置",
+		"custom": "自定义推理令牌",
+		"customHelp": "只能使用此托管模型接受的令牌：1–32 个小写字母、数字、下划线或连字符。不假定支持任何模型系列。",
+		"apply": "应用",
+		"invalidCustom": "令牌无效。将省略推理。",
+		"saving": "保存中…",
+		"nextStep": "下一步",
+		"current": "当前请求：{{value}}",
+		"fallback": "请求了 {{requested}}；将使用 {{effective}}。",
+		"saveFailed": "无法保存推理。已接受的选择未更改。",
+		"unavailableHelp": "此模型没有经过验证的可调推理能力。",
+		"profileDefault": "配置文件默认值 / 高级推理。任务控制可以覆盖此设置，而无需保存配置文件。",
+		"scheduleHelp": "计划更改会影响未来运行；排队中的运行会保留其快照。",
+		"reasons": {
+			"unsupported": "请求的值不受此模型支持。",
+			"unavailable": "此模型的推理能力不可用。",
+			"required": "此模型需要推理。",
+			"budget-only": "此模型使用令牌预算，而不是命名的努力等级。",
+			"invalid-custom": "自定义令牌无效。"
+		}
 	},
 	"contextManagement": {
 		"tokens": "Token",

@@ -354,6 +354,7 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 						apiConfiguration={apiConfiguration}
 						setApiConfigurationField={setApiConfigurationField}
 						modelInfo={selectedModelInfo}
+						showReasoningEffort={false}
 					/>
 				</>
 			) : (

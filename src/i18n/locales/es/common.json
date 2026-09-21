@@ -155,6 +155,11 @@
 		"missing_task_files": "Los archivos de esta tarea faltan. ¿Deseas eliminarla de la lista de tareas?",
 		"auto_import_failed": "Error al importar automáticamente la configuración de Alpha: {{error}}"
 	},
+	"planHandoff": {
+		"tooLarge": "El plan propuesto es demasiado grande para guardarlo (máximo 100.000 caracteres). Se conservó el plan anterior.",
+		"implementInstruction": "Implementa el plan propuesto actual.",
+		"implementFailed": "No se pudo iniciar la implementación del plan. Revisa la tarea y el plan actuales e inténtalo de nuevo."
+	},
 	"info": {
 		"no_changes": "No se encontraron cambios.",
 		"clipboard_copy": "Mensaje del sistema copiado correctamente al portapapeles",

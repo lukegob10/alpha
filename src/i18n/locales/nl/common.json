@@ -155,6 +155,11 @@
 		"missing_task_files": "De bestanden van deze taak ontbreken. Wil je deze uit de takenlijst verwijderen?",
 		"auto_import_failed": "Automatisch importeren van Alpha-instellingen mislukt: {{error}}"
 	},
+	"planHandoff": {
+		"tooLarge": "Het voorgestelde plan is te groot om op te slaan (maximaal 100.000 tekens). Het vorige plan is behouden.",
+		"implementInstruction": "Voer het huidige voorgestelde plan uit.",
+		"implementFailed": "De uitvoering van het plan kon niet worden gestart. Controleer de huidige taak en het plan en probeer het opnieuw."
+	},
 	"info": {
 		"no_changes": "Geen wijzigingen gevonden.",
 		"clipboard_copy": "Systeemprompt succesvol gekopieerd naar klembord",

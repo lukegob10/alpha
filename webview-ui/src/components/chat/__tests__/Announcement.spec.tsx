@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "2.1.49",
+		version: "3.0.0",
 	},
 }))
 
@@ -37,9 +37,9 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 
-		expect(screen.getByText("Welcome to Alpha v2.1.49")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.0.0")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v2.1.49 improves verification, command control, and task continuity."),
+			screen.getByText("Alpha v3.0.0 improves verification, command control, and task continuity."),
 		).toBeInTheDocument()
 	})
 
@@ -66,7 +66,7 @@ describe("Announcement", () => {
 
 		expect(
 			screen.getByText(
-				"Alpha v2.1.49 verbessert die Überprüfung, die Befehlssteuerung und die Fortführung von Aufgaben.",
+				"Alpha v3.0.0 verbessert die Überprüfung, die Befehlssteuerung und die Fortführung von Aufgaben.",
 			),
 		).toBeInTheDocument()
 		expect(

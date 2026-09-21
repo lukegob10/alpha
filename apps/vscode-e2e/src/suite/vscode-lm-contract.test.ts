@@ -1,7 +1,12 @@
 import * as assert from "assert"
 import * as vscode from "vscode"
 
-import { AlphaCodeEventName, type AlphaCodeSettings } from "@alpha-code/types"
+import {
+	AlphaCodeEventName,
+	type AlphaCodeSettings,
+	type TaskReasoningPreference,
+	type TaskReasoningProjection,
+} from "@alpha-code/types"
 
 import { setDefaultSuiteTimeout } from "./test-utils"
 import { sleep, waitFor } from "./utils"
@@ -20,6 +25,8 @@ interface FixtureRequest {
 	index: number
 	scenario: FixtureScenario
 	cancelled: boolean
+	modelId: string
+	configuration?: { reasoningEffort?: string }
 	messages: Array<{ role: vscode.LanguageModelChatMessageRole; parts: FixturePart[] }>
 	tools: string[]
 }
@@ -38,6 +45,8 @@ interface VsCodeLmFixtureControl {
 }
 
 interface ContractTask {
+	apiConfiguration: AlphaCodeSettings
+	getReasoningState(): TaskReasoningProjection
 	abort?: boolean
 	didComplete?: boolean
 	isInitialized?: boolean
@@ -51,6 +60,12 @@ interface ContractTask {
 }
 
 interface ContractHostProvider {
+	setTaskReasoningPreference(
+		taskId: string | undefined,
+		preference: TaskReasoningPreference,
+	): Promise<TaskReasoningProjection>
+	getTaskWithId(taskId: string): Promise<{ historyItem: { reasoningPreference?: TaskReasoningPreference } }>
+	showTaskWithId(taskId: string): Promise<void>
 	getLiveTask(taskId: string): ContractTask | undefined
 	getStateToPostToWebview(): Promise<{ currentTaskId?: string; mode?: string }>
 }
@@ -174,6 +189,41 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 	teardown(async () => {
 		fixture.releaseAll()
 		await globalThis.api.clearCurrentTask().catch(() => undefined)
+	})
+
+	test("persists independent reasoning and omits unverified LM effort without changing model or profile", async () => {
+		const provider = getHostProvider()
+		fixture.reset("completion", { holdRequestIndexes: [0] })
+		let completedCount = 0
+		const onTaskCompleted = () => completedCount++
+		globalThis.api.on(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
+		try {
+			const taskId = await globalThis.api.startNewTask({
+				configuration: createConfiguration(),
+				text: "Complete this reasoning contract fixture.",
+			})
+			await waitForRequestCount(provider, fixture, taskId, 1)
+			const task = provider.getLiveTask(taskId)!
+			const profile = structuredClone(task.apiConfiguration)
+			const requested = { kind: "effort", effort: "high" } as const
+			const state = await provider.setTaskReasoningPreference(taskId, requested)
+			assert.deepStrictEqual(state.requested, requested)
+			assert.equal(state.capabilities.kind, "unavailable")
+			assert.notDeepStrictEqual(state.effective, requested)
+			assert.deepStrictEqual(task.apiConfiguration, profile)
+			assert.equal(fixture.getRequests().length, 1, "Selecting reasoning must not restart the request")
+			assert.equal(fixture.getRequests()[0]!.modelId, FIXTURE_MODEL_ID)
+			assert.equal(fixture.getRequests()[0]!.configuration?.reasoningEffort, undefined)
+			fixture.releaseAll()
+			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 1)
+			assert.deepStrictEqual((await provider.getTaskWithId(taskId)).historyItem.reasoningPreference, requested)
+			await globalThis.api.clearCurrentTask()
+			await provider.showTaskWithId(taskId)
+			assert.deepStrictEqual(provider.getLiveTask(taskId)?.getReasoningState().requested, requested)
+		} finally {
+			globalThis.api.off(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
+			await provider.setTaskReasoningPreference(undefined, { kind: "default" })
+		}
 	})
 
 	test("characterizes VS Code 1.122.1 late cancellation at the direct LM boundary", async () => {

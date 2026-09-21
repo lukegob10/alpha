@@ -61,9 +61,16 @@ interface ThinkingBudgetProps {
 		isUserAction?: boolean,
 	) => void
 	modelInfo?: ModelInfo
+	/** Named effort selection belongs to the task composer for providers that expose task reasoning. */
+	showReasoningEffort?: boolean
 }
 
-export const ThinkingBudget = ({ apiConfiguration, setApiConfigurationField, modelInfo }: ThinkingBudgetProps) => {
+export const ThinkingBudget = ({
+	apiConfiguration,
+	setApiConfigurationField,
+	modelInfo,
+	showReasoningEffort = true,
+}: ThinkingBudgetProps) => {
 	const { t } = useAppTranslation()
 	const { id: selectedModelId } = useSelectedModel(apiConfiguration)
 
@@ -75,7 +82,7 @@ export const ThinkingBudget = ({ apiConfiguration, setApiConfigurationField, mod
 	const isReasoningSupported = !!modelInfo && modelInfo.supportsReasoningBinary
 	const isReasoningBudgetSupported = !!modelInfo && modelInfo.supportsReasoningBudget
 	const isReasoningBudgetRequired = !!modelInfo && modelInfo.requiredReasoningBudget
-	const isReasoningEffortSupported = !!modelInfo && modelInfo.supportsReasoningEffort
+	const isReasoningEffortSupported = showReasoningEffort && !!modelInfo && modelInfo.supportsReasoningEffort
 
 	// Build available reasoning efforts list from capability
 	const supports = modelInfo?.supportsReasoningEffort
@@ -165,6 +172,10 @@ export const ThinkingBudget = ({ apiConfiguration, setApiConfigurationField, mod
 		return null
 	}
 
+	const profileDefaultDescription = (
+		<div className="text-sm text-vscode-descriptionForeground mt-1">{t("chat:reasoning.profileDefault")}</div>
+	)
+
 	// Models with supportsReasoningBinary (binary reasoning) show a simple on/off toggle
 	if (isReasoningSupported) {
 		return (
@@ -176,12 +187,14 @@ export const ThinkingBudget = ({ apiConfiguration, setApiConfigurationField, mod
 					}>
 					{t("settings:providers.useReasoning")}
 				</Checkbox>
+				{profileDefaultDescription}
 			</div>
 		)
 	}
 
 	return isReasoningBudgetSupported && !!modelInfo.maxTokens ? (
 		<>
+			{profileDefaultDescription}
 			{!isReasoningBudgetRequired && (
 				<div className="flex flex-col gap-1">
 					<Checkbox
@@ -267,6 +280,7 @@ export const ThinkingBudget = ({ apiConfiguration, setApiConfigurationField, mod
 					))}
 				</SelectContent>
 			</Select>
+			{profileDefaultDescription}
 		</div>
 	) : null
 }

@@ -1,5 +1,5 @@
 import React from "react"
-import { Check } from "lucide-react"
+import { Check, ChevronDown } from "lucide-react"
 
 import { type ModeConfig, type CustomModePrompts, TelemetryEventName, restoreTaskMode } from "@alpha-code/types"
 
@@ -154,15 +154,9 @@ export const ModeSelector = ({
 				<PopoverTrigger
 					disabled={disabled}
 					data-testid="mode-selector-trigger"
-					className={cn(
-						"inline-flex items-center relative whitespace-nowrap px-1.5 py-1 text-xs",
-						"composer-control text-vscode-foreground",
-						"transition-all duration-150 focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder focus-visible:ring-inset",
-						disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer opacity-90 hover:opacity-100",
-						triggerClassName,
-						!disabled && !hasOpenedModeSelector ? "accent-chip opacity-100" : null,
-					)}>
+					className={cn("composer-control composer-selector", triggerClassName)}>
 					<span className="truncate">{selectedMode?.name || ""}</span>
+					<ChevronDown className="size-3 shrink-0" aria-hidden="true" />
 				</PopoverTrigger>
 			</StandardTooltip>
 			<PopoverContent

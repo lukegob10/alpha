@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.0.0
+
+### Major Changes
+
+- Add clearer Ask, Auto, and Full Access approval modes with explicit outside-workspace warnings.
+- Improve checkpoint initialization and historical diff performance while preserving existing task snapshots.
+- Validate the release on the exact VS Code 1.122.1 compatibility host.
+
 ## 2.1.49
 
 ### Patch Changes

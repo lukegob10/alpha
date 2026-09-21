@@ -5,6 +5,11 @@ import type { HistoryItem } from "@alpha-code/types"
 import HistoryPreview from "../HistoryPreview"
 import type { TaskGroup } from "../types"
 
+vi.mock("@/i18n/TranslationContext", async () => {
+	const { default: i18n } = await import("@/i18n/setup")
+	return { useAppTranslation: () => ({ t: (key: string) => key, i18n }) }
+})
+
 vi.mock("../useTaskSearch")
 vi.mock("../useGroupedTasks")
 

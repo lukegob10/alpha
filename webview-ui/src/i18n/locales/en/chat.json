@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "Copy",
 		"copied": "Copied",
+		"implementPlan": "Implement plan",
 		"edit": "Edit and resend",
 		"restart": "Restart from previous prompt",
 		"restartWarning": "This will rerun the preceding prompt and replace all messages after it. Workspace files will stay as they are.",
@@ -386,10 +387,11 @@
 	"autoApprove": {
 		"tooltipManage": "Manage auto-approval settings",
 		"tooltipStatus": "Auto-approval enabled for: {{toggles}}",
+		"tooltipMode": "Approval mode: {{mode}}",
 		"title": "Auto-approve",
 		"all": "All",
 		"none": "None",
-		"description": "Run these actions without asking for permission. Only enable for actions you fully trust.",
+		"description": "Ask, Auto, or Full Access. Auto is the default. The opened workspace is the trust boundary.",
 		"selectOptionsFirst": "Select at least one option below to enable auto-approval",
 		"toggleAriaLabel": "Toggle auto-approval",
 		"disabledAriaLabel": "Auto-approval disabled - select options first",
@@ -398,7 +400,23 @@
 		"triggerLabel_zero": "0 auto-approve",
 		"triggerLabel_one": "1 auto-approved",
 		"triggerLabel_other": "{{count}} auto-approved",
-		"triggerLabelAll": "BRRR"
+		"triggerLabelAll": "All",
+		"modes": {
+			"ask": "Ask",
+			"auto": "Auto",
+			"bypass": "Full Access"
+		},
+		"modeDescription": {
+			"ask": "Auto-approve workspace reads. Ask before writes, commands, spawn, tickets, MCP, and outside paths.",
+			"auto": "Auto-approve in-workspace edits, spawn, tickets, and commands. Ask for true-outside paths, protected files, and denied commands.",
+			"bypass": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
+		},
+		"bypassWarning": {
+			"title": "Enable Full Access?",
+			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands.",
+			"confirm": "Enable Full Access",
+			"cancel": "Cancel"
+		}
 	},
 	"announcement": {
 		"title": "Welcome to Alpha v{{version}}",
@@ -418,7 +436,37 @@
 	},
 	"reasoning": {
 		"thinking": "Thinking",
-		"seconds": "{{count}}s"
+		"seconds": "{{count}}s",
+		"label": "Reasoning: {{value}}",
+		"title": "Reasoning",
+		"loading": "Loading…",
+		"unavailable": "Unavailable",
+		"default": "Default",
+		"off": "Off",
+		"on": "On",
+		"none": "None",
+		"help": "Default uses the profile setting. Off disables or omits optional reasoning. None sends the provider’s explicit none level.",
+		"budget": "{{tokens}} thinking tokens",
+		"advanced": "Advanced profile settings",
+		"custom": "Custom reasoning token",
+		"customHelp": "Only use a token accepted by this hosted model: 1–32 lowercase letters, digits, underscores or hyphens. No model-family support is assumed.",
+		"apply": "Apply",
+		"invalidCustom": "Invalid token. Reasoning will be omitted.",
+		"saving": "Saving…",
+		"nextStep": "Next step",
+		"current": "Current request: {{value}}",
+		"fallback": "Requested {{requested}}; using {{effective}}.",
+		"saveFailed": "Could not save reasoning. Your accepted choice is unchanged.",
+		"unavailableHelp": "This model has no verified adjustable reasoning capability.",
+		"profileDefault": "Profile default / advanced reasoning. The task control can override this without saving the profile.",
+		"scheduleHelp": "Schedule changes affect future runs; queued runs keep their snapshot.",
+		"reasons": {
+			"unsupported": "The requested value is not supported by this model.",
+			"unavailable": "Reasoning capabilities are unavailable for this model.",
+			"required": "This model requires reasoning.",
+			"budget-only": "This model uses a token budget, not named effort levels.",
+			"invalid-custom": "The custom token is invalid."
+		}
 	},
 	"followUpSuggest": {
 		"copyToInput": "Copy to input (same as shift + click)",

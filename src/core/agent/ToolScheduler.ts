@@ -20,6 +20,11 @@ import {
 } from "../tools/ToolFailure"
 import { getImageOutputPaths } from "../tools/imageOutputPaths"
 import { resolvePathWithExistingAncestor } from "../tools/pathSafety"
+import {
+	normalizeTaskToolArguments,
+	resolveTaskWorkspacePath,
+	type TaskPathContext,
+} from "../tools/taskPathPresentation"
 import { extractMutationPaths } from "./VerificationScope"
 import { formatResponse } from "../prompts/responses"
 import { getModeBySlug } from "../../shared/modes"
@@ -662,6 +667,23 @@ export class ToolScheduler {
 
 	private get executionMode(): ToolExecutionMode {
 		return this.options.executionMode ?? "serial"
+	}
+
+	private resolveScopedPath(candidate: string): string {
+		const task = this.toolTask as TaskPathContext | undefined
+		if (task && typeof task.cwd === "string" && task.cwd.length > 0) {
+			return resolveTaskWorkspacePath(task, candidate)
+		}
+		return path.resolve(this.executionHost.cwd ?? "", candidate)
+	}
+
+	private resolvePolicyPath(toolName: string, candidate: string): string {
+		if (toolName === "shell") {
+			return path.isAbsolute(candidate)
+				? path.resolve(candidate)
+				: path.resolve(this.executionHost.cwd ?? "", candidate)
+		}
+		return this.resolveScopedPath(candidate)
 	}
 
 	private get maxConcurrency(): number {
@@ -1349,14 +1371,19 @@ export class ToolScheduler {
 			return prepared
 		}
 		const rawArguments = rawArgumentsValue as Record<string, unknown>
-		const argumentsValue =
+		const mergedArguments =
 			canonicalName === "manage_command" && call.name === "read_command_output"
 				? { ...rawArguments, action: "read" }
-				: rawArgumentsValue
+				: rawArguments
+		const argumentsValue = normalizeTaskToolArguments(
+			this.toolTask as TaskPathContext,
+			canonicalName,
+			mergedArguments,
+		)
 
 		let pathArguments: string[]
 		try {
-			pathArguments = getPathArguments(canonicalName, argumentsValue as Record<string, unknown>).filter(
+			pathArguments = getPathArguments(canonicalName, argumentsValue).filter(
 				(value): value is string => typeof value === "string" && value.length > 0,
 			)
 		} catch (error) {
@@ -1368,7 +1395,7 @@ export class ToolScheduler {
 		const outsideAccess =
 			this.options.policy?.execution.outsideWorkspace === "approval" && OUTSIDE_WORKSPACE_TOOLS.has(canonicalName)
 		if (canonicalName === "shell") {
-			const args = argumentsValue as Record<string, unknown>
+			const args = argumentsValue
 			if (typeof args.command === "string") {
 				const taskRoot = this.executionHost.cwd ?? ""
 				const roots = this.options.policy?.execution.workspaceRoots
@@ -1398,16 +1425,25 @@ export class ToolScheduler {
 				outsideAccess &&
 				descriptor.capabilities.sideEffects !== "none" &&
 				pathArguments.some(
-					(candidate) => !isPathAllowed(this.options.policy, candidate, this.executionHost.cwd),
+					(candidate) =>
+						!isPathAllowed(
+							this.options.policy,
+							this.resolvePolicyPath(canonicalName, candidate),
+							this.executionHost.cwd,
+						),
 				))
 		prepared.pathIdentities = pathArguments.map((candidate) => {
-			const absolute = path.resolve(this.executionHost.cwd ?? "", candidate)
+			const absolute = this.resolvePolicyPath(canonicalName, candidate)
 			return { absolute, canonical: resolvePathWithExistingAncestor(absolute) }
 		})
 		for (const candidate of pathArguments) {
 			if (
 				!outsideAccess &&
-				!isPathAllowed(this.options.policy, candidate, this.executionHost.cwd ?? "") &&
+				!isPathAllowed(
+					this.options.policy,
+					this.resolvePolicyPath(canonicalName, candidate),
+					this.executionHost.cwd ?? "",
+				) &&
 				!(
 					canonicalName === "read_file" &&
 					(await isBundledSkillResource(this.options.bundledSkillExtensionPath, candidate))
@@ -1539,7 +1575,7 @@ export class ToolScheduler {
 				if (this.isSelectableParallel(prepared)) {
 					throw new ToolReadDeniedError("An approval request cannot run in an approval-free parallel lane.")
 				}
-				const [type, partialMessage, originalProgressStatus, forceApproval] = args
+				const [type, partialMessage, originalProgressStatus, forceApproval, callRequiresExplicit] = args
 				const progressStatus =
 					type === "command" && prepared.commandPathApproval
 						? { ...originalProgressStatus, commandPathApproval: prepared.commandPathApproval }
@@ -1554,7 +1590,8 @@ export class ToolScheduler {
 				) {
 					return prepared.commandApproval.response
 				}
-				const explicitApproval: [boolean] | [] = prepared.requiresExplicitApproval ? [true] : []
+				const explicitApproval: [boolean] | [] =
+					prepared.requiresExplicitApproval || callRequiresExplicit === true ? [true] : []
 				const requestId = `${this.executionHost.taskId}:${prepared.call.id}`
 				this.approvalRequestCount += 1
 

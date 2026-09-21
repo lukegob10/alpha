@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "Копировать",
 		"copied": "Скопировано",
+		"implementPlan": "Реализовать план",
 		"edit": "Изменить и отправить заново",
 		"restart": "Начать заново с предыдущего запроса",
 		"restartWarning": "Предыдущий запрос будет выполнен заново, а все последующие сообщения будут заменены. Файлы рабочей области останутся без изменений.",
@@ -326,7 +327,24 @@
 		"triggerLabel_zero": "0 авто-утвержденных",
 		"triggerLabel_one": "1 авто-утвержден",
 		"triggerLabel_other": "{{count}} авто-утвержденных",
-		"triggerLabelAll": "BRRR"
+		"triggerLabelAll": "Все",
+		"tooltipMode": "Approval mode: {{mode}}",
+		"modes": {
+			"ask": "Ask",
+			"auto": "Auto",
+			"bypass": "Полный доступ"
+		},
+		"modeDescription": {
+			"ask": "Auto-approve workspace reads. Ask before writes, commands, spawn, tickets, MCP, and outside paths.",
+			"auto": "Auto-approve in-workspace edits, spawn, tickets, and commands. Ask for true-outside paths, protected files, and denied commands.",
+			"bypass": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
+		},
+		"bypassWarning": {
+			"title": "Enable Full Access?",
+			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands.",
+			"confirm": "Enable Full Access",
+			"cancel": "Cancel"
+		}
 	},
 	"announcement": {
 		"title": "Выпущен Alpha {{version}}",
@@ -347,7 +365,37 @@
 	},
 	"reasoning": {
 		"thinking": "Обдумывание",
-		"seconds": "{{count}}с"
+		"seconds": "{{count}}с",
+		"label": "Рассуждение: {{value}}",
+		"title": "Рассуждение",
+		"loading": "Загрузка…",
+		"unavailable": "Недоступно",
+		"default": "По умолчанию",
+		"off": "Выкл.",
+		"on": "Вкл.",
+		"none": "Нет",
+		"help": "По умолчанию используются настройки профиля. Выкл. отключает или пропускает необязательное рассуждение. Нет отправляет явный уровень none провайдера.",
+		"budget": "{{tokens}} токенов на размышление",
+		"advanced": "Расширенные настройки профиля",
+		"custom": "Пользовательский токен рассуждения",
+		"customHelp": "Используйте только токен, принимаемый этой размещённой моделью: 1–32 строчные буквы, цифры, символы подчёркивания или дефисы. Поддержка семейства моделей не предполагается.",
+		"apply": "Применить",
+		"invalidCustom": "Недопустимый токен. Рассуждение будет пропущено.",
+		"saving": "Сохранение…",
+		"nextStep": "Следующий шаг",
+		"current": "Текущий запрос: {{value}}",
+		"fallback": "Запрошено {{requested}}; используется {{effective}}.",
+		"saveFailed": "Не удалось сохранить рассуждение. Принятый вариант не изменён.",
+		"unavailableHelp": "Для этой модели нет проверенной возможности настраивать рассуждение.",
+		"profileDefault": "Профильное значение по умолчанию / расширенное рассуждение. Управление задачей может переопределить его без сохранения профиля.",
+		"scheduleHelp": "Изменения расписания влияют на будущие запуски; запуски в очереди сохраняют свой снимок.",
+		"reasons": {
+			"unsupported": "Запрошенное значение не поддерживается этой моделью.",
+			"unavailable": "Возможности рассуждения недоступны для этой модели.",
+			"required": "Этой модели требуется рассуждение.",
+			"budget-only": "Эта модель использует бюджет токенов, а не именованные уровни усилий.",
+			"invalid-custom": "Пользовательский токен недействителен."
+		}
 	},
 	"contextManagement": {
 		"tokens": "токены",

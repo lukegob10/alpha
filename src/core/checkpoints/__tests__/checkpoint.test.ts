@@ -1,6 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach, Mock } from "vitest"
-import { Task } from "../../task/Task"
-import { AlphaProvider } from "../../webview/AlphaProvider"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { checkpointSave, checkpointRestore, checkpointDiff, getCheckpointService } from "../index"
 import { MessageManager } from "../../message-manager"
 import * as vscode from "vscode"
@@ -52,11 +50,6 @@ vi.mock("../../../i18n", () => ({
 	}),
 }))
 
-// Mock p-wait-for to control timeout behavior
-vi.mock("p-wait-for", () => ({
-	default: vi.fn(),
-}))
-
 vi.mock("../../../services/checkpoints")
 
 describe("Checkpoint functionality", () => {
@@ -72,7 +65,9 @@ describe("Checkpoint functionality", () => {
 			restoreCheckpoint: vi.fn().mockResolvedValue(undefined),
 			getDiff: vi.fn().mockResolvedValue([]),
 			on: vi.fn(),
-			initShadowGit: vi.fn().mockResolvedValue(undefined),
+			initShadowGit: vi.fn().mockImplementation(async () => {
+				mockCheckpointService.isInitialized = true
+			}),
 		}
 
 		// Create mock provider
@@ -95,6 +90,7 @@ describe("Checkpoint functionality", () => {
 			enableCheckpoints: true,
 			checkpointService: mockCheckpointService,
 			checkpointServiceInitializing: false,
+			checkpointTimeout: 30,
 			providerRef: {
 				deref: () => mockProvider,
 			},
@@ -110,23 +106,23 @@ describe("Checkpoint functionality", () => {
 
 		// Update the mock to return our mockCheckpointService
 		const checkpointsModule = await import("../../../services/checkpoints")
+		const pathModule = await import("../../../utils/path")
+		const gitModule = await import("../../../utils/git")
 		vi.mocked(checkpointsModule.RepoPerTaskCheckpointService.create).mockReturnValue(mockCheckpointService)
+		vi.mocked(pathModule.getWorkspacePath).mockReturnValue("/test/workspace")
+		vi.mocked(gitModule.checkGitInstalled).mockResolvedValue(true)
 	})
 
 	afterEach(() => {
 		vi.clearAllMocks()
+		vi.useRealTimers()
 	})
 
 	describe("checkpointSave", () => {
 		it("should wait for checkpoint service initialization before saving", async () => {
-			// Set up task with uninitialized service
+			// Start initialization through the same path used by the task loop.
 			mockCheckpointService.isInitialized = false
-			mockTask.checkpointService = mockCheckpointService
-
-			// Simulate service initialization after a delay
-			setTimeout(() => {
-				mockCheckpointService.isInitialized = true
-			}, 100)
+			mockTask.checkpointService = undefined
 
 			// Call checkpointSave
 			const savePromise = checkpointSave(mockTask, true)
@@ -485,18 +481,22 @@ describe("Checkpoint functionality", () => {
 			expect(service).toBeUndefined()
 		})
 
-		it("should return undefined if service is still initializing", async () => {
+		it("should create one shared initialization for simultaneous callers", async () => {
 			mockTask.checkpointService = undefined
-			mockTask.checkpointServiceInitializing = true
-			const service = await getCheckpointService(mockTask)
-			expect(service).toBeUndefined()
-		})
+			mockCheckpointService.isInitialized = false
 
-		it("should create new service if none exists", async () => {
-			mockTask.checkpointService = undefined
-			mockTask.checkpointServiceInitializing = false
+			let releaseInitialization!: () => void
+			const initializationBarrier = new Promise<void>((resolve) => {
+				releaseInitialization = resolve
+			})
+			mockCheckpointService.initShadowGit.mockImplementationOnce(async () => {
+				await initializationBarrier
+				mockCheckpointService.isInitialized = true
+			})
 
-			const service = getCheckpointService(mockTask)
+			const first = getCheckpointService(mockTask)
+			const second = getCheckpointService(mockTask)
+			const third = getCheckpointService(mockTask)
 
 			const checkpointsModule = await import("../../../services/checkpoints")
 			expect(vi.mocked(checkpointsModule.RepoPerTaskCheckpointService.create)).toHaveBeenCalledWith({
@@ -505,6 +505,17 @@ describe("Checkpoint functionality", () => {
 				shadowDir: "/test/storage",
 				log: expect.any(Function),
 			})
+			expect(vi.mocked(checkpointsModule.RepoPerTaskCheckpointService.create)).toHaveBeenCalledOnce()
+			expect(mockCheckpointService.initShadowGit).toHaveBeenCalledOnce()
+
+			releaseInitialization()
+
+			await expect(Promise.all([first, second, third])).resolves.toEqual([
+				mockCheckpointService,
+				mockCheckpointService,
+				mockCheckpointService,
+			])
+			expect(mockTask.checkpointService).toBe(mockCheckpointService)
 		})
 
 		it("should disable checkpoints if workspace path is not found", async () => {
@@ -519,143 +530,146 @@ describe("Checkpoint functionality", () => {
 			expect(service).toBeUndefined()
 			expect(mockTask.enableCheckpoints).toBe(false)
 		})
+
+		it("should settle all waiters immediately when Git is unavailable", async () => {
+			const gitModule = await import("../../../utils/git")
+			vi.mocked(gitModule.checkGitInstalled).mockResolvedValue(false)
+			mockTask.checkpointService = undefined
+
+			const first = getCheckpointService(mockTask)
+			const second = getCheckpointService(mockTask)
+			await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined])
+
+			expect(mockTask.enableCheckpoints).toBe(false)
+			expect(mockTask.checkpointServiceInitializing).toBe(false)
+			expect(mockCheckpointService.initShadowGit).not.toHaveBeenCalled()
+		})
+
+		it("should settle all waiters immediately when initialization fails", async () => {
+			mockTask.checkpointService = undefined
+			mockCheckpointService.isInitialized = false
+			mockCheckpointService.initShadowGit.mockRejectedValueOnce(new Error("init failed"))
+
+			const first = getCheckpointService(mockTask)
+			const second = getCheckpointService(mockTask)
+			await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined])
+
+			expect(mockTask.enableCheckpoints).toBe(false)
+			expect(mockTask.checkpointServiceInitializing).toBe(false)
+			expect(mockTask.checkpointService).toBeUndefined()
+		})
 	})
 
 	describe("getCheckpointService - initialization timeout behavior", () => {
-		it("should send warning message when initialization is slow", async () => {
-			// This test verifies the warning logic by directly testing the condition function behavior
-			const i18nModule = await import("../../../i18n")
-
-			// Setup: Create a scenario where initialization is in progress
-			mockTask.checkpointService = undefined
-			mockTask.checkpointServiceInitializing = true
-			mockTask.checkpointTimeout = 15
-
-			vi.clearAllMocks()
-
-			// Simulate the condition function that runs inside pWaitFor
-			let warningShown = false
-			const simulateConditionCheck = (elapsedMs: number) => {
-				// This simulates what happens inside the pWaitFor condition function (lines 85-100)
-				if (!warningShown && elapsedMs >= 5000) {
-					warningShown = true
-					// This is what the actual code does at line 91-94
-					const provider = mockTask.providerRef.deref()
-					provider?.postMessageToWebview({
-						type: "checkpointInitWarning",
-						checkpointWarning: i18nModule.t("common:errors.wait_checkpoint_long_time", { timeout: 5 }),
-					})
-				}
-
-				return !!mockTask.checkpointService && !!mockTask.checkpointService.isInitialized
-			}
-
-			// Test: At 4 seconds, no warning should be sent
-			expect(simulateConditionCheck(4000)).toBe(false)
-			expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
-
-			// Test: At 5 seconds, warning should be sent
-			expect(simulateConditionCheck(5000)).toBe(false)
-			expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith({
-				type: "checkpointInitWarning",
-				checkpointWarning: "Checkpoint initialization is taking longer than 5 seconds...",
-			})
-
-			// Test: At 6 seconds, warning should not be sent again (warningShown is true)
-			vi.clearAllMocks()
-			expect(simulateConditionCheck(6000)).toBe(false)
-			expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
-		})
-
-		it("should send timeout error message when initialization fails", async () => {
-			const i18nModule = await import("../../../i18n")
-
-			// Setup
+		it("should warn after five seconds and time out waiting callers once", async () => {
+			vi.useFakeTimers()
 			mockTask.checkpointService = undefined
 			mockTask.checkpointTimeout = 10
-			mockTask.enableCheckpoints = true
+			mockCheckpointService.isInitialized = false
 
-			vi.clearAllMocks()
+			let releaseInitialization!: () => void
+			const initializationBarrier = new Promise<void>((resolve) => {
+				releaseInitialization = resolve
+			})
+			mockCheckpointService.initShadowGit.mockImplementationOnce(async () => {
+				await initializationBarrier
+				mockCheckpointService.isInitialized = true
+			})
 
-			// Simulate timeout error scenario (what happens in catch block at line 127-129)
-			const error = new Error("Timeout")
-			error.name = "TimeoutError"
+			const backgroundInitialization = getCheckpointService(mockTask)
+			const waiter = getCheckpointService(mockTask)
 
-			// This is what the code does when TimeoutError is caught
-			if (error.name === "TimeoutError" && mockTask.enableCheckpoints) {
-				const provider = mockTask.providerRef.deref()
-				provider?.postMessageToWebview({
-					type: "checkpointInitWarning",
-					checkpointWarning: i18nModule.t("common:errors.init_checkpoint_fail_long_time", {
-						timeout: mockTask.checkpointTimeout,
-					}),
-				})
-			}
-
-			mockTask.enableCheckpoints = false
-
-			// Verify
+			await vi.advanceTimersByTimeAsync(5000)
 			expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith({
 				type: "checkpointInitWarning",
-				checkpointWarning: "Checkpoint initialization failed after 10 seconds",
+				checkpointWarning: { type: "WAIT_TIMEOUT", timeout: 5 },
+			})
+
+			await vi.advanceTimersByTimeAsync(5000)
+			await expect(waiter).resolves.toBeUndefined()
+			expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith({
+				type: "checkpointInitWarning",
+				checkpointWarning: { type: "INIT_TIMEOUT", timeout: 10 },
 			})
 			expect(mockTask.enableCheckpoints).toBe(false)
+			await expect(Promise.all([backgroundInitialization, waiter])).resolves.toEqual([undefined, undefined])
+
+			releaseInitialization()
+			mockTask.enableCheckpoints = true
+			await vi.advanceTimersByTimeAsync(0)
+			await expect(backgroundInitialization).resolves.toBeUndefined()
+			expect(mockTask.checkpointService).toBeUndefined()
+			expect(mockProvider.postMessageToWebview).toHaveBeenCalledTimes(2)
 		})
 
-		it("should clear warning on successful initialization", async () => {
-			// Setup
-			mockTask.checkpointService = mockCheckpointService
-			mockTask.enableCheckpoints = true
+		it("should settle the shared promise when checkpoints are disabled during initialization", async () => {
+			vi.useFakeTimers()
+			mockTask.checkpointService = undefined
+			mockTask.checkpointTimeout = 10
+			mockCheckpointService.isInitialized = false
 
-			vi.clearAllMocks()
+			let releaseInitialization!: () => void
+			const initializationBarrier = new Promise<void>((resolve) => {
+				releaseInitialization = resolve
+			})
+			mockCheckpointService.initShadowGit.mockImplementationOnce(async () => {
+				await initializationBarrier
+				mockCheckpointService.isInitialized = true
+			})
 
-			// Simulate successful initialization (what happens at line 109 or 123)
-			if (mockTask.enableCheckpoints) {
-				const provider = mockTask.providerRef.deref()
-				provider?.postMessageToWebview({
-					type: "checkpointInitWarning",
-					checkpointWarning: "",
-				})
-			}
+			const backgroundInitialization = getCheckpointService(mockTask)
+			const waiter = getCheckpointService(mockTask)
+			mockTask.enableCheckpoints = false
 
-			// Verify warning was cleared
+			await vi.advanceTimersByTimeAsync(10000)
+			await expect(Promise.all([backgroundInitialization, waiter])).resolves.toEqual([undefined, undefined])
+			expect(mockTask.checkpointServiceInitializing).toBe(false)
+
+			releaseInitialization()
+			await vi.advanceTimersByTimeAsync(0)
+			await expect(backgroundInitialization).resolves.toBeUndefined()
+			expect(mockTask.checkpointService).toBeUndefined()
+		})
+
+		it("should clear the warning and avoid timeout when initialization succeeds", async () => {
+			vi.useFakeTimers()
+			mockTask.checkpointService = undefined
+			mockTask.checkpointTimeout = 10
+			mockCheckpointService.isInitialized = false
+
+			let releaseInitialization!: () => void
+			const initializationBarrier = new Promise<void>((resolve) => {
+				releaseInitialization = resolve
+			})
+			mockCheckpointService.initShadowGit.mockImplementationOnce(async () => {
+				await initializationBarrier
+				mockCheckpointService.isInitialized = true
+			})
+
+			const backgroundInitialization = getCheckpointService(mockTask)
+			const waiter = getCheckpointService(mockTask)
+
+			await vi.advanceTimersByTimeAsync(5000)
 			expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith({
 				type: "checkpointInitWarning",
-				checkpointWarning: "",
+				checkpointWarning: { type: "WAIT_TIMEOUT", timeout: 5 },
 			})
-		})
 
-		it("should use WARNING_THRESHOLD_MS constant of 5000ms", () => {
-			// Verify the warning threshold is 5 seconds by checking the implementation
-			const WARNING_THRESHOLD_MS = 5000
-			expect(WARNING_THRESHOLD_MS).toBe(5000)
-			expect(WARNING_THRESHOLD_MS / 1000).toBe(5) // Used in the i18n call
-		})
+			releaseInitialization()
+			await expect(Promise.all([backgroundInitialization, waiter])).resolves.toEqual([
+				mockCheckpointService,
+				mockCheckpointService,
+			])
+			expect(mockProvider.postMessageToWebview).toHaveBeenLastCalledWith({
+				type: "checkpointInitWarning",
+				checkpointWarning: undefined,
+			})
 
-		it("should convert checkpointTimeout to milliseconds", () => {
-			// Verify timeout conversion logic (line 42)
-			mockTask.checkpointTimeout = 15
-			const checkpointTimeoutMs = mockTask.checkpointTimeout * 1000
-			expect(checkpointTimeoutMs).toBe(15000)
-
-			mockTask.checkpointTimeout = 10
-			expect(mockTask.checkpointTimeout * 1000).toBe(10000)
-
-			mockTask.checkpointTimeout = 60
-			expect(mockTask.checkpointTimeout * 1000).toBe(60000)
-		})
-
-		it("should use correct i18n keys for warning messages", async () => {
-			const i18nModule = await import("../../../i18n")
-			vi.clearAllMocks()
-
-			// Test warning message i18n key
-			const warningMessage = i18nModule.t("common:errors.wait_checkpoint_long_time", { timeout: 5 })
-			expect(warningMessage).toBe("Checkpoint initialization is taking longer than 5 seconds...")
-
-			// Test timeout error message i18n key
-			const errorMessage = i18nModule.t("common:errors.init_checkpoint_fail_long_time", { timeout: 30 })
-			expect(errorMessage).toBe("Checkpoint initialization failed after 30 seconds")
+			await vi.advanceTimersByTimeAsync(10000)
+			expect(mockProvider.postMessageToWebview).not.toHaveBeenCalledWith({
+				type: "checkpointInitWarning",
+				checkpointWarning: { type: "INIT_TIMEOUT", timeout: 10 },
+			})
 		})
 	})
 })

@@ -1,7 +1,13 @@
 import React from "react"
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import type { SkillMetadata, ScheduledTask, WebviewMessage } from "@alpha-code/types"
+import type {
+	SkillMetadata,
+	ScheduledTask,
+	TaskReasoningPreference,
+	TaskReasoningState,
+	WebviewMessage,
+} from "@alpha-code/types"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { vscode } from "@/utils/vscode"
 import labels from "@/i18n/locales/en/scheduledTasks.json"
@@ -9,6 +15,30 @@ import ScheduledTasksView from "../ScheduledTasksView"
 
 vi.mock("@/context/ExtensionStateContext", () => ({ useExtensionState: vi.fn() }))
 vi.mock("@/utils/vscode", () => ({ vscode: { postMessage: vi.fn() } }))
+vi.mock("@/components/reasoning/ReasoningSelector", () => ({
+	ReasoningSelector: ({
+		state,
+		loading,
+		error,
+		onChange,
+	}: {
+		state?: { requested: unknown }
+		loading?: boolean
+		error?: boolean
+		onChange: (preference: unknown) => void
+	}) => (
+		<div data-testid="reasoning-selector" data-loading={loading ? "true" : "false"}>
+			<div data-testid="reasoning-requested">{JSON.stringify(state?.requested)}</div>
+			{error && <div role="alert">Reasoning unavailable</div>}
+			<button type="button" onClick={() => onChange({ kind: "effort", effort: "high" })}>
+				Choose high reasoning
+			</button>
+		</div>
+	),
+	ReasoningSummary: ({ state }: { state: unknown }) => (
+		<div data-testid="reasoning-summary">{JSON.stringify(state)}</div>
+	),
+}))
 vi.mock("@/i18n/TranslationContext", () => ({
 	useAppTranslation: () => ({
 		t: (key: string, options?: Record<string, string | number>) =>
@@ -76,7 +106,9 @@ const saved: ScheduledTask = {
 const select = (name: string, value: string) =>
 	fireEvent.change(screen.getByRole("combobox", { name: new RegExp(`^${name}`) }), { target: { value } })
 const input = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } })
-const messages = () => vi.mocked(vscode.postMessage).mock.calls.map(([message]) => message as WebviewMessage)
+const allMessages = () => vi.mocked(vscode.postMessage).mock.calls.map(([message]) => message as WebviewMessage)
+const messages = () => allMessages().filter((message) => message.type !== "getReasoningCapabilities")
+const reasoningMessages = () => allMessages().filter((message) => message.type === "getReasoningCapabilities")
 const replySkills = (
 	skills: SkillMetadata[],
 	request = messages()
@@ -89,6 +121,27 @@ const replySkills = (
 				data: {
 					type: "scheduledTaskSkills",
 					scheduledTaskSkills: { requestId: request.scheduledTaskSkillsRequest?.requestId, skills },
+				},
+			}),
+		)
+	})
+
+const reasoningState = (requested: TaskReasoningPreference = { kind: "default" }): TaskReasoningState => ({
+	requested,
+	effective: requested,
+	capabilities: { kind: "effort", efforts: ["low", "medium", "high"], canDisable: true },
+})
+
+const replyReasoning = (response: { state?: unknown; error?: string }, request = reasoningMessages().at(-1)!) =>
+	act(() => {
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				data: {
+					type: "reasoningCapabilities",
+					taskReasoningResponse: {
+						requestId: request.requestId,
+						...response,
+					},
 				},
 			}),
 		)
@@ -131,6 +184,103 @@ describe("scheduled task setup", () => {
 			},
 		})
 		expect(messages().some((message) => message.type === "requestScheduledTaskSkills")).toBe(false)
+	})
+
+	it("queries reasoning for the selected profile without touching chat preferences", () => {
+		render(<ScheduledTasksView onDone={() => {}} />)
+		select("Profile", apiConfig.id)
+
+		expect(reasoningMessages()).toHaveLength(1)
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-loading", "true")
+		expect(reasoningMessages().at(-1)).toMatchObject({
+			type: "getReasoningCapabilities",
+			reasoningProfileId: apiConfig.id,
+			reasoningPreference: { kind: "default" },
+		})
+		expect(messages().some((message) => message.type === "setTaskReasoningPreference")).toBe(false)
+	})
+
+	it("loads the stored preference while editing and clears it for a new schedule", () => {
+		const preference: TaskReasoningPreference = { kind: "effort", effort: "high" }
+		state.scheduledTasks = [{ ...saved, apiConfig, reasoningPreference: preference }]
+		render(<ScheduledTasksView onDone={() => {}} />)
+
+		const request = reasoningMessages().at(-1)!
+		expect(request).toMatchObject({ reasoningPreference: preference })
+		replyReasoning({ state: reasoningState(preference) }, request)
+		expect(screen.getByTestId("reasoning-requested")).toHaveTextContent(JSON.stringify(preference))
+
+		fireEvent.click(screen.getByRole("button", { name: "New" }))
+		expect(screen.getByTestId("reasoning-requested")).toHaveTextContent("")
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-loading", "false")
+	})
+
+	it("ignores stale capability responses and reports the latest profile error", () => {
+		state.listApiConfigMeta = [
+			{ ...apiConfig, apiProvider: "openai" },
+			{ id: "coding", name: "Coding", apiProvider: "anthropic" },
+		]
+		render(<ScheduledTasksView onDone={() => {}} />)
+		select("Profile", apiConfig.id)
+		const firstRequest = reasoningMessages().at(-1)!
+		select("Profile", "coding")
+		const secondRequest = reasoningMessages().at(-1)!
+
+		replyReasoning({ state: reasoningState({ kind: "effort", effort: "high" }) }, firstRequest)
+		expect(screen.getByTestId("reasoning-requested")).toHaveTextContent("")
+		replyReasoning({ error: "unavailable" }, secondRequest)
+		expect(screen.getByRole("alert")).toHaveTextContent("Reasoning unavailable")
+	})
+
+	it("saves the local schedule preference without sending chat or profile writes", () => {
+		state.scheduledTasks = [{ ...saved, apiConfig }]
+		render(<ScheduledTasksView onDone={() => {}} />)
+		const request = reasoningMessages().at(-1)!
+		replyReasoning({ state: reasoningState() }, request)
+		fireEvent.click(screen.getByRole("button", { name: "Choose high reasoning" }))
+		fireEvent.click(screen.getByRole("button", { name: "Save" }))
+
+		expect(messages().at(-1)).toMatchObject({
+			type: "updateScheduledTask",
+			scheduledTaskUpdate: { reasoningPreference: { kind: "effort", effort: "high" } },
+		})
+		expect(
+			messages().some((message) => ["setTaskReasoningPreference", "saveApiConfiguration"].includes(message.type)),
+		).toBe(false)
+	})
+
+	it("hides reasoning controls and capability queries for command schedules", () => {
+		state.scheduledTasks = [
+			{ ...saved, apiConfig: undefined, execution: { type: "command", command: "pnpm test" } },
+		]
+		render(<ScheduledTasksView onDone={() => {}} />)
+
+		expect(screen.queryByTestId("reasoning-selector")).not.toBeInTheDocument()
+		expect(reasoningMessages()).toHaveLength(0)
+	})
+
+	it("shows the immutable reasoning snapshot for a persisted run", () => {
+		const snapshot = {
+			...reasoningState({ kind: "effort", effort: "high" }),
+			fallbackReason: "unsupported" as const,
+		}
+		state.scheduledTasks = [{ ...saved, apiConfig }]
+		state.scheduledTaskRuns = [
+			{
+				id: "run-1",
+				taskId: saved.id,
+				status: "succeeded",
+				trigger: "schedule",
+				scheduledFor: Date.now(),
+				prompt: saved.prompt,
+				reasoningPreference: { kind: "effort", effort: "high" },
+				reasoningState: snapshot,
+			},
+		]
+		render(<ScheduledTasksView onDone={() => {}} />)
+
+		expect(screen.getByTestId("reasoning-summary")).toHaveTextContent("high")
+		expect(screen.getByTestId("reasoning-summary")).toHaveTextContent("unsupported")
 	})
 
 	it("lists imported skills and saves the skill and arguments without requiring a prompt", () => {

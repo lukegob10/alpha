@@ -140,6 +140,51 @@ describe("StellarHandler", () => {
 		expect(request).not.toHaveProperty("stream")
 	})
 
+	it("sends a constrained task-only reasoning token without changing the model profile", async () => {
+		mocks.create.mockResolvedValueOnce(createAsyncStream([{ choices: [{ delta: { content: "custom" } }] }]))
+		const handler = createHandler({ taskReasoningCustomEffort: "balanced_reasoning" })
+
+		await handler.createMessage("system", []).next()
+
+		expect(mocks.create).toHaveBeenCalledWith(
+			expect.objectContaining({ reasoning_effort: "balanced_reasoning" }),
+			{},
+		)
+		expect(handler.getModel().info.supportsReasoningEffort).toBeUndefined()
+	})
+
+	it("keeps the custom token on Stellar IDs that resemble an OpenAI reasoning family", async () => {
+		mocks.create.mockResolvedValueOnce(createAsyncStream([{ choices: [{ delta: { content: "custom-o3" } }] }]))
+		const handler = createHandler({ apiModelId: "o3-stellar", taskReasoningCustomEffort: "balanced_reasoning" })
+
+		await handler.createMessage("system", []).next()
+
+		expect(mocks.create).toHaveBeenCalledWith(
+			expect.objectContaining({ model: "o3-stellar", reasoning_effort: "balanced_reasoning" }),
+			{},
+		)
+	})
+
+	it("passes a valid high custom token through the Stellar request", async () => {
+		mocks.create.mockResolvedValueOnce(createAsyncStream([{ choices: [{ delta: { content: "high" } }] }]))
+		const handler = createHandler({ taskReasoningCustomEffort: "high" })
+
+		await handler.createMessage("system", []).next()
+
+		const [request] = mocks.create.mock.calls[0] as [Record<string, unknown>]
+		expect(request).toMatchObject({ reasoning_effort: "high" })
+	})
+
+	it.each(["", "BAD TOKEN"])("omits an empty or invalid custom token (%s)", async (taskReasoningCustomEffort) => {
+		mocks.create.mockResolvedValueOnce(createAsyncStream([{ choices: [{ delta: { content: "plain" } }] }]))
+		const handler = createHandler({ taskReasoningCustomEffort })
+
+		await handler.createMessage("system", []).next()
+
+		const [request] = mocks.create.mock.calls[0] as [Record<string, unknown>]
+		expect(request).not.toHaveProperty("reasoning_effort")
+	})
+
 	it("rejects incomplete or invalid endpoint settings before making a request", () => {
 		expect(() => new StellarHandler({ stellarPemCaBundlePath: "C:\\certs\\corp.pem" })).toThrow(
 			"Missing required Stellar setting: stellarBaseUrl",

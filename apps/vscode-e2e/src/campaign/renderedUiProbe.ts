@@ -5,6 +5,7 @@ import * as assert from "node:assert/strict"
 import { randomUUID } from "node:crypto"
 import { runExtensionTests } from "../runTest"
 import { exerciseRenderedAcceptance } from "../ui/renderedAcceptance"
+import { exerciseRenderedReasoning } from "../ui/renderedReasoning"
 import { CdpConnection } from "../ui/cdp"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
 
@@ -22,25 +23,30 @@ interface Evaluation<T> {
 export async function runRenderedUiProbe(
 	executable: string,
 	output: string,
-	mode: "probe" | "acceptance" = "probe",
+	mode: "probe" | "acceptance" | "reasoning" = "probe",
 	signal?: AbortSignal,
 ) {
 	await fs.mkdir(output, { recursive: true })
 	const nonce = randomUUID()
 	const profileRoot = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-rendered-probe-"))
-	let observed: Record<string, unknown> = { status: "not_started", nonce }
+	let observed: { status: string; nonce: string; [key: string]: unknown } = { status: "not_started", nonce }
 	const runId = `ui-${nonce}`
 	const directory = path.join(profileRoot, "evidence", runId)
 	const userData = path.join(profileRoot, "profile", "1.122.1", "user-data")
 	const abort = new AbortController()
 	const combinedSignal = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal
-	const timer = setTimeout(() => abort.abort(), mode === "acceptance" ? 360000 : 120000)
+	const timer = setTimeout(() => abort.abort(), mode !== "probe" ? 360000 : 120000)
 	let hostSettled = false
 	const running = runExtensionTests({
 		providerMode: "scripted",
 		vscodeVersion: "1.122.1",
 		vscodeExecutablePath: executable,
-		testFile: mode === "acceptance" ? "managed-agents.acceptance.test" : "rendered-ui-probe.test",
+		testFile:
+			mode === "reasoning"
+				? "reasoning-ui.test"
+				: mode === "acceptance"
+					? "managed-agents.acceptance.test"
+					: "rendered-ui-probe.test",
 		rendererDebuggingPort: 0,
 		runId,
 		profileDir: path.join(profileRoot, "profile"),
@@ -48,8 +54,7 @@ export async function runRenderedUiProbe(
 		artifactsDir: path.join(profileRoot, "evidence"),
 		initializeProfile: true,
 		retainEvidenceForCampaign: true,
-		extensionTestsEnv:
-			mode === "acceptance" ? { ALPHA_UI_ACCEPTANCE_NONCE: nonce } : { ALPHA_UI_PROBE_NONCE: nonce },
+		extensionTestsEnv: mode !== "probe" ? { ALPHA_UI_ACCEPTANCE_NONCE: nonce } : { ALPHA_UI_PROBE_NONCE: nonce },
 		signal: combinedSignal,
 	}).finally(() => {
 		hostSettled = true
@@ -72,7 +77,11 @@ export async function runRenderedUiProbe(
 							await fs.readFile(
 								path.join(
 									directory,
-									mode === "acceptance" ? "ui-stage-settings-edit.json" : "ui-ready.json",
+									mode === "reasoning"
+										? "ui-stage-reasoning-high.json"
+										: mode === "acceptance"
+											? "ui-stage-settings-edit.json"
+											: "ui-ready.json",
 								),
 								"utf8",
 							),
@@ -117,7 +126,7 @@ export async function runRenderedUiProbe(
 				inspected.push({ target, snapshot: snapshot.result.value })
 				if (
 					target.url.includes("extensionId=AlphaInc.alpha") &&
-					(mode === "acceptance" || snapshot.result.value?.text.includes("Welcome to Alpha"))
+					(mode !== "probe" || snapshot.result.value?.text.includes("Welcome to Alpha"))
 				)
 					selected = { sessionId, target }
 			}
@@ -125,8 +134,8 @@ export async function runRenderedUiProbe(
 			assert.ok(selected, "No rendered Alpha onboarding target found")
 			const { sessionId } = selected
 			assert.ok(workbenchSession)
-			if (mode === "acceptance") {
-				const stages = await exerciseRenderedAcceptance(
+			if (mode !== "probe") {
+				const stages = await (mode === "reasoning" ? exerciseRenderedReasoning : exerciseRenderedAcceptance)(
 					cdp,
 					sessionId,
 					workbenchSession,
@@ -211,6 +220,7 @@ export async function runRenderedUiProbe(
 				nonce,
 				reason: error instanceof Error ? error.message : "probe_failed",
 			}
+			if (mode === "reasoning") abort.abort()
 		} finally {
 			await fs.writeFile(path.join(directory, "ui-last-rendered.txt"), lastRenderedText)
 			cdp?.close()

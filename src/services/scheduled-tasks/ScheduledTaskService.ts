@@ -8,6 +8,8 @@ import {
 	AlphaCodeEventName,
 	scheduledTaskExecutionSchema,
 	scheduledTaskProfileSchema,
+	taskReasoningPreferenceSchema,
+	taskReasoningStateSchema,
 	type CreateScheduledTaskPayload,
 	type ScheduledTask,
 	type ScheduledTaskAutoApproval,
@@ -15,6 +17,8 @@ import {
 	type ScheduledTaskPermissionSet,
 	type ScheduledTaskRun,
 	type ScheduledTaskState,
+	type TaskReasoningPreference,
+	type TaskReasoningState,
 	type UpdateScheduledTaskPayload,
 } from "@alpha-code/types"
 
@@ -46,6 +50,7 @@ const defaultPermissions: ScheduledTaskPermissionSet = {
 }
 
 const defaultExecution: ScheduledTaskExecution = { type: "prompt" }
+const defaultReasoningPreference: TaskReasoningPreference = { kind: "default" }
 const defaultAutoApproval: ScheduledTaskAutoApproval = {
 	autoApprovalEnabled: true,
 	alwaysAllowReadOnly: true,
@@ -62,6 +67,24 @@ const defaultAutoApproval: ScheduledTaskAutoApproval = {
 
 const normalizeExecution = (execution?: ScheduledTaskExecution): ScheduledTaskExecution =>
 	scheduledTaskExecutionSchema.parse(execution ?? defaultExecution)
+
+const normalizeReasoningPreference = (preference?: TaskReasoningPreference): TaskReasoningPreference =>
+	taskReasoningPreferenceSchema.parse(preference ?? defaultReasoningPreference)
+
+const normalizeReasoningState = (state: unknown): TaskReasoningState | undefined => {
+	const parsed = taskReasoningStateSchema.safeParse(state)
+	return parsed.success ? parsed.data : undefined
+}
+
+const readReasoningState = async (task: unknown): Promise<TaskReasoningState | undefined> => {
+	const reasoningTask = task as {
+		getReasoningState?: () => TaskReasoningState | Promise<TaskReasoningState>
+	}
+	if (typeof reasoningTask.getReasoningState !== "function") {
+		return undefined
+	}
+	return normalizeReasoningState(await reasoningTask.getReasoningState.call(task))
+}
 
 const normalizeAutoApproval = (
 	autoApproval: ScheduledTaskAutoApproval | undefined,
@@ -146,6 +169,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			name: payload.name.trim(),
 			prompt: payload.prompt.trim(),
 			apiConfig: scheduledTaskProfileSchema.optional().parse(payload.apiConfig),
+			reasoningPreference: normalizeReasoningPreference(payload.reasoningPreference),
 			execution,
 			mode: payload.mode,
 			autoApproval,
@@ -179,6 +203,9 @@ export class ScheduledTaskService implements vscode.Disposable {
 			name: payload.name?.trim() ?? existing.name,
 			prompt: payload.prompt?.trim() ?? existing.prompt,
 			apiConfig: scheduledTaskProfileSchema.optional().parse(payload.apiConfig ?? existing.apiConfig),
+			reasoningPreference: normalizeReasoningPreference(
+				payload.reasoningPreference ?? existing.reasoningPreference,
+			),
 			execution,
 			mode: payload.mode ?? existing.mode,
 			autoApproval,
@@ -224,6 +251,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			name: `${task.name} copy`,
 			prompt: task.prompt,
 			apiConfig: task.apiConfig,
+			reasoningPreference: task.reasoningPreference,
 			execution: normalizeExecution(task.execution),
 			mode: task.mode,
 			autoApproval: task.autoApproval,
@@ -294,6 +322,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			workspace: task.workspace,
 			prompt: task.prompt,
 			apiConfig: task.apiConfig,
+			reasoningPreference: normalizeReasoningPreference(task.reasoningPreference),
 			execution,
 			mode: task.mode,
 			autoApproval,
@@ -347,6 +376,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			apiConfig: run.apiConfig,
 			execution: run.execution,
 			autoApproval: run.autoApproval,
+			reasoningPreference: normalizeReasoningPreference(run.reasoningPreference),
 		}
 		const execution = normalizeExecution(task.execution)
 		const autoApproval = normalizeAutoApproval(task.autoApproval, execution)
@@ -367,6 +397,8 @@ export class ScheduledTaskService implements vscode.Disposable {
 			return
 		}
 
+		let alphaTask: Awaited<ReturnType<AlphaProvider["createTask"]>> | undefined
+		let taskStarted = false
 		try {
 			const selectedProfile = scheduledTaskProfileSchema.safeParse(run.apiConfig)
 			if (!selectedProfile.success) {
@@ -382,27 +414,41 @@ export class ScheduledTaskService implements vscode.Disposable {
 			}
 			const { name, id: _id, ...apiConfiguration } = profile
 			const prompt = await this.buildPrompt(task)
-			const alphaTask = await this.provider.createTask(
+			alphaTask = await this.provider.createTask(
 				prompt,
 				undefined,
 				undefined,
 				{
 					preserveExisting: true,
 					background: true,
+					startTask: false,
 					workspacePath: task.workspace,
 					taskMode: task.mode,
 					taskApiConfigName: name,
 					apiConfiguration,
+					reasoningPreference: normalizeReasoningPreference(run.reasoningPreference),
 				},
 				this.configurationForAutoApproval(autoApproval),
 			)
+			await alphaTask.prepareReasoningForAdmission()
+			const reasoningState = await readReasoningState(alphaTask)
 			await this.store.upsertRun({
 				...startedRun,
 				alphaTaskId: alphaTask.taskId,
 				resolvedApiConfig: { id: selectedProfile.data.id, name },
+				reasoningState,
 			})
+			alphaTask.start()
+			taskStarted = true
 			await this.broadcast()
 		} catch (error) {
+			if (alphaTask && !taskStarted) {
+				await alphaTask.abortTask().catch((cleanupError) => {
+					this.outputChannel.appendLine(
+						`Failed to clean up scheduled task ${alphaTask?.taskId}: ${String(cleanupError)}`,
+					)
+				})
+			}
 			const failedRun: ScheduledTaskRun = {
 				...startedRun,
 				status: "failed",
@@ -624,6 +670,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			workspace: task.workspace,
 			prompt: task.prompt,
 			apiConfig: task.apiConfig,
+			reasoningPreference: normalizeReasoningPreference(task.reasoningPreference),
 			execution: normalizeExecution(task.execution),
 			mode: task.mode,
 			autoApproval: task.autoApproval,

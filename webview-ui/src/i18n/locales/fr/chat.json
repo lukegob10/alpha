@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "Copier",
 		"copied": "Copié",
+		"implementPlan": "Implémenter le plan",
 		"edit": "Modifier et renvoyer",
 		"restart": "Repartir de la demande précédente",
 		"restartWarning": "La demande précédente sera relancée et tous les messages suivants seront remplacés. Les fichiers de l’espace de travail resteront en l’état.",
@@ -325,11 +326,58 @@
 		"triggerLabel_zero": "0 approuvé automatiquement",
 		"triggerLabel_one": "1 approuvé automatiquement",
 		"triggerLabel_other": "{{count}} approuvés automatiquement",
-		"triggerLabelAll": "BRRR"
+		"triggerLabelAll": "Tout",
+		"tooltipMode": "Approval mode: {{mode}}",
+		"modes": {
+			"ask": "Ask",
+			"auto": "Auto",
+			"bypass": "Accès complet"
+		},
+		"modeDescription": {
+			"ask": "Auto-approve workspace reads. Ask before writes, commands, spawn, tickets, MCP, and outside paths.",
+			"auto": "Auto-approve in-workspace edits, spawn, tickets, and commands. Ask for true-outside paths, protected files, and denied commands.",
+			"bypass": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
+		},
+		"bypassWarning": {
+			"title": "Enable Full Access?",
+			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands.",
+			"confirm": "Enable Full Access",
+			"cancel": "Cancel"
+		}
 	},
 	"reasoning": {
 		"thinking": "Réflexion",
-		"seconds": "{{count}}s"
+		"seconds": "{{count}}s",
+		"label": "Raisonnement : {{value}}",
+		"title": "Raisonnement",
+		"loading": "Chargement…",
+		"unavailable": "Indisponible",
+		"default": "Par défaut",
+		"off": "Désactivé",
+		"on": "Activé",
+		"none": "Aucun",
+		"help": "La valeur par défaut utilise le paramètre du profil. Désactivé désactive ou omet le raisonnement facultatif. Aucun envoie le niveau none explicite du fournisseur.",
+		"budget": "{{tokens}} jetons de réflexion",
+		"advanced": "Paramètres avancés du profil",
+		"custom": "Jeton de raisonnement personnalisé",
+		"customHelp": "Utilisez uniquement un jeton accepté par ce modèle hébergé : 1 à 32 lettres minuscules, chiffres, traits de soulignement ou traits d’union. Aucune compatibilité avec une famille de modèles n’est supposée.",
+		"apply": "Appliquer",
+		"invalidCustom": "Jeton non valide. Le raisonnement sera omis.",
+		"saving": "Enregistrement…",
+		"nextStep": "Étape suivante",
+		"current": "Requête actuelle : {{value}}",
+		"fallback": "Valeur demandée : {{requested}} ; utilisation de {{effective}}.",
+		"saveFailed": "Impossible d’enregistrer le raisonnement. Votre choix accepté reste inchangé.",
+		"unavailableHelp": "Ce modèle ne possède aucune capacité de raisonnement réglable vérifiée.",
+		"profileDefault": "Valeur par défaut du profil / raisonnement avancé. Le contrôle de la tâche peut la remplacer sans enregistrer le profil.",
+		"scheduleHelp": "Les changements de planification concernent les exécutions futures ; les exécutions en file conservent leur instantané.",
+		"reasons": {
+			"unsupported": "La valeur demandée n’est pas prise en charge par ce modèle.",
+			"unavailable": "Les capacités de raisonnement ne sont pas disponibles pour ce modèle.",
+			"required": "Ce modèle nécessite le raisonnement.",
+			"budget-only": "Ce modèle utilise un budget de jetons, et non des niveaux d’effort nommés.",
+			"invalid-custom": "Le jeton personnalisé n’est pas valide."
+		}
 	},
 	"contextManagement": {
 		"tokens": "tokens",

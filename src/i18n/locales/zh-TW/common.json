@@ -155,6 +155,11 @@
 		"missing_task_files": "此工作的檔案遺失。您想從工作列表中刪除它嗎？",
 		"auto_import_failed": "自動匯入 Alpha 設定失敗：{{error}}"
 	},
+	"planHandoff": {
+		"tooLarge": "提議的計畫太大，無法儲存（最多 100,000 個字元）。已保留先前的計畫。",
+		"implementInstruction": "實作目前提出的計畫。",
+		"implementFailed": "無法開始實作計畫。請檢查目前的任務和計畫，然後重試。"
+	},
 	"info": {
 		"no_changes": "沒有找到更改。",
 		"clipboard_copy": "系統訊息已成功複製到剪貼簿",

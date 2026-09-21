@@ -293,6 +293,16 @@ describe("App", () => {
 		expect(screen.getByTestId("chat-view")).toHaveAttribute("data-hidden", "true")
 	})
 
+	it("keeps the shared popover portal outside the hidden chat view", () => {
+		render(<AppWithProviders />)
+
+		const chatView = screen.getByTestId("chat-view")
+		const portal = document.getElementById("alpha-portal")
+
+		expect(portal).toBeInTheDocument()
+		expect(chatView).not.toContainElement(portal)
+	})
+
 	it("switches to settings view when receiving settingsButtonClicked action", async () => {
 		render(<AppWithProviders />)
 

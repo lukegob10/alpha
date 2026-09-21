@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "コピー",
 		"copied": "コピーしました",
+		"implementPlan": "計画を実装",
 		"edit": "編集して再送信",
 		"restart": "直前のリクエストから再開",
 		"restartWarning": "直前のリクエストを再実行し、それ以降のすべてのメッセージを置き換えます。ワークスペースのファイルは現在の状態を維持します。",
@@ -325,11 +326,58 @@
 		"triggerLabel_zero": "0個の自動承認",
 		"triggerLabel_one": "1個の自動承認済み",
 		"triggerLabel_other": "{{count}}個の自動承認済み",
-		"triggerLabelAll": "BRRR"
+		"triggerLabelAll": "すべて",
+		"tooltipMode": "Approval mode: {{mode}}",
+		"modes": {
+			"ask": "Ask",
+			"auto": "Auto",
+			"bypass": "フルアクセス"
+		},
+		"modeDescription": {
+			"ask": "Auto-approve workspace reads. Ask before writes, commands, spawn, tickets, MCP, and outside paths.",
+			"auto": "Auto-approve in-workspace edits, spawn, tickets, and commands. Ask for true-outside paths, protected files, and denied commands.",
+			"bypass": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
+		},
+		"bypassWarning": {
+			"title": "Enable Full Access?",
+			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands.",
+			"confirm": "Enable Full Access",
+			"cancel": "Cancel"
+		}
 	},
 	"reasoning": {
 		"thinking": "考え中",
-		"seconds": "{{count}}秒"
+		"seconds": "{{count}}秒",
+		"label": "推論: {{value}}",
+		"title": "推論",
+		"loading": "読み込み中…",
+		"unavailable": "利用不可",
+		"default": "既定",
+		"off": "オフ",
+		"on": "オン",
+		"none": "なし",
+		"help": "既定ではプロファイルの設定を使用します。オフにすると任意の推論を無効化または省略します。なしではプロバイダーの明示的な none レベルを送信します。",
+		"budget": "{{tokens}} 思考トークン",
+		"advanced": "プロファイルの詳細設定",
+		"custom": "カスタム推論トークン",
+		"customHelp": "このホスト型モデルが受け付けるトークンだけを使用してください: 小文字、数字、アンダースコア、ハイフンを使った1～32文字。モデルファミリーの対応は仮定されません。",
+		"apply": "適用",
+		"invalidCustom": "無効なトークンです。推論は省略されます。",
+		"saving": "保存中…",
+		"nextStep": "次のステップ",
+		"current": "現在のリクエスト: {{value}}",
+		"fallback": "要求: {{requested}}; {{effective}} を使用します。",
+		"saveFailed": "推論を保存できませんでした。受け付けられた選択は変更されていません。",
+		"unavailableHelp": "このモデルには検証済みの調整可能な推論機能がありません。",
+		"profileDefault": "プロファイルの既定 / 高度な推論。タスクの設定でプロファイルを保存せずに上書きできます。",
+		"scheduleHelp": "スケジュールの変更は今後の実行に適用されます。キュー内の実行はスナップショットを保持します。",
+		"reasons": {
+			"unsupported": "要求された値はこのモデルでサポートされていません。",
+			"unavailable": "このモデルでは推論機能を利用できません。",
+			"required": "このモデルには推論が必要です。",
+			"budget-only": "このモデルは名前付きの努力レベルではなく、トークン予算を使用します。",
+			"invalid-custom": "カスタムトークンが無効です。"
+		}
 	},
 	"contextManagement": {
 		"tokens": "トークン",

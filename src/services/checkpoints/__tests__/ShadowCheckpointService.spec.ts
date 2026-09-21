@@ -108,6 +108,22 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 		})
 
 		describe(`${klass.name}#getDiff`, () => {
+			it("reads historical diffs without staging unrelated live files", async () => {
+				await fs.writeFile(testFile, "Checkpoint content")
+				const checkpoint = await service.saveCheckpoint("Saved content")
+				const shadowGit = simpleGit(service.checkpointsDir)
+				await fs.writeFile(path.join(service.workspaceDir, "untracked.txt"), "Live work")
+				await fs.writeFile(testFile, "Unsaved checkpoint changes")
+
+				const diff = await service.getDiff({ from: service.baseHash, to: checkpoint!.commit })
+				expect(diff.map(({ content }) => content)).toEqual([
+					{ before: "Hello, world!", after: "Checkpoint content" },
+				])
+				expect(await shadowGit.diff(["--cached"])).toBe("")
+				expect(await shadowGit.raw(["ls-files", "--", "untracked.txt"])).toBe("")
+				expect(await fs.readFile(testFile, "utf8")).toBe("Unsaved checkpoint changes")
+			})
+
 			it("returns the correct diff between commits", async () => {
 				await fs.writeFile(testFile, "Ahoy, world!")
 				const commit1 = await service.saveCheckpoint("Ahoy, world!")
@@ -466,6 +482,22 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 		})
 
 		describe(`${klass.name}#create`, () => {
+			it("detects edits despite inherited ignorestat and split-index settings", async () => {
+				const shadowGit = simpleGit(service.checkpointsDir)
+				await shadowGit.addConfig("core.ignorestat", "true")
+				await shadowGit.addConfig("core.splitIndex", "true")
+				await fs.writeFile(testFile, "First change")
+				expect((await service.saveCheckpoint("First change"))?.commit).toBeTruthy()
+				await fs.writeFile(testFile, "Second change, with a different length")
+				const saved = await service.saveCheckpoint("Capture subsequent edit")
+				expect(saved?.commit).toBeTruthy()
+				const diff = await service.getDiff({ from: service.baseHash, to: saved!.commit })
+				expect(diff[0].content).toEqual({
+					before: "Hello, world!",
+					after: "Second change, with a different length",
+				})
+			})
+
 			it("does not publish an initial baseline when staging fails", async () => {
 				const failedShadowDir = path.join(tmpDir, `${prefix}-failed-initial-stage-${Date.now()}`)
 				const failedWorkspaceDir = path.join(tmpDir, `workspace-failed-initial-stage-${Date.now()}`)

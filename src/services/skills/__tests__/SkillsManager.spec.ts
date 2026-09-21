@@ -358,8 +358,8 @@ describe("SkillsManager", () => {
 
 		it("rejects creation through a linked skill root even when the new directory is missing", async () => {
 			mockRealpath.mockImplementation(async (candidate: string) => {
-				if (candidate === globalSkillsDir) return builtinSkillsDir
-				if (candidate.startsWith(`${globalSkillsDir}${path.sep}`))
+				if (candidate === globalAgentsSkillsDir) return builtinSkillsDir
+				if (candidate.startsWith(`${globalAgentsSkillsDir}${path.sep}`))
 					throw Object.assign(new Error("Missing"), { code: "ENOENT" })
 				return candidate
 			})
@@ -1675,13 +1675,13 @@ Instructions`)
 
 			const createdPath = await skillsManager.createSkill("new-skill", "global", "A new skill description")
 
-			expect(createdPath).toBe(p(GLOBAL_ALPHA_DIR, "skills", "new-skill", "SKILL.md"))
-			expect(mockMkdir).toHaveBeenCalledWith(p(GLOBAL_ALPHA_DIR, "skills", "new-skill"), { recursive: true })
+			expect(createdPath).toBe(p(GLOBAL_AGENTS_DIR, "skills", "new-skill", "SKILL.md"))
+			expect(mockMkdir).toHaveBeenCalledWith(p(GLOBAL_AGENTS_DIR, "skills", "new-skill"), { recursive: true })
 			expect(mockWriteFile).toHaveBeenCalled()
 
 			// Verify the content written
 			const writeCall = mockWriteFile.mock.calls[0]
-			expect(writeCall[0]).toBe(p(GLOBAL_ALPHA_DIR, "skills", "new-skill", "SKILL.md"))
+			expect(writeCall[0]).toBe(p(GLOBAL_AGENTS_DIR, "skills", "new-skill", "SKILL.md"))
 			expect(writeCall[1]).toContain("name: new-skill")
 			expect(writeCall[1]).toContain("description: A new skill description")
 		})
@@ -1697,7 +1697,7 @@ Instructions`)
 			const createdPath = await skillsManager.createSkill("code-skill", "global", "A code skill", ["code"])
 
 			// Skills are always created in the generic skills directory now; mode info is in frontmatter
-			expect(createdPath).toBe(p(GLOBAL_ALPHA_DIR, "skills", "code-skill", "SKILL.md"))
+			expect(createdPath).toBe(p(GLOBAL_AGENTS_DIR, "skills", "code-skill", "SKILL.md"))
 
 			// Verify frontmatter contains modeSlugs
 			const writeCall = mockWriteFile.mock.calls[0]
@@ -1715,7 +1715,7 @@ Instructions`)
 
 			const createdPath = await skillsManager.createSkill("project-skill", "project", "A project skill")
 
-			expect(createdPath).toBe(p(PROJECT_DIR, ".alpha", "skills", "project-skill", "SKILL.md"))
+			expect(createdPath).toBe(p(projectAgentsDir, "skills", "project-skill", "SKILL.md"))
 		})
 
 		it("should throw error for invalid skill name", async () => {

@@ -1,39 +1,47 @@
 import { HTMLAttributes, useId, useState } from "react"
 import { X } from "lucide-react"
-import { Trans } from "react-i18next"
-import { Package } from "@alpha/package"
+import { type ApprovalMode, migrateApprovalMode, settingsForApprovalMode } from "@alpha-code/types"
 
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
-import { vscode } from "@/utils/vscode"
-import { Button, Input, Slider } from "@/components/ui"
+import { Button, Input } from "@/components/ui"
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 
 import { SetCachedStateField } from "./types"
 import { SectionHeader } from "./SectionHeader"
 import { Section } from "./Section"
 import { SearchableSetting } from "./SearchableSetting"
-import { AutoApproveToggle } from "./AutoApproveToggle"
 import { MaxLimitInputs } from "./MaxLimitInputs"
 
 type AutoApproveSettingsProps = HTMLAttributes<HTMLDivElement> & {
-	alwaysAllowReadOnly?: boolean
-	alwaysAllowReadOnlyOutsideWorkspace?: boolean
-	alwaysAllowWrite?: boolean
-	alwaysAllowWriteOutsideWorkspace?: boolean
+	approvalMode?: ApprovalMode
+	approvalModeBypassAcknowledged?: boolean
 	alwaysAllowWriteProtected?: boolean
 	alwaysAllowMcp?: boolean
-	alwaysAllowSubtasks?: boolean
-	alwaysAllowSubagents?: boolean
-	alwaysAllowTickets?: boolean
-	alwaysAllowExecute?: boolean
-	alwaysAllowFollowupQuestions?: boolean
 	autoApprovalEnabled?: boolean
-	followupAutoApproveTimeoutMs?: number
+	alwaysAllowReadOnly?: boolean
+	alwaysAllowWrite?: boolean
+	alwaysAllowWriteOutsideWorkspace?: boolean
+	alwaysAllowExecute?: boolean
+	alwaysAllowTickets?: boolean
+	alwaysAllowSubagents?: boolean
+	alwaysAllowReadOnlyOutsideWorkspace?: boolean
 	allowedCommands?: string[]
 	allowedMaxRequests?: number | undefined
 	allowedMaxCost?: number | undefined
 	deniedCommands?: string[]
 	setCachedStateField: SetCachedStateField<
+		| "approvalMode"
+		| "approvalModeBypassAcknowledged"
 		| "alwaysAllowReadOnly"
 		| "alwaysAllowReadOnlyOutsideWorkspace"
 		| "alwaysAllowWrite"
@@ -46,7 +54,6 @@ type AutoApproveSettingsProps = HTMLAttributes<HTMLDivElement> & {
 		| "alwaysAllowExecute"
 		| "alwaysAllowFollowupQuestions"
 		| "autoApprovalEnabled"
-		| "followupAutoApproveTimeoutMs"
 		| "allowedCommands"
 		| "allowedMaxRequests"
 		| "allowedMaxCost"
@@ -54,20 +61,21 @@ type AutoApproveSettingsProps = HTMLAttributes<HTMLDivElement> & {
 	>
 }
 
+const MODES: ApprovalMode[] = ["ask", "auto", "bypass"]
+
 export const AutoApproveSettings = ({
-	alwaysAllowReadOnly,
-	alwaysAllowReadOnlyOutsideWorkspace,
-	alwaysAllowWrite,
-	alwaysAllowWriteOutsideWorkspace: _legacyOutsideWriteApproval,
+	approvalMode,
+	approvalModeBypassAcknowledged,
 	alwaysAllowWriteProtected,
 	alwaysAllowMcp,
-	alwaysAllowSubtasks,
-	alwaysAllowSubagents,
-	alwaysAllowTickets,
-	alwaysAllowExecute,
-	alwaysAllowFollowupQuestions,
 	autoApprovalEnabled,
-	followupAutoApproveTimeoutMs = 60000,
+	alwaysAllowReadOnly,
+	alwaysAllowWrite,
+	alwaysAllowWriteOutsideWorkspace,
+	alwaysAllowExecute,
+	alwaysAllowTickets,
+	alwaysAllowSubagents,
+	alwaysAllowReadOnlyOutsideWorkspace,
 	allowedCommands,
 	allowedMaxRequests,
 	allowedMaxCost,
@@ -78,17 +86,46 @@ export const AutoApproveSettings = ({
 	const { t } = useAppTranslation()
 	const [commandInput, setCommandInput] = useState("")
 	const [deniedCommandInput, setDeniedCommandInput] = useState("")
+	const [bypassWarningOpen, setBypassWarningOpen] = useState(false)
 	const allowedCommandInputId = useId()
 	const deniedCommandInputId = useId()
-	const effectiveAutoApprovalEnabled = autoApprovalEnabled ?? false
+	const mode = migrateApprovalMode({
+		approvalMode,
+		autoApprovalEnabled,
+		alwaysAllowReadOnly,
+		alwaysAllowWrite,
+		alwaysAllowWriteOutsideWorkspace,
+		alwaysAllowWriteProtected,
+		alwaysAllowExecute,
+		alwaysAllowTickets,
+		alwaysAllowSubagents,
+		allowedCommands,
+	})
+
+	const applyMode = (next: ApprovalMode, acknowledged = approvalModeBypassAcknowledged === true) => {
+		const settings = settingsForApprovalMode(next, {
+			alwaysAllowWriteProtected: next === "auto" ? alwaysAllowWriteProtected === true : undefined,
+			alwaysAllowMcp: next !== "bypass" ? alwaysAllowMcp === true : undefined,
+			approvalModeBypassAcknowledged: next === "bypass" ? true : acknowledged,
+		})
+		for (const [field, value] of Object.entries(settings)) {
+			setCachedStateField(field as keyof typeof settings, value as never)
+		}
+	}
+
+	const selectMode = (next: ApprovalMode) => {
+		if (next === "bypass" && approvalModeBypassAcknowledged !== true) {
+			setBypassWarningOpen(true)
+			return
+		}
+		applyMode(next)
+	}
 
 	const handleAddCommand = () => {
 		const currentCommands = allowedCommands ?? []
 		const command = commandInput.trim()
-
 		if (command && !currentCommands.includes(command)) {
-			const newCommands = [...currentCommands, command]
-			setCachedStateField("allowedCommands", newCommands)
+			setCachedStateField("allowedCommands", [...currentCommands, command])
 			setCommandInput("")
 		}
 	}
@@ -96,10 +133,8 @@ export const AutoApproveSettings = ({
 	const handleAddDeniedCommand = () => {
 		const currentCommands = deniedCommands ?? []
 		const command = deniedCommandInput.trim()
-
 		if (command && !currentCommands.includes(command)) {
-			const newCommands = [...currentCommands, command]
-			setCachedStateField("deniedCommands", newCommands)
+			setCachedStateField("deniedCommands", [...currentCommands, command])
 			setDeniedCommandInput("")
 		}
 	}
@@ -111,54 +146,31 @@ export const AutoApproveSettings = ({
 			<Section>
 				<div className="space-y-4">
 					<SearchableSetting
-						settingId="auto-approve-enabled"
+						settingId="auto-approve-mode"
 						section="autoApprove"
-						label={t("settings:autoApprove.enabled")}>
-						<VSCodeCheckbox
-							checked={effectiveAutoApprovalEnabled}
-							aria-label={t("settings:autoApprove.toggleAriaLabel")}
-							onChange={() => {
-								setCachedStateField("autoApprovalEnabled", !effectiveAutoApprovalEnabled)
-							}}>
-							<span className="font-medium">{t("settings:autoApprove.enabled")}</span>
-						</VSCodeCheckbox>
-						<div className="text-vscode-descriptionForeground text-sm mt-1">
-							<p>{t("settings:autoApprove.description")}</p>
-							<p>
-								<Trans
-									i18nKey="settings:autoApprove.toggleShortcut"
-									components={{
-										SettingsLink: (
-											<a
-												href="#"
-												className="text-vscode-textLink-foreground hover:underline cursor-pointer"
-												onClick={(e) => {
-													e.preventDefault()
-													// Send message to open keyboard shortcuts with search for toggle command
-													vscode.postMessage({
-														type: "openKeyboardShortcuts",
-														text: `${Package.name}.toggleAutoApprove`,
-													})
-												}}
-											/>
-										),
-									}}
-								/>
+						label={t("settings:autoApprove.mode.label")}>
+						<div className="flex flex-col gap-2">
+							<p className="text-vscode-descriptionForeground text-sm">
+								{t("settings:autoApprove.mode.description")}
+							</p>
+							<div className="flex flex-wrap gap-2">
+								{MODES.map((candidate) => (
+									<Button
+										key={candidate}
+										variant={mode === candidate ? "primary" : "secondary"}
+										onClick={() => selectMode(candidate)}
+										aria-pressed={mode === candidate}
+										data-testid={`approval-mode-${candidate}`}
+										className="h-auto px-3 py-2">
+										{t(`settings:autoApprove.mode.${candidate}`)}
+									</Button>
+								))}
+							</div>
+							<p className="text-vscode-descriptionForeground text-sm">
+								{t(`settings:autoApprove.mode.${mode}Description`)}
 							</p>
 						</div>
 					</SearchableSetting>
-
-					<AutoApproveToggle
-						alwaysAllowReadOnly={alwaysAllowReadOnly}
-						alwaysAllowWrite={alwaysAllowWrite}
-						alwaysAllowMcp={alwaysAllowMcp}
-						alwaysAllowSubtasks={alwaysAllowSubtasks}
-						alwaysAllowSubagents={alwaysAllowSubagents}
-						alwaysAllowTickets={alwaysAllowTickets}
-						alwaysAllowExecute={alwaysAllowExecute}
-						alwaysAllowFollowupQuestions={alwaysAllowFollowupQuestions}
-						onToggle={(key, value) => setCachedStateField(key, value)}
-					/>
 
 					<MaxLimitInputs
 						allowedMaxRequests={allowedMaxRequests}
@@ -168,41 +180,8 @@ export const AutoApproveSettings = ({
 					/>
 				</div>
 
-				{/* ADDITIONAL SETTINGS */}
-
-				{alwaysAllowReadOnly && (
+				{mode === "auto" && (
 					<div className="flex flex-col gap-3 pl-3 border-l-2 border-vscode-button-background">
-						<div className="flex items-center gap-4 font-bold">
-							<span className="codicon codicon-eye" />
-							<div>{t("settings:autoApprove.readOnly.label")}</div>
-						</div>
-						<SearchableSetting
-							settingId="auto-approve-readonly-outside-workspace"
-							section="autoApprove"
-							label={t("settings:autoApprove.readOnly.outsideWorkspace.label")}>
-							<VSCodeCheckbox
-								checked={alwaysAllowReadOnlyOutsideWorkspace}
-								onChange={(e: any) =>
-									setCachedStateField("alwaysAllowReadOnlyOutsideWorkspace", e.target.checked)
-								}
-								data-testid="always-allow-readonly-outside-workspace-checkbox">
-								<span className="font-medium">
-									{t("settings:autoApprove.readOnly.outsideWorkspace.label")}
-								</span>
-							</VSCodeCheckbox>
-							<div className="text-vscode-descriptionForeground text-sm mt-1">
-								{t("settings:autoApprove.readOnly.outsideWorkspace.description")}
-							</div>
-						</SearchableSetting>
-					</div>
-				)}
-
-				{alwaysAllowWrite && (
-					<div className="flex flex-col gap-3 pl-3 border-l-2 border-vscode-button-background">
-						<div className="flex items-center gap-4 font-bold">
-							<span className="codicon codicon-edit" />
-							<div>{t("settings:autoApprove.write.label")}</div>
-						</div>
 						<SearchableSetting
 							settingId="auto-approve-write-protected"
 							section="autoApprove"
@@ -222,156 +201,148 @@ export const AutoApproveSettings = ({
 					</div>
 				)}
 
-				{alwaysAllowFollowupQuestions && (
-					<div className="flex flex-col gap-3 pl-3 border-l-2 border-vscode-button-background">
-						<div className="flex items-center gap-4 font-bold">
-							<span className="codicon codicon-question" />
-							<div>{t("settings:autoApprove.followupQuestions.label")}</div>
+				<div className="flex flex-col gap-3 pl-3 border-l-2 border-vscode-button-background">
+					<SearchableSetting
+						settingId="auto-approve-denied-commands"
+						section="autoApprove"
+						label={t("settings:autoApprove.execute.deniedCommands")}>
+						<label
+							htmlFor={deniedCommandInputId}
+							className="block font-medium mb-1"
+							data-testid="denied-commands-heading">
+							{t("settings:autoApprove.execute.deniedCommands")}
+						</label>
+						<div className="text-vscode-descriptionForeground text-sm mt-1">
+							{t("settings:autoApprove.execute.deniedCommandsDescription")}
 						</div>
-						<SearchableSetting
-							settingId="auto-approve-followup-timeout"
-							section="autoApprove"
-							label={t("settings:autoApprove.followupQuestions.timeoutLabel")}>
-							<div className="flex items-center gap-2">
-								<Slider
-									min={1000}
-									max={300000}
-									step={1000}
-									value={[followupAutoApproveTimeoutMs]}
-									onValueChange={([value]) =>
-										setCachedStateField("followupAutoApproveTimeoutMs", value)
-									}
-									data-testid="followup-timeout-slider"
-								/>
-								<span className="w-20">{followupAutoApproveTimeoutMs / 1000}s</span>
-							</div>
-							<div className="text-vscode-descriptionForeground text-sm mt-1">
-								{t("settings:autoApprove.followupQuestions.timeoutLabel")}
-							</div>
-						</SearchableSetting>
+					</SearchableSetting>
+					<div className="flex gap-2">
+						<Input
+							id={deniedCommandInputId}
+							value={deniedCommandInput}
+							onChange={(e: any) => setDeniedCommandInput(e.target.value)}
+							onKeyDown={(e: any) => {
+								if (e.key === "Enter") {
+									e.preventDefault()
+									handleAddDeniedCommand()
+								}
+							}}
+							placeholder={t("settings:autoApprove.execute.deniedCommandPlaceholder")}
+							className="grow"
+							data-testid="denied-command-input"
+						/>
+						<Button
+							className="h-8"
+							onClick={handleAddDeniedCommand}
+							data-testid="add-denied-command-button">
+							{t("settings:autoApprove.execute.addButton")}
+						</Button>
 					</div>
-				)}
-
-				{alwaysAllowExecute && (
-					<div className="flex flex-col gap-3 pl-3 border-l-2 border-vscode-button-background">
-						<div className="flex items-center gap-4 font-bold">
-							<span className="codicon codicon-terminal" />
-							<div>{t("settings:autoApprove.execute.label")}</div>
-						</div>
-
-						<SearchableSetting
-							settingId="auto-approve-allowed-commands"
-							section="autoApprove"
-							label={t("settings:autoApprove.execute.allowedCommands")}>
-							<label
-								htmlFor={allowedCommandInputId}
-								className="block font-medium mb-1"
-								data-testid="allowed-commands-heading">
-								{t("settings:autoApprove.execute.allowedCommands")}
-							</label>
-							<div className="text-vscode-descriptionForeground text-sm mt-1">
-								{t("settings:autoApprove.execute.allowedCommandsDescription")}
-							</div>
-						</SearchableSetting>
-
-						<div className="flex gap-2">
-							<Input
-								id={allowedCommandInputId}
-								value={commandInput}
-								onChange={(e: any) => setCommandInput(e.target.value)}
-								onKeyDown={(e: any) => {
-									if (e.key === "Enter") {
-										e.preventDefault()
-										handleAddCommand()
-									}
-								}}
-								placeholder={t("settings:autoApprove.execute.commandPlaceholder")}
-								className="grow"
-								data-testid="command-input"
-							/>
-							<Button className="h-8" onClick={handleAddCommand} data-testid="add-command-button">
-								{t("settings:autoApprove.execute.addButton")}
-							</Button>
-						</div>
-
-						<div className="flex flex-wrap gap-2">
-							{(allowedCommands ?? []).map((cmd, index) => (
-								<Button
-									key={index}
-									variant="secondary"
-									data-testid={`remove-command-${index}`}
-									onClick={() => {
-										const newCommands = (allowedCommands ?? []).filter((_, i) => i !== index)
-										setCachedStateField("allowedCommands", newCommands)
-									}}>
-									<div className="flex flex-row items-center gap-1">
-										<div>{cmd}</div>
-										<X className="text-foreground scale-75" />
-									</div>
-								</Button>
-							))}
-						</div>
-
-						{/* Denied Commands Section */}
-						<SearchableSetting
-							settingId="auto-approve-denied-commands"
-							section="autoApprove"
-							label={t("settings:autoApprove.execute.deniedCommands")}
-							className="mt-6">
-							<label
-								htmlFor={deniedCommandInputId}
-								className="block font-medium mb-1"
-								data-testid="denied-commands-heading">
-								{t("settings:autoApprove.execute.deniedCommands")}
-							</label>
-							<div className="text-vscode-descriptionForeground text-sm mt-1">
-								{t("settings:autoApprove.execute.deniedCommandsDescription")}
-							</div>
-						</SearchableSetting>
-
-						<div className="flex gap-2">
-							<Input
-								id={deniedCommandInputId}
-								value={deniedCommandInput}
-								onChange={(e: any) => setDeniedCommandInput(e.target.value)}
-								onKeyDown={(e: any) => {
-									if (e.key === "Enter") {
-										e.preventDefault()
-										handleAddDeniedCommand()
-									}
-								}}
-								placeholder={t("settings:autoApprove.execute.deniedCommandPlaceholder")}
-								className="grow"
-								data-testid="denied-command-input"
-							/>
+					<div className="flex flex-wrap gap-2">
+						{(deniedCommands ?? []).map((cmd, index) => (
 							<Button
-								className="h-8"
-								onClick={handleAddDeniedCommand}
-								data-testid="add-denied-command-button">
-								{t("settings:autoApprove.execute.addButton")}
+								key={index}
+								variant="secondary"
+								data-testid={`remove-denied-command-${index}`}
+								onClick={() => {
+									setCachedStateField(
+										"deniedCommands",
+										(deniedCommands ?? []).filter((_, i) => i !== index),
+									)
+								}}>
+								<div className="flex flex-row items-center gap-1">
+									<div>{cmd}</div>
+									<X className="text-foreground scale-75" />
+								</div>
 							</Button>
-						</div>
-
-						<div className="flex flex-wrap gap-2">
-							{(deniedCommands ?? []).map((cmd, index) => (
-								<Button
-									key={index}
-									variant="secondary"
-									data-testid={`remove-denied-command-${index}`}
-									onClick={() => {
-										const newCommands = (deniedCommands ?? []).filter((_, i) => i !== index)
-										setCachedStateField("deniedCommands", newCommands)
-									}}>
-									<div className="flex flex-row items-center gap-1">
-										<div>{cmd}</div>
-										<X className="text-foreground scale-75" />
-									</div>
-								</Button>
-							))}
-						</div>
+						))}
 					</div>
-				)}
+
+					<SearchableSetting
+						settingId="auto-approve-allowed-commands"
+						section="autoApprove"
+						label={t("settings:autoApprove.execute.allowedCommands")}>
+						<label
+							htmlFor={allowedCommandInputId}
+							className="block font-medium mb-1"
+							data-testid="allowed-commands-heading">
+							{t("settings:autoApprove.execute.allowedCommands")}
+						</label>
+						<div className="text-vscode-descriptionForeground text-sm mt-1">
+							{t("settings:autoApprove.execute.allowedCommandsDescription")}
+						</div>
+					</SearchableSetting>
+					<div className="flex gap-2">
+						<Input
+							id={allowedCommandInputId}
+							value={commandInput}
+							onChange={(e: any) => setCommandInput(e.target.value)}
+							onKeyDown={(e: any) => {
+								if (e.key === "Enter") {
+									e.preventDefault()
+									handleAddCommand()
+								}
+							}}
+							placeholder={t("settings:autoApprove.execute.commandPlaceholder")}
+							className="grow"
+							data-testid="command-input"
+						/>
+						<Button className="h-8" onClick={handleAddCommand} data-testid="add-command-button">
+							{t("settings:autoApprove.execute.addButton")}
+						</Button>
+					</div>
+					<div className="flex flex-wrap gap-2">
+						{(allowedCommands ?? []).map((cmd, index) => (
+							<Button
+								key={index}
+								variant="secondary"
+								data-testid={`remove-command-${index}`}
+								onClick={() => {
+									setCachedStateField(
+										"allowedCommands",
+										(allowedCommands ?? []).filter((_, i) => i !== index),
+									)
+								}}>
+								<div className="flex flex-row items-center gap-1">
+									<div>{cmd}</div>
+									<X className="text-foreground scale-75" />
+								</div>
+							</Button>
+						))}
+					</div>
+				</div>
+
+				<details className="mt-4">
+					<summary className="cursor-pointer text-sm text-vscode-descriptionForeground">
+						{t("settings:autoApprove.advancedMcp")}
+					</summary>
+					<div className="mt-2">
+						<VSCodeCheckbox
+							checked={alwaysAllowMcp}
+							onChange={(e: any) => setCachedStateField("alwaysAllowMcp", e.target.checked)}
+							data-testid="always-allow-mcp-checkbox">
+							<span className="font-medium">{t("settings:autoApprove.mcp.label")}</span>
+						</VSCodeCheckbox>
+					</div>
+				</details>
 			</Section>
+
+			<AlertDialog open={bypassWarningOpen} onOpenChange={setBypassWarningOpen}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>{t("settings:autoApprove.bypassWarning.title")}</AlertDialogTitle>
+						<AlertDialogDescription>{t("settings:autoApprove.bypassWarning.body")}</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel>{t("settings:autoApprove.bypassWarning.cancel")}</AlertDialogCancel>
+						<AlertDialogAction
+							data-testid="approval-mode-bypass-confirm"
+							onClick={() => applyMode("bypass", true)}>
+							{t("settings:autoApprove.bypassWarning.confirm")}
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
 		</div>
 	)
 }

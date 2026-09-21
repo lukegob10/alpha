@@ -299,6 +299,12 @@ export class ContextProxy {
 	}
 
 	updateGlobalState<K extends GlobalStateKey>(key: K, value: GlobalState[K]) {
+		if (key === "newTaskReasoningPreference") {
+			// A quick-control acknowledgement must never expose an unpersisted choice.
+			return this.originalContext.globalState.update(key, value).then(() => {
+				this.stateCache[key] = value
+			})
+		}
 		if (isPassThroughStateKey(key)) {
 			return this.originalContext.globalState.update(key, value)
 		}

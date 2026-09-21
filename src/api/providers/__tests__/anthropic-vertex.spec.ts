@@ -1078,6 +1078,49 @@ describe("VertexHandler", () => {
 			expect(modelInfo.info.contextWindow).toBe(200_000)
 		})
 
+		it("uses the catalog default when the configured model ID is absent or blank", () => {
+			for (const apiModelId of [undefined, "", "   "]) {
+				const defaultHandler = new AnthropicVertexHandler({ apiModelId })
+				const model = defaultHandler.getModel()
+
+				expect(model.id).toBe("claude-sonnet-5")
+				expect(model.info.maxTokens).toBe(128_000)
+				expect(model.info.supportsPromptCache).toBe(true)
+			}
+		})
+
+		it("preserves unknown Claude IDs without inventing reasoning capabilities", async () => {
+			const unknownModelId = "claude-future-preview"
+			const unknownHandler = new AnthropicVertexHandler({
+				apiModelId: unknownModelId,
+				enableReasoningEffort: true,
+				reasoningEffort: "high",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+			})
+
+			const model = unknownHandler.getModel()
+			expect(model.id).toBe(unknownModelId)
+			expect(model.info.maxTokens).toBeDefined()
+			expect(model.info.supportsReasoningBudget).toBeUndefined()
+			expect(model.info.supportsReasoningEffort).toBeUndefined()
+			expect(model.info.reasoningEffort).toBeUndefined()
+			expect(model.reasoning).toBeUndefined()
+
+			const mockCreate = vitest.fn().mockResolvedValue({
+				async *[Symbol.asyncIterator]() {
+					yield { type: "message_start", message: { usage: { input_tokens: 1, output_tokens: 0 } } }
+				},
+			})
+			setDirectClientCreate(unknownHandler, mockCreate)
+			await unknownHandler.createMessage("system", [{ role: "user", content: "hello" }]).next()
+
+			expect(mockCreate).toHaveBeenCalledWith(
+				expect.objectContaining({ model: unknownModelId, thinking: undefined }),
+				undefined,
+			)
+		})
+
 		it("honors custom maxTokens for thinking models", () => {
 			const handler = new AnthropicVertexHandler({
 				apiModelId: "claude-sonnet-4-6",
@@ -1340,6 +1383,31 @@ describe("VertexHandler", () => {
 			expect(modelInfo.id).toBe("claude-sonnet-4-6")
 			expect(modelInfo.reasoningBudget).toBe(4096)
 			expect(modelInfo.temperature).toBe(1.0) // Thinking requires temperature 1.0.
+		})
+
+		it("omits thinking for Claude 5 until its reasoning contract is verified", async () => {
+			const claude5Handler = new AnthropicVertexHandler({
+				apiModelId: "claude-sonnet-5",
+				enableReasoningEffort: true,
+				reasoningEffort: "high",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+			})
+
+			expect(claude5Handler.getModel().reasoning).toBeUndefined()
+
+			const mockCreate = vitest.fn().mockResolvedValue({
+				async *[Symbol.asyncIterator]() {
+					yield { type: "message_start", message: { usage: { input_tokens: 1, output_tokens: 0 } } }
+				},
+			})
+			setDirectClientCreate(claude5Handler, mockCreate)
+			await claude5Handler.createMessage("system", [{ role: "user", content: "hello" }]).next()
+
+			expect(mockCreate).toHaveBeenCalledWith(
+				expect.objectContaining({ model: "claude-sonnet-5", thinking: undefined }),
+				undefined,
+			)
 		})
 
 		it("should calculate thinking budget correctly", () => {

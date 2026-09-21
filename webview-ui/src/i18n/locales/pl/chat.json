@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "Kopiuj",
 		"copied": "Skopiowano",
+		"implementPlan": "Wdróż plan",
 		"edit": "Edytuj i wyślij ponownie",
 		"restart": "Zacznij ponownie od poprzedniego polecenia",
 		"restartWarning": "Poprzednie polecenie zostanie wykonane ponownie, a wszystkie późniejsze wiadomości zostaną zastąpione. Pliki obszaru roboczego pozostaną bez zmian.",
@@ -325,11 +326,58 @@
 		"triggerLabel_zero": "0 automatycznie zatwierdzone",
 		"triggerLabel_one": "1 automatycznie zatwierdzony",
 		"triggerLabel_other": "{{count}} automatycznie zatwierdzonych",
-		"triggerLabelAll": "BRRR"
+		"triggerLabelAll": "Wszystko",
+		"tooltipMode": "Approval mode: {{mode}}",
+		"modes": {
+			"ask": "Ask",
+			"auto": "Auto",
+			"bypass": "Pełny dostęp"
+		},
+		"modeDescription": {
+			"ask": "Auto-approve workspace reads. Ask before writes, commands, spawn, tickets, MCP, and outside paths.",
+			"auto": "Auto-approve in-workspace edits, spawn, tickets, and commands. Ask for true-outside paths, protected files, and denied commands.",
+			"bypass": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
+		},
+		"bypassWarning": {
+			"title": "Enable Full Access?",
+			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands.",
+			"confirm": "Enable Full Access",
+			"cancel": "Cancel"
+		}
 	},
 	"reasoning": {
 		"thinking": "Myślenie",
-		"seconds": "{{count}} s"
+		"seconds": "{{count}} s",
+		"label": "Rozumowanie: {{value}}",
+		"title": "Rozumowanie",
+		"loading": "Ładowanie…",
+		"unavailable": "Niedostępne",
+		"default": "Domyślne",
+		"off": "Wyłączone",
+		"on": "Włączone",
+		"none": "Brak",
+		"help": "Domyślne używa ustawień profilu. Wyłączone dezaktywuje lub pomija opcjonalne rozumowanie. Brak wysyła jawny poziom none dostawcy.",
+		"budget": "{{tokens}} tokenów myślenia",
+		"advanced": "Zaawansowane ustawienia profilu",
+		"custom": "Niestandardowy token rozumowania",
+		"customHelp": "Używaj tylko tokenu akceptowanego przez ten hostowany model: 1–32 małe litery, cyfry, podkreślenia lub łączniki. Nie zakłada się obsługi rodziny modeli.",
+		"apply": "Zastosuj",
+		"invalidCustom": "Nieprawidłowy token. Rozumowanie zostanie pominięte.",
+		"saving": "Zapisywanie…",
+		"nextStep": "Następny krok",
+		"current": "Bieżące żądanie: {{value}}",
+		"fallback": "Żądano {{requested}}; używane będzie {{effective}}.",
+		"saveFailed": "Nie można zapisać rozumowania. Zaakceptowany wybór pozostaje bez zmian.",
+		"unavailableHelp": "Ten model nie ma zweryfikowanej możliwości dostosowania rozumowania.",
+		"profileDefault": "Domyślne ustawienie profilu / zaawansowane rozumowanie. Sterowanie zadaniem może je zastąpić bez zapisywania profilu.",
+		"scheduleHelp": "Zmiany harmonogramu dotyczą przyszłych uruchomień; uruchomienia w kolejce zachowują swój migawkowy stan.",
+		"reasons": {
+			"unsupported": "Żądana wartość nie jest obsługiwana przez ten model.",
+			"unavailable": "Możliwości rozumowania nie są dostępne dla tego modelu.",
+			"required": "Ten model wymaga rozumowania.",
+			"budget-only": "Ten model używa budżetu tokenów, a nie nazwanych poziomów wysiłku.",
+			"invalid-custom": "Niestandardowy token jest nieprawidłowy."
+		}
 	},
 	"contextManagement": {
 		"tokens": "tokeny",

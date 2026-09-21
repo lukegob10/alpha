@@ -525,6 +525,150 @@ describe("ToolScheduler", () => {
 		expect(execute).not.toHaveBeenCalled()
 	})
 
+	it("executes remapped worker file tools against the private worktree only", async () => {
+		const tempRoot = await fs.mkdtemp(path.join(tmpdir(), "alpha-worker-sched-"))
+		try {
+			const logicalWorkspace = path.join(tempRoot, "workspace")
+			const worktree = path.join(tempRoot, "worktree")
+			await fs.mkdir(path.join(logicalWorkspace, "src", "nested"), { recursive: true })
+			await fs.mkdir(path.join(worktree, "src", "nested"), { recursive: true })
+			await fs.writeFile(path.join(logicalWorkspace, "src", "nested", "read.ts"), "parent-read")
+			await fs.writeFile(path.join(worktree, "src", "nested", "read.ts"), "worktree-read")
+			const resolveNativePath = (cwd: string, candidate: string) =>
+				path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(cwd, candidate)
+			const execute = vi.fn(async ({ call, callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
+				const args = (call.nativeArgs ?? {}) as Record<string, unknown>
+				if (call.name === "write_to_file" && typeof args.path === "string") {
+					const dest = resolveNativePath(worktree, args.path)
+					await fs.mkdir(path.dirname(dest), { recursive: true })
+					await fs.writeFile(dest, String(args.content ?? ""))
+					callbacks.pushToolResult("written")
+					return
+				}
+				if (call.name === "read_file" && Array.isArray(args.files)) {
+					const nested = args.files[0] as { path?: string } | undefined
+					if (typeof nested?.path !== "string") throw new Error("nested read path missing")
+					callbacks.pushToolResult(await fs.readFile(resolveNativePath(worktree, nested.path), "utf8"))
+					return
+				}
+				if (call.name === "apply_patch" && typeof args.patch === "string") {
+					const match = args.patch.match(/^\*\*\* Add File: (.+)$/m)
+					if (!match?.[1]) throw new Error("patch destination missing")
+					const dest = resolveNativePath(worktree, match[1])
+					await fs.mkdir(path.dirname(dest), { recursive: true })
+					await fs.writeFile(dest, "patched")
+					callbacks.pushToolResult("patched")
+					return
+				}
+				if (call.name === "shell") {
+					callbacks.pushToolResult("must not execute parent shell writes")
+					return
+				}
+				callbacks.pushToolResult("ok")
+			})
+			const task = Object.assign(makeTask(), {
+				taskKind: "subagent",
+				subagentRole: "worker",
+				cwd: worktree,
+				historyWorkspacePath: logicalWorkspace,
+			}) as Task
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			for (const name of ["write_to_file", "read_file", "apply_patch", "shell"]) {
+				registry.register(descriptor(name, "serial", execute))
+			}
+			const scheduler = new ToolScheduler({
+				task,
+				registry,
+				mode: "code",
+				validateCall: () => {},
+				policy: createToolPolicySnapshot({
+					visibleTools: ["write_to_file", "read_file", "apply_patch", "shell"],
+					execution: { workspaceRoots: [worktree] },
+				}),
+			})
+			const logicalWrite = path.join(logicalWorkspace, "src", "nested", "foo.ts")
+			const written = await scheduler.run(
+				response({
+					id: "logical-write",
+					name: "write_to_file",
+					arguments: { path: logicalWrite, content: "worktree-only" },
+				}),
+			)
+			expect(written.results[0].status).toBe("success")
+			expect(await fs.readFile(path.join(worktree, "src", "nested", "foo.ts"), "utf8")).toBe("worktree-only")
+			await expect(fs.access(logicalWrite)).rejects.toMatchObject({ code: "ENOENT" })
+
+			const nestedRead = await scheduler.run(
+				response({
+					id: "logical-read",
+					name: "read_file",
+					arguments: { files: [{ path: path.join(logicalWorkspace, "src", "nested", "read.ts") }] },
+				}),
+			)
+			expect(nestedRead.results[0].status).toBe("success")
+			expect(String(nestedRead.results[0].content)).toContain("worktree-read")
+
+			const logicalPatch = path.join(logicalWorkspace, "src", "nested", "patched.ts")
+			const patched = await scheduler.run(
+				response({
+					id: "logical-patch",
+					name: "apply_patch",
+					arguments: {
+						patch: `*** Begin Patch\n*** Add File: ${logicalPatch}\n+patched\n*** End Patch`,
+					},
+				}),
+			)
+			expect(patched.results[0].status).toBe("success")
+			expect(await fs.readFile(path.join(worktree, "src", "nested", "patched.ts"), "utf8")).toBe("patched")
+			await expect(fs.access(logicalPatch)).rejects.toMatchObject({ code: "ENOENT" })
+
+			execute.mockClear()
+			const parentShellDest = path.join(logicalWorkspace, "src", "nested", "leaked.ts")
+			const rejectedShell = await scheduler.run(
+				response({
+					id: "parent-shell",
+					name: "shell",
+					arguments: { command: `echo leaked > "${parentShellDest}"` },
+				}),
+			)
+			expect(rejectedShell.results[0].status).toBe("error")
+			expect(String(rejectedShell.results[0].content)).toMatch(/scope|outside/i)
+			expect(execute).not.toHaveBeenCalled()
+			await expect(fs.access(parentShellDest)).rejects.toMatchObject({ code: "ENOENT" })
+			await expect(fs.access(path.join(worktree, "src", "nested", "leaked.ts"))).rejects.toMatchObject({
+				code: "ENOENT",
+			})
+
+			execute.mockClear()
+			const mentioned = await scheduler.run(
+				response({
+					id: "mention-only",
+					name: "shell",
+					arguments: { command: `echo "${logicalWrite}"` },
+				}),
+			)
+			expect(mentioned.results[0].status).toBe("success")
+			expect(execute).toHaveBeenCalledOnce()
+			expect((execute.mock.calls[0]?.[0].call.nativeArgs as { command?: string }).command).toBe(
+				`echo "${logicalWrite}"`,
+			)
+
+			execute.mockClear()
+			const rejected = await scheduler.run(
+				response({
+					id: "true-outside",
+					name: "write_to_file",
+					arguments: { path: path.join(tempRoot, "other", "file.ts"), content: "no" },
+				}),
+			)
+			expect(rejected.results[0].status).toBe("error")
+			expect(String(rejected.results[0].content)).toContain("outside the allowed workspace roots")
+			expect(execute).not.toHaveBeenCalled()
+		} finally {
+			await fs.rm(tempRoot, { recursive: true, force: true })
+		}
+	})
+
 	it("rejects an unexpected approval without entering Task.ask from a parallel worker", async () => {
 		const task = makeTask()
 		const ask = vi.spyOn(task, "ask")
@@ -1813,6 +1957,34 @@ describe("ToolScheduler", () => {
 		expect(peak).toBe(1)
 		expect(outcome.parallelBatchCount).toBe(0)
 		expect(resultIds(task)).toEqual(["1", "2"])
+	})
+
+	it("forwards a spawn explicit-approval flag independently of tool auto-approval", async () => {
+		const task = makeTask()
+		const ask = vi.fn(async () => ({ response: "noButtonClicked" as const }))
+		task.ask = ask
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(
+			descriptor("spawn_agent", "serial", async ({ callbacks }) => {
+				const approved = await callbacks.askApproval(
+					"tool",
+					'{"tool":"spawnAgent"}',
+					undefined,
+					undefined,
+					true,
+				)
+				callbacks.pushToolResult(approved ? "launched" : "denied")
+			}),
+		)
+		const outcome = await new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(response({ id: "spawn-explicit", name: "spawn_agent" }))
+
+		expect(ask).toHaveBeenCalledWith("tool", '{"tool":"spawnAgent"}', false, undefined, false, true)
+		expect(outcome.results[0].status).toBe("denied")
 	})
 
 	it("accepts a narrow execution host without requiring a concrete Task", async () => {

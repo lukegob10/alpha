@@ -226,6 +226,16 @@ describe("sub-agent orchestration contracts", () => {
 				groupApproved: false,
 			}),
 		).toThrow("Group approval evidence")
+		expect(
+			finalizeSubagentDelegationPolicy(provisional, {
+				authorization: "session-policy",
+			}),
+		).toEqual({
+			policy: "explicit-only",
+			source: "default",
+			authorization: "session-policy",
+			explicitUserRequest: false,
+		})
 	})
 
 	it("authorizes trusted task opt-in and proactive policy without conflating their provenance", () => {

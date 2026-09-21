@@ -1,4 +1,6 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react"
+import React, { useCallback, useContext, useEffect, useRef, useState } from "react"
+
+import { ExtensionStateContext } from "./ExtensionStateContextStore"
 
 import {
 	type ProviderSettings,
@@ -10,7 +12,9 @@ import {
 	type TelemetrySetting,
 	type ExtensionMessage,
 	type ExtensionState,
+	type ApprovalMode,
 	type AlphaMessage,
+	settingsForApprovalMode,
 	type LiveTaskMetadata,
 	type MarketplaceInstalledMetadata,
 	type SkillMetadata,
@@ -105,6 +109,8 @@ export interface ExtensionStateContextType extends ExtensionState {
 	setEnhancementApiConfigId: (value: string) => void
 	setExperimentEnabled: (id: ExperimentId, enabled: boolean) => void
 	setAutoApprovalEnabled: (value: boolean) => void
+	setApprovalMode: (value: ApprovalMode) => void
+	setApprovalModeBypassAcknowledged: (value: boolean) => void
 	customModes: ModeConfig[]
 	setCustomModes: (value: ModeConfig[]) => void
 	setMaxOpenTabsContext: (value: number) => void
@@ -144,7 +150,7 @@ export interface ExtensionStateContextType extends ExtensionState {
 	skills?: SkillMetadata[]
 }
 
-export const ExtensionStateContext = createContext<ExtensionStateContextType | undefined>(undefined)
+export { ExtensionStateContext }
 
 export const mergeExtensionState = (prevState: ExtensionState, newState: Partial<ExtensionState>) => {
 	const { customModePrompts: prevCustomModePrompts, experiments: prevExperiments, ...prevRest } = prevState
@@ -198,6 +204,7 @@ export const mergeExtensionState = (prevState: ExtensionState, newState: Partial
 	const patchHasNoTaskStateSequence = hasDedicatedDomainSequence && incomingTaskStateSeq === undefined
 	if (taskStateIsStale || patchHasNoTaskStateSequence) {
 		rest.currentTaskId = prevState.currentTaskId
+		rest.taskReasoning = prevState.taskReasoning
 		rest.currentTaskItem = prevState.currentTaskItem
 		rest.currentView = prevState.currentView
 		rest.currentTaskAutoApprovalRestricted = prevState.currentTaskAutoApprovalRestricted
@@ -210,6 +217,15 @@ export const mergeExtensionState = (prevState: ExtensionState, newState: Partial
 
 	const targetsDifferentTask =
 		newState.currentTaskId !== undefined && newState.currentTaskId !== prevState.currentTaskId
+	if (
+		!taskStateIsStale &&
+		!patchHasNoTaskStateSequence &&
+		"currentTaskId" in newState &&
+		newState.currentTaskId !== prevState.currentTaskId &&
+		!("taskReasoning" in newState)
+	) {
+		rest.taskReasoning = undefined
+	}
 	const rejectScopedDomains = targetsDifferentTask && (taskStateIsStale || patchHasNoTaskStateSequence)
 	if (rejectScopedDomains || isStale(incomingQueueSeq, previousQueueSeq)) {
 		rest.messageQueue = prevState.messageQueue
@@ -269,8 +285,10 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		experiments: experimentDefault,
 		enhancementApiConfigId: "",
 		hasOpenedModeSelector: false, // Default to false (not opened yet)
-		autoApprovalEnabled: false,
-		alwaysAllowTickets: false,
+		autoApprovalEnabled: true,
+		approvalMode: "auto",
+		approvalModeBypassAcknowledged: false,
+		alwaysAllowTickets: true,
 		customModes: [],
 		maxOpenTabsContext: 20,
 		maxWorkspaceFiles: 200,
@@ -581,12 +599,16 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 				}
 				case "action": {
 					if (message.action === "toggleAutoApprove") {
-						// Toggle the auto-approval state
 						setState((prevState) => {
-							const newValue = !(prevState.autoApprovalEnabled ?? false)
-							// Also send the update to the extension
-							vscode.postMessage({ type: "autoApprovalEnabled", bool: newValue })
-							return { ...prevState, autoApprovalEnabled: newValue }
+							const nextMode = prevState.approvalMode === "ask" ? "auto" : "ask"
+							const settings = settingsForApprovalMode(nextMode, {
+								alwaysAllowWriteProtected:
+									nextMode === "auto" ? prevState.alwaysAllowWriteProtected === true : undefined,
+								alwaysAllowMcp: prevState.alwaysAllowMcp === true,
+								approvalModeBypassAcknowledged: prevState.approvalModeBypassAcknowledged === true,
+							})
+							vscode.postMessage({ type: "updateSettings", updatedSettings: settings })
+							return { ...prevState, ...settings }
 						})
 					}
 					break
@@ -819,6 +841,9 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		setEnhancementApiConfigId: (value) =>
 			setState((prevState) => ({ ...prevState, enhancementApiConfigId: value })),
 		setAutoApprovalEnabled: (value) => setState((prevState) => ({ ...prevState, autoApprovalEnabled: value })),
+		setApprovalMode: (value) => setState((prevState) => ({ ...prevState, approvalMode: value })),
+		setApprovalModeBypassAcknowledged: (value) =>
+			setState((prevState) => ({ ...prevState, approvalModeBypassAcknowledged: value })),
 		setCustomModes: (value) => setState((prevState) => ({ ...prevState, customModes: value })),
 		setMaxOpenTabsContext: (value) => setState((prevState) => ({ ...prevState, maxOpenTabsContext: value })),
 		setMaxWorkspaceFiles: (value) => setState((prevState) => ({ ...prevState, maxWorkspaceFiles: value })),

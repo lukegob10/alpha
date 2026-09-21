@@ -8,6 +8,7 @@ import {
 	providerSettingsSchema,
 } from "./provider-settings.js"
 import { historyItemSchema } from "./history.js"
+import { taskReasoningPreferenceSchema } from "./task-reasoning.js"
 import { codebaseIndexModelsSchema, codebaseIndexConfigSchema } from "./codebase-index.js"
 import { experimentsSchema } from "./experiment.js"
 import { telemetrySettingsSchema } from "./telemetry.js"
@@ -24,6 +25,7 @@ import {
 	subagentRootTokenBudgetSchema,
 	subagentTokenLimitSchema,
 } from "./subagent-orchestration.js"
+import { approvalModeSchema } from "./approval-mode.js"
 
 /**
  * Default delay in milliseconds after writes to allow diagnostics to detect potential problems.
@@ -103,6 +105,8 @@ export const globalSettingsSchema = z.object({
 	customCondensingPrompt: z.string().optional(),
 
 	autoApprovalEnabled: z.boolean().optional(),
+	approvalMode: approvalModeSchema.optional(),
+	approvalModeBypassAcknowledged: z.boolean().optional(),
 	disabledBuiltinSkills: z.array(z.string()).optional(),
 	alwaysAllowReadOnly: z.boolean().optional(),
 	alwaysAllowReadOnlyOutsideWorkspace: z.boolean().optional(),
@@ -237,6 +241,7 @@ export const globalSettingsSchema = z.object({
 	includeTaskHistoryInEnhance: z.boolean().optional(),
 	historyPreviewCollapsed: z.boolean().optional(),
 	reasoningBlockCollapsed: z.boolean().optional(),
+	newTaskReasoningPreference: taskReasoningPreferenceSchema.optional(),
 	/**
 	 * Controls the keyboard behavior for sending messages in the chat input.
 	 * - "send": Enter sends message, Shift+Enter creates newline (default)
@@ -334,6 +339,7 @@ export const EVALS_SETTINGS: AlphaCodeSettings = {
 	pinnedApiConfigs: {},
 
 	autoApprovalEnabled: true,
+	approvalMode: "auto",
 	alwaysAllowReadOnly: true,
 	alwaysAllowReadOnlyOutsideWorkspace: false,
 	alwaysAllowWrite: true,

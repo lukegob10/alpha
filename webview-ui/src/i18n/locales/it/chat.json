@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "Copia",
 		"copied": "Copiato",
+		"implementPlan": "Implementa il piano",
 		"edit": "Modifica e invia di nuovo",
 		"restart": "Riparti dalla richiesta precedente",
 		"restartWarning": "La richiesta precedente verrà eseguita di nuovo e tutti i messaggi successivi verranno sostituiti. I file dell’area di lavoro resteranno invariati.",
@@ -325,11 +326,58 @@
 		"triggerLabel_zero": "0 approvati automaticamente",
 		"triggerLabel_one": "1 approvato automaticamente",
 		"triggerLabel_other": "{{count}} approvati automaticamente",
-		"triggerLabelAll": "BRRR"
+		"triggerLabelAll": "Tutto",
+		"tooltipMode": "Approval mode: {{mode}}",
+		"modes": {
+			"ask": "Ask",
+			"auto": "Auto",
+			"bypass": "Accesso completo"
+		},
+		"modeDescription": {
+			"ask": "Auto-approve workspace reads. Ask before writes, commands, spawn, tickets, MCP, and outside paths.",
+			"auto": "Auto-approve in-workspace edits, spawn, tickets, and commands. Ask for true-outside paths, protected files, and denied commands.",
+			"bypass": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
+		},
+		"bypassWarning": {
+			"title": "Enable Full Access?",
+			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands.",
+			"confirm": "Enable Full Access",
+			"cancel": "Cancel"
+		}
 	},
 	"reasoning": {
 		"thinking": "Sto pensando",
-		"seconds": "{{count}}s"
+		"seconds": "{{count}}s",
+		"label": "Ragionamento: {{value}}",
+		"title": "Ragionamento",
+		"loading": "Caricamento…",
+		"unavailable": "Non disponibile",
+		"default": "Predefinito",
+		"off": "Disattivato",
+		"on": "Attivato",
+		"none": "Nessuno",
+		"help": "Il valore predefinito usa l'impostazione del profilo. Disattivato disabilita o omette il ragionamento facoltativo. Nessuno invia il livello none esplicito del provider.",
+		"budget": "{{tokens}} token di ragionamento",
+		"advanced": "Impostazioni avanzate del profilo",
+		"custom": "Token di ragionamento personalizzato",
+		"customHelp": "Usa solo un token accettato da questo modello ospitato: 1–32 lettere minuscole, cifre, trattini bassi o trattini. Non si presume il supporto per una famiglia di modelli.",
+		"apply": "Applica",
+		"invalidCustom": "Token non valido. Il ragionamento verrà omesso.",
+		"saving": "Salvataggio…",
+		"nextStep": "Passaggio successivo",
+		"current": "Richiesta attuale: {{value}}",
+		"fallback": "Richiesto {{requested}}; verrà usato {{effective}}.",
+		"saveFailed": "Impossibile salvare il ragionamento. La scelta accettata non è cambiata.",
+		"unavailableHelp": "Questo modello non dispone di una capacità di ragionamento regolabile verificata.",
+		"profileDefault": "Predefinito del profilo / ragionamento avanzato. Il controllo dell'attività può sostituirlo senza salvare il profilo.",
+		"scheduleHelp": "Le modifiche alla pianificazione riguardano le esecuzioni future; quelle in coda conservano il loro snapshot.",
+		"reasons": {
+			"unsupported": "Il valore richiesto non è supportato da questo modello.",
+			"unavailable": "Le capacità di ragionamento non sono disponibili per questo modello.",
+			"required": "Questo modello richiede il ragionamento.",
+			"budget-only": "Questo modello usa un budget di token, non livelli di impegno denominati.",
+			"invalid-custom": "Il token personalizzato non è valido."
+		}
 	},
 	"contextManagement": {
 		"tokens": "token",

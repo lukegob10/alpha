@@ -155,6 +155,11 @@
 		"missing_task_files": "Die Dateien dieser Aufgabe fehlen. Möchtest du sie aus der Aufgabenliste entfernen?",
 		"auto_import_failed": "Fehler beim automatischen Import der Alpha-Einstellungen: {{error}}"
 	},
+	"planHandoff": {
+		"tooLarge": "Der vorgeschlagene Plan ist zu groß zum Speichern (maximal 100.000 Zeichen). Der vorherige Plan wurde beibehalten.",
+		"implementInstruction": "Setze den aktuellen vorgeschlagenen Plan um.",
+		"implementFailed": "Die Umsetzung des Plans konnte nicht gestartet werden. Prüfe die aktuelle Aufgabe und den Plan und versuche es erneut."
+	},
 	"info": {
 		"no_changes": "Keine Änderungen gefunden.",
 		"clipboard_copy": "Systemnachricht erfolgreich in die Zwischenablage kopiert",

@@ -61,7 +61,8 @@
 		{
 			"label": "watch:tsc",
 			"type": "shell",
-			"command": "pnpm exec turbo watch:tsc",
+			// Keep the extension host responsive during F5 by checking runtime sources only.
+			"command": "node node_modules/typescript/lib/tsc.js --noEmit --watch --project src/tsconfig.dev-watch.json",
 			"group": "build",
 			"problemMatcher": "$tsc-watch",
 			"isBackground": true,

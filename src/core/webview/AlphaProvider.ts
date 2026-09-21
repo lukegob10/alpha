@@ -1,4 +1,10 @@
 import { assertPrimaryMode, restoreTaskMode } from "@alpha-code/types"
+import {
+	taskReasoningPreferenceSchema,
+	type TaskReasoningPreference,
+	type TaskReasoningProjection,
+} from "@alpha-code/types"
+import { resolveTaskReasoning } from "../agent/TaskReasoning"
 import os from "os"
 import * as path from "path"
 import fs from "fs/promises"
@@ -83,6 +89,12 @@ import {
 	DEFAULT_MODES,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	getModelId,
+	vertexModels,
+	vertexDefaultModelId,
+	stellarModels,
+	stellarDefaultModelId,
+	openAiModelInfoSaneDefaults,
+	type ModelInfo,
 	isProviderName,
 	createSubagentEffectiveLimits,
 	finalizedSubagentContextManifestSchema,
@@ -93,6 +105,11 @@ import {
 	managedAgentTreeProjectionSchema,
 	subagentUsageSchema,
 	disabledSubagentAutoApprovalPolicy,
+	effectiveCommandAllowlistForMode,
+	isSubagentApprovalNarrowerThanParent,
+	migrateApprovalMode,
+	resolveApprovalFlags,
+	shouldDeriveApprovalFlags,
 } from "@alpha-code/types"
 import { aggregateTaskCostsRecursive, type AggregatedCosts } from "./aggregateTaskCosts"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -255,6 +272,18 @@ const getTaskModeForSwitch = async (task: Task): Promise<string | undefined> => 
 
 	const taskWithLegacyModeShape = task as unknown as { _taskMode?: string; taskMode?: string }
 	return taskWithLegacyModeShape._taskMode ?? taskWithLegacyModeShape.taskMode
+}
+
+// Completion and reload prompts wait for the next user instruction, not tool
+// authorization. Changing mode here leaves the prompt and transcript intact.
+const isTaskAwaitingContinuation = (task: Task): boolean => {
+	if (!task.hasPendingAsk?.()) return false
+	const ask = task.taskAsk ?? task.clineMessages.at(-1)
+	return (
+		ask?.type === "ask" &&
+		ask.partial !== true &&
+		(ask.ask === "completion_result" || ask.ask === "resume_completed_task" || ask.ask === "resume_task")
+	)
 }
 
 interface WaitForAgentOptions {
@@ -431,12 +460,115 @@ export class AlphaProvider
 	/** Independent wire-order guards for task-view state domains. */
 	private clineMessagesSeq = 0
 	private taskStateSeq = 0
+	private configurationQueue: Promise<unknown> = Promise.resolve()
+	private draftReasoningCache?: { key: string; state: Promise<TaskReasoningProjection> }
+
+	private enqueueConfiguration<T>(operation: () => Promise<T>): Promise<T> {
+		const result = this.configurationQueue.then(operation)
+		this.configurationQueue = result.catch(() => undefined)
+		return result
+	}
+
+	public async getReasoningCapabilities(
+		profileId?: string,
+		preference: TaskReasoningPreference = { kind: "default" },
+	): Promise<TaskReasoningProjection> {
+		const configuration = profileId
+			? await this.providerSettingsManager.getProfile({ id: profileId })
+			: this.getProviderSettingsSnapshot()
+		return this.resolveReasoningCapabilities(configuration, preference)
+	}
+
+	private async resolveReasoningCapabilities(
+		configuration: ProviderSettings,
+		preference: TaskReasoningPreference,
+	): Promise<TaskReasoningProjection> {
+		const requested = taskReasoningPreferenceSchema.parse(preference)
+		const provider = configuration.apiProvider ?? "vertex"
+		if (provider !== "vscode-lm") {
+			const id =
+				provider === "openai"
+					? (configuration.openAiModelId ?? "")
+					: (configuration.apiModelId ??
+						(provider === "stellar" ? stellarDefaultModelId : vertexDefaultModelId))
+			const info =
+				provider === "vertex"
+					? (vertexModels as Record<string, ModelInfo>)[id]
+					: provider === "stellar"
+						? stellarModels[stellarDefaultModelId]
+						: configuration.openAiCustomModelInfo
+			return resolveTaskReasoning(configuration, requested, { id, info: info ?? openAiModelInfoSaneDefaults })
+				.state
+		}
+		const handler = buildApiHandler(configuration)
+		try {
+			await handler.prepareModel?.()
+			return resolveTaskReasoning(configuration, requested, handler.getModel()).state
+		} finally {
+			handler.dispose?.()
+		}
+	}
+
+	private async getReasoningProjection(task?: Task): Promise<TaskReasoningProjection> {
+		const accepted = task?.getReasoningState?.()
+		if (accepted && task?.apiConfiguration.apiProvider !== "vscode-lm") return accepted
+		const preference = accepted?.requested ??
+			this.contextProxy.getValue("newTaskReasoningPreference") ?? { kind: "default" }
+		const configuration = task?.apiConfiguration ?? this.getProviderSettingsSnapshot()
+		const key = crypto
+			.createHash("sha256")
+			.update(JSON.stringify([configuration, preference]))
+			.digest("hex")
+		if (this.draftReasoningCache?.key !== key) {
+			this.draftReasoningCache = {
+				key,
+				state: this.resolveReasoningCapabilities(configuration, preference).catch(() => ({
+					requested: preference,
+					effective: { kind: "off" },
+					capabilities: { kind: "unavailable", canDisable: false },
+					fallbackReason: "unavailable",
+				})),
+			}
+		}
+		const resolved = await this.draftReasoningCache.state
+		return {
+			...accepted,
+			...resolved,
+			// Live capability refresh affects the next admission, never the captured request.
+			pending: Boolean(accepted?.current && JSON.stringify(accepted.current) !== JSON.stringify(resolved)),
+		}
+	}
+
+	public setTaskReasoningPreference(
+		taskId: string | undefined,
+		input: TaskReasoningPreference,
+		options: { rememberForNewTasks?: boolean } = {},
+	): Promise<TaskReasoningProjection> {
+		const preference = taskReasoningPreferenceSchema.parse(input)
+		return this.enqueueConfiguration(async () => {
+			const task = taskId ? this.getLiveTask(taskId) : undefined
+			if (taskId && (!task || task.abort || task.abandoned)) throw new Error("Task is unavailable")
+			const rememberForNewTasks = !taskId || options.rememberForNewTasks === true
+			const previous = rememberForNewTasks ? this.contextProxy.getValue("newTaskReasoningPreference") : undefined
+			// Persist an explicitly remembered choice first; restore it if the task transaction fails.
+			if (rememberForNewTasks) await this.contextProxy.setValue("newTaskReasoningPreference", preference)
+			try {
+				if (task) await task.updateReasoningPreference(preference)
+			} catch (error) {
+				if (rememberForNewTasks) await this.contextProxy.setValue("newTaskReasoningPreference", previous)
+				throw error
+			}
+			const state = await this.getReasoningProjection(task)
+			await this.postStateToWebview().catch(() => this.log("Failed to refresh reasoning state after persistence"))
+			return state
+		})
+	}
 	private messageQueueSeq = 0
 	private currentTaskTodosSeq = 0
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "september-2026-v2.1.49-task-progress-and-completion"
+	public readonly latestAnnouncementId = "september-2026-v3.0.0-approval-and-performance"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -447,6 +579,13 @@ export class AlphaProvider
 		public readonly contextProxy: ContextProxy,
 	) {
 		super()
+		if ("lm" in vscode && vscode.lm?.onDidChangeChatModels)
+			this.disposables.push(
+				vscode.lm.onDidChangeChatModels(() => {
+					this.draftReasoningCache = undefined
+					void this.postStateToWebviewWithoutTaskHistory().catch(() => undefined)
+				}),
+			)
 		this.currentWorkspacePath = getWorkspacePath()
 		this.taskSessions = new TaskSessionRegistry(this.getConfiguredMaxConcurrentTasks())
 		this.agentLifecycleProjector = new AgentLifecycleProjector({
@@ -1560,6 +1699,7 @@ export class AlphaProvider
 			"terminalOperation",
 			"cancelAutoApproval",
 			"resumeCompletedTask",
+			"implementPlan",
 		])
 		const immediateControlTypes = new Set<WebviewMessage["type"]>([
 			"cancelTask",
@@ -1624,6 +1764,82 @@ export class AlphaProvider
 		return operation
 	}
 
+	/**
+	 * Continue a visible primary Plan task in Code from the explicit Implement plan
+	 * control. The digest and task identity make stale cards unable to switch a
+	 * different task or an already-replaced handoff.
+	 */
+	public handleImplementPlan(taskId: string, planDigest: string): Promise<void> {
+		const operation = (this.modeSwitchQueue ?? Promise.resolve()).then(() =>
+			this.handleImplementPlanForTask(taskId, planDigest),
+		)
+		this.modeSwitchQueue = operation.catch(() => undefined)
+		return operation
+	}
+
+	private async handleImplementPlanForTask(taskId: string, planDigest: string): Promise<void> {
+		const task = this.getLiveTask(taskId)
+		if (
+			!task ||
+			task.taskKind !== "primary" ||
+			!this.isTaskOnScreen(taskId) ||
+			this.getCurrentTask()?.taskId !== taskId
+		) {
+			throw new Error("Implement plan is only available for the visible primary task.")
+		}
+
+		const handoff = task.designHandoff
+		if (!handoff || handoff.sourceTaskId !== taskId || handoff.digest !== planDigest) {
+			throw new Error("The proposed plan is no longer current. Review the latest Plan result and try again.")
+		}
+
+		const currentMode = await getTaskModeForSwitch(task)
+		if (currentMode !== planModeSlug) {
+			throw new Error("Implement plan is only available while this task is in Plan mode.")
+		}
+
+		const checkContinuation = () => {
+			if (this.getCurrentTask() !== task || task.designHandoff?.digest !== planDigest) {
+				throw new Error("The proposed plan is no longer current. Review the latest Plan result and try again.")
+			}
+			const hasPendingAsk = task.hasPendingAsk?.() === true
+			const canAnswerReview = isTaskAwaitingContinuation(task)
+			if (
+				task.abort ||
+				task.abandoned ||
+				task.isStreaming ||
+				task.isWaitingForFirstChunk ||
+				task.hasActiveCommandExecutions?.() ||
+				task.hasPendingSteerMessage?.() ||
+				((hasPendingAsk || task.isTurnActive?.() === true) && !canAnswerReview)
+			) {
+				throw new Error("Wait for the Plan result to finish before implementing it.")
+			}
+			return canAnswerReview
+		}
+
+		checkContinuation()
+		await this.handleModeSwitchForTask("code", task)
+		// Recheck after mode persistence: cancellation or completion may have settled
+		// during the await. A user instruction resumes the existing loop without
+		// approving any tool call or creating a replacement task.
+		const instruction = t("common:planHandoff.implementInstruction")
+		if (checkContinuation()) {
+			task.handleWebviewAskResponse("messageResponse", instruction)
+		} else {
+			try {
+				await task.resumeCompletedTaskFollowup(instruction)
+			} catch (error) {
+				// Failed admission leaves the completed task unchanged. Restore Plan
+				// so its action remains retryable, unless another turn has taken over.
+				if (this.getCurrentTask() === task && !task.isTurnActive() && !task.hasPendingAsk() && !task.abort) {
+					await this.handleModeSwitchForTask(planModeSlug, task)
+				}
+				throw error
+			}
+		}
+	}
+
 	private async handleModeSwitchForTask(newMode: Mode, task: Task | undefined): Promise<void> {
 		assertPrimaryMode(newMode)
 
@@ -1658,7 +1874,7 @@ export class AlphaProvider
 	/**
 	 * Updates the current task's API handler.
 	 * Rebuilds when:
-	 * - provider or model changes, OR
+	 * - provider settings change, including reasoning defaults, OR
 	 * - explicitly forced (e.g., user-initiated profile switch/save to apply changed settings like headers/baseUrl/tier).
 	 * Always synchronizes task.apiConfiguration with latest provider settings.
 	 * @param providerSettings The new provider settings to apply
@@ -1674,22 +1890,11 @@ export class AlphaProvider
 		const { forceRebuild = false } = options
 
 		// Determine if we need to rebuild using the previous configuration snapshot
-		const prevConfig = task.apiConfiguration
-		const prevProvider = prevConfig?.apiProvider
-		const prevModelId = prevConfig ? getModelId(prevConfig) : undefined
-		const newProvider = providerSettings.apiProvider
-		const newModelId = getModelId(providerSettings)
-
-		const needsRebuild = forceRebuild || prevProvider !== newProvider || prevModelId !== newModelId
+		const needsRebuild = forceRebuild || !isDeepStrictEqual(task.apiConfiguration, providerSettings)
 
 		if (needsRebuild) {
-			// Use updateApiConfiguration which handles both API handler rebuild and parser sync.
-			// Note: updateApiConfiguration is declared async but has no actual async operations,
-			// so we can safely call it without awaiting.
+			// Keep the base profile, derived reasoning configuration and handler paired.
 			task.updateApiConfiguration(providerSettings)
-		} else {
-			// No rebuild needed, just sync apiConfiguration
-			;(task as any).apiConfiguration = providerSettings
 		}
 	}
 
@@ -1808,7 +2013,7 @@ export class AlphaProvider
 		if (task.hasActiveCommandExecutions?.()) {
 			throw new Error("Cannot enter Plan mode while a command is still active. Stop or wait for it, then retry.")
 		}
-		if (task.hasPendingAsk?.()) {
+		if (task.hasPendingAsk?.() && !isTaskAwaitingContinuation(task)) {
 			throw new Error("Cannot enter Plan mode while an approval or other task prompt is unresolved.")
 		}
 
@@ -1858,6 +2063,17 @@ export class AlphaProvider
 		providerSettings?: ProviderSettings,
 		options: { postState?: boolean } = {},
 	): Promise<void> {
+		return this.enqueueConfiguration(() =>
+			this.setTaskProviderProfileWithinQueue(taskId, apiConfigName, providerSettings, options),
+		)
+	}
+
+	private async setTaskProviderProfileWithinQueue(
+		taskId: string,
+		apiConfigName: string,
+		providerSettings?: ProviderSettings,
+		options: { postState?: boolean } = {},
+	): Promise<void> {
 		const task = this.getLiveTask(taskId)
 		if (!task) {
 			throw new Error(`Cannot switch provider profile for unknown task ${taskId}`)
@@ -1900,6 +2116,18 @@ export class AlphaProvider
 		providerSettings: ProviderSettings,
 		activate: boolean = true,
 	): Promise<string | undefined> {
+		const task = this.getCurrentTask()
+		return this.enqueueConfiguration(() =>
+			this.upsertProviderProfileWithinQueue(name, providerSettings, activate, task),
+		)
+	}
+
+	private async upsertProviderProfileWithinQueue(
+		name: string,
+		providerSettings: ProviderSettings,
+		activate: boolean,
+		task: Task | undefined,
+	): Promise<string | undefined> {
 		try {
 			// TODO: Do we need to be calling `activateProfile`? It's not
 			// clear to me what the source of truth should be; in some cases
@@ -1930,10 +2158,10 @@ export class AlphaProvider
 
 				// Change the provider for the current task.
 				// TODO: We should rename `buildApiHandler` for clarity (e.g. `getProviderClient`).
-				this.updateTaskApiHandlerIfNeeded(providerSettings, { forceRebuild: true })
+				if (task) this.updateTaskApiHandlerIfNeeded(providerSettings, { forceRebuild: true, task })
 
 				// Keep the current task's sticky provider profile in sync with the newly-activated profile.
-				await this.persistStickyProviderProfileToCurrentTask(name)
+				await this.persistStickyProviderProfileToCurrentTask(name, task)
 			} else {
 				await this.updateGlobalState("listApiConfigMeta", await this.providerSettingsManager.listConfig())
 			}
@@ -2003,8 +2231,10 @@ export class AlphaProvider
 		return cleared
 	}
 
-	private async persistStickyProviderProfileToCurrentTask(apiConfigName: string): Promise<void> {
-		const task = this.getCurrentTask()
+	private async persistStickyProviderProfileToCurrentTask(
+		apiConfigName: string,
+		task: Task | undefined,
+	): Promise<void> {
 		if (!task) {
 			return
 		}
@@ -2035,6 +2265,15 @@ export class AlphaProvider
 		args: { name: string } | { id: string },
 		options?: { persistModeConfig?: boolean; persistTaskHistory?: boolean },
 	) {
+		const task = this.getCurrentTask()
+		return this.enqueueConfiguration(() => this.activateProviderProfileWithinQueue(args, options, task))
+	}
+
+	private async activateProviderProfileWithinQueue(
+		args: { name: string } | { id: string },
+		options: { persistModeConfig?: boolean; persistTaskHistory?: boolean } | undefined,
+		task: Task | undefined,
+	) {
 		const { name, id, ...providerSettings } = await this.providerSettingsManager.activateProfile(args)
 
 		const persistModeConfig = options?.persistModeConfig ?? true
@@ -2054,12 +2293,12 @@ export class AlphaProvider
 		}
 
 		// Change the provider for the current task.
-		this.updateTaskApiHandlerIfNeeded(providerSettings, { forceRebuild: true })
+		if (task) this.updateTaskApiHandlerIfNeeded(providerSettings, { forceRebuild: true, task })
 
 		// Update the current task's sticky provider profile, unless this activation is
 		// being used purely as a non-persisting restoration (e.g., reopening a task from history).
-		if (persistTaskHistory) {
-			await this.persistStickyProviderProfileToCurrentTask(name)
+		if (persistTaskHistory && task) {
+			await this.persistStickyProviderProfileToCurrentTask(name, task)
 		}
 
 		await this.postStateToWebview()
@@ -2869,6 +3108,7 @@ export class AlphaProvider
 		}
 
 		const state: Partial<ExtensionState> = {
+			taskReasoning: await this.getReasoningProjection(currentTask),
 			apiConfiguration: currentTask?.apiConfiguration ?? this.getProviderSettingsSnapshot(),
 			currentApiConfigName:
 				currentTask?.taskApiConfigName ?? this.contextProxy.getValue("currentApiConfigName") ?? "default",
@@ -2997,39 +3237,24 @@ export class AlphaProvider
 
 	/** Capture the effective approval grant without persisting plaintext command rules. */
 	private snapshotSubagentAutoApprovalPolicy(settings: AlphaCodeSettings): SubagentAutoApprovalPolicy {
+		const flags = resolveApprovalFlags(settings)
 		const allowedCommands = this.mergeAllowedCommands(settings.allowedCommands)
 		const deniedCommands = this.mergeDeniedCommands(settings.deniedCommands)
+		const allowlist = shouldDeriveApprovalFlags(settings)
+			? effectiveCommandAllowlistForMode(migrateApprovalMode(settings), allowedCommands)
+			: allowedCommands
 		return {
-			autoApprovalEnabled: settings.autoApprovalEnabled === true,
-			alwaysAllowReadOnly: settings.alwaysAllowReadOnly === true,
-			alwaysAllowReadOnlyOutsideWorkspace: settings.alwaysAllowReadOnlyOutsideWorkspace === true,
-			alwaysAllowWrite: settings.alwaysAllowWrite === true,
-			alwaysAllowWriteOutsideWorkspace: settings.alwaysAllowWriteOutsideWorkspace === true,
-			alwaysAllowWriteProtected: settings.alwaysAllowWriteProtected === true,
-			alwaysAllowTickets: settings.alwaysAllowTickets === true,
-			alwaysAllowExecute: settings.alwaysAllowExecute === true,
-			alwaysAllowSubagents: settings.alwaysAllowSubagents === true,
-			commandApproval: createSubagentCommandApprovalPolicy(allowedCommands, deniedCommands),
+			...flags,
+			commandApproval: createSubagentCommandApprovalPolicy(allowlist, deniedCommands),
 		}
 	}
 
-	private isFullSubagentAutoApprovalPolicy(policy: SubagentAutoApprovalPolicy): boolean {
-		const commandPolicies = [policy.commandApproval, ...(policy.commandApprovalCeilings ?? [])]
-		return (
-			policy.autoApprovalEnabled &&
-			policy.alwaysAllowReadOnly &&
-			policy.alwaysAllowReadOnlyOutsideWorkspace &&
-			policy.alwaysAllowWrite &&
-			policy.alwaysAllowWriteOutsideWorkspace &&
-			policy.alwaysAllowWriteProtected &&
-			policy.alwaysAllowTickets === true &&
-			policy.alwaysAllowExecute &&
-			policy.alwaysAllowSubagents &&
-			commandPolicies.every(
-				(commandPolicy) =>
-					commandPolicy.allowAll && !commandPolicy.denyAll && commandPolicy.denied.length === 0,
-			)
-		)
+	private projectApprovalSettings(settings: AlphaCodeSettings) {
+		return {
+			approvalMode: shouldDeriveApprovalFlags(settings) ? migrateApprovalMode(settings) : undefined,
+			approvalModeBypassAcknowledged: settings.approvalModeBypassAcknowledged === true,
+			...resolveApprovalFlags(settings),
+		}
 	}
 
 	/** Freeze the effective nested grant without recovering or persisting plaintext command prefixes. */
@@ -3323,6 +3548,8 @@ export class AlphaProvider
 			customSupportPrompts,
 			enhancementApiConfigId,
 			autoApprovalEnabled,
+			approvalMode,
+			approvalModeBypassAcknowledged,
 			customModes,
 			experiments,
 			maxOpenTabsContext,
@@ -3360,9 +3587,10 @@ export class AlphaProvider
 		const currentTask = this.currentView.type === "task" ? this.getLiveTask(this.currentView.taskId) : undefined
 		const currentTaskAutoApprovalRestricted =
 			currentTask?.taskKind === "subagent"
-				? !this.isFullSubagentAutoApprovalPolicy(
+				? isSubagentApprovalNarrowerThanParent(
 						currentTask.subagentContextManifest?.runtimePolicy.autoApproval ??
 							disabledSubagentAutoApprovalPolicy,
+						approvalMode ?? migrateApprovalMode({ autoApprovalEnabled }),
 					)
 				: false
 		let currentTaskMode: string | undefined
@@ -3414,9 +3642,12 @@ export class AlphaProvider
 
 		return {
 			version: this.context.extension?.packageJSON?.version ?? "",
+			taskReasoning: await this.getReasoningProjection(currentTask),
 			apiConfiguration: currentTaskApiConfiguration,
 			customInstructions,
 			profileThresholds: profileThresholds ?? {},
+			approvalMode,
+			approvalModeBypassAcknowledged: approvalModeBypassAcknowledged ?? false,
 			alwaysAllowReadOnly: alwaysAllowReadOnly ?? false,
 			alwaysAllowReadOnlyOutsideWorkspace: alwaysAllowReadOnlyOutsideWorkspace ?? false,
 			alwaysAllowWrite: alwaysAllowWrite ?? false,
@@ -3578,6 +3809,7 @@ export class AlphaProvider
 
 		// Build the apiConfiguration object combining state values and secrets.
 		const providerSettings = this.getProviderSettingsSnapshot()
+		const approval = this.projectApprovalSettings(stateValues)
 		const orchestrationSettings = resolveSubagentOrchestrationSettings({
 			maxConcurrentSubagents: stateValues.maxConcurrentSubagents,
 			subagentDelegationPolicy: stateValues.subagentDelegationPolicy,
@@ -3595,16 +3827,18 @@ export class AlphaProvider
 			lastShownAnnouncementId: stateValues.lastShownAnnouncementId,
 			customInstructions: stateValues.customInstructions,
 			apiModelId: stateValues.apiModelId,
-			alwaysAllowReadOnly: stateValues.alwaysAllowReadOnly ?? false,
-			alwaysAllowReadOnlyOutsideWorkspace: stateValues.alwaysAllowReadOnlyOutsideWorkspace ?? false,
-			alwaysAllowWrite: stateValues.alwaysAllowWrite ?? false,
-			alwaysAllowWriteOutsideWorkspace: stateValues.alwaysAllowWriteOutsideWorkspace ?? false,
-			alwaysAllowWriteProtected: stateValues.alwaysAllowWriteProtected ?? false,
-			alwaysAllowExecute: stateValues.alwaysAllowExecute ?? false,
-			alwaysAllowMcp: stateValues.alwaysAllowMcp ?? false,
-			alwaysAllowSubtasks: stateValues.alwaysAllowSubtasks ?? false,
-			alwaysAllowSubagents: stateValues.alwaysAllowSubagents ?? false,
-			alwaysAllowTickets: stateValues.alwaysAllowTickets ?? false,
+			approvalMode: approval.approvalMode,
+			approvalModeBypassAcknowledged: approval.approvalModeBypassAcknowledged,
+			alwaysAllowReadOnly: approval.alwaysAllowReadOnly,
+			alwaysAllowReadOnlyOutsideWorkspace: approval.alwaysAllowReadOnlyOutsideWorkspace,
+			alwaysAllowWrite: approval.alwaysAllowWrite,
+			alwaysAllowWriteOutsideWorkspace: approval.alwaysAllowWriteOutsideWorkspace,
+			alwaysAllowWriteProtected: approval.alwaysAllowWriteProtected,
+			alwaysAllowExecute: approval.alwaysAllowExecute,
+			alwaysAllowMcp: approval.alwaysAllowMcp,
+			alwaysAllowSubtasks: approval.alwaysAllowSubtasks,
+			alwaysAllowSubagents: approval.alwaysAllowSubagents,
+			alwaysAllowTickets: approval.alwaysAllowTickets,
 			maxConcurrentTasks: this.getConfiguredMaxConcurrentTasks(),
 			maxConcurrentSubagents: orchestrationSettings.maxConcurrentSubagents,
 			subagentDelegationPolicy: orchestrationSettings.delegationPolicy,
@@ -3616,7 +3850,7 @@ export class AlphaProvider
 			subagentRootCostBudget: orchestrationSettings.rootCostBudget,
 			subagentDefaultApiConfigId: stateValues.subagentDefaultApiConfigId,
 			subagentApiConfigByRole: stateValues.subagentApiConfigByRole,
-			alwaysAllowFollowupQuestions: stateValues.alwaysAllowFollowupQuestions ?? false,
+			alwaysAllowFollowupQuestions: approval.alwaysAllowFollowupQuestions,
 			followupAutoApproveTimeoutMs: stateValues.followupAutoApproveTimeoutMs ?? 60000,
 			diagnosticsEnabled: stateValues.diagnosticsEnabled ?? true,
 			allowedMaxRequests: stateValues.allowedMaxRequests,
@@ -3656,7 +3890,7 @@ export class AlphaProvider
 			customSupportPrompts: stateValues.customSupportPrompts ?? {},
 			enhancementApiConfigId: stateValues.enhancementApiConfigId,
 			experiments: stateValues.experiments ?? experimentDefault,
-			autoApprovalEnabled: stateValues.autoApprovalEnabled ?? false,
+			autoApprovalEnabled: approval.autoApprovalEnabled,
 			disabledBuiltinSkills: stateValues.disabledBuiltinSkills ?? [],
 			customModes,
 			maxOpenTabsContext: stateValues.maxOpenTabsContext ?? 20,
@@ -4402,6 +4636,12 @@ export class AlphaProvider
 	): Promise<Task> {
 		if (options.taskMode !== undefined) assertPrimaryMode(options.taskMode)
 		if (configuration.mode !== undefined) assertPrimaryMode(configuration.mode)
+		await this.configurationQueue
+		const reasoningPreference = taskReasoningPreferenceSchema.parse(
+			options.reasoningPreference ??
+				parentTask?.reasoningPreference ??
+				this.contextProxy.getValue("newTaskReasoningPreference") ?? { kind: "default" },
+		)
 
 		const topLevelTaskMode = !parentTask
 			? (options.taskMode ?? configuration.mode ?? this.newTaskDraftMode)
@@ -4527,6 +4767,7 @@ export class AlphaProvider
 			// its initial state update, so state.currentTaskId is available ASAP.
 			startTask: false,
 			...taskOptions,
+			reasoningPreference,
 			taskMode: topLevelTaskMode,
 			// Freeze ordinary root tasks at creation so a later settings change or
 			// reload cannot silently change their delegation semantics.
@@ -5042,9 +5283,11 @@ export class AlphaProvider
 			policy.alwaysAllowReadOnly &&
 			normalizedDrafts.every((draft) => draft.agent_kind !== "worker" || policy.alwaysAllowWrite)
 		const autoEligible = isAutoEligibleFor(liveAutoApprovalPolicy) && isAutoEligibleFor(inheritedAutoApprovalPolicy)
-		const requiresExplicitApproval =
-			!autoEligible ||
-			provisionalDelegationPolicies.some((decision) => decision.authorization === "pending-approval")
+		const approvalMode = migrateApprovalMode(settings)
+		const pendingExplicitOnly = provisionalDelegationPolicies.some(
+			(decision) => decision.policy === "explicit-only" && decision.authorization === "pending-approval",
+		)
+		const requiresExplicitApproval = approvalMode === "ask" || !autoEligible || pendingExplicitOnly
 		const orchestrations: SubagentManifestOrchestration[] = orchestrationBases.map((base, index) => ({
 			...base,
 			delegationPolicy: provisionalDelegationPolicies[index],

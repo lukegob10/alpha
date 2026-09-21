@@ -11,6 +11,11 @@ import { vscode } from "@src/utils/vscode"
 
 import ChatView, { ChatViewProps, isContextCondensationRequest } from "../ChatView"
 
+vi.mock("@/i18n/TranslationContext", async () => {
+	const { default: i18n } = await import("@/i18n/setup")
+	return { useAppTranslation: () => ({ t: (key: string) => key, i18n }) }
+})
+
 // Define minimal types needed for testing
 interface AlphaMessage {
 	type: "say" | "ask"
@@ -3171,6 +3176,34 @@ describe("ChatView - Message Queueing Tests", () => {
 				type: "askResponse",
 			}),
 		)
+	})
+
+	it("does not show orphan composer Approve buttons for a spawn ask", async () => {
+		const { queryByText } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: Date.now() - 2000,
+					text: "Initial task",
+				},
+				{
+					type: "ask",
+					ask: "tool",
+					ts: Date.now(),
+					text: JSON.stringify({ tool: "spawnAgent", agent: { role: "explore" } }),
+					partial: false,
+				},
+			],
+		})
+
+		await waitFor(() => {
+			expect(queryByText("chat:approve.title")).not.toBeInTheDocument()
+			expect(queryByText("chat:reject.title")).not.toBeInTheDocument()
+		})
 	})
 
 	it("sends messages normally when API request is complete (cost present)", async () => {

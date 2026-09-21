@@ -1,7 +1,7 @@
 import { useCallback, useState, useMemo, useId } from "react"
 import { useEvent } from "react-use"
 import { t } from "i18next"
-import { ChevronRight, OctagonX } from "lucide-react"
+import { AlertTriangle, ChevronRight, OctagonX } from "lucide-react"
 
 import {
 	type ExtensionMessage,
@@ -163,23 +163,43 @@ export const CommandExecution = ({
 		<>
 			{pathApproval && (
 				<div
-					className="mb-2 ml-6 rounded border border-vscode-inputValidation-warningBorder p-2 text-sm"
-					role="note">
-					<div className="font-medium">{t("settings:autoApprove.execute.pathApprovalTitle")}</div>
-					<p className="my-1 text-vscode-descriptionForeground">
-						{t("settings:autoApprove.execute.pathApprovalDescription")}
-					</p>
+					className="mb-3 ml-6 overflow-hidden rounded-xl border border-vscode-inputValidation-warningBorder bg-vscode-inputValidation-warningBackground text-sm shadow-sm"
+					role="note"
+					aria-label={t("settings:autoApprove.execute.pathApprovalTitle")}>
+					<div className="flex items-start gap-3 border-b border-vscode-inputValidation-warningBorder px-3 py-3">
+						<div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-vscode-inputValidation-warningBackground text-vscode-editorWarning-foreground">
+							<AlertTriangle className="size-4" aria-hidden="true" />
+						</div>
+						<div className="min-w-0">
+							<div className="font-semibold text-vscode-foreground">
+								{t("settings:autoApprove.execute.pathApprovalTitle")}
+							</div>
+							<p className="mt-1 text-xs leading-5 text-vscode-descriptionForeground">
+								{t("settings:autoApprove.execute.pathApprovalDescription")}
+							</p>
+						</div>
+					</div>
 					{pathApproval.outsidePaths.length > 0 && (
-						<ul className="my-1 pl-4">
-							{pathApproval.outsidePaths.map((target) => (
-								<li key={target} className="break-all font-mono text-xs">
-									{target}
-								</li>
-							))}
-						</ul>
+						<div className="space-y-2 px-3 py-3">
+							<ul className="space-y-1.5">
+								{pathApproval.outsidePaths.map((target) => (
+									<li
+										key={target}
+										className="break-all rounded-lg border border-vscode-input-border bg-vscode-editor-background px-2.5 py-2 font-mono text-xs text-vscode-foreground">
+										{target}
+									</li>
+								))}
+							</ul>
+						</div>
 					)}
 					{pathApproval.unresolved && (
-						<p className="my-1">{t("settings:autoApprove.execute.pathApprovalUnresolved")}</p>
+						<div className="flex items-start gap-2 border-t border-vscode-inputValidation-warningBorder px-3 py-2.5 text-xs text-vscode-descriptionForeground">
+							<AlertTriangle
+								className="mt-0.5 size-3.5 shrink-0 text-vscode-editorWarning-foreground"
+								aria-hidden="true"
+							/>
+							<span>{t("settings:autoApprove.execute.pathApprovalUnresolved")}</span>
+						</div>
 					)}
 				</div>
 			)}

@@ -570,8 +570,8 @@ describe("AlphaProvider", () => {
 		expect(writes).toEqual(["running", "completed"])
 	})
 
-	test("shows the v2.1.49 announcement once per installation", async () => {
-		const announcementId = "september-2026-v2.1.49-task-progress-and-completion"
+	test("shows the v3.0.0 announcement once per installation", async () => {
+		const announcementId = "september-2026-v3.0.0-approval-and-performance"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
@@ -1406,19 +1406,66 @@ describe("AlphaProvider", () => {
 		expect(state).toHaveProperty("alwaysAllowWrite")
 		expect(state).toHaveProperty("alwaysAllowExecute")
 		expect(state).toHaveProperty("alwaysAllowSubagents")
-		expect(state.alwaysAllowTickets).toBe(false)
+		expect(state.approvalMode).toBe("auto")
+		expect(state.alwaysAllowTickets).toBe(true)
+		expect(state.alwaysAllowWriteOutsideWorkspace).toBe(false)
 		expect(state).toHaveProperty("taskHistory")
 		expect(state).toHaveProperty("soundEnabled")
 		expect(state).toHaveProperty("ttsEnabled")
 		expect(state).toHaveProperty("writeDelayMs")
 	})
 
-	test.each([true, false])(
-		"projects the saved ticket approval preference %s to runtime and webview",
-		async (value) => {
-			await provider.contextProxy.setValue("alwaysAllowTickets", value)
-			expect((await provider.getState()).alwaysAllowTickets).toBe(value)
-			expect((await provider.getStateToPostToWebview()).alwaysAllowTickets).toBe(value)
+	test("preserves leftover chips instead of deriving an inferred Ask grant", async () => {
+		await provider.contextProxy.setValue("approvalMode", undefined)
+		await provider.contextProxy.setValues({
+			autoApprovalEnabled: false,
+			alwaysAllowReadOnly: false,
+			alwaysAllowWrite: false,
+			alwaysAllowExecute: false,
+			allowedCommands: ["git"],
+		})
+		const disabled = await provider.getState()
+		expect(disabled.approvalMode).toBeUndefined()
+		expect(disabled.autoApprovalEnabled).toBe(false)
+		expect(disabled.alwaysAllowReadOnly).toBe(false)
+		expect(disabled.alwaysAllowExecute).toBe(false)
+
+		await provider.contextProxy.setValues({
+			autoApprovalEnabled: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowWrite: false,
+			alwaysAllowExecute: false,
+			allowedCommands: ["git"],
+		})
+		const retainedRules = await provider.getState()
+		expect(retainedRules.approvalMode).toBeUndefined()
+		expect(retainedRules.alwaysAllowReadOnly).toBe(true)
+		expect(retainedRules.alwaysAllowExecute).toBe(false)
+		expect(retainedRules.alwaysAllowWrite).toBe(false)
+
+		await provider.contextProxy.setValues({
+			autoApprovalEnabled: true,
+			alwaysAllowReadOnly: false,
+			alwaysAllowWrite: true,
+			alwaysAllowExecute: false,
+		})
+		const partialWrite = await provider.getState()
+		expect(partialWrite.alwaysAllowWrite).toBe(true)
+		expect(partialWrite.alwaysAllowReadOnly).toBe(false)
+		expect(partialWrite.alwaysAllowExecute).toBe(false)
+	})
+
+	test.each(["ask", "auto", "bypass"] as const)(
+		"projects saved approvalMode %s and derived chips to runtime and webview",
+		async (approvalMode) => {
+			await provider.contextProxy.setValue("approvalMode", approvalMode)
+			const state = await provider.getState()
+			const webviewState = await provider.getStateToPostToWebview()
+			expect(state.approvalMode).toBe(approvalMode)
+			expect(webviewState.approvalMode).toBe(approvalMode)
+			expect(state.alwaysAllowWrite).toBe(approvalMode !== "ask")
+			expect(state.alwaysAllowWriteOutsideWorkspace).toBe(approvalMode === "bypass")
+			expect(state.alwaysAllowTickets).toBe(approvalMode !== "ask")
 		},
 	)
 
@@ -1466,6 +1513,32 @@ describe("AlphaProvider", () => {
 		const webviewState = await provider.getStateToPostToWebview()
 
 		expect(webviewState.currentTaskAutoApprovalRestricted).toBe(true)
+	})
+
+	test("does not mark an Auto child as approval-restricted under an Auto parent", async () => {
+		await provider.contextProxy.setValue("approvalMode", "auto")
+		const child = new Task(defaultTaskOptions) as any
+		child.taskKind = "subagent"
+		child.subagentContextManifest = {
+			runtimePolicy: {
+				autoApproval: {
+					autoApprovalEnabled: true,
+					alwaysAllowReadOnly: true,
+					alwaysAllowWrite: true,
+					alwaysAllowWriteOutsideWorkspace: false,
+					alwaysAllowWriteProtected: false,
+					alwaysAllowExecute: true,
+					commandApproval: { allowAll: true },
+				},
+			},
+		}
+		child.getTaskMode = vi.fn(async () => "code")
+		child.getTaskApiConfigName = vi.fn(async () => "default")
+		await provider.addTaskToStack(child)
+
+		const webviewState = await provider.getStateToPostToWebview()
+
+		expect(webviewState.currentTaskAutoApprovalRestricted).toBe(false)
 	})
 
 	test("getState preserves code index embedding rate limit settings", async () => {

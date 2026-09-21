@@ -398,6 +398,7 @@ const ApiOptions = ({
 							apiConfiguration={apiConfiguration}
 							setApiConfigurationField={setApiConfigurationField}
 							modelInfo={selectedModelInfo}
+							showReasoningEffort={false}
 						/>
 					)}
 

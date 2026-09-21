@@ -31,6 +31,17 @@ describe("Markdown proposed-plan rendering", () => {
 		expect(screen.getByTestId("markdown-content")).toHaveTextContent("# Provider plan - Update selection")
 		expect(screen.queryByText(/<proposed_plan>/)).not.toBeInTheDocument()
 	})
+	it("offers Implement plan only for a complete proposed plan", () => {
+		const onImplementPlan = vi.fn()
+		const plan = "<proposed_plan>\n# Provider plan\n- Update selection\n</proposed_plan>"
+		const { rerender } = render(<Markdown markdown={plan} onImplementPlan={onImplementPlan} />)
+
+		fireEvent.click(screen.getByRole("button", { name: "Implement plan" }))
+		expect(onImplementPlan).toHaveBeenCalledTimes(1)
+
+		rerender(<Markdown markdown={"<proposed_plan>\n# Provider plan"} partial onImplementPlan={onImplementPlan} />)
+		expect(screen.queryByRole("button", { name: "Implement plan" })).not.toBeInTheDocument()
+	})
 
 	it("supports a streaming proposed-plan block and leaves ordinary markdown unchanged", () => {
 		const { rerender } = render(<Markdown markdown={"<proposed_plan>\n# Streaming plan"} partial />)

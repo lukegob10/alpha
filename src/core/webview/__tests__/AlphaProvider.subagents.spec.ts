@@ -18,7 +18,7 @@ import { AsyncSubagentRunManager } from "../../agent/AsyncSubagentRunManager"
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 import { BoundedDelegationManager } from "../../agent/BoundedDelegationManager"
 import { captureSubagentContext } from "../../agent/SubagentContextCapture"
-import { SubagentNicknameRegistry } from "../../agent/SubagentNicknameRegistry"
+import { SUBAGENT_CALLSIGNS, SubagentNicknameRegistry } from "../../agent/SubagentNicknameRegistry"
 import { readTaskMessages, saveTaskMessages } from "../../task-persistence"
 import { WorkspaceMutationGate } from "../../task/WorkspaceMutationGate"
 
@@ -37,6 +37,7 @@ const makeProviderHarness = (
 		subagentMaxOutputTokens?: number
 		subagentRootTokenBudget?: number | null
 		subagentRootCostBudget?: number | null
+		approvalMode?: "ask" | "auto" | "bypass"
 		autoApprovalEnabled?: boolean
 		alwaysAllowSubagents?: boolean
 		alwaysAllowTickets?: boolean
@@ -95,7 +96,7 @@ const makeProviderHarness = (
 				historyItems.set(item.id, item)
 			}),
 		},
-		subagentNicknameRegistry: new SubagentNicknameRegistry(),
+		subagentNicknameRegistry: new SubagentNicknameRegistry({ pickIndex: () => 0 }),
 		preparedSubagentGroups: new Map(),
 		subagentGroupControllers: new Map(),
 		reservedSubagentSlots: new Map(),
@@ -484,7 +485,10 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 			})
 			expect(envelope.budget.timeoutMs).toBe(120_000)
 		}
-		expect(prepared.group.agents.map((agent) => agent.nickname)).toEqual(["Beacon", "Cinder"])
+		expect(prepared.group.agents.map((agent) => agent.nickname)).toEqual([
+			SUBAGENT_CALLSIGNS[0],
+			SUBAGENT_CALLSIGNS[1],
+		])
 		expect(new Set(prepared.group.agents.map((agent) => agent.nickname)).size).toBe(2)
 		expect(parent.upsertSubagentGroup).toHaveBeenCalledWith(prepared.group)
 	})
@@ -1460,7 +1464,7 @@ If complete, use attempt_completion.
 	})
 
 	it("keeps explicit-only approval provisional during preparation and freezes group approval at launch", async () => {
-		const provider = makeProviderHarness(2, { subagentMaxDepth: 2 })
+		const provider = makeProviderHarness(2, { approvalMode: "ask", subagentMaxDepth: 2 })
 		const parent = makeParent()
 		const prepared = await provider.prepareSubagentGroup(parent as any, [
 			{ objective: "Inspect nested lifecycle", agent_kind: "review" },
@@ -1491,6 +1495,7 @@ If complete, use attempt_completion.
 
 	it("auto-authorizes proactive policy and trusted per-task opt-in without pending approval", async () => {
 		const autoApproval = {
+			approvalMode: "auto" as const,
 			autoApprovalEnabled: true,
 			alwaysAllowSubagents: true,
 			alwaysAllowReadOnly: true,
@@ -1534,6 +1539,7 @@ If complete, use attempt_completion.
 
 	it("freezes the parent auto-approval ceiling into every descendant manifest", async () => {
 		const provider = makeProviderHarness(3, {
+			approvalMode: "auto",
 			autoApprovalEnabled: true,
 			alwaysAllowSubagents: true,
 			alwaysAllowReadOnly: true,
@@ -1568,8 +1574,7 @@ If complete, use attempt_completion.
 		expect(JSON.stringify(directManifest.runtimePolicy.autoApproval)).not.toContain("git push")
 
 		await (provider as any).contextProxy.setValues({
-			autoApprovalEnabled: false,
-			alwaysAllowSubagents: false,
+			approvalMode: "ask",
 		})
 		const child = {
 			...makeParent(),
@@ -1586,8 +1591,11 @@ If complete, use attempt_completion.
 
 		expect(nested.requiresExplicitApproval).toBe(true)
 		expect(nestedManifest.runtimePolicy.autoApproval).toMatchObject({
-			autoApprovalEnabled: false,
+			autoApprovalEnabled: true,
+			alwaysAllowWrite: false,
+			alwaysAllowExecute: false,
 			alwaysAllowSubagents: false,
+			alwaysAllowTickets: false,
 			commandApprovalCeilings: expect.arrayContaining([
 				directManifest.runtimePolicy.autoApproval.commandApproval,
 			]),
@@ -1596,44 +1604,45 @@ If complete, use attempt_completion.
 	})
 
 	it.each([
-		{ captured: undefined, live: true, expected: false },
-		{ captured: false, live: true, expected: false },
-		{ captured: true, live: false, expected: false },
-		{ captured: true, live: true, expected: true },
-	])("freezes ticket approval through nested delegation: %j", async ({ captured, live, expected }) => {
-		const provider = makeProviderHarness(3, {
-			autoApprovalEnabled: true,
-			alwaysAllowSubagents: true,
-			alwaysAllowReadOnly: true,
-			alwaysAllowTickets: captured,
-			subagentDelegationPolicy: "proactive",
-			subagentMaxDepth: 2,
-		})
-		const root = makeParent()
-		const direct = await provider.prepareSubagentGroup(root as any, [
-			{ objective: "Inspect ticket state", agent_kind: "review" },
-		])
-		const manifest = (provider as any).subagentDescriptors.get(direct.envelopes[0].id).contextManifest
-		expect(manifest.runtimePolicy.autoApproval.alwaysAllowTickets).toBe(captured === true)
-		await provider.contextProxy.setValues({ alwaysAllowTickets: live })
-		const child = {
-			...makeParent(),
-			taskId: direct.envelopes[0].id,
-			rootTaskId: root.taskId,
-			taskKind: "subagent",
-			subagentContextManifest: manifest,
-			subagentDelegationPolicy: "proactive",
-		}
-		const nested = await provider.prepareSubagentGroup(child as any, [
-			{ objective: "Inspect nested ticket state", agent_kind: "explore" },
-		])
-		const nestedManifest = (provider as any).subagentDescriptors.get(nested.envelopes[0].id).contextManifest
-		expect(nestedManifest.runtimePolicy.autoApproval.alwaysAllowTickets).toBe(expected)
-		expect(manifest.runtimePolicy.autoApproval.alwaysAllowTickets).toBe(captured === true)
-	})
+		{ captured: "ask" as const, live: "auto" as const, expectedCaptured: false, expectedNested: false },
+		{ captured: "auto" as const, live: "ask" as const, expectedCaptured: true, expectedNested: false },
+		{ captured: "auto" as const, live: "auto" as const, expectedCaptured: true, expectedNested: true },
+		{ captured: "auto" as const, live: "bypass" as const, expectedCaptured: true, expectedNested: true },
+	])(
+		"freezes ticket approval through nested delegation: %j",
+		async ({ captured, live, expectedCaptured, expectedNested }) => {
+			const provider = makeProviderHarness(3, {
+				approvalMode: captured,
+				subagentDelegationPolicy: "proactive",
+				subagentMaxDepth: 2,
+			})
+			const root = makeParent()
+			const direct = await provider.prepareSubagentGroup(root as any, [
+				{ objective: "Inspect ticket state", agent_kind: "review" },
+			])
+			const manifest = (provider as any).subagentDescriptors.get(direct.envelopes[0].id).contextManifest
+			expect(manifest.runtimePolicy.autoApproval.alwaysAllowTickets).toBe(expectedCaptured)
+			await provider.contextProxy.setValues({ approvalMode: live })
+			const child = {
+				...makeParent(),
+				taskId: direct.envelopes[0].id,
+				rootTaskId: root.taskId,
+				taskKind: "subagent",
+				subagentContextManifest: manifest,
+				subagentDelegationPolicy: "proactive",
+			}
+			const nested = await provider.prepareSubagentGroup(child as any, [
+				{ objective: "Inspect nested ticket state", agent_kind: "explore" },
+			])
+			const nestedManifest = (provider as any).subagentDescriptors.get(nested.envelopes[0].id).contextManifest
+			expect(nestedManifest.runtimePolicy.autoApproval.alwaysAllowTickets).toBe(expectedNested)
+			expect(manifest.runtimePolicy.autoApproval.alwaysAllowTickets).toBe(expectedCaptured)
+		},
+	)
 
 	it("requires explicit approval when a retained parent predates approval capture", async () => {
 		const provider = makeProviderHarness(3, {
+			approvalMode: "auto",
 			autoApprovalEnabled: true,
 			alwaysAllowSubagents: true,
 			alwaysAllowReadOnly: true,
@@ -1673,8 +1682,99 @@ If complete, use attempt_completion.
 		})
 	})
 
+	it("captures leftover chip grants without widening them to inferred Ask", async () => {
+		const provider = makeProviderHarness(2, {
+			autoApprovalEnabled: false,
+			alwaysAllowReadOnly: false,
+			alwaysAllowWrite: false,
+			alwaysAllowExecute: false,
+			allowedCommands: ["git"],
+			subagentDelegationPolicy: "explicit-only",
+		})
+		const parent = makeParent()
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Keep the leftover grant", agent_kind: "explore" },
+		])
+		const manifest = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id).contextManifest
+		expect(prepared.requiresExplicitApproval).toBe(true)
+		expect(manifest.runtimePolicy.autoApproval).toMatchObject({
+			autoApprovalEnabled: false,
+			alwaysAllowReadOnly: false,
+			alwaysAllowWrite: false,
+			alwaysAllowExecute: false,
+		})
+	})
+
+	it("requires a human spawn click for explicit-only in Auto or Full Access without opt-in", async () => {
+		for (const approvalMode of ["auto", "bypass"] as const) {
+			const provider = makeProviderHarness(2, {
+				approvalMode,
+				subagentDelegationPolicy: "explicit-only",
+			})
+			const parent = makeParent()
+			const prepared = await provider.prepareSubagentGroup(parent as any, [
+				{ objective: "Inspect without a spawn dialog", agent_kind: "explore" },
+			])
+			const manifest = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id).contextManifest
+			expect(prepared.requiresExplicitApproval).toBe(true)
+			expect(manifest.orchestration.delegationPolicy).toMatchObject({
+				policy: "explicit-only",
+				authorization: "pending-approval",
+				explicitUserRequest: false,
+			})
+			expect(finalizedSubagentContextManifestSchema.safeParse(manifest).success).toBe(false)
+		}
+	})
+
+	it("still requires a human spawn click for explicit-only in Ask", async () => {
+		const provider = makeProviderHarness(2, {
+			approvalMode: "ask",
+			subagentDelegationPolicy: "explicit-only",
+		})
+		const parent = makeParent()
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect after the group card", agent_kind: "review" },
+		])
+		const manifest = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id).contextManifest
+		expect(prepared.requiresExplicitApproval).toBe(true)
+		expect(manifest.orchestration.delegationPolicy).toMatchObject({
+			policy: "explicit-only",
+			authorization: "pending-approval",
+			explicitUserRequest: false,
+		})
+	})
+
+	it("does not let a live Bypass setting widen an Auto child's captured grant", async () => {
+		const provider = makeProviderHarness(3, {
+			approvalMode: "auto",
+			subagentDelegationPolicy: "proactive",
+			subagentMaxDepth: 2,
+		})
+		const root = makeParent()
+		const direct = await provider.prepareSubagentGroup(root as any, [
+			{ objective: "Capture an Auto child", agent_kind: "review" },
+		])
+		const manifest = (provider as any).subagentDescriptors.get(direct.envelopes[0].id).contextManifest
+		expect(manifest.runtimePolicy.autoApproval.alwaysAllowWriteOutsideWorkspace).toBe(false)
+		await provider.contextProxy.setValues({ approvalMode: "bypass" })
+		const child = {
+			...makeParent(),
+			taskId: direct.envelopes[0].id,
+			rootTaskId: root.taskId,
+			taskKind: "subagent",
+			subagentContextManifest: manifest,
+			subagentDelegationPolicy: "proactive",
+		}
+		const nested = await provider.prepareSubagentGroup(child as any, [
+			{ objective: "Stay under the Auto ceiling", agent_kind: "explore" },
+		])
+		const nestedManifest = (provider as any).subagentDescriptors.get(nested.envelopes[0].id).contextManifest
+		expect(nestedManifest.runtimePolicy.autoApproval.alwaysAllowWriteOutsideWorkspace).toBe(false)
+	})
+
 	it("applies a live explicit-only setting as a narrowing cap to an open proactive task", async () => {
 		const provider = makeProviderHarness(2, {
+			approvalMode: "ask",
 			autoApprovalEnabled: true,
 			alwaysAllowSubagents: true,
 			alwaysAllowReadOnly: true,
@@ -4052,6 +4152,7 @@ If complete, use attempt_completion.
 
 	it("rehydrates a child with its frozen delegation policy and role timeout despite changed settings", async () => {
 		const routingSettings: Parameters<typeof makeProviderHarness>[1] = {
+			approvalMode: "auto",
 			subagentDelegationPolicy: "proactive",
 			subagentRoleTimeoutsMs: { explore: 180_000 },
 			autoApprovalEnabled: true,

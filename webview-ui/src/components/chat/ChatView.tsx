@@ -542,6 +542,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 									setPrimaryButtonText(t("chat:completeSubtaskAndReturn"))
 									setSecondaryButtonText(undefined)
 									break
+								case "spawnAgent":
+								case "delegateTask":
+									setPrimaryButtonText(undefined)
+									setSecondaryButtonText(undefined)
+									break
 								case "readFile":
 									if (tool.batchFiles && Array.isArray(tool.batchFiles)) {
 										setPrimaryButtonText(t("chat:read-batch.approve.title"))
@@ -2548,8 +2553,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					/>
 				)}
 			</div>
-
-			<div id="alpha-portal" />
 		</div>
 	)
 }

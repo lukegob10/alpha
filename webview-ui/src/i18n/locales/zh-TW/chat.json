@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "複製",
 		"copied": "已複製",
+		"implementPlan": "實作計畫",
 		"edit": "編輯並重新傳送",
 		"restart": "從上一則請求重新開始",
 		"restartWarning": "將重新執行上一則請求，並取代其後的所有訊息。工作區檔案將維持現狀。",
@@ -376,7 +377,24 @@
 		"triggerLabel_zero": "0 個自動核准",
 		"triggerLabel_one": "1 個自動核准",
 		"triggerLabel_other": "{{count}} 個自動核准",
-		"triggerLabelAll": "BRRR"
+		"triggerLabelAll": "全部",
+		"tooltipMode": "Approval mode: {{mode}}",
+		"modes": {
+			"ask": "Ask",
+			"auto": "Auto",
+			"bypass": "完整存取"
+		},
+		"modeDescription": {
+			"ask": "Auto-approve workspace reads. Ask before writes, commands, spawn, tickets, MCP, and outside paths.",
+			"auto": "Auto-approve in-workspace edits, spawn, tickets, and commands. Ask for true-outside paths, protected files, and denied commands.",
+			"bypass": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
+		},
+		"bypassWarning": {
+			"title": "Enable Full Access?",
+			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands.",
+			"confirm": "Enable Full Access",
+			"cancel": "Cancel"
+		}
 	},
 	"announcement": {
 		"title": "Alpha {{version}} 已發布",
@@ -397,7 +415,37 @@
 	},
 	"reasoning": {
 		"thinking": "思考中",
-		"seconds": "{{count}} 秒"
+		"seconds": "{{count}} 秒",
+		"label": "推理：{{value}}",
+		"title": "推理",
+		"loading": "載入中…",
+		"unavailable": "無法使用",
+		"default": "預設",
+		"off": "關閉",
+		"on": "開啟",
+		"none": "無",
+		"help": "預設會使用設定檔設定。關閉會停用或省略選用推理。無會傳送提供者明確的 none 層級。",
+		"budget": "{{tokens}} 個思考權杖",
+		"advanced": "進階設定檔設定",
+		"custom": "自訂推理權杖",
+		"customHelp": "僅使用此代管模型接受的權杖：1–32 個小寫字母、數字、底線或連字號。不假設支援任何模型系列。",
+		"apply": "套用",
+		"invalidCustom": "權杖無效。將省略推理。",
+		"saving": "儲存中…",
+		"nextStep": "下一步",
+		"current": "目前要求：{{value}}",
+		"fallback": "要求 {{requested}}；使用 {{effective}}。",
+		"saveFailed": "無法儲存推理。已接受的選擇未變更。",
+		"unavailableHelp": "此模型沒有經驗證的可調整推理能力。",
+		"profileDefault": "設定檔預設值 / 進階推理。工作控制可以覆寫此設定，而不儲存設定檔。",
+		"scheduleHelp": "排程變更會影響未來執行；佇列中的執行會保留其快照。",
+		"reasons": {
+			"unsupported": "要求的值不受此模型支援。",
+			"unavailable": "此模型的推理能力無法使用。",
+			"required": "此模型需要推理。",
+			"budget-only": "此模型使用權杖預算，而不是命名的努力等級。",
+			"invalid-custom": "自訂權杖無效。"
+		}
 	},
 	"followUpSuggest": {
 		"copyToInput": "複製到輸入欄（或按住 Shift 並點選）",

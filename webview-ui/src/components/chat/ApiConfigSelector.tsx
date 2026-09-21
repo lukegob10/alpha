@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback } from "react"
 import { Fzf } from "fzf"
+import { ChevronDown } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { useAlphaPortal } from "@/components/ui/hooks/useAlphaPortal"
@@ -149,14 +150,9 @@ export const ApiConfigSelector = ({
 				<PopoverTrigger
 					disabled={disabled}
 					data-testid="dropdown-trigger"
-					className={cn(
-						"min-w-0 inline-flex items-center relative whitespace-nowrap px-1.5 py-1 text-xs",
-						"composer-control text-vscode-foreground",
-						"transition-all duration-150 focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder focus-visible:ring-inset",
-						disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer opacity-90 hover:opacity-100",
-						triggerClassName,
-					)}>
+					className={cn("composer-control composer-selector", triggerClassName)}>
 					<span className="truncate">{displayName}</span>
+					<ChevronDown className="size-3 shrink-0" aria-hidden="true" />
 				</PopoverTrigger>
 			</StandardTooltip>
 			<PopoverContent

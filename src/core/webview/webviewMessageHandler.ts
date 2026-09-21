@@ -23,6 +23,7 @@ import {
 	checkoutDiffPayloadSchema,
 	checkoutRestorePayloadSchema,
 	scheduledTaskSkillsRequestSchema,
+	taskReasoningUpdateSchema,
 } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -1455,7 +1456,27 @@ export const webviewMessageHandler = async (
 			break
 
 		case "mode":
-			await provider.handleModeSwitch(message.text as Mode)
+			try {
+				await provider.handleModeSwitch(message.text as Mode)
+			} catch (error) {
+				// The selector updates optimistically. Restore the host's actual mode
+				// when policy or persistence rejects the change.
+				await provider.postStateToWebview()
+				throw error
+			}
+			break
+		case "implementPlan":
+			if (!message.taskId || !message.planDigest) {
+				provider.log("[webviewMessageHandler] Ignoring implementPlan: missing taskId or planDigest")
+				break
+			}
+			try {
+				await provider.handleImplementPlan(message.taskId, message.planDigest)
+			} catch (error) {
+				provider.log(`[implementPlan] ${error instanceof Error ? error.message : String(error)}`)
+				await provider.postStateToWebview()
+				vscode.window.showErrorMessage(t("common:planHandoff.implementFailed"))
+			}
 			break
 		case "updatePrompt":
 			if (message.promptMode && message.customPrompt !== undefined) {
@@ -1807,9 +1828,64 @@ export const webviewMessageHandler = async (
 						`Error load api configuration by ID: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
 					)
 					vscode.window.showErrorMessage(t("common:errors.load_api_config"))
+					// Release the composer's loading state with the still-accepted profile/capabilities.
+					await provider.postStateToWebview()
 				}
 			}
 			break
+		case "setTaskReasoningPreference": {
+			const parsed = taskReasoningUpdateSchema.safeParse(message.taskReasoningUpdate)
+			const requestId = message.taskReasoningUpdate?.requestId
+			if (typeof requestId !== "string") break
+			if (!parsed.success) {
+				await provider.postMessageToWebview({
+					type: "taskReasoningUpdated",
+					taskReasoningResponse: {
+						requestId,
+						...(typeof message.taskReasoningUpdate?.taskId === "string"
+							? { taskId: message.taskReasoningUpdate.taskId }
+							: {}),
+						error: "invalid",
+					},
+				})
+				break
+			}
+			const { taskId, preference } = parsed.data
+			try {
+				const state = await provider.setTaskReasoningPreference(taskId, preference, {
+					rememberForNewTasks: true,
+				})
+				await provider.postMessageToWebview({
+					type: "taskReasoningUpdated",
+					taskReasoningResponse: { requestId, taskId, state },
+				})
+			} catch {
+				await provider.postMessageToWebview({
+					type: "taskReasoningUpdated",
+					taskReasoningResponse: { requestId, taskId, error: "saveFailed" },
+				})
+			}
+			break
+		}
+		case "getReasoningCapabilities": {
+			if (!message.requestId) break
+			try {
+				const state = await provider.getReasoningCapabilities(
+					message.reasoningProfileId,
+					message.reasoningPreference,
+				)
+				await provider.postMessageToWebview({
+					type: "reasoningCapabilities",
+					taskReasoningResponse: { requestId: message.requestId, state },
+				})
+			} catch {
+				await provider.postMessageToWebview({
+					type: "reasoningCapabilities",
+					taskReasoningResponse: { requestId: message.requestId, error: "unavailable" },
+				})
+			}
+			break
+		}
 		case "deleteApiConfiguration":
 			if (message.text) {
 				const answer = await vscode.window.showInformationMessage(

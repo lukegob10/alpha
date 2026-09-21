@@ -5,6 +5,9 @@ import type {
 	AlphaMessage,
 	HistoryItem,
 	TaskWorkContext,
+	TaskDesignHandoff,
+	TaskReasoningPreference,
+	TaskReasoningState,
 	SubagentChangeSetState,
 	SubagentContextManifest,
 	SubagentDelegationPolicy,
@@ -33,7 +36,10 @@ export type TaskMetadataOptions = {
 	mode?: string
 	/** Provider profile name for the task (sticky profile feature) */
 	apiConfigName?: string
+	reasoningPreference?: TaskReasoningPreference
+	reasoningState?: TaskReasoningState
 	workContext?: TaskWorkContext
+	designHandoff?: TaskDesignHandoff
 	/** Initial status for the task (e.g., "active" for child tasks) */
 	initialStatus?:
 		| "active"
@@ -68,7 +74,10 @@ export async function taskMetadata({
 	workspace,
 	mode,
 	apiConfigName,
+	reasoningPreference,
+	reasoningState,
 	workContext,
+	designHandoff,
 	initialStatus,
 	taskKind,
 	subagentGroupId,
@@ -154,7 +163,10 @@ export async function taskMetadata({
 		size: taskDirSize,
 		workspace,
 		...(workContext && { workContext: structuredClone(workContext) }),
+		...(designHandoff && { designHandoff: structuredClone(designHandoff) }),
 		mode,
+		...(reasoningPreference && { reasoningPreference: structuredClone(reasoningPreference) }),
+		...(reasoningState && { reasoningState: structuredClone(reasoningState) }),
 		...(typeof apiConfigName === "string" && apiConfigName.length > 0 ? { apiConfigName } : {}),
 		...(initialStatus && { status: initialStatus }),
 		...(taskKind && { taskKind }),

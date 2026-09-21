@@ -4,8 +4,10 @@ import axios from "axios"
 
 import {
 	type ModelInfo,
+	taskReasoningCustomTokenPattern,
 	azureOpenAiDefaultApiVersion,
 	openAiModelInfoSaneDefaults,
+	resolveOpenAiCustomModelInfo,
 	OPENAI_AZURE_AI_INFERENCE_PATH,
 } from "@alpha-code/types"
 
@@ -120,6 +122,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): ApiStream {
 		const { info: modelInfo, reasoning } = this.getModel()
+		const effectiveReasoning = this.getRuntimeReasoning(reasoning)
 		const modelUrl = this.options.openAiBaseUrl ?? ""
 		const modelId = this.options.openAiModelId ?? ""
 		const enabledR1Format = this.options.openAiR1FormatEnabled ?? false
@@ -193,7 +196,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				messages: convertedMessages,
 				stream: true as const,
 				...(isGrokXAI ? {} : { stream_options: { include_usage: true } }),
-				...(reasoning && reasoning),
+				...(effectiveReasoning && effectiveReasoning),
 				tools: this.convertToolsForOpenAI(metadata?.tools),
 				tool_choice: metadata?.tool_choice,
 				parallel_tool_calls: metadata?.parallelToolCalls ?? true,
@@ -260,6 +263,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				tools: this.convertToolsForOpenAI(metadata?.tools),
 				tool_choice: metadata?.tool_choice,
 				parallel_tool_calls: metadata?.parallelToolCalls ?? true,
+				...(effectiveReasoning && effectiveReasoning),
 			}
 
 			// Add max_tokens if needed
@@ -300,6 +304,15 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		}
 	}
 
+	/** Apply an ephemeral task token without mutating the saved provider profile. */
+	private getRuntimeReasoning(
+		fallback: { reasoning_effort: OpenAI.Chat.ChatCompletionCreateParams["reasoning_effort"] } | undefined,
+	): { reasoning_effort: OpenAI.Chat.ChatCompletionCreateParams["reasoning_effort"] } | undefined {
+		const value = this.options.taskReasoningCustomEffort
+		if (!value || !taskReasoningCustomTokenPattern.test(value)) return fallback
+		return { reasoning_effort: value as OpenAI.Chat.ChatCompletionCreateParams["reasoning_effort"] }
+	}
+
 	protected processUsageMetrics(usage: any, _modelInfo?: ModelInfo): ApiStreamUsageChunk {
 		return {
 			type: "usage",
@@ -324,7 +337,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		const id = this.options.openAiModelId ?? ""
 		const info: ModelInfo = applyModelToolPreferences(
 			{ provider: "openai", id },
-			this.options.openAiCustomModelInfo ?? openAiModelInfoSaneDefaults,
+			resolveOpenAiCustomModelInfo(this.options.openAiCustomModelInfo ?? openAiModelInfoSaneDefaults),
 		)
 		const params = getModelParams({
 			format: "openai",
@@ -341,10 +354,12 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			const isAzureAiInference = this._isAzureAiInference(this.options.openAiBaseUrl)
 			const model = this.getModel()
 			const modelInfo = model.info
+			const effectiveReasoning = this.getRuntimeReasoning(model.reasoning)
 
 			const requestOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
 				model: model.id,
 				messages: [{ role: "user", content: prompt }],
+				...(effectiveReasoning && effectiveReasoning),
 			}
 
 			// Add max_tokens if needed
@@ -376,7 +391,9 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		messages: Anthropic.Messages.MessageParam[],
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): ApiStream {
-		const modelInfo = this.getModel().info
+		const model = this.getModel()
+		const modelInfo = model.info
+		const effectiveReasoning = this.getRuntimeReasoning(model.reasoning)
 		const methodIsAzureAiInference = this._isAzureAiInference(this.options.openAiBaseUrl)
 
 		if (this.options.openAiStreamingEnabled ?? true) {
@@ -393,7 +410,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				],
 				stream: true,
 				...(isGrokXAI ? {} : { stream_options: { include_usage: true } }),
-				reasoning_effort: modelInfo.reasoningEffort as "low" | "medium" | "high" | undefined,
+				...(effectiveReasoning && effectiveReasoning),
 				temperature: undefined,
 				// Tools are always present (minimum ALWAYS_AVAILABLE_TOOLS)
 				tools: this.convertToolsForOpenAI(metadata?.tools),
@@ -427,7 +444,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					},
 					...convertToOpenAiMessages(messages),
 				],
-				reasoning_effort: modelInfo.reasoningEffort as "low" | "medium" | "high" | undefined,
+				...(effectiveReasoning && effectiveReasoning),
 				temperature: undefined,
 				// Tools are always present (minimum ALWAYS_AVAILABLE_TOOLS)
 				tools: this.convertToolsForOpenAI(metadata?.tools),

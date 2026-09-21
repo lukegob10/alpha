@@ -460,16 +460,16 @@ export class SkillsManager {
 		// Determine base directory
 		let baseDir: string
 		if (source === "global") {
-			baseDir = getGlobalAlphaDirectory()
+			baseDir = getGlobalAgentsDirectory()
 		} else {
 			const provider = this.providerRef.deref()
 			if (!provider?.cwd) {
 				throw new Error(t("skills:errors.no_workspace"))
 			}
-			baseDir = getProjectAlphaDirectoryForCwd(provider.cwd)
+			baseDir = getProjectAgentsDirectoryForCwd(provider.cwd)
 		}
 
-		// Always use the generic skills directory (mode info stored in frontmatter now)
+		// New skills use the portable .agents convention; mode info remains in frontmatter.
 		const skillsDir = path.join(baseDir, "skills")
 		const skillDir = path.join(skillsDir, name)
 		const skillMdPath = path.join(skillDir, "SKILL.md")

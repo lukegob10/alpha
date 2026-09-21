@@ -6,9 +6,9 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v2.1.49
+## Welcome to Alpha v3.0.0
 
-Alpha v2.1.49 prevents false no-progress stops during successful command work and improves recovery when task verification needs attention.
+Alpha v3.0.0 adds clearer approval modes, safer outside-workspace reviews, and faster checkpoint history comparisons.
 
 - Distinct successful commands can continue even when their purpose falls outside the supported Git and ripgrep inspection grammar
 

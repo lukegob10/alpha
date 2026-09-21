@@ -107,6 +107,8 @@ import * as vscode from "vscode"
 import type OpenAI from "openai"
 import { VsCodeLmHandler, getVsCodeLmModels } from "../vscode-lm"
 import type { ApiHandlerOptions } from "../../../shared/api"
+import { resolveTaskReasoning } from "../../../core/agent/TaskReasoning"
+import type { ProviderSettings } from "@alpha-code/types"
 import type { Anthropic } from "@anthropic-ai/sdk"
 import { createReadFileTool } from "../../../core/prompts/tools/native-tools/read_file"
 
@@ -1252,6 +1254,41 @@ describe("VsCodeLmHandler", () => {
 			})
 		})
 
+		it("should apply live reasoning options to the next VS Code LM request", async () => {
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				enableReasoningEffort: true,
+				reasoningEffort: "high",
+			})
+			handler["client"] = mockCopilotGpt55LanguageModelChat as any
+			handler.setReasoningOptions({ enableReasoningEffort: true, reasoningEffort: "low" })
+
+			mockCopilotGpt55LanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Live low response")
+				})(),
+			})
+
+			for await (const _chunk of handler.createMessage("System", [
+				{ role: "user", content: "Use the live setting" },
+			])) {
+				// consume stream
+			}
+
+			expect(mockCopilotGpt55LanguageModelChat.sendRequest).toHaveBeenCalledWith(
+				expect.any(Array),
+				expect.objectContaining({
+					modelOptions: {
+						reasoningEffort: "low",
+					},
+					configuration: {
+						reasoningEffort: "low",
+					},
+				}),
+				expect.anything(),
+			)
+		})
+
 		it("should pass selected extra-high reasoning effort through request options", async () => {
 			handler = new VsCodeLmHandler({
 				...defaultOptions,
@@ -1386,6 +1423,35 @@ describe("VsCodeLmHandler", () => {
 			)
 		})
 
+		it("enables Claude Opus 5's required default effort through the task resolver", async () => {
+			handler = new VsCodeLmHandler(defaultOptions)
+			handler["client"] = mockCopilotClaudeOpus5LanguageModelChat as any
+
+			const profile: ProviderSettings = { ...defaultOptions, apiProvider: "vscode-lm" }
+			const resolution = resolveTaskReasoning(profile, { kind: "default" }, handler.getModel())
+			expect(resolution.state.effective).toEqual({ kind: "effort", effort: "high" })
+			handler.setReasoningOptions(resolution.configuration)
+
+			mockCopilotClaudeOpus5LanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Required reasoning response")
+				})(),
+			})
+
+			for await (const _chunk of handler.createMessage("System", [{ role: "user", content: "Think" }])) {
+				// consume stream
+			}
+
+			expect(mockCopilotClaudeOpus5LanguageModelChat.sendRequest).toHaveBeenCalledWith(
+				expect.any(Array),
+				expect.objectContaining({
+					modelOptions: { reasoningEffort: "high" },
+					configuration: { reasoningEffort: "high" },
+				}),
+				expect.anything(),
+			)
+		})
+
 		it("should pass Grok 4.6 reasoning and context through both model option routes", async () => {
 			handler = new VsCodeLmHandler({
 				...defaultOptions,
@@ -1513,6 +1579,38 @@ describe("VsCodeLmHandler", () => {
 				expect.anything(),
 			)
 			const requestOptions = unsupportedModel.sendRequest.mock.calls.at(-1)?.[1]
+			expect(requestOptions).not.toHaveProperty("modelOptions")
+			expect(requestOptions).not.toHaveProperty("configuration")
+		})
+
+		it("preserves an unknown live model ID and omits unverified reasoning options", async () => {
+			const unknownModel = {
+				...mockLanguageModelChat,
+				id: "copilot-unknown-reasoning-model",
+				name: "Unknown Copilot Reasoning Model",
+				vendor: "copilot",
+				family: "unknown-reasoning-model",
+				version: "2026-09-20",
+			}
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				enableReasoningEffort: true,
+				reasoningEffort: "high",
+			})
+			handler["client"] = unknownModel as any
+
+			unknownModel.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Unknown model response")
+				})(),
+			})
+
+			for await (const _chunk of handler.createMessage("System", [{ role: "user", content: "Answer" }])) {
+				// consume stream
+			}
+
+			expect(handler.getModel().id).toBe("copilot-unknown-reasoning-model")
+			const requestOptions = unknownModel.sendRequest.mock.calls.at(-1)?.[1]
 			expect(requestOptions).not.toHaveProperty("modelOptions")
 			expect(requestOptions).not.toHaveProperty("configuration")
 		})

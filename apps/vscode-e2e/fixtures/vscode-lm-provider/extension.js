@@ -72,6 +72,8 @@ const provider = {
 			index: requestIndex,
 			scenario,
 			cancelled: token.isCancellationRequested,
+			modelId: _model.id,
+			configuration: options.configuration,
 			messages: messages.map((message) => ({
 				role: message.role,
 				parts: message.content.map(summarizePart),

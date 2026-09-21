@@ -1,4 +1,3 @@
-import pWaitFor from "p-wait-for"
 import * as vscode from "vscode"
 
 import type { AlphaApiReqInfo } from "@alpha-code/types"
@@ -20,6 +19,23 @@ import { CheckpointServiceOptions, RepoPerTaskCheckpointService } from "../../se
 
 const WARNING_THRESHOLD_MS = 5000
 
+type CheckpointService = RepoPerTaskCheckpointService
+
+type CheckpointInitializationState = {
+	promise: Promise<CheckpointService | undefined>
+	resolve: (service: CheckpointService | undefined) => void
+	settled: boolean
+	warningTimer?: ReturnType<typeof setTimeout>
+	timeoutTimer?: ReturnType<typeof setTimeout>
+	warningShown: boolean
+	timeoutShown: boolean
+}
+
+// Initialization is intentionally shared per task. The task loop starts it in the
+// background, while checkpoint operations that arrive before it completes join the
+// same promise instead of polling the task every 250ms.
+const checkpointInitializationStates = new WeakMap<Task, CheckpointInitializationState>()
+
 function sendCheckpointInitWarn(task: Task, type?: "WAIT_TIMEOUT" | "INIT_TIMEOUT", timeout?: number) {
 	task.providerRef.deref()?.postMessageToWebview({
 		type: "checkpointInitWarning",
@@ -27,19 +43,156 @@ function sendCheckpointInitWarn(task: Task, type?: "WAIT_TIMEOUT" | "INIT_TIMEOU
 	})
 }
 
-export async function getCheckpointService(task: Task, { interval = 250 }: { interval?: number } = {}) {
+export async function getCheckpointService(task: Task, _options: { interval?: number } = {}) {
 	if (!task.enableCheckpoints) {
 		return undefined
 	}
 
-	if (task.checkpointService) {
+	if (task.checkpointService?.isInitialized) {
 		return task.checkpointService
 	}
 
-	const provider = task.providerRef.deref()
+	let state = checkpointInitializationStates.get(task)
+	if (!state) {
+		const created = createCheckpointInitializationState()
+		state = created.state
+		checkpointInitializationStates.set(task, state)
+		scheduleCheckpointInitializationTimeout(task, state)
+		created.start(task)
 
-	// Get checkpoint timeout from task settings (converted to milliseconds)
-	const checkpointTimeoutMs = task.checkpointTimeout * 1000
+		// The task loop intentionally starts this promise without awaiting it. The
+		// creator follows that same background-start behavior; later callers join it
+		// and arm the wait warning. The deadline covers the whole initialization.
+		return state.promise
+	}
+
+	scheduleCheckpointInitializationTimeout(task, state)
+	armCheckpointInitializationWarning(task, state)
+	return state.promise
+}
+
+function createCheckpointInitializationState(): {
+	state: CheckpointInitializationState
+	start: (task: Task) => void
+} {
+	let resolveInitialization!: (service: CheckpointService | undefined) => void
+
+	const promise = new Promise<CheckpointService | undefined>((resolve) => {
+		resolveInitialization = resolve
+	})
+
+	const state: CheckpointInitializationState = {
+		promise,
+		resolve: resolveInitialization,
+		settled: false,
+		warningShown: false,
+		timeoutShown: false,
+	}
+
+	return {
+		state,
+		start: (task) => {
+			// The state is placed in the WeakMap before this work can be observed by
+			// another task operation. Always settle the shared promise, even if a
+			// future change introduces an uncaught initialization error.
+			void initializeCheckpointService(task).then(
+				(service) => {
+					finishCheckpointInitialization(task, state, service)
+				},
+				(error) => {
+					task.enableCheckpoints = false
+					console.error("[Task#getCheckpointService] unexpected initialization failure", error)
+					finishCheckpointInitialization(task, state, undefined)
+				},
+			)
+		},
+	}
+}
+
+function scheduleCheckpointInitializationTimeout(task: Task, state: CheckpointInitializationState) {
+	if (state.settled || state.timeoutTimer) {
+		return
+	}
+
+	state.timeoutTimer = setTimeout(() => {
+		if (state.settled || checkpointInitializationStates.get(task) !== state) {
+			return
+		}
+
+		if (task.enableCheckpoints) {
+			state.timeoutShown = true
+			sendCheckpointInitWarn(task, "INIT_TIMEOUT", task.checkpointTimeout)
+			task.enableCheckpoints = false
+		}
+		task.checkpointServiceInitializing = false
+		finishCheckpointInitialization(task, state, undefined)
+	}, task.checkpointTimeout * 1000)
+}
+
+function armCheckpointInitializationWarning(task: Task, state: CheckpointInitializationState) {
+	if (state.settled || state.warningTimer) {
+		return
+	}
+
+	state.warningTimer = setTimeout(() => {
+		state.warningTimer = undefined
+
+		// A timeout warning belongs to this exact initialization attempt. Do not
+		// publish it after a newer attempt or after initialization has settled.
+		if (
+			!state.settled &&
+			checkpointInitializationStates.get(task) === state &&
+			task.enableCheckpoints &&
+			!state.warningShown
+		) {
+			state.warningShown = true
+			sendCheckpointInitWarn(task, "WAIT_TIMEOUT", WARNING_THRESHOLD_MS / 1000)
+		}
+	}, WARNING_THRESHOLD_MS)
+}
+
+function finishCheckpointInitialization(
+	task: Task,
+	state: CheckpointInitializationState,
+	service: CheckpointService | undefined,
+) {
+	if (state.settled) {
+		return
+	}
+
+	state.settled = true
+	if (state.warningTimer) {
+		clearTimeout(state.warningTimer)
+		state.warningTimer = undefined
+	}
+	if (state.timeoutTimer) {
+		clearTimeout(state.timeoutTimer)
+		state.timeoutTimer = undefined
+	}
+
+	const canPublishService =
+		!!service &&
+		service.isInitialized &&
+		task.enableCheckpoints &&
+		checkpointInitializationStates.get(task) === state
+
+	if (canPublishService) {
+		task.checkpointService = service
+		sendCheckpointInitWarn(task)
+	}
+
+	// Initialization can fail after the five-second wait warning but before the
+	// shared timeout. Remove that stale warning when the underlying operation has
+	// finished; timeout failures intentionally keep their terminal warning visible.
+	if (!canPublishService && state.warningShown && !state.timeoutShown) {
+		sendCheckpointInitWarn(task)
+	}
+
+	state.resolve(canPublishService ? service : undefined)
+}
+
+async function initializeCheckpointService(task: Task): Promise<CheckpointService | undefined> {
+	const provider = task.providerRef.deref()
 
 	const log = (message: string) => {
 		console.log(message)
@@ -52,6 +205,7 @@ export async function getCheckpointService(task: Task, { interval = 250 }: { int
 	}
 
 	console.log("[Task#getCheckpointService] initializing checkpoints service")
+	task.checkpointServiceInitializing = true
 
 	try {
 		const workspaceDir = task.cwd || getWorkspacePath()
@@ -77,57 +231,24 @@ export async function getCheckpointService(task: Task, { interval = 250 }: { int
 			log,
 		}
 
-		if (task.checkpointServiceInitializing) {
-			const checkpointInitStartTime = Date.now()
-			let warningShown = false
+		const service = task.checkpointService ?? RepoPerTaskCheckpointService.create(options)
+		const gitAvailable = await checkGitInstallation(task, service, log, provider)
 
-			await pWaitFor(
-				() => {
-					const elapsed = Date.now() - checkpointInitStartTime
-
-					// Show warning if we're past the threshold and haven't shown it yet
-					if (!warningShown && elapsed >= WARNING_THRESHOLD_MS) {
-						warningShown = true
-						sendCheckpointInitWarn(task, "WAIT_TIMEOUT", WARNING_THRESHOLD_MS / 1000)
-					}
-
-					console.log(
-						`[Task#getCheckpointService] waiting for service to initialize (${Math.round(elapsed / 1000)}s)`,
-					)
-					return !!task.checkpointService && !!task?.checkpointService?.isInitialized
-				},
-				{ interval, timeout: checkpointTimeoutMs },
-			)
-			if (!task?.checkpointService) {
-				sendCheckpointInitWarn(task, "INIT_TIMEOUT", task.checkpointTimeout)
-				task.enableCheckpoints = false
-				return undefined
-			} else {
-				sendCheckpointInitWarn(task)
-			}
-			return task.checkpointService
-		}
-
-		if (!task.enableCheckpoints) {
+		// Git absence or initialization failure disables checkpoints. The shared
+		// completion handler decides whether a successfully initialized service may
+		// still be published; this prevents a timed-out attempt from publishing late
+		// if a caller re-enables checkpoints while the underlying work finishes.
+		if (!gitAvailable || !service.isInitialized) {
 			return undefined
 		}
 
-		const service = RepoPerTaskCheckpointService.create(options)
-		task.checkpointServiceInitializing = true
-		await checkGitInstallation(task, service, log, provider)
-		task.checkpointService = service
-		if (task.enableCheckpoints) {
-			sendCheckpointInitWarn(task)
-		}
 		return service
 	} catch (err) {
-		if (err.name === "TimeoutError" && task.enableCheckpoints) {
-			sendCheckpointInitWarn(task, "INIT_TIMEOUT", task.checkpointTimeout)
-		}
 		log(`[Task#getCheckpointService] ${err.message}`)
 		task.enableCheckpoints = false
-		task.checkpointServiceInitializing = false
 		return undefined
+	} finally {
+		task.checkpointServiceInitializing = false
 	}
 }
 
@@ -136,7 +257,7 @@ async function checkGitInstallation(
 	service: RepoPerTaskCheckpointService,
 	log: (message: string) => void,
 	provider: any,
-) {
+): Promise<boolean> {
 	try {
 		const gitInstalled = await checkGitInstalled()
 
@@ -145,17 +266,22 @@ async function checkGitInstallation(
 			task.enableCheckpoints = false
 			task.checkpointServiceInitializing = false
 
-			// Show user-friendly notification
-			const selection = await vscode.window.showWarningMessage(
-				t("common:errors.git_not_installed"),
-				t("common:buttons.learn_more"),
+			// Keep the user notification asynchronous so all checkpoint waiters can
+			// settle immediately when Git is unavailable.
+			void Promise.resolve(
+				vscode.window.showWarningMessage(t("common:errors.git_not_installed"), t("common:buttons.learn_more")),
 			)
+				.then((selection) => {
+					if (selection === t("common:buttons.learn_more")) {
+						return vscode.env.openExternal(vscode.Uri.parse("https://git-scm.com/downloads"))
+					}
+					return undefined
+				})
+				.catch((error) => {
+					log(`[Task#getCheckpointService] failed to show Git notification: ${error.message}`)
+				})
 
-			if (selection === t("common:buttons.learn_more")) {
-				await vscode.env.openExternal(vscode.Uri.parse("https://git-scm.com/downloads"))
-			}
-
-			return
+			return false
 		}
 
 		// Git is installed, proceed with initialization
@@ -199,15 +325,18 @@ async function checkGitInstallation(
 
 		try {
 			await service.initShadowGit()
+			return service.isInitialized
 		} catch (err) {
 			log(`[Task#getCheckpointService] initShadowGit -> ${err.message}`)
 			task.enableCheckpoints = false
+			return false
 		}
 	} catch (err) {
 		log(`[Task#getCheckpointService] Unexpected error during Git check: ${err.message}`)
 		console.error("Git check error:", err)
 		task.enableCheckpoints = false
 		task.checkpointServiceInitializing = false
+		return false
 	}
 }
 

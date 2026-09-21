@@ -154,11 +154,17 @@ export const subagentDelegationAuthorizationSchema = z.enum([
 	"pending-approval",
 	"group-approval",
 	"task-opt-in",
+	"session-policy",
 	"proactive-policy",
 ])
 export type SubagentDelegationAuthorization = z.infer<typeof subagentDelegationAuthorizationSchema>
 
-export const subagentFinalDelegationAuthorizationSchema = z.enum(["group-approval", "task-opt-in", "proactive-policy"])
+export const subagentFinalDelegationAuthorizationSchema = z.enum([
+	"group-approval",
+	"task-opt-in",
+	"session-policy",
+	"proactive-policy",
+])
 export type SubagentFinalDelegationAuthorization = z.infer<typeof subagentFinalDelegationAuthorizationSchema>
 
 /** Trusted, per-spawn delegation decision frozen into the child manifest. */
@@ -172,13 +178,21 @@ export const subagentEffectiveDelegationPolicySchema = z
 	})
 	.strict()
 	.superRefine(({ policy, authorization, explicitUserRequest }, context) => {
-		const requiresExplicitRequest = policy === "explicit-only" && authorization !== "pending-approval"
+		const requiresExplicitRequest =
+			policy === "explicit-only" && authorization !== "pending-approval" && authorization !== "session-policy"
 		const recordsExplicitRequest = authorization === "group-approval" || authorization === "task-opt-in"
 		if (requiresExplicitRequest && !recordsExplicitRequest) {
 			context.addIssue({
 				code: z.ZodIssueCode.custom,
 				path: ["authorization"],
 				message: "explicit-only delegation requires a trusted explicit user request",
+			})
+		}
+		if (authorization === "session-policy" && policy !== "explicit-only") {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["authorization"],
+				message: "session-policy authorization requires explicit-only delegation policy",
 			})
 		}
 		if (explicitUserRequest !== recordsExplicitRequest) {
@@ -275,6 +289,7 @@ export function resolveSubagentDelegationPolicy({
 export type FinalizeSubagentDelegationPolicyAuthorization =
 	| { authorization: "group-approval"; groupApproved: boolean }
 	| { authorization: "task-opt-in"; taskExplicitlyEnabled: boolean }
+	| { authorization: "session-policy" }
 	| { authorization: "proactive-policy" }
 
 /** Finalize a trusted approval decision immediately before launch/persistence. */

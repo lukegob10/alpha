@@ -155,6 +155,11 @@
 		"missing_task_files": "File tugas ini hilang. Apakah kamu ingin menghapusnya dari daftar tugas?",
 		"auto_import_failed": "Gagal mengimpor pengaturan Alpha secara otomatis: {{error}}"
 	},
+	"planHandoff": {
+		"tooLarge": "Rencana yang diusulkan terlalu besar untuk disimpan (maksimal 100.000 karakter). Rencana sebelumnya dipertahankan.",
+		"implementInstruction": "Terapkan rencana yang diusulkan saat ini.",
+		"implementFailed": "Tidak dapat memulai penerapan rencana. Tinjau tugas dan rencana saat ini, lalu coba lagi."
+	},
 	"info": {
 		"no_changes": "Tidak ada perubahan ditemukan.",
 		"clipboard_copy": "System prompt berhasil disalin ke clipboard",

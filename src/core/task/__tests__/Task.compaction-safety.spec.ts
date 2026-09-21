@@ -1,5 +1,5 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
-import type { ModelInfo, ProviderSettings } from "@alpha-code/types"
+import type { ModelInfo, ProviderSettings, TaskDesignHandoff } from "@alpha-code/types"
 
 import type { ApiHandler } from "../../../api"
 import type { AgentResponse } from "../../agent/AgentResponse"
@@ -9,6 +9,7 @@ import { summarizeConversation, type SummarizeResponse, type TokenCountContext }
 import { manageContext, willManageContext } from "../../context-management"
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
 import { SYSTEM_PROMPT } from "../../prompts/system"
+import { getDesignHandoffPrompt } from "../../prompts/sections/design-handoff"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
 import { ToolRegistry } from "../../tools/ToolRegistry"
@@ -67,9 +68,13 @@ function harness() {
 		),
 		createMessage: vi.fn<ApiHandler["createMessage"]>(async function* () {}),
 	} satisfies ApiHandler
+	const apiConfiguration: ProviderSettings = { apiProvider: "vertex" }
 	const provider = {
 		getState: vi.fn(async () => ({})),
 		postMessageToWebview: vi.fn(async () => {}),
+		context: {} as any,
+		getMcpHub: vi.fn(() => undefined),
+		getSkillsManager: vi.fn(() => undefined),
 	}
 	const history: ApiMessage[] = [
 		{ role: "user", content: "Original request", ts: 1 },
@@ -96,7 +101,19 @@ function harness() {
 		persistedToolResultIds: new Set<string>(),
 		toolRepetitionDetector: new ToolRepetitionDetector(3),
 		api,
-		apiConfiguration: { apiProvider: "vertex" } satisfies ProviderSettings,
+		apiConfiguration,
+		// Captured provider requests use the effective snapshot. Keep this fixture's
+		// initial effective profile aligned with its base profile.
+		effectiveApiConfiguration: { ...apiConfiguration },
+		reasoningPreference: { kind: "default" },
+		reasoningState: {
+			requested: { kind: "default" },
+			effective: { kind: "default" },
+			capabilities: { kind: "unavailable", canDisable: false },
+		},
+		reasoningByHandler: new WeakMap(),
+		retainedReasoningHandlers: new Set(),
+		reasoningHandlerUsers: new Map(),
 		providerRef: { deref: () => provider },
 		apiConversationHistory: history,
 		agentTurnStep: 0,
@@ -158,6 +175,100 @@ function runRecovery(task: Task, trigger: "manual" | "automatic" | "forced") {
 	}
 	return Reflect.get(task, "handleContextWindowExceededError").call(task) as Promise<void>
 }
+
+describe("Task design handoff provenance", () => {
+	it("captures the Plan handoff on the Code step and retains it through compaction without transcript history", async () => {
+		const { task, api } = harness()
+		const handoff: TaskDesignHandoff = {
+			title: "Persist the design",
+			markdown: "# Persist the design\n\n## Implementation\n\n- Keep the host-owned handoff.",
+			sourceTaskId: task.taskId,
+			digest: "b".repeat(64),
+			updatedAt: 1,
+		}
+		Object.assign(task, { designHandoff: handoff })
+		const getSystemPrompt = Reflect.get(Task.prototype, "getSystemPrompt") as (
+			state?: unknown,
+			provider?: unknown,
+			handoff?: TaskDesignHandoff | null,
+			mode?: string,
+		) => Promise<string>
+		const codePrompt = await getSystemPrompt.call(
+			task,
+			{},
+			{ apiHandler: api, apiConfiguration: task.apiConfiguration },
+			handoff,
+			"code",
+		)
+		const planPrompt = await getSystemPrompt.call(
+			task,
+			{},
+			{ apiHandler: api, apiConfiguration: task.apiConfiguration },
+			handoff,
+			"architect",
+		)
+		expect(codePrompt).toContain(handoff.markdown)
+		expect(planPrompt).not.toContain(handoff.markdown)
+
+		const surface = createTaskToolSurface({
+			registry: new ToolRegistry({ includeBuiltIns: false }),
+			applyProfile: false,
+		})
+		const prompt = getDesignHandoffPrompt(handoff, { taskId: task.taskId })!
+		const step = (task as any).captureAgentStep(
+			0,
+			prompt.text,
+			[],
+			surface.schemas,
+			undefined,
+			{ taskId: task.taskId, mode: "code" },
+			"code",
+			api.getModel().info,
+			surface,
+			undefined,
+			{ apiHandler: api, apiConfiguration: task.apiConfiguration },
+			handoff,
+		)
+
+		expect(step.snapshot.context.mode.slug).toBe("code")
+		expect(step.snapshot.context.transcript.messages).toEqual([])
+		expect(step.snapshot.context.instructions.systemPrompt).toContain(handoff.markdown)
+		expect(step.snapshot.context.instructions.sources).toEqual([prompt.source])
+
+		const compacted = (task as any).agentStepContextBuilder.compaction(step.snapshot, {
+			action: "summary",
+			compaction: { attempted: true, summaryId: "summary-1" },
+		})
+		expect(compacted.context.instructions.sources).toEqual([prompt.source])
+		expect(compacted.context.instructions.systemPrompt).toContain(handoff.markdown)
+		expect(compacted.context.transcript.messages).toEqual([])
+
+		Object.assign(task, { designHandoff: undefined })
+		const noPlanPrompt = await getSystemPrompt.call(
+			task,
+			{},
+			{ apiHandler: api, apiConfiguration: task.apiConfiguration },
+			null,
+			"code",
+		)
+		expect(noPlanPrompt).not.toContain("CURRENT DESIGN HANDOFF")
+		const noPlanStep = (task as any).captureAgentStep(
+			0,
+			noPlanPrompt,
+			[],
+			surface.schemas,
+			undefined,
+			{ taskId: task.taskId, mode: "code" },
+			"code",
+			api.getModel().info,
+			surface,
+			undefined,
+			{ apiHandler: api, apiConfiguration: task.apiConfiguration },
+			null,
+		)
+		expect(noPlanStep.snapshot.context.instructions.sources).toEqual([])
+	})
+})
 
 describe("Task proportional context preflight", () => {
 	beforeEach(async () => {
@@ -929,6 +1040,7 @@ describe("Task context recovery admission", () => {
 			info: { ...model.info, supportsImages: true, preserveReasoning: true },
 		})
 		task.apiConfiguration = { apiProvider: "vscode-lm", apiModelId: "test-model" }
+		Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 		const reasoning = { type: "reasoning", text: "Exact continuation reasoning" }
 		Object.assign(history[1], {
 			content: [reasoning, { type: "text", text: "Recent answer" }],
@@ -954,6 +1066,7 @@ describe("Task context recovery admission", () => {
 				task.apiConversationHistory.push({ role: "user", content: "Fresh environment", ts: 11 })
 				task.api = replacement
 				task.apiConfiguration = { apiProvider: "vertex", apiModelId: "narrow-model" }
+				Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 			}),
 		})
 		vi.mocked(manageContext).mockImplementation(async ({ prepareTools }) => {
@@ -1051,6 +1164,7 @@ describe("Task context recovery admission", () => {
 		vi.spyOn(api, "getModel").mockReturnValue({ ...model, info: { ...model.info, isStealthModel: false } })
 		const configuration: ProviderSettings = { apiProvider: "vertex", todoListEnabled: true }
 		task.apiConfiguration = configuration
+		Reflect.set(task, "effectiveApiConfiguration", { ...configuration })
 		Object.assign(provider, { context: {}, getSkillsManager: () => undefined })
 		Reflect.set(
 			task,
@@ -1061,6 +1175,7 @@ describe("Task context recovery admission", () => {
 					getModel: () => ({ id: "replacement-model", info: { ...model.info, isStealthModel: true } }),
 				}
 				task.apiConfiguration = { apiProvider: "vertex", todoListEnabled: false }
+				Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 				return "code"
 			}),
 		)
@@ -1183,6 +1298,7 @@ describe("Task context recovery admission", () => {
 	] as const)("uses the task catalog for %s compaction on %s", async (trigger, apiProvider) => {
 		const { task, api, history } = harness()
 		task.apiConfiguration = { apiProvider }
+		Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })
 		const tools = [
 			{
 				type: "function" as const,
@@ -1218,10 +1334,23 @@ describe("Task context recovery admission", () => {
 		if (trigger === "manual") await runRecovery(task, trigger)
 		else await expect(runRecovery(task, trigger)).rejects.toMatchObject({ name: "ContextRecoveryExhaustedError" })
 
-		expect(Reflect.get(task, "getSystemPrompt")).toHaveBeenCalledWith(expect.anything(), {
-			apiHandler: api,
-			apiConfiguration: task.apiConfiguration,
-		})
+		const promptCall = vi.mocked(Reflect.get(task, "getSystemPrompt"))
+		if (trigger !== "automatic") {
+			expect(promptCall).toHaveBeenCalledWith(expect.anything(), {
+				apiHandler: api,
+				apiConfiguration: task.apiConfiguration,
+			})
+		} else {
+			expect(promptCall).toHaveBeenCalledWith(
+				expect.anything(),
+				{
+					apiHandler: api,
+					apiConfiguration: task.apiConfiguration,
+				},
+				null,
+				"code",
+			)
+		}
 		expect(buildNativeToolsArrayWithRestrictions).toHaveBeenCalledWith(
 			expect.objectContaining({
 				catalogCache: Reflect.get(task, "toolCatalogCache"),

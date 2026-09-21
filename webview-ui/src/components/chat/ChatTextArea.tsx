@@ -29,6 +29,7 @@ import Thumbnails from "../common/Thumbnails"
 import { ModeSelector } from "./ModeSelector"
 import { ApiConfigSelector } from "./ApiConfigSelector"
 import { AutoApproveDropdown } from "./AutoApproveDropdown"
+import { ChatReasoningControl } from "../reasoning/ChatReasoningControl"
 import { MAX_IMAGES_PER_MESSAGE } from "./ChatView"
 import ContextMenu from "./ContextMenu"
 import { IndexingStatusBadge } from "./IndexingStatusBadge"
@@ -101,7 +102,11 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 			clineMessages,
 			commands,
 			enterBehavior,
+			taskReasoning,
+			currentTaskId,
 		} = useExtensionState()
+		const [reasoningProfileLoading, setReasoningProfileLoading] = useState(false)
+		useEffect(() => setReasoningProfileLoading(false), [taskReasoning, currentTaskId, currentApiConfigName])
 
 		// Find the ID and display text for the currently selected API configuration.
 		const { currentConfigId, displayName } = useMemo(() => {
@@ -1112,6 +1117,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 
 		// Helper function to handle API config change
 		const handleApiConfigChange = useCallback((value: string) => {
+			setReasoningProfileLoading(true)
 			vscode.postMessage({ type: "loadApiConfigurationById", text: value })
 		}, [])
 
@@ -1477,7 +1483,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 				)}
 
 				<div className="flex items-center gap-2 px-1 pt-0.5">
-					<div className="flex items-center gap-2 min-w-0 overflow-clip flex-1">
+					<div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 flex-1">
 						<ModeSelector
 							value={mode}
 							title={t("chat:selectMode")}
@@ -1499,6 +1505,7 @@ export const ChatTextArea = forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 							pinnedApiConfigs={pinnedApiConfigs}
 							togglePinnedApiConfig={togglePinnedApiConfig}
 						/>
+						<ChatReasoningControl profileLoading={reasoningProfileLoading} />
 						<AutoApproveDropdown triggerClassName="min-w-[28px] text-ellipsis overflow-hidden flex-shrink" />
 					</div>
 					<div className={cn("flex flex-shrink-0 items-center gap-0.5 h-5 leading-none", "pr-2")}>

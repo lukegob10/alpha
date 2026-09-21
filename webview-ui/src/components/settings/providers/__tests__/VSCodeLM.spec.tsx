@@ -268,6 +268,7 @@ describe("VSCodeLM", () => {
 				reasoningEffort: "high",
 			}),
 		)
+		expect(thinkingBudgetProps.at(-1).showReasoningEffort).toBe(false)
 	})
 
 	it("uses Kimi K3's single live window without showing a context toggle", () => {

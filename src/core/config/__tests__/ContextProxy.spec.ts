@@ -247,6 +247,22 @@ describe("ContextProxy", () => {
 	})
 
 	describe("updateGlobalState", () => {
+		it("publishes new-task reasoning only after persistence and retains the accepted value on rejection", async () => {
+			const accepted = { kind: "effort", effort: "low" } as const
+			await proxy.updateGlobalState("newTaskReasoningPreference", accepted)
+			let rejectWrite!: (error: Error) => void
+			mockGlobalState.update.mockImplementationOnce(
+				() =>
+					new Promise((_resolve, reject) => {
+						rejectWrite = reject
+					}),
+			)
+			const write = proxy.updateGlobalState("newTaskReasoningPreference", { kind: "effort", effort: "high" })
+			expect(proxy.getGlobalState("newTaskReasoningPreference")).toEqual(accepted)
+			rejectWrite(new Error("disk unavailable"))
+			await expect(write).rejects.toThrow("disk unavailable")
+			expect(proxy.getGlobalState("newTaskReasoningPreference")).toEqual(accepted)
+		})
 		it("should update state directly in original context", async () => {
 			await proxy.updateGlobalState("apiProvider", "deepseek")
 

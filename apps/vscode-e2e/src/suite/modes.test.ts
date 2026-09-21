@@ -115,6 +115,7 @@ interface ModeHostProvider {
 				abort?: boolean
 				clineMessages?: Array<{ ask?: string; say?: string; text?: string; partial?: boolean }>
 				didComplete?: boolean
+				designHandoff?: { digest: string }
 				isInitialized?: boolean
 				isStreaming?: boolean
 				isTaskLoopActive?: boolean
@@ -129,6 +130,7 @@ interface ModeHostProvider {
 		  }
 		| undefined
 	setTaskMode(taskId: string, mode: string, options?: { postState?: boolean }): Promise<void>
+	handleImplementPlan(taskId: string, planDigest: string): Promise<void>
 	getStateToPostToWebview(): Promise<{ currentTaskId?: string; mode?: string }>
 }
 
@@ -285,6 +287,13 @@ suite("Alpha Modes", function () {
 			)
 			assert.equal(await initialTask.getTaskMode(), "architect")
 			assert.deepStrictEqual(scriptedAI.dispatchedToolNames, ["attempt_completion"])
+			// A user may return to Plan while the completion review is still open.
+			// This must change the host mode without answering the review prompt.
+			const pendingAsk = initialTask.taskAsk
+			await provider.setTaskMode(taskId, "code")
+			await provider.setTaskMode(taskId, "architect")
+			assert.equal(await initialTask.getTaskMode(), "architect")
+			assert.strictEqual(initialTask.taskAsk, pendingAsk)
 			if (completedTaskIds.filter((completedTaskId) => completedTaskId === taskId).length < 1) {
 				const task = provider.getLiveTask(taskId)
 				assert.ok(task, "The mode-switch task disappeared before completion could be accepted")
@@ -304,11 +313,10 @@ suite("Alpha Modes", function () {
 			assert.strictEqual(completedTask.apiConfiguration, initialApiConfiguration)
 			assert.equal(await completedTask.getTaskApiConfigName(), initialApiConfigName)
 
-			// Plan mode deliberately cannot dispatch switch_mode. Returning to Code is
-			// an explicit host/user transition, after which the completed task resumes.
-			await provider.setTaskMode(taskId, "code")
+			// Exercise the actual Implement plan host action, including continuation.
+			assert.ok(completedTask.designHandoff, "The proposed plan must have a durable handoff")
+			await provider.handleImplementPlan(taskId, completedTask.designHandoff.digest)
 			assert.equal(await completedTask.getTaskMode(), "code")
-			await completedTask.resumeCompletedTaskFollowup("Continue this retained task in Code.")
 			await waitFor(() => scriptedAI!.requestedTaskIds.length === 2, {
 				timeout: 30_000,
 				interval: 25,
@@ -340,9 +348,9 @@ suite("Alpha Modes", function () {
 			assert.deepStrictEqual(scriptedAI.dispatchedToolNames, ["attempt_completion", "attempt_completion"])
 			assert.deepStrictEqual(
 				switchedModes.filter((event) => event.taskId === taskId).map((event) => event.mode),
-				["code"],
+				["code", "architect", "code"],
 			)
-			assert.deepStrictEqual(localSwitchedModes, ["code"])
+			assert.deepStrictEqual(localSwitchedModes, ["code", "architect", "code"])
 			assert.strictEqual(provider.getLiveTask(taskId), initialTask)
 			assert.strictEqual(initialTask.api, initialApi)
 			assert.strictEqual(initialTask.apiConfiguration, initialApiConfiguration)

@@ -159,6 +159,11 @@
 		"missing_task_files": "Els fitxers d'aquesta tasca falten. Vols eliminar-la de la llista de tasques?",
 		"auto_import_failed": "Ha fallat la importació automàtica de la configuració de Alpha: {{error}}"
 	},
+	"planHandoff": {
+		"tooLarge": "El pla proposat és massa gran per desar-lo (màxim 100.000 caràcters). Es conserva el pla anterior.",
+		"implementInstruction": "Implementa el pla proposat actual.",
+		"implementFailed": "No s’ha pogut iniciar la implementació del pla. Revisa la tasca i el pla actuals i torna-ho a provar."
+	},
 	"info": {
 		"no_changes": "No s'han trobat canvis.",
 		"clipboard_copy": "Missatge del sistema copiat correctament al portapapers",

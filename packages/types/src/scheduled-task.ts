@@ -1,6 +1,8 @@
 import { z } from "zod"
 
 import type { SkillMetadata } from "./skills.js"
+import { taskReasoningPreferenceSchema, taskReasoningStateSchema } from "./task-reasoning.js"
+import type { TaskReasoningPreference } from "./task-reasoning.js"
 
 export const scheduledTaskProfileSchema = z.object({
 	id: z.string().min(1),
@@ -145,6 +147,8 @@ export const scheduledTaskSchema = z.object({
 	prompt: z.string(),
 	// Optional for legacy schedules. Model runs must explicitly select a saved profile.
 	apiConfig: scheduledTaskProfileSchema.optional(),
+	// Optional for legacy schedules; an absent value means the provider/model default.
+	reasoningPreference: taskReasoningPreferenceSchema.optional(),
 	execution: scheduledTaskExecutionSchema.optional(),
 	mode: z.string().optional(),
 	autoApproval: scheduledTaskAutoApprovalSchema.optional(),
@@ -169,6 +173,10 @@ export const scheduledTaskRunSchema = z.object({
 	alphaTaskId: z.string().optional(),
 	apiConfig: scheduledTaskProfileSchema.optional(),
 	resolvedApiConfig: scheduledTaskProfileSchema.optional(),
+	// Captured when the run is queued so later schedule edits cannot change it.
+	reasoningPreference: taskReasoningPreferenceSchema.optional(),
+	// Resolved against the actual profile/model when the run is admitted.
+	reasoningState: taskReasoningStateSchema.optional(),
 	status: scheduledTaskRunStatusSchema,
 	trigger: z.enum(["schedule", "manual", "missed", "system"]),
 	scheduledFor: z.number(),
@@ -200,6 +208,7 @@ export type CreateScheduledTaskPayload = {
 	name: string
 	prompt: string
 	apiConfig?: z.infer<typeof scheduledTaskProfileSchema>
+	reasoningPreference?: TaskReasoningPreference
 	execution?: ScheduledTaskExecution
 	mode?: string
 	autoApproval?: ScheduledTaskAutoApproval

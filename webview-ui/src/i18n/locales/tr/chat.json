@@ -2,6 +2,7 @@
 	"messageActions": {
 		"copy": "Kopyala",
 		"copied": "Kopyalandı",
+		"implementPlan": "Planı uygula",
 		"edit": "Düzenle ve yeniden gönder",
 		"restart": "Önceki istekten yeniden başlat",
 		"restartWarning": "Önceki istek yeniden çalıştırılacak ve sonraki tüm mesajlar değiştirilecek. Çalışma alanındaki dosyalar olduğu gibi kalacak.",
@@ -326,11 +327,58 @@
 		"triggerLabel_zero": "0 otomatik onaylandı",
 		"triggerLabel_one": "1 otomatik onaylandı",
 		"triggerLabel_other": "{{count}} otomatik onaylandı",
-		"triggerLabelAll": "BRRR"
+		"triggerLabelAll": "Tümü",
+		"tooltipMode": "Approval mode: {{mode}}",
+		"modes": {
+			"ask": "Ask",
+			"auto": "Auto",
+			"bypass": "Tam erişim"
+		},
+		"modeDescription": {
+			"ask": "Auto-approve workspace reads. Ask before writes, commands, spawn, tickets, MCP, and outside paths.",
+			"auto": "Auto-approve in-workspace edits, spawn, tickets, and commands. Ask for true-outside paths, protected files, and denied commands.",
+			"bypass": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
+		},
+		"bypassWarning": {
+			"title": "Enable Full Access?",
+			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands.",
+			"confirm": "Enable Full Access",
+			"cancel": "Cancel"
+		}
 	},
 	"reasoning": {
 		"thinking": "Düşünüyor",
-		"seconds": "{{count}}sn"
+		"seconds": "{{count}}sn",
+		"label": "Akıl yürütme: {{value}}",
+		"title": "Akıl yürütme",
+		"loading": "Yükleniyor…",
+		"unavailable": "Kullanılamıyor",
+		"default": "Varsayılan",
+		"off": "Kapalı",
+		"on": "Açık",
+		"none": "Yok",
+		"help": "Varsayılan, profil ayarını kullanır. Kapalı, isteğe bağlı akıl yürütmeyi devre dışı bırakır veya atlar. Yok, sağlayıcının açık none düzeyini gönderir.",
+		"budget": "{{tokens}} düşünme jetonu",
+		"advanced": "Gelişmiş profil ayarları",
+		"custom": "Özel akıl yürütme belirteci",
+		"customHelp": "Yalnızca bu barındırılan modelin kabul ettiği bir belirteci kullanın: 1–32 küçük harf, rakam, alt çizgi veya kısa çizgi. Model ailesi desteği varsayılmaz.",
+		"apply": "Uygula",
+		"invalidCustom": "Geçersiz belirteç. Akıl yürütme atlanacak.",
+		"saving": "Kaydediliyor…",
+		"nextStep": "Sonraki adım",
+		"current": "Geçerli istek: {{value}}",
+		"fallback": "{{requested}} istendi; {{effective}} kullanılıyor.",
+		"saveFailed": "Akıl yürütme kaydedilemedi. Kabul edilen seçiminiz değişmedi.",
+		"unavailableHelp": "Bu modelde doğrulanmış ayarlanabilir akıl yürütme özelliği yok.",
+		"profileDefault": "Profil varsayılanı / gelişmiş akıl yürütme. Görev denetimi, profili kaydetmeden bunu geçersiz kılabilir.",
+		"scheduleHelp": "Zamanlama değişiklikleri gelecekteki çalıştırmaları etkiler; kuyruğa alınan çalıştırmalar anlık görüntülerini korur.",
+		"reasons": {
+			"unsupported": "İstenen değer bu model tarafından desteklenmiyor.",
+			"unavailable": "Akıl yürütme özellikleri bu model için kullanılamıyor.",
+			"required": "Bu model akıl yürütme gerektiriyor.",
+			"budget-only": "Bu model adlandırılmış çaba düzeyleri yerine token bütçesi kullanıyor.",
+			"invalid-custom": "Özel belirteç geçersiz."
+		}
 	},
 	"contextManagement": {
 		"tokens": "token",

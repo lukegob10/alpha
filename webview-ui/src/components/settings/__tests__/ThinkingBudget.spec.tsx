@@ -6,6 +6,10 @@ import type { ModelInfo } from "@alpha-code/types"
 
 import { ThinkingBudget } from "../ThinkingBudget"
 
+vi.mock("@/i18n/TranslationContext", () => ({
+	useAppTranslation: () => ({ t: (key: string) => key }),
+}))
+
 vi.mock("@/components/ui", () => ({
 	Slider: ({ value, onValueChange, min, max, step }: any) => (
 		<input
@@ -235,6 +239,22 @@ describe("ThinkingBudget", () => {
 			contextWindow: 200000,
 			supportsPromptCache: true,
 		}
+
+		it("hides named effort controls when task reasoning owns the selection", () => {
+			const setApiConfigurationField = vi.fn()
+
+			render(
+				<ThinkingBudget
+					{...defaultProps}
+					setApiConfigurationField={setApiConfigurationField}
+					modelInfo={reasoningEffortModelInfo}
+					showReasoningEffort={false}
+				/>,
+			)
+
+			expect(screen.queryByTestId("reasoning-effort")).not.toBeInTheDocument()
+			expect(setApiConfigurationField).not.toHaveBeenCalled()
+		})
 
 		it("should show 'disable' option when supportsReasoningEffort is boolean true", () => {
 			render(<ThinkingBudget {...defaultProps} modelInfo={reasoningEffortModelInfo} />)

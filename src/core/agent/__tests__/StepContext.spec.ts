@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import type { ApiHandlerCreateMessageMetadata } from "../../../api"
 import type { ModelInfo } from "@alpha-code/types"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
+import { getDesignHandoffSource } from "../../prompts/sections/design-handoff"
 import { createStepContext, digestValue, toStepContextMetadata, type StepContext } from "../StepContext"
 
 const modelInfo = { contextWindow: 32_000 } as ModelInfo
@@ -161,5 +162,25 @@ describe("StepContext", () => {
 		expect(toStepContextMetadata(retry).stepContextId).toBe("context-1")
 		expect(toStepContextMetadata(retry).stepContextRetryAttempt).toBe(1)
 		expect(changed.instructions.systemPrompt).not.toBe(retry.instructions.systemPrompt)
+	})
+
+	it("captures design handoff provenance as immutable instruction metadata", () => {
+		const base = makeContext()
+		const source = getDesignHandoffSource(
+			{
+				markdown: "# Plan",
+				sourceTaskId: "task-1",
+				digest: "a".repeat(64),
+				updatedAt: 1,
+			},
+			"task-1",
+		)
+		const input = structuredClone(base) as any
+		input.instructions.sources = [source!]
+		const context = createStepContext(input)
+
+		expect(context.instructions.sources).toEqual([source])
+		expect(Object.isFrozen(context.instructions.sources)).toBe(true)
+		expect(toStepContextMetadata(context).stepContextInstructionDigest).toBe(digestValue([source]))
 	})
 })

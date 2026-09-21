@@ -28,7 +28,13 @@ describe("outside workspace execution", () => {
 		await fs.rm(directory, { recursive: true, force: true })
 	})
 
-	function harness(name: string, args: Record<string, unknown>, allowOutside = true, humanApproves = true) {
+	function harness(
+		name: string,
+		args: Record<string, unknown>,
+		allowOutside = true,
+		humanApproves = true,
+		approvalMode?: "ask" | "auto" | "bypass",
+	) {
 		const prompt = vi.fn(async () => humanApproves)
 		const provider = {
 			getState: async () => ({}),
@@ -50,15 +56,17 @@ describe("outside workspace execution", () => {
 						text,
 						isProtected,
 						requiresExplicitApproval,
-						state: {
-							autoApprovalEnabled: true,
-							alwaysAllowReadOnly: true,
-							alwaysAllowReadOnlyOutsideWorkspace: true,
-							alwaysAllowWrite: true,
-							alwaysAllowWriteOutsideWorkspace: true,
-							alwaysAllowExecute: true,
-							allowedCommands: ["*"],
-						},
+						state: approvalMode
+							? { approvalMode }
+							: {
+									autoApprovalEnabled: true,
+									alwaysAllowReadOnly: true,
+									alwaysAllowReadOnlyOutsideWorkspace: true,
+									alwaysAllowWrite: true,
+									alwaysAllowWriteOutsideWorkspace: true,
+									alwaysAllowExecute: true,
+									allowedCommands: ["*"],
+								},
 					})
 					return {
 						response:
@@ -194,6 +202,26 @@ describe("outside workspace execution", () => {
 		)
 	})
 
+	it("asks for a true-outside mutating command in Auto and can approve it in Bypass", async () => {
+		const auto = harness("execute_command", { command: "echo changed > ../outside/file.txt" }, true, false, "auto")
+		const autoEffect = vi.fn()
+		expect((await auto.run(inspection("execute_command", autoEffect))).results[0].status).toBe("denied")
+		expect(auto.prompt).toHaveBeenCalledOnce()
+		expect(autoEffect).not.toHaveBeenCalled()
+
+		const bypass = harness(
+			"execute_command",
+			{ command: "echo changed > ../outside/file.txt" },
+			true,
+			false,
+			"bypass",
+		)
+		const bypassEffect = vi.fn()
+		expect((await bypass.run(inspection("execute_command", bypassEffect))).results[0].status).toBe("success")
+		expect(bypass.prompt).not.toHaveBeenCalled()
+		expect(bypassEffect).toHaveBeenCalledOnce()
+	})
+
 	it("does not offer outside-command approval when inherited policy forbids it", async () => {
 		const fixture = harness("execute_command", { command: "rm ../outside/file.txt" }, false)
 		const effect = vi.fn()
@@ -251,8 +279,8 @@ describe("outside workspace execution", () => {
 			}
 		})
 		expect(
-			(await fixture.run(new ToolRegistry({ nativeTools: getNativeTools({ includeApplyPatch: true }) }))).results[0]
-				.status,
+			(await fixture.run(new ToolRegistry({ nativeTools: getNativeTools({ includeApplyPatch: true }) })))
+				.results[0].status,
 		).toBe("success")
 		expect(fixture.prompt).toHaveBeenCalledOnce()
 		expect(fixture.provider.recordPrimaryMutation).toHaveBeenCalledWith(

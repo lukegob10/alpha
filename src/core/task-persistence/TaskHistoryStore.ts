@@ -65,6 +65,9 @@ export class TaskHistoryStore {
 	/** Periodic reconciliation interval in milliseconds. */
 	private static readonly RECONCILE_INTERVAL_MS = 5 * 60 * 1000
 
+	/** Bound startup reconciliation reads so large histories do not serialize every file read. */
+	private static readonly RECONCILE_READ_CONCURRENCY = 32
+
 	constructor(globalStoragePath: string, options?: TaskHistoryStoreOptions) {
 		this.globalStoragePath = globalStoragePath
 		this.onWrite = options?.onWrite
@@ -267,16 +270,27 @@ export class TaskHistoryStore {
 
 			// Per-task files are authoritative. Refresh existing cache entries too:
 			// the index can lag a successful per-task write after a crash, and other
-			// extension instances update these files without changing task IDs.
-			for (const taskId of onDiskIds) {
-				try {
-					const item = await this.readTaskFile(taskId)
+			// extension instances update these files without changing task IDs. Read
+			// bounded batches in parallel so startup does not serialize every file read.
+			const taskIds = Array.from(onDiskIds)
+			for (let offset = 0; offset < taskIds.length; offset += TaskHistoryStore.RECONCILE_READ_CONCURRENCY) {
+				const batch = taskIds.slice(offset, offset + TaskHistoryStore.RECONCILE_READ_CONCURRENCY)
+				const entries = await Promise.all(
+					batch.map(async (taskId) => {
+						try {
+							return { taskId, item: await this.readTaskFile(taskId) }
+						} catch {
+							// Corrupted or missing file, keep the last known-good cache entry.
+							return { taskId, item: null }
+						}
+					}),
+				)
+
+				for (const { taskId, item } of entries) {
 					if (item && !deepEqual(this.cache.get(taskId), item)) {
 						this.cache.set(taskId, item)
 						changed = true
 					}
-				} catch {
-					// Corrupted or missing file, keep the last known-good cache entry.
 				}
 			}
 
