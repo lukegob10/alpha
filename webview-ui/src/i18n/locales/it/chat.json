@@ -170,6 +170,7 @@
 		"cancelled": "Richiesta API annullata",
 		"streamingFailed": "Streaming API fallito",
 		"rateLimitWait": "Limitazione della frequenza",
+		"completionWait": "In attesa prima di completare l'attività",
 		"errorTitle": "Errore del fornitore {{code}}",
 		"errorMessage": {
 			"400": "Il provider non ha potuto elaborare la richiesta come presentata. Interrompi l'attività e prova un approccio diverso.",

@@ -192,6 +192,7 @@
 		"cancelled": "Permintaan API Dibatalkan",
 		"streamingFailed": "Streaming API Gagal",
 		"rateLimitWait": "Pembatasan rate",
+		"completionWait": "Menunggu sebelum tugas dapat diselesaikan",
 		"errorTitle": "Kesalahan Penyedia {{code}}",
 		"errorMessage": {
 			"400": "Penyedia tidak dapat memproses permintaan seperti yang dibuat. Hentikan tugas dan coba pendekatan berbeda.",

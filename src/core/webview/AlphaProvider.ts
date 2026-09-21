@@ -4208,6 +4208,11 @@ export class AlphaProvider
 		void this.postStateToWebviewWithoutTaskHistory()
 	}
 
+	/** Keep the task Running so cancel still works, but name the completion-gate wait. */
+	public markCompletionWait(taskId: string, reasonCode?: string): void {
+		this.markTaskLifecycle(taskId, TaskLifecycleState.Running, reasonCode)
+	}
+
 	private queueTaskLifecycleHistoryStatus(
 		taskId: string,
 		lifecycle: TaskLifecycleState,

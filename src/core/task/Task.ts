@@ -4970,13 +4970,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		try {
 			await this.pendingCommandVerification
 			const runtimeRevision = this.completionRuntimeRevision
-			const outstanding = this.workContext?.plan
-				? await getOutstandingAcceptanceChecks(
-						this.workContext,
-						this.cwd,
-						(file) => this.alphaIgnoreController?.validateAccess(file) ?? true,
-					)
-				: []
+			const outstanding =
+				this.workContext?.plan && !this.isLookupStyleCompletionTurn()
+					? await getOutstandingAcceptanceChecks(
+							this.workContext,
+							this.cwd,
+							(file) => this.alphaIgnoreController?.validateAccess(file) ?? true,
+						)
+					: []
 			const decision = await provider.getParentCompletionDecision(this)
 			// Commands and evidence publication can start while the durable snapshot is read.
 			const lateRuntimeDecision = this.getPendingCompletionRuntimeDecision()
@@ -5148,6 +5149,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let orphanReceiptTimedOut = false
 		let timedOut = false
 		let waited = false
+		let publishedWait = false
 		let lastDecision: CompletionGateDecision | undefined
 		try {
 			while (true) {
@@ -5163,6 +5165,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 				if (lastDecision.classification !== "waiting") return lastDecision
 				waited = true
+				if (!publishedWait) {
+					await this.publishCompletionWaitStatus(lastDecision, true)
+					publishedWait = true
+				}
 				if (lastDecision.reasonCode === "receipt_pending") {
 					orphanReceiptDeadline ??= Date.now() + 30_000
 					if (Date.now() >= orphanReceiptDeadline) {
@@ -5202,7 +5208,31 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		} finally {
 			lease.dispose()
+			if (publishedWait) await this.publishCompletionWaitStatus(undefined, false)
 			if (waited) this.getMutableCompletionStageMetrics().runtimeWaitMs += Math.max(0, Date.now() - startedAt)
+		}
+	}
+
+	private async publishCompletionWaitStatus(
+		decision: CompletionGateDecision | undefined,
+		active: boolean,
+	): Promise<void> {
+		try {
+			this.providerRef.deref()?.markCompletionWait?.(this.taskId, active ? decision?.reasonCode : undefined)
+			if (typeof this.say !== "function" || !Array.isArray(this.clineMessages)) return
+			if (!active) {
+				await this.say("api_req_rate_limit_wait", undefined, undefined, false)
+				return
+			}
+			if (decision?.classification !== "waiting") return
+			await this.say(
+				"api_req_rate_limit_wait",
+				JSON.stringify({ kind: "completion", reason: decision.reasonCode ?? "command_running" }),
+				undefined,
+				true,
+			)
+		} catch {
+			// Chat/lifecycle wait status is best-effort and must not change the gate decision.
 		}
 	}
 	private getMutableCompletionStageMetrics(): CompletionStageMetrics {

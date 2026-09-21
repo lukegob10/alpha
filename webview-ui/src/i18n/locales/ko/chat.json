@@ -167,6 +167,7 @@
 		"cancelled": "API 요청 취소됨",
 		"streamingFailed": "API 스트리밍 실패",
 		"rateLimitWait": "속도 제한",
+		"completionWait": "작업을 완료하기 전에 대기 중",
 		"errorTitle": "공급자 오류 {{code}}",
 		"errorMessage": {
 			"400": "공급자가 요청을 처리할 수 없습니다. 작업을 중지하고 다른 방법을 시도하세요.",

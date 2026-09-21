@@ -1381,17 +1381,21 @@ const ChatRowContentInner = ({
 				case "api_req_rate_limit_wait": {
 					const isWaiting = message.partial === true
 
-					const waitSeconds = (() => {
-						if (!message.text) return undefined
+					const parsed = (() => {
+						if (!message.text) return {} as { seconds?: number; kind?: string }
 						try {
-							const data = JSON.parse(message.text)
-							return typeof data.seconds === "number" ? data.seconds : undefined
+							return JSON.parse(message.text) as { seconds?: number; kind?: string }
 						} catch {
-							return undefined
+							return {}
 						}
 					})()
+					const waitSeconds = typeof parsed.seconds === "number" ? parsed.seconds : undefined
+					const isCompletionWait = parsed.kind === "completion"
 
-					return isWaiting && waitSeconds !== undefined ? (
+					if (!isWaiting) return null
+					if (!isCompletionWait && waitSeconds === undefined) return null
+
+					return (
 						<div
 							className={`group text-sm transition-opacity opacity-100`}
 							style={{
@@ -1401,11 +1405,21 @@ const ChatRowContentInner = ({
 							}}>
 							<div style={{ display: "flex", alignItems: "center", gap: "10px", flexGrow: 1 }}>
 								<ProgressIndicator />
-								<span style={{ color: normalColor }}>{t("chat:apiRequest.rateLimitWait")}</span>
+								<span style={{ color: normalColor }}>
+									{t(
+										isCompletionWait
+											? "chat:apiRequest.completionWait"
+											: "chat:apiRequest.rateLimitWait",
+									)}
+								</span>
 							</div>
-							<span className="text-xs font-light text-vscode-descriptionForeground">{waitSeconds}s</span>
+							{waitSeconds !== undefined && !isCompletionWait ? (
+								<span className="text-xs font-light text-vscode-descriptionForeground">
+									{waitSeconds}s
+								</span>
+							) : null}
 						</div>
-					) : null
+					)
 				}
 				case "api_req_finished":
 					return null // we should never see this message type

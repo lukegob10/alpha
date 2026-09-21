@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { classifyRequestWorkClass, extractUserRequestText } from "../requestWorkClass"
-import { resolveLookupToolNames } from "../lookupToolCatalog"
+import { resolveLookupToolNames, toolNamesReferencedInHistory } from "../lookupToolCatalog"
 
 describe("classifyRequestWorkClass", () => {
 	it("classifies interrogative location and existence questions as lookup", () => {
@@ -104,5 +104,23 @@ describe("extractUserRequestText", () => {
 		).toBe("hello")
 		expect(extractUserRequestText([], "Where is X?")).toBe("Where is X?")
 		expect(extractUserRequestText([])).toBeUndefined()
+	})
+})
+
+describe("toolNamesReferencedInHistory", () => {
+	it("collects assistant tool_use names and ignores user text", () => {
+		expect(
+			toolNamesReferencedInHistory([
+				{ role: "user", content: "Where is retryLimit defined?" },
+				{
+					role: "assistant",
+					content: [
+						{ type: "text", text: "looking" },
+						{ type: "tool_use", id: "1", name: "spawn_agent", input: {} },
+						{ type: "tool_use", id: "2", name: "search_files", input: {} },
+					],
+				},
+			]),
+		).toEqual(["search_files", "spawn_agent"])
 	})
 })

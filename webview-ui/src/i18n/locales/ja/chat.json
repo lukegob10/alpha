@@ -167,6 +167,7 @@
 		"cancelled": "APIリクエストキャンセル",
 		"streamingFailed": "APIストリーミング失敗",
 		"rateLimitWait": "レート制限中",
+		"completionWait": "タスクを完了する前に待機しています",
 		"errorTitle": "プロバイダーエラー {{code}}",
 		"errorMessage": {
 			"400": "プロバイダーはリクエストをそのまま処理できませんでした。タスクを停止して別のアプローチを試してください。",

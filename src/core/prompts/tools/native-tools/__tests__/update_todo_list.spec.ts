@@ -32,7 +32,7 @@ describe("update_todo_list native tool", () => {
 		expect(updateTodoList.function.parameters.additionalProperties).toBe(false)
 	})
 
-	it("lets native calls omit work_plan while OpenAI strict conversion requires it as null", () => {
+	it("lets native calls omit work_plan; OpenAI strict still lists the nullable property", () => {
 		const strict = toOpenAiStrictToolSchema(updateTodoList.function.parameters) as {
 			required: string[]
 			properties: { work_plan: { type: unknown } }

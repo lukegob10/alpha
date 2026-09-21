@@ -114,7 +114,7 @@ describe("lookup-class completion gate", () => {
 		})
 	})
 
-	it("still blocks lookup completion when declared acceptance checks are outstanding", async () => {
+	it("does not block lookup completion on leftover work-plan checks from an earlier request", async () => {
 		const task = taskWith({
 			history: lookupHistory,
 			commands: [command()],
@@ -122,9 +122,9 @@ describe("lookup-class completion gate", () => {
 			allowed: true,
 		})
 		expect(await task.getCompletionGateDecision()).toMatchObject({
-			allowed: false,
-			classification: "repairable",
-			reasonCode: "verification_missing",
+			allowed: true,
+			classification: "ready",
+			reasonCode: "ready",
 		})
 	})
 

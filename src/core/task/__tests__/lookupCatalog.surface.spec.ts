@@ -70,6 +70,44 @@ describe("lookup catalog preset", () => {
 		expect(namesOf(result.tools)).toEqual(expect.arrayContaining(["spawn_agent", "write_to_file"]))
 	})
 
+	it("omits unused workflow schemas on Vertex lookup turns", async () => {
+		const result = await buildNativeToolsArrayWithRestrictions(
+			options({
+				apiConfiguration: { apiProvider: "vertex" },
+				includeAllToolsWithRestrictions: true,
+				userRequestText: "Where is retryLimit defined?",
+			}),
+		)
+		expect(namesOf(result.tools)).toEqual(
+			["ask_followup_question", "codebase_search", "list_files", "read_file", "search_files", "shell"].sort(),
+		)
+		expect([...(result.allowedFunctionNames ?? [])].sort()).toEqual(
+			["ask_followup_question", "codebase_search", "list_files", "read_file", "search_files", "shell"].sort(),
+		)
+		expect(result.surface?.isCallable("spawn_agent")).toBe(false)
+		expect(namesOf(result.tools)).not.toContain("spawn_agent")
+	})
+
+	it("keeps historical Vertex declarations visible but not callable on a later lookup", async () => {
+		const result = await buildNativeToolsArrayWithRestrictions(
+			options({
+				apiConfiguration: { apiProvider: "vertex" },
+				includeAllToolsWithRestrictions: true,
+				userRequestText: "Where is retryLimit defined?",
+				discoveryHistory: [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "call-1", name: "spawn_agent", input: {} }],
+					},
+				],
+			}),
+		)
+		expect(namesOf(result.tools)).toContain("spawn_agent")
+		expect(result.allowedFunctionNames).not.toContain("spawn_agent")
+		expect(result.surface?.isCallable("spawn_agent")).toBe(false)
+		expect(result.surface?.isCallable("search_files")).toBe(true)
+	})
+
 	it("widens at a later step when the captured user text becomes an implementation request", async () => {
 		const cache = new TaskToolCatalogCache()
 		const lookup = await buildNativeToolsArrayWithRestrictions(
