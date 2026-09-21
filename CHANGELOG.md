@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0.1
+
+### Patch Changes
+
+- Reduce redundant search, skill, todo, and mutation-shaped completion work for ordinary lookup and Q&A turns.
+- Add deterministic, privacy-safe paired reporting for lookup-efficiency measurements.
+
 ## 3.0.0
 
 ### Major Changes
