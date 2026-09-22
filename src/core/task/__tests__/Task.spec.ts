@@ -2837,8 +2837,8 @@ describe("Alpha", () => {
 			}
 
 			vi.spyOn(task.api, "createMessage").mockReturnValue(neverRespondingStream())
-			const nextChunk = task.attemptApiRequest(0).next()
-			await vi.waitFor(() => expect(task.currentRequestAbortController).toBeDefined())
+			const nextChunk = task.attemptApiRequest(0, { ownerHandlesRetry: true }).next()
+			await vi.waitFor(() => expect(task.api.createMessage).toHaveBeenCalledOnce())
 			const oldController = task.currentRequestAbortController!
 			const newerController = new AbortController()
 			task.currentRequestAbortController = newerController

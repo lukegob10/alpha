@@ -116,6 +116,7 @@ const makeProviderHarness = (
 			historyItems.set(item.id, item)
 			return [...historyItems.values()]
 		}),
+		postTaskSessionStateToWebview: vi.fn().mockResolvedValue(undefined),
 		postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
 		log: vi.fn(),
 	}) as AlphaProvider

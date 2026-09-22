@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.2
+
+### Patch Changes
+
+- Improve task lifecycle correctness, extension responsiveness, release evaluation coverage, and English-only localization maintenance.
+
 ## 3.0.1
 
 ### Patch Changes
