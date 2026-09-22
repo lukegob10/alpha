@@ -53,6 +53,30 @@ export interface WorkflowHost {
 	}>
 }
 
+export async function aggregateTaskUsage(
+	host: WorkflowHost,
+	taskIds: string[],
+): Promise<NonNullable<WorkflowResult["usage"]>> {
+	let inputTokens: number | null = 0
+	let outputTokens: number | null = 0
+	let cost: number | null = 0
+	for (const taskId of taskIds) {
+		if (typeof host.readProblemUsage !== "function") break
+		try {
+			const usage = await host.readProblemUsage(taskId)
+			inputTokens = inputTokens === null || usage.inputTokens === null ? null : inputTokens + usage.inputTokens
+			outputTokens =
+				outputTokens === null || usage.outputTokens === null ? null : outputTokens + usage.outputTokens
+			cost = cost === null || usage.cost === null ? null : cost + usage.cost
+		} catch {
+			inputTokens = null
+			outputTokens = null
+			cost = null
+		}
+	}
+	return { inputTokens, outputTokens, cost }
+}
+
 export interface WorkflowCheckpoint {
 	schemaVersion: 1
 	scenarioId: "reload-continuation"
@@ -300,13 +324,8 @@ export async function runWorkflowScenario(
 		result.failure = { category: failure.category, code: failure.code }
 	} finally {
 		result.requestsUsed = host.requestsUsed()
-		const taskId = options.scenarioId === "problem-solving-attempt" ? result.taskIds[0] : undefined
-		if (taskId && host.readProblemUsage) {
-			try {
-				result.usage = await host.readProblemUsage(taskId)
-			} catch {
-				result.usage = { inputTokens: null, outputTokens: null, cost: null }
-			}
+		if (typeof host.readProblemUsage === "function" && result.taskIds.length > 0) {
+			result.usage = await aggregateTaskUsage(host, result.taskIds)
 		}
 	}
 	return result

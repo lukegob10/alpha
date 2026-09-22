@@ -155,6 +155,20 @@ test("projects verified metadata and rejects failed checks behind a passed claim
 	assert.equal(projected.result.status, "passed")
 	assert.equal(projected.result.actualHostVersion, "1.122.1")
 	assert.equal(projected.result.usage.requests, 2)
+	assert.equal(projected.result.usage.inputTokens, null)
+	assert.equal(projected.result.usage.outputTokens, null)
+	assert.equal(projected.result.usage.cost, null)
+	const withUsage = projectWorkflowResult(
+		{
+			...workflow(),
+			usage: { inputTokens: 11, outputTokens: 7, cost: 0.25 },
+		},
+		request,
+		"run",
+	)
+	assert.equal(withUsage.result.usage.inputTokens, 11)
+	assert.equal(withUsage.result.usage.outputTokens, 7)
+	assert.equal(withUsage.result.usage.cost, 0.25)
 	const invalid = { ...workflow(), checks: [{ name: "file-effect", passed: false }] }
 	assert.equal(projectWorkflowResult(invalid, request, "run").result.failure?.class, "assertion")
 	assert.throws(() => projectWorkflowResult({ ...workflow(), taskIds: [] }, request, "run"))

@@ -786,7 +786,7 @@ describe("AlphaProvider", () => {
 		await expect(provider.focusTask(firstTask.taskId)).resolves.toBe(true)
 
 		expect(provider.getActiveTask()).toBe(firstTask)
-		expect(postTaskState).toHaveBeenCalledWith({ clearManagedAgentTree: true })
+		expect(postTaskState).toHaveBeenCalledWith({ clearManagedAgentTree: true, includeTranscript: false })
 		expect(postBackgroundState).toHaveBeenCalledOnce()
 		expect(postTranscriptState).not.toHaveBeenCalled()
 
@@ -1729,6 +1729,27 @@ describe("AlphaProvider", () => {
 		expect(activate).not.toHaveBeenCalled()
 		expect(provider.contextProxy.getValue("currentApiConfigName")).toBe("Coding")
 		expect(provider.contextProxy.getValue("apiProvider")).toBe("anthropic")
+	})
+
+	test("a background task does not resend the visible transcript", async () => {
+		const parent = Object.assign(new Task(defaultTaskOptions), { taskId: "visible-parent" })
+		parent.clineMessages = [
+			{ ts: 1, type: "say", say: "text", text: "VISIBLE-PARENT-TRANSCRIPT" },
+		] as typeof parent.clineMessages
+		await provider.addTaskToStack(parent)
+		await provider.resolveWebviewView(mockWebviewView)
+		mockPostMessage.mockClear()
+		const fullState = vi.spyOn(provider, "postTaskStateToWebview")
+
+		await provider.createTask("Background review", undefined, undefined, {
+			preserveExisting: true,
+			background: true,
+			startTask: false,
+		})
+
+		expect(fullState).not.toHaveBeenCalled()
+		expect(provider.getCurrentTask()?.taskId).toBe("visible-parent")
+		expect(JSON.stringify(mockPostMessage.mock.calls)).not.toContain("VISIBLE-PARENT-TRANSCRIPT")
 	})
 
 	test("returns a skill catalog for the scheduled workspace and mode", async () => {
@@ -4338,6 +4359,158 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 
 			expect(provider.getTaskWithId).toHaveBeenCalledWith("cold-task", { includeApiConversationHistory: false })
 			expect(post).toHaveBeenCalledWith({ type: "taskOpenResult", taskId: "cold-task", success: true })
+		})
+
+		it("acknowledges a large transcript switch before the transcript is delivered", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			const parent = Object.assign(new Task(defaultTaskOptions), { taskId: "parent-task" })
+			const child = Object.assign(new Task(defaultTaskOptions), { taskId: "child-task" })
+			const transcript = Array.from({ length: 200 }, (_, index) => ({
+				ts: index + 1,
+				type: "say" as const,
+				say: "text" as const,
+				text: `row-${index}-${"x".repeat(2000)}`,
+			}))
+			parent.clineMessages = transcript as typeof parent.clineMessages
+			await provider.addTaskToStack(parent)
+
+			mockPostMessage.mockImplementation(
+				async (message: { type?: string; state?: { clineMessages?: unknown[] } }) => {
+					if (message?.type === "state" && (message.state?.clineMessages?.length ?? 0) > 0) {
+						structuredClone(message.state?.clineMessages)
+					}
+				},
+			)
+			await provider.postTaskStateToWebview({ clearManagedAgentTree: true })
+			const beforeBytes = Buffer.byteLength(JSON.stringify(transcript))
+
+			await provider.addTaskToStack(child)
+			mockPostMessage.mockClear()
+			let releaseAck!: () => void
+			const ackHeld = new Promise<void>((resolve) => {
+				releaseAck = resolve
+			})
+			let releaseTranscript!: () => void
+			const transcriptHeld = new Promise<void>((resolve) => {
+				releaseTranscript = resolve
+			})
+			let ackPosted = false
+			let transcriptStarted = false
+			let identityBytes = 0
+			let transcriptBytes = 0
+			mockPostMessage.mockImplementation(
+				async (message: { type?: string; state?: { clineMessages?: unknown[] } }) => {
+					if (message?.type === "taskOpenResult") {
+						ackPosted = true
+						await ackHeld
+						return
+					}
+					const messages = message?.type === "state" ? message.state?.clineMessages : undefined
+					if (!Array.isArray(messages)) return
+					const bytes = Buffer.byteLength(JSON.stringify(message))
+					if (messages.length === 0) identityBytes = bytes
+					if (messages.length > 0) {
+						transcriptBytes = bytes
+						transcriptStarted = true
+						await transcriptHeld
+					}
+				},
+			)
+
+			const opening = provider.showTaskWithId(parent.taskId)
+			await vi.waitFor(() => expect(ackPosted).toBe(true))
+			expect(transcriptStarted).toBe(false)
+			expect(identityBytes).toBeGreaterThan(0)
+			expect(identityBytes).toBeLessThan(beforeBytes)
+
+			releaseAck()
+			await vi.waitFor(() => expect(transcriptStarted).toBe(true))
+			expect(transcriptBytes).toBeGreaterThan(identityBytes)
+			releaseTranscript()
+			await opening
+
+			expect(provider.getCurrentTask()?.taskId).toBe(parent.taskId)
+		})
+
+		it("keeps the latest task when an older navigation finishes later", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			const anchor = Object.assign(new Task(defaultTaskOptions), { taskId: "anchor-task" })
+			const first = Object.assign(new Task(defaultTaskOptions), { taskId: "first-task" })
+			const second = Object.assign(new Task(defaultTaskOptions), { taskId: "second-task" })
+			first.clineMessages = [
+				{ ts: 1, type: "say", say: "text", text: "OLD-TRANSCRIPT-MARKER" },
+			] as typeof first.clineMessages
+			second.clineMessages = [
+				{ ts: 1, type: "say", say: "text", text: "NEW-TRANSCRIPT-MARKER" },
+			] as typeof second.clineMessages
+			await provider.addTaskToStack(first)
+			await provider.addTaskToStack(second)
+			await provider.addTaskToStack(anchor)
+
+			let releaseFirst!: () => void
+			const firstHeld = new Promise<void>((resolve) => {
+				releaseFirst = resolve
+			})
+			mockPostMessage.mockImplementation(
+				async (message: { type?: string; state?: { currentTaskId?: string; clineMessages?: unknown[] } }) => {
+					if (
+						message?.type === "state" &&
+						message.state?.currentTaskId === "first-task" &&
+						(message.state.clineMessages?.length ?? 0) === 0
+					) {
+						await firstHeld
+					}
+				},
+			)
+
+			const openingFirst = provider.showTaskWithId("first-task")
+			await vi.waitFor(() =>
+				expect(mockPostMessage).toHaveBeenCalledWith(
+					expect.objectContaining({
+						type: "state",
+						state: expect.objectContaining({ currentTaskId: "first-task", clineMessages: [] }),
+					}),
+				),
+			)
+			const openingSecond = provider.showTaskWithId("second-task")
+			await vi.waitFor(() => expect(provider.getCurrentTask()?.taskId).toBe("second-task"))
+			releaseFirst()
+			await Promise.all([openingFirst, openingSecond])
+
+			expect(provider.getCurrentTask()?.taskId).toBe("second-task")
+			const posted = JSON.stringify(mockPostMessage.mock.calls.map((call: unknown[]) => call[0]))
+			expect(posted).toContain("NEW-TRANSCRIPT-MARKER")
+			expect(posted).not.toContain("OLD-TRANSCRIPT-MARKER")
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "taskOpenResult",
+				taskId: "first-task",
+				success: false,
+			})
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "taskOpenResult",
+				taskId: "second-task",
+				success: true,
+			})
+		})
+
+		it("does not wait for a global webview command before opening a task", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+			let releaseCondense!: () => void
+			const condense = vi.spyOn(provider, "condenseTaskContext").mockReturnValue(
+				new Promise<void>((resolve) => {
+					releaseCondense = resolve
+				}),
+			)
+			const open = vi.spyOn(provider, "showTaskWithId").mockResolvedValue(undefined)
+
+			const condensing = messageHandler({ type: "condenseTaskContextRequest", text: "task-1" })
+			await vi.waitFor(() => expect(condense).toHaveBeenCalledWith("task-1"))
+			const opening = messageHandler({ type: "showTaskWithId", text: "parent-task" })
+			await vi.waitFor(() => expect(open).toHaveBeenCalledWith("parent-task"))
+
+			releaseCondense()
+			await Promise.all([condensing, opening])
 		})
 	})
 

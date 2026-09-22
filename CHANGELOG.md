@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.3
+
+### Patch Changes
+
+- Reduce task-switch and queued-message latency while preserving transcript ordering, image validation, and release-host behavior.
+
 ## 3.0.2
 
 ### Patch Changes

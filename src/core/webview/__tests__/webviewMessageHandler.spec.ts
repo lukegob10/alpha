@@ -242,12 +242,18 @@ vi.mock("../../../utils/fs")
 vi.mock("../../../utils/path")
 vi.mock("../../../utils/globalContext")
 
-vi.mock("../../mentions/resolveImageMentions", () => ({
-	resolveImageMentions: vi.fn(async ({ text, images }: { text: string; images?: string[] }) => ({
-		text,
-		images: [...(images ?? []), "data:image/png;base64,from-mention"],
-	})),
-}))
+vi.mock("../../mentions/resolveImageMentions", async () => {
+	const actual = await vi.importActual<typeof import("../../mentions/resolveImageMentions")>(
+		"../../mentions/resolveImageMentions",
+	)
+	return {
+		...actual,
+		resolveImageMentions: vi.fn(async ({ text, images }: { text: string; images?: string[] }) => ({
+			text,
+			images: [...(images ?? []), "data:image/png;base64,from-mention"],
+		})),
+	}
+})
 
 import { resolveImageMentions } from "../../mentions/resolveImageMentions"
 
@@ -762,6 +768,121 @@ describe("webviewMessageHandler - queued message steering", () => {
 				status: "accepted",
 			},
 		})
+	})
+
+	it("admits plain text without waiting for provider state", async () => {
+		const queued: string[] = []
+		vi.mocked(mockAlphaProvider.queueMessageForTask).mockImplementation((_taskId, text) => {
+			queued.push(text)
+			return true
+		})
+		let stateObserved = false
+		vi.mocked(mockAlphaProvider.getState).mockImplementation(
+			() =>
+				new Promise(() => {
+					stateObserved = true
+				}),
+		)
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "queueMessage",
+			text: "plain guidance @/notes.md",
+			taskId: "task-1",
+			requestId: "queue-plain",
+		})
+
+		expect(stateObserved).toBe(false)
+		expect(mockAlphaProvider.getState).not.toHaveBeenCalled()
+		expect(queued).toEqual(["plain guidance @/notes.md"])
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chatCommandResult",
+				requestId: "queue-plain",
+				chatCommandResult: expect.objectContaining({ status: "accepted" }),
+			}),
+		)
+	})
+
+	it("keeps rapidly submitted plain-text messages ordered without dropping or duplicating them", async () => {
+		const queued: string[] = []
+		vi.mocked(mockAlphaProvider.queueMessageForTask).mockImplementation((_taskId, text) => {
+			queued.push(text)
+			return true
+		})
+		vi.mocked(mockAlphaProvider.getState).mockImplementation(() => new Promise(() => undefined))
+		const texts = ["first", "second", "third"]
+
+		await Promise.all(
+			texts.map((text, index) =>
+				webviewMessageHandler(mockAlphaProvider, {
+					type: "queueMessage",
+					text,
+					taskId: "task-1",
+					requestId: `rapid-${index}`,
+				}),
+			),
+		)
+
+		expect(queued).toEqual(texts)
+		expect(mockAlphaProvider.getState).not.toHaveBeenCalled()
+		const acks = vi
+			.mocked(mockAlphaProvider.postMessageToWebview)
+			.mock.calls.map((call) => call[0])
+			.filter((message) => message.type === "chatCommandResult")
+		expect(acks.map((message) => message.requestId)).toEqual(["rapid-0", "rapid-1", "rapid-2"])
+		expect(new Set(acks.map((message) => message.requestId)).size).toBe(3)
+	})
+
+	it("still resolves image mentions and explicit images through provider limits", async () => {
+		const queued: Array<{ text: string; images?: string[] }> = []
+		vi.mocked(mockAlphaProvider.queueMessageForTask).mockImplementation((_taskId, text, images) => {
+			queued.push({ text, images })
+			return true
+		})
+		let releaseState!: (state: { maxImageFileSize: number; maxTotalImageSize: number }) => void
+		vi.mocked(mockAlphaProvider.getState).mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					releaseState = (state) => resolve(state as never)
+				}),
+		)
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({ cwd: "/mock/workspace" } as any)
+
+		const mentioned = webviewMessageHandler(mockAlphaProvider, {
+			type: "queueMessage",
+			text: "look at @/screen.png",
+			taskId: "task-1",
+			requestId: "queue-mention",
+		})
+		await vi.waitFor(() => expect(mockAlphaProvider.getState).toHaveBeenCalled())
+		expect(mockAlphaProvider.queueMessageForTask).not.toHaveBeenCalled()
+		releaseState({ maxImageFileSize: 3, maxTotalImageSize: 9 })
+		await mentioned
+
+		expect(resolveImageMentions).toHaveBeenCalledWith(
+			expect.objectContaining({ maxImageFileSize: 3, maxTotalImageSize: 9, text: "look at @/screen.png" }),
+		)
+		expect(queued[0]?.images).toContain("data:image/png;base64,from-mention")
+
+		vi.mocked(mockAlphaProvider.getState).mockResolvedValue({
+			maxImageFileSize: 4,
+			maxTotalImageSize: 8,
+		} as never)
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "queueMessage",
+			text: "attached only",
+			images: ["data:image/png;base64,explicit"],
+			taskId: "task-1",
+			requestId: "queue-explicit",
+		})
+		expect(mockAlphaProvider.getState).toHaveBeenCalled()
+		expect(resolveImageMentions).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				maxImageFileSize: 4,
+				maxTotalImageSize: 8,
+				images: ["data:image/png;base64,explicit"],
+			}),
+		)
+		expect(queued.map((entry) => entry.text)).toEqual(["look at @/screen.png", "attached only"])
 	})
 
 	it("does not queue or steer messages into terminal tasks", async () => {

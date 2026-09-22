@@ -985,6 +985,72 @@ describe("mergeExtensionState", () => {
 			expect(result.clineMessagesSeq).toBe(5)
 		})
 
+		it("drops a transcript from an older navigation even when its message sequence is newer", () => {
+			const currentMessages = [makeMessage(2, "new task")]
+			const previous: ExtensionState = {
+				...baseState,
+				currentTaskId: "new-task",
+				taskStateSeq: 6,
+				clineMessages: currentMessages,
+				clineMessagesSeq: 8,
+			}
+
+			const result = mergeExtensionState(previous, {
+				currentTaskId: "old-task",
+				taskStateSeq: 5,
+				clineMessages: [makeMessage(1, "old transcript")],
+				clineMessagesSeq: 9,
+			})
+
+			expect(result.currentTaskId).toBe("new-task")
+			expect(result.clineMessages).toBe(currentMessages)
+			expect(result.clineMessagesSeq).toBe(8)
+		})
+
+		it("accepts the transcript that belongs to the navigation already on screen", () => {
+			const transcript = [makeMessage(1, "loaded")]
+			const previous: ExtensionState = {
+				...baseState,
+				currentTaskId: "task-1",
+				taskStateSeq: 6,
+				clineMessages: [],
+				clineMessagesSeq: 8,
+			}
+
+			const result = mergeExtensionState(previous, {
+				currentTaskId: "task-1",
+				currentView: { type: "task", taskId: "task-1" },
+				taskStateSeq: 6,
+				clineMessages: transcript,
+				clineMessagesSeq: 9,
+			})
+
+			expect(result.currentTaskId).toBe("task-1")
+			expect(result.clineMessages).toBe(transcript)
+			expect(result.clineMessagesSeq).toBe(9)
+		})
+
+		it("keeps the visible transcript when a background session patch arrives", () => {
+			const messages = [makeMessage(1, "parent")]
+			const previous: ExtensionState = {
+				...baseState,
+				currentTaskId: "parent",
+				taskStateSeq: 4,
+				clineMessages: messages,
+				clineMessagesSeq: 4,
+			}
+
+			const result = mergeExtensionState(previous, {
+				currentTaskId: "parent",
+				taskStateSeq: 5,
+				liveTaskIds: ["parent", "child"],
+			})
+
+			expect(result.currentTaskId).toBe("parent")
+			expect(result.clineMessages).toBe(messages)
+			expect(result.taskStateSeq).toBe(5)
+		})
+
 		it("accepts clineMessages when seq is strictly greater", () => {
 			const oldMessages = [makeMessage(1, "hello")]
 			const newMessages = [makeMessage(1, "hello"), makeMessage(2, "world")]

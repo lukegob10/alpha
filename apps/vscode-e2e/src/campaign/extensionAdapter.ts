@@ -132,7 +132,12 @@ export function projectWorkflowResult(
 	}
 	const projection = validateScenarioResult({
 		status: checkpointed ? "passed" : candidate.status,
-		usage: { requests: candidate.requestsUsed, inputTokens: null, outputTokens: null, cost: null },
+		usage: {
+			requests: candidate.requestsUsed,
+			inputTokens: candidate.usage?.inputTokens ?? null,
+			outputTokens: candidate.usage?.outputTokens ?? null,
+			cost: candidate.usage?.cost ?? null,
+		},
 		actualHostVersion: candidate.hostVersion,
 		...(candidate.model.id ? { model: { id: candidate.model.id, effort: candidate.model.reasoningEffort } } : {}),
 		taskIds: candidate.taskIds,
@@ -237,6 +242,15 @@ export function createExtensionCampaignOperations(
 			contexts.set(request.attemptId, context)
 			await fs.mkdir(context.workspace)
 			let requestsUsed = 0
+			let seenUsage = false
+			let inputTokens: number | null = null
+			let outputTokens: number | null = null
+			let cost: number | null = null
+			const mergeUsage = (current: number | null, value: number | null) => {
+				if (!seenUsage) return value
+				if (current === null || value === null) return null
+				return current + value
+			}
 			const phases =
 				request.scenarioId === "reload-continuation" ? (["prepare", "continue"] as const) : (["run"] as const)
 			for (const phase of phases) {
@@ -382,7 +396,14 @@ export function createExtensionCampaignOperations(
 				}
 				if (projection.result.usage.requests === null) return projection.result
 				requestsUsed += projection.result.usage.requests
-				const combined = { ...projection.result, usage: { ...projection.result.usage, requests: requestsUsed } }
+				inputTokens = mergeUsage(inputTokens, projection.result.usage.inputTokens)
+				outputTokens = mergeUsage(outputTokens, projection.result.usage.outputTokens)
+				cost = mergeUsage(cost, projection.result.usage.cost)
+				seenUsage = true
+				const combined = {
+					...projection.result,
+					usage: { requests: requestsUsed, inputTokens, outputTokens, cost },
+				}
 				if (projection.result.status !== "passed") return combined
 				if (phase === "prepare" && !projection.checkpointed)
 					return blocked("reload_checkpoint_missing", "lifecycle")

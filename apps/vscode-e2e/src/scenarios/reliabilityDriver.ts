@@ -5,7 +5,7 @@ import type { ExtensionWorkflowHost } from "./extensionWorkflowHost"
 import { LiveResponseFaultController } from "./liveResponseFault"
 import { LiveResponseProbe } from "./liveResponseProbe"
 import type { WorkflowRequestBudget } from "./requestBudget"
-import type { WorkflowDependencies, WorkflowOptions } from "./workflowDriver"
+import { aggregateTaskUsage, type WorkflowDependencies, type WorkflowOptions } from "./workflowDriver"
 import type { ReliabilityScenarioId } from "./reliabilityCatalog"
 import { contextProbeReceipt, isLongContextScenario, MAX_CONTEXT_PROBE_TURNS } from "./longContextProbe"
 
@@ -278,6 +278,9 @@ export async function runReliabilityScenario(
 		budget.transformResponse = undefined
 		budget.responseProbe = undefined
 		result.requestsUsed = budget.used
+		if (typeof host.readProblemUsage === "function" && result.taskIds.length > 0) {
+			result.usage = await aggregateTaskUsage(host, result.taskIds)
+		}
 		await writeEvidence("reliability-observations.json", {
 			schemaVersion: 1,
 			runId: options.runId,

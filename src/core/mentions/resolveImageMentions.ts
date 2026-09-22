@@ -35,6 +35,23 @@ function isPathWithinCwd(absPath: string, cwd: string): boolean {
 	return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel)
 }
 
+function isImagePathMention(mention: string): boolean {
+	if (!mention.startsWith("/")) return false
+	const relPath = unescapeSpaces(mention.slice(1))
+	return isSupportedImageFormat(path.extname(relPath).toLowerCase())
+}
+
+/** True when the text mentions a local image file. Plain text and other mentions are false. */
+export function textHasImageMention(text: string): boolean {
+	if (!text.includes("@")) return false
+	mentionRegexGlobal.lastIndex = 0
+	for (const match of text.matchAll(mentionRegexGlobal)) {
+		const mention = match[1]
+		if (mention && isImagePathMention(mention)) return true
+	}
+	return false
+}
+
 function dedupePreserveOrder(values: string[]): string[] {
 	const seen = new Set<string>()
 	const result: string[] = []
@@ -83,12 +100,7 @@ export async function resolveImageMentions({
 		return { text, images: existingImages }
 	}
 
-	const imageMentions = mentions.filter((mention) => {
-		if (!mention.startsWith("/")) return false
-		const relPath = unescapeSpaces(mention.slice(1))
-		const ext = path.extname(relPath).toLowerCase()
-		return isSupportedImageFormat(ext)
-	})
+	const imageMentions = mentions.filter((mention) => isImagePathMention(mention))
 
 	if (imageMentions.length === 0) {
 		return { text, images: existingImages }

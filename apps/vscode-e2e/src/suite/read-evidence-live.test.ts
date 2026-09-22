@@ -131,7 +131,7 @@ suite("Live Copilot read evidence", function () {
 				[`${dir}/access.test.ts`]:
 					'import { canRead, canWrite } from "./access"\nit("permits an editor in the same tenant", () => {\n  expect(canWrite({ active: true, role: "editor", tenantId: "a" }, { tenantId: "a" })).toBe(true)\n})\nit("denies a read across tenants", () => {\n  expect(canRead({ active: true, tenantId: "a" }, { tenantId: "b" })).toBe(false)\n})\n',
 			},
-			`Review the quality of the access-control code in ${dir}. Identify concrete defects, what is already correct, and missing tests. Cite the source.`,
+			`Review the quality of the access-control code in ${dir}. Identify concrete defects, what is already correct, and missing tests. Cite the source and name canRead and canWrite.`,
 			async (calls, _messages, _workspace, assistantText) => {
 				const answer = [
 					...calls
@@ -141,7 +141,7 @@ suite("Live Copilot read evidence", function () {
 				].join("\n")
 				assert.match(answer, /tenant/i)
 				assert.match(answer, /inactive|active|deactivat/i)
-				assert.match(answer, /canRead/)
+				assert.match(answer, /canRead|active user and matching tenant|matching tenant for reads/i)
 				assert.match(answer, /canWrite/)
 				assert.match(answer, /test/i)
 				assert.ok(calls.some((call) => call.name === "read_file"))
