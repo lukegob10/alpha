@@ -97,17 +97,20 @@ describe("problem-solving extension campaign", () => {
 	})
 
 	it("targets the existing VS Code extension runner", () => {
+		const workspace = path.resolve("work", "workspace")
+		const profileDir = path.resolve("work", "profile")
+		const artifactsDir = path.resolve("work", "artifacts")
 		const args = existingExtensionRunnerArguments(
 			{
-				workspace: "C:/work/workspace",
-				profileDir: "C:/work/profile",
+				workspace,
+				profileDir,
 				provider: "live-copilot",
 				modelId: "gpt-test",
 				effort: "high",
 				hostVersion: "1.122.1",
 				taskId: "repo-cache-invalidation",
-				promptPath: "C:/work/workspace/prompt.md",
-				artifactsDir: "C:/work/artifacts",
+				promptPath: path.join(workspace, "prompt.md"),
+				artifactsDir,
 				runId: "attempt-a",
 				requestLimit: 40,
 			},
@@ -120,9 +123,9 @@ describe("problem-solving extension campaign", () => {
 				"--vscode-version",
 				"1.122.1",
 				"--workspace",
-				"C:/work/workspace",
+				workspace,
 				"--profile-dir",
-				"C:/work/profile",
+				profileDir,
 				"--model-id",
 				"gpt-test",
 			]),

@@ -25,6 +25,7 @@
 				"src/runCoreConfidence.ts",
 				"src/runEvidence.ts",
 				"src/runFailure.ts",
+				"src/runReasoningUi.ts",
 				"src/runTest.ts",
 				"src/runUnitTests.ts",
 				"src/campaign/hostTerminationCampaign.ts",
@@ -46,7 +47,7 @@
 			"project": ["src/**/*.ts"]
 		},
 		"packages/evals": {
-			"entry": ["src/certification/cli.ts", "src/evidence/cli.ts"],
+			"entry": ["src/benchmark/problemSolvingLive.ts", "src/certification/cli.ts", "src/evidence/cli.ts"],
 			"project": ["src/**/*.ts"]
 		},
 		"packages/{build,ipc,telemetry,types}": {

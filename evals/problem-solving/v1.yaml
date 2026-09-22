@@ -371,7 +371,7 @@ tasks:
     source: alpha-native
     sourceRelease: problem-solving-v1@1
     version: 1
-    digest: sha256:748d5156d678eb1b1089385ef2d87344723cc752f867ff55a86bb57f4858aede
+    digest: sha256:7af1e3409149acac044a82b67afcefcb0341d62e1c5fc63ecc5045b8e94fa6e3
     tags: [git, pr-comparison]
     lane: development
     fixture: javascript/alpha-pr-comparison
@@ -380,7 +380,7 @@ tasks:
     source: alpha-native
     sourceRelease: problem-solving-v1@1
     version: 1
-    digest: sha256:e543c8c529f158ba6f87f9edc93257cc9ca54087fc9af520c0317dbbb8ad6d7d
+    digest: sha256:102c04b9798422b7a45dc4124e49657384476f660481aa98f963972ec1c087f0
     tags: [change-integration]
     lane: development
     fixture: javascript/alpha-change-integration
@@ -389,7 +389,7 @@ tasks:
     source: alpha-native
     sourceRelease: problem-solving-v1@1
     version: 1
-    digest: sha256:358b4a798dbe51ccee9def389127cfe8e6f382995e1ddd800e47fd34d6ae29d1
+    digest: sha256:6ed0e85bc4252989e9e72e2015c15a187be6f397f1edbff89c805d098f7a0775
     tags: [cleanup]
     lane: development
     fixture: javascript/alpha-cleanup
@@ -398,7 +398,7 @@ tasks:
     source: alpha-native
     sourceRelease: problem-solving-v1@1
     version: 1
-    digest: sha256:6130b4c45b22c1ae18ef27fcafbf5b349cfadefa11361edebab6db93e2dd3b94
+    digest: sha256:e3331a30763810c3d5415f2ee38687bb7c6a106ddbb906e2c732b91681aadd39
     tags: [skill-workflow]
     lane: development
     fixture: javascript/alpha-skill-workflow
