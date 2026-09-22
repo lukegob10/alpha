@@ -639,7 +639,10 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 
 			await provider.createTaskWithHistoryItem(historyItem)
 
-			expect(activateProviderProfileSpy).toHaveBeenCalledWith({ name: "mode-profile" })
+			expect(activateProviderProfileSpy).toHaveBeenCalledWith(
+				{ name: "mode-profile" },
+				{ persistTaskHistory: false, notifyWebview: false },
+			)
 		})
 
 		it("should use current profile if history item has no saved apiConfigName", async () => {

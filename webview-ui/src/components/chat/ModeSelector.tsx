@@ -9,7 +9,7 @@ import { vscode } from "@/utils/vscode"
 import { telemetryClient } from "@/utils/TelemetryClient"
 import { getUserFacingModeOptions } from "@/utils/modePresentation"
 import { cn } from "@/lib/utils"
-import { useExtensionState } from "@/context/ExtensionStateContext"
+import { useShellState } from "@/context/ExtensionStateContext"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { useAlphaPortal } from "@/components/ui/hooks/useAlphaPortal"
 import { Popover, PopoverContent, PopoverTrigger, StandardTooltip } from "@/components/ui"
@@ -42,7 +42,7 @@ export const ModeSelector = ({
 	const scrollContainerRef = React.useRef<HTMLDivElement>(null)
 	const lastNotifiedInvalidModeRef = React.useRef<string | null>(null)
 	const portalContainer = useAlphaPortal("alpha-portal")
-	const { hasOpenedModeSelector, setHasOpenedModeSelector } = useExtensionState()
+	const { hasOpenedModeSelector, setHasOpenedModeSelector } = useShellState()
 	const { t } = useAppTranslation()
 
 	const trackModeSelectorOpened = React.useCallback(() => {

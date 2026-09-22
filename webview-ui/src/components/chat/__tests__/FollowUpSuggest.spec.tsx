@@ -42,6 +42,13 @@ vi.mock("@src/context/ExtensionStateContext", () => ({
 		}
 		return context
 	},
+	useShellState: () => {
+		const context = useContext(TestExtensionStateContext)
+		if (!context) {
+			throw new Error("useShellState must be used within TestExtensionStateProvider")
+		}
+		return context
+	},
 }))
 
 // Test provider that only provides the specific values needed by FollowUpSuggest

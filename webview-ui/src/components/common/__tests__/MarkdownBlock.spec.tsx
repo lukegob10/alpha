@@ -34,6 +34,14 @@ describe("MarkdownBlock", () => {
 		render(<MarkdownBlock markdown="[Unsafe](command:workbench.action.closeWindow)" />)
 		expect(screen.getByText("Unsafe")).not.toHaveAttribute("href", "command:workbench.action.closeWindow")
 	})
+
+	it("defers math rendering until the stream completes", () => {
+		const { container, rerender } = render(<MarkdownBlock markdown="The answer is $x^2$." partial />)
+		expect(container.querySelector(".katex")).toBeNull()
+		expect(container.querySelector("p")?.textContent).toBe("The answer is $x^2$.")
+		rerender(<MarkdownBlock markdown="The answer is $x^2$." />)
+		expect(container.querySelector(".katex")).not.toBeNull()
+	})
 	it("should correctly handle URLs with trailing punctuation", async () => {
 		const markdown = "Check out this link: https://example.com."
 		const { container } = render(<MarkdownBlock markdown={markdown} />)

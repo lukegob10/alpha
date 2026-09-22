@@ -4,7 +4,7 @@ import { type ApprovalMode, migrateApprovalMode, settingsForApprovalMode } from 
 
 import { vscode } from "@/utils/vscode"
 import { cn } from "@/lib/utils"
-import { useExtensionState } from "@/context/ExtensionStateContext"
+import { useShellState } from "@/context/ExtensionStateContext"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { useAlphaPortal } from "@/components/ui/hooks/useAlphaPortal"
 import {
@@ -31,7 +31,7 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 	const [bypassWarningOpen, setBypassWarningOpen] = React.useState(false)
 	const portalContainer = useAlphaPortal("alpha-portal")
 	const { t } = useAppTranslation()
-	const state = useExtensionState()
+	const state = useShellState()
 	const {
 		approvalMode,
 		approvalModeBypassAcknowledged,

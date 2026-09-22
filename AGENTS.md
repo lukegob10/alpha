@@ -237,8 +237,7 @@ amplification, webview commit/render counts, indexing throughput, memory growth,
 - Prevent unnecessary whole-tree rerenders during streaming; use stable selectors, keys, and subscriptions.
 - Preserve keyboard navigation, focus restoration, readable labels, ARIA semantics, reduced-motion behavior, and narrow
   sidebar layouts.
-- Localize new user-visible text through the appropriate extension `package.nls*.json` or webview i18n locale files.
-  Do not add English-only UI strings. Run `node scripts/find-missing-translations.js` for localization changes.
+- Put new user-visible text in the English `package.nls.json` or English locale files. Alpha ships English only; do not add additional locale files or `package.nls.<locale>.json` overlays.
 - Add focused Testing Library/Vitest coverage for interaction and state behavior. For material visual changes, also verify
   the result manually in the Extension Development Host on VS Code 1.122.1 when available.
 

@@ -32,6 +32,9 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 	useExtensionState: () => ({
 		currentTaskId: "test-task-id",
 	}),
+	useShellState: () => ({
+		currentTaskId: "test-task-id",
+	}),
 }))
 
 import { render, waitFor, screen, fireEvent } from "@/utils/test-utils"

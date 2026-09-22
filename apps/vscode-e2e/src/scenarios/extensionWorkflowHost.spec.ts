@@ -9,8 +9,12 @@ import { AlphaCodeEventName, type AlphaMessage, type AlphaCodeAPI, type AlphaCod
 
 import {
 	ExtensionWorkflowHost,
+	isApprovedProblemCommand,
+	isApprovedProblemToolAsk,
+	isOutsideWorkspaceProblemToolAsk,
 	isApprovedWorkflowCommand,
 	readBoundedJson,
+	usageFromHistoryItem,
 	WORKFLOW_DISABLED_TOOLS,
 } from "./extensionWorkflowHost"
 import { WORKFLOW_COMMANDS, workflowCommands } from "./prompts"
@@ -587,4 +591,142 @@ test("reload applies scenario policy before saved-task construction and reports 
 	} finally {
 		await host.dispose()
 	}
+})
+
+test("problem solving denies an outside read and continues to completion", async () => {
+	let phase: "outside" | "completion" = "outside"
+	const denied: string[] = []
+	const task = {
+		taskId: "problem-task",
+		didComplete: false,
+		apiConversationHistory: [],
+		clineMessages: [],
+		get taskAsk(): AlphaMessage {
+			return phase === "outside"
+				? {
+						ts: 1,
+						type: "ask",
+						ask: "tool",
+						text: JSON.stringify({
+							tool: "readFile",
+							path: "F:/elsewhere/notes.md",
+							isOutsideWorkspace: true,
+						}),
+					}
+				: { ts: 2, type: "ask", ask: "completion_result" }
+		},
+		denyAsk(response?: { text?: string }) {
+			denied.push(response?.text ?? "")
+			phase = "completion"
+		},
+		approveAsk() {
+			assert.equal(phase, "completion")
+			task.didComplete = true
+			api.emit(AlphaCodeEventName.TaskCompleted, task.taskId)
+		},
+	}
+	const provider = Object.assign(new EventEmitter(), {
+		getLiveTask: (id: string) => (id === task.taskId ? task : undefined),
+	})
+	const api = Object.assign(new EventEmitter(), {
+		sidebarProvider: provider,
+		getConfiguration: () => ({}),
+		setConfiguration: async () => {},
+		startNewTask: async () => task.taskId,
+		cancelCurrentTask: async () => {},
+	})
+	const host = new ExtensionWorkflowHost(
+		api as unknown as AlphaCodeAPI,
+		workspace,
+		"scripted",
+		new WorkflowRequestBudget(10),
+		5_000,
+	)
+	try {
+		assert.equal(await host.startProblem("Repair the cache invalidation."), task.taskId)
+		await host.complete(task.taskId)
+		assert.deepEqual(denied, ["Outside the task workspace."])
+	} finally {
+		await host.dispose()
+	}
+})
+
+test("problem solving approves workspace commands and rejects deny-list, escape, and outside tools", () => {
+	const history = [
+		{
+			role: "assistant",
+			content: [{ type: "tool_use", name: "execute_command", input: { command: "npm test", cwd: workspace } }],
+		},
+	]
+	for (const command of [
+		"npm test",
+		"pnpm test",
+		"pytest",
+		"node --test test/behavior.test.js",
+		"git status --short",
+	]) {
+		assert.equal(isApprovedProblemCommand(command, history, workspace), true, command)
+	}
+	for (const command of [
+		"npm install",
+		"pnpm install left",
+		"git push origin main",
+		"npm test && curl example",
+		"node ../outside.js",
+	]) {
+		assert.equal(isApprovedProblemCommand(command, [], workspace), false, command)
+	}
+	assert.equal(
+		isApprovedProblemCommand(
+			"npm test",
+			[
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "tool_use",
+							name: "execute_command",
+							input: { command: "npm test", cwd: path.resolve(workspace, "..") },
+						},
+					],
+				},
+			],
+			workspace,
+		),
+		false,
+	)
+	assert.equal(
+		isApprovedProblemToolAsk(JSON.stringify({ tool: "readFile", path: "src/cache.js", isOutsideWorkspace: false })),
+		true,
+	)
+	assert.equal(
+		isApprovedProblemToolAsk(
+			JSON.stringify({ tool: "readFile", path: "src/assets/skills/debug/SKILL.md", isOutsideWorkspace: true }),
+		),
+		false,
+	)
+	assert.equal(
+		isOutsideWorkspaceProblemToolAsk(
+			JSON.stringify({ tool: "readFile", path: "notes/other.md", isOutsideWorkspace: true }),
+		),
+		true,
+	)
+	assert.equal(
+		isOutsideWorkspaceProblemToolAsk(
+			JSON.stringify({ tool: "appliedDiff", path: "notes/other.md", isOutsideWorkspace: true }),
+		),
+		true,
+	)
+	assert.equal(
+		isOutsideWorkspaceProblemToolAsk(
+			JSON.stringify({ tool: "browser", path: "notes/other.md", isOutsideWorkspace: true }),
+		),
+		false,
+	)
+	assert.equal(isApprovedProblemToolAsk(JSON.stringify({ tool: "readFile", path: "src/cache.js" })), false)
+	assert.deepEqual(usageFromHistoryItem({ tokensIn: 28000, tokensOut: 1200, totalCost: 0 }), {
+		inputTokens: 28000,
+		outputTokens: 1200,
+		cost: 0,
+	})
 })

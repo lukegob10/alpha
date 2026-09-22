@@ -122,14 +122,12 @@ function getPreviousTodos(messages: AlphaMessage[], currentMessageTs: number): a
 export interface ChatRowEnvironment
 	extends Pick<
 		ExtensionStateContextType,
-		| "mcpServers"
-		| "alwaysAllowMcp"
-		| "currentCheckpoint"
-		| "mode"
-		| "currentTaskItem"
-		| "currentTaskId"
-		| "reasoningBlockCollapsed"
+		"mcpServers" | "alwaysAllowMcp" | "currentCheckpoint" | "mode" | "currentTaskId" | "reasoningBlockCollapsed"
 	> {
+	currentTaskItem?: Pick<
+		NonNullable<ExtensionStateContextType["currentTaskItem"]>,
+		"id" | "status" | "designHandoff" | "taskKind" | "childIds" | "completedByChildId"
+	>
 	modelSupportsImages?: boolean
 	getAlphaMessages: () => AlphaMessage[]
 }

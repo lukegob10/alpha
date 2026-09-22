@@ -7,6 +7,7 @@ export const WORKFLOW_SCENARIO_IDS = [
 	"cancel-resume",
 	"long-thread",
 	"reload-continuation",
+	"problem-solving-attempt",
 	...DEVELOPMENT_SCENARIO_IDS,
 	...RELIABILITY_SCENARIO_IDS,
 ] as const
@@ -46,6 +47,11 @@ export interface WorkflowResult {
 	providerMode: string
 	model: { id?: string; family?: string; vendor?: string; reasoningEffort?: string }
 	requestsUsed: number | null
+	usage?: {
+		inputTokens: number | null
+		outputTokens: number | null
+		cost: number | null
+	}
 	failure?: { category: WorkflowFailureCategory; code: string }
 }
 
@@ -99,6 +105,19 @@ export function assertWorkflowResult(value: unknown): asserts value is WorkflowR
 	if (!Array.isArray(value.checks)) throw new WorkflowFailure("harness", "invalid_workflow_checks")
 	if (value.checks.length > MAX_WORKFLOW_CHECKS) throw new WorkflowFailure("harness", "workflow_check_limit_exceeded")
 	if (!value.checks.every(isWorkflowCheck)) throw new WorkflowFailure("harness", "invalid_workflow_check")
+	if (value.usage !== undefined) {
+		if (!isRecord(value.usage)) throw new WorkflowFailure("harness", "invalid_workflow_usage")
+		for (const key of ["inputTokens", "outputTokens"] as const) {
+			const field = value.usage[key]
+			if (field !== null && (typeof field !== "number" || !Number.isSafeInteger(field) || field < 0)) {
+				throw new WorkflowFailure("harness", "invalid_workflow_usage")
+			}
+		}
+		const cost = value.usage.cost
+		if (cost !== null && (typeof cost !== "number" || !Number.isFinite(cost) || cost < 0)) {
+			throw new WorkflowFailure("harness", "invalid_workflow_usage")
+		}
+	}
 	if (value.failure !== undefined || value.status === "failed" || value.status === "blocked") {
 		if (
 			!isRecord(value.failure) ||

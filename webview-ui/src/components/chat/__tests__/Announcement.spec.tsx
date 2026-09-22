@@ -61,18 +61,14 @@ describe("Announcement", () => {
 		).toBeInTheDocument()
 	})
 
-	it("uses localized release text with the current package version", () => {
+	it("falls back to English release text when a retired locale is requested", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText(
-				"Alpha v3.0.1 verbessert die Überprüfung, die Befehlssteuerung und die Fortführung von Aufgaben.",
-			),
+			screen.getByText("Alpha v3.0.1 improves verification, command control, and task continuity."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Erfolgreiche Prüfungen wiederverwenden, solange ihre angegebenen Eingaben unverändert bleiben.",
-			),
+			screen.getByText("Reuse passing checks while their declared inputs remain unchanged."),
 		).toBeInTheDocument()
 	})
 })

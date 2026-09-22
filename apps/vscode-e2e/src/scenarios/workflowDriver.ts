@@ -1,3 +1,6 @@
+import * as fs from "node:fs/promises"
+import * as path from "node:path"
+
 import {
 	WorkflowFailure,
 	isWorkflowCheck,
@@ -34,6 +37,7 @@ export interface WorkflowEvidence {
 
 export interface WorkflowHost {
 	start(prompt: WorkflowPromptName): Promise<string>
+	startProblem?(text: string): Promise<string>
 	followup(taskId: string, prompt: WorkflowPromptName, step?: number): Promise<void>
 	complete(taskId: string, outcome?: "completed" | "blocked"): Promise<void>
 	waitForCommandApproval(taskId: string): Promise<void>
@@ -42,6 +46,11 @@ export interface WorkflowHost {
 	assertUiTask(taskId: string): Promise<void>
 	inspect(taskId: string, outcome?: "completed" | "blocked"): Promise<WorkflowEvidence>
 	requestsUsed(): number | null
+	readProblemUsage?(taskId: string): Promise<{
+		inputTokens: number | null
+		outputTokens: number | null
+		cost: number | null
+	}>
 }
 
 export interface WorkflowCheckpoint {
@@ -148,6 +157,21 @@ export async function runWorkflowScenario(
 		await verify(expected)
 	}
 	try {
+		if (options.scenarioId === "problem-solving-attempt") {
+			if (options.phase !== "run") throw new WorkflowFailure("configuration", "invalid_phase", true)
+			if (!host.startProblem) throw new WorkflowFailure("configuration", "problem_prompt_unavailable", true)
+			const promptPath = path.join(options.workspace, "prompt.md")
+			const stat = await fs.stat(promptPath)
+			if (!stat.isFile() || stat.size === 0 || stat.size > 100_000) {
+				throw new WorkflowFailure("configuration", "invalid_problem_prompt", true)
+			}
+			const taskId = await host.startProblem(await fs.readFile(promptPath, "utf8"))
+			result.taskIds.push(taskId)
+			await host.complete(taskId)
+			await host.assertUiTask(taskId)
+			result.status = "passed"
+			return result
+		}
 		if (isReliabilityScenario(options.scenarioId))
 			throw new WorkflowFailure("configuration", "reliability_driver_unavailable", true)
 		if (!Number.isInteger(options.turns) || options.turns < 4 || options.turns > MAX_WORKFLOW_TURNS)
@@ -276,6 +300,14 @@ export async function runWorkflowScenario(
 		result.failure = { category: failure.category, code: failure.code }
 	} finally {
 		result.requestsUsed = host.requestsUsed()
+		const taskId = options.scenarioId === "problem-solving-attempt" ? result.taskIds[0] : undefined
+		if (taskId && host.readProblemUsage) {
+			try {
+				result.usage = await host.readProblemUsage(taskId)
+			} catch {
+				result.usage = { inputTokens: null, outputTokens: null, cost: null }
+			}
+		}
 	}
 	return result
 }

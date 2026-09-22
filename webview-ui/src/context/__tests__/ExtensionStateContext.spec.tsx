@@ -14,7 +14,12 @@ import {
 	TaskStatus,
 } from "@alpha-code/types"
 
-import { ExtensionStateContextProvider, useExtensionState, mergeExtensionState } from "../ExtensionStateContext"
+import {
+	ExtensionStateContextProvider,
+	useExtensionState,
+	useShellState,
+	mergeExtensionState,
+} from "../ExtensionStateContext"
 import { useAutoApprovalToggles } from "@/hooks/useAutoApprovalToggles"
 
 const TicketApprovalTestComponent = () => {
@@ -891,6 +896,76 @@ describe("mergeExtensionState", () => {
 			expect(switched.taskReasoning).toBeUndefined()
 		})
 
+		it("clears a leftover task identity after a new-chat snapshot drops undefined currentTaskId", () => {
+			const previous: ExtensionState = {
+				...baseState,
+				currentTaskId: "running-task",
+				currentTaskItem: {
+					id: "running-task",
+					number: 1,
+					ts: 1,
+					task: "running",
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+				currentView: { type: "task", taskId: "running-task" },
+				taskStateSeq: 5,
+				taskReasoning: {
+					taskId: "running-task",
+					requested: { kind: "effort", effort: "high" },
+					effective: { kind: "effort", effort: "high" },
+					capabilities: { kind: "effort", efforts: ["low", "high"], canDisable: true },
+				},
+			}
+			const posted = {
+				taskStateSeq: 6,
+				currentView: { type: "newTaskDraft" as const },
+				currentTaskId: undefined,
+				currentTaskItem: undefined,
+				clineMessages: [],
+				taskReasoning: {
+					requested: { kind: "effort" as const, effort: "medium" as const },
+					effective: { kind: "effort" as const, effort: "medium" as const },
+					capabilities: { kind: "effort" as const, efforts: ["low", "medium", "high"], canDisable: true },
+				},
+			}
+			const delivered = JSON.parse(JSON.stringify(posted)) as Partial<ExtensionState>
+			expect("currentTaskId" in delivered).toBe(false)
+
+			const result = mergeExtensionState(previous, delivered)
+			expect(result.currentTaskId).toBeUndefined()
+			expect(result.currentTaskItem).toBeUndefined()
+			expect(result.currentView).toEqual({ type: "newTaskDraft" })
+			expect(result.taskReasoning).toEqual(posted.taskReasoning)
+		})
+
+		it("clears leftover reasoning when a new-chat snapshot omits it after dropping currentTaskId", () => {
+			const previous: ExtensionState = {
+				...baseState,
+				currentTaskId: "running-task",
+				currentView: { type: "task", taskId: "running-task" },
+				taskStateSeq: 5,
+				taskReasoning: {
+					taskId: "running-task",
+					requested: { kind: "effort", effort: "high" },
+					effective: { kind: "effort", effort: "high" },
+					capabilities: { kind: "effort", efforts: ["low", "high"], canDisable: true },
+				},
+			}
+			const delivered = JSON.parse(
+				JSON.stringify({
+					taskStateSeq: 6,
+					currentView: { type: "newTaskDraft" as const },
+					currentTaskId: undefined,
+				}),
+			) as Partial<ExtensionState>
+
+			const result = mergeExtensionState(previous, delivered)
+			expect(result.currentTaskId).toBeUndefined()
+			expect(result.taskReasoning).toBeUndefined()
+		})
+
 		it("rejects clineMessages when seq equals current (not strictly greater)", () => {
 			const currentMessages = [makeMessage(1, "hello"), makeMessage(2, "world")]
 			const sameSeqMessages = [makeMessage(1, "hello")]
@@ -1334,5 +1409,66 @@ describe("mergeExtensionState", () => {
 		})
 		expect(screen.getByTestId("lifecycle-snapshot-status")).toBeEmptyDOMElement()
 		expect(screen.getByTestId("lifecycle-live-task-ids")).toBeEmptyDOMElement()
+	})
+})
+
+describe("shell state isolation", () => {
+	it("does not re-render shell consumers when only the transcript updates", () => {
+		let shellRenderCount = 0
+		const ShellProbe = () => {
+			shellRenderCount += 1
+			useShellState()
+			return <div data-testid="shell-renders">{shellRenderCount}</div>
+		}
+		const TranscriptProbe = () => {
+			const { clineMessages } = useExtensionState()
+			return <div data-testid="transcript-count">{clineMessages.length}</div>
+		}
+
+		render(
+			<ExtensionStateContextProvider>
+				<ShellProbe />
+				<TranscriptProbe />
+			</ExtensionStateContextProvider>,
+		)
+
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: {
+							mode: "code",
+							currentTaskId: "task-1",
+							clineMessages: [{ ts: 1, type: "say", say: "text", text: "hello" }],
+							clineMessagesSeq: 1,
+						},
+					},
+				}),
+			)
+		})
+
+		const rendersAfterHydrate = Number(screen.getByTestId("shell-renders").textContent)
+		expect(screen.getByTestId("transcript-count")).toHaveTextContent("1")
+
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: {
+							clineMessages: [
+								{ ts: 1, type: "say", say: "text", text: "hello" },
+								{ ts: 2, type: "say", say: "text", text: "stream" },
+							],
+							clineMessagesSeq: 2,
+						},
+					},
+				}),
+			)
+		})
+
+		expect(screen.getByTestId("transcript-count")).toHaveTextContent("2")
+		expect(screen.getByTestId("shell-renders")).toHaveTextContent(String(rendersAfterHydrate))
 	})
 })

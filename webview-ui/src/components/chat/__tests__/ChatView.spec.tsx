@@ -424,6 +424,7 @@ describe("ChatView activity trace", () => {
 		const view = renderChatView()
 		publish(firstTurn, "completed")
 		await waitFor(() => expect(view.getByTestId("chat-message-0")).not.toBeVisible())
+		expect(view.queryByText("Inspecting tests")).not.toBeInTheDocument()
 		expect(view.getByTestId("chat-message-2")).toBeVisible()
 
 		// Host metadata can resume before the durable user-feedback row reaches the UI.
@@ -530,6 +531,36 @@ describe("ChatView activity trace", () => {
 			),
 		)
 		expect(getByTestId("chat-message-2")).toBeVisible()
+	})
+
+	it("does not mount transcript rows while the chat tab is hidden", async () => {
+		const view = renderChatView({ isHidden: true })
+		mockPostMessage({
+			currentTaskId: "hidden-tab",
+			clineMessages: [
+				{ ts: 100, type: "say", say: "task", text: "Run the tests" },
+				{ ts: 1000, type: "say", say: "text", text: "Working" },
+			],
+		})
+		await waitFor(() => expect(view.getByTestId("chat-view")).toHaveClass("hidden"))
+		expect(view.queryByTestId("chat-message-0")).not.toBeInTheDocument()
+		expect(view.queryByText("Working")).not.toBeInTheDocument()
+	})
+
+	it("keeps older transcript rows unmounted until Load older is clicked", async () => {
+		const view = renderChatView()
+		const clineMessages: AlphaMessage[] = Array.from({ length: 90 }, (_, index) => ({
+			ts: index + 1,
+			type: "say",
+			say: index === 0 ? "task" : "text",
+			text: `row-${index}`,
+		}))
+		mockPostMessage({ currentTaskId: "long-task", clineMessages })
+		await waitFor(() => expect(view.getByTestId("chat-load-older")).toBeInTheDocument())
+		expect(view.queryByTestId("chat-message-0")).not.toBeInTheDocument()
+		fireEvent.click(view.getByTestId("chat-load-all"))
+		await waitFor(() => expect(view.getByTestId("chat-message-0")).toBeInTheDocument())
+		expect(view.queryByTestId("chat-load-older")).not.toBeInTheDocument()
 	})
 })
 

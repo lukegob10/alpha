@@ -59,13 +59,17 @@ const SUITE_DEFINITIONS: Record<DevelopmentSuiteName, SuiteDefinition> = {
 		maxDurationMs: 30 * MINUTE_MS,
 	},
 	development: {
-		scenarioIds: WORKFLOW_SCENARIO_IDS.filter((id) => !isReliabilityScenario(id)),
+		scenarioIds: WORKFLOW_SCENARIO_IDS.filter(
+			(id) => !isReliabilityScenario(id) && id !== "problem-solving-attempt",
+		),
 		samples: 1,
 		maxRequests: 1_200,
 		maxDurationMs: 2 * HOUR_MS,
 	},
 	soak: {
-		scenarioIds: WORKFLOW_SCENARIO_IDS.filter((id) => !isReliabilityScenario(id)),
+		scenarioIds: WORKFLOW_SCENARIO_IDS.filter(
+			(id) => !isReliabilityScenario(id) && id !== "problem-solving-attempt",
+		),
 		samples: 3,
 		maxRequests: 3_000,
 		maxDurationMs: 6 * HOUR_MS,

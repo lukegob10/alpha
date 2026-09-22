@@ -372,6 +372,7 @@ export interface ExtensionMessage {
 		| "reasoningCapabilities"
 		| "subagentChangeSetActionCapability"
 		| "subagentChangeSetActionResult"
+		| "taskOpenResult"
 	text?: string
 	taskId?: string
 	subagentChangeSetActionCapability?: SubagentChangeSetActionCapability

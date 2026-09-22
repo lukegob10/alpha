@@ -3,7 +3,7 @@ import { TaskLifecycleState, TaskStatus } from "@alpha-code/types"
 import i18next from "i18next"
 
 import { act, fireEvent, render, screen } from "@/utils/test-utils"
-import { ExtensionStateContextProvider } from "@/context/ExtensionStateContext"
+import { ExtensionStateContextProvider, useExtensionState } from "@/context/ExtensionStateContext"
 import common from "@/i18n/locales/en/common.json"
 
 import TaskHeader from "../TaskHeader"
@@ -42,17 +42,27 @@ function sendState(state: Partial<ExtensionState>) {
 	act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "state", state } })))
 }
 
+function ContextBoundTaskHeader() {
+	const { apiConfiguration, currentTaskItem, liveTasksById } = useExtensionState()
+	return (
+		<TaskHeader
+			apiConfiguration={apiConfiguration}
+			currentTaskItem={currentTaskItem}
+			taskModel={currentTaskItem ? liveTasksById?.[currentTaskItem.id]?.model : undefined}
+			tokensIn={100_000}
+			tokensOut={0}
+			totalCost={0}
+			contextTokens={100_000}
+			buttonsDisabled={false}
+			handleCondenseContext={vi.fn()}
+		/>
+	)
+}
+
 function renderHeader() {
 	render(
 		<ExtensionStateContextProvider>
-			<TaskHeader
-				tokensIn={100_000}
-				tokensOut={0}
-				totalCost={0}
-				contextTokens={100_000}
-				buttonsDisabled={false}
-				handleCondenseContext={vi.fn()}
-			/>
+			<ContextBoundTaskHeader />
 		</ExtensionStateContextProvider>,
 	)
 	sendState({

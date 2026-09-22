@@ -16,7 +16,7 @@ import { parseCommand } from "@alpha/parse-command"
 
 import { vscode } from "@src/utils/vscode"
 import { extractPatternsFromCommand } from "@src/utils/command-parser"
-import { useExtensionState } from "@src/context/ExtensionStateContext"
+import { useShellState } from "@src/context/ExtensionStateContext"
 import { cn } from "@src/lib/utils"
 
 import { Button, StandardTooltip } from "@src/components/ui"
@@ -55,7 +55,7 @@ export const CommandExecution = ({
 		deniedCommands = [],
 		setAllowedCommands,
 		setDeniedCommands,
-	} = useExtensionState()
+	} = useShellState()
 
 	const { command, output: parsedOutput } = useMemo(() => parseCommandAndOutput(text), [text])
 

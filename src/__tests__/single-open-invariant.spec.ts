@@ -267,6 +267,7 @@ describe("Single-open-task invariant", () => {
 				setProviderSettings: vi.fn(),
 				getProviderSettings: vi.fn(() => ({})),
 			},
+			postTaskStateToWebview: vi.fn(),
 			postStateToWebview: vi.fn(),
 		} as unknown as AlphaProvider
 

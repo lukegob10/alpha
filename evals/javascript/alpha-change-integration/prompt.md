@@ -1,0 +1,1 @@
+Integrate the existing archive behavior into the action router. Creating a record must keep working, and the archive action must use the archive module. Preserve the exported API and run the tests after the final edit.

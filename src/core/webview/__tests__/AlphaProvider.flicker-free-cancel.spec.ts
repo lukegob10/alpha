@@ -159,6 +159,7 @@ describe("AlphaProvider flicker-free cancel", () => {
 		mockTask1 = {
 			taskId: "task-1",
 			instanceId: "instance-1",
+			clineMessages: [],
 			emit: vi.fn(),
 			abortTask: vi.fn().mockResolvedValue(undefined),
 			abandoned: false,
@@ -170,6 +171,7 @@ describe("AlphaProvider flicker-free cancel", () => {
 		mockTask2 = {
 			taskId: "task-1", // Same ID for rehydration scenario
 			instanceId: "instance-2", // Different instance
+			clineMessages: [],
 			emit: vi.fn(),
 			on: vi.fn(),
 			off: vi.fn(),

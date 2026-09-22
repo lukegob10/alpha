@@ -1,0 +1,8 @@
+{
+	"name": "alpha-cleanup",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "node --test test/report.test.js"
+	}
+}

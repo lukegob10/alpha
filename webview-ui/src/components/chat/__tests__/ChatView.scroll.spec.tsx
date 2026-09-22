@@ -269,83 +269,46 @@ describe("ChatView native scroll behavior", () => {
 	})
 
 	it("bounds the synchronous row mount cost for a long transcript", async () => {
-		const idleCallbacks: IdleRequestCallback[] = []
-		vi.stubGlobal(
-			"requestIdleCallback",
-			vi.fn((callback: IdleRequestCallback) => {
-				idleCallbacks.push(callback)
-				return idleCallbacks.length
-			}),
-		)
-		vi.stubGlobal("cancelIdleCallback", vi.fn())
+		const baseTs = Date.now() - 10_000
+		const messages: AlphaMessage[] = Array.from({ length: 1_001 }, (_, index) => ({
+			type: "say",
+			say: "text",
+			ts: baseTs + index,
+			text: index === 0 ? "task" : `row-${index}`,
+		}))
 
-		try {
-			const baseTs = Date.now() - 10_000
-			const messages: AlphaMessage[] = Array.from({ length: 1_001 }, (_, index) => ({
-				type: "say",
-				say: "text",
-				ts: baseTs + index,
-				text: index === 0 ? "task" : `row-${index}`,
-			}))
+		renderView()
+		await act(async () => postState(messages))
 
-			renderView()
-			await act(async () => postState(messages))
+		expect(document.querySelectorAll("[data-testid='chat-row']")).toHaveLength(80)
+		expect(document.querySelector("[data-testid='chat-load-older']")).toBeTruthy()
+		expect(document.querySelector("[data-testid='chat-transcript-content']")).toHaveAttribute("data-count", "1000")
+		expect(document.querySelector("[data-task-prompt='true']")).toBeNull()
 
-			expect(document.querySelectorAll("[data-testid='chat-row']")).toHaveLength(80)
-			expect(idleCallbacks).toHaveLength(1)
-			expect(document.querySelector("[data-testid='chat-transcript-content']")).toHaveAttribute(
-				"data-count",
-				"1000",
-			)
+		fireEvent.click(document.querySelector("[data-testid='chat-load-older']") as HTMLElement)
+		expect(document.querySelectorAll("[data-testid='chat-row']")).toHaveLength(180)
+		expect(document.querySelector("[data-task-prompt='true']")).toBeNull()
 
-			const firstIdleBatch = idleCallbacks.shift()
-			expect(firstIdleBatch).toBeDefined()
-			await act(async () => firstIdleBatch?.({ didTimeout: false, timeRemaining: () => 50 }))
-
-			expect(document.querySelectorAll("[data-testid='chat-row']")).toHaveLength(180)
-			expect(idleCallbacks).toHaveLength(1)
-			expect(document.querySelector("[data-task-prompt='true']")).toBeNull()
-
-			while (idleCallbacks.length > 0) {
-				const nextBatch = idleCallbacks.shift()
-				await act(async () => nextBatch?.({ didTimeout: false, timeRemaining: () => 50 }))
-			}
-			expect(document.querySelectorAll("[data-testid='chat-row']")).toHaveLength(1001)
-			expect(document.querySelectorAll("[data-task-prompt='true']")).toHaveLength(1)
-		} finally {
-			vi.unstubAllGlobals()
-		}
+		fireEvent.click(document.querySelector("[data-testid='chat-load-all']") as HTMLElement)
+		expect(document.querySelectorAll("[data-testid='chat-row']")).toHaveLength(1001)
+		expect(document.querySelectorAll("[data-task-prompt='true']")).toHaveLength(1)
 	})
 
 	it("resets the render window when a pending task receives its persisted transcript", async () => {
-		const idleCallbacks: IdleRequestCallback[] = []
-		vi.stubGlobal(
-			"requestIdleCallback",
-			vi.fn((callback: IdleRequestCallback) => {
-				idleCallbacks.push(callback)
-				return idleCallbacks.length
-			}),
-		)
-		vi.stubGlobal("cancelIdleCallback", vi.fn())
+		const baseTs = Date.now() - 10_000
+		const messages: AlphaMessage[] = Array.from({ length: 1_001 }, (_, index) => ({
+			type: "say",
+			say: "text",
+			ts: baseTs + index,
+			text: index === 0 ? "task" : `row-${index}`,
+		}))
 
-		try {
-			const baseTs = Date.now() - 10_000
-			const messages: AlphaMessage[] = Array.from({ length: 1_001 }, (_, index) => ({
-				type: "say",
-				say: "text",
-				ts: baseTs + index,
-				text: index === 0 ? "task" : `row-${index}`,
-			}))
+		renderView()
+		await act(async () => postState([], "long-task"))
+		await act(async () => postState(messages, "long-task"))
 
-			renderView()
-			await act(async () => postState([], "long-task"))
-			await act(async () => postState(messages, "long-task"))
-
-			expect(document.querySelectorAll("[data-testid='chat-row']")).toHaveLength(80)
-			expect(idleCallbacks).toHaveLength(1)
-		} finally {
-			vi.unstubAllGlobals()
-		}
+		expect(document.querySelectorAll("[data-testid='chat-row']")).toHaveLength(80)
+		expect(document.querySelector("[data-testid='chat-load-older']")).toBeTruthy()
 	})
 
 	it("uses a real bounded scroller with exact non-virtualized content", async () => {

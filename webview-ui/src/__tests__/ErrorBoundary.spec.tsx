@@ -10,6 +10,14 @@ vi.mock("@src/utils/TelemetryClient", () => ({
 	},
 }))
 
+vi.mock("@src/utils/sourceMapUtils", () => ({
+	enhanceErrorWithSourceMaps: vi.fn(async (error: Error) => ({
+		name: error.name,
+		message: error.message,
+		stack: error.stack,
+	})),
+}))
+
 // Mock translation function
 vi.mock("react-i18next", () => {
 	const tFunction = (key: string) => key

@@ -592,5 +592,9 @@
 		"list_checks": "List checks",
 		"merge_pull_request": "Merge pull request",
 		"comment": "Add comment"
+	},
+	"transcript": {
+		"loadOlder": "Load older messages",
+		"loadAll": "Load all messages"
 	}
 }

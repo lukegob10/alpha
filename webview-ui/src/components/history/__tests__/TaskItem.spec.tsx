@@ -191,6 +191,31 @@ describe("TaskItem", () => {
 		}
 	})
 
+	it("clears opening feedback when the host acknowledges the task", async () => {
+		render(
+			<TaskItem
+				item={mockTask}
+				variant="full"
+				isSelected={false}
+				onToggleSelection={vi.fn()}
+				isSelectionMode={false}
+			/>,
+		)
+
+		const taskItem = screen.getByTestId("task-item-1")
+		fireEvent.click(taskItem)
+		expect(taskItem).toHaveAttribute("aria-busy", "true")
+
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", { data: { type: "taskOpenResult", taskId: "1", success: true } }),
+			)
+		})
+
+		expect(taskItem).toHaveAttribute("aria-busy", "false")
+		expect(screen.queryByTestId("task-opening-indicator")).not.toBeInTheDocument()
+	})
+
 	describe.each(["compact", "full"] as const)("%s task status", (variant) => {
 		it.each([
 			{ lifecycle: TaskLifecycleState.Initializing, isStreaming: false, label: "Starting" },

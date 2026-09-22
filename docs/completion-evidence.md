@@ -112,6 +112,25 @@ When that plan is updated, matching legacy receipts are converted to the executi
 missing or mismatched receipt is reconstructed. Changes to the command, directory, input set, or reuse policy
 invalidate evidence; changed file bytes, failures, ignored inputs, and interrupted checks still block completion.
 
+## Revoked command admissions
+
+Investigated 2026-09-21 against the 3.0.0 working tree. A running acceptance command could regain verification
+credit after its check was removed or changed and then restored before the process settled. Plan replacement
+correctly removed the running receipt, but `settleAcceptanceChecks()` treated an absent current receipt as
+permission to publish the captured result. Restoring the original definition therefore let the late result
+reconstruct evidence whose admission had already been revoked.
+
+Settlement now consumes the exact still-current admitted receipt. A missing receipt, a different execution ID,
+or a stale receipt rejects the late result. Description-only and input-order plan edits retain the same receipt;
+newer executions and reload or user-request invalidation still supersede it. After revocation, running the restored
+check again creates a fresh admission and can satisfy completion normally.
+
+This is an in-memory settlement correction with no persisted-schema, command-policy, approval, sandbox, mode, or
+VS Code API change. Existing saved passed and failed receipts keep their compatibility behavior. The regression
+uses controlled work-plan transitions and the real `Task` admission/publication caller; it does not infer live-model
+quality or efficiency. This cycle does not change the separate workspace/cwd identity contract or make external
+effects observable beyond the declared input snapshot.
+
 ## Validation
 
 ```sh
@@ -131,3 +150,10 @@ recovery, and completion suites. Extension typechecking, focused ESLint, formatt
 `test:smoke:1221` rebuilt the extension and webview and passed all ten host tests on the exact VS Code 1.122.1:
 three activation/command tests, two mode tests, and five language-model contract tests. The deterministic command
 regressions use scripted process receipts; these results do not claim a live-model quality or latency improvement.
+
+For the 2026-09-21 admission-revocation correction, the focused regression first failed in both intended variants
+(28 passed, 2 failed) and then passed 30/30 after the fix. The combined work-context and completion run passed
+85/85; the persistence/reload suite passed 60/60. Extension typechecking, focused ESLint, and Prettier checks passed.
+The exact-host gate rebuilt the extension and webview and passed 17/17 tests on VS Code 1.122.1: four extension,
+two mode, five approval-mode, and six language-model contract tests. These deterministic results establish the
+corrected lifecycle behavior only; they do not claim a live solve-rate or efficiency improvement.

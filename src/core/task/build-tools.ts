@@ -350,7 +350,9 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				readGrant: options.readGrant,
 				policy: options.policy,
 				requestWorkClass,
-				historicalToolNames: toolNamesReferencedInHistory(options.discoveryHistory),
+				historicalToolNames: includeAllToolsWithRestrictions
+					? toolNamesReferencedInHistory(options.discoveryHistory)
+					: undefined,
 				availableBrowserToolNames,
 				codeIndex: [
 					codeIndexManager?.isFeatureEnabled,

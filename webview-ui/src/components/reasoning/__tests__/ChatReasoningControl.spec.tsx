@@ -12,9 +12,13 @@ vi.mock("@/utils/vscode", () => ({
 	},
 }))
 
-vi.mock("@/context/ExtensionStateContext", () => ({
-	useExtensionState: vi.fn(),
-}))
+vi.mock("@/context/ExtensionStateContext", () => {
+	const useExtensionState = vi.fn()
+	return {
+		useExtensionState,
+		useShellState: () => useExtensionState(),
+	}
+})
 
 vi.mock("../ReasoningSelector", () => ({
 	ReasoningSelector: ({
@@ -235,5 +239,33 @@ describe("ChatReasoningControl", () => {
 			new MessageEvent("message", { data: hostAck(request1, "task-1", stateFor("task-1", "high")) }),
 		)
 		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-effective", "low")
+	})
+
+	it("keeps the new-chat composer usable when a leftover task id survives a draft snapshot", async () => {
+		const { rerender } = render(<ChatReasoningControl />)
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-effective", "medium")
+
+		const draftReasoning = { ...stateFor("task-1", "high"), taskId: undefined }
+		mockUseExtensionState.mockReturnValue({
+			...currentState("task-1", "profile-a", "medium"),
+			currentView: { type: "newTaskDraft" },
+			taskReasoning: draftReasoning,
+		})
+		rerender(<ChatReasoningControl />)
+
+		await waitFor(() => {
+			expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-effective", "high")
+			expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-loading", "false")
+		})
+
+		fireEvent.click(screen.getByTestId("choose-low"))
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "setTaskReasoningPreference",
+			taskReasoningUpdate: {
+				requestId: request1,
+				taskId: undefined,
+				preference: { kind: "effort", effort: "low" },
+			},
+		})
 	})
 })

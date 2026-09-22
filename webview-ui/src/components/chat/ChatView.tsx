@@ -1,5 +1,6 @@
 import React, {
 	forwardRef,
+	memo,
 	useCallback,
 	useEffect,
 	useImperativeHandle,
@@ -61,10 +62,10 @@ import { QueuedMessages } from "./QueuedMessages"
 import { WorktreeSelector } from "./WorktreeSelector"
 import FileChangesPanel from "./FileChangesPanel"
 import { ActivityTraceToggle } from "./ActivityTraceToggle"
-import { getCompletedActivity } from "./completedActivity"
-import { fileChangeTurnsFromMessages } from "./utils/fileChangesFromMessages"
+import { getCompletedActivity, type CompletedActivity } from "./completedActivity"
+import { fileChangeTurnsFromMessages, type FileChangeTurn } from "./utils/fileChangesFromMessages"
 import { useProgressiveTranscript } from "./hooks/useProgressiveTranscript"
-import { useChatScrollController } from "@src/hooks/useChatScrollController"
+import { useChatScrollController, type ChatScrollReleaseReason } from "@src/hooks/useChatScrollController"
 
 export interface ChatViewProps {
 	isHidden: boolean
@@ -102,6 +103,159 @@ export const isContextCondensationRequest = (text: string): boolean =>
 		text.trim(),
 	)
 
+function useStableConversationPromptMessages(messages: AlphaMessage[]): AlphaMessage[] {
+	const key = messages
+		.filter((message) => message.type === "say" && message.say === "user_feedback" && message.text?.trim())
+		.map((message) => `${message.ts}:${message.text}`)
+		.join("\0")
+	const cached = useRef({ key: "", value: [] as AlphaMessage[] })
+	if (cached.current.key !== key) {
+		cached.current = {
+			key,
+			value: messages.filter(
+				(message) => message.type === "say" && message.say === "user_feedback" && message.text?.trim(),
+			),
+		}
+	}
+	return cached.current.value
+}
+
+interface ChatTranscriptRowsProps {
+	isHidden: boolean
+	transcriptTaskKey: string | undefined
+	transcriptStartIndex: number
+	hasOlderTranscript: boolean
+	task: AlphaMessage
+	expandedRows: Record<number, boolean>
+	isTurnActive: boolean
+	chatRowEnvironment: ChatRowEnvironment
+	toggleRowExpansion: (ts: number) => void
+	renderedGroupedMessages: AlphaMessage[]
+	completedActivity: Map<number, CompletedActivity>
+	expandedTraces: Record<number, boolean>
+	fileChangeTurnsByEndIndex: Map<number, FileChangeTurn>
+	itemContent: (index: number, message: AlphaMessage) => React.ReactNode
+	loadOlderTranscript: () => void
+	revealTranscriptIndex: (index: number) => void
+	releaseFollow: (reason: ChatScrollReleaseReason) => void
+	setTraceExpanded: (id: number, expanded: boolean) => void
+	handleFileChangesExpandedChange: () => void
+	loadOlderLabel: string
+	loadAllLabel: string
+}
+
+const ChatTranscriptRows = memo(function ChatTranscriptRows({
+	isHidden,
+	transcriptTaskKey,
+	transcriptStartIndex,
+	hasOlderTranscript,
+	task,
+	expandedRows,
+	isTurnActive,
+	chatRowEnvironment,
+	toggleRowExpansion,
+	renderedGroupedMessages,
+	completedActivity,
+	expandedTraces,
+	fileChangeTurnsByEndIndex,
+	itemContent,
+	loadOlderTranscript,
+	revealTranscriptIndex,
+	releaseFollow,
+	setTraceExpanded,
+	handleFileChangesExpandedChange,
+	loadOlderLabel,
+	loadAllLabel,
+}: ChatTranscriptRowsProps) {
+	if (isHidden) {
+		return null
+	}
+
+	return (
+		<>
+			{/* Keep the prompt outside assistant activity groups and prepend it with the oldest rows. */}
+			{transcriptStartIndex === 0 && (
+				<ChatRow
+					key={`${transcriptTaskKey}:prompt`}
+					message={task}
+					isTaskPrompt
+					environment={chatRowEnvironment}
+					isExpanded={expandedRows[task.ts] || false}
+					isLast={false}
+					isStreaming={false}
+					messageActionsDisabled={isTurnActive}
+					onToggleExpand={toggleRowExpansion}
+				/>
+			)}
+			{hasOlderTranscript && (
+				<div className="flex justify-center gap-2 px-[15px] py-2">
+					<Button
+						variant="secondary"
+						size="sm"
+						data-testid="chat-load-older"
+						onClick={() => {
+							releaseFollow("load-older")
+							loadOlderTranscript()
+						}}>
+						{loadOlderLabel}
+					</Button>
+					<Button
+						variant="secondary"
+						size="sm"
+						data-testid="chat-load-all"
+						onClick={() => {
+							releaseFollow("load-older")
+							revealTranscriptIndex(0)
+						}}>
+						{loadAllLabel}
+					</Button>
+				</div>
+			)}
+			{renderedGroupedMessages.map((message, localIndex) => {
+				const index = transcriptStartIndex + localIndex
+				const trace = completedActivity.get(index)
+				const traceExpanded = trace ? Boolean(expandedTraces[trace.id]) : false
+				const fileChangeTurn = fileChangeTurnsByEndIndex.get(index)
+				return (
+					<div key={`${transcriptTaskKey}:${computeChatItemKey(index, message)}`}>
+						{trace && index === Math.max(trace.startIndex, transcriptStartIndex) && (
+							<ActivityTraceToggle
+								traceId={trace.id}
+								durationMs={trace.durationMs}
+								expanded={traceExpanded}
+								controls={Array.from(
+									{ length: trace.endIndex - index + 1 },
+									(_, offset) => `activity-row-${index + offset}`,
+								).join(" ")}
+								onToggle={() => {
+									releaseFollow("row-expansion")
+									setTraceExpanded(trace.id, !traceExpanded)
+								}}
+							/>
+						)}
+						{/* Finished traces stay reachable from the toggle without keeping their rows mounted. */}
+						<div
+							id={`activity-row-${index}`}
+							hidden={Boolean(trace) && !traceExpanded}
+							data-chat-message-index={index}
+							data-testid={`chat-message-${index}`}>
+							{(!trace || traceExpanded) && itemContent(index, message)}
+						</div>
+						{fileChangeTurn && (
+							<FileChangesPanel
+								key={`file-changes:${fileChangeTurn.key}`}
+								clineMessages={fileChangeTurn.messages}
+								taskId={fileChangeTurn.key}
+								onExpandedChange={handleFileChangesExpandedChange}
+							/>
+						)}
+					</div>
+				)
+			})}
+		</>
+	)
+})
+
 const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewProps> = (
 	{ isHidden, showAnnouncement, hideAnnouncement },
 	ref,
@@ -123,7 +277,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		taskHistory,
 		apiConfiguration,
 		mode,
-		setMode,
 		telemetrySetting,
 		soundEnabled,
 		soundVolume,
@@ -137,6 +290,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		alwaysAllowMcp,
 		currentCheckpoint,
 		reasoningBlockCollapsed,
+		setMode,
 	} = extensionState
 	// Show a WarningRow when the user sends a message with a retired provider.
 	const [showRetiredProviderWarning, setShowRetiredProviderWarning] = useState(false)
@@ -154,6 +308,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const isProviderDraftView = currentView?.type === "newTaskDraft" && !currentTaskId && messages.length === 0
 	const isDraftView = isBlankTaskView || isProviderDraftView
 	const activeMessages = useMemo(() => (isDraftView ? [] : messages), [isDraftView, messages])
+	const conversationPromptMessages = useStableConversationPromptMessages(activeMessages)
 	const visibleMessageQueue = useMemo(() => (isDraftView ? [] : messageQueue), [isDraftView, messageQueue])
 	const visibleCurrentTaskId = isDraftView ? undefined : currentTaskId
 	const visibleTaskPayload = useMemo(
@@ -725,12 +880,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [taskTs, visibleCurrentTaskItem?.id, visibleCurrentTaskItem?.childIds])
 
 	useEffect(() => {
-		if (isHidden) {
-			everVisibleMessagesTsRef.current.clear()
-		}
-	}, [isHidden])
-
-	useEffect(() => {
 		const cache = everVisibleMessagesTsRef.current
 		return () => {
 			cache.clear()
@@ -1135,6 +1284,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setDidClickCancel(true)
 	}, [visibleTaskPayload, setDidClickCancel])
 
+	const handleComposerSend = useCallback(() => {
+		handleSendMessage(inputValue, selectedImages)
+	}, [handleSendMessage, inputValue, selectedImages])
+
 	// Handle enqueue button click from textarea
 	const handleEnqueueCurrentMessage = useCallback(() => {
 		const text = inputValue.trim()
@@ -1317,13 +1470,39 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [alphaAsk, visibleTaskPayload, startNewTask, isStreaming, setDidClickCancel, isVisibleTaskFailedOrClosed])
 
 	const { info: model } = useSelectedModel(apiConfiguration)
+	const visibleCurrentTaskItemId = visibleCurrentTaskItem?.id
+	const visibleCurrentTaskItemStatus = visibleCurrentTaskItem?.status
+	const visibleCurrentTaskItemDesignHandoff = visibleCurrentTaskItem?.designHandoff
+	const visibleCurrentTaskItemKind = visibleCurrentTaskItem?.taskKind
+	const visibleCurrentTaskItemChildIds = visibleCurrentTaskItem?.childIds
+	const visibleCurrentTaskItemCompletedByChildId = visibleCurrentTaskItem?.completedByChildId
+	const chatRowTaskItem = useMemo(() => {
+		if (!visibleCurrentTaskItemId) {
+			return undefined
+		}
+		return {
+			id: visibleCurrentTaskItemId,
+			status: visibleCurrentTaskItemStatus,
+			designHandoff: visibleCurrentTaskItemDesignHandoff,
+			taskKind: visibleCurrentTaskItemKind,
+			childIds: visibleCurrentTaskItemChildIds,
+			completedByChildId: visibleCurrentTaskItemCompletedByChildId,
+		}
+	}, [
+		visibleCurrentTaskItemId,
+		visibleCurrentTaskItemStatus,
+		visibleCurrentTaskItemDesignHandoff,
+		visibleCurrentTaskItemKind,
+		visibleCurrentTaskItemCompletedByChildId,
+		visibleCurrentTaskItemChildIds,
+	])
 	const chatRowEnvironment = useMemo<ChatRowEnvironment>(
 		() => ({
 			mcpServers,
 			alwaysAllowMcp,
 			currentCheckpoint,
 			mode,
-			currentTaskItem: visibleCurrentTaskItem,
+			currentTaskItem: chatRowTaskItem,
 			currentTaskId: visibleCurrentTaskId,
 			reasoningBlockCollapsed,
 			modelSupportsImages: model?.supportsImages,
@@ -1334,7 +1513,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			alwaysAllowMcp,
 			currentCheckpoint,
 			mode,
-			visibleCurrentTaskItem,
+			chatRowTaskItem,
 			visibleCurrentTaskId,
 			reasoningBlockCollapsed,
 			model?.supportsImages,
@@ -1495,8 +1674,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 		})
 
-		// Keep every message mounted so native scroll geometry remains exact and
-		// message indices stay stable for checkpoint navigation.
+		// Filter presentation-only rows. Checkpoint jump uses grouped indices plus
+		// revealIndex; collapsed finished activity is unmounted, not hidden-mounted.
 		const newVisibleMessages = modifiedMessages.filter((message) => {
 			// Filter out checkpoint_saved messages that should be suppressed
 			if (message.say === "checkpoint_saved") {
@@ -1832,8 +2011,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const {
 		items: renderedGroupedMessages,
 		startIndex: transcriptStartIndex,
+		hasOlder: hasOlderTranscript,
+		loadOlder: loadOlderTranscript,
 		revealIndex: revealTranscriptIndex,
-	} = useProgressiveTranscript(groupedMessages, transcriptTaskKey, !isHidden)
+	} = useProgressiveTranscript(groupedMessages, transcriptTaskKey, false)
 
 	const checkpointIndices = useMemo(() => {
 		const indices: number[] = []
@@ -2083,7 +2264,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					onToggleExpand={toggleRowExpansion} // This was already stabilized
 					lastModifiedMessage={isLast ? modifiedMessages.at(-1) : undefined}
 					isLast={isLast}
-					isStreaming={isStreaming}
+					isStreaming={isLast && isStreaming}
 					messageActionsDisabled={isTurnActive}
 					onSuggestionClick={handleSuggestionClickInRow} // This was already stabilized
 					onBatchFileResponse={handleBatchFileResponse}
@@ -2187,6 +2368,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			{task ? (
 				<>
 					<TaskHeader
+						apiConfiguration={apiConfiguration}
+						currentTaskItem={visibleCurrentTaskItem}
+						taskModel={
+							visibleCurrentTaskItem ? liveTasksById?.[visibleCurrentTaskItem.id]?.model : undefined
+						}
 						tokensIn={apiMetrics.totalTokensIn}
 						tokensOut={apiMetrics.totalTokensOut}
 						cacheWrites={apiMetrics.totalCacheWrites}
@@ -2281,61 +2467,29 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							data-testid="chat-transcript-content"
 							data-count={groupedMessages.length}
 							data-rendered-count={renderedGroupedMessages.length}>
-							{/* Keep the prompt outside assistant activity groups and prepend it with the oldest rows. */}
-							{transcriptStartIndex === 0 && (
-								<ChatRow
-									key={`${transcriptTaskKey}:prompt`}
-									message={task}
-									isTaskPrompt
-									environment={chatRowEnvironment}
-									isExpanded={expandedRows[task.ts] || false}
-									isLast={false}
-									isStreaming={isStreaming}
-									messageActionsDisabled={isTurnActive}
-									onToggleExpand={toggleRowExpansion}
-								/>
-							)}
-							{renderedGroupedMessages.map((message, localIndex) => {
-								const index = transcriptStartIndex + localIndex
-								const trace = completedActivity.get(index)
-								const traceExpanded = trace ? Boolean(expandedTraces[trace.id]) : false
-								const fileChangeTurn = fileChangeTurnsByEndIndex.get(index)
-								return (
-									<div key={`${transcriptTaskKey}:${computeChatItemKey(index, message)}`}>
-										{trace && index === Math.max(trace.startIndex, transcriptStartIndex) && (
-											<ActivityTraceToggle
-												traceId={trace.id}
-												durationMs={trace.durationMs}
-												expanded={traceExpanded}
-												controls={Array.from(
-													{ length: trace.endIndex - index + 1 },
-													(_, offset) => `activity-row-${index + offset}`,
-												).join(" ")}
-												onToggle={() => {
-													releaseFollow("row-expansion")
-													setTraceExpanded(trace.id, !traceExpanded)
-												}}
-											/>
-										)}
-										{/* Keep live tool subscriptions mounted when hiding finished activity. */}
-										<div
-											id={`activity-row-${index}`}
-											hidden={Boolean(trace) && !traceExpanded}
-											data-chat-message-index={index}
-											data-testid={`chat-message-${index}`}>
-											{itemContent(index, message)}
-										</div>
-										{fileChangeTurn && (
-											<FileChangesPanel
-												key={`file-changes:${fileChangeTurn.key}`}
-												clineMessages={fileChangeTurn.messages}
-												taskId={fileChangeTurn.key}
-												onExpandedChange={handleFileChangesExpandedChange}
-											/>
-										)}
-									</div>
-								)
-							})}
+							<ChatTranscriptRows
+								isHidden={isHidden}
+								transcriptTaskKey={transcriptTaskKey}
+								transcriptStartIndex={transcriptStartIndex}
+								hasOlderTranscript={hasOlderTranscript}
+								task={task}
+								expandedRows={expandedRows}
+								isTurnActive={isTurnActive}
+								chatRowEnvironment={chatRowEnvironment}
+								toggleRowExpansion={toggleRowExpansion}
+								renderedGroupedMessages={renderedGroupedMessages}
+								completedActivity={completedActivity}
+								expandedTraces={expandedTraces}
+								fileChangeTurnsByEndIndex={fileChangeTurnsByEndIndex}
+								itemContent={itemContent}
+								loadOlderTranscript={loadOlderTranscript}
+								revealTranscriptIndex={revealTranscriptIndex}
+								releaseFollow={releaseFollow}
+								setTraceExpanded={setTraceExpanded}
+								handleFileChangesExpandedChange={handleFileChangesExpandedChange}
+								loadOlderLabel={t("chat:transcript.loadOlder")}
+								loadAllLabel={t("chat:transcript.loadAll")}
+							/>
 						</div>
 					</div>
 					{showScrollToBottom && (
@@ -2538,7 +2692,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						placeholderText={placeholderText}
 						selectedImages={selectedImages}
 						setSelectedImages={setSelectedImages}
-						onSend={() => handleSendMessage(inputValue, selectedImages)}
+						onSend={handleComposerSend}
 						onSelectImages={selectImages}
 						shouldDisableImages={shouldDisableImages}
 						mode={mode}
@@ -2550,6 +2704,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						onStop={handleStopTask}
 						onEnqueueMessage={handleEnqueueCurrentMessage}
 						enqueueDisabled={Boolean(pendingQueueRequest)}
+						conversationClineMessages={conversationPromptMessages}
+						isInTask={Boolean(task)}
 					/>
 				)}
 			</div>

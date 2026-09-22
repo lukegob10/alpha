@@ -5,7 +5,7 @@ import type { AlphaMessage } from "@alpha-code/types"
 
 import { vscode } from "@src/utils/vscode"
 import { Button } from "@src/components/ui"
-import { useExtensionState } from "@src/context/ExtensionStateContext"
+import { useShellState } from "@src/context/ExtensionStateContext"
 
 type AutoApprovedRequestLimitWarningProps = {
 	message: AlphaMessage
@@ -13,7 +13,7 @@ type AutoApprovedRequestLimitWarningProps = {
 
 export const AutoApprovedRequestLimitWarning = memo(({ message }: AutoApprovedRequestLimitWarningProps) => {
 	const [buttonClicked, setButtonClicked] = useState(false)
-	const { currentTaskId } = useExtensionState()
+	const { currentTaskId } = useShellState()
 	const { count, type = "requests" } = JSON.parse(message.text ?? "{}")
 
 	if (buttonClicked) {

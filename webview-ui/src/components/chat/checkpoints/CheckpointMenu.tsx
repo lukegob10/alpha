@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next"
 
 import { Button, Popover, PopoverContent, PopoverTrigger, StandardTooltip } from "@/components/ui"
 import { useAlphaPortal } from "@/components/ui/hooks"
-import { useExtensionState } from "@/context/ExtensionStateContext"
+import { useShellState } from "@/context/ExtensionStateContext"
 
 import { vscode } from "@src/utils/vscode"
 import { Checkpoint } from "./schema"
@@ -35,7 +35,7 @@ export const CheckpointMenu = ({
 	const [restoreConfirming, setRestoreConfirming] = useState(false)
 	const [internalMoreOpen, setInternalMoreOpen] = useState(false)
 	const portalContainer = useAlphaPortal("alpha-portal")
-	const { currentTaskId } = useExtensionState()
+	const { currentTaskId } = useShellState()
 
 	const previousCommitHash = checkpoint?.from
 

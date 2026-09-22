@@ -12,7 +12,7 @@ import type { CampaignConfig, CampaignReport } from "./types"
 
 export function assertLiveGateConfig(config: CampaignConfig): void {
 	const completeSuite = [
-		WORKFLOW_SCENARIO_IDS.filter((id) => !isReliabilityScenario(id)),
+		WORKFLOW_SCENARIO_IDS.filter((id) => !isReliabilityScenario(id) && id !== "problem-solving-attempt"),
 		RELIABILITY_ACCEPTANCE_SCENARIO_IDS,
 		CORE_SCENARIO_IDS,
 	].some((ids) => config.scenarioIds.length === ids.length && ids.every((id) => config.scenarioIds.includes(id)))

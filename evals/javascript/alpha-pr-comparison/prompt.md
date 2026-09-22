@@ -1,0 +1,1 @@
+Compare the base and candidate unified diffs. `comparePatches` must report whether they make the same added and removed lines, ignoring file headers and unchanged context. Preserve the exported function and run the tests after the final edit.

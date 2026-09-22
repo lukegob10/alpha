@@ -461,7 +461,7 @@ describe("AlphaProvider Task History Synchronization", () => {
 			// Only the requested root uses the throwing, full task loader. Descendants
 			// use the non-throwing history index while their records are being created.
 			expect(getTaskSpy).toHaveBeenCalledTimes(1)
-			expect(getTaskSpy).toHaveBeenCalledWith(parent.id)
+			expect(getTaskSpy).toHaveBeenCalledWith(parent.id, { includeApiConversationHistory: false })
 
 			warningSpy.mockRestore()
 		})

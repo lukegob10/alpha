@@ -61,6 +61,7 @@ interface HostTask {
 	taskAsk?: AlphaMessage
 	didComplete?: boolean
 	approveAsk(): void
+	denyAsk(response?: { text?: string; images?: string[] }): void
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
 	condenseContext(): Promise<void>
@@ -192,6 +193,126 @@ export function isApprovedWorkflowCommand(
 	return false
 }
 
+/** Same prefixes the extension denies. The scenario does not add a task-specific allowlist. */
+export const PROBLEM_SOLVING_DENIED_COMMANDS = [
+	"git push",
+	"git remote",
+	"git config",
+	"npm install",
+	"pnpm install",
+] as const
+
+const PROBLEM_READ_TOOLS = [
+	"readFile",
+	"listFiles",
+	"listFilesTopLevel",
+	"listFilesRecursive",
+	"searchFiles",
+	"codebaseSearch",
+] as const
+const PROBLEM_WRITE_TOOLS = ["editedExistingFile", "newFileCreated", "appliedDiff"] as const
+const SHELL_OPERATOR = /[|&;`$><\n\r]/
+
+function commandPrefix(command: string): string {
+	return command.trim().toLowerCase().replace(/\s+/g, " ")
+}
+
+function deniedProblemCommand(command: string): boolean {
+	const normalized = commandPrefix(command)
+	return PROBLEM_SOLVING_DENIED_COMMANDS.some(
+		(prefix) => normalized === prefix || normalized.startsWith(`${prefix} `),
+	)
+}
+
+function pathStaysInWorkspace(candidate: string, workspace: string): boolean {
+	const relative = path.relative(workspace, path.resolve(workspace, candidate))
+	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+}
+
+function commandArgumentsStayInWorkspace(command: string, workspace: string): boolean {
+	for (const token of command.trim().split(/\s+/).slice(1)) {
+		const value = token.replace(/^"(.*)"$/, "$1")
+		if (value.startsWith("-") || (!/[\\/]/.test(value) && !value.startsWith("."))) continue
+		if (!pathStaysInWorkspace(value, workspace)) return false
+	}
+	return true
+}
+
+function recordedWorkingDirectoryStaysInWorkspace(command: string, history: unknown[], workspace: string): boolean {
+	for (let messageIndex = history.length - 1; messageIndex >= 0; messageIndex--) {
+		const message = record(history[messageIndex])
+		const content = message?.content
+		if (!Array.isArray(content) || message?.role !== "assistant") continue
+		for (const block of content.map(record)) {
+			if (block?.type !== "tool_use" || !WORKFLOW_COMMAND_TOOL_NAMES.has(String(block.name))) continue
+			const input = record(block.input)
+			if (input?.command !== command || typeof input.cwd !== "string" || input.cwd.length === 0) continue
+			return pathStaysInWorkspace(input.cwd, workspace)
+		}
+	}
+	return true
+}
+
+/**
+ * Approve a workspace-scoped command unless it matches the extension deny list,
+ * chains a shell operator, or names a path outside the task workspace.
+ */
+export function isApprovedProblemCommand(command: string, history: unknown[], workspace: string): boolean {
+	const trimmed = command.trim()
+	if (!trimmed || SHELL_OPERATOR.test(trimmed) || deniedProblemCommand(trimmed)) return false
+	return (
+		commandArgumentsStayInWorkspace(trimmed, workspace) &&
+		recordedWorkingDirectoryStaysInWorkspace(trimmed, history, workspace)
+	)
+}
+
+/** An explicit outside-workspace read or write is denied so the attempt can continue. */
+export function isOutsideWorkspaceProblemToolAsk(text: string): boolean {
+	const value = parsedProblemToolAsk(text)
+	const tool = value?.tool
+	return (
+		typeof tool === "string" &&
+		value?.isOutsideWorkspace === true &&
+		(PROBLEM_READ_TOOLS.includes(tool as (typeof PROBLEM_READ_TOOLS)[number]) ||
+			PROBLEM_WRITE_TOOLS.includes(tool as (typeof PROBLEM_WRITE_TOOLS)[number]))
+	)
+}
+
+/** Read and write approvals stay inside the task workspace. A missing scope flag is not treated as inside. */
+export function isApprovedProblemToolAsk(text: string): boolean {
+	const value = parsedProblemToolAsk(text)
+	const tool = value?.tool
+	if (typeof tool !== "string" || value?.isOutsideWorkspace !== false) return false
+	return (
+		PROBLEM_READ_TOOLS.includes(tool as (typeof PROBLEM_READ_TOOLS)[number]) ||
+		PROBLEM_WRITE_TOOLS.includes(tool as (typeof PROBLEM_WRITE_TOOLS)[number])
+	)
+}
+
+function parsedProblemToolAsk(text: string): Record<string, unknown> | undefined {
+	try {
+		return record(JSON.parse(text))
+	} catch {
+		return undefined
+	}
+}
+
+export function usageFromHistoryItem(value: unknown): {
+	inputTokens: number | null
+	outputTokens: number | null
+	cost: number | null
+} {
+	const item = record(value)
+	const tokens = (field: unknown) =>
+		typeof field === "number" && Number.isSafeInteger(field) && field >= 0 ? field : null
+	const cost = item?.totalCost
+	return {
+		inputTokens: tokens(item?.tokensIn),
+		outputTokens: tokens(item?.tokensOut),
+		cost: typeof cost === "number" && Number.isFinite(cost) && cost >= 0 ? cost : null,
+	}
+}
+
 export class ExtensionWorkflowHost implements WorkflowHost {
 	private readonly provider: HostProvider
 	private readonly completions = new Map<string, number>()
@@ -206,6 +327,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 	private readonly backgroundIds = new Set<string>()
 	private readonly admissions: Array<{ taskId: string; text: string; after: number }> = []
 	private activePrompt: WorkflowPromptName = "review"
+	private problemSolving = false
 	private readonly onCompleted = (id: string) => this.completions.set(id, (this.completions.get(id) ?? 0) + 1)
 	private readonly onCreated = (task: HostTask) => {
 		if (this.scripted || this.guardedTasks.has(task)) return
@@ -247,7 +369,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			alwaysAllowSubagents: false,
 			alwaysAllowFollowupQuestions: false,
 			allowedCommands: [],
-			deniedCommands: ["git push", "git remote", "git config", "npm install", "pnpm install"],
+			deniedCommands: [...PROBLEM_SOLVING_DENIED_COMMANDS],
 			allowedMaxRequests: budget.limit,
 			requestDelaySeconds: 0,
 			writeDelayMs: 0,
@@ -290,6 +412,20 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			if (error instanceof WorkflowFailure) throw error
 			throw new WorkflowFailure("timeout", code)
 		}
+	}
+
+	async startProblem(text: string): Promise<string> {
+		if (text.trim().length === 0 || text.length > 100_000) {
+			throw new WorkflowFailure("configuration", "invalid_problem_prompt", true)
+		}
+		this.problemSolving = true
+		this.configuration.alwaysAllowExecute = true
+		this.configuration.commandExecutionTimeout = 60
+		await this.api.setConfiguration(this.configuration)
+		const id = await this.api.startNewTask({ configuration: this.configuration, text })
+		this.currentId = id
+		this.expectedCompletions.set(id, 1)
+		return id
 	}
 
 	async start(prompt: WorkflowPromptName, options?: { autoApprovalEnabled?: boolean }): Promise<string> {
@@ -366,14 +502,15 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			const ask = task.taskAsk
 			if (!ask || ask.partial || this.approvedAsks.has(ask.ts)) return false
 			if (ask.ask === "command") {
-				if (
-					!isApprovedWorkflowCommand(
-						ask.text ?? "",
-						task.apiConversationHistory,
-						this.workspace,
-						workflowCommands(this.activePrompt),
-					)
-				) {
+				const approved = this.problemSolving
+					? isApprovedProblemCommand(ask.text ?? "", task.apiConversationHistory, this.workspace)
+					: isApprovedWorkflowCommand(
+							ask.text ?? "",
+							task.apiConversationHistory,
+							this.workspace,
+							workflowCommands(this.activePrompt),
+						)
+				if (!approved) {
 					throw new WorkflowFailure("policy", "unexpected_command")
 				}
 				this.approvedAsks.add(ask.ts)
@@ -388,6 +525,16 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 				return true
 			} else if (ask.ask === "api_req_failed" || ask.ask === "auto_approval_max_req_reached") {
 				throw new WorkflowFailure("provider", ask.ask, true)
+			} else if (this.problemSolving && ask.ask === "tool") {
+				if (isOutsideWorkspaceProblemToolAsk(ask.text ?? "")) {
+					this.approvedAsks.add(ask.ts)
+					task.denyAsk({ text: "Outside the task workspace." })
+				} else if (!isApprovedProblemToolAsk(ask.text ?? "")) {
+					throw unexpectedAskFailure(ask)
+				} else {
+					this.approvedAsks.add(ask.ts)
+					task.approveAsk()
+				}
 			} else {
 				throw unexpectedAskFailure(ask)
 			}
@@ -525,6 +672,11 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 
 	requestsUsed(): number {
 		return this.budget.used
+	}
+
+	async readProblemUsage(taskId: string): Promise<ReturnType<typeof usageFromHistoryItem>> {
+		const { historyItem } = await this.provider.getTaskWithId(taskId)
+		return usageFromHistoryItem(historyItem)
 	}
 
 	/** Capture only fixture lifecycle state; never export profile configuration or credentials. */

@@ -583,7 +583,7 @@ export class AlphaProvider
 			this.disposables.push(
 				vscode.lm.onDidChangeChatModels(() => {
 					this.draftReasoningCache = undefined
-					void this.postStateToWebviewWithoutTaskHistory().catch(() => undefined)
+					void this.postStateToWebviewWithoutAlphaMessages().catch(() => undefined)
 				}),
 			)
 		this.currentWorkspacePath = getWorkspacePath()
@@ -706,7 +706,7 @@ export class AlphaProvider
 			const onTaskSpawned = (taskId: string) => this.emit(AlphaCodeEventName.TaskSpawned, taskId)
 			const onTaskUserMessage = (taskId: string) => this.emit(AlphaCodeEventName.TaskUserMessage, taskId)
 			const onTaskTokenUsageUpdated = (taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage) => {
-				void this.postStateToWebviewWithoutTaskHistory()
+				void this.postTaskSessionStateToWebview()
 				this.emit(AlphaCodeEventName.TaskTokenUsageUpdated, taskId, tokenUsage, toolUsage)
 			}
 
@@ -941,7 +941,9 @@ export class AlphaProvider
 			// child and will update the parent to point at the new child.
 			if (parentTaskId && childTaskId && !options?.skipDelegationRepair) {
 				try {
-					const { historyItem: parentHistory } = await this.getTaskWithId(parentTaskId)
+					const { historyItem: parentHistory } = await this.getTaskWithId(parentTaskId, {
+						includeApiConversationHistory: false,
+					})
 
 					if (parentHistory.status === "delegated" && parentHistory.awaitingChildId === childTaskId) {
 						await this.updateTaskHistory({
@@ -1346,7 +1348,10 @@ export class AlphaProvider
 							const hasActualSettings = !!fullProfile.apiProvider
 
 							if (hasActualSettings) {
-								await this.activateProviderProfile({ name: profile.name })
+								await this.activateProviderProfile(
+									{ name: profile.name },
+									{ persistTaskHistory: false, notifyWebview: false },
+								)
 							} else {
 								// The task will continue with the current/default configuration.
 							}
@@ -1496,6 +1501,10 @@ export class AlphaProvider
 			this.log(
 				`[createTaskWithHistoryItem] ${task.parentTask ? "child" : "parent"} task ${task.taskId}.${task.instanceId} instantiated`,
 			)
+		}
+
+		if (shouldFocus) {
+			await this.postTaskStateToWebview({ clearManagedAgentTree: true })
 		}
 
 		return task
@@ -2263,7 +2272,7 @@ export class AlphaProvider
 
 	async activateProviderProfile(
 		args: { name: string } | { id: string },
-		options?: { persistModeConfig?: boolean; persistTaskHistory?: boolean },
+		options?: { persistModeConfig?: boolean; persistTaskHistory?: boolean; notifyWebview?: boolean },
 	) {
 		const task = this.getCurrentTask()
 		return this.enqueueConfiguration(() => this.activateProviderProfileWithinQueue(args, options, task))
@@ -2271,13 +2280,14 @@ export class AlphaProvider
 
 	private async activateProviderProfileWithinQueue(
 		args: { name: string } | { id: string },
-		options: { persistModeConfig?: boolean; persistTaskHistory?: boolean } | undefined,
+		options: { persistModeConfig?: boolean; persistTaskHistory?: boolean; notifyWebview?: boolean } | undefined,
 		task: Task | undefined,
 	) {
 		const { name, id, ...providerSettings } = await this.providerSettingsManager.activateProfile(args)
 
 		const persistModeConfig = options?.persistModeConfig ?? true
 		const persistTaskHistory = options?.persistTaskHistory ?? true
+		const notifyWebview = options?.notifyWebview ?? true
 
 		// See `upsertProviderProfile` for a description of what this is doing.
 		await Promise.all([
@@ -2301,7 +2311,9 @@ export class AlphaProvider
 			await this.persistStickyProviderProfileToCurrentTask(name, task)
 		}
 
-		await this.postStateToWebview()
+		if (notifyWebview) {
+			await this.postStateToWebview()
+		}
 
 		if (providerSettings.apiProvider) {
 			this.emit(AlphaCodeEventName.ProviderProfileChanged, { name, provider: providerSettings.apiProvider })
@@ -2347,7 +2359,10 @@ export class AlphaProvider
 
 	// Task history
 
-	async getTaskWithId(id: string): Promise<{
+	async getTaskWithId(
+		id: string,
+		options?: { includeApiConversationHistory?: boolean },
+	): Promise<{
 		historyItem: HistoryItem
 		taskDirPath: string
 		apiConversationHistoryFilePath: string
@@ -2366,22 +2381,24 @@ export class AlphaProvider
 		const taskDirPath = await getTaskDirectoryPath(globalStoragePath, id)
 		const apiConversationHistoryFilePath = path.join(taskDirPath, GlobalFileNames.apiConversationHistory)
 		const uiMessagesFilePath = path.join(taskDirPath, GlobalFileNames.uiMessages)
-		const fileExists = await fileExistsAtPath(apiConversationHistoryFilePath)
-
 		let apiConversationHistory: Anthropic.MessageParam[] = []
 
-		if (fileExists) {
-			try {
-				apiConversationHistory = JSON.parse(await fs.readFile(apiConversationHistoryFilePath, "utf8"))
-			} catch (error) {
+		if (options?.includeApiConversationHistory !== false) {
+			const fileExists = await fileExistsAtPath(apiConversationHistoryFilePath)
+
+			if (fileExists) {
+				try {
+					apiConversationHistory = JSON.parse(await fs.readFile(apiConversationHistoryFilePath, "utf8"))
+				} catch (error) {
+					console.warn(
+						`[getTaskWithId] api_conversation_history.json corrupted for task ${id}, returning empty history: ${error instanceof Error ? error.message : String(error)}`,
+					)
+				}
+			} else {
 				console.warn(
-					`[getTaskWithId] api_conversation_history.json corrupted for task ${id}, returning empty history: ${error instanceof Error ? error.message : String(error)}`,
+					`[getTaskWithId] api_conversation_history.json missing for task ${id}, returning empty history`,
 				)
 			}
-		} else {
-			console.warn(
-				`[getTaskWithId] api_conversation_history.json missing for task ${id}, returning empty history`,
-			)
 		}
 
 		return {
@@ -2397,7 +2414,7 @@ export class AlphaProvider
 		historyItem: HistoryItem
 		aggregatedCosts: AggregatedCosts
 	}> {
-		const { historyItem } = await this.getTaskWithId(taskId)
+		const { historyItem } = await this.getTaskWithId(taskId, { includeApiConversationHistory: false })
 
 		const aggregatedCosts = await aggregateTaskCostsRecursive(taskId, async (id: string) => {
 			// Descendants can be attached to the parent a few milliseconds before their
@@ -2413,18 +2430,29 @@ export class AlphaProvider
 	}
 
 	async showTaskWithId(id: string) {
-		if (id !== this.getCurrentTask()?.taskId) {
-			const focused = await this.focusTask(id)
-			if (focused) {
-				await this.postMessageToWebview({ type: "action", action: "chatButtonClicked" })
-				return
+		try {
+			if (id !== this.getCurrentTask()?.taskId) {
+				const focused = await this.focusTask(id)
+				if (focused) {
+					await this.postMessageToWebview({ type: "action", action: "chatButtonClicked" })
+					await this.postTaskOpenResult(id, true)
+					return
+				}
+
+				const { historyItem } = await this.getTaskWithId(id, { includeApiConversationHistory: false })
+				await this.createTaskWithHistoryItem(historyItem, { preserveExisting: true })
 			}
 
-			const { historyItem } = await this.getTaskWithId(id)
-			await this.createTaskWithHistoryItem(historyItem, { preserveExisting: true })
+			await this.postMessageToWebview({ type: "action", action: "chatButtonClicked" })
+			await this.postTaskOpenResult(id, true)
+		} catch (error) {
+			await this.postTaskOpenResult(id, false)
+			throw error
 		}
+	}
 
-		await this.postMessageToWebview({ type: "action", action: "chatButtonClicked" })
+	private async postTaskOpenResult(taskId: string, success: boolean): Promise<void> {
+		await this.postMessageToWebview({ type: "taskOpenResult", taskId, success })
 	}
 
 	async exportTaskWithId(id: string) {
@@ -2502,7 +2530,9 @@ export class AlphaProvider
 	async deleteTaskWithId(id: string, cascadeSubtasks: boolean = true) {
 		try {
 			// get the task directory full path and history item
-			const { taskDirPath, historyItem } = await this.getTaskWithId(id)
+			const { taskDirPath, historyItem } = await this.getTaskWithId(id, {
+				includeApiConversationHistory: false,
+			})
 
 			// Collect all task IDs to delete (parent + all subtasks)
 			const allIdsToDelete: string[] = [id]
@@ -2511,7 +2541,9 @@ export class AlphaProvider
 				// Recursively collect all child IDs
 				const collectChildIds = async (taskId: string): Promise<void> => {
 					try {
-						const { historyItem: item } = await this.getTaskWithId(taskId)
+						const { historyItem: item } = await this.getTaskWithId(taskId, {
+							includeApiConversationHistory: false,
+						})
 						if (item.childIds && item.childIds.length > 0) {
 							for (const childId of item.childIds) {
 								allIdsToDelete.push(childId)
@@ -2768,7 +2800,7 @@ export class AlphaProvider
 		}).catch((deliveryError) => {
 			this.log(`Failed to publish lifecycle degraded signal for ${taskId}: ${String(deliveryError)}`)
 		})
-		void this.postStateToWebviewWithoutTaskHistory().catch((stateError) => {
+		void this.postTaskSessionStateToWebview().catch((stateError) => {
 			this.log(`Failed to refresh degraded lifecycle state for ${taskId}: ${String(stateError)}`)
 		})
 		return { ...signal }
@@ -2793,7 +2825,7 @@ export class AlphaProvider
 		}).catch((deliveryError) => {
 			this.log(`Failed to publish lifecycle recovery signal for ${taskId}: ${String(deliveryError)}`)
 		})
-		void this.postStateToWebviewWithoutTaskHistory().catch((stateError) => {
+		void this.postTaskSessionStateToWebview().catch((stateError) => {
 			this.log(`Failed to refresh recovered lifecycle state for ${taskId}: ${String(stateError)}`)
 		})
 	}
@@ -3015,7 +3047,7 @@ export class AlphaProvider
 
 	private handleAgentLifecycleSnapshotUpdated(snapshot: AgentLifecycleSnapshot): void {
 		this.taskSessions.markLifecycleSnapshot(snapshot.taskId, snapshot)
-		void this.postStateToWebviewWithoutTaskHistory().catch((error) => {
+		void this.postTaskSessionStateToWebview().catch((error) => {
 			this.log(`Failed to refresh task state after lifecycle update: ${String(error)}`)
 		})
 	}
@@ -3132,6 +3164,34 @@ export class AlphaProvider
 
 		if (options.clearManagedAgentTree) {
 			state.managedAgentTree = undefined
+		}
+
+		await this.postMessageToWebview({ type: "state", state })
+	}
+
+	/**
+	 * Publish live-task metadata without reserializing the transcript or settings.
+	 *
+	 * Token usage, lifecycle ticks, and snapshot updates used to ship a full
+	 * extension snapshot minus taskHistory. That still copied clineMessages on
+	 * every heartbeat and stalled the webview. Keep those paths on this patch.
+	 */
+	async postTaskSessionStateToWebview(): Promise<void> {
+		const taskStateSeq = ++this.taskStateSeq
+		const currentTask = this.currentView.type === "task" ? this.getLiveTask(this.currentView.taskId) : undefined
+		const state: Partial<ExtensionState> = {
+			currentView: this.currentView,
+			activeTaskId: this.getActiveTaskId(),
+			liveTaskIds: this.getLiveTaskIds(),
+			liveTasksById: this.getLiveTaskMetadata(),
+			agentLifecycleSnapshots: this.getAgentLifecycleSnapshots(),
+			agentLifecycleDegraded: this.getAgentLifecycleDegraded(),
+			taskStateSeq,
+		}
+
+		if (currentTask) {
+			state.currentTaskId = currentTask.taskId
+			state.currentTaskItem = this.taskHistoryStore.get(currentTask.taskId)
 		}
 
 		await this.postMessageToWebview({ type: "state", state })
@@ -4205,7 +4265,7 @@ export class AlphaProvider
 		this.taskSessions.markLifecycle(taskId, lifecycle, waitingReason)
 		this.log(`[task-session] ${taskId}: ${lifecycle}${waitingReason ? ` (${waitingReason})` : ""}`)
 		this.queueTaskLifecycleHistoryStatus(taskId, lifecycle, waitingReason)
-		void this.postStateToWebviewWithoutTaskHistory()
+		void this.postTaskSessionStateToWebview()
 	}
 
 	/** Keep the task Running so cancel still works, but name the completion-gate wait. */
@@ -4792,7 +4852,7 @@ export class AlphaProvider
 		await this.addTaskToStack(task, { focus: !background })
 		await this.postTaskStateToWebview({ clearManagedAgentTree: !background })
 		if (hasConfigurationOverrides) {
-			void this.postStateToWebviewWithoutTaskHistory().catch((error) => {
+			void this.postStateToWebviewWithoutAlphaMessages().catch((error) => {
 				this.log(`[createTask] Background state refresh failed: ${String(error)}`)
 			})
 		}
@@ -4854,7 +4914,7 @@ export class AlphaProvider
 
 		let historyItem: HistoryItem | undefined
 		try {
-			const history = await this.getTaskWithId(task.taskId)
+			const history = await this.getTaskWithId(task.taskId, { includeApiConversationHistory: false })
 			historyItem = history.historyItem
 		} catch (error) {
 			// Cancellation is authoritative even when optional rehydration data is
@@ -7992,7 +8052,9 @@ export class AlphaProvider
 			throw new Error(`Agent ${record.path} does not belong to a resumable asynchronous group`)
 		}
 
-		const { historyItem: storedChildHistoryItem } = await this.getTaskWithId(record.taskId)
+		const { historyItem: storedChildHistoryItem } = await this.getTaskWithId(record.taskId, {
+			includeApiConversationHistory: false,
+		})
 		const childHistoryItem =
 			storedChildHistoryItem ??
 			({
@@ -8361,7 +8423,7 @@ export class AlphaProvider
 
 	private async attachSubagentGroupToParentHistory(parent: Task, prepared: PreparedSubagentGroup): Promise<void> {
 		try {
-			const { historyItem } = await this.getTaskWithId(parent.taskId)
+			const { historyItem } = await this.getTaskWithId(parent.taskId, { includeApiConversationHistory: false })
 			await this.updateTaskHistory({
 				...historyItem,
 				childIds: Array.from(
@@ -8460,7 +8522,7 @@ export class AlphaProvider
 						}
 			const researchDeadlineAt = role === "worker" ? undefined : Date.now() + SUBAGENT_RESEARCH_WINDOW_MS
 			if (followupInstruction) {
-				const { historyItem } = await this.getTaskWithId(envelope.id)
+				const { historyItem } = await this.getTaskWithId(envelope.id, { includeApiConversationHistory: false })
 				const activeHistory = {
 					...historyItem,
 					status: "active" as const,
@@ -9070,7 +9132,7 @@ export class AlphaProvider
 		const child = this.getLiveTask(taskId)
 		child?.setSubagentChangeSet(changeSet)
 		try {
-			const { historyItem } = await this.getTaskWithId(taskId)
+			const { historyItem } = await this.getTaskWithId(taskId, { includeApiConversationHistory: false })
 			await this.updateTaskHistory({ ...historyItem, subagentChangeSet: structuredClone(changeSet) })
 		} catch (error) {
 			this.log(`Failed to update worker change-set history for ${taskId}: ${String(error)}`)
@@ -9582,7 +9644,7 @@ export class AlphaProvider
 
 		// 5) Persist parent delegation metadata BEFORE the child starts writing.
 		try {
-			const { historyItem } = await this.getTaskWithId(parentTaskId)
+			const { historyItem } = await this.getTaskWithId(parentTaskId, { includeApiConversationHistory: false })
 			const childIds = Array.from(new Set([...(historyItem.childIds ?? []), child.taskId]))
 			const updatedHistory: typeof historyItem = {
 				...historyItem,
@@ -9640,8 +9702,10 @@ export class AlphaProvider
 			typeof this.isTaskOnScreen === "function"
 				? this.isTaskOnScreen(childTaskId)
 				: this.getCurrentTask()?.taskId === childTaskId
-		const { historyItem, uiMessagesFilePath, apiConversationHistoryFilePath } =
-			await this.getTaskWithId(parentTaskId)
+		const { historyItem, uiMessagesFilePath, apiConversationHistoryFilePath } = await this.getTaskWithId(
+			parentTaskId,
+			{ includeApiConversationHistory: false },
+		)
 		const originalParentHistory = structuredClone(historyItem)
 		const isMatchingCommittedRetry =
 			historyItem.completedByChildId === childTaskId &&
@@ -9946,7 +10010,9 @@ export class AlphaProvider
 				for (const retryDelayMs of [0, 50, 200]) {
 					if (retryDelayMs > 0) await delay(retryDelayMs)
 					try {
-						const { historyItem: childHistory } = await this.getTaskWithId(childTaskId)
+						const { historyItem: childHistory } = await this.getTaskWithId(childTaskId, {
+							includeApiConversationHistory: false,
+						})
 						await this.updateTaskHistory({ ...childHistory, status: "completed" })
 						childStatusSaved = true
 						break
