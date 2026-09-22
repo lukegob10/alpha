@@ -460,6 +460,8 @@ export class AlphaProvider
 	/** Independent wire-order guards for task-view state domains. */
 	private clineMessagesSeq = 0
 	private taskStateSeq = 0
+	/** Latest task open wins. Older navigations must not focus or publish over it. */
+	private taskNavigationGeneration = 0
 	private configurationQueue: Promise<unknown> = Promise.resolve()
 	private draftReasoningCache?: { key: string; state: Promise<TaskReasoningProjection> }
 
@@ -1297,6 +1299,8 @@ export class AlphaProvider
 			startTask?: boolean
 			preserveExisting?: boolean
 			background?: boolean
+			/** The caller publishes the transcript after its own acknowledgement. */
+			deferTranscript?: boolean
 			subagentRuntime?: Pick<
 				CreateTaskOptions,
 				| "workspacePath"
@@ -1316,6 +1320,8 @@ export class AlphaProvider
 			this.getLiveTask(historyItem.id) ?? this.taskStack?.find((task) => task.taskId === historyItem.id)
 		const isRehydratingCurrentTask = Boolean(existingTask)
 		const shouldFocus = !options?.background
+		const navigationGeneration = this.taskNavigationGeneration
+		const focusThisRestore = () => shouldFocus && this.taskNavigationGeneration === navigationGeneration
 
 		// If the history item has a saved mode, restore it and its associated API configuration.
 		if (historyItem.mode) {
@@ -1483,12 +1489,12 @@ export class AlphaProvider
 			} else {
 				this.taskStack.push(task)
 			}
-			this.taskSessions.register(task, { focus: shouldFocus })
-			if (shouldFocus) {
+			this.taskSessions.register(task, { focus: focusThisRestore() })
+			if (focusThisRestore()) {
 				this.currentView = { type: "task", taskId: task.taskId }
 				this.newTaskDraftMode = defaultModeSlug
 				task.emit(AlphaCodeEventName.TaskFocused)
-			} else if (this.getActiveTaskId() === task.taskId) {
+			} else if (!shouldFocus && this.getActiveTaskId() === task.taskId) {
 				this.taskSessions.clearFocus()
 			}
 
@@ -1496,15 +1502,16 @@ export class AlphaProvider
 				`[createTaskWithHistoryItem] rehydrated task ${task.taskId}.${task.instanceId} in-place (flicker-free)`,
 			)
 		} else {
-			await this.addTaskToStack(task, { focus: shouldFocus })
+			await this.addTaskToStack(task, { focus: focusThisRestore() })
 
 			this.log(
 				`[createTaskWithHistoryItem] ${task.parentTask ? "child" : "parent"} task ${task.taskId}.${task.instanceId} instantiated`,
 			)
 		}
 
-		if (shouldFocus) {
-			await this.postTaskStateToWebview({ clearManagedAgentTree: true })
+		if (focusThisRestore()) {
+			await this.postTaskStateToWebview({ clearManagedAgentTree: true, includeTranscript: false })
+			if (!options?.deferTranscript) this.scheduleVisibleTranscript(task.taskId, navigationGeneration)
 		}
 
 		return task
@@ -1714,6 +1721,9 @@ export class AlphaProvider
 			"cancelTask",
 			"cancelSubagent",
 			"cancelSubagentGroup",
+			// Task switches must not wait behind settings or other global commands.
+			// Overlapping opens are coalesced by taskNavigationGeneration.
+			"showTaskWithId",
 		])
 		const logFailure = (message: WebviewMessage, error: unknown) => {
 			this.log(
@@ -2430,23 +2440,51 @@ export class AlphaProvider
 	}
 
 	async showTaskWithId(id: string) {
+		const generation = ++this.taskNavigationGeneration
+		const stillCurrent = () => generation === this.taskNavigationGeneration
+		let publishTranscript = false
 		try {
 			if (id !== this.getCurrentTask()?.taskId) {
-				const focused = await this.focusTask(id)
-				if (focused) {
-					await this.postMessageToWebview({ type: "action", action: "chatButtonClicked" })
-					await this.postTaskOpenResult(id, true)
+				if (!stillCurrent()) {
+					await this.postTaskOpenResult(id, false)
 					return
 				}
-
-				const { historyItem } = await this.getTaskWithId(id, { includeApiConversationHistory: false })
-				await this.createTaskWithHistoryItem(historyItem, { preserveExisting: true })
+				const focused = await this.focusTask(id, generation)
+				if (!stillCurrent()) {
+					await this.postTaskOpenResult(id, false)
+					return
+				}
+				if (!focused) {
+					const { historyItem } = await this.getTaskWithId(id, { includeApiConversationHistory: false })
+					if (!stillCurrent()) {
+						await this.postTaskOpenResult(id, false)
+						return
+					}
+					await this.createTaskWithHistoryItem(historyItem, {
+						preserveExisting: true,
+						deferTranscript: true,
+					})
+					if (!stillCurrent()) {
+						await this.postTaskOpenResult(id, false)
+						return
+					}
+				}
+				publishTranscript = true
 			}
 
+			if (!stillCurrent()) {
+				await this.postTaskOpenResult(id, false)
+				return
+			}
 			await this.postMessageToWebview({ type: "action", action: "chatButtonClicked" })
+			if (!stillCurrent()) {
+				await this.postTaskOpenResult(id, false)
+				return
+			}
 			await this.postTaskOpenResult(id, true)
+			if (publishTranscript && stillCurrent()) this.scheduleVisibleTranscript(id, generation)
 		} catch (error) {
-			await this.postTaskOpenResult(id, false)
+			if (stillCurrent()) await this.postTaskOpenResult(id, false)
 			throw error
 		}
 	}
@@ -3120,7 +3158,9 @@ export class AlphaProvider
 	 * payloads. Keep that work out of the interaction path and let a sequenced
 	 * full refresh follow in the background.
 	 */
-	async postTaskStateToWebview(options: { clearManagedAgentTree?: boolean } = {}): Promise<void> {
+	async postTaskStateToWebview(
+		options: { clearManagedAgentTree?: boolean; includeTranscript?: boolean } = {},
+	): Promise<void> {
 		const clineMessagesSeq = ++this.clineMessagesSeq
 		const taskStateSeq = ++this.taskStateSeq
 		const messageQueueSeq = ++this.messageQueueSeq
@@ -3154,7 +3194,7 @@ export class AlphaProvider
 			liveTasksById: this.getLiveTaskMetadata(),
 			agentLifecycleSnapshots: this.getAgentLifecycleSnapshots(),
 			agentLifecycleDegraded: this.getAgentLifecycleDegraded(),
-			clineMessages: currentTask?.clineMessages ?? [],
+			clineMessages: options.includeTranscript === false ? [] : (currentTask?.clineMessages ?? []),
 			messageQueue: currentTask?.messageQueueService?.messages,
 			clineMessagesSeq,
 			taskStateSeq,
@@ -3167,6 +3207,53 @@ export class AlphaProvider
 		}
 
 		await this.postMessageToWebview({ type: "state", state })
+	}
+
+	/** Deliver the visible transcript after the lightweight task switch has been posted. */
+	private scheduleVisibleTranscript(taskId: string, navigationGeneration: number): void {
+		const taskStateSeq = this.taskStateSeq
+		void this.postVisibleTaskTranscript(taskId, taskStateSeq, navigationGeneration).catch((error) => {
+			this.log(
+				`[task-navigation] Transcript delivery failed: ${error instanceof Error ? error.message : String(error)}`,
+			)
+		})
+	}
+
+	/**
+	 * The transcript is a separate state patch. Its taskStateSeq is the navigation
+	 * that captured it, so a newer switch rejects it even when this message
+	 * sequence is higher.
+	 */
+	private async postVisibleTaskTranscript(
+		taskId: string,
+		taskStateSeq: number,
+		navigationGeneration: number,
+	): Promise<void> {
+		if (!this.canPublishTranscript(taskId, taskStateSeq, navigationGeneration)) return
+		const task = this.getLiveTask(taskId)
+		if (!task) return
+		const clineMessages = task.clineMessages
+		const clineMessagesSeq = ++this.clineMessagesSeq
+		if (!this.canPublishTranscript(taskId, taskStateSeq, navigationGeneration)) return
+		await this.postMessageToWebview({
+			type: "state",
+			state: {
+				currentTaskId: taskId,
+				currentView: { type: "task", taskId },
+				taskStateSeq,
+				clineMessages,
+				clineMessagesSeq,
+			},
+		})
+	}
+
+	private canPublishTranscript(taskId: string, taskStateSeq: number, navigationGeneration: number): boolean {
+		return (
+			navigationGeneration === this.taskNavigationGeneration &&
+			this.taskStateSeq === taskStateSeq &&
+			this.currentView.type === "task" &&
+			this.currentView.taskId === taskId
+		)
 	}
 
 	/**
@@ -4591,11 +4678,14 @@ export class AlphaProvider
 		return this.taskSessions.getMetadata()
 	}
 
-	public async focusTask(taskId: string): Promise<boolean> {
+	public async focusTask(taskId: string, navigationGeneration?: number): Promise<boolean> {
+		const callerPublishesTranscript = navigationGeneration !== undefined
+		const generation = navigationGeneration ?? ++this.taskNavigationGeneration
+		if (generation !== this.taskNavigationGeneration) return false
 		const previous = this.getActiveTask()
 		const task = this.taskSessions.focus(taskId)
 
-		if (!task) {
+		if (!task || generation !== this.taskNavigationGeneration) {
 			return false
 		}
 
@@ -4606,12 +4696,14 @@ export class AlphaProvider
 		this.currentView = { type: "task", taskId: task.taskId }
 		this.newTaskDraftMode = defaultModeSlug
 		task.emit(AlphaCodeEventName.TaskFocused)
-		// A task switch must acknowledge the click from in-memory state. Building
-		// the full extension snapshot reads configuration and durable stores, which
-		// is especially noticeable when the selected transcript is large. Clear the
-		// previous task's managed tree in the fast snapshot, then reconcile the
-		// remaining settings in a sequenced background refresh.
-		await this.postTaskStateToWebview({ clearManagedAgentTree: true })
+		if (generation !== this.taskNavigationGeneration) return false
+		// Acknowledge the switch without cloning the transcript. The transcript
+		// follows as its own sequenced patch, and settings refresh in the background.
+		await this.postTaskStateToWebview({ clearManagedAgentTree: true, includeTranscript: false })
+		if (generation !== this.taskNavigationGeneration) return false
+		// showTaskWithId publishes the transcript after taskOpenResult. Direct
+		// callers still publish it here, after the lightweight switch.
+		if (!callerPublishesTranscript) this.scheduleVisibleTranscript(task.taskId, generation)
 		void this.postStateToWebviewWithoutAlphaMessages().catch((error) => {
 			this.log(`[focusTask] Background state refresh failed: ${String(error)}`)
 		})
@@ -4850,7 +4942,11 @@ export class AlphaProvider
 				: Promise.resolve()
 
 		await this.addTaskToStack(task, { focus: !background })
-		await this.postTaskStateToWebview({ clearManagedAgentTree: !background })
+		if (background) {
+			await this.postTaskSessionStateToWebview()
+		} else {
+			await this.postTaskStateToWebview({ clearManagedAgentTree: true })
+		}
 		if (hasConfigurationOverrides) {
 			void this.postStateToWebviewWithoutAlphaMessages().catch((error) => {
 				this.log(`[createTask] Background state refresh failed: ${String(error)}`)

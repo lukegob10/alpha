@@ -12,7 +12,10 @@ suite("Live Copilot GitHub CLI approval", function () {
 		if (process.env.ALPHA_E2E_PROVIDER_MODE !== "live-copilot") {
 			this.skip()
 		}
-		assert.equal(vscode.version, "1.122.1")
+		assert.ok(
+			vscode.version === "1.122.1" || vscode.version === "1.136.1",
+			"GitHub approval runs on the reference host or the live Copilot host",
+		)
 	})
 
 	test("Auto auto-approves a read-only gh probe and does not mutate GitHub", async () => {

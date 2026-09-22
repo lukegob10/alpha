@@ -216,6 +216,18 @@ export const mergeExtensionState = (prevState: ExtensionState, newState: Partial
 		rest.managedAgentTree = prevState.managedAgentTree
 		rest.taskStateSeq = prevState.taskStateSeq
 	}
+	// A late transcript from an older navigation can carry a higher message
+	// sequence. Reject it so it cannot replace the task that is now on screen.
+	// An equal task sequence is the transcript for the accepted navigation.
+	if (
+		typeof newState.taskStateSeq === "number" &&
+		typeof prevState.taskStateSeq === "number" &&
+		newState.taskStateSeq < prevState.taskStateSeq &&
+		Object.prototype.hasOwnProperty.call(newState, "clineMessages")
+	) {
+		rest.clineMessages = prevState.clineMessages
+		rest.clineMessagesSeq = prevState.clineMessagesSeq
+	}
 
 	const targetsDifferentTask =
 		newState.currentTaskId !== undefined && newState.currentTaskId !== prevState.currentTaskId

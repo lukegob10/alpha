@@ -65,7 +65,7 @@ import { getVsCodeLmModels } from "../../api/providers/vscode-lm"
 import { openMention } from "../mentions"
 import { searchTicketMentions } from "../../services/tickets/TicketChat"
 import { ticketTargetSchema } from "@alpha-code/types"
-import { resolveImageMentions } from "../mentions/resolveImageMentions"
+import { resolveImageMentions, textHasImageMention } from "../mentions/resolveImageMentions"
 import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
 import { getWorkspacePath } from "../../utils/path"
 import { isPathOutsideWorkspace } from "../../utils/pathUtils"
@@ -3095,22 +3095,31 @@ export const webviewMessageHandler = async (
 		 */
 
 		case "queueMessage": {
-			let resolved: Awaited<ReturnType<typeof resolveIncomingImages>>
-			try {
-				resolved = await resolveIncomingImages({
-					text: message.text,
-					images: message.images,
-					taskId: message.taskId,
-				})
-			} catch (error) {
-				provider.log(
-					`[webviewMessageHandler] queueMessage image resolution failed: ${error instanceof Error ? error.message : String(error)}`,
-				)
-				await postChatCommandResult("queueMessage", "rejected", "image_resolution_failed")
-				break
+			const text = message.text ?? ""
+			const suppliedImages = Array.isArray(message.images) ? message.images : []
+			let resolvedText = text
+			let resolvedImages = suppliedImages
+			// Plain text does not need provider state. Image mentions and attached
+			// images still go through size, workspace, and ignore validation.
+			if (suppliedImages.length > 0 || textHasImageMention(text)) {
+				try {
+					const resolved = await resolveIncomingImages({
+						text,
+						images: suppliedImages,
+						taskId: message.taskId,
+					})
+					resolvedText = resolved.text
+					resolvedImages = resolved.images
+				} catch (error) {
+					provider.log(
+						`[webviewMessageHandler] queueMessage image resolution failed: ${error instanceof Error ? error.message : String(error)}`,
+					)
+					await postChatCommandResult("queueMessage", "rejected", "image_resolution_failed")
+					break
+				}
 			}
 
-			if (!provider.queueMessageForTask(message.taskId, resolved.text, resolved.images)) {
+			if (!provider.queueMessageForTask(message.taskId, resolvedText, resolvedImages)) {
 				provider.log(`[webviewMessageHandler] Ignoring queueMessage: missing, terminal, or unknown taskId`)
 				await postChatCommandResult("queueMessage", "rejected", "task_unavailable")
 				break
