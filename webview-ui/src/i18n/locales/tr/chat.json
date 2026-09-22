@@ -601,5 +601,9 @@
 			"received_other": "{{count}} aracı güncellemesi alındı ​​",
 			"completed": "Aracı beklemesi tamamlandı"
 		}
+	},
+	"transcript": {
+		"loadOlder": "Daha eski iletileri yükle",
+		"loadAll": "Tüm iletileri yükle"
 	}
 }

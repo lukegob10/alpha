@@ -1,0 +1,8 @@
+{
+	"name": "alpha-skill-workflow",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"test": "node --test test/workflow.test.js"
+	}
+}

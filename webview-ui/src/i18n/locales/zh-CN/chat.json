@@ -601,5 +601,9 @@
 			"received_other": "已收到 {{count}} 代理更新",
 			"completed": "代理等待已完成"
 		}
+	},
+	"transcript": {
+		"loadOlder": "加载更早的消息",
+		"loadAll": "加载全部消息"
 	}
 }

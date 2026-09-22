@@ -3930,6 +3930,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.emit(AlphaCodeEventName.Message, { action: "created", message })
 	}
 
+	/**
+	 * Paint the cleaned UI transcript as soon as it is in memory. Provider
+	 * history is still required before Continue, but it must not block first paint.
+	 */
+	private async publishResumedUiPreview(): Promise<void> {
+		const provider = this.providerRef.deref()
+		if (!provider) return
+		if (typeof provider.isTaskOnScreen === "function" && !provider.isTaskOnScreen(this.taskId)) {
+			return
+		}
+		if (typeof provider.postTaskStateToWebview === "function") {
+			await provider.postTaskStateToWebview()
+		}
+	}
+
 	public async overwriteAlphaMessages(newMessages: AlphaMessage[]) {
 		this.reasoningSummaries?.dispose()
 		this.reasoningSummaries = undefined
@@ -5313,7 +5328,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		const provider = this.providerRef.deref()
 		if (!provider) throw new Error("Cannot return legacy child completion because the provider is unavailable")
-		const { historyItem } = await provider.getTaskWithId(this.taskId)
+		const { historyItem } = await provider.getTaskWithId(this.taskId, { includeApiConversationHistory: false })
 		if (historyItem.status === "completed") return false
 		if (historyItem.status !== "active") {
 			throw new Error(
@@ -6082,7 +6097,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const provider = this.providerRef.deref()
 		if (!provider) return
 
-		const { historyItem } = await provider.getTaskWithId(this.taskId)
+		const { historyItem } = await provider.getTaskWithId(this.taskId, { includeApiConversationHistory: false })
 		await provider.updateTaskHistory({
 			...historyItem,
 			status,
@@ -7359,10 +7374,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				? structuredClone(this.clineMessages)
 				: await this.getSavedAlphaMessages(true)
 			if (this.abort || this.abandoned) return
-			const savedApiHistory = useRetainedHistory
-				? this.apiConversationHistory
-				: await this.getSavedApiConversationHistory({ hydrateOnly: true })
-			if (this.abort || this.abandoned) return
+			const savedApiHistoryPromise = useRetainedHistory
+				? Promise.resolve(this.apiConversationHistory)
+				: this.getSavedApiConversationHistory({ hydrateOnly: true })
 
 			// Remove any resume messages that may have been added before.
 			const lastRelevantMessageIndex = findLastIndex(
@@ -7403,12 +7417,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 			}
 
-			// Hydrate together without a standalone UI rewrite. The next interaction
-			// persists cleaned rows through the normal owner after both reads succeed.
+			// Paint the cleaned UI transcript before provider history finishes.
+			// Continue still waits for both reads; this does not persist or ask.
 			this.invalidateBackgroundUsageDrain("The task transcript was resumed")
 			this.clineMessages = modifiedAlphaMessages
-			this.apiConversationHistory = savedApiHistory
 			restoreTodoListForTask(this)
+			if (!useRetainedHistory) {
+				await this.publishResumedUiPreview()
+			}
+			const savedApiHistory = await savedApiHistoryPromise
+			if (this.abort || this.abandoned) return
+			this.apiConversationHistory = savedApiHistory
 			if (!useRetainedHistory) {
 				await this.reconcileInterruptedSubagentGroups()
 				if (this.abort || this.abandoned) return

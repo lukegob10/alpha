@@ -11,11 +11,12 @@ import {
 } from "lucide-react"
 import prettyBytes from "pretty-bytes"
 
+import type { HistoryItem, LiveTaskMetadata, ProviderSettings } from "@alpha-code/types"
+
 import { getModelReservedOutputTokens } from "@alpha/api"
 
 import { formatLargeNumber } from "@src/utils/format"
 import { StandardTooltip, Button, Table, TableBody, TableRow, TableCell, CircularProgress } from "@src/components/ui"
-import { useExtensionState } from "@src/context/ExtensionStateContext"
 import { useSelectedModel } from "@/components/ui/hooks/useSelectedModel"
 import { vscode } from "@src/utils/vscode"
 
@@ -25,6 +26,9 @@ import { TodoListDisplay } from "./TodoListDisplay"
 import { LucideIconButton } from "./LucideIconButton"
 
 export interface TaskHeaderProps {
+	apiConfiguration?: ProviderSettings
+	currentTaskItem?: HistoryItem | null
+	taskModel?: LiveTaskMetadata["model"]
 	tokensIn: number
 	tokensOut: number
 	cacheWrites?: number
@@ -43,6 +47,9 @@ export interface TaskHeaderProps {
 }
 
 const TaskHeader = ({
+	apiConfiguration,
+	currentTaskItem,
+	taskModel,
 	tokensIn,
 	tokensOut,
 	cacheWrites,
@@ -60,9 +67,7 @@ const TaskHeader = ({
 	onExpandedChange,
 }: TaskHeaderProps) => {
 	const { t } = useTranslation()
-	const { apiConfiguration, currentTaskItem, liveTasksById } = useExtensionState()
 	const selectedModel = useSelectedModel(apiConfiguration)
-	const taskModel = currentTaskItem ? liveTasksById?.[currentTaskItem.id]?.model : undefined
 	const { id: modelId, info: model } = taskModel ?? selectedModel
 	const [isTaskExpanded, setIsTaskExpanded] = useState(false)
 	const detailsId = useId()
@@ -264,7 +269,7 @@ const TaskHeader = ({
 					{isTaskExpanded && (
 						<>
 							<div onClick={(e) => e.stopPropagation()}>
-								<TaskActions item={currentTaskItem} buttonsDisabled={buttonsDisabled} />
+								<TaskActions item={currentTaskItem ?? undefined} buttonsDisabled={buttonsDisabled} />
 							</div>
 
 							<div className="pt-3 mt-2 -mx-2.5 px-2.5 border-t border-vscode-sideBar-background">

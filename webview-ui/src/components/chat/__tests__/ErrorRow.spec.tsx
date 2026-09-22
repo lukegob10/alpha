@@ -18,6 +18,10 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 		version: "1.0.0",
 		apiConfiguration: {},
 	}),
+	useShellState: () => ({
+		version: "1.0.0",
+		apiConfiguration: {},
+	}),
 }))
 
 // Mock selected model hook

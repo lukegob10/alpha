@@ -600,5 +600,9 @@
 			"received_other": "{{count}}-Agentenaktualisierungen erhalten",
 			"completed": "Agentenwartezeit abgeschlossen"
 		}
+	},
+	"transcript": {
+		"loadOlder": "Ältere Nachrichten laden",
+		"loadAll": "Alle Nachrichten laden"
 	}
 }

@@ -8,27 +8,28 @@ interface TranscriptWindow {
 	startIndex: number
 }
 
-interface ProgressiveTranscript<T> {
-	items: T[]
-	startIndex: number
-	revealIndex: (index: number) => void
-}
-
 type IdleWindow = Window & {
 	requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number
 	cancelIdleCallback?: (handle: number) => void
 }
 
+interface ProgressiveTranscript<T> {
+	items: T[]
+	startIndex: number
+	hasOlder: boolean
+	loadOlder: () => void
+	revealIndex: (index: number) => void
+}
+
 /**
- * Mounts the newest transcript rows first, then prepends older rows in idle
- * batches. Every row is eventually mounted, preserving native scroll geometry
- * and browser find behavior without making task selection wait for the entire
- * transcript tree.
+ * Mounts the newest transcript rows first. Older rows stay reachable through
+ * Load older / Load all and through revealIndex (checkpoints). Auto-prepending
+ * every historical row made long tasks pay full DOM cost after first paint.
  */
 export function useProgressiveTranscript<T>(
 	items: T[],
 	taskKey: string | undefined,
-	loadOlderRows: boolean,
+	autoLoadOlder = false,
 ): ProgressiveTranscript<T> {
 	const initialStartIndex = Math.max(0, items.length - INITIAL_CHAT_TRANSCRIPT_RENDER_COUNT)
 	const [renderWindow, setRenderWindow] = useState<TranscriptWindow>({
@@ -39,7 +40,7 @@ export function useProgressiveTranscript<T>(
 		renderWindow.taskKey === taskKey ? Math.min(renderWindow.startIndex, initialStartIndex) : initialStartIndex
 
 	useEffect(() => {
-		if (!loadOlderRows || !taskKey || startIndex === 0) {
+		if (!autoLoadOlder || !taskKey || startIndex === 0) {
 			return
 		}
 
@@ -77,7 +78,7 @@ export function useProgressiveTranscript<T>(
 				window.clearTimeout(timeoutHandle)
 			}
 		}
-	}, [initialStartIndex, loadOlderRows, startIndex, taskKey])
+	}, [autoLoadOlder, initialStartIndex, startIndex, taskKey])
 
 	const revealIndex = useCallback(
 		(index: number) => {
@@ -97,7 +98,25 @@ export function useProgressiveTranscript<T>(
 		[initialStartIndex, items.length, taskKey],
 	)
 
+	const loadOlder = useCallback(() => {
+		if (!taskKey || startIndex === 0) {
+			return
+		}
+
+		setRenderWindow((current) => {
+			const currentStartIndex =
+				current.taskKey === taskKey ? Math.min(current.startIndex, initialStartIndex) : initialStartIndex
+			if (currentStartIndex === 0) {
+				return current
+			}
+			return {
+				taskKey,
+				startIndex: Math.max(0, currentStartIndex - CHAT_TRANSCRIPT_RENDER_BATCH_SIZE),
+			}
+		})
+	}, [initialStartIndex, startIndex, taskKey])
+
 	const renderedItems = useMemo(() => items.slice(startIndex), [items, startIndex])
 
-	return { items: renderedItems, startIndex, revealIndex }
+	return { items: renderedItems, startIndex, hasOlder: startIndex > 0, loadOlder, revealIndex }
 }

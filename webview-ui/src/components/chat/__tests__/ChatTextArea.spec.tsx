@@ -8,6 +8,10 @@ import * as pathMentions from "@src/utils/path-mentions"
 
 import { ChatTextArea } from "../ChatTextArea"
 
+const { useExtensionState: mockUseExtensionState } = vi.hoisted(() => ({
+	useExtensionState: vi.fn(),
+}))
+
 vi.mock("@src/utils/vscode", () => ({
 	vscode: {
 		postMessage: vi.fn(),
@@ -30,12 +34,13 @@ vi.mock("@src/utils/path-mentions", () => ({
 	}),
 }))
 
-// Get the mocked postMessage function
+vi.mock("@src/context/ExtensionStateContext", () => ({
+	useExtensionState: mockUseExtensionState,
+	useShellState: (...args: unknown[]) => mockUseExtensionState(...(args as [])),
+}))
+
 const mockPostMessage = vscode.postMessage as ReturnType<typeof vi.fn>
 const mockConvertToMentionPath = pathMentions.convertToMentionPath as ReturnType<typeof vi.fn>
-
-// Mock ExtensionStateContext
-vi.mock("@src/context/ExtensionStateContext")
 
 // Custom query function to get the enhance prompt button
 const getEnhancePromptButton = () => {
@@ -1234,7 +1239,14 @@ describe("ChatTextArea", () => {
 					cwd: "/test/workspace",
 				})
 
-				rerender(<ChatTextArea {...defaultProps} setInputValue={setInputValue} inputValue="" />)
+				rerender(
+					<ChatTextArea
+						{...defaultProps}
+						setInputValue={setInputValue}
+						inputValue=""
+						placeholderText="task-history"
+					/>,
+				)
 
 				const textarea = document.querySelector("textarea")!
 
@@ -1258,7 +1270,14 @@ describe("ChatTextArea", () => {
 				})
 
 				setInputValue.mockClear()
-				rerender(<ChatTextArea {...defaultProps} setInputValue={setInputValue} inputValue="" />)
+				rerender(
+					<ChatTextArea
+						{...defaultProps}
+						setInputValue={setInputValue}
+						inputValue=""
+						placeholderText="conversation"
+					/>,
+				)
 
 				// Should start from beginning of conversation history (newest first)
 				fireEvent.keyDown(textarea, { key: "ArrowUp" })

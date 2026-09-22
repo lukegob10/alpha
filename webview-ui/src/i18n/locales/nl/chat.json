@@ -600,5 +600,9 @@
 			"received_other": "{{count}} agentupdates ontvangen",
 			"completed": "Wachttijd agent voltooid"
 		}
+	},
+	"transcript": {
+		"loadOlder": "Oudere berichten laden",
+		"loadAll": "Alle berichten laden"
 	}
 }

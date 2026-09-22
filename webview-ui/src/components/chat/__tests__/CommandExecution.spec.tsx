@@ -6,7 +6,7 @@ import { useEvent } from "react-use"
 import type { CommandExecutionStatus } from "@alpha-code/types"
 
 import { CommandExecution } from "../CommandExecution"
-import { ExtensionStateContext } from "../../../context/ExtensionStateContext"
+import { ShellStateContext } from "../../../context/ExtensionStateContext"
 
 // Mock dependencies
 vi.mock("react-use", () => ({
@@ -52,7 +52,7 @@ const mockExtensionState = {
 }
 
 const ExtensionStateWrapper = ({ children }: { children: React.ReactNode }) => (
-	<ExtensionStateContext.Provider value={mockExtensionState as any}>{children}</ExtensionStateContext.Provider>
+	<ShellStateContext.Provider value={mockExtensionState as any}>{children}</ShellStateContext.Provider>
 )
 
 // Existing parsing and pattern-management cases exercise the opened terminal.
@@ -245,9 +245,9 @@ describe("CommandExecution", () => {
 		}
 
 		renderExpanded(
-			<ExtensionStateContext.Provider value={stateWithNpmTest as any}>
+			<ShellStateContext.Provider value={stateWithNpmTest as any}>
 				<CommandExecution executionId="test-1" text="npm test" />
-			</ExtensionStateContext.Provider>,
+			</ShellStateContext.Provider>,
 		)
 
 		const allowButton = screen.getByText("Allow")
@@ -274,9 +274,9 @@ describe("CommandExecution", () => {
 		}
 
 		renderExpanded(
-			<ExtensionStateContext.Provider value={stateWithRmRf as any}>
+			<ShellStateContext.Provider value={stateWithRmRf as any}>
 				<CommandExecution executionId="test-1" text="rm -rf" />
-			</ExtensionStateContext.Provider>,
+			</ShellStateContext.Provider>,
 		)
 
 		const denyButton = screen.getByText("Deny")
@@ -380,9 +380,9 @@ Output:
 Output here`
 
 		renderExpanded(
-			<ExtensionStateContext.Provider value={disabledState as any}>
+			<ShellStateContext.Provider value={disabledState as any}>
 				<CommandExecution executionId="test-1" text={commandText} />
-			</ExtensionStateContext.Provider>,
+			</ShellStateContext.Provider>,
 		)
 
 		// Completed command output is available for expansion, but starts collapsed.
@@ -401,9 +401,9 @@ Output here`
 		}
 
 		renderExpanded(
-			<ExtensionStateContext.Provider value={stateWithUndefined as any}>
+			<ShellStateContext.Provider value={stateWithUndefined as any}>
 				<CommandExecution executionId="test-1" text="npm install" />
-			</ExtensionStateContext.Provider>,
+			</ShellStateContext.Provider>,
 		)
 
 		// Should show pattern selector when patterns are available
@@ -419,9 +419,9 @@ Output here`
 		}
 
 		renderExpanded(
-			<ExtensionStateContext.Provider value={stateWithRmInDenied as any}>
+			<ShellStateContext.Provider value={stateWithRmInDenied as any}>
 				<CommandExecution executionId="test-1" text="rm file.txt" />
-			</ExtensionStateContext.Provider>,
+			</ShellStateContext.Provider>,
 		)
 
 		const allowButton = screen.getByText("Allow")
@@ -547,9 +547,9 @@ Running tests...
 			}
 
 			renderExpanded(
-				<ExtensionStateContext.Provider value={conflictState as any}>
+				<ShellStateContext.Provider value={conflictState as any}>
 					<CommandExecution executionId="test-11" text="git push origin main" />
-				</ExtensionStateContext.Provider>,
+				</ShellStateContext.Provider>,
 			)
 
 			// Click to allow "git push origin main"

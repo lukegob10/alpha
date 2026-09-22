@@ -600,5 +600,9 @@
 			"received_other": "S'han rebut actualitzacions de l'agent {{count}}",
 			"completed": "S'ha completat l'espera de l'agent"
 		}
+	},
+	"transcript": {
+		"loadOlder": "Carrega missatges anteriors",
+		"loadAll": "Carrega tots els missatges"
 	}
 }

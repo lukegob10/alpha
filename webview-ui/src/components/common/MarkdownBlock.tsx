@@ -17,6 +17,18 @@ interface MarkdownBlockProps {
 	partial?: boolean
 }
 
+const ensureCodeFenceLanguage = () => {
+	return (tree: any) => {
+		visit(tree, "code", (node: any) => {
+			if (!node.lang) {
+				node.lang = "text"
+			} else if (node.lang.includes(".")) {
+				node.lang = node.lang.split(".").slice(-1)[0]
+			}
+		})
+	}
+}
+
 const StyledMarkdown = styled.div`
 	* {
 		font-weight: 400;
@@ -322,25 +334,19 @@ const MarkdownBlock = memo(({ markdown, partial = false }: MarkdownBlockProps) =
 		[partial],
 	)
 
+	if (partial) {
+		return (
+			<StyledMarkdown>
+				<p style={{ whiteSpace: "pre-wrap", margin: 0 }}>{markdown || ""}</p>
+			</StyledMarkdown>
+		)
+	}
+
 	return (
 		<StyledMarkdown>
 			<ReactMarkdown
 				urlTransform={(url) => (parseHtmlDocumentLink(url) ? url : defaultUrlTransform(url))}
-				remarkPlugins={[
-					remarkGfm,
-					remarkMath,
-					() => {
-						return (tree: any) => {
-							visit(tree, "code", (node: any) => {
-								if (!node.lang) {
-									node.lang = "text"
-								} else if (node.lang.includes(".")) {
-									node.lang = node.lang.split(".").slice(-1)[0]
-								}
-							})
-						}
-					},
-				]}
+				remarkPlugins={[remarkGfm, remarkMath, ensureCodeFenceLanguage]}
 				rehypePlugins={[rehypeKatex as any]}
 				components={components}>
 				{markdown || ""}

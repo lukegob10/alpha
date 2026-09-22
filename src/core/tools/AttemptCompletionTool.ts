@@ -22,7 +22,10 @@ export interface AttemptCompletionCallbacks extends ToolCallbacks {
  * Interface for provider methods needed by AttemptCompletionTool for delegation handling.
  */
 interface DelegationProvider {
-	getTaskWithId(id: string): Promise<{ historyItem: HistoryItem }>
+	getTaskWithId(
+		id: string,
+		options?: { includeApiConversationHistory?: boolean },
+	): Promise<{ historyItem: HistoryItem }>
 	reopenParentFromDelegation(params: {
 		parentTaskId: string
 		childTaskId: string
@@ -94,7 +97,9 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				}
 
 				try {
-					const { historyItem } = await provider.getTaskWithId(task.taskId)
+					const { historyItem } = await provider.getTaskWithId(task.taskId, {
+						includeApiConversationHistory: false,
+					})
 					const status = historyItem?.status
 
 					if (status === "completed") {

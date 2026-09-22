@@ -23,7 +23,9 @@ test("preserves the existing suites and adds explicit live reliability acceptanc
 		"dev-repo-bootstrap",
 		"review-edit-test-commit-followup",
 	])
-	const existing = WORKFLOW_SCENARIO_IDS.filter((id) => !isReliabilityScenario(id))
+	const existing = WORKFLOW_SCENARIO_IDS.filter(
+		(id) => !isReliabilityScenario(id) && id !== "problem-solving-attempt",
+	)
 	assert.deepEqual(createDevelopmentSuite(options({ suite: "development" })).scenarioIds, existing)
 	assert.deepEqual(createDevelopmentSuite(options({ suite: "soak" })).scenarioIds, existing)
 

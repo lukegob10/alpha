@@ -67,6 +67,7 @@ let mockExtensionState: {
 // Mock the ExtensionStateContext
 vi.mock("@src/context/ExtensionStateContext", () => ({
 	useExtensionState: () => mockExtensionState,
+	useShellState: () => mockExtensionState,
 }))
 
 // Mock the useCloudUpsell hook
@@ -128,7 +129,7 @@ vi.mock("@alpha/api", () => ({
 describe("TaskHeader", () => {
 	it("keeps prompt copying on the message instead of in task metadata", () => {
 		mockExtensionState.currentTaskItem = { id: "test-task-id", task: "Original prompt" }
-		render(<TaskHeader {...defaultProps} />)
+		render(<TaskHeader {...defaultProps} {...taskHeaderStateProps()} />)
 		fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
 		expect(screen.getByRole("button", { name: "chat:task.export" })).toBeInTheDocument()
 		expect(screen.queryByRole("button", { name: "history:copyPrompt" })).not.toBeInTheDocument()
@@ -144,10 +145,19 @@ describe("TaskHeader", () => {
 
 	const queryClient = new QueryClient()
 
+	const taskHeaderStateProps = (): Pick<TaskHeaderProps, "apiConfiguration" | "currentTaskItem" | "taskModel"> => {
+		const currentTaskItem = mockExtensionState.currentTaskItem as TaskHeaderProps["currentTaskItem"]
+		return {
+			apiConfiguration: mockExtensionState.apiConfiguration,
+			currentTaskItem,
+			taskModel: currentTaskItem?.id ? mockExtensionState.liveTasksById?.[currentTaskItem.id]?.model : undefined,
+		}
+	}
+
 	const renderTaskHeader = (props: Partial<TaskHeaderProps> = {}) => {
 		return render(
 			<QueryClientProvider client={queryClient}>
-				<TaskHeader {...defaultProps} {...props} />
+				<TaskHeader {...defaultProps} {...taskHeaderStateProps()} {...props} />
 			</QueryClientProvider>,
 		)
 	}
@@ -577,10 +587,10 @@ describe("TaskHeader", () => {
 			const { rerender } = renderTaskHeader({ contextTokens: 100_000 })
 			expect(screen.getByText("11%")).toBeVisible()
 			setLiveWindow(200_000)
-			rerender(<TaskHeader {...defaultProps} contextTokens={100_001} />)
+			rerender(<TaskHeader {...defaultProps} {...taskHeaderStateProps()} contextTokens={100_001} />)
 			expect(screen.getByText("50%")).toBeVisible()
 			setLiveWindow(935_793)
-			rerender(<TaskHeader {...defaultProps} contextTokens={100_002} />)
+			rerender(<TaskHeader {...defaultProps} {...taskHeaderStateProps()} contextTokens={100_002} />)
 			expect(screen.getByText("11%")).toBeVisible()
 		})
 

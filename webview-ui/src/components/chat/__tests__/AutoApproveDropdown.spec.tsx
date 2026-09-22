@@ -46,6 +46,10 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 		...mockState,
 		...mockSetters,
 	}),
+	useShellState: () => ({
+		...mockState,
+		...mockSetters,
+	}),
 }))
 
 describe("AutoApproveDropdown", () => {

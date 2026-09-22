@@ -58,7 +58,7 @@ export async function restartTaskFromMessage(
 		} else {
 			await rewind()
 		}
-		const { historyItem } = await provider.getTaskWithId(task.taskId)
+		const { historyItem } = await provider.getTaskWithId(task.taskId, { includeApiConversationHistory: false })
 		const resumedTask = await provider.createTaskWithHistoryItem(historyItem, {
 			startTask: false,
 			preserveExisting: true,
@@ -115,7 +115,9 @@ export async function handleCheckpointRestoreOperation(config: CheckpointRestore
 			})
 
 			// Get the updated history item and reinitialize
-			const { historyItem } = await provider.getTaskWithId(currentAlpha.taskId)
+			const { historyItem } = await provider.getTaskWithId(currentAlpha.taskId, {
+				includeApiConversationHistory: false,
+			})
 			await provider.createTaskWithHistoryItem(historyItem)
 		}
 	} catch (error) {

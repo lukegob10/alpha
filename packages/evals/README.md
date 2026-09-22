@@ -57,4 +57,5 @@ configurable through `EVALS_DB_PORT` and `EVALS_REDIS_PORT`. Persistent data sta
 Use `benchmark:template`, `benchmark:author-check`, `benchmark:subset`, and
 `benchmark:run-model` from this package. Run `pnpm --filter @alpha-code/evals cli --help`
 for persisted-run commands. See [ADDING-EVALS.md](ADDING-EVALS.md) for exercise structure
-and [../../evals](../../evals) for the versioned extension evaluation corpus.
+and [../../evals](../../evals) for the versioned extension evaluation corpus. The curated
+problem-solving set is [../../evals/problem-solving/v1.yaml](../../evals/problem-solving/v1.yaml).

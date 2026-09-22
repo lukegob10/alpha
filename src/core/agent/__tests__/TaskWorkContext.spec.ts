@@ -44,6 +44,7 @@ describe("task acceptance evidence", () => {
 	async function run(succeeded = true) {
 		const context = replaceWorkPlan(undefined, plan)
 		const captured = await captureAcceptanceChecks(context, root, "python app.py", root, "execution")
+		context.receipts = captured
 		return settleAcceptanceChecks(context, root, captured, succeeded, succeeded ? 0 : 1)
 	}
 	it("reuses observed success across reload without another execution", async () => {
@@ -141,6 +142,7 @@ describe("task acceptance evidence", () => {
 	it("rejects credit when a command changes its declared inputs", async () => {
 		const context = replaceWorkPlan(undefined, plan)
 		const captured = await captureAcceptanceChecks(context, root, "python app.py", root, "changing")
+		context.receipts = captured
 		await fs.writeFile(path.join(root, "app.py"), "changed during check")
 		const settled = await settleAcceptanceChecks(context, root, captured, true, 0)
 		expect(await getOutstandingAcceptanceChecks(settled, root)).toEqual(["behavior: stale"])
@@ -212,6 +214,27 @@ describe("task acceptance evidence", () => {
 		const settled = await settleAcceptanceChecks(context, root, older, true, 0)
 		expect(settled.receipts[0]).toMatchObject({ executionId: "newer", status: "running" })
 	})
+	it.each(["removed", "changed"] as const)(
+		"requires a fresh admission after a live check is %s and restored",
+		async (revision) => {
+			const context = replaceWorkPlan(undefined, plan)
+			const revoked = await captureAcceptanceChecks(context, root, "python app.py", root, "revoked")
+			context.receipts = revoked
+			const replacement = structuredClone(plan)
+			if (revision === "removed") replacement.checks = []
+			else replacement.checks[0].command = "python other.py"
+			const restored = replaceWorkPlan(replaceWorkPlan(context, replacement), plan)
+
+			const late = await settleAcceptanceChecks(restored, root, revoked, true, 0)
+			expect(late.receipts).toEqual([])
+			expect(await getOutstandingAcceptanceChecks(late, root)).toEqual(["behavior: not run"])
+
+			const fresh = await captureAcceptanceChecks(late, root, "python app.py", root, "fresh")
+			const settled = await settleAcceptanceChecks({ ...late, receipts: fresh }, root, fresh, true, 0)
+			expect(await getOutstandingAcceptanceChecks(settled, root)).toEqual([])
+			expect(settled.receipts[0]).toMatchObject({ executionId: "fresh", status: "passed" })
+		},
+	)
 	it("invalidates changed check definitions and interrupted or live checks on resume", async () => {
 		const context = await run()
 		const replacement = structuredClone(plan)

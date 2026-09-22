@@ -40,13 +40,7 @@ describe("ChatRow render isolation", () => {
 				currentTaskId: "original-task",
 				currentTaskItem: {
 					id: "original-task",
-					number: 1,
-					ts: 1,
-					task: "Build HTML",
 					status,
-					tokensIn: 0,
-					tokensOut: 0,
-					totalCost: 0,
 				},
 				getAlphaMessages: () => [message],
 			}

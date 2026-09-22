@@ -77,7 +77,7 @@ describe("AlphaProvider.removeTaskFromStack() delegation awareness", () => {
 		expect(resetNewTaskDraftMode).toHaveBeenCalledTimes(1)
 
 		// Parent lookup should have been called
-		expect(getTaskWithId).toHaveBeenCalledWith("parent-1")
+		expect(getTaskWithId).toHaveBeenCalledWith("parent-1", { includeApiConversationHistory: false })
 
 		// Parent metadata should be repaired
 		expect(updateTaskHistory).toHaveBeenCalledTimes(1)
@@ -132,7 +132,7 @@ describe("AlphaProvider.removeTaskFromStack() delegation awareness", () => {
 		await (AlphaProvider.prototype as any).removeTaskFromStack.call(provider)
 
 		// Parent was looked up but should NOT be updated
-		expect(getTaskWithId).toHaveBeenCalledWith("parent-1")
+		expect(getTaskWithId).toHaveBeenCalledWith("parent-1", { includeApiConversationHistory: false })
 		expect(updateTaskHistory).not.toHaveBeenCalled()
 	})
 
@@ -156,7 +156,7 @@ describe("AlphaProvider.removeTaskFromStack() delegation awareness", () => {
 
 		await (AlphaProvider.prototype as any).removeTaskFromStack.call(provider)
 
-		expect(getTaskWithId).toHaveBeenCalledWith("parent-1")
+		expect(getTaskWithId).toHaveBeenCalledWith("parent-1", { includeApiConversationHistory: false })
 		expect(updateTaskHistory).not.toHaveBeenCalled()
 	})
 

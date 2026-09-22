@@ -106,8 +106,9 @@ export async function settleAcceptanceChecks(
 		const check = context.plan?.checks.find((item) => item.id === captured.checkId)
 		if (!check || !matchesDefinition(captured, check)) continue
 		const latest = context.receipts.find((item) => item.checkId === check.id)
-		// A new request or execution supersedes this physical command's evidence.
-		if (latest && (latest.executionId !== captured.executionId || latest.status === "stale")) continue
+		// Settlement consumes the still-admitted receipt. A plan revision, new
+		// request, or newer execution can revoke or supersede that admission.
+		if (!latest || latest.executionId !== captured.executionId || latest.status === "stale") continue
 		let status: AcceptanceReceipt["status"] = succeeded ? "passed" : "failed"
 		let diagnostic = captured.diagnostic
 		try {

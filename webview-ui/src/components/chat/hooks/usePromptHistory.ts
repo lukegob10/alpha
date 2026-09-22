@@ -7,6 +7,7 @@ interface UsePromptHistoryProps {
 	cwd: string | undefined
 	inputValue: string
 	setInputValue: (value: string) => void
+	isInTask?: boolean
 }
 
 export interface UsePromptHistoryReturn {
@@ -30,6 +31,7 @@ export const usePromptHistory = ({
 	cwd,
 	inputValue,
 	setInputValue,
+	isInTask,
 }: UsePromptHistoryProps): UsePromptHistoryReturn => {
 	// Maximum number of prompts to keep in history for memory management
 	const MAX_PROMPT_HISTORY_SIZE = 100
@@ -50,9 +52,9 @@ export const usePromptHistory = ({
 			return conversationPrompts.slice(-MAX_PROMPT_HISTORY_SIZE).reverse()
 		}
 
-		// If we have clineMessages array (meaning we're in an active task), don't fall back to task history
-		// Only use task history when starting fresh (no active conversation)
-		if (clineMessages?.length) {
+		// If we have an active task (including one with no user_feedback yet), don't
+		// fall back to earlier task titles as "prompt history".
+		if (isInTask === true || (isInTask !== false && clineMessages?.length)) {
 			return []
 		}
 
@@ -66,7 +68,7 @@ export const usePromptHistory = ({
 			.filter((item) => item.task?.trim() && (!item.workspace || item.workspace === cwd))
 			.map((item) => item.task)
 			.slice(0, MAX_PROMPT_HISTORY_SIZE)
-	}, [clineMessages, taskHistory, cwd])
+	}, [clineMessages, isInTask, taskHistory, cwd])
 	const filteredPromptHistoryKey = JSON.stringify(filteredPromptHistory)
 
 	// Reset navigation only when the actual prompts change, not on unrelated streamed messages.

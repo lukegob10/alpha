@@ -1,0 +1,533 @@
+# Problem-solving set v1. Digests for alpha-task-bank and alpha-native tasks are fixture
+# directory digests. Terminal-Bench digests are sha256 of the UTF-8 task.toml text retrieved
+# from the Hugging Face v4.0.0 mirror on 2026-09-21. Inclusion rationale is in README.md.
+schemaVersion: 1
+id: problem-solving-v1
+version: 1
+sources:
+  - id: alpha-task-bank
+    release: frontier-v1@1
+  - id: terminal-bench
+    release: v4.0.0
+    repository: harbor-framework/terminal-bench
+    dataset: terminal-bench/terminal-bench@4.0.0
+    retrievedOn: 2026-09-21
+  - id: alpha-native
+    release: problem-solving-v1@1
+tasks:
+  - id: repo-cache-invalidation
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:8cd79bf103bfecf6873c108eb9a567c4898a7aa2c32804fc2da0160f903496b6
+    tags: [debugging, javascript]
+    lane: core
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
+  - id: repo-stream-backpressure
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:c173830bd6e24d14e66ebdf850646d459aa2f750f11b78251d9ad154aac32665
+    tags: [backend, javascript]
+    lane: core
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 900, gpus: 0, network: disabled }
+  - id: repo-workspace-package-order
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:c1b10ec20be19f15492c88efaeee35bd33b826b981ead70bd2bf2bfcd08bb301
+    tags: [refactoring, javascript]
+    lane: core
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
+  - id: repo-cli-config-layering
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:9e6f631251259f97a240e079a54a3ea2ac0c9576d56a2dba6601406506da2d2d
+    tags: [cli, javascript]
+    lane: core
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
+  - id: repo-pagination-cursor
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:09ce14eadc58485bf15d6f42cc5553a4c6482ceba39adfacc00781f813d146ff
+    tags: [backend, javascript]
+    lane: core
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
+  - id: alpha-repository-rules
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:ad315e0e781c63ef411cd59ac80c5c1612165ed47dda0ebd1135727207e964a8
+    tags: [workflow]
+    lane: core
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
+  - id: alpha-validation-after-edit
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:ce76f9d7348c824fba352932ceb1d07d551108759eab8db24dd5b32761c6e8fa
+    tags: [debugging, workflow]
+    lane: core
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
+  - id: stateful-api-idempotency
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:b4e51e3d5c2631e3211a3b69b16b40465d3109c21542cf00281054c19571c384
+    tags: [backend]
+    lane: core
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 900, gpus: 0, network: disabled }
+  - id: safety-path-policy
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:e3e832c5cf836bc2bea7c7ea7359e6cbab3371d18e697ddf6a55f60e162d99af
+    tags: [workflow]
+    lane: core
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
+  - id: session-window-debug
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:6906eb9b22f63e59346ba720dd7ff46ae7937e9485ffa63ca832ac16c023ad82
+    tags: [debugging, backend, python]
+    lane: core
+    resources: { cpus: 2, memoryMb: 4096, wallSeconds: 28800, gpus: 0, network: local }
+  - id: bun-sourcemap-leak
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:d33774eabad9d50fab9d4c6872dc3fe5687bfc87da6b8b23d91a1253939825c7
+    tags: [debugging, javascript]
+    lane: core
+    resources: { cpus: 2, memoryMb: 4096, wallSeconds: 28800, gpus: 0, network: local }
+  - id: nextjs-performance
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:a8dae8d4fa6b270fd19e75fd19285ad18af7436f9b493d9358c536bb75f2dcd8
+    tags: [web, javascript, typescript]
+    lane: core
+    resources: { cpus: 2, memoryMb: 4096, wallSeconds: 28800, gpus: 0, network: local }
+  - id: react-lead-form
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:34e881a1984ad63a1ccd26a14752d05314423dca80df97691c01d1a27b4a98fc
+    tags: [web, typescript]
+    lane: core
+    resources: { cpus: 2, memoryMb: 4096, wallSeconds: 28800, gpus: 0, network: local }
+  - id: mvcc-lsm-compaction
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:a183fa449530a316735635cdb40dd60322b8de7dbeaa058ef83f6472ce8d014a
+    tags: [debugging, backend]
+    lane: core
+    resources: { cpus: 2, memoryMb: 4096, wallSeconds: 28800, gpus: 0, network: local }
+  - id: wal-recovery-ordering
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:147d7d1f314a9a0240335984d8ecb025baed41cb4e80f352e82dfba37b174fe0
+    tags: [debugging, backend]
+    lane: core
+    resources: { cpus: 2, memoryMb: 4096, wallSeconds: 28800, gpus: 0, network: local }
+  - id: data-anonymization
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:18886a592f71f491661a00016c25598c6393035fdf3b37ddbf89fb0ac6be9e84
+    tags: [python, data]
+    lane: core
+    resources: { cpus: 2, memoryMb: 8192, wallSeconds: 28800, gpus: 0, network: local }
+  - id: fin-saccr-rwa
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:8c65d87bfc462bebccd5df55cbc0efb40c9bbd27dfb2ad9359d700640bd8b9e1
+    tags: [finance, python]
+    lane: core
+    resources: { cpus: 2, memoryMb: 4096, wallSeconds: 28800, gpus: 0, network: local }
+  - id: repo-config-precedence
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:f8c0742d9b14aede86df7d4ce41cb32adaec170f2dffc65f05c979d85bb3df13
+    tags: [javascript]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
+  - id: repo-auth-session-rotation
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:57b5ea2241f5251f174fb8cd47cd4fdc7294d2372d42d482f1522fa3fd6ca1ab
+    tags: [javascript, backend]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
+  - id: repo-migration-rollback
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:2114cbc303529d15b0f1150e4804f2bfbd0649d122ff5e404d1e9e3a4643e159
+    tags: [backend, javascript]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
+  - id: repo-event-deduplication
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:8db74ad50ffabc6ca5086811b18dc78090c7af907d89f22705815816b22e9549
+    tags: [backend, javascript]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
+  - id: repo-concurrent-file-lock
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:1a26ea505e5400ee9089dc43fcb9e094f2b3b26c2d5bcbe19fdf8b2ea6c361da
+    tags: [debugging, javascript]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
+  - id: repo-plugin-dependency-cycle
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:0090eed95293a2327bc0ae8ac65dbd0161d525db8f02f0f5fb32e9dd95f936ba
+    tags: [refactoring, javascript]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
+  - id: repo-transaction-outbox
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:d444e47c34447c7c3430d3ea98f52c898bb67e2672a6422e72c3ea870604a756
+    tags: [backend, javascript]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
+  - id: repo-rate-limit-window
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:7a8a1871a0439ab1672f607fb67609e92a72c83b8ea6464181c8a2a98515d6c1
+    tags: [backend, javascript]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
+  - id: repo-schema-compatibility
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:ea58b30c06fcc966eafb1f81940f58de60226fe826844d876f0f1b5e53fd77dc
+    tags: [backend, javascript]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
+  - id: repo-worker-shutdown
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:8c03df7c229014bd499b3c7b93bb9b7956aa6c33ff2c83b31e3f87d1061f7119
+    tags: [backend, javascript]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
+  - id: repo-build-artifact-boundary
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:4967f7e39771a9e62c4e06c18770d5a9c246bb81760f4d7d442460658c1122ee
+    tags: [refactoring, javascript]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
+  - id: alpha-context-continuity
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:0b440b4e18f48423149a245896e4766578990b5f275fa228caadb08681f3946c
+    tags: [workflow]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 900, gpus: 0, network: disabled }
+  - id: alpha-compaction-resume
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:25866833d0438c75188cf9adab2df881604a697cd9340bbcec712ce5bb5c714e
+    tags: [workflow]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 900, gpus: 0, network: disabled }
+  - id: alpha-cancellation-cleanup
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:6461ec65884edd380788924d5171b24f730474d7a457eab4c8630fc9868a18ec
+    tags: [cleanup, workflow]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
+  - id: alpha-resume-idempotency
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:943fa77645748f16cc6b3123073143af0edba005d40d6f3fb355a1aafe088190
+    tags: [workflow]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
+  - id: alpha-tool-result-integrity
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:08ff044eb110931c8763dc9babb476b7906442f0e25b1e0085b5d3a4fa36f00c
+    tags: [debugging, workflow]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
+  - id: alpha-scheduler-ordering
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:205950e4e7756568229754abfba654464c38c04743eba42fd0bac5adad6de836
+    tags: [workflow]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 900, gpus: 0, network: disabled }
+  - id: safety-secret-redaction
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:882ba83c2af65649627e09151fedfda7c58459521c06dd498f8499d3678c47bb
+    tags: [workflow]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
+  - id: safety-prompt-injection
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:453d70a0677fac969f612daf25cfb5461949f49a165e0b814fd3b0c11b81d2bd
+    tags: [workflow]
+    lane: development
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
+  - id: html-js-filter
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:7827b16c102b8d48d09061ce4251b3f1f6ecb4f4e9e4879a3f06b0db095df985
+    tags: [web, javascript]
+    lane: development
+    resources: { cpus: 2, memoryMb: 8192, wallSeconds: 28800, gpus: 0, network: local }
+  - id: vba-userform-port
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:c0e6af253d72850095286ae63b380a0f70afed9135c3675019e92c340beb2198
+    tags: [web, refactoring, javascript]
+    lane: development
+    resources: { cpus: 2, memoryMb: 8192, wallSeconds: 28800, gpus: 0, network: local }
+  - id: vf2-speedup-networkx
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:56beb527be8643b3562500999113fff01e07513654b5f1efc3a49e3c71a39dd0
+    tags: [python, refactoring]
+    lane: development
+    resources: { cpus: 2, memoryMb: 8192, wallSeconds: 28800, gpus: 0, network: local }
+  - id: cumulative-layout-shift
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:44495cee1eae9f3409ddd9e209aea7a69d2380b10c94b3ffd66f47c0a3195d9b
+    tags: [web, javascript]
+    lane: development
+    resources: { cpus: 4, memoryMb: 8192, wallSeconds: 28800, gpus: 0, network: local }
+  - id: freight-dispatch-shift
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:86135de889075359544ad500df45798ec7814d5c8b8ebd72cfcdd6552d81b40e
+    tags: [cli, python]
+    lane: development
+    resources: { cpus: 2, memoryMb: 4096, wallSeconds: 28800, gpus: 0, network: local }
+  - id: production-planning
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:a962b61e413c3b1d17c90699018725a618f3050229e136087792c97cde2243cd
+    tags: [data, python]
+    lane: development
+    resources: { cpus: 2, memoryMb: 4096, wallSeconds: 28800, gpus: 0, network: local }
+  - id: ontology-kg-querying
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:be1af4fc21bd32f5bdea331b2d8742787c9564f0ff724bb81608a0ebc5eaaa1b
+    tags: [data, python]
+    lane: development
+    resources: { cpus: 2, memoryMb: 4096, wallSeconds: 28800, gpus: 0, network: local }
+  - id: batched-eval-parity
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:f9b7572461c0263731973adc9c03caaa8541144bbd32bd0f3f5f1fa24fa64b81
+    tags: [debugging, python]
+    lane: development
+    resources: { cpus: 1, memoryMb: 4096, wallSeconds: 28800, gpus: 0, network: local }
+  - id: alpha-pr-comparison
+    source: alpha-native
+    sourceRelease: problem-solving-v1@1
+    version: 1
+    digest: sha256:748d5156d678eb1b1089385ef2d87344723cc752f867ff55a86bb57f4858aede
+    tags: [git, pr-comparison]
+    lane: development
+    fixture: javascript/alpha-pr-comparison
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 180, gpus: 0, network: disabled }
+  - id: alpha-change-integration
+    source: alpha-native
+    sourceRelease: problem-solving-v1@1
+    version: 1
+    digest: sha256:e543c8c529f158ba6f87f9edc93257cc9ca54087fc9af520c0317dbbb8ad6d7d
+    tags: [change-integration]
+    lane: development
+    fixture: javascript/alpha-change-integration
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 180, gpus: 0, network: disabled }
+  - id: alpha-cleanup
+    source: alpha-native
+    sourceRelease: problem-solving-v1@1
+    version: 1
+    digest: sha256:358b4a798dbe51ccee9def389127cfe8e6f382995e1ddd800e47fd34d6ae29d1
+    tags: [cleanup]
+    lane: development
+    fixture: javascript/alpha-cleanup
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 180, gpus: 0, network: disabled }
+  - id: alpha-skill-workflow
+    source: alpha-native
+    sourceRelease: problem-solving-v1@1
+    version: 1
+    digest: sha256:6130b4c45b22c1ae18ef27fcafbf5b349cfadefa11361edebab6db93e2dd3b94
+    tags: [skill-workflow]
+    lane: development
+    fixture: javascript/alpha-skill-workflow
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 180, gpus: 0, network: disabled }
+  - id: holdout-001
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:818a818809b0ce1f3c2cef13920f4e7bb9cbcee3843ab9f7fe2ea2391e646758
+    tags: [repository-discovery]
+    lane: holdout
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
+  - id: holdout-002
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:9711d63046d5c342e9d8464709564e53fce8ac5d32994bf2e2a7f8441ec2aab5
+    tags: [repository-discovery]
+    lane: holdout
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
+  - id: holdout-003
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:178c5ea7ad8663385c83ce716cca23121b9c10076a72d8f51584337d027e49df
+    tags: [repository-discovery]
+    lane: holdout
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 900, gpus: 0, network: disabled }
+  - id: holdout-004
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:fa47259f54c7f081c377aabd70007d1361075b4dae42bd1bd71c822e973fbd1d
+    tags: [repository-discovery]
+    lane: holdout
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
+  - id: holdout-005
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:5d126173d9403fa76b648b86900f8bb1f848af5629cd3aef3488d1e5e0a032b1
+    tags: [workflow]
+    lane: holdout
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
+  - id: holdout-006
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:6b1dba98cc8a2c1fd0043958b2cce8447332b318266459259210b40c433d5f06
+    tags: [workflow]
+    lane: holdout
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
+  - id: holdout-007
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:b8dcf70c351d05e81c54633b808f465d488e0fbf84b601a189f2e415e822f19c
+    tags: [workflow]
+    lane: holdout
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 900, gpus: 0, network: disabled }
+  - id: holdout-008
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:51b9aea5aa814447eca87dad9ca97094e91536e2e49c0de2e38e9cabaf429ba5
+    tags: [workflow]
+    lane: holdout
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
+  - id: holdout-009
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:edce0a66426145adc8eee8668f5cad80681b9623520d45329a085235428a8956
+    tags: [workflow]
+    lane: holdout
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 900, gpus: 0, network: disabled }
+  - id: holdout-010
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:27ecdf3209a4eb904eaee013dc6ce89395822fabc3d42fb551ce883eef9fcc87
+    tags: [debugging]
+    lane: holdout
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
+  - id: holdout-011
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:d041935979578171d8ce0b5ad50602d8705b0ce75d830e3fe4dce29567a58d7b
+    tags: [debugging]
+    lane: holdout
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 300, gpus: 0, network: disabled }
+  - id: holdout-012
+    source: alpha-task-bank
+    sourceRelease: frontier-v1@1
+    version: 1
+    digest: sha256:4eb52d6ebe6dcfc12c3e1a0e098ea002e2db4e6f5399efba3073b9e77bda75a5
+    tags: [debugging]
+    lane: holdout
+    resources: { cpus: 2, memoryMb: 2048, wallSeconds: 600, gpus: 0, network: disabled }
+  - id: live-database-cutover
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:3d92be60d134825cdc7c0dc70603938c912200f96cb9c4ffb9d8a297192b5941
+    tags: [backend]
+    lane: holdout
+    resources: { cpus: 16, memoryMb: 16384, wallSeconds: 28800, gpus: 0, network: local }
+  - id: payments-pipeline-fix
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:7434c9d7142d08ccf8ec31a4fddaeef79ab9d47fc24bfa577db16ebf73ec9e65
+    tags: [backend]
+    lane: holdout
+    resources: { cpus: 6, memoryMb: 12288, wallSeconds: 28800, gpus: 0, network: local }
+  - id: intrastat-meldung
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:8cfff8952ea456af12a740e0e299a97a652ec054f783b1cd25d6e6c628c4b8f5
+    tags: [finance, data]
+    lane: holdout
+    resources: { cpus: 2, memoryMb: 8192, wallSeconds: 28800, gpus: 0, network: local }
+  - id: telecom-entity-resolution
+    source: terminal-bench
+    sourceRelease: v4.0.0
+    version: 1
+    digest: sha256:e17352a4924288cd698438762ffcc869576159228958a87ec69beeaefe1aed67
+    tags: [data]
+    lane: holdout
+    resources: { cpus: 2, memoryMb: 8192, wallSeconds: 28800, gpus: 0, network: local }

@@ -600,5 +600,9 @@
 			"received_other": "Otrzymano aktualizacje agenta {{count}}",
 			"completed": "Zakończono oczekiwanie agenta"
 		}
+	},
+	"transcript": {
+		"loadOlder": "Załaduj starsze wiadomości",
+		"loadAll": "Załaduj wszystkie wiadomości"
 	}
 }

@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next"
 import type { HistoryItem } from "@alpha-code/types"
 
 import { vscode } from "@/utils/vscode"
-import { useExtensionState } from "@/context/ExtensionStateContext"
+import { useShellState } from "@/context/ExtensionStateContext"
 
 import { DeleteTaskDialog } from "../history/DeleteTaskDialog"
 import { DownloadIcon, Trash2Icon, FileJsonIcon, MessageSquareCodeIcon } from "lucide-react"
@@ -18,7 +18,7 @@ interface TaskActionsProps {
 export const TaskActions = ({ item, buttonsDisabled }: TaskActionsProps) => {
 	const [deleteTaskId, setDeleteTaskId] = useState<string | null>(null)
 	const { t } = useTranslation()
-	const { debug } = useExtensionState()
+	const { debug } = useShellState()
 
 	return (
 		<div className="flex flex-row items-center -ml-0.5 mt-1 gap-1">

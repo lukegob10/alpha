@@ -114,6 +114,26 @@ describe("Task working record integration", () => {
 			reasonCode: "command_running",
 		})
 	})
+	it("does not publish a late result after its plan admission was revoked and restored", async () => {
+		await task.updateWorkPlan(plan)
+		await task.admitCommandExecution("revoked", "physical-revoked", "node app.js", root)
+		await task.updateWorkPlan({ ...plan, checks: [] })
+		await task.updateWorkPlan(plan)
+
+		task.completeCommandExecution("revoked", { exitCode: 0 }, "physical-revoked")
+		await task.getWorkContext()
+		expect(task.workContext?.receipts).toEqual([])
+		expect(await task.getCompletionGateDecision()).toMatchObject({
+			allowed: false,
+			reasonCode: "verification_missing",
+		})
+
+		await task.admitCommandExecution("fresh", "physical-fresh", "node app.js", root)
+		task.completeCommandExecution("fresh", { exitCode: 0 }, "physical-fresh")
+		await task.getWorkContext()
+		expect(task.workContext?.receipts[0]).toMatchObject({ executionId: "physical-fresh", status: "passed" })
+		expect(await task.getCompletionGateDecision()).toMatchObject({ allowed: true })
+	})
 	it("recognizes distinct passing acceptance checks at the end of a long task", async () => {
 		Object.assign(task, {
 			toolRepetitionDetector: new ToolRepetitionDetector(3),

@@ -21,7 +21,12 @@ const GEOMETRY_EPSILON_PX = 0.5
 
 export type ChatScrollMode = "FOLLOWING" | "BROWSING"
 
-export type ChatScrollReleaseReason = "user-scroll" | "row-expansion" | "task-header-toggle" | "checkpoint-navigation"
+export type ChatScrollReleaseReason =
+	| "user-scroll"
+	| "row-expansion"
+	| "task-header-toggle"
+	| "checkpoint-navigation"
+	| "load-older"
 
 interface ScrollGeometry {
 	scrollTop: number

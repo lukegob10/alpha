@@ -312,6 +312,7 @@ describe("Alpha", () => {
 		mockProvider.postMessageToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebviewWithoutTaskHistory = vi.fn().mockResolvedValue(undefined)
+		mockProvider.postTaskStateToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.updateTaskHistory = vi.fn().mockResolvedValue([])
 		mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
 		mockProvider.rollbackTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
@@ -5286,7 +5287,7 @@ describe("Alpha", () => {
 			expect(task.abandoned).toBe(false)
 		})
 
-		it("hydrates both histories before publishing or saving a reopened task", async () => {
+		it("paints the UI transcript before provider history finishes loading", async () => {
 			const task = createTask()
 			const savedUi = [
 				{ ts: 1, type: "say", say: "text", text: "historical task" },
@@ -5317,14 +5318,18 @@ describe("Alpha", () => {
 				expect(task.apiConversationHistory).toEqual(savedApi)
 				return { response: "noButtonClicked" }
 			})
+			vi.spyOn(mockProvider, "isTaskOnScreen").mockReturnValue(true)
 			const resume = (task as any).resumeTaskFromHistory()
 			await readStarted
+			await vi.waitFor(() => expect(mockProvider.postTaskStateToWebview).toHaveBeenCalled())
 			const effectsBeforeRead = [overwrite.mock.calls.length, save.mock.calls.length, ask.mock.calls.length]
+			expect(task.clineMessages).toEqual(savedUi.slice(0, 2))
 			releaseRead()
 			await resume
 			expect(effectsBeforeRead).toEqual([0, 0, 0])
 			expect(overwrite).not.toHaveBeenCalled()
 			expect(task.clineMessages).toEqual(savedUi.slice(0, 2))
+			expect(ask).toHaveBeenCalledOnce()
 		})
 
 		it.each(["ui", "api"] as const)("preserves history when the %s read fails during reopen", async (phase) => {
@@ -5366,8 +5371,13 @@ describe("Alpha", () => {
 			expect(overwrite).not.toHaveBeenCalled()
 			expect(save).not.toHaveBeenCalled()
 			expect(ask).not.toHaveBeenCalled()
-			expect(task.clineMessages).toEqual([])
-			expect(task.apiConversationHistory).toEqual([])
+			if (phase === "ui") {
+				expect(task.clineMessages).toEqual([])
+				expect(task.apiConversationHistory).toEqual([])
+			} else {
+				expect(task.clineMessages).toEqual([{ ts: 1, type: "say", say: "text", text: "saved" }])
+				expect(task.apiConversationHistory).toEqual([])
+			}
 		})
 
 		it("repairs an interrupted tool call when a root task resumes after reload", async () => {

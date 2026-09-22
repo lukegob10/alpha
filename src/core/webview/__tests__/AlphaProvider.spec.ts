@@ -1756,7 +1756,7 @@ describe("AlphaProvider", () => {
 		const getState = vi.spyOn(provider, "getState")
 		vi.spyOn(provider, "removeTaskFromStack").mockResolvedValue(undefined)
 		vi.spyOn(provider, "addTaskToStack").mockResolvedValue(undefined)
-		vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockResolvedValue(undefined)
+		vi.spyOn(provider, "postStateToWebviewWithoutAlphaMessages").mockResolvedValue(undefined)
 
 		getState.mockResolvedValue({
 			apiConfiguration: { apiProvider: "openai" },
@@ -4116,7 +4116,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 		const installJournal = (journal: object) => {
 			vi.spyOn(provider as any, "getAgentLifecycleJournal").mockResolvedValue(journal)
 			vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
-			vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockResolvedValue(undefined)
+			vi.spyOn(provider, "postTaskSessionStateToWebview").mockResolvedValue(undefined)
 		}
 
 		it("persists terminal history only from the task lifecycle, not a terminal turn snapshot", async () => {
@@ -4142,7 +4142,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				status: "active",
 			})
 			const updateHistory = vi.spyOn(provider, "updateTaskHistory").mockResolvedValue([])
-			vi.spyOn(provider, "postStateToWebviewWithoutTaskHistory").mockResolvedValue(undefined)
+			vi.spyOn(provider, "postTaskSessionStateToWebview").mockResolvedValue(undefined)
 			;(provider as any).handleAgentLifecycleSnapshotUpdated(completedTurn)
 			await Promise.resolve()
 			expect(updateHistory).not.toHaveBeenCalled()
@@ -4273,6 +4273,92 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 
 			// Restore the spy
 			vi.mocked(fsUtils.fileExistsAtPath).mockRestore()
+		})
+
+		it("skips reading provider history when reopen only needs the history item", async () => {
+			const historyItem = { id: "reopen-skip-api", task: "test task", ts: Date.now() }
+			vi.mocked(mockContext.globalState.get).mockImplementation((key: string) => {
+				if (key === "taskHistory") {
+					return [historyItem]
+				}
+				return undefined
+			})
+
+			const fsUtils = await import("../../../utils/fs")
+			const fileExists = vi.spyOn(fsUtils, "fileExistsAtPath")
+			const readFile = vi.mocked(fs.readFile)
+			fileExists.mockClear()
+			readFile.mockClear()
+
+			const result = await provider.getTaskWithId("reopen-skip-api", { includeApiConversationHistory: false })
+
+			expect(result.historyItem).toEqual(historyItem)
+			expect(result.apiConversationHistory).toEqual([])
+			expect(fileExists).not.toHaveBeenCalled()
+			expect(readFile.mock.calls.some((call) => String(call[0]).includes("api_conversation_history"))).toBe(false)
+			fileExists.mockRestore()
+		})
+	})
+
+	describe("showTaskWithId", () => {
+		it("acknowledges a live focus without parsing provider history", async () => {
+			vi.spyOn(provider, "focusTask").mockResolvedValue(true)
+			const getTask = vi.spyOn(provider, "getTaskWithId")
+			const post = vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
+
+			await provider.showTaskWithId("live-task")
+
+			expect(getTask).not.toHaveBeenCalled()
+			expect(post).toHaveBeenCalledWith({ type: "action", action: "chatButtonClicked" })
+			expect(post).toHaveBeenCalledWith({ type: "taskOpenResult", taskId: "live-task", success: true })
+		})
+
+		it("restores a historical task without parsing provider history", async () => {
+			const historyItem = {
+				id: "cold-task",
+				number: 1,
+				ts: 1,
+				task: "Restore me",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			}
+			vi.spyOn(provider, "focusTask").mockResolvedValue(false)
+			vi.spyOn(provider, "getTaskWithId").mockResolvedValue({
+				historyItem,
+				taskDirPath: "/task",
+				apiConversationHistoryFilePath: "/task/api.json",
+				uiMessagesFilePath: "/task/ui.json",
+				apiConversationHistory: [],
+			} as any)
+			vi.spyOn(provider, "createTaskWithHistoryItem").mockResolvedValue({ taskId: "cold-task" } as any)
+			const post = vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
+
+			await provider.showTaskWithId("cold-task")
+
+			expect(provider.getTaskWithId).toHaveBeenCalledWith("cold-task", { includeApiConversationHistory: false })
+			expect(post).toHaveBeenCalledWith({ type: "taskOpenResult", taskId: "cold-task", success: true })
+		})
+	})
+
+	describe("postTaskSessionStateToWebview", () => {
+		it("refreshes live metadata without reshipping the transcript", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			mockPostMessage.mockClear()
+
+			await provider.postTaskSessionStateToWebview()
+
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "state",
+				state: expect.objectContaining({
+					liveTasksById: expect.any(Object),
+					taskStateSeq: expect.any(Number),
+				}),
+			})
+			const posted = mockPostMessage.mock.calls.find(
+				(call: [{ type?: string }]) => call[0]?.type === "state",
+			)?.[0]
+			expect(posted?.state?.clineMessages).toBeUndefined()
 		})
 	})
 })

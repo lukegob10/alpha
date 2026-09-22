@@ -596,5 +596,9 @@
 			"received_other": "收到 {{count}} 代理程式更新",
 			"completed": "代理等待完成"
 		}
+	},
+	"transcript": {
+		"loadOlder": "載入較舊的訊息",
+		"loadAll": "載入全部訊息"
 	}
 }

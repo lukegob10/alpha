@@ -600,5 +600,9 @@
 			"received_other": "Mises à jour de l'agent {{count}} reçues",
 			"completed": "Attente de l'agent terminée"
 		}
+	},
+	"transcript": {
+		"loadOlder": "Charger les messages plus anciens",
+		"loadAll": "Charger tous les messages"
 	}
 }

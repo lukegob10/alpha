@@ -606,5 +606,9 @@
 			"received_other": "Menerima pembaruan agen {{count}}",
 			"completed": "Tunggu agen selesai"
 		}
+	},
+	"transcript": {
+		"loadOlder": "Muat pesan yang lebih lama",
+		"loadAll": "Muat semua pesan"
 	}
 }

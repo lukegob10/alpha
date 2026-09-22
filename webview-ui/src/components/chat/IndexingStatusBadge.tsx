@@ -7,7 +7,7 @@ import { cn } from "@src/lib/utils"
 import { vscode } from "@src/utils/vscode"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 
-import { useExtensionState } from "@src/context/ExtensionStateContext"
+import { useShellState } from "@src/context/ExtensionStateContext"
 import { PopoverTrigger, StandardTooltip, Button } from "@src/components/ui"
 
 import { CodeIndexPopover } from "./CodeIndexPopover"
@@ -18,7 +18,7 @@ interface IndexingStatusBadgeProps {
 
 export const IndexingStatusBadge: React.FC<IndexingStatusBadgeProps> = ({ className }) => {
 	const { t } = useAppTranslation()
-	const { cwd } = useExtensionState()
+	const { cwd } = useShellState()
 
 	const [indexingStatus, setIndexingStatus] = useState<IndexingStatus>({
 		systemStatus: "Standby",

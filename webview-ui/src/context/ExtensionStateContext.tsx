@@ -1,6 +1,6 @@
 import React, { useCallback, useContext, useEffect, useRef, useState } from "react"
 
-import { ExtensionStateContext } from "./ExtensionStateContextStore"
+import { ExtensionStateContext, ShellStateContext } from "./ExtensionStateContextStore"
 
 import {
 	type ProviderSettings,
@@ -150,7 +150,7 @@ export interface ExtensionStateContextType extends ExtensionState {
 	skills?: SkillMetadata[]
 }
 
-export { ExtensionStateContext }
+export { ExtensionStateContext, ShellStateContext }
 
 export const mergeExtensionState = (prevState: ExtensionState, newState: Partial<ExtensionState>) => {
 	const { customModePrompts: prevCustomModePrompts, experiments: prevExperiments, ...prevRest } = prevState
@@ -163,8 +163,10 @@ export const mergeExtensionState = (prevState: ExtensionState, newState: Partial
 		...newRest
 	} = newState
 
-	const customModePrompts = { ...prevCustomModePrompts, ...(newCustomModePrompts ?? {}) }
-	const experiments = { ...prevExperiments, ...(newExperiments ?? {}) }
+	const customModePrompts = newCustomModePrompts
+		? { ...prevCustomModePrompts, ...newCustomModePrompts }
+		: prevCustomModePrompts
+	const experiments = newExperiments ? { ...prevExperiments, ...newExperiments } : prevExperiments
 	const rest = { ...prevRest, ...newRest }
 	const agentLifecycleSnapshots = mergeAgentLifecycleSnapshots(
 		prevState.agentLifecycleSnapshots,
@@ -217,14 +219,39 @@ export const mergeExtensionState = (prevState: ExtensionState, newState: Partial
 
 	const targetsDifferentTask =
 		newState.currentTaskId !== undefined && newState.currentTaskId !== prevState.currentTaskId
+	const acceptedTaskSnapshot = !taskStateIsStale && !patchHasNoTaskStateSequence
 	if (
-		!taskStateIsStale &&
-		!patchHasNoTaskStateSequence &&
+		acceptedTaskSnapshot &&
 		"currentTaskId" in newState &&
 		newState.currentTaskId !== prevState.currentTaskId &&
 		!("taskReasoning" in newState)
 	) {
 		rest.taskReasoning = undefined
+	}
+	if ("currentTaskId" in newState && newState.currentTaskId == null) {
+		rest.currentTaskId = undefined
+	}
+	if ("currentTaskItem" in newState && newState.currentTaskItem == null) {
+		rest.currentTaskItem = undefined
+	}
+	if ("activeTaskId" in newState && newState.activeTaskId == null) {
+		rest.activeTaskId = undefined
+	}
+	// VS Code webview postMessage drops undefined properties, so a new-chat
+	// snapshot cannot clear task identity by sending currentTaskId: undefined.
+	if (acceptedTaskSnapshot && newState.currentView?.type === "newTaskDraft") {
+		if (!("currentTaskId" in newState) || newState.currentTaskId == null) {
+			rest.currentTaskId = undefined
+		}
+		if (!("currentTaskItem" in newState) || newState.currentTaskItem == null) {
+			rest.currentTaskItem = undefined
+		}
+		if (!("activeTaskId" in newState) || newState.activeTaskId == null) {
+			rest.activeTaskId = undefined
+		}
+		if (!("taskReasoning" in newState)) {
+			rest.taskReasoning = undefined
+		}
 	}
 	const rejectScopedDomains = targetsDifferentTask && (taskStateIsStale || patchHasNoTaskStateSequence)
 	if (rejectScopedDomains || isStale(incomingQueueSeq, previousQueueSeq)) {
@@ -250,6 +277,60 @@ export const mergeExtensionState = (prevState: ExtensionState, newState: Partial
 
 	return applyLifecycleSnapshotsToExtensionState(mergedState, agentLifecycleSnapshots)
 }
+
+const TRANSCRIPT_STATE_KEYS = [
+	"clineMessages",
+	"clineMessagesSeq",
+	"messageQueue",
+	"messageQueueSeq",
+	"currentTaskTodos",
+	"currentTaskTodosSeq",
+	"liveTasksById",
+	"liveTaskIds",
+	"agentLifecycleSnapshots",
+	"agentLifecycleDegraded",
+	"taskStateSeq",
+	"currentTaskItem",
+	"managedAgentTree",
+] as const
+
+const TRANSCRIPT_STATE_KEY_SET = new Set<string>(TRANSCRIPT_STATE_KEYS)
+
+function pickShellSnapshot(value: ExtensionStateContextType): Record<string, unknown> {
+	const snapshot: Record<string, unknown> = {}
+	for (const [key, field] of Object.entries(value)) {
+		if (typeof field === "function" || TRANSCRIPT_STATE_KEY_SET.has(key)) {
+			continue
+		}
+		snapshot[key] = field
+	}
+	return snapshot
+}
+
+function shellSnapshotsEqual(left: Record<string, unknown> | undefined, right: Record<string, unknown>): boolean {
+	if (left === right) {
+		return true
+	}
+	if (!left) {
+		return false
+	}
+	const leftKeys = Object.keys(left)
+	const rightKeys = Object.keys(right)
+	if (leftKeys.length !== rightKeys.length) {
+		return false
+	}
+	return leftKeys.every((key) => left[key] === right[key])
+}
+
+function omitTranscriptState(value: ExtensionStateContextType): ExtensionStateContextType {
+	const shell = { ...value } as ExtensionStateContextType & Record<string, unknown>
+	for (const key of TRANSCRIPT_STATE_KEYS) {
+		delete shell[key]
+	}
+	return shell
+}
+
+const EMPTY_PROFILE_THRESHOLDS: Record<string, number> = {}
 
 export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 	const [state, setState] = useState<ExtensionState>({
@@ -368,6 +449,8 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	}
 	const pendingMessageUpdatesRef = useRef(new Map<string, IncrementalMessage>())
 	const messageUpdateFrameRef = useRef<number | undefined>(undefined)
+	const shellSnapshotRef = useRef<Record<string, unknown>>()
+	const shellValueRef = useRef<ExtensionStateContextType>()
 
 	const setListApiConfigMeta = useCallback(
 		(value: ProviderSettingsEntry[]) => setState((prevState) => ({ ...prevState, listApiConfigMeta: value })),
@@ -790,7 +873,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		writeDelayMs: state.writeDelayMs,
 		marketplaceItems,
 		marketplaceInstalledMetadata,
-		profileThresholds: state.profileThresholds ?? {},
+		profileThresholds: state.profileThresholds ?? EMPTY_PROFILE_THRESHOLDS,
 		alwaysAllowFollowupQuestions,
 		followupAutoApproveTimeoutMs,
 		setExperimentEnabled: (id, enabled) =>
@@ -900,7 +983,17 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 			setState((prevState) => ({ ...prevState, showWorktreesInHomeScreen: value })),
 	}
 
-	return <ExtensionStateContext.Provider value={contextValue}>{children}</ExtensionStateContext.Provider>
+	const shellSnapshot = pickShellSnapshot(contextValue)
+	if (!shellValueRef.current || !shellSnapshotsEqual(shellSnapshotRef.current, shellSnapshot)) {
+		shellSnapshotRef.current = shellSnapshot
+		shellValueRef.current = omitTranscriptState(contextValue)
+	}
+
+	return (
+		<ExtensionStateContext.Provider value={contextValue}>
+			<ShellStateContext.Provider value={shellValueRef.current}>{children}</ShellStateContext.Provider>
+		</ExtensionStateContext.Provider>
+	)
 }
 
 export const useExtensionState = () => {
@@ -908,6 +1001,16 @@ export const useExtensionState = () => {
 
 	if (context === undefined) {
 		throw new Error("useExtensionState must be used within an ExtensionStateContextProvider")
+	}
+
+	return context
+}
+
+export const useShellState = () => {
+	const context = useContext(ShellStateContext)
+
+	if (context === undefined) {
+		throw new Error("useShellState must be used within an ExtensionStateContextProvider")
 	}
 
 	return context

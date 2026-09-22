@@ -1,6 +1,6 @@
 import common from "../locales/en/common.json"
+import marketplace from "../locales/en/marketplace.json"
 import settings from "../locales/en/settings.json"
-import frenchMarketplace from "../locales/fr/marketplace.json"
 
 const localeFiles = import.meta.glob("../locales/**/*.json", { eager: true })
 
@@ -39,8 +39,20 @@ describe("locale integrity", () => {
 		expect(settings.providers.refreshModels.missingConfig).toEqual(expect.any(String))
 	})
 
-	it("does not require interpolation for the French clear-tags action", () => {
-		expect(frenchMarketplace.filters.tags.clear).toBe("Effacer les étiquettes")
-		expect(frenchMarketplace.filters.tags.clear).not.toContain("{{")
+	it("does not require interpolation for the English clear-tags action", () => {
+		expect(marketplace.filters.tags.clear).toBe("Clear tags")
+		expect(marketplace.filters.tags.clear).not.toContain("{{")
+	})
+
+	it("ships only the English locale", () => {
+		const localeDirs = [
+			...new Set(
+				Object.keys(localeFiles)
+					.map((path) => path.match(/locales\/([^/]+)\//)?.[1])
+					.filter(Boolean),
+			),
+		]
+
+		expect(localeDirs).toEqual(["en"])
 	})
 })

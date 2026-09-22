@@ -8,8 +8,8 @@ import i18n from "../setup"
 
 vi.mock("@/utils/vscode", () => ({ vscode: { postMessage: vi.fn() } }))
 vi.mock("@/components/ui/hooks/useAlphaPortal", () => ({ useAlphaPortal: () => document.body }))
-vi.mock("@/context/ExtensionStateContext", () => ({
-	useExtensionState: () => ({
+vi.mock("@/context/ExtensionStateContext", () => {
+	const extensionState = {
 		language: "en",
 		autoApprovalEnabled: true,
 		allowedCommands: ["*"],
@@ -25,8 +25,27 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 		alwaysAllowSubagents: true,
 		alwaysAllowTickets: true,
 		alwaysAllowFollowupQuestions: true,
-	}),
-}))
+		setApprovalMode: vi.fn(),
+		setApprovalModeBypassAcknowledged: vi.fn(),
+		setAutoApprovalEnabled: vi.fn(),
+		setAlwaysAllowReadOnly: vi.fn(),
+		setAlwaysAllowReadOnlyOutsideWorkspace: vi.fn(),
+		setAlwaysAllowWrite: vi.fn(),
+		setAlwaysAllowWriteOutsideWorkspace: vi.fn(),
+		setAlwaysAllowWriteProtected: vi.fn(),
+		setAlwaysAllowExecute: vi.fn(),
+		setAlwaysAllowMcp: vi.fn(),
+		setAlwaysAllowSubtasks: vi.fn(),
+		setAlwaysAllowSubagents: vi.fn(),
+		setAlwaysAllowTickets: vi.fn(),
+		setAlwaysAllowFollowupQuestions: vi.fn(),
+	}
+
+	return {
+		useExtensionState: () => extensionState,
+		useShellState: () => extensionState,
+	}
+})
 
 const ComposerControls = memo(function ComposerControls() {
 	return (
@@ -56,14 +75,14 @@ describe("composer translations with real locale resources", () => {
 
 	it.each([
 		["reasoning-trigger", "High"],
-		["auto-approve-dropdown-trigger", "AllAll"],
+		["auto-approve-dropdown-trigger", "Auto"],
 	])("translates %s without the app provider", (testId, expected) => {
 		render(<ComposerControls />)
 
 		expect(screen.getByTestId(testId).textContent).toBe(expected)
 	})
 
-	it("updates memoized controls when the language changes", async () => {
+	it("keeps English labels when a removed locale is requested", async () => {
 		render(
 			<TranslationProvider>
 				<ComposerControls />
@@ -74,7 +93,7 @@ describe("composer translations with real locale resources", () => {
 		await act(async () => {
 			await i18n.changeLanguage("de")
 		})
-		expect(screen.getByTestId("reasoning-trigger")).toHaveTextContent(/^Hoch$/)
-		expect(screen.getByTestId("auto-approve-dropdown-trigger")).toHaveTextContent(/^AlleAlle$/)
+		expect(screen.getByTestId("reasoning-trigger")).toHaveTextContent(/^High$/)
+		expect(screen.getByTestId("auto-approve-dropdown-trigger")).toHaveTextContent(/^Auto$/)
 	})
 })

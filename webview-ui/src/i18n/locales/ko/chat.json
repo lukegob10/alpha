@@ -600,5 +600,9 @@
 			"received_other": "{{count}} 에이전트 업데이트를 받았습니다.",
 			"completed": "에이전트 대기가 완료되었습니다."
 		}
+	},
+	"transcript": {
+		"loadOlder": "이전 메시지 불러오기",
+		"loadAll": "모든 메시지 불러오기"
 	}
 }

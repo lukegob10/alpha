@@ -243,7 +243,9 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 		await vscode.commands.executeCommand(`${Package.name}.SidebarProvider.focus`)
 		await this.waitForWebviewLaunch(5_000)
 
-		const { historyItem } = await this.sidebarProvider.getTaskWithId(taskId)
+		const { historyItem } = await this.sidebarProvider.getTaskWithId(taskId, {
+			includeApiConversationHistory: false,
+		})
 		await this.sidebarProvider.createTaskWithHistoryItem(historyItem)
 
 		if (this.sidebarProvider.viewLaunched) {
@@ -257,7 +259,7 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 
 	public async isTaskInHistory(taskId: string): Promise<boolean> {
 		try {
-			await this.sidebarProvider.getTaskWithId(taskId)
+			await this.sidebarProvider.getTaskWithId(taskId, { includeApiConversationHistory: false })
 			return true
 		} catch {
 			return false

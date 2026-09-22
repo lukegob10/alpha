@@ -600,5 +600,9 @@
 			"received_other": "{{count}} エージェントの更新を受信しました",
 			"completed": "エージェントの待機が完了しました"
 		}
+	},
+	"transcript": {
+		"loadOlder": "以前のメッセージを読み込む",
+		"loadAll": "すべてのメッセージを読み込む"
 	}
 }
