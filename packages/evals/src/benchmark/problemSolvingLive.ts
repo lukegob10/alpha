@@ -254,6 +254,14 @@ export async function runLiveProblemSolvingCore(options: {
 		excluded: ["holdout", "terminal-bench"],
 	}
 	const taskSetSha256 = createHash("sha256").update(JSON.stringify(manifest)).digest("hex")
+	try {
+		await fs.lstat(options.attemptRoot)
+		const error = new Error("Live problem-solving run directory already exists") as NodeJS.ErrnoException
+		error.code = "EEXIST"
+		throw error
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+	}
 	const buildIdentity = execSync("git rev-parse HEAD", { cwd: options.repositoryRoot, encoding: "utf8" }).trim()
 	const workingTree = workingTreeIdentity(options.repositoryRoot)
 	const extensionBundleSha256 = await extensionBundleDigest(options.repositoryRoot)

@@ -66,7 +66,11 @@ describe("live problem-solving runner configuration", () => {
 		const attemptRoot = path.join(parent, "existing-run")
 		await fs.mkdir(attemptRoot)
 		await fs.writeFile(path.join(attemptRoot, "sentinel"), "preserve")
-		await expect(runLiveProblemSolvingCore(options(attemptRoot))).rejects.toMatchObject({ code: "EEXIST" })
+		await expect(
+			runLiveProblemSolvingCore(
+				options(attemptRoot, { repositoryRoot: path.join(parent, "missing-repository") }),
+			),
+		).rejects.toMatchObject({ code: "EEXIST" })
 		expect(await fs.readFile(path.join(attemptRoot, "sentinel"), "utf8")).toBe("preserve")
 	})
 })

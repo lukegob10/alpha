@@ -278,7 +278,7 @@ export async function runReliabilityScenario(
 		budget.transformResponse = undefined
 		budget.responseProbe = undefined
 		result.requestsUsed = budget.used
-		if (typeof host.readProblemUsage === "function" && result.taskIds.length > 0) {
+		if (result.taskIds.length > 0 && typeof host.readProblemUsage === "function") {
 			result.usage = await aggregateTaskUsage(host, result.taskIds)
 		}
 		await writeEvidence("reliability-observations.json", {
