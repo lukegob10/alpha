@@ -4,6 +4,8 @@ import { join } from "path"
 import { fileExistsAtPath } from "../../utils/fs"
 
 const getBuildArtifactPatterns = () => [
+	// Alpha's local code index is derived from workspace files and can be rebuilt.
+	".alpha/code-index/",
 	".gradle/",
 	".idea/",
 	".parcel-cache/",

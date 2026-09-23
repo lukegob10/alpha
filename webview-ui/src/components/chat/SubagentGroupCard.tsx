@@ -69,9 +69,10 @@ const agentDetail = (agent: SubagentRunState): string => {
 export interface SubagentGroupCardProps {
 	group: SubagentGroupState
 	parentTaskId?: string
+	onShowTask?: (taskId: string) => void
 }
 
-export const SubagentGroupCard = memo(({ group, parentTaskId }: SubagentGroupCardProps) => {
+export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: SubagentGroupCardProps) => {
 	const isActive = activeStatuses.has(group.status)
 	const [steeringTaskId, setSteeringTaskId] = useState<string>()
 	const [steeringText, setSteeringText] = useState("")
@@ -209,7 +210,10 @@ export const SubagentGroupCard = memo(({ group, parentTaskId }: SubagentGroupCar
 		}
 	}, [actionableChangeSetIds, group.groupId, requestChangeSetCapability, resolvedParentTaskId])
 
-	const openTask = (agent: SubagentRunState) => vscode.postMessage({ type: "showTaskWithId", text: agent.taskId })
+	const openTask = (agent: SubagentRunState) => {
+		if (onShowTask) onShowTask(agent.taskId)
+		else vscode.postMessage({ type: "showTaskWithId", text: agent.taskId })
+	}
 	const openChangeSet = (changeSetId: string) =>
 		vscode.postMessage({
 			type: "openSubagentChangeSet",

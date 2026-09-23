@@ -2,13 +2,19 @@
 
 ## Recorded deterministic verdict
 
-The latest source-stable strict run recorded on 2026-08-23 for the combined configurable-orchestration,
-nested-agent, Worker-verification, and live-tree implementation passed its deterministic release gate.
+The earlier source-stable strict run recorded on 2026-08-23 for the combined configurable-orchestration,
+nested-agent, Worker-verification, and live-tree implementation passed its deterministic release gate:
 
 - Deterministic matrix: **26 PASS, 0 FAIL, 0 pending merge, 0 baseline-debt exceptions**.
 - Focused execution: **10 tracks, 974 tests passed, 0 failed, 0 skipped, 0 todo**.
 - External boundary: **8 PENDING-INTEGRATION** cases that require a real VS Code host, native provider traffic,
   deliberate reload/process interruption, or multiple extension-host writers.
+
+The 2026-09-22 source-stable strict run for the approval-mode implementation snapshot did not pass: **2,199 passed, 16
+failed, and 1 skipped**. Five failures are in retained-task follow-up/resume coverage; eleven are in `TaskItem` status
+rendering. The approval-specific Worker completion track passed **205/205** tests. The dedicated managed-agent
+Extension Host scenario and the VS Code 1.122.1 smoke gate both passed separately. Auto-mode live UI/reload acceptance
+remains pending.
 
 The deterministic suite now has a separate scripted Extension Host acceptance test for nested Worker Apply/Discard,
 verification, projection, and navigation. The remaining integration rows still require real provider traffic,
@@ -87,34 +93,34 @@ cancellation, orphan/recovery failure, cancellation, failure, and completion.
 
 ## Deterministic matrix
 
-| Row                                    | Gate                                                                        |
-| -------------------------------------- | --------------------------------------------------------------------------- |
-| `CFG-CONTRACT-001`                     | Exact ExtensionState/updateSettings field names, ranges, and defaults       |
-| `CFG-FROZEN-001`                       | Frozen orchestration manifest and legacy-default recovery                   |
-| `PROJECTION-CONTRACT-001`              | Depth/effective-limit/stop-reason live and list projection                  |
-| `CFG-POLICY-001`                       | Explicit-only/proactive behavior, narrowing, and reload persistence         |
-| `CFG-TIMEOUT-001`                      | Role timeout configuration, reload, and exactly-once terminal outcome       |
-| `CFG-BUDGET-001`                       | Output/token/cost enforcement and durable stop reason                       |
-| `NEST-DEPTH-001`                       | Positive authorized nesting, maximum depth, and authority narrowing         |
-| `NEST-CAPACITY-001`                    | Atomic root-wide capacity and exact slot release                            |
-| `NEST-CANCEL-001`                      | Recursive cancel/interrupt/close and race idempotency                       |
-| `ROUTING-MAILBOX-001`                  | Durable cursors, result claims, and managed-child parent-control waits      |
-| `ROUTING-NESTED-001`                   | Immediate-parent routing, descendant authorization, and atomic claims       |
-| `ROUTING-STEERING-RECEIPT-001`         | Durable steering acknowledgment and retained-follow-up recovery             |
-| `ROUTING-PROGRESS-001`                 | Bounded immediate-parent progress routing and exact claim                   |
-| `RECOVERY-BASE-001`                    | Registry, Worker orphan, and Apply-decision reload baseline                 |
-| `RECOVERY-NESTED-001`                  | Nested topology/budget/mailbox rehydration and orphan cleanup               |
-| `CONTEXT-INHERIT-001`                  | Frozen, credential-free, digest-checked `fork_turns` inheritance            |
-| `NEST-COMPLETION-001`                  | Active/unowned descendants block managed-parent completion                  |
-| `WORKER-GATE-001`                      | Quarantine, Apply, durable parent verification, and double completion check |
-| `PROTOCOL-STRICT-001`                  | Strict native-provider/lifecycle parsing                                    |
-| `WORKER-NESTED-001`                    | Explicit descendant Worker verification ownership                           |
-| `UI-LIVE-TREE-001`                     | Compact nested task navigation, attention, overflow controls, and reload    |
-| `UI-SETTINGS-BUFFER-001`               | Local cached edits survive unrelated extension/live-tree updates            |
-| `UI-SETTINGS-DEBT-001`                 | No skipped/placeholder Settings change-detection assertions                 |
-| `RUNTIME-LEGACY-DEBT-001`              | Selected legacy Task coverage has no skipped cases                          |
-| `PROCESS-TREE-CLEANUP-001`             | Awaited Task/provider cleanup and real local OS process-tree removal        |
-| `PERSISTENCE-COMPACT-GLOBAL-STATE-001` | Bounded root-only global-state compatibility history                        |
+| Row                                    | Gate                                                                                            |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `CFG-CONTRACT-001`                     | Exact ExtensionState/updateSettings field names, ranges, and defaults                           |
+| `CFG-FROZEN-001`                       | Frozen orchestration manifest and legacy-default recovery                                       |
+| `PROJECTION-CONTRACT-001`              | Depth/effective-limit/stop-reason live and list projection                                      |
+| `CFG-POLICY-001`                       | Explicit-only/proactive behavior, narrowing, and reload persistence                             |
+| `CFG-TIMEOUT-001`                      | Role timeout configuration, reload, and exactly-once terminal outcome                           |
+| `CFG-BUDGET-001`                       | Output/token/cost enforcement and durable stop reason                                           |
+| `NEST-DEPTH-001`                       | Positive authorized nesting, maximum depth, and authority narrowing                             |
+| `NEST-CAPACITY-001`                    | Atomic root-wide capacity and exact slot release                                                |
+| `NEST-CANCEL-001`                      | Recursive cancel/interrupt/close and race idempotency                                           |
+| `ROUTING-MAILBOX-001`                  | Durable cursors, result claims, and managed-child parent-control waits                          |
+| `ROUTING-NESTED-001`                   | Immediate-parent routing, descendant authorization, and atomic claims                           |
+| `ROUTING-STEERING-RECEIPT-001`         | Durable steering acknowledgment and retained-follow-up recovery                                 |
+| `ROUTING-PROGRESS-001`                 | Bounded immediate-parent progress routing and exact claim                                       |
+| `RECOVERY-BASE-001`                    | Registry, Worker orphan, and Apply-decision reload baseline                                     |
+| `RECOVERY-NESTED-001`                  | Nested topology/budget/mailbox rehydration and orphan cleanup                                   |
+| `CONTEXT-INHERIT-001`                  | Frozen, credential-free, digest-checked `fork_turns` inheritance                                |
+| `NEST-COMPLETION-001`                  | Active/unowned descendants block managed-parent completion                                      |
+| `WORKER-GATE-001`                      | Approval-mode-aware Worker settlement, durable parent verification, and double completion check |
+| `PROTOCOL-STRICT-001`                  | Strict native-provider/lifecycle parsing                                                        |
+| `WORKER-NESTED-001`                    | Explicit descendant Worker verification ownership                                               |
+| `UI-LIVE-TREE-001`                     | Compact nested task navigation, attention, overflow controls, and reload                        |
+| `UI-SETTINGS-BUFFER-001`               | Local cached edits survive unrelated extension/live-tree updates                                |
+| `UI-SETTINGS-DEBT-001`                 | No skipped/placeholder Settings change-detection assertions                                     |
+| `RUNTIME-LEGACY-DEBT-001`              | Selected legacy Task coverage has no skipped cases                                              |
+| `PROCESS-TREE-CLEANUP-001`             | Awaited Task/provider cleanup and real local OS process-tree removal                            |
+| `PERSISTENCE-COMPACT-GLOBAL-STATE-001` | Bounded root-only global-state compatibility history                                            |
 
 ## Latest deterministic execution
 
@@ -151,16 +157,18 @@ INT-STORAGE-WRITERS-001
 INT-GLOBAL-STATE-SIZE-001
 ```
 
-The dedicated scripted Extension Host test proves nested spawn, nested Apply, root Apply/Discard, parent-owned command
+The dedicated scripted Extension Host test proves nested spawn, Ask-mode Worker review, parent-owned command
 verification, persisted orchestration settings, hierarchy projection, and exact task navigation in an isolated Git
-workspace. It intentionally does not promote the rows below because it does not simulate real provider provenance and
+workspace. Auto-mode automatic application is covered by focused provider/task tests and still needs live acceptance. It
+intentionally does not promote the rows below because it does not simulate real provider provenance and
 usage, restart the extension host mid-run, inspect rendered pixels, or coordinate multiple extension-host writers.
 Those rows remain pending until dedicated evidence proves:
 
 - genuine human authorization versus generated, workspace-supplied, or replayed authorization;
 - real extension-host reload with nested processes, immediate-parent mailbox ownership, and orphan cleanup;
 - provider-backed timeout/output/root-token/root-cost stops with accurate final usage and one terminal outcome;
-- nested and outer Worker Apply, blocked completion, parent-owned verification, and recovery across reload;
+- Ask-mode nested and outer Worker Apply, Auto-mode automatic application, blocked completion, parent-owned
+  verification, and recovery across reload;
 - live host/webview compact-row convergence, exact child navigation, sibling continuity, contextual actions,
   attention, transcript selection isolation, and Settings edit-buffer survival;
 - termination of non-cooperative command/provider streams without leaked capacity; and

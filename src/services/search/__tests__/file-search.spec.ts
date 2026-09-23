@@ -24,6 +24,9 @@ vi.mock("vscode", () => ({
 // Mock getBinPath
 vi.mock("../ripgrep", () => ({
 	getBinPath: vi.fn(async () => null), // Return null to skip actual ripgrep execution
+	executeWithRipgrepFallback: (binaryPath: string, execute: (binaryPath: string) => Promise<unknown>) =>
+		execute(binaryPath),
+	createRipgrepProcessError: (error: Error) => new Error(`ripgrep process error: ${error.message}`),
 }))
 
 // Mock child_process

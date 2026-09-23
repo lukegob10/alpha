@@ -183,6 +183,8 @@ export type JournalValidationStatus = "validated" | "unverified" | "incomplete"
 export interface EvidenceJoinProjection {
 	records: Array<{
 		identity: Record<string, string | undefined>
+		/** Present only when the two producer-local run IDs differ. */
+		sourceRunIds?: { lifecycle: string[]; eventLog: string[] }
 		lifecycleSequences: number[]
 		eventLogSequences: number[]
 		eventTypes: string[]
@@ -209,8 +211,10 @@ export function joinProjectedEvidence(input: {
 		"requestIdSha256",
 		"attemptIdSha256",
 	] as const
+	const joinFields = ["taskIdSha256", "turnIdSha256", "stepIdSha256"] as const
 	const groups = new Map<string, EvidenceJoinProjection["records"][number]>()
 	const conflictsByGroup = new Map<string, Set<string>>()
+	const runIdsByGroup = new Map<string, { lifecycle: Set<string>; eventLog: Set<string> }>()
 	const missing = new Set<string>()
 	const add = (source: "lifecycle" | "eventLog", value: unknown) => {
 		if (value === null || typeof value !== "object" || Array.isArray(value)) return
@@ -218,13 +222,10 @@ export function joinProjectedEvidence(input: {
 		for (const field of identityFields) {
 			if (typeof record[field] !== "string") missing.add(`${source}:${field}`)
 		}
-		// Scope the join by the common task/run/turn/step boundary. Request and
-		// attempt IDs were added later and may be absent on one side of an old
-		// record; including them in the key would manufacture two partial joins.
-		const key = identityFields
-			.slice(0, 4)
-			.map((field) => String(record[field] ?? "?"))
-			.join(":")
+		// The two journals create independent run IDs. Join on the shared task,
+		// turn, and step IDs; retain both producer-local run IDs when they differ.
+		// Request and attempt IDs are useful enrichment, but older records may omit them.
+		const key = joinFields.map((field) => String(record[field] ?? "?")).join(":")
 		const existing =
 			groups.get(key) ??
 			({
@@ -238,10 +239,13 @@ export function joinProjectedEvidence(input: {
 				status: "partial",
 			} satisfies EvidenceJoinProjection["records"][number])
 		const conflicts = conflictsByGroup.get(key) ?? new Set<string>()
-		const hasStableIdentity = identityFields
-			.slice(0, 4)
-			.every((field) => typeof existing.identity[field] === "string")
+		const hasStableIdentity = joinFields.every((field) => typeof existing.identity[field] === "string")
 		const sequence = record.sequence
+		if (typeof record.runIdSha256 === "string") {
+			const runIds = runIdsByGroup.get(key) ?? { lifecycle: new Set<string>(), eventLog: new Set<string>() }
+			runIds[source].add(record.runIdSha256)
+			runIdsByGroup.set(key, runIds)
+		}
 		for (const field of identityFields.slice(4)) {
 			const value = record[field]
 			if (typeof value !== "string" || conflicts.has(field)) continue
@@ -265,5 +269,15 @@ export function joinProjectedEvidence(input: {
 	}
 	input.lifecycle?.forEach((record) => add("lifecycle", record))
 	input.eventLog?.forEach((record) => add("eventLog", record))
-	return { records: [...groups.values()], missing: [...missing].sort() }
+	const records = [...groups.entries()].map(([key, record]) => {
+		const runIds = runIdsByGroup.get(key)
+		const lifecycle = [...(runIds?.lifecycle ?? [])].sort()
+		const eventLog = [...(runIds?.eventLog ?? [])].sort()
+		if (lifecycle.length && eventLog.length && lifecycle.some((value) => !eventLog.includes(value))) {
+			delete record.identity.runIdSha256
+			record.sourceRunIds = { lifecycle, eventLog }
+		}
+		return record
+	})
+	return { records, missing: [...missing].sort() }
 }

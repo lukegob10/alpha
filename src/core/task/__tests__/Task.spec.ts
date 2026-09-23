@@ -2460,7 +2460,7 @@ describe("Alpha", () => {
 			expect(active).toHaveBeenCalledWith(task.taskId)
 		})
 
-		it("reuses retained completed-task history without redundant disk reloads", async () => {
+		it("reuses retained completed-task history without disk reloads or a redundant workspace listing", async () => {
 			const task = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
@@ -2500,7 +2500,10 @@ describe("Alpha", () => {
 			expect(continueLoop).toHaveBeenCalledWith(
 				[{ type: "text", text: "<user_message>\ncontinue in place\n</user_message>" }],
 				expect.any(Function),
-				{ deferTaskStartedUntilInitialUserContentPersisted: true },
+				{
+					deferTaskStartedUntilInitialUserContentPersisted: true,
+					includeInitialFileDetails: false,
+				},
 			)
 		})
 

@@ -25,6 +25,7 @@ type CheckpointSimpleGitOptions = Partial<SimpleGitOptions> & {
 }
 
 const EXCLUDED_VENV_PATHSPECS = [":(glob).venv", ":(glob).venv/**", ":(glob)**/.venv", ":(glob)**/.venv/**"] as const
+const EXCLUDED_CHECKPOINT_PATHSPECS = [...EXCLUDED_VENV_PATHSPECS, ".alpha/code-index"] as const
 
 /**
  * Creates a SimpleGit instance with sanitized environment variables to prevent
@@ -77,9 +78,16 @@ function createSanitizedGit(baseDir: string): SimpleGit {
 
 	const options: CheckpointSimpleGitOptions = {
 		baseDir,
-		// Checkpoints must observe edits even when user Git settings favor cached
-		// metadata, and the task's index must remain self-contained.
-		config: ["core.ignorestat=false", "core.splitIndex=false"],
+		// Keep checkpoint commits deterministic without spawning config commands.
+		config: [
+			// Checkpoints must observe edits even when user Git settings favor cached
+			// metadata, and the task's index must remain self-contained.
+			"core.ignorestat=false",
+			"core.splitIndex=false",
+			"commit.gpgSign=false",
+			"user.name=Alpha",
+			"user.email=noreply@example.com",
+		],
 		unsafe: {
 			allowUnsafeConfigEnvCount: true,
 			allowUnsafeTemplateDir: true,
@@ -171,29 +179,24 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 			throw new Error("Shadow git repo already initialized")
 		}
 
-		const nestedGitPath = await this.getNestedGitRepository()
+		const startTime = Date.now()
+		const existingShadowRepository = await fileExistsAtPath(this.dotGitDir)
+		const nestedScanStartTime = Date.now()
+		const nestedGitPath = await this.getNestedGitRepository(!existingShadowRepository)
+		const nestedScanDuration = Date.now() - nestedScanStartTime
 
 		if (nestedGitPath) {
-			// Show persistent error message with the offending path
-			const relativePath = path.relative(this.workspaceDir, nestedGitPath)
-			const message = t("common:errors.nested_git_repos_warning", { path: relativePath })
-			vscode.window.showErrorMessage(message)
-
-			throw new Error(
-				`Checkpoints are disabled because a nested git repository was detected at: ${relativePath}. ` +
-					"Please remove or relocate nested git repositories to use the checkpoints feature.",
-			)
+			this.throwNestedGitRepositoryError(nestedGitPath)
 		}
 
 		await fs.mkdir(this.checkpointsDir, { recursive: true })
 		const git = createSanitizedGit(this.checkpointsDir)
-		const gitVersion = await git.version()
-		this.log(`[${this.constructor.name}#create] git = ${gitVersion}`)
 
 		let created = false
-		const startTime = Date.now()
+		let initialSnapshotDuration: number | undefined
+		let initialSnapshotBreakdown: string | undefined
 
-		if (await fileExistsAtPath(this.dotGitDir)) {
+		if (existingShadowRepository) {
 			this.log(`[${this.constructor.name}#initShadowGit] shadow git repo already exists at ${this.dotGitDir}`)
 			const worktree = await this.getShadowGitConfigWorktree(git)
 
@@ -216,20 +219,45 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 			this.log(`[${this.constructor.name}#initShadowGit] creating shadow git repo at ${this.checkpointsDir}`)
 			await git.init({ "--template": "" })
 			await git.addConfig("core.worktree", this.workspaceDir) // Sets the working tree to the current workspace.
-			await git.addConfig("commit.gpgSign", "false") // Disable commit signing for shadow repo.
-			await git.addConfig("user.name", "Alpha")
-			await git.addConfig("user.email", "noreply@example.com")
 			await this.writeExcludeFile()
-			await this.stageAll(git)
+			const initialSnapshotStartTime = Date.now()
+			const stageStartTime = Date.now()
+			try {
+				await this.stageAll(git)
+			} catch (error) {
+				// Git can fail before writing a gitlink for an uncommitted nested repository.
+				const nestedGitPathAfterStageFailure = await this.getNestedGitRepository()
+				if (nestedGitPathAfterStageFailure) {
+					this.throwNestedGitRepositoryError(nestedGitPathAfterStageFailure)
+				}
+				throw error
+			}
+			const stageDuration = Date.now() - stageStartTime
+			const indexValidationStartTime = Date.now()
+			const nestedGitlinkPath = await this.getNestedGitRepositoryFromIndex(git)
+			const indexValidationDuration = Date.now() - indexValidationStartTime
+			if (nestedGitlinkPath) {
+				this.throwNestedGitRepositoryError(nestedGitlinkPath)
+			}
+			const commitStartTime = Date.now()
 			const { commit } = await git.commit("initial commit", { "--allow-empty": null })
+			const commitDuration = Date.now() - commitStartTime
+			initialSnapshotDuration = Date.now() - initialSnapshotStartTime
+			initialSnapshotBreakdown = `git add ${stageDuration}ms, index validation ${indexValidationDuration}ms, initial commit ${commitDuration}ms`
 			this.baseHash = commit
 			created = true
 		}
 
 		const duration = Date.now() - startTime
+		const durationDetails = [
+			`nested repository scan ${nestedScanDuration}ms`,
+			...(initialSnapshotDuration === undefined
+				? []
+				: [`initial snapshot ${initialSnapshotDuration}ms (${initialSnapshotBreakdown})`]),
+		].join(", ")
 
 		this.log(
-			`[${this.constructor.name}#initShadowGit] initialized shadow repo with base commit ${this.baseHash} in ${duration}ms`,
+			`[${this.constructor.name}#initShadowGit] initialized shadow repo with base commit ${this.baseHash} in ${duration}ms (${durationDetails})`,
 		)
 
 		this.git = git
@@ -273,17 +301,23 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		// from the last complete checkpoint before applying exclusion migrations.
 		await git.raw(["read-tree", "HEAD"])
 
-		const trackedVenvPaths = await git.raw(["ls-files", "-z", "--", ...EXCLUDED_VENV_PATHSPECS])
-		if (!trackedVenvPaths) {
+		const trackedExcludedPaths = await git.raw(["ls-files", "-z", "--", ...EXCLUDED_CHECKPOINT_PATHSPECS])
+		if (!trackedExcludedPaths) {
 			return
 		}
 
-		// Remove dependency environments from the shadow index only. The user's
-		// workspace remains untouched and the new exclude prevents re-staging.
-		await git.raw(["rm", "-r", "-f", "--cached", "--ignore-unmatch", "--", ...EXCLUDED_VENV_PATHSPECS])
+		// Remove generated or dependency paths from the shadow index only. The user's
+		// workspace remains untouched and the new excludes prevent re-staging.
+		await git.raw(["rm", "-r", "-f", "--cached", "--ignore-unmatch", "--", ...EXCLUDED_CHECKPOINT_PATHSPECS])
 
 		const stagedChanges = await git.diffSummary(["--cached"])
-		const unexpectedChanges = stagedChanges.files.filter(({ file }) => !file.split(/[\\/]/).includes(".venv"))
+		const unexpectedChanges = stagedChanges.files.filter(({ file }) => {
+			const normalizedPath = file.replace(/\\/g, "/")
+			const isExcludedVenv = normalizedPath.split("/").includes(".venv")
+			const isExcludedCodeIndex =
+				normalizedPath === ".alpha/code-index" || normalizedPath.startsWith(".alpha/code-index/")
+			return !isExcludedVenv && !isExcludedCodeIndex
+		})
 		if (unexpectedChanges.length > 0) {
 			throw new Error(
 				`Checkpoint exclusion migration staged unexpected paths: ${unexpectedChanges
@@ -298,12 +332,34 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		}
 
 		this.log(
-			`[${this.constructor.name}#migrateTrackedExcludes] removed ${stagedChanges.files.length} tracked .venv path(s) from the shadow repository`,
+			`[${this.constructor.name}#migrateTrackedExcludes] removed ${stagedChanges.files.length} tracked excluded path(s) from the shadow repository`,
 		)
 	}
 
-	private async getNestedGitRepository(): Promise<string | null> {
+	private throwNestedGitRepositoryError(nestedGitPath: string): never {
+		const relativePath = path.relative(this.workspaceDir, nestedGitPath)
+		const message = t("common:errors.nested_git_repos_warning", { path: relativePath })
+		vscode.window.showErrorMessage(message)
+
+		throw new Error(
+			`Checkpoints are disabled because a nested git repository was detected at: ${relativePath}. ` +
+				"Please remove or relocate nested git repositories to use the checkpoints feature.",
+		)
+	}
+
+	private async getNestedGitRepository(excludeCheckpointExcludedDirectories = false): Promise<string | null> {
 		try {
+			// New snapshots can skip checkpoint-excluded directories. Existing indexes may still track
+			// files there, and a workspace .gitignore can override the shadow repo's exclude file.
+			const checkpointExcludedDirectories = (await getExcludePatterns(this.workspaceDir))
+				.filter(
+					(pattern) =>
+						pattern.endsWith("/") &&
+						pattern !== ".git/" &&
+						(excludeCheckpointExcludedDirectories || pattern === ".venv/"),
+				)
+				.map((pattern) => `!**/${pattern.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "")}/**`)
+
 			// Find all .git/HEAD files that are not at the root level.
 			const args = [
 				"--files",
@@ -311,8 +367,7 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 				"--follow",
 				"-g",
 				"**/.git/HEAD",
-				"-g",
-				"!**/.venv/**",
+				...checkpointExcludedDirectories.flatMap((pattern) => ["-g", pattern]),
 				this.workspaceDir,
 			]
 
@@ -361,6 +416,20 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 				cause: error,
 			})
 		}
+	}
+
+	private async getNestedGitRepositoryFromIndex(git: SimpleGit): Promise<string | undefined> {
+		const entries = (await git.raw(["ls-files", "--stage", "-z"])).split("\0")
+		for (const entry of entries) {
+			const pathSeparator = entry.indexOf("\t")
+			if (pathSeparator === -1 || entry.slice(0, pathSeparator).split(" ", 1)[0] !== "160000") {
+				continue
+			}
+
+			return path.resolve(this.workspaceDir, entry.slice(pathSeparator + 1))
+		}
+
+		return undefined
 	}
 
 	private async getShadowGitConfigWorktree(git: SimpleGit) {

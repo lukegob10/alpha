@@ -4,8 +4,8 @@ import * as path from "path"
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
-import { clearRipgrepPathCache } from "../../ripgrep"
-import { searchWorkspaceFiles } from "../file-search"
+import { clearRipgrepPathCache, resolveRipgrepBinary } from "../../ripgrep"
+import { executeRipgrep, searchWorkspaceFiles } from "../file-search"
 
 describe("searchWorkspaceFiles path contract", () => {
 	let tempDir: string
@@ -30,5 +30,26 @@ describe("searchWorkspaceFiles path contract", () => {
 		} else {
 			expect(results.map((result) => result.path)).toContain("src/index.ts")
 		}
+	})
+
+	it("recovers checkpoint file enumeration when its cached ripgrep path disappears", async () => {
+		const packageRoot = path.join(tempDir, "extension", "dist", "node_modules", "@vscode", "ripgrep")
+		const staleBinary = path.join(packageRoot, "bin", process.platform === "win32" ? "rg.exe" : "rg")
+		await fs.mkdir(path.dirname(staleBinary), { recursive: true })
+		await fs.writeFile(staleBinary, "temporary stale executable")
+
+		const resolution = await resolveRipgrepBinary({
+			bundledPackageRoots: [{ packageName: "@vscode/ripgrep", packageRoot }],
+			env: {},
+			logger: { info: () => {}, warn: () => {} },
+			platform: process.platform,
+			skipRuntimePackageLookup: true,
+		})
+		expect(resolution?.path).toBe(staleBinary)
+
+		await fs.rm(staleBinary)
+		const results = await executeRipgrep({ args: ["--files", tempDir], workspacePath: tempDir })
+
+		expect(results).toContainEqual(expect.objectContaining({ path: path.join("src", "index.ts"), type: "file" }))
 	})
 })

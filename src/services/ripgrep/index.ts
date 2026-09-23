@@ -28,6 +28,7 @@ interface RipgrepResolverOptions {
 	env?: NodeJS.ProcessEnv
 	platform?: NodeJS.Platform
 	arch?: NodeJS.Architecture
+	excludedPaths?: string[]
 	logger?: Pick<Console, "info" | "warn">
 }
 
@@ -39,16 +40,10 @@ const BUNDLED_RIPGREP_PACKAGES = [
 	"@vscode/ripgrep-win32-x64",
 	"@vscode/ripgrep-win32-arm64",
 	"@vscode/ripgrep-win32-ia32",
-	"@vscode/ripgrep-linux-x64",
-	"@vscode/ripgrep-linux-arm64",
-	"@vscode/ripgrep-linux-arm",
-	"@vscode/ripgrep-linux-ppc64",
-	"@vscode/ripgrep-linux-riscv64",
-	"@vscode/ripgrep-linux-s390x",
-	"@vscode/ripgrep-linux-ia32",
 ]
 const MAX_PACKAGE_SCAN_DEPTH = 5
 let cachedResolution: RipgrepResolution | undefined
+const unavailableBinaryPaths = new Set<string>()
 
 interface SearchFileResult {
 	file: string
@@ -88,6 +83,81 @@ export function truncateLine(line: string, maxLength: number = MAX_LINE_LENGTH):
 
 function getExecutableName(platform: NodeJS.Platform = process.platform): string {
 	return platform === "win32" ? "rg.exe" : "rg"
+}
+
+function normalizeBinaryPath(binaryPath: string, platform: NodeJS.Platform = process.platform): string {
+	const resolvedPath = path.resolve(binaryPath)
+	return platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath
+}
+
+function isExcludedBinaryPath(binaryPath: string, excludedPaths: string[], platform: NodeJS.Platform): boolean {
+	const normalizedPath = normalizeBinaryPath(binaryPath, platform)
+	return excludedPaths.some((excludedPath) => normalizeBinaryPath(excludedPath, platform) === normalizedPath)
+}
+
+function isMissingExecutable(error: unknown, binaryPath: string): boolean {
+	let processError: unknown = error
+	while (processError instanceof Error && "cause" in processError) {
+		const cause = (processError as Error & { cause?: unknown }).cause
+		if (!cause) break
+		processError = cause
+	}
+
+	if (!(processError instanceof Error)) return false
+	const errnoError = processError as NodeJS.ErrnoException
+	if (errnoError.code !== "ENOENT" || (errnoError.syscall && !errnoError.syscall.startsWith("spawn"))) return false
+	return !errnoError.path || normalizeBinaryPath(errnoError.path) === normalizeBinaryPath(binaryPath)
+}
+
+export function createRipgrepProcessError(error: Error): Error {
+	const wrappedError = new Error(`ripgrep process error: ${error.message}`)
+	;(wrappedError as Error & { cause?: unknown }).cause = error
+	return wrappedError
+}
+
+export async function executeWithRipgrepFallback<T>(
+	initialBinaryPath: string,
+	execute: (binaryPath: string) => Promise<T>,
+	resolveFallback: () => Promise<string | undefined> = getBinPath,
+	signal?: AbortSignal,
+): Promise<T> {
+	let binaryPath = initialBinaryPath
+	let lastError: unknown
+	const attemptedPaths = new Set<string>()
+	if (unavailableBinaryPaths.has(normalizeBinaryPath(binaryPath))) {
+		const fallbackPath = await resolveFallback()
+		if (!fallbackPath || unavailableBinaryPaths.has(normalizeBinaryPath(fallbackPath))) {
+			throw new Error("Could not find an available ripgrep binary")
+		}
+		binaryPath = fallbackPath
+	}
+
+	for (let attempt = 0; attempt < 3; attempt++) {
+		signal?.throwIfAborted()
+		const normalizedPath = normalizeBinaryPath(binaryPath)
+		if (attemptedPaths.has(normalizedPath)) break
+		attemptedPaths.add(normalizedPath)
+
+		try {
+			return await execute(binaryPath)
+		} catch (error) {
+			if (signal?.aborted) throw signal.reason ?? error
+			if (!isMissingExecutable(error, binaryPath)) throw error
+
+			lastError = error
+			unavailableBinaryPaths.add(normalizedPath)
+			if (cachedResolution && normalizeBinaryPath(cachedResolution.path) === normalizedPath) {
+				cachedResolution = undefined
+			}
+
+			const fallbackPath = await resolveFallback()
+			signal?.throwIfAborted()
+			if (!fallbackPath || attemptedPaths.has(normalizeBinaryPath(fallbackPath))) break
+			binaryPath = fallbackPath
+		}
+	}
+
+	throw lastError ?? new Error("Could not find ripgrep binary")
 }
 
 async function findExecutableUnderDirectory(
@@ -136,18 +206,22 @@ async function resolveBundledPackageRoot(
 	packageName: string,
 	packageRoot: string,
 	platform: NodeJS.Platform,
+	excludedPaths: string[],
 ): Promise<{ path: string; packageName: string } | undefined> {
 	const foundPath = await findExecutableUnderDirectory(packageRoot, getExecutableName(platform))
-	return foundPath ? { path: foundPath, packageName } : undefined
+	return foundPath && !isExcludedBinaryPath(foundPath, excludedPaths, platform)
+		? { path: foundPath, packageName }
+		: undefined
 }
 
 async function resolveBundledRipgrep(
 	platform: NodeJS.Platform,
 	bundledPackageRoots: RipgrepResolverOptions["bundledPackageRoots"] = [],
 	skipRuntimePackageLookup = false,
+	excludedPaths: string[] = [],
 ): Promise<{ path: string; packageName: string } | undefined> {
 	for (const { packageName, packageRoot } of bundledPackageRoots) {
-		const resolved = await resolveBundledPackageRoot(packageName, packageRoot, platform)
+		const resolved = await resolveBundledPackageRoot(packageName, packageRoot, platform, excludedPaths)
 		if (resolved) {
 			return resolved
 		}
@@ -193,7 +267,11 @@ async function resolveBundledRipgrep(
 			const packageRequire = runtimeRequire(packageName) as { rgPath?: string }
 			const exportedPath = packageRequire.rgPath
 
-			if (exportedPath && (await fileExistsAtPath(exportedPath))) {
+			if (
+				exportedPath &&
+				!isExcludedBinaryPath(exportedPath, excludedPaths, platform) &&
+				(await fileExistsAtPath(exportedPath))
+			) {
 				return { path: exportedPath, packageName }
 			}
 		} catch {
@@ -201,7 +279,7 @@ async function resolveBundledRipgrep(
 		}
 
 		if (packageRoot) {
-			const resolved = await resolveBundledPackageRoot(packageName, packageRoot, platform)
+			const resolved = await resolveBundledPackageRoot(packageName, packageRoot, platform, excludedPaths)
 			if (resolved) {
 				return resolved
 			}
@@ -211,7 +289,11 @@ async function resolveBundledRipgrep(
 	return undefined
 }
 
-async function resolveSystemRipgrep(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): Promise<string | undefined> {
+async function resolveSystemRipgrep(
+	env: NodeJS.ProcessEnv,
+	platform: NodeJS.Platform,
+	excludedPaths: string[],
+): Promise<string | undefined> {
 	const pathValue = env.PATH || env.Path || env.path
 	if (!pathValue) {
 		return undefined
@@ -228,7 +310,7 @@ async function resolveSystemRipgrep(env: NodeJS.ProcessEnv, platform: NodeJS.Pla
 	for (const pathEntry of pathValue.split(path.delimiter).filter(Boolean)) {
 		for (const executableName of executableNames) {
 			const candidate = path.join(pathEntry, executableName)
-			if (await fileExistsAtPath(candidate)) {
+			if (!isExcludedBinaryPath(candidate, excludedPaths, platform) && (await fileExistsAtPath(candidate))) {
 				return candidate
 			}
 		}
@@ -241,6 +323,7 @@ async function resolveInternalRipgrep(
 	appRoot: string,
 	platform: NodeJS.Platform,
 	arch: NodeJS.Architecture,
+	excludedPaths: string[],
 ): Promise<string | undefined> {
 	const executableName = getExecutableName(platform)
 	const target = `${platform}-${arch}`
@@ -252,7 +335,9 @@ async function resolveInternalRipgrep(
 			// Current hosts use bin/<platform>-<arch>; retain flat legacy layouts without scanning other targets.
 			for (const directory of [path.join(binDirectory, target), binDirectory]) {
 				const candidate = path.join(directory, executableName)
-				if (await fileExistsAtPath(candidate)) return candidate
+				if (!isExcludedBinaryPath(candidate, excludedPaths, platform) && (await fileExistsAtPath(candidate))) {
+					return candidate
+				}
 			}
 		}
 	}
@@ -272,24 +357,30 @@ function logResolution(resolution: RipgrepResolution, logger: Pick<Console, "inf
 
 export function clearRipgrepPathCache(): void {
 	cachedResolution = undefined
+	unavailableBinaryPaths.clear()
 }
 
 export async function resolveRipgrepBinary(
 	options: RipgrepResolverOptions = {},
 ): Promise<RipgrepResolution | undefined> {
-	if (cachedResolution) {
-		return cachedResolution
-	}
-
 	const env = options.env ?? process.env
 	const platform = options.platform ?? process.platform
 	const arch = options.arch ?? process.arch
 	const logger = options.logger ?? console
+	const excludedPaths = [...unavailableBinaryPaths, ...(options.excludedPaths ?? [])]
+
+	if (cachedResolution) {
+		if (!isExcludedBinaryPath(cachedResolution.path, excludedPaths, platform)) {
+			return cachedResolution
+		}
+		cachedResolution = undefined
+	}
 
 	const bundledRipgrep = await resolveBundledRipgrep(
 		platform,
 		options.bundledPackageRoots,
 		options.skipRuntimePackageLookup,
+		excludedPaths,
 	)
 	if (bundledRipgrep) {
 		cachedResolution = {
@@ -301,7 +392,7 @@ export async function resolveRipgrepBinary(
 		return cachedResolution
 	}
 
-	const systemRipgrep = await resolveSystemRipgrep(env, platform)
+	const systemRipgrep = await resolveSystemRipgrep(env, platform, excludedPaths)
 	if (systemRipgrep) {
 		cachedResolution = {
 			path: systemRipgrep,
@@ -313,7 +404,7 @@ export async function resolveRipgrepBinary(
 	}
 
 	if (options.appRoot) {
-		const internalRipgrep = await resolveInternalRipgrep(options.appRoot, platform, arch)
+		const internalRipgrep = await resolveInternalRipgrep(options.appRoot, platform, arch, excludedPaths)
 		if (internalRipgrep) {
 			cachedResolution = {
 				path: internalRipgrep,
@@ -338,7 +429,10 @@ export async function getBinPath(vscodeAppRoot?: string): Promise<string | undef
 
 async function execRipgrep(bin: string, args: string[], signal?: AbortSignal): Promise<RipgrepOutput> {
 	signal?.throwIfAborted()
+	return executeWithRipgrepFallback(bin, (activeBin) => execRipgrepAtPath(activeBin, args, signal), undefined, signal)
+}
 
+function execRipgrepAtPath(bin: string, args: string[], signal?: AbortSignal): Promise<RipgrepOutput> {
 	return new Promise((resolve, reject) => {
 		const rgProcess = childProcess.spawn(bin, args)
 		const decoder = new StringDecoder("utf8")
@@ -436,7 +530,7 @@ async function execRipgrep(bin: string, args: string[], signal?: AbortSignal): P
 			finish()
 		})
 		rgProcess.on("error", (error) => {
-			finish(new Error(`ripgrep process error: ${error.message}`))
+			finish(createRipgrepProcessError(error))
 		})
 
 		signal?.addEventListener("abort", onAbort, { once: true })

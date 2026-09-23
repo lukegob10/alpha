@@ -4,7 +4,7 @@ import * as fs from "fs"
 import * as childProcess from "child_process"
 import * as readline from "readline"
 import { byLengthAsc, Fzf } from "fzf"
-import { getBinPath } from "../ripgrep"
+import { createRipgrepProcessError, executeWithRipgrepFallback, getBinPath } from "../ripgrep"
 import { Package } from "../../shared/package"
 
 export type FileResult = { path: string; type: "file" | "folder"; label?: string }
@@ -31,6 +31,17 @@ export async function executeRipgrep({
 		throw new Error(`ripgrep not found: ${rgPath}`)
 	}
 
+	return executeWithRipgrepFallback(rgPath, (activeRgPath) =>
+		executeRipgrepAtPath(activeRgPath, args, workspacePath, limit),
+	)
+}
+
+function executeRipgrepAtPath(
+	rgPath: string,
+	args: string[],
+	workspacePath: string,
+	limit: number,
+): Promise<FileResult[]> {
 	return new Promise((resolve, reject) => {
 		const rgProcess = childProcess.spawn(rgPath, args)
 		const rl = readline.createInterface({ input: rgProcess.stdout, crlfDelay: Infinity })
@@ -88,7 +99,7 @@ export async function executeRipgrep({
 		})
 
 		rgProcess.on("error", (error) => {
-			reject(new Error(`ripgrep process error: ${error.message}`))
+			reject(createRipgrepProcessError(error))
 		})
 	})
 }

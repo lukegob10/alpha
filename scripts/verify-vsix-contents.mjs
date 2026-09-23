@@ -61,8 +61,19 @@ const requiredEntries = [
 	"extension/assets/vscode-material-icons/icons/3d.svg",
 ]
 
+if (process.platform === "win32" || process.platform === "darwin") {
+	const ripgrepExecutable = process.platform === "win32" ? "rg.exe" : "rg"
+	requiredEntries.push(`extension/dist/node_modules/@vscode/ripgrep/bin/${ripgrepExecutable}`)
+}
+
 const missingEntries = requiredEntries.filter((entry) => !entries.has(entry))
 const packagedEnvironmentFiles = [...entries].filter((entry) => /(^|\/)\.env(?:\.|$)/u.test(entry))
+const packagedLinuxRipgrepFiles = [...entries].filter(
+	(entry) =>
+		/^extension\/dist\/node_modules\/@vscode\/ripgrep-linux-[^/]+\//u.test(entry) ||
+		/^extension\/dist\/node_modules\/@vscode\/ripgrep-universal\/.+\/(?:linux|linux-[^/]+)\//u.test(entry) ||
+		(process.platform === "linux" && entry === "extension/dist/node_modules/@vscode/ripgrep/bin/rg"),
+)
 
 if (missingEntries.length > 0) {
 	console.error(`VSIX is missing required files:\n${missingEntries.map((entry) => `- ${entry}`).join("\n")}`)
@@ -72,6 +83,13 @@ if (missingEntries.length > 0) {
 if (packagedEnvironmentFiles.length > 0) {
 	console.error(
 		`VSIX must not contain .env files:\n${packagedEnvironmentFiles.map((entry) => `- ${entry}`).join("\n")}`,
+	)
+	process.exit(1)
+}
+
+if (packagedLinuxRipgrepFiles.length > 0) {
+	console.error(
+		`VSIX must not contain Linux-specific ripgrep binaries:\n${packagedLinuxRipgrepFiles.map((entry) => `- ${entry}`).join("\n")}`,
 	)
 	process.exit(1)
 }

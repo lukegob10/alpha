@@ -4,7 +4,7 @@ import * as fs from "fs"
 import * as childProcess from "child_process"
 import ignore from "ignore"
 import { arePathsEqual } from "../../utils/path"
-import { getBinPath } from "../../services/ripgrep"
+import { createRipgrepProcessError, executeWithRipgrepFallback, getBinPath } from "../../services/ripgrep"
 import { DIRS_TO_IGNORE } from "./constants"
 
 /**
@@ -887,6 +887,23 @@ async function execRipgrep(
 	options: ListFilesOptions = {},
 ): Promise<string[]> {
 	signal?.throwIfAborted()
+	return executeWithRipgrepFallback(
+		rgPath,
+		(activeRgPath) => execRipgrepAtPath(activeRgPath, args, cwd, limit, signal, options),
+		undefined,
+		signal,
+	)
+}
+
+function execRipgrepAtPath(
+	rgPath: string,
+	args: string[],
+	cwd: string,
+	limit: number,
+	signal?: AbortSignal,
+	options: ListFilesOptions = {},
+): Promise<string[]> {
+	signal?.throwIfAborted()
 	return new Promise((resolve, reject) => {
 		// Scope exclusion globs to this listing; an ancestor named tmp or temp
 		// must not exclude every file in an explicitly requested workspace.
@@ -951,7 +968,7 @@ async function execRipgrep(
 
 		rgProcess.on("error", (error) => {
 			if (settled) return
-			processError = new Error(`ripgrep process error: ${error.message}`)
+			processError = createRipgrepProcessError(error)
 			if (options.rejectOnError || signal?.aborted || timedOut) {
 				stop()
 				return

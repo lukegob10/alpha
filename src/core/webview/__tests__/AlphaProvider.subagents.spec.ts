@@ -110,7 +110,12 @@ const makeProviderHarness = (
 		pendingManagedTaskCompletions: new Map(),
 		workspaceMutationGate: new WorkspaceMutationGate(),
 		boundedDelegationManager: { cancel: () => false },
-		asyncSubagentRunManager: { cancel: () => false, getSnapshot: () => undefined, waitForResult: () => undefined },
+		asyncSubagentRunManager: {
+			cancel: () => false,
+			getSnapshot: () => undefined,
+			waitForResult: () => undefined,
+			resolveRunTaskId: () => undefined,
+		},
 		getTaskWithId: vi.fn(async (taskId: string) => ({ historyItem: historyItems.get(taskId) })),
 		updateTaskHistory: vi.fn(async (item: any) => {
 			historyItems.set(item.id, item)
@@ -2081,7 +2086,12 @@ If complete, use attempt_completion.
 			settlementOrder.push(`settle:${taskId}`)
 			return Promise.resolve(undefined)
 		})
-		;(provider as any).asyncSubagentRunManager = { cancel, waitForResult, getSnapshot: () => undefined }
+		;(provider as any).asyncSubagentRunManager = {
+			cancel,
+			waitForResult,
+			getSnapshot: () => undefined,
+			resolveRunTaskId: () => undefined,
+		}
 
 		const direct = (await provider.cancelAgent(parent as any, child.taskId, "cancel direct subtree")) as any
 		expect(direct).toMatchObject({
@@ -3580,8 +3590,12 @@ If complete, use attempt_completion.
 			})
 		}
 
+		const runId = `${second.taskId}:24671585-d309-4b5b-9847-3244e4769d74`
+		vi.spyOn((provider as any).asyncSubagentRunManager, "resolveRunTaskId").mockImplementation((target) =>
+			target === runId ? second.taskId : undefined,
+		)
 		const waited = (await provider.waitForAgent(parent as any, 10_000, {
-			target: second.path,
+			target: runId,
 			untilTerminal: true,
 		})) as any
 

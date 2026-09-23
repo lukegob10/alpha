@@ -61,6 +61,8 @@ export interface TaskProviderLike {
 
 	// @TODO: Find a better way to do this.
 	postStateToWebview(): Promise<void>
+	/** Apply eligible scoped Worker change sets when the parent is waiting at a turn boundary. */
+	autoApplyPendingSubagentChangeSets?(parentTaskId: string): Promise<void>
 }
 
 export type TaskProviderEvents = {
@@ -181,6 +183,8 @@ export type CurrentTaskView =
 
 export interface LiveTaskMetadata {
 	id: string
+	/** Changes whenever the task transcript changes; used to validate a cached webview transcript. */
+	transcriptRevision?: number
 	/** Resolved provider capabilities for this task; absent on older hosts. */
 	model?: { id: string; info: ModelInfo }
 	status: TaskStatus

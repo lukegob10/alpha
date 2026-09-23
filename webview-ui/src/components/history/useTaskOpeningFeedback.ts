@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 
 import type { ExtensionMessage } from "@alpha-code/types"
 
+import { useCachedTranscriptRevision } from "@/context/ExtensionStateContext"
 import { vscode } from "@/utils/vscode"
 
 export const TASK_OPENING_FEEDBACK_TIMEOUT_MS = 30_000
@@ -11,6 +12,7 @@ export const TASK_OPENING_FEEDBACK_TIMEOUT_MS = 30_000
  * The host acknowledges with taskOpenResult; the timeout is only a failure escape.
  */
 export function useTaskOpeningFeedback(taskId: string) {
+	const cachedTranscriptRevision = useCachedTranscriptRevision(taskId)
 	const [isOpening, setIsOpening] = useState(false)
 	const isOpeningRef = useRef(false)
 	const resetTimeoutRef = useRef<number | undefined>(undefined)
@@ -52,13 +54,17 @@ export function useTaskOpeningFeedback(taskId: string) {
 
 		isOpeningRef.current = true
 		setIsOpening(true)
-		vscode.postMessage({ type: "showTaskWithId", text: taskId })
+		vscode.postMessage({
+			type: "showTaskWithId",
+			text: taskId,
+			...(cachedTranscriptRevision === undefined ? {} : { values: { cachedTranscriptRevision } }),
+		})
 		resetTimeoutRef.current = window.setTimeout(() => {
 			resetTimeoutRef.current = undefined
 			isOpeningRef.current = false
 			setIsOpening(false)
 		}, TASK_OPENING_FEEDBACK_TIMEOUT_MS)
-	}, [taskId])
+	}, [cachedTranscriptRevision, taskId])
 
 	return { isOpening, openTask }
 }

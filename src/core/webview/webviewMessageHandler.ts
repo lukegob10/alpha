@@ -547,6 +547,7 @@ export const webviewMessageHandler = async (
 
 	switch (message.type) {
 		case "webviewDidLaunch":
+			provider.clearPublishedTaskTranscriptRevisions()
 			// Load custom modes first
 			const customModes = await provider.customModesManager.getCustomModes()
 			await updateGlobalState("customModes", customModes)
@@ -865,7 +866,15 @@ export const webviewMessageHandler = async (
 				break
 			}
 			try {
-				await provider.showTaskWithId(taskId)
+				const cachedTranscriptRevision = message.values?.cachedTranscriptRevision
+				const validCachedTranscriptRevision =
+					typeof cachedTranscriptRevision === "number" &&
+					Number.isSafeInteger(cachedTranscriptRevision) &&
+					cachedTranscriptRevision >= 0
+						? cachedTranscriptRevision
+						: undefined
+				if (validCachedTranscriptRevision === undefined) await provider.showTaskWithId(taskId)
+				else await provider.showTaskWithId(taskId, validCachedTranscriptRevision)
 			} catch (error) {
 				provider.log(
 					`[webviewMessageHandler] Could not show task ${taskId.slice(0, 128)}: ${

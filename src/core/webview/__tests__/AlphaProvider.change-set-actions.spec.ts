@@ -115,6 +115,7 @@ describe("AlphaProvider Worker change-set actions", () => {
 		])
 		const provider = Object.assign(Object.create(AlphaProvider.prototype), {
 			context: { globalStorageUri: { fsPath: storage } },
+			taskHistoryStore: { get: (taskId: string) => historyItems.get(taskId) },
 			taskSessions: { getTask: (taskId: string) => (taskId === parent.taskId ? parent : undefined) },
 			workspaceMutationGate: new WorkspaceMutationGate(),
 			agentControlStore: store,
@@ -132,6 +133,41 @@ describe("AlphaProvider Worker change-set actions", () => {
 		;(parent as any).providerRef = new WeakRef(provider)
 
 		return { provider, parent, group, store, persistence, historyItems }
+	}
+
+	const configureAutoApplyPolicy = (
+		provider: AlphaProvider,
+		historyItems: Map<string, any>,
+		approvalMode: "ask" | "auto" | "bypass" | (() => "ask" | "auto" | "bypass"),
+	) => {
+		;(provider as any).contextProxy = {
+			getValues: () => ({ approvalMode: typeof approvalMode === "function" ? approvalMode() : approvalMode }),
+		}
+		vi.spyOn(provider as any, "mergeAllowedCommands").mockReturnValue([])
+		vi.spyOn(provider as any, "mergeDeniedCommands").mockReturnValue([])
+		historyItems.get("worker-1").subagentContextManifest = {
+			runtimePolicy: {
+				autoApproval: {
+					autoApprovalEnabled: true,
+					alwaysAllowReadOnly: true,
+					alwaysAllowReadOnlyOutsideWorkspace: false,
+					alwaysAllowWrite: true,
+					alwaysAllowWriteOutsideWorkspace: false,
+					alwaysAllowWriteProtected: false,
+					alwaysAllowTickets: true,
+					alwaysAllowExecute: true,
+					alwaysAllowSubagents: true,
+					commandApproval: {
+						algorithm: "sha256-salted-prefix-v1",
+						salt: "0".repeat(64),
+						allowAll: false,
+						denyAll: false,
+						allowed: [],
+						denied: [],
+					},
+				},
+			},
+		}
 	}
 
 	it(
@@ -243,6 +279,64 @@ describe("AlphaProvider Worker change-set actions", () => {
 				},
 			])
 			expect(await provider.getParentCompletionDecision(parent)).toMatchObject({ allowed: true })
+		},
+		TEST_TIMEOUT_MS,
+	)
+
+	it.each(["auto", "bypass"] as const)(
+		"auto-applies an in-scope Worker proposal under captured %s write approval",
+		async (approvalMode) => {
+			const artifact = await createArtifact("automatically approved worker change\n")
+			const { provider, parent, group, historyItems } = await createHarness(artifact)
+			configureAutoApplyPolicy(provider, historyItems, approvalMode)
+
+			await provider.autoApplyPendingSubagentChangeSets(parent.taskId)
+
+			expect((await fs.readFile(path.join(repo, "docs/worker.txt"), "utf8")).replace(/\r\n/g, "\n")).toBe(
+				"automatically approved worker change\n",
+			)
+			expect((await managedSubagentWorktreeService.load(storage, artifact.id)).status).toBe("applied")
+			expect(group.agents[0]?.changeSet?.status).toBe("applied")
+		},
+		TEST_TIMEOUT_MS,
+	)
+
+	it(
+		"rechecks the live approval mode under the mutation gate before applying",
+		async () => {
+			const artifact = await createArtifact()
+			const { provider, parent, group, historyItems } = await createHarness(artifact)
+			let currentApprovalMode: "ask" | "auto" = "auto"
+			configureAutoApplyPolicy(provider, historyItems, () => currentApprovalMode)
+			const getCapability = provider.getSubagentChangeSetActionCapability.bind(provider)
+			vi.spyOn(provider, "getSubagentChangeSetActionCapability").mockImplementation(async (...args) => {
+				const capability = await getCapability(...args)
+				currentApprovalMode = "ask"
+				return capability
+			})
+
+			await provider.autoApplyPendingSubagentChangeSets(parent.taskId)
+
+			expect((await managedSubagentWorktreeService.load(storage, artifact.id)).status).toBe("pending_review")
+			expect(group.agents[0]?.changeSet?.status).toBe("pending_review")
+			expect(currentApprovalMode).toBe("ask")
+			await expect(fs.readFile(path.join(repo, "docs/worker.txt"), "utf8")).rejects.toThrow()
+		},
+		TEST_TIMEOUT_MS,
+	)
+
+	it(
+		"keeps Worker proposals in review when the current approval mode is Ask",
+		async () => {
+			const artifact = await createArtifact()
+			const { provider, parent, group, historyItems } = await createHarness(artifact)
+			configureAutoApplyPolicy(provider, historyItems, "ask")
+
+			await provider.autoApplyPendingSubagentChangeSets(parent.taskId)
+
+			expect((await managedSubagentWorktreeService.load(storage, artifact.id)).status).toBe("pending_review")
+			expect(group.agents[0]?.changeSet?.status).toBe("pending_review")
+			await expect(fs.readFile(path.join(repo, "docs/worker.txt"), "utf8")).rejects.toThrow()
 		},
 		TEST_TIMEOUT_MS,
 	)

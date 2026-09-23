@@ -108,6 +108,7 @@ describe("deterministic environment request construction measurements", () => {
 		console.log(JSON.stringify({ first, unchanged, editorChanged, busy, edited }))
 		expect(first.bytes).toBeGreaterThan(unchanged.bytes)
 		expect(unchanged).toEqual({ bytes: 0, tokens: 0, preflightMs: 0, requestAdmissionMs: 0 })
+		expect(listFiles).toHaveBeenCalledTimes(1)
 		expect(busy.preflightMs).toBe(0)
 		expect(edited.preflightMs).toBe(0)
 	})

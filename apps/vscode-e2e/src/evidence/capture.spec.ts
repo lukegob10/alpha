@@ -192,12 +192,40 @@ test("captures empty lock, lifecycle and paired receipt facts but no prompts, ou
 	)
 	await fs.writeFile(
 		path.join(task, "agent_turn_events.jsonl"),
-		JSON.stringify({
-			type: "tool_result",
-			callId: "a-call",
-			status: "error",
-			output: secret,
-		}) + "\n",
+		[
+			JSON.stringify({
+				taskId: "task-1",
+				runId: "event-log-run",
+				turnId: "turn-1",
+				stepId: "turn-1:step-1",
+				sequence: 1,
+				event: { type: "tool_result", callId: "a-call", name: "shell", status: "error", output: secret },
+			}),
+			JSON.stringify({
+				taskId: "task-1",
+				runId: "event-log-run",
+				turnId: "turn-1",
+				stepId: "turn-1:step-1",
+				sequence: 2,
+				event: {
+					type: "tool_batch_finished",
+					status: "completed",
+					batchSize: 3,
+					parallelBatchCount: 1,
+					parallelToolCount: 2,
+					durationMs: 123,
+					truncatedResultCount: 0,
+				},
+			}),
+			JSON.stringify({
+				taskId: "task-1",
+				runId: "event-log-run",
+				turnId: "turn-1",
+				stepId: "turn-1:step-1",
+				sequence: 3,
+				event: { type: "policy_snapshot", digest: "A".repeat(64), toolCount: 7 },
+			}),
+		].join("\n") + "\n",
 	)
 	await fs.writeFile(
 		path.join(task, "api_conversation_history.json"),
@@ -235,6 +263,19 @@ test("captures empty lock, lifecycle and paired receipt facts but no prompts, ou
 	assert.ok(!captured.includes("a-call"))
 	assert.ok(captured.includes("empty-owner"))
 	assert.ok(captured.includes('"isError": true'))
+	const turnProjection = JSON.parse(
+		await fs.readFile(
+			path.join(result.artifactDirectory, "task-1-agent_turn_events.jsonl.projection.json"),
+			"utf8",
+		),
+	)
+	assert.equal(turnProjection.projection.events[0].toolCategory, "command")
+	assert.equal(turnProjection.projection.events[0].status, "error")
+	assert.equal(turnProjection.projection.events[1].parallelToolCount, 2)
+	assert.equal(turnProjection.projection.events[1].durationMs, 123)
+	assert.equal(turnProjection.projection.events[2].policyDigestSha256, "a".repeat(64))
+	assert.ok(!JSON.stringify(turnProjection).includes("shell"))
+	assert.ok(!JSON.stringify(turnProjection).includes(secret))
 	assert.equal(
 		await fs.readFile(path.join(task, "api_conversation_history.json"), "utf8"),
 		JSON.stringify([

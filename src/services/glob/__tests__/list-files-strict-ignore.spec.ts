@@ -8,7 +8,12 @@ import { listFiles } from "../list-files"
 import { getBinPath } from "../../ripgrep"
 
 vi.mock("child_process", () => ({ spawn: vi.fn() }))
-vi.mock("../../ripgrep", () => ({ getBinPath: vi.fn().mockResolvedValue("/mock/rg") }))
+vi.mock("../../ripgrep", () => ({
+	getBinPath: vi.fn().mockResolvedValue("/mock/rg"),
+	executeWithRipgrepFallback: (binaryPath: string, execute: (binaryPath: string) => Promise<unknown>) =>
+		execute(binaryPath),
+	createRipgrepProcessError: (error: Error) => new Error(`ripgrep process error: ${error.message}`),
+}))
 
 function deferred() {
 	let resolve!: () => void

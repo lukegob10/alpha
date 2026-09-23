@@ -334,6 +334,20 @@ test("joins hashed lifecycle and additive identities while preserving missing ma
 	])
 })
 
+test("joins matching task turns and steps when producer-local run IDs differ", () => {
+	const common = { taskIdSha256: "task", turnIdSha256: "turn", stepIdSha256: "step" }
+	const result = joinProjectedEvidence({
+		lifecycle: [{ ...common, runIdSha256: "lifecycle-run", sequence: 2, type: "tool_call_accepted" }],
+		eventLog: [{ ...common, runIdSha256: "event-log-run", sequence: 7, type: "tool_result" }],
+	})
+	assert.equal(result.records[0]?.status, "joined")
+	assert.equal(result.records[0]?.identity.runIdSha256, undefined)
+	assert.deepEqual(result.records[0]?.sourceRunIds, {
+		lifecycle: ["lifecycle-run"],
+		eventLog: ["event-log-run"],
+	})
+})
+
 test("retains an identity conflict marker after contradictory optional IDs", () => {
 	const base = { taskIdSha256: "task", runIdSha256: "run", turnIdSha256: "turn", stepIdSha256: "step" }
 	const result = joinProjectedEvidence({

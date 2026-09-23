@@ -147,12 +147,50 @@ export interface ExtensionStateContextType extends ExtensionState {
 	setIncludeCurrentCost: (value: boolean) => void
 	showWorktreesInHomeScreen: boolean
 	setShowWorktreesInHomeScreen: (value: boolean) => void
+	getCachedTranscriptRevision: (taskId: string) => number | undefined
 	skills?: SkillMetadata[]
 }
 
 export { ExtensionStateContext, ShellStateContext }
 
-export const mergeExtensionState = (prevState: ExtensionState, newState: Partial<ExtensionState>) => {
+interface CachedTaskTranscript {
+	messages: AlphaMessage[]
+	revision: number
+}
+
+type TaskTranscriptCache = Map<string, CachedTaskTranscript>
+
+const MAX_CACHED_TASK_TRANSCRIPTS = 2
+
+function cacheTaskTranscript(
+	cache: TaskTranscriptCache,
+	taskId: string | undefined,
+	messages: AlphaMessage[],
+	revision: number | undefined,
+): void {
+	if (!taskId || !messages.length || revision === undefined) return
+	cache.delete(taskId)
+	cache.set(taskId, { messages, revision })
+	while (cache.size > MAX_CACHED_TASK_TRANSCRIPTS) {
+		const oldestTaskId = cache.keys().next().value
+		if (oldestTaskId === undefined) break
+		cache.delete(oldestTaskId)
+	}
+}
+
+function getCachedTaskTranscript(cache: TaskTranscriptCache, taskId: string): CachedTaskTranscript | undefined {
+	const cached = cache.get(taskId)
+	if (!cached) return undefined
+	cache.delete(taskId)
+	cache.set(taskId, cached)
+	return cached
+}
+
+export const mergeExtensionState = (
+	prevState: ExtensionState,
+	newState: Partial<ExtensionState>,
+	transcriptCache?: TaskTranscriptCache,
+) => {
 	const { customModePrompts: prevCustomModePrompts, experiments: prevExperiments, ...prevRest } = prevState
 
 	const {
@@ -287,6 +325,48 @@ export const mergeExtensionState = (prevState: ExtensionState, newState: Partial
 		agentLifecycleDegraded,
 	}
 
+	if (transcriptCache) {
+		const previousTaskId = prevState.currentTaskId
+		const currentTaskId = mergedState.currentTaskId
+		const taskChanged = previousTaskId !== currentTaskId
+		if (taskChanged && previousTaskId) {
+			cacheTaskTranscript(
+				transcriptCache,
+				previousTaskId,
+				prevState.clineMessages,
+				prevState.liveTasksById?.[previousTaskId]?.transcriptRevision,
+			)
+		}
+
+		if (
+			taskChanged &&
+			currentTaskId &&
+			newState.currentTaskId === currentTaskId &&
+			Array.isArray(newState.clineMessages) &&
+			newState.clineMessages.length === 0
+		) {
+			const cached = getCachedTaskTranscript(transcriptCache, currentTaskId)
+			const revision = mergedState.liveTasksById?.[currentTaskId]?.transcriptRevision
+			if (cached && revision !== undefined && cached.revision === revision) {
+				mergedState.clineMessages = cached.messages
+			}
+		}
+
+		if (
+			currentTaskId &&
+			newState.currentTaskId === currentTaskId &&
+			Array.isArray(newState.clineMessages) &&
+			newState.clineMessages.length > 0
+		) {
+			cacheTaskTranscript(
+				transcriptCache,
+				currentTaskId,
+				mergedState.clineMessages,
+				mergedState.liveTasksById?.[currentTaskId]?.transcriptRevision,
+			)
+		}
+	}
+
 	return applyLifecycleSnapshotsToExtensionState(mergedState, agentLifecycleSnapshots)
 }
 
@@ -345,6 +425,10 @@ function omitTranscriptState(value: ExtensionStateContextType): ExtensionStateCo
 const EMPTY_PROFILE_THRESHOLDS: Record<string, number> = {}
 
 export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+	const transcriptCacheRef = useRef<TaskTranscriptCache>(new Map())
+	const getCachedTranscriptRevision = useCallback((taskId: string) => {
+		return getCachedTaskTranscript(transcriptCacheRef.current, taskId)?.revision
+	}, [])
 	const [state, setState] = useState<ExtensionState>({
 		apiConfiguration: {},
 		version: "",
@@ -623,7 +707,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					// a previously queued partial update.
 					flushPendingMessageUpdates()
 					const newState = message.state ?? {}
-					setState((prevState) => mergeExtensionState(prevState, newState))
+					setState((prevState) => mergeExtensionState(prevState, newState, transcriptCacheRef.current))
 
 					// Queue/todo fast paths can arrive before the full task snapshot. They
 					// intentionally do not own task-domain state, but a fresh patch for a
@@ -993,6 +1077,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		showWorktreesInHomeScreen: state.showWorktreesInHomeScreen ?? true,
 		setShowWorktreesInHomeScreen: (value) =>
 			setState((prevState) => ({ ...prevState, showWorktreesInHomeScreen: value })),
+		getCachedTranscriptRevision,
 	}
 
 	const shellSnapshot = pickShellSnapshot(contextValue)
@@ -1016,6 +1101,12 @@ export const useExtensionState = () => {
 	}
 
 	return context
+}
+
+/** Read the revision of a task transcript cached by the current webview. */
+export const useCachedTranscriptRevision = (taskId: string): number | undefined => {
+	const context = useContext(ExtensionStateContext)
+	return context?.getCachedTranscriptRevision(taskId)
 }
 
 export const useShellState = () => {

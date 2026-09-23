@@ -23,7 +23,7 @@ const playbookPath = path.join(repositoryRoot, "docs", "certification", "managed
 const commandPrefix = "powershell.exe -NoProfile -NonInteractive -Command "
 const runAContractId = "MANAGED_AGENT_RUN_A_V6"
 const runBContractId = "MANAGED_AGENT_RUN_B_V5"
-const runCContractId = "MANAGED_AGENT_RUN_C_V5"
+const runCContractId = "MANAGED_AGENT_RUN_C_V6"
 const prepareRunCWorkspaceFlag = "--prepare-run-c-workspace"
 const expectedSetupCommand = String.raw`powershell.exe -NoProfile -NonInteractive -Command "$workspace=[IO.Path]::GetFullPath((Get-Location).Path); $target=[IO.Path]::GetFullPath([IO.Path]::Combine($workspace,'managed-agent-live-acceptance')); $prefix=$workspace.TrimEnd([char[]]@([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar))+[IO.Path]::DirectorySeparatorChar; if($target -eq $workspace -or -not $target.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)){throw 'Target is not a strict workspace descendant'}; if(Test-Path -LiteralPath $target -PathType Leaf){throw 'Target exists and is not a directory'}; if(Test-Path -LiteralPath $target -PathType Container){Remove-Item -LiteralPath $target -Recurse -Force}; [IO.Directory]::CreateDirectory([IO.Path]::Combine($target,'cancel-probe')) | Out-Null; Write-Output ('SETUP_READY='+$target)"`
 const expectedSleeperCommand = String.raw`powershell.exe -NoProfile -NonInteractive -Command "$child=Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 300' -WindowStyle Hidden -PassThru; Write-Output ('PID_READY='+$child.Id); Wait-Process -Id $child.Id -Timeout 300"`
@@ -434,6 +434,17 @@ function validatePlaybook(
 		runCSection,
 		"- Worker timeout: `3600` seconds",
 		"Run C must reserve enough time for its human checkpoints",
+	)
+	assertIncludes(runCSection, "- Approval mode: `Auto`", "Run C must exercise automatic Worker approval")
+	assertIncludes(
+		promptC,
+		"nested_writer's scoped change set to become applied automatically",
+		"Run C must verify automatic nested Worker application",
+	)
+	assertIncludes(
+		promptC,
+		"Auto mode to apply the eligible outer proposal automatically",
+		"Run C must verify automatic root Worker application",
 	)
 	assertIncludes(
 		promptC,

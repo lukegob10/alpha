@@ -6,7 +6,12 @@ import { spawnSync } from "child_process"
 import { listFiles } from "../list-files"
 import { getBinPath } from "../../ripgrep"
 
-vi.mock("../../ripgrep", () => ({ getBinPath: vi.fn() }))
+vi.mock("../../ripgrep", () => ({
+	getBinPath: vi.fn(),
+	executeWithRipgrepFallback: (binaryPath: string, execute: (binaryPath: string) => Promise<unknown>) =>
+		execute(binaryPath),
+	createRipgrepProcessError: (error: Error) => new Error(`ripgrep process error: ${error.message}`),
+}))
 
 // Exercise real process/pipe and filesystem behavior; only binary discovery is replaced.
 const binary = spawnSync("rg", ["--version"], { encoding: "utf8", windowsHide: true })

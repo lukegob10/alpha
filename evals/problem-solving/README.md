@@ -70,3 +70,59 @@ and task failures stay distinct.
 
 Live improvement runs follow `improvement-loop.md`: one declared subset, one general harness
 change, then the same subset on the new build. Holdout stays out of that change.
+
+## Live trajectory reports
+
+Run live quality measurements through the actual VS Code extension and Copilot provider:
+
+```sh
+pnpm --dir packages/evals benchmark:problem-solving-live
+```
+
+Every invocation creates a unique run directory and refuses to reuse an existing one. The report
+stores the Git commit, clean/dirty state, a digest of the build and evaluation inputs, the resolved
+task-set digest, and the exact selected task IDs and repetitions. The default is one sample for each
+of the 32 eligible local tasks. `PROBLEM_SOLVING_TASK_IDS` accepts a
+comma-separated subset, `PROBLEM_SOLVING_REPETITIONS` accepts 1 through 3, and the host, model,
+effort, request limit, run ID, attempt root, and profile root can be set with the corresponding
+`PROBLEM_SOLVING_*` environment variables. Terminal-Bench and holdout remain excluded from this
+local grader path.
+
+Create a privacy-safe diagnostic packet from a completed run:
+
+```sh
+pnpm --dir packages/evals benchmark:problem-solving-diagnose --report <run-root>/report.json --output <new-path>/diagnosis.json
+```
+
+The command writes JSON and Markdown. It includes outcome uncertainty, the planned selection,
+task-set and extension-entrypoint digests, per-attempt execution-start evidence, task tags, requests
+and tokens, event counts, retries, approvals, verification, scheduler batch timing/parallelism,
+effective tool-policy digests, evidence integrity, and coarse tool categories. It never copies
+prompts, assistant text, tool names, arguments, paths, or output. A reviewer can use this packet to
+challenge the diagnosis and choose the next experiment without receiving task transcripts or
+workspace contents. Policy hashes include each attempt's workspace scope, so differences across
+tasks or run roots do not by themselves mean that policy behavior changed. The extension digest
+covers `src/dist/extension.js` on disk; matching the later E2E capture digest does not attest to
+every packaged asset or directly prove which bytes VS Code loaded.
+The diagnosis flags campaigns with multiple runner-captured entrypoint digests as mixed-artifact
+evidence rather than treating them as one controlled run.
+
+The report flags tag-based coverage candidates such as branch/worktree operations, live GitHub
+issue/PR flows, concurrent workspace edits, and delegation. These flags are prompts for task-text
+review, not proof that a behavior is absent. For example, the current live set includes a `git`
+tagged PR diff-comparison task, but that is not evidence for a branch/commit/worktree lifecycle.
+
+The diagnosis distinguishes attempts recorded from task executions with positive start evidence. It
+lists every planned task and repetition, tasks that remain pending, and a bounded stop signal for
+early exits such as a busy VS Code profile. Initialization-only events do not count as task starts;
+an attempt with unknown start evidence remains a failure in its original report and remains pending
+for execution coverage. Blocked attempts do not enter the grader-scored pass-rate denominator. The
+E2E command gate also reports a fixed rejection reason without copying the command or weakening the
+approval boundary.
+
+Use the exact same host, model, effort, and task subset to repeat a baseline before changing the
+agent. Then change one general harness rule, run that same subset on the new build, and compare
+verified completion first, followed by requests, tokens, policy/tool categories, retries,
+validation, and trace completeness. Keep a distinct report per run; unknown cost remains null. The
+live runner's default host is a measurement setting; the repository's exact VS Code 1.122.1
+compatibility gate still runs separately when a change affects the extension host contract.

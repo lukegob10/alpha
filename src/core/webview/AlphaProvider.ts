@@ -110,6 +110,7 @@ import {
 	migrateApprovalMode,
 	resolveApprovalFlags,
 	shouldDeriveApprovalFlags,
+	subagentAutoApprovalPolicySchema,
 } from "@alpha-code/types"
 import { aggregateTaskCostsRecursive, type AggregatedCosts } from "./aggregateTaskCosts"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -462,6 +463,7 @@ export class AlphaProvider
 	private taskStateSeq = 0
 	/** Latest task open wins. Older navigations must not focus or publish over it. */
 	private taskNavigationGeneration = 0
+	private readonly publishedTaskTranscriptRevisions = new Map<string, number>()
 	private configurationQueue: Promise<unknown> = Promise.resolve()
 	private draftReasoningCache?: { key: string; state: Promise<TaskReasoningProjection> }
 
@@ -504,7 +506,11 @@ export class AlphaProvider
 		}
 		const handler = buildApiHandler(configuration)
 		try {
-			await handler.prepareModel?.()
+			// Reasoning previews are included in webview state snapshots. Preparing a
+			// VS Code LM here can wait up to the configured model-selection timeout,
+			// delaying the entire snapshot and leaving the reasoning control on Loading.
+			// getModel() uses the configured selector's catalog data as a fast fallback;
+			// task admission refreshes this against the live model before a request.
 			return resolveTaskReasoning(configuration, requested, handler.getModel()).state
 		} finally {
 			handler.dispose?.()
@@ -892,6 +898,7 @@ export class AlphaProvider
 		this.taskStack = taskStack.filter((alphaTask) => alphaTask.taskId !== currentTask.taskId)
 		this.taskSessions.markLifecycle(currentTask.taskId, TaskLifecycleState.Closing)
 		let task: Task | undefined = this.taskSessions?.unregister(currentTask.taskId) ?? currentTask
+		this.publishedTaskTranscriptRevisions.delete(currentTask.taskId)
 		const nextActiveTaskId = this.getActiveTaskId()
 		const enteredNewTaskDraft =
 			this.currentView.type === "task" && this.currentView.taskId === currentTask.taskId && !nextActiveTaskId
@@ -1403,12 +1410,14 @@ export class AlphaProvider
 			}
 		}
 
-		const {
-			apiConfiguration: currentApiConfiguration,
-			enableCheckpoints,
-			checkpointTimeout,
-			experiments,
-		} = await this.getState()
+		// Restoring a history task only needs these cached settings. getState() also
+		// loads custom modes from disk, which can block subagent navigation for no
+		// benefit because the task's mode and provider profile were restored above.
+		const stateValues = this.contextProxy.getValues()
+		const currentApiConfiguration = this.getProviderSettingsSnapshot()
+		const enableCheckpoints = stateValues.enableCheckpoints ?? true
+		const checkpointTimeout = stateValues.checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS
+		const experiments = stateValues.experiments ?? experimentDefault
 		const apiConfiguration =
 			options?.subagentRuntime?.apiConfiguration ?? restoredApiConfiguration ?? currentApiConfiguration
 
@@ -2439,7 +2448,7 @@ export class AlphaProvider
 		return { historyItem, aggregatedCosts }
 	}
 
-	async showTaskWithId(id: string) {
+	async showTaskWithId(id: string, cachedTranscriptRevision?: number) {
 		const generation = ++this.taskNavigationGeneration
 		const stillCurrent = () => generation === this.taskNavigationGeneration
 		let publishTranscript = false
@@ -2468,8 +2477,14 @@ export class AlphaProvider
 						await this.postTaskOpenResult(id, false)
 						return
 					}
+					publishTranscript = true
+				} else {
+					const transcriptRevision = this.taskSessions.getTranscriptRevision(id)
+					publishTranscript =
+						cachedTranscriptRevision === undefined ||
+						cachedTranscriptRevision !== transcriptRevision ||
+						this.publishedTaskTranscriptRevisions.get(id) !== transcriptRevision
 				}
-				publishTranscript = true
 			}
 
 			if (!stillCurrent()) {
@@ -2677,6 +2692,8 @@ export class AlphaProvider
 	}
 
 	async postStateToWebview() {
+		const visibleTaskId = this.currentView.type === "task" ? this.currentView.taskId : undefined
+		const transcriptRevision = visibleTaskId ? this.taskSessions.markTranscriptChanged(visibleTaskId) : undefined
 		const clineMessagesSeq = ++this.clineMessagesSeq
 		const taskStateSeq = ++this.taskStateSeq
 		const messageQueueSeq = ++this.messageQueueSeq
@@ -2684,6 +2701,7 @@ export class AlphaProvider
 		const state = await this.getStateToPostToWebview()
 		Object.assign(state, { clineMessagesSeq, taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
 		await this.postMessageToWebview({ type: "state", state })
+		this.recordPublishedTaskTranscript(visibleTaskId, transcriptRevision)
 	}
 
 	/**
@@ -2697,9 +2715,15 @@ export class AlphaProvider
 		clineMessage: AlphaMessage,
 	): Promise<void> {
 		this.taskSessions.markActivity(taskId)
+		const transcriptRevision = this.taskSessions.markTranscriptChanged(taskId)
+		const transcriptWasVisible = this.isTaskOnScreen(taskId)
+		const hasPublishedTranscript = this.publishedTaskTranscriptRevisions.has(taskId)
 		const clineMessagesSeq = ++this.clineMessagesSeq
 		const liveTask = this.getLiveTaskMetadata()[taskId]
 		await this.postMessageToWebview({ type, taskId, clineMessage, clineMessagesSeq, liveTask })
+		if (transcriptWasVisible && hasPublishedTranscript) {
+			this.recordPublishedTaskTranscript(taskId, transcriptRevision)
+		}
 		const task = this.getLiveTask(taskId)
 		if (task?.taskKind === "primary") {
 			await this.htmlDocumentAutoOpen.handle(
@@ -3161,6 +3185,11 @@ export class AlphaProvider
 	async postTaskStateToWebview(
 		options: { clearManagedAgentTree?: boolean; includeTranscript?: boolean } = {},
 	): Promise<void> {
+		const currentTaskId = this.currentView.type === "task" ? this.currentView.taskId : undefined
+		const transcriptRevision =
+			options.includeTranscript === false || !currentTaskId
+				? undefined
+				: this.taskSessions.markTranscriptChanged(currentTaskId)
 		const clineMessagesSeq = ++this.clineMessagesSeq
 		const taskStateSeq = ++this.taskStateSeq
 		const messageQueueSeq = ++this.messageQueueSeq
@@ -3207,6 +3236,7 @@ export class AlphaProvider
 		}
 
 		await this.postMessageToWebview({ type: "state", state })
+		this.recordPublishedTaskTranscript(currentTaskId, transcriptRevision)
 	}
 
 	/** Deliver the visible transcript after the lightweight task switch has been posted. */
@@ -3232,6 +3262,7 @@ export class AlphaProvider
 		if (!this.canPublishTranscript(taskId, taskStateSeq, navigationGeneration)) return
 		const task = this.getLiveTask(taskId)
 		if (!task) return
+		const transcriptRevision = this.taskSessions.getTranscriptRevision(taskId)
 		const clineMessages = task.clineMessages
 		const clineMessagesSeq = ++this.clineMessagesSeq
 		if (!this.canPublishTranscript(taskId, taskStateSeq, navigationGeneration)) return
@@ -3245,6 +3276,16 @@ export class AlphaProvider
 				clineMessagesSeq,
 			},
 		})
+		this.recordPublishedTaskTranscript(taskId, transcriptRevision)
+	}
+
+	private recordPublishedTaskTranscript(taskId: string | undefined, revision: number | undefined): void {
+		if (!taskId || revision === undefined || this.taskSessions.getTranscriptRevision(taskId) !== revision) return
+		this.publishedTaskTranscriptRevisions.set(taskId, revision)
+	}
+
+	public clearPublishedTaskTranscriptRevisions(): void {
+		this.publishedTaskTranscriptRevisions.clear()
 	}
 
 	private canPublishTranscript(taskId: string, taskStateSeq: number, navigationGeneration: number): boolean {
@@ -7838,7 +7879,11 @@ export class AlphaProvider
 
 	private async requireControlledAgent(parent: Task, target: string): Promise<AgentRecord> {
 		const root = await this.ensureAgentControlRoot(parent)
-		const record = this.agentControlStore.getAgent(target.trim(), root.rootTaskId)
+		const normalizedTarget = target.trim()
+		const record = this.agentControlStore.getAgent(
+			this.asyncSubagentRunManager.resolveRunTaskId(normalizedTarget) ?? normalizedTarget,
+			root.rootTaskId,
+		)
 		if (!record || record.role === "root") {
 			throw new Error(`Unknown child agent target: ${target}`)
 		}
@@ -9235,6 +9280,59 @@ export class AlphaProvider
 		}
 	}
 
+	private getCapturedSubagentAutoApprovalPolicy(taskId: string): SubagentAutoApprovalPolicy | undefined {
+		const manifest =
+			this.subagentDescriptors.get(taskId)?.contextManifest ??
+			this.getLiveTask(taskId)?.subagentContextManifest ??
+			this.taskHistoryStore.get(taskId)?.subagentContextManifest
+		const capturedPolicy = manifest?.runtimePolicy?.autoApproval
+		if (capturedPolicy === undefined) return undefined
+		const parsed = subagentAutoApprovalPolicySchema.safeParse(capturedPolicy)
+		return parsed.success ? parsed.data : undefined
+	}
+
+	private getAutoApprovedWorkerChangePolicy(taskId: string): SubagentAutoApprovalPolicy | undefined {
+		const settings = this.contextProxy.getValues()
+		const livePolicy = this.snapshotSubagentAutoApprovalPolicy(settings)
+		if (migrateApprovalMode(settings) === "ask" || !livePolicy.autoApprovalEnabled || !livePolicy.alwaysAllowWrite)
+			return undefined
+
+		const capturedPolicy = this.getCapturedSubagentAutoApprovalPolicy(taskId)
+		if (!capturedPolicy) return undefined
+		const effectivePolicy = this.intersectSubagentAutoApprovalPolicies(livePolicy, capturedPolicy)
+		return effectivePolicy.autoApprovalEnabled && effectivePolicy.alwaysAllowWrite ? effectivePolicy : undefined
+	}
+
+	/** Auto-apply only scoped Worker proposals whose captured and current policy both allow writes. */
+	public async autoApplyPendingSubagentChangeSets(parentTaskId: string): Promise<void> {
+		const parent = this.getLiveTask(parentTaskId)
+		if (!parent) return
+
+		const pendingChangeSets = parent.clineMessages.flatMap((message) => {
+			const group = message.subagentGroup
+			if (!group || group.parentTaskId !== parentTaskId) return []
+			return group.agents
+				.filter(
+					(agent) =>
+						agent.role === "worker" &&
+						agent.changeSet?.status === "pending_review" &&
+						agent.changeSet.changedFiles.length > 0,
+				)
+				.map((agent) => ({ groupId: group.groupId, changeSetId: agent.changeSet!.id, taskId: agent.taskId }))
+		})
+
+		for (const pending of pendingChangeSets) {
+			if (!this.getAutoApprovedWorkerChangePolicy(pending.taskId)) continue
+			const capability = await this.getSubagentChangeSetActionCapability(
+				parentTaskId,
+				pending.groupId,
+				pending.changeSetId,
+			)
+			if (!capability.actions.apply.allowed) continue
+			await this.applySubagentChangeSetInternal(parentTaskId, pending.groupId, pending.changeSetId, true)
+		}
+	}
+
 	public async openSubagentChangeSet(parentTaskId: string, groupId: string, changeSetId: string): Promise<void> {
 		const target = this.getWorkerChangeSetTarget(parentTaskId, groupId, changeSetId)
 		if (!target) return
@@ -9257,6 +9355,15 @@ export class AlphaProvider
 		groupId: string,
 		changeSetId: string,
 	): Promise<SubagentChangeSetActionResult> {
+		return this.applySubagentChangeSetInternal(parentTaskId, groupId, changeSetId, false)
+	}
+
+	private async applySubagentChangeSetInternal(
+		parentTaskId: string,
+		groupId: string,
+		changeSetId: string,
+		requireAutoApproval: boolean,
+	): Promise<SubagentChangeSetActionResult> {
 		const target = this.getWorkerChangeSetTarget(parentTaskId, groupId, changeSetId)
 		if (!target) {
 			return {
@@ -9272,7 +9379,7 @@ export class AlphaProvider
 		const lease = target.parent.acquireExternalMutation("applying Worker changes")
 		if (!lease.release) {
 			const capability = await this.getSubagentChangeSetActionCapability(parentTaskId, groupId, changeSetId)
-			void vscode.window.showWarningMessage(capability.reason)
+			if (!requireAutoApproval) void vscode.window.showWarningMessage(capability.reason)
 			return {
 				action: "apply",
 				taskId: parentTaskId,
@@ -9301,8 +9408,25 @@ export class AlphaProvider
 						"Plan mode cannot apply Worker changes. Switch to Code mode to apply this proposal.",
 					)
 				}
+				if (requireAutoApproval && !this.getAutoApprovedWorkerChangePolicy(target.agent.taskId)) {
+					return undefined
+				}
 				return managedSubagentWorktreeService.apply(this.context.globalStorageUri.fsPath, changeSetId)
 			})
+			if (!result) {
+				actionResult = {
+					action: "apply",
+					taskId: parentTaskId,
+					groupId,
+					changeSetId,
+					success: false,
+					message: "Automatic apply was skipped because the approval policy changed.",
+				}
+				return {
+					...actionResult,
+					capability: await this.getSubagentChangeSetActionCapability(parentTaskId, groupId, changeSetId),
+				}
+			}
 			const artifact = await managedSubagentWorktreeService.load(
 				this.context.globalStorageUri.fsPath,
 				changeSetId,
@@ -9635,6 +9759,13 @@ export class AlphaProvider
 			await this.recordWorkerVerificationObligation(parent, prepared.group, agent)
 			await parent.upsertSubagentGroup(prepared.group)
 			this.publishedSubagentResults.add(publicationKey)
+			if (result.changeSet?.status === "pending_review") {
+				try {
+					await this.autoApplyPendingSubagentChangeSets(parent.taskId)
+				} catch (error) {
+					this.log(`Failed to auto-apply Worker proposal ${result.changeSet.id}: ${String(error)}`)
+				}
+			}
 		}
 	}
 

@@ -815,6 +815,81 @@ describe("mergeExtensionState", () => {
 		const makeMessage = (ts: number, text: string): AlphaMessage =>
 			({ ts, type: "say", say: "text", text }) as AlphaMessage
 
+		it("reuses a cached task transcript only while its revision is current", () => {
+			const transcriptCache = new Map()
+			const parentMessages = [makeMessage(1, "parent")]
+			const childMessages = [makeMessage(2, "child")]
+			const parentState: ExtensionState = {
+				...baseState,
+				currentTaskId: "parent",
+				currentView: { type: "task", taskId: "parent" },
+				clineMessages: parentMessages,
+				clineMessagesSeq: 1,
+				taskStateSeq: 1,
+				liveTasksById: { parent: { id: "parent", transcriptRevision: 10 } as any },
+			}
+			const childIdentity = mergeExtensionState(
+				parentState,
+				{
+					currentTaskId: "child",
+					currentView: { type: "task", taskId: "child" },
+					clineMessages: [],
+					clineMessagesSeq: 2,
+					taskStateSeq: 2,
+					liveTasksById: {
+						parent: { id: "parent", transcriptRevision: 10 },
+						child: { id: "child", transcriptRevision: 20 },
+					} as any,
+				},
+				transcriptCache,
+			)
+			const childState = mergeExtensionState(
+				childIdentity,
+				{
+					currentTaskId: "child",
+					currentView: { type: "task", taskId: "child" },
+					clineMessages: childMessages,
+					clineMessagesSeq: 3,
+					taskStateSeq: 2,
+				},
+				transcriptCache,
+			)
+
+			const parentIdentity = mergeExtensionState(
+				childState,
+				{
+					currentTaskId: "parent",
+					currentView: { type: "task", taskId: "parent" },
+					clineMessages: [],
+					clineMessagesSeq: 4,
+					taskStateSeq: 3,
+					liveTasksById: {
+						parent: { id: "parent", transcriptRevision: 10 },
+						child: { id: "child", transcriptRevision: 20 },
+					} as any,
+				},
+				transcriptCache,
+			)
+			expect(parentIdentity.clineMessages).toBe(parentMessages)
+
+			const staleParentIdentity = mergeExtensionState(
+				childState,
+				{
+					currentTaskId: "parent",
+					currentView: { type: "task", taskId: "parent" },
+					clineMessages: [],
+					clineMessagesSeq: 5,
+					taskStateSeq: 4,
+					liveTasksById: {
+						parent: { id: "parent", transcriptRevision: 11 },
+						child: { id: "child", transcriptRevision: 20 },
+					} as any,
+				},
+				transcriptCache,
+			)
+			expect(staleParentIdentity.clineMessages).toEqual([])
+		})
+
 		it("rejects stale clineMessages when seq is not newer", () => {
 			const newerMessages = [makeMessage(1, "hello"), makeMessage(2, "world")]
 			const staleMessages = [makeMessage(1, "hello")]

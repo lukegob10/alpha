@@ -123,6 +123,49 @@ const PHASES = new Set([
 ])
 const DECISIONS = new Set(["approved", "denied", "cancelled"])
 
+const TOOL_CATEGORIES: Readonly<Record<string, string>> = {
+	codebase_search: "search",
+	search_files: "search",
+	read_file: "read",
+	read_command_output: "read",
+	list_files: "read",
+	write_to_file: "edit",
+	apply_diff: "edit",
+	edit: "edit",
+	search_and_replace: "edit",
+	search_replace: "edit",
+	edit_file: "edit",
+	apply_patch: "edit",
+	shell: "command",
+	execute_command: "command",
+	manage_command: "command",
+	attempt_completion: "workflow",
+	ask_followup_question: "workflow",
+	report_progress: "workflow",
+	update_todo_list: "workflow",
+	skill: "workflow",
+	new_task: "delegation",
+	delegate_task: "delegation",
+	spawn_agent: "delegation",
+	list_agents: "delegation",
+	wait_agent: "delegation",
+	send_message: "delegation",
+	ticket: "ticket",
+	list_tickets: "ticket",
+	read_ticket: "ticket",
+	create_ticket: "ticket",
+	update_ticket: "ticket",
+	delete_ticket: "ticket",
+	use_mcp_tool: "external",
+	access_mcp_resource: "external",
+	discover_tools: "external",
+}
+
+function toolCategory(value: unknown): string | undefined {
+	if (typeof value !== "string" || value.length === 0) return undefined
+	return TOOL_CATEGORIES[value.toLowerCase()] ?? "other"
+}
+
 const sha256 = (content: Buffer | string): string => createHash("sha256").update(content).digest("hex")
 
 function limitsWithDefaults(overrides: Partial<EvidenceLimits> = {}): Required<EvidenceLimits> {
@@ -326,6 +369,13 @@ function projectJournalEvent(value: unknown): unknown {
 	// marking the semantic projection incomplete.
 	if (!event || typeof event.type !== "string" || !EVENT_TYPES.has(event.type)) return undefined
 	const projected: Record<string, unknown> = { type: event.type }
+	if (
+		event.type === "policy_snapshot" &&
+		typeof payload?.digest === "string" &&
+		/^[a-f0-9]{64}$/i.test(payload.digest)
+	) {
+		projected.policyDigestSha256 = payload.digest.toLowerCase()
+	}
 	for (const key of [
 		"eventId",
 		"taskId",
@@ -349,23 +399,40 @@ function projectJournalEvent(value: unknown): unknown {
 		"inputTokens",
 		"outputTokens",
 		"cacheReadTokens",
+		"cacheWriteTokens",
+		"reasoningTokens",
 		"batchSize",
+		"parallelBatchCount",
+		"parallelToolCount",
 		"durationMs",
+		"truncatedResultCount",
 		"exitCode",
 	]) {
 		const value = raw?.[key] ?? payload?.[key]
 		if (typeof value === "number" && Number.isFinite(value)) projected[key] = value
 	}
-	for (const key of ["status", "phase", "decision"] as const) {
+	for (const key of ["status", "phase", "decision", "commandCategory"] as const) {
 		const value = payload?.[key]
 		if (
 			typeof value === "string" &&
 			((key === "status" && STATUSES.has(value)) ||
 				(key === "phase" && PHASES.has(value)) ||
-				(key === "decision" && DECISIONS.has(value)))
+				(key === "decision" && DECISIONS.has(value)) ||
+				(key === "commandCategory" && ["test", "build", "lint", "typecheck"].includes(value)))
 		)
 			projected[key] = value
 	}
+	for (const key of ["retry", "retryable"] as const) {
+		const value = raw?.[key] ?? payload?.[key]
+		if (typeof value === "boolean") projected[key] = value
+	}
+	const item = object(payload?.item)
+	const name =
+		event.type === "verification_result"
+			? undefined
+			: (event.name ?? event.toolName ?? payload?.toolName ?? item?.name)
+	const category = event.type === "verification_result" ? "verification" : toolCategory(name)
+	if (category) projected.toolCategory = category
 	const callId = payload?.callId
 	if (typeof callId === "string") projected.callIdSha256 = sha256(callId)
 	const code = knownFailureCode(payload?.code)

@@ -129,7 +129,9 @@ describe("SpawnAgentTool", () => {
 		expect(provider.launchPreparedSubagentGroup).toHaveBeenCalledAfter(askApproval)
 		expect(provider.launchPreparedSubagentGroup).toHaveBeenCalledWith(task, batch, lifetimeSignal)
 		expect(provider.launchPreparedSubagentGroup).not.toHaveBeenCalledWith(task, batch, requestSignal)
-		expect(pushToolResult).toHaveBeenCalledWith(JSON.stringify({ ...handle(), taskName: "backend_review" }))
+		expect(pushToolResult).toHaveBeenCalledWith(
+			JSON.stringify({ ...handle(), target: "child-1", taskName: "backend_review" }),
+		)
 	})
 
 	it("rejects an invalid draft before preparation or approval", async () => {

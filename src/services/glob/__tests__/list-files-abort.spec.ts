@@ -23,6 +23,9 @@ vi.mock("fs", () => ({
 
 vi.mock("../../ripgrep", () => ({
 	getBinPath: vi.fn(),
+	executeWithRipgrepFallback: (binaryPath: string, execute: (binaryPath: string) => Promise<unknown>) =>
+		execute(binaryPath),
+	createRipgrepProcessError: (error: Error) => new Error(`ripgrep process error: ${error.message}`),
 }))
 
 vi.mock("../../../utils/path", () => ({

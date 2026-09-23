@@ -2533,6 +2533,8 @@ describe("AlphaProvider", () => {
 
 		test("handles history items without mode property", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
+			const getState = vi.spyOn(provider, "getState")
+			const getCustomModes = vi.spyOn(provider.customModesManager, "getCustomModes")
 
 			// Mock provider settings manager
 			;(provider as any).providerSettingsManager = {
@@ -2557,6 +2559,8 @@ describe("AlphaProvider", () => {
 
 			// Verify no mode validation occurred (mode update not called)
 			expect(mockContext.globalState.update).not.toHaveBeenCalledWith("mode", expect.any(String))
+			expect(getState).not.toHaveBeenCalled()
+			expect(getCustomModes).not.toHaveBeenCalled()
 		})
 
 		test("settles retained automatic-result claims before constructing a replacement Task", async () => {
@@ -4359,6 +4363,62 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 
 			expect(provider.getTaskWithId).toHaveBeenCalledWith("cold-task", { includeApiConversationHistory: false })
 			expect(post).toHaveBeenCalledWith({ type: "taskOpenResult", taskId: "cold-task", success: true })
+		})
+
+		it("reuses a transcript on live subagent navigation until a message changes it", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			const parent = Object.assign(new Task(defaultTaskOptions), { taskId: "parent-task" })
+			const child = Object.assign(new Task(defaultTaskOptions), { taskId: "child-task" })
+			parent.clineMessages = [{ ts: 1, type: "say", say: "text", text: "parent transcript" }]
+			child.clineMessages = [{ ts: 2, type: "say", say: "text", text: "child transcript" }]
+			await provider.addTaskToStack(parent)
+			await provider.addTaskToStack(child)
+
+			await provider.showTaskWithId(parent.taskId)
+			const parentRevision = provider.getLiveTaskMetadata()[parent.taskId].transcriptRevision
+			expect(parentRevision).toBeDefined()
+			await vi.waitFor(() =>
+				expect((provider as any).publishedTaskTranscriptRevisions.get(parent.taskId)).toBe(parentRevision),
+			)
+			await provider.showTaskWithId(child.taskId)
+
+			mockPostMessage.mockClear()
+			await provider.showTaskWithId(parent.taskId, parentRevision)
+			await vi.waitFor(() =>
+				expect(mockPostMessage).toHaveBeenCalledWith(
+					expect.objectContaining({
+						type: "taskOpenResult",
+						taskId: parent.taskId,
+						success: true,
+					}),
+				),
+			)
+			expect(
+				mockPostMessage.mock.calls.some(
+					([message]: [{ type?: string; state?: { clineMessages?: unknown[] } }]) =>
+						message.type === "state" && (message.state?.clineMessages?.length ?? 0) > 0,
+				),
+			).toBe(false)
+
+			await provider.showTaskWithId(child.taskId)
+			parent.clineMessages = [
+				...parent.clineMessages,
+				{ ts: 3, type: "say", say: "text", text: "new parent message" },
+			]
+			await provider.postTaskMessageToWebview("messageCreated", parent.taskId, parent.clineMessages.at(-1)!)
+			const updatedRevision = provider.getLiveTaskMetadata()[parent.taskId].transcriptRevision
+			expect(updatedRevision).toBeGreaterThan(parentRevision!)
+
+			mockPostMessage.mockClear()
+			await provider.showTaskWithId(parent.taskId, parentRevision)
+			await vi.waitFor(() =>
+				expect(
+					mockPostMessage.mock.calls.some(
+						([message]: [{ type?: string; state?: { clineMessages?: unknown[] } }]) =>
+							message.type === "state" && (message.state?.clineMessages?.length ?? 0) > 0,
+					),
+				).toBe(true),
+			)
 		})
 
 		it("acknowledges a large transcript switch before the transcript is delivered", async () => {

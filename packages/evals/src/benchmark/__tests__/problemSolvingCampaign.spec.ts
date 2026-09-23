@@ -77,6 +77,26 @@ describe("problem-solving extension campaign", () => {
 				runExtension: async () =>
 					host({ phase: "preflight", modelId: null, effort: null, usage: { ...usage, requests: null } }),
 			})
+			const profileBusy = await runProblemSolvingAttempt({
+				evalRoot,
+				repositoryRoot,
+				taskId: "repo-cache-invalidation",
+				attemptRoot: root,
+				attemptId: "attempt-d",
+				hostVersion: "1.122.1",
+				provider: "live-copilot",
+				modelId: "gpt-test",
+				effort: "medium",
+				runExtension: async () =>
+					host({
+						status: "blocked",
+						failureClass: "profile_busy",
+						failureCategory: "runner",
+						failureCode: "profile_busy",
+						tracePath: null,
+						usage: { cost: null, inputTokens: null, outputTokens: null, requests: null },
+					}),
+			})
 
 			expect(passed.countsAsSolving).toBe(true)
 			expect(passed.graderDecision).toBe("passed")
@@ -91,6 +111,7 @@ describe("problem-solving extension campaign", () => {
 			expect(preflight.graderDecision).toBeNull()
 			expect(preflight.usage.requests).toBeNull()
 			expect(preflight.usage.cost).toBeNull()
+			expect(profileBusy).toMatchObject({ status: "blocked", failureClass: "profile_busy", graderDecision: null })
 		} finally {
 			await fs.rm(root, { recursive: true, force: true })
 		}
@@ -158,5 +179,64 @@ describe("problem-solving extension campaign", () => {
 		expect(unavailable.status).toBe("blocked")
 		expect(unavailable.failureClass).toBe("authentication")
 		expect(unavailable.usage.requests).toBeNull()
+	})
+
+	it("retains only allowlisted failure signals from workflow receipts", () => {
+		const rejected = problemSolvingHostFromReceipts({
+			buildIdentity: "abc123",
+			tracePath: "C:/work/workflow-result.json",
+			workflow: {
+				status: "failed",
+				failure: { category: "policy", code: "unexpected_command" },
+			},
+		})
+		const untrusted = problemSolvingHostFromReceipts({
+			buildIdentity: "abc123",
+			tracePath: "C:/work/workflow-result.json",
+			workflow: {
+				status: "failed",
+				failure: { category: "policy", code: "secret-command-content" },
+			},
+		})
+		const scopedRejection = problemSolvingHostFromReceipts({
+			buildIdentity: "abc123",
+			tracePath: "C:/work/workflow-result.json",
+			workflow: {
+				status: "failed",
+				failure: { category: "policy", code: "unexpected_command_outside_workspace_cwd" },
+			},
+		})
+		const busy = problemSolvingHostFromReceipts({
+			buildIdentity: "abc123",
+			tracePath: null,
+			workflow: null,
+			runnerFailure: "profile-busy",
+		})
+		const timeout = problemSolvingHostFromReceipts({
+			buildIdentity: "abc123",
+			tracePath: null,
+			workflow: null,
+			runnerFailure: "scenario-timeout",
+		})
+
+		expect(rejected).toMatchObject({ failureCategory: "policy", failureCode: "unexpected_command" })
+		expect(untrusted).toMatchObject({ failureCategory: "policy", failureCode: "other" })
+		expect(scopedRejection).toMatchObject({
+			failureCategory: "policy",
+			failureCode: "unexpected_command_outside_workspace_cwd",
+		})
+		expect(busy).toMatchObject({
+			status: "blocked",
+			failureClass: "profile_busy",
+			failureCategory: "runner",
+			failureCode: "profile_busy",
+		})
+		expect(timeout).toMatchObject({
+			status: "failed",
+			failureClass: "budget",
+			failureCategory: "timeout",
+			failureCode: "runner_timeout",
+		})
+		expect(JSON.stringify(untrusted)).not.toContain("secret-command-content")
 	})
 })

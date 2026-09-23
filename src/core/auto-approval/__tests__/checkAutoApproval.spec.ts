@@ -323,7 +323,7 @@ describe("checkAutoApproval", () => {
 		).resolves.toEqual({ decision: "ask" })
 	})
 
-	it("treats an inherited sub-agent policy as an approval ceiling", async () => {
+	it("uses the captured mode as the ceiling for child action review", async () => {
 		const liveState = { approvalMode: "auto" as const, allowedCommands: ["*"], deniedCommands: [] }
 		const inheritedAll = {
 			autoApprovalEnabled: true,
@@ -389,7 +389,7 @@ describe("checkAutoApproval", () => {
 				ask: "command",
 				text: "npm test",
 			}),
-		).resolves.toEqual({ decision: "ask" })
+		).resolves.toEqual({ decision: "approve" })
 		await expect(
 			checkAutoApprovalWithInheritedPolicy({
 				state: liveState,
@@ -408,7 +408,7 @@ describe("checkAutoApproval", () => {
 		).resolves.toEqual({ decision: "ask" })
 	})
 
-	it("does not let a live Bypass setting widen an Auto child grant", async () => {
+	it("auto-approves child actions in Auto or Bypass while preserving explicit command denials", async () => {
 		const inheritedAuto = {
 			autoApprovalEnabled: true,
 			alwaysAllowReadOnly: true,
@@ -418,19 +418,76 @@ describe("checkAutoApproval", () => {
 			alwaysAllowWriteProtected: false,
 			alwaysAllowExecute: true,
 			alwaysAllowSubagents: true,
-			commandApproval: createSubagentCommandApprovalPolicy(["*"], [], "a".repeat(64)),
+			commandApproval: createSubagentCommandApprovalPolicy(["git"], ["git push"], "a".repeat(64)),
 		}
+
+		for (const approvalMode of ["auto", "bypass"] as const) {
+			await expect(
+				checkAutoApprovalWithInheritedPolicy({
+					state: { approvalMode, allowedCommands: ["*"] },
+					inheritedState: inheritedAuto,
+					ask: "tool",
+					text: writeOutside,
+					isProtected: true,
+					requiresExplicitApproval: true,
+				}),
+			).resolves.toEqual({ decision: "approve" })
+
+			await expect(
+				checkAutoApprovalWithInheritedPolicy({
+					state: { approvalMode, allowedCommands: ["*"], deniedCommands: [] },
+					inheritedState: inheritedAuto,
+					ask: "command",
+					text: "pnpm test",
+					requiresExplicitApproval: true,
+				}),
+			).resolves.toEqual({ decision: "approve" })
+
+			await expect(
+				checkAutoApprovalWithInheritedPolicy({
+					state: { approvalMode, allowedCommands: ["*"], deniedCommands: [] },
+					inheritedState: inheritedAuto,
+					ask: "command",
+					text: "git push origin main",
+				}),
+			).resolves.toEqual({ decision: "deny" })
+		}
+	})
+
+	it("requires review when either the live or captured subagent mode is Ask", async () => {
+		const inheritedAuto = {
+			autoApprovalEnabled: true,
+			alwaysAllowReadOnly: true,
+			alwaysAllowReadOnlyOutsideWorkspace: false,
+			alwaysAllowWrite: true,
+			alwaysAllowWriteOutsideWorkspace: false,
+			alwaysAllowWriteProtected: false,
+			alwaysAllowExecute: true,
+			alwaysAllowSubagents: true,
+			commandApproval: createSubagentCommandApprovalPolicy(["*"], [], "b".repeat(64)),
+		}
+		const liveAuto = { approvalMode: "auto" as const, allowedCommands: ["*"] }
+
 		await expect(
 			checkAutoApprovalWithInheritedPolicy({
-				state: { approvalMode: "bypass" },
+				state: { approvalMode: "ask" },
 				inheritedState: inheritedAuto,
-				ask: "tool",
-				text: writeOutside,
+				ask: "command",
+				text: "pnpm test",
+			}),
+		).resolves.toEqual({ decision: "ask" })
+
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state: liveAuto,
+				inheritedState: { ...inheritedAuto, alwaysAllowWrite: false, alwaysAllowExecute: false },
+				ask: "command",
+				text: "pnpm test",
 			}),
 		).resolves.toEqual({ decision: "ask" })
 	})
 
-	it("requires every frozen nested command ceiling to approve", async () => {
+	it("preserves nested command denials while auto-approving other child actions", async () => {
 		const allowAll = createSubagentCommandApprovalPolicy(["*"], [], "7".repeat(64))
 		const ancestorLimit = createSubagentCommandApprovalPolicy(["git"], ["git push"], "8".repeat(64))
 		const inheritedState = {
@@ -462,7 +519,7 @@ describe("checkAutoApproval", () => {
 				ask: "command",
 				text: "npm test",
 			}),
-		).resolves.toEqual({ decision: "ask" })
+		).resolves.toEqual({ decision: "approve" })
 		await expect(
 			checkAutoApprovalWithInheritedPolicy({
 				state: liveState,
