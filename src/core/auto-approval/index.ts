@@ -8,8 +8,10 @@ import {
 	type ApprovalMode,
 	deriveAutoApprovalFlags,
 	effectiveCommandAllowlistForMode,
+	inferApprovalModeFromPolicy,
 	isApprovalMode,
 	isNonBlockingAsk,
+	migrateApprovalMode,
 } from "@alpha-code/types"
 
 import { AlphaAskResponse } from "../../shared/WebviewMessage"
@@ -271,9 +273,9 @@ export async function checkAutoApproval({
 }
 
 /**
- * Apply the live settings and the approval grant captured for a managed child.
- * The captured grant is an upper bound: live settings can revoke approval, but
- * changing global settings later cannot silently widen a child's authority.
+ * Apply the live and captured approval modes to managed-child actions.
+ * Ask at either boundary requires review; Auto and Bypass skip per-action
+ * review while explicit command denials remain authoritative.
  */
 export async function checkAutoApprovalWithInheritedPolicy({
 	inheritedState,
@@ -299,6 +301,15 @@ export async function checkAutoApprovalWithInheritedPolicy({
 	const results = [liveResult, inheritedResult]
 
 	if (results.some(({ decision }) => decision === "deny")) return { decision: "deny" }
+	const isSubagentAction = input.ask === "tool" || input.ask === "command"
+	const liveMode = input.state ? migrateApprovalMode(input.state) : "ask"
+	const inheritedMode = inferApprovalModeFromPolicy(inheritedState)
+	if (isSubagentAction && liveMode !== "ask" && inheritedMode !== "ask") {
+		// Auto and Full Access authorize the child action without asking the user.
+		// Keep explicit command denials above this check; hard tool and path policy
+		// is enforced before Task.ask and is unaffected by approval routing.
+		return { decision: "approve" }
+	}
 	if (results.some(({ decision }) => decision === "ask")) return { decision: "ask" }
 
 	const timeouts = results.filter(

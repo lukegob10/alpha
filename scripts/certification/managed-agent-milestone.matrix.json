@@ -598,7 +598,7 @@
 		},
 		{
 			"id": "WORKER-GATE-001",
-			"requirement": "Worker Apply is quarantined and reload-safe; review and effect settlement gate completion while optional process evidence remains advisory.",
+			"requirement": "Worker changes remain quarantined until approval-mode policy safely settles them: Ask requires review, Auto/Full Access auto-apply eligible scoped changes, and parent verification gates completion while optional process evidence remains advisory.",
 			"classification": "baseline",
 			"trackIds": ["runtime-invariants", "worker-worktree", "worker-completion-gate", "live-tree-ui"],
 			"probes": [
@@ -862,8 +862,8 @@
 		},
 		{
 			"id": "INT-WORKER-GATE-001",
-			"requirement": "Real VS Code host: Worker Apply transitions required -> pending after review; optional parent process evidence retains its outcome across reload without blocking settled completion.",
-			"reason": "Requires the real extension host, terminal ownership, filesystem worktree, UI Apply action, reload, and completion transition.",
+			"requirement": "Real VS Code host: Ask requires Worker Apply/Discard review while Auto/Full Access automatically apply eligible scoped changes; parent verification and optional process evidence retain their contract across reload.",
+			"reason": "Requires the real extension host, terminal ownership, filesystem worktree, approval-mode transitions, UI review, reload, and completion transition.",
 			"evidenceCommand": null
 		},
 		{

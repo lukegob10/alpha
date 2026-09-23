@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.0.4
+
+### Patch Changes
+
+- Make sub-agent approvals follow the parent task's Ask, Auto, and Full Access policy, clarify spawn and wait targets, and improve lifecycle updates in the task view.
+- Keep reasoning controls available while task profiles resolve and show the selected task's effective reasoning preference.
+- Reduce checkpoint startup work by excluding generated code-index data, and improve file-search handling for ignored and large workspaces.
+- Improve follow-up responsiveness, task switching, Alpha ticket-tool discovery, and release verification coverage.
+
 ## 3.0.3
 
 ### Patch Changes

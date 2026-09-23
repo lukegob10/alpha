@@ -33,7 +33,7 @@ const WORKFLOW_INTENT_RE =
 const NAMED_SKILL_RE =
 	/\b(?:use|load|follow|apply)\s+(?:the\s+)?[\w.-]+\s+skill\b|\b(?:create|author)\s+(?:a\s+)?skill\b|\bSKILL\.md\b/i
 
-const NAMED_TICKET_RE = /\b(?:read|list|open)\s+(?:the\s+)?tickets?\b|\bticket\s+[A-Za-z]{2,}-\d+\b/i
+const TICKET_INTENT_RE = /\btickets?\b|\b[A-Z]{2,4}(?:\s*(?:[-#]|number\s*)\s*)?(?:\d{1,10}|one)\b/i
 
 const IMPLEMENTATION_LEAD_RE =
 	/^(?:please\s+)?(?:implement|fix|add|create|write|edit|delete|remove|rename|refactor|migrate|update|patch|install|change)\b/i
@@ -64,7 +64,7 @@ export function classifyRequestWorkClass(
 	}
 
 	const includeSkill = NAMED_SKILL_RE.test(text)
-	const includeTickets = NAMED_TICKET_RE.test(text)
+	const includeTickets = TICKET_INTENT_RE.test(text)
 
 	if (WORKFLOW_INTENT_RE.test(text) || (includeSkill && /\b(?:create|author)\s+(?:a\s+)?skill\b/i.test(text))) {
 		return { class: "full", reason: "explicit_workflow", includeSkill, includeTickets }

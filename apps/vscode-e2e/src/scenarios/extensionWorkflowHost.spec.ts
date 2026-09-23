@@ -10,6 +10,7 @@ import { AlphaCodeEventName, type AlphaMessage, type AlphaCodeAPI, type AlphaCod
 import {
 	ExtensionWorkflowHost,
 	isApprovedProblemCommand,
+	problemCommandRejectionReason,
 	isApprovedProblemToolAsk,
 	isOutsideWorkspaceProblemToolAsk,
 	isApprovedWorkflowCommand,
@@ -729,4 +730,16 @@ test("problem solving approves workspace commands and rejects deny-list, escape,
 		outputTokens: 1200,
 		cost: 0,
 	})
+})
+
+test("problem command rejection reasons are content-free and preserve the approval boundary", () => {
+	assert.equal(problemCommandRejectionReason("  ", [], workspace), "empty_command")
+	assert.equal(problemCommandRejectionReason("npm test && curl example", [], workspace), "shell_operator")
+	assert.equal(problemCommandRejectionReason("npm install package", [], workspace), "denied_prefix")
+	assert.equal(problemCommandRejectionReason("node ../outside.js", [], workspace), "outside_workspace_argument")
+	assert.equal(
+		problemCommandRejectionReason("npm test", history("npm test", path.resolve(workspace, "..")), workspace),
+		"outside_workspace_cwd",
+	)
+	assert.equal(problemCommandRejectionReason("npm test", history("npm test"), workspace), null)
 })

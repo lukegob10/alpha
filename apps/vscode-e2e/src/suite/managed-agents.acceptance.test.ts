@@ -568,6 +568,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			fakeAi: scriptedAI,
 			currentApiConfigName: "managed-agent-scripted-e2e",
 			mode: "code",
+			approvalMode: "ask",
 			autoApprovalEnabled: true,
 			alwaysAllowReadOnly: true,
 			alwaysAllowWrite: true,
@@ -601,6 +602,9 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 		const toolFailures: string[] = []
 		const lastGroupStates = new Map<string, string>()
 		const onMessage = (event: { taskId: string; action: "created" | "updated"; message: AlphaMessage }) => {
+			if (event.message.type === "ask" && (event.message.ask === "tool" || event.message.ask === "command")) {
+				queueMicrotask(() => provider.getLiveTask(event.taskId)?.approveAsk())
+			}
 			if (event.message.type === "ask") {
 				console.log(
 					`[managed-agent-e2e] ask task=${event.taskId} kind=${event.message.ask ?? "unknown"} text=${JSON.stringify(event.message.text ?? "")}`,

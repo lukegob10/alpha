@@ -24,7 +24,7 @@ export const wait_agent = {
 						{ type: "null" },
 					],
 					description:
-						"Optional immediate-child task ID or canonical path. Use null for any immediate child. Requires until_terminal true.",
+						"Copy target from the spawn_agent result (the taskId, not runId), or use the child's canonical path. Use null for any immediate child. Requires until_terminal true.",
 				},
 				until_terminal: {
 					anyOf: [{ type: "boolean" }, { type: "null" }],

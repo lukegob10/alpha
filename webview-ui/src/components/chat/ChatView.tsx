@@ -291,6 +291,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		currentCheckpoint,
 		reasoningBlockCollapsed,
 		setMode,
+		getCachedTranscriptRevision,
 	} = extensionState
 	// Show a WarningRow when the user sends a message with a retired provider.
 	const [showRetiredProviderWarning, setShowRetiredProviderWarning] = useState(false)
@@ -314,6 +315,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const visibleTaskPayload = useMemo(
 		() => (visibleCurrentTaskId ? { taskId: visibleCurrentTaskId } : {}),
 		[visibleCurrentTaskId],
+	)
+	const openTaskWithCache = useCallback(
+		(taskId: string) => {
+			const cachedTranscriptRevision = getCachedTranscriptRevision(taskId)
+			vscode.postMessage({
+				type: "showTaskWithId",
+				text: taskId,
+				...(cachedTranscriptRevision === undefined ? {} : { values: { cachedTranscriptRevision } }),
+			})
+		},
+		[getCachedTranscriptRevision],
 	)
 	const visibleLiveTask = visibleCurrentTaskId ? liveTasksById?.[visibleCurrentTaskId] : undefined
 	const isVisibleTaskLifecycleDegraded = Boolean(
@@ -1507,6 +1519,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			reasoningBlockCollapsed,
 			modelSupportsImages: model?.supportsImages,
 			getAlphaMessages,
+			onShowTask: openTaskWithCache,
 		}),
 		[
 			mcpServers,
@@ -1518,6 +1531,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			reasoningBlockCollapsed,
 			model?.supportsImages,
 			getAlphaMessages,
+			openTaskWithCache,
 		],
 	)
 
@@ -2391,6 +2405,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							)
 						}
 						parentTaskId={visibleCurrentTaskItem?.parentTaskId}
+						onShowTask={openTaskWithCache}
 						isManagedSubagent={isManagedSubagent}
 						costBreakdown={
 							visibleCurrentTaskItem?.id && aggregatedCostsMap.has(visibleCurrentTaskItem.id)
@@ -2414,7 +2429,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 								groups={managedAgentGroups}
 								projection={managedAgentTreeProjection}
 								liveTasksById={liveTasksById}
-								onShowTask={(taskId) => vscode.postMessage({ type: "showTaskWithId", text: taskId })}
+								onShowTask={openTaskWithCache}
 							/>
 						</div>
 					)}

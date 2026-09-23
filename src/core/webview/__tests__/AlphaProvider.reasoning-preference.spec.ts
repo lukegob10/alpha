@@ -1,5 +1,6 @@
 import type { HistoryItem, ProviderSettings, TaskReasoningPreference, TaskReasoningProjection } from "@alpha-code/types"
 
+import { buildApiHandler } from "../../../api"
 import { AlphaProvider } from "../AlphaProvider"
 import { Task } from "../../task/Task"
 
@@ -220,6 +221,33 @@ function resetTaskConstructor() {
 describe("AlphaProvider reasoning preference boundaries", () => {
 	beforeEach(() => {
 		resetTaskConstructor()
+	})
+
+	it("projects VS Code LM reasoning without waiting for model selection", async () => {
+		const prepareModel = vi.fn(() => new Promise<void>(() => undefined))
+		vi.mocked(buildApiHandler).mockReturnValueOnce({
+			getModel: vi.fn(() => ({
+				id: "copilot/gpt-5.6-luna",
+				info: { supportsReasoningEffort: ["low", "medium", "high"] },
+			})),
+			prepareModel,
+			dispose: vi.fn(),
+		} as never)
+		const { provider } = providerHarness()
+
+		const pending = (AlphaProvider.prototype as any).resolveReasoningCapabilities.call(
+			provider,
+			{ apiProvider: "vscode-lm", vsCodeLmModelSelector: { vendor: "copilot", family: "gpt-5.6-luna" } },
+			{ kind: "default" },
+		)
+
+		expect(prepareModel).not.toHaveBeenCalled()
+		const result = await pending
+		expect(result.capabilities).toEqual({
+			kind: "effort",
+			efforts: ["low", "medium", "high"],
+			canDisable: true,
+		})
 	})
 
 	it.each(["low", "high"] as const)(

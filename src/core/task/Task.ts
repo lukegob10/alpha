@@ -4513,23 +4513,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const offscreenAutoResponse = requiresExplicitApproval
 			? undefined
 			: this.getOffscreenAutoAskResponse(type, text, isProtected)
-		const approval =
-			!requiresExplicitApproval && this.isParentAuthorizedSubagentAsk(type, text, isProtected)
-				? ({ decision: "approve" } as const)
-				: offscreenAutoResponse
-					? ({ decision: "ask" } as const)
-					: await checkAutoApprovalWithInheritedPolicy({
-							state,
-							inheritedState:
-								this.taskKind === "subagent"
-									? (this.subagentContextManifest?.runtimePolicy.autoApproval ??
-										disabledSubagentAutoApprovalPolicy)
-									: undefined,
-							ask: type,
-							text,
-							isProtected,
-							requiresExplicitApproval,
-						})
+		const approval = offscreenAutoResponse
+			? ({ decision: "ask" } as const)
+			: await checkAutoApprovalWithInheritedPolicy({
+					state,
+					inheritedState:
+						this.taskKind === "subagent"
+							? (this.subagentContextManifest?.runtimePolicy.autoApproval ??
+								disabledSubagentAutoApprovalPolicy)
+							: undefined,
+					ask: type,
+					text,
+					isProtected,
+					requiresExplicitApproval,
+				})
 
 		if (offscreenAutoResponse) {
 			this.handleWebviewAskResponse(
@@ -5889,10 +5886,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			const barrier = this.subagentReviewBarrier
 			this.isAwaitingSubagentReview = true
-			await this.providerRef
-				.deref()
-				?.postStateToWebviewWithoutTaskHistory()
-				.catch(() => undefined)
+			try {
+				await this.providerRef.deref()?.autoApplyPendingSubagentChangeSets?.(this.taskId)
+			} catch (error) {
+				console.error(
+					`[Task#waitForPendingSubagentChangeSetReviews] Automatic Worker apply failed: ${String(error)}`,
+				)
+			}
+			this.releaseSubagentReviewBarrierIfSettled()
+			if (this.hasPendingSubagentChangeSetReview()) {
+				await this.providerRef
+					.deref()
+					?.postStateToWebviewWithoutTaskHistory()
+					.catch(() => undefined)
+			}
 			try {
 				await barrier.promise
 			} finally {
@@ -6114,37 +6121,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (status === "timed_out") return "timeout"
 		if (status === "interrupted") return "interrupted"
 		return "failed"
-	}
-
-	private isParentAuthorizedSubagentAsk(type: AlphaAsk, text?: string, isProtected?: boolean): boolean {
-		if (!this.subagentAuthority || type !== "tool") return false
-
-		try {
-			const payload = JSON.parse(text ?? "{}") as { tool?: string; path?: string; skill?: string }
-			if (payload.tool === "skill" && typeof payload.skill === "string") {
-				return Boolean(this.getInheritedSubagentSkill(payload.skill))
-			}
-			if (
-				[
-					"readFile",
-					"listFiles",
-					"listFilesTopLevel",
-					"listFilesRecursive",
-					"searchFiles",
-					"codebaseSearch",
-				].includes(payload.tool ?? "")
-			)
-				return true
-			return (
-				this.subagentAuthority.role === "worker" &&
-				!isProtected &&
-				["editedExistingFile", "appliedDiff", "newFileCreated"].includes(payload.tool ?? "") &&
-				typeof payload.path === "string" &&
-				this.isWorkerWritePathAllowed(payload.path)
-			)
-		} catch {
-			return false
-		}
 	}
 
 	/**
@@ -7635,12 +7611,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			// Task resuming from history item.
 			try {
+				const loopOptions = {
+					deferTaskStartedUntilInitialUserContentPersisted:
+						options.deferTaskStartedUntilInitialUserContentPersisted === true,
+					includeInitialFileDetails: !useRetainedHistory,
+				}
 				if (options.deferTaskStartedUntilInitialUserContentPersisted) {
-					await this.initiateTaskLoop(newUserContent, onResumedUserContentPersisted, {
-						deferTaskStartedUntilInitialUserContentPersisted: true,
-					})
+					await this.initiateTaskLoop(newUserContent, onResumedUserContentPersisted, loopOptions)
 				} else {
-					await this.initiateTaskLoop(newUserContent, onResumedUserContentPersisted)
+					await this.initiateTaskLoop(newUserContent, onResumedUserContentPersisted, loopOptions)
 				}
 			} finally {
 				if (useRetainedHistory && !resumedUserContentPersisted) {
@@ -7975,7 +7954,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async initiateTaskLoop(
 		userContent: Anthropic.Messages.ContentBlockParam[],
 		onInitialUserContentPersisted?: () => Promise<void> | void,
-		options: { deferTaskStartedUntilInitialUserContentPersisted?: boolean } = {},
+		options: {
+			deferTaskStartedUntilInitialUserContentPersisted?: boolean
+			includeInitialFileDetails?: boolean
+		} = {},
 	): Promise<void> {
 		// Kicks off the checkpoints initialization process in the background.
 		if (userContent.length > 0) {
@@ -8190,7 +8172,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		let nextTurnInput: TaskTurnInput = {
 			userContent,
-			includeFileDetails: true,
+			includeFileDetails: options.includeInitialFileDetails ?? true,
 			onUserContentPersisted: handleInitialUserContentPersisted,
 		}
 		const continueAfterCompletionRejection = async (

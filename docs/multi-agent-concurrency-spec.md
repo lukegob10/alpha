@@ -15,7 +15,7 @@ The extension now supports the core "parallel agent" workflow:
 7. Completed tasks release their live-task slot back to the pool.
 8. Recent Tasks and Task History can reopen completed, waiting, running, and background tasks without stopping other sessions.
 
-The managed-child implementation now includes nonblocking `spawn_agent`, durable canonical paths and mailboxes, `list_agents`, `wait_agent`, downward `send_message`, immediate-parent `report_progress`, `followup_task`, `interrupt_agent`, `cancel_agent`, and `close_agent`. `report_progress` is available to every managed child without granting delegation or arbitrary routing authority; it appends a bounded durable mailbox event only for the frozen immediate parent. `fork_turns: none | all | N` captures a frozen, credential-free record of inherited conversation turns, instructions, skills, workspace, model route, runtime authority, ancestry, and effective limits. Explorer and Reviewer roles remain read-only. Workers use isolated scoped worktrees and quarantined change sets; an authorized Worker may layer a narrower nested Worker through its own private checkout, with verification owned first by the immediate Worker parent and later by the root for the outer change set. Root-wide capacity and budget contracts apply across descendants. The webview consumes a bounded, report-body-free projection of the durable registry for hierarchy, lifecycle, usage, capacity, budgets, activity, attention, and controls while transcript cards remain summaries.
+The managed-child implementation now includes nonblocking `spawn_agent`, durable canonical paths and mailboxes, `list_agents`, `wait_agent`, downward `send_message`, immediate-parent `report_progress`, `followup_task`, `interrupt_agent`, `cancel_agent`, and `close_agent`. `report_progress` is available to every managed child without granting delegation or arbitrary routing authority; it appends a bounded durable mailbox event only for the frozen immediate parent. `fork_turns: none | all | N` captures a frozen, credential-free record of inherited conversation turns, instructions, skills, workspace, model route, runtime authority, ancestry, and effective limits. Explorer and Reviewer roles remain read-only. Workers use isolated scoped worktrees and quarantined change sets; Auto and Full Access automatically apply eligible in-scope, conflict-free Worker changes, while Ask retains explicit Apply/Discard review. Conflicts and scope violations remain reviewable in every mode. An authorized Worker may layer a narrower nested Worker through its own private checkout, with verification owned first by the immediate Worker parent and later by the root for the outer change set. Root-wide capacity and budget contracts apply across descendants. The webview consumes a bounded, report-body-free projection of the durable registry for hierarchy, lifecycle, usage, capacity, budgets, activity, attention, and controls while transcript cards remain summaries.
 
 ## Goal
 
@@ -88,7 +88,7 @@ The implemented managed-child flow provides:
 6. A child can publish a bounded durable progress event only to its frozen immediate parent; `wait_agent` owns that event once.
 7. Read-only roles remain read-only, while Workers use isolated worktrees, scoped writes, and parent verification.
 8. User-configured provider-profile request pacing remains shared across parent and children and is reported as configured wait telemetry, not as an API failure.
-9. Worker changes remain quarantined until explicit review. After Apply, parent completion is rejected until a relevant parent-owned verification command satisfies the durable obligation.
+9. Worker changes remain isolated until the parent can safely settle them. Ask requires explicit Apply/Discard; Auto and Full Access auto-apply eligible in-scope changes when the parent reaches a safe mutation boundary. Conflicts and scope violations remain quarantined for review. After Apply, parent completion is rejected until a relevant parent-owned verification command satisfies the durable obligation.
 
 ## Recommendation
 
@@ -396,12 +396,12 @@ Completed:
 2. Explicit `fork_turns: none | all | N` inheritance with durable context references and a credential-free manifest of effective instructions, skills, workspace, model route, and runtime authority.
 3. Default and per-role saved provider-profile routing with safe parent-profile fallback and frozen route metadata.
 4. Read-only Explorer/Reviewer enforcement and parent-authority narrowing.
-5. Isolated, exact-scope Worker worktrees with quarantined change sets, explicit review/apply/discard controls, conflict protection, and crash-safe/idempotent Apply recovery.
+5. Isolated, exact-scope Worker worktrees with approval-mode-aware Apply/Discard, conflict protection, and crash-safe/idempotent recovery.
 6. Durable parent-verification obligations: `required`, `pending`, `satisfied`, `failed`, `superseded`, and `not_applicable`.
 7. Completion enforcement before completion UI and immediately before the terminal transition. Applied `pending` or `failed` obligations block completion; missing or unreadable durable decisions fail closed.
 8. Verification evidence restricted to relevant, post-Apply, parent-owned command execution. Pre-Apply, unrelated, and child commands do not satisfy the obligation.
 9. Worker-card verification states, authoritative Apply/Discard capability checks, visible confirmation/error handling, duplicate-submission protection, and lifecycle/list projections.
-10. Live VS Code acceptance proved the complete transition `pending_review/required -> applied/pending -> completion rejected -> verified/satisfied -> completed`, including durable reload-safe evidence and no duplicate pending/satisfied events.
+10. Ask-mode live VS Code acceptance proved the transition `pending_review/required -> applied/pending -> completion rejected -> verified/satisfied -> completed`, including durable reload-safe evidence and no duplicate pending/satisfied events. Auto/Full Access automatic application has focused provider/task coverage and remains in live acceptance.
 
 Non-blocking observation:
 
@@ -503,7 +503,7 @@ Milestone 3 was large and is complete at the original depth-one/live-certified b
 
 ## Resolved Decisions
 
-1. Worker children use isolated managed worktrees and exact write scopes; their changes remain quarantined until explicit review.
+1. Worker children use isolated managed worktrees and exact write scopes; Ask requires explicit review, while Auto and Full Access apply eligible conflict-free proposals automatically.
 2. The total live-task cap is user-configurable and defaults conservatively to `3`.
 3. Children inherit the parent provider profile by default, with configurable default and per-role saved-profile overrides.
 4. Child context inheritance is explicit and frozen through `fork_turns` plus a durable manifest.
@@ -521,6 +521,14 @@ Milestone 3 was large and is complete at the original depth-one/live-certified b
 3. What stall/loop heuristics are reliable enough to show as warnings without creating noise?
 4. What compatibility window and telemetry threshold should govern final `delegate_task` retirement?
 5. Which real native-provider/VS Code host matrix is sufficient to promote the deterministic implementation to release-certified status?
+
+## Spawn target compatibility (2026-09-22)
+
+The model-facing `spawn_agent` result includes `target`, equal to its stable `taskId`, for subsequent lifecycle calls.
+The existing `runId` remains available for correlation. Lifecycle controls also accept an exact run ID retained by the
+current run manager, resolving it before the normal root/subtree and immediate-child authorization checks. Unknown,
+superseded, or forgotten run IDs are not inferred from their task-ID prefix. After reload, callers should use the stable
+task ID or canonical path. This prevents the observed spawn-to-wait identifier mix-up without widening child authority.
 
 ## Bottom Line
 

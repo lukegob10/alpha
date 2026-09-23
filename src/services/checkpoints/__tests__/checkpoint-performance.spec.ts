@@ -19,6 +19,7 @@ const sourceFileSize = 16 * 1024
 const dataFileSize = 1024 * 1024
 const nodeModulePackageCount = 100
 const nodeModuleFilesPerPackage = nodeModuleFileCount / nodeModulePackageCount
+const suppliedWorkspaceDir = process.env.ALPHA_CHECKPOINT_PERF_WORKSPACE?.trim()
 
 const median = (values: number[]) => {
 	const ordered = [...values].sort((left, right) => left - right)
@@ -116,6 +117,48 @@ const assertOwnedTemporaryRoot = (root: string) => {
 }
 
 describe.skipIf(!enabled)("checkpoint performance benchmark", () => {
+	it.skipIf(!suppliedWorkspaceDir)(
+		"measures initialization against a live workspace without changing it",
+		async () => {
+			const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-checkpoint-live-perf-"))
+			assertOwnedTemporaryRoot(root)
+
+			try {
+				const initializationMs: number[] = []
+				const breakdowns: string[] = []
+				for (let sample = 0; sample < sampleCount; sample++) {
+					const serviceLogs: string[] = []
+					const service = new RepoPerTaskCheckpointService(
+						`live-workspace-benchmark-${sample}`,
+						path.join(root, `shadow-${sample}`),
+						suppliedWorkspaceDir!,
+						(message) => serviceLogs.push(message),
+					)
+					const initialization = await durationMs(() => service.initShadowGit())
+					const breakdown = serviceLogs.find((message) => message.includes("initialized shadow repo"))
+					if (!breakdown) throw new Error("Checkpoint initialization did not report its phase timings")
+					initializationMs.push(initialization.duration)
+					breakdowns.push(breakdown)
+				}
+
+				console.info(
+					"CHECKPOINT_LIVE_WORKSPACE_RESULT",
+					JSON.stringify({
+						samples: sampleCount,
+						initializationMs: initializationMs.map((value) => Number(value.toFixed(2))),
+						medianInitializationMs: Number(median(initializationMs).toFixed(2)),
+						breakdowns,
+						shadowDirectory: "temporary",
+					}),
+				)
+			} finally {
+				await fs.rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
+				await expect(fs.access(root)).rejects.toThrow()
+			}
+		},
+		180_000,
+	)
+
 	it("measures cold initialization, nested repository scanning, and historical diffs", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-checkpoint-perf-"))
 		assertOwnedTemporaryRoot(root)
@@ -123,6 +166,7 @@ describe.skipIf(!enabled)("checkpoint performance benchmark", () => {
 		try {
 			const { workspaceDir, sourceContent, dataContent } = await createWorkspaceFixture(root)
 			const initializationMs: number[] = []
+			const initializationBreakdowns: string[] = []
 			const nestedScanMs: number[] = []
 			const historicalDiffMs: number[] = []
 			const originalExecuteRipgrep = fileSearch.executeRipgrep
@@ -137,14 +181,21 @@ describe.skipIf(!enabled)("checkpoint performance benchmark", () => {
 				})
 
 				try {
+					const serviceLogs: string[] = []
 					const service = new RepoPerTaskCheckpointService(
 						`benchmark-${sample}`,
 						shadowDir,
 						workspaceDir,
-						() => {},
+						(message) => serviceLogs.push(message),
 					)
 					const initialization = await durationMs(() => service.initShadowGit())
 					initializationMs.push(initialization.duration)
+					const initializationBreakdown = serviceLogs.find((message) =>
+						message.includes("initialized shadow repo"),
+					)
+					if (!initializationBreakdown)
+						throw new Error("Checkpoint initialization did not report its phase timings")
+					initializationBreakdowns.push(initializationBreakdown)
 					nestedScanMs.push(scanDuration)
 
 					const changedSourceContent = Buffer.alloc(sourceFileSize, 0x63)
@@ -191,7 +242,7 @@ describe.skipIf(!enabled)("checkpoint performance benchmark", () => {
 			}
 
 			console.info(
-				"CHECKPOINT_PERFORMANCE_BASELINE",
+				"CHECKPOINT_PERFORMANCE_RESULT",
 				JSON.stringify({
 					service: "ShadowCheckpointService",
 					fixture: {
@@ -201,6 +252,7 @@ describe.skipIf(!enabled)("checkpoint performance benchmark", () => {
 					},
 					samples: sampleCount,
 					initializationMs: initializationMs.map((value) => Number(value.toFixed(2))),
+					initializationBreakdowns,
 					nestedScanMs: nestedScanMs.map((value) => Number(value.toFixed(2))),
 					historicalDiffMs: historicalDiffMs.map((value) => Number(value.toFixed(2))),
 					medianMs: {

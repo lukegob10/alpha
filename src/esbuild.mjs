@@ -20,13 +20,6 @@ const ripgrepPackages = [
 	"@vscode/ripgrep-win32-x64",
 	"@vscode/ripgrep-win32-arm64",
 	"@vscode/ripgrep-win32-ia32",
-	"@vscode/ripgrep-linux-x64",
-	"@vscode/ripgrep-linux-arm64",
-	"@vscode/ripgrep-linux-arm",
-	"@vscode/ripgrep-linux-ppc64",
-	"@vscode/ripgrep-linux-riscv64",
-	"@vscode/ripgrep-linux-s390x",
-	"@vscode/ripgrep-linux-ia32",
 ]
 
 function findPackageRoot(resolvedPath, packageName) {
@@ -75,7 +68,21 @@ function copyBundledRipgrepDependencies(distDir) {
 
 		fs.rmSync(targetDir, { recursive: true, force: true })
 		fs.mkdirSync(path.dirname(targetDir), { recursive: true })
-		fs.cpSync(packageDir, targetDir, { recursive: true })
+		fs.cpSync(packageDir, targetDir, {
+			recursive: true,
+			filter: (sourcePath) => {
+				const relativePath = path.relative(packageDir, sourcePath)
+				const pathSegments = relativePath.split(path.sep)
+				const isLinuxPackage = /^@vscode\/ripgrep-linux-/u.test(packageName)
+				const isLinuxUniversalBinary = pathSegments.some((segment) => /^linux(?:-|$)/u.test(segment))
+				const isLinuxDefaultBinary =
+					packageName === "@vscode/ripgrep" &&
+					process.platform === "linux" &&
+					relativePath === path.join("bin", "rg")
+
+				return !isLinuxPackage && !isLinuxUniversalBinary && !isLinuxDefaultBinary
+			},
+		})
 		console.log(`[copyBundledRipgrepDependencies] Copied ${packageName} to ${targetDir}`)
 	}
 }

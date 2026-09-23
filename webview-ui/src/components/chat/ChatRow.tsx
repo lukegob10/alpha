@@ -124,6 +124,7 @@ export interface ChatRowEnvironment
 		ExtensionStateContextType,
 		"mcpServers" | "alwaysAllowMcp" | "currentCheckpoint" | "mode" | "currentTaskId" | "reasoningBlockCollapsed"
 	> {
+	onShowTask?: (taskId: string) => void
 	currentTaskItem?: Pick<
 		NonNullable<ExtensionStateContextType["currentTaskItem"]>,
 		"id" | "status" | "designHandoff" | "taskKind" | "childIds" | "completedByChildId"
@@ -201,6 +202,14 @@ export const ChatRowContent = (props: ChatRowContentProps) => {
 		reasoningBlockCollapsed: extensionState.reasoningBlockCollapsed,
 		modelSupportsImages: model?.supportsImages,
 		getAlphaMessages: () => extensionState.clineMessages,
+		onShowTask: (taskId) => {
+			const cachedTranscriptRevision = extensionState.getCachedTranscriptRevision?.(taskId)
+			vscode.postMessage({
+				type: "showTaskWithId",
+				text: taskId,
+				...(cachedTranscriptRevision === undefined ? {} : { values: { cachedTranscriptRevision } }),
+			})
+		},
 	}
 
 	return <ChatRowContentInner {...props} environment={environment} />
@@ -235,6 +244,7 @@ const ChatRowContentInner = ({
 		reasoningBlockCollapsed,
 		modelSupportsImages,
 		getAlphaMessages,
+		onShowTask,
 	} = environment
 	// A completion report can survive an interrupted finalization; only the projected task status confirms success.
 	const isTaskCompleted = currentTaskItem?.id === currentTaskId && currentTaskItem?.status === "completed"
@@ -1052,9 +1062,10 @@ const ChatRowContentInner = ({
 								{childTaskId && !isFollowedBySubtaskResult && (
 									<button
 										className="cursor-pointer flex gap-1 items-center mt-2 text-vscode-descriptionForeground hover:text-vscode-descriptionForeground hover:underline font-normal"
-										onClick={() =>
-											vscode.postMessage({ type: "showTaskWithId", text: childTaskId })
-										}>
+										onClick={() => {
+											if (onShowTask) onShowTask(childTaskId)
+											else vscode.postMessage({ type: "showTaskWithId", text: childTaskId })
+										}}>
 										{t("chat:subtasks.goToSubtask")}
 										<ArrowRight className="size-3" />
 									</button>
@@ -1230,7 +1241,11 @@ const ChatRowContentInner = ({
 									)}
 								</>
 							}>
-							<SubagentGroupCard group={message.subagentGroup} parentTaskId={currentTaskId} />
+							<SubagentGroupCard
+								group={message.subagentGroup}
+								parentTaskId={currentTaskId}
+								onShowTask={onShowTask}
+							/>
 						</ActivityStep>
 					) : null
 				case "diff_error":
@@ -1258,9 +1273,10 @@ const ChatRowContentInner = ({
 							{completedChildTaskId && (
 								<button
 									className="cursor-pointer flex gap-1 items-center mt-2 text-vscode-descriptionForeground hover:text-vscode-descriptionForeground hover:underline font-normal"
-									onClick={() =>
-										vscode.postMessage({ type: "showTaskWithId", text: completedChildTaskId })
-									}>
+									onClick={() => {
+										if (onShowTask) onShowTask(completedChildTaskId)
+										else vscode.postMessage({ type: "showTaskWithId", text: completedChildTaskId })
+									}}>
 									{t("chat:subtasks.goToSubtask")}
 									<ArrowRight className="size-3" />
 								</button>

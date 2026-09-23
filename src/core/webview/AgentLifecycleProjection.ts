@@ -483,7 +483,15 @@ function legacyProjection(
 	taskStatus?: TaskStatus,
 ): AlphaMessageStatusProjection {
 	const latest = messages.at(-1)
-	const ask = taskAsk ?? [...messages].reverse().find((message) => message.type === "ask")
+	let ask = taskAsk
+	if (!ask) {
+		for (let index = messages.length - 1; index >= 0; index--) {
+			if (messages[index].type === "ask") {
+				ask = messages[index]
+				break
+			}
+		}
+	}
 	const askType = ask?.type === "ask" ? ask.ask : undefined
 
 	if (askType === "resume_completed_task") {

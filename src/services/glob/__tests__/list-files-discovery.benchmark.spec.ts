@@ -11,7 +11,11 @@ const { spawn, readdir, access, readFile } = vi.hoisted(() => ({
 
 vi.mock("child_process", () => ({ spawn }))
 vi.mock("fs", () => ({ promises: { readdir, access, readFile } }))
-vi.mock("../../ripgrep", () => ({ getBinPath: async () => "fixture-rg" }))
+vi.mock("../../ripgrep", () => ({
+	getBinPath: async () => "fixture-rg",
+	executeWithRipgrepFallback: (binaryPath: string, execute: (path: string) => Promise<unknown>) =>
+		execute(binaryPath),
+}))
 vi.mock("../../../utils/path", () => ({ arePathsEqual: () => false }))
 
 const root = path.resolve("/discovery-workspace")

@@ -61,6 +61,21 @@ describe("classifyRequestWorkClass", () => {
 		expect([...resolveLookupToolNames(ticket)!]).toEqual(expect.arrayContaining(["read_ticket", "list_tickets"]))
 	})
 
+	it("recognizes ordinary ticket questions and project references as ticket lookups", () => {
+		for (const text of [
+			"Which Alpha tickets are in progress?",
+			"What is PM-01 about?",
+			"What is PM number one about?",
+			"Where is PM number 1 documented?",
+		]) {
+			const decision = classifyRequestWorkClass(text)
+			expect(decision, text).toMatchObject({ class: "lookup", includeTickets: true })
+			expect([...resolveLookupToolNames(decision)!]).toEqual(
+				expect.arrayContaining(["list_tickets", "read_ticket"]),
+			)
+		}
+	})
+
 	it("does not classify ambiguous or empty text as lookup", () => {
 		expect(classifyRequestWorkClass(undefined)).toMatchObject({ class: "full", reason: "empty" })
 		expect(classifyRequestWorkClass("")).toMatchObject({ class: "full", reason: "empty" })

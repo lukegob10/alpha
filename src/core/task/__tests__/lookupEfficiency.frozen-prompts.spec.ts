@@ -25,20 +25,14 @@ const casesPath = path.join(
 
 const LOOKUP_NATIVE_NAMES = [
 	"ask_followup_question",
+	"attempt_completion",
 	"codebase_search",
 	"list_files",
 	"read_file",
 	"search_files",
 	"shell",
 ]
-const HIDDEN_WORKFLOW_NAMES = [
-	"spawn_agent",
-	"update_todo_list",
-	"attempt_completion",
-	"write_to_file",
-	"skill",
-	"list_tickets",
-]
+const HIDDEN_WORKFLOW_NAMES = ["spawn_agent", "update_todo_list", "write_to_file", "skill", "list_tickets"]
 
 const leftoverPlan: TaskWorkPlan = {
 	objective: "Fix behavior",

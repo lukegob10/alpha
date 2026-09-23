@@ -29,6 +29,7 @@ export const normalizeMaxLiveTasks = (value: unknown): number => {
 type TaskSession = {
 	task: Task
 	lifecycle: TaskLifecycleState
+	transcriptRevision: number
 	lastActivityAt: number
 	waitingReason?: string
 	/** Canonical lifecycle state, when the runtime has supplied one. */
@@ -56,6 +57,7 @@ const canAcceptTerminalAskInput = (ask: AlphaAsk | undefined) => Boolean(ask && 
 export class TaskSessionRegistry {
 	private readonly sessions = new Map<string, TaskSession>()
 	private activeTaskId: string | undefined
+	private nextTranscriptRevision = 0
 
 	constructor(private maxLiveTasks = DEFAULT_MAX_LIVE_TASKS) {
 		this.maxLiveTasks = normalizeMaxLiveTasks(maxLiveTasks)
@@ -118,6 +120,7 @@ export class TaskSessionRegistry {
 	}
 
 	register(task: Task, options: { focus?: boolean; lifecycleSnapshot?: AgentLifecycleSnapshot } = {}): void {
+		const transcriptRevision = ++this.nextTranscriptRevision
 		const pendingSnapshot = options.lifecycleSnapshot ?? this.lifecycleSnapshots.get(task.taskId)
 		const projection = pendingSnapshot
 			? projectAgentLifecycleSnapshot(pendingSnapshot, {
@@ -127,6 +130,7 @@ export class TaskSessionRegistry {
 			: undefined
 		this.sessions.set(task.taskId, {
 			task,
+			transcriptRevision,
 			lifecycle: this.lifecycleDegradedTaskIds.has(task.taskId)
 				? projectAlphaMessageStatus({
 						messages: task.clineMessages,
@@ -202,6 +206,17 @@ export class TaskSessionRegistry {
 		const session = this.sessions.get(taskId)
 		if (!session) return
 		session.lastActivityAt = Math.max(observedAt, session.lastActivityAt)
+	}
+
+	markTranscriptChanged(taskId: string): number | undefined {
+		const session = this.sessions.get(taskId)
+		if (!session) return undefined
+		session.transcriptRevision = ++this.nextTranscriptRevision
+		return session.transcriptRevision
+	}
+
+	getTranscriptRevision(taskId: string): number | undefined {
+		return this.sessions.get(taskId)?.transcriptRevision
 	}
 
 	private readonly lifecycleSnapshots = new Map<string, AgentLifecycleSnapshot>()
@@ -395,6 +410,7 @@ export class TaskSessionRegistry {
 				typeof task.hasPendingSteerMessage === "function" ? task.hasPendingSteerMessage() : false
 			const metadata: LiveTaskMetadata = {
 				id: task.taskId,
+				transcriptRevision: session.transcriptRevision,
 				model: task.api?.getModel(),
 				status,
 				lifecycle,

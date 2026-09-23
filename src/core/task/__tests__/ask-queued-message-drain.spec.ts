@@ -97,7 +97,7 @@ describe("Task.ask queued message drain", () => {
 		await expect(pending).resolves.toMatchObject({ response: "noButtonClicked" })
 	})
 
-	it("still requires explicit approval for a command covered by an inherited grant", async () => {
+	it("auto-approves a managed-child action despite an explicit review flag in Auto", async () => {
 		const task = await createAskOnlyTask()
 		;(task as any).taskKind = "subagent"
 		;(task as any).subagentContextManifest = { runtimePolicy: { autoApproval: inheritedCommandPolicy } }
@@ -113,39 +113,58 @@ describe("Task.ask queued message drain", () => {
 		}
 
 		const autoApprove = vi.spyOn(task, "approveAsk")
-		const pending = task.ask("command", "git diff", false, undefined, false, true)
-		await vi.waitFor(() => expect(task["addToAlphaMessages"]).toHaveBeenCalled())
-		expect(autoApprove).not.toHaveBeenCalled()
-		task.handleWebviewAskResponse("noButtonClicked")
-		await expect(pending).resolves.toMatchObject({
-			response: "noButtonClicked",
-		})
+		const result = await task.ask(
+			"tool",
+			JSON.stringify({ tool: "editedExistingFile", path: "protected.txt", isOutsideWorkspace: true }),
+			false,
+			undefined,
+			true,
+			true,
+		)
+
+		expect(autoApprove).toHaveBeenCalledOnce()
+		expect(result.response).toBe("yesButtonClicked")
 	})
 
-	it("does not let wider live settings exceed a managed child's inherited command policy", async () => {
+	it("keeps Ask review active even for a parent-authorized managed-child read", async () => {
+		const task = await createAskOnlyTask()
+		Object.assign(task, {
+			taskKind: "subagent",
+			subagentAuthority: { role: "review", logicalWorkspace: "F:/workspace", approvalProvenance: "group" },
+			subagentContextManifest: { runtimePolicy: { autoApproval: inheritedCommandPolicy } },
+		})
+		;(task as any).providerRef = {
+			deref: () => ({
+				getState: vi.fn(async () => ({ approvalMode: "ask" })),
+				isTaskOnScreen: vi.fn(() => true),
+			}),
+		}
+
+		const autoApprove = vi.spyOn(task, "approveAsk")
+		const askPromise = task.ask("tool", JSON.stringify({ tool: "readFile", path: "src/index.ts" }), false)
+		await vi.waitFor(() => expect(task["addToAlphaMessages"]).toHaveBeenCalled())
+		expect(autoApprove).not.toHaveBeenCalled()
+		task.handleWebviewAskResponse("yesButtonClicked")
+
+		await expect(askPromise).resolves.toMatchObject({ response: "yesButtonClicked" })
+	})
+
+	it("auto-approves a child command outside its command allowlist in Auto", async () => {
 		const task = await createAskOnlyTask()
 		;(task as any).taskKind = "subagent"
 		;(task as any).subagentContextManifest = { runtimePolicy: { autoApproval: inheritedCommandPolicy } }
 		;(task as any).providerRef = {
 			deref: () => ({
-				getState: vi.fn(async () => ({
-					...inheritedCommandPolicy,
-					allowedCommands: ["*"],
-					deniedCommands: [],
-				})),
+				getState: vi.fn(async () => ({ approvalMode: "auto", allowedCommands: ["*"], deniedCommands: [] })),
 				isTaskOnScreen: vi.fn(() => true),
 			}),
 		}
 
-		const askPromise = task.ask("command", "pnpm test", false)
-		setTimeout(() => {
-			;(task as any).handleWebviewAskResponse("messageResponse", "manual approval required")
-		}, 0)
+		const autoApprove = vi.spyOn(task, "approveAsk")
+		const result = await task.ask("command", "pnpm test", false, undefined, false, true)
 
-		await expect(askPromise).resolves.toMatchObject({
-			response: "messageResponse",
-			text: "manual approval required",
-		})
+		expect(autoApprove).toHaveBeenCalledOnce()
+		expect(result.response).toBe("yesButtonClicked")
 	})
 
 	it("fails closed for a retained managed child without a captured approval ceiling", async () => {

@@ -5,7 +5,14 @@ import * as os from "os"
 import * as path from "path"
 
 import { AlphaIgnoreController } from "../../../core/ignore/AlphaIgnoreController"
-import { clearRipgrepPathCache, regexSearchFiles, resolveRipgrepBinary, truncateLine } from "../index"
+import {
+	clearRipgrepPathCache,
+	createRipgrepProcessError,
+	executeWithRipgrepFallback,
+	regexSearchFiles,
+	resolveRipgrepBinary,
+	truncateLine,
+} from "../index"
 
 vi.mock("vscode", async (importOriginal) => ({
 	...(await importOriginal<typeof import("vscode")>()),
@@ -178,6 +185,90 @@ describe("Ripgrep binary resolution", () => {
 		})
 
 		expect(resolution?.path).toBe(bundledRg)
+	})
+
+	it("invalidates an executable after ENOENT and resolves the next bundled candidate", async () => {
+		const firstPackageRoot = path.join(tempDir, "extension", "node_modules", "@vscode", "ripgrep")
+		const firstBinary = path.join(firstPackageRoot, "bin", process.platform === "win32" ? "rg.exe" : "rg")
+		const fallbackPackageRoot = path.join(tempDir, "fallback", "node_modules", "@vscode", "ripgrep")
+		const fallbackBinary = path.join(fallbackPackageRoot, "bin", process.platform === "win32" ? "rg.exe" : "rg")
+		await writeExecutable(firstBinary)
+		await writeExecutable(fallbackBinary)
+
+		const options = {
+			bundledPackageRoots: [
+				{ packageName: "@vscode/ripgrep", packageRoot: firstPackageRoot },
+				{ packageName: "@vscode/ripgrep", packageRoot: fallbackPackageRoot },
+			],
+			env: {},
+			logger,
+			platform: process.platform,
+			skipRuntimePackageLookup: true,
+		}
+		expect(await resolveRipgrepBinary(options)).toMatchObject({ path: firstBinary, source: "bundled" })
+
+		const spawnError = Object.assign(new Error(`spawn ${firstBinary} ENOENT`), {
+			code: "ENOENT",
+			path: firstBinary,
+			syscall: `spawn ${firstBinary}`,
+		})
+		const execute = vi.fn(async (binaryPath: string) => {
+			if (binaryPath === firstBinary) throw createRipgrepProcessError(spawnError)
+			return binaryPath
+		})
+		const resolveFallback = () => resolveRipgrepBinary(options).then((resolution) => resolution?.path)
+
+		await expect(executeWithRipgrepFallback(firstBinary, execute, resolveFallback)).resolves.toBe(fallbackBinary)
+		expect(await resolveRipgrepBinary(options)).toMatchObject({ path: fallbackBinary, source: "bundled" })
+	})
+
+	it("retries once from the remaining binary sources after spawn returns ENOENT", async () => {
+		const bundledRg = path.join(tempDir, "extension", "node_modules", "@vscode", "ripgrep", "bin", "rg.exe")
+		const fallbackRg = path.join(
+			tempDir,
+			"vscode",
+			"node_modules.asar.unpacked",
+			"@vscode",
+			"ripgrep",
+			"bin",
+			"rg.exe",
+		)
+		const spawnError = Object.assign(new Error(`spawn ${bundledRg} ENOENT`), {
+			code: "ENOENT",
+			path: bundledRg,
+			syscall: `spawn ${bundledRg}`,
+		})
+		const execute = vi.fn(async (binaryPath: string) => {
+			if (binaryPath === bundledRg) throw createRipgrepProcessError(spawnError)
+			return binaryPath
+		})
+		const resolveFallback = vi.fn(async () => fallbackRg)
+
+		await expect(executeWithRipgrepFallback(bundledRg, execute, resolveFallback)).resolves.toBe(fallbackRg)
+		expect(execute).toHaveBeenNthCalledWith(1, bundledRg)
+		expect(execute).toHaveBeenNthCalledWith(2, fallbackRg)
+		expect(resolveFallback).toHaveBeenCalledOnce()
+	})
+
+	it("does not retry a missing binary after cancellation", async () => {
+		const bundledRg = path.join(tempDir, "extension", "node_modules", "@vscode", "ripgrep", "bin", "rg.exe")
+		const controller = new AbortController()
+		const cancelReason = new Error("cancelled")
+		const spawnError = Object.assign(new Error(`spawn ${bundledRg} ENOENT`), {
+			code: "ENOENT",
+			path: bundledRg,
+			syscall: `spawn ${bundledRg}`,
+		})
+		const execute = vi.fn(async () => {
+			controller.abort(cancelReason)
+			throw createRipgrepProcessError(spawnError)
+		})
+		const resolveFallback = vi.fn(async () => path.join(tempDir, "fallback", "rg.exe"))
+
+		await expect(executeWithRipgrepFallback(bundledRg, execute, resolveFallback, controller.signal)).rejects.toBe(
+			cancelReason,
+		)
+		expect(resolveFallback).not.toHaveBeenCalled()
 	})
 
 	it.each(

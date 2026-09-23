@@ -213,6 +213,13 @@ const PROBLEM_READ_TOOLS = [
 const PROBLEM_WRITE_TOOLS = ["editedExistingFile", "newFileCreated", "appliedDiff"] as const
 const SHELL_OPERATOR = /[|&;`$><\n\r]/
 
+export type ProblemCommandRejectionReason =
+	| "empty_command"
+	| "shell_operator"
+	| "denied_prefix"
+	| "outside_workspace_argument"
+	| "outside_workspace_cwd"
+
 function commandPrefix(command: string): string {
 	return command.trim().toLowerCase().replace(/\s+/g, " ")
 }
@@ -257,13 +264,22 @@ function recordedWorkingDirectoryStaysInWorkspace(command: string, history: unkn
  * Approve a workspace-scoped command unless it matches the extension deny list,
  * chains a shell operator, or names a path outside the task workspace.
  */
-export function isApprovedProblemCommand(command: string, history: unknown[], workspace: string): boolean {
+export function problemCommandRejectionReason(
+	command: string,
+	history: unknown[],
+	workspace: string,
+): ProblemCommandRejectionReason | null {
 	const trimmed = command.trim()
-	if (!trimmed || SHELL_OPERATOR.test(trimmed) || deniedProblemCommand(trimmed)) return false
-	return (
-		commandArgumentsStayInWorkspace(trimmed, workspace) &&
-		recordedWorkingDirectoryStaysInWorkspace(trimmed, history, workspace)
-	)
+	if (!trimmed) return "empty_command"
+	if (SHELL_OPERATOR.test(trimmed)) return "shell_operator"
+	if (deniedProblemCommand(trimmed)) return "denied_prefix"
+	if (!commandArgumentsStayInWorkspace(trimmed, workspace)) return "outside_workspace_argument"
+	if (!recordedWorkingDirectoryStaysInWorkspace(trimmed, history, workspace)) return "outside_workspace_cwd"
+	return null
+}
+
+export function isApprovedProblemCommand(command: string, history: unknown[], workspace: string): boolean {
+	return problemCommandRejectionReason(command, history, workspace) === null
 }
 
 /** An explicit outside-workspace read or write is denied so the attempt can continue. */
@@ -502,15 +518,21 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			const ask = task.taskAsk
 			if (!ask || ask.partial || this.approvedAsks.has(ask.ts)) return false
 			if (ask.ask === "command") {
-				const approved = this.problemSolving
-					? isApprovedProblemCommand(ask.text ?? "", task.apiConversationHistory, this.workspace)
-					: isApprovedWorkflowCommand(
-							ask.text ?? "",
-							task.apiConversationHistory,
-							this.workspace,
-							workflowCommands(this.activePrompt),
-						)
-				if (!approved) {
+				if (this.problemSolving) {
+					const rejection = problemCommandRejectionReason(
+						ask.text ?? "",
+						task.apiConversationHistory,
+						this.workspace,
+					)
+					if (rejection) throw new WorkflowFailure("policy", `unexpected_command_${rejection}`)
+				} else if (
+					!isApprovedWorkflowCommand(
+						ask.text ?? "",
+						task.apiConversationHistory,
+						this.workspace,
+						workflowCommands(this.activePrompt),
+					)
+				) {
 					throw new WorkflowFailure("policy", "unexpected_command")
 				}
 				this.approvedAsks.add(ask.ts)

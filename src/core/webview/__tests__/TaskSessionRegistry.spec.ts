@@ -46,6 +46,41 @@ const createLifecycleSnapshot = (
 	})
 
 describe("TaskSessionRegistry", () => {
+	it("finds legacy ask state without cloning the task transcript", () => {
+		const messages = new Proxy(
+			[
+				{ ts: 1, type: "say", say: "text", text: "prompt" },
+				{ ts: 2, type: "ask", ask: "followup", text: "Question?" },
+				{ ts: 3, type: "say", say: "text", text: "response" },
+			] as Task["clineMessages"],
+			{
+				get(target, property, receiver) {
+					if (property === Symbol.iterator) throw new Error("transcript must not be copied")
+					return Reflect.get(target, property, receiver)
+				},
+			},
+		)
+		const registry = new TaskSessionRegistry(1)
+		registry.register(createTask("legacy", { clineMessages: messages }))
+
+		expect(registry.getMetadata().legacy).toMatchObject({
+			status: TaskStatus.Interactive,
+			isWaitingForInput: true,
+			waitingReason: "interactive",
+		})
+	})
+
+	it("advances transcript revisions when a live transcript changes", () => {
+		const registry = new TaskSessionRegistry(1)
+		registry.register(createTask("revision"))
+		const initialRevision = registry.getTranscriptRevision("revision")
+
+		const updatedRevision = registry.markTranscriptChanged("revision")
+
+		expect(updatedRevision).toBeGreaterThan(initialRevision!)
+		expect(registry.getMetadata().revision.transcriptRevision).toBe(updatedRevision)
+	})
+
 	it("projects each task's current provider input budget independently", () => {
 		const registry = new TaskSessionRegistry(2)
 		const model = (contextWindow: number) => ({

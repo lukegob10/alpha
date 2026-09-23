@@ -62,6 +62,18 @@ avoids duplicating Rust regex parsing in JavaScript. Existing successful pattern
 `alpha\s+beta` still matches on one line, and `alpha\\nbeta` still searches for a literal backslash followed by `n`.
 `--multiline-dotall` is not enabled; explicit regex flags such as `(?s:...)` retain their normal meaning.
 
+## Ripgrep executable recovery and packaging
+
+If a ripgrep subprocess returns `ENOENT` for its cached executable, Alpha marks that path unavailable for the current
+extension session and retries with the next available bundled, `PATH`, or VS Code-internal executable. The retry is
+bounded to three candidates and does not retry search,
+permission, or cancellation errors. File listing, workspace file search, and content search share this recovery path.
+
+The extension bundle omits Linux-specific ripgrep binaries and Linux platform packages. Linux hosts use a `ripgrep` on
+`PATH` or VS Code's internal copy. Windows and macOS packages include the host-built executable; the VSIX verifier
+requires it on those build hosts. This keeps the extension package free of Linux ripgrep payloads while retaining the
+existing runtime fallback for Linux.
+
 ## Limits and compatibility
 
 One multiline JSON match can contain many source lines. The service numbers and truncates each source line separately,

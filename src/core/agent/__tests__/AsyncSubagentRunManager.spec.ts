@@ -67,6 +67,9 @@ describe("AsyncSubagentRunManager", () => {
 			status: "pending",
 		})
 		expect(Object.isFrozen(handle)).toBe(true)
+		expect(manager.resolveRunTaskId(handle.runId)).toBe(handle.taskId)
+		expect(manager.resolveRunTaskId(`${handle.taskId}:stale-run`)).toBeUndefined()
+		expect(manager.resolveRunTaskId("unknown:run")).toBeUndefined()
 		expect(runner).not.toHaveBeenCalled()
 		expect(manager.getSnapshot("child-1")).toMatchObject({ status: "pending", phase: "queued" })
 
@@ -81,6 +84,9 @@ describe("AsyncSubagentRunManager", () => {
 		})
 		expect(observed).toEqual(["status:pending", "started:running", "completed:completed"])
 		expect(manager.getEvents("child-1")).toHaveLength(3)
+		expect(manager.resolveRunTaskId(handle.runId)).toBe(handle.taskId)
+		manager.forget(handle.taskId)
+		expect(manager.resolveRunTaskId(handle.runId)).toBeUndefined()
 	})
 
 	it("shares a bounded manager and queues launches beyond its concurrency", async () => {

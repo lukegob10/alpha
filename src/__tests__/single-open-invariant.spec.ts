@@ -256,12 +256,19 @@ describe("Single-open-task invariant", () => {
 				checkpointTimeout: 60,
 				experiments: {},
 			}),
+			getProviderSettingsSnapshot: vi.fn(() => ({ apiProvider: "vertex", consecutiveMistakeLimit: 0 })),
 			// Methods used by createTaskWithHistoryItem for pending edit cleanup
 			getPendingEditOperation: vi.fn().mockReturnValue(undefined),
 			clearPendingEditOperation: vi.fn(),
 			context: { extension: { packageJSON: {} }, globalStorageUri: { fsPath: "/tmp" } },
 			contextProxy: {
 				extensionUri: {},
+				getValues: vi.fn(() => ({
+					currentApiConfigName: "default",
+					enableCheckpoints: true,
+					checkpointTimeout: 60,
+					experiments: {},
+				})),
 				getValue: vi.fn(),
 				setValue: vi.fn(),
 				setProviderSettings: vi.fn(),
@@ -269,6 +276,7 @@ describe("Single-open-task invariant", () => {
 			},
 			postTaskStateToWebview: vi.fn(),
 			postStateToWebview: vi.fn(),
+			scheduleVisibleTranscript: vi.fn(),
 		} as unknown as AlphaProvider
 
 		const historyItem = {

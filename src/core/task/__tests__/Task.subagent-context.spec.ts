@@ -44,12 +44,11 @@ describe("Task managed-child context authority", () => {
 		expect(task.getTaskAllowedToolNames()).not.toContain("execute_command")
 	})
 
-	it("auto-approves only a listed inherited skill for a background child", () => {
+	it("exposes only listed inherited skills to a managed child", () => {
 		const task = makeTask()
-		const authorize = (task as any).isParentAuthorizedSubagentAsk.bind(task)
 
-		expect(authorize("tool", JSON.stringify({ tool: "skill", skill: "review-repository" }), false)).toBe(true)
-		expect(authorize("tool", JSON.stringify({ tool: "skill", skill: "not-in-catalog" }), false)).toBe(false)
+		expect(task.getInheritedSubagentSkill("review-repository")).toMatchObject({ name: "review-repository" })
+		expect(task.getInheritedSubagentSkill("not-in-catalog")).toBeUndefined()
 	})
 
 	it("reloads the private frozen snapshot once and never consults changed live instructions", async () => {

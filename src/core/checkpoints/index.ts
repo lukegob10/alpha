@@ -259,7 +259,9 @@ async function checkGitInstallation(
 	provider: any,
 ): Promise<boolean> {
 	try {
+		const gitCheckStartTime = Date.now()
 		const gitInstalled = await checkGitInstalled()
+		log(`[Task#getCheckpointService] Git availability check ${Date.now() - gitCheckStartTime}ms`)
 
 		if (!gitInstalled) {
 			log("[Task#getCheckpointService] Git is not installed, disabling checkpoints")

@@ -15,13 +15,57 @@ export const problemSolvingFailureClasses = [
 	"budget",
 	"task",
 	"authentication",
+	"profile_busy",
 ] as const
 export type ProblemSolvingFailureClass = (typeof problemSolvingFailureClasses)[number]
+
+export const problemSolvingDiagnosticFailureCategories = [
+	"configuration",
+	"provider",
+	"policy",
+	"tool",
+	"persistence",
+	"lifecycle",
+	"assertion",
+	"timeout",
+	"harness",
+	"runner",
+] as const
+export type ProblemSolvingDiagnosticFailureCategory = (typeof problemSolvingDiagnosticFailureCategories)[number]
+
+export const problemSolvingDiagnosticFailureCodes = [
+	"unexpected_command",
+	"unexpected_command_empty_command",
+	"unexpected_command_shell_operator",
+	"unexpected_command_denied_prefix",
+	"unexpected_command_outside_workspace_argument",
+	"unexpected_command_outside_workspace_cwd",
+	"unexpected_read_approval",
+	"unexpected_write_approval",
+	"unexpected_tool_approval",
+	"unexpected_resume_task",
+	"unexpected_resume_completed_task",
+	"unexpected_recovery_or_approval",
+	"unexpected_completed_verification",
+	"request_limit_reached",
+	"scenario_deadline",
+	"actual_model_mismatch",
+	"model-unavailable",
+	"discovery-unavailable",
+	"profile_busy",
+	"runner_timeout",
+	"runner_request_limit",
+	"runner_failure",
+	"other",
+] as const
+export type ProblemSolvingDiagnosticFailureCode = (typeof problemSolvingDiagnosticFailureCodes)[number]
 
 export type ProblemSolvingHostResult = {
 	phase: "sample" | "preflight" | "smoke"
 	status: "passed" | "failed" | "blocked" | "cancelled"
 	failureClass?: ProblemSolvingFailureClass
+	failureCategory?: ProblemSolvingDiagnosticFailureCategory | null
+	failureCode?: ProblemSolvingDiagnosticFailureCode | null
 	modelId?: string | null
 	effort?: string | null
 	tracePath?: string | null
@@ -66,6 +110,8 @@ export type ProblemSolvingAttemptReport = {
 	usage: ProblemSolvingHostResult["usage"]
 	graderDecision: GraderRunResult["decision"] | null
 	failureClass: ProblemSolvingFailureClass | null
+	failureCategory?: ProblemSolvingDiagnosticFailureCategory | null
+	failureCode?: ProblemSolvingDiagnosticFailureCode | null
 	status: "passed" | "failed" | "blocked" | "cancelled"
 }
 
@@ -159,12 +205,52 @@ export function problemSolvingHostFromReceipts(input: {
 	}
 	if (input.workflow?.status === "passed") return { ...base, status: "passed" }
 	const failureClass = classifyReceipt(input.workflow, input.runnerFailure)
+	const failureCategory =
+		safeDiagnosticCategory(input.workflow?.failure?.category) ?? safeRunnerFailureCategory(input.runnerFailure)
+	const failureCode = safeDiagnosticCode(input.workflow?.failure?.code, input.runnerFailure)
 	return {
 		...base,
 		status:
-			failureClass === "cancellation" ? "cancelled" : failureClass === "authentication" ? "blocked" : "failed",
+			failureClass === "cancellation"
+				? "cancelled"
+				: failureClass === "authentication" || failureClass === "profile_busy"
+					? "blocked"
+					: "failed",
 		failureClass,
+		failureCategory,
+		failureCode,
 	}
+}
+
+function safeDiagnosticCategory(value: unknown): ProblemSolvingDiagnosticFailureCategory | null {
+	return problemSolvingDiagnosticFailureCategories.find((category) => category === value) ?? null
+}
+
+function safeDiagnosticCode(
+	workflowCode: unknown,
+	runnerFailure: string | null | undefined,
+): ProblemSolvingDiagnosticFailureCode | null {
+	if (typeof workflowCode === "string") {
+		return problemSolvingDiagnosticFailureCodes.find((code) => code === workflowCode) ?? "other"
+	}
+	return safeRunnerFailureCode(runnerFailure)
+}
+
+function safeRunnerFailureCategory(value: string | null | undefined): ProblemSolvingDiagnosticFailureCategory | null {
+	if (value === "profile-busy") return "runner"
+	if (typeof value === "string" && /timeout|deadline/i.test(value)) return "timeout"
+	if (typeof value === "string" && /request.*limit|limit.*request/i.test(value)) return "provider"
+	return null
+}
+
+function safeRunnerFailureCode(value: string | null | undefined): ProblemSolvingDiagnosticFailureCode | null {
+	if (!value) return null
+	if (value === "profile-busy") return "profile_busy"
+	const exact = problemSolvingDiagnosticFailureCodes.find((code) => code === value)
+	if (exact) return exact
+	if (/timeout|deadline/i.test(value)) return "runner_timeout"
+	if (/request.*limit|limit.*request/i.test(value)) return "runner_request_limit"
+	return "runner_failure"
 }
 
 function classifyReceipt(
@@ -173,6 +259,7 @@ function classifyReceipt(
 ): ProblemSolvingFailureClass {
 	const code = workflow?.failure?.code ?? runnerFailure ?? ""
 	if (code.includes("authentication") || code === "setup-incomplete") return "authentication"
+	if (code === "profile-busy") return "profile_busy"
 	if (
 		code === "model-unavailable" ||
 		code === "discovery-unavailable" ||
@@ -228,10 +315,14 @@ export async function runProblemSolvingAttempt(options: {
 	}
 	const host = await options.runExtension(request)
 	const diagnostic = host.phase !== "sample" || options.provider !== "live-copilot"
-	const grader =
-		diagnostic || host.status === "cancelled" || host.failureClass === "cancellation"
-			? null
-			: await gradeWorkspace(workspace, task.id, options.processRunner)
+	const skipGrader =
+		diagnostic ||
+		host.status === "blocked" ||
+		host.status === "cancelled" ||
+		host.failureClass === "cancellation" ||
+		host.failureClass === "authentication" ||
+		host.failureClass === "profile_busy"
+	const grader = skipGrader ? null : await gradeWorkspace(workspace, task.id, options.processRunner)
 	const failureClass = classify(host, grader)
 	const solved = !diagnostic && host.status === "passed" && grader?.decision === "passed" && failureClass === null
 	return {
@@ -252,11 +343,15 @@ export async function runProblemSolvingAttempt(options: {
 		usage: host.usage,
 		graderDecision: grader?.decision ?? null,
 		failureClass,
+		failureCategory: host.failureCategory ?? null,
+		failureCode: host.failureCode ?? null,
 		status: solved
 			? "passed"
 			: host.status === "cancelled" || failureClass === "cancellation"
 				? "cancelled"
-				: "failed",
+				: host.status === "blocked" || failureClass === "authentication" || failureClass === "profile_busy"
+					? "blocked"
+					: "failed",
 	}
 }
 

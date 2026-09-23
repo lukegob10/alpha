@@ -34,6 +34,7 @@
 				"src/suite/**/*.test.ts",
 				"src/scenarios/**/*.spec.ts",
 				"src/campaign/**/*.spec.ts",
+				"src/quality/**/*.spec.ts",
 				"src/ui/**/*.spec.ts",
 				"src/evidence/**/*.spec.ts",
 				"src/suite/shared-storage.entry.ts",
@@ -47,7 +48,7 @@
 			"project": ["src/**/*.ts"]
 		},
 		"packages/evals": {
-			"entry": ["src/benchmark/problemSolvingLive.ts", "src/certification/cli.ts", "src/evidence/cli.ts"],
+			"entry": ["src/certification/cli.ts", "src/evidence/cli.ts"],
 			"project": ["src/**/*.ts"]
 		},
 		"packages/{build,ipc,telemetry,types}": {

@@ -51,7 +51,13 @@ const liveTask = (overrides: Partial<LiveTaskMetadata>): LiveTaskMetadata => ({
 
 const taskWithLiveMetadata = (metadata: LiveTaskMetadata, variant: "compact" | "full" = "compact") => (
 	<ExtensionStateContext.Provider
-		value={{ currentTaskId: undefined, liveTasksById: { [metadata.id]: metadata } } as ExtensionStateContextType}>
+		value={
+			{
+				currentTaskId: undefined,
+				liveTasksById: { [metadata.id]: metadata },
+				getCachedTranscriptRevision: () => undefined,
+			} as unknown as ExtensionStateContextType
+		}>
 		<TaskItem item={mockTask} variant={variant} />
 	</ExtensionStateContext.Provider>
 )
@@ -255,6 +261,7 @@ describe("TaskItem", () => {
 				value={
 					{
 						currentTaskId: "1",
+						getCachedTranscriptRevision: () => undefined,
 						liveTasksById: {
 							"1": liveTask({
 								lifecycle: TaskLifecycleState.Waiting,
@@ -286,6 +293,7 @@ describe("TaskItem", () => {
 				value={
 					{
 						currentTaskId: undefined,
+						getCachedTranscriptRevision: () => undefined,
 						liveTasksById: {
 							"1": liveTask({
 								lifecycle: TaskLifecycleState.Completed,

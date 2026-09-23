@@ -5,6 +5,9 @@ import { listFiles } from "../list-files"
 // Mock ripgrep
 vi.mock("../../ripgrep", () => ({
 	getBinPath: vi.fn().mockResolvedValue("/mock/path/to/rg"),
+	executeWithRipgrepFallback: (binaryPath: string, execute: (binaryPath: string) => Promise<unknown>) =>
+		execute(binaryPath),
+	createRipgrepProcessError: (error: Error) => new Error(`ripgrep process error: ${error.message}`),
 }))
 
 // Mock vscode

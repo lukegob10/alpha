@@ -42,6 +42,7 @@ export interface TaskHeaderProps {
 	contextTokens: number
 	buttonsDisabled: boolean
 	handleCondenseContext: (taskId: string) => void
+	onShowTask?: (taskId: string) => void
 	todos?: any[]
 	onExpandedChange?: () => void
 }
@@ -63,6 +64,7 @@ const TaskHeader = ({
 	contextTokens,
 	buttonsDisabled,
 	handleCondenseContext,
+	onShowTask,
 	todos,
 	onExpandedChange,
 }: TaskHeaderProps) => {
@@ -135,7 +137,8 @@ const TaskHeader = ({
 
 	const handleBackToParent = () => {
 		if (parentTaskId) {
-			vscode.postMessage({ type: "showTaskWithId", text: parentTaskId })
+			if (onShowTask) onShowTask(parentTaskId)
+			else vscode.postMessage({ type: "showTaskWithId", text: parentTaskId })
 		}
 	}
 

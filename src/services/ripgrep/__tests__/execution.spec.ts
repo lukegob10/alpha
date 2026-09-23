@@ -85,6 +85,36 @@ describe("Ripgrep execution and multiline recovery", () => {
 		},
 	)
 
+	it("recovers when the cached executable disappears before spawn", async () => {
+		const initialBinary = (
+			await resolveRipgrepBinary({
+				env: { PATH: cwd },
+				logger: { info: vi.fn(), warn: vi.fn() },
+				skipRuntimePackageLookup: true,
+			})
+		)?.path
+		if (!initialBinary) throw new Error("Expected the test resolver to select an initial ripgrep path")
+
+		const spawnError = Object.assign(new Error(`spawn ${initialBinary} ENOENT`), {
+			code: "ENOENT",
+			path: initialBinary,
+			syscall: `spawn ${initialBinary}`,
+		})
+		enqueueProcess(({ child }) => {
+			child.emit("error", spawnError)
+			child.emit("close", null)
+		})
+		enqueueProcess(({ stdout, child }) => {
+			stdout.write(matchOutput())
+			child.emit("close", 0)
+		})
+
+		await expect(regexSearchFiles(cwd, cwd, "alpha\\s+beta")).resolves.toContain("alpha")
+		expect(spawn).toHaveBeenCalledTimes(2)
+		expect(spawn.mock.calls[0][0]).toBe(initialBinary)
+		expect(spawn.mock.calls[1][0]).not.toBe(initialBinary)
+	})
+
 	it.each(["regex parse error: unclosed group", "permission denied", ""])(
 		"propagates unrelated failures without retry: %j",
 		async (diagnostic) => {

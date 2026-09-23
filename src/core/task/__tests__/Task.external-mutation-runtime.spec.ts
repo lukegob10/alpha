@@ -56,7 +56,10 @@ describe("Task external mutation runtime state", () => {
 	})
 
 	it("pauses between a nested Worker result and the next provider request until review settles", async () => {
-		const provider = { postStateToWebviewWithoutTaskHistory: vi.fn(async () => undefined) }
+		const provider = {
+			postStateToWebviewWithoutTaskHistory: vi.fn(async () => undefined),
+			autoApplyPendingSubagentChangeSets: vi.fn(async () => undefined),
+		}
 		const group = {
 			groupId: "nested-group",
 			createdAt: Date.now(),
@@ -79,6 +82,7 @@ describe("Task external mutation runtime state", () => {
 		})
 
 		const waiting = (task as any).waitForPendingSubagentChangeSetReviews() as Promise<void>
+		await vi.waitFor(() => expect(provider.postStateToWebviewWithoutTaskHistory).toHaveBeenCalledOnce())
 		expect(task.getExternalMutationCapability()).toEqual({
 			allowed: true,
 			state: "available",
@@ -102,7 +106,34 @@ describe("Task external mutation runtime state", () => {
 		await waiting
 		expect(resumed).toBe(true)
 		expect((task as any).isAwaitingSubagentReview).toBe(false)
-		expect(provider.postStateToWebviewWithoutTaskHistory).toHaveBeenCalledOnce()
+		expect(provider.autoApplyPendingSubagentChangeSets).toHaveBeenCalledWith(task.taskId)
+	})
+
+	it("settles Auto-approved Worker proposals before opening the review barrier", async () => {
+		const group = {
+			groupId: "auto-group",
+			createdAt: Date.now(),
+			agents: [{ changeSet: { id: "auto-change", status: "pending_review" } }],
+		}
+		const provider = {
+			postStateToWebviewWithoutTaskHistory: vi.fn(async () => undefined),
+			autoApplyPendingSubagentChangeSets: vi.fn(async () => {
+				group.agents[0]!.changeSet.status = "applied"
+			}),
+		}
+		const task = makePausedTask({
+			activeAsk: undefined,
+			providerRef: { deref: () => provider },
+			clineMessages: [{ type: "say", say: "subagent_group", subagentGroup: group }],
+			isAwaitingSubagentReview: false,
+			subagentReviewBarrier: undefined,
+		})
+
+		await (task as any).waitForPendingSubagentChangeSetReviews()
+
+		expect(provider.autoApplyPendingSubagentChangeSets).toHaveBeenCalledWith(task.taskId)
+		expect(provider.postStateToWebviewWithoutTaskHistory).not.toHaveBeenCalled()
+		expect((task as any).isAwaitingSubagentReview).toBe(false)
 	})
 
 	it.each([

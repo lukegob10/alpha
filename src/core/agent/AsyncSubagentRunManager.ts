@@ -219,6 +219,12 @@ export class AsyncSubagentRunManager {
 		return interrupted
 	}
 
+	resolveRunTaskId(runId: string): string | undefined {
+		const taskId = runId.slice(0, runId.lastIndexOf(":"))
+		const record = this.runs.get(taskId)
+		return record?.handle.runId === runId ? record.handle.taskId : undefined
+	}
+
 	getSnapshot(taskId: string): SubagentRunState | undefined {
 		const state = this.runs.get(taskId)?.state
 		return state ? cloneState(state) : undefined

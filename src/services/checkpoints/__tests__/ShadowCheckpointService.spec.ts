@@ -450,6 +450,40 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				expect(await fs.readFile(ignoredFile, "utf-8")).toBe("Modified ignored content")
 			})
 
+			it("excludes the generated Alpha code index from the initial snapshot but keeps Alpha documents", async () => {
+				const generatedIndexFile = path.join(
+					service.workspaceDir,
+					".alpha",
+					"code-index",
+					"lancedb",
+					"data",
+					"index.lance",
+				)
+				const documentFile = path.join(service.workspaceDir, ".alpha", "documents", "review.html")
+				await fs.mkdir(path.dirname(generatedIndexFile), { recursive: true })
+				await fs.mkdir(path.dirname(documentFile), { recursive: true })
+				await fs.writeFile(generatedIndexFile, "generated index data")
+				await fs.writeFile(documentFile, "<h1>Review</h1>")
+
+				const logs: string[] = []
+				const initialService = new klass(
+					service.taskId,
+					path.join(tmpDir, `${prefix}-generated-index-${Date.now()}`),
+					service.workspaceDir,
+					(message) => logs.push(message),
+				)
+				await initialService.initShadowGit()
+
+				const shadowGit = simpleGit(initialService.checkpointsDir)
+				const trackedPaths = await shadowGit.raw(["ls-files"])
+				expect(trackedPaths.split(/\r?\n/)).not.toContain(".alpha/code-index/lancedb/data/index.lance")
+				expect(trackedPaths.split(/\r?\n/)).toContain(".alpha/documents/review.html")
+				expect(logs.join("\n")).toMatch(/git add \d+ms, index validation \d+ms, initial commit \d+ms/)
+
+				await fs.writeFile(generatedIndexFile, "updated generated index data")
+				expect(await initialService.saveCheckpoint("Ignore generated index changes")).toBeUndefined()
+			})
+
 			it("does not create a checkpoint for LFS files", async () => {
 				// Create a .gitattributes file with LFS patterns.
 				const gitattributesPath = path.join(service.workspaceDir, ".gitattributes")
@@ -522,6 +556,8 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				await fs.writeFile(trackedVenvFile, "Keep this workspace dependency")
 
 				const shadowGit = simpleGit(service.checkpointsDir)
+				await shadowGit.addConfig("user.name", "Alpha")
+				await shadowGit.addConfig("user.email", "support@alpha.invalid")
 				await shadowGit.add(["-f", ".venv/tracked.txt"])
 				const legacyCommit = await shadowGit.commit("Legacy tracked virtual environment")
 				expect(legacyCommit.commit).toBeTruthy()
@@ -539,6 +575,46 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				expect((await shadowGit.raw(["ls-files", "--", ".venv/tracked.txt"])).trim()).toBe("")
 				expect(migratedService.baseHash).toBe(await shadowGit.revparse(["HEAD"]))
 				expect(migratedService.baseHash).not.toBe(legacyCommit.commit)
+			})
+
+			it("migrates tracked Alpha code-index files without deleting workspace data or checkpoint history", async () => {
+				const codeIndexFile = path.join(
+					service.workspaceDir,
+					".alpha",
+					"code-index",
+					"lancedb",
+					"data",
+					"legacy.lance",
+				)
+				await fs.mkdir(path.dirname(codeIndexFile), { recursive: true })
+				await fs.writeFile(codeIndexFile, "Keep workspace cache data")
+
+				const shadowGit = simpleGit(service.checkpointsDir)
+				await shadowGit.addConfig("user.name", "Alpha")
+				await shadowGit.addConfig("user.email", "support@alpha.invalid")
+				await shadowGit.add(["-f", ".alpha/code-index/lancedb/data/legacy.lance"])
+				const legacyCommit = await shadowGit.commit("Legacy code-index baseline")
+				expect(legacyCommit.commit).toBeTruthy()
+
+				const migratedService = new klass(
+					service.taskId,
+					service.checkpointsDir,
+					service.workspaceDir,
+					() => {},
+				)
+				await migratedService.initShadowGit()
+
+				expect(await fs.readFile(codeIndexFile, "utf-8")).toBe("Keep workspace cache data")
+				expect((await shadowGit.raw(["ls-files", "--", ".alpha/code-index"])).trim()).toBe("")
+				expect(migratedService.baseHash).not.toBe(legacyCommit.commit)
+				expect(
+					await shadowGit.raw([
+						"merge-base",
+						"--is-ancestor",
+						legacyCommit.commit,
+						migratedService.baseHash!,
+					]),
+				).toBe("")
 			})
 
 			it("initializes a git repository if one does not already exist", async () => {
@@ -617,9 +693,7 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				expect(await fileExistsAtPath(nestedGitDir)).toBe(true)
 
 				vitest.spyOn(fileSearch, "executeRipgrep").mockImplementation(({ args }) => {
-					const searchPattern = args[4]
-
-					if (searchPattern.includes(".git/HEAD")) {
+					if (args.includes("**/.git/HEAD")) {
 						// Return the HEAD file path, not the .git directory
 						const headFilePath = path.join(path.relative(workspaceDir, nestedGitDir), "HEAD")
 						return Promise.resolve([
@@ -676,12 +750,129 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				// Verify that initialization succeeds when no nested git repos are detected
 				await expect(service.initShadowGit()).resolves.not.toThrow()
 				expect(service.isInitialized).toBe(true)
-				expect(searchSpy.mock.calls[0][0].args).toContain("!**/.venv/**")
+				const searchArgs = searchSpy.mock.calls[0][0].args
+				expect(searchArgs).toContain("!**/.venv/**")
+				expect(searchArgs).toContain("!**/node_modules/**")
+				expect(searchArgs).toContain("!**/.alpha/code-index/**")
+				expect(searchArgs).toContain("--follow")
 
 				// Clean up.
 				vitest.restoreAllMocks()
 				await fs.rm(shadowDir, { recursive: true, force: true })
 				await fs.rm(workspaceDir, { recursive: true, force: true })
+			})
+
+			it("does not scan nested repositories under checkpoint-excluded directories", async () => {
+				const shadowDir = path.join(tmpDir, `${prefix}-nested-git-excluded-${Date.now()}`)
+				const workspaceDir = path.join(tmpDir, `workspace-nested-git-excluded-${Date.now()}`)
+				await initWorkspaceRepo({ workspaceDir })
+				const nestedRepoDir = path.join(workspaceDir, "node_modules", "nested-repo")
+				await fs.mkdir(nestedRepoDir, { recursive: true })
+				await simpleGit(nestedRepoDir).init()
+
+				const service = new klass(taskId, shadowDir, workspaceDir, () => {})
+				await expect(service.initShadowGit()).resolves.not.toThrow()
+				expect(service.isInitialized).toBe(true)
+
+				vitest.restoreAllMocks()
+				await fs.rm(shadowDir, { recursive: true, force: true })
+				await fs.rm(workspaceDir, { recursive: true, force: true })
+			})
+
+			it("rejects a nested repository when the workspace re-includes an excluded directory", async () => {
+				const shadowDir = path.join(tmpDir, `${prefix}-nested-git-reincluded-${Date.now()}`)
+				const workspaceDir = path.join(tmpDir, `workspace-nested-git-reincluded-${Date.now()}`)
+				await initWorkspaceRepo({ workspaceDir })
+				await fs.writeFile(path.join(workspaceDir, ".gitignore"), "!node_modules/\n!node_modules/**\n")
+
+				const nestedRepoDir = path.join(workspaceDir, "node_modules", "nested-repo")
+				await fs.mkdir(nestedRepoDir, { recursive: true })
+				const nestedGit = simpleGit(nestedRepoDir)
+				await nestedGit.init()
+				await nestedGit.addConfig("user.name", "Nested repository")
+				await nestedGit.addConfig("user.email", "nested@example.invalid")
+				await fs.writeFile(path.join(nestedRepoDir, "nested.txt"), "nested")
+				await nestedGit.add(".")
+				await nestedGit.commit("initial nested commit")
+
+				const service = new klass(taskId, shadowDir, workspaceDir, () => {})
+				await expect(service.initShadowGit()).rejects.toThrow(
+					/Checkpoints are disabled because a nested git repository was detected at:/,
+				)
+
+				vitest.restoreAllMocks()
+				await fs.rm(shadowDir, { recursive: true, force: true })
+				await fs.rm(workspaceDir, { recursive: true, force: true })
+			})
+
+			it("reports an uncommitted nested repository re-included by the workspace", async () => {
+				const shadowDir = path.join(tmpDir, `${prefix}-nested-git-reincluded-uncommitted-${Date.now()}`)
+				const workspaceDir = path.join(tmpDir, `workspace-nested-git-reincluded-uncommitted-${Date.now()}`)
+				await initWorkspaceRepo({ workspaceDir })
+				await fs.writeFile(path.join(workspaceDir, ".gitignore"), "!node_modules/\n!node_modules/**\n")
+
+				const nestedRepoDir = path.join(workspaceDir, "node_modules", "nested-repo")
+				await fs.mkdir(nestedRepoDir, { recursive: true })
+				await simpleGit(nestedRepoDir).init()
+
+				const service = new klass(taskId, shadowDir, workspaceDir, () => {})
+				await expect(service.initShadowGit()).rejects.toThrow(
+					/Checkpoints are disabled because a nested git repository was detected at: node_modules[\\/]nested-repo/,
+				)
+
+				vitest.restoreAllMocks()
+				await fs.rm(shadowDir, { recursive: true, force: true })
+				await fs.rm(workspaceDir, { recursive: true, force: true })
+			})
+
+			it("continues to reject legacy nested repositories under checkpoint-excluded directories", async () => {
+				const shadowDir = path.join(tmpDir, `${prefix}-legacy-nested-git-${Date.now()}`)
+				const workspaceDir = path.join(tmpDir, `workspace-legacy-nested-git-${Date.now()}`)
+				await initWorkspaceRepo({ workspaceDir })
+				const nestedRepoDir = path.join(workspaceDir, "node_modules", "nested-repo")
+				await fs.mkdir(nestedRepoDir, { recursive: true })
+				await simpleGit(nestedRepoDir).init()
+
+				await fs.mkdir(shadowDir, { recursive: true })
+				const shadowGit = simpleGit(shadowDir)
+				await shadowGit.init()
+				await shadowGit.addConfig("core.worktree", workspaceDir)
+				await shadowGit.addConfig("user.name", "Alpha")
+				await shadowGit.addConfig("user.email", "noreply@example.com")
+				await shadowGit.commit("legacy empty baseline", { "--allow-empty": null })
+
+				const service = new klass(taskId, shadowDir, workspaceDir, () => {})
+				await expect(service.initShadowGit()).rejects.toThrow(
+					/Checkpoints are disabled because a nested git repository was detected at:/,
+				)
+
+				vitest.restoreAllMocks()
+				await fs.rm(shadowDir, { recursive: true, force: true })
+				await fs.rm(workspaceDir, { recursive: true, force: true })
+			})
+
+			it("continues to detect nested repositories reached through workspace directory links", async () => {
+				const shadowDir = path.join(tmpDir, `${prefix}-nested-git-link-${Date.now()}`)
+				const workspaceDir = path.join(tmpDir, `workspace-nested-git-link-${Date.now()}`)
+				const linkedRepoDir = path.join(tmpDir, `linked-nested-repo-${Date.now()}`)
+				await initWorkspaceRepo({ workspaceDir })
+				await fs.mkdir(linkedRepoDir, { recursive: true })
+				await simpleGit(linkedRepoDir).init()
+				await fs.symlink(
+					linkedRepoDir,
+					path.join(workspaceDir, "linked-repo"),
+					process.platform === "win32" ? "junction" : "dir",
+				)
+
+				const service = new klass(taskId, shadowDir, workspaceDir, () => {})
+				await expect(service.initShadowGit()).rejects.toThrow(
+					/Checkpoints are disabled because a nested git repository was detected at:/,
+				)
+
+				vitest.restoreAllMocks()
+				await fs.rm(shadowDir, { recursive: true, force: true })
+				await fs.rm(workspaceDir, { recursive: true, force: true })
+				await fs.rm(linkedRepoDir, { recursive: true, force: true })
 			})
 
 			it("fails closed when nested repository detection cannot complete", async () => {

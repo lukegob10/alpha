@@ -68,6 +68,7 @@ const mockAlphaProvider = {
 	createTaskWithHistoryItem: vi.fn(),
 	cancelTask: vi.fn(),
 	showTaskWithId: vi.fn(),
+	clearPublishedTaskTranscriptRevisions: vi.fn(),
 	exportTaskWithId: vi.fn(),
 	condenseTaskContext: vi.fn(),
 	deleteTaskWithId: vi.fn(),
@@ -346,6 +347,26 @@ describe("webviewMessageHandler - showTaskWithId", () => {
 		expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
 			"This task is not available yet. If it is still launching, wait a moment and try again.",
 		)
+	})
+
+	it("passes a non-negative cached transcript revision to the provider", async () => {
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "showTaskWithId",
+			text: "cached-task",
+			values: { cachedTranscriptRevision: 42 },
+		})
+
+		expect(mockAlphaProvider.showTaskWithId).toHaveBeenCalledWith("cached-task", 42)
+	})
+
+	it("ignores an invalid cached transcript revision", async () => {
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "showTaskWithId",
+			text: "cached-task",
+			values: { cachedTranscriptRevision: -1 },
+		})
+
+		expect(mockAlphaProvider.showTaskWithId).toHaveBeenCalledWith("cached-task")
 	})
 })
 
