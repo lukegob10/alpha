@@ -206,6 +206,7 @@ async function createHarness() {
 		legacyHandoffInputBuffers: buffers,
 		taskEventListeners: new WeakMap(),
 		taskStack: [child],
+		publishedTaskTranscriptRevisions: new Map(),
 		currentView: { type: "task", taskId: CHILD_ID },
 		getParentCompletionDecision: getDecision,
 		getTaskWithId: vi.fn<AlphaProvider["getTaskWithId"]>(async (taskId) => {

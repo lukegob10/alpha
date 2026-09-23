@@ -38,11 +38,19 @@ describe("lookup catalog preset", () => {
 			options({ userRequestText: "Where is retryLimit defined?" }),
 		)
 		expect(namesOf(result.tools)).toEqual(
-			["ask_followup_question", "codebase_search", "list_files", "read_file", "search_files", "shell"].sort(),
+			[
+				"ask_followup_question",
+				"attempt_completion",
+				"codebase_search",
+				"list_files",
+				"read_file",
+				"search_files",
+				"shell",
+			].sort(),
 		)
 		expect(result.surface?.isCallable("spawn_agent")).toBe(false)
 		expect(result.surface?.isCallable("update_todo_list")).toBe(false)
-		expect(result.surface?.isCallable("attempt_completion")).toBe(false)
+		expect(result.surface?.isCallable("attempt_completion")).toBe(true)
 		expect(result.surface?.isCallable("write_to_file")).toBe(false)
 		expect(result.surface?.isCallable("skill")).toBe(false)
 		expect(result.surface?.isCallable("list_tickets")).toBe(false)
@@ -93,10 +101,26 @@ describe("lookup catalog preset", () => {
 			}),
 		)
 		expect(namesOf(result.tools)).toEqual(
-			["ask_followup_question", "codebase_search", "list_files", "read_file", "search_files", "shell"].sort(),
+			[
+				"ask_followup_question",
+				"attempt_completion",
+				"codebase_search",
+				"list_files",
+				"read_file",
+				"search_files",
+				"shell",
+			].sort(),
 		)
 		expect([...(result.allowedFunctionNames ?? [])].sort()).toEqual(
-			["ask_followup_question", "codebase_search", "list_files", "read_file", "search_files", "shell"].sort(),
+			[
+				"ask_followup_question",
+				"attempt_completion",
+				"codebase_search",
+				"list_files",
+				"read_file",
+				"search_files",
+				"shell",
+			].sort(),
 		)
 		expect(result.surface?.isCallable("spawn_agent")).toBe(false)
 		expect(namesOf(result.tools)).not.toContain("spawn_agent")
@@ -140,7 +164,15 @@ describe("lookup catalog preset", () => {
 			options({ mode: "architect", userRequestText: "Where is retryLimit defined?" }),
 		)
 		expect(namesOf(result.tools)).toEqual(
-			["ask_followup_question", "codebase_search", "list_files", "read_file", "search_files", "shell"].sort(),
+			[
+				"ask_followup_question",
+				"attempt_completion",
+				"codebase_search",
+				"list_files",
+				"read_file",
+				"search_files",
+				"shell",
+			].sort(),
 		)
 		expect(result.surface?.isCallable("write_to_file")).toBe(false)
 		expect(result.surface?.isCallable("spawn_agent")).toBe(false)

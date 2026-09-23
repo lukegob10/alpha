@@ -2413,7 +2413,10 @@ describe("Alpha", () => {
 					...formatResponse.imageBlocks(images),
 				],
 				expect.any(Function),
-				{ deferTaskStartedUntilInitialUserContentPersisted: true },
+				expect.objectContaining({
+					deferTaskStartedUntilInitialUserContentPersisted: true,
+					includeInitialFileDetails: true,
+				}),
 			)
 			await expect(task.resumeWithEditedMessage("Duplicate")).rejects.toThrow("already started")
 		})
@@ -5423,6 +5426,10 @@ describe("Alpha", () => {
 					{ type: "text", text: "<user_message>\ncontinue after reload\n</user_message>" },
 				],
 				undefined,
+				expect.objectContaining({
+					deferTaskStartedUntilInitialUserContentPersisted: false,
+					includeInitialFileDetails: true,
+				}),
 			)
 		})
 	})

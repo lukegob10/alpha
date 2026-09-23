@@ -556,6 +556,8 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				await fs.writeFile(trackedVenvFile, "Keep this workspace dependency")
 
 				const shadowGit = simpleGit(service.checkpointsDir)
+				await shadowGit.addConfig("user.name", "Alpha")
+				await shadowGit.addConfig("user.email", "support@alpha.invalid")
 				await shadowGit.add(["-f", ".venv/tracked.txt"])
 				const legacyCommit = await shadowGit.commit("Legacy tracked virtual environment")
 				expect(legacyCommit.commit).toBeTruthy()
@@ -588,6 +590,8 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				await fs.writeFile(codeIndexFile, "Keep workspace cache data")
 
 				const shadowGit = simpleGit(service.checkpointsDir)
+				await shadowGit.addConfig("user.name", "Alpha")
+				await shadowGit.addConfig("user.email", "support@alpha.invalid")
 				await shadowGit.add(["-f", ".alpha/code-index/lancedb/data/legacy.lance"])
 				const legacyCommit = await shadowGit.commit("Legacy code-index baseline")
 				expect(legacyCommit.commit).toBeTruthy()

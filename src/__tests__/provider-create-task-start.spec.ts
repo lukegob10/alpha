@@ -98,9 +98,9 @@ describe("AlphaProvider.createTask start control", () => {
 		"rejects restored %s before closing the current task",
 		async (apiProvider) => {
 			const provider = createProvider()
-			vi.mocked(provider.getState).mockResolvedValue({ apiConfiguration: { apiProvider } } as Awaited<
-				ReturnType<AlphaProvider["getState"]>
-			>)
+			vi.mocked(provider["getProviderSettingsSnapshot"]).mockReturnValue({
+				apiProvider: apiProvider as ProviderSettings["apiProvider"],
+			})
 			await expect(
 				AlphaProvider.prototype.createTaskWithHistoryItem.call(provider, { id: "saved-task" } as HistoryItem),
 			).rejects.toThrow(`Unsupported API provider: ${apiProvider}`)

@@ -2,8 +2,8 @@ import { canonicalizeToolName } from "../tools/ToolRegistry"
 import { classifyRequestWorkClass, type RequestWorkClassDecision } from "./requestWorkClass"
 
 /**
- * Lookup-sized native names. Workflow tools stay in the product; they are omitted
- * from the advertised/callable surface of a classified lookup step.
+ * Lookup-sized native names. Mutation and orchestration tools are omitted, while
+ * lifecycle controls stay available so a lookup task can finish or ask a question.
  */
 export const LOOKUP_CORE_TOOL_NAMES = [
 	"read_file",
@@ -11,6 +11,7 @@ export const LOOKUP_CORE_TOOL_NAMES = [
 	"list_files",
 	"shell",
 	"ask_followup_question",
+	"attempt_completion",
 ] as const
 
 export const LOOKUP_OPTIONAL_TOOL_NAMES = ["codebase_search"] as const

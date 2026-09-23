@@ -68,6 +68,10 @@ describe("Task retained sub-agent follow-up", () => {
 				{ type: "text", text: "<user_message>\nCheck the edge case next\n</user_message>" },
 			],
 			undefined,
+			expect.objectContaining({
+				deferTaskStartedUntilInitialUserContentPersisted: false,
+				includeInitialFileDetails: true,
+			}),
 		)
 	})
 
@@ -123,6 +127,10 @@ describe("Task retained sub-agent follow-up", () => {
 				{ type: "text", text: "<user_message>\nSECOND_RUN\n</user_message>" },
 			],
 			onFollowupPersisted,
+			expect.objectContaining({
+				deferTaskStartedUntilInitialUserContentPersisted: false,
+				includeInitialFileDetails: true,
+			}),
 		)
 	})
 })
