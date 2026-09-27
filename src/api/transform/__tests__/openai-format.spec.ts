@@ -76,6 +76,97 @@ describe("convertToOpenAiMessages", () => {
 		})
 	})
 
+	it("preserves tool-result images after every matching tool message", () => {
+		const anthropicMessages: Anthropic.Messages.MessageParam[] = [
+			{
+				role: "assistant",
+				content: [
+					{ type: "tool_use", id: "call-1", name: "read_image", input: {} },
+					{ type: "tool_use", id: "call-2", name: "read_image", input: {} },
+				],
+			},
+			{
+				role: "user",
+				content: [
+					{
+						type: "tool_result",
+						tool_use_id: "call-1",
+						content: [
+							{ type: "text", text: "First image:" },
+							{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } },
+						],
+					},
+					{
+						type: "tool_result",
+						tool_use_id: "call-2",
+						content: [
+							{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: "BBBB" } },
+						],
+					},
+				],
+			},
+		]
+
+		const messages = convertToOpenAiMessages(anthropicMessages, {
+			normalizeToolCallId: (id) => id.replace("-", ""),
+		})
+
+		expect(messages).toHaveLength(4)
+		expect(
+			(messages[0] as OpenAI.Chat.ChatCompletionAssistantMessageParam).tool_calls?.map((call) => call.id),
+		).toEqual(["call1", "call2"])
+		expect(messages[1]).toMatchObject({
+			role: "tool",
+			tool_call_id: "call1",
+			content: "First image:\n(see following user message for image)",
+		})
+		expect(messages[2]).toMatchObject({
+			role: "tool",
+			tool_call_id: "call2",
+			content: "(see following user message for image)",
+		})
+		expect(messages[3]).toEqual({
+			role: "user",
+			content: [
+				{ type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+				{ type: "image_url", image_url: { url: "data:image/jpeg;base64,BBBB" } },
+			],
+		})
+	})
+
+	it("keeps user text alongside a tool-result image when text merging is enabled", () => {
+		const anthropicMessages: Anthropic.Messages.MessageParam[] = [
+			{
+				role: "user",
+				content: [
+					{
+						type: "tool_result",
+						tool_use_id: "image-call",
+						content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } }],
+					},
+					{ type: "text", text: "Please describe the image." },
+				],
+			},
+		]
+
+		const messages = convertToOpenAiMessages(anthropicMessages, { mergeToolResultText: true })
+		expect(messages).toEqual([
+			{
+				role: "tool",
+				tool_call_id: "image-call",
+				content: "(see following user message for image)",
+			},
+			{
+				role: "user",
+				content: [{ type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } }],
+			},
+			{
+				role: "user",
+				content: [{ type: "text", text: "Please describe the image." }],
+			},
+		])
+	})
+
 	it("should handle assistant messages with tool use (no normalization without normalizeToolCallId)", () => {
 		const anthropicMessages: Anthropic.Messages.MessageParam[] = [
 			{

@@ -26,6 +26,7 @@ import {
 	subagentTokenLimitSchema,
 } from "./subagent-orchestration.js"
 import { approvalModeSchema } from "./approval-mode.js"
+import { subagentAgentTypesSchema } from "./subagent.js"
 
 /**
  * Default delay in milliseconds after writes to allow diagnostics to detect potential problems.
@@ -92,6 +93,9 @@ export const DEFAULT_CHECKPOINT_TIMEOUT_SECONDS = 15
  * GlobalSettings
  */
 
+export const autoCondenseContextScopeSchema = z.enum(["full-context", "after-prefix"])
+export type AutoCondenseContextScope = z.infer<typeof autoCondenseContextScopeSchema>
+
 export const globalSettingsSchema = z.object({
 	currentApiConfigName: z.string().optional(),
 	listApiConfigMeta: z.array(providerSettingsEntrySchema).optional(),
@@ -133,6 +137,8 @@ export const globalSettingsSchema = z.object({
 	allowedMaxCost: z.number().nullish(),
 	autoCondenseContext: z.boolean().optional(),
 	autoCondenseContextPercent: z.number().optional(),
+	autoCondenseContextScope: autoCondenseContextScopeSchema.optional(),
+	postTurnCondenseContextPercent: z.number().int().min(0).max(100).optional(),
 	maxConcurrentTasks: z.number().int().min(MIN_MAX_CONCURRENT_TASKS).max(MAX_MAX_CONCURRENT_TASKS).optional(),
 	/** Root-wide live managed-child cap, independent from maxConcurrentTasks. */
 	maxConcurrentSubagents: maxConcurrentSubagentsSchema.optional(),
@@ -151,6 +157,7 @@ export const globalSettingsSchema = z.object({
 	/** Optional aggregate provider-reported cost budget for one root tree; null disables it. */
 	subagentRootCostBudget: subagentRootCostBudgetSchema.optional(),
 	subagentDefaultApiConfigId: z.string().optional(),
+	subagentAgentTypes: subagentAgentTypesSchema.optional(),
 	subagentApiConfigByRole: z
 		.object({
 			explore: z.string().optional(),
@@ -249,6 +256,7 @@ export const globalSettingsSchema = z.object({
 	 * @default "send"
 	 */
 	enterBehavior: z.enum(["send", "newline"]).optional(),
+	/** @deprecated Read legacy saved values safely; runtime compaction uses the global threshold. */
 	profileThresholds: z.record(z.string(), z.number()).optional(),
 	hasOpenedModeSelector: z.boolean().optional(),
 	lastModeExportPath: z.string().optional(),
@@ -296,22 +304,12 @@ export const SECRET_STATE_KEYS = [
 	"codebaseIndexVertexJsonCredentials",
 ] as const
 
-// Kept as an empty compatibility surface for callers that iterate global
-// secrets. Obsolete GitHub token storage is migrated and deleted by
-// ContextProxy; it is no longer part of the active settings schema.
-export const GLOBAL_SECRET_KEYS = [] as const
-
-// Type for the actual secret storage keys
 type ProviderSecretKey = (typeof SECRET_STATE_KEYS)[number]
-type GlobalSecretKey = (typeof GLOBAL_SECRET_KEYS)[number]
 
-// Type representing all secrets that can be stored
-export type SecretState = Pick<ProviderSettings, Extract<ProviderSecretKey, keyof ProviderSettings>> & {
-	[K in GlobalSecretKey]?: string
-}
+export type SecretState = Pick<ProviderSettings, Extract<ProviderSecretKey, keyof ProviderSettings>>
 
 export const isSecretStateKey = (key: string): key is Keys<SecretState> =>
-	SECRET_STATE_KEYS.includes(key as ProviderSecretKey) || GLOBAL_SECRET_KEYS.includes(key as GlobalSecretKey)
+	SECRET_STATE_KEYS.includes(key as ProviderSecretKey)
 
 /**
  * GlobalState

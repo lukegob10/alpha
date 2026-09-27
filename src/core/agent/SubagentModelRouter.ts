@@ -2,6 +2,7 @@ import {
 	getModelId,
 	type ProviderSettings,
 	type ProviderSettingsWithId,
+	type ReasoningEffortExtended,
 	type SubagentModelRouteState,
 } from "@alpha-code/types"
 
@@ -22,6 +23,8 @@ export interface ResolveSubagentModelRouteOptions {
 	defaultProfileId?: string
 	profileByRole?: Partial<Record<SubagentRole, string>>
 	profileLoader: SubagentProfileLoader
+	requestedModelId?: string
+	requestedReasoningEffort?: ReasoningEffortExtended
 }
 
 export interface ResolvedSubagentModelRoute {
@@ -56,6 +59,10 @@ const settingsFromProfile = (profile: StoredProviderProfile): ProviderSettings =
 	return snapshotProviderSettings(settings)
 }
 
+/** VS Code LM stores its model identity in the selector rather than a generic model-id field. */
+export const getSubagentRouteModelId = (settings: ProviderSettings): string | undefined =>
+	settings.apiProvider === "vscode-lm" ? settings.vsCodeLmModelSelector?.id : getModelId(settings)
+
 async function resolveParentRoute(
 	options: ResolveSubagentModelRouteOptions,
 	source: SubagentModelRouteState["source"],
@@ -83,16 +90,14 @@ async function resolveParentRoute(
 			profileId,
 			profileName: apiConfigName,
 			provider: apiConfiguration.apiProvider,
-			modelId: getModelId(apiConfiguration),
+			modelId: getSubagentRouteModelId(apiConfiguration),
 			...fallback,
 		},
 	}
 }
 
 /** Resolve and snapshot a sub-agent profile without mutating the active provider profile. */
-export async function resolveSubagentModelRoute(
-	options: ResolveSubagentModelRouteOptions,
-): Promise<ResolvedSubagentModelRoute> {
+async function resolveProfileRoute(options: ResolveSubagentModelRouteOptions): Promise<ResolvedSubagentModelRoute> {
 	const roleProfileId = options.profileByRole?.[options.role]
 	const requestedProfileId = roleProfileId || options.defaultProfileId
 	const source: SubagentModelRouteState["source"] = roleProfileId
@@ -132,7 +137,67 @@ export async function resolveSubagentModelRoute(
 			profileId: profile.id,
 			profileName: profile.name,
 			provider: apiConfiguration.apiProvider,
-			modelId: getModelId(apiConfiguration),
+			modelId: getSubagentRouteModelId(apiConfiguration),
 		},
 	}
+}
+
+/** Apply a model-facing override to a captured provider profile without changing its credentials or provider. */
+export function applySubagentSpawnOverrides(
+	base: ResolvedSubagentModelRoute,
+	requestedModelId?: string,
+	requestedReasoningEffort?: ReasoningEffortExtended,
+): ResolvedSubagentModelRoute {
+	if (!requestedModelId && !requestedReasoningEffort) return base
+
+	const apiConfiguration = snapshotProviderSettings(base.apiConfiguration)
+	if (requestedModelId) {
+		switch (apiConfiguration.apiProvider) {
+			case "openai":
+				apiConfiguration.apiModelId = undefined
+				if (apiConfiguration.openAiModelId !== requestedModelId) {
+					apiConfiguration.openAiCustomModelInfo = null
+				}
+				apiConfiguration.openAiModelId = requestedModelId
+				break
+			case "vertex":
+			case "stellar":
+				apiConfiguration.openAiModelId = undefined
+				apiConfiguration.apiModelId = requestedModelId
+				break
+			case "vscode-lm":
+				apiConfiguration.apiModelId = undefined
+				apiConfiguration.openAiModelId = undefined
+				apiConfiguration.vsCodeLmModelSelector = { id: requestedModelId }
+				break
+			default:
+				throw new Error(
+					`Provider ${apiConfiguration.apiProvider ?? "unconfigured"} cannot select a spawn model`,
+				)
+		}
+	}
+	if (requestedReasoningEffort) {
+		apiConfiguration.enableReasoningEffort = requestedReasoningEffort !== "none"
+		apiConfiguration.reasoningEffort = requestedReasoningEffort
+	}
+
+	return {
+		apiConfiguration,
+		apiConfigName: base.apiConfigName,
+		route: {
+			...base.route,
+			source: "spawn",
+			modelId: getSubagentRouteModelId(apiConfiguration),
+			...(requestedModelId ? { requestedModelId } : {}),
+			...(requestedReasoningEffort ? { requestedReasoningEffort } : {}),
+		},
+	}
+}
+
+/** Resolve the profile first, then apply a per-spawn model or effort override. */
+export async function resolveSubagentModelRoute(
+	options: ResolveSubagentModelRouteOptions,
+): Promise<ResolvedSubagentModelRoute> {
+	const base = await resolveProfileRoute(options)
+	return applySubagentSpawnOverrides(base, options.requestedModelId, options.requestedReasoningEffort)
 }

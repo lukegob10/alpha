@@ -296,7 +296,13 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 			return
 		}
 
-		await this.sidebarProvider.postMessageToWebview({ type: "invoke", invoke: "sendMessage", text, images })
+		await this.sidebarProvider.postMessageToWebview({
+			type: "invoke",
+			invoke: "sendMessage",
+			text,
+			images,
+			...(currentTask ? { taskId: currentTask.taskId } : {}),
+		})
 	}
 
 	public deleteQueuedMessage(messageId: string) {

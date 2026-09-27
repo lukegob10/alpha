@@ -26,6 +26,8 @@
 				"src/runEvidence.ts",
 				"src/runFailure.ts",
 				"src/runReasoningUi.ts",
+				"src/runHistoryUi.ts",
+				"src/runTicketsUi.ts",
 				"src/runTest.ts",
 				"src/runUnitTests.ts",
 				"src/campaign/hostTerminationCampaign.ts",

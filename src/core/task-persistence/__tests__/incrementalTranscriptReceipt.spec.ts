@@ -83,6 +83,24 @@ afterEach(async () => {
 })
 
 describe("incremental transcript receipts", () => {
+	it("reloads hook prompt fragments with their original hook run IDs", async () => {
+		const messages: ApiMessage[] = [
+			{
+				role: "user",
+				content: [{ type: "text", text: "Check the tests.\n\nReview the result." }],
+				hook_prompt: {
+					event: "Stop",
+					fragments: [
+						{ hook_run_id: "run-1", text: "Check the tests." },
+						{ hook_run_id: "run-2", text: "Review the result." },
+					],
+				},
+			},
+		]
+		await saveApiMessages({ messages, taskId, globalStoragePath: storagePath })
+		expect(await readApiMessages({ taskId, globalStoragePath: storagePath })).toEqual(messages)
+	})
+
 	it("persists canonical legacy bytes and binds a compact v2 sidecar while preserving reasoning metadata", async () => {
 		const messages: ApiMessage[] = [
 			{

@@ -4,6 +4,7 @@ import path from "path"
 import { isPathWithinRoot } from "../tools/pathSafety"
 
 import { digestValue } from "./StepContext"
+import type { ApprovalMode } from "@alpha-code/types"
 
 export const DEFAULT_TOOL_OUTPUT_LIMIT = 32_000
 
@@ -13,6 +14,7 @@ export interface ToolPolicyCapability {
 	controlFlow: boolean
 	requiresApproval: boolean
 	parallelCommandRead?: boolean
+	parallelMcpRead?: boolean
 }
 
 export type ToolSandboxMode = "workspace-write"
@@ -40,6 +42,8 @@ export interface ToolPolicySnapshot {
 	allowedTools: readonly string[]
 	disabledTools: readonly string[]
 	approval: {
+		/** Missing only on legacy captured snapshots; prompt projection must treat it as Ask. */
+		mode?: ApprovalMode
 		autoApprovalEnabled: boolean
 		liveRevalidation: boolean
 	}
@@ -56,6 +60,8 @@ export interface ToolPolicyInput {
 	visibleTools: readonly string[]
 	allowedTools?: readonly string[]
 	disabledTools?: readonly string[]
+	/** Approval tier captured at the turn boundary. Missing legacy inputs fail closed as Ask. */
+	approvalMode?: ApprovalMode
 	autoApprovalEnabled?: boolean
 	capabilities?: Readonly<Record<string, ToolPolicyCapability>>
 	outputLimits?: Readonly<Record<string, number>>
@@ -119,12 +125,17 @@ export function createToolPolicySnapshot(input: ToolPolicyInput): ToolPolicySnap
 		},
 		cancellation: "abort-process",
 	}
+	const approvalMode =
+		input.approvalMode === "ask" || input.approvalMode === "auto" || input.approvalMode === "bypass"
+			? input.approvalMode
+			: "ask"
 	const summary = formatToolPolicySummary(execution, outputLimits)
 	const normalized = {
 		visibleTools: Object.freeze(visibleTools),
 		allowedTools: Object.freeze(allowedTools),
 		disabledTools: Object.freeze(disabledTools),
 		approval: Object.freeze({
+			mode: approvalMode,
 			autoApprovalEnabled: input.autoApprovalEnabled === true,
 			liveRevalidation: true,
 		}),

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 
@@ -68,6 +69,7 @@ export type ProblemSolvingHostResult = {
 	failureCode?: ProblemSolvingDiagnosticFailureCode | null
 	modelId?: string | null
 	effort?: string | null
+	e2eApprovalPolicySha256?: string | null
 	tracePath?: string | null
 	buildIdentity: string
 	usage: {
@@ -77,6 +79,11 @@ export type ProblemSolvingHostResult = {
 		requests: number | null
 	}
 }
+
+export const problemSolvingPromptVariants = ["baseline", "single-command"] as const
+export type ProblemSolvingPromptVariant = (typeof problemSolvingPromptVariants)[number]
+
+const SINGLE_COMMAND_PROMPT_VARIANT_PATH = path.join("problem-solving", "prompt-variants", "single-command.md")
 
 export type ProblemSolvingExtensionRequest = {
 	workspace: string
@@ -99,6 +106,10 @@ export type ProblemSolvingAttemptReport = {
 	taskDigest: string
 	lane: ProblemSolvingTask["lane"]
 	attemptId: string
+	repetition: number
+	promptVariant: ProblemSolvingPromptVariant
+	promptSha256: string
+	promptVariantInstructionSha256: string | null
 	workspace: string
 	profileDir: string
 	hostVersion: string
@@ -106,6 +117,7 @@ export type ProblemSolvingAttemptReport = {
 	providerMode: "live-copilot" | "scripted"
 	countsAsSolving: boolean
 	model: { id: string | null; effort: string | null }
+	e2eApprovalPolicySha256?: string | null
 	tracePath: string | null
 	usage: ProblemSolvingHostResult["usage"]
 	graderDecision: GraderRunResult["decision"] | null
@@ -177,6 +189,7 @@ export function problemSolvingHostFromReceipts(input: {
 		usage?: { inputTokens?: number | null; outputTokens?: number | null; cost?: number | null }
 		failure?: { category?: string; code?: string }
 		model?: { id?: string; reasoningEffort?: string }
+		e2eApprovalPolicySha256?: string
 	} | null
 	runnerFailure?: string | null
 }): ProblemSolvingHostResult {
@@ -195,11 +208,17 @@ export function problemSolvingHostFromReceipts(input: {
 	}
 	const modelId = input.workflow?.model?.id ?? null
 	const effort = input.workflow?.model?.reasoningEffort ?? null
+	const e2eApprovalPolicySha256 =
+		typeof input.workflow?.e2eApprovalPolicySha256 === "string" &&
+		/^[a-f0-9]{64}$/i.test(input.workflow.e2eApprovalPolicySha256)
+			? input.workflow.e2eApprovalPolicySha256.toLowerCase()
+			: null
 	const base = {
 		phase: "sample" as const,
 		buildIdentity: input.buildIdentity,
 		modelId,
 		effort,
+		e2eApprovalPolicySha256,
 		tracePath: input.tracePath,
 		usage,
 	}
@@ -281,6 +300,9 @@ export async function runProblemSolvingAttempt(options: {
 	taskId: string
 	attemptRoot: string
 	attemptId: string
+	repetition?: number
+	promptVariant?: ProblemSolvingPromptVariant
+	promptVariantInstruction?: string
 	hostVersion: string
 	provider: "live-copilot" | "scripted"
 	modelId?: string
@@ -300,6 +322,25 @@ export async function runProblemSolvingAttempt(options: {
 	await fs.mkdir(profileDir, { recursive: true })
 	await fs.mkdir(artifactsDir, { recursive: true })
 	await fs.cp(fixture, workspace, { recursive: true })
+	const promptPath = path.join(workspace, "prompt.md")
+	let prompt = await fs.readFile(promptPath, "utf8")
+	let promptVariantInstructionSha256: string | null = null
+	const promptVariant = options.promptVariant ?? "baseline"
+	if (!problemSolvingPromptVariants.includes(promptVariant)) {
+		throw new Error(`Unsupported problem-solving prompt variant: ${String(promptVariant)}`)
+	}
+	const repetition = options.repetition ?? 1
+	if (!Number.isSafeInteger(repetition) || repetition < 1)
+		throw new Error("Problem-solving repetition must be positive")
+	if (promptVariant === "single-command") {
+		const instruction =
+			options.promptVariantInstruction ??
+			(await fs.readFile(path.join(options.evalRoot, SINGLE_COMMAND_PROMPT_VARIANT_PATH), "utf8"))
+		promptVariantInstructionSha256 = createHash("sha256").update(instruction).digest("hex")
+		prompt = `${prompt.trimEnd()}\n\n${instruction.trim()}\n`
+		await fs.writeFile(promptPath, prompt, "utf8")
+	}
+	const promptSha256 = createHash("sha256").update(prompt).digest("hex")
 	const request: ProblemSolvingExtensionRequest = {
 		workspace,
 		profileDir,
@@ -311,7 +352,7 @@ export async function runProblemSolvingAttempt(options: {
 		effort: options.effort,
 		hostVersion: options.hostVersion,
 		taskId: task.id,
-		promptPath: path.join(workspace, "prompt.md"),
+		promptPath,
 	}
 	const host = await options.runExtension(request)
 	const diagnostic = host.phase !== "sample" || options.provider !== "live-copilot"
@@ -332,6 +373,10 @@ export async function runProblemSolvingAttempt(options: {
 		taskDigest: task.digest,
 		lane: task.lane,
 		attemptId: options.attemptId,
+		repetition,
+		promptVariant,
+		promptSha256,
+		promptVariantInstructionSha256,
 		workspace,
 		profileDir,
 		hostVersion: options.hostVersion,
@@ -339,6 +384,7 @@ export async function runProblemSolvingAttempt(options: {
 		providerMode: options.provider,
 		countsAsSolving: solved,
 		model: { id: host.modelId ?? options.modelId ?? null, effort: host.effort ?? options.effort ?? null },
+		e2eApprovalPolicySha256: host.e2eApprovalPolicySha256 ?? null,
 		tracePath: host.tracePath ?? null,
 		usage: host.usage,
 		graderDecision: grader?.decision ?? null,

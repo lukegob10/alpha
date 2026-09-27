@@ -46,6 +46,7 @@ export interface WorkflowHost {
 	assertUiTask(taskId: string): Promise<void>
 	inspect(taskId: string, outcome?: "completed" | "blocked"): Promise<WorkflowEvidence>
 	requestsUsed(): number | null
+	e2eApprovalPolicySha256?(): string | null
 	readProblemUsage?(taskId: string): Promise<{
 		inputTokens: number | null
 		outputTokens: number | null
@@ -324,6 +325,7 @@ export async function runWorkflowScenario(
 		result.failure = { category: failure.category, code: failure.code }
 	} finally {
 		result.requestsUsed = host.requestsUsed()
+		result.e2eApprovalPolicySha256 = host.e2eApprovalPolicySha256?.() ?? undefined
 		if (typeof host.readProblemUsage === "function" && result.taskIds.length > 0) {
 			result.usage = await aggregateTaskUsage(host, result.taskIds)
 		}

@@ -29,7 +29,6 @@ import {
 	ArrowLeft,
 	GitCommitVertical,
 	GraduationCap,
-	Bot,
 } from "lucide-react"
 
 import {
@@ -78,7 +77,6 @@ import PromptsSettings from "./PromptsSettings"
 import { SlashCommandsSettings } from "./SlashCommandsSettings"
 import { SkillsSettings } from "./SkillsSettings"
 import { UISettings } from "./UISettings"
-import { AgentsSettings } from "./AgentsSettings"
 import ModesView from "../modes/ModesView"
 import McpView from "../mcp/McpView"
 import { WorktreesView } from "../worktrees/WorktreesView"
@@ -103,7 +101,6 @@ export interface SettingsViewRef {
 
 export const sectionNames = [
 	"providers",
-	"agents",
 	"autoApprove",
 	"slashCommands",
 	"skills",
@@ -178,7 +175,9 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		alwaysAllowWriteOutsideWorkspace,
 		alwaysAllowWriteProtected,
 		autoCondenseContext,
-		autoCondenseContextPercent,
+		autoCondenseContextPercent = 100,
+		autoCondenseContextScope = "full-context",
+		postTurnCondenseContextPercent = 0,
 		enableCheckpoints,
 		checkpointTimeout,
 		experiments,
@@ -207,7 +206,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		maxImageFileSize,
 		maxTotalImageSize,
 		customSupportPrompts,
-		profileThresholds,
 		autoApprovalEnabled,
 		approvalMode,
 		approvalModeBypassAcknowledged,
@@ -221,15 +219,8 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		enterBehavior,
 		maxConcurrentTasks,
 		subagentDefaultApiConfigId,
+		subagentAgentTypes,
 		subagentApiConfigByRole,
-		maxConcurrentSubagents,
-		subagentDelegationPolicy,
-		subagentMaxDepth,
-		subagentRoleTimeoutsMs,
-		subagentMaxInputTokens,
-		subagentMaxOutputTokens,
-		subagentRootTokenBudget,
-		subagentRootCostBudget,
 		includeCurrentTime,
 		includeCurrentCost,
 		maxGitStatusFiles,
@@ -426,8 +417,11 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					allowedMaxCost: allowedMaxCost ?? null,
 					autoCondenseContext,
 					autoCondenseContextPercent,
+					autoCondenseContextScope,
+					postTurnCondenseContextPercent,
 					maxConcurrentTasks: Math.min(Math.max(1, maxConcurrentTasks ?? 3), 50),
 					subagentDefaultApiConfigId: subagentDefaultApiConfigId ?? "",
+					...(subagentAgentTypes !== undefined ? { subagentAgentTypes } : {}),
 					subagentApiConfigByRole: {
 						explore: subagentApiConfigByRole?.explore ?? "",
 						review: subagentApiConfigByRole?.review ?? "",
@@ -467,13 +461,12 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					followupAutoApproveTimeoutMs,
 					includeTaskHistoryInEnhance: includeTaskHistoryInEnhance ?? true,
 					enhancementApiConfigId: enhancementApiConfigId ?? "",
-					reasoningBlockCollapsed: reasoningBlockCollapsed ?? true,
+					reasoningBlockCollapsed: reasoningBlockCollapsed ?? false,
 					enterBehavior: enterBehavior ?? "send",
 					includeCurrentTime: includeCurrentTime ?? true,
 					includeCurrentCost: includeCurrentCost ?? true,
 					maxGitStatusFiles: maxGitStatusFiles ?? 0,
 					showWorktreesInHomeScreen,
-					profileThresholds,
 					experiments,
 					customModePrompts,
 					customInstructions,
@@ -576,7 +569,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	const sections: { id: SectionName; icon: LucideIcon }[] = useMemo(
 		() => [
 			{ id: "providers", icon: Plug },
-			{ id: "agents", icon: Bot },
 			{ id: "modes", icon: Users2 },
 			{ id: "skills", icon: GraduationCap },
 			{ id: "slashCommands", icon: SquareSlash },
@@ -754,26 +746,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 				</div>
 			)}
 
-			{/* Agents Section */}
-			{section === "agents" && (
-				<AgentsSettings
-					profiles={cachedState.listApiConfigMeta ?? []}
-					defaultProfileId={subagentDefaultApiConfigId}
-					profileByRole={subagentApiConfigByRole}
-					managedAgentSettings={{
-						maxConcurrentSubagents,
-						subagentDelegationPolicy,
-						subagentMaxDepth,
-						subagentRoleTimeoutsMs,
-						subagentMaxInputTokens,
-						subagentMaxOutputTokens,
-						subagentRootTokenBudget,
-						subagentRootCostBudget,
-					}}
-					setCachedStateField={setCachedStateField}
-				/>
-			)}
-
 			{/* Auto-Approve Section */}
 			{section === "autoApprove" && (
 				<AutoApproveSettings
@@ -833,14 +805,14 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 				<ContextManagementSettings
 					autoCondenseContext={autoCondenseContext}
 					autoCondenseContextPercent={autoCondenseContextPercent}
-					listApiConfigMeta={listApiConfigMeta ?? []}
+					autoCondenseContextScope={autoCondenseContextScope}
+					postTurnCondenseContextPercent={postTurnCondenseContextPercent}
 					maxOpenTabsContext={maxOpenTabsContext}
 					maxWorkspaceFiles={maxWorkspaceFiles ?? 200}
 					showRooIgnoredFiles={showRooIgnoredFiles}
 					enableSubfolderRules={enableSubfolderRules}
 					maxImageFileSize={maxImageFileSize}
 					maxTotalImageSize={maxTotalImageSize}
-					profileThresholds={profileThresholds}
 					includeDiagnosticMessages={includeDiagnosticMessages}
 					maxDiagnosticMessages={maxDiagnosticMessages}
 					writeDelayMs={writeDelayMs}
@@ -916,7 +888,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			{/* UI Section */}
 			{section === "ui" && (
 				<UISettings
-					reasoningBlockCollapsed={reasoningBlockCollapsed ?? true}
+					reasoningBlockCollapsed={reasoningBlockCollapsed ?? false}
 					enterBehavior={enterBehavior ?? "send"}
 					maxConcurrentTasks={maxConcurrentTasks ?? 3}
 					setCachedStateField={setCachedStateField}

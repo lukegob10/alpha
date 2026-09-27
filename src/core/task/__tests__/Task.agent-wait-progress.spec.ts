@@ -100,9 +100,18 @@ describe.each(["serial", "selective-parallel"] as const)("managed wait progress 
 				postMessageToWebview: async () => {},
 			})
 			host.askApproval = async () => ({ response: "yesButtonClicked" })
+			const mcpName = "mcp--external--operation"
+			const mcpSchema = {
+				type: "function",
+				function: {
+					name: mcpName,
+					description: "external operation",
+					parameters: { type: "object", properties: { id: { type: "number" } } },
+				},
+			} as const
 			const scheduler = new ToolScheduler({
 				executionHost: host,
-				registry: new ToolRegistry(),
+				registry: new ToolRegistry({ nativeTools: [], mcpTools: [mcpSchema] }),
 				mode: "code",
 				executionMode: mode,
 				validateCall: () => {},
@@ -112,8 +121,8 @@ describe.each(["serial", "selective-parallel"] as const)("managed wait progress 
 					{
 						type: "tool_call",
 						id: `mcp-${index}`,
-						name: "use_mcp_tool",
-						arguments: { server_name: "external", tool_name: "operation", arguments: { id } },
+						name: mcpName,
+						arguments: { id },
 					},
 				])
 			for (let index = 0; index < 20; index++) {
@@ -122,9 +131,9 @@ describe.each(["serial", "selective-parallel"] as const)("managed wait progress 
 				expect(result.trustedProgress).toBeUndefined()
 				expect(result.opaqueResultFingerprint).toMatch(/^[a-f0-9]{64}$/)
 			}
-			expect(task.shouldStopRepeatedToolCall("use_mcp_tool", {})).toBe(false)
+			expect(task.shouldStopRepeatedToolCall(mcpName, { id: 19 })).toBe(false)
 			for (let index = 20; index < 24; index++) await run(index, 19)
-			expect(task.shouldStopRepeatedToolCall("use_mcp_tool", {})).toBe(true)
+			expect(task.shouldStopRepeatedToolCall(mcpName, { id: 19 })).toBe(true)
 			expect(callTool).toHaveBeenCalledTimes(24)
 			expect(host.userMessageContent).toHaveLength(24)
 			expect(Reflect.get(task, "userMessageContent")).toEqual([
@@ -213,10 +222,12 @@ describe.each(["serial", "selective-parallel"] as const)("managed wait progress 
 							timedOut: false,
 							source: "managed_agent_mailbox",
 							claimId: `claim-${provider.waitForAgent.mock.calls.length}`,
-							events: [{ eventId: `event-${provider.waitForAgent.mock.calls.length}`, kind: "result" }],
+							eventCount: 1,
+							updatedAgents: [{ taskId: "child", path: "/root/child" }],
 						},
 			)
-			for (let index = 0; index < 20; index++) expect((await run(index)).results[0].status).toBe("success")
+			for (let index = 0; index < 20; index++)
+				expect((await run(index)).results[0]).toMatchObject({ status: "success" })
 			expect(task.shouldStopRepeatedToolCall("wait_agent", {})).toBe(false)
 			expect(
 				detector.recordOutcome({ toolName: "execute_command", kind: "check", status: "success" }),

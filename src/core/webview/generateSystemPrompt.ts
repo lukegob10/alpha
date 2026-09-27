@@ -29,12 +29,14 @@ export const generateSystemPrompt = async (provider: AlphaProvider, message: Web
 
 	const alphaIgnoreInstructions = provider.getCurrentTask()?.alphaIgnoreController?.getInstructions()
 
-	// Create a temporary API handler to check model info for stealth mode.
-	// This avoids relying on an active Alpha instance which might not exist during preview.
+	// Resolve model metadata and ID for the preview without relying on an active Alpha instance.
 	let modelInfo: { isStealthModel?: boolean } | undefined
+	let modelId: string | undefined
 	try {
 		const tempApiHandler = buildApiHandler(apiConfiguration)
-		modelInfo = tempApiHandler.getModel().info
+		const model = tempApiHandler.getModel()
+		modelInfo = model.info
+		modelId = model.id
 	} catch (error) {
 		console.error("Error fetching model info for system prompt preview:", error)
 	}
@@ -62,7 +64,7 @@ export const generateSystemPrompt = async (provider: AlphaProvider, message: Web
 			isStealthModel: modelInfo?.isStealthModel,
 		},
 		undefined, // todoList
-		undefined, // modelId
+		modelId,
 		provider.getSkillsManager(),
 	)
 

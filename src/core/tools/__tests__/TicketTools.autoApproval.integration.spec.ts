@@ -56,6 +56,8 @@ describe("native ticket approvals with persisted storage", () => {
 	}
 
 	it.each([
+		{ label: "Auto mode", state: { approvalMode: "auto" as const }, prompts: 0 },
+		{ label: "Ask mode", state: { approvalMode: "ask" as const }, prompts: 2 },
 		{ label: "both enabled", state: { autoApprovalEnabled: true, alwaysAllowTickets: true }, prompts: 0 },
 		{ label: "category disabled", state: { autoApprovalEnabled: true, alwaysAllowTickets: false }, prompts: 2 },
 		{ label: "master disabled", state: { autoApprovalEnabled: false, alwaysAllowTickets: true }, prompts: 2 },
@@ -118,7 +120,7 @@ describe("native ticket approvals with persisted storage", () => {
 	})
 
 	it("keeps reads approval-free and rejects stale or cross-project writes with auto approval enabled", async () => {
-		const { run, callbacks, manualApproval } = harness({ autoApprovalEnabled: true, alwaysAllowTickets: true })
+		const { run, callbacks, manualApproval } = harness({ approvalMode: "auto" })
 		const original = await store.create({ name: "Original" })
 		const edited = await store.update({
 			id: original.id,
@@ -156,53 +158,63 @@ describe("native ticket approvals with persisted storage", () => {
 		expect((await store.list()).total).toBe(0)
 	})
 
-	it.each([false, true])(
-		"requires manual approval to delete even with ticket auto approval (approved=%s)",
-		async (approved) => {
-			const deleted = await store.create({ name: "Delete only this ticket" })
-			const survivor = await store.create({ name: "Keep this ticket" })
-			const { run, callbacks, manualApproval, task } = harness(
-				{ autoApprovalEnabled: true, alwaysAllowTickets: true },
-				approved,
-			)
-			await run("delete_ticket", { id: deleted.reference!, expectedRevision: deleted.revision })
-			expect(manualApproval).toHaveBeenCalledTimes(1)
-			expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith(
-				expect.objectContaining({
-					status: approved ? "success" : "denied",
-				}),
-			)
-			expect(callbacks.pushToolResult).toHaveBeenCalledTimes(1)
-			expect(await store.read(survivor.id)).toEqual(survivor)
-			if (approved) {
-				await expect(store.read(deleted.id)).rejects.toThrow("not found")
-				expect(JSON.parse(task.say.mock.calls[0][1]).ticketActivity).toMatchObject({
-					operation: "delete",
-					state: "success",
-					name: deleted.name,
-					reference: deleted.reference,
-				})
-			} else {
-				expect(await store.read(deleted.id)).toEqual(deleted)
-				expect(task.say).not.toHaveBeenCalled()
-			}
-			expect((await store.create({ name: "Next ticket" })).reference).toBe("PRO-03")
-		},
-	)
+	it("deletes the requested project ticket in Auto without a manual prompt", async () => {
+		const deleted = await store.create({ name: "Delete only this ticket" })
+		const survivor = await store.create({ name: "Keep this ticket" })
+		const { run, callbacks, manualApproval, task } = harness({ approvalMode: "auto" })
+		await run("delete_ticket", { id: deleted.reference!, expectedRevision: deleted.revision })
+		expect(manualApproval).not.toHaveBeenCalled()
+		expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ status: "success" }),
+		)
+		await expect(store.read(deleted.id)).rejects.toThrow("not found")
+		expect(await store.read(survivor.id)).toEqual(survivor)
+		expect(JSON.parse(task.say.mock.calls[0][1]).ticketActivity).toMatchObject({
+			operation: "delete",
+			state: "success",
+			name: deleted.name,
+			reference: deleted.reference,
+		})
+		expect((await store.create({ name: "Next ticket" })).reference).toBe("PRO-03")
+	})
+
+	it.each([false, true])("requires manual approval to delete in Ask mode (approved=%s)", async (approved) => {
+		const deleted = await store.create({ name: "Delete only this ticket" })
+		const survivor = await store.create({ name: "Keep this ticket" })
+		const { run, callbacks, manualApproval, task } = harness({ approvalMode: "ask" }, approved)
+		await run("delete_ticket", { id: deleted.reference!, expectedRevision: deleted.revision })
+		expect(manualApproval).toHaveBeenCalledTimes(1)
+		expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				status: approved ? "success" : "denied",
+			}),
+		)
+		expect(callbacks.pushToolResult).toHaveBeenCalledTimes(1)
+		expect(await store.read(survivor.id)).toEqual(survivor)
+		if (approved) {
+			await expect(store.read(deleted.id)).rejects.toThrow("not found")
+			expect(JSON.parse(task.say.mock.calls[0][1]).ticketActivity).toMatchObject({
+				operation: "delete",
+				state: "success",
+				name: deleted.name,
+				reference: deleted.reference,
+			})
+		} else {
+			expect(await store.read(deleted.id)).toEqual(deleted)
+			expect(task.say).not.toHaveBeenCalled()
+		}
+		expect((await store.create({ name: "Next ticket" })).reference).toBe("PRO-03")
+	})
 
 	it("preserves an external edit made while deletion approval is pending", async () => {
 		const original = await store.create({ name: "Original" })
-		const { run, callbacks, task } = harness(
-			{ autoApprovalEnabled: true, alwaysAllowTickets: true },
-			true,
-			async () => {
-				await store.update({
-					id: original.id,
-					expectedRevision: original.revision,
-					name: "Edited during approval",
-				})
-			},
-		)
+		const { run, callbacks, task } = harness({ approvalMode: "ask" }, true, async () => {
+			await store.update({
+				id: original.id,
+				expectedRevision: original.revision,
+				name: "Edited during approval",
+			})
+		})
 		await run("delete_ticket", { id: original.id, expectedRevision: original.revision })
 		expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "error" })
 		expect(callbacks.pushToolResult).toHaveBeenCalledTimes(1)
@@ -213,11 +225,22 @@ describe("native ticket approvals with persisted storage", () => {
 	it("cancellation during deletion approval preserves the ticket", async () => {
 		const ticket = await store.create({ name: "Keep cancelled deletion" })
 		const controller = new AbortController()
-		const { run, callbacks, task } = harness({ autoApprovalEnabled: true, alwaysAllowTickets: true }, true, () =>
+		const { run, callbacks, task } = harness({ approvalMode: "ask" }, true, () => controller.abort())
+		await run("delete_ticket", { id: ticket.id, expectedRevision: ticket.revision }, controller.signal)
+		expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "cancelled" })
+		expect(await store.read(ticket.id)).toEqual(ticket)
+		expect(task.say).not.toHaveBeenCalled()
+	})
+
+	it("cancellation after Auto approves deletion preserves the ticket", async () => {
+		const ticket = await store.create({ name: "Keep cancelled Auto deletion" })
+		const controller = new AbortController()
+		const { run, callbacks, manualApproval, task } = harness({ approvalMode: "auto" }, false, () =>
 			controller.abort(),
 		)
 		await run("delete_ticket", { id: ticket.id, expectedRevision: ticket.revision }, controller.signal)
 		expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "cancelled" })
+		expect(manualApproval).not.toHaveBeenCalled()
 		expect(await store.read(ticket.id)).toEqual(ticket)
 		expect(task.say).not.toHaveBeenCalled()
 	})

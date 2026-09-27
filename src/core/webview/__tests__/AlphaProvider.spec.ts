@@ -598,11 +598,12 @@ describe("AlphaProvider", () => {
 	})
 
 	test("resolveWebviewView sets up webview correctly in development mode even if local server is not running", async () => {
+		const developmentContext = { ...mockContext, extensionMode: vscode.ExtensionMode.Development }
 		provider = new AlphaProvider(
-			{ ...mockContext, extensionMode: vscode.ExtensionMode.Development },
+			developmentContext,
 			mockOutputChannel,
 			"sidebar",
-			new ContextProxy(mockContext),
+			new ContextProxy(developmentContext),
 		)
 		;(axios.get as any).mockRejectedValueOnce(new Error("Network error"))
 
@@ -614,6 +615,7 @@ describe("AlphaProvider", () => {
 		})
 
 		expect(mockWebviewView.webview.html).toContain("<!DOCTYPE html>")
+		expect(vscode.window.showErrorMessage).toHaveBeenCalled()
 
 		// Verify Content Security Policy contains the necessary PostHog domains
 		expect(mockWebviewView.webview.html).toContain("connect-src vscode-webview://test-csp-source")
@@ -625,6 +627,26 @@ describe("AlphaProvider", () => {
 		expect(scriptSrcMatch![0]).toContain("'nonce-")
 		// Verify wasm-unsafe-eval is present for Shiki syntax highlighting
 		expect(scriptSrcMatch![0]).toContain("'wasm-unsafe-eval'")
+	})
+
+	test("resolveWebviewView loads nonce'd Vite module scripts when the local server is running", async () => {
+		const developmentContext = { ...mockContext, extensionMode: vscode.ExtensionMode.Development }
+		provider = new AlphaProvider(
+			developmentContext,
+			mockOutputChannel,
+			"sidebar",
+			new ContextProxy(developmentContext),
+		)
+		;(axios.get as any).mockResolvedValueOnce({ status: 200 })
+
+		await provider.resolveWebviewView(mockWebviewView)
+
+		const html = mockWebviewView.webview.html
+		expect(html).toMatch(
+			/<script nonce="[A-Za-z0-9]+" type="module" src="http:\/\/127\.0\.0\.1:\d+\/src\/index\.tsx"><\/script>/,
+		)
+		expect(html.match(/script-src[^;]*;/)?.[0]).toContain("'strict-dynamic'")
+		expect(html).not.toMatch(/<script type="module" src=/)
 	})
 
 	test("postMessageToWebview sends message to webview", async () => {
@@ -1880,6 +1902,22 @@ describe("AlphaProvider", () => {
 		expect(updateGlobalStateSpy).toHaveBeenCalledWith("autoCondenseContextPercent", 75)
 		expect(mockContext.globalState.update).toHaveBeenCalledWith("autoCondenseContextPercent", 75)
 		expect(mockPostMessage).toHaveBeenCalled()
+	})
+
+	test("persists compaction scope and post-turn threshold settings", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
+		await messageHandler({
+			type: "updateSettings",
+			updatedSettings: {
+				autoCondenseContextScope: "after-prefix",
+				postTurnCondenseContextPercent: 80,
+			},
+		})
+		expect(updateGlobalStateSpy).toHaveBeenCalledWith("autoCondenseContextScope", "after-prefix")
+		expect(updateGlobalStateSpy).toHaveBeenCalledWith("postTurnCondenseContextPercent", 80)
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("autoCondenseContextScope", "after-prefix")
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("postTurnCondenseContextPercent", 80)
 	})
 
 	it.each(["ask", "debug", "orchestrator"])("rejects a retired %s selection from the webview", async (mode) => {

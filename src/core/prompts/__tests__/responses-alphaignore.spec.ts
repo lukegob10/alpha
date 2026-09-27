@@ -3,6 +3,15 @@
 import type { Mock } from "vitest"
 
 import { formatResponse } from "../responses"
+
+describe("formatResponse.noToolsUsed", () => {
+	it("asks for missing user input directly without naming a retired question tool", () => {
+		const reminder = formatResponse.noToolsUsed()
+
+		expect(reminder).toContain("If you require additional information from the user, ask them directly.")
+		expect(reminder).not.toContain("ask_followup_question")
+	})
+})
 import { AlphaIgnoreController, LOCK_TEXT_SYMBOL } from "../../ignore/AlphaIgnoreController"
 import { fileExistsAtPath } from "../../../utils/fs"
 import * as fs from "fs/promises"
@@ -190,7 +199,7 @@ describe("RooIgnore Response Formatting", () => {
 
 			// Should contain truncation message (case-insensitive check)
 			expect(result).toContain("File list truncated")
-			expect(result).toMatch(/use list_files on specific subdirectories/i)
+			expect(result).toMatch(/bounded exec_command scoped to a specific workspace directory/i)
 		})
 
 		/**

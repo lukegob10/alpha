@@ -87,6 +87,238 @@ describe("ticket editor", () => {
 				})
 		})
 	})
+	it("changes status only in the reader and preserves its value after a conflict", async () => {
+		vi.mocked(vscode.getState).mockReturnValue({ project: "project" })
+		render(<TicketsView />)
+		const row = await screen.findByRole("button", { name: /Original/ })
+		expect(within(row.closest("tr")!).queryByRole("combobox")).not.toBeInTheDocument()
+		fireEvent.click(row)
+		await screen.findByRole("article", { name: "Original" })
+		const select = screen.getByRole("combobox", { name: "statusOf" })
+		fireEvent.change(select, { target: { value: "canceled" } })
+		expect(requests("update")[0].operation).toMatchObject({
+			input: { id: ticket.id, expectedRevision: "v1", status: "canceled" },
+		})
+		expect(select).toBeDisabled()
+		reply({ type: "ticketResponse", requestId: requests("update")[0].requestId, error: "Ticket changed" })
+		await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Ticket changed"))
+		expect(select).toHaveValue("backlog")
+	})
+	it("persists a priority change and expanded type through reader reload", async () => {
+		render(<TicketsView />)
+		fireEvent.change(screen.getByRole("combobox", { name: "priority" }), { target: { value: "high" } })
+		const priorityRequest = requests("update")[0]
+		expect(priorityRequest.operation).toMatchObject({
+			input: { id: ticket.id, expectedRevision: "v1", priority: "high" },
+		})
+		reply({
+			type: "ticketResponse",
+			requestId: priorityRequest.requestId,
+			result: { ...ticket, priority: "high", revision: "v2" },
+		})
+		await waitFor(() => expect(screen.getByRole("combobox", { name: "priority" })).toHaveValue("high"))
+		fireEvent.change(screen.getByRole("combobox", { name: "type" }), { target: { value: "performance" } })
+		const typeRequest = requests("update")[1]
+		expect(typeRequest.operation).toMatchObject({ input: { expectedRevision: "v2", type: "performance" } })
+		const saved = { ...ticket, priority: "high", type: "performance", revision: "v3" }
+		reply({ type: "ticketResponse", requestId: typeRequest.requestId, result: saved })
+		await waitFor(() => expect(screen.getByRole("combobox", { name: "type" })).toHaveValue("performance"))
+		const previousPost = vi.mocked(vscode.postTicketMessage).getMockImplementation()
+		let readReconciled = false
+		vi.mocked(vscode.postTicketMessage).mockImplementation((message) => {
+			if (message.type === "ticketRequest" && message.operation.action === "read") {
+				queueMicrotask(() => {
+					reply({ type: "ticketResponse", requestId: message.requestId, result: saved })
+					readReconciled = true
+				})
+			} else previousPost?.(message)
+		})
+		reply({ type: "ticketChanged", project: "project" })
+		await waitFor(() => expect(readReconciled).toBe(true))
+		expect(screen.queryByText("changed")).not.toBeInTheDocument()
+		expect(screen.getByRole("combobox", { name: "priority" })).toHaveValue("high")
+		expect(screen.getByRole("combobox", { name: "type" })).toHaveValue("performance")
+	})
+	it("ignores stale disk reads when an inline update succeeds after a notification", async () => {
+		render(<TicketsView />)
+		fireEvent.change(screen.getByRole("combobox", { name: "priority" }), { target: { value: "high" } })
+		const update = requests("update")[0]
+		const saved = { ...ticket, priority: "high" as const, revision: "v2" }
+		const previousPost = vi.mocked(vscode.postTicketMessage).getMockImplementation()
+		vi.mocked(vscode.postTicketMessage).mockImplementation((message) => {
+			if (!(message.type === "ticketRequest" && message.operation.action === "read")) previousPost?.(message)
+		})
+		reply({ type: "ticketChanged", project: "project" })
+		await waitFor(() => expect(requests("read")).toHaveLength(1))
+		reply({ type: "ticketResponse", requestId: update.requestId, result: saved })
+		await waitFor(() => expect(requests("read")).toHaveLength(2))
+		reply({ type: "ticketResponse", requestId: requests("read")[0].requestId, result: ticket })
+		await act(async () => {})
+		expect(screen.queryByText("changed")).not.toBeInTheDocument()
+		reply({ type: "ticketResponse", requestId: requests("read")[1].requestId, result: saved })
+		await waitFor(() => expect(screen.queryByText("changed")).not.toBeInTheDocument())
+		expect(screen.getByRole("combobox", { name: "priority" })).toHaveValue("high")
+	})
+	it("uses unfiltered relations and sends the selected linked conversation", async () => {
+		vi.mocked(vscode.getState).mockReturnValue({
+			project: "project",
+			ticket: { ...ticket, linkedTaskIds: ["run-1", "run-2"] },
+			editing: false,
+			query: "unrelated",
+			typeFilter: "bug",
+		})
+		render(<TicketsView />)
+		await waitFor(() => expect(requests("relations")).toHaveLength(1))
+		expect(requests("relations")[0].operation).toEqual({ action: "relations", id: ticket.id })
+		reply({
+			type: "ticketResponse",
+			requestId: requests("relations")[0].requestId,
+			result: {
+				children: [
+					{
+						...ticket,
+						id: "2cf4023f-a15b-47d8-971b-7da490ff043f",
+						name: "Child outside filter",
+						parentId: ticket.id,
+						childCount: 0,
+						completedChildCount: 0,
+					},
+				],
+			},
+		})
+		expect(await screen.findByRole("button", { name: /Child outside filter/ })).toBeVisible()
+		fireEvent.click(screen.getAllByRole("button", { name: "openLinkedConversation" })[1])
+		expect(requests("openLinkedTask")[0].operation).toEqual({
+			action: "openLinkedTask",
+			id: ticket.id,
+			taskId: "run-2",
+		})
+	})
+	it("refreshes parent progress after a child status change in the reader", async () => {
+		vi.mocked(vscode.getState).mockReturnValue({ project: "project" })
+		const parent = {
+			...ticket,
+			id: "2cf4023f-a15b-47d8-971b-7da490ff043f",
+			name: "Parent",
+			childCount: 1,
+			completedChildCount: 0,
+		}
+		let child: Ticket & { childCount: number; completedChildCount: number } = {
+			...ticket,
+			id: "3df51340-b26c-48e9-a82c-8eb5a1001540",
+			name: "Child",
+			parentId: parent.id,
+			status: "in-progress",
+			childCount: 0,
+			completedChildCount: 0,
+		}
+		vi.mocked(vscode.postTicketMessage).mockImplementation((message) => {
+			announceProjects(message)
+			if (message.type === "ticketRequest" && message.operation.action === "list")
+				queueMicrotask(() =>
+					reply({
+						type: "ticketResponse",
+						requestId: message.requestId,
+						result: {
+							tickets: [{ ...parent, completedChildCount: child.status === "complete" ? 1 : 0 }, child],
+							total: 2,
+							invalidFiles: [],
+						},
+					}),
+				)
+			if (message.type === "ticketRequest" && message.operation.action === "read")
+				queueMicrotask(() => reply({ type: "ticketResponse", requestId: message.requestId, result: child }))
+		})
+		render(<TicketsView />)
+		const childRow = await screen.findByRole("button", { name: /^Child/ })
+		expect(within(screen.getByRole("button", { name: /^Parent/ })).getByText("0/1")).toBeVisible()
+		fireEvent.click(childRow)
+		await screen.findByRole("article", { name: "Child" })
+		fireEvent.change(screen.getByRole("combobox", { name: "statusOf" }), { target: { value: "complete" } })
+		child = { ...child, status: "complete", revision: "v2" }
+		reply({ type: "ticketResponse", requestId: requests("update")[0].requestId, result: child })
+		fireEvent.click(within(screen.getByRole("navigation")).getByRole("button", { name: "title" }))
+		await waitFor(() =>
+			expect(within(screen.getByRole("button", { name: /^Parent/ })).getByText("1/1")).toBeVisible(),
+		)
+	})
+	it("updates status from the reader without entering edit mode", async () => {
+		render(<TicketsView />)
+		const select = screen.getByRole("combobox", { name: "statusOf" })
+		fireEvent.change(select, { target: { value: "canceled" } })
+		expect(requests("update")[0].operation).toMatchObject({
+			input: { id: ticket.id, expectedRevision: "v1", status: "canceled" },
+		})
+		expect(select).toBeDisabled()
+		reply({
+			type: "ticketResponse",
+			requestId: requests("update")[0].requestId,
+			result: { ...ticket, status: "canceled", revision: "v2" },
+		})
+		await waitFor(() => expect(screen.getByRole("combobox", { name: "statusOf" })).toHaveValue("canceled"))
+		expect(screen.queryByRole("button", { name: "work" })).not.toBeInTheDocument()
+	})
+	it("allows Complete in the editor with an empty Implementation summary field", () => {
+		render(<TicketsView />)
+		fireEvent.click(screen.getByRole("button", { name: "edit" }))
+		fireEvent.change(screen.getByLabelText("status"), { target: { value: "complete" } })
+		expect(screen.getByRole("textbox", { name: "Implementation summary" })).not.toBeRequired()
+		fireEvent.click(screen.getByRole("button", { name: "save" }))
+		expect(requests("update")[0].operation).toMatchObject({
+			input: { status: "complete", implementationSummary: "" },
+		})
+	})
+	it("opens a new child draft from a ticket and creates it under that ticket", () => {
+		render(<TicketsView />)
+		fireEvent.click(screen.getByRole("button", { name: "addChild" }))
+		expect(screen.getByRole("combobox", { name: "parentTicket" })).toHaveValue(ticket.id)
+		fireEvent.change(screen.getByRole("textbox", { name: "name" }), { target: { value: "Child task" } })
+		fireEvent.click(screen.getByRole("button", { name: "save" }))
+		expect(requests("create")[0].operation).toMatchObject({ input: { name: "Child task", parentId: ticket.id } })
+	})
+	it("lets an editor choose a parent ticket and saves its relationship", async () => {
+		const parent = { ...ticket, id: "2cf4023f-a15b-47d8-971b-7da490ff043f", name: "Parent", reference: "PM-02" }
+		vi.mocked(vscode.postTicketMessage).mockImplementation((message) => {
+			announceProjects(message)
+			if (message.type === "ticketRequest" && message.operation.action === "list")
+				queueMicrotask(() =>
+					reply({
+						type: "ticketResponse",
+						requestId: message.requestId,
+						result: { tickets: [ticket, parent], total: 2, invalidFiles: [] },
+					}),
+				)
+		})
+		render(<TicketsView />)
+		fireEvent.click(screen.getByRole("button", { name: "edit" }))
+		const parentSelect = await screen.findByRole("combobox", { name: "parentTicket" })
+		await waitFor(() => expect(within(parentSelect).getByRole("option", { name: /PM-02/ })).toBeInTheDocument())
+		fireEvent.change(parentSelect, { target: { value: parent.id } })
+		expect(parentSelect).toHaveValue(parent.id)
+		expect(screen.getByRole("button", { name: "save" })).toBeEnabled()
+		fireEvent.click(screen.getByRole("button", { name: "save" }))
+		await waitFor(() => expect(requests("update")).toHaveLength(1))
+		expect(requests("update")[0].operation).toMatchObject({
+			input: { parentId: parent.id, expectedRevision: "v1" },
+		})
+	})
+	it("reports parent search failures while preserving the current editor", async () => {
+		vi.mocked(vscode.postTicketMessage).mockImplementation((message) => {
+			announceProjects(message)
+			if (message.type === "ticketRequest" && message.operation.action === "list")
+				queueMicrotask(() =>
+					reply({ type: "ticketResponse", requestId: message.requestId, error: "Search unavailable" }),
+				)
+		})
+		render(<TicketsView />)
+		fireEvent.click(screen.getByRole("button", { name: "edit" }))
+		await waitFor(() =>
+			expect(
+				screen.getAllByRole("alert").some((alert) => alert.textContent?.includes("Search unavailable")),
+			).toBe(true),
+		)
+		expect(screen.getByRole("textbox", { name: "name" })).toHaveValue("Original")
+	})
 	it("confirms the saved ticket identity and cancels deletion without sending a request", async () => {
 		vi.mocked(vscode.getState).mockReturnValue({
 			project: "project",
@@ -309,32 +541,47 @@ describe("ticket editor", () => {
 		})
 		render(<TicketsView />)
 		await screen.findByRole("button", { name: /Active/ })
-		expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
-			"in-progress1",
-			"backlog1",
-			"complete1",
-		])
+		expect(
+			screen
+				.getAllByRole("button", { name: /^(in-progress|backlog|complete) \d+$/ })
+				.map((group) => group.textContent),
+		).toEqual(["in-progress1", "backlog1", "complete1"])
 	})
 	it("starts expanded on reload while preserving manual collapses through ticket navigation", async () => {
 		vi.mocked(vscode.getState).mockReturnValue({
 			project: "project",
-			collapsedStatuses: ["in-progress", "backlog", "complete"],
+			collapsedStatuses: ["in-progress", "backlog"],
+		})
+		vi.mocked(vscode.postTicketMessage).mockImplementation((message) => {
+			announceProjects(message)
+			if (message.type === "ticketRequest" && message.operation.action === "list")
+				queueMicrotask(() =>
+					reply({
+						type: "ticketResponse",
+						requestId: message.requestId,
+						result: {
+							tickets: [ticket, { ...ticket, id: "b", name: "Active", status: "in-progress" }],
+							total: 2,
+							invalidFiles: [],
+						},
+					}),
+				)
+			if (message.type === "ticketRequest" && message.operation.action === "read")
+				queueMicrotask(() => reply({ type: "ticketResponse", requestId: message.requestId, result: ticket }))
 		})
 		const view = render(<TicketsView />)
 		const row = await screen.findByRole("button", { name: /Original/ })
-		for (const status of ["in-progress", "backlog", "complete"]) {
+		for (const status of ["in-progress", "backlog"]) {
 			expect(screen.getByRole("button", { name: new RegExp(`^${status}`) })).toHaveAttribute(
 				"aria-expanded",
 				"true",
 			)
 		}
-		fireEvent.click(screen.getByRole("button", { name: /^complete/ }))
 		fireEvent.click(screen.getByRole("button", { name: /^in-progress/ }))
 		fireEvent.click(row)
 		await screen.findByRole("article", { name: "Original" })
 		fireEvent.click(within(screen.getByRole("navigation")).getByRole("button", { name: "title" }))
 		expect(screen.getByRole("button", { name: /^in-progress/ })).toHaveAttribute("aria-expanded", "false")
-		expect(screen.getByRole("button", { name: /^complete/ })).toHaveAttribute("aria-expanded", "false")
 		expect(screen.getByRole("button", { name: /^backlog/ })).toHaveAttribute("aria-expanded", "true")
 		fireEvent.click(screen.getByRole("button", { name: /^backlog/ }))
 		const saved = vi.mocked(vscode.setState).mock.calls.at(-1)![0]
@@ -342,13 +589,14 @@ describe("ticket editor", () => {
 		view.unmount()
 		vi.mocked(vscode.getState).mockReturnValue(saved)
 		render(<TicketsView />)
-		for (const status of ["in-progress", "backlog", "complete"]) {
+		await screen.findByRole("button", { name: /Original/ })
+		for (const status of ["in-progress", "backlog"]) {
 			expect(screen.getByRole("button", { name: new RegExp(`^${status}`) })).toHaveAttribute(
 				"aria-expanded",
 				"true",
 			)
 		}
-		expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(3)
+		expect(screen.getAllByRole("button", { name: /^(in-progress|backlog) \d+$/ })).toHaveLength(2)
 		expect(await screen.findByRole("button", { name: /Original/ })).toBeVisible()
 	})
 
@@ -376,10 +624,12 @@ describe("ticket editor", () => {
 		render(<TicketsView />)
 		fireEvent.click(await screen.findByRole("button", { name: /PM-01.*Original/ }))
 		await screen.findByRole("heading", { name: "Original" })
-		expect(screen.getByRole("navigation")).toHaveTextContent("PM-01 · Original")
+		expect(screen.getByRole("navigation")).toHaveTextContent("PM-01")
 		expect(screen.getByRole("article")).toHaveTextContent("PM-01")
 		fireEvent.click(screen.getByRole("button", { name: "edit" }))
-		expect(screen.getByText("PM-01")).toBeInTheDocument()
+		expect(
+			within(screen.getByRole("textbox", { name: "name" }).closest("form")!).getByText("PM-01"),
+		).toBeInTheDocument()
 		expect(screen.queryByText(ticket.id)).not.toBeInTheDocument()
 	})
 
@@ -389,8 +639,17 @@ describe("ticket editor", () => {
 		reply({ type: "ticketProjects", projects: [{ id: "project", name: "Project" }], language: "en" })
 		fireEvent.change(screen.getByLabelText("name"), { target: { value: "My draft" } })
 		fireEvent.change(screen.getByLabelText("type"), { target: { value: "improvement" } })
+		const previousPost = vi.mocked(vscode.postTicketMessage).getMockImplementation()
+		const external = { ...ticket, name: "External edit", revision: "v2" }
+		vi.mocked(vscode.postTicketMessage).mockImplementation((message) => {
+			if (message.type === "ticketRequest" && message.operation.action === "read")
+				queueMicrotask(() => reply({ type: "ticketResponse", requestId: message.requestId, result: external }))
+			else previousPost?.(message)
+		})
 		reply({ type: "ticketChanged", project: "project" })
+		await screen.findByText("changed")
 		expect(screen.getByLabelText("name")).toHaveValue("My draft")
+		expect(screen.getByLabelText("type")).toHaveValue("improvement")
 		fireEvent.click(screen.getByText("save"))
 		const request = vi
 			.mocked(vscode.postTicketMessage)
@@ -407,7 +666,9 @@ describe("ticket editor", () => {
 
 	it("saves and removes a classification and displays the saved type in properties", async () => {
 		render(<TicketsView />)
-		expect(within(screen.getByRole("complementary", { name: "properties" })).getByText("noType")).toBeVisible()
+		expect(
+			within(screen.getByRole("region", { name: "properties" })).getByRole("combobox", { name: "type" }),
+		).toHaveValue("")
 		fireEvent.click(screen.getByRole("button", { name: "edit" }))
 		expect(screen.getByRole("button", { name: "save" })).toBeDisabled()
 		fireEvent.change(screen.getByLabelText("type"), { target: { value: "bug" } })
@@ -419,7 +680,7 @@ describe("ticket editor", () => {
 			result: { ...ticket, type: "bug", revision: "v2" },
 		})
 		await screen.findByRole("article")
-		expect(within(screen.getByRole("complementary")).getByText("types.bug")).toBeVisible()
+		expect(within(screen.getByRole("complementary")).getByRole("combobox", { name: "type" })).toHaveValue("bug")
 		fireEvent.click(screen.getByRole("button", { name: "edit" }))
 		expect(screen.getByLabelText("type")).toHaveValue("bug")
 		fireEvent.change(screen.getByLabelText("type"), { target: { value: "" } })
@@ -431,7 +692,7 @@ describe("ticket editor", () => {
 			result: { ...ticket, type: null, revision: "v3" },
 		})
 		await screen.findByRole("article")
-		expect(within(screen.getByRole("complementary")).getByText("noType")).toBeVisible()
+		expect(within(screen.getByRole("complementary")).getByRole("combobox", { name: "type" })).toHaveValue("")
 	})
 
 	it("includes the type when creating a ticket", () => {
@@ -536,30 +797,36 @@ describe("ticket editor", () => {
 		expect(screen.getAllByRole("checkbox")).toHaveLength(2)
 		expect(screen.getAllByRole("checkbox")[0]).toBeChecked()
 		expect(screen.getAllByRole("checkbox")[0]).toBeDisabled()
-		expect(screen.getByRole("heading", { name: "Activity" })).toBeVisible()
+		expect(screen.getByRole("heading", { name: "Implementation summary" })).toBeVisible()
 	})
 
 	it.each(["backlog", "in-progress", "complete"] as const)(
-		"shows a blank Activity section before editing a %s ticket",
+		"shows a blank Implementation summary section before editing a %s ticket",
 		(status) => {
 			vi.mocked(vscode.getState).mockReturnValue({ project: "project", ticket: { ...ticket, status } })
 			render(<TicketsView />)
-			expect(screen.getByRole("region", { name: "Activity" })).toHaveTextContent(/^Activity$/)
-			expect(screen.queryByRole("textbox", { name: "Activity" })).not.toBeInTheDocument()
+			expect(screen.getByRole("region", { name: "Implementation summary" })).toHaveTextContent(
+				/^Implementation summary$/,
+			)
+			expect(screen.queryByRole("textbox", { name: "Implementation summary" })).not.toBeInTheDocument()
 			fireEvent.click(screen.getByRole("button", { name: "edit" }))
-			expect(screen.getByRole("textbox", { name: "Activity" })).toHaveValue("")
+			expect(screen.getByRole("textbox", { name: "Implementation summary" })).toHaveValue("")
 		},
 	)
 
-	it("renders existing implementation notes as Activity and preserves them in the editor", () => {
+	it("renders existing implementation notes as Implementation summary and preserves them in the editor", () => {
 		vi.mocked(vscode.getState).mockReturnValue({
 			project: "project",
 			ticket: { ...ticket, implementationSummary: "Existing **implementation notes**" },
 		})
 		render(<TicketsView />)
-		expect(screen.getByRole("region", { name: "Activity" })).toHaveTextContent("Existing implementation notes")
+		expect(screen.getByRole("region", { name: "Implementation summary" })).toHaveTextContent(
+			"Existing implementation notes",
+		)
 		fireEvent.click(screen.getByRole("button", { name: "edit" }))
-		expect(screen.getByRole("textbox", { name: "Activity" })).toHaveValue("Existing **implementation notes**")
+		expect(screen.getByRole("textbox", { name: "Implementation summary" })).toHaveValue(
+			"Existing **implementation notes**",
+		)
 	})
 
 	it("edits in the same view and returns to the rendered ticket after saving", async () => {
@@ -597,14 +864,14 @@ describe("ticket editor", () => {
 		vi.mocked(vscode.getState).mockReturnValue({ project: "project" })
 		const { container } = render(<TicketsView />)
 		const row = await screen.findByRole("button", { name: /Original/ })
-		expect(screen.getByRole("region", { name: "title" })).toBeInTheDocument()
+		expect(screen.getByRole("region", { name: "allTickets" })).toBeInTheDocument()
 		expect(screen.queryByRole("article")).not.toBeInTheDocument()
 		fireEvent.change(screen.getByRole("textbox", { name: "search" }), { target: { value: "Original" } })
 		const page = container.querySelector<HTMLDivElement>(".tickets-page")!
 		page.scrollTop = 180
 		fireEvent.click(row)
 		await screen.findByRole("heading", { name: "Original" })
-		expect(screen.queryByRole("region", { name: "title" })).not.toBeInTheDocument()
+		expect(screen.queryByRole("region", { name: "allTickets" })).not.toBeInTheDocument()
 		expect(screen.queryByRole("textbox", { name: "search" })).not.toBeInTheDocument()
 		expect(page.scrollTop).toBe(0)
 		const breadcrumb = screen.getByRole("navigation", { name: "navigation" })
@@ -648,7 +915,7 @@ describe("ticket editor", () => {
 			within(screen.getByRole("navigation", { name: "navigation" })).getByRole("button", { name: "Original" }),
 		)
 		expect(screen.getByRole("article", { name: "Original" })).toBeInTheDocument()
-		expect(screen.queryByRole("region", { name: "title" })).not.toBeInTheDocument()
+		expect(screen.queryByRole("region", { name: "allTickets" })).not.toBeInTheDocument()
 		expect(screen.queryByRole("textbox", { name: "name" })).not.toBeInTheDocument()
 	})
 

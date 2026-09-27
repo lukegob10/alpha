@@ -219,6 +219,11 @@ export function hasToolCallResultIntegrity(messages: ApiMessage[]): boolean {
 
 export const DEFAULT_RECENT_TAIL_TOKENS = 16_384
 
+const MAX_PRESERVED_USER_MESSAGE_TOKENS = 20_000
+const USER_MESSAGE_RECORD_PATTERN = /^<user_message>[\s\S]*<\/user_message>$/i
+const USER_MESSAGE_TRUNCATION_GAP = "\n\n[... middle content omitted during compaction ...]\n\n"
+const USER_MESSAGE_TRUNCATION_NOTE = "[This user message was shortened to fit the compaction budget.]"
+
 const MAX_CONDENSE_STREAM_ERROR_DETAIL_LENGTH = 512
 
 /** Keep provider stream failures useful without copying untrusted payloads into task history. */
@@ -375,6 +380,12 @@ export function getLogicalStepStarts(messages: ApiMessage[]): number[] {
 			current.isSummary ||
 			previous.isSummary ||
 			(current.role === "user" && previous.role === "assistant") ||
+			// Carried user instructions precede the exact tail after compaction.
+			// A later direct user turn must be eligible for exact retention on its own.
+			(current.role === "user" &&
+				previous.role === "user" &&
+				!hasResult(previous) &&
+				getVerbatimUserTextBlocks(current).length > 0) ||
 			// A correction can accompany any of several result records. Keep it
 			// through transaction completion and the assistant response it guides.
 			(current.role === "assistant" && hasResult(previous) && !pendingUserInstruction)
@@ -423,6 +434,136 @@ export async function selectRecentTail(
 		startIndex = start
 	}
 	return { startIndex, tokens, newestStepTooLarge }
+}
+
+function getVerbatimUserTextBlocks(message: ApiMessage): Anthropic.Messages.TextBlockParam[] {
+	if (message.role !== "user" || message.isSummary || message.isTruncationMarker) return []
+	const content =
+		typeof message.content === "string" ? [{ type: "text" as const, text: message.content }] : message.content
+	if (!Array.isArray(content)) return []
+	return content.filter(
+		(block): block is Anthropic.Messages.TextBlockParam =>
+			block.type === "text" && USER_MESSAGE_RECORD_PATTERN.test(block.text),
+	)
+}
+
+function createVerbatimUserMessage(
+	source: ApiMessage,
+	textBlocks: Anthropic.Messages.TextBlockParam[],
+	isTruncated = false,
+): ApiMessage {
+	const message: ApiMessage = {
+		...source,
+		role: "user",
+		content: [
+			...textBlocks.map((block) => ({ ...block })),
+			...(isTruncated ? [{ type: "text" as const, text: USER_MESSAGE_TRUNCATION_NOTE }] : []),
+		],
+	}
+	delete message.condenseId
+	delete message.condenseParent
+	delete message.isSummary
+	delete message.isTruncationMarker
+	delete message.truncationId
+	delete message.truncationParent
+	return message
+}
+
+async function truncateVerbatimUserMessage(
+	source: ApiMessage,
+	textBlock: Anthropic.Messages.TextBlockParam,
+	tokenBudget: number,
+	apiHandler: ApiHandler,
+	countContext: TokenCountContext,
+): Promise<{ message?: ApiMessage; tokens: number }> {
+	const match = /^<user_message>([\s\S]*)<\/user_message>$/i.exec(textBlock.text)
+	if (!match || tokenBudget <= 0) return { tokens: 0 }
+	const body = Array.from(match[1])
+	if (body.length < 2) return { tokens: 0 }
+	let low = 1
+	let high = body.length - 1
+	let bestMessage: ApiMessage | undefined
+	let bestTokens = 0
+
+	while (low <= high) {
+		const keptCharacters = Math.floor((low + high) / 2)
+		const prefixLength = Math.ceil(keptCharacters / 2)
+		const suffixLength = Math.floor(keptCharacters / 2)
+		const content = `${body.slice(0, prefixLength).join("")}${USER_MESSAGE_TRUNCATION_GAP}${
+			suffixLength > 0 ? body.slice(-suffixLength).join("") : ""
+		}`
+		const truncatedBlock = { ...textBlock, text: `<user_message>${content}</user_message>` }
+		const candidate = createVerbatimUserMessage(source, [truncatedBlock], true)
+		const tokens = await countHistoryTokens([candidate], apiHandler, countContext)
+		if (!Number.isFinite(tokens) || tokens < 0) return { tokens: Number.NaN }
+		if (tokens <= tokenBudget) {
+			bestMessage = candidate
+			bestTokens = tokens
+			low = keptCharacters + 1
+		} else {
+			high = keptCharacters - 1
+		}
+	}
+
+	return { message: bestMessage, tokens: bestTokens }
+}
+
+type VerbatimUserMessageSelection = { messages: ApiMessage[]; tokens: number }
+
+/** Retain recent direct user records verbatim without copying tool or generated user content. */
+async function selectVerbatimUserMessages(
+	prefixMessages: ApiMessage[],
+	tailMessages: ApiMessage[],
+	tokenBudget: number,
+	apiHandler: ApiHandler,
+	countContext: TokenCountContext,
+): Promise<VerbatimUserMessageSelection> {
+	const seenText = new Set(
+		tailMessages.flatMap((message) => getVerbatimUserTextBlocks(message).map((block) => block.text)),
+	)
+	const selected: ApiMessage[] = []
+	let tokens = 0
+
+	for (let index = prefixMessages.length - 1; index >= 0; index--) {
+		const source = prefixMessages[index]
+		const textBlocks = getVerbatimUserTextBlocks(source).filter((block) => {
+			if (seenText.has(block.text)) return false
+			seenText.add(block.text)
+			return true
+		})
+		if (textBlocks.length === 0) continue
+
+		const candidate = createVerbatimUserMessage(source, textBlocks)
+		const messageTokens = await countHistoryTokens([candidate], apiHandler, countContext)
+		if (!Number.isFinite(messageTokens) || messageTokens < 0) {
+			return { messages: [], tokens: Number.NaN }
+		}
+		if (tokens + messageTokens > tokenBudget) {
+			// Newer user records win. If the next record is too large, retain a
+			// clearly marked middle-truncated excerpt within the remaining budget,
+			// then stop before older records.
+			if (textBlocks.length !== 1) break
+			const truncated = await truncateVerbatimUserMessage(
+				source,
+				textBlocks[0],
+				tokenBudget - tokens,
+				apiHandler,
+				countContext,
+			)
+			if (!Number.isFinite(truncated.tokens) || truncated.tokens < 0) {
+				return { messages: [], tokens: Number.NaN }
+			}
+			if (!truncated.message) break
+			selected.push(truncated.message)
+			tokens += truncated.tokens
+			break
+		}
+
+		selected.push(candidate)
+		tokens += messageTokens
+	}
+
+	return { messages: selected.reverse(), tokens }
 }
 
 export async function countContextTokens(
@@ -685,7 +826,7 @@ export const getToolFreeRequestMetadata = getToolFreeMetadata
  *
  * The older active prefix is summarized while a bounded recent suffix stays exact:
  * - The summary becomes a user message (not assistant)
- * - Post-condense, the model sees the summary followed by complete recent steps
+ * - Post-condense, the model sees the summary, bounded verbatim user instructions, and complete recent steps
  * - Older messages stay stored and are tagged with condenseParent for rewind
  * - <command> blocks from the original task are preserved across condensings
  * - File context (folded code definitions) can be preserved for continuity
@@ -869,10 +1010,40 @@ ${commandBlocks}
 	}
 	if (messagesToSummarize.length === 1 && messagesToSummarize[0].isSummary && canLeaveUnchanged) return unchanged()
 
+	// Preserve a bounded set of direct user instructions verbatim. Reserve at
+	// least a quarter of the available history budget for the generated summary;
+	// the copied user records share the remaining budget with the exact recent tail.
+	const minimumSummaryBudget = Math.floor(availableHistoryTokens / 4)
+	const verbatimUserBudget = Math.max(
+		0,
+		Math.min(
+			MAX_PRESERVED_USER_MESSAGE_TOKENS,
+			Math.floor(availableHistoryTokens / 4),
+			availableHistoryTokens - tail.tokens - minimumSummaryBudget,
+		),
+	)
+	const verbatimUserSelection = await selectVerbatimUserMessages(
+		messagesToSummarize,
+		retainedMessages,
+		verbatimUserBudget,
+		apiHandler,
+		countContext,
+	)
+	if (!Number.isFinite(verbatimUserSelection.tokens) || verbatimUserSelection.tokens < 0) {
+		return finish(
+			{ ...response, error: t("common:errors.condense_failed"), status: "no_progress" },
+			"invalid_candidate_count",
+		)
+	}
+	const verbatimUserMessages = verbatimUserSelection.messages
+
 	// Use custom prompt if provided and non-empty, otherwise use the default CONDENSE prompt
 	// This respects user's custom condensing prompt setting
 	const condenseInstructions = customCondensingPrompt?.trim() || supportPrompt.default.CONDENSE
-	const summaryBudgetTokens = Math.max(0, Math.floor(availableHistoryTokens - tail.tokens))
+	const summaryBudgetTokens = Math.max(
+		0,
+		Math.floor(availableHistoryTokens - tail.tokens - verbatimUserSelection.tokens),
+	)
 	diagnostic.summaryBudgetTokens = summaryBudgetTokens
 
 	const finalRequestMessage: Anthropic.MessageParam = {
@@ -1059,7 +1230,7 @@ ${commandBlocks}
 					if (section.trim()) {
 						const candidate = [...summaryContent, { type: "text" as const, text: section }]
 						const tokens = await countContextTokens(
-							[{ role: "user", content: candidate }, ...retainedMessages],
+							[{ role: "user", content: candidate }, ...verbatimUserMessages, ...retainedMessages],
 							apiHandler,
 							systemPrompt,
 							metadata,
@@ -1099,7 +1270,7 @@ ${commandBlocks}
 	}
 
 	const newContextTokens = await countContextTokens(
-		[summaryMessage, ...retainedMessages],
+		[summaryMessage, ...verbatimUserMessages, ...retainedMessages],
 		apiHandler,
 		systemPrompt,
 		metadata,
@@ -1131,7 +1302,7 @@ ${commandBlocks}
 	const newMessages = messages.map((msg) =>
 		prefix.has(msg) && !msg.condenseParent ? { ...msg, condenseParent: condenseId } : msg,
 	)
-	newMessages.splice(insertIndex, 0, summaryMessage)
+	newMessages.splice(insertIndex, 0, summaryMessage, ...verbatimUserMessages)
 	return finish(
 		{
 			messages: newMessages,

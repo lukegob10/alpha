@@ -27,11 +27,12 @@ const metadata: ApiHandlerCreateMessageMetadata = {
 	parallelToolCalls: true,
 }
 
-function capturedInput(): CreateStepContextInput {
+function capturedInput(approvalMode: "ask" | "auto" | "bypass" = "ask"): CreateStepContextInput {
 	const messages: ApiMessage[] = [{ role: "user", content: "Inspect the workspace" }]
 	const policy = createToolPolicySnapshot({
 		visibleTools: ["read_file"],
 		allowedTools: ["read_file"],
+		approvalMode,
 		capabilities: {
 			read_file: { concurrency: "parallel", sideEffects: "none", controlFlow: false, requiresApproval: false },
 		},
@@ -129,6 +130,38 @@ describe("AgentStepContextBuilder", () => {
 		expect(retry.metadata.stepContextDigest).toBe(first.metadata.stepContextDigest)
 		expect(retry.runtime.getHandler()).toBe(handler)
 		expect(retry.context.instructions).toEqual(first.context.instructions)
+	})
+
+	it.each(["ask", "auto", "bypass"] as const)("retains captured %s approval mode across retries", (mode) => {
+		const first = new AgentStepContextBuilder().build(capturedInput(mode))
+		const retry = new AgentStepContextBuilder().retry(first)
+
+		expect(first.context.policy.approval.mode).toBe(mode)
+		expect(retry.context.policy.approval.mode).toBe(mode)
+		expect(retry.metadata.stepContextPolicyDigest).toBe(first.metadata.stepContextPolicyDigest)
+	})
+
+	it("preserves ordered instruction fragments through immutable retry and compaction snapshots", () => {
+		const input = capturedInput()
+		const instructionFragments: NonNullable<CreateStepContextInput["instructions"]["instructionFragments"]> = [
+			{ role: "developer", origin: "built-in-mode-instructions", content: "Use code mode." },
+			{ role: "user", origin: "global-custom-instructions", content: "Prefer small edits." },
+		]
+		input.instructions.instructionFragments = instructionFragments
+		const builder = new AgentStepContextBuilder()
+		const first = builder.build(input)
+		const expectedFragments = structuredClone(instructionFragments)
+		instructionFragments[0].content = "changed after capture"
+
+		const retry = builder.retry(first)
+		const compaction = builder.compaction(first, { compaction: { action: "summary", attempted: true } })
+
+		expect(first.context.instructions.instructionFragments).toEqual(expectedFragments)
+		expect(retry.context.instructions.instructionFragments).toEqual(expectedFragments)
+		expect(compaction.context.instructions.instructionFragments).toEqual(expectedFragments)
+		expect(retry.metadata.stepContextInstructionDigest).toBe(first.metadata.stepContextInstructionDigest)
+		expect(Object.isFrozen(first.context.instructions.instructionFragments)).toBe(true)
+		expect(Object.isFrozen(first.context.instructions.instructionFragments?.[0])).toBe(true)
 	})
 
 	it("derives deterministic child contexts with explicit ancestry", () => {

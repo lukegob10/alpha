@@ -28,6 +28,17 @@ const makeProviderHarness = (
 	availableCapacity = 2,
 	routingSettings: {
 		subagentDefaultApiConfigId?: string
+		subagentAgentTypes?: Record<
+			string,
+			{
+				description: string
+				role?: "default" | "explore" | "review" | "worker"
+				apiConfigId?: string
+				model?: string
+				reasoningEffort?: "low" | "medium" | "high"
+				developerInstructions?: string
+			}
+		>
 		subagentApiConfigByRole?: { explore?: string; review?: string }
 		maxConcurrentSubagents?: number
 		subagentDelegationPolicy?: "explicit-only" | "proactive"
@@ -154,6 +165,9 @@ const makeParent = () => ({
 	getTaskLifetimeCancellationSignal: vi.fn(() => new AbortController().signal),
 	beginAgentWait: vi.fn(() => ({ signal: new AbortController().signal, dispose: vi.fn() })),
 	forgetWaitAgentResultClaim: vi.fn(),
+	hasRetainedWaitAgentResultClaim: vi.fn(() => false),
+	hasDurablyPersistedWaitAgentClaim: vi.fn(() => false),
+	stageWaitAgentNotifications: vi.fn(),
 	getCommandExecutionEvidence: vi.fn(() => []),
 	getSubagentFileWriteScope: vi.fn(() => []),
 	emit: vi.fn(),
@@ -228,6 +242,144 @@ describe("AlphaProvider root lifecycle ownership", () => {
 })
 
 describe("AlphaProvider bounded sub-agent preparation", () => {
+	it.each(["auto", "bypass"] as const)(
+		"launches a default %s sub-agent without an approval dialog",
+		async (approvalMode) => {
+			const provider = makeProviderHarness(2, { approvalMode })
+			const prepared = await provider.prepareSubagentGroup(makeParent() as any, [
+				{ objective: "Inspect the workspace", agent_kind: "explore" },
+			])
+			expect(prepared.requiresExplicitApproval).toBe(false)
+			const manifest = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id).contextManifest
+			expect(manifest.orchestration.delegationPolicy.authorization).toBe("session-policy")
+		},
+	)
+
+	it("accepts a historical flat spawn request and retains its explicit approval", async () => {
+		const provider = makeProviderHarness(2, { approvalMode: "ask", subagentDelegationPolicy: "explicit-only" })
+		const parent = makeParent()
+		const prepared = await provider.prepareSubagentGroup(parent as any, {
+			task_name: "legacy_explore",
+			objective: "Inspect the opened workspace only.",
+			agent_kind: "explore",
+			write_scope: null,
+			expected_output: null,
+		})
+		expect(prepared.group.agents[0].role).toBe("explore")
+		expect(prepared.requiresExplicitApproval).toBe(true)
+	})
+
+	it("applies a named agent type while letting the spawn model override its configured model", async () => {
+		const provider = makeProviderHarness(
+			2,
+			{
+				subagentDefaultApiConfigId: "research-profile",
+				subagentApiConfigByRole: { explore: "research-profile" },
+				subagentAgentTypes: {
+					researcher: {
+						description: "Investigates code paths",
+						role: "explore",
+						apiConfigId: "research-profile",
+						model: "configured-model",
+						reasoningEffort: "medium",
+						developerInstructions: "Cite the inspected source paths.",
+					},
+				},
+			},
+			[
+				{
+					id: "research-profile",
+					name: "Research profile",
+					apiProvider: "openai",
+					openAiModelId: "original-model",
+				},
+			],
+		)
+		const parent = makeParent()
+		const prepared = await provider.prepareSubagentGroup(parent as any, {
+			task_name: "research_agent",
+			message: "Inspect the agent loop",
+			agent_type: "researcher",
+			model: "spawn-model",
+			reasoning_effort: "high",
+		})
+		expect(prepared.group.agents[0]).toMatchObject({
+			role: "explore",
+			modelRoute: {
+				source: "spawn",
+				profileName: "Parent",
+				modelId: "spawn-model",
+				requestedModelId: "spawn-model",
+				requestedReasoningEffort: "high",
+			},
+		})
+		expect(prepared.group.agents[0].modelRoute?.profileId).not.toBe("research-profile")
+		const descriptor = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id)
+		expect(descriptor.inheritedInstructions).toContain("Cite the inspected source paths.")
+		expect(descriptor.contextManifest.instructions.sources).toEqual(
+			expect.arrayContaining([expect.objectContaining({ kind: "agent-type" })]),
+		)
+	})
+
+	it("rejects an unconfigured named agent type before reserving capacity", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		await expect(
+			provider.prepareSubagentGroup(parent as any, {
+				task_name: "unknown_agent",
+				message: "Inspect the agent loop",
+				agent_type: "unconfigured",
+			}),
+		).rejects.toThrow("unknown agent_type 'unconfigured'")
+		expect(parent.upsertSubagentGroup).not.toHaveBeenCalled()
+	})
+
+	it("turns a Codex default spawn into an approved editing worker with inherited provider overrides", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const validateScope = vi.spyOn(managedSubagentWorktreeService, "validateScope").mockResolvedValue({
+			gitRoot: parent.cwd,
+			logicalWorkspace: parent.cwd,
+			logicalWorkspaceFromRoot: "",
+			writeScope: ["."],
+			gitRelativeScope: ["."],
+			fileWriteScope: [],
+			gitRelativeFileScope: [],
+		})
+
+		const prepared = await provider.prepareSubagentGroup(parent as any, {
+			task_name: "implement_change",
+			message: "Implement the requested change",
+			model: "gpt-6-sol",
+			reasoning_effort: "high",
+		})
+
+		expect(validateScope).toHaveBeenCalledWith(parent.cwd, ["."], { allowWorkspaceRoot: true })
+		expect(prepared.group.agents[0]).toMatchObject({
+			role: "worker",
+			writeScope: ["."],
+			modelRoute: {
+				source: "spawn",
+				provider: "openai",
+				modelId: "gpt-6-sol",
+				requestedReasoningEffort: "high",
+			},
+		})
+		expect(prepared.requiresExplicitApproval).toBe(false)
+	})
+
+	it("uses the read-only default role for a Codex spawn in Plan mode", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		parent.getTaskMode.mockResolvedValue("architect")
+		const prepared = await provider.prepareSubagentGroup(parent as any, {
+			task_name: "inspect_change",
+			message: "Inspect the proposed change",
+		})
+		expect(prepared.group.agents[0].role).toBe("explore")
+		expect(prepared.envelopes[0].scope.allowedPaths).toBeUndefined()
+	})
+
 	it("permits read-only Explore and Review agents in Plan mode", async () => {
 		const provider = makeProviderHarness(2)
 		const parent = makeParent()
@@ -651,7 +803,7 @@ If complete, use attempt_completion.
 			instructions: manifest.instructions,
 			skills: manifest.skills,
 			orchestration: {
-				delegationPolicy: { authorization: "group-approval", explicitUserRequest: true },
+				delegationPolicy: { authorization: "session-policy", explicitUserRequest: false },
 			},
 		})
 		expect(childPrompt).toContain("Objective: Review the selected context")
@@ -778,7 +930,7 @@ If complete, use attempt_completion.
 		).rejects.toThrow('Sub-agent task_name "backend_review" is already in use')
 	})
 
-	it("snapshots different role profiles without changing the parent configuration", async () => {
+	it("ignores persisted role and default profiles and inherits the parent route", async () => {
 		const provider = makeProviderHarness(
 			2,
 			{
@@ -811,15 +963,45 @@ If complete, use attempt_completion.
 		])
 
 		expect(prepared.envelopes.map((envelope) => envelope.modelRoute)).toEqual([
-			expect.objectContaining({ provider: "openai", model: "fast/model" }),
-			expect.objectContaining({ provider: "vertex", model: "review-model" }),
+			expect.objectContaining({ provider: "openai", model: "alpha-model" }),
+			expect.objectContaining({ provider: "openai", model: "alpha-model" }),
 		])
 		expect(prepared.group.agents.map((agent) => agent.modelRoute)).toEqual([
-			expect.objectContaining({ source: "role", profileId: "explore-id", profileName: "Fast Explorer" }),
-			expect.objectContaining({ source: "role", profileId: "review-id", profileName: "Deep Reviewer" }),
+			expect.objectContaining({ source: "parent", profileName: "Parent", modelId: "alpha-model" }),
+			expect.objectContaining({ source: "parent", profileName: "Parent", modelId: "alpha-model" }),
 		])
 		expect(JSON.stringify(prepared.group)).not.toContain("secret")
 		expect(parent.apiConfiguration).toEqual(originalParentConfiguration)
+	})
+
+	it("ignores stale role routes when restoring a manifest-less child", async () => {
+		const provider = makeProviderHarness(
+			2,
+			{
+				subagentDefaultApiConfigId: "default-id",
+				subagentApiConfigByRole: { explore: "explore-id" },
+			},
+			[
+				{ id: "default-id", name: "Legacy default", apiProvider: "vertex", apiModelId: "old-default" },
+				{ id: "explore-id", name: "Legacy explorer", apiProvider: "openai", openAiModelId: "old-explore" },
+			],
+		)
+		const parent = makeParent()
+
+		const restored = await (provider as any).restoreCapturedSubagentModelRoute(
+			parent,
+			"explore",
+			{ id: "legacy-child" },
+			undefined,
+		)
+
+		expect(restored.route).toMatchObject({
+			source: "parent",
+			profileName: "Parent",
+			provider: "openai",
+			modelId: "alpha-model",
+		})
+		expect(restored.apiConfiguration).toMatchObject({ apiProvider: "openai", openAiModelId: "alpha-model" })
 	})
 
 	it("clears deleted profile references without disturbing another role", async () => {
@@ -837,7 +1019,7 @@ If complete, use attempt_completion.
 		})
 	})
 
-	it("launches concurrent children with their frozen role configurations", async () => {
+	it("launches concurrent children with inherited parent configuration despite saved role routes", async () => {
 		const provider = makeProviderHarness(
 			2,
 			{ subagentApiConfigByRole: { explore: "explore-id", review: "review-id" } },
@@ -913,14 +1095,14 @@ If complete, use attempt_completion.
 		expect(result.status).toBe("completed")
 		expect(launchOptions).toHaveLength(2)
 		expect(launchOptions.find((options) => options.subagentRole === "explore")).toMatchObject({
-			taskApiConfigName: "Fast Explorer",
-			apiConfiguration: { openAiApiKey: "explore-secret", openAiModelId: "fast/model" },
-			subagentModelRoute: { profileId: "explore-id", modelId: "fast/model" },
+			taskApiConfigName: "Parent",
+			apiConfiguration: { openAiModelId: "alpha-model" },
+			subagentModelRoute: { source: "parent", modelId: "alpha-model" },
 		})
 		expect(launchOptions.find((options) => options.subagentRole === "review")).toMatchObject({
-			taskApiConfigName: "Deep Reviewer",
-			apiConfiguration: { vertexJsonCredentials: "review-secret", apiModelId: "review-model" },
-			subagentModelRoute: { profileId: "review-id", modelId: "review-model" },
+			taskApiConfigName: "Parent",
+			apiConfiguration: { openAiModelId: "alpha-model" },
+			subagentModelRoute: { source: "parent", modelId: "alpha-model" },
 		})
 		expect(parent.apiConfiguration).toEqual(parentSnapshot)
 	})
@@ -1570,7 +1752,7 @@ If complete, use attempt_completion.
 			alwaysAllowSubagents: true,
 			commandApproval: {
 				algorithm: "sha256-salted-prefix-v1",
-				allowAll: false,
+				allowAll: true,
 				denyAll: false,
 				allowed: [expect.objectContaining({ prefixLength: "git diff".length })],
 				denied: [expect.objectContaining({ prefixLength: "git push".length })],
@@ -1711,7 +1893,7 @@ If complete, use attempt_completion.
 		})
 	})
 
-	it("requires a human spawn click for explicit-only in Auto or Full Access without opt-in", async () => {
+	it("uses the Auto or Full Access session grant for explicit-only delegation", async () => {
 		for (const approvalMode of ["auto", "bypass"] as const) {
 			const provider = makeProviderHarness(2, {
 				approvalMode,
@@ -1722,13 +1904,13 @@ If complete, use attempt_completion.
 				{ objective: "Inspect without a spawn dialog", agent_kind: "explore" },
 			])
 			const manifest = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id).contextManifest
-			expect(prepared.requiresExplicitApproval).toBe(true)
+			expect(prepared.requiresExplicitApproval).toBe(false)
 			expect(manifest.orchestration.delegationPolicy).toMatchObject({
 				policy: "explicit-only",
-				authorization: "pending-approval",
+				authorization: "session-policy",
 				explicitUserRequest: false,
 			})
-			expect(finalizedSubagentContextManifestSchema.safeParse(manifest).success).toBe(false)
+			expect(finalizedSubagentContextManifestSchema.safeParse(manifest).success).toBe(true)
 		}
 	})
 
@@ -2402,7 +2584,11 @@ If complete, use attempt_completion.
 
 		const mailbox = (await provider.waitForAgent(parent as any, 10_000)) as any
 		expect(mailbox.timedOut).toBe(false)
-		expect(mailbox.events.some((event: any) => event.name === "agent_completed")).toBe(true)
+		expect(mailbox.eventCount).toBeGreaterThan(0)
+		expect(parent.stageWaitAgentNotifications).toHaveBeenCalledWith(
+			mailbox.claimId,
+			expect.arrayContaining([expect.objectContaining({ name: "agent_completed" })]),
+		)
 
 		const followup = (await provider.followupAgentTask(
 			parent as any,
@@ -2463,6 +2649,7 @@ If complete, use attempt_completion.
 		expect(handle.nickname).toBe("backend_review")
 		expect(handle.path).toBe("/root/backend-review")
 		expect(result).toMatchObject({ taskId: handle.taskId, path: handle.path, delivery: "queued" })
+		expect(JSON.stringify(result)).not.toContain("Prioritize cancellation ordering")
 		expect((provider as any).subagentDescriptors.get(handle.taskId).pendingSteerMessage).toMatchObject({
 			message: "Prioritize cancellation ordering",
 		})
@@ -2506,6 +2693,65 @@ If complete, use attempt_completion.
 			}),
 		).toEqual([])
 		expect((provider as any).subagentDescriptors.get(handle.taskId).pendingSteerMessage).toBeUndefined()
+	})
+
+	it("rechecks the child after mailbox persistence when launch drains before the event commits", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ task_name: "startup_race", objective: "Receive the queued parent message", agent_kind: "review" },
+		])
+		const records = await (provider as any).ensurePreparedSubagentControlRecords(parent, prepared)
+		const record = records.get(prepared.envelopes[0].id)
+		assert.ok(record)
+
+		let beginAppend!: () => void
+		const appendStarted = new Promise<void>((resolve) => {
+			beginAppend = resolve
+		})
+		let finishAppend!: () => void
+		const appendGate = new Promise<void>((resolve) => {
+			finishAppend = resolve
+		})
+		const store = (provider as any).agentControlStore as AgentControlStore
+		const appendEvent = store.appendEvent.bind(store)
+		vi.spyOn(store, "appendEvent").mockImplementation(async (input) => {
+			if (input.name === "parent_message") {
+				beginAppend()
+				await appendGate
+			}
+			return appendEvent(input)
+		})
+
+		let persist!: () => Promise<void>
+		const child = {
+			canAcceptSteerMessage: () => true,
+			steerUserMessage: vi.fn(
+				async (_message: string, _images: string[] | undefined, onPersisted: () => Promise<void>) => {
+					persist = onPersisted
+				},
+			),
+		}
+		;(provider as any).taskSessions.getTask = (taskId: string) =>
+			taskId === prepared.envelopes[0].id ? undefined : undefined
+		const sending = provider.sendMessageToAgent(parent as any, "startup_race", "STEERING_MESSAGE")
+		await appendStarted
+
+		// The child registers and performs its one pre-launch drain while the
+		// sender is waiting for the mailbox's durable append to finish.
+		;(provider as any).taskSessions.getTask = (taskId: string) =>
+			taskId === prepared.envelopes[0].id ? child : undefined
+		await (provider as any).deliverQueuedAgentMessage(child, record)
+		expect(child.steerUserMessage).not.toHaveBeenCalled()
+
+		finishAppend()
+		await expect(sending).resolves.toMatchObject({ delivery: "delivered", sequence: 1 })
+		expect(child.steerUserMessage).toHaveBeenCalledOnce()
+		expect(child.steerUserMessage).toHaveBeenCalledWith("STEERING_MESSAGE", undefined, expect.any(Function))
+		expect(store.getUnacknowledgedMailboxEntries(record.taskId, { rootTaskId: record.rootTaskId })).toHaveLength(1)
+
+		await persist()
+		expect(store.getUnacknowledgedMailboxEntries(record.taskId, { rootTaskId: record.rootTaskId })).toEqual([])
 	})
 
 	it("acknowledges live steering only after the child reports durable persistence", async () => {
@@ -2628,8 +2874,8 @@ If complete, use attempt_completion.
 				delegationPolicyProvenance: {
 					policy: "explicit-only",
 					source: "default",
-					authorization: "group-approval",
-					explicitUserRequest: true,
+					authorization: "session-policy",
+					explicitUserRequest: false,
 				},
 				resultAvailable: true,
 			}),
@@ -2762,7 +3008,7 @@ If complete, use attempt_completion.
 		expect(parent.beginAgentWait).not.toHaveBeenCalled()
 	})
 
-	it.each([NaN, Infinity, -1, 9_999, 300_001, 10_000.5])(
+	it.each([NaN, Infinity, -1, 9_999, 3_600_001, 10_000.5])(
 		"rejects an invalid host wait deadline %s before reading the mailbox",
 		async (timeoutMs) => {
 			const provider = makeProviderHarness()
@@ -2835,7 +3081,7 @@ If complete, use attempt_completion.
 		},
 	)
 
-	it("collects a child result after 95 seconds with one default wait and no timer leak", async () => {
+	it("collects a child result after 95 seconds across default waits with no timer leak", async () => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
 		try {
 			const provider = makeProviderHarness()
@@ -2883,10 +3129,13 @@ If complete, use attempt_completion.
 			}
 			expect(result).toMatchObject({
 				timedOut: false,
-				events: [expect.objectContaining({ name: "agent_completed" })],
+				eventCount: 1,
 			})
-			expect(waitCalls).toHaveBeenCalledTimes(1)
-			expect(dispose).toHaveBeenCalledTimes(1)
+			expect(parent.stageWaitAgentNotifications).toHaveBeenCalledWith((result as any).claimId, [
+				expect.objectContaining({ name: "agent_completed" }),
+			])
+			expect(waitCalls).toHaveBeenCalledTimes(4)
+			expect(dispose).toHaveBeenCalledTimes(4)
 			expect(vi.getTimerCount()).toBe(0)
 		} finally {
 			vi.useRealTimers()
@@ -2934,19 +3183,19 @@ If complete, use attempt_completion.
 				name: "parent_message",
 				payload: { message: "CANCEL_NOW" },
 			})
+			request.abort(Object.assign(new Error("Steered by parent"), { name: "SteerRequestInterruptError" }))
 
 			await expect(waiting).resolves.toMatchObject({
 				timedOut: false,
-				events: [
-					expect.objectContaining({
-						senderTaskId: root.taskId,
-						recipientTaskId: child.taskId,
-						kind: "message",
-						name: "parent_message",
-						payload: { message: "CANCEL_NOW" },
-					}),
-				],
+				interrupted: true,
+				reason: "steered_input",
 			})
+			expect(childTask.stageWaitAgentNotifications).not.toHaveBeenCalled()
+			expect(
+				(provider as any).agentControlStore.getUnacknowledgedMailboxEntries(child.taskId, {
+					rootTaskId: root.rootTaskId,
+				}),
+			).toEqual([expect.objectContaining({ senderTaskId: root.taskId, name: "parent_message" })])
 			expect(dispose).toHaveBeenCalledOnce()
 		} finally {
 			request.abort(new Error("test cleanup"))
@@ -3026,15 +3275,17 @@ If complete, use attempt_completion.
 		const waited = (await provider.waitForAgent(childTask as any, 10_000)) as any
 		expect(waited).toMatchObject({
 			timedOut: false,
-			events: [
-				expect.objectContaining({
-					senderTaskId: grandchild.taskId,
-					recipientTaskId: child.taskId,
-					kind: "message",
-					name: "agent_progress",
-				}),
-			],
+			eventCount: 1,
+			updatedAgents: [{ taskId: grandchild.taskId, path: grandchild.path }],
 		})
+		expect(childTask.stageWaitAgentNotifications).toHaveBeenCalledWith(waited.claimId, [
+			expect.objectContaining({
+				senderTaskId: grandchild.taskId,
+				recipientTaskId: child.taskId,
+				kind: "message",
+				name: "agent_progress",
+			}),
+		])
 		expect(
 			(provider as any).agentControlStore.readMailbox(child.taskId, {
 				rootTaskId: root.rootTaskId,
@@ -3159,8 +3410,11 @@ If complete, use attempt_completion.
 			timedOut: false,
 			source: "managed_agent_mailbox",
 			claimId: expect.any(String),
-			events: [expect.objectContaining({ name: "first_update" })],
+			eventCount: 1,
 		})
+		expect(parent.stageWaitAgentNotifications).toHaveBeenCalledWith(expect.any(String), [
+			expect.objectContaining({ name: "first_update" }),
+		])
 		expect(
 			store
 				.getUnacknowledgedMailboxEntries(root.taskId, { rootTaskId: root.rootTaskId })
@@ -3226,16 +3480,18 @@ If complete, use attempt_completion.
 			timedOut: false,
 			source: "managed_agent_mailbox",
 			claimId: expect.any(String),
-			events: [
-				expect.objectContaining({
-					kind: "result",
-					name: "agent_completed",
-					senderTaskId: child.taskId,
-					senderPath: child.path,
-					payload: expect.objectContaining({ taskId: child.taskId, status: "completed" }),
-				}),
-			],
+			eventCount: 1,
+			updatedAgents: [{ taskId: child.taskId, path: child.path }],
 		})
+		expect(waited).not.toHaveProperty("events")
+		expect(parent.stageWaitAgentNotifications).toHaveBeenCalledWith(waited.claimId, [
+			expect.objectContaining({
+				kind: "result",
+				name: "agent_completed",
+				senderTaskId: child.taskId,
+				payload: expect.objectContaining({ status: "completed" }),
+			}),
+		])
 		expect(
 			(provider as any).agentControlStore.getUnacknowledgedMailboxEntries(root.taskId, {
 				rootTaskId: root.rootTaskId,
@@ -3250,6 +3506,40 @@ If complete, use attempt_completion.
 				kinds: ["result"],
 			}),
 		).toEqual([])
+	})
+
+	it("bounds one wait summary and leaves later mailbox entries for the next claim", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const root = await (provider as any).ensureAgentControlRoot(parent)
+		const child = await (provider as any).agentControlStore.createAgent({
+			taskId: "chatty-child",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "Chatty",
+			role: "review",
+			objective: "Send updates",
+			status: "running",
+		})
+		for (let index = 0; index < 17; index++) {
+			await (provider as any).agentControlStore.appendEvent({
+				rootTaskId: root.rootTaskId,
+				sender: child.taskId,
+				recipient: root.taskId,
+				kind: "message",
+				name: "agent_progress",
+				payload: { message: `Update ${index}` },
+			})
+		}
+		const waited = (await provider.waitForAgent(parent as any, 10_000)) as any
+		expect(waited).toMatchObject({ eventCount: 16, updatedAgents: [{ taskId: child.taskId, path: child.path }] })
+		expect(waited).not.toHaveProperty("events")
+		expect((parent.stageWaitAgentNotifications as any).mock.lastCall[1]).toHaveLength(16)
+		expect(
+			(provider as any).agentControlStore.getUnacknowledgedMailboxEntries(root.taskId, {
+				rootTaskId: root.rootTaskId,
+			}),
+		).toHaveLength(17)
 	})
 
 	it("claims a native wait result without mutating its lifecycle projection", async () => {
@@ -3321,15 +3611,16 @@ If complete, use attempt_completion.
 			timedOut: false,
 			source: "managed_agent_mailbox",
 			claimId: expect.any(String),
-			events: [
-				expect.objectContaining({
-					name: "agent_completed",
-					senderTaskId: child.taskId,
-					senderPath: child.path,
-					payload: expect.objectContaining({ status: "completed" }),
-				}),
-			],
+			eventCount: 1,
+			updatedAgents: [{ taskId: child.taskId, path: child.path }],
 		})
+		expect(parent.stageWaitAgentNotifications).toHaveBeenCalledWith(waited.claimId, [
+			expect.objectContaining({
+				name: "agent_completed",
+				senderTaskId: child.taskId,
+				payload: expect.objectContaining({ status: "completed" }),
+			}),
+		])
 		expect(parent.upsertSubagentGroup).not.toHaveBeenCalled()
 		expect(parent.clineMessages[0].subagentGroup?.agents[0].resultDeliveredAt).toBeUndefined()
 		expect(
@@ -3414,9 +3705,12 @@ If complete, use attempt_completion.
 			timedOut: false,
 			source: "managed_agent_mailbox",
 			claimId: expect.any(String),
+			eventCount: 3,
 		})
+		expect(firstWait).not.toHaveProperty("events")
+		const firstNotifications = (parent.stageWaitAgentNotifications as any).mock.lastCall[1]
 		expect(
-			firstWait.events.map((event: any) => ({
+			firstNotifications.map((event: any) => ({
 				eventId: event.eventId,
 				senderTaskId: event.senderTaskId,
 				senderPath: event.senderPath,
@@ -3459,7 +3753,8 @@ If complete, use attempt_completion.
 		})
 		const retried = (await provider.waitForAgent(parent as any, 10_000)) as any
 		expect(retried.claimId).not.toBe(firstWait.claimId)
-		expect(retried.events.map((event: any) => event.eventId)).toEqual([
+		const retriedNotifications = (parent.stageWaitAgentNotifications as any).mock.lastCall[1]
+		expect(retriedNotifications.map((event: any) => event.eventId)).toEqual([
 			"terminal-native-1",
 			"terminal-native-2",
 			"terminal-native-3",
@@ -3478,6 +3773,10 @@ If complete, use attempt_completion.
 						tool_use_id: "call-terminal-native",
 						content: JSON.stringify(retried),
 					},
+					...retriedNotifications.map((event: any) => ({
+						type: "text",
+						text: JSON.stringify({ source: "managed_agent_notification", eventId: event.eventId }),
+					})),
 				],
 			},
 		] as any
@@ -3543,8 +3842,11 @@ If complete, use attempt_completion.
 
 		await expect(provider.waitForAgent(parent as any, 10_000)).resolves.toMatchObject({
 			timedOut: false,
-			events: [expect.objectContaining({ kind: "message" })],
+			eventCount: 1,
 		})
+		expect(parent.stageWaitAgentNotifications).toHaveBeenCalledWith(expect.any(String), [
+			expect.objectContaining({ kind: "message" }),
+		])
 		expect(parent.upsertSubagentGroup).not.toHaveBeenCalled()
 		expect(parent.clineMessages[0].subagentGroup.agents[0].resultDeliveredAt).toBeUndefined()
 	})
@@ -3603,7 +3905,8 @@ If complete, use attempt_completion.
 			timedOut: false,
 			source: "managed_agent_mailbox",
 			claimId: expect.any(String),
-			events: [expect.objectContaining({ kind: "result", senderTaskId: second.taskId })],
+			eventCount: 1,
+			updatedAgents: [{ taskId: second.taskId, path: second.path }],
 		})
 		expect(
 			(provider as any).agentControlStore
@@ -3623,7 +3926,8 @@ If complete, use attempt_completion.
 			timedOut: false,
 			source: "managed_agent_mailbox",
 			claimId: expect.any(String),
-			events: [expect.objectContaining({ kind: "result", senderTaskId: first.taskId })],
+			eventCount: 1,
+			updatedAgents: [{ taskId: first.taskId, path: first.path }],
 		})
 		expect(
 			(provider as any).agentControlStore
@@ -3671,7 +3975,8 @@ If complete, use attempt_completion.
 
 		await expect(waiting).resolves.toMatchObject({
 			timedOut: false,
-			events: [expect.objectContaining({ senderTaskId: child.taskId, kind: "result" })],
+			eventCount: 1,
+			updatedAgents: [{ taskId: child.taskId, path: child.path }],
 		})
 	})
 
@@ -3725,7 +4030,8 @@ If complete, use attempt_completion.
 			timedOut: false,
 			source: "managed_agent_mailbox",
 			claimId: expect.any(String),
-			events: [expect.objectContaining({ senderTaskId: child.taskId, kind: "result" })],
+			eventCount: 1,
+			updatedAgents: [{ taskId: child.taskId, path: child.path }],
 		})
 		await provider.acknowledgeWaitAgentResults(parent as any, waited.claimId)
 		expect(store.getUnacknowledgedMailboxEntries(root.taskId, { rootTaskId: root.rootTaskId })).toEqual([
@@ -3982,7 +4288,7 @@ If complete, use attempt_completion.
 			timedOut: false,
 			source: "managed_agent_mailbox",
 			claimId: expect.any(String),
-			events: [expect.objectContaining({ eventId: "reload-result-unpersisted" })],
+			eventCount: 1,
 		})
 		expect(waited.claimId).not.toBe(abandoned.claimId)
 		expect(afterReload.getUnacknowledgedMailboxEntries("parent-1", { kinds: ["result"] })).toEqual([
@@ -4025,7 +4331,14 @@ If complete, use attempt_completion.
 							timedOut: false,
 							source: "managed_agent_mailbox",
 							claimId: claimed.claimId,
-							events: claimed.entries,
+							eventCount: claimed.entries.length,
+						}),
+					},
+					{
+						type: "text",
+						text: JSON.stringify({
+							source: "managed_agent_notification",
+							eventId: "reload-result-persisted",
 						}),
 					},
 				],
@@ -4044,6 +4357,51 @@ If complete, use attempt_completion.
 			noActiveAgents: true,
 			events: [],
 		})
+	})
+
+	it("redelivers a reload-preserved claim when its wait receipt lacks child notifications", async () => {
+		const persistence = new InMemoryAgentControlPersistence()
+		const beforeReload = new AgentControlStore(persistence)
+		await beforeReload.initialize()
+		await beforeReload.ensureRoot({ taskId: "parent-1", status: "interrupted" })
+		await beforeReload.appendEvent({
+			eventId: "reload-missing-notification",
+			recipient: "parent-1",
+			kind: "result",
+			name: "agent_completed",
+			payload: { taskId: "child", status: "completed" },
+		})
+		const abandoned = await beforeReload.claimMailbox("parent-1", { channel: "wait", kinds: ["result"] })
+		const reloaded = new AgentControlStore(persistence)
+		await reloaded.initialize()
+		const provider = makeProviderHarness()
+		;(provider as any).agentControlStore = reloaded
+		;(provider as any).agentControlStoreReady = Promise.resolve()
+		const parent = makeParent()
+		parent.apiConversationHistory = [
+			{ role: "assistant", content: [{ type: "tool_use", id: "call-missing", name: "wait_agent", input: {} }] },
+			{
+				role: "user",
+				content: [
+					{
+						type: "tool_result",
+						tool_use_id: "call-missing",
+						content: JSON.stringify({
+							source: "managed_agent_mailbox",
+							claimId: abandoned.claimId,
+							eventCount: 1,
+						}),
+					},
+				],
+			},
+		] as any
+
+		const waited = (await provider.waitForAgent(parent as any, 10_000)) as any
+		expect(waited).toMatchObject({ eventCount: 1, claimId: expect.any(String) })
+		expect(waited.claimId).not.toBe(abandoned.claimId)
+		expect(parent.stageWaitAgentNotifications).toHaveBeenCalledWith(waited.claimId, [
+			expect.objectContaining({ eventId: "reload-missing-notification" }),
+		])
 	})
 
 	it("recovers a legacy orchestration omission with frozen legacy defaults", async () => {
@@ -4198,7 +4556,7 @@ If complete, use attempt_completion.
 			alwaysAllowExecute: true,
 			alwaysAllowSubagents: true,
 			commandApproval: {
-				allowAll: false,
+				allowAll: true,
 				denyAll: false,
 				allowed: [expect.objectContaining({ prefixLength: "git diff".length })],
 				denied: [expect.objectContaining({ prefixLength: "git push".length })],
@@ -4296,6 +4654,75 @@ If complete, use attempt_completion.
 			capturedManifest.skills.map((skill: any) => ({ id: skill.name, digest: skill.digest })),
 		)
 		expect(parent.captureEffectiveInheritedInstructions).not.toHaveBeenCalled()
+	})
+
+	it("queues a follow-up for a running child without starting an overlapping run", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const root = await (provider as any).ensureAgentControlRoot(parent)
+		const child = await (provider as any).agentControlStore.createAgent({
+			taskId: "running-followup-child",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "Review",
+			role: "review",
+			objective: "Review while running",
+			status: "running",
+		})
+		;(provider as any).subagentDescriptors.set(child.taskId, {})
+		const start = vi.spyOn(provider as any, "startPreparedSubagentRun")
+
+		await expect(
+			provider.followupAgentTask(parent as any, child.path, "Check the second case"),
+		).resolves.toMatchObject({
+			taskId: child.taskId,
+			followup: true,
+			delivery: "queued",
+		})
+		expect(start).not.toHaveBeenCalled()
+		expect((provider as any).subagentDescriptors.get(child.taskId).pendingSteerMessage).toMatchObject({
+			message: "Check the second case",
+		})
+		expect(
+			(provider as any).agentControlStore.getUnacknowledgedMailboxEntries(child.taskId, {
+				rootTaskId: root.rootTaskId,
+			}),
+		).toEqual([
+			expect.objectContaining({
+				senderTaskId: root.taskId,
+				name: "parent_message",
+				payload: { message: "Check the second case" },
+			}),
+		])
+	})
+
+	it("steers a live running follow-up through the child's next input boundary", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const root = await (provider as any).ensureAgentControlRoot(parent)
+		const child = await (provider as any).agentControlStore.createAgent({
+			taskId: "live-followup-child",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "Live review",
+			role: "review",
+			objective: "Review while running",
+			status: "running",
+		})
+		const steerUserMessage = vi.fn(async () => undefined)
+		;(provider as any).taskSessions.getTask = (taskId: string) =>
+			taskId === child.taskId ? { canAcceptSteerMessage: () => true, steerUserMessage } : undefined
+		const start = vi.spyOn(provider as any, "startPreparedSubagentRun")
+
+		await expect(
+			provider.followupAgentTask(parent as any, child.path, "Check the live case"),
+		).resolves.toMatchObject({
+			taskId: child.taskId,
+			followup: true,
+			delivery: "delivered",
+		})
+		expect(steerUserMessage).toHaveBeenCalledWith("Check the live case", undefined, expect.any(Function))
+		expect(start).not.toHaveBeenCalled()
 	})
 
 	it("rejects a restored follow-up from persisted root-budget exhaustion despite relaxed current settings", async () => {

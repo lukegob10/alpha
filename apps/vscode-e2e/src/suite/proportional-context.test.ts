@@ -103,13 +103,17 @@ class ProportionalContextScriptedAI {
 
 		const turn = runtime.requests.length
 		if (this.scenario === "known-file-lookup" && turn === 1) {
-			assert.ok(metadata.tools.some((tool) => record(record(tool)?.function)?.name === "read_file"))
-			runtime.emittedToolCalls.push("read_file")
+			assert.ok(metadata.tools.some((tool) => record(record(tool)?.function)?.name === "exec_command"))
+			for (const legacyName of ["read_file", "list_files", "search_files", "codebase_search"])
+				assert.ok(!metadata.tools.some((tool) => record(record(tool)?.function)?.name === legacyName))
+			runtime.emittedToolCalls.push("exec_command")
 			yield {
 				type: "tool_call",
-				id: `${this.id}-read`,
-				name: "read_file",
-				arguments: JSON.stringify({ path: this.fixtureName, offset: 2, limit: 1 }),
+				id: `${this.id}-inspect`,
+				name: "exec_command",
+				arguments: JSON.stringify({
+					cmd: `node -e "const fs=require('fs');console.log(fs.readFileSync('${this.fixtureName}','utf8').split(/\\r?\\n/)[1])"`,
+				}),
 			}
 			return
 		}
@@ -117,9 +121,9 @@ class ProportionalContextScriptedAI {
 		assert.equal(turn, this.scenario === "conversation" ? 1 : 2, "Unexpected model continuation")
 		if (this.scenario === "known-file-lookup") {
 			const result = blocks.find(
-				(block) => block.type === "tool_result" && block.tool_use_id === `${this.id}-read`,
+				(block) => block.type === "tool_result" && block.tool_use_id === `${this.id}-inspect`,
 			)
-			assert.ok(result, "The real read_file result must reach the next provider request")
+			assert.ok(result, "The real exec_command result must reach the next provider request")
 			assert.notEqual(result.is_error, true)
 			const evidence = typeof result.content === "string" ? result.content : JSON.stringify(result.content)
 			assert.ok(evidence)
@@ -197,6 +201,9 @@ suite("Alpha proportional context request measurements", function () {
 							mode: "code",
 							autoApprovalEnabled: true,
 							alwaysAllowReadOnly: true,
+							...(scenario === "known-file-lookup"
+								? { alwaysAllowExecute: true, allowedCommands: ["node"] }
+								: {}),
 							requestDelaySeconds: 0,
 							writeDelayMs: 0,
 							enableCheckpoints: false,
@@ -208,7 +215,7 @@ suite("Alpha proportional context request measurements", function () {
 							text:
 								scenario === "conversation"
 									? "Reply with Hello. No workspace investigation is needed."
-									: `Read line 2 of ${fixtureName} and report the configured answer.`,
+									: `Use one concise, host-approved node command to inspect line 2 of ${fixtureName}, then report the configured answer.`,
 						})
 						const runtime = runtimes.get(scripted)!
 						await waitFor(
@@ -242,7 +249,7 @@ suite("Alpha proportional context request measurements", function () {
 						assert.equal(runtime.requests.length, scenario === "conversation" ? 1 : 2)
 						assert.deepStrictEqual(
 							runtime.emittedToolCalls,
-							scenario === "conversation" ? [] : ["read_file"],
+							scenario === "conversation" ? [] : ["exec_command"],
 						)
 						assert.equal(runtime.evidenceObserved, scenario === "known-file-lookup")
 						assert.ok(

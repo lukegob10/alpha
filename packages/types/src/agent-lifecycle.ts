@@ -151,7 +151,15 @@ export const agentLifecycleToolCallItemSchema = z
 	})
 	.strict()
 
-export const agentToolResultStatusSchema = z.enum(["completed", "success", "failed", "error", "denied", "cancelled"])
+export const agentToolResultStatusSchema = z.enum([
+	"completed",
+	"success",
+	"failed",
+	"error",
+	"denied",
+	"cancelled",
+	"indeterminate",
+])
 export type AgentToolResultStatus = z.infer<typeof agentToolResultStatusSchema>
 
 /** A terminal result for one accepted tool call. */
@@ -326,6 +334,7 @@ const turnStartedEventSchema = z
 		payload: z
 			.object({
 				phase: agentLifecyclePhaseSchema.optional(),
+				effectTrackingVersion: z.literal(1).optional(),
 			})
 			.strict(),
 	})
@@ -402,6 +411,18 @@ const toolCallAcceptedEventSchema = z
 		payload: z
 			.object({
 				item: agentLifecycleToolCallItemSchema,
+			})
+			.strict(),
+	})
+	.strict()
+
+const toolEffectStartedEventSchema = z
+	.object({
+		...lifecycleEventEnvelopeFields,
+		type: z.literal("tool_effect_started"),
+		payload: z
+			.object({
+				toolCallId: agentToolCallIdSchema,
 			})
 			.strict(),
 	})
@@ -536,6 +557,7 @@ export const agentLifecycleEventSchema = z.discriminatedUnion("type", [
 	itemAddedEventSchema,
 	itemUpdatedEventSchema,
 	toolCallAcceptedEventSchema,
+	toolEffectStartedEventSchema,
 	toolResultRecordedEventSchema,
 	approvalRequestedEventSchema,
 	approvalResolvedEventSchema,
@@ -620,9 +642,13 @@ export const agentLifecycleSnapshotSchema = z
 		lastSequence: z.number().int().nonnegative(),
 		terminalEventId: agentEventIdSchema.optional(),
 		terminalAt: lifecycleTimestampSchema.optional(),
+		/** Present only for turns started by hosts that durably fence effectful calls. */
+		effectTrackingVersion: z.literal(1).optional(),
 		items: z.array(agentLifecycleItemSchema),
 		steps: z.array(agentLifecycleStepSnapshotSchema),
 		acceptedToolCallIds: z.array(agentToolCallIdSchema),
+		/** Calls with a durable intent to begin a potentially effectful operation. Optional for v1 snapshots written before this field existed. */
+		effectStartedToolCallIds: z.array(agentToolCallIdSchema).default([]),
 		terminalToolCallIds: z.array(agentToolCallIdSchema),
 		processedEvents: z.array(agentLifecycleEventReceiptSchema),
 	})
@@ -653,6 +679,7 @@ export const agentLifecycleSnapshotSchema = z
 		}
 
 		const accepted = new Set(snapshot.acceptedToolCallIds)
+		const effectStarted = new Set(snapshot.effectStartedToolCallIds)
 		const terminal = new Set(snapshot.terminalToolCallIds)
 		if (accepted.size !== snapshot.acceptedToolCallIds.length) {
 			context.addIssue({
@@ -667,6 +694,22 @@ export const agentLifecycleSnapshotSchema = z
 				path: ["terminalToolCallIds"],
 				message: "Terminal tool call IDs must be unique",
 			})
+		}
+		if (effectStarted.size !== snapshot.effectStartedToolCallIds.length) {
+			context.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["effectStartedToolCallIds"],
+				message: "Effect-started tool call IDs must be unique",
+			})
+		}
+		for (const [index, toolCallId] of snapshot.effectStartedToolCallIds.entries()) {
+			if (!accepted.has(toolCallId)) {
+				context.addIssue({
+					code: z.ZodIssueCode.custom,
+					path: ["effectStartedToolCallIds", index],
+					message: "An effect-started tool call must belong to an accepted tool call",
+				})
+			}
 		}
 		for (const [index, toolCallId] of snapshot.terminalToolCallIds.entries()) {
 			if (!accepted.has(toolCallId)) {

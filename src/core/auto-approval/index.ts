@@ -154,10 +154,9 @@ export async function checkAutoApproval({
 			const mcpServerUse = JSON.parse(text) as McpServerUse
 
 			if (mcpServerUse.type === "use_mcp_tool") {
-				return mode === "bypass" ||
-					(flags.alwaysAllowMcp && isMcpToolAlwaysAllowed(mcpServerUse, state.mcpServers))
-					? { decision: "approve" }
-					: { decision: "ask" }
+				const legacyAlwaysAllowed =
+					flags.alwaysAllowMcp && isMcpToolAlwaysAllowed(mcpServerUse, state.mcpServers)
+				return mode === "bypass" || legacyAlwaysAllowed ? { decision: "approve" } : { decision: "ask" }
 			} else if (mcpServerUse.type === "access_mcp_resource") {
 				return flags.alwaysAllowMcp ? { decision: "approve" } : { decision: "ask" }
 			}
@@ -222,6 +221,16 @@ export async function checkAutoApproval({
 		}
 
 		if (requiresExplicitApproval && mode !== "bypass") return { decision: "ask" }
+		if (toolName === "create_task") {
+			const workspaceMode = (tool as { workspaceMode?: unknown }).workspaceMode
+			if (workspaceMode !== "shared" && workspaceMode !== "worktree") return { decision: "ask" }
+			return (mode === "auto" && workspaceMode === "shared") || mode === "bypass"
+				? { decision: "approve" }
+				: { decision: "ask" }
+		}
+		if (toolName === "send_task_message" || toolName === "steer_task" || toolName === "stop_task") {
+			return mode === "auto" || mode === "bypass" ? { decision: "approve" } : { decision: "ask" }
+		}
 
 		if (tool.tool === "updateTodoList") {
 			return { decision: "approve" }
@@ -229,9 +238,10 @@ export async function checkAutoApproval({
 
 		if (tool.tool === "ticket") {
 			const activity = tool.ticketActivity
+			// TicketStore binds these operations to the current project even though its files live under the user profile.
 			return flags.alwaysAllowTickets &&
 				activity?.state === "pending" &&
-				(activity.operation === "create" || activity.operation === "update")
+				(activity.operation === "create" || activity.operation === "update" || activity.operation === "delete")
 				? { decision: "approve" }
 				: { decision: "ask" }
 		}
@@ -274,8 +284,9 @@ export async function checkAutoApproval({
 
 /**
  * Apply the live and captured approval modes to managed-child actions.
- * Ask at either boundary requires review; Auto and Bypass skip per-action
- * review while explicit command denials remain authoritative.
+ * Ask at either boundary requires review. Auto must pass both live and captured
+ * action checks; only Full Access skips per-action review, while explicit command
+ * denials remain authoritative.
  */
 export async function checkAutoApprovalWithInheritedPolicy({
 	inheritedState,
@@ -284,6 +295,7 @@ export async function checkAutoApprovalWithInheritedPolicy({
 	inheritedState?: SubagentAutoApprovalPolicy
 }): Promise<CheckAutoApprovalResult> {
 	if (!inheritedState) return checkAutoApproval(input)
+	if (isNonBlockingAsk(input.ask)) return { decision: "approve" }
 	const checkInheritedPolicy = async (): Promise<CheckAutoApprovalResult> => {
 		if (input.ask !== "command") return checkAutoApproval({ ...input, state: inheritedState })
 		if (!inheritedState.autoApprovalEnabled || !inheritedState.alwaysAllowExecute || !input.text) {
@@ -293,6 +305,7 @@ export async function checkAutoApprovalWithInheritedPolicy({
 			(policy) => getSubagentCommandDecision(input.text!, policy),
 		)
 		if (decisions.some((decision) => decision === "auto_deny")) return { decision: "deny" }
+		if (input.requiresExplicitApproval) return { decision: "ask" }
 		if (decisions.every((decision) => decision === "auto_approve")) return { decision: "approve" }
 		return { decision: "ask" }
 	}
@@ -301,13 +314,12 @@ export async function checkAutoApprovalWithInheritedPolicy({
 	const results = [liveResult, inheritedResult]
 
 	if (results.some(({ decision }) => decision === "deny")) return { decision: "deny" }
-	const isSubagentAction = input.ask === "tool" || input.ask === "command"
 	const liveMode = input.state ? migrateApprovalMode(input.state) : "ask"
 	const inheritedMode = inferApprovalModeFromPolicy(inheritedState)
-	if (isSubagentAction && liveMode !== "ask" && inheritedMode !== "ask") {
-		// Auto and Full Access authorize the child action without asking the user.
-		// Keep explicit command denials above this check; hard tool and path policy
-		// is enforced before Task.ask and is unaffected by approval routing.
+	if (liveMode === "ask" || inheritedMode === "ask") return { decision: "ask" }
+	if (liveMode === "bypass" && inheritedMode === "bypass") {
+		// Full Access can skip per-action review only when both the live and captured
+		// grants authorize it. Auto still applies each action's narrower policy.
 		return { decision: "approve" }
 	}
 	if (results.some(({ decision }) => decision === "ask")) return { decision: "ask" }

@@ -5,7 +5,7 @@ import { type ModelInfo, stellarDefaultModelId, stellarModels } from "@alpha-cod
 
 import type { ApiHandlerOptions } from "../../shared/api"
 import { getModelParams } from "../transform/model-params"
-import type { ApiStream } from "../transform/stream"
+import type { ApiStream, ApiStreamCapabilities } from "../transform/stream"
 import type { ApiHandlerCreateMessageMetadata } from "../index"
 
 import { DEFAULT_HEADERS } from "./constants"
@@ -28,7 +28,7 @@ type StellarSettings = {
 
 export class StellarHandler extends OpenAiHandler {
 	// Credential setup before the shared transport is not yet cancellable.
-	override readonly streamCapabilities = { cancellation: false } as const
+	override readonly streamCapabilities: ApiStreamCapabilities
 	private readonly stellarSettings: StellarSettings
 	private readonly helixTokenManager: HelixTokenManager
 	private transportSetupPromise?: Promise<void>
@@ -50,6 +50,10 @@ export class StellarHandler extends OpenAiHandler {
 			openAiCustomModelInfo: modelInfo,
 			openAiStreamingEnabled: options.stellarStreamingEnabled ?? true,
 		})
+		this.streamCapabilities = {
+			cancellation: false,
+			...(this.shouldUseResponsesApi(modelId) ? {} : { lifecycle: true }),
+		}
 
 		this.stellarSettings = settings
 		this.helixTokenManager = HelixTokenManager.getOrCreate({

@@ -170,65 +170,76 @@ describe("TaskToolCatalogCache effective input invalidation", () => {
 			...options,
 			policy: {
 				...first.policy,
-				visibleTools: ["read_file"],
-				allowedTools: ["read_file"],
+				visibleTools: ["exec_command"],
+				allowedTools: ["exec_command"],
 			},
 		})
 		expect(policyLimited).not.toBe(autoApproved)
-		expect(policyLimited.isCallable("read_file")).toBe(true)
-		expect(policyLimited.isCallable("execute_command")).toBe(false)
+		expect(policyLimited.isCallable("exec_command")).toBe(true)
+		expect(policyLimited.isCallable("read_file")).toBe(false)
+		expect(functionNames(policyLimited)).toEqual(["exec_command"])
 	})
 
-	it("invalidates model image capability and included or excluded tools", async () => {
+	it("invalidates model image capability, surgical preferences, and excluded tools", async () => {
 		const { options } = createFixture()
 		const baseModel = options.modelInfo!
 		const first = await capture(options)
-		const firstReadFile = first.schemas.find(
-			(schema) => schema.type === "function" && schema.function.name === "read_file",
+		const firstViewImage = first.schemas.find(
+			(schema) => schema.type === "function" && schema.function.name === "view_image",
 		)
 
 		const imageCapable = await capture({
 			...options,
 			modelInfo: { ...baseModel, supportsImages: true },
 		})
-		const imageReadFile = imageCapable.schemas.find(
-			(schema) => schema.type === "function" && schema.function.name === "read_file",
+		const imageViewImage = imageCapable.schemas.find(
+			(schema) => schema.type === "function" && schema.function.name === "view_image",
 		)
 		expect(imageCapable).not.toBe(first)
-		expect(imageReadFile).not.toEqual(firstReadFile)
+		expect(firstViewImage).toBeUndefined()
+		expect(imageViewImage).toBeDefined()
+		expect(imageCapable.isCallable("view_image")).toBe(true)
 
-		const included = await capture({
+		const editorMode = customMode(["edit"])
+		const editorOptions = {
 			...options,
-			modelIdentity: { provider: "vertex", id: "gpt-5.5" },
+			mode: editorMode.slug,
+			customModes: [editorMode],
+			modelIdentity: { provider: "vertex" },
+		}
+		const withoutPatch = await capture(editorOptions)
+		const included = await capture({
+			...editorOptions,
 			modelInfo: { ...baseModel, includedTools: ["apply_patch"] },
 		})
-		expect(included).not.toBe(imageCapable)
-		expect(included.isCallable("edit")).toBe(true)
-		expect(first.isCallable("edit")).toBe(true)
-		expect(included.isCallable("apply_patch")).toBe(true)
-		expect(first.isCallable("apply_patch")).toBe(false)
+		expect(included).not.toBe(withoutPatch)
+		expect(included.isCallable("apply_patch")).toBe(false)
+		expect(withoutPatch.isCallable("apply_patch")).toBe(false)
 
 		const excluded = await capture({
 			...options,
-			modelInfo: { ...baseModel, excludedTools: ["write_to_file"] },
+			modelInfo: { ...baseModel, excludedTools: ["exec_command"] },
 		})
-		expect(excluded).not.toBe(included)
-		expect(excluded.isCallable("write_to_file")).toBe(false)
+		expect(excluded).not.toBe(first)
+		expect(excluded.isCallable("exec_command")).toBe(false)
 	})
 
-	it("invalidates mode, custom mode definitions, and child authority", async () => {
+	it("invalidates mode, retired-mode definitions, and child authority", async () => {
 		const { options } = createFixture()
 		const first = await capture(options)
 
 		const plan = await capture({ ...options, mode: "architect" })
 		expect(plan).not.toBe(first)
-		expect(plan.isCallable("write_to_file")).toBe(false)
+		expect(plan.isCallable("apply_patch")).toBe(false)
 
 		const limited = customMode(["read"])
 		const custom = await capture({ ...options, mode: limited.slug, customModes: [limited] })
 		expect(custom).not.toBe(plan)
-		expect(custom.isCallable("read_file")).toBe(true)
-		expect(custom.isCallable("write_to_file")).toBe(false)
+		// Non-primary saved modes restore to Plan. Plan exposes exec_command, with
+		// its command allowlist enforced at dispatch rather than catalog filtering.
+		expect(custom.isCallable("exec_command")).toBe(true)
+		expect(custom.isCallable("read_file")).toBe(false)
+		expect(custom.isCallable("apply_patch")).toBe(false)
 
 		const changedMode = await capture({
 			...options,
@@ -236,16 +247,17 @@ describe("TaskToolCatalogCache effective input invalidation", () => {
 			customModes: [{ ...limited, groups: ["command"] }],
 		})
 		expect(changedMode).not.toBe(custom)
-		expect(changedMode.isCallable("execute_command")).toBe(true)
+		expect(changedMode.isCallable("exec_command")).toBe(true)
 
 		const child = await capture({
 			...options,
 			taskKind: "subagent",
-			allowedToolNames: ["read_file"],
+			allowedToolNames: ["exec_command"],
 		})
 		expect(child).not.toBe(changedMode)
-		expect(child.allowedFunctionNames).toEqual(["read_file"])
-		expect(child.isCallable("execute_command")).toBe(false)
+		expect(child.allowedFunctionNames).toEqual(["exec_command"])
+		expect(child.isCallable("exec_command")).toBe(true)
+		expect(child.isCallable("apply_patch")).toBe(false)
 	})
 
 	it("invalidates browser and code index availability while reusing equivalent browser order", async () => {
@@ -269,7 +281,8 @@ describe("TaskToolCatalogCache effective input invalidation", () => {
 		const available = await capture(options)
 		expect(available).not.toBe(first)
 		expect(available.isCallable("read_page")).toBe(true)
-		expect(available.isCallable("codebase_search")).toBe(true)
+		expect(available.isCallable("codebase_search")).toBe(false)
+		expect(available.isCallable("exec_command")).toBe(true)
 
 		testState.browserToolNames = ["open_browser_page"]
 		const browserRemoved = await capture(options)

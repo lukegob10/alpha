@@ -3,7 +3,7 @@ export function getToolUseGuidelinesSection(
 	isPlanMode = false,
 ): string {
 	const inspectionGuidance =
-		"For investigations and reviews, batch independent inspections only when each resolves a concrete unanswered question in the requested scope. Use known file locations directly. For known tokens, symbols, and filenames, start with search_files; at most one codebase_search when the location is unknown; then read_file on a hit. Do not start with recursive list_files or shell search. Reuse current evidence and passing checks; refresh affected evidence after changes or failures. Continue partial output only when the missing portion matters. For a command that already ran, inspect its retained output or status instead of rerunning it merely to obtain more output. Synthesize once the requested coverage is complete; an explicitly comprehensive task still requires its full coverage."
+		"For investigations and reviews, batch independent inspections only when each resolves a concrete unanswered question in the requested scope. Use known file locations directly. Use concise, workspace-scoped exec_command calls with rg for text/path matches and Get-Content or an equivalent host command for known files. Avoid recursive whole-workspace scans. In Plan mode, use only commands accepted by the host's read-only classifier. Reuse current evidence and passing checks; refresh affected evidence after changes or failures. Continue partial output only when the missing portion matters. For a command that already ran, inspect its retained output or status instead of rerunning it merely to obtain more output. Synthesize once the requested coverage is complete; an explicitly comprehensive task still requires its full coverage."
 	if (subagentRole) {
 		return `# Tool Use Guidelines
 
@@ -11,21 +11,21 @@ export function getToolUseGuidelinesSection(
 2. Choose the narrowest available repository tool that supplies the required evidence or authorized change.
 3. Group independent read-only operations; serialize dependent operations and worker mutations.
 4. Treat returned results as the source of truth. Never assume success from missing or incomplete output.
-5. If the objective cannot be completed with this child authority or available workspace evidence, report the constraint through attempt_completion instead of inventing information.`
+5. If the objective cannot be completed with this child authority or available workspace evidence, report the constraint in your final assistant answer instead of inventing information.`
 	}
 
 	if (isPlanMode) {
 		return `# Tool Use Guidelines
 
 1. Begin with the request and repository evidence already available.
-2. Use the narrowest read-only repository tool that resolves the next material uncertainty. Prefer repository tools; use shell only for a host-approved inspection or verification that those tools cannot supply as well.
+2. Use the narrowest host-approved read-only exec_command that resolves the next material uncertainty. Keep commands bounded to the workspace and use installed search/read utilities where they fit.
 3. Group independent reads; serialize dependent investigation and agent coordination. ${inspectionGuidance}
 4. Treat returned results as evidence of what ran; distinguish verified facts from assumptions. Missing or incomplete output does not establish success.`
 	}
 
 	return `# Tool Use Guidelines
 
-1. Choose the most appropriate tool for the next unresolved need. Prefer purpose-built repository tools over shell substitutes when both provide the needed result.
+1. Choose the most appropriate tool for the next unresolved need. Use exec_command for concise file and repository inspection, and retain other purpose-built tools for their specific capabilities.
 2. Group independent, read-only calls when policy permits. Serialize dependent actions, workspace mutations, approvals, and control-flow operations; inspect results before the next dependent action. ${inspectionGuidance}
 3. Treat returned tool results as evidence; no separate user confirmation is required. Never assume success. If output is missing or incomplete and the outcome matters, use a bounded follow-up check of the exit status, process state, or resulting artifact.
 4. Supply required parameters only when the task, repository, or prior results provide a defensible value. Never invent a missing material value.`

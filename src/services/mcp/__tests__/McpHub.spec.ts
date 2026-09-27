@@ -1162,7 +1162,7 @@ describe("McpHub", () => {
 			expect(tools[1].alwaysAllow).toBe(true)
 		})
 
-		it("should only allow specific tools when no wildcard is present", async () => {
+		it("should preserve tool annotations while applying configured alwaysAllow entries", async () => {
 			const mockConfig = {
 				mcpServers: {
 					"test-server": {
@@ -1190,7 +1190,11 @@ describe("McpHub", () => {
 				client: {
 					request: vi.fn().mockResolvedValue({
 						tools: [
-							{ name: "allowed-tool", description: "Allowed Tool" },
+							{
+								name: "allowed-tool",
+								description: "Allowed Tool",
+								annotations: { readOnlyHint: true, destructiveHint: false },
+							},
 							{ name: "not-allowed-tool", description: "Not Allowed Tool" },
 						],
 					}),
@@ -1206,6 +1210,7 @@ describe("McpHub", () => {
 			expect(tools.length).toBe(2)
 			expect(tools[0].alwaysAllow).toBe(true) // allowed-tool
 			expect(tools[1].alwaysAllow).toBe(false) // not-allowed-tool
+			expect(tools[0].annotations).toEqual({ readOnlyHint: true, destructiveHint: false })
 		})
 	})
 
@@ -1966,6 +1971,47 @@ describe("McpHub", () => {
 					}),
 				)
 			})
+		})
+	})
+
+	describe("resource listing", () => {
+		it("passes a resource cursor and cancellation signal through the existing MCP client", async () => {
+			const controller = new AbortController()
+			const request = vi.fn().mockResolvedValue({ resources: [], nextCursor: "page-3" })
+			mcpHub.connections = [
+				{
+					type: "connected",
+					server: { name: "test-server", config: "{}", status: "connected" },
+					client: { request } as any,
+					transport: {} as any,
+				},
+			]
+			expect(await mcpHub.listResources("test-server", "page-2", undefined, controller.signal)).toEqual({
+				resources: [],
+				nextCursor: "page-3",
+			})
+			expect(request).toHaveBeenCalledWith(
+				{ method: "resources/list", params: { cursor: "page-2" } },
+				expect.any(Object),
+				{ signal: controller.signal },
+			)
+		})
+
+		it("lists templates and refuses a disabled server", async () => {
+			const request = vi.fn().mockResolvedValue({ resourceTemplates: [] })
+			mcpHub.connections = [
+				{
+					type: "connected",
+					server: { name: "test-server", config: "{}", status: "connected" },
+					client: { request } as any,
+					transport: {} as any,
+				},
+			]
+			await mcpHub.listResourceTemplates("test-server")
+			expect(request).toHaveBeenCalledWith({ method: "resources/templates/list" }, expect.any(Object), undefined)
+			mcpHub.connections[0].server.disabled = true
+			await expect(mcpHub.listResourceTemplates("test-server")).rejects.toThrow("No enabled connection")
+			expect(request).toHaveBeenCalledTimes(1)
 		})
 	})
 

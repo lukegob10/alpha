@@ -5,10 +5,15 @@ import type { ApiHandler } from "../../../api"
 import type { AgentResponse } from "../../agent/AgentResponse"
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../../agent/AgentStepContextBuilder"
 import type { ToolSchedulerOutcome } from "../../agent/ToolScheduler"
-import { summarizeConversation, type SummarizeResponse, type TokenCountContext } from "../../condense"
+import {
+	getEffectiveApiHistory,
+	summarizeConversation,
+	type SummarizeResponse,
+	type TokenCountContext,
+} from "../../condense"
 import { manageContext, willManageContext } from "../../context-management"
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
-import { SYSTEM_PROMPT } from "../../prompts/system"
+import { SYSTEM_PROMPT_FRAGMENTS } from "../../prompts/system"
 import { getDesignHandoffPrompt } from "../../prompts/sections/design-handoff"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
@@ -25,7 +30,12 @@ vi.mock("../build-tools", async (importOriginal) => ({
 vi.mock("../../environment/getEnvironmentDetails", () => ({ getEnvironmentDetails: vi.fn(async () => "") }))
 vi.mock("../../prompts/system", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../prompts/system")>()),
-	SYSTEM_PROMPT: vi.fn(async () => "Captured provider prompt"),
+	SYSTEM_PROMPT_FRAGMENTS: vi.fn(async () => ({
+		systemPrefix: "Captured provider prompt",
+		userContext: "",
+		systemSuffix: "",
+		instructionParts: [{ role: "developer", origin: "built-in-mode", content: "Captured provider prompt" }],
+	})),
 }))
 vi.mock("../../condense", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../condense")>()),
@@ -122,7 +132,6 @@ function harness() {
 		userMessageContent: [],
 		clineMessages: [],
 		getTaskMode: vi.fn(async () => "code"),
-		getCurrentProfileId: vi.fn(async () => "default"),
 		getSystemPrompt: vi.fn(async () => "System prompt"),
 		getTokenUsage: vi.fn(() => ({ contextTokens: 100 })),
 		getTaskAllowedToolNames: () => undefined,
@@ -150,7 +159,11 @@ function harness() {
 	}) as Task
 	vi.mocked(buildNativeToolsArrayWithRestrictions).mockResolvedValue({
 		tools: [],
-		surface: createTaskToolSurface({ registry: new ToolRegistry({ includeBuiltIns: false }), applyProfile: false }),
+		surface: createTaskToolSurface({
+			registry: new ToolRegistry({ includeBuiltIns: false }),
+			applyProfile: false,
+			approvalMode: "auto",
+		}),
 	})
 	vi.mocked(summarizeConversation).mockImplementation(async ({ messages }) => compactedResult(messages))
 	return { task, api, provider, save, history }
@@ -300,7 +313,7 @@ describe("Task proportional context preflight", () => {
 		expect(task.apiConversationHistory).toEqual(expectedHistory)
 		expect(buildNativeToolsArrayWithRestrictions).toHaveBeenCalledTimes(1)
 		expect(buildNativeToolsArrayWithRestrictions).toHaveBeenCalledWith(
-			expect.objectContaining({ readGrant: expect.objectContaining({ enabled: false }) }),
+			expect.objectContaining({ readGrant: expect.objectContaining({ enabled: true }) }),
 		)
 	})
 
@@ -329,7 +342,7 @@ describe("Task proportional context preflight", () => {
 		expect(summarizeConversation).toHaveBeenCalledOnce()
 		expect(buildNativeToolsArrayWithRestrictions).toHaveBeenCalledTimes(2)
 		expect(buildNativeToolsArrayWithRestrictions).toHaveBeenLastCalledWith(
-			expect.objectContaining({ readGrant: expect.objectContaining({ enabled: false }) }),
+			expect.objectContaining({ readGrant: expect.objectContaining({ enabled: true }) }),
 		)
 		expect(save).toHaveBeenCalledOnce()
 		expect(api.createMessage).toHaveBeenCalledOnce()
@@ -368,6 +381,26 @@ describe("Task proportional context preflight", () => {
 })
 
 describe("Task manual compaction boundary", () => {
+	it("uses the captured instruction roles and provenance for manual compaction", async () => {
+		const { task } = harness()
+		const fragments = [
+			{ role: "developer" as const, origin: "built-in-mode", content: "Base instructions" },
+			{ role: "user" as const, origin: "project-instructions", content: "\nProject instructions" },
+		]
+		Reflect.set(
+			task,
+			"getSystemPrompt",
+			vi.fn(async (...args: unknown[]) => {
+				;(args[4] as (value: typeof fragments) => void)(fragments)
+				return fragments.map(({ content }) => content).join("")
+			}),
+		)
+
+		await task.condenseContext()
+
+		expect(vi.mocked(summarizeConversation).mock.calls[0][0].metadata?.instructionFragments).toEqual(fragments)
+	})
+
 	it("keeps useful exploration running across long history and compaction while retaining the repetition bound", async () => {
 		const { task, save } = harness()
 		const detector = task.toolRepetitionDetector
@@ -388,11 +421,12 @@ describe("Task manual compaction boundary", () => {
 		expect(suspend).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("repeated tool outcomes"), "blocked")
 	})
 
-	it("uses the selected profile threshold and effective output reservation for manual compaction", async () => {
+	it("uses the global threshold and effective output reservation for manual compaction", async () => {
 		const { task, provider } = harness()
 		provider.getState.mockResolvedValue({ autoCondenseContextPercent: 5, profileThresholds: { default: 20 } })
 		await task.condenseContext()
-		expect(summarizeConversation).toHaveBeenCalledWith(expect.objectContaining({ maxContextTokens: 6407 }))
+		// The legacy 20% profile value is ignored; 5% of 128k yields a 6.4k trigger and 1.6k target.
+		expect(summarizeConversation).toHaveBeenCalledWith(expect.objectContaining({ maxContextTokens: 1607 }))
 	})
 
 	it("publishes an unchanged result without rewriting history or resetting its environment", async () => {
@@ -642,6 +676,106 @@ describe("Task manual compaction boundary", () => {
 	})
 })
 
+describe("Task post-turn compaction", () => {
+	it("restores the after-prefix baseline from a persisted compaction receipt", () => {
+		const { task } = harness()
+		task.clineMessages = [
+			{
+				ts: 1,
+				type: "say",
+				say: "condense_context",
+				contextCondense: {
+					cost: 0,
+					prevContextTokens: 700,
+					newContextTokens: 125,
+					summary: "Saved summary",
+				},
+			},
+		]
+		const { task: reloaded } = harness()
+		reloaded.clineMessages = structuredClone(task.clineMessages)
+		expect(Reflect.get(reloaded, "getCompactionWindowPrefillTokens").call(reloaded)).toBe(125)
+		reloaded.clineMessages = [
+			{ ts: 2, type: "say", say: "api_req_started", text: JSON.stringify({ tokensIn: 125, tokensOut: 50 }) },
+		]
+		expect(Reflect.get(reloaded, "getCompactionWindowPrefillTokens").call(reloaded)).toBe(125)
+	})
+
+	it("persists a reduced active history that reloads with its rewind archive", async () => {
+		const { task, api, provider, save, history } = harness()
+		api.getModel = () => ({
+			id: "million-token-model",
+			info: { contextWindow: 1_000_000, maxTokens: 4096, supportsPromptCache: false },
+		})
+		api.countTokens.mockImplementation(async (blocks) => {
+			const text = JSON.stringify(blocks)
+			if (text.includes("Original request")) return 400_000
+			if (text.includes("Earlier conversation")) return 50_000
+			return 1_000
+		})
+		provider.getState.mockResolvedValue({ autoCondenseContext: true, postTurnCondenseContextPercent: 30 })
+		vi.mocked(summarizeConversation).mockResolvedValueOnce({
+			...compactedResult(history),
+			prevContextTokens: 403_000,
+			status: "reduced",
+			targetContextTokens: 67_000,
+		})
+
+		await Reflect.get(task, "maybeCompactAfterTurn").call(task)
+
+		expect(summarizeConversation).toHaveBeenCalledWith(expect.objectContaining({ isAutomaticTrigger: true }))
+		expect(vi.mocked(summarizeConversation).mock.calls[0][0].maxContextTokens).toBeLessThan(100_000)
+		expect(save).toHaveBeenCalledOnce()
+		const reloadedHistory = structuredClone(task.apiConversationHistory)
+		expect(reloadedHistory[0].condenseParent).toBe("summary-1")
+		expect(getEffectiveApiHistory(reloadedHistory)).toEqual(getEffectiveApiHistory(task.apiConversationHistory))
+		expect(getEffectiveApiHistory(reloadedHistory)).not.toContainEqual(reloadedHistory[0])
+	})
+
+	it("keeps a completed turn and its history when post-turn summarization fails", async () => {
+		const { task, api, provider, history, save } = harness()
+		api.getModel = () => ({
+			id: "small-model",
+			info: { contextWindow: 1000, maxTokens: 100, supportsPromptCache: false },
+		})
+		provider.getState.mockResolvedValue({ autoCondenseContext: true, postTurnCondenseContextPercent: 1 })
+		vi.mocked(summarizeConversation).mockRejectedValueOnce(new Error("summary provider failed"))
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			await expect(Reflect.get(task, "maybeCompactAfterTurn").call(task)).resolves.toBeUndefined()
+			expect(task.apiConversationHistory).toEqual(history)
+			expect(save).not.toHaveBeenCalled()
+			expect(warning).toHaveBeenCalledOnce()
+		} finally {
+			warning.mockRestore()
+		}
+	})
+
+	it("leaves queued follow-up input ahead of post-turn compaction", async () => {
+		const { task, provider, save } = harness()
+		vi.mocked(summarizeConversation).mockClear()
+		provider.getState.mockResolvedValue({ autoCondenseContext: true, postTurnCondenseContextPercent: 80 })
+		task.messageQueueService.addMessage("Follow up now")
+		await Reflect.get(task, "maybeCompactAfterTurn").call(task)
+		expect(provider.getState).not.toHaveBeenCalled()
+		expect(summarizeConversation).not.toHaveBeenCalled()
+		expect(save).not.toHaveBeenCalled()
+	})
+
+	it("skips post-turn compaction when follow-up input arrives while settings load", async () => {
+		const { task, provider, save } = harness()
+		const pendingState = deferred<{ autoCondenseContext: boolean; postTurnCondenseContextPercent: number }>()
+		provider.getState.mockReturnValue(pendingState.promise)
+		vi.mocked(summarizeConversation).mockClear()
+		const run = Reflect.get(task, "maybeCompactAfterTurn").call(task)
+		task.messageQueueService.addMessage("Use this follow-up")
+		pendingState.resolve({ autoCondenseContext: true, postTurnCondenseContextPercent: 80 })
+		await run
+		expect(summarizeConversation).not.toHaveBeenCalled()
+		expect(save).not.toHaveBeenCalled()
+	})
+})
+
 describe("Task context recovery admission", () => {
 	it.each([
 		["manual", 30],
@@ -716,9 +850,9 @@ describe("Task context recovery admission", () => {
 	})
 
 	it.each(["manual", "automatic", "forced"] as const)(
-		"stops %s recovery at the profile's working limit even when input is smaller",
+		"continues %s recovery below the global limit despite a lower legacy profile value",
 		async (trigger) => {
-			const { task, api, provider, history } = harness()
+			const { task, api, provider, history, save } = harness()
 			api.getModel = () => ({
 				id: "million-token-model",
 				info: { contextWindow: 1_000_000, maxTokens: 4096, supportsPromptCache: false },
@@ -727,7 +861,7 @@ describe("Task context recovery admission", () => {
 			api.countTokens.mockImplementation(async (blocks) => {
 				const text = JSON.stringify(blocks)
 				if (text.includes("Original request")) return 400_000
-				if (text.includes("Fresh environment")) return 296_000
+				if (text.includes("Fresh environment")) return 297_000
 				return 1_000
 			})
 			const result = {
@@ -742,9 +876,13 @@ describe("Task context recovery admission", () => {
 				task.apiConversationHistory.push({ role: "user", content: "Fresh environment", ts: 20 })
 			})
 
-			await expect(runRecovery(task, trigger)).rejects.toMatchObject({ name: "ContextRecoveryExhaustedError" })
-			expect(api.createMessage).not.toHaveBeenCalled()
-			expect(task.say).not.toHaveBeenCalled()
+			await runRecovery(task, trigger)
+
+			const compactionReceipt = vi.mocked(task.say).mock.calls.find(([type]) => type === "condense_context")?.[7]
+			expect(compactionReceipt?.newContextTokens).toBeGreaterThan(300_000)
+			expect(compactionReceipt?.newContextTokens).toBeLessThan(350_000)
+			expect(save).toHaveBeenCalledOnce()
+			if (trigger === "automatic") expect(api.createMessage).toHaveBeenCalledOnce()
 		},
 	)
 
@@ -1191,12 +1329,66 @@ describe("Task context recovery admission", () => {
 			),
 		).resolves.toBe("Captured provider prompt")
 
-		expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0][12]).toMatchObject({
+		expect(vi.mocked(SYSTEM_PROMPT_FRAGMENTS).mock.calls[0][12]).toMatchObject({
 			todoListEnabled: true,
 			isStealthModel: false,
 		})
-		expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0][14]).toBe("test-model")
+		expect(vi.mocked(SYSTEM_PROMPT_FRAGMENTS).mock.calls[0][14]).toBe("test-model")
 	})
+
+	it.each([
+		["Code", "code", undefined, undefined, true, "Implement a TypeScript change and run tests."],
+		["Plan", "architect", undefined, undefined, true, "Implement a TypeScript change and run tests."],
+		[
+			"disabled delegation",
+			"code",
+			["spawn_agent"],
+			undefined,
+			false,
+			"Implement a TypeScript change and run tests.",
+		],
+		[
+			"model excluded delegation",
+			"code",
+			undefined,
+			["spawn_agent"],
+			false,
+			"Implement a TypeScript change and run tests.",
+		],
+		["lookup catalog", "code", undefined, undefined, false, "Where is retryLimit defined?"],
+	] as const)(
+		"advertises the pinned root role only with a callable spawn_agent tool in %s",
+		async (_case, mode, disabledTools, excludedTools, expected, requestText) => {
+			const { task, api, provider } = harness()
+			Object.assign(provider, { context: {}, getSkillsManager: () => undefined })
+			Reflect.set(task, "shouldExposeAgentLifecycleTools", () => true)
+			Reflect.set(
+				task,
+				"getTaskMode",
+				vi.fn(async () => mode),
+			)
+			Reflect.set(task, "getUserRequestTextForCatalog", () => requestText)
+			if (excludedTools) {
+				const model = api.getModel()
+				vi.spyOn(api, "getModel").mockReturnValue({
+					...model,
+					info: { ...model.info, excludedTools: [...excludedTools] },
+				})
+			}
+
+			await expect(
+				Reflect.get(Task.prototype, "getSystemPrompt").call(
+					task,
+					{ mcpEnabled: false, ...(disabledTools ? { disabledTools: [...disabledTools] } : {}) },
+					{ apiHandler: api, apiConfiguration: { apiProvider: "vertex" } },
+				),
+			).resolves.toBe("Captured provider prompt")
+
+			expect(vi.mocked(SYSTEM_PROMPT_FRAGMENTS).mock.lastCall?.[12]).toMatchObject({
+				codexRootDelegationAvailable: expected,
+			})
+		},
+	)
 
 	it.each([
 		["manual", 60],
@@ -1312,6 +1504,7 @@ describe("Task context recovery admission", () => {
 			surface: createTaskToolSurface({
 				registry: new ToolRegistry({ includeBuiltIns: false }),
 				applyProfile: false,
+				approvalMode: "auto",
 			}),
 		})
 		vi.mocked(summarizeConversation).mockResolvedValue({
@@ -1335,22 +1528,16 @@ describe("Task context recovery admission", () => {
 		else await expect(runRecovery(task, trigger)).rejects.toMatchObject({ name: "ContextRecoveryExhaustedError" })
 
 		const promptCall = vi.mocked(Reflect.get(task, "getSystemPrompt"))
-		if (trigger !== "automatic") {
-			expect(promptCall).toHaveBeenCalledWith(expect.anything(), {
-				apiHandler: api,
-				apiConfiguration: task.apiConfiguration,
-			})
-		} else {
-			expect(promptCall).toHaveBeenCalledWith(
-				expect.anything(),
-				{
-					apiHandler: api,
-					apiConfiguration: task.apiConfiguration,
-				},
-				null,
-				"code",
-			)
+		expect(promptCall.mock.calls[0][0]).toEqual(expect.anything())
+		expect(promptCall.mock.calls[0][1]).toEqual({
+			apiHandler: api,
+			apiConfiguration: task.apiConfiguration,
+		})
+		if (trigger !== "forced") {
+			expect(promptCall.mock.calls[0][3]).toBe("code")
+			expect(promptCall.mock.calls[0][4]).toEqual(expect.any(Function))
 		}
+		if (trigger === "automatic") expect(promptCall.mock.calls[0][2]).toBeNull()
 		expect(buildNativeToolsArrayWithRestrictions).toHaveBeenCalledWith(
 			expect.objectContaining({
 				catalogCache: Reflect.get(task, "toolCatalogCache"),

@@ -57,6 +57,22 @@ describe("getMcpServerTools", () => {
 		expect(getFunction(result[0]).description).toBe("Test tool")
 	})
 
+	it("preserves an MCP output schema in the model-facing tool description", () => {
+		const outputSchema = {
+			type: "object",
+			properties: { id: { type: "string" } },
+			required: ["id"],
+		}
+		const server = createMockServer("testServer", [{ ...createMockTool("testTool"), outputSchema }])
+		const mockHub = createMockMcpHub([server])
+
+		const result = getMcpServerTools(mockHub as McpHub)
+
+		expect(getFunction(result[0]).description).toBe(
+			`Test tool\n\nOutput schema (JSON Schema):\n${JSON.stringify(outputSchema)}`,
+		)
+	})
+
 	it("should filter out tools with enabledForPrompt set to false", () => {
 		const enabledTool = createMockTool("enabledTool")
 		const disabledTool = { ...createMockTool("disabledTool"), enabledForPrompt: false }

@@ -36,15 +36,17 @@ import {
 	marketplaceItemSchema,
 } from "./marketplace.js"
 import type { TodoItem, TodoApprovalEdit } from "./todo.js"
-import type { GitHubToolApproval } from "./github.js"
 import type { TicketActivity, TicketSearchResponse, TicketTarget } from "./ticket.js"
 import type { SerializedCustomToolDefinition } from "./custom-tool.js"
 import type { GitCommit } from "./git.js"
-import type { McpServer } from "./mcp.js"
+import type { McpServer, McpToolAnnotations } from "./mcp.js"
 import type { SkillMetadata } from "./skills.js"
 import type { WorktreeIncludeStatus } from "./worktree.js"
 import type { SubagentChangeSetActionCapability, SubagentChangeSetActionResult } from "./subagent.js"
 import type { BrowserToolName } from "./browser.js"
+import type { ToolApprovalDecision } from "./tool-approval.js"
+import type { TaskApprovalModeUpdate, TaskApprovalModeUpdateResult } from "./task-approval-mode.js"
+import type { ApprovalMode } from "./approval-mode.js"
 import type { SearchFilesOutputMode, SearchFilesQueryResult } from "./tool-params.js"
 import type { CodebaseIndexEmbedderProvider } from "./codebase-index.js"
 import type {
@@ -369,6 +371,7 @@ export interface ExtensionMessage {
 		| "scheduledTasksUpdated"
 		| "scheduledTaskSkills"
 		| "taskReasoningUpdated"
+		| "taskApprovalModeUpdated"
 		| "reasoningCapabilities"
 		| "subagentChangeSetActionCapability"
 		| "subagentChangeSetActionResult"
@@ -385,6 +388,7 @@ export interface ExtensionMessage {
 	scheduledTaskState?: ScheduledTaskState
 	scheduledTaskSkills?: ScheduledTaskSkillsResponse
 	taskReasoningResponse?: TaskReasoningResponse
+	taskApprovalModeUpdateResult?: TaskApprovalModeUpdateResult
 	/** Canonical lifecycle event payload for extension -> webview rollout. */
 	agentLifecycleEvent?: AgentLifecycleEvent
 	/** Canonical lifecycle snapshot payload for extension -> webview rollout. */
@@ -551,6 +555,7 @@ export type ExtensionState = Pick<
 	| "subagentRootTokenBudget"
 	| "subagentRootCostBudget"
 	| "subagentDefaultApiConfigId"
+	| "subagentAgentTypes"
 	| "subagentApiConfigByRole"
 	| "alwaysAllowReadOnly"
 	| "alwaysAllowReadOnlyOutsideWorkspace"
@@ -614,6 +619,8 @@ export type ExtensionState = Pick<
 	currentView?: CurrentTaskView
 	/** True when the visible managed child has a frozen approval ceiling below global "All". */
 	currentTaskAutoApprovalRestricted?: boolean
+	/** Current task override; null means its approval mode follows the default. */
+	currentTaskApprovalMode?: TaskApprovalModeUpdateResult["approvalMode"] | null
 	activeTaskId?: string
 	liveTaskIds?: string[]
 	liveTasksById?: Record<string, LiveTaskMetadata>
@@ -660,6 +667,8 @@ export type ExtensionState = Pick<
 
 	autoCondenseContext: boolean
 	autoCondenseContextPercent: number
+	autoCondenseContextScope?: GlobalSettings["autoCondenseContextScope"]
+	postTurnCondenseContextPercent?: number
 	marketplaceItems?: MarketplaceItem[]
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	marketplaceInstalledMetadata?: { project: Record<string, any>; global: Record<string, any> }
@@ -729,10 +738,13 @@ interface WebviewMessageBase {
 		| "getListApiConfiguration"
 		| "customInstructions"
 		| "webviewDidLaunch"
+		| "webviewUiReady"
 		| "newTask"
 		| "resumeCompletedTask"
 		| "startBlankTask"
 		| "askResponse"
+		| "toolApprovalResponse"
+		| "setTaskApprovalMode"
 		| "terminalOperation"
 		| "clearTask"
 		| "didShowAnnouncement"
@@ -754,6 +766,7 @@ interface WebviewMessageBase {
 		| "openMention"
 		| "closeTask"
 		| "cancelTask"
+		| "stopIndependentTask"
 		| "cancelSubagentGroup"
 		| "cancelSubagent"
 		| "steerSubagent"
@@ -894,6 +907,7 @@ interface WebviewMessageBase {
 		| "requestScheduledTaskSkills"
 	text?: string
 	taskId?: string
+	parentTaskId?: string
 	/** Digest of the current host-owned design handoff for Implement plan. */
 	planDigest?: string
 	groupId?: string
@@ -907,6 +921,9 @@ interface WebviewMessageBase {
 	scheduledTaskUpdate?: UpdateScheduledTaskPayload
 	scheduledTaskSkillsRequest?: ScheduledTaskSkillsRequest
 	taskReasoningUpdate?: z.infer<typeof taskReasoningUpdateSchema>
+	taskApprovalModeUpdate?: TaskApprovalModeUpdate
+	/** Draft composer choice captured when the first prompt creates a task. */
+	taskApprovalMode?: ApprovalMode
 	reasoningProfileId?: string
 	reasoningPreference?: z.infer<typeof taskReasoningPreferenceSchema>
 	editedMessageContent?: string
@@ -915,6 +932,10 @@ interface WebviewMessageBase {
 	context?: string
 	dataUri?: string
 	askResponse?: AlphaAskResponse
+	/** Transcript row answered by this ordinary user message, when it came from an async question card. */
+	asyncUserInputMessageTs?: number
+	approvalRequestId?: string
+	toolApprovalDecision?: ToolApprovalDecision
 	apiConfiguration?: ProviderSettings
 	images?: string[]
 	bool?: boolean
@@ -1016,8 +1037,27 @@ interface WebviewMessageBase {
 
 export type WebviewMessage =
 	| (Omit<WebviewMessageBase, "type" | "value"> & { type: "updateVSCodeSetting"; value?: number | boolean })
+	| (Omit<WebviewMessageBase, "type" | "taskId" | "approvalRequestId" | "toolApprovalDecision"> & {
+			type: "toolApprovalResponse"
+			taskId: string
+			approvalRequestId: string
+			toolApprovalDecision: ToolApprovalDecision
+	  })
+	| (Omit<WebviewMessageBase, "type" | "taskApprovalModeUpdate"> & {
+			type: "setTaskApprovalMode"
+			taskApprovalModeUpdate: TaskApprovalModeUpdate
+	  })
+	| (Omit<WebviewMessageBase, "type"> & { type: "queueMessage"; clientSubmittedAt?: number })
+	| (Omit<WebviewMessageBase, "type"> & { type: "webviewUiReady"; durationMs: number })
 	| (Omit<WebviewMessageBase, "type"> & {
-			type: Exclude<WebviewMessageBase["type"], "updateVSCodeSetting">
+			type: Exclude<
+				WebviewMessageBase["type"],
+				| "updateVSCodeSetting"
+				| "webviewUiReady"
+				| "queueMessage"
+				| "toolApprovalResponse"
+				| "setTaskApprovalMode"
+			>
 	  })
 
 export const checkoutDiffPayloadSchema = z.object({
@@ -1091,7 +1131,6 @@ export interface LanguageModelChatSelector {
 
 export interface AlphaSayTool {
 	ticketActivity?: TicketActivity
-	github?: GitHubToolApproval
 	tool:
 		| "editedExistingFile"
 		| "appliedDiff"
@@ -1115,7 +1154,6 @@ export interface AlphaSayTool {
 		| "updateTodoList"
 		| "skill"
 		| "browserAction"
-		| "githubApi"
 	path?: string
 	// For readCommandOutput
 	readStart?: number
@@ -1200,6 +1238,7 @@ export interface AlphaAskUseMcpServer {
 	serverName: string
 	type: "use_mcp_tool" | "access_mcp_resource"
 	toolName?: string
+	annotations?: McpToolAnnotations
 	arguments?: string
 	uri?: string
 	response?: string

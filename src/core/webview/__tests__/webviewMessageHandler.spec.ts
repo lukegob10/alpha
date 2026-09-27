@@ -52,6 +52,7 @@ const mockAlphaProvider = {
 	handleImplementPlan: vi.fn(),
 	handleModeSwitch: vi.fn(),
 	setTaskReasoningPreference: vi.fn(),
+	updateTaskApprovalMode: vi.fn(),
 	getReasoningCapabilities: vi.fn(),
 	activateProviderProfile: vi.fn(),
 	postStateToWebview: vi.fn(),
@@ -164,6 +165,85 @@ describe("task reasoning messages", () => {
 		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
 			type: "taskReasoningUpdated",
 			taskReasoningResponse: { requestId: "r3", taskId: undefined, error: "saveFailed" },
+		})
+	})
+
+	it("routes a valid approval update to its task and returns the scoped result", async () => {
+		vi.mocked(mockAlphaProvider.updateTaskApprovalMode).mockReturnValueOnce({
+			requestId: "approval-1",
+			taskId: "background-task",
+			status: "applied",
+			approvalMode: "ask",
+		})
+
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "setTaskApprovalMode",
+			taskApprovalModeUpdate: {
+				requestId: "approval-1",
+				taskId: "background-task",
+				approvalMode: "ask",
+			},
+		})
+
+		expect(mockAlphaProvider.updateTaskApprovalMode).toHaveBeenCalledWith({
+			requestId: "approval-1",
+			taskId: "background-task",
+			approvalMode: "ask",
+		})
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "taskApprovalModeUpdated",
+			taskApprovalModeUpdateResult: {
+				requestId: "approval-1",
+				taskId: "background-task",
+				status: "applied",
+				approvalMode: "ask",
+			},
+		})
+		expect(mockAlphaProvider.postStateToWebview).toHaveBeenCalledTimes(1)
+	})
+
+	it("returns explicit target-unavailable status without widening the update", async () => {
+		vi.mocked(mockAlphaProvider.updateTaskApprovalMode).mockReturnValueOnce({
+			requestId: "approval-2",
+			taskId: "closed-task",
+			status: "targetUnavailable",
+		})
+
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "setTaskApprovalMode",
+			taskApprovalModeUpdate: { requestId: "approval-2", taskId: "closed-task", approvalMode: "bypass" },
+		})
+
+		expect(mockAlphaProvider.updateTaskApprovalMode).toHaveBeenCalledWith({
+			requestId: "approval-2",
+			taskId: "closed-task",
+			approvalMode: "bypass",
+		})
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "taskApprovalModeUpdated",
+			taskApprovalModeUpdateResult: {
+				requestId: "approval-2",
+				taskId: "closed-task",
+				status: "targetUnavailable",
+			},
+		})
+		expect(mockAlphaProvider.postStateToWebview).not.toHaveBeenCalled()
+	})
+
+	it("rejects malformed approval updates and correlates by request even without a usable task id", async () => {
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "setTaskApprovalMode",
+			taskApprovalModeUpdate: { requestId: "approval-3", approvalMode: "unsafe" },
+		} as unknown as WebviewMessage)
+
+		expect(mockAlphaProvider.updateTaskApprovalMode).not.toHaveBeenCalled()
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "taskApprovalModeUpdated",
+			taskApprovalModeUpdateResult: {
+				requestId: "approval-3",
+				status: "rejected",
+				error: "invalid",
+			},
 		})
 	})
 })
@@ -567,12 +647,74 @@ describe("webviewMessageHandler - image mentions", () => {
 		])
 	})
 
+	it("persists the exact async question card after accepting its ordinary reply", async () => {
+		const handleWebviewAskResponse = vi.fn()
+		const markAsyncUserInputAnswered = vi.fn().mockResolvedValue(true)
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
+			handleWebviewAskResponse,
+			markAsyncUserInputAnswered,
+		} as any)
+
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "askResponse",
+			askResponse: "messageResponse",
+			text: "Answers to the earlier questions:\n\nWhich color?\nAnswer: Blue",
+			taskId: "task-1",
+			asyncUserInputMessageTs: 42,
+		})
+
+		expect(handleWebviewAskResponse).toHaveBeenCalledOnce()
+		expect(markAsyncUserInputAnswered).toHaveBeenCalledExactlyOnceWith(42)
+		expect(handleWebviewAskResponse.mock.invocationCallOrder[0]).toBeLessThan(
+			markAsyncUserInputAnswered.mock.invocationCallOrder[0],
+		)
+	})
+
+	it("routes typed approval decisions with their request id", async () => {
+		const handleWebviewToolApprovalResponse = vi.fn().mockReturnValue(true)
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({ handleWebviewToolApprovalResponse } as any)
+
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "toolApprovalResponse",
+			taskId: "task-1",
+			approvalRequestId: "task-1:call-1",
+			toolApprovalDecision: { decision: "abort" },
+		})
+
+		expect(handleWebviewToolApprovalResponse).toHaveBeenCalledWith("task-1:call-1", { decision: "abort" })
+	})
+
+	it("ignores legacy askResponse messages while a typed approval is pending", async () => {
+		const handleWebviewAskResponse = vi.fn()
+		const markAsyncUserInputAnswered = vi.fn()
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
+			hasPendingToolApprovalRequest: vi.fn().mockReturnValue(true),
+			handleWebviewAskResponse,
+			markAsyncUserInputAnswered,
+		} as any)
+
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "askResponse",
+			askResponse: "yesButtonClicked",
+			taskId: "task-1",
+			asyncUserInputMessageTs: 42,
+		})
+
+		expect(handleWebviewAskResponse).not.toHaveBeenCalled()
+		expect(markAsyncUserInputAnswered).not.toHaveBeenCalled()
+		expect(mockAlphaProvider.log).toHaveBeenCalledWith(
+			"[webviewMessageHandler] Ignoring legacy askResponse while a typed tool approval is active",
+		)
+	})
+
 	it("resumes a completed task with the submitted follow-up instead of creating a task", async () => {
 		const resumeCompletedTaskFollowup = vi.fn().mockResolvedValue(undefined)
+		const markAsyncUserInputAnswered = vi.fn().mockResolvedValue(true)
 		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
 			cwd: "/mock/workspace",
 			alphaIgnoreController: undefined,
 			resumeCompletedTaskFollowup,
+			markAsyncUserInputAnswered,
 		} as any)
 
 		await webviewMessageHandler(mockAlphaProvider, {
@@ -580,12 +722,14 @@ describe("webviewMessageHandler - image mentions", () => {
 			text: "Evaluate @/img.png",
 			images: [],
 			taskId: "task-1",
+			asyncUserInputMessageTs: 42,
 		})
 
 		expect(resumeCompletedTaskFollowup).toHaveBeenCalledWith("Evaluate @/img.png", [
 			"data:image/png;base64,from-mention",
 		])
 		expect(mockAlphaProvider.createTask).not.toHaveBeenCalled()
+		expect(markAsyncUserInputAnswered).toHaveBeenCalledExactlyOnceWith(42)
 	})
 
 	it("restores a completed-task draft when the host cannot resume it", async () => {
@@ -769,6 +913,12 @@ describe("webviewMessageHandler - queued message steering", () => {
 
 	it("acknowledges a queued message only after the task accepts it", async () => {
 		vi.mocked(mockAlphaProvider.queueMessageForTask).mockReturnValue(true)
+		const recordTaskPerformanceDuration = vi.fn()
+		const markAsyncUserInputAnswered = vi.fn().mockResolvedValue(true)
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
+			recordTaskPerformanceDuration,
+			markAsyncUserInputAnswered,
+		} as any)
 
 		await webviewMessageHandler(mockAlphaProvider, {
 			type: "queueMessage",
@@ -776,7 +926,11 @@ describe("webviewMessageHandler - queued message steering", () => {
 			images: [],
 			taskId: "task-1",
 			requestId: "queue-request-1",
+			clientSubmittedAt: Date.now() - 15,
+			asyncUserInputMessageTs: 42,
 		})
+		expect(recordTaskPerformanceDuration).toHaveBeenCalledWith("queue_admission", expect.any(Number))
+		expect(markAsyncUserInputAnswered).toHaveBeenCalledExactlyOnceWith(42)
 
 		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
 			type: "chatCommandResult",
@@ -969,6 +1123,35 @@ describe("webviewMessageHandler - newTask", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 		vi.mocked(mockAlphaProvider.createTask).mockResolvedValue({ taskId: "task-1" } as any)
+	})
+
+	it("captures a draft approval choice on the new task without updating the global default", async () => {
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "newTask",
+			text: "Build the feature",
+			images: [],
+			taskApprovalMode: "ask",
+		})
+
+		expect(mockAlphaProvider.createTask).toHaveBeenCalledWith(
+			"Build the feature",
+			expect.any(Array),
+			undefined,
+			{ taskId: undefined, preserveExisting: true, taskApprovalMode: "ask" },
+			undefined,
+		)
+		expect(mockAlphaProvider.contextProxy.setValue).not.toHaveBeenCalled()
+	})
+
+	it("rejects an invalid draft approval mode before creating a task", async () => {
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "newTask",
+			text: "Build the feature",
+			taskApprovalMode: "unsafe",
+		} as unknown as WebviewMessage)
+
+		expect(mockAlphaProvider.createTask).not.toHaveBeenCalled()
+		expect(vscode.window.showErrorMessage).toHaveBeenCalledWith("Invalid task approval mode")
 	})
 
 	it("keeps the newly created task visible instead of resetting back to a blank chat", async () => {

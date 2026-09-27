@@ -64,7 +64,7 @@ suite("Rendered reasoning controls", function () {
 			apiProvider: "openai",
 			openAiBaseUrl: `http://127.0.0.1:${address.port}/v1`,
 			openAiApiKey: "local-fixture",
-			openAiModelId: "reasoning-fixture",
+			openAiModelId: "gpt-6-luna",
 			openAiStreamingEnabled: false,
 			openAiCustomModelInfo: {
 				contextWindow: 128_000,
@@ -76,14 +76,26 @@ suite("Rendered reasoning controls", function () {
 			enableReasoningEffort: true,
 			reasoningEffort: "low",
 		}
+		const alternateConfiguration: ProviderSettings = {
+			...configuration,
+			openAiModelId: "gpt-5.6-luna",
+			openAiCustomModelInfo: {
+				contextWindow: 128_000,
+				maxTokens: 4096,
+				supportsPromptCache: false,
+				supportsReasoningEffort: ["low", "high"],
+				reasoningEffort: "low",
+			},
+		}
 		let completions = 0
 		const completed = () => {
 			completions++
 		}
 		globalThis.api.on(AlphaCodeEventName.TaskCompleted, completed)
 		try {
-			await provider.upsertProviderProfile("reasoning-ui-fixture", configuration)
-			await provider.activateProviderProfile({ name: "reasoning-ui-fixture" })
+			await provider.upsertProviderProfile("GPT 6 Luna", configuration)
+			await provider.upsertProviderProfile("GPT 5.6 Luna", alternateConfiguration)
+			await provider.activateProviderProfile({ name: "GPT 6 Luna" })
 			await vscode.commands.executeCommand("alpha.SidebarProvider.focus")
 			const taskId = await globalThis.api.startNewTask({
 				text: "Complete the first fixture turn.",
@@ -106,17 +118,15 @@ suite("Rendered reasoning controls", function () {
 			}
 			await acceptCompletion(1)
 			assert.equal(requests[0]?.reasoning_effort, "low")
-			const profile = await provider.providerSettingsManager.getProfile({ name: "reasoning-ui-fixture" })
+			const profile = await provider.providerSettingsManager.getProfile({ name: "GPT 6 Luna" })
 			const count = (await provider.providerSettingsManager.listConfig()).length
 			const before = globalThis.api.getConfiguration()
 			await uiFixtureBarrier("reasoning-high", { version: vscode.version })
+			await uiFixtureBarrier("reasoning-model-switch", { version: vscode.version, maxDurationMs: 5000 })
 			await acceptCompletion(2)
 			assert.equal(requests.length, 2)
-			assert.deepEqual(requests[1], { model: "reasoning-fixture", reasoning_effort: "high" })
-			assert.deepEqual(
-				await provider.providerSettingsManager.getProfile({ name: "reasoning-ui-fixture" }),
-				profile,
-			)
+			assert.deepEqual(requests[1], { model: "gpt-5.6-luna", reasoning_effort: "high" })
+			assert.deepEqual(await provider.providerSettingsManager.getProfile({ name: "GPT 6 Luna" }), profile)
 			assert.equal((await provider.providerSettingsManager.listConfig()).length, count)
 			assert.equal(globalThis.api.getConfiguration().mode, before.mode)
 			assert.equal(globalThis.api.getConfiguration().autoApprovalEnabled, before.autoApprovalEnabled)

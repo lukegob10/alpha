@@ -7,8 +7,6 @@ import { getObjectiveSection } from "../sections/objective"
 import { getToolUseGuidelinesSection } from "../sections/tool-use-guidelines"
 import { McpHub } from "../../../services/mcp/McpHub"
 import * as shellUtils from "../../../utils/shell"
-import searchFiles from "../tools/native-tools/search_files"
-import listFiles from "../tools/native-tools/list_files"
 import { createShellTool } from "../tools/native-tools/execute_command"
 
 function toolDescription(tool: OpenAI.Chat.ChatCompletionTool): string {
@@ -52,9 +50,10 @@ describe("getCapabilitiesSection", () => {
 		const result = getCapabilitiesSection(cwd)
 
 		expect(result).toContain("CAPABILITIES")
-		expect(result).toContain("execute CLI commands")
-		expect(result).toContain("list files")
-		expect(result).toContain("read and write files")
+		expect(result).toContain("exec_command")
+		expect(result).toContain("write_stdin")
+		expect(result).toContain("file and repository inspection")
+		expect(result).toContain("available tools for edits and other capabilities")
 	})
 
 	it("includes MCP reference when mcpHub is provided", () => {
@@ -99,11 +98,19 @@ describe("getRulesSection", () => {
 	it("keeps primary rules free of fixed conversation and discovery recipes", () => {
 		const result = getRulesSection(cwd)
 
-		expect(result).toContain("ask_followup_question tool")
+		expect(result).toContain("Ask necessary user questions directly")
+		expect(result).not.toContain("ask_followup_question")
 		expect(result).not.toContain("2-4 suggested answers")
 		expect(result).not.toContain("Desktop")
 		expect(result).not.toContain("list_files tool")
 		expect(result).not.toContain('starting your messages with "Great"')
+	})
+
+	it("directs Plan questions to its available user-input tool", () => {
+		const result = getRulesSection(cwd, undefined, true)
+
+		expect(result).toContain("request_user_input")
+		expect(result).not.toContain("ask_followup_question")
 	})
 
 	it("uses side-effect-aware MCP batching", () => {
@@ -116,12 +123,16 @@ describe("getRulesSection", () => {
 		expect(result).not.toContain("MCP operations should be used one at a time")
 	})
 
-	it("makes search_files the first search path for Code and Plan", () => {
-		expect(getToolUseGuidelinesSection()).toContain("start with search_files")
-		expect(getToolUseGuidelinesSection(undefined, true)).toContain("start with search_files")
-		expect(getToolUseGuidelinesSection("explore")).not.toContain("start with search_files")
-		expect(getToolUseGuidelinesSection("review")).not.toContain("start with search_files")
-		expect(getToolUseGuidelinesSection("worker")).not.toContain("start with search_files")
+	it("directs Code and Plan inspection through exec_command", () => {
+		expect(getToolUseGuidelinesSection()).toContain("exec_command calls")
+		expect(getToolUseGuidelinesSection(undefined, true)).toContain("exec_command calls")
+		expect(getToolUseGuidelinesSection()).not.toMatch(/\b(?:read_file|list_files|search_files|codebase_search)\b/)
+		expect(getToolUseGuidelinesSection(undefined, true)).not.toMatch(
+			/\b(?:read_file|list_files|search_files|codebase_search)\b/,
+		)
+		expect(getToolUseGuidelinesSection("explore")).not.toContain("exec_command calls")
+		expect(getToolUseGuidelinesSection("review")).not.toContain("exec_command calls")
+		expect(getToolUseGuidelinesSection("worker")).not.toContain("exec_command calls")
 	})
 
 	it("includes vendor confidentiality section when isStealthModel is true", () => {
@@ -184,7 +195,7 @@ describe("getRulesSection", () => {
 		)
 	})
 
-	it("allows managed final answers while keeping blocked outcomes explicit", () => {
+	it("allows managed final answers while reporting blocked constraints", () => {
 		const result = getRulesSection(cwd, {
 			todoListEnabled: true,
 			useAgentRules: true,
@@ -192,9 +203,10 @@ describe("getRulesSection", () => {
 			subagentRole: "worker",
 		})
 
-		expect(result).toContain("provide a concise, self-contained final answer or use attempt_completion")
+		expect(result).toContain("provide a concise, self-contained final answer")
+		expect(result).not.toContain("attempt_completion")
 		expect(result).toContain("assigned work and required checks are complete")
-		expect(result).toContain("outcome blocked when a constraint prevents completion")
+		expect(result).toContain("Report any constraint that prevented completion")
 	})
 })
 
@@ -276,7 +288,7 @@ describe("getRulesSection shell-aware command chaining", () => {
 		)
 		const result = getRulesSection(cwd)
 
-		expect(result).toContain("Prefer `search_files` for content and path search")
+		expect(result).toContain("For bounded repository inspection, use `rg` for text or path matches")
 		expect(result).toContain("For mutations, avoid Unix-specific utilities")
 		expect(result).toContain("`sed`, `grep`, `awk`, `cat`, `rm`, `cp`, `mv`")
 		expect(result).not.toContain("`Select-String` for grep")
@@ -299,7 +311,9 @@ describe("getRulesSection shell-aware command chaining", () => {
 		vi.spyOn(shellUtils, "getShell").mockReturnValue("C:\\Windows\\System32\\cmd.exe")
 		const result = getRulesSection(cwd)
 
-		expect(result).toContain("Prefer `search_files` for content and path search")
+		expect(result).toContain(
+			"For bounded repository inspection, use `rg` where installed and `type` for known files",
+		)
 		expect(result).toContain("For mutations, avoid Unix-specific utilities")
 		expect(result).toContain("`sed`, `grep`, `awk`, `cat`, `rm`, `cp`, `mv`")
 		expect(result).toContain("`del` for rm")
@@ -324,7 +338,7 @@ describe("getRulesSection shell-aware command chaining", () => {
 		expect(result).not.toContain("Note: Using")
 	})
 
-	it("does not emit shell or recursive listing as the first search for a definition lookup", () => {
+	it("uses bounded command inspection without advertising retired file tools", () => {
 		vi.spyOn(shellUtils, "getShell").mockReturnValue(
 			"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
 		)
@@ -333,17 +347,14 @@ describe("getRulesSection shell-aware command chaining", () => {
 			question,
 			getRulesSection(cwd),
 			getToolUseGuidelinesSection(),
-			toolDescription(searchFiles),
-			toolDescription(listFiles),
 			toolDescription(createShellTool()),
 		].join("\n")
 
-		expect(combined).toContain("start with search_files")
-		expect(combined).toContain("Not a search fallback when search_files can run")
-		expect(combined).toContain("Do not start a lookup or workspace hunt with recursive listing")
+		expect(combined).toContain("Use concise, workspace-scoped exec_command calls")
+		expect(combined).toContain("Runs a concise command in the task's host terminal")
+		expect(combined).toMatch(/\brg\b/)
+		expect(combined).not.toMatch(/\b(?:read_file|list_files|search_files|codebase_search)\b/)
 		expect(combined).not.toContain("`Select-String` for grep")
 		expect(combined).not.toContain("`find`/`findstr` for grep")
-		expect(combined.indexOf("start with search_files")).toBeGreaterThanOrEqual(0)
-		expect(combined.indexOf("Not a search fallback when search_files can run")).toBeGreaterThanOrEqual(0)
 	})
 })

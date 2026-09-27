@@ -72,6 +72,12 @@ export interface ReadFileParams extends ReadFileOptions {
 	path: string
 }
 
+/** Parameters for viewing one local image file. */
+export interface ViewImageParams {
+	/** Path to a supported local image file, relative to the workspace. */
+	path: string
+}
+
 // ─── Legacy Format Types (Backward Compatibility) ─────────────────────────────
 
 /**

@@ -49,6 +49,15 @@ describe("ticket task linkage", () => {
 		expect(await store.read(ticket.id)).toMatchObject({ status: "backlog", linkedTaskIds: [] })
 		expect(start).not.toHaveBeenCalled()
 	})
+	it("does not start work on a canceled ticket until it is reopened", async () => {
+		const ticket = await store.create({ name: "Do not work" })
+		const canceled = await store.update({ id: ticket.id, expectedRevision: ticket.revision, status: "canceled" })
+		await expect(workOnTicket(store, provider, ticket.id, canceled.revision)).rejects.toThrow("Reopen")
+		expect(createTask).not.toHaveBeenCalled()
+		const reopened = await store.update({ id: ticket.id, expectedRevision: canceled.revision, status: "backlog" })
+		await workOnTicket(store, provider, ticket.id, reopened.revision)
+		expect(createTask).toHaveBeenCalledTimes(1)
+	})
 	it("aborts the unstarted task if a concurrent edit prevents linkage", async () => {
 		const ticket = await store.create({ name: "Work" })
 		createTask.mockImplementationOnce(async () => {

@@ -53,9 +53,8 @@ describe("getObjectiveSection", () => {
 
 		expect(objective).toContain("visible ordinary assistant answer")
 		expect(objective).toContain("when no tool call or continuation is needed")
-		expect(objective).toContain(
-			"Do not invent a tool call or attempt_completion solely to force a completion format",
-		)
+		expect(objective).toContain("Do not invent a tool call solely to force a completion format")
+		expect(objective).not.toContain("attempt_completion")
 		expect(objective).toContain("without entering repetitive or open-ended improvement loops")
 	})
 

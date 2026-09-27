@@ -285,11 +285,12 @@ describe("useMcpToolTool", () => {
 			})
 			mockProviderRef.deref.mockReturnValue({
 				getMcpHub: () => ({
-					getAllServers: vi
-						.fn()
-						.mockReturnValue([
-							{ name: "test_server", tools: [{ name: "test_tool", description: "desc" }] },
-						]),
+					getAllServers: vi.fn().mockReturnValue([
+						{
+							name: "test_server",
+							tools: [{ name: "test_tool", description: "desc", annotations: { readOnlyHint: true } }],
+						},
+					]),
 					callTool: vi.fn().mockResolvedValue(mockToolResult),
 				}),
 				postMessageToWebview,
@@ -303,6 +304,7 @@ describe("useMcpToolTool", () => {
 
 			expect(mockTask.consecutiveMistakeCount).toBe(0)
 			expect(mockAskApproval).toHaveBeenCalled()
+			expect(JSON.parse(mockAskApproval.mock.calls[0][1]).annotations).toEqual({ readOnlyHint: true })
 			expect(mockTask.say).toHaveBeenCalledWith("mcp_server_request_started")
 			expect(mockTask.say).toHaveBeenCalledWith("mcp_server_response", "Tool executed successfully", [])
 			expect(mockPushToolResult).toHaveBeenCalledWith("Tool result: Tool executed successfully")
@@ -975,6 +977,39 @@ describe("useMcpToolTool", () => {
 	})
 
 	describe("image handling", () => {
+		it("forwards structured content from an error result with empty content", async () => {
+			const structuredContent = { code: "NOT_FOUND", message: "Record is missing" }
+			const callTool = vi.fn().mockResolvedValue({ content: [], structuredContent, isError: true })
+			const postMessageToWebview = vi.fn()
+			const setResultMetadata = vi.fn()
+			mockAskApproval.mockResolvedValue(true)
+			mockProviderRef.deref.mockReturnValue({
+				getMcpHub: () => ({
+					callTool,
+					getAllServers: () => [{ name: "test_server", tools: [{ name: "test_tool" }] }],
+				}),
+				postMessageToWebview,
+			})
+
+			await useMcpToolTool.execute({ server_name: "test_server", tool_name: "test_tool" }, mockTask as Task, {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+				setResultMetadata,
+			})
+
+			const modelOutput = `Error:\nStructured content:\n${JSON.stringify(structuredContent, null, 2)}`
+			expect(mockTask.say).toHaveBeenCalledWith("mcp_server_response", modelOutput, [])
+			expect(mockPushToolResult).toHaveBeenCalledWith(`Tool result: ${modelOutput}`)
+			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
+			expect(setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+			expect(executionStatuses(postMessageToWebview).at(-1)).toEqual({
+				executionId: "123456789",
+				status: "error",
+				error: "Error executing MCP tool",
+			})
+		})
+
 		it("normalizes an embedded image resource into image content", () => {
 			const result = (useMcpToolTool as any).processToolContent({
 				content: [

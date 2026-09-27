@@ -652,6 +652,40 @@ describe("VsCodeLmHandler", () => {
 			expect(mockLanguageModelChat.countTokens).not.toHaveBeenCalled()
 		})
 
+		it("projects instruction fragments as ordered User messages on VS Code 1.122.1", async () => {
+			mockVsCodeVersion.value = "1.122.1"
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Response")
+				})(),
+			})
+
+			for await (const _chunk of handler.createMessage(
+				"Legacy prompt",
+				[{ role: "user", content: "Current request" }],
+				{
+					taskId: "fragment-test",
+					instructionFragments: [
+						{ role: "developer", content: "Base instructions\n\n" },
+						{ role: "user", content: "Project instructions\n\n" },
+						{ role: "system", content: "Mode instructions" },
+					],
+				},
+			)) {
+				// consume stream
+			}
+
+			const requestMessages = mockLanguageModelChat.sendRequest.mock.calls.at(-1)?.[0] as Array<{
+				role: string
+				content: unknown[]
+			}>
+			expect(requestMessages.map(({ role }) => role)).toEqual(["user", "user"])
+			expect(requestMessages[0]?.content[0]).toEqual(
+				expect.objectContaining({ value: "Base instructions\n\nProject instructions\n\nMode instructions" }),
+			)
+			expect(requestMessages[1]?.content[0]).toEqual(expect.objectContaining({ value: "Current request" }))
+		})
+
 		it("should include serialized tool schemas in the synchronous input estimate", async () => {
 			mockLanguageModelChat.sendRequest.mockImplementation(async () => ({
 				stream: (async function* () {})(),
@@ -996,13 +1030,14 @@ describe("VsCodeLmHandler", () => {
 				chunks.push(chunk)
 			}
 
-			expect(chunks).toHaveLength(2) // Tool call chunk + usage chunk
+			expect(chunks).toHaveLength(3) // Tool call, completion marker, and usage chunk
 			expect(chunks[0]).toEqual({
 				type: "tool_call",
 				id: toolCallData.callId,
 				name: toolCallData.name,
 				arguments: JSON.stringify(toolCallData.arguments),
 			})
+			expect(chunks[1]).toEqual({ type: "tool_call_end", id: toolCallData.callId })
 		})
 
 		it("should emit structurally compatible tool calls when tools are provided", async () => {
@@ -1110,13 +1145,14 @@ describe("VsCodeLmHandler", () => {
 				chunks.push(chunk)
 			}
 
-			expect(chunks).toHaveLength(2) // Tool call chunk + usage chunk
+			expect(chunks).toHaveLength(3) // Tool call, completion marker, and usage chunk
 			expect(chunks[0]).toEqual({
 				type: "tool_call",
 				id: toolCallData.callId,
 				name: toolCallData.name,
 				arguments: JSON.stringify(toolCallData.arguments),
 			})
+			expect(chunks[1]).toEqual({ type: "tool_call_end", id: toolCallData.callId })
 		})
 
 		it("should pass tools to request options when tools are provided", async () => {
@@ -1351,6 +1387,43 @@ describe("VsCodeLmHandler", () => {
 						reasoningEffort: "max",
 						contextSize: 922_000,
 					},
+				}),
+				expect.anything(),
+			)
+		})
+
+		it("should pass maximum reasoning to the discovered GPT-6 Luna Copilot model", async () => {
+			handler = new VsCodeLmHandler({
+				...defaultOptions,
+				enableReasoningEffort: true,
+				reasoningEffort: "max",
+			})
+			const gpt6LunaModel = {
+				...mockLanguageModelChat,
+				id: "gpt-6-luna",
+				name: "GPT-6 Luna",
+				vendor: "copilot",
+				family: "gpt-6-luna",
+				version: "gpt-6-luna",
+			}
+			handler["client"] = gpt6LunaModel as any
+
+			expect(handler.getModel().info.supportsReasoningEffort).toContain("max")
+			gpt6LunaModel.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Maximum reasoned response")
+				})(),
+			})
+
+			for await (const _chunk of handler.createMessage("System", [{ role: "user", content: "Think fully" }])) {
+				// consume stream
+			}
+
+			expect(gpt6LunaModel.sendRequest).toHaveBeenCalledWith(
+				expect.any(Array),
+				expect.objectContaining({
+					modelOptions: { reasoningEffort: "max" },
+					configuration: { reasoningEffort: "max" },
 				}),
 				expect.anything(),
 			)
@@ -1701,7 +1774,13 @@ describe("VsCodeLmHandler", () => {
 					taskId: "partial-no-choices",
 					tools: [createReadFileTool()],
 				})
-				await stream.next()
+				const firstChunk = await stream.next()
+				if (firstChunk.value?.type === "tool_call") {
+					expect(await stream.next()).toMatchObject({
+						done: false,
+						value: { type: "tool_call_end", id: "call-1" },
+					})
+				}
 				await expect(stream.next()).rejects.toMatchObject({ retryable: false, semanticOutputObserved: true })
 			}
 		})
@@ -2677,16 +2756,22 @@ describe("VsCodeLmHandler", () => {
 })
 
 describe("getVsCodeLmModels", () => {
-	it("returns only serializable selectors discovered in the current VS Code window", async () => {
+	it("returns only Copilot API selectors discovered in the current VS Code window", async () => {
 		const unknownModel = {
 			...mockLanguageModelChat,
 			id: "claude-3.7-sonnet",
 			name: "Claude 3.7 Sonnet",
+			vendor: "copilot",
 		}
 		const currentModel = { ...mockCopilotGpt56TerraLanguageModelChat }
+		const cliModel = {
+			...mockCopilotGpt56TerraLanguageModelChat,
+			id: "gpt-5.6-terra",
+			vendor: "copilotid",
+		}
 		const selectChatModels = vscode.lm.selectChatModels as Mock
 		selectChatModels.mockReset()
-		selectChatModels.mockResolvedValue([unknownModel, currentModel])
+		selectChatModels.mockResolvedValue([unknownModel, currentModel, cliModel])
 
 		const models = await getVsCodeLmModels()
 
@@ -2703,6 +2788,7 @@ describe("getVsCodeLmModels", () => {
 			}),
 		])
 		expect(models.some((model) => model.family === "gpt-5.5")).toBe(false)
+		expect(models.some((model) => model.vendor === "copilotid")).toBe(false)
 		expect(models.every((model) => !("sendRequest" in model))).toBe(true)
 	})
 

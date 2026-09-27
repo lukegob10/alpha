@@ -90,6 +90,50 @@ export function isSupportedImageFormat(extension: string): boolean {
 	return SUPPORTED_IMAGE_FORMATS.includes(extension.toLowerCase() as (typeof SUPPORTED_IMAGE_FORMATS)[number])
 }
 
+/** Checks the file signature after policy approval so a renamed text file is not returned as an image. */
+export function isSupportedImageContent(buffer: Buffer, extension: string): boolean {
+	const ext = extension.toLowerCase()
+	switch (ext) {
+		case ".png":
+			return buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+		case ".jpg":
+		case ".jpeg":
+			return buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff
+		case ".gif": {
+			const signature = buffer.subarray(0, 6).toString("ascii")
+			return signature === "GIF87a" || signature === "GIF89a"
+		}
+		case ".webp":
+			return (
+				buffer.length >= 12 &&
+				buffer.toString("ascii", 0, 4) === "RIFF" &&
+				buffer.toString("ascii", 8, 12) === "WEBP"
+			)
+		case ".bmp":
+			return buffer.length >= 2 && buffer.toString("ascii", 0, 2) === "BM"
+		case ".ico":
+			return buffer.length >= 4 && buffer.subarray(0, 4).equals(Buffer.from([0x00, 0x00, 0x01, 0x00]))
+		case ".tif":
+		case ".tiff":
+			return (
+				buffer.subarray(0, 4).equals(Buffer.from([0x49, 0x49, 0x2a, 0x00])) ||
+				buffer.subarray(0, 4).equals(Buffer.from([0x4d, 0x4d, 0x00, 0x2a])) ||
+				buffer.subarray(0, 4).equals(Buffer.from([0x49, 0x49, 0x2b, 0x00])) ||
+				buffer.subarray(0, 4).equals(Buffer.from([0x4d, 0x4d, 0x00, 0x2b]))
+			)
+		case ".avif":
+			return (
+				buffer.length >= 12 &&
+				buffer.toString("ascii", 4, 8) === "ftyp" &&
+				["avif", "avis"].includes(buffer.toString("ascii", 8, 12))
+			)
+		case ".svg":
+			return /<svg\b/i.test(buffer.toString("utf8"))
+		default:
+			return false
+	}
+}
+
 /**
  * Validates if an image can be processed based on size limits and model support
  */

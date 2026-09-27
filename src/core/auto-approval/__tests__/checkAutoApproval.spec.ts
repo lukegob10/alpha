@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { disabledSubagentAutoApprovalPolicy } from "@alpha-code/types"
 
 import { checkAutoApproval, checkAutoApprovalWithInheritedPolicy } from "../index"
 import { createSubagentCommandApprovalPolicy } from "../commands"
@@ -6,6 +7,10 @@ import { createSubagentCommandApprovalPolicy } from "../commands"
 const ticketCreate = JSON.stringify({
 	tool: "ticket",
 	ticketActivity: { operation: "create", state: "pending", name: "Ticket" },
+})
+const ticketUpdate = JSON.stringify({
+	tool: "ticket",
+	ticketActivity: { operation: "update", state: "pending", name: "Ticket" },
 })
 const ticketDelete = JSON.stringify({
 	tool: "ticket",
@@ -49,13 +54,16 @@ describe("checkAutoApproval", () => {
 		{ mode: "ask" as const, ask: "tool" as const, text: writeInside, decision: "ask" },
 		{ mode: "ask" as const, ask: "tool" as const, text: spawnExplore, decision: "ask" },
 		{ mode: "ask" as const, ask: "tool" as const, text: ticketCreate, decision: "ask" },
+		{ mode: "ask" as const, ask: "tool" as const, text: ticketUpdate, decision: "ask" },
+		{ mode: "ask" as const, ask: "tool" as const, text: ticketDelete, decision: "ask" },
 		{ mode: "ask" as const, ask: "command" as const, text: "pnpm test", decision: "ask" },
 		{ mode: "auto" as const, ask: "tool" as const, text: readInside, decision: "approve" },
 		{ mode: "auto" as const, ask: "tool" as const, text: writeInside, decision: "approve" },
 		{ mode: "auto" as const, ask: "tool" as const, text: spawnExplore, decision: "approve" },
 		{ mode: "auto" as const, ask: "tool" as const, text: spawnWorker, decision: "approve" },
 		{ mode: "auto" as const, ask: "tool" as const, text: ticketCreate, decision: "approve" },
-		{ mode: "auto" as const, ask: "tool" as const, text: ticketDelete, decision: "ask" },
+		{ mode: "auto" as const, ask: "tool" as const, text: ticketUpdate, decision: "approve" },
+		{ mode: "auto" as const, ask: "tool" as const, text: ticketDelete, decision: "approve" },
 		{ mode: "auto" as const, ask: "tool" as const, text: writeOutside, decision: "ask" },
 		{ mode: "auto" as const, ask: "tool" as const, text: writeProtected, decision: "ask" },
 		{ mode: "auto" as const, ask: "tool" as const, text: readOutside, decision: "ask" },
@@ -63,7 +71,7 @@ describe("checkAutoApproval", () => {
 		{ mode: "bypass" as const, ask: "tool" as const, text: writeOutside, decision: "approve" },
 		{ mode: "bypass" as const, ask: "tool" as const, text: writeProtected, decision: "approve" },
 		{ mode: "bypass" as const, ask: "tool" as const, text: readOutside, decision: "approve" },
-		{ mode: "bypass" as const, ask: "tool" as const, text: ticketDelete, decision: "ask" },
+		{ mode: "bypass" as const, ask: "tool" as const, text: ticketDelete, decision: "approve" },
 	])("applies $mode to $text → $decision", async ({ mode, ask, text, decision }) => {
 		await expect(
 			checkAutoApproval({
@@ -75,14 +83,60 @@ describe("checkAutoApproval", () => {
 		).resolves.toEqual({ decision })
 	})
 
-	it("auto-approves in-workspace commands in Auto when the allowlist is empty", async () => {
+	it.each([
+		{ mode: "ask" as const, workspaceMode: "shared", decision: "ask" },
+		{ mode: "auto" as const, workspaceMode: "shared", decision: "approve" },
+		{ mode: "auto" as const, workspaceMode: "worktree", decision: "ask" },
+		{ mode: "bypass" as const, workspaceMode: "worktree", decision: "approve" },
+		{ mode: "auto" as const, workspaceMode: "invalid", decision: "ask" },
+	])("$mode create_task with $workspaceMode workspace → $decision", async ({ mode, workspaceMode, decision }) => {
+		await expect(
+			checkAutoApproval({
+				ask: "tool",
+				text: JSON.stringify({ tool: "create_task", workspaceMode }),
+				state: { approvalMode: mode },
+			}),
+		).resolves.toEqual({ decision })
+	})
+
+	it.each(["send_task_message", "steer_task", "stop_task"])("lets Auto manage its own %s call", async (tool) => {
+		await expect(
+			checkAutoApproval({ ask: "tool", text: JSON.stringify({ tool }), state: { approvalMode: "auto" } }),
+		).resolves.toEqual({ decision: "approve" })
+	})
+
+	it("approves Git commands in Auto with an empty saved allowlist", async () => {
 		await expect(
 			checkAutoApproval({
 				ask: "command",
-				text: "gh --version",
+				text: "git status --short",
 				state: { approvalMode: "auto", allowedCommands: [] },
 			}),
 		).resolves.toEqual({ decision: "approve" })
+	})
+
+	it("limits an Ask-mode GitHub version probe to its approved command", async () => {
+		const state = { approvalMode: "ask" as const, allowedCommands: ["gh --version"] }
+		await expect(checkAutoApproval({ ask: "command", text: "gh --version", state })).resolves.toEqual({
+			decision: "approve",
+		})
+		for (const text of ["gh issue create", "gh api repos/owner/repo/issues", "gh --version && gh issue create"]) {
+			await expect(checkAutoApproval({ ask: "command", text, state })).resolves.toEqual({ decision: "ask" })
+		}
+	})
+
+	it.each([
+		{ mode: "ask" as const, decision: "ask" },
+		{ mode: "auto" as const, decision: "approve" },
+		{ mode: "bypass" as const, decision: "approve" },
+	])("applies $mode to an unknown command", async ({ mode, decision }) => {
+		await expect(
+			checkAutoApproval({
+				ask: "command",
+				text: "custom-command --version",
+				state: { approvalMode: mode, allowedCommands: [] },
+			}),
+		).resolves.toEqual({ decision })
 	})
 
 	it("still asks for an advanced Ask allowlist miss and honors a hit", async () => {
@@ -100,6 +154,39 @@ describe("checkAutoApproval", () => {
 				state: { approvalMode: "ask", allowedCommands: ["git"] },
 			}),
 		).resolves.toEqual({ decision: "approve" })
+	})
+
+	it("uses a persisted prefix after task restart while keeping denies and dynamic commands guarded", async () => {
+		const storedSettings = { allowedCommands: ["git status --short"] }
+		const restartedTaskState = {
+			approvalMode: "ask" as const,
+			allowedCommands: [...storedSettings.allowedCommands],
+			deniedCommands: [] as string[],
+		}
+
+		await expect(
+			checkAutoApproval({
+				ask: "command",
+				text: "git status --short --branch",
+				state: restartedTaskState,
+			}),
+		).resolves.toEqual({ decision: "approve" })
+
+		await expect(
+			checkAutoApproval({
+				ask: "command",
+				text: "git status --short --porcelain",
+				state: { ...restartedTaskState, deniedCommands: ["git status --short --porcelain"] },
+			}),
+		).resolves.toEqual({ decision: "deny" })
+
+		await expect(
+			checkAutoApproval({
+				ask: "command",
+				text: "git status --short && $NEXT_COMMAND",
+				state: restartedTaskState,
+			}),
+		).resolves.toEqual({ decision: "ask" })
 	})
 
 	it("does not let an Ask allowlist wildcard approve unrelated commands", async () => {
@@ -173,13 +260,13 @@ describe("checkAutoApproval", () => {
 		},
 	)
 
-	it("denies the deny-list in every mode, including Bypass", async () => {
+	it("keeps explicit deny-list matches denied in every mode, including Bypass", async () => {
 		for (const mode of ["ask", "auto", "bypass"] as const) {
 			await expect(
 				checkAutoApproval({
 					ask: "command",
 					text: "rm -rf /",
-					state: { approvalMode: mode, deniedCommands: ["rm"] },
+					state: { approvalMode: mode, allowedCommands: [], deniedCommands: ["rm"] },
 				}),
 			).resolves.toEqual({ decision: "deny" })
 		}
@@ -220,16 +307,6 @@ describe("checkAutoApproval", () => {
 					alwaysAllowWriteOutsideWorkspace: true,
 					alwaysAllowWriteProtected: true,
 				},
-			}),
-		).resolves.toEqual({ decision: "ask" })
-	})
-
-	it("requires manual deletion approval even in Bypass", async () => {
-		await expect(
-			checkAutoApproval({
-				ask: "tool",
-				text: ticketDelete,
-				state: { approvalMode: "bypass" },
 			}),
 		).resolves.toEqual({ decision: "ask" })
 	})
@@ -289,6 +366,68 @@ describe("checkAutoApproval", () => {
 		).resolves.toEqual({ decision: "ask" })
 	})
 
+	it.each(["resources/list", "resources/templates/list"])(
+		"asks before listing %s through an MCP server in Ask mode",
+		async (uri) => {
+			await expect(
+				checkAutoApproval({
+					ask: "use_mcp_server",
+					text: JSON.stringify({ type: "access_mcp_resource", serverName: "docs", uri }),
+					state: { approvalMode: "ask" },
+				}),
+			).resolves.toEqual({ decision: "ask" })
+		},
+	)
+
+	it("keeps MCP prompts in Auto unless the individual tool is explicitly allowed", async () => {
+		await expect(
+			checkAutoApproval({
+				ask: "use_mcp_server",
+				text: JSON.stringify({
+					type: "use_mcp_tool",
+					serverName: "linear",
+					toolName: "get_issue",
+					annotations: { readOnlyHint: true },
+				}),
+				state: { approvalMode: "auto" },
+			}),
+		).resolves.toEqual({ decision: "ask" })
+		await expect(
+			checkAutoApproval({
+				ask: "use_mcp_server",
+				text: JSON.stringify({
+					type: "use_mcp_tool",
+					serverName: "linear",
+					toolName: "update_issue",
+					annotations: { readOnlyHint: true, destructiveHint: true },
+				}),
+				state: { approvalMode: "auto" },
+			}),
+		).resolves.toEqual({ decision: "ask" })
+		await expect(
+			checkAutoApproval({
+				ask: "use_mcp_server",
+				text: JSON.stringify({ type: "use_mcp_tool", serverName: "linear", toolName: "update_issue" }),
+				state: {
+					approvalMode: "auto",
+					alwaysAllowMcp: true,
+					mcpServers: [{ name: "linear", tools: [{ name: "update_issue", alwaysAllow: true }] } as never],
+				},
+			}),
+		).resolves.toEqual({ decision: "approve" })
+		await expect(
+			checkAutoApproval({
+				ask: "use_mcp_server",
+				text: JSON.stringify({ type: "use_mcp_tool", serverName: "linear", toolName: "update_issue" }),
+				state: {
+					autoApprovalEnabled: true,
+					alwaysAllowMcp: true,
+					mcpServers: [{ name: "linear", tools: [{ name: "update_issue", alwaysAllow: true }] } as never],
+				},
+			}),
+		).resolves.toEqual({ decision: "approve" })
+	})
+
 	it("auto-approves delegation control tools when a session dial is active", async () => {
 		await expect(
 			checkAutoApproval({
@@ -322,6 +461,44 @@ describe("checkAutoApproval", () => {
 			}),
 		).resolves.toEqual({ decision: "ask" })
 	})
+
+	it.each([ticketCreate, ticketUpdate, ticketDelete])(
+		"honors live and captured Auto ticket grants for managed children: %s",
+		async (text) => {
+			const inheritedAuto = {
+				...disabledSubagentAutoApprovalPolicy,
+				autoApprovalEnabled: true,
+				alwaysAllowReadOnly: true,
+				alwaysAllowWrite: true,
+				alwaysAllowExecute: true,
+				alwaysAllowTickets: true,
+			}
+			await expect(
+				checkAutoApprovalWithInheritedPolicy({
+					state: { approvalMode: "auto" },
+					inheritedState: inheritedAuto,
+					ask: "tool",
+					text,
+				}),
+			).resolves.toEqual({ decision: "approve" })
+			await expect(
+				checkAutoApprovalWithInheritedPolicy({
+					state: { approvalMode: "auto" },
+					inheritedState: { ...inheritedAuto, alwaysAllowTickets: false },
+					ask: "tool",
+					text,
+				}),
+			).resolves.toEqual({ decision: "ask" })
+			await expect(
+				checkAutoApprovalWithInheritedPolicy({
+					state: { approvalMode: "ask" },
+					inheritedState: inheritedAuto,
+					ask: "tool",
+					text,
+				}),
+			).resolves.toEqual({ decision: "ask" })
+		},
+	)
 
 	it("uses the captured mode as the ceiling for child action review", async () => {
 		const liveState = { approvalMode: "auto" as const, allowedCommands: ["*"], deniedCommands: [] }
@@ -389,7 +566,7 @@ describe("checkAutoApproval", () => {
 				ask: "command",
 				text: "npm test",
 			}),
-		).resolves.toEqual({ decision: "approve" })
+		).resolves.toEqual({ decision: "ask" })
 		await expect(
 			checkAutoApprovalWithInheritedPolicy({
 				state: liveState,
@@ -408,7 +585,7 @@ describe("checkAutoApproval", () => {
 		).resolves.toEqual({ decision: "ask" })
 	})
 
-	it("auto-approves child actions in Auto or Bypass while preserving explicit command denials", async () => {
+	it("keeps Auto child actions inside the captured write and command policy", async () => {
 		const inheritedAuto = {
 			autoApprovalEnabled: true,
 			alwaysAllowReadOnly: true,
@@ -421,37 +598,66 @@ describe("checkAutoApproval", () => {
 			commandApproval: createSubagentCommandApprovalPolicy(["git"], ["git push"], "a".repeat(64)),
 		}
 
-		for (const approvalMode of ["auto", "bypass"] as const) {
-			await expect(
-				checkAutoApprovalWithInheritedPolicy({
-					state: { approvalMode, allowedCommands: ["*"] },
-					inheritedState: inheritedAuto,
-					ask: "tool",
-					text: writeOutside,
-					isProtected: true,
-					requiresExplicitApproval: true,
-				}),
-			).resolves.toEqual({ decision: "approve" })
+		const state = { approvalMode: "auto" as const, allowedCommands: ["git"], deniedCommands: [] }
 
-			await expect(
-				checkAutoApprovalWithInheritedPolicy({
-					state: { approvalMode, allowedCommands: ["*"], deniedCommands: [] },
-					inheritedState: inheritedAuto,
-					ask: "command",
-					text: "pnpm test",
-					requiresExplicitApproval: true,
-				}),
-			).resolves.toEqual({ decision: "approve" })
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state,
+				inheritedState: inheritedAuto,
+				ask: "tool",
+				text: writeInside,
+			}),
+		).resolves.toEqual({ decision: "approve" })
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state,
+				inheritedState: inheritedAuto,
+				ask: "command",
+				text: "pnpm test",
+			}),
+		).resolves.toEqual({ decision: "ask" })
 
-			await expect(
-				checkAutoApprovalWithInheritedPolicy({
-					state: { approvalMode, allowedCommands: ["*"], deniedCommands: [] },
-					inheritedState: inheritedAuto,
-					ask: "command",
-					text: "git push origin main",
-				}),
-			).resolves.toEqual({ decision: "deny" })
-		}
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state,
+				inheritedState: { ...inheritedAuto, alwaysAllowWrite: false, alwaysAllowExecute: false },
+				ask: "command",
+				text: "pnpm test",
+			}),
+		).resolves.toEqual({ decision: "ask" })
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state,
+				inheritedState: inheritedAuto,
+				ask: "command",
+				text: "git status",
+			}),
+		).resolves.toEqual({ decision: "approve" })
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state,
+				inheritedState: inheritedAuto,
+				ask: "command",
+				text: "pnpm test",
+			}),
+		).resolves.toEqual({ decision: "ask" })
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state,
+				inheritedState: inheritedAuto,
+				ask: "command",
+				text: "git status",
+				requiresExplicitApproval: true,
+			}),
+		).resolves.toEqual({ decision: "ask" })
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state,
+				inheritedState: inheritedAuto,
+				ask: "command",
+				text: "git push origin main",
+			}),
+		).resolves.toEqual({ decision: "deny" })
 	})
 
 	it("requires review when either the live or captured subagent mode is Ask", async () => {
@@ -467,6 +673,21 @@ describe("checkAutoApproval", () => {
 			commandApproval: createSubagentCommandApprovalPolicy(["*"], [], "b".repeat(64)),
 		}
 		const liveAuto = { approvalMode: "auto" as const, allowedCommands: ["*"] }
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state: { approvalMode: "ask" },
+				inheritedState: inheritedAuto,
+				ask: "command_output",
+			}),
+		).resolves.toEqual({ decision: "approve" })
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state: { approvalMode: "ask" },
+				inheritedState: inheritedAuto,
+				ask: "tool",
+				text: readInside,
+			}),
+		).resolves.toEqual({ decision: "ask" })
 
 		await expect(
 			checkAutoApprovalWithInheritedPolicy({

@@ -8,9 +8,11 @@ const taskMocks = vi.hoisted(() => {
 		taskId = "created-task"
 		instanceId = "instance-1"
 		parentTask?: any
+		taskApprovalMode?: string
 
 		constructor(options: any) {
 			this.parentTask = options.parentTask
+			this.taskApprovalMode = options.taskApprovalMode
 			instances.push(this)
 		}
 
@@ -40,6 +42,8 @@ describe("AlphaProvider.createTask start control", () => {
 	const createProvider = () =>
 		({
 			taskStack: [],
+			taskCreationQueue: Promise.resolve(),
+			createTaskUnderCreationLock: (AlphaProvider.prototype as any).createTaskUnderCreationLock,
 			getLiveTask: vi.fn(),
 			taskSessions: { canCreateTask: vi.fn(() => true) },
 			customModesManager: { updateCustomMode: vi.fn() },
@@ -121,6 +125,19 @@ describe("AlphaProvider.createTask start control", () => {
 		expect((provider as any).updateGlobalState).toHaveBeenCalledWith("mode", "code")
 	})
 
+	it("freezes a draft approval override into the new task without changing the default", async () => {
+		const provider = createProvider()
+
+		await AlphaProvider.prototype.createTask.call(provider, "First prompt", undefined, undefined, {
+			taskApprovalMode: "ask",
+			startTask: false,
+		})
+
+		expect(taskMocks.instances).toHaveLength(1)
+		expect(taskMocks.instances[0].taskApprovalMode).toBe("ask")
+		expect(provider["setValues"]).not.toHaveBeenCalled()
+	})
+
 	it("starts a task by default", async () => {
 		const provider = createProvider()
 
@@ -129,6 +146,38 @@ describe("AlphaProvider.createTask start control", () => {
 		expect(taskMocks.instances).toHaveLength(1)
 		expect(taskMocks.start).toHaveBeenCalledTimes(1)
 		expect((provider as any).updateGlobalState).toHaveBeenCalledWith("mode", "code")
+	})
+
+	it("serializes concurrent task creation in submission order", async () => {
+		const provider = createProvider()
+		let startFirst!: () => void
+		let releaseFirst!: () => void
+		const firstStarted = new Promise<void>((resolve) => {
+			startFirst = resolve
+		})
+		const firstGate = new Promise<void>((resolve) => {
+			releaseFirst = resolve
+		})
+		const order: string[] = []
+		;(provider as any).createTaskUnderCreationLock = vi.fn(async (text: string) => {
+			order.push(`started:${text}`)
+			if (text === "First") {
+				startFirst()
+				await firstGate
+			}
+			order.push(`finished:${text}`)
+			return { taskId: text }
+		})
+
+		const first = AlphaProvider.prototype.createTask.call(provider, "First")
+		const second = AlphaProvider.prototype.createTask.call(provider, "Second")
+
+		await firstStarted
+		expect(order).toEqual(["started:First"])
+
+		releaseFirst()
+		await expect(Promise.all([first, second])).resolves.toMatchObject([{ taskId: "First" }, { taskId: "Second" }])
+		expect(order).toEqual(["started:First", "finished:First", "started:Second", "finished:Second"])
 	})
 
 	it("publishes and starts before slow mode persistence finishes", async () => {

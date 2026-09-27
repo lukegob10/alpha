@@ -180,6 +180,63 @@ describe("agent lifecycle reducer", () => {
 		).toThrowError(expect.objectContaining<Partial<AgentLifecycleReducerError>>({ code: "duplicate_tool_result" }))
 	})
 
+	it("requires an accepted call for an effect intent and preserves indeterminate outcomes", () => {
+		const initial = createAgentLifecycleSnapshot(ids)
+		const callEvent = {
+			version: 1 as const,
+			eventId: "event-1",
+			sequence: 1,
+			...ids,
+			occurredAt: 1,
+			type: "tool_call_accepted" as const,
+			payload: { item: toolCall() },
+		}
+		const effectStartEvent = {
+			version: 1 as const,
+			eventId: "event-2",
+			sequence: 2,
+			...ids,
+			occurredAt: 2,
+			type: "tool_effect_started" as const,
+			payload: { toolCallId: "call-1" },
+		}
+		const afterCall = reduceAgentLifecycleEvent(initial, callEvent)
+		expect(() => reduceAgentLifecycleEvent(initial, { ...effectStartEvent, sequence: 1 })).toThrowError(
+			expect.objectContaining<Partial<AgentLifecycleReducerError>>({
+				code: "tool_effect_started_without_accepted_call",
+			}),
+		)
+
+		const afterEffectStart = reduceAgentLifecycleEvent(afterCall, effectStartEvent)
+		expect(afterEffectStart.effectStartedToolCallIds).toEqual(["call-1"])
+		expect(() =>
+			reduceAgentLifecycleEvent(afterEffectStart, {
+				...effectStartEvent,
+				eventId: "event-3",
+				sequence: 3,
+				occurredAt: 3,
+			} as AgentLifecycleEvent),
+		).toThrowError(
+			expect.objectContaining<Partial<AgentLifecycleReducerError>>({ code: "duplicate_tool_effect_start" }),
+		)
+
+		const indeterminateResult = reduceAgentLifecycleEvent(afterEffectStart, {
+			version: 1,
+			eventId: "event-3",
+			sequence: 3,
+			...ids,
+			occurredAt: 3,
+			type: "tool_result_recorded",
+			payload: {
+				item: { ...toolResult(), status: "indeterminate", output: "The tool effect may have started." },
+			},
+		})
+		expect(indeterminateResult.terminalToolCallIds).toEqual(["call-1"])
+		expect(indeterminateResult.items.find((item) => item.type === "tool_result")).toMatchObject({
+			status: "indeterminate",
+		})
+	})
+
 	it("does not allow a terminal turn with unresolved tools and enforces one terminal state", () => {
 		const initial = createAgentLifecycleSnapshot(ids)
 		const callEvent = {

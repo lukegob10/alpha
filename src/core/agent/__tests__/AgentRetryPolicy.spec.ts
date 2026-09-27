@@ -144,6 +144,18 @@ describe("AgentRetryPolicy", () => {
 		expect(policy.shouldRetry("context", 1)).toBe(false)
 	})
 
+	it("enforces the global attempt cap when failures alternate between categories", () => {
+		const policy = new AgentRetryPolicy({ maxAttempts: 3, baseDelayMs: 0, jitter: "none" })
+
+		expect(policy.decide({ category: "transport", attempt: 1, totalAttempt: 1 }).shouldRetry).toBe(true)
+		expect(policy.decide({ category: "rate-limit", attempt: 1, totalAttempt: 2 }).shouldRetry).toBe(true)
+		expect(policy.decide({ category: "transport", attempt: 2, totalAttempt: 3 })).toMatchObject({
+			shouldRetry: false,
+			exhausted: true,
+			reason: "attempts",
+		})
+	})
+
 	it("never lets a category budget exceed the global attempt limit", () => {
 		const policy = new AgentRetryPolicy({
 			maxAttempts: 2,

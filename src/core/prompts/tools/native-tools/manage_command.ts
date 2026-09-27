@@ -16,13 +16,14 @@ export default {
 		name: "manage_command",
 		strict: false,
 		description:
-			"Wait for new output or completion, stop, send input to, or read truncated output from a command started by this task. Use the execution_id returned by shell for wait, stop, or input. Use action read with the artifact_id returned by shell when output was persisted. Wait inside the host instead of repeatedly polling unchanged output. A running server is not ready merely because it has a process: inspect its output and verify its observed URL before browser interaction. Input is supported only by interactive terminal providers. A stop request is not proof of exit; inspect the returned status. Never relaunch an existing server just to obtain its output.",
+			"Wait for new output or completion, stop, send input to, or read truncated output from a command started by this task. Use the execution_id returned by exec_command or by historical shell calls for wait, stop, or input. Use action read with the artifact_id returned by exec_command when output was persisted. Wait inside the host instead of repeatedly polling unchanged output. A running server is not ready merely because it has a process: inspect its output and verify its observed URL before browser interaction. Input is supported only by interactive terminal providers. A stop request is not proof of exit; inspect the returned status. Never relaunch an existing server just to obtain its output.",
 		parameters: {
 			type: "object",
 			properties: {
 				execution_id: {
 					type: "string",
-					description: "Execution ID returned by shell; required for wait, stop, and input.",
+					description:
+						"Execution ID returned by exec_command or a historical shell call; required for wait, stop, and input.",
 				},
 				action: { type: "string", enum: ["wait", "stop", "input", "read"] },
 				input: {
@@ -68,3 +69,45 @@ export default {
 		},
 	},
 } satisfies OpenAI.Chat.ChatCompletionTool
+
+export function createWriteStdinTool(): OpenAI.Chat.ChatCompletionTool {
+	return {
+		type: "function",
+		function: {
+			name: "write_stdin",
+			strict: false,
+			description:
+				"Write characters to an existing task command session and return recent output. Use the numeric session_id returned by exec_command. Omit chars or pass an empty string to poll; non-empty input is supported only by interactive terminal providers. A session belongs to the current task and cannot control another task's command.",
+			parameters: {
+				type: "object",
+				properties: {
+					session_id: {
+						type: "integer",
+						minimum: 1,
+						description: "Numeric session identifier returned by exec_command.",
+					},
+					chars: {
+						type: "string",
+						maxLength: 16_384,
+						description: "Literal terminal input. Defaults to empty, which polls without writing.",
+					},
+					yield_time_ms: {
+						type: "integer",
+						minimum: 0,
+						maximum: MANAGE_COMMAND_MAX_TIMEOUT_MS,
+						description:
+							"Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default. Returns early on new output, completion, or cancellation.",
+					},
+					max_output_tokens: {
+						type: "integer",
+						minimum: 0,
+						maximum: 100_000,
+						description: "Approximate maximum tool result size in tokens. Defaults to 10000.",
+					},
+				},
+				required: ["session_id"],
+				additionalProperties: false,
+			},
+		},
+	} satisfies OpenAI.Chat.ChatCompletionTool
+}

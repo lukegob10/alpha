@@ -1,0 +1,65 @@
+.ticket-type-badge {
+	--ticket-type-accent: var(--vscode-charts-blue, var(--vscode-textLink-foreground));
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	max-width: 100%;
+	padding: 2px 8px;
+	border: 1px solid var(--vscode-contrastBorder, var(--vscode-panel-border));
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-size: 11px;
+	font-weight: 500;
+	line-height: 1.4;
+	white-space: nowrap;
+}
+
+.ticket-type-dot {
+	width: 7px;
+	height: 7px;
+	flex: 0 0 7px;
+	border-radius: 50%;
+	background: var(--ticket-type-accent);
+}
+
+.ticket-type-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.ticket-type-badge[data-type="bug"] {
+	--ticket-type-accent: var(--vscode-testing-iconFailed, var(--vscode-errorForeground));
+}
+
+.ticket-type-badge[data-type="feature"] {
+	--ticket-type-accent: var(--vscode-charts-purple, var(--vscode-textLink-foreground));
+}
+
+.ticket-type-badge[data-type="improvement"] {
+	--ticket-type-accent: var(--vscode-charts-blue, var(--vscode-textLink-foreground));
+}
+
+.ticket-type-badge[data-type="testing"] {
+	--ticket-type-accent: var(--vscode-testing-iconPassed, var(--vscode-textLink-foreground));
+}
+
+.ticket-type-badge[data-type="performance"] {
+	--ticket-type-accent: var(--vscode-charts-orange, var(--vscode-textLink-foreground));
+}
+
+.ticket-type-badge[data-type="ux"] {
+	--ticket-type-accent: var(--vscode-charts-green, var(--vscode-textLink-foreground));
+}
+
+@supports (background: color-mix(in srgb, black, white)) {
+	.ticket-type-badge {
+		border-color: var(
+			--vscode-contrastBorder,
+			color-mix(in srgb, var(--ticket-type-accent) 28%, var(--vscode-panel-border))
+		);
+		background: color-mix(in srgb, var(--ticket-type-accent) 10%, transparent);
+	}
+}

@@ -57,7 +57,13 @@ import fs from "fs/promises"
 import type { PathLike } from "fs"
 import path from "path"
 
-import { loadRuleFiles, addCustomInstructions } from "../custom-instructions"
+import { DEFAULT_MODES } from "@alpha-code/types"
+import {
+	addCustomInstructionParts,
+	addCustomInstructions,
+	loadRuleFiles,
+	renderCustomInstructionParts,
+} from "../custom-instructions"
 
 // Create mock functions
 const readFileMock = vi.fn()
@@ -69,7 +75,10 @@ const realpathMock = vi.fn()
 
 // Replace fs functions with our mocks
 fs.readFile = readFileMock as any
-fs.stat = statMock as any
+fs.stat = ((filePath: PathLike) => {
+	if (path.basename(filePath.toString()) === ".git") return Promise.reject({ code: "ENOENT" })
+	return statMock(filePath)
+}) as any
 fs.readdir = readdirMock as any
 fs.readlink = readlinkMock as any
 fs.lstat = lstatMock as any
@@ -545,6 +554,104 @@ describe("loadRuleFiles", () => {
 describe("addCustomInstructions", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
+	})
+
+	it.each(["code", "architect"])(
+		"keeps built-in %s instructions in Developer parts and preserves the flattened prompt",
+		async (mode) => {
+			statMock.mockRejectedValue({ code: "ENOENT" })
+			readFileMock.mockRejectedValue({ code: "ENOENT" })
+			lstatMock.mockRejectedValue({ code: "ENOENT" })
+			const modeInstructions = DEFAULT_MODES.find((modeConfig) => modeConfig.slug === mode)?.customInstructions
+			expect(modeInstructions).toBeTruthy()
+
+			const parts = await addCustomInstructionParts(modeInstructions!, "global guidance", "/fake/path", mode, {
+				modeInstructionAuthority: "builtin",
+			})
+			const expectedPrompt = `
+====
+
+USER'S CUSTOM INSTRUCTIONS
+
+The following additional instructions are provided by the user, and should be followed to the best of your ability.
+
+Global Instructions:\nglobal guidance
+
+Mode-specific Instructions:\n${modeInstructions}
+`
+
+			expect(parts.find(({ origin }) => origin === "built-in-mode-instructions")).toEqual({
+				role: "developer",
+				origin: "built-in-mode-instructions",
+				content: `Mode-specific Instructions:\n${modeInstructions}`,
+			})
+			expect(
+				parts
+					.filter(({ origin }) => origin === "global-custom-instructions")
+					.every(({ role }) => role === "user"),
+			).toBe(true)
+			expect(renderCustomInstructionParts(parts)).toBe(expectedPrompt)
+			expect(await addCustomInstructions(modeInstructions!, "global guidance", "/fake/path", mode)).toBe(
+				expectedPrompt,
+			)
+		},
+	)
+
+	it("keeps custom mode overrides in User context", async () => {
+		statMock.mockRejectedValue({ code: "ENOENT" })
+		readFileMock.mockRejectedValue({ code: "ENOENT" })
+		lstatMock.mockRejectedValue({ code: "ENOENT" })
+
+		const parts = await addCustomInstructionParts("User-defined code guidance", "", "/fake/path", "code")
+
+		expect(parts.find(({ origin }) => origin === "custom-mode-instructions")).toMatchObject({
+			role: "user",
+			content: "Mode-specific Instructions:\nUser-defined code guidance",
+		})
+		expect(parts.some(({ origin }) => origin === "built-in-mode-instructions")).toBe(false)
+	})
+
+	it("does not promote a user override that happens to equal the built-in text", async () => {
+		statMock.mockRejectedValue({ code: "ENOENT" })
+		readFileMock.mockRejectedValue({ code: "ENOENT" })
+		lstatMock.mockRejectedValue({ code: "ENOENT" })
+		const codeInstructions = DEFAULT_MODES.find((modeConfig) => modeConfig.slug === "code")?.customInstructions
+		expect(codeInstructions).toBeTruthy()
+
+		const parts = await addCustomInstructionParts(codeInstructions!, "", "/fake/path", "code", {
+			modeInstructionAuthority: "user",
+		})
+
+		expect(parts.find(({ origin }) => origin === "custom-mode-instructions")).toMatchObject({
+			role: "user",
+			content: `Mode-specific Instructions:\n${codeInstructions}`,
+		})
+		expect(parts.some(({ origin }) => origin === "built-in-mode-instructions")).toBe(false)
+	})
+
+	it("assembles project instruction files once and keeps them in User context", async () => {
+		statMock.mockRejectedValue({ code: "ENOENT" })
+		lstatMock.mockImplementation((filePath: PathLike) => {
+			if (filePath.toString().endsWith("AGENTS.md")) {
+				return Promise.resolve({ isSymbolicLink: vi.fn().mockReturnValue(false) })
+			}
+			return Promise.reject({ code: "ENOENT" })
+		})
+		readFileMock.mockImplementation((filePath: PathLike) => {
+			if (filePath.toString().endsWith("AGENTS.md")) return Promise.resolve("Project rule")
+			return Promise.reject({ code: "ENOENT" })
+		})
+
+		const parts = await addCustomInstructionParts("", "", "/fake/path", "code", {
+			settings: { todoListEnabled: true, useAgentRules: true, newTaskRequireTodos: false },
+		})
+
+		const result = renderCustomInstructionParts(parts)
+		expect(result).toContain("# Agent Rules Standard (AGENTS.md):\nProject rule")
+		expect(parts.find(({ origin }) => origin === "agent-rules")).toMatchObject({ role: "user" })
+		expect(readFileMock.mock.calls.filter(([filePath]) => filePath.toString().endsWith("AGENTS.md"))).toHaveLength(
+			1,
+		)
 	})
 
 	it("should combine all instruction types when provided", async () => {

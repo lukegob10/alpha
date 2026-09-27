@@ -24,6 +24,13 @@ export interface StepInstructionSource {
 	digest: string
 }
 
+/** Ordered provider-facing instruction with its role and assembly provenance. */
+export interface StepInstructionFragment {
+	role: "developer" | "system" | "user"
+	origin: string
+	content: string
+}
+
 export interface StepTranscriptBoundary {
 	startIndex: number
 	endIndex: number
@@ -75,6 +82,8 @@ export interface StepContextData {
 
 	instructions: {
 		systemPrompt: string
+		/** Present on newly captured role-aware prompts; omitted for legacy snapshots. */
+		instructionFragments?: StepInstructionFragment[]
 		environmentDetails?: string
 		environmentSnapshot?: EnvironmentSnapshot
 		sources: StepInstructionSource[]
@@ -293,7 +302,13 @@ export function getStepContextDigests(context: StepContext): StepContextDigests 
 	const environment = digestValue(context.instructions.environmentDetails ?? "")
 	const stableEnvironment = digestValue(context.instructions.environmentSnapshot?.stable ?? {})
 	const volatileEnvironment = digestValue(context.instructions.environmentSnapshot?.volatile ?? {})
-	const instructions = digestValue(context.instructions.sources)
+	const instructions =
+		context.instructions.instructionFragments === undefined
+			? digestValue(context.instructions.sources)
+			: digestValue({
+					sources: context.instructions.sources,
+					instructionFragments: context.instructions.instructionFragments,
+				})
 	const transcript = context.transcript.boundary.digest || digestValue(context.transcript.messages)
 	const tools =
 		context.tools.digest ||

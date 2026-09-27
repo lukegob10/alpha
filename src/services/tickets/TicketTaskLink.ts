@@ -14,7 +14,8 @@ export async function workOnTicket(
 	await store.read(id)
 	return withFileLock(path.join(store.directory, ".launch"), async () => {
 		const ticket = await store.read(id)
-		if (ticket.status === "complete") throw new Error("Reopen the ticket before starting work")
+		if (ticket.status === "complete" || ticket.status === "canceled")
+			throw new Error("Reopen the ticket before starting work")
 		const linked = ticket.linkedTaskIds.at(-1)
 		if (linked) {
 			await provider.showTaskWithId(linked)

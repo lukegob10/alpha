@@ -3,10 +3,12 @@ import { createHash } from "crypto"
 import fs from "fs/promises"
 import path from "path"
 import { promisify } from "util"
+import { createTwoFilesPatch } from "diff"
 
 import type { ToolUse } from "../../shared/tools"
 import { parsePatch } from "../tools/apply-patch/parser"
 import { fingerprintContent } from "../tools/contentVersion"
+import { computeDiffStats, sanitizeUnifiedDiff } from "../diff/stats"
 import { getImageOutputPaths } from "../tools/imageOutputPaths"
 
 const execFileAsync = promisify(execFile)
@@ -17,6 +19,10 @@ const MAX_TOTAL_BYTES = 16 * 1_024 * 1_024
 const MAX_COMMAND_LENGTH = 4_096
 const MAX_ANCESTORS = 32
 const MAX_GIT_OUTPUT_BYTES = 1_024 * 1_024
+const MAX_PRESENTATION_FILE_BYTES = 128 * 1_024
+const MAX_PRESENTATION_TOTAL_BYTES = 512 * 1_024
+const MAX_PRESENTATION_FILES = 64
+const MAX_PRESENTATION_DURATION_MS = 2_000
 
 export type VerificationContent = Record<string, string>
 
@@ -278,6 +284,20 @@ export type WorkspaceMutationState = GitMutationState & {
 	workspace: WorkspaceIdentity
 }
 
+/** Short-lived original bytes retained only until a command's terminal mutation receipt settles. */
+export interface WorkspaceMutationDiffBaseline {
+	workspace: WorkspaceIdentity
+	contents: Record<string, Buffer | null>
+}
+
+export interface WorkspaceMutationDiff {
+	path: string
+	diff: string
+	diffStats: { added: number; removed: number }
+	originalContent: string
+	finalContent: string
+}
+
 async function workspaceIdentity(workspaceRoot: string): Promise<WorkspaceIdentity> {
 	const root = await fs.realpath(workspaceRoot)
 	const stat = await fs.stat(root)
@@ -291,11 +311,11 @@ function assertWorkspaceIdentity(expected: WorkspaceIdentity, actual: WorkspaceI
 	}
 }
 
-async function gitObservation(cwd: string, args: string[]): Promise<string> {
+async function gitObservation(cwd: string, args: string[], timeoutMs = 5_000): Promise<string> {
 	const { stdout } = await execFileAsync(
 		"git",
 		["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", ...args],
-		{ cwd, encoding: "utf8", maxBuffer: MAX_GIT_OUTPUT_BYTES, timeout: 5_000, windowsHide: true },
+		{ cwd, encoding: "utf8", maxBuffer: MAX_GIT_OUTPUT_BYTES, timeout: timeoutMs, windowsHide: true },
 	)
 	return stdout
 }
@@ -511,4 +531,132 @@ export async function compareWorkspaceMutationState(
 		changedPaths,
 		files: Object.fromEntries(changedPaths.map((candidate) => [candidate, current.files[candidate] ?? "missing"])),
 	}
+}
+
+/** Capture only bounded, already observed dirty files; clean Git files come from the captured HEAD later. */
+export async function captureWorkspaceMutationDiffBaseline(
+	workspaceRoot: string,
+	state: WorkspaceMutationState,
+): Promise<WorkspaceMutationDiffBaseline> {
+	const workspace = await workspaceIdentity(workspaceRoot)
+	assertWorkspaceIdentity(state.workspace, workspace)
+	const contents: Record<string, Buffer | null> = Object.create(null)
+	let retainedBytes = 0
+	for (const candidate of Object.keys(state.files).sort()) {
+		if (Object.keys(contents).length >= MAX_PRESENTATION_FILES) break
+		const absolute = resolveContainedPath(workspace.root, candidate, workspaceRoot)
+		const bytes = await readBoundedFile(workspace.root, absolute, MAX_FILE_BYTES)
+		const hash = bytes ? createHash("sha256").update(bytes).digest("hex") : "missing"
+		if (hash !== state.files[candidate]) {
+			throw new VerificationScopeError("Workspace content changed while capturing command diff baseline")
+		}
+		if (
+			bytes &&
+			(bytes.length > MAX_PRESENTATION_FILE_BYTES || retainedBytes + bytes.length > MAX_PRESENTATION_TOTAL_BYTES)
+		) {
+			continue
+		}
+		contents[candidate] = bytes ?? null
+		retainedBytes += bytes?.length ?? 0
+	}
+	assertWorkspaceIdentity(workspace, await workspaceIdentity(workspaceRoot))
+	return { workspace, contents }
+}
+
+async function readGitBaselineContent(
+	root: string,
+	head: string,
+	candidate: string,
+	remainingTimeMs: () => number,
+): Promise<Buffer | null | undefined> {
+	const treeTimeoutMs = remainingTimeMs()
+	if (treeTimeoutMs === 0) return undefined
+	const tree = await gitObservation(root, ["ls-tree", "-z", "--full-tree", head, "--", candidate], treeTimeoutMs)
+	if (!tree) return null
+	const match = /^(100644|100755) blob ([0-9a-f]{40,64})\t([^\0]+)\0$/.exec(tree)
+	if (!match || match[3] !== candidate) return undefined
+	const blobTimeoutMs = remainingTimeMs()
+	if (blobTimeoutMs === 0) return undefined
+	const { stdout } = await execFileAsync("git", ["--no-optional-locks", "cat-file", "blob", match[2]], {
+		cwd: root,
+		encoding: "buffer",
+		maxBuffer: MAX_PRESENTATION_FILE_BYTES + 1,
+		timeout: blobTimeoutMs,
+		windowsHide: true,
+	})
+	return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout)
+}
+
+function decodePresentationContent(bytes: Buffer | null): string | undefined {
+	if (!bytes) return ""
+	if (bytes.includes(0)) return undefined
+	try {
+		return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+	} catch {
+		return undefined
+	}
+}
+
+/** Build truthful, bounded UI diffs from the exact mutation receipt rather than Git HEAD's current diff. */
+export async function createWorkspaceMutationDiffs(
+	workspaceRoot: string,
+	before: WorkspaceMutationState,
+	changes: { changedPaths: string[]; files: VerificationContent },
+	baseline: WorkspaceMutationDiffBaseline,
+	now: () => number = () => performance.now(),
+): Promise<WorkspaceMutationDiff[]> {
+	const workspace = await workspaceIdentity(workspaceRoot)
+	assertWorkspaceIdentity(before.workspace, workspace)
+	assertWorkspaceIdentity(baseline.workspace, workspace)
+	const deadline = now() + MAX_PRESENTATION_DURATION_MS
+	const remainingTimeMs = () => Math.max(0, Math.ceil(deadline - now()))
+	const diffs: WorkspaceMutationDiff[] = []
+	let retainedBytes = 0
+	for (const candidate of changes.changedPaths.slice(0, MAX_PRESENTATION_FILES)) {
+		if (remainingTimeMs() === 0) break
+		try {
+			const wasObserved = Object.prototype.hasOwnProperty.call(before.files, candidate)
+			if (wasObserved && !Object.prototype.hasOwnProperty.call(baseline.contents, candidate)) continue
+			const originalBytes = wasObserved
+				? baseline.contents[candidate]
+				: before.kind === "git" && before.head
+					? await readGitBaselineContent(workspace.root, before.head, candidate, remainingTimeMs)
+					: null
+			if (originalBytes === undefined) continue
+			if (remainingTimeMs() === 0) break
+			const absolute = resolveContainedPath(workspace.root, candidate, workspaceRoot)
+			const finalBytes = await readBoundedFile(workspace.root, absolute, MAX_FILE_BYTES)
+			if (remainingTimeMs() === 0) break
+			const finalHash = finalBytes ? createHash("sha256").update(finalBytes).digest("hex") : "missing"
+			if (finalHash !== changes.files[candidate]) continue
+			if (
+				(originalBytes?.length ?? 0) > MAX_PRESENTATION_FILE_BYTES ||
+				(finalBytes?.length ?? 0) > MAX_PRESENTATION_FILE_BYTES ||
+				retainedBytes + (originalBytes?.length ?? 0) + (finalBytes?.length ?? 0) > MAX_PRESENTATION_TOTAL_BYTES
+			)
+				continue
+			const originalContent = decodePresentationContent(originalBytes ?? null)
+			const finalContent = decodePresentationContent(finalBytes ?? null)
+			if (originalContent === undefined || finalContent === undefined) continue
+			if (originalContent === finalContent) continue
+			const diff = sanitizeUnifiedDiff(
+				createTwoFilesPatch(
+					originalBytes ? candidate : "/dev/null",
+					finalBytes ? candidate : "/dev/null",
+					originalContent,
+					finalContent,
+				),
+			)
+			if (diff.length > MAX_PRESENTATION_FILE_BYTES * 2) continue
+			const diffStats = computeDiffStats(diff)
+			if (!diffStats || (diffStats.added === 0 && diffStats.removed === 0)) continue
+			diffs.push({ path: candidate, diff, diffStats, originalContent, finalContent })
+			retainedBytes += (originalBytes?.length ?? 0) + (finalBytes?.length ?? 0)
+		} catch {
+			// The receipt already preserves exact changed paths. A presentation diff
+			// must not change the command's outcome when a file is binary or races us.
+			if (remainingTimeMs() === 0) break
+		}
+	}
+	return diffs
 }

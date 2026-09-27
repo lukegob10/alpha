@@ -580,6 +580,8 @@ describe("AlphaProvider Worker change-set actions", () => {
 			expect(decision).toMatchObject({ allowed: false })
 			expect(decision.message).toContain("managed descendant is still active")
 			expect(decision.message).toContain("/root/worker")
+			expect(decision.message).toContain("then give a final answer")
+			expect(decision.message).not.toContain("attempt_completion")
 		},
 		TEST_TIMEOUT_MS,
 	)
@@ -605,6 +607,8 @@ describe("AlphaProvider Worker change-set actions", () => {
 
 			expect(blocked).toMatchObject({ allowed: false })
 			expect(blocked.message).toContain("terminal result remains unconsumed")
+			expect(blocked.message).toContain("then give a final answer")
+			expect(blocked.message).not.toContain("attempt_completion")
 
 			await store.acknowledge("parent-1", entry.sequence, "parent-1")
 			await expect(provider.getParentCompletionDecision(parent)).resolves.toMatchObject({ allowed: true })

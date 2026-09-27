@@ -87,7 +87,7 @@ export function convertAnthropicContentToGemini(
 					...(functionCallSignature ? { thoughtSignature: functionCallSignature } : {}),
 				} as Part
 			case "tool_result": {
-				if (!block.content) {
+				if (block.content === null) {
 					return []
 				}
 
@@ -103,12 +103,12 @@ export function convertAnthropicContentToGemini(
 					)
 				}
 
-				if (typeof block.content === "string") {
+				if (typeof block.content === "string" || block.content === undefined) {
 					return {
 						functionResponse: {
 							id: block.tool_use_id,
 							name: toolName,
-							response: { name: toolName, content: block.content },
+							response: { name: toolName, content: block.content ?? "" },
 						},
 					}
 				}

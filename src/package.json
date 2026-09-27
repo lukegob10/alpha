@@ -339,11 +339,7 @@
 					"items": {
 						"type": "string"
 					},
-					"default": [
-						"git log",
-						"git diff",
-						"git show"
-					],
+					"default": [],
 					"description": "%commands.allowedCommands.description%"
 				},
 				"alpha.deniedCommands": {
@@ -373,6 +369,70 @@
 					"type": "boolean",
 					"default": false,
 					"description": "%commands.preventCompletionWithOpenTodos.description%"
+				},
+				"alpha.completionHooks": {
+					"type": "object",
+					"scope": "machine",
+					"default": {},
+					"description": "%settings.completionHooks.description%",
+					"properties": {
+						"stop": {
+							"type": "array",
+							"maxItems": 8,
+							"items": {
+								"type": "object",
+								"required": [
+									"command"
+								],
+								"additionalProperties": false,
+								"properties": {
+									"command": {
+										"type": "string",
+										"minLength": 1
+									},
+									"args": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"timeoutMs": {
+										"type": "integer",
+										"minimum": 100,
+										"maximum": 30000
+									}
+								}
+							}
+						},
+						"subagentStop": {
+							"type": "array",
+							"maxItems": 8,
+							"items": {
+								"type": "object",
+								"required": [
+									"command"
+								],
+								"additionalProperties": false,
+								"properties": {
+									"command": {
+										"type": "string",
+										"minLength": 1
+									},
+									"args": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"timeoutMs": {
+										"type": "integer",
+										"minimum": 100,
+										"maximum": 30000
+									}
+								}
+							}
+						}
+					}
 				},
 				"alpha.vsCodeLmModelSelector": {
 					"type": "object",

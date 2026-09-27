@@ -29,6 +29,7 @@ import {
 	DEFAULT_MAX_IMAGE_FILE_SIZE_MB,
 	DEFAULT_MAX_TOTAL_IMAGE_SIZE_MB,
 	isSupportedImageFormat,
+	isSupportedImageContent,
 	validateImageForProcessing,
 	processImageFile,
 	ImageMemoryTracker,
@@ -175,6 +176,36 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 	}
 
 	/**
+	 * Execute a single image-only read through the same path checks and approval
+	 * flow as read_file. The native view_image surface cannot return text or other
+	 * binary formats.
+	 */
+	async executeImage(imagePath: unknown, task: Task, callbacks: ToolCallbacks): Promise<void> {
+		if (typeof imagePath !== "string" || !imagePath.trim()) {
+			task.didToolFailInCurrentTurn = true
+			callbacks.setResultMetadata?.({ status: "error" })
+			callbacks.pushToolResult("Error: view_image requires a non-empty path.")
+			return
+		}
+
+		if (!isSupportedImageFormat(path.extname(imagePath))) {
+			task.didToolFailInCurrentTurn = true
+			callbacks.setResultMetadata?.({ status: "error" })
+			callbacks.pushToolResult("Error: view_image only supports local image files.")
+			return
+		}
+
+		if (!(task.api.getModel().info.supportsImages ?? false)) {
+			task.didToolFailInCurrentTurn = true
+			callbacks.setResultMetadata?.({ status: "error" })
+			callbacks.pushToolResult("Error: the current model does not support image input.")
+			return
+		}
+
+		await this.executeNew([{ path: imagePath }], task, callbacks, false, true)
+	}
+
+	/**
 	 * Execute normalized file selections through shared approval, reading, and rendering.
 	 */
 	private async executeNew(
@@ -182,6 +213,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		task: Task,
 		callbacks: ToolCallbacks,
 		batch: boolean,
+		imageOnly = false,
 	): Promise<void> {
 		const supportsImages = task.api.getModel().info.supportsImages ?? false
 		const fileResults: FileResult[] = entries.map((entry) => {
@@ -272,7 +304,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 					const isBinary = await isBinaryFile(fullPath)
 					callbacks.signal?.throwIfAborted()
 
-					if (isBinary) {
+					if (imageOnly || isBinary) {
 						await this.handleBinaryFile(
 							task,
 							relPath,
@@ -284,6 +316,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 							imageMemoryTracker,
 							(_path, updates) => updateFileResult(fileResult, updates),
 							callbacks,
+							imageOnly,
 						)
 						continue
 					}
@@ -449,6 +482,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 		imageMemoryTracker: ImageMemoryTracker,
 		updateFileResult: (path: string, updates: Partial<FileResult>) => void,
 		callbacks: ToolCallbacks,
+		imageOnly = false,
 	): Promise<void> {
 		const fileExtension = path.extname(relPath).toLowerCase()
 		const supportedBinaryFormats = getSupportedBinaryFormats()
@@ -473,6 +507,16 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				}
 
 				const imageResult = await processImageFile(fullPath)
+				if (imageOnly && !isSupportedImageContent(imageResult.buffer, fileExtension)) {
+					const error = `File content does not match the supported image format for ${fileExtension}.`
+					updateFileResult(relPath, {
+						status: "error",
+						error,
+						nativeContent: `File: ${relPath}\nError: ${error}`,
+					})
+					callbacks.setResultMetadata?.({ status: "error" })
+					return
+				}
 				imageMemoryTracker.addMemoryUsage(imageResult.sizeInMB)
 				await task.fileContextTracker.trackFileContext(relPath, "read_tool" as RecordSource)
 

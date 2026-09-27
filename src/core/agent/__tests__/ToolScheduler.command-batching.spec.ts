@@ -11,6 +11,8 @@ function fixture(
 	count = 12,
 	preparation: "read" | "fallback" | "mutation" = "read",
 	durationForCall: (id: string) => number = () => 100,
+	requirePreparedCommandRead = false,
+	deferResultCommit = false,
 ) {
 	let active = 0
 	let peak = 0
@@ -85,12 +87,16 @@ function fixture(
 		}),
 		signal: controller.signal,
 		preserveAbortedResults: true,
+		requirePreparedCommandRead,
+		deferResultCommit,
 	})
 	const calls = Array.from({ length: count }, (_, index) => ({
 		type: "tool_call" as const,
 		id: `command-${index}`,
-		name: "execute_command",
-		arguments: { command: "git status" },
+		name: requirePreparedCommandRead ? "exec_command" : "execute_command",
+		arguments: requirePreparedCommandRead
+			? { cmd: "git status", yield_time_ms: 10_000 }
+			: { command: "git status" },
 	}))
 	return { scheduler, calls, host, trace, controller, registry, descriptor, peak: () => peak, active: () => active }
 }
@@ -169,6 +175,47 @@ describe("approved command batches", () => {
 		expect(test.peak()).toBe(1)
 		expect(test.host.askApproval).toHaveBeenCalledTimes(2)
 		expect(outcome.results.every((result) => result.status === "success")).toBe(true)
+	})
+
+	it("fails closed instead of running an ordinary command when an early read is no longer isolated", async () => {
+		vi.useFakeTimers()
+		const test = fixture("selective-parallel", 5, "mutation", () => 0, true)
+		const pending = test.scheduler.run(test.calls)
+		await vi.runAllTimersAsync()
+		const outcome = await pending
+		expect(outcome.results.map((result) => result.status)).toEqual([
+			"success",
+			"success",
+			"success",
+			"success",
+			"denied",
+		])
+		expect(test.trace).not.toContain("start:command-4")
+	})
+
+	it("admits only the settled isolated exec_command read into the pre-EOF deferred lane", async () => {
+		const test = fixture("selective-parallel", 5, "mutation", () => 0, true, true)
+		const outcome = await test.scheduler.run(test.calls)
+
+		expect(outcome.results.map((result) => result.status)).toEqual([
+			"success",
+			"success",
+			"success",
+			"success",
+			"denied",
+		])
+		expect(test.trace).toContain("start:command-0")
+		expect(test.trace).not.toContain("start:command-4")
+		expect(test.host.userMessageContent).toEqual([])
+
+		await test.scheduler.commitDeferredResults()
+		expect(test.host.userMessageContent).toMatchObject([
+			{ type: "tool_result", tool_use_id: "command-0", is_error: false },
+			{ type: "tool_result", tool_use_id: "command-1", is_error: false },
+			{ type: "tool_result", tool_use_id: "command-2", is_error: false },
+			{ type: "tool_result", tool_use_id: "command-3", is_error: false },
+			{ type: "tool_result", tool_use_id: "command-4", is_error: true },
+		])
 	})
 
 	it("joins read batches before a mutating command and then resumes batching", async () => {

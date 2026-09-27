@@ -98,14 +98,30 @@ export function normalizeTaskToolArguments(
 	toolName: string,
 	args: Record<string, unknown>,
 ): Record<string, unknown> {
+	if (toolName === "exec_command") {
+		if (typeof args.cmd === "string" && typeof args.command === "string" && args.cmd !== args.command) {
+			throw new Error("conflicting exec_command command and cmd arguments")
+		}
+		if (typeof args.workdir === "string" && typeof args.cwd === "string" && args.workdir !== args.cwd) {
+			throw new Error("conflicting exec_command workdir and cwd arguments")
+		}
+		args = {
+			...args,
+			...(typeof args.command === "string" || typeof args.cmd !== "string" ? {} : { command: args.cmd }),
+			...(typeof args.cwd === "string" || typeof args.workdir !== "string" ? {} : { cwd: args.workdir }),
+			...(typeof args.timeout === "number" || typeof args.yield_time_ms !== "number"
+				? {}
+				: { timeout: args.yield_time_ms / 1_000 }),
+		}
+	}
 	if (!isManagedWorker(task) || !task.historyWorkspacePath || typeof task.cwd !== "string" || !task.cwd) {
 		return args
 	}
 
-	if (toolName === "shell") {
+	if (toolName === "exec_command") {
 		if (typeof args.cwd !== "string") return args
 		const cwd = presentRemappedTaskPath(task, args.cwd)
-		return cwd === args.cwd ? args : { ...args, cwd }
+		return cwd === args.cwd ? args : { ...args, cwd, ...(typeof args.workdir === "string" ? { workdir: cwd } : {}) }
 	}
 
 	const next = { ...args }
@@ -138,9 +154,11 @@ export function isWorkerWritePathAllowed(
 
 	const relative = path.relative(task.cwd, rewritten).split(path.sep).join("/")
 	if (!relative || relative.startsWith("../") || path.isAbsolute(relative)) return false
+	if (relative === ".git" || relative.startsWith(".git/")) return false
 	const fileScopes = task.subagentAuthority?.role === "worker" ? (task.subagentAuthority.fileWriteScope ?? []) : []
 	const allowed = task.subagentWriteScope.some(
-		(scope) => relative === scope || (!fileScopes.includes(scope) && relative.startsWith(`${scope}/`)),
+		(scope) =>
+			scope === "." || relative === scope || (!fileScopes.includes(scope) && relative.startsWith(`${scope}/`)),
 	)
 	if (!allowed) return false
 

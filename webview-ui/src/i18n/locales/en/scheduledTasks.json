@@ -17,8 +17,25 @@
 	"weeks": "weeks",
 	"months": "months",
 	"minutes": "minutes",
-	"approvalSummary": "Selected: {{count}}",
-	"enableAutoApproval": "Enable auto-approval",
+	"approvals": "Approvals",
+	"approvalMode": {
+		"ask": "Ask",
+		"auto": "Auto",
+		"bypass": "Full Access"
+	},
+	"approvalDescription": {
+		"ask": "Review writes and commands when the task runs. Saved command prefixes may run automatically.",
+		"auto": "Allow workspace edits and commands plus Alpha Tickets for this project. Outside writes and other gated actions still request approval.",
+		"bypass": "Allow actions without review, including outside paths and protected files. Command deny rules still apply."
+	},
+	"commandApprovalHelp": "Direct commands use the same command rules. When review is needed, the run waits for your decision.",
+	"legacyCommandRules": "This older schedule has command deny rules. Prompt runs will fail until you review command rules in Settings and save this schedule.",
+	"bypassWarning": {
+		"title": "Enable Full Access for this schedule?",
+		"body": "Each run may change files and execute commands without review, including outside the workspace. Command deny rules still apply.",
+		"confirm": "Enable Full Access",
+		"cancel": "Cancel"
+	},
 	"emptyHelp": "Create a task to run a prompt, skill, or command on a schedule.",
 	"everyInterval": "Every {{interval}}"
 }

@@ -3,7 +3,7 @@ import path from "path"
 import { z } from "zod"
 import { ticketRequestSchema, ticketTargetSchema, type TicketResponse, type TicketTarget } from "@alpha-code/types"
 import type { AlphaProvider } from "../../core/webview/AlphaProvider"
-import { getNonce } from "../../core/webview/getNonce"
+import { resolveWebviewHtml } from "../../core/webview/webviewHtml"
 import { workOnTicket } from "./TicketTaskLink"
 import { TicketStore } from "./TicketStore"
 
@@ -36,7 +36,7 @@ export class TicketPanel implements vscode.Disposable {
 			vscode.workspace.onDidChangeWorkspaceFolders(prepare),
 			vscode.window.registerWebviewPanelSerializer("alpha.tickets", {
 				deserializeWebviewPanel: async (panel) => {
-					this.attach(panel)
+					await this.attach(panel)
 				},
 			}),
 		)
@@ -68,10 +68,10 @@ export class TicketPanel implements vscode.Disposable {
 			retainContextWhenHidden: true,
 			localResourceRoots: [this.context.extensionUri],
 		})
-		this.attach(panel)
+		await this.attach(panel)
 	}
 
-	private attach(panel: vscode.WebviewPanel) {
+	private async attach(panel: vscode.WebviewPanel) {
 		if (this.panel && this.panel !== panel) this.panel.dispose()
 		panel.webview.options = { enableScripts: true, localResourceRoots: [this.context.extensionUri] }
 		this.panel = panel
@@ -99,12 +99,14 @@ export class TicketPanel implements vscode.Disposable {
 				)
 			}),
 		)
-		const asset = (name: string) =>
-			panel.webview.asWebviewUri(
-				vscode.Uri.joinPath(this.context.extensionUri, "webview-ui", "build", "assets", name),
-			)
-		const nonce = getNonce()
-		panel.webview.html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${panel.webview.cspSource} 'unsafe-inline'; font-src ${panel.webview.cspSource} data:; script-src ${panel.webview.cspSource} 'nonce-${nonce}';"><link rel="stylesheet" href="${asset("index.css")}"></head><body><div id="root" data-view="tickets"></div><script nonce="${nonce}" type="module" src="${asset("index.js")}"></script></body></html>`
+		const html = await resolveWebviewHtml({
+			webview: panel.webview,
+			extensionUri: this.context.extensionUri,
+			extensionMode: this.context.extensionMode,
+			view: "tickets",
+		})
+		if (this.panel !== panel) return
+		panel.webview.html = html
 	}
 
 	private post(message: TicketResponse, panel = this.panel) {
@@ -208,6 +210,17 @@ export class TicketPanel implements vscode.Disposable {
 				case "read":
 					result.result = await store.read(operation.id)
 					break
+				case "relations":
+					result.result = await store.relations(operation.id)
+					break
+				case "openLinkedTask": {
+					const ticket = await store.read(operation.id)
+					if (!ticket.linkedTaskIds.includes(operation.taskId))
+						throw new Error("This conversation is not linked to the ticket")
+					await this.provider.showTaskWithId(operation.taskId)
+					await vscode.commands.executeCommand("alpha.SidebarProvider.focus")
+					break
+				}
 				case "create":
 					result.result = await store.create(operation.input)
 					break

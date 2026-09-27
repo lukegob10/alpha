@@ -54,6 +54,8 @@ export interface ApiStreamOutcomeChunk extends ApiStreamRequestMetadata {
 	terminal: boolean
 	/** True when text/reasoning/tool output was observed before this outcome. */
 	semanticOutputObserved: boolean
+	/** True when this response ended normally but the agent turn needs another model request. */
+	requiresContinuation?: boolean
 	reason?: string
 	retryable?: boolean
 	phase?: string
@@ -198,6 +200,7 @@ export interface ApiStreamOutcomeInput extends ApiStreamRequestMetadata {
 	status: ApiStreamOutcomeStatus
 	terminal?: boolean
 	semanticOutputObserved?: boolean
+	requiresContinuation?: boolean
 	reason?: string
 	retryable?: boolean
 	phase?: string
@@ -210,6 +213,7 @@ export function createApiStreamOutcome(input: ApiStreamOutcomeInput): ApiStreamO
 		status: input.status,
 		terminal: input.terminal ?? true,
 		semanticOutputObserved: input.semanticOutputObserved ?? false,
+		...(input.requiresContinuation !== undefined ? { requiresContinuation: input.requiresContinuation } : {}),
 		...(input.reason !== undefined ? { reason: input.reason } : {}),
 		...(input.retryable !== undefined ? { retryable: input.retryable } : {}),
 		...(input.phase !== undefined ? { phase: input.phase } : {}),

@@ -131,6 +131,20 @@ describe("TaskItem", () => {
 		expect(screen.getByText(/ago/)).toBeInTheDocument()
 	})
 
+	it.each([false, true])("aligns compact metadata with a fixed status slot (hasStatus=%s)", (hasStatus) => {
+		if (hasStatus) render(taskWithLiveMetadata(liveTask({ lifecycle: TaskLifecycleState.Completed }), "compact"))
+		else render(<TaskItem item={mockTask} variant="compact" />)
+
+		const metadata = screen.getByTestId("task-metadata")
+		const age = screen.getByTestId("task-time-ago")
+
+		expect(metadata).toHaveClass("grid-cols-[0.875rem_3rem]")
+		expect(age).toHaveClass("w-12", "text-right")
+		expect(metadata.children).toHaveLength(2)
+		if (hasStatus) expect(metadata).toContainElement(screen.getByTestId("task-status-indicator"))
+		else expect(screen.queryByTestId("task-status-indicator")).not.toBeInTheDocument()
+	})
+
 	it("applies hover effect class", () => {
 		render(
 			<TaskItem

@@ -1,7 +1,13 @@
 export { getRulesSection } from "./rules"
 export { getSystemInfoSection } from "./system-info"
 export { getObjectiveSection } from "./objective"
-export { addCustomInstructions, loadApplicableAgentInstructionSources } from "./custom-instructions"
+export {
+	addCustomInstructionParts,
+	addCustomInstructions,
+	loadApplicableAgentInstructionSources,
+	renderCustomInstructionParts,
+} from "./custom-instructions"
+export type { CustomInstructionOrigin, CustomInstructionPart } from "./custom-instructions"
 export { getSharedToolUseSection } from "./tool-use"
 export { getToolUseGuidelinesSection } from "./tool-use-guidelines"
 export { getCapabilitiesSection } from "./capabilities"

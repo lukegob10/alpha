@@ -58,6 +58,22 @@ export interface ExecutionProfileApplication {
 	allowedFunctionNames: string[]
 }
 
+// Plan's host validators narrow these actions to read-only command inspection,
+// parent-owned agent controls, plan state, and a direct user question. Their
+// scheduler metadata is broader than their call-specific authority.
+const PLAN_HOST_RESTRICTED_TOOLS = new Set([
+	"exec_command",
+	"request_user_input",
+	"request_user_input_async",
+	"update_plan",
+	"spawn_agent",
+	"list_agents",
+	"wait_agent",
+	"send_message",
+	"followup_task",
+	"interrupt_agent",
+])
+
 function schemaName(schema: OpenAI.Chat.ChatCompletionTool): string | undefined {
 	return schema.type === "function" ? canonicalizeToolName(schema.function.name) : undefined
 }
@@ -88,13 +104,9 @@ export function applyExecutionProfile(
 	const profileAllows = (name: string) => {
 		const canonical = canonicalizeToolName(name)
 		if (profile.id === "work") return true
+		if (PLAN_HOST_RESTRICTED_TOOLS.has(canonical)) return true
 		const capability = policy.capabilities[canonical]
-		return (
-			canonical !== "shell" &&
-			canonical !== "new_task" &&
-			capability?.sideEffects === "none" &&
-			!capability.controlFlow
-		)
+		return canonical !== "new_task" && capability?.sideEffects === "none" && !capability.controlFlow
 	}
 	const registryNames = registry ? new Set(registry.list().map((descriptor) => descriptor.name)) : undefined
 	const allowedFunctionNames = policy.allowedTools.filter(
@@ -111,6 +123,7 @@ export function applyExecutionProfile(
 		visibleTools: options.includeAllToolsWithRestrictions ? policy.visibleTools : visibleTools,
 		allowedTools: allowedFunctionNames,
 		disabledTools: policy.disabledTools,
+		approvalMode: policy.approval.mode,
 		autoApprovalEnabled: policy.approval.autoApprovalEnabled,
 		capabilities: Object.fromEntries(
 			Object.entries(policy.capabilities).filter(([name]) => allowed.has(canonicalizeToolName(name))),

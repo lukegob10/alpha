@@ -16,8 +16,11 @@ describe("Alpha ticket discovery guidance", () => {
 	it("preserves Plan authority and supplies discoverable native tool descriptions", () => {
 		expect(getTicketsSection(true)).toContain("cannot update their status or contents")
 		expect(getTicketsSection(false)).toContain("latest revision")
+		expect(getTicketsSection(false)).toContain("Reopen a canceled ticket")
 		for (const tool of ticketTools) expect(tool.function.description).toMatch(/Alpha|ticket/)
 		expect(ticketTools[0].function.description).toContain("before planning")
 		expect(ticketTools[1].function.description).toContain("PM number 1")
+		expect(ticketTools[3].function.description).toContain("may include an implementation summary")
+		expect(ticketTools[3].function.description).not.toContain("requires an implementation summary")
 	})
 })

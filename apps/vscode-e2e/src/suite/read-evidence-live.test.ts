@@ -5,7 +5,10 @@ import { runInNewContext } from "node:vm"
 import { runLiveCase } from "./live-file-tool-support"
 
 const scope =
-	"Work only in live-read-evidence. Leave files unchanged. Finish with a concise answer supported by the evidence you obtained."
+	"Work only in live-read-evidence. Use exec_command with bounded read-only Node.js inspections of the named files. Leave files unchanged unless the task explicitly asks for a repair. Finish with a concise answer supported by command output."
+
+const linesCommand = (file: string, start: number, count: number) =>
+	`node -e "const fs=require('fs');const lines=fs.readFileSync('${file}','utf8').split(/\\r?\\n/);console.log(lines.slice(${start - 1},${start - 1 + count}).map((line,index)=>String(index+${start})+' | '+line).join('\\n'))"`
 
 suite("Live Copilot read evidence", function () {
 	this.timeout(230_000)
@@ -20,13 +23,13 @@ suite("Live Copilot read evidence", function () {
 			"\r\n"
 		await runLiveCase(
 			"read-repair",
-			["search_files", "apply_patch"],
+			["exec_command", "apply_patch"],
 			{
 				[file]:
 					prefix +
 					"function totalCents(items) {\r\n  return items.reduce((sum, item) => sum + item.unitCents, 0)\r\n}\r\nmodule.exports = { totalCents }",
 			},
-			`Fix totalCents in ${file}: invoice totals must multiply each item's unitCents by its quantity, then sum all items. Empty invoices total zero. Inspect the relevant implementation and preserve the unrelated content. Verify the saved change and briefly report what you verified.`,
+			`Inspect lines 1601-1603 of ${file} with this read-only command before editing: ${JSON.stringify(linesCommand(file, 1601, 3))}. Fix totalCents so invoice totals multiply each item's unitCents by its quantity, then sum all items. Empty invoices total zero. Preserve unrelated content. Verify the saved change and briefly report what you verified.`,
 			async (calls, _messages, workspace) => {
 				const source = await fs.readFile(path.join(workspace, file), "utf8")
 				assert.ok(source.startsWith(prefix), "Unrelated content, BOM, and CRLF must be preserved")
@@ -44,11 +47,15 @@ suite("Live Copilot read evidence", function () {
 					950,
 				)
 				assert.equal(total([{ unitCents: 100, quantity: 0 }]), 0)
-				assert.ok(calls.some((call) => call.name === "read_file"))
+				const inspection = calls.find((call) => call.name === "exec_command")
+				assert.ok(inspection, "The model must inspect the current implementation with exec_command")
+				assert.match(inspection.result, /function totalCents/)
+				assert.match(inspection.result, /item\.unitCents/)
 				assert.ok(calls.some((call) => call.name === "apply_patch" && !call.isError))
 			},
 			{
-				scope: "Work only in live-read-evidence/repair. Make the requested repair with the available file tools.",
+				scope: "Work only in live-read-evidence/repair. Inspect with exec_command, then make the requested repair with apply_patch.",
+				commands: ["node"],
 			},
 		)
 	})
@@ -57,31 +64,22 @@ suite("Live Copilot read evidence", function () {
 		const first = "live-read-evidence/batch/first.txt"
 		const second = "live-read-evidence/batch/second.txt"
 		const content = Array.from({ length: 320 }, (_, index) => `record ${index + 1}`).join("\n")
-		const input = {
-			path: first,
-			files: [
-				{ path: first, line_ranges: null },
-				{ path: second, line_ranges: null },
-			],
-			offset: 220,
-			limit: 3,
-			mode: "slice",
-		}
+		const cmd = `node -e "const fs=require('fs');for(const p of ['${first}','${second}']){const lines=fs.readFileSync(p,'utf8').split(/\\r?\\n/);console.log(p+'\\n'+lines.slice(219,222).map((line,index)=>String(index+220)+' | '+line).join('\\n'))}"`
 		await runLiveCase(
 			"read-batch",
-			[],
+			["exec_command"],
 			{ [first]: content, [second]: content },
-			`Submit one read_file call with these arguments unchanged: ${JSON.stringify(input)}. Report the returned records. Do not retry errors.`,
+			`Use one exec_command call with this cmd exactly: ${JSON.stringify(cmd)}. Report the returned records. Do not retry errors.`,
 			async (calls) => {
-				const reads = calls.filter((call) => call.name === "read_file")
+				const reads = calls.filter((call) => call.name === "exec_command")
 				assert.equal(reads.length, 1)
 				assert.equal(reads[0]!.isError, false)
-				assert.deepEqual(reads[0]!.input, input)
+				assert.equal(reads[0]!.input.cmd, cmd)
 				for (const line of [220, 221, 222])
 					assert.equal(reads[0]!.result.match(new RegExp(`\\b${line} \\| record ${line}`, "g"))?.length, 2)
 				assert.doesNotMatch(reads[0]!.result, /\b(?:1|219|223) \| record /)
 			},
-			{ scope },
+			{ scope, commands: ["node"] },
 		)
 	})
 
@@ -91,14 +89,20 @@ suite("Live Copilot read evidence", function () {
 			{ length: 2500 },
 			(_, index) => `record ${String(index + 1).padStart(4, "0")} ${"x".repeat(44)}`,
 		).join("\n")
+		const firstCmd = linesCommand(file, 1, 80)
+		const secondCmd = linesCommand(file, 81, 80)
 		await runLiveCase(
 			"read-continuation",
-			[],
+			["exec_command"],
 			{ [file]: content },
-			`Read ${file} from the beginning using read_file's default line limit. Then make one more read_file call using the continuation provided by that result. Stop after these two reads and report the line ranges actually visible; do not read the entire file.`,
+			`Inspect ${file} in two bounded windows. First call exec_command with cmd ${JSON.stringify(firstCmd)}, then call exec_command with cmd ${JSON.stringify(secondCmd)}. Stop after those two reads and report the line ranges actually visible; do not read the entire file.`,
 			async (calls) => {
-				const reads = calls.filter((call) => call.name === "read_file")
+				const reads = calls.filter((call) => call.name === "exec_command")
 				assert.equal(reads.length, 2)
+				assert.deepEqual(
+					reads.map((read) => read.input.cmd),
+					[firstCmd, secondCmd],
+				)
 				const ranges = reads.map((read) => {
 					assert.equal(read.isError, false)
 					assert.ok(read.result.length <= 32_000)
@@ -112,15 +116,16 @@ suite("Live Copilot read evidence", function () {
 				assert.equal(ranges[0]!.first, 1)
 				assert.equal(ranges[1]!.first, ranges[0]!.last + 1)
 			},
-			{ scope },
+			{ scope, commands: ["node"] },
 		)
 	})
 
 	test("a small quality review finds both defects and the correct boundary", async () => {
 		const dir = "live-read-evidence/review"
+		const cmd = `node -e "const fs=require('fs');for(const p of ['${dir}/access.ts','${dir}/routes.ts','${dir}/access.test.ts','${dir}/README.md']){console.log(p);console.log(fs.readFileSync(p,'utf8'))}"`
 		await runLiveCase(
 			"read-review",
-			["list_files", "search_files"],
+			["exec_command"],
 			{
 				[`${dir}/access.ts`]:
 					'export function canRead(user, record) {\n  return user.active && user.tenantId === record.tenantId\n}\nexport function canWrite(user, record) {\n  return user.role === "editor"\n}\n',
@@ -131,7 +136,7 @@ suite("Live Copilot read evidence", function () {
 				[`${dir}/access.test.ts`]:
 					'import { canRead, canWrite } from "./access"\nit("permits an editor in the same tenant", () => {\n  expect(canWrite({ active: true, role: "editor", tenantId: "a" }, { tenantId: "a" })).toBe(true)\n})\nit("denies a read across tenants", () => {\n  expect(canRead({ active: true, tenantId: "a" }, { tenantId: "b" })).toBe(false)\n})\n',
 			},
-			`Review the quality of the access-control code in ${dir}. Identify concrete defects, what is already correct, and missing tests. Cite the source and name canRead and canWrite.`,
+			`Inspect the named access-control source, tests, and requirements in ${dir} with one exec_command call using this cmd exactly: ${JSON.stringify(cmd)}. Identify concrete defects, what is already correct, and missing tests. Cite the source and name canRead and canWrite.`,
 			async (calls, _messages, _workspace, assistantText) => {
 				const answer = [
 					...calls
@@ -144,9 +149,13 @@ suite("Live Copilot read evidence", function () {
 				assert.match(answer, /canRead|active user and matching tenant|matching tenant for reads/i)
 				assert.match(answer, /canWrite/)
 				assert.match(answer, /test/i)
-				assert.ok(calls.some((call) => call.name === "read_file"))
+				const inspection = calls.find((call) => call.name === "exec_command")
+				assert.ok(inspection)
+				assert.equal(inspection.input.cmd, cmd)
+				assert.match(inspection.result, /user\.active/)
+				assert.match(inspection.result, /canWrite/)
 			},
-			{ scope },
+			{ scope, commands: ["node"] },
 		)
 	})
 })

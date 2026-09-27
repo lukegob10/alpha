@@ -198,6 +198,29 @@ describe("ModelPicker", () => {
 		)
 	})
 
+	it("uses the visible model labels for option tooltips", async () => {
+		await act(async () => {
+			render(
+				<QueryClientProvider client={queryClient}>
+					<ModelPicker
+						{...defaultProps}
+						labelTransform={(modelId) => (modelId === "model1" ? "GPT 5.6 Luna" : "GPT 6 Luna")}
+						secondaryLabelTransform={(modelId) => (modelId === "model1" ? "GPT-5.6-Luna" : "GPT-6-Luna")}
+					/>
+				</QueryClientProvider>,
+			)
+		})
+
+		await act(async () => {
+			fireEvent.click(screen.getByTestId("model-picker-button"))
+			vi.advanceTimersByTime(100)
+		})
+
+		expect(screen.getByTitle("GPT 5.6 Luna")).toBeInTheDocument()
+		expect(screen.getByTitle("GPT-5.6-Luna")).toBeInTheDocument()
+		expect(screen.queryByTitle("model1")).not.toBeInTheDocument()
+	})
+
 	it("does not render service copy when the service URL is empty", async () => {
 		await act(async () => {
 			render(

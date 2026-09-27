@@ -16,18 +16,22 @@ const PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 	"list_tickets",
 	"read_ticket",
 	"read_file",
+	"view_image",
 	"search_files",
 	"list_files",
 	"codebase_search",
-	"ask_followup_question",
-	"attempt_completion",
-	"shell",
+	"request_user_input",
+	"request_user_input_async",
+	"update_plan",
+	"exec_command",
 	"spawn_agent",
 	"list_agents",
 	"wait_agent",
 	"send_message",
 	"followup_task",
-	"close_agent",
+	"interrupt_agent",
+	"list_tasks",
+	"wait_task",
 ])
 
 /**
@@ -195,9 +199,11 @@ export function isToolAllowedForMode(
 		if (toolParams?.write_scope != null) return false
 	}
 
-	if (modeSlug === planModeSlug && resolvedTool === "shell" && toolParams) {
-		if (typeof toolParams.command !== "string" || !isPlanCommandAllowed(toolParams.command)) return false
-		if (!isPlanCommandCwdAllowed(toolParams.cwd)) return false
+	if (modeSlug === planModeSlug && resolvedTool === "exec_command" && toolParams) {
+		const command = typeof toolParams.command === "string" ? toolParams.command : toolParams.cmd
+		const cwd = typeof toolParams.cwd === "string" ? toolParams.cwd : toolParams.workdir
+		if (typeof command !== "string" || !isPlanCommandAllowed(command)) return false
+		if (!isPlanCommandCwdAllowed(cwd)) return false
 		if (toolParams.verification != null) return false
 	}
 
@@ -206,7 +212,7 @@ export function isToolAllowedForMode(
 	if (modeSlug === planModeSlug) return true
 
 	// Always allow these tools (unless explicitly disabled above)
-	if (ALWAYS_AVAILABLE_TOOLS.includes(tool as any)) {
+	if (ALWAYS_AVAILABLE_TOOLS.includes(tool as any) || ALWAYS_AVAILABLE_TOOLS.includes(resolvedTool as any)) {
 		return true
 	}
 

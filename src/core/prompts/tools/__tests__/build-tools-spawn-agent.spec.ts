@@ -12,6 +12,7 @@ vi.mock("../../../../services/code-index/manager", () => ({
 
 import { buildNativeToolsArrayWithRestrictions } from "../../../task/build-tools"
 import { Task } from "../../../task/Task"
+import { toOpenAiStrictToolSchema } from "../../../../api/transform/openai-strict-tool-schema"
 
 const names = (tools: Array<{ type: string; function?: { name: string } }>) =>
 	tools.flatMap((tool) => (tool.type === "function" && tool.function ? [tool.function.name] : []))
@@ -23,7 +24,7 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		"wait_agent",
 		"send_message",
 		"followup_task",
-		"close_agent",
+		"interrupt_agent",
 	]
 	const provider = {
 		context: {},
@@ -72,27 +73,51 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 				parameters?: { required?: string[]; properties?: Record<string, unknown> }
 			}
 		}>
-		const newTaskDescription = nativeTools.find((tool) => tool.function?.name === "new_task")?.function?.description
-		expect(newTaskDescription).toContain("blocking mode/task handoff")
-		expect(newTaskDescription).toContain("suspends the caller")
-		expect(newTaskDescription).toContain("resumes it with the child result")
-		expect(newTaskDescription).not.toContain("wait_agent")
 
 		const spawnTool = nativeTools.find((tool) => tool.function?.name === "spawn_agent")
 		expect(spawnTool?.function?.description).toContain("asynchronously")
 		expect(spawnTool?.function?.description).toContain("return its handle immediately")
 		expect(spawnTool?.function?.description).toContain(
-			"Collect terminal results through wait_agent as native tool results",
+			"Collect the terminal result through wait_agent before completing",
 		)
-		expect(spawnTool?.function?.parameters?.required).toEqual(expect.arrayContaining(["task_name", "fork_turns"]))
+		expect(spawnTool?.function?.parameters?.required).toEqual(["task_name", "message"])
 		expect(spawnTool?.function?.parameters?.properties).toHaveProperty("fork_turns")
-		const completionTool = nativeTools.find((tool) => tool.function?.name === "attempt_completion")
-		expect(completionTool?.function?.parameters?.properties).toHaveProperty("outcome")
-		expect(completionTool?.function?.description).not.toContain("sub-agents only")
+		expect(spawnTool?.function?.parameters?.properties).toHaveProperty("agent_type")
+		expect(spawnTool?.function?.parameters?.properties).toHaveProperty("model")
+		expect(spawnTool?.function?.parameters?.properties).toHaveProperty("reasoning_effort")
+		expect(spawnTool?.function?.parameters?.properties).not.toHaveProperty("write_scope")
+		expect(spawnTool?.function?.parameters?.properties).not.toHaveProperty("objective")
+		expect(nativeTools.find((tool) => tool.function?.name === "attempt_completion")).toBeUndefined()
 		const waitTool = (result.tools as any[]).find((tool) => tool.function?.name === "wait_agent")
-		expect(waitTool?.function?.description).toContain("sender task/path provenance")
-		expect(waitTool?.function?.description).toContain("only after this tool result is persisted")
+		expect(waitTool?.function?.description).toContain("mailbox update from any live agent")
+		expect(waitTool?.function?.parameters?.properties).not.toHaveProperty("target")
 		expect(names(result.tools as any)).not.toContain("report_progress")
+	})
+
+	it("can publish strict native schemas for managed lifecycle calls", async () => {
+		const result = await buildNativeToolsArrayWithRestrictions({
+			provider,
+			cwd: "F:/workspace",
+			mode: "code",
+			customModes: undefined,
+			experiments: {},
+			apiConfiguration: undefined,
+			includeAllToolsWithRestrictions: true,
+			taskKind: "primary",
+		})
+		for (const name of orchestrationTools) {
+			const tool = (result.tools as Array<{ function?: { name: string; parameters?: unknown } }>).find(
+				(candidate) => candidate.function?.name === name,
+			)
+			expect(tool?.function?.parameters).toBeDefined()
+			const strict = toOpenAiStrictToolSchema(tool!.function!.parameters) as {
+				additionalProperties: boolean
+				properties: Record<string, unknown>
+				required: string[]
+			}
+			expect(strict.additionalProperties).toBe(false)
+			expect(strict.required).toEqual(Object.keys(strict.properties))
+		}
 	})
 
 	it("keeps the spawn entry point while trimming idle lifecycle controls", async () => {
@@ -129,30 +154,28 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		})
 
 		expect(result.allowedFunctionNames).toEqual(
-			expect.arrayContaining([
-				"read_file",
-				"search_files",
-				"list_files",
-				"ask_followup_question",
-				"attempt_completion",
-				"shell",
-				...orchestrationTools,
-			]),
+			expect.arrayContaining(["request_user_input", "exec_command", ...orchestrationTools]),
 		)
+		for (const legacyName of ["read_file", "list_files", "search_files", "codebase_search"])
+			expect(result.allowedFunctionNames, legacyName).not.toContain(legacyName)
+		expect(result.surface?.allowedFunctionNames).toContain("exec_command")
 		for (const forbidden of ["new_task", "switch_mode", "update_todo_list", "write_to_file", "use_mcp_tool"]) {
 			expect(result.allowedFunctionNames).not.toContain(forbidden)
 		}
 
 		const planTools = result.tools as any[]
-		const shell = planTools.find((tool) => tool.function?.name === "shell")
-		expect(shell.function.description).toContain("host-classified")
-		expect(shell.function.description).toContain("Shell chaining")
-		expect(shell.function.parameters.properties.verification).toBeUndefined()
-		expect(shell.function.description).not.toContain("npm run dev")
+		const execCommand = planTools.find((tool) => tool.function?.name === "exec_command")
+		expect(execCommand.function.description).toContain("host-classified")
+		expect(execCommand.function.description).toContain("Shell chaining")
+		expect(execCommand.function.parameters.required).toEqual(["cmd"])
+		expect(execCommand.function.parameters.properties.workdir).toBeDefined()
+		expect(execCommand.function.parameters.properties.verification).toBeUndefined()
+		expect(execCommand.function.description).not.toContain("npm run dev")
 		const spawnAgent = planTools.find((tool) => tool.function?.name === "spawn_agent")
 		expect(spawnAgent.function.description).not.toMatch(/worker|quarantined/i)
-		expect(spawnAgent.function.parameters.properties.agent_kind.enum).toEqual(["explore", "review"])
-		expect(spawnAgent.function.parameters.properties.write_scope).toMatchObject({ type: "null" })
+		expect(spawnAgent.function.parameters.properties.agent_type.type).toBe("string")
+		expect(spawnAgent.function.parameters.properties.agent_type.description).not.toContain("worker")
+		expect(spawnAgent.function.parameters.properties).not.toHaveProperty("write_scope")
 
 		expect(planTools.find((tool) => tool.function?.name === "delegate_task")).toBeUndefined()
 	})
@@ -175,7 +198,9 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 			taskKind: "primary",
 		})
 
-		expect(names(result.tools as any)).toEqual(expect.arrayContaining(["read_file", "shell", "spawn_agent"]))
+		expect(names(result.tools as any)).toEqual(expect.arrayContaining(["exec_command", "spawn_agent"]))
+		for (const legacyName of ["read_file", "list_files", "search_files", "codebase_search"])
+			expect(names(result.tools as any), legacyName).not.toContain(legacyName)
 		expect(names(result.tools as any)).not.toEqual(
 			expect.arrayContaining(["write_to_file", "apply_diff", "use_mcp_tool"]),
 		)
@@ -201,9 +226,7 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 			expect(names(result.tools as any)).toContain(tool)
 			expect(result.allowedFunctionNames).toContain(tool)
 		}
-		const completionTool = (result.tools as any[]).find((tool) => tool.function?.name === "attempt_completion")
-		expect(completionTool?.function?.parameters?.properties).toHaveProperty("outcome")
-		expect(completionTool?.function?.description).toContain("assigned objective")
+		expect(names(result.tools as any)).not.toContain("attempt_completion")
 	})
 
 	it("does not let the stable primary default override a managed child's frozen authority", async () => {

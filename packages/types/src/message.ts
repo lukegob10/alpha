@@ -1,6 +1,11 @@
 import { z } from "zod"
 
 import {
+	exactCommandApprovalAmendmentSchema,
+	persistentCommandPrefixAmendmentSchema,
+} from "./tool-approval-amendment.js"
+
+import {
 	subagentChangeSetStateSchema,
 	subagentModelRouteStateSchema,
 	parentVerificationSummarySchema,
@@ -8,6 +13,7 @@ import {
 	subagentVerificationSchema,
 } from "./subagent.js"
 import { subagentStopReasonSchema, subagentUsageSchema } from "./subagent-orchestration.js"
+import { asyncUserInputDataSchema } from "./followup.js"
 
 /**
  * AlphaAsk
@@ -164,6 +170,7 @@ export const alphaSays = [
 	"completion_result",
 	"user_feedback",
 	"user_feedback_diff",
+	"async_user_input",
 	"command_output",
 	"shell_integration_warning",
 	"mcp_server_request_started",
@@ -430,6 +437,60 @@ export const contextTruncationSchema = z.object({
 
 export type ContextTruncation = z.infer<typeof contextTruncationSchema>
 
+/** User-facing scheduler approval request with only the choices available for this exact action. */
+export const toolApprovalPromptSchema = z
+	.object({
+		requestId: z.string().min(1).max(512),
+		taskId: z.string().min(1).max(512),
+		toolName: z.string().min(1).max(128),
+		description: z.string().max(100_000).optional(),
+		/** Effective command working directory, projected from a typed approval request. */
+		cwd: z.string().min(1).max(4_096).optional(),
+		/** Outside write paths reviewed with this command approval. */
+		commandPathApproval: z
+			.object({
+				outsidePaths: z.array(z.string().min(1).max(4_096)).max(128),
+				unresolved: z.boolean(),
+			})
+			.strict()
+			.optional(),
+		availableDecisions: z
+			.array(
+				z.enum([
+					"approve_once",
+					"approve_session",
+					"approve_with_amendment",
+					"approve_persistently",
+					"deny",
+					"abort",
+				]),
+			)
+			.min(1),
+		proposedAmendment: exactCommandApprovalAmendmentSchema.optional(),
+		proposedPersistentAmendment: persistentCommandPrefixAmendmentSchema.optional(),
+	})
+	.strict()
+	.superRefine((prompt, context) => {
+		const offersAmendment = prompt.availableDecisions.includes("approve_with_amendment")
+		if (offersAmendment !== (prompt.proposedAmendment !== undefined)) {
+			context.addIssue({
+				code: "custom",
+				message: "An exact-command session grant must be included when that approval choice is offered.",
+				path: ["proposedAmendment"],
+			})
+		}
+		const offersPersistentAmendment = prompt.availableDecisions.includes("approve_persistently")
+		if (offersPersistentAmendment !== (prompt.proposedPersistentAmendment !== undefined)) {
+			context.addIssue({
+				code: "custom",
+				message: "A persistent command prefix must be included when that approval choice is offered.",
+				path: ["proposedPersistentAmendment"],
+			})
+		}
+	})
+
+export type ToolApprovalPrompt = z.infer<typeof toolApprovalPromptSchema>
+
 /**
  * AlphaMessage
  *
@@ -442,48 +503,72 @@ export type ContextTruncation = z.infer<typeof contextTruncationSchema>
  *
  * Note: These fields are mutually exclusive - a message will have at most one of them.
  */
-export const alphaMessageSchema = z.object({
-	/** Associates completed command output with its approval message when a batch runs concurrently. */
-	commandExecutionId: z.string().optional(),
-	ts: z.number(),
-	type: z.union([z.literal("ask"), z.literal("say")]),
-	ask: alphaAskSchema.optional(),
-	say: alphaSaySchema.optional(),
-	text: z.string().optional(),
-	images: z.array(z.string()).optional(),
-	partial: z.boolean().optional(),
-	reasoning: z.string().optional(),
-	/** Presentation-only synopsis of provider-visible reasoning; never sent back as provider history. */
-	reasoningSummary: z.string().max(280).optional(),
-	reasoningSummaryUsage: z
-		.object({
-			tokensIn: z.number().nonnegative(),
-			tokensOut: z.number().nonnegative(),
-			cacheWrites: z.number().nonnegative(),
-			cacheReads: z.number().nonnegative(),
-			cost: z.number().nonnegative(),
-		})
-		.optional(),
-	conversationHistoryIndex: z.number().optional(),
-	checkpoint: z.record(z.string(), z.unknown()).optional(),
-	progressStatus: toolProgressStatusSchema.optional(),
-	subagentGroup: subagentGroupStateSchema.optional(),
-	/** Idempotency key for a legacy blocking child result injected into its parent. */
-	subtaskResultChildId: z.string().min(1).optional(),
-	/**
-	 * Data for successful context condensation.
-	 * Present when `say: "condense_context"` and `partial: false`.
-	 */
-	contextCondense: contextCondenseSchema.optional(),
-	/**
-	 * Data for sliding window truncation.
-	 * Present when `say: "sliding_window_truncation"`.
-	 */
-	contextTruncation: contextTruncationSchema.optional(),
-	isProtected: z.boolean().optional(),
-	apiProtocol: z.union([z.literal("openai"), z.literal("anthropic")]).optional(),
-	isAnswered: z.boolean().optional(),
-})
+export const alphaMessageSchema = z
+	.object({
+		/** Associates completed command output with its approval message when a batch runs concurrently. */
+		commandExecutionId: z.string().optional(),
+		/** Correlates a typed tool approval prompt with its one-shot response. */
+		toolApprovalRequest: toolApprovalPromptSchema.optional(),
+		/** Typed, nonblocking question card emitted by request_user_input_async. */
+		asyncUserInput: asyncUserInputDataSchema.optional(),
+		ts: z.number(),
+		type: z.union([z.literal("ask"), z.literal("say")]),
+		ask: alphaAskSchema.optional(),
+		say: alphaSaySchema.optional(),
+		text: z.string().optional(),
+		images: z.array(z.string()).optional(),
+		partial: z.boolean().optional(),
+		reasoning: z.string().optional(),
+		/** Presentation-only synopsis of provider-visible reasoning; never sent back as provider history. */
+		reasoningSummary: z.string().max(280).optional(),
+		reasoningSummaryUsage: z
+			.object({
+				tokensIn: z.number().nonnegative(),
+				tokensOut: z.number().nonnegative(),
+				cacheWrites: z.number().nonnegative(),
+				cacheReads: z.number().nonnegative(),
+				cost: z.number().nonnegative(),
+			})
+			.optional(),
+		conversationHistoryIndex: z.number().optional(),
+		checkpoint: z.record(z.string(), z.unknown()).optional(),
+		progressStatus: toolProgressStatusSchema.optional(),
+		subagentGroup: subagentGroupStateSchema.optional(),
+		/** Idempotency key for a legacy blocking child result injected into its parent. */
+		subtaskResultChildId: z.string().min(1).optional(),
+		/**
+		 * Data for successful context condensation.
+		 * Present when `say: "condense_context"` and `partial: false`.
+		 */
+		contextCondense: contextCondenseSchema.optional(),
+		/**
+		 * Data for sliding window truncation.
+		 * Present when `say: "sliding_window_truncation"`.
+		 */
+		contextTruncation: contextTruncationSchema.optional(),
+		isProtected: z.boolean().optional(),
+		apiProtocol: z.union([z.literal("openai"), z.literal("anthropic")]).optional(),
+		isAnswered: z.boolean().optional(),
+	})
+	.superRefine((message, context) => {
+		if ((message.type === "say" && message.say === "async_user_input") !== (message.asyncUserInput !== undefined)) {
+			context.addIssue({
+				code: "custom",
+				message: "Async user input cards require a typed question payload and cannot be attached elsewhere.",
+				path: ["asyncUserInput"],
+			})
+		}
+		if (
+			(message.toolApprovalRequest?.proposedAmendment || message.toolApprovalRequest?.cwd !== undefined) &&
+			message.ask !== "command"
+		) {
+			context.addIssue({
+				code: "custom",
+				message: "Command approval details can only be attached to a command approval.",
+				path: ["toolApprovalRequest"],
+			})
+		}
+	})
 
 export type AlphaMessage = z.infer<typeof alphaMessageSchema>
 

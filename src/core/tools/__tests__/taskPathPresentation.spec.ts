@@ -132,6 +132,27 @@ describe("managed worker path presentation", () => {
 		}
 	})
 
+	it("keeps host-selected whole-workspace writes inside the private checkout", () => {
+		const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-worker-all-paths-"))
+		try {
+			const worktree = path.join(tempRoot, "worktree")
+			fs.mkdirSync(path.join(worktree, "src"), { recursive: true })
+			const worker = {
+				taskKind: "subagent" as const,
+				subagentRole: "worker" as const,
+				cwd: worktree,
+				subagentWriteScope: ["."],
+				subagentAuthority: { role: "worker" as const, fileWriteScope: [] as string[] },
+			}
+			expect(isWorkerWritePathAllowed(worker, "src/new.ts")).toBe(true)
+			expect(isWorkerWritePathAllowed(worker, "another/new.ts")).toBe(true)
+			expect(isWorkerWritePathAllowed(worker, ".git/config")).toBe(false)
+			expect(isWorkerWritePathAllowed(worker, path.join(tempRoot, "outside.ts"))).toBe(false)
+		} finally {
+			fs.rmSync(tempRoot, { recursive: true, force: true })
+		}
+	})
+
 	it("rejects a junction escape from worker write-scope", () => {
 		const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-worker-junction-"))
 		try {
@@ -179,12 +200,14 @@ describe("managed worker path presentation", () => {
 		expect(String(remappedPatch.patch)).toContain("*** Add File: src/nested/foo.ts")
 		expect(String(remappedPatch.patch)).not.toContain(logicalWorkspace)
 
-		const shell = normalizeTaskToolArguments(task, "shell", {
-			command: `echo leaked > "${logicalFile}"`,
-			cwd: logicalWorkspace,
+		const command = normalizeTaskToolArguments(task, "exec_command", {
+			cmd: `echo leaked > "${logicalFile}"`,
+			workdir: logicalWorkspace,
 		})
-		expect(shell.command).toBe(`echo leaked > "${logicalFile}"`)
-		expect(shell.cwd).toBe(".")
+		expect(command.cmd).toBe(`echo leaked > "${logicalFile}"`)
+		expect(command.command).toBe(`echo leaked > "${logicalFile}"`)
+		expect(command.workdir).toBe(".")
+		expect(command.cwd).toBe(".")
 	})
 
 	it("redacts the managed worktree from a generated system prompt", () => {

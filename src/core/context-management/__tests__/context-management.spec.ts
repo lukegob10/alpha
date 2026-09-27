@@ -1124,10 +1124,8 @@ describe("Context Management", () => {
 		})
 	})
 
-	/**
-	 * Tests for profile-specific thresholds functionality
-	 */
-	describe("profile-specific thresholds", () => {
+	/** Legacy per-profile values remain readable but do not affect compaction. */
+	describe("legacy profile thresholds", () => {
 		const createModelInfo = (contextWindow: number, maxTokens?: number): ModelInfo => ({
 			contextWindow,
 			supportsPromptCache: true,
@@ -1142,20 +1140,14 @@ describe("Context Management", () => {
 			{ role: "user", content: "Fifth message" },
 		]
 
-		/**
-		 * Test that a profile's specific threshold is correctly used instead of the global threshold
-		 * when defined in profileThresholds
-		 */
-		it("should use profile-specific threshold when enabled and profile has specific threshold", async () => {
+		it("does not let a legacy profile threshold override the saved global threshold", async () => {
 			const modelInfo = createModelInfo(100000, 30000)
 			const profileThresholds = {
-				"test-profile": 60, // Profile-specific threshold of 60%
+				"test-profile": 35,
 			}
 			const currentProfileId = "test-profile"
 			const contextWindow = modelInfo.contextWindow
-
-			// Set tokens to 65% of context window - above profile threshold (60%) but below global default (100%)
-			const totalTokens = Math.floor(contextWindow * 0.65) // 65000 tokens
+			const totalTokens = 55000 // Below the global 80% trigger and the 60000-token hard limit.
 
 			// Create messages with very small content in the last one to avoid token overflow
 			const messagesWithSmallContent = [
@@ -1163,23 +1155,7 @@ describe("Context Management", () => {
 				{ ...messages[messages.length - 1], content: "" },
 			]
 
-			// Mock the summarizeConversation function
-			const mockSummary = "Profile-specific threshold summary"
-			const mockCost = 0.03
-			const mockSummarizeResponse: condenseModule.SummarizeResponse = {
-				messages: [
-					{ role: "user", content: "First message" },
-					{ role: "user", content: mockSummary, isSummary: true },
-					{ role: "assistant", content: "Last message" },
-				],
-				summary: mockSummary,
-				cost: mockCost,
-				newContextTokens: 100,
-			}
-
-			const summarizeSpy = vi
-				.spyOn(condenseModule, "summarizeConversation")
-				.mockResolvedValue(mockSummarizeResponse)
+			const summarizeSpy = vi.spyOn(condenseModule, "summarizeConversation")
 
 			const result = await manageContext({
 				messages: messagesWithSmallContent,
@@ -1188,21 +1164,17 @@ describe("Context Management", () => {
 				maxTokens: modelInfo.maxTokens,
 				apiHandler: mockApiHandler,
 				autoCondenseContext: true,
-				autoCondenseContextPercent: 100, // Global threshold of 100%
+				autoCondenseContextPercent: 80,
 				systemPrompt: "System prompt",
 				taskId,
 				profileThresholds,
 				currentProfileId,
 			})
 
-			// Should use summarization because 65% > 60% (profile threshold)
-			expect(summarizeSpy).toHaveBeenCalled()
-			expect(result).toMatchObject({
-				messages: mockSummarizeResponse.messages,
-				summary: mockSummary,
-				cost: mockCost,
-				prevContextTokens: totalTokens,
-			})
+			// The 35% saved profile value is ignored; the effective threshold is global 80%.
+			expect(summarizeSpy).not.toHaveBeenCalled()
+			expect(result.messages).toBe(messagesWithSmallContent)
+			expect(result.prevContextTokens).toBe(totalTokens)
 
 			// Clean up
 			summarizeSpy.mockRestore()
@@ -1621,19 +1593,19 @@ describe("Context Management", () => {
 			expect(result).toBe(false)
 		})
 
-		it("should use profile-specific threshold when available", () => {
+		it("ignores a legacy profile threshold when evaluating compaction", () => {
 			const result = willManageContext({
 				totalTokens: 55000,
 				contextWindow: 100000, // 55% of context window
 				maxTokens: 30000,
 				autoCondenseContext: true,
 				autoCondenseContextPercent: 80, // Global threshold 80%
-				profileThresholds: { "test-profile": 50 }, // Profile threshold 50%
+				profileThresholds: { "test-profile": 50 }, // Legacy value is ignored.
 				currentProfileId: "test-profile",
 				lastMessageTokens: 0,
 			})
-			// Should trigger because 55% > 50% (profile threshold)
-			expect(result).toBe(true)
+			// Should NOT trigger because the global threshold is 80%.
+			expect(result).toBe(false)
 		})
 
 		it("should fall back to global threshold when profile threshold is -1", () => {

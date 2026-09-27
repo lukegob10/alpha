@@ -94,7 +94,7 @@ export function convertToOpenAiMessages(
 				)
 
 				// Process tool result messages FIRST since they must follow the tool use messages
-				let toolResultImages: Anthropic.Messages.ImageBlockParam[] = []
+				const toolResultImages: Anthropic.Messages.ImageBlockParam[] = []
 				toolMessages.forEach((toolMessage) => {
 					// The Anthropic SDK allows tool results to be a string or an array of text and image blocks, enabling rich and structured content. In contrast, the OpenAI SDK only supports tool results as a single string, so we map the Anthropic tool result parts into one concatenated string to maintain compatibility.
 					let content: string
@@ -121,21 +121,17 @@ export function convertToOpenAiMessages(
 					})
 				})
 
-				// If tool results contain images, send as a separate user message
-				// I ran into an issue where if I gave feedback for one of many tool uses, the request would fail.
-				// "Messages following `tool_use` blocks must begin with a matching number of `tool_result` blocks."
-				// Therefore we need to send these images after the tool result messages
-				// NOTE: it's actually okay to have multiple user messages in a row, the model will treat them as a continuation of the same input (this way works better than combining them into one message, since the tool result specifically mentions (see following user message for image)
-				// Keep image results in a separate user message when tool results contain images.
-				// if (toolResultImages.length > 0) {
-				// 	openAiMessages.push({
-				// 		role: "user",
-				// 		content: toolResultImages.map((part) => ({
-				// 			type: "image_url",
-				// 			image_url: { url: `data:${part.source.media_type};base64,${part.source.data}` },
-				// 		})),
-				// 	})
-				// }
+				// Chat tool messages have string content. Send images after all matching
+				// tool results so their call IDs remain adjacent to the assistant calls.
+				if (toolResultImages.length > 0) {
+					openAiMessages.push({
+						role: "user",
+						content: toolResultImages.map((part) => ({
+							type: "image_url",
+							image_url: { url: `data:${part.source.media_type};base64,${part.source.data}` },
+						})),
+					})
+				}
 
 				// Process non-tool messages
 				// Filter out empty text blocks to prevent "must include at least one parts field" error
@@ -151,7 +147,10 @@ export function convertToOpenAiMessages(
 					const hasOnlyTextContent = filteredNonToolMessages.every((part) => part.type === "text")
 					const hasToolMessages = toolMessages.length > 0
 					const shouldMergeIntoToolMessage =
-						options?.mergeToolResultText && hasToolMessages && hasOnlyTextContent
+						options?.mergeToolResultText &&
+						hasToolMessages &&
+						hasOnlyTextContent &&
+						toolResultImages.length === 0
 
 					if (shouldMergeIntoToolMessage) {
 						// Merge text content into the last tool message

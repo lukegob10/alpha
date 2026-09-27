@@ -3,7 +3,7 @@
 import React from "react"
 import { render, waitFor, act, fireEvent, within } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { agentLifecycleSnapshotSchema } from "@alpha-code/types"
+import { agentLifecycleSnapshotSchema, type ToolApprovalPrompt } from "@alpha-code/types"
 import { readFileSync } from "node:fs"
 
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
@@ -25,6 +25,8 @@ interface AlphaMessage {
 	text?: string
 	partial?: boolean
 	isAnswered?: boolean
+	toolApprovalRequest?: ToolApprovalPrompt
+	asyncUserInput?: { questions: Array<{ title: string; options?: string[] }> }
 }
 
 interface ExtensionState {
@@ -58,14 +60,30 @@ vi.mock("../ChatRow", () => ({
 		message,
 		isTaskPrompt,
 		onSuggestionClick,
+		onAsyncUserInputSubmit,
+		isAsyncUserInputAnswered,
 	}: {
 		message: AlphaMessage
 		isTaskPrompt?: boolean
 		onSuggestionClick?: (suggestion: { answer: string; mode?: string }, event?: React.MouseEvent) => void
+		onAsyncUserInputSubmit?: (messageTs: number, response: string) => boolean
+		isAsyncUserInputAnswered?: boolean
 	}) {
 		return (
 			<div data-testid="chat-row">
 				{isTaskPrompt ? <span>{message.text}</span> : JSON.stringify(message)}
+				{message.say === "async_user_input" && (
+					<>
+						<button
+							data-testid={`async-user-input-submit-${message.ts}`}
+							onClick={() => onAsyncUserInputSubmit?.(message.ts, "Use blue and label it Ready.")}>
+							Send async reply
+						</button>
+						<span data-testid={`async-user-input-status-${message.ts}`}>
+							{isAsyncUserInputAnswered ? "Answers sent" : "Awaiting an answer"}
+						</span>
+					</>
+				)}
 				{message.ask === "followup" && (
 					<button
 						data-testid="auto-mode-suggestion"
@@ -106,14 +124,6 @@ vi.mock("../FileChangesPanel", () => ({
 vi.mock("../AutoApproveMenu", () => ({
 	default: () => null,
 }))
-
-// Mock VersionIndicator - returns null by default to prevent rendering in tests
-vi.mock("../../common/VersionIndicator", () => ({
-	default: vi.fn(() => null),
-}))
-
-// Get the mock function after the module is mocked
-const mockVersionIndicator = vi.mocked((await import("../../common/VersionIndicator")).default)
 
 vi.mock("../Announcement", () => ({
 	default: function MockAnnouncement({ hideAnnouncement }: { hideAnnouncement: () => void }) {
@@ -185,13 +195,6 @@ vi.mock("../QueuedMessages", () => ({
 	},
 }))
 
-// Mock AlphaTips component
-vi.mock("@src/components/welcome/AlphaTips", () => ({
-	default: function MockAlphaTips() {
-		return <div data-testid="roo-tips">Tips content</div>
-	},
-}))
-
 // Mock AlphaHero component
 vi.mock("@src/components/welcome/AlphaHero", () => ({
 	default: function MockAlphaHero() {
@@ -227,6 +230,9 @@ vi.mock("react-i18next", () => ({
 
 interface ChatTextAreaProps {
 	onSend: () => void
+	isTaskDraft?: boolean
+	draftApprovalMode?: "ask" | "auto" | "bypass"
+	onDraftApprovalModeChange?: (mode: "ask" | "auto" | "bypass") => void
 	inputValue?: string
 	setInputValue?: (value: string) => void
 	sendingDisabled?: boolean
@@ -259,7 +265,14 @@ vi.mock("../ChatTextArea", () => {
 		}))
 
 		return (
-			<div data-testid="chat-textarea">
+			<div data-testid="chat-textarea" data-is-task-draft={props.isTaskDraft ? "true" : "false"}>
+				{props.isTaskDraft && (
+					<button
+						data-testid="mock-draft-approval-ask"
+						onClick={() => props.onDraftApprovalModeChange?.("ask")}>
+						Ask
+					</button>
+				)}
 				<input
 					ref={mockInputRef}
 					type="text"
@@ -382,109 +395,339 @@ const renderChatView = (props: Partial<ChatViewProps> = {}) => {
 	)
 }
 
+describe("ChatView async user input", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it("sends a submitted card as one ordinary message after later progress", async () => {
+		const taskId = "async-question-task"
+		const view = renderChatView()
+		mockPostMessage({
+			currentTaskId: taskId,
+			currentView: { type: "task", taskId },
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Update the status indicator" },
+				{
+					type: "say",
+					say: "async_user_input",
+					ts: 2,
+					asyncUserInput: { questions: [{ title: "Which color?", options: ["Blue", "Green"] }] },
+				},
+				{ type: "say", say: "text", ts: 3, text: "I am continuing while you decide." },
+			],
+		})
+
+		const submit = await waitFor(() => view.getByTestId("async-user-input-submit-2"))
+		expect(view.getByTestId("async-user-input-status-2")).toHaveTextContent("Awaiting an answer")
+		expect(view.getByTestId("chat-message-1")).toHaveTextContent("I am continuing while you decide.")
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.click(submit)
+
+		await waitFor(() => expect(view.getByTestId("async-user-input-status-2")).toHaveTextContent("Answers sent"))
+		expect(
+			vi
+				.mocked(vscode.postMessage)
+				.mock.calls.map(([message]) => message)
+				.filter((message) => ["askResponse", "queueMessage", "newTask"].includes(message.type)),
+		).toEqual([
+			{
+				type: "askResponse",
+				askResponse: "messageResponse",
+				text: "Use blue and label it Ready.",
+				images: [],
+				taskId,
+				asyncUserInputMessageTs: 2,
+			},
+		])
+	})
+
+	it("keeps an acknowledged card answered after task state reload", async () => {
+		const taskId = "reloaded-async-question-task"
+		const view = renderChatView()
+		mockPostMessage({
+			currentTaskId: taskId,
+			currentView: { type: "task", taskId },
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Update the status indicator" },
+				{
+					type: "say",
+					say: "async_user_input",
+					ts: 2,
+					isAnswered: true,
+					asyncUserInput: { questions: [{ title: "Which color?", options: ["Blue", "Green"] }] },
+				},
+			],
+		})
+
+		await waitFor(() => expect(view.getByTestId("async-user-input-status-2")).toHaveTextContent("Answers sent"))
+	})
+
+	it("keeps the card unanswered when a completed-task resume is already pending", async () => {
+		const taskId = "completed-async-question-task"
+		const view = renderChatView()
+		mockPostMessage({
+			currentTaskId: taskId,
+			currentView: { type: "task", taskId },
+			liveTasksById: {
+				[taskId]: {
+					id: taskId,
+					status: "idle",
+					lifecycle: "completed",
+					isActive: false,
+					isStreaming: false,
+					isTurnActive: false,
+					isWaitingForInput: false,
+					lastUpdatedAt: 3,
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Update the status indicator" },
+				{
+					type: "say",
+					say: "async_user_input",
+					ts: 2,
+					asyncUserInput: { questions: [{ title: "Which color?", options: ["Blue", "Green"] }] },
+				},
+				{ type: "say", say: "text", ts: 3, text: "The task completed." },
+			],
+		})
+		const input = (await waitFor(() =>
+			view.getByTestId("chat-textarea").querySelector("input"),
+		)) as HTMLInputElement
+		await waitFor(() => view.getByTestId("async-user-input-submit-2"))
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.change(input, { target: { value: "Resume the task" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		await waitFor(() =>
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "resumeCompletedTask",
+				taskId,
+				text: "Resume the task",
+				images: [],
+			}),
+		)
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.click(view.getByTestId("async-user-input-submit-2"))
+
+		await waitFor(() =>
+			expect(view.getByTestId("async-user-input-status-2")).toHaveTextContent("Awaiting an answer"),
+		)
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+	})
+})
+
 describe("ChatView activity trace", () => {
 	const focusDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "focus")!
 	afterEach(() => Object.defineProperty(HTMLElement.prototype, "focus", focusDescriptor))
 
-	it("keeps each completed turn collapsed across follow-ups, lifecycle refreshes, and reload", async () => {
+	it("folds live action runs between visible progress messages and preserves pending approvals", async () => {
+		const view = renderChatView()
+		const messages: AlphaMessage[] = [
+			{ ts: 100, type: "say", say: "task", text: "Update the code" },
+			{ ts: 200, type: "say", say: "text", text: "I am inspecting the implementation." },
+			{ ts: 300, type: "ask", ask: "command", text: "rg -n implementation src" },
+			{ ts: 400, type: "say", say: "command_output", text: "src/agent.ts:10" },
+			{ ts: 500, type: "say", say: "reasoning", text: "The execution path needs a change." },
+			{
+				ts: 600,
+				type: "ask",
+				ask: "tool",
+				text: JSON.stringify({ tool: "editedExistingFile", path: "src/agent.ts" }),
+			},
+			{ ts: 700, type: "say", say: "text", text: "The edit is in place." },
+		]
+		mockPostMessage({
+			currentTaskId: "live-actions",
+			clineMessages: messages,
+			liveTasksById: {
+				"live-actions": {
+					id: "live-actions",
+					status: "running",
+					lifecycle: "running",
+					isActive: true,
+					isStreaming: true,
+					isTurnActive: true,
+					isWaitingForInput: false,
+					lastUpdatedAt: 700,
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+		})
+		await waitFor(() => expect(view.getByTestId("chat-message-0")).toBeVisible())
+		for (const index of [0, 2, 4]) expect(view.getByTestId(`chat-message-${index}`)).toBeVisible()
+		for (const index of [1, 3]) expect(view.getByTestId(`chat-message-${index}`)).not.toBeVisible()
+		expect(within(view.getByTestId("chat-message-1")).getByTestId("chat-row")).toBeInTheDocument()
+		const toggles = view.getAllByRole("button", { name: /chat:activityTrace\.(runningCommands|editingFiles)/ })
+		expect(toggles).toHaveLength(2)
+		fireEvent.click(toggles[0])
+		expect(view.getByTestId("chat-message-1")).toBeVisible()
+		expect(view.getByTestId("chat-message-3")).not.toBeVisible()
+
+		mockPostMessage({
+			currentTaskId: "live-actions",
+			clineMessages: [
+				...messages,
+				{
+					ts: 800,
+					type: "ask",
+					ask: "command",
+					text: "pnpm test",
+					toolApprovalRequest: {
+						requestId: "approval-1",
+						taskId: "live-actions",
+						toolName: "exec_command",
+						availableDecisions: ["approve_once", "deny", "abort"],
+					},
+				},
+			],
+		})
+		await waitFor(() => expect(view.getByTestId("chat-message-5")).toBeVisible())
+		expect(view.getByTestId("chat-message-5")).toHaveTextContent("pnpm test")
+	})
+
+	it("keeps the API failure row visible when the failure ask is filtered from the trace", async () => {
+		const view = renderChatView()
+		mockPostMessage({
+			currentTaskId: "failed-api",
+			clineMessages: [
+				{ ts: 1, type: "say", say: "task", text: "Run a check" },
+				{ ts: 2, type: "say", say: "api_req_started", text: "{}" },
+				{ ts: 3, type: "ask", ask: "api_req_failed", text: "The provider is unavailable" },
+			],
+		})
+		await waitFor(() => expect(view.getByTestId("chat-message-0")).toBeVisible())
+		expect(view.queryByRole("button", { name: /chat:activityTrace.working/ })).not.toBeInTheDocument()
+	})
+
+	it("keeps reasoning visible while action groups survive follow-ups and reload", async () => {
 		const taskId = "successive-traces"
 		const firstTurn: AlphaMessage[] = [
 			{ ts: 100, type: "say", say: "task", text: "Run the tests" },
 			{ ts: 1000, type: "say", say: "reasoning", text: "Inspecting tests" },
 			{ ts: 2000, type: "ask", ask: "command", text: "pnpm test" },
-			{ ts: 480000, type: "say", say: "completion_result", text: "First answer" },
-			{ ts: 481000, type: "ask", ask: "completion_result", text: "" },
+			{ ts: 3000, type: "say", say: "completion_result", text: "First answer" },
 		]
 		const followup: AlphaMessage[] = [
-			{ ts: 600000, type: "say", say: "user_feedback", text: "Now check the types" },
-			{ ts: 601000, type: "say", say: "reasoning", text: "Checking types" },
-			{ ts: 602000, type: "ask", ask: "command", text: "pnpm check-types" },
+			{ ts: 4000, type: "say", say: "user_feedback", text: "Now check the types" },
+			{ ts: 5000, type: "say", say: "reasoning", text: "Checking types" },
+			{ ts: 6000, type: "ask", ask: "command", text: "pnpm check-types", isAnswered: true },
 		]
-		const publish = (clineMessages: AlphaMessage[], lifecycle: "running" | "completed") =>
-			mockPostMessage({
-				currentTaskId: taskId,
-				clineMessages,
-				liveTasksById: {
-					[taskId]: {
-						id: taskId,
-						status: "idle",
-						lifecycle,
-						isActive: true,
-						isStreaming: false,
-						isTurnActive: lifecycle === "running",
-						isWaitingForInput: false,
-						lastUpdatedAt: clineMessages.at(-1)!.ts,
-						queueCount: 0,
-						tokensIn: 0,
-						tokensOut: 0,
-						totalCost: 0,
-					},
-				},
-			})
+		const publish = (clineMessages: AlphaMessage[]) => mockPostMessage({ currentTaskId: taskId, clineMessages })
 		const view = renderChatView()
-		publish(firstTurn, "completed")
-		await waitFor(() => expect(view.getByTestId("chat-message-0")).not.toBeVisible())
-		expect(view.queryByText("Inspecting tests")).not.toBeInTheDocument()
+		publish(firstTurn)
+		await waitFor(() => expect(view.getByTestId("chat-message-0")).toBeVisible())
+		expect(view.getByTestId("chat-message-1")).not.toBeVisible()
 		expect(view.getByTestId("chat-message-2")).toBeVisible()
-
-		// Host metadata can resume before the durable user-feedback row reaches the UI.
-		await act(async () => {
-			const delivered = new Promise<void>((resolve) =>
-				window.addEventListener("message", () => resolve(), { once: true }),
-			)
-			publish(firstTurn, "running")
-			await delivered
-		})
-		expect(view.getByTestId("chat-message-0")).not.toBeVisible()
-		publish([...firstTurn, ...followup], "running")
+		publish([...firstTurn, ...followup])
 		await waitFor(() => expect(view.getByTestId("chat-message-4")).toBeVisible())
-		expect(view.getByTestId("chat-message-0")).not.toBeVisible()
-		expect(view.getByTestId("chat-message-2")).toBeVisible()
-		expect(view.getByTestId("chat-message-3")).toBeVisible()
-		expect(view.getByTestId("chat-message-5")).toBeVisible()
-
-		const completedTurns: AlphaMessage[] = [
-			...firstTurn,
-			...followup,
-			{ ts: 720000, type: "say", say: "completion_result", text: "Second answer" },
-			{ ts: 721000, type: "ask", ask: "completion_result", text: "" },
-		]
-		publish(completedTurns, "completed")
-		await waitFor(() =>
-			expect(view.getAllByRole("button", { name: "chat:activityTrace.workedFor" })).toHaveLength(2),
-		)
-		for (const index of [0, 1, 4, 5]) expect(view.getByTestId(`chat-message-${index}`)).not.toBeVisible()
-		for (const index of [2, 3, 6]) expect(view.getByTestId(`chat-message-${index}`)).toBeVisible()
-		const toggles = view.getAllByRole("button", { name: "chat:activityTrace.workedFor" })
-		for (const toggle of toggles) expect(toggle).toHaveAttribute("aria-expanded", "false")
+		for (const index of [0, 2, 3, 4]) expect(view.getByTestId(`chat-message-${index}`)).toBeVisible()
+		for (const index of [1, 5]) expect(view.getByTestId(`chat-message-${index}`)).not.toBeVisible()
+		const toggles = view.getAllByRole("button", { name: /chat:activityTrace.runningCommands/ })
+		expect(toggles).toHaveLength(2)
 		fireEvent.click(toggles[0])
-		expect(view.getByTestId("chat-message-0")).toBeVisible()
-		expect(view.getByTestId("chat-message-4")).not.toBeVisible()
-
+		expect(view.getByTestId("chat-message-1")).toBeVisible()
+		expect(view.getByTestId("chat-message-5")).not.toBeVisible()
 		view.unmount()
 		const reloaded = renderChatView()
-		publish(completedTurns, "completed")
-		await waitFor(() =>
-			expect(reloaded.getAllByRole("button", { name: "chat:activityTrace.workedFor" })).toHaveLength(2),
-		)
-		for (const index of [0, 1, 4, 5]) expect(reloaded.getByTestId(`chat-message-${index}`)).not.toBeVisible()
-		for (const index of [2, 3, 6]) expect(reloaded.getByTestId(`chat-message-${index}`)).toBeVisible()
+		publish([...firstTurn, ...followup])
+		await waitFor(() => expect(reloaded.getByTestId("chat-message-4")).toBeVisible())
+		for (const index of [1, 5]) expect(reloaded.getByTestId(`chat-message-${index}`)).not.toBeVisible()
 	})
 
-	it("shows live activity, folds it above the final response, and restores it on click", async () => {
-		const { getByTestId, getByRole, queryByRole } = renderChatView()
+	it("collapses an opened action group when the task completes and allows reopening it", async () => {
+		const view = renderChatView()
+		const taskId = "completed-actions"
 		const messages: AlphaMessage[] = [
-			{ ts: 100, type: "say", say: "text", text: "Run the tests" },
-			{ ts: 1000, type: "say", say: "reasoning", text: "Checking the test suite" },
-			{ ts: 2000, type: "ask", ask: "command", text: "pnpm test" },
-			{ ts: 3000, type: "say", say: "text", text: "All tests passed", partial: true },
+			{ ts: 100, type: "say", say: "task", text: "Run the tests" },
+			{ ts: 200, type: "ask", ask: "command", text: "pnpm test", isAnswered: true },
+			{ ts: 300, type: "say", say: "text", text: "Tests are done." },
 		]
-		mockPostMessage({ currentTaskId: "trace-a", clineMessages: messages })
-		await waitFor(() => expect(getByTestId("chat-message-0")).toBeVisible())
-		expect(getByTestId("chat-message-1")).toBeVisible()
-		expect(queryByRole("button", { name: "chat:activityTrace.workedFor" })).not.toBeInTheDocument()
-		// The shared FAST/JSDOM setup replaces native focus with a no-op. Record
-		// the actual target of focus restoration and dispatch the focus event.
+		const runningTask = {
+			id: taskId,
+			status: "running",
+			lifecycle: "running",
+			isActive: true,
+			isStreaming: true,
+			isTurnActive: true,
+			isWaitingForInput: false,
+			lastUpdatedAt: 200,
+			queueCount: 0,
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+		}
+		mockPostMessage({ currentTaskId: taskId, clineMessages: messages, liveTasksById: { [taskId]: runningTask } })
+		const toggle = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.runningCommands/ }))
+		fireEvent.click(toggle)
+		expect(toggle).toHaveAttribute("aria-expanded", "true")
+		expect(view.getByTestId("chat-message-0")).toBeVisible()
+
+		mockPostMessage({
+			currentTaskId: taskId,
+			clineMessages: messages,
+			liveTasksById: {
+				[taskId]: {
+					...runningTask,
+					status: "completed",
+					lifecycle: "completed",
+					isActive: false,
+					isStreaming: false,
+					isTurnActive: false,
+				},
+			},
+		})
+		await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "false"))
+		expect(view.getByTestId("chat-message-0")).not.toBeVisible()
+		fireEvent.click(toggle)
+		expect(toggle).toHaveAttribute("aria-expanded", "true")
+		expect(view.getByTestId("chat-message-0")).toBeVisible()
+	})
+
+	it("collapses an opened action group at the completion prompt before lifecycle state catches up", async () => {
+		const view = renderChatView()
+		const taskId = "completion-prompt-actions"
+		const messages: AlphaMessage[] = [
+			{ ts: 100, type: "say", say: "task", text: "Run the tests" },
+			{ ts: 200, type: "ask", ask: "command", text: "pnpm test", isAnswered: true },
+			{ ts: 300, type: "say", say: "text", text: "Tests are done." },
+		]
+		mockPostMessage({ currentTaskId: taskId, clineMessages: messages })
+		const toggle = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.runningCommands/ }))
+		fireEvent.click(toggle)
+		expect(toggle).toHaveAttribute("aria-expanded", "true")
+
+		mockPostMessage({
+			currentTaskId: taskId,
+			clineMessages: [
+				...messages,
+				{ ts: 400, type: "say", say: "completion_result", text: "Done." },
+				{ ts: 500, type: "ask", ask: "completion_result", text: "" },
+			],
+		})
+		await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "false"))
+		expect(view.getByTestId("chat-message-0")).not.toBeVisible()
+	})
+
+	it("restores focus to the action toggle when collapsing focused details", async () => {
+		const view = renderChatView()
+		const messages: AlphaMessage[] = [
+			{ ts: 100, type: "say", say: "task", text: "Run tests" },
+			{ ts: 200, type: "say", say: "text", text: "Checking" },
+			{ ts: 300, type: "ask", ask: "command", text: "pnpm test" },
+			{ ts: 400, type: "say", say: "text", text: "The command finished." },
+		]
+		mockPostMessage({ currentTaskId: "focus-actions", clineMessages: messages })
+		const toggle = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.runningCommands/ }))
+		fireEvent.click(toggle)
 		const focusedElements: HTMLElement[] = []
 		Object.defineProperty(HTMLElement.prototype, "focus", {
 			configurable: true,
@@ -492,47 +735,11 @@ describe("ChatView activity trace", () => {
 				focusedElements.push(this)
 			},
 		})
-		fireEvent.focus(getByTestId("chat-message-1"))
-
-		const completedMessages: AlphaMessage[] = [
-			...messages.slice(0, 3),
-			{ ...messages[3], say: "completion_result", partial: false },
-			{ ts: 5500, type: "ask", ask: "completion_result", text: "" },
-		]
-		mockPostMessage({ currentTaskId: "trace-a", clineMessages: completedMessages })
-		await waitFor(() =>
-			expect(getByRole("button", { name: "chat:activityTrace.workedFor" })).toHaveAttribute(
-				"aria-expanded",
-				"false",
-			),
-		)
-		expect(getByTestId("chat-message-0")).not.toBeVisible()
-		expect(getByTestId("chat-message-1")).not.toBeVisible()
-		expect(getByTestId("chat-message-2")).toBeVisible()
-		expect(getByTestId("chat-message-2")).toHaveTextContent("All tests passed")
-		expect(focusedElements).toContain(getByRole("button", { name: "chat:activityTrace.workedFor" }))
-		fireEvent.click(getByRole("button", { name: "chat:activityTrace.workedFor" }))
-		expect(getByTestId("chat-message-0")).toBeVisible()
-		expect(getByTestId("chat-message-1")).toBeVisible()
-
-		// A state refresh preserves the reader's choice; another task cannot inherit it.
-		mockPostMessage({ currentTaskId: "trace-a", clineMessages: completedMessages })
-		await waitFor(() =>
-			expect(getByRole("button", { name: "chat:activityTrace.workedFor" })).toHaveAttribute(
-				"aria-expanded",
-				"true",
-			),
-		)
-		mockPostMessage({ currentTaskId: "trace-b", clineMessages: completedMessages })
-		await waitFor(() =>
-			expect(getByRole("button", { name: "chat:activityTrace.workedFor" })).toHaveAttribute(
-				"aria-expanded",
-				"false",
-			),
-		)
-		expect(getByTestId("chat-message-2")).toBeVisible()
+		fireEvent.focus(view.getByTestId("chat-message-1"))
+		fireEvent.click(toggle)
+		expect(view.getByTestId("chat-message-1")).not.toBeVisible()
+		expect(focusedElements).toContain(toggle)
 	})
-
 	it("does not mount transcript rows while the chat tab is hidden", async () => {
 		const view = renderChatView({ isHidden: true })
 		mockPostMessage({
@@ -596,6 +803,34 @@ describe("ChatView file-change summaries", () => {
 
 describe("ChatView - Plan command", () => {
 	beforeEach(() => vi.clearAllMocks())
+
+	it("includes a selected draft approval mode in the first new task request", async () => {
+		const { getByTestId } = renderChatView()
+		mockPostMessage({
+			mode: "code",
+			currentTaskId: undefined,
+			currentView: { type: "newTaskDraft" },
+			clineMessages: [],
+		})
+
+		const composer = await waitFor(() => getByTestId("chat-textarea"))
+		expect(composer).toHaveAttribute("data-is-task-draft", "true")
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(getByTestId("mock-draft-approval-ask"))
+
+		const input = composer.querySelector("input") as HTMLInputElement
+		fireEvent.change(input, { target: { value: "Start with Ask" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+		await waitFor(() => {
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "newTask",
+				text: "Start with Ask",
+				images: [],
+				taskApprovalMode: "ask",
+			})
+		})
+	})
 
 	it("sends an inline Plan command as one atomic host request", async () => {
 		const { getByTestId } = renderChatView()
@@ -1036,153 +1271,128 @@ describe("ChatView - Focus Grabbing Tests", () => {
 	})
 })
 
-describe("ChatView - Version Indicator Tests", () => {
+describe("ChatView - Inline Chats navigation", () => {
+	const focusedElements: HTMLElement[] = []
+	const focusDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "focus")!
 	beforeEach(() => {
 		vi.clearAllMocks()
-		// Reset the mock to return null by default
-		mockVersionIndicator.mockReturnValue(null)
+		focusedElements.length = 0
+		// The shared FAST/JSDOM setup replaces native focus with a no-op.
+		Object.defineProperty(HTMLElement.prototype, "focus", {
+			configurable: true,
+			value: function (this: HTMLElement) {
+				focusedElements.push(this)
+			},
+		})
 	})
+	afterEach(() => Object.defineProperty(HTMLElement.prototype, "focus", focusDescriptor))
 
-	it("displays version indicator button", () => {
-		// Mock VersionIndicator to return a button
-		mockVersionIndicator.mockReturnValue(
-			React.createElement("button", {
-				"data-testid": "version-indicator",
-				"aria-label": "Version 1.0.0",
-				className: "version-indicator-button",
-			}),
-		)
-
-		const { getByTestId } = renderChatView()
-
-		// Hydrate state with no active task
+	it("expands View all in place and restores compact home chats on close", async () => {
+		const view = renderChatView()
 		mockPostMessage({
-			version: "1.0.0",
 			clineMessages: [],
+			taskHistory: Array.from({ length: 7 }, (_, index) => ({
+				id: `recent-${index}`,
+				ts: 100 - index,
+				task: `Recent chat ${index}`,
+			})),
 		})
-
-		// Should display version indicator
-		expect(getByTestId("version-indicator")).toBeInTheDocument()
+		const expand = await view.findByRole("button", { name: "history:viewAllHistory" })
+		const composer = view.getByTestId("chat-textarea").querySelector("input")!
+		fireEvent.change(composer, { target: { value: "Home draft" } })
+		expect(view.queryByRole("searchbox")).not.toBeInTheDocument()
+		expect(view.queryByText("Recent chat 5")).not.toBeInTheDocument()
+		fireEvent.click(expand)
+		expect(focusedElements.at(-1)).toBe(view.getByRole("searchbox"))
+		expect(composer).toHaveValue("Home draft")
+		fireEvent.click(view.getByRole("button", { name: "history:closeChats" }))
+		expect(view.queryByRole("searchbox")).not.toBeInTheDocument()
+		expect(view.getByRole("button", { name: "history:viewAllHistory" })).toBeInTheDocument()
+		expect(view.getByTestId("chat-textarea").querySelector("input")).toBe(composer)
+		expect(composer).toHaveValue("Home draft")
+		fireEvent.click(view.getByRole("button", { name: "history:viewAllHistory" }))
+		expect(focusedElements.at(-1)).toBe(view.getByRole("searchbox"))
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "clearTask" }))
 	})
 
-	it("opens announcement modal when version indicator is clicked", async () => {
-		// Mock VersionIndicator to return a button with onClick
-		mockVersionIndicator.mockImplementation(({ onClick }: { onClick?: () => void }) =>
-			React.createElement("button", {
-				"data-testid": "version-indicator",
-				onClick,
-			}),
+	it("keeps the active transcript and draft mounted while opening Chats", async () => {
+		const props = { ...defaultProps, historyFocusRequest: 0 }
+		const tree = () => (
+			<ExtensionStateContextProvider>
+				<QueryClientProvider client={queryClient}>
+					<ChatView {...props} />
+				</QueryClientProvider>
+			</ExtensionStateContextProvider>
 		)
-
-		const { getByTestId, queryByTestId } = renderChatView({ showAnnouncement: false })
-
-		// Hydrate state
+		const view = render(tree())
 		mockPostMessage({
-			version: "1.0.0",
-			clineMessages: [],
+			currentTaskId: "active-chat",
+			clineMessages: [{ ts: 1, type: "say", say: "text", text: "Active chat" }],
+			taskHistory: [{ id: "active-chat", ts: 1, task: "Active chat" }],
 		})
-
-		// Wait for component to render
-		await waitFor(() => {
-			expect(getByTestId("version-indicator")).toBeInTheDocument()
-		})
-
-		// Click version indicator
-		const versionIndicator = getByTestId("version-indicator")
-		act(() => {
-			versionIndicator.click()
-		})
-
-		// Wait for announcement modal to appear
-		await waitFor(() => {
-			expect(queryByTestId("announcement-modal")).toBeInTheDocument()
-		})
-	})
-
-	it("version indicator has correct styling classes", () => {
-		// Mock VersionIndicator to return a button with specific classes
-		mockVersionIndicator.mockReturnValue(
-			React.createElement("button", {
-				"data-testid": "version-indicator",
-				className: "version-indicator-button absolute top-2 right-2",
-			}),
+		const transcript = await view.findByTestId("chat-transcript-viewport")
+		const composer = view.getByTestId("chat-textarea").querySelector("input")!
+		fireEvent.change(composer, { target: { value: "Unsent draft" } })
+		props.historyFocusRequest = 1
+		view.rerender(tree())
+		expect(view.getByRole("heading", { name: "history:chats" })).toBeInTheDocument()
+		expect(view.getByTestId("chat-transcript-viewport")).toBe(transcript)
+		expect(view.getByTestId("chat-textarea").querySelector("input")).toBe(composer)
+		expect(composer).toHaveValue("Unsent draft")
+		fireEvent.click(view.getByRole("button", { name: "history:closeChats" }))
+		expect(view.queryByRole("searchbox")).not.toBeInTheDocument()
+		props.historyFocusRequest = 2
+		view.rerender(tree())
+		expect(focusedElements.at(-1)).toBe(view.getByRole("searchbox"))
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "taskOpenResult", taskId: "active-chat", success: false },
+				}),
+			),
 		)
-
-		const { getByTestId } = renderChatView()
-
-		// Hydrate state
-		mockPostMessage({
-			version: "1.0.0",
-			clineMessages: [],
-		})
-
-		const versionIndicator = getByTestId("version-indicator")
-		expect(versionIndicator.className).toContain("version-indicator-button")
-		expect(versionIndicator.className).toContain("absolute")
-		expect(versionIndicator.className).toContain("top-2")
-		expect(versionIndicator.className).toContain("right-2")
-	})
-
-	it("version indicator has proper accessibility attributes", () => {
-		// Mock VersionIndicator to return a button with aria-label
-		mockVersionIndicator.mockReturnValue(
-			React.createElement("button", {
-				"data-testid": "version-indicator",
-				"aria-label": "Version 1.0.0",
-				role: "button",
-			}),
+		expect(view.getByRole("heading", { name: "history:chats" })).toBeInTheDocument()
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "taskOpenResult", taskId: "active-chat", success: true },
+				}),
+			),
 		)
-
-		const { getByTestId } = renderChatView()
-
-		// Hydrate state
-		mockPostMessage({
-			version: "1.0.0",
-			clineMessages: [],
-		})
-
-		const versionIndicator = getByTestId("version-indicator")
-		expect(versionIndicator.getAttribute("aria-label")).toBe("Version 1.0.0")
-		expect(versionIndicator.getAttribute("role")).toBe("button")
+		expect(view.queryByRole("heading", { name: "history:chats" })).not.toBeInTheDocument()
+		expect(view.getByTestId("chat-transcript-viewport")).toBe(transcript)
+		expect(composer).toHaveValue("Unsent draft")
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "clearTask" }))
 	})
+})
 
-	it("does not display version indicator when there is an active task", () => {
-		// Mock VersionIndicator to return null (simulating hidden state)
-		mockVersionIndicator.mockReturnValue(null)
+describe("ChatView - Empty chat home", () => {
+	beforeEach(() => vi.clearAllMocks())
 
-		const { queryByTestId } = renderChatView()
+	it.each([0, 3, 7])("shows only the centered Alpha mark when there are %i recent chats", async (historyCount) => {
+		const { getByTestId, getByRole, queryByTestId } = renderChatView()
+		const taskHistory = Array.from({ length: historyCount }, (_, index) => ({
+			id: `task-${index + 1}`,
+			ts: Date.now() - index * 1000,
+			task: `Recent task ${index + 1}`,
+			workspace: "/test/workspace",
+		}))
 
-		// Hydrate state with active task
-		mockPostMessage({
-			version: "1.0.0",
-			clineMessages: [
-				{
-					type: "say",
-					say: "task",
-					ts: Date.now(),
-					text: "Active task",
-				},
-			],
-		})
+		mockPostMessage({ cwd: "/test/workspace", taskHistory, clineMessages: [] })
+		if (historyCount > 0) {
+			await waitFor(() => expect(getByTestId("history-preview-list")).toBeInTheDocument())
+		}
 
-		// Should not display version indicator during active task
+		expect(getByTestId("alpha-home-brand")).toBeInTheDocument()
+		expect(getByTestId("roo-hero")).toBeInTheDocument()
+		expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
 		expect(queryByTestId("version-indicator")).not.toBeInTheDocument()
-	})
+		expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
 
-	it("displays version indicator only on welcome screen (no task)", () => {
-		// Mock VersionIndicator to return a button
-		mockVersionIndicator.mockReturnValue(React.createElement("button", { "data-testid": "version-indicator" }))
-
-		const { queryByTestId } = renderChatView()
-
-		// Hydrate state with no active task
-		mockPostMessage({
-			version: "1.0.0",
-			clineMessages: [],
-		})
-
-		// Should display version indicator on welcome screen
-		expect(queryByTestId("version-indicator")).toBeInTheDocument()
+		if (historyCount > 0) {
+			expect(getByRole("heading", { name: "history:chats" })).toBeInTheDocument()
+			expect(getByTestId("history-preview-list")).toBeInTheDocument()
+		}
 	})
 })
 
@@ -1241,7 +1451,7 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 			clineMessages: [], // No active task
 		})
 
-		// Cloud upsell surfaces are removed, so the welcome screen should stay on Alpha tips.
+		// The empty home keeps its logo and chat history without an upsell panel.
 		await waitFor(() => {
 			expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
 		})
@@ -1272,48 +1482,10 @@ describe("ChatView - DismissibleUpsell Display Tests", () => {
 		await waitFor(() => {
 			// Should not show DismissibleUpsell during active task
 			expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
-			// Should not show AlphaTips either since the entire welcome screen is hidden during active tasks
-			expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
-			// Should not show AlphaHero either since the entire welcome screen is hidden during active tasks
+			// The empty-home logo should not appear in an active task.
+			expect(queryByTestId("alpha-home-brand")).not.toBeInTheDocument()
 			expect(queryByTestId("roo-hero")).not.toBeInTheDocument()
 		})
-	})
-
-	it("shows AlphaTips when user is authenticated (instead of DismissibleUpsell)", () => {
-		const { queryByTestId, getByTestId } = renderChatView()
-
-		// Hydrate state with user authenticated to cloud
-		mockPostMessage({
-			taskHistory: [
-				{ id: "1", ts: Date.now() - 3000 },
-				{ id: "2", ts: Date.now() - 2000 },
-				{ id: "3", ts: Date.now() - 1000 },
-				{ id: "4", ts: Date.now() },
-			],
-			clineMessages: [], // No active task
-		})
-
-		// Should not show DismissibleUpsell but should show AlphaTips
-		expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
-		expect(getByTestId("roo-tips")).toBeInTheDocument()
-	})
-
-	it("shows AlphaTips when user has fewer than 6 tasks (instead of DismissibleUpsell)", () => {
-		const { queryByTestId, getByTestId } = renderChatView()
-
-		// Hydrate state with user not authenticated but fewer than 4 tasks
-		mockPostMessage({
-			taskHistory: [
-				{ id: "1", ts: Date.now() - 2000 },
-				{ id: "2", ts: Date.now() - 1000 },
-				{ id: "3", ts: Date.now() },
-			],
-			clineMessages: [], // No active task
-		})
-
-		// Should not show DismissibleUpsell but should show AlphaTips
-		expect(queryByTestId("dismissible-upsell")).not.toBeInTheDocument()
-		expect(getByTestId("roo-tips")).toBeInTheDocument()
 	})
 })
 
@@ -1677,6 +1849,79 @@ describe("ChatView - Message Queueing Tests", () => {
 			messageQueue: queuedMessages,
 		}
 
+		it("waits for the reopened task transcript before dispatching a targeted host send", async () => {
+			const taskId = "reopened-completed-task"
+			const { getByTestId } = renderChatView()
+			mockPostMessage({
+				currentTaskId: undefined,
+				currentView: { type: "newTaskDraft" },
+				taskStateSeq: 1,
+				clineMessagesSeq: 1,
+				clineMessages: [],
+			})
+			await waitFor(() => expect(getByTestId("chat-textarea")).toBeInTheDocument())
+			vi.mocked(vscode.postMessage).mockClear()
+
+			await act(async () => {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: { type: "invoke", invoke: "sendMessage", taskId, text: "Continue the reopened task" },
+					}),
+				)
+			})
+			expect(vscode.postMessage).not.toHaveBeenCalled()
+
+			const completedTask = {
+				id: taskId,
+				status: "completed",
+				lifecycle: "completed",
+				isActive: true,
+				isStreaming: false,
+				isWaitingForInput: false,
+				lastUpdatedAt: 10,
+				queueCount: 0,
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			}
+			mockPostMessage({
+				currentTaskId: taskId,
+				currentView: { type: "task", taskId },
+				currentTaskItem: { id: taskId, task: "Reopened task", ts: 1 },
+				liveTasksById: { [taskId]: completedTask },
+				taskStateSeq: 2,
+				clineMessagesSeq: 2,
+				clineMessages: [],
+			})
+			await waitFor(() => expect(getByTestId("chat-textarea")).toBeInTheDocument())
+			expect(vscode.postMessage).not.toHaveBeenCalled()
+
+			mockPostMessage({
+				currentTaskId: taskId,
+				currentView: { type: "task", taskId },
+				currentTaskItem: { id: taskId, task: "Reopened task", ts: 1 },
+				liveTasksById: { [taskId]: completedTask },
+				taskStateSeq: 2,
+				clineMessagesSeq: 3,
+				clineMessages: [
+					{ type: "say", say: "task", ts: 1, text: "Reopened task" },
+					{ type: "say", say: "completion_result", ts: 2, text: "Previous answer" },
+					{ type: "ask", ask: "resume_completed_task", ts: 3, text: "", partial: false },
+				],
+			})
+
+			await waitFor(() =>
+				expect(vscode.postMessage).toHaveBeenCalledWith({
+					type: "askResponse",
+					askResponse: "messageResponse",
+					text: "Continue the reopened task",
+					images: [],
+					taskId,
+				}),
+			)
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "newTask" }))
+		})
+
 		it.each(
 			(["invoke", "suggestion"] as const).flatMap((method) =>
 				[false, true].map((switchTask) => ({ method, switchTask })),
@@ -1766,6 +2011,7 @@ describe("ChatView - Message Queueing Tests", () => {
 				},
 				{
 					type: "queueMessage",
+					clientSubmittedAt: expect.any(Number),
 					text: "Next instruction",
 					images: [],
 					taskId: waitingTask.id,
@@ -1946,7 +2192,7 @@ describe("ChatView - Message Queueing Tests", () => {
 				isWaitingForInput: true,
 			})),
 		])("preserves queue routing at $boundary", async ({ currentAsk, isWaitingForInput }) => {
-			const { getByTestId, getAllByTestId, getByRole } = renderChatView()
+			const { getByTestId, getAllByTestId, getByRole, queryByRole } = renderChatView()
 			mockPostMessage(waitingState)
 			await waitFor(() => getByTestId("copy-mode-suggestion"))
 			mockPostMessage({
@@ -1956,7 +2202,8 @@ describe("ChatView - Message Queueing Tests", () => {
 			})
 			await waitFor(() => {
 				if (currentAsk.ask === "command_output") {
-					expect(getByRole("button", { name: "chat:proceedWhileRunning.title" })).toBeInTheDocument()
+					expect(queryByRole("button", { name: "chat:proceedWhileRunning.title" })).not.toBeInTheDocument()
+					expect(getByRole("button", { name: "chat:killCommand.title" })).toBeInTheDocument()
 				} else {
 					expect(getAllByTestId("chat-row").at(-1)).toHaveTextContent(JSON.stringify(currentAsk))
 				}
@@ -1977,6 +2224,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 			expect(vscode.postMessage).toHaveBeenCalledWith({
 				type: "queueMessage",
+				clientSubmittedAt: expect.any(Number),
 				text: "Next instruction",
 				images: [],
 				taskId: waitingTask.id,
@@ -2014,6 +2262,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 				expect(vscode.postMessage).toHaveBeenCalledWith({
 					type: "queueMessage",
+					clientSubmittedAt: expect.any(Number),
 					text: "Next instruction",
 					images: [],
 					taskId: waitingTask.id,
@@ -2035,6 +2284,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 			expect(vscode.postMessage).toHaveBeenCalledWith({
 				type: "queueMessage",
+				clientSubmittedAt: expect.any(Number),
 				text: "Save this for the next turn",
 				images: [],
 				taskId: waitingTask.id,
@@ -2369,9 +2619,8 @@ describe("ChatView - Message Queueing Tests", () => {
 		)
 		expect(queryByText("chat:modelResponseDelayed")).not.toBeInTheDocument()
 	})
-	;(process.env.ALPHA_COMPLETION_IDLE_EVIDENCE ? it : it.skip)(
-		"replays the isolated live completion-idle capture through the rendered chat",
-		async () => {
+	if (process.env.ALPHA_COMPLETION_IDLE_EVIDENCE)
+		it("replays the isolated live completion-idle capture through the rendered chat", async () => {
 			const evidence = JSON.parse(readFileSync(process.env.ALPHA_COMPLETION_IDLE_EVIDENCE!, "utf8"))
 			expect(evidence.schemaVersion).toBe(1)
 			expect(evidence.elapsedMs).toBeGreaterThanOrEqual(30_000)
@@ -2390,8 +2639,7 @@ describe("ChatView - Message Queueing Tests", () => {
 				)
 				expect(queryByText("chat:modelResponseDelayed")).not.toBeInTheDocument()
 			}
-		},
-	)
+		})
 
 	it("shows the task chat shell when a focused task exists before its first message arrives", async () => {
 		const { getByTestId, queryByTestId, queryByText } = renderChatView()
@@ -2416,7 +2664,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		expect(queryByText("Second task")).toBeInTheDocument()
-		expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
+		expect(queryByTestId("alpha-home-brand")).not.toBeInTheDocument()
 	})
 
 	it("enters an empty new-task window before backend state clears the old running task", async () => {
@@ -2464,7 +2712,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		await waitFor(() => {
 			const input = getByTestId("chat-textarea").querySelector("input")!
 			expect(input.getAttribute("data-sending-disabled")).toBe("false")
-			expect(queryByTestId("roo-tips")).toBeInTheDocument()
+			expect(queryByTestId("alpha-home-brand")).toBeInTheDocument()
 		})
 
 		mockPostMessage({
@@ -2497,7 +2745,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		await waitFor(() => {
-			expect(queryByTestId("roo-tips")).toBeInTheDocument()
+			expect(queryByTestId("alpha-home-brand")).toBeInTheDocument()
 		})
 
 		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
@@ -2561,7 +2809,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		await waitFor(() => {
-			expect(queryByTestId("roo-tips")).toBeInTheDocument()
+			expect(queryByTestId("alpha-home-brand")).toBeInTheDocument()
 		})
 
 		mockPostMessage({
@@ -2573,7 +2821,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		await waitFor(() => {
-			expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
+			expect(queryByTestId("alpha-home-brand")).not.toBeInTheDocument()
 			expect(queryByText("Original task")).toBeInTheDocument()
 		})
 	})
@@ -2631,7 +2879,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		await waitFor(() => {
-			expect(queryByTestId("roo-tips")).toBeInTheDocument()
+			expect(queryByTestId("alpha-home-brand")).toBeInTheDocument()
 		})
 
 		mockPostMessage({
@@ -2643,7 +2891,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		await waitFor(() => {
-			expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
+			expect(queryByTestId("alpha-home-brand")).not.toBeInTheDocument()
 			expect(queryByText("Original task")).toBeInTheDocument()
 		})
 	})
@@ -2773,6 +3021,7 @@ describe("ChatView - Message Queueing Tests", () => {
 				.find((message) => message.type === "queueMessage")
 			expect(queuedRequest).toEqual({
 				type: "queueMessage",
+				clientSubmittedAt: expect.any(Number),
 				text: "follow-up question during spinner",
 				images: [],
 				taskId: "task-1",
@@ -3161,6 +3410,195 @@ describe("ChatView - Message Queueing Tests", () => {
 		expect(input.value).toBe("run this after approval")
 	})
 
+	it.each([
+		{
+			button: "chat:approveOnce.title",
+			decision: { decision: "approve_once" },
+			availableDecisions: ["approve_once", "deny", "abort"] as const,
+		},
+		{
+			button: "chat:reject.title",
+			feedback: "Please leave that file alone.",
+			decision: { decision: "deny", feedback: "Please leave that file alone." },
+			availableDecisions: ["approve_once", "deny", "abort"] as const,
+		},
+		{
+			button: "chat:approvalAbort.title",
+			decision: { decision: "abort" },
+			availableDecisions: ["approve_once", "deny", "abort"] as const,
+		},
+		{
+			button: "chat:approveSession.title",
+			decision: { decision: "approve_session" },
+			availableDecisions: ["approve_once", "approve_session", "deny", "abort"] as const,
+		},
+		{
+			button: "chat:approveCommand.title",
+			decision: {
+				decision: "approve_with_amendment",
+				amendment: { kind: "exact_command", command: "node scripts/check.js" },
+			},
+			availableDecisions: ["approve_once", "approve_with_amendment", "deny", "abort"] as const,
+			proposedAmendment: { kind: "exact_command" as const, command: "node scripts/check.js" },
+			cwd: "/workspace/packages",
+		},
+		{
+			button: "chat:approvePersistentCommand.title",
+			decision: {
+				decision: "approve_persistently",
+				amendment: { kind: "command_prefix", prefix: "node scripts/check.js" },
+			},
+			availableDecisions: ["approve_once", "approve_persistently", "deny", "abort"] as const,
+			proposedPersistentAmendment: { kind: "command_prefix" as const, prefix: "node scripts/check.js" },
+		},
+	])(
+		"routes typed approval choice from $button with its request id",
+		async ({
+			button,
+			feedback,
+			decision,
+			availableDecisions,
+			proposedAmendment,
+			proposedPersistentAmendment,
+			cwd,
+		}) => {
+			const { getByTestId, getByText, queryByText } = renderChatView()
+
+			mockPostMessage({
+				currentTaskId: "task-1",
+				clineMessages: [
+					{
+						type: "say",
+						say: "task",
+						ts: Date.now() - 2000,
+						text: "Initial task",
+					},
+					{
+						type: "ask",
+						ask: "command",
+						ts: Date.now(),
+						text: "Read src/main.ts",
+						toolApprovalRequest: {
+							requestId: "task-1:call-1",
+							taskId: "task-1",
+							toolName: "read_file",
+							description: "Read src/main.ts",
+							availableDecisions: [...availableDecisions],
+							...(proposedAmendment ? { proposedAmendment } : {}),
+							...(proposedPersistentAmendment ? { proposedPersistentAmendment } : {}),
+							...(cwd ? { cwd } : {}),
+						},
+					},
+				],
+			})
+
+			await waitFor(() => {
+				expect(getByText(button)).toBeInTheDocument()
+			})
+			if (!availableDecisions.some((choice) => choice === "approve_session")) {
+				expect(queryByText("chat:approveSession.title")).not.toBeInTheDocument()
+			}
+			if (!availableDecisions.some((choice) => choice === "approve_with_amendment")) {
+				expect(queryByText("chat:approveCommand.title")).not.toBeInTheDocument()
+			}
+			if (!availableDecisions.some((choice) => choice === "approve_persistently")) {
+				expect(queryByText("chat:approvePersistentCommand.title")).not.toBeInTheDocument()
+			}
+			if (proposedAmendment) {
+				expect(getByText(proposedAmendment.command)).toBeInTheDocument()
+			}
+			if (proposedPersistentAmendment) {
+				expect(getByText(proposedPersistentAmendment.prefix)).toBeInTheDocument()
+			}
+			if (cwd) {
+				expect(getByText("chat:approveCommand.cwdLabel")).toBeInTheDocument()
+				expect(getByText(cwd)).toBeInTheDocument()
+			}
+			if (feedback) {
+				const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+				fireEvent.change(input, { target: { value: feedback } })
+			}
+
+			vi.mocked(vscode.postMessage).mockClear()
+			fireEvent.click(getByText(button))
+
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "toolApprovalResponse",
+				taskId: "task-1",
+				approvalRequestId: "task-1:call-1",
+				toolApprovalDecision: decision,
+			})
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "cancelTask" }))
+		},
+	)
+
+	it("keeps an auto-approved command in the expandable actions without approval controls", async () => {
+		const { getByTestId, getByRole, queryByText } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: Date.now() - 2000,
+					text: "Initial task",
+				},
+				{
+					type: "ask",
+					ask: "command",
+					ts: Date.now(),
+					text: "pnpm test",
+					isAnswered: true,
+					toolApprovalRequest: {
+						requestId: "task-1:call-1",
+						taskId: "task-1",
+						toolName: "exec_command",
+						description: "pnpm test",
+						availableDecisions: ["approve_once", "deny", "abort"],
+					},
+				},
+			],
+		})
+
+		const toggle = await waitFor(() => getByRole("button", { name: /chat:activityTrace.runningCommands/ }))
+		expect(getByTestId("chat-message-0")).not.toBeVisible()
+		fireEvent.click(toggle)
+		expect(getByTestId("chat-transcript-content").textContent).toContain("pnpm test")
+		expect(queryByText("chat:approveOnce.title")).not.toBeInTheDocument()
+		expect(queryByText("chat:reject.title")).not.toBeInTheDocument()
+	})
+
+	it("folds a streaming command without showing disabled approval controls", async () => {
+		const { getByTestId, getByRole, queryByText } = renderChatView()
+
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{
+					type: "say",
+					say: "task",
+					ts: Date.now() - 2000,
+					text: "Initial task",
+				},
+				{
+					type: "ask",
+					ask: "command",
+					ts: Date.now(),
+					text: "pnpm test",
+					partial: true,
+				},
+			],
+		})
+
+		const toggle = await waitFor(() => getByRole("button", { name: /chat:activityTrace.runningCommands/ }))
+		expect(getByTestId("chat-message-0")).not.toBeVisible()
+		fireEvent.click(toggle)
+		expect(getByTestId("chat-transcript-content").textContent).toContain("pnpm test")
+		expect(queryByText("chat:runCommand.title")).not.toBeInTheDocument()
+		expect(queryByText("chat:reject.title")).not.toBeInTheDocument()
+	})
+
 	it("queues composer text submitted while a tool approval is pending", async () => {
 		const { getByTestId, getByText } = renderChatView()
 
@@ -3197,6 +3635,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		expect(vscode.postMessage).toHaveBeenCalledWith({
 			type: "queueMessage",
+			clientSubmittedAt: expect.any(Number),
 			text: "run this after approval",
 			images: [],
 			taskId: "task-1",
@@ -3790,7 +4229,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		},
 	)
 
-	it("keeps Start New Task enabled at an open completion review boundary", async () => {
+	it("keeps New Chat enabled at an open completion review boundary", async () => {
 		const { getByRole, getByTestId } = renderChatView()
 
 		mockPostMessage({
@@ -3833,7 +4272,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "startBlankTask" })
 	})
 
-	it("submits an existing draft when Start New Task is clicked", async () => {
+	it("submits an existing draft when New Chat is clicked", async () => {
 		const { getByTestId, getByRole, queryByTestId, queryByText } = renderChatView()
 
 		mockPostMessage({
@@ -3864,7 +4303,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 		expect(vscode.postMessage).not.toHaveBeenCalledWith({ type: "startBlankTask" })
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "askResponse" }))
-		expect(queryByTestId("roo-tips")).toBeInTheDocument()
+		expect(queryByTestId("alpha-home-brand")).toBeInTheDocument()
 
 		mockPostMessage({
 			currentTaskId: "task-2",
@@ -3873,7 +4312,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		})
 
 		await waitFor(() => {
-			expect(queryByTestId("roo-tips")).not.toBeInTheDocument()
+			expect(queryByTestId("alpha-home-brand")).not.toBeInTheDocument()
 			expect(queryByText("new task from button")).toBeInTheDocument()
 		})
 	})
@@ -3903,14 +4342,14 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "startBlankTask" })
 		await waitFor(() => {
-			expect(queryByTestId("roo-tips")).toBeInTheDocument()
+			expect(queryByTestId("alpha-home-brand")).toBeInTheDocument()
 			expect(getByTestId("chat-textarea").querySelector("input")!.getAttribute("data-sending-disabled")).toBe(
 				"false",
 			)
 		})
 
 		mockPostMessage(completedState)
-		await waitFor(() => expect(queryByTestId("roo-tips")).toBeInTheDocument())
+		await waitFor(() => expect(queryByTestId("alpha-home-brand")).toBeInTheDocument())
 
 		const input = getByTestId("chat-textarea").querySelector("input")!
 		fireEvent.change(input, { target: { value: "new task after transition" } })
@@ -3960,6 +4399,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		expect(vscode.postMessage).toHaveBeenCalledWith({
 			type: "queueMessage",
+			clientSubmittedAt: expect.any(Number),
 			text: "next message",
 			images: [],
 			taskId: "task-1",
@@ -4019,6 +4459,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		await waitFor(() => {
 			expect(vscode.postMessage).toHaveBeenCalledWith({
 				type: "queueMessage",
+				clientSubmittedAt: expect.any(Number),
 				text: "message during queue drain",
 				images: [],
 				taskId: "task-1",
@@ -4085,6 +4526,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		await waitFor(() => {
 			expect(vscode.postMessage).toHaveBeenCalledWith({
 				type: "queueMessage",
+				clientSubmittedAt: expect.any(Number),
 				text: "message during command execution",
 				images: [],
 				taskId: "task-1",

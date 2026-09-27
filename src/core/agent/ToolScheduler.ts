@@ -1,13 +1,21 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import { serializeError } from "serialize-error"
 import path from "path"
-import { createHash } from "crypto"
+import { createHash, randomUUID } from "crypto"
 import stringify from "safe-stable-stringify"
 import { isBundledSkillResource } from "../../services/skills/bundledSkillResources"
+import {
+	createTaskSessionApprovalKey,
+	grantTaskSessionApproval,
+	hasTaskSessionApproval,
+} from "../auto-approval/taskSessionApprovalGrants"
+import { createPersistentCommandPrefixAmendment } from "../auto-approval/commandApprovalAmendment"
 import { assessCommandPaths } from "../auto-approval/commandPathScope"
 import { unescapeHtmlEntities } from "../../utils/text-normalization"
 
+import { toolApprovalDecisionSchema, toolApprovalRequestSchema } from "@alpha-code/types"
 import type { AlphaAsk, AlphaAskResponse, AlphaSay, ModeConfig, ToolProgressStatus } from "@alpha-code/types"
+import type { ToolApprovalDecision, ToolApprovalRequest } from "@alpha-code/types"
 
 import type { ToolResponse, ToolUse } from "../../shared/tools"
 import type { ToolApprovalResponse, ToolCallbacks, ToolResultMetadata } from "../tools/BaseTool"
@@ -21,7 +29,9 @@ import {
 import { getImageOutputPaths } from "../tools/imageOutputPaths"
 import { resolvePathWithExistingAncestor } from "../tools/pathSafety"
 import {
+	getTaskDisplayPath,
 	normalizeTaskToolArguments,
+	redactTaskPrivatePaths,
 	resolveTaskWorkspacePath,
 	type TaskPathContext,
 } from "../tools/taskPathPresentation"
@@ -73,8 +83,14 @@ export interface ToolSchedulerOptions {
 	validateCall?: (call: AgentToolCall, toolCall: ToolUse<any>) => void
 	/** Revalidate the persisted assistant boundary immediately before an effect. */
 	beforeEffect?: (call: AgentToolCall) => void | Promise<void>
+	/** Durably record that a potentially effectful call is about to start, after approval settles. */
+	onEffectStart?: (call: AgentToolCall) => void | Promise<void>
 	/** Persist deterministic results for all calls when cancellation wins. */
 	preserveAbortedResults?: boolean
+	/** Hold results until the host commits the assistant transcript boundary. */
+	deferResultCommit?: boolean
+	/** Pre-EOF dispatch may execute a command only through its isolated read executor. */
+	requirePreparedCommandRead?: boolean
 	onEvent?: (event: AgentTurnEvent) => void | Promise<void>
 	/** Safe by default. Parallel work is opt-in at the scheduler boundary. */
 	executionMode?: ToolExecutionMode
@@ -106,6 +122,8 @@ type ToolExecutionHostAsk = (
 	requiresExplicitApproval?: boolean,
 ) => Promise<{ response: AlphaAskResponse; text?: string; images?: string[] }>
 
+type ToolExecutionHostApproval = (request: ToolApprovalRequest) => Promise<ToolApprovalDecision | undefined>
+
 /**
  * The small state and callback surface the scheduler needs from its host.
  *
@@ -115,6 +133,7 @@ type ToolExecutionHostAsk = (
  */
 export interface ToolExecutionHost {
 	taskId: string
+	taskKind?: "primary" | "subagent"
 	cwd?: string
 	abort?: boolean
 	didToolFailInCurrentTurn?: boolean
@@ -123,6 +142,10 @@ export interface ToolExecutionHost {
 	ask?: ToolExecutionHostAsk
 	/** Alias kept explicit for host implementations that prefer an approval name. */
 	askApproval?: ToolExecutionApproval
+	/** Typed approval path for hosts that support once/session decisions and reviewed amendments. */
+	requestToolApproval?: ToolExecutionHostApproval
+	/** Persist a user-approved command prefix to the host's existing command allowlist settings. */
+	persistCommandApprovalPrefix?: (prefix: string) => Promise<boolean>
 	say: ToolExecutionSay
 	recordToolUsage: (name: string) => void
 	pushToolResultToUserContent: (result: Anthropic.ToolResultBlockParam) => boolean
@@ -175,6 +198,7 @@ export interface ToolSchedulerResult {
 	/** Actual process outcome, when the tool reports one separately from handler completion. */
 	executionStatus?: ToolResultMetadata["executionStatus"]
 	exitCode?: number
+	commandResult?: ToolResultMetadata["commandResult"]
 	truncated?: boolean
 	timedOut?: boolean
 	/** Trusted progress-only observation; never verification evidence. */
@@ -252,10 +276,14 @@ class ToolResultCollector {
 	private approvalResult: ToolResponse | undefined
 	private feedback?: { text: string; images?: string[] }
 	private status: ToolSchedulerResult["status"] = "success"
+	private structuredStatus?: ToolResultStatus
 	private metadata: ToolResultMetadata = {}
 	private truncated = false
 
-	constructor(private readonly maxOutputChars: number) {}
+	constructor(
+		private readonly maxOutputChars: number,
+		private readonly statusSource: "handler" | "structured_output",
+	) {}
 
 	setApprovalFeedback(feedback: { text: string; images?: string[] }): void {
 		this.feedback = feedback
@@ -305,10 +333,9 @@ class ToolResultCollector {
 			return
 		}
 
-		const structuredStatus = getStructuredToolResultStatus(content)
-		if (structuredStatus && this.status === "success") {
-			this.status = structuredStatus
-		}
+		const structuredStatus =
+			this.statusSource === "structured_output" ? getStructuredToolResultStatus(content) : undefined
+		this.structuredStatus = structuredStatus
 
 		if (this.feedback) {
 			const feedbackText = formatResponse.toolApprovedWithFeedback(this.feedback.text)
@@ -337,12 +364,10 @@ class ToolResultCollector {
 	}
 
 	getStatus(): ToolSchedulerResult["status"] {
-		// A non-success status from either the handler metadata or structured output
-		// must not be hidden by a normally-resolved outer invocation.
-		if (this.metadata.status && this.metadata.status !== "success") {
-			return this.metadata.status
-		}
-		return this.status === "success" ? (this.metadata.status ?? this.status) : this.status
+		// Runtime cancellation/denial and handler metadata outrank status-looking
+		// result text. Only legacy native results without metadata use the text.
+		if (this.status !== "success") return this.status
+		return this.metadata.status ?? this.structuredStatus ?? "success"
 	}
 
 	getContent(): ToolResponse {
@@ -377,14 +402,13 @@ function limitToolResponse(
 }
 
 function getVerificationCategory(call: AgentToolCall): "test" | "build" | "lint" | "typecheck" | undefined {
-	if (canonicalizeToolName(call.name) !== "shell") {
+	if (canonicalizeToolName(call.name) !== "exec_command") {
 		return undefined
 	}
 
-	const command =
-		typeof call.arguments === "object" && call.arguments !== null
-			? String((call.arguments as Record<string, unknown>).command ?? "")
-			: ""
+	const args: Record<string, unknown> =
+		typeof call.arguments === "object" && call.arguments !== null ? (call.arguments as Record<string, unknown>) : {}
+	const command = typeof args.cmd === "string" ? args.cmd : typeof args.command === "string" ? args.command : ""
 	if (/(test|pytest|vitest|jest|mocha|ruff)/i.test(command)) return "test"
 	if (/(build|bundle|compile)/i.test(command)) return "build"
 	if (/(lint|eslint|prettier|format)/i.test(command)) return "lint"
@@ -403,6 +427,9 @@ interface PreparedCall {
 	readPrepared?: boolean
 	read?: PreparedToolRead
 	commandRead?: PreparedCommandRead
+	/** Approval was settled serially for a captured MCP read-only annotation. */
+	mcpApprovalPrepared?: boolean
+	mcpReadPrepared?: boolean
 	commandCollector?: ToolResultCollector
 	commandApproval?: { command: string; response: ToolApprovalResponse }
 	preparationResult?: ToolSchedulerResult
@@ -434,7 +461,7 @@ function trustedExplorationForResult(
 	const observation = metadata.trustedExploration
 	const executionStatus = metadata.executionStatus ?? metadata.status
 	if (
-		canonicalizeToolName(toolName) !== "shell" ||
+		canonicalizeToolName(toolName) !== "exec_command" ||
 		status !== "success" ||
 		executionStatus !== "success" ||
 		metadata.exitCode !== 0 ||
@@ -524,13 +551,23 @@ function resultForError(
 export function getToolBatchIsolationError(registry: ToolRegistry, toolNames: readonly string[]): string | undefined {
 	if (toolNames.length <= 1) return undefined
 
-	const barrier = toolNames.find((name) => registry.resolve(name)?.capabilities.concurrency === "barrier")
+	const barrier = toolNames.find((name) => {
+		const descriptor = registry.resolve(name)
+		// A completed wait returns to this task, so the scheduler can fence it in
+		// model order. Terminal and user-suspending tools still require a lone call.
+		return descriptor?.capabilities.concurrency === "barrier" && descriptor.name !== "wait_agent"
+	})
 	if (!barrier) return undefined
 
 	return (
 		`${barrier} must be called by itself in a message turn. ` +
 		"No tools from this turn were executed. Retry with the control-flow tool alone."
 	)
+}
+
+function getSchedulerToolIdentity(registry: ToolRegistry, name: string): string {
+	const canonicalName = registry.canonicalName(name)
+	return canonicalName === "exec_command" ? canonicalName : name
 }
 
 function getToolResultParts(content: ToolResponse): {
@@ -607,7 +644,7 @@ const OUTSIDE_WORKSPACE_TOOLS = new Set([
 	"edit_file",
 	"search_replace",
 	"generate_image",
-	"shell",
+	"exec_command",
 ])
 
 function assertPathIdentities(prepared: PreparedCall): void {
@@ -638,6 +675,7 @@ export class ToolScheduler {
 	private readonly admissionMutex = new AsyncMutex()
 	private effectFenceFailure?: ToolEffectFenceError
 	private batchController = new AbortController()
+	private approvalAbortRequested = false
 	private executionSignal?: AbortSignal
 	private approvalRequestCount = 0
 	private approvalDeniedCount = 0
@@ -646,6 +684,13 @@ export class ToolScheduler {
 	private parallelToolCount = 0
 	private outputTruncatedCount = 0
 	private readonly observedToolCallIds = new Set<string>()
+	private readonly effectStartedCallIds = new Set<string>()
+	private deferredResultCommit?: { calls: AgentToolCall[]; results: ToolSchedulerResult[] }
+	private deferredCommitPromise?: Promise<void>
+	private readonly deferredCommittedResultIds = new Set<string>()
+	private readonly deferredResultEventIds = new Set<string>()
+	private readonly deferredVerificationEventIds = new Set<string>()
+	private deferredBatchFinishedEvent?: Extract<AgentTurnEvent, { type: "tool_batch_finished" }>
 
 	constructor(private readonly options: ToolSchedulerOptions) {}
 
@@ -677,8 +722,20 @@ export class ToolScheduler {
 		return path.resolve(this.executionHost.cwd ?? "", candidate)
 	}
 
+	private getApprovalWorkingDirectory(nativeArgs: unknown): string | undefined {
+		const task = this.toolTask as TaskPathContext
+		const taskRoot = this.executionHost.cwd || task.cwd
+		if (!taskRoot) return undefined
+
+		const args = nativeArgs && typeof nativeArgs === "object" ? (nativeArgs as Record<string, unknown>) : {}
+		const requestedCwd = typeof args.cwd === "string" && args.cwd.length > 0 ? args.cwd : "."
+		const effectiveCwd = path.resolve(taskRoot, requestedCwd)
+		const displayCwd = redactTaskPrivatePaths(task, getTaskDisplayPath(task, effectiveCwd))
+		return displayCwd.length > 0 && displayCwd.length <= 4_096 ? displayCwd : undefined
+	}
+
 	private resolvePolicyPath(toolName: string, candidate: string): string {
-		if (toolName === "shell") {
+		if (toolName === "exec_command") {
 			return path.isAbsolute(candidate)
 				? path.resolve(candidate)
 				: path.resolve(this.executionHost.cwd ?? "", candidate)
@@ -697,6 +754,21 @@ export class ToolScheduler {
 	private isSelectableParallel(item: PreparedCall | undefined): boolean {
 		const capabilities = item?.descriptor?.capabilities
 		const captured = item?.descriptor && this.options.policy?.capabilities[item.descriptor.name]
+		if (item?.mcpReadPrepared) {
+			return (
+				this.executionMode === "selective-parallel" &&
+				capabilities?.parallelMcpRead === true &&
+				capabilities.concurrency === "serial" &&
+				capabilities.sideEffects === "external" &&
+				capabilities.requiresApproval &&
+				!capabilities.controlFlow &&
+				captured?.parallelMcpRead === true &&
+				captured.concurrency === "serial" &&
+				captured.sideEffects === "external" &&
+				captured.requiresApproval &&
+				!captured.controlFlow
+			)
+		}
 		if (item?.commandRead) {
 			return (
 				!item.commandRead.serialFallback &&
@@ -729,6 +801,24 @@ export class ToolScheduler {
 			this.options.policy?.capabilities[descriptor.name]?.parallelCommandRead === true &&
 			!this.options.policy.capabilities[descriptor.name].controlFlow &&
 			!!descriptor.prepareParallelCommand
+		)
+	}
+
+	private canPrepareParallelMcpRead(item: PreparedCall): boolean {
+		const descriptor = item.descriptor
+		const captured = descriptor && this.options.policy?.capabilities[descriptor.name]
+		return (
+			this.executionMode === "selective-parallel" &&
+			descriptor?.capabilities.parallelMcpRead === true &&
+			descriptor.capabilities.concurrency === "serial" &&
+			descriptor.capabilities.sideEffects === "external" &&
+			descriptor.capabilities.requiresApproval &&
+			!descriptor.capabilities.controlFlow &&
+			captured?.parallelMcpRead === true &&
+			captured.concurrency === "serial" &&
+			captured.sideEffects === "external" &&
+			captured.requiresApproval &&
+			!captured.controlFlow
 		)
 	}
 
@@ -803,12 +893,51 @@ export class ToolScheduler {
 	private async prepareRead(item: PreparedCall): Promise<void> {
 		if (item.readPrepared || item.validationError || !item.toolCall || !item.descriptor) return
 		item.readPrepared = true
+		if (this.options.requirePreparedCommandRead && canonicalizeToolName(item.call.name) === "exec_command") {
+			if (!this.canPrepareParallelCommand(item)) {
+				item.validationError = "The command no longer qualifies for isolated read execution."
+				item.preparationDenied = true
+				return
+			}
+			const result = await this.executeCall(item, true)
+			item.preparationDurationMs = result.durationMs
+			if (result.status !== "success") {
+				item.preparationResult = result
+				return
+			}
+			if (!item.commandRead?.run || item.commandRead.serialFallback) {
+				item.validationError = "The command did not remain an isolated read after approval."
+				item.preparationDenied = true
+				return
+			}
+			item.scope = item.commandRead.scope
+			if (!item.scope || !path.isAbsolute(item.scope)) {
+				item.validationError = "The isolated command read did not provide a valid workspace scope."
+				item.preparationDenied = true
+			}
+			return
+		}
 		if (this.canPrepareParallelCommand(item)) {
 			const result = await this.executeCall(item, true)
 			item.preparationDurationMs = result.durationMs
 			if (result.status !== "success") item.preparationResult = result
 			if (item.commandRead) item.scope = item.commandRead.scope
 			if (!item.scope || !path.isAbsolute(item.scope)) item.scope = undefined
+			return
+		}
+		if (this.canPrepareParallelMcpRead(item)) {
+			const result = await this.executeCall(item, false, true)
+			item.preparationDurationMs = result.durationMs
+			if (result.status !== "success") {
+				item.preparationResult = result
+				return
+			}
+			if (!item.mcpApprovalPrepared) {
+				item.validationError = "The MCP read-only call did not settle its approval before execution."
+				item.preparationDenied = true
+				return
+			}
+			item.mcpReadPrepared = true
 			return
 		}
 		const { readGrant, policy } = this.options
@@ -899,6 +1028,9 @@ export class ToolScheduler {
 	}
 
 	async run(response: AgentResponse | AgentToolCall[]): Promise<ToolSchedulerOutcome> {
+		if (this.deferredResultCommit || this.deferredCommitPromise) {
+			throw new Error("ToolScheduler cannot start another batch while deferred results are pending.")
+		}
 		this.approvalRequestCount = 0
 		this.approvalDeniedCount = 0
 		this.approvalCancelledCount = 0
@@ -906,7 +1038,9 @@ export class ToolScheduler {
 		this.parallelToolCount = 0
 		this.outputTruncatedCount = 0
 		this.observedToolCallIds.clear()
+		this.effectStartedCallIds.clear()
 		this.effectFenceFailure = undefined
+		this.approvalAbortRequested = false
 		this.batchController = new AbortController()
 		this.executionSignal = this.options.signal
 			? AbortSignal.any([this.options.signal, this.batchController.signal])
@@ -921,6 +1055,48 @@ export class ToolScheduler {
 		).map(normalizeAgentToolCall)
 		const prepared: PreparedCall[] = []
 		for (const [index, call] of calls.entries()) prepared.push(await this.prepareCall(call, index))
+		if (this.options.deferResultCommit) {
+			for (const item of prepared) {
+				const descriptor = item.descriptor
+				const descriptorCapabilities = descriptor?.capabilities
+				const policyCapabilities = descriptor ? this.options.policy?.capabilities[descriptor.name] : undefined
+				const auditedCommandReadAdmission =
+					this.options.requirePreparedCommandRead === true &&
+					item.call.name === "exec_command" &&
+					descriptor?.name === "exec_command" &&
+					descriptorCapabilities?.parallelCommandRead === true &&
+					!descriptorCapabilities.controlFlow &&
+					policyCapabilities?.parallelCommandRead === true &&
+					!policyCapabilities.controlFlow
+				const approvalFreeReadAdmission =
+					item.read !== undefined ||
+					auditedCommandReadAdmission ||
+					(this.options.readGrant?.enabled === true && descriptor?.prepareParallelRead !== undefined)
+				const noEffectEarlyResult =
+					this.options.requirePreparedCommandRead === true &&
+					(item.validationError !== undefined || item.preparationResult !== undefined)
+				if (
+					!descriptorCapabilities ||
+					(!noEffectEarlyResult &&
+						((!auditedCommandReadAdmission && descriptorCapabilities.concurrency !== "parallel") ||
+							(!auditedCommandReadAdmission && descriptorCapabilities.sideEffects !== "none") ||
+							descriptorCapabilities.controlFlow ||
+							(descriptorCapabilities.requiresApproval && !approvalFreeReadAdmission) ||
+							(policyCapabilities !== undefined &&
+								((!auditedCommandReadAdmission && policyCapabilities.concurrency !== "parallel") ||
+									(!auditedCommandReadAdmission && policyCapabilities.sideEffects !== "none") ||
+									policyCapabilities.controlFlow ||
+									(policyCapabilities.requiresApproval && !approvalFreeReadAdmission)))))
+				) {
+					throw new Error(
+						`Deferred tool results require an audited, approval-free read call. ` +
+							`Call ${item.call.id} failed admission (early command candidate=${auditedCommandReadAdmission}, ` +
+							`no-effect early result=${noEffectEarlyResult}, descriptor=${descriptor?.name ?? "missing"}, ` +
+							`captured command-read capability=${policyCapabilities?.parallelCommandRead === true}).`,
+					)
+				}
+			}
+		}
 		const results = new Array<ToolSchedulerResult | undefined>(prepared.length)
 
 		if (prepared.length === 0) {
@@ -928,19 +1104,6 @@ export class ToolScheduler {
 		}
 
 		await this.options.onEvent?.({ type: "tool_batch_started", batchSize: calls.length })
-
-		// The host may already have staged these rejections before persistence.
-		// Cancellation aborts the batch without changing an invalid call's error receipt.
-		const isolationError = getToolBatchIsolationError(
-			this.options.registry,
-			calls.map((call) => (typeof call?.name === "string" ? call.name : "")),
-		)
-		if (isolationError) {
-			for (const item of prepared) {
-				results[item.index] = resultForError(item.call, isolationError)
-			}
-			return this.commitResults(results, calls, calls.length, 0, startedAt)
-		}
 
 		if (this.isCancelled()) {
 			this.fillCancelledResults(results, calls)
@@ -979,7 +1142,7 @@ export class ToolScheduler {
 			}
 			if (
 				this.executionHost.shouldStopRepeatedToolCall?.(
-					item.call.name,
+					getSchedulerToolIdentity(this.options.registry, item.call.name),
 					item.toolCall?.nativeArgs ?? item.call.arguments,
 				)
 			) {
@@ -1023,11 +1186,17 @@ export class ToolScheduler {
 						!candidate.descriptor ||
 						!candidate.toolCall ||
 						!this.isSelectableParallel(candidate) ||
-						parallelItems.some(
-							(active) =>
-								scopesOverlap(active.scope!, candidate.scope!) &&
-								!(active.commandRead && candidate.commandRead),
-						)
+						parallelItems.some((active) => {
+							const independentPreparedReads =
+								(active.commandRead && candidate.commandRead) ||
+								(active.mcpReadPrepared && candidate.mcpReadPrepared)
+							return (
+								!independentPreparedReads &&
+								!!active.scope &&
+								!!candidate.scope &&
+								scopesOverlap(active.scope, candidate.scope)
+							)
+						})
 					) {
 						break
 					}
@@ -1065,7 +1234,9 @@ export class ToolScheduler {
 					// All workers and finalizers are settled. Only this bounded read
 					// window can overshoot a stop; later windows have not been admitted.
 					for (const readItem of parallelItems) {
-						await this.observeToolResult(results[readItem.index]!, readItem.call)
+						if (!this.options.deferResultCommit) {
+							await this.observeToolResult(results[readItem.index]!, readItem.call)
+						}
 					}
 				} catch (error) {
 					if (!(error instanceof ToolEffectFenceError)) throw error
@@ -1074,10 +1245,15 @@ export class ToolScheduler {
 				continue
 			}
 
+			// Serial calls, including lifecycle barriers, are exclusive ordered fences:
+			// the preceding parallel window has settled above, and this await prevents
+			// any later call from starting until the current call has returned.
 			try {
 				results[item.index] = await this.executeCall(item)
 				results[item.index] = await this.finalizeRead(item, results[item.index]!)
-				if (!this.isCancelled()) await this.observeToolResult(results[item.index]!, item.call)
+				if (!this.options.deferResultCommit && !this.isCancelled()) {
+					await this.observeToolResult(results[item.index]!, item.call)
+				}
 			} catch (error) {
 				if (!(error instanceof ToolEffectFenceError)) throw error
 				return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
@@ -1136,11 +1312,17 @@ export class ToolScheduler {
 	}
 
 	private cancelledResultFor(call: AgentToolCall): ToolSchedulerResult {
+		const effectMayHaveStarted = this.effectStartedCallIds.has(sanitizeToolUseId(call.id))
 		return {
 			callId: call.id,
 			name: call.name,
 			status: "cancelled",
-			content: formatFailureResult("Tool execution was cancelled.", "cancelled"),
+			content: formatFailureResult(
+				effectMayHaveStarted
+					? "Tool execution was cancelled after it may have started. Its outcome is unknown; verify the current state before retrying."
+					: "Tool execution was cancelled before it started.",
+				"cancelled",
+			),
 			executionStatus: "cancelled",
 			durationMs: 0,
 		}
@@ -1171,7 +1353,9 @@ export class ToolScheduler {
 		// deterministic cancelled receipts) through the same boundary used by
 		// normal completion. `push...` is idempotent, so results already committed
 		// before cancellation are not duplicated.
-		if (this.options.preserveAbortedResults) {
+		if (this.options.deferResultCommit) {
+			this.retainDeferredResults(calls, completeResults)
+		} else if (this.options.preserveAbortedResults) {
 			for (const [index, result] of completeResults.entries()) {
 				const parts = getToolResultParts(result.content)
 				const added = this.executionHost.pushToolResultToUserContent({
@@ -1209,15 +1393,7 @@ export class ToolScheduler {
 			this.executionHost.userMessageContentReady = true
 		}
 		const outcome = this.metrics("aborted", completeResults, batchSize, parallelBatchCount, startedAt)
-		await this.options.onEvent?.({
-			type: "tool_batch_finished",
-			status: outcome.status,
-			batchSize: outcome.batchSize,
-			parallelBatchCount: outcome.parallelBatchCount,
-			parallelToolCount: outcome.parallelToolCount,
-			durationMs: outcome.durationMs,
-			truncatedResultCount: outcome.outputTruncatedCount,
-		})
+		await this.emitBatchFinished(outcome)
 		return outcome
 	}
 
@@ -1244,30 +1420,33 @@ export class ToolScheduler {
 		})
 
 		// Unlike an exception, this path retains the scheduler's truthful local
-		// results. Stage all terminal receipts so the host can durably close every
-		// accepted call before returning the failed turn.
-		for (const [index, result] of completeResults.entries()) {
-			const parts = getToolResultParts(result.content)
-			const added = this.executionHost.pushToolResultToUserContent({
-				type: "tool_result",
-				tool_use_id: sanitizeToolUseId(result.callId),
-				content: parts.text,
-				is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
-			})
-			if (added && parts.images.length > 0) this.executionHost.userMessageContent.push(...parts.images)
-			if (added) {
-				await this.options.onEvent?.({
+		// results. A pre-EOF read lane holds them until its assistant boundary commits.
+		if (this.options.deferResultCommit) {
+			this.retainDeferredResults(calls, completeResults)
+		} else {
+			for (const [index, result] of completeResults.entries()) {
+				const parts = getToolResultParts(result.content)
+				const added = this.executionHost.pushToolResultToUserContent({
 					type: "tool_result",
-					callId: result.callId,
-					name: result.name,
-					status: result.status,
-					output: result.content,
-					truncated: result.truncated,
-					timedOut: result.timedOut,
+					tool_use_id: sanitizeToolUseId(result.callId),
+					content: parts.text,
+					is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
 				})
+				if (added && parts.images.length > 0) this.executionHost.userMessageContent.push(...parts.images)
+				if (added) {
+					await this.options.onEvent?.({
+						type: "tool_result",
+						callId: result.callId,
+						name: result.name,
+						status: result.status,
+						output: result.content,
+						truncated: result.truncated,
+						timedOut: result.timedOut,
+					})
+				}
 			}
 		}
-		this.executionHost.userMessageContentReady = true
+		if (!this.options.deferResultCommit) this.executionHost.userMessageContentReady = true
 
 		const outcome: ToolSchedulerOutcome = {
 			...this.metrics("failed", completeResults, batchSize, parallelBatchCount, startedAt),
@@ -1277,15 +1456,7 @@ export class ToolScheduler {
 				message: failure.message,
 			},
 		}
-		await this.options.onEvent?.({
-			type: "tool_batch_finished",
-			status: outcome.status,
-			batchSize: outcome.batchSize,
-			parallelBatchCount: outcome.parallelBatchCount,
-			parallelToolCount: outcome.parallelToolCount,
-			durationMs: outcome.durationMs,
-			truncatedResultCount: outcome.outputTruncatedCount,
-		})
+		await this.emitBatchFinished(outcome)
 		return outcome
 	}
 
@@ -1375,11 +1546,19 @@ export class ToolScheduler {
 			canonicalName === "manage_command" && call.name === "read_command_output"
 				? { ...rawArguments, action: "read" }
 				: rawArguments
-		const argumentsValue = normalizeTaskToolArguments(
-			this.toolTask as TaskPathContext,
-			canonicalName,
-			mergedArguments,
-		)
+		let argumentsValue: Record<string, unknown>
+		try {
+			argumentsValue = normalizeTaskToolArguments(
+				this.toolTask as TaskPathContext,
+				canonicalName,
+				mergedArguments,
+			)
+		} catch (error) {
+			prepared.validationError = this.errorMessage(error)
+			reject("invalid_arguments")
+			prepared.descriptor = descriptor
+			return prepared
+		}
 
 		let pathArguments: string[]
 		try {
@@ -1394,24 +1573,28 @@ export class ToolScheduler {
 		}
 		const outsideAccess =
 			this.options.policy?.execution.outsideWorkspace === "approval" && OUTSIDE_WORKSPACE_TOOLS.has(canonicalName)
-		if (canonicalName === "shell") {
+		if (canonicalName === "exec_command") {
 			const args = argumentsValue
 			if (typeof args.command === "string") {
 				const taskRoot = this.executionHost.cwd ?? ""
 				const roots = this.options.policy?.execution.workspaceRoots
+				const commandCwd = path.resolve(taskRoot, typeof args.cwd === "string" ? args.cwd : ".")
 				const scope = assessCommandPaths(
 					unescapeHtmlEntities(args.command),
-					path.resolve(taskRoot, typeof args.cwd === "string" ? args.cwd : "."),
+					commandCwd,
 					roots?.length ? roots : [taskRoot],
 				)
 				pathArguments.push(...scope.writePaths)
-				if (scope.outsidePaths.length || scope.unresolvedWrite) {
+				const outsidePaths = !isPathAllowed(this.options.policy, commandCwd, taskRoot)
+					? [...new Set([commandCwd, ...scope.outsidePaths])]
+					: scope.outsidePaths
+				if (outsidePaths.length || scope.unresolvedWrite) {
 					prepared.commandPathApproval = {
-						outsidePaths: scope.outsidePaths,
+						outsidePaths,
 						unresolved: scope.unresolvedWrite,
 					}
 					if (this.options.policy && !outsideAccess) {
-						prepared.validationError = "Command write paths exceed the task scope or could not be resolved."
+						prepared.validationError = "Command paths exceed the task scope or could not be resolved."
 						reject("policy_denied", "workspace")
 						prepared.descriptor = descriptor
 						return prepared
@@ -1421,7 +1604,7 @@ export class ToolScheduler {
 		}
 		prepared.requiresExplicitApproval =
 			!!prepared.commandPathApproval ||
-			(canonicalName !== "shell" &&
+			(canonicalName !== "exec_command" &&
 				outsideAccess &&
 				descriptor.capabilities.sideEffects !== "none" &&
 				pathArguments.some(
@@ -1456,10 +1639,14 @@ export class ToolScheduler {
 			}
 		}
 
-		if (canonicalName === "shell") {
+		if (canonicalName === "exec_command") {
 			const command = (argumentsValue as Record<string, unknown>).command
-			if (typeof command === "string" && isCommandDeniedByPolicy(this.options.policy, command)) {
+			if (
+				typeof command === "string" &&
+				isCommandDeniedByPolicy(this.options.policy, unescapeHtmlEntities(command))
+			) {
 				prepared.validationError = "This command is denied by the current execution policy."
+				prepared.preparationDenied = true
 				reject("policy_denied", "capability")
 				prepared.descriptor = descriptor
 				return prepared
@@ -1513,7 +1700,11 @@ export class ToolScheduler {
 		return prepared
 	}
 
-	private async executeCall(prepared: PreparedCall, prepareCommand = false): Promise<ToolSchedulerResult> {
+	private async executeCall(
+		prepared: PreparedCall,
+		prepareCommand = false,
+		prepareMcpRead = false,
+	): Promise<ToolSchedulerResult> {
 		const startedAt = performance.now()
 		if (this.isCancelled()) {
 			return this.cancelledResultFor(prepared.call)
@@ -1528,7 +1719,33 @@ export class ToolScheduler {
 					prepared.descriptor?.maxOutputChars ?? Number.MAX_SAFE_INTEGER,
 					getToolOutputLimit(this.options.policy, prepared.call.name),
 				),
+				prepared.descriptor?.statusSource ?? "structured_output",
 			)
+		const startsAuditedCommandRead =
+			!prepareCommand && prepared.commandRead?.serialFallback !== true && prepared.commandRead?.run !== undefined
+		const requiresEffectStart =
+			startsAuditedCommandRead ||
+			(!prepareCommand &&
+				prepared.descriptor?.capabilities.sideEffects !== undefined &&
+				prepared.descriptor.capabilities.sideEffects !== "none" &&
+				(!prepared.commandRead || prepared.commandRead.serialFallback))
+		const callId = sanitizeToolUseId(prepared.call.id)
+		const startEffect = async (): Promise<boolean> => {
+			if (!requiresEffectStart) return true
+			if (this.effectStartedCallIds.has(callId)) return true
+			if (this.isCancelled()) return false
+			try {
+				await this.options.onEffectStart?.(prepared.call)
+				this.effectStartedCallIds.add(callId)
+				return !this.isCancelled()
+			} catch (error) {
+				const failure =
+					error instanceof ToolEffectFenceError ? error : new ToolEffectFenceError(prepared.call, error)
+				this.effectFenceFailure ??= failure
+				this.batchController.abort(failure)
+				throw failure
+			}
+		}
 		let executionAdmitted = false
 		const recordExecutionFailure = (status: "error" | "denied" | "cancelled") => {
 			if (collector.getMetadata().failure) return
@@ -1567,15 +1784,36 @@ export class ToolScheduler {
 					recovery: { kind: "user-action" },
 				}),
 			})
+		const recordApprovalCancellation = async (
+			requestId: string,
+			reason: string,
+			options: { timedOut?: boolean; abortBatch?: boolean } = {},
+		) => {
+			collector.setStatus("cancelled")
+			if (options.timedOut) collector.setMetadata({ timedOut: true })
+			approvalFailure("cancelled")
+			collector.pushApprovalResult(formatFailureResult(reason, "cancelled"))
+			this.approvalCancelledCount += 1
+			if (options.abortBatch) {
+				this.approvalAbortRequested = true
+				this.batchController.abort(new Error(reason))
+			}
+			await this.options.onEvent?.({ type: "approval_result", requestId, decision: "cancelled", reason })
+		}
 		const requestApproval = async (
 			args: Parameters<ToolCallbacks["askApproval"]>,
 			responseMode: "boolean" | "structured",
 		): Promise<ToolApprovalResponse | undefined> =>
 			this.approvalMutex.run(async () => {
+				const [type] = args
+				if (prepared.mcpReadPrepared && type === "use_mcp_server" && responseMode === "boolean") {
+					if (this.isCancelled()) return undefined
+					return (await startEffect()) ? { response: "yesButtonClicked" } : undefined
+				}
 				if (this.isSelectableParallel(prepared)) {
 					throw new ToolReadDeniedError("An approval request cannot run in an approval-free parallel lane.")
 				}
-				const [type, partialMessage, originalProgressStatus, forceApproval, callRequiresExplicit] = args
+				const [, partialMessage, originalProgressStatus, forceApproval, callRequiresExplicit] = args
 				const progressStatus =
 					type === "command" && prepared.commandPathApproval
 						? { ...originalProgressStatus, commandPathApproval: prepared.commandPathApproval }
@@ -1592,8 +1830,79 @@ export class ToolScheduler {
 				}
 				const explicitApproval: [boolean] | [] =
 					prepared.requiresExplicitApproval || callRequiresExplicit === true ? [true] : []
-				const requestId = `${this.executionHost.taskId}:${prepared.call.id}`
+				const requiresExplicitApproval = explicitApproval.length > 0
+				// Provider call IDs can repeat across turns; a typed approval needs a fresh
+				// correlation ID while task and call identity remain explicit fields.
+				const requestId = randomUUID()
 				this.approvalRequestCount += 1
+				const typedApprovalHost =
+					responseMode === "boolean"
+						? this.executionHost.requestToolApproval?.bind(this.executionHost)
+						: undefined
+				const approvalSessionKey =
+					typedApprovalHost && !requiresExplicitApproval && forceApproval !== true
+						? createTaskSessionApprovalKey({
+								taskId: this.executionHost.taskId,
+								toolName: this.options.registry.canonicalName(prepared.call.name),
+								askType: type,
+								description: partialMessage,
+								argumentsValue: prepared.call.arguments,
+								cwd: this.executionHost.cwd,
+								policyDigest: this.options.policy?.digest,
+							})
+						: undefined
+				const proposedAmendment: ToolApprovalRequest["proposedAmendment"] =
+					typedApprovalHost &&
+					approvalSessionKey &&
+					!requiresExplicitApproval &&
+					forceApproval !== true &&
+					type === "command" &&
+					!prepared.commandPathApproval &&
+					partialMessage &&
+					partialMessage.length <= 4096
+						? { kind: "exact_command", command: partialMessage }
+						: undefined
+				const proposedPersistentAmendment =
+					typedApprovalHost &&
+					this.executionHost.taskKind === "primary" &&
+					type === "command" &&
+					typeof this.executionHost.persistCommandApprovalPrefix === "function" &&
+					!requiresExplicitApproval &&
+					forceApproval !== true &&
+					!prepared.commandPathApproval &&
+					this.executionHost.cwd !== undefined &&
+					redactTaskPrivatePaths(this.toolTask as TaskPathContext, partialMessage ?? "") === partialMessage
+						? createPersistentCommandPrefixAmendment(partialMessage)
+						: undefined
+				const availableDecisions: ToolApprovalRequest["availableDecisions"] = [
+					"approve_once",
+					...(approvalSessionKey && !proposedAmendment ? ["approve_session" as const] : []),
+					...(proposedAmendment ? ["approve_with_amendment" as const] : []),
+					...(proposedPersistentAmendment ? ["approve_persistently" as const] : []),
+					"deny",
+					"abort",
+				]
+				const approvalWorkingDirectory =
+					type === "command" ? this.getApprovalWorkingDirectory(prepared.toolCall?.nativeArgs) : undefined
+				const approvalRequest = typedApprovalHost
+					? toolApprovalRequestSchema.parse({
+							requestId,
+							taskId: this.executionHost.taskId,
+							callId: prepared.call.id,
+							toolName: this.options.registry.canonicalName(prepared.call.name),
+							askType: type,
+							...(partialMessage === undefined ? {} : { description: partialMessage }),
+							...(approvalWorkingDirectory === undefined ? {} : { cwd: approvalWorkingDirectory }),
+							forceApproval: forceApproval === true,
+							requiresExplicitApproval,
+							...(prepared.commandPathApproval
+								? { commandPathApproval: prepared.commandPathApproval }
+								: {}),
+							availableDecisions,
+							...(proposedAmendment ? { proposedAmendment } : {}),
+							...(proposedPersistentAmendment ? { proposedPersistentAmendment } : {}),
+						})
+					: undefined
 
 				if (this.isCancelled()) {
 					this.approvalCancelledCount += 1
@@ -1614,31 +1923,51 @@ export class ToolScheduler {
 					callId: prepared.call.id,
 					toolName: prepared.call.name,
 				})
+				if (typedApprovalHost && approvalSessionKey && hasTaskSessionApproval(approvalSessionKey)) {
+					await this.options.onEvent?.({
+						type: "approval_result",
+						requestId,
+						decision: "approved",
+						reason: "Approved by an exact task-session grant.",
+					})
+					return (await startEffect()) ? { response: "yesButtonClicked" } : undefined
+				}
 
 				let approval: ToolApprovalResponse | undefined
+				let typedDecision: ToolApprovalDecision | undefined
+				let approvalEventReason: string | undefined
 				try {
-					approval = await this.raceCancellation(async () => {
-						if (this.executionHost.askApproval) {
-							return this.executionHost.askApproval(
-								type,
-								partialMessage,
-								progressStatus,
-								forceApproval || false,
-								...explicitApproval,
-							)
+					if (typedApprovalHost && approvalRequest) {
+						const response = await this.raceCancellation(() => typedApprovalHost(approvalRequest))
+						if (response !== undefined) {
+							const parsed = toolApprovalDecisionSchema.safeParse(response)
+							if (!parsed.success) throw new Error("Tool approval host returned an invalid decision.")
+							typedDecision = parsed.data
 						}
-						if (this.executionHost.ask) {
-							return this.executionHost.ask(
-								type,
-								partialMessage,
-								false,
-								progressStatus,
-								forceApproval || false,
-								...explicitApproval,
-							)
-						}
-						throw new Error("Tool execution host does not provide an approval callback.")
-					})
+					} else {
+						approval = await this.raceCancellation(async () => {
+							if (this.executionHost.askApproval) {
+								return this.executionHost.askApproval(
+									type,
+									partialMessage,
+									progressStatus,
+									forceApproval || false,
+									...explicitApproval,
+								)
+							}
+							if (this.executionHost.ask) {
+								return this.executionHost.ask(
+									type,
+									partialMessage,
+									false,
+									progressStatus,
+									forceApproval || false,
+									...explicitApproval,
+								)
+							}
+							throw new Error("Tool execution host does not provide an approval callback.")
+						})
+					}
 					assertPathIdentities(prepared)
 				} catch (error) {
 					if (error instanceof AskIgnoredError) {
@@ -1658,6 +1987,144 @@ export class ToolScheduler {
 						return undefined
 					}
 					throw error
+				}
+
+				// A host can settle the prompt in the same turn that task cancellation
+				// arrives. Cancellation wins over a late denial (and approval), so a
+				// stopped tool never reports the user's choice as the terminal outcome.
+				if (this.isCancelled()) {
+					await recordApprovalCancellation(requestId, "Approval was cancelled while waiting for a decision.")
+					return undefined
+				}
+
+				if (typedDecision) {
+					if (
+						typedDecision.decision === "approve_session" &&
+						!approvalRequest?.availableDecisions.includes("approve_session")
+					) {
+						throw new Error("Tool approval host selected an unavailable session grant.")
+					}
+					if (
+						typedDecision.decision === "approve_with_amendment" &&
+						(!approvalRequest?.availableDecisions.includes("approve_with_amendment") ||
+							approvalRequest.askType !== "command" ||
+							typedDecision.amendment.kind !== "exact_command" ||
+							typedDecision.amendment.command !== approvalRequest.proposedAmendment?.command)
+					) {
+						throw new Error("Tool approval host selected an unavailable or mismatched policy amendment.")
+					}
+					if (
+						typedDecision.decision === "approve_persistently" &&
+						(!approvalRequest?.availableDecisions.includes("approve_persistently") ||
+							approvalRequest.askType !== "command" ||
+							typedDecision.amendment.kind !== "command_prefix" ||
+							typedDecision.amendment.prefix !== approvalRequest.proposedPersistentAmendment?.prefix ||
+							!this.executionHost.persistCommandApprovalPrefix ||
+							this.executionHost.taskKind !== "primary")
+					) {
+						throw new Error(
+							"Tool approval host selected an unavailable or mismatched persistent command rule.",
+						)
+					}
+
+					if (typedDecision.decision === "deny") {
+						const feedback = typedDecision.feedback
+						if (feedback) {
+							await this.executionHost.say("user_feedback", feedback)
+							collector.pushApprovalResult(
+								formatResponse.toolResult(formatResponse.toolDeniedWithFeedback(feedback)),
+							)
+						} else {
+							collector.pushApprovalResult(formatResponse.toolDenied())
+						}
+						collector.setStatus("denied")
+						approvalFailure("denied")
+						this.approvalDeniedCount += 1
+						await this.options.onEvent?.({
+							type: "approval_result",
+							requestId,
+							decision: "denied",
+							reason: feedback,
+						})
+						return undefined
+					}
+
+					if (typedDecision.decision === "abort") {
+						await recordApprovalCancellation(requestId, "Approval was aborted by the user.", {
+							abortBatch: true,
+						})
+						return undefined
+					}
+
+					if (typedDecision.decision === "timeout") {
+						await recordApprovalCancellation(requestId, "Approval request timed out.", { timedOut: true })
+						return undefined
+					}
+
+					if (
+						typedDecision.decision === "approve_with_amendment" &&
+						(!approvalSessionKey || !approvalRequest?.proposedAmendment)
+					) {
+						throw new Error("Tool approval host selected an unavailable exact-command session grant.")
+					}
+					if (
+						typedDecision.decision === "approve_persistently" &&
+						(!approvalRequest?.proposedPersistentAmendment ||
+							!this.executionHost.persistCommandApprovalPrefix)
+					) {
+						throw new Error("Tool approval host selected an unavailable persistent command rule.")
+					}
+					if (typedDecision.decision === "approve_persistently") {
+						if (this.isCancelled()) {
+							await recordApprovalCancellation(
+								requestId,
+								"Approval was cancelled before its persistent command rule was saved.",
+							)
+							return undefined
+						}
+						const saved = await this.executionHost.persistCommandApprovalPrefix!(
+							typedDecision.amendment.prefix,
+						)
+						if (!saved) throw new Error("Persistent command approval rule could not be saved.")
+					}
+					if (
+						(typedDecision.decision === "approve_session" ||
+							typedDecision.decision === "approve_with_amendment") &&
+						approvalSessionKey
+					) {
+						if (this.isCancelled()) {
+							await recordApprovalCancellation(
+								requestId,
+								"Approval was cancelled before its session grant was saved.",
+							)
+							return undefined
+						}
+						if (
+							!grantTaskSessionApproval(
+								approvalSessionKey,
+								this.executionHost.taskId,
+								this.executionSignal!,
+							)
+						) {
+							if (this.isCancelled()) {
+								await recordApprovalCancellation(
+									requestId,
+									"Approval was cancelled before its session grant was saved.",
+								)
+								return undefined
+							}
+							throw new Error("Tool approval session grant could not be recorded.")
+						}
+					}
+					approval = { response: "yesButtonClicked" }
+					approvalEventReason =
+						typedDecision.decision === "approve_session"
+							? "Approved for this exact request in the task session."
+							: typedDecision.decision === "approve_with_amendment"
+								? "Approved for this exact command and request in the task session."
+								: typedDecision.decision === "approve_persistently"
+									? "Approved and saved the command prefix to the persistent allowlist."
+									: undefined
 				}
 
 				if (!approval) {
@@ -1710,6 +2177,7 @@ export class ToolScheduler {
 						collector.pushApprovalResult(formatFailureResult("Tool execution was cancelled.", "cancelled"))
 						return undefined
 					}
+					if (decision === "approved" && !(await startEffect())) return undefined
 					return approval
 				}
 
@@ -1742,19 +2210,36 @@ export class ToolScheduler {
 					await this.executionHost.say("user_feedback", text, images)
 					approvalFeedback(text, images)
 				}
-				await this.options.onEvent?.({ type: "approval_result", requestId, decision: "approved" })
+				await this.options.onEvent?.({
+					type: "approval_result",
+					requestId,
+					decision: "approved",
+					...(approvalEventReason ? { reason: approvalEventReason } : {}),
+				})
 				if (prepareCommand && type === "command" && partialMessage) {
 					prepared.commandApproval = { command: partialMessage, response: approval }
 				}
+				if (!(await startEffect())) return undefined
+				if (this.effectFenceFailure) throw this.effectFenceFailure
 				return approval
 			})
 
 		const callbacks: ToolCallbacks = {
-			askApproval: async (...args: Parameters<ToolCallbacks["askApproval"]>) =>
-				(await requestApproval(args, "boolean"))?.response === "yesButtonClicked",
+			askApproval: async (...args: Parameters<ToolCallbacks["askApproval"]>) => {
+				const approval = await requestApproval(args, "boolean")
+				const approved = approval?.response === "yesButtonClicked"
+				if (prepareMcpRead && args[0] === "use_mcp_server" && approved) {
+					prepared.mcpApprovalPrepared = true
+				}
+				// Settle through the canonical approval path, then stop this legacy
+				// handler before dispatch. The approved call is replayed only after the
+				// complete serial preflight for its parallel batch.
+				return prepareMcpRead ? false : approved
+			},
 			askApprovalResponse: async (...args: Parameters<NonNullable<ToolCallbacks["askApprovalResponse"]>>) =>
 				requestApproval(args, "structured"),
 			handleError: async (action: string, error: Error) => {
+				if (error instanceof ToolEffectFenceError) throw error
 				if (error instanceof AskIgnoredError) {
 					this.supersededAskCount += 1
 					const status = this.isCancelled() ? "cancelled" : "error"
@@ -1788,7 +2273,7 @@ export class ToolScheduler {
 		try {
 			if (
 				this.executionHost.shouldStopRepeatedToolCall?.(
-					prepared.call.name,
+					getSchedulerToolIdentity(this.options.registry, prepared.call.name),
 					prepared.toolCall?.nativeArgs ?? prepared.toolCall?.params,
 				)
 			) {
@@ -1817,8 +2302,16 @@ export class ToolScheduler {
 				await this.checkEffectFence(prepared.call)
 				if (this.isCancelled()) return
 				assertPathIdentities(prepared)
+				if (
+					requiresEffectStart &&
+					(prepared.descriptor!.capabilities.requiresApproval !== true || startsAuditedCommandRead) &&
+					!(await startEffect())
+				)
+					return
 				if (!prepared.usageRecorded) {
-					this.executionHost.recordToolUsage(prepared.call.name)
+					this.executionHost.recordToolUsage(
+						getSchedulerToolIdentity(this.options.registry, prepared.call.name),
+					)
 					prepared.usageRecorded = true
 				}
 				executionAdmitted = true
@@ -1853,6 +2346,7 @@ export class ToolScheduler {
 				void execution.catch(() => {})
 			})
 			await execution
+			if (this.effectFenceFailure?.call.id === prepared.call.id) throw this.effectFenceFailure
 		} catch (error) {
 			if (error instanceof ToolEffectFenceError) throw error
 			const cancelled = this.isCancelled()
@@ -1918,13 +2412,25 @@ export class ToolScheduler {
 			(metadata.waitOutcome === "active" || metadata.waitOutcome === "idle")
 				? metadata.waitOutcome
 				: undefined
+		const rawContent = collector.getContent()
+		const effectMayHaveStarted = this.effectStartedCallIds.has(callId)
+		const effectOutcomeUnknown =
+			effectMayHaveStarted && (status === "cancelled" || metadata.failure?.outcome === "unknown")
+		const content = effectOutcomeUnknown
+			? (() => {
+					const parts = getToolResultParts(rawContent)
+					const text = `${parts.text}\n\nThe tool effect may have started, but its outcome is unknown. Verify the current state before retrying.`
+					return parts.images.length > 0 ? ([{ type: "text", text }, ...parts.images] as ToolResponse) : text
+				})()
+			: rawContent
 		return {
 			callId: prepared.call.id,
 			name: prepared.call.name,
 			status,
-			content: collector.getContent(),
+			content,
 			executionStatus,
 			exitCode: metadata.exitCode,
+			...(metadata.commandResult ? { commandResult: metadata.commandResult } : {}),
 			truncated: collector.isTruncated(),
 			timedOut: metadata.timedOut,
 			...(trustedExploration ? { trustedExploration } : {}),
@@ -1945,6 +2451,15 @@ export class ToolScheduler {
 		parallelBatchCount: number,
 		startedAt: number,
 	): Promise<ToolSchedulerOutcome> {
+		if (this.options.deferResultCommit) {
+			const completeResults = calls.map(
+				(call, index) => results[index] ?? resultForError(call, "Tool execution did not produce a result."),
+			)
+			this.retainDeferredResults(calls, completeResults)
+			const outcome = this.metrics("completed", completeResults, batchSize, parallelBatchCount, startedAt)
+			await this.emitBatchFinished(outcome)
+			return outcome
+		}
 		if (this.isCancelled()) {
 			this.fillCancelledResults(results, calls)
 			return this.abortOutcome(results, calls, batchSize, parallelBatchCount, startedAt)
@@ -2009,7 +2524,116 @@ export class ToolScheduler {
 
 		this.executionHost.userMessageContentReady = true
 		const outcome = this.metrics("completed", committed, batchSize, parallelBatchCount, startedAt)
+		await this.emitBatchFinished(outcome)
+		return outcome
+	}
+
+	/** Commit held results after the host has made the assistant response durable. */
+	async commitDeferredResults(options: { deferBatchFinished?: boolean } = {}): Promise<void> {
+		if (!this.options.deferResultCommit) {
+			throw new Error("ToolScheduler has no deferred result boundary to commit.")
+		}
+		if (this.deferredCommitPromise) return this.deferredCommitPromise
+		const deferred = this.deferredResultCommit
+		if (!deferred) return
+		const commit = async () => {
+			let observationError: unknown
+			for (const [index, result] of deferred.results.entries()) {
+				const callId = sanitizeToolUseId(result.callId)
+				if (this.deferredCommittedResultIds.has(callId)) continue
+				try {
+					await this.observeToolResult(result, deferred.calls[index])
+				} catch (error) {
+					observationError ??= error
+				}
+				const parts = getToolResultParts(result.content)
+				const added = this.executionHost.pushToolResultToUserContent({
+					type: "tool_result",
+					tool_use_id: sanitizeToolUseId(result.callId),
+					content: parts.text,
+					is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
+				})
+				if (added && parts.images.length > 0) this.executionHost.userMessageContent.push(...parts.images)
+				if (!this.deferredResultEventIds.has(callId)) {
+					await this.options.onEvent?.({
+						type: "tool_result",
+						callId: result.callId,
+						name: result.name,
+						status: result.status,
+						output: result.content,
+						truncated: result.truncated,
+						timedOut: result.timedOut,
+					})
+					this.deferredResultEventIds.add(callId)
+				}
+				const commandCategory = getVerificationCategory(deferred.calls[index])
+				const verificationStatus =
+					result.executionStatus ?? (result.status === "success" ? undefined : result.status)
+				if (
+					commandCategory &&
+					verificationStatus &&
+					verificationStatus !== "running" &&
+					!this.deferredVerificationEventIds.has(callId)
+				) {
+					await this.options.onEvent?.({
+						type: "verification_result",
+						commandCategory,
+						toolName: result.name,
+						status: verificationStatus,
+						durationMs: result.durationMs,
+						exitCode: result.exitCode,
+						output: getVerificationOutput(result.content),
+					})
+					this.deferredVerificationEventIds.add(callId)
+				}
+				this.deferredCommittedResultIds.add(callId)
+			}
+			this.executionHost.userMessageContentReady = true
+			if (!options.deferBatchFinished) await this.finishDeferredBatch()
+			this.deferredResultCommit = undefined
+			if (observationError) throw observationError
+		}
+		this.deferredCommitPromise = Promise.resolve().then(commit)
+		try {
+			await this.deferredCommitPromise
+		} catch (error) {
+			this.deferredCommitPromise = undefined
+			throw error
+		}
+	}
+
+	/** Publish the deferred batch terminal event after every held result is committed. */
+	async finishDeferredBatch(overrides?: {
+		status?: ToolSchedulerOutcome["status"]
+		batchSize?: number
+	}): Promise<void> {
+		const event = this.deferredBatchFinishedEvent
+		if (!event) return
 		await this.options.onEvent?.({
+			...event,
+			...(overrides?.status ? { status: overrides.status } : {}),
+			...(overrides?.batchSize !== undefined ? { batchSize: overrides.batchSize } : {}),
+		})
+		this.deferredBatchFinishedEvent = undefined
+	}
+
+	/** Drop held output when the host rejects or abandons the speculative read batch. */
+	discardDeferredResults(): void {
+		if (this.deferredCommitPromise) throw new Error("Committed deferred tool results cannot be discarded.")
+		this.deferredResultCommit = undefined
+		this.deferredBatchFinishedEvent = undefined
+	}
+
+	private retainDeferredResults(calls: AgentToolCall[], results: ToolSchedulerResult[]): void {
+		if (!this.options.deferResultCommit) return
+		this.deferredResultCommit = {
+			calls: [...calls],
+			results: results.map((result) => ({ ...result })),
+		}
+	}
+
+	private async emitBatchFinished(outcome: ToolSchedulerOutcome): Promise<void> {
+		const event: AgentTurnEvent = {
 			type: "tool_batch_finished",
 			status: outcome.status,
 			batchSize: outcome.batchSize,
@@ -2017,8 +2641,12 @@ export class ToolScheduler {
 			parallelToolCount: outcome.parallelToolCount,
 			durationMs: outcome.durationMs,
 			truncatedResultCount: outcome.outputTruncatedCount,
-		})
-		return outcome
+		}
+		if (this.options.deferResultCommit) {
+			this.deferredBatchFinishedEvent = event
+			return
+		}
+		await this.options.onEvent?.(event)
 	}
 
 	private metrics(
@@ -2045,7 +2673,7 @@ export class ToolScheduler {
 	}
 
 	private isCancelled(): boolean {
-		return this.executionHost.abort === true || this.options.signal?.aborted === true
+		return this.executionHost.abort === true || this.options.signal?.aborted === true || this.approvalAbortRequested
 	}
 
 	private retryBlockResult(call: AgentToolCall): ToolSchedulerResult | undefined {

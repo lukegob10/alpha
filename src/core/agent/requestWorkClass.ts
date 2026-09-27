@@ -20,20 +20,29 @@ export interface RequestWorkClassDecision {
 	reason: RequestWorkClassReason
 	/** Advertise `skill` on an otherwise lookup-sized catalog. */
 	includeSkill: boolean
-	/** Advertise ticket read tools on an otherwise lookup-sized catalog. */
+	/** Advertise Alpha Tickets tools on an otherwise lookup-sized catalog. */
 	includeTickets: boolean
+	/** Advertise MCP resource tools on an otherwise lookup-sized catalog. */
+	includeMcpResources: boolean
 }
 
 const USER_MESSAGE_RE = /<user_message>\s*([\s\S]*?)\s*<\/user_message>/i
 const ENVIRONMENT_DETAILS_RE = /<environment_details>[\s\S]*?<\/environment_details>/gi
 
 const WORKFLOW_INTENT_RE =
-	/\b(?:spawn(?:_agent)?|delegate(?:\s+to)?\s+(?:a\s+)?(?:sub)?agent|create(?:\s+a)?\s+ticket|file(?:\s+a)?\s+ticket|update(?:\s+a)?\s+ticket|delete(?:\s+a)?\s+ticket|open(?:\s+the)?\s+browser|screenshot(?:\s+the)?\s+page|navigate(?:\s+the)?\s+page|playwright|update_todo_list|work[- ]plan)\b/i
+	/\b(?:spawn(?:_agent)?|delegate(?:\s+to)?\s+(?:a\s+)?(?:sub)?agent|create(?:\s+a)?\s+ticket|file(?:\s+a)?\s+ticket|update(?:\s+a)?\s+ticket|delete(?:\s+a)?\s+ticket|open(?:\s+the)?\s+browser|screenshot(?:\s+the)?\s+page|navigate(?:\s+the)?\s+page|playwright|update[_ ](?:todo[_ ]list|plan)|work[- ]plan)\b/i
+
+const CROSS_TASK_ACTION_RE =
+	/\b(?:launch|start|create|open|spin\s+up|send|message|steer|stop|cancel|wait\s+for|check\s+on|list)\b(?:\s+[\w-]+){0,5}\s+(?:threads?|chats?|tasks?|sub-?agents?|agents?)\b/i
+const HOW_TO_QUESTION_RE =
+	/^(?:how\s+(?:do|can|would|should)\s+(?:i|we|you)|can\s+you\s+(?:tell|show|explain)\s+me\s+how)\b/i
 
 const NAMED_SKILL_RE =
 	/\b(?:use|load|follow|apply)\s+(?:the\s+)?[\w.-]+\s+skill\b|\b(?:create|author)\s+(?:a\s+)?skill\b|\bSKILL\.md\b/i
 
 const TICKET_INTENT_RE = /\btickets?\b|\b[A-Z]{2,4}(?:\s*(?:[-#]|number\s*)\s*)?(?:\d{1,10}|one)\b/i
+
+const MCP_RESOURCE_INTENT_RE = /\bmcp\b|\bresource(?:s|\s+templates?)?\b/i
 
 const IMPLEMENTATION_LEAD_RE =
 	/^(?:please\s+)?(?:implement|fix|add|create|write|edit|delete|remove|rename|refactor|migrate|update|patch|install|change)\b/i
@@ -55,23 +64,40 @@ export function classifyRequestWorkClass(
 	options: { taskKind?: "primary" | "subagent" } = {},
 ): RequestWorkClassDecision {
 	if (options.taskKind === "subagent") {
-		return { class: "full", reason: "subagent", includeSkill: false, includeTickets: false }
+		return {
+			class: "full",
+			reason: "subagent",
+			includeSkill: false,
+			includeTickets: false,
+			includeMcpResources: false,
+		}
 	}
 
 	const text = (userRequestText ?? "").trim()
 	if (!text) {
-		return { class: "full", reason: "empty", includeSkill: false, includeTickets: false }
+		return {
+			class: "full",
+			reason: "empty",
+			includeSkill: false,
+			includeTickets: false,
+			includeMcpResources: false,
+		}
 	}
 
 	const includeSkill = NAMED_SKILL_RE.test(text)
 	const includeTickets = TICKET_INTENT_RE.test(text)
+	const includeMcpResources = MCP_RESOURCE_INTENT_RE.test(text)
 
-	if (WORKFLOW_INTENT_RE.test(text) || (includeSkill && /\b(?:create|author)\s+(?:a\s+)?skill\b/i.test(text))) {
-		return { class: "full", reason: "explicit_workflow", includeSkill, includeTickets }
+	if (
+		WORKFLOW_INTENT_RE.test(text) ||
+		(CROSS_TASK_ACTION_RE.test(text) && !HOW_TO_QUESTION_RE.test(text)) ||
+		(includeSkill && /\b(?:create|author)\s+(?:a\s+)?skill\b/i.test(text))
+	) {
+		return { class: "full", reason: "explicit_workflow", includeSkill, includeTickets, includeMcpResources }
 	}
 
 	if (IMPLEMENTATION_LEAD_RE.test(text) || IMPLEMENTATION_ASK_RE.test(text)) {
-		return { class: "full", reason: "implementation", includeSkill, includeTickets }
+		return { class: "full", reason: "implementation", includeSkill, includeTickets, includeMcpResources }
 	}
 
 	if (
@@ -79,10 +105,10 @@ export function classifyRequestWorkClass(
 		READ_ONLY_CONSTRAINT_RE.test(text) ||
 		TICKET_OR_SKILL_READ_LEAD_RE.test(text)
 	) {
-		return { class: "lookup", reason: "lookup_question", includeSkill, includeTickets }
+		return { class: "lookup", reason: "lookup_question", includeSkill, includeTickets, includeMcpResources }
 	}
 
-	return { class: "full", reason: "uncertain", includeSkill, includeTickets }
+	return { class: "full", reason: "uncertain", includeSkill, includeTickets, includeMcpResources }
 }
 
 export function extractUserRequestText(

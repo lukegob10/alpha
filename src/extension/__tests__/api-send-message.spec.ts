@@ -77,6 +77,22 @@ describe("API - SendMessage Command", () => {
 		})
 	})
 
+	it("targets a host sendMessage invoke at the current task", async () => {
+		vi.mocked(mockProvider.getCurrentTask).mockReturnValue({ taskId: "existing-task" } as ReturnType<
+			AlphaProvider["getCurrentTask"]
+		>)
+
+		await api.sendMessage("Continue the opened task")
+
+		expect(mockPostMessageToWebview).toHaveBeenCalledWith({
+			type: "invoke",
+			invoke: "sendMessage",
+			text: "Continue the opened task",
+			images: undefined,
+			taskId: "existing-task",
+		})
+	})
+
 	it("should handle SendMessage command with text and images", async () => {
 		// Arrange
 		const messageText = "Analyze this image"

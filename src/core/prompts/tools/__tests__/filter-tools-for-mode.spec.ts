@@ -100,6 +100,58 @@ describe("filterNativeToolsForMode - disabledTools", () => {
 	})
 })
 
+describe("mode-specific user input tool", () => {
+	it("advertises request_user_input in Plan and preserves ask_followup_question in Code", () => {
+		const tools = [makeTool("ask_followup_question"), makeTool("request_user_input")]
+		const codeNames = filterNativeToolsForMode(tools, "code", undefined, undefined, undefined, {}).map(
+			(tool) => (tool as any).function.name,
+		)
+		const planNames = filterNativeToolsForMode(tools, "architect", undefined, undefined, undefined, {}).map(
+			(tool) => (tool as any).function.name,
+		)
+
+		expect(codeNames).toContain("ask_followup_question")
+		expect(codeNames).not.toContain("request_user_input")
+		expect(planNames).toContain("request_user_input")
+		expect(planNames).not.toContain("ask_followup_question")
+	})
+})
+
+describe("filterNativeToolsForMode - command schema aliases", () => {
+	it("keeps the exec_command schema visible in Code and Plan while using shell policy", () => {
+		const tools = [makeTool("exec_command"), makeTool("read_file")]
+
+		for (const mode of ["code", "architect"]) {
+			const result = filterNativeToolsForMode(tools, mode, undefined, undefined, undefined, {})
+			expect(result.map((tool) => (tool as any).function.name)).toEqual(["exec_command", "read_file"])
+		}
+	})
+
+	it("applies disabled command aliases and prefers one exec_command schema", () => {
+		const tools = [makeTool("shell"), makeTool("exec_command")]
+		const enabled = filterNativeToolsForMode(tools, "code", undefined, undefined, undefined, {})
+		const disabled = filterNativeToolsForMode(tools, "code", undefined, undefined, undefined, {
+			disabledTools: ["execute_command"],
+		})
+
+		expect(enabled.map((tool) => (tool as any).function.name)).toEqual(["exec_command"])
+		expect(disabled).toEqual([])
+	})
+})
+
+describe("filterNativeToolsForMode - canonical update_plan alias", () => {
+	it("prefers update_plan and suppresses its saved-history alias when disabled", () => {
+		const tools = [makeTool("update_todo_list"), makeTool("update_plan")]
+		const enabled = filterNativeToolsForMode(tools, "code", undefined, undefined, undefined, {})
+		const disabled = filterNativeToolsForMode(tools, "code", undefined, undefined, undefined, {
+			todoListEnabled: false,
+		})
+
+		expect(enabled.map((tool) => (tool as any).function.name)).toEqual(["update_plan"])
+		expect(disabled).toEqual([])
+	})
+})
+
 describe("tool filtering - invalid mode fallback", () => {
 	const nativeTools: OpenAI.Chat.ChatCompletionTool[] = [
 		makeTool("read_file"),
@@ -116,6 +168,26 @@ describe("tool filtering - invalid mode fallback", () => {
 		expect(filterMcpToolsForMode(mcpTools, "deleted-custom-mode", undefined, {})).toEqual(
 			filterMcpToolsForMode(mcpTools, "architect", undefined, {}),
 		)
+	})
+})
+
+describe("filterMcpToolsForMode", () => {
+	const mcpTools = [makeTool("mcp--docs--lookup"), makeTool("mcp--tickets--get")]
+
+	it("keeps direct MCP descriptors for modes with the MCP group", () => {
+		expect(filterMcpToolsForMode(mcpTools, "code", undefined, {})).toEqual(mcpTools)
+	})
+
+	it("denies direct MCP descriptors when the mode lacks the MCP group", () => {
+		const mode = {
+			slug: "code",
+			name: "MCP disabled",
+			roleDefinition: "Read files only",
+			groups: ["read"],
+		} as any
+
+		expect(filterMcpToolsForMode(mcpTools, mode.slug, [mode], {})).toEqual([])
+		expect(filterMcpToolsForMode(mcpTools, "architect", undefined, {})).toEqual([])
 	})
 })
 
@@ -136,13 +208,20 @@ describe("filterNativeToolsForMode - Code delegation", () => {
 })
 
 describe("filterNativeToolsForMode - bounded sub-agents", () => {
-	const lifecycleTools = ["spawn_agent", "list_agents", "wait_agent", "send_message", "followup_task", "close_agent"]
+	const lifecycleTools = [
+		"spawn_agent",
+		"list_agents",
+		"wait_agent",
+		"send_message",
+		"followup_task",
+		"interrupt_agent",
+	]
 	const nativeTools: OpenAI.Chat.ChatCompletionTool[] = [
 		// Retained only as explicit historical fixtures; these must never be
 		// re-advertised by the production mode filter.
 		makeTool("delegate_task"),
 		makeTool("report_progress"),
-		makeTool("interrupt_agent"),
+		makeTool("close_agent"),
 		makeTool("cancel_agent"),
 		...lifecycleTools.map(makeTool),
 		makeTool("read_file"),
@@ -159,10 +238,10 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 		expect(codeNames).toEqual(expect.arrayContaining(lifecycleTools))
 		expect(askNames).toEqual(expect.arrayContaining(lifecycleTools))
 		expect(codeNames).not.toEqual(
-			expect.arrayContaining(["delegate_task", "report_progress", "interrupt_agent", "cancel_agent"]),
+			expect.arrayContaining(["delegate_task", "report_progress", "cancel_agent", "close_agent"]),
 		)
 		expect(askNames).not.toEqual(
-			expect.arrayContaining(["delegate_task", "report_progress", "interrupt_agent", "cancel_agent"]),
+			expect.arrayContaining(["delegate_task", "report_progress", "cancel_agent", "close_agent"]),
 		)
 	})
 
@@ -170,10 +249,12 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 		const planTools = [
 			...nativeTools,
 			makeTool("ask_followup_question"),
+			makeTool("request_user_input"),
 			makeTool("attempt_completion"),
 			makeTool("new_task"),
 			makeTool("switch_mode"),
 			makeTool("update_todo_list"),
+			makeTool("update_plan"),
 			makeTool("shell"),
 			makeTool("manage_command"),
 			makeTool("write_to_file"),
@@ -187,14 +268,22 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 			expect.arrayContaining([
 				"read_file",
 				"spawn_agent",
-				"ask_followup_question",
-				"attempt_completion",
+				"request_user_input",
+				"update_plan",
 				"shell",
 				...lifecycleTools,
 			]),
 		)
+		expect(names).not.toContain("attempt_completion")
 		expect(names).not.toEqual(
-			expect.arrayContaining(["new_task", "switch_mode", "update_todo_list", "write_to_file", "use_mcp_tool"]),
+			expect.arrayContaining([
+				"new_task",
+				"switch_mode",
+				"ask_followup_question",
+				"update_todo_list",
+				"write_to_file",
+				"use_mcp_tool",
+			]),
 		)
 	})
 

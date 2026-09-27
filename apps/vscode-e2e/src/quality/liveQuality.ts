@@ -1,12 +1,12 @@
 import type { ToolName } from "@alpha-code/types"
 
 /** Retrieval tools whose results can support a claim. Completion text cannot. */
-const RETRIEVAL_TOOLS = new Set(["read_file", "search_files"])
+const RETRIEVAL_TOOLS = new Set(["exec_command", "read_file", "search_files"])
 const COMPLETION_TOOL = "attempt_completion"
 
 export interface QualityCall {
 	name: string
-	input?: { result?: unknown }
+	input?: { path?: unknown; files?: unknown; result?: unknown; cmd?: unknown; workdir?: unknown }
 	result: string
 	isError: boolean
 }
@@ -46,9 +46,11 @@ export interface QualityCase {
 	forbidden: readonly string[]
 	/** Span that must appear in a successful read or search result. */
 	evidence: string
+	/** Fixture file whose successful tool result must contain the evidence. */
+	sourcePath: string
 	absence?: boolean
-	/** Tool names that must occur in order. Extra calls are allowed inside maxSteps. */
-	milestones: readonly string[]
+	/** Ordered tool milestones; each may allow equivalent actions. Extra calls count against maxSteps. */
+	milestones: readonly (string | readonly string[])[]
 	maxSteps: number
 }
 
@@ -59,7 +61,7 @@ const ledger = (): string => {
 	return lines.join("\n")
 }
 
-const readTools = ["search_files", "list_files"] as const satisfies readonly ToolName[]
+const readTools = ["exec_command"] as const satisfies readonly ToolName[]
 
 /**
  * Four read-only probes. One live completion scores groundedness and trajectory together.
@@ -75,12 +77,13 @@ export const LIVE_QUALITY_CASES: readonly QualityCase[] = [
 			"live-quality/supported-total/notes.md": "Invoice total: 900\n",
 		},
 		prompt: "Items are [{cents:200,quantity:3},{cents:50,quantity:2}]. What number does exports.total in live-quality/supported-total/invoice.cjs return? Reply with only that number.",
-		scope: "Work only inside live-quality/supported-total. Read the implementation before answering. Do not edit files, run commands, or delegate.",
+		scope: "Work only inside live-quality/supported-total. Read the implementation with bounded exec_command calls using rg or Node.js before answering. Do not edit files or delegate.",
 		requestLimit: 8,
 		expected: "700",
 		forbidden: ["900", "250"],
 		evidence: "item.cents * item.quantity",
-		milestones: ["read_file"],
+		sourcePath: "live-quality/supported-total/invoice.cjs",
+		milestones: ["exec_command"],
 		maxSteps: 3,
 	},
 	{
@@ -91,12 +94,13 @@ export const LIVE_QUALITY_CASES: readonly QualityCase[] = [
 				"function draftTotal() {\n  return 400\n}\nfunction total() {\n  return 250\n}\nmodule.exports = { total }\n",
 		},
 		prompt: "What number does the exported total function in live-quality/exported-symbol/totals.cjs return? Reply with only that number.",
-		scope: "Work only inside live-quality/exported-symbol. Read the implementation before answering. Do not edit files, run commands, or delegate.",
+		scope: "Work only inside live-quality/exported-symbol. Read the implementation with bounded exec_command calls using rg or Node.js before answering. Do not edit files or delegate.",
 		requestLimit: 8,
 		expected: "250",
 		forbidden: ["400"],
 		evidence: "module.exports = { total }",
-		milestones: ["read_file"],
+		sourcePath: "live-quality/exported-symbol/totals.cjs",
+		milestones: ["exec_command"],
 		maxSteps: 3,
 	},
 	{
@@ -106,12 +110,13 @@ export const LIVE_QUALITY_CASES: readonly QualityCase[] = [
 			"live-quality/late-span/ledger.txt": ledger(),
 		},
 		prompt: "live-quality/late-span/ledger.txt is long. What is the active ticket id? Reply with only that id.",
-		scope: "Work only inside live-quality/late-span. Find the active ticket from the file. Do not edit files, run commands, or delegate.",
+		scope: "Work only inside live-quality/late-span. Find the active ticket with bounded exec_command reads using rg or Node.js. Do not edit files or delegate.",
 		requestLimit: 8,
 		expected: "TICKET-1842",
 		forbidden: ["TICKET-0001"],
 		evidence: "TICKET-1842",
-		milestones: ["search_files"],
+		sourcePath: "live-quality/late-span/ledger.txt",
+		milestones: ["exec_command"],
 		maxSteps: 3,
 	},
 	{
@@ -121,13 +126,14 @@ export const LIVE_QUALITY_CASES: readonly QualityCase[] = [
 			"live-quality/refund-absence/shipping.md": "Standard shipping is 5 business days.\n",
 		},
 		prompt: "What refund window does live-quality/refund-absence/shipping.md state? If none is stated, reply exactly: no refund window is stated",
-		scope: "Work only inside live-quality/refund-absence. Read the file before answering. Do not edit files, run commands, or delegate.",
+		scope: "Work only inside live-quality/refund-absence. Read the file with bounded exec_command calls using rg or Node.js before answering. Do not edit files or delegate.",
 		requestLimit: 8,
 		expected: "no refund window is stated",
 		forbidden: ["14 days", "30 days", "60 days", "90 days"],
 		evidence: "5 business days",
+		sourcePath: "live-quality/refund-absence/shipping.md",
 		absence: true,
-		milestones: ["read_file"],
+		milestones: ["exec_command"],
 		maxSteps: 3,
 	},
 ]
@@ -140,9 +146,38 @@ export function visibleAnswer(calls: readonly QualityCall[], transcript: string)
 	return completed.length > 0 ? completed.join("\n") : transcript
 }
 
-function contains(haystack: string, needle: string, insensitive = false): boolean {
-	if (!needle) return false
-	return insensitive ? haystack.toLowerCase().includes(needle.toLowerCase()) : haystack.includes(needle)
+function sourceMatches(path: unknown, sourcePath: string): boolean {
+	if (typeof path !== "string") return false
+	const normalized = path.replaceAll("\\", "/").replace(/\/$/, "")
+	return normalized === sourcePath || normalized.endsWith(`/${sourcePath}`)
+}
+
+function retrievedSource(call: QualityCall, sourcePath: string): boolean {
+	if (call.isError) return false
+	if (call.name === "exec_command") {
+		if (typeof call.input?.cmd !== "string") return false
+		const command = call.input.cmd.replaceAll("\\", "/")
+		if (command.includes(sourcePath)) return true
+		const parts = sourcePath.split("/")
+		const filename = parts.pop()
+		const directory = parts.join("/")
+		if (!filename || !directory || !sourceMatches(call.input.workdir, directory)) return false
+		return command.split(/[\s"']+/).includes(filename)
+	}
+	if (call.name === "read_file") {
+		if (sourceMatches(call.input?.path, sourcePath)) return true
+		return (
+			Array.isArray(call.input?.files) &&
+			call.input.files.some(
+				(file) =>
+					file !== null &&
+					typeof file === "object" &&
+					sourceMatches((file as { path?: unknown }).path, sourcePath),
+			)
+		)
+	}
+	if (call.name === "search_files") return call.result.replaceAll("\\", "/").includes(sourcePath)
+	return false
 }
 
 function score(partial: Omit<DimensionScore, "passed">): DimensionScore {
@@ -154,13 +189,19 @@ function stepsOf(calls: readonly QualityCall[]): QualityCall[] {
 }
 
 export function scoreGroundedness(
-	spec: Pick<QualityCase, "expected" | "forbidden" | "evidence" | "absence">,
+	spec: Pick<QualityCase, "expected" | "forbidden" | "evidence" | "sourcePath" | "absence">,
 	observation: QualityObservation,
 ): DimensionScore {
-	const retrieved = observation.calls.filter((call) => !call.isError && RETRIEVAL_TOOLS.has(call.name))
-	const claim = contains(observation.answer, spec.expected, spec.absence === true)
-	const decoysClear = spec.forbidden.every((item) => !contains(observation.answer, item))
-	const evidenceFound = retrieved.some((call) => contains(call.result, spec.evidence))
+	const answer = observation.answer.trim()
+	const claim =
+		spec.absence === true ? answer.toLowerCase() === spec.expected.toLowerCase() : answer === spec.expected
+	const decoysClear = spec.forbidden.every((item) => !answer.includes(item))
+	const evidenceFound = observation.calls.some(
+		(call) =>
+			RETRIEVAL_TOOLS.has(call.name) &&
+			retrievedSource(call, spec.sourcePath) &&
+			call.result.includes(spec.evidence),
+	)
 	const hits = [claim, decoysClear, evidenceFound].filter(Boolean).length
 	const missing = [claim ? "" : "claim", decoysClear ? "" : "decoy", evidenceFound ? "" : "evidence"].filter(Boolean)
 	return score({
@@ -172,13 +213,19 @@ export function scoreGroundedness(
 	})
 }
 
-/** Subsequence match, same rule as harness-evals ToolCorrectness in subsequence mode. */
-export function scoreToolCorrectness(milestones: readonly string[], calls: readonly QualityCall[]): DimensionScore {
-	const called = stepsOf(calls).map((call) => call.name)
+/** Match successful tools in order; equivalent retrieval actions may satisfy one milestone. */
+export function scoreToolCorrectness(
+	milestones: readonly (string | readonly string[])[],
+	calls: readonly QualityCall[],
+): DimensionScore {
+	const called = stepsOf(calls)
+		.filter((call) => !call.isError)
+		.map((call) => call.name)
 	let matched = 0
 	for (const tool of called) {
 		if (matched >= milestones.length) break
-		if (tool === milestones[matched]) matched++
+		const expected = milestones[matched]
+		if (typeof expected === "string" ? tool === expected : expected?.includes(tool)) matched++
 	}
 	const value = milestones.length === 0 ? 0 : matched / milestones.length
 	return score({

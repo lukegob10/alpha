@@ -5,6 +5,33 @@ import { Anthropic } from "@anthropic-ai/sdk"
 import { convertAnthropicMessageToGemini } from "../gemini-format"
 
 describe("convertAnthropicMessageToGemini", () => {
+	it.each([undefined, ""])("keeps an empty tool result paired with its call (%s)", (content) => {
+		const result = convertAnthropicMessageToGemini(
+			{
+				role: "user",
+				content: [
+					{ type: "tool_result", tool_use_id: "call-1", ...(content === undefined ? {} : { content }) },
+				],
+			},
+			{ toolIdToName: new Map([["call-1", "read_file"]]) },
+		)
+
+		expect(result).toEqual([
+			{
+				role: "user",
+				parts: [
+					{
+						functionResponse: {
+							id: "call-1",
+							name: "read_file",
+							response: { name: "read_file", content: "" },
+						},
+					},
+				],
+			},
+		])
+	})
+
 	it("should convert a simple text message", () => {
 		const anthropicMessage: Anthropic.Messages.MessageParam = {
 			role: "user",

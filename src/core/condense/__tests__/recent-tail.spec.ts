@@ -173,6 +173,59 @@ describe("exact recent working set", () => {
 		expect(hasToolCallResultIntegrity(messages)).toBe(true)
 	})
 
+	it("keeps a new user turn exact after verbatim instructions carried through an earlier summary", async () => {
+		const provider = new SummaryProvider()
+		const carried: ApiMessage = {
+			role: "user",
+			content: [{ type: "text", text: `<user_message>${"Older constraint. ".repeat(1000)}</user_message>` }],
+			ts: 2,
+		}
+		const latest: ApiMessage[] = [
+			{
+				role: "user",
+				content: [{ type: "text", text: "<user_message>Use the latest tool result.</user_message>" }],
+				ts: 3,
+			},
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "latest-read", name: "read_file", input: { path: "current.ts" } }],
+				ts: 4,
+				reasoning_details: [{ type: "reasoning.encrypted", data: "latest-provider-state" }],
+			},
+			{
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "latest-read", content: "current value" }],
+				ts: 5,
+			},
+		]
+		const messages: ApiMessage[] = [
+			{
+				role: "user",
+				content: "## Conversation Summary\nEarlier work",
+				isSummary: true,
+				condenseId: "first",
+				ts: 1,
+			},
+			carried,
+			...latest,
+		]
+		const latestTokens = await countHistoryTokens(latest, provider)
+		expect(getLogicalStepStarts(messages)).toEqual([0, 1, 2])
+		expect(await selectRecentTail(messages, provider, latestTokens, 1)).toMatchObject({
+			startIndex: 2,
+			tokens: latestTokens,
+			newestStepTooLarge: false,
+		})
+		const result = await summarizeConversation({
+			...options(messages, provider),
+			maxContextTokens: 1000,
+			recentTailTokenBudget: latestTokens,
+		})
+		expect(result.status).toBe("reduced")
+		expect(getEffectiveApiHistory(result.messages).slice(-3)).toEqual(latest)
+		expect(hasToolCallResultIntegrity(getEffectiveApiHistory(result.messages))).toBe(true)
+	})
+
 	it.each([false, true])(
 		"keeps a result-carried correction with its response (separate results=%s)",
 		async (separateResults) => {
@@ -219,6 +272,101 @@ describe("exact recent working set", () => {
 			expect(hasToolCallResultIntegrity(getEffectiveApiHistory(result.messages))).toBe(true)
 		},
 	)
+
+	it("keeps an older direct user constraint verbatim when its step is summarized", async () => {
+		const messages: ApiMessage[] = [
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "old-read", name: "read_file", input: { path: "service.ts" } }],
+				ts: 1,
+			},
+			{
+				role: "user",
+				...{ opaqueUserState: "opaque-user-state" },
+				content: [
+					{ type: "tool_result", tool_use_id: "old-read", content: "TOOL_RESULT_ONLY" },
+					{ type: "text", text: "<user_message>Keep retries at exactly 3.</user_message>" },
+					{ type: "text", text: "<system-reminder>GENERATED_ONLY</system-reminder>" },
+				],
+				ts: 2,
+			},
+			{ role: "assistant", content: "Older investigation. ".repeat(1000), ts: 3 },
+			{
+				role: "user",
+				content: [{ type: "text", text: "<user_message>Inspect the current implementation.</user_message>" }],
+				ts: 4,
+			},
+		]
+		const provider = new SummaryProvider()
+		const result = await summarizeConversation(options(messages, provider))
+		const active = getEffectiveApiHistory(result.messages)
+
+		expect(result.status).toBe("reduced")
+		const activeContent = JSON.stringify(active)
+		expect(activeContent).toContain("<user_message>Keep retries at exactly 3.</user_message>")
+		expect(activeContent).toContain("<user_message>Inspect the current implementation.</user_message>")
+		expect(activeContent).not.toContain("TOOL_RESULT_ONLY")
+		expect(activeContent).not.toContain("GENERATED_ONLY")
+		expect(activeContent).toContain("opaque-user-state")
+		expect(result.newContextTokens).toBeLessThanOrEqual(result.targetContextTokens!)
+		expect(result.newContextTokens).toBeLessThan(result.prevContextTokens!)
+		expect(hasToolCallResultIntegrity(active)).toBe(true)
+		expect(hasToolCallResultIntegrity(result.messages)).toBe(true)
+
+		const reloaded = JSON.parse(JSON.stringify(result.messages)) as ApiMessage[]
+		expect(getEffectiveApiHistory(reloaded)).toEqual(active)
+		const followUp: ApiMessage[] = [
+			{ role: "assistant", content: "Newer investigation. ".repeat(1000), ts: 5 },
+			{
+				role: "user",
+				content: [{ type: "text", text: "<user_message>Continue with the latest result.</user_message>" }],
+				ts: 6,
+			},
+		]
+		const recompacted = await summarizeConversation(options([...reloaded, ...followUp], provider))
+		const recompactHistory = getEffectiveApiHistory(recompacted.messages)
+		expect(recompacted.status).toBe("reduced")
+		expect(
+			recompactHistory.filter((message) =>
+				JSON.stringify(message.content).includes("Keep retries at exactly 3."),
+			),
+		).toHaveLength(1)
+	})
+
+	it("prioritizes recent user records, truncates to budget, and deduplicates the exact tail", async () => {
+		const oldConstraint = `<user_message>KEEP_OLD. ${"older detail ".repeat(1000)}</user_message>`
+		const latestConstraint = "<user_message>KEEP_LATEST_PREFIX.</user_message>"
+		const tailUserMessage = "<user_message>KEEP_LATEST_TAIL.</user_message>"
+		const duplicateConstraint = "<user_message>DEDUPLICATE_THIS.</user_message>"
+		const messages: ApiMessage[] = [
+			{ role: "user", content: [{ type: "text", text: oldConstraint }], ts: 1 },
+			{ role: "assistant", content: "Acknowledged. ".repeat(20), ts: 2 },
+			{ role: "user", content: [{ type: "text", text: latestConstraint }], ts: 3 },
+			{ role: "assistant", content: "Intermediate investigation. ".repeat(1000), ts: 4 },
+			{ role: "user", content: [{ type: "text", text: duplicateConstraint }], ts: 5 },
+			{ role: "assistant", content: "More recent work. ".repeat(1000), ts: 6 },
+			{ role: "user", content: [{ type: "text", text: tailUserMessage }], ts: 7 },
+			{ role: "assistant", content: "Latest step. ".repeat(20), ts: 8 },
+			{ role: "user", content: [{ type: "text", text: duplicateConstraint }], ts: 9 },
+		]
+		const provider = new SummaryProvider()
+		const result = await summarizeConversation(options(messages, provider))
+		const active = getEffectiveApiHistory(result.messages)
+		const activeContent = JSON.stringify(active)
+
+		expect(result.status).toBe("reduced")
+		expect(activeContent).toContain(latestConstraint)
+		expect(activeContent).not.toContain(oldConstraint)
+		expect(activeContent).toContain("KEEP_OLD.")
+		expect(activeContent).toContain("[This user message was shortened to fit the compaction budget.]")
+		expect(activeContent).toContain(tailUserMessage)
+		expect(activeContent).toContain(duplicateConstraint)
+		expect(active.filter((message) => JSON.stringify(message.content).includes(duplicateConstraint))).toHaveLength(
+			1,
+		)
+		expect(result.newContextTokens).toBeLessThanOrEqual(result.targetContextTokens!)
+		expect(result.newContextTokens).toBeLessThan(result.prevContextTokens!)
+	})
 
 	it("summarizes an oversized newest transaction as a whole with an explicit fallback notice", async () => {
 		const messages = history()

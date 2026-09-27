@@ -35,6 +35,8 @@ export interface ExtensionTestRunOptions {
 	vscodeExecutablePath?: string
 	/** Test an artifact installed in the owned profile, without overriding Alpha from the source checkout. */
 	installedExtensionPath?: string
+	/** Override the development extension root when a campaign runs from a frozen build snapshot. */
+	extensionDevelopmentPath?: string
 	workspace?: string
 	profileDir?: string
 	artifactsDir?: string
@@ -112,6 +114,7 @@ const valueOptions = new Set([
 	"--vscode-version",
 	"--vscode-executable",
 	"--installed-extension",
+	"--extension-development-path",
 	"--workspace",
 	"--profile-dir",
 	"--artifacts-dir",
@@ -180,6 +183,7 @@ export function readRunOptions(
 		scenarioPhase: phase,
 		scenarioResultPath: parsed.get("--scenario-result-path"),
 		installedExtensionPath: parsed.get("--installed-extension"),
+		extensionDevelopmentPath: parsed.get("--extension-development-path"),
 		requestLimit: limit ? Number(limit) : undefined,
 		retainEvidenceForCampaign: parsed.has("--retain-evidence-for-campaign"),
 	}
@@ -269,9 +273,13 @@ export async function runExtensionTests(
 		(options.rendererDebuggingPort !== 0 ||
 			options.providerMode !== "scripted" ||
 			!options.profileDir ||
-			!["rendered-ui-probe.test", "managed-agents.acceptance.test", "reasoning-ui.test"].includes(
-				options.testFile ?? "",
-			))
+			![
+				"rendered-ui-probe.test",
+				"managed-agents.acceptance.test",
+				"reasoning-ui.test",
+				"history-ui.test",
+				"tickets-ui.test",
+			].includes(options.testFile ?? ""))
 	) {
 		throw new TestRunError(
 			"invalid-options",
@@ -283,6 +291,15 @@ export async function runExtensionTests(
 			"invalid-options",
 			"Installed extension tests require an absolute artifact path and an owned profile",
 		)
+	}
+	if (
+		options.extensionDevelopmentPath !== undefined &&
+		(!path.isAbsolute(options.extensionDevelopmentPath) || options.extensionDevelopmentPath.includes("\0"))
+	) {
+		throw new TestRunError("invalid-options", "Development extension path must be an absolute path")
+	}
+	if (options.extensionDevelopmentPath && options.installedExtensionPath) {
+		throw new TestRunError("invalid-options", "Choose one extension source path")
 	}
 	const launchKind =
 		dependencies.launchKind ??
@@ -323,6 +340,7 @@ export async function runExtensionTests(
 	const runId = options.runId ?? randomUUID()
 	if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(runId)) throw new Error("Invalid test run ID")
 	const extensionDevelopmentPath =
+		options.extensionDevelopmentPath ??
 		options.installedExtensionPath ??
 		dependencies.extensionDevelopmentPath ??
 		path.resolve(__dirname, "../../../src")

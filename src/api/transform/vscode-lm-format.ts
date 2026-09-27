@@ -115,47 +115,26 @@ export function convertToVsCodeLmMessages(
 		// Handle complex message structures
 		switch (anthropicMessage.role) {
 			case "user": {
-				const { nonToolMessages, toolMessages } = anthropicMessage.content.reduce<{
-					nonToolMessages: (Anthropic.TextBlockParam | Anthropic.ImageBlockParam)[]
-					toolMessages: Anthropic.ToolResultBlockParam[]
-				}>(
-					(acc, part) => {
-						if (part.type === "tool_result") {
-							acc.toolMessages.push(part)
-						} else if (part.type === "text" || part.type === "image") {
-							acc.nonToolMessages.push(part)
-						}
-						return acc
-					},
-					{ nonToolMessages: [], toolMessages: [] },
-				)
-
-				// Process tool messages first then non-tool messages
-				const contentParts = [
-					// Convert tool messages to ToolResultParts
-					...toolMessages.map((toolMessage) => {
-						// Process tool result content into TextParts
+				const contentParts: Array<
+					vscode.LanguageModelTextPart | vscode.LanguageModelToolResultPart | vscode.LanguageModelDataPart
+				> = []
+				for (const part of anthropicMessage.content) {
+					if (part.type === "tool_result") {
 						const toolContentParts: Array<vscode.LanguageModelTextPart | vscode.LanguageModelDataPart> =
-							typeof toolMessage.content === "string"
-								? [new vscode.LanguageModelTextPart(toolMessage.content)]
-								: (toolMessage.content?.map((part) => {
-										if (part.type === "image") {
-											return convertAnthropicImagePart(part)
-										}
-										return new vscode.LanguageModelTextPart(part.text)
-									}) ?? [new vscode.LanguageModelTextPart("")])
-
-						return new vscode.LanguageModelToolResultPart(toolMessage.tool_use_id, toolContentParts)
-					}),
-
-					// Convert non-tool messages to TextParts after tool messages
-					...nonToolMessages.map((part) => {
-						if (part.type === "image") {
-							return convertAnthropicImagePart(part)
-						}
-						return new vscode.LanguageModelTextPart(part.text)
-					}),
-				]
+							typeof part.content === "string"
+								? [new vscode.LanguageModelTextPart(part.content)]
+								: (part.content?.map((content) =>
+										content.type === "image"
+											? convertAnthropicImagePart(content)
+											: new vscode.LanguageModelTextPart(content.text),
+									) ?? [new vscode.LanguageModelTextPart("")])
+						contentParts.push(new vscode.LanguageModelToolResultPart(part.tool_use_id, toolContentParts))
+					} else if (part.type === "image") {
+						contentParts.push(convertAnthropicImagePart(part))
+					} else if (part.type === "text") {
+						contentParts.push(new vscode.LanguageModelTextPart(part.text))
+					}
+				}
 
 				// Add single user message with all content parts
 				vsCodeLmMessages.push(vscode.LanguageModelChatMessage.User(contentParts))
@@ -163,42 +142,20 @@ export function convertToVsCodeLmMessages(
 			}
 
 			case "assistant": {
-				const { nonToolMessages, toolMessages } = anthropicMessage.content.reduce<{
-					nonToolMessages: (Anthropic.TextBlockParam | Anthropic.ImageBlockParam)[]
-					toolMessages: Anthropic.ToolUseBlockParam[]
-				}>(
-					(acc, part) => {
-						if (part.type === "tool_use") {
-							acc.toolMessages.push(part)
-						} else if (part.type === "text" || part.type === "image") {
-							acc.nonToolMessages.push(part)
-						}
-						return acc
-					},
-					{ nonToolMessages: [], toolMessages: [] },
-				)
-
-				// Process non-tool messages first, then tool messages
-				// Tool calls must come at the end so they are properly followed by user message with tool results
-				const contentParts = [
-					// Convert non-tool messages to TextParts first
-					...nonToolMessages.map((part) => {
-						if (part.type === "image") {
-							return convertAnthropicImagePart(part)
-						}
-						return new vscode.LanguageModelTextPart(part.text)
-					}),
-
-					// Convert tool messages to ToolCallParts after text
-					...toolMessages.map(
-						(toolMessage) =>
-							new vscode.LanguageModelToolCallPart(
-								toolMessage.id,
-								toolMessage.name,
-								asObjectSafe(toolMessage.input),
-							),
-					),
-				]
+				const contentParts: Array<
+					vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart | vscode.LanguageModelDataPart
+				> = []
+				for (const part of anthropicMessage.content) {
+					if (part.type === "tool_use") {
+						contentParts.push(
+							new vscode.LanguageModelToolCallPart(part.id, part.name, asObjectSafe(part.input)),
+						)
+					} else if (part.type === "image") {
+						contentParts.push(convertAnthropicImagePart(part))
+					} else if (part.type === "text") {
+						contentParts.push(new vscode.LanguageModelTextPart(part.text))
+					}
+				}
 
 				// Add the assistant message to the list of messages
 				vsCodeLmMessages.push(vscode.LanguageModelChatMessage.Assistant(contentParts))

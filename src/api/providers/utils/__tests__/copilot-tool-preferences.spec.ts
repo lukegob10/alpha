@@ -85,7 +85,7 @@ describe("Copilot edit-tool preferences", () => {
 		expect(result).toEqual({
 			...original,
 			includedTools: ["browser", "edit"],
-			excludedTools: ["shell"],
+			excludedTools: ["exec_command"],
 		})
 		expect(original.includedTools).toEqual(["browser"])
 	})

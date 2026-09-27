@@ -26,6 +26,15 @@ function policy() {
 }
 
 describe("ToolPolicy", () => {
+	it("captures the approval mode and defaults missing legacy inputs to Ask", () => {
+		const captured = createToolPolicySnapshot({ visibleTools: [], approvalMode: "bypass" })
+		const legacy = createToolPolicySnapshot({ visibleTools: [] })
+
+		expect(captured.approval.mode).toBe("bypass")
+		expect(legacy.approval.mode).toBe("ask")
+		expect(captured.digest).not.toBe(legacy.digest)
+	})
+
 	it("freezes execution policy and produces a sanitized model summary", () => {
 		const snapshot = policy()
 

@@ -37,7 +37,7 @@ Please analyze this codebase and create an AGENTS.md file containing:
   </purpose>
 
   <todo_list_creation>
-    If the update_todo_list tool is available, create a todo list with these focused analysis steps:
+    If the update_plan tool is available, create a plan with these focused analysis steps:
 
     1. Check for existing AGENTS.md files
        CRITICAL - Check these EXACT paths IN THE PROJECT ROOT:
@@ -97,7 +97,7 @@ Please analyze this codebase and create an AGENTS.md file containing:
        - If creating new: Follow the non-obvious-only principle
        - Create mode-specific files in .alpha/rules-*/ directories (IN PROJECT ROOT)
 
-    Note: If update_todo_list is not available, proceed with the analysis workflow directly without creating a todo list.
+    Note: If update_plan is not available, proceed with the analysis workflow directly without creating a plan.
   </todo_list_creation>
 </initialization>
 

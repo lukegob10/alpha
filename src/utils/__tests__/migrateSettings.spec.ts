@@ -78,7 +78,7 @@ describe("migrateSettings", () => {
 			await migrateSettings(mockContext, mockOutputChannel)
 
 			// Check that old default commands were removed
-			expect(mockGlobalState.get("allowedCommands")).toEqual(["git log"])
+			expect(mockGlobalState.get("allowedCommands")).toEqual([])
 
 			// Check that migration was marked as complete
 			expect(mockContext.globalState.update).toHaveBeenCalledWith("defaultCommandsMigrationCompleted", true)
@@ -110,14 +110,10 @@ describe("migrateSettings", () => {
 
 			// Check that old default commands were removed
 			const updatedCommands = mockGlobalState.get("allowedCommands")
-			expect(updatedCommands).toEqual(["git log", "git diff", "echo hello"])
+			expect(updatedCommands).toEqual(["echo hello"])
 
 			// Verify the update was called
-			expect(mockContext.globalState.update).toHaveBeenCalledWith("allowedCommands", [
-				"git log",
-				"git diff",
-				"echo hello",
-			])
+			expect(mockContext.globalState.update).toHaveBeenCalledWith("allowedCommands", ["echo hello"])
 
 			// Verify migration was marked as complete
 			expect(mockContext.globalState.update).toHaveBeenCalledWith("defaultCommandsMigrationCompleted", true)
@@ -179,11 +175,11 @@ describe("migrateSettings", () => {
 
 			// Check that unsafe commands were removed regardless of case
 			const updatedCommands = mockGlobalState.get("allowedCommands")
-			expect(updatedCommands).toEqual(["git log"])
+			expect(updatedCommands).toEqual([])
 		})
 
-		it("should not modify commands if no old defaults are present", async () => {
-			// Set up initial state with only safe commands
+		it("should remove former built-in command prefixes while preserving other saved rules", async () => {
+			// These entries were shipped as defaults, while the other rules were user-added.
 			const initialCommands = ["git log", "git diff", "ls -la", "echo hello"]
 			mockGlobalState.set("allowedCommands", initialCommands)
 
@@ -194,15 +190,19 @@ describe("migrateSettings", () => {
 			// Run migration
 			await migrateSettings(mockContext, mockOutputChannel)
 
-			// Check that commands remain unchanged
+			// Only the built-in entries are migrated; all other saved rules remain.
 			const updatedCommands = mockGlobalState.get("allowedCommands")
-			expect(updatedCommands).toEqual(initialCommands)
+			expect(updatedCommands).toEqual(["ls -la", "echo hello"])
+			expect(mockContext.globalState.update).toHaveBeenCalledWith("allowedCommands", ["ls -la", "echo hello"])
 
 			// Verify no notification was shown
 			expect(vscode.window.showInformationMessage).not.toHaveBeenCalled()
 
 			// Verify migration was still marked as complete
-			expect(mockContext.globalState.update).toHaveBeenCalledWith("defaultCommandsMigrationCompleted", true)
+			expect(mockContext.globalState.update).toHaveBeenCalledWith(
+				"autoApprovalCommandDefaultsMigrationCompleted",
+				true,
+			)
 		})
 
 		it("should handle missing or invalid allowedCommands gracefully", async () => {

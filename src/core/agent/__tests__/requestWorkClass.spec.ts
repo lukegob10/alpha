@@ -49,12 +49,32 @@ describe("classifyRequestWorkClass", () => {
 			class: "full",
 			reason: "explicit_workflow",
 		})
+		expect(classifyRequestWorkClass("Use update_plan to track the implementation.")).toMatchObject({
+			class: "full",
+			reason: "explicit_workflow",
+		})
+	})
+
+	it("keeps task orchestration tools for requests phrased as questions about taking action", () => {
+		for (const text of [
+			"can you launch a test thread",
+			"Could you start another chat to inspect the backend?",
+			"Can you create a separate task with sub-agents?",
+			"Can you send a message to the child thread?",
+			"Can you stop that task?",
+		]) {
+			expect(classifyRequestWorkClass(text), text).toMatchObject({
+				class: "full",
+				reason: "explicit_workflow",
+			})
+		}
+		expect(classifyRequestWorkClass("How do I launch a thread?")).toMatchObject({ class: "lookup" })
 	})
 
 	it("keeps skill and ticket extras without hiding a named skill or ticket on lookup", () => {
 		const skill = classifyRequestWorkClass("Where is the exporter registered? Use the pdf-processing skill.")
 		expect(skill).toMatchObject({ class: "lookup", includeSkill: true, includeTickets: false })
-		expect([...resolveLookupToolNames(skill)!]).toEqual(expect.arrayContaining(["skill", "search_files"]))
+		expect([...resolveLookupToolNames(skill)!]).toEqual(expect.arrayContaining(["skill", "exec_command"]))
 
 		const ticket = classifyRequestWorkClass("Read ticket AB-123 and tell me where the mentioned helper lives.")
 		expect(ticket).toMatchObject({ class: "lookup", includeTickets: true })

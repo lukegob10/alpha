@@ -76,7 +76,7 @@ describe("Task mistake-limit recovery", () => {
 		)
 		expect(guidance.feedback).toContain("The previous completion call failed. Do not repeat it unchanged")
 		expect(guidance.feedback).toContain("Unrelated reads or substitute writes do not resolve a failed operation")
-		expect(guidance.feedback).toContain("new_task by itself")
+		expect(guidance.feedback).toContain("spawn_agent by itself")
 	})
 
 	it("keeps mistake-limit asks interactive when on-screen auto-approval is disabled", async () => {
@@ -124,7 +124,7 @@ describe("Task mistake-limit recovery", () => {
 		expect(guidance).not.toContain("call an edit or other mutation tool now")
 	})
 
-	it("preserves the durable completion requirement for managed children", async () => {
+	it("routes managed-child completion through final assistant text", async () => {
 		const task = createTask({ isTaskOnScreen: () => false })
 		Reflect.set(task, "taskKind", "subagent")
 		const userContent: Array<{ type: string; text: string }> = []
@@ -132,8 +132,8 @@ describe("Task mistake-limit recovery", () => {
 		await Reflect.get(task, "handleConsecutiveMistakeLimit").call(task, userContent)
 
 		const guidance = JSON.parse(userContent[0].text).feedback as string
-		expect(guidance).toContain("publish the durable child result through attempt_completion")
-		expect(guidance).not.toContain("ordinary final answer")
+		expect(guidance).toContain("ordinary final answer that the host records as the child result")
+		expect(guidance).not.toContain("through attempt_completion")
 	})
 
 	it.each(["primary", "subagent"] as const)(
@@ -145,7 +145,7 @@ describe("Task mistake-limit recovery", () => {
 			const guidance: string = Reflect.get(task, "getOffscreenMistakeLimitGuidance").call(task)
 
 			expect(guidance).toContain("pending verification")
-			expect(guidance).toContain(kind === "primary" ? "ordinary final answer" : "durable child result")
+			expect(guidance).toContain(kind === "primary" ? "ordinary final answer" : "child result")
 			expect(guidance).not.toContain("exactly one concrete next action")
 		},
 	)

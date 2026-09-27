@@ -10,7 +10,9 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { AgentTurnEvent } from "../../agent/AgentTurnEvents"
 import { ToolScheduler, type ToolExecutionHost } from "../../agent/ToolScheduler"
+import { getLegacyFileToolSchemas } from "../../prompts/tools/native-tools"
 import { ToolRegistry } from "../../tools/ToolRegistry"
+import { readFileTool } from "../../tools/ReadFileTool"
 import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 import { OutputInterceptor } from "../../../integrations/terminal/OutputInterceptor"
 import { Task } from "../Task"
@@ -22,6 +24,7 @@ import type {
 	AlphaTerminalProcessResultPromise,
 } from "../../../integrations/terminal/types"
 import { executeCommandInTerminal } from "../../tools/ExecuteCommandTool"
+import type { ToolUse } from "../../../shared/tools"
 
 const mutationObservationSuspension = "errors.command_mutation_observation_incomplete"
 const mutationReceiptSuspension = "errors.command_mutation_receipt_incomplete"
@@ -119,6 +122,30 @@ function response(callId: string, command: string, verificationChangeSetIds: str
 				type: "tool_call" as const,
 				id: callId,
 				name: "execute_command",
+				arguments: argumentsValue,
+			},
+		],
+	}
+}
+
+function execCommandResponse(callId: string, command: string) {
+	const argumentsValue = { cmd: command, yield_time_ms: 1_000 }
+	return {
+		items: [
+			{
+				type: "tool_call" as const,
+				id: callId,
+				name: "exec_command",
+				arguments: argumentsValue,
+			},
+		],
+		text: "",
+		reasoning: "",
+		toolCalls: [
+			{
+				type: "tool_call" as const,
+				id: callId,
+				name: "exec_command",
 				arguments: argumentsValue,
 			},
 		],
@@ -347,6 +374,7 @@ async function createTask(approval: "approve" | "deny" = "approve"): Promise<Tas
 				recordOutcome: vi.fn(() => ({ action: "continue" as const })),
 			},
 			getTaskLifetimeCancellationSignal: vi.fn(() => lifetimeController.signal),
+			requestToolApproval: undefined,
 			ask: vi.fn(async (type: string) =>
 				type === "command_output"
 					? { response: "messageResponse", text: "Continue in the background." }
@@ -407,9 +435,9 @@ async function withTaskHarness<T>(
 function createScheduler(
 	harness: TaskHarness,
 	events: AgentTurnEvent[],
-	options: { preserveAbortedResults?: boolean } = {},
+	options: { preserveAbortedResults?: boolean; registry?: ToolRegistry } = {},
 ): ToolScheduler {
-	const registry = new ToolRegistry()
+	const registry = options.registry ?? new ToolRegistry()
 	const executionHost = harness.task as unknown as ToolExecutionHost
 	return new ToolScheduler({
 		task: harness.task,
@@ -550,7 +578,30 @@ describe("ordinary task tool contracts", () => {
 					],
 				},
 			}
-			await createScheduler(harness, []).run({ items: [call], text: "", reasoning: "", toolCalls: [call] })
+			const readFileSchema = getLegacyFileToolSchemas().find(
+				(schema) => schema.type === "function" && schema.function.name === "read_file",
+			)
+			if (!readFileSchema) throw new Error("Missing saved read_file compatibility schema")
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			registry.register({
+				name: "read_file",
+				aliases: [],
+				schema: readFileSchema,
+				capabilities: {
+					concurrency: "serial",
+					sideEffects: "none",
+					controlFlow: false,
+					requiresApproval: true,
+				},
+				execute: async ({ task, call, callbacks }) =>
+					readFileTool.handle(task, call as ToolUse<"read_file">, callbacks),
+			})
+			await createScheduler(harness, [], { registry }).run({
+				items: [call],
+				text: "",
+				reasoning: "",
+				toolCalls: [call],
+			})
 			const output = JSON.stringify(harness.toolResults())
 			expect(output).toContain("File: fixture.txt")
 			expect(output).toContain("File: second.txt")
@@ -1090,7 +1141,7 @@ describe("Stage Three command outcome integration", () => {
 			const terminal = controlledTerminal(harness.workspacePath)
 			installTerminal(terminal)
 
-			const run = createScheduler(harness, events).run(response("exit-zero", "pnpm test"))
+			const run = createScheduler(harness, events).run(execCommandResponse("exit-zero", "pnpm test"))
 			await terminal.runStarted.promise
 			await terminal.processForTest!.complete({ exitCode: 0 })
 			const outcome = await run
@@ -1099,19 +1150,19 @@ describe("Stage Three command outcome integration", () => {
 			expect(outcome.results).toEqual([
 				expect.objectContaining({
 					callId: "exit-zero",
-					name: "execute_command",
+					name: "exec_command",
 					status: "success",
 					executionStatus: "success",
 					exitCode: 0,
 				}),
 			])
 			expect(toolResultEvents(events)).toEqual([
-				expect.objectContaining({ callId: "exit-zero", name: "execute_command", status: "success" }),
+				expect.objectContaining({ callId: "exit-zero", name: "exec_command", status: "success" }),
 			])
 			expect(verificationEvents(events)).toEqual([
 				expect.objectContaining({
 					commandCategory: "test",
-					toolName: "execute_command",
+					toolName: "exec_command",
 					status: "success",
 					exitCode: 0,
 				}),

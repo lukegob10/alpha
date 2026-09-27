@@ -67,6 +67,89 @@ describe("AgentLifecycleJournal", () => {
 		await restarted.close()
 	})
 
+	it("replays a persisted snapshot from before effect-start receipts existed", async () => {
+		const journal = await AgentLifecycleJournal.open(ids.taskId, storagePath)
+		await journal.append(phaseEvent("event-1"))
+		await journal.writeSnapshot()
+		const snapshotPath = await journal.getSnapshotFilePath()
+		await journal.close()
+
+		const legacySnapshot = JSON.parse(await fs.readFile(snapshotPath, "utf8")) as Record<string, unknown>
+		delete legacySnapshot.effectTrackingVersion
+		delete legacySnapshot.effectStartedToolCallIds
+		await fs.writeFile(snapshotPath, JSON.stringify(legacySnapshot), "utf8")
+
+		const recovered = await AgentLifecycleJournal.open(ids.taskId, storagePath)
+		expect(recovered.getSnapshot()).toMatchObject({
+			phase: "working",
+			lastSequence: 1,
+			effectStartedToolCallIds: [],
+		})
+		await recovered.close()
+	})
+
+	it("waits for the durable effect-start file sync before acknowledging intent", async () => {
+		const journal = await AgentLifecycleJournal.open(ids.taskId, storagePath)
+		await journal.append({
+			version: 1,
+			eventId: "call-accepted",
+			...ids,
+			occurredAt: 1,
+			type: "tool_call_accepted",
+			payload: {
+				item: {
+					itemId: "call-item",
+					type: "tool_call",
+					toolCallId: "call-1",
+					name: "write_to_file",
+					arguments: { path: "file.txt" },
+					status: "accepted",
+				},
+			},
+		})
+
+		const probe = await fs.open(await journal.getEventsFilePath(), "a")
+		const fileHandlePrototype = Object.getPrototypeOf(probe)
+		await probe.close()
+		const originalSync = fileHandlePrototype.sync
+		let releaseSync!: () => void
+		let markSyncStarted!: () => void
+		const syncGate = new Promise<void>((resolve) => {
+			releaseSync = resolve
+		})
+		const syncStarted = new Promise<void>((resolve) => {
+			markSyncStarted = resolve
+		})
+		const sync = vi.spyOn(fileHandlePrototype, "sync").mockImplementation(function (this: any) {
+			markSyncStarted()
+			return syncGate.then(() => originalSync.call(this))
+		})
+		let acknowledged = false
+		const append = journal.append(
+			{
+				version: 1,
+				eventId: "effect-started",
+				...ids,
+				occurredAt: 2,
+				type: "tool_effect_started",
+				payload: { toolCallId: "call-1" },
+			},
+			{ durable: true },
+		)
+		void append.then(() => {
+			acknowledged = true
+		})
+		await syncStarted
+		await Promise.resolve()
+		expect(acknowledged).toBe(false)
+		releaseSync()
+		await append
+		expect(sync).toHaveBeenCalledOnce()
+		expect(acknowledged).toBe(true)
+		sync.mockRestore()
+		await journal.close()
+	})
+
 	it("flushes an append that was submitted immediately before close", async () => {
 		const journal = new AgentLifecycleJournal(ids.taskId, storagePath)
 		const append = journal.append(phaseEvent("event-1"))

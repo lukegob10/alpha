@@ -63,12 +63,13 @@ function operationIdentity(toolName: string, args: unknown): string {
 		// Observations use the living tool's action; admission still receives the historical payload.
 		args = { ...args, action: "read" }
 	}
-	if (canonicalName === "shell" && args && typeof args === "object" && "command" in args) {
-		const command = typeof args.command === "string" ? args.command.trim() : args.command
-		const cwd = "cwd" in args ? (args.cwd ?? undefined) : undefined
+	if (canonicalName === "exec_command" && args && typeof args === "object") {
+		const parameters = args as Record<string, unknown>
+		const command = typeof parameters.cmd === "string" ? parameters.cmd : parameters.command
+		const cwd = parameters.workdir ?? parameters.cwd
 		// Timeout and verification association do not change the requested effect.
-		// Preserve whitespace inside shell strings, which can change their meaning.
-		return digest({ toolName: canonicalName, command, cwd })
+		// Preserve whitespace inside command strings, which can change their meaning.
+		return digest({ toolName: canonicalName, command: typeof command === "string" ? command.trim() : command, cwd })
 	}
 	return digest({ toolName: canonicalName, args })
 }
@@ -223,7 +224,7 @@ export class ToolRepetitionDetector {
 			observation.opaqueResultFingerprint !== undefined
 		const freshOpaque = opaque && this.rememberNovelty(this.seenOpaqueResults, observation.opaqueResultFingerprint!)
 		const freshUnclassifiedCommand =
-			canonicalizeToolName(observation.toolName) === "shell" &&
+			canonicalizeToolName(observation.toolName) === "exec_command" &&
 			observation.status === "success" &&
 			observation.executionStatus === "success" &&
 			observation.explorationFingerprint === undefined &&

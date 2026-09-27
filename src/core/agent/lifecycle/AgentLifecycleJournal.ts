@@ -54,6 +54,11 @@ export interface AgentLifecycleAppendReceipt {
 	replayed: boolean
 }
 
+export interface AgentLifecycleAppendOptions {
+	/** Flush the appended event to stable storage before acknowledging it to the caller. */
+	durable?: boolean
+}
+
 export type AgentLifecycleJournalRecoveryErrorCode =
 	| "malformed_record"
 	| "torn_final_record"
@@ -243,7 +248,10 @@ export class AgentLifecycleJournal {
 	 * Append one validated lifecycle event. If sequence is omitted, the next
 	 * durable sequence is assigned after the journal lock is acquired.
 	 */
-	append(input: AgentLifecycleEventInput): Promise<AgentLifecycleAppendReceipt> {
+	append(
+		input: AgentLifecycleEventInput,
+		options: AgentLifecycleAppendOptions = {},
+	): Promise<AgentLifecycleAppendReceipt> {
 		if (this.state !== "open") return Promise.reject(this.closedError())
 		return this.enqueue(async () => {
 			await this.initialize()
@@ -319,7 +327,11 @@ export class AgentLifecycleJournal {
 				}
 
 				try {
-					await fs.appendFile(paths.eventsPath, `${JSON.stringify(event)}\n`, "utf8")
+					await appendLifecycleEventLine(
+						paths.eventsPath,
+						`${JSON.stringify(event)}\n`,
+						options.durable === true,
+					)
 				} catch (error) {
 					throw new AgentLifecycleRecoveryError(
 						"write_failed",
@@ -584,6 +596,40 @@ export class AgentLifecycleJournal {
 		}
 		return { events, snapshot: replayed }
 	}
+}
+
+async function syncLifecycleDirectory(directoryPath: string): Promise<void> {
+	if (process.platform === "win32") return
+	const handle = await fs.open(directoryPath, "r")
+	try {
+		await handle.sync()
+	} finally {
+		await handle.close()
+	}
+}
+
+async function appendLifecycleEventLine(filePath: string, line: string, durable: boolean): Promise<void> {
+	if (!durable) {
+		await fs.appendFile(filePath, line, "utf8")
+		return
+	}
+
+	let fileExisted = true
+	try {
+		await fs.access(filePath)
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") throw error
+		fileExisted = false
+	}
+
+	const handle = await fs.open(filePath, "a")
+	try {
+		await handle.writeFile(line, "utf8")
+		await handle.sync()
+	} finally {
+		await handle.close()
+	}
+	if (!fileExisted) await syncLifecycleDirectory(path.dirname(filePath))
 }
 
 /** Read and validate only the new lifecycle journal file. */

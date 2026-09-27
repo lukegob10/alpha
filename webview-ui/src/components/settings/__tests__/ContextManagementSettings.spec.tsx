@@ -2,7 +2,6 @@
 
 import { render, screen, fireEvent, waitFor } from "@/utils/test-utils"
 import { ContextManagementSettings } from "../ContextManagementSettings"
-import { vscode } from "@/utils/vscode"
 
 // Mock the translation hook
 vi.mock("@/i18n/TranslationContext", () => ({
@@ -83,11 +82,9 @@ describe("ContextManagementSettings", () => {
 	const defaultProps = {
 		autoCondenseContext: false,
 		autoCondenseContextPercent: 80,
-		listApiConfigMeta: [],
 		maxOpenTabsContext: 20,
 		maxWorkspaceFiles: 200,
 		showRooIgnoredFiles: false,
-		profileThresholds: {},
 		includeDiagnosticMessages: true,
 		maxDiagnosticMessages: 50,
 		writeDelayMs: 1000,
@@ -198,24 +195,21 @@ describe("ContextManagementSettings", () => {
 		expect(screen.getByTestId("auto-condense-context-checkbox")).toBeInTheDocument()
 	})
 
-	it("buffers profile thresholds without persisting before Save", async () => {
+	it("buffers the global compaction threshold without writing settings immediately", async () => {
 		const setCachedStateField = vi.fn()
 		render(
 			<ContextManagementSettings
 				{...defaultProps}
 				autoCondenseContext={true}
-				listApiConfigMeta={[{ id: "profile-1", name: "Profile 1" }]}
 				setCachedStateField={setCachedStateField}
 			/>,
 		)
 
-		fireEvent.click(screen.getByRole("combobox"))
 		fireEvent.change(screen.getByTestId("condense-threshold-slider"), { target: { value: "65" } })
 
 		await waitFor(() => {
-			expect(setCachedStateField).toHaveBeenCalledWith("profileThresholds", { "profile-1": 65 })
+			expect(setCachedStateField).toHaveBeenCalledWith("autoCondenseContextPercent", 65)
 		})
-		expect(vscode.postMessage).not.toHaveBeenCalled()
 	})
 
 	describe("Edge cases for maxDiagnosticMessages", () => {
@@ -348,9 +342,10 @@ describe("ContextManagementSettings", () => {
 		const slider = screen.getByTestId("condense-threshold-slider")
 		expect(slider).toBeInTheDocument()
 
-		// Should render the profile select dropdown
+		// The compaction threshold is global, with one scope selector.
 		const selects = screen.getAllByRole("combobox")
 		expect(selects).toHaveLength(1)
+		expect(screen.queryByTestId("threshold-profile-select")).not.toBeInTheDocument()
 	})
 
 	describe("Auto Condense Context functionality", () => {
@@ -358,10 +353,6 @@ describe("ContextManagementSettings", () => {
 			...defaultProps,
 			autoCondenseContext: true,
 			autoCondenseContextPercent: 75,
-			listApiConfigMeta: [
-				{ id: "config-1", name: "Config 1" },
-				{ id: "config-2", name: "Config 2" },
-			],
 		}
 
 		it("toggles auto condense context setting", () => {
@@ -383,8 +374,22 @@ describe("ContextManagementSettings", () => {
 
 			// Threshold settings should be visible
 			expect(screen.getByTestId("condense-threshold-slider")).toBeInTheDocument()
-			// One combobox for profile selection
+			// Only the scope selector remains; threshold values apply to all profiles.
 			expect(screen.getAllByRole("combobox")).toHaveLength(1)
+			expect(screen.queryByTestId("threshold-profile-select")).not.toBeInTheDocument()
+		})
+
+		it("buffers the turn-end threshold with the other context settings", () => {
+			const setCachedStateField = vitest.fn()
+			render(
+				<ContextManagementSettings
+					{...autoCondenseProps}
+					postTurnCondenseContextPercent={20}
+					setCachedStateField={setCachedStateField}
+				/>,
+			)
+			fireEvent.change(screen.getByTestId("post-turn-condense-slider"), { target: { value: "35" } })
+			expect(setCachedStateField).toHaveBeenCalledWith("postTurnCondenseContextPercent", 35)
 		})
 
 		it("updates auto condense context percent", () => {

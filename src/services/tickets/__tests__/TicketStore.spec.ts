@@ -21,31 +21,65 @@ describe("TicketStore", () => {
 		await expect(fs.stat(path.join(home, ".alpha"))).rejects.toMatchObject({ code: "ENOENT" })
 	})
 	it("persists classification through edits, status moves, reload, and explicit removal", async () => {
-		const created = await store.create({ name: "Classified", type: "bug" })
-		expect(await fs.readFile(await store.markdownPath(created.id), "utf8")).toContain("type: bug")
+		const created = await store.create({ name: "Classified", type: "bug", priority: "high" })
+		const markdown = await fs.readFile(await store.markdownPath(created.id), "utf8")
+		expect(markdown).toContain("type: bug")
+		expect(markdown).toContain("priority: high")
 		const moved = await store.update({ id: created.id, expectedRevision: created.revision, status: "in-progress" })
 		const reopened = await TicketStore.forWorkspace(workspace, home)
 		expect((await reopened.read(created.id)).type).toBe("bug")
-		const changed = await reopened.update({ id: moved.id, expectedRevision: moved.revision, type: "improvement" })
-		expect(changed.type).toBe("improvement")
+		expect((await reopened.read(created.id)).priority).toBe("high")
+		const changed = await reopened.update({
+			id: moved.id,
+			expectedRevision: moved.revision,
+			type: "improvement",
+			priority: "medium",
+		})
+		expect(changed).toMatchObject({ type: "improvement", priority: "medium" })
 		await expect(store.update({ id: moved.id, expectedRevision: moved.revision, type: "feature" })).rejects.toThrow(
 			"changed",
 		)
-		const cleared = await store.update({ id: changed.id, expectedRevision: changed.revision, type: null })
+		const cleared = await store.update({
+			id: changed.id,
+			expectedRevision: changed.revision,
+			type: null,
+			priority: null,
+		})
 		expect((await reopened.read(cleared.id)).type).toBeNull()
+		expect((await reopened.read(cleared.id)).priority).toBeNull()
 		expect((await store.list({ type: null })).tickets).toEqual([
-			expect.objectContaining({ id: cleared.id, type: null }),
+			expect.objectContaining({ id: cleared.id, type: null, priority: null }),
 		])
+	})
+	it.each(["testing", "performance", "ux"] as const)(
+		"persists the %s ticket type and priority in list summaries",
+		async (type) => {
+			const created = await store.create({ name: `Classified ${type}`, type, priority: "low" })
+			const reopened = await TicketStore.forWorkspace(workspace, home)
+			expect(await reopened.read(created.id)).toMatchObject({ type, priority: "low" })
+			expect(await reopened.list({ type })).toMatchObject({
+				total: 1,
+				tickets: [expect.objectContaining({ id: created.id, type, priority: "low" })],
+			})
+		},
+	)
+	it.each(["high", "medium", "low"] as const)("round-trips the %s ticket priority", async (priority) => {
+		const created = await store.create({ name: `Priority ${priority}`, priority })
+		expect((await store.read(created.id)).priority).toBe(priority)
+		expect((await store.list()).tickets).toEqual([expect.objectContaining({ id: created.id, priority })])
 	})
 	it("keeps legacy tickets untagged without rewriting them during inspection", async () => {
 		const created = await store.create({ name: "Legacy" })
 		const file = await store.markdownPath(created.id)
 		const before = await fs.readFile(file, "utf8")
 		expect((await store.read(created.id)).type).toBeUndefined()
+		expect((await store.read(created.id)).priority).toBeUndefined()
 		expect((await store.list({ type: null })).tickets[0].id).toBe(created.id)
+		expect((await store.list()).tickets[0]).not.toHaveProperty("priority")
 		expect(await fs.readFile(file, "utf8")).toBe(before)
 		await store.update({ id: created.id, expectedRevision: created.revision, name: "Renamed" })
 		expect((await store.read(created.id)).type).toBeUndefined()
+		expect((await store.read(created.id)).priority).toBeUndefined()
 	})
 	it("filters classifications before pagination and combines them with search and status", async () => {
 		const bug = await store.create({ name: "Search bug", type: "bug" })
@@ -79,6 +113,42 @@ describe("TicketStore", () => {
 		expect((await store.list({ limit: 1, offset: 0 })).tickets[0]?.id).toBe(active.id)
 		expect((await store.list({ limit: 1, offset: 1 })).tickets[0]?.id).toBe(backlog.id)
 		expect((await store.list({ limit: 1, offset: 2 })).tickets[0]?.id).toBe(complete.id)
+	})
+	it("returns a ticket's parent and every direct child with uncapped relationship counts", async () => {
+		const parent = await store.create({ name: "Parent", priority: "high" })
+		const activeChild = await store.create({ name: "Active child", parentId: parent.id, priority: "low" })
+		const active = await store.update({
+			id: activeChild.id,
+			expectedRevision: activeChild.revision,
+			status: "in-progress",
+		})
+		const backlogChild = await store.create({ name: "Backlog child", parentId: parent.id })
+		const completedChild = await store.create({ name: "Completed child", parentId: parent.id })
+		const completed = await store.update({
+			id: completedChild.id,
+			expectedRevision: completedChild.revision,
+			status: "complete",
+		})
+		const grandchild = await store.create({ name: "Grandchild", parentId: backlogChild.id })
+
+		const parentRelations = await store.relations(parent.id)
+		expect(parentRelations.parent).toBeUndefined()
+		expect(parentRelations.children.map(({ id }) => id)).toEqual([active.id, backlogChild.id, completed.id])
+		expect(parentRelations.children[1]).toMatchObject({
+			id: backlogChild.id,
+			childCount: 1,
+			completedChildCount: 0,
+		})
+
+		const childRelations = await store.relations(backlogChild.id)
+		expect(childRelations.parent).toMatchObject({
+			id: parent.id,
+			priority: "high",
+			childCount: 3,
+			completedChildCount: 1,
+		})
+		expect(childRelations.children.map(({ id }) => id)).toEqual([grandchild.id])
+		expect(childRelations.children[0]).toMatchObject({ childCount: 0, completedChildCount: 0 })
 	})
 
 	it("allocates permanent project references across concurrent writers and deletion", async () => {
@@ -164,7 +234,7 @@ describe("TicketStore", () => {
 		expect((await store.read(ticket.id)).status).toBe("in-progress")
 	})
 
-	it("round trips Markdown and requires a summary for explicit completion", async () => {
+	it("round trips Markdown and permits direct completion without a summary", async () => {
 		const created = await store.create({
 			name: "Fix retry",
 			description: "Details\n\nMore details",
@@ -177,24 +247,123 @@ describe("TicketStore", () => {
 			context: "Context",
 			successCriteria: "- [ ] Tests pass",
 		})
-		await expect(
-			store.update({ id: created.id, expectedRevision: created.revision, status: "complete" }),
-		).rejects.toThrow("summary")
-		const complete = await store.update({
-			id: created.id,
-			expectedRevision: created.revision,
+		const complete = await store.update({ id: created.id, expectedRevision: created.revision, status: "complete" })
+		expect(complete.completedAt).toBeTruthy()
+		expect(complete.implementationSummary).toBe("")
+		await expect((await TicketStore.forWorkspace(workspace, home)).read(complete.id)).resolves.toMatchObject({
 			status: "complete",
+			implementationSummary: "",
+		})
+		expect(await fs.readdir(path.join(store.directory, "backlog"))).toEqual([])
+		const documented = await store.update({
+			id: complete.id,
+			expectedRevision: complete.revision,
 			implementationSummary: "Fixed retry. Tests pass.",
 		})
-		expect(complete.completedAt).toBeTruthy()
-		expect(await fs.readdir(path.join(store.directory, "backlog"))).toEqual([])
 		const reopened = await store.update({
 			id: created.id,
-			expectedRevision: complete.revision,
+			expectedRevision: documented.revision,
 			status: "in-progress",
 		})
 		expect(reopened.completedAt).toBeUndefined()
-		expect(reopened.implementationSummary).toBe(complete.implementationSummary)
+		expect(reopened.implementationSummary).toBe(documented.implementationSummary)
+	})
+
+	it("keeps cancellation distinct from completion and allows reopening", async () => {
+		const created = await store.create({ name: "May be canceled" })
+		const canceled = await store.update({ id: created.id, expectedRevision: created.revision, status: "canceled" })
+		expect(canceled).toMatchObject({ status: "canceled", implementationSummary: "" })
+		expect(canceled.completedAt).toBeUndefined()
+		expect(await store.markdownPath(canceled.id)).toContain(`${path.sep}canceled${path.sep}`)
+		expect((await store.list({ status: "canceled" })).tickets).toEqual([
+			expect.objectContaining({ id: canceled.id, revision: canceled.revision }),
+		])
+		await expect(
+			store.update({ id: canceled.id, expectedRevision: created.revision, status: "in-progress" }),
+		).rejects.toThrow("changed")
+		const reopened = await store.update({
+			id: canceled.id,
+			expectedRevision: canceled.revision,
+			status: "in-progress",
+		})
+		expect(reopened.status).toBe("in-progress")
+		expect(reopened.completedAt).toBeUndefined()
+		const complete = await store.update({
+			id: reopened.id,
+			expectedRevision: reopened.revision,
+			status: "complete",
+			implementationSummary: "Completed before cancellation",
+		})
+		const laterCanceled = await store.update({
+			id: complete.id,
+			expectedRevision: complete.revision,
+			status: "canceled",
+		})
+		expect(laterCanceled.completedAt).toBeUndefined()
+	})
+
+	it("persists a ticket hierarchy and exposes parent and revision in list summaries", async () => {
+		const parent = await store.create({ name: "Parent" })
+		const child = await store.create({ name: "Child", parentId: parent.id })
+		const grandchild = await store.create({ name: "Grandchild", parentId: child.id })
+		const reopened = await TicketStore.forWorkspace(workspace, home)
+		expect(await reopened.read(child.id)).toMatchObject({ parentId: parent.id })
+		expect((await reopened.list()).tickets).toContainEqual(
+			expect.objectContaining({ id: child.id, parentId: parent.id, revision: child.revision }),
+		)
+		expect((await reopened.read(grandchild.id)).parentId).toBe(child.id)
+		const detached = await reopened.update({ id: child.id, expectedRevision: child.revision, parentId: null })
+		expect(detached.parentId).toBeUndefined()
+		expect(await fs.readFile(await reopened.markdownPath(child.id), "utf8")).not.toContain("parentId:")
+		await expect(
+			store.update({ id: child.id, expectedRevision: child.revision, parentId: parent.id }),
+		).rejects.toThrow("changed")
+	})
+	it("counts all direct children before status filtering and pagination", async () => {
+		const parent = await store.create({ name: "Parent aggregate" })
+		const child = await store.create({ name: "Child complete", parentId: parent.id })
+		const complete = await store.update({ id: child.id, expectedRevision: child.revision, status: "complete" })
+		await store.create({ name: "Child backlog", parentId: parent.id })
+		await store.create({ name: "Unrelated ticket" })
+		const parentPage = await store.list({ query: "Parent aggregate", status: "backlog", limit: 1 })
+		expect(parentPage).toMatchObject({
+			total: 1,
+			tickets: [{ id: parent.id, childCount: 2, completedChildCount: 1 }],
+		})
+		const pages = await Promise.all([0, 1, 2, 3].map((offset) => store.list({ limit: 1, offset })))
+		expect(pages.find((page) => page.tickets[0]?.id === parent.id)?.tickets[0]).toMatchObject({
+			childCount: 2,
+			completedChildCount: 1,
+		})
+		const reopened = await store.update({
+			id: child.id,
+			expectedRevision: complete.revision,
+			status: "in-progress",
+		})
+		expect(reopened.status).toBe("in-progress")
+		expect((await store.list({ query: "Parent aggregate" })).tickets[0]).toMatchObject({
+			childCount: 2,
+			completedChildCount: 0,
+		})
+	})
+
+	it("rejects missing parents, self-parenting, and hierarchy cycles without altering tickets", async () => {
+		const first = await store.create({ name: "First" })
+		const second = await store.create({ name: "Second", parentId: first.id })
+		const third = await store.create({ name: "Third", parentId: second.id })
+		const unknown = "ad309f14-0a52-41b0-b16e-91e8f0d6aeaf"
+		await expect(store.create({ name: "Orphan", parentId: unknown })).rejects.toThrow("Parent ticket not found")
+		await expect(
+			store.update({ id: first.id, expectedRevision: first.revision, parentId: unknown }),
+		).rejects.toThrow("Parent ticket not found")
+		await expect(
+			store.update({ id: first.id, expectedRevision: first.revision, parentId: first.id }),
+		).rejects.toThrow("own parent")
+		await expect(
+			store.update({ id: first.id, expectedRevision: first.revision, parentId: third.id }),
+		).rejects.toThrow("descendant")
+		expect((await store.read(first.id)).parentId).toBeUndefined()
+		expect((await store.read(second.id)).parentId).toBe(first.id)
 	})
 
 	it("preserves external metadata and sections and rejects stale saves", async () => {

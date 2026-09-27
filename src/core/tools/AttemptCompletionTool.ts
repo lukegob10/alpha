@@ -65,6 +65,19 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				return
 			}
 			if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult)) return
+			const hookOutcome = await task.evaluateCompletionHooks(result)
+			if (task.abort || task.getTaskLifetimeCancellationSignal().aborted) return
+			if (hookOutcome.limitReached) {
+				task.suspendAfterCurrentTurn(
+					"Completion hooks requested too many continuation steps. Resume the task to retry.",
+				)
+				pushToolResult(formatResponse.toolError("Completion hook continuation limit reached."))
+				return
+			}
+			if (hookOutcome.prompt) {
+				pushToolResult(formatResponse.toolError(hookOutcome.prompt))
+				return
+			}
 
 			task.consecutiveMistakeCount = 0
 

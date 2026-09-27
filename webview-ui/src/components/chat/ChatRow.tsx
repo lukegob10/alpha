@@ -1,12 +1,12 @@
 import React, { memo, useCallback, useEffect, useMemo, useState } from "react"
 import { useTranslation, Trans } from "react-i18next"
 import deepEqual from "fast-deep-equal"
-import removeMd from "remove-markdown"
 import { VSCodeBadge } from "@vscode/webview-ui-toolkit/react"
 
 import type {
 	AlphaMessage,
 	FollowUpData,
+	RequestUserInputAnswerMap,
 	SuggestionItem,
 	AlphaApiReqInfo,
 	AlphaAskUseMcpServer,
@@ -40,6 +40,8 @@ import McpResourceRow from "../mcp/McpResourceRow"
 import { UserMessageText } from "./UserMessageText"
 import { CheckpointSaved } from "./checkpoints/CheckpointSaved"
 import { FollowUpSuggest } from "./FollowUpSuggest"
+import { RequestUserInputForm } from "./RequestUserInputForm"
+import { AsyncUserInputCard } from "./AsyncUserInputCard"
 import { BatchFilePermission } from "./BatchFilePermission"
 import { BatchListFilesPermission } from "./BatchListFilesPermission"
 import { BatchDiffApproval } from "./BatchDiffApproval"
@@ -84,7 +86,6 @@ import { SubagentGroupCard } from "./SubagentGroupCard"
 import { TicketActivity } from "./TicketActivity"
 import { ActivityStep } from "./ActivityStep"
 import { MessageActions } from "./MessageActions"
-import { GitHubApiActivity } from "./GitHubApiActivity"
 
 // Helper function to get previous todos before a specific message
 function getPreviousTodos(messages: AlphaMessage[], currentMessageTs: number): any[] {
@@ -145,6 +146,10 @@ interface ChatRowProps {
 	messageActionsDisabled?: boolean
 	onToggleExpand: (ts: number) => void
 	onSuggestionClick?: (suggestion: SuggestionItem, event?: React.MouseEvent) => void
+	onRequestUserInputSubmit?: (answers: RequestUserInputAnswerMap) => void
+	onRequestUserInputCancel?: () => void
+	onAsyncUserInputSubmit?: (messageTs: number, response: string) => boolean
+	isAsyncUserInputAnswered?: boolean
 	onBatchFileResponse?: (response: { [key: string]: boolean }) => void
 	onFollowUpUnmount?: () => void
 	isFollowUpAnswered?: boolean
@@ -171,6 +176,7 @@ const ChatRow = memo(
 					props.isTaskPrompt ||
 						props.message.say === "user_feedback" ||
 						props.message.say === "completion_result" ||
+						props.message.say === "async_user_input" ||
 						props.message.ask === "completion_result" ||
 						props.message.ask === "followup"
 						? "py-4"
@@ -226,6 +232,10 @@ const ChatRowContentInner = ({
 	messageActionsDisabled = isStreaming,
 	onToggleExpand,
 	onSuggestionClick,
+	onRequestUserInputSubmit,
+	onRequestUserInputCancel,
+	onAsyncUserInputSubmit,
+	isAsyncUserInputAnswered,
 	onFollowUpUnmount,
 	onBatchFileResponse,
 	isFollowUpAnswered,
@@ -486,6 +496,11 @@ const ChatRowContentInner = ({
 					<MessageCircleQuestionMark className="w-4 shrink-0" aria-label="Question icon" />,
 					<span style={{ color: normalColor, fontWeight: "bold" }}>{t("chat:questions.hasQuestion")}</span>,
 				]
+			case "async_user_input":
+				return [
+					<MessageCircleQuestionMark className="w-4 shrink-0" aria-label="Question icon" />,
+					<span style={{ color: normalColor, fontWeight: "bold" }}>{t("chat:asyncUserInput.title")}</span>,
+				]
 			default:
 				return [null, null]
 		}
@@ -632,7 +647,9 @@ const ChatRowContentInner = ({
 										? t("chat:fileOperations.wantsToEditProtected")
 										: tool.isOutsideWorkspace
 											? t("chat:fileOperations.wantsToEditOutsideWorkspace")
-											: t("chat:fileOperations.wantsToEdit")}
+											: tool.tool === "newFileCreated"
+												? t("chat:fileOperations.wantsToCreate")
+												: t("chat:fileOperations.wantsToEdit")}
 								</span>
 							</>
 						}>
@@ -700,9 +717,6 @@ const ChatRowContentInner = ({
 			}
 			case "ticket":
 				return <TicketActivity tool={tool} />
-			// Historical transcript projection; native GitHub API execution is retired.
-			case "githubApi":
-				return <GitHubApiActivity request={tool.github ?? tool} />
 			case "updateTodoList" as any: {
 				const todos = (tool as any).todos || []
 				// Get previous todos from the latest todos in the task context
@@ -1217,6 +1231,25 @@ const ChatRowContentInner = ({
 	switch (message.type) {
 		case "say":
 			switch (isTaskPrompt ? "user_feedback" : message.say) {
+				case "async_user_input": {
+					const request = message.asyncUserInput
+					if (!request) return null
+					return (
+						<div className="flex flex-col gap-2" role="group" aria-label={t("chat:asyncUserInput.title")}>
+							<div className="flex items-center gap-2 text-sm text-vscode-descriptionForeground">
+								<MessageCircleQuestionMark className="w-4 shrink-0" aria-hidden="true" />
+								<span>{t("chat:asyncUserInput.title")}</span>
+							</div>
+							<div className="ml-6">
+								<AsyncUserInputCard
+									request={request}
+									isAnswered={isAsyncUserInputAnswered}
+									onSubmit={(response) => onAsyncUserInputSubmit?.(message.ts, response) ?? false}
+								/>
+							</div>
+						</div>
+					)
+				}
 				case "subagent_group":
 					return message.subagentGroup ? (
 						<ActivityStep
@@ -1439,36 +1472,22 @@ const ChatRowContentInner = ({
 					return null // we should never see this message type
 				case "text":
 					return (
-						<ActivityStep
-							{...activityProps}
-							summary={
-								<>
-									<MessageCircle className="size-4 shrink-0" />
-									<span>
-										{removeMd((message.text || "").split(/\r?\n/, 1)[0]).trim() ||
-											t("chat:text.rooSaid")}
-									</span>
-								</>
-							}>
-							{isExpanded && (
-								<article className="group" aria-label={t("chat:text.rooSaid")}>
-									<Markdown
-										markdown={message.text}
-										partial={message.partial}
-										onRestart={handleRestartClick}
-										restartDisabled={messageActionsDisabled}
-										actions={<OpenMarkdownPreviewButton markdown={message.text} />}
-									/>
-									{message.images && message.images.length > 0 && (
-										<div style={{ marginTop: "10px" }}>
-											{message.images.map((image, index) => (
-												<ImageBlock key={index} imageData={image} />
-											))}
-										</div>
-									)}
-								</article>
+						<article className="group py-1 text-sm" aria-label={t("chat:text.rooSaid")}>
+							<Markdown
+								markdown={message.text}
+								partial={message.partial}
+								onRestart={handleRestartClick}
+								restartDisabled={messageActionsDisabled}
+								actions={<OpenMarkdownPreviewButton markdown={message.text} />}
+							/>
+							{message.images && message.images.length > 0 && (
+								<div style={{ marginTop: "10px" }}>
+									{message.images.map((image, index) => (
+										<ImageBlock key={index} imageData={image} />
+									))}
+								</div>
 							)}
-						</ActivityStep>
+						</article>
 					)
 				case "user_feedback":
 					return (
@@ -1954,7 +1973,10 @@ const ChatRowContentInner = ({
 						<CommandExecution
 							executionId={message.ts.toString()}
 							workingDirectory={message.progressStatus?.text}
-							pathApproval={message.progressStatus?.commandPathApproval}
+							pathApproval={
+								message.toolApprovalRequest?.commandPathApproval ??
+								message.progressStatus?.commandPathApproval
+							}
 							onToggleExpand={handleToggleExpand}
 							text={message.text}
 							icon={icon}
@@ -2051,20 +2073,32 @@ const ChatRowContentInner = ({
 								</div>
 							)}
 							<div className="flex flex-col gap-2 ml-6">
-								<Markdown
-									markdown={message.partial === true ? message?.text : followUpData?.question}
-									partial={message.partial}
-									onRestart={handleRestartClick}
-									restartDisabled={messageActionsDisabled}
-								/>
-								<FollowUpSuggest
-									suggestions={followUpData?.suggest}
-									onSuggestionClick={onSuggestionClick}
-									ts={message?.ts}
-									onCancelAutoApproval={onFollowUpUnmount}
-									isAnswered={isFollowUpAnswered}
-									isFollowUpAutoApprovalPaused={isFollowUpAutoApprovalPaused}
-								/>
+								{followUpData?.requestUserInput ? (
+									<RequestUserInputForm
+										request={followUpData.requestUserInput}
+										onSubmit={(answers) => onRequestUserInputSubmit?.(answers)}
+										onCancel={onRequestUserInputCancel}
+										onInteraction={onFollowUpUnmount}
+										isAnswered={isFollowUpAnswered}
+									/>
+								) : (
+									<>
+										<Markdown
+											markdown={message.partial === true ? message?.text : followUpData?.question}
+											partial={message.partial}
+											onRestart={handleRestartClick}
+											restartDisabled={messageActionsDisabled}
+										/>
+										<FollowUpSuggest
+											suggestions={followUpData?.suggest}
+											onSuggestionClick={onSuggestionClick}
+											ts={message?.ts}
+											onCancelAutoApproval={onFollowUpUnmount}
+											isAnswered={isFollowUpAnswered}
+											isFollowUpAutoApprovalPaused={isFollowUpAutoApprovalPaused}
+										/>
+									</>
+								)}
 							</div>
 						</>
 					)

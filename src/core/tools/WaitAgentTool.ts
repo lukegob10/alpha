@@ -43,17 +43,21 @@ export class WaitAgentTool extends BaseTool<"wait_agent"> {
 				if (typeof result !== "object" || result === null) return
 				// This is the in-process lifecycle host's envelope, never parsed model/MCP text.
 				// Timeout means a bounded blocking wait elapsed; an empty fast path is idle.
-				if ("cancelled" in result && result.cancelled === true) {
+				if (
+					("cancelled" in result && result.cancelled === true) ||
+					("interrupted" in result && result.interrupted === true)
+				) {
 					callbacks.setResultMetadata?.({ status: "cancelled" })
 					return
 				}
 				const idle =
 					("noActiveAgents" in result && result.noActiveAgents === true) ||
 					("alreadyDelivered" in result && result.alreadyDelivered === true)
-				const events = "events" in result && Array.isArray(result.events) ? result.events : []
+				const eventCount =
+					"eventCount" in result && typeof result.eventCount === "number" ? result.eventCount : 0
 				const claimId = "claimId" in result ? result.claimId : undefined
 				const hasClaim = typeof claimId === "string" && claimId.length > 0
-				const activity = hasClaim && events.length > 0
+				const activity = hasClaim && eventCount > 0
 				const timedOut = "timedOut" in result && result.timedOut === true
 				callbacks.setResultMetadata?.({
 					status: "success",

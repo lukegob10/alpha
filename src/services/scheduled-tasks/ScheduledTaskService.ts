@@ -6,6 +6,11 @@ import * as path from "path"
 
 import {
 	AlphaCodeEventName,
+	deriveAutoApprovalFlags,
+	hasStoredApprovalSurface,
+	isApprovalMode,
+	migrateApprovalMode,
+	type ApprovalMode,
 	scheduledTaskExecutionSchema,
 	scheduledTaskProfileSchema,
 	taskReasoningPreferenceSchema,
@@ -30,6 +35,7 @@ import { t } from "../../i18n"
 import { SkillsManager } from "../skills/SkillsManager"
 import { buildSkillResult, resolveSkillContentForMode } from "../skills/skillInvocation"
 import { ScheduledTaskStore } from "./ScheduledTaskStore"
+import { checkAutoApproval } from "../../core/auto-approval"
 import { getNextRunAt, isRecurringSchedule } from "./schedule"
 
 const ACTIVE_RUN_STATUSES = new Set(["pending", "queued", "running", "waiting_for_approval"])
@@ -51,20 +57,6 @@ const defaultPermissions: ScheduledTaskPermissionSet = {
 
 const defaultExecution: ScheduledTaskExecution = { type: "prompt" }
 const defaultReasoningPreference: TaskReasoningPreference = { kind: "default" }
-const defaultAutoApproval: ScheduledTaskAutoApproval = {
-	autoApprovalEnabled: true,
-	alwaysAllowReadOnly: true,
-	alwaysAllowReadOnlyOutsideWorkspace: false,
-	alwaysAllowWrite: false,
-	alwaysAllowWriteOutsideWorkspace: false,
-	alwaysAllowWriteProtected: false,
-	alwaysAllowExecute: false,
-	alwaysAllowMcp: false,
-	alwaysAllowSubtasks: false,
-	allowedCommands: [],
-	deniedCommands: [],
-}
-
 const normalizeExecution = (execution?: ScheduledTaskExecution): ScheduledTaskExecution =>
 	scheduledTaskExecutionSchema.parse(execution ?? defaultExecution)
 
@@ -87,32 +79,29 @@ const readReasoningState = async (task: unknown): Promise<TaskReasoningState | u
 }
 
 const normalizeAutoApproval = (
-	autoApproval: ScheduledTaskAutoApproval | undefined,
-	execution: ScheduledTaskExecution,
+	autoApproval?: ScheduledTaskAutoApproval,
+	fallback: ApprovalMode = "ask",
 ): ScheduledTaskAutoApproval => ({
-	...defaultAutoApproval,
-	...autoApproval,
-	alwaysAllowExecute:
-		execution.type === "command"
-			? true
-			: (autoApproval?.alwaysAllowExecute ?? defaultAutoApproval.alwaysAllowExecute),
-	allowedCommands:
-		execution.type === "command" && autoApproval?.allowedCommands?.length
-			? autoApproval.allowedCommands
-			: (autoApproval?.allowedCommands ?? defaultAutoApproval.allowedCommands),
+	approvalMode:
+		autoApproval && (isApprovalMode(autoApproval.approvalMode) || hasStoredApprovalSurface(autoApproval))
+			? migrateApprovalMode(autoApproval)
+			: fallback,
+	...(autoApproval?.deniedCommands?.length ? { deniedCommands: autoApproval.deniedCommands } : {}),
 })
 
 const permissionsForExecution = (
-	execution: ScheduledTaskExecution,
 	autoApproval: ScheduledTaskAutoApproval,
 	permissions?: Partial<ScheduledTaskPermissionSet>,
-): ScheduledTaskPermissionSet => ({
-	...defaultPermissions,
-	...permissions,
-	readFiles: autoApproval.autoApprovalEnabled && autoApproval.alwaysAllowReadOnly,
-	runCommands: autoApproval.autoApprovalEnabled && (autoApproval.alwaysAllowExecute || execution.type === "command"),
-	editFiles: autoApproval.autoApprovalEnabled && autoApproval.alwaysAllowWrite,
-})
+): ScheduledTaskPermissionSet => {
+	const flags = deriveAutoApprovalFlags(migrateApprovalMode(autoApproval))
+	return {
+		...defaultPermissions,
+		...permissions,
+		readFiles: flags.autoApprovalEnabled && flags.alwaysAllowReadOnly,
+		runCommands: flags.autoApprovalEnabled && flags.alwaysAllowExecute,
+		editFiles: flags.autoApprovalEnabled && flags.alwaysAllowWrite,
+	}
+}
 
 const truncateOutput = (output: string): string =>
 	output.length > MAX_COMMAND_OUTPUT_CHARS
@@ -163,7 +152,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 		this.validateSetup(payload)
 		const now = Date.now()
 		const execution = normalizeExecution(payload.execution)
-		const autoApproval = normalizeAutoApproval(payload.autoApproval, execution)
+		const autoApproval = normalizeAutoApproval(payload.autoApproval, "auto")
 		const task: ScheduledTask = {
 			id: crypto.randomUUID(),
 			name: payload.name.trim(),
@@ -176,7 +165,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			workspace: payload.workspace || getWorkspacePath(),
 			enabled: true,
 			schedule: payload.schedule,
-			permissions: permissionsForExecution(execution, autoApproval),
+			permissions: permissionsForExecution(autoApproval),
 			notificationPreference: payload.notificationPreference ?? "on_failure",
 			createdAt: now,
 			updatedAt: now,
@@ -195,7 +184,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 		const now = Date.now()
 		const schedule = payload.schedule ?? existing.schedule
 		const execution = normalizeExecution(payload.execution ?? existing.execution)
-		const autoApproval = normalizeAutoApproval(payload.autoApproval ?? existing.autoApproval, execution)
+		const autoApproval = normalizeAutoApproval(payload.autoApproval ?? existing.autoApproval)
 		const task: ScheduledTask = {
 			...existing,
 			...payload,
@@ -210,7 +199,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			mode: payload.mode ?? existing.mode,
 			autoApproval,
 			schedule,
-			permissions: permissionsForExecution(execution, autoApproval, {
+			permissions: permissionsForExecution(autoApproval, {
 				...existing.permissions,
 				...payload.permissions,
 			}),
@@ -302,7 +291,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 		trigger: ScheduledTaskRun["trigger"],
 	): Promise<void> {
 		const execution = normalizeExecution(task.execution)
-		const autoApproval = normalizeAutoApproval(task.autoApproval, execution)
+		const autoApproval = normalizeAutoApproval(task.autoApproval)
 		const activeRun = this.store
 			.getRunsForTask(task.id)
 			.find((run) => ACTIVE_RUN_STATUSES.has(run.status) || this.queue.some((queued) => queued.id === run.id))
@@ -379,7 +368,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			reasoningPreference: normalizeReasoningPreference(run.reasoningPreference),
 		}
 		const execution = normalizeExecution(task.execution)
-		const autoApproval = normalizeAutoApproval(task.autoApproval, execution)
+		const autoApproval = normalizeAutoApproval(task.autoApproval)
 		const startedRun: ScheduledTaskRun = {
 			...run,
 			status: "running",
@@ -414,22 +403,22 @@ export class ScheduledTaskService implements vscode.Disposable {
 			}
 			const { name, id: _id, ...apiConfiguration } = profile
 			const prompt = await this.buildPrompt(task)
-			alphaTask = await this.provider.createTask(
-				prompt,
-				undefined,
-				undefined,
-				{
-					preserveExisting: true,
-					background: true,
-					startTask: false,
-					workspacePath: task.workspace,
-					taskMode: task.mode,
-					taskApiConfigName: name,
-					apiConfiguration,
-					reasoningPreference: normalizeReasoningPreference(run.reasoningPreference),
-				},
-				this.configurationForAutoApproval(autoApproval),
-			)
+			if (autoApproval.deniedCommands?.length) {
+				throw new Error(
+					"Review and save this legacy schedule's approval mode before running it. Its old command deny rules cannot be applied to a background task.",
+				)
+			}
+			alphaTask = await this.provider.createTask(prompt, undefined, undefined, {
+				preserveExisting: true,
+				background: true,
+				startTask: false,
+				workspacePath: task.workspace,
+				taskMode: task.mode,
+				taskApprovalMode: migrateApprovalMode(autoApproval),
+				taskApiConfigName: name,
+				apiConfiguration,
+				reasoningPreference: normalizeReasoningPreference(run.reasoningPreference),
+			})
 			await alphaTask.prepareReasoningForAdmission()
 			const reasoningState = await readReasoningState(alphaTask)
 			await this.store.upsertRun({
@@ -464,17 +453,6 @@ export class ScheduledTaskService implements vscode.Disposable {
 		run: ScheduledTaskRun,
 		execution: Extract<ScheduledTaskExecution, { type: "command" }>,
 	): Promise<void> {
-		const autoApproval = normalizeAutoApproval(task.autoApproval, execution)
-		if (!autoApproval.autoApprovalEnabled || !autoApproval.alwaysAllowExecute) {
-			await this.finishRun(task, {
-				...run,
-				status: "failed",
-				finishedAt: Date.now(),
-				error: "Command execution requires Always allow execute operations.",
-			})
-			return
-		}
-
 		if (!execution.command.trim()) {
 			await this.finishRun(task, {
 				...run,
@@ -484,7 +462,100 @@ export class ScheduledTaskService implements vscode.Disposable {
 			})
 			return
 		}
+		try {
+			const state = await this.provider.getState()
+			const approval = await checkAutoApproval({
+				state: {
+					...state,
+					approvalMode: migrateApprovalMode(task.autoApproval),
+					deniedCommands: [...(state.deniedCommands ?? []), ...(task.autoApproval?.deniedCommands ?? [])],
+				},
+				ask: "command",
+				text: execution.command,
+			})
+			if (approval.decision === "deny") {
+				await this.finishRun(task, {
+					...run,
+					status: "failed",
+					finishedAt: Date.now(),
+					error: "Command is blocked by an explicit deny rule.",
+				})
+				return
+			}
+			if (approval.decision !== "approve") {
+				const waitingRun: ScheduledTaskRun = { ...run, status: "waiting_for_approval" }
+				await this.store.updateTaskAndRun(
+					{ ...task, lastRunId: run.id, lastRunStatus: waitingRun.status, updatedAt: Date.now() },
+					waitingRun,
+				)
+				await this.broadcast()
+				// Keep the scheduler queue moving while the user considers this run.
+				void this.awaitCommandApproval(task, waitingRun, execution)
+				return
+			}
+		} catch (error) {
+			await this.finishRun(task, {
+				...run,
+				status: "failed",
+				finishedAt: Date.now(),
+				error: error instanceof Error ? error.message : String(error),
+			})
+			return
+		}
+		await this.executeCommandRun(task, run, execution)
+	}
 
+	private async awaitCommandApproval(
+		task: ScheduledTask,
+		run: ScheduledTaskRun,
+		execution: Extract<ScheduledTaskExecution, { type: "command" }>,
+	): Promise<void> {
+		try {
+			const response = await vscode.window.showWarningMessage(
+				`Scheduled task “${task.name}” wants to run:\n${execution.command}`,
+				{ modal: true },
+				"Run once",
+			)
+			if (
+				this.disposed ||
+				this.store.getState().runs.find((candidate) => candidate.id === run.id)?.status !==
+					"waiting_for_approval"
+			) {
+				return
+			}
+			if (response !== "Run once") {
+				await this.finishRun(task, {
+					...run,
+					status: "canceled",
+					finishedAt: Date.now(),
+					summary: "Command was not approved.",
+				})
+				return
+			}
+			const resumedRun: ScheduledTaskRun = { ...run, status: "running" }
+			await this.store.updateTaskAndRun(
+				{ ...task, lastRunId: run.id, lastRunStatus: resumedRun.status, updatedAt: Date.now() },
+				resumedRun,
+			)
+			await this.broadcast()
+			await this.executeCommandRun(task, resumedRun, execution)
+		} catch (error) {
+			if (!this.disposed) {
+				await this.finishRun(task, {
+					...run,
+					status: "failed",
+					finishedAt: Date.now(),
+					error: error instanceof Error ? error.message : String(error),
+				})
+			}
+		}
+	}
+
+	private async executeCommandRun(
+		task: ScheduledTask,
+		run: ScheduledTaskRun,
+		execution: Extract<ScheduledTaskExecution, { type: "command" }>,
+	): Promise<void> {
 		try {
 			const result = await execFileAsync(execution.command, {
 				cwd: task.workspace || getWorkspacePath(),
@@ -569,23 +640,6 @@ export class ScheduledTaskService implements vscode.Disposable {
 			return buildSkillResult(execution.skillName, execution.arguments, content)
 		} catch {
 			throw new Error(t("scheduledTasks:skillUnavailable", { name: execution.skillName }))
-		}
-	}
-
-	private configurationForAutoApproval(autoApproval: ScheduledTaskAutoApproval) {
-		return {
-			autoApprovalEnabled: autoApproval.autoApprovalEnabled,
-			alwaysAllowReadOnly: autoApproval.alwaysAllowReadOnly,
-			alwaysAllowReadOnlyOutsideWorkspace: autoApproval.alwaysAllowReadOnlyOutsideWorkspace,
-			alwaysAllowWrite: autoApproval.alwaysAllowWrite,
-			alwaysAllowWriteOutsideWorkspace: autoApproval.alwaysAllowWriteOutsideWorkspace,
-			alwaysAllowWriteProtected: autoApproval.alwaysAllowWriteProtected,
-			alwaysAllowTickets: false,
-			alwaysAllowExecute: autoApproval.alwaysAllowExecute,
-			alwaysAllowMcp: autoApproval.alwaysAllowMcp,
-			alwaysAllowSubtasks: autoApproval.alwaysAllowSubtasks,
-			allowedCommands: autoApproval.allowedCommands,
-			deniedCommands: autoApproval.deniedCommands,
 		}
 	}
 

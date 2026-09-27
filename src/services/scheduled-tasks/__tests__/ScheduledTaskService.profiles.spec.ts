@@ -143,10 +143,10 @@ describe("scheduled profiles and skills", () => {
 				preserveExisting: true,
 				workspacePath: task.workspace,
 				taskMode: "architect",
+				taskApprovalMode: "auto",
 				taskApiConfigName: apiConfig.name,
 				apiConfiguration: { apiProvider: "openai", openAiModelId: "internal-model" },
 			}),
-			expect.not.objectContaining({ currentApiConfigName: expect.anything() }),
 		)
 		expect(provider.setProviderProfile).not.toHaveBeenCalled()
 		expect(provider.currentApiConfigName).toBe("Coding")
@@ -181,8 +181,7 @@ describe("scheduled profiles and skills", () => {
 			expect.any(String),
 			undefined,
 			undefined,
-			expect.objectContaining({ reasoningPreference, startTask: false }),
-			expect.anything(),
+			expect.objectContaining({ reasoningPreference, startTask: false, taskApprovalMode: "auto" }),
 		)
 		expect(run).toMatchObject({ reasoningPreference, reasoningState })
 		const createdTask = (await provider.createTask.mock.results[0]?.value) as {
@@ -403,10 +402,10 @@ describe("scheduled profiles and skills", () => {
 			expect.objectContaining({
 				taskApiConfigName: apiConfig.name,
 				taskMode: "architect",
+				taskApprovalMode: "auto",
 				workspacePath: second.workspace,
 				reasoningPreference: queuedReasoningPreference,
 			}),
-			expect.anything(),
 		)
 		expect(run.reasoningPreference).toEqual(queuedReasoningPreference)
 	})

@@ -1,6 +1,6 @@
 import React from "react"
 import { Settings, ChevronDown } from "lucide-react"
-import { type ApprovalMode, migrateApprovalMode, settingsForApprovalMode } from "@alpha-code/types"
+import { type ApprovalMode, migrateApprovalMode, taskApprovalModeUpdateResultSchema } from "@alpha-code/types"
 
 import { vscode } from "@/utils/vscode"
 import { cn } from "@/lib/utils"
@@ -22,17 +22,37 @@ import { Popover, PopoverContent, PopoverTrigger, StandardTooltip, Button } from
 interface AutoApproveDropdownProps {
 	disabled?: boolean
 	triggerClassName?: string
+	isDraft?: boolean
+	draftApprovalMode?: ApprovalMode
+	onDraftApprovalModeChange?: (mode: ApprovalMode) => void
 }
 
 const MODES: ApprovalMode[] = ["ask", "auto", "bypass"]
+const APPROVAL_MODE_UPDATE_TIMEOUT_MS = 15_000
 
-export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }: AutoApproveDropdownProps) => {
+export const AutoApproveDropdown = ({
+	disabled = false,
+	triggerClassName = "",
+	isDraft = false,
+	draftApprovalMode,
+	onDraftApprovalModeChange,
+}: AutoApproveDropdownProps) => {
 	const [open, setOpen] = React.useState(false)
 	const [bypassWarningOpen, setBypassWarningOpen] = React.useState(false)
+	const [taskModeOverrides, setTaskModeOverrides] = React.useState<Record<string, ApprovalMode>>({})
+	const [pendingUpdates, setPendingUpdates] = React.useState<Record<string, string>>({})
+	const [updateFailures, setUpdateFailures] = React.useState<
+		Record<string, "targetUnavailable" | "rejected" | "timedOut">
+	>({})
+	const pendingTaskByRequest = React.useRef(new Map<string, string>())
+	const pendingRequestByTask = React.useRef(new Map<string, string>())
+	const pendingTimeouts = React.useRef(new Map<string, ReturnType<typeof setTimeout>>())
 	const portalContainer = useAlphaPortal("alpha-portal")
 	const { t } = useAppTranslation()
 	const state = useShellState()
 	const {
+		currentTaskId,
+		currentTaskApprovalMode,
 		approvalMode,
 		approvalModeBypassAcknowledged,
 		autoApprovalEnabled,
@@ -44,23 +64,9 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		alwaysAllowMcp,
 		alwaysAllowSubagents,
 		allowedCommands,
-		setApprovalMode,
-		setApprovalModeBypassAcknowledged,
-		setAutoApprovalEnabled,
-		setAlwaysAllowReadOnly,
-		setAlwaysAllowReadOnlyOutsideWorkspace,
-		setAlwaysAllowWrite,
-		setAlwaysAllowWriteOutsideWorkspace,
-		setAlwaysAllowWriteProtected,
-		setAlwaysAllowExecute,
-		setAlwaysAllowMcp,
-		setAlwaysAllowSubtasks,
-		setAlwaysAllowSubagents,
-		setAlwaysAllowTickets,
-		setAlwaysAllowFollowupQuestions,
 	} = state
 
-	const mode = migrateApprovalMode({
+	const defaultMode = migrateApprovalMode({
 		approvalMode,
 		autoApprovalEnabled,
 		alwaysAllowWrite,
@@ -72,61 +78,130 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		alwaysAllowSubagents,
 		allowedCommands,
 	})
+	const targetTaskId = isDraft ? undefined : currentTaskId
+	const mode = isDraft
+		? (draftApprovalMode ?? defaultMode)
+		: targetTaskId
+			? (currentTaskApprovalMode ?? taskModeOverrides[targetTaskId] ?? defaultMode)
+			: defaultMode
+	const failureForCurrentTask = targetTaskId ? updateFailures[targetTaskId] : undefined
+	const isUpdatingCurrentTask = Boolean(targetTaskId && pendingUpdates[targetTaskId])
+	const canChangeMode = isDraft ? Boolean(onDraftApprovalModeChange) : Boolean(targetTaskId)
+
+	const settlePendingUpdate = React.useCallback((requestId: string) => {
+		const taskId = pendingTaskByRequest.current.get(requestId)
+		if (!taskId) return undefined
+
+		pendingTaskByRequest.current.delete(requestId)
+		if (pendingRequestByTask.current.get(taskId) === requestId) {
+			pendingRequestByTask.current.delete(taskId)
+		}
+		const timeout = pendingTimeouts.current.get(requestId)
+		if (timeout !== undefined) {
+			clearTimeout(timeout)
+			pendingTimeouts.current.delete(requestId)
+		}
+		setPendingUpdates((previous) => {
+			if (previous[taskId] !== requestId) return previous
+			const next = { ...previous }
+			delete next[taskId]
+			return next
+		})
+		return taskId
+	}, [])
+
+	React.useEffect(() => {
+		const handleMessage = (event: MessageEvent) => {
+			const data = event.data as { type?: unknown; taskApprovalModeUpdateResult?: unknown }
+			if (data?.type !== "taskApprovalModeUpdated") return
+
+			const rawResult = data.taskApprovalModeUpdateResult
+			if (!rawResult || typeof rawResult !== "object" || !("requestId" in rawResult)) return
+			const requestId = (rawResult as { requestId?: unknown }).requestId
+			if (typeof requestId !== "string") return
+			const taskId = settlePendingUpdate(requestId)
+			if (!taskId) return
+
+			const parsed = taskApprovalModeUpdateResultSchema.safeParse(rawResult)
+			if (!parsed.success || (parsed.data.taskId && parsed.data.taskId !== taskId)) {
+				setUpdateFailures((previous) => ({ ...previous, [taskId]: "rejected" }))
+				return
+			}
+
+			const result = parsed.data
+			if (result.status === "applied" && result.approvalMode !== undefined) {
+				setTaskModeOverrides((previous) => ({ ...previous, [taskId]: result.approvalMode! }))
+				setUpdateFailures((previous) => {
+					const next = { ...previous }
+					delete next[taskId]
+					return next
+				})
+				if (currentTaskId === taskId) setOpen(false)
+				return
+			}
+
+			setUpdateFailures((previous) => ({
+				...previous,
+				[taskId]: result.status === "targetUnavailable" ? "targetUnavailable" : "rejected",
+			}))
+		}
+
+		window.addEventListener("message", handleMessage)
+		return () => window.removeEventListener("message", handleMessage)
+	}, [currentTaskId, settlePendingUpdate])
+
+	React.useEffect(
+		() => () => {
+			for (const timeout of pendingTimeouts.current.values()) clearTimeout(timeout)
+			pendingTimeouts.current.clear()
+		},
+		[],
+	)
 
 	const applyMode = React.useCallback(
-		(next: ApprovalMode, acknowledged = approvalModeBypassAcknowledged === true) => {
-			const settings = settingsForApprovalMode(next, {
-				alwaysAllowWriteProtected: next === "auto" ? alwaysAllowWriteProtected === true : undefined,
-				alwaysAllowMcp: next !== "bypass" ? alwaysAllowMcp === true : undefined,
-				approvalModeBypassAcknowledged: next === "bypass" ? true : acknowledged,
+		(next: ApprovalMode) => {
+			if (isDraft) {
+				onDraftApprovalModeChange?.(next)
+				setOpen(false)
+				return
+			}
+			if (!targetTaskId || pendingRequestByTask.current.has(targetTaskId)) return
+			const requestId = crypto.randomUUID()
+			pendingTaskByRequest.current.set(requestId, targetTaskId)
+			pendingRequestByTask.current.set(targetTaskId, requestId)
+			setPendingUpdates((previous) => ({ ...previous, [targetTaskId]: requestId }))
+			setUpdateFailures((previous) => {
+				const next = { ...previous }
+				delete next[targetTaskId]
+				return next
 			})
-			vscode.postMessage({ type: "updateSettings", updatedSettings: settings })
-			setApprovalMode(settings.approvalMode)
-			setApprovalModeBypassAcknowledged(settings.approvalModeBypassAcknowledged === true)
-			setAutoApprovalEnabled(settings.autoApprovalEnabled)
-			setAlwaysAllowReadOnly(settings.alwaysAllowReadOnly)
-			setAlwaysAllowReadOnlyOutsideWorkspace(settings.alwaysAllowReadOnlyOutsideWorkspace)
-			setAlwaysAllowWrite(settings.alwaysAllowWrite)
-			setAlwaysAllowWriteOutsideWorkspace(settings.alwaysAllowWriteOutsideWorkspace)
-			setAlwaysAllowWriteProtected(settings.alwaysAllowWriteProtected)
-			setAlwaysAllowExecute(settings.alwaysAllowExecute)
-			setAlwaysAllowMcp(settings.alwaysAllowMcp)
-			setAlwaysAllowSubtasks(settings.alwaysAllowSubtasks)
-			setAlwaysAllowSubagents(settings.alwaysAllowSubagents)
-			setAlwaysAllowTickets(settings.alwaysAllowTickets)
-			setAlwaysAllowFollowupQuestions(settings.alwaysAllowFollowupQuestions)
+			const timeout = setTimeout(() => {
+				const taskId = settlePendingUpdate(requestId)
+				if (taskId) setUpdateFailures((previous) => ({ ...previous, [taskId]: "timedOut" }))
+			}, APPROVAL_MODE_UPDATE_TIMEOUT_MS)
+			pendingTimeouts.current.set(requestId, timeout)
+			vscode.postMessage({
+				type: "setTaskApprovalMode",
+				taskApprovalModeUpdate: { requestId, taskId: targetTaskId, approvalMode: next },
+			})
 		},
-		[
-			alwaysAllowMcp,
-			alwaysAllowWriteProtected,
-			approvalModeBypassAcknowledged,
-			setAlwaysAllowExecute,
-			setAlwaysAllowFollowupQuestions,
-			setAlwaysAllowMcp,
-			setAlwaysAllowReadOnly,
-			setAlwaysAllowReadOnlyOutsideWorkspace,
-			setAlwaysAllowSubagents,
-			setAlwaysAllowSubtasks,
-			setAlwaysAllowTickets,
-			setAlwaysAllowWrite,
-			setAlwaysAllowWriteOutsideWorkspace,
-			setAlwaysAllowWriteProtected,
-			setApprovalMode,
-			setApprovalModeBypassAcknowledged,
-			setAutoApprovalEnabled,
-		],
+		[isDraft, onDraftApprovalModeChange, settlePendingUpdate, targetTaskId],
 	)
 
 	const selectMode = React.useCallback(
 		(next: ApprovalMode) => {
-			if (next === "bypass" && approvalModeBypassAcknowledged !== true) {
+			if (
+				!canChangeMode ||
+				(!isDraft && targetTaskId !== undefined && pendingRequestByTask.current.has(targetTaskId))
+			)
+				return
+			if (next === "bypass" && mode !== "bypass" && approvalModeBypassAcknowledged !== true) {
 				setBypassWarningOpen(true)
 				return
 			}
 			applyMode(next)
-			setOpen(false)
 		},
-		[applyMode, approvalModeBypassAcknowledged],
+		[applyMode, approvalModeBypassAcknowledged, canChangeMode, isDraft, mode, targetTaskId],
 	)
 
 	const handleOpenSettings = React.useCallback(
@@ -139,9 +214,15 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 		<>
 			<Popover open={open} onOpenChange={setOpen} data-testid="auto-approve-dropdown-root">
 				<StandardTooltip
-					content={t("chat:autoApprove.tooltipMode", { mode: t(`chat:autoApprove.modes.${mode}`) })}>
+					content={
+						targetTaskId
+							? t("chat:autoApprove.tooltipMode", { mode: t(`chat:autoApprove.modes.${mode}`) })
+							: isDraft
+								? t("chat:autoApprove.tooltipDraftMode", { mode: t(`chat:autoApprove.modes.${mode}`) })
+								: t("chat:autoApprove.tooltipNoCurrentTask")
+					}>
 					<PopoverTrigger
-						disabled={disabled}
+						disabled={disabled || !canChangeMode}
 						data-testid="auto-approve-dropdown-trigger"
 						className={cn("composer-control composer-selector", "max-[300px]:shrink-0", triggerClassName)}>
 						<span className="truncate min-w-0">{t(`chat:autoApprove.modes.${mode}`)}</span>
@@ -166,10 +247,26 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 								/>
 							</div>
 							<p className="m-0 text-xs text-vscode-descriptionForeground">
-								{t("chat:autoApprove.description")}
+								{t(isDraft ? "chat:autoApprove.descriptionDraft" : "chat:autoApprove.description")}
 							</p>
 						</div>
 						<div className="flex flex-col gap-1 p-3">
+							{isUpdatingCurrentTask && (
+								<p className="m-0 text-xs text-vscode-descriptionForeground" role="status">
+									{t("chat:autoApprove.updatingTask")}
+								</p>
+							)}
+							{failureForCurrentTask && (
+								<p className="m-0 text-xs text-vscode-errorForeground" role="alert">
+									{t(
+										failureForCurrentTask === "targetUnavailable"
+											? "chat:autoApprove.updateTargetUnavailable"
+											: failureForCurrentTask === "timedOut"
+												? "chat:autoApprove.updateTimedOut"
+												: "chat:autoApprove.updateRejected",
+									)}
+								</p>
+							)}
 							{MODES.map((candidate) => (
 								<StandardTooltip
 									key={candidate}
@@ -177,6 +274,7 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 									<Button
 										variant={mode === candidate ? "primary" : "secondary"}
 										onClick={() => selectMode(candidate)}
+										disabled={disabled || !canChangeMode || isUpdatingCurrentTask}
 										aria-pressed={mode === candidate}
 										data-testid={`approval-mode-${candidate}`}
 										className="justify-start h-auto px-2 py-2 text-sm">
@@ -199,8 +297,7 @@ export const AutoApproveDropdown = ({ disabled = false, triggerClassName = "" }:
 						<AlertDialogAction
 							data-testid="approval-mode-bypass-confirm"
 							onClick={() => {
-								applyMode("bypass", true)
-								setOpen(false)
+								applyMode("bypass")
 							}}>
 							{t("chat:autoApprove.bypassWarning.confirm")}
 						</AlertDialogAction>

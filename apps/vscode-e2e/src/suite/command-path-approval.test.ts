@@ -41,8 +41,8 @@ class CommandPathAI {
 			yield {
 				type: "tool_call" as const,
 				id: `path-command-${index}`,
-				name: "shell",
-				arguments: JSON.stringify({ command: observation.commands[index], timeout: 90 }),
+				name: "exec_command",
+				arguments: JSON.stringify({ cmd: observation.commands[index], yield_time_ms: 10_000 }),
 			}
 		} else {
 			assert.equal(index, observation.commands.length, "No unexpected model retries")
@@ -110,8 +110,7 @@ suite("Command and path approval in the extension host", function () {
 					apiProvider: "fake-ai",
 					fakeAi: scripted,
 					mode: "code",
-					autoApprovalEnabled: true,
-					alwaysAllowExecute: true,
+					approvalMode: "auto",
 					allowedCommands: ["*"],
 					deniedCommands: [],
 					terminalShellIntegrationDisabled: true,
@@ -126,9 +125,13 @@ suite("Command and path approval in the extension host", function () {
 					const error = task?.clineMessages.find((message) => message.say === "error")
 					assert.equal(error, undefined, error?.text)
 					const ask = task?.taskAsk
-					if (ask?.ask === "command" && ask.progressStatus?.commandPathApproval && !handled.has(ask.ts)) {
-						assert.deepEqual(ask.progressStatus.commandPathApproval.outsidePaths, [sentinel])
-						assert.equal(ask.progressStatus.commandPathApproval.unresolved, false)
+					if (
+						ask?.ask === "command" &&
+						ask.toolApprovalRequest?.commandPathApproval &&
+						!handled.has(ask.ts)
+					) {
+						assert.deepEqual(ask.toolApprovalRequest.commandPathApproval.outsidePaths, [sentinel])
+						assert.equal(ask.toolApprovalRequest.commandPathApproval.unresolved, false)
 						assert.equal(
 							(await fs.readFile(sentinel, "utf8")).trim(),
 							approvalCount === 0 ? "unchanged" : "approved-once",

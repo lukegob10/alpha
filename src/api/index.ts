@@ -21,6 +21,13 @@ export interface SingleCompletionHandler {
 	completePrompt(prompt: string): Promise<string>
 }
 
+export interface ApiInstructionFragment {
+	role: "developer" | "system" | "user"
+	content: string
+	/** Assembly provenance retained in step snapshots; provider adapters use role/content. */
+	origin?: string
+}
+
 export interface ApiHandlerCreateMessageMetadata extends ApiStreamRequestMetadata {
 	/**
 	 * Task ID used for tracking and provider-specific features.
@@ -29,6 +36,8 @@ export interface ApiHandlerCreateMessageMetadata extends ApiStreamRequestMetadat
 	/** Current mode slug for provider-specific tracking. */
 	mode?: string
 	suppressPreviousResponseId?: boolean
+	/** Role-preserving system and user context. When absent, adapters use systemPrompt unchanged. */
+	instructionFragments?: readonly ApiInstructionFragment[]
 	/**
 	 * Controls whether the response should be stored for 30 days in OpenAI's Responses API.
 	 * When true (default), responses are stored and can be referenced in future requests

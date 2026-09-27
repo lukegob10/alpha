@@ -1,5 +1,6 @@
 import { Task } from "../Task"
 import { createSubagentCommandApprovalPolicy } from "../../auto-approval/commands"
+import type { AlphaMessage } from "@alpha-code/types"
 
 // Keep this test focused: if a queued message arrives while Task.ask() is blocked,
 // it should be consumed and used to fulfill the ask.
@@ -38,6 +39,28 @@ describe("Task.ask queued message drain", () => {
 		alwaysAllowSubagents: true,
 		commandApproval: createSubagentCommandApprovalPolicy(["git"], ["git push"], "7".repeat(64)),
 	}
+
+	it("marks a cancelled grouped follow-up ask answered in the transcript", async () => {
+		const task = await createAskOnlyTask()
+		;(task as any).taskKind = "primary"
+		;(task as any).addToAlphaMessages = vi.fn(async (message: AlphaMessage) => {
+			task.clineMessages.push(message)
+		})
+
+		const pending = task.ask(
+			"followup",
+			JSON.stringify({ requestUserInput: { questions: [{ id: "scope" }] } }),
+			false,
+		)
+		await vi.waitFor(() => expect((task as any).activeAsk).toMatchObject({ type: "followup" }))
+
+		task.handleWebviewAskResponse("noButtonClicked")
+		await expect(pending).resolves.toMatchObject({ response: "noButtonClicked" })
+
+		expect(task.clineMessages).toHaveLength(1)
+		expect(task.clineMessages[0]).toMatchObject({ type: "ask", ask: "followup", isAnswered: true })
+		expect(task["saveAlphaMessages"]).toHaveBeenCalledOnce()
+	})
 
 	it.each([
 		{ taskKind: "primary", onScreen: true },
@@ -97,7 +120,7 @@ describe("Task.ask queued message drain", () => {
 		await expect(pending).resolves.toMatchObject({ response: "noButtonClicked" })
 	})
 
-	it("auto-approves a managed-child action despite an explicit review flag in Auto", async () => {
+	it("asks before a managed-child outside write in Auto despite a broad command allowlist", async () => {
 		const task = await createAskOnlyTask()
 		;(task as any).taskKind = "subagent"
 		;(task as any).subagentContextManifest = { runtimePolicy: { autoApproval: inheritedCommandPolicy } }
@@ -113,7 +136,7 @@ describe("Task.ask queued message drain", () => {
 		}
 
 		const autoApprove = vi.spyOn(task, "approveAsk")
-		const result = await task.ask(
+		const pending = task.ask(
 			"tool",
 			JSON.stringify({ tool: "editedExistingFile", path: "protected.txt", isOutsideWorkspace: true }),
 			false,
@@ -122,13 +145,16 @@ describe("Task.ask queued message drain", () => {
 			true,
 		)
 
-		expect(autoApprove).toHaveBeenCalledOnce()
-		expect(result.response).toBe("yesButtonClicked")
+		await vi.waitFor(() => expect(task["addToAlphaMessages"]).toHaveBeenCalled())
+		expect(autoApprove).not.toHaveBeenCalled()
+		task.handleWebviewAskResponse("yesButtonClicked")
+		await expect(pending).resolves.toMatchObject({ response: "yesButtonClicked" })
 	})
 
 	it("keeps Ask review active even for a parent-authorized managed-child read", async () => {
 		const task = await createAskOnlyTask()
 		Object.assign(task, {
+			taskApprovalMode: "ask",
 			taskKind: "subagent",
 			subagentAuthority: { role: "review", logicalWorkspace: "F:/workspace", approvalProvenance: "group" },
 			subagentContextManifest: { runtimePolicy: { autoApproval: inheritedCommandPolicy } },
@@ -149,7 +175,7 @@ describe("Task.ask queued message drain", () => {
 		await expect(askPromise).resolves.toMatchObject({ response: "yesButtonClicked" })
 	})
 
-	it("auto-approves a child command outside its command allowlist in Auto", async () => {
+	it("asks before a managed-child command outside its captured allowlist in Auto", async () => {
 		const task = await createAskOnlyTask()
 		;(task as any).taskKind = "subagent"
 		;(task as any).subagentContextManifest = { runtimePolicy: { autoApproval: inheritedCommandPolicy } }
@@ -161,10 +187,11 @@ describe("Task.ask queued message drain", () => {
 		}
 
 		const autoApprove = vi.spyOn(task, "approveAsk")
-		const result = await task.ask("command", "pnpm test", false, undefined, false, true)
-
-		expect(autoApprove).toHaveBeenCalledOnce()
-		expect(result.response).toBe("yesButtonClicked")
+		const pending = task.ask("command", "pnpm test", false, undefined, false, true)
+		await vi.waitFor(() => expect(task["addToAlphaMessages"]).toHaveBeenCalled())
+		expect(autoApprove).not.toHaveBeenCalled()
+		task.handleWebviewAskResponse("yesButtonClicked")
+		await expect(pending).resolves.toMatchObject({ response: "yesButtonClicked" })
 	})
 
 	it("fails closed for a retained managed child without a captured approval ceiling", async () => {
@@ -299,7 +326,7 @@ describe("Task.ask queued message drain", () => {
 		expect(result.response).toBe("messageResponse")
 		expect(result.text).toContain("Continue independent authorized work where possible")
 		expect(result.text).toContain("ordinary final answer")
-		expect(result.text).toContain("new_task by itself")
+		expect(result.text).toContain("spawn_agent by itself")
 	})
 
 	it("auto-answers off-screen follow-up asks with the first suggestion", async () => {
@@ -431,11 +458,12 @@ describe("Task.ask queued message drain", () => {
 		expect(result.response).toBe("yesButtonClicked")
 	})
 
-	it("auto-approves on-screen asynchronous sub-agent asks when sub-agent auto-approval is enabled", async () => {
+	it("auto-approves an on-screen sub-agent in Auto", async () => {
 		const task = await createAskOnlyTask()
 		;(task as any).providerRef = {
 			deref: () => ({
 				getState: vi.fn(async () => ({
+					approvalMode: "auto",
 					autoApprovalEnabled: true,
 					alwaysAllowSubagents: true,
 					alwaysAllowReadOnly: true,
@@ -444,8 +472,9 @@ describe("Task.ask queued message drain", () => {
 			}),
 		}
 
+		const autoApprove = vi.spyOn(task, "approveAsk")
 		const result = await task.ask("tool", JSON.stringify({ tool: "spawnAgent", agent: { role: "explore" } }), false)
-
+		expect(autoApprove).toHaveBeenCalled()
 		expect(result.response).toBe("yesButtonClicked")
 	})
 

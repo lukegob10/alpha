@@ -1,13 +1,17 @@
 import Anthropic from "@anthropic-ai/sdk"
 import type { ApiHandler } from "../../../api"
 import { TelemetryService } from "@alpha-code/telemetry"
+import * as condenseModule from "../../condense"
 
 import {
 	DEFAULT_MIN_REDUCTION_PERCENT,
 	evaluateCompactionProgress,
 	getCompactionTargetTokens,
+	isAutoCondenseLimitReached,
+	isPostTurnCondenseDue,
 	manageContext,
 	truncateConversation,
+	willManageContext,
 } from "../index"
 import {
 	getToolCallResultPairs,
@@ -96,6 +100,58 @@ describe("bounded context recovery policy", () => {
 		expect(getCompactionTargetTokens({ contextWindow: 1000, reservedTokens: 200 })).toBe(200)
 	})
 
+	it("counts growth after the saved prefix while retaining the full input limit", () => {
+		const options = {
+			totalTokens: 600,
+			lastMessageTokens: 0,
+			contextWindow: 1000,
+			maxTokens: 100,
+			autoCondenseContext: true,
+			autoCondenseContextPercent: 50,
+			profileThresholds: {},
+			currentProfileId: "default",
+		} as const
+		expect(willManageContext(options)).toBe(true)
+		expect(
+			willManageContext({ ...options, autoCondenseContextScope: "after-prefix", prefillContextTokens: 500 }),
+		).toBe(false)
+		expect(willManageContext({ ...options, autoCondenseContextScope: "after-prefix" })).toBe(false)
+		expect(isAutoCondenseLimitReached(800, 500, 800, "after-prefix", 500)).toBe(true)
+	})
+
+	it("disables turn-end compaction at zero and measures its percentage against the full limit", () => {
+		expect(isPostTurnCondenseDue(700, 800, 500, 0)).toBe(false)
+		expect(isPostTurnCondenseDue(639, 800, 500, 80, "after-prefix", 600)).toBe(false)
+		expect(isPostTurnCondenseDue(640, 800, 500, 80, "after-prefix", 600)).toBe(true)
+		expect(isPostTurnCondenseDue(800, 800, 500, 100, "after-prefix", 600)).toBe(true)
+	})
+
+	it("does not summarize a prefix whose new body remains below the configured limit", async () => {
+		const handler = createCountingHandler()
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Start" },
+			{ role: "assistant", content: "Done" },
+			{ role: "user", content: "Continue" },
+		]
+		const result = await manageContext({
+			messages,
+			totalTokens: 600,
+			contextWindow: 1000,
+			maxTokens: 100,
+			apiHandler: handler,
+			autoCondenseContext: true,
+			autoCondenseContextPercent: 50,
+			autoCondenseContextScope: "after-prefix",
+			prefillContextTokens: 500,
+			systemPrompt: "System",
+			taskId: "task-1",
+			profileThresholds: {},
+			currentProfileId: "default",
+		})
+		expect(result.messages).toBe(messages)
+		expect(handler.createMessage).not.toHaveBeenCalled()
+	})
+
 	it("keeps tool call/result pairs together when truncating", () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "Initial task", ts: 1 },
@@ -125,7 +181,7 @@ describe("bounded context recovery policy", () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "One" },
 			{ role: "assistant", content: "Two" },
-			{ role: "user", content: "Three".repeat(100) },
+			{ role: "user", content: "Three".repeat(200) },
 			{ role: "assistant", content: "Four" },
 			{ role: "user", content: "Five" },
 		]
@@ -147,6 +203,54 @@ describe("bounded context recovery policy", () => {
 		expect(result.messagesRemoved).toBe(2)
 		expect(result.status).toBe("reduced")
 		expect(result.error).toBeDefined()
+	})
+
+	it("preserves history when proactive summarization fails below the input limit", async () => {
+		const handler = createCountingHandler()
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Keep the original instructions." },
+			{ role: "assistant", content: "B".repeat(20) },
+			{ role: "user", content: "C".repeat(200) },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "call-1", name: "read_file", input: { path: "a.ts" } }],
+			},
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "call-1", content: "D".repeat(200) }] },
+			{ role: "assistant", content: "E".repeat(200), reasoning_content: "opaque provider state" },
+			{ role: "user", content: "Continue under the same constraints." },
+		]
+		const summarizer = vi.spyOn(condenseModule, "summarizeConversation").mockResolvedValue({
+			messages,
+			summary: "",
+			cost: 0.01,
+			error: "Summary request rate limited",
+			status: "no_progress",
+		})
+		try {
+			expect(await condenseModule.countContextTokens(messages, handler, "System")).toBeLessThan(800)
+			const result = await manageContext({
+				messages,
+				totalTokens: 600,
+				contextWindow: 1000,
+				maxTokens: 100,
+				apiHandler: handler,
+				autoCondenseContext: true,
+				autoCondenseContextPercent: 50,
+				systemPrompt: "System",
+				taskId: "task-1",
+			})
+
+			expect(summarizer).toHaveBeenCalledOnce()
+			expect(result.messages).toBe(messages)
+			expect(result.status).toBe("no_progress")
+			expect(result.error).toBe("Summary request rate limited")
+			expect(result.cost).toBe(0.01)
+			expect(result.truncationId).toBeUndefined()
+			expect(hasToolCallResultIntegrity(result.messages)).toBe(true)
+			expect(result.messages[5].reasoning_content).toBe("opaque provider state")
+		} finally {
+			summarizer.mockRestore()
+		}
 	})
 
 	it("returns exhausted when truncation cannot change an unchanged input", async () => {

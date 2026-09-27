@@ -170,9 +170,7 @@ describe("SearchFilesTool", () => {
 		}
 	})
 
-	it.each([false, true])("emits one scheduler receipt for a batch (all errors: %s)", async (allErrors) => {
-		regexSearchFilesMock.mockRejectedValueOnce(new Error("regex parse error: unclosed group"))
-		if (allErrors) regexSearchFilesMock.mockRejectedValueOnce(new Error("permission denied"))
+	it("keeps retired search_files calls non-callable on the active registry", async () => {
 		const task = createTask()
 		const push = vi.fn(() => true)
 		Object.assign(task, {
@@ -187,13 +185,13 @@ describe("SearchFilesTool", () => {
 			pushToolResultToUserContent: push,
 		})
 		const surface = createTaskToolSurface({
-			registry: new ToolRegistry(),
+			registry: new ToolRegistry({ nativeTools: [searchFilesDefinition] }),
 			schemas: [searchFilesDefinition],
 			cwd: task.cwd,
 			mode: "code",
 		})
-		expect(surface.isCallable("search_files")).toBe(true)
-		expect(surface.schemas).toEqual([searchFilesDefinition])
+		expect(surface.isCallable("search_files")).toBe(false)
+		expect(surface.schemas).toEqual([])
 		const call = {
 			type: "tool_call" as const,
 			id: "search-batch",
@@ -213,10 +211,10 @@ describe("SearchFilesTool", () => {
 			validateCall: () => {},
 		}).run({ items: [call], toolCalls: [call], text: "", reasoning: "" })
 		expect(outcome.results).toHaveLength(1)
-		expect(outcome.results[0].status).toBe(allErrors ? "error" : "success")
+		expect(outcome.results[0].status).toBe("error")
 		expect(push).toHaveBeenCalledOnce()
-		expect(JSON.stringify(push.mock.calls)).toContain("regex parse error: unclosed group")
-		expect(JSON.stringify(push.mock.calls)).toContain(allErrors ? "permission denied" : "results for TODO")
+		expect(JSON.stringify(push.mock.calls)).toContain("not registered")
+		expect(regexSearchFilesMock).not.toHaveBeenCalled()
 	})
 
 	it("treats a successful no-match query beside an error as overall success", async () => {

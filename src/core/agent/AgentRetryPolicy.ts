@@ -59,8 +59,10 @@ export const DEFAULT_AGENT_RETRY_POLICY: AgentRetryPolicyDefaults = Object.freez
 
 export interface AgentRetryRequest {
 	category: AgentRetryCategory
-	/** One-based number of the attempt that just failed. */
+	/** One-based number of the failed attempt within this category. */
 	attempt: number
+	/** One-based number across all failure categories for the same logical request. */
+	totalAttempt?: number
 	/** Optional provider hint in milliseconds, such as HTTP Retry-After. */
 	retryAfterMs?: number
 	/** Elapsed retry-sequence time at the failed attempt, in milliseconds. */
@@ -199,13 +201,15 @@ export class AgentRetryPolicy {
 	/** Resolve retry/exhaustion, output guards, and delay in one stable result. */
 	decide(request: AgentRetryRequest): AgentRetryDecision {
 		const attempt = normalizeAttempt(request.attempt)
+		const totalAttempt = request.totalAttempt === undefined ? attempt : normalizeAttempt(request.totalAttempt)
+		if (totalAttempt < attempt) throw new RangeError("Total retry attempt cannot precede its category attempt")
 		this.assertCategory(request.category)
 
 		let reason: AgentRetryExhaustionReason | undefined
 		let delayMs = 0
 		if (request.hasSemanticOutput) {
 			reason = "semantic-output"
-		} else if (attempt >= this.getMaxAttempts(request.category)) {
+		} else if (totalAttempt >= this.maxAttempts || attempt >= this.getMaxAttempts(request.category)) {
 			reason = "attempts"
 		} else {
 			const elapsedMs = normalizeElapsedMs(request.elapsedMs)

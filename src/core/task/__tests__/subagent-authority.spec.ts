@@ -134,15 +134,18 @@ describe("sub-agent task authority", () => {
 		expect(settled).toBe(true)
 	})
 
-	it("narrows child tools to reads and completion", () => {
+	it("narrows review child tools to command reads and completion", () => {
 		const child = Object.assign(Object.create(Task.prototype), { taskKind: "subagent" }) as Task
 		const allowed = child.getTaskAllowedToolNames()
 
-		expect(allowed).toEqual(["read_file", "search_files", "list_files", "codebase_search", "attempt_completion"])
+		expect(allowed).toEqual(["exec_command", "attempt_completion"])
 		expect(child.isToolAllowedForTask("report_progress")).toBe(false)
-		expect(child.isToolAllowedForTask("read_file")).toBe(true)
+		expect(child.isToolAllowedForTask("exec_command")).toBe(true)
+		expect(child.isToolAllowedForTask("execute_command")).toBe(true)
+		expect(child.isToolAllowedForTask("read_file")).toBe(false)
 		expect(child.isToolAllowedForTask("apply_patch")).toBe(false)
-		expect(child.isToolAllowedForTask("execute_command")).toBe(false)
+		expect(child.isToolAllowedForTask("manage_command")).toBe(false)
+		expect(child.isToolAllowedForTask("write_stdin")).toBe(false)
 		expect(child.isToolAllowedForTask("delegate_task")).toBe(false)
 		expect(child.isToolAllowedForTask("use_mcp_tool")).toBe(false)
 	})
@@ -150,22 +153,17 @@ describe("sub-agent task authority", () => {
 	it("grants only current tools to delegating workers", () => {
 		const allowed = getSubagentAllowedToolNames("worker", true, true)
 		expect(allowed).toEqual([
-			"read_file",
-			"search_files",
-			"list_files",
-			"codebase_search",
-			"write_to_file",
-			"edit",
 			"apply_patch",
-			"shell",
+			"exec_command",
 			"manage_command",
+			"write_stdin",
 			"skill",
 			"spawn_agent",
 			"list_agents",
 			"wait_agent",
 			"send_message",
 			"followup_task",
-			"close_agent",
+			"interrupt_agent",
 			"attempt_completion",
 		])
 	})
@@ -191,10 +189,11 @@ describe("sub-agent task authority", () => {
 			},
 		}) as Task
 
-		expect(child.getTaskAllowedToolNames()).toEqual(["read_file", "write_to_file", "edit", "shell"])
+		expect(child.getTaskAllowedToolNames()).toEqual(["exec_command"])
 		expect(child.isToolAllowedForTask("execute_command")).toBe(true)
-		expect(child.isToolAllowedForTask("search_and_replace")).toBe(true)
-		expect(child.isToolAllowedForTask("write_file")).toBe(true)
+		expect(child.isToolAllowedForTask("search_and_replace")).toBe(false)
+		expect(child.isToolAllowedForTask("write_file")).toBe(false)
+		expect(child.isToolAllowedForTask("read_file")).toBe(false)
 		expect(child.isToolAllowedForTask("manage_command")).toBe(false)
 		expect(child.isToolAllowedForTask("read_command_output")).toBe(false)
 		expect(child.isToolAllowedForTask("spawn_agent")).toBe(false)
@@ -221,14 +220,18 @@ describe("sub-agent task authority", () => {
 		}) as Task
 
 		expect(child.isToolAllowedForTask("apply_patch")).toBe(true)
-		expect(child.isToolAllowedForTask("execute_command")).toBe(true)
+		expect(child.isToolAllowedForTask("exec_command")).toBe(true)
 		expect(child.isToolAllowedForTask("manage_command")).toBe(true)
+		expect(child.isToolAllowedForTask("write_stdin")).toBe(true)
 		expect(child.isToolAllowedForTask("delegate_task")).toBe(false)
 		expect(child.isToolAllowedForTask("use_mcp_tool")).toBe(false)
-		expect(child.getTaskToolDenialReason("edit", { file_path: "core/task/Task.ts" })).toBeUndefined()
-		expect(child.getTaskToolDenialReason("edit", { file_path: "outside.ts" })).toContain("outside")
-		expect(child.getTaskToolDenialReason("search_and_replace", { file_path: "outside.ts" })).toContain("outside")
-		expect(child.getTaskToolDenialReason("write_file", { path: "outside.ts" })).toContain("outside")
+		expect(
+			child.getTaskToolDenialReason("apply_patch", {
+				patch: "*** Begin Patch\n*** Update File: core/task/Task.ts\n@@\n+const workerChange = true\n*** End Patch",
+			}),
+		).toBeUndefined()
+		expect(child.getTaskToolDenialReason("edit", { file_path: "core/task/Task.ts" })).toContain("not allowed")
+		expect(child.getTaskToolDenialReason("write_file", { path: "outside.ts" })).toContain("not allowed")
 		expect(
 			child.getTaskToolDenialReason("apply_patch", {
 				patch: "*** Begin Patch\n*** Update File: outside.ts\n*** End Patch",
@@ -236,15 +239,15 @@ describe("sub-agent task authority", () => {
 		).toContain("outside")
 	})
 
-	it("reserves the completion tool after the research deadline", () => {
+	it("requires final assistant text after the research deadline", () => {
 		const child = Object.assign(Object.create(Task.prototype), {
 			taskKind: "subagent",
 			subagentResearchDeadlineAt: Date.now() - 1,
 		}) as Task
 
-		expect(child.isToolAllowedForTask("read_file")).toBe(false)
-		expect(child.getTaskToolDenialReason("read_file")).toContain("call attempt_completion now")
-		expect(child.isToolAllowedForTask("attempt_completion")).toBe(true)
+		expect(child.isToolAllowedForTask("exec_command")).toBe(false)
+		expect(child.getTaskToolDenialReason("exec_command")).toContain("give a final assistant answer")
+		expect(child.isToolAllowedForTask("attempt_completion")).toBe(false)
 	})
 
 	it("persists the exact terminal status after a managed child stops", async () => {

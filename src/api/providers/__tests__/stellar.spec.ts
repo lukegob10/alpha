@@ -76,6 +76,7 @@ describe("StellarHandler", () => {
 		)
 		const handler = createHandler()
 		expect(handler.streamCapabilities.cancellation).toBe(false)
+		expect(handler.streamCapabilities.lifecycle).toBe(true)
 
 		const firstChunk = await handler.createMessage("system prompt", []).next()
 
@@ -122,7 +123,7 @@ describe("StellarHandler", () => {
 
 	it("supports non-streaming chat completions", async () => {
 		mocks.create.mockResolvedValueOnce({
-			choices: [{ message: { content: "non-streamed response" } }],
+			choices: [{ message: { content: "non-streamed response" }, finish_reason: "stop" }],
 			usage: { prompt_tokens: 3, completion_tokens: 4 },
 		})
 		const handler = createHandler({ stellarStreamingEnabled: false })
@@ -135,6 +136,7 @@ describe("StellarHandler", () => {
 		expect(chunks).toEqual([
 			{ type: "text", text: "non-streamed response" },
 			expect.objectContaining({ type: "usage", inputTokens: 3, outputTokens: 4 }),
+			expect.objectContaining({ type: "outcome", status: "completed", terminal: true }),
 		])
 		const [request] = mocks.create.mock.calls[0]
 		expect(request).not.toHaveProperty("stream")

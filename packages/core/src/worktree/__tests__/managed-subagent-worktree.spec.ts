@@ -91,6 +91,21 @@ describe("ManagedSubagentWorktreeService", () => {
 	)
 
 	it(
+		"allows a host-selected whole-workspace scope while rejecting the same scope from legacy callers",
+		async () => {
+			await expect(service.validateScope(repo, ["."])).rejects.toThrow("traversal")
+			const validated = await service.validateScope(repo, ["."], { allowWorkspaceRoot: true })
+			const prepared = await service.create(storage, "whole-workspace-worker", validated)
+			await fs.writeFile(path.join(prepared.workspacePath, "keep.txt"), "changed\n")
+			await fs.writeFile(path.join(prepared.workspacePath, "src/value.txt"), "changed\n")
+			const artifact = await service.capture(storage, prepared.artifact.id)
+			expect(artifact.status).toBe("pending_review")
+			expect(artifact.changes.map((change) => change.path).sort()).toEqual(["keep.txt", "src/value.txt"])
+		},
+		WORKTREE_TEST_TIMEOUT_MS,
+	)
+
+	it(
 		"recovers an exact patch that landed before applied metadata was persisted",
 		async () => {
 			const validated = await service.validateScope(repo, ["src/value.txt"])

@@ -9,6 +9,32 @@
 			"name": "Run Extension",
 			"type": "extensionHost",
 			"request": "launch",
+			// VS Code 1.139.1 can resolve the debugger's localhost attachment to ::1
+			// while its extension-host inspector listens on 127.0.0.1. Keep F5
+			// usable by running the development host without that attachment.
+			"noDebug": true,
+			"debugWebviews": false,
+			"debugWebWorkerHost": false,
+			"runtimeExecutable": "${execPath}",
+			"args": ["--extensionDevelopmentPath=${workspaceFolder}/src"],
+			"sourceMaps": true,
+			"outFiles": ["${workspaceFolder}/src/dist/**/*.js"],
+			"preLaunchTask": "${defaultBuildTask}",
+			"env": {
+				"NODE_ENV": "development",
+				"VSCODE_DEBUG_MODE": "true"
+			},
+			"resolveSourceMapLocations": ["${workspaceFolder}/**", "!**/node_modules/**"],
+			"presentation": {
+				"hidden": false,
+				"group": "tasks",
+				"order": 0
+			}
+		},
+		{
+			"name": "Run Extension (debugger)",
+			"type": "extensionHost",
+			"request": "launch",
 			"runtimeExecutable": "${execPath}",
 			"args": ["--extensionDevelopmentPath=${workspaceFolder}/src"],
 			"sourceMaps": true,

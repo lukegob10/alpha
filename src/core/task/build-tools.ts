@@ -4,9 +4,11 @@ import type OpenAI from "openai"
 
 import {
 	openAiModelInfoSaneDefaults,
+	restoreTaskMode,
 	type ProviderSettings,
 	type ModeConfig,
 	type ModelInfo,
+	type ApprovalMode,
 	type ToolName,
 	type McpServer,
 } from "@alpha-code/types"
@@ -19,7 +21,7 @@ import { planModeSlug } from "../../shared/modes"
 
 import { getNativeTools } from "../prompts/tools/native-tools"
 import { buildMcpServerTools } from "../prompts/tools/native-tools/mcp_server"
-import { discoverTools } from "../prompts/tools/native-tools/discover_tools"
+import { discoverTools, toolSearch } from "../prompts/tools/native-tools/discover_tools"
 import {
 	filterNativeToolsForMode,
 	filterMcpToolsForMode,
@@ -38,7 +40,8 @@ import {
 import type { ApiMessage } from "../task-persistence/apiMessages"
 import type { McpHub } from "../../services/mcp/McpHub"
 import { buildMcpToolName } from "../../utils/mcp-name"
-import { DISCOVERY_OUTPUT_LIMIT, type DiscoverTools, type TaskToolCatalogCache } from "./TaskToolCatalogCache"
+import { DISCOVERY_OUTPUT_LIMIT, type ToolSearch, type TaskToolCatalogCache } from "./TaskToolCatalogCache"
+import { availableCustomTools } from "./customToolCatalog"
 import {
 	applyModelToolPreferences,
 	getModelSurgicalEditTool,
@@ -67,8 +70,11 @@ export interface BuildToolsOptions {
 	taskKind?: "primary" | "subagent"
 	/** Stable primary-task lifecycle catalog; managed children remain allow-list constrained. */
 	enableAgentLifecycleTools?: boolean
+	/** Root tasks control direct children; an independent child can only message its recorded parent. */
+	crossTaskRole?: "root" | "child" | "none"
 	/** Optional caller policy values used when exposing the unified surface. */
 	policy?: ToolPolicySnapshot
+	approvalMode?: ApprovalMode
 	autoApprovalEnabled?: boolean
 	readGrant?: TaskReadGrant
 	/** Task-owned cache, used only at a real new step boundary (never during a transport retry). */
@@ -112,12 +118,37 @@ function getToolName(tool: OpenAI.Chat.ChatCompletionTool): string {
 	return (tool as OpenAI.Chat.ChatCompletionFunctionTool).function.name
 }
 
-const AGENT_LIFECYCLE_TOOLS = new Set(["list_agents", "wait_agent", "send_message", "followup_task", "close_agent"])
+function historyContainsToolName(history: readonly ApiMessage[] | undefined, name: string): boolean {
+	return (
+		history?.some(
+			(message) =>
+				message.role === "assistant" &&
+				Array.isArray(message.content) &&
+				message.content.some(
+					(block) =>
+						!!block &&
+						typeof block === "object" &&
+						"type" in block &&
+						block.type === "tool_use" &&
+						"name" in block &&
+						block.name === name,
+				),
+		) ?? false
+	)
+}
+
+const AGENT_LIFECYCLE_TOOLS = new Set(["list_agents", "wait_agent", "send_message", "followup_task", "interrupt_agent"])
 
 const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", ...AGENT_LIFECYCLE_TOOLS])
 
 // Bump when native schemas or provider projection rules change. Dynamic schemas are fingerprinted below.
-const TOOL_CATALOG_SCHEMA_VERSION = 4
+const TOOL_CATALOG_SCHEMA_VERSION = 12
+
+const ASYNC_USER_INPUT_CATALOG_NAMES = new Set(["request_user_input_async", "send_user_message_async"])
+
+function supportsAsyncUserInput(modelInfo: ModelInfo | undefined): boolean {
+	return modelInfo?.experimental_supported_tools?.some((name) => ASYNC_USER_INPUT_CATALOG_NAMES.has(name)) ?? false
+}
 
 const orderedNames = (names: readonly string[] | undefined) =>
 	names ? [...new Set(names.map(canonicalizeToolName))].sort() : undefined
@@ -153,6 +184,39 @@ function connectionFor(mcpHub: McpHub | undefined, server: McpServer) {
 	return mcpHub?.connections?.find((connection) => connection.server === server)
 }
 
+const MCP_TOOL_ANNOTATION_KEYS = new Set([
+	"title",
+	"audience",
+	"priority",
+	"lastModified",
+	"readOnlyHint",
+	"destructiveHint",
+	"idempotentHint",
+	"openWorldHint",
+])
+
+function isMcpReadOnlyHint(annotations: unknown): boolean {
+	if (!annotations || typeof annotations !== "object" || Array.isArray(annotations)) return false
+	const values = annotations as Record<string, unknown>
+	if (Object.keys(values).some((key) => !MCP_TOOL_ANNOTATION_KEYS.has(key))) return false
+	if (values.title !== undefined && typeof values.title !== "string") return false
+	if (
+		values.audience !== undefined &&
+		(!Array.isArray(values.audience) || values.audience.some((item) => item !== "user" && item !== "assistant"))
+	)
+		return false
+	if (values.priority !== undefined && (typeof values.priority !== "number" || !Number.isFinite(values.priority)))
+		return false
+	if (values.lastModified !== undefined && typeof values.lastModified !== "string") return false
+	if (
+		["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"].some(
+			(key) => values[key] !== undefined && typeof values[key] !== "boolean",
+		)
+	)
+		return false
+	return values.readOnlyHint === true && values.destructiveHint !== true
+}
+
 function serverState(servers: readonly McpServer[], mcpHub?: McpHub, cache?: TaskToolCatalogCache) {
 	return servers.map((server) => {
 		const connection = connectionFor(mcpHub, server)
@@ -186,6 +250,7 @@ function captureMcpAvailability(
 			serverName: string
 			toolName: string
 			source: McpServer["source"]
+			parallelRead: boolean
 			connection: ReturnType<typeof connectionFor>
 			client: unknown
 			schemaDigest: string
@@ -202,6 +267,7 @@ function captureMcpAvailability(
 				serverName: server.name,
 				toolName: tool.name,
 				source: server.source,
+				parallelRead: isMcpReadOnlyHint(tool.annotations),
 				connection,
 				client: connection?.client,
 				schemaDigest: digestValue(schema),
@@ -236,7 +302,11 @@ function captureMcpAvailability(
 			)
 			if (!tool) return false
 			const schema = buildMcpServerTools([{ ...server, tools: [tool] }])[0]
-			return !!schema && digestValue(schema) === expected.schemaDigest
+			return (
+				!!schema &&
+				digestValue(schema) === expected.schemaDigest &&
+				isMcpReadOnlyHint(tool.annotations) === expected.parallelRead
+			)
 		} catch {
 			return false
 		}
@@ -283,6 +353,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		allowedToolNames,
 		taskKind = "primary",
 		enableAgentLifecycleTools = taskKind === "primary",
+		crossTaskRole = "none",
 	} = options
 	const modelIdentity = options.modelIdentity ?? { provider: apiConfiguration?.apiProvider }
 	const modelPreference = getModelSurgicalEditTool(modelIdentity)
@@ -291,6 +362,25 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		: modelPreference === "apply_patch"
 			? applyModelToolPreferences(modelIdentity, openAiModelInfoSaneDefaults)
 			: undefined
+	const catalogModelInfo: ModelInfo | undefined =
+		restoreTaskMode(mode) === "code"
+			? {
+					...(modelInfo ?? openAiModelInfoSaneDefaults),
+					// Supply required metadata while preserving no-model-info image behavior.
+					supportsImages: modelInfo?.supportsImages ?? false,
+					includedTools: [
+						...new Set([
+							...(modelInfo?.includedTools ?? []).filter(
+								(name) => canonicalizeToolName(name) !== "apply_patch",
+							),
+							"apply_patch",
+						]),
+					],
+					excludedTools: modelInfo?.excludedTools?.filter(
+						(name) => canonicalizeToolName(name) !== "apply_patch",
+					),
+				}
+			: modelInfo
 	const disabledTools = orderedNames([...(requestedDisabledTools ?? []), ...(options.policy?.disabledTools ?? [])])!
 	const requestWorkClass = requestWorkClassCacheKey(options.userRequestText, taskKind)
 
@@ -314,10 +404,14 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				a.definition.name < b.definition.name ? -1 : a.definition.name > b.definition.name ? 1 : 0,
 			)
 	}
+	customTools = availableCustomTools(customTools)
 	// All live reads precede this synchronous capture. No await may split key construction from its factory.
 	const mcpHub = provider.getMcpHub()
 	const servers = [...(mcpHub?.getServers() ?? [])].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
 	const availableBrowserToolNames = [...getAvailableVSCodeBrowserToolNames()].sort()
+	const namedAgentTypes = Object.entries(provider.contextProxy?.getValues?.().subagentAgentTypes ?? {})
+		.map(([name, definition]) => ({ name, description: definition.description }))
+		.sort((a, b) => a.name.localeCompare(b.name))
 	const cache = options.catalogCache
 	const providerName = apiConfiguration?.apiProvider
 	const canDiscover =
@@ -338,14 +432,18 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				allowedToolNames: orderedNames(allowedToolNames),
 				taskKind,
 				enableAgentLifecycleTools,
+				crossTaskRole,
+				namedAgentTypes,
 				todoListEnabled: apiConfiguration?.todoListEnabled ?? true,
 				modelSchema: {
-					supportsImages: modelInfo?.supportsImages ?? false,
-					includedTools: orderedNames(modelInfo?.includedTools),
-					excludedTools: orderedNames(modelInfo?.excludedTools),
+					supportsImages: catalogModelInfo?.supportsImages ?? false,
+					includedTools: orderedNames(catalogModelInfo?.includedTools),
+					excludedTools: orderedNames(catalogModelInfo?.excludedTools),
+					experimentalSupportedTools: orderedNames(catalogModelInfo?.experimental_supported_tools),
 				},
 				modelIdentity,
 				modelPreference,
+				approvalMode: options.approvalMode,
 				autoApprovalEnabled: options.autoApprovalEnabled,
 				readGrant: options.readGrant,
 				policy: options.policy,
@@ -353,6 +451,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				historicalToolNames: includeAllToolsWithRestrictions
 					? toolNamesReferencedInHistory(options.discoveryHistory)
 					: undefined,
+				legacyDiscoverToolsInHistory: historyContainsToolName(options.discoveryHistory, "discover_tools"),
 				availableBrowserToolNames,
 				codeIndex: [
 					codeIndexManager?.isFeatureEnabled,
@@ -368,28 +467,38 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			})
 		: ""
 
-	const build = (discover?: DiscoverTools): TaskToolSurface => {
+	const build = (search?: ToolSearch): TaskToolSurface => {
 		// Build settings object for tool filtering.
 		const filterSettings = {
 			todoListEnabled: apiConfiguration?.todoListEnabled ?? true,
 			disabledTools,
-			modelInfo,
+			modelInfo: catalogModelInfo,
 		}
 
 		// Check if the model supports images for read_file tool description.
-		const supportsImages = modelInfo?.supportsImages ?? false
+		const supportsImages = catalogModelInfo?.supportsImages ?? false
 
 		// Build native tools with dynamic read_file tool based on settings.
 		const nativeTools = getNativeTools({
 			supportsImages,
 			availableBrowserToolNames,
 			taskKind,
+			mcpResourcesAvailable: servers.length > 0,
+			includeLegacyMcpResource:
+				includeAllToolsWithRestrictions === true &&
+				historyContainsToolName(options.discoveryHistory, "access_mcp_resource"),
+			crossTaskRole,
 			agentKinds: mode === planModeSlug ? ["explore", "review"] : undefined,
+			namedAgentTypes,
 			planMode: mode === planModeSlug,
-			includeApplyPatch: modelPreference === "apply_patch",
+			includeRequestUserInputAsync: taskKind === "primary" && supportsAsyncUserInput(catalogModelInfo),
 		})
-		// Restricted provider supersets retain definitions used by earlier ordinary-provider history.
-		if (canDiscover || includeAllToolsWithRestrictions) nativeTools.push(discoverTools)
+		// Restricted provider supersets retain discovery definitions only when saved history requires them.
+		const legacyDiscoveryInHistory = historyContainsToolName(options.discoveryHistory, "discover_tools")
+		const discoveryInHistory =
+			legacyDiscoveryInHistory || historyContainsToolName(options.discoveryHistory, "tool_search")
+		if (canDiscover || (includeAllToolsWithRestrictions && discoveryInHistory)) nativeTools.push(toolSearch)
+		if (legacyDiscoveryInHistory) nativeTools.push(discoverTools)
 		// Managed child lanes provide a frozen authority allow-list. Retain only the
 		// orchestration schemas explicitly granted there.
 		const explicitlyAllowedTools = allowedToolNames
@@ -405,9 +514,8 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			if (AGENT_LIFECYCLE_TOOLS.has(name)) return enableAgentLifecycleTools
 			return true
 		})
-
 		// Filter native tools based on mode restrictions.
-		const filteredNativeTools = filterNativeToolsForMode(
+		const modeFilteredNativeTools = filterNativeToolsForMode(
 			taskNativeTools,
 			mode,
 			customModes,
@@ -415,7 +523,18 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			codeIndexManager,
 			filterSettings,
 			mcpHub,
-		).filter((tool) => canDiscover || getToolName(tool) !== "discover_tools")
+		).filter((tool) => {
+			const name = getToolName(tool)
+			return (
+				name !== "access_mcp_resource" && (canDiscover || (name !== "tool_search" && name !== "discover_tools"))
+			)
+		})
+		const filteredNativeTools = [
+			...modeFilteredNativeTools,
+			...(canDiscover && historyContainsToolName(options.discoveryHistory, "discover_tools")
+				? [discoverTools]
+				: []),
+		]
 
 		// Filter MCP tools based on mode restrictions.
 		const mcpTools = buildMcpServerTools(servers, includeAllToolsWithRestrictions)
@@ -425,7 +544,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			: filterMcpToolsForMode(connectedMcpTools, mode, customModes, experiments)
 		const nativeCustomTools = customTools.map((tool) => tool.schema)
 
-		// Combine filtered tools (for backward compatibility and for allowedFunctionNames)
+		// Combine filtered native, MCP, and custom tools into one captured surface.
 		const taskAllowedNames = allowedToolNames ? new Set(allowedToolNames.map(canonicalizeToolName)) : undefined
 		const requestClass = classifyRequestWorkClass(options.userRequestText, { taskKind })
 		const filteredTools = applyLookupCatalogNarrowing(
@@ -441,8 +560,8 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			customTools,
 			mcpToolTargets: mcpCapture.targets,
 			isMcpToolCurrent: mcpCapture.isCurrent,
-			...(canDiscover && discover
-				? { discovery: { execute: discover, maxOutputChars: DISCOVERY_OUTPUT_LIMIT } }
+			...(canDiscover && search
+				? { discovery: { execute: search, maxOutputChars: DISCOVERY_OUTPUT_LIMIT } }
 				: {}),
 		})
 
@@ -475,7 +594,9 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 	const surface = cache ? cache.capture(key, build, options.discoveryHistory) : build()
 	return {
 		tools: [...surface.schemas],
-		...(surface.includeAllToolsWithRestrictions ? { allowedFunctionNames: [...surface.allowedFunctionNames] } : {}),
+		...(surface.includeAllToolsWithRestrictions
+			? { allowedFunctionNames: getProviderAllowedFunctionNames(surface) }
+			: {}),
 		registry: surface.registry,
 		schemas: [...surface.schemas],
 		policy: surface.policy,
@@ -523,6 +644,7 @@ function createCapturedToolSurface(input: {
 		allowedToolNames: allowedFunctionNames,
 		disabledTools,
 		policy: options.policy,
+		approvalMode: options.approvalMode,
 		autoApprovalEnabled: options.autoApprovalEnabled,
 		readGrant: options.readGrant,
 		mode: options.mode,
@@ -534,6 +656,20 @@ function createCapturedToolSurface(input: {
 		// surface only captures that result and must not narrow it a second time.
 		applyProfile: false,
 	})
+}
+
+/** Match provider function allow-lists to the exact names in the captured schema catalog. */
+function getProviderAllowedFunctionNames(surface: TaskToolSurface): string[] {
+	const schemaNamesByCanonical = new Map<string, string>()
+	for (const schema of surface.schemas) {
+		if (schema.type !== "function") continue
+		const name = schema.function.name
+		const canonical = canonicalizeToolName(name)
+		const preferred = canonical
+		const existing = schemaNamesByCanonical.get(canonical)
+		if (!existing || (name === preferred && existing !== preferred)) schemaNamesByCanonical.set(canonical, name)
+	}
+	return surface.allowedFunctionNames.map((name) => schemaNamesByCanonical.get(canonicalizeToolName(name)) ?? name)
 }
 
 /** Build the unified registry/schema/policy capture for a provider request. */

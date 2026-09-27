@@ -71,6 +71,7 @@ vitest.mock("openai", () => {
 										{
 											delta: {},
 											index: 0,
+											finish_reason: "stop",
 										},
 									],
 									usage: {
@@ -129,7 +130,7 @@ describe("OpenAiHandler with usage tracking fix", () => {
 			expect(textChunks[0].text).toBe("Test ")
 			expect(textChunks[1].text).toBe("response")
 
-			// Check we only have one usage chunk and it's the last one
+			// Check we only have one usage chunk and that the terminal status follows it.
 			const usageChunks = chunks.filter((chunk) => chunk.type === "usage")
 			expect(usageChunks).toHaveLength(1)
 			expect(usageChunks[0]).toEqual({
@@ -138,11 +139,8 @@ describe("OpenAiHandler with usage tracking fix", () => {
 				outputTokens: 5,
 			})
 
-			// Check the usage chunk is the last one reported from the API
-			const lastChunk = chunks[chunks.length - 1]
-			expect(lastChunk.type).toBe("usage")
-			expect(lastChunk.inputTokens).toBe(10)
-			expect(lastChunk.outputTokens).toBe(5)
+			expect(chunks.at(-2)).toMatchObject({ type: "usage", inputTokens: 10, outputTokens: 5 })
+			expect(chunks.at(-1)).toMatchObject({ type: "outcome", status: "completed", terminal: true })
 		})
 
 		it("should handle case where usage is only in the final chunk", async () => {
@@ -151,7 +149,7 @@ describe("OpenAiHandler with usage tracking fix", () => {
 				if (!options.stream) {
 					return {
 						id: "test-completion",
-						choices: [{ message: { role: "assistant", content: "Test response" } }],
+						choices: [{ message: { role: "assistant", content: "Test response" }, finish_reason: "stop" }],
 						usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
 					}
 				}
@@ -172,7 +170,7 @@ describe("OpenAiHandler with usage tracking fix", () => {
 
 						// Final chunk with usage data
 						yield {
-							choices: [{ delta: {}, index: 0 }],
+							choices: [{ delta: {}, index: 0, finish_reason: "stop" }],
 							usage: {
 								prompt_tokens: 10,
 								completion_tokens: 5,
@@ -205,7 +203,7 @@ describe("OpenAiHandler with usage tracking fix", () => {
 				if (!options.stream) {
 					return {
 						id: "test-completion",
-						choices: [{ message: { role: "assistant", content: "Test response" } }],
+						choices: [{ message: { role: "assistant", content: "Test response" }, finish_reason: "stop" }],
 						usage: null,
 					}
 				}
@@ -217,7 +215,7 @@ describe("OpenAiHandler with usage tracking fix", () => {
 							usage: null,
 						}
 						yield {
-							choices: [{ delta: {}, index: 0 }],
+							choices: [{ delta: {}, index: 0, finish_reason: "stop" }],
 							usage: null,
 						}
 					},

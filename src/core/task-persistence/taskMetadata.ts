@@ -14,6 +14,7 @@ import type {
 	SubagentModelRouteState,
 	SubagentRole,
 	SubagentStopReason,
+	ApprovalMode,
 } from "@alpha-code/types"
 
 import { combineApiRequests } from "../../shared/combineApiRequests"
@@ -27,6 +28,10 @@ const taskSizeCache = new NodeCache({ stdTTL: 30, checkperiod: 5 * 60 })
 
 export type TaskMetadataOptions = {
 	taskId: string
+	orchestrationParentTaskId?: string
+	orchestrationWorkspaceMode?: "shared" | "worktree"
+	orchestrationWorkspaceRelativePath?: string
+	orchestrationWorkspaceBaselineCommit?: string
 	rootTaskId?: string
 	parentTaskId?: string
 	taskNumber: number
@@ -38,6 +43,7 @@ export type TaskMetadataOptions = {
 	apiConfigName?: string
 	reasoningPreference?: TaskReasoningPreference
 	reasoningState?: TaskReasoningState
+	approvalMode?: ApprovalMode
 	workContext?: TaskWorkContext
 	designHandoff?: TaskDesignHandoff
 	/** Initial status for the task (e.g., "active" for child tasks) */
@@ -66,6 +72,10 @@ export type TaskMetadataOptions = {
 
 export async function taskMetadata({
 	taskId: id,
+	orchestrationParentTaskId,
+	orchestrationWorkspaceMode,
+	orchestrationWorkspaceRelativePath,
+	orchestrationWorkspaceBaselineCommit,
 	rootTaskId,
 	parentTaskId,
 	taskNumber,
@@ -76,6 +86,7 @@ export async function taskMetadata({
 	apiConfigName,
 	reasoningPreference,
 	reasoningState,
+	approvalMode,
 	workContext,
 	designHandoff,
 	initialStatus,
@@ -148,6 +159,10 @@ export async function taskMetadata({
 	// where attempt_completion might run before a separate status update.
 	const historyItem: HistoryItem = {
 		id,
+		...(orchestrationParentTaskId ? { orchestrationParentTaskId } : {}),
+		...(orchestrationWorkspaceMode ? { orchestrationWorkspaceMode } : {}),
+		...(orchestrationWorkspaceRelativePath !== undefined ? { orchestrationWorkspaceRelativePath } : {}),
+		...(orchestrationWorkspaceBaselineCommit ? { orchestrationWorkspaceBaselineCommit } : {}),
 		rootTaskId,
 		parentTaskId,
 		number: taskNumber,
@@ -167,6 +182,7 @@ export async function taskMetadata({
 		mode,
 		...(reasoningPreference && { reasoningPreference: structuredClone(reasoningPreference) }),
 		...(reasoningState && { reasoningState: structuredClone(reasoningState) }),
+		...(approvalMode && { approvalMode }),
 		...(typeof apiConfigName === "string" && apiConfigName.length > 0 ? { apiConfigName } : {}),
 		...(initialStatus && { status: initialStatus }),
 		...(taskKind && { taskKind }),

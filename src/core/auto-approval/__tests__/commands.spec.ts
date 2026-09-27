@@ -36,6 +36,40 @@ describe("containsDangerousSubstitution", () => {
 })
 
 describe("getCommandDecision", () => {
+	it.each([
+		["env rm -rf .", ["env"]],
+		["command rm -rf .", ["command"]],
+		["sudo -u root rm -rf .", ["sudo"]],
+		["npx -p tools rm -rf .", ["npx"]],
+		["npm exec --package tools -- rm -rf .", ["npm"]],
+		["uv run rm -rf .", ["uv"]],
+		['bash -c "rm -rf ."', ["bash"]],
+		['bash -c "echo ready; rm -rf ."', ["bash"]],
+	])("applies an rm denial through a command launcher: %s", (command, allowed) => {
+		expect(getCommandDecision(command, allowed, ["rm"])).toBe("auto_deny")
+	})
+
+	it.each([
+		["eval echo $PAYLOAD", ["eval echo"]],
+		["bash -c true$PAYLOAD", ["bash -c true"]],
+		["cmd /c echo %PAYLOAD%", ["cmd /c echo"]],
+		["powershell -Command Get-Date$PAYLOAD", ["powershell -Command Get-Date"]],
+		["node -e 1$PAYLOAD", ["node -e 1"]],
+		["nodejs -e 1$PAYLOAD", ["nodejs -e 1"]],
+		["python -c pass$PAYLOAD", ["python -c pass"]],
+		["node scripts/check.js$SUFFIX", ["node scripts/check.js"]],
+		["bash scripts/check.sh$SUFFIX", ["bash scripts/check.sh"]],
+		["deno run scripts/check.ts$SUFFIX", ["deno run scripts/check.ts"]],
+		["env $COMMAND", ["env"]],
+	])("asks before evaluating a dynamic code operand: %s", (command, allowed) => {
+		expect(getCommandDecision(command, allowed, [])).toBe("ask_user")
+	})
+
+	it("preserves an explicitly configured static interpreter command", () => {
+		expect(getCommandDecision("node -e 1", ["node"], [])).toBe("auto_approve")
+		expect(getCommandDecision("eval echo", ["eval echo"], [])).toBe("auto_approve")
+	})
+
 	it.each(["gh pr list", "gh pr create --fill", "gh api repos/owner/repo/issues -f title=test"])(
 		"uses configured approval rules for %s",
 		(command) => {
@@ -61,6 +95,11 @@ describe("getCommandDecision", () => {
 })
 
 describe("plaintext-free inherited command approval", () => {
+	it("applies nested launcher denials to hashed child policies", () => {
+		const policy = createSubagentCommandApprovalPolicy(["env"], ["rm"], "7".repeat(64))
+		expect(getSubagentCommandDecision("env rm -rf .", policy)).toBe("auto_deny")
+	})
+
 	it("preserves longest-prefix and chain decisions without persisting command text", () => {
 		const allowed = ["git", "git push --dry-run", "mycli --token hunter2"]
 		const denied = ["git push", "curl -u user:password"]
@@ -142,6 +181,12 @@ describe("containsDangerousSubstitution — true positives still caught", () => 
 
 describe("getCommandDecision — integration with dangerous substitution checks", () => {
 	const allowedCommands = ["node", "echo"]
+
+	it("requires every executable in a bounded read pipeline to be allowed", () => {
+		const command = "rg -n -i -m 20 'active ticket|ticket.*active|active' ledger.txt | cut -c 1-240"
+		expect(getCommandDecision(command, ["node", "rg"])).toBe("ask_user")
+		expect(getCommandDecision(command, ["node", "rg", "cut"])).toBe("auto_approve")
+	})
 
 	it("should auto-approve the complex node -e one-liner when node is allowed", () => {
 		const nodeOneLiner = `node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('prd.json','utf8'));const allowed=new Set(['pending','in-progress','complete','blocked']);const bad=(p.items||[]).filter(i=>!allowed.has(i.status));console.log('meta.status',p.meta?.status);console.log('workstreams', (p.workstreams||[]).length);console.log('items', (p.items||[]).length);console.log('statusCounts', (p.items||[]).reduce((a,i)=>(a[i.status]=(a[i.status]||0)+1,a),{}));console.log('invalidStatuses', bad.length);if(bad.length){console.log(bad.map(i=>i.id+':'+i.status).join('\\\\n'));process.exit(2);} "`

@@ -1,8 +1,11 @@
 import * as assert from "assert"
+import * as fs from "node:fs/promises"
+import * as path from "node:path"
 import * as vscode from "vscode"
 
 import {
 	AlphaCodeEventName,
+	type AgentLifecycleSnapshot,
 	type AlphaCodeSettings,
 	type TaskReasoningPreference,
 	type TaskReasoningProjection,
@@ -11,7 +14,13 @@ import {
 import { setDefaultSuiteTimeout } from "./test-utils"
 import { sleep, waitFor } from "./utils"
 
-type FixtureScenario = "tool-followup" | "cancellation" | "error-recovery" | "no-choices-recovery" | "completion"
+type FixtureScenario =
+	| "tool-followup"
+	| "tool-followup-tail"
+	| "cancellation"
+	| "error-recovery"
+	| "no-choices-recovery"
+	| "completion"
 
 interface FixturePart {
 	kind: "tool_call" | "tool_result" | "text" | "unknown"
@@ -32,7 +41,10 @@ interface FixtureRequest {
 }
 
 interface VsCodeLmFixtureControl {
-	reset(scenario: FixtureScenario, options?: { holdRequestIndexes?: number[] }): void
+	reset(
+		scenario: FixtureScenario,
+		options?: { holdRequestIndexes?: number[]; holdAfterToolCallRequestIndexes?: number[] },
+	): void
 	getRequests(): FixtureRequest[]
 	getEvents(): Array<{
 		type: string
@@ -41,6 +53,7 @@ interface VsCodeLmFixtureControl {
 		cancellationRequested?: boolean
 	}>
 	releaseRequest(requestIndex: number): void
+	releaseToolCallTail(requestIndex: number): void
 	releaseAll(): void
 }
 
@@ -65,6 +78,7 @@ interface ContractHostProvider {
 		preference: TaskReasoningPreference,
 	): Promise<TaskReasoningProjection>
 	getTaskWithId(taskId: string): Promise<{ historyItem: { reasoningPreference?: TaskReasoningPreference } }>
+	getAgentLifecycleSnapshot(taskId: string | undefined): AgentLifecycleSnapshot | undefined
 	showTaskWithId(taskId: string): Promise<void>
 	getLiveTask(taskId: string): ContractTask | undefined
 	getStateToPostToWebview(): Promise<{ currentTaskId?: string; mode?: string }>
@@ -72,6 +86,9 @@ interface ContractHostProvider {
 
 const FIXTURE_VENDOR = "alpha-e2e"
 const FIXTURE_MODEL_ID = "alpha-e2e-model"
+const READ_PROOF_FILE = "alpha-e2e-stream-read-proof.txt"
+const READ_PROOF = "ALPHA_E2E_EARLY_READ_PROOF"
+const READ_COMMAND = `rg --no-config -n ${READ_PROOF} ${READ_PROOF_FILE}`
 const COMPLETION_ASKS = new Set(["completion_result", "resume_completed_task"])
 
 const getHostProvider = (): ContractHostProvider => {
@@ -107,6 +124,27 @@ const createConfiguration = (): AlphaCodeSettings => ({
 	enableCheckpoints: false,
 })
 
+const createCommandReadConfiguration = (): AlphaCodeSettings => ({
+	...createConfiguration(),
+	alwaysAllowExecute: true,
+	allowedCommands: [READ_COMMAND],
+})
+
+const createReadProofFile = async (): Promise<() => Promise<void>> => {
+	const workspace = vscode.workspace.workspaceFolders?.[0]
+	assert.ok(workspace, "The VS Code LM contract test has no workspace folder")
+	const filePath = path.join(workspace.uri.fsPath, READ_PROOF_FILE)
+	await fs.writeFile(filePath, `${READ_PROOF}\n`, { encoding: "utf8", flag: "wx" })
+	return async () => fs.rm(filePath, { force: true })
+}
+
+const getToolResultText = (request: FixtureRequest, callId: string): string => {
+	const result = request.messages
+		.flatMap((message) => message.parts)
+		.find((part) => part.kind === "tool_result" && part.callId === callId)
+	return result?.content?.map((part) => part.value ?? "").join("\n") ?? ""
+}
+
 const getTaskDiagnostics = async (provider: ContractHostProvider, fixture: VsCodeLmFixtureControl, taskId: string) => {
 	const task = provider.getLiveTask(taskId)
 	const state = await provider.getStateToPostToWebview()
@@ -115,7 +153,23 @@ const getTaskDiagnostics = async (provider: ContractHostProvider, fixture: VsCod
 		currentTaskId: state.currentTaskId,
 		mode: state.mode,
 		requestCount: fixture.getRequests().length,
-		requests: fixture.getRequests().map(({ index, scenario, cancelled }) => ({ index, scenario, cancelled })),
+		requests: fixture.getRequests().map(({ index, scenario, cancelled, tools, messages }) => ({
+			index,
+			scenario,
+			cancelled,
+			tools,
+			toolResults: messages.flatMap((message) =>
+				message.parts
+					.filter((part) => part.kind === "tool_result")
+					.map((part) => ({
+						callId: part.callId,
+						content: part.content
+							?.map((item) => item.value ?? "")
+							.join("\\n")
+							.slice(0, 500),
+					})),
+			),
+		})),
 		fixtureEvents: fixture.getEvents(),
 		isInitialized: task?.isInitialized,
 		isTaskLoopActive: task?.isTaskLoopActive,
@@ -304,6 +358,7 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 
 	test("carries tool call and result through VS Code LM, then resumes a completed task with the follow-up", async () => {
 		const provider = getHostProvider()
+		const cleanupReadProof = await createReadProofFile()
 		fixture.reset("tool-followup", { holdRequestIndexes: [1] })
 		let completedCount = 0
 		const onTaskCompleted = () => completedCount++
@@ -311,8 +366,8 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 
 		try {
 			const taskId = await globalThis.api.startNewTask({
-				configuration: createConfiguration(),
-				text: "List this workspace, complete, then accept a same-task evaluation follow-up.",
+				configuration: createCommandReadConfiguration(),
+				text: "Search this workspace for the read proof, complete, then accept a same-task follow-up.",
 			})
 			const initialTask = provider.getLiveTask(taskId)
 			assert.ok(initialTask, "The VS Code LM task was not registered with the extension host")
@@ -322,27 +377,45 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 			const [firstRequest, secondRequest] = fixture.getRequests()
 			assert.ok(firstRequest, "The initial VS Code LM request was not recorded")
 			assert.ok(secondRequest, "The tool-result VS Code LM request was not recorded")
-			assert.ok(firstRequest.tools.includes("list_files"), "Alpha did not offer list_files through VS Code LM")
 			assert.ok(
-				firstRequest.tools.includes("attempt_completion"),
-				"Alpha did not offer attempt_completion through VS Code LM",
+				firstRequest.tools.includes("exec_command"),
+				"Alpha did not offer exec_command through VS Code LM",
+			)
+			assert.ok(
+				!firstRequest.tools.includes("attempt_completion"),
+				"Alpha exposed the retired attempt_completion tool through VS Code LM",
 			)
 
 			const callMessageIndex = secondRequest.messages.findIndex((message) =>
-				message.parts.some((part) => part.kind === "tool_call" && part.callId === "alpha-e2e-list-files-1"),
+				message.parts.some((part) => part.kind === "tool_call" && part.callId === "alpha-e2e-command-read-1"),
 			)
 			const resultMessageIndex = secondRequest.messages.findIndex((message) =>
-				message.parts.some((part) => part.kind === "tool_result" && part.callId === "alpha-e2e-list-files-1"),
+				message.parts.some((part) => part.kind === "tool_result" && part.callId === "alpha-e2e-command-read-1"),
 			)
-			assert.ok(callMessageIndex >= 0, "The second VS Code LM request omitted the assistant tool call")
+			assert.ok(callMessageIndex >= 0, "The second VS Code LM request omitted the assistant exec_command call")
 			assert.ok(resultMessageIndex > callMessageIndex, "The tool result did not follow its tool call")
 			assert.equal(secondRequest.messages[callMessageIndex]!.role, vscode.LanguageModelChatMessageRole.Assistant)
 			assert.equal(secondRequest.messages[resultMessageIndex]!.role, vscode.LanguageModelChatMessageRole.User)
+			assert.ok(
+				getToolResultText(secondRequest, "alpha-e2e-command-read-1").includes(READ_PROOF),
+				`The VS Code LM tool result omitted content read from the workspace fixture: ${JSON.stringify(
+					getToolResultText(secondRequest, "alpha-e2e-command-read-1"),
+				)}`,
+			)
 
 			await sleep(150)
 			assert.equal(fixture.getRequests().length, 2, "A held response unexpectedly triggered another API request")
 			fixture.releaseRequest(1)
 			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 1)
+			assert.ok(
+				initialTask.clineMessages?.some(
+					(message) =>
+						(message.say === "text" || message.say === "completion_result") &&
+						!message.partial &&
+						message.text === "The VS Code LM contract turn completed.",
+				),
+				"Ordinary assistant text was not retained as the completed VS Code LM answer",
+			)
 
 			await initialTask.resumeCompletedTaskFollowup("Evaluate the completed answer and keep this exact task ID.")
 			await waitForRequestCount(provider, fixture, taskId, 3)
@@ -365,8 +438,141 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 				"The same-task follow-up text never crossed the VS Code LM boundary",
 			)
 			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 2)
+			assert.ok(
+				initialTask.clineMessages?.some(
+					(message) =>
+						(message.say === "text" || message.say === "completion_result") &&
+						!message.partial &&
+						message.text === "The same-task follow-up completed through VS Code LM.",
+				),
+				"Ordinary assistant text from the same-task follow-up was not retained",
+			)
 		} finally {
 			globalThis.api.off(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
+			await cleanupReadProof()
+		}
+	})
+
+	test("starts an audited exec_command read while the VS Code LM response tail is held", async () => {
+		const provider = getHostProvider()
+		const callId = "alpha-e2e-command-read-1"
+		const cleanupReadProof = await createReadProofFile()
+		fixture.reset("tool-followup-tail", { holdAfterToolCallRequestIndexes: [0] })
+		let completedCount = 0
+		const onTaskCompleted = () => completedCount++
+		globalThis.api.on(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
+
+		try {
+			const taskStartedAt = Date.now()
+			const taskId = await globalThis.api.startNewTask({
+				configuration: createCommandReadConfiguration(),
+				text: "Search this workspace for the read proof and report what you found.",
+			})
+			await waitForRequestCount(provider, fixture, taskId, 1)
+			await waitFor(() => fixture.getEvents().some((event) => event.type === "provider-tool-call-reported"), {
+				timeout: 10_000,
+				interval: 25,
+				description: "the fixture to report its complete exec_command item",
+				onTimeout: () => getTaskDiagnostics(provider, fixture, taskId),
+			})
+			const toolCallReportedAt = fixture
+				.getEvents()
+				.find((event) => event.requestIndex === 0 && event.type === "provider-tool-call-reported")?.elapsedMs
+			assert.ok(toolCallReportedAt !== undefined, "The fixture did not timestamp its completed exec_command item")
+			await waitFor(
+				() => provider.getAgentLifecycleSnapshot(taskId)?.effectStartedToolCallIds.includes(callId) ?? false,
+				{
+					timeout: 10_000,
+					interval: 25,
+					description: "the isolated exec_command effect to start before provider completion",
+					onTimeout: () => getTaskDiagnostics(provider, fixture, taskId),
+				},
+			)
+			const effectObservedAtMs = Date.now() - taskStartedAt
+			await waitFor(
+				() =>
+					provider
+						.getLiveTask(taskId)
+						?.clineMessages?.some(
+							({ say, text }) => say === "command_output" && text?.includes(READ_PROOF) === true,
+						) ?? false,
+				{
+					timeout: 10_000,
+					interval: 25,
+					description: "the isolated rg read to return the workspace proof before provider completion",
+					onTimeout: () => getTaskDiagnostics(provider, fixture, taskId),
+				},
+			)
+
+			const heldEvents = fixture.getEvents()
+			assert.ok(
+				!heldEvents.some(
+					(event) =>
+						event.requestIndex === 0 &&
+						(event.type === "provider-tail-released" || event.type === "provider-request-returned"),
+				),
+				"The provider response tail returned before the read effect began",
+			)
+			console.info(
+				JSON.stringify({
+					metric: "held-tail audited exec_command read",
+					providerToolCallReportedAtMs: toolCallReportedAt,
+					effectObservedAtMs,
+					observedOverlapAfterToolCallMs: Math.max(0, effectObservedAtMs - toolCallReportedAt),
+					tailReleasedBeforeEffect: false,
+				}),
+			)
+			assert.deepStrictEqual(
+				provider.getAgentLifecycleSnapshot(taskId)?.effectStartedToolCallIds.filter((id) => id === callId),
+				[callId],
+				"The read effect should start once while the tail remains held",
+			)
+			assert.equal(
+				fixture.getRequests().length,
+				1,
+				"A tool-result request must wait for the assistant response boundary",
+			)
+
+			fixture.releaseToolCallTail(0)
+			await waitForRequestCount(provider, fixture, taskId, 2)
+			const toolResultRequest = fixture.getRequests()[1]
+			assert.ok(toolResultRequest, "The follow-up request containing the read result was not recorded")
+			const callMessageIndex = toolResultRequest.messages.findIndex((message) =>
+				message.parts.some((part) => part.kind === "tool_call" && part.callId === callId),
+			)
+			const resultMessageIndex = toolResultRequest.messages.findIndex((message) =>
+				message.parts.some((part) => part.kind === "tool_result" && part.callId === callId),
+			)
+			assert.ok(callMessageIndex >= 0, "The assistant tool call was not persisted before the result")
+			assert.ok(resultMessageIndex > callMessageIndex, "The tool result did not follow its assistant tool call")
+			assert.equal(
+				toolResultRequest.messages[callMessageIndex]!.role,
+				vscode.LanguageModelChatMessageRole.Assistant,
+			)
+			assert.equal(toolResultRequest.messages[resultMessageIndex]!.role, vscode.LanguageModelChatMessageRole.User)
+			const resultPart = toolResultRequest.messages[resultMessageIndex]!.parts.find(
+				(part) => part.kind === "tool_result" && part.callId === callId,
+			)
+			assert.ok(resultPart?.content?.some((part) => part.kind === "text" && Boolean(part.value)))
+			assert.ok(
+				getToolResultText(toolResultRequest, callId).includes(READ_PROOF),
+				"The persisted exec_command result omitted content read from the workspace fixture",
+			)
+
+			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 1)
+			const settled = provider.getAgentLifecycleSnapshot(taskId)
+			assert.deepStrictEqual(
+				settled?.effectStartedToolCallIds.filter((id) => id === callId),
+				[callId],
+			)
+			assert.deepStrictEqual(
+				settled?.terminalToolCallIds.filter((id) => id === callId),
+				[callId],
+			)
+		} finally {
+			fixture.releaseToolCallTail(0)
+			globalThis.api.off(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
+			await cleanupReadProof()
 		}
 	})
 

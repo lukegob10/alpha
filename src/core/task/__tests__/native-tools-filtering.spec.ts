@@ -77,11 +77,11 @@ describe("Native Tools Filtering by Mode", () => {
 			expect(codeAllowedTools.has("list_files")).toBe(true)
 
 			// Code SHOULD have command tools
-			expect(codeAllowedTools.has("shell")).toBe(true)
+			expect(codeAllowedTools.has("exec_command")).toBe(true)
 			expect(codeAllowedTools.has("manage_command")).toBe(true)
 		})
 
-		it("should filter MCP tools based on use_mcp_tool permission", async () => {
+		it("allows direct MCP descriptors only when the MCP group is enabled", async () => {
 			const modeWithMcp: ModeConfig = {
 				slug: "test-mode-with-mcp",
 				name: "Test Mode",
@@ -98,11 +98,11 @@ describe("Native Tools Filtering by Mode", () => {
 
 			const { isToolAllowedForMode } = await import("../../tools/validateToolUse")
 
-			// Mode with MCP group should allow use_mcp_tool
-			expect(isToolAllowedForMode("use_mcp_tool", "test-mode-with-mcp", [modeWithMcp])).toBe(true)
+			// Dynamic MCP names are checked against the captured tool's capability.
+			expect(isToolAllowedForMode("mcp--docs--lookup", "test-mode-with-mcp", [modeWithMcp])).toBe(true)
 
-			// Mode without MCP group should NOT allow use_mcp_tool
-			expect(isToolAllowedForMode("use_mcp_tool", "test-mode-no-mcp", [modeWithoutMcp])).toBe(false)
+			expect(isToolAllowedForMode("mcp--docs--lookup", "test-mode-no-mcp", [modeWithoutMcp])).toBe(false)
+			expect(isToolAllowedForMode("use_mcp_tool", "test-mode-with-mcp", [modeWithMcp])).toBe(false)
 		})
 
 		it("should always include always-available tools regardless of mode", async () => {

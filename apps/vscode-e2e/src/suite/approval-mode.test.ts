@@ -15,29 +15,82 @@ interface ApprovalTask {
 	clineMessages: AlphaMessage[]
 	approveAsk(): void
 	denyAsk(): void
+	handleWebviewAskResponse(response: "messageResponse", text: string): void
 	waitForTermination(): Promise<void>
+	getCommandExecutionEvidence(): Array<{ toolCallId: string; status: string; command: string; exitCode?: number }>
+}
+
+interface ApprovalModeHostProvider {
+	getLiveTask(taskId: string): ApprovalTask | undefined
+	updateTaskApprovalMode(update: { requestId: string; taskId: string; approvalMode: "ask" | "auto" | "bypass" }): {
+		status: "applied" | "targetUnavailable" | "rejected"
+		approvalMode?: string
+	}
 }
 
 interface Observation {
 	task?: ApprovalTask
 	requests: number
 	calls: Array<{ name: string; arguments: Record<string, unknown> }>
+	modelInputs: unknown[][]
 }
 
 const observations = new WeakMap<object, Observation>()
 
+function findRequestUserInputAnswerMap(value: unknown): Record<string, unknown> | undefined {
+	if (typeof value === "string") {
+		try {
+			return findRequestUserInputAnswerMap(JSON.parse(value))
+		} catch {
+			return undefined
+		}
+	}
+	if (Array.isArray(value)) {
+		for (const item of value) {
+			const result = findRequestUserInputAnswerMap(item)
+			if (result) return result
+		}
+		return undefined
+	}
+	if (!value || typeof value !== "object") return undefined
+
+	const record = value as Record<string, unknown>
+	const answers = record.answers
+	if (
+		answers &&
+		typeof answers === "object" &&
+		!Array.isArray(answers) &&
+		"approach" in answers &&
+		"validation" in answers
+	) {
+		return answers as Record<string, unknown>
+	}
+	for (const item of Object.values(record)) {
+		const result = findRequestUserInputAnswerMap(item)
+		if (result) return result
+	}
+	return undefined
+}
+
 class ApprovalModeAI {
 	readonly id = "approval-mode-host"
 	removeFromCache?: () => void
+	private rootTaskId?: string
 	constructor(
 		observation: Observation,
 		private readonly resolveTask: (id: string) => ApprovalTask,
 	) {
 		observations.set(this, observation)
 	}
-	async *createMessage(_system: string, _messages: unknown[], metadata?: { taskId?: string }) {
+	async *createMessage(_system: string, messages: unknown[], metadata?: { taskId?: string }) {
 		assert.ok(metadata?.taskId)
+		this.rootTaskId ??= metadata.taskId
+		if (metadata.taskId !== this.rootTaskId) {
+			yield { type: "text" as const, text: "Child inspection complete." }
+			return
+		}
 		const observation = observations.get(this)!
+		observation.modelInputs.push(messages)
 		observation.task = this.resolveTask(metadata.taskId)
 		const index = observation.requests++
 		if (index < observation.calls.length) {
@@ -66,9 +119,17 @@ class ApprovalModeAI {
 
 async function runScriptedApproval(options: {
 	approvalMode: "ask" | "auto" | "bypass"
+	mode?: "code" | "architect"
 	calls: Observation["calls"]
-	onAsk?: (task: ApprovalTask, ask: AlphaMessage) => void
-}): Promise<{ asks: string[]; workspace: string; outside: string }> {
+	onAsk?: (task: ApprovalTask, ask: AlphaMessage, provider: ApprovalModeHostProvider) => void
+}): Promise<{
+	asks: string[]
+	workspace: string
+	outside: string
+	commandEvidence: ReturnType<ApprovalTask["getCommandExecutionEvidence"]>
+	modelInputs: unknown[][]
+	messages: AlphaMessage[]
+}> {
 	assert.equal(vscode.version, "1.122.1")
 	const workspace = process.env.ALPHA_E2E_WORKSPACE
 	const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR
@@ -77,10 +138,10 @@ async function runScriptedApproval(options: {
 	const configuration = globalThis.api.getConfiguration()
 	const provider = (
 		globalThis.api as unknown as {
-			sidebarProvider: { getLiveTask(id: string): ApprovalTask | undefined }
+			sidebarProvider: ApprovalModeHostProvider
 		}
 	).sidebarProvider
-	const observation: Observation = { requests: 0, calls: options.calls }
+	const observation: Observation = { requests: 0, calls: options.calls, modelInputs: [] }
 	const scripted = new ApprovalModeAI(observation, (id) => {
 		const task = provider.getLiveTask(id)
 		assert.ok(task)
@@ -89,6 +150,8 @@ async function runScriptedApproval(options: {
 	const acknowledgeCompletion = createCompletionReviewAcknowledger()
 	const handled = new Set<number>()
 	const asks: string[] = []
+	let commandEvidence: ReturnType<ApprovalTask["getCommandExecutionEvidence"]> = []
+	let messages: AlphaMessage[] = []
 	await withBoundedFixtureCleanup(async () => {
 		await globalThis.api.startNewTask({
 			text: "Exercise the session approval dial.",
@@ -96,7 +159,7 @@ async function runScriptedApproval(options: {
 				...configuration,
 				apiProvider: "fake-ai",
 				fakeAi: scripted,
-				mode: "code",
+				mode: options.mode ?? "code",
 				approvalMode: options.approvalMode,
 				subagentDelegationPolicy: "explicit-only",
 				deniedCommands: ["rm"],
@@ -115,7 +178,7 @@ async function runScriptedApproval(options: {
 				if (ask && !ask.partial && !handled.has(ask.ts)) {
 					handled.add(ask.ts)
 					asks.push(ask.ask ?? "")
-					options.onAsk?.(task!, ask)
+					options.onAsk?.(task!, ask, provider)
 				}
 				acknowledgeCompletion(task)
 				return task?.didComplete === true
@@ -123,28 +186,71 @@ async function runScriptedApproval(options: {
 			{ description: `${options.approvalMode} approval-mode host`, timeout: 150_000 },
 		)
 		await observation.task!.waitForTermination()
+		commandEvidence = observation.task!.getCommandExecutionEvidence()
+		messages = [...observation.task!.clineMessages]
 	}, [
 		() => globalThis.api.clearCurrentTask(),
 		() => scripted.removeFromCache?.(),
 		() => globalThis.api.setConfiguration(configuration),
 		() => fs.rm(outside, { recursive: true, force: true }),
 	])
-	return { asks, workspace, outside }
+	return { asks, workspace, outside, commandEvidence, modelInputs: observation.modelInputs, messages }
 }
 
 suite("Ask / Auto / Full Access in the extension host", function () {
 	this.timeout(180_000)
 
 	test("Auto writes inside the opened workspace without asking", async () => {
-		const { asks, workspace } = await runScriptedApproval({
+		const relativeFile = `src/approval-inside-${Date.now()}.txt`
+		const { asks, workspace, messages } = await runScriptedApproval({
 			approvalMode: "auto",
-			calls: [{ name: "write_to_file", arguments: { path: "src/approval-inside.txt", content: "inside" } }],
+			calls: [
+				{
+					name: "apply_patch",
+					arguments: { patch: `*** Begin Patch\n*** Add File: ${relativeFile}\n+inside\n*** End Patch` },
+				},
+			],
 		})
 		assert.deepEqual(
 			asks.filter((ask) => ask !== "completion_result"),
 			[],
 		)
-		assert.equal(await fs.readFile(path.join(workspace, "src", "approval-inside.txt"), "utf8"), "inside")
+		assert.equal(
+			(await fs.readFile(path.join(workspace, relativeFile), "utf8")).replaceAll("\r\n", "\n"),
+			"inside\n",
+		)
+		const patchMessage = messages.find(
+			(message) =>
+				message.type === "ask" &&
+				message.ask === "tool" &&
+				!message.partial &&
+				message.text?.includes(relativeFile),
+		)
+		assert.ok(patchMessage?.text, "apply_patch must project a file-change message")
+		assert.equal(patchMessage.isAnswered, true)
+		const patchPayload = JSON.parse(patchMessage.text) as {
+			tool: string
+			diffStats?: { added: number; removed: number }
+		}
+		assert.equal(patchPayload.tool, "newFileCreated")
+		assert.deepEqual(patchPayload.diffStats, { added: 1, removed: 0 })
+	})
+
+	test("Auto runs a workspace Git command without a saved prefix", async () => {
+		const { asks, commandEvidence } = await runScriptedApproval({
+			approvalMode: "auto",
+			calls: [{ name: "exec_command", arguments: { cmd: "git --version" } }],
+		})
+		assert.equal(asks.includes("command"), false)
+		assert.ok(
+			commandEvidence.some(
+				(evidence) =>
+					evidence.toolCallId === "approval-mode-0" &&
+					evidence.status === "succeeded" &&
+					evidence.exitCode === 0,
+			),
+			`the command must run without review: ${JSON.stringify({ asks, commandEvidence })}`,
+		)
 	})
 
 	test("Auto still asks for a true-outside write", async () => {
@@ -154,8 +260,10 @@ suite("Ask / Auto / Full Access in the extension host", function () {
 			approvalMode: "auto",
 			calls: [
 				{
-					name: "write_to_file",
-					arguments: { path: outsideFile, content: "outside" },
+					name: "apply_patch",
+					arguments: {
+						patch: `*** Begin Patch\n*** Add File: ${outsideFile.replace(/\\/g, "/")}\n+outside\n*** End Patch`,
+					},
 				},
 			],
 			onAsk: (task, ask) => {
@@ -172,27 +280,44 @@ suite("Ask / Auto / Full Access in the extension host", function () {
 
 	test("Full Access auto-approves an outside write while the deny-list still denies", async () => {
 		const outsideFile = path.join(os.tmpdir(), `alpha-approval-bypass-${Date.now()}.txt`)
-		const { asks } = await runScriptedApproval({
+		const { asks, commandEvidence } = await runScriptedApproval({
 			approvalMode: "bypass",
 			calls: [
-				{ name: "write_to_file", arguments: { path: outsideFile, content: "bypass" } },
-				{ name: "shell", arguments: { command: "rm --help", timeout: 10 } },
+				{
+					name: "apply_patch",
+					arguments: {
+						patch: `*** Begin Patch\n*** Add File: ${outsideFile.replace(/\\/g, "/")}\n+bypass\n*** End Patch`,
+					},
+				},
+				{ name: "exec_command", arguments: { cmd: "rm --help" } },
 			],
 			onAsk: (task, ask) => {
 				if (ask.ask === "command") task.denyAsk()
 			},
 		})
-		assert.equal(await fs.readFile(outsideFile, "utf8"), "bypass")
+		assert.equal((await fs.readFile(outsideFile, "utf8")).replaceAll("\r\n", "\n"), "bypass\n")
 		assert.ok(!asks.includes("tool"))
 		assert.equal(asks.includes("command"), false, "deny-list must auto-deny rm without a human click")
+		assert.ok(
+			commandEvidence.some(
+				(evidence) => evidence.toolCallId === "approval-mode-1" && evidence.status === "denied",
+			),
+			"the visible exec_command call must reach the command policy and be denied",
+		)
 		await fs.rm(outsideFile, { force: true })
 	})
 
 	test("Ask asks for an in-workspace write", async () => {
 		let approved = false
+		const relativeFile = `src/approval-ask-${Date.now()}.txt`
 		const { asks, workspace } = await runScriptedApproval({
 			approvalMode: "ask",
-			calls: [{ name: "write_to_file", arguments: { path: "src/approval-ask.txt", content: "ask" } }],
+			calls: [
+				{
+					name: "apply_patch",
+					arguments: { patch: `*** Begin Patch\n*** Add File: ${relativeFile}\n+ask\n*** End Patch` },
+				},
+			],
 			onAsk: (task, ask) => {
 				if (ask.ask === "tool") {
 					approved = true
@@ -202,34 +327,158 @@ suite("Ask / Auto / Full Access in the extension host", function () {
 		})
 		assert.equal(approved, true)
 		assert.ok(asks.includes("tool"))
-		assert.equal(await fs.readFile(path.join(workspace, "src", "approval-ask.txt"), "utf8"), "ask")
+		assert.equal((await fs.readFile(path.join(workspace, relativeFile), "utf8")).replaceAll("\r\n", "\n"), "ask\n")
 	})
 
-	test("Auto + explicit-only spawn still raises a human spawn ask", async () => {
-		let asked = false
-		const { asks } = await runScriptedApproval({
-			approvalMode: "auto",
+	test("a task approval change during a pending Ask affects the next step only", async () => {
+		const firstFile = "src/approval-pending-ask-" + Date.now() + ".txt"
+		const nextFile = "src/approval-next-step-" + Date.now() + ".txt"
+		let changedMode = false
+		const { asks, workspace } = await runScriptedApproval({
+			approvalMode: "ask",
 			calls: [
 				{
-					name: "spawn_agent",
+					name: "apply_patch",
 					arguments: {
-						task_name: "approval_explore",
-						fork_turns: "none",
-						objective: "Inspect the opened workspace only.",
-						agent_kind: "explore",
-						write_scope: null,
-						expected_output: null,
+						patch:
+							"*** Begin Patch\n*** Add File: " +
+							firstFile +
+							"\n+approved-under-original-ask\n*** End Patch",
+					},
+				},
+				{
+					name: "apply_patch",
+					arguments: {
+						patch: "*** Begin Patch\n*** Add File: " + nextFile + "\n+auto-next-step\n*** End Patch",
+					},
+				},
+			],
+			onAsk: (task, ask, provider) => {
+				if (ask.ask !== "tool") return
+				if (!changedMode) {
+					const result = provider.updateTaskApprovalMode({
+						requestId: "pending-ask-to-auto",
+						taskId: task.taskId,
+						approvalMode: "auto",
+					})
+					assert.deepEqual(result, {
+						requestId: "pending-ask-to-auto",
+						taskId: task.taskId,
+						status: "applied",
+						approvalMode: "auto",
+					})
+					changedMode = true
+					task.approveAsk()
+					return
+				}
+				task.denyAsk()
+			},
+		})
+		assert.equal(changedMode, true)
+		assert.equal(asks.filter((ask) => ask === "tool").length, 1)
+		assert.equal(
+			(await fs.readFile(path.join(workspace, firstFile), "utf8")).replaceAll("\r\n", "\n"),
+			"approved-under-original-ask\n",
+		)
+		assert.equal(
+			(await fs.readFile(path.join(workspace, nextFile), "utf8")).replaceAll("\r\n", "\n"),
+			"auto-next-step\n",
+		)
+	})
+
+	for (const approvalMode of ["auto", "bypass"] as const) {
+		test(`${approvalMode} authorizes an explicit-only sub-agent without a spawn dialog`, async () => {
+			const { asks, messages, modelInputs } = await runScriptedApproval({
+				approvalMode,
+				calls: [
+					{
+						name: "spawn_agent",
+						arguments: {
+							task_name: `approval_explore_${approvalMode}`,
+							fork_turns: "none",
+							objective: "Inspect the opened workspace only.",
+							agent_kind: "explore",
+							write_scope: null,
+							expected_output: null,
+						},
+					},
+					{ name: "wait_agent", arguments: { timeout_ms: 60_000 } },
+				],
+			})
+			assert.equal(asks.includes("tool"), false, `${approvalMode} must not open a spawn dialog`)
+			const spawnResult = (
+				modelInputs[1] as Array<{ content?: Array<{ type?: string; is_error?: boolean }> }> | undefined
+			)
+				?.flatMap((message) => message.content ?? [])
+				.find((block) => block.type === "tool_result")
+			assert.ok(spawnResult, "The parent must receive a spawn tool result")
+			assert.equal(spawnResult.is_error, false, "The child launch must succeed")
+			assert.ok(
+				messages.some((message) => message.type === "ask" && message.ask === "tool" && message.isAnswered),
+				"The spawn decision must be recorded as resolved",
+			)
+		})
+	}
+
+	test("Plan request_user_input asks once for all questions and returns structured answers to the model", async () => {
+		let pendingGroupedRequests = 0
+		const { asks, modelInputs } = await runScriptedApproval({
+			approvalMode: "auto",
+			mode: "architect",
+			calls: [
+				{
+					name: "request_user_input",
+					arguments: {
+						questions: [
+							{
+								id: "approach",
+								header: "Approach",
+								question: "Which implementation approach should the plan use?",
+								options: [
+									{ label: "Focused (Recommended)", description: "Keep the implementation narrow." },
+									{ label: "Broad", description: "Cover adjacent behavior too." },
+								],
+							},
+							{
+								id: "validation",
+								header: "Testing",
+								question: "Which validation should the plan include?",
+								options: [
+									{ label: "Focused tests", description: "Run tests for the changed behavior." },
+									{ label: "Full suite", description: "Run the complete test suite." },
+								],
+							},
+						],
 					},
 				},
 			],
 			onAsk: (task, ask) => {
-				if (ask.ask === "tool") {
-					asked = true
-					task.denyAsk()
-				}
+				if (ask.ask !== "followup") return
+				const payload = JSON.parse(ask.text ?? "{}")
+				assert.deepEqual(
+					payload.requestUserInput.questions.map((question: { id: string }) => question.id),
+					["approach", "validation"],
+				)
+				pendingGroupedRequests = task.clineMessages.filter(
+					(message) => message.type === "ask" && message.ask === "followup" && !message.isAnswered,
+				).length
+				task.handleWebviewAskResponse(
+					"messageResponse",
+					JSON.stringify({
+						answers: {
+							approach: { answers: ["Focused (Recommended)"] },
+							validation: { answers: ["Focused tests"] },
+						},
+					}),
+				)
 			},
 		})
-		assert.equal(asked, true)
-		assert.ok(asks.includes("tool"), "explicit-only must keep a spawn dialog in Auto")
+		assert.equal(asks.filter((ask) => ask === "followup").length, 1)
+		assert.equal(pendingGroupedRequests, 1, "one grouped request should be pending while the user answers")
+		const returnedAnswers = findRequestUserInputAnswerMap(modelInputs.at(-1))
+		assert.deepEqual(returnedAnswers, {
+			approach: { answers: ["Focused (Recommended)"] },
+			validation: { answers: ["Focused tests"] },
+		})
 	})
 })

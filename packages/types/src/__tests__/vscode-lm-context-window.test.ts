@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { getVscodeLlmContextWindow } from "../providers/vscode-llm.js"
+import { getVscodeLlmContextWindow, getVscodeLlmExtendedContextSize } from "../providers/vscode-llm.js"
 
 describe("VS Code LM context window", () => {
 	const selector = { vendor: "copilot", family: "claude-opus-4.7" }
@@ -35,4 +35,14 @@ describe("VS Code LM context window", () => {
 		)
 		expect(getVscodeLlmContextWindow({ ...selector, family: "claude-haiku-4.5" }, 936_000)).toBe(128_000)
 	})
+
+	it.each(["gpt-6-astra", "gpt-6-luna", "gpt-6-sol"] as const)(
+		"uses the supported default and extended context sizes for %s",
+		(family) => {
+			const model = { vendor: "copilot", family, maxInputTokens: 1_050_000 }
+			expect(getVscodeLlmExtendedContextSize(model)).toBe(1_050_000)
+			expect(getVscodeLlmContextWindow(model)).toBe(272_000)
+			expect(getVscodeLlmContextWindow(model, 1_050_000)).toBe(1_050_000)
+		},
+	)
 })

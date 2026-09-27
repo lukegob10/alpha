@@ -85,7 +85,11 @@ describe("search activity labels", () => {
 			/>,
 		)
 		const toggle = screen.getByRole("button", { name: /Thinking.*Checking submission handlers/ })
+		expect(toggle).toHaveAttribute("aria-expanded", "true")
+		expect(screen.getByText(/The complete original reasoning/)).toBeVisible()
+		fireEvent.click(toggle)
 		expect(toggle).toHaveAttribute("aria-expanded", "false")
+		expect(screen.queryByText(/The complete original reasoning/)).not.toBeInTheDocument()
 		fireEvent.click(toggle)
 		expect(screen.getByText(/The complete original reasoning/)).toBeVisible()
 	})

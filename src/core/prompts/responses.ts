@@ -48,8 +48,8 @@ ${instructions}
 
 # Next Steps
 
-If you have completed the user's task, use the attempt_completion tool.
-If you require additional information from the user, use the ask_followup_question tool.
+If you have completed the user's task, give a concise final answer.
+If you require additional information from the user, ask them directly.
 Otherwise, if work remains and no input is missing, your next response must contain the concrete tool call that performs the next step.
 (This is an automated message, so do not respond to it conversationally.)`
 	},
@@ -182,7 +182,7 @@ Otherwise, if work remains and no input is missing, your next response must cont
 		if (didHitLimit) {
 			return `${alphaIgnoreParsed.join(
 				"\n",
-			)}\n\n(File list truncated. Use list_files on specific subdirectories if you need to explore further.)`
+			)}\n\n(File list truncated. Use a bounded exec_command scoped to a specific workspace directory if you need more entries.)`
 		} else if (alphaIgnoreParsed.length === 0 || (alphaIgnoreParsed.length === 1 && alphaIgnoreParsed[0] === "")) {
 			return "No files found."
 		} else {

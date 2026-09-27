@@ -1089,7 +1089,7 @@ export class McpHub {
 			if (!connection || connection.type !== "connected") {
 				return []
 			}
-			const response = await connection.client.request({ method: "resources/list" }, ListResourcesResultSchema)
+			const response = await this.listResources(serverName, undefined, source)
 			return response?.resources || []
 		} catch (error) {
 			// console.error(`Failed to fetch resources for ${serverName}:`, error)
@@ -1106,10 +1106,7 @@ export class McpHub {
 			if (!connection || connection.type !== "connected") {
 				return []
 			}
-			const response = await connection.client.request(
-				{ method: "resources/templates/list" },
-				ListResourceTemplatesResultSchema,
-			)
+			const response = await this.listResourceTemplates(serverName, undefined, source)
 			return response?.resourceTemplates || []
 		} catch (error) {
 			// console.error(`Failed to fetch resource templates for ${serverName}:`, error)
@@ -1747,6 +1744,40 @@ export class McpHub {
 			this.showErrorMessage(`Failed to delete MCP server ${serverName}`, error)
 			throw error
 		}
+	}
+
+	async listResources(serverName: string, cursor?: string, source?: "global" | "project", signal?: AbortSignal) {
+		const connection = this.findConnection(serverName, source)
+		if (!connection || connection.type !== "connected" || connection.server.disabled) {
+			throw new Error(`No enabled connection found for server: ${serverName}`)
+		}
+		const request = cursor
+			? { method: "resources/list" as const, params: { cursor } }
+			: { method: "resources/list" as const }
+		return await requestWithAbort(
+			() => connection.client.request(request, ListResourcesResultSchema, signal ? { signal } : undefined),
+			signal,
+		)
+	}
+
+	async listResourceTemplates(
+		serverName: string,
+		cursor?: string,
+		source?: "global" | "project",
+		signal?: AbortSignal,
+	) {
+		const connection = this.findConnection(serverName, source)
+		if (!connection || connection.type !== "connected" || connection.server.disabled) {
+			throw new Error(`No enabled connection found for server: ${serverName}`)
+		}
+		const request = cursor
+			? { method: "resources/templates/list" as const, params: { cursor } }
+			: { method: "resources/templates/list" as const }
+		return await requestWithAbort(
+			() =>
+				connection.client.request(request, ListResourceTemplatesResultSchema, signal ? { signal } : undefined),
+			signal,
+		)
 	}
 
 	async readResource(

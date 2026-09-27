@@ -25,19 +25,30 @@ suite("Live Copilot file-tool contracts", function () {
 
 	test("patch preserves BOM, CRLF, literal dollars/entities and no final newline", async () => {
 		const file = `${prefix}/patch-bytes.txt`
+		const inspect = `node -e "const fs=require('fs');console.log(fs.readFileSync('${file}').toString('base64'))"`
 		const patch = `*** Begin Patch\n*** Update File: ${file}\n@@\n-header\n-value = old\n-footer\n+header\r\n+${replacement}\r\n+footer\n*** End Patch`
 		await runLiveCase(
 			"patch-bytes",
-			["apply_patch"],
+			["exec_command", "apply_patch"],
 			{ [file]: originalBytes },
-			`Read ${file}, then submit exactly one apply_patch call using the patch string in this JSON argument unchanged, including its mixed LF/CRLF separators: ${JSON.stringify({ patch })}. Preserve the file's BOM, CRLF and absent final newline. Read it after editing.`,
+			`Inspect ${file} with exec_command using this cmd before and after editing: ${JSON.stringify(inspect)}. Then submit exactly one apply_patch call using the patch string in this JSON argument unchanged, including its mixed LF/CRLF separators: ${JSON.stringify({ patch })}. Preserve the file's BOM, CRLF and absent final newline.`,
 			async (calls, _messages, workspace) => {
 				const edits = calls.filter((call) => call.name === "apply_patch")
+				const inspections = calls.filter((call) => call.name === "exec_command")
+				assert.ok(inspections.length >= 2, "The model must inspect the file before and after the patch")
+				assert.ok(inspections.every((call) => call.input.cmd === inspect))
+				assert.ok(
+					inspections.some((call) => call.result.includes(Buffer.from(originalBytes).toString("base64"))),
+				)
+				assert.ok(
+					inspections.some((call) => call.result.includes(Buffer.from(expectedBytes).toString("base64"))),
+				)
 				assert.equal(edits.length, 1)
 				assert.equal(edits[0]!.input.patch, patch)
 				assert.equal(edits[0]!.isError, false)
 				assert.deepEqual(await fs.readFile(path.join(workspace, file)), Buffer.from(expectedBytes))
 			},
+			{ commands: ["node"] },
 		)
 	})
 
@@ -63,18 +74,25 @@ suite("Live Copilot file-tool contracts", function () {
 			"+fourth new",
 			"*** End Patch",
 		].join("\n")
+		const inspect = `node -e "const fs=require('fs');for(const p of ['${paths[0]}','${paths[1]}','${paths[2]}']){console.log(p);console.log(fs.readFileSync(p,'utf8'))}"`
 		await runLiveCase(
 			"patch-partial",
-			["apply_patch"],
+			["exec_command", "apply_patch"],
 			{
 				[paths[0]!]: "first old\n",
 				[paths[1]!]: "second old\n",
 				[paths[2]!]: "third old\n",
 				[paths[3]!]: "fourth old\n",
 			},
-			`Read partial-first.txt, partial-second.txt and partial-third.txt under live-file-tools. Submit exactly ONE apply_patch call with this deliberate contract probe, unchanged: the second hunk cannot match, and the fourth file is ignored. Let the tool enforce those failures. Do not read the fourth file separately, fix the patch, or retry it. Report the per-file outcomes, then finish.\n${patch}`,
+			`Inspect the first three named files under live-file-tools with exec_command using this cmd: ${JSON.stringify(inspect)}. Submit exactly ONE apply_patch call with this deliberate contract probe, unchanged: the second hunk cannot match, and the fourth file is ignored. Let the tool enforce those failures. Do not inspect the fourth file, fix the patch, or retry it. Report the per-file outcomes, then finish.\n${patch}`,
 			async (calls, _messages, workspace) => {
 				const edits = calls.filter((call) => call.name === "apply_patch")
+				const inspection = calls.find((call) => call.name === "exec_command")
+				assert.ok(inspection)
+				assert.equal(inspection.input.cmd, inspect)
+				assert.match(inspection.result, /first old/)
+				assert.match(inspection.result, /second old/)
+				assert.match(inspection.result, /third old/)
 				assert.equal(edits.length, 1)
 				assert.equal(edits[0]!.isError, true)
 				const ledger = record(JSON.parse(edits[0]!.result)).files
@@ -94,64 +112,34 @@ suite("Live Copilot file-tool contracts", function () {
 				assert.match(String(record(ledger[1]).reason), /Failed to find expected lines/)
 				assert.match(String(record(ledger[3]).reason), /alphaignore/)
 			},
+			{ commands: ["node"] },
 		)
 	})
 
-	test("search returns compact modes, literal matches and partial batch success", async () => {
+	test("exec_command inspects bounded workspace matches", async () => {
 		const dir = `${prefix}/search`
-		const queries = [
-			{ path: dir, regex: "(" },
-			{ path: dir, regex: "foo(.bar", output_mode: "files", literal: true },
-			{ path: dir, regex: "TODO", output_mode: "count", literal: null },
-			{ path: dir, regex: "alpha\\nbeta", literal: false },
-			{ path: `${prefix}/large`, regex: "BUDGET_TOKEN", output_mode: "count" },
-		]
+		const inspect = `node -e "const fs=require('fs');for(const p of ['${dir}/first.txt','${dir}/second.txt']){const lines=fs.readFileSync(p,'utf8').split(/\\r?\\n/);for(let i=0;i<lines.length;i++)if(lines[i].includes('foo(.bar'))console.log(p+':'+String(i+1)+':'+lines[i])}"`
 		await runLiveCase(
-			"search-modes",
-			["search_files"],
+			"exec-file-inspection",
+			["exec_command"],
 			{
 				[`${dir}/first.txt`]: "HEADER\nfoo(.bar\nTODO TODO\nalpha\nbeta\nTRAILER\n",
 				[`${dir}/second.txt`]: "foo(.bar\nTODO\n",
 				[`${dir}/secret.txt`]: "foo(.bar TODO\n",
 				[`${prefix}/large/repeated.txt`]: "BUDGET_TOKEN\n".repeat(2_000),
 			},
-			`Make exactly one search_files call with this queries array, including the deliberately invalid first regex. Do not replace the invalid query or split the batch. Report what succeeded and failed.\n${JSON.stringify({ queries })}`,
-			async (calls, messages) => {
-				const searches = calls.filter((call) => call.name === "search_files")
-				assert.equal(searches.length, 1)
-				assert.equal(searches[0]!.isError, false, "One failed query must not fail a partially successful batch")
-				assert.deepEqual(searches[0]!.input.queries, queries)
-				const approvals = messages
-					.filter((message) => !message.partial && (message.ask === "tool" || message.say === "tool"))
-					.map((message) => {
-						try {
-							return record(JSON.parse(message.text ?? ""))
-						} catch {
-							return {}
-						}
-					})
-					.filter((message) => message.tool === "searchFiles" && Array.isArray(message.batchSearches))
-				assert.ok(approvals.length > 0)
-				const results = (approvals.at(-1)!.batchSearches as unknown[]).map(record)
-				assert.deepEqual(
-					results.map((result) => result.searchStatus),
-					["error", "success", "success", "success", "success"],
-				)
-				assert.match(String(results[0]!.content), /unclosed group|regex parse error/)
-				assert.deepEqual(String(results[1]!.content).split("\n").sort(), [
-					`${dir}/first.txt`,
-					`${dir}/second.txt`,
-				])
-				assert.deepEqual(String(results[2]!.content).split("\n").sort(), [
-					`${dir}/first.txt: 2`,
-					`${dir}/second.txt: 1`,
-				])
-				assert.match(String(results[3]!.content), /4 \| alpha\n\s*5 \| beta/)
-				assert.match(String(results[4]!.content), /Search output truncated/)
-				assert.match(String(results[4]!.content), /Counts are lower bounds/)
-				assert.ok(!String(results[4]!.content).includes("BUDGET_TOKEN"))
-				assert.ok(searches[0]!.result.length <= 16_000)
+			`Use one exec_command call with this cmd exactly: ${JSON.stringify(inspect)}. Report the matches and their line numbers. Do not inspect secret.txt or the large directory.`,
+			async (calls) => {
+				const inspections = calls.filter((call) => call.name === "exec_command")
+				assert.equal(inspections.length, 1)
+				assert.equal(inspections[0]!.input.cmd, inspect)
+				assert.equal(inspections[0]!.isError, false)
+				assert.match(inspections[0]!.result, new RegExp(`${dir}/first\\.txt:2:foo\\(\\.bar`))
+				assert.match(inspections[0]!.result, new RegExp(`${dir}/second\\.txt:1:foo\\(\\.bar`))
+				assert.doesNotMatch(inspections[0]!.result, /secret\.txt|BUDGET_TOKEN/)
+				assert.ok(inspections[0]!.result.length <= 16_000)
 			},
+			{ commands: ["node"] },
 		)
 	})
 })

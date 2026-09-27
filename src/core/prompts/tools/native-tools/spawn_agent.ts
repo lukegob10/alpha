@@ -1,20 +1,33 @@
 import type OpenAI from "openai"
 
+import { reasoningEffortsExtended } from "@alpha-code/types"
+
 import type { ManagedAgentKind } from "./delegate_task"
 
 const ALL_AGENT_KINDS: readonly ManagedAgentKind[] = ["explore", "review", "worker"]
 
-export function createSpawnAgentTool(agentKinds: readonly ManagedAgentKind[] = ALL_AGENT_KINDS) {
+export function createSpawnAgentTool(
+	agentKinds: readonly ManagedAgentKind[] = ALL_AGENT_KINDS,
+	namedAgentTypes: readonly { name: string; description: string }[] = [],
+) {
 	const readOnlyOnly = !agentKinds.includes("worker")
+	const namedTypesDescription = namedAgentTypes.length
+		? ` Available named types: ${namedAgentTypes
+				.map(({ name, description }) => `${name} (${description.slice(0, 120)})`)
+				.join(", ")}.`
+		: ""
+	const agentTypeDescription = readOnlyOnly
+		? "Optional agent type override. Omit unless the user explicitly requests a role. Built-ins are default and explorer; configured named types may also be selected when read-only in Plan. The host enforces the selected type within parent authority and workspace limits."
+		: "Optional agent type override. Omit unless the user explicitly requests a role. Built-ins are default, explorer, and worker; configured named types may also be selected. The host enforces the selected type within parent authority and workspace limits."
 
 	return {
 		type: "function",
 		function: {
 			name: "spawn_agent",
 			description: readOnlyOnly
-				? "Start one bounded managed Explore or Review sub-agent asynchronously and return its handle immediately. Keep the objective read-only, batch independent spawns when capacity permits, and collect terminal results through bounded wait_agent calls."
-				: "Start one bounded managed Alpha sub-agent asynchronously and return its handle immediately so the caller can continue. Set task_name and fork_turns. Use worker with a complete, narrow write_scope for file changes and explore or review for read-only inspection. Batch independent spawns when capacity permits. Collect terminal results through wait_agent as native tool results before completing.",
-			strict: true,
+				? "Start one bounded managed Explore or Review sub-agent asynchronously and return its handle immediately. Set a self-contained message; omit agent_type to let the host resolve the narrowest role. Omitted fork_turns defaults to all available turns. The requested role never grants authority. Set model or reasoning_effort only when explicitly requested by the user. Collect the terminal result through wait_agent before completing."
+				: "Start one bounded managed Alpha sub-agent asynchronously and return its handle immediately. Set a self-contained message; omit agent_type so the host selects a role within parent authority. Omitted fork_turns defaults to all available turns. The host derives or rejects Worker scope from trusted parent authority. Set model or reasoning_effort only when explicitly requested by the user. Collect the terminal result through wait_agent before completing.",
+			strict: false,
 			parameters: {
 				type: "object",
 				properties: {
@@ -26,56 +39,38 @@ export function createSpawnAgentTool(agentKinds: readonly ManagedAgentKind[] = A
 						description:
 							"Stable lowercase name for lifecycle controls, using letters, digits, and underscores; for example backend_review.",
 					},
+					message: {
+						type: "string",
+						minLength: 1,
+						description: "Initial plain-text task for the new agent.",
+					},
+					agent_type: {
+						type: "string",
+						description: `${agentTypeDescription}${namedTypesDescription}`,
+					},
 					fork_turns: {
 						type: "string",
 						maxLength: 16,
 						pattern: "^(?:none|all|[1-9][0-9]*)$",
+						default: "all",
 						description:
-							"Parent conversation inheritance after host sanitization and within its context bound: none, all available turns, or a canonical positive decimal integer string selecting the most recent N available user-led turns. Environment, instructions, skills, workspace, model route, and narrowed runtime policy are inherited independently.",
+							"Parent conversation inheritance after host sanitization and within its context bound. Omit for all available turns, or use none or a canonical positive decimal integer string for the most recent N turns. Workspace, instructions, skills, model route, and narrowed runtime policy are inherited independently.",
 					},
-					objective: {
+					model: {
 						type: "string",
 						minLength: 1,
-						description: "One concrete, self-contained objective for the child.",
+						maxLength: 256,
+						description:
+							"Optional model override. Omit unless the user explicitly requested a different model.",
 					},
-					agent_kind: {
+					reasoning_effort: {
 						type: "string",
-						enum: [...agentKinds],
-						description: readOnlyOnly
-							? "Use explore for repository discovery or review for evidence-focused analysis. Both are read-only and cannot run commands."
-							: "Use worker for every objective that creates, modifies, renames, or deletes files. Use explore or review only for read-only repository inspection without commands.",
-					},
-					write_scope: readOnlyOnly
-						? {
-								type: "null",
-								description: "Read-only Explore and Review children have no write scope; use null.",
-							}
-						: {
-								anyOf: [
-									{
-										type: "array",
-										minItems: 1,
-										maxItems: 12,
-										items: { type: "string", minLength: 1 },
-									},
-									{ type: "null" },
-								],
-								description:
-									"For worker, one to twelve workspace-relative files or directories covering every possible edit. For explore or review, use null.",
-							},
-					expected_output: {
-						anyOf: [
-							{
-								type: "array",
-								maxItems: 12,
-								items: { type: "string", minLength: 1 },
-							},
-							{ type: "null" },
-						],
-						description: "Optional deliverables for the child; use null when none are needed.",
+						enum: [...reasoningEffortsExtended],
+						description:
+							"Optional reasoning effort override. Omit unless the user explicitly requested a different effort; the host validates support for the selected model.",
 					},
 				},
-				required: ["task_name", "fork_turns", "objective", "agent_kind", "write_scope", "expected_output"],
+				required: ["task_name", "message"],
 				additionalProperties: false,
 			},
 		},

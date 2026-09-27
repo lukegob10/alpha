@@ -85,8 +85,12 @@ task-set digest, and the exact selected task IDs and repetitions. The default is
 of the 32 eligible local tasks. `PROBLEM_SOLVING_TASK_IDS` accepts a
 comma-separated subset, `PROBLEM_SOLVING_REPETITIONS` accepts 1 through 3, and the host, model,
 effort, request limit, run ID, attempt root, and profile root can be set with the corresponding
-`PROBLEM_SOLVING_*` environment variables. Terminal-Bench and holdout remain excluded from this
-local grader path.
+`PROBLEM_SOLVING_*` environment variables. `PROBLEM_SOLVING_PROMPT_VARIANTS` accepts `baseline`,
+`single-command`, or both as a comma-separated value; the default is `baseline`. When both are
+selected, repetition order alternates between arms. Reports include per-attempt effective prompt
+hashes, the treatment-instruction hash, and per-task/per-arm grader outcomes without storing prompt
+text in the sanitized diagnosis. Terminal-Bench and holdout remain excluded from this local grader
+path.
 
 Create a privacy-safe diagnostic packet from a completed run:
 
@@ -94,10 +98,11 @@ Create a privacy-safe diagnostic packet from a completed run:
 pnpm --dir packages/evals benchmark:problem-solving-diagnose --report <run-root>/report.json --output <new-path>/diagnosis.json
 ```
 
-The command writes JSON and Markdown. It includes outcome uncertainty, the planned selection,
+The command writes JSON and Markdown. It includes outcome uncertainty, per-task pass counts, the planned selection,
 task-set and extension-entrypoint digests, per-attempt execution-start evidence, task tags, requests
 and tokens, event counts, retries, approvals, verification, scheduler batch timing/parallelism,
-effective tool-policy digests, evidence integrity, and coarse tool categories. It never copies
+workspace-scoped tool-policy digests, a stable hash of effective E2E approval settings, evidence
+integrity, and coarse tool categories. The live report also records the request limit. It never copies
 prompts, assistant text, tool names, arguments, paths, or output. A reviewer can use this packet to
 challenge the diagnosis and choose the next experiment without receiving task transcripts or
 workspace contents. Policy hashes include each attempt's workspace scope, so differences across
@@ -106,6 +111,12 @@ covers `src/dist/extension.js` on disk; matching the later E2E capture digest do
 every packaged asset or directly prove which bytes VS Code loaded.
 The diagnosis flags campaigns with multiple runner-captured entrypoint digests as mixed-artifact
 evidence rather than treating them as one controlled run.
+When the prelaunch hash or all started-attempt captures are unavailable, mismatch status is reported
+as not assessed. E2E approval-policy identities are computed from the effective approval flags,
+command rules, disabled-tool set, and request cap; they exclude workspace paths and are stable across
+fresh task workspaces when those settings match. Older reports do not contain this identity and
+diagnose it as missing. Record host, model, effort, and request limit alongside it before making
+cross-run policy comparisons.
 
 The report flags tag-based coverage candidates such as branch/worktree operations, live GitHub
 issue/PR flows, concurrent workspace edits, and delegation. These flags are prompts for task-text
@@ -120,9 +131,11 @@ for execution coverage. Blocked attempts do not enter the grader-scored pass-rat
 E2E command gate also reports a fixed rejection reason without copying the command or weakening the
 approval boundary.
 
-Use the exact same host, model, effort, and task subset to repeat a baseline before changing the
-agent. Then change one general harness rule, run that same subset on the new build, and compare
-verified completion first, followed by requests, tokens, policy/tool categories, retries,
-validation, and trace completeness. Keep a distinct report per run; unknown cost remains null. The
-live runner's default host is a measurement setting; the repository's exact VS Code 1.122.1
-compatibility gate still runs separately when a change affects the extension host contract.
+Use the exact same host, model, effort, request limit, and task subset to repeat a baseline before
+changing the agent. Then change one general harness rule, run that same subset on the new build, and
+compare per-task verified completion first, followed by gate-stop frequency, requests, tokens,
+policy/tool categories, retries, validation, and trace completeness. A pooled Wilson interval is per
+attempt and does not account for task selection or clustering. Keep a distinct report per run;
+unknown cost remains null. The live runner's default host is a measurement setting; the repository's
+exact VS Code 1.122.1 compatibility gate still runs separately when a change affects the extension
+host contract.

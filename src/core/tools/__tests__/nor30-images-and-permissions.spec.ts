@@ -5,7 +5,6 @@ import {
 	capturedSurface,
 	fixtureDescriptor,
 	fixtureRegistry,
-	imageResults,
 	makeExecutionHost,
 	runToolCalls,
 	toolResults,
@@ -14,59 +13,87 @@ import { ToolRegistry } from "../ToolRegistry"
 import type { ToolDescriptor } from "../ToolRegistry"
 
 describe("NOR-30 captured tool execution: images and permissions", () => {
-	it("commits native leaf images after their tool result", async () => {
-		const schemas = getNativeTools({ supportsImages: true })
+	it("forwards images attached to a native user answer and commits its structured result", async () => {
+		const schemas = getNativeTools({ supportsImages: true, planMode: true })
 		const registry = new ToolRegistry({ nativeTools: schemas, supportsImages: true })
-		const surface = capturedSurface(registry)
+		const surface = capturedSurface(registry, { schemas, mode: "architect", profile: "plan" })
 		const images = ["data:image/png;base64,base64ImageData"]
 		const harness = makeExecutionHost({
-			approval: { response: "yesButtonClicked", text: "I see a cat", images },
+			approval: { response: "messageResponse", text: "I see a cat", images },
 		})
+		Object.assign(harness.task, { taskKind: "primary" })
 
-		const outcome = await runToolCalls(harness, surface, [
-			{
-				id: "image-1",
-				name: "ask_followup_question",
-				arguments: { question: "What do you see?", follow_up: [] },
-			},
-		])
+		const outcome = await runToolCalls(
+			harness,
+			surface,
+			[
+				{
+					id: "image-1",
+					name: "request_user_input",
+					arguments: {
+						questions: [
+							{
+								id: "image_description",
+								header: "Image",
+								question: "What do you see?",
+								options: [
+									{ label: "Describe it", description: "Tell me what is visible." },
+									{ label: "Skip", description: "Continue without a description." },
+								],
+							},
+						],
+					},
+				},
+			],
+			{ mode: "architect" },
+		)
 
 		expect(outcome.results[0].status).toBe("success")
 		expect(toolResults(harness)).toHaveLength(1)
 		expect(toolResults(harness)[0]).toMatchObject({
 			tool_use_id: "image-1",
-			content: expect.stringContaining("I see a cat"),
+			content: JSON.stringify({ answers: { image_description: { answers: ["I see a cat"] } } }),
 		})
 		expect(typeof toolResults(harness)[0].content).toBe("string")
-		expect(imageResults(harness)).toHaveLength(1)
-		expect(imageResults(harness)[0]).toMatchObject({
-			type: "image",
-			source: { type: "base64", media_type: "image/png", data: "base64ImageData" },
-		})
-		expect(harness.userMessageContent.indexOf(toolResults(harness)[0])).toBeLessThan(
-			harness.userMessageContent.indexOf(imageResults(harness)[0]),
-		)
 		expect(harness.host.say).toHaveBeenCalledWith("user_feedback", "I see a cat", images)
 	})
 
 	it("keeps a native text-only result a string when the leaf has no images", async () => {
-		const schemas = getNativeTools({ supportsImages: true })
+		const schemas = getNativeTools({ supportsImages: true, planMode: true })
 		const registry = new ToolRegistry({ nativeTools: schemas, supportsImages: true })
-		const surface = capturedSurface(registry)
-		const harness = makeExecutionHost({ approval: { response: "yesButtonClicked", text: "Alice" } })
+		const surface = capturedSurface(registry, { schemas, mode: "architect", profile: "plan" })
+		const harness = makeExecutionHost({ approval: { response: "messageResponse", text: "Alice" } })
+		Object.assign(harness.task, { taskKind: "primary" })
 
-		const outcome = await runToolCalls(harness, surface, [
-			{
-				id: "text-only-1",
-				name: "ask_followup_question",
-				arguments: { question: "What is your name?", follow_up: [] },
-			},
-		])
+		const outcome = await runToolCalls(
+			harness,
+			surface,
+			[
+				{
+					id: "text-only-1",
+					name: "request_user_input",
+					arguments: {
+						questions: [
+							{
+								id: "name",
+								header: "Name",
+								question: "What is your name?",
+								options: [
+									{ label: "Alice", description: "Use Alice as the name." },
+									{ label: "Skip", description: "Continue without a name." },
+								],
+							},
+						],
+					},
+				},
+			],
+			{ mode: "architect" },
+		)
 
 		expect(outcome.results[0].status).toBe("success")
 		expect(typeof outcome.results[0].content).toBe("string")
-		expect(outcome.results[0].content).toContain("Alice")
-		expect(imageResults(harness)).toHaveLength(0)
+		expect(outcome.results[0].content).toBe(JSON.stringify({ answers: { name: { answers: ["Alice"] } } }))
+		expect(harness.host.say).toHaveBeenCalledWith("user_feedback", "Alice", undefined)
 	})
 
 	it("returns a deterministic fallback for a leaf that emits no output", async () => {

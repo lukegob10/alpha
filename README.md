@@ -105,7 +105,18 @@ For active development, use VSCode's built-in debugging:
 Press `F5` (or go to **Run** → **Start Debugging**) in VSCode. This will open a new VSCode window with the Alpha extension running.
 
 - Changes to the webview will appear immediately.
-- Changes to the core extension will also hot reload automatically.
+- Changes to the core extension rebuild automatically; restart the development host to load them.
+
+If both Alpha Code and Alpha Tickets stay gray, select **Run Extension** in Run and Debug, then press `F5`. The
+standard profile runs the development build with webview hot reload without attaching a breakpoint debugger. You can
+also use **Run → Run Without Debugging** (`Ctrl+F5`). The optional **Run Extension (debugger)** profile is available
+when debugger attachment is working.
+
+The Windows VS Code 1.139.1 / bundled JavaScript Debugger 1.117.0 combination was observed on 2026-09-26 failing
+before Alpha activation: the debugger reported `ECONNREFUSED ::1:<port>`, followed by the development host's
+60-second ready-message timeout. The debugger's [extension-host attachment code](https://github.com/microsoft/vscode-js-debug/blob/main/src/targets/node/extensionHostAttacher.ts)
+uses `localhost`, while the host inspector listens on IPv4 loopback. Running without the debugger avoids this
+attachment failure; it does not change Alpha's VS Code 1.122.1 compatibility requirement.
 
 ### Core checks
 

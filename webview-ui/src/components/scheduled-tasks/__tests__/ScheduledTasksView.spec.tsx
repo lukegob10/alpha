@@ -41,11 +41,19 @@ vi.mock("@/components/reasoning/ReasoningSelector", () => ({
 }))
 vi.mock("@/i18n/TranslationContext", () => ({
 	useAppTranslation: () => ({
-		t: (key: string, options?: Record<string, string | number>) =>
-			labels[key.replace("scheduledTasks:", "") as keyof typeof labels]?.replace(
-				/\{\{(\w+)\}\}/g,
-				(_, name: string) => String(options?.[name] ?? ""),
-			) ?? key,
+		t: (key: string, options?: Record<string, string | number>) => {
+			const path = key.replace("scheduledTasks:", "").split(".")
+			const value = path.reduce<unknown>(
+				(current, segment) =>
+					typeof current === "object" && current !== null
+						? (current as Record<string, unknown>)[segment]
+						: undefined,
+				labels,
+			)
+			return typeof value === "string"
+				? value.replace(/\{\{(\w+)\}\}/g, (_, name: string) => String(options?.[name] ?? ""))
+				: key
+		},
 		i18n: { resolvedLanguage: "en" },
 	}),
 }))
@@ -377,48 +385,53 @@ describe("scheduled task setup", () => {
 		expect(screen.getByRole("spinbutton", { name: "Repeat every" })).toHaveValue(3)
 	})
 
-	it("keeps approval choices when collapsed or disabled without submitting the form", async () => {
+	it("uses the three task approval modes without changing the global setting", async () => {
 		const user = userEvent.setup()
 		state.scheduledTasks = [{ ...saved, apiConfig }]
 		render(<ScheduledTasksView onDone={() => {}} />)
-		const approvals = screen.getByRole("button", { name: /Auto-approval/ })
+		const approvals = screen.getByRole("button", { name: /Approvals/ })
 		expect(approvals).toHaveAttribute("aria-expanded", "false")
 		await user.click(approvals)
-		await user.click(screen.getByRole("checkbox", { name: "Write files" }))
+		for (const name of ["Ask", "Auto", "Full Access"]) {
+			expect(screen.getByRole("button", { name })).toBeEnabled()
+		}
+		await user.click(screen.getByRole("button", { name: "Ask" }))
 		await user.click(approvals)
-		expect(approvals).toHaveTextContent("Selected: 2")
+		expect(approvals).toHaveTextContent("Ask")
 		await user.click(approvals)
-		expect(screen.getByRole("checkbox", { name: "Write files" })).toBeChecked()
-		await user.click(screen.getByRole("checkbox", { name: "Enable auto-approval" }))
-		expect(screen.getByRole("checkbox", { name: "Write files" })).toBeDisabled()
+		expect(screen.getByRole("button", { name: "Ask" })).toHaveAttribute("aria-pressed", "true")
 		expect(messages()).toEqual([])
 		await user.click(screen.getByRole("button", { name: "Save" }))
-		expect(messages().at(-1)?.scheduledTaskUpdate?.autoApproval).toMatchObject({
-			autoApprovalEnabled: false,
-			alwaysAllowWrite: true,
-		})
+		expect(messages().at(-1)?.scheduledTaskUpdate?.autoApproval).toEqual({ approvalMode: "ask" })
 	})
 
-	it("keeps command execution approval enabled", async () => {
+	it("shows all approval modes for commands and confirms Full Access", async () => {
 		const user = userEvent.setup()
 		render(<ScheduledTasksView onDone={() => {}} />)
 		select("Execution", "command")
-		await user.click(screen.getByRole("button", { name: /Auto-approval/ }))
-		for (const name of ["Enable auto-approval", "Execute commands"]) {
-			expect(screen.getByRole("checkbox", { name })).toBeChecked()
-			expect(screen.getByRole("checkbox", { name })).toBeDisabled()
-		}
+		await user.click(screen.getByRole("button", { name: /Approvals/ }))
+		await user.click(screen.getByRole("button", { name: "Full Access" }))
+		expect(screen.getByRole("alertdialog", { name: "Enable Full Access for this schedule?" })).toBeVisible()
+		await user.click(screen.getByRole("button", { name: "Cancel" }))
+		expect(screen.getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "true")
+		await user.click(screen.getByRole("button", { name: "Full Access" }))
+		await user.click(screen.getByRole("button", { name: "Enable Full Access" }))
+		expect(screen.getByRole("button", { name: "Full Access" })).toHaveAttribute("aria-pressed", "true")
 	})
 
-	it("shows the effective command approvals when editing a legacy schedule", async () => {
+	it("opens legacy schedules in Ask without granting command execution", async () => {
 		const user = userEvent.setup()
-		state.scheduledTasks = [{ ...saved, execution: { type: "command", command: "pnpm test" } }]
+		state.scheduledTasks = [
+			{
+				...saved,
+				autoApproval: { autoApprovalEnabled: true, alwaysAllowReadOnly: true, deniedCommands: ["rm"] },
+				execution: { type: "command", command: "pnpm test" },
+			},
+		]
 		render(<ScheduledTasksView onDone={() => {}} />)
-		await user.click(screen.getByRole("button", { name: /Auto-approval/ }))
-		for (const name of ["Enable auto-approval", "Execute commands"]) {
-			expect(screen.getByRole("checkbox", { name })).toBeChecked()
-			expect(screen.getByRole("checkbox", { name })).toBeDisabled()
-		}
+		await user.click(screen.getByRole("button", { name: /Approvals/ }))
+		expect(screen.getByRole("button", { name: "Ask" })).toHaveAttribute("aria-pressed", "true")
+		expect(screen.getByRole("alert")).toHaveTextContent("Prompt runs will fail")
 	})
 
 	it("runs the selected schedule without submitting unsaved edits", async () => {

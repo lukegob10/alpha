@@ -62,9 +62,9 @@ describe("useGroupedTasks", () => {
 			const { result } = renderHook(() => useGroupedTasks([task1, task2], ""))
 
 			expect(result.current.groups).toHaveLength(2)
-			expect(result.current.groups[0].parent.id).toBe("task-2") // Newest first
+			expect(result.current.groups[0].parent.id).toBe("task-1")
 			expect(result.current.groups[0].subtasks).toHaveLength(0)
-			expect(result.current.groups[1].parent.id).toBe("task-1")
+			expect(result.current.groups[1].parent.id).toBe("task-2")
 			expect(result.current.groups[1].subtasks).toHaveLength(0)
 		})
 
@@ -89,7 +89,7 @@ describe("useGroupedTasks", () => {
 			expect(result.current.groups.find((g) => g.parent.id === "regular-1")).toBeTruthy()
 		})
 
-		it("sorts groups by parent timestamp (newest first)", () => {
+		it("preserves the caller's selected order instead of forcing newest first", () => {
 			const oldTask = createMockTask({
 				id: "old-1",
 				task: "Old task",
@@ -109,9 +109,9 @@ describe("useGroupedTasks", () => {
 			const { result } = renderHook(() => useGroupedTasks([oldTask, newTask, middleTask], ""))
 
 			expect(result.current.groups).toHaveLength(3)
-			expect(result.current.groups[0].parent.id).toBe("new-1")
-			expect(result.current.groups[1].parent.id).toBe("middle-1")
-			expect(result.current.groups[2].parent.id).toBe("old-1")
+			expect(result.current.groups[0].parent.id).toBe("old-1")
+			expect(result.current.groups[1].parent.id).toBe("new-1")
+			expect(result.current.groups[2].parent.id).toBe("middle-1")
 		})
 
 		it("handles empty task list", () => {

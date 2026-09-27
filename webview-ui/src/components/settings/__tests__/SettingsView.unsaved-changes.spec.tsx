@@ -282,6 +282,7 @@ vi.mock("../SettingsSearch", () => ({
 
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 import ApiOptions from "../ApiOptions"
+import { ContextManagementSettings } from "../ContextManagementSettings"
 import { NotificationSettings } from "../NotificationSettings"
 
 describe("SettingsView - Unsaved Changes Detection", () => {
@@ -728,6 +729,82 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			expect.objectContaining({
 				type: "updateSettings",
 				updatedSettings: expect.objectContaining({ soundEnabled: true }),
+			}),
+		)
+	})
+
+	it("preserves named agent definitions when saving another buffered setting", async () => {
+		const definitions = {
+			reviewer: { description: "Review changes", model: "gpt-6", reasoningEffort: "low" as const },
+		}
+		const liveState = { ...defaultExtensionState, soundEnabled: false, subagentAgentTypes: definitions }
+		;(useExtensionState as any).mockReturnValue(liveState)
+		vi.mocked(NotificationSettings).mockImplementation(({ soundEnabled, setCachedStateField }) => (
+			<button onClick={() => setCachedStateField("soundEnabled", !soundEnabled)}>Change sound</button>
+		))
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="notifications" />
+			</QueryClientProvider>,
+		)
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByText("Change sound"))
+		expect(liveState.soundEnabled).toBe(false)
+		expect(mockPostMessage).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({ soundEnabled: true, subagentAgentTypes: definitions }),
+			}),
+		)
+	})
+
+	it("saves post-turn and after-prefix controls from the local edit buffer", async () => {
+		const liveState = {
+			...defaultExtensionState,
+			autoCondenseContext: true,
+			autoCondenseContextScope: "full-context" as const,
+			postTurnCondenseContextPercent: 0,
+		}
+		;(useExtensionState as any).mockReturnValue(liveState)
+		vi.mocked(ContextManagementSettings).mockImplementation(
+			({ autoCondenseContextScope, postTurnCondenseContextPercent, setCachedStateField }) => (
+				<div>
+					<span data-testid="cached-scope">{autoCondenseContextScope}</span>
+					<span data-testid="cached-post-turn">{postTurnCondenseContextPercent}</span>
+					<button onClick={() => setCachedStateField("autoCondenseContextScope", "after-prefix")}>
+						Change scope
+					</button>
+					<button onClick={() => setCachedStateField("postTurnCondenseContextPercent", 80)}>
+						Change threshold
+					</button>
+				</div>
+			),
+		)
+
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="contextManagement" />
+			</QueryClientProvider>,
+		)
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByText("Change scope"))
+		fireEvent.click(screen.getByText("Change threshold"))
+		expect(liveState.autoCondenseContextScope).toBe("full-context")
+		expect(liveState.postTurnCondenseContextPercent).toBe(0)
+		expect(screen.getByTestId("cached-scope")).toHaveTextContent("after-prefix")
+		expect(screen.getByTestId("cached-post-turn")).toHaveTextContent("80")
+		expect(mockPostMessage).not.toHaveBeenCalled()
+
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({
+					autoCondenseContextScope: "after-prefix",
+					postTurnCondenseContextPercent: 80,
+				}),
 			}),
 		)
 	})

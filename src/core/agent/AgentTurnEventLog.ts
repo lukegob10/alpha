@@ -21,6 +21,7 @@ const PROJECTED_EVENT_TYPES = new Set([
 	"progress",
 	"retry",
 	"model_request_started",
+	"task_performance",
 	"request_usage",
 	"context_refreshed",
 	"policy_snapshot",
@@ -52,6 +53,15 @@ const PROJECTED_STATUSES = new Set([
 ])
 const PROJECTED_DECISIONS = new Set(["approved", "denied", "cancelled"])
 const PROJECTED_COMMAND_CATEGORIES = new Set(["test", "build", "lint", "typecheck"])
+const PROJECTED_PERFORMANCE_PHASES = new Set([
+	"task_setup",
+	"checkpoint_ready",
+	"first_provider_request",
+	"completed_task_followup",
+	"queue_admission",
+	"queued_message_wait",
+	"condensation",
+])
 const PROJECTED_RESPONSE_ITEM_TYPES = new Set(["text", "reasoning", "tool_call", "usage", "grounding", "error"])
 
 /** Optional construction hooks kept separate from the persisted event shape. */
@@ -280,6 +290,9 @@ function projectEvent(event: AgentTurnEvent): Record<string, unknown> {
 				(key === "commandCategory" && PROJECTED_COMMAND_CATEGORIES.has(value)))
 		)
 			projected[key] = value
+	}
+	if (typeof source.phase === "string" && PROJECTED_PERFORMANCE_PHASES.has(source.phase)) {
+		projected.phase = source.phase
 	}
 	for (const [key, output] of [
 		["name", "nameSha256"],

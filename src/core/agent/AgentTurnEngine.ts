@@ -22,6 +22,32 @@ export interface AgentTurnStepResult<TInput> {
 	requiresContinuation?: boolean
 }
 
+/** One canonical provider response captured before transcript or tool effects. */
+export interface AgentTurnSample<TStep = unknown> {
+	response: AgentResponse
+	/** Runtime-only adapter state for the remaining phases of this logical step. */
+	step?: TStep
+	status?: AgentTurnStepStatus
+	reason?: string
+	error?: unknown
+}
+
+/** Optional result from a host-owned persistence or effect boundary. */
+export interface AgentTurnPhaseResult {
+	status?: AgentTurnStepStatus
+	reason?: string
+	error?: unknown
+}
+
+/** The Task adapter selects concrete input; the engine owns whether to continue. */
+export interface AgentTurnContinuation<TInput> {
+	nextInput: TInput | "complete"
+	requiresContinuation?: boolean
+	status?: AgentTurnStepStatus
+	reason?: string
+	error?: unknown
+}
+
 /**
  * Host boundary for the first turn-engine extraction.
  *
@@ -30,13 +56,35 @@ export interface AgentTurnStepResult<TInput> {
  * sequencing of these host-controlled steps and keeps the continuation state
  * out of the Task's outer loop.
  */
-export interface AgentTurnHost<TInput> {
-	runStep(input: TInput): Promise<AgentTurnStepResult<TInput>>
+interface AgentTurnHostBase<TInput, TStep> {
+	/** New staged boundary: sample, commit, perform effects, then select input. */
+	sampleStep?(input: TInput): Promise<AgentTurnSample<TStep>>
+	commitResponse?(sample: AgentTurnSample<TStep>, step: number): Promise<AgentTurnPhaseResult | void>
+	executeEffects?(sample: AgentTurnSample<TStep>, step: number): Promise<AgentTurnPhaseResult | void>
+	selectContinuation?(sample: AgentTurnSample<TStep>, step: number): Promise<AgentTurnContinuation<TInput>>
+	/** Release process-local step state after every path through the staged transaction. */
+	releaseStep?(sample: AgentTurnSample<TStep>, step: number): Promise<void> | void
 	shouldAbort(): boolean
 	/** Hosts can retain an explicit completion contract or pending user continuation. */
 	canCompleteWithoutTools?(response: AgentResponse, step: number): boolean
-	onStepComplete?(response: AgentResponse, step: number): Promise<void> | void
+	onStepComplete?(
+		response: AgentResponse,
+		step: number,
+	): Promise<AgentTurnPhaseResult | void> | AgentTurnPhaseResult | void
 }
+
+/** Legacy one-callback host retained with its original required method contract. */
+export interface AgentTurnHost<TInput, TStep = unknown> extends AgentTurnHostBase<TInput, TStep> {
+	runStep(input: TInput): Promise<AgentTurnStepResult<TInput>>
+}
+
+/** Task and new adapters can implement the sequenced transaction without a legacy loop callback. */
+export interface AgentTurnStagedHost<TInput, TStep = unknown> extends AgentTurnHostBase<TInput, TStep> {
+	sampleStep(input: TInput): Promise<AgentTurnSample<TStep>>
+	runStep?: never
+}
+
+type AgentTurnHostAdapter<TInput, TStep> = AgentTurnHost<TInput, TStep> | AgentTurnStagedHost<TInput, TStep>
 
 export type AgentTurnOutcome =
 	| {
@@ -110,18 +158,24 @@ function terminalOutcome(
  * boundary, including ordinary assistant completion when the response has
  * visible text and no pending tool calls.
  */
-export class AgentTurnEngine<TInput> {
-	constructor(private readonly host: AgentTurnHost<TInput>) {}
+export class AgentTurnEngine<TInput, TStep = unknown> {
+	constructor(private readonly host: AgentTurnHostAdapter<TInput, TStep>) {}
 
 	async run(initialInput: TInput): Promise<AgentTurnOutcome> {
+		if (this.host.sampleStep) return this.runStaged(initialInput)
+		return this.runLegacy(initialInput)
+	}
+
+	private async runLegacy(initialInput: TInput): Promise<AgentTurnOutcome> {
 		let input = initialInput
 		let steps = 0
+		const host = this.host as AgentTurnHost<TInput, TStep>
 
 		try {
-			while (!this.host.shouldAbort()) {
+			while (!host.shouldAbort()) {
 				let result: AgentTurnStepResult<TInput>
 				try {
-					result = await this.host.runStep(input)
+					result = await host.runStep(input)
 				} catch (error) {
 					return terminalOutcome("failed", steps, undefined, errorMessage(error), error)
 				}
@@ -170,8 +224,19 @@ export class AgentTurnEngine<TInput> {
 				const completedWithoutTools =
 					isVisibleNoToolResponse &&
 					!result.requiresContinuation &&
+					!result.response.outcome?.requiresContinuation &&
 					(this.host.canCompleteWithoutTools?.(result.response, steps) ?? true)
 
+				const requiresContinuation =
+					result.requiresContinuation || result.response.outcome?.requiresContinuation
+				if (result.nextInput === "complete" && requiresContinuation) {
+					return terminalOutcome(
+						"incomplete",
+						steps,
+						result.response,
+						"Agent turn requires continuation input but the host marked the step complete.",
+					)
+				}
 				if (result.nextInput === "complete" || completedWithoutTools) {
 					if (this.host.shouldAbort()) return terminalOutcome("aborted", steps, result.response)
 					return {
@@ -187,6 +252,168 @@ export class AgentTurnEngine<TInput> {
 		} catch (error) {
 			// shouldAbort/callback failures are host failures, never successful
 			// completion. Preserve the error for callers that need diagnostics.
+			return terminalOutcome("failed", steps, undefined, errorMessage(error), error)
+		}
+
+		return terminalOutcome("aborted", steps, undefined)
+	}
+
+	private async runStaged(initialInput: TInput): Promise<AgentTurnOutcome> {
+		let input = initialInput
+		let steps = 0
+
+		try {
+			while (!this.host.shouldAbort()) {
+				let sample: AgentTurnSample<TStep>
+				try {
+					sample = await this.host.sampleStep!(input)
+				} catch (error) {
+					return terminalOutcome("failed", steps, undefined, errorMessage(error), error)
+				}
+				steps += 1
+
+				let status = sample.status
+				let reason = sample.reason
+				let error = sample.error
+				let outcome: AgentTurnOutcome | undefined
+				let continuationInput: TInput | undefined
+				let hasContinuation = false
+				const absorbPhase = (result: AgentTurnPhaseResult | void) => {
+					if (!result) return
+					if (result.status && result.status !== "completed") status = result.status
+					if (result.reason !== undefined) reason = result.reason
+					if (result.error !== undefined) error = result.error
+				}
+
+				try {
+					// The host owns the transcript format, but the shared engine enforces
+					// that the response commit settles before any effect can begin.
+					absorbPhase(await this.host.commitResponse?.(sample, steps))
+
+					const sampleTerminal = status && status !== "completed" ? status : undefined
+					const providerTerminal = outcomeStatus(sample.response)
+					if (!sampleTerminal && !providerTerminal) {
+						// After sampling starts, finish the effect transaction even if Stop
+						// arrives during commit. Task settles cancelled tool receipts here.
+						absorbPhase(await this.host.executeEffects?.(sample, steps))
+					}
+				} catch (phaseError) {
+					status = "failed"
+					reason = errorMessage(phaseError)
+					error = phaseError
+				}
+
+				try {
+					absorbPhase(await this.host.onStepComplete?.(sample.response, steps))
+				} catch (callbackError) {
+					if (!status || status === "completed") {
+						status = "failed"
+						reason = errorMessage(callbackError)
+						error = callbackError
+					}
+				}
+
+				try {
+					if (this.host.shouldAbort()) {
+						outcome = terminalOutcome("aborted", steps, undefined, reason)
+					} else if (status && status !== "completed") {
+						outcome = terminalOutcome(status, steps, sample.response, reason, error)
+					} else {
+						const providerStatus = outcomeStatus(sample.response)
+						if (providerStatus) {
+							outcome = terminalOutcome(
+								providerStatus as Exclude<AgentTurnStepStatus, "completed">,
+								steps,
+								sample.response,
+								reason,
+							)
+						} else {
+							const continuation = await this.host.selectContinuation?.(sample, steps)
+							if (!continuation) {
+								outcome = terminalOutcome(
+									"incomplete",
+									steps,
+									sample.response,
+									"Agent turn host did not select continuation input.",
+								)
+							} else if (continuation.status && continuation.status !== "completed") {
+								outcome = terminalOutcome(
+									continuation.status,
+									steps,
+									sample.response,
+									continuation.reason,
+									continuation.error,
+								)
+							} else {
+								const isVisibleNoToolResponse =
+									sample.response.toolCalls.length === 0 && sample.response.text.trim().length > 0
+								const completedWithoutTools =
+									isVisibleNoToolResponse &&
+									!continuation.requiresContinuation &&
+									!sample.response.outcome?.requiresContinuation &&
+									(this.host.canCompleteWithoutTools?.(sample.response, steps) ?? true)
+								const requiresContinuation =
+									continuation.requiresContinuation || sample.response.outcome?.requiresContinuation
+								if (continuation.nextInput === "complete" && requiresContinuation) {
+									outcome = terminalOutcome(
+										"incomplete",
+										steps,
+										sample.response,
+										"Agent turn requires continuation input but the host marked the step complete.",
+									)
+								} else if (continuation.nextInput === "complete" || completedWithoutTools) {
+									outcome = this.host.shouldAbort()
+										? terminalOutcome("aborted", steps, sample.response)
+										: {
+												status: "completed",
+												steps,
+												response: sample.response,
+												completionReason:
+													continuation.nextInput === "complete" ? "host" : "assistant",
+											}
+								} else {
+									continuationInput = continuation.nextInput
+									hasContinuation = true
+								}
+							}
+						}
+					}
+				} catch (decisionError) {
+					outcome = terminalOutcome(
+						"failed",
+						steps,
+						sample.response,
+						errorMessage(decisionError),
+						decisionError,
+					)
+				}
+
+				try {
+					await this.host.releaseStep?.(sample, steps)
+				} catch (releaseError) {
+					if (!outcome || outcome.status === "completed") {
+						outcome = terminalOutcome(
+							"failed",
+							steps,
+							sample.response,
+							errorMessage(releaseError),
+							releaseError,
+						)
+					}
+				}
+
+				if (outcome) return outcome
+				if (!hasContinuation) {
+					return terminalOutcome(
+						"incomplete",
+						steps,
+						sample.response,
+						"Agent turn continuation input was missing.",
+					)
+				}
+				input = continuationInput!
+			}
+		} catch (error) {
 			return terminalOutcome("failed", steps, undefined, errorMessage(error), error)
 		}
 

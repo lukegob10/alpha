@@ -11,6 +11,27 @@ function msg(overrides: Partial<AlphaMessage> & { text: string }): AlphaMessage 
 	}
 }
 
+function completedCommandEdit(
+	path: string,
+	diff: string,
+	commandExecutionId: string,
+	originalContent = "before\n",
+	finalContent = "after\n",
+): AlphaMessage {
+	return msg({
+		text: JSON.stringify({
+			tool: "appliedDiff",
+			path,
+			diff,
+			diffStats: { added: 1, removed: 1 },
+			originalContent,
+			finalContent,
+			changeStatus: "applied",
+			commandExecutionId,
+		}),
+	})
+}
+
 describe("fileChangesFromMessages", () => {
 	it("returns empty array for undefined messages", () => {
 		expect(fileChangesFromMessages(undefined)).toEqual([])
@@ -124,6 +145,99 @@ describe("fileChangesFromMessages", () => {
 		expect(result).toHaveLength(1)
 		expect(result[0].path).toBe("lib/bar.ts")
 		expect(result[0].diff).toBe("-old\n+new")
+	})
+
+	it("projects completed command edits with their captured before and after content", () => {
+		const result = fileChangesFromMessages([
+			completedCommandEdit("src/file.ts", "@@ -1 +1 @@\n-before\n+after", "run-1"),
+		])
+
+		expect(result).toEqual([
+			{
+				path: "src/file.ts",
+				diff: "@@ -1 +1 @@\n-before\n+after",
+				diffStats: { added: 1, removed: 1 },
+				originalContent: "before\n",
+				finalContent: "after\n",
+				commandExecutionId: "run-1",
+			},
+		])
+	})
+
+	it("uses a completed record once instead of also counting its answered approval preview", () => {
+		const diff = "@@ -1 +1 @@\n-before\n+after"
+		const preview = msg({
+			type: "ask",
+			ask: "tool",
+			isAnswered: true,
+			text: JSON.stringify({
+				tool: "appliedDiff",
+				path: "./src/file.ts",
+				diff,
+				diffStats: { added: 9, removed: 9 },
+			}),
+		})
+		const result = fileChangesFromMessages([preview, completedCommandEdit("src/file.ts", diff, "run-1")])
+
+		expect(result).toHaveLength(1)
+		expect(result[0]).toMatchObject({
+			path: "src/file.ts",
+			diffStats: { added: 1, removed: 1 },
+			commandExecutionId: "run-1",
+		})
+	})
+
+	it("retains separate edits to the same path across completed command executions", () => {
+		const messages = [
+			completedCommandEdit("src/file.ts", "-before\n+middle", "run-1", "before\n", "middle\n"),
+			completedCommandEdit("src/file.ts", "-middle\n+after", "run-2", "middle\n", "after\n"),
+		]
+
+		expect(fileChangesFromMessages(messages).map((entry) => entry.commandExecutionId)).toEqual(["run-1", "run-2"])
+	})
+
+	it("matches at most one identical preview per completion and keeps unrelated edits", () => {
+		const preview = (path: string, diff: string) =>
+			msg({
+				type: "ask",
+				ask: "tool",
+				isAnswered: true,
+				text: JSON.stringify({ tool: "appliedDiff", path, diff }),
+			})
+		const result = fileChangesFromMessages([
+			preview("src/file.ts", "-before\n+after"),
+			preview("src/file.ts", "-before\n+after"),
+			preview("src/file.ts", "-different\n+other"),
+			completedCommandEdit("src/file.ts", "-before\n+after", "run-1"),
+		])
+
+		expect(result).toHaveLength(3)
+		expect(result.filter((entry) => entry.commandExecutionId === "run-1")).toHaveLength(1)
+		expect(result.filter((entry) => entry.diff === "-before\n+after")).toHaveLength(2)
+		expect(result.some((entry) => entry.diff === "-different\n+other")).toBe(true)
+	})
+
+	it("does not merge identical diff text from different physical executions", () => {
+		const preview = msg({
+			type: "ask",
+			ask: "tool",
+			isAnswered: true,
+			commandExecutionId: "run-1",
+			text: JSON.stringify({ tool: "appliedDiff", path: "src/file.ts", diff: "-before\n+after" }),
+		})
+		const completed = completedCommandEdit("src/file.ts", "-before\n+after", "run-2")
+
+		expect(fileChangesFromMessages([preview, completed])).toHaveLength(2)
+	})
+
+	it("ignores cancelled, incomplete, and empty command change records", () => {
+		const applied = completedCommandEdit("src/file.ts", "-before\n+after", "run-1")
+		const cancelled = msg({ ...applied, text: applied.text!.replace('"applied"', '"cancelled"') })
+		const failed = msg({ ...applied, text: applied.text!.replace('"applied"', '"failed"') })
+		const incomplete: AlphaMessage = { ...applied, partial: true }
+		const empty = completedCommandEdit("src/file.ts", "", "run-2")
+
+		expect(fileChangesFromMessages([cancelled, failed, incomplete, empty])).toEqual([])
 	})
 
 	it("uses content when diff is missing for single-file", () => {

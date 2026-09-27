@@ -1,7 +1,8 @@
 import { z } from "zod"
 
-export const ticketStatusSchema = z.enum(["backlog", "in-progress", "complete"])
-export const ticketTypeSchema = z.enum(["bug", "feature", "improvement"])
+export const ticketStatusSchema = z.enum(["backlog", "in-progress", "complete", "canceled"])
+export const ticketTypeSchema = z.enum(["bug", "feature", "improvement", "testing", "performance", "ux"])
+export const ticketPrioritySchema = z.enum(["high", "medium", "low"])
 export const ticketIdSchema = z.string().uuid()
 export const ticketReferenceSchema = z
 	.string()
@@ -26,6 +27,8 @@ export const ticketFieldsSchema = z.object({
 	name: z.string().trim().min(1).max(200),
 	// Omitted in legacy tickets; null explicitly removes an existing classification.
 	type: ticketTypeSchema.nullable().optional(),
+	// Omitted in legacy tickets; null explicitly removes an existing priority.
+	priority: ticketPrioritySchema.nullable().optional(),
 	description: section,
 	context: section,
 	successCriteria: section,
@@ -35,6 +38,7 @@ export const ticketSchema = ticketFieldsSchema.extend({
 	schemaVersion: z.literal(1),
 	id: ticketIdSchema,
 	reference: ticketReferenceSchema.optional(),
+	parentId: ticketIdSchema.optional(),
 	status: ticketStatusSchema,
 	createdAt: z.string().datetime(),
 	updatedAt: z.string().datetime(),
@@ -42,7 +46,11 @@ export const ticketSchema = ticketFieldsSchema.extend({
 	linkedTaskIds: z.array(z.string().min(1).max(200)).max(100),
 	revision: z.string(),
 })
-export const createTicketSchema = ticketFieldsSchema.partial().required({ name: true }).strict()
+export const createTicketSchema = ticketFieldsSchema
+	.partial()
+	.required({ name: true })
+	.extend({ parentId: ticketIdSchema.optional() })
+	.strict()
 export const deleteTicketSchema = z.object({ id: ticketLocatorSchema, expectedRevision: z.string().min(1) }).strict()
 export const updateTicketSchema = ticketFieldsSchema
 	.partial()
@@ -50,6 +58,7 @@ export const updateTicketSchema = ticketFieldsSchema
 		id: ticketLocatorSchema,
 		expectedRevision: z.string().min(1),
 		status: ticketStatusSchema.optional(),
+		parentId: ticketIdSchema.nullable().optional(),
 	})
 	.strict()
 export const listTicketsSchema = z
@@ -68,7 +77,8 @@ export type DeleteTicket = z.infer<typeof deleteTicketSchema>
 export type UpdateTicket = z.infer<typeof updateTicketSchema>
 export type TicketStatus = z.infer<typeof ticketStatusSchema>
 export type TicketType = z.infer<typeof ticketTypeSchema>
-export const ticketStatusOrder: TicketStatus[] = ["in-progress", "backlog", "complete"]
+export type TicketPriority = z.infer<typeof ticketPrioritySchema>
+export const ticketStatusOrder: TicketStatus[] = ["in-progress", "backlog", "complete", "canceled"]
 export const ticketTargetSchema = z.object({ project: z.string().min(1).max(200), id: ticketIdSchema }).strict()
 export type TicketTarget = z.infer<typeof ticketTargetSchema>
 export const ticketSearchRequestSchema = z.object({
@@ -80,7 +90,18 @@ export const ticketSearchResponseSchema = z.object({
 	type: z.literal("ticketSearchResults"),
 	requestId: z.string(),
 	tickets: z
-		.array(ticketSchema.pick({ id: true, reference: true, name: true, status: true, type: true, updatedAt: true }))
+		.array(
+			ticketSchema.pick({
+				id: true,
+				reference: true,
+				parentId: true,
+				name: true,
+				status: true,
+				type: true,
+				priority: true,
+				updatedAt: true,
+			}),
+		)
 		.max(50),
 	error: z.boolean().optional(),
 })
@@ -118,7 +139,18 @@ export const ticketActivitySchema = z.discriminatedUnion("operation", [
 	}),
 ])
 export type TicketActivity = z.infer<typeof ticketActivitySchema>
-export type TicketSummary = Pick<Ticket, "id" | "reference" | "name" | "status" | "type" | "updatedAt">
+export type TicketSummary = Pick<
+	Ticket,
+	"id" | "reference" | "parentId" | "name" | "status" | "type" | "priority" | "updatedAt" | "revision"
+> & {
+	/** Direct children across the whole project, before search and pagination. */
+	childCount: number
+	completedChildCount: number
+}
+export type TicketRelations = {
+	parent?: TicketSummary
+	children: TicketSummary[]
+}
 export interface TicketList {
 	tickets: TicketSummary[]
 	total: number
@@ -136,6 +168,12 @@ export const ticketRequestSchema = z
 			z.object({ action: z.literal("create"), input: createTicketSchema }),
 			z.object({ action: z.literal("update"), input: updateTicketSchema }),
 			z.object({ action: z.literal("delete"), input: deleteTicketSchema }),
+			z.object({ action: z.literal("relations"), id: ticketIdSchema }),
+			z.object({
+				action: z.literal("openLinkedTask"),
+				id: ticketIdSchema,
+				taskId: z.string().min(1).max(200),
+			}),
 			z.object({ action: z.literal("openMarkdown"), id: ticketIdSchema }),
 			z.object({ action: z.literal("work"), id: ticketIdSchema, expectedRevision: z.string().min(1) }),
 		]),
@@ -146,4 +184,4 @@ export type TicketResponse =
 	| { type: "ticketOpen"; target: TicketTarget }
 	| { type: "ticketProjects"; projects: { id: string; name: string }[]; language: string; error?: string }
 	| { type: "ticketChanged"; project: string }
-	| { type: "ticketResponse"; requestId: string; result?: Ticket | TicketList; error?: string }
+	| { type: "ticketResponse"; requestId: string; result?: Ticket | TicketList | TicketRelations; error?: string }

@@ -8,8 +8,8 @@ import { customToolRegistry, formatNative } from "@alpha-code/core"
 import {
 	browserToolNames,
 	discoverToolsParamsSchema,
+	toolSearchParamsSchema,
 	type CustomToolDefinition,
-	type DiscoverToolsParams,
 } from "@alpha-code/types"
 
 import type { NativeToolArgs, ToolResponse, ToolUse } from "../../shared/tools"
@@ -20,19 +20,30 @@ import { isPathWithinRoot } from "./pathSafety"
 import { TOOL_ALIASES } from "../../shared/tools"
 import { normalizeMcpToolName, parseMcpToolName } from "../../utils/mcp-name"
 import { getNativeTools } from "../prompts/tools/native-tools"
-import { discoverTools } from "../prompts/tools/native-tools/discover_tools"
+import { toolSearch } from "../prompts/tools/native-tools/discover_tools"
 import { formatResponse } from "../prompts/responses"
+import { MANAGE_COMMAND_MAX_TIMEOUT_MS, normalizeExecCommandYieldTimeMs } from "./commandTimeouts"
 import type { Task } from "../task/Task"
 
 import { accessMcpResourceTool } from "./accessMcpResourceTool"
+import { listMcpResourcesTool, listMcpResourceTemplatesTool, readMcpResourceTool } from "./McpResourceTools"
 import { applyDiffTool } from "./ApplyDiffTool"
 import { applyPatchTool } from "./ApplyPatchTool"
 import { askFollowupQuestionTool } from "./AskFollowupQuestionTool"
+import { requestUserInputTool } from "./RequestUserInputTool"
+import { requestUserInputAsyncTool } from "./RequestUserInputAsyncTool"
 import { attemptCompletionTool, type AttemptCompletionCallbacks } from "./AttemptCompletionTool"
 import { BaseTool, type ToolCallbacks } from "./BaseTool"
-import { codebaseSearchTool } from "./CodebaseSearchTool"
 import { cancelAgentTool } from "./CancelAgentTool"
 import { closeAgentTool } from "./CloseAgentTool"
+import {
+	createTaskTool,
+	listTasksTool,
+	waitTaskTool,
+	sendTaskMessageTool,
+	steerTaskTool,
+	stopTaskTool,
+} from "./CrossTaskOrchestrationTools"
 import { delegateTaskTool } from "./DelegateTaskTool"
 import { editFileTool } from "./EditFileTool"
 import { editTool } from "./EditTool"
@@ -41,12 +52,11 @@ import { prepareParallelCommand } from "./ParallelCommandRead"
 import { followupTaskTool } from "./FollowupTaskTool"
 import { interruptAgentTool } from "./InterruptAgentTool"
 import { listAgentsTool } from "./ListAgentsTool"
-import { listFilesTool } from "./ListFilesTool"
 import { newTaskTool } from "./NewTaskTool"
 import { manageCommandTool } from "./ManageCommandTool"
-import { readFileTool } from "./ReadFileTool"
+import { commandSessionRegistry } from "./CommandSessionRegistry"
+import { viewImageTool } from "./ViewImageTool"
 import { runSlashCommandTool } from "./RunSlashCommandTool"
-import { searchFilesTool } from "./SearchFilesTool"
 import { searchReplaceTool } from "./SearchReplaceTool"
 import { sendMessageTool } from "./SendMessageTool"
 import { reportProgressTool } from "./ReportProgressTool"
@@ -80,6 +90,8 @@ export interface ToolCapabilities {
 	requiresApproval: boolean
 	/** Audited command preparation may narrow a serial command to an approved independent read. */
 	parallelCommandRead?: boolean
+	/** Captured MCP read-only hint; scheduling still requires serial approval preflight. */
+	parallelMcpRead?: boolean
 }
 
 export interface ToolExecutionContext {
@@ -113,10 +125,14 @@ export interface PreparedCommandRead {
 
 export interface ToolDescriptor {
 	name: string
+	/** Handler metadata owns execution status when result text is opaque external data. */
+	statusSource?: "handler" | "structured_output"
 	/** Alternate model-facing names. All entries resolve to `name`. */
 	aliases: readonly string[]
 	schema: OpenAI.Chat.ChatCompletionTool
 	capabilities: ToolCapabilities
+	/** Deferred tools remain executable in the captured registry and are exposed through tool search. */
+	exposure?: "eager" | "deferred"
 	/** Maximum text characters returned to the next model turn. */
 	maxOutputChars?: number
 	/** Explicit independent resource scope for approval-free kernel executors. Unknown scope is serial. */
@@ -143,11 +159,17 @@ export interface ToolRegistryOptions {
 	nativeTools?: readonly OpenAI.Chat.ChatCompletionTool[]
 	mcpTools?: readonly OpenAI.Chat.ChatCompletionTool[]
 	/** Original targets owned by the same captured schemas, including sanitized-name collisions. */
-	mcpToolTargets?: ReadonlyMap<string, { serverName: string; toolName: string; source?: "global" | "project" }>
+	mcpToolTargets?: ReadonlyMap<
+		string,
+		{ serverName: string; toolName: string; source?: "global" | "project"; parallelRead?: boolean }
+	>
 	includeCustomTools?: boolean
 	/** Captured custom definitions and schemas from one catalog boundary. */
 	customTools?: readonly { definition: CustomToolDefinition; schema: OpenAI.Chat.ChatCompletionTool }[]
-	discovery?: { execute: (params: DiscoverToolsParams, signal?: AbortSignal) => string; maxOutputChars: number }
+	discovery?: {
+		execute: (params: { query: string; limit: number }, signal?: AbortSignal) => string
+		maxOutputChars: number
+	}
 	/** Fail closed if the original target, source, connection or schema changes before dispatch. */
 	isMcpToolCurrent?: (name: string, serverName?: string, toolName?: string, source?: "global" | "project") => boolean
 	supportsImages?: boolean
@@ -156,14 +178,21 @@ export interface ToolRegistryOptions {
 const BARRIER_TOOLS = new Set([
 	"new_task",
 	"delegate_task",
+	"create_task",
+	"wait_task",
+	"send_task_message",
+	"steer_task",
+	"stop_task",
 	"wait_agent",
 	"attempt_completion",
 	"ask_followup_question",
+	"request_user_input",
+	"request_user_input_async",
 ])
 
 // Read-like metadata alone never grants parallel execution. The scheduler also
 // requires an explicit independent scope and an approval-free execution path.
-const PARALLEL_READ_TOOLS = new Set(["read_file", "list_files", "search_files", "codebase_search", "list_agents"])
+const PARALLEL_READ_TOOLS = new Set(["list_agents"])
 
 const WORKSPACE_TOOLS = new Set([
 	"write_to_file",
@@ -172,15 +201,19 @@ const WORKSPACE_TOOLS = new Set([
 	"search_replace",
 	"edit_file",
 	"apply_patch",
-	"shell",
+	"exec_command",
 ])
 
 const CHECKPOINT_TOOLS = new Set(["write_to_file", "apply_diff", "edit", "search_replace", "edit_file", "apply_patch"])
 
 const TASK_TOOLS = new Set([
-	"update_todo_list",
+	"update_plan",
 	"new_task",
 	"delegate_task",
+	"create_task",
+	"send_task_message",
+	"steer_task",
+	"stop_task",
 	"spawn_agent",
 	"wait_agent",
 	"send_message",
@@ -191,33 +224,170 @@ const TASK_TOOLS = new Set([
 	"close_agent",
 	"attempt_completion",
 	"ask_followup_question",
+	"request_user_input",
+	"request_user_input_async",
 ])
 
 const BROWSER_TOOLS = new Set<string>(browserToolNames)
 
 /**
- * The terminal host still lives in ExecuteCommandTool for lifecycle and
- * compatibility reasons. The registry exposes it through the canonical shell
- * name without changing that host's implementation name or behavior.
+ * Keep the terminal process lifecycle in ExecuteCommandTool while presenting
+ * the Codex-compatible exec_command contract to the registry and scheduler.
  */
-class ShellCommandToolAdapter extends BaseTool<"shell"> {
-	readonly name = "shell" as const
+class ExecCommandToolAdapter extends BaseTool<"exec_command"> {
+	readonly name = "exec_command" as const
 
 	constructor(private readonly legacyTool: typeof executeCommandTool) {
 		super()
 	}
 
-	async execute(params: NativeToolArgs["shell"], task: Task, callbacks: ToolCallbacks): Promise<void> {
-		await this.legacyTool.execute(params, task, callbacks)
+	async execute(params: NativeToolArgs["exec_command"], task: Task, callbacks: ToolCallbacks): Promise<void> {
+		const raw = params as unknown as Record<string, unknown>
+		const usesExecCommandArgs = typeof raw.cmd === "string"
+		const command = typeof raw.cmd === "string" ? raw.cmd : typeof raw.command === "string" ? raw.command : ""
+		const workdir =
+			typeof raw.workdir === "string" ? raw.workdir : typeof raw.cwd === "string" ? raw.cwd : undefined
+		const normalizedYield = normalizeExecCommandYieldTimeMs(raw.yield_time_ms)
+		const legacyTimeout = typeof raw.timeout === "number" ? raw.timeout : undefined
+		const maxOutputTokens =
+			typeof raw.max_output_tokens === "number" && Number.isInteger(raw.max_output_tokens)
+				? Math.min(100_000, Math.max(0, raw.max_output_tokens))
+				: usesExecCommandArgs
+					? 10_000
+					: undefined
+		const nativeParams: NativeToolArgs["execute_command"] = {
+			command,
+			...(workdir ? { cwd: workdir } : {}),
+			...(usesExecCommandArgs
+				? { timeout: normalizedYield / 1_000 }
+				: legacyTimeout !== undefined
+					? { timeout: legacyTimeout }
+					: {}),
+			...(raw.verification && typeof raw.verification === "object"
+				? { verification: raw.verification as NativeToolArgs["execute_command"]["verification"] }
+				: {}),
+		}
+		await this.legacyTool.execute(
+			nativeParams,
+			task,
+			withMaxOutputTokens(callbacks, maxOutputTokens, usesExecCommandArgs),
+		)
 	}
 
-	override async handlePartial(task: Task, block: ToolUse<"shell">): Promise<void> {
-		const legacyBlock: ToolUse<"execute_command"> = { ...block, name: "execute_command" }
+	override async handlePartial(task: Task, block: ToolUse<"exec_command">): Promise<void> {
+		const raw = block.params as Record<string, string | undefined>
+		const command = raw.cmd ?? raw.command
+		const workdir = raw.workdir ?? raw.cwd
+		const nativeArgs = block.nativeArgs as Record<string, unknown> | undefined
+		const timeout =
+			typeof nativeArgs?.yield_time_ms === "number" ? nativeArgs.yield_time_ms / 1_000 : nativeArgs?.timeout
+		const verification = nativeArgs?.verification as NativeToolArgs["execute_command"]["verification"] | undefined
+		const legacyBlock: ToolUse<"execute_command"> = {
+			...block,
+			name: "execute_command",
+			params: { ...block.params, ...(command ? { command } : {}) },
+			nativeArgs: command
+				? {
+						command,
+						...(workdir ? { cwd: workdir } : {}),
+						...(typeof timeout === "number" ? { timeout } : {}),
+						...(verification ? { verification } : {}),
+					}
+				: undefined,
+		}
 		await this.legacyTool.handlePartial(task, legacyBlock)
 	}
 }
 
-const shellCommandTool = new ShellCommandToolAdapter(executeCommandTool)
+const execCommandToolAdapter = new ExecCommandToolAdapter(executeCommandTool)
+
+function normalizeWriteStdinOutputTokens(value: unknown): number {
+	return typeof value === "number" && Number.isInteger(value) ? Math.min(100_000, Math.max(0, value)) : 10_000
+}
+
+class WriteStdinToolAdapter extends BaseTool<"write_stdin"> {
+	readonly name = "write_stdin" as const
+
+	async execute(params: NativeToolArgs["write_stdin"], task: Task, callbacks: ToolCallbacks): Promise<void> {
+		const session = commandSessionRegistry.resolve(task, params.session_id)
+		if (!session) {
+			callbacks.setResultMetadata?.({ status: "error" })
+			await callbacks.handleError(
+				"controlling command",
+				new Error("Command session is unavailable for this task"),
+			)
+			return
+		}
+		const chars = params.chars ?? ""
+		const requestedYieldTimeMs = params.yield_time_ms ?? 250
+		const maxOutputTokens = normalizeWriteStdinOutputTokens(params.max_output_tokens)
+		const yieldTimeMs =
+			chars.length > 0
+				? Math.max(250, Math.min(30_000, requestedYieldTimeMs))
+				: Math.max(5_000, Math.min(MANAGE_COMMAND_MAX_TIMEOUT_MS, requestedYieldTimeMs))
+		await manageCommandTool.execute(
+			{
+				execution_id: session.executionId,
+				action: chars.length > 0 ? "input" : "wait",
+				...(chars.length > 0 ? { input: chars } : {}),
+				timeout_ms: yieldTimeMs,
+			},
+			task,
+			withMaxOutputTokens(callbacks, maxOutputTokens, true),
+			() => {
+				if (!commandSessionRegistry.isCurrent(task, params.session_id, session.process))
+					throw new Error("Command session changed while approval was pending")
+			},
+			params.session_id,
+		)
+	}
+}
+
+const writeStdinTool = new WriteStdinToolAdapter()
+
+function withMaxOutputTokens(
+	callbacks: ToolCallbacks,
+	maxOutputTokens: number | undefined,
+	includeCommandResult = false,
+): ToolCallbacks {
+	if (maxOutputTokens === undefined && !includeCommandResult) return callbacks
+	const maxOutputChars = maxOutputTokens === undefined ? undefined : Math.max(0, Math.floor(maxOutputTokens * 4))
+	const maxCharacters = maxOutputChars ?? Number.MAX_SAFE_INTEGER
+	const truncate = (value: string, limit = maxCharacters): string => {
+		if (value.length <= limit) return value
+		const marker = "\n[output truncated]"
+		if (limit <= marker.length) return value.slice(0, limit)
+		return `${value.slice(0, limit - marker.length)}${marker}`
+	}
+	return {
+		...callbacks,
+		...(includeCommandResult
+			? { commandResultMaxOutputTokens: maxOutputTokens ?? 10_000, commandResultFormat: "codex" as const }
+			: {}),
+		pushToolResult: (content: ToolResponse) => {
+			if (typeof content === "string") {
+				callbacks.pushToolResult(
+					includeCommandResult && content.startsWith("Chunk ID: ") ? content : truncate(content),
+				)
+				return
+			}
+
+			let remaining = maxCharacters
+			const bounded: Exclude<ToolResponse, string>[number][] = []
+			for (const block of content) {
+				if (block.type !== "text") {
+					bounded.push(block)
+					continue
+				}
+				if (remaining <= 0) continue
+				const text = truncate(block.text, remaining)
+				remaining = Math.max(0, remaining - text.length)
+				bounded.push({ ...block, text })
+			}
+			callbacks.pushToolResult(bounded)
+		},
+	}
+}
 
 /**
  * Canonicalize a model-facing name before it enters any policy or dispatch
@@ -251,7 +421,12 @@ export const canonicalToolName = canonicalizeToolName
 function canonicalizeSchema(schema: OpenAI.Chat.ChatCompletionTool): OpenAI.Chat.ChatCompletionTool {
 	if (schema.type !== "function") return schema
 	const canonical = canonicalizeToolName(schema.function.name)
-	if (canonical === schema.function.name) return schema
+	if (
+		canonical === schema.function.name ||
+		schema.function.name === "exec_command" ||
+		schema.function.name === "update_plan"
+	)
+		return schema
 	return {
 		...schema,
 		function: {
@@ -276,13 +451,24 @@ function cloneAndFreeze<T>(value: T): T {
 
 const TOOL_NAMES = [
 	"manage_command",
+	"write_stdin",
 	"access_mcp_resource",
+	"list_mcp_resources",
+	"list_mcp_resource_templates",
+	"read_mcp_resource",
 	"apply_diff",
 	"apply_patch",
 	"ask_followup_question",
+	"request_user_input",
+	"request_user_input_async",
 	"attempt_completion",
-	"codebase_search",
 	"delegate_task",
+	"create_task",
+	"list_tasks",
+	"wait_task",
+	"send_task_message",
+	"steer_task",
+	"stop_task",
 	"spawn_agent",
 	"list_agents",
 	"wait_agent",
@@ -294,41 +480,21 @@ const TOOL_NAMES = [
 	"close_agent",
 	"edit",
 	"edit_file",
+	"exec_command",
 	"shell",
 	"execute_command",
 	...browserToolNames,
-	"list_files",
 	"new_task",
 	"read_command_output",
-	"read_file",
+	"view_image",
 	"run_slash_command",
-	"search_files",
 	"search_replace",
 	"skill",
-	"update_todo_list",
-	"use_mcp_tool",
+	"update_plan",
 	"write_to_file",
 ] as const
 
 type BuiltInToolName = (typeof TOOL_NAMES)[number]
-
-const legacyMcpSchema: OpenAI.Chat.ChatCompletionFunctionTool = {
-	type: "function",
-	function: {
-		name: "use_mcp_tool",
-		description: "Call a tool exposed by a connected MCP server.",
-		parameters: {
-			type: "object",
-			properties: {
-				server_name: { type: "string" },
-				tool_name: { type: "string" },
-				arguments: { type: "object", additionalProperties: true },
-			},
-			required: ["server_name", "tool_name"],
-			additionalProperties: false,
-		},
-	},
-}
 
 function getSchemaMap(tools: readonly OpenAI.Chat.ChatCompletionTool[]): Map<string, OpenAI.Chat.ChatCompletionTool> {
 	const result = new Map<string, OpenAI.Chat.ChatCompletionTool>()
@@ -336,8 +502,7 @@ function getSchemaMap(tools: readonly OpenAI.Chat.ChatCompletionTool[]): Map<str
 		if (tool.type === "function") {
 			const canonical = canonicalizeToolName(tool.function.name)
 			const normalized = canonicalizeSchema(tool)
-			// Prefer a schema already named canonically over a legacy alias when a
-			// provider sends both variants.
+			// Prefer canonical schemas unless a provider-facing alias has its own wire contract.
 			if (!result.has(canonical) || tool.function.name === canonical) {
 				result.set(canonical, normalized)
 			}
@@ -367,7 +532,7 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 			: "serial"
 
 	const sideEffects: ToolSideEffects =
-		WORKSPACE_TOOLS.has(name) || name === "manage_command"
+		WORKSPACE_TOOLS.has(name) || name === "manage_command" || name === "write_stdin"
 			? "workspace"
 			: TASK_TOOLS.has(name)
 				? "task"
@@ -384,11 +549,16 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 	return {
 		concurrency,
 		sideEffects,
-		...(name === "shell" && options.parallelExecutionEnabled !== false ? { parallelCommandRead: true } : {}),
+		...(name === "exec_command" && options.parallelExecutionEnabled !== false ? { parallelCommandRead: true } : {}),
 		controlFlow: BARRIER_TOOLS.has(name) || name === "run_slash_command" || name === "skill",
 		// Individual tool handlers own the exact approval prompt. This flag is
 		// metadata for scheduling and future policy decisions, not a second prompt.
-		requiresApproval: name !== "report_progress" && name !== "list_tickets" && name !== "read_ticket",
+		requiresApproval:
+			name !== "report_progress" &&
+			name !== "list_tickets" &&
+			name !== "read_ticket" &&
+			name !== "list_tasks" &&
+			name !== "wait_task",
 	}
 }
 
@@ -398,9 +568,11 @@ function getToolDescription(call: ToolUse): string {
 
 	switch (call.name) {
 		case "shell":
+		case "exec_command":
 		case "execute_command":
 			return `[${call.name} for '${value("command") ?? ""}']`
 		case "read_file":
+		case "view_image":
 			return `[${call.name} for '${value("path") ?? ""}']`
 		case "write_to_file":
 		case "edit":
@@ -420,6 +592,24 @@ function getToolDescription(call: ToolUse): string {
 			return `[${call.name} for '${value("server_name") ?? ""}']`
 		case "ask_followup_question":
 			return `[${call.name} for '${value("question") ?? ""}']`
+		case "request_user_input": {
+			const questions = value("questions")
+			const firstQuestion = Array.isArray(questions) ? questions[0] : undefined
+			const prompt =
+				firstQuestion && typeof firstQuestion === "object"
+					? ((firstQuestion as Record<string, unknown>).question ?? "")
+					: ""
+			return `[${call.name} for '${prompt}']`
+		}
+		case "request_user_input_async": {
+			const questions = value("questions")
+			const firstQuestion = Array.isArray(questions) ? questions[0] : undefined
+			const prompt =
+				firstQuestion && typeof firstQuestion === "object"
+					? ((firstQuestion as Record<string, unknown>).title ?? "")
+					: ""
+			return `[${call.name} for '${prompt}']`
+		}
 		case "new_task":
 			return `[${call.name} in '${value("mode") ?? ""}' mode]`
 		default:
@@ -591,10 +781,36 @@ export class ToolRegistry {
 				})
 		}
 		this.registerBuiltIn("access_mcp_resource", accessMcpResourceTool, schemas)
+		this.registerBuiltIn("list_mcp_resources", listMcpResourcesTool, schemas)
+		this.registerBuiltIn("list_mcp_resource_templates", listMcpResourceTemplatesTool, schemas)
+		this.registerBuiltIn("read_mcp_resource", readMcpResourceTool, schemas)
 		this.registerBuiltIn("apply_diff", applyDiffTool, schemas)
 		this.registerBuiltIn("manage_command", manageCommandTool, schemas)
+		this.registerBuiltIn("write_stdin", writeStdinTool, schemas)
 		this.registerBuiltIn("apply_patch", applyPatchTool, schemas)
 		this.registerBuiltIn("ask_followup_question", askFollowupQuestionTool, schemas)
+		this.registerBuiltIn(
+			"request_user_input",
+			requestUserInputTool,
+			schemas,
+			async ({ task, call, signal, callbacks }) => {
+				await requestUserInputTool.handle(task, call as ToolUse<"request_user_input">, {
+					...callbacks,
+					signal: signal ?? callbacks.signal,
+				})
+			},
+		)
+		this.registerBuiltIn(
+			"request_user_input_async",
+			requestUserInputAsyncTool,
+			schemas,
+			async ({ task, call, signal, callbacks }) => {
+				await requestUserInputAsyncTool.handle(task, call as ToolUse<"request_user_input_async">, {
+					...callbacks,
+					signal: signal ?? callbacks.signal,
+				})
+			},
+		)
 		this.registerBuiltIn("attempt_completion", attemptCompletionTool, schemas, async (context) => {
 			const callbacks: AttemptCompletionCallbacks = {
 				...context.callbacks,
@@ -604,8 +820,13 @@ export class ToolRegistry {
 			}
 			await attemptCompletionTool.handle(context.task, context.call as ToolUse<"attempt_completion">, callbacks)
 		})
-		this.registerBuiltIn("codebase_search", codebaseSearchTool, schemas)
 		this.registerBuiltIn("delegate_task", delegateTaskTool, schemas)
+		this.registerBuiltIn("create_task", createTaskTool, schemas)
+		this.registerBuiltIn("list_tasks", listTasksTool, schemas)
+		this.registerBuiltIn("wait_task", waitTaskTool, schemas)
+		this.registerBuiltIn("send_task_message", sendTaskMessageTool, schemas)
+		this.registerBuiltIn("steer_task", steerTaskTool, schemas)
+		this.registerBuiltIn("stop_task", stopTaskTool, schemas)
 		this.registerBuiltIn("spawn_agent", spawnAgentTool, schemas)
 		this.registerBuiltIn("list_agents", listAgentsTool, schemas)
 		this.registerBuiltIn("wait_agent", waitAgentTool, schemas)
@@ -617,7 +838,7 @@ export class ToolRegistry {
 		this.registerBuiltIn("close_agent", closeAgentTool, schemas)
 		this.registerBuiltIn("edit", editTool, schemas)
 		this.registerBuiltIn("edit_file", editFileTool, schemas)
-		this.registerBuiltIn("shell", shellCommandTool, schemas)
+		this.registerBuiltIn("exec_command", execCommandToolAdapter, schemas)
 		this.registerBuiltIn("open_browser_page", openBrowserPageTool, schemas)
 		this.registerBuiltIn("list_browser_pages", listBrowserPagesTool, schemas)
 		this.registerBuiltIn("read_page", readPageTool, schemas)
@@ -629,30 +850,33 @@ export class ToolRegistry {
 		this.registerBuiltIn("drag_element", dragElementTool, schemas)
 		this.registerBuiltIn("handle_dialog", handleDialogTool, schemas)
 		this.registerBuiltIn("run_playwright_code", runPlaywrightCodeTool, schemas)
-		this.registerBuiltIn("list_files", listFilesTool, schemas)
 		this.registerBuiltIn("new_task", newTaskTool, schemas)
-		this.registerBuiltIn("read_file", readFileTool, schemas)
+		this.registerBuiltIn("view_image", viewImageTool, schemas)
 		this.registerBuiltIn("run_slash_command", runSlashCommandTool, schemas)
-		this.registerBuiltIn("search_files", searchFilesTool, schemas)
 		this.registerBuiltIn("search_replace", searchReplaceTool, schemas)
 		this.registerBuiltIn("skill", skillTool, schemas)
-		this.registerBuiltIn("update_todo_list", updateTodoListTool, schemas)
-		this.registerBuiltIn("use_mcp_tool", useMcpToolTool, schemas, undefined, legacyMcpSchema)
+		this.registerBuiltIn("update_plan", updateTodoListTool, schemas)
 		this.registerBuiltIn("write_to_file", writeToFileTool, schemas)
-		if (schemas.has("discover_tools")) {
+		if (schemas.has("tool_search")) {
 			const discovery = options.discovery
 			this.register({
-				name: "discover_tools",
+				name: "tool_search",
 				aliases: [],
-				schema: discoverTools,
-				capabilities: getToolCapabilities("discover_tools"),
+				schema: schemas.get("tool_search") ?? toolSearch,
+				capabilities: getToolCapabilities("tool_search"),
 				maxOutputChars: discovery?.maxOutputChars,
+				exposure: "eager",
 				execute: async ({ call, signal, callbacks }) => {
 					signal?.throwIfAborted()
 					if (!discovery) throw new Error("Tool discovery is unavailable for this catalog.")
-					const parsed = discoverToolsParamsSchema.safeParse(call.nativeArgs)
+					const parsed =
+						call.originalName === "discover_tools"
+							? discoverToolsParamsSchema.safeParse(call.nativeArgs)
+							: toolSearchParamsSchema.safeParse(call.nativeArgs)
 					if (!parsed.success) throw new Error("Invalid tool discovery arguments.")
-					callbacks.pushToolResult(discovery.execute(parsed.data, signal))
+					callbacks.pushToolResult(
+						discovery.execute({ query: parsed.data.query, limit: parsed.data.limit }, signal),
+					)
 				},
 			})
 		}
@@ -672,7 +896,12 @@ export class ToolRegistry {
 				name,
 				aliases: [],
 				schema: canonicalizeSchema(schema),
-				capabilities: getToolCapabilities(name),
+				capabilities: {
+					...getToolCapabilities(name),
+					...(capturedTarget?.parallelRead === true ? { parallelMcpRead: true } : {}),
+				},
+				statusSource: "handler",
+				exposure: "deferred",
 				execute: async ({ task, call, callbacks, signal }) => {
 					const assertCurrent = (serverName?: string, toolName?: string, source?: "global" | "project") => {
 						signal?.throwIfAborted()
@@ -685,6 +914,7 @@ export class ToolRegistry {
 					assertCurrent()
 					const parsed = capturedTarget ?? parseMcpToolName(name)
 					if (!parsed) {
+						callbacks.setResultMetadata?.({ status: "error" })
 						callbacks.pushToolResult(formatResponse.toolError(`Invalid MCP tool name "${name}".`))
 						return
 					}
@@ -741,6 +971,8 @@ export class ToolRegistry {
 					aliases: [],
 					schema,
 					capabilities: getToolCapabilities("custom_tool"),
+					statusSource: "handler",
+					exposure: "deferred",
 					execute: async ({ task, call, callbacks }) => {
 						try {
 							const args = parameters?.parse(call.nativeArgs ?? {}) ?? call.nativeArgs ?? {}
@@ -750,6 +982,7 @@ export class ToolRegistry {
 							})
 							callbacks.pushToolResult(result)
 						} catch (error) {
+							callbacks.setResultMetadata?.({ status: "error" })
 							callbacks.pushToolResult(
 								formatResponse.toolError(
 									`Error executing custom tool "${customTool.name}": ${error instanceof Error ? error.message : String(error)}`,
@@ -767,9 +1000,8 @@ export class ToolRegistry {
 		tool: BaseTool<TName>,
 		schemas: Map<string, OpenAI.Chat.ChatCompletionTool>,
 		customExecute?: (context: ToolExecutionContext) => Promise<void>,
-		fallbackSchema?: OpenAI.Chat.ChatCompletionTool,
 	): void {
-		const schema = schemas.get(name) ?? fallbackSchema
+		const schema = schemas.get(name)
 		if (!schema) {
 			// Provider catalogs can be intentionally narrowed (for example, a
 			// text-only browser catalog or a replay fixture). A missing schema is
@@ -783,10 +1015,7 @@ export class ToolRegistry {
 			aliases: [],
 			schema: canonicalizeSchema(schema),
 			capabilities: getToolCapabilities(name),
-			...(name === "list_files"
-				? { prepareParallelRead: listFilesTool.prepareParallelRead.bind(listFilesTool) }
-				: {}),
-			...(name === "shell" ? { prepareParallelCommand } : {}),
+			...(name === "exec_command" ? { prepareParallelCommand } : {}),
 			execute: customExecute ?? executeBaseTool(tool, name),
 		})
 	}
@@ -826,6 +1055,7 @@ export class ToolRegistry {
 			aliases: Object.freeze(aliases),
 			schema: cloneAndFreeze(canonicalizeSchema(descriptor.schema)),
 			capabilities: Object.freeze({ ...descriptor.capabilities }),
+			exposure: descriptor.exposure ?? "eager",
 		}
 		this.descriptors.set(name, Object.freeze(frozenDescriptor))
 		for (const alias of aliases) {

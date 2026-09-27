@@ -143,6 +143,10 @@ export async function runRenderedUiProbe(
 					nonce,
 					combinedSignal,
 				)
+				const modelSwitchTiming =
+					mode === "reasoning"
+						? JSON.parse(await fs.readFile(path.join(directory, "ui-model-switch-timing.json"), "utf8"))
+						: undefined
 				observed = {
 					status: "passed",
 					nonce,
@@ -151,6 +155,7 @@ export async function runRenderedUiProbe(
 					trustedInputVerified: true,
 					stages,
 					provider: "scripted",
+					...(modelSwitchTiming ? { modelSwitchTiming } : {}),
 				}
 			} else {
 				const focused = await cdp.request<Evaluation<boolean>>(

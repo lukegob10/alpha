@@ -19,6 +19,8 @@ export async function migrateSettings(
 ): Promise<void> {
 	// First, migrate commands from old defaults (security fix)
 	await migrateDefaultCommands(context, outputChannel)
+	// Auto now prompts for shell commands unless a user explicitly allows a prefix.
+	await migrateAutoApprovalCommandDefaults(context, outputChannel)
 	// Legacy file names that need to be migrated to the new names in GlobalFileNames
 	const fileMigrations = [
 		// custom_modes.json to custom_modes.yaml is handled separately below
@@ -63,6 +65,41 @@ export async function migrateSettings(
 		}
 	} catch (error) {
 		outputChannel.appendLine(`Error migrating settings files: ${error}`)
+	}
+}
+
+/** Remove the former built-in command prefixes, which were not a user opt-in. */
+async function migrateAutoApprovalCommandDefaults(
+	context: vscode.ExtensionContext,
+	outputChannel: vscode.OutputChannel,
+): Promise<void> {
+	try {
+		const migrationKey = "autoApprovalCommandDefaultsMigrationCompleted"
+		if (context.globalState.get(migrationKey)) {
+			outputChannel.appendLine("[Auto Command Defaults Migration] Migration already completed, skipping")
+			return
+		}
+
+		const allowedCommands = context.globalState.get<unknown>("allowedCommands")
+		if (!Array.isArray(allowedCommands)) {
+			await context.globalState.update(migrationKey, true)
+			outputChannel.appendLine("[Auto Command Defaults Migration] No global command rules found")
+			return
+		}
+
+		const formerDefaults = new Set(["git log", "git diff", "git show"])
+		const filteredCommands = allowedCommands.filter(
+			(command) => typeof command !== "string" || !formerDefaults.has(command.trim().toLowerCase()),
+		)
+		if (filteredCommands.length !== allowedCommands.length) {
+			await context.globalState.update("allowedCommands", filteredCommands)
+			outputChannel.appendLine(
+				`[Auto Command Defaults Migration] Removed ${allowedCommands.length - filteredCommands.length} built-in command rule(s)`,
+			)
+		}
+		await context.globalState.update(migrationKey, true)
+	} catch (error) {
+		outputChannel.appendLine(`[Auto Command Defaults Migration] Error migrating command rules: ${error}`)
 	}
 }
 

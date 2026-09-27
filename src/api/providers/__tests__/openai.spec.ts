@@ -8,14 +8,21 @@ import { openAiModelInfoSaneDefaults } from "@alpha-code/types"
 import { Package } from "../../../shared/package"
 import axios from "axios"
 import { resolveTaskReasoning } from "../../../core/agent/TaskReasoning"
+import { supportsOpenAiResponsesFreeformApplyPatch } from "../openai-responses"
+import { AgentResponseAccumulator } from "../../../core/agent/AgentResponseAccumulator"
+import type { ApiStreamChunk } from "../../transform/stream"
 
 const mockCreate = vitest.fn()
+const mockResponsesCreate = vitest.fn()
 
 vitest.mock("openai", () => {
 	const mockConstructor = vitest.fn()
 	return {
 		__esModule: true,
 		default: mockConstructor.mockImplementation(() => ({
+			responses: {
+				create: mockResponsesCreate,
+			},
 			chat: {
 				completions: {
 					create: mockCreate.mockImplementation(async (options) => {
@@ -52,6 +59,7 @@ vitest.mock("openai", () => {
 									choices: [
 										{
 											delta: {},
+											finish_reason: "stop",
 											index: 0,
 										},
 									],
@@ -89,6 +97,755 @@ describe("OpenAiHandler", () => {
 		}
 		handler = new OpenAiHandler(mockOptions)
 		mockCreate.mockClear()
+		mockResponsesCreate.mockReset()
+	})
+
+	it("requires terminal outcomes on Chat Completions routes while preserving Responses EOF", () => {
+		const chatCompletionsHandler = new OpenAiHandler({ ...mockOptions, openAiModelId: "gpt-4" })
+		const responsesHandler = new OpenAiHandler({ ...mockOptions, openAiModelId: "gpt-6-luna" })
+
+		expect(chatCompletionsHandler.streamCapabilities).toEqual({ lifecycle: true, cancellation: true })
+		expect(responsesHandler.streamCapabilities).toEqual({ cancellation: true })
+	})
+
+	describe("Responses API freeform apply_patch path", () => {
+		const applyPatchTools = [
+			{
+				type: "function" as const,
+				function: {
+					name: "apply_patch",
+					description: "Apply a patch",
+					parameters: {
+						type: "object",
+						properties: { patch: { type: "string" } },
+						required: ["patch"],
+						additionalProperties: false,
+					},
+				},
+			},
+		]
+
+		it("uses raw custom patch input and preserves encrypted reasoning and usage", async () => {
+			const patch = '*** Begin Patch\n*** Add File: answer.txt\n+print("ok")\n*** End Patch'
+			const customCall = {
+				id: "item_patch",
+				type: "custom_tool_call",
+				call_id: "call_patch",
+				name: "apply_patch",
+				input: patch,
+			}
+			const reasoning = {
+				id: "reasoning_1",
+				type: "reasoning",
+				encrypted_content: "opaque-reasoning",
+				summary: [{ type: "summary_text", text: "Reviewed the patch." }],
+			}
+			const secondReasoning = {
+				id: "reasoning_2",
+				type: "reasoning",
+				encrypted_content: "opaque-reasoning-2",
+				summary: [{ type: "summary_text", text: "Confirmed the patch." }],
+			}
+			const message = {
+				id: "message_1",
+				type: "message",
+				role: "assistant",
+				status: "completed",
+				content: [{ type: "output_text", text: "Applying the patch." }],
+			}
+			const response = {
+				id: "resp_1",
+				status: "completed",
+				output: [reasoning, customCall, message, secondReasoning],
+				usage: {
+					input_tokens: 120,
+					output_tokens: 30,
+					input_tokens_details: { cached_tokens: 40 },
+					output_tokens_details: { reasoning_tokens: 12 },
+					total_tokens: 150,
+				},
+			}
+			const provider = new OpenAiHandler({ ...mockOptions, openAiModelId: "gpt-5.6-sol" })
+			let streamingReasoningItemIds: string[] | undefined
+			mockResponsesCreate.mockImplementationOnce(async () => ({
+				[Symbol.asyncIterator]: async function* () {
+					yield {
+						type: "response.output_item.added",
+						output_index: 1,
+						sequence_number: 0,
+						item: { ...customCall, input: "" },
+					}
+					yield {
+						type: "response.custom_tool_call_input.delta",
+						output_index: 1,
+						item_id: "item_patch",
+						sequence_number: 1,
+						delta: patch.slice(0, 40),
+					}
+					yield {
+						type: "response.custom_tool_call_input.delta",
+						output_index: 1,
+						item_id: "item_patch",
+						sequence_number: 2,
+						delta: patch.slice(40),
+					}
+					yield { type: "response.output_item.done", output_index: 1, sequence_number: 3, item: customCall }
+					yield {
+						type: "response.output_item.done",
+						output_index: 3,
+						sequence_number: 4,
+						item: secondReasoning,
+					}
+					yield { type: "response.output_item.done", output_index: 0, sequence_number: 5, item: reasoning }
+					streamingReasoningItemIds = provider.getReasoningItems().map((item) => item.id)
+					yield { type: "response.output_item.done", output_index: 2, sequence_number: 6, item: message }
+					yield { type: "response.completed", sequence_number: 7, response }
+				},
+			}))
+
+			const chunks = []
+			for await (const chunk of provider.createMessage("legacy prompt", [], {
+				taskId: "responses-patch",
+				instructionFragments: [
+					{ role: "developer", content: "Codex base" },
+					{ role: "user", content: "Workspace context" },
+				],
+				tools: applyPatchTools,
+				tool_choice: { type: "function", function: { name: "apply_patch" } },
+				store: false,
+			})) {
+				chunks.push(chunk)
+			}
+
+			expect(mockResponsesCreate).toHaveBeenCalledOnce()
+			expect(mockCreate).not.toHaveBeenCalled()
+			const [request] = mockResponsesCreate.mock.calls[0]!
+			expect(request.input).toEqual([
+				{ role: "developer", content: "Codex base" },
+				{ role: "user", content: "Workspace context" },
+			])
+			expect(request.tools).toEqual([
+				expect.objectContaining({
+					type: "custom",
+					name: "apply_patch",
+					format: {
+						type: "grammar",
+						syntax: "lark",
+						definition: expect.stringContaining("start: begin_patch hunk+ end_patch"),
+					},
+				}),
+			])
+			expect(request.tool_choice).toEqual({ type: "custom", name: "apply_patch" })
+			expect(request.store).toBe(false)
+
+			const partialArguments = chunks
+				.filter((chunk) => chunk.type === "tool_call_partial")
+				.map((chunk) => chunk.arguments ?? "")
+				.join("")
+			expect(JSON.parse(partialArguments)).toEqual({ patch })
+			expect(chunks).toContainEqual({ type: "tool_call_end", id: "call_patch" })
+			expect(chunks).toContainEqual({ type: "text", text: "Applying the patch." })
+			expect(chunks).not.toContainEqual({ type: "reasoning", text: "Reviewed the patch." })
+			expect(chunks).toContainEqual({
+				type: "usage",
+				inputTokens: 120,
+				outputTokens: 30,
+				cacheReadTokens: 40,
+				reasoningTokens: 12,
+			})
+			expect(provider.getResponseId()).toBe("resp_1")
+			expect(provider.getEncryptedContent()).toEqual({ encrypted_content: "opaque-reasoning", id: "reasoning_1" })
+			expect(streamingReasoningItemIds).toEqual(["reasoning_1", "reasoning_2"])
+			expect(provider.getReasoningItems()).toEqual([
+				{
+					id: "reasoning_1",
+					encrypted_content: "opaque-reasoning",
+					summary: [{ type: "summary_text", text: "Reviewed the patch." }],
+				},
+				{
+					id: "reasoning_2",
+					encrypted_content: "opaque-reasoning-2",
+					summary: [{ type: "summary_text", text: "Confirmed the patch." }],
+				},
+			])
+		})
+
+		it("marks an output_item.done tool call complete before later streamed output", async () => {
+			const functionCall = {
+				id: "item_list",
+				type: "function_call",
+				call_id: "call_list",
+				name: "list_files",
+				arguments: '{"path":"."}',
+			}
+			const message = {
+				id: "message_tail",
+				type: "message",
+				role: "assistant",
+				status: "completed",
+				content: [{ type: "output_text", text: "The directory was inspected." }],
+			}
+			const response = {
+				id: "resp_early_read",
+				status: "completed",
+				output: [functionCall, message],
+				usage: null,
+			}
+			mockResponsesCreate.mockImplementationOnce(async () => ({
+				[Symbol.asyncIterator]: async function* () {
+					yield { type: "response.output_item.done", output_index: 0, item: functionCall }
+					yield { type: "response.output_item.done", output_index: 1, item: message }
+					yield { type: "response.completed", response }
+				},
+			}))
+			const provider = new OpenAiHandler({ ...mockOptions, openAiModelId: "gpt-5.6-sol" })
+			const chunks = []
+
+			for await (const chunk of provider.createMessage("system", [], {
+				taskId: "responses-output-item-done",
+				tools: [
+					{
+						type: "function",
+						function: {
+							name: "list_files",
+							description: "List one directory",
+							parameters: {
+								type: "object",
+								properties: { path: { type: "string" } },
+								required: ["path"],
+							},
+						},
+					},
+				],
+			})) {
+				chunks.push(chunk)
+			}
+
+			const toolCallIndex = chunks.findIndex((chunk) => chunk.type === "tool_call")
+			const toolCallEndIndex = chunks.findIndex((chunk) => chunk.type === "tool_call_end")
+			const tailIndex = chunks.findIndex((chunk) => chunk.type === "text")
+			expect(chunks[toolCallIndex]).toEqual({
+				type: "tool_call",
+				id: "call_list",
+				name: "list_files",
+				arguments: '{"path":"."}',
+			})
+			expect(chunks[toolCallEndIndex]).toEqual({ type: "tool_call_end", id: "call_list" })
+			expect(toolCallEndIndex).toBeGreaterThan(toolCallIndex)
+			expect(tailIndex).toBeGreaterThan(toolCallEndIndex)
+		})
+
+		it("accepts a minimal completed event after output items and retains streamed reasoning metadata", async () => {
+			const reasoning = {
+				id: "reasoning_minimal",
+				type: "reasoning",
+				encrypted_content: "opaque-minimal",
+				summary: [{ type: "summary_text", text: "Checked the file." }],
+			}
+			const functionCall = {
+				id: "item_minimal",
+				type: "function_call",
+				call_id: "call_minimal",
+				name: "read_file",
+				arguments: '{"path":"example.txt"}',
+			}
+			mockResponsesCreate.mockResolvedValueOnce({
+				[Symbol.asyncIterator]: async function* () {
+					yield { type: "response.output_item.done", output_index: 0, item: reasoning }
+					yield { type: "response.output_item.done", output_index: 1, item: functionCall }
+					yield {
+						type: "response.completed",
+						response: {
+							id: "resp_minimal",
+							usage: { input_tokens: 8, output_tokens: 3, input_tokens_details: { cached_tokens: 2 } },
+						},
+					}
+				},
+			})
+			const provider = new OpenAiHandler({ ...mockOptions, openAiModelId: "gpt-5.6-sol" })
+			const chunks = []
+			for await (const chunk of provider.createMessage("system", [], { taskId: "responses-minimal-completed" })) {
+				chunks.push(chunk)
+			}
+
+			expect(chunks.filter((chunk) => chunk.type === "tool_call")).toEqual([
+				{ type: "tool_call", id: "call_minimal", name: "read_file", arguments: '{"path":"example.txt"}' },
+			])
+			expect(chunks.filter((chunk) => chunk.type === "tool_call_end")).toEqual([
+				{ type: "tool_call_end", id: "call_minimal" },
+			])
+			expect(chunks).toContainEqual({ type: "usage", inputTokens: 8, outputTokens: 3, cacheReadTokens: 2 })
+			expect(provider.getResponseId()).toBe("resp_minimal")
+			expect(provider.getEncryptedContent()).toEqual({
+				encrypted_content: "opaque-minimal",
+				id: "reasoning_minimal",
+			})
+			expect(provider.getReasoningItems()).toEqual([
+				{
+					id: "reasoning_minimal",
+					encrypted_content: "opaque-minimal",
+					summary: [{ type: "summary_text", text: "Checked the file." }],
+				},
+			])
+			expect(provider.getSummary()).toEqual([{ type: "summary_text", text: "Checked the file." }])
+		})
+
+		it.each(["incomplete", "failed"])("rejects an explicit %s status in a completed event", async (status) => {
+			mockResponsesCreate.mockResolvedValueOnce({
+				[Symbol.asyncIterator]: async function* () {
+					yield { type: "response.completed", response: { id: "resp_bad_status", status } }
+				},
+			})
+			const provider = new OpenAiHandler({ ...mockOptions, openAiModelId: "gpt-5.6-sol" })
+			await expect(async () => {
+				for await (const _chunk of provider.createMessage("system", [], { taskId: "responses-bad-status" })) {
+					// Consume the request stream.
+				}
+			}).rejects.toThrow(`status ${status}`)
+		})
+
+		it("rejects a minimal completed event while a streamed tool call is still open", async () => {
+			mockResponsesCreate.mockResolvedValueOnce({
+				[Symbol.asyncIterator]: async function* () {
+					yield {
+						type: "response.output_item.added",
+						output_index: 0,
+						item: {
+							id: "item_open",
+							type: "function_call",
+							call_id: "call_open",
+							name: "read_file",
+							arguments: "",
+						},
+					}
+					yield { type: "response.function_call_arguments.delta", output_index: 0, delta: '{"path":' }
+					yield { type: "response.completed", response: { id: "resp_open" } }
+				},
+			})
+			const provider = new OpenAiHandler({ ...mockOptions, openAiModelId: "gpt-5.6-sol" })
+			const chunks: unknown[] = []
+			await expect(async () => {
+				for await (const chunk of provider.createMessage("system", [], { taskId: "responses-open-tool" })) {
+					chunks.push(chunk)
+				}
+			}).rejects.toThrow("streamed tool call was complete")
+			expect(chunks).not.toContainEqual({ type: "tool_call_end", id: "call_open" })
+		})
+
+		it.each([
+			{ type: "function_call", itemId: "function-item" },
+			{ type: "function_call", itemId: undefined },
+			{ type: "custom_tool_call", itemId: "custom-item" },
+			{ type: "custom_tool_call", itemId: undefined },
+		])("finalizes repeated $type output once with item ID $itemId", async ({ type, itemId }) => {
+			const isCustom = type === "custom_tool_call"
+			const patch = "*** Begin Patch\n*** Add File: result.txt\n+done\n*** End Patch"
+			const call = {
+				type,
+				...(itemId ? { id: itemId } : {}),
+				call_id: "replayed-call",
+				name: isCustom ? "apply_patch" : "exec_command",
+				...(isCustom ? { input: patch } : { arguments: '{"cmd":"pwd"}' }),
+			}
+			const message = {
+				id: "final-message",
+				type: "message",
+				role: "assistant",
+				status: "completed",
+				content: [{ type: "output_text", text: "Finished." }],
+			}
+			mockResponsesCreate.mockImplementationOnce(async () => ({
+				[Symbol.asyncIterator]: async function* () {
+					yield {
+						type: "response.output_item.added",
+						output_index: 0,
+						item: { ...call, ...(isCustom ? { input: "" } : { arguments: "" }) },
+					}
+					yield { type: "response.output_item.done", output_index: 0, item: call }
+					yield { type: "response.output_item.done", output_index: 0, item: call }
+					yield { type: "response.output_item.done", output_index: 1, item: message }
+					yield {
+						type: "response.completed",
+						response: {
+							id: "replayed-response",
+							status: "completed",
+							output: [call, message],
+							usage: null,
+						},
+					}
+				},
+			}))
+			const provider = new OpenAiHandler({ ...mockOptions, openAiModelId: "gpt-6-sol" })
+			const chunks: ApiStreamChunk[] = []
+
+			for await (const chunk of provider.createMessage("system", [], {
+				taskId: "responses-replayed-completion",
+				tools: applyPatchTools,
+			})) {
+				chunks.push(chunk)
+			}
+
+			expect(chunks.filter((chunk) => chunk.type === "tool_call_end")).toEqual([
+				{ type: "tool_call_end", id: "replayed-call" },
+			])
+			expect(chunks.filter((chunk) => chunk.type === "tool_call")).toEqual([])
+			const argumentsText = chunks
+				.filter((chunk) => chunk.type === "tool_call_partial")
+				.map((chunk) => chunk.arguments ?? "")
+				.join("")
+			expect(JSON.parse(argumentsText)).toEqual(isCustom ? { patch } : { cmd: "pwd" })
+			expect(chunks.filter((chunk) => chunk.type === "text")).toEqual([{ type: "text", text: "Finished." }])
+		})
+
+		it.each([
+			{ outputIndex: "0", finalCallId: "call-1", reason: "invalid index" },
+			{ outputIndex: -1, finalCallId: "call-1", reason: "invalid index" },
+			{ outputIndex: 0.5, finalCallId: "call-1", reason: "invalid index" },
+			{ outputIndex: 1, finalCallId: "call-1", reason: "final output" },
+			{ outputIndex: 0, finalCallId: "different-call", reason: "final output" },
+		])(
+			"rejects mismatched output identity at $outputIndex ($finalCallId)",
+			async ({ outputIndex, finalCallId, reason }) => {
+				const call = {
+					id: "tool-item",
+					type: "function_call",
+					call_id: "call-1",
+					name: "exec_command",
+					arguments: '{"cmd":"pwd"}',
+				}
+				mockResponsesCreate.mockImplementationOnce(async () => ({
+					[Symbol.asyncIterator]: async function* () {
+						yield { type: "response.output_item.done", output_index: outputIndex, item: call }
+						yield {
+							type: "response.completed",
+							response: {
+								id: "mismatched-response",
+								status: "completed",
+								output: [{ ...call, call_id: finalCallId }],
+								usage: null,
+							},
+						}
+					},
+				}))
+				const provider = new OpenAiHandler({ ...mockOptions, openAiModelId: "gpt-6-sol" })
+				const chunks: ApiStreamChunk[] = []
+
+				await expect(async () => {
+					for await (const chunk of provider.createMessage("system", [], {
+						taskId: "responses-mismatched-completion",
+						tools: applyPatchTools,
+					})) {
+						chunks.push(chunk)
+					}
+				}).rejects.toThrow(reason)
+				expect(chunks.filter((chunk) => chunk.type === "tool_call_end").length).toBeLessThanOrEqual(1)
+				expect(chunks.some((chunk) => chunk.type === "usage")).toBe(false)
+			},
+		)
+
+		it.each([
+			{ modelId: "gpt-4o", baseUrl: "https://api.openai.com/v1" },
+			{ modelId: "gpt-5.6-sol", baseUrl: "https://gateway.example.com/v1" },
+		])("keeps Chat Completions fallback for $modelId at $baseUrl", async ({ modelId, baseUrl }) => {
+			const provider = new OpenAiHandler({ ...mockOptions, openAiModelId: modelId, openAiBaseUrl: baseUrl })
+			for await (const _chunk of provider.createMessage("system", [], {
+				taskId: "fallback",
+				tools: applyPatchTools,
+			})) {
+				// Consume the request stream.
+			}
+			expect(mockResponsesCreate).not.toHaveBeenCalled()
+			expect(mockCreate).toHaveBeenCalledOnce()
+		})
+
+		it.each([
+			{ tools: undefined, expectedTools: undefined },
+			{
+				tools: [
+					{
+						type: "function" as const,
+						function: {
+							name: "read_file",
+							parameters: { type: "object", properties: { path: { type: "string" } } },
+						},
+					},
+				],
+				expectedTools: [expect.objectContaining({ type: "function", name: "read_file" })],
+			},
+		])("uses Responses for a Codex GPT model without apply_patch", async ({ tools, expectedTools }) => {
+			mockResponsesCreate.mockResolvedValueOnce({
+				id: "resp_no_patch",
+				status: "completed",
+				output: [
+					{
+						id: "message_1",
+						type: "message",
+						role: "assistant",
+						status: "completed",
+						content: [{ type: "output_text", text: "Ready." }],
+					},
+				],
+				usage: null,
+			})
+			const provider = new OpenAiHandler({
+				...mockOptions,
+				openAiModelId: "gpt-6-sol",
+				openAiStreamingEnabled: false,
+			})
+			const chunks: unknown[] = []
+			for await (const chunk of provider.createMessage("system", [], { taskId: "responses-no-patch", tools })) {
+				chunks.push(chunk)
+			}
+
+			expect(mockResponsesCreate).toHaveBeenCalledOnce()
+			expect(mockCreate).not.toHaveBeenCalled()
+			expect(mockResponsesCreate.mock.calls[0]?.[0].tools).toEqual(expectedTools)
+			expect(chunks).toContainEqual({ type: "text", text: "Ready." })
+		})
+
+		it("normalizes freeform input in non-streaming mode", async () => {
+			const patch = "*** Begin Patch\n*** Delete File: gone.txt\n*** End Patch"
+			const reasoningItems = [
+				{
+					id: "reasoning_nonstream_1",
+					type: "reasoning",
+					encrypted_content: "opaque-nonstream-1",
+					summary: [{ type: "summary_text", text: "Reviewed the deletion." }],
+				},
+				{
+					id: "reasoning_nonstream_2",
+					type: "reasoning",
+					encrypted_content: "opaque-nonstream-2",
+					summary: [{ type: "summary_text", text: "Confirmed the deletion." }],
+				},
+			]
+			mockResponsesCreate.mockResolvedValueOnce({
+				id: "resp_nonstream",
+				status: "completed",
+				output: [
+					reasoningItems[0],
+					{
+						id: "item_patch",
+						type: "custom_tool_call",
+						call_id: "call_patch",
+						name: "apply_patch",
+						input: patch,
+					},
+					reasoningItems[1],
+				],
+				usage: {
+					input_tokens: 10,
+					output_tokens: 3,
+					input_tokens_details: { cached_tokens: 0 },
+					output_tokens_details: { reasoning_tokens: 0 },
+					total_tokens: 13,
+				},
+			})
+			const provider = new OpenAiHandler({
+				...mockOptions,
+				openAiModelId: "gpt-5.6-sol",
+				openAiStreamingEnabled: false,
+			})
+			const chunks: unknown[] = []
+			for await (const chunk of provider.createMessage("system", [], {
+				taskId: "responses-nonstream",
+				tools: applyPatchTools,
+			})) {
+				chunks.push(chunk)
+			}
+
+			expect(mockResponsesCreate.mock.calls[0]?.[0].stream).toBe(false)
+			expect(mockResponsesCreate.mock.calls[0]?.[0].store).toBe(false)
+			expect(chunks).toContainEqual({
+				type: "tool_call",
+				id: "call_patch",
+				name: "apply_patch",
+				arguments: JSON.stringify({ patch }),
+			})
+			expect(provider.getReasoningItems()).toEqual([
+				{
+					id: "reasoning_nonstream_1",
+					encrypted_content: "opaque-nonstream-1",
+					summary: [{ type: "summary_text", text: "Reviewed the deletion." }],
+				},
+				{
+					id: "reasoning_nonstream_2",
+					encrypted_content: "opaque-nonstream-2",
+					summary: [{ type: "summary_text", text: "Confirmed the deletion." }],
+				},
+			])
+		})
+
+		it("allows explicit storage opt-in on the Responses path", async () => {
+			mockResponsesCreate.mockResolvedValueOnce({
+				id: "resp_stored",
+				status: "completed",
+				output: [],
+				usage: null,
+			})
+			const provider = new OpenAiHandler({
+				...mockOptions,
+				openAiModelId: "gpt-5.6-sol",
+				openAiStreamingEnabled: false,
+			})
+			for await (const _chunk of provider.createMessage("system", [], {
+				taskId: "responses-stored",
+				tools: applyPatchTools,
+				store: true,
+			})) {
+				// Consume the request stream.
+			}
+			expect(mockResponsesCreate.mock.calls[0]?.[0].store).toBe(true)
+		})
+
+		it("rejects an incomplete streamed response before completing its tool call", async () => {
+			const patch = "*** Begin Patch\n*** End Patch"
+			const customCall = {
+				id: "item_patch",
+				type: "custom_tool_call",
+				call_id: "call_patch",
+				name: "apply_patch",
+				input: patch,
+			}
+			mockResponsesCreate.mockResolvedValueOnce({
+				[Symbol.asyncIterator]: async function* () {
+					yield { type: "response.output_item.added", output_index: 0, item: { ...customCall, input: "" } }
+					yield { type: "response.custom_tool_call_input.delta", output_index: 0, delta: patch }
+					yield {
+						type: "response.incomplete",
+						response: {
+							id: "resp_incomplete",
+							status: "incomplete",
+							incomplete_details: { reason: "max_output_tokens" },
+							output: [customCall],
+							usage: null,
+						},
+					}
+				},
+			})
+			const provider = new OpenAiHandler({ ...mockOptions, openAiModelId: "gpt-5.6-sol" })
+			const chunks: unknown[] = []
+			await expect(async () => {
+				for await (const chunk of provider.createMessage("system", [], {
+					taskId: "responses-incomplete-stream",
+					tools: applyPatchTools,
+				}))
+					chunks.push(chunk)
+			}).rejects.toThrow("incomplete")
+			expect(chunks).not.toContainEqual({ type: "tool_call_end", id: "call_patch" })
+		})
+
+		it.each(["response", "tool item"] as const)(
+			"rejects incomplete non-streaming %s before emitting a tool call",
+			async (incompletePart) => {
+				mockResponsesCreate.mockResolvedValueOnce({
+					id: "resp_incomplete",
+					status: incompletePart === "response" ? "incomplete" : "completed",
+					incomplete_details: { reason: "max_output_tokens" },
+					output: [
+						{
+							id: "item_patch",
+							type: "custom_tool_call",
+							...(incompletePart === "tool item" ? { status: "incomplete" } : {}),
+							call_id: "call_patch",
+							name: "apply_patch",
+							input: "*** Begin Patch",
+						},
+					],
+					usage: null,
+				})
+				const provider = new OpenAiHandler({
+					...mockOptions,
+					openAiModelId: "gpt-5.6-sol",
+					openAiStreamingEnabled: false,
+				})
+				const chunks: unknown[] = []
+				await expect(async () => {
+					for await (const chunk of provider.createMessage("system", [], {
+						taskId: "responses-incomplete-nonstream",
+						tools: applyPatchTools,
+					}))
+						chunks.push(chunk)
+				}).rejects.toThrow("incomplete")
+				expect(chunks).toEqual([])
+			},
+		)
+
+		it("keeps the Responses protocol when the captured tools omit apply_patch", async () => {
+			mockResponsesCreate.mockResolvedValueOnce({
+				[Symbol.asyncIterator]: async function* () {
+					yield {
+						type: "response.completed",
+						response: { id: "resp_without_tools", status: "completed", output: [], usage: null },
+					}
+				},
+			})
+			const provider = new OpenAiHandler({ ...mockOptions, openAiModelId: "gpt-5.6-sol" })
+			for await (const _chunk of provider.createMessage("system", [], { taskId: "no-patch-tool" })) {
+				// Consume the request stream.
+			}
+			expect(mockResponsesCreate).toHaveBeenCalledOnce()
+			expect(mockCreate).not.toHaveBeenCalled()
+		})
+
+		it("rejects unsupported tools instead of silently switching a Codex GPT request to Chat Completions", async () => {
+			const provider = new OpenAiHandler({ ...mockOptions, openAiModelId: "gpt-6-sol" })
+			await expect(async () => {
+				for await (const _chunk of provider.createMessage("system", [], {
+					taskId: "unsupported-responses-tool",
+					tools: [{ type: "custom", name: "unexpected" } as any],
+				})) {
+					// Consume the request stream.
+				}
+			}).rejects.toThrow("Responses tool")
+			expect(mockResponsesCreate).not.toHaveBeenCalled()
+			expect(mockCreate).not.toHaveBeenCalled()
+		})
+
+		it("forwards cancellation through the Responses request", async () => {
+			let requestSignal: AbortSignal | undefined
+			let started: (() => void) | undefined
+			const requestStarted = new Promise<void>((resolve) => {
+				started = resolve
+			})
+			mockResponsesCreate.mockImplementationOnce(async (_request, options) => {
+				requestSignal = options.signal
+				started?.()
+				return {
+					[Symbol.asyncIterator]: async function* () {
+						await new Promise<void>((_resolve, reject) =>
+							options.signal.addEventListener("abort", () => reject(new Error("aborted")), {
+								once: true,
+							}),
+						)
+						yield { type: "error", message: "Abort was not observed" }
+					},
+				}
+			})
+			const controller = new AbortController()
+			const provider = new OpenAiHandler({ ...mockOptions, openAiModelId: "gpt-5.6-sol" })
+			const stream = provider.createMessage("system", [], {
+				taskId: "responses-cancel",
+				signal: controller.signal,
+				tools: applyPatchTools,
+			})
+			const next = stream.next()
+			await requestStarted
+			controller.abort()
+			await expect(next).rejects.toThrow()
+			expect(requestSignal?.aborted).toBe(true)
+		})
+
+		it("routes only the exact supported model IDs on the direct OpenAI host", () => {
+			expect(supportsOpenAiResponsesFreeformApplyPatch("gpt-5.6-sol", "https://api.openai.com/v1")).toBe(true)
+			expect(supportsOpenAiResponsesFreeformApplyPatch(" gpt-5.6-sol ", "https://api.openai.com/v1")).toBe(false)
+			expect(supportsOpenAiResponsesFreeformApplyPatch("gpt-5.6-sol-preview", "https://api.openai.com/v1")).toBe(
+				false,
+			)
+			expect(
+				supportsOpenAiResponsesFreeformApplyPatch("gpt-5.6-sol", "https://api.openai.com/v1/chat/completions"),
+			).toBe(false)
+		})
 	})
 
 	describe("constructor", () => {
@@ -217,6 +974,113 @@ describe("OpenAiHandler", () => {
 			},
 		]
 
+		it("projects developer and user fragments in order and preserves the legacy fallback", async () => {
+			const instructionFragments = [
+				{ role: "developer", content: "Base instructions\n\n" },
+				{ role: "developer", content: "Shared base section" },
+				{ role: "user", content: "Project instructions\n\n" },
+				{ role: "user", content: "Additional project context" },
+				{ role: "developer", content: "Mode instructions\n\n" },
+				{ role: "system", content: "Final base section" },
+			] as const
+
+			for await (const _chunk of handler.createMessage("Legacy prompt", messages, {
+				taskId: "fragment-test",
+				instructionFragments,
+			})) {
+				// consume stream
+			}
+
+			let requestMessages = mockCreate.mock.calls.at(-1)?.[0].messages
+			expect(requestMessages?.slice(0, 3)).toEqual([
+				{ role: "system", content: "Base instructions\n\nShared base section" },
+				{ role: "user", content: "Project instructions\n\nAdditional project context" },
+				{ role: "system", content: "Mode instructions\n\nFinal base section" },
+			])
+			expect(requestMessages?.[3]?.role).toBe("user")
+
+			mockCreate.mockClear()
+			for await (const _chunk of handler.createMessage("Legacy prompt", messages)) {
+				// consume stream
+			}
+
+			requestMessages = mockCreate.mock.calls.at(-1)?.[0].messages
+			expect(requestMessages?.[0]).toEqual({ role: "system", content: "Legacy prompt" })
+			expect(requestMessages?.[1]?.role).toBe("user")
+		})
+
+		it("coalesces role-aware prompt fragments into one user message for DeepSeek R1", async () => {
+			const r1Handler = new OpenAiHandler({ ...mockOptions, openAiModelId: "deepseek-reasoner" })
+			const instructionFragments = [
+				{ role: "developer", content: "Base instructions\n\n" },
+				{ role: "developer", content: "Shared base section\n\n" },
+				{ role: "user", content: "Project instructions\n\n" },
+				{ role: "user", content: "Additional project context\n\n" },
+				{ role: "system", content: "Mode instructions\n\n" },
+				{ role: "system", content: "Final base section" },
+			] as const
+
+			for await (const _chunk of r1Handler.createMessage("Legacy prompt", [], {
+				taskId: "r1-fragment-test",
+				instructionFragments,
+			})) {
+				// consume stream
+			}
+
+			expect(mockCreate.mock.calls.at(-1)?.[0].messages).toEqual([
+				{
+					role: "user",
+					content:
+						"Base instructions\n\nShared base section\n\nProject instructions\n\nAdditional project context\n\nMode instructions\n\nFinal base section",
+				},
+			])
+		})
+
+		it("keeps prompt cache markers on role-aware instructions and conversation history", async () => {
+			const cachedHandler = new OpenAiHandler({
+				...mockOptions,
+				openAiCustomModelInfo: { contextWindow: 128_000, supportsPromptCache: true },
+			})
+			const instructionFragments = [
+				{ role: "developer", content: "Base instructions\n\n" },
+				{ role: "developer", content: "Shared base section" },
+				{ role: "user", content: "Project instructions\n\n" },
+				{ role: "user", content: "Additional project context" },
+				{ role: "developer", content: "Mode instructions\n\n" },
+				{ role: "system", content: "Final base section" },
+			] as const
+
+			for await (const _chunk of cachedHandler.createMessage("Legacy prompt", messages, {
+				taskId: "cache-fragment-test",
+				instructionFragments,
+			})) {
+				// consume stream
+			}
+
+			const requestMessages = mockCreate.mock.calls.at(-1)?.[0].messages
+			expect(requestMessages?.[0]).toMatchObject({
+				role: "system",
+				content: "Base instructions\n\nShared base section",
+			})
+			expect(requestMessages?.[1]).toEqual({
+				role: "user",
+				content: "Project instructions\n\nAdditional project context",
+			})
+			expect(requestMessages?.[2]).toMatchObject({
+				role: "system",
+				content: [
+					{
+						text: "Mode instructions\n\nFinal base section",
+						cache_control: { type: "ephemeral" },
+					},
+				],
+			})
+			expect(requestMessages?.[3]).toMatchObject({
+				role: "user",
+				content: [{ text: "Hello!", cache_control: { type: "ephemeral" } }],
+			})
+		})
+
 		it("should handle non-streaming mode", async () => {
 			const handler = new OpenAiHandler({
 				...mockOptions,
@@ -238,6 +1102,7 @@ describe("OpenAiHandler", () => {
 			expect(usageChunk).toBeDefined()
 			expect(usageChunk?.inputTokens).toBe(10)
 			expect(usageChunk?.outputTokens).toBe(5)
+			expect(chunks).toContainEqual(expect.objectContaining({ type: "outcome", status: "completed" }))
 		})
 
 		it("should handle tool calls in non-streaming mode", async () => {
@@ -287,6 +1152,40 @@ describe("OpenAiHandler", () => {
 				name: "test_tool",
 				arguments: '{"arg":"value"}',
 			})
+			expect(chunks).toContainEqual(expect.objectContaining({ type: "outcome", status: "completed" }))
+		})
+
+		it("does not expose non-streaming tool calls from a length-truncated response", async () => {
+			mockCreate.mockResolvedValueOnce({
+				choices: [
+					{
+						message: {
+							role: "assistant",
+							content: null,
+							tool_calls: [
+								{
+									id: "call-truncated",
+									type: "function",
+									function: { name: "apply_patch", arguments: '{"patch":"partial"}' },
+								},
+							],
+						},
+						finish_reason: "length",
+					},
+				],
+				usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+			})
+			const nonStreamingHandler = new OpenAiHandler({ ...mockOptions, openAiStreamingEnabled: false })
+			const chunks: any[] = []
+			for await (const chunk of nonStreamingHandler.createMessage(systemPrompt, messages)) chunks.push(chunk)
+
+			const accumulator = new AgentResponseAccumulator()
+			for (const chunk of chunks) await accumulator.add(chunk)
+			const response = await accumulator.finish()
+
+			expect(chunks[0]).toMatchObject({ type: "outcome", status: "incomplete", terminal: true })
+			expect(response.toolCalls).toEqual([])
+			expect(response.outcome?.status).toBe("incomplete")
 		})
 
 		it("should handle streaming responses", async () => {
@@ -384,7 +1283,7 @@ describe("OpenAiHandler", () => {
 			expect(toolCallEndChunks).toHaveLength(1)
 		})
 
-		it("should yield tool calls even when finish_reason is not set (fallback behavior)", async () => {
+		it("marks an open tool call incomplete when the stream stops without a tool_calls finish reason", async () => {
 			mockCreate.mockImplementation(async (options) => {
 				return {
 					[Symbol.asyncIterator]: async function* () {
@@ -433,6 +1332,36 @@ describe("OpenAiHandler", () => {
 				name: "fallback_tool",
 				arguments: '{"test":"fallback"}',
 			})
+			expect(chunks).toContainEqual(
+				expect.objectContaining({ type: "outcome", status: "incomplete", terminal: true }),
+			)
+			expect(chunks.some((chunk) => chunk.type === "tool_call_end")).toBe(false)
+
+			const accumulator = new AgentResponseAccumulator()
+			for (const chunk of chunks) await accumulator.add(chunk)
+			const response = await accumulator.finish()
+			expect(response.toolCalls).toEqual([])
+			expect(response.outcome?.status).toBe("incomplete")
+		})
+
+		it("marks EOF without a finish reason incomplete instead of completing assistant text", async () => {
+			mockCreate.mockImplementationOnce(async () => ({
+				[Symbol.asyncIterator]: async function* () {
+					yield { choices: [{ delta: { content: "Partial answer." }, finish_reason: null }] }
+				},
+			}))
+
+			const chunks: unknown[] = []
+			for await (const chunk of handler.createMessage(systemPrompt, messages)) chunks.push(chunk)
+
+			expect(chunks).toContainEqual(
+				expect.objectContaining({
+					type: "outcome",
+					status: "incomplete",
+					terminal: false,
+					semanticOutputObserved: true,
+				}),
+			)
 		})
 
 		it("should include reasoning_effort when reasoning effort is enabled", async () => {
@@ -876,6 +1805,33 @@ describe("OpenAiHandler", () => {
 			},
 		}
 
+		it.each([true, false])("keeps developer and user instruction roles in order (stream=%s)", async (streaming) => {
+			const o3Handler = new OpenAiHandler({ ...o3Options, openAiStreamingEnabled: streaming })
+			const messages: Anthropic.Messages.MessageParam[] = [{ role: "user", content: "Hello!" }]
+			const instructionFragments = [
+				{ role: "developer", content: "Base instructions\n\n" },
+				{ role: "developer", content: "Shared base section" },
+				{ role: "user", content: "Project instructions\n\n" },
+				{ role: "user", content: "Additional project context" },
+				{ role: "system", content: "Mode instructions\n\n" },
+				{ role: "developer", content: "Final base section" },
+			] as const
+
+			for await (const _chunk of o3Handler.createMessage("Legacy prompt", messages, {
+				taskId: "o3-fragment-test",
+				instructionFragments,
+			})) {
+				// consume stream
+			}
+
+			const requestMessages = mockCreate.mock.calls.at(-1)?.[0].messages
+			expect(requestMessages?.slice(0, 3)).toEqual([
+				{ role: "developer", content: "Formatting re-enabled\nBase instructions\n\nShared base section" },
+				{ role: "user", content: "Project instructions\n\nAdditional project context" },
+				{ role: "developer", content: "Mode instructions\n\nFinal base section" },
+			])
+		})
+
 		it("should handle O3 model with streaming and include max_completion_tokens when includeMaxTokens is true", async () => {
 			const o3Handler = new OpenAiHandler({
 				...o3Options,
@@ -1004,7 +1960,7 @@ describe("OpenAiHandler", () => {
 			expect(toolCallEndChunks).toHaveLength(1)
 		})
 
-		it("should yield tool calls for O3 model even when finish_reason is not set (fallback behavior)", async () => {
+		it("marks O3 tool fragments incomplete when finish_reason is length", async () => {
 			const o3Handler = new OpenAiHandler(o3Options)
 
 			mockCreate.mockImplementation(async (options) => {
@@ -1055,6 +2011,7 @@ describe("OpenAiHandler", () => {
 				name: "o3_fallback_tool",
 				arguments: '{"o3":"test"}',
 			})
+			expect(chunks).toContainEqual(expect.objectContaining({ type: "outcome", status: "incomplete" }))
 		})
 
 		it("should handle O3 model with streaming and exclude max_tokens when includeMaxTokens is false", async () => {

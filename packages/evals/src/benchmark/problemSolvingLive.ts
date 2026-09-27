@@ -10,9 +10,11 @@ import {
 	defaultExtensionRunnerPath,
 	existingExtensionRunnerArguments,
 	problemSolvingHostFromReceipts,
+	problemSolvingPromptVariants,
 	runProblemSolvingAttempt,
 	type ProblemSolvingAttemptReport,
 	type ProblemSolvingExtensionRequest,
+	type ProblemSolvingPromptVariant,
 } from "./problemSolvingCampaign"
 
 const DEFAULT_HOST_VERSION = "1.136.1"
@@ -37,6 +39,7 @@ const BUILD_INPUT_PATHS = [
 	"packages/evals",
 	"apps/vscode-e2e",
 	"evals/problem-solving",
+	"evals/problem-solving/prompt-variants/single-command.md",
 	"scripts/evals",
 	"package.json",
 	"pnpm-lock.yaml",
@@ -74,6 +77,31 @@ function workingTreeIdentity(repositoryRoot: string): { clean: boolean; digest: 
 		}
 	}
 	return { clean: fullStatus.length === 0, digest: hash.digest("hex") }
+}
+
+export function orderProblemSolvingPromptVariants(
+	variants: ProblemSolvingPromptVariant[],
+	repetition: number,
+): ProblemSolvingPromptVariant[] {
+	if (variants.length === 2 && variants.includes("baseline") && variants.includes("single-command")) {
+		return repetition % 2 === 0 ? ["single-command", "baseline"] : ["baseline", "single-command"]
+	}
+	return [...variants]
+}
+
+function parsePromptVariants(value: string | undefined): ProblemSolvingPromptVariant[] | undefined {
+	if (value === undefined) return undefined
+	const parsed = value.split(",").map((variant) => variant.trim())
+	if (
+		parsed.length === 0 ||
+		parsed.some((variant) => !problemSolvingPromptVariants.includes(variant as ProblemSolvingPromptVariant)) ||
+		new Set(parsed).size !== parsed.length
+	) {
+		throw new Error(
+			`Problem-solving prompt variants must be unique values from: ${problemSolvingPromptVariants.join(", ")}`,
+		)
+	}
+	return parsed as ProblemSolvingPromptVariant[]
 }
 
 export async function extensionBundleDigest(repositoryRoot: string): Promise<string> {
@@ -186,6 +214,10 @@ async function launchExtension(
 											: undefined,
 								}
 							: undefined,
+					e2eApprovalPolicySha256:
+						typeof workflow.e2eApprovalPolicySha256 === "string"
+							? workflow.e2eApprovalPolicySha256
+							: undefined,
 				}
 			: null,
 		runnerFailure:
@@ -205,6 +237,7 @@ export async function runLiveProblemSolvingCore(options: {
 	requestLimit?: number
 	taskIds?: string[]
 	repetitions?: number
+	promptVariants?: ProblemSolvingPromptVariant[]
 }): Promise<{
 	runId: string
 	hostVersion: string
@@ -213,6 +246,8 @@ export async function runLiveProblemSolvingCore(options: {
 	buildIdentity: string
 	extensionBundleSha256: string
 	taskSetSha256: string
+	promptVariants: ProblemSolvingPromptVariant[]
+	promptVariantInstructionSha256: string | null
 	attempts: ProblemSolvingAttemptReport[]
 }> {
 	const manifest = await loadProblemSolvingSet(options.evalRoot)
@@ -234,6 +269,25 @@ export async function runLiveProblemSolvingCore(options: {
 	const requestLimit = options.requestLimit ?? DEFAULT_REQUEST_LIMIT
 	if (!Number.isSafeInteger(requestLimit) || requestLimit < 1 || requestLimit > 200)
 		throw new Error("Live problem-solving request limit must be from 1 to 200")
+	const promptVariants = options.promptVariants ?? ["baseline"]
+	if (
+		promptVariants.length === 0 ||
+		promptVariants.some((variant) => !problemSolvingPromptVariants.includes(variant)) ||
+		new Set(promptVariants).size !== promptVariants.length
+	) {
+		throw new Error(
+			`Live problem-solving prompt variants must be unique values from: ${problemSolvingPromptVariants.join(", ")}`,
+		)
+	}
+	const promptVariantInstruction = promptVariants.includes("single-command")
+		? await fs.readFile(
+				path.join(options.evalRoot, "problem-solving", "prompt-variants", "single-command.md"),
+				"utf8",
+			)
+		: null
+	const promptVariantInstructionSha256 = promptVariantInstruction
+		? createHash("sha256").update(promptVariantInstruction).digest("hex")
+		: null
 	const hostVersion = options.hostVersion ?? DEFAULT_HOST_VERSION
 	const modelId = options.modelId ?? DEFAULT_MODEL_ID
 	const effort = options.effort ?? DEFAULT_EFFORT
@@ -248,6 +302,8 @@ export async function runLiveProblemSolvingCore(options: {
 		requested: requestedIds?.length ?? availableTasks.length,
 		selected: tasks.length,
 		repetitions,
+		promptVariants,
+		promptVariantInstructionSha256,
 		taskIds: tasks.map(({ id }) => id),
 		sources: [...new Set(tasks.map((task) => task.source))],
 		lanes: [...new Set(tasks.map((task) => task.lane))],
@@ -270,63 +326,85 @@ export async function runLiveProblemSolvingCore(options: {
 	const attempts: ProblemSolvingAttemptReport[] = []
 	for (const task of tasks) {
 		for (let repetition = 1; repetition <= repetitions; repetition++) {
-			const report = await runProblemSolvingAttempt({
-				evalRoot: options.evalRoot,
-				repositoryRoot: options.repositoryRoot,
-				taskId: task.id,
-				attemptRoot: options.attemptRoot,
-				attemptId: `ps-${task.id}-r${repetition}`,
-				hostVersion,
-				provider: "live-copilot",
-				modelId,
-				effort,
-				profileDir: options.profileDir,
-				requestLimit,
-				runExtension: (request) => launchExtension(request, options.repositoryRoot, buildIdentity),
-			})
-			attempts.push(report)
-			await fs.writeFile(
-				path.join(options.attemptRoot, "report.json"),
-				JSON.stringify(
-					{
-						schemaVersion: 1,
+			for (const promptVariant of orderProblemSolvingPromptVariants(promptVariants, repetition)) {
+				const report = await runProblemSolvingAttempt({
+					evalRoot: options.evalRoot,
+					repositoryRoot: options.repositoryRoot,
+					taskId: task.id,
+					attemptRoot: options.attemptRoot,
+					attemptId: `ps-${task.id}-r${repetition}-${promptVariant}`,
+					repetition,
+					promptVariant,
+					promptVariantInstruction:
+						promptVariant === "single-command" && promptVariantInstruction !== null
+							? promptVariantInstruction
+							: undefined,
+					hostVersion,
+					provider: "live-copilot",
+					modelId,
+					effort,
+					profileDir: options.profileDir,
+					requestLimit,
+					runExtension: (request) => launchExtension(request, options.repositoryRoot, buildIdentity),
+				})
+				attempts.push(report)
+				await fs.writeFile(
+					path.join(options.attemptRoot, "report.json"),
+					JSON.stringify(
+						{
+							schemaVersion: 1,
+							runId,
+							startedAt,
+							generatedAt: new Date().toISOString(),
+							hostVersion,
+							modelId,
+							effort,
+							requestLimit,
+							buildIdentity,
+							extensionBundleSha256,
+							taskSetSha256,
+							workingTreeClean: workingTree.clean,
+							workingTreeDigest: workingTree.digest,
+							selection,
+							attempts,
+						},
+						null,
+						2,
+					) + "\n",
+				)
+				if (
+					report.failureClass === "authentication" ||
+					report.failureClass === "profile_busy" ||
+					(report.failureClass === "infrastructure" && report.tracePath === null)
+				) {
+					return {
 						runId,
-						startedAt,
-						generatedAt: new Date().toISOString(),
 						hostVersion,
 						modelId,
 						effort,
 						buildIdentity,
 						extensionBundleSha256,
 						taskSetSha256,
-						workingTreeClean: workingTree.clean,
-						workingTreeDigest: workingTree.digest,
-						selection,
+						promptVariants,
+						promptVariantInstructionSha256,
 						attempts,
-					},
-					null,
-					2,
-				) + "\n",
-			)
-			if (
-				report.failureClass === "authentication" ||
-				report.failureClass === "profile_busy" ||
-				(report.failureClass === "infrastructure" && report.tracePath === null)
-			) {
-				return {
-					runId,
-					hostVersion,
-					modelId,
-					effort,
-					buildIdentity,
-					extensionBundleSha256,
-					taskSetSha256,
-					attempts,
+					}
 				}
 			}
 		}
 	}
-	return { runId, hostVersion, modelId, effort, buildIdentity, extensionBundleSha256, taskSetSha256, attempts }
+	return {
+		runId,
+		hostVersion,
+		modelId,
+		effort,
+		buildIdentity,
+		extensionBundleSha256,
+		taskSetSha256,
+		promptVariants,
+		promptVariantInstructionSha256,
+		attempts,
+	}
 }
 
 const isDirectRun = process.argv[1]?.replaceAll("\\", "/").endsWith("problemSolvingLive.ts")
@@ -342,6 +420,7 @@ if (isDirectRun) {
 		.map((value) => value.trim())
 		.filter(Boolean)
 	const repetitions = Number(process.env.PROBLEM_SOLVING_REPETITIONS ?? "1")
+	const promptVariants = parsePromptVariants(process.env.PROBLEM_SOLVING_PROMPT_VARIANTS)
 	const requestLimit = Number(process.env.PROBLEM_SOLVING_REQUEST_LIMIT ?? String(DEFAULT_REQUEST_LIMIT))
 	const report = await runLiveProblemSolvingCore({
 		evalRoot,
@@ -355,12 +434,14 @@ if (isDirectRun) {
 		requestLimit,
 		taskIds,
 		repetitions,
+		promptVariants,
 	})
 	console.log(
 		JSON.stringify(
 			{
 				runId: report.runId,
-				tasks: report.attempts.length,
+				attempts: report.attempts.length,
+				promptVariants: report.promptVariants,
 				solved: report.attempts.filter((attempt) => attempt.countsAsSolving).length,
 			},
 			null,

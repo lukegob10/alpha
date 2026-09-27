@@ -1,13 +1,112 @@
 import { z } from "zod"
 
+import { reasoningEffortExtendedSchema } from "./model.js"
+
+const SUBAGENT_TASK_NAME_PATTERN = /^[a-z][a-z0-9_]{0,31}$/
+const SUBAGENT_FORK_TURNS_PATTERN = /^[1-9]\d*$/
+
+/** Stable model-facing task name used by the Codex V2 spawn contract. */
+export const subagentTaskNameSchema = z.string().min(1).max(32).regex(SUBAGENT_TASK_NAME_PATTERN)
+
+/** Turn selection shared with V2 spawn requests; numeric selections remain decimal strings. */
+export const subagentSpawnForkTurnsSchema = z.union([
+	z.literal("none"),
+	z.literal("all"),
+	z
+		.string()
+		.regex(SUBAGENT_FORK_TURNS_PATTERN)
+		.refine((value) => Number.isSafeInteger(Number(value)), "fork_turns must be a safe positive integer"),
+])
+
+/** Alpha roles plus the Codex V2 names accepted for the same bounded runtime. */
+export const subagentSpawnAgentTypeSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/)
+export type SubagentSpawnAgentType = z.infer<typeof subagentSpawnAgentTypeSchema>
+
+/** Named agent definitions narrow a child role and layer provider settings over parent inheritance. */
+export const subagentAgentTypeDefinitionSchema = z
+	.object({
+		description: z.string().trim().min(1).max(500),
+		role: z.enum(["default", "explore", "review", "worker"]).optional(),
+		apiConfigId: z.string().trim().min(1).optional(),
+		model: z.string().trim().min(1).max(256).optional(),
+		reasoningEffort: reasoningEffortExtendedSchema.optional(),
+		developerInstructions: z.string().trim().max(20_000).optional(),
+	})
+	.strict()
+export type SubagentAgentTypeDefinition = z.infer<typeof subagentAgentTypeDefinitionSchema>
+
+export const subagentAgentTypesSchema = z
+	.record(subagentSpawnAgentTypeSchema, subagentAgentTypeDefinitionSchema)
+	.refine((types) => Object.keys(types).length <= 24, "At most 24 named agent types are supported")
+
+const nonEmptySubagentTextSchema = z.string().trim().min(1)
+const subagentModelOverrideSchema = nonEmptySubagentTextSchema.max(256)
+const subagentExpectedOutputSchema = z.array(nonEmptySubagentTextSchema).max(12)
+const subagentWriteScopeSchema = z.array(nonEmptySubagentTextSchema).min(1).max(12)
+
+/**
+ * Current model-facing spawn_agent contract. Role resolution and authority are
+ * host decisions; these arguments only express the requested task and route.
+ */
+export const subagentSpawnAgentV2ArgsSchema = z
+	.object({
+		task_name: subagentTaskNameSchema,
+		message: nonEmptySubagentTextSchema,
+		agent_type: subagentSpawnAgentTypeSchema.optional(),
+		fork_turns: subagentSpawnForkTurnsSchema.optional(),
+		model: subagentModelOverrideSchema.optional(),
+		reasoning_effort: reasoningEffortExtendedSchema.optional(),
+	})
+	.strict()
+export type SubagentSpawnAgentV2Args = z.infer<typeof subagentSpawnAgentV2ArgsSchema>
+
+const legacySpawnAgentSharedArgsSchema = z.object({
+	task_name: subagentTaskNameSchema.optional(),
+	fork_turns: subagentSpawnForkTurnsSchema.optional(),
+	objective: nonEmptySubagentTextSchema,
+	expected_output: subagentExpectedOutputSchema.nullable().optional(),
+})
+
+const legacyReadOnlySpawnAgentArgsSchema = z
+	.object({
+		agent_kind: z.enum(["explore", "review"]),
+		write_scope: z.null().optional(),
+	})
+	.merge(legacySpawnAgentSharedArgsSchema)
+	.strict()
+
+const legacyWorkerSpawnAgentArgsSchema = z
+	.object({
+		agent_kind: z.literal("worker"),
+		write_scope: subagentWriteScopeSchema,
+	})
+	.merge(legacySpawnAgentSharedArgsSchema)
+	.strict()
+
+/** Legacy persisted/captured calls remain readable during the model contract migration. */
+export const legacySubagentSpawnAgentArgsSchema = z.union([
+	legacyReadOnlySpawnAgentArgsSchema,
+	legacyWorkerSpawnAgentArgsSchema,
+])
+export type LegacySubagentSpawnAgentArgs = z.infer<typeof legacySubagentSpawnAgentArgsSchema>
+
+/** Parser boundary accepting either current V2 model calls or historical Alpha calls. */
+export const subagentSpawnAgentArgsSchema = z.union([
+	subagentSpawnAgentV2ArgsSchema,
+	legacySubagentSpawnAgentArgsSchema,
+])
+export type SubagentSpawnAgentArgs = z.infer<typeof subagentSpawnAgentArgsSchema>
+
 /** Persisted, credential-free snapshot of the model route selected for a sub-agent. */
 export const subagentModelRouteStateSchema = z.object({
-	source: z.enum(["parent", "default", "role"]),
+	source: z.enum(["parent", "default", "role", "spawn"]),
 	resolution: z.enum(["selected", "fallback"]),
 	profileId: z.string().optional(),
 	profileName: z.string(),
 	provider: z.string().optional(),
 	modelId: z.string().optional(),
+	requestedModelId: z.string().min(1).optional(),
+	requestedReasoningEffort: reasoningEffortExtendedSchema.optional(),
 	requestedProfileId: z.string().optional(),
 	fallbackReason: z.enum(["missing", "unconfigured"]).optional(),
 })

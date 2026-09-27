@@ -29,9 +29,10 @@ describe("effective tool catalog policy", () => {
 			customModes: undefined,
 			experiments: {},
 			apiConfiguration: undefined,
-			policy: createToolPolicySnapshot({ visibleTools: ["read_file"] }),
+			policy: createToolPolicySnapshot({ visibleTools: ["exec_command"] }),
 		})
 		expect(result.tools).toEqual(result.surface?.schemas)
-		expect(result.tools.map((tool) => tool.type === "function" && tool.function.name)).toEqual(["read_file"])
+		expect(result.tools.map((tool) => tool.type === "function" && tool.function.name)).toEqual(["exec_command"])
+		expect(result.surface?.isCallable("read_file")).toBe(false)
 	})
 })

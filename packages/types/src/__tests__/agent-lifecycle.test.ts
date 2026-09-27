@@ -76,6 +76,13 @@ describe("agent lifecycle contracts", () => {
 				status: "completed",
 				output: "contents",
 			},
+			{
+				itemId: "result-item-2",
+				type: "tool_result",
+				toolCallId: "call-2",
+				status: "indeterminate",
+				output: "The effect may have started.",
+			},
 			{ itemId: "approval-1", type: "approval", approvalId: "approval-1", status: "requested" },
 			{ itemId: "usage-1", type: "usage", inputTokens: 3, outputTokens: 4 },
 			{ itemId: "error-1", type: "error", message: "A normalized error" },
@@ -86,6 +93,7 @@ describe("agent lifecycle contracts", () => {
 		for (const item of items) expect(agentLifecycleItemSchema.safeParse(item).success).toBe(true)
 		expect(agentLifecycleToolCallItemSchema.safeParse(items[3]).success).toBe(true)
 		expect(agentLifecycleToolResultItemSchema.safeParse(items[4]).success).toBe(true)
+		expect(agentLifecycleToolResultItemSchema.safeParse(items[5]).success).toBe(true)
 		expect(
 			agentLifecycleItemSchema.safeParse({
 				itemId: "missing-output",
@@ -119,6 +127,13 @@ describe("agent lifecycle contracts", () => {
 		expect(agentLifecycleEventSchema.safeParse({ ...event, payload: { phase: "provider_phase" } }).success).toBe(
 			false,
 		)
+		expect(
+			agentLifecycleEventSchema.safeParse({
+				...event,
+				type: "turn_started",
+				payload: { phase: "starting" },
+			}).success,
+		).toBe(true)
 	})
 
 	it("validates snapshot receipt continuity and terminal metadata", () => {
@@ -138,6 +153,7 @@ describe("agent lifecycle contracts", () => {
 		} as const
 
 		expect(agentLifecycleSnapshotSchema.safeParse(base).success).toBe(true)
+		expect(agentLifecycleSnapshotSchema.parse(base).effectStartedToolCallIds).toEqual([])
 		expect(
 			agentLifecycleSnapshotSchema.safeParse({
 				...base,

@@ -22,6 +22,44 @@ export interface FileChangeEntry {
 	diffStats?: { added: number; removed: number }
 	/** Original file content before first edit (for merged diff display) */
 	originalContent?: string
+	/** Content captured when the edit completed, before any later workspace changes. */
+	finalContent?: string
+	commandExecutionId?: string
+}
+
+type FileChangePayload = AlphaSayTool & {
+	finalContent?: string
+	changeStatus?: string
+	commandExecutionId?: string
+}
+
+interface FileChangeCandidate {
+	entry: FileChangeEntry
+	source: "ask" | "say"
+	/** Full replacement content on a legacy approval preview, when available. */
+	previewContent?: string
+}
+
+export function normalizedFileChangePath(path: string): string {
+	return path.replace(/\\/g, "/").replace(/^\.\/+/, "")
+}
+
+function matchesCompletedEdit(preview: FileChangeCandidate, completed: FileChangeCandidate): boolean {
+	if (normalizedFileChangePath(preview.entry.path) !== normalizedFileChangePath(completed.entry.path)) return false
+	if (preview.entry.commandExecutionId && completed.entry.commandExecutionId) {
+		return preview.entry.commandExecutionId === completed.entry.commandExecutionId
+	}
+	if (
+		preview.entry.originalContent !== undefined &&
+		completed.entry.originalContent !== undefined &&
+		preview.entry.originalContent !== completed.entry.originalContent
+	) {
+		return false
+	}
+	return (
+		preview.entry.diff === completed.entry.diff ||
+		(preview.previewContent !== undefined && preview.previewContent === completed.entry.finalContent)
+	)
 }
 
 export interface FileChangeTurn {
@@ -35,35 +73,40 @@ export interface FileChangeTurn {
 /**
  * Derives a list of file changes from clineMessages for the current conversation.
  * Includes:
- * - type "say" + say "tool" (applied tool results, if any are ever pushed that way)
- * - type "ask" + ask "tool" (tool approval messages; after approval the message stays as ask, so this is where file edits appear in the UI)
+ * - type "say" + say "tool" (completed edit records)
+ * - type "ask" + ask "tool" (legacy answered approval previews)
  */
 export function fileChangesFromMessages(messages: AlphaMessage[] | undefined): FileChangeEntry[] {
 	if (!messages?.length) return []
 
-	const entries: FileChangeEntry[] = []
+	const candidates: FileChangeCandidate[] = []
 
 	for (const msg of messages) {
-		// Tool payload can be in say "tool" (rare) or ask "tool" (how file edits are stored after approval)
 		const isSayTool = msg.type === "say" && msg.say === "tool"
 		const isAskTool = msg.type === "ask" && msg.ask === "tool"
 		if ((!isSayTool && !isAskTool) || !msg.text || msg.partial) continue
-		// Only include ask "tool" file edits that the user (or auto-approval) has approved
 		if (isAskTool && !msg.isAnswered) continue
 
-		const tool = safeJsonParse<AlphaSayTool>(msg.text)
-		if (!tool || !FILE_EDIT_TOOLS.has(tool.tool as string)) continue
+		const tool = safeJsonParse<FileChangePayload>(msg.text)
+		if (
+			!tool ||
+			!FILE_EDIT_TOOLS.has(tool.tool as string) ||
+			(tool.changeStatus !== undefined && tool.changeStatus !== "applied")
+		) {
+			continue
+		}
+		const source = isSayTool ? "say" : "ask"
+		const commandExecutionId = tool.commandExecutionId ?? msg.commandExecutionId
 
 		// Batch diffs
 		if (tool.batchDiffs && Array.isArray(tool.batchDiffs)) {
 			for (const file of tool.batchDiffs) {
-				if (!file.path) continue
+				if (typeof file.path !== "string" || !file.path) continue
 				const content = file.content ?? file.diffs?.map((d) => d.content).join("\n") ?? ""
 				if (content) {
-					entries.push({
-						path: file.path,
-						diff: content,
-						diffStats: file.diffStats,
+					candidates.push({
+						entry: { path: file.path, diff: content, diffStats: file.diffStats, commandExecutionId },
+						source,
 					})
 				}
 			}
@@ -71,19 +114,44 @@ export function fileChangesFromMessages(messages: AlphaMessage[] | undefined): F
 		}
 
 		// Single file
-		if (!tool.path) continue
+		if (typeof tool.path !== "string" || !tool.path) continue
 		const diff = tool.diff ?? tool.content ?? ""
-		if (diff) {
-			entries.push({
-				path: tool.path,
-				diff,
-				diffStats: tool.diffStats,
-				originalContent: tool.originalContent,
+		if (typeof diff === "string" && diff) {
+			candidates.push({
+				entry: {
+					path: tool.path,
+					diff,
+					diffStats: tool.diffStats,
+					originalContent: tool.originalContent,
+					finalContent: tool.finalContent,
+					commandExecutionId,
+				},
+				source,
+				previewContent: isAskTool ? tool.content : undefined,
 			})
 		}
 	}
 
-	return entries
+	// One completed record replaces at most one matching approval preview. Distinct
+	// edits to the same path, including later command executions, remain separate.
+	const supersededPreviews = new Set<number>()
+	for (let completedIndex = 0; completedIndex < candidates.length; completedIndex++) {
+		const completed = candidates[completedIndex]
+		if (completed.source !== "say") continue
+		for (let previewIndex = completedIndex - 1; previewIndex >= 0; previewIndex--) {
+			const preview = candidates[previewIndex]
+			if (
+				preview.source === "ask" &&
+				!supersededPreviews.has(previewIndex) &&
+				matchesCompletedEdit(preview, completed)
+			) {
+				supersededPreviews.add(previewIndex)
+				break
+			}
+		}
+	}
+
+	return candidates.flatMap((candidate, index) => (supersededPreviews.has(index) ? [] : [candidate.entry]))
 }
 
 /**

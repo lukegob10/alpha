@@ -32,6 +32,11 @@ describe("Single-open-task invariant", () => {
 		vi.restoreAllMocks()
 	})
 
+	const serializedTaskCreation = () => ({
+		taskCreationQueue: Promise.resolve(),
+		createTaskUnderCreationLock: (AlphaProvider.prototype as any).createTaskUnderCreationLock,
+	})
+
 	it("User-initiated create: closes existing before opening new", async () => {
 		// Allow profile
 		vi.spyOn(ProfileValidatorMod.ProfileValidator, "isProfileAllowed").mockReturnValue(true)
@@ -40,6 +45,7 @@ describe("Single-open-task invariant", () => {
 		const addTaskToStack = vi.fn().mockResolvedValue(undefined)
 
 		const provider = {
+			...serializedTaskCreation(),
 			// Simulate an existing task present in stack
 			taskStack: [{ taskId: "existing-1" }],
 			setValues: vi.fn(),
@@ -88,6 +94,7 @@ describe("Single-open-task invariant", () => {
 		const addTaskToStack = vi.fn().mockResolvedValue(undefined)
 
 		const provider = {
+			...serializedTaskCreation(),
 			taskStack: [{ taskId: "existing-1" }],
 			taskSessions: { canCreateTask: vi.fn(() => true) },
 			finalizeActiveCompletionCandidate: vi.fn().mockResolvedValue(undefined),
@@ -136,6 +143,7 @@ describe("Single-open-task invariant", () => {
 		const addTaskToStack = vi.fn()
 
 		const provider = {
+			...serializedTaskCreation(),
 			taskStack: [{ taskId: "existing-1" }],
 			taskSessions: { canCreateTask: vi.fn(() => false) },
 			finalizeActiveCompletionCandidate: vi.fn().mockResolvedValue(undefined),

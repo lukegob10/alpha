@@ -1,6 +1,7 @@
 import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
+import crypto from "crypto"
 
 import type { Anthropic } from "@anthropic-ai/sdk"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -351,7 +352,7 @@ describe("Stage Four real Task transcript persistence", () => {
 			else await fs.unlink(harness.legacyPath)
 
 			const restarted = harness.makeTask()
-			const failureCode = mode === "malformed" ? "digest_mismatch" : "read_failed"
+			const failureCode = mode === "malformed" ? "invalid_messages" : "read_failed"
 			await expect(boundaries(restarted).getSavedApiConversationHistory()).rejects.toMatchObject({
 				code: failureCode,
 			})
@@ -361,6 +362,30 @@ describe("Stage Four real Task transcript persistence", () => {
 			else await expect(fs.stat(harness.legacyPath)).rejects.toMatchObject({ code: "ENOENT" })
 		},
 	)
+
+	it("stops reload when the legacy bytes and receipt agree on malformed provider history", async () => {
+		const harness = await setup()
+		const task = await seedTask(harness)
+		await persistAssistant(task)
+		const malformed = [
+			{ role: "user", content: "request" },
+			{ role: "assistant", content: [{ type: "tool_use", id: "read-1", name: "read_file", input: {} }] },
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: 12, content: "invalid result id" }] },
+		]
+		const contents = JSON.stringify(malformed)
+		const sidecar = JSON.parse(await fs.readFile(harness.sidecarPath, "utf8"))
+		sidecar.digest = crypto.createHash("sha256").update(contents).digest("hex")
+		sidecar.byteLength = Buffer.byteLength(contents)
+		await fs.writeFile(harness.legacyPath, contents, "utf8")
+		await fs.writeFile(harness.sidecarPath, JSON.stringify(sidecar), "utf8")
+
+		const restarted = harness.makeTask()
+		await expect(boundaries(restarted).getSavedApiConversationHistory()).rejects.toMatchObject({
+			code: "invalid_messages",
+		})
+		await harness.expectFlushFailure(restarted, "invalid_messages")
+		expect(await fs.readFile(harness.legacyPath, "utf8")).toBe(contents)
+	})
 
 	it("does not migrate a stale Claude fallback over a missing v2 authority", async () => {
 		const harness = await setup()

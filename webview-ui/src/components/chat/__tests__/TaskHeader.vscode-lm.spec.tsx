@@ -79,7 +79,7 @@ function renderHeader() {
 			totalCost: 0,
 		},
 	})
-	fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
+	fireEvent.click(screen.getByRole("button", { name: "chat:task.expandContextDetails" }))
 }
 
 describe("VS Code LM chat context metadata", () => {
@@ -87,17 +87,18 @@ describe("VS Code LM chat context metadata", () => {
 		await i18next.init({ lng: "en", resources: { en: { common } } })
 	})
 
-	it("updates the displayed capacity and percentage when the saved context selection changes", () => {
+	it("updates the visible usage bar when the saved context selection changes", () => {
 		renderHeader()
-		expect(screen.getByTestId("context-window-size")).toHaveTextContent("200.0k")
+		expect(screen.getByTestId("context-usage-percent")).toHaveTextContent("50%")
+		expect(screen.queryByTestId("context-window-size")).not.toBeInTheDocument()
 
 		sendState({ apiConfiguration: configuration(936_000) })
-		expect(screen.getByTestId("context-window-size")).toHaveTextContent("936.0k")
 		expect(screen.getByText("11%")).toBeVisible()
+		expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "11")
 
 		sendState({ apiConfiguration: configuration(200_000) })
-		expect(screen.getByTestId("context-window-size")).toHaveTextContent("200.0k")
 		expect(screen.getByText("50%")).toBeVisible()
+		expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "50")
 	})
 
 	it("uses the visible task's live input limit and falls back to its saved selection on older hosts", () => {
@@ -109,14 +110,12 @@ describe("VS Code LM chat context metadata", () => {
 				"background-task": liveTask("background-task", 200_000),
 			},
 		})
-		expect(screen.getByTestId("context-window-size")).toHaveTextContent("935.8k")
 		expect(screen.getByText("11%")).toBeVisible()
 
 		sendState({ liveTasksById: { "visible-task": liveTask("visible-task", 199_793) } })
-		expect(screen.getByTestId("context-window-size")).toHaveTextContent("199.8k")
 		expect(screen.getByText("50%")).toBeVisible()
 
 		sendState({ liveTasksById: {} })
-		expect(screen.getByTestId("context-window-size")).toHaveTextContent("936.0k")
+		expect(screen.getByText("11%")).toBeVisible()
 	})
 })

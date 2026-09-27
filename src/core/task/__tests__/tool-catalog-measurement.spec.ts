@@ -18,7 +18,7 @@ import {
 } from "../../agent/ToolScheduler"
 import { TaskToolCatalogCache } from "../TaskToolCatalogCache"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
-import { readFileTool } from "../../tools/ReadFileTool"
+import { executeCommandTool } from "../../tools/ExecuteCommandTool"
 import { useMcpToolTool } from "../../tools/UseMcpToolTool"
 import { canonicalizeToolName } from "../../tools/ToolRegistry"
 import {
@@ -147,7 +147,7 @@ interface CoreWorkflowSeries {
 }
 
 interface CoreWorkflowMeasurement {
-	toolName: "read_file"
+	toolName: "exec_command"
 	toolArguments: Record<string, unknown>
 	eager: CoreWorkflowSeries
 	cached: CoreWorkflowSeries
@@ -432,7 +432,7 @@ function createWorkflowHost(): ToolExecutionHost {
 		ask: vi.fn(async () => ({ response: "yesButtonClicked" as const })),
 		say: vi.fn(async () => {}),
 		recordToolUsage: vi.fn(),
-		taskFacade: {} as never,
+		taskFacade: { providerRef: { deref: () => undefined } } as never,
 		pushToolResultToUserContent(result) {
 			if (
 				userMessageContent.some(
@@ -536,7 +536,7 @@ async function createWorkflowSample(input: {
 	return {
 		phase: input.phase,
 		modelToolRounds: input.executions.length,
-		discoveryModelRounds: input.executions.filter((execution) => execution.call.name === "discover_tools").length,
+		discoveryModelRounds: input.executions.filter((execution) => execution.call.name === "tool_search").length,
 		extraModelRoundsComparedWithEager: input.executions.length - 1,
 		effectiveSchemaRequestCount: effectiveSchemaPayloads.length,
 		effectiveSchemaBytes: effectiveSchemaPayloads.reduce((total, payload) => total + payload.jsonBytes, 0),
@@ -566,14 +566,15 @@ function installSyntheticMcpEffect(): unknown[] {
 	return effectPayloads
 }
 
-const NOR28_CORE_TOOL = "read_file" as const
-const NOR28_CORE_ARGUMENTS = Object.freeze({ path: "nor28-core-workflow.txt" })
+const NOR28_CORE_TOOL = "exec_command" as const
+const NOR28_CORE_ARGUMENTS = Object.freeze({ cmd: "git --no-pager status --short", yield_time_ms: 1_000 })
 
-function installSyntheticReadFileEffect(): unknown[] {
+function installSyntheticExecCommandEffect(): unknown[] {
 	const effectPayloads: unknown[] = []
-	vi.spyOn(readFileTool, "handle").mockImplementation(async (_task, block, callbacks) => {
-		effectPayloads.push(structuredClone(block.nativeArgs))
-		callbacks.pushToolResult("NOR-28 synthetic read_file result")
+	vi.spyOn(executeCommandTool, "execute").mockImplementation(async (params, _task, callbacks) => {
+		effectPayloads.push(structuredClone(params))
+		callbacks.setResultMetadata?.({ status: "success", executionStatus: "success", exitCode: 0 })
+		callbacks.pushToolResult("NOR-28 synthetic exec_command result")
 	})
 	return effectPayloads
 }
@@ -595,7 +596,7 @@ async function measureCoreWorkflowSeries(
 		const build = await measureBuild(options, `${useCache ? "cached" : "eager"}:core:${phase}:build`)
 		if (!build.result.surface) throw new Error("NOR-28 core workflow build did not expose a task surface")
 		expect(build.result.surface.isCallable(NOR28_CORE_TOOL)).toBe(true)
-		expect(build.result.surface.isCallable("discover_tools")).toBe(false)
+		expect(build.result.surface.isCallable("tool_search")).toBe(false)
 		effectiveSchemaDigests.push(digestValue([...build.result.surface.schemas]))
 		const execution = await executeWorkflowCall(
 			build.result.surface,
@@ -605,7 +606,7 @@ async function measureCoreWorkflowSeries(
 				`core-${useCache ? "cached" : "eager"}-${phase}`,
 			),
 		)
-		expect(execution.result.status).toBe("success")
+		expect(execution.result.status, workflowResultText(execution.result)).toBe("success")
 		samples.push(
 			await createWorkflowSample({
 				phase,
@@ -623,7 +624,7 @@ async function measureCoreWorkflowSeries(
 async function measureCoreWorkflow(
 	servers: readonly import("@alpha-code/types").McpServer[],
 ): Promise<CoreWorkflowMeasurement> {
-	const effectPayloads = installSyntheticReadFileEffect()
+	const effectPayloads = installSyntheticExecCommandEffect()
 	const eager = await measureCoreWorkflowSeries(servers, false, effectPayloads)
 	effectPayloads.splice(0)
 	const cached = await measureCoreWorkflowSeries(servers, true, effectPayloads)
@@ -702,10 +703,10 @@ async function measureDeferredWorkflow(
 	const initialStarted = performance.now()
 	const initial = await measureBuild(options, "deferred:cold:initial-build")
 	if (!initial.result.surface) throw new Error("NOR-28 deferred workflow initial build did not expose a task surface")
-	expect(initial.result.surface.isCallable("discover_tools")).toBe(true)
+	expect(initial.result.surface.isCallable("tool_search")).toBe(true)
 	expect(initial.result.surface.isCallable(NOR28_WORKFLOW_TOOL)).toBe(false)
 
-	const discoveryCall = createWorkflowCall("discover_tools", { ...NOR28_DISCOVERY_ARGUMENTS }, "deferred-discovery")
+	const discoveryCall = createWorkflowCall("tool_search", { ...NOR28_DISCOVERY_ARGUMENTS }, "deferred-discovery")
 	const discovery = await executeWorkflowCall(initial.result.surface, discoveryCall)
 	expect(discovery.result.status).toBe("success")
 	expect(typeof discovery.result.content).toBe("string")
@@ -819,7 +820,7 @@ async function measureWorkflowComparison(
 			effectiveSchema: fallbackSchema,
 			result: fallbackResult,
 			wallTimeMs: fallbackWallTimeMs,
-			discoveryCallable: fallbackBuild.result.surface.isCallable("discover_tools"),
+			discoveryCallable: fallbackBuild.result.surface.isCallable("tool_search"),
 			toolCallable: fallbackBuild.result.surface.isCallable(NOR28_WORKFLOW_TOOL),
 			outcomeStatus: fallbackRun.outcome.status,
 			toolResultStatus: fallbackRun.result.status,
@@ -844,7 +845,16 @@ function assertCapturedSurfaceMatchesSchemas(result: BuildToolsResult): void {
 	for (const schema of result.surface.schemas.filter(isFunctionTool)) {
 		const descriptor = result.surface.registry.resolve(schema.function.name)
 		expect(descriptor, `missing executable descriptor for ${schema.function.name}`).toBeDefined()
-		expect(descriptor?.schema).toEqual(schema)
+		if (
+			schema.function.name === "discover_tools" &&
+			descriptor?.schema.type === "function" &&
+			descriptor.schema.function.name === "tool_search"
+		) {
+			// Saved transcripts may need the legacy spelling; it routes through the current descriptor.
+			expect(canonicalizeToolName(schema.function.name)).toBe(descriptor.name)
+		} else {
+			expect(descriptor?.schema).toEqual(schema)
+		}
 	}
 
 	for (const name of result.surface.allowedFunctionNames) {
@@ -1017,7 +1027,7 @@ describe("NOR-28 tool catalog baseline measurement", () => {
 		const child = await measureFilteringProbe("managed-child", fixture.largeServers, {
 			taskKind: "subagent",
 			allowedToolNames: [
-				"read_file",
+				"exec_command",
 				"attempt_completion",
 				fixture.disabledMcpTool,
 			] as BuildToolsOptions["allowedToolNames"],
@@ -1028,7 +1038,8 @@ describe("NOR-28 tool catalog baseline measurement", () => {
 		expect(disabled.allowedFunctionNames).not.toContain(fixture.disabledNativeTool)
 		expect(disabled.allowedFunctionNames).not.toContain(fixture.disabledMcpTool)
 		expect(child.mcpEffectiveNames).toContain(fixture.disabledMcpTool)
-		expect(child.allowedFunctionNames).toEqual(["attempt_completion", "read_file", fixture.disabledMcpTool].sort())
+		expect(child.allowedFunctionNames).toEqual(["exec_command", fixture.disabledMcpTool].sort())
+		expect(child.allowedFunctionNames).not.toContain("attempt_completion")
 		expect(child.roundTrip.stable).toBe(true)
 		expect(
 			getNor28ExposedServers(fixture.largeServers).some((server) => server.name === fixture.disabledServerName),
@@ -1131,6 +1142,10 @@ describe("NOR-28 tool catalog baseline measurement", () => {
 		expect(comparison.cached.samples[1].extraModelRoundsComparedWithEager).toBe(0)
 		expect(comparison.eager.samples[0].toolResultStatus).toBe("success")
 		expect(comparison.cached.samples[0].toolResultStatus).toBe("success")
+		expect(comparison.eager.samples[0].toolResultText).toBe("NOR-28 synthetic exec_command result")
+		expect(comparison.eager.samples[0].effectPayload).toMatchObject({
+			command: NOR28_CORE_ARGUMENTS.cmd,
+		})
 		expect(comparison.equivalence).toEqual({
 			toolResultStatusEqual: true,
 			toolResultTextEqual: true,

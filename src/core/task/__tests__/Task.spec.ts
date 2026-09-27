@@ -11,13 +11,17 @@ import { Anthropic } from "@anthropic-ai/sdk"
 import {
 	AlphaCodeEventName,
 	getApiProtocol,
+	type AlphaAsk,
+	type ApprovalMode,
 	type GlobalState,
 	type ProviderSettings,
 	type ModelInfo,
+	type ToolApprovalDecision,
+	type ToolApprovalRequest,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
-import { Task } from "../Task"
+import { Task, type ToolApprovalReviewer } from "../Task"
 import { AskIgnoredError } from "../AskIgnoredError"
 import { AlphaProvider } from "../../webview/AlphaProvider"
 import { ApiStreamChunk } from "../../../api/transform/stream"
@@ -27,16 +31,18 @@ import { processUserContentMentions } from "../../mentions/processUserContentMen
 import { MultiSearchReplaceDiffStrategy } from "../../diff/strategies/multi-search-replace"
 import { formatResponse } from "../../prompts/responses"
 import { createAgentResponse } from "../../agent/AgentResponse"
+import { AgentResponseAccumulator } from "../../agent/AgentResponseAccumulator"
 import { AgentRetryPolicy } from "../../agent/AgentRetryPolicy"
 import { AgentControlTransactionError } from "../../agent/AgentControlTransaction"
+import { ToolScheduler } from "../../agent/ToolScheduler"
 import { parseProposedPlan } from "../../../shared/plan-mode"
-import { delegate_task } from "../../prompts/tools/native-tools/delegate_task"
 import { getNativeTools } from "../../prompts/tools/native-tools"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
-import { ToolRegistry } from "../../tools/ToolRegistry"
+import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
 import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 import type { AgentTurnEvent } from "../../agent/AgentTurnEvents"
 import { captureEnvironmentDetails } from "../../environment/getEnvironmentDetails"
+import { checkAutoApproval, checkAutoApprovalWithInheritedPolicy } from "../../auto-approval"
 import * as contextManagement from "../../context-management"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import i18n from "../../../i18n"
@@ -221,6 +227,13 @@ const mockMessages = [
 		text: "historical task",
 	},
 ]
+
+const markTestHandlerAsLegacyEOF = (task: Task) => {
+	Object.defineProperty(task.api, "streamCapabilities", {
+		configurable: true,
+		value: { cancellation: true },
+	})
+}
 
 describe("Alpha", () => {
 	let mockProvider: any
@@ -1238,6 +1251,7 @@ describe("Alpha", () => {
 						task: "retry environment",
 						startTask: false,
 					})
+					markTestHandlerAsLegacyEOF(task)
 					const capture = {
 						details: "<environment_details>terminal A</environment_details>",
 						commit: vi.fn(),
@@ -1378,6 +1392,65 @@ describe("Alpha", () => {
 				},
 			)
 
+			it("persists ordered child notifications beside one wait receipt before ACK", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "deliver child notifications",
+					startTask: false,
+				})
+				task.apiConversationHistory = [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "call-ordered", name: "wait_agent", input: {} }],
+						ts: 1,
+					},
+				] as any
+				const entry = (eventId: string, sequence: number) => ({
+					eventId,
+					sequence,
+					rootTaskId: task.taskId,
+					senderTaskId: "review-child",
+					senderPath: "/root/review",
+					recipientTaskId: task.taskId,
+					recipientPath: "/root",
+					kind: "message" as const,
+					name: "agent_progress",
+					payload: { message: eventId },
+					createdAt: sequence,
+				})
+				task.stageWaitAgentNotifications("claim-ordered", [entry("second", 2), entry("first", 1)])
+				task.retainWaitAgentResultClaim("call-ordered", "claim-ordered")
+				const receipt = {
+					type: "tool_result" as const,
+					tool_use_id: "call-ordered",
+					content: JSON.stringify({
+						source: "managed_agent_mailbox",
+						claimId: "claim-ordered",
+						eventCount: 2,
+					}),
+				}
+				expect(task.pushToolResultToUserContent(receipt)).toBe(true)
+				expect(task.pushToolResultToUserContent(receipt)).toBe(false)
+				expect(task.userMessageContent.map((block) => block.type)).toEqual(["tool_result", "text", "text"])
+				expect(task.hasRetainedWaitAgentResultClaim("claim-ordered")).toBe(true)
+				expect(task.userMessageContent.slice(1).map((block: any) => JSON.parse(block.text).eventId)).toEqual([
+					"first",
+					"second",
+				])
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+				;(task as any).assistantMessageSavedToHistory = true
+				await expect(task.flushPendingToolResultsToHistory()).resolves.toBe(true)
+				expect(mockProvider.acknowledgeWaitAgentResults).toHaveBeenCalledOnce()
+				expect(mockProvider.acknowledgeWaitAgentResults).toHaveBeenCalledWith(task, "claim-ordered")
+				expect(task.hasRetainedWaitAgentResultClaim("claim-ordered")).toBe(false)
+				expect(task.apiConversationHistory.at(-1)?.content).toMatchObject([
+					{ type: "tool_result", tool_use_id: "call-ordered" },
+					{ type: "text" },
+					{ type: "text" },
+				])
+			})
+
 			it("acknowledges a native wait claim only after its matching tool result is durably saved", async () => {
 				const task = new Task({
 					provider: mockProvider,
@@ -1393,6 +1466,21 @@ describe("Alpha", () => {
 					},
 				] as any
 				task.retainWaitAgentResultClaim("call-wait", "claim-native-wait")
+				task.stageWaitAgentNotifications("claim-native-wait", [
+					{
+						eventId: "wait-event",
+						sequence: 1,
+						senderTaskId: "child",
+						senderPath: "/root/child",
+						recipientTaskId: task.taskId,
+						recipientPath: "/root",
+						rootTaskId: task.taskId,
+						kind: "result",
+						name: "agent_completed",
+						payload: { summary: "Child done" },
+						createdAt: 1,
+					},
+				])
 				let releaseSave!: (saved: boolean) => void
 				const saveBlocked = new Promise<boolean>((resolve) => (releaseSave = resolve))
 				vi.spyOn(task as any, "saveApiConversationHistory").mockReturnValue(saveBlocked)
@@ -1404,16 +1492,102 @@ describe("Alpha", () => {
 							tool_use_id: "call-wait",
 							content: JSON.stringify({ source: "managed_agent_mailbox", claimId: "claim-native-wait" }),
 						},
+						{
+							type: "text" as const,
+							text: JSON.stringify({
+								source: "managed_agent_notification",
+								eventId: "wait-event",
+								senderPath: "/root/child",
+								payload: { summary: "Child done" },
+							}),
+						},
 					],
 				}
 
 				const persisting = (task as any).addToApiConversationHistory(toolResult)
-				expect(mockProvider.acknowledgeWaitAgentResults).not.toHaveBeenCalled()
+				expect(mockProvider.acknowledgeWaitAgentResults).not.toHaveBeenCalledWith(task, "claim-native-wait")
 				releaseSave(true)
 				await expect(persisting).resolves.toBe(true)
 
 				expect(mockProvider.acknowledgeWaitAgentResults).toHaveBeenCalledWith(task, "claim-native-wait")
 				expect((task as any).pendingWaitAgentResultClaims.size).toBe(0)
+			})
+
+			it("does not ACK a wait receipt if its child notification is missing from the saved message", async () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "retain incomplete child delivery",
+					startTask: false,
+				})
+				task.apiConversationHistory = [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "call-incomplete", name: "wait_agent", input: {} }],
+						ts: 1,
+					},
+				] as any
+				task.stageWaitAgentNotifications("claim-incomplete", [
+					{
+						eventId: "missing-notification",
+						sequence: 1,
+						rootTaskId: task.taskId,
+						senderTaskId: "child",
+						senderPath: "/root/child",
+						recipientTaskId: task.taskId,
+						recipientPath: "/root",
+						kind: "result",
+						name: "agent_completed",
+						createdAt: 1,
+					},
+				])
+				task.retainWaitAgentResultClaim("call-incomplete", "claim-incomplete")
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+				await (task as any).addToApiConversationHistory({
+					role: "user",
+					content: [
+						{
+							type: "tool_result",
+							tool_use_id: "call-incomplete",
+							content: JSON.stringify({ source: "managed_agent_mailbox", claimId: "claim-incomplete" }),
+						},
+					],
+				})
+				expect(mockProvider.acknowledgeWaitAgentResults).not.toHaveBeenCalledWith(task, "claim-incomplete")
+				expect(task.hasRetainedWaitAgentResultClaim("claim-incomplete")).toBe(true)
+				expect(task.hasDurablyPersistedWaitAgentClaim("claim-incomplete")).toBe(false)
+			})
+
+			it("releases a staged claim when the wait call receives a cancellation receipt", () => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "cancel wait",
+					startTask: false,
+				})
+				task.stageWaitAgentNotifications("claim-cancelled", [
+					{
+						eventId: "cancelled-event",
+						sequence: 1,
+						rootTaskId: task.taskId,
+						senderTaskId: "child",
+						senderPath: "/root/child",
+						recipientTaskId: task.taskId,
+						recipientPath: "/root",
+						kind: "message",
+						name: "agent_progress",
+						createdAt: 1,
+					},
+				])
+				task.retainWaitAgentResultClaim("call-cancelled", "claim-cancelled")
+				task.pushToolResultToUserContent({
+					type: "tool_result",
+					tool_use_id: "call-cancelled",
+					content: "Wait cancelled",
+					is_error: true,
+				})
+				expect(task.hasRetainedWaitAgentResultClaim("claim-cancelled")).toBe(false)
+				expect(task.userMessageContent.map((block) => block.type)).toEqual(["tool_result"])
 			})
 
 			it("retains a native wait claim when history persistence fails and ACKs it after a successful retry", async () => {
@@ -1431,6 +1605,20 @@ describe("Alpha", () => {
 					},
 				] as any
 				task.retainWaitAgentResultClaim("call-retry", "claim-retry")
+				task.stageWaitAgentNotifications("claim-retry", [
+					{
+						eventId: "retry-event",
+						sequence: 1,
+						senderTaskId: "child",
+						senderPath: "/root/child",
+						recipientTaskId: task.taskId,
+						recipientPath: "/root",
+						rootTaskId: task.taskId,
+						kind: "result",
+						name: "agent_completed",
+						createdAt: 1,
+					},
+				])
 				vi.spyOn(task as any, "saveApiConversationHistory")
 					.mockResolvedValueOnce(false)
 					.mockResolvedValueOnce(true)
@@ -1441,6 +1629,10 @@ describe("Alpha", () => {
 							type: "tool_result" as const,
 							tool_use_id: "call-retry",
 							content: JSON.stringify({ source: "managed_agent_mailbox", claimId: "claim-retry" }),
+						},
+						{
+							type: "text" as const,
+							text: JSON.stringify({ source: "managed_agent_notification", eventId: "retry-event" }),
 						},
 					],
 				}
@@ -2341,6 +2533,36 @@ describe("Alpha", () => {
 			expect(handleResponseSpy).toHaveBeenCalledWith("messageResponse", "new context", ["image1.png"])
 		})
 
+		it("accepts a queued steering message at the command output handoff", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
+			;(task as any).activeAsk = { type: "command_output", ts: Date.now() }
+
+			expect(task.canAcceptSteerMessage()).toBe(true)
+			await task.steerUserMessage("use the output already available", ["context.png"])
+
+			expect(handleResponseSpy).toHaveBeenCalledWith("messageResponse", "use the output already available", [
+				"context.png",
+			])
+		})
+
+		it("does not accept queued steering through a command approval ask", () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			;(task as any).activeAsk = { type: "command", ts: Date.now() }
+
+			expect(task.canAcceptSteerMessage()).toBe(false)
+		})
+
 		it("aborts the active request without aborting the task when steering during streaming", async () => {
 			const task = new Task({
 				provider: mockProvider,
@@ -2675,7 +2897,7 @@ describe("Alpha", () => {
 		})
 
 		it.each([true, false])(
-			"captures the read grant in an ordinary provider request (enabled=%s)",
+			"captures the read grant from the task approval mode despite the legacy read chip (legacy chip=%s)",
 			async (alwaysAllowReadOnly) => {
 				const task = new Task({
 					provider: mockProvider,
@@ -2685,6 +2907,7 @@ describe("Alpha", () => {
 				})
 				vi.spyOn(mockProvider, "getState").mockResolvedValue({
 					mode: "code",
+					approvalMode: "auto",
 					autoApprovalEnabled: true,
 					alwaysAllowReadOnly,
 					showRooIgnoredFiles: false,
@@ -2698,13 +2921,15 @@ describe("Alpha", () => {
 				}
 				const surface = (task as any).currentTaskToolSurface
 				expect(surface?.readGrant).toEqual({
-					enabled: alwaysAllowReadOnly,
+					enabled: true,
 					workspaceRoot: task.cwd,
 					showIgnoredFiles: false,
 				})
 				expect(Object.isFrozen(surface.readGrant)).toBe(true)
 				expect(surface.policy.approval.autoApprovalEnabled).toBe(true)
-				expect(surface.resolve("list_files")?.prepareParallelRead).toBeTypeOf("function")
+				expect(surface.isCallable("exec_command")).toBe(true)
+				expect(surface.isCallable("read_file")).toBe(false)
+				expect(surface.resolve("exec_command")?.prepareParallelCommand).toBeTypeOf("function")
 			},
 		)
 
@@ -3230,6 +3455,7 @@ describe("Alpha", () => {
 				startTask: false,
 				enableCheckpoints: false,
 			})
+			markTestHandlerAsLegacyEOF(task)
 			vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
 			vi.spyOn(task as any, "enqueueAlphaMessagesSave").mockImplementation(async (...args: unknown[]) => {
 				const [createSnapshot, onPersisted] = args as [() => unknown, (() => void) | undefined]
@@ -3246,6 +3472,763 @@ describe("Alpha", () => {
 			vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
 				() => ({ get: (_key: string, defaultValue: unknown) => defaultValue }) as any,
 			)
+		})
+
+		const deferred = <T = void>() => {
+			let resolve!: (value: T | PromiseLike<T>) => void
+			const promise = new Promise<T>((resolvePromise) => {
+				resolve = resolvePromise
+			})
+			return { promise, resolve }
+		}
+
+		it("uses the admitted step's approval mode and isolates the next-step task override", async () => {
+			const task = createTask()
+			task.setTaskApprovalMode("ask")
+			const globalAskState = {
+				approvalMode: "ask",
+				autoApprovalEnabled: false,
+				apiConfiguration: mockApiConfig,
+			} as unknown as Awaited<ReturnType<AlphaProvider["getState"]>>
+			const editAsk = {
+				tool: JSON.stringify({ tool: "appliedDiff" }),
+				command: "echo approval-mode-test",
+			}
+			const decide = (mode: ReturnType<Task["getTaskApprovalMode"]>, ask: "tool" | "command", text: string) =>
+				checkAutoApprovalWithInheritedPolicy({
+					state: task["approvalStateForAsk"](globalAskState, mode),
+					ask,
+					text,
+				})
+
+			const admittedMode = task["getApprovalModeForAsk"]()
+			Object.assign(task, {
+				currentAgentStep: { snapshot: { context: { policy: { approval: { mode: admittedMode } } } } },
+			})
+			expect(admittedMode).toBe("ask")
+			expect(await decide(admittedMode, "tool", editAsk.tool)).toEqual({ decision: "ask" })
+			expect(await decide(admittedMode, "command", editAsk.command)).toEqual({ decision: "ask" })
+
+			// Changing the task while this step is admitted cannot widen its policy.
+			expect(task.setTaskApprovalMode("auto")).toBe(true)
+			expect(task["getApprovalModeForAsk"]()).toBe("ask")
+			expect(await decide(task["getApprovalModeForAsk"](), "tool", editAsk.tool)).toEqual({ decision: "ask" })
+			expect(await decide(task["getApprovalModeForAsk"](), "command", editAsk.command)).toEqual({
+				decision: "ask",
+			})
+
+			// The next admitted step receives Auto, while the provider's default and
+			// another task remain on Ask.
+			Object.assign(task, {
+				currentAgentStep: { snapshot: { context: { policy: { approval: { mode: "auto" } } } } },
+			})
+			expect(task["getApprovalModeForAsk"]()).toBe("auto")
+			expect(await decide(task["getApprovalModeForAsk"](), "tool", editAsk.tool)).toEqual({ decision: "approve" })
+			expect(await decide(task["getApprovalModeForAsk"](), "command", editAsk.command)).toEqual({
+				decision: "approve",
+			})
+			const unrelatedTask = createTask()
+			unrelatedTask.setTaskApprovalMode("ask")
+			expect(unrelatedTask["getApprovalModeForAsk"]()).toBe("ask")
+		})
+
+		it("includes pre-start managed-child steering in the first provider input before acknowledging it", async () => {
+			const task = createTask("subagent")
+			task.apiConversationHistory = []
+			const requests: unknown[][] = []
+			let historyAtAcknowledgement: unknown
+			const onPersisted = vi.fn(() => {
+				historyAtAcknowledgement = structuredClone(task.apiConversationHistory)
+			})
+			await task.steerUserMessage("STEERING_MESSAGE", [], onPersisted)
+
+			mockProvider.getState = vi.fn().mockResolvedValue({})
+			mockProvider.getValues = vi.fn().mockReturnValue({})
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task.api, "createMessage").mockImplementation(async function* (_system, messages) {
+				requests.push(structuredClone(messages))
+				yield { type: "text", text: "I received the parent instruction." } as const
+			})
+
+			await expect(
+				task.runAgentRequests([{ type: "text", text: "INITIAL_CHILD_PROMPT" }], false),
+			).resolves.toMatchObject({ status: "completed" })
+
+			expect(requests).toHaveLength(1)
+			expect(JSON.stringify(requests[0])).toContain("INITIAL_CHILD_PROMPT")
+			expect(JSON.stringify(requests[0])).toContain("STEERING_MESSAGE")
+			expect(onPersisted).toHaveBeenCalledOnce()
+			expect(JSON.stringify(historyAtAcknowledgement)).toContain("STEERING_MESSAGE")
+			expect(JSON.stringify(task.apiConversationHistory)).toContain("STEERING_MESSAGE")
+		})
+
+		const waitForControlledSignal = async <T>(
+			name: string,
+			promise: Promise<T>,
+			state: () => string,
+		): Promise<T> => {
+			let timer: ReturnType<typeof setTimeout> | undefined
+			try {
+				return await Promise.race([
+					promise,
+					new Promise<T>((_resolve, reject) => {
+						timer = setTimeout(() => reject(new Error(`${name} timed out: ${state()}`)), 4000)
+					}),
+				])
+			} finally {
+				if (timer) clearTimeout(timer)
+			}
+		}
+
+		const startEarlyReadStream = async (scenario: {
+			barrier?: boolean
+			outcome?: "failed" | "cancelled"
+			mismatch?: boolean
+			command?: { command: string; arguments: string }
+		}) => {
+			const task = createTask()
+			if (scenario.command) {
+				vi.spyOn(task as any, "assertCurrentProviderTranscriptBeforeEffects").mockResolvedValue(undefined)
+				vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+			}
+			const events: AgentTurnEvent[] = []
+			const eventOrder: string[] = []
+			const lifecyclePublications: Array<{ type: string; durable: boolean }> = []
+			let lifecycleSnapshot: any
+			let sequence = 0
+			const acceptedCallId = "early-read-1"
+			let readEffectCount = 0
+			const assistantSaveStarted = deferred()
+			const releaseAssistantSave = deferred()
+			const readStarted = deferred()
+			const readResultReady = deferred()
+			const providerTailReached = deferred()
+			const normalCommandStarted = deferred()
+			const releaseRead = deferred()
+			const releaseProvider = deferred()
+			const persistedAssistantHistory: any[] = []
+			const barrierExecute = vi.fn()
+			let normalCommandEffectCount = 0
+			let commandPreparationCount = 0
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			const readExecute = vi.fn()
+			if (!scenario.command)
+				registry.register({
+					name: "exec_command",
+					aliases: [],
+					schema: {
+						type: "function",
+						function: {
+							name: "exec_command",
+							description: "Run an audited read command",
+							parameters: {
+								type: "object",
+								properties: { cmd: { type: "string" }, workdir: { type: "string" } },
+								required: ["cmd"],
+							},
+						},
+					},
+					capabilities: {
+						concurrency: "serial",
+						sideEffects: "workspace",
+						controlFlow: false,
+						requiresApproval: true,
+						parallelCommandRead: true,
+					},
+					prepareParallelCommand: async () => ({
+						scope: path.resolve(task.cwd, "."),
+						run: async (callbacks) => {
+							readEffectCount += 1
+							eventOrder.push("read_started")
+							readStarted.resolve()
+							await releaseRead.promise
+							callbacks.pushToolResult("directory listing")
+							eventOrder.push("read_result_ready")
+							readResultReady.resolve()
+							return async () => {
+								// The command result is collected during the read; Task publishes it after durable history.
+							}
+						},
+					}),
+					execute: readExecute,
+				})
+			if (scenario.command) {
+				registry.register({
+					name: "exec_command",
+					aliases: [],
+					schema: {
+						type: "function",
+						function: {
+							name: "exec_command",
+							description: "Execute a command",
+							parameters: {
+								type: "object",
+								properties: { cmd: { type: "string" } },
+								required: ["cmd"],
+							},
+						},
+					},
+					capabilities: {
+						concurrency: "serial",
+						sideEffects: "workspace",
+						controlFlow: false,
+						requiresApproval: true,
+						parallelCommandRead: true,
+					},
+					prepareParallelCommand: async () => {
+						commandPreparationCount += 1
+						return undefined
+					},
+					execute: async ({ callbacks }) => {
+						if (!(await callbacks.askApproval("command", scenario.command!.command))) return
+						normalCommandEffectCount += 1
+						eventOrder.push("normal_command_started")
+						normalCommandStarted.resolve()
+						callbacks.pushToolResult("normal command effect completed")
+					},
+				})
+			}
+			if (scenario.barrier) {
+				registry.register({
+					name: "attempt_completion",
+					aliases: [],
+					schema: {
+						type: "function",
+						function: {
+							name: "attempt_completion",
+							description: "Finish the task",
+							parameters: { type: "object", properties: {} },
+						},
+					},
+					capabilities: {
+						concurrency: "barrier",
+						sideEffects: "task",
+						controlFlow: true,
+						requiresApproval: false,
+					},
+					execute: barrierExecute,
+				})
+			}
+			const surface = createTaskToolSurface({
+				registry,
+				mode: "code",
+				applyProfile: false,
+				autoApprovalEnabled: true,
+				readGrant: { enabled: true, workspaceRoot: task.cwd, showIgnoredFiles: false },
+				execution: { workspaceRoots: [task.cwd] },
+				taskKind: "primary",
+			})
+			const state = {
+				autoApprovalEnabled: true,
+				alwaysAllowReadOnly: true,
+				showRooIgnoredFiles: false,
+				...(scenario.command ? { alwaysAllowExecute: true, allowedCommands: [scenario.command.command] } : {}),
+			}
+			mockProvider.getState = vi.fn().mockResolvedValue(state)
+			mockProvider.getValues = vi.fn().mockReturnValue(state)
+			mockProvider.replayAgentLifecycle = vi.fn(async () => lifecycleSnapshot)
+			mockProvider.getAgentLifecycleSnapshot = vi.fn(() => lifecycleSnapshot)
+			mockProvider.publishAgentLifecycleEvent = vi.fn(async (input: any, options?: { durable?: boolean }) => {
+				const event = { ...input, sequence: ++sequence }
+				lifecyclePublications.push({ type: event.type, durable: options?.durable === true })
+				eventOrder.push(`lifecycle:${event.type}`)
+				if (!lifecycleSnapshot) {
+					lifecycleSnapshot = {
+						version: 1,
+						taskId: event.taskId,
+						runId: event.runId,
+						turnId: event.turnId,
+						status: "in_progress",
+						phase: "starting",
+						lastSequence: 0,
+						items: [],
+						steps: [],
+						acceptedToolCallIds: [],
+						effectStartedToolCallIds: [],
+						terminalToolCallIds: [],
+						processedEvents: [],
+						effectTrackingVersion: 1,
+					}
+				}
+				lifecycleSnapshot.lastSequence = event.sequence
+				if (event.type === "step_started") {
+					lifecycleSnapshot.steps.push({ stepId: event.stepId, status: "in_progress", phase: "working" })
+				} else if (event.type === "tool_call_accepted") {
+					lifecycleSnapshot.items.push(event.payload.item)
+					lifecycleSnapshot.acceptedToolCallIds.push(event.payload.item.toolCallId)
+				} else if (event.type === "tool_effect_started") {
+					lifecycleSnapshot.effectStartedToolCallIds.push(event.payload.toolCallId)
+				} else if (event.type === "tool_result_recorded") {
+					lifecycleSnapshot.items.push(event.payload.item)
+					lifecycleSnapshot.terminalToolCallIds.push(event.payload.item.toolCallId)
+				}
+				return { accepted: true, event, snapshot: lifecycleSnapshot }
+			})
+			await (task as any).beginCanonicalLifecycleTurn()
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task, "recordToolCallForStopping").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(true)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "appendAgentTurnEvent").mockImplementation(async (...args: unknown[]) => {
+				const event = args[0] as AgentTurnEvent
+				events.push(event)
+				eventOrder.push(`event:${event.type}`)
+			})
+			const initialAssistantCount = task.apiConversationHistory.filter(
+				(message) => message.role === "assistant",
+			).length
+			vi.spyOn(task as any, "saveApiConversationHistory").mockImplementation(async () => {
+				if (
+					task.apiConversationHistory.filter((message) => message.role === "assistant").length >
+					initialAssistantCount
+				) {
+					assistantSaveStarted.resolve()
+					await releaseAssistantSave.promise
+					persistedAssistantHistory.push(structuredClone(task.apiConversationHistory))
+				}
+				return true
+			})
+			const executeCanonicalToolCalls = (task as any).executeCanonicalToolCalls.bind(task)
+			const earlyDispatchSettled = deferred()
+			vi.spyOn(task as any, "executeCanonicalToolCalls").mockImplementation(async (...args: any[]) => {
+				const outcome = await executeCanonicalToolCalls(...args)
+				if (args[5]?.deferResultCommit) earlyDispatchSettled.resolve(outcome)
+				return outcome
+			})
+			let providerReachedEof = false
+			let mismatchFinishSpy: { mockRestore: () => void } | undefined
+			if (scenario.mismatch) {
+				const originalFinish = AgentResponseAccumulator.prototype.finish
+				mismatchFinishSpy = vi
+					.spyOn(AgentResponseAccumulator.prototype, "finish")
+					.mockImplementation(async function (
+						this: AgentResponseAccumulator,
+						...args: Parameters<AgentResponseAccumulator["finish"]>
+					) {
+						const response = await originalFinish.apply(this, args)
+						return createAgentResponse(
+							[{ type: "text", text: "The finalized response omitted its accepted tool call." }],
+							response.outcome,
+						)
+					})
+			}
+			const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					const attemptNumber = (attempt.mock.calls.length - 1) as number
+					const turnId = (task as any).agentTurnId as string
+					const step = {
+						stepId: `${turnId}:step-${attemptNumber + 1}`,
+						turnId,
+						requestId: `early-read-request-${attemptNumber + 1}`,
+						attemptId: `early-read-attempt-${attemptNumber + 1}`,
+						surface,
+						snapshot: {
+							context: { contextId: "early-read-context", provider: { apiProtocol: "openai" } },
+							runtime: { getHandler: () => undefined },
+						},
+					}
+					Object.assign(task, { currentAgentStep: step, currentTaskToolSurface: surface })
+					await (task as any).ensureCanonicalLifecycleStepStarted(step)
+					if (attemptNumber > 0) {
+						yield { type: "text", text: "The directory inspection is complete." }
+						providerReachedEof = true
+						return
+					}
+					yield {
+						type: "tool_call",
+						id: acceptedCallId,
+						name: "exec_command",
+						arguments:
+							scenario.command?.arguments ?? JSON.stringify({ cmd: "git status --short", workdir: "." }),
+					}
+					yield { type: "tool_call_end", id: acceptedCallId }
+					providerTailReached.resolve()
+					await releaseProvider.promise
+					if (scenario.barrier) {
+						yield {
+							type: "tool_call",
+							id: "later-barrier-1",
+							name: "attempt_completion",
+							arguments: JSON.stringify({ result: "done" }),
+						}
+						yield { type: "tool_call_end", id: "later-barrier-1" }
+					} else if (scenario.outcome === "failed") {
+						yield {
+							type: "error",
+							error: "provider_failed",
+							message: "Provider failed after the read completed.",
+							retryable: false,
+							semanticOutputObserved: true,
+						}
+						yield {
+							type: "outcome",
+							status: "failed",
+							terminal: true,
+							semanticOutputObserved: true,
+							reason: "Provider failed after the read completed.",
+							retryable: false,
+						}
+					} else if (scenario.outcome === "cancelled") {
+						yield {
+							type: "outcome",
+							status: "cancelled",
+							terminal: true,
+							semanticOutputObserved: true,
+							reason: "Provider cancelled after the read completed.",
+						}
+					} else {
+						yield { type: "text", text: "The directory was inspected." }
+					}
+					eventOrder.push("provider_eof")
+					providerReachedEof = true
+				})(),
+			)
+			const run = task.runAgentRequests([{ type: "text", text: "Inspect this directory." }], false)
+			let runCompletion: unknown
+			void run.then(
+				(result) => {
+					runCompletion =
+						typeof result === "boolean"
+							? { value: result }
+							: { status: result.status, reason: result.reason }
+				},
+				(error) => {
+					runCompletion = { error: error instanceof Error ? error.message : String(error) }
+				},
+			)
+			return {
+				task,
+				run,
+				attempt,
+				restoreMismatchSpy: () => mismatchFinishSpy?.mockRestore(),
+				events,
+				eventOrder,
+				lifecycleSnapshot: () => lifecycleSnapshot,
+				debugState: () =>
+					JSON.stringify({
+						eventOrder,
+						lifecycle: lifecyclePublications,
+						providerReachedEof,
+						runCompletion,
+						assistantSavedToHistory: (task as any).assistantMessageSavedToHistory,
+						historyRoles: task.apiConversationHistory.map((message) => message.role),
+					}),
+				lifecyclePublications,
+				providerTailReached: providerTailReached.promise,
+				normalCommandStarted: normalCommandStarted.promise,
+				normalCommandEffectCount: () => normalCommandEffectCount,
+				commandPreparationCount: () => commandPreparationCount,
+				persistedAssistantHistory,
+				barrierExecute,
+				readExecute,
+				acceptedCallId,
+				readEffectCount: () => readEffectCount,
+				providerReachedEof: () => providerReachedEof,
+				runCompletion: () => runCompletion,
+				assistantSaveStarted: assistantSaveStarted.promise,
+				readStarted: readStarted.promise,
+				readResultReady: readResultReady.promise,
+				earlyDispatchSettled: earlyDispatchSettled.promise,
+				releaseRead: () => releaseRead.resolve(),
+				releaseProvider: () => releaseProvider.resolve(),
+				releaseAssistantSave: () => releaseAssistantSave.resolve(),
+			}
+		}
+
+		it("starts list_files before provider EOF and withholds its result until assistant history is durable", async () => {
+			const fixture = await startEarlyReadStream({})
+			const state = fixture.debugState
+			try {
+				await waitForControlledSignal("read start", fixture.readStarted, state)
+				expect(fixture.providerReachedEof()).toBe(false)
+				expect(fixture.readEffectCount()).toBe(1)
+				const acceptance = fixture.lifecyclePublications.findIndex(
+					(publication) => publication.type === "tool_call_accepted" && publication.durable,
+				)
+				expect(acceptance).toBeGreaterThanOrEqual(0)
+				expect(fixture.eventOrder.indexOf("lifecycle:tool_call_accepted")).toBeLessThan(
+					fixture.eventOrder.indexOf("read_started"),
+				)
+
+				fixture.releaseRead()
+				await waitForControlledSignal("read result", fixture.readResultReady, state)
+				await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, state)
+				expect(fixture.providerReachedEof()).toBe(false)
+				expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
+				expect(fixture.task.userMessageContent.some((block) => block.type === "tool_result")).toBe(false)
+
+				fixture.releaseProvider()
+				await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, state)
+				expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
+				expect(fixture.task.userMessageContent.some((block) => block.type === "tool_result")).toBe(false)
+				fixture.releaseAssistantSave()
+				const result = await waitForControlledSignal("task run", fixture.run, state)
+
+				expect(result, JSON.stringify(result)).toMatchObject({ status: "completed" })
+				expect(fixture.eventOrder.indexOf("read_started")).toBeLessThan(
+					fixture.eventOrder.indexOf("provider_eof"),
+				)
+				expect(fixture.eventOrder.indexOf("provider_eof")).toBeLessThan(
+					fixture.eventOrder.indexOf("event:tool_result"),
+				)
+				expect(fixture.eventOrder.filter((event) => event === "read_started")).toHaveLength(1)
+				expect(fixture.readEffectCount()).toBe(1)
+				expect(fixture.persistedAssistantHistory[0]).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							role: "assistant",
+							content: expect.arrayContaining([
+								expect.objectContaining({ type: "tool_use", id: fixture.acceptedCallId }),
+							]),
+						}),
+					]),
+				)
+				const pendingResults = fixture.task.userMessageContent.filter(
+					(block) => block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
+				)
+				expect(pendingResults).toHaveLength(1)
+				expect(pendingResults[0]).toMatchObject({ content: "directory listing", is_error: false })
+				expect(await fixture.task.flushPendingToolResultsToHistory()).toBe(true)
+				const historyResults = fixture.task.apiConversationHistory.flatMap((message) =>
+					message.role === "user" && Array.isArray(message.content)
+						? message.content.filter(
+								(block) => block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
+							)
+						: [],
+				)
+				expect(historyResults).toHaveLength(1)
+				const callHistoryIndex = fixture.task.apiConversationHistory.findIndex(
+					(message) =>
+						message.role === "assistant" &&
+						Array.isArray(message.content) &&
+						message.content.some(
+							(block) => block.type === "tool_use" && block.id === fixture.acceptedCallId,
+						),
+				)
+				const resultHistoryIndex = fixture.task.apiConversationHistory.findIndex(
+					(message) =>
+						message.role === "user" &&
+						Array.isArray(message.content) &&
+						message.content.some(
+							(block) => block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
+						),
+				)
+				expect(callHistoryIndex).toBeGreaterThanOrEqual(0)
+				expect(resultHistoryIndex).toBeGreaterThan(callHistoryIndex)
+				expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
+			} finally {
+				fixture.releaseRead()
+				fixture.releaseProvider()
+				fixture.releaseAssistantSave()
+				await Promise.race([
+					fixture.run.catch(() => undefined),
+					new Promise((resolve) => setTimeout(resolve, 500)),
+				])
+			}
+		})
+
+		it("runs a non-audited exec_command once through normal staging after provider EOF", async () => {
+			const command = "node --version"
+			const callId = "early-read-1"
+			const fixture = await startEarlyReadStream({
+				command: { command, arguments: JSON.stringify({ cmd: command }) },
+			})
+			const state = fixture.debugState
+			try {
+				await waitForControlledSignal("provider command tail", fixture.providerTailReached, state)
+				expect(fixture.providerReachedEof()).toBe(false)
+				expect(fixture.normalCommandEffectCount()).toBe(0)
+				expect(fixture.commandPreparationCount()).toBe(0)
+
+				fixture.releaseProvider()
+				await waitForControlledSignal("assistant history persistence", fixture.assistantSaveStarted, state)
+				expect(fixture.normalCommandEffectCount()).toBe(0)
+				fixture.releaseAssistantSave()
+				await waitForControlledSignal("normal command effect", fixture.normalCommandStarted, state)
+				expect(fixture.providerReachedEof()).toBe(true)
+				expect(fixture.normalCommandEffectCount()).toBe(1)
+				expect(fixture.commandPreparationCount()).toBe(1)
+				expect(fixture.eventOrder.indexOf("provider_eof")).toBeLessThan(
+					fixture.eventOrder.indexOf("normal_command_started"),
+				)
+
+				const result = await waitForControlledSignal("task run", fixture.run, state)
+				expect(result, JSON.stringify(result)).toMatchObject({ status: "completed" })
+				expect(fixture.normalCommandEffectCount()).toBe(1)
+				expect(
+					fixture.task.userMessageContent.filter(
+						(block) => block.type === "tool_result" && block.tool_use_id === callId,
+					),
+				).toHaveLength(1)
+				expect(await fixture.task.flushPendingToolResultsToHistory()).toBe(true)
+				const callHistoryIndex = fixture.task.apiConversationHistory.findIndex(
+					(message) =>
+						message.role === "assistant" &&
+						Array.isArray(message.content) &&
+						message.content.some((block) => block.type === "tool_use" && block.id === callId),
+				)
+				const resultHistoryIndex = fixture.task.apiConversationHistory.findIndex(
+					(message) =>
+						message.role === "user" &&
+						Array.isArray(message.content) &&
+						message.content.some((block) => block.type === "tool_result" && block.tool_use_id === callId),
+				)
+				expect(callHistoryIndex).toBeGreaterThanOrEqual(0)
+				expect(resultHistoryIndex).toBeGreaterThan(callHistoryIndex)
+				expect(
+					fixture.task.apiConversationHistory.flatMap((message) =>
+						message.role === "user" && Array.isArray(message.content)
+							? message.content.filter(
+									(block) => block.type === "tool_result" && block.tool_use_id === callId,
+								)
+							: [],
+					),
+				).toHaveLength(1)
+			} finally {
+				fixture.releaseRead()
+				fixture.releaseProvider()
+				fixture.releaseAssistantSave()
+				await Promise.race([
+					fixture.run.catch(() => undefined),
+					new Promise((resolve) => setTimeout(resolve, 500)),
+				])
+			}
+		})
+
+		it("settles an early list_files read before rejecting a later lifecycle barrier", async () => {
+			const fixture = await startEarlyReadStream({ barrier: true })
+			const state = fixture.debugState
+			try {
+				await waitForControlledSignal("read start", fixture.readStarted, state)
+				expect(fixture.providerReachedEof()).toBe(false)
+				fixture.releaseRead()
+				await waitForControlledSignal("read result", fixture.readResultReady, state)
+				await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, state)
+				expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
+
+				fixture.releaseProvider()
+				await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, state)
+				expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
+				fixture.releaseAssistantSave()
+				const result = await waitForControlledSignal("task run", fixture.run, state)
+
+				expect(result).toMatchObject({ status: "completed" })
+				expect(fixture.barrierExecute).not.toHaveBeenCalled()
+				const pendingResults = fixture.task.userMessageContent.filter((block) => block.type === "tool_result")
+				expect(pendingResults).toHaveLength(2)
+				const pendingEarly = pendingResults.find((block) => block.tool_use_id === fixture.acceptedCallId)
+				const pendingBarrier = pendingResults.find((block) => block.tool_use_id === "later-barrier-1")
+				expect(pendingEarly).toMatchObject({ content: "directory listing", is_error: false })
+				expect(pendingBarrier).toMatchObject({ is_error: true })
+				expect(await fixture.task.flushPendingToolResultsToHistory()).toBe(true)
+				const results = fixture.task.apiConversationHistory.flatMap((message) =>
+					message.role === "user" && Array.isArray(message.content)
+						? message.content.filter((block) => block.type === "tool_result")
+						: [],
+				)
+				expect(results).toHaveLength(2)
+				expect(results).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							tool_use_id: fixture.acceptedCallId,
+							content: "directory listing",
+							is_error: false,
+						}),
+						expect.objectContaining({
+							tool_use_id: "later-barrier-1",
+							is_error: true,
+						}),
+					]),
+				)
+				expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([
+					fixture.acceptedCallId,
+					"later-barrier-1",
+				])
+				expect(fixture.eventOrder.indexOf("event:tool_result")).toBeLessThan(
+					fixture.eventOrder.indexOf("event:tool_batch_finished"),
+				)
+			} finally {
+				fixture.releaseRead()
+				fixture.releaseProvider()
+				fixture.releaseAssistantSave()
+				await fixture.run.catch(() => undefined)
+			}
+		})
+
+		it.each([
+			{ outcome: "failed" as const, expectedStatus: "failed" },
+			{ outcome: "cancelled" as const, expectedStatus: "aborted" },
+		])("withholds an early read result when the provider ends $outcome", async ({ outcome, expectedStatus }) => {
+			const fixture = await startEarlyReadStream({ outcome })
+			const state = fixture.debugState
+			try {
+				await waitForControlledSignal("read start", fixture.readStarted, state)
+				fixture.releaseRead()
+				await waitForControlledSignal("read result", fixture.readResultReady, state)
+				await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, state)
+				fixture.releaseProvider()
+				await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, state)
+				expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
+				fixture.releaseAssistantSave()
+				const result = await waitForControlledSignal("task run", fixture.run, state)
+
+				expect(result).toMatchObject({ status: expectedStatus })
+				const historyResults = fixture.task.apiConversationHistory.flatMap((message) =>
+					message.role === "user" && Array.isArray(message.content)
+						? message.content.filter(
+								(block) => block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
+							)
+						: [],
+				)
+				expect(historyResults).toHaveLength(1)
+				expect(historyResults[0]).toMatchObject({
+					is_error: true,
+					content: expect.stringContaining("read completed"),
+				})
+				expect(fixture.events.filter((event) => event.type === "tool_result")).toHaveLength(0)
+				expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
+			} finally {
+				fixture.releaseRead()
+				fixture.releaseProvider()
+				fixture.releaseAssistantSave()
+				await fixture.run.catch(() => undefined)
+			}
+		})
+
+		it("repairs a final provider response that omits an already accepted early read", async () => {
+			const fixture = await startEarlyReadStream({ mismatch: true })
+			const state = fixture.debugState
+			try {
+				await waitForControlledSignal("read start", fixture.readStarted, state)
+				fixture.releaseRead()
+				await waitForControlledSignal("read result", fixture.readResultReady, state)
+				await waitForControlledSignal("early dispatch", fixture.earlyDispatchSettled, state)
+				fixture.releaseProvider()
+				await waitForControlledSignal("assistant save", fixture.assistantSaveStarted, state)
+				expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
+				fixture.releaseAssistantSave()
+				const result = await waitForControlledSignal("task run", fixture.run, state)
+
+				expect(result).toMatchObject({ status: "completed" })
+				expect(
+					fixture.task.apiConversationHistory.flatMap((message) =>
+						message.role === "user" && Array.isArray(message.content)
+							? message.content.filter(
+									(block) =>
+										block.type === "tool_result" && block.tool_use_id === fixture.acceptedCallId,
+								)
+							: [],
+					),
+				).toHaveLength(1)
+				expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual([fixture.acceptedCallId])
+				expect(fixture.events.some((event) => event.type === "tool_result")).toBe(false)
+			} finally {
+				fixture.releaseRead()
+				fixture.releaseProvider()
+				fixture.releaseAssistantSave()
+				fixture.restoreMismatchSpy()
+				await fixture.run.catch(() => undefined)
+			}
 		})
 
 		it.each(["apply_patch", "edit"])(
@@ -3344,6 +4327,139 @@ describe("Alpha", () => {
 			expect(completed).toHaveBeenCalledOnce()
 		})
 
+		it("keeps a clean legacy text-only EOF completed", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			markTestHandlerAsLegacyEOF(task)
+			vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					yield { type: "text", text: "The response completed normally." }
+				})(),
+			)
+
+			await expect(
+				task.runAgentRequests([{ type: "text", text: "Explain the result." }], false),
+			).resolves.toMatchObject({
+				status: "completed",
+				response: { text: "The response completed normally." },
+			})
+		})
+
+		it("does not complete lifecycle output when the provider ends without a terminal outcome", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			Object.defineProperty(task.api, "streamCapabilities", {
+				configurable: true,
+				value: { lifecycle: true, cancellation: true },
+			})
+			const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					yield { type: "text", text: "This answer was cut off." }
+				})(),
+			)
+
+			const result = await task.runAgentRequests([{ type: "text", text: "Explain the result." }], false)
+
+			expect(result).toMatchObject({
+				status: "incomplete",
+				reason: "Provider stream closed before a terminal response outcome.",
+				response: { text: "This answer was cut off.", outcome: { status: "incomplete" } },
+			})
+			expect(attempt).toHaveBeenCalledOnce()
+			const terminalEvents = appendEvent.mock.calls
+				.map(([event]) => event as AgentTurnEvent)
+				.filter((event) => event.type === "response_terminal")
+			expect(terminalEvents).toHaveLength(1)
+			expect(terminalEvents[0]).toMatchObject({ type: "response_terminal", status: "incomplete" })
+		})
+
+		it("keeps provider errors after lifecycle text failed", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			Object.defineProperty(task.api, "streamCapabilities", {
+				configurable: true,
+				value: { lifecycle: true, cancellation: true },
+			})
+			const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					yield { type: "text", text: "This answer stopped early." }
+					throw new Error("Provider stream failed after visible output.")
+				})(),
+			)
+
+			const result = await task.runAgentRequests([{ type: "text", text: "Explain the result." }], false)
+
+			expect(result).toMatchObject({
+				status: "failed",
+				reason: expect.stringContaining("Provider stream failed after visible output."),
+				response: { text: "This answer stopped early.", outcome: { status: "failed" } },
+			})
+			expect(attempt).toHaveBeenCalledOnce()
+			const terminalEvents = appendEvent.mock.calls
+				.map(([event]) => event as AgentTurnEvent)
+				.filter((event) => event.type === "response_terminal")
+			expect(terminalEvents).toHaveLength(1)
+			expect(terminalEvents[0]).toMatchObject({ type: "response_terminal", status: "failed" })
+		})
+
+		it("keeps cancellation terminal after lifecycle output has started", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			Object.defineProperty(task.api, "streamCapabilities", {
+				configurable: true,
+				value: { lifecycle: true, cancellation: true },
+			})
+			const requestController = new AbortController()
+			let markStreamWaiting!: () => void
+			const streamWaiting = new Promise<void>((resolve) => {
+				markStreamWaiting = resolve
+			})
+			const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					task.currentRequestAbortController = requestController
+					;(task as any).currentRequestSignal = requestController.signal
+					yield { type: "text", text: "This answer was interrupted." }
+					markStreamWaiting()
+					await new Promise<void>((_resolve, reject) => {
+						requestController.signal.addEventListener(
+							"abort",
+							() => reject(requestController.signal.reason),
+							{ once: true },
+						)
+					})
+				})(),
+			)
+
+			const pending = task.runAgentRequests([{ type: "text", text: "Explain the result." }], false)
+			await streamWaiting
+			task.cancelCurrentRequest()
+			const result = await pending
+
+			expect(result).toMatchObject({ status: "aborted", response: { outcome: { status: "cancelled" } } })
+			expect(attempt).toHaveBeenCalledOnce()
+			const terminalEvents = appendEvent.mock.calls
+				.map(([event]) => event as AgentTurnEvent)
+				.filter((event) => event.type === "response_terminal")
+			expect(terminalEvents).toHaveLength(1)
+			expect(terminalEvents[0]).toMatchObject({ type: "response_terminal", status: "aborted" })
+		})
+
 		it.each([false, true])(
 			"automatically recovers a recognized empty response with tool auto-approval=%s",
 			async (autoApprovalEnabled) => {
@@ -3414,6 +4530,87 @@ describe("Alpha", () => {
 		)
 
 		it.each([false, true])(
+			"retries a provider-classified 429 independently of tool auto-approval=%s",
+			async (autoApprovalEnabled) => {
+				const task = createTask()
+				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled })
+				vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+				const events = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+				vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+				vi.spyOn(task as any, "maybeWaitForProviderRateLimit").mockResolvedValue(undefined)
+				Object.assign(task, { agentRetryPolicy: new AgentRetryPolicy({ baseDelayMs: 0 }) })
+				const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+				const request = vi
+					.spyOn(task, "attemptApiRequest")
+					.mockImplementationOnce(() =>
+						(async function* (): AsyncGenerator<ApiStreamChunk> {
+							yield* []
+							throw Object.assign(new Error("Gemini quota exceeded"), {
+								firstChunkFailure: true,
+								status: 429,
+								statusCode: 429,
+								retryable: true,
+								retryCategory: "rate-limit",
+								errorDetails: [{ retryDelay: "2s" }],
+							})
+						})(),
+					)
+					.mockImplementationOnce(() =>
+						(async function* (): AsyncGenerator<ApiStreamChunk> {
+							yield { type: "text", text: "Recovered after Gemini rate limit." }
+						})(),
+					)
+
+				await expect(task.runAgentRequests([{ type: "text", text: "start" }], false)).resolves.toMatchObject({
+					status: "completed",
+				})
+				expect(request).toHaveBeenCalledTimes(2)
+				expect(ask).not.toHaveBeenCalled()
+				expect(events).toHaveBeenCalledWith(expect.objectContaining({ type: "retry", attempt: 1 }))
+			},
+		)
+
+		it.each([
+			["rate-limit", "transport", "Provider retry budget exhausted (attempts)."],
+			["empty-response", "transport", "Provider retry budget exhausted (attempts)."],
+			["rate-limit", "empty-response", "Empty-response retry budget exhausted."],
+		] as const)(
+			"stops transport, %s, and %s failures at the global attempt cap",
+			async (middleCategory, finalCategory, reason) => {
+				const task = createTask()
+				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+				vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+				vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+				vi.spyOn(task as any, "maybeWaitForProviderRateLimit").mockResolvedValue(undefined)
+				vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+				Object.assign(task, {
+					agentRetryPolicy: new AgentRetryPolicy({ maxAttempts: 3, baseDelayMs: 0, jitter: "none" }),
+				})
+				const categories = ["transport", middleCategory, finalCategory] as const
+				const request = vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+					(async function* (): AsyncGenerator<ApiStreamChunk> {
+						yield* []
+						const category = categories[request.mock.calls.length - 1] ?? "transport"
+						if (category === "empty-response") return
+						throw Object.assign(new Error(`Provider ${category} failure`), {
+							firstChunkFailure: true,
+							retryable: true,
+							retryCategory: category,
+						})
+					})(),
+				)
+
+				await expect(task.runAgentRequests([{ type: "text", text: "start" }], false)).resolves.toMatchObject({
+					status: "exhausted",
+					reason,
+				})
+				expect(request).toHaveBeenCalledTimes(3)
+			},
+		)
+
+		it.each([false, true])(
 			"stops at the logical retry deadline with tool auto-approval=%s",
 			async (autoApprovalEnabled) => {
 				vi.useFakeTimers()
@@ -3469,83 +4666,123 @@ describe("Alpha", () => {
 			},
 		)
 
-		it.each(["new_task", "delegate_task", "attempt_completion", "ask_followup_question", "wait_agent"])(
-			"rejects a mixed %s batch before persisting the assistant response",
-			async (barrier) => {
-				const task = createTask()
-				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
-				vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
-				vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
-				const events = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
-				vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
-				const fence = vi
-					.spyOn(task as any, "assertCurrentProviderTranscriptBeforeEffects")
-					.mockResolvedValue(undefined)
-				const execute = vi.spyOn(task as any, "executeCanonicalToolCallsForTurn")
-				const usage = vi.spyOn(task, "recordToolUsage")
-				const surface = createTaskToolSurface({
-					registry: new ToolRegistry({
-						// This mixed-batch matrix retains a historical delegate_task
-						// barrier as an explicit schema fixture.
-						nativeTools: [...getNativeTools(), delegate_task],
-						mcpTools: [
-							{
-								type: "function",
-								function: { name: "mcp--docs--lookup", parameters: { type: "object", properties: {} } },
-							},
-						],
-					}),
-					mode: "code",
+		it("rejects a mixed request_user_input batch before persisting the assistant response", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("architect")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			const events = vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			const fence = vi
+				.spyOn(task as any, "assertCurrentProviderTranscriptBeforeEffects")
+				.mockResolvedValue(undefined)
+			const execute = vi.spyOn(task as any, "executeCanonicalToolCallsForTurn")
+			const usage = vi.spyOn(task, "recordToolUsage")
+			const surface = createTaskToolSurface({
+				registry: new ToolRegistry({
+					nativeTools: getNativeTools({ planMode: true }),
+					mcpTools: [
+						{
+							type: "function",
+							function: { name: "mcp--docs--lookup", parameters: { type: "object", properties: {} } },
+						},
+					],
+				}),
+				mode: "architect",
+			})
+			const snapshots: Task["userMessageContent"][] = []
+			const persist = vi
+				.spyOn(task as any, "persistAssistantResponseBeforeEffects")
+				.mockImplementation(async () => {
+					snapshots.push([...task.userMessageContent])
+					return true
 				})
-				const snapshots: Task["userMessageContent"][] = []
-				const persist = vi
-					.spyOn(task as any, "persistAssistantResponseBeforeEffects")
-					.mockImplementation(async () => {
-						snapshots.push([...task.userMessageContent])
-						return true
-					})
-				vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
-					(async function* (): AsyncGenerator<ApiStreamChunk> {
-						// A real request captures this surface before reading provider chunks.
-						Object.assign(task, { currentTaskToolSurface: surface })
-						yield { type: "reasoning", text: "Inspect the workspace first." }
-						yield { type: "text", text: "Preparing the tools." }
-						for (const [id, name] of [
-							["read-first", "read_file"],
-							["barrier", barrier],
-							["mcp-last", "mcp__docs__lookup"],
-						]) {
-							yield { type: "tool_call", id, name, arguments: "{}" }
-						}
-					})(),
-				)
+			vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					// A real request captures this surface before reading provider chunks.
+					Object.assign(task, { currentTaskToolSurface: surface })
+					yield { type: "reasoning", text: "Inspect the workspace first." }
+					yield { type: "text", text: "Preparing the tools." }
+					for (const [id, name] of [
+						["read-first", "read_file"],
+						["barrier", "request_user_input"],
+						["mcp-last", "mcp__docs__lookup"],
+					]) {
+						yield { type: "tool_call", id, name, arguments: "{}" }
+					}
+				})(),
+			)
 
-				await task.runAgentRequests([{ type: "text", text: "start" }], false)
+			await task.runAgentRequests([{ type: "text", text: "start" }], false)
 
-				expect(persist).toHaveBeenCalledOnce()
-				expect(execute).toHaveBeenCalledOnce()
-				expect(fence).toHaveBeenCalledOnce() // Scheduler-entry fence only; no per-effect fence is reached.
-				expect(usage).not.toHaveBeenCalled()
-				expect(snapshots[0]).toEqual([
-					expect.objectContaining({ type: "tool_result", tool_use_id: "read-first", is_error: true }),
-					expect.objectContaining({ type: "tool_result", tool_use_id: "barrier", is_error: true }),
-					expect.objectContaining({ type: "tool_result", tool_use_id: "mcp-last", is_error: true }),
-				])
-				expect(task.assistantMessageContent).toEqual([])
-				expect(task.userMessageContentReady).toBe(true)
-				expect(task.userMessageContent).toEqual(snapshots[0])
-				expect(
-					events.mock.calls.flatMap(([input]) => {
-						const event = input as AgentTurnEvent
-						return event.type === "tool_result" ? [{ callId: event.callId, status: event.status }] : []
-					}),
-				).toEqual([
-					{ callId: "read-first", status: "error" },
-					{ callId: "barrier", status: "error" },
-					{ callId: "mcp-last", status: "error" },
-				])
-			},
-		)
+			expect(persist).toHaveBeenCalledOnce()
+			expect(execute).not.toHaveBeenCalled()
+			expect(fence).not.toHaveBeenCalled()
+			expect(usage).not.toHaveBeenCalled()
+			expect(snapshots[0]).toEqual([
+				expect.objectContaining({ type: "tool_result", tool_use_id: "read-first", is_error: true }),
+				expect.objectContaining({ type: "tool_result", tool_use_id: "barrier", is_error: true }),
+				expect.objectContaining({ type: "tool_result", tool_use_id: "mcp-last", is_error: true }),
+			])
+			expect(task.assistantMessageContent).toEqual([])
+			expect(task.userMessageContentReady).toBe(true)
+			expect(task.userMessageContent).toEqual(snapshots[0])
+			expect(events.mock.calls.some(([input]) => (input as AgentTurnEvent).type === "tool_result")).toBe(false)
+		})
+
+		it("commits a mixed native wait batch before scheduling its ordered effects", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			const order: string[] = []
+			const persist = vi
+				.spyOn(task as any, "persistAssistantResponseBeforeEffects")
+				.mockImplementation(async () => {
+					order.push("commit")
+					return true
+				})
+			const execute = vi.spyOn(task as any, "executeCanonicalToolCallsForTurn").mockImplementation(async () => {
+				order.push("effects")
+				return { status: "completed" }
+			})
+			const surface = createTaskToolSurface({ registry: new ToolRegistry(), mode: "code" })
+			vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					Object.assign(task, { currentTaskToolSurface: surface })
+					yield { type: "tool_call", id: "list-first", name: "list_agents", arguments: "{}" }
+					yield { type: "tool_call", id: "wait-second", name: "wait_agent", arguments: "{}" }
+				})(),
+			)
+
+			const sampled = await task.runAgentRequests([{ type: "text", text: "start" }], false, undefined, {
+				deferResponseTransaction: true,
+			})
+			if (typeof sampled === "boolean" || !sampled.transaction) {
+				throw new Error("Expected a deferred response transaction for the mixed wait batch.")
+			}
+			expect(order).toEqual([])
+			await sampled.transaction.commitResponse()
+			expect(order).toEqual(["commit"])
+			expect(task.userMessageContent).toEqual([])
+			await sampled.transaction.executeEffects()
+			expect(order).toEqual(["commit", "effects"])
+			expect(execute).toHaveBeenCalledWith(
+				expect.objectContaining({
+					toolCalls: [
+						expect.objectContaining({ id: "list-first", name: "list_agents" }),
+						expect.objectContaining({ id: "wait-second", name: "wait_agent" }),
+					],
+				}),
+				surface,
+				"code",
+				expect.anything(),
+			)
+			expect(persist).toHaveBeenCalledOnce()
+			sampled.transaction.release()
+		})
 
 		it.each([
 			["successful", false],
@@ -3572,6 +4809,68 @@ describe("Alpha", () => {
 			expect(requestStep).toHaveBeenCalledTimes(2)
 			expect(requestStep.mock.calls[0]?.slice(0, 2)).toEqual([initialContent, true])
 			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([[toolResult], false])
+		})
+
+		it("keeps canonical persistence and tool effects in separate deferred phases", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			const events: string[] = []
+			const persist = vi
+				.spyOn(task as any, "persistAssistantResponseBeforeEffects")
+				.mockImplementation(async () => {
+					events.push("commit")
+					return true
+				})
+			const execute = vi.spyOn(task as any, "executeCanonicalToolCallsForTurn").mockImplementation(async () => {
+				events.push("effects")
+				return { status: "completed" }
+			})
+			const surface = createTaskToolSurface({
+				registry: new ToolRegistry({ nativeTools: getNativeTools() }),
+				mode: "code",
+			})
+			vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					Object.assign(task, { currentTaskToolSurface: surface })
+					yield { type: "text", text: "Inspecting the file." }
+					yield {
+						type: "tool_call",
+						id: "deferred-read",
+						name: "read_file",
+						arguments: JSON.stringify({ path: "README.md" }),
+					}
+				})(),
+			)
+
+			const sampled = await task.runAgentRequests([{ type: "text", text: "start" }], false, undefined, {
+				deferResponseTransaction: true,
+			})
+			if (typeof sampled === "boolean" || !sampled.transaction) {
+				throw new Error("Expected the provider sample to carry a deferred response transaction.")
+			}
+
+			expect(sampled.status).toBe("completed")
+			expect(events).toEqual([])
+			expect(persist).not.toHaveBeenCalled()
+			expect(execute).not.toHaveBeenCalled()
+			expect((task as any).stepInterruptionController).toBeDefined()
+
+			await sampled.transaction.commitResponse()
+			expect(events).toEqual(["commit"])
+			expect(persist).toHaveBeenCalledOnce()
+			expect(execute).not.toHaveBeenCalled()
+
+			await sampled.transaction.executeEffects()
+			expect(events).toEqual(["commit", "effects"])
+			expect(execute).toHaveBeenCalledOnce()
+
+			sampled.transaction.release()
+			expect((task as any).stepInterruptionController).toBeUndefined()
+			expect((task as any).isTaskLoopActive).toBe(false)
 		})
 
 		it("persists one deterministic error receipt for every unexecuted terminal tool call", async () => {
@@ -3791,15 +5090,26 @@ describe("Alpha", () => {
 			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
 			vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
 			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			const reserveToolCall = vi.spyOn(task as any, "reserveStreamingToolCall")
+			const executeToolTurn = vi.spyOn(task as any, "executeCanonicalToolCallsForTurn")
 			const executeTools = vi.spyOn(task as any, "executeCanonicalToolCalls")
 			const attempt = vi.spyOn(task, "attemptApiRequest").mockImplementation(() => {
 				return (async function* (): AsyncGenerator<ApiStreamChunk> {
+					Object.assign(task, {
+						currentTaskToolSurface: createTaskToolSurface({
+							registry: new ToolRegistry({ nativeTools: getNativeTools() }),
+							mode: "code",
+						}),
+					})
 					yield {
 						type: "tool_call",
 						id: "failed-stream-tool",
 						name: "read_file",
 						arguments: JSON.stringify({ path: "README.md" }),
 					}
+					expect(reserveToolCall).toHaveBeenCalledOnce()
+					expect(executeToolTurn).not.toHaveBeenCalled()
+					expect(executeTools).not.toHaveBeenCalled()
 					yield {
 						type: "error",
 						error: "policy_rejected",
@@ -3839,6 +5149,8 @@ describe("Alpha", () => {
 				},
 			})
 			expect(attempt).toHaveBeenCalledOnce()
+			expect(reserveToolCall).toHaveBeenCalledOnce()
+			expect(executeToolTurn).not.toHaveBeenCalled()
 			expect(executeTools).not.toHaveBeenCalled()
 			const assistantBoundary = task.apiConversationHistory.find(
 				(message) =>
@@ -3854,6 +5166,72 @@ describe("Alpha", () => {
 						type: "tool_result",
 						tool_use_id: "failed-stream-tool",
 						content: "Tool call was not executed because the provider response failed.",
+						is_error: true,
+					},
+				],
+			})
+		})
+
+		it("persists an accepted call receipt and suppresses effects when the provider response is truncated", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			const executeToolTurn = vi.spyOn(task as any, "executeCanonicalToolCallsForTurn")
+			const executeTools = vi.spyOn(task as any, "executeCanonicalToolCalls")
+			const surface = createTaskToolSurface({
+				registry: new ToolRegistry({ nativeTools: getNativeTools() }),
+				mode: "code",
+			})
+			vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					Object.assign(task, { currentTaskToolSurface: surface })
+					yield {
+						type: "tool_call",
+						id: "truncated-stream-tool",
+						name: "read_file",
+						arguments: JSON.stringify({ path: "README.md" }),
+					}
+					yield {
+						type: "outcome",
+						status: "incomplete",
+						terminal: true,
+						semanticOutputObserved: true,
+						reason: "The provider reached its output token limit.",
+					}
+				})(),
+			)
+
+			const result = await task.runAgentRequests([{ type: "text", text: "start" }], false)
+
+			expect(result).toMatchObject({
+				status: "incomplete",
+				response: {
+					outcome: { status: "incomplete" },
+					toolCalls: [{ id: "truncated-stream-tool", name: "read_file", arguments: { path: "README.md" } }],
+				},
+			})
+			expect(executeToolTurn).not.toHaveBeenCalled()
+			expect(executeTools).not.toHaveBeenCalled()
+			expect(
+				task.apiConversationHistory.some(
+					(message) =>
+						message.role === "assistant" &&
+						Array.isArray(message.content) &&
+						message.content.some(
+							(block) => block.type === "tool_use" && block.id === "truncated-stream-tool",
+						),
+				),
+			).toBe(true)
+			expect(task.apiConversationHistory.at(-1)).toMatchObject({
+				role: "user",
+				content: [
+					{
+						type: "tool_result",
+						tool_use_id: "truncated-stream-tool",
+						content: "Tool call was not executed because the provider response was incomplete.",
 						is_error: true,
 					},
 				],
@@ -4978,6 +6356,26 @@ describe("Alpha", () => {
 			})
 		})
 
+		it("continues a provider-completed response with empty input instead of a no-tool error", async () => {
+			const task = createTask()
+			const requestStep = vi
+				.spyOn(task, "runAgentRequests")
+				.mockResolvedValueOnce({
+					status: "completed",
+					response: createAgentResponse([{ type: "text", text: "The provider requests a follow-up step." }], {
+						status: "completed",
+						requiresContinuation: true,
+					}),
+				})
+				.mockResolvedValueOnce(true)
+
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+
+			expect(requestStep).toHaveBeenCalledTimes(2)
+			expect(requestStep.mock.calls[1]?.slice(0, 2)).toEqual([[], false])
+			expect(JSON.stringify(task.apiConversationHistory)).not.toContain(formatResponse.noToolsUsed())
+		})
+
 		it("keeps the queue behind pending turn content", async () => {
 			const task = createTask()
 			const pendingContent = [{ type: "text" as const, text: "tool result continuation" }]
@@ -5792,6 +7190,508 @@ describe("Queued message processing after condense", () => {
 		expect(spyB).not.toHaveBeenCalled()
 		expect(taskA.messageQueueService.isEmpty()).toBe(false)
 		expect(taskB.messageQueueService.isEmpty()).toBe(false)
+	})
+})
+
+describe("Task typed tool approval bridge", () => {
+	beforeEach(() => {
+		if (!TelemetryService.hasInstance()) {
+			TelemetryService.createInstance([])
+		}
+	})
+
+	const request = (taskId: string, overrides: Partial<ToolApprovalRequest> = {}): ToolApprovalRequest => ({
+		requestId: `${taskId}:call-1`,
+		taskId,
+		callId: "call-1",
+		toolName: "read_file",
+		askType: "tool",
+		description: "Read src/main.ts",
+		forceApproval: false,
+		requiresExplicitApproval: true,
+		availableDecisions: ["approve_once", "deny", "abort"],
+		...overrides,
+	})
+
+	const createTask = (
+		options: {
+			toolApprovalReviewer?: ToolApprovalReviewer
+			taskApprovalMode?: ApprovalMode
+			provider?: AlphaProvider
+		} = {},
+	) =>
+		new Task({
+			provider:
+				options.provider ??
+				({
+					context: { globalStorageUri: { fsPath: "/test/storage" } },
+					getState: vi.fn().mockResolvedValue({}),
+					isTaskOnScreen: vi.fn().mockReturnValue(true),
+					postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
+				} as any),
+			apiConfiguration: { apiProvider: "openai", openAiApiKey: "test-key" },
+			task: "typed approval test",
+			startTask: false,
+			...options,
+		})
+
+	it("persists a prefix in global settings for a resumed task and keeps deny rules effective", async () => {
+		const settings = { allowedCommands: [] as string[] }
+		const provider = {
+			context: { globalStorageUri: { fsPath: "/test/storage" } },
+			getValue: vi.fn((key: string) => (key === "allowedCommands" ? settings.allowedCommands : undefined)),
+			setValue: vi.fn(async (key: string, value: unknown) => {
+				if (key === "allowedCommands" && Array.isArray(value)) settings.allowedCommands = value as string[]
+			}),
+			getState: vi.fn(async () => ({ allowedCommands: [...settings.allowedCommands] })),
+			isTaskOnScreen: vi.fn().mockReturnValue(true),
+			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
+			log: vi.fn(),
+		} as unknown as AlphaProvider
+		const approvingTask = createTask({ provider, taskApprovalMode: "ask" })
+
+		await expect(approvingTask.persistCommandApprovalPrefix("git status --short")).resolves.toBe(true)
+		expect(provider.setValue).toHaveBeenCalledWith("allowedCommands", ["git status --short"])
+		expect(provider.postStateToWebviewWithoutTaskHistory).toHaveBeenCalledOnce()
+
+		const resumedTask = createTask({ provider, taskApprovalMode: "ask" })
+		const reloadedState = await provider.getState()
+		await expect(
+			checkAutoApproval({
+				ask: "command",
+				text: "git status --short --branch",
+				state: {
+					approvalMode: resumedTask.getTaskApprovalMode(),
+					allowedCommands: reloadedState.allowedCommands,
+					deniedCommands: [],
+				},
+			}),
+		).resolves.toEqual({ decision: "approve" })
+
+		await expect(
+			checkAutoApproval({
+				ask: "command",
+				text: "git status --short --porcelain",
+				state: {
+					approvalMode: resumedTask.getTaskApprovalMode(),
+					allowedCommands: reloadedState.allowedCommands,
+					deniedCommands: ["git status --short --porcelain"],
+				},
+			}),
+		).resolves.toEqual({ decision: "deny" })
+	})
+
+	const runApprovalTool = async (task: Task, askType: AlphaAsk) => {
+		const executeEffect = vi.fn()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const descriptor: ToolDescriptor = {
+			name: "reviewable_tool",
+			aliases: [],
+			schema: {
+				type: "function",
+				function: {
+					name: "reviewable_tool",
+					description: "A deterministic approval test tool",
+					parameters: { type: "object", properties: {}, additionalProperties: false },
+				},
+			},
+			capabilities: { concurrency: "serial", sideEffects: "task", controlFlow: false, requiresApproval: false },
+			getConcurrencyScope: () => "tool-approval-review-test",
+			execute: async ({ callbacks }) => {
+				if (await callbacks.askApproval(askType, "Perform the reviewed action")) {
+					executeEffect()
+					callbacks.pushToolResult("action completed")
+				}
+			},
+		}
+		registry.register(descriptor)
+		const outcome = await new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			signal: task.getTaskCancellationSignal(),
+			validateCall: () => {},
+		}).run(
+			createAgentResponse([{ type: "tool_call", id: "reviewable-call", name: "reviewable_tool", arguments: {} }]),
+		)
+		return { outcome, executeEffect }
+	}
+
+	it("projects the reviewed working directory into command approval prompts", async () => {
+		const task = createTask()
+		const approval = request(task.taskId, {
+			toolName: "exec_command",
+			askType: "command",
+			description: "pnpm lint",
+			cwd: "C:\\repo\\workspace",
+			commandPathApproval: { outsidePaths: ["C:\\outside\\output.txt"], unresolved: false },
+			requiresExplicitApproval: true,
+		})
+
+		await task.ask("command", approval.description, undefined, undefined, undefined, true, approval)
+
+		expect(task.clineMessages.at(-1)?.toolApprovalRequest).toMatchObject({
+			requestId: approval.requestId,
+			taskId: task.taskId,
+			toolName: "exec_command",
+			description: "pnpm lint",
+			cwd: "C:\\repo\\workspace",
+			commandPathApproval: { outsidePaths: ["C:\\outside\\output.txt"], unresolved: false },
+		})
+	})
+
+	it("projects the persistent prefix into the command approval prompt", async () => {
+		const task = createTask()
+		const approval = request(task.taskId, {
+			toolName: "exec_command",
+			askType: "command",
+			description: "node scripts/check.js",
+			requiresExplicitApproval: false,
+			availableDecisions: ["approve_once", "approve_persistently", "deny", "abort"],
+			proposedPersistentAmendment: {
+				kind: "command_prefix",
+				prefix: "node scripts/check.js",
+			},
+		})
+
+		await task.ask("command", approval.description, undefined, undefined, undefined, false, approval)
+
+		expect(task.clineMessages.at(-1)?.toolApprovalRequest).toMatchObject({
+			availableDecisions: ["approve_once", "approve_persistently", "deny", "abort"],
+			proposedPersistentAmendment: {
+				kind: "command_prefix",
+				prefix: "node scripts/check.js",
+			},
+		})
+	})
+
+	it("publishes an auto-approved command as answered on its first update", async () => {
+		const publishedMessages: unknown[] = []
+		const provider = {
+			context: { globalStorageUri: { fsPath: "/test/storage" } },
+			getState: vi.fn().mockResolvedValue({
+				approvalMode: "auto",
+				autoApprovalEnabled: true,
+				alwaysAllowExecute: true,
+				allowedCommands: ["pnpm test"],
+				deniedCommands: [],
+			}),
+			postTaskMessageToWebview: vi.fn(async (...args: unknown[]) => {
+				publishedMessages.push(args[2])
+			}),
+			isTaskOnScreen: vi.fn().mockReturnValue(true),
+			postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
+		} as unknown as AlphaProvider
+		const task = createTask({ provider, taskApprovalMode: "auto" })
+		const approval = request(task.taskId, {
+			toolName: "exec_command",
+			askType: "command",
+			description: "pnpm test",
+			requiresExplicitApproval: false,
+		})
+
+		await expect(
+			task.ask("command", approval.description, undefined, undefined, undefined, false, approval),
+		).resolves.toMatchObject({ response: "yesButtonClicked" })
+
+		expect(publishedMessages).toHaveLength(1)
+		expect(publishedMessages[0]).toMatchObject({
+			type: "ask",
+			ask: "command",
+			text: "pnpm test",
+			isAnswered: true,
+		})
+		expect(task.clineMessages.at(-1)?.isAnswered).toBe(true)
+	})
+
+	it.each([
+		{ decision: { decision: "approve_once" } as const, expectedAskResponse: "yesButtonClicked" },
+		{
+			decision: { decision: "deny", feedback: "Do not read that file." } as const,
+			expectedAskResponse: "noButtonClicked",
+		},
+		{ decision: { decision: "abort" } as const, expectedAskResponse: "noButtonClicked" },
+		{
+			approval: (taskId: string) =>
+				request(taskId, {
+					requiresExplicitApproval: false,
+					availableDecisions: ["approve_once", "approve_session", "deny", "abort"],
+				}),
+			decision: { decision: "approve_session" } as const,
+			expectedAskResponse: "yesButtonClicked",
+		},
+		{
+			approval: (taskId: string) =>
+				request(taskId, {
+					toolName: "execute_command",
+					askType: "command",
+					description: "node scripts/check.js",
+					requiresExplicitApproval: false,
+					availableDecisions: ["approve_once", "approve_with_amendment", "deny", "abort"],
+					proposedAmendment: { kind: "exact_command", command: "node scripts/check.js" },
+				}),
+			decision: {
+				decision: "approve_with_amendment",
+				amendment: { kind: "exact_command", command: "node scripts/check.js" },
+			} as const,
+			expectedAskResponse: "yesButtonClicked",
+		},
+		{
+			approval: (taskId: string) =>
+				request(taskId, {
+					toolName: "execute_command",
+					askType: "command",
+					description: "node scripts/check.js",
+					requiresExplicitApproval: false,
+					availableDecisions: ["approve_once", "approve_persistently", "deny", "abort"],
+					proposedPersistentAmendment: {
+						kind: "command_prefix",
+						prefix: "node scripts/check.js",
+					},
+				}),
+			decision: {
+				decision: "approve_persistently",
+				amendment: { kind: "command_prefix", prefix: "node scripts/check.js" },
+			} as const,
+			expectedAskResponse: "yesButtonClicked",
+		},
+	])(
+		"returns the typed $decision.decision choice without conflating abort and deny",
+		async ({ decision, expectedAskResponse, approval: buildApproval }) => {
+			const task = createTask()
+			const approval = buildApproval?.(task.taskId) ?? request(task.taskId)
+			const askResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
+			const askSpy = vi
+				.spyOn(task, "ask")
+				.mockImplementation(async (type, text, _partial, _progress, _protected, _explicit, shownRequest) => {
+					expect(type).toBe(approval.askType)
+					expect(text).toBe(approval.description)
+					expect(shownRequest).toEqual(approval)
+					;(task as any).activeAsk = { type, ts: 42 }
+					expect(task.handleWebviewToolApprovalResponse("stale-request", decision)).toBe(false)
+					expect(task.handleWebviewToolApprovalResponse(approval.requestId, decision)).toBe(true)
+					return {
+						response: (task as any).askResponse,
+						text: (task as any).askResponseText,
+					}
+				})
+
+			await expect(task.requestToolApproval(approval)).resolves.toEqual(decision)
+			expect(askSpy).toHaveBeenCalledTimes(1)
+			expect(askResponseSpy).toHaveBeenCalledWith(
+				expectedAskResponse,
+				decision.decision === "deny" ? decision.feedback : undefined,
+			)
+			expect(task.hasPendingToolApprovalRequest()).toBe(false)
+		},
+	)
+
+	it("rejects a delayed response from the previous prompt while a new prompt is active", async () => {
+		const task = createTask()
+		const firstApproval = request(task.taskId, { requestId: "approval-from-first-turn" })
+		const secondApproval = request(task.taskId, { requestId: "approval-from-second-turn" })
+		const askSpy = vi
+			.spyOn(task, "ask")
+			.mockImplementation(async (type, _text, _partial, _progress, _protected, _explicit, shownRequest) => {
+				;(task as any).activeAsk = { type, ts: 42 }
+				if (shownRequest?.requestId === secondApproval.requestId) {
+					expect(
+						task.handleWebviewToolApprovalResponse(firstApproval.requestId, { decision: "approve_once" }),
+					).toBe(false)
+					expect(
+						task.handleWebviewToolApprovalResponse(secondApproval.requestId, { decision: "approve_once" }),
+					).toBe(true)
+				} else {
+					expect(shownRequest?.requestId).toBe(firstApproval.requestId)
+					expect(
+						task.handleWebviewToolApprovalResponse(firstApproval.requestId, { decision: "approve_once" }),
+					).toBe(true)
+				}
+				return { response: "yesButtonClicked" }
+			})
+
+		await expect(task.requestToolApproval(firstApproval)).resolves.toEqual({ decision: "approve_once" })
+		await expect(task.requestToolApproval(secondApproval)).resolves.toEqual({ decision: "approve_once" })
+		expect(askSpy).toHaveBeenCalledTimes(2)
+	})
+
+	it("rejects session approval for an explicit request", async () => {
+		const task = createTask()
+		const approval = request(task.taskId, {
+			availableDecisions: ["approve_once", "approve_session", "deny", "abort"],
+		})
+		await expect(task.requestToolApproval(approval)).rejects.toThrow(/invalid or mismatched/)
+	})
+
+	it("rejects an exact-command session grant that differs from the reviewed command", async () => {
+		const task = createTask()
+		const approval = request(task.taskId, {
+			toolName: "execute_command",
+			askType: "command",
+			description: "node scripts/check.js",
+			requiresExplicitApproval: false,
+			availableDecisions: ["approve_once", "approve_with_amendment", "deny", "abort"],
+			proposedAmendment: { kind: "exact_command", command: "node scripts/check.js" },
+		})
+		vi.spyOn(task, "ask").mockImplementation(async (type) => {
+			;(task as any).activeAsk = { type, ts: 42 }
+			expect(
+				task.handleWebviewToolApprovalResponse(approval.requestId, {
+					decision: "approve_with_amendment",
+					amendment: { kind: "exact_command", command: "node scripts/check.js --all" },
+				}),
+			).toBe(false)
+			return { response: "noButtonClicked" }
+		})
+
+		await expect(task.requestToolApproval(approval)).resolves.toEqual({ decision: "deny" })
+	})
+
+	it("maps the existing auto-approve Ask response to a one-shot approval", async () => {
+		const task = createTask()
+		const askSpy = vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+
+		await expect(task.requestToolApproval(request(task.taskId))).resolves.toEqual({ decision: "approve_once" })
+		expect(askSpy).toHaveBeenCalledTimes(1)
+	})
+
+	it("uses the injected reviewer for typed MCP approvals without widening the task mode", async () => {
+		const reviewer = vi.fn<ToolApprovalReviewer>(async () => ({ decision: "approve" }))
+		const task = createTask({ toolApprovalReviewer: reviewer, taskApprovalMode: "ask" })
+		const askSpy = vi.spyOn(task, "ask")
+
+		const { outcome, executeEffect } = await runApprovalTool(task, "use_mcp_server")
+
+		expect(reviewer).toHaveBeenCalledOnce()
+		expect(reviewer.mock.calls[0]![0]).toMatchObject({
+			taskId: task.taskId,
+			toolName: "reviewable_tool",
+			askType: "use_mcp_server",
+		})
+		expect(reviewer.mock.calls[0]![0]).not.toHaveProperty("arguments")
+		expect(reviewer.mock.calls[0]![1]).toBeInstanceOf(AbortSignal)
+		expect(outcome.results).toMatchObject([{ status: "success", content: "action completed" }])
+		expect(executeEffect).toHaveBeenCalledOnce()
+		expect(askSpy).not.toHaveBeenCalled()
+		expect(task.getTaskApprovalMode()).toBe("ask")
+	})
+
+	it("records reviewer denial as a terminal tool result without executing the effect", async () => {
+		const reviewer = vi.fn<ToolApprovalReviewer>(async () => ({ decision: "deny" }))
+		const task = createTask({ toolApprovalReviewer: reviewer, taskApprovalMode: "ask" })
+		const askSpy = vi.spyOn(task, "ask")
+
+		const { outcome, executeEffect } = await runApprovalTool(task, "tool")
+
+		expect(outcome.results).toMatchObject([{ status: "denied" }])
+		expect(outcome.approvalDeniedCount).toBe(1)
+		expect(executeEffect).not.toHaveBeenCalled()
+		expect(askSpy).not.toHaveBeenCalled()
+		expect(task.getTaskApprovalMode()).toBe("ask")
+	})
+
+	it("falls back to the existing user ask when the reviewer defers", async () => {
+		const reviewer = vi.fn<ToolApprovalReviewer>(async () => ({ decision: "fallback_to_user" }))
+		const task = createTask({ toolApprovalReviewer: reviewer, taskApprovalMode: "ask" })
+		const askSpy = vi
+			.spyOn(task, "ask")
+			.mockImplementation(async (type, _text, _partial, _progress, _protected, _explicit, shownRequest) => {
+				;(task as any).activeAsk = { type, ts: 42 }
+				expect(shownRequest).toBeDefined()
+				task.handleWebviewToolApprovalResponse(shownRequest!.requestId, { decision: "approve_once" })
+				return { response: "yesButtonClicked" }
+			})
+
+		const { outcome, executeEffect } = await runApprovalTool(task, "tool")
+
+		expect(reviewer).toHaveBeenCalledOnce()
+		expect(askSpy).toHaveBeenCalledOnce()
+		expect(outcome.results).toMatchObject([{ status: "success", content: "action completed" }])
+		expect(executeEffect).toHaveBeenCalledOnce()
+		expect(task.getTaskApprovalMode()).toBe("ask")
+	})
+
+	it("turns a reviewer failure into an error receipt without executing the tool", async () => {
+		const reviewer = vi.fn<ToolApprovalReviewer>(async () => {
+			throw new Error("review unavailable")
+		})
+		const task = createTask({ toolApprovalReviewer: reviewer, taskApprovalMode: "ask" })
+		const askSpy = vi.spyOn(task, "ask")
+
+		const { outcome, executeEffect } = await runApprovalTool(task, "tool")
+
+		expect(outcome.results).toMatchObject([{ status: "error" }])
+		expect(outcome.results[0]?.content).toContain("review unavailable")
+		expect(executeEffect).not.toHaveBeenCalled()
+		expect(askSpy).not.toHaveBeenCalled()
+		expect(task.hasPendingToolApprovalRequest()).toBe(false)
+	})
+
+	it("rejects malformed reviewer outcomes as errors instead of granting approval", async () => {
+		const reviewer = vi.fn<ToolApprovalReviewer>(async () => ({ decision: "approve_once" }) as never)
+		const task = createTask({ toolApprovalReviewer: reviewer, taskApprovalMode: "ask" })
+		const askSpy = vi.spyOn(task, "ask")
+
+		const { outcome, executeEffect } = await runApprovalTool(task, "tool")
+
+		expect(outcome.results).toMatchObject([{ status: "error" }])
+		expect(outcome.results[0]?.content).toContain("invalid outcome")
+		expect(executeEffect).not.toHaveBeenCalled()
+		expect(askSpy).not.toHaveBeenCalled()
+	})
+
+	it("records cancellation while reviewer is pending and suppresses the tool effect", async () => {
+		let markReviewerStarted!: () => void
+		const reviewerStarted = new Promise<void>((resolve) => {
+			markReviewerStarted = resolve
+		})
+		const reviewer: ToolApprovalReviewer = (_request, signal) => {
+			markReviewerStarted()
+			return new Promise((_, reject) => {
+				signal.addEventListener("abort", () => reject(new Error("review cancelled")), { once: true })
+			})
+		}
+		const task = createTask({ toolApprovalReviewer: reviewer, taskApprovalMode: "ask" })
+		const controller = new AbortController()
+		;(task as any).currentRequestAbortController = controller
+		const askSpy = vi.spyOn(task, "ask")
+		const requestApproval = task.requestToolApproval.bind(task)
+		let pendingApproval: Promise<ToolApprovalDecision | undefined> | undefined
+		vi.spyOn(task, "requestToolApproval").mockImplementation((approvalRequest) => {
+			pendingApproval = requestApproval(approvalRequest)
+			return pendingApproval
+		})
+		const pendingRun = runApprovalTool(task, "tool")
+
+		await reviewerStarted
+		controller.abort(new Error("user cancelled"))
+		const { outcome, executeEffect } = await pendingRun
+
+		expect(outcome.results).toMatchObject([{ status: "cancelled" }])
+		expect(executeEffect).not.toHaveBeenCalled()
+		expect(askSpy).not.toHaveBeenCalled()
+		expect(pendingApproval).toBeDefined()
+		await expect(pendingApproval).resolves.toEqual({ decision: "abort" })
+		expect(task.hasPendingToolApprovalRequest()).toBe(false)
+	})
+
+	it("cancels a pending reviewer and clears the active typed approval", async () => {
+		let reviewSignal: AbortSignal | undefined
+		const reviewer: ToolApprovalReviewer = (_request, signal) => {
+			reviewSignal = signal
+			return new Promise(() => {})
+		}
+		const task = createTask({ toolApprovalReviewer: reviewer })
+		const controller = new AbortController()
+		;(task as any).currentRequestAbortController = controller
+		const review = task.requestToolApproval(request(task.taskId))
+
+		expect(task.hasPendingToolApprovalRequest()).toBe(true)
+		controller.abort(new Error("test cancellation"))
+
+		await expect(review).resolves.toEqual({ decision: "abort" })
+		expect(reviewSignal?.aborted).toBe(true)
+		expect(task.hasPendingToolApprovalRequest()).toBe(false)
 	})
 })
 

@@ -149,7 +149,10 @@ test("interactive setup can remain idle indefinitely after startup; completed ru
 	host.published.set(LIVE_HOST_COMPLETION, receipt)
 	host.event(LIVE_HOST_COMPLETION)
 	await nextTurn()
-	context.mock.timers.tick(LIVE_HOST_CLOSE_TIMEOUT_MS)
+	// A signed-in VS Code host can flush its profile after the terminal receipt for over ten seconds.
+	context.mock.timers.tick(10_000)
+	assert.deepEqual(host.failures, [])
+	context.mock.timers.tick(LIVE_HOST_CLOSE_TIMEOUT_MS - 10_000)
 	assert.deepEqual(host.failures, ["host-close-timeout"])
 	assert.equal(host.disposed(), 1)
 })

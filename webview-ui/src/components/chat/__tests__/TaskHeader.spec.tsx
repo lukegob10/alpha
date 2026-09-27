@@ -130,7 +130,7 @@ describe("TaskHeader", () => {
 	it("keeps prompt copying on the message instead of in task metadata", () => {
 		mockExtensionState.currentTaskItem = { id: "test-task-id", task: "Original prompt" }
 		render(<TaskHeader {...defaultProps} {...taskHeaderStateProps()} />)
-		fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
+		fireEvent.click(screen.getByRole("button", { name: "chat:task.expandContextDetails" }))
 		expect(screen.getByRole("button", { name: "chat:task.export" })).toBeInTheDocument()
 		expect(screen.queryByRole("button", { name: "history:copyPrompt" })).not.toBeInTheDocument()
 	})
@@ -165,7 +165,7 @@ describe("TaskHeader", () => {
 	it("keeps task metrics in the expandable details", () => {
 		renderTaskHeader()
 		expect(screen.queryByText("$0.05")).not.toBeInTheDocument()
-		fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
+		fireEvent.click(screen.getByRole("button", { name: "chat:task.expandContextDetails" }))
 		expect(screen.getByText("$0.05")).toBeInTheDocument()
 	})
 
@@ -193,15 +193,15 @@ describe("TaskHeader", () => {
 		const onExpandedChange = vi.fn()
 		renderTaskHeader({ onExpandedChange })
 
-		fireEvent.click(screen.getByText("chat:task.title"))
+		fireEvent.click(screen.getByRole("button", { name: "chat:task.expandContextDetails" }))
 
 		expect(onExpandedChange).toHaveBeenCalledTimes(1)
-		expect(screen.getByText("chat:task.title")).toBeInTheDocument()
+		expect(screen.queryByText("chat:task.title")).not.toBeInTheDocument()
 	})
 
 	it("exposes expansion state on the keyboard control", () => {
 		renderTaskHeader()
-		const expandButton = screen.getByRole("button", { name: "chat:task.expand" })
+		const expandButton = screen.getByRole("button", { name: "chat:task.expandContextDetails" })
 		expect(expandButton).toHaveAttribute("aria-expanded", "false")
 		const details = document.getElementById(expandButton.getAttribute("aria-controls")!)
 		expect(details).toBeInTheDocument()
@@ -209,48 +209,44 @@ describe("TaskHeader", () => {
 
 		fireEvent.click(expandButton)
 
-		expect(screen.getByRole("button", { name: "chat:task.collapse" })).toHaveAttribute("aria-expanded", "true")
+		expect(screen.getByRole("button", { name: "chat:task.collapseContextDetails" })).toHaveAttribute(
+			"aria-expanded",
+			"true",
+		)
 		expect(details).toBeVisible()
-		fireEvent.click(screen.getByTestId("context-window-label"))
+		fireEvent.click(screen.getByText("chat:task.tokens"))
 		expect(details).toBeVisible()
 	})
 
-	it("keeps the metadata card visible when expanded and collapsed", () => {
+	it("keeps a compact usage bar visible while details expand and collapse", () => {
 		const { container } = renderTaskHeader()
-		expect(screen.getByText("chat:task.title").closest(".task-context-card")).toBeInTheDocument()
-		fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
-		expect(screen.getByTestId("context-window-label")).toBeVisible()
-		fireEvent.click(screen.getByRole("button", { name: "chat:task.collapse" }))
-		expect(screen.getByText("chat:task.title").closest(".task-context-card")).toBeInTheDocument()
+		const progress = screen.getByRole("progressbar", { name: "chat:task.contextUsage" })
+		expect(progress).toBeVisible()
+		expect(progress).toHaveAttribute("aria-valuenow", "0")
+		expect(screen.queryByText("chat:task.title")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "chat:task.expandContextDetails" }))
+		expect(screen.getByText("chat:task.tokens")).toBeVisible()
+		fireEvent.click(screen.getByRole("button", { name: "chat:task.collapseContextDetails" }))
+		expect(progress).toBeVisible()
 		expect(container.querySelector(".user-message")).not.toBeInTheDocument()
 	})
 
-	it("should render the condense context button when expanded", () => {
+	it("shows compact context action before expanding and keeps it independent of expansion", () => {
 		renderTaskHeader()
-		// First click to expand the task header
-		const taskHeader = screen.getByText("chat:task.title")
-		fireEvent.click(taskHeader)
-
-		// Now find the condense button in the expanded state
-		const buttons = screen.getAllByRole("button")
-		const condenseButton = buttons.find((button) => button.querySelector("svg.lucide-fold-vertical"))
-		expect(condenseButton).toBeDefined()
-		expect(condenseButton?.querySelector("svg")).toBeInTheDocument()
+		const condenseButton = screen.getByRole("button", { name: "chat:task.condenseContext" })
+		expect(condenseButton).toBeVisible()
+		fireEvent.click(condenseButton)
+		expect(screen.getByRole("button", { name: "chat:task.expandContextDetails" })).toHaveAttribute(
+			"aria-expanded",
+			"false",
+		)
 	})
 
 	it("should call handleCondenseContext when condense context button is clicked", () => {
 		const handleCondenseContext = vi.fn()
 		renderTaskHeader({ handleCondenseContext })
 
-		// First click to expand the task header
-		const taskHeader = screen.getByText("chat:task.title")
-		fireEvent.click(taskHeader)
-
-		// Find the button that contains the FoldVertical icon
-		const buttons = screen.getAllByRole("button")
-		const condenseButton = buttons.find((button) => button.querySelector("svg.lucide-fold-vertical"))
-		expect(condenseButton).toBeDefined()
-		fireEvent.click(condenseButton!)
+		fireEvent.click(screen.getByRole("button", { name: "chat:task.condenseContext" }))
 		expect(handleCondenseContext).toHaveBeenCalledWith("test-task-id")
 	})
 
@@ -258,16 +254,9 @@ describe("TaskHeader", () => {
 		const handleCondenseContext = vi.fn()
 		renderTaskHeader({ buttonsDisabled: true, handleCondenseContext })
 
-		// First click to expand the task header
-		const taskHeader = screen.getByText("chat:task.title")
-		fireEvent.click(taskHeader)
-
-		// Find the button that contains the FoldVertical icon
-		const buttons = screen.getAllByRole("button")
-		const condenseButton = buttons.find((button) => button.querySelector("svg.lucide-fold-vertical"))
-		expect(condenseButton).toBeDefined()
+		const condenseButton = screen.getByRole("button", { name: "chat:task.condenseContext" })
 		expect(condenseButton).toBeDisabled()
-		fireEvent.click(condenseButton!)
+		fireEvent.click(condenseButton)
 		expect(handleCondenseContext).not.toHaveBeenCalled()
 	})
 
@@ -604,7 +593,13 @@ describe("TaskHeader", () => {
 
 			renderTaskHeader({ contextTokens: 200 })
 			expect(screen.getByText("25%")).toBeVisible()
-			fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
+			const progress = screen.getByRole("progressbar", { name: "chat:task.contextUsage" })
+			expect(progress).toHaveAttribute("aria-valuenow", "25")
+			expect(progress.firstElementChild).toHaveStyle({ width: "25%" })
+			expect(progress.parentElement?.parentElement?.lastElementChild).toBe(
+				screen.getByTestId("context-usage-percent"),
+			)
+			fireEvent.click(screen.getByRole("button", { name: "chat:task.expandContextDetails" }))
 
 			// The percentage remains available in the expanded task details.
 			// Verify that 25% is displayed (correct formula) and NOT 40% (old incorrect formula)
@@ -619,7 +614,7 @@ describe("TaskHeader", () => {
 			mockMaxOutputTokens = 200
 
 			renderTaskHeader({ contextTokens: 100 })
-			fireEvent.click(screen.getByRole("button", { name: "chat:task.expand" }))
+			fireEvent.click(screen.getByRole("button", { name: "chat:task.expandContextDetails" }))
 
 			// Should show 0% when available input space is 0
 			expect(screen.getByText("0%")).toBeInTheDocument()

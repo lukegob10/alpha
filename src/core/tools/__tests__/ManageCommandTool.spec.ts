@@ -1,9 +1,12 @@
 import { EventEmitter } from "events"
 import { manageCommandTool, waitForCommand } from "../ManageCommandTool"
+import { commandSessionRegistry } from "../CommandSessionRegistry"
+import { ToolRegistry } from "../ToolRegistry"
 import { readCommandOutputTool } from "../ReadCommandOutputTool"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
 import type { AlphaTerminalProcess } from "../../../integrations/terminal/types"
 import type { Task } from "../../task/Task"
+import type { ToolUse } from "../../../shared/tools"
 
 function harness() {
 	const process = Object.assign(new EventEmitter(), {
@@ -20,9 +23,13 @@ function harness() {
 	}) as unknown as AlphaTerminalProcess
 	const terminal = { taskId: "task", process, running: true }
 	vi.spyOn(TerminalRegistry, "getTerminals").mockReturnValue([terminal as never])
+	const commandEvidence: { executionId: string; status: string; exitCode?: number } = {
+		executionId: "execution",
+		status: "running",
+	}
 	const task = {
 		taskId: "task",
-		getCommandExecutionEvidence: () => [{ executionId: "execution", status: "running" }],
+		getCommandExecutionEvidence: () => [commandEvidence],
 		providerRef: {
 			deref: () => ({
 				runWorkspaceMutation: async (_task: unknown, _name: string, run: () => Promise<void>) => run(),
@@ -35,7 +42,7 @@ function harness() {
 		handleError: vi.fn(),
 		setResultMetadata: vi.fn(),
 	}
-	return { process, terminal, task, callbacks }
+	return { process, terminal, task, callbacks, commandEvidence }
 }
 
 afterEach(() => {
@@ -73,6 +80,58 @@ it("does not require a model poll or approval for a bounded wait", async () => {
 	await manageCommandTool.execute({ execution_id: "execution", action: "wait", timeout_ms: 0 }, task, callbacks)
 	expect(callbacks.askApproval).not.toHaveBeenCalled()
 	expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining('"status":"running"'))
+	expect(callbacks.pushToolResult.mock.calls[0][0]).toContain('"execution_id":"execution"')
+	expect(callbacks.pushToolResult.mock.calls[0][0]).not.toContain("Chunk ID:")
+})
+
+it("formats a native running wait with the process session", async () => {
+	const { task, callbacks, process } = harness()
+	const sessionId = commandSessionRegistry.register(task, process)
+	await manageCommandTool.execute(
+		{ execution_id: "execution", action: "wait", timeout_ms: 0 },
+		task,
+		{
+			...callbacks,
+			commandResultMaxOutputTokens: 256,
+			commandResultFormat: "codex",
+			toolCallId: "write-stdin-call",
+		},
+		undefined,
+		sessionId,
+	)
+
+	const sidecar = callbacks.setResultMetadata.mock.calls[0]?.[0].commandResult
+	expect(sidecar).toMatchObject({ session_id: sessionId, output: "ready at http://localhost:1234" })
+	expect(sidecar).not.toHaveProperty("exit_code")
+	expect(callbacks.pushToolResult).toHaveBeenCalledWith(
+		expect.stringMatching(
+			new RegExp(
+				`^Chunk ID: write-stdin-call\\nWall time: \\d+\\.\\d{4} seconds\\nProcess running with session ID ${sessionId}\\nOutput:\\nready at http://localhost:1234$`,
+			),
+		),
+	)
+})
+
+it("formats a completed native wait with its exit code", async () => {
+	const { task, callbacks, process, commandEvidence } = harness()
+	process.isSettled = true
+	commandEvidence.status = "succeeded"
+	commandEvidence.exitCode = 7
+	await manageCommandTool.execute({ execution_id: "execution", action: "wait", timeout_ms: 0 }, task, {
+		...callbacks,
+		commandResultMaxOutputTokens: 256,
+		commandResultFormat: "codex",
+		toolCallId: "write-stdin-call",
+	})
+
+	const sidecar = callbacks.setResultMetadata.mock.calls[0]?.[0].commandResult
+	expect(sidecar).toMatchObject({ exit_code: 7, output: "ready at http://localhost:1234" })
+	expect(sidecar).not.toHaveProperty("session_id")
+	expect(callbacks.pushToolResult).toHaveBeenCalledWith(
+		expect.stringMatching(
+			/^Chunk ID: write-stdin-call\nWall time: \d+\.\d{4} seconds\nProcess exited with code 7\nOutput:\nready at http:\/\/localhost:1234$/,
+		),
+	)
 })
 
 it("delegates artifact reads through the manage command host", async () => {
@@ -151,6 +210,42 @@ it("rechecks process identity after approval", async () => {
 	expect(callbacks.handleError).toHaveBeenCalled()
 })
 
+it("rejects input if the same process receives a new execution identity during approval", async () => {
+	const { task, callbacks, process } = harness()
+	callbacks.askApproval.mockImplementation(async () => {
+		process.executionId = "replacement"
+		return true
+	})
+	await manageCommandTool.execute(
+		{ execution_id: "execution", action: "input", input: "yes\n", timeout_ms: 0 },
+		task,
+		callbacks,
+	)
+	expect(process.writeInput).not.toHaveBeenCalled()
+	expect(callbacks.handleError).toHaveBeenCalledWith("controlling command", expect.any(Error))
+})
+
+it("rechecks a session binding inside the mutation gate before writing input", async () => {
+	const { task, callbacks, process } = harness()
+	let current = true
+	vi.spyOn(task.providerRef, "deref").mockReturnValue({
+		runWorkspaceMutation: async (_task: unknown, _label: string, run: () => Promise<void>) => {
+			current = false
+			await run()
+		},
+	} as never)
+	await manageCommandTool.execute(
+		{ execution_id: "execution", action: "input", input: "yes\n", timeout_ms: 0 },
+		task,
+		callbacks,
+		() => {
+			if (!current) throw new Error("Session changed while approval was pending")
+		},
+	)
+	expect(process.writeInput).not.toHaveBeenCalled()
+	expect(callbacks.handleError).toHaveBeenCalledWith("controlling command", expect.any(Error))
+})
+
 it("preserves denied input and sends only literal approved input", async () => {
 	const { task, callbacks, process } = harness()
 	callbacks.askApproval.mockResolvedValueOnce(false)
@@ -159,4 +254,55 @@ it("preserves denied input and sends only literal approved input", async () => {
 	expect(process.writeInput).not.toHaveBeenCalled()
 	await manageCommandTool.execute(args, task, callbacks)
 	expect(process.writeInput).toHaveBeenCalledWith("yes\n")
+})
+
+it("uses the numeric exec session to poll and send approved input through the tool registry", async () => {
+	const { task, callbacks, process } = harness()
+	process.hasUnretrievedOutput = vi.fn(() => true)
+	const sessionId = commandSessionRegistry.register(task, process)
+	const descriptor = new ToolRegistry().resolve("write_stdin")!
+	const call = (chars?: string): ToolUse<"write_stdin"> => ({
+		type: "tool_use",
+		id: "write-call",
+		name: "write_stdin",
+		params: {},
+		partial: false,
+		nativeArgs: { session_id: sessionId, ...(chars === undefined ? {} : { chars }), yield_time_ms: 0 },
+	})
+
+	await descriptor.execute({ task, call: call(), callbacks })
+	expect(callbacks.askApproval).not.toHaveBeenCalled()
+	expect(callbacks.pushToolResult).toHaveBeenCalledWith(
+		expect.stringContaining(`Process running with session ID ${sessionId}`),
+	)
+
+	await descriptor.execute({ task, call: call("yes\n"), callbacks })
+	expect(callbacks.askApproval).toHaveBeenCalledWith("command", "input command execution\nyes\n")
+	expect(process.writeInput).toHaveBeenCalledExactlyOnceWith("yes\n")
+	expect(callbacks.handleError).not.toHaveBeenCalled()
+})
+
+it("rejects a numeric session when approval resumes after its process identity changes", async () => {
+	const { task, callbacks, process } = harness()
+	const sessionId = commandSessionRegistry.register(task, process)
+	callbacks.askApproval.mockImplementation(async () => {
+		process.executionId = "replacement"
+		return true
+	})
+	const descriptor = new ToolRegistry().resolve("write_stdin")!
+	await descriptor.execute({
+		task,
+		call: {
+			type: "tool_use",
+			id: "write-call",
+			name: "write_stdin",
+			params: {},
+			partial: false,
+			nativeArgs: { session_id: sessionId, chars: "yes\n", yield_time_ms: 0 },
+		},
+		callbacks,
+	})
+	expect(process.writeInput).not.toHaveBeenCalled()
+	expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
+	expect(callbacks.handleError).toHaveBeenCalledWith("controlling command", expect.any(Error))
 })

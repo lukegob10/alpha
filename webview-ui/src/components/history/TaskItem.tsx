@@ -6,6 +6,8 @@ import type { DisplayHistoryItem } from "./types"
 import { cn } from "@/lib/utils"
 import { Checkbox } from "@/components/ui/checkbox"
 import { ExtensionStateContext } from "@/context/ExtensionStateContext"
+import { formatTimeAgo } from "@/utils/format"
+import { useAppTranslation } from "@/i18n/TranslationContext"
 
 import TaskItemFooter from "./TaskItemFooter"
 import { StandardTooltip } from "../ui"
@@ -71,6 +73,21 @@ const TaskItem = ({
 	onDelete,
 	className,
 }: TaskItemProps) => {
+	const { t } = useAppTranslation()
+	const ageSeconds = Math.max(0, Math.floor((Date.now() - item.ts) / 1000))
+	const ageUnit = (
+		[
+			["year", 31536000],
+			["month", 2592000],
+			["week", 604800],
+			["day", 86400],
+			["hour", 3600],
+			["minute", 60],
+		] as const
+	).find(([, seconds]) => ageSeconds >= seconds)
+	const compactAge = ageUnit
+		? t(`history:age.${ageUnit[0]}`, { count: Math.floor(ageSeconds / ageUnit[1]) })
+		: t("history:age.now")
 	const { isOpening, openTask } = useTaskOpeningFeedback(item.id)
 	const extensionState = useContext(ExtensionStateContext)
 	const currentTaskId = extensionState?.currentTaskId
@@ -109,6 +126,30 @@ const TaskItem = ({
 	}
 
 	const isCompact = variant === "compact"
+	const taskContentClassName = cn(
+		"min-w-0 flex-1 font-normal leading-5",
+		isCompact
+			? "truncate whitespace-nowrap text-base"
+			: "overflow-hidden whitespace-pre-wrap text-ellipsis line-clamp-3 text-base",
+		!isCompact && isSelectionMode && "mb-1",
+	)
+	const statusIndicator = liveTaskIndicator && (
+		<StandardTooltip content={liveTaskTooltip ?? liveTaskIndicator.label}>
+			<span
+				className={cn("flex size-3.5 shrink-0 items-center justify-center", !isCompact && "mt-1.5")}
+				aria-label={`Task status: ${liveTaskIndicator.label}`}
+				data-testid="task-status-indicator">
+				{isRunning ? (
+					<LoaderCircle
+						className="size-3.5 animate-spin motion-reduce:animate-none text-vscode-progressBar-background"
+						aria-hidden="true"
+					/>
+				) : (
+					<span className={cn("block size-2 rounded-full", liveTaskIndicator.className)} aria-hidden="true" />
+				)}
+			</span>
+		</StandardTooltip>
+	)
 
 	return (
 		<div
@@ -121,7 +162,7 @@ const TaskItem = ({
 					? "bg-transparent transition-[color,background-color] duration-150 hover:bg-[var(--alpha-accent-soft)] hover:text-vscode-foreground"
 					: "surface-raised transition-[color,background-color,border-color,box-shadow,transform] duration-150 hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)] hover:text-vscode-foreground",
 				isActive && "border-[var(--border-accent)] bg-[var(--alpha-accent-soft)] text-vscode-foreground",
-				hasSubtasks ? "rounded-t-xl" : "rounded-xl",
+				isCompact ? "rounded-md" : hasSubtasks ? "rounded-t-xl" : "rounded-xl",
 				className,
 			)}
 			onClick={handleClick}
@@ -131,7 +172,12 @@ const TaskItem = ({
 			aria-busy={isOpening}
 			aria-current={isActive ? "page" : undefined}
 			aria-label={`Open task: ${item.task}`}>
-			<div className={cn("flex gap-3 px-4 py-3.5", !isCompact && isSelectionMode && "pb-3 pl-3")}>
+			<div
+				className={cn(
+					"flex min-w-0",
+					isCompact ? "min-h-7 items-center gap-2 px-2 py-1" : "gap-3 px-4 py-3.5",
+					!isCompact && isSelectionMode && "pb-3 pl-3",
+				)}>
 				{/* Selection checkbox - only in full variant */}
 				{!isCompact && isSelectionMode && (
 					<div
@@ -147,54 +193,38 @@ const TaskItem = ({
 					</div>
 				)}
 
-				<div className="flex-1 min-w-0">
-					<div className="flex items-start gap-1">
+				<div className={cn("min-w-0 flex-1", isCompact && "flex items-center gap-3")}>
+					<div className={cn("flex gap-1", isCompact ? "min-w-0 flex-1 items-center" : "items-start")}>
 						{item.highlight ? (
 							<div
-								className={cn(
-									"flex-1 min-w-0 overflow-hidden whitespace-pre-wrap font-normal leading-5 text-ellipsis line-clamp-3",
-									{
-										"text-base": !isCompact,
-									},
-									!isCompact && isSelectionMode ? "mb-1" : "",
-								)}
+								className={taskContentClassName}
 								data-testid="task-content"
 								dangerouslySetInnerHTML={{ __html: item.highlight }}
 							/>
 						) : (
-							<div
-								className={cn(
-									"flex-1 min-w-0 overflow-hidden whitespace-pre-wrap font-normal leading-5 text-ellipsis line-clamp-3",
-									{
-										"text-base": !isCompact,
-									},
-									!isCompact && isSelectionMode ? "mb-1" : "",
-								)}
-								data-testid="task-content">
+							<div className={taskContentClassName} data-testid="task-content">
 								<StandardTooltip content={item.task}>
 									<span>{item.task}</span>
 								</StandardTooltip>
 							</div>
 						)}
-						{liveTaskIndicator && (
-							<StandardTooltip content={liveTaskTooltip ?? liveTaskIndicator.label}>
-								<span
-									className="mt-1.5 flex size-3.5 shrink-0 items-center justify-center"
-									aria-label={`Task status: ${liveTaskIndicator.label}`}
-									data-testid="task-status-indicator">
-									{isRunning ? (
-										<LoaderCircle
-											className="size-3.5 animate-spin motion-reduce:animate-none text-vscode-progressBar-background"
-											aria-hidden="true"
-										/>
-									) : (
-										<span
-											className={cn("block size-2 rounded-full", liveTaskIndicator.className)}
-											aria-hidden="true"
-										/>
-									)}
-								</span>
-							</StandardTooltip>
+						{isCompact ? (
+							<div
+								className="grid shrink-0 grid-cols-[0.875rem_3rem] items-center gap-1.5"
+								data-testid="task-metadata">
+								{statusIndicator ?? <span aria-hidden="true" />}
+								<StandardTooltip content={new Date(item.ts).toLocaleString()}>
+									<span
+										className="w-12 shrink-0 whitespace-nowrap text-right text-xs text-vscode-descriptionForeground"
+										title={new Date(item.ts).toLocaleString()}
+										aria-label={formatTimeAgo(item.ts)}
+										data-testid="task-time-ago">
+										{compactAge}
+									</span>
+								</StandardTooltip>
+							</div>
+						) : (
+							statusIndicator
 						)}
 						{/* Arrow icon that appears on hover */}
 						{isOpening ? (
@@ -204,7 +234,12 @@ const TaskItem = ({
 								aria-hidden="true"
 							/>
 						) : (
-							<ArrowRight className="size-4 shrink-0 -translate-x-1 opacity-0 transition-[opacity,transform] group-hover:translate-x-0 group-hover:opacity-100" />
+							<ArrowRight
+								className={cn(
+									"shrink-0 -translate-x-1 opacity-0 transition-[opacity,transform] group-hover:translate-x-0 group-hover:opacity-100",
+									isCompact ? "size-3.5" : "size-4",
+								)}
+							/>
 						)}
 					</div>
 
@@ -215,13 +250,15 @@ const TaskItem = ({
 						</div>
 					)}
 
-					<TaskItemFooter
-						item={item}
-						variant={variant}
-						isSelectionMode={isSelectionMode}
-						isSubtask={item.isSubtask}
-						onDelete={onDelete}
-					/>
+					{!isCompact && (
+						<TaskItemFooter
+							item={item}
+							variant={variant}
+							isSelectionMode={isSelectionMode}
+							isSubtask={item.isSubtask}
+							onDelete={onDelete}
+						/>
+					)}
 				</div>
 			</div>
 		</div>

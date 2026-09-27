@@ -133,13 +133,11 @@ export default defineConfig(({ mode }) => {
 						return "assets/[name][extname]"
 					},
 					manualChunks: (id, { getModuleInfo }) => {
-						// Consolidate all mermaid code and its direct large dependencies (like dagre)
-						// into a single chunk. The 'channel.js' error often points to dagre.
+						// Consolidate mermaid and its graph dependencies into a single chunk.
 						if (
 							id.includes("node_modules/mermaid") ||
-							id.includes("node_modules/dagre") || // dagre is a common dep for graph layout
+							id.includes("node_modules/dagre-d3-es") ||
 							id.includes("node_modules/cytoscape") // another potential graph lib
-							// Add other known large mermaid dependencies if identified
 						) {
 							return "mermaid-bundle"
 						}
@@ -160,8 +158,12 @@ export default defineConfig(({ mode }) => {
 			},
 		},
 		server: {
+			host: "127.0.0.1",
 			hmr: {
-				host: "localhost",
+				// Keep the dev server on an IPv4 loopback address. VS Code webviews
+				// resolve localhost differently from Node on Windows, which can leave
+				// the extension host running while the React panel spins forever.
+				host: "127.0.0.1",
 				protocol: "ws",
 			},
 			cors: {
@@ -172,11 +174,7 @@ export default defineConfig(({ mode }) => {
 		},
 		define,
 		optimizeDeps: {
-			include: [
-				"mermaid",
-				"dagre", // Explicitly include dagre for pre-bundling
-				// Add other known large mermaid dependencies if identified
-			],
+			include: ["mermaid"],
 			exclude: ["@vscode/codicons", "vscode-oniguruma", "shiki"],
 		},
 		assetsInclude: ["**/*.wasm", "**/*.wav"],

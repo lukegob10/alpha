@@ -28,9 +28,10 @@ vi.mock("@src/utils/TelemetryClient", () => ({
 
 vi.mock("@src/components/chat/ChatView", () => ({
 	__esModule: true,
-	default: function ChatView({ isHidden }: { isHidden: boolean }) {
+	default: function ChatView({ isHidden, historyFocusRequest }: { isHidden: boolean; historyFocusRequest: number }) {
 		return (
-			<div data-testid="chat-view" data-hidden={isHidden}>
+			<div data-testid="chat-view" data-hidden={isHidden} data-history-request={historyFocusRequest}>
+				<input aria-label="Draft" defaultValue="" />
 				Chat View
 			</div>
 		)
@@ -43,17 +44,6 @@ vi.mock("@src/components/settings/SettingsView", () => ({
 		return (
 			<div data-testid="settings-view" onClick={onDone}>
 				Settings View
-			</div>
-		)
-	},
-}))
-
-vi.mock("@src/components/history/HistoryView", () => ({
-	__esModule: true,
-	default: function HistoryView({ onDone }: { onDone: () => void }) {
-		return (
-			<div data-testid="history-view" onClick={onDone}>
-				History View
 			</div>
 		)
 	},
@@ -317,36 +307,35 @@ describe("App", () => {
 		expect(chatView.getAttribute("data-hidden")).toBe("true")
 	})
 
-	it("switches to history view when receiving historyButtonClicked action", async () => {
+	it.each([
+		{ action: "historyButtonClicked" },
+		{ action: "switchTab", tab: "history" },
+		{ action: "historyButtonClicked", values: { force: true } },
+	])("opens Chats in the mounted chat for $action", async (request) => {
 		render(<AppWithProviders />)
-
+		const chat = screen.getByTestId("chat-view")
+		fireEvent.change(screen.getByRole("textbox", { name: "Draft" }), { target: { value: "Unsent draft" } })
+		act(() => triggerMessage("settingsButtonClicked"))
+		await screen.findByTestId("settings-view")
 		act(() => {
-			triggerMessage("historyButtonClicked")
+			window.dispatchEvent(new MessageEvent("message", { data: { type: "action", ...request } }))
 		})
-
-		const historyView = await screen.findByTestId("history-view")
-		expect(historyView).toBeInTheDocument()
-
-		const chatView = screen.getByTestId("chat-view")
-		expect(chatView.getAttribute("data-hidden")).toBe("true")
+		expect(screen.getByTestId("chat-view")).toBe(chat)
+		expect(chat).toHaveAttribute("data-hidden", "false")
+		expect(chat).toHaveAttribute("data-history-request", "1")
+		expect(screen.getByRole("textbox", { name: "Draft" })).toHaveValue("Unsent draft")
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "clearTask" }))
+		act(() => triggerMessage("historyButtonClicked"))
+		expect(chat).toHaveAttribute("data-history-request", "2")
 	})
 
 	it("forces chat view when receiving a forced chatButtonClicked action", async () => {
 		render(<AppWithProviders />)
-
-		act(() => {
-			triggerMessage("historyButtonClicked")
-		})
-
-		expect(await screen.findByTestId("history-view")).toBeInTheDocument()
-
-		act(() => {
-			triggerForcedChatMessage()
-		})
-
-		const chatView = screen.getByTestId("chat-view")
-		expect(chatView.getAttribute("data-hidden")).toBe("false")
-		expect(screen.queryByTestId("history-view")).not.toBeInTheDocument()
+		act(() => triggerMessage("settingsButtonClicked"))
+		await screen.findByTestId("settings-view")
+		act(() => triggerForcedChatMessage())
+		expect(screen.getByTestId("chat-view")).toHaveAttribute("data-hidden", "false")
+		expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument()
 	})
 
 	it("returns to chat view when clicking done in settings view", async () => {
@@ -365,24 +354,6 @@ describe("App", () => {
 		const chatView = screen.getByTestId("chat-view")
 		expect(chatView.getAttribute("data-hidden")).toBe("false")
 		expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument()
-	})
-
-	it.each(["history"])("returns to chat view when clicking done in %s view", async (view) => {
-		render(<AppWithProviders />)
-
-		act(() => {
-			triggerMessage(`${view}ButtonClicked`)
-		})
-
-		const viewElement = await screen.findByTestId(`${view}-view`)
-
-		act(() => {
-			viewElement.click()
-		})
-
-		const chatView = screen.getByTestId("chat-view")
-		expect(chatView.getAttribute("data-hidden")).toBe("false")
-		expect(screen.queryByTestId(`${view}-view`)).not.toBeInTheDocument()
 	})
 
 	it("switches to marketplace view when receiving marketplaceButtonClicked action", async () => {

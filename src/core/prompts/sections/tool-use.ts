@@ -11,8 +11,8 @@ export function getSharedToolUseSection(
 	if (subagentRole) {
 		const baseAuthority =
 			subagentRole === "worker"
-				? "repository reads, native file edits within the approved write scope, shell commands, manage_command reads, and attempt_completion"
-				: "repository reads, file listing and search, available codebase search, and attempt_completion"
+				? "repository reads, native file edits within the approved write scope, exec_command, write_stdin, and visible assistant completion"
+				: "repository reads, file listing and search, available codebase search, and visible assistant completion"
 		const authority = subagentHasInheritedSkills
 			? `${baseAuthority}, plus loading skills listed in the frozen inherited catalog`
 			: baseAuthority
@@ -22,7 +22,7 @@ export function getSharedToolUseSection(
 		const delegationGuidance = subagentCanDelegate
 			? `
 
-spawn_agent is nonblocking. Batch independent spawn_agent calls when root-wide capacity allows. The lifecycle controls list_agents, send_message, followup_task, and close_agent may be combined only when every descendant target is already known. wait_agent is blocking and must be called alone; bounded waits may repeat while agent work or parent control is pending. Do not control ancestors, siblings, or foreign branches.${
+spawn_agent is nonblocking. Batch independent spawn_agent calls when root-wide capacity allows. The lifecycle controls list_agents, send_message, followup_task, and interrupt_agent may be combined only when every descendant target is already known. wait_agent is blocking and must be called alone; bounded waits may repeat while agent work or parent control is pending. Do not control ancestors, siblings, or foreign branches.${
 					subagentDelegationPolicy === "proactive"
 						? ""
 						: " A launch requires persisted task opt-in or trusted group approval."
@@ -39,7 +39,7 @@ ${scopeGuidance}
 
 ${progressGuidance}
 
-When the assigned objective and required checks are complete, managed subagents may return a final assistant answer or use attempt_completion. Both paths preserve parent review and verification. Use attempt_completion with outcome blocked for an unresolved constraint. Continue when tools, steering, or required work remain pending.
+When the assigned objective and required checks are complete, provide a concise visible final assistant answer. This preserves parent review and verification. Report any unresolved constraint in that answer. Continue when tools, steering, or required work remain pending.
 
 Batch independent reads and searches when their results do not affect one another. Serialize dependent actions, approvals, and${
 			subagentRole === "worker" ? " workspace mutations" : " final synthesis"
@@ -51,11 +51,11 @@ Batch independent reads and searches when their results do not affect one anothe
 
 TOOL USE
 
-Use the provider-native tool-calling mechanism for non-mutating repository inspection only. The Plan tool surface is limited to reads, listing, search, host-classified inspection or verification commands, questions, and managed read-only agent coordination.
+Use the provider-native tool-calling mechanism for non-mutating repository inspection only. The Plan tool surface is limited to reads, listing, search, host-classified inspection or verification commands, questions, and managed read-only agent coordination when its tools are supplied for this turn.
 
 ${progressGuidance}
 
-shell accepts only a conservative, workspace-confined single-command allow-list; never use shell composition, expansion, redirection, mutation/fix/update flags, watchers, arbitrary scripts, package installation, or output/temp/cache/config/plugin overrides. Permitted verification may execute trusted repository test/config code and create ordinary tool caches. Managed agents must be Explore or Review children with read-only objectives. Never steer, relaunch, or otherwise advance a retained Worker. Never call a mutation, MCP, browser, legacy task, mode-switch, todo, slash-command, or skill tool from Plan mode.`
+exec_command accepts only host-classified inspection or source-non-mutating verification commands in a workspace-confined working directory; never use command composition, expansion, redirection, mutation/fix/update flags, watchers, arbitrary scripts, package installation, or output/temp/cache/config/plugin overrides. Permitted verification may execute trusted repository test/config code and create ordinary tool caches. Managed agents must be Explore or Review children with read-only objectives. Never steer, relaunch, or otherwise advance a retained Worker. Never call a mutation, MCP, browser, legacy task, mode-switch, todo, slash-command, or skill tool from Plan mode.`
 	}
 
 	const rootDelegationGuidance =
@@ -77,5 +77,7 @@ You have access to tools governed by the current execution and approval policy. 
 
 ${progressGuidance}
 
-new_task is a blocking delegation boundary and must be called alone, never batched with another tool. spawn_agent is nonblocking. Independent spawn_agent calls may be batched together.${rootDelegationGuidance}`
+When update_plan is available, use it for work with several meaningful phases. Keep one step in progress and update completed steps as work finishes. Skip it for simple tasks.
+
+spawn_agent is nonblocking. Batch independent spawn_agent calls when they are useful and within policy. Use wait_agent alone when you need to wait for a child; use interrupt_agent to stop a retained child. Do not treat an assistant response as complete while required tool calls or child work remain pending.${rootDelegationGuidance}`
 }

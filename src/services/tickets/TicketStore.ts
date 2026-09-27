@@ -20,6 +20,8 @@ import {
 	type UpdateTicket,
 	type Ticket,
 	type TicketList,
+	type TicketRelations,
+	type TicketSummary,
 	type TicketStatus,
 } from "@alpha-code/types"
 import { atomicWriteText, withFileLock } from "../../core/task-persistence/atomicWrite"
@@ -34,6 +36,39 @@ const digest = (text: string) => createHash("sha256").update(text).digest("hex")
 const revisionOf = (status: TicketStatus, text: string) => digest(`${status}\0${text}`)
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT"
 const checkCancelled = (signal?: AbortSignal) => signal?.throwIfAborted()
+type TicketChildCounts = { childCount: number; completedChildCount: number }
+function countChildren(tickets: Ticket[]): Map<string, TicketChildCounts> {
+	const counts = new Map<string, TicketChildCounts>()
+	for (const ticket of tickets) {
+		if (!ticket.parentId) continue
+		const childCounts = counts.get(ticket.parentId) ?? { childCount: 0, completedChildCount: 0 }
+		childCounts.childCount++
+		if (ticket.status === "complete") childCounts.completedChildCount++
+		counts.set(ticket.parentId, childCounts)
+	}
+	return counts
+}
+function compareTickets(a: Ticket, b: Ticket): number {
+	return (
+		ticketStatusOrder.indexOf(a.status) - ticketStatusOrder.indexOf(b.status) ||
+		b.updatedAt.localeCompare(a.updatedAt) ||
+		a.id.localeCompare(b.id)
+	)
+}
+function summarizeTicket(ticket: Ticket, childCounts: Map<string, TicketChildCounts>): TicketSummary {
+	return {
+		id: ticket.id,
+		reference: ticket.reference,
+		parentId: ticket.parentId,
+		name: ticket.name,
+		status: ticket.status,
+		type: ticket.type,
+		...(ticket.priority !== undefined ? { priority: ticket.priority } : {}),
+		updatedAt: ticket.updatedAt,
+		revision: ticket.revision,
+		...(childCounts.get(ticket.id) ?? { childCount: 0, completedChildCount: 0 }),
+	}
+}
 const sequenceSchema = z
 	.object({
 		version: z.literal(1),
@@ -267,8 +302,6 @@ export class TicketStore {
 			}),
 		)
 		const ticket = ticketSchema.parse({ ...metadata, ...fields, status, revision: revisionOf(status, raw) })
-		if (ticket.status === "complete" && !ticket.implementationSummary.trim())
-			throw new Error("Complete tickets require an implementation summary")
 		return { ticket, metadata, body }
 	}
 
@@ -292,9 +325,11 @@ export class TicketStore {
 		} = ticket
 		const merged: Record<string, unknown> = { ...metadata, ...meta }
 		delete merged.completedAt
+		delete merged.parentId
 		delete merged.status
 		delete merged.revision
 		if (ticket.completedAt) merged.completedAt = ticket.completedAt
+		if (ticket.parentId) merged.parentId = ticket.parentId
 		const text = `---\n${stringify(merged)}---\n${body}`
 		if (Buffer.byteLength(text, "utf8") > 100000) throw new Error("Ticket exceeds 100 KB")
 		const parsed = this.parse(text, ticket.status).ticket
@@ -326,6 +361,21 @@ export class TicketStore {
 
 	async read(id: string, signal?: AbortSignal): Promise<Ticket> {
 		return this.inspect(async () => (await this.locate(await this.resolveId(id, signal))).ticket, signal)
+	}
+	async relations(id: string, signal?: AbortSignal): Promise<TicketRelations> {
+		const ticketId = ticketIdSchema.parse(id)
+		return this.inspect(async () => {
+			const { tickets } = await this.scan(signal)
+			const ticket = tickets.find((item) => item.id === ticketId)
+			if (!ticket) throw new Error("Ticket not found")
+			const childCounts = countChildren(tickets)
+			const parent = ticket.parentId ? tickets.find((item) => item.id === ticket.parentId) : undefined
+			const children = tickets.filter((item) => item.parentId === ticketId).sort(compareTickets)
+			return {
+				...(parent ? { parent: summarizeTicket(parent, childCounts) } : {}),
+				children: children.map((child) => summarizeTicket(child, childCounts)),
+			}
+		}, signal)
 	}
 	async markdownPath(id: string): Promise<string> {
 		return this.inspect(async () => (await this.locate(id)).file)
@@ -371,10 +421,25 @@ export class TicketStore {
 		return matches[0].id
 	}
 
+	private validateParent(tickets: Ticket[], ticketId: string, parentId?: string): void {
+		if (!parentId) return
+		const byId = new Map(tickets.map((ticket) => [ticket.id, ticket]))
+		const visited = new Set<string>([ticketId])
+		let current: string | undefined = parentId
+		while (current) {
+			if (visited.has(current)) throw new Error("A ticket cannot be its own parent or descendant")
+			visited.add(current)
+			const parent: Ticket | undefined = byId.get(current)
+			if (!parent) throw new Error("Parent ticket not found in this project")
+			current = parent.parentId
+		}
+	}
+
 	async list(input: unknown = {}, signal?: AbortSignal): Promise<TicketList> {
 		const filter = listTicketsSchema.parse(input)
 		return this.inspect(async () => {
 			const { tickets, invalidFiles } = await this.scan(signal)
+			const childCounts = countChildren(tickets)
 			const reference = filter.query && normalizeTicketReference(filter.query)
 			const terms = filter.query?.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []
 			const matches = tickets
@@ -391,23 +456,11 @@ export class TicketStore {
 										.includes(term),
 								)),
 				)
-				.sort(
-					(a, b) =>
-						ticketStatusOrder.indexOf(a.status) - ticketStatusOrder.indexOf(b.status) ||
-						b.updatedAt.localeCompare(a.updatedAt) ||
-						a.id.localeCompare(b.id),
-				)
+				.sort(compareTickets)
 			return {
 				tickets: matches
 					.slice(filter.offset, filter.offset + filter.limit)
-					.map(({ id, reference, name, status, type, updatedAt }) => ({
-						id,
-						reference,
-						name,
-						status,
-						type,
-						updatedAt,
-					})),
+					.map((ticket) => summarizeTicket(ticket, childCounts)),
 				total: matches.length,
 				invalidFiles: invalidFiles.slice(0, 100),
 			}
@@ -417,12 +470,12 @@ export class TicketStore {
 	async create(input: CreateTicket, signal?: AbortSignal): Promise<Ticket> {
 		const fields = createTicketSchema.parse(input)
 		return this.transaction(async () => {
-			const sequence = await this.sequence((await this.scan(signal)).tickets)
+			const { tickets } = await this.scan(signal)
+			const sequence = await this.sequence(tickets)
 			const now = new Date().toISOString()
 			const ticket: Ticket = {
 				schemaVersion: 1,
 				id: randomUUID(),
-				reference: await this.reserveReference(sequence),
 				status: "backlog",
 				createdAt: now,
 				updatedAt: now,
@@ -434,6 +487,8 @@ export class TicketStore {
 				implementationSummary: "",
 				...fields,
 			}
+			this.validateParent(tickets, ticket.id, ticket.parentId)
+			ticket.reference = await this.reserveReference(sequence)
 			const file = this.file(ticket.id, ticket.status)
 			await this.safe(file)
 			checkCancelled(signal)
@@ -448,20 +503,21 @@ export class TicketStore {
 			const old = await this.locate(await this.resolveId(patch.id, signal))
 			if (old.ticket.revision !== patch.expectedRevision)
 				throw new Error("Ticket changed; reload before saving. Your draft has not been saved.")
-			const { expectedRevision: _expected, id: _id, ...fields } = patch
+			const { expectedRevision: _expected, id: _id, parentId, ...fields } = patch
 			const now = new Date().toISOString()
 			const ticket = ticketSchema.parse({
 				...old.ticket,
 				...fields,
+				parentId: parentId === null ? undefined : (parentId ?? old.ticket.parentId),
 				updatedAt: now,
 				linkedTaskIds: linkedTaskId
 					? [...new Set([...old.ticket.linkedTaskIds, linkedTaskId])]
 					: old.ticket.linkedTaskIds,
 			})
-			const sequence = await this.sequence((await this.scan(signal)).tickets)
+			const { tickets } = await this.scan(signal)
+			const sequence = await this.sequence(tickets)
+			this.validateParent(tickets, ticket.id, ticket.parentId)
 			if (!ticket.reference) ticket.reference = await this.reserveReference(sequence)
-			if (ticket.status === "complete" && !ticket.implementationSummary.trim())
-				throw new Error("Add an implementation summary before completing the ticket")
 			ticket.completedAt = ticket.status === "complete" ? (old.ticket.completedAt ?? now) : undefined
 			const target = this.file(ticket.id, ticket.status)
 			await this.safe(target)
@@ -495,7 +551,10 @@ export class TicketStore {
 			const old = await this.locate(await this.resolveId(request.id, signal))
 			if (old.ticket.revision !== request.expectedRevision)
 				throw new Error("Ticket changed; reload before deleting. The ticket has not been deleted.")
-			const sequence = await this.sequence((await this.scan(signal)).tickets)
+			const { tickets } = await this.scan(signal)
+			const sequence = await this.sequence(tickets)
+			if (tickets.some((ticket) => ticket.parentId === old.ticket.id))
+				throw new Error("Detach or delete child tickets before deleting their parent")
 			const sequenceFile = path.join(this.directory, ".sequence.json")
 			await this.safe(sequenceFile)
 			checkCancelled(signal)

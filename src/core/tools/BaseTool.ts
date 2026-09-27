@@ -1,4 +1,4 @@
-import type { AlphaAsk, AlphaAskResponse, ToolName, ToolProgressStatus } from "@alpha-code/types"
+import type { AlphaAsk, AlphaAskResponse, CommandToolResult, ToolName, ToolProgressStatus } from "@alpha-code/types"
 
 import { Task } from "../task/Task"
 import type { ToolUse, HandleError, PushToolResult, AskApproval, NativeToolArgs } from "../../shared/tools"
@@ -55,6 +55,8 @@ export interface ToolResultMetadata {
 	status?: "success" | "error" | "denied" | "cancelled"
 	executionStatus?: "running" | "success" | "error" | "denied" | "cancelled"
 	exitCode?: number
+	/** Structured command outcome retained alongside the legacy user-facing content string. */
+	commandResult?: CommandToolResult
 	timedOut?: boolean
 	/** Host-issued progress observation. This is deliberately not verification evidence. */
 	trustedExploration?: TrustedExplorationObservation
@@ -84,6 +86,83 @@ export interface ToolCallbacks {
 	/** Host-captured server scope for a dynamic descriptor; never read from model arguments. */
 	mcpSource?: "global" | "project"
 	resolveCommandTimeoutMs?: (requestedTimeoutMs: number | null | undefined, command: string) => number
+	/** Present only for exec_command and write_stdin model calls. */
+	commandResultMaxOutputTokens?: number
+	/** Present only for the native exec_command and write_stdin aliases. */
+	commandResultFormat?: "codex"
+}
+
+/**
+ * Serialize a command result while keeping its JSON envelope intact within the available character budget.
+ * The tool output is trimmed before the returned string is serialized for the model.
+ */
+export function serializeCommandToolResult(result: CommandToolResult, maxCharacters: number): string {
+	const budget = Math.max(0, Math.floor(maxCharacters))
+	const serialize = (output: string) => JSON.stringify({ ...result, output })
+	const complete = serialize(result.output)
+	if (complete.length <= budget) return complete
+
+	const empty = serialize("")
+	// The envelope itself is the minimum valid representation. Keep it intact
+	// when a host supplies a budget too small to fit the metadata.
+	if (empty.length > budget) return empty
+	if (result.output.length === 0) return empty
+
+	const marker = "\n[output truncated]"
+	let low = 0
+	let high = result.output.length
+	let best = empty
+	while (low <= high) {
+		const length = Math.floor((low + high) / 2)
+		const output = `${result.output.slice(0, length)}${marker}`
+		const candidate = serialize(output)
+		if (candidate.length <= budget) {
+			best = candidate
+			low = length + 1
+		} else {
+			high = length - 1
+		}
+	}
+	return best
+}
+
+export function getCommandToolResultLimit(callbacks: ToolCallbacks): number {
+	const requestedLimit =
+		callbacks.commandResultMaxOutputTokens !== undefined
+			? Math.max(0, Math.floor(callbacks.commandResultMaxOutputTokens * 4))
+			: Number.MAX_SAFE_INTEGER
+	return Math.min(requestedLimit, callbacks.getRemainingOutputChars?.() ?? requestedLimit)
+}
+
+export function boundCommandToolResult(result: CommandToolResult, maxCharacters: number): CommandToolResult {
+	return JSON.parse(serializeCommandToolResult(result, maxCharacters)) as CommandToolResult
+}
+
+/** Format native command aliases like Codex; the cap applies to command output, not the headers. */
+export function formatCommandToolResult(result: CommandToolResult, maxCharacters: number, chunkId?: string): string {
+	const lines = [
+		...(chunkId ? [`Chunk ID: ${chunkId}`] : []),
+		`Wall time: ${result.wall_time_seconds.toFixed(4)} seconds`,
+		...(typeof result.exit_code === "number" ? [`Process exited with code ${result.exit_code}`] : []),
+		...(result.session_id ? [`Process running with session ID ${result.session_id}`] : []),
+		...(typeof result.original_token_count === "number"
+			? [`Original token count: ${result.original_token_count}`]
+			: []),
+		"Output:",
+	]
+	const prefix = `${lines.join("\n")}\n`
+	const artifactNote = result.artifact_id
+		? `\nOutput truncated. Read artifact ${result.artifact_id} with read_command_output.`
+		: ""
+	const budget = Math.max(0, Math.floor(maxCharacters))
+	const marker = "\n[output truncated]"
+	const output =
+		result.output.length <= budget
+			? result.output
+			: budget <= marker.length
+				? result.output.slice(0, budget)
+				: `${result.output.slice(0, budget - marker.length)}${marker}`
+	return `${prefix}${output}${artifactNote}`
 }
 
 /**

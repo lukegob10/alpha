@@ -41,6 +41,38 @@ function renderRows(messages: AlphaMessage[]) {
 }
 
 describe("compact activity steps", () => {
+	it("shows the full multiline progress message in the transcript", () => {
+		renderRows([
+			{ ts: 1, type: "say", say: "text", text: "Checking the code.\n\nThe command path needs an update." },
+		])
+		expect(screen.getByText("Checking the code.")).toBeVisible()
+		expect(screen.getByText("The command path needs an update.")).toBeVisible()
+	})
+
+	it("shows available reasoning content by default", () => {
+		renderRows([{ ts: 1, type: "say", say: "reasoning", text: "I found the execution path." }])
+		expect(screen.getByText("I found the execution path.")).toBeVisible()
+	})
+
+	it("shows outside write paths from a typed command approval", () => {
+		renderRows([
+			{
+				ts: 1,
+				type: "ask",
+				ask: "command",
+				text: "echo ready > outside.txt",
+				toolApprovalRequest: {
+					requestId: "task-1:outside-write",
+					taskId: "task-1",
+					toolName: "exec_command",
+					availableDecisions: ["approve_once", "deny", "abort"],
+					commandPathApproval: { outsidePaths: ["/other/outside.txt"], unresolved: false },
+				},
+			},
+		])
+		expect(screen.getByText("/other/outside.txt")).toBeVisible()
+	})
+
 	it("keeps a long code search query out of the activity heading and reveals it on demand", () => {
 		const query =
 			"How the backend application connects to the database, configures Oracle, and handles pooled connections"
@@ -130,7 +162,7 @@ describe("compact activity steps", () => {
 		expect(within(details).getByText("Maple")).toBeVisible()
 	})
 
-	it("collapses commentary while keeping the user message and final answer visible", () => {
+	it("shows full commentary beside the user message and final answer", () => {
 		renderRows([
 			{ ts: 1, type: "say", say: "user_feedback", text: "Change the timer" },
 			{ ts: 2, type: "say", say: "text", text: "Inspecting the timer\nChecking cancellation too", partial: true },
@@ -138,10 +170,6 @@ describe("compact activity steps", () => {
 		])
 		expect(screen.getByText("Change the timer")).toBeVisible()
 		expect(screen.getByText("The timer now waits 60 seconds")).toBeVisible()
-		const toggle = screen.getByRole("button", { name: "Inspecting the timer", expanded: false })
-		expect(toggle.tagName).toBe("BUTTON")
-		expect(screen.queryByText(/Checking cancellation too/)).not.toBeInTheDocument()
-		fireEvent.click(toggle)
 		expect(screen.getByText(/Checking cancellation too/)).toBeVisible()
 	})
 

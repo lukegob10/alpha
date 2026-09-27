@@ -137,6 +137,11 @@ describe("ApplyPatchTool", () => {
 		)
 
 		expect(callbacks.askApproval).toHaveBeenCalledOnce()
+		expect(JSON.parse(callbacks.askApproval.mock.calls[0][1])).toMatchObject({
+			tool: "newFileCreated",
+			path: "new.txt",
+			diffStats: { added: 1, removed: 0 },
+		})
 		expect(mockedFs.writeFile).toHaveBeenCalledWith(path.resolve(task.cwd, "new.txt"), "new content\n", {
 			encoding: "utf-8",
 			flag: "wx",
@@ -201,6 +206,10 @@ describe("ApplyPatchTool", () => {
 			callbacks,
 		)
 		expect(mockedFs.writeFile).toHaveBeenCalledWith(expect.stringContaining("source.txt"), expected, "utf-8")
+		expect(JSON.parse(callbacks.askApproval.mock.calls[0][1])).toMatchObject({
+			tool: "appliedDiff",
+			diffStats: { added: 1, removed: 1 },
+		})
 		expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "success" })
 	})
 
@@ -238,7 +247,7 @@ describe("ApplyPatchTool", () => {
 			}
 			const outcome = await new ToolScheduler({
 				task,
-				registry: new ToolRegistry({ nativeTools: getNativeTools({ includeApplyPatch: true }) }),
+				registry: new ToolRegistry({ nativeTools: getNativeTools() }),
 				mode: "code",
 				preserveAbortedResults: true,
 				validateCall: () => {},

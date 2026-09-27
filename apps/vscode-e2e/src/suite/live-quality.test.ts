@@ -15,9 +15,9 @@ suite("Live Copilot groundedness and trajectory", function () {
 				[...item.tools],
 				{ ...item.files },
 				item.prompt,
-				async (calls, _messages, _workspace, transcript) => {
+				async (calls, _messages, workspace, _transcript, _task, finalAssistantText) => {
 					const report = scoreQuality(item, {
-						answer: visibleAnswer(calls, transcript),
+						answer: visibleAnswer(calls, finalAssistantText),
 						calls,
 					})
 					const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR
@@ -38,8 +38,14 @@ suite("Live Copilot groundedness and trajectory", function () {
 							)
 							.join("; "),
 					)
+					for (const [relative, content] of Object.entries(item.files))
+						assert.equal(
+							await fs.readFile(path.join(workspace, relative), "utf8"),
+							content,
+							`Read-only quality probe changed ${relative}`,
+						)
 				},
-				{ scope: item.scope, requestLimit: item.requestLimit },
+				{ scope: item.scope, commands: ["node", "rg", "cut"], requestLimit: item.requestLimit },
 			)
 		})
 	}

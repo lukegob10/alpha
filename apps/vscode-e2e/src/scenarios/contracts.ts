@@ -47,6 +47,8 @@ export interface WorkflowResult {
 	providerMode: string
 	model: { id?: string; family?: string; vendor?: string; reasoningEffort?: string }
 	requestsUsed: number | null
+	/** Stable hash of effective E2E approval settings; excludes the task workspace path. */
+	e2eApprovalPolicySha256?: string
 	usage?: {
 		inputTokens: number | null
 		outputTokens: number | null
@@ -102,6 +104,11 @@ export function assertWorkflowResult(value: unknown): asserts value is WorkflowR
 				value.requestsUsed < 0))
 	)
 		throw new WorkflowFailure("harness", "invalid_workflow_result")
+	if (
+		value.e2eApprovalPolicySha256 !== undefined &&
+		(typeof value.e2eApprovalPolicySha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.e2eApprovalPolicySha256))
+	)
+		throw new WorkflowFailure("harness", "invalid_workflow_approval_policy")
 	if (!Array.isArray(value.checks)) throw new WorkflowFailure("harness", "invalid_workflow_checks")
 	if (value.checks.length > MAX_WORKFLOW_CHECKS) throw new WorkflowFailure("harness", "workflow_check_limit_exceeded")
 	if (!value.checks.every(isWorkflowCheck)) throw new WorkflowFailure("harness", "invalid_workflow_check")

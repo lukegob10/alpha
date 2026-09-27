@@ -39,6 +39,8 @@ export type AgentResponseStatus = "completed" | "incomplete" | "failed" | "cance
 
 export interface AgentResponseOutcome {
 	status: AgentResponseStatus
+	/** The provider completed this response, but requires a follow-up model step for the same turn. */
+	requiresContinuation?: boolean
 	reason?: string
 	retryable?: boolean
 }
@@ -66,7 +68,7 @@ export interface AgentResponse {
 	text: string
 	reasoning: string
 	toolCalls: AgentToolCall[]
-	/** Present when the provider/host knows the response did not complete normally. */
+	/** Present when the provider/host reports response lifecycle or turn-continuation state. */
 	outcome?: AgentResponseOutcome
 }
 

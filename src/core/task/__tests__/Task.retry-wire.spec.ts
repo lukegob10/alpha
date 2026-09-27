@@ -165,6 +165,49 @@ describe("Task retained retry wire inputs", () => {
 	beforeEach(() => vi.clearAllMocks())
 	afterEach(() => vi.restoreAllMocks())
 
+	it("captures ordered instruction roles once and retains them across a transport retry", async () => {
+		const { task, originalHandler } = harness()
+		const systemEnvironment =
+			"\n====\n\nSYSTEM INFORMATION\n\nOperating System: Linux 6.8\nDefault Shell: /bin/bash\nHome Directory: /home/coder"
+		const instructionFragments = [
+			{ role: "developer" as const, content: "Base instructions", origin: "built-in-mode" },
+			{ role: "developer" as const, content: systemEnvironment, origin: "system-environment" },
+			{ role: "user" as const, content: "\nProject instructions", origin: "project-instructions" },
+		]
+		const getSystemPrompt = vi.fn(async (...args: unknown[]) => {
+			const capture = args[4] as (fragments: typeof instructionFragments) => void
+			capture(instructionFragments)
+			return `Base instructions${systemEnvironment}\nProject instructions`
+		})
+		Object.assign(task, { getSystemPrompt })
+		originalHandler.createMessage.mockImplementationOnce(() => failBeforeFirstChunk(new Error("retry fixture")))
+		await expect(
+			task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true }).next(),
+		).rejects.toThrow("retry fixture")
+		const firstCall = originalHandler.createMessage.mock.calls[0]
+		expect(firstCall[2]?.instructionFragments).toEqual(instructionFragments)
+		const firstSnapshot = capturedStep(task).snapshot
+		expect(firstSnapshot.context.instructions.instructionFragments).toEqual(instructionFragments)
+		expect(
+			firstSnapshot.context.instructions.instructionFragments?.filter(
+				({ origin }) => origin === "system-environment",
+			),
+		).toEqual([{ role: "developer", content: systemEnvironment, origin: "system-environment" }])
+
+		for await (const _chunk of task.attemptApiRequest(1, {
+			skipProviderRateLimit: true,
+			ownerHandlesRetry: true,
+			retryCategory: "transport",
+		})) {
+			/* consume */
+		}
+		expect(getSystemPrompt).toHaveBeenCalledOnce()
+		expect(originalHandler.createMessage.mock.calls[1][2]?.instructionFragments).toEqual(instructionFragments)
+		expect(capturedStep(task).snapshot.context.instructions.instructionFragments).toEqual(instructionFragments)
+		expect(capturedStep(task).snapshot.digests.instructions).toBe(firstSnapshot.digests.instructions)
+		expect(logicalRequest(originalHandler.createMessage.mock.calls[1])).toEqual(logicalRequest(firstCall))
+	})
+
 	it.each(["primary", "subagent"])(
 		"prepares a %s model before its first tool capture and only again on a new step",
 		async (taskKind) => {
@@ -300,7 +343,9 @@ describe("Task retained retry wire inputs", () => {
 		"retains the actual logical request and handler across a %s retry, with fresh attempt cancellation",
 		async (retryCategory) => {
 			const { task, live, originalHandler } = harness()
-			if (retryCategory === "rate-limit") live.allowedFunctionNames = ["read_file"]
+			// A provider-facing alias must survive a retry even when the captured
+			// surface stores a different canonical policy name.
+			if (retryCategory === "rate-limit") live.allowedFunctionNames = ["exec_command"]
 			Object.assign(task, { skipPrevResponseIdOnce: true })
 			const now = vi.spyOn(Date, "now").mockReturnValue(1000)
 			const firstStepController = new AbortController()

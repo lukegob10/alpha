@@ -57,6 +57,9 @@ describe("supported provider model catalogs", () => {
 			"gpt-5.6-luna",
 			"gpt-5.6-sol",
 			"gpt-5.6-terra",
+			"gpt-6-astra",
+			"gpt-6-luna",
+			"gpt-6-sol",
 			"claude-fable-5",
 			"claude-haiku-4.5",
 			"claude-sonnet-4.5",
@@ -89,6 +92,25 @@ describe("supported provider model catalogs", () => {
 			for (const modelId of currentCopilotModelIds) {
 				expect(getVscodeLlmModelInfo({ vendor: "copilot", id: `copilot-${modelId}` })).toBe(
 					vscodeLlmModels[modelId],
+				)
+			}
+		})
+
+		it("configures GPT-6 default and extended context plus reasoning levels", () => {
+			const expectedReasoningEfforts = {
+				"gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
+				"gpt-6-luna": ["none", "low", "medium", "high", "xhigh", "max"],
+				"gpt-6-sol": ["none", "low", "medium", "high", "xhigh", "max"],
+			} as const
+
+			for (const [modelId, reasoningEfforts] of Object.entries(expectedReasoningEfforts)) {
+				expect(vscodeLlmModels[modelId as keyof typeof vscodeLlmModels]).toEqual(
+					expect.objectContaining({
+						contextWindow: 272_000,
+						supportsContextWindowConfiguration: true,
+						extendedContextSize: 1_050_000,
+						supportsReasoningEffort: reasoningEfforts,
+					}),
 				)
 			}
 		})
