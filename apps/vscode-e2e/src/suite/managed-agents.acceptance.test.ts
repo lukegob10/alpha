@@ -850,12 +850,22 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			})
 			await waitFor(
 				async () => {
-					const history = await provider.getTaskWithId(interruptTaskId)
-					return history.apiConversationHistory.some(
-						(message) =>
-							Array.isArray(message.content) &&
-							message.content.some((block) => block.type === "tool_use" && block.name === "wait_agent"),
-					)
+					try {
+						const history = await provider.getTaskWithId(interruptTaskId)
+						return history.apiConversationHistory.some(
+							(message) =>
+								Array.isArray(message.content) &&
+								message.content.some(
+									(block) => block.type === "tool_use" && block.name === "wait_agent",
+								),
+						)
+					} catch (error) {
+						// Spawn publication can precede the child's first durable history write.
+						// Treat only that known admission window as retryable; preserve every
+						// other persistence failure for the acceptance gate to report.
+						if (error instanceof Error && error.message === "Task not found") return false
+						throw error
+					}
 				},
 				{ timeout: 60_000, interval: 50, description: "interrupt Worker blocked in wait_agent" },
 			)
