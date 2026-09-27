@@ -24,6 +24,7 @@ import {
 	approvalModeSchema,
 	checkoutDiffPayloadSchema,
 	checkoutRestorePayloadSchema,
+	openDiffPayloadSchema,
 	scheduledTaskSkillsRequestSchema,
 	taskReasoningUpdateSchema,
 	subagentAgentTypesSchema,
@@ -55,6 +56,7 @@ import { checkExistKey } from "../../shared/checkExistApiConfig"
 import { experimentDefault } from "../../shared/experiments"
 import { Terminal } from "../../integrations/terminal/Terminal"
 import { openFile } from "../../integrations/misc/open-file"
+import { openDiff } from "../../integrations/editor/openDiff"
 import { openHtmlDocumentLink } from "./html-document"
 import { openImage, saveImage } from "../../integrations/misc/image-handler"
 import { selectImages } from "../../integrations/misc/process-images"
@@ -1119,6 +1121,11 @@ export const webviewMessageHandler = async (
 			}
 			openFile(filePath, message.values as { create?: boolean; content?: string; line?: number })
 			break
+		case "openDiff": {
+			const result = openDiffPayloadSchema.safeParse(message.payload)
+			if (result.success) await openDiff(result.data)
+			break
+		}
 		case "readFileContent": {
 			const relPath = message.text || ""
 			if (!relPath) {

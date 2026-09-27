@@ -51,7 +51,8 @@
 	"fileChangesInConversation": {
 		"header": "Files edited: {{count}}",
 		"linesChanged": "{{added}} lines added, {{removed}} lines removed",
-		"openFile": "Open file: {{path}}"
+		"openDiff": "Show diff: {{path}}",
+		"openAllDiffs": "Review"
 	},
 	"retry": {
 		"title": "Retry",

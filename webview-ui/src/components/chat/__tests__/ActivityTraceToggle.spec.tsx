@@ -25,11 +25,7 @@ describe("ActivityTraceToggle", () => {
 		const button = screen.getByRole("button", { name: `${label} 2` })
 		expect(button).toHaveAttribute("aria-expanded", "false")
 		expect(button).toHaveAttribute("aria-controls", "row-1 row-2")
-		if (kind === "commands") {
-			expect(button.parentElement).toHaveClass("border-b")
-		} else {
-			expect(button.parentElement).not.toHaveClass("border-b")
-		}
+		expect(button.parentElement).not.toHaveClass("border-b")
 		fireEvent.click(button)
 		expect(onToggle).toHaveBeenCalledTimes(1)
 	})

@@ -164,6 +164,21 @@ describe("fileChangesFromMessages", () => {
 		])
 	})
 
+	it("prefers the canonical unified content over a raw apply_diff instruction", () => {
+		const result = fileChangesFromMessages([
+			msg({
+				text: JSON.stringify({
+					tool: "appliedDiff",
+					path: "src/file.ts",
+					diff: "<<<<<<< SEARCH\n-old\n=======\n+new\n>>>>>>> REPLACE",
+					content: "--- src/file.ts\n+++ src/file.ts\n@@ -1 +1 @@\n-old\n+new",
+				}),
+			}),
+		])
+
+		expect(result[0]?.diff).toBe("--- src/file.ts\n+++ src/file.ts\n@@ -1 +1 @@\n-old\n+new")
+	})
+
 	it("uses a completed record once instead of also counting its answered approval preview", () => {
 		const diff = "@@ -1 +1 @@\n-before\n+after"
 		const preview = msg({

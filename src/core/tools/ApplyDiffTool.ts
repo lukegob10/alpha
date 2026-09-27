@@ -143,6 +143,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 					diff: diffContent,
 					content: unifiedPatch,
 					originalContent,
+					finalContent: diffResult.content,
 					diffStats,
 					isProtected: isWriteProtected,
 				} satisfies AlphaSayTool)
@@ -191,6 +192,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 					diff: diffContent,
 					content: unifiedPatch,
 					originalContent,
+					finalContent: diffResult.content,
 					diffStats,
 					isProtected: isWriteProtected,
 				} satisfies AlphaSayTool)

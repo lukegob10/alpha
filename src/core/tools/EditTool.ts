@@ -189,6 +189,8 @@ export class EditTool extends BaseTool<"edit"> {
 			const completeMessage = JSON.stringify({
 				...sharedMessageProps,
 				content: sanitizedDiff,
+				originalContent: originalFileContent,
+				finalContent: newContent,
 				isProtected: isWriteProtected,
 				diffStats,
 			} satisfies AlphaSayTool)

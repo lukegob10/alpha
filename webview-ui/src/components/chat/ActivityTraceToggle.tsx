@@ -20,7 +20,7 @@ export function ActivityTraceToggle({ traceId, kind, count, expanded, controls, 
 	)
 
 	return (
-		<div className={cn("mx-[15px] my-1 pb-1", kind === "commands" && "border-b border-[var(--border-subtle)]")}>
+		<div className="mx-[15px] my-1 pb-1">
 			<button
 				type="button"
 				data-activity-trace-id={traceId}

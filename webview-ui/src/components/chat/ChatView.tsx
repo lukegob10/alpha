@@ -2185,8 +2185,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						path: tool.path || "",
 						changeCount: 1,
 						key: tool.path || "",
-						content: tool.content || tool.diff || "",
+						content: tool.content ?? tool.diff ?? "",
 						diffStats: tool.diffStats,
+						originalContent: tool.originalContent,
+						finalContent: tool.finalContent,
 					}
 				} catch {
 					return { path: "", changeCount: 0, key: "", content: "" }

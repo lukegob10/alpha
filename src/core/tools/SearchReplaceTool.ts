@@ -185,6 +185,8 @@ export class SearchReplaceTool extends BaseTool<"search_replace"> {
 			const completeMessage = JSON.stringify({
 				...sharedMessageProps,
 				content: sanitizedDiff,
+				originalContent: originalFileContent,
+				finalContent: newContent,
 				isProtected: isWriteProtected,
 				diffStats,
 			} satisfies AlphaSayTool)

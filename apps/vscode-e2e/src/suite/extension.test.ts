@@ -15,6 +15,7 @@ suite("Alpha Extension", function () {
 	})
 
 	test("Ticket editor opens once and can be closed", async () => {
+		const activeColumn = vscode.window.tabGroups.activeTabGroup.viewColumn
 		const ticketTabs = () =>
 			vscode.window.tabGroups.all
 				.flatMap((group) => group.tabs)
@@ -38,6 +39,9 @@ suite("Alpha Extension", function () {
 		// VS Code 1.122.1 title-menu mouse actions forward this focus context.
 		await vscode.commands.executeCommand("alpha.openTickets", { preserveFocus: false })
 		await opened
+		const ticketTab = ticketTabs()[0]
+		const ticketGroup = vscode.window.tabGroups.all.find((group) => group.tabs.includes(ticketTab))
+		assert.equal(ticketGroup?.viewColumn, activeColumn, "Ticket editor should reuse the active editor group")
 		await vscode.commands.executeCommand("alpha.openTickets", { preserveFocus: false })
 		await vscode.commands.executeCommand("alpha.openTickets")
 		const tabs = ticketTabs()

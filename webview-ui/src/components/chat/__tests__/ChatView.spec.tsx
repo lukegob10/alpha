@@ -110,9 +110,17 @@ vi.mock("../FileChangesPanel", () => ({
 			try {
 				const tool = JSON.parse(message.text) as {
 					path?: string
-					batchDiffs?: Array<{ path?: string }>
+					batchDiffs?: Array<{ path?: string; originalContent?: string; finalContent?: string }>
 				}
-				return tool.batchDiffs?.map((file) => file.path).filter(Boolean) ?? (tool.path ? [tool.path] : [])
+				return (
+					tool.batchDiffs
+						?.map((file) =>
+							file.originalContent !== undefined && file.finalContent !== undefined
+								? `${file.path}:snapshot`
+								: file.path,
+						)
+						.filter(Boolean) ?? (tool.path ? [tool.path] : [])
+				)
 			} catch {
 				return []
 			}
@@ -772,6 +780,34 @@ describe("ChatView activity trace", () => {
 })
 
 describe("ChatView file-change summaries", () => {
+	it("preserves snapshots when consecutive completed file edits are grouped", async () => {
+		const view = renderChatView()
+		const edit = (ts: number, path: string): AlphaMessage => ({
+			type: "ask",
+			ask: "tool",
+			ts,
+			isAnswered: true,
+			text: JSON.stringify({
+				tool: "appliedDiff",
+				path,
+				content: `--- ${path}\n+++ ${path}\n@@ -1 +1 @@\n-old\n+new`,
+				originalContent: "old\n",
+				finalContent: "new\n",
+			}),
+		})
+		mockPostMessage({
+			currentTaskId: "grouped-diff-task",
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Edit two files" },
+				edit(2, "bootstrap.py"),
+				edit(3, "config.py"),
+				{ type: "say", say: "completion_result", ts: 4, text: "Done." },
+			],
+		})
+		await waitFor(() => expect(view.getByTestId("file-changes-panel")).toHaveTextContent("bootstrap.py:snapshot"))
+		expect(view.getByTestId("file-changes-panel")).toHaveTextContent("config.py:snapshot")
+	})
+
 	it("keeps each turn's applied edits below that turn instead of aggregating them", async () => {
 		const view = renderChatView()
 		const edit = (ts: number, path: string): AlphaMessage => ({
