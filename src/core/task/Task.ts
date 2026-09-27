@@ -17,6 +17,7 @@ import {
 	persistentCommandPrefixAmendmentSchema,
 	toolApprovalDecisionSchema,
 	toolApprovalRequestSchema,
+	DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
 } from "@alpha-code/types"
 import {
 	captureAcceptanceChecks,
@@ -493,6 +494,16 @@ type BackgroundUsageDrainOwner = {
 
 /** Provider-neutral result returned by one Task model/tool step. */
 type TaskStepStatus = "completed" | "aborted" | "failed" | "incomplete" | "exhausted" | "awaiting-user"
+
+export function shouldCompactAfterTurn(outcome: {
+	status: AgentTurnOutcome["status"]
+	completionReason?: "assistant" | "host"
+}): boolean {
+	return (
+		(outcome.status === "completed" && outcome.completionReason === "assistant") ||
+		outcome.status === "awaiting-user"
+	)
+}
 
 type TaskRetryAttempts = Partial<Record<AgentRetryCategory, number>>
 
@@ -7817,7 +7828,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const state = await this.providerRef.deref()?.getState()
 			if (signal.aborted) signal.throwIfAborted()
 			if (this.pendingSteerMessage !== undefined || !this.messageQueueService.isEmpty()) return
-			const percent = state?.postTurnCondenseContextPercent ?? 0
+			const percent = state?.postTurnCondenseContextPercent ?? DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT
 			if (state?.autoCondenseContext === false || !Number.isInteger(percent) || percent < 1 || percent > 100)
 				return
 			capturedProvider = {
@@ -9563,7 +9574,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			try {
 				await this.beginCanonicalLifecycleTurn()
 				const outcome = await engine.run(input)
-				if (outcome.status === "completed" && outcome.completionReason === "assistant" && !this.abort) {
+				if (shouldCompactAfterTurn(outcome) && !this.abort) {
 					await this.maybeCompactAfterTurn()
 				}
 				const toolCallCount = "response" in outcome && outcome.response ? outcome.response.toolCalls.length : 0

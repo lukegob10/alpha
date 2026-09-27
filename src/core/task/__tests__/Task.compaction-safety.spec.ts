@@ -20,7 +20,7 @@ import { createTaskToolSurface } from "../../tools/TaskToolSurface"
 import { ToolRegistry } from "../../tools/ToolRegistry"
 import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 import { buildNativeToolsArrayWithRestrictions } from "../build-tools"
-import { Task } from "../Task"
+import { shouldCompactAfterTurn, Task } from "../Task"
 import { TaskToolCatalogCache } from "../TaskToolCatalogCache"
 
 vi.mock("../build-tools", async (importOriginal) => ({
@@ -168,6 +168,18 @@ function harness() {
 	vi.mocked(summarizeConversation).mockImplementation(async ({ messages }) => compactedResult(messages))
 	return { task, api, provider, save, history }
 }
+
+describe("post-turn compaction admission", () => {
+	it.each([
+		[{ status: "completed", completionReason: "assistant" }, true],
+		[{ status: "completed", completionReason: "host" }, false],
+		[{ status: "awaiting-user" }, true],
+		[{ status: "incomplete" }, false],
+		[{ status: "aborted" }, false],
+	] as const)("returns %s", (outcome, expected) => {
+		expect(shouldCompactAfterTurn(outcome)).toBe(expected)
+	})
+})
 
 function holdSummary() {
 	const started = deferred<void>()
@@ -730,6 +742,30 @@ describe("Task post-turn compaction", () => {
 		expect(reloadedHistory[0].condenseParent).toBe("summary-1")
 		expect(getEffectiveApiHistory(reloadedHistory)).toEqual(getEffectiveApiHistory(task.apiConversationHistory))
 		expect(getEffectiveApiHistory(reloadedHistory)).not.toContainEqual(reloadedHistory[0])
+	})
+
+	it("uses the default post-turn threshold when a saved value is absent", async () => {
+		const { task, api, provider, history } = harness()
+		api.getModel = () => ({
+			id: "small-model",
+			info: { contextWindow: 100_000, maxTokens: 4096, supportsPromptCache: false },
+		})
+		api.countTokens.mockImplementation(async (blocks) =>
+			JSON.stringify(blocks).includes("Earlier conversation") ? 1_000 : 20_000,
+		)
+		provider.getState.mockResolvedValue({ autoCondenseContext: true })
+		vi.mocked(summarizeConversation).mockClear()
+		vi.mocked(summarizeConversation).mockResolvedValueOnce({
+			...compactedResult(history),
+			prevContextTokens: 20_000,
+			newContextTokens: 1_000,
+			status: "reduced",
+		})
+
+		await Reflect.get(task, "maybeCompactAfterTurn").call(task)
+
+		expect(summarizeConversation).toHaveBeenCalledOnce()
+		expect(summarizeConversation).toHaveBeenCalledWith(expect.objectContaining({ isAutomaticTrigger: true }))
 	})
 
 	it("keeps a completed turn and its history when post-turn summarization fails", async () => {

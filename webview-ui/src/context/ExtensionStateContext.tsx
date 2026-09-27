@@ -21,6 +21,7 @@ import {
 	type Command,
 	type McpServer,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
+	DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
 } from "@alpha-code/types"
 
 import { findLastIndex } from "@alpha/array"
@@ -491,7 +492,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		autoCondenseContext: true,
 		autoCondenseContextPercent: 100,
 		autoCondenseContextScope: "full-context",
-		postTurnCondenseContextPercent: 0,
+		postTurnCondenseContextPercent: DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
 		profileThresholds: {},
 		codebaseIndexConfig: {
 			codebaseIndexEnabled: true,
@@ -962,7 +963,8 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const contextValue: ExtensionStateContextType = {
 		...state,
 		autoCondenseContextScope: state.autoCondenseContextScope ?? "full-context",
-		postTurnCondenseContextPercent: state.postTurnCondenseContextPercent ?? 0,
+		postTurnCondenseContextPercent:
+			state.postTurnCondenseContextPercent ?? DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
 		reasoningBlockCollapsed: state.reasoningBlockCollapsed ?? false,
 		didHydrateState,
 		showWelcome,

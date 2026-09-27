@@ -392,6 +392,11 @@ describe("ContextManagementSettings", () => {
 			expect(setCachedStateField).toHaveBeenCalledWith("postTurnCondenseContextPercent", 35)
 		})
 
+		it("defaults the turn-end threshold to the shared setting default", () => {
+			render(<ContextManagementSettings {...autoCondenseProps} />)
+			expect(screen.getByTestId("post-turn-condense-slider")).toHaveValue("15")
+		})
+
 		it("updates auto condense context percent", () => {
 			const mockSetCachedStateField = vitest.fn()
 			const props = { ...autoCondenseProps, setCachedStateField: mockSetCachedStateField }

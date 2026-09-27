@@ -89,6 +89,9 @@ export const MAX_CHECKPOINT_TIMEOUT_SECONDS = 60
  */
 export const DEFAULT_CHECKPOINT_TIMEOUT_SECONDS = 15
 
+/** Default post-response compaction trigger, measured against the usable context limit. */
+export const DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT = 15
+
 /**
  * GlobalSettings
  */

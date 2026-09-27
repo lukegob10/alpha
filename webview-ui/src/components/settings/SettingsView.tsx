@@ -36,6 +36,7 @@ import {
 	type ExperimentId,
 	type TelemetrySetting,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
+	DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
 } from "@alpha-code/types"
 
 import { vscode } from "@src/utils/vscode"
@@ -177,7 +178,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		autoCondenseContext,
 		autoCondenseContextPercent = 100,
 		autoCondenseContextScope = "full-context",
-		postTurnCondenseContextPercent = 0,
+		postTurnCondenseContextPercent = DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
 		enableCheckpoints,
 		checkpointTimeout,
 		experiments,
