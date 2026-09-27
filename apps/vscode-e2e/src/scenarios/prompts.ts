@@ -3,6 +3,10 @@ import { contextProbePrompt } from "./longContextProbe"
 import { settlementPrompt, SETTLEMENT_COMMANDS } from "./commandSettlement"
 
 export const WORKFLOW_COMMANDS = {
+	readModule: "node -e \"process.stdout.write(require('node:fs').readFileSync('lib/stats.cjs','utf8'))\"",
+	readTests: "node -e \"process.stdout.write(require('node:fs').readFileSync('test/stats.test.cjs','utf8'))\"",
+	readReadme: "node -e \"process.stdout.write(require('node:fs').readFileSync('README.md','utf8'))\"",
+	readCases: "node -e \"process.stdout.write(require('node:fs').readFileSync('test/workflow-cases.json','utf8'))\"",
 	test: "node --test test/stats.test.cjs",
 	status: "git status --short",
 	diff: "git diff -- lib/stats.cjs test/stats.test.cjs README.md",
@@ -13,7 +17,7 @@ export const WORKFLOW_COMMANDS = {
 const scope = [
 	"Work only in this disposable repository. Do not install dependencies, use network services, delegate, push,",
 	"alter Git configuration, or modify the fixture ownership marker or workflow checkpoints/results.",
-	"Use file tools for inspection and edits. The harness approves only these exact terminal commands, without",
+	"Use exec_command for bounded inspection and apply_patch for edits. The harness approves only these exact terminal commands, without",
 	"prefixes, shell operators, pipelines, or command substitutions, and only with the workspace as cwd:",
 	...Object.values(WORKFLOW_COMMANDS),
 ].join("\n")
@@ -25,9 +29,9 @@ export const WORKFLOW_PROMPTS = {
 	enhance: `[workflow:enhance]\n${scope}\nFix sum([]) to return 0 while preserving sum of numbers. Add an empty-array regression test in test/stats.test.cjs if absent. Run ${WORKFLOW_COMMANDS.test} and report its outcome. Do not commit yet.`,
 	commit: `[workflow:commit]\n${scope}\nReview the diff, stage the changes and create exactly one local commit with the approved stage and commit commands. Leave the repository clean.`,
 	followup: `[workflow:followup]\n${scope}\nAdd a regression test for negative numbers in test/stats.test.cjs and document sum([-2, 1]) = -1 in README.md. Run ${WORKFLOW_COMMANDS.test}. Keep this follow-up uncommitted.`,
-	hold: `[workflow:hold]\n${scope}\nSubmit ${WORKFLOW_COMMANDS.test} using shell with the workspace as cwd. Do not edit files. This cancellation test needs the tool's pending command-approval boundary: submit the tool call now; the host will withhold execution approval. Do not request conversational approval through ask_followup_question or wait in prose before submitting the command.`,
+	hold: `[workflow:hold]\n${scope}\nSubmit ${WORKFLOW_COMMANDS.test} using exec_command with the workspace as workdir. Do not edit files. This cancellation test needs the tool's pending command-approval boundary: submit the tool call now; the host will withhold execution approval. Do not request conversational approval through ask_followup_question or wait in prose before submitting the command.`,
 	verify: `[workflow:verify]\n${scope}\nRecheck the current files and run ${WORKFLOW_COMMANDS.test}. Do not modify or commit anything. Explain the result using the accumulated task context.`,
-	completionIdle: `[workflow:completion-idle]\n${scope}\nRecheck the implemented changes and run ${WORKFLOW_COMMANDS.test}. Do not modify or commit anything. Finish using attempt_completion with outcome completed and a concise verification report. This tests the normal completion-tool boundary after an implementation thread.`,
+	completionIdle: `[workflow:completion-idle]\n${scope}\nRecheck the implemented changes and run ${WORKFLOW_COMMANDS.test}. Do not modify or commit anything. Finish with a concise verification report as ordinary assistant text. This tests the normal completion boundary after an implementation thread.`,
 	extend: `[workflow:extend]\n${scope}\nExtend the accumulated regression cases as instructed below, preserving all earlier behavior and tests.`,
 } as const
 

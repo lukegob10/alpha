@@ -62,7 +62,11 @@ suite("Completion review after an implementation thread", function () {
 			})
 			assert.equal(budget.used, requestsAtReview, "Idle completion must not make another model request")
 			assert.equal(after.liveTasksById[id]?.isWaitingForInput, true, "Host must publish the review boundary")
-			assert.equal(after.agentLifecycleSnapshots[id]?.phase, "executing", "Exercise the pending completion tool")
+			assert.equal(
+				after.agentLifecycleSnapshots[id]?.phase,
+				"finalizing",
+				"Exercise the canonical assistant-text completion boundary",
+			)
 			await host.followup(id, "verify")
 			await host.complete(id)
 			await host.assertUiTask(id)

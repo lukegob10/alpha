@@ -40,7 +40,7 @@ describe("lookup catalog preset", () => {
 		expect(namesOf(result.tools)).toEqual(["exec_command"])
 		expect(result.surface?.isCallable("spawn_agent")).toBe(false)
 		expect(result.surface?.isCallable("update_todo_list")).toBe(false)
-		expect(result.surface?.isCallable("attempt_completion")).toBe(true)
+		expect(result.surface?.isCallable("attempt_completion")).toBe(false)
 		expect(result.surface?.isCallable("write_to_file")).toBe(false)
 		expect(result.surface?.isCallable("skill")).toBe(false)
 		expect(result.surface?.isCallable("list_tickets")).toBe(false)
@@ -110,20 +110,6 @@ describe("lookup catalog preset", () => {
 			expect(names).not.toContain(name)
 			expect(result.surface?.isCallable(name)).toBe(false)
 		}
-	})
-
-	it("exposes ticket search and read tools for an ordinary Alpha Tickets lookup", async () => {
-		const result = await buildNativeToolsArrayWithRestrictions(
-			options({ userRequestText: "Which Alpha tickets are still in progress?" }),
-		)
-		const names = namesOf(result.tools)
-
-		expect(names).toEqual(expect.arrayContaining(["list_tickets", "read_ticket"]))
-		expect(names).not.toContain("create_ticket")
-		expect(names).not.toContain("update_ticket")
-		expect(names).not.toContain("delete_ticket")
-		expect(result.surface?.isCallable("list_tickets")).toBe(true)
-		expect(result.surface?.isCallable("read_ticket")).toBe(true)
 	})
 
 	it("keeps workflow tools on an implementation request", async () => {

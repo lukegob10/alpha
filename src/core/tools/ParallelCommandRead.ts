@@ -17,6 +17,7 @@ import { getCommandDecision } from "../auto-approval/commands"
 import { isCommandDeniedByPolicy, isPathAllowed, isToolAllowed, type ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { createToolFailure } from "./ToolFailure"
 import { normalizeExecCommandYieldTimeMs } from "./commandTimeouts"
+import { getBinPath } from "../../services/ripgrep"
 
 const MAX_OUTPUT_BYTES = 1_048_576
 const MAX_READ_TIME_MS = 60_000
@@ -109,7 +110,20 @@ async function resolveExecutable(name: string, root: string, env: NodeJS.Process
 			/* An unavailable PATH entry is not an executable candidate. */
 		}
 	}
-	return undefined
+	// The extension bundles ripgrep for hosts that do not expose it on PATH. Keep
+	// the fallback limited to the read-only executable and apply the same workspace
+	// boundary check as PATH candidates.
+	if (name !== "rg") return undefined
+	const bundledPath = await getBinPath()
+	if (!bundledPath) return undefined
+	try {
+		const candidate = await fs.realpath(bundledPath)
+		if (isPathWithinRoot(root, candidate)) return undefined
+		if (!(await fs.stat(candidate)).isFile()) return undefined
+		return candidate
+	} catch {
+		return undefined
+	}
 }
 
 /** Prepare serially through the scheduler's existing approval and durability boundaries. */

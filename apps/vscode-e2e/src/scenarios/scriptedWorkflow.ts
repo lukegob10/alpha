@@ -4,6 +4,7 @@ import { isDevelopmentPrompt, WORKFLOW_COMMANDS, type WorkflowPromptName } from 
 import { developmentScript } from "./developmentCatalog"
 import { WorkflowRequestBudget } from "./requestBudget"
 import { settlementScript } from "./commandSettlement"
+import { BASELINE_MODULE_SOURCE, BASELINE_README, BASELINE_TEST_SOURCE } from "./repositoryFixture"
 
 export const ENHANCED_SOURCE = [
 	"function sum(values) {",
@@ -50,6 +51,30 @@ interface ScriptTool {
 	name: string
 	arguments: Record<string, unknown>
 }
+
+function patchLines(content: string): string[] {
+	return content.replace(/\r\n/g, "\n").replace(/\n$/, "").split("\n")
+}
+
+function updateFilePatch(file: string, before: string, after: string): string {
+	return [
+		"*** Begin Patch",
+		`*** Update File: ${file}`,
+		"@@",
+		...patchLines(before).map((line) => `-${line}`),
+		...patchLines(after).map((line) => `+${line}`),
+		"*** End Patch",
+	].join("\n")
+}
+
+function addFilePatch(file: string, content: string): string {
+	return [
+		"*** Begin Patch",
+		`*** Add File: ${file}`,
+		...patchLines(content).map((line) => `+${line}`),
+		"*** End Patch",
+	].join("\n")
+}
 type ScriptChunk =
 	| { type: "tool_call"; id: string; name: string; arguments: string }
 	| { type: "text"; text: string }
@@ -95,14 +120,24 @@ export class WorkflowScriptedAI {
 			this.plan = developmentScript(phase, this.workspace)
 			return
 		}
-		const read = (file: string): ScriptTool => ({ name: "read_file", arguments: { path: file } })
-		const write = (file: string, content: string): ScriptTool => ({
-			name: "write_to_file",
-			arguments: { path: file, content },
+		const readCommands: Record<string, string> = {
+			"lib/stats.cjs": WORKFLOW_COMMANDS.readModule,
+			"test/stats.test.cjs": WORKFLOW_COMMANDS.readTests,
+			"README.md": WORKFLOW_COMMANDS.readReadme,
+			"test/workflow-cases.json": WORKFLOW_COMMANDS.readCases,
+		}
+		const read = (file: string): ScriptTool => command(readCommands[file] ?? "")
+		const update = (file: string, before: string, after: string): ScriptTool => ({
+			name: "apply_patch",
+			arguments: { patch: updateFilePatch(file, before, after) },
+		})
+		const add = (file: string, content: string): ScriptTool => ({
+			name: "apply_patch",
+			arguments: { patch: addFilePatch(file, content) },
 		})
 		const command = (value: string): ScriptTool => ({
-			name: "shell",
-			arguments: { command: value, cwd: this.workspace, timeout: 30 },
+			name: "exec_command",
+			arguments: { cmd: value, workdir: this.workspace, yield_time_ms: 10_000 },
 		})
 		switch (phase) {
 			case "review":
@@ -111,8 +146,8 @@ export class WorkflowScriptedAI {
 			case "enhance":
 				this.plan = [
 					read("lib/stats.cjs"),
-					write("lib/stats.cjs", ENHANCED_SOURCE),
-					write("test/stats.test.cjs", scriptedTests(false, false)),
+					update("lib/stats.cjs", BASELINE_MODULE_SOURCE, ENHANCED_SOURCE),
+					update("test/stats.test.cjs", BASELINE_TEST_SOURCE, scriptedTests(false, false)),
 					command(WORKFLOW_COMMANDS.test),
 				]
 				break
@@ -126,8 +161,8 @@ export class WorkflowScriptedAI {
 			case "followup":
 				this.plan = [
 					read("test/stats.test.cjs"),
-					write("test/stats.test.cjs", scriptedTests(true, false)),
-					write("README.md", FOLLOWUP_README),
+					update("test/stats.test.cjs", scriptedTests(false, false), scriptedTests(true, false)),
+					update("README.md", BASELINE_README, FOLLOWUP_README),
 					command(WORKFLOW_COMMANDS.test),
 				]
 				break
@@ -138,17 +173,19 @@ export class WorkflowScriptedAI {
 				this.plan = [read("lib/stats.cjs"), command(WORKFLOW_COMMANDS.test)]
 				break
 			case "completionIdle":
-				this.plan = [
-					read("lib/stats.cjs"),
-					command(WORKFLOW_COMMANDS.test),
-					{ name: "attempt_completion", arguments: { result: this.finalReport, outcome: "completed" } },
-				]
+				this.plan = [read("lib/stats.cjs"), command(WORKFLOW_COMMANDS.test)]
 				break
 			case "extend":
 				this.plan = [
 					read(step === 1 ? "test/stats.test.cjs" : "test/workflow-cases.json"),
-					write("test/workflow-cases.json", JSON.stringify(accumulatedCases(step), null, 2) + "\n"),
-					write("test/stats.test.cjs", scriptedTests(true, true)),
+					step === 1
+						? add("test/workflow-cases.json", JSON.stringify(accumulatedCases(step), null, 2) + "\n")
+						: update(
+								"test/workflow-cases.json",
+								JSON.stringify(accumulatedCases(step - 1), null, 2) + "\n",
+								JSON.stringify(accumulatedCases(step), null, 2) + "\n",
+							),
+					update("test/stats.test.cjs", scriptedTests(true, false), scriptedTests(true, true)),
 					command(WORKFLOW_COMMANDS.test),
 				]
 				break

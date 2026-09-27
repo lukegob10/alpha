@@ -144,6 +144,23 @@ test("counts canonical lifecycle terminal outcomes per run/turn and ignores othe
 	})
 })
 
+test("accepts the canonical tool effect start event", () => {
+	const taskId = "task-tool-effect"
+	const events = [
+		lifecycleEnvelope(taskId, "run-1", "turn-1", "turn_started", { phase: "starting" }, "event-1", 1),
+		lifecycleEnvelope(taskId, "run-1", "turn-1", "tool_call_accepted", {}, "event-2", 2),
+		lifecycleEnvelope(taskId, "run-1", "turn-1", "tool_effect_started", {}, "event-3", 3),
+		lifecycleEnvelope(taskId, "run-1", "turn-1", "turn_terminal", { status: "completed" }, "event-4", 4),
+	]
+
+	assert.deepEqual(inspectTaskLifecycle(events, taskId), {
+		completedTurns: 1,
+		cancelledTurns: 0,
+		failedTurns: 0,
+		errors: [],
+	})
+})
+
 test("catches lifecycle terminality defects and keeps counts scoped to first terminal closure", () => {
 	const taskId = "task-lifecycle"
 	const events = [
