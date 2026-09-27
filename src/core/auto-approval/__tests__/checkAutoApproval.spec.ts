@@ -566,7 +566,7 @@ describe("checkAutoApproval", () => {
 				ask: "command",
 				text: "npm test",
 			}),
-		).resolves.toEqual({ decision: "ask" })
+		).resolves.toEqual({ decision: "approve" })
 		await expect(
 			checkAutoApprovalWithInheritedPolicy({
 				state: liveState,
@@ -612,8 +612,17 @@ describe("checkAutoApproval", () => {
 			checkAutoApprovalWithInheritedPolicy({
 				state,
 				inheritedState: inheritedAuto,
-				ask: "tool",
-				text: writeOutside,
+				ask: "command",
+				text: "pnpm test",
+			}),
+		).resolves.toEqual({ decision: "ask" })
+
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state: liveAuto,
+				inheritedState: { ...inheritedAuto, alwaysAllowWrite: false, alwaysAllowExecute: false },
+				ask: "command",
+				text: "pnpm test",
 			}),
 		).resolves.toEqual({ decision: "ask" })
 		await expect(
