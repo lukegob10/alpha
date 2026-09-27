@@ -32,6 +32,7 @@ const workflowTools = new Set<ToolName>([
 	"read_file",
 	"list_files",
 	"search_files",
+	"exec_command",
 	"shell",
 	"execute_command",
 	"manage_command",
@@ -48,7 +49,7 @@ const workflowTools = new Set<ToolName>([
 	"ask_followup_question",
 ])
 
-const WORKFLOW_COMMAND_TOOL_NAMES = new Set(["shell", "execute_command"])
+const WORKFLOW_COMMAND_TOOL_NAMES = new Set(["exec_command", "shell", "execute_command"])
 
 // A closed scenario surface prevents unrelated browser, MCP, image and
 // delegation calls from relying on a model's obedience to the fixture prompt.
@@ -82,6 +83,7 @@ interface HostProvider {
 	getStateToPostToWebview(): Promise<ExtensionState>
 	getTaskSettlementDiagnostics(task: HostTask): unknown
 	recordPrimaryMutation(task: HostTask, ...args: unknown[]): Promise<boolean>
+	focusTask?(taskId: string): Promise<boolean>
 	getTaskWithId(taskId: string): Promise<{ historyItem: unknown; taskDirPath: string }>
 	createTaskWithHistoryItem(
 		historyItem: unknown,
@@ -178,15 +180,18 @@ export function isApprovedWorkflowCommand(
 			continue
 		}
 		// A live response can request several serial commands. Match within its batch, never older assistant turns.
-		const matches = calls.map((block) => record(block?.input)).filter((input) => input?.command === command)
+		const matches = calls
+			.map((block) => record(block?.input))
+			.filter((input) => input?.cmd === command || input?.command === command)
 		return (
 			matches.length > 0 &&
 			matches.every(
 				(input) =>
-					input?.cwd === undefined ||
-					input.cwd === null ||
-					(typeof input.cwd === "string" &&
-						path.relative(workspace, path.resolve(workspace, input.cwd)) === ""),
+					(input?.cwd === undefined && input?.workdir === undefined) ||
+					(input?.cwd === null && input?.workdir === null) ||
+					(typeof (input?.workdir ?? input?.cwd) === "string" &&
+						path.relative(workspace, path.resolve(workspace, (input.workdir ?? input.cwd) as string)) ===
+							""),
 			)
 		)
 	}
@@ -372,6 +377,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			...api.getConfiguration(),
 			...(this.scripted ? { apiProvider: "fake-ai", fakeAi: this.scripted } : {}),
 			mode: "code",
+			approvalMode: "auto",
 			disabledTools: WORKFLOW_DISABLED_TOOLS,
 			autoApprovalEnabled: true,
 			alwaysAllowReadOnly: true,
@@ -440,6 +446,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		this.configuration.commandExecutionTimeout = 60
 		await this.api.setConfiguration(this.configuration)
 		const id = await this.api.startNewTask({ configuration: this.configuration, text })
+		await this.provider.focusTask?.(id)
 		this.currentId = id
 		this.expectedCompletions.set(id, 1)
 		return id
@@ -484,6 +491,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		// Policy stays explicit across reloads and never derives from the selected model.
 		await this.api.setConfiguration(this.configuration)
 		const id = await this.api.startNewTask({ configuration: this.configuration, text: workflowPrompt(prompt) })
+		await this.provider.focusTask?.(id)
 		this.currentId = id
 		this.expectedCompletions.set(id, 1)
 		return id

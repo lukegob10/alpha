@@ -76,6 +76,7 @@ const lifecycleEventTypes = new Set([
 	"item_added",
 	"item_updated",
 	"tool_call_accepted",
+	"tool_effect_started",
 	"tool_result_recorded",
 	"approval_requested",
 	"approval_resolved",
