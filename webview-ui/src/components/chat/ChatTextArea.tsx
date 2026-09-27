@@ -13,7 +13,7 @@ import { useEvent } from "react-use"
 import DynamicTextArea from "react-textarea-autosize"
 import { VolumeX, Image, WandSparkles, SendHorizontal, X, ListEnd, Square } from "lucide-react"
 
-import type { AlphaMessage, ExtensionMessage } from "@alpha-code/types"
+import type { AlphaMessage, ApprovalMode, ExtensionMessage } from "@alpha-code/types"
 
 import { mentionRegex, mentionRegexGlobal, commandRegexGlobal, unescapeSpaces } from "@alpha/context-mentions"
 import { WebviewMessage } from "@alpha/WebviewMessage"
@@ -71,6 +71,9 @@ interface ChatTextAreaProps {
 	enqueueDisabled?: boolean
 	conversationClineMessages?: AlphaMessage[]
 	isInTask?: boolean
+	isTaskDraft?: boolean
+	draftApprovalMode?: ApprovalMode
+	onDraftApprovalModeChange?: (mode: ApprovalMode) => void
 }
 
 export const ChatTextArea = memo(
@@ -99,6 +102,9 @@ export const ChatTextArea = memo(
 				enqueueDisabled = false,
 				conversationClineMessages,
 				isInTask,
+				isTaskDraft = false,
+				draftApprovalMode,
+				onDraftApprovalModeChange,
 			},
 			ref,
 		) => {
@@ -1539,7 +1545,12 @@ export const ChatTextArea = memo(
 								togglePinnedApiConfig={togglePinnedApiConfig}
 							/>
 							<ChatReasoningControl profileLoading={reasoningProfileLoading} />
-							<AutoApproveDropdown triggerClassName="min-w-[28px] text-ellipsis overflow-hidden flex-shrink" />
+							<AutoApproveDropdown
+								isDraft={isTaskDraft}
+								draftApprovalMode={draftApprovalMode}
+								onDraftApprovalModeChange={onDraftApprovalModeChange}
+								triggerClassName="min-w-[28px] text-ellipsis overflow-hidden flex-shrink"
+							/>
 						</div>
 						<div className={cn("flex flex-shrink-0 items-center gap-0.5 h-5 leading-none", "pr-2")}>
 							{isTtsPlaying && (

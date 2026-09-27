@@ -8,7 +8,7 @@ import { waitFor } from "./utils"
 const CANONICAL_MODE_SLUGS = ["architect", "code"]
 
 type ScriptChunk =
-	| { type: "tool_call"; id: string; name: string; arguments: string }
+	| { type: "text"; text: string }
 	| { type: "usage"; inputTokens: number; outputTokens: number; totalCost: number }
 
 interface ModeSwitchRuntime {
@@ -21,7 +21,7 @@ const modeSwitchRuntimes = new WeakMap<object, ModeSwitchRuntime>()
 
 class ModeSwitchScriptedAI {
 	readonly id = "mode-switch-e2e"
-	readonly dispatchedToolNames: string[] = []
+	readonly emittedTexts: string[] = []
 	readonly requestedTaskIds: string[] = []
 	private turn = 0
 
@@ -60,26 +60,15 @@ class ModeSwitchScriptedAI {
 			await modeSwitchRuntimes.get(this)?.initialRequestGate
 		}
 
-		const calls = [
-			{
-				name: "attempt_completion",
-				arguments: { result: "<proposed_plan>\nMode switch verified.\n</proposed_plan>" },
-			},
-			{
-				name: "attempt_completion",
-				arguments: { result: "Returned to Code and continued in the same task." },
-			},
+		const responses = [
+			"<proposed_plan>\nMode switch verified.\n</proposed_plan>",
+			"Returned to Code and continued in the same task.",
 		]
-		const call = calls[this.turn++]
-		if (!call) throw new Error(`Unexpected scripted mode-switch turn ${this.turn}`)
-		this.dispatchedToolNames.push(call.name)
+		const response = responses[this.turn++]
+		if (response === undefined) throw new Error(`Unexpected scripted mode-switch turn ${this.turn}`)
+		this.emittedTexts.push(response)
 
-		yield {
-			type: "tool_call",
-			id: `mode-switch-e2e-${metadata.taskId}-${this.turn}`,
-			name: call.name,
-			arguments: JSON.stringify(call.arguments),
-		}
+		yield { type: "text", text: response }
 		yield { type: "usage", inputTokens: 10, outputTokens: 5, totalCost: 0 }
 	}
 
@@ -286,7 +275,9 @@ suite("Alpha Modes", function () {
 				},
 			)
 			assert.equal(await initialTask.getTaskMode(), "architect")
-			assert.deepStrictEqual(scriptedAI.dispatchedToolNames, ["attempt_completion"])
+			assert.deepStrictEqual(scriptedAI.emittedTexts, [
+				"<proposed_plan>\nMode switch verified.\n</proposed_plan>",
+			])
 			// A user may return to Plan while the completion review is still open.
 			// This must change the host mode without answering the review prompt.
 			const pendingAsk = initialTask.taskAsk
@@ -345,7 +336,10 @@ suite("Alpha Modes", function () {
 			})
 
 			assert.deepStrictEqual(scriptedAI.requestedTaskIds, [taskId, taskId])
-			assert.deepStrictEqual(scriptedAI.dispatchedToolNames, ["attempt_completion", "attempt_completion"])
+			assert.deepStrictEqual(scriptedAI.emittedTexts, [
+				"<proposed_plan>\nMode switch verified.\n</proposed_plan>",
+				"Returned to Code and continued in the same task.",
+			])
 			assert.deepStrictEqual(
 				switchedModes.filter((event) => event.taskId === taskId).map((event) => event.mode),
 				["code", "architect", "code"],

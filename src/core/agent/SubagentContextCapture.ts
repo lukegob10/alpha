@@ -503,6 +503,8 @@ function sanitizeModelRoute(route: SubagentModelRouteState): SubagentModelRouteS
 		profileName: input.profileName,
 		provider: input.provider,
 		modelId: input.modelId,
+		requestedModelId: input.requestedModelId,
+		requestedReasoningEffort: input.requestedReasoningEffort,
 		requestedProfileId: input.requestedProfileId,
 		fallbackReason: input.fallbackReason,
 	})

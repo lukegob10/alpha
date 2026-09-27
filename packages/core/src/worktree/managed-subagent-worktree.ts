@@ -173,7 +173,11 @@ export class ManagedSubagentWorktreeService {
 		}
 	}
 
-	async validateScope(workspacePath: string, requestedScope: string[]): Promise<ValidatedWorkerScope> {
+	async validateScope(
+		workspacePath: string,
+		requestedScope: string[],
+		options: { allowWorkspaceRoot?: boolean } = {},
+	): Promise<ValidatedWorkerScope> {
 		if (!Array.isArray(requestedScope) || requestedScope.length < 1 || requestedScope.length > 12) {
 			throw new Error("Worker write_scope requires 1 to 12 workspace-relative files or directories")
 		}
@@ -190,6 +194,10 @@ export class ManagedSubagentWorktreeService {
 		for (const raw of requestedScope) {
 			const value = typeof raw === "string" ? raw.trim() : ""
 			if (!value) throw new Error("Worker write_scope entries cannot be empty")
+			if (value === "." && options.allowWorkspaceRoot && requestedScope.length === 1) {
+				normalized.push(".")
+				continue
+			}
 			if (path.isAbsolute(value)) throw new Error(`Worker write_scope must be relative: ${value}`)
 			if (GLOB_PATTERN.test(value)) throw new Error(`Worker write_scope does not support globs: ${value}`)
 			const segments = normalizeRelative(value).split("/")
@@ -333,7 +341,10 @@ export class ManagedSubagentWorktreeService {
 	private pathInScope(candidate: string, scopes: string[], fileScopes: string[]): boolean {
 		const normalized = normalizeRelative(candidate)
 		return scopes.some(
-			(scope) => normalized === scope || (!fileScopes.includes(scope) && normalized.startsWith(`${scope}/`)),
+			(scope) =>
+				scope === "." ||
+				normalized === scope ||
+				(!fileScopes.includes(scope) && normalized.startsWith(`${scope}/`)),
 		)
 	}
 

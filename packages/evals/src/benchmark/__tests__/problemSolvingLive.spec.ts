@@ -5,7 +5,11 @@ import * as path from "node:path"
 
 import { afterEach, describe, expect, it } from "vitest"
 
-import { extensionBundleDigest, runLiveProblemSolvingCore } from "../problemSolvingLive"
+import {
+	extensionBundleDigest,
+	orderProblemSolvingPromptVariants,
+	runLiveProblemSolvingCore,
+} from "../problemSolvingLive"
 
 const evalRoot = path.resolve(process.cwd(), "../../evals")
 const repositoryRoot = path.resolve(process.cwd(), "../..")
@@ -33,6 +37,18 @@ afterEach(async () => {
 })
 
 describe("live problem-solving runner configuration", () => {
+	it("balances prompt-arm order across repetitions", () => {
+		expect(orderProblemSolvingPromptVariants(["baseline", "single-command"], 1)).toEqual([
+			"baseline",
+			"single-command",
+		])
+		expect(orderProblemSolvingPromptVariants(["baseline", "single-command"], 2)).toEqual([
+			"single-command",
+			"baseline",
+		])
+		expect(orderProblemSolvingPromptVariants(["baseline"], 2)).toEqual(["baseline"])
+	})
+
 	it("fingerprints the extension bundle selected by the VS Code development host", async () => {
 		const repository = await root()
 		const bundlePath = path.join(repository, "src", "dist", "extension.js")
@@ -58,6 +74,15 @@ describe("live problem-solving runner configuration", () => {
 		await expect(runLiveProblemSolvingCore(options(attemptRoot, { repetitions: 4 }))).rejects.toThrow(
 			"repetitions must be from 1 to 3",
 		)
+		await expect(fs.stat(attemptRoot)).rejects.toMatchObject({ code: "ENOENT" })
+	})
+
+	it("rejects duplicate prompt arms before creating a run directory", async () => {
+		const parent = await root()
+		const attemptRoot = path.join(parent, "run")
+		await expect(
+			runLiveProblemSolvingCore(options(attemptRoot, { promptVariants: ["baseline", "baseline"] })),
+		).rejects.toThrow("prompt variants must be unique")
 		await expect(fs.stat(attemptRoot)).rejects.toMatchObject({ code: "ENOENT" })
 	})
 

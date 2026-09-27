@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 
@@ -49,7 +50,7 @@ const workflowTools = new Set<ToolName>([
 
 const WORKFLOW_COMMAND_TOOL_NAMES = new Set(["shell", "execute_command"])
 
-// A closed scenario surface prevents unrelated browser, GitHub, MCP, image and
+// A closed scenario surface prevents unrelated browser, MCP, image and
 // delegation calls from relying on a model's obedience to the fixture prompt.
 export const WORKFLOW_DISABLED_TOOLS = toolNames.filter((name) => !workflowTools.has(name))
 
@@ -442,6 +443,37 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		this.currentId = id
 		this.expectedCompletions.set(id, 1)
 		return id
+	}
+
+	e2eApprovalPolicySha256(): string | null {
+		if (!this.problemSolving) return null
+		const configuration = this.configuration
+		const effectivePolicy = {
+			version: 1,
+			mode: configuration.mode,
+			autoApprovalEnabled: configuration.autoApprovalEnabled,
+			alwaysAllowReadOnly: configuration.alwaysAllowReadOnly,
+			alwaysAllowReadOnlyOutsideWorkspace: configuration.alwaysAllowReadOnlyOutsideWorkspace,
+			alwaysAllowWrite: configuration.alwaysAllowWrite,
+			alwaysAllowWriteOutsideWorkspace: configuration.alwaysAllowWriteOutsideWorkspace,
+			alwaysAllowWriteProtected: configuration.alwaysAllowWriteProtected,
+			alwaysAllowExecute: configuration.alwaysAllowExecute,
+			alwaysAllowMcp: configuration.alwaysAllowMcp,
+			mcpEnabled: configuration.mcpEnabled,
+			alwaysAllowSubtasks: configuration.alwaysAllowSubtasks,
+			alwaysAllowSubagents: configuration.alwaysAllowSubagents,
+			alwaysAllowFollowupQuestions: configuration.alwaysAllowFollowupQuestions,
+			allowedCommands: [...(configuration.allowedCommands ?? [])].sort(),
+			deniedCommands: [...(configuration.deniedCommands ?? [])].sort(),
+			disabledTools: [...(configuration.disabledTools ?? [])].sort(),
+			allowedMaxRequests: configuration.allowedMaxRequests,
+			requestDelaySeconds: configuration.requestDelaySeconds,
+			writeDelayMs: configuration.writeDelayMs,
+			commandExecutionTimeout: configuration.commandExecutionTimeout,
+			commandTimeoutAllowlist: [...(configuration.commandTimeoutAllowlist ?? [])].sort(),
+			commandPolicy: "problem-solving-workspace-boundary-v1",
+		}
+		return createHash("sha256").update(JSON.stringify(effectivePolicy)).digest("hex")
 	}
 
 	async start(prompt: WorkflowPromptName, options?: { autoApprovalEnabled?: boolean }): Promise<string> {
@@ -841,6 +873,25 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			90_000,
 		)
 		return summaries() > before
+	}
+
+	inspectCompactionEvidence(taskId: string, retainedFact: string) {
+		const task = this.requireTask(taskId)
+		const summary = [...task.apiConversationHistory]
+			.reverse()
+			.map(record)
+			.find((message) => message?.isSummary === true)
+		const message = [...task.clineMessages]
+			.reverse()
+			.find((item) => item.say === "condense_context" && item.contextCondense)
+		const receipt = message?.contextCondense
+		return {
+			summaryId: typeof summary?.condenseId === "string" ? summary.condenseId : undefined,
+			receiptId: receipt?.condenseId,
+			summaryRetainedFact: summary ? JSON.stringify(summary.content).includes(retainedFact) : false,
+			previousTokens: receipt?.prevContextTokens,
+			currentTokens: receipt?.newContextTokens,
+		}
 	}
 
 	async cancelAtStreamBoundary(taskId: string): Promise<void> {

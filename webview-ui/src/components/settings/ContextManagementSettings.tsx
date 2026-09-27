@@ -2,9 +2,9 @@ import { HTMLAttributes } from "react"
 import React from "react"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { VSCodeCheckbox, VSCodeTextArea } from "@vscode/webview-ui-toolkit/react"
-import { FoldVertical } from "lucide-react"
 
 import { supportPrompt } from "@alpha/support-prompt"
+import type { AutoCondenseContextScope } from "@alpha-code/types"
 
 import { cn } from "@/lib/utils"
 import {
@@ -26,15 +26,15 @@ import { SearchableSetting } from "./SearchableSetting"
 
 type ContextManagementSettingsProps = HTMLAttributes<HTMLDivElement> & {
 	autoCondenseContext: boolean
-	autoCondenseContextPercent: number
-	listApiConfigMeta: any[]
+	autoCondenseContextPercent?: number
+	autoCondenseContextScope?: AutoCondenseContextScope
+	postTurnCondenseContextPercent?: number
 	maxOpenTabsContext: number
 	maxWorkspaceFiles: number
 	showRooIgnoredFiles?: boolean
 	enableSubfolderRules?: boolean
 	maxImageFileSize?: number
 	maxTotalImageSize?: number
-	profileThresholds?: Record<string, number>
 	includeDiagnosticMessages?: boolean
 	maxDiagnosticMessages?: number
 	writeDelayMs: number
@@ -46,13 +46,14 @@ type ContextManagementSettingsProps = HTMLAttributes<HTMLDivElement> & {
 	setCachedStateField: SetCachedStateField<
 		| "autoCondenseContext"
 		| "autoCondenseContextPercent"
+		| "autoCondenseContextScope"
+		| "postTurnCondenseContextPercent"
 		| "maxOpenTabsContext"
 		| "maxWorkspaceFiles"
 		| "showRooIgnoredFiles"
 		| "enableSubfolderRules"
 		| "maxImageFileSize"
 		| "maxTotalImageSize"
-		| "profileThresholds"
 		| "includeDiagnosticMessages"
 		| "maxDiagnosticMessages"
 		| "writeDelayMs"
@@ -64,8 +65,9 @@ type ContextManagementSettingsProps = HTMLAttributes<HTMLDivElement> & {
 
 export const ContextManagementSettings = ({
 	autoCondenseContext,
-	autoCondenseContextPercent,
-	listApiConfigMeta,
+	autoCondenseContextPercent = 100,
+	autoCondenseContextScope = "full-context",
+	postTurnCondenseContextPercent = 0,
 	maxOpenTabsContext,
 	maxWorkspaceFiles,
 	showRooIgnoredFiles,
@@ -73,7 +75,6 @@ export const ContextManagementSettings = ({
 	setCachedStateField,
 	maxImageFileSize,
 	maxTotalImageSize,
-	profileThresholds = {},
 	includeDiagnosticMessages,
 	maxDiagnosticMessages,
 	writeDelayMs,
@@ -86,7 +87,6 @@ export const ContextManagementSettings = ({
 	...props
 }: ContextManagementSettingsProps) => {
 	const { t } = useAppTranslation()
-	const [selectedThresholdProfile, setSelectedThresholdProfile] = React.useState<string>("default")
 
 	// Helper function to get the CONDENSE prompt value
 	const getCondensePromptValue = (): string => {
@@ -111,31 +111,6 @@ export const ContextManagementSettings = ({
 		setCustomSupportPrompts(updatedPrompts)
 	}
 
-	// Helper function to get the current threshold value based on selected profile
-	const getCurrentThresholdValue = () => {
-		if (selectedThresholdProfile === "default") {
-			return autoCondenseContextPercent
-		}
-		const profileThreshold = profileThresholds[selectedThresholdProfile]
-		if (profileThreshold === undefined || profileThreshold === -1) {
-			return autoCondenseContextPercent // Use default if profile not configured or set to -1
-		}
-		return profileThreshold
-	}
-
-	// Helper function to handle threshold changes
-	const handleThresholdChange = (value: number) => {
-		if (selectedThresholdProfile === "default") {
-			setCachedStateField("autoCondenseContextPercent", value)
-		} else {
-			const newThresholds = {
-				...profileThresholds,
-				[selectedThresholdProfile]: value,
-			}
-
-			setCachedStateField("profileThresholds", newThresholds)
-		}
-	}
 	return (
 		<div className={cn("flex flex-col gap-2", className)} {...props}>
 			<SectionHeader description={t("settings:contextManagement.description")}>
@@ -484,75 +459,93 @@ export const ContextManagementSettings = ({
 				</SearchableSetting>
 				{autoCondenseContext && (
 					<div className="flex flex-col gap-3 pl-3 border-l-2 border-vscode-button-background">
-						<div className="flex items-center gap-4 font-bold">
-							<FoldVertical size={16} />
-							<div>{t("settings:contextManagement.condensingThreshold.label")}</div>
-						</div>
-						<div>
+						<SearchableSetting
+							settingId="context-condense-scope"
+							section="contextManagement"
+							label={t("settings:contextManagement.condensingScope.label")}>
+							<span className="block font-medium mb-1">
+								{t("settings:contextManagement.condensingScope.label")}
+							</span>
 							<Select
-								value={selectedThresholdProfile || "default"}
-								onValueChange={(value) => {
-									setSelectedThresholdProfile(value)
-								}}
-								data-testid="threshold-profile-select">
-								<SelectTrigger className="w-full">
-									<SelectValue
-										placeholder={
-											t("settings:contextManagement.condensingThreshold.selectProfile") ||
-											"Select profile for threshold"
-										}
-									/>
+								value={autoCondenseContextScope}
+								onValueChange={(value) =>
+									setCachedStateField("autoCondenseContextScope", value as AutoCondenseContextScope)
+								}
+								data-testid="condense-threshold-scope-select">
+								<SelectTrigger
+									className="w-full"
+									aria-label={t("settings:contextManagement.condensingScope.label")}>
+									<SelectValue />
 								</SelectTrigger>
 								<SelectContent>
-									<SelectItem value="default">
-										{t("settings:contextManagement.condensingThreshold.defaultProfile") ||
-											"Default (applies to all unconfigured profiles)"}
+									<SelectItem value="full-context">
+										{t("settings:contextManagement.condensingScope.fullContext")}
 									</SelectItem>
-									{(listApiConfigMeta || []).map((config) => {
-										const profileThreshold = profileThresholds[config.id]
-										const thresholdDisplay =
-											profileThreshold !== undefined
-												? profileThreshold === -1
-													? ` ${t(
-															"settings:contextManagement.condensingThreshold.usesGlobal",
-															{
-																threshold: autoCondenseContextPercent,
-															},
-														)}`
-													: ` (${profileThreshold}%)`
-												: ""
-										return (
-											<SelectItem key={config.id} value={config.id}>
-												{config.name}
-												{thresholdDisplay}
-											</SelectItem>
-										)
-									})}
+									<SelectItem value="after-prefix">
+										{t("settings:contextManagement.condensingScope.afterPrefix")}
+									</SelectItem>
 								</SelectContent>
 							</Select>
-						</div>
-
-						{/* Threshold Slider */}
-						<div>
+							<div className="text-vscode-descriptionForeground text-sm mt-1">
+								{t("settings:contextManagement.condensingScope.description")}
+							</div>
+						</SearchableSetting>
+						<SearchableSetting
+							settingId="context-post-turn-condense"
+							section="contextManagement"
+							label={t("settings:contextManagement.postTurnCondense.label")}>
+							<span className="block font-medium mb-1">
+								{t("settings:contextManagement.postTurnCondense.label")}
+							</span>
 							<div className="flex items-center gap-2">
 								<Slider
-									min={10}
+									min={0}
 									max={100}
 									step={1}
-									value={[getCurrentThresholdValue()]}
-									onValueChange={([value]) => handleThresholdChange(value)}
-									data-testid="condense-threshold-slider"
+									value={[postTurnCondenseContextPercent]}
+									onValueChange={([value]) =>
+										setCachedStateField("postTurnCondenseContextPercent", value)
+									}
+									data-testid="post-turn-condense-slider"
+									aria-label={t("settings:contextManagement.postTurnCondense.label")}
 								/>
-								<span className="w-20">{getCurrentThresholdValue()}%</span>
+								<span className="w-20">
+									{postTurnCondenseContextPercent === 0
+										? t("settings:contextManagement.postTurnCondense.off")
+										: `${postTurnCondenseContextPercent}%`}
+								</span>
 							</div>
 							<div className="text-vscode-descriptionForeground text-sm mt-1">
-								{selectedThresholdProfile === "default"
-									? t("settings:contextManagement.condensingThreshold.defaultDescription", {
-											threshold: autoCondenseContextPercent,
-										})
-									: t("settings:contextManagement.condensingThreshold.profileDescription")}
+								{t("settings:contextManagement.postTurnCondense.description")}
 							</div>
-						</div>
+						</SearchableSetting>
+						<SearchableSetting
+							settingId="context-condense-threshold"
+							section="contextManagement"
+							label={t("settings:contextManagement.autoCondenseContextPercent.label")}>
+							<span className="block font-medium mb-1">
+								{t("settings:contextManagement.autoCondenseContextPercent.label")}
+							</span>
+							<div className="flex items-center gap-2">
+								<Slider
+									min={5}
+									max={100}
+									step={1}
+									value={[autoCondenseContextPercent]}
+									onValueChange={([value]) =>
+										setCachedStateField("autoCondenseContextPercent", value)
+									}
+									data-testid="condense-threshold-slider"
+									aria-label={t("settings:contextManagement.autoCondenseContextPercent.label")}
+								/>
+								<span className="w-20" data-testid="condense-threshold-value">
+									{autoCondenseContextPercent}%
+								</span>
+							</div>
+							<div className="text-vscode-descriptionForeground text-sm mt-1">
+								{t("settings:contextManagement.autoCondenseContextPercent.description")}
+							</div>
+						</SearchableSetting>
 					</div>
 				)}
 			</Section>

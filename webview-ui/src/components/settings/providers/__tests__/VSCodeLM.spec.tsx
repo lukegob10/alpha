@@ -93,8 +93,10 @@ describe("VSCodeLM", () => {
 
 		const props = modelPickerProps.at(-1)
 		expect(Object.keys(props.models)).toEqual(["copilot/copilot-gpt-5.5-low", "copilot/copilot-gpt-5.5-high"])
-		expect(props.labelTransform("copilot/copilot-gpt-5.5-low")).toBe("GPT-5.5 · Low")
-		expect(props.labelTransform("copilot/copilot-gpt-5.5-high")).toBe("GPT-5.5 · High")
+		expect(props.labelTransform("copilot/copilot-gpt-5.5-low")).toBe("GPT 5.5")
+		expect(props.labelTransform("copilot/copilot-gpt-5.5-high")).toBe("GPT 5.5")
+		expect(props.secondaryLabelTransform("copilot/copilot-gpt-5.5-low")).toBe("GPT-5.5-Low")
+		expect(props.secondaryLabelTransform("copilot/copilot-gpt-5.5-high")).toBe("GPT-5.5-High")
 		expect(props.allowCustomModel).toBe(false)
 	})
 
@@ -217,6 +219,9 @@ describe("VSCodeLM", () => {
 		["gemini-3.6-flash", "Gemini 3.6 Flash", 936_000, 200_000, 936_000],
 		["claude-opus-5", "Claude Opus 5", 936_000, 200_000, 936_000],
 		["grok-4.6", "Grok 4.6", 425_001, 200_000, 425_001],
+		["gpt-6-astra", "GPT 6 Astra", 1_050_000, 272_000, 1_050_000],
+		["gpt-6-luna", "GPT 6 Luna", 1_050_000, 272_000, 1_050_000],
+		["gpt-6-sol", "GPT 6 Sol", 1_050_000, 272_000, 1_050_000],
 	] as const)(
 		"renders the live standard and extended context tiers for %s",
 		(family, name, maxInputTokens, defaultContextSize, extendedContextSize) => {
@@ -422,16 +427,19 @@ describe("VSCodeLM", () => {
 			"copilot/copilot-claude-opus-4.7-alt",
 		])
 		expect(props.labelTransform(Object.keys(props.models)[0])).toBe("Claude Opus 4.7")
-		expect(props.secondaryLabelTransform(Object.keys(props.models)[1])).toContain("copilot-claude-opus-4.7-alt")
+		expect(props.secondaryLabelTransform(Object.keys(props.models)[1])).toBe("Claude-Opus-4.7-Alt")
 	})
 
 	it("makes every current Copilot model returned by VS Code selectable", () => {
 		const currentModels = [
-			["gpt-5.3-codex", "GPT-5.3-Codex"],
-			["gpt-5.5", "GPT-5.5"],
-			["gpt-5.6-luna", "GPT-5.6 Luna"],
-			["gpt-5.6-sol", "GPT-5.6 Sol"],
-			["gpt-5.6-terra", "GPT-5.6 Terra"],
+			["gpt-5.3-codex", "GPT 5.3 Codex"],
+			["gpt-5.5", "GPT 5.5"],
+			["gpt-5.6-luna", "GPT 5.6 Luna"],
+			["gpt-5.6-sol", "GPT 5.6 Sol"],
+			["gpt-5.6-terra", "GPT 5.6 Terra"],
+			["gpt-6-astra", "GPT 6 Astra"],
+			["gpt-6-luna", "GPT 6 Luna"],
+			["gpt-6-sol", "GPT 6 Sol"],
 			["claude-fable-5", "Claude Fable 5"],
 			["claude-haiku-4.5", "Claude Haiku 4.5"],
 			["claude-sonnet-4.5", "Claude Sonnet 4.5"],
@@ -447,7 +455,7 @@ describe("VSCodeLM", () => {
 			["gemini-3.5-flash", "Gemini 3.5 Flash"],
 			["gemini-3.6-flash", "Gemini 3.6 Flash"],
 			["gemini-3.7-flash", "Gemini 3.7 Flash"],
-			["mai-code-1.1-flash", "MAI-Code-1.1-Flash"],
+			["mai-code-1.1-flash", "MAI Code 1.1 Flash"],
 			["kimi-k3", "Kimi K3"],
 			["grok-4.5", "Grok 4.5"],
 			["grok-4.6", "Grok 4.6"],
@@ -473,6 +481,8 @@ describe("VSCodeLM", () => {
 			expect(Object.keys(props.models)).toContain(selector)
 			expect(props.labelTransform(selector)).toBe(name)
 		}
+
+		expect(props.secondaryLabelTransform("copilot/copilot-gpt-5.6-luna")).toBe("GPT-5.6-Luna")
 	})
 
 	it("maps an already configured selector to its exact live identity", () => {
@@ -584,11 +594,7 @@ describe("VSCodeLM", () => {
 		})
 
 		const props = thinkingBudgetProps.at(-1)
-		expect(props.modelInfo).toEqual(
-			expect.objectContaining({
-				description: expect.stringContaining("GPT-5.4 mini"),
-			}),
-		)
+		expect(props.modelInfo.description).toBeUndefined()
 		expect(props.modelInfo.name).toBe("GPT-5.4 mini")
 		expect(props.modelInfo.family).toBe("gpt-5.4-mini")
 	})

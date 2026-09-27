@@ -142,6 +142,9 @@ describe("optional work_plan", () => {
 			say: vi.fn(),
 			providerRef: { deref: () => undefined },
 			updateWorkPlan: vi.fn().mockResolvedValue(undefined),
+			consecutiveMistakeCount: 0,
+			didToolFailInCurrentTurn: false,
+			recordToolError: vi.fn(),
 		} as unknown as Task
 		const callbacks = {
 			askApproval: vi.fn<ToolCallbacks["askApproval"]>().mockResolvedValue(true),
@@ -169,6 +172,51 @@ describe("optional work_plan", () => {
 
 		expect(task.updateWorkPlan).not.toHaveBeenCalled()
 		expect(task.todoList?.map((todo) => todo.content)).toEqual(["Look up the handler"])
+	})
+
+	it("maps update_plan statuses to Alpha checklist state without replacing work_plan", async () => {
+		const { task, callbacks } = harness()
+		const plan = [
+			{ step: "Inspect the current tool", status: "completed" as const },
+			{ step: "Adapt the schema", status: "in_progress" as const },
+			{ step: "Run focused checks", status: "pending" as const },
+		]
+
+		await updateTodoListTool.execute({ explanation: "The plan is now explicit.", plan }, task, callbacks)
+
+		expect(task.todoList?.map(({ content, status }) => ({ content, status }))).toEqual([
+			{ content: "Inspect the current tool", status: "completed" },
+			{ content: "Adapt the schema", status: "in_progress" },
+			{ content: "Run focused checks", status: "pending" },
+		])
+		expect(task.updateWorkPlan).not.toHaveBeenCalled()
+		const approval = JSON.parse(callbacks.askApproval.mock.calls[0][1]!)
+		expect(approval.todos.map(({ content, status }: TodoItem) => ({ content, status }))).toEqual([
+			{ content: "Inspect the current tool", status: "completed" },
+			{ content: "Adapt the schema", status: "in_progress" },
+			{ content: "Run focused checks", status: "pending" },
+		])
+		expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("The plan is now explicit."))
+	})
+
+	it("rejects an update_plan with multiple in-progress steps before approval", async () => {
+		const { task, callbacks } = harness()
+
+		await updateTodoListTool.execute(
+			{
+				plan: [
+					{ step: "First", status: "in_progress" },
+					{ step: "Second", status: "in_progress" },
+				],
+			},
+			task,
+			callbacks,
+		)
+
+		expect(callbacks.askApproval).not.toHaveBeenCalled()
+		expect(task.didToolFailInCurrentTurn).toBe(true)
+		expect(task.recordToolError).toHaveBeenCalledWith("update_todo_list")
+		expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("At most one plan step"))
 	})
 
 	it("still records a work plan with acceptance checks when supplied", async () => {

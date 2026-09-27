@@ -6,12 +6,12 @@ import { useExtensionState } from "@/context/ExtensionStateContext"
 
 type SortOption = "newest" | "oldest" | "mostExpensive" | "mostTokens" | "mostRelevant"
 
-export const useTaskSearch = () => {
+export const useTaskSearch = (initialShowAllWorkspaces = false) => {
 	const { taskHistory, cwd } = useExtensionState()
 	const [searchQuery, setSearchQuery] = useState("")
 	const [sortOption, setSortOption] = useState<SortOption>("newest")
 	const [lastNonRelevantSort, setLastNonRelevantSort] = useState<SortOption | null>("newest")
-	const [showAllWorkspaces, setShowAllWorkspaces] = useState(false)
+	const [showAllWorkspaces, setShowAllWorkspaces] = useState(initialShowAllWorkspaces)
 
 	useEffect(() => {
 		if (searchQuery && sortOption !== "mostRelevant" && !lastNonRelevantSort) {

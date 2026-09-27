@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import { DEFAULT_MODES, assertPrimaryMode, groupEntryArraySchema, restoreTaskMode } from "../mode.js"
 import { historyItemSchema } from "../history.js"
-import { deprecatedToolGroups, toolGroups, toolNames, toolUsageSchema } from "../tool.js"
+import { toolGroups, toolNames, toolUsageSchema } from "../tool.js"
 
 describe("mode retirement", () => {
 	it("keeps only the two canonical execution modes", () => {
@@ -29,17 +29,9 @@ describe("mode retirement", () => {
 		})
 	})
 
-	it("retires the GitHub group while stripping it from persisted modes", () => {
+	it("rejects removed GitHub groups in mode configuration", () => {
 		expect(toolGroups).not.toContain("github")
-		expect(deprecatedToolGroups).toContain("github")
 		expect(DEFAULT_MODES.find((mode) => mode.slug === "code")?.groups).not.toContain("github")
-		expect(
-			groupEntryArraySchema.parse([
-				"read",
-				"github",
-				["github", { description: "legacy GitHub access" }],
-				"edit",
-			]),
-		).toEqual(["read", "edit"])
+		expect(groupEntryArraySchema.safeParse(["read", "github", "edit"]).success).toBe(false)
 	})
 })

@@ -20,7 +20,7 @@ describe("VS Code integrated-browser native tools", () => {
 		if (tool?.type !== "function") throw new Error(`Missing browser tool: ${name}`)
 
 		expect(tool.function.description).toContain("HTTP or HTTPS")
-		expect(tool.function.description).toContain("read_file")
+		expect(tool.function.description).toContain("exec_command")
 		expect(tool.function.parameters).toMatchObject({
 			properties: {
 				url: { description: expect.stringContaining("HTTP or HTTPS") },

@@ -46,6 +46,26 @@ function registry() {
 }
 
 describe("TaskToolSurface", () => {
+	it.each(["ask", "auto", "bypass"] as const)(
+		"captures the %s approval tier and carries it to child surfaces",
+		(mode) => {
+			const primary = createTaskToolSurface({
+				registry: registry(),
+				approvalMode: mode,
+				autoApprovalEnabled: mode !== "ask",
+			})
+			const child = createTaskToolSurface({
+				registry: registry(),
+				policy: primary.policy,
+				taskKind: "subagent",
+			})
+
+			expect(primary.policy.approval.mode).toBe(mode)
+			expect(child.policy.approval.mode).toBe(mode)
+			expect(child.policy.digest).toBe(primary.policy.digest)
+		},
+	)
+
 	it.each(["code", "architect"])(
 		"allows primary outside paths under the %s profile without widening inherited policy",
 		(mode) => {
@@ -182,9 +202,9 @@ describe("TaskToolSurface", () => {
 	})
 
 	it("captures a frozen read grant without changing descriptor approval metadata", () => {
-		const source = new ToolRegistry()
-		const listFiles = source.resolve("list_files")
-		expect(listFiles).toBeDefined()
+		const source = new ToolRegistry({ includeBuiltIns: false })
+		const readFixture = descriptor("fixture_read", { ...readCapabilities, requiresApproval: true })
+		source.register(readFixture)
 		const liveGrant = {
 			enabled: true,
 			workspaceRoot: "C:\\workspace",
@@ -192,9 +212,9 @@ describe("TaskToolSurface", () => {
 		}
 		const surface = createTaskToolSurface({
 			registry: source,
-			schemas: [listFiles!.schema],
-			visibleToolNames: ["list_files"],
-			allowedToolNames: ["list_files"],
+			schemas: [readFixture.schema],
+			visibleToolNames: ["fixture_read"],
+			allowedToolNames: ["fixture_read"],
 			autoApprovalEnabled: true,
 			readGrant: liveGrant,
 			applyProfile: false,
@@ -203,7 +223,7 @@ describe("TaskToolSurface", () => {
 		expect(surface.readGrant).toEqual(liveGrant)
 		expect(surface.readGrant).not.toBe(liveGrant)
 		expect(Object.isFrozen(surface.readGrant)).toBe(true)
-		expect(surface.registry.resolve("list_files")?.capabilities.requiresApproval).toBe(true)
+		expect(surface.registry.resolve("fixture_read")?.capabilities.requiresApproval).toBe(true)
 		expect(() => Object.assign(surface.readGrant!, { enabled: false })).toThrow()
 
 		liveGrant.enabled = false
@@ -217,14 +237,14 @@ describe("TaskToolSurface", () => {
 	})
 
 	it("disables an omitted or non-auto-approved read grant", () => {
-		const source = new ToolRegistry()
-		const listFiles = source.resolve("list_files")
-		expect(listFiles).toBeDefined()
+		const source = new ToolRegistry({ includeBuiltIns: false })
+		const readFixture = descriptor("fixture_read", { ...readCapabilities, requiresApproval: true })
+		source.register(readFixture)
 		const input = {
 			registry: source,
-			schemas: [listFiles!.schema],
-			visibleToolNames: ["list_files"],
-			allowedToolNames: ["list_files"],
+			schemas: [readFixture.schema],
+			visibleToolNames: ["fixture_read"],
+			allowedToolNames: ["fixture_read"],
 			applyProfile: false,
 		}
 

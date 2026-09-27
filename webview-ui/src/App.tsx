@@ -21,7 +21,8 @@ import { useAddNonInteractiveClickListener } from "./components/ui/hooks/useNonI
 import { TooltipProvider } from "./components/ui/tooltip"
 import { STANDARD_TOOLTIP_DELAY } from "./components/ui/standard-tooltip"
 
-const HistoryView = React.lazy(() => import("./components/history/HistoryView"))
+const webviewAppStartedAt = performance.now()
+
 const SettingsView = React.lazy(() => import("./components/settings/SettingsView"))
 const MarketplaceView = React.lazy(() =>
 	import("./components/marketplace/MarketplaceView").then(({ MarketplaceView }) => ({ default: MarketplaceView })),
@@ -70,12 +71,32 @@ const App = () => {
 		renderContext,
 		currentTaskId,
 	} = useExtensionState()
+	const didReportUiReady = useRef(false)
+
+	useEffect(() => {
+		if (!didHydrateState || didReportUiReady.current) return
+		let secondFrame = 0
+		const firstFrame = requestAnimationFrame(() => {
+			secondFrame = requestAnimationFrame(() => {
+				didReportUiReady.current = true
+				vscode.postMessage({
+					type: "webviewUiReady",
+					durationMs: Math.max(0, Math.round(performance.now() - webviewAppStartedAt)),
+				})
+			})
+		})
+		return () => {
+			cancelAnimationFrame(firstFrame)
+			if (secondFrame) cancelAnimationFrame(secondFrame)
+		}
+	}, [didHydrateState])
 
 	// Create a persistent state manager
 	const marketplaceStateManager = useMemo(() => new MarketplaceViewStateManager(), [])
 
 	const [showAnnouncement, setShowAnnouncement] = useState(false)
-	const [tab, setTab] = useState<Tab>("chat")
+	const [tab, setTab] = useState<Exclude<Tab, "history">>("chat")
+	const [historyFocusRequest, setHistoryFocusRequest] = useState(0)
 	const [scheduledTaskTargetId, setScheduledTaskTargetId] = useState<string | undefined>(undefined)
 
 	const [deleteMessageDialogState, setDeleteMessageDialogState] = useState<DeleteMessageDialogState>({
@@ -95,16 +116,28 @@ const App = () => {
 	const settingsRef = useRef<SettingsViewRef>(null)
 	const chatViewRef = useRef<ChatViewRef>(null)
 
-	const switchTab = useCallback((newTab: Tab) => {
-		setCurrentSection(undefined)
-		setCurrentMarketplaceTab(undefined)
-
-		if (settingsRef.current?.checkUnsaveChanges) {
-			settingsRef.current.checkUnsaveChanges(() => setTab(newTab))
+	const navigateToTab = useCallback((newTab: Tab) => {
+		if (newTab === "history") {
+			setHistoryFocusRequest((request) => request + 1)
+			setTab("chat")
 		} else {
 			setTab(newTab)
 		}
 	}, [])
+
+	const switchTab = useCallback(
+		(newTab: Tab) => {
+			setCurrentSection(undefined)
+			setCurrentMarketplaceTab(undefined)
+
+			if (settingsRef.current?.checkUnsaveChanges) {
+				settingsRef.current.checkUnsaveChanges(() => navigateToTab(newTab))
+			} else {
+				navigateToTab(newTab)
+			}
+		},
+		[navigateToTab],
+	)
 
 	const [currentSection, setCurrentSection] = useState<string | undefined>(undefined)
 	const [currentMarketplaceTab, setCurrentMarketplaceTab] = useState<string | undefined>(undefined)
@@ -136,7 +169,7 @@ const App = () => {
 						if (message.values?.force === true) {
 							setCurrentSection(undefined)
 							setCurrentMarketplaceTab(undefined)
-							setTab(newTab)
+							navigateToTab(newTab)
 						} else {
 							switchTab(newTab)
 						}
@@ -175,7 +208,7 @@ const App = () => {
 				chatViewRef.current?.acceptInput()
 			}
 		},
-		[switchTab, currentTaskId],
+		[switchTab, navigateToTab, currentTaskId],
 	)
 
 	useEvent("message", onMessage)
@@ -237,7 +270,6 @@ const App = () => {
 	) : (
 		<>
 			<React.Suspense fallback={null}>
-				{tab === "history" && <HistoryView onDone={() => switchTab("chat")} />}
 				{tab === "settings" && (
 					<SettingsView ref={settingsRef} onDone={() => setTab("chat")} targetSection={currentSection} />
 				)}
@@ -255,6 +287,7 @@ const App = () => {
 			<ChatView
 				ref={chatViewRef}
 				isHidden={tab !== "chat"}
+				historyFocusRequest={historyFocusRequest}
 				showAnnouncement={showAnnouncement}
 				hideAnnouncement={() => setShowAnnouncement(false)}
 			/>

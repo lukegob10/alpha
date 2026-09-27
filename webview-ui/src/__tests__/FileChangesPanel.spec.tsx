@@ -1,5 +1,6 @@
 import React from "react"
-import { fireEvent, render, screen } from "@/utils/test-utils"
+import { createTwoFilesPatch } from "diff"
+import { act, fireEvent, render, screen } from "@/utils/test-utils"
 import type { AlphaMessage } from "@alpha-code/types"
 import { TranslationProvider } from "@/i18n/__mocks__/TranslationContext"
 import FileChangesPanel from "../components/chat/FileChangesPanel"
@@ -44,6 +45,30 @@ function createFileEditMessage(
 			path,
 			diff,
 			...(diffStats && { diffStats }),
+		}),
+	}
+}
+
+function completedCommandEdit(
+	path: string,
+	originalContent: string,
+	finalContent: string,
+	commandExecutionId: string,
+): AlphaMessage {
+	const lineCount = (content: string) => (content ? content.split("\n").length - (content.endsWith("\n") ? 1 : 0) : 0)
+	return {
+		type: "say",
+		say: "tool",
+		ts: Date.now(),
+		text: JSON.stringify({
+			tool: "appliedDiff",
+			path,
+			diff: createTwoFilesPatch(path, path, originalContent, finalContent),
+			diffStats: { added: lineCount(finalContent), removed: lineCount(originalContent) },
+			originalContent,
+			finalContent,
+			changeStatus: "applied",
+			commandExecutionId,
 		}),
 	}
 }
@@ -118,6 +143,36 @@ describe("FileChangesPanel", () => {
 		expect(screen.getByText("src/foo.ts")).toBeInTheDocument()
 	})
 
+	it("shows line counts for a newly added file from apply_patch", () => {
+		renderPanel([
+			{
+				type: "ask",
+				ask: "tool",
+				ts: 1,
+				isAnswered: true,
+				text: JSON.stringify({
+					tool: "newFileCreated",
+					path: "new.txt",
+					diff: "--- /dev/null\n+++ new.txt\n@@ -0,0 +1,2 @@\n+first\n+second\n",
+					diffStats: { added: 2, removed: 0 },
+				}),
+			},
+		])
+
+		expect(screen.getByText("new.txt")).toBeInTheDocument()
+		expect(screen.getByTestId("total-added")).toHaveTextContent("+2")
+		expect(screen.getByTestId("total-removed")).toHaveTextContent("-0")
+	})
+
+	it("does not attribute a generic shell command to a file edit", () => {
+		const { container } = renderPanel([
+			{ type: "ask", ask: "command", ts: 1, isAnswered: true, text: "Set-Content new.txt 'hello'" },
+			{ type: "say", say: "command_output", ts: 2, text: "success" },
+		])
+
+		expect(container.firstChild).toBeNull()
+	})
+
 	it("renders one row per unique path when multiple files edited", () => {
 		const messages = [createFileEditMessage("src/a.ts", "diff a"), createFileEditMessage("src/b.ts", "diff b")]
 		renderPanel(messages)
@@ -174,6 +229,81 @@ describe("FileChangesPanel", () => {
 
 		expect(screen.getByTestId("total-added")).toHaveTextContent("+5")
 		expect(screen.getByTestId("total-removed")).toHaveTextContent("-6")
+	})
+
+	it("counts a completed command edit once when an answered preview matches", () => {
+		const completed = completedCommandEdit("src/file.ts", "before\n", "after\n", "run-1")
+		const preview = createFileEditMessage("src/file.ts", JSON.parse(completed.text!).diff, {
+			added: 7,
+			removed: 7,
+		})
+		renderPanel([preview, completed])
+
+		expect(screen.getByText("Files edited: 1")).toBeInTheDocument()
+		expect(screen.getByTestId("total-added")).toHaveTextContent("+1")
+		expect(screen.getByTestId("total-removed")).toHaveTextContent("-1")
+	})
+
+	it("merges multiple command edits from the first before content to the last captured after content", () => {
+		renderPanel([
+			completedCommandEdit("src/file.ts", "first\n", "middle\n", "run-1"),
+			completedCommandEdit("src/file.ts", "middle\n", "last\n", "run-2"),
+		])
+
+		expect(screen.getByTestId("total-added")).toHaveTextContent("+1")
+		expect(screen.getByTestId("total-removed")).toHaveTextContent("-1")
+		fireEvent.click(screen.getByRole("button", { name: /src\/file.ts \+1 -1/ }))
+		const displayedDiff = screen.getByTestId("file-diff")
+		expect(displayedDiff).toHaveTextContent("-first")
+		expect(displayedDiff).toHaveTextContent("+last")
+		expect(displayedDiff).not.toHaveTextContent("middle")
+		expect(mockPostMessage).not.toHaveBeenCalledWith({ type: "readFileContent", text: "src/file.ts" })
+
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "fileContent",
+						fileContent: { path: "src/file.ts", content: "later external edit\n" },
+					},
+				}),
+			)
+		})
+		expect(screen.getByTestId("file-diff")).toHaveTextContent("+last")
+		expect(screen.getByTestId("file-diff")).not.toHaveTextContent("later external edit")
+	})
+
+	it("renders a completed deletion with empty final content without reading the live file", () => {
+		renderPanel([completedCommandEdit("src/file.ts", "before\n", "", "run-1")])
+		fireEvent.click(screen.getByRole("button", { name: /src\/file.ts \+0 -1/ }))
+
+		expect(screen.getByTestId("file-diff")).toHaveTextContent("-before")
+		expect(mockPostMessage).not.toHaveBeenCalledWith({ type: "readFileContent", text: "src/file.ts" })
+	})
+
+	it("shows net line counts after successive rewrite, repair, and format commands", () => {
+		const content = (prefix: string, count: number) =>
+			Array.from({ length: count }, (_, index) => `${prefix}-${index + 1}`).join("\n") + "\n"
+		renderPanel([
+			completedCommandEdit("src/auth.ts", content("original", 60), content("rewrite", 130), "run-1"),
+			completedCommandEdit("src/auth.ts", content("rewrite", 130), content("repair", 100), "run-2"),
+			completedCommandEdit("src/auth.ts", content("repair", 100), content("formatted", 81), "run-3"),
+		])
+
+		expect(screen.getByTestId("total-added")).toHaveTextContent("+81")
+		expect(screen.getByTestId("total-removed")).toHaveTextContent("-60")
+		expect(screen.getByRole("button", { name: /src\/auth.ts \+81 -60/ })).toBeInTheDocument()
+	})
+
+	it("groups relative path aliases for successive edits to one file", () => {
+		renderPanel([
+			completedCommandEdit("./src/file.ts", "first\n", "middle\n", "run-1"),
+			completedCommandEdit("src/file.ts", "middle\n", "last\n", "run-2"),
+		])
+
+		expect(screen.getByText("Files edited: 1")).toBeInTheDocument()
+		expect(screen.getByTestId("total-added")).toHaveTextContent("+1")
+		expect(screen.getByTestId("total-removed")).toHaveTextContent("-1")
 	})
 
 	it("preserves expanded files during streaming and resets them only when the task changes", () => {

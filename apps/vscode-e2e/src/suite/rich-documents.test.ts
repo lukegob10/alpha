@@ -40,6 +40,12 @@ interface ScriptState {
 
 // The fake provider is serialized in configuration. Keep callbacks and observations outside that payload.
 const scripts = new WeakMap<object, ScriptState>()
+
+function nodeReadCommand(file: string): string {
+	const commandPath = file.replace(/\\/g, "/").replace(/'/g, "\\'")
+	return `node -e "process.stdout.write(require('fs').readFileSync('${commandPath}','utf8'))"`
+}
+
 class DocumentScriptedAI {
 	readonly id = `rich-document-${randomUUID()}`
 	constructor(state: ScriptState) {
@@ -175,15 +181,16 @@ suite("Rich document authoring through captured task tools", function () {
 				state.plan = [
 					{ name: "skill", arguments: { skill: "rich-documents" } },
 					{
-						name: "read_file",
+						name: "exec_command",
 						arguments: {
-							path:
+							cmd: nodeReadCommand(
 								source === "builtin"
 									? path.join(
 											extension.extensionPath,
 											"webview-ui/build/artifact-kit/v1/reference.md",
 										)
 									: overridePath,
+							),
 						},
 					},
 					{ name: "write_to_file", arguments: { path: relativeFile, content: html(1) } },
@@ -200,6 +207,9 @@ suite("Rich document authoring through captured task tools", function () {
 						autoApprovalEnabled: true,
 						alwaysAllowReadOnly: true,
 						alwaysAllowReadOnlyOutsideWorkspace: true,
+						alwaysAllowExecute: true,
+						allowedCommands: ["node"],
+						commandExecutionTimeout: 300,
 						alwaysAllowWrite: true,
 						alwaysAllowWriteOutsideWorkspace: false,
 						alwaysAllowWriteProtected: false,
@@ -241,7 +251,7 @@ suite("Rich document authoring through captured task tools", function () {
 				)
 				assert.ok(
 					state.inputs[2]!.includes(source === "builtin" ? "data-alpha-chart" : marker),
-					"The referenced resource must be read through the real file tool",
+					"The exec_command output must include the referenced resource content",
 				)
 				assert.ok(
 					provider.getLiveTask(taskId)!.clineMessages.some((message) => message.text?.includes(state.link)),
@@ -250,7 +260,7 @@ suite("Rich document authoring through captured task tools", function () {
 				await waitForRevision(1)
 				assert.equal(documentTabs()[0]!.group, deliveryGroup, "Delivery opens in the existing active group")
 				state.plan = [
-					{ name: "read_file", arguments: { path: relativeFile } },
+					{ name: "exec_command", arguments: { cmd: nodeReadCommand(relativeFile) } },
 					{
 						name: "write_to_file",
 						arguments: {
@@ -272,7 +282,7 @@ suite("Rich document authoring through captured task tools", function () {
 				)
 				await vscode.commands.executeCommand("alpha.previewHtmlDocument", uri)
 				state.plan = [
-					{ name: "read_file", arguments: { path: relativeFile } },
+					{ name: "exec_command", arguments: { cmd: nodeReadCommand(relativeFile) } },
 					{ name: "write_to_file", arguments: { path: relativeFile, content: html(3) } },
 				]
 				await globalThis.api.sendMessage(

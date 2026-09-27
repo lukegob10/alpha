@@ -27,6 +27,8 @@ function ticketState(ticket: Ticket): string {
 		name: ticket.name,
 		status: ticket.status,
 		type: ticket.type ?? null,
+		priority: ticket.priority ?? null,
+		parentId: ticket.parentId ?? null,
 		description: ticket.description,
 		context: ticket.context,
 		successCriteria: ticket.successCriteria,
@@ -146,13 +148,31 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 						scope: fingerprint(["tickets", store.projectId]),
 						stateFingerprint: fingerprint({
 							tickets: result.tickets
-								.map(({ id, reference, name, status, type }) => ({
-									id,
-									reference,
-									name,
-									status,
-									type: type ?? null,
-								}))
+								.map(
+									({
+										id,
+										reference,
+										name,
+										status,
+										type,
+										priority,
+										parentId,
+										revision,
+										childCount,
+										completedChildCount,
+									}) => ({
+										id,
+										reference,
+										name,
+										status,
+										type: type ?? null,
+										priority: priority ?? null,
+										parentId: parentId ?? null,
+										revision,
+										childCount,
+										completedChildCount,
+									}),
+								)
 								.sort((left, right) => left.id.localeCompare(right.id)),
 							total: result.total,
 							invalidFiles: [...result.invalidFiles].sort(),

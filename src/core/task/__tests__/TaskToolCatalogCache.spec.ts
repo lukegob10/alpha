@@ -1,5 +1,11 @@
 import type Anthropic from "@anthropic-ai/sdk"
-import { openAiModelInfoSaneDefaults, vertexModels, type McpServer, type ModelInfo } from "@alpha-code/types"
+import {
+	openAiModelInfoSaneDefaults,
+	vertexModels,
+	type CustomToolDefinition,
+	type McpServer,
+	type ModelInfo,
+} from "@alpha-code/types"
 import { applyCopilotToolPreferences } from "../../../api/providers/utils/router-tool-preferences"
 import { planModeSlug } from "../../../shared/modes"
 import { customToolRegistry } from "@alpha-code/core"
@@ -121,10 +127,18 @@ function receipt(calls: AgentToolCall[], executionHost: ToolExecutionHost): ApiM
 }
 
 async function discover(surface: TaskToolSurface) {
-	const calls = [call("discover_tools", { query: "lookup_00", limit: 1 }, "discovery-1")]
+	const calls = [call("tool_search", { query: "lookup_00", limit: 1 }, "discovery-1")]
 	const result = await execute(surface, calls)
 	expect(result.outcome.results[0].status).toBe("success")
 	return receipt(calls, result.executionHost)
+}
+
+async function discoverNames(surface: TaskToolSurface, query: string, limit = 3): Promise<string[]> {
+	const result = await execute(surface, [call("tool_search", { query, limit }, `discovery-${query}`)])
+	expect(result.outcome.results[0].status).toBe("success")
+	const content = result.outcome.results[0].content
+	if (typeof content !== "string") throw new Error("Discovery fixture must contain a text result")
+	return (JSON.parse(content) as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name)
 }
 
 function mockMcpEffect() {
@@ -173,16 +187,223 @@ function realMcpHost(options: BuildToolsOptions, servers: McpServer[]) {
 afterEach(() => vi.restoreAllMocks())
 
 describe("TaskToolCatalogCache", () => {
+	it("captures only validated MCP read-only hints and rejects annotation drift before dispatch", async () => {
+		const { options, server } = fixture(4)
+		server.tools![0].annotations = { readOnlyHint: true, destructiveHint: false }
+		server.tools![1].annotations = undefined
+		server.tools![2].annotations = { readOnlyHint: false }
+		server.tools![3].annotations = { readOnlyHint: true, destructiveHint: true }
+		const surface = await capture(options)
+		const readDescriptor = surface.registry.resolve(target)!
+		expect(readDescriptor.capabilities).toMatchObject({
+			concurrency: "serial",
+			sideEffects: "external",
+			requiresApproval: true,
+			parallelMcpRead: true,
+		})
+		expect(surface.policy.capabilities[target]?.parallelMcpRead).toBe(true)
+		for (const name of ["mcp--calendar--lookup_01", "mcp--calendar--lookup_02", "mcp--calendar--lookup_03"]) {
+			expect(surface.registry.resolve(name)?.capabilities.parallelMcpRead).toBeUndefined()
+			expect(surface.policy.capabilities[name]?.parallelMcpRead).toBeUndefined()
+		}
+
+		const effect = mockMcpEffect()
+		const executionHost = host()
+		executionHost.ask = async () => {
+			server.tools![0].annotations = { readOnlyHint: false }
+			return { response: "yesButtonClicked" }
+		}
+		const result = await execute(surface, [call(target, { query: "today" })], { executionHost })
+		expect(result.outcome.results[0].status).toBe("error")
+		expect(effect).not.toHaveBeenCalled()
+	})
+
+	it("ranks a complete deferred tool name above broader metadata matches", async () => {
+		const { options } = fixture()
+		const surface = await capture(options)
+
+		expect(await discoverNames(surface, target, 1)).toEqual([target])
+	})
+
+	it("advertises Codex tool_search with default limit 8 through the captured discovery registry", async () => {
+		const { options } = fixture()
+		const surface = await capture(options)
+		const schema = surface.schemas.find((item) => item.type === "function" && item.function.name === "tool_search")
+		expect(schema).toMatchObject({
+			function: {
+				name: "tool_search",
+				parameters: { required: ["query"], properties: { limit: { minimum: 1, maximum: 32 } } },
+			},
+		})
+		expect(
+			surface.schemas.some((item) => item.type === "function" && item.function.name === "discover_tools"),
+		).toBe(false)
+		expect(surface.isCallable("tool_search")).toBe(true)
+		expect(surface.registry.resolve("tool_search")?.name).toBe("tool_search")
+		expect(surface.registry.resolve("discover_tools")?.name).toBe("tool_search")
+		expect(surface.registry.resolve("tool_search")?.schema).toEqual(schema)
+		expect(surface.policy.visibleTools).toContain("tool_search")
+		expect(surface.policy.visibleTools).not.toContain("discover_tools")
+
+		const result = await execute(surface, [call("tool_search", { query: "calendar operation" })])
+		expect(result.outcome.results[0].status).toBe("success")
+		const content = result.outcome.results[0].content
+		if (typeof content !== "string") throw new Error("Discovery fixture must contain a text result")
+		expect(JSON.parse(content).tools).toHaveLength(8)
+	})
+
+	it("defers registered custom tools through the same catalog while leaving Alpha Tickets eager", async () => {
+		const names = Array.from({ length: 8 }, (_, index) => `calendar_custom_fixture_${index}`)
+		const targetName = "calendar_custom_fixture_3"
+		for (const [index, name] of names.entries()) {
+			const definition: CustomToolDefinition = {
+				name,
+				description: `Calendar catalog capability ${index}. ${"Find and inspect calendar appointments. ".repeat(80)}`,
+				execute: async () => "custom result",
+			}
+			customToolRegistry.register(definition)
+		}
+		try {
+			const { options } = fixture(0)
+			options.experiments = { customTools: true }
+			const initial = await capture(options)
+			for (const name of names) expect(initial.isCallable(name)).toBe(false)
+			expect(initial.isCallable("tool_search")).toBe(true)
+			expect(initial.isCallable("list_tickets")).toBe(true)
+			expect(
+				initial.schemas.some((schema) => schema.type === "function" && schema.function.name === "list_tickets"),
+			).toBe(true)
+
+			const calls = [call("tool_search", { query: targetName, limit: 1 }, "custom-tool-search")]
+			const result = await execute(initial, calls)
+			expect(result.outcome.results[0].status).toBe("success")
+			const content = result.outcome.results[0].content
+			if (typeof content !== "string") throw new Error("Discovery fixture must contain a text result")
+			expect(JSON.parse(content).tools.map((tool: { name: string }) => tool.name)).toEqual([targetName])
+
+			const next = await capture({ ...options, discoveryHistory: receipt(calls, result.executionHost) })
+			expect(next.isCallable(targetName)).toBe(true)
+			expect(next.registry.resolve(targetName)?.exposure).toBe("deferred")
+		} finally {
+			for (const name of names) customToolRegistry.unregister(name)
+		}
+	})
+
+	it("restores persisted legacy discover_tools calls alongside the new tool_search schema", async () => {
+		const { options } = fixture()
+		const initial = await capture(options)
+		const calls = [call("discover_tools", { query: "lookup_00", limit: 1 }, "legacy-discovery")]
+		const result = await execute(initial, calls)
+		expect(result.outcome.results[0].status).toBe("success")
+		expect(result.outcome.results[0]).toMatchObject({ callId: "legacy-discovery", name: "discover_tools" })
+		expect(result.executionHost.userMessageContent[0]).toMatchObject({
+			type: "tool_result",
+			tool_use_id: "legacy-discovery",
+		})
+		const next = await capture({ ...options, discoveryHistory: receipt(calls, result.executionHost) })
+		const names = next.schemas.flatMap((schema) => (schema.type === "function" ? [schema.function.name] : []))
+
+		expect(names).toContain("tool_search")
+		expect(names).toContain("discover_tools")
+		expect(next.isCallable(target)).toBe(true)
+	})
+
+	it("uses natural-language synonyms across tool names and descriptions", async () => {
+		const { options, server } = fixture()
+		server.tools![0].name = "search_meetings"
+		server.tools![0].description = `Search calendar meetings and appointments. ${server.tools![0].description}`
+		server.tools![1].name = "delete_event"
+		server.tools![1].description = `Remove scheduled calendar appointments. ${server.tools![1].description}`
+		const surface = await capture(options)
+		const names = await discoverNames(surface, "find me a calendar meeting", 3)
+
+		expect(names).toContain("mcp--calendar--search_meetings")
+		expect(names[0]).toBe("mcp--calendar--search_meetings")
+	})
+
+	it("indexes nested schema properties and descriptions and promotes the selected schema next step", async () => {
+		const { options, server } = fixture()
+		server.tools![0].description = "Perform the configured operation."
+		server.tools![0].inputSchema = {
+			type: "object",
+			properties: {
+				event: {
+					type: "object",
+					properties: {
+						venue_timezone: {
+							type: "string",
+							description: "The geographic offset used for local event times.",
+						},
+					},
+				},
+			},
+		}
+		const initial = await capture(options)
+		expect(initial.isCallable(target)).toBe(false)
+		expect(await discoverNames(initial, "venue timezone", 1)).toEqual([target])
+		expect(await discoverNames(initial, "geographic offset", 1)).toEqual([target])
+
+		const calls = [call("tool_search", { query: "venue timezone", limit: 1 }, "nested-schema-search")]
+		const discovery = await execute(initial, calls)
+		const content = discovery.outcome.results[0].content
+		if (typeof content !== "string") throw new Error("Discovery fixture must contain a text result")
+		const selectedSchema = (JSON.parse(content) as { tools: Array<{ name: string; schema: unknown }> }).tools[0]
+		expect(selectedSchema.name).toBe(target)
+
+		const next = await capture({ ...options, discoveryHistory: receipt(calls, discovery.executionHost) })
+		expect(next.isCallable(target)).toBe(true)
+		expect(next.resolve(target)?.schema).toEqual(selectedSchema.schema)
+
+		const effect = mockMcpEffect()
+		const result = await execute(next, [call(target, { event: { venue_timezone: "Europe/Paris" } })])
+		expect(result.outcome.results[0].status).toBe("success")
+		expect(effect).toHaveBeenCalledWith({
+			server_name: "calendar",
+			tool_name: "lookup_00",
+			arguments: { event: { venue_timezone: "Europe/Paris" } },
+		})
+	})
+
+	it("bounds nested schema search by recursion depth and indexed text", async () => {
+		const { options, server } = fixture()
+		let deepSchema: Record<string, unknown> = {
+			type: "string",
+			description: "hidden_depth_signal",
+		}
+		for (let level = 0; level < 10; level++) {
+			deepSchema = { type: "object", properties: { [`level_${level}`]: deepSchema } }
+		}
+		server.tools![0].description = "Perform the deep operation."
+		server.tools![0].inputSchema = deepSchema
+		server.tools![1].description = "Perform the text operation."
+		server.tools![1].inputSchema = {
+			type: "object",
+			properties: { payload: { type: "string", description: `${" ".repeat(8_000)}late_text_signal` } },
+		}
+		const surface = await capture(options)
+
+		expect(await discoverNames(surface, "hidden depth signal", 1)).toEqual([])
+		expect(await discoverNames(surface, "late sentinel signal", 1)).toEqual([])
+	})
+
+	it("does not return unrelated tools and preserves lexical order for equal matches", async () => {
+		const { options } = fixture()
+		const surface = await capture(options)
+
+		expect(await discoverNames(surface, "quantum entanglement")).toEqual([])
+		expect(await discoverNames(surface, "calendar operation", 3)).toEqual([
+			"mcp--calendar--lookup_00",
+			"mcp--calendar--lookup_01",
+			"mcp--calendar--lookup_02",
+		])
+	})
+
 	it.each(["primary", "subagent"] as const)(
-		"captures Copilot edit schemas and executable policy together for %s tasks",
+		"captures the Codex patch schema and executable policy together for %s tasks",
 		async (taskKind) => {
 			const { options } = fixture(0)
 			Object.assign(options, { taskKind, apiConfiguration: { apiProvider: "vscode-lm" } })
-			for (const [family, preferred, hidden] of [
-				["gpt-5.5", "apply_patch", "apply_diff"],
-				["claude-opus-4.7", "edit", "apply_patch"],
-				["gemini-3.1-pro", "edit", "apply_patch"],
-			]) {
+			for (const family of ["gpt-5.5", "claude-opus-4.7", "gemini-3.1-pro"]) {
 				options.modelIdentity = { provider: "vscode-lm", vendor: "copilot", family }
 				options.modelInfo = applyCopilotToolPreferences(
 					{ vendor: "copilot", family },
@@ -190,22 +411,19 @@ describe("TaskToolCatalogCache", () => {
 				)
 				const current = await capture(options)
 				const names = current.schemas.map((schema) => schema.type === "function" && schema.function.name)
-				expect(names).toContain(preferred)
-				expect(current.resolve(preferred)).toBeDefined()
-				if (preferred === "apply_patch") expect(names).toContain("edit")
-				if (preferred === "edit") expect(names).not.toContain("apply_patch")
-				for (const name of [hidden, "search_replace", "edit_file"]) {
+				expect(names).toContain("apply_patch")
+				expect(current.resolve("apply_patch")).toBeDefined()
+				for (const name of ["apply_diff", "search_replace", "edit_file", "edit", "write_to_file"]) {
 					expect(names).not.toContain(name)
 					expect(current.isCallable(name)).toBe(false)
 				}
-				expect(current.isCallable("write_to_file")).toBe(true)
 				const rejected = await execute(current, [call("apply_diff", { path: "fixture.ts", diff: "hidden" })])
 				expect(rejected.outcome.results[0].status).toBe("error")
 				expect(rejected.fence).not.toHaveBeenCalled()
-				const disabled = await capture({ ...options, disabledTools: [preferred] })
-				expect(disabled.isCallable(preferred)).toBe(false)
+				const disabled = await capture({ ...options, disabledTools: ["apply_patch"] })
+				expect(disabled.isCallable("apply_patch")).toBe(false)
 				const plan = await capture({ ...options, mode: planModeSlug })
-				expect(plan.isCallable(preferred)).toBe(false)
+				expect(plan.isCallable("apply_patch")).toBe(false)
 				const readOnly = await capture({
 					...options,
 					mode: "review-only",
@@ -213,14 +431,14 @@ describe("TaskToolCatalogCache", () => {
 						{ slug: "review-only", name: "Review", roleDefinition: "Review files", groups: ["read"] },
 					],
 				})
-				expect(readOnly.isCallable(preferred)).toBe(false)
+				expect(readOnly.isCallable("apply_patch")).toBe(false)
 				const restrictedChild = await capture({ ...options, allowedToolNames: ["read_file"] })
-				expect(restrictedChild.isCallable(preferred)).toBe(false)
+				expect(restrictedChild.isCallable("apply_patch")).toBe(false)
 			}
 		},
 	)
 
-	it("invalidates the next catalog for model preferences while retaining the prior surface", async () => {
+	it("reuses the same Codex catalog across model preference metadata", async () => {
 		const { options } = fixture(0)
 		options.apiConfiguration = { apiProvider: "vscode-lm" }
 		options.modelIdentity = { provider: "vscode-lm", vendor: "copilot", family: "gpt-5.5" }
@@ -236,10 +454,11 @@ describe("TaskToolCatalogCache", () => {
 		options.modelIdentity = { provider: "vscode-lm", vendor: "copilot", family: "claude-opus-4.7" }
 		const next = await capture(options)
 		expect(original.isCallable("apply_patch")).toBe(true)
-		expect(original.isCallable("edit")).toBe(true)
-		expect(next.isCallable("apply_patch")).toBe(false)
-		expect(next.isCallable("edit")).toBe(true)
-		expect(next.digest).not.toBe(original.digest)
+		expect(original.isCallable("edit")).toBe(false)
+		expect(next.isCallable("apply_patch")).toBe(true)
+		expect(next.isCallable("edit")).toBe(false)
+		expect(next.digest).toBe(original.digest)
+		expect(next.schemas).toEqual(original.schemas)
 	})
 
 	it.each(["search_replace", "edit_file"])(
@@ -254,16 +473,16 @@ describe("TaskToolCatalogCache", () => {
 			const current = await capture(options)
 			expect(current.isCallable(preferred)).toBe(false)
 			expect(current.isCallable("apply_patch")).toBe(true)
-			expect(current.isCallable("edit")).toBe(true)
+			expect(current.isCallable("edit")).toBe(false)
 		},
 	)
 
-	it("keeps portable edit for non-GPT providers and gates patch by verified identity", async () => {
+	it("uses the Codex patch tool across provider identities", async () => {
 		const { options } = fixture(0)
-		for (const [apiProvider, modelIdentity, patchExpected] of [
-			["vertex", { provider: "vertex", id: "gemini-3.7-flash" }, false],
-			["stellar", { provider: "stellar", id: "Meta-Llama-3.3-70B-Instruct" }, false],
-			["openai", { provider: "openai", id: "gpt-5.5" }, true],
+		for (const [apiProvider, modelIdentity] of [
+			["vertex", { provider: "vertex", id: "gemini-3.7-flash" }],
+			["stellar", { provider: "stellar", id: "Meta-Llama-3.3-70B-Instruct" }],
+			["openai", { provider: "openai", id: "gpt-5.5" }],
 		] as const) {
 			const existing = await capture({
 				...options,
@@ -272,8 +491,8 @@ describe("TaskToolCatalogCache", () => {
 				modelInfo: openAiModelInfoSaneDefaults,
 			})
 			expect(existing.isCallable("apply_diff")).toBe(false)
-			expect(existing.isCallable("apply_patch")).toBe(patchExpected)
-			expect(existing.isCallable("edit")).toBe(true)
+			expect(existing.isCallable("apply_patch")).toBe(true)
+			expect(existing.isCallable("edit")).toBe(false)
 		}
 		for (const [modelId, model] of Object.entries(vertexModels)) {
 			const modelInfo = model as ModelInfo
@@ -287,11 +506,12 @@ describe("TaskToolCatalogCache", () => {
 			expect(existing.isCallable("apply_diff")).toBe(false)
 			expect(existing.isCallable("search_replace")).toBe(false)
 			expect(existing.isCallable("edit_file")).toBe(false)
-			expect(existing.isCallable("edit")).toBe(true)
+			expect(existing.isCallable("apply_patch")).toBe(true)
+			expect(existing.isCallable("edit")).toBe(false)
 		}
 	})
 
-	it("removes stale patch metadata before a non-GPT provider superset is built", async () => {
+	it("keeps Codex patch schema across stale model metadata in a provider superset", async () => {
 		const { options } = fixture(0)
 		const result = await capture({
 			...options,
@@ -301,10 +521,10 @@ describe("TaskToolCatalogCache", () => {
 			includeAllToolsWithRestrictions: true,
 		})
 		const names = result.schemas.flatMap((schema) => (schema.type === "function" ? [schema.function.name] : []))
-		expect(names).not.toContain("apply_patch")
-		expect(names).toContain("edit")
-		expect(result.isCallable("apply_patch")).toBe(false)
-		expect(result.isCallable("edit")).toBe(true)
+		expect(names).toContain("apply_patch")
+		expect(names).not.toContain("edit")
+		expect(result.isCallable("apply_patch")).toBe(true)
+		expect(result.isCallable("edit")).toBe(false)
 	})
 
 	it("reuses deterministic frozen schemas and a sealed registry for equivalent inputs", async () => {
@@ -318,10 +538,10 @@ describe("TaskToolCatalogCache", () => {
 		expect(Object.isFrozen(first.schemas)).toBe(true)
 		expect(Object.isFrozen(first.registry.resolve(target))).toBe(true)
 		expect(
-			first.schemas.some((schema) => schema.type === "function" && schema.function.name === "discover_tools"),
+			first.schemas.some((schema) => schema.type === "function" && schema.function.name === "tool_search"),
 		).toBe(true)
 		expect(first.isCallable(target)).toBe(false)
-		expect(first.isCallable("read_file")).toBe(true)
+		expect(first.isCallable("read_file")).toBe(false)
 	})
 
 	it("promotes only persisted successful discovery results at the next boundary and executes through the same registry", async () => {
@@ -353,7 +573,7 @@ describe("TaskToolCatalogCache", () => {
 		const effect = mockMcpEffect()
 		const initial = await capture(options)
 		const result = await execute(initial, [
-			call("discover_tools", { query: "lookup_00", limit: 1 }),
+			call("tool_search", { query: "lookup_00", limit: 1 }),
 			call(target),
 			call(targetAlias),
 			call("use_mcp_tool", { server_name: "calendar", tool_name: "lookup_00" }),
@@ -653,7 +873,7 @@ describe("TaskToolCatalogCache", () => {
 				includeAllToolsWithRestrictions: apiProvider !== "vscode-lm",
 			})
 			expect(fallback.isCallable(target)).toBe(true)
-			expect(fallback.isCallable("discover_tools")).toBe(false)
+			expect(fallback.isCallable("tool_search")).toBe(false)
 			expect(fallback.schemas.every((schema) => schema.type === "function")).toBe(true)
 		},
 	)
@@ -671,13 +891,11 @@ describe("TaskToolCatalogCache", () => {
 				includeAllToolsWithRestrictions: true,
 			})
 			expect(
-				fallback.schemas.some(
-					(schema) => schema.type === "function" && schema.function.name === "discover_tools",
-				),
+				fallback.schemas.some((schema) => schema.type === "function" && schema.function.name === "tool_search"),
 			).toBe(true)
-			expect(fallback.allowedFunctionNames).not.toContain("discover_tools")
+			expect(fallback.allowedFunctionNames).not.toContain("tool_search")
 			expect(fallback.isCallable(target)).toBe(true)
-			const rejected = await execute(fallback, [call("discover_tools", { query: "calendar" })])
+			const rejected = await execute(fallback, [call("tool_search", { query: "calendar" })])
 			expect(rejected.outcome.results[0].status).toBe("error")
 			expect(rejected.executionHost.userMessageContent[0]).toMatchObject({ is_error: true })
 			const pushToolResult = vi.fn()
@@ -704,14 +922,14 @@ describe("TaskToolCatalogCache", () => {
 		const small = fixture(2)
 		const surface = await capture(small.options)
 		expect(surface.isCallable(target)).toBe(true)
-		expect(surface.isCallable("discover_tools")).toBe(false)
+		expect(surface.isCallable("tool_search")).toBe(false)
 		const large = fixture()
 		const disabled = await capture({ ...large.options, disabledTools: ["discover_tools"] })
 		expect(disabled.isCallable(target)).toBe(true)
-		expect(disabled.isCallable("discover_tools")).toBe(false)
+		expect(disabled.isCallable("tool_search")).toBe(false)
 		const noMcp = await capture({ ...large.options, disabledTools: ["use_mcp_tool"] })
 		expect(noMcp.isCallable(target)).toBe(false)
-		expect(noMcp.isCallable("discover_tools")).toBe(false)
+		expect(noMcp.isCallable("tool_search")).toBe(false)
 	})
 
 	it("restores paired discovery after reload, retains it across context reset, and isolates other tasks", async () => {
@@ -817,7 +1035,7 @@ describe("TaskToolCatalogCache", () => {
 		const { options } = fixture()
 		const initial = await capture(options)
 		for (const args of [{ query: "" }, { query: "qzxvnoresults" }, { query: "calendar", limit: 99 }]) {
-			const calls = [call("discover_tools", args)]
+			const calls = [call("tool_search", args)]
 			const result = await execute(initial, calls)
 			const emptySuccess = args.query === "qzxvnoresults"
 			expect(result.outcome.results[0].status).toBe(emptySuccess ? "success" : "error")
@@ -830,12 +1048,12 @@ describe("TaskToolCatalogCache", () => {
 		}
 		const controller = new AbortController()
 		controller.abort()
-		const cancelled = await execute(initial, [call("discover_tools", { query: "calendar" })], {
+		const cancelled = await execute(initial, [call("tool_search", { query: "calendar" })], {
 			signal: controller.signal,
 		})
 		expect(cancelled.outcome.results[0].status).toBe("cancelled")
 		expect(cancelled.executionHost.userMessageContent[0]).toMatchObject({ is_error: true })
-		const failed = await execute(initial, [call("discover_tools", { query: "calendar" })], { failFence: true })
+		const failed = await execute(initial, [call("tool_search", { query: "calendar" })], { failFence: true })
 		expect(failed.outcome.status).toBe("failed")
 		expect((await capture(options)).isCallable(target)).toBe(false)
 	})
@@ -850,7 +1068,7 @@ describe("TaskToolCatalogCache", () => {
 		const initial = await capture(options)
 		expect(initial.isCallable("mcp--calendar--oversized")).toBe(true)
 		const calls = Array.from({ length: 40 }, (_, i) =>
-			call("discover_tools", { query: `lookup_${String(i).padStart(2, "0")}`, limit: 1 }, `discover-${i}`),
+			call("tool_search", { query: `lookup_${String(i).padStart(2, "0")}`, limit: 1 }, `discover-${i}`),
 		)
 		const result = await execute(initial, calls)
 		for (const item of result.outcome.results) {

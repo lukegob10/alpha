@@ -47,6 +47,7 @@ async function createCampaign() {
 			hostVersion: "1.136.1",
 			modelId: "gpt-test",
 			effort: "high",
+			requestLimit: 40,
 			buildIdentity: "a".repeat(40),
 			extensionBundleSha256: "b".repeat(64),
 			taskSetSha256: "d".repeat(64),
@@ -59,6 +60,7 @@ async function createCampaign() {
 					countsAsSolving: true,
 					status: "passed",
 					graderDecision: "passed",
+					e2eApprovalPolicySha256: "f".repeat(64),
 					usage: { requests: 1, inputTokens: 900, outputTokens: 120, cost: null },
 				},
 			],
@@ -90,6 +92,7 @@ describe("problem-solving campaign diagnosis", () => {
 			plannedRepetitions: 1,
 			hostVersion: "1.136.1",
 			modelId: "gpt-test",
+			requestLimit: 40,
 		})
 		expect(diagnosis.attempts[0]?.executionStartEvidence).toBe("request_receipt")
 		expect(diagnosis.outcomes).toMatchObject({ passed: 1, scoredAttempts: 1, passRate: 1 })
@@ -113,17 +116,32 @@ describe("problem-solving campaign diagnosis", () => {
 			observedPolicyDigestSha256s: ["e".repeat(64)],
 			startedAttemptsWithoutPolicyDigest: 0,
 			attemptsWithMultiplePolicyDigests: 0,
+			observedE2EApprovalPolicySha256s: ["f".repeat(64)],
+			startedAttemptsWithoutE2EApprovalPolicy: 0,
 		})
 		expect(diagnosis.evidence.toolResultsByCategory).toEqual({ search: 1 })
 		expect(diagnosis.evidence.verificationResults).toBe(1)
 		expect(diagnosis.evidence.parallelTools).toMatchObject({ count: 1, median: 2, p95: 2 })
+		expect(diagnosis.hypotheses.find(({ priority }) => priority === "low")?.nextCheck).toContain(
+			"First complete a frozen same-artifact diagnostic",
+		)
 		expect(diagnosis.coverage.candidateGaps.map(({ area }) => area)).toContain(
 			"Git branch, commit, and worktree operations",
 		)
-		expect(markdown).toContain("One sample per task cannot estimate run-to-run variance")
+		expect(markdown).toContain(
+			"Wilson interval is per attempt and does not account for task selection or clustering",
+		)
+		expect(markdown).toContain("does not prove which bytes the host loaded or identify every packaged asset")
+		expect(markdown).toContain("do not establish policy equivalence across fresh workspaces")
+		expect(markdown).toContain(
+			"E2E approval-policy identity: 1 unique stable hash(es); 0 started attempt(s) without one",
+		)
+		expect(markdown).toContain("| alpha-scheduler-ordering | baseline | 1/1 |")
 		expect(markdown).toContain("Git branch, commit, and worktree operations")
 		expect(markdown).toContain(`Task-set SHA-256: ${"d".repeat(64)}`)
-		expect(markdown).toContain("Planned selection: 1 task(s) × 1 repetition(s): alpha-scheduler-ordering.")
+		expect(markdown).toContain(
+			"Planned selection: 1 task(s) × 1 repetition(s) × 1 prompt arm(s) (baseline): alpha-scheduler-ordering.",
+		)
 		expect(markdown).toContain(
 			"Effective tool-policy hashes captured: 1 unique digest(s); 1 policy_snapshot event(s)",
 		)
@@ -134,9 +152,79 @@ describe("problem-solving campaign diagnosis", () => {
 			"verification_result trajectory events: 1 (grader outcomes are reported separately).",
 		)
 		expect(markdown).toContain(
-			`Extension bundle SHA-256: prelaunch ${"b".repeat(64)}; runner-captured ${"b".repeat(64)}; missing on started attempts 0; mismatches 0; prelaunch match confirmed.`,
+			`Extension bundle SHA-256: prelaunch ${"b".repeat(64)}; runner-captured on started attempts ${"b".repeat(64)}; missing on started attempts 0; mismatches 0; prelaunch match confirmed.`,
 		)
 		expect(markdown).not.toContain("/tmp/alpha-live-diagnosis-")
+	})
+
+	it("reports prompt-arm outcomes separately without exposing instruction text", async () => {
+		const reportPath = await createCampaign()
+		const report = JSON.parse(await fs.readFile(reportPath, "utf8")) as {
+			selection: Record<string, unknown>
+			attempts: Array<Record<string, unknown>>
+		}
+		const baseline = report.attempts[0]!
+		const baselineId = String(baseline.attemptId)
+		const singleCommandId = "ps-alpha-scheduler-ordering-r1-single-command"
+		const singleCommandArtifacts = path.join(
+			path.dirname(reportPath),
+			singleCommandId,
+			"artifacts",
+			singleCommandId,
+		)
+		await fs.mkdir(path.dirname(singleCommandArtifacts), { recursive: true })
+		await fs.cp(path.join(path.dirname(reportPath), baselineId, "artifacts", baselineId), singleCommandArtifacts, {
+			recursive: true,
+		})
+		report.selection = {
+			selected: 1,
+			repetitions: 1,
+			taskIds: ["alpha-scheduler-ordering"],
+			promptVariants: ["baseline", "single-command"],
+			promptVariantInstructionSha256: "a".repeat(64),
+		}
+		report.attempts.push({
+			...baseline,
+			attemptId: singleCommandId,
+			repetition: 1,
+			promptVariant: "single-command",
+			promptSha256: "c".repeat(64),
+			promptVariantInstructionSha256: "a".repeat(64),
+			countsAsSolving: false,
+			status: "failed",
+			failureClass: "infrastructure",
+			failureCategory: "policy",
+			failureCode: "unexpected_command_shell_operator",
+			graderDecision: "outcome_failed",
+		})
+		await fs.writeFile(reportPath, JSON.stringify(report))
+
+		const diagnosis = await diagnoseProblemSolvingCampaign({ reportPath, evalRoot })
+		const markdown = problemSolvingDiagnosisMarkdown(diagnosis)
+
+		expect(diagnosis.run).toMatchObject({ plannedAttemptCount: 2, campaignComplete: true })
+		expect(diagnosis.promptComparison).toEqual([
+			{
+				variant: "baseline",
+				attempts: 1,
+				started: 1,
+				verifiedPasses: 1,
+				scoredAttempts: 1,
+				commandGateStops: 0,
+			},
+			{
+				variant: "single-command",
+				attempts: 1,
+				started: 1,
+				verifiedPasses: 0,
+				scoredAttempts: 1,
+				commandGateStops: 1,
+			},
+		])
+		expect(markdown).toContain("Prompt variant instruction SHA-256: " + "a".repeat(64))
+		expect(markdown).toContain("| alpha-scheduler-ordering | single-command | 0/1 |")
+		expect(diagnosis.attempts[1]?.promptSha256).toBe("c".repeat(64))
+		expect(JSON.stringify(diagnosis)).not.toContain("Use file tools")
 	})
 
 	it("flags runner-captured extension bundle digests that differ from the prelaunch fingerprint", async () => {
@@ -191,8 +279,12 @@ describe("problem-solving campaign diagnosis", () => {
 
 		expect(diagnosis.extensionArtifact).toMatchObject({
 			observedBundleSha256s: ["b".repeat(64), "c".repeat(64)],
+			mismatchedStartedAttemptDigests: null,
 			matchesExpected: null,
 		})
+		expect(problemSolvingDiagnosisMarkdown(diagnosis)).toContain(
+			"mismatches not assessed; prelaunch match unverified.",
+		)
 		expect(diagnosis.hypotheses[0]?.finding).toContain("Multiple runner-captured extension bundle digests")
 	})
 
@@ -224,7 +316,7 @@ describe("problem-solving campaign diagnosis", () => {
 		attempt.status = "failed"
 		attempt.failureClass = "infrastructure"
 		attempt.failureCategory = "policy"
-		attempt.failureCode = "unexpected_command"
+		attempt.failureCode = "unexpected_command_shell_operator"
 		attempt.graderDecision = "outcome_failed"
 		attempt.rejectedCommandText = "SENSITIVE-COMMAND-CONTENT"
 		await fs.writeFile(reportPath, JSON.stringify(data))
@@ -232,12 +324,14 @@ describe("problem-solving campaign diagnosis", () => {
 		const diagnosis = await diagnoseProblemSolvingCampaign({ reportPath, evalRoot })
 		const markdown = problemSolvingDiagnosisMarkdown(diagnosis)
 
-		expect(diagnosis.failureReasons).toEqual({ "infrastructure/policy/unexpected_command": 1 })
-		expect(diagnosis.hypotheses[0]?.finding).toContain("command approval gate")
-		expect(diagnosis.hypotheses[0]?.nextCheck).toContain("without relaxing approvals")
-		expect(markdown).toContain("| infrastructure/policy/unexpected_command | 1 |")
+		expect(diagnosis.failureReasons).toEqual({ "infrastructure/policy/unexpected_command_shell_operator": 1 })
+		expect(diagnosis.hypotheses[0]?.finding).toContain("E2E shell-operator policy stop")
+		expect(diagnosis.hypotheses[0]?.nextCheck).toContain("quoted literal punctuation")
+		expect(diagnosis.hypotheses[0]?.nextCheck).toContain("completed graded-task control")
+		expect(markdown).toContain("| infrastructure/policy/unexpected_command_shell_operator | 1 |")
+		expect(markdown).toContain("| alpha-scheduler-ordering | baseline | 0/1 |")
 		expect(markdown).toContain(
-			"| alpha-scheduler-ordering | alpha-task-bank | development | failed | request_receipt | infrastructure/policy/unexpected_command | outcome_failed |",
+			"| alpha-scheduler-ordering | baseline | unknown | alpha-task-bank | development | failed | request_receipt | infrastructure/policy/unexpected_command_shell_operator | outcome_failed |",
 		)
 		expect(JSON.stringify(diagnosis)).not.toContain("SENSITIVE-COMMAND-CONTENT")
 		expect(markdown).not.toContain("SENSITIVE-COMMAND-CONTENT")
@@ -304,12 +398,20 @@ describe("problem-solving campaign diagnosis", () => {
 		})
 		expect(diagnosis.hypotheses[0]?.nextCheck).toContain("rerun the declared selection in a fresh run root")
 		expect(diagnosis.hypotheses[0]?.finding).not.toContain("model quality")
+		expect(diagnosis.extensionArtifact).toMatchObject({
+			observedBundleSha256s: [],
+			mismatchedStartedAttemptDigests: null,
+			matchesExpected: null,
+		})
+		expect(problemSolvingDiagnosisMarkdown(diagnosis)).toContain(
+			"runner-captured on started attempts none; missing on started attempts 0; mismatches not assessed; prelaunch match unverified.",
+		)
 		expect(problemSolvingDiagnosisMarkdown(diagnosis)).toContain(
 			"Campaign execution incomplete: 1/6 attempts recorded; 0 task executions started; 1 blocked before execution; 0 execution starts unknown; 6 planned execution(s) pending. Last safe signal profile_busy/runner/profile_busy. Pending task IDs for remaining repetitions: alpha-scheduler-ordering, repo-cache-invalidation, repo-pagination-cursor.",
 		)
 		expect(problemSolvingDiagnosisMarkdown(diagnosis)).toContain("1 attempt had no usable grader score.")
 		expect(problemSolvingDiagnosisMarkdown(diagnosis)).toContain(
-			"| alpha-scheduler-ordering | alpha-task-bank | development | blocked | preflight_blocked | profile_busy/runner/profile_busy | excluded from score (recorded outcome_failed) |",
+			"| alpha-scheduler-ordering | baseline | unknown | alpha-task-bank | development | blocked | preflight_blocked | profile_busy/runner/profile_busy | excluded from score (recorded outcome_failed) |",
 		)
 		expect(problemSolvingDiagnosisMarkdown(diagnosis)).toContain(
 			"Candidate gap analysis not run because no task execution start was evidenced.",

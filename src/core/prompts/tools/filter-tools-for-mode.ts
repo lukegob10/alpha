@@ -199,7 +199,9 @@ export function filterNativeToolsForMode(
 	// then let the validator reduce the complete native catalog to the canonical set.
 	const allToolsForMode =
 		modeSlug === planModeSlug
-			? nativeTools.flatMap((tool) => ("function" in tool && tool.function ? [tool.function.name] : []))
+			? nativeTools.flatMap((tool) =>
+					"function" in tool && tool.function ? [resolveToolAlias(tool.function.name)] : [],
+				)
 			: getToolsForMode(modeConfig.groups)
 
 	// Filter to only tools that pass permission checks
@@ -231,7 +233,13 @@ export function filterNativeToolsForMode(
 			"wait_agent",
 			"send_message",
 			"followup_task",
-			"close_agent",
+			"interrupt_agent",
+			"create_task",
+			"list_tasks",
+			"wait_task",
+			"send_task_message",
+			"steer_task",
+			"stop_task",
 		] as const) {
 			allowedToolNames.delete(tool)
 		}
@@ -245,9 +253,9 @@ export function filterNativeToolsForMode(
 		allowedToolNames.delete("codebase_search")
 	}
 
-	// Conditionally exclude update_todo_list if disabled in settings
+	// Conditionally exclude update_plan if disabled in settings
 	if (settings?.todoListEnabled === false) {
-		allowedToolNames.delete("update_todo_list")
+		allowedToolNames.delete("update_plan")
 	}
 
 	// Historical transcripts may contain the retired image-generation tool.
@@ -273,21 +281,27 @@ export function filterNativeToolsForMode(
 		allowedToolNames.delete("access_mcp_resource")
 	}
 
-	// Filter native tools based on canonical allowed names. Historical aliases
-	// remain accepted at dispatch, but are never re-advertised as schemas.
-	const filteredTools: OpenAI.Chat.ChatCompletionTool[] = []
+	// Filter schemas by canonical permission while keeping the selected
+	// provider-facing spelling intact for dispatch and conversation history.
+	const filteredTools = new Map<string, { schema: OpenAI.Chat.ChatCompletionTool; name: string }>()
 
 	for (const tool of nativeTools) {
 		// Handle both ChatCompletionTool and ChatCompletionCustomTool
 		if ("function" in tool && tool.function) {
 			const toolName = tool.function.name
-			if (allowedToolNames.has(toolName)) {
-				filteredTools.push(tool)
+			const canonicalName = resolveToolAlias(toolName)
+			if (!allowedToolNames.has(canonicalName)) continue
+
+			// Prefer the canonical provider schema when legacy aliases are also present.
+			const preferredName = canonicalName
+			const existing = filteredTools.get(canonicalName)
+			if (!existing || (toolName === preferredName && existing.name !== preferredName)) {
+				filteredTools.set(canonicalName, { schema: tool, name: toolName })
 			}
 		}
 	}
 
-	return filteredTools
+	return [...filteredTools.values()].map(({ schema }) => schema)
 }
 
 /**
@@ -335,7 +349,10 @@ export function isToolAllowedInMode(
 	}
 
 	// Check if it's an always-available tool
-	if (ALWAYS_AVAILABLE_TOOLS.includes(toolName)) {
+	if (
+		ALWAYS_AVAILABLE_TOOLS.includes(toolName) ||
+		ALWAYS_AVAILABLE_TOOLS.includes(resolveToolAlias(toolName) as ToolName)
+	) {
 		// But still check for conditional exclusions
 		if (toolName === "codebase_search") {
 			return !!(
@@ -345,7 +362,7 @@ export function isToolAllowedInMode(
 				codeIndexManager.isInitialized
 			)
 		}
-		if (toolName === "update_todo_list") {
+		if (toolName === "update_todo_list" || toolName === "update_plan") {
 			return settings?.todoListEnabled !== false
 		}
 		if (toolName === "generate_image") {
@@ -401,13 +418,13 @@ export function getAvailableToolsInGroup(
 }
 
 /**
- * Filters MCP tools based on whether use_mcp_tool is allowed in the current mode.
+ * Filters MCP tools using each captured descriptor's mode capability.
  *
  * @param mcpTools - Array of MCP tools
  * @param mode - Current mode slug
  * @param customModes - Custom mode configurations
  * @param experiments - Experiment flags
- * @returns Filtered array of MCP tools if use_mcp_tool is allowed, empty array otherwise
+ * @returns MCP descriptors allowed by the current mode
  */
 export function filterMcpToolsForMode(
 	mcpTools: OpenAI.Chat.ChatCompletionTool[],
@@ -417,15 +434,16 @@ export function filterMcpToolsForMode(
 ): OpenAI.Chat.ChatCompletionTool[] {
 	const { modeSlug } = resolveEffectiveMode(mode, customModes)
 
-	// MCP tools are always in the mcp group, check if use_mcp_tool is allowed
-	const isMcpAllowed = isToolAllowedForMode(
-		"use_mcp_tool",
-		modeSlug,
-		customModes ?? [],
-		undefined,
-		undefined,
-		experiments ?? {},
+	return mcpTools.filter(
+		(tool) =>
+			tool.type === "function" &&
+			isToolAllowedForMode(
+				tool.function.name,
+				modeSlug,
+				customModes ?? [],
+				undefined,
+				undefined,
+				experiments ?? {},
+			),
 	)
-
-	return isMcpAllowed ? mcpTools : []
 }

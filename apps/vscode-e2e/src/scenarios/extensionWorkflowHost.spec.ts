@@ -107,6 +107,62 @@ test("a rejected manual compaction is a failure rather than a timeout", async ()
 	}
 })
 
+test("compaction evidence ties the latest measured receipt to the saved summary", async () => {
+	const task = {
+		taskId: "compaction-receipt",
+		apiConversationHistory: [
+			{ role: "user", content: "ALPHA-CONTEXT-ANCHOR-7f3a", isSummary: true, condenseId: "summary-1" },
+		],
+		clineMessages: [
+			{
+				say: "condense_context",
+				contextCondense: {
+					prevContextTokens: 900,
+					newContextTokens: 450,
+					outcome: "reduced",
+					condenseId: "summary-1",
+				},
+			},
+		],
+	}
+	const provider = Object.assign(new EventEmitter(), { getLiveTask: () => task })
+	const api = Object.assign(new EventEmitter(), { sidebarProvider: provider, getConfiguration: () => ({}) })
+	const host = new ExtensionWorkflowHost(
+		api as unknown as AlphaCodeAPI,
+		workspace,
+		"scripted",
+		new WorkflowRequestBudget(10),
+		5_000,
+	)
+	try {
+		assert.deepEqual(host.inspectCompactionEvidence(task.taskId, "ALPHA-CONTEXT-ANCHOR-7f3a"), {
+			summaryId: "summary-1",
+			receiptId: "summary-1",
+			summaryRetainedFact: true,
+			previousTokens: 900,
+			currentTokens: 450,
+		})
+		task.clineMessages.push({
+			say: "condense_context",
+			contextCondense: {
+				prevContextTokens: 450,
+				newContextTokens: 450,
+				outcome: "unchanged",
+				condenseId: "summary-2",
+			},
+		})
+		assert.deepEqual(host.inspectCompactionEvidence(task.taskId, "ALPHA-CONTEXT-ANCHOR-7f3a"), {
+			summaryId: "summary-1",
+			receiptId: "summary-2",
+			summaryRetainedFact: true,
+			previousTokens: 450,
+			currentTokens: 450,
+		})
+	} finally {
+		await host.dispose()
+	}
+})
+
 test("late provider recovery waits for a new retry instead of counting earlier requests", async () => {
 	const budget = new WorkflowRequestBudget(30)
 	budget.used = 20
@@ -232,14 +288,7 @@ test("cancellation waits for an actual scoped command approval and never approve
 })
 
 test("scenario policy excludes unrelated external and delegation tools", () => {
-	for (const name of [
-		"github_api",
-		"use_mcp_tool",
-		"generate_image",
-		"spawn_agent",
-		"new_task",
-		"custom_tool",
-	] as const) {
+	for (const name of ["use_mcp_tool", "generate_image", "spawn_agent", "new_task", "custom_tool"] as const) {
 		assert.ok(WORKFLOW_DISABLED_TOOLS.includes(name))
 	}
 	assert.equal(WORKFLOW_DISABLED_TOOLS.includes("write_to_file"), false)
@@ -735,6 +784,8 @@ test("problem solving approves workspace commands and rejects deny-list, escape,
 test("problem command rejection reasons are content-free and preserve the approval boundary", () => {
 	assert.equal(problemCommandRejectionReason("  ", [], workspace), "empty_command")
 	assert.equal(problemCommandRejectionReason("npm test && curl example", [], workspace), "shell_operator")
+	// This test gate uses a deliberately conservative text rule: metacharacters are denied even when quoted.
+	assert.equal(problemCommandRejectionReason('node --test "test/name;value.cjs"', [], workspace), "shell_operator")
 	assert.equal(problemCommandRejectionReason("npm install package", [], workspace), "denied_prefix")
 	assert.equal(problemCommandRejectionReason("node ../outside.js", [], workspace), "outside_workspace_argument")
 	assert.equal(
@@ -742,4 +793,52 @@ test("problem command rejection reasons are content-free and preserve the approv
 		"outside_workspace_cwd",
 	)
 	assert.equal(problemCommandRejectionReason("npm test", history("npm test"), workspace), null)
+})
+
+test("E2E approval identity hashes effective settings without binding to workspace paths", async () => {
+	const createHost = (workspacePath: string, requestLimit: number) => {
+		let effectiveConfiguration: AlphaCodeSettings | undefined
+		const provider = Object.assign(new EventEmitter(), { getLiveTask: () => undefined })
+		const api = Object.assign(new EventEmitter(), {
+			sidebarProvider: provider,
+			getConfiguration: () => ({}),
+			setConfiguration: async (configuration: AlphaCodeSettings) => {
+				effectiveConfiguration = configuration
+			},
+			startNewTask: async () => "policy-identity-task",
+			cancelCurrentTask: async () => {},
+		})
+		const host = new ExtensionWorkflowHost(
+			api as unknown as AlphaCodeAPI,
+			workspacePath,
+			"live-copilot",
+			new WorkflowRequestBudget(requestLimit),
+			900_000,
+		)
+		return { host, getConfiguration: () => effectiveConfiguration }
+	}
+	const first = createHost(path.join(workspace, "first"), 40)
+	const samePolicy = createHost(path.join(workspace, "second"), 40)
+	const differentRequestLimit = createHost(path.join(workspace, "third"), 41)
+	try {
+		assert.equal(
+			first.host.e2eApprovalPolicySha256(),
+			null,
+			"identity is absent before the problem-solving policy applies",
+		)
+		await Promise.all([
+			first.host.startProblem("Run the workspace task."),
+			samePolicy.host.startProblem("Run the workspace task."),
+			differentRequestLimit.host.startProblem("Run the workspace task."),
+		])
+		const firstDigest = first.host.e2eApprovalPolicySha256()
+		assert.match(firstDigest ?? "", /^[a-f0-9]{64}$/)
+		assert.equal(samePolicy.host.e2eApprovalPolicySha256(), firstDigest)
+		assert.notEqual(differentRequestLimit.host.e2eApprovalPolicySha256(), firstDigest)
+		assert.equal(first.getConfiguration()?.alwaysAllowExecute, true)
+		assert.deepEqual(first.getConfiguration()?.allowedCommands, [])
+		assert.equal(first.getConfiguration()?.alwaysAllowWriteOutsideWorkspace, false)
+	} finally {
+		await Promise.all([first.host.dispose(), samePolicy.host.dispose(), differentRequestLimit.host.dispose()])
+	}
 })

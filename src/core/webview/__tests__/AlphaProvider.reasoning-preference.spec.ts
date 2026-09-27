@@ -1,4 +1,10 @@
-import type { HistoryItem, ProviderSettings, TaskReasoningPreference, TaskReasoningProjection } from "@alpha-code/types"
+import type {
+	ApprovalMode,
+	HistoryItem,
+	ProviderSettings,
+	TaskReasoningPreference,
+	TaskReasoningProjection,
+} from "@alpha-code/types"
 
 import { buildApiHandler } from "../../../api"
 import { AlphaProvider } from "../AlphaProvider"
@@ -118,6 +124,8 @@ type FakeTask = {
 	apiConfiguration: ProviderSettings
 	updateReasoningPreference: ReturnType<typeof vi.fn>
 	getReasoningState: ReturnType<typeof vi.fn>
+	setTaskApprovalMode: ReturnType<typeof vi.fn>
+	getTaskApprovalMode: ReturnType<typeof vi.fn>
 }
 
 const baseConfiguration: ProviderSettings = {
@@ -137,6 +145,7 @@ function projection(taskId: string, preference: TaskReasoningPreference): TaskRe
 }
 
 function fakeTask(taskId: string, preference: TaskReasoningPreference = { kind: "default" }): FakeTask {
+	let approvalMode: ApprovalMode = "auto"
 	const task = {
 		taskId,
 		abort: false,
@@ -147,6 +156,11 @@ function fakeTask(taskId: string, preference: TaskReasoningPreference = { kind: 
 			task.reasoningPreference = next
 		}),
 		getReasoningState: vi.fn(() => projection(taskId, task.reasoningPreference)),
+		setTaskApprovalMode: vi.fn((next: ApprovalMode) => {
+			approvalMode = next
+			return true
+		}),
+		getTaskApprovalMode: vi.fn(() => approvalMode),
 	}
 	return task
 }
@@ -352,6 +366,81 @@ describe("AlphaProvider reasoning preference boundaries", () => {
 		expect(state.newTaskReasoningPreference).toEqual({ kind: "effort", effort: "high" })
 	})
 
+	it("routes approval changes to one task and leaves other task policy and saved defaults alone", () => {
+		const first = fakeTask("task-a")
+		const second = fakeTask("task-b")
+		const { provider, contextProxy } = providerHarness([first, second])
+		vi.spyOn(provider, "canAcceptTaskInput").mockReturnValue(true)
+
+		const result = provider.updateTaskApprovalMode({
+			requestId: "approval-a",
+			taskId: "task-a",
+			approvalMode: "ask",
+		})
+
+		expect(result).toEqual({
+			requestId: "approval-a",
+			taskId: "task-a",
+			status: "applied",
+			approvalMode: "ask",
+		})
+		expect(first.setTaskApprovalMode).toHaveBeenCalledWith("ask")
+		expect(second.setTaskApprovalMode).not.toHaveBeenCalled()
+		expect(first.getTaskApprovalMode()).toBe("ask")
+		expect(second.getTaskApprovalMode()).toBe("auto")
+		expect(contextProxy.setValue).not.toHaveBeenCalled()
+	})
+
+	it("reports an unavailable target without applying the mode to another task", () => {
+		const second = fakeTask("task-b")
+		const { provider } = providerHarness([second])
+		vi.spyOn(provider, "canAcceptTaskInput").mockReturnValue(true)
+
+		const result = provider.updateTaskApprovalMode({
+			requestId: "approval-missing",
+			taskId: "missing-task",
+			approvalMode: "bypass",
+		})
+
+		expect(result).toEqual({ requestId: "approval-missing", taskId: "missing-task", status: "targetUnavailable" })
+		expect(second.setTaskApprovalMode).not.toHaveBeenCalled()
+	})
+
+	it("rejects a task that can no longer accept a mode change", () => {
+		const task = fakeTask("task-a")
+		const { provider } = providerHarness([task])
+		vi.spyOn(provider, "canAcceptTaskInput").mockReturnValue(false)
+
+		const result = provider.updateTaskApprovalMode({
+			requestId: "approval-terminal",
+			taskId: "task-a",
+			approvalMode: "ask",
+		})
+
+		expect(result).toEqual({ requestId: "approval-terminal", taskId: "task-a", status: "targetUnavailable" })
+		expect(task.setTaskApprovalMode).not.toHaveBeenCalled()
+	})
+
+	it("returns notMutable when the task rejects the update", () => {
+		const task = fakeTask("task-a")
+		task.setTaskApprovalMode.mockReturnValue(false)
+		const { provider } = providerHarness([task])
+		vi.spyOn(provider, "canAcceptTaskInput").mockReturnValue(true)
+
+		const result = provider.updateTaskApprovalMode({
+			requestId: "approval-rejected",
+			taskId: "task-a",
+			approvalMode: "ask",
+		})
+
+		expect(result).toEqual({
+			requestId: "approval-rejected",
+			taskId: "task-a",
+			status: "rejected",
+			error: "notMutable",
+		})
+	})
+
 	it("retains the composer preference when a task update fails", async () => {
 		const task = fakeTask("task-a", { kind: "effort", effort: "low" })
 		const { provider, state, contextProxy } = providerHarness([task], { kind: "effort", effort: "medium" })
@@ -403,6 +492,18 @@ describe("AlphaProvider reasoning preference boundaries", () => {
 		})
 	})
 
+	it("captures approval defaults per task so a later settings change only affects new tasks", async () => {
+		const { provider, state } = providerHarness()
+		state.approvalMode = "ask"
+		await provider.createTask("first", undefined, undefined, { startTask: false })
+
+		state.approvalMode = "bypass"
+		await provider.createTask("second", undefined, undefined, { startTask: false })
+
+		expect(providerTestState.constructedTaskOptions[0]).toMatchObject({ taskApprovalMode: "ask" })
+		expect(providerTestState.constructedTaskOptions[1]).toMatchObject({ taskApprovalMode: "bypass" })
+	})
+
 	it("restores the saved reasoning preference from a history snapshot", async () => {
 		const { provider } = providerHarness()
 		const historyItem: HistoryItem = {
@@ -425,5 +526,24 @@ describe("AlphaProvider reasoning preference boundaries", () => {
 			kind: "effort",
 			effort: "high",
 		})
+	})
+
+	it("restores the task approval mode stored in history instead of using the newer default", async () => {
+		const { provider, state } = providerHarness()
+		state.approvalMode = "bypass"
+		const historyItem: HistoryItem = {
+			id: "restored-approval-task",
+			number: 1,
+			ts: 1,
+			task: "restore approval policy",
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+			approvalMode: "ask",
+		}
+
+		await provider.createTaskWithHistoryItem(historyItem, { startTask: false })
+
+		expect(providerTestState.constructedTaskOptions[0]).toMatchObject({ taskApprovalMode: "ask", historyItem })
 	})
 })

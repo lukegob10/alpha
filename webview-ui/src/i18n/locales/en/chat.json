@@ -11,22 +11,26 @@
 	},
 	"activityTrace": {
 		"needsAttention": "Needs attention",
-		"workedFor": "Worked for {{duration}}"
+		"working": "Working",
+		"runningCommands": "Running commands",
+		"editingFiles": "Editing files"
 	},
 	"completionReport": "Completion report",
 	"greeting": "Welcome to Alpha.",
 	"task": {
-		"title": "Task",
-		"expand": "Expand task",
-		"collapse": "Collapse task",
+		"contextUsage": "Context usage",
+		"taskDetails": "Task details",
+		"expandContextDetails": "Expand context details",
+		"collapseContextDetails": "Collapse context details",
 		"seeMore": "See more",
 		"seeLess": "See less",
 		"tokens": "Tokens",
+		"inputTokens": "Input tokens",
+		"outputTokens": "Output tokens",
 		"cache": "Cache",
 		"apiCost": "API Cost",
 		"size": "Size",
 		"condenseContext": "Intelligently condense context",
-		"contextWindow": "Context Length",
 		"closeAndStart": "Close task and start a new one",
 		"export": "Export task history",
 		"share": "Share task",
@@ -54,8 +58,8 @@
 		"tooltip": "Try the operation again"
 	},
 	"startNewTask": {
-		"title": "Start New Task",
-		"tooltip": "Begin a new task"
+		"title": "New Chat",
+		"tooltip": "Start a new chat"
 	},
 	"proceedAnyways": {
 		"title": "Proceed Anyways",
@@ -76,6 +80,27 @@
 	"reject": {
 		"title": "Deny",
 		"tooltip": "Prevent this action from occurring"
+	},
+	"approveOnce": {
+		"title": "Approve once"
+	},
+	"approveSession": {
+		"title": "Approve for session",
+		"tooltip": "Automatically approve this exact action for the rest of this task."
+	},
+	"approveCommand": {
+		"title": "Allow this command for this task",
+		"tooltip": "Allow only this exact command and its current arguments again during this task.",
+		"review": "This task-session permission applies only to this exact command and its current arguments:",
+		"cwdLabel": "Working directory"
+	},
+	"approvePersistentCommand": {
+		"title": "Always allow prefix",
+		"tooltip": "Save this reviewed command prefix globally. Existing deny rules and path approval checks still apply.",
+		"review": "Save this command prefix in Allowed command prefixes:"
+	},
+	"approvalAbort": {
+		"title": "Abort"
 	},
 	"completeSubtaskAndReturn": "Complete subtask and keep going",
 	"approve": {
@@ -123,8 +148,8 @@
 		"tooltip": "Resume the current task"
 	},
 	"terminate": {
-		"title": "New task",
-		"tooltip": "Start a new task"
+		"title": "New Chat",
+		"tooltip": "Start a new chat"
 	},
 	"cancel": {
 		"title": "Cancel",
@@ -388,11 +413,18 @@
 	"autoApprove": {
 		"tooltipManage": "Manage auto-approval settings",
 		"tooltipStatus": "Auto-approval enabled for: {{toggles}}",
-		"tooltipMode": "Approval mode: {{mode}}",
+		"tooltipMode": "This task's approval mode: {{mode}}",
+		"tooltipDraftMode": "New task approval mode: {{mode}}",
+		"tooltipNoCurrentTask": "Open a task to change its approval mode. Change the default in Settings.",
 		"title": "Auto-approve",
 		"all": "All",
 		"none": "None",
-		"description": "Ask, Auto, or Full Access. Auto is the default. The opened workspace is the trust boundary.",
+		"description": "Choose Ask, Auto, or Full Access for this task. Change the default for new tasks in Settings.",
+		"descriptionDraft": "Choose Ask, Auto, or Full Access for this new task. Change the default in Settings.",
+		"updatingTask": "Updating this task's approval mode…",
+		"updateTargetUnavailable": "This task is no longer available. Reopen it to change its approval mode.",
+		"updateRejected": "This task could not accept the approval mode change.",
+		"updateTimedOut": "The approval update was not confirmed. Check the mode and try again if needed.",
 		"selectOptionsFirst": "Select at least one option below to enable auto-approval",
 		"toggleAriaLabel": "Toggle auto-approval",
 		"disabledAriaLabel": "Auto-approval disabled - select options first",
@@ -408,14 +440,14 @@
 			"bypass": "Full Access"
 		},
 		"modeDescription": {
-			"ask": "Auto-approve workspace reads. Ask before writes, commands, spawn, tickets, MCP, and outside paths.",
-			"auto": "Auto-approve in-workspace edits, spawn, tickets, and commands. Ask for true-outside paths, protected files, and denied commands.",
+			"ask": "Auto-approve workspace reads. Ask before writes, commands, sub-agent launches, tickets, MCP, and outside paths. A saved command prefix can allow matching commands.",
+			"auto": "Auto-approve workspace reads, in-workspace file changes and commands, and Alpha Tickets for the current project. Ask for outside or protected changes, sub-agent launches, and MCP. Command deny rules still apply.",
 			"bypass": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
 		},
 		"bypassWarning": {
-			"title": "Enable Full Access?",
-			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands.",
-			"confirm": "Enable Full Access",
+			"title": "Enable Full Access for this task?",
+			"body": "Full Access for this task auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands. This does not change the default for new tasks.",
+			"confirm": "Enable for this task",
 			"cancel": "Cancel"
 		}
 	},
@@ -433,6 +465,27 @@
 			"commandControl": "Wait for, send input to, and stop background commands owned by the task.",
 			"workflowContinuity": "Preserve task constraints and skill context across reload and compaction.",
 			"chatUpdates": "Use clearer chat actions and select a provider after task completion."
+		}
+	},
+	"crossTasks": {
+		"title": "Threads",
+		"thread": "Thread",
+		"untitled": "Independent task",
+		"openTask": "Open {{thread}}: {{objective}}",
+		"stopTask": "Stop task: {{objective}}",
+		"stop": "Stop task",
+		"workspace": {
+			"shared": "Shared workspace",
+			"worktree": "Git worktree"
+		},
+		"status": {
+			"starting": "Starting",
+			"running": "Running",
+			"waiting": "Waiting",
+			"completed": "Completed",
+			"failed": "Failed",
+			"stopping": "Stopping",
+			"stopped": "Stopped"
 		}
 	},
 	"reasoning": {
@@ -472,6 +525,23 @@
 	"followUpSuggest": {
 		"copyToInput": "Copy to input (same as shift + click)",
 		"timerPrefix": "Auto-approve enabled. Selecting in {{seconds}}s…"
+	},
+	"requestUserInput": {
+		"title": "Answer the questions",
+		"other": "Other",
+		"otherAnswer": "Other answer for {{header}} question {{index}}",
+		"otherPlaceholder": "Enter an answer",
+		"cancel": "Cancel",
+		"submit": "Submit answers"
+	},
+	"asyncUserInput": {
+		"title": "A question for you",
+		"responsePrefix": "Answers to the earlier questions:",
+		"freeText": "Or enter a free-text answer",
+		"answerFor": "Answer for {{question}}",
+		"replyHelp": "You can answer now or later while the task continues.",
+		"submit": "Send response",
+		"sent": "Response sent as a message"
 	},
 	"costs": {
 		"totalWithSubtasks": "Total Cost (including subtasks): ${{cost}}",
@@ -584,14 +654,6 @@
 		"title": "Provider no longer supported",
 		"message": "This saved provider is no longer supported. Select GCP Vertex AI, VS Code LM API, Stellar, or OpenAI Compatible in Settings.",
 		"openSettings": "Open Settings"
-	},
-	"githubActions": {
-		"request": "Request",
-		"create_pull_request": "Create pull request",
-		"get_pull_request": "View pull request",
-		"list_checks": "List checks",
-		"merge_pull_request": "Merge pull request",
-		"comment": "Add comment"
 	},
 	"transcript": {
 		"loadOlder": "Load older messages",

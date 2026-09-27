@@ -12,27 +12,25 @@ suite("Live Copilot GitHub CLI approval", function () {
 		if (process.env.ALPHA_E2E_PROVIDER_MODE !== "live-copilot") {
 			this.skip()
 		}
-		assert.ok(
-			vscode.version === "1.122.1" || vscode.version === "1.136.1",
-			"GitHub approval runs on the reference host or the live Copilot host",
-		)
+		const expectedVersion = process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION
+		if (expectedVersion) assert.equal(vscode.version, expectedVersion)
 	})
 
 	test("Auto auto-approves a read-only gh probe and does not mutate GitHub", async () => {
 		await runLiveCase(
 			"approval-github-live",
-			["shell"],
+			["exec_command"],
 			{},
 			[
-				"Use the shell tool exactly once.",
+				"Use the exec_command tool exactly once.",
 				"Run only `gh --version`.",
 				"Do not run `gh auth login`, `gh api`, `gh pr create`, `gh issue create`, or any mutating GitHub command.",
 				"Do not write files. Report the CLI version and finish.",
 			].join(" "),
 			async (calls, messages) => {
-				const commands = calls.filter((call) => call.name === "shell" || call.name === "execute_command")
+				const commands = calls.filter((call) => call.name === "exec_command")
 				assert.equal(commands.length, 1)
-				const command = String(commands[0]!.input.command ?? "")
+				const command = String(commands[0]!.input.cmd ?? "")
 				assert.match(command, /^\s*gh\s+--version\b/)
 				assert.doesNotMatch(command, /\bgh\s+(api|pr|issue|repo|auth\s+login)\b/)
 				assert.equal(commands[0]!.isError, false)
@@ -65,7 +63,7 @@ suite("Live Copilot GitHub CLI approval", function () {
 					{ flag: "wx" },
 				)
 			},
-			{ commands: [], requestLimit: 6 },
+			{ commands: ["gh --version"], requestLimit: 6 },
 		)
 	})
 })

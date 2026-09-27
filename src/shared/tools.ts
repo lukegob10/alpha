@@ -1,4 +1,4 @@
-import type { CreateTicket, UpdateTicket, DeleteTicket } from "@alpha-code/types"
+import type { CreateTicket, UpdateTicket, DeleteTicket, TicketStatus, TicketType } from "@alpha-code/types"
 import { Anthropic } from "@anthropic-ai/sdk"
 
 import type {
@@ -15,10 +15,19 @@ import type {
 	InterruptAgentParams,
 	CancelAgentParams,
 	CloseAgentParams,
+	CreateTaskParams,
+	ListTasksParams,
+	WaitTaskParams,
+	SendTaskMessageParams,
+	SteerTaskParams,
+	StopTaskParams,
 	SubagentForkTurns,
+	SubagentSpawnAgentArgs,
 	BrowserToolArgs,
 	DiscoverToolsParams,
+	ToolSearchParams,
 	SearchFilesParams,
+	ViewImageParams,
 } from "@alpha-code/types"
 
 export type ToolResponse = string | Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam>
@@ -45,6 +54,7 @@ export interface TextContent {
 
 export const toolParamNames = [
 	"command",
+	"cmd",
 	"path",
 	"content",
 	"regex",
@@ -81,10 +91,15 @@ export const toolParamNames = [
 	"coordinate",
 	"text",
 	"server_name",
+	"server",
+	"cursor",
 	"tool_name",
 	"arguments",
 	"uri",
 	"question",
+	"questions",
+	"title",
+	"options",
 	"result",
 	"outcome",
 	"diff",
@@ -93,6 +108,7 @@ export const toolParamNames = [
 	"mode",
 	"message",
 	"cwd",
+	"workdir",
 	"follow_up",
 	"task",
 	"size",
@@ -113,6 +129,10 @@ export const toolParamNames = [
 	"replace_all", // edit tool parameter for replacing all occurrences
 	"expected_replacements", // edit_file parameter for multiple occurrences
 	"timeout", // execute_command parameter
+	"yield_time_ms", // exec_command and write_stdin wait interval
+	"max_output_tokens", // exec_command and write_stdin result budget
+	"session_id", // write_stdin session identifier
+	"chars", // write_stdin input
 	"verification", // execute_command verification scope
 	"artifact_id", // read_command_output parameter
 	"search", // read_command_output parameter for grep-like search
@@ -130,19 +150,11 @@ export const toolParamNames = [
 	"line_ranges",
 	// search_files bounded batch parameter
 	"queries",
-	// Legacy github_api parameters retained for historical transcript replay only.
-	"owner",
-	"repo",
-	"pull_number",
-	"issue_number",
-	"head",
-	"base",
-	"title",
-	"body",
-	"sha",
-	"merge_method",
 	"tasks",
 	"task_name",
+	"task_id",
+	"workspace_mode",
+	"agent_type",
 	"fork_turns",
 	"objective",
 	"agent_kind",
@@ -152,6 +164,10 @@ export const toolParamNames = [
 	"timeout_ms",
 	"until_terminal",
 	"target",
+	"explanation",
+	"plan",
+	"step",
+	"status",
 ] as const
 
 export type ToolParamName = (typeof toolParamNames)[number]
@@ -162,8 +178,13 @@ export type ToolParamName = (typeof toolParamNames)[number]
  */
 export type NativeToolArgs = BrowserToolArgs & {
 	access_mcp_resource: { server_name: string; uri: string }
+	list_mcp_resources: { server?: string; cursor?: string }
+	list_mcp_resource_templates: { server?: string; cursor?: string }
+	read_mcp_resource: { server: string; uri: string }
 	discover_tools: DiscoverToolsParams
+	tool_search: ToolSearchParams
 	read_file: import("@alpha-code/types").ReadFileToolParams
+	view_image: ViewImageParams
 	read_command_output: { artifact_id: string; search?: string; offset?: number; limit?: number }
 	manage_command:
 		| {
@@ -179,11 +200,25 @@ export type NativeToolArgs = BrowserToolArgs & {
 				offset?: number
 				limit?: number
 		  }
+	write_stdin: {
+		session_id: number
+		chars?: string
+		yield_time_ms?: number
+		max_output_tokens?: number
+	}
 	shell: {
 		command: string
 		cwd?: string | null
 		timeout?: number | null
 		/** Internal and historical verification metadata; omitted from the model-facing schema. */
+		verification?: { change_set_ids: string[] } | null
+	}
+	exec_command: {
+		cmd: string
+		workdir?: string | null
+		yield_time_ms?: number | null
+		max_output_tokens?: number | null
+		/** Host-injected verification scope; omitted from the model-facing schema. */
 		verification?: { change_set_ids: string[] } | null
 	}
 	attempt_completion: { result: string; outcome?: "completed" | "blocked" }
@@ -220,23 +255,7 @@ export type NativeToolArgs = BrowserToolArgs & {
 			  }
 		>
 	}
-	spawn_agent:
-		| {
-				task_name: string
-				fork_turns: SubagentForkTurns
-				objective: string
-				agent_kind: "explore" | "review"
-				write_scope: null
-				expected_output: string[] | null
-		  }
-		| {
-				task_name: string
-				fork_turns: SubagentForkTurns
-				objective: string
-				agent_kind: "worker"
-				write_scope: string[]
-				expected_output: string[] | null
-		  }
+	spawn_agent: SubagentSpawnAgentArgs
 	list_agents: ListAgentsParams
 	wait_agent: WaitAgentParams
 	send_message: SendMessageParams
@@ -245,62 +264,44 @@ export type NativeToolArgs = BrowserToolArgs & {
 	interrupt_agent: InterruptAgentParams
 	cancel_agent: CancelAgentParams
 	close_agent: CloseAgentParams
+	create_task: CreateTaskParams
+	list_tasks: ListTasksParams
+	wait_task: WaitTaskParams
+	send_task_message: SendTaskMessageParams
+	steer_task: SteerTaskParams
+	stop_task: StopTaskParams
 	ask_followup_question: {
 		question: string
 		follow_up: Array<{ text: string; mode?: string }>
+	}
+	request_user_input: {
+		questions: Array<{
+			id: string
+			header: string
+			question: string
+			options: Array<{ label: string; description: string }>
+		}>
+	}
+	request_user_input_async: {
+		questions: Array<{ title: string; options?: string[] }>
 	}
 	codebase_search: { query: string; path?: string }
 	generate_image: GenerateImageParams
 	run_slash_command: { command: string; args?: string }
 	skill: { skill: string; args?: string }
 	search_files: SearchFilesParams
-	list_tickets: { query?: string; status?: "backlog" | "in-progress" | "complete"; offset?: number; limit?: number }
+	list_tickets: { query?: string; status?: TicketStatus; type?: TicketType | null; offset?: number; limit?: number }
 	read_ticket: { id: string }
 	create_ticket: CreateTicket
 	update_ticket: UpdateTicket
 	delete_ticket: DeleteTicket
 	update_todo_list: { todos: string; work_plan?: import("@alpha-code/types").TaskWorkPlan | null }
+	update_plan: {
+		explanation?: string | null
+		plan: Array<{ step: string; status: "pending" | "in_progress" | "completed" }>
+	}
 	use_mcp_tool: { server_name: string; tool_name: string; arguments?: Record<string, unknown> }
 	write_to_file: { path: string; content: string }
-	// Retained for typed replay of historical calls; no executable registry descriptor exists.
-	github_api:
-		| {
-				action: "create_pull_request"
-				owner: string
-				repo: string
-				head: string
-				base: string
-				title: string
-				body?: string | null
-		  }
-		| {
-				action: "get_pull_request"
-				owner: string
-				repo: string
-				pull_number: number
-		  }
-		| {
-				action: "list_checks"
-				owner: string
-				repo: string
-				sha: string
-		  }
-		| {
-				action: "merge_pull_request"
-				owner: string
-				repo: string
-				pull_number: number
-				merge_method?: "merge" | "squash" | "rebase" | null
-				title?: string | null
-				message?: string | null
-		  }
-		| {
-				action: "comment"
-				owner: string
-				repo: string
-				issue_number: number
-				body: string
-		  }
 	// Add more tools as they are migrated to native protocol
 }
 
@@ -383,6 +384,11 @@ export interface ReadFileToolUse extends ToolUse<"read_file"> {
 	>
 }
 
+export interface ViewImageToolUse extends ToolUse<"view_image"> {
+	name: "view_image"
+	params: Partial<Pick<Record<ToolParamName, string>, "path">>
+}
+
 export interface WriteToFileToolUse extends ToolUse<"write_to_file"> {
 	name: "write_to_file"
 	params: Partial<Pick<Record<ToolParamName, string>, "path" | "content">>
@@ -420,6 +426,14 @@ export interface AskFollowupQuestionToolUse extends ToolUse<"ask_followup_questi
 	params: Partial<Pick<Record<ToolParamName, string>, "question" | "follow_up">>
 }
 
+export interface RequestUserInputToolUse extends ToolUse<"request_user_input"> {
+	name: "request_user_input"
+}
+
+export interface RequestUserInputAsyncToolUse extends ToolUse<"request_user_input_async"> {
+	name: "request_user_input_async"
+}
+
 export interface AttemptCompletionToolUse extends ToolUse<"attempt_completion"> {
 	name: "attempt_completion"
 	params: Partial<Pick<Record<ToolParamName, string>, "result" | "outcome">>
@@ -445,28 +459,6 @@ export interface GenerateImageToolUse extends ToolUse<"generate_image"> {
 	params: Partial<Pick<Record<ToolParamName, string>, "prompt" | "path" | "image">>
 }
 
-/** Historical GitHub API tool calls remain representable when replaying saved transcripts. */
-export interface GitHubApiToolUse extends ToolUse<"github_api"> {
-	name: "github_api"
-	params: Partial<
-		Pick<
-			Record<ToolParamName, string>,
-			| "action"
-			| "owner"
-			| "repo"
-			| "pull_number"
-			| "issue_number"
-			| "head"
-			| "base"
-			| "title"
-			| "body"
-			| "sha"
-			| "merge_method"
-			| "message"
-		>
-	>
-}
-
 // Define tool group configuration
 export type ToolGroupConfig = {
 	tools: readonly string[]
@@ -476,9 +468,12 @@ export type ToolGroupConfig = {
 
 export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	shell: "run commands",
+	exec_command: "run commands",
 	execute_command: "run commands",
 	manage_command: "control task commands",
+	write_stdin: "control task commands",
 	read_file: "read files",
+	view_image: "view images",
 	read_command_output: "read command output",
 	write_to_file: "write files",
 	apply_diff: "apply changes",
@@ -491,12 +486,24 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	list_files: "list files",
 	use_mcp_tool: "use mcp tools",
 	access_mcp_resource: "access mcp resources",
+	list_mcp_resources: "list mcp resources",
+	list_mcp_resource_templates: "list mcp resource templates",
+	read_mcp_resource: "read an mcp resource",
 	discover_tools: "discover optional MCP tools",
+	tool_search: "search deferred tools",
 	ask_followup_question: "ask questions",
+	request_user_input: "request user input",
+	request_user_input_async: "ask the user while work continues",
 	attempt_completion: "complete tasks",
 	new_task: "create new task",
 	delegate_task: "delegate bounded tasks",
 	spawn_agent: "spawn a bounded agent",
+	create_task: "create an independent task",
+	list_tasks: "list tasks created by this task",
+	wait_task: "wait for a task update",
+	send_task_message: "send a message to a task",
+	steer_task: "steer a task",
+	stop_task: "stop a task",
 	list_agents: "list agents",
 	wait_agent: "wait for agent updates",
 	send_message: "message an agent",
@@ -512,11 +519,10 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	update_ticket: "update a ticket",
 	delete_ticket: "delete a ticket",
 	update_todo_list: "update todo list",
+	update_plan: "update plan",
 	run_slash_command: "run slash command",
 	skill: "load skill",
 	generate_image: "generate images",
-	// Historical display label for saved GitHub API tool calls; this name is not advertised.
-	github_api: "use GitHub API",
 	open_browser_page: "open an integrated browser page",
 	list_browser_pages: "list shared integrated browser pages",
 	read_page: "read an integrated browser page",
@@ -534,24 +540,51 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 // Define available tool groups.
 export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 	read: {
-		tools: ["read_file", "search_files", "list_files", "codebase_search", "list_tickets", "read_ticket"],
+		tools: [
+			"read_file",
+			"view_image",
+			"search_files",
+			"list_files",
+			"codebase_search",
+			"list_tickets",
+			"read_ticket",
+		],
 	},
 	edit: {
 		tools: ["edit", "write_to_file", "create_ticket", "update_ticket", "delete_ticket"],
 		customTools: ["apply_patch"],
 	},
 	command: {
-		tools: ["shell", "manage_command"],
+		tools: ["exec_command", "manage_command", "write_stdin"],
 	},
 	mcp: {
-		tools: ["use_mcp_tool", "access_mcp_resource", "discover_tools"],
+		tools: [
+			"access_mcp_resource",
+			"list_mcp_resources",
+			"list_mcp_resource_templates",
+			"read_mcp_resource",
+			"tool_search",
+		],
 	},
 	modes: {
 		tools: ["new_task"],
 		alwaysAvailable: true,
 	},
 	agents: {
-		tools: ["spawn_agent", "wait_agent", "send_message", "followup_task", "list_agents", "close_agent"],
+		tools: [
+			"spawn_agent",
+			"wait_agent",
+			"send_message",
+			"followup_task",
+			"list_agents",
+			"interrupt_agent",
+			"create_task",
+			"list_tasks",
+			"wait_task",
+			"send_task_message",
+			"steer_task",
+			"stop_task",
+		],
 	},
 	browser: {
 		tools: [
@@ -573,11 +606,13 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 // Tools that are always available to all modes.
 export const ALWAYS_AVAILABLE_TOOLS: ToolName[] = [
 	"ask_followup_question",
+	"request_user_input_async",
 	"attempt_completion",
 	"new_task",
-	"update_todo_list",
+	"update_plan",
 	"run_slash_command",
 	"skill",
+	"tool_search",
 ] as const
 
 /**
@@ -591,7 +626,10 @@ export const ALWAYS_AVAILABLE_TOOLS: ToolName[] = [
  * To add a new alias, simply add an entry here. No other files need to be modified.
  */
 export const TOOL_ALIASES: Record<string, ToolName> = {
-	execute_command: "shell",
+	discover_tools: "tool_search",
+	shell: "exec_command",
+	execute_command: "exec_command",
+	update_todo_list: "update_plan",
 	read_command_output: "manage_command",
 	write_file: "write_to_file",
 	search_and_replace: "edit",

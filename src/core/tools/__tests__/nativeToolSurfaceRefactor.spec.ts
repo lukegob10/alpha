@@ -26,11 +26,30 @@ const retiredAdvertisedNames = [
 	"edit_file",
 	"execute_command",
 	"read_command_output",
+	"attempt_completion",
+	"ask_followup_question",
+	"edit",
+	"write_to_file",
+	"manage_command",
+	"new_task",
+	"update_todo_list",
 	"delegate_task",
-	"interrupt_agent",
+	"close_agent",
 	"cancel_agent",
 	"report_progress",
 ] as const
+
+const crossTaskToolNames = [
+	"create_task",
+	"list_tasks",
+	"wait_task",
+	"send_task_message",
+	"steer_task",
+	"stop_task",
+] as const
+
+const crossTaskMutationToolNames = ["create_task", "send_task_message", "steer_task", "stop_task"] as const
+const planCrossTaskReadToolNames = ["list_tasks", "wait_task"] as const
 
 function namesOf(tools: ReturnType<typeof getNativeTools>): string[] {
 	return tools.flatMap((tool) => (tool.type === "function" ? [tool.function.name] : []))
@@ -108,7 +127,6 @@ describe("native tool-surface refactor contract", () => {
 					getNativeTools({
 						supportsImages: true,
 						availableBrowserToolNames: liveBrowserToolNames,
-						includeApplyPatch: true,
 					}),
 					"code",
 					undefined,
@@ -121,24 +139,16 @@ describe("native tool-surface refactor contract", () => {
 				),
 			).sort()
 			const expected = [
-				"read_file",
-				"search_files",
-				"list_files",
-				"codebase_search",
 				"list_tickets",
 				"read_ticket",
-				"edit",
-				"write_to_file",
 				"create_ticket",
 				"update_ticket",
 				"delete_ticket",
 				"apply_patch",
-				"shell",
-				"manage_command",
-				"ask_followup_question",
-				"attempt_completion",
-				"new_task",
-				"update_todo_list",
+				"exec_command",
+				"view_image",
+				"write_stdin",
+				"update_plan",
 				"run_slash_command",
 				"skill",
 				"spawn_agent",
@@ -146,11 +156,13 @@ describe("native tool-surface refactor contract", () => {
 				"send_message",
 				"followup_task",
 				"list_agents",
-				"close_agent",
+				"interrupt_agent",
 				...liveBrowserToolNames,
 			].sort()
 
 			expect(names).toEqual(expected)
+			for (const legacyName of ["read_file", "list_files", "search_files", "codebase_search"])
+				expect(names, legacyName).not.toContain(legacyName)
 			expect(new Set(names).size).toBe(names.length)
 		})
 
@@ -173,42 +185,39 @@ describe("native tool-surface refactor contract", () => {
 				[
 					"list_tickets",
 					"read_ticket",
-					"read_file",
-					"search_files",
-					"list_files",
-					"ask_followup_question",
-					"attempt_completion",
-					"shell",
+					"request_user_input",
+					"update_plan",
+					"exec_command",
 					"spawn_agent",
 					"list_agents",
 					"wait_agent",
 					"send_message",
 					"followup_task",
-					"close_agent",
+					"interrupt_agent",
 				].sort(),
 			)
+			for (const legacyName of ["read_file", "list_files", "search_files", "codebase_search"])
+				expect(result.allowedFunctionNames, legacyName).not.toContain(legacyName)
 		})
 
 		it("advertises canonical names and omits retired names from the eager catalog", () => {
 			const names = namesOf(getNativeTools({ availableBrowserToolNames: [] }))
 
-			expect(names).toContain("shell")
-			expect(names).toContain("edit")
-			expect(names).toContain("write_to_file")
-			expect(names).not.toContain("apply_patch")
+			expect(names).toContain("exec_command")
+			expect(names).toContain("apply_patch")
+			expect(names).toContain("update_plan")
 			for (const name of retiredAdvertisedNames) {
 				expect(names).not.toContain(name)
 			}
 		})
 
-		it("keeps apply_patch opt-in at native catalog and registry boundaries", () => {
-			expect(namesOf(getNativeTools())).not.toContain("apply_patch")
-			expect(namesOf(nativeTools)).not.toContain("apply_patch")
-			expect(namesOf(getNativeTools({ includeApplyPatch: true }))).toContain("apply_patch")
-			expect(new ToolRegistry().getSchema("apply_patch")).toBeUndefined()
-			expect(
-				new ToolRegistry({ nativeTools: getNativeTools({ includeApplyPatch: true }) }).getSchema("apply_patch"),
-			).toBeDefined()
+		it("keeps the Codex patch and plan tools in the eager native catalog and registry", () => {
+			expect(namesOf(getNativeTools())).toContain("apply_patch")
+			expect(namesOf(nativeTools)).toContain("apply_patch")
+			expect(new ToolRegistry().getSchema("apply_patch")).toBeDefined()
+			expect(new ToolRegistry().getSchema("update_plan")).toMatchObject({
+				function: { name: "update_plan" },
+			})
 		})
 
 		it("does not let includedTools invent a schema missing from the native catalog", () => {
@@ -219,30 +228,26 @@ describe("native tool-surface refactor contract", () => {
 					undefined,
 					{},
 					undefined,
-					{ modelInfo: { ...openAiModelInfoSaneDefaults, includedTools: ["apply_patch"] } },
+					{ modelInfo: { ...openAiModelInfoSaneDefaults, includedTools: ["not_a_registered_tool"] } },
 				),
 			)
 
-			expect(names).not.toContain("apply_patch")
+			expect(names).not.toContain("not_a_registered_tool")
 		})
 
 		it.each([
-			["openai", { provider: "openai", id: "gpt-5.5" }, true],
-			["openai gpt-oss", { provider: "openai", id: "gpt-oss-120b" }, true],
-			["vertex", { provider: "vertex", id: "o3" }, true],
-			["vertex gpt-oss", { provider: "vertex", id: "gpt-oss" }, true],
-			["vscode-lm", { provider: "vscode-lm", vendor: "copilot", family: "gpt-5.5" }, true],
-			[
-				"vscode-lm gpt-oss",
-				{ provider: "vscode-lm", vendor: "copilot", family: "gpt-oss-120b" },
-				true,
-			],
-			["codex", { provider: "openai", id: "codex" }, true],
-			["claude", { provider: "openai", id: "claude-opus-4.7" }, false],
-			["gemini", { provider: "openai", id: "gemini-3.1-pro" }, false],
-			["grok", { provider: "openai", id: "xai/grok-4.6" }, false],
-			["llama", { provider: "openai", id: "Meta-Llama-3.3-70B-Instruct" }, false],
-		] as const)("gates patch schema for the verified %s identity", async (_name, modelIdentity, patchExpected) => {
+			["openai", { provider: "openai", id: "gpt-5.5" }],
+			["openai gpt-oss", { provider: "openai", id: "gpt-oss-120b" }],
+			["vertex", { provider: "vertex", id: "o3" }],
+			["vertex gpt-oss", { provider: "vertex", id: "gpt-oss" }],
+			["vscode-lm", { provider: "vscode-lm", vendor: "copilot", family: "gpt-5.5" }],
+			["vscode-lm gpt-oss", { provider: "vscode-lm", vendor: "copilot", family: "gpt-oss-120b" }],
+			["codex", { provider: "openai", id: "codex" }],
+			["claude", { provider: "openai", id: "claude-opus-4.7" }],
+			["gemini", { provider: "openai", id: "gemini-3.1-pro" }],
+			["grok", { provider: "openai", id: "xai/grok-4.6" }],
+			["llama", { provider: "openai", id: "Meta-Llama-3.3-70B-Instruct" }],
+		] as const)("uses the Codex patch schema for the %s identity", async (_name, modelIdentity) => {
 			const provider = {
 				context: {},
 				getMcpHub: () => ({ getServers: () => [] }),
@@ -258,9 +263,10 @@ describe("native tool-surface refactor contract", () => {
 			})
 			const names = namesOf(result.tools)
 
-			expect(names).toContain("edit")
-			expect(names).toContain("write_to_file")
-			expect(names.includes("apply_patch")).toBe(patchExpected)
+			expect(names).toContain("apply_patch")
+			for (const legacy of ["edit", "write_to_file", "attempt_completion"]) {
+				expect(names).not.toContain(legacy)
+			}
 		})
 
 		it("keeps Plan read-only and excludes command management, editors, and ticket writes", () => {
@@ -279,12 +285,17 @@ describe("native tool-surface refactor contract", () => {
 				),
 			)
 
-			expect(names).toContain("shell")
+			expect(names).toContain("exec_command")
 			expect(names).toEqual(expect.arrayContaining(["list_tickets", "read_ticket"]))
+			expect(names).toContain("update_plan")
 			for (const name of [
 				"manage_command",
+				"ask_followup_question",
+				"attempt_completion",
 				"edit",
 				"write_to_file",
+				"new_task",
+				"update_todo_list",
 				"apply_patch",
 				"create_ticket",
 				"update_ticket",
@@ -294,22 +305,82 @@ describe("native tool-surface refactor contract", () => {
 			}
 		})
 
+		it("captures cross-task callability by task role and execution mode", async () => {
+			const provider = {
+				context: {},
+				getMcpHub: () => ({ getServers: () => [] }),
+			}
+			const buildSurface = (mode: string, crossTaskRole: "root" | "child" | "none") =>
+				buildNativeToolsArrayWithRestrictions({
+					provider: provider as unknown as BuildToolsOptions["provider"],
+					cwd: process.cwd(),
+					mode,
+					customModes: undefined,
+					experiments: {},
+					apiConfiguration: { apiProvider: "openai" },
+					taskKind: "primary",
+					crossTaskRole,
+				})
+
+			const rootCode = await buildSurface("code", "root")
+			const rootCodeNames = new Set(namesOf(rootCode.tools))
+			for (const name of crossTaskToolNames) {
+				expect(rootCodeNames.has(name)).toBe(true)
+				expect(rootCode.surface?.isCallable(name)).toBe(true)
+				expect(rootCode.surface?.resolve(name)).toBeDefined()
+			}
+
+			const childCode = await buildSurface("code", "child")
+			const childCodeNames = new Set(namesOf(childCode.tools))
+			for (const name of crossTaskToolNames) {
+				const isParentMessage = name === "send_task_message"
+				expect(childCodeNames.has(name)).toBe(isParentMessage)
+				expect(childCode.surface?.isCallable(name)).toBe(isParentMessage)
+				expect(childCode.surface?.resolve(name) !== undefined).toBe(isParentMessage)
+			}
+
+			const unscopedCode = await buildSurface("code", "none")
+			for (const name of crossTaskToolNames) expect(unscopedCode.surface?.isCallable(name)).toBe(false)
+
+			const rootPlan = await buildSurface("architect", "root")
+			const rootPlanNames = new Set(namesOf(rootPlan.tools))
+			for (const name of crossTaskToolNames) {
+				const isPlanRead = (planCrossTaskReadToolNames as readonly string[]).includes(name)
+				expect(rootPlanNames.has(name)).toBe(isPlanRead)
+				expect(rootPlan.surface?.isCallable(name)).toBe(isPlanRead)
+				expect(rootPlan.surface?.resolve(name) !== undefined).toBe(isPlanRead)
+			}
+			for (const name of crossTaskMutationToolNames) {
+				expect(rootPlan.surface?.isCallable(name)).toBe(false)
+			}
+
+			const childPlan = await buildSurface("architect", "child")
+			const childPlanNames = new Set(namesOf(childPlan.tools))
+			for (const name of crossTaskToolNames) {
+				expect(childPlanNames.has(name)).toBe(false)
+				expect(childPlan.surface?.isCallable(name)).toBe(false)
+			}
+		})
+
 		it("does not place native product tools behind MCP discovery", () => {
 			const names = namesOf(getNativeTools({ availableBrowserToolNames: [] }))
 
 			expect(names).not.toContain("discover_tools")
 		})
 
-		it("resolves the renamed command through the canonical alias", () => {
-			expect(TOOL_ALIASES.execute_command).toBe("shell")
+		it("keeps exec_command canonical and maps legacy command names to it", () => {
+			expect(TOOL_ALIASES.shell).toBe("exec_command")
+			expect(TOOL_ALIASES.execute_command).toBe("exec_command")
+			expect(TOOL_ALIASES.exec_command).toBeUndefined()
 		})
 
-		it("discovers only deferred MCP candidates and never native product tools", async () => {
+		it("searches only deferred MCP candidates and never native product tools", async () => {
 			const result = await buildNativeToolsArrayWithRestrictions(mcpDiscoveryFixture())
 			const surface = result.surface!
 			const advertisedNames = namesOf(result.tools)
 
-			expect(advertisedNames).toContain("discover_tools")
+			expect(advertisedNames).toContain("tool_search")
+			expect(advertisedNames).not.toContain("discover_tools")
 			expect(advertisedNames.filter((name) => name.startsWith("mcp--"))).toEqual([])
 
 			const executionHost = discoveryHost()
@@ -323,7 +394,7 @@ describe("native tool-surface refactor contract", () => {
 					{
 						type: "tool_call",
 						id: "discovery",
-						name: "discover_tools",
+						name: "tool_search",
 						arguments: { query: "lookup_00", limit: 1 },
 					} satisfies AgentToolCall,
 				]),
@@ -345,7 +416,7 @@ describe("native tool-surface refactor contract", () => {
 
 	describe("phase 1: names, groups, and aliases", () => {
 		it("keeps canonical shell and historical names in the type-level catalog", () => {
-			expect(toolNames).toContain("shell")
+			expect(toolNames).toContain("exec_command")
 			for (const name of retiredAdvertisedNames) {
 				expect(toolNames).toContain(name)
 			}
@@ -353,7 +424,7 @@ describe("native tool-surface refactor contract", () => {
 
 		it("keeps shell and retired tool usage records readable", () => {
 			const usage = Object.fromEntries(
-				["shell", ...retiredAdvertisedNames].map((name) => [name, { attempts: 1, failures: 0 }]),
+				["exec_command", ...retiredAdvertisedNames].map((name) => [name, { attempts: 1, failures: 0 }]),
 			)
 			expect(toolUsageSchema.parse(usage)).toEqual(usage)
 		})
@@ -370,7 +441,7 @@ describe("native tool-surface refactor contract", () => {
 		})
 
 		it("defines the locked command, edit, and managed-agent groups", () => {
-			expect(TOOL_GROUPS.command.tools).toEqual(["shell", "manage_command"])
+			expect(TOOL_GROUPS.command.tools).toEqual(["exec_command", "manage_command", "write_stdin"])
 			expect(TOOL_GROUPS.edit.tools).toEqual([
 				"edit",
 				"write_to_file",
@@ -385,13 +456,14 @@ describe("native tool-surface refactor contract", () => {
 				"send_message",
 				"followup_task",
 				"list_agents",
-				"close_agent",
+				"interrupt_agent",
+				...crossTaskToolNames,
 			])
 		})
 
 		it("keeps compatibility aliases without aliasing payload-incompatible tools", () => {
 			expect(TOOL_ALIASES).toMatchObject({
-				execute_command: "shell",
+				execute_command: "exec_command",
 				write_file: "write_to_file",
 				search_and_replace: "edit",
 			})

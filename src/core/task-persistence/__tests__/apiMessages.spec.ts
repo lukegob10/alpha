@@ -5,6 +5,7 @@ import * as path from "path"
 import * as fs from "fs/promises"
 
 import { readApiMessages } from "../apiMessages"
+import { ProviderTranscriptStoreError } from "../ProviderTranscriptStore"
 
 let tmpBaseDir: string
 
@@ -13,22 +14,23 @@ beforeEach(async () => {
 })
 
 describe("apiMessages.readApiMessages", () => {
-	it("returns empty array when api_conversation_history.json contains invalid JSON", async () => {
+	it("rejects invalid JSON without replacing the API history", async () => {
 		const taskId = "task-corrupt-api"
 		const taskDir = path.join(tmpBaseDir, "tasks", taskId)
 		await fs.mkdir(taskDir, { recursive: true })
 		const filePath = path.join(taskDir, "api_conversation_history.json")
 		await fs.writeFile(filePath, "<<<corrupt data>>>", "utf8")
 
-		const result = await readApiMessages({
+		const read = readApiMessages({
 			taskId,
 			globalStoragePath: tmpBaseDir,
 		})
 
-		expect(result).toEqual([])
+		await expect(read).rejects.toMatchObject({ code: "invalid_messages" })
+		expect(await fs.readFile(filePath, "utf8")).toBe("<<<corrupt data>>>")
 	})
 
-	it("returns empty array when claude_messages.json fallback contains invalid JSON", async () => {
+	it("rejects invalid fallback JSON and retains the legacy file", async () => {
 		const taskId = "task-corrupt-fallback"
 		const taskDir = path.join(tmpBaseDir, "tasks", taskId)
 		await fs.mkdir(taskDir, { recursive: true })
@@ -37,12 +39,12 @@ describe("apiMessages.readApiMessages", () => {
 		const oldPath = path.join(taskDir, "claude_messages.json")
 		await fs.writeFile(oldPath, "not json at all {[!", "utf8")
 
-		const result = await readApiMessages({
+		const read = readApiMessages({
 			taskId,
 			globalStoragePath: tmpBaseDir,
 		})
 
-		expect(result).toEqual([])
+		await expect(read).rejects.toBeInstanceOf(ProviderTranscriptStoreError)
 
 		// The corrupted fallback file should NOT be deleted
 		const stillExists = await fs
@@ -52,22 +54,22 @@ describe("apiMessages.readApiMessages", () => {
 		expect(stillExists).toBe(true)
 	})
 
-	it("returns [] when file contains valid JSON that is not an array", async () => {
+	it("rejects a non-array API history", async () => {
 		const taskId = "task-non-array-api"
 		const taskDir = path.join(tmpBaseDir, "tasks", taskId)
 		await fs.mkdir(taskDir, { recursive: true })
 		const filePath = path.join(taskDir, "api_conversation_history.json")
 		await fs.writeFile(filePath, JSON.stringify("hello"), "utf8")
 
-		const result = await readApiMessages({
+		const read = readApiMessages({
 			taskId,
 			globalStoragePath: tmpBaseDir,
 		})
 
-		expect(result).toEqual([])
+		await expect(read).rejects.toMatchObject({ code: "invalid_messages" })
 	})
 
-	it("returns [] when fallback file contains valid JSON that is not an array", async () => {
+	it("rejects a non-array fallback without migrating it", async () => {
 		const taskId = "task-non-array-fallback"
 		const taskDir = path.join(tmpBaseDir, "tasks", taskId)
 		await fs.mkdir(taskDir, { recursive: true })
@@ -76,12 +78,76 @@ describe("apiMessages.readApiMessages", () => {
 		const oldPath = path.join(taskDir, "claude_messages.json")
 		await fs.writeFile(oldPath, JSON.stringify({ key: "value" }), "utf8")
 
-		const result = await readApiMessages({
+		const read = readApiMessages({
 			taskId,
 			globalStoragePath: tmpBaseDir,
 		})
 
-		expect(result).toEqual([])
+		await expect(read).rejects.toMatchObject({ code: "invalid_messages" })
+		expect(await fs.readFile(oldPath, "utf8")).toBe(JSON.stringify({ key: "value" }))
+	})
+
+	it.each([
+		["unknown role", [{ role: "tool", content: "orphan" }]],
+		["missing content", [{ role: "assistant" }]],
+		["untyped content block", [{ role: "user", content: [{}] }]],
+		["invalid reasoning record", [{ type: "reasoning", encrypted_content: 7 }]],
+		[
+			"missing tool input",
+			[{ role: "assistant", content: [{ type: "tool_use", id: "call-1", name: "read_file" }] }],
+		],
+	])("rejects %s in persisted API history", async (_case, messages) => {
+		const taskId = "task-malformed-api"
+		const taskDir = path.join(tmpBaseDir, "tasks", taskId)
+		await fs.mkdir(taskDir, { recursive: true })
+		const filePath = path.join(taskDir, "api_conversation_history.json")
+		const contents = JSON.stringify(messages)
+		await fs.writeFile(filePath, contents, "utf8")
+
+		await expect(readApiMessages({ taskId, globalStoragePath: tmpBaseDir })).rejects.toMatchObject({
+			code: "invalid_messages",
+		})
+		expect(await fs.readFile(filePath, "utf8")).toBe(contents)
+	})
+
+	it("preserves valid completion-hook provenance in persisted API history", async () => {
+		const taskId = "task-hook-provenance"
+		const taskDir = path.join(tmpBaseDir, "tasks", taskId)
+		await fs.mkdir(taskDir, { recursive: true })
+		const filePath = path.join(taskDir, "api_conversation_history.json")
+		const messages = [
+			{
+				role: "user",
+				content: "Recheck the result.",
+				hook_prompt: {
+					event: "Stop",
+					fragments: [{ hook_run_id: "hook-run-1", text: "Recheck the result." }],
+				},
+			},
+		]
+		await fs.writeFile(filePath, JSON.stringify(messages), "utf8")
+
+		expect(await readApiMessages({ taskId, globalStoragePath: tmpBaseDir })).toEqual(messages)
+	})
+
+	it.each([
+		["event", { event: "Unknown", fragments: [{ hook_run_id: "run-1", text: "Check again." }] }],
+		["fragments", { event: "Stop", fragments: [] }],
+		["run ID", { event: "Stop", fragments: [{ hook_run_id: "", text: "Check again." }] }],
+		["text", { event: "Stop", fragments: [{ hook_run_id: "run-1", text: "  " }] }],
+	])("rejects malformed completion-hook provenance (%s)", async (_case, hook_prompt) => {
+		const taskId = "task-malformed-hook-provenance"
+		const taskDir = path.join(tmpBaseDir, "tasks", taskId)
+		await fs.mkdir(taskDir, { recursive: true })
+		const filePath = path.join(taskDir, "api_conversation_history.json")
+		const messages = [{ role: "user", content: "Recheck the result.", hook_prompt }]
+		const contents = JSON.stringify(messages)
+		await fs.writeFile(filePath, contents, "utf8")
+
+		await expect(readApiMessages({ taskId, globalStoragePath: tmpBaseDir })).rejects.toMatchObject({
+			code: "invalid_messages",
+		})
+		expect(await fs.readFile(filePath, "utf8")).toBe(contents)
 	})
 
 	it("migrates valid fallback history before removing the legacy file", async () => {

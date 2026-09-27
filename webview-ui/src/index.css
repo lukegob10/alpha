@@ -391,6 +391,17 @@
 		border: 1px solid var(--border-subtle);
 	}
 
+	.task-context-metrics {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+		gap: 0.5rem;
+	}
+
+	.task-context-metric {
+		background: color-mix(in srgb, var(--chat-background) 42%, var(--chat-surface));
+		border: 1px solid var(--border-subtle);
+	}
+
 	.user-message {
 		box-sizing: border-box;
 		width: fit-content;
@@ -418,6 +429,10 @@
 		border: 1px solid var(--border-subtle);
 	}
 
+	.brand-mark-watermark {
+		opacity: 0.16;
+	}
+
 	.brand-title {
 		width: fit-content;
 		color: var(--vscode-foreground);
@@ -428,6 +443,11 @@
 	.vscode-high-contrast-light .brand-mark {
 		filter: brightness(0) saturate(100%) opacity(0.72);
 	}
+
+	.vscode-light .brand-mark-watermark,
+	.vscode-high-contrast-light .brand-mark-watermark {
+		filter: brightness(0) saturate(100%);
+	}
 }
 
 @media (forced-colors: active) {
@@ -435,6 +455,7 @@
 	.surface-raised,
 	.surface-overlay,
 	.task-context-card,
+	.task-context-metric,
 	.hero-panel {
 		background: var(--vscode-editor-background);
 	}

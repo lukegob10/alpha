@@ -27,7 +27,6 @@
 	},
 	"sections": {
 		"providers": "Providers",
-		"agents": "Agents",
 		"modes": "Modes",
 		"mcp": "MCP Servers",
 		"worktrees": "Worktrees",
@@ -43,35 +42,6 @@
 		"experimental": "Experimental",
 		"language": "Language",
 		"about": "About Alpha"
-	},
-	"agents": {
-		"description": "Choose which saved provider profiles Alpha uses for sub-agents. Role overrides take precedence over the default, then the parent task is inherited.",
-		"searchPlaceholder": "Search provider profiles...",
-		"noProfilesFound": "No matching provider profiles",
-		"unavailableProfile": "Unavailable profile ({{id}})",
-		"staleWarning": "This saved profile is unavailable. New sub-agents will use the parent profile until you choose another profile.",
-		"defaultProfile": {
-			"label": "Default sub-agent profile",
-			"inheritParent": "Inherit parent",
-			"description": "Used when a role does not have its own profile override."
-		},
-		"roles": {
-			"title": "Role overrides",
-			"description": "Optionally route each agent role through a different saved provider profile.",
-			"useDefault": "Use default",
-			"explore": {
-				"label": "Explorer profile",
-				"description": "Optional profile override for repository exploration agents."
-			},
-			"review": {
-				"label": "Reviewer profile",
-				"description": "Optional profile override for review agents."
-			},
-			"worker": {
-				"label": "Worker profile",
-				"description": "Optional profile override for isolated editing workers."
-			}
-		}
 	},
 	"about": {
 		"manageSettings": "Manage Settings",
@@ -282,8 +252,8 @@
 			"ask": "Ask",
 			"auto": "Auto",
 			"bypass": "Full Access",
-			"askDescription": "Auto-approve workspace reads. Ask before writes, commands, spawn, tickets, MCP, and outside paths.",
-			"autoDescription": "Auto-approve in-workspace edits, spawn, tickets, and commands. Ask for true-outside paths, protected files, and denied commands.",
+			"askDescription": "Auto-approve workspace reads. Ask before writes, commands, sub-agent launches, tickets, MCP, and outside paths. A saved command prefix can allow matching commands.",
+			"autoDescription": "Auto-approve workspace reads, in-workspace file changes and commands, and Alpha Tickets for the current project. Ask for outside or protected changes, sub-agent launches, and MCP. Command deny rules still apply.",
 			"bypassDescription": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
 		},
 		"bypassWarning": {
@@ -335,7 +305,7 @@
 		},
 		"tickets": {
 			"label": "Alpha Tickets",
-			"description": "Automatically approve creating and updating Alpha tickets."
+			"description": "Automatically approve creating, updating, and deleting Alpha Tickets for the current project."
 		},
 		"followupQuestions": {
 			"label": "Question",
@@ -344,9 +314,9 @@
 		},
 		"execute": {
 			"label": "Command rules",
-			"description": "Auto-approve commands within the task write scope. Network access is enabled. Writes outside that scope are blocked. Setup is global and persists across projects.",
+			"description": "Auto approves commands run from the workspace. Detected outside or unresolved write paths ask for review; deny rules still block commands. Path checks are not an OS sandbox. Saved rules persist across projects.",
 			"allowedCommands": "Allowed command prefixes",
-			"allowedCommandsDescription": "Use * to auto-approve commands, including scripts. Saved rules apply globally. Detected outside-root writes and unresolved write paths still require approval. This is a command/path check, not an OS sandbox.",
+			"allowedCommandsDescription": "Add a prefix to allow matching commands in Ask or to override a broader deny rule. Auto already approves commands run from the workspace. Detected outside-root writes and unresolved write paths still require approval. Saved rules apply globally.",
 			"deniedCommands": "Denied Commands",
 			"deniedCommandsDescription": "Command prefixes that will be automatically denied without asking for approval. In case of conflicts with allowed commands, the longest prefix match takes precedence. Add * to deny all commands.",
 			"commandPlaceholder": "Enter command prefix (e.g., 'git ')",
@@ -354,7 +324,7 @@
 			"addButton": "Add",
 			"autoDenied": "Commands with the prefix `{{prefix}}` have been forbidden by the user. Do not bypass this restriction by running another command.",
 			"pathApprovalTitle": "File paths need approval",
-			"pathApprovalDescription": "This command may change files outside the task root. Approval applies only to this run.",
+			"pathApprovalDescription": "This command uses a path outside the task root or has an unresolved write destination. Approval applies only to this run.",
 			"pathApprovalUnresolved": "Some write paths could not be resolved."
 		},
 		"apiRequestLimit": {
@@ -563,8 +533,19 @@
 	"contextManagement": {
 		"description": "Control what information is included in the AI's context window, affecting token usage and response quality",
 		"autoCondenseContextPercent": {
-			"label": "Threshold to trigger intelligent context condensing",
-			"description": "When the context window reaches this threshold, Alpha will automatically condense it."
+			"label": "Automatic compaction trigger (% of the model context window)",
+			"description": "Compaction starts when usage reaches this share of the model's full context window. The trigger is capped to leave room for the next response and a safety buffer."
+		},
+		"condensingScope": {
+			"label": "Count context usage",
+			"fullContext": "Full active context",
+			"afterPrefix": "Growth since the saved prefix",
+			"description": "Count the full context or only tokens added since the initial or last compacted prefix. The model's full context limit always applies."
+		},
+		"postTurnCondense": {
+			"label": "Compact after a response",
+			"description": "After a response, compact when the full active context reaches this percentage of its usable limit. Zero disables this extra trigger; the automatic compaction trigger still applies.",
+			"off": "Off"
 		},
 		"condensingApiConfiguration": {
 			"label": "API Configuration for Context Condensing",
@@ -629,15 +610,6 @@
 				"label": "Delay after writes to allow diagnostics to detect potential problems",
 				"description": "Time to wait after file writes before proceeding, allowing diagnostic tools to process changes and detect issues."
 			}
-		},
-		"condensingThreshold": {
-			"label": "Condensing Trigger Threshold",
-			"selectProfile": "Configure threshold for profile",
-			"defaultProfile": "Global Default (all profiles)",
-			"defaultDescription": "When context reaches this percentage, it will be automatically condensed for all profiles unless they have custom settings",
-			"profileDescription": "Custom threshold for this profile only (overrides global default)",
-			"inheritDescription": "This profile inherits the global default threshold ({{threshold}}%)",
-			"usesGlobal": "(uses global {{threshold}}%)"
 		},
 		"includeCurrentTime": {
 			"label": "Include current time in context",

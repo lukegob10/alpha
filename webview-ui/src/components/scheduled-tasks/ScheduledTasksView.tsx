@@ -1,4 +1,10 @@
-import { restoreTaskMode } from "@alpha-code/types"
+import {
+	APPROVAL_MODES,
+	DEFAULT_APPROVAL_MODE,
+	isApprovalMode,
+	migrateApprovalMode,
+	restoreTaskMode,
+} from "@alpha-code/types"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
 	ArrowLeft,
@@ -19,9 +25,9 @@ import {
 
 import type {
 	ExtensionMessage,
+	ApprovalMode,
 	SkillMetadata,
 	ScheduledTask,
-	ScheduledTaskAutoApproval,
 	ScheduledTaskExecution,
 	ScheduledTaskNotificationPreference,
 	ScheduledTaskSchedule,
@@ -37,7 +43,14 @@ import { vscode } from "@/utils/vscode"
 import { getUserFacingModeOptions, normalizeUserFacingModeSlug } from "@/utils/modePresentation"
 import {
 	Button,
-	Checkbox,
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
 	Collapsible,
 	CollapsibleContent,
 	CollapsibleTrigger,
@@ -128,34 +141,7 @@ const describeExecution = (execution?: ScheduledTaskExecution) => {
 	}
 }
 
-const defaultAutoApproval: ScheduledTaskAutoApproval = {
-	autoApprovalEnabled: true,
-	alwaysAllowReadOnly: true,
-	alwaysAllowReadOnlyOutsideWorkspace: false,
-	alwaysAllowWrite: false,
-	alwaysAllowWriteOutsideWorkspace: false,
-	alwaysAllowWriteProtected: false,
-	alwaysAllowExecute: false,
-	alwaysAllowMcp: false,
-	alwaysAllowSubtasks: false,
-	allowedCommands: [],
-	deniedCommands: [],
-}
-
 const defaultReasoningPreference: TaskReasoningPreference = { kind: "default" }
-
-const normalizeAutoApproval = (autoApproval?: ScheduledTaskAutoApproval): ScheduledTaskAutoApproval => ({
-	...defaultAutoApproval,
-	...autoApproval,
-})
-
-const approvalOptions = [
-	["alwaysAllowReadOnly", "Read files"],
-	["alwaysAllowWrite", "Write files"],
-	["alwaysAllowExecute", "Execute commands"],
-	["alwaysAllowMcp", "MCP"],
-	["alwaysAllowSubtasks", "Subtasks"],
-] as const
 
 const intervalUnitKeys = {
 	hourly: "scheduledTasks:hours",
@@ -210,7 +196,8 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 	const [executionArguments, setExecutionArguments] = useState("")
 	const [taskMode, setTaskMode] = useState<string>(() => normalizeUserFacingModeSlug(mode))
 	const modes = useMemo(() => getUserFacingModeOptions(getAllModes(customModes), taskMode), [customModes, taskMode])
-	const [autoApproval, setAutoApproval] = useState<ScheduledTaskAutoApproval>(defaultAutoApproval)
+	const [approvalMode, setApprovalMode] = useState<ApprovalMode>(DEFAULT_APPROVAL_MODE)
+	const [bypassWarningOpen, setBypassWarningOpen] = useState(false)
 	const [scheduleType, setScheduleType] = useState<ScheduleKind>("daily")
 	const [startAt, setStartAt] = useState(localDateTimeValue(nowPlusHour))
 	const [interval, setIntervalValue] = useState(1)
@@ -318,7 +305,8 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 		setPluginName("")
 		setExecutionArguments("")
 		setTaskMode(normalizeUserFacingModeSlug(mode))
-		setAutoApproval(defaultAutoApproval)
+		setApprovalMode(DEFAULT_APPROVAL_MODE)
+		setBypassWarningOpen(false)
 		setScheduleType("daily")
 		setStartAt(localDateTimeValue(nowPlusHour))
 		setIntervalValue(1)
@@ -347,12 +335,8 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 				execution.type === "skill" || execution.type === "plugin" ? (execution.arguments ?? "") : "",
 			)
 			setTaskMode(restoreTaskMode(task.mode))
-			const approval = normalizeAutoApproval(task.autoApproval)
-			setAutoApproval(
-				execution.type === "command"
-					? { ...approval, autoApprovalEnabled: true, alwaysAllowExecute: true }
-					: approval,
-			)
+			setApprovalMode(task.autoApproval ? migrateApprovalMode(task.autoApproval) : "ask")
+			setBypassWarningOpen(false)
 			setScheduleType(task.schedule.type)
 			setStartAt(localDateTimeValue(task.schedule.startAt))
 			setIntervalValue(getInterval(task.schedule))
@@ -420,10 +404,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 			execution,
 			mode: taskMode,
 			...(executionType !== "command" ? { reasoningPreference } : {}),
-			autoApproval:
-				executionType === "command"
-					? { ...autoApproval, autoApprovalEnabled: true, alwaysAllowExecute: true }
-					: autoApproval,
+			autoApproval: { approvalMode },
 			schedule,
 			workspace,
 			notificationPreference,
@@ -602,13 +583,6 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 														setSkillName("")
 														setSkillPath(undefined)
 														setExecutionArguments("")
-													}
-													if (next === "command") {
-														setAutoApproval((current) => ({
-															...current,
-															autoApprovalEnabled: true,
-															alwaysAllowExecute: true,
-														}))
 													}
 												}}>
 												<SelectTrigger className="w-full min-w-0" aria-label="Execution">
@@ -892,14 +866,9 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 											className="size-4 shrink-0 text-vscode-descriptionForeground"
 											aria-hidden="true"
 										/>
-										<span className="text-sm font-semibold">Auto-approval</span>
+										<span className="text-sm font-semibold">{t("scheduledTasks:approvals")}</span>
 										<span className="ml-auto text-xs text-vscode-descriptionForeground">
-											{autoApproval.autoApprovalEnabled
-												? t("scheduledTasks:approvalSummary", {
-														count: approvalOptions.filter(([key]) => autoApproval[key])
-															.length,
-													})
-												: "Ask"}
+											{t(`scheduledTasks:approvalMode.${approvalMode}`)}
 										</span>
 										<ChevronDown
 											className="size-4 shrink-0 text-vscode-descriptionForeground group-data-[state=open]:rotate-180"
@@ -907,50 +876,63 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 										/>
 									</CollapsibleTrigger>
 									<CollapsibleContent className="pt-4">
-										<label className="mb-4 flex items-center gap-2 text-sm">
-											<Checkbox
-												checked={autoApproval.autoApprovalEnabled}
-												disabled={executionType === "command"}
-												onCheckedChange={(checked) =>
-													setAutoApproval((current) => ({
-														...current,
-														autoApprovalEnabled: checked === true,
-													}))
-												}
-											/>
-											{t("scheduledTasks:enableAutoApproval")}
-										</label>
-										<div className="grid grid-cols-1 gap-x-4 gap-y-3 @min-[420px]:grid-cols-2">
-											{approvalOptions.map(([key, label]) => (
-												<label key={key} className="flex items-center gap-2 text-sm">
-													<Checkbox
-														checked={autoApproval[key]}
-														disabled={
-															!autoApproval.autoApprovalEnabled ||
-															(executionType === "command" &&
-																key === "alwaysAllowExecute")
+										{selectedTask?.autoApproval?.deniedCommands?.length &&
+											!isApprovalMode(selectedTask.autoApproval.approvalMode) && (
+												<p role="alert" className="mt-0 text-xs text-vscode-errorForeground">
+													{t("scheduledTasks:legacyCommandRules")}
+												</p>
+											)}
+										<div
+											className="flex flex-wrap gap-2"
+											role="group"
+											aria-label={t("scheduledTasks:approvals")}>
+											{APPROVAL_MODES.map((candidate) => (
+												<Button
+													key={candidate}
+													type="button"
+													variant={approvalMode === candidate ? "primary" : "secondary"}
+													aria-pressed={approvalMode === candidate}
+													onClick={() => {
+														if (candidate === "bypass" && approvalMode !== "bypass") {
+															setBypassWarningOpen(true)
+														} else {
+															setApprovalMode(candidate)
 														}
-														onCheckedChange={(checked) =>
-															setAutoApproval((current) => ({
-																...current,
-																[key]: checked === true,
-															}))
-														}
-													/>
-													{label}
-												</label>
+													}}>
+													{t(`scheduledTasks:approvalMode.${candidate}`)}
+												</Button>
 											))}
 										</div>
 										<p className="mb-0 mt-4 text-xs leading-relaxed text-vscode-descriptionForeground">
-											Commits, pushes, and pull requests stay disabled for scheduled tasks.
+											{t(`scheduledTasks:approvalDescription.${approvalMode}`)}
 										</p>
 										{executionType === "command" && (
 											<p className="mb-0 mt-2 text-xs text-vscode-descriptionForeground">
-												Command runs in the configured workspace.
+												{t("scheduledTasks:commandApprovalHelp")}
 											</p>
 										)}
 									</CollapsibleContent>
 								</Collapsible>
+								<AlertDialog open={bypassWarningOpen} onOpenChange={setBypassWarningOpen}>
+									<AlertDialogContent>
+										<AlertDialogHeader>
+											<AlertDialogTitle>
+												{t("scheduledTasks:bypassWarning.title")}
+											</AlertDialogTitle>
+											<AlertDialogDescription>
+												{t("scheduledTasks:bypassWarning.body")}
+											</AlertDialogDescription>
+										</AlertDialogHeader>
+										<AlertDialogFooter>
+											<AlertDialogCancel>
+												{t("scheduledTasks:bypassWarning.cancel")}
+											</AlertDialogCancel>
+											<AlertDialogAction onClick={() => setApprovalMode("bypass")}>
+												{t("scheduledTasks:bypassWarning.confirm")}
+											</AlertDialogAction>
+										</AlertDialogFooter>
+									</AlertDialogContent>
+								</AlertDialog>
 							</form>
 							{selectedTask && (
 								<section

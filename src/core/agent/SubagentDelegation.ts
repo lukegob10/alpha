@@ -1,4 +1,11 @@
-import { subagentForkTurnsSchema, type SubagentForkTurns, type SubagentGroupState } from "@alpha-code/types"
+import {
+	subagentForkTurnsSchema,
+	subagentSpawnAgentArgsSchema,
+	type ReasoningEffortExtended,
+	type SubagentForkTurns,
+	type SubagentGroupState,
+	type SubagentSpawnAgentType,
+} from "@alpha-code/types"
 
 import type { InternalTaskEnvelope } from "./InternalTaskEnvelope"
 
@@ -18,6 +25,27 @@ export type SubagentTaskDraft =
 			write_scope: string[]
 			expected_output?: string[]
 	  }
+
+type LegacySpawnAgentRequest = {
+	source: "legacy"
+	task_name?: string
+	message: string
+	fork_turns: SubagentForkTurns
+	expected_output?: string[]
+} & ({ agent_type: "explore" | "review"; write_scope?: never } | { agent_type: "worker"; write_scope: string[] })
+
+/** Model-facing V2 request after strict normalization; runtime role and authority remain host decisions. */
+export interface CodexV2SpawnAgentRequest {
+	source: "codex-v2"
+	task_name: string
+	message: string
+	agent_type?: SubagentSpawnAgentType
+	fork_turns: SubagentForkTurns
+	model?: string
+	reasoning_effort?: ReasoningEffortExtended
+}
+
+export type SpawnAgentRequest = CodexV2SpawnAgentRequest | LegacySpawnAgentRequest
 
 const DELEGATED_TASK_FIELDS = new Set([
 	"task_name",
@@ -69,6 +97,51 @@ export function normalizeSubagentForkTurns(value: unknown = undefined): Subagent
 		throw new Error("fork_turns must be 'none', 'all', or a canonical positive safe-integer string")
 	}
 	return parsed.data
+}
+
+/** Normalize V2 and legacy model calls while keeping route and authority intent distinct. */
+export function normalizeSpawnAgentRequest(input: unknown): SpawnAgentRequest {
+	const parsed = subagentSpawnAgentArgsSchema.safeParse(input)
+	if (!parsed.success) {
+		throw new Error("spawn_agent requires a valid V2 or legacy request with no unsupported fields")
+	}
+
+	if ("message" in parsed.data) {
+		return {
+			source: "codex-v2",
+			task_name: parsed.data.task_name,
+			message: parsed.data.message,
+			agent_type: parsed.data.agent_type,
+			fork_turns: parsed.data.fork_turns ?? "all",
+			...(parsed.data.model ? { model: parsed.data.model } : {}),
+			...(parsed.data.reasoning_effort ? { reasoning_effort: parsed.data.reasoning_effort } : {}),
+		}
+	}
+
+	const args = parsed.data
+	const forkTurns = normalizeSubagentForkTurns(args.fork_turns)
+	const taskName = args.task_name
+	const expectedOutput = args.expected_output ?? undefined
+	if (args.agent_kind === "worker") {
+		return {
+			source: "legacy",
+			...(taskName ? { task_name: taskName } : {}),
+			message: args.objective,
+			agent_type: "worker",
+			fork_turns: forkTurns,
+			write_scope: args.write_scope,
+			...(expectedOutput ? { expected_output: expectedOutput } : {}),
+		}
+	}
+
+	return {
+		source: "legacy",
+		...(taskName ? { task_name: taskName } : {}),
+		message: args.objective,
+		agent_type: args.agent_kind,
+		fork_turns: forkTurns,
+		...(expectedOutput ? { expected_output: expectedOutput } : {}),
+	}
 }
 
 /**
@@ -236,7 +309,7 @@ export function buildSubagentPrompt({
 			"Use repository tools and commands as useful for the objective. Command and protected-write approvals remain separately governed; choose verification proportionate to the work and report checks run, skipped checks, and any limitations.",
 			"Do not commit, stage, create branches, or change remotes.",
 			"Before finishing, inspect any edits, list changed files if there are any, report verification and remaining risks. Never expose the private worktree path.",
-			"Call attempt_completion with outcome completed when the objective is satisfied, including when no change is needed. If the objective cannot be completed, report the constraint with outcome blocked instead of implying success.",
+			"When the objective is satisfied, give a concise, self-contained final assistant answer, including when no change was needed. If the objective cannot be completed, explain the constraint in that answer without implying success.",
 			deliverables,
 		].join("\n\n")
 	}
@@ -246,11 +319,11 @@ export function buildSubagentPrompt({
 		`Objective: ${objective}`,
 		`Inspect the repository independently and report evidence. You may only read, list, search, use codebase search, and use any explicitly granted managed-agent lifecycle tools. Do not edit files, run commands, access the network or MCP, ask the user questions, or switch modes. ${delegationGuidance}`,
 		"Stay within the assigned evidence scope. If a requested location or source is missing, say so explicitly; do not silently substitute a different scope. Use nearby evidence only when clearly labeled as supplemental, and report blocked when the requested deliverable cannot be supported.",
-		"If the assigned objective requires an edit or command despite these limits, state that authority mismatch explicitly and finish with outcome blocked.",
+		"If the assigned objective requires an edit or command despite these limits, state that authority mismatch explicitly in the final answer.",
 		"Use read, list, search, and codebase tools as appropriate for the objective, adapting discovery to named and unnamed targets. Tool results may be bounded, missing, or truncated; do not infer absence from incomplete output, and report the limitation or obtain direct evidence when it matters.",
 		"Once the evidence is sufficient for the objective, synthesize it. A named file can be read directly without semantic discovery. Expand only for an unresolved requirement, dependency, or contradiction. If material findings are established but further investigation is needed, include those findings and evidence locations in the synthesis. Further delegation needs a distinct question and useful independent deliverable, not just available capacity. If the available evidence cannot support the requested conclusion, report the uncertainty or constraint explicitly instead of inventing certainty.",
 		`Keep the final report proportional to the objective and under ${SUBAGENT_REPORT_WORD_BUDGET} words unless extra detail is required for correctness. Prioritize requested deliverables, evidence, uncertainty, and actionable conclusions; do not repeat file contents or narrate the research process.`,
-		"When the objective and required checks are complete, provide a concise, self-contained final answer or use attempt_completion. Use attempt_completion with outcome blocked if a constraint prevented the objective. Include concrete file references where useful.",
+		"When the objective and required checks are complete, provide a concise, self-contained final assistant answer. Explain any constraint that prevented the objective and include concrete file references where useful.",
 		deliverables,
 	].join("\n\n")
 }

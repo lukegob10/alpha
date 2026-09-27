@@ -7,7 +7,12 @@ import { LiveResponseProbe } from "./liveResponseProbe"
 import type { WorkflowRequestBudget } from "./requestBudget"
 import { aggregateTaskUsage, type WorkflowDependencies, type WorkflowOptions } from "./workflowDriver"
 import type { ReliabilityScenarioId } from "./reliabilityCatalog"
-import { contextProbeReceipt, isLongContextScenario, MAX_CONTEXT_PROBE_TURNS } from "./longContextProbe"
+import {
+	CONTEXT_PROBE_ANCHOR,
+	contextProbeReceipt,
+	isLongContextScenario,
+	MAX_CONTEXT_PROBE_TURNS,
+} from "./longContextProbe"
 
 type Observation = { phase: string; elapsedMs: number; requestsBefore: number; requestsAfter: number; heapUsed: number }
 
@@ -142,6 +147,47 @@ export async function runReliabilityScenario(
 				for (const item of await repository.verify("enhanced")) check(`late_fix_${item.name}`, item.passed)
 				check("late_fix_tests_pass", (await repository.test()).exitCode === 0)
 			})
+		} else if (options.scenarioId === "context-compaction") {
+			taskId = await host.start("contextProbe")
+			result.taskIds.push(taskId)
+			await host.complete(taskId)
+			await inspect(taskId)
+			check("initial_anchor_receipt", host.inspectContext(taskId, contextProbeReceipt(0)).receiptPresent)
+			// Keep a bounded prefix outside the compactor's recent-turn tail.
+			for (let step = 1; step < 6; step++) {
+				await host.followup(taskId, "contextProbe", step)
+				await host.complete(taskId)
+				await inspect(taskId)
+				check(
+					`retained_anchor_receipt_${step}`,
+					host.inspectContext(taskId, contextProbeReceipt(step)).receiptPresent,
+				)
+			}
+			const requestsBefore = budget.used
+			await measure("manual_compaction", async () => check("new_summary_persisted", await host.condense(taskId!)))
+			check("compaction_used_real_model", budget.used > requestsBefore)
+			const compacted = host.inspectCompactionEvidence(taskId, CONTEXT_PROBE_ANCHOR)
+			check("compaction_summary_has_anchor", compacted.summaryRetainedFact)
+			check(
+				"compaction_receipt_matches_summary",
+				!!compacted.summaryId && compacted.receiptId === compacted.summaryId,
+			)
+			check(
+				"compaction_receipt_reduced_context",
+				compacted.previousTokens !== undefined &&
+					compacted.currentTokens !== undefined &&
+					compacted.currentTokens < compacted.previousTokens,
+			)
+			await measure("post_compaction_reopen", () => host.resume(taskId!, "contextProbe", 6, { reopen: true }))
+			await host.complete(taskId)
+			await inspect(taskId)
+			const reopened = host.inspectCompactionEvidence(taskId, CONTEXT_PROBE_ANCHOR)
+			check(
+				"compaction_summary_reloaded",
+				reopened.summaryId === compacted.summaryId && reopened.summaryRetainedFact,
+			)
+			check("reopened_anchor_receipt", host.inspectContext(taskId, contextProbeReceipt(6)).receiptPresent)
+			for (const item of await repository.verify("baseline")) check(`probe_preserved_${item.name}`, item.passed)
 		} else if (options.scenarioId === "background-isolation") {
 			fault.arm("pause")
 			budget.transformResponse = (response) => fault.wrap(response)
@@ -238,18 +284,6 @@ export async function runReliabilityScenario(
 			await measure("review_followup", () => host.followup(taskId!, "verify"))
 			await host.complete(taskId)
 			await inspect(taskId)
-			if (options.scenarioId === "context-compaction") {
-				const requestsBefore = budget.used
-				await measure("manual_compaction", async () =>
-					check("new_summary_persisted", await host.condense(taskId!)),
-				)
-				check("compaction_used_real_model", budget.used > requestsBefore)
-				await measure("post_compaction_followup", () => host.followup(taskId!, "verify"))
-				await host.complete(taskId)
-				await inspect(taskId)
-				for (const item of await repository.verify("followup")) check(`compacted_${item.name}`, item.passed)
-				check("post_compaction_tests_pass", (await repository.test()).exitCode === 0)
-			}
 			if (options.scenarioId === "completion-admission") {
 				await measure("accepted_completion_followup", () => host.followup(taskId!, "verify"))
 				await host.complete(taskId)

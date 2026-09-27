@@ -20,10 +20,13 @@ import {
 	TelemetryEventName,
 	AlphaCodeSettings,
 	ExperimentId,
+	taskApprovalModeUpdateSchema,
+	approvalModeSchema,
 	checkoutDiffPayloadSchema,
 	checkoutRestorePayloadSchema,
 	scheduledTaskSkillsRequestSchema,
 	taskReasoningUpdateSchema,
+	subagentAgentTypesSchema,
 } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -32,6 +35,7 @@ import { type ApiMessage } from "../task-persistence/apiMessages"
 import { saveTaskMessages } from "../task-persistence"
 
 import { AlphaProvider } from "./AlphaProvider"
+import type { Task } from "../task/Task"
 import { handleCheckpointRestoreOperation, restartTaskFromMessage } from "./checkpointRestoreHandler"
 import { generateErrorDiagnostics } from "./diagnosticsHandler"
 import {
@@ -89,6 +93,21 @@ import {
 } from "./worktree"
 
 const ALLOWED_VSCODE_SETTINGS = new Set(["terminal.integrated.inheritEnv"])
+
+async function acknowledgeAsyncUserInput(
+	provider: AlphaProvider,
+	task: Task | undefined,
+	messageTs: number | undefined,
+) {
+	if (!task || messageTs === undefined) return
+	try {
+		await task.markAsyncUserInputAnswered(messageTs)
+	} catch (error) {
+		provider.log(
+			`[webviewMessageHandler] Failed to persist async user input acknowledgement: ${error instanceof Error ? error.message : String(error)}`,
+		)
+	}
+}
 
 function sanitizeCommandList(commands: unknown): string[] {
 	if (!Array.isArray(commands)) {
@@ -546,13 +565,30 @@ export const webviewMessageHandler = async (
 	}
 
 	switch (message.type) {
+		case "webviewUiReady":
+			if (
+				process.env.ALPHA_TASK_OBSERVABILITY === "1" &&
+				typeof message.durationMs === "number" &&
+				Number.isFinite(message.durationMs)
+			) {
+				provider.log(
+					`[performance] ${JSON.stringify({ phase: "webview_ui_ready", durationMs: Math.max(0, Math.round(message.durationMs)) })}`,
+				)
+			}
+			break
 		case "webviewDidLaunch":
+			const webviewLaunchStartedAt = performance.now()
 			provider.clearPublishedTaskTranscriptRevisions()
 			// Load custom modes first
 			const customModes = await provider.customModesManager.getCustomModes()
 			await updateGlobalState("customModes", customModes)
 
 			await provider.postStateToWebview()
+			if (process.env.ALPHA_TASK_OBSERVABILITY === "1") {
+				provider.log(
+					`[performance] ${JSON.stringify({ phase: "webview_state_posted", durationMs: Math.round(performance.now() - webviewLaunchStartedAt) })}`,
+				)
+			}
 			void provider.workspaceTracker?.initializeFilePaths().catch((error) => {
 				provider.log(
 					`[webviewDidLaunch] Failed to initialize workspace file paths: ${error instanceof Error ? error.message : String(error)}`,
@@ -646,6 +682,13 @@ export const webviewMessageHandler = async (
 			provider.isViewLaunched = true
 			break
 		case "newTask":
+			if (
+				message.taskApprovalMode !== undefined &&
+				!approvalModeSchema.safeParse(message.taskApprovalMode).success
+			) {
+				vscode.window.showErrorMessage("Invalid task approval mode")
+				break
+			}
 			// Initializing new instance of Alpha will make sure that any
 			// agentically running promises in old instance don't affect our new
 			// task. This essentially creates a fresh slate for the new task.
@@ -660,7 +703,13 @@ export const webviewMessageHandler = async (
 					resolved.text,
 					resolved.images,
 					undefined,
-					{ taskId: message.taskId, preserveExisting: true },
+					{
+						taskId: message.taskId,
+						preserveExisting: true,
+						...(message.taskApprovalMode === undefined
+							? {}
+							: { taskApprovalMode: message.taskApprovalMode }),
+					},
 					message.taskConfiguration,
 				)
 			} catch (error) {
@@ -699,6 +748,7 @@ export const webviewMessageHandler = async (
 				try {
 					const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
 					await task.resumeCompletedTaskFollowup(resolved.text ?? "", resolved.images ?? [])
+					await acknowledgeAsyncUserInput(provider, task, message.asyncUserInputMessageTs)
 				} catch (error) {
 					provider.log(
 						`[webviewMessageHandler] Failed to resume completed task ${message.taskId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -720,8 +770,31 @@ export const webviewMessageHandler = async (
 				if (!task) {
 					break
 				}
+				if (task.hasPendingToolApprovalRequest?.()) {
+					provider.log(
+						"[webviewMessageHandler] Ignoring legacy askResponse while a typed tool approval is active",
+					)
+					break
+				}
 				const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
 				task.handleWebviewAskResponse(message.askResponse!, resolved.text, resolved.images)
+				if (message.askResponse === "messageResponse") {
+					await acknowledgeAsyncUserInput(provider, task, message.asyncUserInputMessageTs)
+				}
+			}
+			break
+
+		case "toolApprovalResponse":
+			{
+				const task = getRequiredTaskForMessage(provider, message, "toolApprovalResponse")
+				if (!task) {
+					break
+				}
+				if (!task.handleWebviewToolApprovalResponse(message.approvalRequestId, message.toolApprovalDecision)) {
+					provider.log(
+						`[webviewMessageHandler] Ignoring stale or invalid tool approval response for ${message.approvalRequestId}`,
+					)
+				}
 			}
 			break
 
@@ -789,6 +862,8 @@ export const webviewMessageHandler = async (
 						provider.setMaxConcurrentTasks(newValue as number)
 					} else if (key === "subagentDefaultApiConfigId") {
 						newValue = typeof value === "string" && value.length > 0 ? value : undefined
+					} else if (key === "subagentAgentTypes") {
+						newValue = value == null ? undefined : subagentAgentTypesSchema.parse(value)
 					} else if (key === "subagentApiConfigByRole") {
 						const roles = value as { explore?: unknown; review?: unknown; worker?: unknown } | undefined
 						const normalizedRoles = {
@@ -1153,6 +1228,20 @@ export const webviewMessageHandler = async (
 			}
 			await provider.cancelTask(message.taskId, "webview_stop")
 			break
+		case "stopIndependentTask": {
+			if (!message.parentTaskId || !message.taskId) {
+				provider.log("[webviewMessageHandler] Ignoring stopIndependentTask: missing parentTaskId or taskId")
+				break
+			}
+			const parent = provider.getLiveTask(message.parentTaskId)
+			if (!parent) {
+				provider.log("[webviewMessageHandler] Ignoring stopIndependentTask: parent task is not live")
+				break
+			}
+			await provider.stopIndependentTask(parent, message.taskId)
+			await provider.postStateToWebview()
+			break
+		}
 		case "cancelSubagentGroup":
 			if (!message.taskId || !message.groupId) {
 				provider.log("[webviewMessageHandler] Ignoring cancelSubagentGroup: missing taskId or groupId")
@@ -1874,6 +1963,40 @@ export const webviewMessageHandler = async (
 					taskReasoningResponse: { requestId, taskId, error: "saveFailed" },
 				})
 			}
+			break
+		}
+		case "setTaskApprovalMode": {
+			const rawUpdate = message.taskApprovalModeUpdate as unknown
+			const parsed = taskApprovalModeUpdateSchema.safeParse(rawUpdate)
+			const requestId =
+				rawUpdate && typeof rawUpdate === "object" && "requestId" in rawUpdate
+					? (rawUpdate as { requestId?: unknown }).requestId
+					: undefined
+			if (typeof requestId !== "string" || requestId.length < 1 || requestId.length > 128) break
+
+			if (!parsed.success) {
+				const taskId =
+					rawUpdate && typeof rawUpdate === "object" && "taskId" in rawUpdate
+						? (rawUpdate as { taskId?: unknown }).taskId
+						: undefined
+				await provider.postMessageToWebview({
+					type: "taskApprovalModeUpdated",
+					taskApprovalModeUpdateResult: {
+						requestId,
+						...(typeof taskId === "string" && taskId.length > 0 && taskId.length <= 512 ? { taskId } : {}),
+						status: "rejected",
+						error: "invalid",
+					},
+				})
+				break
+			}
+
+			const result = provider.updateTaskApprovalMode(parsed.data)
+			await provider.postMessageToWebview({
+				type: "taskApprovalModeUpdated",
+				taskApprovalModeUpdateResult: result,
+			})
+			if (result.status === "applied") await provider.postStateToWebview()
 			break
 		}
 		case "getReasoningCapabilities": {
@@ -3104,6 +3227,7 @@ export const webviewMessageHandler = async (
 		 */
 
 		case "queueMessage": {
+			const queueStartedAt = process.env.ALPHA_TASK_OBSERVABILITY === "1" ? performance.now() : undefined
 			const text = message.text ?? ""
 			const suppliedImages = Array.isArray(message.images) ? message.images : []
 			let resolvedText = text
@@ -3132,6 +3256,20 @@ export const webviewMessageHandler = async (
 				provider.log(`[webviewMessageHandler] Ignoring queueMessage: missing, terminal, or unknown taskId`)
 				await postChatCommandResult("queueMessage", "rejected", "task_unavailable")
 				break
+			}
+			const queueTask = provider.getLiveTask(message.taskId)
+			await acknowledgeAsyncUserInput(provider, queueTask, message.asyncUserInputMessageTs)
+			const clientElapsedMs =
+				typeof message.clientSubmittedAt === "number" &&
+				Number.isFinite(message.clientSubmittedAt) &&
+				message.clientSubmittedAt <= Date.now() &&
+				Date.now() - message.clientSubmittedAt <= 120_000
+					? Date.now() - message.clientSubmittedAt
+					: undefined
+			if (clientElapsedMs !== undefined) {
+				queueTask?.recordTaskPerformanceDuration?.("queue_admission", clientElapsedMs)
+			} else if (queueStartedAt !== undefined) {
+				queueTask?.recordTaskPerformance?.("queue_admission", queueStartedAt)
 			}
 			await postChatCommandResult("queueMessage", "accepted")
 			break

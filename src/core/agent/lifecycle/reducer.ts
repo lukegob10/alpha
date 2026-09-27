@@ -34,6 +34,8 @@ export type AgentLifecycleReducerErrorCode =
 	| "duplicate_step"
 	| "missing_step"
 	| "duplicate_tool_call"
+	| "tool_effect_started_without_accepted_call"
+	| "duplicate_tool_effect_start"
 	| "tool_result_without_accepted_call"
 	| "duplicate_tool_result"
 	| "unresolved_tool_calls"
@@ -94,6 +96,7 @@ export function createAgentLifecycleSnapshot(input: AgentLifecycleSnapshotInput)
 		items: [],
 		steps: [],
 		acceptedToolCallIds: [],
+		effectStartedToolCallIds: [],
 		terminalToolCallIds: [],
 		processedEvents: [],
 	})
@@ -169,6 +172,7 @@ function copySnapshot(snapshot: AgentLifecycleSnapshot): AgentLifecycleSnapshot 
 		items: [...snapshot.items],
 		steps: snapshot.steps.map((step) => ({ ...step })),
 		acceptedToolCallIds: [...snapshot.acceptedToolCallIds],
+		effectStartedToolCallIds: [...snapshot.effectStartedToolCallIds],
 		terminalToolCallIds: [...snapshot.terminalToolCallIds],
 		processedEvents: snapshot.processedEvents.map((receipt) => ({ ...receipt })),
 	}
@@ -244,6 +248,35 @@ function appendToolResult(
 		})
 	}
 	snapshot.terminalToolCallIds.push(item.toolCallId)
+}
+
+function recordToolEffectStart(
+	snapshot: AgentLifecycleSnapshot,
+	event: Extract<AgentLifecycleEvent, { type: "tool_effect_started" }>,
+): void {
+	const toolCallId = event.payload.toolCallId
+	if (!snapshot.acceptedToolCallIds.includes(toolCallId)) {
+		fail("tool_effect_started_without_accepted_call", `Tool effect start ${toolCallId} has no accepted call`, {
+			eventId: event.eventId,
+			sequence: event.sequence,
+			toolCallId,
+		})
+	}
+	if (snapshot.terminalToolCallIds.includes(toolCallId)) {
+		fail("invalid_transition", `Tool effect ${toolCallId} cannot start after a terminal result`, {
+			eventId: event.eventId,
+			sequence: event.sequence,
+			toolCallId,
+		})
+	}
+	if (snapshot.effectStartedToolCallIds.includes(toolCallId)) {
+		fail("duplicate_tool_effect_start", `Tool effect ${toolCallId} was already marked started`, {
+			eventId: event.eventId,
+			sequence: event.sequence,
+			toolCallId,
+		})
+	}
+	snapshot.effectStartedToolCallIds.push(toolCallId)
 }
 
 function appendItem(snapshot: AgentLifecycleSnapshot, item: AgentLifecycleItem, event: AgentLifecycleEvent): void {
@@ -459,6 +492,9 @@ function applyEvent(snapshot: AgentLifecycleSnapshot, event: AgentLifecycleEvent
 	switch (event.type) {
 		case "turn_started":
 			if (event.payload.phase !== undefined) snapshot.phase = event.payload.phase
+			if (event.payload.effectTrackingVersion !== undefined) {
+				snapshot.effectTrackingVersion = event.payload.effectTrackingVersion
+			}
 			return
 
 		case "phase_changed":
@@ -493,6 +529,10 @@ function applyEvent(snapshot: AgentLifecycleSnapshot, event: AgentLifecycleEvent
 				})
 			}
 			appendItem(snapshot, event.payload.item, event)
+			return
+
+		case "tool_effect_started":
+			recordToolEffectStart(snapshot, event)
 			return
 
 		case "tool_result_recorded":

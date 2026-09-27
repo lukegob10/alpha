@@ -1,6 +1,7 @@
 import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
+import crypto from "crypto"
 
 import type { ApiMessage } from "../apiMessages"
 import { GlobalFileNames } from "../../../shared/globalFileNames"
@@ -72,6 +73,54 @@ describe("ProviderTranscriptStore", () => {
 		await fs.writeFile(filePath, JSON.stringify(envelope), "utf8")
 
 		await expect(store.read()).rejects.toBeInstanceOf(ProviderTranscriptDigestMismatchError)
+	})
+
+	it("rejects a digest-valid envelope with malformed provider messages", async () => {
+		const store = new ProviderTranscriptStore(taskId, storagePath)
+		await store.commit(messages("original"))
+		const filePath = await store.getFilePath()
+		const envelope = JSON.parse(await fs.readFile(filePath, "utf8"))
+		envelope.messages = [
+			{ role: "assistant", content: [{ type: "tool_use", id: 7, name: "read_file", input: {} }] },
+		]
+		envelope.digest = crypto
+			.createHash("sha256")
+			.update('{"content":[{"id":7,"input":{},"name":"read_file","type":"tool_use"}],"role":"assistant"}')
+			.digest("hex")
+		await fs.writeFile(filePath, JSON.stringify(envelope), "utf8")
+
+		await expect(store.read()).rejects.toMatchObject({ code: "invalid_messages" })
+	})
+
+	it("retains legacy tool-call aliases, provider metadata, and reasoning records", async () => {
+		const store = new ProviderTranscriptStore(taskId, storagePath)
+		const history = [
+			{ role: "user", content: "request" },
+			{
+				role: "assistant",
+				content: [
+					{ type: "tool_call", tool_call_id: "call-1", function: { name: "read_file", arguments: "{}" } },
+				],
+				provider_state: { opaque: true },
+			},
+			{ role: "user", content: [{ type: "tool_result", tool_call_id: "call-1", content: null }] },
+			{ type: "reasoning", encrypted_content: "opaque", summary: [], id: "reasoning-1" },
+		] as unknown as ApiMessage[]
+		await store.commit(history)
+		expect((await store.read()).messages).toEqual(history)
+	})
+
+	it("accepts an incomplete call boundary and freeform tool input for recovery", async () => {
+		const store = new ProviderTranscriptStore(taskId, storagePath)
+		const history = [
+			{ role: "user", content: "request" },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "call-1", name: "apply_patch", input: "*** Begin Patch" }],
+			},
+		] as ApiMessage[]
+		await store.commit(history)
+		expect((await store.read()).messages).toEqual(history)
 	})
 
 	it("quarantines a corrupt envelope and rebuilds it from the authoritative transcript", async () => {

@@ -34,7 +34,12 @@ import {
 import { BaseProvider } from "./base-provider"
 import { getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
 import { applyCopilotToolPreferences, type ModelToolIdentity } from "./utils/router-tool-preferences"
-import type { SingleCompletionHandler, ApiHandlerCountTokensMetadata, ApiHandlerCreateMessageMetadata } from "../index"
+import type {
+	SingleCompletionHandler,
+	ApiHandlerCountTokensMetadata,
+	ApiHandlerCreateMessageMetadata,
+	ApiInstructionFragment,
+} from "../index"
 
 /**
  * Converts OpenAI-format tools to VSCode Language Model tools.
@@ -586,6 +591,15 @@ function convertToStatefulVsCodeLmMessages(
 	})
 }
 
+function toVsCodeLmInstructionMessages(
+	fragments: readonly ApiInstructionFragment[],
+): vscode.LanguageModelChatMessage[] {
+	// VS Code 1.122.1 exposes User and Assistant constructors only. Keep the
+	// fragment order and project every instruction role through one User fallback.
+	const content = fragments.map(({ content }) => content).join("")
+	return content ? [vscode.LanguageModelChatMessage.User(content)] : []
+}
+
 function buildVsCodeLmModelInfo(
 	client: vscode.LanguageModelChat,
 	configuredContextSize?: ProviderSettings["vsCodeLmContextSize"],
@@ -1130,7 +1144,9 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 
 			// Convert Anthropic messages to VS Code LM messages
 			const vsCodeLmMessages: vscode.LanguageModelChatMessage[] = [
-				vscode.LanguageModelChatMessage.User(systemPrompt),
+				...(metadata?.instructionFragments !== undefined
+					? toVsCodeLmInstructionMessages(metadata.instructionFragments)
+					: [vscode.LanguageModelChatMessage.User(systemPrompt)]),
 				...convertToStatefulVsCodeLmMessages(messages),
 			]
 			const tools = convertToVsCodeLmTools(metadata?.tools ?? [])
@@ -1258,6 +1274,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 								name: chunk.name,
 								arguments: argumentsString,
 							}
+							yield { type: "tool_call_end", id: chunk.callId }
 						}
 					} catch (error) {
 						console.error("Alpha <Language Model API>: Failed to process tool call:", error)
@@ -1481,15 +1498,18 @@ export async function getVsCodeLmModels() {
 		// Live selectors are the authority for account-specific routing. Static
 		// catalog entries describe capabilities, but must never become clickable
 		// when the current VS Code window did not return them.
+		// This selector represents the Copilot API; hide unrelated VS Code vendors such as copilotid.
 		return mergeVscodeLlmModels(
-			models.map(({ vendor, family, version, id, name, maxInputTokens }) => ({
-				vendor,
-				family,
-				version,
-				id,
-				name,
-				maxInputTokens,
-			})),
+			models
+				.filter(({ vendor }) => vendor.toLowerCase() === "copilot")
+				.map(({ vendor, family, version, id, name, maxInputTokens }) => ({
+					vendor,
+					family,
+					version,
+					id,
+					name,
+					maxInputTokens,
+				})),
 		)
 	} catch (error) {
 		console.error(

@@ -6,33 +6,18 @@ export const wait_agent = {
 	function: {
 		name: "wait_agent",
 		description:
-			"Wait for a managed-agent update, waking as soon as a result or relevant input arrives. Set until_terminal true to ignore progress/control traffic and await an immediate child's terminal result; target optionally selects that child by task ID/canonical path and requires until_terminal true. Results carry durable event IDs, sender task/path provenance, and terminal status; their mailbox claim is consumed once only after this tool result is persisted. Otherwise wait for the next mailbox update, including parent control for managed children. Call this blocking tool alone, after useful local work. Prefer the default long wait to repeated short polls. A timeout with work still active can be followed by another bounded wait. If noActiveAgents or alreadyDelivered is true, use the available results or continue other work. Use null for optional defaults.",
-		strict: true,
+			"Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Returns a summary of which agents have updates, an interruption summary for steered input, or a timeout summary. Call this blocking tool alone after useful local work.",
+		strict: false,
 		parameters: {
 			type: "object",
 			properties: {
 				timeout_ms: {
-					anyOf: [{ type: "integer", minimum: 10_000, maximum: 300_000 }, { type: "null" }],
-					description: `Maximum wait in milliseconds; returns early on activity or cancellation. Use null for ${WAIT_AGENT_DEFAULT_TIMEOUT_MS}.`,
-				},
-				target: {
-					anyOf: [
-						{
-							type: "string",
-							pattern: "^(?:/root(?:/[a-z0-9]+(?:-[a-z0-9]+)*)*|[A-Za-z0-9][A-Za-z0-9._:-]*)$",
-						},
-						{ type: "null" },
-					],
-					description:
-						"Copy target from the spawn_agent result (the taskId, not runId), or use the child's canonical path. Use null for any immediate child. Requires until_terminal true.",
-				},
-				until_terminal: {
-					anyOf: [{ type: "boolean" }, { type: "null" }],
-					description:
-						"When true, ignore non-terminal mailbox traffic and await a terminal child result. Use null or false for legacy next-update behavior.",
+					type: "integer",
+					minimum: 10_000,
+					maximum: 3_600_000,
+					description: `Timeout in milliseconds. Defaults to ${WAIT_AGENT_DEFAULT_TIMEOUT_MS}, min 10000, max 3600000.`,
 				},
 			},
-			required: ["timeout_ms", "target", "until_terminal"],
 			additionalProperties: false,
 		},
 	},

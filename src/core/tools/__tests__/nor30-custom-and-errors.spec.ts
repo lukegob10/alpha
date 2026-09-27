@@ -115,54 +115,24 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 		expect(toolResults(harness)).toHaveLength(1)
 	})
 
-	it("rejects a retired native GitHub API call with one terminal result", async () => {
-		const registry = new ToolRegistry({ nativeTools: getNativeTools() })
-		const surface = capturedSurface(registry)
-		const harness = makeExecutionHost()
-
-		const outcome = await runToolCalls(harness, surface, [
-			{
-				id: "github-retired-1",
-				name: "github_api",
-				arguments: { action: "get_pull_request", owner: "org", repo: "repo", pull_number: 1 },
-			},
-		])
-
-		expect(outcome.results).toHaveLength(1)
-		expect(outcome.results[0]).toMatchObject({
-			callId: "github-retired-1",
-			name: "github_api",
-			status: "error",
-		})
-		expect(JSON.parse(String(outcome.results[0].content))).toMatchObject({
-			error: 'Unknown tool "github_api". This tool is not registered.',
-		})
-		expect(toolResults(harness)).toHaveLength(1)
-		expect(toolResults(harness)[0]).toMatchObject({
-			tool_use_id: "github-retired-1",
-			is_error: true,
-		})
-		expect(harness.host.recordToolUsage).not.toHaveBeenCalled()
-	})
-
-	it("normalizes production aliases at the surface policy boundary", async () => {
+	it("normalizes the Codex command name at the surface policy boundary", async () => {
 		const schemas = getNativeTools()
 		const registry = new ToolRegistry({ nativeTools: schemas })
 		const surface = capturedSurface(registry, {
 			schemas,
-			disabledTools: ["search_and_replace"],
+			disabledTools: ["exec_command"],
 		})
 		const harness = makeExecutionHost()
 
-		expect(surface.registry.resolve("search_and_replace")?.name).toBe("edit")
-		expect(surface.policy.disabledTools).toContain("edit")
-		expect(surface.isCallable("search_and_replace")).toBe(false)
+		expect(surface.registry.resolve("exec_command")?.name).toBe("exec_command")
+		expect(surface.policy.disabledTools).toContain("exec_command")
+		expect(surface.isCallable("exec_command")).toBe(false)
 
 		const outcome = await runToolCalls(harness, surface, [
 			{
 				id: "alias-disabled-1",
-				name: "search_and_replace",
-				arguments: { path: "fixture.txt", old_string: "old", new_string: "new" },
+				name: "exec_command",
+				arguments: { cmd: "node --version" },
 			},
 		])
 
@@ -172,7 +142,7 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 		expect(toolResults(harness)).toHaveLength(1)
 	})
 
-	it("records the legacy MCP leaf through the real registry and scheduler", async () => {
+	it("executes a captured MCP leaf through the real registry and scheduler", async () => {
 		const callTool = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "mcp result" }] })
 		const postMessageToWebview = vi.fn()
 		const mcpHub = {
@@ -180,24 +150,21 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 			callTool,
 		}
 		const provider = { getMcpHub: () => mcpHub, postMessageToWebview }
-		const schemas = getNativeTools()
-		const registry = new ToolRegistry({ nativeTools: schemas })
-		const surface = capturedSurface(registry)
+		const name = "mcp--nor30-server--nor30_tool"
+		const schema = functionSchema(name)
+		const registry = new ToolRegistry({ nativeTools: [], mcpTools: [schema] })
+		const surface = capturedSurface(registry, { schemas: [schema] })
 		const harness = makeExecutionHost({ provider })
 
 		const outcome = await runToolCalls(harness, surface, [
 			{
 				id: "mcp-1",
-				name: "use_mcp_tool",
-				arguments: {
-					server_name: "nor30-server",
-					tool_name: "nor30_tool",
-					arguments: { value: "hello" },
-				},
+				name,
+				arguments: { value: "hello" },
 			},
 		])
 
-		expect(outcome.results[0]).toMatchObject({ callId: "mcp-1", name: "use_mcp_tool", status: "success" })
+		expect(outcome.results[0]).toMatchObject({ callId: "mcp-1", name, status: "success" })
 		expect(outcome.results[0].content).toBe("mcp result")
 		expect(callTool).toHaveBeenCalledWith(
 			"nor30-server",
@@ -206,7 +173,8 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 			undefined,
 			expect.any(AbortSignal),
 		)
-		expect(harness.host.recordToolUsage).toHaveBeenCalledWith("use_mcp_tool")
+		expect(harness.host.recordToolUsage).toHaveBeenCalledWith(name)
+		expect(harness.host.ask).toHaveBeenCalledOnce()
 		expect(toolResults(harness)).toHaveLength(1)
 	})
 
@@ -308,7 +276,7 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 		})
 	})
 
-	it("rejects an approval-denied legacy MCP call without invoking its leaf", async () => {
+	it("returns a structured unknown-tool error for the retired generic MCP wrapper", async () => {
 		const callTool = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "must not run" }] })
 		const mcpHub = {
 			getAllServers: () => [{ name: "nor30-server", tools: [{ name: "nor30_tool" }] }],
@@ -328,11 +296,19 @@ describe("NOR-30 captured tool execution: custom and MCP tools", () => {
 			},
 		])
 
-		expect(outcome.results[0].status).toBe("denied")
+		expect(outcome.results[0]).toMatchObject({
+			callId: "mcp-denied-1",
+			name: "use_mcp_tool",
+			status: "error",
+		})
+		expect(String(outcome.results[0].content)).toContain("not registered")
 		expect(callTool).not.toHaveBeenCalled()
-		expect(outcome.approvalDeniedCount).toBe(1)
+		expect(harness.host.ask).not.toHaveBeenCalled()
+		expect(outcome.approvalRequestCount).toBe(0)
+		expect(outcome.approvalDeniedCount).toBe(0)
+		expect(harness.host.recordToolUsage).not.toHaveBeenCalled()
 		expect(toolResults(harness)).toHaveLength(1)
-		expect(toolResults(harness)[0].is_error).toBe(true)
+		expect(toolResults(harness)[0]).toMatchObject({ tool_use_id: "mcp-denied-1", is_error: true })
 	})
 })
 
@@ -372,7 +348,7 @@ describe("NOR-30 scheduler lifecycle and error receipts", () => {
 		])
 	})
 
-	it("rejects a blocking barrier mixed with another call before either leaf runs", async () => {
+	it("runs a blocking barrier after an earlier call and records results in model order", async () => {
 		const read = vi.fn()
 		const complete = vi.fn()
 		const registry = fixtureRegistry(
@@ -395,10 +371,10 @@ describe("NOR-30 scheduler lifecycle and error receipts", () => {
 			{ validateCall: () => {} },
 		)
 
-		expect(read).not.toHaveBeenCalled()
-		expect(complete).not.toHaveBeenCalled()
-		expect(outcome.results.map((result) => result.status)).toEqual(["error", "error"])
-		expect(outcome.results[1].content).toContain("must be called by itself")
+		expect(read).toHaveBeenCalledOnce()
+		expect(complete).toHaveBeenCalledOnce()
+		expect(read.mock.invocationCallOrder[0]).toBeLessThan(complete.mock.invocationCallOrder[0])
+		expect(outcome.results.map((result) => result.status)).toEqual(["success", "success"])
 		expect(toolResults(harness).map((result) => result.tool_use_id)).toEqual(["barrier-read", "barrier-complete"])
 	})
 })

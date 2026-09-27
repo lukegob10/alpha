@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -97,6 +98,41 @@ describe("problem-solving extension campaign", () => {
 						usage: { cost: null, inputTokens: null, outputTokens: null, requests: null },
 					}),
 			})
+			let baselinePrompt = ""
+			let singleCommandPrompt = ""
+			const baselinePromptReport = await runProblemSolvingAttempt({
+				evalRoot,
+				repositoryRoot,
+				taskId: "repo-cache-invalidation",
+				attemptRoot: root,
+				attemptId: "attempt-prompt-baseline",
+				repetition: 1,
+				hostVersion: "1.122.1",
+				provider: "live-copilot",
+				modelId: "gpt-test",
+				effort: "medium",
+				runExtension: async (request) => {
+					baselinePrompt = await fs.readFile(request.promptPath, "utf8")
+					return host({ phase: "preflight", status: "failed", modelId: null, effort: null })
+				},
+			})
+			const singleCommandPromptReport = await runProblemSolvingAttempt({
+				evalRoot,
+				repositoryRoot,
+				taskId: "repo-cache-invalidation",
+				attemptRoot: root,
+				attemptId: "attempt-prompt-single-command",
+				repetition: 1,
+				promptVariant: "single-command",
+				hostVersion: "1.122.1",
+				provider: "live-copilot",
+				modelId: "gpt-test",
+				effort: "medium",
+				runExtension: async (request) => {
+					singleCommandPrompt = await fs.readFile(request.promptPath, "utf8")
+					return host({ phase: "preflight", status: "failed", modelId: null, effort: null })
+				},
+			})
 
 			expect(passed.countsAsSolving).toBe(true)
 			expect(passed.graderDecision).toBe("passed")
@@ -112,6 +148,15 @@ describe("problem-solving extension campaign", () => {
 			expect(preflight.usage.requests).toBeNull()
 			expect(preflight.usage.cost).toBeNull()
 			expect(profileBusy).toMatchObject({ status: "blocked", failureClass: "profile_busy", graderDecision: null })
+			expect(baselinePromptReport.promptVariant).toBe("baseline")
+			expect(baselinePromptReport.promptSha256).toBe(createHash("sha256").update(baselinePrompt).digest("hex"))
+			expect(singleCommandPrompt.startsWith(`${baselinePrompt.trimEnd()}\n\n`)).toBe(true)
+			expect(singleCommandPrompt).toContain("Run one direct command at a time")
+			expect(singleCommandPromptReport).toMatchObject({
+				promptVariant: "single-command",
+				promptVariantInstructionSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+				repetition: 1,
+			})
 		} finally {
 			await fs.rm(root, { recursive: true, force: true })
 		}
@@ -166,6 +211,7 @@ describe("problem-solving extension campaign", () => {
 				requestsUsed: 6,
 				usage: { inputTokens: 28000, outputTokens: 1200, cost: 0 },
 				model: { id: "gpt-test", reasoningEffort: "high" },
+				e2eApprovalPolicySha256: "A".repeat(64),
 			},
 		})
 		const unavailable = problemSolvingHostFromReceipts({
@@ -176,6 +222,7 @@ describe("problem-solving extension campaign", () => {
 		})
 		expect(finished.status).toBe("passed")
 		expect(finished.usage).toEqual({ cost: null, inputTokens: 28000, outputTokens: 1200, requests: 6 })
+		expect(finished.e2eApprovalPolicySha256).toBe("a".repeat(64))
 		expect(unavailable.status).toBe("blocked")
 		expect(unavailable.failureClass).toBe("authentication")
 		expect(unavailable.usage.requests).toBeNull()
@@ -196,6 +243,7 @@ describe("problem-solving extension campaign", () => {
 			workflow: {
 				status: "failed",
 				failure: { category: "policy", code: "secret-command-content" },
+				e2eApprovalPolicySha256: "secret-content",
 			},
 		})
 		const scopedRejection = problemSolvingHostFromReceipts({
@@ -221,6 +269,7 @@ describe("problem-solving extension campaign", () => {
 
 		expect(rejected).toMatchObject({ failureCategory: "policy", failureCode: "unexpected_command" })
 		expect(untrusted).toMatchObject({ failureCategory: "policy", failureCode: "other" })
+		expect(untrusted.e2eApprovalPolicySha256).toBeNull()
 		expect(scopedRejection).toMatchObject({
 			failureCategory: "policy",
 			failureCode: "unexpected_command_outside_workspace_cwd",

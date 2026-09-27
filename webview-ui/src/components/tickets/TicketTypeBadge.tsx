@@ -3,10 +3,11 @@ import type { TicketType } from "@alpha-code/types"
 
 export function TicketTypeBadge({ type }: { type: TicketType }) {
 	const { t } = useTranslation("tickets")
+	const label = t(`types.${type}`)
 	return (
 		<span className="ticket-type-badge" data-type={type}>
 			<span className="ticket-type-dot" aria-hidden="true" />
-			{t(`types.${type}`)}
+			<span className="ticket-type-label">{label}</span>
 		</span>
 	)
 }

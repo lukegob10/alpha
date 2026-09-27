@@ -3,6 +3,9 @@ import { z } from "zod"
 const discoveredToolNameSchema = z.string().min(1).max(256)
 const schemaDigestSchema = z.string().regex(/^[a-f0-9]{64}$/)
 
+/** Alpha bounds one search receipt so promotion and provider history stay finite. */
+export const TOOL_SEARCH_MAX_LIMIT = 32
+
 /** Arguments accepted by the ordinary native tool used to search deferred MCP tools. */
 export const discoverToolsParamsSchema = z
 	.object({
@@ -11,8 +14,17 @@ export const discoverToolsParamsSchema = z
 	})
 	.strict()
 
+/** Codex-compatible search arguments for newly issued `tool_search` calls. */
+export const toolSearchParamsSchema = z
+	.object({
+		query: z.string().trim().min(1).max(256),
+		limit: z.number().int().min(1).max(TOOL_SEARCH_MAX_LIMIT).default(8),
+	})
+	.strict()
+
 // This is the caller-facing input type: the schema supplies the default for an omitted limit.
 export type DiscoverToolsParams = z.input<typeof discoverToolsParamsSchema>
+export type ToolSearchParams = z.input<typeof toolSearchParamsSchema>
 
 /** Stable identity for a discovered function definition. */
 export const discoveredToolReferenceSchema = z
@@ -58,7 +70,7 @@ export const discoverToolsResultSchema = z
 		version: z.literal(1),
 		status: z.literal("success"),
 		activation: z.literal("next_step"),
-		tools: z.array(discoveredToolResultEntrySchema).max(5),
+		tools: z.array(discoveredToolResultEntrySchema).max(TOOL_SEARCH_MAX_LIMIT),
 		message: z.string().max(512).optional(),
 	})
 	.strict()

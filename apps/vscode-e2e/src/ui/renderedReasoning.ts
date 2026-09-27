@@ -80,7 +80,13 @@ export async function exerciseRenderedReasoning(
 			),
 		)
 	}
-	const stages = ["reasoning-high", "reasoning-reload", "reasoning-fallback", "reasoning-editor"]
+	const stages = [
+		"reasoning-high",
+		"reasoning-model-switch",
+		"reasoning-reload",
+		"reasoning-fallback",
+		"reasoning-editor",
+	]
 	try {
 		for (const stage of stages) {
 			await waitUntil(
@@ -138,6 +144,37 @@ export async function exerciseRenderedReasoning(
 					"d.querySelector('[data-testid=reasoning-trigger]')?.getAttribute('aria-label')==='Reasoning: High'",
 				)
 				await capture(stage)
+			} else if (stage === "reasoning-model-switch") {
+				const startedAt = Date.now()
+				await focus("[data-testid=dropdown-trigger]")
+				await key("Enter", "Enter", 13)
+				await check("d.body.innerText.includes('GPT 5.6 Luna')")
+				const profileFocused = await evaluate<boolean>(
+					"(()=>{const e=[...d.querySelectorAll('button')].find(b=>b.textContent?.includes('GPT 5.6 Luna'));if(!e)return false;e.focus();return d.activeElement===e})()",
+				)
+				assert.equal(profileFocused, true, "The GPT 5.6 Luna profile was not focusable")
+				await key("Enter", "Enter", 13)
+				await check(
+					"(()=>{const config=d.querySelector('[data-testid=dropdown-trigger]');const reasoning=d.querySelector('[data-testid=reasoning-trigger]');return config?.textContent?.includes('GPT 5.6 Luna')&&reasoning&&!reasoning.disabled&&reasoning.getAttribute('aria-busy')==='false'&&reasoning.getAttribute('aria-label')==='Reasoning: High'})()",
+				)
+				const durationMs = Date.now() - startedAt
+				assert.ok(
+					durationMs <= 5000,
+					`GPT 5.6 Luna and reasoning controls took ${durationMs}ms to become ready`,
+				)
+				await fs.writeFile(
+					path.join(directory, "ui-model-switch-timing.json"),
+					JSON.stringify({
+						from: "GPT 6 Luna",
+						fromModelId: "gpt-6-luna",
+						to: "GPT 5.6 Luna",
+						modelId: "gpt-5.6-luna",
+						reasoning: "high",
+						durationMs,
+						maxDurationMs: 5000,
+						status: "passed",
+					}),
+				)
 				await focus("textarea")
 				await cdp.request(
 					"Input.insertText",

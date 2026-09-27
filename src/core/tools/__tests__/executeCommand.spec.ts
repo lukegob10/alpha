@@ -9,6 +9,8 @@ import { ExecuteCommandOptions } from "../ExecuteCommandTool"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
 import { Terminal } from "../../../integrations/terminal/Terminal"
 import { ExecaTerminal } from "../../../integrations/terminal/ExecaTerminal"
+import { commandSessionRegistry } from "../CommandSessionRegistry"
+import { ToolRegistry } from "../ToolRegistry"
 import type { AlphaTerminalCallbacks } from "../../../integrations/terminal/types"
 
 const fsMocks = vitest.hoisted(() => ({ access: vitest.fn(), realpath: vitest.fn() }))
@@ -390,14 +392,30 @@ describe("executeCommand", () => {
 			let resolveProcess!: () => void
 			const backgroundProcess = new Promise<void>((resolve) => (resolveProcess = resolve)) as any
 			backgroundProcess.continue = vitest.fn()
+			backgroundProcess.isSettled = false
+			backgroundProcess.hasUnretrievedOutput = vitest.fn(() => true)
+			backgroundProcess.captureUnretrievedOutput = vitest.fn(() => ({
+				output: "PID_READY=12345\n",
+				commit: vitest.fn(),
+				release: vitest.fn(),
+			}))
+			backgroundProcess.writeInput = vitest.fn()
+			mockProvider.runWorkspaceMutation = async (_task: unknown, _name: string, run: () => Promise<void>) => run()
+			mockTask.providerRef.deref.mockReturnValue(mockProvider)
+			mockTask.getCommandExecutionEvidence = () => [
+				{ executionId: backgroundProcess.executionId, status: "running" },
+			]
 			mockTerminal.provider = "execa"
 			mockTerminal.busy = true
+			mockTerminal.running = true
 			mockTerminal.taskId = mockTask.taskId
 			mockTerminal.process = backgroundProcess
+			vitest.mocked(TerminalRegistry.getTerminals).mockReturnValue([mockTerminal])
 			mockTerminal.runCommand.mockImplementation((_command: string, callbacks: AlphaTerminalCallbacks) => {
 				void callbacks.onLine("PID_READY=12345\n", backgroundProcess)
 				return backgroundProcess
 			})
+			const onCommandResult = vitest.fn()
 
 			try {
 				const execution = executeCommandInTerminal(mockTask, {
@@ -406,6 +424,7 @@ describe("executeCommand", () => {
 					command: "long-running-command",
 					terminalShellIntegrationDisabled: false,
 					agentTimeout: 1_000,
+					onCommandResult,
 				})
 
 				await vitest.advanceTimersByTimeAsync(1_000)
@@ -417,9 +436,57 @@ describe("executeCommand", () => {
 				expect(rejected).toBe(false)
 				expect(result).toContain("Command is still running")
 				expect(result).toContain("PID_READY=12345")
+				const sessionId = Number((result as string).match(/session_id: (\d+)/)?.[1])
+				expect(Number.isSafeInteger(sessionId)).toBe(true)
+				expect(commandSessionRegistry.resolve(mockTask, sessionId)?.process).toBe(backgroundProcess)
+				const writeStdin = new ToolRegistry().resolve("write_stdin")!
+				const toolCallbacks = {
+					askApproval: vitest.fn().mockResolvedValue(true),
+					handleError: vitest.fn(),
+					pushToolResult: vitest.fn(),
+					setResultMetadata: vitest.fn(),
+				}
+				await writeStdin.execute({
+					task: mockTask,
+					call: {
+						type: "tool_use",
+						id: "poll-call",
+						name: "write_stdin",
+						params: {},
+						partial: false,
+						nativeArgs: { session_id: sessionId, yield_time_ms: 0 },
+					},
+					callbacks: toolCallbacks,
+				})
+				expect(toolCallbacks.pushToolResult).toHaveBeenCalledWith(
+					expect.stringContaining(`Process running with session ID ${sessionId}`),
+				)
+				await writeStdin.execute({
+					task: mockTask,
+					call: {
+						type: "tool_use",
+						id: "input-call",
+						name: "write_stdin",
+						params: {},
+						partial: false,
+						nativeArgs: { session_id: sessionId, chars: "yes\n", yield_time_ms: 0 },
+					},
+					callbacks: toolCallbacks,
+				})
+				expect(backgroundProcess.writeInput).toHaveBeenCalledExactlyOnceWith("yes\n")
+				expect(toolCallbacks.handleError).not.toHaveBeenCalled()
 				expect(mockTask.markCommandExecutionBackgrounded).toHaveBeenCalledWith(
 					"background-call",
 					expect.stringMatching(/^managed-worker-background:[\da-f-]+$/),
+				)
+				const [, physicalExecutionId] = mockTask.markCommandExecutionBackgrounded.mock.calls[0]
+				expect(result).toContain(`execution_id: ${physicalExecutionId}`)
+				expect(result).toContain(`session_id: ${sessionId}`)
+				expect(onCommandResult).toHaveBeenCalledWith(
+					expect.objectContaining({
+						output: "PID_READY=12345\n",
+						session_id: sessionId,
+					}),
 				)
 				expect(backgroundProcess.continue).toHaveBeenCalledOnce()
 				expect(mockTask.supersedePendingAsk).toHaveBeenCalledOnce()
@@ -515,6 +582,7 @@ describe("executeCommand", () => {
 		})
 
 		it("records terminal exit evidence independently of model-facing output", async () => {
+			const onCommandResult = vitest.fn()
 			mockTerminal.runCommand.mockImplementation((_command: string, callbacks: AlphaTerminalCallbacks) => {
 				setTimeout(() => {
 					callbacks.onShellExecutionComplete({ exitCode: 0 }, mockProcess)
@@ -528,6 +596,7 @@ describe("executeCommand", () => {
 				toolCallId: "evidence-call",
 				command: "pnpm test",
 				terminalShellIntegrationDisabled: false,
+				onCommandResult,
 			})
 
 			expect(mockTask.completeCommandExecution).toHaveBeenCalledWith(
@@ -535,6 +604,10 @@ describe("executeCommand", () => {
 				{ exitCode: 0 },
 				expect.stringMatching(/^evidence-execution:[\da-f-]+$/),
 			)
+			expect(onCommandResult).toHaveBeenCalledWith(
+				expect.objectContaining({ output: "output without an exit-code string", exit_code: 0 }),
+			)
+			expect(onCommandResult.mock.calls[0][0]).not.toHaveProperty("session_id")
 			expect(mockTask.markCommandExecutionBackgrounded).not.toHaveBeenCalled()
 		})
 

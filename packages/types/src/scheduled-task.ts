@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import type { SkillMetadata } from "./skills.js"
+import { approvalModeSchema } from "./approval-mode.js"
 import { taskReasoningPreferenceSchema, taskReasoningStateSchema } from "./task-reasoning.js"
 import type { TaskReasoningPreference } from "./task-reasoning.js"
 
@@ -124,19 +125,20 @@ export const scheduledTaskExecutionSchema = z.discriminatedUnion("type", [
 export type ScheduledTaskExecution = z.infer<typeof scheduledTaskExecutionSchema>
 
 export const scheduledTaskAutoApprovalSchema = z.object({
-	autoApprovalEnabled: z.boolean().default(true),
-	alwaysAllowReadOnly: z.boolean().default(true),
-	alwaysAllowReadOnlyOutsideWorkspace: z.boolean().default(false),
-	alwaysAllowWrite: z.boolean().default(false),
-	alwaysAllowWriteOutsideWorkspace: z.boolean().default(false),
-	alwaysAllowWriteProtected: z.boolean().default(false),
-	alwaysAllowExecute: z.boolean().default(false),
-	alwaysAllowMcp: z.boolean().default(false),
-	// Retained only to read existing schedules; mode switches are user-controlled.
+	approvalMode: approvalModeSchema.optional(),
+	// Legacy fields remain readable. New schedules persist only the approval mode.
+	autoApprovalEnabled: z.boolean().optional(),
+	alwaysAllowReadOnly: z.boolean().optional(),
+	alwaysAllowReadOnlyOutsideWorkspace: z.boolean().optional(),
+	alwaysAllowWrite: z.boolean().optional(),
+	alwaysAllowWriteOutsideWorkspace: z.boolean().optional(),
+	alwaysAllowWriteProtected: z.boolean().optional(),
+	alwaysAllowExecute: z.boolean().optional(),
+	alwaysAllowMcp: z.boolean().optional(),
 	alwaysAllowModeSwitch: z.boolean().optional(),
-	alwaysAllowSubtasks: z.boolean().default(false),
-	allowedCommands: z.array(z.string()).default([]),
-	deniedCommands: z.array(z.string()).default([]),
+	alwaysAllowSubtasks: z.boolean().optional(),
+	allowedCommands: z.array(z.string()).optional(),
+	deniedCommands: z.array(z.string()).optional(),
 })
 
 export type ScheduledTaskAutoApproval = z.infer<typeof scheduledTaskAutoApprovalSchema>

@@ -410,6 +410,15 @@ export class TaskSessionRegistry {
 				typeof task.hasPendingSteerMessage === "function" ? task.hasPendingSteerMessage() : false
 			const metadata: LiveTaskMetadata = {
 				id: task.taskId,
+				...(task.orchestrationParentTaskId
+					? { orchestrationParentTaskId: task.orchestrationParentTaskId }
+					: {}),
+				...(task.orchestrationWorkspaceMode
+					? { orchestrationWorkspaceMode: task.orchestrationWorkspaceMode }
+					: {}),
+				...(task.orchestrationParentTaskId
+					? { orchestrationObjective: task.metadata.task?.slice(0, 1200) ?? "" }
+					: {}),
 				transcriptRevision: session.transcriptRevision,
 				model: task.api?.getModel(),
 				status,

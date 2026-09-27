@@ -127,13 +127,14 @@ describe("VertexOpenAiHandler", () => {
 
 		expect(handler).toBeInstanceOf(VertexOpenAiHandler)
 		expect(handler.streamCapabilities?.cancellation).toBe(false)
+		expect(handler.streamCapabilities?.lifecycle).toBe(true)
 	})
 
 	it("calls the Vertex OpenAI endpoint with PEM trust and the cached Helix token", async () => {
 		mocks.create.mockResolvedValueOnce(
 			createAsyncStream([
 				{ choices: [{ delta: { content: "Grok response" } }] },
-				{ choices: [], usage: { prompt_tokens: 3, completion_tokens: 4 } },
+				{ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 3, completion_tokens: 4 } },
 			]),
 		)
 		const handler = createHandler()
@@ -146,6 +147,7 @@ describe("VertexOpenAiHandler", () => {
 		expect(chunks).toEqual([
 			{ type: "text", text: "Grok response" },
 			expect.objectContaining({ type: "usage", inputTokens: 3, outputTokens: 4 }),
+			expect.objectContaining({ type: "outcome", status: "completed", terminal: true }),
 		])
 		expect(mocks.configureTransport).toHaveBeenCalledWith("C:\\certs\\corp.pem")
 		expect(mocks.getOrCreate).toHaveBeenCalledWith({
@@ -231,7 +233,7 @@ describe("VertexOpenAiHandler", () => {
 
 	it("supports non-streaming Vertex chat completions", async () => {
 		mocks.create.mockResolvedValueOnce({
-			choices: [{ message: { content: "non-streamed response" } }],
+			choices: [{ message: { content: "non-streamed response" }, finish_reason: "stop" }],
 			usage: { prompt_tokens: 3, completion_tokens: 4 },
 		})
 		const handler = createHandler({ vertexStreamingEnabled: false })
@@ -244,6 +246,7 @@ describe("VertexOpenAiHandler", () => {
 		expect(chunks).toEqual([
 			{ type: "text", text: "non-streamed response" },
 			expect.objectContaining({ type: "usage", inputTokens: 3, outputTokens: 4 }),
+			expect.objectContaining({ type: "outcome", status: "completed", terminal: true }),
 		])
 		const [request] = mocks.create.mock.calls[0]
 		expect(request).not.toHaveProperty("stream")

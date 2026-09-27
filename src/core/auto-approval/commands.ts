@@ -4,6 +4,7 @@ import type { SubagentCommandApprovalPolicy, SubagentCommandApprovalRule } from 
 
 import { parseCommand } from "../../shared/parse-command"
 import { analyzeShellCommands, containsDynamicExecutable } from "./shellCommand"
+import { analyzeIndirectCommandExecution } from "./indirectCommandExecution"
 
 const SUBAGENT_COMMAND_APPROVAL_ALGORITHM = "sha256-salted-prefix-v1" as const
 
@@ -313,14 +314,17 @@ export function getCommandDecision(
 ): CommandDecision {
 	// A global wildcard accepts scripts and computed commands. Path review is a separate scheduler check.
 	if (allowedCommands.includes("*") && !deniedCommands?.length) return "auto_approve"
-	return aggregateCommandDecision(command, (singleCommand) =>
-		getSingleCommandDecision(singleCommand, allowedCommands, deniedCommands),
+	return aggregateCommandDecision(
+		command,
+		(singleCommand) => getSingleCommandDecision(singleCommand, allowedCommands, deniedCommands),
+		Boolean(deniedCommands?.length),
 	)
 }
 
 function aggregateCommandDecision(
 	command: string,
 	getDecision: (singleCommand: string) => CommandDecision,
+	hasDeniedRules = false,
 ): CommandDecision {
 	if (!command?.trim()) {
 		return "auto_approve"
@@ -346,6 +350,10 @@ function aggregateCommandDecision(
 		return "auto_deny"
 	}
 
+	const indirect = analyzeIndirectCommandExecution(command)
+	const nestedDecisions = indirect.commands.flatMap((nested) => parseCommand(nested).map(getDecision))
+	if (nestedDecisions.includes("auto_deny")) return "auto_deny"
+
 	// Require explicit user approval for dangerous patterns
 	if (containsDangerousSubstitution(command)) {
 		return "ask_user"
@@ -353,7 +361,12 @@ function aggregateCommandDecision(
 
 	// A prefix policy cannot determine an executable supplied by shell expansion.
 	// Never inherit approval for an indeterminate command name.
-	if (shellAnalysis.malformedSubstitution || containsDynamicExecutable(command)) {
+	if (
+		shellAnalysis.malformedSubstitution ||
+		containsDynamicExecutable(command) ||
+		indirect.dynamicCode ||
+		(hasDeniedRules && !indirect.resolved)
+	) {
 		return "ask_user"
 	}
 
@@ -403,7 +416,11 @@ function getHashedSingleCommandDecision(command: string, policy: SubagentCommand
 /** Evaluate a command against an approval ceiling that contains no plaintext command rules. */
 export function getSubagentCommandDecision(command: string, policy: SubagentCommandApprovalPolicy): CommandDecision {
 	if (policy.allowAll && !policy.denyAll && !policy.denied.length) return "auto_approve"
-	return aggregateCommandDecision(command, (singleCommand) => getHashedSingleCommandDecision(singleCommand, policy))
+	return aggregateCommandDecision(
+		command,
+		(singleCommand) => getHashedSingleCommandDecision(singleCommand, policy),
+		policy.denyAll || policy.denied.length > 0,
+	)
 }
 
 /**

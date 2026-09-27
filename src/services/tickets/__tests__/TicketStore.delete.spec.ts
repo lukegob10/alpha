@@ -19,22 +19,40 @@ describe("TicketStore deletion", () => {
 		await fs.rm(home, { recursive: true, force: true })
 	})
 
-	it.each(["backlog", "in-progress", "complete"] as const)("deletes only the selected %s ticket", async (status) => {
-		const created = await store.create({ name: "Delete this ticket", description: "Snapshot content" })
-		const ticket = await store.update({
-			id: created.id,
-			expectedRevision: created.revision,
-			status,
-			implementationSummary: "Completed work",
-		})
-		const retained = await store.create({ name: "Keep this ticket" })
-		const file = await store.markdownPath(ticket.id)
-		expect(await store.delete({ id: ticket.reference!, expectedRevision: ticket.revision })).toEqual(ticket)
-		await expect(fs.stat(file)).rejects.toMatchObject({ code: "ENOENT" })
-		await expect(store.read(ticket.id)).rejects.toThrow("not found")
-		expect(await store.read(retained.id)).toEqual(retained)
-		expect((await store.list()).tickets.map(({ id }) => id)).toEqual([retained.id])
-		await expect(store.delete({ id: ticket.id, expectedRevision: ticket.revision })).rejects.toThrow("not found")
+	it.each(["backlog", "in-progress", "complete", "canceled"] as const)(
+		"deletes only the selected %s ticket",
+		async (status) => {
+			const created = await store.create({ name: "Delete this ticket", description: "Snapshot content" })
+			const ticket = await store.update({
+				id: created.id,
+				expectedRevision: created.revision,
+				status,
+				implementationSummary: "Completed work",
+			})
+			const retained = await store.create({ name: "Keep this ticket" })
+			const file = await store.markdownPath(ticket.id)
+			expect(await store.delete({ id: ticket.reference!, expectedRevision: ticket.revision })).toEqual(ticket)
+			await expect(fs.stat(file)).rejects.toMatchObject({ code: "ENOENT" })
+			await expect(store.read(ticket.id)).rejects.toThrow("not found")
+			expect(await store.read(retained.id)).toEqual(retained)
+			expect((await store.list()).tickets.map(({ id }) => id)).toEqual([retained.id])
+			await expect(store.delete({ id: ticket.id, expectedRevision: ticket.revision })).rejects.toThrow(
+				"not found",
+			)
+		},
+	)
+
+	it("requires children to be detached or deleted before their parent", async () => {
+		const parent = await store.create({ name: "Parent" })
+		const child = await store.create({ name: "Child", parentId: parent.id })
+		await expect(store.delete({ id: parent.id, expectedRevision: parent.revision })).rejects.toThrow(
+			"child tickets",
+		)
+		expect(await store.read(parent.id)).toEqual(parent)
+		const detached = await store.update({ id: child.id, expectedRevision: child.revision, parentId: null })
+		expect(detached.parentId).toBeUndefined()
+		await store.delete({ id: parent.id, expectedRevision: parent.revision })
+		expect(await store.read(child.id)).toEqual(detached)
 	})
 
 	it.each([false, true])(

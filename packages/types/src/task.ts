@@ -12,6 +12,7 @@ import type { StaticAppProperties, GitProperties, TelemetryProperties } from "./
 import type { TodoItem } from "./todo.js"
 import type { AgentLifecyclePhase } from "./agent-lifecycle.js"
 import type { ModelInfo } from "./model.js"
+import type { ApprovalMode } from "./approval-mode.js"
 
 /**
  * TaskProviderLike
@@ -99,6 +100,8 @@ export type TaskProviderEvents = {
 export interface CreateTaskOptions {
 	/** Independent task preference; callers such as schedules supply their own snapshot. */
 	reasoningPreference?: import("./task-reasoning.js").TaskReasoningPreference
+	/** Approval mode captured for this task at creation; later setting changes apply to new tasks only. */
+	taskApprovalMode?: ApprovalMode
 	taskId?: string
 	/** Create the task without making it the active foreground task. */
 	background?: boolean
@@ -129,6 +132,13 @@ export interface CreateTaskOptions {
 	startTask?: boolean
 	/** Keep other live top-level tasks running when this task is created. */
 	preserveExisting?: boolean
+	/** Parent conversation for an independent primary task; separate from managed-agent parentTaskId. */
+	orchestrationParentTaskId?: string
+	/** Whether this independent task shares the parent's workspace or gets a dedicated Git worktree. */
+	orchestrationWorkspaceMode?: "shared" | "worktree"
+	/** Workspace path below the Git root for restoring an isolated task worktree. Empty means Git root. */
+	orchestrationWorkspaceRelativePath?: string
+	orchestrationWorkspaceBaselineCommit?: string
 	/** Internal task kind. Sub-agents are parent-managed task lanes. */
 	taskKind?: "primary" | "subagent"
 	/** Frozen task-level policy. Descendants may narrow it but cannot widen it without a trusted user-authored override. */
@@ -153,6 +163,33 @@ export interface CreateTaskOptions {
 	subagentPrivateWorkspaceRoot?: string
 	/** Absolute time after which a sub-agent must stop researching and synthesize its result. */
 	subagentResearchDeadlineAt?: number
+}
+
+export interface CreateTaskParams {
+	objective: string
+	workspace_mode: "shared" | "worktree"
+}
+
+export type ListTasksParams = Record<string, never>
+
+export interface WaitTaskParams {
+	task_id: string
+	timeout_ms?: number
+}
+
+export interface SendTaskMessageParams {
+	task_id: string
+	message: string
+}
+
+export interface SteerTaskParams {
+	task_id: string
+	message: string
+}
+
+export interface StopTaskParams {
+	task_id: string
+	reason?: string
 }
 export enum TaskStatus {
 	Running = "running",
@@ -183,6 +220,10 @@ export type CurrentTaskView =
 
 export interface LiveTaskMetadata {
 	id: string
+	orchestrationParentTaskId?: string
+	orchestrationWorkspaceMode?: "shared" | "worktree"
+	orchestrationWorkspaceBaselineCommit?: string
+	orchestrationObjective?: string
 	/** Changes whenever the task transcript changes; used to validate a cached webview transcript. */
 	transcriptRevision?: number
 	/** Resolved provider capabilities for this task; absent on older hosts. */
@@ -217,6 +258,7 @@ export type TaskMetadata = z.infer<typeof taskMetadataSchema>
 
 export interface TaskLike {
 	readonly taskId: string
+	readonly orchestrationParentTaskId?: string
 	readonly rootTaskId?: string
 	readonly parentTaskId?: string
 	readonly taskKind?: "primary" | "subagent"
@@ -234,6 +276,10 @@ export interface TaskLike {
 
 	approveAsk(options?: { text?: string; images?: string[] }): void
 	denyAsk(options?: { text?: string; images?: string[] }): void
+	/** Set the policy for later steps admitted by this task. Existing StepContext snapshots are immutable. */
+	setTaskApprovalMode?(mode: ApprovalMode): boolean
+	/** Return this task's effective approval mode, including its captured creation default. */
+	getTaskApprovalMode?(): ApprovalMode
 	submitUserMessage(text: string, images?: string[], mode?: string, providerProfile?: string): Promise<void>
 	abortTask(): void
 }

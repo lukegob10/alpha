@@ -7,7 +7,9 @@ import { FileAgentControlPersistence, type AgentControlTransactionDiagnostic } f
 
 type TransactionOwner = { token: string; pid: number }
 type Reaper = "tryReapTransactionLock" | "tryReapReleasedTransactionLock"
-type TransactionReapers = Record<Reaper, (owner: TransactionOwner) => Promise<boolean>>
+type TransactionReapers = Record<Reaper, (owner: TransactionOwner) => Promise<boolean>> & {
+	renameTransactionLock(source: string, destination: string): Promise<void>
+}
 
 const state = (updatedAt: number): AgentControlState => ({
 	version: 2,
@@ -174,7 +176,14 @@ describe("FileAgentControlPersistence recovery races", () => {
 			await fs.writeFile(path.join(lockPath, "released"), owner.token, "utf8")
 			// Both contenders already observed the same owner. A release marker can
 			// survive its process exiting, making both recovery paths eligible.
-			await expect(firstInternals[firstReaper](owner)).resolves.toBe(true)
+			const firstReaped = await firstInternals[firstReaper](owner)
+			if (!firstReaped) {
+				// A transient Windows rename failure is a retryable miss, not proof
+				// that recovery completed. The successor acquisition below retries it.
+				await expect(fs.readFile(path.join(lockPath, "owner.json"), "utf8")).resolves.toBe(
+					JSON.stringify(owner),
+				)
+			}
 
 			await successor.withTransaction(async () => {
 				await expect(delayedInternals[delayedReaper](owner)).resolves.toBe(false)
@@ -182,6 +191,40 @@ describe("FileAgentControlPersistence recovery races", () => {
 			})
 			await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" })
 		} finally {
+			await fs.rm(directory, { recursive: true, force: true })
+		}
+	})
+
+	it("preserves a successor after a transient reaper rename failure", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-transient-reaper-"))
+		const first = new FileAgentControlPersistence(directory)
+		const delayed = new FileAgentControlPersistence(directory)
+		const successor = new FileAgentControlPersistence(directory)
+		const lockPath = `${first.filePath}.transaction.lock`
+		const owner = { token: "transient-reap-owner", pid: 2_147_483_647 }
+		const firstInternals = first as unknown as TransactionReapers
+		const delayedInternals = delayed as unknown as TransactionReapers
+		const originalRename = firstInternals.renameTransactionLock.bind(first)
+		const rename = vi.spyOn(firstInternals, "renameTransactionLock").mockImplementation(originalRename)
+		rename.mockImplementationOnce(async () => {
+			throw Object.assign(new Error("Transient Windows sharing violation"), { code: "EBUSY" })
+		})
+
+		try {
+			await fs.mkdir(lockPath)
+			await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify(owner), "utf8")
+			await fs.writeFile(path.join(lockPath, "released"), owner.token, "utf8")
+
+			await expect(firstInternals.tryReapTransactionLock(owner)).resolves.toBe(false)
+			await expect(fs.readFile(path.join(lockPath, "owner.json"), "utf8")).resolves.toBe(JSON.stringify(owner))
+
+			await successor.withTransaction(async () => {
+				await expect(delayedInternals.tryReapReleasedTransactionLock(owner)).resolves.toBe(false)
+				await expect(successor.assertTransactionOwner()).resolves.toBeUndefined()
+			})
+			await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" })
+		} finally {
+			rename.mockRestore()
 			await fs.rm(directory, { recursive: true, force: true })
 		}
 	})

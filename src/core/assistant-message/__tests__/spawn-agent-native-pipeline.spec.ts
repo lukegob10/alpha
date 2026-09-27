@@ -21,8 +21,7 @@ const handlers = vi.hoisted(() => ({
 	wait: vi.fn(),
 	send: vi.fn(),
 	cancel: vi.fn(),
-	read: vi.fn(),
-	followup: vi.fn(),
+	requestInput: vi.fn(),
 }))
 
 vi.mock("../../tools/SpawnAgentTool", () => ({ spawnAgentTool: { handle: handlers.spawn } }))
@@ -30,8 +29,7 @@ vi.mock("../../tools/ListAgentsTool", () => ({ listAgentsTool: { handle: handler
 vi.mock("../../tools/WaitAgentTool", () => ({ waitAgentTool: { handle: handlers.wait } }))
 vi.mock("../../tools/SendMessageTool", () => ({ sendMessageTool: { handle: handlers.send } }))
 vi.mock("../../tools/CancelAgentTool", () => ({ cancelAgentTool: { handle: handlers.cancel } }))
-vi.mock("../../tools/ReadFileTool", () => ({ readFileTool: { handle: handlers.read } }))
-vi.mock("../../tools/AskFollowupQuestionTool", () => ({ askFollowupQuestionTool: { handle: handlers.followup } }))
+vi.mock("../../tools/RequestUserInputTool", () => ({ requestUserInputTool: { handle: handlers.requestInput } }))
 
 function call(id: string, name: string, args: Record<string, unknown> = {}): AgentToolCall {
 	return { type: "tool_call", id, name, arguments: args }
@@ -50,6 +48,9 @@ function createTask() {
 		subagentRole: undefined as string | undefined,
 		subagentPrivateWorkspaceRoot: undefined as string | undefined,
 		persistedToolResultIds: new Set<string>(),
+		pendingWaitAgentResultClaims: new Map<string, string>(),
+		stagedWaitAgentNotifications: new Map<string, Anthropic.TextBlockParam[]>(),
+		pendingWaitAgentNotificationBlocks: new Set<Anthropic.TextBlockParam>(),
 		presentAssistantMessageLocked: false,
 		presentAssistantMessageHasPendingUpdates: false,
 		currentStreamingContentIndex: 0,
@@ -77,7 +78,9 @@ function scheduler(
 ) {
 	const registry = includeHistoricalCancel
 		? new ToolRegistry({ nativeTools: [...getNativeTools(), cancel_agent] })
-		: new ToolRegistry()
+		: mode === "architect"
+			? new ToolRegistry({ nativeTools: getNativeTools({ planMode: true }) })
+			: new ToolRegistry()
 	const surface = includeHistoricalCancel
 		? (() => {
 				const capturedNames = registry
@@ -229,14 +232,28 @@ describe("native streaming through the captured scheduler/registry surface", () 
 	it("returns an error receipt when a tool-internal ask is superseded", async () => {
 		const task = createTask()
 		task.ask.mockRejectedValueOnce(new AskIgnoredError("superseded"))
-		handlers.followup.mockImplementationOnce(async (host, _block, callbacks) => {
+		handlers.requestInput.mockImplementationOnce(async (host, _block, callbacks) => {
 			try {
 				await host.ask("followup", "{}", false)
 			} catch (error) {
 				await callbacks.handleError("asking a follow-up question", error)
 			}
 		})
-		const outcome = await scheduler(task).run([call("ask-superseded", "ask_followup_question")])
+		const outcome = await scheduler(task, "architect").run([
+			call("ask-superseded", "request_user_input", {
+				questions: [
+					{
+						id: "choice",
+						header: "Choice",
+						question: "Which option should the plan use?",
+						options: [
+							{ label: "A (Recommended)", description: "Use A." },
+							{ label: "B", description: "Use B." },
+						],
+					},
+				],
+			}),
+		])
 		expect(outcome.results).toEqual([
 			expect.objectContaining({
 				status: "error",
@@ -287,43 +304,69 @@ describe("native streaming through the captured scheduler/registry surface", () 
 		expect(resultIds(task)).toEqual(["failed"])
 	})
 
-	it.each([
-		["read_file", "read"],
-		["spawn_agent", "spawn"],
-	] as const)("waits for every serial %s handler before committing ordered results", async (name, handlerName) => {
-		const task = createTask()
-		const secondStarted = deferred()
-		const secondMayFinish = deferred()
-		handlers[handlerName].mockImplementation(async (_task, block, callbacks) => {
-			if (block.id === "second") {
-				secondStarted.resolve()
-				await secondMayFinish.promise
-			}
-			callbacks.pushToolResult(`${block.id} result`)
-		})
-		const response = await collectAgentResponse(
-			(async function* (): AsyncGenerator<ApiStreamChunk> {
-				for (const [index, id] of ["first", "second"].entries()) {
-					yield { type: "tool_call_partial", index, id, name }
-					yield { type: "tool_call_partial", index, arguments: "{}" }
+	it.each([["spawn_agent", "spawn"]] as const)(
+		"waits for every serial %s handler before committing ordered results",
+		async (name, handlerName) => {
+			const task = createTask()
+			const secondStarted = deferred()
+			const secondMayFinish = deferred()
+			handlers[handlerName].mockImplementation(async (_task, block, callbacks) => {
+				if (block.id === "second") {
+					secondStarted.resolve()
+					await secondMayFinish.promise
 				}
-			})(),
-		)
-		let settled = false
-		const run = scheduler(task)
-			.run(response)
-			.then((outcome) => {
-				settled = true
-				return outcome
+				callbacks.pushToolResult(`${block.id} result`)
 			})
-		await secondStarted.promise
-		expect(settled).toBe(false)
-		expect(task.userMessageContent).toEqual([])
-		secondMayFinish.resolve()
-		const outcome = await run
-		expect(outcome.parallelBatchCount).toBe(0)
-		expect(resultIds(task)).toEqual(["first", "second"])
-		expect(handlers[handlerName].mock.calls.map(([, block]) => block.id)).toEqual(["first", "second"])
+			const response = await collectAgentResponse(
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					for (const [index, id] of ["first", "second"].entries()) {
+						yield { type: "tool_call_partial", index, id, name }
+						yield { type: "tool_call_partial", index, arguments: "{}" }
+					}
+				})(),
+			)
+			let settled = false
+			const run = scheduler(task)
+				.run(response)
+				.then((outcome) => {
+					settled = true
+					return outcome
+				})
+			await secondStarted.promise
+			expect(settled).toBe(false)
+			expect(task.userMessageContent).toEqual([])
+			secondMayFinish.resolve()
+			const outcome = await run
+			expect(outcome.parallelBatchCount).toBe(0)
+			expect(resultIds(task)).toEqual(["first", "second"])
+			expect(handlers[handlerName].mock.calls.map(([, block]) => block.id)).toEqual(["first", "second"])
+		},
+	)
+
+	it("returns one unknown-tool receipt for a saved read_file call without invoking file work", async () => {
+		const task = createTask()
+		const outcome = await scheduler(task).run([
+			call("saved-read", "read_file", { files: [{ path: "C:/workspace/secret.txt" }] }),
+		])
+
+		expect(outcome.results).toEqual([
+			expect.objectContaining({
+				callId: "saved-read",
+				status: "error",
+				failure: expect.objectContaining({ reason: "capability_unavailable", effectsStarted: "no" }),
+			}),
+		])
+		expect(JSON.parse(String(outcome.results[0].content))).toMatchObject({
+			status: "error",
+			message: "The tool execution failed",
+			error: expect.stringContaining('Unknown tool "read_file"'),
+		})
+		expect(handlers.spawn).not.toHaveBeenCalled()
+		expect(resultIds(task)).toEqual(["saved-read"])
+		expect(task.userMessageContent[0]).toMatchObject({
+			tool_use_id: "saved-read",
+			is_error: true,
+		})
 	})
 
 	it("executes lifecycle controls and named steering in model order", async () => {
@@ -347,12 +390,13 @@ describe("native streaming through the captured scheduler/registry surface", () 
 		expect(resultIds(task)).toEqual(calls.map((item) => item.id))
 	})
 
-	it("rejects a wait batch before a preceding lifecycle control can execute", async () => {
+	it("runs an earlier lifecycle read before a wait barrier and preserves result order", async () => {
 		const task = createTask()
 		const outcome = await scheduler(task).run([call("list", "list_agents"), call("wait", "wait_agent")])
-		expect(handlers.list).not.toHaveBeenCalled()
-		expect(handlers.wait).not.toHaveBeenCalled()
-		expect(outcome.results.map((result) => result.status)).toEqual(["error", "error"])
+		expect(handlers.list).toHaveBeenCalledOnce()
+		expect(handlers.wait).toHaveBeenCalledOnce()
+		expect(handlers.list.mock.invocationCallOrder[0]).toBeLessThan(handlers.wait.mock.invocationCallOrder[0])
+		expect(outcome.results.map((result) => result.status)).toEqual(["success", "success"])
 		expect(resultIds(task)).toEqual(["list", "wait"])
 	})
 

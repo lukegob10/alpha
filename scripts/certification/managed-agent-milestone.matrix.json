@@ -710,17 +710,19 @@
 		},
 		{
 			"id": "UI-SETTINGS-BUFFER-001",
-			"requirement": "Managed-agent settings bind to cachedState and unrelated live updates cannot erase unsaved edits.",
+			"requirement": "Approval mode settings bind to cachedState and unrelated live updates cannot erase unsaved edits.",
 			"classification": "baseline",
 			"trackIds": ["settings-buffering"],
 			"probes": [
 				{
-					"label": "Save-buffered profile IDs",
-					"patterns": ["buffers stable profile IDs until Save"]
+					"label": "Save-buffered approval mode",
+					"patterns": [
+						"keeps the session dial buffered through live refreshes and saves mode with derived chips"
+					]
 				},
 				{
-					"label": "cached-state callback",
-					"patterns": ["writes selections only through the cached-state callback"]
+					"label": "Cancel and Discard use buffered approval mode",
+					"patterns": ["preserves approval-mode edits on Cancel and resets them on Discard"]
 				}
 			],
 			"sourceProbes": [

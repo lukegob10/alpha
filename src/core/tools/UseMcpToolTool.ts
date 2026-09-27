@@ -1,4 +1,9 @@
-import type { AlphaAskUseMcpServer, McpExecutionStatus } from "@alpha-code/types"
+import type {
+	AlphaAskUseMcpServer,
+	McpExecutionStatus,
+	McpToolAnnotations,
+	McpToolCallResponse,
+} from "@alpha-code/types"
 import { createHash } from "crypto"
 import stringify from "safe-stable-stringify"
 
@@ -23,6 +28,7 @@ type ValidationResult =
 			serverName: string
 			toolName: string
 			parsedArguments?: Record<string, unknown>
+			annotations?: McpToolAnnotations
 	  }
 
 export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
@@ -65,6 +71,7 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 				type: "use_mcp_tool",
 				serverName,
 				toolName: resolvedToolName,
+				annotations: toolValidation.annotations,
 				arguments: params.arguments ? JSON.stringify(params.arguments) : undefined,
 			} satisfies AlphaAskUseMcpServer)
 
@@ -162,7 +169,12 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 		toolName: string,
 		callbacks: ToolCallbacks,
 		source?: "global" | "project",
-	): Promise<{ isValid: boolean; availableTools?: string[]; resolvedToolName?: string }> {
+	): Promise<{
+		isValid: boolean
+		availableTools?: string[]
+		resolvedToolName?: string
+		annotations?: McpToolAnnotations
+	}> {
 		// Get the MCP hub to access server information. Validation cannot be
 		// authoritative when the hub is absent, so fail before approval/dispatch.
 		const provider = task.providerRef.deref()
@@ -265,7 +277,12 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 		}
 
 		// Tool exists and is enabled - return the original tool name for use with the server.
-		return { isValid: true, availableTools: server.tools.map((t) => t.name), resolvedToolName: tool.name }
+		return {
+			isValid: true,
+			availableTools: server.tools.map((t) => t.name),
+			resolvedToolName: tool.name,
+			annotations: tool.annotations,
+		}
 	}
 
 	private markFailure(task: Task, callbacks: ToolCallbacks): void {
@@ -284,14 +301,14 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 		}
 	}
 
-	private processToolContent(toolResult: any): { text: string; images: string[] } {
-		if (!toolResult?.content || toolResult.content.length === 0) {
+	private processToolContent(toolResult: McpToolCallResponse): { text: string; images: string[] } {
+		if (!toolResult?.content?.length && toolResult?.structuredContent === undefined) {
 			return { text: "", images: [] }
 		}
 
 		const images: string[] = []
 
-		const textContent = toolResult.content
+		const contentText = (toolResult.content ?? [])
 			.map((item: any) => {
 				if (item.type === "text") {
 					return item.text
@@ -354,6 +371,11 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 			})
 			.filter(Boolean)
 			.join("\n\n")
+		const structuredContentText =
+			toolResult.structuredContent === undefined
+				? ""
+				: `Structured content:\n${JSON.stringify(toolResult.structuredContent, null, 2)}`
+		const textContent = [contentText, structuredContentText].filter(Boolean).join("\n\n")
 
 		return { text: textContent, images }
 	}

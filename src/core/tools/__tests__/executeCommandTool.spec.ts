@@ -1,6 +1,7 @@
 // npx vitest run src/core/tools/__tests__/executeCommandTool.spec.ts
 
 import type { ToolUsage } from "@alpha-code/types"
+import { EventEmitter } from "events"
 import fs from "fs/promises"
 import path from "path"
 import * as vscode from "vscode"
@@ -13,6 +14,11 @@ import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistr
 import { createAgentResponse } from "../../agent/AgentResponse"
 import { ToolScheduler, type ToolExecutionHost } from "../../agent/ToolScheduler"
 import { ToolRegistry } from "../ToolRegistry"
+import { createTaskToolSurface } from "../TaskToolSurface"
+import { normalizeExecCommandYieldTimeMs } from "../commandTimeouts"
+import { getNativeTools } from "../../prompts/tools/native-tools"
+import type { AlphaTerminalProcess } from "../../../integrations/terminal/types"
+import { mergePromise } from "../../../integrations/terminal/mergePromise"
 
 // Mock dependencies
 vitest.mock("execa", () => ({
@@ -38,6 +44,7 @@ vitest.mock("../../../integrations/terminal/TerminalRegistry", () => ({
 			runCommand: vitest.fn().mockResolvedValue(undefined),
 			getCurrentWorkingDirectory: vitest.fn().mockReturnValue("/test/workspace"),
 		}),
+		getTerminals: vitest.fn().mockReturnValue([]),
 	},
 }))
 
@@ -264,8 +271,27 @@ describe("executeCommandTool", () => {
 			expect(result).toContain("Command")
 		})
 
-		it("routes a canonical shell call through the scheduler to the legacy command host", async () => {
-			const registry = new ToolRegistry()
+		it("formats a native exec command result with Codex headers", async () => {
+			const toolCallId = "exec-command-call"
+			await executeCommandTool.execute({ command: "echo test" }, mockAlphaTask as unknown as Task, {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+				toolCallId,
+				commandResultMaxOutputTokens: 256,
+				commandResultFormat: "codex",
+			})
+
+			expect(mockPushToolResult).toHaveBeenCalledOnce()
+			expect(mockPushToolResult.mock.calls[0][0]).toMatch(
+				/^Chunk ID: exec-command-call\nWall time: \d+\.\d{4} seconds\nOutput:\n/,
+			)
+		})
+
+		it("routes exec_command through the scheduler to the terminal host", async () => {
+			const schemas = getNativeTools()
+			const registry = new ToolRegistry({ nativeTools: schemas })
+			const surface = createTaskToolSurface({ registry, schemas, mode: "code" })
 			const provider = {
 				getState: vitest.fn().mockResolvedValue({ terminalShellIntegrationDisabled: true }),
 				postMessageToWebview: vitest.fn(),
@@ -276,12 +302,13 @@ describe("executeCommandTool", () => {
 				taskId: "shell-scheduler-task",
 				providerRef: { deref: vitest.fn(() => provider) },
 			} as unknown as Task
+			const executeCommandSpy = vitest.spyOn(executeCommandTool, "execute")
 			const userMessageContent: ToolExecutionHost["userMessageContent"] = []
 			const call = {
 				type: "tool_call" as const,
 				id: "shell-scheduler-call",
-				name: "shell",
-				arguments: { command: "echo test" },
+				name: "exec_command",
+				arguments: { cmd: "echo test", workdir: "/custom/path", yield_time_ms: 375, max_output_tokens: 20 },
 			}
 			const host: ToolExecutionHost = {
 				taskId: "shell-scheduler-task",
@@ -302,25 +329,156 @@ describe("executeCommandTool", () => {
 
 			const outcome = await new ToolScheduler({
 				executionHost: host,
-				registry,
+				registry: surface.registry,
+				policy: surface.policy,
 				mode: "code",
 				validateCall: () => {},
 			}).run(createAgentResponse([call]))
 
 			expect(outcome.results[0]).toMatchObject({
-				name: "shell",
+				name: "exec_command",
 				status: "success",
-				content: expect.stringContaining("Command is still running"),
+				content: expect.stringContaining("Chunk ID: shell-scheduler-call"),
 			})
-			expect(host.recordToolUsage).toHaveBeenCalledWith("shell")
-			expect(host.askApproval).toHaveBeenCalledWith("command", "echo test", undefined, false)
+			expect(host.recordToolUsage).toHaveBeenCalledWith("exec_command")
+			expect(executeCommandSpy).toHaveBeenCalledWith(
+				expect.objectContaining({
+					command: "echo test",
+					cwd: "/custom/path",
+					timeout: normalizeExecCommandYieldTimeMs(375) / 1_000,
+				}),
+				task,
+				expect.any(Object),
+			)
+			expect(host.askApproval).toHaveBeenCalledWith(
+				"command",
+				"echo test",
+				{ text: path.resolve("/custom/path") },
+				false,
+			)
 			expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledWith(
-				"/test/workspace",
+				"/custom/path",
 				"shell-scheduler-task",
 				"execa",
 			)
 			expect(userMessageContent).toHaveLength(1)
 			expect(userMessageContent[0]).toMatchObject({ type: "tool_result", tool_use_id: "shell-scheduler-call" })
+		})
+
+		it("passes the exec_command session_id through the task surface to write_stdin", async () => {
+			vitest.mocked(formatResponse.toolResult).mockImplementation((text) => text)
+			vitest.mocked(formatResponse.toolError).mockImplementation((text) => `ERROR: ${text}`)
+			const schemas = getNativeTools()
+			const registry = new ToolRegistry({ nativeTools: schemas })
+			const surface = createTaskToolSurface({ registry, schemas, mode: "code" })
+			const provider = {
+				getState: vitest.fn().mockResolvedValue({ terminalShellIntegrationDisabled: true }),
+				postMessageToWebview: vitest.fn(),
+				runWorkspaceMutation: vitest.fn(async (_task: Task, _label: string, run: () => Promise<void>) => run()),
+			}
+			let sessionId = 0
+			let releaseCommand!: () => void
+			const running = new Promise<void>((resolve) => {
+				releaseCommand = resolve
+			})
+			const process = mergePromise(
+				Object.assign(new EventEmitter(), {
+					executionId: "",
+					command: "echo test",
+					isHot: true,
+					isSettled: false,
+					hasUnretrievedOutput: vitest.fn(() => true),
+					abort: vitest.fn(),
+					continue: vitest.fn(() => releaseCommand()),
+					run: vitest.fn(),
+					getUnretrievedOutput: vitest.fn(() => ""),
+					trimRetrievedOutput: vitest.fn(),
+					writeInput: vitest.fn(),
+					captureUnretrievedOutput: vitest.fn(() => ({
+						output: "ready at http://localhost:1234",
+						commit: vitest.fn(),
+						release: vitest.fn(),
+					})),
+				}) as unknown as AlphaTerminalProcess,
+				running,
+			)
+			const terminal = {
+				taskId: "exec-command-session-task",
+				process,
+				running: true,
+				runCommand: vitest.fn(() => process),
+				getCurrentWorkingDirectory: vitest.fn(() => "/test/workspace"),
+			}
+			vitest.mocked(TerminalRegistry.getOrCreateTerminal).mockResolvedValueOnce(terminal as never)
+			vitest.mocked(TerminalRegistry.getTerminals).mockReturnValue([terminal as never])
+			const task = {
+				...mockAlphaTask,
+				taskId: "exec-command-session-task",
+				supersedePendingAsk: vitest.fn(),
+				providerRef: { deref: vitest.fn(() => provider) },
+				getCommandExecutionEvidence: vitest.fn(() =>
+					sessionId ? [{ executionId: process.executionId, status: "running" }] : [],
+				),
+			} as unknown as Task
+			const userMessageContent: ToolExecutionHost["userMessageContent"] = []
+			const host: ToolExecutionHost = {
+				taskId: task.taskId,
+				cwd: "/test/workspace",
+				userMessageContent,
+				taskFacade: task,
+				askApproval: vitest.fn().mockResolvedValue({ response: "yesButtonClicked" }),
+				say: vitest.fn().mockResolvedValue(undefined),
+				recordToolUsage: vitest.fn(),
+				pushToolResultToUserContent: vitest.fn((result) => {
+					userMessageContent.push(result)
+					return true
+				}),
+			}
+			const scheduler = new ToolScheduler({
+				executionHost: host,
+				registry: surface.registry,
+				policy: surface.policy,
+				mode: "code",
+				validateCall: () => {},
+			})
+
+			const commandOutcome = await scheduler.run(
+				createAgentResponse([
+					{
+						type: "tool_call",
+						id: "exec-command-session-call",
+						name: "exec_command",
+						arguments: { cmd: "echo test", yield_time_ms: 500 },
+					},
+				]),
+			)
+
+			const commandText = String(commandOutcome.results[0].content)
+			const sessionIdMatch = commandText.match(/Process running with session ID\s+(\d+)/)
+			expect(commandText).toContain("Chunk ID: exec-command-session-call")
+			expect(sessionIdMatch?.[1]).toBeTruthy()
+			sessionId = Number(sessionIdMatch![1])
+			expect(Number.isSafeInteger(sessionId)).toBe(true)
+			expect(sessionId).toBeGreaterThan(0)
+			const stdinOutcome = await scheduler.run(
+				createAgentResponse([
+					{
+						type: "tool_call",
+						id: "exec-command-stdin-call",
+						name: "write_stdin",
+						arguments: { session_id: sessionId, chars: "y\n", yield_time_ms: 0 },
+					},
+				]),
+			)
+
+			expect(stdinOutcome.results[0]).toMatchObject({ name: "write_stdin", status: "success" })
+			expect(process.writeInput).toHaveBeenCalledWith("y\n")
+			expect(host.askApproval).toHaveBeenCalledWith(
+				"command",
+				`input command ${process.executionId}\ny\n`,
+				undefined,
+				false,
+			)
 		})
 
 		it("should pass along custom working directory if provided", async () => {

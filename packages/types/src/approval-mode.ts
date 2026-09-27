@@ -152,6 +152,7 @@ export function deriveAutoApprovalFlags(
 		alwaysAllowTickets: true,
 		alwaysAllowSubtasks: true,
 		alwaysAllowSubagents: true,
+		// Commands run from the workspace by default; path review and explicit denies still apply.
 		alwaysAllowExecute: true,
 		alwaysAllowWriteProtected: options.alwaysAllowWriteProtected === true,
 		alwaysAllowMcp: options.alwaysAllowMcp === true,
@@ -166,6 +167,10 @@ export function deriveAutoApprovalFlags(
 		alwaysAllowReadOnlyOutsideWorkspace: true,
 		alwaysAllowWriteOutsideWorkspace: true,
 		alwaysAllowWriteProtected: true,
+		alwaysAllowTickets: true,
+		alwaysAllowSubtasks: true,
+		alwaysAllowSubagents: true,
+		alwaysAllowExecute: true,
 		alwaysAllowMcp: true,
 		alwaysAllowFollowupQuestions: true,
 	}
@@ -217,13 +222,7 @@ export function effectiveCommandAllowlistForMode(mode: ApprovalMode, allowedComm
 	if (mode === "ask") {
 		return allowedCommands.filter((command) => command.trim() !== "*")
 	}
-	if (mode === "bypass") {
-		return allowedCommands.some((command) => command.trim() === "*") ? allowedCommands : ["*", ...allowedCommands]
-	}
-	if (mode === "auto" && allowedCommands.length === 0) {
-		return ["*"]
-	}
-	return allowedCommands
+	return allowedCommands.some((command) => command.trim() === "*") ? allowedCommands : ["*", ...allowedCommands]
 }
 
 /** True when the captured grant is Bypass-equivalent. Auto children are not Bypass. */

@@ -1,4 +1,5 @@
 import type OpenAI from "openai"
+import type { ApprovalMode } from "@alpha-code/types"
 
 import { digestValue } from "../agent/StepContext"
 import {
@@ -60,6 +61,7 @@ export interface TaskToolSurfaceInput {
 	includeAllToolsWithRestrictions?: boolean
 	/** The mode filter may already have applied legacy restrictions. */
 	applyProfile?: boolean
+	approvalMode?: ApprovalMode
 	autoApprovalEnabled?: boolean
 	/** Captured primary-task read settings. Omission keeps legacy approval execution. */
 	readGrant?: TaskReadGrant
@@ -99,6 +101,7 @@ interface PolicySource {
 	visibleTools: readonly string[]
 	allowedTools: readonly string[]
 	disabledTools: readonly string[]
+	approvalMode?: ApprovalMode
 	autoApprovalEnabled: boolean
 	capabilities?: Readonly<Record<string, ToolCapabilities>>
 	outputLimits?: Readonly<Record<string, number>>
@@ -116,6 +119,7 @@ function asPolicySource(policy: TaskToolSurfaceInput["policy"]): PolicySource | 
 			visibleTools: policy.visibleTools,
 			allowedTools: policy.allowedTools,
 			disabledTools: policy.disabledTools,
+			approvalMode: policy.approval.mode,
 			autoApprovalEnabled: policy.approval.autoApprovalEnabled,
 			capabilities: policy.capabilities,
 			outputLimits: policy.outputLimits,
@@ -126,6 +130,7 @@ function asPolicySource(policy: TaskToolSurfaceInput["policy"]): PolicySource | 
 		visibleTools: policy.visibleTools,
 		allowedTools: policy.allowedTools ?? policy.visibleTools,
 		disabledTools: policy.disabledTools ?? [],
+		approvalMode: policy.approvalMode,
 		autoApprovalEnabled: policy.autoApprovalEnabled === true,
 		capabilities: policy.capabilities,
 		outputLimits: policy.outputLimits,
@@ -135,6 +140,14 @@ function asPolicySource(policy: TaskToolSurfaceInput["policy"]): PolicySource | 
 
 function canonicalSchema(schema: TaskToolSchema): TaskToolSchema {
 	if (schema.type !== "function") return freezeValue(structuredClone(schema))
+	if (
+		schema.function.name === "exec_command" ||
+		schema.function.name === "update_plan" ||
+		schema.function.name === "update_todo_list" ||
+		schema.function.name === "tool_search" ||
+		schema.function.name === "discover_tools"
+	)
+		return freezeValue(structuredClone(schema))
 	const name = canonicalizeToolName(schema.function.name)
 	const normalized = name === schema.function.name ? schema : { ...schema, function: { ...schema.function, name } }
 	return freezeValue(structuredClone(normalized))
@@ -169,18 +182,40 @@ function normalizeSchemas(
 			continue
 		}
 
-		const name = schema.function.name
-		if (!registry.resolve(name)) continue
-		if (!includeAllToolsWithRestrictions && allowedNames && !allowedNames.has(name)) continue
-		const existingIndex = indexes.get(name)
+		const canonicalName = canonicalizeToolName(schema.function.name)
+		if (!registry.resolve(canonicalName)) continue
+		if (!includeAllToolsWithRestrictions && allowedNames && !allowedNames.has(canonicalName)) continue
+		const existingIndex = indexes.get(canonicalName)
 		if (existingIndex !== undefined) {
+			if (
+				canonicalName === "tool_search" &&
+				schema.function.name === "discover_tools" &&
+				result[existingIndex]?.type === "function" &&
+				result[existingIndex].function.name === "tool_search"
+			) {
+				// Keep the old provider-history name alongside tool_search when a saved task uses it.
+				result.push(schema)
+				continue
+			}
+			if (
+				includeAllToolsWithRestrictions &&
+				canonicalName === "update_plan" &&
+				schema.function.name === "update_todo_list" &&
+				result[existingIndex]?.type === "function" &&
+				result[existingIndex].function.name === "update_plan"
+			) {
+				// Restricted providers may need the old declaration to replay a saved
+				// update_todo_list call. Its name stays out of the callable allow-list.
+				result.push(schema)
+				continue
+			}
 			// Keep schema selection aligned with ToolRegistry.getSchemaMap: when a
 			// provider sends both an alias and its canonical spelling, the canonical
 			// definition is authoritative even if it appears later in the catalog.
-			if (source.type === "function" && source.function.name === name) result[existingIndex] = schema
+			if (source.type === "function" && source.function.name === canonicalName) result[existingIndex] = schema
 			continue
 		}
-		indexes.set(name, result.length)
+		indexes.set(canonicalName, result.length)
 		result.push(schema)
 	}
 	return result
@@ -233,6 +268,7 @@ function fingerprintRegistry(registry: ToolRegistry): unknown {
 			name: descriptor.name,
 			aliases: [...descriptor.aliases].sort(),
 			schema: descriptor.schema,
+			exposure: descriptor.exposure ?? "eager",
 			capabilities: descriptor.capabilities,
 			maxOutputChars: descriptor.maxOutputChars,
 			auditedParallelRead: !!descriptor.prepareParallelRead,
@@ -321,6 +357,7 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		visibleTools: visibleNames,
 		allowedTools: candidateAllowedNames,
 		disabledTools: disabledNames,
+		approvalMode: input.approvalMode ?? source?.approvalMode,
 		autoApprovalEnabled: input.autoApprovalEnabled ?? source?.autoApprovalEnabled,
 		capabilities: descriptorCapabilities(registry, input.capabilities ?? source?.capabilities),
 		outputLimits: descriptorOutputLimits(registry, input.outputLimits ?? source?.outputLimits),
@@ -361,6 +398,7 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		visibleTools: finalVisibleNames,
 		allowedTools: allowedFunctionNames,
 		disabledTools: disabledNames,
+		approvalMode: basePolicy.approval.mode,
 		autoApprovalEnabled: basePolicy.approval.autoApprovalEnabled,
 		capabilities: descriptorCapabilities(registry, basePolicy.capabilities),
 		outputLimits: basePolicy.outputLimits,

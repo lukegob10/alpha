@@ -69,17 +69,26 @@ describe("context management tool metadata admission", () => {
 		expect(condense.summarizeConversation).not.toHaveBeenCalled()
 	})
 
-	it.each<{ totalTokens: number; profileThresholds: Record<string, number> }>([
-		{ totalTokens: 490, profileThresholds: {} },
-		{ totalTokens: 240, profileThresholds: { default: 25 } },
-		{ totalTokens: 490, profileThresholds: { default: -1 } },
-	])("prepares once at an exact global or profile threshold: %j", async (threshold) => {
+	it("prepares once at the global threshold even when a legacy profile threshold is higher", async () => {
 		const { options, prepareTools } = fixture()
-		await manageContext({ ...options, ...threshold })
+		// The final-message estimate brings usage to exactly 50% of the model window.
+		await manageContext({ ...options, totalTokens: 490, profileThresholds: { default: 90 } })
 		expect(prepareTools).toHaveBeenCalledOnce()
 		expect(condense.summarizeConversation).toHaveBeenCalledWith(
 			expect.objectContaining({ metadata: expect.objectContaining({ tools }) }),
 		)
+	})
+
+	it("does not prepare tools below the global threshold despite a lower legacy profile threshold", async () => {
+		const { options, prepareTools } = fixture()
+		const result = await manageContext({
+			...options,
+			totalTokens: 240,
+			profileThresholds: { default: 25 },
+		})
+		expect(result.messages).toBe(options.messages)
+		expect(prepareTools).not.toHaveBeenCalled()
+		expect(condense.summarizeConversation).not.toHaveBeenCalled()
 	})
 
 	it("includes prepared schemas in truncation counts with automatic condensation disabled", async () => {

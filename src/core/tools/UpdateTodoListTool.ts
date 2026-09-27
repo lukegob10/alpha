@@ -19,6 +19,11 @@ interface UpdateTodoListParams {
 	work_plan?: TaskWorkPlan | null
 }
 
+interface UpdatePlanParams {
+	explanation?: string | null
+	plan: Array<{ step: string; status: "pending" | "in_progress" | "completed" }>
+}
+
 interface PendingTodoApproval {
 	approvalId: string
 	todos: TodoItem[]
@@ -27,10 +32,14 @@ interface PendingTodoApproval {
 // A task can have one pending TODO approval; stale UI edits must not reach its next invocation.
 const pendingTodoApprovals = new WeakMap<Task, PendingTodoApproval>()
 
-export class UpdateTodoListTool extends BaseTool<"update_todo_list"> {
-	readonly name = "update_todo_list" as const
+export class UpdateTodoListTool extends BaseTool<"update_plan"> {
+	readonly name = "update_plan" as const
 
-	async execute(params: UpdateTodoListParams, task: Task, callbacks: ToolCallbacks): Promise<void> {
+	async execute(
+		params: UpdateTodoListParams | UpdatePlanParams,
+		task: Task,
+		callbacks: ToolCallbacks,
+	): Promise<void> {
 		const { pushToolResult, handleError, askApproval } = callbacks
 		let pending: PendingTodoApproval | undefined
 		const clearPending = () => {
@@ -43,8 +52,22 @@ export class UpdateTodoListTool extends BaseTool<"update_todo_list"> {
 
 		try {
 			assertActive()
-			const workPlan = params.work_plan == null ? undefined : taskWorkPlanSchema.parse(params.work_plan)
-			const todosRaw = params.todos
+			const isPlanUpdate = "plan" in params
+			const legacyParams = params as UpdateTodoListParams
+			const planResult = isPlanUpdate ? serializeUpdatePlan(params.plan) : undefined
+			if (planResult?.error) {
+				task.consecutiveMistakeCount++
+				task.recordToolError("update_todo_list")
+				task.didToolFailInCurrentTurn = true
+				pushToolResult(formatResponse.toolError(planResult.error))
+				return
+			}
+			const explanation =
+				isPlanUpdate && typeof params.explanation === "string" ? params.explanation.trim() : undefined
+			const explanationSuffix = explanation ? `\n\n${explanation}` : ""
+			const workPlan =
+				legacyParams.work_plan == null ? undefined : taskWorkPlanSchema.parse(legacyParams.work_plan)
+			const todosRaw = planResult?.markdown ?? legacyParams.todos
 
 			let todos: TodoItem[]
 			try {
@@ -109,9 +132,17 @@ export class UpdateTodoListTool extends BaseTool<"update_todo_list"> {
 
 			if (isTodoListChanged) {
 				const md = todoListToMarkdown(normalizedTodos)
-				pushToolResult(formatResponse.toolResult("User edits todo:\n\n" + md))
+				pushToolResult(
+					formatResponse.toolResult(
+						`${isPlanUpdate ? "User edits plan:" : "User edits todo:"}\n\n${md}${explanationSuffix}`,
+					),
+				)
 			} else {
-				pushToolResult(formatResponse.toolResult("Todo list updated successfully."))
+				pushToolResult(
+					formatResponse.toolResult(
+						`${isPlanUpdate ? "Plan updated successfully." : "Todo list updated successfully."}${explanationSuffix}`,
+					),
+				)
 			}
 		} catch (error) {
 			if (callbacks.signal?.aborted || task.abort) {
@@ -126,8 +157,10 @@ export class UpdateTodoListTool extends BaseTool<"update_todo_list"> {
 		}
 	}
 
-	override async handlePartial(task: Task, block: ToolUse<"update_todo_list">): Promise<void> {
-		const todosRaw = block.params.todos
+	override async handlePartial(task: Task, block: ToolUse<"update_plan">): Promise<void> {
+		const params = (block.nativeArgs ?? block.params) as Record<string, unknown>
+		const planResult = Array.isArray(params.plan) ? serializeUpdatePlan(params.plan) : undefined
+		const todosRaw = planResult?.markdown ?? (typeof params.todos === "string" ? params.todos : "")
 
 		// Parse the markdown checklist to maintain consistent format with execute()
 		let todos: TodoItem[]
@@ -144,6 +177,28 @@ export class UpdateTodoListTool extends BaseTool<"update_todo_list"> {
 		})
 		await task.ask("tool", approvalMsg, block.partial).catch(() => {})
 	}
+}
+
+function serializeUpdatePlan(value: unknown): { markdown?: string; error?: string } {
+	if (!Array.isArray(value)) return { error: "The plan parameter must be an array." }
+	let inProgressCount = 0
+	const lines: string[] = []
+	for (const [index, item] of value.entries()) {
+		if (!item || typeof item !== "object") return { error: `Plan step ${index + 1} must be an object.` }
+		const step = (item as Record<string, unknown>).step
+		const status = (item as Record<string, unknown>).status
+		if (typeof step !== "string" || !step.trim()) return { error: `Plan step ${index + 1} must have text.` }
+		if (status !== "pending" && status !== "in_progress" && status !== "completed") {
+			return { error: `Plan step ${index + 1} has an invalid status.` }
+		}
+		if (status === "in_progress" && ++inProgressCount > 1) {
+			return { error: "At most one plan step can be in progress." }
+		}
+		const checkbox = status === "completed" ? "[x]" : status === "in_progress" ? "[-]" : "[ ]"
+		const content = step.replace(/[\r\n]+/g, " ").trim()
+		lines.push(`${checkbox} ${content}`)
+	}
+	return { markdown: lines.join("\n") }
 }
 
 export function addTodoToTask(alphaTask: Task, content: string, status: TodoStatus = "pending", id?: string): TodoItem {

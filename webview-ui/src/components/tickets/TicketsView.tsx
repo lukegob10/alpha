@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react"
-import { ChevronRight, Plus, Ticket as TicketIcon } from "lucide-react"
+import { ChevronRight } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import {
 	ticketSchema,
 	ticketTargetSchema,
 	ticketStatusOrder,
 	ticketTypeSchema,
+	ticketPrioritySchema,
+	type TicketRelations,
 	type TicketType,
 	type TicketTarget,
 	type Ticket,
@@ -14,6 +16,7 @@ import {
 	type TicketRequest,
 	type TicketResponse,
 	type TicketStatus,
+	type TicketSummary,
 } from "@alpha-code/types"
 import { vscode } from "../../utils/vscode"
 import i18n from "../../i18n/setup"
@@ -30,10 +33,13 @@ import {
 	AlertDialogTitle,
 } from "../ui/alert-dialog"
 import "./tickets.css"
+import "./ticket-types.css"
+import "./ticket-list.css"
+import "./ticket-detail.css"
 
 const empty: TicketFields = { name: "", description: "", context: "", successCriteria: "", implementationSummary: "" }
 const statuses: TicketStatus[] = ticketStatusOrder
-type Draft = TicketFields & { status: TicketStatus }
+type Draft = TicketFields & { status: TicketStatus; parentId?: string }
 type StoredState = {
 	project: string
 	ticket?: Ticket
@@ -43,16 +49,18 @@ type StoredState = {
 	typeFilter?: TicketType | "untagged"
 	offset?: number
 }
-type Result = Ticket | TicketList | undefined
+type Result = Ticket | TicketList | TicketRelations | undefined
 
 const ticketDraft = (ticket: Ticket): Draft => ({
 	name: ticket.name,
 	type: ticket.type,
+	priority: ticket.priority,
 	description: ticket.description,
 	context: ticket.context,
 	successCriteria: ticket.successCriteria,
 	implementationSummary: ticket.implementationSummary,
 	status: ticket.status,
+	parentId: ticket.parentId,
 })
 
 export default function TicketsView() {
@@ -76,6 +84,9 @@ export default function TicketsView() {
 	const [list, setList] = useState<TicketList>({ tickets: [], total: 0, invalidFiles: [] })
 	const [listLoading, setListLoading] = useState(true)
 	const [listError, setListError] = useState("")
+	const [relations, setRelations] = useState<TicketRelations>({ children: [] })
+	const [relationsLoading, setRelationsLoading] = useState(true)
+	const [relationsError, setRelationsError] = useState("")
 	const projectAvailable = projects.some((item) => item.id === project)
 	const [query, setQuery] = useState(initial?.query ?? "")
 	const [typeFilter, setTypeFilter] = useState<StoredState["typeFilter"]>(initial?.typeFilter)
@@ -83,6 +94,12 @@ export default function TicketsView() {
 	const [collapsedStatuses, setCollapsedStatuses] = useState<TicketStatus[]>([])
 	const [error, setError] = useState("")
 	const [busy, setBusy] = useState(false)
+	const [pendingStatusId, setPendingStatusId] = useState<string>()
+	const pendingStatusRef = useRef<string>()
+	const [statusError, setStatusError] = useState<{ id: string; message: string }>()
+	const [parentQuery, setParentQuery] = useState("")
+	const [parentCandidates, setParentCandidates] = useState<TicketSummary[]>([])
+	const [parentSearchError, setParentSearchError] = useState("")
 	const running = useRef(false)
 	const mounted = useRef(true)
 	const [deleteTarget, setDeleteTarget] = useState<{ project: string; ticket: Ticket }>()
@@ -93,6 +110,7 @@ export default function TicketsView() {
 	const [changed, setChanged] = useState(false)
 	const [discard, setDiscard] = useState<(() => void) | undefined>()
 	const sequence = useRef(0)
+	const ticketChangeSequence = useRef(0)
 	const listSequence = useRef(0)
 	const page = useRef<HTMLDivElement>(null)
 	const listScroll = useRef(0)
@@ -106,8 +124,8 @@ export default function TicketsView() {
 	)
 	const baseline = ticket && ticketDraft(ticket)
 	const dirty = !!draft && JSON.stringify(draft) !== JSON.stringify(baseline)
-	const latest = useRef({ project, dirty, id: ticket?.id })
-	latest.current = { project, dirty, id: ticket?.id }
+	const latest = useRef({ project, dirty, id: ticket?.id, revision: ticket?.revision })
+	latest.current = { project, dirty, id: ticket?.id, revision: ticket?.revision }
 
 	const request = useCallback(
 		(operation: TicketRequest["operation"], targetProject = latest.current.project) =>
@@ -121,6 +139,32 @@ export default function TicketsView() {
 				vscode.postTicketMessage({ type: "ticketRequest", requestId, project: targetProject, operation })
 			}),
 		[],
+	)
+	const reconcileTicketChange = useCallback(
+		(targetProject: string, ticketId: string, expectedRevision?: string) => {
+			const currentSequence = ++ticketChangeSequence.current
+			const isCurrent = () =>
+				mounted.current &&
+				currentSequence === ticketChangeSequence.current &&
+				latest.current.project === targetProject &&
+				latest.current.id === ticketId
+
+			void request({ action: "read", id: ticketId }, targetProject)
+				.then((result) => {
+					if (!isCurrent()) return
+					const parsed = ticketSchema.safeParse(result)
+					if (!parsed.success || parsed.data.id !== ticketId) {
+						setChanged(true)
+						return
+					}
+					const knownRevision = expectedRevision ?? latest.current.revision
+					setChanged(!knownRevision || parsed.data.revision !== knownRevision)
+				})
+				.catch(() => {
+					if (isCurrent()) setChanged(true)
+				})
+		},
+		[request],
 	)
 
 	useEffect(() => {
@@ -142,7 +186,7 @@ export default function TicketsView() {
 				setProject((current) => current || message.projects[0]?.id || "")
 			} else if (message.type === "ticketChanged" && message.project === latest.current.project) {
 				setRefresh((value) => value + 1)
-				setChanged(true)
+				if (latest.current.id) reconcileTicketChange(message.project, latest.current.id)
 			} else if (message.type === "ticketResponse") {
 				const callback = pending.current.get(message.requestId)
 				if (!callback) return
@@ -164,7 +208,7 @@ export default function TicketsView() {
 			}
 			callbacks.clear()
 		}
-	}, [])
+	}, [reconcileTicketChange])
 
 	useEffect(() => {
 		vscode.setState({ project, ticket, draft, editing, query, typeFilter, offset })
@@ -206,12 +250,59 @@ export default function TicketsView() {
 			clearTimeout(timer)
 		}
 	}, [projectAvailable, project, query, typeFilter, offset, refresh, request])
+	const searchingParents = editing && draft !== undefined
+	const relationTicketId = ticket?.id
+	useEffect(() => {
+		setRelations({ children: [] })
+		setRelationsError("")
+		setRelationsLoading(true)
+		if (!projectAvailable || !relationTicketId || editing) return
+		let active = true
+		void request({ action: "relations", id: relationTicketId }, project)
+			.then((result) => {
+				if (!active) return
+				if (!result || !("children" in result) || !Array.isArray(result.children))
+					throw new Error(i18n.t("tickets:relationsError"))
+				setRelations(result)
+			})
+			.catch((cause: Error) => {
+				if (active) setRelationsError(cause.message)
+			})
+			.finally(() => {
+				if (active) setRelationsLoading(false)
+			})
+		return () => {
+			active = false
+		}
+	}, [projectAvailable, project, relationTicketId, editing, refresh, request])
+	useEffect(() => {
+		if (!projectAvailable || !searchingParents) return
+		let active = true
+		const timer = setTimeout(() => {
+			void request({ action: "list", input: { query: parentQuery, offset: 0, limit: 100 } }, project)
+				.then((result) => {
+					if (active && result && "tickets" in result) {
+						setParentCandidates(result.tickets)
+						setParentSearchError("")
+					}
+				})
+				.catch((cause: Error) => {
+					if (active) setParentSearchError(cause.message)
+				})
+		}, 150)
+		return () => {
+			active = false
+			clearTimeout(timer)
+		}
+	}, [projectAvailable, project, searchingParents, parentQuery, request])
 
 	const accept = (value: Result) => {
 		if (!mounted.current) return
 		const parsed = ticketSchema.safeParse(value)
 		if (!parsed.success) return
 		const valueTicket = parsed.data
+		ticketChangeSequence.current++
+		latest.current = { ...latest.current, id: valueTicket.id, revision: valueTicket.revision, dirty: false }
 		returnToTicket.current = valueTicket.id
 		setTicket(valueTicket)
 		setDraft(ticketDraft(valueTicket))
@@ -238,6 +329,8 @@ export default function TicketsView() {
 	}
 	const backToList = () =>
 		guard(() => {
+			ticketChangeSequence.current++
+			latest.current = { ...latest.current, id: undefined, revision: undefined, dirty: false }
 			setTicket(undefined)
 			setDraft(undefined)
 			setEditing(false)
@@ -254,6 +347,8 @@ export default function TicketsView() {
 				const result = await request({ action: "read", id: target.id }, target.project)
 				if (ticketSchema.safeParse(result).success) {
 					if (target.project !== project) {
+						ticketChangeSequence.current++
+						latest.current = { ...latest.current, project: target.project }
 						setProject(target.project)
 						setQuery("")
 						setTypeFilter(undefined)
@@ -285,6 +380,8 @@ export default function TicketsView() {
 				target.project,
 			)
 			if (!mounted.current) return
+			ticketChangeSequence.current++
+			latest.current = { ...latest.current, id: undefined, revision: undefined, dirty: false }
 			// Discard collection reads started before the deletion and any queued navigation back to it.
 			listSequence.current++
 			setNavigation((current) =>
@@ -308,13 +405,19 @@ export default function TicketsView() {
 	}
 	const save = async (): Promise<Ticket | undefined> => {
 		if (!draft) return ticket
-		const { status, ...fields } = draft
+		const { status, parentId, ...fields } = draft
 		let result = ticket
 			? await request({
 					action: "update",
-					input: { id: ticket.id, expectedRevision: ticket.revision, ...fields, status },
+					input: {
+						id: ticket.id,
+						expectedRevision: ticket.revision,
+						...fields,
+						status,
+						parentId: parentId ?? null,
+					},
 				})
-			: await request({ action: "create", input: fields })
+			: await request({ action: "create", input: { ...fields, parentId } })
 		if (!ticket && status !== "backlog" && result && "id" in result)
 			result = await request({
 				action: "update",
@@ -323,6 +426,44 @@ export default function TicketsView() {
 		accept(result)
 		setRefresh((value) => value + 1)
 		return ticketSchema.parse(result)
+	}
+	const updateReaderProperty = (item: Ticket, patch: Partial<Pick<Ticket, "status" | "type" | "priority">>) => {
+		if (running.current || pendingStatusRef.current) return
+		const targetProject = project
+		const notificationSequence = ticketChangeSequence.current
+		pendingStatusRef.current = item.id
+		setPendingStatusId(item.id)
+		setStatusError(undefined)
+		void request({ action: "update", input: { id: item.id, expectedRevision: item.revision, ...patch } })
+			.then((result) => {
+				if (!mounted.current || latest.current.project !== targetProject) return
+				const parsed = ticketSchema.safeParse(result)
+				if (!parsed.success || parsed.data.id !== item.id) throw new Error(t("invalidStatusResponse"))
+				const notificationOccurred = ticketChangeSequence.current !== notificationSequence
+				if (latest.current.id === item.id) {
+					latest.current = { ...latest.current, revision: parsed.data.revision }
+					// Ignore reads started before this accepted write, then verify any concurrent notification.
+					ticketChangeSequence.current++
+					setChanged(false)
+				}
+				setTicket((current) => (current?.id === item.id ? parsed.data : current))
+				setDraft((current) =>
+					current && latest.current.id === item.id && !latest.current.dirty
+						? ticketDraft(parsed.data)
+						: current,
+				)
+				setRefresh((value) => value + 1)
+				if (latest.current.id === item.id && notificationOccurred) {
+					reconcileTicketChange(targetProject, item.id, parsed.data.revision)
+				}
+			})
+			.catch((cause: Error) => {
+				if (mounted.current) setStatusError({ id: item.id, message: cause.message })
+			})
+			.finally(() => {
+				pendingStatusRef.current = undefined
+				if (mounted.current) setPendingStatusId(undefined)
+			})
 	}
 
 	const startWork = () => {
@@ -385,6 +526,14 @@ export default function TicketsView() {
 								onChange={(event) => {
 									const next = event.target.value
 									guard(() => {
+										ticketChangeSequence.current++
+										latest.current = {
+											...latest.current,
+											project: next,
+											id: undefined,
+											revision: undefined,
+											dirty: false,
+										}
 										setProject(next)
 										setTicket(undefined)
 										setDraft(undefined)
@@ -401,7 +550,10 @@ export default function TicketsView() {
 								}}>
 								{projects.map((p) => (
 									<option key={p.id} value={p.id}>
-										{p.name} · {p.id.slice(-6)}
+										{p.name}
+										{projects.filter((item) => item.name === p.name).length > 1
+											? ` · ${p.id.slice(-6)}`
+											: ""}
 									</option>
 								))}
 							</select>
@@ -410,14 +562,10 @@ export default function TicketsView() {
 							<ChevronRight size={14} aria-hidden="true" />
 							{showingDetail ? (
 								<button disabled={busy} onClick={backToList}>
-									<TicketIcon size={15} aria-hidden="true" />
 									{t("title")}
 								</button>
 							) : (
-								<span aria-current="page">
-									<TicketIcon size={15} aria-hidden="true" />
-									{t("title")}
-								</span>
+								<span aria-current="page">{t("title")}</span>
 							)}
 						</li>
 						{ticket && (
@@ -428,11 +576,11 @@ export default function TicketsView() {
 										disabled={busy}
 										title={ticket.name}
 										onClick={() => guard(() => accept(ticket))}>
-										{ticket.reference ? `${ticket.reference} · ${ticket.name}` : ticket.name}
+										{ticket.reference ?? ticket.name}
 									</button>
 								) : (
 									<span aria-current="page" title={ticket.name}>
-										{ticket.reference ? `${ticket.reference} · ${ticket.name}` : ticket.name}
+										{ticket.reference ?? ticket.name}
 									</span>
 								)}
 							</li>
@@ -446,10 +594,12 @@ export default function TicketsView() {
 					</ol>
 				</nav>
 				<button
-					className="tickets-new-button"
+					className={showingDetail ? "tickets-header-new" : "tickets-new-button"}
 					disabled={!project || busy}
 					onClick={() =>
 						guard(() => {
+							ticketChangeSequence.current++
+							latest.current = { ...latest.current, id: undefined, revision: undefined, dirty: false }
 							if (!showingDetail) listScroll.current = page.current?.scrollTop ?? 0
 							setTicket(undefined)
 							setDraft({ ...empty, status: "backlog" })
@@ -457,7 +607,6 @@ export default function TicketsView() {
 							setChanged(false)
 						})
 					}>
-					<Plus size={15} aria-hidden="true" />
 					{t("new")}
 				</button>
 			</header>
@@ -533,8 +682,36 @@ export default function TicketsView() {
 				{ticket && !editing ? (
 					<TicketReader
 						ticket={ticket}
-						busy={busy}
+						busy={busy || !!pendingStatusId}
 						changed={changed}
+						onOpenRelated={open}
+						onAddChild={() =>
+							guard(() => {
+								ticketChangeSequence.current++
+								latest.current = { ...latest.current, id: undefined, revision: undefined, dirty: false }
+								returnToTicket.current = ticket.id
+								setTicket(undefined)
+								setDraft({ ...empty, status: "backlog", parentId: ticket.id })
+								setParentQuery("")
+								setEditing(true)
+								setChanged(false)
+								setError("")
+							})
+						}
+						parent={relations.parent}
+						childTickets={relations.children}
+						relationsLoading={relationsLoading}
+						relationsError={relationsError || undefined}
+						onStatusChange={(status) => updateReaderProperty(ticket, { status })}
+						onPriorityChange={(priority) => updateReaderProperty(ticket, { priority })}
+						onTypeChange={(type) => updateReaderProperty(ticket, { type })}
+						onOpenLinkedTask={(taskId) => {
+							void run(async () => {
+								await request({ action: "openLinkedTask", id: ticket.id, taskId })
+							})
+						}}
+						statusPending={!!pendingStatusId}
+						statusError={statusError?.id === ticket.id ? statusError.message : undefined}
 						onEdit={() => setEditing(true)}
 						onReload={() => open(ticket.id)}
 						onWork={startWork}
@@ -572,6 +749,25 @@ export default function TicketsView() {
 							</label>
 							<div className="ticket-editor-properties">
 								<label>
+									{t("priority")}
+									<select
+										value={draft.priority ?? ""}
+										onChange={(event) =>
+											setDraft({
+												...draft,
+												priority:
+													ticketPrioritySchema.safeParse(event.target.value).data ?? null,
+											})
+										}>
+										<option value="">{t("noPriority")}</option>
+										{ticketPrioritySchema.options.map((priority) => (
+											<option key={priority} value={priority}>
+												{t(`priorities.${priority}`)}
+											</option>
+										))}
+									</select>
+								</label>
+								<label>
 									{t("status")}
 									<select
 										value={draft.status}
@@ -604,6 +800,39 @@ export default function TicketsView() {
 									</select>
 								</label>
 							</div>
+							<div className="ticket-editor-parent">
+								<label>
+									{t("findParent")}
+									<input
+										value={parentQuery}
+										onChange={(event) => setParentQuery(event.target.value)}
+										placeholder={t("searchParents")}
+									/>
+								</label>
+								<label>
+									{t("parentTicket")}
+									<select
+										value={draft.parentId ?? ""}
+										onChange={(event) =>
+											setDraft({ ...draft, parentId: event.target.value || undefined })
+										}>
+										<option value="">{t("noParent")}</option>
+										{draft.parentId &&
+											!parentCandidates.some((candidate) => candidate.id === draft.parentId) && (
+												<option value={draft.parentId}>{t("currentParent")}</option>
+											)}
+										{parentCandidates
+											.filter((candidate) => candidate.id !== ticket?.id)
+											.map((candidate) => (
+												<option key={candidate.id} value={candidate.id}>
+													{candidate.reference ? `${candidate.reference} · ` : ""}
+													{candidate.name}
+												</option>
+											))}
+									</select>
+								</label>
+								{parentSearchError && <p role="alert">{parentSearchError}</p>}
+							</div>
 							{ticket && (
 								<div className="ticket-dates">
 									<span>
@@ -626,7 +855,6 @@ export default function TicketsView() {
 										<textarea
 											rows={field === "context" ? 6 : 4}
 											maxLength={16000}
-											required={field === "implementationSummary" && draft.status === "complete"}
 											value={draft[field]}
 											onChange={(event) => setDraft({ ...draft, [field]: event.target.value })}
 										/>

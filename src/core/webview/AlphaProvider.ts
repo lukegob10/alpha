@@ -10,13 +10,13 @@ import * as path from "path"
 import fs from "fs/promises"
 import EventEmitter from "events"
 import crypto from "crypto"
+import { v7 as uuidv7 } from "uuid"
 import { isDeepStrictEqual } from "util"
 import { settlementDiagnostics } from "../agent/SettlementDiagnostics"
 import { resolveWaitTimeout } from "../tools/AgentLifecycleTool"
 
 import { Anthropic } from "@anthropic-ai/sdk"
 import delay from "delay"
-import axios from "axios"
 import pWaitFor from "p-wait-for"
 import * as vscode from "vscode"
 import {
@@ -29,6 +29,9 @@ import {
 import {
 	type TaskProviderLike,
 	type TaskProviderEvents,
+	type TaskLike,
+	type TaskApprovalModeUpdate,
+	type TaskApprovalModeUpdateResult,
 	type GlobalState,
 	type ProviderSettings,
 	type AlphaCodeSettings,
@@ -104,6 +107,7 @@ import {
 	subagentRootOrchestrationSummarySchema,
 	managedAgentTreeProjectionSchema,
 	subagentUsageSchema,
+	subagentAgentTypesSchema,
 	disabledSubagentAutoApprovalPolicy,
 	effectiveCommandAllowlistForMode,
 	isSubagentApprovalNarrowerThanParent,
@@ -198,6 +202,8 @@ import {
 	upgradeLegacySubagentContextManifest,
 } from "../agent/SubagentContextCapture"
 import {
+	applySubagentSpawnOverrides,
+	getSubagentRouteModelId,
 	resolveSubagentModelRoute,
 	snapshotProviderSettings,
 	type ResolvedSubagentModelRoute,
@@ -205,8 +211,10 @@ import {
 import {
 	assertSubagentTaskAuthorities,
 	buildSubagentPrompt,
+	normalizeSpawnAgentRequest,
 	normalizeSubagentTaskDrafts,
 	type PreparedSubagentGroup,
+	type SpawnAgentRequest,
 	type SubagentToolResult,
 } from "../agent/SubagentDelegation"
 
@@ -220,10 +228,17 @@ import {
 	TaskHistoryStore,
 } from "../task-persistence"
 import { readTaskMessages } from "../task-persistence/taskMessages"
-import { getNonce } from "./getNonce"
-import { getUri } from "./getUri"
+import { resolveWebviewHtml } from "./webviewHtml"
 import { validateAndFixToolResultIds } from "../task/validateToolResultIds"
 import { normalizeMaxLiveTasks, TaskSessionRegistry } from "./TaskSessionRegistry"
+import { crossTaskWorktreeService } from "./CrossTaskWorktreeService"
+import type {
+	CrossTaskLifecycle,
+	CrossTaskOrchestrationProvider,
+	CrossTaskRecord,
+	CrossTaskWaitResult,
+	CrossTaskWorkspaceMode,
+} from "./CrossTaskOrchestration"
 import {
 	AgentLifecycleProjector,
 	type AgentLifecycleProjectionResult,
@@ -369,7 +384,7 @@ function canonicalLifecycleEventCandidate(value: unknown): unknown {
 
 export class AlphaProvider
 	extends EventEmitter<TaskProviderEvents>
-	implements vscode.WebviewViewProvider, TelemetryPropertiesProvider, TaskProviderLike
+	implements vscode.WebviewViewProvider, TelemetryPropertiesProvider, TaskProviderLike, CrossTaskOrchestrationProvider
 {
 	// Used in package.json as the view's id. This value cannot be changed due
 	// to how VSCode caches views based on their id, and updating the id would
@@ -382,6 +397,7 @@ export class AlphaProvider
 	private view?: vscode.WebviewView | vscode.WebviewPanel
 	private readonly htmlDocumentAutoOpen = new HtmlDocumentAutoOpen(autoOpenHtmlDocument)
 	private taskStack: Task[] = []
+	private taskCreationQueue: Promise<void> = Promise.resolve()
 	private taskSessions: TaskSessionRegistry
 	/** Canonical lifecycle state is projected independently from ClineMessages. */
 	private readonly agentLifecycleProjector: AgentLifecycleProjector
@@ -389,6 +405,8 @@ export class AlphaProvider
 	private readonly agentLifecycleJournals = new Map<string, Promise<AgentLifecycleJournal>>()
 	/** Serialize task-level status writes without deriving them from turn snapshots. */
 	private readonly taskLifecycleHistoryWrites = new Map<string, Promise<void>>()
+	/** A waiting parent receives the child's result through wait_task, so no second message is needed. */
+	private readonly independentTaskWaiters = new Map<string, number>()
 	/** Tasks whose legacy transcript remains authoritative after a canonical failure. */
 	private readonly agentLifecycleDegradedSignals = new Map<string, AgentLifecycleDegradedSignal>()
 	private currentView: CurrentTaskView = { type: "newTaskDraft" }
@@ -571,6 +589,36 @@ export class AlphaProvider
 			return state
 		})
 	}
+	/** Apply a task-scoped approval choice to future step admissions for exactly the addressed task. */
+	public updateTaskApprovalMode(update: TaskApprovalModeUpdate): TaskApprovalModeUpdateResult {
+		const { requestId, taskId, approvalMode } = update
+		const task = this.getLiveTask(taskId)
+		if (!task || !this.canAcceptTaskInput(taskId)) {
+			return { requestId, taskId, status: "targetUnavailable" }
+		}
+
+		// Task owns the override; the optional shape keeps this bridge compile-safe while older live tasks are present.
+		const taskController = task as unknown as Pick<TaskLike, "setTaskApprovalMode">
+		if (typeof taskController.setTaskApprovalMode !== "function") {
+			return { requestId, taskId, status: "rejected", error: "notMutable" }
+		}
+
+		try {
+			if (!taskController.setTaskApprovalMode(approvalMode)) {
+				return { requestId, taskId, status: "rejected", error: "notMutable" }
+			}
+		} catch (error) {
+			this.log(
+				`[updateTaskApprovalMode] Task ${taskId} rejected an approval-mode update: ${
+					error instanceof Error ? error.name : "unknown error"
+				}`,
+			)
+			return { requestId, taskId, status: "rejected", error: "notMutable" }
+		}
+
+		return { requestId, taskId, status: "applied", approvalMode }
+	}
+
 	private messageQueueSeq = 0
 	private currentTaskTodosSeq = 0
 
@@ -678,7 +726,15 @@ export class AlphaProvider
 					this.pendingManagedTaskCompletions.set(taskId, { tokenUsage, toolUsage })
 					return
 				}
-				void this.completeTaskLifecycle(taskId, tokenUsage, toolUsage, { rootAlreadyPrepared: true }).catch(
+				const parentWasWaiting = this.independentTaskWaiters.has(taskId)
+				void this.completeTaskLifecycle(taskId, tokenUsage, toolUsage, { rootAlreadyPrepared: true }).then(
+					() => {
+						if (instance.orchestrationParentTaskId && !parentWasWaiting) {
+							void this.notifyIndependentTaskCompletion(instance).catch((error) => {
+								this.log(`Failed to deliver task ${taskId} result to its parent: ${String(error)}`)
+							})
+						}
+					},
 					(error) => {
 						this.log(`Failed to publish task ${taskId} completion: ${String(error)}`)
 					},
@@ -1222,10 +1278,12 @@ export class AlphaProvider
 			localResourceRoots: resourceRoots,
 		}
 
-		webviewView.webview.html =
-			this.contextProxy.extensionMode === vscode.ExtensionMode.Development
-				? await this.getHMRHtmlContent(webviewView.webview)
-				: await this.getHtmlContent(webviewView.webview)
+		webviewView.webview.html = await resolveWebviewHtml({
+			webview: webviewView.webview,
+			extensionUri: this.contextProxy.extensionUri,
+			extensionMode: this.contextProxy.extensionMode,
+			onHmrUnavailable: () => vscode.window.showErrorMessage(t("common:errors.hmr_not_running")),
+		})
 
 		// Sets up an event listener to listen for messages passed from the webview view context
 		// and executes code based on the message that is received.
@@ -1414,6 +1472,7 @@ export class AlphaProvider
 		// loads custom modes from disk, which can block subagent navigation for no
 		// benefit because the task's mode and provider profile were restored above.
 		const stateValues = this.contextProxy.getValues()
+		const taskApprovalMode = historyItem.approvalMode ?? migrateApprovalMode(stateValues)
 		const currentApiConfiguration = this.getProviderSettingsSnapshot()
 		const enableCheckpoints = stateValues.enableCheckpoints ?? true
 		const checkpointTimeout = stateValues.checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS
@@ -1464,9 +1523,19 @@ export class AlphaProvider
 		// Settle it before a replacement can start another delivery turn.
 		await this.agentControlStore.retryPendingMailboxClaimSettlements(historyItem.id)
 
+		let restoredWorkspacePath = options?.subagentRuntime?.workspacePath ?? historyItem.workspace
+		if (historyItem.orchestrationWorkspaceMode === "worktree") {
+			restoredWorkspacePath = await crossTaskWorktreeService.resolve(
+				this.contextProxy.globalStorageUri.fsPath,
+				historyItem.id,
+				historyItem.orchestrationWorkspaceRelativePath ?? "",
+			)
+		}
+
 		const task = new Task({
 			provider: this,
 			apiConfiguration,
+			taskApprovalMode,
 			taskApiConfigName: historyItem.apiConfigName,
 			enableCheckpoints,
 			checkpointTimeout,
@@ -1476,7 +1545,7 @@ export class AlphaProvider
 			rootTask: historyItem.rootTask,
 			parentTask: historyItem.parentTask,
 			taskNumber: historyItem.number,
-			workspacePath: options?.subagentRuntime?.workspacePath ?? historyItem.workspace,
+			workspacePath: restoredWorkspacePath,
 			historyWorkspacePath: options?.subagentRuntime?.historyWorkspacePath,
 			subagentPrivateWorkspaceRoot: options?.subagentRuntime?.subagentPrivateWorkspaceRoot,
 			subagentAuthority: options?.subagentRuntime?.subagentAuthority,
@@ -1536,175 +1605,6 @@ export class AlphaProvider
 		} catch {
 			// View disposed, drop message silently
 		}
-	}
-
-	private async getHMRHtmlContent(webview: vscode.Webview): Promise<string> {
-		let localPort = "5173"
-
-		try {
-			const fs = require("fs")
-			const path = require("path")
-			const portFilePath = path.resolve(__dirname, "../../.vite-port")
-
-			if (fs.existsSync(portFilePath)) {
-				localPort = fs.readFileSync(portFilePath, "utf8").trim()
-				console.log(`[AlphaProvider:Vite] Using Vite server port from ${portFilePath}: ${localPort}`)
-			} else {
-				console.log(
-					`[AlphaProvider:Vite] Port file not found at ${portFilePath}, using default port: ${localPort}`,
-				)
-			}
-		} catch (err) {
-			console.error("[AlphaProvider:Vite] Failed to read Vite port file:", err)
-		}
-
-		const localServerUrl = `localhost:${localPort}`
-
-		// Check if local dev server is running.
-		try {
-			await axios.get(`http://${localServerUrl}`)
-		} catch (error) {
-			vscode.window.showErrorMessage(t("common:errors.hmr_not_running"))
-			return this.getHtmlContent(webview)
-		}
-
-		const nonce = getNonce()
-
-		const stylesUri = getUri(webview, this.contextProxy.extensionUri, [
-			"webview-ui",
-			"build",
-			"assets",
-			"index.css",
-		])
-
-		const codiconsUri = getUri(webview, this.contextProxy.extensionUri, ["assets", "codicons", "codicon.css"])
-		const materialIconsUri = getUri(webview, this.contextProxy.extensionUri, [
-			"assets",
-			"vscode-material-icons",
-			"icons",
-		])
-		const imagesUri = getUri(webview, this.contextProxy.extensionUri, ["assets", "images"])
-		const audioUri = getUri(webview, this.contextProxy.extensionUri, ["webview-ui", "audio"])
-
-		const file = "src/index.tsx"
-		const scriptUri = `http://${localServerUrl}/${file}`
-
-		const reactRefresh = /*html*/ `
-			<script nonce="${nonce}" type="module">
-				import RefreshRuntime from "http://localhost:${localPort}/@react-refresh"
-				RefreshRuntime.injectIntoGlobalHook(window)
-				window.$RefreshReg$ = () => {}
-				window.$RefreshSig$ = () => (type) => type
-				window.__vite_plugin_react_preamble_installed__ = true
-			</script>
-		`
-
-		const csp = [
-			"default-src 'none'",
-			`font-src ${webview.cspSource} data:`,
-			`style-src ${webview.cspSource} 'unsafe-inline' https://* http://${localServerUrl} http://0.0.0.0:${localPort}`,
-			`img-src ${webview.cspSource} https://storage.googleapis.com https://img.clerk.com data:`,
-			`media-src ${webview.cspSource}`,
-			`script-src 'unsafe-eval' ${webview.cspSource} https://* https://*.posthog.com http://${localServerUrl} http://0.0.0.0:${localPort} 'nonce-${nonce}'`,
-			`connect-src ${webview.cspSource} https://* https://*.posthog.com ws://${localServerUrl} ws://0.0.0.0:${localPort} http://${localServerUrl} http://0.0.0.0:${localPort}`,
-		]
-
-		return /*html*/ `
-			<!DOCTYPE html>
-			<html lang="en">
-				<head>
-					<meta charset="utf-8">
-					<meta name="viewport" content="width=device-width,initial-scale=1,shrink-to-fit=no">
-					<meta http-equiv="Content-Security-Policy" content="${csp.join("; ")}">
-					<link rel="stylesheet" type="text/css" href="${stylesUri}">
-					<link href="${codiconsUri}" rel="stylesheet" />
-					<script nonce="${nonce}">
-						window.IMAGES_BASE_URI = "${imagesUri}"
-						window.AUDIO_BASE_URI = "${audioUri}"
-						window.MATERIAL_ICONS_BASE_URI = "${materialIconsUri}"
-					</script>
-					<title>Alpha</title>
-				</head>
-				<body>
-					<div id="root"></div>
-					${reactRefresh}
-					<script type="module" src="${scriptUri}"></script>
-				</body>
-			</html>
-		`
-	}
-
-	/**
-	 * Defines and returns the HTML that should be rendered within the webview panel.
-	 *
-	 * @remarks This is also the place where references to the React webview build files
-	 * are created and inserted into the webview HTML.
-	 *
-	 * @param webview A reference to the extension webview
-	 * @param extensionUri The URI of the directory containing the extension
-	 * @returns A template string literal containing the HTML that should be
-	 * rendered within the webview panel
-	 */
-	private async getHtmlContent(webview: vscode.Webview): Promise<string> {
-		// Get the local path to main script run in the webview,
-		// then convert it to a uri we can use in the webview.
-
-		// The CSS file from the React build output
-		const stylesUri = getUri(webview, this.contextProxy.extensionUri, [
-			"webview-ui",
-			"build",
-			"assets",
-			"index.css",
-		])
-
-		const scriptUri = getUri(webview, this.contextProxy.extensionUri, ["webview-ui", "build", "assets", "index.js"])
-		const codiconsUri = getUri(webview, this.contextProxy.extensionUri, ["assets", "codicons", "codicon.css"])
-		const materialIconsUri = getUri(webview, this.contextProxy.extensionUri, [
-			"assets",
-			"vscode-material-icons",
-			"icons",
-		])
-		const imagesUri = getUri(webview, this.contextProxy.extensionUri, ["assets", "images"])
-		const audioUri = getUri(webview, this.contextProxy.extensionUri, ["webview-ui", "audio"])
-
-		// Use a nonce to only allow a specific script to be run.
-		/*
-		content security policy of your webview to only allow scripts that have a specific nonce
-		create a content security policy meta tag so that only loading scripts with a nonce is allowed
-		As your extension grows you will likely want to add custom styles, fonts, and/or images to your webview. If you do, you will need to update the content security policy meta tag to explicitly allow for these resources. E.g.
-				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource}; font-src ${webview.cspSource}; img-src ${webview.cspSource} https:; script-src 'nonce-${nonce}';">
-		- 'unsafe-inline' is required for styles due to vscode-webview-toolkit's dynamic style injection
-		- since we pass base64 images to the webview, we need to specify img-src ${webview.cspSource} data:;
-
-		in meta tag we add nonce attribute: A cryptographic nonce (only used once) to allow scripts. The server must generate a unique nonce value each time it transmits a policy. It is critical to provide a nonce that cannot be guessed as bypassing a resource's policy is otherwise trivial.
-		*/
-		const nonce = getNonce()
-
-		// Tip: Install the es6-string-html VS Code extension to enable code highlighting below
-		return /*html*/ `
-        <!DOCTYPE html>
-        <html lang="en">
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width,initial-scale=1,shrink-to-fit=no">
-            <meta name="theme-color" content="#000000">
-            <meta http-equiv="Content-Security-Policy" content="default-src 'none'; font-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; img-src ${webview.cspSource} https://storage.googleapis.com data:; media-src ${webview.cspSource}; script-src ${webview.cspSource} 'wasm-unsafe-eval' 'nonce-${nonce}' 'strict-dynamic'; connect-src ${webview.cspSource};">
-            <link rel="stylesheet" type="text/css" href="${stylesUri}">
-			<link href="${codiconsUri}" rel="stylesheet" />
-			<script nonce="${nonce}">
-				window.IMAGES_BASE_URI = "${imagesUri}"
-				window.AUDIO_BASE_URI = "${audioUri}"
-				window.MATERIAL_ICONS_BASE_URI = "${materialIconsUri}"
-			</script>
-            <title>Alpha</title>
-          </head>
-          <body>
-            <noscript>You need to enable JavaScript to run this app.</noscript>
-            <div id="root"></div>
-            <script nonce="${nonce}" type="module" src="${scriptUri}"></script>
-          </body>
-        </html>
-      `
 	}
 
 	/**
@@ -2920,7 +2820,10 @@ export class AlphaProvider
 	}
 
 	/** Async publishing variants await ordered delivery for runtime callers. */
-	async publishAgentLifecycleEvent(value: unknown): Promise<AgentLifecycleProjectionResult> {
+	async publishAgentLifecycleEvent(
+		value: unknown,
+		options: { durable?: boolean } = {},
+	): Promise<AgentLifecycleProjectionResult> {
 		const candidate = canonicalLifecycleEventCandidate(value)
 		let parsed = agentLifecycleEventSchema.safeParse(candidate)
 		let eventInput: AgentLifecycleEventInput
@@ -2956,7 +2859,7 @@ export class AlphaProvider
 		let projection: AgentLifecycleProjectionResult
 		try {
 			const journal = await this.getAgentLifecycleJournal(eventInput.taskId)
-			const receipt = await journal.append(eventInput)
+			const receipt = await journal.append(eventInput, { durable: options.durable === true })
 			projection = receipt.replayed
 				? this.agentLifecycleProjector.ingestSnapshot(receipt.snapshot)
 				: this.agentLifecycleProjector.ingestEvent(receipt.event)
@@ -3706,11 +3609,14 @@ export class AlphaProvider
 			subagentRootTokenBudget,
 			subagentRootCostBudget,
 			subagentDefaultApiConfigId,
+			subagentAgentTypes,
 			subagentApiConfigByRole,
 			allowedMaxRequests,
 			allowedMaxCost,
 			autoCondenseContext,
 			autoCondenseContextPercent,
+			autoCondenseContextScope,
+			postTurnCondenseContextPercent,
 			soundEnabled,
 			ttsEnabled,
 			ttsSpeed,
@@ -3835,6 +3741,9 @@ export class AlphaProvider
 			customInstructions,
 			profileThresholds: profileThresholds ?? {},
 			approvalMode,
+			currentTaskApprovalMode: currentTask
+				? ((currentTask as unknown as Pick<TaskLike, "getTaskApprovalMode">).getTaskApprovalMode?.() ?? null)
+				: null,
 			approvalModeBypassAcknowledged: approvalModeBypassAcknowledged ?? false,
 			alwaysAllowReadOnly: alwaysAllowReadOnly ?? false,
 			alwaysAllowReadOnlyOutsideWorkspace: alwaysAllowReadOnlyOutsideWorkspace ?? false,
@@ -3856,11 +3765,14 @@ export class AlphaProvider
 			subagentRootTokenBudget: orchestrationSettings.rootTokenBudget,
 			subagentRootCostBudget: orchestrationSettings.rootCostBudget,
 			subagentDefaultApiConfigId,
+			subagentAgentTypes,
 			subagentApiConfigByRole,
 			allowedMaxRequests,
 			allowedMaxCost,
 			autoCondenseContext: autoCondenseContext ?? true,
 			autoCondenseContextPercent: autoCondenseContextPercent ?? 100,
+			autoCondenseContextScope: autoCondenseContextScope ?? "full-context",
+			postTurnCondenseContextPercent: postTurnCondenseContextPercent ?? 0,
 			uriScheme: vscode.env.uriScheme,
 			currentTaskId: currentTask?.taskId,
 			currentView: this.currentView,
@@ -3927,7 +3839,7 @@ export class AlphaProvider
 			maxTotalImageSize: maxTotalImageSize ?? 20,
 			settingsImportedAt: this.settingsImportedAt,
 			historyPreviewCollapsed: historyPreviewCollapsed ?? false,
-			reasoningBlockCollapsed: reasoningBlockCollapsed ?? true,
+			reasoningBlockCollapsed: reasoningBlockCollapsed ?? false,
 			enterBehavior: enterBehavior ?? "send",
 			customCondensingPrompt,
 			codebaseIndexModels: codebaseIndexModels ?? EMBEDDING_MODEL_PROFILES,
@@ -4037,6 +3949,7 @@ export class AlphaProvider
 			subagentRootTokenBudget: orchestrationSettings.rootTokenBudget,
 			subagentRootCostBudget: orchestrationSettings.rootCostBudget,
 			subagentDefaultApiConfigId: stateValues.subagentDefaultApiConfigId,
+			subagentAgentTypes: stateValues.subagentAgentTypes,
 			subagentApiConfigByRole: stateValues.subagentApiConfigByRole,
 			alwaysAllowFollowupQuestions: approval.alwaysAllowFollowupQuestions,
 			followupAutoApproveTimeoutMs: stateValues.followupAutoApproveTimeoutMs ?? 60000,
@@ -4045,6 +3958,8 @@ export class AlphaProvider
 			allowedMaxCost: stateValues.allowedMaxCost,
 			autoCondenseContext: stateValues.autoCondenseContext ?? true,
 			autoCondenseContextPercent: stateValues.autoCondenseContextPercent ?? 100,
+			autoCondenseContextScope: stateValues.autoCondenseContextScope ?? "full-context",
+			postTurnCondenseContextPercent: stateValues.postTurnCondenseContextPercent ?? 0,
 			taskHistory: this.taskHistoryStore.getAll(),
 			scheduledTasks: this.scheduledTaskService?.getState().tasks ?? [],
 			scheduledTaskRuns: this.scheduledTaskService?.getState().runs ?? [],
@@ -4090,7 +4005,7 @@ export class AlphaProvider
 			maxImageFileSize: stateValues.maxImageFileSize ?? 5,
 			maxTotalImageSize: stateValues.maxTotalImageSize ?? 20,
 			historyPreviewCollapsed: stateValues.historyPreviewCollapsed ?? false,
-			reasoningBlockCollapsed: stateValues.reasoningBlockCollapsed ?? true,
+			reasoningBlockCollapsed: stateValues.reasoningBlockCollapsed ?? false,
 			enterBehavior: stateValues.enterBehavior ?? "send",
 			customCondensingPrompt: stateValues.customCondensingPrompt,
 			codebaseIndexModels: stateValues.codebaseIndexModels ?? EMBEDDING_MODEL_PROFILES,
@@ -4665,6 +4580,396 @@ export class AlphaProvider
 		return this.taskSessions.getTask(taskId)
 	}
 
+	public async createIndependentTask(
+		parent: Task,
+		objective: string,
+		workspaceMode: CrossTaskWorkspaceMode,
+		signal?: AbortSignal,
+	): Promise<CrossTaskRecord> {
+		this.assertCrossTaskRoot(parent)
+		const throwIfCancelled = () => {
+			if (!signal?.aborted) return
+			if (signal.reason instanceof Error) throw signal.reason
+			const error = new Error(typeof signal.reason === "string" ? signal.reason : "Task creation cancelled")
+			error.name = "AbortError"
+			throw error
+		}
+		const normalizedObjective = objective.trim()
+		if (!normalizedObjective || normalizedObjective.length > 12_000) {
+			throw new Error("The task objective must contain 1 to 12000 characters")
+		}
+		if (workspaceMode !== "shared" && workspaceMode !== "worktree") {
+			throw new Error("The workspace mode must be shared or worktree")
+		}
+		throwIfCancelled()
+		await this.taskHistoryStoreReady
+		if (!this.taskSessions.canCreateTask()) {
+			throw new Error(`Maximum live task limit reached (${this.taskSessions.getMaxLiveTasks()})`)
+		}
+
+		const taskMode = await parent.getTaskMode()
+		const taskApiConfigName = await parent.getTaskApiConfigName()
+		const globalStoragePath = this.contextProxy.globalStorageUri.fsPath
+		const taskId = uuidv7()
+		let workspacePath = parent.workspacePath
+		let worktree: Awaited<ReturnType<typeof crossTaskWorktreeService.create>> | undefined
+		if (workspaceMode === "worktree") {
+			worktree = await crossTaskWorktreeService.create(globalStoragePath, taskId, parent.workspacePath)
+			workspacePath = worktree.workspacePath
+		}
+
+		let childCreated = false
+		try {
+			throwIfCancelled()
+			const { fakeAi, ...providerSettings } = parent.apiConfiguration
+			const apiConfiguration = structuredClone(providerSettings) as typeof parent.apiConfiguration
+			// FakeAI is a host-provided runtime adapter, not persisted configuration. Keep
+			// its methods intact while snapshotting the serializable provider settings.
+			if (fakeAi !== undefined) apiConfiguration.fakeAi = fakeAi
+			const child = await this.createTask(normalizedObjective, undefined, undefined, {
+				taskId,
+				preserveExisting: true,
+				background: true,
+				workspacePath,
+				historyWorkspacePath: parent.historyWorkspacePath,
+				taskMode,
+				taskApiConfigName,
+				apiConfiguration,
+				reasoningPreference: structuredClone(parent.reasoningPreference),
+				subagentDelegationPolicy: structuredClone(parent.subagentDelegationPolicy),
+				subagentDelegationExplicitlyEnabled: parent.subagentDelegationExplicitlyEnabled,
+				orchestrationParentTaskId: parent.taskId,
+				orchestrationWorkspaceMode: workspaceMode,
+				...(worktree
+					? {
+							orchestrationWorkspaceRelativePath: worktree.workspaceRelativePath,
+							orchestrationWorkspaceBaselineCommit: worktree.baselineCommit,
+						}
+					: {}),
+			})
+			childCreated = true
+			if (signal?.aborted) {
+				await this.stopIndependentTask(parent, child.taskId, "Task creation was cancelled")
+				throwIfCancelled()
+			}
+			const record = await this.getCrossTaskRecord(this.taskHistoryStore.get(child.taskId), child, false)
+			if (signal?.aborted) {
+				await this.stopIndependentTask(parent, child.taskId, "Task creation was cancelled")
+				throwIfCancelled()
+			}
+			return record
+		} catch (error) {
+			if (!childCreated) await worktree?.cleanup()
+			throw error
+		}
+	}
+
+	public async listIndependentTasks(parent: Task): Promise<CrossTaskRecord[]> {
+		this.assertCrossTaskRoot(parent)
+		await this.taskHistoryStoreReady
+		const liveMetadata = this.taskSessions.getMetadata()
+		const childIds = new Set<string>()
+		for (const item of this.taskHistoryStore.getAll()) {
+			if (item.orchestrationParentTaskId === parent.taskId) childIds.add(item.id)
+		}
+		for (const metadata of Object.values(liveMetadata)) {
+			if (metadata.orchestrationParentTaskId === parent.taskId) childIds.add(metadata.id)
+		}
+		const records = await Promise.all(
+			Array.from(childIds, async (taskId) => {
+				const history = this.taskHistoryStore.get(taskId)
+				const task = this.getLiveTask(taskId)
+				if ((history?.taskKind ?? task?.taskKind ?? "primary") !== "primary") return undefined
+				return this.getCrossTaskRecord(history, task, true)
+			}),
+		)
+		return records
+			.filter((record): record is CrossTaskRecord => record !== undefined)
+			.sort((left, right) => right.updated_at - left.updated_at)
+			.slice(0, 20)
+	}
+
+	public async waitForIndependentTask(
+		parent: Task,
+		taskId: string,
+		timeoutMs: number,
+		signal?: AbortSignal,
+	): Promise<CrossTaskWaitResult> {
+		this.assertCrossTaskRoot(parent)
+		const { history, task } = await this.getDirectCrossTask(parent, taskId)
+		const record = await this.getCrossTaskRecord(history, task, true)
+		if (this.isCrossTaskWaitBoundary(record.lifecycle) || !task) {
+			return { task_id: taskId, lifecycle: record.lifecycle, ...(record.result ? { result: record.result } : {}) }
+		}
+		if (signal?.aborted) return { task_id: taskId, lifecycle: record.lifecycle, cancelled: true }
+
+		return new Promise<CrossTaskWaitResult>((resolve) => {
+			let settled = false
+			let timer: ReturnType<typeof setTimeout> | undefined
+			this.independentTaskWaiters.set(taskId, (this.independentTaskWaiters.get(taskId) ?? 0) + 1)
+			const cleanup = () => {
+				const waiting = this.independentTaskWaiters.get(taskId) ?? 0
+				if (waiting <= 1) this.independentTaskWaiters.delete(taskId)
+				else this.independentTaskWaiters.set(taskId, waiting - 1)
+				if (timer) clearTimeout(timer)
+				signal?.removeEventListener("abort", onAbort)
+				task.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+				task.off(AlphaCodeEventName.TaskAborted, onAborted)
+				task.off(AlphaCodeEventName.TaskInteractive, onWaiting)
+				task.off(AlphaCodeEventName.TaskResumable, onWaiting)
+			}
+			const finish = (kind: "changed" | "timeout" | "cancelled", lifecycle?: CrossTaskLifecycle) => {
+				if (settled) return
+				settled = true
+				cleanup()
+				void this.getCrossTaskRecord(this.taskHistoryStore.get(taskId) ?? history, task, true).then(
+					(latest) => {
+						const resolvedLifecycle = lifecycle ?? latest.lifecycle
+						resolve({
+							task_id: taskId,
+							lifecycle: resolvedLifecycle,
+							...(kind === "timeout" ? { timed_out: true } : {}),
+							...(kind === "cancelled" ? { cancelled: true } : {}),
+							...(latest.result ? { result: latest.result } : {}),
+						})
+					},
+					() =>
+						resolve({
+							task_id: taskId,
+							lifecycle: lifecycle ?? "unknown",
+							...(kind === "timeout" ? { timed_out: true } : {}),
+							...(kind === "cancelled" ? { cancelled: true } : {}),
+						}),
+				)
+			}
+			const onCompleted = () => finish("changed", "completed")
+			const onAborted = () => finish("changed", task.abortReason === "streaming_failed" ? "failed" : "closed")
+			const onWaiting = () => finish("changed", "waiting")
+			const onAbort = () => finish("cancelled")
+
+			task.once(AlphaCodeEventName.TaskCompleted, onCompleted)
+			task.once(AlphaCodeEventName.TaskAborted, onAborted)
+			task.once(AlphaCodeEventName.TaskInteractive, onWaiting)
+			task.once(AlphaCodeEventName.TaskResumable, onWaiting)
+			signal?.addEventListener("abort", onAbort, { once: true })
+			timer = setTimeout(() => finish("timeout"), timeoutMs)
+			if (signal?.aborted) onAbort()
+			else if (task.isCompleted()) onCompleted()
+			else if (task.abort) onAborted()
+		})
+	}
+
+	private async notifyIndependentTaskCompletion(child: Task): Promise<void> {
+		const parentTaskId = child.orchestrationParentTaskId
+		if (!parentTaskId || !this.getLiveTask(parentTaskId)) return
+		const record = await this.getCrossTaskRecord(this.taskHistoryStore.get(child.taskId), child, true)
+		if (record.lifecycle !== "completed") return
+		const message = record.result ? `Completed.\n${record.result}` : "Completed."
+		await this.sendIndependentTaskMessage(child, "parent", message)
+	}
+
+	public async sendIndependentTaskMessage(
+		sender: Task,
+		targetTaskId: string,
+		message: string,
+	): Promise<{ task_id: string; status: string }> {
+		const resolvedTargetTaskId =
+			targetTaskId === "parent" && sender.taskKind === "primary" && sender.orchestrationParentTaskId
+				? sender.orchestrationParentTaskId
+				: targetTaskId
+		const targetIsParent =
+			sender.taskKind === "primary" && sender.orchestrationParentTaskId === resolvedTargetTaskId
+		let target: Task | undefined
+		if (targetIsParent) {
+			target = this.getLiveTask(resolvedTargetTaskId)
+			if (!target || target.taskKind !== "primary")
+				throw new Error("The parent task is not live to receive messages")
+		} else {
+			this.assertCrossTaskRoot(sender)
+			const directChild = await this.getDirectCrossTask(sender, resolvedTargetTaskId)
+			target = directChild.task
+			if (!target) throw new Error("The child task is not live to receive messages")
+		}
+
+		const attribution = targetIsParent
+			? `Message from task ${sender.taskId}:`
+			: `Message from parent task ${sender.taskId}:`
+		const attributedMessage = `${attribution}\n${message.trim()}`
+		if (target.isCompleted()) {
+			await target.resumeCompletedTaskFollowup(attributedMessage)
+			return { task_id: resolvedTargetTaskId, status: "resumed" }
+		}
+		if (target.abort) throw new Error("The target task is stopped and cannot accept a message")
+		if (target.taskAsk) {
+			await target.submitUserMessage(attributedMessage)
+			return { task_id: resolvedTargetTaskId, status: "delivered" }
+		}
+		if (target.isTurnActive()) {
+			if (!target.messageQueueService.addMessage(attributedMessage)) {
+				throw new Error("The target task message queue is full")
+			}
+			return { task_id: resolvedTargetTaskId, status: "queued" }
+		}
+		await target.steerUserMessage(attributedMessage)
+		return { task_id: resolvedTargetTaskId, status: "resumed" }
+	}
+
+	public async steerIndependentTask(
+		parent: Task,
+		taskId: string,
+		message: string,
+	): Promise<{ task_id: string; status: string }> {
+		this.assertCrossTaskRoot(parent)
+		const { task } = await this.getDirectCrossTask(parent, taskId)
+		if (!task) throw new Error("The child task is not live to receive steering")
+		if (task.isCompleted() || task.abort)
+			throw new Error("The child task is stopped; use send_task_message to resume it")
+		if (!task.isTurnActive() && !task.taskAsk)
+			throw new Error("The child task is not active; use send_task_message")
+		await task.steerUserMessage(`Message from parent task ${parent.taskId}:\n${message.trim()}`)
+		return { task_id: taskId, status: "steered" }
+	}
+
+	public async stopIndependentTask(
+		parent: Task,
+		taskId: string,
+		reason?: string,
+	): Promise<{ task_id: string; status: string }> {
+		this.assertCrossTaskRoot(parent)
+		const { history, task } = await this.getDirectCrossTask(parent, taskId)
+		if (!task) {
+			const lifecycle = this.getCrossTaskLifecycle(history, undefined)
+			if (this.isCrossTaskTerminal(lifecycle)) return { task_id: taskId, status: "already_terminal" }
+			throw new Error("The child task is not live to stop")
+		}
+		if (this.isCrossTaskTerminal(this.getCrossTaskLifecycle(history, task))) {
+			return { task_id: taskId, status: "already_terminal" }
+		}
+		if (task.abort) return { task_id: taskId, status: "stopping" }
+		if (reason) this.log(`[cross-task] Stopping ${taskId}: ${reason.slice(0, 500)}`)
+		// cancelTask rehydrates cancelled tasks so a user can resume them. An explicit
+		// orchestration stop must leave the child closed instead of restarting it.
+		await this.removeTaskFromStack({ taskId, requireAbortSuccess: true })
+		await this.taskLifecycleHistoryWrites.get(taskId)
+		const stoppedHistory = this.taskHistoryStore.get(taskId)
+		if (stoppedHistory?.status === "completed" || stoppedHistory?.status === "failed") {
+			return { task_id: taskId, status: "already_terminal" }
+		}
+		if (stoppedHistory && stoppedHistory.status !== "interrupted") {
+			await this.updateTaskHistory({ ...stoppedHistory, status: "interrupted" })
+		}
+		return { task_id: taskId, status: "stopped" }
+	}
+
+	private assertCrossTaskRoot(task: Task): void {
+		if (
+			task.taskKind !== "primary" ||
+			task.orchestrationParentTaskId ||
+			task.parentTaskId ||
+			(task.rootTaskId && task.rootTaskId !== task.taskId)
+		) {
+			throw new Error("Only a top-level primary task can control independent child tasks")
+		}
+	}
+
+	private async getDirectCrossTask(parent: Task, taskId: string): Promise<{ history?: HistoryItem; task?: Task }> {
+		await this.taskHistoryStoreReady
+		const history = this.taskHistoryStore.get(taskId)
+		const task = this.getLiveTask(taskId)
+		if (
+			(history?.orchestrationParentTaskId ?? task?.orchestrationParentTaskId) !== parent.taskId ||
+			(history?.taskKind ?? task?.taskKind ?? "primary") !== "primary"
+		) {
+			throw new Error("The task is not a direct child of this parent")
+		}
+		return { history, task }
+	}
+
+	private getCrossTaskLifecycle(history?: HistoryItem, task?: Task): CrossTaskLifecycle {
+		if (task?.isCompleted()) return "completed"
+		if (task?.abort) return task.abortReason === "streaming_failed" ? "failed" : "closed"
+		const liveLifecycle = task ? this.taskSessions.getMetadata()[task.taskId]?.lifecycle : undefined
+		switch (liveLifecycle) {
+			case TaskLifecycleState.Initializing:
+				return "initializing"
+			case TaskLifecycleState.Running:
+				return "running"
+			case TaskLifecycleState.Waiting:
+				return "waiting"
+			case TaskLifecycleState.Completed:
+				return "completed"
+			case TaskLifecycleState.Failed:
+				return "failed"
+			case TaskLifecycleState.Closed:
+			case TaskLifecycleState.Closing:
+				return "closed"
+		}
+		switch (history?.status) {
+			case "completed":
+				return "completed"
+			case "failed":
+				return "failed"
+			case "interrupted":
+			case "cancelled":
+			case "timed_out":
+				return "closed"
+			case "blocked":
+				return "waiting"
+			case "active":
+				return task ? "running" : "unknown"
+			default:
+				return "unknown"
+		}
+	}
+
+	private isCrossTaskTerminal(lifecycle: CrossTaskLifecycle): boolean {
+		return lifecycle === "completed" || lifecycle === "failed" || lifecycle === "closed"
+	}
+
+	private isCrossTaskWaitBoundary(lifecycle: CrossTaskLifecycle): boolean {
+		return lifecycle === "waiting" || this.isCrossTaskTerminal(lifecycle)
+	}
+
+	private async getCrossTaskRecord(
+		history: HistoryItem | undefined,
+		task: Task | undefined,
+		includeResult: boolean,
+	): Promise<CrossTaskRecord> {
+		const currentHistory = history ?? this.taskHistoryStore.get(task?.taskId ?? "")
+		const taskId = currentHistory?.id ?? task?.taskId ?? ""
+		const lifecycle = this.getCrossTaskLifecycle(currentHistory, task)
+		const record: CrossTaskRecord = {
+			task_id: taskId,
+			objective: (currentHistory?.task ?? task?.metadata.task ?? "").slice(0, 1200),
+			lifecycle,
+			workspace_mode: currentHistory?.orchestrationWorkspaceMode ?? task?.orchestrationWorkspaceMode ?? "shared",
+			updated_at: Math.max(currentHistory?.ts ?? 0, this.taskSessions.getMetadata()[taskId]?.lastUpdatedAt ?? 0),
+		}
+		if (!includeResult || !this.isCrossTaskTerminal(lifecycle)) return record
+		let messages = task?.clineMessages
+		if (!messages) {
+			messages = await readTaskMessages({
+				taskId,
+				globalStoragePath: this.contextProxy.globalStorageUri.fsPath,
+			}).catch(() => [])
+		}
+		for (let index = messages.length - 1; index >= 0; index--) {
+			const message = messages[index]
+			if (
+				message.type === "say" &&
+				!message.partial &&
+				(message.say === "completion_result" || message.say === "text")
+			) {
+				const result = message.text?.trim()
+				if (result) {
+					record.result = result.length > 4_000 ? `${result.slice(0, 4_000)}…` : result
+					break
+				}
+			}
+		}
+		return record
+	}
+
 	public canAcceptTaskInput(taskId: string | undefined): boolean {
 		return this.taskSessions.canAcceptInput(taskId)
 	}
@@ -4832,6 +5137,36 @@ export class AlphaProvider
 		options: ManagedCreateTaskOptions = {},
 		configuration: AlphaCodeSettings = {},
 	): Promise<Task> {
+		const performanceSubmissionStartedAt =
+			process.env.ALPHA_TASK_OBSERVABILITY === "1" ? performance.now() : undefined
+		const previousCreation = this.taskCreationQueue
+		let releaseCreation!: () => void
+		this.taskCreationQueue = new Promise<void>((resolve) => {
+			releaseCreation = resolve
+		})
+		await previousCreation
+		try {
+			return await this.createTaskUnderCreationLock(
+				text,
+				images,
+				parentTask,
+				options,
+				configuration,
+				performanceSubmissionStartedAt,
+			)
+		} finally {
+			releaseCreation()
+		}
+	}
+
+	private async createTaskUnderCreationLock(
+		text?: string,
+		images?: string[],
+		parentTask?: Task,
+		options: ManagedCreateTaskOptions = {},
+		configuration: AlphaCodeSettings = {},
+		performanceSubmissionStartedAt?: number,
+	): Promise<Task> {
 		if (options.taskMode !== undefined) assertPrimaryMode(options.taskMode)
 		if (configuration.mode !== undefined) assertPrimaryMode(configuration.mode)
 		await this.configurationQueue
@@ -4885,6 +5220,7 @@ export class AlphaProvider
 		}
 
 		const stateValues = this.contextProxy.getValues()
+		const taskApprovalMode = options.taskApprovalMode ?? migrateApprovalMode(stateValues)
 		const currentApiConfiguration = this.getProviderSettingsSnapshot()
 		const currentApiConfigName = stateValues.currentApiConfigName ?? "default"
 		const enableCheckpoints = stateValues.enableCheckpoints ?? true
@@ -4958,6 +5294,7 @@ export class AlphaProvider
 			rootTask: parentTask ? (parentTask.rootTask ?? parentTask) : undefined,
 			parentTask,
 			taskNumber: this.taskStack.length + 1,
+			performanceSubmissionStartedAt,
 			onCreated: this.taskCreationCallback,
 			initialTodos: taskOptions.initialTodos,
 			taskApiConfigName,
@@ -4965,6 +5302,7 @@ export class AlphaProvider
 			// its initial state update, so state.currentTaskId is available ASAP.
 			startTask: false,
 			...taskOptions,
+			taskApprovalMode,
 			reasoningPreference,
 			taskMode: topLevelTaskMode,
 			// Freeze ordinary root tasks at creation so a later settings change or
@@ -4992,6 +5330,9 @@ export class AlphaProvider
 			void this.postStateToWebviewWithoutAlphaMessages().catch((error) => {
 				this.log(`[createTask] Background state refresh failed: ${String(error)}`)
 			})
+		}
+		if (performanceSubmissionStartedAt !== undefined) {
+			task.recordTaskPerformance("task_setup", performanceSubmissionStartedAt)
 		}
 		if (options.startTask !== false) {
 			task.start()
@@ -5440,7 +5781,54 @@ export class AlphaProvider
 		toolCallId?: string,
 	): Promise<PreparedSubagentGroup> {
 		const parentMode = await parent.getTaskMode()
-		const normalizedDrafts = normalizeSubagentTaskDrafts(drafts)
+		const parentAuthority = this.getParentDelegationAuthority(parent)
+		const settings = this.contextProxy.getValues()
+		const spawnRequest: SpawnAgentRequest | undefined = Array.isArray(drafts)
+			? undefined
+			: normalizeSpawnAgentRequest(drafts)
+		const configuredTypes = subagentAgentTypesSchema.parse(settings.subagentAgentTypes ?? {})
+		const typeName = spawnRequest?.source === "codex-v2" ? (spawnRequest.agent_type ?? "default") : undefined
+		const typeDefinition =
+			typeName && Object.hasOwn(configuredTypes, typeName) ? configuredTypes[typeName] : undefined
+		if (typeName && !typeDefinition && !["default", "explorer", "explore", "review", "worker"].includes(typeName)) {
+			throw new Error(`unknown agent_type '${typeName}'`)
+		}
+		const requestedRole = typeDefinition?.role ?? spawnRequest?.agent_type
+		const runtimeRole =
+			requestedRole === "explore" || requestedRole === "explorer"
+				? "explore"
+				: requestedRole === "review"
+					? "review"
+					: requestedRole === "worker" ||
+						  (spawnRequest && parentMode === "code" && parentAuthority.policy.mutate)
+						? "worker"
+						: "explore"
+		if (spawnRequest && requestedRole === "worker" && !parentAuthority.policy.mutate) {
+			throw new Error("A read-only parent cannot spawn an editing worker")
+		}
+		const inheritedWriteScope = parentAuthority.allowedPaths
+		const spawnWriteScope =
+			spawnRequest?.source === "legacy" && spawnRequest.agent_type === "worker"
+				? spawnRequest.write_scope
+				: inheritedWriteScope?.length
+					? inheritedWriteScope
+					: ["."]
+		const normalizedDrafts = normalizeSubagentTaskDrafts(
+			spawnRequest
+				? [
+						{
+							task_name: spawnRequest.task_name,
+							objective: spawnRequest.message,
+							fork_turns: spawnRequest.fork_turns,
+							agent_kind: runtimeRole,
+							...(runtimeRole === "worker" ? { write_scope: spawnWriteScope } : {}),
+							...(spawnRequest.source === "legacy"
+								? { expected_output: spawnRequest.expected_output }
+								: {}),
+						},
+					]
+				: drafts,
+		)
 		if (parentMode !== "code" && parentMode !== planModeSlug) {
 			throw new Error("Managed sub-agents are available only in Code and Plan modes")
 		}
@@ -5450,8 +5838,6 @@ export class AlphaProvider
 			)
 		}
 		assertSubagentTaskAuthorities(normalizedDrafts)
-		const parentAuthority = this.getParentDelegationAuthority(parent)
-		const settings = this.contextProxy.getValues()
 		const liveAutoApprovalPolicy = this.snapshotSubagentAutoApprovalPolicy(settings)
 		const inheritedAutoApprovalPolicy =
 			parent.taskKind === "subagent"
@@ -5486,13 +5872,15 @@ export class AlphaProvider
 			normalizedDrafts.every((draft) => draft.agent_kind !== "worker" || policy.alwaysAllowWrite)
 		const autoEligible = isAutoEligibleFor(liveAutoApprovalPolicy) && isAutoEligibleFor(inheritedAutoApprovalPolicy)
 		const approvalMode = migrateApprovalMode(settings)
-		const pendingExplicitOnly = provisionalDelegationPolicies.some(
-			(decision) => decision.policy === "explicit-only" && decision.authorization === "pending-approval",
-		)
-		const requiresExplicitApproval = approvalMode === "ask" || !autoEligible || pendingExplicitOnly
+		const requiresExplicitApproval = approvalMode === "ask" || !autoEligible
 		const orchestrations: SubagentManifestOrchestration[] = orchestrationBases.map((base, index) => ({
 			...base,
-			delegationPolicy: provisionalDelegationPolicies[index],
+			delegationPolicy:
+				!requiresExplicitApproval && provisionalDelegationPolicies[index].authorization === "pending-approval"
+					? finalizeSubagentDelegationPolicy(provisionalDelegationPolicies[index], {
+							authorization: "session-policy",
+						})
+					: provisionalDelegationPolicies[index],
 		}))
 		const requestedPolicies = normalizedDrafts.map((draft, index) =>
 			this.getRequestedSubagentPolicy(
@@ -5565,7 +5953,13 @@ export class AlphaProvider
 			Promise.all(
 				normalizedDrafts.map((draft) =>
 					draft.agent_kind === "worker"
-						? managedSubagentWorktreeService.validateScope(parent.cwd, draft.write_scope)
+						? spawnRequest?.source === "codex-v2" &&
+							draft.write_scope.length === 1 &&
+							draft.write_scope[0] === "."
+							? managedSubagentWorktreeService.validateScope(parent.cwd, draft.write_scope, {
+									allowWorkspaceRoot: true,
+								})
+							: managedSubagentWorktreeService.validateScope(parent.cwd, draft.write_scope)
 						: Promise.resolve(undefined),
 				),
 			),
@@ -5576,7 +5970,6 @@ export class AlphaProvider
 
 		const createdAt = Date.now()
 		const parentApiConfigName = await runReserved(() => parent.getTaskApiConfigName())
-		const { subagentDefaultApiConfigId, subagentApiConfigByRole } = settings
 		const routes = await runReserved(() =>
 			Promise.all(
 				normalizedDrafts.map((draft) =>
@@ -5584,14 +5977,26 @@ export class AlphaProvider
 						role: draft.agent_kind,
 						parentApiConfiguration: parent.apiConfiguration,
 						parentApiConfigName,
-						defaultProfileId: subagentDefaultApiConfigId,
-						profileByRole: subagentApiConfigByRole,
 						profileLoader: this.providerSettingsManager,
+						...(spawnRequest?.source === "codex-v2"
+							? {
+									requestedModelId: spawnRequest.model,
+									requestedReasoningEffort: spawnRequest.reasoning_effort,
+								}
+							: {}),
 					}),
 				),
 			),
 		)
 		const inheritedInstructions = await runReserved(() => parent.captureEffectiveInheritedInstructions())
+		if (typeName && typeDefinition?.developerInstructions) {
+			inheritedInstructions.effectiveText += `\n\n${typeDefinition.developerInstructions}`
+			inheritedInstructions.sources.push({
+				kind: "agent-type",
+				ref: `settings:subagentAgentTypes:${typeName}`,
+				text: typeDefinition.developerInstructions,
+			})
+		}
 		const skillMetadata = this.skillsManager?.getSkillsForMode(parentMode) ?? []
 		const inheritedSkills = (
 			await runReserved(() =>
@@ -6954,10 +7359,10 @@ export class AlphaProvider
 			message: [
 				verificationDecision.message,
 				activeDescendants.length > 0
-					? `Cannot complete while ${activeDescendants.length} managed descendant${activeDescendants.length === 1 ? " is" : "s are"} still active: ${activePaths}. Wait for or cancel the descendant subtree, review its results, then retry attempt_completion.`
+					? `Cannot complete while ${activeDescendants.length} managed descendant${activeDescendants.length === 1 ? " is" : "s are"} still active: ${activePaths}. Wait for or cancel the descendant subtree, review its results, then give a final answer.`
 					: undefined,
 				unacknowledgedResults.length > 0
-					? `Cannot complete while ${unacknowledgedResults.length} immediate-parent terminal result${unacknowledgedResults.length === 1 ? " remains" : "s remain"} unconsumed. Consume the result with wait_agent, review it, then retry attempt_completion.`
+					? `Cannot complete while ${unacknowledgedResults.length} immediate-parent terminal result${unacknowledgedResults.length === 1 ? " remains" : "s remain"} unconsumed. Consume the result with wait_agent, review it, then give a final answer.`
 					: undefined,
 			]
 				.filter(Boolean)
@@ -7079,7 +7484,7 @@ export class AlphaProvider
 		}
 	}
 
-	private getPersistedWaitAgentClaimIds(parent: Task): Set<string> {
+	private getPersistedWaitAgentClaimIds(parent: Task, claims: ReadonlyMap<string, AgentMailboxEntry[]>): Set<string> {
 		const waitToolCallIds = new Set<string>()
 		for (const message of parent.apiConversationHistory) {
 			if (message.role !== "assistant" || !Array.isArray(message.content)) continue
@@ -7093,6 +7498,21 @@ export class AlphaProvider
 		const claimIds = new Set<string>()
 		for (const message of parent.apiConversationHistory) {
 			if (message.role !== "user" || !Array.isArray(message.content)) continue
+			const notificationIds = new Set<string>()
+			for (const block of message.content) {
+				if (block.type !== "text") continue
+				try {
+					const notification = JSON.parse(block.text) as { source?: unknown; eventId?: unknown }
+					if (
+						notification.source === "managed_agent_notification" &&
+						typeof notification.eventId === "string"
+					) {
+						notificationIds.add(notification.eventId)
+					}
+				} catch {
+					// User text is not a mailbox delivery receipt.
+				}
+			}
 			for (const block of message.content) {
 				if (block.type !== "tool_result" || !waitToolCallIds.has(sanitizeToolUseId(block.tool_use_id))) continue
 				const textParts =
@@ -7102,10 +7522,13 @@ export class AlphaProvider
 				for (const text of textParts) {
 					try {
 						const parsed = JSON.parse(text) as { source?: unknown; claimId?: unknown }
+						const claimedEntries =
+							typeof parsed.claimId === "string" ? claims.get(parsed.claimId) : undefined
 						if (
 							parsed?.source === WAIT_AGENT_RESULT_SOURCE &&
 							typeof parsed.claimId === "string" &&
-							parsed.claimId.length > 0
+							claimedEntries?.length &&
+							claimedEntries.every((entry) => notificationIds.has(entry.eventId))
 						) {
 							claimIds.add(parsed.claimId)
 						}
@@ -7128,9 +7551,11 @@ export class AlphaProvider
 		}
 		if (claims.size === 0) return 0
 
-		const persistedClaimIds = this.getPersistedWaitAgentClaimIds(parent)
+		const persistedClaimIds = this.getPersistedWaitAgentClaimIds(parent, claims)
 		let acknowledged = 0
 		for (const claimId of claims.keys()) {
+			if (parent.hasRetainedWaitAgentResultClaim(claimId) && !parent.hasDurablyPersistedWaitAgentClaim(claimId))
+				continue
 			const disposition = persistedClaimIds.has(claimId) ? "acknowledge" : "release"
 			await this.agentControlStore.settleMailboxClaim(parent.taskId, claimId, disposition, rootTaskId)
 			parent.forgetWaitAgentResultClaim(claimId)
@@ -7194,25 +7619,40 @@ export class AlphaProvider
 				`Agent ${target.path} is not an immediate child of this task; terminal results are collected by ${target.parentPath}`,
 			)
 		}
+		const caller = this.agentControlStore.getAgent(parent.taskId, root.rootTaskId)
 		const takeAvailable = async (): Promise<{ events: AgentMailboxEntry[]; claimId?: string }> => {
 			const claim = await this.agentControlStore.claimMailbox(parent.taskId, {
 				rootTaskId: root.rootTaskId,
 				channel: "wait",
+				limit: 16,
+				...(caller?.parentTaskId ? { excludeSenderTaskIds: [caller.parentTaskId] } : {}),
 				...(untilTerminal ? { kinds: ["result" as const] } : {}),
 				...(target ? { payloadTaskIds: [target.taskId] } : {}),
 			})
 			if (claim.entries.length === 0) return { events: [] }
 			return { events: claim.entries, claimId: claim.claimId }
 		}
-
-		const immediate = await takeAvailable()
-		if (immediate.claimId) {
+		const summarizeAvailable = (available: { events: AgentMailboxEntry[]; claimId?: string }) => {
+			if (!available.claimId) throw new Error("Cannot deliver unclaimed agent mailbox entries")
+			parent.stageWaitAgentNotifications(available.claimId, available.events)
+			const agents = new Map<string, { taskId: string; path?: string }>()
+			for (const entry of available.events) {
+				if (entry.senderTaskId && !agents.has(entry.senderTaskId)) {
+					agents.set(entry.senderTaskId, { taskId: entry.senderTaskId, path: entry.senderPath })
+				}
+			}
 			return {
 				timedOut: false,
 				source: WAIT_AGENT_RESULT_SOURCE,
-				claimId: immediate.claimId,
-				events: immediate.events,
+				claimId: available.claimId,
+				eventCount: available.events.length,
+				updatedAgents: [...agents.values()],
 			}
+		}
+
+		const immediate = await takeAvailable()
+		if (immediate.claimId) {
+			return summarizeAvailable(immediate)
 		}
 		if (reconciledClaimCount > 0 && !untilTerminal) {
 			return { timedOut: false, events: [], alreadyDelivered: true }
@@ -7230,7 +7670,6 @@ export class AlphaProvider
 		const activeAgents = visibleAgents.filter((record) =>
 			(["pending", "running", "cancelling"] as AgentLifecycleStatus[]).includes(record.status),
 		)
-		const caller = this.agentControlStore.getAgent(parent.taskId, root.rootTaskId)
 		const canReceiveParentControl =
 			caller?.parentTaskId !== undefined &&
 			(["pending", "running", "cancelling"] as AgentLifecycleStatus[]).includes(caller.status)
@@ -7284,12 +7723,7 @@ export class AlphaProvider
 			// returning an empty/already-delivered fast path.
 			const finalAvailable = await takeAvailable()
 			if (finalAvailable.claimId) {
-				return {
-					timedOut: false,
-					source: WAIT_AGENT_RESULT_SOURCE,
-					claimId: finalAvailable.claimId,
-					events: finalAvailable.events,
-				}
+				return summarizeAvailable(finalAvailable)
 			}
 			if (target) {
 				return {
@@ -7309,7 +7743,9 @@ export class AlphaProvider
 		const signal = wait.signal
 		try {
 			if (signal.aborted) {
-				return { timedOut: false, cancelled: true, events: [] }
+				return signal.reason instanceof Error && signal.reason.name === "SteerRequestInterruptError"
+					? { timedOut: false, interrupted: true, reason: "steered_input" }
+					: { timedOut: false, cancelled: true, events: [] }
 			}
 
 			return await new Promise<unknown>((resolve, reject) => {
@@ -7354,18 +7790,17 @@ export class AlphaProvider
 							readRequested = false
 							const available = await takeAvailable()
 							if (available.claimId) {
-								settle({
-									timedOut: false,
-									source: WAIT_AGENT_RESULT_SOURCE,
-									claimId: available.claimId,
-									events: available.events,
-								})
+								settle(summarizeAvailable(available))
 								return
 							}
 						} while (readRequested && !settled)
 
 						if (cancellationRequested) {
-							settle({ timedOut: false, cancelled: true, events: [] })
+							settle(
+								signal.reason instanceof Error && signal.reason.name === "SteerRequestInterruptError"
+									? { timedOut: false, interrupted: true, reason: "steered_input" }
+									: { timedOut: false, cancelled: true, events: [] },
+							)
 						} else if (timeoutElapsed) {
 							settle({ timedOut: true, events: [] })
 						}
@@ -7402,7 +7837,7 @@ export class AlphaProvider
 		}
 	}
 
-	public async sendMessageToAgent(parent: Task, target: string, message: string): Promise<unknown> {
+	public async sendMessageToAgent(parent: Task, target: string, message: string) {
 		const instruction = this.normalizeAgentInstruction(message, "Message")
 		const record = await this.requireControlledAgent(parent, target)
 		await this.assertPlanAgentAdvanceAllowed(parent, record, "send a message to")
@@ -7427,8 +7862,14 @@ export class AlphaProvider
 			payload: { message: instruction },
 		})
 		let delivery: "delivered" | "queued"
-		if (child) {
-			await child.steerUserMessage(instruction, undefined, () =>
+		// Appending the mailbox event is asynchronous. A child can be constructed
+		// and drain its pre-launch mailbox while that write is pending, so the
+		// preflight Task reference above may be stale by the time the event commits.
+		// Re-resolve after persistence: if launch already passed its drain, steer the
+		// now-live child directly instead of leaving an unacknowledged event behind.
+		const deliveryChild = this.getLiveTask(record.taskId)
+		if (deliveryChild?.canAcceptSteerMessage()) {
+			await deliveryChild.steerUserMessage(instruction, undefined, () =>
 				this.acknowledgeQueuedAgentMessage(record, {
 					message: instruction,
 					sequence: event.entry.sequence,
@@ -7436,6 +7877,7 @@ export class AlphaProvider
 			)
 			delivery = "delivered"
 		} else {
+			if (!descriptor) throw new Error(`Agent ${record.path} has no retained runtime descriptor`)
 			descriptor!.pendingSteerMessage = { message: instruction, sequence: event.entry.sequence }
 			delivery = "queued"
 		}
@@ -7449,7 +7891,13 @@ export class AlphaProvider
 			agent.lastSteeredAt = steeredAt
 			await parent.upsertSubagentGroup(prepared.group)
 		}
-		return { taskId: record.taskId, path: record.path, status: record.status, delivery, event: event.entry }
+		return {
+			taskId: record.taskId,
+			path: record.path,
+			status: record.status,
+			delivery,
+			sequence: event.entry.sequence,
+		}
 	}
 
 	public async reportAgentProgress(child: Task, message: string): Promise<unknown> {
@@ -7571,6 +8019,10 @@ export class AlphaProvider
 			throw new Error(
 				`Agent ${record.path} still has a quarantined change set. Review and apply or discard it before starting a follow-up.`,
 			)
+		}
+		if (record.status === "running" || record.status === "pending") {
+			const delivery = await this.sendMessageToAgent(parent, record.path, instruction)
+			return { ...delivery, followup: true }
 		}
 		if (
 			!(["completed", "blocked", "failed", "timed_out", "interrupted"] as AgentLifecycleStatus[]).includes(
@@ -7714,11 +8166,12 @@ export class AlphaProvider
 		if (!(["pending", "running"] as AgentLifecycleStatus[]).includes(record.status)) {
 			throw new Error(`Agent ${record.path} cannot be interrupted while status is ${record.status}`)
 		}
+		const previousStatus = record.status
 		if (!this.asyncSubagentRunManager.interrupt(record.taskId, `Agent ${record.path} interrupted by parent`)) {
 			throw new Error(`Agent ${record.path} no longer has an active turn to interrupt`)
 		}
 		await this.publishAgentControlRequest(parent, record, "interrupt_requested")
-		return { taskId: record.taskId, path: record.path, status: "cancelling" }
+		return { previous_status: previousStatus }
 	}
 
 	public async cancelAgent(parent: Task, target: string, reason?: string): Promise<unknown> {
@@ -8107,13 +8560,10 @@ export class AlphaProvider
 	): Promise<ResolvedSubagentModelRoute> {
 		if (!manifest) {
 			const parentApiConfigName = await parent.getTaskApiConfigName()
-			const settings = this.contextProxy.getValues()
 			return resolveSubagentModelRoute({
 				role,
 				parentApiConfiguration: parent.apiConfiguration,
 				parentApiConfigName,
-				defaultProfileId: settings.subagentDefaultApiConfigId,
-				profileByRole: settings.subagentApiConfigByRole,
 				profileLoader: this.providerSettingsManager,
 			})
 		}
@@ -8140,8 +8590,18 @@ export class AlphaProvider
 			apiConfigName = (await parent.getTaskApiConfigName()) ?? capturedRoute.profileName
 		}
 
+		const restoredRoute = applySubagentSpawnOverrides(
+			{
+				apiConfiguration,
+				apiConfigName,
+				route: capturedRoute,
+			},
+			capturedRoute.requestedModelId,
+			capturedRoute.requestedReasoningEffort,
+		)
+		apiConfiguration = restoredRoute.apiConfiguration
 		const restoredProvider = apiConfiguration.apiProvider
-		const restoredModel = getModelId(apiConfiguration)
+		const restoredModel = getSubagentRouteModelId(apiConfiguration)
 		if (capturedRoute.provider && restoredProvider !== capturedRoute.provider) {
 			throw new Error(
 				`Cannot resume child: captured provider ${capturedRoute.provider} now resolves to ${restoredProvider ?? "unknown"}`,

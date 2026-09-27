@@ -1,7 +1,7 @@
 import type { SubagentGroupState } from "@alpha-code/types"
 
 import { buildInternalTaskEnvelope, type InternalTaskPolicy } from "../../agent/InternalTaskEnvelope"
-import { spawn_agent as spawnAgentSchema } from "../../prompts/tools/native-tools/spawn_agent"
+import { createSpawnAgentTool, spawn_agent as spawnAgentSchema } from "../../prompts/tools/native-tools/spawn_agent"
 import { spawnAgentTool } from "../SpawnAgentTool"
 
 const policy: InternalTaskPolicy = {
@@ -58,21 +58,33 @@ function handle() {
 }
 
 describe("SpawnAgentTool", () => {
-	it("publishes one flat strict-schema task draft", () => {
+	it("advertises configured agent names without exposing their instructions", () => {
+		const schema = createSpawnAgentTool(undefined, [{ name: "researcher", description: "Inspect code paths" }])
+		expect(schema.function.parameters.properties.agent_type.description).toContain(
+			"researcher (Inspect code paths)",
+		)
+		expect(JSON.stringify(schema)).not.toContain("developerInstructions")
+	})
+	it("publishes the V2 task request schema without exposing legacy authority fields", () => {
 		const definition = spawnAgentSchema.function
-		expect(definition).toMatchObject({ name: "spawn_agent", strict: true })
+		expect(definition).toMatchObject({ name: "spawn_agent", strict: false })
 		expect(definition.parameters).toMatchObject({
 			type: "object",
-			required: ["task_name", "fork_turns", "objective", "agent_kind", "write_scope", "expected_output"],
+			required: ["task_name", "message"],
 			additionalProperties: false,
 		})
 		expect(definition.parameters.properties).toMatchObject({
 			task_name: { pattern: "^[a-z][a-z0-9_]{0,31}$" },
-			fork_turns: { pattern: "^(?:none|all|[1-9][0-9]*)$" },
-			agent_kind: { enum: ["explore", "review", "worker"] },
-			write_scope: { anyOf: [{ minItems: 1, maxItems: 12 }, { type: "null" }] },
-			expected_output: { anyOf: [{ type: "array" }, { type: "null" }] },
+			message: { type: "string", minLength: 1 },
+			agent_type: { type: "string" },
+			fork_turns: { pattern: "^(?:none|all|[1-9][0-9]*)$", default: "all" },
+			model: { minLength: 1, maxLength: 256 },
+			reasoning_effort: { enum: expect.arrayContaining(["low", "high", "xhigh"]) },
 		})
+		expect(definition.parameters.properties).not.toHaveProperty("objective")
+		expect(definition.parameters.properties).not.toHaveProperty("agent_kind")
+		expect(definition.parameters.properties).not.toHaveProperty("write_scope")
+		expect(definition.parameters.properties).not.toHaveProperty("expected_output")
 		expect(definition.parameters.properties).not.toHaveProperty("tasks")
 	})
 
@@ -96,11 +108,10 @@ describe("SpawnAgentTool", () => {
 		await spawnAgentTool.execute(
 			{
 				task_name: "backend_review",
-				fork_turns: "all",
-				objective: "Inspect src",
-				agent_kind: "explore",
-				write_scope: null,
-				expected_output: null,
+				message: "Inspect src",
+				agent_type: "explorer",
+				model: "gpt-6-sol",
+				reasoning_effort: "high",
 			},
 			task,
 			{ askApproval, pushToolResult, handleError: vi.fn(), toolCallId: "call-1" } as any,
@@ -108,14 +119,13 @@ describe("SpawnAgentTool", () => {
 
 		expect(provider.prepareSubagentGroup).toHaveBeenCalledWith(
 			task,
-			[
-				{
-					task_name: "backend_review",
-					fork_turns: "all",
-					objective: "Inspect src",
-					agent_kind: "explore",
-				},
-			],
+			{
+				task_name: "backend_review",
+				message: "Inspect src",
+				agent_type: "explorer",
+				model: "gpt-6-sol",
+				reasoning_effort: "high",
+			},
 			"call-1",
 		)
 		expect(askApproval).toHaveBeenCalledAfter(provider.prepareSubagentGroup)
@@ -131,6 +141,48 @@ describe("SpawnAgentTool", () => {
 		expect(provider.launchPreparedSubagentGroup).not.toHaveBeenCalledWith(task, batch, requestSignal)
 		expect(pushToolResult).toHaveBeenCalledWith(
 			JSON.stringify({ ...handle(), target: "child-1", taskName: "backend_review" }),
+		)
+	})
+
+	it("validates historical Alpha arguments before forwarding them to the host", async () => {
+		const batch = prepared()
+		const provider = {
+			prepareSubagentGroup: vi.fn(async () => batch),
+			launchPreparedSubagentGroup: vi.fn(),
+			cancelPreparedSubagentGroup: vi.fn(),
+		}
+		const task = { providerRef: { deref: () => provider } } as any
+
+		await spawnAgentTool.execute(
+			{
+				task_name: "legacy_worker",
+				fork_turns: "none",
+				objective: "Update the parser tests.",
+				agent_kind: "worker",
+				write_scope: ["src/core/parser.spec.ts"],
+				expected_output: ["Updated tests"],
+			},
+			task,
+			{ askApproval: vi.fn(async () => false), pushToolResult: vi.fn(), handleError: vi.fn() } as any,
+		)
+
+		expect(provider.prepareSubagentGroup).toHaveBeenCalledWith(
+			task,
+			{
+				task_name: "legacy_worker",
+				objective: "Update the parser tests.",
+				agent_kind: "worker",
+				fork_turns: "none",
+				write_scope: ["src/core/parser.spec.ts"],
+				expected_output: ["Updated tests"],
+			},
+			undefined,
+		)
+		expect(provider.launchPreparedSubagentGroup).not.toHaveBeenCalled()
+		expect(provider.cancelPreparedSubagentGroup).toHaveBeenCalledWith(
+			task,
+			batch,
+			expect.stringContaining("denied"),
 		)
 	})
 
@@ -162,8 +214,11 @@ describe("SpawnAgentTool", () => {
 		)
 
 		expect(provider.prepareSubagentGroup).not.toHaveBeenCalled()
-		expect(pushToolResult).toHaveBeenCalledWith("Error: Worker task 1 requires write_scope")
-		expect(recordToolError).toHaveBeenCalledWith("spawn_agent", "Worker task 1 requires write_scope")
+		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("Error: spawn_agent requires a valid"))
+		expect(recordToolError).toHaveBeenCalledWith(
+			"spawn_agent",
+			expect.stringContaining("valid V2 or legacy request"),
+		)
 		expect(task.didToolFailInCurrentTurn).toBe(true)
 	})
 

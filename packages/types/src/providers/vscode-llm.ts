@@ -27,6 +27,8 @@ export const vscodeLlmDefaultModelId: VscodeLlmModelId = "gpt-5.5"
 const COPILOT_DEFAULT_CONTEXT_WINDOW = 128_000
 const COPILOT_GPT_5_CONTEXT_WINDOW = 272_000
 const COPILOT_GPT_5_6_LUNA_CONTEXT_WINDOW = 200_000
+const COPILOT_GPT_6_CONTEXT_WINDOW = 272_000
+const COPILOT_GPT_6_EXTENDED_CONTEXT_SIZE = 1_050_000
 const COPILOT_EXTENDED_CONTEXT_SIZE = 922_000
 const COPILOT_CLAUDE_CONTEXT_WINDOW = 200_000
 const COPILOT_CLAUDE_EXTENDED_CONTEXT_SIZE = 936_000
@@ -38,6 +40,13 @@ const COPILOT_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", 
 const COPILOT_MINIMAL_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["minimal", "low", "medium", "high"]
 const COPILOT_EXTRA_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["none", "low", "medium", "high", "xhigh"]
 const COPILOT_CODEX_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "medium", "high", "xhigh"]
+const COPILOT_GPT_6_ASTRA_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = [
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+]
 const COPILOT_KIMI_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "high", "max"]
 const COPILOT_CLAUDE_46_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = ["low", "medium", "high", "max"]
 const COPILOT_CLAUDE_FRONTIER_REASONING_EFFORTS: ModelInfo["supportsReasoningEffort"] = [
@@ -175,6 +184,37 @@ export const vscodeLlmModels = {
 		supportsImages: true,
 		supportsReasoningEffort: COPILOT_MAX_REASONING_EFFORTS,
 		supportsContextWindowConfiguration: true,
+	}),
+	"gpt-6-astra": {
+		...copilotModel({
+			name: "GPT 6 Astra",
+			family: "gpt-6-astra",
+			contextWindow: COPILOT_GPT_6_CONTEXT_WINDOW,
+			supportsImages: true,
+			supportsReasoningEffort: COPILOT_GPT_6_ASTRA_REASONING_EFFORTS,
+			supportsContextWindowConfiguration: true,
+			extendedContextSize: COPILOT_GPT_6_EXTENDED_CONTEXT_SIZE,
+		}),
+		// The pinned model catalog opts this exact slug into async user questions.
+		experimental_supported_tools: ["request_user_input_async"],
+	},
+	"gpt-6-luna": copilotModel({
+		name: "GPT 6 Luna",
+		family: "gpt-6-luna",
+		contextWindow: COPILOT_GPT_6_CONTEXT_WINDOW,
+		supportsImages: true,
+		supportsReasoningEffort: COPILOT_MAX_REASONING_EFFORTS,
+		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_GPT_6_EXTENDED_CONTEXT_SIZE,
+	}),
+	"gpt-6-sol": copilotModel({
+		name: "GPT 6 Sol",
+		family: "gpt-6-sol",
+		contextWindow: COPILOT_GPT_6_CONTEXT_WINDOW,
+		supportsImages: true,
+		supportsReasoningEffort: COPILOT_MAX_REASONING_EFFORTS,
+		supportsContextWindowConfiguration: true,
+		extendedContextSize: COPILOT_GPT_6_EXTENDED_CONTEXT_SIZE,
 	}),
 	"claude-fable-5": copilotModel({
 		name: "Claude Fable 5",

@@ -6,6 +6,7 @@ import { subagentDelegationPolicySchema, subagentStopReasonSchema } from "./suba
 import { taskWorkContextSchema } from "./task-work-context.js"
 import { taskDesignHandoffSchema } from "./task-design-handoff.js"
 import { taskReasoningPreferenceSchema, taskReasoningStateSchema } from "./task-reasoning.js"
+import { approvalModeSchema } from "./approval-mode.js"
 
 /**
  * HistoryItem
@@ -13,6 +14,15 @@ import { taskReasoningPreferenceSchema, taskReasoningStateSchema } from "./task-
 
 export const historyItemSchema = z.object({
 	id: z.string(),
+	/** Independent primary conversation launched by this task; distinct from managed-agent/delegation parentTaskId. */
+	orchestrationParentTaskId: z.string().min(1).optional(),
+	orchestrationWorkspaceMode: z.enum(["shared", "worktree"]).optional(),
+	/** Workspace path below the Git root for restoring an isolated task worktree. Empty means Git root. */
+	orchestrationWorkspaceRelativePath: z.string().optional(),
+	orchestrationWorkspaceBaselineCommit: z
+		.string()
+		.regex(/^[0-9a-f]{40,64}$/i)
+		.optional(),
 	rootTaskId: z.string().optional(),
 	parentTaskId: z.string().optional(),
 	number: z.number(),
@@ -29,6 +39,8 @@ export const historyItemSchema = z.object({
 	apiConfigName: z.string().optional(), // Provider profile name for sticky profile feature
 	reasoningPreference: taskReasoningPreferenceSchema.optional(),
 	reasoningState: taskReasoningStateSchema.optional(),
+	/** Effective task approval mode, including a task-scoped override. Missing values keep legacy behavior. */
+	approvalMode: approvalModeSchema.optional(),
 	workContext: taskWorkContextSchema.optional(),
 	designHandoff: taskDesignHandoffSchema.optional(),
 	status: z

@@ -14,10 +14,10 @@ const lifecycleNames = [
 	"wait_agent",
 	"send_message",
 	"followup_task",
-	"close_agent",
+	"interrupt_agent",
 ] as const
 
-const retiredLifecycleNames = ["delegate_task", "report_progress", "interrupt_agent", "cancel_agent"] as const
+const retiredLifecycleNames = ["delegate_task", "report_progress", "cancel_agent", "close_agent"] as const
 
 function harness() {
 	const provider = {
@@ -26,7 +26,7 @@ function harness() {
 		sendMessageToAgent: vi.fn(async () => ({ status: "running" })),
 		reportAgentProgress: vi.fn(async () => ({ delivery: "queued" })),
 		followupAgentTask: vi.fn(async () => ({ status: "pending" })),
-		interruptAgent: vi.fn(async () => ({ status: "cancelling" })),
+		interruptAgent: vi.fn(async () => ({ previous_status: "running" })),
 		cancelAgent: vi.fn(async () => ({ status: "cancelling" })),
 		closeAgent: vi.fn(async () => ({ status: "completed" })),
 	}
@@ -56,7 +56,7 @@ function harness() {
 }
 
 describe("agent lifecycle tools", () => {
-	it("publish strict native schemas", () => {
+	it("publishes Codex-style native lifecycle schemas", () => {
 		const definitions = getNativeTools().flatMap((tool) =>
 			tool.type === "function" && lifecycleNames.includes(tool.function.name as any) ? [tool.function] : [],
 		)
@@ -69,16 +69,15 @@ describe("agent lifecycle tools", () => {
 		expect(definitions.map((definition) => definition.name)).toEqual(lifecycleNames)
 		expect(advertisedNames).toEqual([])
 		for (const definition of definitions) {
-			expect(definition.strict).toBe(true)
+			expect(definition.strict).toBe(!["spawn_agent", "list_agents", "wait_agent"].includes(definition.name))
 			expect(definition.parameters).toMatchObject({ type: "object", additionalProperties: false })
 		}
 		expect(definitions.find((definition) => definition.name === "wait_agent")?.parameters).toMatchObject({
-			required: ["timeout_ms", "target", "until_terminal"],
-			properties: {
-				target: expect.any(Object),
-				until_terminal: expect.any(Object),
-			},
+			properties: { timeout_ms: expect.objectContaining({ minimum: 10_000, maximum: 3_600_000 }) },
 		})
+		expect(definitions.find((definition) => definition.name === "wait_agent")?.parameters).not.toHaveProperty(
+			"properties.target",
+		)
 	})
 
 	it("dispatches every operation without asking for approval", async () => {
@@ -94,7 +93,7 @@ describe("agent lifecycle tools", () => {
 		await closeAgentTool.execute({ target: "child-1" }, task, callbacks)
 
 		expect(provider.listAgents).toHaveBeenCalledWith(task, "/root/review")
-		expect(provider.waitForAgent).toHaveBeenCalledWith(task, 120_000)
+		expect(provider.waitForAgent).toHaveBeenCalledWith(task, 30_000)
 		expect(provider.sendMessageToAgent).toHaveBeenCalledWith(task, "/root/review", "Check this.")
 		expect(provider.reportAgentProgress).toHaveBeenCalledWith(task, "Halfway through.")
 		expect(provider.followupAgentTask).toHaveBeenCalledWith(task, "child-1", "Continue.")
@@ -102,6 +101,7 @@ describe("agent lifecycle tools", () => {
 		expect(provider.cancelAgent).toHaveBeenCalledWith(task, "child-1", "Stop.")
 		expect(provider.closeAgent).toHaveBeenCalledWith(task, "child-1")
 		expect(pushToolResult).toHaveBeenCalledTimes(8)
+		expect(pushToolResult).toHaveBeenNthCalledWith(6, JSON.stringify({ previous_status: "running" }))
 		expect(askApproval).not.toHaveBeenCalled()
 		expect(say).toHaveBeenCalledTimes(4)
 
@@ -187,29 +187,15 @@ describe("agent lifecycle tools", () => {
 		})
 	})
 
-	it("retains a native wait claim under the tool call ID before returning its provenance envelope", async () => {
+	it("retains a native wait claim before returning a bounded summary without child content", async () => {
 		const { provider, task, callbacks, pushToolResult } = harness()
 		callbacks.toolCallId = "call-native-wait"
 		const nativeResult = {
 			timedOut: false,
 			source: "managed_agent_mailbox",
 			claimId: "claim-native-wait",
-			events: [
-				{
-					eventId: "event-child-failed",
-					sequence: 7,
-					kind: "result",
-					name: "agent_failed",
-					senderTaskId: "child-failed",
-					senderPath: "/root/child_failed",
-					payload: {
-						taskId: "child-failed",
-						status: "failed",
-						summary: "The review failed.",
-						stopReason: "runtime_error",
-					},
-				},
-			],
+			eventCount: 1,
+			updatedAgents: [{ taskId: "child-failed", path: "/root/child-failed" }],
 		}
 		provider.waitForAgent.mockResolvedValueOnce(nativeResult)
 
@@ -217,9 +203,22 @@ describe("agent lifecycle tools", () => {
 
 		expect(task.retainWaitAgentResultClaim).toHaveBeenCalledWith("call-native-wait", "claim-native-wait")
 		expect(pushToolResult).toHaveBeenCalledWith(JSON.stringify(nativeResult))
+		expect(JSON.stringify(pushToolResult.mock.calls)).not.toContain("The review failed")
 		expect(task.retainWaitAgentResultClaim.mock.invocationCallOrder[0]).toBeLessThan(
 			pushToolResult.mock.invocationCallOrder[0],
 		)
+	})
+
+	it.each([
+		[{ timedOut: false, interrupted: true, reason: "steered_input" }, "cancelled"],
+		[{ timedOut: false, cancelled: true, events: [] }, "cancelled"],
+		[{ timedOut: true, events: [] }, "success"],
+	] as const)("keeps wait termination outcome %j distinct in its result", async (outcome, status) => {
+		const { provider, task, callbacks, pushToolResult } = harness()
+		provider.waitForAgent.mockResolvedValueOnce(outcome)
+		await waitAgentTool.execute({ timeout_ms: 10_000 }, task, callbacks)
+		expect(pushToolResult).toHaveBeenCalledWith(JSON.stringify(outcome))
+		expect(callbacks.setResultMetadata).toHaveBeenCalledWith(expect.objectContaining({ status }))
 	})
 
 	it("dispatches a targeted terminal wait without changing legacy wait calls", async () => {

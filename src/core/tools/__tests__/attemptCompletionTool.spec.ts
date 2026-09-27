@@ -74,6 +74,8 @@ describe("attemptCompletionTool", () => {
 
 		mockTask = {
 			recordCompletionCandidate: vi.fn(),
+			evaluateCompletionHooks: vi.fn(async () => ({})),
+			getTaskLifetimeCancellationSignal: vi.fn(() => new AbortController().signal),
 			recordCompletionRejection: vi.fn((decision) => decision),
 			waitForCompletionGateDecision: vi.fn(async () => {
 				const todos = mockTask.getOpenTodoCompletionDecision?.()
@@ -172,6 +174,21 @@ describe("attemptCompletionTool", () => {
 		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("command is still running"))
 		expect(mockTask.presentCompletionResult).not.toHaveBeenCalled()
 		expect(mockTask.emit).not.toHaveBeenCalledWith(AlphaCodeEventName.TaskCompleted, expect.anything())
+	})
+
+	it("feeds a Stop hook rejection through the completion tool result without finalizing", async () => {
+		vi.mocked(mockTask.evaluateCompletionHooks!).mockResolvedValue({ prompt: "Check the final result again." })
+		const callbacks: AttemptCompletionCallbacks = {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+		}
+		await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
+		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("Check the final result again."))
+		expect(mockTask.presentCompletionResult).not.toHaveBeenCalled()
+		expect(mockTask.finalizeTaskCompletion).not.toHaveBeenCalled()
 	})
 
 	it.each(["pending", "failed"])(

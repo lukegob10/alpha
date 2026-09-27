@@ -1,3 +1,5 @@
+import type { AutoCondenseContextScope } from "@alpha-code/types"
+
 /**
  * Pure policy helpers for bounded context recovery.
  *
@@ -18,16 +20,42 @@ export const TOKEN_BUFFER_PERCENTAGE = 0.1
 export const MIN_CONDENSE_THRESHOLD = 5
 export const MAX_CONDENSE_THRESHOLD = 100
 
-/** Global and per-profile percentages use the same validation and raw-window denominator. */
-export function resolveCondenseThreshold(
-	globalThreshold: number,
-	profileThresholds: Record<string, number> = {},
-	currentProfileId = "",
-): number {
+/** A missing prefix begins at the current usage, as it does for a new compaction window. */
+export function isAutoCondenseLimitReached(
+	activeTokens: number,
+	triggerTokens: number,
+	allowedTokens: number,
+	scope: AutoCondenseContextScope = "full-context",
+	prefillTokens?: number,
+): boolean {
+	if (!Number.isFinite(activeTokens) || activeTokens < 0) return false
+	if (activeTokens >= allowedTokens) return true
+	const countedTokens =
+		scope === "after-prefix" ? Math.max(0, activeTokens - (prefillTokens ?? activeTokens)) : activeTokens
+	return countedTokens >= triggerTokens
+}
+
+/** Zero disables the optional turn-end pass. The full input limit remains a hard cap. */
+export function isPostTurnCondenseDue(
+	activeTokens: number,
+	allowedTokens: number,
+	triggerTokens: number,
+	percent: number,
+	scope: AutoCondenseContextScope = "full-context",
+	prefillTokens?: number,
+): boolean {
+	if (!Number.isInteger(percent) || percent < 1 || percent > 100) return false
+	return (
+		isAutoCondenseLimitReached(activeTokens, triggerTokens, allowedTokens, scope, prefillTokens) ||
+		activeTokens * 100 >= allowedTokens * percent
+	)
+}
+
+/** Compaction uses one global percentage; missing or invalid saved values default to 100%. */
+export function resolveCondenseThreshold(globalThreshold?: number): number {
 	const valid = (value: number) =>
 		Number.isFinite(value) && value >= MIN_CONDENSE_THRESHOLD && value <= MAX_CONDENSE_THRESHOLD
-	const profile = profileThresholds[currentProfileId]
-	return valid(profile) ? profile : valid(globalThreshold) ? globalThreshold : MAX_CONDENSE_THRESHOLD
+	return globalThreshold !== undefined && valid(globalThreshold) ? globalThreshold : MAX_CONDENSE_THRESHOLD
 }
 
 /** The configured trigger cannot exceed the input limit with its safety margin. */

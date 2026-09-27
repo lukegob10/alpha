@@ -10,6 +10,40 @@ export interface FollowUpData {
 	question?: string
 	/** Array of suggested answers that the user can select */
 	suggest?: Array<SuggestionItem>
+	/** A native grouped request_user_input payload. */
+	requestUserInput?: RequestUserInputData
+}
+
+export interface RequestUserInputOption {
+	label: string
+	description: string
+}
+
+export interface RequestUserInputQuestion {
+	id: string
+	header: string
+	question: string
+	options: RequestUserInputOption[]
+}
+
+export interface RequestUserInputData {
+	questions: RequestUserInputQuestion[]
+}
+
+export interface RequestUserInputAnswer {
+	answers: string[]
+}
+
+export type RequestUserInputAnswerMap = Record<string, RequestUserInputAnswer>
+
+/** Nonblocking user questions requested during an active task turn. */
+export interface AsyncUserInputQuestion {
+	title: string
+	options?: string[]
+}
+
+export interface AsyncUserInputData {
+	questions: AsyncUserInputQuestion[]
 }
 
 /**
@@ -30,12 +64,38 @@ export const suggestionItemSchema = z.object({
 	mode: z.string().optional(),
 })
 
+export const requestUserInputOptionSchema = z.object({
+	label: z.string(),
+	description: z.string(),
+})
+
+export const requestUserInputQuestionSchema = z.object({
+	id: z.string(),
+	header: z.string(),
+	question: z.string(),
+	options: z.array(requestUserInputOptionSchema),
+})
+
+export const requestUserInputDataSchema = z.object({
+	questions: z.array(requestUserInputQuestionSchema),
+})
+
+export const asyncUserInputQuestionSchema = z.object({
+	title: z.string().trim().min(1),
+	options: z.array(z.string().trim().min(1)).min(1).optional(),
+})
+
+export const asyncUserInputDataSchema = z.object({
+	questions: z.array(asyncUserInputQuestionSchema).min(1),
+})
+
 /**
  * Zod schema for FollowUpData
  */
 export const followUpDataSchema = z.object({
 	question: z.string().optional(),
 	suggest: z.array(suggestionItemSchema).optional(),
+	requestUserInput: requestUserInputDataSchema.optional(),
 })
 
 export type FollowUpDataType = z.infer<typeof followUpDataSchema>

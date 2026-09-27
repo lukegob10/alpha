@@ -27,6 +27,22 @@ describe("scheduled setup contracts", () => {
 			}).resolvedApiConfig,
 		).toBeUndefined()
 	})
+	it("reads legacy approval switches and round trips each current approval mode", () => {
+		expect(
+			scheduledTaskSchema.parse({
+				...legacy,
+				autoApproval: { autoApprovalEnabled: true, alwaysAllowReadOnly: true, deniedCommands: ["rm"] },
+			}).autoApproval,
+		).toEqual({ autoApprovalEnabled: true, alwaysAllowReadOnly: true, deniedCommands: ["rm"] })
+		for (const approvalMode of ["ask", "auto", "bypass"] as const) {
+			expect(scheduledTaskSchema.parse({ ...legacy, autoApproval: { approvalMode } }).autoApproval).toEqual({
+				approvalMode,
+			})
+		}
+		expect(scheduledTaskSchema.safeParse({ ...legacy, autoApproval: { approvalMode: "invalid" } }).success).toBe(
+			false,
+		)
+	})
 	it("round trips the selected profile and exact skill location", () => {
 		const task = {
 			...legacy,

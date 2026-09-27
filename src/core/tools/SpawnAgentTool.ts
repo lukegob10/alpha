@@ -1,9 +1,9 @@
 import type { SubagentSpawnHandle } from "@alpha-code/types"
 
 import {
-	normalizeSubagentTaskDrafts,
+	normalizeSpawnAgentRequest,
 	type PreparedSubagentGroup,
-	type SubagentTaskDraft,
+	type SpawnAgentRequest,
 } from "../agent/SubagentDelegation"
 import type { Task } from "../task/Task"
 
@@ -40,10 +40,9 @@ export class SpawnAgentTool extends BaseTool<"spawn_agent"> {
 			return
 		}
 
-		let draft: SubagentTaskDraft
+		let request: SpawnAgentRequest
 		try {
-			const drafts = normalizeSubagentTaskDrafts([params])
-			draft = drafts[0]
+			request = normalizeSpawnAgentRequest(params)
 		} catch (error) {
 			reject(error instanceof Error ? error.message : String(error))
 			return
@@ -51,7 +50,7 @@ export class SpawnAgentTool extends BaseTool<"spawn_agent"> {
 
 		let prepared: PreparedSubagentGroup
 		try {
-			prepared = await provider.prepareSubagentGroup(task, [draft], callbacks.toolCallId)
+			prepared = await provider.prepareSubagentGroup(task, params, callbacks.toolCallId)
 			if (prepared.group.agents.length !== 1 || prepared.envelopes.length !== 1) {
 				throw new Error("spawn_agent must prepare exactly one child")
 			}
@@ -100,7 +99,7 @@ export class SpawnAgentTool extends BaseTool<"spawn_agent"> {
 				task.getTaskLifetimeCancellationSignal(),
 			)
 			callbacks.pushToolResult(
-				JSON.stringify({ ...handle, target: handle.taskId, taskName: draft.task_name ?? handle.nickname }),
+				JSON.stringify({ ...handle, target: handle.taskId, taskName: request.task_name ?? handle.nickname }),
 			)
 		} catch (error) {
 			try {

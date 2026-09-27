@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 
+import type { ApiStreamChunk } from "../../../api/transform/stream"
 import { AgentResponseAccumulator } from "../AgentResponseAccumulator"
 
 describe("AgentResponseAccumulator", () => {
@@ -34,6 +35,61 @@ describe("AgentResponseAccumulator", () => {
 		])
 	})
 
+	it("normalizes Codex freeform apply_patch calls for preflight and dispatch", async () => {
+		const patch = "*** Begin Patch\r\n*** Add File: src/new-file.ts\r\n+export const value = 1\r\n*** End Patch\r\n"
+		const preflightCalls: unknown[] = []
+		const accumulator = new AgentResponseAccumulator()
+		await accumulator.add(
+			{ type: "tool_call", id: "patch-1", name: "apply_patch", arguments: patch },
+			undefined,
+			(call) => {
+				preflightCalls.push(call.arguments)
+			},
+		)
+
+		const response = await accumulator.finish()
+
+		expect(preflightCalls).toEqual([{ patch }])
+		expect(response.toolCalls).toEqual([
+			{ type: "tool_call", id: "patch-1", name: "apply_patch", arguments: { patch } },
+		])
+	})
+
+	it("assembles a streamed freeform apply_patch before preflight", async () => {
+		const patch = "*** Begin Patch\n*** Add File: src/new-file.ts\n+export const value = 1\n*** End Patch\n"
+		const preflightArguments: unknown[] = []
+		const accumulator = new AgentResponseAccumulator()
+		await accumulator.add({ type: "tool_call_start", id: "patch-stream", name: "apply_patch" })
+		await accumulator.add({ type: "tool_call_delta", id: "patch-stream", delta: patch.slice(0, 38) })
+		await accumulator.add({ type: "tool_call_delta", id: "patch-stream", delta: patch.slice(38) })
+		await accumulator.add({ type: "tool_call_end", id: "patch-stream" }, undefined, (call) => {
+			preflightArguments.push(call.arguments)
+		})
+
+		const response = await accumulator.finish()
+
+		expect(preflightArguments).toEqual([{ patch }])
+		expect(response.toolCalls).toEqual([
+			{ type: "tool_call", id: "patch-stream", name: "apply_patch", arguments: { patch } },
+		])
+	})
+
+	it("keeps JSON apply_patch function calls unchanged", async () => {
+		const patch = "*** Begin Patch\n*** Add File: src/new-file.ts\n+export const value = 1\n*** End Patch\n"
+		const accumulator = new AgentResponseAccumulator()
+		await accumulator.add({
+			type: "tool_call",
+			id: "patch-json",
+			name: "apply_patch",
+			arguments: JSON.stringify({ patch }),
+		})
+		const response = await accumulator.finish()
+
+		expect(response.toolCalls).toEqual([
+			{ type: "tool_call", id: "patch-json", name: "apply_patch", arguments: { patch } },
+		])
+	})
+
 	it("emits indexed calls once and in model order despite duplicate markers", async () => {
 		const emitted: string[] = []
 		const accumulator = new AgentResponseAccumulator()
@@ -51,6 +107,223 @@ describe("AgentResponseAccumulator", () => {
 
 		expect(emitted).toEqual(["first", "second"])
 		expect(response.toolCalls.map((call) => call.id)).toEqual(["call-1", "call-2"])
+	})
+
+	it("retains a tool call between text fragments while deferring the call until stream completion", async () => {
+		const accumulator = new AgentResponseAccumulator()
+		const emitted: string[] = []
+		let chunksConsumed = 0
+		let canonicalCallEmittedAfterChunk: number | undefined
+		const onItem = (item: { type: string }) => {
+			emitted.push(item.type)
+			if (item.type === "tool_call") canonicalCallEmittedAfterChunk = chunksConsumed
+		}
+
+		await accumulator.add({ type: "text", text: "First. " }, onItem)
+		chunksConsumed += 1
+		await accumulator.add({ type: "tool_call_start", id: "call-1", name: "read_file" }, onItem)
+		chunksConsumed += 1
+		await accumulator.add({ type: "tool_call_delta", id: "call-1", delta: '{"path":"a.ts"}' }, onItem)
+		chunksConsumed += 1
+		await accumulator.add({ type: "tool_call_end", id: "call-1" }, onItem)
+		chunksConsumed += 1
+		await accumulator.add({ type: "text", text: "Second." }, onItem)
+		chunksConsumed += 1
+		expect(emitted).toEqual(["text", "text"])
+
+		const response = await accumulator.finish(onItem)
+		expect(emitted).toEqual(["text", "text", "tool_call"])
+		expect(canonicalCallEmittedAfterChunk).toBe(5)
+		expect(response.items).toEqual([
+			{ type: "text", text: "First. " },
+			{ type: "tool_call", id: "call-1", name: "read_file", arguments: { path: "a.ts" } },
+			{ type: "text", text: "Second." },
+		])
+	})
+
+	it("reports a stable completed call for preflight before the provider reaches EOF", async () => {
+		const accumulator = new AgentResponseAccumulator()
+		const readyCalls: Array<{ chunkIndex: number; id: string; name: string; arguments: unknown }> = []
+		const chunks: ApiStreamChunk[] = [
+			{ type: "text", text: "First. " },
+			{ type: "tool_call_start", id: "call-1", name: "read_file" },
+			{ type: "tool_call_delta", id: "call-1", delta: '{"path":"a.ts"}' },
+			{ type: "tool_call_end", id: "call-1" },
+			{ type: "text", text: "Second." },
+		]
+		let chunksConsumed = 0
+
+		for (const chunk of chunks) {
+			chunksConsumed += 1
+			await accumulator.add(chunk, undefined, (call) => {
+				readyCalls.push({ chunkIndex: chunksConsumed, ...call })
+			})
+		}
+
+		expect(readyCalls).toEqual([
+			{
+				chunkIndex: 4,
+				type: "tool_call",
+				id: "call-1",
+				name: "read_file",
+				arguments: { path: "a.ts" },
+			},
+		])
+		// The scripted stream has one trailing chunk after the call is complete.
+		expect(chunksConsumed - readyCalls[0]!.chunkIndex).toBe(1)
+
+		const response = await accumulator.finish()
+		expect(response.items).toEqual([
+			{ type: "text", text: "First. " },
+			{ type: "tool_call", id: "call-1", name: "read_file", arguments: { path: "a.ts" } },
+			{ type: "text", text: "Second." },
+		])
+	})
+
+	it("reports a validated call after its end marker and before EOF while keeping canonical item ordering", async () => {
+		const accumulator = new AgentResponseAccumulator()
+		const events: string[] = []
+		const completedCalls: string[] = []
+		let chunksConsumed = 0
+		const chunks: ApiStreamChunk[] = [
+			{ type: "text", text: "Before " },
+			{ type: "tool_call", id: "call-early", name: "read_file", arguments: '{"path":"a.ts"}' },
+			{ type: "tool_call_end", id: "call-early" },
+			{ type: "text", text: "after" },
+		]
+
+		for (const chunk of chunks) {
+			chunksConsumed += 1
+			await accumulator.add(
+				chunk,
+				(item) => {
+					events.push(item.type)
+				},
+				undefined,
+				(call) => {
+					completedCalls.push(`${chunksConsumed}:${call.id}`)
+					events.push("completed")
+				},
+			)
+		}
+
+		expect(completedCalls).toEqual(["3:call-early"])
+		expect(events).toEqual(["text", "completed", "text"])
+
+		const response = await accumulator.finish((item) => {
+			events.push(item.type)
+		})
+		expect(events).toEqual(["text", "completed", "text", "tool_call"])
+		expect(response.items).toEqual([
+			{ type: "text", text: "Before " },
+			{ type: "tool_call", id: "call-early", name: "read_file", arguments: { path: "a.ts" } },
+			{ type: "text", text: "after" },
+		])
+	})
+
+	it("does not report partial, malformed, or synthetic calls as completed", async () => {
+		const accumulator = new AgentResponseAccumulator()
+		const completedCalls: string[] = []
+		const onCompleted = (call: { id: string }) => {
+			completedCalls.push(call.id)
+		}
+
+		await accumulator.add(
+			{ type: "tool_call_start", id: "call-partial", name: "read_file" },
+			undefined,
+			undefined,
+			onCompleted,
+		)
+		await accumulator.add(
+			{ type: "tool_call_delta", id: "call-partial", delta: '{"path":"a.ts"}' },
+			undefined,
+			undefined,
+			onCompleted,
+		)
+		await accumulator.add(
+			{ type: "tool_call", id: "call-malformed-args", name: "read_file", arguments: "not-json" },
+			undefined,
+			undefined,
+			onCompleted,
+		)
+		await accumulator.add(
+			{ type: "tool_call", id: "call/malformed-id", name: "read_file", arguments: "{}" },
+			undefined,
+			undefined,
+			onCompleted,
+		)
+		await accumulator.add(
+			{ type: "tool_call", id: "", name: "read_file", arguments: "{}" },
+			undefined,
+			undefined,
+			onCompleted,
+		)
+
+		expect(completedCalls).toEqual([])
+	})
+
+	it("reports one completion per stable call ID despite duplicate completion markers", async () => {
+		const accumulator = new AgentResponseAccumulator()
+		const completedCalls: string[] = []
+		const onCompleted = (call: { id: string }) => {
+			completedCalls.push(call.id)
+		}
+
+		await accumulator.add(
+			{ type: "tool_call", id: "call-once", name: "read_file", arguments: "{}" },
+			undefined,
+			undefined,
+			onCompleted,
+		)
+		await accumulator.add(
+			{ type: "tool_call", id: "call-once", name: "read_file", arguments: "{}" },
+			undefined,
+			undefined,
+			onCompleted,
+		)
+		await accumulator.add({ type: "tool_call_end", id: "call-once" }, undefined, undefined, onCompleted)
+
+		expect(completedCalls).toEqual(["call-once"])
+	})
+
+	it.each([
+		{
+			label: "provider error",
+			terminalChunk: { type: "error", error: "provider failed", message: "Provider failed." } as ApiStreamChunk,
+		},
+		{
+			label: "incomplete outcome",
+			terminalChunk: { type: "outcome", status: "incomplete", reason: "token limit" } as ApiStreamChunk,
+		},
+	])("blocks later completion notifications after a $label", async ({ terminalChunk }) => {
+		const accumulator = new AgentResponseAccumulator()
+		const completedCalls: string[] = []
+		await accumulator.add(terminalChunk)
+		await accumulator.add(
+			{ type: "tool_call", id: "call-after-terminal", name: "read_file", arguments: "{}" },
+			undefined,
+			undefined,
+			(call) => {
+				completedCalls.push(call.id)
+			},
+		)
+
+		expect(completedCalls).toEqual([])
+	})
+
+	it("does not preflight a call after a provider failure has been observed", async () => {
+		const accumulator = new AgentResponseAccumulator()
+		const readyCalls: string[] = []
+		await accumulator.add({ type: "error", error: "failed", message: "Provider failed." })
+		await accumulator.add(
+			{ type: "tool_call", id: "call-1", name: "read_file", arguments: "{}" },
+			undefined,
+			(call) => {
+				readyCalls.push(call.id)
+			},
+		)
+
+		expect(readyCalls).toEqual([])
 	})
 
 	it("keeps valid calls when a later call has malformed arguments", async () => {
@@ -141,5 +414,61 @@ describe("AgentResponseAccumulator", () => {
 			reason: "max_output_tokens",
 			retryable: false,
 		})
+	})
+
+	it("does not expose buffered tool calls from an incomplete provider response", async () => {
+		const emitted: string[] = []
+		const accumulator = new AgentResponseAccumulator()
+		await accumulator.add({
+			type: "tool_call_partial",
+			index: 0,
+			id: "call-truncated",
+			name: "apply_patch",
+			arguments: '{"patch":"*** Begin Patch"}',
+		})
+		await accumulator.add({
+			type: "outcome",
+			status: "incomplete",
+			terminal: true,
+			semanticOutputObserved: true,
+			reason: "output token limit",
+		})
+
+		const response = await accumulator.finish((item) => {
+			emitted.push(item.type)
+		})
+
+		expect(response.outcome).toMatchObject({ status: "incomplete", reason: "output token limit" })
+		expect(response.toolCalls).toEqual([])
+		expect(emitted).not.toContain("tool_call")
+	})
+
+	it("retains a complete accepted call from an incomplete response for terminal receipt repair", async () => {
+		const accumulator = new AgentResponseAccumulator()
+		await accumulator.add({
+			type: "tool_call",
+			id: "accepted-before-truncation",
+			name: "read_file",
+			arguments: '{"path":"README.md"}',
+		})
+		await accumulator.add({
+			type: "outcome",
+			status: "incomplete",
+			terminal: true,
+			semanticOutputObserved: true,
+			reason: "output token limit",
+		})
+
+		const response = await accumulator.finish()
+
+		expect(response.outcome).toMatchObject({ status: "incomplete", reason: "output token limit" })
+		expect(response.toolCalls).toEqual([
+			{
+				type: "tool_call",
+				id: "accepted-before-truncation",
+				name: "read_file",
+				arguments: { path: "README.md" },
+			},
+		])
 	})
 })

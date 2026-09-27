@@ -3,14 +3,14 @@ import path from "path"
 import * as os from "os"
 import { Dirent } from "fs"
 
-import { isLanguage } from "@alpha-code/types"
+import { DEFAULT_MODES, isLanguage } from "@alpha-code/types"
 
 import type { SystemPromptSettings } from "../types"
 
 import { LANGUAGES } from "../../../shared/language"
 import {
 	getAllLegacyConfigDirectoriesForCwd,
-	getAgentsDirectoriesForCwd,
+	getProjectInstructionDirectoriesForCwd,
 	getLegacyGlobalConfigDirectory,
 } from "../../../services/config-paths"
 
@@ -69,6 +69,43 @@ async function directoryExists(dirPath: string): Promise<boolean> {
 }
 
 const MAX_DEPTH = 5
+const MAX_PROJECT_INSTRUCTION_BYTES = 32 * 1024
+
+interface ProjectInstructionBudget {
+	remainingBytes: number
+}
+
+function createProjectInstructionBudget(): ProjectInstructionBudget {
+	return { remainingBytes: MAX_PROJECT_INSTRUCTION_BYTES }
+}
+
+function takeUtf8Prefix(text: string, maxBytes: number): { text: string; bytesUsed: number } {
+	const bytes = Buffer.from(text, "utf8")
+	const bytesUsed = Math.min(bytes.length, maxBytes)
+	let safeEnd = bytesUsed
+
+	if (safeEnd < bytes.length && safeEnd > 0) {
+		let sequenceStart = safeEnd - 1
+		while (sequenceStart > 0 && (bytes[sequenceStart]! & 0b1100_0000) === 0b1000_0000) {
+			sequenceStart--
+		}
+
+		const firstByte = bytes[sequenceStart]!
+		const sequenceLength =
+			(firstByte & 0b1000_0000) === 0
+				? 1
+				: (firstByte & 0b1110_0000) === 0b1100_0000
+					? 2
+					: (firstByte & 0b1111_0000) === 0b1110_0000
+						? 3
+						: (firstByte & 0b1111_1000) === 0b1111_0000
+							? 4
+							: 1
+		if (sequenceStart + sequenceLength > safeEnd) safeEnd = sequenceStart
+	}
+
+	return { text: bytes.subarray(0, safeEnd).toString("utf8"), bytesUsed }
+}
 
 /**
  * Recursively resolve directory entries and collect file paths
@@ -244,7 +281,9 @@ function getAlphaDirectoriesForCwd(cwd: string): string[] {
 interface InstructionDirectories {
 	alpha: string[]
 	legacy: string[]
+	projectAgents: string[]
 	agents: string[]
+	agentTrustRoot: string
 }
 
 async function captureInstructionDirectories(
@@ -255,6 +294,7 @@ async function captureInstructionDirectories(
 	const legacyDirectories = enableSubfolderRules
 		? await getAllLegacyConfigDirectoriesForCwd(cwd)
 		: [getLegacyGlobalConfigDirectory(), path.join(cwd, ".roo")]
+	const projectInstructions = await getProjectInstructionDirectoriesForCwd(cwd)
 
 	const alphaSubfolders = legacyDirectories
 		.map((dir) => {
@@ -266,9 +306,22 @@ async function captureInstructionDirectories(
 	return {
 		alpha: enableSubfolderRules ? [...alphaDirectories, ...alphaSubfolders] : alphaDirectories,
 		legacy: legacyDirectories,
-		// The first two entries are global and project-local; only discovered
-		// descendants contribute additional AGENTS locations.
-		agents: [cwd, ...legacyDirectories.slice(2).map((directory) => path.dirname(directory))],
+		projectAgents: projectInstructions.directories,
+		// Project instructions follow the nearest .git root through cwd. Alpha's
+		// optional .roo subfolder rule discovery remains scoped below cwd.
+		agents: [
+			...projectInstructions.directories,
+			...legacyDirectories
+				.slice(2)
+				.map((directory) => path.dirname(directory))
+				.filter(
+					(directory) =>
+						!projectInstructions.directories.some(
+							(projectDirectory) => path.resolve(projectDirectory) === path.resolve(directory),
+						),
+				),
+		],
+		agentTrustRoot: projectInstructions.root,
 	}
 }
 
@@ -332,22 +385,52 @@ async function loadRuleFilesFromDirectories(cwd: string, directories: Instructio
 	return ""
 }
 
-/**
- * Read content from an agent rules file (AGENTS.md, AGENT.md, etc.)
- * Handles symlink resolution.
- *
- * @param filePath - Full path to the agent rules file
- * @returns File content or empty string if file doesn't exist
- */
-async function readAgentRulesFile(filePath: string, trustedRoot: string): Promise<string> {
+async function readAgentInstructionFile(
+	filePath: string,
+	trustedRoot: string,
+	budget?: ProjectInstructionBudget,
+): Promise<{ ref: string; text: string } | undefined> {
+	if (budget && budget.remainingBytes <= 0) return undefined
 	try {
 		await fs.lstat(filePath)
 	} catch {
-		return ""
+		return undefined
 	}
 
 	const resolvedPath = await resolvePathWithinRoot(filePath, trustedRoot)
-	return resolvedPath ? safeReadFile(resolvedPath) : ""
+	if (!resolvedPath) return undefined
+
+	try {
+		const fileContents = await fs.readFile(resolvedPath, "utf-8")
+		if (!budget) return { ref: filePath, text: fileContents.trim() }
+		const bounded = takeUtf8Prefix(fileContents, budget.remainingBytes)
+		budget.remainingBytes -= bounded.bytesUsed
+		return { ref: filePath, text: bounded.text.trim() }
+	} catch (error) {
+		const errorCode = (error as NodeJS.ErrnoException).code
+		if (!errorCode || !["ENOENT", "EISDIR"].includes(errorCode)) throw error
+		return undefined
+	}
+}
+
+async function readPreferredAgentRulesFile(
+	directory: string,
+	trustedRoot: string,
+	budget?: ProjectInstructionBudget,
+): Promise<{ ref: string; text: string } | undefined> {
+	if (budget && budget.remainingBytes <= 0) return undefined
+
+	for (const filename of ["AGENTS.override.md", "AGENTS.md", "AGENT.md"]) {
+		const ref = path.join(directory, filename)
+		try {
+			const source = await readAgentInstructionFile(ref, trustedRoot, budget)
+			if (source) return source
+		} catch {
+			// Optional instruction files are best effort, like existing Alpha rules.
+		}
+	}
+
+	return undefined
 }
 
 /**
@@ -364,43 +447,31 @@ async function loadAgentRulesFileFromDirectory(
 	directory: string,
 	showPath: boolean = false,
 	cwd?: string,
+	trustedRoot?: string,
+	budget?: ProjectInstructionBudget,
 ): Promise<string> {
-	// Try both filenames - AGENTS.md (standard) first, then AGENT.md (alternative)
-	const filenames = ["AGENTS.md", "AGENT.md"]
 	const results: string[] = []
 	const displayPath = cwd ? path.relative(cwd, directory) : directory
-
-	for (const filename of filenames) {
-		try {
-			const agentPath = path.join(directory, filename)
-			const content = await readAgentRulesFile(agentPath, cwd ?? directory)
-
-			if (content) {
-				// Compute relative path for display if cwd is provided
-				const header = showPath
-					? `# Agent Rules Standard (${filename}) from ${displayPath}:`
-					: `# Agent Rules Standard (${filename}):`
-				results.push(`${header}\n${content}`)
-
-				// Found a standard file, don't check alternative
-				break
-			}
-		} catch (err) {
-			// Silently ignore errors - agent rules files are optional
-		}
+	const standard = await readPreferredAgentRulesFile(directory, trustedRoot ?? cwd ?? directory, budget)
+	if (standard?.text) {
+		const filename = path.basename(standard.ref)
+		const header = showPath
+			? `# Agent Rules Standard (${filename}) from ${displayPath}:`
+			: `# Agent Rules Standard (${filename}):`
+		results.push(`${header}\n${standard.text}`)
 	}
 
 	// Always try to load AGENTS.local.md for personal overrides (even if AGENTS.md doesn't exist)
 	try {
 		const localFilename = "AGENTS.local.md"
 		const localPath = path.join(directory, localFilename)
-		const localContent = await readAgentRulesFile(localPath, cwd ?? directory)
+		const localFile = await readAgentInstructionFile(localPath, trustedRoot ?? cwd ?? directory)
 
-		if (localContent) {
+		if (localFile?.text) {
 			const localHeader = showPath
 				? `# Agent Rules Local (${localFilename}) from ${displayPath}:`
 				: `# Agent Rules Local (${localFilename}):`
-			results.push(`${localHeader}\n${localContent}`)
+			results.push(`${localHeader}\n${localFile.text}`)
 		}
 	} catch (err) {
 		// Silently ignore errors - local agent rules file is optional
@@ -416,7 +487,7 @@ async function loadAgentRulesFileFromDirectory(
  * @deprecated Use loadAllAgentRulesFiles for loading from all directories
  */
 async function loadAgentRulesFile(cwd: string): Promise<string> {
-	return loadAgentRulesFileFromDirectory(cwd, false, cwd)
+	return loadAgentRulesFileFromDirectory(cwd, false, cwd, cwd, createProjectInstructionBudget())
 }
 
 /**
@@ -427,13 +498,28 @@ async function loadAgentRulesFile(cwd: string): Promise<string> {
  * @param directories - Ordered root and descendant locations captured for this assembly
  * @returns Combined AGENTS.md content from all locations
  */
-async function loadAllAgentRulesFiles(cwd: string, directories: readonly string[]): Promise<string> {
+async function loadAllAgentRulesFiles(
+	cwd: string,
+	directories: readonly string[],
+	projectDirectories: readonly string[],
+	trustedRoot: string,
+): Promise<string> {
 	const agentRules: string[] = []
+	const budget = createProjectInstructionBudget()
 
 	for (const directory of directories) {
 		// Show path for all directories except the root
-		const showPath = directory !== cwd
-		const content = await loadAgentRulesFileFromDirectory(directory, showPath, cwd)
+		const showPath = path.resolve(directory) !== path.resolve(cwd)
+		const isProjectDirectory = projectDirectories.some(
+			(projectDirectory) => path.resolve(projectDirectory) === path.resolve(directory),
+		)
+		const content = await loadAgentRulesFileFromDirectory(
+			directory,
+			showPath,
+			cwd,
+			trustedRoot,
+			isProjectDirectory ? budget : undefined,
+		)
 		if (content && content.trim()) {
 			agentRules.push(content.trim())
 		}
@@ -452,21 +538,24 @@ export async function loadApplicableAgentInstructionSources(
 	cwd: string,
 	enableSubfolderRules: boolean = false,
 ): Promise<Array<{ kind: "agents"; ref: string; text: string }>> {
-	const directories = enableSubfolderRules ? await getAgentsDirectoriesForCwd(cwd) : [cwd]
+	const instructionDirectories = await captureInstructionDirectories(cwd, enableSubfolderRules)
 	const sources: Array<{ kind: "agents"; ref: string; text: string }> = []
+	const budget = createProjectInstructionBudget()
 
-	for (const directory of directories) {
-		for (const filename of ["AGENTS.md", "AGENT.md"]) {
-			const ref = path.join(directory, filename)
-			const text = await readAgentRulesFile(ref, cwd)
-			if (!text) continue
-			sources.push({ kind: "agents", ref, text })
-			break
-		}
+	for (const directory of instructionDirectories.agents) {
+		const isProjectDirectory = instructionDirectories.projectAgents.some(
+			(projectDirectory) => path.resolve(projectDirectory) === path.resolve(directory),
+		)
+		const standard = await readPreferredAgentRulesFile(
+			directory,
+			instructionDirectories.agentTrustRoot,
+			isProjectDirectory ? budget : undefined,
+		)
+		if (standard?.text) sources.push({ kind: "agents", ref: standard.ref, text: standard.text })
 
 		const localRef = path.join(directory, "AGENTS.local.md")
-		const localText = await readAgentRulesFile(localRef, cwd)
-		if (localText) sources.push({ kind: "agents", ref: localRef, text: localText })
+		const localFile = await readAgentInstructionFile(localRef, instructionDirectories.agentTrustRoot)
+		if (localFile?.text) sources.push({ kind: "agents", ref: localFile.ref, text: localFile.text })
 	}
 
 	return sources
@@ -477,6 +566,7 @@ function formatApplicableAgentInstructionSources(
 	sources: readonly { kind: "agents"; ref: string; text: string }[],
 ): string {
 	return sources
+		.filter((source) => source.text.trim())
 		.map(({ ref, text }) => {
 			const filename = path.basename(ref)
 			const directory = path.dirname(ref)
@@ -488,7 +578,41 @@ function formatApplicableAgentInstructionSources(
 		.join("\n\n")
 }
 
-export async function addCustomInstructions(
+export type CustomInstructionOrigin =
+	| "prompt-wrapper"
+	| "section-separator"
+	| "language-preference"
+	| "global-custom-instructions"
+	| "built-in-mode-instructions"
+	| "custom-mode-instructions"
+	| "mode-rules"
+	| "alpha-ignore"
+	| "agent-rules"
+	| "generic-rules"
+	| "rules-label"
+
+export interface CustomInstructionPart {
+	readonly role: "developer" | "user"
+	readonly origin: CustomInstructionOrigin
+	readonly content: string
+}
+
+export function renderCustomInstructionParts(parts: readonly CustomInstructionPart[]): string {
+	return parts.map(({ content }) => content).join("")
+}
+
+const userInstructionsPrefix = `
+====
+
+USER'S CUSTOM INSTRUCTIONS
+
+The following additional instructions are provided by the user, and should be followed to the best of your ability.
+
+`
+
+const userInstructionsSuffix = "\n"
+
+export async function addCustomInstructionParts(
 	modeCustomInstructions: string,
 	globalCustomInstructions: string,
 	cwd: string,
@@ -497,11 +621,12 @@ export async function addCustomInstructions(
 		language?: string
 		alphaIgnoreInstructions?: string
 		settings?: SystemPromptSettings
+		modeInstructionAuthority?: "builtin" | "user"
 		/** Already captured sources avoid rereading mutable AGENTS files at a child-launch boundary. */
 		agentInstructionSources?: readonly { kind: "agents"; ref: string; text: string }[]
 	} = {},
-): Promise<string> {
-	const sections = []
+): Promise<CustomInstructionPart[]> {
+	const sections: CustomInstructionPart[][] = []
 
 	// Get the enableSubfolderRules setting (default: false)
 	const enableSubfolderRules = options.settings?.enableSubfolderRules ?? false
@@ -568,35 +693,63 @@ export async function addCustomInstructions(
 	// Add language preference if provided
 	if (options.language) {
 		const languageName = isLanguage(options.language) ? LANGUAGES[options.language] : options.language
-		sections.push(
-			`Language Preference:\nYou should always speak and think in the "${languageName}" (${options.language}) language unless the user gives you instructions below to do otherwise.`,
-		)
+		sections.push([
+			{
+				role: "user",
+				origin: "language-preference",
+				content: `Language Preference:\nYou should always speak and think in the "${languageName}" (${options.language}) language unless the user gives you instructions below to do otherwise.`,
+			},
+		])
 	}
 
 	// Add global instructions first
 	if (typeof globalCustomInstructions === "string" && globalCustomInstructions.trim()) {
-		sections.push(`Global Instructions:\n${globalCustomInstructions.trim()}`)
+		sections.push([
+			{
+				role: "user",
+				origin: "global-custom-instructions",
+				content: `Global Instructions:\n${globalCustomInstructions.trim()}`,
+			},
+		])
 	}
 
 	// Add mode-specific instructions after
 	if (typeof modeCustomInstructions === "string" && modeCustomInstructions.trim()) {
-		sections.push(`Mode-specific Instructions:\n${modeCustomInstructions.trim()}`)
+		const modeInstructions = modeCustomInstructions.trim()
+		const builtInInstructions = DEFAULT_MODES.find((modeConfig) => modeConfig.slug === mode)?.customInstructions
+		const isBuiltInInstructions =
+			options.modeInstructionAuthority === "builtin" ||
+			(options.modeInstructionAuthority === undefined &&
+				(mode === "code" || mode === "architect") &&
+				typeof builtInInstructions === "string" &&
+				modeInstructions === builtInInstructions.trim())
+		sections.push([
+			{
+				role: isBuiltInInstructions ? "developer" : "user",
+				origin: isBuiltInInstructions ? "built-in-mode-instructions" : "custom-mode-instructions",
+				content: `Mode-specific Instructions:\n${modeInstructions}`,
+			},
+		])
 	}
 
 	// Add rules - include both mode-specific and generic rules if they exist
-	const rules = []
+	const rules: CustomInstructionPart[] = []
 
 	// Add mode-specific rules first if they exist
 	if (modeRuleContent && modeRuleContent.trim()) {
 		if (usedRuleFile.includes(path.join(".roo", `rules-${mode}`))) {
-			rules.push(modeRuleContent.trim())
+			rules.push({ role: "user", origin: "mode-rules", content: modeRuleContent.trim() })
 		} else {
-			rules.push(`# Rules from ${usedRuleFile}:\n${modeRuleContent}`)
+			rules.push({
+				role: "user",
+				origin: "mode-rules",
+				content: `# Rules from ${usedRuleFile}:\n${modeRuleContent}`,
+			})
 		}
 	}
 
 	if (options.alphaIgnoreInstructions) {
-		rules.push(options.alphaIgnoreInstructions)
+		rules.push({ role: "user", origin: "alpha-ignore", content: options.alphaIgnoreInstructions })
 	}
 
 	// Add AGENTS.md content if enabled (default: true)
@@ -605,35 +758,53 @@ export async function addCustomInstructions(
 		const agentRulesContent =
 			options.agentInstructionSources !== undefined
 				? formatApplicableAgentInstructionSources(cwd, options.agentInstructionSources)
-				: await loadAllAgentRulesFiles(cwd, directories.agents)
+				: await loadAllAgentRulesFiles(
+						cwd,
+						directories.agents,
+						directories.projectAgents,
+						directories.agentTrustRoot,
+					)
 		if (agentRulesContent && agentRulesContent.trim()) {
-			rules.push(agentRulesContent.trim())
+			rules.push({ role: "user", origin: "agent-rules", content: agentRulesContent.trim() })
 		}
 	}
 
 	// Add generic rules
 	const genericRuleContent = await loadRuleFilesFromDirectories(cwd, directories)
 	if (genericRuleContent && genericRuleContent.trim()) {
-		rules.push(genericRuleContent.trim())
+		rules.push({ role: "user", origin: "generic-rules", content: genericRuleContent.trim() })
 	}
 
 	if (rules.length > 0) {
-		sections.push(`Rules:\n\n${rules.join("\n\n")}`)
+		sections.push([
+			{ role: "user", origin: "rules-label", content: "Rules:\n\n" },
+			...rules.flatMap<CustomInstructionPart>((rule, index) =>
+				index === 0 ? [rule] : [{ role: "user", origin: "section-separator", content: "\n\n" }, rule],
+			),
+		])
 	}
 
-	const joinedSections = sections.join("\n\n")
+	if (sections.length === 0) return []
 
-	return joinedSections
-		? `
-====
+	return [
+		{ role: "user", origin: "prompt-wrapper", content: userInstructionsPrefix },
+		...sections.flatMap<CustomInstructionPart>((section, index) =>
+			index === 0 ? section : [{ role: "user", origin: "section-separator", content: "\n\n" }, ...section],
+		),
+		{ role: "user", origin: "prompt-wrapper", content: userInstructionsSuffix },
+	]
+}
 
-USER'S CUSTOM INSTRUCTIONS
-
-The following additional instructions are provided by the user, and should be followed to the best of your ability.
-
-${joinedSections}
-`
-		: ""
+export async function addCustomInstructions(
+	modeCustomInstructions: string,
+	globalCustomInstructions: string,
+	cwd: string,
+	mode: string,
+	options: Parameters<typeof addCustomInstructionParts>[4] = {},
+): Promise<string> {
+	return renderCustomInstructionParts(
+		await addCustomInstructionParts(modeCustomInstructions, globalCustomInstructions, cwd, mode, options),
+	)
 }
 
 /**

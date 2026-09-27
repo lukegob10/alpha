@@ -2,6 +2,8 @@ import { getSharedToolUseSection } from "../tool-use"
 import { getRulesSection } from "../rules"
 import { getObjectiveSection } from "../objective"
 import { getToolUseGuidelinesSection } from "../tool-use-guidelines"
+import { getCapabilitiesSection } from "../capabilities"
+import { getNativeTools } from "../../tools/native-tools"
 
 describe("getSharedToolUseSection", () => {
 	it.each([undefined, "explore", "review", "worker"] as const)(
@@ -23,6 +25,24 @@ describe("getSharedToolUseSection", () => {
 		expect(section).toContain("Do not include XML markup or examples")
 	})
 
+	it("uses update_plan proportionately in the primary Code surface", () => {
+		const code = getSharedToolUseSection()
+		const plan = getSharedToolUseSection(undefined, false, false, undefined, true)
+
+		expect(code).toContain("update_plan")
+		expect(code).toContain("Keep one step in progress")
+		expect(code).toContain("Skip it for simple tasks")
+		expect(plan).not.toContain("When update_plan is available")
+	})
+
+	it("conditions Plan agent coordination on the supplied tool surface", () => {
+		const toolUse = getSharedToolUseSection(undefined, false, false, undefined, true)
+		const capabilities = getCapabilitiesSection("F:/workspace", undefined, undefined, false, undefined, true)
+
+		expect(toolUse).toContain("managed read-only agent coordination when its tools are supplied for this turn")
+		expect(capabilities).toContain("only when agent lifecycle controls are supplied for this turn")
+	})
+
 	it("keeps batching in the shared guidelines", () => {
 		const section = getToolUseGuidelinesSection()
 
@@ -38,21 +58,108 @@ describe("getSharedToolUseSection", () => {
 	it("keeps primary delegation guidance bounded to entry points", () => {
 		const section = getSharedToolUseSection()
 
-		expect(section).toContain("new_task is a blocking delegation boundary")
-		expect(section).toContain("must be called alone")
-		expect(section).toContain("Independent spawn_agent calls may be batched together")
-		for (const lifecycleTool of [
-			"list_agents",
-			"wait_agent",
-			"send_message",
+		expect(section).toContain("spawn_agent is nonblocking")
+		expect(section).toContain("Use wait_agent alone when you need to wait for a child")
+		expect(section).toContain("use interrupt_agent to stop a retained child")
+	})
+
+	it.each([
+		{
+			name: "primary Code",
+			prompt: () =>
+				[
+					getSharedToolUseSection(),
+					getToolUseGuidelinesSection(),
+					getRulesSection("F:/workspace"),
+					getCapabilitiesSection("F:/workspace"),
+					getObjectiveSection(),
+				].join("\n"),
+			tools: () => getNativeTools(),
+		},
+		{
+			name: "Plan",
+			prompt: () =>
+				[
+					getSharedToolUseSection(undefined, false, false, undefined, true),
+					getToolUseGuidelinesSection(undefined, true),
+					getRulesSection("F:/workspace", undefined, true),
+					getCapabilitiesSection("F:/workspace", undefined, undefined, false, undefined, true),
+					getObjectiveSection(true),
+				].join("\n"),
+			tools: () => getNativeTools({ planMode: true }),
+		},
+		{
+			name: "managed Worker",
+			prompt: () =>
+				[
+					getSharedToolUseSection("worker"),
+					getToolUseGuidelinesSection("worker"),
+					getRulesSection("F:/workspace", {
+						todoListEnabled: true,
+						useAgentRules: true,
+						newTaskRequireTodos: false,
+						subagentRole: "worker",
+					}),
+					getCapabilitiesSection("F:/workspace", undefined, "worker"),
+				].join("\n"),
+			tools: () => getNativeTools({ taskKind: "subagent" }),
+		},
+	])("keeps explicit $name tool references within the supplied schemas", ({ prompt: buildPrompt, tools }) => {
+		const prompt = buildPrompt()
+		const suppliedNames = new Set(tools().flatMap((tool) => (tool.type === "function" ? [tool.function.name] : [])))
+		const knownNames = [
+			"apply_patch",
+			"exec_command",
 			"followup_task",
 			"interrupt_agent",
-			"cancel_agent",
-			"close_agent",
-			"delegate_task",
-		]) {
-			expect(section).not.toContain(lifecycleTool)
+			"list_agents",
+			"request_user_input",
+			"send_message",
+			"spawn_agent",
+			"update_plan",
+			"wait_agent",
+			"write_stdin",
+		]
+		const referencedNames = knownNames.filter((name) => new RegExp(`\\b${name}\\b`).test(prompt))
+
+		for (const name of referencedNames) {
+			expect(suppliedNames, `${name} is named in the prompt`).toContain(name)
 		}
+		expect(prompt).not.toMatch(/\b(?:read_file|list_files|search_files|codebase_search)\b/)
+	})
+
+	it("removes retired tool names from current prompt overlays", () => {
+		const prompts = [
+			getSharedToolUseSection(),
+			getSharedToolUseSection("worker"),
+			getSharedToolUseSection(undefined, false, false, undefined, true),
+			getRulesSection("F:/workspace"),
+			getRulesSection("F:/workspace", undefined, true),
+			getRulesSection("F:/workspace", {
+				todoListEnabled: true,
+				useAgentRules: true,
+				newTaskRequireTodos: false,
+				subagentRole: "worker",
+			}),
+			getToolUseGuidelinesSection(),
+			getToolUseGuidelinesSection("worker"),
+			getToolUseGuidelinesSection(undefined, true),
+			getCapabilitiesSection("F:/workspace"),
+			getCapabilitiesSection("F:/workspace", undefined, "worker"),
+			getCapabilitiesSection("F:/workspace", undefined, undefined, false, undefined, true),
+			getObjectiveSection(),
+		].join("\n")
+
+		for (const retiredName of [
+			"close_agent",
+			"new_task",
+			"attempt_completion",
+			"manage_command",
+			"ask_followup_question",
+		]) {
+			expect(prompts).not.toContain(retiredName)
+		}
+		expect(prompts).not.toMatch(/\bshell (?:tool|search|accepts|is limited)\b/)
 	})
 
 	it("keeps root work local under explicit-only delegation unless the user requested it", () => {
@@ -128,8 +235,8 @@ describe("getSharedToolUseSection", () => {
 	it("routes managed final answers through review and retains pending work", () => {
 		const section = getSharedToolUseSection("review")
 
-		expect(section).toContain("managed subagents may return a final assistant answer or use attempt_completion")
-		expect(section).toContain("Both paths preserve parent review and verification")
+		expect(section).toContain("provide a concise visible final assistant answer")
+		expect(section).toContain("This preserves parent review and verification")
 		expect(section).toContain("Continue when tools, steering, or required work remain pending")
 	})
 

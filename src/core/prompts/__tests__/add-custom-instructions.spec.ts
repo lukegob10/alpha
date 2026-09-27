@@ -58,9 +58,16 @@ vi.mock("../sections/modes", () => ({
 // Mock the custom instructions
 vi.mock("../sections/custom-instructions", () => {
 	const addCustomInstructions = vi.fn()
+	const addCustomInstructionParts = vi.fn(async (...args: any[]) => {
+		const content = await addCustomInstructions(...args)
+		return content ? [{ role: "user", origin: "generic-rules", content }] : []
+	})
 	return {
 		addCustomInstructions,
-		__setMockImplementation: (impl: any) => {
+		addCustomInstructionParts,
+		renderCustomInstructionParts: (parts: Array<{ content: string }>) =>
+			parts.map(({ content }) => content).join(""),
+		__setMockImplementation: (impl: (...args: any[]) => unknown) => {
 			addCustomInstructions.mockImplementation(impl)
 		},
 	}

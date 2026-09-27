@@ -162,6 +162,104 @@ describe("VertexHandler", () => {
 			])
 		})
 
+		it("propagates caller cancellation while a streamed iterator is waiting for its next chunk", async () => {
+			let markNextStarted!: () => void
+			const nextStarted = new Promise<void>((resolve) => {
+				markNextStarted = resolve
+			})
+			const next = vitest.fn(() => new Promise<IteratorResult<never>>(() => markNextStarted()))
+			const returnIterator = vitest.fn().mockResolvedValue({ done: true, value: undefined })
+			const generateContentStream = handler["client"].models.generateContentStream as any
+			generateContentStream.mockResolvedValue({
+				[Symbol.asyncIterator]() {
+					return { next, return: returnIterator }
+				},
+			})
+			const controller = new AbortController()
+			const stream = handler.createMessage(systemPrompt, mockMessages, {
+				taskId: "gemini-cancelled-stream",
+				signal: controller.signal,
+			})
+			const pendingRead = stream.next()
+			await nextStarted
+
+			controller.abort(new Error("fixture cancelled"))
+
+			await expect(pendingRead).rejects.toThrow("fixture cancelled")
+			expect(generateContentStream).toHaveBeenCalledOnce()
+			expect(generateContentStream.mock.calls[0]?.[0].config.abortSignal.aborted).toBe(true)
+			expect(returnIterator).toHaveBeenCalledOnce()
+		})
+
+		it("preserves Gemini 429 retry metadata for provider-neutral retry policy", async () => {
+			const quotaError = Object.assign(new Error("quota exceeded"), {
+				status: 429,
+				errorDetails: [{ retryDelay: "2s" }],
+			})
+			;(handler["client"].models.generateContentStream as any).mockRejectedValue(quotaError)
+			const stream = handler.createMessage(systemPrompt, mockMessages)
+
+			await expect(stream.next()).rejects.toMatchObject({
+				status: 429,
+				statusCode: 429,
+				retryable: true,
+				retryCategory: "rate-limit",
+				errorDetails: [{ retryDelay: "2s" }],
+			})
+			expect(handler["client"].models.generateContentStream).toHaveBeenCalledOnce()
+		})
+
+		it("marks a complete streamed Gemini function call before later output", async () => {
+			;(handler["client"].models.generateContentStream as any).mockResolvedValue({
+				async *[Symbol.asyncIterator]() {
+					yield {
+						candidates: [
+							{
+								content: {
+									parts: [
+										{
+											functionCall: {
+												id: "gemini-list-1",
+												name: "list_files",
+												args: { path: "." },
+											},
+										},
+									],
+								},
+							},
+						],
+					}
+					yield {
+						candidates: [
+							{ content: { parts: [{ text: "The directory was inspected." }] }, finishReason: "STOP" },
+						],
+					}
+				},
+			})
+			const chunks: ApiStreamChunk[] = []
+
+			for await (const chunk of handler.createMessage(systemPrompt, mockMessages, {
+				taskId: "gemini-completed-tool-item",
+				tools: [
+					{
+						type: "function",
+						function: {
+							name: "list_files",
+							description: "List one directory",
+							parameters: { type: "object", properties: { path: { type: "string" } } },
+						},
+					},
+				],
+			})) {
+				chunks.push(chunk)
+			}
+
+			const toolCallEndIndex = chunks.findIndex((chunk) => chunk.type === "tool_call_end")
+			const tailIndex = chunks.findIndex((chunk) => chunk.type === "text")
+			expect(chunks[toolCallEndIndex]).toEqual({ type: "tool_call_end", id: "gemini-list-1" })
+			expect(tailIndex).toBeGreaterThan(toolCallEndIndex)
+		})
+
 		it("omits unverified thinking configuration for an unknown Gemini model ID", async () => {
 			const unknownModelId = "gemini-new-preview-model"
 			const generateContentStream = vitest.fn().mockResolvedValue({
@@ -250,6 +348,7 @@ describe("VertexHandler", () => {
 				{ type: "text", text: "Completed response" },
 				{ type: "reasoning", text: "Reasoning trace" },
 				{ type: "tool_call", id: "vertex-call-123", name: "read_file", arguments: '{"path":"src/index.ts"}' },
+				{ type: "tool_call_end", id: "vertex-call-123" },
 				{ type: "grounding", sources: [{ title: "Example", url: "https://example.com" }] },
 				expect.objectContaining({
 					type: "usage",

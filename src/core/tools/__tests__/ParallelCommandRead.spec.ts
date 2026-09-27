@@ -167,6 +167,73 @@ describe("isolated command reads", () => {
 		)
 	})
 
+	it("prepares an exec_command rg read from its native cmd and workdir fields", async () => {
+		const command = "rg -n needle src"
+		context.call = {
+			...context.call,
+			name: "exec_command",
+			nativeArgs: { cmd: command, workdir: ".", yield_time_ms: 10_000 },
+		}
+
+		const read = await prepareParallelCommand(context, policy)
+
+		expect(read).toMatchObject({ scope: root })
+		expect(context.callbacks.askApproval).toHaveBeenCalledExactlyOnceWith("command", command, { text: root })
+		const finalize = await read!.run!(context.callbacks)
+		expect(execa).toHaveBeenCalledWith(
+			expect.stringContaining("rg"),
+			expect.arrayContaining(["--no-config", "-n", "needle", "src"]),
+			expect.objectContaining({ cwd: root, timeout: 10_000, shell: false }),
+		)
+		await finalize()
+	})
+
+	it("allows isolated rg reads when only an unrelated Git environment setting is present", async () => {
+		context.call = {
+			...context.call,
+			name: "exec_command",
+			nativeArgs: { cmd: "rg -n needle src" },
+		}
+		vi.stubEnv("GIT_PAGER", "custom")
+
+		const read = await prepareParallelCommand(context, policy)
+
+		expect(read).toMatchObject({ scope: root })
+		const finalize = await read!.run!(context.callbacks)
+		expect(execa).toHaveBeenCalledExactlyOnceWith(
+			expect.any(String),
+			expect.arrayContaining(["--no-config", "-n", "needle", "src"]),
+			expect.objectContaining({ cwd: root, shell: false }),
+		)
+		await finalize()
+	})
+
+	it("keeps non-read exec_command calls on the ordinary path without approval or process start", async () => {
+		context.call = {
+			...context.call,
+			name: "exec_command",
+			nativeArgs: { cmd: "node -e \\\"require('fs').writeFileSync('unsafe.txt', 'x')\\\"" },
+		}
+
+		expect(await prepareParallelCommand(context, policy)).toBeUndefined()
+		expect(context.callbacks.askApproval).not.toHaveBeenCalled()
+		expect(execa).not.toHaveBeenCalled()
+	})
+
+	it("rechecks changed approval for native exec_command before starting the read process", async () => {
+		context.call = {
+			...context.call,
+			name: "exec_command",
+			nativeArgs: { cmd: "rg -n needle src" },
+		}
+		const read = await prepareParallelCommand(context, policy)
+		expect(read).toBeDefined()
+
+		state.deniedCommands.push("rg")
+		await expect(read!.run!(context.callbacks)).rejects.toThrow("approval or read scope changed")
+		expect(execa).not.toHaveBeenCalled()
+	})
+
 	it("associates output with the command approval when approval feedback follows it", async () => {
 		context.task.clineMessages.push({ ts: 124, type: "say", say: "user_feedback", text: "Proceed" })
 		Object.defineProperty(context.task, "lastMessageTs", { value: 124 })
@@ -213,10 +280,13 @@ describe("isolated command reads", () => {
 		},
 	)
 
-	it.each(["RIPGREP_CONFIG_PATH", "GIT_CONFIG_PARAMETERS", "GIT_TRACE", "GIT_REDIRECT_STDOUT"])(
+	it.each(["RIPGREP_CONFIG_PATH", "GIT_CONFIG_PARAMETERS", "GIT_TRACE", "GIT_REDIRECT_STDOUT", "GIT_PAGER"])(
 		"keeps environment-configured %s commands serial",
 		async (key) => {
 			vi.stubEnv(key, "custom")
+			if (key === "RIPGREP_CONFIG_PATH") {
+				context.call.nativeArgs = { command: "rg -n needle src" }
+			}
 			expect(await prepareParallelCommand(context, policy)).toBeUndefined()
 			expect(context.callbacks.askApproval).not.toHaveBeenCalled()
 			expect(execa).not.toHaveBeenCalled()

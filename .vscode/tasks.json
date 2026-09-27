@@ -5,7 +5,8 @@
 	"tasks": [
 		{
 			"label": "watch",
-			"dependsOn": ["watch:webview", "watch:bundle", "watch:tsc"],
+			"dependsOn": ["watch:bundle", "watch:webview", "watch:tsc"],
+			"dependsOrder": "sequence",
 			"presentation": {
 				"reveal": "never"
 			},

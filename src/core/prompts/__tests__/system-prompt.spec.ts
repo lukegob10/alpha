@@ -34,20 +34,35 @@ vi.mock("os", () => ({
 }))
 
 vi.mock("os-name", () => ({
-	default: () => "Linux",
+	default: vi.fn(() => "Linux"),
 }))
 
 vi.mock("fs/promises")
 
 import * as vscode from "vscode"
+import osName from "os-name"
+import { Tiktoken } from "tiktoken/lite"
+import o200kBase from "tiktoken/encoders/o200k_base"
 
 import { ModeConfig, PLAN_MODE_INSTRUCTIONS } from "@alpha-code/types"
 
-import { SYSTEM_PROMPT } from "../system"
+import {
+	CODEX_COLLABORATION_MODE_ORIGIN,
+	CODEX_MULTI_AGENT_ROLE_ORIGIN,
+	renderSystemPromptFragments,
+	SYSTEM_PROMPT,
+	SYSTEM_PROMPT_FRAGMENTS,
+} from "../system"
+import {
+	CODEX_MODEL_INSTRUCTIONS,
+	DEFAULT_CODEX_MODEL_PROMPT,
+	resolveCodexModelPrompt,
+} from "../codex-model-instructions"
+import { CODEX_RUNTIME_PROMPT_SHA256, resolveCodexRuntimeInstructions } from "../codex-runtime-instructions"
 import { McpHub } from "../../../services/mcp/McpHub"
 import { defaultMode, defaultModeSlug, Mode, planModeSlug } from "../../../shared/modes"
 import "../../../utils/path"
-import { addCustomInstructions } from "../sections/custom-instructions"
+import { addCustomInstructionParts } from "../sections/custom-instructions"
 import { MultiSearchReplaceDiffStrategy } from "../../diff/strategies/multi-search-replace"
 
 // Mock the sections
@@ -58,8 +73,18 @@ vi.mock("../sections/modes", () => ({
 // Mock the custom instructions
 vi.mock("../sections/custom-instructions", () => {
 	const addCustomInstructions = vi.fn()
+	const addCustomInstructionParts = vi.fn(async (...args: unknown[]) => [
+		{
+			role: "user",
+			origin: "global-custom-instructions",
+			content: await addCustomInstructions(...args),
+		},
+	])
 	return {
 		addCustomInstructions,
+		addCustomInstructionParts,
+		renderCustomInstructionParts: (parts: readonly { content: string }[]) =>
+			parts.map(({ content }) => content).join(""),
 		__setMockImplementation: (impl: any) => {
 			addCustomInstructions.mockImplementation(impl)
 		},
@@ -228,6 +253,390 @@ describe("SYSTEM_PROMPT", () => {
 		expect(prompt).toMatchFileSnapshot("./__snapshots__/system-prompt/consistent-system-prompt.snap")
 	})
 
+	it("separates user instruction context from base prompt sections", async () => {
+		const userContext = "\nUSER_CONTEXT_MARKER"
+		vi.mocked(addCustomInstructionParts).mockResolvedValueOnce([
+			{ role: "user", origin: "global-custom-instructions", content: userContext },
+		])
+
+		const fragments = await SYSTEM_PROMPT_FRAGMENTS(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			planModeSlug,
+			undefined,
+			undefined,
+			undefined,
+			experiments,
+		)
+
+		expect(fragments.userContext).toBe(userContext)
+		expect(fragments.systemPrefix).toContain("SYSTEM INFORMATION")
+		expect(fragments.systemPrefix).not.toContain("USER_CONTEXT_MARKER")
+		expect(fragments.systemSuffix).toBe(`\n\n<collaboration_mode>${PLAN_MODE_INSTRUCTIONS}\n</collaboration_mode>`)
+		expect(fragments.instructionParts.map(({ content }) => content).join("")).toBe(
+			`${fragments.systemPrefix}${userContext}${fragments.systemSuffix}`,
+		)
+		expect(fragments.instructionParts.map(({ role }) => role)).toEqual([
+			"developer",
+			"developer",
+			"developer",
+			"developer",
+			"user",
+			"developer",
+		])
+		expect(renderSystemPromptFragments(fragments)).toBe(
+			`${fragments.systemPrefix}${userContext}${fragments.systemSuffix}`,
+		)
+	})
+
+	it.each(["ask", "auto", "bypass"] as const)("uses the captured %s approval mode in the prompt", async (mode) => {
+		const fragments = await SYSTEM_PROMPT_FRAGMENTS(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			defaultModeSlug,
+			undefined,
+			undefined,
+			undefined,
+			experiments,
+			undefined,
+			undefined,
+			{ todoListEnabled: true, useAgentRules: false, newTaskRequireTodos: false, approvalMode: mode },
+		)
+		const approvalParts = fragments.instructionParts.filter(({ origin }) => origin === "approval-context")
+
+		expect(approvalParts).toHaveLength(1)
+		expect(approvalParts[0]?.content).toContain(
+			`The current approval mode is ${mode[0].toUpperCase()}${mode.slice(1)}.`,
+		)
+		expect(approvalParts[0]?.content).not.toContain("sandbox")
+		expect(fragments.instructionParts.map(({ content }) => content).join("")).toBe(
+			renderSystemPromptFragments(fragments),
+		)
+	})
+
+	it("captures the system environment as an identified fragment for each prompt assembly", async () => {
+		vi.mocked(osName).mockReturnValueOnce("Linux first capture").mockReturnValueOnce("Linux next capture")
+
+		const first = await SYSTEM_PROMPT_FRAGMENTS(mockContext, "/test/path", false, undefined, undefined, "code")
+		const next = await SYSTEM_PROMPT_FRAGMENTS(mockContext, "/test/path", false, undefined, undefined, "code")
+		const firstEnvironmentParts = first.instructionParts.filter(({ origin }) => origin === "system-environment")
+		const nextEnvironmentParts = next.instructionParts.filter(({ origin }) => origin === "system-environment")
+
+		expect(firstEnvironmentParts).toHaveLength(1)
+		expect(firstEnvironmentParts[0]).toMatchObject({
+			role: "developer",
+			content: expect.stringContaining("Operating System: Linux first capture"),
+		})
+		expect(firstEnvironmentParts[0]?.content).toContain("Default Shell: /bin/zsh")
+		expect(firstEnvironmentParts[0]?.content).toContain("Home Directory: /home/user")
+		expect(nextEnvironmentParts[0]?.content).toContain("Operating System: Linux next capture")
+		expect(first.instructionParts.map(({ content }) => content).join("")).toBe(
+			`${first.systemPrefix}${first.userContext}${first.systemSuffix}`,
+		)
+		expect(renderSystemPromptFragments(first)).toContain("# Alpha Tickets")
+		expect(renderSystemPromptFragments(first).toLowerCase()).not.toContain("sandbox")
+	})
+
+	it("selects the exact Codex base and appends Alpha tool, Tickets, and runtime fragments", async () => {
+		const fragments = await SYSTEM_PROMPT_FRAGMENTS(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			defaultModeSlug,
+			undefined,
+			undefined,
+			undefined,
+			experiments,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			"gpt-5.6-terra",
+		)
+		const rendered = renderSystemPromptFragments(fragments)
+		const codexPart = fragments.instructionParts[0]
+		const featurePart = fragments.instructionParts.find(({ origin }) => origin === "alpha-feature-overlay")
+		const environmentPart = fragments.instructionParts.find(({ origin }) => origin === "system-environment")
+		const userContextPart = fragments.instructionParts.find(({ origin }) => origin === "global-custom-instructions")
+
+		expect(codexPart).toMatchObject({
+			role: "developer",
+			origin: "codex-model-instructions",
+			content: CODEX_MODEL_INSTRUCTIONS["gpt-5.6"],
+		})
+		expect(rendered.startsWith(CODEX_MODEL_INSTRUCTIONS["gpt-5.6"])).toBe(true)
+		expect(featurePart?.content).toContain("ALPHA TOOL CONTRACT")
+		expect(featurePart?.content).toContain("# Alpha Tickets")
+		expect(featurePart?.content).toContain("MODES")
+		expect(environmentPart?.role).toBe("developer")
+		expect(rendered).not.toContain("FROZEN INSTRUCTION SNAPSHOT")
+		expect(rendered.toLowerCase()).not.toContain("sandbox")
+		expect(fragments.instructionParts.map(({ content }) => content).join("")).toBe(rendered)
+		expect(rendered.indexOf(CODEX_MODEL_INSTRUCTIONS["gpt-5.6"])).toBeLessThan(
+			rendered.indexOf("ALPHA TOOL CONTRACT"),
+		)
+		expect(rendered.indexOf("ALPHA TOOL CONTRACT")).toBeLessThan(rendered.indexOf("SYSTEM INFORMATION"))
+		expect(rendered.indexOf("SYSTEM INFORMATION")).toBeLessThan(rendered.indexOf("USER'S CUSTOM INSTRUCTIONS"))
+		expect(userContextPart?.role).toBe("user")
+	})
+
+	it.each([
+		"gpt-6-astra",
+		"gpt-6-sol",
+		"gpt-6-luna",
+		"gpt-5.6-sol",
+		"gpt-5.6-terra",
+		"gpt-5.6-luna",
+		"gpt-daybreak-blue-latest",
+		"gpt-daybreak-red-latest",
+		"gpt-5.5",
+		"gpt-5.4",
+	])("inserts the exact pinned base bytes for recognized model %s", async (modelId) => {
+		const fragments = await SYSTEM_PROMPT_FRAGMENTS(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			defaultModeSlug,
+			undefined,
+			undefined,
+			undefined,
+			experiments,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			modelId,
+		)
+
+		expect(fragments.instructionParts[0]?.content).toBe(resolveCodexModelPrompt(modelId).instructions)
+	})
+
+	it.each(["claude-sonnet-4.6", "gemini-2.5-pro"])(
+		"uses GPT-6 Sol base and matching Codex/Alpha fragments for provider model id %s",
+		async (modelId) => {
+			const build = async (requestedModelId: string) =>
+				SYSTEM_PROMPT_FRAGMENTS(
+					mockContext,
+					"/test/path",
+					false,
+					undefined,
+					undefined,
+					defaultModeSlug,
+					undefined,
+					undefined,
+					undefined,
+					experiments,
+					undefined,
+					undefined,
+					{
+						todoListEnabled: true,
+						useAgentRules: true,
+						newTaskRequireTodos: false,
+						approvalMode: "auto",
+						codexRootDelegationAvailable: true,
+					},
+					undefined,
+					requestedModelId,
+				)
+			const fragments = await build(modelId)
+			const gpt6SolFragments = await build("gpt-6-sol")
+
+			expect(fragments.instructionParts[0]?.content).toBe(CODEX_MODEL_INSTRUCTIONS[DEFAULT_CODEX_MODEL_PROMPT])
+			expect(fragments.instructionParts.map(({ role, origin, content }) => ({ role, origin, content }))).toEqual(
+				gpt6SolFragments.instructionParts.map(({ role, origin, content }) => ({ role, origin, content })),
+			)
+		},
+	)
+
+	it("uses Default collaboration guidance in Code and keeps Plan mode Alpha-owned", async () => {
+		const code = await SYSTEM_PROMPT_FRAGMENTS(mockContext, "/test/path", false, undefined, undefined, "code")
+		const plan = await SYSTEM_PROMPT_FRAGMENTS(mockContext, "/test/path", false, undefined, undefined, planModeSlug)
+		const codeModeParts = code.instructionParts.filter(({ origin }) => origin === CODEX_COLLABORATION_MODE_ORIGIN)
+		const planModeParts = plan.instructionParts.filter(({ origin }) => origin === CODEX_COLLABORATION_MODE_ORIGIN)
+
+		expect(codeModeParts).toHaveLength(1)
+		expect(codeModeParts[0]?.content).toBe(
+			"\n\n<collaboration_mode>" +
+				resolveCodexRuntimeInstructions("gpt-6-sol", "default").collaborationModeInstructions +
+				"</collaboration_mode>",
+		)
+		expect(planModeParts).toHaveLength(1)
+		expect(planModeParts[0]?.role).toBe("developer")
+		expect(planModeParts[0]?.content).toBe(
+			`\n\n<collaboration_mode>${PLAN_MODE_INSTRUCTIONS}\n</collaboration_mode>`,
+		)
+		expect(renderSystemPromptFragments(plan).trimEnd().endsWith("</collaboration_mode>")).toBe(true)
+	})
+
+	it("marks Default mode even when a selected model has no catalog collaboration text", async () => {
+		const fragments = await SYSTEM_PROMPT_FRAGMENTS(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			"code",
+			undefined,
+			undefined,
+			undefined,
+			experiments,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			"gpt-5.6-sol",
+		)
+
+		expect(
+			fragments.instructionParts.find(({ origin }) => origin === CODEX_COLLABORATION_MODE_ORIGIN),
+		).toMatchObject({
+			role: "developer",
+			content: "\n\n<collaboration_mode># Collaboration Mode: Default\n</collaboration_mode>",
+		})
+	})
+
+	it("keeps Plan agent guidance conditional when the captured surface has no spawn_agent", async () => {
+		const fragments = await SYSTEM_PROMPT_FRAGMENTS(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			planModeSlug,
+			undefined,
+			undefined,
+			undefined,
+			experiments,
+			undefined,
+			undefined,
+			{
+				todoListEnabled: true,
+				useAgentRules: false,
+				newTaskRequireTodos: false,
+				codexRootDelegationAvailable: false,
+			},
+		)
+		const prompt = renderSystemPromptFragments(fragments)
+
+		expect(
+			fragments.instructionParts.filter(({ origin }) => origin === CODEX_MULTI_AGENT_ROLE_ORIGIN),
+		).toHaveLength(0)
+		expect(prompt).toContain("When agent lifecycle tools are supplied for this turn")
+		expect(prompt).toContain("managed read-only agent coordination when its tools are supplied for this turn")
+		expect(prompt).not.toContain("You may coordinate managed Explore or Review sub-agents")
+	})
+
+	it("adds a root multi-agent role only when captured delegation capability is enabled", async () => {
+		const build = (codexRootDelegationAvailable?: boolean) =>
+			SYSTEM_PROMPT_FRAGMENTS(
+				mockContext,
+				"/test/path",
+				false,
+				undefined,
+				undefined,
+				defaultModeSlug,
+				undefined,
+				undefined,
+				undefined,
+				experiments,
+				undefined,
+				undefined,
+				{
+					todoListEnabled: true,
+					useAgentRules: true,
+					newTaskRequireTodos: false,
+					codexRootDelegationAvailable,
+				},
+			)
+		const withoutDelegation = await build(undefined)
+		const withDelegation = await build(true)
+
+		expect(
+			withoutDelegation.instructionParts.find(({ origin }) => origin === CODEX_MULTI_AGENT_ROLE_ORIGIN),
+		).toBeUndefined()
+		expect(
+			withDelegation.instructionParts.find(({ origin }) => origin === CODEX_MULTI_AGENT_ROLE_ORIGIN)?.content,
+		).toBe(
+			"\n\n<multi_agent_role>" +
+				resolveCodexRuntimeInstructions("gpt-6-sol", "default", "root").multiAgentRoleInstructions +
+				"</multi_agent_role>",
+		)
+	})
+
+	it("adds the subagent role only when the child's captured authority permits delegation", async () => {
+		const build = (subagentCanDelegate: boolean) =>
+			SYSTEM_PROMPT_FRAGMENTS(
+				mockContext,
+				"/test/path",
+				false,
+				undefined,
+				undefined,
+				defaultModeSlug,
+				undefined,
+				undefined,
+				undefined,
+				experiments,
+				undefined,
+				undefined,
+				{
+					todoListEnabled: true,
+					useAgentRules: true,
+					newTaskRequireTodos: false,
+					subagentRole: "explore",
+					subagentCanDelegate,
+				},
+			)
+		const restricted = await build(false)
+		const delegating = await build(true)
+
+		expect(
+			restricted.instructionParts.find(({ origin }) => origin === CODEX_MULTI_AGENT_ROLE_ORIGIN),
+		).toBeUndefined()
+		expect(
+			delegating.instructionParts.find(({ origin }) => origin === CODEX_MULTI_AGENT_ROLE_ORIGIN)?.content,
+		).toBe(
+			"\n\n<multi_agent_role>" +
+				resolveCodexRuntimeInstructions("gpt-6-sol", "default", "subagent").multiAgentRoleInstructions +
+				"</multi_agent_role>",
+		)
+	})
+
+	it("keeps the selected Codex base plus Alpha additions below blind append cost", async () => {
+		const fragments = await SYSTEM_PROMPT_FRAGMENTS(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			defaultModeSlug,
+			undefined,
+			undefined,
+			undefined,
+			experiments,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			"gpt-5.6-sol",
+		)
+		const encoder = new Tiktoken(o200kBase.bpe_ranks, o200kBase.special_tokens, o200kBase.pat_str)
+		const newTokenCount = encoder.encode(renderSystemPromptFragments(fragments), undefined, []).length
+
+		// Previous Alpha-only base prompt: 2,158 o200k tokens. Blindly appending the 3,552-token GPT-5.6 base costs 5,710.
+		expect(newTokenCount).toBe(4179)
+		expect(newTokenCount).toBeLessThan(5710)
+	})
+
 	it("should include MCP server info when mcpHub is provided", async () => {
 		mockMcpHub = createMockMcpHub(true)
 
@@ -276,7 +685,7 @@ describe("SYSTEM_PROMPT", () => {
 				{ name: "forbidden-skill", description: "Must not be offered to a managed child" },
 			])
 
-			const prompt = await SYSTEM_PROMPT(
+			const promptFragments = await SYSTEM_PROMPT_FRAGMENTS(
 				mockContext,
 				"/test/path",
 				false,
@@ -299,23 +708,27 @@ describe("SYSTEM_PROMPT", () => {
 				undefined,
 				{ getSkillsForMode } as any,
 			)
+			const prompt = renderSystemPromptFragments(promptFragments)
+			const alphaToolContract =
+				promptFragments.instructionParts.find(({ origin }) => origin === "alpha-feature-overlay")?.content ?? ""
 
-			expect(prompt).not.toContain("MCP servers")
+			expect(prompt).not.toContain("ALPHA MCP TOOLS")
 			expect(prompt).not.toContain("<available_skills>")
 			expect(prompt).not.toContain("MODES")
 			expect(prompt).not.toContain("ask_followup_question")
 			expect(prompt).not.toContain("delegate_task")
 			expect(prompt).not.toContain("new_task")
 			expect(getSkillsForMode).not.toHaveBeenCalled()
-			expect(prompt).toContain("attempt_completion")
+			expect(prompt).toContain("visible final assistant answer")
+			expect(prompt).not.toContain("attempt_completion")
 			expect(prompt).toContain("Current Workspace Directory: /test/path")
-
 			if (subagentRole === "worker") {
 				expect(prompt).toContain("approved write scope")
-				expect(prompt).toContain("shell")
+				expect(alphaToolContract).toContain("exec_command")
+				expect(alphaToolContract).toContain("write_stdin")
 			} else {
 				expect(prompt).toContain("read-only child task")
-				expect(prompt).not.toContain("shell")
+				expect(alphaToolContract).not.toContain("exec_command")
 			}
 		},
 	)
@@ -349,7 +762,7 @@ describe("SYSTEM_PROMPT", () => {
 		expect(prompt.match(/FROZEN_MARKER_721/g)).toHaveLength(1)
 		expect(prompt).toContain(`--- BEGIN FROZEN INSTRUCTION SNAPSHOT ---\n${frozenInstructions}`)
 		expect(prompt).not.toContain("LIVE_INSTRUCTION_MUST_NOT_BE_READ")
-		expect(addCustomInstructions).not.toHaveBeenCalled()
+		expect(addCustomInstructionParts).not.toHaveBeenCalled()
 		expect(prompt).toContain("This child is read-only")
 		expect(prompt).toContain("cannot grant tools")
 		const frozenIndex = prompt.indexOf("FROZEN_MARKER_721")
@@ -380,7 +793,7 @@ describe("SYSTEM_PROMPT", () => {
 			},
 		)
 
-		expect(prompt).toContain("frozen delegation policy is explicit-only")
+		expect(prompt).toContain("Alpha managed delegation is explicit-only")
 		expect(prompt).toContain("Your own judgment that delegation would be useful is not authorization")
 	})
 
@@ -484,8 +897,10 @@ describe("SYSTEM_PROMPT", () => {
 			undefined, // alphaIgnoreInstructions
 		)
 
-		// Role definition should be at the top
-		expect(prompt.indexOf("Custom role definition")).toBeLessThan(prompt.indexOf("TOOL USE"))
+		// The pinned Codex developer base leads; the user-defined role remains in user context.
+		expect(prompt.startsWith("You are Codex")).toBe(true)
+		expect(prompt.indexOf("Custom role definition")).toBeGreaterThan(prompt.indexOf("SYSTEM INFORMATION"))
+		expect(prompt.indexOf("Custom role definition")).toBeLessThan(prompt.indexOf("USER'S CUSTOM INSTRUCTIONS"))
 
 		// Custom instructions should be at the bottom
 		const customInstructionsIndex = prompt.indexOf("Custom mode instructions")
@@ -493,6 +908,24 @@ describe("SYSTEM_PROMPT", () => {
 		expect(customInstructionsIndex).toBeGreaterThan(-1)
 		expect(userInstructionsHeader).toBeGreaterThan(-1)
 		expect(customInstructionsIndex).toBeGreaterThan(userInstructionsHeader)
+		const fragments = await SYSTEM_PROMPT_FRAGMENTS(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			"custom-mode",
+			undefined,
+			customModes,
+			"Global instructions",
+			experiments,
+		)
+		expect(fragments.instructionParts.find(({ origin }) => origin === "custom-role-definition")).toMatchObject({
+			role: "user",
+			origin: "custom-role-definition",
+			content: "Custom role definition",
+		})
+		expect(fragments.instructionParts.map(({ content }) => content).join("")).toBe(prompt)
 	})
 
 	it("should use promptComponent roleDefinition when available", async () => {
@@ -518,10 +951,25 @@ describe("SYSTEM_PROMPT", () => {
 			undefined, // alphaIgnoreInstructions
 		)
 
-		// Role definition from promptComponent should be at the top
-		expect(prompt.indexOf("Custom prompt role definition")).toBeLessThan(prompt.indexOf("TOOL USE"))
+		// A prompt component may add a user-role definition after the pinned developer base.
+		expect(prompt.startsWith("You are Codex")).toBe(true)
+		expect(prompt.indexOf("Custom prompt role definition")).toBeGreaterThan(prompt.indexOf("SYSTEM INFORMATION"))
 		// Should not contain the default mode's role definition
 		expect(prompt).not.toContain(defaultMode.roleDefinition)
+		const fragments = await SYSTEM_PROMPT_FRAGMENTS(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			defaultModeSlug as Mode,
+			customModePrompts,
+		)
+		expect(fragments.instructionParts.find(({ origin }) => origin === "custom-role-definition")).toMatchObject({
+			role: "user",
+			origin: "custom-role-definition",
+			content: "Custom prompt role definition",
+		})
 	})
 
 	it("keeps engineering-specific guidance in Code without duplicating the shared workflow", async () => {
@@ -562,14 +1010,18 @@ describe("SYSTEM_PROMPT", () => {
 		expect(planPrompt).not.toContain("Do not optimize for file count")
 	})
 
-	it.each(["code", "architect", "ask"])("assembles one complete workflow rule in %s mode", async (mode) => {
+	it.each(["code", "architect", "ask"])("uses the pinned base and Alpha mode guidance in %s mode", async (mode) => {
 		const prompt = await SYSTEM_PROMPT(mockContext, "/test/path", false, undefined, undefined, mode)
 
-		expect(prompt.match(/Choose the smallest complete workflow/g)).toHaveLength(1)
-		expect(prompt).toContain("For broad work, preserve all requested coverage")
-		expect(prompt).toContain("relevant content, configuration, scope, and authority remain valid")
-		expect(prompt).toContain("Preserve required checks and fresh reads")
-		expect(prompt).not.toContain("call this tool next")
+		expect(prompt.startsWith("You are Codex")).toBe(true)
+		expect(prompt).toContain("# Alpha Tickets")
+		if (mode === planModeSlug) {
+			expect(prompt).toContain("TOOL USE")
+			expect(prompt.trim().endsWith(`</collaboration_mode>`)).toBe(true)
+		} else {
+			expect(prompt).toContain("ALPHA TOOL CONTRACT")
+			expect(prompt).toContain("Before consequential code changes")
+		}
 	})
 
 	it("should fall back to Code when the requested mode no longer exists", async () => {
@@ -586,7 +1038,8 @@ describe("SYSTEM_PROMPT", () => {
 			experiments,
 		)
 
-		expect(prompt.startsWith(defaultMode.roleDefinition)).toBe(true)
+		expect(prompt.startsWith("You are Codex")).toBe(true)
+		expect(prompt).not.toContain(defaultMode.roleDefinition)
 		expect(prompt).toContain("Before consequential code changes")
 	})
 
@@ -635,8 +1088,9 @@ describe("SYSTEM_PROMPT", () => {
 			undefined, // alphaIgnoreInstructions
 		)
 
-		// Should use the default mode's role definition
-		expect(prompt.indexOf(defaultMode.roleDefinition)).toBeLessThan(prompt.indexOf("TOOL USE"))
+		// The Codex base replaces the generic built-in Alpha persona; custom mode guidance remains.
+		expect(prompt).not.toContain(defaultMode.roleDefinition)
+		expect(prompt).toContain("Custom prompt instructions")
 	})
 
 	it("keeps legacy todo settings from restoring todo management in Plan", async () => {
@@ -690,7 +1144,7 @@ describe("SYSTEM_PROMPT", () => {
 
 		expect(prompt).not.toContain("Legacy override: edit a plan file and ask for approval.")
 		expect(prompt).not.toContain("Custom planner")
-		expect(prompt.trim().endsWith(PLAN_MODE_INSTRUCTIONS)).toBe(true)
+		expect(prompt.trim().endsWith(`</collaboration_mode>`)).toBe(true)
 		expect(prompt).toContain("non-mutating repository inspection only")
 		expect(prompt).toContain("host-classified inspection or verification commands")
 		expect(prompt).not.toContain("artifact reader")
@@ -771,17 +1225,16 @@ describe("SYSTEM_PROMPT", () => {
 			settings, // settings
 		)
 
-		// Should contain TOOL USE section with native note
-		expect(prompt).toContain("TOOL USE")
-		expect(prompt).toContain("provider-native tool-calling mechanism")
-		expect(prompt).toContain("Do not include XML markup or examples")
+		// Alpha adds only the native tool contract needed to map the Codex base onto its supplied tools.
+		expect(prompt).toContain("ALPHA TOOL CONTRACT")
+		expect(prompt).toContain("provider-native tools supplied by Alpha")
+		expect(prompt).toContain("Their names, schemas, and host-enforced policy define the available actions")
 
 		// Should NOT contain XML-style tags or examples
 		expect(prompt).not.toContain("<actual_tool_name>")
 		expect(prompt).not.toContain("</actual_tool_name>")
 
-		// Should contain Tool Use Guidelines section
-		expect(prompt).toContain("Tool Use Guidelines")
+		expect(prompt).not.toContain("Tool Use Guidelines")
 
 		// Should NOT contain a tool catalog / XML examples
 		expect(prompt).not.toContain("# Tools")
@@ -792,12 +1245,13 @@ describe("SYSTEM_PROMPT", () => {
 		expect(prompt).not.toContain("Usage:")
 		expect(prompt).not.toContain("Examples:")
 
-		// Should still contain role definition and other non-XML sections
-		expect(prompt).toContain(defaultMode.roleDefinition)
-		expect(prompt).toContain("CAPABILITIES")
-		expect(prompt).toContain("RULES")
+		// Alpha keeps its mode workflow and runtime facts without adding a second persona or generic base sections.
+		expect(prompt).not.toContain(defaultMode.roleDefinition)
+		expect(prompt).toContain("Before consequential code changes")
+		expect(prompt).toContain("# Alpha Tickets")
 		expect(prompt).toContain("SYSTEM INFORMATION")
-		expect(prompt).toContain("OBJECTIVE")
+		expect(prompt).not.toContain("CAPABILITIES")
+		expect(prompt).not.toContain("OBJECTIVE")
 	})
 
 	afterAll(() => {

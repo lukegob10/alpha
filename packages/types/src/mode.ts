@@ -1,6 +1,6 @@
 import { z } from "zod"
 
-import { deprecatedToolGroups, toolGroupsSchema } from "./tool.js"
+import { toolGroupsSchema } from "./tool.js"
 
 /**
  * GroupOptions
@@ -42,24 +42,7 @@ export type GroupEntry = z.infer<typeof groupEntrySchema>
  * ModeConfig
  */
 
-/**
- * Checks if a group entry references a deprecated tool group.
- * Handles both string entries and tuple entries.
- */
-function isDeprecatedGroupEntry(entry: unknown): boolean {
-	if (typeof entry === "string") {
-		return deprecatedToolGroups.includes(entry)
-	}
-	if (Array.isArray(entry) && entry.length >= 1 && typeof entry[0] === "string") {
-		return deprecatedToolGroups.includes(entry[0])
-	}
-	return false
-}
-
-/**
- * Raw schema for validating group entries after deprecated groups are stripped.
- */
-const rawGroupEntryArraySchema = z.array(groupEntrySchema).refine(
+export const groupEntryArraySchema = z.array(groupEntrySchema).refine(
 	(groups) => {
 		const seen = new Set()
 
@@ -77,21 +60,6 @@ const rawGroupEntryArraySchema = z.array(groupEntrySchema).refine(
 	},
 	{ message: "Duplicate groups are not allowed" },
 )
-
-/**
- * Schema for mode group entries. Preprocesses the input to strip deprecated
- * legacy tool groups before validation, ensuring backward compatibility
- * with older user configs.
- *
- * The type assertion to `z.ZodType<GroupEntry[], z.ZodTypeDef, GroupEntry[]>` is
- * required because `z.preprocess` erases the input type to `unknown`, which
- * propagates through `modeConfigSchema → alphaCodeSettingsSchema → createRunSchema`
- * and breaks `zodResolver` generic inference in downstream consumers (e.g., web-evals).
- */
-export const groupEntryArraySchema = z.preprocess((val) => {
-	if (!Array.isArray(val)) return val
-	return val.filter((entry) => !isDeprecatedGroupEntry(entry))
-}, rawGroupEntryArraySchema) as z.ZodType<GroupEntry[], z.ZodTypeDef, GroupEntry[]>
 
 export const modeConfigSchema = z.object({
 	slug: z.string().regex(/^[a-zA-Z0-9-]+$/, "Slug must contain only letters numbers and dashes"),
@@ -173,7 +141,7 @@ If a required verification approach cannot work, repair it or use equivalent evi
 
 export const PLAN_MODE_INSTRUCTIONS = `You are in strict Plan collaboration mode until the host or user changes modes. Plan the work; do not implement it.
 
-Use only non-mutating repository inspection. Read, list, and search repository evidence before asking questions. You may run only host-approved inspection or source-non-mutating verification commands and read their output. Verification may execute trusted repository test/config code and create ordinary tool caches, but it cannot target output, temp, cache, config, or plugin paths. You may coordinate managed Explore or Review sub-agents for bounded read-only investigation, but never launch or advance a Worker or request file changes, configuration changes, commits, or other side effects.
+Use only non-mutating repository inspection. Read, list, and search repository evidence before asking questions. You may run only host-approved inspection or source-non-mutating verification commands and read their output. Verification may execute trusted repository test/config code and create ordinary tool caches, but it cannot target output, temp, cache, config, or plugin paths. When agent lifecycle tools are supplied for this turn, you may coordinate managed Explore or Review sub-agents for bounded read-only investigation. Never launch or advance a Worker or request file changes, configuration changes, commits, or other side effects.
 
 Resolve facts from the request and available evidence first. Ask a concise follow-up question only when an undiscoverable product or technical choice would materially change the plan. Do not ask the user to choose details that repository inspection can answer.
 

@@ -282,7 +282,7 @@ describe("BaseProvider", () => {
 			const result = provider.testConvertToolsForOpenAI([shell, manageCommand])
 
 			expect(result?.[0].function.strict).toBe(false)
-			expect(result?.[0].function.parameters.required).toEqual(["command"])
+			expect(result?.[0].function.parameters.required).toEqual(["cmd"])
 			expect(result?.[0].function.parameters.properties).toEqual(shell.function.parameters?.properties)
 			expect(result?.[1].function.strict).toBe(false)
 			expect(result?.[1].function.parameters.required).toEqual(["action"])

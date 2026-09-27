@@ -320,10 +320,11 @@ export async function getAllLegacyConfigDirectoriesForCwd(cwd: string): Promise<
 }
 
 /**
- * Gets parent directories containing .roo folders, in order from root to subfolders
+ * Gets project instruction directories from the nearest .git root through cwd,
+ * followed by parent directories of discovered subfolder .roo directories.
  *
  * @param cwd - Current working directory (project path)
- * @returns Array of parent directory paths (not .roo paths) containing AGENTS.md or .roo
+ * @returns Ordered directories to check for agent instruction files
  *
  * @example
  * ```typescript
@@ -332,10 +333,7 @@ export async function getAllLegacyConfigDirectoriesForCwd(cwd: string): Promise<
  * ```
  */
 export async function getAgentsDirectoriesForCwd(cwd: string): Promise<string[]> {
-	const directories: string[] = []
-
-	// Always include the root directory
-	directories.push(cwd)
+	const { directories } = await getProjectInstructionDirectoriesForCwd(cwd)
 
 	// Get all subfolder .roo directories
 	const legacySubfolderConfigDirs = await discoverLegacySubfolderConfigDirectories(cwd)
@@ -343,10 +341,55 @@ export async function getAgentsDirectoriesForCwd(cwd: string): Promise<string[]>
 	// Extract parent directories (remove .roo from path)
 	for (const legacyConfigDir of legacySubfolderConfigDirs) {
 		const parentDir = path.dirname(legacyConfigDir)
-		directories.push(parentDir)
+		if (!directories.some((directory) => path.resolve(directory) === path.resolve(parentDir))) {
+			directories.push(parentDir)
+		}
 	}
 
 	return directories
+}
+
+/**
+ * Finds the nearest project root marked by a .git entry and returns its
+ * directories from root to cwd. If no marker is found, cwd is the only
+ * instruction directory.
+ */
+export async function getProjectInstructionDirectoriesForCwd(
+	cwd: string,
+): Promise<{ root: string; directories: string[] }> {
+	const cwdPath = path.isAbsolute(cwd) ? cwd : path.resolve(cwd)
+	let cursor = cwdPath
+	let root = cwdPath
+
+	while (true) {
+		try {
+			const marker = await fs.stat(path.join(cursor, ".git"))
+			if (marker.isDirectory() || marker.isFile()) {
+				root = cursor
+				break
+			}
+		} catch {
+			// Project-root discovery is best effort; inaccessible or absent markers are ignored.
+		}
+
+		const parent = path.dirname(cursor)
+		if (parent === cursor) break
+		cursor = parent
+	}
+	if (root === cwdPath && cwdPath !== cwd) root = cwd
+
+	const directories: string[] = []
+	cursor = root === cwd ? cwd : cwdPath
+	while (true) {
+		directories.push(cursor)
+		if (cursor === root) break
+		const parent = path.dirname(cursor)
+		if (parent === cursor) break
+		cursor = parent
+	}
+	directories.reverse()
+
+	return { root, directories }
 }
 
 /**

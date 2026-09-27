@@ -3,6 +3,7 @@ import {
 	buildSubagentPrompt,
 	getReadOnlyAuthorityMismatch,
 	normalizeSubagentForkTurns,
+	normalizeSpawnAgentRequest,
 	normalizeSubagentTaskDrafts,
 	SUBAGENT_REPORT_WORD_BUDGET,
 } from "../SubagentDelegation"
@@ -21,6 +22,8 @@ describe("buildSubagentPrompt", () => {
 		expect(prompt).toContain(`under ${SUBAGENT_REPORT_WORD_BUDGET} words`)
 		expect(prompt).toContain("do not repeat file contents or narrate the research process")
 		expect(prompt).not.toContain("report_progress")
+		expect(prompt).toContain("final assistant answer")
+		expect(prompt).not.toContain("attempt_completion")
 		expect(prompt).toContain("include those findings and evidence locations in the synthesis")
 		expect(prompt).not.toContain("immediate parent")
 		expect(prompt).not.toContain("report each distinct update once")
@@ -75,7 +78,9 @@ describe("buildSubagentPrompt", () => {
 		expect(prompt).toContain("Do not commit, stage, create branches, or change remotes")
 		expect(prompt).toContain("a complete objective may conclude that no repository change is needed")
 		expect(prompt).toContain("choose verification proportionate to the work")
-		expect(prompt).toContain("including when no change is needed")
+		expect(prompt).toContain("including when no change was needed")
+		expect(prompt).toContain("final assistant answer")
+		expect(prompt).not.toContain("attempt_completion")
 		expect(prompt).not.toContain("begin with the edit")
 		expect(prompt).not.toContain("Prefer one shell-compatible verification command")
 		expect(prompt).not.toContain("at least one authorized change exists")
@@ -189,6 +194,124 @@ describe("normalizeSubagentTaskDrafts", () => {
 				write_scope: ["docs/README.md"],
 			},
 		])
+	})
+})
+
+describe("normalizeSpawnAgentRequest", () => {
+	it("defaults V2 turn inheritance to all and preserves the requested agent type", () => {
+		expect(
+			normalizeSpawnAgentRequest({
+				task_name: "map_lifecycle",
+				message: "Trace the task lifecycle.",
+				agent_type: "explorer",
+			}),
+		).toEqual({
+			source: "codex-v2",
+			task_name: "map_lifecycle",
+			message: "Trace the task lifecycle.",
+			agent_type: "explorer",
+			fork_turns: "all",
+		})
+	})
+
+	it("retains default and route overrides without treating them as authority", () => {
+		const request = normalizeSpawnAgentRequest({
+			task_name: "scoped_worker",
+			message: "Update the parser tests.",
+			agent_type: "default",
+			fork_turns: "all",
+			model: "gpt-6-sol",
+			reasoning_effort: "high",
+		})
+
+		expect(request).toEqual({
+			source: "codex-v2",
+			task_name: "scoped_worker",
+			message: "Update the parser tests.",
+			agent_type: "default",
+			fork_turns: "all",
+			model: "gpt-6-sol",
+			reasoning_effort: "high",
+		})
+		expect(request).not.toHaveProperty("write_scope")
+	})
+
+	it("keeps new Worker role intent separate from write authority", () => {
+		const request = normalizeSpawnAgentRequest({
+			task_name: "scoped_worker",
+			message: "Update the parser tests.",
+			agent_type: "worker",
+		})
+
+		expect(request).toMatchObject({ source: "codex-v2", agent_type: "worker" })
+		expect(request).not.toHaveProperty("write_scope")
+	})
+
+	it.each([
+		{ model: " " },
+		{ reasoning_effort: "disable" },
+		{ reasoning_effort: "ultra" },
+		{ fork_turns: "01" },
+		{ agent_type: "root admin" },
+		{ write_scope: ["src"] },
+		{ fork_context: true },
+	])("rejects malformed or authority-bearing V2 fields: %j", (overrides) => {
+		expect(() =>
+			normalizeSpawnAgentRequest({
+				task_name: "map_lifecycle",
+				message: "Trace the task lifecycle.",
+				...overrides,
+			}),
+		).toThrow("spawn_agent")
+	})
+
+	it("reads legacy fields and preserves their conservative defaults", () => {
+		expect(
+			normalizeSpawnAgentRequest({
+				objective: "Inspect the parser.",
+				agent_kind: "review",
+				write_scope: null,
+				expected_output: null,
+			}),
+		).toEqual({
+			source: "legacy",
+			message: "Inspect the parser.",
+			agent_type: "review",
+			fork_turns: "none",
+		})
+	})
+
+	it("retains the explicit scope required by a legacy Worker", () => {
+		expect(
+			normalizeSpawnAgentRequest({
+				task_name: "parser_worker",
+				fork_turns: "2",
+				objective: "Update the parser tests.",
+				agent_kind: "worker",
+				write_scope: ["src/core/parser.spec.ts"],
+				expected_output: ["Updated tests"],
+			}),
+		).toEqual({
+			source: "legacy",
+			task_name: "parser_worker",
+			message: "Update the parser tests.",
+			agent_type: "worker",
+			fork_turns: "2",
+			write_scope: ["src/core/parser.spec.ts"],
+			expected_output: ["Updated tests"],
+		})
+	})
+
+	it("rejects legacy Workers without a bounded scope", () => {
+		for (const write_scope of [undefined, null, []]) {
+			expect(() =>
+				normalizeSpawnAgentRequest({
+					objective: "Update the parser tests.",
+					agent_kind: "worker",
+					write_scope,
+				}),
+			).toThrow("spawn_agent")
+		}
 	})
 })
 

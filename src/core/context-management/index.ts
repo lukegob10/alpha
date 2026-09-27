@@ -17,7 +17,7 @@ import {
 	TokenCountContext,
 } from "../condense"
 import { ApiMessage } from "../task-persistence/apiMessages"
-import { ANTHROPIC_DEFAULT_MAX_TOKENS } from "@alpha-code/types"
+import { ANTHROPIC_DEFAULT_MAX_TOKENS, type AutoCondenseContextScope } from "@alpha-code/types"
 import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
 import { checkContextWindowExceededError } from "../context/context-management/context-error-handling"
 import {
@@ -25,6 +25,7 @@ import {
 	evaluateCompactionProgress,
 	getCompactionTargetTokens,
 	getContextLimits,
+	isAutoCondenseLimitReached,
 	resolveCondenseThreshold,
 } from "./recovery"
 import type { ContextRecoveryStatus } from "./recovery"
@@ -301,8 +302,12 @@ export type WillManageContextOptions = {
 	maxTokens?: number | null
 	autoCondenseContext: boolean
 	autoCondenseContextPercent: number
-	profileThresholds: Record<string, number>
-	currentProfileId: string
+	autoCondenseContextScope?: AutoCondenseContextScope
+	prefillContextTokens?: number
+	/** @deprecated Retained only so old callers and saved settings remain readable. */
+	profileThresholds?: Record<string, number>
+	/** @deprecated Profile-specific compaction thresholds are no longer supported. */
+	currentProfileId?: string
 	lastMessageTokens: number
 }
 
@@ -321,15 +326,23 @@ export function willManageContext({
 	maxTokens,
 	autoCondenseContext,
 	autoCondenseContextPercent,
-	profileThresholds,
-	currentProfileId,
+	autoCondenseContextScope,
+	prefillContextTokens,
 	lastMessageTokens,
 }: WillManageContextOptions): boolean {
 	const reservedTokens = maxTokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS
 	const prevContextTokens = totalTokens + lastMessageTokens
-	const threshold = resolveCondenseThreshold(autoCondenseContextPercent, profileThresholds, currentProfileId)
+	const threshold = resolveCondenseThreshold(autoCondenseContextPercent)
 	const { allowedTokens, triggerTokens } = getContextLimits(contextWindow, reservedTokens, threshold)
-	return autoCondenseContext ? prevContextTokens >= triggerTokens : prevContextTokens > allowedTokens
+	return autoCondenseContext
+		? isAutoCondenseLimitReached(
+				prevContextTokens,
+				triggerTokens,
+				allowedTokens,
+				autoCondenseContextScope,
+				prefillContextTokens,
+			)
+		: prevContextTokens > allowedTokens
 }
 
 /**
@@ -350,11 +363,15 @@ export type ContextManagementOptions = {
 	apiHandler: ApiHandler
 	autoCondenseContext: boolean
 	autoCondenseContextPercent: number
+	autoCondenseContextScope?: AutoCondenseContextScope
+	prefillContextTokens?: number
 	systemPrompt: string
 	taskId: string
 	customCondensingPrompt?: string
-	profileThresholds: Record<string, number>
-	currentProfileId: string
+	/** @deprecated Retained only so old callers and saved settings remain readable. */
+	profileThresholds?: Record<string, number>
+	/** @deprecated Profile-specific compaction thresholds are no longer supported. */
+	currentProfileId?: string
 	/** Optional metadata to pass through to the condensing API call (tools, taskId, etc.) */
 	metadata?: ApiHandlerCreateMessageMetadata
 	/** Resolve tool overhead only after compaction is required; control metadata stays eager. */
@@ -403,11 +420,11 @@ export async function manageContext({
 	apiHandler,
 	autoCondenseContext,
 	autoCondenseContextPercent,
+	autoCondenseContextScope,
+	prefillContextTokens,
 	systemPrompt,
 	taskId,
 	customCondensingPrompt,
-	profileThresholds,
-	currentProfileId,
 	metadata,
 	prepareTools,
 	environmentDetails,
@@ -444,7 +461,7 @@ export async function manageContext({
 	let forceTruncation = forceCompaction
 	// Calculate the maximum tokens reserved for response
 	const reservedTokens = maxTokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS
-	const threshold = resolveCondenseThreshold(autoCondenseContextPercent, profileThresholds, currentProfileId)
+	const threshold = resolveCondenseThreshold(autoCondenseContextPercent)
 	const { allowedTokens, triggerTokens } = getContextLimits(contextWindow, reservedTokens, threshold)
 	let targetContextTokens = getCompactionTargetTokens({
 		contextWindow,
@@ -487,7 +504,16 @@ export async function manageContext({
 	}
 
 	if (autoCondenseContext) {
-		if (forceCompaction || prevContextTokens >= triggerTokens) {
+		if (
+			forceCompaction ||
+			isAutoCondenseLimitReached(
+				prevContextTokens,
+				triggerTokens,
+				allowedTokens,
+				autoCondenseContextScope,
+				prefillContextTokens,
+			)
+		) {
 			if (prepareTools) await prepareToolMetadata()
 			// Charge fixed prompt and schema overhead before budgeting the summary and tail.
 			const fixedTokens = await countContextTokens([], apiHandler, systemPrompt, metadata, operation)
@@ -533,14 +559,22 @@ export async function manageContext({
 			if (result.error) {
 				error = result.error
 				errorDetails = result.errorDetails
-				// A failed compaction must not leave the caller retrying the same
-				// oversized input.  Truncation is the bounded fallback; the
-				// context-window check remains useful for preserving the original
-				// forced-recovery semantics and diagnostics.
+				// Preserve a fitting history when summarization fails for reasons
+				// unrelated to input size. Forced recovery and a provider-reported
+				// context-window error still require a bounded reduction.
 				const isContextWindowError = checkContextWindowExceededError(
 					new Error([result.error, result.errorDetails].filter(Boolean).join("\n\n")),
 				)
-				forceTruncation = isContextWindowError || Boolean(result.error)
+				forceTruncation ||= isContextWindowError
+				if (!forceTruncation && prevContextTokens <= allowedTokens) {
+					return {
+						...result,
+						messages,
+						prevContextTokens,
+						status: result.status === "exhausted" ? "exhausted" : "no_progress",
+						targetContextTokens,
+					}
+				}
 			} else {
 				const progress = evaluateCompactionProgress({
 					beforeTokens: prevContextTokens,

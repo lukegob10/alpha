@@ -1,12 +1,12 @@
 // pnpm --filter @alpha-code/vscode-webview test src/components/settings/__tests__/SettingsView.spec.tsx
 
-import { render, screen, fireEvent, within, waitFor, act } from "@/utils/test-utils"
+import { render, screen, fireEvent, within, act } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
 import { vscode } from "@/utils/vscode"
 import { ExtensionStateContextProvider } from "@/context/ExtensionStateContext"
 
-import SettingsView from "../SettingsView"
+import SettingsView, { sectionNames } from "../SettingsView"
 
 vi.mock("@/i18n/TranslationContext", async () => {
 	const { default: i18n } = await import("@/i18n/setup")
@@ -349,13 +349,92 @@ const renderSettingsView = (targetSection?: string) => {
 }
 
 describe("SettingsView - Startup rendering", () => {
-	it("keeps the selected section visible while the search index warms in the background", () => {
+	it("falls back to providers for the retired Agents route and excludes its controls", () => {
 		const { getSettingsContent } = renderSettingsView("agents")
-		const visibleContent = getSettingsContent()
+		expect(sectionNames).not.toContain("agents")
+		expect(getSettingsContent()).toHaveTextContent("settings:sections.providers")
+		expect(screen.queryByTestId("subagent-default-profile")).not.toBeInTheDocument()
+		expect(screen.queryByTestId("max-concurrent-subagents-input")).not.toBeInTheDocument()
+		expect(screen.queryByText("Orchestration guardrails")).not.toBeInTheDocument()
+	})
+})
 
-		expect(visibleContent.textContent).toContain("settings:sections.agents")
-		expect(screen.getByTestId("settings-indexing-content")).toBeInTheDocument()
-		expect(screen.getByTestId("settings-indexing-content")).not.toContainElement(visibleContent)
+describe("SettingsView - Context compaction", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it("saves the global threshold and drops loaded legacy profile overrides", () => {
+		const { activateTab, getSettingsContent } = renderSettingsView()
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: {
+							autoCondenseContext: true,
+							autoCondenseContextPercent: 80,
+							profileThresholds: { "legacy-profile": 35 },
+						},
+					},
+				}),
+			),
+		)
+		activateTab("contextManagement")
+
+		const content = getSettingsContent()
+		const threshold = within(content).getByTestId("condense-threshold-slider")
+		expect(threshold).toHaveValue("80")
+		expect(within(content).queryByTestId("threshold-profile-select")).not.toBeInTheDocument()
+
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.change(threshold, { target: { value: "65" } })
+		expect(threshold).toHaveValue("65")
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+
+		fireEvent.click(screen.getByTestId("save-button"))
+		const update = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "updateSettings")?.[0]
+		expect(update).toEqual(
+			expect.objectContaining({
+				updatedSettings: expect.objectContaining({ autoCondenseContextPercent: 65 }),
+			}),
+		)
+		expect(update).not.toEqual(
+			expect.objectContaining({
+				updatedSettings: expect.objectContaining({ profileThresholds: expect.anything() }),
+			}),
+		)
+	})
+
+	it("keeps a compaction edit after Cancel and discards it without saving", () => {
+		const { activateTab, getSettingsContent, onDone } = renderSettingsView()
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: { autoCondenseContext: true, autoCondenseContextPercent: 80 },
+					},
+				}),
+			),
+		)
+		activateTab("contextManagement")
+
+		const threshold = () => within(getSettingsContent()).getByTestId("condense-threshold-slider")
+		fireEvent.change(threshold(), { target: { value: "65" } })
+		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
+		fireEvent.click(screen.getByTestId("alert-dialog-cancel"))
+
+		expect(threshold()).toHaveValue("65")
+		expect(onDone).not.toHaveBeenCalled()
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+
+		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
+		fireEvent.click(screen.getByTestId("alert-dialog-action"))
+
+		expect(threshold()).toHaveValue("80")
+		expect(onDone).toHaveBeenCalledTimes(1)
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
 	})
 })
 
@@ -408,150 +487,6 @@ describe("SettingsView - Built-in Skills", () => {
 				updatedSettings: expect.objectContaining({ disabledBuiltinSkills: ["other-default"] }),
 			}),
 		)
-	})
-})
-
-describe("SettingsView - Agents", () => {
-	beforeEach(() => vi.clearAllMocks())
-
-	it("buffers stable profile IDs until Save", async () => {
-		const { activateTab } = renderSettingsView()
-		await act(async () => {
-			mockPostMessage({
-				settingsImportedAt: 1,
-				listApiConfigMeta: [
-					{ id: "fast-id", name: "Fast", apiProvider: "openrouter", modelId: "fast/model" },
-					{ id: "review-id", name: "Review", apiProvider: "anthropic", modelId: "review-model" },
-				],
-			})
-			await new Promise((resolve) => setTimeout(resolve, 0))
-		})
-		activateTab("agents")
-
-		const explorer = await screen.findByLabelText("settings:agents.roles.explore.label")
-		fireEvent.change(explorer, { target: { value: "fast-id" } })
-		await waitFor(() => expect(explorer).toHaveValue("fast-id"))
-
-		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
-		fireEvent.click(screen.getByTestId("save-button"))
-
-		await waitFor(() =>
-			expect(vscode.postMessage).toHaveBeenCalledWith(
-				expect.objectContaining({
-					type: "updateSettings",
-					updatedSettings: expect.objectContaining({
-						subagentApiConfigByRole: { explore: "fast-id", review: "", worker: "" },
-					}),
-				}),
-			),
-		)
-	})
-
-	it("keeps managed-agent edits buffered across unrelated live-state refreshes until Save", async () => {
-		const { activateTab, getSettingsContent } = renderSettingsView()
-		await act(async () => {
-			mockPostMessage({
-				settingsImportedAt: 2,
-				maxConcurrentSubagents: 2,
-				subagentDelegationPolicy: "explicit-only",
-				subagentMaxDepth: 1,
-				subagentRoleTimeoutsMs: { explore: 120_000, review: 180_000, worker: 900_000 },
-				subagentMaxInputTokens: 16_000,
-				subagentMaxOutputTokens: 4_000,
-				subagentRootTokenBudget: 128_000,
-				subagentRootCostBudget: 8,
-			})
-			await new Promise((resolve) => setTimeout(resolve, 0))
-		})
-		activateTab("agents")
-
-		const content = getSettingsContent()
-		fireEvent.change(within(content).getByTestId("max-concurrent-subagents-input"), {
-			target: { value: "4" },
-		})
-		fireEvent.change(within(content).getByLabelText("Delegation policy"), {
-			target: { value: "proactive" },
-		})
-		fireEvent.change(within(content).getByTestId("subagent-explore-timeout-input"), {
-			target: { value: "420" },
-		})
-		fireEvent.change(within(content).getByTestId("subagent-review-timeout-input"), {
-			target: { value: "480" },
-		})
-		fireEvent.change(within(content).getByTestId("subagent-worker-timeout-input"), {
-			target: { value: "900" },
-		})
-		fireEvent.change(within(content).getByTestId("subagent-max-input-tokens-input"), {
-			target: { value: "24000" },
-		})
-		fireEvent.change(within(content).getByTestId("subagent-max-output-tokens-input"), {
-			target: { value: "8000" },
-		})
-		fireEvent.change(within(content).getByTestId("subagent-root-token-budget-input"), {
-			target: { value: "320000" },
-		})
-		fireEvent.change(within(content).getByTestId("subagent-root-cost-budget-input"), {
-			target: { value: "15.75" },
-		})
-		fireEvent.change(within(content).getByTestId("subagent-max-depth-input"), {
-			target: { value: "3" },
-		})
-
-		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
-
-		await act(async () => {
-			mockPostMessage({ liveTaskIds: ["root-1"], liveTasksById: { "root-1": { lifecycle: "running" } } })
-			await new Promise((resolve) => setTimeout(resolve, 0))
-		})
-
-		expect(within(content).getByTestId("max-concurrent-subagents-input")).toHaveValue(4)
-		expect(within(content).getByLabelText("Delegation policy")).toHaveValue("proactive")
-
-		fireEvent.click(screen.getByTestId("save-button"))
-
-		await waitFor(() =>
-			expect(vscode.postMessage).toHaveBeenCalledWith(
-				expect.objectContaining({
-					type: "updateSettings",
-					updatedSettings: expect.objectContaining({
-						maxConcurrentSubagents: 4,
-						subagentDelegationPolicy: "proactive",
-						subagentMaxDepth: 3,
-						subagentRoleTimeoutsMs: { explore: 420_000, review: 480_000, worker: 900_000 },
-						subagentMaxInputTokens: 24_000,
-						subagentMaxOutputTokens: 8_000,
-						subagentRootTokenBudget: 320_000,
-						subagentRootCostBudget: 15.75,
-					}),
-				}),
-			),
-		)
-
-		const updateMessage = vi
-			.mocked(vscode.postMessage)
-			.mock.calls.map(([message]) => message)
-			.find((message) => message.type === "updateSettings")
-		const updatedSettings = updateMessage?.updatedSettings as Record<string, unknown>
-		const managedSettings = Object.fromEntries(
-			Object.entries(updatedSettings).filter(
-				([key]) =>
-					key === "maxConcurrentSubagents" ||
-					(key.startsWith("subagent") &&
-						key !== "subagentDefaultApiConfigId" &&
-						key !== "subagentApiConfigByRole"),
-			),
-		)
-
-		expect(managedSettings).toEqual({
-			maxConcurrentSubagents: 4,
-			subagentDelegationPolicy: "proactive",
-			subagentMaxDepth: 3,
-			subagentRoleTimeoutsMs: { explore: 420_000, review: 480_000, worker: 900_000 },
-			subagentMaxInputTokens: 24_000,
-			subagentMaxOutputTokens: 8_000,
-			subagentRootTokenBudget: 320_000,
-			subagentRootCostBudget: 15.75,
-		})
 	})
 })
 

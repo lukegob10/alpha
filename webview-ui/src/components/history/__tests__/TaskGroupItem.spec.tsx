@@ -84,7 +84,7 @@ describe("TaskGroupItem", () => {
 			expect(screen.getByTestId("task-group-my-parent-id")).toBeInTheDocument()
 		})
 
-		it("uses one card surface for the group instead of nesting a second task card", () => {
+		it("renders a compact row without a card surface and includes its age", () => {
 			const group = createMockGroup()
 
 			render(
@@ -96,9 +96,11 @@ describe("TaskGroupItem", () => {
 				/>,
 			)
 
-			expect(screen.getByTestId("task-group-parent-1")).toHaveClass("surface-raised")
+			expect(screen.getByTestId("task-group-parent-1")).not.toHaveClass("surface-raised")
 			expect(screen.getByTestId("task-item-parent-1")).toHaveAttribute("data-contained", "true")
 			expect(screen.getByTestId("task-item-parent-1")).not.toHaveClass("surface-raised")
+			expect(screen.getByTestId("task-time-ago")).toHaveTextContent("history:age.now")
+			expect(screen.getByTestId("task-time-ago")).toHaveAttribute("aria-label", "2 hours ago")
 		})
 	})
 
@@ -162,6 +164,26 @@ describe("TaskGroupItem", () => {
 	})
 
 	describe("expand/collapse behavior", () => {
+		it("keeps compact child history expandable", () => {
+			const onToggleExpand = vi.fn()
+			const group = createMockGroup({
+				subtasks: [createMockSubtaskNode({ id: "child-1", task: "Compact child" })],
+			})
+
+			render(
+				<TaskGroupItem
+					group={group}
+					variant="compact"
+					onToggleExpand={onToggleExpand}
+					onToggleSubtaskExpand={vi.fn()}
+				/>,
+			)
+
+			fireEvent.click(screen.getByRole("button", { name: "history:expandSubtasks" }))
+
+			expect(onToggleExpand).toHaveBeenCalledTimes(1)
+		})
+
 		it("calls onToggleExpand when chevron row is clicked", () => {
 			const onToggleExpand = vi.fn()
 			const group = createMockGroup({

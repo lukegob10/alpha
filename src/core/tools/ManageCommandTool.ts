@@ -6,6 +6,8 @@ import type { AlphaTerminalProcess } from "../../integrations/terminal/types"
 import type { NativeToolArgs } from "../../shared/tools"
 import { MANAGE_COMMAND_MAX_TIMEOUT_MS } from "./commandTimeouts"
 import { readCommandOutputTool } from "./ReadCommandOutputTool"
+import type { CommandToolResult } from "@alpha-code/types"
+import { boundCommandToolResult, formatCommandToolResult, getCommandToolResultLimit } from "./BaseTool"
 
 const paramsSchema = z.discriminatedUnion("action", [
 	z.object({
@@ -58,7 +60,14 @@ export async function waitForCommand(
 
 export class ManageCommandTool extends BaseTool<"manage_command"> {
 	readonly name = "manage_command" as const
-	async execute(raw: NativeToolArgs["manage_command"], task: Task, callbacks: ToolCallbacks): Promise<void> {
+	async execute(
+		raw: NativeToolArgs["manage_command"],
+		task: Task,
+		callbacks: ToolCallbacks,
+		assertSessionCurrent?: () => void,
+		sessionId?: number,
+	): Promise<void> {
+		const startedAt = performance.now()
 		try {
 			const params = paramsSchema.parse(raw)
 			const assertActive = () => {
@@ -81,6 +90,7 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 				(item) => item.taskId === task.taskId && item.process?.executionId === params.execution_id,
 			)
 			const process = terminal?.process
+			assertSessionCurrent?.()
 			if (params.action !== "wait") {
 				if (!process || !terminal.running || (params.action === "input" && process.isSettled))
 					throw new Error("Command is no longer running")
@@ -97,14 +107,26 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 					return
 				}
 				assertActive()
-				if (terminal.taskId !== task.taskId || terminal.process !== process || !terminal.running)
+				assertSessionCurrent?.()
+				if (
+					terminal.taskId !== task.taskId ||
+					terminal.process !== process ||
+					process.executionId !== params.execution_id ||
+					!terminal.running
+				)
 					throw new Error("Command changed while approval was pending")
 				if (params.action === "input") {
 					const provider = task.providerRef.deref()
 					if (!provider) throw new Error("Task mutation owner unavailable")
 					await provider.runWorkspaceMutation(task, "command input", async () => {
 						assertActive()
-						if (terminal.taskId !== task.taskId || terminal.process !== process || process.isSettled)
+						assertSessionCurrent?.()
+						if (
+							terminal.taskId !== task.taskId ||
+							terminal.process !== process ||
+							process.executionId !== params.execution_id ||
+							process.isSettled
+						)
 							throw new Error("Command is no longer accepting input")
 						await process.writeInput!(params.input!)
 					})
@@ -113,18 +135,62 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 			if (process) await waitForCommand(process, params.timeout_ms ?? 10_000, callbacks.signal)
 			assertActive()
 			const current = evidence()!
-			const receipt = process?.captureUnretrievedOutput(
-				Math.max(0, Math.min(8_000, (callbacks.getRemainingOutputChars?.() ?? 9_000) - 1_000)),
-			)
+			const receiptOutputLimit =
+				callbacks.commandResultMaxOutputTokens !== undefined
+					? Math.max(0, Math.min(8_000, getCommandToolResultLimit(callbacks) - 512))
+					: Math.max(0, Math.min(8_000, (callbacks.getRemainingOutputChars?.() ?? 9_000) - 1_000))
+			const receipt = process?.captureUnretrievedOutput(receiptOutputLimit)
 			try {
+				const commandResult: CommandToolResult | undefined =
+					callbacks.commandResultMaxOutputTokens === undefined
+						? undefined
+						: boundCommandToolResult(
+								{
+									wall_time_seconds: Math.max(0, (performance.now() - startedAt) / 1000),
+									output: receipt?.output ?? "",
+									...(typeof current.exitCode === "number" ? { exit_code: current.exitCode } : {}),
+									...(current.status === "running" && sessionId !== undefined
+										? { session_id: sessionId }
+										: {}),
+								},
+								getCommandToolResultLimit(callbacks),
+							)
 				callbacks.pushToolResult(
-					`${JSON.stringify({ execution_id: current.executionId, status: current.status, exit_code: current.exitCode ?? null, process_available: Boolean(process), stop_requested: params.action === "stop" })}\nOutput:\n${receipt?.output ?? ""}`,
+					callbacks.commandResultFormat === "codex" && commandResult
+						? formatCommandToolResult(
+								commandResult,
+								getCommandToolResultLimit(callbacks),
+								callbacks.toolCallId ?? current.executionId,
+							)
+						: `${JSON.stringify({ execution_id: current.executionId, status: current.status, exit_code: current.exitCode ?? null, process_available: Boolean(process), stop_requested: params.action === "stop" })}\nOutput:\n${receipt?.output ?? ""}`,
 				)
+				callbacks.setResultMetadata?.({
+					...(commandResult
+						? {
+								executionStatus:
+									current.status === "running"
+										? "running"
+										: current.status === "succeeded"
+											? "success"
+											: current.status === "denied" || current.status === "cancelled"
+												? current.status
+												: "error",
+								status:
+									current.status === "running" || current.status === "succeeded"
+										? "success"
+										: current.status === "denied" || current.status === "cancelled"
+											? current.status
+											: "error",
+								...(typeof current.exitCode === "number" ? { exitCode: current.exitCode } : {}),
+							}
+						: {}),
+					...(commandResult ? { commandResult } : {}),
+					waitOutcome: current.status === "running" ? "active" : "idle",
+				})
 				receipt?.commit()
 			} finally {
 				receipt?.release()
 			}
-			callbacks.setResultMetadata?.({ waitOutcome: current.status === "running" ? "active" : "idle" })
 		} catch (error) {
 			if (callbacks.signal?.aborted) throw error
 			callbacks.setResultMetadata?.({ status: "error" })

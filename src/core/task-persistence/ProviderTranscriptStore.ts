@@ -6,6 +6,7 @@ import { z } from "zod"
 
 import type { ApiMessage, ApiMessagesCommitReceipt } from "./apiMessages"
 import { atomicWriteJson, withFileLock } from "./atomicWrite"
+import { invalidPersistedApiMessages } from "./validatePersistedApiMessages"
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { getTaskDirectoryPath } from "../../utils/storage"
 
@@ -52,9 +53,8 @@ export const providerTranscriptEnvelopeSchema = z
 		revision: z.number().int().nonnegative(),
 		digest: z.string().regex(DIGEST_PATTERN),
 		writtenAt: z.number().finite().nonnegative(),
-		// ApiMessage is intentionally an open compatibility surface: providers
-		// add message block fields over time. The envelope still validates that
-		// the persisted value is an array before it is returned as ApiMessage[].
+		// Keep provider fields open; validate the stable role/content/tool shape
+		// after parsing, without stripping historical or future metadata.
 		messages: z.array(
 			z
 				.unknown()
@@ -526,13 +526,11 @@ function normalizeCommitInput(
 }
 
 function validateMessages(messages: unknown, taskId: string): asserts messages is ApiMessage[] {
-	if (
-		!Array.isArray(messages) ||
-		messages.some((message) => message === null || typeof message !== "object" || Array.isArray(message))
-	) {
+	const problem = invalidPersistedApiMessages(messages)
+	if (problem) {
 		throw new ProviderTranscriptStoreError(
 			"invalid_messages",
-			`Provider transcript messages must be an array of message objects for task ${taskId}`,
+			`Invalid provider transcript for task ${taskId}: ${problem}`,
 			taskId,
 		)
 	}
@@ -605,6 +603,7 @@ function envelopeFromUnknown(value: unknown, taskId: string, filePath: string): 
 	}
 
 	const messages = parsed.data.messages as ApiMessage[]
+	validateMessages(messages, taskId)
 	const actualDigest = digestProviderTranscript(messages)
 	if (actualDigest !== parsed.data.digest) {
 		throw new ProviderTranscriptDigestMismatchError(taskId, parsed.data.digest, actualDigest)

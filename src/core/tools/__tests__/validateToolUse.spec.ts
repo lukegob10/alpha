@@ -21,6 +21,8 @@ describe("mode-validator", () => {
 						expect(isToolAllowedForMode(tool, codeMode, [])).toBe(true)
 					})
 				})
+				expect(isToolAllowedForMode("update_plan", codeMode, [])).toBe(true)
+				expect(isToolAllowedForMode("update_todo_list", codeMode, [])).toBe(true)
 			})
 
 			it("disallows unknown tools", () => {
@@ -39,30 +41,46 @@ describe("mode-validator", () => {
 
 		describe("architect mode", () => {
 			it("allows only read-only planning, conservative commands, and managed-agent tools", () => {
+				const planManagedAgentTools = [
+					"spawn_agent",
+					"wait_agent",
+					"send_message",
+					"followup_task",
+					"list_agents",
+					"interrupt_agent",
+				]
 				const architectTools = [
 					...TOOL_GROUPS.read.tools,
-					...TOOL_GROUPS.command.tools.filter((tool) => tool !== "manage_command"),
-					...TOOL_GROUPS.agents.tools,
+					...TOOL_GROUPS.command.tools.filter((tool) => tool !== "manage_command" && tool !== "write_stdin"),
+					...planManagedAgentTools,
+					"list_tasks",
+					"wait_task",
 				]
 				architectTools.forEach((tool) => {
 					expect(isToolAllowedForMode(tool, architectMode, [])).toBe(true)
 				})
-				expect(isToolAllowedForMode("ask_followup_question", architectMode, [])).toBe(true)
-				expect(isToolAllowedForMode("attempt_completion", architectMode, [])).toBe(true)
-				expect(isToolAllowedForMode("write_to_file", architectMode, [])).toBe(false)
-				expect(isToolAllowedForMode("execute_command", architectMode, [])).toBe(true)
+				expect(isToolAllowedForMode("request_user_input", architectMode, [])).toBe(true)
+				expect(isToolAllowedForMode("ask_followup_question", architectMode, [])).toBe(false)
+				expect(isToolAllowedForMode("attempt_completion", architectMode, [])).toBe(false)
+				expect(isToolAllowedForMode("apply_patch", architectMode, [])).toBe(false)
+				expect(isToolAllowedForMode("exec_command", architectMode, [])).toBe(true)
 				expect(isToolAllowedForMode("manage_command", architectMode, [])).toBe(false)
 				expect(isToolAllowedForMode("use_mcp_tool", architectMode, [])).toBe(false)
 				expect(isToolAllowedForMode("new_task", architectMode, [])).toBe(false)
 				expect(isToolAllowedForMode("switch_mode", architectMode, [])).toBe(false)
-				expect(isToolAllowedForMode("update_todo_list", architectMode, [])).toBe(false)
+				expect(isToolAllowedForMode("update_plan", architectMode, [])).toBe(true)
+				expect(isToolAllowedForMode("update_todo_list", architectMode, [])).toBe(true)
+				for (const name of ["create_task", "send_task_message", "steer_task", "stop_task"]) {
+					expect(isToolAllowedForMode(name, architectMode, [])).toBe(false)
+				}
+
 				expect(isToolAllowedForMode("read_page", architectMode, [])).toBe(false)
 			})
 
 			it("enforces the Plan command classifier independently of auto-approval settings", () => {
 				expect(
-					isToolAllowedForMode("execute_command", architectMode, [], undefined, {
-						command: "pnpm --dir src exec vitest run shared/__tests__/plan-mode.spec.ts",
+					isToolAllowedForMode("exec_command", architectMode, [], undefined, {
+						cmd: "pnpm --dir src exec vitest run shared/__tests__/plan-mode.spec.ts",
 						verification: null,
 					}),
 				).toBe(true)
@@ -74,23 +92,23 @@ describe("mode-validator", () => {
 					"git status && git diff",
 				]) {
 					expect(
-						isToolAllowedForMode("execute_command", architectMode, [], undefined, {
-							command,
+						isToolAllowedForMode("exec_command", architectMode, [], undefined, {
+							cmd: command,
 							verification: null,
 						}),
 					).toBe(false)
 				}
 				expect(
-					isToolAllowedForMode("execute_command", architectMode, [], undefined, {
-						command: "pnpm exec tsc --noEmit",
+					isToolAllowedForMode("exec_command", architectMode, [], undefined, {
+						cmd: "pnpm exec tsc --noEmit",
 						verification: { change_set_ids: ["worker-change"] },
 					}),
 				).toBe(false)
 				for (const cwd of ["/tmp", "C:/outside", "../outside", "src/../../outside"]) {
 					expect(
-						isToolAllowedForMode("execute_command", architectMode, [], undefined, {
-							command: "pnpm exec tsc --noEmit",
-							cwd,
+						isToolAllowedForMode("exec_command", architectMode, [], undefined, {
+							cmd: "pnpm exec tsc --noEmit",
+							workdir: cwd,
 							verification: null,
 						}),
 					).toBe(false)
@@ -126,8 +144,8 @@ describe("mode-validator", () => {
 		it.each(["ask", "debug", "orchestrator"])(
 			"does not grant editing or command tools to retired %s mode",
 			(mode) => {
-				expect(isToolAllowedForMode("write_to_file", mode, [])).toBe(false)
-				expect(isToolAllowedForMode("execute_command", mode, [])).toBe(false)
+				expect(isToolAllowedForMode("apply_patch", mode, [])).toBe(false)
+				expect(isToolAllowedForMode("exec_command", mode, [])).toBe(false)
 			},
 		)
 
@@ -152,9 +170,13 @@ describe("mode-validator", () => {
 				]
 				// Should allow tools from read and edit groups
 				expect(isToolAllowedForMode("read_file", "custom-mode", customModes)).toBe(true)
-				expect(isToolAllowedForMode("write_to_file", "custom-mode", customModes)).toBe(true)
+				expect(
+					isToolAllowedForMode("apply_patch", "custom-mode", customModes, undefined, undefined, undefined, [
+						"apply_patch",
+					]),
+				).toBe(true)
 				// Should not allow tools from other groups
-				expect(isToolAllowedForMode("execute_command", "custom-mode", customModes)).toBe(false)
+				expect(isToolAllowedForMode("exec_command", "custom-mode", customModes)).toBe(false)
 			})
 
 			it("allows browser tools only when a custom mode opts into the browser group", () => {
@@ -184,7 +206,7 @@ describe("mode-validator", () => {
 				// Should allow tools from read group
 				expect(isToolAllowedForMode("read_file", codeMode, customModes)).toBe(true)
 				// Should not allow tools from other groups
-				expect(isToolAllowedForMode("write_to_file", codeMode, customModes)).toBe(false)
+				expect(isToolAllowedForMode("apply_patch", codeMode, customModes)).toBe(false)
 			})
 
 			it("respects tool requirements in custom modes", () => {
@@ -196,27 +218,47 @@ describe("mode-validator", () => {
 						groups: ["edit"] as const,
 					},
 				]
-				const requirements = { edit: false }
+				const requirements = { apply_patch: false }
 
 				// Should respect disabled requirement even if tool group is allowed
-				expect(isToolAllowedForMode("edit", "custom-mode", customModes, requirements)).toBe(false)
+				expect(
+					isToolAllowedForMode(
+						"apply_patch",
+						"custom-mode",
+						customModes,
+						requirements,
+						undefined,
+						undefined,
+						["apply_patch"],
+					),
+				).toBe(false)
 
-				// Should allow other edit tools
-				expect(isToolAllowedForMode("write_to_file", "custom-mode", customModes, requirements)).toBe(true)
+				// Disabling file edits does not disable other tools in the same mode group.
+				expect(isToolAllowedForMode("create_ticket", "custom-mode", customModes, requirements)).toBe(true)
 			})
 
-			it("enforces file restrictions for empty-content writes", () => {
+			it("enforces file restrictions for empty-content patches", () => {
 				expect(
-					isToolAllowedForMode("write_to_file", "source-only", sourceOnlyMode, undefined, {
-						path: "src/empty.ts",
-						content: "",
-					}),
+					isToolAllowedForMode(
+						"apply_patch",
+						"source-only",
+						sourceOnlyMode,
+						undefined,
+						{ patch: "*** Begin Patch\n*** Add File: src/empty.ts\n*** End Patch" },
+						undefined,
+						["apply_patch"],
+					),
 				).toBe(true)
 				expect(() =>
-					isToolAllowedForMode("write_to_file", "source-only", sourceOnlyMode, undefined, {
-						path: "docs/empty.md",
-						content: "",
-					}),
+					isToolAllowedForMode(
+						"apply_patch",
+						"source-only",
+						sourceOnlyMode,
+						undefined,
+						{ patch: "*** Begin Patch\n*** Add File: docs/empty.md\n*** End Patch" },
+						undefined,
+						["apply_patch"],
+					),
 				).toThrow()
 			})
 
@@ -224,10 +266,15 @@ describe("mode-validator", () => {
 				"checks normalized workspace-relative paths before applying fileRegex: %s",
 				(filePath) => {
 					expect(() =>
-						isToolAllowedForMode("write_to_file", "source-only", sourceOnlyMode, undefined, {
-							path: filePath,
-							content: "changed",
-						}),
+						isToolAllowedForMode(
+							"apply_patch",
+							"source-only",
+							sourceOnlyMode,
+							undefined,
+							{ patch: `*** Begin Patch\n*** Add File: ${filePath}\n+changed\n*** End Patch` },
+							undefined,
+							["apply_patch"],
+						),
 					).toThrow()
 				},
 			)
@@ -337,18 +384,19 @@ describe("mode-validator", () => {
 
 		it("throws error for disallowed tools in architect mode", () => {
 			expect(() =>
-				validateToolUse("execute_command", "architect", [], undefined, {
-					command: "pnpm install",
+				validateToolUse("exec_command", "architect", [], undefined, {
+					cmd: "pnpm install",
 					verification: null,
 				}),
-			).toThrow('Tool "execute_command" is not allowed in architect mode.')
+			).toThrow('Tool "exec_command" is not allowed in architect mode.')
 		})
 
 		it("does not throw for allowed tools in architect mode", () => {
 			expect(() => validateToolUse("read_file", "architect", [])).not.toThrow()
+			expect(() => validateToolUse("view_image", "architect", [])).not.toThrow()
 			expect(() =>
-				validateToolUse("execute_command", "architect", [], undefined, {
-					command: "pnpm exec tsc --noEmit",
+				validateToolUse("exec_command", "architect", [], undefined, {
+					cmd: "pnpm exec tsc --noEmit",
 					verification: null,
 				}),
 			).not.toThrow()
@@ -371,7 +419,7 @@ describe("mode-validator", () => {
 		})
 
 		it("blocks tool when disabledTools is converted to toolRequirements", () => {
-			const disabledTools = ["execute_command", "search_files"]
+			const disabledTools = ["exec_command", "search_files"]
 			const toolRequirements = disabledTools.reduce(
 				(acc: Record<string, boolean>, tool: string) => {
 					acc[tool] = false
@@ -380,8 +428,8 @@ describe("mode-validator", () => {
 				{} as Record<string, boolean>,
 			)
 
-			expect(() => validateToolUse("execute_command", codeMode, [], toolRequirements)).toThrow(
-				'Tool "execute_command" is not allowed in code mode.',
+			expect(() => validateToolUse("exec_command", codeMode, [], toolRequirements)).toThrow(
+				'Tool "exec_command" is not allowed in code mode.',
 			)
 			expect(() => validateToolUse("search_files", codeMode, [], toolRequirements)).toThrow(
 				'Tool "search_files" is not allowed in code mode.',
@@ -389,7 +437,7 @@ describe("mode-validator", () => {
 		})
 
 		it("allows non-disabled tools when disabledTools is converted to toolRequirements", () => {
-			const disabledTools = ["execute_command"]
+			const disabledTools = ["exec_command"]
 			const toolRequirements = disabledTools.reduce(
 				(acc: Record<string, boolean>, tool: string) => {
 					acc[tool] = false
@@ -399,7 +447,9 @@ describe("mode-validator", () => {
 			)
 
 			expect(() => validateToolUse("read_file", codeMode, [], toolRequirements)).not.toThrow()
-			expect(() => validateToolUse("write_to_file", codeMode, [], toolRequirements)).not.toThrow()
+			expect(() =>
+				validateToolUse("apply_patch", codeMode, [], toolRequirements, undefined, undefined, ["apply_patch"]),
+			).not.toThrow()
 		})
 
 		it("handles empty disabledTools array converted to toolRequirements", () => {
@@ -412,7 +462,7 @@ describe("mode-validator", () => {
 				{} as Record<string, boolean>,
 			)
 
-			expect(() => validateToolUse("execute_command", codeMode, [], toolRequirements)).not.toThrow()
+			expect(() => validateToolUse("exec_command", codeMode, [], toolRequirements)).not.toThrow()
 		})
 	})
 })

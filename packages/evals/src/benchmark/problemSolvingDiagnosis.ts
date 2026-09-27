@@ -5,9 +5,11 @@ import {
 	problemSolvingDiagnosticFailureCategories,
 	problemSolvingDiagnosticFailureCodes,
 	problemSolvingFailureClasses,
+	problemSolvingPromptVariants,
 	type ProblemSolvingDiagnosticFailureCategory,
 	type ProblemSolvingDiagnosticFailureCode,
 	type ProblemSolvingFailureClass,
+	type ProblemSolvingPromptVariant,
 } from "./problemSolvingCampaign"
 import { loadProblemSolvingSet, type ProblemSolvingTask } from "./problemSolving"
 
@@ -51,6 +53,10 @@ const TURN_EXECUTION_EVENT_TYPES = new Set([
 
 export interface ProblemSolvingAttemptDiagnosis {
 	taskId: string
+	repetition: number | null
+	promptVariant: ProblemSolvingPromptVariant | null
+	promptSha256: string | null
+	promptVariantInstructionSha256: string | null
 	source: string | null
 	lane: string | null
 	tags: string[]
@@ -58,6 +64,7 @@ export interface ProblemSolvingAttemptDiagnosis {
 	executionState: ExecutionState
 	executionStartEvidence: ExecutionStartEvidence
 	countsAsSolving: boolean
+	e2eApprovalPolicySha256: string | null
 	graderDecision: string | null
 	failureClass: ProblemSolvingFailureClass | null
 	failureCategory: ProblemSolvingDiagnosticFailureCategory | null
@@ -100,6 +107,9 @@ export interface ProblemSolvingDiagnosis {
 		hostVersion: string | null
 		modelId: string | null
 		effort: string | null
+		requestLimit: number | null
+		plannedPromptVariants: ProblemSolvingPromptVariant[]
+		promptVariantInstructionSha256: string | null
 		buildIdentity: string | null
 		workingTreeClean: boolean | null
 		workingTreeDigest: string | null
@@ -120,7 +130,7 @@ export interface ProblemSolvingDiagnosis {
 	extensionArtifact: {
 		observedBundleSha256s: string[]
 		missingStartedAttemptDigests: number
-		mismatchedStartedAttemptDigests: number
+		mismatchedStartedAttemptDigests: number | null
 		matchesExpected: boolean | null
 	}
 	policyArtifacts: {
@@ -128,7 +138,17 @@ export interface ProblemSolvingDiagnosis {
 		observedPolicyDigestSha256s: string[]
 		startedAttemptsWithoutPolicyDigest: number
 		attemptsWithMultiplePolicyDigests: number
+		observedE2EApprovalPolicySha256s: string[]
+		startedAttemptsWithoutE2EApprovalPolicy: number
 	}
+	promptComparison: Array<{
+		variant: ProblemSolvingPromptVariant
+		attempts: number
+		started: number
+		verifiedPasses: number
+		scoredAttempts: number
+		commandGateStops: number
+	}>
 	outcomes: {
 		passed: number
 		failed: number
@@ -455,6 +475,15 @@ async function diagnoseAttempt(
 				: "started"
 	return {
 		taskId,
+		repetition:
+			numeric(attempt.repetition) !== null && Number.isSafeInteger(numeric(attempt.repetition))
+				? numeric(attempt.repetition)
+				: null,
+		promptVariant:
+			problemSolvingPromptVariants.find((variant) => variant === attempt.promptVariant) ??
+			(attempt.promptVariant === undefined ? "baseline" : null),
+		promptSha256: safeSha256(attempt.promptSha256),
+		promptVariantInstructionSha256: safeSha256(attempt.promptVariantInstructionSha256),
 		source: task?.source ?? null,
 		lane: task?.lane ?? (typeof attempt.lane === "string" ? attempt.lane : null),
 		tags: task?.tags ?? [],
@@ -462,6 +491,7 @@ async function diagnoseAttempt(
 		executionState,
 		executionStartEvidence,
 		countsAsSolving: attempt.countsAsSolving === true,
+		e2eApprovalPolicySha256: safeSha256(attempt.e2eApprovalPolicySha256),
 		graderDecision: graderDecision ?? null,
 		failureClass,
 		failureCategory,
@@ -524,11 +554,22 @@ export async function diagnoseProblemSolvingCampaign(input: {
 	const selectedTaskCount = numeric(selection?.selected)
 	const repetitions = numeric(selection?.repetitions)
 	const plannedRepetitions = repetitions !== null && Number.isSafeInteger(repetitions) ? repetitions : null
+	const recordedPromptVariants = Array.isArray(selection?.promptVariants)
+		? selection.promptVariants.filter(
+				(variant): variant is ProblemSolvingPromptVariant =>
+					typeof variant === "string" &&
+					problemSolvingPromptVariants.includes(variant as ProblemSolvingPromptVariant),
+			)
+		: []
+	const plannedPromptVariants: ProblemSolvingPromptVariant[] = [
+		...new Set<ProblemSolvingPromptVariant>(recordedPromptVariants.length ? recordedPromptVariants : ["baseline"]),
+	]
+	const promptVariantInstructionSha256 = safeSha256(selection?.promptVariantInstructionSha256)
 	const plannedAttemptCount =
 		selectedTaskCount !== null &&
 		plannedRepetitions !== null &&
-		Number.isSafeInteger(selectedTaskCount * plannedRepetitions)
-			? selectedTaskCount * plannedRepetitions
+		Number.isSafeInteger(selectedTaskCount * plannedRepetitions * plannedPromptVariants.length)
+			? selectedTaskCount * plannedRepetitions * plannedPromptVariants.length
 			: null
 	const selectedTaskIds = Array.isArray(selection?.taskIds)
 		? selection.taskIds.filter((taskId): taskId is string => typeof taskId === "string" && taskMap.has(taskId))
@@ -553,15 +594,19 @@ export async function diagnoseProblemSolvingCampaign(input: {
 	const missingStartedAttemptDigests = executionAttempts.filter(
 		(attempt) => attempt.evidence.extensionBundleSha256 === null,
 	).length
-	const mismatchedStartedAttemptDigests = expectedExtensionBundleSha256
-		? executionAttempts.filter(
-				(attempt) =>
-					attempt.evidence.extensionBundleSha256 !== null &&
-					attempt.evidence.extensionBundleSha256 !== expectedExtensionBundleSha256,
-			).length
-		: 0
+	const mismatchedStartedAttemptDigests =
+		expectedExtensionBundleSha256 === null || observedExtensionBundleSha256s.length === 0
+			? null
+			: executionAttempts.filter(
+					(attempt) =>
+						attempt.evidence.extensionBundleSha256 !== null &&
+						attempt.evidence.extensionBundleSha256 !== expectedExtensionBundleSha256,
+				).length
 	const bundleDigestMatchesExpected =
-		expectedExtensionBundleSha256 === null || executionAttempts.length === 0
+		expectedExtensionBundleSha256 === null ||
+		observedExtensionBundleSha256s.length === 0 ||
+		executionAttempts.length === 0 ||
+		mismatchedStartedAttemptDigests === null
 			? null
 			: mismatchedStartedAttemptDigests > 0
 				? false
@@ -577,16 +622,30 @@ export async function diagnoseProblemSolvingCampaign(input: {
 	const attemptsWithMultiplePolicyDigests = executionAttempts.filter(
 		(attempt) => attempt.evidence.policyDigestSha256s.length > 1,
 	).length
+	const observedE2EApprovalPolicySha256s = [
+		...new Set(
+			executionAttempts.flatMap((attempt) =>
+				attempt.e2eApprovalPolicySha256 ? [attempt.e2eApprovalPolicySha256] : [],
+			),
+		),
+	].sort()
+	const startedAttemptsWithoutE2EApprovalPolicy = executionAttempts.filter(
+		(attempt) => attempt.e2eApprovalPolicySha256 === null,
+	).length
 	const policySnapshotEventCount = attempts.reduce(
 		(sum, attempt) => sum + (attempt.trace.eventCounts.policy_snapshot ?? 0),
 		0,
 	)
-	const executionsByTask = new Map<string, number>()
+	const executionsByTaskVariant = new Map<string, number>()
 	for (const attempt of executionAttempts) {
-		executionsByTask.set(attempt.taskId, (executionsByTask.get(attempt.taskId) ?? 0) + 1)
+		const promptVariant = attempt.promptVariant ?? "baseline"
+		const key = `${attempt.taskId}\0${promptVariant}`
+		executionsByTaskVariant.set(key, (executionsByTaskVariant.get(key) ?? 0) + 1)
 	}
-	const notAttemptedTaskIds = selectedTaskIds.filter(
-		(taskId) => (executionsByTask.get(taskId) ?? 0) < (plannedRepetitions ?? 1),
+	const notAttemptedTaskIds = selectedTaskIds.filter((taskId) =>
+		plannedPromptVariants.some(
+			(variant) => (executionsByTaskVariant.get(`${taskId}\0${variant}`) ?? 0) < (plannedRepetitions ?? 1),
+		),
 	)
 	const campaignComplete =
 		plannedAttemptCount === null
@@ -640,8 +699,28 @@ export async function diagnoseProblemSolvingCampaign(input: {
 	const batchDurations = attempts.flatMap(({ trace }) => trace.batchDurationsMs)
 	const parallelCounts = attempts.flatMap(({ trace }) => trace.parallelTools)
 	const attemptsWithKnownCost = attempts.filter(({ usage }) => usage.cost !== null).length
+	const promptComparison = plannedPromptVariants.map((variant) => {
+		const variantAttempts = attempts.filter((attempt) => attempt.promptVariant === variant)
+		const scoredVariantAttempts = variantAttempts.filter(
+			(attempt) =>
+				attempt.status === "passed" ||
+				(attempt.status === "failed" &&
+					["outcome_failed", "safety_failed"].includes(attempt.graderDecision ?? "")),
+		)
+		return {
+			variant,
+			attempts: variantAttempts.length,
+			started: variantAttempts.filter((attempt) => attempt.executionState === "started").length,
+			verifiedPasses: variantAttempts.filter((attempt) => attempt.countsAsSolving).length,
+			scoredAttempts: scoredVariantAttempts.length,
+			commandGateStops: variantAttempts.filter(isCommandGateFailure).length,
+		}
+	})
 	const hypotheses: ProblemSolvingDiagnosis["hypotheses"] = []
 	const commandGateFailures = attempts.filter(isCommandGateFailure).length
+	const shellOperatorFailures = attempts.filter(
+		(attempt) => attempt.failureCode === "unexpected_command_shell_operator",
+	).length
 	const profileBusyBlocks = attempts.filter(
 		(attempt) => attempt.status === "blocked" && attempt.failureClass === "profile_busy",
 	).length
@@ -661,7 +740,11 @@ export async function diagnoseProblemSolvingCampaign(input: {
 			attempt.failureCode?.startsWith("unexpected_command") &&
 			attempt.graderDecision === "outcome_failed",
 	).length
-	if (taskExecutionStartedAttemptCount > 0 && mismatchedStartedAttemptDigests > 0) {
+	if (
+		taskExecutionStartedAttemptCount > 0 &&
+		mismatchedStartedAttemptDigests !== null &&
+		mismatchedStartedAttemptDigests > 0
+	) {
 		hypotheses.push({
 			priority: "high",
 			finding: "The runner-captured extension bundle digest differs from the prelaunch fingerprint.",
@@ -707,10 +790,14 @@ export async function diagnoseProblemSolvingCampaign(input: {
 		hypotheses.push({
 			priority: "high",
 			finding:
-				"The E2E command approval gate stopped multiple live attempts, and the resulting workspaces did not pass grading.",
-			evidence: `${commandGateFailures}/${attempts.length} attempts ended with a safe infrastructure/policy/unexpected_command signal; ${commandGateGraderFailures} then received grader outcome_failed. This measures the gate interaction and resulting workspace state, not model capability after an admitted command.`,
+				shellOperatorFailures > 0
+					? `${shellOperatorFailures > 1 ? "Repeated" : "An"} E2E shell-operator policy stop${shellOperatorFailures > 1 ? "s" : ""} blocked live attempts, but the category does not show whether the command contained a real shell operator or quoted punctuation.`
+					: "The E2E command approval gate stopped multiple live attempts, and the resulting workspaces did not pass grading.",
+			evidence: `${commandGateFailures}/${attempts.length} attempts ended with a safe infrastructure/policy/unexpected_command signal${shellOperatorFailures ? `, including unexpected_command_shell_operator on ${shellOperatorFailures}` : ""}; ${commandGateGraderFailures} then received grader outcome_failed. This measures the gate interaction and resulting workspace state, not model capability after an admitted command.`,
 			nextCheck:
-				"Use the new content-free rejection-reason categories to inspect the policy boundary without relaxing approvals; rerun a small representative live cohort before tuning prompts or the core engine.",
+				plannedPromptVariants.length > 1
+					? "Compare the selected prompt arms by per-task grader result and shell-operator gate stops. Check task coverage, prompt hashes, bundle digest, and effective approval-policy identity against the declared design; do not change the gate based on this run."
+					: "Verify one admitted single command, one rejected chained command, and the intended treatment of quoted literal punctuation; record the effective E2E approval-policy identity and a completed graded-task control. Only then test one task-independent prompt strategy and compare both gate-stop frequency and grader completion, without relaxing approvals.",
 		})
 	}
 	if (incompleteJoins > 0) {
@@ -740,7 +827,7 @@ export async function diagnoseProblemSolvingCampaign(input: {
 		hypotheses.push({
 			priority: "medium",
 			finding:
-				"This one-sample-per-task campaign shows no task failures, so it does not identify a prompt, engine, or scheduler defect.",
+				"This campaign shows no task failures, so it does not identify a prompt, engine, or scheduler defect.",
 			evidence: `${statuses.passed}/${attempts.length} attempts passed; there is one observation per task and the Wilson 95% interval is ${formatInterval(wilson95(statuses.passed, attempts.length))}.`,
 			nextCheck:
 				"Repeat the declared subset on the same live host/model setup before selecting an agent-behavior change; then vary one harness component and compare the same tasks.",
@@ -771,7 +858,7 @@ export async function diagnoseProblemSolvingCampaign(input: {
 			finding: "The event projection now has enough structure for a first-pass trajectory comparison.",
 			evidence: `${joins}/${attempts.length} attempts have captured joins and ${categorizedToolResults}/${allToolResults} tool results have categories.`,
 			nextCheck:
-				"Use the same task subset for a controlled prompt or engine change and compare completion, requests, tool categories, retries, validation, and trace integrity.",
+				"First complete a frozen same-artifact diagnostic and identify a component-specific failure; only then compare one harness change on the same task subset across completion, requests, tool categories, retries, validation, and trace integrity.",
 		})
 	}
 	const selectedTasks = executionAttempts.flatMap((attempt) => {
@@ -790,6 +877,9 @@ export async function diagnoseProblemSolvingCampaign(input: {
 			hostVersion: typeof campaign.hostVersion === "string" ? campaign.hostVersion : null,
 			modelId: typeof campaign.modelId === "string" ? campaign.modelId : null,
 			effort: typeof campaign.effort === "string" ? campaign.effort : null,
+			requestLimit: numeric(campaign.requestLimit),
+			plannedPromptVariants,
+			promptVariantInstructionSha256,
 			buildIdentity: typeof campaign.buildIdentity === "string" ? campaign.buildIdentity : null,
 			workingTreeClean: typeof campaign.workingTreeClean === "boolean" ? campaign.workingTreeClean : null,
 			workingTreeDigest: typeof campaign.workingTreeDigest === "string" ? campaign.workingTreeDigest : null,
@@ -818,7 +908,10 @@ export async function diagnoseProblemSolvingCampaign(input: {
 			observedPolicyDigestSha256s,
 			startedAttemptsWithoutPolicyDigest,
 			attemptsWithMultiplePolicyDigests,
+			observedE2EApprovalPolicySha256s,
+			startedAttemptsWithoutE2EApprovalPolicy,
 		},
+		promptComparison,
 		outcomes: {
 			...statuses,
 			scoredAttempts,
@@ -871,7 +964,9 @@ export async function diagnoseProblemSolvingCampaign(input: {
 			"No prompt, assistant text, tool arguments, paths, or tool output is copied into this report.",
 			"Execution start requires a positive model-request receipt, a model-request, tool/approval, verification, or turn/task event, or a verified pass; profile/policy initialization alone does not count. Otherwise start status is unknown and the planned execution remains pending.",
 			"A grader pass measures the declared fixture and checks; it does not establish correctness on every workflow shape.",
-			"One sample per task cannot estimate run-to-run variance or confidently select a harness change.",
+			"A small, selected cohort cannot estimate stable run variance or generalize to the suite; the Wilson interval is per attempt and does not account for task selection or clustering.",
+			"The extension bundle digest is a later read of the entrypoint file; it does not prove which bytes the host loaded or identify every packaged asset.",
+			"Effective tool-policy digests include workspace scope and do not establish policy equivalence across fresh workspaces.",
 			"Terminal-Bench tasks remain outside this local live score because their published verifiers and environments are container-bound.",
 			"Coverage gaps are based on manifest tags; review task instructions before treating an absent tag as an absent behavior.",
 			"Cost remains unknown when Copilot supplies no positive price; missing cost is not zero.",
@@ -910,8 +1005,31 @@ export function problemSolvingDiagnosisMarkdown(report: ProblemSolvingDiagnosis)
 			attempt.status === "blocked"
 				? `excluded from score${attempt.graderDecision ? ` (recorded ${attempt.graderDecision})` : " (no grader result)"}`
 				: (attempt.graderDecision ?? "none")
-		return `| ${attempt.taskId} | ${attempt.source ?? "unknown"} | ${attempt.lane ?? "unknown"} | ${attempt.status} | ${attempt.executionStartEvidence} | ${failureSignal} | ${graderRecord} | ${displayNumber(attempt.usage.requests)} | ${attempt.evidence.joinStatus} |`
+		return `| ${attempt.taskId} | ${attempt.promptVariant ?? "unknown"} | ${attempt.repetition ?? "unknown"} | ${attempt.source ?? "unknown"} | ${attempt.lane ?? "unknown"} | ${attempt.status} | ${attempt.executionStartEvidence} | ${failureSignal} | ${graderRecord} | ${displayNumber(attempt.usage.requests)} | ${attempt.evidence.joinStatus} |`
 	})
+	const outcomesByTask = new Map<string, { passed: number; scored: number }>()
+	for (const attempt of report.attempts) {
+		const scored =
+			attempt.status === "passed" ||
+			(attempt.status === "failed" && ["outcome_failed", "safety_failed"].includes(attempt.graderDecision ?? ""))
+		if (!scored) continue
+		const promptVariant = attempt.promptVariant ?? "baseline"
+		const key = `${attempt.taskId}\0${promptVariant}`
+		const task = outcomesByTask.get(key) ?? { passed: 0, scored: 0 }
+		task.scored++
+		if (attempt.status === "passed") task.passed++
+		outcomesByTask.set(key, task)
+	}
+	const taskOutcomeRows = [...outcomesByTask.entries()]
+		.sort(([left], [right]) => left.localeCompare(right))
+		.map(([taskId, outcomes]) => {
+			const [taskIdPart, promptVariant] = taskId.split("\0")
+			return `| ${taskIdPart} | ${promptVariant} | ${outcomes.passed}/${outcomes.scored} |`
+		})
+	const promptComparisonRows = report.promptComparison.map(
+		({ variant, attempts, started, verifiedPasses, scoredAttempts, commandGateStops }) =>
+			`| ${variant} | ${verifiedPasses}/${scoredAttempts} | ${commandGateStops} | ${started}/${attempts} |`,
+	)
 	const campaignCompletion =
 		report.run.campaignComplete === null
 			? "Completion status unavailable; the planned selection was not recorded."
@@ -951,12 +1069,12 @@ export function problemSolvingDiagnosisMarkdown(report: ProblemSolvingDiagnosis)
 	const bundleDigestSummary =
 		"Extension bundle SHA-256: prelaunch " +
 		(report.run.expectedExtensionBundleSha256 ?? "not recorded") +
-		"; runner-captured " +
+		"; runner-captured on started attempts " +
 		(report.extensionArtifact.observedBundleSha256s.join(", ") || "none") +
 		"; missing on started attempts " +
 		report.extensionArtifact.missingStartedAttemptDigests +
 		"; mismatches " +
-		report.extensionArtifact.mismatchedStartedAttemptDigests +
+		(report.extensionArtifact.mismatchedStartedAttemptDigests ?? "not assessed") +
 		"; prelaunch match " +
 		(report.extensionArtifact.matchesExpected === null
 			? "unverified"
@@ -973,15 +1091,20 @@ export function problemSolvingDiagnosisMarkdown(report: ProblemSolvingDiagnosis)
 		report.policyArtifacts.startedAttemptsWithoutPolicyDigest +
 		" started attempt(s) without a captured digest; " +
 		report.policyArtifacts.attemptsWithMultiplePolicyDigests +
-		" attempt(s) with multiple digests. These hashes include workspace scope, so differences across tasks or runs can be expected."
+		" attempt(s) with multiple digests. These hashes include workspace scope, so differences across tasks or runs can be expected. E2E approval-policy identity: " +
+		report.policyArtifacts.observedE2EApprovalPolicySha256s.length +
+		" unique stable hash(es); " +
+		report.policyArtifacts.startedAttemptsWithoutE2EApprovalPolicy +
+		" started attempt(s) without one. This identity excludes workspace paths."
 	const plannedSelection = report.run.plannedTaskIds.length
-		? `Planned selection: ${report.run.plannedTaskIds.length} task(s) × ${report.run.plannedRepetitions ?? "unknown"} repetition(s): ${report.run.plannedTaskIds.join(", ")}.`
+		? `Planned selection: ${report.run.plannedTaskIds.length} task(s) × ${report.run.plannedRepetitions ?? "unknown"} repetition(s) × ${report.run.plannedPromptVariants.length} prompt arm(s) (${report.run.plannedPromptVariants.join(", ")}): ${report.run.plannedTaskIds.join(", ")}.`
 		: "Planned task IDs unavailable in the campaign report."
 	return [
 		"# Live problem-solving campaign diagnosis",
 		"",
 		`Generated: ${report.generatedAt}`,
-		`Run: ${report.run.runId ?? "unknown"} · VS Code ${report.run.hostVersion ?? "unknown"} · ${report.run.modelId ?? "unknown"} · ${report.run.effort ?? "unknown"}`,
+		`Run: ${report.run.runId ?? "unknown"} · VS Code ${report.run.hostVersion ?? "unknown"} · ${report.run.modelId ?? "unknown"} · ${report.run.effort ?? "unknown"} · request limit ${report.run.requestLimit ?? "unknown"}`,
+		`Prompt variant instruction SHA-256: ${report.run.promptVariantInstructionSha256 ?? "not applicable"}`,
 		`Build: ${report.run.buildIdentity ?? "unknown"}`,
 		`Working tree: ${report.run.workingTreeClean === null ? "not recorded" : report.run.workingTreeClean ? "clean" : "dirty"}`,
 		`Working-tree input digest: ${report.run.workingTreeDigest ?? "not recorded"}`,
@@ -997,6 +1120,18 @@ export function problemSolvingDiagnosisMarkdown(report: ProblemSolvingDiagnosis)
 		`- Requests per attempt: n=${report.usage.requests.count}, median ${displayNumber(report.usage.requests.median)}, p95 ${displayNumber(report.usage.requests.p95)}.`,
 		`- Input tokens: median ${displayNumber(report.usage.inputTokens.median)}, p95 ${displayNumber(report.usage.inputTokens.p95)}. Output tokens: median ${displayNumber(report.usage.outputTokens.median)}, p95 ${displayNumber(report.usage.outputTokens.p95)}.`,
 		`- Cost recorded for ${report.usage.knownCostAttempts}/${report.run.attemptCount} attempts; the remainder is unknown, not zero.`,
+		"",
+		"## Per-task outcomes",
+		"",
+		"| Task | Prompt variant | Verified passes / scored attempts |",
+		"| --- | --- | ---: |",
+		...(taskOutcomeRows.length ? taskOutcomeRows : ["| No scored attempts | — | — |"]),
+		"",
+		"## Prompt arm comparison",
+		"",
+		"| Prompt variant | Verified passes / scored attempts | Shell-operator gate stops | Execution starts / attempts |",
+		"| --- | ---: | ---: | ---: |",
+		...(promptComparisonRows.length ? promptComparisonRows : ["| No prompt arms | — | — | — |"]),
 		"",
 		"## Evidence quality",
 		"",
@@ -1053,9 +1188,9 @@ export function problemSolvingDiagnosisMarkdown(report: ProblemSolvingDiagnosis)
 		"",
 		"## Attempt summary",
 		"",
-		"| Task | Source | Lane | Outcome | Execution-start evidence | Safe failure signal | Grader record / score treatment | Requests | Trace join |",
-		"| --- | --- | --- | --- | --- | --- | --- | ---: | --- |",
-		...(attemptRows.length ? attemptRows : ["| none | — | — | — | — | — | — | — | — |"]),
+		"| Task | Prompt variant | Rep | Source | Lane | Outcome | Execution-start evidence | Safe failure signal | Grader record / score treatment | Requests | Trace join |",
+		"| --- | --- | ---: | --- | --- | --- | --- | --- | --- | ---: | --- |",
+		...(attemptRows.length ? attemptRows : ["| none | — | — | — | — | — | — | — | — | — | — |"]),
 		"",
 		"## Limits",
 		"",

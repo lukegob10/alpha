@@ -429,6 +429,7 @@ describe("VertexHandler", () => {
 				},
 				{ type: "text", text: "Completed response" },
 				{ type: "tool_call", id: "toolu_1", name: "read_file", arguments: '{"path":"src/index.ts"}' },
+				{ type: "tool_call_end", id: "toolu_1" },
 			])
 		})
 
@@ -703,6 +704,58 @@ describe("VertexHandler", () => {
 	})
 
 	describe("thinking functionality", () => {
+		it("replays a signed thinking block with its tool call and result", async () => {
+			const provider = new AnthropicVertexHandler({
+				apiModelId: "claude-3-5-sonnet-v2@20241022",
+				vertexProjectId: "test-project",
+				vertexRegion: "us-central1",
+				vertexStreamingEnabled: false,
+			})
+			const create = vitest
+				.fn()
+				.mockResolvedValueOnce({
+					content: [
+						{ type: "thinking", thinking: "Need to read the file.", signature: "signed-thinking" },
+						{ type: "tool_use", id: "read-1", name: "read_file", input: { path: "a.ts" } },
+					],
+				})
+				.mockResolvedValueOnce({ content: [{ type: "text", text: "done" }] })
+			setDirectClientCreate(provider, create)
+			const chunks = []
+			for await (const chunk of provider.createMessage("instructions", [
+				{ role: "user", content: "Read a.ts" },
+			])) {
+				chunks.push(chunk)
+			}
+			expect(chunks).toContainEqual({ type: "reasoning", text: "Need to read the file." })
+			expect(chunks).toContainEqual({
+				type: "tool_call",
+				id: "read-1",
+				name: "read_file",
+				arguments: '{"path":"a.ts"}',
+			})
+			expect(provider.getThoughtSignature()).toBe("signed-thinking")
+
+			const history: Anthropic.Messages.MessageParam[] = [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "thinking",
+							thinking: "Need to read the file.",
+							signature: provider.getThoughtSignature()!,
+						},
+						{ type: "tool_use", id: "read-1", name: "read_file", input: { path: "a.ts" } },
+					],
+				},
+				{ role: "user", content: [{ type: "tool_result", tool_use_id: "read-1", content: "file contents" }] },
+			]
+			for await (const _chunk of provider.createMessage("instructions", history)) {
+			}
+			expect(create.mock.calls[1][0].messages).toEqual(history)
+			expect(provider.getThoughtSignature()).toBeUndefined()
+		})
+
 		const mockMessages: Anthropic.Messages.MessageParam[] = [
 			{
 				role: "user",
@@ -745,6 +798,10 @@ describe("VertexHandler", () => {
 					},
 				},
 				{
+					type: "content_block_delta",
+					delta: { type: "signature_delta", signature: "claude-signature-1" },
+				},
+				{
 					type: "content_block_start",
 					index: 1,
 					content_block: {
@@ -778,6 +835,7 @@ describe("VertexHandler", () => {
 			expect(reasoningChunks).toHaveLength(2)
 			expect(reasoningChunks[0].text).toBe("Let me think about this...")
 			expect(reasoningChunks[1].text).toBe(" I need to consider all options.")
+			expect(handler.getThoughtSignature()).toBe("claude-signature-1")
 
 			// Verify text content is processed correctly
 			const textChunks = chunks.filter((chunk) => chunk.type === "text")

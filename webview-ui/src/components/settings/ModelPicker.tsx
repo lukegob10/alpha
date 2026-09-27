@@ -270,7 +270,9 @@ export const ModelPicker = ({
 											onSelect={onSelect}
 											data-testid={`model-option-${model}`}>
 											<span className="min-w-0 flex flex-col">
-												<span className="truncate" title={model}>
+												<span
+													className="truncate"
+													title={labelTransform?.(model, models?.[model]) ?? model}>
 													{labelTransform?.(model, models?.[model]) ?? model}
 												</span>
 												{secondaryLabelTransform?.(model, models?.[model]) && (

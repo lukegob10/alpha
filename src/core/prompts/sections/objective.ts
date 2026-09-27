@@ -4,7 +4,7 @@ export function getObjectiveSection(isPlanMode = false): string {
 		: "Accomplish the user's intended outcome end to end."
 	const completion = isPlanMode
 		? "Once the plan is decision-complete, hand it off in the required proposed-plan block; do not implement it or ask for approval."
-		: "Once the requested outcome and any requested verification are complete, provide the final result. A primary task may finish with a visible ordinary assistant answer when no tool call or continuation is needed. Do not invent a tool call or attempt_completion solely to force a completion format. Address feedback without entering repetitive or open-ended improvement loops."
+		: "Once the requested outcome and any requested verification are complete, provide the final result. A primary task may finish with a visible ordinary assistant answer when no tool call or continuation is needed. Do not invent a tool call solely to force a completion format. Address feedback without entering repetitive or open-ended improvement loops."
 
 	return `====
 

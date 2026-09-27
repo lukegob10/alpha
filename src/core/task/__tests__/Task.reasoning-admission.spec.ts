@@ -238,6 +238,9 @@ describe("Task reasoning admission", () => {
 		expect(Reflect.get(task, "getSystemPrompt")).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({ apiConfiguration: expect.objectContaining({ reasoningEffort: "low" }) }),
+			undefined,
+			"code",
+			expect.any(Function),
 		)
 	})
 })

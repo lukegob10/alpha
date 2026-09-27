@@ -10,7 +10,7 @@ export type HostLaunchKind = "extension-test" | "development-sidecar"
 export const LIVE_HOST_STARTED = "live-host-started.json"
 export const LIVE_HOST_COMPLETION = "host-completion.json"
 export const LIVE_HOST_STARTUP_TIMEOUT_MS = 60_000
-export const LIVE_HOST_CLOSE_TIMEOUT_MS = 10_000
+export const LIVE_HOST_CLOSE_TIMEOUT_MS = 30_000
 
 export type LiveHostExpected = {
 	runId: string

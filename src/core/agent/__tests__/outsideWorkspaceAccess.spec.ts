@@ -7,7 +7,6 @@ import { checkAutoApproval } from "../../auto-approval"
 import type { Task } from "../../task/Task"
 import { getNativeTools } from "../../prompts/tools/native-tools"
 import { ToolRegistry } from "../../tools/ToolRegistry"
-import { writeToFileTool } from "../../tools/WriteToFileTool"
 import { applyPatchTool } from "../../tools/ApplyPatchTool"
 import { createToolPolicySnapshot } from "../ToolPolicy"
 import { ToolScheduler, type ToolExecutionHost } from "../ToolScheduler"
@@ -101,7 +100,9 @@ describe("outside workspace execution", () => {
 				policy: createToolPolicySnapshot({
 					...policy,
 					autoApprovalEnabled: true,
-					capabilities: { [name]: registry.resolve(name)!.capabilities },
+					...(registry.resolve(name)
+						? { capabilities: { [name]: registry.resolve(name)!.capabilities } }
+						: {}),
 				}),
 				mode: "code",
 				validateCall: () => {},
@@ -115,13 +116,29 @@ describe("outside workspace execution", () => {
 		return { host, prompt, provider, run }
 	}
 
-	it("falls back to the approved native listing path outside the parallel read grant", async () => {
-		await fs.writeFile(path.join(outside, "code.ts"), "export const outside = true")
-		const fixture = harness("list_files", { path: "../outside" })
+	it.each([
+		["read_file", { files: [{ path: "../outside/code.ts" }] }],
+		["list_files", { path: "../outside" }],
+		["search_files", { queries: [{ path: "../outside", regex: "code" }] }],
+	] as const)("returns an unknown-tool receipt for retired saved %s calls without approval", async (name, args) => {
+		const fixture = harness(name, args)
 		const outcome = await fixture.run(new ToolRegistry())
-		expect(outcome.results[0].status).toBe("success")
-		expect(outcome.results[0].content).toContain("code.ts")
+		expect(outcome.results).toEqual([
+			expect.objectContaining({
+				callId: "call",
+				status: "error",
+				failure: expect.objectContaining({ reason: "capability_unavailable", effectsStarted: "no" }),
+			}),
+		])
+		expect(JSON.parse(String(outcome.results[0].content))).toMatchObject({
+			status: "error",
+			message: "The tool execution failed",
+			error: expect.stringContaining(`Unknown tool "${name}"`),
+		})
+		expect(fixture.host.askApproval).not.toHaveBeenCalled()
 		expect(fixture.prompt).not.toHaveBeenCalled()
+		expect(fixture.host.recordToolUsage).not.toHaveBeenCalled()
+		expect(fixture.provider.recordPrimaryMutation).not.toHaveBeenCalled()
 	})
 
 	function inspection(name: string, execute: () => Promise<void> = async () => {}) {
@@ -134,8 +151,8 @@ describe("outside workspace execution", () => {
 			execute: async ({ callbacks }) => {
 				if (
 					await callbacks.askApproval(
-						name === "execute_command" ? "command" : "tool",
-						name === "execute_command"
+						name === "exec_command" ? "command" : "tool",
+						name === "exec_command"
 							? "node script.js"
 							: JSON.stringify({ tool: "readFile", isOutsideWorkspace: true }),
 					)
@@ -148,40 +165,22 @@ describe("outside workspace execution", () => {
 		return registry
 	}
 
-	it.each(["read_file", "list_files", "search_files"])(
-		"admits %s outside the root through existing read approvals",
-		async (name) => {
-			const args =
-				name === "read_file"
-					? { files: [{ path: "../outside/code.ts" }] }
-					: name === "search_files"
-						? { queries: [{ path: "../outside", regex: "code" }] }
-						: { path: "../outside" }
-			const allowed = harness(name, args)
-			expect((await allowed.run(inspection(name))).results[0].status).toBe("success")
-			expect(allowed.prompt).not.toHaveBeenCalled()
-			const restricted = harness(name, args, false)
-			expect((await restricted.run(inspection(name))).results[0].status).toBe("error")
-			expect(restricted.host.askApproval).not.toHaveBeenCalled()
-		},
-	)
-
 	it.each([undefined, "."])("uses global command auto-approval inside cwd %s", async (commandCwd) => {
-		const fixture = harness("execute_command", { command: "node script.js", cwd: commandCwd }, true, false)
+		const fixture = harness("exec_command", { cmd: "node script.js", workdir: commandCwd }, true, false)
 		const effect = vi.fn()
-		expect((await fixture.run(inspection("execute_command", effect))).results[0].status).toBe("success")
+		expect((await fixture.run(inspection("exec_command", effect))).results[0].status).toBe("success")
 		expect(fixture.prompt).not.toHaveBeenCalled()
 		expect(effect).toHaveBeenCalledOnce()
 	})
 
 	it.each([
-		{ command: "echo changed > ../outside/file.txt" },
-		{ command: "Remove-Item -LiteralPath ../outside/file.txt" },
-		{ command: "node script.js", cwd: "../outside" },
+		{ cmd: "echo changed > ../outside/file.txt" },
+		{ cmd: "Remove-Item -LiteralPath ../outside/file.txt" },
+		{ cmd: "git status --short", workdir: "../outside" },
 	])("requires a decision for a detected outside command path: %j", async (args) => {
-		const fixture = harness("execute_command", args, true, false)
+		const fixture = harness("exec_command", args, true, false)
 		const effect = vi.fn()
-		expect((await fixture.run(inspection("execute_command", effect))).results[0].status).toBe("denied")
+		expect((await fixture.run(inspection("exec_command", effect))).results[0].status).toBe("denied")
 		expect(fixture.prompt).toHaveBeenCalledOnce()
 		expect(effect).not.toHaveBeenCalled()
 	})
@@ -189,8 +188,8 @@ describe("outside workspace execution", () => {
 	it.each([true, false])("honors the one-run decision %s for command mutations", async (approve) => {
 		const file = path.join(outside, "command.txt")
 		await fs.writeFile(file, "original")
-		const fixture = harness("execute_command", { command: `echo changed > "${file}"` }, true, approve)
-		await fixture.run(inspection("execute_command", () => fs.writeFile(file, "changed")))
+		const fixture = harness("exec_command", { cmd: `echo changed > "${file}"` }, true, approve)
+		await fixture.run(inspection("exec_command", () => fs.writeFile(file, "changed")))
 		expect(fixture.prompt).toHaveBeenCalledOnce()
 		expect(await fs.readFile(file, "utf8")).toBe(approve ? "changed" : "original")
 		expect(fixture.host.askApproval).toHaveBeenCalledWith(
@@ -203,29 +202,23 @@ describe("outside workspace execution", () => {
 	})
 
 	it("asks for a true-outside mutating command in Auto and can approve it in Bypass", async () => {
-		const auto = harness("execute_command", { command: "echo changed > ../outside/file.txt" }, true, false, "auto")
+		const auto = harness("exec_command", { cmd: "echo changed > ../outside/file.txt" }, true, false, "auto")
 		const autoEffect = vi.fn()
-		expect((await auto.run(inspection("execute_command", autoEffect))).results[0].status).toBe("denied")
+		expect((await auto.run(inspection("exec_command", autoEffect))).results[0].status).toBe("denied")
 		expect(auto.prompt).toHaveBeenCalledOnce()
 		expect(autoEffect).not.toHaveBeenCalled()
 
-		const bypass = harness(
-			"execute_command",
-			{ command: "echo changed > ../outside/file.txt" },
-			true,
-			false,
-			"bypass",
-		)
+		const bypass = harness("exec_command", { cmd: "echo changed > ../outside/file.txt" }, true, false, "bypass")
 		const bypassEffect = vi.fn()
-		expect((await bypass.run(inspection("execute_command", bypassEffect))).results[0].status).toBe("success")
+		expect((await bypass.run(inspection("exec_command", bypassEffect))).results[0].status).toBe("success")
 		expect(bypass.prompt).not.toHaveBeenCalled()
 		expect(bypassEffect).toHaveBeenCalledOnce()
 	})
 
 	it("does not offer outside-command approval when inherited policy forbids it", async () => {
-		const fixture = harness("execute_command", { command: "rm ../outside/file.txt" }, false)
+		const fixture = harness("exec_command", { cmd: "rm ../outside/file.txt" }, false)
 		const effect = vi.fn()
-		expect((await fixture.run(inspection("execute_command", effect))).results[0].content).toContain(
+		expect((await fixture.run(inspection("exec_command", effect))).results[0].content).toContain(
 			"exceed the task scope",
 		)
 		expect(fixture.prompt).not.toHaveBeenCalled()
@@ -235,14 +228,14 @@ describe("outside workspace execution", () => {
 	it("rechecks a command destination junction after path approval", async () => {
 		const link = path.join(cwd, "linked")
 		await fs.symlink(outside, link, process.platform === "win32" ? "junction" : "dir")
-		const fixture = harness("execute_command", { command: "echo changed > linked/file.txt" })
+		const fixture = harness("exec_command", { cmd: "echo changed > linked/file.txt" })
 		const effect = vi.fn()
 		fixture.prompt.mockImplementation(async () => {
 			await fs.unlink(link)
 			await fs.symlink(cwd, link, process.platform === "win32" ? "junction" : "dir")
 			return true
 		})
-		expect((await fixture.run(inspection("execute_command", effect))).results[0].status).toBe("denied")
+		expect((await fixture.run(inspection("exec_command", effect))).results[0].status).toBe("denied")
 		expect(effect).not.toHaveBeenCalled()
 	})
 
@@ -251,10 +244,17 @@ describe("outside workspace execution", () => {
 		async (approve) => {
 			const target = path.join(outside, "file.txt")
 			await fs.writeFile(target, "original")
-			const fixture = harness("write_to_file", { path: target, content: "changed" }, true, approve)
-			vi.spyOn(writeToFileTool, "handle").mockImplementation(async (_task, _call, callbacks) => {
+			const fixture = harness(
+				"apply_patch",
+				{
+					patch: "*** Begin Patch\n*** Update File: ../outside/file.txt\n@@\n-original\n+changed\n*** End Patch",
+				},
+				true,
+				approve,
+			)
+			vi.spyOn(applyPatchTool, "handle").mockImplementation(async (_task, _call, callbacks) => {
 				// The scheduler must enforce the boundary even if a tool omits its presentation flag.
-				if (await callbacks.askApproval("tool", JSON.stringify({ tool: "editedExistingFile" }))) {
+				if (await callbacks.askApproval("tool", JSON.stringify({ tool: "appliedDiff" }))) {
 					await fs.writeFile(target, "changed")
 					callbacks.pushToolResult("written")
 				}
@@ -278,10 +278,9 @@ describe("outside workspace execution", () => {
 				callbacks.pushToolResult("written")
 			}
 		})
-		expect(
-			(await fixture.run(new ToolRegistry({ nativeTools: getNativeTools({ includeApplyPatch: true }) })))
-				.results[0].status,
-		).toBe("success")
+		expect((await fixture.run(new ToolRegistry({ nativeTools: getNativeTools() }))).results[0].status).toBe(
+			"success",
+		)
 		expect(fixture.prompt).toHaveBeenCalledOnce()
 		expect(fixture.provider.recordPrimaryMutation).toHaveBeenCalledWith(
 			expect.anything(),
@@ -308,10 +307,12 @@ describe("outside workspace execution", () => {
 	it("requires approval for an outward junction and rejects a retargeted junction during approval", async () => {
 		const link = path.join(cwd, "linked")
 		await fs.symlink(outside, link, process.platform === "win32" ? "junction" : "dir")
-		const fixture = harness("write_to_file", { path: "linked/file.txt", content: "changed" })
+		const fixture = harness("apply_patch", {
+			patch: "*** Begin Patch\n*** Add File: linked/file.txt\n+changed\n*** End Patch",
+		})
 		const effect = vi.fn()
-		vi.spyOn(writeToFileTool, "handle").mockImplementation(async (_task, _call, callbacks) => {
-			if (await callbacks.askApproval("tool", JSON.stringify({ tool: "newFileCreated" }))) effect()
+		vi.spyOn(applyPatchTool, "handle").mockImplementation(async (_task, _call, callbacks) => {
+			if (await callbacks.askApproval("tool", JSON.stringify({ tool: "appliedDiff" }))) effect()
 		})
 		fixture.prompt.mockImplementation(async () => {
 			await fs.unlink(link)

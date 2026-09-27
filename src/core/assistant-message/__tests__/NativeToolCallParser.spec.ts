@@ -114,6 +114,149 @@ describe("NativeToolCallParser", () => {
 			}
 		})
 
+		it("preserves the Codex exec_command payload under its canonical identity", () => {
+			const args = {
+				cmd: "pnpm --version",
+				workdir: "src",
+				yield_time_ms: 10_000,
+				max_output_tokens: 120,
+			}
+			const result = NativeToolCallParser.parseToolCall({
+				id: "codex-exec-command",
+				name: "exec_command",
+				arguments: JSON.stringify(args),
+			})
+
+			expect(result).toMatchObject({
+				type: "tool_use",
+				name: "exec_command",
+				nativeArgs: args,
+			})
+
+			NativeToolCallParser.startStreamingToolCall("codex-exec-stream", "exec_command")
+			const partial = NativeToolCallParser.processStreamingChunk("codex-exec-stream", '{"cmd":"pnpm --version"')
+			expect(partial).toMatchObject({
+				name: "exec_command",
+				nativeArgs: { cmd: "pnpm --version" },
+			})
+
+			NativeToolCallParser.processStreamingChunk(
+				"codex-exec-stream",
+				',"workdir":"src","yield_time_ms":10000,"max_output_tokens":120}',
+			)
+			expect(NativeToolCallParser.finalizeStreamingToolCall("codex-exec-stream")).toMatchObject({
+				name: "exec_command",
+				nativeArgs: args,
+			})
+		})
+
+		it("parses a required local image path for view_image", () => {
+			const result = NativeToolCallParser.parseToolCall({
+				id: "view-image",
+				name: "view_image",
+				arguments: JSON.stringify({ path: "assets/chart.png" }),
+			})
+
+			expect(result).toMatchObject({
+				type: "tool_use",
+				name: "view_image",
+				nativeArgs: { path: "assets/chart.png" },
+			})
+
+			const missingPath = NativeToolCallParser.parseToolCall({
+				id: "view-image-missing-path",
+				name: "view_image",
+				arguments: "{}",
+			})
+			expect(missingPath).toBeNull()
+		})
+
+		it.each([
+			{
+				name: "write_stdin" as const,
+				canonicalName: "write_stdin",
+				args: { session_id: 17, chars: "y\\n", yield_time_ms: 750, max_output_tokens: 256 },
+			},
+			{
+				name: "update_plan" as const,
+				canonicalName: "update_plan",
+				args: {
+					explanation: "The first step is underway.",
+					plan: [
+						{ step: "Inspect the parser", status: "completed" },
+						{ step: "Add native tool parsing", status: "in_progress" },
+					],
+				},
+			},
+			{
+				name: "request_user_input" as const,
+				canonicalName: "request_user_input",
+				args: {
+					questions: [
+						{
+							id: "test_choice",
+							header: "Choice",
+							question: "Which option should run?",
+							options: [
+								{ label: "Option A", description: "Keeps the first behavior." },
+								{ label: "Option B", description: "Uses the second behavior." },
+							],
+						},
+					],
+				},
+			},
+		])("preserves native $name arguments in final and streaming calls", ({ name, canonicalName, args }) => {
+			const result = NativeToolCallParser.parseToolCall({
+				id: `native-${name}`,
+				name,
+				arguments: JSON.stringify(args),
+			})
+
+			expect(result).toMatchObject({
+				type: "tool_use",
+				name: canonicalName,
+				nativeArgs: args,
+			})
+			if (name !== canonicalName) expect(result).toHaveProperty("originalName", name)
+
+			const id = `native-stream-${name}`
+			NativeToolCallParser.startStreamingToolCall(id, name)
+			const partial = NativeToolCallParser.processStreamingChunk(id, JSON.stringify(args))
+			expect(partial).toMatchObject({ name: canonicalName, nativeArgs: args, partial: true })
+			expect(NativeToolCallParser.finalizeStreamingToolCall(id)).toMatchObject({
+				name: canonicalName,
+				nativeArgs: args,
+				partial: false,
+			})
+		})
+
+		it("parses saved update_todo_list calls into the canonical plan handler with legacy todos payloads", () => {
+			const args = { todos: "[-] Preserve the saved checklist", work_plan: null }
+			const result = NativeToolCallParser.parseToolCall({
+				id: "saved-todo-call",
+				name: "update_todo_list",
+				arguments: JSON.stringify(args),
+			})
+
+			expect(result).toMatchObject({
+				type: "tool_use",
+				name: "update_plan",
+				originalName: "update_todo_list",
+				nativeArgs: args,
+			})
+
+			NativeToolCallParser.startStreamingToolCall("saved-todo-stream", "update_todo_list")
+			expect(NativeToolCallParser.processStreamingChunk("saved-todo-stream", JSON.stringify(args))).toMatchObject(
+				{ name: "update_plan", originalName: "update_todo_list", nativeArgs: args, partial: true },
+			)
+			expect(NativeToolCallParser.finalizeStreamingToolCall("saved-todo-stream")).toMatchObject({
+				name: "update_plan",
+				originalName: "update_todo_list",
+				nativeArgs: args,
+				partial: false,
+			})
+		})
+
 		it("does not promote a malformed execute-command verification scope", () => {
 			const result = NativeToolCallParser.parseToolCall({
 				id: "invalid-verification",
@@ -137,7 +280,7 @@ describe("NativeToolCallParser", () => {
 			}
 		})
 
-		it("parses the canonical shell name with omitted optional arguments", () => {
+		it("parses a legacy shell alias with omitted optional arguments", () => {
 			const result = NativeToolCallParser.parseToolCall({
 				id: "shell-command",
 				name: "shell",
@@ -146,10 +289,10 @@ describe("NativeToolCallParser", () => {
 
 			expect(result).toMatchObject({
 				type: "tool_use",
-				name: "shell",
+				name: "exec_command",
+				originalName: "shell",
 				nativeArgs: { command: "pnpm test" },
 			})
-			expect(result).not.toHaveProperty("originalName")
 		})
 
 		it("preserves internal verification metadata for shell without advertising it", () => {
@@ -159,14 +302,14 @@ describe("NativeToolCallParser", () => {
 				name: "shell",
 				arguments: JSON.stringify(args),
 			})
-			expect(result).toMatchObject({ name: "shell", nativeArgs: args })
+			expect(result).toMatchObject({ name: "exec_command", originalName: "shell", nativeArgs: args })
 			NativeToolCallParser.startStreamingToolCall("scoped-shell-stream", "shell")
 			const partial = NativeToolCallParser.processStreamingChunk("scoped-shell-stream", JSON.stringify(args))
-			expect(partial).toMatchObject({ name: "shell", nativeArgs: args })
+			expect(partial).toMatchObject({ name: "exec_command", originalName: "shell", nativeArgs: args })
 			NativeToolCallParser.finalizeStreamingToolCall("scoped-shell-stream")
 		})
 
-		it("dispatches a legacy execute-command alias to shell without dropping verification", () => {
+		it("dispatches a legacy execute-command alias to exec_command without dropping verification", () => {
 			const result = NativeToolCallParser.parseToolCall({
 				id: "legacy-shell-command",
 				name: "execute_command",
@@ -178,7 +321,7 @@ describe("NativeToolCallParser", () => {
 
 			expect(result).toMatchObject({
 				type: "tool_use",
-				name: "shell",
+				name: "exec_command",
 				originalName: "execute_command",
 				nativeArgs: {
 					command: "pnpm test",
@@ -187,14 +330,14 @@ describe("NativeToolCallParser", () => {
 			})
 		})
 
-		it("keeps canonical and legacy shell names through streaming finalization", () => {
+		it("keeps legacy shell aliases through streaming finalization", () => {
 			const canonicalId = "streamed-shell-command"
-			NativeToolCallParser.startStreamingToolCall(canonicalId, "shell")
+			NativeToolCallParser.startStreamingToolCall(canonicalId, "exec_command")
 			const canonical = NativeToolCallParser.processStreamingChunk(
 				canonicalId,
-				JSON.stringify({ command: "pnpm test" }),
+				JSON.stringify({ cmd: "pnpm test" }),
 			)
-			expect(canonical).toMatchObject({ name: "shell", nativeArgs: { command: "pnpm test" } })
+			expect(canonical).toMatchObject({ name: "exec_command", nativeArgs: { cmd: "pnpm test" } })
 			NativeToolCallParser.finalizeStreamingToolCall(canonicalId)
 
 			const legacyId = "streamed-legacy-shell-command"
@@ -204,7 +347,7 @@ describe("NativeToolCallParser", () => {
 				JSON.stringify({ command: "pnpm test", verification: { change_set_ids: ["change-1"] } }),
 			)
 			expect(legacy).toMatchObject({
-				name: "shell",
+				name: "exec_command",
 				originalName: "execute_command",
 				nativeArgs: { command: "pnpm test", verification: { change_set_ids: ["change-1"] } },
 			})
@@ -257,6 +400,16 @@ describe("NativeToolCallParser", () => {
 		describe("spawn_agent tool", () => {
 			it.each([
 				{
+					label: "Codex V2",
+					payload: {
+						task_name: "v2_review",
+						message: "Review the parser boundary.",
+						agent_type: "explorer",
+						model: "gpt-6-sol",
+						reasoning_effort: "high",
+					},
+				},
+				{
 					label: "explore",
 					payload: {
 						task_name: "parser_explore",
@@ -300,6 +453,30 @@ describe("NativeToolCallParser", () => {
 				if (result?.type === "tool_use") {
 					expect(result.nativeArgs).toEqual(payload)
 				}
+			})
+
+			it.each([
+				{ model: " " },
+				{ reasoning_effort: "ultra" },
+				{ fork_turns: "01" },
+				{ agent_type: "root admin" },
+				{ write_scope: ["src"] },
+				{ fork_context: true },
+			])("rejects an invalid V2 override or legacy authority field: %j", (overrides) => {
+				const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				const result = NativeToolCallParser.parseToolCall({
+					id: "invalid-v2-spawn",
+					name: "spawn_agent",
+					arguments: JSON.stringify({
+						task_name: "parser_review",
+						message: "Inspect the parser.",
+						...overrides,
+					}),
+				})
+
+				expect(result).toBeNull()
+				expect(errorSpy).toHaveBeenCalled()
+				errorSpy.mockRestore()
 			})
 
 			it.each([
@@ -1112,6 +1289,39 @@ describe("NativeToolCallParser", () => {
 
 	describe("processStreamingChunk", () => {
 		describe("spawn_agent tool", () => {
+			it("preserves optional V2 route overrides through streaming finalization", () => {
+				const id = "spawn-v2-streaming"
+				const payload = {
+					task_name: "streamed_review",
+					message: "Review the streamed parser output.",
+					fork_turns: "all",
+					agent_type: "explorer",
+					model: "gpt-6-sol",
+					reasoning_effort: "high",
+				}
+				const encoded = JSON.stringify(payload)
+				const splitAt = encoded.indexOf('"model"')
+				NativeToolCallParser.startStreamingToolCall(id, "spawn_agent")
+
+				const incomplete = NativeToolCallParser.processStreamingChunk(id, encoded.slice(0, splitAt))
+				expect(incomplete?.nativeArgs).toEqual({
+					task_name: payload.task_name,
+					message: payload.message,
+					fork_turns: payload.fork_turns,
+					agent_type: payload.agent_type,
+				})
+
+				const partial = NativeToolCallParser.processStreamingChunk(id, encoded.slice(splitAt))
+				expect(partial?.partial).toBe(true)
+				expect(partial?.nativeArgs).toEqual(payload)
+
+				const finalized = NativeToolCallParser.finalizeStreamingToolCall(id)
+				expect(finalized?.type).toBe("tool_use")
+				if (finalized?.type === "tool_use") {
+					expect(finalized.nativeArgs).toEqual(payload)
+				}
+			})
+
 			it("emits strict partial nativeArgs and preserves them on finalize", () => {
 				const id = "spawn-streaming"
 				const payload = {

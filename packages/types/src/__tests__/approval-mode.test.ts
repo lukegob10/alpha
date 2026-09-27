@@ -168,7 +168,7 @@ describe("approvalMode", () => {
 			alwaysAllowWrite: true,
 			alwaysAllowExecute: true,
 			alwaysAllowSubagents: true,
-			alwaysAllowTickets: true,
+			alwaysAllowTickets: false,
 		}
 		expect(inferApprovalModeFromPolicy(autoChild)).toBe("auto")
 		expect(isBypassSubagentAutoApprovalPolicy(autoChild)).toBe(false)
@@ -188,5 +188,11 @@ describe("approvalMode", () => {
 	it("strips the command wildcard from Ask allowlists", () => {
 		expect(effectiveCommandAllowlistForMode("ask", ["*", "git status"])).toEqual(["git status"])
 		expect(effectiveCommandAllowlistForMode("ask", ["*"])).toEqual([])
+	})
+
+	it("grants commands by default in Auto while retaining saved prefixes", () => {
+		expect(effectiveCommandAllowlistForMode("auto", [])).toEqual(["*"])
+		expect(effectiveCommandAllowlistForMode("auto", ["git diff"])).toEqual(["*", "git diff"])
+		expect(effectiveCommandAllowlistForMode("auto", ["git diff", "*"])).toEqual(["git diff", "*"])
 	})
 })

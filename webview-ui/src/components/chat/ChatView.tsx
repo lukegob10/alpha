@@ -23,9 +23,13 @@ import type {
 	AlphaAsk,
 	AlphaSayTool,
 	AlphaMessage,
+	RequestUserInputAnswerMap,
+	ToolApprovalDecision,
+	ToolApprovalPrompt,
 	ExtensionMessage,
 	AudioType,
 	QueuedMessage,
+	ApprovalMode,
 } from "@alpha-code/types"
 import { isRetiredProvider, TaskLifecycleState } from "@alpha-code/types"
 
@@ -45,13 +49,12 @@ import { useExtensionState } from "@src/context/ExtensionStateContext"
 import { projectLegacyLiveTaskMetadata } from "@src/context/agentLifecycleState"
 import { useSelectedModel } from "@src/components/ui/hooks/useSelectedModel"
 import AlphaHero from "@src/components/welcome/AlphaHero"
-import AlphaTips from "@src/components/welcome/AlphaTips"
 import { StandardTooltip, Button } from "@src/components/ui"
 
 import TelemetryBanner from "../common/TelemetryBanner"
-import VersionIndicator from "../common/VersionIndicator"
 import HistoryPreview from "../history/HistoryPreview"
 import { ManagedAgentTree } from "../agents/ManagedAgentTree"
+import { CrossTaskPanel } from "./CrossTaskPanel"
 import Announcement from "./Announcement"
 import ChatRow, { type ChatRowEnvironment } from "./ChatRow"
 import WarningRow from "./WarningRow"
@@ -62,12 +65,13 @@ import { QueuedMessages } from "./QueuedMessages"
 import { WorktreeSelector } from "./WorktreeSelector"
 import FileChangesPanel from "./FileChangesPanel"
 import { ActivityTraceToggle } from "./ActivityTraceToggle"
-import { getCompletedActivity, type CompletedActivity } from "./completedActivity"
+import { getActionActivity, type ActionActivity } from "./actionActivity"
 import { fileChangeTurnsFromMessages, type FileChangeTurn } from "./utils/fileChangesFromMessages"
 import { useProgressiveTranscript } from "./hooks/useProgressiveTranscript"
 import { useChatScrollController, type ChatScrollReleaseReason } from "@src/hooks/useChatScrollController"
 
 export interface ChatViewProps {
+	historyFocusRequest?: number
 	isHidden: boolean
 	showAnnouncement: boolean
 	hideAnnouncement: () => void
@@ -89,6 +93,9 @@ const messageResponseAskTypes = new Set<AlphaAsk>([
 const completedTaskResponseAskTypes = new Set<AlphaAsk>(["completion_result", "resume_completed_task"])
 const approvalAskTypes = new Set<AlphaAsk>(["tool", "command", "use_mcp_server"])
 const MODEL_RESPONSE_DELAY_MS = 30_000
+const MAX_PENDING_HOST_SENDS = 16
+
+type PendingHostSend = { taskId: string; text: string; images: string[] }
 
 const computeChatItemKey = (index: number, message: AlphaMessage) => `${message.ts}:${index}`
 
@@ -131,7 +138,7 @@ interface ChatTranscriptRowsProps {
 	chatRowEnvironment: ChatRowEnvironment
 	toggleRowExpansion: (ts: number) => void
 	renderedGroupedMessages: AlphaMessage[]
-	completedActivity: Map<number, CompletedActivity>
+	actionActivity: Map<number, ActionActivity>
 	expandedTraces: Record<number, boolean>
 	fileChangeTurnsByEndIndex: Map<number, FileChangeTurn>
 	itemContent: (index: number, message: AlphaMessage) => React.ReactNode
@@ -155,7 +162,7 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 	chatRowEnvironment,
 	toggleRowExpansion,
 	renderedGroupedMessages,
-	completedActivity,
+	actionActivity,
 	expandedTraces,
 	fileChangeTurnsByEndIndex,
 	itemContent,
@@ -213,7 +220,7 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 			)}
 			{renderedGroupedMessages.map((message, localIndex) => {
 				const index = transcriptStartIndex + localIndex
-				const trace = completedActivity.get(index)
+				const trace = actionActivity.get(index)
 				const traceExpanded = trace ? Boolean(expandedTraces[trace.id]) : false
 				const fileChangeTurn = fileChangeTurnsByEndIndex.get(index)
 				return (
@@ -221,7 +228,8 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 						{trace && index === Math.max(trace.startIndex, transcriptStartIndex) && (
 							<ActivityTraceToggle
 								traceId={trace.id}
-								durationMs={trace.durationMs}
+								kind={trace.kind}
+								count={trace.count}
 								expanded={traceExpanded}
 								controls={Array.from(
 									{ length: trace.endIndex - index + 1 },
@@ -233,13 +241,13 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 								}}
 							/>
 						)}
-						{/* Finished traces stay reachable from the toggle without keeping their rows mounted. */}
+						{/* Live actions keep their listeners mounted while their details are visually folded. */}
 						<div
 							id={`activity-row-${index}`}
 							hidden={Boolean(trace) && !traceExpanded}
 							data-chat-message-index={index}
 							data-testid={`chat-message-${index}`}>
-							{(!trace || traceExpanded) && itemContent(index, message)}
+							{(!trace || traceExpanded || isTurnActive) && itemContent(index, message)}
 						</div>
 						{fileChangeTurn && (
 							<FileChangesPanel
@@ -257,9 +265,13 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 })
 
 const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewProps> = (
-	{ isHidden, showAnnouncement, hideAnnouncement },
+	{ isHidden, showAnnouncement, hideAnnouncement, historyFocusRequest = 0 },
 	ref,
 ) => {
+	const [dismissedHistoryRequest, setDismissedHistoryRequest] = useState(0)
+	const [isHistoryExpanded, setIsHistoryExpanded] = useState(false)
+	const showChatsPanel = isHistoryExpanded || historyFocusRequest > dismissedHistoryRequest
+
 	const [audioBaseUri] = useState(() => {
 		return (window as unknown as { AUDIO_BASE_URI?: string }).AUDIO_BASE_URI || ""
 	})
@@ -303,11 +315,19 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [providerName])
 
 	const [isBlankTaskView, setIsBlankTaskView] = useState(false)
+	const [draftApprovalMode, setDraftApprovalMode] = useState<ApprovalMode | undefined>()
 	const blankTaskSourceIdRef = useRef<string | undefined>(undefined)
 	const hasSeenProviderDraftRef = useRef(false)
 	const lastFocusedTaskIdRef = useRef<string | undefined>(currentTaskId)
 	const isProviderDraftView = currentView?.type === "newTaskDraft" && !currentTaskId && messages.length === 0
 	const isDraftView = isBlankTaskView || isProviderDraftView
+	const draftTaskApprovalMode = isDraftView ? draftApprovalMode : undefined
+	const previousDraftViewRef = useRef(isDraftView)
+	useEffect(() => {
+		if (previousDraftViewRef.current === isDraftView) return
+		previousDraftViewRef.current = isDraftView
+		setDraftApprovalMode(undefined)
+	}, [isDraftView])
 	const activeMessages = useMemo(() => (isDraftView ? [] : messages), [isDraftView, messages])
 	const conversationPromptMessages = useStableConversationPromptMessages(activeMessages)
 	const visibleMessageQueue = useMemo(() => (isDraftView ? [] : messageQueue), [isDraftView, messageQueue])
@@ -339,6 +359,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const isVisibleTaskCompleted = effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Completed
 	const visibleCurrentTaskItem = isDraftView ? undefined : currentTaskItem
 	const isManagedSubagent = visibleCurrentTaskItem?.taskKind === "subagent"
+	const canShowCrossTaskPanel = Boolean(
+		visibleCurrentTaskId &&
+			!visibleCurrentTaskItem?.parentTaskId &&
+			!visibleCurrentTaskItem?.orchestrationParentTaskId &&
+			!liveTasksById?.[visibleCurrentTaskId]?.orchestrationParentTaskId &&
+			!isManagedSubagent,
+	)
 	const managedAgentGroups = useMemo(
 		() => activeMessages.flatMap((message) => (message.subagentGroup ? [message.subagentGroup] : [])),
 		[activeMessages],
@@ -359,6 +386,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	)
 	const messagesRef = useRef(activeMessages)
 	const isBlankTaskPendingRef = useRef(false)
+	const pendingHostSendsRef = useRef<PendingHostSend[]>([])
 	const getAlphaMessages = useCallback(() => messagesRef.current, [])
 
 	// Interaction routing must observe the transcript that committed with the
@@ -444,6 +472,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const [inputValue, setInputValue] = useState("")
 	const inputValueRef = useRef(inputValue)
 	const textAreaRef = useRef<HTMLTextAreaElement>(null)
+	const closeChatsPanel = useCallback(() => {
+		setIsHistoryExpanded(false)
+		setDismissedHistoryRequest(historyFocusRequest)
+		textAreaRef.current?.focus()
+	}, [historyFocusRequest])
 	const [sendingDisabled, setSendingDisabled] = useState(false)
 	const [selectedImages, setSelectedImages] = useState<string[]>([])
 	const selectedImagesRef = useRef(selectedImages)
@@ -457,6 +490,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		taskId: string
 		text: string
 		images: string[]
+		clientSubmittedAt: number
 	} | null>(null)
 	const [pendingSteerRequest, setPendingSteerRequest] = useState<{
 		requestId: string
@@ -476,6 +510,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const [enableButtons, setEnableButtons] = useState<boolean>(false)
 	const [primaryButtonText, setPrimaryButtonText] = useState<string | undefined>(undefined)
 	const [secondaryButtonText, setSecondaryButtonText] = useState<string | undefined>(undefined)
+	const [tertiaryButtonText, setTertiaryButtonText] = useState<string | undefined>(undefined)
+	const [toolApprovalRequest, setToolApprovalRequest] = useState<ToolApprovalPrompt | undefined>(undefined)
+	const approvalTaskIdRef = useRef(visibleCurrentTaskId)
 	const pendingCompletedTaskResumeIdRef = useRef<string | undefined>(undefined)
 	const [pendingCompletedTaskResumeId, setPendingCompletedTaskResumeId] = useState<string | undefined>(undefined)
 	const isCompletedTaskResumePending = Boolean(
@@ -537,7 +574,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		{ type: "WAIT_TIMEOUT" | "INIT_TIMEOUT"; timeout: number } | undefined
 	>(undefined)
 	const [isCondensing, setIsCondensing] = useState<boolean>(false)
-	const [showAnnouncementModal, setShowAnnouncementModal] = useState(false)
 	const everVisibleMessagesTsRef = useRef<LRUCache<number, boolean>>(
 		new LRUCache({
 			max: 100,
@@ -639,14 +675,52 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}
 
 	useDeepCompareEffect(() => {
+		if (approvalTaskIdRef.current !== visibleCurrentTaskId) {
+			approvalTaskIdRef.current = visibleCurrentTaskId
+			setToolApprovalRequest(undefined)
+			setTertiaryButtonText(undefined)
+			setAlphaAsk(undefined)
+			setEnableButtons(false)
+			setPrimaryButtonText(undefined)
+			setSecondaryButtonText(undefined)
+			setSendingDisabled(false)
+		}
 		// if last message is an ask, show user ask UI
 		// if user finished a task, then start a new task with a new conversation history since in this moment that the extension is waiting for user response, the user could close the extension and the conversation history would be lost.
 		// basically as long as a task is active, the conversation history will be persisted
 		if (lastMessage) {
+			if (lastMessage.type !== "ask") {
+				setToolApprovalRequest(undefined)
+				setTertiaryButtonText(undefined)
+			}
 			switch (lastMessage.type) {
 				case "ask":
 					// Reset user response flag when a new ask arrives to allow auto-approval
 					userRespondedRef.current = false
+					if (
+						lastMessage.toolApprovalRequest &&
+						lastMessage.toolApprovalRequest.taskId !== visibleCurrentTaskId
+					) {
+						setToolApprovalRequest(undefined)
+						setTertiaryButtonText(undefined)
+						setAlphaAsk(undefined)
+						setEnableButtons(false)
+						setPrimaryButtonText(undefined)
+						setSecondaryButtonText(undefined)
+						break
+					}
+					if (lastMessage.isAnswered) {
+						setToolApprovalRequest(undefined)
+						setTertiaryButtonText(undefined)
+						setAlphaAsk(undefined)
+						setEnableButtons(false)
+						setSendingDisabled(false)
+						setPrimaryButtonText(undefined)
+						setSecondaryButtonText(undefined)
+						break
+					}
+					setToolApprovalRequest(lastMessage.toolApprovalRequest)
+					setTertiaryButtonText(undefined)
 					const isPartial = lastMessage.partial === true
 					switch (lastMessage.ask) {
 						case "api_req_failed":
@@ -688,6 +762,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							setSendingDisabled(isPartial)
 							setAlphaAsk("tool")
 							setEnableButtons(!isPartial)
+							if (isPartial) {
+								setPrimaryButtonText(undefined)
+								setSecondaryButtonText(undefined)
+								break
+							}
+							if (lastMessage.toolApprovalRequest) {
+								setPrimaryButtonText(t("chat:approveOnce.title"))
+								setSecondaryButtonText(t("chat:reject.title"))
+								setTertiaryButtonText(t("chat:approvalAbort.title"))
+								break
+							}
 							const tool = JSON.parse(lastMessage.text || "{}") as AlphaSayTool
 							switch (tool.tool) {
 								case "editedExistingFile":
@@ -743,6 +828,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							setSendingDisabled(isPartial)
 							setAlphaAsk("command")
 							setEnableButtons(!isPartial)
+							if (isPartial) {
+								setPrimaryButtonText(undefined)
+								setSecondaryButtonText(undefined)
+								break
+							}
+							if (lastMessage.toolApprovalRequest) {
+								setPrimaryButtonText(t("chat:approveOnce.title"))
+								setSecondaryButtonText(t("chat:reject.title"))
+								setTertiaryButtonText(t("chat:approvalAbort.title"))
+								break
+							}
 							setPrimaryButtonText(t("chat:runCommand.title"))
 							setSecondaryButtonText(t("chat:reject.title"))
 							break
@@ -750,13 +846,24 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							setSendingDisabled(false)
 							setAlphaAsk("command_output")
 							setEnableButtons(true)
-							setPrimaryButtonText(t("chat:proceedWhileRunning.title"))
+							setPrimaryButtonText(undefined)
 							setSecondaryButtonText(t("chat:killCommand.title"))
 							break
 						case "use_mcp_server":
 							setSendingDisabled(isPartial)
 							setAlphaAsk("use_mcp_server")
 							setEnableButtons(!isPartial)
+							if (isPartial) {
+								setPrimaryButtonText(undefined)
+								setSecondaryButtonText(undefined)
+								break
+							}
+							if (lastMessage.toolApprovalRequest) {
+								setPrimaryButtonText(t("chat:approveOnce.title"))
+								setSecondaryButtonText(t("chat:reject.title"))
+								setTertiaryButtonText(t("chat:approvalAbort.title"))
+								break
+							}
 							setPrimaryButtonText(t("chat:approve.title"))
 							setSecondaryButtonText(t("chat:reject.title"))
 							break
@@ -777,7 +884,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							setSendingDisabled(false)
 							setAlphaAsk("resume_task")
 							setEnableButtons(true)
-							// For completed subtasks, show "Start New Task" instead of "Resume"
+							// For completed subtasks, show the new-chat action instead of "Resume"
 							// A subtask is considered completed if:
 							// - It has a parentTaskId AND
 							// - Its messages contain a completion_result (either ask or say)
@@ -839,7 +946,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					break
 			}
 		}
-	}, [lastMessage, secondLastMessage, isVisibleTaskCompleted])
+	}, [lastMessage, secondLastMessage, isVisibleTaskCompleted, visibleCurrentTaskId])
 
 	// Update button text when messages change (e.g., completion_result is added) for subtasks in resume_task state
 	useEffect(() => {
@@ -1035,13 +1142,18 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 			if (trimmedInput || images.length > 0) {
 				isBlankTaskPendingRef.current = false
-				vscode.postMessage({ type: "newTask", text: trimmedInput, images })
+				vscode.postMessage({
+					type: "newTask",
+					text: trimmedInput,
+					images,
+					...(draftTaskApprovalMode ? { taskApprovalMode: draftTaskApprovalMode } : {}),
+				})
 				return
 			}
 
 			vscode.postMessage({ type: "startBlankTask" })
 		},
-		[enterBlankTaskView],
+		[draftTaskApprovalMode, enterBlankTaskView],
 	)
 
 	const handleCondenseContext = useCallback(
@@ -1057,7 +1169,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	)
 
 	const postQueuedMessage = useCallback(
-		(text: string, images: string[]) => {
+		(text: string, images: string[], asyncUserInputMessageTs?: number) => {
 			// Queue messages are task-scoped on the extension side. Preserve the draft
 			// during transient view/task state instead of posting a request it will reject.
 			if (!visibleCurrentTaskId || pendingQueueRequestRef.current) {
@@ -1070,11 +1182,20 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				taskId: visibleCurrentTaskId,
 				text,
 				images: [...images],
+				clientSubmittedAt: Date.now(),
 			}
 			pendingQueueRequestRef.current = request
 			setPendingQueueRequest(request)
 			setChatCommandError(undefined)
-			vscode.postMessage({ type: "queueMessage", text, images, taskId: visibleCurrentTaskId, requestId })
+			vscode.postMessage({
+				type: "queueMessage",
+				text,
+				images,
+				taskId: visibleCurrentTaskId,
+				requestId,
+				clientSubmittedAt: request.clientSubmittedAt,
+				...(asyncUserInputMessageTs === undefined ? {} : { asyncUserInputMessageTs }),
+			})
 			return true
 		},
 		[visibleCurrentTaskId],
@@ -1086,15 +1207,15 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	 * @param images - Array of image data URLs to send with the message
 	 */
 	const handleSendMessage = useCallback(
-		(text: string, images: string[]) => {
+		(text: string, images: string[], asyncUserInputMessageTs?: number): boolean => {
 			text = text.trim()
 			const planCommand = parsePlanModeCommand(text)
 
 			if (!text && images.length === 0) {
-				return
+				return false
 			}
 			if (visibleCurrentTaskId && pendingCompletedTaskResumeIdRef.current === visibleCurrentTaskId) {
-				return
+				return false
 			}
 
 			// Allow users to trigger the same operation as the context-condense
@@ -1103,7 +1224,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				handleCondenseContext(visibleCurrentTaskId)
 				setInputValue("")
 				setSelectedImages([])
-				return
+				return true
 			}
 
 			if (editingQueuedMessage) {
@@ -1119,13 +1240,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				setInputValue(editingQueuedMessage.priorText)
 				setSelectedImages(editingQueuedMessage.priorImages)
 				setEditingQueuedMessage(null)
-				return
+				return true
 			}
 
 			// Intercept when the active provider is retired; show a WarningRow instead of sending.
 			if (apiConfiguration?.apiProvider && isRetiredProvider(apiConfiguration.apiProvider)) {
 				setShowRetiredProviderWarning(true)
-				return
+				return false
 			}
 
 			if (planCommand) {
@@ -1138,7 +1259,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 				// Match the CLI contract: mode commands do not become queued user
 				// messages while the current turn or an approval boundary is active.
-				if (isPlanCommandUnavailable) return
+				if (isPlanCommandUnavailable) return false
 
 				if (!planCommand.prompt && images.length === 0) {
 					if (mode !== planModeSlug) {
@@ -1147,7 +1268,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					}
 					setInputValue("")
 					setSelectedImages([])
-					return
+					return true
 				}
 
 				// Keep `/plan` attached to the user message. The extension host parses
@@ -1163,16 +1284,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					taskId: visibleCurrentTaskId,
 					text,
 					images,
+					...(asyncUserInputMessageTs === undefined ? {} : { asyncUserInputMessageTs }),
 				})
 				handleChatReset()
 				setPrimaryButtonText(undefined)
 				setSecondaryButtonText(undefined)
-				return
+				return true
 			}
 
 			if (isVisibleTaskFailedOrClosed) {
 				startNewTask(text, images)
-				return
+				return true
 			}
 
 			const currentInputBoundary = messagesRef.current.findLast(
@@ -1185,8 +1307,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				submittedFollowUpRef.current?.taskId === visibleCurrentTaskId &&
 				submittedFollowUpRef.current?.ts === currentInputBoundary.ts
 			if (isLastFollowUpAnswered || isFollowUpLocallyAnswered) {
-				postQueuedMessage(text, images)
-				return
+				return postQueuedMessage(text, images, asyncUserInputMessageTs)
 			}
 
 			const isCurrentFollowUpResponse =
@@ -1206,8 +1327,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					(alphaAskRef.current !== undefined && approvalAskTypes.has(alphaAskRef.current)))
 
 			if (shouldQueueMessage) {
-				postQueuedMessage(text, images)
-				return
+				return postQueuedMessage(text, images, asyncUserInputMessageTs)
 			}
 
 			// Mark that user has responded - this prevents any pending auto-approvals.
@@ -1215,7 +1335,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 			if (isBlankTaskPendingRef.current || messagesRef.current.length === 0) {
 				isBlankTaskPendingRef.current = false
-				vscode.postMessage({ type: "newTask", text, images })
+				vscode.postMessage({
+					type: "newTask",
+					text,
+					images,
+					...(draftTaskApprovalMode ? { taskApprovalMode: draftTaskApprovalMode } : {}),
+				})
 			} else if (
 				isCurrentFollowUpResponse ||
 				!alphaAskRef.current ||
@@ -1234,10 +1359,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					text,
 					images,
 					...visibleTaskPayload,
+					...(asyncUserInputMessageTs === undefined ? {} : { asyncUserInputMessageTs }),
 				})
+			} else {
+				return false
 			}
 
 			handleChatReset()
+			return true
 		},
 		[
 			handleChatReset,
@@ -1256,6 +1385,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			handleCondenseContext,
 			visibleCurrentTaskId,
 			mode,
+			draftTaskApprovalMode,
 			setMode,
 		], // messagesRef and alphaAskRef are stable
 	)
@@ -1263,6 +1393,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	useLayoutEffect(() => {
 		committedSendMessageRef.current = handleSendMessage
 	}, [handleSendMessage])
+
+	useEffect(() => {
+		if (!visibleCurrentTaskId || messagesRef.current.length === 0) return
+
+		const pending = pendingHostSendsRef.current
+		const ready = pending.filter((invoke) => invoke.taskId === visibleCurrentTaskId)
+		if (ready.length === 0) return
+
+		pendingHostSendsRef.current = pending.filter((invoke) => invoke.taskId !== visibleCurrentTaskId)
+		for (const invoke of ready) committedSendMessageRef.current(invoke.text, invoke.images)
+	}, [activeMessages.length, visibleCurrentTaskId])
 
 	const handleSetChatBoxMessage = useCallback(
 		(text: string, images: string[]) => {
@@ -1334,6 +1475,55 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	// This logic depends on the useEffect[messages] above to set alphaAsk,
 	// after which buttons are shown and we then send an askResponse to the
 	// extension.
+	const sendToolApprovalDecision = useCallback(
+		(
+			decision:
+				| "approve_once"
+				| "approve_session"
+				| "approve_with_amendment"
+				| "approve_persistently"
+				| "deny"
+				| "abort",
+			feedback?: string,
+		) => {
+			if (
+				!toolApprovalRequest ||
+				!visibleCurrentTaskId ||
+				!toolApprovalRequest.availableDecisions.includes(decision)
+			) {
+				return false
+			}
+			let toolApprovalDecision: ToolApprovalDecision
+			if (decision === "approve_with_amendment") {
+				if (!toolApprovalRequest.proposedAmendment) return false
+				toolApprovalDecision = { decision, amendment: toolApprovalRequest.proposedAmendment }
+			} else if (decision === "approve_persistently") {
+				if (!toolApprovalRequest.proposedPersistentAmendment) return false
+				toolApprovalDecision = { decision, amendment: toolApprovalRequest.proposedPersistentAmendment }
+			} else if (decision === "deny") {
+				toolApprovalDecision = { decision, ...(feedback?.trim() ? { feedback: feedback.trim() } : {}) }
+			} else {
+				toolApprovalDecision = { decision }
+			}
+			vscode.postMessage({
+				type: "toolApprovalResponse",
+				taskId: visibleCurrentTaskId,
+				approvalRequestId: toolApprovalRequest.requestId,
+				toolApprovalDecision,
+			})
+			userRespondedRef.current = true
+			setSendingDisabled(true)
+			setAlphaAsk(undefined)
+			setEnableButtons(false)
+			setPrimaryButtonText(undefined)
+			setSecondaryButtonText(undefined)
+			setTertiaryButtonText(undefined)
+			setToolApprovalRequest(undefined)
+			return true
+		},
+		[toolApprovalRequest, visibleCurrentTaskId],
+	)
+
 	const handlePrimaryButtonClick = useCallback(
 		(text?: string, images?: string[]) => {
 			if (
@@ -1377,6 +1567,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				case "command":
 				case "tool":
 				case "use_mcp_server":
+					if (toolApprovalRequest) {
+						sendToolApprovalDecision("approve_once")
+						break
+					}
 					vscode.postMessage({
 						type: "askResponse",
 						askResponse: "yesButtonClicked",
@@ -1438,6 +1632,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			visibleCurrentTaskItem?.parentTaskId,
 			isVisibleTaskFailedOrClosed,
 			visibleCurrentTaskId,
+			toolApprovalRequest,
+			sendToolApprovalDecision,
 		],
 	)
 
@@ -1446,7 +1642,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		// Mark that user has responded
 		userRespondedRef.current = true
 
-		if (isStreaming) {
+		if (isStreaming && !toolApprovalRequest) {
 			vscode.postMessage({ type: "cancelTask", ...visibleTaskPayload })
 			setDidClickCancel(true)
 			return
@@ -1461,6 +1657,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			case "command":
 			case "tool":
 			case "use_mcp_server":
+				if (toolApprovalRequest) {
+					const feedback = inputValue.trim()
+					if (sendToolApprovalDecision("deny", feedback) && feedback) {
+						setInputValue("")
+					}
+					break
+				}
 				// Responds to the API with a "This operation failed" and lets it try again.
 				vscode.postMessage({
 					type: "askResponse",
@@ -1479,7 +1682,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setSendingDisabled(true)
 		setAlphaAsk(undefined)
 		setEnableButtons(false)
-	}, [alphaAsk, visibleTaskPayload, startNewTask, isStreaming, setDidClickCancel, isVisibleTaskFailedOrClosed])
+	}, [
+		alphaAsk,
+		visibleTaskPayload,
+		startNewTask,
+		isStreaming,
+		setDidClickCancel,
+		isVisibleTaskFailedOrClosed,
+		toolApprovalRequest,
+		inputValue,
+		sendToolApprovalDecision,
+	])
 
 	const { info: model } = useSelectedModel(apiConfiguration)
 	const visibleCurrentTaskItemId = visibleCurrentTaskItem?.id
@@ -1573,6 +1786,24 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						case "sendMessage":
 							// The window listener refreshes passively; route an immediate host
 							// invoke through the callback from the latest committed task view.
+							if (
+								typeof message.taskId === "string" &&
+								(message.taskId !== visibleCurrentTaskId || messagesRef.current.length === 0)
+							) {
+								const pending = pendingHostSendsRef.current
+								if (pending.length < MAX_PENDING_HOST_SENDS) {
+									pending.push({
+										taskId: message.taskId,
+										text: message.text ?? "",
+										images: message.images ?? [],
+									})
+								} else {
+									console.warn(
+										"Dropping host sendMessage while the requested task transcript is unavailable",
+									)
+								}
+								break
+							}
 							committedSendMessageRef.current(message.text ?? "", message.images ?? [])
 							break
 						case "setChatBoxMessage":
@@ -1636,6 +1867,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					}
 					break
 				}
+				case "taskOpenResult":
+					if (message.success === true && typeof message.taskId === "string") {
+						setIsHistoryExpanded(false)
+						setDismissedHistoryRequest(historyFocusRequest)
+					}
+					if (message.success === false && typeof message.taskId === "string") {
+						pendingHostSendsRef.current = pendingHostSendsRef.current.filter(
+							(invoke) => invoke.taskId !== message.taskId,
+						)
+					}
+					break
 				case "checkpointInitWarning":
 					setCheckpointWarning(message.checkpointWarning)
 					break
@@ -1658,6 +1900,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		},
 		[
 			isCondensing,
+			historyFocusRequest,
 			isHidden,
 			sendingDisabled,
 			enableButtons,
@@ -1990,25 +2233,52 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const transcriptTaskKey = transcriptIdentity
 		? `${transcriptIdentity}:${transcriptRootMessageTs ?? "pending"}`
 		: undefined
-	const completedActivity = useMemo(
-		() => getCompletedActivity(groupedMessages, activeMessages, effectiveVisibleLiveTask),
-		[groupedMessages, activeMessages, effectiveVisibleLiveTask],
+	const pendingApprovalTs =
+		lastMessage?.type === "ask" &&
+		lastMessage.isAnswered !== true &&
+		lastMessage.ask !== undefined &&
+		approvalAskTypes.has(lastMessage.ask) &&
+		enableButtons
+			? lastMessage.ts
+			: undefined
+	const failedApiRequestTs = useMemo(() => {
+		if (lastMessage?.ask !== "api_req_failed") return undefined
+		for (let index = activeMessages.length - 1; index >= 0; index--) {
+			if (activeMessages[index].say === "api_req_started") return activeMessages[index].ts
+		}
+		return undefined
+	}, [activeMessages, lastMessage])
+	const actionActivity = useMemo(
+		() => getActionActivity(groupedMessages, pendingApprovalTs, failedApiRequestTs),
+		[groupedMessages, pendingApprovalTs, failedApiRequestTs],
 	)
 	const [traceExpansion, setTraceExpansion] = useState<{ taskKey?: string; expanded: Record<number, boolean> }>({
 		expanded: {},
 	})
+	const traceCompletionRef = useRef<{ taskKey?: string; completed: boolean }>({ completed: false })
+	const hasCompletedTranscriptBoundary = isVisibleTaskCompleted || completedTaskResponseAsk !== undefined
 	const focusedActivityRef = useRef<{ taskKey?: string; index: number }>()
 	useEffect(() => {
-		// Retracted completions and checkpoint restores must not reuse an old
-		// expansion choice if that activity completes again later.
-		const traceIds = new Set(Array.from(completedActivity.values(), (trace) => trace.id))
+		// Removed or replaced action groups must not reuse an old expansion choice.
+		const traceIds = new Set(Array.from(actionActivity.values(), (trace) => trace.id))
 		setTraceExpansion((current) => {
 			if (current.taskKey !== transcriptTaskKey) return { taskKey: transcriptTaskKey, expanded: {} }
 			const entries = Object.entries(current.expanded)
 			const retained = entries.filter(([id]) => traceIds.has(Number(id)))
 			return retained.length === entries.length ? current : { ...current, expanded: Object.fromEntries(retained) }
 		})
-	}, [completedActivity, transcriptTaskKey])
+	}, [actionActivity, transcriptTaskKey])
+	useEffect(() => {
+		const previous = traceCompletionRef.current
+		traceCompletionRef.current = { taskKey: transcriptTaskKey, completed: hasCompletedTranscriptBoundary }
+		if (previous.taskKey !== transcriptTaskKey || previous.completed || !hasCompletedTranscriptBoundary) return
+		// Finishing a turn folds details opened while actions were running; the reader can reopen them.
+		setTraceExpansion((current) =>
+			current.taskKey === transcriptTaskKey && Object.keys(current.expanded).length > 0
+				? { ...current, expanded: {} }
+				: current,
+		)
+	}, [hasCompletedTranscriptBoundary, transcriptTaskKey])
 	const expandedTraces = useMemo(
 		() => (traceExpansion.taskKey === transcriptTaskKey ? traceExpansion.expanded : {}),
 		[traceExpansion, transcriptTaskKey],
@@ -2081,13 +2351,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		// Hiding a focused element may already have returned focus to body before
 		// layout effects run. The capture handler retains the previous row identity.
 		if (focused !== document.body && !transcriptScrollerRef.current?.contains(focused)) return
-		const trace = completedActivity.get(activity.index)
+		const trace = actionActivity.get(activity.index)
 		if (trace && !expandedTraces[trace.id]) {
 			transcriptScrollerRef.current
 				?.querySelector<HTMLButtonElement>(`[data-activity-trace-id="${trace.id}"]`)
 				?.focus({ preventScroll: true })
 		}
-	}, [completedActivity, expandedTraces, transcriptTaskKey])
+	}, [actionActivity, expandedTraces, transcriptTaskKey])
 
 	// The floating controls are siblings of the transcript scroller, so wheel input
 	// over a button would otherwise stop at the overflow-hidden viewport wrapper.
@@ -2189,6 +2459,64 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[handleSendMessage, setInputValue, switchToMode],
 	)
 
+	const handleRequestUserInputSubmit = useCallback(
+		(answers: RequestUserInputAnswerMap) => {
+			void handleSendMessage(JSON.stringify({ answers }), [])
+		},
+		[handleSendMessage],
+	)
+
+	const [answeredAsyncUserInputTs, setAnsweredAsyncUserInputTs] = useState<Set<string>>(() => new Set())
+	const handleAsyncUserInputSubmit = useCallback(
+		(messageTs: number, response: string) => {
+			if (
+				!visibleCurrentTaskId ||
+				pendingCompletedTaskResumeIdRef.current === visibleCurrentTaskId ||
+				editingQueuedMessage ||
+				isVisibleTaskFailedOrClosed ||
+				isBlankTaskPendingRef.current ||
+				messagesRef.current.length === 0
+			) {
+				return false
+			}
+			if (apiConfiguration?.apiProvider && isRetiredProvider(apiConfiguration.apiProvider)) {
+				setShowRetiredProviderWarning(true)
+				return false
+			}
+
+			if (!handleSendMessage(response, [], messageTs)) return false
+			const key = `${visibleCurrentTaskId}:${messageTs}`
+			setAnsweredAsyncUserInputTs((current) => new Set(current).add(key))
+			return true
+		},
+		[
+			handleSendMessage,
+			visibleCurrentTaskId,
+			editingQueuedMessage,
+			isVisibleTaskFailedOrClosed,
+			apiConfiguration?.apiProvider,
+		],
+	)
+
+	const handleRequestUserInputCancel = useCallback(() => {
+		if (alphaAskRef.current !== "followup") return
+
+		const pendingFollowUp = messagesRef.current.findLast(
+			(message) => message.type === "ask" && message.ask === "followup" && !message.isAnswered,
+		)
+		if (pendingFollowUp && visibleCurrentTaskId) {
+			submittedFollowUpRef.current = { taskId: visibleCurrentTaskId, ts: pendingFollowUp.ts }
+		}
+		userRespondedRef.current = true
+		markFollowUpAsAnswered()
+		vscode.postMessage({
+			type: "askResponse",
+			askResponse: "noButtonClicked",
+			...visibleTaskPayload,
+		})
+		handleChatReset()
+	}, [handleChatReset, markFollowUpAsAnswered, visibleCurrentTaskId, visibleTaskPayload])
+
 	const handleBatchFileResponse = useCallback(
 		(response: { [key: string]: boolean }) => {
 			// Handle batch file response, e.g., for file uploads
@@ -2230,7 +2558,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		checkpointJumpCursorRef.current = nextCursor
 
 		releaseFollow("checkpoint-navigation")
-		const trace = completedActivity.get(nextCheckpointIndex)
+		const trace = actionActivity.get(nextCheckpointIndex)
 		if (trace && !expandedTraces[trace.id]) {
 			pendingCheckpointIndexRef.current = nextCheckpointIndex
 			setTraceExpanded(trace.id, true)
@@ -2247,7 +2575,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 		pendingCheckpointIndexRef.current = nextCheckpointIndex
 		revealTranscriptIndex(nextCheckpointIndex)
-	}, [checkpointIndices, releaseFollow, revealTranscriptIndex, completedActivity, expandedTraces, setTraceExpanded])
+	}, [checkpointIndices, releaseFollow, revealTranscriptIndex, actionActivity, expandedTraces, setTraceExpanded])
 
 	useEffect(() => {
 		const pendingCheckpointIndex = pendingCheckpointIndexRef.current
@@ -2281,6 +2609,15 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					isStreaming={isLast && isStreaming}
 					messageActionsDisabled={isTurnActive}
 					onSuggestionClick={handleSuggestionClickInRow} // This was already stabilized
+					onRequestUserInputSubmit={handleRequestUserInputSubmit}
+					onRequestUserInputCancel={handleRequestUserInputCancel}
+					onAsyncUserInputSubmit={handleAsyncUserInputSubmit}
+					isAsyncUserInputAnswered={
+						messageOrGroup.type === "say" &&
+						messageOrGroup.say === "async_user_input" &&
+						(messageOrGroup.isAnswered === true ||
+							answeredAsyncUserInputTs.has(`${visibleCurrentTaskId}:${messageOrGroup.ts}`))
+					}
 					onBatchFileResponse={handleBatchFileResponse}
 					onFollowUpUnmount={handleFollowUpUnmount}
 					isFollowUpAnswered={
@@ -2318,6 +2655,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			isStreaming,
 			isTurnActive,
 			handleSuggestionClickInRow,
+			handleRequestUserInputSubmit,
+			handleRequestUserInputCancel,
+			handleAsyncUserInputSubmit,
+			answeredAsyncUserInputTs,
+			visibleCurrentTaskId,
 			handleBatchFileResponse,
 			handleFollowUpUnmount,
 			currentFollowUpTs,
@@ -2354,7 +2696,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		},
 	}))
 
-	const areActionButtonsVisible = primaryButtonText || secondaryButtonText
+	const areActionButtonsVisible = primaryButtonText || secondaryButtonText || tertiaryButtonText
 
 	return (
 		<div
@@ -2367,18 +2709,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}}
 			className={isHidden ? "hidden" : "app-shell fixed inset-0 flex flex-col overflow-hidden"}>
 			{telemetrySetting === "unset" && <TelemetryBanner />}
-			{(showAnnouncement || showAnnouncementModal) && (
-				<Announcement
-					hideAnnouncement={() => {
-						if (showAnnouncementModal) {
-							setShowAnnouncementModal(false)
-						}
-						if (showAnnouncement) {
-							hideAnnouncement()
-						}
-					}}
-				/>
-			)}
+			{showAnnouncement && <Announcement hideAnnouncement={hideAnnouncement} />}
 			{task ? (
 				<>
 					<TaskHeader
@@ -2434,6 +2765,15 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						</div>
 					)}
 
+					{canShowCrossTaskPanel && visibleCurrentTaskId && (
+						<CrossTaskPanel
+							parentTaskId={visibleCurrentTaskId}
+							taskHistory={taskHistory}
+							liveTasksById={liveTasksById}
+							onOpen={openTaskWithCache}
+						/>
+					)}
+
 					{checkpointWarning && (
 						<div className="px-3">
 							<CheckpointWarning warning={checkpointWarning} />
@@ -2441,20 +2781,26 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					)}
 				</>
 			) : (
-				<div className="relative flex h-full min-h-0 flex-col justify-center gap-4 overflow-y-auto p-5 min-[400px]:p-7">
-					<div className="mx-auto flex h-full w-full max-w-[760px] flex-col items-start justify-center gap-3">
-						<VersionIndicator
-							onClick={() => setShowAnnouncementModal(true)}
-							className="absolute top-2 right-3 z-10"
-						/>
-						<div className="hero-panel flex w-full flex-col gap-5 rounded-3xl p-5 min-[400px]:p-7">
-							<AlphaHero />
-							{/* Show AlphaTips when authenticated or when user is new */}
-							{taskHistory.length < 6 && <AlphaTips />}
-							{/* Everyone should see their task history if any */}
-							{taskHistory.length > 0 && <HistoryPreview />}
+				<div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto p-3 min-[400px]:p-5">
+					<div className="mx-auto flex w-full max-w-[760px] min-h-0 flex-1 flex-col">
+						{(taskHistory.length > 0 || showChatsPanel) && (
+							<HistoryPreview
+								expanded={showChatsPanel}
+								onExpand={() => setIsHistoryExpanded(true)}
+								focusRequest={historyFocusRequest}
+								onClose={closeChatsPanel}
+							/>
+						)}
+						<div data-testid="alpha-home-brand" className="flex min-h-0 flex-1 items-center justify-center">
+							<AlphaHero variant="watermark" />
 						</div>
 					</div>
+				</div>
+			)}
+
+			{task && showChatsPanel && (
+				<div className="max-h-[40vh] shrink-0 overflow-y-auto px-3 pb-2">
+					<HistoryPreview expanded focusRequest={historyFocusRequest} onClose={closeChatsPanel} />
 				</div>
 			)}
 
@@ -2493,7 +2839,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 								chatRowEnvironment={chatRowEnvironment}
 								toggleRowExpansion={toggleRowExpansion}
 								renderedGroupedMessages={renderedGroupedMessages}
-								completedActivity={completedActivity}
+								actionActivity={actionActivity}
 								expandedTraces={expandedTraces}
 								fileChangeTurnsByEndIndex={fileChangeTurnsByEndIndex}
 								itemContent={itemContent}
@@ -2553,63 +2899,156 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							</div>
 						)}
 						{areActionButtonsVisible && !isManagedSubagent && !isCompletedTaskResumePending && (
-							<div
-								className={`mb-1 flex h-9 shrink-0 items-center px-[15px] ${enableButtons ? "opacity-100" : "opacity-50"}`}>
-								{primaryButtonText && (
-									<StandardTooltip
-										content={
-											primaryButtonText === t("chat:retry.title")
-												? t("chat:retry.tooltip")
-												: primaryButtonText === t("chat:save.title")
-													? t("chat:save.tooltip")
-													: primaryButtonText === t("chat:approve.title")
-														? t("chat:approve.tooltip")
-														: primaryButtonText === t("chat:runCommand.title")
-															? t("chat:runCommand.tooltip")
-															: primaryButtonText === t("chat:startNewTask.title")
-																? t("chat:startNewTask.tooltip")
-																: primaryButtonText === t("chat:resumeTask.title")
-																	? t("chat:resumeTask.tooltip")
-																	: primaryButtonText ===
-																		  t("chat:proceedAnyways.title")
-																		? t("chat:proceedAnyways.tooltip")
-																		: primaryButtonText ===
-																			  t("chat:proceedWhileRunning.title")
-																			? t("chat:proceedWhileRunning.tooltip")
-																			: undefined
-										}>
-										<Button
-											variant="primary"
-											disabled={!enableButtons}
-											className={secondaryButtonText ? "flex-1 mr-[6px]" : "flex-[2] mr-0"}
-											onClick={() => handlePrimaryButtonClick(inputValue, selectedImages)}>
-											{primaryButtonText}
-										</Button>
-									</StandardTooltip>
+							<>
+								{toolApprovalRequest?.cwd && (
+									<div
+										role="note"
+										className="mx-[15px] mb-1 rounded-md border border-vscode-panel-border px-3 py-2 text-xs text-vscode-descriptionForeground">
+										<span>{t("chat:approveCommand.cwdLabel")}</span>
+										<code className="mt-1 block max-h-16 overflow-auto whitespace-pre-wrap break-all font-mono text-vscode-foreground">
+											{toolApprovalRequest.cwd}
+										</code>
+									</div>
 								)}
-								{secondaryButtonText && (
-									<StandardTooltip
-										content={
-											secondaryButtonText === t("chat:startNewTask.title")
-												? t("chat:startNewTask.tooltip")
-												: secondaryButtonText === t("chat:reject.title")
-													? t("chat:reject.tooltip")
-													: secondaryButtonText === t("chat:terminate.title")
-														? t("chat:terminate.tooltip")
-														: secondaryButtonText === t("chat:killCommand.title")
-															? t("chat:killCommand.tooltip")
-															: undefined
-										}>
+								{toolApprovalRequest?.proposedAmendment && (
+									<div
+										role="note"
+										className="mx-[15px] mb-1 rounded-md border border-vscode-panel-border px-3 py-2 text-xs text-vscode-descriptionForeground">
+										<span>{t("chat:approveCommand.review")}</span>
+										<code className="mt-1 block max-h-24 overflow-auto whitespace-pre-wrap break-all font-mono text-vscode-foreground">
+											{toolApprovalRequest.proposedAmendment.command}
+										</code>
+									</div>
+								)}
+								{toolApprovalRequest?.proposedPersistentAmendment && (
+									<div
+										role="note"
+										className="mx-[15px] mb-1 rounded-md border border-vscode-panel-border px-3 py-2 text-xs text-vscode-descriptionForeground">
+										<span>{t("chat:approvePersistentCommand.review")}</span>
+										<code className="mt-1 block max-h-24 overflow-auto whitespace-pre-wrap break-all font-mono text-vscode-foreground">
+											{toolApprovalRequest.proposedPersistentAmendment.prefix}
+										</code>
+									</div>
+								)}
+								<div
+									className={`mb-1 flex h-9 shrink-0 items-center px-[15px] ${enableButtons ? "opacity-100" : "opacity-50"}`}>
+									{primaryButtonText && (
+										<StandardTooltip
+											content={
+												primaryButtonText === t("chat:retry.title")
+													? t("chat:retry.tooltip")
+													: primaryButtonText === t("chat:save.title")
+														? t("chat:save.tooltip")
+														: primaryButtonText === t("chat:approve.title")
+															? t("chat:approve.tooltip")
+															: primaryButtonText === t("chat:runCommand.title")
+																? t("chat:runCommand.tooltip")
+																: primaryButtonText === t("chat:startNewTask.title")
+																	? t("chat:startNewTask.tooltip")
+																	: primaryButtonText === t("chat:resumeTask.title")
+																		? t("chat:resumeTask.tooltip")
+																		: primaryButtonText ===
+																			  t("chat:proceedAnyways.title")
+																			? t("chat:proceedAnyways.tooltip")
+																			: primaryButtonText ===
+																				  t("chat:proceedWhileRunning.title")
+																				? t("chat:proceedWhileRunning.tooltip")
+																				: undefined
+											}>
+											<Button
+												variant="primary"
+												disabled={!enableButtons}
+												className={secondaryButtonText ? "flex-1 mr-[6px]" : "flex-[2] mr-0"}
+												onClick={() => handlePrimaryButtonClick(inputValue, selectedImages)}>
+												{primaryButtonText}
+											</Button>
+										</StandardTooltip>
+									)}
+									{secondaryButtonText && (
+										<StandardTooltip
+											content={
+												secondaryButtonText === t("chat:startNewTask.title")
+													? t("chat:startNewTask.tooltip")
+													: secondaryButtonText === t("chat:reject.title")
+														? t("chat:reject.tooltip")
+														: secondaryButtonText === t("chat:terminate.title")
+															? t("chat:terminate.tooltip")
+															: secondaryButtonText === t("chat:killCommand.title")
+																? t("chat:killCommand.tooltip")
+																: undefined
+											}>
+											<Button
+												variant="secondary"
+												disabled={!enableButtons}
+												className={tertiaryButtonText ? "flex-1 mx-[3px]" : "flex-1 ml-[6px]"}
+												onClick={() => handleSecondaryButtonClick()}>
+												{secondaryButtonText}
+											</Button>
+										</StandardTooltip>
+									)}
+									{tertiaryButtonText && (
 										<Button
 											variant="secondary"
 											disabled={!enableButtons}
-											className="flex-1 ml-[6px]"
-											onClick={() => handleSecondaryButtonClick()}>
-											{secondaryButtonText}
+											className="flex-1 ml-[3px]"
+											aria-label={tertiaryButtonText}
+											onClick={() => {
+												if (toolApprovalRequest) sendToolApprovalDecision("abort")
+											}}>
+											{tertiaryButtonText}
 										</Button>
-									</StandardTooltip>
-								)}
-							</div>
+									)}
+								</div>
+								{toolApprovalRequest &&
+									(toolApprovalRequest.availableDecisions.includes("approve_session") ||
+										toolApprovalRequest.availableDecisions.includes("approve_with_amendment") ||
+										toolApprovalRequest.availableDecisions.includes("approve_persistently")) && (
+										<div
+											className={`mb-2 grid shrink-0 grid-cols-3 gap-1 px-[15px] ${enableButtons ? "opacity-100" : "opacity-50"}`}>
+											{toolApprovalRequest.availableDecisions.includes("approve_session") && (
+												<StandardTooltip content={t("chat:approveSession.tooltip")}>
+													<Button
+														variant="secondary"
+														disabled={!enableButtons}
+														aria-label={t("chat:approveSession.title")}
+														onClick={() => sendToolApprovalDecision("approve_session")}>
+														{t("chat:approveSession.title")}
+													</Button>
+												</StandardTooltip>
+											)}
+											{toolApprovalRequest.availableDecisions.includes(
+												"approve_persistently",
+											) && (
+												<StandardTooltip content={t("chat:approvePersistentCommand.tooltip")}>
+													<Button
+														variant="secondary"
+														disabled={!enableButtons}
+														aria-label={t("chat:approvePersistentCommand.title")}
+														onClick={() =>
+															sendToolApprovalDecision("approve_persistently")
+														}>
+														{t("chat:approvePersistentCommand.title")}
+													</Button>
+												</StandardTooltip>
+											)}
+											{toolApprovalRequest.availableDecisions.includes(
+												"approve_with_amendment",
+											) && (
+												<StandardTooltip content={t("chat:approveCommand.tooltip")}>
+													<Button
+														variant="secondary"
+														disabled={!enableButtons}
+														aria-label={t("chat:approveCommand.title")}
+														onClick={() =>
+															sendToolApprovalDecision("approve_with_amendment")
+														}>
+														{t("chat:approveCommand.title")}
+													</Button>
+												</StandardTooltip>
+											)}
+										</div>
+									)}
+							</>
 						)}
 					</>
 				)}
@@ -2721,6 +3160,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						enqueueDisabled={Boolean(pendingQueueRequest)}
 						conversationClineMessages={conversationPromptMessages}
 						isInTask={Boolean(task)}
+						isTaskDraft={isDraftView}
+						draftApprovalMode={draftApprovalMode}
+						onDraftApprovalModeChange={setDraftApprovalMode}
 					/>
 				)}
 			</div>

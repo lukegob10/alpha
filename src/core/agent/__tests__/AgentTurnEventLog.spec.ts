@@ -20,6 +20,28 @@ import {
 } from "../AgentTurnEventLog"
 
 describe("AgentTurnEventLog", () => {
+	it("projects task performance samples as phase, outcome, and duration only", async () => {
+		const record: PersistedAgentTurnEvent = {
+			taskId: "task-performance",
+			runId: "run-performance",
+			sequence: 1,
+			timestamp: 123,
+			event: {
+				type: "task_performance",
+				phase: "first_provider_request",
+				status: "completed",
+				durationMs: 42,
+			},
+		}
+
+		expect(projectPersistedAgentTurnEvent(record).event).toEqual({
+			type: "task_performance",
+			phase: "first_provider_request",
+			status: "completed",
+			durationMs: 42,
+		})
+	})
+
 	it("writes ordered bounded and redacted task events", async () => {
 		const storagePath = await fs.mkdtemp(path.join(tmpdir(), "agent-turn-events-"))
 		const log = new AgentTurnEventLog("task-1", storagePath)

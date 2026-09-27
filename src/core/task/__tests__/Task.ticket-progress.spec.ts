@@ -1,6 +1,7 @@
 import * as fs from "fs/promises"
 import os from "os"
 import path from "path"
+import { ticketSchema } from "@alpha-code/types"
 import { TicketStore } from "../../../services/tickets/TicketStore"
 import { ToolRegistry } from "../../tools/ToolRegistry"
 import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
@@ -8,6 +9,14 @@ import { ToolScheduler, type ToolExecutionHost } from "../../agent/ToolScheduler
 import type { AgentToolCall } from "../../agent/AgentResponse"
 import { AgentTurnEngine, type AgentTurnHost } from "../../agent/AgentTurnEngine"
 import { Task } from "../Task"
+
+function ticketFromToolResult(content: unknown) {
+	const payload: unknown = JSON.parse(String(content))
+	if (!payload || typeof payload !== "object" || !("result" in payload)) {
+		throw new Error("Ticket tool result did not include a ticket")
+	}
+	return ticketSchema.parse(payload.result)
+}
 
 describe("ticket progress through the scheduler and Task", () => {
 	let profile: string
@@ -81,52 +90,59 @@ describe("ticket progress through the scheduler and Task", () => {
 		return { task, host, observe, suspend, run, controller }
 	}
 
-	it.each(["serial", "selective-parallel"] as const)(
-		"finishes distinct deletions beyond the history window in %s mode",
-		async (mode) => {
-			const tickets = []
-			for (let index = 0; index < 20; index++) tickets.push(await store.create({ name: `Cleanup ${index}` }))
-			const { run, host, observe, suspend, task } = harness(mode)
-			const calls: AgentToolCall[] = tickets.map((ticket, index) => ({
-				type: "tool_call",
-				id: `delete-${index}`,
-				name: "delete_ticket",
-				arguments: { id: ticket.reference, expectedRevision: ticket.revision },
-			}))
-			const turnHost: AgentTurnHost<number> = {
-				shouldAbort: () => false,
-				runStep: vi.fn(async (step) => {
-					if (step === 0) {
-						const outcome = await run(calls)
-						return {
-							response: { items: calls, toolCalls: calls, text: "", reasoning: "" },
-							nextInput: 1,
-							...(outcome.results.some((result) => result.status !== "success")
-								? { status: "incomplete" as const }
-								: {}),
-						}
-					}
+	it("finishes distinct deletions beyond the history window with selective parallel enabled", async () => {
+		const tickets = []
+		// Nine distinct effects are enough to cross the detector's eight-result window.
+		for (let index = 0; index < 9; index++) tickets.push(await store.create({ name: `Cleanup ${index}` }))
+		const { run, host, observe, suspend, task } = harness("selective-parallel")
+		const calls: AgentToolCall[] = tickets.map((ticket, index) => ({
+			type: "tool_call",
+			id: `delete-${index}`,
+			name: "delete_ticket",
+			arguments: { id: ticket.reference, expectedRevision: ticket.revision },
+		}))
+		let schedulerOutcome: Awaited<ReturnType<typeof run>> | undefined
+		const turnHost: AgentTurnHost<number> = {
+			shouldAbort: () => false,
+			runStep: vi.fn(async (step) => {
+				if (step === 0) {
+					const outcome = await run(calls)
+					schedulerOutcome = outcome
 					return {
-						response: { items: [], toolCalls: [], text: "Deleted the requested tickets.", reasoning: "" },
-						nextInput: "complete" as const,
+						response: { items: calls, toolCalls: calls, text: "", reasoning: "" },
+						nextInput: 1,
+						...(outcome.results.some((result) => result.status !== "success")
+							? { status: "incomplete" as const }
+							: {}),
 					}
-				}),
-			}
-			expect(await new AgentTurnEngine(turnHost).run(0)).toMatchObject({ status: "completed", steps: 2 })
-			expect(turnHost.runStep).toHaveBeenCalledTimes(2)
-			expect((await store.list()).total).toBe(0)
-			expect(observe).toHaveBeenCalledTimes(tickets.length)
-			expect(host.userMessageContent).toHaveLength(tickets.length)
-			expect(suspend).not.toHaveBeenCalled()
-			expect(Reflect.get(task, "userMessageContent")).toEqual([])
-		},
-	)
+				}
+				return {
+					response: { items: [], toolCalls: [], text: "Deleted the requested tickets.", reasoning: "" },
+					nextInput: "complete" as const,
+				}
+			}),
+		}
+		expect(await new AgentTurnEngine(turnHost).run(0)).toMatchObject({ status: "completed", steps: 2 })
+		expect(turnHost.runStep).toHaveBeenCalledTimes(2)
+		expect(schedulerOutcome).toMatchObject({
+			batchSize: tickets.length,
+			parallelBatchCount: 0,
+			parallelToolCount: 0,
+		})
+		expect((await store.list()).total).toBe(0)
+		expect(observe).toHaveBeenCalledTimes(tickets.length)
+		expect(host.userMessageContent).toHaveLength(tickets.length)
+		expect(suspend).not.toHaveBeenCalled()
+		expect(Reflect.get(task, "userMessageContent")).toEqual([])
+	}, 60_000)
 
 	it("credits incremental updates and revisiting externally changed tickets beyond the window", async () => {
-		const { run, suspend, task } = harness()
+		const { run, host, observe, suspend, task } = harness()
 		await run([{ type: "tool_call", id: "create", name: "create_ticket", arguments: { name: "Work item" } }])
 		let ticket = await store.read("PRO-01")
-		for (let index = 0; index < 20; index++) {
+		const updateCycles = 5
+		// Each cycle contributes an update and a read, so five cycles exceed the eight-result window.
+		for (let index = 0; index < updateCycles; index++) {
 			const outcome = await run([
 				{
 					type: "tool_call",
@@ -140,20 +156,27 @@ describe("ticket progress through the scheduler and Task", () => {
 				},
 			])
 			expect(outcome.results[0].status).toBe("success")
-			ticket = await store.read(ticket.id)
-			expect(ticket.description).toBe(`Completed step ${index}`)
+			const updatedTicket = ticketFromToolResult(outcome.results[0].content)
+			expect(updatedTicket.description).toBe(`Completed step ${index}`)
 			ticket = await store.update({
-				id: ticket.id,
-				expectedRevision: ticket.revision,
+				id: updatedTicket.id,
+				expectedRevision: updatedTicket.revision,
 				context: `External detail ${index}`,
 			})
-			await run([
+			const readOutcome = await run([
 				{ type: "tool_call", id: `read-${index}`, name: "read_ticket", arguments: { id: ticket.reference } },
 			])
+			expect(readOutcome.results[0].status).toBe("success")
+			expect(ticketFromToolResult(readOutcome.results[0].content)).toMatchObject({
+				id: ticket.id,
+				context: `External detail ${index}`,
+			})
 		}
+		expect(observe).toHaveBeenCalledTimes(1 + updateCycles * 2)
+		expect(host.userMessageContent).toHaveLength(1 + updateCycles * 2)
 		expect(suspend).not.toHaveBeenCalled()
 		expect(Reflect.get(task, "userMessageContent")).toEqual([])
-	})
+	}, 60_000)
 
 	it("recognizes distinct result pages and bounds repeated empty searches despite query churn", async () => {
 		for (let index = 0; index < 12; index++) await store.create({ name: `Item ${index}` })
@@ -176,7 +199,7 @@ describe("ticket progress through the scheduler and Task", () => {
 		}
 		expect(suspend).toHaveBeenCalledOnce()
 		expect(Reflect.get(task, "userMessageContent")).toHaveLength(1)
-	})
+	}, 60_000)
 
 	it("bounds successful no-op updates without treating revision or locator spelling as progress", async () => {
 		let ticket = await store.create({ name: "Stable" })

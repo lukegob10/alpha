@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
+import { createApiStreamOutcome } from "../../../api/transform/stream"
 
 import {
 	AgentResponseAccumulator,
@@ -6,6 +7,7 @@ import {
 	collectAgentResponse,
 	type AgentResponse,
 	type AgentTurnHost,
+	type AgentTurnStagedHost,
 } from "../AgentTurnEngine"
 
 const emptyResponse = (): AgentResponse => ({
@@ -79,6 +81,47 @@ describe("AgentResponseAccumulator", () => {
 })
 
 describe("AgentTurnEngine", () => {
+	it("does not run effects or complete a step for a truncated streamed tool call", async () => {
+		const response = await collectAgentResponse(
+			(async function* () {
+				yield {
+					type: "tool_call_partial",
+					index: 0,
+					id: "call-truncated",
+					name: "apply_patch",
+					arguments: '{"patch":"*** Begin Patch"}',
+				} as const
+				yield {
+					type: "outcome",
+					status: "incomplete",
+					terminal: true,
+					semanticOutputObserved: true,
+					reason: "output token limit",
+				} as const
+			})(),
+		)
+		const effects: string[] = []
+		const host: AgentTurnStagedHost<string> = {
+			shouldAbort: () => false,
+			sampleStep: async () => ({ response }),
+			commitResponse: vi.fn(),
+			executeEffects: vi.fn(async (sample: { response: AgentResponse }) => {
+				effects.push(...sample.response.toolCalls.map((call) => call.id))
+			}),
+			selectContinuation: vi.fn(async () => ({ nextInput: "complete" })),
+		}
+
+		const result = await new AgentTurnEngine(host).run("first")
+
+		expect(response.outcome?.status).toBe("incomplete")
+		expect(response.toolCalls).toEqual([])
+		expect(host.commitResponse).toHaveBeenCalledOnce()
+		expect(host.executeEffects).not.toHaveBeenCalled()
+		expect(host.selectContinuation).not.toHaveBeenCalled()
+		expect(effects).toEqual([])
+		expect(result).toMatchObject({ status: "incomplete", steps: 1, reason: "output token limit" })
+	})
+
 	it("treats a visible assistant response without tool calls as a completed turn", async () => {
 		const host: AgentTurnHost<string> = {
 			shouldAbort: () => false,
@@ -97,6 +140,42 @@ describe("AgentTurnEngine", () => {
 			response: { ...emptyResponse(), text: "The requested explanation." },
 		})
 		expect(host.runStep).toHaveBeenCalledOnce()
+	})
+
+	it("continues after a normally completed response explicitly requires another model step", async () => {
+		const firstResponse = await collectAgentResponse(
+			(async function* () {
+				yield { type: "text", text: "Intermediate progress." } as const
+				yield createApiStreamOutcome({
+					status: "completed",
+					terminal: true,
+					semanticOutputObserved: true,
+					requiresContinuation: true,
+				})
+			})(),
+		)
+		const finalResponse = { ...emptyResponse(), text: "The final answer." }
+		const host: AgentTurnStagedHost<string> = {
+			shouldAbort: () => false,
+			sampleStep: vi.fn(async (input) => ({
+				response: input === "first" ? firstResponse : finalResponse,
+			})),
+			selectContinuation: vi.fn(async (_sample, step) => ({
+				nextInput: step === 1 ? "provider-follow-up" : "complete",
+			})),
+		}
+
+		const result = await new AgentTurnEngine(host).run("first")
+
+		expect(firstResponse.outcome).toEqual({ status: "completed", requiresContinuation: true })
+		expect(host.sampleStep).toHaveBeenNthCalledWith(1, "first")
+		expect(host.sampleStep).toHaveBeenNthCalledWith(2, "provider-follow-up")
+		expect(result).toEqual({
+			status: "completed",
+			steps: 2,
+			completionReason: "host",
+			response: finalResponse,
+		})
 	})
 
 	it("lets hosts require an explicit completion boundary", async () => {
@@ -299,5 +378,95 @@ describe("AgentTurnEngine", () => {
 		await new AgentTurnEngine(host).run("first")
 
 		expect(completed).toEqual([1, 2])
+	})
+
+	it("keeps sampled step state alive through continuation selection and releases afterward", async () => {
+		const events: string[] = []
+		const sample = { response: { ...emptyResponse(), text: "Answer." }, step: { retained: true } }
+		const host: AgentTurnStagedHost<string, typeof sample.step> = {
+			shouldAbort: () => false,
+			sampleStep: vi.fn(async () => sample),
+			commitResponse: async () => {
+				events.push("commit")
+			},
+			executeEffects: async () => {
+				events.push("effects")
+			},
+			selectContinuation: async (selectedSample) => {
+				events.push("continuation")
+				expect(selectedSample.step).toBe(sample.step)
+				expect(events).not.toContain("release")
+				return { nextInput: "complete" }
+			},
+			releaseStep: (releasedSample) => {
+				events.push("release")
+				expect(releasedSample.step).toBe(sample.step)
+			},
+		}
+
+		const result = await new AgentTurnEngine(host).run("first")
+
+		expect(events).toEqual(["commit", "effects", "continuation", "release"])
+		expect(result).toEqual({
+			status: "completed",
+			steps: 1,
+			response: sample.response,
+			completionReason: "host",
+		})
+	})
+
+	it("preserves the original phase failure and response when completion and release also fail", async () => {
+		const response = { ...emptyResponse(), text: "Persisted candidate." }
+		const phaseError = new Error("assistant commit failed")
+		const host: AgentTurnStagedHost<string, { lease: number }> = {
+			shouldAbort: () => false,
+			sampleStep: async () => ({ response, step: { lease: 1 } }),
+			commitResponse: async () => {
+				throw phaseError
+			},
+			executeEffects: vi.fn(),
+			onStepComplete: async () => {
+				throw new Error("completion callback failed")
+			},
+			selectContinuation: vi.fn(async () => ({ nextInput: "complete" as const })),
+			releaseStep: async () => {
+				throw new Error("release failed")
+			},
+		}
+
+		const result = await new AgentTurnEngine(host).run("first")
+
+		expect(result).toMatchObject({
+			status: "failed",
+			steps: 1,
+			reason: "assistant commit failed",
+			error: phaseError,
+			response,
+		})
+		expect(host.executeEffects).not.toHaveBeenCalled()
+		expect(host.selectContinuation).not.toHaveBeenCalled()
+	})
+
+	it("reports a release failure against the sampled response", async () => {
+		const response = { ...emptyResponse(), text: "Candidate." }
+		const releaseError = new Error("step cleanup failed")
+		const host: AgentTurnStagedHost<string, { lease: number }> = {
+			shouldAbort: () => false,
+			sampleStep: async () => ({ response, step: { lease: 1 } }),
+			selectContinuation: async () => ({ nextInput: "complete" }),
+			releaseStep: async () => {
+				throw releaseError
+			},
+		}
+
+		const result = await new AgentTurnEngine(host).run("first")
+
+		expect(result).toMatchObject({
+			status: "failed",
+			steps: 1,
+			reason: "step cleanup failed",
+			error: releaseError,
+			response,
+		})
 	})
 })

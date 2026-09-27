@@ -11,6 +11,7 @@ const {
 	mockGetLegacyConfigDirectoriesForCwd,
 	mockGetAllLegacyConfigDirectoriesForCwd,
 	mockGetAgentsDirectoriesForCwd,
+	mockGetProjectInstructionDirectoriesForCwd,
 	mockGetLegacyGlobalConfigDirectory,
 } = vi.hoisted(() => ({
 	mockHomedir: vi.fn(),
@@ -22,6 +23,7 @@ const {
 	mockGetLegacyConfigDirectoriesForCwd: vi.fn(),
 	mockGetAllLegacyConfigDirectoriesForCwd: vi.fn(),
 	mockGetAgentsDirectoriesForCwd: vi.fn(),
+	mockGetProjectInstructionDirectoriesForCwd: vi.fn(),
 	mockGetLegacyGlobalConfigDirectory: vi.fn(),
 }))
 
@@ -49,6 +51,7 @@ vi.mock("../../../../services/config-paths", () => ({
 	getLegacyConfigDirectoriesForCwd: mockGetLegacyConfigDirectoriesForCwd,
 	getAllLegacyConfigDirectoriesForCwd: mockGetAllLegacyConfigDirectoriesForCwd,
 	getAgentsDirectoriesForCwd: mockGetAgentsDirectoriesForCwd,
+	getProjectInstructionDirectoriesForCwd: mockGetProjectInstructionDirectoriesForCwd,
 	getLegacyGlobalConfigDirectory: mockGetLegacyGlobalConfigDirectory,
 }))
 
@@ -68,6 +71,7 @@ describe("custom-instructions global .roo support", () => {
 		mockGetAllLegacyConfigDirectoriesForCwd.mockResolvedValue([legacyGlobalConfigDir, legacyProjectConfigDir])
 		// getAgentsDirectoriesForCwd returns parent directories (without .roo)
 		mockGetAgentsDirectoriesForCwd.mockResolvedValue([mockCwd])
+		mockGetProjectInstructionDirectoriesForCwd.mockResolvedValue({ root: mockCwd, directories: [mockCwd] })
 		mockGetLegacyGlobalConfigDirectory.mockReturnValue(legacyGlobalConfigDir)
 		// Default lstat to reject (file not found)
 		mockLstat.mockRejectedValue(new Error("ENOENT"))

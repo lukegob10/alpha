@@ -374,11 +374,11 @@ describe("ToolScheduler progress observation", () => {
 			validateCall: () => {},
 		}).run(calls("fixture_command_alias", 1))
 		expect(execute).not.toHaveBeenCalled()
-		expect(host.getToolRetryBlock).toHaveBeenCalledWith("shell", expect.any(Object))
+		expect(host.getToolRetryBlock).toHaveBeenCalledWith("exec_command", expect.any(Object))
 		expect(outcome.results[0]).toMatchObject({ status: "error", failure })
 		expect(outcome.results[0].content).toContain("before repeating")
 		expect(host.recordToolCallForStopping).toHaveBeenCalledWith(
-			"shell",
+			"exec_command",
 			expect.any(Object),
 			"error",
 			undefined,
@@ -693,6 +693,7 @@ describe("ToolScheduler progress observation", () => {
 		}).run(calls("execute_command", 24))
 		expect(effects).toBe(12)
 		expect(outcome.results).toHaveLength(24)
+		expect(outcome.results[0]?.content).toEqual("check failed")
 		expect(outcome.results.slice(0, 12).every((result) => result.content === "check failed")).toBe(true)
 		expect(outcome.results.slice(12).every((result) => String(result.content).includes("Stopping repeated"))).toBe(
 			true,

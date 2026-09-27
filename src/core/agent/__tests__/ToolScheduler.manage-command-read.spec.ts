@@ -44,12 +44,13 @@ afterEach(() => {
 	vi.restoreAllMocks()
 })
 
-describe("ToolScheduler manage command artifact reads", () => {
-	it("dispatches the historical read alias through manage_command as a read action", async () => {
+describe("ToolScheduler retired command alias", () => {
+	it("rejects the retired read_command_output tool before accessing command artifacts", async () => {
 		const task = taskFixture()
 		const host = hostFixture(task)
 		const observe = vi.fn()
 		host.recordToolCallForStopping = observe
+		const terminalLookup = vi.spyOn(TerminalRegistry, "getTerminals")
 
 		const outcome = await new ToolScheduler({
 			executionHost: host,
@@ -74,23 +75,20 @@ describe("ToolScheduler manage command artifact reads", () => {
 		expect(outcome.results[0]).toMatchObject({
 			name: "read_command_output",
 			status: "error",
-			content: expect.stringContaining("Invalid artifact_id format"),
+			content: expect.stringContaining("Unknown tool"),
 		})
 		expect(observe).toHaveBeenCalledWith(
 			"manage_command",
-			{
-				action: "read",
-				execution_id: "forged-execution",
-				artifact_id: "invalid-artifact",
-			},
+			{ action: "read", execution_id: "forged-execution", artifact_id: "invalid-artifact" },
 			"error",
 			undefined,
 			expect.any(Object),
 		)
-		expect(task.recordToolError).toHaveBeenCalledWith("read_command_output")
+		expect(terminalLookup).not.toHaveBeenCalled()
+		expect(task.recordToolError).not.toHaveBeenCalled()
 	})
 
-	it("does not execute a forged stop from the historical read alias", async () => {
+	it("does not execute a forged stop from the retired read alias", async () => {
 		const task = taskFixture()
 		const host = hostFixture(task)
 		const observe = vi.fn()

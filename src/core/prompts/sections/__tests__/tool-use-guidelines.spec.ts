@@ -58,7 +58,7 @@ describe("getToolUseGuidelinesSection", () => {
 	it("keeps Plan evidence distinct from authority and assumptions", () => {
 		const guidelines = getToolUseGuidelinesSection(undefined, true)
 
-		expect(guidelines).toContain("host-approved inspection or verification")
+		expect(guidelines).toContain("host-approved read-only exec_command")
 		expect(guidelines).toContain("Missing or incomplete output does not establish success")
 		expect(guidelines).not.toContain("evidence as authoritative")
 	})

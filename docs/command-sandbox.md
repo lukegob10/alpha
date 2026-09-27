@@ -5,9 +5,23 @@
 Alpha uses the normal inline or VS Code terminal. There is no downloaded command runtime, Codex executable, OS sandbox,
 Windows account provisioning, or permission repair in the extension. This replaces the native runtime introduced in 2.1.39.
 
-Global command auto-approval and allowed/denied prefixes decide whether ordinary commands ask. `*` permits scripts,
-computed commands, builds, tests, and network commands. Existing explicit deny rules, disabled tools, Plan restrictions,
-and inherited child authority still apply. Preferences use the existing global store and persist across projects/reloads.
+The approval mode and saved allowed/denied prefixes decide whether ordinary commands ask. Auto approves commands run
+from the workspace without requiring a saved prefix. The built-in prefix list is empty; users can save a prefix for Ask
+mode or to override a broader deny rule. Existing explicit deny rules, disabled tools, Plan restrictions, and inherited
+child authority still apply. Preferences use the existing global store and persist across projects/reloads.
+
+## Auto mode contract
+
+Auto approves read-only workspace access, validated in-workspace file changes, commands run from the workspace, and
+Alpha Ticket changes for the current project. It asks before launching sub-agents, MCP calls, protected-file changes,
+and detected outside-workspace or unresolved command writes. Ask requests approval for file changes and commands by
+default; saved non-wildcard prefixes can still allow matching commands. Full Access skips the ordinary per-action review
+for actions it permits, while explicit command denials remain in force. See the
+[approval-mode policy](approval-mode-policy.md) for the decision record and Codex comparison.
+
+Earlier manifests seeded `git log`, `git diff`, and `git show` as allowed command prefixes. A one-time upgrade migration
+removes those exact entries from global state because they were product defaults, not a user's explicit opt-in. Other
+saved prefixes are retained, and VS Code user/workspace/folder settings are not changed.
 
 The execution scheduler separately examines common file destinations before command approval:
 

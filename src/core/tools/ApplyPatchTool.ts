@@ -315,7 +315,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		const diffStats = computeDiffStats(sanitizedDiff) || undefined
 
 		const sharedMessageProps: AlphaSayTool = {
-			tool: "appliedDiff",
+			tool: "newFileCreated",
 			path: getTaskReadablePath(task, relPath),
 			diff: sanitizedDiff,
 			isOutsideWorkspace,

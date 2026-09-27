@@ -282,6 +282,7 @@ export type LiveCopilotDiscoveryStatus = "not-run" | "available" | "failed"
 
 export type LiveCopilotReadinessMetadata = {
 	readonly status: "ready" | "provider-unavailable" | "timed-out" | "failed"
+	readonly unavailableReason?: "language-model-api-missing" | "copilot-chat-extension-missing"
 	readonly activation: "not-run" | "already-active" | "started" | "completed"
 	readonly queryCount: number
 	readonly modelChangeObserved: boolean
@@ -484,8 +485,10 @@ async function discoverModels(dependencies: LiveCopilotDiscoveryDependencies = {
 	let activation: LiveCopilotReadinessMetadata["activation"] = "not-run"
 	let queryCount = 0
 	let modelChangeObserved = false
+	let unavailableReason: LiveCopilotReadinessMetadata["unavailableReason"]
 	const readiness = (status: LiveCopilotReadinessMetadata["status"]): LiveCopilotReadinessMetadata => ({
 		status,
+		...(unavailableReason ? { unavailableReason } : {}),
 		activation,
 		queryCount,
 		modelChangeObserved,
@@ -518,6 +521,7 @@ async function discoverModels(dependencies: LiveCopilotDiscoveryDependencies = {
 					typeof vscode.lm.onDidChangeChatModels !== "function" ||
 					typeof vscode.extensions?.getExtension !== "function"
 				) {
+					unavailableReason = "language-model-api-missing"
 					fail("provider-unavailable")
 					return
 				}
@@ -564,6 +568,7 @@ async function discoverModels(dependencies: LiveCopilotDiscoveryDependencies = {
 				})
 				const provider = vscode.extensions.getExtension("GitHub.copilot-chat")
 				if (!provider) {
+					unavailableReason = "copilot-chat-extension-missing"
 					fail("provider-unavailable")
 					return
 				}

@@ -35,16 +35,6 @@ type VSCodeLMProps = {
 	) => void
 }
 
-const REASONING_LEVEL_LABELS: Record<string, string> = {
-	none: "None",
-	minimal: "Minimal",
-	low: "Low",
-	medium: "Medium",
-	high: "High",
-	xhigh: "xHigh",
-	max: "Max",
-}
-
 function titleCaseIdentifier(value: string): string {
 	return value
 		.replace(/[_-]+/g, " ")
@@ -56,20 +46,6 @@ function titleCaseIdentifier(value: string): string {
 		.replace(/\bMai\b/g, "MAI")
 }
 
-function inferReasoningLevel(model: VSCodeLmModel): string | undefined {
-	const candidates = [model.name, model.version, model.id].filter(Boolean).map((value) => value!.toLowerCase())
-
-	for (const candidate of candidates) {
-		for (const level of Object.keys(REASONING_LEVEL_LABELS)) {
-			if (new RegExp(`(^|[^a-z])${level}([^a-z]|$)`).test(candidate)) {
-				return REASONING_LEVEL_LABELS[level]
-			}
-		}
-	}
-
-	return undefined
-}
-
 function formatVsCodeLmModelLabel(model: VSCodeLmModel | undefined, fallbackId: string): string {
 	if (!model) {
 		return fallbackId
@@ -79,14 +55,19 @@ function formatVsCodeLmModelLabel(model: VSCodeLmModel | undefined, fallbackId: 
 	const providerName = staticInfo?.name || model.name
 	const baseName = providerName || model.family || model.id || fallbackId
 	const nameWithoutVendor = baseName.replace(/^copilot[-/\s]+/i, "")
-	const cleanedName = providerName ? nameWithoutVendor : titleCaseIdentifier(nameWithoutVendor)
-	const reasoningLevel = inferReasoningLevel(model)
+	const cleanedName = (providerName ? nameWithoutVendor : titleCaseIdentifier(nameWithoutVendor)).replace(/-/g, " ")
+	return cleanedName
+}
 
-	if (!reasoningLevel || cleanedName.toLowerCase().includes(reasoningLevel.toLowerCase())) {
-		return cleanedName
-	}
-
-	return `${cleanedName} · ${reasoningLevel}`
+function formatModelIdentifier(value: string): string {
+	return value
+		.split(/[-_]+/)
+		.map((part) => {
+			if (part.toLowerCase() === "gpt") return "GPT"
+			if (part.toLowerCase() === "mai") return "MAI"
+			return part.charAt(0).toUpperCase() + part.slice(1)
+		})
+		.join("-")
 }
 
 function formatVsCodeLmModelDetail(model: VSCodeLmModel | undefined): string | undefined {
@@ -94,7 +75,8 @@ function formatVsCodeLmModelDetail(model: VSCodeLmModel | undefined): string | u
 		return undefined
 	}
 
-	return [model.vendor, model.family, model.version, model.id].filter(Boolean).join(" / ") || undefined
+	const modelIdentifier = model.id?.replace(/^copilot[-/]/i, "") || model.family
+	return modelIdentifier ? formatModelIdentifier(modelIdentifier) : undefined
 }
 
 function getVsCodeLmPickerKey(model: LanguageModelChatSelector): string {
@@ -127,7 +109,6 @@ function buildVsCodeLmModelInfo(model: VSCodeLmModel, configuredContextSize?: nu
 		reasoningEffort: staticInfo?.reasoningEffort,
 		// The live VS Code list is authoritative even when static retirement metadata is stale.
 		deprecated: false,
-		description: [model.name, model.vendor, model.family, model.version, model.id].filter(Boolean).join(" - "),
 	}
 }
 

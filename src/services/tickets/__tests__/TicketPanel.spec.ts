@@ -5,6 +5,7 @@ import type { AlphaProvider } from "../../../core/webview/AlphaProvider"
 import { TicketStore } from "../TicketStore"
 vi.mock("../TicketTaskLink", () => ({ workOnTicket: vi.fn() }))
 vi.mock("vscode", () => ({
+	commands: { executeCommand: vi.fn() },
 	workspace: {
 		workspaceFolders: [],
 		onDidChangeWorkspaceFolders: vi.fn(() => ({ dispose: vi.fn() })),
@@ -16,6 +17,7 @@ vi.mock("vscode", () => ({
 		})),
 	},
 	window: { registerWebviewPanelSerializer: vi.fn(() => ({ dispose: vi.fn() })), createWebviewPanel: vi.fn() },
+	ExtensionMode: { Production: 1, Development: 2, Test: 3 },
 	ViewColumn: { Beside: 2 },
 	env: { language: "en" },
 	Uri: { joinPath: vi.fn(() => "asset"), file: vi.fn((fsPath) => ({ scheme: "file", fsPath })) },
@@ -49,11 +51,13 @@ function setupProject() {
 		prepareReferences: vi.fn().mockResolvedValue(undefined),
 		list: vi.fn().mockResolvedValue(result),
 		delete: vi.fn(),
+		read: vi.fn(),
+		relations: vi.fn(),
 	}
 	vi.spyOn(TicketStore, "forWorkspace").mockResolvedValue(store as unknown as TicketStore)
 	return { store, result }
 }
-function createPanel() {
+function createPanel(provider: Partial<AlphaProvider> = {}) {
 	let receive: (message: unknown) => void = () => {}
 	let close: () => void = () => {}
 	const webview = {
@@ -78,8 +82,12 @@ function createPanel() {
 	}
 	vi.mocked(vscode.window.createWebviewPanel).mockReturnValue(nativePanel as unknown as vscode.WebviewPanel)
 	const panel = new TicketPanel(
-		{ subscriptions: [], extensionUri: "extension" } as unknown as vscode.ExtensionContext,
-		{} as AlphaProvider,
+		{
+			subscriptions: [],
+			extensionUri: "extension",
+			extensionMode: vscode.ExtensionMode.Production,
+		} as unknown as vscode.ExtensionContext,
+		provider as AlphaProvider,
 	)
 	return { panel, webview, receive: (message: unknown) => receive(message), nativePanel }
 }
@@ -91,12 +99,74 @@ const listRequest = (requestId: string, project = "project") => ({
 })
 
 describe("ticket panel navigation", () => {
+	it.each([true, false])("validates linked conversation membership (linked: %s)", async (linked) => {
+		const { store } = setupProject()
+		store.read.mockResolvedValue({ linkedTaskIds: linked ? ["linked-task"] : ["other-task"] })
+		const showTaskWithId = vi.fn().mockResolvedValue(undefined)
+		const { panel, webview, receive } = createPanel({ showTaskWithId })
+		await panel.open()
+		receive({ type: "ticketsReady" })
+		await vi.waitFor(() =>
+			expect(webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "ticketProjects" })),
+		)
+		receive({
+			type: "ticketRequest",
+			requestId: "linked",
+			project: "project",
+			operation: { action: "openLinkedTask", id: "a97392fe-59bf-4f80-8a10-51b2cb62a38f", taskId: "linked-task" },
+		})
+		await vi.waitFor(() =>
+			expect(webview.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "ticketResponse", requestId: "linked" }),
+			),
+		)
+		if (linked) expect(showTaskWithId).toHaveBeenCalledExactlyOnceWith("linked-task")
+		else {
+			expect(showTaskWithId).not.toHaveBeenCalled()
+			expect(webview.postMessage).toHaveBeenCalledWith({
+				type: "ticketResponse",
+				requestId: "linked",
+				error: "This conversation is not linked to the ticket",
+			})
+		}
+		panel.dispose()
+	})
+	it("loads relations through the selected project store", async () => {
+		const { store } = setupProject()
+		const relations = { children: [{ id: "child", name: "Direct child" }] }
+		store.relations.mockResolvedValue(relations)
+		const { panel, webview, receive } = createPanel()
+		await panel.open()
+		receive({ type: "ticketsReady" })
+		await vi.waitFor(() =>
+			expect(webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "ticketProjects" })),
+		)
+		const id = "a97392fe-59bf-4f80-8a10-51b2cb62a38f"
+		receive({
+			type: "ticketRequest",
+			requestId: "relations",
+			project: "project",
+			operation: { action: "relations", id },
+		})
+		await vi.waitFor(() =>
+			expect(webview.postMessage).toHaveBeenCalledWith({
+				type: "ticketResponse",
+				requestId: "relations",
+				result: relations,
+			}),
+		)
+		expect(store.relations).toHaveBeenCalledExactlyOnceWith(id)
+		panel.dispose()
+	})
 	it.each([undefined, null, { preserveFocus: false }, { preserveFocus: true }])(
 		"opens and reveals the ticket board with command menu context %j",
 		async (context) => {
 			const { panel, nativePanel, webview, receive } = createPanel()
 			await panel.open(context)
 			expect(vscode.window.createWebviewPanel).toHaveBeenCalledOnce()
+			expect(webview.html).toContain('data-view="tickets"')
+			expect(webview.html).toContain("'strict-dynamic'")
+			expect(webview.html).toMatch(/<script nonce="[A-Za-z0-9]+" type="module"/)
 			receive({ type: "ticketsReady" })
 			await vi.waitFor(() =>
 				expect(webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "ticketProjects" })),

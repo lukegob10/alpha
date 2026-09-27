@@ -5,7 +5,7 @@ import { type ModelInfo, openAiModelInfoSaneDefaults, vertexModels } from "@alph
 
 import type { ApiHandlerOptions } from "../../shared/api"
 import type { ApiHandlerCreateMessageMetadata } from "../index"
-import type { ApiStream } from "../transform/stream"
+import type { ApiStream, ApiStreamCapabilities } from "../transform/stream"
 
 import { DEFAULT_HEADERS } from "./constants"
 import { OpenAiHandler } from "./openai"
@@ -37,7 +37,7 @@ type VertexOpenAiSettings = {
  */
 export class VertexOpenAiHandler extends OpenAiHandler {
 	// Credential setup before the shared transport is not yet cancellable.
-	override readonly streamCapabilities = { cancellation: false } as const
+	override readonly streamCapabilities: ApiStreamCapabilities
 	private readonly selectedModelId: string
 	private readonly vertexSettings: VertexOpenAiSettings
 	private readonly helixTokenManager: HelixTokenManager
@@ -67,6 +67,10 @@ export class VertexOpenAiHandler extends OpenAiHandler {
 			openAiCustomModelInfo: modelInfo,
 			openAiStreamingEnabled: options.vertexStreamingEnabled ?? true,
 		})
+		this.streamCapabilities = {
+			cancellation: false,
+			...(this.shouldUseResponsesApi(routedModelId) ? {} : { lifecycle: true }),
+		}
 		this.selectedModelId = selectedModelId
 
 		this.vertexSettings = settings

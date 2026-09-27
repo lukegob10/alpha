@@ -1,6 +1,7 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
 import {
 	GoogleGenAI,
+	type GenerateContentResponse,
 	type GenerateContentResponseUsageMetadata,
 	type GenerateContentParameters,
 	type GenerateContentConfig,
@@ -23,13 +24,19 @@ import type { ApiHandlerOptions } from "../../shared/api"
 
 import { convertAnthropicMessageToGemini } from "../transform/gemini-format"
 import { t } from "i18next"
-import type { ApiStream, GroundingSource } from "../transform/stream"
+import {
+	ApiStreamDeadlineError,
+	createLinkedAbortController,
+	raceApiStreamAbort,
+	type ApiStream,
+	type GroundingSource,
+} from "../transform/stream"
 import { getModelParams } from "../transform/model-params"
 
 import type { SingleCompletionHandler, ApiHandlerCreateMessageMetadata } from "../index"
 import { BaseProvider } from "./base-provider"
 import { HelixTokenManager, type HelixParseMode } from "./utils/helix-token-manager"
-import { getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
+import { formatApiRequestTimeoutError, getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
 import { configureVertexGatewayTransport } from "./utils/vertex-gateway-transport"
 import { applyModelToolPreferences } from "./utils/router-tool-preferences"
 
@@ -60,6 +67,57 @@ type GeminiRequestContext = {
 
 type VertexGatewayAuthClient = {
 	getRequestHeaders: (url?: string | URL) => Promise<Iterable<[string, string]>>
+}
+
+type ProviderInstructionParts = {
+	systemInstructions: string
+	userContext: string
+}
+
+function getProviderInstructionParts(
+	systemPrompt: string,
+	instructionFragments: ApiHandlerCreateMessageMetadata["instructionFragments"],
+): ProviderInstructionParts {
+	if (instructionFragments === undefined) {
+		return { systemInstructions: systemPrompt, userContext: "" }
+	}
+
+	const systemParts: string[] = []
+	const userParts: string[] = []
+	for (const fragment of instructionFragments) {
+		const targetParts = fragment.role === "user" ? userParts : systemParts
+		targetParts.push(fragment.content)
+	}
+
+	return {
+		systemInstructions: systemParts.join(""),
+		userContext: userParts.join(""),
+	}
+}
+
+function prependUserInstructionContext(
+	messages: Anthropic.Messages.MessageParam[],
+	userContext: string,
+): Anthropic.Messages.MessageParam[] {
+	if (!userContext) return messages
+
+	const firstMessage = messages[0]
+	if (firstMessage?.role !== "user") {
+		return [{ role: "user", content: userContext }, ...messages]
+	}
+
+	const content =
+		typeof firstMessage.content === "string"
+			? `${userContext}${userContext.endsWith("\n") ? "" : "\n\n"}${firstMessage.content}`
+			: [
+					{
+						type: "text" as const,
+						text: `${userContext}${userContext.endsWith("\n") ? "" : "\n\n"}`,
+					},
+					...firstMessage.content,
+				]
+
+	return [{ ...firstMessage, content }, ...messages.slice(1)]
 }
 
 /**
@@ -482,6 +540,37 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 		return `${fallbackPrefix}: ${errorMessage}`
 	}
 
+	private wrapProviderError(error: Error, translationKey: string, fallbackPrefix: string): Error {
+		const wrapped = new Error(this.formatProviderError(translationKey, fallbackPrefix, error.message))
+		const source = error as Error & {
+			status?: unknown
+			statusCode?: unknown
+			code?: unknown
+			errorDetails?: unknown
+			retryAfterMs?: unknown
+			retryable?: unknown
+			retryCategory?: unknown
+		}
+		const target = wrapped as Error & Record<string, unknown>
+
+		for (const key of ["code", "errorDetails", "retryAfterMs", "retryable", "retryCategory"] as const) {
+			if (source[key] !== undefined) target[key] = source[key]
+		}
+
+		const status = this.extractStatusCode(error)
+		if (status !== undefined) {
+			target.status = status
+			target.statusCode = status
+		}
+
+		if (status === 429) {
+			target.retryable = source.retryable === false ? false : true
+			target.retryCategory = "rate-limit"
+		}
+
+		return wrapped
+	}
+
 	private mergeHttpOptions(
 		baseHttpOptions: GenerateContentConfig["httpOptions"],
 		overrideHttpOptions: GenerateContentConfig["httpOptions"],
@@ -541,6 +630,10 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): ApiStream {
 		const { id: model, info, reasoning: thinkingConfig, maxTokens } = this.getModel()
+		const { systemInstructions, userContext } = getProviderInstructionParts(
+			systemInstruction,
+			metadata?.instructionFragments,
+		)
 		// Reset per-request metadata that we persist into apiConversationHistory.
 		this.lastThoughtSignature = undefined
 		this.lastResponseId = undefined
@@ -573,6 +666,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 			}
 			return true
 		})
+		const requestMessages = prependUserInstructionContext(geminiMessages, userContext)
 
 		// Build a map of tool IDs to names from previous messages
 		// This is needed because Anthropic's tool_result blocks only contain the ID,
@@ -588,7 +682,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 			}
 		}
 
-		const contents = geminiMessages
+		const contents = requestMessages
 			.map((message) => convertAnthropicMessageToGemini(message, { includeThoughtSignatures, toolIdToName }))
 			.flat()
 
@@ -617,7 +711,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 			: info.defaultTemperature
 
 		const config: GenerateContentConfig = {
-			systemInstruction,
+			systemInstruction: systemInstructions,
 			thinkingConfig,
 			maxOutputTokens,
 			temperature: temperatureConfig,
@@ -669,8 +763,33 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 		const requestTimeoutMs = getApiRequestTimeout()
 
 		while (true) {
+			metadata?.signal?.throwIfAborted()
 			const requestContext = await this.getRequestContext(model)
-			const requestAbortController = requestTimeoutMs ? new AbortController() : undefined
+			metadata?.signal?.throwIfAborted()
+			const requestControl = createLinkedAbortController({ signal: metadata?.signal })
+			const requestAbortController = requestControl.controller
+			const throwIfRequestAborted = () => {
+				if (!requestControl.signal.aborted) return
+				const reason = requestControl.signal.reason
+				if (reason instanceof ApiStreamDeadlineError) throw reason
+				requestControl.signal.throwIfAborted()
+			}
+			const awaitRequest = async <T>(operation: PromiseLike<T>, operationName: string): Promise<T> => {
+				const result = await raceApiStreamAbort(
+					withApiRequestTimeout(operation, operationName, requestTimeoutMs, () =>
+						requestAbortController.abort(
+							new ApiStreamDeadlineError(
+								formatApiRequestTimeoutError(operationName, requestTimeoutMs ?? 0),
+							),
+						),
+					),
+					requestControl.signal,
+				)
+				throwIfRequestAborted()
+				return result as T
+			}
+			let resultIterator: AsyncIterator<GenerateContentResponse> | undefined
+			let streamIteratorCompleted = false
 			const timeoutHttpOptions: GenerateContentConfig["httpOptions"] = requestTimeoutMs
 				? { timeout: requestTimeoutMs }
 				: undefined
@@ -684,7 +803,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 				config: {
 					...config,
 					httpOptions,
-					...(requestAbortController ? { abortSignal: requestAbortController.signal } : {}),
+					abortSignal: requestAbortController.signal,
 				},
 			}
 
@@ -692,11 +811,9 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 
 			try {
 				if (this.options.vertexStreamingEnabled === false) {
-					const result = await withApiRequestTimeout(
+					const result = await awaitRequest(
 						requestContext.client.models.generateContent(params),
 						`${this.providerName} request for ${requestContext.model}`,
-						requestTimeoutMs,
-						() => requestAbortController?.abort(),
 					)
 
 					let toolCallCounter = 0
@@ -732,6 +849,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 									name: part.functionCall.name,
 									arguments: JSON.stringify(part.functionCall.args ?? {}),
 								}
+								yield { type: "tool_call_end", id: callId }
 								toolCallCounter++
 							} else if (part.text) {
 								hasContent = true
@@ -779,11 +897,9 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 					return
 				}
 
-				const result = await withApiRequestTimeout(
+				const result = await awaitRequest(
 					requestContext.client.models.generateContentStream(params),
 					`${this.providerName} stream request for ${requestContext.model}`,
-					requestTimeoutMs,
-					() => requestAbortController?.abort(),
 				)
 
 				let lastUsageMetadata: GenerateContentResponseUsageMetadata | undefined
@@ -794,17 +910,30 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 				let toolCallCounter = 0
 				let hasContent = false
 
-				const resultIterator = result[Symbol.asyncIterator]()
+				resultIterator = result[Symbol.asyncIterator]()
 
 				while (true) {
-					const nextChunk = await withApiRequestTimeout(
-						resultIterator.next(),
-						`${this.providerName} stream response for ${requestContext.model}`,
-						requestTimeoutMs,
-						() => requestAbortController?.abort(),
+					const nextChunk = await raceApiStreamAbort(
+						withApiRequestTimeout(
+							resultIterator.next(),
+							`${this.providerName} stream response for ${requestContext.model}`,
+							requestTimeoutMs,
+							() =>
+								requestAbortController.abort(
+									new ApiStreamDeadlineError(
+										formatApiRequestTimeoutError(
+											`${this.providerName} stream response for ${requestContext.model}`,
+											requestTimeoutMs ?? 0,
+										),
+									),
+								),
+						),
+						requestControl.signal,
 					)
+					throwIfRequestAborted()
 
-					if (nextChunk.done) {
+					if (!nextChunk || nextChunk.done) {
+						streamIteratorCompleted = true
 						break
 					}
 
@@ -870,6 +999,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 										name: undefined,
 										arguments: args,
 									}
+									yield { type: "tool_call_end", id: callId }
 
 									toolCallCounter++
 								} else {
@@ -935,6 +1065,13 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 
 				return
 			} catch (error) {
+				if (metadata?.signal?.aborted) {
+					throwIfRequestAborted()
+					throw error
+				}
+
+				if (error instanceof ApiStreamDeadlineError) throw error
+
 				if (
 					!didRetryForGatewayAuth &&
 					!emittedAnyStreamChunk &&
@@ -954,16 +1091,19 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 				this.captureProviderException(apiError)
 
 				if (error instanceof Error) {
-					throw new Error(
-						this.formatProviderError(
-							"common:errors.gemini.generate_stream",
-							"Gemini stream error",
-							error.message,
-						),
-					)
+					throw this.wrapProviderError(error, "common:errors.gemini.generate_stream", "Gemini stream error")
 				}
 
 				throw error
+			} finally {
+				if (resultIterator && !streamIteratorCompleted) {
+					try {
+						void Promise.resolve(resultIterator.return?.()).catch(() => undefined)
+					} catch {
+						// Iterator cleanup is best effort after a failed or cancelled request.
+					}
+				}
+				requestControl.dispose()
 			}
 		}
 	}
@@ -1095,12 +1235,10 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 				this.captureProviderException(apiError)
 
 				if (error instanceof Error) {
-					throw new Error(
-						this.formatProviderError(
-							"common:errors.gemini.generate_complete_prompt",
-							"Gemini completion error",
-							error.message,
-						),
+					throw this.wrapProviderError(
+						error,
+						"common:errors.gemini.generate_complete_prompt",
+						"Gemini completion error",
 					)
 				}
 

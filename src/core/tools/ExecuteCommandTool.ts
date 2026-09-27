@@ -5,7 +5,12 @@ import * as vscode from "vscode"
 
 import delay from "delay"
 
-import { CommandExecutionStatus, DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE, PersistedCommandOutput } from "@alpha-code/types"
+import {
+	CommandExecutionStatus,
+	DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE,
+	PersistedCommandOutput,
+	type CommandToolResult,
+} from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../task/Task"
@@ -21,23 +26,51 @@ import {
 	AlphaTerminalProcess,
 } from "../../integrations/terminal/types"
 import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
+import { commandSessionRegistry } from "./CommandSessionRegistry"
 import { Terminal } from "../../integrations/terminal/Terminal"
 import { OutputInterceptor } from "../../integrations/terminal/OutputInterceptor"
 import { Package } from "../../shared/package"
 import { t } from "../../i18n"
 import { getTaskDirectoryPath } from "../../utils/storage"
-import { BaseTool, ToolCallbacks } from "./BaseTool"
+import {
+	BaseTool,
+	boundCommandToolResult,
+	formatCommandToolResult,
+	getCommandToolResultLimit,
+	ToolCallbacks,
+} from "./BaseTool"
 import { createToolFailure, type ToolFailureMetadata } from "./ToolFailure"
 import { isToolAllowedForMode } from "./validateToolUse"
 import { redactTaskPrivatePaths } from "./taskPathPresentation"
 import {
 	captureWorkspaceMutationState,
+	captureWorkspaceMutationDiffBaseline,
+	createWorkspaceMutationDiffs,
 	compareWorkspaceMutationState,
+	type WorkspaceMutationDiff,
+	type WorkspaceMutationDiffBaseline,
 	type WorkspaceMutationState,
 } from "../agent/VerificationScope"
 import { getTrustedCommandExploration } from "./CommandExploration"
 
 class ShellIntegrationError extends Error {}
+
+const MAX_TURN_FILE_CHANGE_MESSAGE_BYTES = 2 * 1_024 * 1_024
+const fileChangeMessageBytesByTask = new WeakMap<Task, Map<number, number>>()
+
+function reserveFileChangeMessageBytes(task: Task, turnKey: number, bytes: number): boolean {
+	let byTurn = fileChangeMessageBytesByTask.get(task)
+	if (!byTurn) {
+		byTurn = new Map()
+		fileChangeMessageBytesByTask.set(task, byTurn)
+	}
+	const used = byTurn.get(turnKey) ?? 0
+	if (used + bytes > MAX_TURN_FILE_CHANGE_MESSAGE_BYTES) return false
+	byTurn.set(turnKey, used + bytes)
+	// Only a few older turns can still have background commands in flight.
+	while (byTurn.size > 8) byTurn.delete(byTurn.keys().next().value!)
+	return true
+}
 
 type CommandMutationReceiptPhase =
 	| "capture-final-state"
@@ -94,10 +127,11 @@ export class CommandOutputBookkeepingError extends Error {
 async function finalizeCommandMutationReceipt(
 	task: Task,
 	mutationBaseline: WorkspaceMutationState | undefined,
+	diffBaseline: WorkspaceMutationDiffBaseline | undefined,
 	physicalExecutionId: string,
 	onIncomplete: () => void,
-): Promise<void> {
-	if (task.taskKind !== "primary") return
+): Promise<WorkspaceMutationDiff[]> {
+	if (task.taskKind !== "primary") return []
 
 	let changes: Awaited<ReturnType<typeof compareWorkspaceMutationState>> | undefined
 	if (mutationBaseline) {
@@ -121,7 +155,12 @@ async function finalizeCommandMutationReceipt(
 		} catch (error) {
 			throw new CommandMutationReceiptError("persist-final-receipt", false, error)
 		}
-		return
+		if (!mutationBaseline || !diffBaseline) return []
+		try {
+			return await createWorkspaceMutationDiffs(task.cwd, mutationBaseline, changes, diffBaseline)
+		} catch {
+			return []
+		}
 	}
 
 	try {
@@ -136,6 +175,7 @@ async function finalizeCommandMutationReceipt(
 	} catch (error) {
 		throw new CommandMutationReceiptError("release-no-op-receipt", false, error)
 	}
+	return []
 }
 
 interface ExecuteCommandParams {
@@ -156,6 +196,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 		const { command, cwd: requestedCwd, timeout: timeoutSeconds, verification } = params
 		const customCwd = requestedCwd ?? undefined
 		const { handleError, pushToolResult, askApproval } = callbacks
+		let commandResult: CommandToolResult | undefined
 		let commandEvidenceId: string | undefined
 		let effectsStarted: ToolFailureMetadata["effectsStarted"] = "no"
 		let failure: ToolFailureMetadata | undefined
@@ -187,7 +228,6 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				}),
 			)
 		}
-
 		try {
 			if (!command) {
 				preLaunchFailure("invalid_arguments", { kind: "repair" })
@@ -289,6 +329,12 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				onExecutionState: (state) => {
 					effectsStarted = state
 				},
+				onCommandResult: (result) => {
+					commandResult =
+						callbacks.commandResultMaxOutputTokens === undefined
+							? undefined
+							: boundCommandToolResult(result, getCommandToolResultLimit(callbacks))
+				},
 				onFailure: reportFailure,
 			}
 
@@ -299,7 +345,15 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 					task.didRejectTool = true
 				}
 
-				pushToolResult(result)
+				pushToolResult(
+					callbacks.commandResultFormat === "codex" && commandResult && typeof result === "string"
+						? formatCommandToolResult(
+								commandResult,
+								getCommandToolResultLimit(callbacks),
+								callbacks.toolCallId ?? commandEvidenceId,
+							)
+						: result,
+				)
 			} catch (error: unknown) {
 				if (!(error instanceof ShellIntegrationError)) throw error
 
@@ -319,7 +373,15 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 					task.didRejectTool = true
 				}
 
-				pushToolResult(result)
+				pushToolResult(
+					callbacks.commandResultFormat === "codex" && commandResult && typeof result === "string"
+						? formatCommandToolResult(
+								commandResult,
+								getCommandToolResultLimit(callbacks),
+								callbacks.toolCallId ?? commandEvidenceId,
+							)
+						: result,
+				)
 			}
 
 			return
@@ -397,6 +459,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 								? evidence.status
 								: "error",
 					exitCode: evidence.exitCode,
+					...(commandResult ? { commandResult } : {}),
 					timedOut: evidence.status === "timed_out",
 					...(trustedExploration ? { trustedExploration } : {}),
 				})
@@ -421,6 +484,7 @@ export type ExecuteCommandOptions = {
 	agentTimeout?: number
 	/** Trusted launch boundary for distinguishing rejection from an unknown process outcome. */
 	onExecutionState?: (state: ToolFailureMetadata["effectsStarted"]) => void
+	onCommandResult?: (result: CommandToolResult) => void
 	onFailure?: (failure: ToolFailureMetadata) => void
 }
 
@@ -436,18 +500,30 @@ export async function executeCommandInTerminal(
 		commandExecutionTimeout = 0,
 		agentTimeout = 0,
 		onExecutionState,
+		onCommandResult,
 		onFailure,
 	}: ExecuteCommandOptions,
 ): Promise<[boolean, ToolResponse]> {
+	const commandStartedAt = performance.now()
 	// Convert milliseconds back to seconds for display purposes.
 	const commandExecutionTimeoutSeconds = commandExecutionTimeout / 1000
 	let workingDir: string
 	const physicalExecutionId = `${executionId}:${randomUUID()}`
+	let fileChangeTurnKey = task.clineMessages?.[0]?.ts ?? 0
+	for (let index = (task.clineMessages?.length ?? 0) - 1; index >= 0; index--) {
+		const message = task.clineMessages[index]
+		if (message.type === "say" && message.say === "user_feedback") {
+			fileChangeTurnKey = message.ts
+			break
+		}
+	}
 	let mutationBaseline: WorkspaceMutationState | undefined
-	let mutationReceiptCompletion: Promise<void> | undefined
+	let diffBaseline: WorkspaceMutationDiffBaseline | undefined
+	let mutationReceiptCompletion: Promise<WorkspaceMutationDiff[]> | undefined
 	let commandMutationCompletion = Promise.resolve()
 	let commandMutationFailureHandling: Promise<{ recoveryError?: unknown }> | undefined
 	let commandTerminalOutcomeFenced = false
+	let fileChangesPublished = false
 
 	const isManagedWorker = task.taskKind === "subagent" && task.subagentRole === "worker"
 	const executionMode = typeof task.getTaskMode === "function" ? await task.getTaskMode() : defaultModeSlug
@@ -548,7 +624,7 @@ export async function executeCommandInTerminal(
 					}
 					// The unresolved receipt now owns this physical reservation. A late
 					// terminal callback must not try to settle the same token a second time.
-					mutationReceiptCompletion = Promise.resolve()
+					mutationReceiptCompletion = Promise.resolve([])
 				} catch (recoveryFailure) {
 					recoveryError = recoveryFailure
 				}
@@ -574,7 +650,7 @@ export async function executeCommandInTerminal(
 		})()
 		return commandMutationFailureHandling
 	}
-	const observeCommandMutationFailure = (operation: Promise<void>): Promise<void> =>
+	const observeCommandMutationFailure = <T>(operation: Promise<T>): Promise<T> =>
 		operation.catch(async (error) => {
 			const { recoveryError } = await handleCommandMutationFailure(error)
 			if (recoveryError) {
@@ -585,9 +661,9 @@ export async function executeCommandInTerminal(
 			}
 			throw error
 		})
-	const ensureMutationReceipt = (): Promise<void> => {
+	const ensureMutationReceipt = (): Promise<WorkspaceMutationDiff[]> => {
 		mutationReceiptCompletion ??= observeCommandMutationFailure(
-			finalizeCommandMutationReceipt(task, mutationBaseline, physicalExecutionId, () => {
+			finalizeCommandMutationReceipt(task, mutationBaseline, diffBaseline, physicalExecutionId, () => {
 				workspaceObservationIncomplete = true
 			}),
 		)
@@ -818,17 +894,40 @@ export async function executeCommandInTerminal(
 			scheduleMissingOutputCompletionFailure()
 			commandMutationCompletion = observeCommandMutationFailure(
 				(async () => {
-					await ensureMutationReceipt()
+					const fileChanges = await ensureMutationReceipt()
 					// Output persistence is not mutation observation, but command success
 					// must not be published until it has settled. A rejected output gate is
 					// surfaced separately by the foreground join or background observer.
 					await onCompletedPromise?.catch(() => undefined)
 					if (outputBookkeepingFailure || commandMutationFailureHandling) return
-					if (!toolCallId) return
-					try {
-						task.completeCommandExecution?.(toolCallId, details, physicalExecutionId)
-					} catch (error) {
-						throw new CommandMutationReceiptError("complete-command-evidence", false, error)
+					if (toolCallId) {
+						try {
+							task.completeCommandExecution?.(toolCallId, details, physicalExecutionId)
+						} catch (error) {
+							throw new CommandMutationReceiptError("complete-command-evidence", false, error)
+						}
+					}
+					if (details.exitCode === 0 && !details.signalName && !taskWasCancelled() && !fileChangesPublished) {
+						fileChangesPublished = true
+						for (const change of fileChanges) {
+							const payload = JSON.stringify({
+								tool: "appliedDiff",
+								...change,
+								changeStatus: "applied",
+								commandExecutionId: physicalExecutionId,
+							})
+							if (!reserveFileChangeMessageBytes(task, fileChangeTurnKey, Buffer.byteLength(payload)))
+								break
+							await task
+								.say("tool", payload, undefined, false, undefined, undefined, {
+									isNonInteractive: true,
+								})
+								.catch((error) =>
+									console.warn(
+										`[ExecuteCommandTool] Could not publish completed file change for ${redactTaskPrivatePaths(task, change.path)} (${physicalExecutionId}): ${redactTaskPrivatePaths(task, String(error)).slice(0, 256)}`,
+									),
+								)
+						}
 					}
 				})(),
 			)
@@ -860,6 +959,11 @@ export async function executeCommandInTerminal(
 	if (task.taskKind === "primary") {
 		try {
 			mutationBaseline = await captureWorkspaceMutationState(task.cwd)
+			try {
+				diffBaseline = await captureWorkspaceMutationDiffBaseline(task.cwd, mutationBaseline)
+			} catch {
+				// Presentation evidence is optional; the mutation receipt remains authoritative.
+			}
 		} catch {
 			workspaceObservationIncomplete = true
 		}
@@ -1096,7 +1200,7 @@ export async function executeCommandInTerminal(
 
 	if (shellIntegrationError) {
 		const shellError = new ShellIntegrationError(shellIntegrationError)
-		const completions: Promise<void>[] = [ensureMutationReceipt()]
+		const completions: Promise<unknown>[] = [ensureMutationReceipt()]
 		if (onCompletedInvoked && onCompletedPromise) completions.push(onCompletedPromise)
 		const completionResults = await Promise.allSettled(completions)
 		if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
@@ -1132,6 +1236,15 @@ export async function executeCommandInTerminal(
 	}
 
 	const displayOutput = result || latestCompressedOutput || ""
+	const sessionId =
+		!completed &&
+		!exitDetails &&
+		!process.isSettled &&
+		terminal.taskId === task.taskId &&
+		terminal.process === process &&
+		terminal.running
+			? commandSessionRegistry.register(task, process)
+			: undefined
 	if (toolCallId && (message || (!completed && !exitDetails))) {
 		task.markCommandExecutionBackgrounded?.(toolCallId, physicalExecutionId)
 	}
@@ -1139,6 +1252,15 @@ export async function executeCommandInTerminal(
 		backgroundResultReturned = true
 		void handleBackgroundOutputBookkeepingFailure()
 	}
+	onCommandResult?.({
+		wall_time_seconds: Math.max(0, (performance.now() - commandStartedAt) / 1000),
+		output: redactTaskPrivatePaths(task, persistedResult?.truncated ? persistedResult.preview : displayOutput),
+		...(typeof exitDetails?.exitCode === "number" ? { exit_code: exitDetails.exitCode } : {}),
+		...(sessionId !== undefined ? { session_id: sessionId } : {}),
+		...(persistedResult?.truncated && persistedResult.artifactPath
+			? { artifact_id: path.basename(persistedResult.artifactPath) }
+			: {}),
+	})
 
 	if (message) {
 		const { text, images } = message
@@ -1150,7 +1272,7 @@ export async function executeCommandInTerminal(
 				redactTaskPrivatePaths(
 					task,
 					[
-						`Command is still running in terminal from '${terminal.getCurrentWorkingDirectory().toPosix()}'. execution_id: ${physicalExecutionId}. Use manage_command to wait or stop this command.`,
+						`Command is still running in terminal from '${terminal.getCurrentWorkingDirectory().toPosix()}'. execution_id: ${physicalExecutionId}.${sessionId === undefined ? "" : ` session_id: ${sessionId}. Use write_stdin to wait for output or send input.`}`,
 						displayOutput.length > 0 ? `Here's the output so far:\n${displayOutput}\n` : "\n",
 						`<user_message>\n${text}\n</user_message>`,
 					].join("\n"),
@@ -1214,7 +1336,7 @@ export async function executeCommandInTerminal(
 			redactTaskPrivatePaths(
 				task,
 				[
-					`Command is still running in terminal ${workingDir ? ` from '${isManagedWorker ? "." : workingDir.toPosix()}'` : ""}. execution_id: ${physicalExecutionId}. Use manage_command to wait for output or stop this command.`,
+					`Command is still running in terminal ${workingDir ? ` from '${isManagedWorker ? "." : workingDir.toPosix()}'` : ""}. execution_id: ${physicalExecutionId}.${sessionId === undefined ? "" : ` session_id: ${sessionId}. Use write_stdin to wait for output or send input.`}`,
 					displayOutput.length > 0 ? `Here's the output so far:\n${displayOutput}\n` : "\n",
 					"You will be updated on the terminal status and new output in the future.",
 				].join("\n"),

@@ -9,6 +9,8 @@ import {
 	type FileEntry,
 	type SearchFilesQuery,
 	discoverToolsParamsSchema,
+	toolSearchParamsSchema,
+	subagentSpawnAgentArgsSchema,
 } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 
@@ -73,6 +75,122 @@ export class NativeToolCallParser {
 
 	private static isArgumentObject(value: unknown): value is Record<string, unknown> {
 		return typeof value === "object" && value !== null && !Array.isArray(value)
+	}
+
+	private static isExecCommandArgs(value: unknown): value is NativeToolArgs["exec_command"] {
+		if (
+			!this.isArgumentObject(value) ||
+			!this.hasOnlyKeys(value, ["cmd", "workdir", "yield_time_ms", "max_output_tokens", "verification"])
+		) {
+			return false
+		}
+		return (
+			typeof value.cmd === "string" &&
+			(value.verification === undefined ||
+				value.verification === null ||
+				this.parseCommandVerificationScope(value.verification) !== undefined) &&
+			(value.workdir === undefined || value.workdir === null || typeof value.workdir === "string") &&
+			(value.yield_time_ms === undefined ||
+				value.yield_time_ms === null ||
+				(typeof value.yield_time_ms === "number" && Number.isInteger(value.yield_time_ms))) &&
+			(value.max_output_tokens === undefined ||
+				value.max_output_tokens === null ||
+				(typeof value.max_output_tokens === "number" && Number.isInteger(value.max_output_tokens)))
+		)
+	}
+
+	private static isWriteStdinArgs(value: unknown): value is NativeToolArgs["write_stdin"] {
+		if (
+			!this.isArgumentObject(value) ||
+			!this.hasOnlyKeys(value, ["session_id", "chars", "yield_time_ms", "max_output_tokens"])
+		) {
+			return false
+		}
+		return (
+			typeof value.session_id === "number" &&
+			Number.isSafeInteger(value.session_id) &&
+			value.session_id >= 1 &&
+			(value.chars === undefined || (typeof value.chars === "string" && value.chars.length <= 16_384)) &&
+			(value.yield_time_ms === undefined ||
+				(typeof value.yield_time_ms === "number" &&
+					Number.isInteger(value.yield_time_ms) &&
+					value.yield_time_ms >= 0 &&
+					value.yield_time_ms <= 300_000)) &&
+			(value.max_output_tokens === undefined ||
+				(typeof value.max_output_tokens === "number" &&
+					Number.isInteger(value.max_output_tokens) &&
+					value.max_output_tokens >= 0 &&
+					value.max_output_tokens <= 100_000))
+		)
+	}
+
+	private static isUpdatePlanArgs(value: unknown): value is NativeToolArgs["update_plan"] {
+		if (!this.isArgumentObject(value) || !this.hasOnlyKeys(value, ["explanation", "plan"])) return false
+		if (value.explanation !== undefined && value.explanation !== null && typeof value.explanation !== "string") {
+			return false
+		}
+		return (
+			Array.isArray(value.plan) &&
+			value.plan.every(
+				(step: unknown) =>
+					this.isArgumentObject(step) &&
+					this.hasOnlyKeys(step, ["step", "status"]) &&
+					typeof step.step === "string" &&
+					(step.status === "pending" || step.status === "in_progress" || step.status === "completed"),
+			)
+		)
+	}
+
+	private static isRequestUserInputArgs(value: unknown): value is NativeToolArgs["request_user_input"] {
+		if (!this.isArgumentObject(value) || !this.hasOnlyKeys(value, ["questions"])) return false
+		return (
+			Array.isArray(value.questions) &&
+			value.questions.length >= 1 &&
+			value.questions.length <= 3 &&
+			value.questions.every((question: unknown) => {
+				if (
+					!this.isArgumentObject(question) ||
+					!this.hasOnlyKeys(question, ["id", "header", "question", "options"]) ||
+					typeof question.id !== "string" ||
+					typeof question.header !== "string" ||
+					typeof question.question !== "string" ||
+					!Array.isArray(question.options) ||
+					question.options.length < 2 ||
+					question.options.length > 3
+				) {
+					return false
+				}
+				return question.options.every(
+					(option: unknown) =>
+						this.isArgumentObject(option) &&
+						this.hasOnlyKeys(option, ["label", "description"]) &&
+						typeof option.label === "string" &&
+						typeof option.description === "string",
+				)
+			})
+		)
+	}
+
+	private static isRequestUserInputAsyncArgs(value: unknown): value is NativeToolArgs["request_user_input_async"] {
+		if (!this.isArgumentObject(value) || !this.hasOnlyKeys(value, ["questions"])) return false
+		return (
+			Array.isArray(value.questions) &&
+			value.questions.length >= 1 &&
+			value.questions.every((question: unknown) => {
+				if (
+					!this.isArgumentObject(question) ||
+					!this.hasOnlyKeys(question, ["title", "options"]) ||
+					typeof question.title !== "string" ||
+					(question.options !== undefined &&
+						(!Array.isArray(question.options) ||
+							question.options.length < 1 ||
+							!question.options.every((option: unknown) => typeof option === "string")))
+				) {
+					return false
+				}
+				return true
+			})
+		)
 	}
 
 	// Streaming state management for argument accumulation (keyed by scope + tool call id)
@@ -170,36 +288,33 @@ export class NativeToolCallParser {
 		)
 	}
 
+	private static isCrossTaskId(value: unknown): value is string {
+		return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(value)
+	}
+
+	private static isCrossTaskWaitTimeout(value: unknown): value is number {
+		return typeof value === "number" && Number.isInteger(value) && value >= 1_000 && value <= 300_000
+	}
+
 	private static isWaitTimeout(value: unknown): value is number {
 		return typeof value === "number" && Number.isInteger(value) && value >= 10_000 && value <= 300_000
 	}
 
 	private static isSpawnAgentArgs(value: unknown): value is NativeToolArgs["spawn_agent"] {
-		if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+		const parsed = subagentSpawnAgentArgsSchema.safeParse(value)
+		if (!parsed.success) return false
 
-		const args = value as Record<string, unknown>
-		const allowedKeys = new Set([
-			"task_name",
-			"fork_turns",
-			"objective",
-			"agent_kind",
-			"write_scope",
-			"expected_output",
-		])
-		const keys = Object.keys(args)
-		if (keys.length !== allowedKeys.size || keys.some((key) => !allowedKeys.has(key))) return false
-		if (typeof args.task_name !== "string" || !/^[a-z][a-z0-9_]{0,31}$/.test(args.task_name)) return false
-		if (!isSubagentForkTurns(args.fork_turns)) return false
-		if (typeof args.objective !== "string" || args.objective.length < 1) return false
-		if (args.expected_output !== null && !this.isBoundedNonEmptyStringArray(args.expected_output, 0, 12)) {
-			return false
+		if ("objective" in parsed.data) {
+			const legacyArgs = value as Record<string, unknown>
+			return (
+				typeof legacyArgs.task_name === "string" &&
+				typeof legacyArgs.fork_turns === "string" &&
+				legacyArgs.write_scope !== undefined &&
+				legacyArgs.expected_output !== undefined
+			)
 		}
 
-		if (args.agent_kind === "worker") {
-			return this.isBoundedNonEmptyStringArray(args.write_scope, 1, 12)
-		}
-
-		return (args.agent_kind === "explore" || args.agent_kind === "review") && args.write_scope === null
+		return true
 	}
 
 	private static isDelegateTaskArgs(value: unknown): value is NativeToolArgs["delegate_task"] {
@@ -706,6 +821,12 @@ export class NativeToolCallParser {
 				}
 				break
 
+			case "view_image":
+				if (typeof partialArgs.path === "string") {
+					nativeArgs = { path: partialArgs.path }
+				}
+				break
+
 			case "attempt_completion":
 				if (partialArgs.result && this.isAttemptCompletionOutcome(partialArgs.outcome)) {
 					nativeArgs = {
@@ -717,9 +838,14 @@ export class NativeToolCallParser {
 				}
 				break
 
+			case "exec_command":
 			case "shell":
 			case "execute_command":
-				if (partialArgs.command) {
+				if (name === "exec_command" && (originalName === undefined || originalName === "exec_command")) {
+					if (this.isExecCommandArgs(partialArgs)) {
+						nativeArgs = partialArgs
+					}
+				} else if (partialArgs.command) {
 					nativeArgs = {
 						command: partialArgs.command,
 						cwd: partialArgs.cwd,
@@ -809,12 +935,38 @@ export class NativeToolCallParser {
 				}
 				break
 
-			case "update_todo_list":
-				if (partialArgs.todos !== undefined) {
+			case "update_plan":
+				if (originalName !== "update_todo_list") {
+					if (
+						this.isArgumentObject(partialArgs) &&
+						this.hasOnlyKeys(partialArgs, ["explanation", "plan"]) &&
+						Array.isArray(partialArgs.plan)
+					) {
+						nativeArgs = partialArgs
+					}
+				} else if (partialArgs.todos !== undefined) {
 					nativeArgs = {
 						todos: partialArgs.todos,
 						...(partialArgs.work_plan !== undefined ? { work_plan: partialArgs.work_plan } : {}),
 					}
+				}
+				break
+
+			case "write_stdin":
+				if (this.isWriteStdinArgs(partialArgs)) {
+					nativeArgs = partialArgs
+				}
+				break
+
+			case "request_user_input":
+				if (this.isArgumentObject(partialArgs) && Array.isArray(partialArgs.questions)) {
+					nativeArgs = partialArgs
+				}
+				break
+
+			case "request_user_input_async":
+				if (this.isRequestUserInputAsyncArgs(partialArgs)) {
+					nativeArgs = partialArgs
 				}
 				break
 
@@ -912,6 +1064,69 @@ export class NativeToolCallParser {
 						mode: partialArgs.mode,
 						message: partialArgs.message,
 						todos: partialArgs.todos,
+					}
+				}
+				break
+
+			case "create_task":
+				if (
+					this.hasOnlyKeys(partialArgs, ["objective", "workspace_mode"]) &&
+					typeof partialArgs.objective === "string" &&
+					partialArgs.objective.length >= 1 &&
+					partialArgs.objective.length <= 12_000 &&
+					(partialArgs.workspace_mode === "shared" || partialArgs.workspace_mode === "worktree")
+				) {
+					nativeArgs = {
+						objective: partialArgs.objective,
+						workspace_mode: partialArgs.workspace_mode,
+					}
+				}
+				break
+
+			case "list_tasks":
+				if (this.hasOnlyKeys(partialArgs, [])) nativeArgs = {}
+				break
+
+			case "wait_task":
+				if (
+					this.hasOnlyKeys(partialArgs, ["task_id", "timeout_ms"]) &&
+					this.isCrossTaskId(partialArgs.task_id) &&
+					(partialArgs.timeout_ms === null || this.isCrossTaskWaitTimeout(partialArgs.timeout_ms))
+				) {
+					nativeArgs = {
+						task_id: partialArgs.task_id,
+						timeout_ms: partialArgs.timeout_ms === null ? undefined : partialArgs.timeout_ms,
+					}
+				}
+				break
+
+			case "send_task_message":
+			case "steer_task":
+				if (
+					this.hasOnlyKeys(partialArgs, ["task_id", "message"]) &&
+					this.isCrossTaskId(partialArgs.task_id) &&
+					typeof partialArgs.message === "string" &&
+					partialArgs.message.trim().length >= 1 &&
+					partialArgs.message.length <= 12_000
+				) {
+					nativeArgs = {
+						task_id: partialArgs.task_id,
+						message: partialArgs.message,
+					}
+				}
+				break
+
+			case "stop_task":
+				if (
+					this.hasOnlyKeys(partialArgs, ["task_id", "reason"]) &&
+					this.isCrossTaskId(partialArgs.task_id) &&
+					(partialArgs.reason === null ||
+						partialArgs.reason === undefined ||
+						(typeof partialArgs.reason === "string" && partialArgs.reason.length <= 500))
+				) {
+					nativeArgs = {
+						task_id: partialArgs.task_id,
+						reason: partialArgs.reason === null ? undefined : partialArgs.reason,
 					}
 				}
 				break
@@ -1162,6 +1377,12 @@ export class NativeToolCallParser {
 					}
 					break
 
+				case "view_image":
+					if (typeof args.path === "string" && args.path.trim()) {
+						nativeArgs = { path: args.path } as NativeArgsFor<TName>
+					}
+					break
+
 				case "attempt_completion":
 					if (args.result && this.isAttemptCompletionOutcome(args.outcome)) {
 						nativeArgs = {
@@ -1173,9 +1394,15 @@ export class NativeToolCallParser {
 					}
 					break
 
+				case "exec_command":
 				case "shell":
 				case "execute_command":
-					if (args.command) {
+					if (toolCall.name === "exec_command") {
+						if (this.isExecCommandArgs(args)) {
+							// Keep the provider's Codex-shaped fields intact for the registry adapter.
+							nativeArgs = args as NativeArgsFor<TName>
+						}
+					} else if (args.command) {
 						nativeArgs = {
 							command: args.command,
 							cwd: args.cwd,
@@ -1283,12 +1510,35 @@ export class NativeToolCallParser {
 					nativeArgs = args as NativeArgsFor<TName>
 					break
 
-				case "update_todo_list":
-					if (args.todos !== undefined) {
+				case "update_plan":
+					if (toolCall.name !== "update_todo_list") {
+						if (this.isUpdatePlanArgs(args)) {
+							// The checklist handler also accepts the canonical native plan contract.
+							nativeArgs = args as NativeArgsFor<TName>
+						}
+					} else if (args.todos !== undefined) {
 						nativeArgs = {
 							todos: args.todos,
 							...(args.work_plan !== undefined ? { work_plan: args.work_plan } : {}),
 						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "write_stdin":
+					if (this.isWriteStdinArgs(args)) {
+						nativeArgs = args as NativeArgsFor<TName>
+					}
+					break
+
+				case "request_user_input":
+					if (this.isRequestUserInputArgs(args)) {
+						nativeArgs = args as NativeArgsFor<TName>
+					}
+					break
+
+				case "request_user_input_async":
+					if (this.isRequestUserInputAsyncArgs(args)) {
+						nativeArgs = args as NativeArgsFor<TName>
 					}
 					break
 
@@ -1347,8 +1597,27 @@ export class NativeToolCallParser {
 					}
 					break
 
-				case "discover_tools": {
-					const parsed = discoverToolsParamsSchema.safeParse(args)
+				case "list_mcp_resources":
+				case "list_mcp_resource_templates":
+					if (
+						(args.server === undefined || typeof args.server === "string") &&
+						(args.cursor === undefined || typeof args.cursor === "string")
+					) {
+						nativeArgs = { server: args.server, cursor: args.cursor } as NativeArgsFor<TName>
+					}
+					break
+
+				case "read_mcp_resource":
+					if (typeof args.server === "string" && typeof args.uri === "string") {
+						nativeArgs = { server: args.server, uri: args.uri } as NativeArgsFor<TName>
+					}
+					break
+
+				case "tool_search": {
+					const parsed =
+						toolCall.name === "discover_tools"
+							? discoverToolsParamsSchema.safeParse(args)
+							: toolSearchParamsSchema.safeParse(args)
 					if (parsed.success) {
 						nativeArgs = parsed.data as NativeArgsFor<TName>
 					}
@@ -1407,6 +1676,66 @@ export class NativeToolCallParser {
 							mode: args.mode,
 							message: args.message,
 							todos: args.todos,
+						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "create_task":
+					if (
+						this.hasOnlyKeys(args, ["objective", "workspace_mode"]) &&
+						typeof args.objective === "string" &&
+						args.objective.length >= 1 &&
+						args.objective.length <= 12_000 &&
+						(args.workspace_mode === "shared" || args.workspace_mode === "worktree")
+					) {
+						nativeArgs = {
+							objective: args.objective,
+							workspace_mode: args.workspace_mode,
+						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "list_tasks":
+					if (this.hasOnlyKeys(args, [])) nativeArgs = {} as NativeArgsFor<TName>
+					break
+
+				case "wait_task":
+					if (
+						this.hasOnlyKeys(args, ["task_id", "timeout_ms"]) &&
+						this.isCrossTaskId(args.task_id) &&
+						(args.timeout_ms === null || this.isCrossTaskWaitTimeout(args.timeout_ms))
+					) {
+						nativeArgs = {
+							task_id: args.task_id,
+							timeout_ms: args.timeout_ms === null ? undefined : args.timeout_ms,
+						} as NativeArgsFor<TName>
+					}
+					break
+
+				case "send_task_message":
+				case "steer_task":
+					if (
+						this.hasOnlyKeys(args, ["task_id", "message"]) &&
+						this.isCrossTaskId(args.task_id) &&
+						typeof args.message === "string" &&
+						args.message.trim().length >= 1 &&
+						args.message.length <= 12_000
+					) {
+						nativeArgs = { task_id: args.task_id, message: args.message } as NativeArgsFor<TName>
+					}
+					break
+
+				case "stop_task":
+					if (
+						this.hasOnlyKeys(args, ["task_id", "reason"]) &&
+						this.isCrossTaskId(args.task_id) &&
+						(args.reason === null ||
+							args.reason === undefined ||
+							(typeof args.reason === "string" && args.reason.length <= 500))
+					) {
+						nativeArgs = {
+							task_id: args.task_id,
+							reason: args.reason === null ? undefined : args.reason,
 						} as NativeArgsFor<TName>
 					}
 					break

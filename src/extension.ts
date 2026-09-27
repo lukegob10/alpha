@@ -108,6 +108,8 @@ async function checkWorktreeAutoOpen(
 // This method is called when your extension is activated.
 // Your extension is activated the very first time the command is executed.
 export async function activate(context: vscode.ExtensionContext) {
+	const activationStartedAt = performance.now()
+	const performanceObservabilityEnabled = process.env.ALPHA_TASK_OBSERVABILITY === "1"
 	context.subscriptions.push(registerBuiltinSkillInspection(context.extensionUri))
 	extensionContext = context
 	outputChannel = createLifecycleSafeOutputChannel(vscode.window.createOutputChannel(Package.outputChannel))
@@ -304,6 +306,11 @@ export async function activate(context: vscode.ExtensionContext) {
 		})
 	}
 
+	if (performanceObservabilityEnabled) {
+		outputChannel.appendLine(
+			`[performance] ${JSON.stringify({ phase: "extension_activation", durationMs: Math.round(performance.now() - activationStartedAt) })}`,
+		)
+	}
 	return new API(outputChannel, provider, socketPath, enableLogging)
 }
 

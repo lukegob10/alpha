@@ -37,6 +37,59 @@ describe("ask messages", () => {
 		})
 		expect(alphaMessageSchema.safeParse({ ...oldMessage, commandExecutionId: 900 }).success).toBe(false)
 	})
+	test("round trips the approval choices and amendments offered by the scheduler", () => {
+		const message = {
+			type: "ask" as const,
+			ask: "command" as const,
+			ts: 42,
+			text: "node scripts/check.js",
+			toolApprovalRequest: {
+				requestId: "task-1:call-1",
+				taskId: "task-1",
+				toolName: "execute_command",
+				description: "node scripts/check.js",
+				cwd: "/workspace",
+				availableDecisions: [
+					"approve_once",
+					"approve_with_amendment",
+					"approve_persistently",
+					"deny",
+					"abort",
+				] as const,
+				proposedAmendment: { kind: "exact_command", command: "node scripts/check.js" },
+				proposedPersistentAmendment: {
+					kind: "command_prefix",
+					prefix: "node scripts/check.js",
+				},
+			},
+		}
+		expect(alphaMessageSchema.parse(JSON.parse(JSON.stringify(message)))).toEqual(message)
+		expect(alphaMessageSchema.safeParse({ ...message, ask: "tool" }).success).toBe(false)
+		expect(
+			alphaMessageSchema.safeParse({
+				...message,
+				toolApprovalRequest: { ...message.toolApprovalRequest, availableDecisions: ["timeout"] },
+			}).success,
+		).toBe(false)
+		expect(
+			alphaMessageSchema.safeParse({
+				...message,
+				toolApprovalRequest: {
+					...message.toolApprovalRequest,
+					availableDecisions: ["approve_with_amendment"],
+					proposedAmendment: undefined,
+				},
+			}).success,
+		).toBe(false)
+
+		const response: WebviewMessage = {
+			type: "toolApprovalResponse",
+			taskId: "task-1",
+			approvalRequestId: "task-1:call-1",
+			toolApprovalDecision: { decision: "abort" },
+		}
+		expect(response.toolApprovalDecision).toEqual({ decision: "abort" })
+	})
 	test("all ask messages are classified", () => {
 		for (const ask of alphaAsks) {
 			expect(

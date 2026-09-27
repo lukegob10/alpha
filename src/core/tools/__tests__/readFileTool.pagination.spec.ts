@@ -5,9 +5,29 @@ import type { ReadFileToolParams } from "@alpha-code/types"
 import { ToolRegistry } from "../ToolRegistry"
 import { ToolScheduler, type ToolExecutionHost } from "../../agent/ToolScheduler"
 import { NativeToolCallParser } from "../../assistant-message/NativeToolCallParser"
+import { getLegacyFileToolSchemas } from "../../prompts/tools/native-tools"
 
 vi.mock("fs/promises", () => ({ readFile: vi.fn(), stat: vi.fn() }))
 vi.mock("isbinaryfile", () => ({ isBinaryFile: vi.fn(async () => false) }))
+
+function savedReadFileSchema() {
+	const schema = getLegacyFileToolSchemas().find(
+		(schema) => schema.type === "function" && schema.function.name === "read_file",
+	)
+	if (schema?.type !== "function") throw new Error("Missing saved read_file compatibility schema")
+	return schema
+}
+
+function registerReadFileFixture(registry: ToolRegistry, task: unknown) {
+	registry.register({
+		name: "read_file",
+		aliases: [],
+		schema: savedReadFileSchema(),
+		capabilities: { concurrency: "serial", sideEffects: "none", requiresApproval: true, controlFlow: false },
+		execute: async ({ call, callbacks }) =>
+			readFileTool.execute(call.nativeArgs as ReadFileToolParams, task as Task, callbacks),
+	})
+}
 
 function harness(content: string, budget = 32_000) {
 	vi.mocked(fs.readFile).mockResolvedValue(Buffer.from(content))
@@ -191,11 +211,7 @@ describe("read_file delivered evidence", () => {
 			},
 		}
 		const registry = new ToolRegistry({ includeBuiltIns: false })
-		registry.register({
-			...new ToolRegistry().resolve("read_file")!,
-			execute: async ({ call, callbacks }) =>
-				readFileTool.execute(call.nativeArgs as ReadFileToolParams, task as unknown as Task, callbacks),
-		})
+		registerReadFileFixture(registry, task)
 		const scheduler = new ToolScheduler({ executionHost: host, registry, mode: "code", validateCall: () => {} })
 		const first = await scheduler.run([
 			{ type: "tool_call", id: "bad-read", name: "read_file", arguments: { path: "template.md", offset: 180 } },

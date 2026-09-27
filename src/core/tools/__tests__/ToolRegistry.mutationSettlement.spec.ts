@@ -7,7 +7,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { AgentControlStore, FileAgentControlPersistence } from "../../agent/AgentControlStore"
 import { Task } from "../../task/Task"
 import { ToolRegistry } from "../ToolRegistry"
-import { writeToFileTool } from "../WriteToFileTool"
+import { applyPatchTool } from "../ApplyPatchTool"
 import type { ToolCallbacks } from "../BaseTool"
 import { fingerprintContent } from "../contentVersion"
 import i18next from "../../../i18n"
@@ -78,19 +78,20 @@ async function fixture() {
 		setResultMetadata: vi.fn(),
 		toolCallId: "html-edit",
 	}
-	vi.spyOn(writeToFileTool, "handle").mockImplementation(async () => {
+	const patch = "*** Begin Patch\n*** Add File: index.html\n+<button>Interactive HTML</button>\n*** End Patch"
+	vi.spyOn(applyPatchTool, "handle").mockImplementation(async () => {
 		await writeFile(path.join(directory, "index.html"), "<button>Interactive HTML</button>")
 		callbacks.pushToolResult("File saved")
 	})
 	const execute = () =>
-		new ToolRegistry().resolve("write_to_file")!.execute({
+		new ToolRegistry().resolve("apply_patch")!.execute({
 			task,
 			call: {
 				type: "tool_use",
 				id: "html-edit",
-				name: "write_to_file",
-				params: { path: "index.html" },
-				nativeArgs: { path: "index.html", content: "<button>Interactive HTML</button>" },
+				name: "apply_patch",
+				params: { patch },
+				nativeArgs: { patch },
 				partial: false,
 			},
 			callbacks,
@@ -125,7 +126,7 @@ describe("file mutation receipt settlement", () => {
 		expect(decision.blockingObligations?.[0].mutationReservations).toEqual(["html-edit"])
 		expect(decision.message).toContain("admitted mutation still needs its final content receipt")
 		expect(f.task.suspendAfterCurrentTurn).toHaveBeenCalledOnce()
-		expect(f.task.shouldStopRepeatedToolCall("execute_command", { command: "node --version" })).toBe(true)
+		expect(f.task.shouldStopRepeatedToolCall("exec_command", { cmd: "node --version" })).toBe(true)
 		expect(f.callbacks.setResultMetadata).toHaveBeenCalledWith(expect.objectContaining({ status: "error" }))
 	})
 

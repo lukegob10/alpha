@@ -1,5 +1,5 @@
 import path from "path"
-import { subagentContextManifestSchema } from "@alpha-code/types"
+import { subagentContextManifestSchema, type SubagentModelRouteState } from "@alpha-code/types"
 
 import { formatResponse } from "../../prompts/responses"
 import { createSubagentCommandApprovalPolicy } from "../../auto-approval/commands"
@@ -55,7 +55,7 @@ const legacyNoToolsUsed = () =>
 	[
 		"[ERROR] You did not use a tool in your previous response! Please retry with a tool use.",
 		"# Next Steps",
-		"If you have completed the user's task, use the attempt_completion tool.",
+		"If you have completed the user's task, give a concise final answer.",
 		"(This is an automated message, so do not respond to it conversationally.)",
 	].join("\n\n")
 
@@ -105,7 +105,7 @@ const history: ApiMessage[] = [
 	{ role: "assistant", content: [{ type: "text", text: "Third answer" }] },
 ]
 
-function capture(forkTurns: "none" | "all" | `${number}` = "all") {
+function capture(forkTurns: "none" | "all" | `${number}` = "all", modelRoute: SubagentModelRouteState = route) {
 	return captureSubagentContext({
 		parentTaskId: "parent-task",
 		capturedAt: 1_700_000_000_000,
@@ -118,7 +118,7 @@ function capture(forkTurns: "none" | "all" | `${number}` = "all") {
 		skills: [{ name: "typescript", path: "/skills/typescript/SKILL.md", content: "Skill instructions" }],
 		cwd: "/workspace",
 		workspaceRoots: ["/workspace"],
-		modelRoute: route,
+		modelRoute,
 		runtimePolicy,
 	})
 }
@@ -132,6 +132,25 @@ describe("sub-agent context capture", () => {
 		expect(reloaded).toEqual(manifest)
 		expect(isValidSubagentContextManifest(reloaded)).toBe(true)
 		expect(serializeSubagentContextManifest(reloaded)).toBe(serialized)
+	})
+
+	it("preserves explicit spawn model and effort overrides across context manifest reload", () => {
+		const { manifest } = capture("none", {
+			...route,
+			source: "spawn",
+			modelId: "gpt-6-sol",
+			requestedModelId: "gpt-6-sol",
+			requestedReasoningEffort: "high",
+		})
+		const serialized = serializeSubagentContextManifest(manifest)
+		const reloaded = subagentContextManifestSchema.parse(JSON.parse(serialized))
+
+		expect(reloaded.modelRoute).toMatchObject({
+			source: "spawn",
+			modelId: "gpt-6-sol",
+			requestedModelId: "gpt-6-sol",
+			requestedReasoningEffort: "high",
+		})
 	})
 
 	it("groups history into user-led turns and excludes protocol-only user records", () => {

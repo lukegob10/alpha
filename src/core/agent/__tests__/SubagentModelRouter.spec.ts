@@ -149,4 +149,76 @@ describe("resolveSubagentModelRoute", () => {
 		expect((result.apiConfiguration.fakeAi as Record<string, unknown>).createMessage).toBeUndefined()
 		expect(executableFakeAi.createMessage).toBe(createMessage)
 	})
+
+	it("applies a per-spawn model and effort after selecting the saved profile", async () => {
+		const result = await resolveSubagentModelRoute({
+			role: "explore",
+			parentApiConfiguration,
+			profileByRole: { explore: "explore-id" },
+			profileLoader: loader,
+			requestedModelId: "claude-sonnet-override",
+			requestedReasoningEffort: "high",
+		})
+
+		expect(result.route).toMatchObject({
+			source: "spawn",
+			profileId: "explore-id",
+			provider: "vertex",
+			modelId: "claude-sonnet-override",
+			requestedModelId: "claude-sonnet-override",
+			requestedReasoningEffort: "high",
+		})
+		expect(result.apiConfiguration).toMatchObject({
+			apiProvider: "vertex",
+			apiModelId: "claude-sonnet-override",
+			enableReasoningEffort: true,
+			reasoningEffort: "high",
+			vertexJsonCredentials: "explore-secret",
+		})
+		expect(profiles[2].apiModelId).toBe("explore-model")
+	})
+
+	it("clears custom OpenAI model metadata when a spawn selects a different model", async () => {
+		const result = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration: {
+				apiProvider: "openai",
+				openAiModelId: "parent-model",
+				openAiCustomModelInfo: { contextWindow: 128_000, supportsPromptCache: true, supportsImages: true },
+			},
+			profileLoader: loader,
+			requestedModelId: "spawn-model",
+		})
+
+		expect(result.apiConfiguration.openAiModelId).toBe("spawn-model")
+		expect(result.apiConfiguration.openAiCustomModelInfo).toBeNull()
+	})
+
+	it("selects a Copilot model by unique VS Code LM id", async () => {
+		const result = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration: {
+				apiProvider: "vscode-lm",
+				vsCodeLmModelSelector: { vendor: "copilot", family: "old-family", id: "old-id" },
+			},
+			profileLoader: loader,
+			requestedModelId: "copilot-gpt-new",
+			requestedReasoningEffort: "none",
+		})
+
+		expect(result.apiConfiguration.vsCodeLmModelSelector).toEqual({ id: "copilot-gpt-new" })
+		expect(result.apiConfiguration.enableReasoningEffort).toBe(false)
+		expect(result.route.modelId).toBe("copilot-gpt-new")
+	})
+
+	it("rejects a model override when the provider has no model selection", async () => {
+		await expect(
+			resolveSubagentModelRoute({
+				role: "worker",
+				parentApiConfiguration: { apiProvider: "fake-ai", fakeAi: { id: "scripted-runtime" } },
+				profileLoader: loader,
+				requestedModelId: "arbitrary-model",
+			}),
+		).rejects.toThrow("cannot select a spawn model")
+	})
 })

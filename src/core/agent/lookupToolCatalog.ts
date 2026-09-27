@@ -2,31 +2,38 @@ import { canonicalizeToolName } from "../tools/ToolRegistry"
 import { classifyRequestWorkClass, type RequestWorkClassDecision } from "./requestWorkClass"
 
 /**
- * Lookup-sized native names. Mutation and orchestration tools are omitted, while
- * lifecycle controls stay available so a lookup task can finish or ask a question.
+ * Keep fresh lookup requests on the current exec_command schema. Legacy
+ * file/search tools remain available only for saved provider-history replay.
  */
-export const LOOKUP_CORE_TOOL_NAMES = [
-	"read_file",
-	"search_files",
-	"list_files",
-	"shell",
-	"ask_followup_question",
-	"attempt_completion",
-] as const
+export const LOOKUP_CORE_TOOL_NAMES = ["exec_command", "request_user_input", "request_user_input_async"] as const
 
-export const LOOKUP_OPTIONAL_TOOL_NAMES = ["codebase_search"] as const
 export const LOOKUP_SKILL_TOOL_NAMES = ["skill"] as const
-export const LOOKUP_TICKET_TOOL_NAMES = ["list_tickets", "read_ticket"] as const
+export const LOOKUP_MCP_RESOURCE_TOOL_NAMES = [
+	"list_mcp_resources",
+	"list_mcp_resource_templates",
+	"read_mcp_resource",
+] as const
+export const LOOKUP_TICKET_TOOL_NAMES = [
+	"list_tickets",
+	"read_ticket",
+	"create_ticket",
+	"update_ticket",
+	"delete_ticket",
+] as const
 
 export function resolveLookupToolNames(decision: RequestWorkClassDecision): ReadonlySet<string> | undefined {
 	if (decision.class !== "lookup") return undefined
-	const names = new Set<string>(LOOKUP_CORE_TOOL_NAMES)
-	for (const name of LOOKUP_OPTIONAL_TOOL_NAMES) names.add(name)
+	// Catalog narrowing compares canonical policy names, while these constants
+	// use the current provider-facing schema names (notably exec_command).
+	const names = new Set<string>(LOOKUP_CORE_TOOL_NAMES.map(canonicalizeToolName))
 	if (decision.includeSkill) {
-		for (const name of LOOKUP_SKILL_TOOL_NAMES) names.add(name)
+		for (const name of LOOKUP_SKILL_TOOL_NAMES) names.add(canonicalizeToolName(name))
+	}
+	if (decision.includeMcpResources) {
+		for (const name of LOOKUP_MCP_RESOURCE_TOOL_NAMES) names.add(canonicalizeToolName(name))
 	}
 	if (decision.includeTickets) {
-		for (const name of LOOKUP_TICKET_TOOL_NAMES) names.add(name)
+		for (const name of LOOKUP_TICKET_TOOL_NAMES) names.add(canonicalizeToolName(name))
 	}
 	return names
 }
@@ -38,6 +45,7 @@ export function requestWorkClassCacheKey(userRequestText: string | undefined, ta
 		reason: decision.reason,
 		includeSkill: decision.includeSkill,
 		includeTickets: decision.includeTickets,
+		includeMcpResources: decision.includeMcpResources,
 	}
 }
 

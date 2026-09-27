@@ -1,5 +1,10 @@
 import { toolNames } from "../tool.js"
-import { discoverToolsParamsSchema, discoverToolsResultSchema, type DiscoverToolsResult } from "../tool-discovery.js"
+import {
+	discoverToolsParamsSchema,
+	discoverToolsResultSchema,
+	toolSearchParamsSchema,
+	type DiscoverToolsResult,
+} from "../tool-discovery.js"
 
 const schemaDigest = "a".repeat(64)
 const toolName = "mcp--calendar--list_events"
@@ -32,6 +37,15 @@ describe("discover tool wire schemas", () => {
 			query: "calendar events",
 			limit: 3,
 		})
+	})
+
+	it("uses Codex tool_search defaults and Alpha's bounded result cap", () => {
+		expect(toolSearchParamsSchema.parse({ query: "  calendar events  " })).toEqual({
+			query: "calendar events",
+			limit: 8,
+		})
+		expect(toolSearchParamsSchema.parse({ query: "calendar", limit: 32 }).limit).toBe(32)
+		expect(toolSearchParamsSchema.safeParse({ query: "calendar", limit: 33 }).success).toBe(false)
 	})
 
 	it.each([
@@ -85,7 +99,7 @@ describe("discover tool wire schemas", () => {
 		expect(
 			discoverToolsResultSchema.safeParse({
 				...validResult,
-				tools: Array.from({ length: 6 }, (_, index) => ({
+				tools: Array.from({ length: 33 }, (_, index) => ({
 					...validResult.tools[0],
 					name: `${toolName}-${index}`,
 					schema: { ...functionTool, function: { ...functionTool.function, name: `${toolName}-${index}` } },
@@ -98,7 +112,8 @@ describe("discover tool wire schemas", () => {
 		expect(discoverToolsResultSchema.safeParse({ ...validResult, message: "x".repeat(513) }).success).toBe(false)
 	})
 
-	it("adds discover_tools to the shared tool-name contract", () => {
+	it("adds discovery names to the shared tool-name contract", () => {
 		expect(toolNames).toContain("discover_tools")
+		expect(toolNames).toContain("tool_search")
 	})
 })

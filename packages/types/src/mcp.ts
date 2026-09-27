@@ -15,6 +15,23 @@ export interface McpServerUse {
 	serverName: string
 	toolName?: string
 	uri?: string
+	annotations?: McpToolAnnotations
+}
+
+/**
+ * Optional MCP tool annotations supplied by the server. Treat these as
+ * untrusted hints when deciding whether an action needs user approval.
+ */
+export interface McpToolAnnotations {
+	title?: string
+	audience?: Array<"user" | "assistant">
+	priority?: number
+	lastModified?: string
+	readOnlyHint?: boolean
+	destructiveHint?: boolean
+	idempotentHint?: boolean
+	openWorldHint?: boolean
+	[key: string]: unknown
 }
 
 /**
@@ -71,6 +88,8 @@ export type McpTool = {
 	name: string
 	description?: string
 	inputSchema?: object
+	outputSchema?: object
+	annotations?: McpToolAnnotations
 	alwaysAllow?: boolean
 	enabledForPrompt?: boolean
 }
@@ -101,6 +120,7 @@ export type McpResourceResponse = {
 
 export type McpToolCallResponse = {
 	_meta?: Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
+	structuredContent?: Record<string, unknown>
 	content: Array<
 		| {
 				type: "text"

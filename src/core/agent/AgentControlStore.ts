@@ -1061,6 +1061,7 @@ export interface ClaimAgentMailboxOptions {
 	limit?: number
 	kinds?: AgentMailboxKind[]
 	payloadTaskIds?: string[]
+	excludeSenderTaskIds?: string[]
 	channel: AgentMailboxClaimChannel
 	claimId?: string
 }
@@ -2560,11 +2561,13 @@ export class AgentControlStore {
 			const limit = Math.max(1, Math.min(options.limit ?? 100, 1_000))
 			const kinds = options.kinds ? new Set(options.kinds) : undefined
 			const payloadTaskIds = options.payloadTaskIds ? new Set(options.payloadTaskIds) : undefined
+			const excludedSenders = options.excludeSenderTaskIds ? new Set(options.excludeSenderTaskIds) : undefined
 			const entries = draft.mailbox
 				.filter((entry) => entry.rootTaskId === address.rootTaskId && entry.recipientTaskId === address.taskId)
 				.filter((entry) => entry.sequence > afterSequence)
 				.filter((entry) => entry.acknowledgedAt === undefined && entry.claimId === undefined)
 				.filter((entry) => !kinds || kinds.has(entry.kind))
+				.filter((entry) => !entry.senderTaskId || !excludedSenders?.has(entry.senderTaskId))
 				.filter(
 					(entry) =>
 						!payloadTaskIds ||

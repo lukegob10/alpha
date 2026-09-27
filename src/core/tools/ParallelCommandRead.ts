@@ -16,6 +16,7 @@ import { isToolAllowedForMode } from "./validateToolUse"
 import { getCommandDecision } from "../auto-approval/commands"
 import { isCommandDeniedByPolicy, isPathAllowed, isToolAllowed, type ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { createToolFailure } from "./ToolFailure"
+import { normalizeExecCommandYieldTimeMs } from "./commandTimeouts"
 
 const MAX_OUTPUT_BYTES = 1_048_576
 const MAX_READ_TIME_MS = 60_000
@@ -117,18 +118,25 @@ export async function prepareParallelCommand(
 	policy: ToolPolicySnapshot,
 ): Promise<PreparedCommandRead | undefined> {
 	const args: Record<string, unknown> = { ...call.nativeArgs }
+	const usesExecCommandArgs = typeof args.cmd === "string"
+	const commandValue = usesExecCommandArgs ? args.cmd : args.command
+	const requestedCwdValue = usesExecCommandArgs ? args.workdir : args.cwd
+	const requestedTimeoutValue = usesExecCommandArgs
+		? normalizeExecCommandYieldTimeMs(args.yield_time_ms) / 1_000
+		: args.timeout
 	if (
-		canonicalizeToolName(call.name) !== "shell" ||
-		typeof args.command !== "string" ||
+		canonicalizeToolName(call.name) !== "exec_command" ||
+		typeof commandValue !== "string" ||
 		task.taskKind !== "primary" ||
 		args.verification != null ||
 		!callbacks.toolCallId ||
-		(args.cwd != null && typeof args.cwd !== "string") ||
-		(args.timeout != null && (typeof args.timeout !== "number" || !Number.isFinite(args.timeout)))
+		(requestedCwdValue != null && typeof requestedCwdValue !== "string") ||
+		(requestedTimeoutValue != null &&
+			(typeof requestedTimeoutValue !== "number" || !Number.isFinite(requestedTimeoutValue)))
 	)
 		return undefined
-	const requestedCwd = typeof args.cwd === "string" ? args.cwd : "."
-	const command = unescapeHtmlEntities(args.command)
+	const requestedCwd = typeof requestedCwdValue === "string" ? requestedCwdValue : "."
+	const command = unescapeHtmlEntities(commandValue)
 	// Acceptance checks need the ordinary command path's before/after observations.
 	if (task.workContext?.plan?.checks.some((check) => check.command === command)) return undefined
 	const root = await fs.realpath(task.cwd)
@@ -138,7 +146,11 @@ export async function prepareParallelCommand(
 	if (!invocation) return undefined
 	const env = { ...process.env }
 	// Shell/profile configuration and injected Git configuration belong to the serial handler.
-	if (env.RIPGREP_CONFIG_PATH || Object.keys(env).some((key) => /^GIT_/i.test(key))) return undefined
+	if (
+		(invocation.executable === "rg" && env.RIPGREP_CONFIG_PATH) ||
+		(invocation.executable === "git" && Object.keys(env).some((key) => /^GIT_/i.test(key)))
+	)
+		return undefined
 	if (invocation.executable === "git") {
 		try {
 			await fs.lstat(path.join(root, ".git"))
@@ -170,7 +182,8 @@ export async function prepareParallelCommand(
 	const state = provider.getValues()
 	const previewSize = state.terminalOutputPreviewSize ?? DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE
 	const globalStoragePath = provider.context?.globalStorageUri?.fsPath
-	const requestedTimeout = typeof args.timeout === "number" && args.timeout > 0 ? args.timeout * 1000 : 0
+	const requestedTimeout =
+		typeof requestedTimeoutValue === "number" && requestedTimeoutValue > 0 ? requestedTimeoutValue * 1000 : 0
 	const timeout = Math.min(
 		MAX_READ_TIME_MS,
 		callbacks.resolveCommandTimeoutMs?.(requestedTimeout, command) || requestedTimeout || MAX_READ_TIME_MS,
@@ -182,10 +195,10 @@ export async function prepareParallelCommand(
 			task.abort ||
 			task.taskMode !== mode ||
 			task.providerRef.deref() !== provider ||
-			!isToolAllowedForMode("shell", task.taskMode, [], undefined, args) ||
-			!isToolAllowed(policy, "shell") ||
+			!isToolAllowedForMode("exec_command", task.taskMode, [], undefined, args) ||
+			!isToolAllowed(policy, "exec_command") ||
 			isCommandDeniedByPolicy(policy, command) ||
-			current.disabledTools?.some((name) => canonicalizeToolName(name) === "shell") ||
+			current.disabledTools?.some((name) => canonicalizeToolName(name) === "exec_command") ||
 			getCommandDecision(command, current.allowedCommands ?? [], current.deniedCommands ?? []) === "auto_deny" ||
 			task.alphaIgnoreController !== ignore ||
 			ignore?.alphaIgnoreContent !== ignoreContent ||
@@ -201,7 +214,8 @@ export async function prepareParallelCommand(
 		activeSignal?.throwIfAborted()
 	}
 	await assertAuthorized(signal)
-	if (!(await callbacks.askApproval("command", command, args.cwd ? { text: cwd } : undefined))) return undefined
+	if (!(await callbacks.askApproval("command", command, requestedCwdValue ? { text: cwd } : undefined)))
+		return undefined
 	// Approval feedback can append another message before the callback returns.
 	let executionId: string | undefined
 	for (let index = task.clineMessages.length - 1; index >= 0; index--) {
@@ -283,7 +297,7 @@ export async function prepareParallelCommand(
 							failure: createToolFailure({
 								reason: cancelled ? "cancelled" : "execution_failed",
 								scopeKind: "operation",
-								scopeIdentity: ["execute_command", cwd, command],
+								scopeIdentity: ["exec_command", cwd, command],
 								effectsStarted: "yes",
 								outcome: "known",
 								recovery: { kind: "repair" },

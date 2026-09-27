@@ -53,8 +53,11 @@ const stateTestText = (owner: string): string =>
 const OUTER_OBJECTIVE = "Produce the outer Worker change after reviewing the nested Worker proposal."
 const NESTED_OBJECTIVE = "Produce the nested Worker change for immediate-parent review."
 const DISCARD_OBJECTIVE = "Produce a throwaway Worker proposal that the root will discard."
+const INTERRUPT_OBJECTIVE = "Hold one wait_agent call so the root can interrupt this Worker."
+const STEERING_MESSAGE = "Before applying your proposal, include the exact owner name outer_worker."
+const INTERRUPT_PATH = "/root/interrupt-worker"
 
-type ScriptRole = "root" | "outer" | "nested" | "discard"
+type ScriptRole = "root" | "outer" | "nested" | "discard" | "interrupt"
 
 type ScriptChunk =
 	| { type: "text"; text: string }
@@ -68,6 +71,12 @@ type ScriptedToolCall = {
 
 class ManagedAgentScriptedAI {
 	readonly id = `managed-agent-e2e-${Date.now()}`
+	observedMailboxClaims = 0
+	observedSteeringMessage = false
+	observedInterruptResult = false
+	observedCompletionGateRecovery = false
+	heldReviewTaskId?: string
+	heldInterruptCall = false
 	removeFromCache?: () => void
 	private readonly turnsByTask = new Map<string, number>()
 	private readonly requestCountsByTask = new Map<string, number>()
@@ -75,16 +84,33 @@ class ManagedAgentScriptedAI {
 	private readonly waitRetriesByTask = new Map<string, number>()
 	private readonly rolesByTask = new Map<string, ScriptRole>()
 	private readonly verificationChangeSetsByRole = new Map<ScriptRole, string[]>()
+	private rootVerificationIssued = false
 	private releaseDiscardGate?: () => void
+	private releaseReviewGate?: () => void
+	private releaseInterruptGate?: () => void
 	private readonly discardGate = process.env.ALPHA_UI_ACCEPTANCE_NONCE
 		? new Promise<void>((resolve) => {
 				this.releaseDiscardGate = resolve
 			})
 		: undefined
+	private readonly reviewGate = new Promise<void>((resolve) => {
+		this.releaseReviewGate = resolve
+	})
+	private readonly interruptGate = new Promise<void>((resolve) => {
+		this.releaseInterruptGate = resolve
+	})
 	heldDiscardTaskId?: string
 
 	releaseDiscard(): void {
 		this.releaseDiscardGate?.()
+	}
+
+	releaseReview(): void {
+		this.releaseReviewGate?.()
+	}
+
+	releaseInterrupt(): void {
+		this.releaseInterruptGate?.()
 	}
 
 	registerTaskRole(taskId: string, nickname: string): void {
@@ -92,10 +118,12 @@ class ManagedAgentScriptedAI {
 			outer_worker: "outer",
 			nested_writer: "nested",
 			discard_worker: "discard",
+			interrupt_worker: "interrupt",
 		}
 		const role = rolesByNickname[nickname]
 		if (!role) throw new Error(`Unexpected managed-agent nickname ${nickname}`)
 		this.rolesByTask.set(taskId, role)
+		this.taskIdsByRole.set(role, taskId)
 	}
 
 	setVerificationChangeSets(role: Extract<ScriptRole, "root" | "outer">, changeSetIds: string[]): void {
@@ -115,29 +143,129 @@ class ManagedAgentScriptedAI {
 		let turn = this.turnsByTask.get(taskId) ?? 0
 		const priorResult = this.assertPriorToolSucceeded(role, turn, messages)
 		const previousCall = this.previousCallsByTask.get(taskId)
+		const completionBlocked =
+			role === "outer" &&
+			previousCall?.name === "assistant_text" &&
+			JSON.stringify(messages.slice(-2)).includes("immediate-parent terminal result")
+		if (completionBlocked) this.observedCompletionGateRecovery = true
+		const commandSession =
+			previousCall?.name === "exec_command" || previousCall?.name === "write_stdin"
+				? priorResult?.match(/Process running with session ID\s+(\d+)/)?.[1]
+				: undefined
+		if (commandSession) turn -= 1
+		if (role === "root" && previousCall?.name === "list_agents") {
+			const listed = JSON.parse(priorResult ?? "null") as { agents?: Array<{ taskName?: string }> }
+			const taskNames = new Set((listed.agents ?? []).map(({ taskName }) => taskName))
+			for (const taskName of ["discard_worker", "interrupt_worker", "outer_worker"])
+				assert.ok(taskNames.has(taskName), `list_agents omitted ${taskName}`)
+		}
+		if (role === "root" && previousCall?.name === "send_message") {
+			const delivery = JSON.parse(priorResult ?? "null") as { delivery?: unknown; taskId?: unknown }
+			assert.ok(["delivered", "queued"].includes(String(delivery?.delivery)))
+			assert.equal(delivery.taskId, this.taskIdsByRole.get("outer"))
+		}
+		if (role === "root" && previousCall?.name === "interrupt_agent") {
+			const interrupt = JSON.parse(priorResult ?? "null") as { previous_status?: unknown }
+			assert.ok(["pending", "running"].includes(String(interrupt?.previous_status)))
+			this.observedInterruptResult = true
+		}
 		const waitResult: unknown = previousCall?.name === "wait_agent" ? JSON.parse(priorResult ?? "null") : undefined
+		if (waitResult && typeof waitResult === "object" && "claimId" in waitResult) {
+			this.observedMailboxClaims++
+			const summary = waitResult as { eventCount?: unknown; updatedAgents?: unknown; events?: unknown }
+			assert.equal("events" in summary, false, "wait_agent must not return raw mailbox entries")
+			assert.ok(typeof summary.eventCount === "number" && summary.eventCount > 0 && summary.eventCount <= 16)
+			assert.ok(Array.isArray(summary.updatedAgents) && summary.updatedAgents.length <= 16)
+			const latestContent = (messages.at(-1) as { content?: unknown } | undefined)?.content
+			assert.ok(Array.isArray(latestContent), "wait notifications must reach the next model input")
+			const notifications = latestContent.flatMap((block: { type?: string; text?: string }) => {
+				if (block.type !== "text" || typeof block.text !== "string") return []
+				try {
+					const value = JSON.parse(block.text) as {
+						source?: string
+						eventId?: string
+						sequence?: number
+						senderPath?: string
+						kind?: string
+						payload?: { taskId?: string }
+					}
+					return value.source === "managed_agent_notification" ? [value] : []
+				} catch {
+					return []
+				}
+			})
+			assert.equal(notifications.length, summary.eventCount)
+			assert.ok(
+				notifications.every(
+					(entry: { eventId?: string; senderPath?: string }) => entry.eventId && entry.senderPath,
+				),
+			)
+			assert.deepEqual(
+				notifications.map((entry: { sequence?: number }) => entry.sequence),
+				[...notifications]
+					.map((entry: { sequence?: number }) => entry.sequence)
+					.sort((left, right) => (left ?? 0) - (right ?? 0)),
+			)
+			if (role === "root") {
+				for (const notification of notifications) {
+					const value = notification as { kind?: string; payload?: { taskId?: unknown } }
+					if (value.kind === "result" && typeof value.payload?.taskId === "string") {
+						this.terminalTaskIds.add(value.payload.taskId)
+					}
+				}
+			}
+		}
 		if (waitResult && typeof waitResult === "object" && "timedOut" in waitResult && waitResult.timedOut === true) {
 			// Handler success means the bounded wait finished, not that the child
 			// finished. Stay on this script step until its terminal result is consumed.
 			const retries = (this.waitRetriesByTask.get(taskId) ?? 0) + 1
 			assert.ok(retries <= 3, `The ${role} scripted wait exhausted four bounded attempts`)
 			this.waitRetriesByTask.set(taskId, retries)
-			turn -= 1
+			if (role !== "root" || turn < 6) turn -= 1
 		} else {
 			this.waitRetriesByTask.delete(taskId)
 		}
 		console.log(`[managed-agent-e2e] model task=${taskId} role=${role} turn=${turn}`)
 		this.turnsByTask.set(taskId, turn + 1)
-		const call = await this.getToolCall(role, turn)
-		if (role === "discard" && call.name === "attempt_completion" && this.discardGate) {
+		const call: ScriptedToolCall = commandSession
+			? {
+					name: "write_stdin",
+					arguments: { session_id: Number(commandSession), chars: "", yield_time_ms: 30_000 },
+				}
+			: completionBlocked
+				? { name: "wait_agent", arguments: { timeout_ms: 60_000 } }
+				: role === "outer" && turn >= 6
+					? {
+							name: "assistant_text",
+							arguments: {
+								result: "Applied and verified the nested proposal, then produced the outer proposal.",
+							},
+						}
+					: await this.getToolCall(role, turn)
+		if (role === "outer" && call.name === "apply_patch") {
+			assert.ok(
+				JSON.stringify(messages).includes(STEERING_MESSAGE),
+				"send_message must reach the Worker model input",
+			)
+			this.observedSteeringMessage = true
+		}
+		if (role === "discard" && call.name === "assistant_text" && this.discardGate) {
 			this.heldDiscardTaskId = taskId
 			await this.discardGate
+		}
+		if (role === "root" && call.name === "exec_command") {
+			this.heldReviewTaskId = taskId
+			await this.reviewGate
+		}
+		if (role === "root" && call.name === "interrupt_agent") {
+			this.heldInterruptCall = true
+			await this.interruptGate
 		}
 		this.previousCallsByTask.set(taskId, call)
 		const requestIndex = this.requestCountsByTask.get(taskId) ?? 0
 		this.requestCountsByTask.set(taskId, requestIndex + 1)
 
-		if (role !== "root" && call.name === "attempt_completion") {
+		if (call.name === "assistant_text") {
 			assert.equal(typeof call.arguments.result, "string")
 			yield { type: "text", text: String(call.arguments.result) }
 		} else {
@@ -173,6 +301,9 @@ class ManagedAgentScriptedAI {
 		return ""
 	}
 
+	private readonly taskIdsByRole = new Map<ScriptRole, string>()
+	private readonly terminalTaskIds = new Set<string>()
+
 	private assertPriorToolSucceeded(role: ScriptRole, turn: number, messages: unknown[]): string | undefined {
 		if (turn === 0) return
 		let result: { type?: string; content?: unknown; is_error?: boolean } | undefined
@@ -197,7 +328,9 @@ class ManagedAgentScriptedAI {
 		if (
 			result.is_error === true ||
 			serialized.includes('"status":"error"') ||
-			serialized.includes("Command execution was not successful")
+			serialized.includes("Command execution was not successful") ||
+			/\b(?:Process exited with code|Exit code:)\s*[1-9]\d*/i.test(serialized) ||
+			/"exit_code"\s*:\s*[1-9]\d*/.test(serialized)
 		) {
 			console.error(
 				`[managed-agent-e2e] prior tool failure role=${role} turn=${turn} result=${serialized.slice(0, 4_000)}`,
@@ -214,62 +347,44 @@ class ManagedAgentScriptedAI {
 					name: "spawn_agent",
 					arguments: {
 						task_name: "outer_worker",
+						message: OUTER_OBJECTIVE,
 						fork_turns: "none",
-						objective: OUTER_OBJECTIVE,
-						agent_kind: "worker",
-						write_scope: [`${FIXTURE_ROOT}/worker`],
-						expected_output: ["A quarantined change set containing the nested and outer fixture updates."],
+						agent_type: "worker",
+					},
+				},
+				{
+					name: "send_message",
+					arguments: {
+						target: "outer_worker",
+						message: STEERING_MESSAGE,
 					},
 				},
 				{
 					name: "spawn_agent",
 					arguments: {
 						task_name: "discard_worker",
+						message: DISCARD_OBJECTIVE,
 						fork_turns: "none",
-						objective: DISCARD_OBJECTIVE,
-						agent_kind: "worker",
-						write_scope: [DISCARD_PATH],
-						expected_output: ["A quarantined throwaway change set."],
+						agent_type: "worker",
 					},
 				},
 				{
-					name: "wait_agent",
+					name: "spawn_agent",
 					arguments: {
-						timeout_ms: 20_000,
-						target: "/root/outer-worker",
-						until_terminal: true,
+						task_name: "interrupt_worker",
+						message: INTERRUPT_OBJECTIVE,
+						fork_turns: "none",
+						agent_type: "worker",
 					},
 				},
 				{
-					name: "wait_agent",
-					arguments: {
-						timeout_ms: 20_000,
-						target: "/root/discard-worker",
-						until_terminal: true,
-					},
+					name: "list_agents",
+					arguments: {},
 				},
 				{
-					name: "ask_followup_question",
+					name: "interrupt_agent",
 					arguments: {
-						question:
-							"Pause while the automated acceptance harness reviews both root-owned Worker proposals.",
-						follow_up: [{ text: "Both proposals were reviewed; continue.", mode: null }],
-					},
-				},
-				{
-					// The scripted harness injects internal verification metadata after the
-					// thin public shell schema is selected.
-					name: "shell",
-					arguments: {
-						command: "vitest run --maxWorkers=2",
-						cwd: ROOT_VERIFY_CWD,
-						timeout: 30,
-					},
-				},
-				{
-					name: "attempt_completion",
-					arguments: {
-						result: "Nested Worker Apply, root Worker Apply, discard, and verification completed.",
+						target: INTERRUPT_PATH,
 					},
 				},
 			],
@@ -278,40 +393,41 @@ class ManagedAgentScriptedAI {
 					name: "spawn_agent",
 					arguments: {
 						task_name: "nested_writer",
+						message: NESTED_OBJECTIVE,
 						fork_turns: "none",
-						objective: NESTED_OBJECTIVE,
-						agent_kind: "worker",
-						write_scope: [NESTED_PATH],
-						expected_output: ["A quarantined nested fixture change."],
+						agent_type: "worker",
 					},
 				},
 				{
 					name: "wait_agent",
 					arguments: {
-						timeout_ms: 20_000,
-						target: "/root/outer-worker/nested-writer",
-						until_terminal: true,
+						timeout_ms: 60_000,
 					},
 				},
 				{
-					// Internal scripted verification metadata is attached after the canonical
-					// shell call is selected; it is not part of the model-facing schema.
-					name: "shell",
+					name: "exec_command",
 					arguments: {
-						command: "vitest run --maxWorkers=2",
-						cwd: OUTER_VERIFY_CWD,
-						timeout: 30,
+						cmd: "vitest run --maxWorkers=2",
+						workdir: OUTER_VERIFY_CWD,
+						yield_time_ms: 30_000,
 					},
 				},
 				{
-					name: "write_to_file",
+					name: "apply_patch",
 					arguments: {
-						path: OUTER_PATH,
-						content: stateModuleText("outer_worker", true),
+						patch: `*** Begin Patch\n*** Update File: ${OUTER_PATH}\n@@\n-export default {"owner":"baseline","verified":false}\n+export default {"owner":"outer_worker","verified":true}\n*** End Patch`,
 					},
 				},
 				{
-					name: "attempt_completion",
+					name: "exec_command",
+					arguments: {
+						cmd: "vitest run --maxWorkers=2",
+						workdir: ROOT_VERIFY_CWD,
+						yield_time_ms: 30_000,
+					},
+				},
+				{
+					name: "assistant_text",
 					arguments: {
 						result: "Applied and verified the nested proposal, then produced the outer proposal.",
 					},
@@ -319,35 +435,64 @@ class ManagedAgentScriptedAI {
 			],
 			nested: [
 				{
-					name: "write_to_file",
+					name: "apply_patch",
 					arguments: {
-						path: NESTED_PATH,
-						content: stateModuleText("nested_writer", true),
+						patch: `*** Begin Patch\n*** Update File: ${NESTED_PATH}\n@@\n-export default {"owner":"baseline","verified":false}\n+export default {"owner":"nested_writer","verified":true}\n*** End Patch`,
 					},
 				},
 				{
-					name: "attempt_completion",
-					arguments: { result: "Produced the nested fixture proposal.", outcome: "completed" },
+					name: "assistant_text",
+					arguments: { result: "Produced the nested fixture proposal." },
 				},
 			],
 			discard: [
 				{
-					name: "write_to_file",
+					name: "apply_patch",
 					arguments: {
-						path: DISCARD_PATH,
-						content: '{"owner":"discard_worker","verified":true}\n',
+						patch: `*** Begin Patch\n*** Update File: ${DISCARD_PATH}\n@@\n-{"owner":"baseline","verified":false}\n+{"owner":"discard_worker","verified":true}\n*** End Patch`,
 					},
 				},
 				{
-					name: "attempt_completion",
-					arguments: { result: "Produced the throwaway fixture proposal.", outcome: "completed" },
+					name: "assistant_text",
+					arguments: { result: "Produced the throwaway fixture proposal." },
 				},
+			],
+			interrupt: [
+				{ name: "wait_agent", arguments: { timeout_ms: 60_000 } },
+				{ name: "assistant_text", arguments: { result: "The interrupted Worker resumed and finished." } },
 			],
 		}
 
-		const call = scripts[role][turn]
+		let call = scripts[role][turn]
+		if (role === "root" && turn >= 6) {
+			const requiredIds = ["outer", "discard", "interrupt"]
+				.map((requiredRole) => this.taskIdsByRole.get(requiredRole as ScriptRole))
+				.filter((id): id is string => id !== undefined)
+			if (requiredIds.length === 3 && requiredIds.every((id) => this.terminalTaskIds.has(id))) {
+				if (this.rootVerificationIssued) {
+					call = {
+						name: "assistant_text",
+						arguments: {
+							result: "Reviewed the child proposals, applied the outer change, and verified the result.",
+						},
+					}
+				} else {
+					call = {
+						name: "exec_command",
+						arguments: {
+							cmd: "vitest run --maxWorkers=2",
+							workdir: ROOT_VERIFY_CWD,
+							yield_time_ms: 30_000,
+						},
+					}
+					this.rootVerificationIssued = true
+				}
+			} else {
+				call = { name: "wait_agent", arguments: { timeout_ms: 20_000 } }
+			}
+		}
 		if (!call) throw new Error(`Unexpected ${role} model turn ${turn + 1}`)
-		if (call.name === "shell") {
+		if (call.name === "exec_command") {
 			await waitFor(() => (this.verificationChangeSetsByRole.get(role)?.length ?? 0) > 0, {
 				timeout: 60_000,
 				interval: 25,
@@ -407,6 +552,11 @@ interface ManagedAgentHostProvider {
 				messageQueueService?: { isEmpty(): boolean }
 				clineMessages?: AlphaMessage[]
 				approveAsk(): void
+				getCommandExecutionEvidence(): Array<{
+					command?: string
+					status: string
+					verificationChangeSetIds?: string[]
+				}>
 		  }
 		| undefined
 }
@@ -583,7 +733,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			commandExecutionTimeout: 30,
 			enableCheckpoints: false,
 			maxConcurrentTasks: 6,
-			maxConcurrentSubagents: 3,
+			maxConcurrentSubagents: 4,
 			subagentDelegationPolicy: "proactive",
 			subagentMaxDepth: 2,
 			subagentRoleTimeoutsMs: { worker: 120_000 },
@@ -597,7 +747,6 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 		const spawned = new Set<string>()
 		const completed = new Set<string>()
 		const completionCounts = new Map<string, number>()
-		const followupTasks = new Set<string>()
 		const completionPromptTasks = new Set<string>()
 		const toolFailures: string[] = []
 		const lastGroupStates = new Map<string, string>()
@@ -629,7 +778,6 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				}
 				groups.set(event.message.subagentGroup.groupId, structuredClone(event.message.subagentGroup))
 			}
-			if (event.message.type === "ask" && event.message.ask === "followup") followupTasks.add(event.taskId)
 			if (event.message.type === "ask" && event.message.ask === "completion_result") {
 				completionPromptTasks.add(event.taskId)
 			}
@@ -668,7 +816,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				await provider.postStateToWebview()
 				await provider.postStateToWebview()
 				await uiFixtureBarrier("settings-refresh-discard")
-				assert.equal(api.getConfiguration().maxConcurrentSubagents, 3)
+				assert.equal(api.getConfiguration().maxConcurrentSubagents, 4)
 			}
 
 			rootTaskId = await api.startNewTask({
@@ -680,8 +828,10 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				waitForAgent(provider, groups, rootTaskId, OUTER_OBJECTIVE),
 				waitForAgent(provider, groups, rootTaskId, DISCARD_OBJECTIVE),
 			])
+			const interruptTarget = await waitForAgent(provider, groups, rootTaskId, INTERRUPT_OBJECTIVE)
 			const outerTaskId = outerTarget.agent.taskId
 			const discardTaskId = discardTarget.agent.taskId
+			const interruptTaskId = interruptTarget.agent.taskId
 			const nestedTarget = await waitForAgent(provider, groups, outerTaskId, NESTED_OBJECTIVE)
 			const nestedTaskId = nestedTarget.agent.taskId
 
@@ -689,9 +839,27 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				[
 					`${rootTaskId}:${outerTaskId}`,
 					`${rootTaskId}:${discardTaskId}`,
+					`${rootTaskId}:${interruptTaskId}`,
 					`${outerTaskId}:${nestedTaskId}`,
 				].map((edge) => waitFor(() => spawned.has(edge), { timeout: 30_000, interval: 50 })),
 			)
+			await waitFor(() => scriptedAI.heldInterruptCall, {
+				timeout: 60_000,
+				interval: 50,
+				description: "model-visible interrupt_agent call barrier",
+			})
+			await waitFor(
+				async () => {
+					const history = await provider.getTaskWithId(interruptTaskId)
+					return history.apiConversationHistory.some(
+						(message) =>
+							Array.isArray(message.content) &&
+							message.content.some((block) => block.type === "tool_use" && block.name === "wait_agent"),
+					)
+				},
+				{ timeout: 60_000, interval: 50, description: "interrupt Worker blocked in wait_agent" },
+			)
+			scriptedAI.releaseInterrupt()
 
 			const nestedChangeSet = await waitForPendingChangeSet(groups, outerTaskId, NESTED_OBJECTIVE)
 			if (renderedUi) {
@@ -784,12 +952,28 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				assert.equal(outerApply.changeSetStatus, "applied")
 			}
 			scriptedAI.setVerificationChangeSets("root", [outerChangeSet.changeSetId])
-			await waitFor(() => followupTasks.has(rootTaskId!), { timeout: 60_000, interval: 50 })
+			await waitFor(() => scriptedAI.heldReviewTaskId === rootTaskId, {
+				timeout: 60_000,
+				interval: 50,
+				description: "root review gate before verification",
+			})
+			assert.equal(
+				scriptedAI.observedSteeringMessage,
+				true,
+				"The outer Worker must receive its send_message input",
+			)
+			assert.equal(
+				scriptedAI.observedInterruptResult,
+				true,
+				"interrupt_agent must return the child's prior status",
+			)
+			assert.ok(scriptedAI.observedMailboxClaims > 0, "wait_agent must claim and deliver mailbox updates")
+			scriptedAI.releaseReview()
 
 			const stateBeforeResume = await provider.getStateToPostToWebview()
 			const projection = managedAgentTreeProjectionSchema.parse(stateBeforeResume.managedAgentTree)
 			assert.equal(projection.rootTaskId, rootTaskId)
-			assert.equal(projection.nodes.length, 4)
+			assert.equal(projection.nodes.length, 5)
 			assert.deepEqual(
 				projection.nodes
 					.map(({ taskId, parentTaskId, depth }) => ({ taskId, parentTaskId, depth }))
@@ -798,21 +982,19 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 					{ taskId: rootTaskId, parentTaskId: undefined, depth: 0 },
 					{ taskId: outerTaskId, parentTaskId: rootTaskId, depth: 1 },
 					{ taskId: discardTaskId, parentTaskId: rootTaskId, depth: 1 },
+					{ taskId: interruptTaskId, parentTaskId: rootTaskId, depth: 1 },
 					{ taskId: nestedTaskId, parentTaskId: outerTaskId, depth: 2 },
 				].sort((left, right) => left.taskId.localeCompare(right.taskId)),
 			)
 			assert.equal(projection.capacity.active, 0)
 			assert.equal(projection.capacity.queued, 0)
-			assert.equal(projection.capacity.terminal, 3)
+			assert.equal(projection.capacity.terminal, 4)
 
 			const persisted = api.getConfiguration()
-			assert.equal(persisted.maxConcurrentSubagents, 3)
+			assert.equal(persisted.maxConcurrentSubagents, 4)
 			assert.equal(persisted.subagentMaxDepth, 2)
 			assert.equal(persisted.subagentDelegationPolicy, "proactive")
 
-			await api.sendMessage(
-				"Both root-owned Worker proposals were reviewed; verify the applied files and finish.",
-			)
 			await waitFor(() => completionPromptTasks.has(rootTaskId!), {
 				timeout: 60_000,
 				interval: 50,
@@ -840,6 +1022,40 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			}
 			await waitFor(() => completed.has(rootTaskId!), { timeout: 90_000, interval: 50 })
 			assert.deepStrictEqual(toolFailures, [], "The scripted scenario emitted tool failures")
+			assert.ok(scriptedAI.observedMailboxClaims > 0, "The scenario never delivered a mailbox claim")
+			assert.equal(scriptedAI.observedSteeringMessage, true)
+			assert.equal(scriptedAI.observedInterruptResult, true)
+			assert.equal(
+				completed.has(interruptTaskId),
+				false,
+				"An interrupted Worker must not be reported as completed",
+			)
+			assert.equal(findAgent(groups, rootTaskId!, INTERRUPT_OBJECTIVE)?.agent.status, "interrupted")
+			const rootCommandEvidence = provider.getLiveTask(rootTaskId!)?.getCommandExecutionEvidence() ?? []
+			assert.ok(
+				rootCommandEvidence.some(
+					(evidence) =>
+						evidence.status === "succeeded" &&
+						evidence.command?.includes("vitest run --maxWorkers=2") &&
+						evidence.verificationChangeSetIds?.includes(outerChangeSet.changeSetId),
+				),
+				"The current exec_command action must succeed and verify the applied root change set",
+			)
+			const rootHistory = (await provider.getTaskWithId(rootTaskId!)).apiConversationHistory
+			const rootToolNames = rootHistory.flatMap((message) =>
+				Array.isArray(message.content)
+					? message.content.flatMap((block) => (block.type === "tool_use" && block.name ? [block.name] : []))
+					: [],
+			)
+			for (const name of [
+				"spawn_agent",
+				"send_message",
+				"list_agents",
+				"interrupt_agent",
+				"wait_agent",
+				"exec_command",
+			])
+				assert.ok(rootToolNames.includes(name), `The host transcript did not record ${name}`)
 			assert.ok(completed.has(outerTaskId), "Outer Worker never reached a terminal completion")
 			assert.ok(completed.has(nestedTaskId), "Nested Worker never reached a terminal completion")
 			assert.ok(completed.has(discardTaskId), "Discard Worker never reached a terminal completion")
@@ -851,14 +1067,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				assert.equal(completionCounts.get(taskId), 1, "Child completion must be published once")
 				assert.equal(completionPromptTasks.has(taskId), false, "Child review belongs to the parent")
 				const { apiConversationHistory } = await provider.getTaskWithId(taskId)
-				const blocks = apiConversationHistory.flatMap((message) =>
-					Array.isArray(message.content) ? message.content : [],
-				)
-				assert.equal(
-					blocks.some((block) => block.type === "tool_use" && block.name === "attempt_completion"),
-					false,
-					"Ordinary child completion must not create a synthetic tool call",
-				)
+				const expectedAnswerCount = taskId === outerTaskId && scriptedAI.observedCompletionGateRecovery ? 2 : 1
 				assert.equal(
 					apiConversationHistory.filter(
 						(message) =>
@@ -866,9 +1075,19 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 							Array.isArray(message.content) &&
 							message.content.some((block) => block.type === "text" && block.text === expectedReport),
 					).length,
-					1,
-					"The child final answer must survive transcript persistence",
+					expectedAnswerCount,
+					"The accepted child answer and any rejected completion candidate must survive transcript persistence",
 				)
+				if (taskId === outerTaskId && scriptedAI.observedCompletionGateRecovery) {
+					assert.ok(
+						apiConversationHistory.some(
+							(message) =>
+								message.role === "user" &&
+								JSON.stringify(message.content).includes("terminal result remains unconsumed"),
+						),
+						"The rejected completion must remain visible to the model before it waits and retries",
+					)
+				}
 			}
 
 			// Workspace file writes may use host-native CRLF; normalize only EOL before the exact module comparison.
@@ -907,12 +1126,14 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				const finalTree = managedAgentTreeProjectionSchema.parse(
 					(await provider.getStateToPostToWebview()).managedAgentTree,
 				)
-				assert.equal(finalTree.nodes.length, 4)
-				assert.equal(finalTree.capacity.terminal, 3)
+				assert.equal(finalTree.nodes.length, 5)
+				assert.equal(finalTree.capacity.terminal, 4)
 				await uiFixtureBarrier("complete")
 			}
 		} finally {
 			scriptedAI.releaseDiscard()
+			scriptedAI.releaseReview()
+			scriptedAI.releaseInterrupt()
 			api.off(AlphaCodeEventName.Message, onMessage)
 			api.off(AlphaCodeEventName.TaskSpawned, onSpawned)
 			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)

@@ -78,7 +78,7 @@ function transactions(history: unknown): Transaction[] {
 }
 
 const scope =
-	"Use only the named file tools inside live-file-tools. Do not use commands, delegate, or create unrelated files. These are intentional contract probes: do not repair deliberately invalid searches/edits or retry them. Finish with a concise report of the observed results."
+	"Use exec_command for bounded read-only file inspection inside live-file-tools. Do not delegate or create unrelated files. These are intentional contract probes: do not repair deliberately invalid edits or retry them. Finish with a concise report of the observed results."
 
 export async function runLiveCase(
 	id: string,
@@ -91,6 +91,7 @@ export async function runLiveCase(
 		workspace: string,
 		answer: string,
 		task: LiveTask,
+		finalAssistantText: string,
 	) => Promise<void>,
 	options: { scope?: string; commands?: string[]; requestLimit?: number; timeoutMs?: number } = {},
 ) {
@@ -127,8 +128,13 @@ export async function runLiveCase(
 	}
 	provider.on("taskCreated", onCreated)
 	api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
-	const allowed = new Set<ToolName>(["read_file", "attempt_completion", ...tools])
+	const allowed = new Set<ToolName>(["attempt_completion", ...tools])
 	const policyAllowed = new Set(allowed)
+	if (allowed.has("exec_command")) {
+		policyAllowed.add("shell")
+		policyAllowed.add("execute_command")
+	}
+	if (allowed.has("update_plan")) policyAllowed.add("update_todo_list")
 	if (allowed.has("shell")) policyAllowed.add("execute_command")
 	if (allowed.has("manage_command")) policyAllowed.add("read_command_output")
 	const startedAt = Date.now()
@@ -213,10 +219,12 @@ export async function runLiveCase(
 			assert.deepEqual(inspectToolTransactions(history).errors, [])
 			calls = transactions(history)
 			assert.ok(Array.isArray(history))
+			const assistantMessages = history
+				.filter((message) => record(message).role === "assistant")
+				.map((message) => text(record(message).content))
+				.filter((value) => value.trim())
 			answer = [
-				...history
-					.filter((message) => record(message).role === "assistant")
-					.map((message) => text(record(message).content)),
+				...assistantMessages,
 				...calls
 					.filter((call) => call.name === "attempt_completion")
 					.map((call) => (typeof call.input.result === "string" ? call.input.result : "")),
@@ -229,7 +237,7 @@ export async function runLiveCase(
 				calls.every((call) => allowed.has(call.name as ToolName)),
 				"No alternate tool may bypass the probe",
 			)
-			await verify(calls, task.clineMessages, workspace, answer, task)
+			await verify(calls, task.clineMessages, workspace, answer, task, assistantMessages.at(-1) ?? "")
 			passed = true
 		} catch (error) {
 			failure = error instanceof Error ? error.message : String(error)

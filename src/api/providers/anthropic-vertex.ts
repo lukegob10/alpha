@@ -64,6 +64,57 @@ type VertexGatewayGoogleAuth = {
 	getClient: () => Promise<VertexGatewayAuthClient>
 }
 
+type ProviderInstructionParts = {
+	systemInstructions: string
+	userContext: string
+}
+
+function getProviderInstructionParts(
+	systemPrompt: string,
+	instructionFragments: ApiHandlerCreateMessageMetadata["instructionFragments"],
+): ProviderInstructionParts {
+	if (instructionFragments === undefined) {
+		return { systemInstructions: systemPrompt, userContext: "" }
+	}
+
+	const systemParts: string[] = []
+	const userParts: string[] = []
+	for (const fragment of instructionFragments) {
+		const targetParts = fragment.role === "user" ? userParts : systemParts
+		targetParts.push(fragment.content)
+	}
+
+	return {
+		systemInstructions: systemParts.join(""),
+		userContext: userParts.join(""),
+	}
+}
+
+function prependUserInstructionContext(
+	messages: Anthropic.Messages.MessageParam[],
+	userContext: string,
+): Anthropic.Messages.MessageParam[] {
+	if (!userContext) return messages
+
+	const firstMessage = messages[0]
+	if (firstMessage?.role !== "user") {
+		return [{ role: "user", content: userContext }, ...messages]
+	}
+
+	const content =
+		typeof firstMessage.content === "string"
+			? `${userContext}${userContext.endsWith("\n") ? "" : "\n\n"}${firstMessage.content}`
+			: [
+					{
+						type: "text" as const,
+						text: `${userContext}${userContext.endsWith("\n") ? "" : "\n\n"}`,
+					},
+					...firstMessage.content,
+				]
+
+	return [{ ...firstMessage, content }, ...messages.slice(1)]
+}
+
 // A model ID supplied by the gateway may be newer than the static catalog. Keep
 // the opaque ID usable while withholding reasoning capabilities until the model
 // has an explicitly verified entry in the catalog.
@@ -85,6 +136,11 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 	private readonly vertexGatewayGoogleAuth?: GoogleAuth
 	private readonly gatewayFetch?: typeof fetch
 	private gatewayTransportSetupPromise?: Promise<void>
+	private lastThoughtSignature?: string
+
+	getThoughtSignature(): string | undefined {
+		return this.lastThoughtSignature
+	}
 
 	constructor(options: ApiHandlerOptions) {
 		super()
@@ -654,12 +710,18 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 		messages: Anthropic.Messages.MessageParam[],
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): ApiStream {
+		this.lastThoughtSignature = undefined
 		let { id, info, temperature, maxTokens, reasoning: thinking, betas } = this.getModel()
 
 		const { supportsPromptCache } = info
+		const { systemInstructions, userContext } = getProviderInstructionParts(
+			systemPrompt,
+			metadata?.instructionFragments,
+		)
 
 		// Filter out non-Anthropic blocks (reasoning, thoughtSignature, etc.) before sending to the API
 		const sanitizedMessages = filterNonAnthropicBlocks(messages)
+		const requestMessages = prependUserInstructionContext(sanitizedMessages, userContext)
 
 		const nativeToolParams = {
 			tools: convertOpenAIToolsToAnthropic(metadata?.tools ?? []),
@@ -668,7 +730,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 				metadata?.parallelToolCalls,
 			),
 		}
-		const uncachedMessages = this.removeCacheControlFromMessages(sanitizedMessages)
+		const uncachedMessages = this.removeCacheControlFromMessages(requestMessages)
 
 		const betaRequestOptions: Anthropic.RequestOptions | undefined = betas?.length
 			? { headers: { "anthropic-beta": betas.join(",") } }
@@ -687,7 +749,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 			 * 3. Cache control can only be applied to user messages, not assistant messages
 			 *
 			 * Our caching strategy:
-			 * - Cache the system prompt (1 block)
+			 * - Cache privileged system instructions (1 block)
 			 * - Cache the last text block of the second-to-last user message (1 block)
 			 * - Cache the last text block of the last user message (1 block)
 			 * This ensures we stay under the 4-block limit while maintaining effective caching
@@ -699,9 +761,9 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 				temperature,
 				thinking,
 				system: usePromptCache
-					? [{ text: systemPrompt, type: "text" as const, cache_control: { type: "ephemeral" } }]
-					: systemPrompt,
-				messages: usePromptCache ? addCacheBreakpoints(sanitizedMessages) : uncachedMessages,
+					? [{ text: systemInstructions, type: "text" as const, cache_control: { type: "ephemeral" } }]
+					: systemInstructions,
+				messages: usePromptCache ? addCacheBreakpoints(requestMessages) : uncachedMessages,
 				...nativeToolParams,
 			}
 
@@ -752,6 +814,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 								break
 							}
 							case "thinking": {
+								this.lastThoughtSignature = block.signature || undefined
 								if (index > 0) {
 									yield { type: "reasoning", text: "\n" }
 								}
@@ -766,6 +829,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 									name: toolUseBlock.name,
 									arguments: this.stringifyToolArguments(toolUseBlock.input),
 								}
+								yield { type: "tool_call_end", id: toolUseBlock.id }
 								break
 							}
 						}
@@ -816,6 +880,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 									break
 								}
 								case "thinking": {
+									this.lastThoughtSignature = chunk.content_block.signature || undefined
 									if (chunk.index! > 0) {
 										yield { type: "reasoning", text: "\n" }
 									}
@@ -858,6 +923,10 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 									yield { type: "reasoning", text: (chunk.delta as any).thinking }
 									break
 								}
+								case "signature_delta": {
+									this.lastThoughtSignature = (chunk.delta as { signature: string }).signature
+									break
+								}
 								case "input_json_delta": {
 									const activeToolUseBlock = activeToolUseBlocks.get(chunk.index!)
 									if (activeToolUseBlock) {
@@ -898,8 +967,6 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 								activeToolUseBlocks.delete(chunk.index!)
 							}
 
-							// Note: Signature for multi-turn thinking would require using stream.finalMessage()
-							// after iteration completes, which requires restructuring the streaming approach.
 							break
 						}
 					}

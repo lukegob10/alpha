@@ -73,9 +73,20 @@ describe("native tickets", () => {
 		expect(callbacks.setResultMetadata).toHaveBeenLastCalledWith({ status: "error" })
 	})
 	it.each([
-		{ name: "create_ticket" as const, args: { name: "Ticket", description: "Text", type: "bug" } },
-		{ name: "update_ticket" as const, args: { id: "PM-01", expectedRevision: "v1", type: null } },
-		{ name: "list_tickets" as const, args: { type: "feature" } },
+		{
+			name: "create_ticket" as const,
+			args: {
+				name: "Ticket",
+				description: "Text",
+				type: "bug",
+				parentId: "a97392fe-59bf-4f80-8a10-51b2cb62a38f",
+			},
+		},
+		{
+			name: "update_ticket" as const,
+			args: { id: "PM-01", expectedRevision: "v1", type: null, parentId: null, status: "canceled" },
+		},
+		{ name: "list_tickets" as const, args: { type: "feature", status: "canceled" } },
 		{ name: "delete_ticket" as const, args: { id: "PM-01", expectedRevision: "v1" } },
 	])("preserves native $name structured arguments", ({ name, args }) => {
 		const call = NativeToolCallParser.parseToolCall({
@@ -86,6 +97,50 @@ describe("native tickets", () => {
 		// Task assigns the stream call ID after parsing, as for other built-in tools.
 		expect(call).toMatchObject({ name, nativeArgs: args })
 	})
+	it("forwards parent and canceled status through the approved native tool path", async () => {
+		const id = "a97392fe-59bf-4f80-8a10-51b2cb62a38f"
+		const parentId = "db99f570-ce68-4ad8-85cb-f5c10391343d"
+		const result = {
+			id,
+			name: "Child",
+			status: "canceled",
+			parentId,
+			revision: "v1",
+			linkedTaskIds: [],
+		}
+		const create = vi.fn().mockResolvedValue(result)
+		const update = vi.fn().mockResolvedValue(result)
+		vi.spyOn(TicketStore, "forWorkspace").mockResolvedValue({
+			projectId: "project",
+			create,
+			update,
+			read: vi.fn().mockResolvedValue(result),
+		} as unknown as TicketStore)
+		const callbacks = {
+			askApproval: vi.fn().mockResolvedValue(true),
+			pushToolResult: vi.fn(),
+			setResultMetadata: vi.fn(),
+		}
+		const task = { cwd: "/project", abort: false, canMutateWorkspace: () => true, say: vi.fn() }
+		await executeTicketTool({
+			task,
+			callbacks,
+			call: { name: "create_ticket", nativeArgs: { name: "Child", parentId } },
+		} as unknown as ToolExecutionContext)
+		expect(create).toHaveBeenCalledWith({ name: "Child", parentId }, undefined)
+		await executeTicketTool({
+			task,
+			callbacks,
+			call: {
+				name: "update_ticket",
+				nativeArgs: { id, expectedRevision: "v1", parentId: null, status: "canceled" },
+			},
+		} as unknown as ToolExecutionContext)
+		expect(update).toHaveBeenCalledWith(
+			{ id, expectedRevision: "v1", parentId: null, status: "canceled" },
+			undefined,
+		)
+	})
 	it("exposes read tools in Plan while restricting writes", () => {
 		const registry = new ToolRegistry()
 		for (const name of ["create_ticket", "update_ticket", "list_tickets"] as const) {
@@ -93,12 +148,60 @@ describe("native tickets", () => {
 				function: {
 					parameters: {
 						properties: {
-							type: { type: ["string", "null"], enum: ["bug", "feature", "improvement", null] },
+							type: {
+								type: ["string", "null"],
+								enum: ["bug", "feature", "improvement", "testing", "performance", "ux", null],
+							},
 						},
 					},
 				},
 			})
 		}
+		for (const name of ["create_ticket", "update_ticket"] as const) {
+			expect(registry.resolve(name)?.schema).toMatchObject({
+				function: {
+					parameters: {
+						properties: {
+							type: {
+								description:
+									"Ticket classification: bug, feature, improvement, testing, performance, or UX. Use null for no type.",
+							},
+							priority: {
+								type: ["string", "null"],
+								enum: ["high", "medium", "low", null],
+								description: "Ticket priority: high, medium, or low. Use null for no priority.",
+							},
+						},
+					},
+				},
+			})
+		}
+		expect(registry.resolve("list_tickets")?.schema).toMatchObject({
+			function: {
+				parameters: {
+					properties: {
+						type: {
+							description: "Filter by classification; null finds untagged tickets. Omit for all types.",
+						},
+					},
+				},
+			},
+		})
+		for (const name of ["list_tickets", "update_ticket"] as const) {
+			expect(registry.resolve(name)?.schema).toMatchObject({
+				function: {
+					parameters: {
+						properties: { status: { enum: ["backlog", "in-progress", "complete", "canceled"] } },
+					},
+				},
+			})
+		}
+		expect(registry.resolve("create_ticket")?.schema).toMatchObject({
+			function: { parameters: { properties: { parentId: { type: "string" } } } },
+		})
+		expect(registry.resolve("update_ticket")?.schema).toMatchObject({
+			function: { parameters: { properties: { parentId: { type: ["string", "null"] } } } },
+		})
 		for (const name of ["list_tickets", "read_ticket"] as const) {
 			expect(registry.resolve(name)?.capabilities.sideEffects).toBe("none")
 			expect(isToolAllowedForMode(name, "architect", [])).toBe(true)
@@ -118,6 +221,48 @@ describe("native tickets", () => {
 				parameters: { required: ["id", "expectedRevision"], additionalProperties: false },
 			},
 		})
+	})
+	it("includes revision and parent in native list progress fingerprints", async () => {
+		const summary = {
+			id: "a97392fe-59bf-4f80-8a10-51b2cb62a38f",
+			reference: "PM-01",
+			name: "Backend cleanup",
+			status: "backlog" as const,
+			type: null,
+			updatedAt: "2026-09-24T00:00:00.000Z",
+			revision: "revision-1",
+			parentId: undefined,
+			childCount: 0,
+			completedChildCount: 0,
+		}
+		const list = vi.fn().mockResolvedValue({ tickets: [summary], total: 1, invalidFiles: [] })
+		vi.spyOn(TicketStore, "forWorkspace").mockResolvedValue({ list } as unknown as TicketStore)
+		const run = async () => {
+			const callbacks = { setResultMetadata: vi.fn(), pushToolResult: vi.fn() }
+			await executeTicketTool({
+				task: { cwd: "/project", abort: false },
+				callbacks,
+				call: { name: "list_tickets", nativeArgs: {} },
+			} as unknown as ToolExecutionContext)
+			return callbacks.setResultMetadata.mock.calls[0]?.[0].trustedProgress?.stateFingerprint
+		}
+		const first = await run()
+		list.mockResolvedValue({ tickets: [{ ...summary, revision: "revision-2" }], total: 1, invalidFiles: [] })
+		const changedRevision = await run()
+		expect(changedRevision).not.toBe(first)
+		list.mockResolvedValue({
+			tickets: [{ ...summary, revision: "revision-2", parentId: "db99f570-ce68-4ad8-85cb-f5c10391343d" }],
+			total: 1,
+			invalidFiles: [],
+		})
+		const changedParent = await run()
+		expect(changedParent).not.toBe(changedRevision)
+		list.mockResolvedValue({
+			tickets: [{ ...summary, revision: "revision-2", childCount: 1, completedChildCount: 1 }],
+			total: 1,
+			invalidFiles: [],
+		})
+		expect(await run()).not.toBe(changedRevision)
 	})
 
 	it.each(["approved", "denied", "cancelled"] as const)("handles %s ticket deletion", async (outcome) => {

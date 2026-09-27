@@ -15,13 +15,16 @@ import {
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../Task"
+import { buildOpenAiResponsesInput } from "../../../api/providers/openai-responses"
 import { AlphaProvider } from "../../webview/AlphaProvider"
 import { ContextProxy } from "../../config/ContextProxy"
 import { createAgentLifecycleSnapshot, reduceAgentLifecycleEvent } from "../../agent/lifecycle/reducer"
 import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
 import { createAgentResponse } from "../../agent/AgentResponse"
+import { AgentResponseAccumulator } from "../../agent/AgentResponseAccumulator"
 import { getToolBatchIsolationError } from "../../agent/ToolScheduler"
+import { getNativeTools } from "../../prompts/tools/native-tools"
 import { formatResponse } from "../../prompts/responses"
 import { captureEnvironmentDetails } from "../../environment/getEnvironmentDetails"
 import { EnvironmentContext, type EnvironmentCapture } from "../../environment/EnvironmentContext"
@@ -383,6 +386,58 @@ describe("Task persistence", () => {
 		mockProvider.getVerificationProgressState = vi.fn(() => ({ stateFingerprint: "task-persistence-fixture" }))
 	})
 
+	it("does not overwrite an answered card when a historical task closes before its UI transcript loads", async () => {
+		const savedCard = {
+			ts: 42,
+			type: "say" as const,
+			say: "async_user_input" as const,
+			asyncUserInput: { questions: [{ title: "Which color?", options: ["Blue", "Green"] }] },
+			isAnswered: true,
+		}
+		let persistedMessages = [savedCard]
+		let releaseRead!: () => void
+		let signalReadStarted!: () => void
+		const readHeld = new Promise<void>((resolve) => {
+			releaseRead = resolve
+		})
+		const readStarted = new Promise<void>((resolve) => {
+			signalReadStarted = resolve
+		})
+		mockReadTaskMessages.mockImplementation(async () => {
+			signalReadStarted()
+			await readHeld
+			return structuredClone(persistedMessages)
+		})
+		mockSaveTaskMessages.mockImplementation(async ({ messages }) => {
+			persistedMessages = structuredClone(messages)
+		})
+
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			historyItem: {
+				id: "answered-card",
+				number: 1,
+				ts: 1,
+				task: "Saved questions",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			},
+			startTask: false,
+		})
+		const resume = (task as any).resumeTaskFromHistory()
+		await readStarted
+		expect(task.clineMessages).toEqual([])
+
+		await task.abortTask()
+		releaseRead()
+		await resume
+
+		expect(mockSaveTaskMessages).not.toHaveBeenCalled()
+		expect(persistedMessages).toEqual([savedCard])
+	})
+
 	// ── saveApiConversationHistory (via retrySaveApiConversationHistory) ──
 
 	it.each(["ask", "debug", "orchestrator", "custom-mode"])(
@@ -410,6 +465,55 @@ describe("Task persistence", () => {
 			expect(await task.getTaskMode()).toBe("architect")
 		},
 	)
+
+	it("persists task-scoped approval changes and restores them instead of the current default", async () => {
+		const historyItem: HistoryItem = {
+			id: "approval-mode-history",
+			number: 1,
+			ts: 1,
+			task: "Persist an approval-mode change",
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+			approvalMode: "ask",
+		}
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			taskId: historyItem.id,
+			task: historyItem.task,
+			taskApiConfigName: "test-profile",
+			taskApprovalMode: "ask",
+			startTask: false,
+		})
+		mockTaskMetadata.mockResolvedValueOnce({
+			historyItem: { ...historyItem, approvalMode: "auto" },
+			tokenUsage: {
+				totalTokensIn: 0,
+				totalTokensOut: 0,
+				totalCacheWrites: 0,
+				totalCacheReads: 0,
+				totalCost: 0,
+				contextTokens: 0,
+			},
+		})
+
+		expect(task.getTaskApprovalMode()).toBe("ask")
+		expect(task.setTaskApprovalMode("auto")).toBe(true)
+		await (task as unknown as { taskApprovalModePersistence: Promise<boolean> }).taskApprovalModePersistence
+
+		expect(mockTaskMetadata).toHaveBeenCalledWith(expect.objectContaining({ approvalMode: "auto" }))
+		const savedHistoryItem = vi.mocked(mockProvider.updateTaskHistory).mock.calls.at(-1)?.[0]
+		expect(savedHistoryItem?.approvalMode).toBe("auto")
+
+		const restoredTask = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			historyItem: savedHistoryItem!,
+			startTask: false,
+		})
+		expect(restoredTask.getTaskApprovalMode()).toBe("auto")
+	})
 
 	it("restores task constraints and skill identities while invalidating interrupted checks", async () => {
 		const historyItem: HistoryItem = {
@@ -481,6 +585,235 @@ describe("Task persistence", () => {
 		expect(mockSaveApiMessages).not.toHaveBeenCalled()
 	})
 
+	it("persists ordered signed Anthropic thinking blocks without prepending the legacy aggregate", async () => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "anthropic ordered history",
+			startTask: false,
+		})
+		task.apiConfiguration = { ...mockApiConfig, apiProvider: "vertex", apiModelId: "claude-sonnet-4" }
+		const response = createAgentResponse([
+			{ type: "text", text: "Before." },
+			{ type: "reasoning", text: "First " },
+			{ type: "reasoning", text: "block.", signature: "first-signature" },
+			{ type: "tool_call", id: "read-1", name: "read_file", arguments: { path: "a.ts" } },
+			{ type: "reasoning", text: "Second block.", signature: "second-signature" },
+			{ type: "text", text: "After." },
+		])
+		;(task as any).api = { getThoughtSignature: () => "legacy-aggregate-signature" }
+
+		const persisted = await (task as any).persistAssistantResponseBeforeEffects(
+			{
+				role: "assistant",
+				content: [
+					{ type: "text", text: "Before." },
+					{ type: "tool_use", id: "read-1", name: "read_file", input: { path: "a.ts" } },
+					{ type: "text", text: "After." },
+				],
+			},
+			response.reasoning,
+			response,
+		)
+
+		expect(persisted).toBe(true)
+		expect(task.apiConversationHistory.at(-1)?.content).toEqual([
+			{ type: "text", text: "Before." },
+			{ type: "thinking", thinking: "First block.", signature: "first-signature" },
+			{ type: "tool_use", id: "read-1", name: "read_file", input: { path: "a.ts" } },
+			{ type: "thinking", thinking: "Second block.", signature: "second-signature" },
+			{ type: "text", text: "After." },
+		])
+	})
+
+	it("persists adjacent completed reasoning blocks without combining their signed payloads", async () => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "adjacent signed reasoning",
+			startTask: false,
+		})
+		task.apiConfiguration = { ...mockApiConfig, apiProvider: "vertex", apiModelId: "claude-sonnet-4" }
+		;(task as any).api = { getThoughtSignature: () => "legacy-aggregate-signature" }
+		const accumulator = new AgentResponseAccumulator()
+		await accumulator.add({ type: "reasoning", text: "First block." })
+		await accumulator.add({ type: "thinking_complete", signature: "first-signature" })
+		await accumulator.add({ type: "reasoning", text: "Second " })
+		await accumulator.add({ type: "reasoning", text: "block." })
+		await accumulator.add({ type: "thinking_complete", signature: "second-signature" })
+		await accumulator.add({ type: "text", text: "Answer." })
+		const response = await accumulator.finish()
+
+		expect(
+			await (task as any).persistAssistantResponseBeforeEffects(
+				{ role: "assistant", content: [{ type: "text", text: "Answer." }] },
+				response.reasoning,
+				response,
+			),
+		).toBe(true)
+		const savedMessages = mockSaveApiMessages.mock.calls.at(-1)?.[0].messages
+		expect(JSON.parse(JSON.stringify(savedMessages)).at(-1).content).toEqual([
+			{ type: "thinking", thinking: "First block.", signature: "first-signature" },
+			{ type: "thinking", thinking: "Second block.", signature: "second-signature" },
+			{ type: "text", text: "Answer." },
+		])
+	})
+
+	it("uses ordered Anthropic thinking for terminal responses and retains other provider metadata fallbacks", async () => {
+		const anthropicTask = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "anthropic terminal history",
+			startTask: false,
+		})
+		anthropicTask.apiConfiguration = {
+			...mockApiConfig,
+			apiProvider: "vertex",
+			apiModelId: "claude-sonnet-4",
+		}
+		const terminalResponse = createAgentResponse(
+			[
+				{ type: "text", text: "Before." },
+				{ type: "reasoning", text: "Reasoned result.", signature: "terminal-signature" },
+				{ type: "text", text: "After." },
+			],
+			{ status: "failed", reason: "provider failure" },
+		)
+		;(anthropicTask as any).api = { getThoughtSignature: () => "legacy-aggregate-signature" }
+
+		const terminal = await (anthropicTask as any).persistTerminalCanonicalResponse(
+			terminalResponse,
+			"failed",
+			"provider failure",
+		)
+
+		expect(terminal.assistantPersisted).toBe(true)
+		expect(anthropicTask.apiConversationHistory.at(-1)?.content).toEqual([
+			{ type: "text", text: "Before." },
+			{ type: "thinking", thinking: "Reasoned result.", signature: "terminal-signature" },
+			{ type: "text", text: "After." },
+		])
+
+		const openAiTask = new Task({
+			provider: mockProvider,
+			apiConfiguration: mockApiConfig,
+			task: "other provider metadata",
+			startTask: false,
+		})
+		const openAiResponse = createAgentResponse([
+			{ type: "reasoning", text: "Reasoning summary.", signature: "provider-signature" },
+			{ type: "text", text: "Answer." },
+		])
+		;(openAiTask as any).api = {
+			getEncryptedContent: () => ({ encrypted_content: "encrypted-reasoning", id: "reasoning-id" }),
+			getThoughtSignature: () => "provider-signature",
+			getReasoningDetails: () => [{ type: "summary", text: "provider detail" }],
+			getStatefulMarker: () => "vscode-state",
+		}
+		const openAiSaved = await (openAiTask as any).persistAssistantResponseBeforeEffects(
+			{ role: "assistant", content: [{ type: "text", text: "Answer." }] },
+			openAiResponse.reasoning,
+			openAiResponse,
+		)
+
+		expect(openAiSaved).toBe(true)
+		expect(openAiTask.apiConversationHistory.at(-1)).toMatchObject({
+			vscodeLmStatefulMarker: "vscode-state",
+			reasoning_details: [{ type: "summary", text: "provider detail" }],
+			content: [
+				{ type: "reasoning", encrypted_content: "encrypted-reasoning", id: "reasoning-id" },
+				{ type: "text", text: "Answer." },
+				{ type: "thoughtSignature", thoughtSignature: "provider-signature" },
+			],
+		})
+	})
+
+	it("persists and replays every encrypted OpenAI Responses reasoning item in order", async () => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: { ...mockApiConfig, openAiModelId: "gpt-6-sol" },
+			task: "preserve provider reasoning",
+			startTask: false,
+		})
+		const reasoningItems = [
+			{
+				id: "reasoning-1",
+				encrypted_content: "opaque-1",
+				summary: [{ type: "summary_text", text: "First thought" }],
+			},
+			{
+				id: "reasoning-2",
+				encrypted_content: "opaque-2",
+				summary: [{ type: "summary_text", text: "Second thought" }],
+			},
+		]
+		Object.assign(task.api, { getReasoningItems: () => reasoningItems })
+		vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+
+		const response = createAgentResponse([{ type: "text", text: "Answer." }])
+		await (task as any).persistAssistantResponseBeforeEffects(
+			{ role: "assistant", content: [{ type: "text", text: "Answer." }] },
+			undefined,
+			response,
+		)
+
+		expect(task.apiConversationHistory.at(-1)?.content).toEqual([
+			{ type: "reasoning", ...reasoningItems[0] },
+			{ type: "reasoning", ...reasoningItems[1] },
+			{ type: "text", text: "Answer." },
+		])
+		const cleanHistory = (task as any).buildCleanConversationHistory(task.apiConversationHistory)
+		expect(cleanHistory).toEqual([
+			{ type: "reasoning", ...reasoningItems[0] },
+			{ type: "reasoning", ...reasoningItems[1] },
+			{ role: "assistant", content: "Answer." },
+		])
+		expect(buildOpenAiResponsesInput("", undefined, cleanHistory, false)).toEqual([
+			{ type: "reasoning", encrypted_content: "opaque-1", summary: reasoningItems[0].summary },
+			{ type: "reasoning", encrypted_content: "opaque-2", summary: reasoningItems[1].summary },
+			{ role: "assistant", content: "Answer." },
+		])
+		expect(buildOpenAiResponsesInput("", undefined, cleanHistory, true)).toEqual([
+			{ type: "reasoning", ...reasoningItems[0] },
+			{ type: "reasoning", ...reasoningItems[1] },
+			{ role: "assistant", content: "Answer." },
+		])
+	})
+
+	it("replays encrypted reasoning between assistant output items in provider order", () => {
+		const task = new Task({
+			provider: mockProvider,
+			apiConfiguration: { ...mockApiConfig, openAiModelId: "gpt-6-sol" },
+			task: "interleaved provider reasoning",
+			startTask: false,
+		})
+		const firstReasoning = { type: "reasoning", id: "r1", encrypted_content: "opaque-1", summary: [] }
+		const secondReasoning = { type: "reasoning", id: "r2", encrypted_content: "opaque-2", summary: [] }
+		const toolUse = { type: "tool_use", id: "call-1", name: "read_file", input: { path: "a.ts" } }
+		task.apiConversationHistory = [
+			{
+				role: "assistant",
+				content: [
+					{ type: "text", text: "Before." },
+					firstReasoning,
+					toolUse,
+					secondReasoning,
+					{ type: "text", text: "After." },
+				],
+				ts: 1,
+			} as any,
+		]
+
+		const cleanHistory = (task as any).buildCleanConversationHistory(task.apiConversationHistory)
+		expect(buildOpenAiResponsesInput("", undefined, cleanHistory, false)).toEqual([
+			{ role: "assistant", content: "Before." },
+			{ type: "reasoning", encrypted_content: "opaque-1", summary: [] },
+			{ type: "function_call", call_id: "call-1", name: "read_file", arguments: '{"path":"a.ts"}' },
+			{ type: "reasoning", encrypted_content: "opaque-2", summary: [] },
+			{ role: "assistant", content: "After." },
+		])
+	})
+
 	describe("environment delivery fence", () => {
 		function createEnvironmentTask() {
 			const task = new Task({
@@ -492,8 +825,10 @@ describe("Task persistence", () => {
 			const internal = task as unknown as {
 				persistUserContentWithEnvironment(
 					content: Anthropic.Messages.ContentBlockParam[],
-					capture: EnvironmentCapture,
+					capture?: EnvironmentCapture,
 					signal?: AbortSignal,
+					onPersisted?: () => void,
+					hookPrompt?: { event: "Stop" | "SubagentStop"; fragments: { hook_run_id: string; text: string }[] },
 				): Promise<void>
 				refreshEnvironmentContext(state?: undefined, signal?: AbortSignal): Promise<void>
 				saveApiConversationHistory(): Promise<boolean>
@@ -507,6 +842,24 @@ describe("Task persistence", () => {
 			}
 			return { task, internal, capture, content: [{ type: "text" as const, text: capture.details }] }
 		}
+
+		it("attaches structured hook provenance to the persisted continuation without sending it to the provider", async () => {
+			const { task, internal } = createEnvironmentTask()
+			const provenance = {
+				event: "Stop" as const,
+				fragments: [{ hook_run_id: "hook-run-1", text: "Check the tests." }],
+			}
+			await internal.persistUserContentWithEnvironment(
+				[{ type: "text", text: "Check the tests." }],
+				undefined,
+				undefined,
+				undefined,
+				provenance,
+			)
+			expect(task.apiConversationHistory.at(-1)?.hook_prompt).toEqual(provenance)
+			const clean = (task as any).buildCleanConversationHistory(task.apiConversationHistory)
+			expect(clean.at(-1)).not.toHaveProperty("hook_prompt")
+		})
 
 		it.each([false, true])(
 			"acknowledges a durable event before later mailbox failure (save retry: %s)",
@@ -1024,13 +1377,9 @@ describe("Task persistence", () => {
 				mockReadApiMessages.mockReset().mockResolvedValue([])
 			})
 
-			it.each(
-				["wait_agent", "ask_followup_question"].flatMap((barrier) =>
-					[false, true].map((cancelled) => ({ barrier, cancelled })),
-				),
-			)(
-				"retains one $barrier rejection across persistence and replay (cancelled=$cancelled)",
-				async ({ barrier, cancelled }) => {
+			it.each([false, true])(
+				"retains one request_user_input barrier rejection across persistence and replay (cancelled=%s)",
+				async (cancelled) => {
 					const task = new Task({
 						provider: mockProvider,
 						apiConfiguration: mockApiConfig,
@@ -1058,7 +1407,12 @@ describe("Task persistence", () => {
 					}
 					Object.assign(task, { providerRef: { deref: () => lifecycleProvider } })
 					await (task as any).beginCanonicalLifecycleTurn()
-					const surface = createTaskToolSurface({ registry: new ToolRegistry(), mode: "code" })
+					const schemas = getNativeTools({ planMode: true })
+					const surface = createTaskToolSurface({
+						registry: new ToolRegistry({ nativeTools: schemas }),
+						schemas,
+						mode: "architect",
+					})
 					// Capture the same provider/runtime boundary used by production persistence.
 					const step = (task as any).captureAgentStep(
 						0,
@@ -1067,14 +1421,14 @@ describe("Task persistence", () => {
 						surface.schemas,
 						undefined,
 						{ taskId: task.taskId },
-						"code",
+						"architect",
 						task.api.getModel().info,
 						surface,
 					)
 					await (task as any).ensureCanonicalLifecycleStepStarted(step)
 					const calls = [
 						{ type: "tool_call" as const, id: "read", name: "read_file", arguments: {} },
-						{ type: "tool_call" as const, id: "barrier", name: barrier, arguments: {} },
+						{ type: "tool_call" as const, id: "barrier", name: "request_user_input", arguments: {} },
 					]
 					const response = createAgentResponse(calls)
 					const error = getToolBatchIsolationError(
@@ -1095,10 +1449,6 @@ describe("Task persistence", () => {
 						writes.push(structuredClone(messages))
 						if (cancelled && writes.length === 1) task.abort = true
 					})
-					const fence = vi
-						.spyOn(task as any, "assertCurrentProviderTranscriptBeforeEffects")
-						.mockResolvedValue(undefined)
-					const usage = vi.spyOn(task, "recordToolUsage")
 					const persisted = await (task as any).persistAssistantResponseBeforeEffects(
 						{
 							role: "assistant",
@@ -1117,21 +1467,6 @@ describe("Task persistence", () => {
 					expect(writes[0][0].role).toBe("assistant")
 					expect(published.filter((event) => event.type === "tool_result_recorded")).toHaveLength(2)
 
-					const outcome = await (task as any).executeCanonicalToolCallsForTurn(
-						response,
-						surface,
-						"code",
-						undefined,
-					)
-					expect(outcome).toMatchObject({
-						status: cancelled ? "aborted" : "completed",
-						results: [
-							{ callId: "read", status: "error" },
-							{ callId: "barrier", status: "error" },
-						],
-					})
-					expect(usage).not.toHaveBeenCalled()
-					expect(fence).toHaveBeenCalledOnce()
 					expect(task.userMessageContent).toEqual(earlyReceipts)
 					await expect(task.flushPendingToolResultsToHistory({ allowAborted: true })).resolves.toBe(true)
 					await expect(task.flushPendingToolResultsToHistory({ allowAborted: true })).resolves.toBe(true)
@@ -1155,9 +1490,6 @@ describe("Task persistence", () => {
 					expect(loaded[1].content).toEqual(earlyReceipts)
 					await (replacement as any).replayCanonicalLifecycle()
 					await (replacement as any).publishCanonicalLifecyclePendingToolResults(response, step)
-					for (const receipt of outcome.results) {
-						await (replacement as any).publishCanonicalLifecycleToolResult(receipt, step)
-					}
 					const terminalEvents = published.filter((event) => event.type === "tool_result_recorded")
 					expect(terminalEvents).toHaveLength(2)
 					expect(terminalEvents.map((event) => event.payload.item.status)).toEqual(["error", "error"])
@@ -1313,6 +1645,195 @@ describe("Task persistence", () => {
 			expect((task as any).agentTurnId).toBe("turn-1")
 			expect((task as any).agentTurnStep).toBe(7)
 			expect(publishAgentLifecycleEvent).not.toHaveBeenCalled()
+		})
+
+		it.each([
+			{ scenario: "without a persisted result", result: undefined, expectedStatus: "indeterminate" },
+			{
+				scenario: "with a persisted successful result",
+				result: { content: "file written", is_error: false },
+				expectedStatus: "success",
+			},
+			{
+				scenario: "with a persisted failed result",
+				result: { content: "write failed: permission denied", is_error: true },
+				expectedStatus: "error",
+			},
+		])(
+			"recovers an interrupted effect-start $scenario without replaying it",
+			async ({ scenario: _scenario, result, expectedStatus }) => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "recover interrupted effect",
+					startTask: false,
+				})
+				let snapshot: AgentLifecycleSnapshot | undefined
+				const published: AgentLifecycleEvent[] = []
+				const lifecycleProvider = {
+					replayAgentLifecycle: vi.fn(async () => snapshot),
+					getAgentLifecycleSnapshot: vi.fn(() => snapshot),
+					publishAgentLifecycleEvent: vi.fn(
+						async (input: Record<string, unknown>, options?: { durable?: boolean }) => {
+							const identityChanged =
+								snapshot !== undefined &&
+								(snapshot.runId !== input.runId || snapshot.turnId !== input.turnId)
+							const base =
+								!snapshot || identityChanged
+									? createAgentLifecycleSnapshot({
+											taskId: String(input.taskId),
+											runId: String(input.runId),
+											turnId: String(input.turnId),
+										})
+									: snapshot
+							const event = agentLifecycleEventSchema.parse({ ...input, sequence: base.lastSequence + 1 })
+							snapshot = reduceAgentLifecycleEvent(base, event)
+							published.push(event)
+							return { accepted: true, event, snapshot, durable: options?.durable === true }
+						},
+					),
+				}
+				;(task as any).providerRef = { deref: () => lifecycleProvider }
+				;(task as any).canonicalLifecycleQueue = Promise.resolve()
+
+				await (task as any).beginCanonicalLifecycleTurn()
+				expect(snapshot?.effectTrackingVersion).toBe(1)
+				const step = { stepId: `${(task as any).agentTurnId}:step-1` }
+				;(task as any).currentAgentStep = step
+				await (task as any).ensureCanonicalLifecycleStepStarted(step)
+				const toolCall = {
+					type: "tool_call" as const,
+					id: "mutate-before-reload",
+					name: "write_to_file",
+					arguments: { path: "state.txt" },
+				}
+				await (task as any).publishCanonicalLifecycleResponseItems(
+					{ items: [toolCall], text: "", reasoning: "", toolCalls: [toolCall] },
+					step,
+				)
+				await (task as any).enqueueCanonicalLifecycleEvent(
+					"tool_effect_started",
+					{ toolCallId: toolCall.id },
+					step.stepId,
+					undefined,
+					{ durable: true, required: true },
+				)
+				expect(lifecycleProvider.publishAgentLifecycleEvent).toHaveBeenLastCalledWith(
+					expect.objectContaining({ type: "tool_effect_started" }),
+					{ durable: true },
+				)
+				if (result) {
+					;(task as any).apiConversationHistory = [
+						{
+							role: "assistant",
+							content: [
+								{
+									type: "tool_use",
+									id: toolCall.id,
+									name: toolCall.name,
+									input: toolCall.arguments,
+								},
+							],
+						},
+						{
+							role: "user",
+							content: [
+								{
+									type: "tool_result",
+									tool_use_id: toolCall.id,
+									content: result.content,
+									is_error: result.is_error,
+								},
+							],
+						},
+					]
+				}
+
+				await (task as any).recoverIncompleteCanonicalToolCallsForResume()
+
+				expect(snapshot).toMatchObject({
+					status: "interrupted",
+					effectTrackingVersion: 1,
+					effectStartedToolCallIds: [toolCall.id],
+					terminalToolCallIds: [toolCall.id],
+				})
+				const resultItem = snapshot?.items.find((item) => item.type === "tool_result")
+				expect(resultItem?.status).toBe(expectedStatus)
+				if (result) {
+					expect(resultItem).toMatchObject({ toolCallId: toolCall.id, output: result.content })
+				} else {
+					expect(resultItem?.output).toEqual(expect.stringContaining("outcome is unknown"))
+				}
+				expect(published.filter((event) => event.type === "tool_result_recorded")).toHaveLength(1)
+			},
+		)
+
+		it("recovers an accepted legacy call without an effect marker as indeterminate", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "recover legacy accepted tool call",
+				startTask: false,
+			})
+			const runId = "legacy-run"
+			const turnId = "legacy-turn"
+			const stepId = `${turnId}:step-1`
+			let snapshot = createAgentLifecycleSnapshot({ taskId: task.taskId, runId, turnId })
+			const append = (event: Record<string, unknown>) => {
+				const parsed = agentLifecycleEventSchema.parse({
+					version: 1,
+					eventId: `legacy-event-${snapshot.lastSequence + 1}`,
+					sequence: snapshot.lastSequence + 1,
+					taskId: task.taskId,
+					runId,
+					turnId,
+					occurredAt: snapshot.lastSequence + 1,
+					...event,
+				})
+				snapshot = reduceAgentLifecycleEvent(snapshot, parsed)
+			}
+			append({ type: "turn_started", payload: { phase: "starting" } })
+			append({ type: "step_started", stepId, payload: { phase: "working" } })
+			append({
+				type: "tool_call_accepted",
+				stepId,
+				payload: {
+					item: {
+						itemId: `${stepId}:tool-call-legacy-call`,
+						stepId,
+						type: "tool_call",
+						toolCallId: "legacy-call",
+						name: "write_to_file",
+						arguments: { path: "state.txt" },
+						status: "accepted",
+					},
+				},
+			})
+
+			const lifecycleProvider = {
+				replayAgentLifecycle: vi.fn(async () => snapshot),
+				getAgentLifecycleSnapshot: vi.fn(() => snapshot),
+				publishAgentLifecycleEvent: vi.fn(async (input: Record<string, unknown>) => {
+					const event = agentLifecycleEventSchema.parse({
+						...input,
+						sequence: snapshot.lastSequence + 1,
+					})
+					snapshot = reduceAgentLifecycleEvent(snapshot, event)
+					return { accepted: true, event, snapshot }
+				}),
+			}
+			;(task as any).providerRef = { deref: () => lifecycleProvider }
+			;(task as any).canonicalLifecycleQueue = Promise.resolve()
+
+			await (task as any).recoverIncompleteCanonicalToolCallsForResume()
+
+			expect(snapshot.effectTrackingVersion).toBeUndefined()
+			expect(snapshot.status).toBe("interrupted")
+			expect(snapshot.items.find((item) => item.type === "tool_result")).toMatchObject({
+				toolCallId: "legacy-call",
+				status: "indeterminate",
+				output: expect.stringContaining("outcome is unknown"),
+			})
 		})
 
 		it("joins delayed accepted calls before persisting staged mixed receipts and cancelling approvals", async () => {
@@ -1901,309 +2422,54 @@ describe("Task persistence", () => {
 		})
 	})
 
-	describe("list_files parallel-read Task integration", () => {
-		const cwd = path.resolve(os.tmpdir(), "alpha-code-list-files-integration")
-		const originalWorkspaceFolders = vscode.workspace.workspaceFolders
-
-		type TranscriptStoreFixture = {
-			commitAuthoritativeTranscript: ReturnType<typeof vi.fn>
-			getLastCommitReceipt: ReturnType<typeof vi.fn>
-			assertCommitReceipt: ReturnType<typeof vi.fn>
-		}
-
-		const configureWorkspace = () => {
-			;(vscode.workspace as any).workspaceFolders = [
-				{
-					uri: { fsPath: cwd },
-					name: "parallel-read-workspace",
-					index: 0,
-				},
-			]
-		}
-
-		const createListFilesTask = () => {
-			configureWorkspace()
-			mockProvider.getValues = vi.fn().mockReturnValue({
-				autoApprovalEnabled: true,
-				alwaysAllowReadOnly: true,
-				alwaysAllowReadOnlyOutsideWorkspace: false,
-				showRooIgnoredFiles: false,
-				workspaceFolders: [{ uri: { fsPath: cwd }, name: "parallel-read-workspace", index: 0 }],
-			})
-
+	describe("saved retired tool calls", () => {
+		it("persists one terminal unknown-tool receipt for a saved list_files call", async () => {
+			const cwd = path.resolve(os.tmpdir(), "alpha-code-retired-list-files")
 			const task = new Task({
 				provider: mockProvider,
 				apiConfiguration: mockApiConfig,
-				task: "list files integration",
+				task: "replay retired list_files call",
 				taskMode: "code",
 				taskKind: "primary",
 				workspacePath: cwd,
 				startTask: false,
 			})
-			task.alphaIgnoreController = { validateAccess: vi.fn().mockReturnValue(true) } as any
-			task.alphaProtectedController = { isWriteProtected: vi.fn().mockReturnValue(false) } as any
+			const schemas = getNativeTools()
+			const registry = new ToolRegistry({ nativeTools: schemas })
+			const surface = createTaskToolSurface({ registry, schemas, mode: "code", cwd })
+			const call = {
+				type: "tool_call" as const,
+				id: "saved-list-files",
+				name: "list_files" as const,
+				arguments: { path: ".", recursive: false },
+			}
+			const response = createAgentResponse([call])
 
-			const store = MockProviderTranscriptStore.mock.results.at(-1)?.value as TranscriptStoreFixture
-			let revision = 0
-			store.commitAuthoritativeTranscript.mockImplementation(async () => {
-				const receipt = {
-					version: 1,
-					taskId: task.taskId,
-					revision: ++revision,
-					digest: "0".repeat(64),
-					writtenAt: 1,
-				}
-				store.getLastCommitReceipt.mockReturnValue(receipt)
-				return receipt
-			})
-			store.assertCommitReceipt.mockImplementation(async (receipt: unknown) => receipt)
+			expect(registry.resolve("list_files")).toBeUndefined()
+			expect(surface.isCallable("list_files")).toBe(false)
 
-			return { task, store }
-		}
-
-		const createListFilesSurface = (readGrantEnabled: boolean) =>
-			createTaskToolSurface({
-				registry: new ToolRegistry(),
-				mode: "code",
-				cwd,
-				autoApprovalEnabled: true,
-				readGrant: {
-					enabled: readGrantEnabled,
-					workspaceRoot: cwd,
-					showIgnoredFiles: false,
-				},
-			})
-
-		const listFilesCall = (id: string, relativePath: string) => ({
-			type: "tool_call" as const,
-			id,
-			name: "list_files" as const,
-			arguments: { path: relativePath, recursive: false },
-		})
-
-		const persistAssistantResponse = async (task: Task, response: ReturnType<typeof createAgentResponse>) => {
 			const saved = await (task as any).persistAssistantResponseBeforeEffects(
 				{
 					role: "assistant",
-					content: response.toolCalls.map((call) => ({
-						type: "tool_use" as const,
-						id: call.id,
-						name: call.name,
-						input: call.arguments,
-					})),
+					content: [{ type: "tool_use", id: call.id, name: call.name, input: call.arguments }],
 				},
 				undefined,
 				response,
 			)
 			expect(saved).toBe(true)
-		}
 
-		beforeEach(() => {
-			configureWorkspace()
-			mockSaveApiMessages.mockReset().mockResolvedValue(undefined)
-			mockRealpath.mockReset().mockImplementation(async (value: string) => value)
-			mockLstat.mockReset().mockImplementation(async (value: string) => {
-				if (path.basename(value) === ".gitignore") {
-					throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })
-				}
-				return { isDirectory: () => true }
-			})
-			mockOpendir.mockReset().mockResolvedValue({
-				async *[Symbol.asyncIterator]() {},
-			})
-			mockListFiles.mockReset()
-		})
+			const outcome = await (task as any).executeCanonicalToolCallsForTurn(response, surface, "code", undefined)
 
-		afterEach(() => {
-			;(vscode.workspace as any).workspaceFolders = originalWorkspaceFolders
-		})
-
-		it("overlaps independent reads, finalizes them in call order, and persists one ordered result batch", async () => {
-			const { task } = createListFilesTask()
-			const firstDirectory = path.resolve(cwd, "first")
-			const secondDirectory = path.resolve(cwd, "second")
-			const calls = [listFilesCall("list-first", "first"), listFilesCall("list-second", "second")]
-			const response = createAgentResponse(calls)
-			await persistAssistantResponse(task, response)
-			const say = vi.spyOn(task, "say").mockResolvedValue(undefined)
-
-			const pending = new Map<string, (result: [string[], boolean]) => void>()
-			mockListFiles.mockImplementation((absolutePath: string) => {
-				return new Promise<[string[], boolean]>((resolve) => {
-					pending.set(absolutePath, resolve)
-				})
-			})
-
-			const run = (task as any).executeCanonicalToolCallsForTurn(
-				response,
-				createListFilesSurface(true),
-				"code",
-				undefined,
-			)
-			await vi.waitFor(() => expect(mockListFiles).toHaveBeenCalledTimes(2))
-			expect(mockListFiles.mock.calls.map(([absolutePath]) => absolutePath).sort()).toEqual(
-				[firstDirectory, secondDirectory].sort(),
-			)
-			for (const [, , , , options] of mockListFiles.mock.calls) {
-				expect(options).toEqual({ followSymlinks: false, rejectOnError: true, workspaceRoot: cwd })
-			}
-
-			pending.get(secondDirectory)?.([[path.join(secondDirectory, "second.ts")], false])
-			expect(say).not.toHaveBeenCalled()
-			pending.get(firstDirectory)?.([[path.join(firstDirectory, "first.ts")], false])
-
-			const outcome = await run
 			expect(outcome).toMatchObject({
 				status: "completed",
-				parallelBatchCount: 1,
-				parallelToolCount: 2,
-				results: [
-					{ callId: "list-first", status: "success" },
-					{ callId: "list-second", status: "success" },
-				],
+				results: [{ callId: "saved-list-files", name: "list_files", status: "error" }],
 			})
-			expect(say.mock.calls.map(([type]) => type)).toEqual(["tool", "tool"])
-			expect(
-				task.userMessageContent
-					.filter((block): block is Anthropic.Messages.ToolResultBlockParam => block.type === "tool_result")
-					.map((block) => block.tool_use_id),
-			).toEqual(["list-first", "list-second"])
-
-			expect(await task.flushPendingToolResultsToHistory({ allowAborted: true })).toBe(true)
-			expect(mockSaveApiMessages).toHaveBeenCalledTimes(2)
-			expect(
-				(
-					mockSaveApiMessages.mock.calls.at(-1)?.[0].messages.at(-1)
-						?.content as Anthropic.ToolResultBlockParam[]
-				).map((block) => block.tool_use_id),
-			).toEqual(["list-first", "list-second"])
-			await task.flushPendingToolResultsToHistory({ allowAborted: true })
-			expect(mockSaveApiMessages).toHaveBeenCalledTimes(2)
-		})
-
-		it("joins an ignored-signal read before cancellation and does not start a follow-on listing", async () => {
-			const { task } = createListFilesTask()
-			const calls = [listFilesCall("cancel-first", "same"), listFilesCall("cancel-second", "same")]
-			const response = createAgentResponse(calls)
-			await persistAssistantResponse(task, response)
-			let observedSignal: AbortSignal | undefined
-			let release!: (result: [string[], boolean]) => void
-			mockListFiles.mockImplementation(
-				(_absolutePath: string, _recursive: boolean, _limit: number, signal?: AbortSignal) => {
-					observedSignal = signal
-					return new Promise<[string[], boolean]>((resolve) => {
-						release = resolve
-					})
-				},
-			)
-
-			const run = (task as any).executeCanonicalToolCallsForTurn(
-				response,
-				createListFilesSurface(true),
-				"code",
-				undefined,
-			)
-			await vi.waitFor(() => expect(mockListFiles).toHaveBeenCalledTimes(1))
-			const abort = task.abortTask()
-			await vi.waitFor(() => expect(observedSignal?.aborted).toBe(true))
-			let settled = false
-			void run.then(() => {
-				settled = true
-			})
-			await Promise.resolve()
-			expect(settled).toBe(false)
-			expect(mockListFiles).toHaveBeenCalledTimes(1)
-
-			release([[], false])
-			const [outcome] = await Promise.all([run, abort])
-			expect(outcome).toMatchObject({
-				status: "aborted",
-				results: [
-					{ callId: "cancel-first", status: "cancelled" },
-					{ callId: "cancel-second", status: "cancelled" },
-				],
-			})
-			expect(mockListFiles).toHaveBeenCalledTimes(1)
-
-			expect(await task.flushPendingToolResultsToHistory({ allowAborted: true })).toBe(true)
-			expect(task.userMessageContent).toEqual([])
-			expect(mockSaveApiMessages).toHaveBeenCalledTimes(2)
-			expect(mockSaveApiMessages.mock.calls.at(-1)?.[0].messages.at(-1)).toMatchObject({
-				role: "user",
-				content: [
-					{ type: "tool_result", tool_use_id: "cancel-first", is_error: true },
-					{ type: "tool_result", tool_use_id: "cancel-second", is_error: true },
-				],
-			})
-		})
-
-		it("does not broaden a disabled captured read grant when live settings enable reads", async () => {
-			const { task } = createListFilesTask()
-			const response = createAgentResponse([listFilesCall("serial-denied", "serial")])
-			await persistAssistantResponse(task, response)
-			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" } as any)
-			mockListFiles.mockResolvedValue([[path.resolve(cwd, "serial", "entry.ts")], false])
-
-			const outcome = await (task as any).executeCanonicalToolCallsForTurn(
-				response,
-				createListFilesSurface(false),
-				"code",
-				undefined,
-			)
-			expect(outcome).toMatchObject({
-				status: "completed",
-				parallelBatchCount: 0,
-				parallelToolCount: 0,
-				results: [{ callId: "serial-denied", status: "denied" }],
-			})
-			expect(ask).toHaveBeenCalledOnce()
-			expect(mockListFiles).toHaveBeenCalledOnce()
-			expect(mockListFiles.mock.calls[0][4]).toBeUndefined()
-			expect(mockRealpath).not.toHaveBeenCalled()
-			expect(await task.flushPendingToolResultsToHistory({ allowAborted: true })).toBe(true)
-			expect(mockSaveApiMessages.mock.calls.at(-1)?.[0].messages.at(-1)).toMatchObject({
-				role: "user",
-				content: [{ type: "tool_result", tool_use_id: "serial-denied", is_error: true }],
-			})
-		})
-
-		it("blocks physical read preparation when a per-call persistence fence fails", async () => {
-			const { task, store } = createListFilesTask()
-			const calls = [listFilesCall("fence-first", "first"), listFilesCall("fence-second", "second")]
-			const response = createAgentResponse(calls)
-			await persistAssistantResponse(task, response)
-			store.assertCommitReceipt.mockClear()
-			let verifyCalls = 0
-			store.assertCommitReceipt.mockImplementation(async (receipt: unknown) => {
-				verifyCalls += 1
-				if (verifyCalls === 2) throw new Error("per-call fence failed")
-				return receipt
-			})
-
-			const outcome = await (task as any).executeCanonicalToolCallsForTurn(
-				response,
-				createListFilesSurface(true),
-				"code",
-				undefined,
-			)
-			expect(outcome).toMatchObject({
-				status: "failed",
-				results: [
-					{ callId: "fence-first", status: "error" },
-					{ callId: "fence-second", status: "error" },
-				],
-				failure: { kind: "effect_fence", callId: "fence-first", message: "per-call fence failed" },
-			})
-			expect(verifyCalls).toBeGreaterThanOrEqual(2)
-			expect(mockRealpath).not.toHaveBeenCalled()
+			expect(String(outcome.results[0].content)).toContain("not registered")
 			expect(mockListFiles).not.toHaveBeenCalled()
-			expect(task.userMessageContent).toEqual([])
+			expect(await task.flushPendingToolResultsToHistory({ allowAborted: true })).toBe(true)
 			expect(mockSaveApiMessages.mock.calls.at(-1)?.[0].messages.at(-1)).toMatchObject({
 				role: "user",
-				content: [
-					{ type: "tool_result", tool_use_id: "fence-first", is_error: true },
-					{ type: "tool_result", tool_use_id: "fence-second", is_error: true },
-				],
+				content: [{ type: "tool_result", tool_use_id: "saved-list-files", is_error: true }],
 			})
 		})
 	})

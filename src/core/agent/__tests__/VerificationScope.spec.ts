@@ -11,6 +11,8 @@ import {
 	captureGitMutationState,
 	captureVerificationContent,
 	captureWorkspaceMutationState,
+	captureWorkspaceMutationDiffBaseline,
+	createWorkspaceMutationDiffs,
 	compareGitMutationState,
 	compareWorkspaceMutationState,
 	extractMutationPaths,
@@ -459,6 +461,57 @@ describe("verification scope observations", () => {
 			changedPaths: ["new.ts", "source.ts"],
 			files: { "new.ts": fingerprintContent("created"), "source.ts": "missing" },
 		})
+	})
+
+	it("builds command diffs against the captured dirty and clean baselines", async () => {
+		await git(["init", "--quiet"])
+		await write("clean.ts", "original clean\n")
+		await write("dirty.ts", "committed dirty\n")
+		await git(["add", "."])
+		await git(["commit", "--quiet", "-m", "baseline"])
+		await write("dirty.ts", "user's unsaved baseline\n")
+		const before = await captureWorkspaceMutationState(root)
+		const baseline = await captureWorkspaceMutationDiffBaseline(root, before)
+
+		await write("clean.ts", "agent clean edit\n")
+		await write("dirty.ts", "agent dirty edit\n")
+		const after = await captureWorkspaceMutationState(root, before)
+		const changes = await compareWorkspaceMutationState(root, before, after)
+		const diffs = await createWorkspaceMutationDiffs(root, before, changes, baseline)
+
+		expect(diffs.map(({ path }) => path)).toEqual(["clean.ts", "dirty.ts"])
+		expect(diffs[0]).toMatchObject({
+			originalContent: "original clean\n",
+			finalContent: "agent clean edit\n",
+			diffStats: { added: 1, removed: 1 },
+		})
+		expect(diffs[1]).toMatchObject({
+			originalContent: "user's unsaved baseline\n",
+			finalContent: "agent dirty edit\n",
+			diffStats: { added: 1, removed: 1 },
+		})
+		expect(diffs[1].diff).not.toContain("committed dirty")
+	})
+
+	it("stops resolving later Git diffs when the presentation deadline expires", async () => {
+		await git(["init", "--quiet"])
+		await write("a.ts", "before a\n")
+		await write("b.ts", "before b\n")
+		await git(["add", "."])
+		await git(["commit", "--quiet", "-m", "baseline"])
+		const before = await captureWorkspaceMutationState(root)
+		const baseline = await captureWorkspaceMutationDiffBaseline(root, before)
+		await write("a.ts", "after a\n")
+		await write("b.ts", "after b\n")
+		const after = await captureWorkspaceMutationState(root, before)
+		const changes = await compareWorkspaceMutationState(root, before, after)
+
+		let clockReads = 0
+		const now = () => (++clockReads < 7 ? 0 : 2_001)
+		const diffs = await createWorkspaceMutationDiffs(root, before, changes, baseline, now)
+
+		expect(changes.changedPaths).toEqual(["a.ts", "b.ts"])
+		expect(diffs.map(({ path }) => path)).toEqual(["a.ts"])
 	})
 
 	it("refuses unbounded non-Git trees and symlinks while accepting content-preserving initialization", async () => {

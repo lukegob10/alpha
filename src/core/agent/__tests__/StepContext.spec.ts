@@ -4,7 +4,13 @@ import type { ApiHandlerCreateMessageMetadata } from "../../../api"
 import type { ModelInfo } from "@alpha-code/types"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { getDesignHandoffSource } from "../../prompts/sections/design-handoff"
-import { createStepContext, digestValue, toStepContextMetadata, type StepContext } from "../StepContext"
+import {
+	createStepContext,
+	digestValue,
+	toStepContextMetadata,
+	type StepContext,
+	type StepInstructionFragment,
+} from "../StepContext"
 
 const modelInfo = { contextWindow: 32_000 } as ModelInfo
 const toolSchema = {
@@ -23,7 +29,13 @@ const metadata: ApiHandlerCreateMessageMetadata = {
 	parallelToolCalls: true,
 }
 
-function makeContext(overrides: Partial<{ systemPrompt: string; retryAttempt: number }> = {}): StepContext {
+function makeContext(
+	overrides: Partial<{
+		systemPrompt: string
+		retryAttempt: number
+		instructionFragments: StepInstructionFragment[]
+	}> = {},
+): StepContext {
 	const systemPrompt = overrides.systemPrompt ?? "system prompt"
 	return createStepContext({
 		contextId: "context-1",
@@ -45,6 +57,9 @@ function makeContext(overrides: Partial<{ systemPrompt: string; retryAttempt: nu
 		},
 		instructions: {
 			systemPrompt,
+			...(overrides.instructionFragments !== undefined
+				? { instructionFragments: overrides.instructionFragments }
+				: {}),
 			environmentDetails: "<environment_details>F:/workspace</environment_details>",
 			environmentSnapshot: {
 				stable: {
@@ -182,5 +197,43 @@ describe("StepContext", () => {
 		expect(context.instructions.sources).toEqual([source])
 		expect(Object.isFrozen(context.instructions.sources)).toBe(true)
 		expect(toStepContextMetadata(context).stepContextInstructionDigest).toBe(digestValue([source]))
+	})
+
+	it("captures ordered role-aware fragments immutably and includes them in the instruction digest", () => {
+		const instructionFragments: StepInstructionFragment[] = [
+			{ role: "developer", origin: "built-in-mode-instructions", content: "Use the native code mode." },
+			{ role: "user", origin: "agent-rules", content: "Keep the public API stable." },
+		]
+		const context = makeContext({ instructionFragments })
+		const digest = toStepContextMetadata(context).stepContextInstructionDigest
+
+		instructionFragments[0].content = "mutated after capture"
+		instructionFragments.reverse()
+
+		expect(context.instructions.instructionFragments).toEqual([
+			{ role: "developer", origin: "built-in-mode-instructions", content: "Use the native code mode." },
+			{ role: "user", origin: "agent-rules", content: "Keep the public API stable." },
+		])
+		expect(Object.isFrozen(context.instructions.instructionFragments)).toBe(true)
+		expect(Object.isFrozen(context.instructions.instructionFragments?.[0])).toBe(true)
+		expect(digest).toBe(
+			digestValue({
+				sources: context.instructions.sources,
+				instructionFragments: context.instructions.instructionFragments,
+			}),
+		)
+		const capturedFragments = context.instructions.instructionFragments ?? []
+		const reordered = makeContext({ instructionFragments: [...capturedFragments].reverse() })
+		const changedRoleOrOrigin = makeContext({
+			instructionFragments: capturedFragments.map(
+				(fragment, index): StepInstructionFragment =>
+					index === 0 ? { ...fragment, role: "user", origin: "custom-mode-instructions" } : { ...fragment },
+			),
+		})
+		expect(toStepContextMetadata(reordered).stepContextInstructionDigest).not.toBe(digest)
+		expect(toStepContextMetadata(changedRoleOrOrigin).stepContextInstructionDigest).not.toBe(digest)
+		expect(toStepContextMetadata(makeContext()).stepContextInstructionDigest).toBe(
+			digestValue(makeContext().instructions.sources),
+		)
 	})
 })

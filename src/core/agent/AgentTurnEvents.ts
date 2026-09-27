@@ -78,6 +78,19 @@ export type AgentTurnEvent =
 	| { type: "retry"; attempt: number; reason: string; delayMs?: number }
 	| { type: "model_request_started"; attempt: number }
 	| {
+			type: "task_performance"
+			phase:
+				| "task_setup"
+				| "checkpoint_ready"
+				| "first_provider_request"
+				| "completed_task_followup"
+				| "queue_admission"
+				| "queued_message_wait"
+				| "condensation"
+			status: "completed" | "failed" | "cancelled"
+			durationMs: number
+	  }
+	| {
 			type: "request_usage"
 			requestIndex: number
 			retry: boolean

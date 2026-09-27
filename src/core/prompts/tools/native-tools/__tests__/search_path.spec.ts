@@ -1,12 +1,11 @@
 import type OpenAI from "openai"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { getCommandChainOperator, getRulesSection } from "../../../sections/rules"
 import { getToolUseGuidelinesSection } from "../../../sections/tool-use-guidelines"
 import * as shellUtils from "../../../../../utils/shell"
-import codebaseSearch from "../codebase_search"
-import { createShellTool } from "../execute_command"
-import listFiles from "../list_files"
-import searchFiles from "../search_files"
+import { createExecCommandTool } from "../execute_command"
+import { getNativeTools } from ".."
 
 function toolFunction(tool: OpenAI.Chat.ChatCompletionTool) {
 	if (tool.type !== "function") {
@@ -15,11 +14,7 @@ function toolFunction(tool: OpenAI.Chat.ChatCompletionTool) {
 	return tool.function
 }
 
-function toolDescription(tool: OpenAI.Chat.ChatCompletionTool): string {
-	return toolFunction(tool).description ?? ""
-}
-
-describe("search path policy", () => {
+describe("native file inspection surface", () => {
 	afterEach(() => {
 		vi.restoreAllMocks()
 	})
@@ -33,85 +28,47 @@ describe("search path policy", () => {
 		expect(getCommandChainOperator()).toBe("&&")
 	})
 
-	it("does not tell PowerShell users to use Select-String as the grep equivalent", () => {
+	it("guides bounded PowerShell repository inspection", () => {
 		vi.spyOn(shellUtils, "getShell").mockReturnValue(
 			"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
 		)
 		const rules = getRulesSection("/workspace")
 
-		expect(rules).toContain("Prefer `search_files` for content and path search")
-		expect(rules).not.toContain("`Select-String` for grep")
+		expect(rules).toContain("For bounded repository inspection, use `rg` for text or path matches")
+		expect(rules).toContain("`Get-Content` for known files")
 		expect(rules).toContain("For mutations, avoid Unix-specific utilities")
-		expect(rules).toContain("`sed`, `grep`, `awk`, `cat`, `rm`, `cp`, `mv`")
+		expect(rules).not.toMatch(/\b(?:read_file|list_files|search_files|codebase_search)\b/)
 	})
 
-	it("does not tell cmd.exe users to use find/findstr as repository search", () => {
+	it("guides bounded cmd.exe repository inspection", () => {
 		vi.spyOn(shellUtils, "getShell").mockReturnValue("C:\\Windows\\System32\\cmd.exe")
 		const rules = getRulesSection("/workspace")
 
-		expect(rules).toContain("Prefer `search_files` for content and path search")
-		expect(rules).not.toContain("`find`/`findstr` for grep")
-		expect(rules).toContain("For mutations, avoid Unix-specific utilities")
-		expect(rules).toContain("`cat`")
-	})
-
-	it("describes search_files as the first tool and keeps queries 1-8 as the fan-out", () => {
-		const definition = toolFunction(searchFiles)
-		const description = definition.description ?? ""
-		const queries = (
-			definition.parameters as { properties?: { queries?: { minItems?: number; maxItems?: number } } }
-		).properties?.queries
-
-		expect(description).toContain("First tool for exact text, symbols, and filenames")
-		expect(description).toContain("queries for 1 to 8 independent searches")
-		expect(description).toContain("in one round")
-		expect(queries?.minItems).toBe(1)
-		expect(queries?.maxItems).toBe(8)
-	})
-
-	it("limits codebase_search to unknown location and one semantic query", () => {
-		const description = toolDescription(codebaseSearch)
-
-		expect(toolFunction(codebaseSearch).name).toBe("codebase_search")
-		expect(description).toContain("semantic search")
-		expect(description).toContain("Use only when the implementation location is unknown")
-		expect(description).toContain("one semantic query")
-		expect(description).toContain("Not the first hop for a known token")
-	})
-
-	it("forbids recursive list_files as the first lookup or workspace hunt", () => {
-		const description = toolDescription(listFiles)
-
-		expect(description).toContain("List the children of a known directory")
-		expect(description).toContain("Do not start a lookup or workspace hunt with recursive listing")
-	})
-
-	it("says shell is not a search fallback when search_files can run", () => {
-		expect(toolDescription(createShellTool())).toContain("Not a search fallback when search_files can run")
-		expect(toolDescription(createShellTool(true))).toContain("strict Plan mode")
-		expect(toolDescription(createShellTool(true))).not.toContain("Not a search fallback when search_files can run")
-	})
-
-	it("does not emit shell or recursive listing as the first search for a definition lookup", () => {
-		vi.spyOn(shellUtils, "getShell").mockReturnValue(
-			"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+		expect(rules).toContain(
+			"For bounded repository inspection, use `rg` where installed and `type` for known files",
 		)
-		const question = "Where is retryLimit defined?"
-		const combined = [
-			question,
-			getRulesSection("/workspace"),
-			getToolUseGuidelinesSection(),
-			toolDescription(searchFiles),
-			toolDescription(listFiles),
-			toolDescription(createShellTool()),
-		].join("\n")
+		expect(rules).toContain("For mutations, avoid Unix-specific utilities")
+		expect(rules).not.toMatch(/\b(?:read_file|list_files|search_files|codebase_search)\b/)
+	})
 
-		expect(combined).toContain("start with search_files")
-		expect(combined).toContain("First tool for exact text, symbols, and filenames")
-		expect(combined).toContain("Not a search fallback when search_files can run")
-		expect(combined).toContain("Do not start a lookup or workspace hunt with recursive listing")
-		expect(combined).toContain("Do not start with recursive list_files or shell search")
-		expect(combined).not.toContain("`Select-String` for grep")
-		expect(combined).not.toContain("`find`/`findstr` for grep")
+	it.each([
+		{ name: "Code", tools: getNativeTools() },
+		{ name: "Plan", tools: getNativeTools({ planMode: true }) },
+	])("excludes retired file tools from the $name fresh catalog", ({ tools }) => {
+		const names = tools.flatMap((tool) => (tool.type === "function" ? [tool.function.name] : []))
+
+		expect(names).toContain("exec_command")
+		for (const legacyName of ["read_file", "list_files", "search_files", "codebase_search"])
+			expect(names, legacyName).not.toContain(legacyName)
+	})
+
+	it("describes bounded exec_command inspection for Code and strict Plan mode", () => {
+		expect(toolFunction(createExecCommandTool()).description).toContain(
+			"workspace-scoped commands for file inspection",
+		)
+		expect(toolFunction(createExecCommandTool(true)).description).toContain("strict Plan mode")
+		expect(getToolUseGuidelinesSection()).toContain("exec_command calls with rg")
+		expect(getToolUseGuidelinesSection(undefined, true)).toContain("exec_command calls with rg")
+		expect(getToolUseGuidelinesSection()).not.toMatch(/\b(?:read_file|list_files|search_files|codebase_search)\b/)
 	})
 })

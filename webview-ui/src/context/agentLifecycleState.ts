@@ -31,6 +31,7 @@ const lifecycleEventTypes = new Set([
 	"item_added",
 	"item_updated",
 	"tool_call_accepted",
+	"tool_effect_started",
 	"tool_result_recorded",
 	"approval_requested",
 	"approval_resolved",
@@ -160,6 +161,7 @@ function createSnapshotFromEvent(event: AgentLifecycleEvent): AgentLifecycleSnap
 		items: [],
 		steps: [],
 		acceptedToolCallIds: [],
+		effectStartedToolCallIds: [],
 		terminalToolCallIds: [],
 		processedEvents: [],
 	}
@@ -217,6 +219,14 @@ function applyEvent(snapshot: AgentLifecycleSnapshot, event: AgentLifecycleEvent
 		case "tool_result_recorded":
 		case "approval_requested":
 			addItem(snapshot, event.payload.item)
+			return
+		case "tool_effect_started":
+			if (
+				snapshot.acceptedToolCallIds.includes(event.payload.toolCallId) &&
+				!snapshot.effectStartedToolCallIds.includes(event.payload.toolCallId)
+			) {
+				snapshot.effectStartedToolCallIds.push(event.payload.toolCallId)
+			}
 			return
 		case "item_updated":
 		case "approval_resolved": {

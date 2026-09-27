@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert"
 import { test } from "node:test"
 
-import { MAX_WORKFLOW_TURNS, readWorkflowSelection, WorkflowFailure } from "./contracts"
+import { assertWorkflowResult, MAX_WORKFLOW_TURNS, readWorkflowSelection, WorkflowFailure } from "./contracts"
 
 test("workflow selection rejects unknown IDs, ambiguous phases, and unbounded budgets", () => {
 	for (const env of [
@@ -47,4 +47,23 @@ test("turn selection accepts both supported endpoints and rejects the adjacent u
 				}),
 			WorkflowFailure,
 		)
+})
+
+test("workflow results validate optional effective E2E approval-policy identities", () => {
+	const result = {
+		schemaVersion: 1,
+		runId: "approval-policy-identity",
+		scenarioId: "problem-solving-attempt",
+		phase: "run",
+		status: "passed",
+		checks: [],
+		taskIds: ["task-1"],
+		hostVersion: "1.136.1",
+		providerMode: "live-copilot",
+		model: { id: "gpt-5.6-luna" },
+		requestsUsed: 1,
+		e2eApprovalPolicySha256: "a".repeat(64),
+	}
+	assertWorkflowResult(result)
+	assert.throws(() => assertWorkflowResult({ ...result, e2eApprovalPolicySha256: "invalid" }), WorkflowFailure)
 })

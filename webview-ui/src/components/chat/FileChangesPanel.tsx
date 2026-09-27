@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useState, useCallback, useRef, useId } from "react"
 import { useTranslation } from "react-i18next"
 import { ChevronDown, ChevronRight, FileDiff, ArrowUpRight } from "lucide-react"
-import { createTwoFilesPatch } from "diff"
+import { createTwoFilesPatch, diffLines } from "diff"
 
 import type { AlphaMessage, ExtensionMessage } from "@alpha-code/types"
 
@@ -9,7 +9,11 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { cn } from "@/lib/utils"
 import { vscode } from "@src/utils/vscode"
 
-import { fileChangesFromMessages, type FileChangeEntry } from "./utils/fileChangesFromMessages"
+import {
+	fileChangesFromMessages,
+	normalizedFileChangePath,
+	type FileChangeEntry,
+} from "./utils/fileChangesFromMessages"
 import DiffView from "../common/DiffView"
 
 interface FileChangesPanelProps {
@@ -17,6 +21,16 @@ interface FileChangesPanelProps {
 	taskId?: string
 	className?: string
 	onExpandedChange?: () => void
+}
+
+function countChangedLines(originalContent: string, finalContent: string): { added: number; removed: number } {
+	let added = 0
+	let removed = 0
+	for (const change of diffLines(originalContent, finalContent)) {
+		if (change.added) added += change.count ?? 0
+		if (change.removed) removed += change.count ?? 0
+	}
+	return { added, removed }
 }
 
 const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedChange }: FileChangesPanelProps) => {
@@ -27,6 +41,9 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
 	const [finalContentByPath, setFinalContentByPath] = useState<Record<string, string | null>>({})
 	const pendingPathsRef = useRef<Set<string>>(new Set())
+	const netStatsCacheRef = useRef(
+		new Map<string, { originalContent: string; finalContent: string; stats: { added: number; removed: number } }>(),
+	)
 
 	// Reset expanded file rows and final content cache when switching to a different task
 	useEffect(() => {
@@ -35,6 +52,7 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 		setExpandedPaths(new Set())
 		setFinalContentByPath({})
 		pendingPathsRef.current = new Set()
+		netStatsCacheRef.current.clear()
 	}, [taskId])
 
 	const fileChanges = useMemo(() => fileChangesFromMessages(clineMessages), [clineMessages])
@@ -43,7 +61,7 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 	const byPath = useMemo(() => {
 		const map = new Map<string, FileChangeEntry[]>()
 		for (const entry of fileChanges) {
-			const key = entry.path
+			const key = normalizedFileChangePath(entry.path)
 			const list = map.get(key) ?? []
 			list.push(entry)
 			map.set(key, list)
@@ -51,16 +69,49 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 		return map
 	}, [fileChanges])
 
-	// Aggregate total lines added/removed across all files for the panel header
-	const totalStats = useMemo(() => {
-		return fileChanges.reduce(
-			(acc, e) => ({
-				added: acc.added + (e.diffStats?.added ?? 0),
-				removed: acc.removed + (e.diffStats?.removed ?? 0),
-			}),
-			{ added: 0, removed: 0 },
-		)
-	}, [fileChanges])
+	const summariesByPath = useMemo(() => {
+		const summaries = new Map<string, { added: number; removed: number }>()
+		for (const [path, entries] of byPath) {
+			const originalContent = entries[0].originalContent
+			const finalContent = entries[entries.length - 1].finalContent
+			if (originalContent !== undefined && finalContent !== undefined) {
+				const cached = netStatsCacheRef.current.get(path)
+				if (cached?.originalContent === originalContent && cached.finalContent === finalContent) {
+					summaries.set(path, cached.stats)
+				} else {
+					const stats = countChangedLines(originalContent, finalContent)
+					if (!netStatsCacheRef.current.has(path) && netStatsCacheRef.current.size >= 128) {
+						const oldestPath = netStatsCacheRef.current.keys().next().value
+						if (oldestPath !== undefined) netStatsCacheRef.current.delete(oldestPath)
+					}
+					netStatsCacheRef.current.set(path, { originalContent, finalContent, stats })
+					summaries.set(path, stats)
+				}
+			} else {
+				const stats = entries.reduce(
+					(acc, entry) => ({
+						added: acc.added + (entry.diffStats?.added ?? 0),
+						removed: acc.removed + (entry.diffStats?.removed ?? 0),
+					}),
+					{ added: 0, removed: 0 },
+				)
+				summaries.set(path, stats)
+			}
+		}
+		return summaries
+	}, [byPath])
+
+	const totalStats = useMemo(
+		() =>
+			Array.from(summariesByPath.values()).reduce(
+				(acc, stats) => ({
+					added: acc.added + stats.added,
+					removed: acc.removed + stats.removed,
+				}),
+				{ added: 0, removed: 0 },
+			),
+		[summariesByPath],
+	)
 
 	const togglePath = useCallback(
 		(path: string) => {
@@ -75,15 +126,17 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 		[onExpandedChange],
 	)
 
-	// Request final file content when a row is expanded and we have originalContent
+	// Older edit records need a live read; completed records carry their own immutable final content.
 	useEffect(() => {
 		for (const path of expandedPaths) {
 			const entries = byPath.get(path)
 			if (!entries?.length) continue
 			const originalContent = entries[0].originalContent
+			const recordedFinalContent = entries[entries.length - 1].finalContent
 			const lookupPath = path.startsWith("./") ? path.slice(2) : path
 			if (
 				originalContent !== undefined &&
+				recordedFinalContent === undefined &&
 				!(lookupPath in finalContentByPath) &&
 				!pendingPathsRef.current.has(lookupPath)
 			) {
@@ -160,20 +213,16 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 						.map(([path, entries], index) => {
 							const originalContent = entries[0].originalContent
 							const lookupPath = path.startsWith("./") ? path.slice(2) : path
-							const finalContent = finalContentByPath[lookupPath]
-							const hasMergedDiff =
-								originalContent !== undefined && finalContent != null && finalContent !== ""
-							const displayDiff = hasMergedDiff
-								? createTwoFilesPatch(path, path, originalContent, finalContent)
-								: entries.map((e) => e.diff).join("\n\n")
-							const combinedStats = entries.reduce(
-								(acc, e) => ({
-									added: acc.added + (e.diffStats?.added ?? 0),
-									removed: acc.removed + (e.diffStats?.removed ?? 0),
-								}),
-								{ added: 0, removed: 0 },
-							)
+							const finalContent =
+								entries[entries.length - 1].finalContent ?? finalContentByPath[lookupPath]
+							const hasMergedDiff = originalContent !== undefined && finalContent != null
 							const isExpanded = expandedPaths.has(path)
+							const displayDiff = !isExpanded
+								? ""
+								: hasMergedDiff
+									? createTwoFilesPatch(path, path, originalContent, finalContent)
+									: entries.map((e) => e.diff).join("\n\n")
+							const combinedStats = summariesByPath.get(path)!
 							return (
 								<div key={path} className="group/file">
 									<div className="flex items-center px-3 hover:bg-vscode-list-hoverBackground">

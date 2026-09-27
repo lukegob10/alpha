@@ -133,12 +133,12 @@ describe("convertToVsCodeLmMessages", () => {
 		expect(result).toHaveLength(1)
 		expect(result[0].role).toBe("user")
 		expect(result[0].content).toHaveLength(2)
-		const [toolResult, textContent] = result[0].content as [
-			MockLanguageModelToolResultPart,
+		const [textContent, toolResult] = result[0].content as [
 			MockLanguageModelTextPart,
+			MockLanguageModelToolResultPart,
 		]
-		expect(toolResult.type).toBe("tool_result")
 		expect(textContent.type).toBe("text")
+		expect(toolResult.type).toBe("tool_result")
 	})
 
 	it("should handle complex assistant messages with tool calls", () => {
@@ -162,11 +162,55 @@ describe("convertToVsCodeLmMessages", () => {
 		expect(result).toHaveLength(1)
 		expect(result[0].role).toBe("assistant")
 		expect(result[0].content).toHaveLength(2)
-		// Text must come before tool calls so that tool calls are at the end,
-		// properly followed by user message with tool results
+		// Keep the model's text and tool call in their original order.
 		const [textContent, toolCall] = result[0].content as [MockLanguageModelTextPart, MockLanguageModelToolCallPart]
 		expect(textContent.type).toBe("text")
 		expect(toolCall.type).toBe("tool_call")
+	})
+
+	it("preserves ordered assistant parts around tool calls for continuation", () => {
+		const result = convertToVsCodeLmMessages([
+			{
+				role: "assistant",
+				content: [
+					{ type: "text", text: "Before" },
+					{ type: "tool_use", id: "tool-1", name: "read_file", input: { path: "a.txt" } },
+					{ type: "text", text: "After" },
+					{ type: "tool_use", id: "tool-2", name: "read_file", input: { path: "b.txt" } },
+				],
+			},
+		])
+
+		expect(result[0].content).toMatchObject([
+			{ type: "text", value: "Before" },
+			{ type: "tool_call", callId: "tool-1", name: "read_file", input: { path: "a.txt" } },
+			{ type: "text", value: "After" },
+			{ type: "tool_call", callId: "tool-2", name: "read_file", input: { path: "b.txt" } },
+		])
+	})
+
+	it("preserves ordered user parts around tool results for continuation", () => {
+		const result = convertToVsCodeLmMessages([
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: "First" },
+					{ type: "tool_result", tool_use_id: "tool-1", content: "Output one" },
+					{ type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } },
+					{ type: "text", text: "Second" },
+					{ type: "tool_result", tool_use_id: "tool-2", content: "Output two" },
+				],
+			},
+		])
+
+		expect(result[0].content).toMatchObject([
+			{ type: "text", value: "First" },
+			{ type: "tool_result", callId: "tool-1", content: [{ type: "text", value: "Output one" }] },
+			{ type: "data", mimeType: "image/png", data: expect.any(Uint8Array) },
+			{ type: "text", value: "Second" },
+			{ type: "tool_result", callId: "tool-2", content: [{ type: "text", value: "Output two" }] },
+		])
+		expect(Array.from((result[0].content[2] as MockLanguageModelDataPart).data)).toEqual([104, 101, 108, 108, 111])
 	})
 
 	it("should convert base64 image blocks to VS Code data parts", () => {

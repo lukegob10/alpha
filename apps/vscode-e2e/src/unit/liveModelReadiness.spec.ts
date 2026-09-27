@@ -328,6 +328,7 @@ test("a missing or disabled provider is not installed, enabled, or queried", asy
 	const host = fixture({ missing: true })
 	const result = await discoverLiveCopilotModels({}, host.dependencies)
 	assert.equal(result.readiness?.status, "provider-unavailable")
+	assert.equal(result.readiness?.unavailableReason, "copilot-chat-extension-missing")
 	assert.equal(host.state().activations, 0)
 	assert.equal(host.state().queries, 0)
 	assert.equal(host.state().disposed, 1)

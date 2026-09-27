@@ -172,7 +172,6 @@ describe("importExport", () => {
 					mode: "code",
 					autoApprovalEnabled: true,
 					alwaysAllowTickets,
-					githubToken: "legacy-token-that-must-be-dropped",
 				},
 			})
 

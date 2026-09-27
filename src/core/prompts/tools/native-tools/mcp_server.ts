@@ -60,12 +60,17 @@ export function buildMcpServerTools(
 				// No schema provided - create a minimal valid schema
 				parameters = { type: "object", additionalProperties: false } as JsonSchema
 			}
+			const description = tool.outputSchema
+				? [tool.description, `Output schema (JSON Schema):\n${JSON.stringify(tool.outputSchema)}`]
+						.filter(Boolean)
+						.join("\n\n")
+				: tool.description
 
 			const toolDefinition: OpenAI.Chat.ChatCompletionTool = {
 				type: "function",
 				function: {
 					name: toolName,
-					description: tool.description,
+					description,
 					parameters: parameters as OpenAI.FunctionParameters,
 				},
 			}

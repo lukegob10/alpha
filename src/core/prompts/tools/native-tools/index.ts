@@ -1,29 +1,29 @@
 import { ticketTools } from "./tickets"
 import type OpenAI from "openai"
 import accessMcpResource from "./access_mcp_resource"
+import { mcpResourceTools } from "./mcp_resources"
 import applyPatch from "./apply_patch"
-import askFollowupQuestion from "./ask_followup_question"
-import { createAttemptCompletionTool } from "./attempt_completion"
+import requestUserInput from "./request_user_input"
+import requestUserInputAsync from "./request_user_input_async"
 import codebaseSearch from "./codebase_search"
-import editTool from "./edit"
-import { createShellTool } from "./execute_command"
+import { createExecCommandTool } from "./execute_command"
 import { browserTools } from "./browser"
 import listFiles from "./list_files"
-import newTask from "./new_task"
 import type { ManagedAgentKind } from "./delegate_task"
 import { createSpawnAgentTool } from "./spawn_agent"
 import { list_agents as listAgents } from "./list_agents"
 import { wait_agent as waitAgent } from "./wait_agent"
 import { send_message as sendMessage } from "./send_message"
 import { followup_task as followupTask } from "./followup_task"
-import { close_agent as closeAgent } from "./close_agent"
-import manageCommand from "./manage_command"
-import { createReadFileTool, type ReadFileToolOptions } from "./read_file"
+import { interrupt_agent as interruptAgent } from "./interrupt_agent"
+import { crossTaskOrchestrationTools } from "./cross_task_orchestration"
+import { createWriteStdinTool } from "./manage_command"
+import { createReadFileTool } from "./read_file"
+import { viewImageToolSchema } from "./view_image"
 import runSlashCommand from "./run_slash_command"
 import skill from "./skill"
 import searchFiles from "./search_files"
-import updateTodoList from "./update_todo_list"
-import writeToFile from "./write_to_file"
+import updatePlan from "./update_plan"
 
 export { getMcpServerTools } from "./mcp_server"
 export { convertOpenAIToolToAnthropic, convertOpenAIToolsToAnthropic } from "./converters"
@@ -41,10 +41,25 @@ export interface NativeToolsOptions {
 	taskKind?: "primary" | "subagent"
 	/** Narrows managed-agent roles advertised to the model. Runtime policy validates them independently. */
 	agentKinds?: readonly ManagedAgentKind[]
+	/** Configured names shown in the spawn schema at the captured step boundary. */
+	namedAgentTypes?: readonly { name: string; description: string }[]
 	/** Advertise the host-enforced non-mutating command contract used by strict Plan mode. */
 	planMode?: boolean
-	/** Include the GPT-family structured patch schema in this request's eager catalog. */
-	includeApplyPatch?: boolean
+	/** Include request_user_input in the Plan-mode model catalog. */
+	includeRequestUserInput?: boolean
+	/** Include the nonblocking user question tool for catalog-capable root tasks. */
+	includeRequestUserInputAsync?: boolean
+	/** MCP resources are exposed only when at least one enabled server is configured. */
+	mcpResourcesAvailable?: boolean
+	/** Retain the retired resource declaration for provider history, without granting a new call. */
+	includeLegacyMcpResource?: boolean
+	/** Root tasks control direct children; an independent child can only message its parent. */
+	crossTaskRole?: "root" | "child" | "none"
+}
+
+/** Schemas kept only for decoding and dispatching tool calls saved by older tasks. */
+export function getLegacyFileToolSchemas(options: Pick<NativeToolsOptions, "supportsImages"> = {}) {
+	return [codebaseSearch, listFiles, createReadFileTool({ supportsImages: options.supportsImages }), searchFiles]
 }
 
 /**
@@ -59,47 +74,48 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		availableBrowserToolNames,
 		taskKind = "primary",
 		agentKinds,
+		namedAgentTypes,
 		planMode = false,
-		includeApplyPatch = false,
+		includeRequestUserInput = taskKind === "primary" && planMode,
+		includeRequestUserInputAsync = false,
+		mcpResourcesAvailable = false,
+		includeLegacyMcpResource = false,
+		crossTaskRole = "none",
 	} = options
 
-	const readFileOptions: ReadFileToolOptions = {
-		supportsImages,
-	}
 	const availableBrowserTools = browserTools.filter((tool) => {
 		const name = tool.function.name
 		if (availableBrowserToolNames && !availableBrowserToolNames.includes(name)) return false
-		// The runtime registry builds from the full static catalog when availability
-		// is omitted. Production model requests pass the live VS Code catalog and can
-		// then omit image-returning tools for text-only models.
+		// Production model requests pass the live VS Code catalog and can then omit
+		// image-returning tools for text-only models.
 		return !availableBrowserToolNames || supportsImages || name !== "screenshot_page"
 	})
 
 	return [
 		...ticketTools,
-		accessMcpResource,
-		...(includeApplyPatch ? [applyPatch] : []),
-		askFollowupQuestion,
-		createAttemptCompletionTool(taskKind),
-		codebaseSearch,
-		createShellTool(planMode),
+		...(mcpResourcesAvailable ? mcpResourceTools : []),
+		...(includeLegacyMcpResource ? [accessMcpResource] : []),
+		applyPatch,
+		...(includeRequestUserInput ? [requestUserInput] : []),
+		...(includeRequestUserInputAsync && taskKind === "primary" ? [requestUserInputAsync] : []),
+		createExecCommandTool(planMode),
+		...(supportsImages ? [viewImageToolSchema] : []),
 		...availableBrowserTools,
-		listFiles,
-		newTask,
-		createSpawnAgentTool(agentKinds),
+		createSpawnAgentTool(agentKinds, namedAgentTypes),
+		...(crossTaskRole === "root"
+			? crossTaskOrchestrationTools
+			: crossTaskRole === "child"
+				? [crossTaskOrchestrationTools[3]]
+				: []),
 		listAgents,
 		waitAgent,
 		sendMessage,
 		followupTask,
-		closeAgent,
-		...(!planMode ? [manageCommand] : []),
-		createReadFileTool(readFileOptions),
+		interruptAgent,
+		...(!planMode ? [createWriteStdinTool()] : []),
 		runSlashCommand,
 		skill,
-		editTool,
-		searchFiles,
-		updateTodoList,
-		writeToFile,
+		...(taskKind === "primary" ? [updatePlan] : []),
 	] satisfies OpenAI.Chat.ChatCompletionTool[]
 }
 

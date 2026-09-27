@@ -16,14 +16,14 @@ interface ReasoningBlockProps {
 
 export const ReasoningBlock = ({ content, summary, isStreaming, isLast, collapsedByDefault }: ReasoningBlockProps) => {
 	const { t } = useTranslation()
-	const [isCollapsed, setIsCollapsed] = useState(collapsedByDefault ?? true)
+	const [isCollapsed, setIsCollapsed] = useState(collapsedByDefault ?? false)
 
 	const startTimeRef = useRef<number>(Date.now())
 	const [elapsed, setElapsed] = useState<number>(0)
 	const contentRef = useRef<HTMLDivElement>(null)
 
 	useEffect(() => {
-		setIsCollapsed(collapsedByDefault ?? true)
+		setIsCollapsed(collapsedByDefault ?? false)
 	}, [collapsedByDefault])
 
 	useEffect(() => {

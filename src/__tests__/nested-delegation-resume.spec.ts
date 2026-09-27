@@ -195,6 +195,8 @@ describe("Nested delegation resume (A → B → C)", () => {
 			recordCompletionCandidate: vi.fn(),
 			getCompletionGateDecision: vi.fn(async () => ({ allowed: true, modelCanResolveRejection: true })),
 			waitForCompletionGateDecision: vi.fn(async () => ({ allowed: true, modelCanResolveRejection: true })),
+			evaluateCompletionHooks: vi.fn(async () => ({})),
+			getTaskLifetimeCancellationSignal: vi.fn(() => new AbortController().signal),
 			messageQueueService: {
 				isEmpty: vi.fn(() => true),
 				on: vi.fn(),
@@ -264,6 +266,8 @@ describe("Nested delegation resume (A → B → C)", () => {
 			recordCompletionCandidate: vi.fn(),
 			getCompletionGateDecision: vi.fn(async () => ({ allowed: true, modelCanResolveRejection: true })),
 			waitForCompletionGateDecision: vi.fn(async () => ({ allowed: true, modelCanResolveRejection: true })),
+			evaluateCompletionHooks: vi.fn(async () => ({})),
+			getTaskLifetimeCancellationSignal: vi.fn(() => new AbortController().signal),
 			messageQueueService: {
 				isEmpty: vi.fn(() => true),
 				on: vi.fn(),

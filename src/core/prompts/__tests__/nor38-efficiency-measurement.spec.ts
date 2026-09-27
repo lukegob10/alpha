@@ -10,7 +10,7 @@ import { getRulesSection } from "../sections/rules"
 import { getSharedToolUseSection } from "../sections/tool-use"
 import { getToolUseGuidelinesSection } from "../sections/tool-use-guidelines"
 import attemptCompletion from "../tools/native-tools/attempt_completion"
-import updateTodoList from "../tools/native-tools/update_todo_list"
+import updatePlan from "../tools/native-tools/update_plan"
 
 vi.mock("../../../utils/shell", () => ({ getShell: () => "/bin/bash" }))
 
@@ -28,7 +28,7 @@ describe("NOR38 emitted workflow prompt measurement", () => {
 			toolUseGuidelines: getToolUseGuidelinesSection(),
 			codeInstructions: codeInstructions!,
 			completionSchema: JSON.stringify(attemptCompletion),
-			todoSchema: JSON.stringify(updateTodoList),
+			planSchema: JSON.stringify(updatePlan),
 		}
 		const samples = []
 		for (const [section, text] of Object.entries(sections)) {

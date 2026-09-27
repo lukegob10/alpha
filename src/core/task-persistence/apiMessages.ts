@@ -8,7 +8,9 @@ import { fileExistsAtPath } from "../../utils/fs"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { getTaskDirectoryPath } from "../../utils/storage"
+import type { CompletionHookPromptProvenance } from "../agent/CompletionHooks"
 import { atomicWriteText, withFileLock } from "./atomicWrite"
+import { invalidPersistedApiMessages } from "./validatePersistedApiMessages"
 import {
 	assertAuthoritativeTranscriptMissing,
 	assertAuthoritativeTranscriptReplacementAllowed,
@@ -27,6 +29,8 @@ export interface ApiMessagesCommitReceipt {
 }
 
 export type ApiMessage = Anthropic.MessageParam & {
+	/** Host-owned source of a hook continuation; retained in the canonical transcript across reload. */
+	hook_prompt?: CompletionHookPromptProvenance
 	ts?: number
 	isSummary?: boolean
 	id?: string
@@ -66,26 +70,21 @@ export async function readApiMessages({
 
 	if (await fileExistsAtPath(filePath)) {
 		const fileContent = await fs.readFile(filePath, "utf8")
+		let parsedData: unknown
 		try {
-			const parsedData = JSON.parse(fileContent)
-			if (!Array.isArray(parsedData)) {
-				console.warn(
-					`[readApiMessages] Parsed data is not an array (got ${typeof parsedData}), returning empty. TaskId: ${taskId}, Path: ${filePath}`,
-				)
-				return []
-			}
-			if (parsedData.length === 0) {
-				console.error(
-					`[Alpha-Debug] readApiMessages: Found API conversation history file, but it's empty (parsed as []). TaskId: ${taskId}, Path: ${filePath}`,
-				)
-			}
-			return parsedData
+			parsedData = JSON.parse(fileContent)
 		} catch (error) {
-			console.warn(
-				`[readApiMessages] Error parsing API conversation history file, returning empty. TaskId: ${taskId}, Path: ${filePath}, Error: ${error}`,
+			throw new ProviderTranscriptStoreError(
+				"invalid_messages",
+				"Invalid API conversation history JSON",
+				taskId,
+				{
+					cause: error,
+				},
 			)
-			return []
 		}
+		assertValidHistory(parsedData, taskId)
+		return parsedData
 	} else {
 		return withLegacyTranscriptMigration(filePath, taskId, async () => {
 			const oldPath = path.join(taskDir, "claude_messages.json")
@@ -96,19 +95,16 @@ export async function readApiMessages({
 				try {
 					parsedData = JSON.parse(fileContent)
 				} catch (error) {
-					console.warn(
-						`[readApiMessages] Error parsing OLD API conversation history file (claude_messages.json), returning empty. TaskId: ${taskId}, Path: ${oldPath}, Error: ${error}`,
+					throw new ProviderTranscriptStoreError(
+						"invalid_messages",
+						"Invalid legacy API conversation history JSON",
+						taskId,
+						{
+							cause: error,
+						},
 					)
-					// DO NOT unlink oldPath if parsing failed.
-					return []
 				}
-
-				if (!Array.isArray(parsedData)) {
-					console.warn(
-						`[readApiMessages] Parsed OLD data is not an array (got ${typeof parsedData}), returning empty. TaskId: ${taskId}, Path: ${oldPath}`,
-					)
-					return []
-				}
+				assertValidHistory(parsedData, taskId)
 				if (parsedData.length === 0) {
 					console.error(
 						`[Alpha-Debug] readApiMessages: Found OLD API conversation history file (claude_messages.json), but it's empty (parsed as []). TaskId: ${taskId}, Path: ${oldPath}`,
@@ -138,6 +134,17 @@ export async function readApiMessages({
 			)
 			return []
 		})
+	}
+}
+
+function assertValidHistory(value: unknown, taskId: string): asserts value is ApiMessage[] {
+	const problem = invalidPersistedApiMessages(value)
+	if (problem) {
+		throw new ProviderTranscriptStoreError(
+			"invalid_messages",
+			`Invalid API conversation history: ${problem}`,
+			taskId,
+		)
 	}
 }
 

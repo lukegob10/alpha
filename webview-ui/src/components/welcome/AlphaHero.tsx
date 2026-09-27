@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils"
 
 type AlphaHeroProps = {
-	variant?: "compact" | "welcome"
+	variant?: "compact" | "welcome" | "watermark"
 	className?: string
 }
 
@@ -38,6 +38,16 @@ const AlphaHero = ({ variant = "compact", className }: AlphaHeroProps) => {
 			<div
 				className={cn("relative forced-color-adjust-none flex w-full items-start overflow-visible", className)}>
 				<AlphaWolfIcon className="brand-mark h-28 w-36 origin-left scale-125" />
+			</div>
+		)
+	}
+
+	if (variant === "watermark") {
+		return (
+			<div
+				aria-hidden="true"
+				className={cn("flex w-full items-center justify-center forced-color-adjust-none", className)}>
+				<AlphaWolfIcon className="brand-mark brand-mark-watermark h-24 w-24 min-[400px]:h-32 min-[400px]:w-32" />
 			</div>
 		)
 	}

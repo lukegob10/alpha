@@ -90,7 +90,9 @@ VS Code **1.122.1** is the reference product and release-gating host, not merely
   Defer nonessential initialization and dispose subscriptions, watchers, terminals, processes, and timers.
 - A deliberate VS Code baseline migration must update the extension manifest, E2E runner/defaults, fixture manifest,
   exact-host tests, workflows, compatible VS Code types, and documentation as one reviewed change.
-- Testing on latest stable is useful for forward compatibility, but it never replaces the exact-host gate:
+- Deterministic extension-host tests use VS Code 1.122.1. Live GitHub Copilot evaluations may use the current installed
+  VS Code version with a dedicated, signed-in Alpha-owned profile. Record the exact host version, selected model ID,
+  profile, and run conditions with the result. A live run does not replace the deterministic exact-host gate:
 
 ```sh
 pnpm --filter @alpha-code/vscode-e2e test:smoke:1221

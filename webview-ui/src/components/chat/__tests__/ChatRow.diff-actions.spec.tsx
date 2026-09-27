@@ -21,6 +21,7 @@ vi.mock("react-i18next", () => ({
 				"chat:fileOperations.wantsToEdit": "Alpha wants to edit this file",
 				"chat:fileOperations.wantsToEditProtected": "Alpha wants to edit a protected file",
 				"chat:fileOperations.wantsToEditOutsideWorkspace": "Alpha wants to edit outside workspace",
+				"chat:fileOperations.wantsToCreate": "Alpha wants to create a new file",
 				"chat:fileOperations.wantsToApplyBatchChanges": "Alpha wants to apply batch changes",
 			}
 			return map[key] || key
@@ -143,7 +144,7 @@ describe("ChatRow - inline diff stats and actions", () => {
 		expect(screen.getByText("-2")).toBeInTheDocument()
 	})
 
-	it("uses same edit treatment for newFileCreated", () => {
+	it("shows a creation label and line counts for newFileCreated", () => {
 		const content = "a\nb\nc"
 		const message = createToolAskMessage({
 			tool: "newFileCreated",
@@ -154,7 +155,7 @@ describe("ChatRow - inline diff stats and actions", () => {
 
 		const { container } = renderChatRow(message)
 
-		expect(screen.getByText("Alpha wants to edit this file")).toBeInTheDocument()
+		expect(screen.getByText("Alpha wants to create a new file")).toBeInTheDocument()
 		expect(container.querySelector(".codicon-diff")).toBeInTheDocument()
 		expect(screen.getByText("+3")).toBeInTheDocument()
 		expect(screen.getByText("-0")).toBeInTheDocument()

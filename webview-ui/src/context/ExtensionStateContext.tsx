@@ -135,6 +135,10 @@ export interface ExtensionStateContextType extends ExtensionState {
 	setAutoCondenseContext: (value: boolean) => void
 	autoCondenseContextPercent: number
 	setAutoCondenseContextPercent: (value: number) => void
+	autoCondenseContextScope: NonNullable<ExtensionState["autoCondenseContextScope"]>
+	postTurnCondenseContextPercent: number
+	setAutoCondenseContextScope: (value: NonNullable<ExtensionState["autoCondenseContextScope"]>) => void
+	setPostTurnCondenseContextPercent: (value: number) => void
 	includeDiagnosticMessages?: boolean
 	setIncludeDiagnosticMessages: (value: boolean) => void
 	maxDiagnosticMessages?: number
@@ -482,10 +486,12 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		terminalZshP10k: false, // Default Powerlevel10k integration setting
 		terminalZdotdir: false, // Default ZDOTDIR handling setting
 		historyPreviewCollapsed: false, // Initialize the new state (default to expanded)
-		reasoningBlockCollapsed: true, // Default to collapsed
+		reasoningBlockCollapsed: false,
 		enterBehavior: "send", // Default: Enter sends, Shift+Enter creates newline
 		autoCondenseContext: true,
 		autoCondenseContextPercent: 100,
+		autoCondenseContextScope: "full-context",
+		postTurnCondenseContextPercent: 0,
 		profileThresholds: {},
 		codebaseIndexConfig: {
 			codebaseIndexEnabled: true,
@@ -955,7 +961,9 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 
 	const contextValue: ExtensionStateContextType = {
 		...state,
-		reasoningBlockCollapsed: state.reasoningBlockCollapsed ?? true,
+		autoCondenseContextScope: state.autoCondenseContextScope ?? "full-context",
+		postTurnCondenseContextPercent: state.postTurnCondenseContextPercent ?? 0,
+		reasoningBlockCollapsed: state.reasoningBlockCollapsed ?? false,
 		didHydrateState,
 		showWelcome,
 		theme,
@@ -1058,6 +1066,10 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		setAutoCondenseContext: (value) => setState((prevState) => ({ ...prevState, autoCondenseContext: value })),
 		setAutoCondenseContextPercent: (value) =>
 			setState((prevState) => ({ ...prevState, autoCondenseContextPercent: value })),
+		setAutoCondenseContextScope: (value) =>
+			setState((prevState) => ({ ...prevState, autoCondenseContextScope: value })),
+		setPostTurnCondenseContextPercent: (value) =>
+			setState((prevState) => ({ ...prevState, postTurnCondenseContextPercent: value })),
 		setProfileThresholds: (value) => setState((prevState) => ({ ...prevState, profileThresholds: value })),
 		includeDiagnosticMessages: state.includeDiagnosticMessages,
 		setIncludeDiagnosticMessages: (value) => {

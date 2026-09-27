@@ -183,3 +183,73 @@ test("a live admission failure retains its task snapshot and is never projected 
 	assert.equal(receipts.get("reliability-failure-state.json"), state)
 	assert.ok(receipts.has("reliability-observations.json"))
 })
+
+test("context compaction requires a shrinking receipt and reopens the saved task before follow-up", async () => {
+	const budget = new WorkflowRequestBudget(30)
+	const actions: string[] = []
+	const host = {
+		start: async (phase: string) => {
+			assert.equal(phase, "contextProbe")
+			budget.consume()
+			return "retained"
+		},
+		complete: async () => {},
+		followup: async (id: string, phase: string, step: number) => {
+			assert.equal(id, "retained")
+			assert.equal(phase, "contextProbe")
+			actions.push(`followup:${step}`)
+			budget.consume()
+		},
+		resume: async (id: string, phase: string, step: number, options: { reopen: boolean }) => {
+			assert.equal(id, "retained")
+			assert.equal(phase, "contextProbe")
+			assert.equal(step, 6)
+			assert.equal(options.reopen, true)
+			actions.push("reopen")
+			budget.consume()
+		},
+		condense: async () => {
+			actions.push("condense")
+			budget.consume()
+			return true
+		},
+		inspectCompactionEvidence: () => ({
+			summaryId: "summary-1",
+			receiptId: "summary-1",
+			summaryRetainedFact: true,
+			previousTokens: 900,
+			currentTokens: 450,
+		}),
+		inspectContext: (_id: string, receipt: string) => {
+			actions.push(`receipt:${receipt}`)
+			return { receiptPresent: true }
+		},
+		inspect: async () => ({ errors: [], callCount: 1, resultCount: 1, completedTurns: 1 }),
+		admissionsAreUnique: () => true,
+	} as unknown as ExtensionWorkflowHost
+	const repository = {
+		create: async () => ({ initialCommit: "abc" }),
+		verify: async (phase: string) => {
+			actions.push(`grade:${phase}`)
+			return [{ name: "fixture", passed: true }]
+		},
+	} as unknown as WorkflowDependencies["repository"]
+	const result = await runReliabilityScenario(
+		{ ...options, scenarioId: "context-compaction" },
+		host,
+		budget,
+		repository,
+		async () => {},
+	)
+	assert.equal(result.status, "passed")
+	assert.ok(actions.indexOf("reopen") > actions.indexOf("condense"))
+	assert.equal(actions.filter((action) => action === "reopen").length, 1)
+	assert.deepEqual(
+		actions.filter((action) => action.startsWith("followup:")),
+		["followup:1", "followup:2", "followup:3", "followup:4", "followup:5"],
+	)
+	assert.equal(actions.filter((action) => action.startsWith("receipt:")).length, 7)
+	assert.equal(actions.filter((action) => action === "grade:baseline").length, 2)
+	assert.ok(result.checks.some((check) => check.name === "compaction_receipt_reduced_context" && check.passed))
+	assert.ok(result.checks.some((check) => check.name === "compaction_summary_has_anchor" && check.passed))
+})
