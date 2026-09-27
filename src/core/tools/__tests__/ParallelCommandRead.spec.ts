@@ -7,11 +7,17 @@ import type { ToolExecutionContext } from "../ToolRegistry"
 import { createToolPolicySnapshot } from "../../agent/ToolPolicy"
 import { classifyCommandRead, prepareParallelCommand } from "../ParallelCommandRead"
 
+const { getBinPathMock } = vi.hoisted(() => ({
+	getBinPathMock: vi.fn(),
+}))
+
 vi.mock("execa", () => ({ execa: vi.fn() }))
+vi.mock("../../../services/ripgrep", () => ({ getBinPath: getBinPathMock }))
 
 describe("isolated command reads", () => {
 	let directory: string
 	let root: string
+	let bundledRipgrep: string
 	let context: ToolExecutionContext
 	let state: { disabledTools: string[]; allowedCommands: string[]; deniedCommands: string[] }
 	const policy = createToolPolicySnapshot({ visibleTools: ["execute_command"] })
@@ -25,6 +31,10 @@ describe("isolated command reads", () => {
 		await fs.writeFile(path.join(root, "src", "example.ts"), "const needle = 1")
 		const bin = path.join(directory, "bin")
 		await fs.mkdir(bin)
+		bundledRipgrep = path.join(directory, "bundled", process.platform === "win32" ? "rg.exe" : "rg")
+		await fs.mkdir(path.dirname(bundledRipgrep), { recursive: true })
+		await fs.writeFile(bundledRipgrep, "")
+		getBinPathMock.mockResolvedValue(bundledRipgrep)
 		for (const name of ["git", "rg"])
 			await fs.writeFile(path.join(bin, process.platform === "win32" ? `${name}.exe` : name), "")
 		for (const key of Object.keys(process.env))
@@ -184,6 +194,27 @@ describe("isolated command reads", () => {
 			expect.stringContaining("rg"),
 			expect.arrayContaining(["--no-config", "-n", "needle", "src"]),
 			expect.objectContaining({ cwd: root, timeout: 10_000, shell: false }),
+		)
+		await finalize()
+	})
+
+	it("uses the extension-bundled ripgrep when rg is absent from PATH", async () => {
+		context.call = {
+			...context.call,
+			name: "exec_command",
+			nativeArgs: { cmd: "rg -n needle src" },
+		}
+		vi.stubEnv(Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") ?? "PATH", "")
+
+		const read = await prepareParallelCommand(context, policy)
+
+		expect(read).toMatchObject({ scope: root })
+		expect(getBinPathMock).toHaveBeenCalled()
+		const finalize = await read!.run!(context.callbacks)
+		expect(execa).toHaveBeenCalledWith(
+			bundledRipgrep,
+			expect.arrayContaining(["--no-config", "-n", "needle", "src"]),
+			expect.objectContaining({ cwd: root, shell: false }),
 		)
 		await finalize()
 	})
