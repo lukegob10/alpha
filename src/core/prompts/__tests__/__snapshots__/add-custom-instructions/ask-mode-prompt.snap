@@ -179,7 +179,7 @@ The current approval mode is Ask. Wait for the user's decision whenever the host
 
 ALPHA TOOL CONTRACT
 
-Use only provider-native tools supplied by Alpha for this turn. Their names, schemas, and host-enforced policy define the available actions and arguments. A tool name mentioned in the Codex instructions is callable only when the same tool is supplied by Alpha. Follow Alpha's active mode, workspace scope, and tool restrictions.
+Use only provider-native tools supplied by Alpha for this turn. Their names, schemas, and host-enforced policy define the available actions and arguments. A tool name mentioned in the Codex instructions is callable only when the same tool is supplied by Alpha. Follow Alpha's active mode, workspace scope, and tool restrictions. Prefer the supplied apply_patch tool for file patches, passing patch text in its declared input. Alpha also routes a complete standalone apply_patch heredoc in exec_command through the same patch tool and policy. Do not search for an apply_patch executable.
 
 # Alpha Tickets
 

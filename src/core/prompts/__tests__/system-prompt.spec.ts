@@ -388,6 +388,39 @@ describe("SYSTEM_PROMPT", () => {
 		expect(userContextPart?.role).toBe("user")
 	})
 
+	it("tells Copilot GPT-5.6 Sol to call the native patch tool and reports the command shell", async () => {
+		const fragments = await SYSTEM_PROMPT_FRAGMENTS(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			defaultModeSlug,
+			undefined,
+			undefined,
+			undefined,
+			experiments,
+			undefined,
+			undefined,
+			{
+				todoListEnabled: true,
+				useAgentRules: true,
+				newTaskRequireTodos: false,
+				commandShell: "C:\\Windows\\System32\\cmd.exe",
+			},
+			undefined,
+			"gpt-5.6-sol",
+		)
+		const toolContract = fragments.instructionParts.find(
+			({ origin }) => origin === "alpha-feature-overlay",
+		)?.content
+		const environment = fragments.instructionParts.find(({ origin }) => origin === "system-environment")?.content
+
+		expect(toolContract).toContain("Prefer the supplied apply_patch tool")
+		expect(toolContract).toContain("routes a complete standalone apply_patch heredoc")
+		expect(environment).toContain("Default Shell: C:\\Windows\\System32\\cmd.exe")
+	})
+
 	it.each([
 		"gpt-6-astra",
 		"gpt-6-sol",
@@ -633,7 +666,8 @@ describe("SYSTEM_PROMPT", () => {
 		const newTokenCount = encoder.encode(renderSystemPromptFragments(fragments), undefined, []).length
 
 		// Previous Alpha-only base prompt: 2,158 o200k tokens. Blindly appending the 3,552-token GPT-5.6 base costs 5,710.
-		expect(newTokenCount).toBe(4179)
+		// Codex-compatible patch routing guidance adds 48 local tokens to the captured Code prompt.
+		expect(newTokenCount).toBe(4227)
 		expect(newTokenCount).toBeLessThan(5710)
 	})
 

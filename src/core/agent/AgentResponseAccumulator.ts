@@ -37,13 +37,18 @@ type OrderedResponseEntry = AgentResponseItem | ToolSlot
 
 type ParsedArguments = { ok: true; value: unknown } | { ok: false }
 
+function isToolArgumentsObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
 function parseToolArguments(argumentsText: string, toolName?: string): ParsedArguments {
 	if (!argumentsText.trim()) {
 		return { ok: false }
 	}
 
 	try {
-		return { ok: true, value: JSON.parse(argumentsText) }
+		const value: unknown = JSON.parse(argumentsText)
+		return isToolArgumentsObject(value) ? { ok: true, value } : { ok: false }
 	} catch {
 		// Codex's apply_patch transport is a freeform patch string rather than a
 		// JSON object. Keep provider adapters on their existing function-call

@@ -1,7 +1,7 @@
 import type { ModelInfo } from "../model.js"
 
 /** Levels declared by the custom-model settings editor, not inferred from a model ID. */
-export const openAiCustomReasoningEfforts = ["low", "medium", "high", "xhigh"] as const
+export const openAiCustomReasoningEfforts = ["low", "medium", "high", "xhigh", "max"] as const
 
 /** Read legacy editor profiles without rewriting them or widening explicit capabilities. */
 export function resolveOpenAiCustomModelInfo(info: ModelInfo): ModelInfo {

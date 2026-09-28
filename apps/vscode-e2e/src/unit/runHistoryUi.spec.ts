@@ -33,6 +33,16 @@ test("history UI accepts only a complete result from its owned exact-version hos
 		assert.equal(accepted.status, "passed")
 		assert.deepEqual(accepted.host, verifiedHost)
 
+		const comparative = await completeHistoryUiRun(
+			{ ...verifiedHost, actualVSCodeVersion: "1.139.1" },
+			evidence,
+			output,
+			"comparative-139",
+			"1.139.1",
+		)
+		assert.equal(comparative.status, "passed")
+		assert.equal(comparative.host.actualVSCodeVersion, "1.139.1")
+
 		for (const [name, change] of [
 			["failed", { status: "failed" }],
 			["blocked", { status: "blocked" }],

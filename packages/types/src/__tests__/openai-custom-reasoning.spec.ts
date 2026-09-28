@@ -9,6 +9,12 @@ describe("custom OpenAI reasoning declarations", () => {
 		expect(info.supportsReasoningEffort).toBeUndefined()
 	})
 
+	it("offers max only when the user enables custom-model reasoning", () => {
+		const info: ModelInfo = { contextWindow: 128_000, supportsPromptCache: false, reasoningEffort: "max" }
+		expect(resolveOpenAiCustomModelInfo(info).supportsReasoningEffort).toContain("max")
+		expect(info.supportsReasoningEffort).toBeUndefined()
+	})
+
 	it.each<Partial<ModelInfo>>([
 		{},
 		{ supportsReasoningEffort: false, reasoningEffort: "low" },

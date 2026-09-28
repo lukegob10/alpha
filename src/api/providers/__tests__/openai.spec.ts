@@ -125,6 +125,44 @@ describe("OpenAiHandler", () => {
 			},
 		]
 
+		it("sends a user-selected max effort for an official Responses model", async () => {
+			mockResponsesCreate.mockResolvedValueOnce({
+				id: "response-max",
+				status: "completed",
+				output: [
+					{
+						id: "message-max",
+						type: "message",
+						role: "assistant",
+						status: "completed",
+						content: [{ type: "output_text", text: "Done." }],
+					},
+				],
+				usage: null,
+			})
+			const provider = new OpenAiHandler({
+				...mockOptions,
+				openAiModelId: "gpt-6-luna",
+				openAiStreamingEnabled: false,
+				enableReasoningEffort: true,
+				openAiCustomModelInfo: {
+					contextWindow: 128_000,
+					supportsPromptCache: false,
+					reasoningEffort: "max",
+				},
+			})
+
+			for await (const _chunk of provider.createMessage("system", [])) {
+				// Consume the provider response.
+			}
+
+			expect(mockResponsesCreate).toHaveBeenCalledWith(
+				expect.objectContaining({ model: "gpt-6-luna", reasoning: { effort: "max", summary: "auto" } }),
+				expect.anything(),
+			)
+			expect(mockCreate).not.toHaveBeenCalled()
+		})
+
 		it("uses raw custom patch input and preserves encrypted reasoning and usage", async () => {
 			const patch = '*** Begin Patch\n*** Add File: answer.txt\n+print("ok")\n*** End Patch'
 			const customCall = {

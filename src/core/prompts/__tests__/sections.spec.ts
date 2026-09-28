@@ -282,6 +282,19 @@ describe("getRulesSection shell-aware command chaining", () => {
 		expect(result).toContain("Note: Using `&&` for cmd.exe command chaining")
 	})
 
+	it("uses the captured command shell when the VS Code profile differs", () => {
+		vi.spyOn(shellUtils, "getShell").mockReturnValue("C:\\Program Files\\PowerShell\\7\\pwsh.exe")
+		const result = getRulesSection(cwd, {
+			todoListEnabled: true,
+			useAgentRules: true,
+			newTaskRequireTodos: false,
+			commandShell: "C:\\Windows\\System32\\cmd.exe",
+		})
+
+		expect(result).toContain("commands must be chained, use `&&`")
+		expect(result).toContain("Note: Using `&&` for cmd.exe command chaining")
+	})
+
 	it("includes Unix utility guidance for PowerShell", () => {
 		vi.spyOn(shellUtils, "getShell").mockReturnValue(
 			"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",

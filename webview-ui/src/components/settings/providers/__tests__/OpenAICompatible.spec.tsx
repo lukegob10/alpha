@@ -126,7 +126,7 @@ describe("OpenAICompatible Component - includeMaxTokens checkbox", () => {
 		expect(mockSetApiConfigurationField).toHaveBeenCalledWith(
 			"openAiCustomModelInfo",
 			expect.objectContaining({
-				supportsReasoningEffort: ["low", "medium", "high", "xhigh"],
+				supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
 			}),
 		)
 	})

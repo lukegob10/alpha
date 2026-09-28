@@ -471,4 +471,29 @@ describe("AgentResponseAccumulator", () => {
 			},
 		])
 	})
+
+	it.each(["null", "[]", "1", '"text"'])("rejects non-object JSON tool arguments: %s", async (argumentsText) => {
+		const readyCalls: unknown[] = []
+		const accumulator = new AgentResponseAccumulator()
+		await accumulator.add(
+			{ type: "tool_call", id: "call-invalid-root", name: "read_file", arguments: argumentsText },
+			undefined,
+			(call) => {
+				readyCalls.push(call)
+			},
+		)
+
+		const response = await accumulator.finish()
+
+		expect(readyCalls).toEqual([])
+		expect(response.toolCalls).toEqual([])
+		expect(response.items).toContainEqual({
+			type: "error",
+			message: 'Unable to parse arguments for tool call "read_file" (call-invalid-root).',
+			callId: "call-invalid-root",
+			toolName: "read_file",
+			retryable: false,
+		})
+		expect(response.outcome).toMatchObject({ status: "failed", retryable: false })
+	})
 })

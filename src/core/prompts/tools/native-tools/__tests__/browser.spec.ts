@@ -28,6 +28,17 @@ describe("VS Code integrated-browser native tools", () => {
 		})
 	})
 
+	it("requires the URL that VS Code 1.122.1 requires to open a browser page", () => {
+		const tool = getNativeTools().find(
+			(tool) => tool.type === "function" && tool.function.name === "open_browser_page",
+		)
+		if (tool?.type !== "function") throw new Error("Missing browser tool: open_browser_page")
+
+		expect(tool.function.parameters).toMatchObject({ required: ["url"] })
+		expect(tool.function.description).toContain("Always provide the URL")
+		expect(tool.function.description).not.toContain("Omit url")
+	})
+
 	it("exposes only browser tools currently registered by VS Code", () => {
 		const names = toolNames({
 			supportsImages: true,

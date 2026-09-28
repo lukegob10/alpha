@@ -27,6 +27,7 @@ import {
 	type ToolFailureMetadata,
 } from "../tools/ToolFailure"
 import { getImageOutputPaths } from "../tools/imageOutputPaths"
+import { extractApplyPatchCommand, rebaseApplyPatchPaths } from "../tools/apply-patch/invocation"
 import { resolvePathWithExistingAncestor } from "../tools/pathSafety"
 import {
 	getTaskDisplayPath,
@@ -1519,14 +1520,14 @@ export class ToolScheduler {
 			return prepared
 		}
 
-		const descriptor = this.options.registry.resolve(call.name)
+		let descriptor = this.options.registry.resolve(call.name)
 		if (!descriptor) {
 			prepared.validationError = `Unknown tool "${call.name}". This tool is not registered.`
 			reject("capability_unavailable", "capability")
 			return prepared
 		}
 
-		const canonicalName = this.options.registry.canonicalName(call.name)
+		let canonicalName = this.options.registry.canonicalName(call.name)
 		if (!isToolAllowed(this.options.policy, canonicalName)) {
 			prepared.validationError = `Tool "${call.name}" is not allowed by the current step policy.`
 			reject("policy_denied", "capability")
@@ -1558,6 +1559,62 @@ export class ToolScheduler {
 			reject("invalid_arguments")
 			prepared.descriptor = descriptor
 			return prepared
+		}
+		const requestedArgumentsValue = argumentsValue
+		const requestedCanonicalName = canonicalName
+		if (canonicalName === "exec_command" && typeof argumentsValue.command === "string") {
+			const command = unescapeHtmlEntities(argumentsValue.command)
+			if (isCommandDeniedByPolicy(this.options.policy, command)) {
+				prepared.validationError = "This command is denied by the current execution policy."
+				prepared.preparationDenied = true
+				reject("policy_denied", "capability")
+				prepared.descriptor = descriptor
+				return prepared
+			}
+
+			const invocation = extractApplyPatchCommand(command)
+			if (invocation) {
+				if (invocation.kind === "error") {
+					prepared.validationError = invocation.message
+					reject("invalid_arguments")
+					prepared.descriptor = descriptor
+					return prepared
+				}
+				const patchDescriptor = this.options.registry.resolve("apply_patch")
+				if (!patchDescriptor) {
+					prepared.validationError = "The apply_patch tool is not registered."
+					reject("capability_unavailable", "capability")
+					prepared.descriptor = descriptor
+					return prepared
+				}
+				if (!isToolAllowed(this.options.policy, "apply_patch")) {
+					prepared.validationError = 'Tool "apply_patch" is not allowed by the current step policy.'
+					reject("policy_denied", "capability")
+					prepared.descriptor = descriptor
+					return prepared
+				}
+				const taskRoot = this.executionHost.cwd ?? (this.toolTask as TaskPathContext).cwd
+				const commandCwd = path.resolve(
+					taskRoot,
+					typeof argumentsValue.cwd === "string" ? argumentsValue.cwd : ".",
+					invocation.workdir ?? ".",
+				)
+				argumentsValue = normalizeTaskToolArguments(this.toolTask as TaskPathContext, "apply_patch", {
+					patch: rebaseApplyPatchPaths(invocation.patch, taskRoot, commandCwd),
+				})
+				canonicalName = "apply_patch"
+				descriptor = patchDescriptor
+			}
+		}
+		if (canonicalName === "apply_patch") {
+			const denial = this.options.task?.getTaskToolDenialReason?.("apply_patch", argumentsValue)
+			if (denial) {
+				prepared.validationError = denial
+				prepared.preparationDenied = true
+				reject("policy_denied", "workspace")
+				prepared.descriptor = descriptor
+				return prepared
+			}
 		}
 
 		let pathArguments: string[]
@@ -1639,20 +1696,6 @@ export class ToolScheduler {
 			}
 		}
 
-		if (canonicalName === "exec_command") {
-			const command = (argumentsValue as Record<string, unknown>).command
-			if (
-				typeof command === "string" &&
-				isCommandDeniedByPolicy(this.options.policy, unescapeHtmlEntities(command))
-			) {
-				prepared.validationError = "This command is denied by the current execution policy."
-				prepared.preparationDenied = true
-				reject("policy_denied", "capability")
-				prepared.descriptor = descriptor
-				return prepared
-			}
-		}
-
 		const toolCall: ToolUse<any> = {
 			type: "tool_use",
 			id: call.id,
@@ -1662,6 +1705,7 @@ export class ToolScheduler {
 			partial: false,
 			nativeArgs: argumentsValue,
 		}
+		const interceptedPatch = requestedCanonicalName === "exec_command" && canonicalName === "apply_patch"
 
 		try {
 			if (!getModeBySlug(this.options.mode, this.options.customModes)) {
@@ -1678,10 +1722,31 @@ export class ToolScheduler {
 			)
 
 			if (this.options.validateCall) {
-				this.options.validateCall(call, toolCall)
+				if (interceptedPatch) {
+					this.options.validateCall(call, {
+						...toolCall,
+						name: requestedCanonicalName,
+						nativeArgs: requestedArgumentsValue,
+					})
+				}
+				this.options.validateCall(
+					interceptedPatch ? { ...call, name: canonicalName, arguments: argumentsValue } : call,
+					toolCall,
+				)
 			} else {
+				if (interceptedPatch) {
+					validateToolUse(
+						call.name as never,
+						this.options.mode,
+						this.options.customModes,
+						disabledRequirements,
+						requestedArgumentsValue,
+						this.options.experiments,
+						this.options.includedTools,
+					)
+				}
 				validateToolUse(
-					call.name as never,
+					(canonicalName === "apply_patch" ? canonicalName : call.name) as never,
 					this.options.mode,
 					this.options.customModes,
 					disabledRequirements,
@@ -1717,10 +1782,17 @@ export class ToolScheduler {
 			new ToolResultCollector(
 				Math.min(
 					prepared.descriptor?.maxOutputChars ?? Number.MAX_SAFE_INTEGER,
-					getToolOutputLimit(this.options.policy, prepared.call.name),
+					getToolOutputLimit(this.options.policy, prepared.descriptor?.name ?? prepared.call.name),
 				),
 				prepared.descriptor?.statusSource ?? "structured_output",
 			)
+		const interceptedPatch =
+			prepared.toolCall?.name === "apply_patch" &&
+			this.options.registry.canonicalName(prepared.call.name) === "exec_command"
+		const approvalToolName = interceptedPatch
+			? "apply_patch"
+			: this.options.registry.canonicalName(prepared.call.name)
+		const approvalArguments = interceptedPatch ? prepared.toolCall?.nativeArgs : prepared.call.arguments
 		const startsAuditedCommandRead =
 			!prepareCommand && prepared.commandRead?.serialFallback !== true && prepared.commandRead?.run !== undefined
 		const requiresEffectStart =
@@ -1843,10 +1915,10 @@ export class ToolScheduler {
 					typedApprovalHost && !requiresExplicitApproval && forceApproval !== true
 						? createTaskSessionApprovalKey({
 								taskId: this.executionHost.taskId,
-								toolName: this.options.registry.canonicalName(prepared.call.name),
+								toolName: approvalToolName,
 								askType: type,
 								description: partialMessage,
-								argumentsValue: prepared.call.arguments,
+								argumentsValue: approvalArguments,
 								cwd: this.executionHost.cwd,
 								policyDigest: this.options.policy?.digest,
 							})
@@ -1889,7 +1961,7 @@ export class ToolScheduler {
 							requestId,
 							taskId: this.executionHost.taskId,
 							callId: prepared.call.id,
-							toolName: this.options.registry.canonicalName(prepared.call.name),
+							toolName: approvalToolName,
 							askType: type,
 							...(partialMessage === undefined ? {} : { description: partialMessage }),
 							...(approvalWorkingDirectory === undefined ? {} : { cwd: approvalWorkingDirectory }),
@@ -1921,7 +1993,7 @@ export class ToolScheduler {
 					type: "approval_request",
 					requestId,
 					callId: prepared.call.id,
-					toolName: prepared.call.name,
+					toolName: interceptedPatch ? approvalToolName : prepared.call.name,
 				})
 				if (typedApprovalHost && approvalSessionKey && hasTaskSessionApproval(approvalSessionKey)) {
 					await this.options.onEvent?.({

@@ -26,6 +26,7 @@ type CheckpointSimpleGitOptions = Partial<SimpleGitOptions> & {
 
 const EXCLUDED_VENV_PATHSPECS = [":(glob).venv", ":(glob).venv/**", ":(glob)**/.venv", ":(glob)**/.venv/**"] as const
 const EXCLUDED_CHECKPOINT_PATHSPECS = [...EXCLUDED_VENV_PATHSPECS, ".alpha/code-index"] as const
+const CHECKPOINT_COMMIT_HASH_PATTERN = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i
 
 /**
  * Creates a SimpleGit instance with sanitized environment variables to prevent
@@ -180,7 +181,17 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		}
 
 		const startTime = Date.now()
-		const existingShadowRepository = await fileExistsAtPath(this.dotGitDir)
+		const phaseDurations: string[] = []
+		const measurePhase = async <T>(name: string, operation: () => Promise<T>): Promise<T> => {
+			const phaseStartTime = Date.now()
+			try {
+				return await operation()
+			} finally {
+				phaseDurations.push(`${name} ${Date.now() - phaseStartTime}ms`)
+			}
+		}
+
+		const existingShadowRepository = await measurePhase("shadow lookup", () => fileExistsAtPath(this.dotGitDir))
 		const nestedScanStartTime = Date.now()
 		const nestedGitPath = await this.getNestedGitRepository(!existingShadowRepository)
 		const nestedScanDuration = Date.now() - nestedScanStartTime
@@ -189,8 +200,10 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 			this.throwNestedGitRepositoryError(nestedGitPath)
 		}
 
-		await fs.mkdir(this.checkpointsDir, { recursive: true })
+		await measurePhase("shadow directory setup", () => fs.mkdir(this.checkpointsDir, { recursive: true }))
+		const gitClientSetupStartTime = Date.now()
 		const git = createSanitizedGit(this.checkpointsDir)
+		phaseDurations.push(`git client setup ${Date.now() - gitClientSetupStartTime}ms`)
 
 		let created = false
 		let initialSnapshotDuration: number | undefined
@@ -212,14 +225,17 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 				)
 			}
 
-			await this.writeExcludeFile()
-			await this.migrateTrackedExcludes(git)
-			this.baseHash = await git.revparse(["HEAD"])
+			await measurePhase("exclude file write", () => this.writeExcludeFile())
+			await measurePhase("tracked exclude migration", () => this.migrateTrackedExcludes(git))
+			this.baseHash = await measurePhase("base commit lookup", () => git.revparse(["HEAD"]))
 		} else {
 			this.log(`[${this.constructor.name}#initShadowGit] creating shadow git repo at ${this.checkpointsDir}`)
-			await git.init({ "--template": "" })
-			await git.addConfig("core.worktree", this.workspaceDir) // Sets the working tree to the current workspace.
-			await this.writeExcludeFile()
+			await measurePhase("git init", () => git.init({ "--template": "" }))
+			await measurePhase(
+				"worktree config",
+				() => git.addConfig("core.worktree", this.workspaceDir), // Sets the working tree to the current workspace.
+			)
+			await measurePhase("exclude file write", () => this.writeExcludeFile())
 			const initialSnapshotStartTime = Date.now()
 			const stageStartTime = Date.now()
 			try {
@@ -251,6 +267,7 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		const duration = Date.now() - startTime
 		const durationDetails = [
 			`nested repository scan ${nestedScanDuration}ms`,
+			`setup phases: ${phaseDurations.join(", ")}`,
 			...(initialSnapshotDuration === undefined
 				? []
 				: [`initial snapshot ${initialSnapshotDuration}ms (${initialSnapshotBreakdown})`]),
@@ -351,7 +368,10 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		try {
 			// New snapshots can skip checkpoint-excluded directories. Existing indexes may still track
 			// files there, and a workspace .gitignore can override the shadow repo's exclude file.
-			const checkpointExcludedDirectories = (await getExcludePatterns(this.workspaceDir))
+			const excludePatternStartTime = Date.now()
+			const excludePatterns = await getExcludePatterns(this.workspaceDir)
+			const excludePatternDuration = Date.now() - excludePatternStartTime
+			const checkpointExcludedDirectories = excludePatterns
 				.filter(
 					(pattern) =>
 						pattern.endsWith("/") &&
@@ -371,7 +391,12 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 				this.workspaceDir,
 			]
 
+			const ripgrepStartTime = Date.now()
 			const gitPaths = await executeRipgrep({ args, workspacePath: this.workspaceDir })
+			const ripgrepDuration = Date.now() - ripgrepStartTime
+			this.log(
+				`[${this.constructor.name}#getNestedGitRepository] task ${this.taskId} scan phases: exclude-pattern discovery ${excludePatternDuration}ms, ripgrep resolution/process ${ripgrepDuration}ms`,
+			)
 
 			// Filter to only include nested git directories (not the root .git).
 			// Since we're searching for HEAD files, we expect type to be "file"
@@ -535,20 +560,27 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 				throw new Error("Shadow git repo not initialized")
 			}
 
+			if (!CHECKPOINT_COMMIT_HASH_PATTERN.test(commitHash)) {
+				throw new Error("Invalid checkpoint commit hash")
+			}
+
+			const resolvedCommitHash = (await this.git.revparse(["--verify", `${commitHash}^{commit}`])).trim()
 			const start = Date.now()
 			await this.git.clean("f", ["-d", "-f"])
-			await this.git.reset(["--hard", commitHash])
+			await this.git.reset(["--hard", resolvedCommitHash])
 
 			// Remove all checkpoints after the specified commitHash.
-			const checkpointIndex = this._checkpoints.indexOf(commitHash)
+			const checkpointIndex = this._checkpoints.indexOf(resolvedCommitHash)
 
 			if (checkpointIndex !== -1) {
 				this._checkpoints = this._checkpoints.slice(0, checkpointIndex + 1)
 			}
 
 			const duration = Date.now() - start
-			this.emit("restore", { type: "restore", commitHash, duration })
-			this.log(`[${this.constructor.name}#restoreCheckpoint] restored checkpoint ${commitHash} in ${duration}ms`)
+			this.emit("restore", { type: "restore", commitHash: resolvedCommitHash, duration })
+			this.log(
+				`[${this.constructor.name}#restoreCheckpoint] restored checkpoint ${resolvedCommitHash} in ${duration}ms`,
+			)
 		} catch (e) {
 			const error = e instanceof Error ? e : new Error(String(e))
 			this.log(`[${this.constructor.name}#restoreCheckpoint] failed to restore checkpoint: ${error.message}`)

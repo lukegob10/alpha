@@ -1,0 +1,14 @@
+{
+	"name": "alpha-portable-automation",
+	"displayName": "Alpha Portable Automation",
+	"publisher": "AlphaTests",
+	"version": "0.0.1",
+	"private": true,
+	"engines": {
+		"vscode": "^1.122.1"
+	},
+	"main": "./extension.js",
+	"activationEvents": [
+		"onStartupFinished"
+	]
+}

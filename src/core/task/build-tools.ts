@@ -32,6 +32,7 @@ import { canonicalizeToolName, ToolRegistry, type ToolRegistryOptions, type Task
 import type { ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { digestValue } from "../agent/StepContext"
 import { classifyRequestWorkClass, type RequestWorkClassDecision } from "../agent/requestWorkClass"
+import { isExplicitIndependentTaskRequest } from "../agent/independentTaskAuthorization"
 import {
 	requestWorkClassCacheKey,
 	resolveLookupToolNames,
@@ -142,7 +143,7 @@ const AGENT_LIFECYCLE_TOOLS = new Set(["list_agents", "wait_agent", "send_messag
 const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", ...AGENT_LIFECYCLE_TOOLS])
 
 // Bump when native schemas or provider projection rules change. Dynamic schemas are fingerprinted below.
-const TOOL_CATALOG_SCHEMA_VERSION = 12
+const TOOL_CATALOG_SCHEMA_VERSION = 13
 
 const ASYNC_USER_INPUT_CATALOG_NAMES = new Set(["request_user_input_async", "send_user_message_async"])
 
@@ -383,6 +384,10 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			: modelInfo
 	const disabledTools = orderedNames([...(requestedDisabledTools ?? []), ...(options.policy?.disabledTools ?? [])])!
 	const requestWorkClass = requestWorkClassCacheKey(options.userRequestText, taskKind)
+	const allowIndependentTaskCreation =
+		crossTaskRole === "root" && isExplicitIndependentTaskRequest(options.userRequestText)
+	const retainHistoricalCreateTaskSchema =
+		includeAllToolsWithRestrictions === true && historyContainsToolName(options.discoveryHistory, "create_task")
 
 	// Get CodeIndexManager for feature checking.
 	const { CodeIndexManager } = await awaitCatalogInput(import("../../services/code-index/manager"), options.signal)
@@ -433,6 +438,8 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				taskKind,
 				enableAgentLifecycleTools,
 				crossTaskRole,
+				allowIndependentTaskCreation,
+				retainHistoricalCreateTaskSchema,
 				namedAgentTypes,
 				todoListEnabled: apiConfiguration?.todoListEnabled ?? true,
 				modelSchema: {
@@ -488,6 +495,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				includeAllToolsWithRestrictions === true &&
 				historyContainsToolName(options.discoveryHistory, "access_mcp_resource"),
 			crossTaskRole,
+			includeCreateTaskSchema: allowIndependentTaskCreation || retainHistoricalCreateTaskSchema,
 			agentKinds: mode === planModeSlug ? ["explore", "review"] : undefined,
 			namedAgentTypes,
 			planMode: mode === planModeSlug,
@@ -526,7 +534,9 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		).filter((tool) => {
 			const name = getToolName(tool)
 			return (
-				name !== "access_mcp_resource" && (canDiscover || (name !== "tool_search" && name !== "discover_tools"))
+				(name !== "create_task" || allowIndependentTaskCreation) &&
+				name !== "access_mcp_resource" &&
+				(canDiscover || (name !== "tool_search" && name !== "discover_tools"))
 			)
 		})
 		const filteredNativeTools = [

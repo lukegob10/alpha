@@ -9,8 +9,8 @@ import { getShell } from "../../../utils/shell"
  * - cmd.exe: `&&` (conditional execution, same as Unix)
  * @internal Exported for testing purposes
  */
-export function getCommandChainOperator(): string {
-	const shell = getShell().toLowerCase()
+export function getCommandChainOperator(commandShell = getShell()): string {
+	const shell = commandShell.toLowerCase()
 
 	// Check for PowerShell (both Windows PowerShell and PowerShell Core)
 	if (shell.includes("powershell") || shell.includes("pwsh")) {
@@ -30,8 +30,8 @@ export function getCommandChainOperator(): string {
 /**
  * Returns a shell-specific note about command chaining syntax and platform-specific utilities.
  */
-function getCommandChainNote(): string {
-	const shell = getShell().toLowerCase()
+function getCommandChainNote(commandShell = getShell()): string {
+	const shell = commandShell.toLowerCase()
 
 	// Check for PowerShell
 	if (shell.includes("powershell") || shell.includes("pwsh")) {
@@ -64,8 +64,8 @@ When asked about your creator, vendor, or company, respond with:
 
 export function getRulesSection(cwd: string, settings?: SystemPromptSettings, isPlanMode = false): string {
 	// Get shell-appropriate command chaining operator
-	const chainOp = getCommandChainOperator()
-	const chainNote = getCommandChainNote()
+	const chainOp = getCommandChainOperator(settings?.commandShell)
+	const chainNote = getCommandChainNote(settings?.commandShell)
 	const subagentRole = settings?.subagentRole
 
 	if (subagentRole) {

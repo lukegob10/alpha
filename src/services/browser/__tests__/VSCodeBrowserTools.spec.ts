@@ -244,16 +244,14 @@ describe("VSCodeBrowserTools", () => {
 		})
 	})
 
-	it("preserves omitted URLs when requesting access to an already-open website tab", async () => {
+	it("rejects an open request without a URL before invoking the host", async () => {
 		vscodeMock.tools.push({ name: "open_browser_page" })
-		vscodeMock.invokeTool.mockResolvedValue({ content: [{ value: "Shared page page-1" }] })
 
-		await expect(invokeVSCodeBrowserTool("open_browser_page", {})).resolves.toBe("Shared page page-1")
-		expect(vscodeMock.invokeTool).toHaveBeenCalledWith(
-			"open_browser_page",
-			{ input: {}, toolInvocationToken: undefined },
-			expect.anything(),
+		await expect(invokeVSCodeBrowserTool("open_browser_page", {} as { url: string })).rejects.toThrow(
+			/HTTP.*HTTPS.*read_file/,
 		)
+		expect(vscodeMock.invokeTool).not.toHaveBeenCalled()
+		expect(vscodeMock.cancellationTokens).toHaveLength(0)
 	})
 
 	it.each([undefined, "url"] as const)("rejects URL navigation without a URL (type=%j)", async (type) => {

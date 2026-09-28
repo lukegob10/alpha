@@ -23,6 +23,13 @@ interface PanelMetrics {
 	text: string
 }
 
+interface RendererNavigationProbe {
+	startedAt: number
+	domAt?: number
+	paintedAt?: number
+	openingFeedbackAt?: number
+}
+
 type HistoryUiHost = Pick<
 	ExtensionTestRunResult,
 	"status" | "execution" | "ownershipGate" | "captureComplete" | "hostExitObserved" | "actualVSCodeVersion"
@@ -33,6 +40,7 @@ export async function completeHistoryUiRun<T extends HistoryUiHost>(
 	directory: string,
 	output: string,
 	runId: string,
+	expectedHostVersion = "1.122.1",
 ) {
 	const savedDirectory = path.join(output, runId)
 	await fs.cp(directory, savedDirectory, { recursive: true })
@@ -42,14 +50,14 @@ export async function completeHistoryUiRun<T extends HistoryUiHost>(
 		host.ownershipGate !== "verified" ||
 		host.captureComplete !== true ||
 		host.hostExitObserved !== true ||
-		host.actualVSCodeVersion !== "1.122.1"
+		host.actualVSCodeVersion !== expectedHostVersion
 	)
 		throw new Error(`History UI host validation failed; inspect retained evidence in ${savedDirectory}`)
 	return { status: "passed" as const, directory: savedDirectory, host }
 }
 
 /** Exercises the built extension in an isolated exact-host profile, with trusted renderer input. */
-export async function runHistoryUi(executable: string, output: string) {
+export async function runHistoryUi(executable: string, output: string, expectedHostVersion = "1.122.1") {
 	await fs.mkdir(output, { recursive: true })
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-chats-ui-"))
 	const nonce = randomUUID()
@@ -61,7 +69,7 @@ export async function runHistoryUi(executable: string, output: string) {
 	let hostSettled = false
 	const running = runExtensionTests({
 		providerMode: "scripted",
-		vscodeVersion: "1.122.1",
+		vscodeVersion: expectedHostVersion,
 		vscodeExecutablePath: executable,
 		testFile: "history-ui.test",
 		rendererDebuggingPort: 0,
@@ -71,7 +79,10 @@ export async function runHistoryUi(executable: string, output: string) {
 		artifactsDir: evidenceRoot,
 		initializeProfile: true,
 		retainEvidenceForCampaign: true,
-		extensionTestsEnv: { ALPHA_UI_ACCEPTANCE_NONCE: nonce },
+		extensionTestsEnv: {
+			ALPHA_UI_ACCEPTANCE_NONCE: nonce,
+			ALPHA_UI_EXPECTED_VSCODE_VERSION: expectedHostVersion,
+		},
 		signal: abort.signal,
 	}).finally(() => {
 		hostSettled = true
@@ -95,7 +106,7 @@ export async function runHistoryUi(executable: string, output: string) {
 								await fs.readFile(path.join(directory, `ui-stage-${stage}.json`), "utf8"),
 							)
 							assert.equal(receipt.nonce, nonce)
-							assert.equal(receipt.version, "1.122.1")
+							assert.equal(receipt.version, expectedHostVersion)
 							return true
 						} catch (error) {
 							if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
@@ -108,7 +119,10 @@ export async function runHistoryUi(executable: string, output: string) {
 			])
 		await ready("chats-small")
 		const [port, endpoint] = (
-			await fs.readFile(path.join(root, "profile", "1.122.1", "user-data", "DevToolsActivePort"), "utf8")
+			await fs.readFile(
+				path.join(root, "profile", expectedHostVersion, "user-data", "DevToolsActivePort"),
+				"utf8",
+			)
 		)
 			.trim()
 			.split(/\r?\n/)
@@ -178,6 +192,11 @@ export async function runHistoryUi(executable: string, output: string) {
 			)
 			await fs.writeFile(path.join(directory, `${name}.png`), Buffer.from(screenshot.data, "base64"))
 		}
+		const installNavigationProbe = async (predicate: string, taskId?: string) =>
+			evaluate<boolean>(
+				`(()=>{const win=d.defaultView??window;const probe={startedAt:win.performance.now()};win.__alphaHistoryUiProbe=probe;const observer=new win.MutationObserver(()=>{const row=${taskId ? `d.querySelector('[data-testid="task-item-${taskId}"]')` : "undefined"};if(!probe.openingFeedbackAt&&row?.querySelector('[data-testid="task-opening-indicator"]'))probe.openingFeedbackAt=win.performance.now();if(probe.domAt===undefined&&(${predicate})){probe.domAt=win.performance.now();observer.disconnect();win.requestAnimationFrame(()=>win.requestAnimationFrame(()=>{probe.paintedAt=win.performance.now()}))}});observer.observe(d.body,{childList:true,subtree:true,attributes:true});return true})()`,
+			)
+		const readNavigationProbe = () => evaluate<RendererNavigationProbe>("d.defaultView.__alphaHistoryUiProbe")
 		await check(
 			"!!d.querySelector('[data-testid=history-view-all]') && d.querySelectorAll('[data-testid^=task-item-history-visual-]').length === 3",
 		)
@@ -266,8 +285,146 @@ export async function runHistoryUi(executable: string, output: string) {
 			await activate("history-close")
 			await writeJsonAtomically(path.join(directory, `ui-done-${stage}.json`), { nonce, stage, status: "passed" })
 		}
+
+		await ready("navigation-ready")
+		const navigationReady = JSON.parse(
+			await fs.readFile(path.join(directory, "ui-stage-navigation-ready.json"), "utf8"),
+		) as {
+			taskId?: unknown
+			expectedVisibleMessages?: unknown
+			persistedTranscriptMessages?: unknown
+			sentinel?: unknown
+		}
+		assert.equal(typeof navigationReady.taskId, "string")
+		assert.match(navigationReady.taskId as string, /^[a-zA-Z0-9-]+$/)
+		assert.ok(
+			typeof navigationReady.expectedVisibleMessages === "number" &&
+				navigationReady.expectedVisibleMessages >= 1200,
+		)
+		assert.ok(
+			typeof navigationReady.persistedTranscriptMessages === "number" &&
+				navigationReady.persistedTranscriptMessages >= navigationReady.expectedVisibleMessages,
+		)
+		assert.equal(navigationReady.sentinel, "history-ui-navigation-transcript-sentinel")
+		const transcriptCount = navigationReady.expectedVisibleMessages as number
+		const navigationStartState = await evaluate<{
+			transcriptCount: number
+			renderedCount: number
+			sentinelVisible: boolean
+			homeVisible: boolean
+		}>(
+			`(()=>{const e=d.querySelector('[data-testid="chat-transcript-content"]');return {transcriptCount:Number(e?.dataset.count??0),renderedCount:Number(e?.dataset.renderedCount??0),sentinelVisible:d.body.innerText.includes(${JSON.stringify(navigationReady.sentinel)}),homeVisible:!!d.querySelector('[data-testid="alpha-home-brand"]')}})()`,
+		)
+		await fs.writeFile(
+			path.join(directory, "navigation-ready-dom.json"),
+			JSON.stringify(navigationStartState, null, 2),
+		)
+		await capture("navigation-ready")
+		await check(
+			`(()=>{const e=d.querySelector('[data-testid="chat-transcript-content"]');return Number(e?.dataset.count)>=${transcriptCount}&&d.body.innerText.includes(${JSON.stringify(navigationReady.sentinel)})})()`,
+		)
+		await installNavigationProbe(
+			"!!d.querySelector('[data-testid=alpha-home-brand]')&&!d.querySelector('[data-testid=chat-transcript-viewport]')",
+		)
+		await writeJsonAtomically(path.join(directory, "ui-done-navigation-ready.json"), {
+			nonce,
+			stage: "navigation-ready",
+			status: "passed",
+		})
+		await check("typeof d.defaultView.__alphaHistoryUiProbe.paintedAt === 'number'")
+		const newChatProbe = await readNavigationProbe()
+		assert.ok(newChatProbe.domAt !== undefined && newChatProbe.paintedAt !== undefined)
+		await ready("navigation-new-chat")
+		const newChatReceipt = JSON.parse(
+			await fs.readFile(path.join(directory, "ui-stage-navigation-new-chat.json"), "utf8"),
+		) as { taskId?: unknown }
+		assert.equal(newChatReceipt.taskId, navigationReady.taskId)
+		await writeJsonAtomically(path.join(directory, "ui-done-navigation-new-chat.json"), {
+			nonce,
+			stage: "navigation-new-chat",
+			status: "passed",
+		})
+
+		await ready("navigation-reopen-ready")
+		const reopenReceipt = JSON.parse(
+			await fs.readFile(path.join(directory, "ui-stage-navigation-reopen-ready.json"), "utf8"),
+		) as { taskId?: unknown }
+		assert.equal(reopenReceipt.taskId, navigationReady.taskId)
+		const taskId = navigationReady.taskId as string
+		const taskItemSelector = `[data-testid="task-item-${taskId}"]`
+		await check(`!!d.querySelector(${JSON.stringify(taskItemSelector)})`)
+		assert.equal(
+			await evaluate(
+				`(()=>{const e=d.querySelector(${JSON.stringify(taskItemSelector)});e.focus();return d.activeElement===e})()`,
+			),
+			true,
+		)
+		await installNavigationProbe(
+			`(()=>{const e=d.querySelector('[data-testid="chat-transcript-content"]');return Number(e?.dataset.count)>=${transcriptCount}&&d.body.innerText.includes(${JSON.stringify(navigationReady.sentinel)})})()`,
+			taskId,
+		)
+		for (const type of ["keyDown", "keyUp"]) {
+			await connection.request(
+				"Input.dispatchKeyEvent",
+				{
+					type,
+					key: "Enter",
+					code: "Enter",
+					windowsVirtualKeyCode: 13,
+					...(type === "keyDown" ? { text: "\r" } : {}),
+				},
+				sessionId,
+			)
+		}
+		await check("typeof d.defaultView.__alphaHistoryUiProbe.paintedAt === 'number'")
+		const reopenProbe = await readNavigationProbe()
+		assert.ok(reopenProbe.domAt !== undefined && reopenProbe.paintedAt !== undefined)
+		const reopenedTranscript = await evaluate<{ count: number; renderedCount: number; sentinelVisible: boolean }>(
+			`(()=>{const e=d.querySelector('[data-testid="chat-transcript-content"]');return {count:Number(e?.dataset.count??0),renderedCount:Number(e?.dataset.renderedCount??0),sentinelVisible:d.body.innerText.includes(${JSON.stringify(navigationReady.sentinel)})}})()`,
+		)
+		assert.ok(reopenedTranscript.count >= transcriptCount, "Reopened transcript retains all fixture messages")
+		assert.ok(reopenedTranscript.renderedCount > 0 && reopenedTranscript.renderedCount <= 100)
+		assert.equal(reopenedTranscript.sentinelVisible, true)
+		const rendererLatency = {
+			schemaVersion: 1,
+			hostVersion: expectedHostVersion,
+			runId,
+			provider: "scripted-fake-ai",
+			taskId,
+			extensionBundleSha256: undefined as string | undefined,
+			transcriptCacheState: "persisted-transcript-task-object-closed-in-same-extension-host",
+			sampleCounts: { newChat: 1, coldTaskReopen: 1, warmTaskReopen: 0 },
+			transcriptMessages: transcriptCount,
+			reopenedTranscript,
+			measurementsMs: {
+				newChatDomCommit: newChatProbe.domAt! - newChatProbe.startedAt,
+				newChatFramePaint: newChatProbe.paintedAt! - newChatProbe.startedAt,
+				reopenClickToOpeningFeedback:
+					reopenProbe.openingFeedbackAt === undefined
+						? null
+						: reopenProbe.openingFeedbackAt - reopenProbe.startedAt,
+				reopenClickToTranscriptDom: reopenProbe.domAt! - reopenProbe.startedAt,
+				reopenClickToTranscriptFramePaint: reopenProbe.paintedAt! - reopenProbe.startedAt,
+			},
+			measurementBoundary: `VS Code ${expectedHostVersion} webview performance clock: New Chat DOM commit and frame after it; history-row click to opening feedback and transcript DOM/frame with persisted synthetic transcript; timings are one scripted sample, not a general speed claim.`,
+		}
+		await writeJsonAtomically(path.join(directory, "ui-done-navigation-reopen-ready.json"), {
+			nonce,
+			stage: "navigation-reopen-ready",
+			status: "passed",
+		})
 		const host = await running
-		return completeHistoryUiRun(host, directory, output, runId)
+		assert.ok(host.evidenceManifestPath)
+		const manifest = JSON.parse(await fs.readFile(host.evidenceManifestPath, "utf8")) as { bundleSha256?: unknown }
+		assert.equal(typeof manifest.bundleSha256, "string")
+		assert.match(manifest.bundleSha256 as string, /^[a-f0-9]{64}$/)
+		rendererLatency.extensionBundleSha256 = manifest.bundleSha256 as string
+		await fs.writeFile(
+			path.join(directory, "navigation-renderer-latency.json"),
+			JSON.stringify(rendererLatency, null, 2),
+			{ flag: "wx" },
+		)
+		return completeHistoryUiRun(host, directory, output, runId, expectedHostVersion)
 	} finally {
 		clearTimeout(timer)
 		cdp?.close()
@@ -279,10 +436,11 @@ export async function runHistoryUi(executable: string, output: string) {
 
 if (require.main === module) {
 	void (async () => {
-		const executable = process.env.VSCODE_EXECUTABLE_PATH ?? (await downloadAndUnzipVSCode({ version: "1.122.1" }))
-		console.log(
-			JSON.stringify(await runHistoryUi(executable, path.resolve(__dirname, "../../../artifacts/history-ux"))),
-		)
+		const expectedHostVersion = process.env.ALPHA_HISTORY_UI_VSCODE_VERSION ?? "1.122.1"
+		const executable =
+			process.env.VSCODE_EXECUTABLE_PATH ?? (await downloadAndUnzipVSCode({ version: expectedHostVersion }))
+		const output = process.env.ALPHA_HISTORY_UI_OUTPUT ?? path.join(os.tmpdir(), "alpha-code-history-ux")
+		console.log(JSON.stringify(await runHistoryUi(executable, output, expectedHostVersion)))
 	})().catch((error) => {
 		console.error(error)
 		process.exitCode = 1

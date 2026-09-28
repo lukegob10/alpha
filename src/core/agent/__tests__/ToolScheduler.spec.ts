@@ -1272,6 +1272,226 @@ describe("ToolScheduler", () => {
 		expect(execute).not.toHaveBeenCalled()
 	})
 
+	it("routes an intercepted patch through the canonical mutation gate", async () => {
+		const workspace = await fs.mkdtemp(path.join(tmpdir(), "alpha-intercepted-patch-gate-"))
+		const task = makeTask()
+		const checkpointSave = vi.fn()
+		Object.assign(task, {
+			cwd: workspace,
+			canMutateWorkspace: () => false,
+			checkpointSave,
+			providerRef: { deref: () => undefined },
+		})
+		try {
+			const outcome = await new ToolScheduler({
+				task,
+				registry: new ToolRegistry(),
+				mode: "code",
+				includedTools: ["apply_patch"],
+				policy: createToolPolicySnapshot({ visibleTools: ["exec_command", "apply_patch"] }),
+			}).run(
+				response({
+					id: "intercepted-patch",
+					name: "exec_command",
+					arguments: {
+						cmd: "apply_patch <<'PATCH'\n*** Begin Patch\n*** Add File: fixture.txt\n+must not write\n*** End Patch\nPATCH",
+					},
+				}),
+			)
+
+			expect(outcome.results[0]).toMatchObject({ name: "exec_command", status: "denied" })
+			expect(checkpointSave).not.toHaveBeenCalled()
+			await expect(fs.access(path.join(workspace, "fixture.txt"))).rejects.toThrow()
+		} finally {
+			await fs.rm(workspace, { recursive: true, force: true })
+		}
+	})
+
+	describe("Codex-style apply_patch command interception", () => {
+		const patch = "*** Begin Patch\n*** Add File: note.txt\n+hello\n*** End Patch"
+		const invocation = `apply_patch <<'PATCH'\n${patch}\nPATCH`
+
+		function setup(
+			visibleTools = ["exec_command", "apply_patch"],
+			patchNeedsApproval = false,
+			deniedPrefixes: string[] = [],
+		) {
+			const task = makeTask()
+			Object.assign(task, { cwd: path.join(tmpdir(), "intercepted-patch-workspace") })
+			const commandExecute = vi.fn(async ({ callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
+				callbacks.pushToolResult("shell ran")
+			})
+			const patchExecute = vi.fn(async ({ callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
+				if (!patchNeedsApproval || (await callbacks.askApproval("tool", "apply patch"))) {
+					callbacks.pushToolResult("patch applied")
+				}
+			})
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			registry.register(descriptor("exec_command", "serial", commandExecute))
+			registry.register(descriptor("apply_patch", "serial", patchExecute))
+			const policy = createToolPolicySnapshot({
+				visibleTools,
+				execution: { workspaceRoots: [task.cwd], command: { deniedPrefixes } },
+			})
+			const run = (cmd: string, workdir?: string) =>
+				new ToolScheduler({ task, registry, mode: "code", policy, validateCall: () => {} }).run(
+					response({
+						id: "shell-patch",
+						name: "exec_command",
+						arguments: { cmd, ...(workdir ? { workdir } : {}) },
+					}),
+				)
+			return { task, commandExecute, patchExecute, run }
+		}
+
+		it("routes a complete heredoc through the patch descriptor while retaining the provider call ID", async () => {
+			const { task, commandExecute, patchExecute, run } = setup()
+			const outcome = await run(invocation)
+
+			expect(commandExecute).not.toHaveBeenCalled()
+			expect(patchExecute).toHaveBeenCalledOnce()
+			expect(patchExecute.mock.calls[0][0].call).toMatchObject({
+				id: "shell-patch",
+				name: "apply_patch",
+				nativeArgs: { patch },
+			})
+			expect(outcome.results[0]).toMatchObject({ callId: "shell-patch", name: "exec_command", status: "success" })
+			expect(resultIds(task)).toEqual(["shell-patch"])
+		})
+
+		it("resolves patch paths relative to the command workdir", async () => {
+			const { patchExecute, run } = setup()
+			const outcome = await run(invocation, "src")
+
+			expect(outcome.results[0].status).toBe("success")
+			expect(patchExecute.mock.calls[0][0].call.nativeArgs).toEqual({
+				patch: patch.replace("note.txt", "src/note.txt"),
+			})
+		})
+
+		it("denies a hidden patch capability without running a shell", async () => {
+			const { commandExecute, patchExecute, run } = setup(["exec_command"])
+			const outcome = await run(invocation)
+
+			expect(outcome.results[0]).toMatchObject({
+				name: "exec_command",
+				status: "error",
+				failure: { reason: "policy_denied" },
+			})
+			expect(commandExecute).not.toHaveBeenCalled()
+			expect(patchExecute).not.toHaveBeenCalled()
+		})
+
+		it("honors the original command deny rule before patch interception", async () => {
+			const { commandExecute, patchExecute, run } = setup(["exec_command", "apply_patch"], false, ["apply_patch"])
+			const outcome = await run(invocation)
+
+			expect(outcome.results[0]).toMatchObject({ status: "denied", failure: { reason: "policy_denied" } })
+			expect(commandExecute).not.toHaveBeenCalled()
+			expect(patchExecute).not.toHaveBeenCalled()
+		})
+
+		it("rejects an unterminated patch heredoc before shell launch", async () => {
+			const { commandExecute, patchExecute, run } = setup()
+			const outcome = await run(invocation.replace(/PATCH$/, "WRONG"))
+
+			expect(outcome.results[0]).toMatchObject({ status: "error", failure: { reason: "invalid_arguments" } })
+			expect(commandExecute).not.toHaveBeenCalled()
+			expect(patchExecute).not.toHaveBeenCalled()
+		})
+
+		it("checks patch paths against the captured workspace roots", async () => {
+			const { commandExecute, patchExecute, run } = setup()
+			const outcome = await run(invocation.replace("note.txt", "../outside.txt"))
+
+			expect(outcome.results[0]).toMatchObject({ status: "error", failure: { reason: "policy_denied" } })
+			expect(commandExecute).not.toHaveBeenCalled()
+			expect(patchExecute).not.toHaveBeenCalled()
+		})
+
+		it("honors task-scoped patch denials for intercepted calls", async () => {
+			const { task, commandExecute, patchExecute, run } = setup()
+			const getTaskToolDenialReason = vi.fn(() => "Worker edit path is outside the approved write_scope")
+			Object.assign(task, { getTaskToolDenialReason })
+			const outcome = await run(invocation)
+
+			expect(outcome.results[0]).toMatchObject({ status: "denied", failure: { reason: "policy_denied" } })
+			expect(getTaskToolDenialReason).toHaveBeenCalledWith("apply_patch", { patch })
+			expect(commandExecute).not.toHaveBeenCalled()
+			expect(patchExecute).not.toHaveBeenCalled()
+		})
+
+		it("does not turn a Plan mode command into a write", async () => {
+			const task = makeTask()
+			Object.assign(task, { cwd: path.join(tmpdir(), "plan-patch-workspace") })
+			const execute = vi.fn(async ({ callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
+				callbacks.pushToolResult("must not execute")
+			})
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			registry.register(descriptor("exec_command", "serial", execute))
+			registry.register(descriptor("apply_patch", "serial", execute))
+
+			const outcome = await new ToolScheduler({
+				task,
+				registry,
+				mode: "architect",
+				includedTools: ["apply_patch"],
+				policy: createToolPolicySnapshot({ visibleTools: ["exec_command", "apply_patch"] }),
+			}).run(response({ id: "plan-patch", name: "exec_command", arguments: { cmd: invocation } }))
+
+			expect(outcome.results[0]).toMatchObject({ status: "error", failure: { reason: "policy_denied" } })
+			expect(execute).not.toHaveBeenCalled()
+		})
+
+		it("keeps the command disabled-tool requirement when the patch tool is allowed", async () => {
+			const task = makeTask()
+			Object.assign(task, { cwd: path.join(tmpdir(), "disabled-command-patch-workspace") })
+			const execute = vi.fn(async ({ callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
+				callbacks.pushToolResult("must not execute")
+			})
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			registry.register(descriptor("exec_command", "serial", execute))
+			registry.register(descriptor("apply_patch", "serial", execute))
+
+			const outcome = await new ToolScheduler({
+				task,
+				registry,
+				mode: "code",
+				includedTools: ["apply_patch"],
+				disabledTools: ["exec_command"],
+				policy: createToolPolicySnapshot({ visibleTools: ["exec_command", "apply_patch"] }),
+			}).run(response({ id: "disabled-command", name: "exec_command", arguments: { cmd: invocation } }))
+
+			expect(outcome.results[0]).toMatchObject({ status: "error", failure: { reason: "policy_denied" } })
+			expect(execute).not.toHaveBeenCalled()
+		})
+
+		it("identifies the effective patch tool in approval requests", async () => {
+			const { task, run } = setup(["exec_command", "apply_patch"], true)
+			const requestToolApproval = vi.fn(async (_request: ToolApprovalRequest) => ({
+				decision: "approve_once" as const,
+			}))
+			Object.assign(task, { requestToolApproval })
+			const outcome = await run(invocation)
+
+			expect(outcome.results[0].status).toBe("success")
+			expect(requestToolApproval).toHaveBeenCalledOnce()
+			expect(requestToolApproval.mock.calls[0][0]).toMatchObject({
+				callId: "shell-patch",
+				toolName: "apply_patch",
+			})
+		})
+
+		it("leaves unrelated commands to the command tool", async () => {
+			const { commandExecute, patchExecute, run } = setup()
+			const outcome = await run("apply_patch --version")
+
+			expect(outcome.results[0].status).toBe("success")
+			expect(commandExecute).toHaveBeenCalledOnce()
+			expect(patchExecute).not.toHaveBeenCalled()
+		})
+	})
+
 	it("uses exec_command for live approval and receipt identity while replaying legacy command names", async () => {
 		const task = makeTask()
 		const workspace = path.join(tmpdir(), "canonical-command-identity-workspace")

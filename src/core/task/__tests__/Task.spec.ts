@@ -3247,6 +3247,50 @@ describe("Alpha", () => {
 			expect(emitSpy).toHaveBeenCalledWith("taskAborted")
 		})
 
+		it("does not record cancellation when disposing a completed task", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "completed task cleanup",
+				startTask: false,
+			})
+			vi.spyOn(task, "dispose").mockImplementation(() => {})
+			vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(undefined)
+			const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent")
+			const taskAborted = vi.fn()
+			task.on(AlphaCodeEventName.TaskAborted, taskAborted)
+			task.markCompleted()
+
+			await task.abortTask(true)
+
+			expect(task.abort).toBe(true)
+			expect(
+				appendEvent.mock.calls.filter(([event]) => (event as AgentTurnEvent).type === "cancelled"),
+			).toHaveLength(0)
+			expect(taskAborted).not.toHaveBeenCalled()
+		})
+
+		it("records genuine in-flight cancellation exactly once", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "in-flight task cancellation",
+				startTask: false,
+			})
+			vi.spyOn(task, "dispose").mockImplementation(() => {})
+			vi.spyOn(task as any, "saveAlphaMessages").mockResolvedValue(undefined)
+			const appendEvent = vi.spyOn(task as any, "appendAgentTurnEvent")
+			const taskAborted = vi.fn()
+			task.on(AlphaCodeEventName.TaskAborted, taskAborted)
+
+			await task.abortTask()
+
+			expect(
+				appendEvent.mock.calls.filter(([event]) => (event as AgentTurnEvent).type === "cancelled"),
+			).toHaveLength(1)
+			expect(taskAborted).toHaveBeenCalledOnce()
+		})
+
 		it("should be equivalent to clicking Cancel button functionality", async () => {
 			const task = new Task({
 				provider: mockProvider,

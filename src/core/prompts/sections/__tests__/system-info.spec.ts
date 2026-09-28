@@ -64,4 +64,12 @@ describe("getSystemInfoSection", () => {
 
 		expect(result).toContain("Operating System: win32 10.0.19043")
 	})
+
+	it("reports the actual command shell when it differs from the VS Code profile", () => {
+		mockOsName.mockReturnValue("Windows")
+
+		expect(getSystemInfoSection(mockCwd, "C:\\Windows\\System32\\cmd.exe")).toContain(
+			"Default Shell: C:\\Windows\\System32\\cmd.exe",
+		)
+	})
 })

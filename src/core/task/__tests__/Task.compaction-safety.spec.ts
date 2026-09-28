@@ -2,6 +2,7 @@ import type { Anthropic } from "@anthropic-ai/sdk"
 import type { ModelInfo, ProviderSettings, TaskDesignHandoff } from "@alpha-code/types"
 
 import type { ApiHandler } from "../../../api"
+import { BaseTerminal } from "../../../integrations/terminal/BaseTerminal"
 import { createAgentResponse, type AgentResponse } from "../../agent/AgentResponse"
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../../agent/AgentStepContextBuilder"
 import type { ToolSchedulerOutcome } from "../../agent/ToolScheduler"
@@ -1385,6 +1386,24 @@ describe("Task context recovery admission", () => {
 			isStealthModel: false,
 		})
 		expect(vi.mocked(SYSTEM_PROMPT_FRAGMENTS).mock.calls[0][14]).toBe("test-model")
+	})
+
+	it("reports the command backend shell used by a captured prompt step", async () => {
+		const { task, api, provider } = harness()
+		Object.assign(provider, { context: {}, getSkillsManager: () => undefined })
+		vi.spyOn(BaseTerminal, "getExecaShellPath").mockReturnValue("configured-command-shell")
+
+		await expect(
+			Reflect.get(Task.prototype, "getSystemPrompt").call(
+				task,
+				{ mcpEnabled: false, terminalShellIntegrationDisabled: true },
+				{ apiHandler: api, apiConfiguration: { apiProvider: "vertex" } },
+			),
+		).resolves.toBe("Captured provider prompt")
+
+		expect(vi.mocked(SYSTEM_PROMPT_FRAGMENTS).mock.lastCall?.[12]).toMatchObject({
+			commandShell: "configured-command-shell",
+		})
 	})
 
 	it.each([

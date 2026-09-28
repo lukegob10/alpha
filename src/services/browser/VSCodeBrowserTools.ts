@@ -101,10 +101,11 @@ export async function invokeVSCodeBrowserTool<TName extends BrowserToolName>(
 	signal?: AbortSignal,
 ): Promise<ToolResponse> {
 	signal?.throwIfAborted()
-	if (name === "open_browser_page" || name === "navigate_page") {
+	if (name === "open_browser_page") {
+		validateWebsiteUrl("url" in input ? input.url : undefined)
+	} else if (name === "navigate_page") {
 		const url = "url" in input ? input.url : undefined
-		const requiresUrl =
-			name === "navigate_page" && (!("type" in input) || input.type === undefined || input.type === "url")
+		const requiresUrl = !("type" in input) || input.type === undefined || input.type === "url"
 		if (url !== undefined || requiresUrl) validateWebsiteUrl(url)
 	}
 

@@ -241,6 +241,7 @@ describe("native tool-surface refactor contract", () => {
 			["vertex", { provider: "vertex", id: "o3" }],
 			["vertex gpt-oss", { provider: "vertex", id: "gpt-oss" }],
 			["vscode-lm", { provider: "vscode-lm", vendor: "copilot", family: "gpt-5.5" }],
+			["vscode-lm GPT-5.6 Sol", { provider: "vscode-lm", vendor: "copilot", family: "gpt-5.6-sol" }],
 			["vscode-lm gpt-oss", { provider: "vscode-lm", vendor: "copilot", family: "gpt-oss-120b" }],
 			["codex", { provider: "openai", id: "codex" }],
 			["claude", { provider: "openai", id: "claude-opus-4.7" }],
@@ -320,6 +321,7 @@ describe("native tool-surface refactor contract", () => {
 					apiConfiguration: { apiProvider: "openai" },
 					taskKind: "primary",
 					crossTaskRole,
+					userRequestText: "Create one independent task for parser review.",
 				})
 
 			const rootCode = await buildSurface("code", "root")
