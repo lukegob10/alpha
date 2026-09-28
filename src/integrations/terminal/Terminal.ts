@@ -12,10 +12,15 @@ export class Terminal extends BaseTerminal {
 
 	public cmdCounter: number = 0
 
-	constructor(id: number, terminal: vscode.Terminal | undefined, cwd: string) {
+	constructor(
+		id: number,
+		terminal: vscode.Terminal | undefined,
+		cwd: string,
+		commandEnv: Record<string, string> = {},
+	) {
 		super("vscode", id, cwd)
 
-		const env = Terminal.getEnv()
+		const env = { ...Terminal.getEnv(), ...commandEnv }
 		const iconPath = new vscode.ThemeIcon("rocket")
 		this.terminal = terminal ?? vscode.window.createTerminal({ cwd, name: "Alpha", iconPath, env })
 

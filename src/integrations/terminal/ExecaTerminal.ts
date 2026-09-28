@@ -4,7 +4,11 @@ import { ExecaTerminalProcess } from "./ExecaTerminalProcess"
 import { mergePromise } from "./mergePromise"
 
 export class ExecaTerminal extends BaseTerminal {
-	constructor(id: number, cwd: string) {
+	constructor(
+		id: number,
+		cwd: string,
+		readonly commandEnv: Record<string, string> = {},
+	) {
 		super("execa", id, cwd)
 	}
 

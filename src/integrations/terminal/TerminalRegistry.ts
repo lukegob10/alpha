@@ -7,6 +7,7 @@ import { TerminalProcess } from "./TerminalProcess"
 import { Terminal } from "./Terminal"
 import { ExecaTerminal } from "./ExecaTerminal"
 import { ShellIntegrationManager } from "./ShellIntegrationManager"
+import { getRipgrepPathOverlay } from "./ripgrepEnvironment"
 
 // Although vscode.window.terminals provides a list of all open terminals,
 // there's no way to know whether they're busy or not (exitStatus does not
@@ -131,13 +132,17 @@ export class TerminalRegistry {
 		}
 	}
 
-	public static createTerminal(cwd: string, provider: AlphaTerminalProvider): AlphaTerminal {
+	public static createTerminal(
+		cwd: string,
+		provider: AlphaTerminalProvider,
+		commandEnv: Record<string, string> = {},
+	): AlphaTerminal {
 		let newTerminal
 
 		if (provider === "vscode") {
-			newTerminal = new Terminal(this.nextTerminalId++, undefined, cwd)
+			newTerminal = new Terminal(this.nextTerminalId++, undefined, cwd, commandEnv)
 		} else {
-			newTerminal = new ExecaTerminal(this.nextTerminalId++, cwd)
+			newTerminal = new ExecaTerminal(this.nextTerminalId++, cwd, commandEnv)
 		}
 
 		this.terminals.push(newTerminal)
@@ -158,30 +163,9 @@ export class TerminalRegistry {
 		taskId?: string,
 		provider: AlphaTerminalProvider = "vscode",
 	): Promise<AlphaTerminal> {
-		const terminals = this.getAllTerminals()
-		let terminal: AlphaTerminal | undefined
-
-		// First priority: Find a terminal already assigned to this task with
-		// matching directory.
-		if (taskId) {
-			terminal = terminals.find((t) => {
-				if (t.busy || t.taskId !== taskId || t.provider !== provider) {
-					return false
-				}
-
-				const terminalCwd = t.getCurrentWorkingDirectory()
-
-				if (!terminalCwd) {
-					return false
-				}
-
-				return arePathsEqual(vscode.Uri.file(cwd).fsPath, terminalCwd)
-			})
-		}
-
-		// Second priority: Find any available terminal with matching directory.
-		if (!terminal) {
-			terminal = terminals.find((t) => {
+		const findAvailableTerminal = () => {
+			const terminals = this.getAllTerminals()
+			const matches = (t: AlphaTerminal) => {
 				if (t.busy || t.provider !== provider) {
 					return false
 				}
@@ -193,12 +177,20 @@ export class TerminalRegistry {
 				}
 
 				return arePathsEqual(vscode.Uri.file(cwd).fsPath, terminalCwd)
-			})
+			}
+
+			// Prefer a matching terminal already assigned to this task.
+			return (
+				(taskId ? terminals.find((t) => t.taskId === taskId && matches(t)) : undefined) ??
+				terminals.find(matches)
+			)
 		}
 
-		// If no suitable terminal found, create a new one.
+		let terminal = findAvailableTerminal()
 		if (!terminal) {
-			terminal = this.createTerminal(cwd, provider)
+			const commandEnv = await getRipgrepPathOverlay()
+			// Another request may have created a terminal while binary resolution was pending.
+			terminal = findAvailableTerminal() ?? this.createTerminal(cwd, provider, commandEnv)
 		}
 
 		terminal.taskId = taskId

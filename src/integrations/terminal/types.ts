@@ -18,6 +18,7 @@ export interface AlphaTerminal {
 	busy: boolean
 	running: boolean
 	taskId?: string
+	commandEnv?: Record<string, string>
 	process?: AlphaTerminalProcess
 	getCurrentWorkingDirectory(): string
 	isClosed: () => boolean
