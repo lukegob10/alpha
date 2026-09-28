@@ -1268,6 +1268,8 @@ export interface AlphaSayTool {
 export interface AlphaAskUseMcpServer {
 	serverName: string
 	type: "use_mcp_tool" | "access_mcp_resource"
+	/** Captured MCP server scope, when the caller knows it. Older approval payloads omit this field. */
+	source?: "global" | "project"
 	toolName?: string
 	annotations?: McpToolAnnotations
 	arguments?: string

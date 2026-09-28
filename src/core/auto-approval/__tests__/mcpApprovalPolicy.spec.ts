@@ -1,41 +1,50 @@
-import { requiresMcpToolApproval } from "../mcpApprovalPolicy"
+import { getMcpToolApprovalDecision } from "../mcpApprovalPolicy"
 
-describe("requiresMcpToolApproval", () => {
+const toolUse = (annotations?: unknown) => ({
+	type: "use_mcp_tool",
+	serverName: "linear",
+	toolName: "get_issue",
+	annotations,
+})
+
+describe("getMcpToolApprovalDecision", () => {
 	it.each([
-		["read-only tools", { readOnlyHint: true }, false],
-		["closed-world non-destructive tools", { destructiveHint: false, openWorldHint: false }, false],
-		["destructive tools", { destructiveHint: true, readOnlyHint: true }, true],
-		["open-world tools", { destructiveHint: false, openWorldHint: true }, true],
-		["incomplete annotations", { destructiveHint: false }, true],
-		["empty annotations", {}, true],
-		["missing annotations", undefined, true],
-	])("Auto requires approval for %s", (_name, annotations, requiresApproval) => {
-		expect(requiresMcpToolApproval("auto", annotations)).toBe(requiresApproval)
+		["read-only annotation", { readOnlyHint: true }],
+		["destructive annotation", { destructiveHint: true, readOnlyHint: true }],
+		["incomplete annotations", { destructiveHint: false }],
+		["unknown annotation", { readOnlyHint: true, futureHint: false }],
+		["missing annotations", undefined],
+	])("keeps an Auto MCP call gated with only a %s", (_name, annotations) => {
+		expect(getMcpToolApprovalDecision("auto", toolUse(annotations), false)).toBe("ask")
+	})
+
+	it.each(["ask", "auto"] as const)("honors an explicit saved grant in %s", (mode) => {
+		expect(getMcpToolApprovalDecision(mode, toolUse({ readOnlyHint: true, destructiveHint: true }), true)).toBe(
+			"approve",
+		)
+		expect(getMcpToolApprovalDecision(mode, toolUse({ futureHint: true }), true)).toBe("approve")
+	})
+
+	it("keeps Ask strict when no saved grant exists and lets Bypass approve a valid MCP call", () => {
+		expect(getMcpToolApprovalDecision("ask", toolUse({ readOnlyHint: true }), false)).toBe("ask")
+		expect(getMcpToolApprovalDecision("bypass", toolUse({ futureHint: true }), false)).toBe("approve")
 	})
 
 	it.each([
-		["read-only tools", { readOnlyHint: true }, false],
-		["destructive read-only tools", { readOnlyHint: true, destructiveHint: true }, true],
-		["tools that can write", { readOnlyHint: false }, true],
-		["missing annotations", undefined, true],
-	])("Writes requires approval for %s", (_name, annotations, requiresApproval) => {
-		expect(requiresMcpToolApproval("writes", annotations)).toBe(requiresApproval)
+		undefined,
+		{ type: "use_mcp_tool", serverName: "linear", toolName: "" },
+		{ type: "access_mcp_resource", serverName: "linear", toolName: "get_issue" },
+		{ type: "use_mcp_tool", serverName: "linear", toolName: "get_issue", source: "other" },
+	])("fails closed for malformed MCP tool identity: %j", (use) => {
+		expect(getMcpToolApprovalDecision("bypass", use, true)).toBe("ask")
 	})
 
-	it("always requires approval in Prompt mode and never in Approve mode", () => {
-		const annotations = { readOnlyHint: true }
-		expect(requiresMcpToolApproval("prompt", annotations)).toBe(true)
-		expect(requiresMcpToolApproval("approve", undefined)).toBe(false)
+	it("fails closed for an unknown approval mode even when a grant is present", () => {
+		expect(getMcpToolApprovalDecision("unknown", toolUse({ readOnlyHint: true }), true)).toBe("ask")
 	})
 
-	it.each([[{ readOnlyHint: "true" }], [{ readOnlyHint: true, futureHint: false }], [{ audience: ["system"] }]])(
-		"fails closed for invalid or unknown annotations: %j",
-		(annotations) => {
-			expect(requiresMcpToolApproval("auto", annotations)).toBe(true)
-		},
-	)
-
-	it("fails closed for an unknown approval mode", () => {
-		expect(requiresMcpToolApproval("unknown", { readOnlyHint: true })).toBe(true)
+	it("preserves an explicit grant for the legacy settings path", () => {
+		expect(getMcpToolApprovalDecision(undefined, toolUse(undefined), true)).toBe("approve")
+		expect(getMcpToolApprovalDecision(undefined, toolUse(undefined), false)).toBe("ask")
 	})
 })

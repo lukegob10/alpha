@@ -2,7 +2,7 @@ import * as vscode from "vscode"
 
 import type { OpenDiffPayload } from "@alpha-code/types"
 
-import { DIFF_VIEW_URI_SCHEME } from "./DiffViewProvider"
+import { DIFF_VIEW_URI_SCHEME } from "./diffViewConstants"
 
 const DEFAULT_DIFF_TITLE = "Alpha Diff"
 

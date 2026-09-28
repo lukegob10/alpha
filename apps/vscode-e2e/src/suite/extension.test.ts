@@ -40,6 +40,7 @@ suite("Alpha Extension", function () {
 		await vscode.commands.executeCommand("alpha.openTickets", { preserveFocus: false })
 		await opened
 		const ticketTab = ticketTabs()[0]
+		assert.ok(ticketTab)
 		const ticketGroup = vscode.window.tabGroups.all.find((group) => group.tabs.includes(ticketTab))
 		assert.equal(ticketGroup?.viewColumn, activeColumn, "Ticket editor should reuse the active editor group")
 		await vscode.commands.executeCommand("alpha.openTickets", { preserveFocus: false })

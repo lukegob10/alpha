@@ -89,8 +89,11 @@ export const MAX_CHECKPOINT_TIMEOUT_SECONDS = 60
  */
 export const DEFAULT_CHECKPOINT_TIMEOUT_SECONDS = 15
 
-/** Default post-response compaction trigger, measured against the usable context limit. */
-export const DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT = 15
+/**
+ * Optional post-response compaction is off until enabled by the user, matching pinned Codex CLI behavior.
+ * Source: https://github.com/openai/codex/blob/e0ef5a1a0f6421601baaa679fb37eddaa4e9c8c1/codex-rs/core/src/config/mod.rs#L4192-L4194
+ */
+export const DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT = 0
 
 /**
  * GlobalSettings

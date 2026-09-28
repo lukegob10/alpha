@@ -5,6 +5,7 @@ import * as assert from "node:assert/strict"
 import { randomUUID } from "node:crypto"
 import { runExtensionTests } from "../runTest"
 import { exerciseRenderedAcceptance } from "../ui/renderedAcceptance"
+import { exerciseRenderedFileReview } from "../ui/renderedFileReview"
 import { exerciseRenderedReasoning } from "../ui/renderedReasoning"
 import { CdpConnection } from "../ui/cdp"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
@@ -23,7 +24,7 @@ interface Evaluation<T> {
 export async function runRenderedUiProbe(
 	executable: string,
 	output: string,
-	mode: "probe" | "acceptance" | "reasoning" = "probe",
+	mode: "probe" | "acceptance" | "reasoning" | "file-review" = "probe",
 	signal?: AbortSignal,
 ) {
 	await fs.mkdir(output, { recursive: true })
@@ -42,11 +43,13 @@ export async function runRenderedUiProbe(
 		vscodeVersion: "1.122.1",
 		vscodeExecutablePath: executable,
 		testFile:
-			mode === "reasoning"
-				? "reasoning-ui.test"
-				: mode === "acceptance"
-					? "managed-agents.acceptance.test"
-					: "rendered-ui-probe.test",
+			mode === "file-review"
+				? "file-review-ui.test"
+				: mode === "reasoning"
+					? "reasoning-ui.test"
+					: mode === "acceptance"
+						? "managed-agents.acceptance.test"
+						: "rendered-ui-probe.test",
 		rendererDebuggingPort: 0,
 		runId,
 		profileDir: path.join(profileRoot, "profile"),
@@ -77,11 +80,13 @@ export async function runRenderedUiProbe(
 							await fs.readFile(
 								path.join(
 									directory,
-									mode === "reasoning"
-										? "ui-stage-reasoning-high.json"
-										: mode === "acceptance"
-											? "ui-stage-settings-edit.json"
-											: "ui-ready.json",
+									mode === "file-review"
+										? "ui-stage-file-review.json"
+										: mode === "reasoning"
+											? "ui-stage-reasoning-high.json"
+											: mode === "acceptance"
+												? "ui-stage-settings-edit.json"
+												: "ui-ready.json",
 								),
 								"utf8",
 							),
@@ -135,14 +140,13 @@ export async function runRenderedUiProbe(
 			const { sessionId } = selected
 			assert.ok(workbenchSession)
 			if (mode !== "probe") {
-				const stages = await (mode === "reasoning" ? exerciseRenderedReasoning : exerciseRenderedAcceptance)(
-					cdp,
-					sessionId,
-					workbenchSession,
-					directory,
-					nonce,
-					combinedSignal,
-				)
+				const stages = await (
+					mode === "file-review"
+						? exerciseRenderedFileReview
+						: mode === "reasoning"
+							? exerciseRenderedReasoning
+							: exerciseRenderedAcceptance
+				)(cdp, sessionId, workbenchSession, directory, nonce, combinedSignal)
 				const modelSwitchTiming =
 					mode === "reasoning"
 						? JSON.parse(await fs.readFile(path.join(directory, "ui-model-switch-timing.json"), "utf8"))
@@ -225,14 +229,21 @@ export async function runRenderedUiProbe(
 				nonce,
 				reason: error instanceof Error ? error.message : "probe_failed",
 			}
-			if (mode === "reasoning") abort.abort()
+			if (mode === "reasoning" || mode === "file-review") abort.abort()
 		} finally {
-			await fs.writeFile(path.join(directory, "ui-last-rendered.txt"), lastRenderedText)
 			cdp?.close()
-			await fs.writeFile(path.join(directory, "ui-probe.json"), JSON.stringify(observed, null, 2))
-			await fs.writeFile(path.join(directory, "ui-finish.json"), JSON.stringify({ nonce }), {
-				flag: "wx",
-			})
+			if (
+				await fs.stat(directory).then(
+					() => true,
+					() => false,
+				)
+			) {
+				await fs.writeFile(path.join(directory, "ui-last-rendered.txt"), lastRenderedText)
+				await fs.writeFile(path.join(directory, "ui-probe.json"), JSON.stringify(observed, null, 2))
+				await fs.writeFile(path.join(directory, "ui-finish.json"), JSON.stringify({ nonce }), {
+					flag: "wx",
+				})
+			}
 		}
 		result = await running
 	} catch (error) {

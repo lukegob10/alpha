@@ -15,9 +15,9 @@ import { Task } from "../../core/task/Task"
 import { t } from "../../i18n"
 
 import { DecorationController } from "./DecorationController"
+import { DIFF_VIEW_URI_SCHEME } from "./diffViewConstants"
 
-// Preserve the URI scheme so existing or restored diff tabs still resolve after source renames.
-export const DIFF_VIEW_URI_SCHEME = "cline-diff"
+export { DIFF_VIEW_URI_SCHEME } from "./diffViewConstants"
 export const DIFF_VIEW_LABEL_CHANGES = "Original ↔ Alpha's Changes"
 
 /**

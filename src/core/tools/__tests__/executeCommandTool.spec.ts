@@ -271,6 +271,67 @@ describe("executeCommandTool", () => {
 			expect(result).toContain("Command")
 		})
 
+		it.each(["ask", "auto", "bypass"] as const)(
+			"denies a serial read-only child command before %s approval",
+			async (_approvalMode) => {
+				const reason =
+					"This read-only sub-agent may run audited Git and ripgrep inspections only through the isolated command reader."
+				mockAlphaTask.getTaskCommandDenialReason = vitest.fn().mockReturnValue(reason)
+				const setResultMetadata = vitest.fn()
+
+				await executeCommandTool.execute({ command: "git status --short" }, mockAlphaTask as unknown as Task, {
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+					toolCallId: "serial-read-only-child-command",
+					setResultMetadata,
+				})
+
+				expect(mockAskApproval).not.toHaveBeenCalled()
+				expect(executeCommandModule.executeCommandInTerminal).not.toHaveBeenCalled()
+				expect(setResultMetadata).toHaveBeenCalledWith(
+					expect.objectContaining({
+						status: "denied",
+						failure: expect.objectContaining({ reason: "policy_denied" }),
+					}),
+				)
+				expect(formatResponse.toolError).toHaveBeenCalledWith(reason)
+			},
+		)
+
+		it.each(["ask", "auto", "bypass"] as const)(
+			"rechecks child command authority after a %s approval before launch",
+			async (_approvalMode) => {
+				const commandAuthority = vitest
+					.fn()
+					.mockResolvedValueOnce(undefined)
+					.mockResolvedValueOnce(
+						"Read-only sub-agents may run only audited Git inspection and ripgrep commands.",
+					)
+				mockAlphaTask.getTaskCommandDenialReason = commandAuthority
+				const setResultMetadata = vitest.fn()
+
+				await executeCommandTool.execute({ command: "git status --short" }, mockAlphaTask as unknown as Task, {
+					askApproval: mockAskApproval,
+					handleError: mockHandleError,
+					pushToolResult: mockPushToolResult,
+					toolCallId: "read-only-child-command",
+					setResultMetadata,
+				})
+
+				expect(commandAuthority).toHaveBeenCalledTimes(2)
+				expect(mockAskApproval).toHaveBeenCalledWith("command", "git status --short")
+				expect(executeCommandModule.executeCommandInTerminal).not.toHaveBeenCalled()
+				expect(setResultMetadata).toHaveBeenCalledWith(
+					expect.objectContaining({
+						status: "denied",
+						failure: expect.objectContaining({ reason: "policy_denied" }),
+					}),
+				)
+				expect(formatResponse.toolError).toHaveBeenCalledWith(expect.stringContaining("audited Git inspection"))
+			},
+		)
+
 		it("formats a native exec command result with Codex headers", async () => {
 			const toolCallId = "exec-command-call"
 			await executeCommandTool.execute({ command: "echo test" }, mockAlphaTask as unknown as Task, {

@@ -13,14 +13,16 @@ export const MAX_MCP_TOOLS_THRESHOLD = 60
 export interface McpServerUse {
 	type: string
 	serverName: string
+	/** Captured MCP server scope, when the caller knows it. Older approval payloads omit this field. */
+	source?: "global" | "project"
 	toolName?: string
 	uri?: string
 	annotations?: McpToolAnnotations
 }
 
 /**
- * Optional MCP tool annotations supplied by the server. Treat these as
- * untrusted hints when deciding whether an action needs user approval.
+ * Optional MCP tool annotations supplied by the server. Preserve them as
+ * untrusted approval context; they never grant permission to call a tool.
  */
 export interface McpToolAnnotations {
 	title?: string

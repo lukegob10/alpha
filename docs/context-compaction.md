@@ -2,6 +2,15 @@
 
 Implemented on `codex/nor-56-tool-progress`, reviewed against current source on 2026-09-14.
 
+## Optional post-turn compaction
+
+Post-turn compaction runs only at a settled model-turn boundary. Its default threshold is now `0` (disabled), matching
+the pinned Codex CLI configuration default inspected on 2026-09-26 at commit
+`e0ef5a1a0f6421601baaa679fb37eddaa4e9c8c1`. A saved nonzero threshold still opts a task into the same post-turn
+path, and automatic recovery from a provider context error retains its separate behavior. The setting change does not
+rewrite existing saved values. The `Task.compaction-safety.spec.ts` regression reaches a completed agent turn with no
+saved threshold and verifies that no post-turn summary is generated; another test covers an explicit saved threshold.
+
 ## Working budget
 
 The advertised model capacity, selected request window, input allowance, and automatic trigger are different quantities.

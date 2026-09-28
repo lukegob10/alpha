@@ -11,10 +11,6 @@ vi.mock("vscode", () => ({
 	Uri: { parse: parseUri },
 }))
 
-vi.mock("../DiffViewProvider", () => ({
-	DIFF_VIEW_URI_SCHEME: "cline-diff",
-}))
-
 import { openDiff } from "../openDiff"
 
 describe("openDiff", () => {

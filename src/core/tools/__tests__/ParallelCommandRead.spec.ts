@@ -177,6 +177,24 @@ describe("isolated command reads", () => {
 		)
 	})
 
+	it("uses the isolated executor for audited reads from managed child tasks", async () => {
+		const child = context.task as unknown as { taskKind: string; subagentRole: string }
+		child.taskKind = "subagent"
+		child.subagentRole = "review"
+
+		const read = await prepareParallelCommand(context, policy)
+
+		expect(read).toBeDefined()
+		expect(context.callbacks.askApproval).toHaveBeenCalledWith("command", "git status --short", undefined)
+		const finalize = await read!.run!(context.callbacks)
+		expect(execa).toHaveBeenCalledWith(
+			expect.stringContaining("git"),
+			expect.arrayContaining(["--no-lazy-fetch", "--no-pager", "status", "--short"]),
+			expect.objectContaining({ shell: false, stdin: "ignore" }),
+		)
+		await finalize()
+	})
+
 	it("prepares an exec_command rg read from its native cmd and workdir fields", async () => {
 		const command = "rg -n needle src"
 		context.call = {

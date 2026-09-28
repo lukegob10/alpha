@@ -288,6 +288,7 @@ describe("useMcpToolTool", () => {
 					getAllServers: vi.fn().mockReturnValue([
 						{
 							name: "test_server",
+							source: "project",
 							tools: [{ name: "test_tool", description: "desc", annotations: { readOnlyHint: true } }],
 						},
 					]),
@@ -300,11 +301,13 @@ describe("useMcpToolTool", () => {
 				askApproval: mockAskApproval,
 				handleError: mockHandleError,
 				pushToolResult: mockPushToolResult,
+				mcpSource: "project",
 			})
 
 			expect(mockTask.consecutiveMistakeCount).toBe(0)
 			expect(mockAskApproval).toHaveBeenCalled()
 			expect(JSON.parse(mockAskApproval.mock.calls[0][1]).annotations).toEqual({ readOnlyHint: true })
+			expect(JSON.parse(mockAskApproval.mock.calls[0][1]).source).toBe("project")
 			expect(mockTask.say).toHaveBeenCalledWith("mcp_server_request_started")
 			expect(mockTask.say).toHaveBeenCalledWith("mcp_server_response", "Tool executed successfully", [])
 			expect(mockPushToolResult).toHaveBeenCalledWith("Tool result: Tool executed successfully")
@@ -850,6 +853,7 @@ describe("useMcpToolTool", () => {
 			// Tool should be found and executed
 			expect(mockTask.consecutiveMistakeCount).toBe(0)
 			expect(mockTask.recordToolError).not.toHaveBeenCalled()
+			expect(JSON.parse(mockAskApproval.mock.calls[0][1]).toolName).toBe("get-user-profile")
 			expect(mockTask.say).toHaveBeenCalledWith("mcp_server_request_started")
 
 			// The original tool name (with hyphens) should be passed to callTool
@@ -906,6 +910,38 @@ describe("useMcpToolTool", () => {
 				}),
 			).rejects.toThrow("cancelled before dispatch")
 			expect(callTool).not.toHaveBeenCalled()
+		})
+
+		it("does not dispatch when approval settles after cancellation", async () => {
+			let resolveApproval!: (approved: boolean) => void
+			let markApprovalStarted!: () => void
+			const approvalStarted = new Promise<void>((resolve) => {
+				markApprovalStarted = resolve
+			})
+			const approval = new Promise<boolean>((resolve) => {
+				resolveApproval = resolve
+			})
+			const callTool = vi.fn()
+			installValidServer(callTool)
+			const askApproval = vi.fn(() => {
+				markApprovalStarted()
+				return approval
+			})
+			const controller = new AbortController()
+			const running = useMcpToolTool.handle(mockTask as Task, validBlock() as any, {
+				askApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+				signal: controller.signal,
+			})
+
+			await approvalStarted
+			controller.abort(new Error("cancelled while approval was pending"))
+			resolveApproval(true)
+
+			await expect(running).rejects.toThrow("cancelled while approval was pending")
+			expect(callTool).not.toHaveBeenCalled()
+			expect(mockTask.say).not.toHaveBeenCalledWith("mcp_server_request_started")
 		})
 
 		it("forwards the scheduler signal and rejects a late MCP settlement", async () => {

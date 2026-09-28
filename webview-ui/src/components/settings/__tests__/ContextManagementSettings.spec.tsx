@@ -394,7 +394,8 @@ describe("ContextManagementSettings", () => {
 
 		it("defaults the turn-end threshold to the shared setting default", () => {
 			render(<ContextManagementSettings {...autoCondenseProps} />)
-			expect(screen.getByTestId("post-turn-condense-slider")).toHaveValue("15")
+			expect(screen.getByTestId("post-turn-condense-slider")).toHaveValue("0")
+			expect(screen.getByText("settings:contextManagement.postTurnCondense.off")).toBeInTheDocument()
 		})
 
 		it("updates auto condense context percent", () => {

@@ -6960,11 +6960,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	public getTaskAllowedToolNames(): readonly ToolName[] | undefined {
 		if (this.taskKind !== "subagent") return undefined
 		const role = this.subagentRole ?? "review"
-		const hardCeiling = getSubagentAllowedToolNames(
+		const roleCeiling = getSubagentAllowedToolNames(
 			role,
 			Boolean(this.subagentContextManifest?.skills.length),
 			this.subagentContextManifest?.runtimePolicy.delegate === true,
 		)
+		const execute = this.subagentContextManifest?.runtimePolicy.execute ?? role === "worker"
+		const hardCeiling = execute
+			? roleCeiling
+			: roleCeiling.filter((tool) => tool !== "manage_command" && tool !== "write_stdin")
 		const capturedGrant = this.subagentContextManifest?.runtimePolicy.allowedTools
 		if (!capturedGrant) return hardCeiling
 		// Preserve equivalent renamed capabilities in saved manifests. An artifact-read
@@ -7007,6 +7011,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	public isToolAllowedForTask(toolName: string): boolean {
 		return this.getTaskToolDenialReason(toolName) === undefined
+	}
+
+	/**
+	 * Read-only managed roles may use the audited Git and ripgrep inspection
+	 * executor, but must not fall through to the serial terminal handler. Their
+	 * captured execute=false ceiling cannot be raised by approval behavior.
+	 */
+	public getTaskCommandDenialReason(_command: string, _cwd?: string): string | undefined {
+		if (this.taskKind !== "subagent") return undefined
+
+		const role = this.subagentRole ?? this.subagentContextManifest?.runtimePolicy.role ?? "review"
+		const execute = this.subagentContextManifest?.runtimePolicy.execute ?? role === "worker"
+		if (execute) return undefined
+
+		return "This read-only sub-agent may run audited Git and ripgrep inspections only through the isolated command reader."
 	}
 
 	public getTaskToolDenialReason(toolName: string, params?: Record<string, unknown>): string | undefined {

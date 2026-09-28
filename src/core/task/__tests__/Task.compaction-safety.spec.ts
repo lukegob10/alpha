@@ -2,7 +2,7 @@ import type { Anthropic } from "@anthropic-ai/sdk"
 import type { ModelInfo, ProviderSettings, TaskDesignHandoff } from "@alpha-code/types"
 
 import type { ApiHandler } from "../../../api"
-import type { AgentResponse } from "../../agent/AgentResponse"
+import { createAgentResponse, type AgentResponse } from "../../agent/AgentResponse"
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../../agent/AgentStepContextBuilder"
 import type { ToolSchedulerOutcome } from "../../agent/ToolScheduler"
 import {
@@ -146,6 +146,7 @@ function harness() {
 		emit: vi.fn(),
 		messageQueueService: new MessageQueueService(),
 		beginCanonicalLifecycleTurn: vi.fn(async () => {}),
+		finishCanonicalLifecycleTurn: vi.fn(async () => {}),
 		publishCanonicalLifecyclePhase: vi.fn(async () => {}),
 		appendAgentTurnEvent: vi.fn(async () => {}),
 		publishCanonicalLifecycleSchedulerEvent: vi.fn(async () => {}),
@@ -725,7 +726,7 @@ describe("Task post-turn compaction", () => {
 			if (text.includes("Earlier conversation")) return 50_000
 			return 1_000
 		})
-		provider.getState.mockResolvedValue({ autoCondenseContext: true, postTurnCondenseContextPercent: 30 })
+		provider.getState.mockResolvedValue({ autoCondenseContext: true, postTurnCondenseContextPercent: 15 })
 		vi.mocked(summarizeConversation).mockResolvedValueOnce({
 			...compactedResult(history),
 			prevContextTokens: 403_000,
@@ -744,8 +745,8 @@ describe("Task post-turn compaction", () => {
 		expect(getEffectiveApiHistory(reloadedHistory)).not.toContainEqual(reloadedHistory[0])
 	})
 
-	it("uses the default post-turn threshold when a saved value is absent", async () => {
-		const { task, api, provider, history } = harness()
+	it("keeps optional post-turn compaction disabled on a completed model turn by default", async () => {
+		const { task, api, provider, history, save } = harness()
 		api.getModel = () => ({
 			id: "small-model",
 			info: { contextWindow: 100_000, maxTokens: 4096, supportsPromptCache: false },
@@ -755,17 +756,32 @@ describe("Task post-turn compaction", () => {
 		)
 		provider.getState.mockResolvedValue({ autoCondenseContext: true })
 		vi.mocked(summarizeConversation).mockClear()
-		vi.mocked(summarizeConversation).mockResolvedValueOnce({
-			...compactedResult(history),
-			prevContextTokens: 20_000,
-			newContextTokens: 1_000,
-			status: "reduced",
+		const requestStep = vi.spyOn(task, "runAgentRequests").mockResolvedValue({
+			status: "completed",
+			response: createAgentResponse([{ type: "text", text: "The task is complete." }]),
+		})
+		vi.spyOn(task, "recordCompletionCandidate").mockImplementation(() => {})
+		vi.spyOn(task, "waitForCompletionGateDecision").mockResolvedValue({
+			allowed: true,
+			modelCanResolveRejection: true,
+			classification: "ready",
+			reasonCode: "ready",
+		})
+		vi.spyOn(task, "evaluateCompletionHooks").mockResolvedValue({})
+		vi.spyOn(task, "presentCompletionResult").mockResolvedValue()
+		vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+		vi.spyOn(task, "finalizeTaskCompletion").mockImplementation(async () => {
+			Reflect.set(task, "didComplete", true)
+			return true
 		})
 
-		await Reflect.get(task, "maybeCompactAfterTurn").call(task)
+		await Reflect.get(task, "initiateTaskLoop").call(task, [])
 
-		expect(summarizeConversation).toHaveBeenCalledOnce()
-		expect(summarizeConversation).toHaveBeenCalledWith(expect.objectContaining({ isAutomaticTrigger: true }))
+		expect(requestStep).toHaveBeenCalledOnce()
+		expect(provider.getState).toHaveBeenCalledOnce()
+		expect(summarizeConversation).not.toHaveBeenCalled()
+		expect(save).not.toHaveBeenCalled()
+		expect(Reflect.get(task, "didComplete")).toBe(true)
 	})
 
 	it("keeps a completed turn and its history when post-turn summarization fails", async () => {
