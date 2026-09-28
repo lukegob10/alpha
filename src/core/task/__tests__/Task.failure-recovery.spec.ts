@@ -117,7 +117,13 @@ describe("Task actionable failure recovery", () => {
 		expect(task.getToolRetryBlock("execute_command", { command: "supported-setup" })).toBeUndefined()
 		expect(suspend).not.toHaveBeenCalled()
 		await task.recordToolCallForStopping("execute_command", operation, "error", undefined, result(5))
-		expect(suspend).toHaveBeenCalledWith(expect.stringContaining("execution prerequisite failed"), "blocked")
+		expect(suspend).not.toHaveBeenCalled()
+		expect(task.shouldStopRepeatedToolCall("read_file", { path: "setup-config.json" })).toBe(false)
+		expect(task.getToolRetryBlock("execute_command", { command: "supported-setup" })).toBeUndefined()
+		expect(task.userMessageContent).toContainEqual({
+			type: "text",
+			text: expect.stringContaining("execution prerequisite failed"),
+		})
 	})
 
 	it("allows outcome inspection but blocks repetition of an operation with unknown effects", async () => {
@@ -129,7 +135,13 @@ describe("Task actionable failure recovery", () => {
 		await task.recordToolCallForStopping("read_file", { path: "setup-state.json" }, "success")
 		expect(suspend).not.toHaveBeenCalled()
 		await task.recordToolCallForStopping("execute_command", operation, "error", undefined, result(1, failure(true)))
-		expect(suspend).toHaveBeenCalledWith(expect.stringContaining("outcome is unknown"), "blocked")
+		expect(suspend).not.toHaveBeenCalled()
+		expect(task.getToolRetryBlock("execute_command", operation)).toEqual(failure(true))
+		expect(task.shouldStopRepeatedToolCall("read_file", { path: "setup-state.json" })).toBe(false)
+		expect(task.userMessageContent).toContainEqual({
+			type: "text",
+			text: expect.stringContaining("outcome is unknown"),
+		})
 	})
 
 	it("uses a successful terminal retry as resolution, without crediting unrelated repair activity", async () => {

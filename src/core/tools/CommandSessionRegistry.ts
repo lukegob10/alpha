@@ -32,6 +32,13 @@ export class CommandSessionRegistry {
 		if (!Number.isSafeInteger(sessionId) || sessionId < 1) return undefined
 		const session = this.sessions.get(task)?.get(sessionId)
 		if (!session || session.process.executionId !== session.executionId) return undefined
+		// A command can finish between returning its session ID and the next poll.
+		// Its settled process still owns the unread output even after terminal reuse.
+		if (session.process.isSettled) return session
+		return this.resolveActive(task, session)
+	}
+
+	private resolveActive(task: Task, session: CommandSession): CommandSession | undefined {
 		const terminals = [
 			...TerminalRegistry.getTerminals(true, task.taskId),
 			...TerminalRegistry.getTerminals(false, task.taskId),
@@ -48,7 +55,14 @@ export class CommandSessionRegistry {
 
 	/** Use this before and after approval, immediately before sending literal input. */
 	isCurrent(task: Task, sessionId: number, process: AlphaTerminalProcess): boolean {
-		return this.resolve(task, sessionId)?.process === process
+		const session = this.sessions.get(task)?.get(sessionId)
+		return (
+			!!session &&
+			session.process === process &&
+			!process.isSettled &&
+			process.executionId === session.executionId &&
+			this.resolveActive(task, session)?.process === process
+		)
 	}
 
 	release(task: Task, sessionId: number): void {

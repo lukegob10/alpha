@@ -64,6 +64,11 @@ describe.skipIf(!supportedPlatform)("ExecaTerminalProcess process-tree integrati
 			getCurrentWorkingDirectory: () => path.dirname(fixturePath),
 			isClosed: () => false,
 			setActiveStream: () => undefined,
+			shellExecutionComplete: (details: Parameters<AlphaTerminal["shellExecutionComplete"]>[0]) => {
+				terminal.running = false
+				terminal.busy = false
+				terminalProcess.emit("shell_execution_complete", details)
+			},
 		} as unknown as AlphaTerminal
 		const terminalProcess = new ExecaTerminalProcess(terminal)
 		let fixturePids: FixturePids | undefined

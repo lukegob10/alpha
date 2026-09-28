@@ -963,15 +963,24 @@ export async function executeCommandInTerminal(
 
 	if (taskWasCancelled()) return cancellationResult()
 	const terminal = await TerminalRegistry.getOrCreateTerminal(workingDir, task.taskId, terminalProvider)
-	if (taskWasCancelled()) return cancellationResult()
+	const releaseTerminalReservation = () => TerminalRegistry.releaseTerminalReservation(terminal, task.taskId)
+	if (taskWasCancelled()) {
+		releaseTerminalReservation()
+		return cancellationResult()
+	}
 
 	if (terminal instanceof Terminal) {
-		terminal.terminal.show(true)
+		try {
+			terminal.terminal.show(true)
 
-		// Update the working directory in case the terminal we asked for has
-		// a different working directory so that the model will know where the
-		// command actually executed.
-		workingDir = terminal.getCurrentWorkingDirectory()
+			// Update the working directory in case the terminal we asked for has
+			// a different working directory so that the model will know where the
+			// command actually executed.
+			workingDir = terminal.getCurrentWorkingDirectory()
+		} catch (error) {
+			releaseTerminalReservation()
+			throw error
+		}
 	}
 
 	if (task.taskKind === "primary") {
@@ -988,7 +997,10 @@ export async function executeCommandInTerminal(
 	}
 	let admissionFailure: { error: unknown; cancelled: boolean } | undefined
 	try {
-		if (taskWasCancelled()) return cancellationResult()
+		if (taskWasCancelled()) {
+			releaseTerminalReservation()
+			return cancellationResult()
+		}
 		if (task.taskKind === "primary") {
 			const owner = task.providerRef.deref()
 			if (!owner) throw new Error("Primary mutation ledger is unavailable")
@@ -1016,11 +1028,13 @@ export async function executeCommandInTerminal(
 		admissionFailure = { error, cancelled: taskWasCancelled() }
 	}
 	if (admissionFailure) {
+		releaseTerminalReservation()
 		await releaseMutationReservationBeforeLaunch(admissionFailure.error)
 		if (admissionFailure.cancelled) return cancellationResult()
 		throw new CommandExecutionLifecycleError("admit-command", admissionFailure.error)
 	}
 	if (taskWasCancelled()) {
+		releaseTerminalReservation()
 		await releaseMutationReservationBeforeLaunch(new Error("Command admission was cancelled"))
 		return cancellationResult()
 	}
@@ -1031,6 +1045,7 @@ export async function executeCommandInTerminal(
 		process.executionId = physicalExecutionId
 		onExecutionState?.("yes")
 	} catch (error) {
+		releaseTerminalReservation()
 		const launchError = new CommandExecutionLifecycleError("launch-command", error)
 		if (mutationReservationAcquired) {
 			const receiptError = new CommandMutationReceiptError("launch-outcome-unknown", true, launchError)

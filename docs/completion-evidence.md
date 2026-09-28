@@ -16,6 +16,37 @@ path-containment, and content-size limits. Receipts now retain an optional, boun
 record and completion feedback so the agent can address the cause before trying to finish again. Native filesystem
 error text is not retained. Older receipts without a diagnostic remain readable; no missing evidence is inferred.
 
+## Current tool-progress continuation policy (2026-09-28)
+
+The older screenshot and several deterministic reproductions exposed a broader loop mismatch. At the default provider
+profile setting of three, Alpha used to suggest a new strategy after six tool outcomes with no recognized state or
+verification delta and then suspend the task after twelve. This counted successful `update_todo_list`, MCP, repeated
+reads, and other tool results even when the model had more work to do. The detector's knowledge of progress is partial:
+absence of a recognized delta does not establish that the requested task is blocked.
+
+`ToolRepetitionDetector` now issues one bounded strategy suggestion and continues passing terminal tool results to the
+model. Fresh admitted evidence clears the advisory window, and compaction retains it. `Task` no longer turns a
+no-progress or unchanged opaque-result guess into a blocked task. The provider profile's Error & Repetition Limit still
+controls the mistake dialog and the advisory threshold. Its UI description now distinguishes those behaviors. Known
+failed operations retain their per-operation retry block; a rejected retry returns corrective feedback without pausing
+independent repair or inspection. Unknown effects still require verification before replay.
+Completion obligations, cancellation, provider failures, approval decisions, and explicit user stops retain their own
+lifecycle boundaries.
+
+This is the same continuation principle as the current Codex CLI turn loop: when a sampled response needs tool
+follow-up or pending input exists, the turn continues; [stop hooks run only after that continuation is clear](https://github.com/openai/codex/blob/f5430515a8acf9251f60cacae6c86ae43686c960/codex-rs/core/src/session/turn.rs#L3178-L3230).
+Codex also [returns a non-fatal tool-dispatch error to the model for follow-up](https://github.com/openai/codex/blob/f5430515a8acf9251f60cacae6c86ae43686c960/codex-rs/core/src/stream_events_utils.rs#L2101-L2147).
+The [pinned source](https://github.com/openai/codex/blob/f5430515a8acf9251f60cacae6c86ae43686c960/codex-rs/core/src/session/turn.rs#L3383-L3398)
+was retrieved 2026-09-28. This comparison concerns turn continuation, not a claim that every Codex CLI policy matches
+Alpha's retry and verification rules. The screenshot's exact task transcript remains unavailable, so the historical
+failure is reproduced at the shared Task boundary rather than attributed to an unobserved individual command.
+
+The stopping policies are **partially aligned, not fully converged**. Alpha still has a default three-mistake dialog,
+one advisory based on recognized progress, scoped retry blocks, and completion-evidence obligations. Those are Alpha
+policies with no claimed Codex CLI equivalent. Safety and durability failures can still stop a task. Further convergence
+requires auditing each policy's reason to interrupt the turn; removing the old twelve-outcome stop alone does not prove
+parity for primary tasks, launched tasks, or managed children.
+
 ## Successful commands incorrectly treated as a stalled loop
 
 Investigated 2026-09-18 against the 2.1.48 working tree. The screenshot's exact message,
@@ -65,12 +96,40 @@ also returns tool results to the model for a final response or further tool call
 Alpha retains bounded repetition and completion-evidence policies. The correction narrows the additional stop rule to
 avoid treating a gap in command instrumentation as sufficient reason to interrupt distinct successful work.
 
-## Resuming after a no-progress stop
+## Active command sessions (2026-09-28)
 
-The tool-progress detector stops an attempt after repeated outcomes provide no new state or evidence. Its stopped
-state remains latched for that attempt, including across compaction. Continue or a typed response to the recovery
-prompt starts a fresh progress window, without removing declared acceptance checks or their recorded evidence.
-Automatic tool-result feedback does not renew this window, so another unchanged attempt remains bounded.
+The older screenshot also shows `Command session is unavailable for this task` before the no-progress pause. The
+session registry used to require the returned process to remain the terminal's current process. A command that
+finished between `exec_command` and `write_stdin` lost that binding, so the final poll became an error instead of
+delivering its exit code and remaining output. The settled process is now available to its owning task until the
+final output receipt is consumed. Input still requires the original live process and is rechecked after approval.
+
+On a slower host, command admission can overlap another task's terminal acquisition. Terminal acquisition now
+reserves the selected shell before returning, releases unused claims on cancellation or admission failure, and
+never reuses a physically running shell. Execa completion clears the terminal's running state through the same
+terminal completion path as the VS Code provider.
+
+The progress detector also counted every backgrounded `exec_command` result and active `write_stdin` wait as a
+stagnant tool outcome. A batch of legitimate slow commands could therefore exhaust the former no-progress allowance
+without any completed operation to evaluate. Running command results and active command waits preserve the advisory
+window; failed commands, unavailable sessions, unchanged completed outcomes, and idle waits can trigger one strategy
+suggestion. They no longer suspend the task based on that heuristic. This applies to primary, launched, and managed
+child tasks through their shared Task and tool paths.
+
+The comparison target remains Codex CLI's pinned source commit
+[`e0ef5a1`](https://github.com/openai/codex/blob/e0ef5a1a0f6421601baaa679fb37eddaa4e9c8c1/codex-rs/core/src/session/turn.rs),
+retrieved 2026-09-28. Its turn loop follows pending tool input and evaluates stop hooks after ordinary
+continuation is finished. That change preserved Alpha's former no-progress stop while preventing unfinished commands
+from being treated as demonstrated stagnation; the current policy above supersedes that stop. The screenshot alone does not establish which command process
+or workspace path changed on the other computer.
+
+## Historical recovery after a no-progress stop
+
+The following describes the pre-2026-09-28 policy and its recovery behavior. The tool-progress detector stopped an
+attempt after repeated outcomes provided no new state or evidence. Its stopped state remained latched for that attempt,
+including across compaction. Continue or a typed response to the recovery prompt started a fresh progress window,
+without removing declared acceptance checks or their recorded evidence. Automatic tool-result feedback did not renew
+this window, so another unchanged attempt remained bounded.
 
 Previously, recovery resumed inside the existing task loop and bypassed the detector reset at loop entry. Every
 subsequent tool result inherited the old stop, even when it read a new file. The task-loop regressions reproduce
@@ -144,6 +203,14 @@ pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
 The completion integration regressions exercise both final-answer paths through the real task loop, completion
 gate, scheduler, and finalizer. Each preserves the passing receipt, completes exactly once, and never reaches
 the Continue boundary after a descriptive plan update. Provider, UI, and message-persistence I/O are fixture adapters.
+
+For the 2026-09-28 continuation correction, the new Task regression first failed in all six primary, launched,
+and child combinations across serial and selective-parallel scheduling: each was suspended by the old twelfth-result
+stop. After the change, seven focused suites passed 194/194 tests; the full Task suite passed 256/256, the scheduler
+progress suite 45/45, the completion integration suite 28/28, and the command-outcome integration suite 36/36.
+Extension and webview typechecks, repository lint, and the exact VS Code 1.122.1 smoke gate passed. The automated
+managed-agent certification and its nested-worker host E2E also passed. These are deterministic checks; they do not
+measure a live model's solve rate or guarantee that a model will choose an effective next action after advisory text.
 
 For the 2026-09-18 command-progress correction, 453 tests passed across 13 affected detector, scheduler, task,
 recovery, and completion suites. Extension typechecking, focused ESLint, formatting, and diff checks passed.

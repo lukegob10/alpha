@@ -33,7 +33,8 @@ const failedCheck: ToolProgressObservation = {
  * model round, actual effects counted separately from legacy suppressed calls.
  * The baseline path is the unchanged check() used by Task at 1a8e38dfb971.
  * Both paths use the same script, a 24-round budget, and legacy limit 3; the new
- * policy defaults to strategy change after 6 stagnant effects and stop after 12.
+ * policy defaults to one strategy suggestion after 6 stagnant effects. The
+ * scripted round budget, not a progress guess, bounds this fixture.
  * Counts measure these workloads, not latency or general live-model behavior.
  */
 async function runFixture(workload: FixtureWorkload, policy: "before" | "after"): Promise<FixtureResult> {
@@ -73,7 +74,7 @@ const workloads: FixtureWorkload[] = [
 		name: "repeated unsuccessful check",
 		next: () => failedCheck,
 		before: { toolCalls: 18, modelRounds: 24, outcome: "exhausted", strategyChanges: 0 },
-		after: { toolCalls: 12, modelRounds: 12, outcome: "incomplete", strategyChanges: 1 },
+		after: { toolCalls: 24, modelRounds: 24, outcome: "exhausted", strategyChanges: 1 },
 	},
 	{
 		name: "alternating unsuccessful checks with equivalent outcomes",
@@ -83,7 +84,7 @@ const workloads: FixtureWorkload[] = [
 			evidenceFingerprint: `unrelated failure timestamp ${round}`,
 		}),
 		before: { toolCalls: 24, modelRounds: 24, outcome: "exhausted", strategyChanges: 0 },
-		after: { toolCalls: 12, modelRounds: 12, outcome: "incomplete", strategyChanges: 1 },
+		after: { toolCalls: 24, modelRounds: 24, outcome: "exhausted", strategyChanges: 1 },
 	},
 	{
 		name: "alternating successful calls without new evidence",
@@ -94,7 +95,7 @@ const workloads: FixtureWorkload[] = [
 			status: "success",
 		}),
 		before: { toolCalls: 24, modelRounds: 24, outcome: "exhausted", strategyChanges: 0 },
-		after: { toolCalls: 12, modelRounds: 12, outcome: "incomplete", strategyChanges: 1 },
+		after: { toolCalls: 24, modelRounds: 24, outcome: "exhausted", strategyChanges: 1 },
 	},
 	{
 		name: "productive exploration across twelve files",

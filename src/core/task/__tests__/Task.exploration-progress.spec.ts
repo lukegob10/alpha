@@ -137,7 +137,7 @@ describe("Task trusted exploration progress", () => {
 			}
 			expect(Reflect.get(task, "userMessageContent")).toEqual([])
 
-			// Re-reading a target with cosmetic changes must still exhaust recovery.
+			// Re-reading a target with cosmetic changes must prompt a different strategy.
 			for (let index = 0; index < 4; index++) {
 				const command = `git${" ".repeat(index + 1)}--no-pager show --format=label-${index} --no-ext-diff --no-textconv HEAD:file-0.ts`
 				const trustedExploration = await getTrustedCommandExploration({
@@ -153,7 +153,7 @@ describe("Task trusted exploration progress", () => {
 				})
 				if (index < 3) expect(suspendAfterCurrentTurn).not.toHaveBeenCalled()
 			}
-			expect(suspendAfterCurrentTurn).toHaveBeenCalledOnce()
+			expect(suspendAfterCurrentTurn).not.toHaveBeenCalled()
 			expect(Reflect.get(task, "userMessageContent")).toHaveLength(1)
 		} finally {
 			await fs.rm(workspace, { recursive: true, force: true })
@@ -204,7 +204,7 @@ describe("Task trusted exploration progress", () => {
 		})
 	})
 
-	it("still bounds repeated inspection identities despite command spelling changes", async () => {
+	it("advises on repeated inspection identities despite command spelling changes", async () => {
 		const { task, suspendAfterCurrentTurn } = createTask()
 
 		for (let index = 0; index < 5; index++) {
@@ -217,11 +217,7 @@ describe("Task trusted exploration progress", () => {
 			)
 		}
 
-		expect(suspendAfterCurrentTurn).toHaveBeenCalledOnce()
-		expect(suspendAfterCurrentTurn).toHaveBeenCalledWith(
-			expect.stringContaining("Task remains incomplete"),
-			"blocked",
-		)
+		expect(suspendAfterCurrentTurn).not.toHaveBeenCalled()
 		expect(Reflect.get(task, "userMessageContent")).toHaveLength(1)
 	})
 })

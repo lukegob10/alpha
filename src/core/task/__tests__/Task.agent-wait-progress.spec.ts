@@ -5,14 +5,15 @@ import { ToolRegistry } from "../../tools/ToolRegistry"
 import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 import { Task } from "../Task"
 
-function harness(taskKind: "primary" | "subagent", executionMode: "serial" | "selective-parallel") {
+function harness(taskKind: "primary" | "subagent" | "launched", executionMode: "serial" | "selective-parallel") {
 	const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
 	const provider = {
 		waitForAgent: vi.fn(async (): Promise<unknown> => ({ timedOut: false, noActiveAgents: true, events: [] })),
 		getVerificationProgressState: () => ({ stateFingerprint: "unchanged-workspace" }),
 	}
 	const task = Object.assign(Object.create(Task.prototype), {
-		taskKind,
+		taskKind: taskKind === "launched" ? "primary" : taskKind,
+		...(taskKind === "launched" ? { parentTaskId: "launch-parent" } : {}),
 		workspacePath: "/workspace",
 		taskCancellationController: new AbortController(),
 		pendingCommandVerification: Promise.resolve(),
@@ -61,6 +62,56 @@ function harness(taskKind: "primary" | "subagent", executionMode: "serial" | "se
 }
 
 describe.each(["serial", "selective-parallel"] as const)("managed wait progress in %s mode", (mode) => {
+	it.each(["primary", "launched", "subagent"] as const)(
+		"keeps %s work running after successful results without host progress metadata",
+		async (surface) => {
+			const { task } = harness(surface, mode)
+			for (let index = 0; index < 16; index++) {
+				await task.recordToolCallForStopping(
+					"update_todo_list",
+					{ todos: [{ id: index, content: `Investigate item ${index}` }] },
+					"success",
+				)
+				expect(task.shouldStopRepeatedToolCall("update_todo_list", {})).toBe(false)
+			}
+			expect(Reflect.get(task, "userMessageContent")).toHaveLength(1)
+		},
+	)
+	it.each(["primary", "launched", "subagent"] as const)(
+		"keeps active command sessions from stopping %s work",
+		async (surface) => {
+			const { task, detector } = harness(surface, mode)
+			for (let index = 0; index < 12; index++) {
+				await task.recordToolCallForStopping(
+					"exec_command",
+					{ cmd: `node long-running-${index}.js` },
+					"success",
+					undefined,
+					{
+						callId: `command-${index}`,
+						name: "exec_command",
+						status: "success",
+						content: "Process running",
+						durationMs: 0,
+						executionStatus: "running",
+					},
+				)
+				await task.recordToolCallForStopping("write_stdin", { session_id: index + 1 }, "success", undefined, {
+					callId: `poll-${index}`,
+					name: "write_stdin",
+					status: "success",
+					content: "Process running",
+					durationMs: 0,
+					executionStatus: "running",
+					waitOutcome: "active",
+				})
+			}
+			expect(task.shouldStopRepeatedToolCall("write_stdin", {})).toBe(false)
+			expect(detector.recordOutcome({ toolName: "no-op", kind: "other", status: "success" }).stagnantCalls).toBe(
+				1,
+			)
+		},
+	)
 	it.each(["command", "completion"] as const)(
 		"bounds a stuck %s evidence publisher while observing tool results",
 		async (publisher) => {
@@ -88,7 +139,7 @@ describe.each(["serial", "selective-parallel"] as const)("managed wait progress 
 	)
 
 	it.each(["primary", "subagent"] as const)(
-		"allows distinct MCP exchanges and bounds unchanged results for %s",
+		"allows distinct MCP exchanges and advises on unchanged results for %s",
 		async (surface) => {
 			const { task, provider, host } = harness(surface, mode)
 			const callTool = vi.fn(async () => ({ content: [{ type: "text", text: "ok" }] }))
@@ -133,7 +184,7 @@ describe.each(["serial", "selective-parallel"] as const)("managed wait progress 
 			}
 			expect(task.shouldStopRepeatedToolCall(mcpName, { id: 19 })).toBe(false)
 			for (let index = 20; index < 24; index++) await run(index, 19)
-			expect(task.shouldStopRepeatedToolCall(mcpName, { id: 19 })).toBe(true)
+			expect(task.shouldStopRepeatedToolCall(mcpName, { id: 19 })).toBe(false)
 			expect(callTool).toHaveBeenCalledTimes(24)
 			expect(host.userMessageContent).toHaveLength(24)
 			expect(Reflect.get(task, "userMessageContent")).toEqual([
@@ -143,7 +194,7 @@ describe.each(["serial", "selective-parallel"] as const)("managed wait progress 
 	)
 
 	it.each([false, true])(
-		"bounds nonblocking command reads while a command runs (completion recovery: %s)",
+		"advises on unchanged command reads while a command runs (completion recovery: %s)",
 		async (recovery) => {
 			const { task } = harness("primary", mode)
 			Reflect.set(
@@ -176,39 +227,50 @@ describe.each(["serial", "selective-parallel"] as const)("managed wait progress 
 					},
 				)
 			}
-			expect(task.shouldStopRepeatedToolCall("read_command_output", {})).toBe(true)
+			expect(task.shouldStopRepeatedToolCall("read_command_output", {})).toBe(false)
+			expect(Reflect.get(task, "userMessageContent")).toHaveLength(1)
 		},
 	)
 
-	it.each(["primary", "subagent"] as const)("bounds empty %s waits within four model steps", async (surface) => {
-		const { task, provider, host, run } = harness(surface, mode)
-		const turnHost: AgentTurnHost<number> = {
-			shouldAbort: () => false,
-			runStep: vi.fn<AgentTurnHost<number>["runStep"]>(async (step) => {
-				await run(step)
-				return {
-					response: {
-						items: [],
-						toolCalls: [{ type: "tool_call", id: `wait-${step}`, name: "wait_agent", arguments: {} }],
-						text: "",
-						reasoning: "",
-					},
-					nextInput: step + 1,
-					...(task.shouldStopRepeatedToolCall("wait_agent", {})
-						? { status: "incomplete" as const }
-						: step === 19
-							? { status: "exhausted" as const }
-							: {}),
-				}
-			}),
-		}
-		expect(await new AgentTurnEngine(turnHost).run(0)).toMatchObject({ status: "incomplete", steps: 4 })
-		expect(provider.waitForAgent).toHaveBeenCalledTimes(4)
-		expect(host.userMessageContent).toHaveLength(4)
-		expect(Reflect.get(task, "userMessageContent")).toEqual([
-			{ type: "text", text: expect.stringContaining("Use available child results or continue other work") },
-		])
-	})
+	it.each(["primary", "subagent"] as const)(
+		"lets %s finish after empty waits and strategy guidance",
+		async (surface) => {
+			const { task, provider, host, run } = harness(surface, mode)
+			const turnHost: AgentTurnHost<number> = {
+				shouldAbort: () => false,
+				runStep: vi.fn<AgentTurnHost<number>["runStep"]>(async (step) => {
+					if (step === 4) {
+						return {
+							response: {
+								items: [{ type: "text", text: "The task is complete." }],
+								toolCalls: [],
+								text: "The task is complete.",
+								reasoning: "",
+							},
+							nextInput: "complete",
+						}
+					}
+					await run(step)
+					return {
+						response: {
+							items: [],
+							toolCalls: [{ type: "tool_call", id: `wait-${step}`, name: "wait_agent", arguments: {} }],
+							text: "",
+							reasoning: "",
+						},
+						nextInput: step + 1,
+						...(task.shouldStopRepeatedToolCall("wait_agent", {}) ? { status: "incomplete" as const } : {}),
+					}
+				}),
+			}
+			expect(await new AgentTurnEngine(turnHost).run(0)).toMatchObject({ status: "completed", steps: 5 })
+			expect(provider.waitForAgent).toHaveBeenCalledTimes(4)
+			expect(host.userMessageContent).toHaveLength(4)
+			expect(Reflect.get(task, "userMessageContent")).toEqual([
+				{ type: "text", text: expect.stringContaining("Use available child results or continue other work") },
+			])
+		},
+	)
 
 	it.each(["timeout", "mailbox"] as const)(
 		"allows repeated %s results without clearing an existing strike",
@@ -235,7 +297,7 @@ describe.each(["serial", "selective-parallel"] as const)("managed wait progress 
 		},
 	)
 
-	it.each(["already-delivered", "unknown"] as const)("does not exempt %s wait responses", async (kind) => {
+	it.each(["already-delivered", "unknown"] as const)("advises on %s wait responses", async (kind) => {
 		const { task, provider, run } = harness("primary", mode)
 		provider.waitForAgent.mockResolvedValue(
 			kind === "already-delivered"
@@ -243,7 +305,8 @@ describe.each(["serial", "selective-parallel"] as const)("managed wait progress 
 				: { message: "still working", active: true },
 		)
 		for (let index = 0; index < 4; index++) await run(index)
-		expect(task.shouldStopRepeatedToolCall("wait_agent", {})).toBe(true)
+		expect(task.shouldStopRepeatedToolCall("wait_agent", {})).toBe(false)
+		expect(Reflect.get(task, "userMessageContent")).toHaveLength(1)
 	})
 
 	it("keeps a cancelled host wait cancelled through the scheduler", async () => {
@@ -265,7 +328,8 @@ describe.each(["serial", "selective-parallel"] as const)("managed wait progress 
 			})
 			if (outcome === "active") provider.waitForAgent.mockResolvedValue({ timedOut: true, events: [] })
 			for (let index = 0; index < 4; index++) await run(index)
-			expect(task.shouldStopRepeatedToolCall("wait_agent", {})).toBe(outcome === "idle")
+			expect(task.shouldStopRepeatedToolCall("wait_agent", {})).toBe(false)
+			expect(Reflect.get(task, "userMessageContent")).toHaveLength(outcome === "idle" ? 1 : 0)
 			expect(Reflect.get(task, "completionRecoveryActive")).toBe(true)
 		},
 	)

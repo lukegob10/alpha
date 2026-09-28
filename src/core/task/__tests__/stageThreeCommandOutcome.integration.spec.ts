@@ -33,6 +33,7 @@ const outputBookkeepingSuspension = "errors.command_output_bookkeeping_incomplet
 const terminalRegistryMock = vi.hoisted(() => ({
 	getOrCreateTerminal: vi.fn(),
 	getTerminals: vi.fn(() => []),
+	releaseTerminalReservation: vi.fn(),
 	releaseTerminalsForTask: vi.fn(),
 }))
 

@@ -165,7 +165,9 @@ describe("Task working record integration", () => {
 			task.completeCommandExecution(id, { exitCode: 0 }, id)
 			await task.recordToolCallForStopping("execute_command", { command: check.command }, "success")
 		}
-		expect(suspend).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("repeated tool outcomes"), "blocked")
+		expect(suspend).not.toHaveBeenCalled()
+		expect(Reflect.get(task, "userMessageContent")).toHaveLength(1)
+		expect(await task.getCompletionGateDecision()).toMatchObject({ allowed: true })
 	})
 	it("serializes a background result with admission of another acceptance check", async () => {
 		await task.updateWorkPlan({

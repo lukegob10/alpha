@@ -7,6 +7,7 @@ import * as vscode from "vscode"
 vi.mock("vscode", () => ({
 	window: {
 		showErrorMessage: vi.fn(),
+		showWarningMessage: vi.fn(),
 		createTextEditorDecorationType: vi.fn(() => ({})),
 		showInformationMessage: vi.fn(),
 	},
@@ -82,9 +83,11 @@ describe("Checkpoint functionality", () => {
 		}
 
 		// Create mock task
+		const taskCancellationController = new AbortController()
 		mockTask = {
 			taskId: "test-task-id",
 			abort: false,
+			getTaskLifetimeCancellationSignal: () => taskCancellationController.signal,
 			abortTask: vi.fn().mockResolvedValue(undefined),
 			waitForTermination: vi.fn().mockResolvedValue(undefined),
 			enableCheckpoints: true,
@@ -507,6 +510,8 @@ describe("Checkpoint functionality", () => {
 			})
 			expect(vi.mocked(checkpointsModule.RepoPerTaskCheckpointService.create)).toHaveBeenCalledOnce()
 			expect(mockCheckpointService.initShadowGit).toHaveBeenCalledOnce()
+			const gitModule = await import("../../../utils/git")
+			expect(gitModule.checkGitInstalled).not.toHaveBeenCalled()
 
 			releaseInitialization()
 
@@ -531,10 +536,15 @@ describe("Checkpoint functionality", () => {
 			expect(mockTask.enableCheckpoints).toBe(false)
 		})
 
-		it("should settle all waiters immediately when Git is unavailable", async () => {
+		it("settles waiters before diagnosing missing Git after repository setup fails", async () => {
 			const gitModule = await import("../../../utils/git")
-			vi.mocked(gitModule.checkGitInstalled).mockResolvedValue(false)
+			let completeGitCheck!: (installed: boolean) => void
+			vi.mocked(gitModule.checkGitInstalled).mockImplementationOnce(
+				() => new Promise((resolve) => (completeGitCheck = resolve)),
+			)
 			mockTask.checkpointService = undefined
+			mockCheckpointService.isInitialized = false
+			mockCheckpointService.initShadowGit.mockRejectedValueOnce(new Error("spawn git ENOENT"))
 
 			const first = getCheckpointService(mockTask)
 			const second = getCheckpointService(mockTask)
@@ -542,7 +552,17 @@ describe("Checkpoint functionality", () => {
 
 			expect(mockTask.enableCheckpoints).toBe(false)
 			expect(mockTask.checkpointServiceInitializing).toBe(false)
-			expect(mockCheckpointService.initShadowGit).not.toHaveBeenCalled()
+			expect(mockCheckpointService.initShadowGit).toHaveBeenCalledOnce()
+			expect(gitModule.checkGitInstalled).toHaveBeenCalledWith(mockTask.getTaskLifetimeCancellationSignal())
+			expect(vscode.window.showWarningMessage).not.toHaveBeenCalled()
+
+			completeGitCheck(false)
+			await vi.waitFor(() =>
+				expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+					"common:errors.git_not_installed",
+					"common:buttons.learn_more",
+				),
+			)
 		})
 
 		it("should settle all waiters immediately when initialization fails", async () => {
@@ -561,6 +581,33 @@ describe("Checkpoint functionality", () => {
 	})
 
 	describe("getCheckpointService - initialization timeout behavior", () => {
+		it("does not spend the checkpoint deadline on a separate Git availability probe", async () => {
+			vi.useFakeTimers()
+			mockTask.checkpointService = undefined
+			mockTask.checkpointTimeout = 20
+			mockCheckpointService.isInitialized = false
+
+			const gitModule = await import("../../../utils/git")
+			vi.mocked(gitModule.checkGitInstalled).mockImplementationOnce(
+				() => new Promise((resolve) => setTimeout(() => resolve(true), 17_000)),
+			)
+			mockCheckpointService.initShadowGit.mockImplementationOnce(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 11_750))
+				mockCheckpointService.isInitialized = true
+			})
+
+			const initialization = getCheckpointService(mockTask)
+			await vi.advanceTimersByTimeAsync(20_000)
+
+			await expect(initialization).resolves.toBe(mockCheckpointService)
+			expect(mockCheckpointService.initShadowGit).toHaveBeenCalledOnce()
+			expect(gitModule.checkGitInstalled).not.toHaveBeenCalled()
+			expect(mockProvider.postMessageToWebview).not.toHaveBeenCalledWith({
+				type: "checkpointInitWarning",
+				checkpointWarning: { type: "INIT_TIMEOUT", timeout: 20 },
+			})
+		})
+
 		it("should warn after five seconds and time out waiting callers once", async () => {
 			vi.useFakeTimers()
 			mockTask.checkpointService = undefined
