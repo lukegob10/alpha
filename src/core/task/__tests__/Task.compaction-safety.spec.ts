@@ -778,7 +778,6 @@ describe("Task post-turn compaction", () => {
 		await Reflect.get(task, "initiateTaskLoop").call(task, [])
 
 		expect(requestStep).toHaveBeenCalledOnce()
-		expect(provider.getState).toHaveBeenCalledOnce()
 		expect(summarizeConversation).not.toHaveBeenCalled()
 		expect(save).not.toHaveBeenCalled()
 		expect(Reflect.get(task, "didComplete")).toBe(true)

@@ -69,8 +69,15 @@ jobs:
                   $shortSha = "${{ steps.release.outputs.short_sha }}"
                   $vsix = "${{ steps.release.outputs.vsix_path }}"
                   $releaseTitle = "Alpha VSIX v$version ($shortSha)"
+                  $changelog = Get-Content -LiteralPath CHANGELOG.md -Raw
+                  $versionHeading = [regex]::Escape("## $version")
+                  $entry = [regex]::Match($changelog, "(?ms)^$versionHeading\r?\n(?<body>.*?)(?=^## |\z)")
+                  if (-not $entry.Success -or [string]::IsNullOrWhiteSpace($entry.Groups["body"].Value)) {
+                    throw "No changelog entry found for release version $version."
+                  }
+                  $highlights = $entry.Groups["body"].Value.Trim()
                   $notes = @"
-                  VSIX build from main.
+                  $highlights
 
                   Commit: ${{ github.sha }}
 

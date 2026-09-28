@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.0.1",
+		version: "3.1.0",
 	},
 }))
 
@@ -37,9 +37,9 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 
-		expect(screen.getByText("Welcome to Alpha v3.0.1")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.1.0")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.0.1 improves verification, command control, and task continuity."),
+			screen.getByText("Alpha v3.1.0 brings a shared agent runtime and a clearer code review experience."),
 		).toBeInTheDocument()
 	})
 
@@ -48,16 +48,20 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
-			screen.getByText("Reuse passing checks while their declared inputs remain unchanged."),
+			screen.getByText(
+				"Use one provider-neutral TypeScript engine for model steps, tools, approvals, and delegated work.",
+			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Wait for, send input to, and stop background commands owned by the task."),
+			screen.getByText("Apply Ask, Auto, and Full Access policies consistently, including to child tasks."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Preserve task constraints and skill context across reload and compaction."),
+			screen.getByText("Expand a completed turn's Worked for summary to inspect its full activity trace."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Use clearer chat actions and select a provider after task completion."),
+			screen.getByText(
+				"Review the whole turn or open per-file diffs in Alpha Diff, with added and removed line counts.",
+			),
 		).toBeInTheDocument()
 	})
 
@@ -65,10 +69,12 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.0.1 improves verification, command control, and task continuity."),
+			screen.getByText("Alpha v3.1.0 brings a shared agent runtime and a clearer code review experience."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Reuse passing checks while their declared inputs remain unchanged."),
+			screen.getByText(
+				"Use one provider-neutral TypeScript engine for model steps, tools, approvals, and delegated work.",
+			),
 		).toBeInTheDocument()
 	})
 })

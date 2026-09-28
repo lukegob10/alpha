@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.1.0
+
+### Major Changes
+
+- Move turn execution onto one provider-neutral TypeScript agent engine. Canonical response items, immutable step context, structured tool transactions, bounded scheduling, and lifecycle records keep model, tool, approval, and recovery behavior consistent across providers.
+- Apply the same Ask, Auto, and Full Access policy to built-in tools, MCP calls, commands, and delegated tasks. Child tasks inherit or narrow their parent's authority, and accepted tool calls keep explicit success, error, denied, or cancelled outcomes.
+- Keep Alpha Tickets integrated in the agent's eager tool surface, with ticket lookup and actions available as part of ordinary work.
+
+### Chat and review
+
+- Fold completed command and tool activity into a compact **Worked for** section. Expand it when you need the full trace.
+- Review changes from the chat with a collapsed turn summary, added and removed line counts, a **Review** action for the complete turn, and per-file diffs in the Alpha Diff editor.
+- Run automatic context compaction at safe turn boundaries when the configured threshold is met, while preserving fitting history if summarization fails and keeping follow-up turns resumable.
+- Remove the redundant end-of-message **New Chat** bar; start a chat from the existing top-level action.
+
 ## 3.0.4
 
 ### Patch Changes
