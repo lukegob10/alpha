@@ -194,6 +194,19 @@ describe("scheduled task setup", () => {
 		expect(messages().some((message) => message.type === "requestScheduledTaskSkills")).toBe(false)
 	})
 
+	it("keeps an unassigned legacy schedule idle until it is saved in this workspace", () => {
+		state.scheduledTasks = [{ ...saved, apiConfig, workspace: undefined }]
+		render(<ScheduledTasksView onDone={() => {}} />)
+
+		expect(screen.getByText(labels.legacyWorkspaceHelp)).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "Run Now" })).toBeDisabled()
+		fireEvent.click(screen.getByRole("button", { name: "Save" }))
+		expect(messages().at(-1)).toMatchObject({
+			type: "updateScheduledTask",
+			scheduledTaskUpdate: { workspace: "/coding" },
+		})
+	})
+
 	it("queries reasoning for the selected profile without touching chat preferences", () => {
 		render(<ScheduledTasksView onDone={() => {}} />)
 		select("Profile", apiConfig.id)

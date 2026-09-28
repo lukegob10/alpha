@@ -1,7 +1,7 @@
 import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
-import type * as vscode from "vscode"
+import * as vscode from "vscode"
 import { EventEmitter } from "events"
 import {
 	AlphaCodeEventName,
@@ -79,6 +79,12 @@ describe("scheduled profiles and skills", () => {
 	beforeEach(async () => {
 		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "scheduled-profiles-"))
 		provider = makeProvider()
+		Object.assign(vscode.workspace, {
+			workspaceFolders: [
+				{ uri: vscode.Uri.file(path.join(tmpDir, "scheduled-workspace")) },
+				{ uri: vscode.Uri.file(provider.cwd) },
+			],
+		})
 		service = new ScheduledTaskService(
 			{ globalStorageUri: { fsPath: tmpDir } } as vscode.ExtensionContext,
 			provider as unknown as AlphaProvider,
@@ -89,9 +95,109 @@ describe("scheduled profiles and skills", () => {
 
 	afterEach(async () => {
 		service.dispose()
+		Object.assign(vscode.workspace, { workspaceFolders: [] })
 		onRun = undefined
 		vi.restoreAllMocks()
 		await fs.rm(tmpDir, { recursive: true, force: true })
+	})
+
+	it("rejects a schedule for a repository that is not open in this window", async () => {
+		await expect(service.createTask(payload({ workspace: path.join(tmpDir, "other-repo") }))).rejects.toThrow(
+			"workspace must be an open workspace root",
+		)
+		await expect(service.getSkills(path.join(tmpDir, "other-repo"), "architect")).rejects.toThrow(
+			labels.workspaceInvalid,
+		)
+		expect(service.getState().tasks).toEqual([])
+	})
+
+	it("does not fail a running schedule when another window opens the same repository", async () => {
+		const task = await service.createTask(payload())
+		const running = await runNow(task.id)
+		expect(running.status).toBe("running")
+
+		const otherProvider = makeProvider()
+		const otherWindow = new ScheduledTaskService(
+			{ globalStorageUri: { fsPath: tmpDir } } as vscode.ExtensionContext,
+			otherProvider as unknown as AlphaProvider,
+			{ appendLine: vi.fn() } as unknown as vscode.OutputChannel,
+		)
+		try {
+			await otherWindow.initialize()
+			expect(otherWindow.getState().runs.find((run) => run.id === running.id)?.status).toBe("running")
+			expect(otherProvider.createTask).not.toHaveBeenCalled()
+		} finally {
+			otherWindow.dispose()
+		}
+	})
+
+	it("completes a captured run after its schedule moves to a repository closed in this window", async () => {
+		const task = await service.createTask(payload())
+		const running = await runNow(task.id)
+		const nextWorkspace = path.join(tmpDir, "next-workspace")
+		const originalFolders = vscode.workspace.workspaceFolders
+		Object.assign(vscode.workspace, {
+			workspaceFolders: [...(originalFolders ?? []), { uri: vscode.Uri.file(nextWorkspace) }],
+		})
+		await service.updateTask(task.id, { workspace: nextWorkspace })
+		Object.assign(vscode.workspace, { workspaceFolders: originalFolders })
+		expect(service.getState().tasks).toEqual([])
+
+		provider.emit(AlphaCodeEventName.TaskCompleted, "alpha-task")
+		const reloaded = new ScheduledTaskStore(tmpDir)
+		await reloaded.initialize()
+		await vi.waitFor(async () => {
+			await reloaded.refresh()
+			expect(reloaded.getState().runs.find((run) => run.id === running.id)?.status).toBe("succeeded")
+		})
+	})
+
+	it("does not mark an occurrence missed while it is within the normal tick interval", async () => {
+		const task = await service.createTask(payload())
+		const editor = new ScheduledTaskStore(tmpDir)
+		await editor.initialize()
+		await editor.upsertTask({ ...task, nextRunAt: Date.now() - 1_000 })
+
+		const otherWindow = new ScheduledTaskService(
+			{ globalStorageUri: { fsPath: tmpDir } } as vscode.ExtensionContext,
+			makeProvider() as unknown as AlphaProvider,
+			{ appendLine: vi.fn() } as unknown as vscode.OutputChannel,
+		)
+		try {
+			await otherWindow.initialize()
+			expect(otherWindow.getState().tasks[0]?.enabled).toBe(true)
+			expect(otherWindow.getState().runs).toEqual([])
+		} finally {
+			otherWindow.dispose()
+		}
+	})
+
+	it("recovers a queued run whose owning window is gone", async () => {
+		const task = await service.createTask(payload())
+		const editor = new ScheduledTaskStore(tmpDir)
+		await editor.initialize()
+		await editor.upsertRun({
+			id: "orphaned-run",
+			taskId: task.id,
+			ownerId: "closed-window",
+			status: "queued",
+			trigger: "schedule",
+			scheduledFor: task.nextRunAt!,
+			workspace: task.workspace,
+			prompt: task.prompt,
+		})
+
+		const otherWindow = new ScheduledTaskService(
+			{ globalStorageUri: { fsPath: tmpDir } } as vscode.ExtensionContext,
+			makeProvider() as unknown as AlphaProvider,
+			{ appendLine: vi.fn() } as unknown as vscode.OutputChannel,
+		)
+		try {
+			await otherWindow.initialize()
+			expect(otherWindow.getState().runs.find((run) => run.id === "orphaned-run")?.status).toBe("failed")
+		} finally {
+			otherWindow.dispose()
+		}
 	})
 
 	it("persists create, update and duplicate profiles and skill arguments across reload", async () => {
@@ -215,6 +321,46 @@ describe("scheduled profiles and skills", () => {
 		expect(prepareReasoningForAdmission).toHaveBeenCalledOnce()
 		expect(start).not.toHaveBeenCalled()
 		expect(abortTask).toHaveBeenCalledOnce()
+	})
+
+	it("finalizes a claimed run when admission persistence fails", async () => {
+		const task = await service.createTask(payload())
+		vi.spyOn(ScheduledTaskStore.prototype, "projectRunStatus").mockRejectedValueOnce(
+			new Error("status write failed"),
+		)
+
+		const run = await runNow(task.id)
+		expect(run).toMatchObject({ status: "failed", error: "status write failed" })
+		expect(provider.createTask).not.toHaveBeenCalled()
+	})
+
+	it("does not launch a task after the owning window closes during admission", async () => {
+		let releaseAdmission!: () => void
+		let admissionEntered!: () => void
+		const entered = new Promise<void>((resolve) => (admissionEntered = resolve))
+		const admission = new Promise<void>((resolve) => (releaseAdmission = resolve))
+		const start = vi.fn()
+		const abortTask = vi.fn(async () => undefined)
+		provider.createTask.mockImplementationOnce(
+			async () =>
+				({
+					taskId: "closing-task",
+					prepareReasoningForAdmission: vi.fn(async () => {
+						admissionEntered()
+						await admission
+					}),
+					start,
+					abortTask,
+				}) as never,
+		)
+		const task = await service.createTask(payload())
+		await service.runNow(task.id)
+		await entered
+		service.dispose()
+		releaseAdmission()
+
+		await vi.waitFor(() => expect(abortTask).toHaveBeenCalledOnce())
+		expect(start).not.toHaveBeenCalled()
 	})
 
 	it.each(["hello world", "Review the code.\n\nKeep this paragraph separate."])(

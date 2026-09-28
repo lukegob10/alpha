@@ -29,7 +29,7 @@ import {
 
 import type { AlphaProvider } from "../../core/webview/AlphaProvider"
 import { Package } from "../../shared/package"
-import { getWorkspacePath } from "../../utils/path"
+import { arePathsEqual, getWorkspacePath } from "../../utils/path"
 import { defaultModeSlug } from "../../shared/modes"
 import { t } from "../../i18n"
 import { SkillsManager } from "../skills/SkillsManager"
@@ -110,9 +110,19 @@ const truncateOutput = (output: string): string =>
 
 export class ScheduledTaskService implements vscode.Disposable {
 	private readonly store: ScheduledTaskStore
+	private readonly ownerId = crypto.randomUUID()
+	private releaseOwnerLease: (() => Promise<void>) | undefined
+	private workspaceListener: vscode.Disposable | undefined
+	private stopWatching: (() => void) | undefined
+	private refreshTimer: ReturnType<typeof setTimeout> | undefined
 	private timer: ReturnType<typeof setTimeout> | undefined
 	private disposed = false
-	private queue: ScheduledTaskRun[] = []
+	private readonly commandControllers = new Set<AbortController>()
+	private readonly activeAlphaTasks = new Map<
+		string,
+		{ alphaTask: Awaited<ReturnType<AlphaProvider["createTask"]>>; task: ScheduledTask; run: ScheduledTaskRun }
+	>()
+	private queue: Array<{ task: ScheduledTask; run: ScheduledTaskRun }> = []
 	private processing = false
 
 	constructor(
@@ -121,17 +131,58 @@ export class ScheduledTaskService implements vscode.Disposable {
 		private readonly outputChannel: vscode.OutputChannel,
 		private readonly tickMs = DEFAULT_TICK_MS,
 	) {
-		this.store = new ScheduledTaskStore(context.globalStorageUri.fsPath)
+		this.store = new ScheduledTaskStore(
+			context.globalStorageUri.fsPath,
+			() => vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [],
+		)
 	}
 
 	async initialize(): Promise<void> {
 		await this.store.initialize()
+		this.releaseOwnerLease = await this.store.acquireOwnerLease(this.ownerId, (error) => {
+			this.outputChannel.appendLine(`[ScheduledTaskService] Owner lease lost: ${error.message}`)
+			this.dispose()
+		})
+		if (this.disposed) {
+			await this.releaseOwnerLease()
+			this.releaseOwnerLease = undefined
+			return
+		}
 		this.provider.on(AlphaCodeEventName.TaskCompleted, this.handleTaskCompleted)
 		this.provider.on(AlphaCodeEventName.TaskAborted, this.handleTaskAborted)
-		await this.recoverInterruptedRuns()
-		await this.detectMissedRuns()
-		await this.broadcast()
-		this.scheduleTick()
+		this.workspaceListener = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+			void this.store
+				.refresh()
+				.then(() => this.broadcast())
+				.catch((error) => {
+					this.outputChannel.appendLine(`[ScheduledTaskService] Workspace refresh failed: ${String(error)}`)
+				})
+		})
+		try {
+			await this.recoverInterruptedRuns()
+			await this.detectMissedRuns()
+			await this.broadcast()
+			try {
+				this.stopWatching = await this.store.watchChanges(
+					() => this.scheduleRefresh(),
+					(error) =>
+						this.outputChannel.appendLine(
+							`[ScheduledTaskService] Schedule watcher failed: ${error.message}`,
+						),
+				)
+			} catch (error) {
+				this.outputChannel.appendLine(`[ScheduledTaskService] Schedule watcher unavailable: ${String(error)}`)
+			}
+			if (this.disposed) {
+				this.stopWatching?.()
+				this.stopWatching = undefined
+				return
+			}
+			this.scheduleTick()
+		} catch (error) {
+			this.dispose()
+			throw error
+		}
 	}
 
 	dispose(): void {
@@ -140,8 +191,33 @@ export class ScheduledTaskService implements vscode.Disposable {
 			clearTimeout(this.timer)
 			this.timer = undefined
 		}
+		if (this.refreshTimer) {
+			clearTimeout(this.refreshTimer)
+			this.refreshTimer = undefined
+		}
+		this.stopWatching?.()
+		this.stopWatching = undefined
+		for (const controller of this.commandControllers) controller.abort()
+		this.commandControllers.clear()
+		for (const { alphaTask } of this.activeAlphaTasks.values()) {
+			void alphaTask.abortTask().catch((error) => {
+				this.outputChannel.appendLine(
+					`[ScheduledTaskService] Could not abort task ${alphaTask.taskId}: ${String(error)}`,
+				)
+			})
+		}
+		this.activeAlphaTasks.clear()
 		this.provider.off(AlphaCodeEventName.TaskCompleted, this.handleTaskCompleted)
 		this.provider.off(AlphaCodeEventName.TaskAborted, this.handleTaskAborted)
+		this.workspaceListener?.dispose()
+		this.workspaceListener = undefined
+		const release = this.releaseOwnerLease
+		this.releaseOwnerLease = undefined
+		if (release) {
+			void release().catch((error) => {
+				this.outputChannel.appendLine(`[ScheduledTaskService] Could not release owner lease: ${String(error)}`)
+			})
+		}
 	}
 
 	getState(): ScheduledTaskState {
@@ -179,34 +255,34 @@ export class ScheduledTaskService implements vscode.Disposable {
 	}
 
 	async updateTask(taskId: string, payload: UpdateScheduledTaskPayload): Promise<void> {
-		const existing = this.requireTask(taskId)
-		this.validateSetup({ ...existing, ...payload })
 		const now = Date.now()
-		const schedule = payload.schedule ?? existing.schedule
-		const execution = normalizeExecution(payload.execution ?? existing.execution)
-		const autoApproval = normalizeAutoApproval(payload.autoApproval ?? existing.autoApproval)
-		const task: ScheduledTask = {
-			...existing,
-			...payload,
-			id: existing.id,
-			name: payload.name?.trim() ?? existing.name,
-			prompt: payload.prompt?.trim() ?? existing.prompt,
-			apiConfig: scheduledTaskProfileSchema.optional().parse(payload.apiConfig ?? existing.apiConfig),
-			reasoningPreference: normalizeReasoningPreference(
-				payload.reasoningPreference ?? existing.reasoningPreference,
-			),
-			execution,
-			mode: payload.mode ?? existing.mode,
-			autoApproval,
-			schedule,
-			permissions: permissionsForExecution(autoApproval, {
-				...existing.permissions,
-				...payload.permissions,
-			}),
-			updatedAt: now,
-			nextRunAt: getNextRunAt(schedule, now - 1),
-		}
-		await this.store.upsertTask(task)
+		await this.store.updateTask(taskId, (existing) => {
+			this.validateSetup({ ...existing, ...payload })
+			const schedule = payload.schedule ?? existing.schedule
+			const execution = normalizeExecution(payload.execution ?? existing.execution)
+			const autoApproval = normalizeAutoApproval(payload.autoApproval ?? existing.autoApproval)
+			return {
+				...existing,
+				...payload,
+				id: existing.id,
+				name: payload.name?.trim() ?? existing.name,
+				prompt: payload.prompt?.trim() ?? existing.prompt,
+				apiConfig: scheduledTaskProfileSchema.optional().parse(payload.apiConfig ?? existing.apiConfig),
+				reasoningPreference: normalizeReasoningPreference(
+					payload.reasoningPreference ?? existing.reasoningPreference,
+				),
+				execution,
+				mode: payload.mode ?? existing.mode,
+				autoApproval,
+				schedule,
+				permissions: permissionsForExecution(autoApproval, {
+					...existing.permissions,
+					...payload.permissions,
+				}),
+				updatedAt: now,
+				nextRunAt: getNextRunAt(schedule, now - 1),
+			}
+		})
 		await this.broadcast()
 		this.scheduleTick()
 	}
@@ -217,24 +293,23 @@ export class ScheduledTaskService implements vscode.Disposable {
 	}
 
 	async pauseTask(taskId: string): Promise<void> {
-		const task = this.requireTask(taskId)
-		await this.store.upsertTask({ ...task, enabled: false, updatedAt: Date.now() })
+		await this.store.updateTask(taskId, (task) => ({ ...task, enabled: false, updatedAt: Date.now() }))
 		await this.broadcast()
 	}
 
 	async resumeTask(taskId: string): Promise<void> {
-		const task = this.requireTask(taskId)
-		await this.store.upsertTask({
+		await this.store.updateTask(taskId, (task) => ({
 			...task,
 			enabled: true,
 			updatedAt: Date.now(),
 			nextRunAt: getNextRunAt(task.schedule, Date.now() - 1),
-		})
+		}))
 		await this.broadcast()
 		this.scheduleTick()
 	}
 
 	async duplicateTask(taskId: string): Promise<void> {
+		await this.store.refresh()
 		const task = this.requireTask(taskId)
 		await this.createTask({
 			name: `${task.name} copy`,
@@ -251,7 +326,10 @@ export class ScheduledTaskService implements vscode.Disposable {
 	}
 
 	async runNow(taskId: string): Promise<void> {
+		await this.store.refresh()
+		await this.recoverInterruptedRuns()
 		const task = this.requireTask(taskId)
+		if (!task.workspace) throw new Error("Assign this legacy schedule to the open workspace before running it")
 		await this.enqueueRun(task, Date.now(), "manual")
 	}
 
@@ -268,11 +346,28 @@ export class ScheduledTaskService implements vscode.Disposable {
 		}, this.tickMs)
 	}
 
+	private scheduleRefresh(): void {
+		if (this.disposed) return
+		if (this.refreshTimer) clearTimeout(this.refreshTimer)
+		this.refreshTimer = setTimeout(() => {
+			this.refreshTimer = undefined
+			void this.refreshState().catch((error) => {
+				this.outputChannel.appendLine(`[ScheduledTaskService] Schedule refresh failed: ${String(error)}`)
+			})
+		}, 75)
+	}
+
+	private async refreshState(): Promise<void> {
+		if (!this.disposed && (await this.store.refresh())) await this.broadcast()
+	}
+
 	private async tick(): Promise<void> {
 		try {
+			await this.refreshState()
+			await this.recoverInterruptedRuns()
 			const now = Date.now()
 			for (const task of this.store.getState().tasks) {
-				if (task.enabled && task.nextRunAt !== undefined && task.nextRunAt <= now) {
+				if (task.workspace && task.enabled && task.nextRunAt !== undefined && task.nextRunAt <= now) {
 					await this.enqueueRun(task, task.nextRunAt, "schedule")
 				}
 			}
@@ -290,49 +385,52 @@ export class ScheduledTaskService implements vscode.Disposable {
 		scheduledFor: number,
 		trigger: ScheduledTaskRun["trigger"],
 	): Promise<void> {
-		const execution = normalizeExecution(task.execution)
-		const autoApproval = normalizeAutoApproval(task.autoApproval)
-		const activeRun = this.store
-			.getRunsForTask(task.id)
-			.find((run) => ACTIVE_RUN_STATUSES.has(run.status) || this.queue.some((queued) => queued.id === run.id))
-
-		if (activeRun) {
-			await this.recordSkipped(task, scheduledFor, "already_running")
-			return
+		const claimed = await this.store.claimRun(task.id, scheduledFor, trigger, (current, hasActiveRun) => {
+			const run: ScheduledTaskRun = {
+				id: crypto.randomUUID(),
+				taskId: current.id,
+				ownerId: this.ownerId,
+				status: hasActiveRun ? "skipped" : "queued",
+				trigger,
+				scheduledFor,
+				...(hasActiveRun
+					? { finishedAt: Date.now(), summary: "Skipped: already_running", skipReason: "already_running" }
+					: { queuedAt: Date.now() }),
+				workspace: current.workspace,
+				prompt: current.prompt,
+				apiConfig: current.apiConfig,
+				reasoningPreference: normalizeReasoningPreference(current.reasoningPreference),
+				execution: normalizeExecution(current.execution),
+				mode: current.mode,
+				autoApproval: normalizeAutoApproval(current.autoApproval),
+			}
+			const nextRunAt =
+				trigger === "manual"
+					? current.nextRunAt
+					: hasActiveRun
+						? isRecurringSchedule(current.schedule)
+							? getNextRunAt(current.schedule, Date.now())
+							: undefined
+						: getNextRunAt(current.schedule, scheduledFor)
+			return {
+				task: {
+					...current,
+					lastRunId: run.id,
+					lastRunStatus: run.status,
+					lastRunSummary: run.summary,
+					nextRunAt,
+					enabled: current.schedule.type === "once" && trigger !== "manual" ? false : current.enabled,
+					updatedAt: Date.now(),
+				},
+				run,
+			}
+		})
+		if (!claimed) return
+		if (claimed.run.status === "queued") {
+			this.queue.push(claimed)
+			void this.processQueue()
 		}
-
-		const run: ScheduledTaskRun = {
-			id: crypto.randomUUID(),
-			taskId: task.id,
-			status: "queued",
-			trigger,
-			scheduledFor,
-			queuedAt: Date.now(),
-			workspace: task.workspace,
-			prompt: task.prompt,
-			apiConfig: task.apiConfig,
-			reasoningPreference: normalizeReasoningPreference(task.reasoningPreference),
-			execution,
-			mode: task.mode,
-			autoApproval,
-		}
-
-		const nextRunAt = trigger === "manual" ? task.nextRunAt : getNextRunAt(task.schedule, scheduledFor)
-		await this.store.updateTaskAndRun(
-			{
-				...task,
-				lastRunId: run.id,
-				lastRunStatus: run.status,
-				lastRunSummary: undefined,
-				nextRunAt,
-				enabled: task.schedule.type === "once" && trigger !== "manual" ? false : task.enabled,
-				updatedAt: Date.now(),
-			},
-			run,
-		)
-		this.queue.push(run)
 		await this.broadcast()
-		void this.processQueue()
 	}
 
 	private async processQueue(): Promise<void> {
@@ -343,12 +441,24 @@ export class ScheduledTaskService implements vscode.Disposable {
 		this.processing = true
 		try {
 			while (this.queue.length > 0) {
-				const run = this.queue.shift()!
-				const task = this.store.getTask(run.taskId)
-				if (!task) {
-					continue
+				const { task, run } = this.queue.shift()!
+				try {
+					await this.startRun(task, run)
+				} catch (error) {
+					this.outputChannel.appendLine(
+						`[ScheduledTaskService] Run ${run.id} failed before admission: ${error instanceof Error ? error.message : String(error)}`,
+					)
+					await this.finishRun(task, {
+						...run,
+						status: "failed",
+						finishedAt: Date.now(),
+						error: error instanceof Error ? error.message : String(error),
+					}).catch((persistError) => {
+						this.outputChannel.appendLine(
+							`[ScheduledTaskService] Could not finalize run ${run.id}: ${String(persistError)}`,
+						)
+					})
 				}
-				await this.startRun(task, run)
 			}
 		} finally {
 			this.processing = false
@@ -377,7 +487,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			autoApproval,
 			mode: task.mode,
 		}
-		await this.store.upsertRun(startedRun)
+		if (!(await this.store.projectRunStatus(startedRun))) return
 		await this.broadcast()
 		await this.notifyBeforeRun(task, startedRun)
 
@@ -419,7 +529,10 @@ export class ScheduledTaskService implements vscode.Disposable {
 				apiConfiguration,
 				reasoningPreference: normalizeReasoningPreference(run.reasoningPreference),
 			})
+			this.activeAlphaTasks.set(alphaTask.taskId, { alphaTask, task, run: startedRun })
+			if (this.disposed) throw new Error("Scheduled task service stopped before admission")
 			await alphaTask.prepareReasoningForAdmission()
+			if (this.disposed) throw new Error("Scheduled task service stopped before admission")
 			const reasoningState = await readReasoningState(alphaTask)
 			await this.store.upsertRun({
 				...startedRun,
@@ -427,11 +540,12 @@ export class ScheduledTaskService implements vscode.Disposable {
 				resolvedApiConfig: { id: selectedProfile.data.id, name },
 				reasoningState,
 			})
+			if (this.disposed) throw new Error("Scheduled task service stopped before launch")
 			alphaTask.start()
 			taskStarted = true
 			await this.broadcast()
 		} catch (error) {
-			if (alphaTask && !taskStarted) {
+			if (alphaTask && !taskStarted && this.activeAlphaTasks.delete(alphaTask.taskId)) {
 				await alphaTask.abortTask().catch((cleanupError) => {
 					this.outputChannel.appendLine(
 						`Failed to clean up scheduled task ${alphaTask?.taskId}: ${String(cleanupError)}`,
@@ -484,10 +598,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			}
 			if (approval.decision !== "approve") {
 				const waitingRun: ScheduledTaskRun = { ...run, status: "waiting_for_approval" }
-				await this.store.updateTaskAndRun(
-					{ ...task, lastRunId: run.id, lastRunStatus: waitingRun.status, updatedAt: Date.now() },
-					waitingRun,
-				)
+				if (!(await this.store.projectRunStatus(waitingRun))) return
 				await this.broadcast()
 				// Keep the scheduler queue moving while the user considers this run.
 				void this.awaitCommandApproval(task, waitingRun, execution)
@@ -533,10 +644,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 				return
 			}
 			const resumedRun: ScheduledTaskRun = { ...run, status: "running" }
-			await this.store.updateTaskAndRun(
-				{ ...task, lastRunId: run.id, lastRunStatus: resumedRun.status, updatedAt: Date.now() },
-				resumedRun,
-			)
+			if (!(await this.store.projectRunStatus(resumedRun))) return
 			await this.broadcast()
 			await this.executeCommandRun(task, resumedRun, execution)
 		} catch (error) {
@@ -556,9 +664,13 @@ export class ScheduledTaskService implements vscode.Disposable {
 		run: ScheduledTaskRun,
 		execution: Extract<ScheduledTaskExecution, { type: "command" }>,
 	): Promise<void> {
+		if (this.disposed) return
+		const controller = new AbortController()
+		this.commandControllers.add(controller)
 		try {
 			const result = await execFileAsync(execution.command, {
 				cwd: task.workspace || getWorkspacePath(),
+				signal: controller.signal,
 				timeout: execution.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
 				maxBuffer: 2 * 1024 * 1024,
 				windowsHide: true,
@@ -584,6 +696,8 @@ export class ScheduledTaskService implements vscode.Disposable {
 				output,
 				exitCode: typeof commandError.code === "number" ? commandError.code : undefined,
 			})
+		} finally {
+			this.commandControllers.delete(controller)
 		}
 	}
 
@@ -613,7 +727,11 @@ export class ScheduledTaskService implements vscode.Disposable {
 
 	private async discoverSkills(workspace?: string): Promise<SkillsManager> {
 		const cwd = workspace || this.provider.cwd
-		if (cwd && !path.isAbsolute(cwd)) {
+		if (
+			!cwd ||
+			!path.isAbsolute(cwd) ||
+			!vscode.workspace.workspaceFolders?.some((folder) => arePathsEqual(folder.uri.fsPath, cwd))
+		) {
 			throw new Error(t("scheduledTasks:workspaceInvalid"))
 		}
 		// One-shot discovery uses the existing catalog rules without adding file watchers.
@@ -656,37 +774,24 @@ export class ScheduledTaskService implements vscode.Disposable {
 		status: ScheduledTaskRun["status"],
 		summary: string,
 	): Promise<void> {
-		const run = this.store
-			.getState()
-			.runs.find((candidate) => candidate.alphaTaskId === alphaTaskId && candidate.status === "running")
-		if (!run) {
-			return
-		}
-		const task = this.store.getTask(run.taskId)
-		if (!task) {
-			return
-		}
-		await this.finishRun(task, { ...run, status, summary, finishedAt: Date.now() })
+		const active = this.activeAlphaTasks.get(alphaTaskId)
+		if (!active) return
+		this.activeAlphaTasks.delete(alphaTaskId)
+		await this.finishRun(active.task, { ...active.run, status, summary, finishedAt: Date.now() })
 	}
 
-	private async finishRun(task: ScheduledTask, run: ScheduledTaskRun): Promise<void> {
-		await this.store.updateTaskAndRun(
-			{
-				...(this.store.getTask(task.id) ?? task),
-				lastRunId: run.id,
-				lastRunStatus: run.status,
-				lastRunSummary: run.summary ?? run.error,
-				updatedAt: Date.now(),
-			},
-			run,
-		)
+	private async finishRun(_task: ScheduledTask, run: ScheduledTaskRun): Promise<void> {
+		const completed = await this.store.completeRun(run)
+		if (!completed) return
 		await this.broadcast()
-		await this.notifyRunFinished(task, run)
+		await this.notifyRunFinished(completed.task, completed.run)
 	}
 
 	private async recoverInterruptedRuns(): Promise<void> {
 		for (const run of this.store.getState().runs) {
 			if (ACTIVE_RUN_STATUSES.has(run.status)) {
+				if (run.ownerId === this.ownerId) continue
+				if (run.ownerId && (await this.store.isOwnerLive(run.ownerId))) continue
 				const task = this.store.getTask(run.taskId)
 				if (!task) {
 					continue
@@ -704,7 +809,13 @@ export class ScheduledTaskService implements vscode.Disposable {
 	private async detectMissedRuns(): Promise<void> {
 		const now = Date.now()
 		for (const task of this.store.getState().tasks) {
-			if (!task.enabled || task.nextRunAt === undefined || task.nextRunAt > now) {
+			if (
+				!task.workspace ||
+				!task.enabled ||
+				task.nextRunAt === undefined ||
+				// A second window can open during the normal tick interval; that occurrence is still due.
+				task.nextRunAt > now - this.tickMs
+			) {
 				continue
 			}
 			await this.recordSkipped(task, task.nextRunAt, "missed_while_inactive")
@@ -712,37 +823,40 @@ export class ScheduledTaskService implements vscode.Disposable {
 	}
 
 	private async recordSkipped(task: ScheduledTask, scheduledFor: number, reason: string): Promise<void> {
-		const run: ScheduledTaskRun = {
-			id: crypto.randomUUID(),
-			taskId: task.id,
-			status: "skipped",
-			trigger: reason === "missed_while_inactive" ? "missed" : "schedule",
-			scheduledFor,
-			finishedAt: Date.now(),
-			summary: `Skipped: ${reason}`,
-			skipReason: reason,
-			workspace: task.workspace,
-			prompt: task.prompt,
-			apiConfig: task.apiConfig,
-			reasoningPreference: normalizeReasoningPreference(task.reasoningPreference),
-			execution: normalizeExecution(task.execution),
-			mode: task.mode,
-			autoApproval: task.autoApproval,
-		}
-		const nextRunAt = isRecurringSchedule(task.schedule) ? getNextRunAt(task.schedule, Date.now()) : undefined
-		await this.store.updateTaskAndRun(
-			{
-				...task,
-				lastRunId: run.id,
-				lastRunStatus: run.status,
-				lastRunSummary: run.summary,
-				nextRunAt,
-				enabled: task.schedule.type === "once" ? false : task.enabled,
-				updatedAt: Date.now(),
-			},
-			run,
-		)
-		await this.broadcast()
+		const claimed = await this.store.claimRun(task.id, scheduledFor, "missed", (current) => {
+			const run: ScheduledTaskRun = {
+				id: crypto.randomUUID(),
+				taskId: current.id,
+				status: "skipped",
+				trigger: "missed",
+				scheduledFor,
+				finishedAt: Date.now(),
+				summary: `Skipped: ${reason}`,
+				skipReason: reason,
+				workspace: current.workspace,
+				prompt: current.prompt,
+				apiConfig: current.apiConfig,
+				reasoningPreference: normalizeReasoningPreference(current.reasoningPreference),
+				execution: normalizeExecution(current.execution),
+				mode: current.mode,
+				autoApproval: current.autoApproval,
+			}
+			return {
+				task: {
+					...current,
+					lastRunId: run.id,
+					lastRunStatus: run.status,
+					lastRunSummary: run.summary,
+					nextRunAt: isRecurringSchedule(current.schedule)
+						? getNextRunAt(current.schedule, Date.now())
+						: undefined,
+					enabled: current.schedule.type === "once" ? false : current.enabled,
+					updatedAt: Date.now(),
+				},
+				run,
+			}
+		})
+		if (claimed) await this.broadcast()
 	}
 
 	private async notifyBeforeRun(task: ScheduledTask, run: ScheduledTaskRun): Promise<void> {
@@ -805,11 +919,17 @@ export class ScheduledTaskService implements vscode.Disposable {
 
 	private async broadcast(): Promise<void> {
 		const state = this.store.getState()
-		await this.provider.postMessageToWebview({
-			type: "scheduledTasksUpdated",
-			scheduledTaskState: state,
-			scheduledTasks: state.tasks,
-			scheduledTaskRuns: state.runs,
-		})
+		try {
+			await this.provider.postMessageToWebview({
+				type: "scheduledTasksUpdated",
+				scheduledTaskState: state,
+				scheduledTasks: state.tasks,
+				scheduledTaskRuns: state.runs,
+			})
+		} catch (error) {
+			this.outputChannel.appendLine(
+				`[ScheduledTaskService] Could not update scheduled task view: ${String(error)}`,
+			)
+		}
 	}
 }

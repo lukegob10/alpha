@@ -66,7 +66,11 @@ describe("scheduled task approval grants", () => {
 			vi.spyOn(ScheduledTaskStore.prototype, "getTask").mockReturnValue(task)
 			vi.spyOn(ScheduledTaskStore.prototype, "getRunsForTask").mockReturnValue([])
 			vi.spyOn(ScheduledTaskStore.prototype, "getState").mockReturnValue({ tasks: [task], runs: [] })
-			vi.spyOn(ScheduledTaskStore.prototype, "updateTaskAndRun").mockResolvedValue({ tasks: [task], runs: [] })
+			vi.spyOn(ScheduledTaskStore.prototype, "refresh").mockResolvedValue(false)
+			vi.spyOn(ScheduledTaskStore.prototype, "claimRun").mockImplementation(async (_id, _time, _trigger, build) =>
+				build(task, false),
+			)
+			vi.spyOn(ScheduledTaskStore.prototype, "projectRunStatus").mockResolvedValue(true)
 			let finishRun!: () => void
 			const launched = new Promise<void>((resolve) => (finishRun = resolve))
 			vi.spyOn(ScheduledTaskStore.prototype, "upsertRun").mockImplementation(async (run) => {
@@ -137,13 +141,19 @@ describe("scheduled direct command approval", () => {
 			tasks: [task],
 			runs: currentRun ? [currentRun] : [],
 		}))
-		vi.spyOn(ScheduledTaskStore.prototype, "updateTaskAndRun").mockImplementation(async (_task, run) => {
-			currentRun = run
-			return { tasks: [task], runs: [run] }
+		vi.spyOn(ScheduledTaskStore.prototype, "refresh").mockResolvedValue(false)
+		vi.spyOn(ScheduledTaskStore.prototype, "claimRun").mockImplementation(async (_id, _time, _trigger, build) => {
+			const claimed = build(task, false)
+			currentRun = claimed.run
+			return claimed
 		})
-		vi.spyOn(ScheduledTaskStore.prototype, "upsertRun").mockImplementation(async (run) => {
+		vi.spyOn(ScheduledTaskStore.prototype, "projectRunStatus").mockImplementation(async (run) => {
 			currentRun = run
-			return { tasks: [task], runs: [run] }
+			return true
+		})
+		vi.spyOn(ScheduledTaskStore.prototype, "completeRun").mockImplementation(async (run) => {
+			currentRun = run
+			return { task, run }
 		})
 		let resolveApproval!: (decision: vscode.MessageItem | undefined) => void
 		const approvalResponse = new Promise<vscode.MessageItem | undefined>((resolve) => {
@@ -209,13 +219,19 @@ it("fails a legacy prompt with private deny rules before starting an agent", asy
 		tasks: [task],
 		runs: currentRun ? [currentRun] : [],
 	}))
-	vi.spyOn(ScheduledTaskStore.prototype, "updateTaskAndRun").mockImplementation(async (_task, run) => {
-		currentRun = run
-		return { tasks: [task], runs: [run] }
+	vi.spyOn(ScheduledTaskStore.prototype, "refresh").mockResolvedValue(false)
+	vi.spyOn(ScheduledTaskStore.prototype, "claimRun").mockImplementation(async (_id, _time, _trigger, build) => {
+		const claimed = build(task, false)
+		currentRun = claimed.run
+		return claimed
 	})
-	vi.spyOn(ScheduledTaskStore.prototype, "upsertRun").mockImplementation(async (run) => {
+	vi.spyOn(ScheduledTaskStore.prototype, "projectRunStatus").mockImplementation(async (run) => {
 		currentRun = run
-		return { tasks: [task], runs: [run] }
+		return true
+	})
+	vi.spyOn(ScheduledTaskStore.prototype, "completeRun").mockImplementation(async (run) => {
+		currentRun = run
+		return { task, run }
 	})
 	const createTask = vi.fn()
 	const provider = {
