@@ -141,7 +141,6 @@ export async function prepareParallelCommand(
 	if (
 		canonicalizeToolName(call.name) !== "exec_command" ||
 		typeof commandValue !== "string" ||
-		task.taskKind !== "primary" ||
 		args.verification != null ||
 		!callbacks.toolCallId ||
 		(requestedCwdValue != null && typeof requestedCwdValue !== "string") ||

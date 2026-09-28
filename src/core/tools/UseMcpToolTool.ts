@@ -70,6 +70,7 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 			const completeMessage = JSON.stringify({
 				type: "use_mcp_tool",
 				serverName,
+				source: callbacks.mcpSource,
 				toolName: resolvedToolName,
 				annotations: toolValidation.annotations,
 				arguments: params.arguments ? JSON.stringify(params.arguments) : undefined,

@@ -115,6 +115,7 @@ import {
 	resolveApprovalFlags,
 	shouldDeriveApprovalFlags,
 	subagentAutoApprovalPolicySchema,
+	DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
 } from "@alpha-code/types"
 import { aggregateTaskCostsRecursive, type AggregatedCosts } from "./aggregateTaskCosts"
 import { TelemetryService } from "@alpha-code/telemetry"
@@ -624,7 +625,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "september-2026-v3.0.1-lookup-efficiency"
+	public readonly latestAnnouncementId = "september-2026-v3.1.0-agent-runtime"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -3772,7 +3773,8 @@ export class AlphaProvider
 			autoCondenseContext: autoCondenseContext ?? true,
 			autoCondenseContextPercent: autoCondenseContextPercent ?? 100,
 			autoCondenseContextScope: autoCondenseContextScope ?? "full-context",
-			postTurnCondenseContextPercent: postTurnCondenseContextPercent ?? 0,
+			postTurnCondenseContextPercent:
+				postTurnCondenseContextPercent ?? DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
 			uriScheme: vscode.env.uriScheme,
 			currentTaskId: currentTask?.taskId,
 			currentView: this.currentView,
@@ -3959,7 +3961,8 @@ export class AlphaProvider
 			autoCondenseContext: stateValues.autoCondenseContext ?? true,
 			autoCondenseContextPercent: stateValues.autoCondenseContextPercent ?? 100,
 			autoCondenseContextScope: stateValues.autoCondenseContextScope ?? "full-context",
-			postTurnCondenseContextPercent: stateValues.postTurnCondenseContextPercent ?? 0,
+			postTurnCondenseContextPercent:
+				stateValues.postTurnCondenseContextPercent ?? DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
 			taskHistory: this.taskHistoryStore.getAll(),
 			scheduledTasks: this.scheduledTaskService?.getState().tasks ?? [],
 			scheduledTaskRuns: this.scheduledTaskService?.getState().runs ?? [],

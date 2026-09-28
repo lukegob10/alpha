@@ -324,6 +324,8 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		const completeMessage = JSON.stringify({
 			...sharedMessageProps,
 			content: sanitizedDiff,
+			originalContent: "",
+			finalContent: newContent,
 			isProtected: isWriteProtected,
 			diffStats,
 		} satisfies AlphaSayTool)
@@ -424,6 +426,8 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			const completeMessage = JSON.stringify({
 				...sharedMessageProps,
 				content: `Delete file: ${relPath}`,
+				originalContent: expectedState.content,
+				finalContent: "",
 				isProtected: isWriteProtected,
 			} satisfies AlphaSayTool)
 
@@ -581,6 +585,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		const completeMessage = JSON.stringify({
 			...sharedMessageProps,
 			content: approvalContent,
+			finalContent: newContent,
 			isProtected: isWriteProtected,
 			diffStats,
 		} satisfies AlphaSayTool)

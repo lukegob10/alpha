@@ -6,24 +6,16 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v3.0.1
+## Welcome to Alpha v3.1.0
 
-Alpha v3.0.1 makes ordinary lookup and Q&A turns more direct while adding privacy-safe lookup-efficiency measurement.
+Alpha v3.1.0 brings a shared, provider-neutral agent runtime together with a clearer task trace and code-review flow.
 
-- Ordinary lookup and Q&A turns avoid redundant search, skill, todo, and mutation-shaped completion work
-
-- Distinct successful commands can continue even when their purpose falls outside the supported Git and ripgrep inspection grammar
-
-- Repairable completion checks return feedback to the model without displaying a premature terminal error
-
-- Unavailable acceptance-check inputs include bounded diagnostics so the model can address the cause
-
-- Repeated operations remain bounded, and completion still requires the existing verification checks
-
-- Optional acceptance checks reuse passing evidence while their declared inputs remain unchanged
-- Tasks can wait for, send input to, and stop their own background commands under existing approval rules
-- Saved task context retains constraints and skill identities across reload and compaction
-- Chat includes improved edit and restart actions, reasoning summaries, and provider selection after completion
+- One TypeScript turn engine coordinates model steps, tool calls, approvals, and delegated work across supported providers
+- Ask, Auto, and Full Access policies apply consistently to tool calls and child tasks
+- Alpha Tickets stays available as an eager, integrated set of agent tools
+- Completed work folds into a **Worked for** summary; expand it to inspect the full activity trace
+- Review the whole turn or open a per-file diff in Alpha Diff, with added and removed line counts
+- Automatic context compaction runs at safe boundaries when its configured threshold is reached
 - The standalone Alpha CLI is retired; Alpha continues as a VS Code extension
 
 ---

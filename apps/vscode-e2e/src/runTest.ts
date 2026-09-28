@@ -275,6 +275,7 @@ export async function runExtensionTests(
 			!options.profileDir ||
 			![
 				"rendered-ui-probe.test",
+				"file-review-ui.test",
 				"managed-agents.acceptance.test",
 				"reasoning-ui.test",
 				"history-ui.test",

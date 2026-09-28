@@ -20,6 +20,7 @@ vi.mock("react-i18next", () => ({
 			if (key === "chat:fileChangesInConversation.header" && opts?.count != null) {
 				return `Files edited: ${opts.count}`
 			}
+			if (key === "chat:fileChangesInConversation.openAllDiffs") return "Review"
 			return key
 		},
 	}),
@@ -73,12 +74,18 @@ function completedCommandEdit(
 	}
 }
 
-function renderPanel(messages: AlphaMessage[] | undefined, taskId?: string) {
-	return render(
+function renderPanel(messages: AlphaMessage[] | undefined, taskId?: string, expandPanel = true) {
+	const result = render(
 		<TranslationProvider>
 			<FileChangesPanel clineMessages={messages} taskId={taskId} />
 		</TranslationProvider>,
 	)
+	if (expandPanel) {
+		const header = screen.queryByText(/Files edited:/)
+		const trigger = header?.closest("button")
+		if (trigger) fireEvent.click(trigger)
+	}
+	return result
 }
 
 describe("FileChangesPanel", () => {
@@ -182,9 +189,9 @@ describe("FileChangesPanel", () => {
 		expect(screen.getByText("src/b.ts")).toBeInTheDocument()
 	})
 
-	it("shows the file list by default and lets the user collapse it", () => {
+	it("starts collapsed and reveals the file list on demand", () => {
 		const messages = [createFileEditMessage("src/foo.ts", "diff")]
-		renderPanel(messages)
+		renderPanel(messages, undefined, false)
 
 		// Header visible
 		const headerText = screen.getByText("Files edited: 1")
@@ -193,11 +200,12 @@ describe("FileChangesPanel", () => {
 		const trigger = headerText.closest("button")
 		expect(trigger).toBeInTheDocument()
 
-		expect(trigger).toHaveAttribute("aria-expanded", "true")
-		fireEvent.click(trigger!)
+		expect(trigger).toHaveAttribute("aria-expanded", "false")
 		expect(screen.queryByText("src/foo.ts")).not.toBeInTheDocument()
 		fireEvent.click(trigger!)
 		expect(screen.getByText("src/foo.ts")).toBeInTheDocument()
+		fireEvent.click(trigger!)
+		expect(screen.queryByText("src/foo.ts")).not.toBeInTheDocument()
 	})
 
 	it("toggling a file row expand calls onToggleExpand", () => {
@@ -331,6 +339,7 @@ describe("FileChangesPanel", () => {
 				<FileChangesPanel clineMessages={[edit]} taskId="task-b" />
 			</TranslationProvider>,
 		)
+		fireEvent.click(screen.getByText("Files edited: 1").closest("button")!)
 		expect(screen.getByRole("button", { name: /^src\/foo.ts/ })).toHaveAttribute("aria-expanded", "false")
 	})
 })
@@ -364,6 +373,7 @@ describe("Compact file summaries", () => {
 				onExpandedChange={onExpandedChange}
 			/>,
 		)
+		fireEvent.click(screen.getByText("Files edited: 4").closest("button")!)
 		expect(screen.getByRole("button", { name: /one.ts \+2 -1/ })).toHaveAttribute("aria-expanded", "false")
 		expect(screen.queryByText("four.ts")).not.toBeInTheDocument()
 		expect(screen.queryByTestId("file-diff")).not.toBeInTheDocument()
@@ -371,32 +381,117 @@ describe("Compact file summaries", () => {
 		expect(screen.getByTestId("total-added")).toHaveTextContent("+8")
 		fireEvent.click(screen.getByRole("button", { name: "chat:task.seeMore" }))
 		expect(screen.getByText("four.ts")).toBeInTheDocument()
-		expect(onExpandedChange).toHaveBeenCalledTimes(1)
+		expect(onExpandedChange).toHaveBeenCalledTimes(2)
 		fireEvent.click(screen.getByRole("button", { name: "chat:task.seeLess" }))
 		expect(screen.queryByText("four.ts")).not.toBeInTheDocument()
 	})
 
-	it("keeps expanding a diff separate from opening the file in the editor", () => {
-		render(<FileChangesPanel clineMessages={[edit("src/one.ts")]} taskId="one" />)
+	it("uses the side action to expand and collapse the file diff", () => {
+		renderPanel([edit("src/one.ts")], "one", true)
 		const toggle = screen.getByRole("button", { name: /src\/one.ts \+2 -1/ })
 		expect(toggle.tagName).toBe("BUTTON")
-		fireEvent.click(toggle)
+		const diffAction = screen.getByRole("button", { name: "chat:fileChangesInConversation.openDiff" })
+		expect(toggle).toHaveAttribute("aria-expanded", "false")
+		fireEvent.click(diffAction)
 		expect(toggle).toHaveAttribute("aria-expanded", "true")
 		expect(screen.getByTestId("file-diff")).toHaveTextContent("-old +new")
-		expect(mockPostMessage).toHaveBeenCalledWith({ type: "readFileContent", text: "src/one.ts" })
-		fireEvent.click(screen.getByRole("button", { name: "chat:fileChangesInConversation.openFile" }))
-		expect(mockPostMessage).toHaveBeenCalledWith({ type: "openFile", text: "./src/one.ts" })
-		expect(toggle).toHaveAttribute("aria-expanded", "true")
-		fireEvent.click(toggle)
+		expect(mockPostMessage).not.toHaveBeenCalled()
+		fireEvent.click(diffAction)
+		expect(toggle).toHaveAttribute("aria-expanded", "false")
 		expect(screen.queryByTestId("file-diff")).not.toBeInTheDocument()
+	})
+
+	it("opens a captured single-file diff and a broader change-set diff", () => {
+		const first = completedCommandEdit("src/one.ts", "old\n", "new\n", "run-1")
+		const second = completedCommandEdit("src/two.ts", "before\n", "after\n", "run-2")
+		renderPanel([first, second], "one", false)
+
+		const allDiffs = screen.getByRole("button", { name: "Review" })
+		expect(allDiffs).toBeEnabled()
+		fireEvent.click(allDiffs)
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "openDiff",
+			payload: {
+				title: "Alpha Diff",
+				files: [
+					expect.objectContaining({ path: "src/one.ts", originalContent: "old\n", finalContent: "new\n" }),
+					expect.objectContaining({
+						path: "src/two.ts",
+						originalContent: "before\n",
+						finalContent: "after\n",
+					}),
+				],
+			},
+		})
+
+		fireEvent.click(screen.getByText("Files edited: 2").closest("button")!)
+		fireEvent.click(screen.getAllByRole("button", { name: "chat:fileChangesInConversation.openDiff" })[0]!)
+		expect(mockPostMessage).toHaveBeenLastCalledWith({
+			type: "openDiff",
+			payload: {
+				title: "Alpha Diff: src/one.ts",
+				files: [expect.objectContaining({ path: "src/one.ts" })],
+			},
+		})
+	})
+
+	it("opens individual and aggregate diffs for a grouped two-file approval", () => {
+		const message: AlphaMessage = {
+			type: "ask",
+			ask: "tool",
+			ts: 1,
+			isAnswered: true,
+			text: JSON.stringify({
+				tool: "appliedDiff",
+				batchDiffs: [
+					{
+						path: "bootstrap.py",
+						content: "-old\n+new",
+						originalContent: "old\n",
+						finalContent: "new\n",
+					},
+					{
+						path: "config.py",
+						content: "-before\n+after",
+						originalContent: "before\n",
+						finalContent: "after\n",
+					},
+				],
+			}),
+		}
+		renderPanel([message], "grouped-edit", false)
+		const allDiffs = screen.getByRole("button", { name: "Review" })
+		expect(allDiffs).toBeEnabled()
+		fireEvent.click(allDiffs)
+		expect(mockPostMessage).toHaveBeenLastCalledWith({
+			type: "openDiff",
+			payload: {
+				title: "Alpha Diff",
+				files: [
+					{ path: "bootstrap.py", originalContent: "old\n", finalContent: "new\n" },
+					{ path: "config.py", originalContent: "before\n", finalContent: "after\n" },
+				],
+			},
+		})
+		fireEvent.click(screen.getByText("Files edited: 2").closest("button")!)
+		fireEvent.click(screen.getAllByRole("button", { name: "chat:fileChangesInConversation.openDiff" })[1]!)
+		expect(mockPostMessage).toHaveBeenLastCalledWith({
+			type: "openDiff",
+			payload: {
+				title: "Alpha Diff: config.py",
+				files: [{ path: "config.py", originalContent: "before\n", finalContent: "after\n" }],
+			},
+		})
 	})
 
 	it("resets disclosure state when changing tasks and excludes unapproved edits", () => {
 		const messages = [edit("one.ts"), edit("pending.ts", { isAnswered: false })]
 		const { rerender } = render(<FileChangesPanel clineMessages={messages} taskId="one" />)
 		expect(screen.queryByText("pending.ts")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByText("Files edited: 1").closest("button")!)
 		fireEvent.click(screen.getByRole("button", { name: /one.ts \+2 -1/ }))
 		rerender(<FileChangesPanel clineMessages={messages} taskId="two" />)
+		fireEvent.click(screen.getByText("Files edited: 1").closest("button")!)
 		expect(screen.getByRole("button", { name: /one.ts \+2 -1/ })).toHaveAttribute("aria-expanded", "false")
 		expect(screen.queryByTestId("file-diff")).not.toBeInTheDocument()
 	})

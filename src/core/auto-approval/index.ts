@@ -18,6 +18,7 @@ import { AlphaAskResponse } from "../../shared/WebviewMessage"
 
 import { isWriteToolAction, isReadOnlyToolAction } from "./tools"
 import { isMcpToolAlwaysAllowed } from "./mcp"
+import { getMcpToolApprovalDecision } from "./mcpApprovalPolicy"
 import { getCommandDecision, getSubagentCommandDecision } from "./commands"
 
 // We have auto-approval actions for different categories.
@@ -154,9 +155,8 @@ export async function checkAutoApproval({
 			const mcpServerUse = JSON.parse(text) as McpServerUse
 
 			if (mcpServerUse.type === "use_mcp_tool") {
-				const legacyAlwaysAllowed =
-					flags.alwaysAllowMcp && isMcpToolAlwaysAllowed(mcpServerUse, state.mcpServers)
-				return mode === "bypass" || legacyAlwaysAllowed ? { decision: "approve" } : { decision: "ask" }
+				const explicitMcpGrant = flags.alwaysAllowMcp && isMcpToolAlwaysAllowed(mcpServerUse, state.mcpServers)
+				return { decision: getMcpToolApprovalDecision(mode, mcpServerUse, explicitMcpGrant) }
 			} else if (mcpServerUse.type === "access_mcp_resource") {
 				return flags.alwaysAllowMcp ? { decision: "approve" } : { decision: "ask" }
 			}

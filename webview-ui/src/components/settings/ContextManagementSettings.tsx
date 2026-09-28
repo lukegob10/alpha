@@ -4,7 +4,7 @@ import { useAppTranslation } from "@/i18n/TranslationContext"
 import { VSCodeCheckbox, VSCodeTextArea } from "@vscode/webview-ui-toolkit/react"
 
 import { supportPrompt } from "@alpha/support-prompt"
-import type { AutoCondenseContextScope } from "@alpha-code/types"
+import { DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT, type AutoCondenseContextScope } from "@alpha-code/types"
 
 import { cn } from "@/lib/utils"
 import {
@@ -67,7 +67,7 @@ export const ContextManagementSettings = ({
 	autoCondenseContext,
 	autoCondenseContextPercent = 100,
 	autoCondenseContextScope = "full-context",
-	postTurnCondenseContextPercent = 0,
+	postTurnCondenseContextPercent = DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
 	maxOpenTabsContext,
 	maxWorkspaceFiles,
 	showRooIgnoredFiles,

@@ -63,7 +63,7 @@ export class TicketPanel implements vscode.Disposable {
 			return
 		}
 		if (this.disposed) return
-		const panel = vscode.window.createWebviewPanel("alpha.tickets", "Alpha Tickets", vscode.ViewColumn.Beside, {
+		const panel = vscode.window.createWebviewPanel("alpha.tickets", "Alpha Tickets", vscode.ViewColumn.Active, {
 			enableScripts: true,
 			retainContextWhenHidden: true,
 			localResourceRoots: [this.context.extensionUri],

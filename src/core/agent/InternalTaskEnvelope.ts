@@ -8,6 +8,7 @@ export type ModelRouteId = "fast" | "balanced" | "deep" | "user-configured"
 
 export interface InternalTaskPolicy {
 	read: boolean
+	/** Allows commands beyond the audited read-only command set, subject to inherited approval policy. */
 	execute: boolean
 	mutate: boolean
 	delegate: boolean

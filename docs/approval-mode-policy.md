@@ -16,6 +16,12 @@ Ask requests approval for file changes and commands by default; a saved non-wild
 matching commands without a prompt. Full Access continues to skip the ordinary per-action review for actions it permits,
 while explicit command denials remain in force.
 
+For an MCP tool call, the runtime resolves the captured server, source (`global` or `project`), and tool before asking.
+Ask and Auto require review unless the user has enabled the legacy global MCP grant and saved an allow grant for that
+exact resolved tool. MCP `readOnlyHint`, `destructiveHint`, and related annotations are displayed as context; provider
+metadata cannot grant approval. Full Access skips the ordinary MCP tool review. Older approval records without a source
+remain readable, while a new source-qualified call cannot borrow a grant from a same-named server in another scope.
+
 ## Command boundary
 
 The [official Codex sandbox and approvals guidance](https://developers.openai.com/codex/security/) checked on
@@ -43,6 +49,7 @@ settings. Users can re-add a prefix for Ask mode or to override a broader deny r
 ## Owning code
 
 - `src/core/auto-approval/index.ts` decides whether tool calls and commands are approved.
+- `src/core/auto-approval/mcpApprovalPolicy.ts` applies the same MCP decision inside that runtime path.
 - `packages/types/src/approval-mode.ts` derives mode flags and command allowlists.
 - `src/core/agent/ToolScheduler.ts` supplies trusted path-review requirements to the common approval decision.
 - `src/services/tickets/TicketStore.ts` scopes ticket reads and mutations to the current project.

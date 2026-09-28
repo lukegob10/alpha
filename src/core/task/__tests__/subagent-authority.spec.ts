@@ -150,6 +150,41 @@ describe("sub-agent task authority", () => {
 		expect(child.isToolAllowedForTask("use_mcp_tool")).toBe(false)
 	})
 
+	it.each(["ask", "auto", "bypass"] as const)(
+		"keeps serial child commands denied under the %s approval tier",
+		async (approvalMode) => {
+			const child = Object.assign(Object.create(Task.prototype), {
+				taskKind: "subagent",
+				subagentRole: "review",
+				workspacePath: process.cwd(),
+				approvalMode,
+				subagentContextManifest: { runtimePolicy: { role: "review", execute: false } },
+			}) as Task
+
+			expect(child.getTaskCommandDenialReason("git status --short")).toContain("isolated command reader")
+			expect(child.getTaskCommandDenialReason("rg -n needle src")).toContain("isolated command reader")
+			expect(child.getTaskCommandDenialReason("git push origin main")).toContain("isolated command reader")
+			expect(child.getTaskCommandDenialReason("npm test")).toContain("isolated command reader")
+		},
+	)
+
+	it("removes command control tools from a Worker with narrowed execute authority", () => {
+		const child = Object.assign(Object.create(Task.prototype), {
+			taskKind: "subagent",
+			subagentRole: "worker",
+			subagentContextManifest: {
+				skills: [],
+				runtimePolicy: {
+					role: "worker",
+					execute: false,
+					allowedTools: ["exec_command", "manage_command", "write_stdin", "attempt_completion"],
+				},
+			},
+		}) as Task
+
+		expect(child.getTaskAllowedToolNames()).toEqual(["exec_command", "attempt_completion"])
+	})
+
 	it("grants only current tools to delegating workers", () => {
 		const allowed = getSubagentAllowedToolNames("worker", true, true)
 		expect(allowed).toEqual([

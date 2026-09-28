@@ -342,7 +342,7 @@ describe("checkAutoApproval", () => {
 		).resolves.toEqual({ decision: "ask" })
 	})
 
-	it("auto-approves MCP tools in Full Access without a per-tool alwaysAllow flag", async () => {
+	it("requires Full Access or both MCP grant settings to skip review", async () => {
 		await expect(
 			checkAutoApproval({
 				ask: "use_mcp_server",
@@ -353,6 +353,17 @@ describe("checkAutoApproval", () => {
 				},
 			}),
 		).resolves.toEqual({ decision: "approve" })
+		await expect(
+			checkAutoApproval({
+				ask: "use_mcp_server",
+				text: JSON.stringify({ type: "use_mcp_tool", serverName: "linear", toolName: "update_issue" }),
+				state: {
+					approvalMode: "auto",
+					alwaysAllowMcp: false,
+					mcpServers: [{ name: "linear", tools: [{ name: "update_issue", alwaysAllow: true }] } as never],
+				},
+			}),
+		).resolves.toEqual({ decision: "ask" })
 		await expect(
 			checkAutoApproval({
 				ask: "use_mcp_server",
@@ -379,31 +390,26 @@ describe("checkAutoApproval", () => {
 		},
 	)
 
-	it("keeps MCP prompts in Auto unless the individual tool is explicitly allowed", async () => {
-		await expect(
-			checkAutoApproval({
-				ask: "use_mcp_server",
-				text: JSON.stringify({
-					type: "use_mcp_tool",
-					serverName: "linear",
-					toolName: "get_issue",
-					annotations: { readOnlyHint: true },
+	it("keeps MCP annotations advisory in Auto and honors an exact explicit tool grant", async () => {
+		for (const annotations of [
+			{ readOnlyHint: true },
+			{ readOnlyHint: true, destructiveHint: true },
+			{ readOnlyHint: true, futureHint: false },
+			undefined,
+		]) {
+			await expect(
+				checkAutoApproval({
+					ask: "use_mcp_server",
+					text: JSON.stringify({
+						type: "use_mcp_tool",
+						serverName: "linear",
+						toolName: "get_issue",
+						annotations,
+					}),
+					state: { approvalMode: "auto" },
 				}),
-				state: { approvalMode: "auto" },
-			}),
-		).resolves.toEqual({ decision: "ask" })
-		await expect(
-			checkAutoApproval({
-				ask: "use_mcp_server",
-				text: JSON.stringify({
-					type: "use_mcp_tool",
-					serverName: "linear",
-					toolName: "update_issue",
-					annotations: { readOnlyHint: true, destructiveHint: true },
-				}),
-				state: { approvalMode: "auto" },
-			}),
-		).resolves.toEqual({ decision: "ask" })
+			).resolves.toEqual({ decision: "ask" })
+		}
 		await expect(
 			checkAutoApproval({
 				ask: "use_mcp_server",
@@ -423,6 +429,63 @@ describe("checkAutoApproval", () => {
 					autoApprovalEnabled: true,
 					alwaysAllowMcp: true,
 					mcpServers: [{ name: "linear", tools: [{ name: "update_issue", alwaysAllow: true }] } as never],
+				},
+			}),
+		).resolves.toEqual({ decision: "approve" })
+	})
+
+	it("matches an explicit MCP grant against the resolved server source", async () => {
+		const request = JSON.stringify({
+			type: "use_mcp_tool",
+			serverName: "linear",
+			toolName: "update_issue",
+			source: "project",
+		})
+		const globalGrant = {
+			name: "linear",
+			config: "{}",
+			status: "connected" as const,
+			source: "global" as const,
+			tools: [{ name: "update_issue", alwaysAllow: true }],
+		}
+		const projectGrant = {
+			name: "linear",
+			config: "{}",
+			status: "connected" as const,
+			source: "project" as const,
+			tools: [{ name: "update_issue", alwaysAllow: true }],
+		}
+
+		await expect(
+			checkAutoApproval({
+				ask: "use_mcp_server",
+				text: request,
+				state: { approvalMode: "auto", alwaysAllowMcp: true, mcpServers: [globalGrant] },
+			}),
+		).resolves.toEqual({ decision: "ask" })
+		await expect(
+			checkAutoApproval({
+				ask: "use_mcp_server",
+				text: request,
+				state: { approvalMode: "auto", alwaysAllowMcp: true, mcpServers: [globalGrant, projectGrant] },
+			}),
+		).resolves.toEqual({ decision: "approve" })
+		await expect(
+			checkAutoApproval({
+				ask: "use_mcp_server",
+				text: request,
+				state: {
+					approvalMode: "auto",
+					alwaysAllowMcp: true,
+					mcpServers: [
+						{
+							name: "linear",
+							config: "{}",
+							status: "connected" as const,
+							tools: [{ name: "update_issue", alwaysAllow: true }],
+							// Pre-source MCP state remains a supported persisted shape.
+						},
+					],
 				},
 			}),
 		).resolves.toEqual({ decision: "approve" })

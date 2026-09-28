@@ -228,6 +228,12 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				}),
 			)
 		}
+		const denyByTaskCommandAuthority = (reason: string) => {
+			if (commandEvidenceId) task.failCommandExecution?.(commandEvidenceId, "denied")
+			task.recordToolError("exec_command", reason)
+			preLaunchFailure("policy_denied", { kind: "user-action" }, "managed-child-command-authority")
+			pushToolResult(formatResponse.toolError(reason))
+		}
 		try {
 			if (!command) {
 				preLaunchFailure("invalid_arguments", { kind: "repair" })
@@ -257,6 +263,12 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				return
 			}
 
+			const initialAuthorityDenial = await task.getTaskCommandDenialReason?.(canonicalCommand, customCwd)
+			if (initialAuthorityDenial) {
+				denyByTaskCommandAuthority(initialAuthorityDenial)
+				return
+			}
+
 			task.consecutiveMistakeCount = 0
 
 			const didApprove = customCwd
@@ -267,6 +279,12 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 
 			if (!didApprove) {
 				task.failCommandExecution?.(commandEvidenceId, "denied")
+				return
+			}
+
+			const postApprovalAuthorityDenial = await task.getTaskCommandDenialReason?.(canonicalCommand, customCwd)
+			if (postApprovalAuthorityDenial) {
+				denyByTaskCommandAuthority(postApprovalAuthorityDenial)
 				return
 			}
 

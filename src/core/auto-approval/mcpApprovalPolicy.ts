@@ -1,63 +1,35 @@
-import type { McpToolAnnotations } from "@alpha-code/types"
+import type { McpServerUse } from "@alpha-code/types"
 
-export type McpToolApprovalMode = "auto" | "prompt" | "writes" | "approve"
+export type McpToolApprovalDecision = "approve" | "ask"
 
-const KNOWN_ANNOTATION_KEYS = new Set([
-	"title",
-	"audience",
-	"priority",
-	"lastModified",
-	"readOnlyHint",
-	"destructiveHint",
-	"idempotentHint",
-	"openWorldHint",
-])
+function isMcpToolUse(value: unknown): value is McpServerUse & { type: "use_mcp_tool"; toolName: string } {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-function hasValidAnnotations(value: unknown): value is McpToolAnnotations {
-	if (!isRecord(value) || Object.keys(value).some((key) => !KNOWN_ANNOTATION_KEYS.has(key))) {
-		return false
-	}
-
-	if (value.title !== undefined && typeof value.title !== "string") return false
-	if (
-		value.audience !== undefined &&
-		(!Array.isArray(value.audience) || value.audience.some((item) => item !== "user" && item !== "assistant"))
-	) {
-		return false
-	}
-	if (value.priority !== undefined && (typeof value.priority !== "number" || !Number.isFinite(value.priority))) {
-		return false
-	}
-	if (value.lastModified !== undefined && typeof value.lastModified !== "string") return false
-	if (
-		["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"].some(
-			(key) => value[key] !== undefined && typeof value[key] !== "boolean",
-		)
-	) {
-		return false
-	}
-
-	return true
+	const use = value as Record<string, unknown>
+	return (
+		use.type === "use_mcp_tool" &&
+		typeof use.serverName === "string" &&
+		use.serverName.trim().length > 0 &&
+		typeof use.toolName === "string" &&
+		use.toolName.trim().length > 0 &&
+		(use.source === undefined || use.source === "global" || use.source === "project")
+	)
 }
 
 /**
- * Decide whether an MCP tool needs a user prompt under the selected policy.
- * Missing, malformed, and unrecognized annotations always require review.
+ * Resolve MCP approval using Alpha's captured three-tier mode and an exact
+ * user-configured grant. MCP annotations are untrusted hints shown with the
+ * approval request; they do not authorize a call in Ask or Auto.
  */
-export function requiresMcpToolApproval(mode: unknown, annotations?: unknown): boolean {
-	if (mode === "approve") return false
-	if (mode === "prompt" || (mode !== "auto" && mode !== "writes")) return true
-	if (!hasValidAnnotations(annotations)) return true
-
-	if (mode === "writes") {
-		return annotations.readOnlyHint !== true || annotations.destructiveHint === true
-	}
-
-	if (annotations.destructiveHint === true) return true
-	if (annotations.readOnlyHint === true) return false
-	return annotations.destructiveHint !== false || annotations.openWorldHint !== false
+export function getMcpToolApprovalDecision(
+	mode: unknown,
+	use: unknown,
+	explicitlyAllowed: boolean,
+): McpToolApprovalDecision {
+	if (!isMcpToolUse(use)) return "ask"
+	if (mode === "bypass") return "approve"
+	// `undefined` is the persisted legacy-settings path; an explicit MCP grant
+	// remains valid there when the legacy auto-approval surface is enabled.
+	if (mode !== undefined && mode !== "ask" && mode !== "auto") return "ask"
+	return explicitlyAllowed ? "approve" : "ask"
 }

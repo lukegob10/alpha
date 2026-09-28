@@ -117,6 +117,8 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 				const completeMessage = JSON.stringify({
 					...sharedMessageProps,
 					content: unified,
+					originalContent: fileExists ? task.diffViewProvider.originalContent || "" : "",
+					finalContent: newContent,
 					diffStats: computeDiffStats(unified) || undefined,
 				} satisfies AlphaSayTool)
 
@@ -158,6 +160,8 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 				const completeMessage = JSON.stringify({
 					...sharedMessageProps,
 					content: unified,
+					originalContent: fileExists ? task.diffViewProvider.originalContent || "" : "",
+					finalContent: newContent,
 					diffStats: computeDiffStats(unified) || undefined,
 				} satisfies AlphaSayTool)
 

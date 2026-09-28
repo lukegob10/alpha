@@ -2,7 +2,9 @@ import { fireEvent, render, screen } from "@testing-library/react"
 import { ActivityTraceToggle } from "../ActivityTraceToggle"
 
 vi.mock("@src/i18n/TranslationContext", () => ({
-	useAppTranslation: () => ({ t: (key: string) => key }),
+	useAppTranslation: () => ({
+		t: (key: string, options?: { duration?: string }) => (options?.duration ? `${key} ${options.duration}` : key),
+	}),
 }))
 
 describe("ActivityTraceToggle", () => {
@@ -25,12 +27,25 @@ describe("ActivityTraceToggle", () => {
 		const button = screen.getByRole("button", { name: `${label} 2` })
 		expect(button).toHaveAttribute("aria-expanded", "false")
 		expect(button).toHaveAttribute("aria-controls", "row-1 row-2")
-		if (kind === "commands") {
-			expect(button.parentElement).toHaveClass("border-b")
-		} else {
-			expect(button.parentElement).not.toHaveClass("border-b")
-		}
+		expect(button.parentElement).not.toHaveClass("border-b")
 		fireEvent.click(button)
 		expect(onToggle).toHaveBeenCalledTimes(1)
+	})
+
+	it("shows elapsed time without an action count for a completed turn", () => {
+		render(
+			<ActivityTraceToggle
+				traceId={1}
+				kind="worked"
+				count={8}
+				durationMs={12 * 60 * 1_000}
+				expanded={false}
+				controls="row-1 row-2"
+				onToggle={vi.fn()}
+			/>,
+		)
+
+		expect(screen.getByRole("button", { name: "chat:activityTrace.workedFor 12m" })).toBeInTheDocument()
+		expect(screen.queryByText("8")).not.toBeInTheDocument()
 	})
 })

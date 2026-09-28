@@ -110,9 +110,17 @@ vi.mock("../FileChangesPanel", () => ({
 			try {
 				const tool = JSON.parse(message.text) as {
 					path?: string
-					batchDiffs?: Array<{ path?: string }>
+					batchDiffs?: Array<{ path?: string; originalContent?: string; finalContent?: string }>
 				}
-				return tool.batchDiffs?.map((file) => file.path).filter(Boolean) ?? (tool.path ? [tool.path] : [])
+				return (
+					tool.batchDiffs
+						?.map((file) =>
+							file.originalContent !== undefined && file.finalContent !== undefined
+								? `${file.path}:snapshot`
+								: file.path,
+						)
+						.filter(Boolean) ?? (tool.path ? [tool.path] : [])
+				)
 			} catch {
 				return []
 			}
@@ -608,12 +616,12 @@ describe("ChatView activity trace", () => {
 		expect(view.queryByRole("button", { name: /chat:activityTrace.working/ })).not.toBeInTheDocument()
 	})
 
-	it("keeps reasoning visible while action groups survive follow-ups and reload", async () => {
+	it("folds completed turns while keeping a live follow-up independently expandable", async () => {
 		const taskId = "successive-traces"
 		const firstTurn: AlphaMessage[] = [
 			{ ts: 100, type: "say", say: "task", text: "Run the tests" },
 			{ ts: 1000, type: "say", say: "reasoning", text: "Inspecting tests" },
-			{ ts: 2000, type: "ask", ask: "command", text: "pnpm test" },
+			{ ts: 2000, type: "ask", ask: "command", text: "pnpm test", isAnswered: true },
 			{ ts: 3000, type: "say", say: "completion_result", text: "First answer" },
 		]
 		const followup: AlphaMessage[] = [
@@ -624,23 +632,23 @@ describe("ChatView activity trace", () => {
 		const publish = (clineMessages: AlphaMessage[]) => mockPostMessage({ currentTaskId: taskId, clineMessages })
 		const view = renderChatView()
 		publish(firstTurn)
-		await waitFor(() => expect(view.getByTestId("chat-message-0")).toBeVisible())
-		expect(view.getByTestId("chat-message-1")).not.toBeVisible()
+		const completedTrace = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.workedFor/ }))
+		for (const index of [0, 1]) expect(view.getByTestId(`chat-message-${index}`)).not.toBeVisible()
 		expect(view.getByTestId("chat-message-2")).toBeVisible()
 		publish([...firstTurn, ...followup])
-		await waitFor(() => expect(view.getByTestId("chat-message-4")).toBeVisible())
-		for (const index of [0, 2, 3, 4]) expect(view.getByTestId(`chat-message-${index}`)).toBeVisible()
-		for (const index of [1, 5]) expect(view.getByTestId(`chat-message-${index}`)).not.toBeVisible()
-		const toggles = view.getAllByRole("button", { name: /chat:activityTrace.runningCommands/ })
-		expect(toggles).toHaveLength(2)
-		fireEvent.click(toggles[0])
+		await waitFor(() => expect(view.getByTestId("chat-message-3")).toBeVisible())
+		for (const index of [0, 1, 5]) expect(view.getByTestId(`chat-message-${index}`)).not.toBeVisible()
+		for (const index of [2, 3, 4]) expect(view.getByTestId(`chat-message-${index}`)).toBeVisible()
+		expect(view.getAllByRole("button", { name: /chat:activityTrace.runningCommands/ })).toHaveLength(1)
+		fireEvent.click(completedTrace)
+		expect(view.getByTestId("chat-message-0")).toBeVisible()
 		expect(view.getByTestId("chat-message-1")).toBeVisible()
 		expect(view.getByTestId("chat-message-5")).not.toBeVisible()
 		view.unmount()
 		const reloaded = renderChatView()
 		publish([...firstTurn, ...followup])
-		await waitFor(() => expect(reloaded.getByTestId("chat-message-4")).toBeVisible())
-		for (const index of [1, 5]) expect(reloaded.getByTestId(`chat-message-${index}`)).not.toBeVisible()
+		await waitFor(() => expect(reloaded.getByTestId("chat-message-3")).toBeVisible())
+		for (const index of [0, 1, 5]) expect(reloaded.getByTestId(`chat-message-${index}`)).not.toBeVisible()
 	})
 
 	it("collapses an opened action group when the task completes and allows reopening it", async () => {
@@ -772,6 +780,72 @@ describe("ChatView activity trace", () => {
 })
 
 describe("ChatView file-change summaries", () => {
+	it("collapses a completed turn into one worked-for trace and leaves its summary and diff visible", async () => {
+		const view = renderChatView()
+		mockPostMessage({
+			currentTaskId: "completed-turn-trace",
+			clineMessages: [
+				{ type: "say", say: "task", ts: 100, text: "Organize the ignore files" },
+				{ type: "say", say: "text", ts: 200, text: "I’ll inspect the ignore rules." },
+				{ type: "ask", ask: "command", ts: 300, text: "git status --short", isAnswered: true },
+				{ type: "say", say: "command_output", ts: 400, text: " M .gitignore" },
+				{
+					type: "say",
+					say: "tool",
+					ts: 500,
+					text: JSON.stringify({
+						tool: "appliedDiff",
+						path: ".gitignore",
+						content: "--- old\\n+++ new",
+						originalContent: "old\\n",
+						finalContent: "new\\n",
+					}),
+				},
+				{ type: "say", say: "completion_result", ts: 700, text: "The ignore rules are organized." },
+			],
+		})
+
+		const toggle = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.workedFor/ }))
+		expect(toggle).toHaveAttribute("aria-expanded", "false")
+		for (const index of [0, 1, 2]) expect(view.getByTestId(`chat-message-${index}`)).not.toBeVisible()
+		expect(view.getByText("Organize the ignore files")).toBeVisible()
+		expect(view.getByTestId("chat-message-3")).toBeVisible()
+		expect(view.getByTestId("file-changes-panel")).toHaveTextContent(".gitignore")
+
+		fireEvent.click(toggle)
+		for (const index of [0, 1, 2]) expect(view.getByTestId(`chat-message-${index}`)).toBeVisible()
+		expect(view.getByTestId("chat-message-3")).toBeVisible()
+		expect(view.getByTestId("file-changes-panel")).toBeVisible()
+	})
+
+	it("preserves snapshots when consecutive completed file edits are grouped", async () => {
+		const view = renderChatView()
+		const edit = (ts: number, path: string): AlphaMessage => ({
+			type: "ask",
+			ask: "tool",
+			ts,
+			isAnswered: true,
+			text: JSON.stringify({
+				tool: "appliedDiff",
+				path,
+				content: `--- ${path}\n+++ ${path}\n@@ -1 +1 @@\n-old\n+new`,
+				originalContent: "old\n",
+				finalContent: "new\n",
+			}),
+		})
+		mockPostMessage({
+			currentTaskId: "grouped-diff-task",
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Edit two files" },
+				edit(2, "bootstrap.py"),
+				edit(3, "config.py"),
+				{ type: "say", say: "completion_result", ts: 4, text: "Done." },
+			],
+		})
+		await waitFor(() => expect(view.getByTestId("file-changes-panel")).toHaveTextContent("bootstrap.py:snapshot"))
+		expect(view.getByTestId("file-changes-panel")).toHaveTextContent("config.py:snapshot")
+	})
+
 	it("keeps each turn's applied edits below that turn instead of aggregating them", async () => {
 		const view = renderChatView()
 		const edit = (ts: number, path: string): AlphaMessage => ({
@@ -3872,7 +3946,7 @@ describe("ChatView - Message Queueing Tests", () => {
 	it.each(["completion_result", "followup"] as const)(
 		"shows a pending state while resuming a completed live task with a stale %s ask",
 		async (staleAsk) => {
-			const { getByRole, getByTestId, queryByRole, queryByTestId } = renderChatView()
+			const { getByTestId, queryByRole, queryByTestId } = renderChatView()
 
 			mockPostMessage({
 				currentTaskId: "task-1",
@@ -3914,11 +3988,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			await waitFor(() => {
 				expect(getByTestId("chat-textarea")).toBeInTheDocument()
 			})
-			if (staleAsk === "completion_result") {
-				await waitFor(() =>
-					expect(getByRole("button", { name: "chat:startNewTask.title" })).toBeInTheDocument(),
-				)
-			}
+			expect(queryByRole("button", { name: "chat:startNewTask.title" })).not.toBeInTheDocument()
 
 			vi.mocked(vscode.postMessage).mockClear()
 			const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
@@ -3966,17 +4036,9 @@ describe("ChatView - Message Queueing Tests", () => {
 
 			await waitFor(() => {
 				expect(queryByTestId("completed-task-resume-pending")).not.toBeInTheDocument()
-				expect(getByRole("button", { name: "chat:startNewTask.title" })).toBeInTheDocument()
+				expect(queryByRole("button", { name: "chat:startNewTask.title" })).not.toBeInTheDocument()
 				expect(input).toHaveAttribute("data-sending-disabled", "false")
 				expect(input).toHaveValue("do not submit twice new work")
-			})
-
-			vi.mocked(vscode.postMessage).mockClear()
-			fireEvent.click(getByRole("button", { name: "chat:startNewTask.title" }))
-			expect(vscode.postMessage).toHaveBeenCalledWith({
-				type: "newTask",
-				text: "do not submit twice new work",
-				images: [],
 			})
 		},
 	)
@@ -4229,8 +4291,8 @@ describe("ChatView - Message Queueing Tests", () => {
 		},
 	)
 
-	it("keeps New Chat enabled at an open completion review boundary", async () => {
-		const { getByRole, getByTestId } = renderChatView()
+	it("hides the standalone New Chat action at an open completion boundary", async () => {
+		const { queryByRole, getByTestId } = renderChatView()
 
 		mockPostMessage({
 			currentTaskId: "task-1",
@@ -4263,17 +4325,13 @@ describe("ChatView - Message Queueing Tests", () => {
 			],
 		})
 
-		const startNewTaskButton = await waitFor(() => getByRole("button", { name: "chat:startNewTask.title" }))
+		await waitFor(() => expect(getByTestId("mock-provider-selector")).not.toBeDisabled())
+		expect(queryByRole("button", { name: "chat:startNewTask.title" })).not.toBeInTheDocument()
 		expect(getByTestId("mock-provider-selector")).not.toBeDisabled()
-		vi.mocked(vscode.postMessage).mockClear()
-
-		fireEvent.click(startNewTaskButton)
-
-		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "startBlankTask" })
 	})
 
-	it("submits an existing draft when New Chat is clicked", async () => {
-		const { getByTestId, getByRole, queryByTestId, queryByText } = renderChatView()
+	it("hides the standalone New Chat action at a completed-task resume boundary", async () => {
+		const { getByTestId, queryByRole } = renderChatView()
 
 		mockPostMessage({
 			currentTaskId: "task-1",
@@ -4290,35 +4348,13 @@ describe("ChatView - Message Queueing Tests", () => {
 			],
 		})
 
-		const input = await waitFor(() => getByTestId("chat-textarea").querySelector("input"))
-		fireEvent.change(input!, { target: { value: "new task from button" } })
-		vi.mocked(vscode.postMessage).mockClear()
-
-		fireEvent.click(getByRole("button", { name: "chat:startNewTask.title" }))
-
-		expect(vscode.postMessage).toHaveBeenCalledWith({
-			type: "newTask",
-			text: "new task from button",
-			images: [],
-		})
-		expect(vscode.postMessage).not.toHaveBeenCalledWith({ type: "startBlankTask" })
-		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "askResponse" }))
-		expect(queryByTestId("alpha-home-brand")).toBeInTheDocument()
-
-		mockPostMessage({
-			currentTaskId: "task-2",
-			currentView: { type: "task", taskId: "task-2" },
-			clineMessages: [{ type: "say", say: "task", ts: 200, text: "new task from button" }],
-		})
-
-		await waitFor(() => {
-			expect(queryByTestId("alpha-home-brand")).not.toBeInTheDocument()
-			expect(queryByText("new task from button")).toBeInTheDocument()
-		})
+		await waitFor(() => expect(getByTestId("chat-textarea")).toBeInTheDocument())
+		expect(queryByRole("button", { name: "chat:startNewTask.title" })).not.toBeInTheDocument()
+		expect(getByTestId("chat-textarea").querySelector("input")).toBeInTheDocument()
 	})
 
 	it("keeps an empty new-task draft usable while stale completed-task state is in flight", async () => {
-		const { getByTestId, getByRole, queryByTestId } = renderChatView()
+		const { getByTestId, queryByTestId } = renderChatView()
 		const completedState = {
 			currentTaskId: "task-1",
 			currentView: { type: "task" as const, taskId: "task-1" },
@@ -4335,12 +4371,10 @@ describe("ChatView - Message Queueing Tests", () => {
 		}
 
 		mockPostMessage(completedState)
-		await waitFor(() => getByRole("button", { name: "chat:startNewTask.title" }))
-		vi.mocked(vscode.postMessage).mockClear()
+		await act(async () => {
+			window.postMessage({ type: "invoke", invoke: "newChat" }, "*")
+		})
 
-		fireEvent.click(getByRole("button", { name: "chat:startNewTask.title" }))
-
-		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "startBlankTask" })
 		await waitFor(() => {
 			expect(queryByTestId("alpha-home-brand")).toBeInTheDocument()
 			expect(getByTestId("chat-textarea").querySelector("input")!.getAttribute("data-sending-disabled")).toBe(

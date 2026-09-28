@@ -1,6 +1,6 @@
 import type { AlphaMessage } from "@alpha-code/types"
 
-export type ActionActivityKind = "working" | "commands" | "edits"
+export type ActionActivityKind = "working" | "commands" | "edits" | "worked"
 
 export interface ActionActivity {
 	id: number
@@ -8,10 +8,22 @@ export interface ActionActivity {
 	endIndex: number
 	kind: ActionActivityKind
 	count: number
+	durationMs?: number
 }
 
 const editTools = new Set(["editedExistingFile", "appliedDiff", "newFileCreated", "insertContent", "searchAndReplace"])
 const failureStatuses = new Set(["error", "failed", "denied", "cancelled"])
+const pendingInputAsks = new Set(["command", "followup", "tool", "use_mcp_server"])
+
+function hasPendingUserInput(messages: AlphaMessage[], startIndex: number, endIndex: number): boolean {
+	for (let index = startIndex; index <= endIndex; index++) {
+		const message = messages[index]
+		if (message.type === "say" && message.say === "async_user_input" && message.isAnswered !== true) return true
+		if (message.type === "ask" && pendingInputAsks.has(message.ask ?? "") && message.isAnswered !== true)
+			return true
+	}
+	return false
+}
 
 function toolKind(message: AlphaMessage): ActionActivityKind | undefined {
 	try {
@@ -100,5 +112,58 @@ export function getActionActivity(
 		count++
 	}
 	flush(messages.length - 1)
+	return byIndex
+}
+
+/** Groups a completed assistant turn while leaving its prompt and final answer visible. */
+export function getCompletedTurnActivity(
+	messages: AlphaMessage[],
+	initialPromptTs?: number,
+	currentTurnCompleted = false,
+): Map<number, ActionActivity> {
+	const byIndex = new Map<number, ActionActivity>()
+	let prompt =
+		initialPromptTs !== undefined && Number.isFinite(initialPromptTs) && initialPromptTs > 0
+			? { index: -1, ts: initialPromptTs }
+			: undefined
+	const addTurn = (promptStart: { index: number; ts: number }, summaryIndex: number) => {
+		const startIndex = promptStart.index + 1
+		const endIndex = summaryIndex - 1
+		if (startIndex > endIndex || hasPendingUserInput(messages, startIndex, endIndex)) return
+
+		const activity: ActionActivity = {
+			id: messages[startIndex].ts,
+			startIndex,
+			endIndex,
+			kind: "worked",
+			count: endIndex - startIndex + 1,
+			durationMs: Math.max(0, messages[summaryIndex].ts - promptStart.ts),
+		}
+		for (let row = startIndex; row <= endIndex; row++) byIndex.set(row, activity)
+	}
+
+	for (let index = 0; index < messages.length; index++) {
+		const message = messages[index]
+		if (message.type === "say" && message.say === "user_feedback") {
+			prompt = { index, ts: message.ts }
+			continue
+		}
+
+		if (message.type !== "say" || message.say !== "completion_result" || message.partial === true) continue
+
+		if (prompt) addTurn(prompt, index)
+		prompt = undefined
+	}
+
+	if (currentTurnCompleted && prompt) {
+		for (let index = messages.length - 1; index > prompt.index; index--) {
+			const message = messages[index]
+			if (message.type === "say" && message.say === "text" && message.partial !== true) {
+				addTurn(prompt, index)
+				break
+			}
+		}
+	}
+
 	return byIndex
 }

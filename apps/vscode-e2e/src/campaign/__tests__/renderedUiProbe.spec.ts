@@ -5,7 +5,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { runExtensionTests, type ExtensionTestRunOptions } from "../../runTest"
 
-for (const testFile of ["rendered-ui-probe.test", "tickets-ui.test"]) {
+for (const testFile of ["rendered-ui-probe.test", "tickets-ui.test", "file-review-ui.test"]) {
 	test(`renderer debugging for ${testFile} requires scripted execution and an owned profile`, async () => {
 		for (const change of [
 			{ rendererDebuggingPort: 9222 },

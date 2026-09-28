@@ -761,6 +761,7 @@ interface WebviewMessageBase {
 		| "openImage"
 		| "saveImage"
 		| "openFile"
+		| "openDiff"
 		| "openHtmlDocument"
 		| "readFileContent"
 		| "openMention"
@@ -1105,7 +1106,32 @@ export type WebViewMessagePayload =
 	| UpdateTodoListPayload
 	| EditQueuedMessagePayload
 	| ReorderQueuedMessagePayload
+	| OpenDiffPayload
 
+export interface OpenDiffFile {
+	path: string
+	originalContent: string
+	finalContent: string
+}
+
+export interface OpenDiffPayload {
+	title?: string
+	files: OpenDiffFile[]
+}
+
+export const openDiffPayloadSchema = z.object({
+	title: z.string().max(256).optional(),
+	files: z
+		.array(
+			z.object({
+				path: z.string().min(1).max(4_096),
+				originalContent: z.string(),
+				finalContent: z.string(),
+			}),
+		)
+		.min(1)
+		.max(128),
+})
 export interface IndexingStatus {
 	systemStatus: string
 	message?: string
@@ -1165,6 +1191,8 @@ export interface AlphaSayTool {
 	content?: string
 	// Original file content before first edit (for merged diff display in FileChangesPanel)
 	originalContent?: string
+	// Final file content captured when an edit was approved, for historical diff views
+	finalContent?: string
 	// Unified diff statistics computed by the extension
 	diffStats?: { added: number; removed: number }
 	regex?: string
@@ -1195,6 +1223,9 @@ export interface AlphaSayTool {
 		content: string
 		// Per-file unified diff statistics computed by the extension
 		diffStats?: { added: number; removed: number }
+		// Preserve captured contents when consecutive edit messages are grouped for display.
+		originalContent?: string
+		finalContent?: string
 		diffs?: Array<{
 			content: string
 			startLine?: number
@@ -1237,6 +1268,8 @@ export interface AlphaSayTool {
 export interface AlphaAskUseMcpServer {
 	serverName: string
 	type: "use_mcp_tool" | "access_mcp_resource"
+	/** Captured MCP server scope, when the caller knows it. Older approval payloads omit this field. */
+	source?: "global" | "project"
 	toolName?: string
 	annotations?: McpToolAnnotations
 	arguments?: string

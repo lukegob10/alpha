@@ -39,6 +39,8 @@ logs
 /artifacts/core-confidence/
 /artifacts/harness/
 /artifacts/reasoning-ui/
+/artifacts/file-review-ui/
+/artifacts/tickets-ui/
 /packages/evals/artifacts/campaigns/
 /artifacts/certification/core-confidence.log
 /artifacts/certification/*.json.tmp-*

@@ -105,7 +105,16 @@ export function fileChangesFromMessages(messages: AlphaMessage[] | undefined): F
 				const content = file.content ?? file.diffs?.map((d) => d.content).join("\n") ?? ""
 				if (content) {
 					candidates.push({
-						entry: { path: file.path, diff: content, diffStats: file.diffStats, commandExecutionId },
+						entry: {
+							path: file.path,
+							diff: content,
+							diffStats: file.diffStats,
+							...(typeof file.originalContent === "string"
+								? { originalContent: file.originalContent }
+								: {}),
+							...(typeof file.finalContent === "string" ? { finalContent: file.finalContent } : {}),
+							commandExecutionId,
+						},
 						source,
 					})
 				}
@@ -115,7 +124,10 @@ export function fileChangesFromMessages(messages: AlphaMessage[] | undefined): F
 
 		// Single file
 		if (typeof tool.path !== "string" || !tool.path) continue
-		const diff = tool.diff ?? tool.content ?? ""
+		// Completed edit records store the canonical unified patch in `content`.
+		// `diff` is the model's raw edit instruction for apply_diff and may not be
+		// renderable as a file diff. Keep the raw value as a compatibility fallback.
+		const diff = tool.content ?? tool.diff ?? ""
 		if (typeof diff === "string" && diff) {
 			candidates.push({
 				entry: {

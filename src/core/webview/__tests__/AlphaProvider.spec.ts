@@ -570,8 +570,8 @@ describe("AlphaProvider", () => {
 		expect(writes).toEqual(["running", "completed"])
 	})
 
-	test("shows the v3.0.1 announcement once per installation", async () => {
-		const announcementId = "september-2026-v3.0.1-lookup-efficiency"
+	test("shows the v3.1.0 announcement once per installation", async () => {
+		const announcementId = "september-2026-v3.1.0-agent-runtime"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
