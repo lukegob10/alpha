@@ -150,7 +150,17 @@ export class TaskHistoryStore {
 	 * Get history items filtered by workspace path.
 	 */
 	getByWorkspace(workspace: string): HistoryItem[] {
-		return this.getAll().filter((item) => item.workspace === workspace)
+		return this.getAll().filter((item) => this.isForWorkspace(item, workspace))
+	}
+
+	/** Compare persisted workspace identity without changing or migrating older records. */
+	isForWorkspace(item: Pick<HistoryItem, "workspace"> | undefined, workspace: string): boolean {
+		if (!item?.workspace || !workspace) return false
+		const savedPath = path.resolve(item.workspace)
+		const currentPath = path.resolve(workspace)
+		return process.platform === "win32"
+			? savedPath.toLowerCase() === currentPath.toLowerCase()
+			: savedPath === currentPath
 	}
 
 	// ────────────────────────────── Mutations ──────────────────────────────

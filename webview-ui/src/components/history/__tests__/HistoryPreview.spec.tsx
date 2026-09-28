@@ -37,13 +37,11 @@ const tasks: HistoryItem[] = Array.from({ length: 6 }, (_, index) => ({
 	tokensIn: 100,
 	tokensOut: 50,
 	totalCost: 0.01,
-	workspace: index === 5 ? "/other/project" : "/test/workspace",
+	workspace: "/test/workspace",
 }))
 
-const setHistory = (taskHistory = tasks) => {
-	vi.mocked(useExtensionState).mockReturnValue({ taskHistory, cwd: "/test/workspace" } as ReturnType<
-		typeof useExtensionState
-	>)
+const setHistory = (taskHistory = tasks, cwd = "/test/workspace") => {
+	vi.mocked(useExtensionState).mockReturnValue({ taskHistory, cwd } as ReturnType<typeof useExtensionState>)
 }
 const manage = () => fireEvent.click(screen.getByRole("button", { name: "history:manageChats" }))
 const search = (value: string) => fireEvent.change(screen.getByTestId("history-search-input"), { target: { value } })
@@ -144,14 +142,26 @@ describe("inline Chats history", () => {
 		expect(screen.getByTestId("task-item-task-6")).toBeInTheDocument()
 	})
 
-	it("filters to the current workspace and can restore all chats", () => {
+	it("labels history as current project without an all-project filter", () => {
 		render(<HistoryPreview expanded />)
-		const filter = screen.getByRole("combobox", { name: "history:filterChats" })
-		fireEvent.change(filter, { target: { value: "current" } })
-		expect(screen.queryByTestId("task-item-task-6")).not.toBeInTheDocument()
+		expect(screen.getByText("history:currentWorkspace")).toBeInTheDocument()
+		expect(screen.queryByRole("combobox", { name: "history:filterChats" })).not.toBeInTheDocument()
 		expect(screen.getByTestId("task-item-task-1")).toBeInTheDocument()
-		fireEvent.change(filter, { target: { value: "all" } })
-		expect(screen.getByTestId("task-item-task-6")).toBeInTheDocument()
+	})
+
+	it("resets search and selection when the project changes", () => {
+		const { rerender } = render(<HistoryPreview expanded />)
+		manage()
+		fireEvent.click(screen.getByTestId("toggle-selection-mode-button"))
+		fireEvent.click(screen.getByTestId("task-item-task-1"))
+		search("authentication")
+		const otherProjectTask = { ...tasks[0], id: "other-project-task", workspace: "/other/project" }
+		setHistory([otherProjectTask], "/other/project")
+		rerender(<HistoryPreview expanded focusRequest={1} />)
+		expect(screen.getByTestId("history-search-input")).toHaveValue("")
+		expect(screen.getByTestId("task-item-other-project-task")).toBeInTheDocument()
+		expect(screen.queryByTestId("task-item-task-1")).not.toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "history:deleteSelected" })).toBeDisabled()
 	})
 
 	it("honors oldest sorting for the grouped inline list", () => {
@@ -221,10 +231,8 @@ describe("inline Chats history", () => {
 		render(<HistoryPreview expanded />)
 		manage()
 		fireEvent.click(screen.getByTestId("toggle-selection-mode-button"))
-		fireEvent.click(screen.getByTestId("task-item-task-6"))
-		fireEvent.change(screen.getByRole("combobox", { name: "history:filterChats" }), {
-			target: { value: "current" },
-		})
+		fireEvent.click(screen.getByTestId("task-item-task-2"))
+		search("authentication")
 		expect(screen.getByRole("button", { name: "history:deleteSelected" })).toBeDisabled()
 	})
 

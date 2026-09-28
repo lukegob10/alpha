@@ -200,6 +200,11 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 		await check(
 			"!!d.querySelector('[data-testid=history-view-all]') && d.querySelectorAll('[data-testid^=task-item-history-visual-]').length === 3",
 		)
+		assert.equal(
+			await evaluate("!!d.querySelector('[data-testid=task-item-history-foreign-project]')"),
+			false,
+			"Another project's task must not appear in Chats preview",
+		)
 		assert.equal(await evaluate("!!d.querySelector('[data-testid=history-search-input]')"), false)
 		const smallHeight = await evaluate<number>(
 			"d.querySelector('[data-testid=history-view-all]').closest('section').getBoundingClientRect().height",
@@ -208,6 +213,11 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 		await capture("chats-small-preview")
 		await activate("history-view-all")
 		await check("!!d.querySelector('[data-testid=history-search-input]')")
+		assert.equal(
+			await evaluate("!!d.querySelector('[data-testid=task-item-history-foreign-project]')"),
+			false,
+			"Another project's task must not appear in expanded Chats",
+		)
 		const expandedSmallHeight = await evaluate<number>(
 			"d.querySelector('[data-testid=history-search-input]').closest('section').getBoundingClientRect().height",
 		)

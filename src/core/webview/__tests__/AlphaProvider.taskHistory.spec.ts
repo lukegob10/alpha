@@ -362,6 +362,7 @@ describe("AlphaProvider Task History Synchronization", () => {
 		} as unknown as vscode.WebviewView
 
 		provider = new AlphaProvider(mockContext, mockOutputChannel, "sidebar", new ContextProxy(mockContext))
+		Object.assign(provider, { currentWorkspacePath: "/test/workspace" })
 
 		// Wait for the async TaskHistoryStore initialization to complete
 		// (fire-and-forget from the constructor; microtasks need to flush)
@@ -391,6 +392,7 @@ describe("AlphaProvider Task History Synchronization", () => {
 		tokensIn: 100,
 		tokensOut: 50,
 		totalCost: 0.01,
+		workspace: "/test/workspace",
 		...overrides,
 	})
 
@@ -512,6 +514,34 @@ describe("AlphaProvider Task History Synchronization", () => {
 			expect(lastCall[0].type).toBe("taskHistoryItemUpdated")
 			expect(lastCall[0].taskHistoryItem).toBeDefined()
 			expect(lastCall[0].taskHistoryItem.id).toBe("task-1")
+		})
+
+		it("does not send another project's incremental history item", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			provider.isViewLaunched = true
+			mockPostMessage.mockClear()
+
+			await provider.updateTaskHistory(
+				createHistoryItem({ id: "other-project", task: "Other task", workspace: "/other/project" }),
+			)
+
+			expect(findCallsByType(mockPostMessage.mock.calls, "taskHistoryItemUpdated")).toHaveLength(0)
+			expect(findCallsByType(mockPostMessage.mock.calls, "taskHistoryUpdated")).toHaveLength(0)
+		})
+
+		it("removes a projected item when its saved project changes", async () => {
+			await provider.resolveWebviewView(mockWebviewView)
+			provider.isViewLaunched = true
+			const item = createHistoryItem({ id: "moved-task", task: "Moved task" })
+			await provider.updateTaskHistory(item)
+			mockPostMessage.mockClear()
+
+			await provider.updateTaskHistory({ ...item, workspace: "/other/project" })
+
+			expect(findCallsByType(mockPostMessage.mock.calls, "taskHistoryItemUpdated")).toHaveLength(0)
+			const updates = findCallsByType(mockPostMessage.mock.calls, "taskHistoryUpdated")
+			expect(updates).toHaveLength(1)
+			expect(updates[0][0].taskHistory).toEqual([])
 		})
 
 		it("does not broadcast when broadcast option is false", async () => {
@@ -706,6 +736,8 @@ describe("AlphaProvider Task History Synchronization", () => {
 				createHistoryItem({ id: "valid", ts: now, task: "Valid task" }),
 				createHistoryItem({ id: "no-ts", ts: 0, task: "No timestamp", number: 2 }), // Invalid: ts is 0/falsy
 				createHistoryItem({ id: "no-task", ts: now, task: "", number: 3 }), // Invalid: empty task
+				createHistoryItem({ id: "foreign", ts: now, task: "Foreign task", workspace: "/other/project" }),
+				createHistoryItem({ id: "unknown", ts: now, task: "Unknown project", workspace: undefined }),
 			]
 
 			// Clear previous calls
@@ -746,9 +778,10 @@ describe("AlphaProvider Task History Synchronization", () => {
 		})
 	})
 
-	describe("task history includes all workspaces", () => {
-		it("getStateToPostToWebview returns tasks from all workspaces", async () => {
+	describe("task history is scoped to the current project", () => {
+		it("getStateToPostToWebview sends only the current project's tasks", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
+			Object.assign(provider, { currentWorkspacePath: "/path/to/workspace1" })
 
 			const now = Date.now()
 
@@ -782,14 +815,17 @@ describe("AlphaProvider Task History Synchronization", () => {
 				}),
 				{ broadcast: false },
 			)
+			await provider.updateTaskHistory(
+				createHistoryItem({ id: "unknown-task", ts: now - 3000, task: "Legacy task", workspace: undefined }),
+				{ broadcast: false },
+			)
 
 			const state = await provider.getStateToPostToWebview()
 
-			// All tasks from all workspaces should be included
-			expect(state.taskHistory.length).toBe(3)
-			expect(state.taskHistory.some((item: HistoryItem) => item.workspace === "/path/to/workspace1")).toBe(true)
-			expect(state.taskHistory.some((item: HistoryItem) => item.workspace === "/path/to/workspace2")).toBe(true)
-			expect(state.taskHistory.some((item: HistoryItem) => item.workspace === "/different/workspace")).toBe(true)
+			expect(state.taskHistory.map((item: HistoryItem) => item.id)).toEqual(["ws1-task"])
+			Object.assign(provider, { currentWorkspacePath: "/path/to/workspace2" })
+			const secondProjectState = await provider.getStateToPostToWebview()
+			expect(secondProjectState.taskHistory.map((item: HistoryItem) => item.id)).toEqual(["ws2-task"])
 		})
 	})
 
