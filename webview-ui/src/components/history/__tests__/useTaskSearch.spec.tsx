@@ -47,7 +47,7 @@ const mockTaskHistory: HistoryItem[] = [
 		tokensIn: 150,
 		tokensOut: 75,
 		totalCost: 0.05,
-		workspace: "/workspace/project2",
+		workspace: "/workspace/project1",
 	},
 ]
 
@@ -60,38 +60,24 @@ describe("useTaskSearch", () => {
 		} as any)
 	})
 
-	it("returns all tasks by default", () => {
+	it("returns the projected project tasks by default", () => {
 		const { result } = renderHook(() => useTaskSearch())
-
-		expect(result.current.tasks).toHaveLength(2) // Only tasks from current workspace
-		expect(result.current.tasks[0].id).toBe("task-2") // Newest first
-		expect(result.current.tasks[1].id).toBe("task-1")
-	})
-
-	it("filters tasks by current workspace by default", () => {
-		const { result } = renderHook(() => useTaskSearch())
-
-		expect(result.current.tasks).toHaveLength(2)
-		expect(result.current.tasks.every((task) => task.workspace === "/workspace/project1")).toBe(true)
-	})
-
-	it("shows all workspaces when showAllWorkspaces is true", () => {
-		const { result } = renderHook(() => useTaskSearch())
-
-		act(() => {
-			result.current.setShowAllWorkspaces(true)
-		})
 
 		expect(result.current.tasks).toHaveLength(3)
-		expect(result.current.showAllWorkspaces).toBe(true)
+		expect(result.current.tasks[0].id).toBe("task-2") // Newest first
+		expect(result.current.tasks[1].id).toBe("task-1")
+		expect(result.current.tasks[2].id).toBe("task-3")
+	})
+
+	it("keeps the project history supplied by the extension", () => {
+		const { result } = renderHook(() => useTaskSearch())
+
+		expect(result.current.tasks).toHaveLength(3)
+		expect(result.current.tasks.every((task) => task.workspace === "/workspace/project1")).toBe(true)
 	})
 
 	it("sorts by newest by default", () => {
 		const { result } = renderHook(() => useTaskSearch())
-
-		act(() => {
-			result.current.setShowAllWorkspaces(true)
-		})
 
 		expect(result.current.sortOption).toBe("newest")
 		expect(result.current.tasks[0].id).toBe("task-2") // Feb 17
@@ -103,7 +89,6 @@ describe("useTaskSearch", () => {
 		const { result } = renderHook(() => useTaskSearch())
 
 		act(() => {
-			result.current.setShowAllWorkspaces(true)
 			result.current.setSortOption("oldest")
 		})
 
@@ -116,7 +101,6 @@ describe("useTaskSearch", () => {
 		const { result } = renderHook(() => useTaskSearch())
 
 		act(() => {
-			result.current.setShowAllWorkspaces(true)
 			result.current.setSortOption("mostExpensive")
 		})
 
@@ -129,7 +113,6 @@ describe("useTaskSearch", () => {
 		const { result } = renderHook(() => useTaskSearch())
 
 		act(() => {
-			result.current.setShowAllWorkspaces(true)
 			result.current.setSortOption("mostTokens")
 		})
 
@@ -145,7 +128,6 @@ describe("useTaskSearch", () => {
 		const { result } = renderHook(() => useTaskSearch())
 
 		act(() => {
-			result.current.setShowAllWorkspaces(true)
 			result.current.setSearchQuery("React")
 		})
 
@@ -251,10 +233,6 @@ describe("useTaskSearch", () => {
 
 		const { result } = renderHook(() => useTaskSearch())
 
-		act(() => {
-			result.current.setShowAllWorkspaces(true)
-		})
-
 		// Should only include tasks with both ts and task content
 		expect(result.current.tasks).toHaveLength(3)
 		expect(result.current.tasks.every((task) => task.ts && task.task)).toBe(true)
@@ -264,7 +242,6 @@ describe("useTaskSearch", () => {
 		const { result } = renderHook(() => useTaskSearch())
 
 		act(() => {
-			result.current.setShowAllWorkspaces(true)
 			result.current.setSearchQuery("nonexistent")
 		})
 
@@ -275,7 +252,6 @@ describe("useTaskSearch", () => {
 		const { result } = renderHook(() => useTaskSearch())
 
 		act(() => {
-			result.current.setShowAllWorkspaces(true)
 			result.current.setSearchQuery("test")
 			result.current.setSortOption("mostRelevant")
 		})
