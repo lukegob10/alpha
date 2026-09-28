@@ -1,6 +1,9 @@
 // npx vitest run src/integrations/terminal/__tests__/TerminalRegistry.spec.ts
 
 import * as vscode from "vscode"
+import * as path from "node:path"
+import { resolveRipgrepBinary } from "../../../services/ripgrep"
+import { ExecaTerminal } from "../ExecaTerminal"
 import { Terminal } from "../Terminal"
 import { TerminalRegistry } from "../TerminalRegistry"
 
@@ -9,11 +12,14 @@ const PAGER = process.platform === "win32" ? "" : "cat"
 vi.mock("execa", () => ({
 	execa: vi.fn(),
 }))
+vi.mock("../../../services/ripgrep", () => ({ resolveRipgrepBinary: vi.fn() }))
 
 describe("TerminalRegistry", () => {
 	let mockCreateTerminal: any
 
 	beforeEach(() => {
+		vi.mocked(resolveRipgrepBinary).mockReset()
+		vi.mocked(resolveRipgrepBinary).mockResolvedValue(undefined)
 		mockCreateTerminal = vi.spyOn(vscode.window, "createTerminal").mockImplementation(
 			(...args: any[]) =>
 				({
@@ -122,5 +128,71 @@ describe("TerminalRegistry", () => {
 				Terminal.setTerminalZshP10k(false)
 			}
 		})
+	})
+
+	it("makes bundled rg available to a new Alpha terminal when it is absent from PATH", async () => {
+		const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") ?? "PATH"
+		const originalPath = process.env[pathKey]
+		const basePath = process.platform === "win32" ? "C:\\Windows\\System32" : "/usr/bin"
+		const rgPath = path.join(process.platform === "win32" ? "C:\\alpha-rg" : "/alpha-rg", "rg.exe")
+		process.env[pathKey] = basePath
+		vi.mocked(resolveRipgrepBinary).mockResolvedValue({
+			path: rgPath,
+			source: "bundled",
+			reason: "using extension-bundled @vscode/ripgrep",
+		})
+
+		try {
+			await TerminalRegistry.getOrCreateTerminal("/test/rg-path", "rg-path")
+			const options = mockCreateTerminal.mock.lastCall?.[0] as vscode.TerminalOptions
+			expect(options.env?.[pathKey]).toBe(`${path.dirname(rgPath)}${path.delimiter}${basePath}`)
+		} finally {
+			if (originalPath === undefined) delete process.env[pathKey]
+			else process.env[pathKey] = originalPath
+		}
+	})
+
+	it("passes the bundled rg path to a new Execa terminal", async () => {
+		const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") ?? "PATH"
+		const originalPath = process.env[pathKey]
+		const basePath = process.platform === "win32" ? "C:\\Windows\\System32" : "/usr/bin"
+		const rgPath = path.join(process.platform === "win32" ? "C:\\alpha-rg" : "/alpha-rg", "rg.exe")
+		process.env[pathKey] = basePath
+		vi.mocked(resolveRipgrepBinary).mockResolvedValue({
+			path: rgPath,
+			source: "bundled",
+			reason: "using extension-bundled @vscode/ripgrep",
+		})
+
+		try {
+			const terminal = await TerminalRegistry.getOrCreateTerminal("/test/rg-execa-path", "rg-execa-path", "execa")
+			expect(terminal).toBeInstanceOf(ExecaTerminal)
+			expect(terminal.commandEnv?.[pathKey]).toBe(`${path.dirname(rgPath)}${path.delimiter}${basePath}`)
+		} finally {
+			if (originalPath === undefined) delete process.env[pathKey]
+			else process.env[pathKey] = originalPath
+		}
+	})
+
+	it("does not resolve rg again when it reuses an Alpha terminal", async () => {
+		const first = await TerminalRegistry.getOrCreateTerminal("/test/reused-rg-path", "reused-rg-path")
+		const second = await TerminalRegistry.getOrCreateTerminal("/test/reused-rg-path", "reused-rg-path")
+
+		expect(second).toBe(first)
+		expect(resolveRipgrepBinary).toHaveBeenCalledOnce()
+		expect(mockCreateTerminal).toHaveBeenCalledOnce()
+	})
+
+	it("does not create duplicate terminals while rg resolution is pending", async () => {
+		let releaseResolution!: (value: undefined) => void
+		const resolution = new Promise<undefined>((resolve) => (releaseResolution = resolve))
+		vi.mocked(resolveRipgrepBinary).mockReturnValue(resolution)
+
+		const first = TerminalRegistry.getOrCreateTerminal("/test/concurrent-rg-path", "concurrent-rg-path")
+		const second = TerminalRegistry.getOrCreateTerminal("/test/concurrent-rg-path", "concurrent-rg-path")
+		releaseResolution(undefined)
+
+		expect(await second).toBe(await first)
+		expect(mockCreateTerminal).toHaveBeenCalledOnce()
 	})
 })

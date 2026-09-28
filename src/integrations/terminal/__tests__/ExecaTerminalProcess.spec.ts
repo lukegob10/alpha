@@ -25,6 +25,7 @@ vitest.mock("ps-tree", () => ({
 }))
 
 import { execa } from "execa"
+import * as path from "node:path"
 import psTree from "ps-tree"
 import { ExecaTerminalProcess } from "../ExecaTerminalProcess"
 import { BaseTerminal } from "../BaseTerminal"
@@ -74,6 +75,19 @@ describe("ExecaTerminalProcess", () => {
 	})
 
 	describe("UTF-8 encoding fix", () => {
+		it("makes bundled rg available to the Execa shell when it is absent from PATH", async () => {
+			const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === "PATH") ?? "PATH"
+			const basePath = process.platform === "win32" ? "C:\\Windows\\System32" : "/usr/bin"
+			const rgPath = path.join(process.platform === "win32" ? "C:\\alpha-rg" : "/alpha-rg", "rg.exe")
+			process.env[pathKey] = basePath
+			mockTerminal.commandEnv = { [pathKey]: `${path.dirname(rgPath)}${path.delimiter}${basePath}` }
+
+			await terminalProcess.run("rg --version")
+
+			const options = vitest.mocked(execa).mock.lastCall?.[0] as unknown as { env: Record<string, string> }
+			expect(options.env[pathKey]).toBe(`${path.dirname(rgPath)}${path.delimiter}${basePath}`)
+		})
+
 		it("should set LANG and LC_ALL to en_US.UTF-8", async () => {
 			await terminalProcess.run("echo test")
 			const execaMock = vitest.mocked(execa)

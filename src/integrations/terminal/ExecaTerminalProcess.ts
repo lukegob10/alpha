@@ -53,6 +53,7 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				stdin: "ignore",
 				env: {
 					...process.env,
+					...this.terminal.commandEnv,
 					// Ensure UTF-8 encoding for Ruby, CocoaPods, etc.
 					LANG: "en_US.UTF-8",
 					LC_ALL: "en_US.UTF-8",
