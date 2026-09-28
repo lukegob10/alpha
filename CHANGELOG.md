@@ -15,6 +15,14 @@
 - Run automatic context compaction at safe turn boundaries when the configured threshold is met, while preserving fitting history if summarization fails and keeping follow-up turns resumable.
 - Remove the redundant end-of-message **New Chat** bar; start a chat from the existing top-level action.
 
+### 3.1.0 refresh
+
+- Route Codex-style `apply_patch` invocations through Alpha's native patch tool on Windows, and report the active shell accurately to the agent.
+- Keep browser tools available for explicit browser workflows on VS Code 1.122.1, including prompts that also restrict unrelated file edits.
+- Require an explicit user request before creating a separate Alpha task, and preserve matched tool results and clean completion records across multi-step turns.
+- Validate checkpoint restore targets before cleanup and add exact-host task-navigation, checkpoint, and live-task reproduction coverage.
+- To replace an earlier 3.1.0 VSIX, restart VS Code and reinstall this release's VSIX through **Extensions: Install from VSIX**.
+
 ## 3.0.4
 
 ### Patch Changes

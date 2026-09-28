@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import * as vscode from "vscode"
 import { userInfo } from "os"
-import { getShell } from "../shell"
+import { getCommandShell, getShell } from "../shell"
 
 // Mock vscode module
 vi.mock("vscode", () => ({
+	env: { shell: undefined },
 	workspace: {
 		getConfiguration: vi.fn(),
 	},
@@ -50,6 +51,7 @@ describe("Shell Detection Tests", () => {
 		originalPlatform = process.platform
 		originalEnv = { ...process.env }
 		originalGetConfig = vscode.workspace.getConfiguration
+		Object.assign(vscode.env, { shell: undefined })
 
 		// Clear environment variables for a clean test
 		delete process.env.SHELL
@@ -73,6 +75,21 @@ describe("Shell Detection Tests", () => {
 	describe("Windows Shell Detection", () => {
 		beforeEach(() => {
 			Object.defineProperty(process, "platform", { value: "win32" })
+		})
+
+		it("reports the command backend shell rather than the VS Code profile for Execa", () => {
+			mockVsCodeConfig("windows", "PowerShell", {
+				PowerShell: { path: "C:\\Program Files\\PowerShell\\7\\pwsh.exe" },
+			})
+			process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe"
+
+			expect(getCommandShell(true)).toBe("C:\\Windows\\System32\\cmd.exe")
+			expect(getCommandShell(true, "C:\\Program Files\\PowerShell\\7\\pwsh.exe")).toBe(
+				"C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+			)
+			expect(getCommandShell(false)).toBe("C:\\Program Files\\PowerShell\\7\\pwsh.exe")
+			Object.assign(vscode.env, { shell: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" })
+			expect(getCommandShell(false)).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
 		})
 
 		it("uses explicit PowerShell 7 path from VS Code config (profile path)", () => {
@@ -201,6 +218,15 @@ describe("Shell Detection Tests", () => {
 	describe("macOS Shell Detection", () => {
 		beforeEach(() => {
 			Object.defineProperty(process, "platform", { value: "darwin" })
+		})
+
+		it("reports /bin/sh for Execa even when the VS Code profile uses another shell", () => {
+			mockVsCodeConfig("osx", "MyCustomShell", {
+				MyCustomShell: { path: "/usr/local/bin/fish" },
+			})
+
+			expect(getCommandShell(true)).toBe("/bin/sh")
+			expect(getCommandShell(false)).toBe("/usr/local/bin/fish")
 		})
 
 		it("uses VS Code profile path if available", () => {

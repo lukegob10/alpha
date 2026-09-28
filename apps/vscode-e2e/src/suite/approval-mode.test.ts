@@ -236,6 +236,28 @@ suite("Ask / Auto / Full Access in the extension host", function () {
 		assert.deepEqual(patchPayload.diffStats, { added: 1, removed: 0 })
 	})
 
+	test("Auto routes a standalone apply_patch heredoc through the patch tool", async () => {
+		const relativeFile = `src/approval-intercepted-${Date.now()}.txt`
+		const patch = `*** Begin Patch\n*** Add File: ${relativeFile}\n+intercepted\n*** End Patch`
+		const { asks, workspace, commandEvidence } = await runScriptedApproval({
+			approvalMode: "auto",
+			calls: [{ name: "exec_command", arguments: { cmd: `apply_patch <<'PATCH'\n${patch}\nPATCH` } }],
+		})
+
+		assert.deepEqual(
+			asks.filter((ask) => ask !== "completion_result"),
+			[],
+		)
+		assert.equal(
+			(await fs.readFile(path.join(workspace, relativeFile), "utf8")).replaceAll("\r\n", "\n"),
+			"intercepted\n",
+		)
+		assert.equal(
+			commandEvidence.some((evidence) => evidence.toolCallId === "approval-mode-0"),
+			false,
+		)
+	})
+
 	test("Auto runs a workspace Git command without a saved prefix", async () => {
 		const { asks, commandEvidence } = await runScriptedApproval({
 			approvalMode: "auto",
@@ -402,7 +424,7 @@ suite("Ask / Auto / Full Access in the extension host", function () {
 							expected_output: null,
 						},
 					},
-					{ name: "wait_agent", arguments: { timeout_ms: 60_000 } },
+					{ name: "wait_agent", arguments: { timeout_ms: 60_000, until_terminal: true } },
 				],
 			})
 			assert.equal(asks.includes("tool"), false, `${approvalMode} must not open a spawn dialog`)

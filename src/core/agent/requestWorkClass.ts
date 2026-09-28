@@ -30,7 +30,27 @@ const USER_MESSAGE_RE = /<user_message>\s*([\s\S]*?)\s*<\/user_message>/i
 const ENVIRONMENT_DETAILS_RE = /<environment_details>[\s\S]*?<\/environment_details>/gi
 
 const WORKFLOW_INTENT_RE =
-	/\b(?:spawn(?:_agent)?|delegate(?:\s+to)?\s+(?:a\s+)?(?:sub)?agent|create(?:\s+a)?\s+ticket|file(?:\s+a)?\s+ticket|update(?:\s+a)?\s+ticket|delete(?:\s+a)?\s+ticket|open(?:\s+the)?\s+browser|screenshot(?:\s+the)?\s+page|navigate(?:\s+the)?\s+page|playwright|update[_ ](?:todo[_ ]list|plan)|work[- ]plan)\b/i
+	/\b(?:spawn(?:_agent)?|delegate(?:\s+to)?\s+(?:a\s+)?(?:sub)?agent|create(?:\s+a)?\s+ticket|file(?:\s+a)?\s+ticket|update(?:\s+a)?\s+ticket|delete(?:\s+a)?\s+ticket|playwright|update[_ ](?:todo[_ ]list|plan)|work[- ]plan)\b/i
+
+const BROWSER_INTERACTION_ACTION_RE =
+	/\b(?:use|drive|control|interact|open|navigate|inspect|read|click|type|select|filter|reload|screenshot|scroll|submit|add|test|exercise|verify|check|run|try|fill|enter|search|visit|browse|capture|show|display|render)\b/i
+const BROWSER_REFERENCE_RE = /\b(?:browser|web(?:\s+(?:page|site))?|website|site|page|url|link)\b/i
+const BROWSER_INFORMATION_QUESTION_RE =
+	/^(?:how\s+(?:do|can|would|should)\s+(?:i|we|you)\b|(?:can|could)\s+you\s+(?:tell|show|explain)\b|(?:what|which)\s+(?:(?:integrated\s+)?browser(?:\s+(?:tools?|actions?|capabilities))?|tools?)\b|(?:can|could|do|does|is|are)\s+(?!you\b|we\b)[\w'-]+\b[\s\S]{0,120}\b(?:browser|web(?:\s+(?:page|site))?|website|site|page|url|link)\b)/i
+const BROWSER_ACTION_REQUEST_RE =
+	/(?:^|[.!?;\n]\s*)(?:(?:please|then|also|now|let's)\s+)*(?:(?:can|could|would)\s+you\s+|(?:i|we)\s+(?:want|need)\s+(?:you\s+to|to)\s+|(?:i|we)(?:'d| would)\s+like\s+to\s+)?(?:drive|control|interact|open|navigate|inspect|read|click|type|select|filter|reload|screenshot|scroll|submit|add|test|exercise|verify|check|run|try|fill|enter|search|visit|browse|capture|show|display|render)\b/i
+const BROWSER_USE_REQUEST_RE =
+	/(?:^|[.!?;\n]\s*)(?:(?:please|then|also|now|let's)\s+)*(?:(?:can|could|would)\s+you\s+|(?:i|we)\s+(?:want|need)\s+(?:you\s+to|to)\s+|(?:i|we)(?:'d| would)\s+like\s+to\s+)?use\b[\s\S]{0,100}\b(?:browser|web(?:\s+(?:page|site))?|website|site|page|url|link)\b/i
+
+function hasBrowserInteractionIntent(text: string): boolean {
+	return (
+		BROWSER_INTERACTION_ACTION_RE.test(text) &&
+		BROWSER_REFERENCE_RE.test(text) &&
+		(!BROWSER_INFORMATION_QUESTION_RE.test(text) ||
+			BROWSER_ACTION_REQUEST_RE.test(text) ||
+			BROWSER_USE_REQUEST_RE.test(text))
+	)
+}
 
 const CROSS_TASK_ACTION_RE =
 	/\b(?:launch|start|create|open|spin\s+up|send|message|steer|stop|cancel|wait\s+for|check\s+on|list)\b(?:\s+[\w-]+){0,5}\s+(?:threads?|chats?|tasks?|sub-?agents?|agents?)\b/i
@@ -90,6 +110,7 @@ export function classifyRequestWorkClass(
 
 	if (
 		WORKFLOW_INTENT_RE.test(text) ||
+		hasBrowserInteractionIntent(text) ||
 		(CROSS_TASK_ACTION_RE.test(text) && !HOW_TO_QUESTION_RE.test(text)) ||
 		(includeSkill && /\b(?:create|author)\s+(?:a\s+)?skill\b/i.test(text))
 	) {

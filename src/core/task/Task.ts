@@ -188,12 +188,14 @@ import { DiffViewProvider } from "../../integrations/editor/DiffViewProvider"
 import { findToolName } from "../../integrations/misc/export-markdown"
 import { AlphaTerminalProcess } from "../../integrations/terminal/types"
 import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
+import { BaseTerminal } from "../../integrations/terminal/BaseTerminal"
 import { OutputInterceptor } from "../../integrations/terminal/OutputInterceptor"
 
 // utils
 import { calculateApiCostAnthropic, calculateApiCostOpenAI } from "../../shared/cost"
 import { ReasoningSummary } from "./ReasoningSummary"
 import { getWorkspacePath } from "../../utils/path"
+import { getCommandShell } from "../../utils/shell"
 import { sanitizeToolUseId } from "../../utils/tool-id"
 import { getTaskDirectoryPath } from "../../utils/storage"
 
@@ -9132,6 +9134,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async performAbortTask(): Promise<void> {
 		// Will stop any autonomously running promises.
 
+		const wasAlreadyCompleted = this.didComplete
 		this.abort = true
 		this.activeToolApprovalRequest = undefined
 		this.activeToolApprovalDecision = undefined
@@ -9166,7 +9169,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Force final token usage update before abort event
 		this.emitFinalTokenUsageUpdate()
 
-		this.emit(AlphaCodeEventName.TaskAborted)
+		// AlphaProvider persists this event as an interruption; only live tasks may emit it.
+		if (!wasAlreadyCompleted) {
+			this.emit(AlphaCodeEventName.TaskAborted)
+		}
 
 		try {
 			this.dispose() // Call the centralized dispose method
@@ -9181,8 +9187,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		} catch (error) {
 			console.error(`Error saving messages during abort for task ${this.taskId}.${this.instanceId}:`, error)
 		}
-		await this.appendAgentTurnEvent({ type: "cancelled", reason: this.abortReason ?? "user_cancelled" })
-		await this.flushAgentTurnEvents()
+		if (!wasAlreadyCompleted) {
+			await this.appendAgentTurnEvent({ type: "cancelled", reason: this.abortReason ?? "user_cancelled" })
+			await this.flushAgentTurnEvents()
+		}
 		try {
 			await this.flushApiConversationHistoryPersistence()
 		} catch (error) {
@@ -9407,6 +9415,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 		let recoveryExplanationPublished = false
 		let activeStep: TaskTurnStep | undefined
+		let acceptedToolCallCount = 0
+		let acceptedToolCallIds = new Set<string>()
 
 		const host: AgentTurnStagedHost<TaskTurnInput, TaskTurnStep> = {
 			shouldAbort: () => this.abort,
@@ -9440,6 +9450,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (!transaction) return sample.step?.result
 				try {
 					const result = await transaction.commitResponse()
+					if (result.status === "completed") {
+						const lifecycle = this.getCanonicalLifecycleSnapshot()
+						if (lifecycle && lifecycle.runId === this.agentRunId && lifecycle.turnId === this.agentTurnId) {
+							acceptedToolCallIds = new Set(lifecycle.acceptedToolCallIds)
+						} else {
+							for (const call of sample.response.toolCalls) {
+								const callId = sanitizeToolUseId(call.id)
+								if (callId) acceptedToolCallIds.add(callId)
+							}
+						}
+						acceptedToolCallCount = acceptedToolCallIds.size
+					}
 					if (sample.step) sample.step.result = { ...result, transaction }
 					return result
 				} catch (error) {
@@ -9590,18 +9612,24 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 			const wasAgentTurnEngineActive = this.isAgentTurnEngineActive
 			this.isAgentTurnEngineActive = true
+			acceptedToolCallCount = 0
+			acceptedToolCallIds = new Set()
 			try {
 				await this.beginCanonicalLifecycleTurn()
+				const lifecycle = this.getCanonicalLifecycleSnapshot()
+				if (lifecycle && lifecycle.runId === this.agentRunId && lifecycle.turnId === this.agentTurnId) {
+					acceptedToolCallIds = new Set(lifecycle.acceptedToolCallIds)
+					acceptedToolCallCount = acceptedToolCallIds.size
+				}
 				const outcome = await engine.run(input)
 				if (shouldCompactAfterTurn(outcome) && !this.abort) {
 					await this.maybeCompactAfterTurn()
 				}
-				const toolCallCount = "response" in outcome && outcome.response ? outcome.response.toolCalls.length : 0
 				if (outcome.status === "completed" || outcome.status === "aborted") {
 					await this.appendAgentTurnEvent({
 						type: "turn_completed",
 						status: outcome.status,
-						toolCallCount,
+						toolCallCount: acceptedToolCallCount,
 						retryCount: 0,
 					})
 				} else if (outcome.status === "failed" || outcome.status === "exhausted") {
@@ -9625,7 +9653,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			status: AgentTurnOutcome["status"],
 			reason?: string,
 			error?: unknown,
-			toolCallCount = 0,
+			toolCallCount = acceptedToolCallCount,
 		): Promise<void> => {
 			if (status === "completed" || status === "aborted") {
 				await this.appendAgentTurnEvent({
@@ -9787,8 +9815,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const terminalStatus = this.abort ? "aborted" : outcome.status
 				const terminalReason = "reason" in outcome ? outcome.reason : undefined
 				const terminalError = "error" in outcome ? outcome.error : undefined
-				const terminalToolCallCount =
-					"response" in outcome && outcome.response ? outcome.response.toolCalls.length : 0
 				if (
 					this.taskKind === "primary" &&
 					!this.abort &&
@@ -9809,7 +9835,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					this.abort ? "aborted" : this.didComplete ? "completed" : terminalStatus,
 					terminalReason,
 					terminalError,
-					terminalToolCallCount,
+					acceptedToolCallCount,
 				)
 				return
 			}
@@ -9878,7 +9904,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					this.abort ? "aborted" : "completed",
 					undefined,
 					undefined,
-					outcome.response.toolCalls.length,
+					acceptedToolCallCount,
 				)
 				return
 			}
@@ -9927,12 +9953,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				try {
 					if (await this.returnCompletionToLegacyParent(outcome.response.text)) {
-						await appendTaskTerminalEvent(
-							"completed",
-							undefined,
-							undefined,
-							outcome.response.toolCalls.length,
-						)
+						await appendTaskTerminalEvent("completed", undefined, undefined, acceptedToolCallCount)
 						return
 					}
 				} catch (error) {
@@ -9968,7 +9989,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							this.abort ? "aborted" : "completed",
 							undefined,
 							undefined,
-							outcome.response.toolCalls.length,
+							acceptedToolCallCount,
 						)
 						return
 					}
@@ -10000,11 +10021,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						this.abort ? "aborted" : this.didComplete ? "completed" : "incomplete",
 						completionFailureReason,
 						undefined,
-						outcome.response.toolCalls.length,
+						acceptedToolCallCount,
 					)
 					return
 				}
-				await appendTaskTerminalEvent("completed", undefined, undefined, outcome.response.toolCalls.length)
+				await appendTaskTerminalEvent("completed", undefined, undefined, acceptedToolCallCount)
 				return
 			}
 
@@ -12481,6 +12502,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						.get<boolean>("newTaskRequireTodos", false),
 					isStealthModel: modelInfo?.isStealthModel,
 					approvalMode: approvalModeOverride ?? migrateApprovalMode(state),
+					commandShell: getCommandShell(
+						(isSubagent && this.subagentRole === "worker") ||
+							(state?.terminalShellIntegrationDisabled ?? true),
+						BaseTerminal.getExecaShellPath(),
+					),
 					codexRootDelegationAvailable,
 					subagentRole: isSubagent ? this.subagentRole : undefined,
 					subagentHasInheritedSkills: isSubagent

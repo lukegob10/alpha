@@ -368,3 +368,10 @@ export function getShell(): string {
 
 	return shell
 }
+
+/** Reports the shell used by exec_command's selected terminal backend. */
+export function getCommandShell(useExeca: boolean, execaShellPath?: string): string {
+	if (!useExeca) return vscode.env?.shell || getShell()
+	if (execaShellPath) return execaShellPath
+	return process.platform === "win32" ? process.env.ComSpec || process.env.COMSPEC || "cmd.exe" : "/bin/sh"
+}

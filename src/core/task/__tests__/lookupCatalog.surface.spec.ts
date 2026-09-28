@@ -306,21 +306,79 @@ describe("lookup catalog preset", () => {
 		}
 	})
 
-	it("offers create_task to a root when the user asks to launch a test thread", async () => {
-		for (const apiProvider of ["openai", "vscode-lm"] as const) {
+	it("offers create_task across providers for direct new-task requests", async () => {
+		for (const apiProvider of ["openai", "vscode-lm", "vertex"] as const) {
+			for (const userRequestText of [
+				"Could you please launch a test thread?",
+				"I want a new task for provider-neutral validation.",
+			]) {
+				const result = await buildNativeToolsArrayWithRestrictions(
+					options({
+						apiConfiguration: { apiProvider },
+						includeAllToolsWithRestrictions: apiProvider === "vertex",
+						approvalMode: "auto",
+						crossTaskRole: "root",
+						userRequestText,
+					}),
+				)
+
+				expect(namesOf(result.tools), `${apiProvider}: ${userRequestText}`).toContain("create_task")
+				expect(result.surface?.policy.visibleTools, `${apiProvider}: ${userRequestText}`).toContain(
+					"create_task",
+				)
+				expect(result.surface?.isCallable("create_task"), `${apiProvider}: ${userRequestText}`).toBe(true)
+			}
+		}
+	})
+
+	it("hides create_task from an ordinary root work request, including after a prior authorized turn", async () => {
+		const catalogCache = new TaskToolCatalogCache()
+		const base = {
+			crossTaskRole: "root" as const,
+			catalogCache,
+		}
+		const authorized = await buildNativeToolsArrayWithRestrictions(
+			options({ ...base, userRequestText: "Create a new thread for parser review." }),
+		)
+		expect(authorized.surface?.isCallable("create_task")).toBe(true)
+
+		for (const apiProvider of ["openai", "vscode-lm", "vertex"] as const) {
 			const result = await buildNativeToolsArrayWithRestrictions(
 				options({
+					...base,
 					apiConfiguration: { apiProvider },
-					approvalMode: "auto",
-					crossTaskRole: "root",
-					userRequestText: "can you launch a test thread",
+					includeAllToolsWithRestrictions: apiProvider === "vertex",
+					userRequestText: "Fix the parser with managed sub-agents if useful.",
 				}),
 			)
-
-			expect(namesOf(result.tools), apiProvider).toContain("create_task")
-			expect(result.surface?.policy.visibleTools, apiProvider).toContain("create_task")
-			expect(result.surface?.isCallable("create_task"), apiProvider).toBe(true)
+			expect(namesOf(result.tools), apiProvider).not.toContain("create_task")
+			expect(result.surface?.policy.visibleTools, apiProvider).not.toContain("create_task")
+			expect(result.surface?.isCallable("create_task"), apiProvider).toBe(false)
+			expect(result.surface?.resolve("create_task"), apiProvider).toBeUndefined()
+			expect(result.surface?.isCallable("spawn_agent"), apiProvider).toBe(true)
 		}
+	})
+
+	it("keeps an old create_task declaration for Vertex replay without allowing a new call", async () => {
+		const result = await buildNativeToolsArrayWithRestrictions(
+			options({
+				apiConfiguration: { apiProvider: "vertex" },
+				includeAllToolsWithRestrictions: true,
+				crossTaskRole: "root",
+				userRequestText: "Fix the parser with managed sub-agents if useful.",
+				discoveryHistory: [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "prior-create", name: "create_task", input: {} }],
+					},
+				],
+			}),
+		)
+
+		expect(namesOf(result.tools)).toContain("create_task")
+		expect(result.allowedFunctionNames).not.toContain("create_task")
+		expect(result.surface?.isCallable("create_task")).toBe(false)
+		expect(result.surface?.resolve("create_task")).toBeUndefined()
 	})
 
 	it("keeps Plan and retired custom-mode cross-task access read-only", async () => {

@@ -13,6 +13,8 @@ export interface SystemPromptSettings {
 	isStealthModel?: boolean
 	/** Effective approval mode captured for this model step. */
 	approvalMode?: ApprovalMode
+	/** Shell selected by exec_command for this model step. */
+	commandShell?: string
 	/** Whether the captured primary tool surface exposes spawn_agent to this prompt. */
 	codexRootDelegationAvailable?: boolean
 	/** Narrow child authority used to omit capabilities the child cannot call. */

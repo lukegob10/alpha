@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import { getExecCommandYieldTimeBounds } from "../../../tools/commandTimeouts"
 import { createExecCommandTool } from "../native-tools/execute_command"
 import manageCommand, { createWriteStdinTool } from "../native-tools/manage_command"
+import applyPatch from "../native-tools/apply_patch"
 
 type ObjectSchema = {
 	type?: string | string[]
@@ -27,6 +28,7 @@ describe("command tool schemas", () => {
 		const parameters = parametersOf()
 
 		expect(tool.name).toBe("exec_command")
+		expect(tool.description).toContain("standalone apply_patch heredoc is routed through the patch tool")
 		expect(tool.strict).toBe(false)
 		expect(parameters.required).toEqual(["cmd"])
 		expect(parameters.properties).toMatchObject({
@@ -50,6 +52,12 @@ describe("command tool schemas", () => {
 		expect(parameters.properties).not.toHaveProperty("login")
 		expect(parameters.properties).not.toHaveProperty("verification")
 		expect(parameters.additionalProperties).toBe(false)
+	})
+
+	it("describes both native and intercepted apply_patch calls", () => {
+		if (applyPatch.type !== "function") throw new Error("apply_patch schema must be a function tool")
+		expect(applyPatch.function.description).toContain("Prefer this native tool with the patch argument")
+		expect(applyPatch.function.description).toContain("heredoc in exec_command is routed to the same handler")
 	})
 
 	it("keeps the Plan allow-list contract in the exec_command description", () => {

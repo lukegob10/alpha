@@ -194,6 +194,7 @@ async function createHarness() {
 	const installCandidates = (
 		beforeCandidate?: (step: number) => void | Promise<void>,
 		interleaveReads: boolean | "repair-verification" | readonly string[] = false,
+		deferResponseTransaction = false,
 	) => {
 		requestStep.mockImplementation(async (input) => {
 			// Model the request adapter's durable steering consumption; the real
@@ -254,7 +255,19 @@ async function createHarness() {
 				}).run(response)
 				expect(outcome.results.map((result) => result.status)).toEqual(["success"])
 			}
-			return { status: "completed", response }
+			return {
+				status: "completed",
+				response,
+				...(deferResponseTransaction
+					? {
+							transaction: {
+								commitResponse: async () => ({ status: "completed" as const, response }),
+								executeEffects: async () => ({ status: "completed" as const, response }),
+								release: () => undefined,
+							},
+						}
+					: {}),
+			}
 		})
 	}
 
@@ -1140,6 +1153,24 @@ describe("Stage Three durable completion integration", () => {
 		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
 		expect(harness.store.getVerificationObligations({ parentTaskId: TASK_ID })).toEqual([])
 		expect(harness.store.getAgent(TASK_ID, TASK_ID)?.status).toBe("completed")
+	})
+
+	it("counts accepted tool calls across every response in the completed turn", async () => {
+		const harness = await setup()
+		for (const file of ["first.ts", "second.ts"]) {
+			await fs.writeFile(path.join(harness.storagePath, file), `export const ${file.replace(".ts", "")} = true\n`)
+		}
+		harness.installCandidates(undefined, ["first.ts", "second.ts"], true)
+
+		await harness.run()
+
+		expect(harness.requests).toHaveLength(3)
+		expect(harness.events).toContainEqual(
+			expect.objectContaining({ type: "turn_completed", status: "completed", toolCallCount: 2 }),
+		)
+		expect(harness.events).toContainEqual(
+			expect.objectContaining({ type: "task_completed", status: "completed", toolCallCount: 2 }),
+		)
 	})
 
 	it("preserves queued guidance arriving while text completion is being persisted", async () => {

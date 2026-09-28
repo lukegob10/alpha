@@ -279,6 +279,7 @@ export async function runExtensionTests(
 				"managed-agents.acceptance.test",
 				"reasoning-ui.test",
 				"history-ui.test",
+				"task-navigation-ui.test",
 				"tickets-ui.test",
 			].includes(options.testFile ?? ""))
 	) {

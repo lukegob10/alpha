@@ -55,6 +55,8 @@ export interface NativeToolsOptions {
 	includeLegacyMcpResource?: boolean
 	/** Root tasks control direct children; an independent child can only message its parent. */
 	crossTaskRole?: "root" | "child" | "none"
+	/** Include the create_task declaration; the captured policy decides whether it is callable. */
+	includeCreateTaskSchema?: boolean
 }
 
 /** Schemas kept only for decoding and dispatching tool calls saved by older tasks. */
@@ -81,6 +83,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		mcpResourcesAvailable = false,
 		includeLegacyMcpResource = false,
 		crossTaskRole = "none",
+		includeCreateTaskSchema = false,
 	} = options
 
 	const availableBrowserTools = browserTools.filter((tool) => {
@@ -103,7 +106,9 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		...availableBrowserTools,
 		createSpawnAgentTool(agentKinds, namedAgentTypes),
 		...(crossTaskRole === "root"
-			? crossTaskOrchestrationTools
+			? crossTaskOrchestrationTools.filter(
+					(tool) => tool.function.name !== "create_task" || includeCreateTaskSchema,
+				)
 			: crossTaskRole === "child"
 				? [crossTaskOrchestrationTools[3]]
 				: []),

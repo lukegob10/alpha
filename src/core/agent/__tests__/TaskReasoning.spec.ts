@@ -27,15 +27,15 @@ describe("resolveTaskReasoning", () => {
 		})
 	})
 
-	it("resolves legacy custom-profile levels without changing the saved profile", () => {
+	it("resolves legacy custom-profile levels including max without changing the saved profile", () => {
 		const info = modelInfo({ reasoningEffort: "low" })
 		const profile = configuration({ enableReasoningEffort: true, openAiCustomModelInfo: info })
 		const before = structuredClone(profile)
-		for (const effort of ["low", "medium", "high"] as const) {
+		for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
 			const result = resolveTaskReasoning(profile, { kind: "effort", effort }, { id: "test-model", info })
 			expect(result.state.capabilities).toEqual({
 				kind: "effort",
-				efforts: ["low", "medium", "high", "xhigh"],
+				efforts: ["low", "medium", "high", "xhigh", "max"],
 				canDisable: true,
 			})
 			expect(result.state.effective).toEqual({ kind: "effort", effort })

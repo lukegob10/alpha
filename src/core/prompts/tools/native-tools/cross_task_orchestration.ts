@@ -12,7 +12,7 @@ export const create_task = {
 	function: {
 		name: "create_task",
 		description:
-			"Launch a separate task (chat/thread) beside this conversation and return its stable task ID. The child uses this task's provider profile, mode, reasoning setting, tool policy, and delegation limits. Choose shared to use the same workspace, or worktree to start from the current Git HEAD in a dedicated worktree; worktree mode does not include uncommitted changes. Only a top-level task can create independent tasks. Wait with wait_task for its result and inspect with list_tasks.",
+			"Create a separate task (chat/thread) only when the user directly asks for a new task or thread. For bounded work within this task, use spawn_agent when delegation is authorized. The new task uses this task's provider profile, mode, reasoning setting, tool policy, and delegation limits. Choose shared to use the same workspace, or worktree to start from the current Git HEAD in a dedicated worktree; worktree mode does not include uncommitted changes. Only a top-level task can create independent tasks. Wait with wait_task for its result and inspect with list_tasks.",
 		strict: true,
 		parameters: {
 			type: "object",

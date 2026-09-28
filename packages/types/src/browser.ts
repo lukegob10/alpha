@@ -20,7 +20,7 @@ export const browserToolNames = [
 export type BrowserToolName = (typeof browserToolNames)[number]
 
 export interface OpenBrowserPageParams {
-	url?: string
+	url: string
 	forceNew?: boolean
 }
 

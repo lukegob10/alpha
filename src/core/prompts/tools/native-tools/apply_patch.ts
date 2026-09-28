@@ -1,6 +1,6 @@
 import type OpenAI from "openai"
 
-const apply_patch_DESCRIPTION = `Apply patches to files using a stripped-down, file-oriented diff format. This tool supports creating new files, deleting files, and updating existing files with precise changes.
+const apply_patch_DESCRIPTION = `Apply patches to files using a stripped-down, file-oriented diff format. Prefer this native tool with the patch argument. A complete standalone apply_patch heredoc in exec_command is routed to the same handler. This tool supports creating new files, deleting files, and updating existing files with precise changes.
 
 The patch format uses a simple, human-readable structure:
 

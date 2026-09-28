@@ -22,6 +22,8 @@
 		"test:cross-task:1221": "pnpm -w bundle && pnpm compile && node ./out/runTest.js --vscode-version 1.122.1 --provider scripted --file cross-task-orchestration.acceptance.test",
 		"test:reasoning:1221": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runReasoningUi.js",
 		"test:history-ui:1221": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runHistoryUi.js",
+		"test:task-navigation:1221": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runTest.js --vscode-version 1.122.1 --provider scripted --file task-navigation-latency.test",
+		"test:task-navigation-ui:1221": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runTaskNavigationUi.js",
 		"test:tickets-ui:1221": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runTicketsUi.js",
 		"test:file-review-ui:1221": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm compile && node ./out/runFileReviewUi.js",
 		"test:core:1221": "pnpm test:smoke:1221 && pnpm test:core:1221:run",

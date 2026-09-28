@@ -55,6 +55,57 @@ describe("classifyRequestWorkClass", () => {
 		})
 	})
 
+	it("keeps browser interaction requests in the full catalog despite unrelated read-only constraints", () => {
+		const request =
+			"Use Alpha's integrated VS Code browser tools to open that URL, inspect the page, select a category filter, add one synthetic item, and reload it. Do not modify inventory.csv, credentials, or VS Code profile settings."
+
+		expect(classifyRequestWorkClass(request)).toMatchObject({
+			class: "full",
+			reason: "explicit_workflow",
+		})
+	})
+
+	it("keeps browser workflows full across wording, order, and prompt length", () => {
+		const longPrompt = [
+			"In the integrated browser,",
+			"Use only the synthetic test account, follow the displayed confirmation, and report the final order state. ".repeat(
+				8,
+			),
+			"click the checkout button; do not edit source files.",
+		].join(" ")
+
+		for (const request of [
+			"Test the site's checkout flow in the browser; do not edit source files.",
+			"Test the site's checkout flow in the browser; don't edit source files.",
+			"In the browser, verify the checkout flow and do not modify source files.",
+			"Please run through the checkout flow on the website; do not change source files.",
+			"Can you test the site's checkout flow in the browser? Do not edit source files.",
+			"What browser tools are available? Then open the checkout page and verify the flow; do not edit source files.",
+			"What browser tools are available? I want you to test the checkout flow in the browser; do not edit source files.",
+			"What does the checkout page show? Do not edit source files.",
+			longPrompt,
+		]) {
+			expect(classifyRequestWorkClass(request), request).toMatchObject({
+				class: "full",
+				reason: "explicit_workflow",
+			})
+		}
+	})
+
+	it("keeps browser capability and how-to questions narrow", () => {
+		for (const request of [
+			"Can you explain what the browser tools do? Do not modify inventory.csv.",
+			"What browser tools are available? Do not edit source files.",
+			"Can browser tools click and type on a page? Do not edit source files.",
+			"How do I use the integrated browser tools? Do not edit source files.",
+		]) {
+			expect(classifyRequestWorkClass(request), request).toMatchObject({
+				class: "lookup",
+				reason: "lookup_question",
+			})
+		}
+	})
+
 	it("keeps task orchestration tools for requests phrased as questions about taking action", () => {
 		for (const text of [
 			"can you launch a test thread",

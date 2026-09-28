@@ -21,7 +21,7 @@ function createTask(overrides: Record<string, unknown> = {}): FakeTask {
 		reasoningPreference: { kind: "default" },
 		subagentDelegationPolicy: { enabled: false },
 		subagentDelegationExplicitlyEnabled: false,
-		metadata: { task: "Parent objective" },
+		metadata: { task: "Can you launch a test thread?" },
 		clineMessages: [],
 		abort: false,
 		abortReason: undefined,
@@ -104,6 +104,20 @@ const taskHistoryItem = (id: string, parentId: string, task = "Child objective")
 })
 
 describe("Cross-task orchestration host", () => {
+	it("rejects independent task creation without an explicit user request", async () => {
+		const { provider, internals, tasks } = createProviderFixture()
+		const parent = createTask({
+			apiConversationHistory: [{ role: "user", content: "Fix the parser with managed sub-agents if useful." }],
+		})
+		tasks.set(parent.taskId, parent)
+		internals.createTask = vi.fn()
+
+		await expect(
+			provider.createIndependentTask(parent as unknown as Task, "Inspect parser", "shared"),
+		).rejects.toThrow(/explicit.*task|explicit.*thread/i)
+		expect(internals.createTask).not.toHaveBeenCalled()
+	})
+
 	it("creates a background primary task with the parent's execution snapshot and a distinct persisted owner", async () => {
 		const { provider, internals, tasks, metadata } = createProviderFixture()
 		const parent = createTask()

@@ -302,7 +302,9 @@ describe("NativeToolCallParser registry dispatch", () => {
 			pushToolResult: vi.fn((content) => results.push(String(content))),
 			setResultMetadata: vi.fn(),
 		}
-		const registry = new ToolRegistry({ nativeTools: getNativeTools({ crossTaskRole: "root" }) })
+		const registry = new ToolRegistry({
+			nativeTools: getNativeTools({ crossTaskRole: "root", includeCreateTaskSchema: true }),
+		})
 		const invocations: Array<[string, Record<string, unknown>]> = [
 			["create_task", { objective: "Inspect the parser", workspace_mode: "worktree" }],
 			["list_tasks", {}],

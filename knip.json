@@ -28,6 +28,7 @@
 				"src/runReasoningUi.ts",
 				"src/runFileReviewUi.ts",
 				"src/runHistoryUi.ts",
+				"src/runTaskNavigationUi.ts",
 				"src/runTicketsUi.ts",
 				"src/runTest.ts",
 				"src/runUnitTests.ts",

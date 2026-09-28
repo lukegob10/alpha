@@ -5,6 +5,8 @@ import {
 	type TaskReasoningProjection,
 } from "@alpha-code/types"
 import { resolveTaskReasoning } from "../agent/TaskReasoning"
+import { isExplicitIndependentTaskRequest } from "../agent/independentTaskAuthorization"
+import { extractUserRequestText } from "../agent/requestWorkClass"
 import os from "os"
 import * as path from "path"
 import fs from "fs/promises"
@@ -4590,6 +4592,13 @@ export class AlphaProvider
 		signal?: AbortSignal,
 	): Promise<CrossTaskRecord> {
 		this.assertCrossTaskRoot(parent)
+		if (
+			!isExplicitIndependentTaskRequest(
+				extractUserRequestText(parent.apiConversationHistory, parent.metadata?.task),
+			)
+		) {
+			throw new Error("Creating a separate task requires an explicit user request for a new task or thread")
+		}
 		const throwIfCancelled = () => {
 			if (!signal?.aborted) return
 			if (signal.reason instanceof Error) throw signal.reason

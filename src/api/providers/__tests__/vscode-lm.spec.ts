@@ -2299,6 +2299,7 @@ describe("VsCodeLmHandler", () => {
 		})
 
 		it.each([
+			["gpt-5.6-sol", "apply_patch"],
 			["gpt-5.6-luna", "apply_patch"],
 			["claude-opus-4.7", "edit"],
 			["gemini-3.1-pro", "edit"],

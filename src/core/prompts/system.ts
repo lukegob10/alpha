@@ -137,14 +137,17 @@ function getAlphaToolContractSection(
 	subagentDelegationPolicy?: "explicit-only" | "proactive",
 	isPlanMode = false,
 ): string {
+	const patchToolGuidance =
+		"Prefer the supplied apply_patch tool for file patches, passing patch text in its declared input. Alpha also routes a complete standalone apply_patch heredoc in exec_command through the same patch tool and policy. Do not search for an apply_patch executable."
 	if (subagentRole || isPlanMode) {
-		return getSharedToolUseSection(
+		const sharedToolUse = getSharedToolUseSection(
 			subagentRole,
 			subagentHasInheritedSkills,
 			subagentCanDelegate,
 			subagentDelegationPolicy,
 			isPlanMode,
 		)
+		return subagentRole === "worker" ? `${sharedToolUse}\n\n${patchToolGuidance}` : sharedToolUse
 	}
 	const delegationGuidance =
 		subagentDelegationPolicy === "explicit-only"
@@ -157,11 +160,11 @@ function getAlphaToolContractSection(
 
 ALPHA TOOL CONTRACT
 
-Use only provider-native tools supplied by Alpha for this turn. Their names, schemas, and host-enforced policy define the available actions and arguments. A tool name mentioned in the Codex instructions is callable only when the same tool is supplied by Alpha. Follow Alpha's active mode, workspace scope, and tool restrictions.${delegationGuidance}`
+Use only provider-native tools supplied by Alpha for this turn. Their names, schemas, and host-enforced policy define the available actions and arguments. A tool name mentioned in the Codex instructions is callable only when the same tool is supplied by Alpha. Follow Alpha's active mode, workspace scope, and tool restrictions. ${patchToolGuidance}${delegationGuidance}`
 }
 
-function getAlphaEnvironmentFactsSection(cwd: string): string {
-	const environment = getSystemInfoSection(cwd)
+function getAlphaEnvironmentFactsSection(cwd: string, commandShell?: string): string {
+	const environment = getSystemInfoSection(cwd, commandShell)
 	const detailsStart = environment.indexOf("\n\nThe Current Workspace Directory is")
 	return detailsStart < 0 ? environment : environment.slice(0, detailsStart)
 }
@@ -241,7 +244,7 @@ async function generatePrompt(
 	const frozenSubagentInstructionsSection = getFrozenSubagentInstructionsSection(settings)
 	const hasUserDefinedRole = isCustomMode(mode, customModeConfigs) || Boolean(promptComponent?.roleDefinition)
 	const effectiveBaseInstructions = isPlanMode && baseInstructions === PLAN_MODE_INSTRUCTIONS ? "" : baseInstructions
-	const systemEnvironmentSection = getAlphaEnvironmentFactsSection(cwd)
+	const systemEnvironmentSection = getAlphaEnvironmentFactsSection(cwd, settings?.commandShell)
 	const customInstructionParts =
 		subagentRole && settings?.subagentUsesFrozenContext
 			? []

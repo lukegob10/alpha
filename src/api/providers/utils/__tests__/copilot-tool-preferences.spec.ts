@@ -5,6 +5,7 @@ import { applyCopilotToolPreferences, applyModelToolPreferences } from "../route
 
 describe("Copilot edit-tool preferences", () => {
 	it.each([
+		["gpt-5.6-sol", "apply_patch"],
 		["gpt-5.6-luna", "apply_patch"],
 		["gpt-5.3-codex", "apply_patch"],
 		["gpt-oss", "apply_patch"],

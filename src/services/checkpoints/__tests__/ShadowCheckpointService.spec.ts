@@ -107,6 +107,42 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 			vitest.restoreAllMocks()
 		})
 
+		describe(`${klass.name}#initShadowGit`, () => {
+			it("logs the phases needed to attribute shadow repository initialization time", async () => {
+				const workspaceDir = path.join(tmpDir, `phase-workspace-${Date.now()}`)
+				await initWorkspaceRepo({ workspaceDir })
+				const messages: string[] = []
+				const timedService = await klass.create({
+					taskId,
+					shadowDir: path.join(tmpDir, `phase-shadow-${Date.now()}`),
+					workspaceDir,
+					log: (message) => messages.push(message),
+				})
+
+				await timedService.initShadowGit()
+
+				const summary = messages.find((message) => message.includes("initialized shadow repo with base commit"))
+				expect(summary).toBeDefined()
+				for (const phase of [
+					"shadow lookup",
+					"nested repository scan",
+					"shadow directory setup",
+					"git init",
+					"worktree config",
+					"exclude file write",
+					"git add",
+					"index validation",
+					"initial commit",
+				]) {
+					expect(summary).toContain(phase)
+				}
+				expect(messages.some((message) => message.includes("scan phases: exclude-pattern discovery"))).toBe(
+					true,
+				)
+				expect(messages.some((message) => message.includes("ripgrep resolution/process"))).toBe(true)
+			})
+		})
+
 		describe(`${klass.name}#getDiff`, () => {
 			it("reads historical diffs without staging unrelated live files", async () => {
 				await fs.writeFile(testFile, "Checkpoint content")
@@ -263,6 +299,24 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 		})
 
 		describe(`${klass.name}#saveCheckpoint`, () => {
+			it("restores a saved workspace snapshot and removes files created afterward", async () => {
+				const checkpointSentinel = path.join(service.workspaceDir, "checkpoint-sentinel.txt")
+				const laterSentinel = path.join(service.workspaceDir, "later-sentinel.txt")
+				await fs.writeFile(testFile, "Saved tracked content")
+				await fs.writeFile(checkpointSentinel, "Saved untracked content")
+
+				const checkpoint = await service.saveCheckpoint("Restore fixture checkpoint")
+				expect(checkpoint?.commit).toBeTruthy()
+
+				await fs.writeFile(testFile, "Changed after checkpoint")
+				await fs.writeFile(laterSentinel, "Must be removed by restore")
+				await service.restoreCheckpoint(checkpoint!.commit)
+
+				expect(await fs.readFile(testFile, "utf8")).toBe("Saved tracked content")
+				expect(await fs.readFile(checkpointSentinel, "utf8")).toBe("Saved untracked content")
+				await expect(fs.access(laterSentinel)).rejects.toThrow()
+			})
+
 			it("fails closed when staging files fails", async () => {
 				const checkpointGit = (service as unknown as { git: SimpleGit }).git
 				const baseHash = service.baseHash
@@ -1004,6 +1058,16 @@ describe.each([[RepoPerTaskCheckpointService, "RepoPerTaskCheckpointService"]])(
 				const eventData = errorHandler.mock.calls[0][0]
 				expect(eventData.type).toBe("error")
 				expect(eventData.error).toBeInstanceOf(Error)
+			})
+
+			it("preserves untracked workspace files when the restore target is invalid", async () => {
+				const untrackedFile = path.join(service.workspaceDir, "untracked-before-invalid-restore.txt")
+				await fs.writeFile(untrackedFile, "keep this file")
+
+				const nonexistentCommitHash = "f".repeat(service.baseHash!.length)
+				await expect(service.restoreCheckpoint(nonexistentCommitHash)).rejects.toThrow()
+
+				expect(await fs.readFile(untrackedFile, "utf-8")).toBe("keep this file")
 			})
 
 			it("preserves the original restore failure when no error listener is registered", async () => {
