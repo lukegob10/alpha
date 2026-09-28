@@ -474,7 +474,11 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 												{task.name}
 											</span>
 											<span className="shrink-0 rounded border border-[var(--border-subtle)] px-1.5 py-0.5 text-[10px] text-vscode-descriptionForeground">
-												{task.enabled ? "Enabled" : "Paused"}
+												{!task.workspace
+													? t("scheduledTasks:assignWorkspace")
+													: task.enabled
+														? "Enabled"
+														: "Paused"}
 											</span>
 										</div>
 										<span className="text-xs text-vscode-descriptionForeground">
@@ -504,6 +508,11 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 											Workspace: {workspace || "current workspace"}
 										</span>
 									</div>
+									{selectedTask && !selectedTask.workspace && (
+										<p className="mt-2 text-xs text-vscode-descriptionForeground">
+											{t("scheduledTasks:legacyWorkspaceHelp")}
+										</p>
+									)}
 								</div>
 								{selectedTask && (
 									<DropdownMenu>
@@ -1013,6 +1022,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 								{selectedTask && (
 									<Button
 										variant="secondary"
+										disabled={!selectedTask.workspace}
 										onClick={() =>
 											vscode.postMessage({
 												type: "runScheduledTaskNow",

@@ -11,6 +11,8 @@
 	"newTask": "New scheduled task",
 	"moreActions": "More actions",
 	"nextRun": "Next run",
+	"assignWorkspace": "Assign workspace",
+	"legacyWorkspaceHelp": "This older schedule has no workspace. Open its repository and save it here before running it.",
 	"repeatEvery": "Repeat every",
 	"hours": "hours",
 	"days": "days",

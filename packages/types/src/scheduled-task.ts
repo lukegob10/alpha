@@ -172,6 +172,8 @@ export type ScheduledTask = z.infer<typeof scheduledTaskSchema>
 export const scheduledTaskRunSchema = z.object({
 	id: z.string(),
 	taskId: z.string(),
+	// The extension host that owns an active run. Absent on historical records.
+	ownerId: z.string().uuid().optional(),
 	alphaTaskId: z.string().optional(),
 	apiConfig: scheduledTaskProfileSchema.optional(),
 	resolvedApiConfig: scheduledTaskProfileSchema.optional(),
