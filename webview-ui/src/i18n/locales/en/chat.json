@@ -12,6 +12,7 @@
 	"activityTrace": {
 		"needsAttention": "Needs attention",
 		"working": "Working",
+		"workedFor": "Worked for {{duration}}",
 		"runningCommands": "Running commands",
 		"editingFiles": "Editing files"
 	},

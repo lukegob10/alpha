@@ -1,8 +1,46 @@
 import type { AlphaMessage } from "@alpha-code/types"
 
-import { getActionActivity } from "../actionActivity"
+import { getActionActivity, getCompletedTurnActivity } from "../actionActivity"
 
 describe("action activity projection", () => {
+	it("projects completed turn activity separately from its prompt and final response", () => {
+		const messages: AlphaMessage[] = [
+			{ ts: 200, type: "say", say: "text", text: "I’ll inspect the ignore rules." },
+			{ ts: 300, type: "ask", ask: "command", text: "git status --short", isAnswered: true },
+			{ ts: 400, type: "say", say: "command_output", text: " M .gitignore" },
+			{ ts: 700, type: "say", say: "completion_result", text: "The ignore rules are organized." },
+		]
+
+		const activity = getCompletedTurnActivity(messages, 100)
+		expect(activity.get(0)).toEqual({
+			id: 200,
+			startIndex: 0,
+			endIndex: 2,
+			kind: "worked",
+			count: 3,
+			durationMs: 600,
+		})
+		expect(activity.get(2)).toBe(activity.get(0))
+		expect(activity.has(3)).toBe(false)
+	})
+
+	it("uses a completed ordinary assistant message as the turn boundary", () => {
+		const messages: AlphaMessage[] = [
+			{ ts: 200, type: "say", say: "text", text: "Checking the implementation." },
+			{ ts: 300, type: "ask", ask: "command", text: "git status --short", isAnswered: true },
+			{ ts: 700, type: "say", say: "text", text: "The changes are complete." },
+		]
+
+		const activity = getCompletedTurnActivity(messages, 100, true)
+		expect(activity.get(0)).toMatchObject({
+			startIndex: 0,
+			endIndex: 1,
+			kind: "worked",
+			durationMs: 600,
+		})
+		expect(activity.has(2)).toBe(false)
+	})
+
 	it("folds consecutive live actions without hiding narrative or final responses", () => {
 		const messages: AlphaMessage[] = [
 			{ ts: 1, type: "say", say: "text", text: "Checking the implementation" },

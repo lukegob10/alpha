@@ -65,7 +65,7 @@ import { QueuedMessages } from "./QueuedMessages"
 import { WorktreeSelector } from "./WorktreeSelector"
 import FileChangesPanel from "./FileChangesPanel"
 import { ActivityTraceToggle } from "./ActivityTraceToggle"
-import { getActionActivity, type ActionActivity } from "./actionActivity"
+import { getActionActivity, getCompletedTurnActivity, type ActionActivity } from "./actionActivity"
 import { fileChangeTurnsFromMessages, type FileChangeTurn } from "./utils/fileChangesFromMessages"
 import { useProgressiveTranscript } from "./hooks/useProgressiveTranscript"
 import { useChatScrollController, type ChatScrollReleaseReason } from "@src/hooks/useChatScrollController"
@@ -230,6 +230,7 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 								traceId={trace.id}
 								kind={trace.kind}
 								count={trace.count}
+								durationMs={trace.durationMs}
 								expanded={traceExpanded}
 								controls={Array.from(
 									{ length: trace.endIndex - index + 1 },
@@ -524,6 +525,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		: latestVisibleMessage?.type === "ask" && isCompletedTaskResponseAsk(latestVisibleMessage.ask)
 			? latestVisibleMessage.ask
 			: undefined
+	const hasCompletedTranscriptBoundary = isVisibleTaskCompleted || completedTaskResponseAsk !== undefined
 	const hasOpenCompletedTaskResponseBoundary =
 		completedTaskResponseAsk === "resume_completed_task" ||
 		(completedTaskResponseAsk === "completion_result" && !isVisibleTaskCompleted)
@@ -2250,15 +2252,28 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		}
 		return undefined
 	}, [activeMessages, lastMessage])
-	const actionActivity = useMemo(
-		() => getActionActivity(groupedMessages, pendingApprovalTs, failedApiRequestTs),
-		[groupedMessages, pendingApprovalTs, failedApiRequestTs],
-	)
+	const actionActivity = useMemo(() => {
+		const activity = getActionActivity(groupedMessages, pendingApprovalTs, failedApiRequestTs)
+		for (const [index, trace] of getCompletedTurnActivity(
+			groupedMessages,
+			task?.ts,
+			hasCompletedTranscriptBoundary || isVisibleTaskCompleted,
+		)) {
+			activity.set(index, trace)
+		}
+		return activity
+	}, [
+		groupedMessages,
+		pendingApprovalTs,
+		failedApiRequestTs,
+		task?.ts,
+		hasCompletedTranscriptBoundary,
+		isVisibleTaskCompleted,
+	])
 	const [traceExpansion, setTraceExpansion] = useState<{ taskKey?: string; expanded: Record<number, boolean> }>({
 		expanded: {},
 	})
 	const traceCompletionRef = useRef<{ taskKey?: string; completed: boolean }>({ completed: false })
-	const hasCompletedTranscriptBoundary = isVisibleTaskCompleted || completedTaskResponseAsk !== undefined
 	const focusedActivityRef = useRef<{ taskKey?: string; index: number }>()
 	useEffect(() => {
 		// Removed or replaced action groups must not reuse an old expansion choice.
@@ -2674,6 +2689,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		],
 	)
 
+	const isStandaloneNewTaskAction =
+		primaryButtonText === t("chat:startNewTask.title") &&
+		!secondaryButtonText &&
+		!tertiaryButtonText &&
+		!toolApprovalRequest
+
 	useImperativeHandle(ref, () => ({
 		acceptInput: () => {
 			const hasInput = inputValue.trim() || selectedImages.length > 0
@@ -2690,7 +2711,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				return
 			}
 
-			if (enableButtons && primaryButtonText) {
+			if (enableButtons && primaryButtonText && !isStandaloneNewTaskAction) {
 				handlePrimaryButtonClick(inputValue, selectedImages)
 			} else if (!sendingDisabled && !isProfileDisabled && hasInput) {
 				handleSendMessage(inputValue, selectedImages)
@@ -2699,6 +2720,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}))
 
 	const areActionButtonsVisible = primaryButtonText || secondaryButtonText || tertiaryButtonText
+	const shouldShowActionButtons =
+		areActionButtonsVisible && !isStandaloneNewTaskAction && !isManagedSubagent && !isCompletedTaskResumePending
 
 	return (
 		<div
@@ -2900,7 +2923,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 								<span>{t("chat:resumeTask.title")}…</span>
 							</div>
 						)}
-						{areActionButtonsVisible && !isManagedSubagent && !isCompletedTaskResumePending && (
+						{shouldShowActionButtons && (
 							<>
 								{toolApprovalRequest?.cwd && (
 									<div
