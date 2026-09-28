@@ -3,6 +3,8 @@ name: Release VSIX
 on:
     push:
         branches: [main]
+        paths:
+            - src/package.json
     workflow_dispatch:
 
 permissions:
@@ -81,11 +83,7 @@ jobs:
 
                   Commit: ${{ github.sha }}
 
-                  Download the VSIX asset below and install it in VS Code with:
-
-                  ````bash
-                  code --install-extension ${{ steps.release.outputs.vsix_name }}
-                  ````
+                  Download the VSIX asset below. Install it from a terminal with: code --install-extension ${{ steps.release.outputs.vsix_name }}
                   "@
 
                   gh release view "$tag" --json tagName 2>$null
