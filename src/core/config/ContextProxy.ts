@@ -18,6 +18,8 @@ import {
 	isGlobalStateKey,
 	isProviderName,
 	isRetiredProvider,
+	LEGACY_SUBAGENT_MAX_INPUT_TOKENS,
+	LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
@@ -88,6 +90,9 @@ export class ContextProxy {
 
 		// Migration: Clear old default condensing prompt so users get the improved v2 default
 		await this.migrateOldDefaultCondensingPrompt()
+
+		// Older settings pages persisted the small managed-agent defaults as explicit values.
+		await this.migrateLegacySubagentBudgetDefaults()
 
 		this._isInitialized = true
 	}
@@ -165,6 +170,38 @@ export class ContextProxy {
 		} catch (error) {
 			logger.error(
 				`Error during old default condensing prompt migration: ${error instanceof Error ? error.message : String(error)}`,
+			)
+		}
+	}
+
+	/** Clear only the old default pair; retain custom budgets and frozen limits on existing tasks. */
+	private async migrateLegacySubagentBudgetDefaults() {
+		const migrationKey = "subagentBudgetDefaultsMigrationV1"
+		try {
+			const migrationState = this.originalContext.globalState.get<"started" | "done">(migrationKey)
+			if (migrationState === "done") return
+			if (migrationState !== "started") {
+				if (
+					this.stateCache.subagentMaxInputTokens !== LEGACY_SUBAGENT_MAX_INPUT_TOKENS ||
+					this.stateCache.subagentMaxOutputTokens !== LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS
+				) {
+					await this.originalContext.globalState.update(migrationKey, "done")
+					return
+				}
+				await this.originalContext.globalState.update(migrationKey, "started")
+			}
+			if (this.stateCache.subagentMaxInputTokens === LEGACY_SUBAGENT_MAX_INPUT_TOKENS) {
+				await this.originalContext.globalState.update("subagentMaxInputTokens", undefined)
+				this.stateCache.subagentMaxInputTokens = undefined
+			}
+			if (this.stateCache.subagentMaxOutputTokens === LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS) {
+				await this.originalContext.globalState.update("subagentMaxOutputTokens", undefined)
+				this.stateCache.subagentMaxOutputTokens = undefined
+			}
+			await this.originalContext.globalState.update(migrationKey, "done")
+		} catch (error) {
+			logger.error(
+				`Error migrating legacy subagent budget defaults: ${error instanceof Error ? error.message : String(error)}`,
 			)
 		}
 	}

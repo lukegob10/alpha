@@ -1227,6 +1227,44 @@ If complete, use attempt_completion.
 		expect(child.finalizeSubagentHistory).toHaveBeenCalledWith("cancelled", testCase.summary, testCase.stopReason)
 	})
 
+	it("lets a default-budget child continue after three ordinary model requests", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const usage = { totalTokensIn: 22_084, totalTokensOut: 5_035, totalCost: 0 }
+		let child: any
+		;(provider as any).createTask = vi.fn(
+			async (_text: string, _images: unknown, _parent: unknown, options: any) => {
+				const emitter = new EventEmitter()
+				child = Object.assign(emitter, {
+					taskId: options.taskId,
+					taskKind: "subagent",
+					rootTaskId: parent.taskId,
+					clineMessages: [{ type: "say", say: "completion_result", text: "Review complete." }],
+					getTokenUsage: () => usage,
+					persistFrozenSubagentInstructions: vi.fn(async () => undefined),
+					finalizeSubagentHistory: vi.fn(async () => undefined),
+					cancelCurrentRequest: vi.fn(),
+					abortTask: vi.fn(async () => undefined),
+					start() {
+						emitter.emit(AlphaCodeEventName.TaskCompleted, options.taskId, usage)
+					},
+				})
+				return child
+			},
+		)
+
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect existing test coverage", agent_kind: "review" },
+		])
+		;(provider as any).finalizePreparedSubagentAuthorization(prepared)
+
+		const result = await (provider as any).runSubagentEnvelope(prepared.envelopes[0], new AbortController().signal)
+
+		expect(result).toMatchObject({ status: "completed", summary: "Review complete." })
+		expect(child.cancelCurrentRequest).not.toHaveBeenCalled()
+		expect(child.abortTask).not.toHaveBeenCalled()
+	})
+
 	it("does not reuse a retained completion report when an immediate follow-up cancellation has no report", async () => {
 		vi.spyOn(Date, "now").mockReturnValue(200)
 		const provider = makeProviderHarness()

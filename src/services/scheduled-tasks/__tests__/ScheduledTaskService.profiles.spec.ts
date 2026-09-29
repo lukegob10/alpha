@@ -484,7 +484,9 @@ describe("scheduled profiles and skills", () => {
 		await runNow(task.id)
 		await service.updateTask(task.id, { prompt: "New prompt", apiConfig: { id: "new", name: "New" } })
 		const completed = new Promise<ScheduledTaskRun>((resolve) => {
-			onRun = resolve
+			onRun = (run) => {
+				if (run.status === "succeeded") resolve(run)
+			}
 		})
 		provider.emit(AlphaCodeEventName.TaskCompleted, "alpha-task")
 		await completed

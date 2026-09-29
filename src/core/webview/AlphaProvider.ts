@@ -89,6 +89,8 @@ import {
 	DEFAULT_WRITE_DELAY_MS,
 	DEFAULT_MAX_CONCURRENT_TASKS,
 	DEFAULT_SUBAGENT_DELEGATION_POLICY,
+	LEGACY_SUBAGENT_MAX_INPUT_TOKENS,
+	LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS,
 	MAX_MANAGED_AGENT_TREE_ACTIVITY,
 	MAX_MANAGED_AGENT_TREE_NODES,
 	DEFAULT_MODES,
@@ -8528,7 +8530,10 @@ export class AlphaProvider
 			) {
 				throw new Error("authority_denied: only a managed Worker may grant a descendant Worker")
 			}
-			const legacySettings = resolveSubagentOrchestrationSettings()
+			const legacySettings = resolveSubagentOrchestrationSettings({
+				subagentMaxInputTokens: LEGACY_SUBAGENT_MAX_INPUT_TOKENS,
+				subagentMaxOutputTokens: LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS,
+			})
 			const limits: SubagentEffectiveLimits = parentOrchestration?.limits
 				? {
 						...structuredClone(parentOrchestration.limits),
@@ -8689,7 +8694,10 @@ export class AlphaProvider
 			if (record.parentTaskId !== record.rootTaskId || parent.taskId !== record.rootTaskId) {
 				throw new Error(`recovery_failed: nested legacy agent ${record.path} has no trustworthy ancestry`)
 			}
-			const legacySettings = resolveSubagentOrchestrationSettings()
+			const legacySettings = resolveSubagentOrchestrationSettings({
+				subagentMaxInputTokens: LEGACY_SUBAGENT_MAX_INPUT_TOKENS,
+				subagentMaxOutputTokens: LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS,
+			})
 			const legacyDecision = finalizeSubagentDelegationPolicy(resolveSubagentDelegationPolicy({}), {
 				authorization: "group-approval",
 				groupApproved: true,

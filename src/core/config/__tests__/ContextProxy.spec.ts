@@ -84,6 +84,54 @@ describe("ContextProxy", () => {
 		})
 	})
 
+	describe("legacy subagent budget defaults", () => {
+		const migrationKey = "subagentBudgetDefaultsMigrationV1"
+
+		function useStoredValues(entries: [string, unknown][]) {
+			const stored = new Map<string, unknown>(entries)
+			mockGlobalState.get.mockImplementation((key: string) => stored.get(key))
+			mockGlobalState.update.mockImplementation(async (key: string, value: unknown) => {
+				if (value === undefined) stored.delete(key)
+				else stored.set(key, value)
+			})
+			return stored
+		}
+
+		it("clears the old default pair so existing installations inherit the larger budget", async () => {
+			const stored = useStoredValues([
+				["subagentMaxInputTokens", 16_000],
+				["subagentMaxOutputTokens", 4_000],
+			])
+			const migrated = new ContextProxy(mockContext)
+			await migrated.initialize()
+
+			expect(migrated.getValue("subagentMaxInputTokens")).toBeUndefined()
+			expect(migrated.getValue("subagentMaxOutputTokens")).toBeUndefined()
+			expect(stored.get(migrationKey)).toBe("done")
+
+			const updatesAfterMigration = mockGlobalState.update.mock.calls.length
+			await new ContextProxy(mockContext).initialize()
+			expect(mockGlobalState.update).toHaveBeenCalledTimes(updatesAfterMigration)
+		})
+
+		it("preserves customized limits and resumes a partially completed migration", async () => {
+			const stored = useStoredValues([
+				["subagentMaxInputTokens", 16_000],
+				["subagentMaxOutputTokens", 8_000],
+			])
+			await new ContextProxy(mockContext).initialize()
+			expect(stored.get("subagentMaxInputTokens")).toBe(16_000)
+			expect(stored.get("subagentMaxOutputTokens")).toBe(8_000)
+
+			stored.set(migrationKey, "started")
+			stored.delete("subagentMaxInputTokens")
+			stored.set("subagentMaxOutputTokens", 4_000)
+			await new ContextProxy(mockContext).initialize()
+			expect(stored.has("subagentMaxOutputTokens")).toBe(false)
+			expect(stored.get(migrationKey)).toBe("done")
+		})
+	})
+
 	describe("read-only pass-through properties", () => {
 		it("should return extension properties from the original context", () => {
 			expect(proxy.extensionUri).toBe(mockContext.extensionUri)
@@ -97,14 +145,15 @@ describe("ContextProxy", () => {
 
 	describe("constructor", () => {
 		it("should initialize state cache with all global state keys", () => {
-			// +2 for the condensing-prompt migration checks.
-			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 2)
+			// +3 for the condensing-prompt and subagent-budget migration checks.
+			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 3)
 			for (const key of GLOBAL_STATE_KEYS) {
 				expect(mockGlobalState.get).toHaveBeenCalledWith(key)
 			}
 			// Also check for migration calls
 			expect(mockGlobalState.get).toHaveBeenCalledWith("customCondensingPrompt")
 			expect(mockGlobalState.get).toHaveBeenCalledWith("customSupportPrompts")
+			expect(mockGlobalState.get).toHaveBeenCalledWith("subagentBudgetDefaultsMigrationV1")
 		})
 
 		it("should initialize secret cache with all secret keys", () => {
@@ -124,8 +173,8 @@ describe("ContextProxy", () => {
 			const result = proxy.getGlobalState("apiProvider")
 			expect(result).toBe("deepseek")
 
-			// Original context should be called once during updateGlobalState (+2 for migration checks)
-			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 2) // From initialization + migration checks
+			// Original context should be called once during updateGlobalState (+3 for migration checks)
+			expect(mockGlobalState.get).toHaveBeenCalledTimes(GLOBAL_STATE_KEYS.length + 3) // From initialization + migration checks
 		})
 
 		it("should handle default values correctly", async () => {
@@ -450,8 +499,8 @@ describe("ContextProxy", () => {
 				expect(mockGlobalState.update).toHaveBeenCalledWith(key, undefined)
 			}
 
-			// Total calls should include initial setup + reset operations
-			const expectedUpdateCalls = 2 + GLOBAL_STATE_KEYS.length
+			// Total calls include initial setup, a migration marker write on each initialization, and reset.
+			const expectedUpdateCalls = 4 + GLOBAL_STATE_KEYS.length
 			expect(mockGlobalState.update).toHaveBeenCalledTimes(expectedUpdateCalls)
 		})
 
