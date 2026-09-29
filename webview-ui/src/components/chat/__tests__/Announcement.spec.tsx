@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.1.0",
+		version: "3.1.1",
 	},
 }))
 
@@ -37,9 +37,11 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 
-		expect(screen.getByText("Welcome to Alpha v3.1.0")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.1.1")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.1.0 brings a shared agent runtime and a clearer code review experience."),
+			screen.getByText(
+				"Alpha v3.1.1 keeps longer agent tasks moving and makes scheduled runs and task history more predictable.",
+			),
 		).toBeInTheDocument()
 	})
 
@@ -49,31 +51,29 @@ describe("Announcement", () => {
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
 			screen.getByText(
-				"Use one provider-neutral TypeScript engine for model steps, tools, approvals, and delegated work.",
+				"Keep useful progress across repeated tool calls and recover when checkpoint setup is slow.",
 			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Apply Ask, Auto, and Full Access policies consistently, including to child tasks."),
+			screen.getByText("Give managed agents enough token budget to finish normal multi-step work."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Expand a completed turn's Worked for summary to inspect its full activity trace."),
+			screen.getByText("Run scheduled tasks only in open VS Code workspaces, with one claim across windows."),
 		).toBeInTheDocument()
-		expect(
-			screen.getByText(
-				"Review the whole turn or open per-file diffs in Alpha Diff, with added and removed line counts.",
-			),
-		).toBeInTheDocument()
+		expect(screen.getByText("Keep task history scoped to the current project.")).toBeInTheDocument()
 	})
 
 	it("falls back to English release text when a retired locale is requested", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.1.0 brings a shared agent runtime and a clearer code review experience."),
+			screen.getByText(
+				"Alpha v3.1.1 keeps longer agent tasks moving and makes scheduled runs and task history more predictable.",
+			),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Use one provider-neutral TypeScript engine for model steps, tools, approvals, and delegated work.",
+				"Keep useful progress across repeated tool calls and recover when checkpoint setup is slow.",
 			),
 		).toBeInTheDocument()
 	})
