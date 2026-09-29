@@ -14504,10 +14504,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			matchedFiles: scope.matchedFiles,
 			kind: scope.kind,
 		}))
+		const completedCommandFailure =
+			(result?.executionStatus === "error" && typeof result.exitCode === "number") ||
+			(failure?.reason === "execution_failed" &&
+				failure.outcome === "known" &&
+				typeof evidence?.exitCode === "number")
 		const scopedCheckFailure =
 			canonicalName === "exec_command" &&
-			result?.executionStatus === "error" &&
-			typeof result.exitCode === "number" &&
+			completedCommandFailure &&
 			evidence?.status === "failed" &&
 			scopes.length > 0
 		let failureOwnedByCompletion = false
