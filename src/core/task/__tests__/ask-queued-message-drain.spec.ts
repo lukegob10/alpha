@@ -269,6 +269,34 @@ describe("Task.ask queued message drain", () => {
 		},
 	)
 
+	it("retains host input sent before a restored task installs its resume ask", async () => {
+		const task = await createAskOnlyTask()
+		;(task as any).initialHistoryResumePending = true
+		;(task as any).providerRef = {
+			deref: () => ({
+				getState: vi.fn(async () => undefined),
+				isTaskOnScreen: vi.fn(() => true),
+			}),
+		}
+		const handleResponseSpy = vi.spyOn(task, "handleWebviewAskResponse")
+
+		await task.submitUserMessage("continue the restored task", ["image1.png"])
+
+		expect(handleResponseSpy).not.toHaveBeenCalled()
+		expect(task.messageQueueService.messages).toMatchObject([
+			{ text: "continue the restored task", images: ["image1.png"] },
+		])
+
+		const result = await task.ask("resume_completed_task", "Resume?", false)
+
+		expect(result).toMatchObject({
+			response: "messageResponse",
+			text: "continue the restored task",
+			images: ["image1.png"],
+		})
+		expect(task.messageQueueService.isEmpty()).toBe(true)
+	})
+
 	it("settles a blocked ask when the task is aborted", async () => {
 		const task = await createAskOnlyTask()
 		const askPromise = task.ask("followup", "Q?", false)

@@ -844,6 +844,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	abort: boolean = false
 	private abortTaskPromise?: Promise<void>
 	private ownedLifecyclePromise?: Promise<void>
+	/** Retains host input until a rehydrated task has installed its initial resume ask. */
+	private initialHistoryResumePending = false
 	private taskTerminationPromise?: Promise<void>
 	currentRequestAbortController?: AbortController
 	/** Owns the whole model step, including preflight and automatic context compaction. */
@@ -1874,7 +1876,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (task || images) {
 				this.ownBackgroundLifecycle("start", this.startTask(task, images))
 			} else if (historyItem) {
-				this.ownBackgroundLifecycle("resume", this.resumeTaskFromHistory())
+				this.initialHistoryResumePending = true
+				const lifecycle = this.resumeTaskFromHistory().finally(() => {
+					this.initialHistoryResumePending = false
+				})
+				this.ownBackgroundLifecycle("resume", lifecycle)
 			} else {
 				throw new Error("Either historyItem or task/images must be provided")
 			}
@@ -7581,6 +7587,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				if (providerProfile) {
 					await provider.setTaskProviderProfile(this.taskId, providerProfile)
+				}
+
+				// showTaskWithId acknowledges navigation before asynchronous history
+				// rehydration necessarily reaches its resume ask. A host message sent in
+				// that window must wait in the existing FIFO rather than occupying the
+				// ask-response slot that ask() resets during initialization.
+				if (this.initialHistoryResumePending && !this.activeAsk) {
+					this.messageQueueService.addMessage(text, images)
+					return
 				}
 
 				this.emit(AlphaCodeEventName.TaskUserMessage, this.taskId)
