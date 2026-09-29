@@ -246,6 +246,34 @@ describe("SubagentGroupCard", () => {
 		expect(postMessage).not.toHaveBeenCalledWith({ type: "showTaskWithId", text: "child-2" })
 	})
 
+	it("surfaces the launch error without linking a failed child that never created a task", async () => {
+		const user = userEvent.setup()
+		const error = "Git worktree creation failed before the child task was created."
+		render(
+			<SubagentGroupCard
+				group={makeGroup({
+					status: "failed",
+					agents: [
+						{
+							...makeGroup().agents[0],
+							status: "failed",
+							stopReason: "never_launched",
+							error,
+							completedAt: 2_000,
+						},
+					],
+				})}
+				parentTaskId="parent-1"
+			/>,
+		)
+
+		const task = screen.getByRole("button", { name: /Maple task unavailable · Failed/i })
+		expect(task).toBeDisabled()
+		expect(screen.getByText(error)).toBeVisible()
+		await user.click(task)
+		expect(postMessage).not.toHaveBeenCalledWith({ type: "showTaskWithId", text: "child-1" })
+	})
+
 	it("shows review attention while keeping Worker internals out of the trace", () => {
 		render(<SubagentGroupCard group={makeWorkerGroup()} parentTaskId="parent-1" />)
 

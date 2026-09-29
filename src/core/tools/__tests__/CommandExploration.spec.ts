@@ -2,7 +2,11 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 
-import { getTrustedCommandExploration } from "../CommandExploration"
+import {
+	getCommandExplorationSource,
+	getCommandSearchSource,
+	getTrustedCommandExploration,
+} from "../CommandExploration"
 
 describe("trusted command exploration", () => {
 	let workspace: string
@@ -26,6 +30,43 @@ describe("trusted command exploration", () => {
 			...overrides,
 		})
 	}
+
+	it("classifies only safe standalone ripgrep and Git commands", () => {
+		expect(getCommandExplorationSource("rg -n needle src")).toBe("ripgrep")
+		expect(getCommandExplorationSource("RG.EXE --files")).toBe("ripgrep")
+		expect(getCommandExplorationSource("git status --short")).toBe("git")
+		expect(getCommandExplorationSource("rg needle src | Select-Object -First 10")).toBeUndefined()
+		expect(getCommandExplorationSource("Get-Content src/file.ts")).toBeUndefined()
+	})
+
+	it.each([
+		["rg -n needle src", "ripgrep"],
+		['"C:\\Program Files\\ripgrep\\rg.exe" needle src | Select-Object -First 20', "ripgrep"],
+		["grep -R needle src | head -20", "grep"],
+		["FINDSTR /S needle src\\*.ts", "grep"],
+		["Select-String -Path src\\*.ts -Pattern needle", "grep"],
+		["git --no-pager grep needle -- src", "git-grep"],
+		["git -C . -c color.ui=false grep needle", "git-grep"],
+	])("classifies repository search variants without depending on presentation: %s", (command, source) => {
+		expect(getCommandSearchSource(command)).toBe(source)
+	})
+
+	it.each(["git status --short", "Get-Content src/file.ts", "echo rg needle", "pnpm test"])(
+		"does not classify productive non-search commands as repository searches: %s",
+		(command) => {
+			expect(getCommandSearchSource(command)).toBeUndefined()
+		},
+	)
+
+	it.each([
+		"rg needle src; pnpm test",
+		"rg needle src && pnpm test",
+		"rg needle src || Write-Output missing",
+		"rg needle src > matches.txt",
+		"rg needle src | xargs sed -i replacement",
+	])("does not classify compound or mutating commands as search-only: %s", (command) => {
+		expect(getCommandSearchSource(command)).toBeUndefined()
+	})
 
 	it("canonicalizes equivalent ripgrep file inspections without using output", async () => {
 		const short = await observe('rg --files -g "*.ts" ./src')

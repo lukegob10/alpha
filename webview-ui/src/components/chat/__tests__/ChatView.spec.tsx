@@ -403,6 +403,74 @@ const renderChatView = (props: Partial<ChatViewProps> = {}) => {
 	)
 }
 
+describe("ChatView checkpoint initialization warnings", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it("keeps checkpoint warnings scoped to the task that emitted them", async () => {
+		const view = renderChatView()
+		mockPostMessage({
+			currentTaskId: "task-a",
+			clineMessages: [{ type: "say", say: "task", ts: 1, text: "Task A" }],
+		})
+		await waitFor(() => expect(view.getByText("Task A")).toBeInTheDocument())
+
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "checkpointInitWarning",
+						taskId: "task-a",
+						checkpointWarning: { type: "INIT_TIMEOUT", timeout: 20 },
+					},
+				}),
+			)
+		})
+		await waitFor(() => expect(view.getByText("errors.init_checkpoint_fail_long_time")).toBeInTheDocument())
+
+		mockPostMessage({
+			currentTaskId: "task-b",
+			clineMessages: [{ type: "say", say: "task", ts: 2, text: "Task B" }],
+		})
+		await waitFor(() => expect(view.getByText("Task B")).toBeInTheDocument())
+		expect(view.queryByText("errors.init_checkpoint_fail_long_time")).not.toBeInTheDocument()
+
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "checkpointInitWarning",
+						taskId: "task-a",
+						checkpointWarning: { type: "INIT_TIMEOUT", timeout: 20 },
+					},
+				}),
+			)
+		})
+		expect(view.queryByText("errors.init_checkpoint_fail_long_time")).not.toBeInTheDocument()
+
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "checkpointInitWarning",
+						taskId: "task-b",
+						checkpointWarning: { type: "INIT_TIMEOUT", timeout: 20 },
+					},
+				}),
+			)
+		})
+		await waitFor(() => expect(view.getByText("errors.init_checkpoint_fail_long_time")).toBeInTheDocument())
+
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "checkpointInitWarning", taskId: "task-b", checkpointWarning: undefined },
+				}),
+			)
+		})
+		await waitFor(() => expect(view.queryByText("errors.init_checkpoint_fail_long_time")).not.toBeInTheDocument())
+	})
+})
+
 describe("ChatView async user input", () => {
 	beforeEach(() => vi.clearAllMocks())
 
@@ -533,6 +601,42 @@ describe("ChatView async user input", () => {
 describe("ChatView activity trace", () => {
 	const focusDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "focus")!
 	afterEach(() => Object.defineProperty(HTMLElement.prototype, "focus", focusDescriptor))
+
+	it("animates a folded trace only while it contains the active tail work", async () => {
+		const view = renderChatView()
+		const taskId = "active-trace"
+		const messages: AlphaMessage[] = [
+			{ ts: 100, type: "say", say: "task", text: "Run the checks" },
+			{ ts: 200, type: "ask", ask: "command", text: "pnpm test", isAnswered: true },
+		]
+		const runningTask = {
+			id: taskId,
+			status: "running",
+			lifecycle: "running",
+			isActive: true,
+			isStreaming: true,
+			isTurnActive: true,
+			isWaitingForInput: false,
+			lastUpdatedAt: 200,
+			queueCount: 0,
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+		}
+		mockPostMessage({ currentTaskId: taskId, clineMessages: messages, liveTasksById: { [taskId]: runningTask } })
+
+		const toggle = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.runningCommands/ }))
+		expect(toggle).toHaveAttribute("aria-busy", "true")
+		expect(toggle).toHaveClass("activity-trace-toggle--active")
+
+		mockPostMessage({
+			currentTaskId: taskId,
+			clineMessages: [...messages, { ts: 300, type: "say", say: "text", text: "The command finished." }],
+			liveTasksById: { [taskId]: { ...runningTask, lastUpdatedAt: 300 } },
+		})
+		await waitFor(() => expect(toggle).not.toHaveClass("activity-trace-toggle--active"))
+		expect(toggle).not.toHaveAttribute("aria-busy")
+	})
 
 	it("folds live action runs between visible progress messages and preserves pending approvals", async () => {
 		const view = renderChatView()

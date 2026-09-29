@@ -604,6 +604,7 @@ describe("Checkpoint functionality", () => {
 			expect(gitModule.checkGitInstalled).not.toHaveBeenCalled()
 			expect(mockProvider.postMessageToWebview).not.toHaveBeenCalledWith({
 				type: "checkpointInitWarning",
+				taskId: "test-task-id",
 				checkpointWarning: { type: "INIT_TIMEOUT", timeout: 20 },
 			})
 		})
@@ -629,6 +630,7 @@ describe("Checkpoint functionality", () => {
 			await vi.advanceTimersByTimeAsync(5000)
 			expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith({
 				type: "checkpointInitWarning",
+				taskId: "test-task-id",
 				checkpointWarning: { type: "WAIT_TIMEOUT", timeout: 5 },
 			})
 
@@ -636,6 +638,7 @@ describe("Checkpoint functionality", () => {
 			await expect(waiter).resolves.toBeUndefined()
 			expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith({
 				type: "checkpointInitWarning",
+				taskId: "test-task-id",
 				checkpointWarning: { type: "INIT_TIMEOUT", timeout: 10 },
 			})
 			expect(mockTask.enableCheckpoints).toBe(false)
@@ -699,6 +702,7 @@ describe("Checkpoint functionality", () => {
 			await vi.advanceTimersByTimeAsync(5000)
 			expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith({
 				type: "checkpointInitWarning",
+				taskId: "test-task-id",
 				checkpointWarning: { type: "WAIT_TIMEOUT", timeout: 5 },
 			})
 
@@ -709,12 +713,14 @@ describe("Checkpoint functionality", () => {
 			])
 			expect(mockProvider.postMessageToWebview).toHaveBeenLastCalledWith({
 				type: "checkpointInitWarning",
+				taskId: "test-task-id",
 				checkpointWarning: undefined,
 			})
 
 			await vi.advanceTimersByTimeAsync(10000)
 			expect(mockProvider.postMessageToWebview).not.toHaveBeenCalledWith({
 				type: "checkpointInitWarning",
+				taskId: "test-task-id",
 				checkpointWarning: { type: "INIT_TIMEOUT", timeout: 10 },
 			})
 		})

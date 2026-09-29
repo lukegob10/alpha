@@ -1,7 +1,11 @@
 import type { SubagentStopReason } from "@alpha-code/types"
 
 import { AsyncSubagentRunManager } from "../AsyncSubagentRunManager"
-import { BoundedDelegationManager, type InternalTaskResult } from "../BoundedDelegationManager"
+import {
+	BoundedDelegationManager,
+	InternalTaskNeverLaunchedError,
+	type InternalTaskResult,
+} from "../BoundedDelegationManager"
 import { buildInternalTaskEnvelope } from "../InternalTaskEnvelope"
 
 const envelope = (id: string, timeoutMs = 10_000) =>
@@ -64,6 +68,18 @@ describe("BoundedDelegationManager stable stop reasons", () => {
 			status: "failed",
 			stopReason: "failed",
 			summary: "provider failed",
+		})
+	})
+
+	it("preserves a failure that occurred before the child task was addressable", async () => {
+		const failed = new BoundedDelegationManager(async () => {
+			throw new InternalTaskNeverLaunchedError("worktree setup failed")
+		})
+
+		await expect(failed.run(envelope("never-launched"))).resolves.toMatchObject({
+			status: "failed",
+			stopReason: "never_launched",
+			summary: "worktree setup failed",
 		})
 	})
 

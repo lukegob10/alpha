@@ -5,6 +5,8 @@ import path from "path"
 import { promisify } from "util"
 
 import type { ToolSchedulerResult } from "../../agent/ToolScheduler"
+import { createAgentResponse } from "../../agent/AgentResponse"
+import { SearchLoopRecoveryPolicy } from "../../agent/SearchLoopRecoveryPolicy"
 import { getTrustedCommandExploration } from "../../tools/CommandExploration"
 import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 import { Task } from "../Task"
@@ -175,6 +177,37 @@ describe("Task trusted exploration progress", () => {
 
 		expect(suspendAfterCurrentTurn).not.toHaveBeenCalled()
 		expect(Reflect.get(task, "userMessageContent")).toEqual([])
+	})
+
+	it("adds model-step recovery guidance before pausing a persistent search-only loop", () => {
+		const { task, suspendAfterCurrentTurn } = createTask()
+		Reflect.set(
+			task,
+			"searchLoopRecoveryPolicy",
+			new SearchLoopRecoveryPolicy({ searchOnlyStepLimit: 2, maxAutomaticRecoveries: 1 }),
+		)
+		const observe = Reflect.get(task, "observeSearchLoopStep") as (
+			response: ReturnType<typeof createAgentResponse>,
+		) => void
+		const searchResponse = createAgentResponse([
+			{
+				type: "tool_call",
+				id: "search",
+				name: "exec_command",
+				arguments: { cmd: "rg -n needle src" },
+			},
+		])
+
+		observe.call(task, searchResponse)
+		observe.call(task, searchResponse)
+		expect(Reflect.get(task, "userMessageContent")).toEqual([
+			expect.objectContaining({ type: "text", text: expect.stringContaining("Search-loop recovery checkpoint") }),
+		])
+		expect(suspendAfterCurrentTurn).not.toHaveBeenCalled()
+
+		observe.call(task, searchResponse)
+		observe.call(task, searchResponse)
+		expect(suspendAfterCurrentTurn).toHaveBeenCalledWith("errors.search_loop_recovery_paused", "blocked")
 	})
 
 	it("keeps exploration identity separate from verification evidence", async () => {

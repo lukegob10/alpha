@@ -861,6 +861,44 @@ If complete, use attempt_completion.
 		expect(descriptor.inheritedInstructions).toBe("Language Preference: English")
 	})
 
+	it("distinguishes startup failure before task registration from a failure after registration", async () => {
+		const runFailure = async (registerBeforeFailure: boolean) => {
+			const provider = makeProviderHarness()
+			const parent = makeParent()
+			let attemptedTaskId: string | undefined
+			;(provider as any).taskSessions.getTask = (taskId: string) => {
+				if (taskId === parent.taskId) return parent
+				if (registerBeforeFailure && taskId === attemptedTaskId) return { taskId }
+				return undefined
+			}
+			;(provider as any).createTask = vi.fn(
+				async (_prompt: string, _images: unknown, _parent: unknown, options: any) => {
+					attemptedTaskId = options.taskId
+					throw new Error("child task storage unavailable")
+				},
+			)
+			const prepared = await provider.prepareSubagentGroup(parent as any, [
+				{ objective: "Inspect startup", agent_kind: "explore", fork_turns: "none" },
+			])
+			;(provider as any).finalizePreparedSubagentAuthorization(prepared)
+			const manager = new BoundedDelegationManager((envelope, signal) =>
+				(provider as any).runSubagentEnvelope(envelope, signal),
+			)
+			return manager.run(prepared.envelopes[0])
+		}
+
+		await expect(runFailure(false)).resolves.toMatchObject({
+			status: "failed",
+			stopReason: "never_launched",
+			summary: "child task storage unavailable",
+		})
+		await expect(runFailure(true)).resolves.toMatchObject({
+			status: "failed",
+			stopReason: "failed",
+			summary: "child task storage unavailable",
+		})
+	})
+
 	it("allows a requested task name that belongs to a different root task", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
@@ -4670,6 +4708,30 @@ If complete, use attempt_completion.
 				payload: { message: "Check the second case" },
 			}),
 		])
+	})
+
+	it("rejects a follow-up when the original child never created a retained task", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const root = await (provider as any).ensureAgentControlRoot(parent)
+		const child = await (provider as any).agentControlStore.createAgent({
+			taskId: "never-launched-followup-child",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			groupId: "never-launched-group",
+			nickname: "Missing child",
+			role: "review",
+			objective: "Exercise failed startup",
+			status: "failed",
+			snapshot: { stopReason: "never_launched" },
+		})
+
+		await expect(provider.requiresExplicitAgentFollowupApproval(parent as any, child.path)).rejects.toThrow(
+			"never launched and has no retained task",
+		)
+		await expect(provider.followupAgentTask(parent as any, child.path, "Try the review again")).rejects.toThrow(
+			"Start a new spawn_agent request",
+		)
 	})
 
 	it("buffers a live running follow-up through the child's next input boundary", async () => {

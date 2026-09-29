@@ -435,7 +435,17 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 		} finally {
 			const evidence = task.getCommandExecutionEvidence?.().find((item) => item.toolCallId === commandEvidenceId)
 			if (evidence) {
-				if (!failure && evidence.status !== "succeeded" && evidence.status !== "running") {
+				const completedProcessFailure =
+					!failure &&
+					evidence.status === "failed" &&
+					typeof evidence.exitCode === "number" &&
+					evidence.signalName === undefined
+				if (
+					!failure &&
+					!completedProcessFailure &&
+					evidence.status !== "succeeded" &&
+					evidence.status !== "running"
+				) {
 					const unknown =
 						effectsStarted !== "no" &&
 						evidence.exitCode === undefined &&
@@ -469,9 +479,16 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 							})
 						: undefined
 				callbacks.setResultMetadata?.({
-					executionStatus: evidence.status === "running" ? "running" : undefined,
+					executionStatus:
+						evidence.status === "running"
+							? "running"
+							: evidence.status === "succeeded"
+								? "success"
+								: evidence.status === "denied" || evidence.status === "cancelled"
+									? evidence.status
+									: "error",
 					status:
-						evidence.status === "succeeded" || evidence.status === "running"
+						evidence.status === "succeeded" || evidence.status === "running" || completedProcessFailure
 							? "success"
 							: evidence.status === "denied" || evidence.status === "cancelled"
 								? evidence.status

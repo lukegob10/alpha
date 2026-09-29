@@ -21,9 +21,9 @@ const pinnedSourceSha256 = {
 
 describe("pinned Codex runtime instructions", () => {
 	it("records the upstream source provenance", () => {
-		expect(CODEX_RUNTIME_PROMPT_SOURCE_COMMIT).toBe("dfdb40cd0b72dfba3293db5c7c441232e8ef1a60")
+		expect(CODEX_RUNTIME_PROMPT_SOURCE_COMMIT).toBe("4994306e9f80448bde85e770a0b0c93d3fee5665")
 		expect(CODEX_RUNTIME_PROMPT_SOURCE_PATH).toBe("codex-rs/models-manager/models.json")
-		expect(CODEX_RUNTIME_PROMPT_SOURCE_RETRIEVED_AT).toBe("2026-09-26")
+		expect(CODEX_RUNTIME_PROMPT_SOURCE_RETRIEVED_AT).toBe("2026-09-29")
 	})
 
 	it.each(gpt6ModelPrompts)("selects the pinned default collaboration mode for %s", (modelPromptSlug) => {

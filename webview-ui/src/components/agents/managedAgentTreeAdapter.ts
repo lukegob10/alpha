@@ -4,6 +4,7 @@ import type {
 	SubagentGroupState,
 	SubagentRole,
 	SubagentRunState,
+	SubagentStopReason,
 } from "@alpha-code/types"
 
 export type ManagedAgentStatus = SubagentRunState["status"] | "unknown"
@@ -15,6 +16,7 @@ export interface ManagedAgentNode {
 	nickname: string
 	role: SubagentRole
 	status: ManagedAgentStatus
+	stopReason?: SubagentStopReason
 	depth: number
 	attention?: string
 }
@@ -167,6 +169,7 @@ const buildProjectedTreeModel = (
 						nickname: node.nickname,
 						role: node.role,
 						status: node.status,
+						stopReason: node.stopReason,
 						depth: node.depth,
 						attention: node.attention?.label,
 					},
@@ -192,6 +195,7 @@ export function buildManagedAgentTreeModel(input: ManagedAgentTreeAdapterInput):
 			nickname: agent.nickname,
 			role: agent.role,
 			status: agent.status,
+			stopReason: agent.stopReason,
 			depth: depthFor(agent.taskId, parents, input.rootTaskId),
 			attention: agent.pendingApproval
 				? `Waiting for approval: ${agent.pendingApproval.operation}`

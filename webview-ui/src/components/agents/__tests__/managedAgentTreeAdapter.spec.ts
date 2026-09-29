@@ -170,6 +170,7 @@ describe("buildManagedAgentTreeModel", () => {
 			nickname: "Iris",
 			role: "review",
 			status: "timed_out",
+			stopReason: "output_token_limit",
 			depth: 2,
 			attention: "Waiting for user input",
 		})

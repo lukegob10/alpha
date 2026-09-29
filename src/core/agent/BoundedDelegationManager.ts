@@ -57,6 +57,14 @@ export class InternalTaskCancellationError extends Error {
 	}
 }
 
+/** A runner failed before it created an addressable child task or durable history entry. */
+export class InternalTaskNeverLaunchedError extends Error {
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options)
+		this.name = "InternalTaskNeverLaunchedError"
+	}
+}
+
 const cancellationMessage = (reason: unknown, fallback: string): string => {
 	if (reason instanceof Error && reason.message.trim()) return reason.message
 	if (typeof reason === "string" && reason.trim()) return reason
@@ -176,7 +184,11 @@ export class BoundedDelegationManager {
 				usage: { durationMs: Date.now() - started },
 				modelRouteId: envelope.modelRoute.id,
 				requiresParentVerification: false,
-				stopReason: controller.signal.aborted ? this.getCancellationStopReason(controller.signal) : "failed",
+				stopReason: controller.signal.aborted
+					? this.getCancellationStopReason(controller.signal)
+					: error instanceof InternalTaskNeverLaunchedError
+						? "never_launched"
+						: "failed",
 			}
 		} finally {
 			if (timer) clearTimeout(timer)

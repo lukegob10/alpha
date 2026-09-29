@@ -200,6 +200,7 @@ import {
 import {
 	BoundedDelegationManager,
 	InternalTaskCancellationError,
+	InternalTaskNeverLaunchedError,
 	type InternalTaskResult,
 } from "../agent/BoundedDelegationManager"
 import {
@@ -644,7 +645,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "september-2026-v3.1.1-agent-continuity"
+	public readonly latestAnnouncementId = "september-2026-v3.1.2-agent-recovery"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -8191,6 +8192,7 @@ export class AlphaProvider
 
 	public async requiresExplicitAgentFollowupApproval(parent: Task, target: string): Promise<boolean> {
 		const record = await this.requireControlledAgent(parent, target)
+		this.assertAgentHasRetainedTask(record)
 		await this.assertPlanAgentAdvanceAllowed(parent, record, "relaunch")
 		const manifest =
 			this.subagentDescriptors.get(record.taskId)?.contextManifest ?? record.snapshot?.contextManifest
@@ -8211,6 +8213,7 @@ export class AlphaProvider
 		record: AgentRecord,
 		instruction: string,
 	): Promise<unknown> {
+		this.assertAgentHasRetainedTask(record)
 		await this.assertPlanAgentAdvanceAllowed(parent, record, "relaunch")
 		await this.synchronizeParentVerificationObligations(parent)
 		if (
@@ -8287,6 +8290,18 @@ export class AlphaProvider
 			retainedSnapshot !== undefined,
 		)
 		return { ...handle, followup: true }
+	}
+
+	private assertAgentHasRetainedTask(record: AgentRecord): void {
+		if (
+			record.terminalResult?.stopReason !== "never_launched" &&
+			record.snapshot?.stopReason !== "never_launched"
+		) {
+			return
+		}
+		throw new Error(
+			`Agent ${record.path} never launched and has no retained task. Start a new spawn_agent request instead of using followup_task.`,
+		)
 	}
 
 	private async assertPlanAgentAdvanceAllowed(parent: Task, record: AgentRecord, action: string): Promise<void> {
@@ -9244,6 +9259,21 @@ export class AlphaProvider
 	}
 
 	private async runSubagentEnvelope(
+		envelope: InternalTaskEnvelope,
+		signal: AbortSignal,
+	): Promise<Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification">> {
+		try {
+			return await this.executeSubagentEnvelope(envelope, signal)
+		} catch (error) {
+			// A managed-agent control record exists before its Task. Preserve the
+			// distinction so presentation never advertises an unresolvable task ID.
+			if (this.getLiveTask(envelope.id) || this.taskHistoryStore.get(envelope.id)) throw error
+			const message = error instanceof Error ? error.message : String(error)
+			throw new InternalTaskNeverLaunchedError(message, { cause: error })
+		}
+	}
+
+	private async executeSubagentEnvelope(
 		envelope: InternalTaskEnvelope,
 		signal: AbortSignal,
 	): Promise<Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification">> {

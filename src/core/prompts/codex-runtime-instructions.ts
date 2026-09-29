@@ -4,9 +4,9 @@ import type { CodexModelPromptSlug } from "./codex-model-instructions"
  * Runtime-gated model_messages from openai/codex at the pinned catalog commit.
  * Source fields: collaboration_modes.default/plan and multi_agent.role/mode.
  */
-export const CODEX_RUNTIME_PROMPT_SOURCE_COMMIT = "dfdb40cd0b72dfba3293db5c7c441232e8ef1a60" as const
+export const CODEX_RUNTIME_PROMPT_SOURCE_COMMIT = "4994306e9f80448bde85e770a0b0c93d3fee5665" as const
 export const CODEX_RUNTIME_PROMPT_SOURCE_PATH = "codex-rs/models-manager/models.json" as const
-export const CODEX_RUNTIME_PROMPT_SOURCE_RETRIEVED_AT = "2026-09-26" as const
+export const CODEX_RUNTIME_PROMPT_SOURCE_RETRIEVED_AT = "2026-09-29" as const
 
 const GPT_6_MODEL_PROMPTS = new Set<CodexModelPromptSlug>(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])
 

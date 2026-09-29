@@ -23,6 +23,7 @@ describe("getObjectiveSection", () => {
 		expect(objective).toContain("smallest complete workflow")
 		expect(objective).toContain("requested outcome, coverage, material unknowns, and required checks")
 		expect(objective).toContain("For bounded work, proceed directly")
+		expect(objective).toContain("changing query wording alone is not progress")
 		expect(objective).toContain("For broad work, preserve all requested coverage")
 		expect(objective).toContain("For unclear work, resolve material unknowns")
 		expect(objective).toContain("concrete dependency, contradiction, material risk, or user scope change")

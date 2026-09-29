@@ -462,11 +462,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} keeps longer agent tasks moving and makes scheduled runs and task history more predictable.",
-			"acceptanceChecks": "Keep useful progress across repeated tool calls and recover when checkpoint setup is slow.",
-			"commandControl": "Give managed agents enough token budget to finish normal multi-step work.",
-			"workflowContinuity": "Run scheduled tasks only in open VS Code workspaces, with one claim across windows.",
-			"chatUpdates": "Keep task history scoped to the current project."
+			"welcome": "Alpha v{{version}} keeps delegated work visible, prevents search loops, and makes active traces easier to follow.",
+			"acceptanceChecks": "Open only managed-agent tasks that actually launched, with accurate terminal reasons when startup fails.",
+			"commandControl": "Recover from repeated search-only steps by consolidating evidence and taking a concrete next action.",
+			"workflowContinuity": "See a subtle pulse on folded command and edit traces while work is still running.",
+			"chatUpdates": "Use Codex-aligned Plan tools, command outcomes, prompts, and turn sequencing."
 		}
 	},
 	"crossTasks": {

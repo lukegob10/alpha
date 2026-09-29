@@ -12,6 +12,7 @@ guides. Check implementation details against current source and tests; dated mea
 | Local host acceptance experiments                   | [Runnable checks and retained evidence](harness-local-acceptance.md), [rendered UI](harness-ui-acceptance.md)                        |
 | Research basis and implementation verification      | [Harness research](harness-development-research.md), [progress](harness-implementation-progress.md)                                  |
 | Agent architecture and certification requirements   | [Multi-agent concurrency](multi-agent-concurrency-spec.md)                                                                           |
+| Turn sequencing and current Codex prompt alignment  | [Agent turn path trace](agent-turn-path-trace.md)                                                                                    |
 | Retired CLI and historical evaluation compatibility | [CLI retirement](cli-retirement.md)                                                                                                  |
 | Code/Plan modes and saved-task compatibility        | [Mode retirement](mode-retirement.md)                                                                                                |
 | Model tool catalogs and historical aliases          | [Tool surface refactor](tool-surface-refactor.md), [implementation checks](tool-surface-refactor-validation.md)                      |

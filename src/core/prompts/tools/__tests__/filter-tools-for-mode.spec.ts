@@ -265,14 +265,7 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 		)
 
 		expect(names).toEqual(
-			expect.arrayContaining([
-				"read_file",
-				"spawn_agent",
-				"request_user_input",
-				"update_plan",
-				"shell",
-				...lifecycleTools,
-			]),
+			expect.arrayContaining(["read_file", "spawn_agent", "request_user_input", "shell", ...lifecycleTools]),
 		)
 		expect(names).not.toContain("attempt_completion")
 		expect(names).not.toEqual(
@@ -281,6 +274,7 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 				"switch_mode",
 				"ask_followup_question",
 				"update_todo_list",
+				"update_plan",
 				"write_to_file",
 				"use_mcp_tool",
 			]),

@@ -239,7 +239,7 @@ describe("executeCommandTool", () => {
 				})
 
 				expect(setResultMetadata).toHaveBeenCalledWith({
-					executionStatus: undefined,
+					executionStatus: "success",
 					status: "success",
 					exitCode: 0,
 					timedOut: false,
@@ -250,6 +250,40 @@ describe("executeCommandTool", () => {
 				})
 			},
 		)
+
+		it("returns a completed nonzero process as a successful tool transaction with failed execution evidence", async () => {
+			mockAlphaTask.getCommandExecutionEvidence = vitest.fn(() => [
+				{
+					toolCallId: "nonzero-call",
+					executionId: "nonzero-execution",
+					status: "failed",
+					exitCode: 1,
+					startedAt: 1,
+					completedAt: 2,
+					command: "rg missing src",
+					cwd: mockAlphaTask.cwd,
+				},
+			])
+			mockToolUse.params.command = "rg missing src"
+			mockToolUse.nativeArgs = { command: "rg missing src" }
+			const setResultMetadata = vitest.fn()
+
+			await executeCommandTool.handle(mockAlphaTask as unknown as Task, mockToolUse, {
+				askApproval: mockAskApproval as unknown as AskApproval,
+				handleError: mockHandleError as unknown as HandleError,
+				pushToolResult: mockPushToolResult as unknown as PushToolResult,
+				setResultMetadata,
+				toolCallId: "nonzero-call",
+			})
+
+			expect(setResultMetadata).toHaveBeenLastCalledWith({
+				executionStatus: "error",
+				status: "success",
+				exitCode: 1,
+				timedOut: false,
+			})
+			expect(setResultMetadata.mock.calls.some(([metadata]) => metadata.failure !== undefined)).toBe(false)
+		})
 
 		it("should execute a command normally", async () => {
 			// Setup
