@@ -50,6 +50,7 @@ import {
 	type TerminalActionId,
 	type TerminalActionPromptType,
 	type HistoryItem,
+	type IncidentDashboardTurnDetail,
 	type CreateTaskOptions,
 	type CurrentTaskView,
 	type TokenUsage,
@@ -2726,9 +2727,61 @@ export class AlphaProvider
 	}
 
 	public async getIncidentDashboardSnapshot() {
-		if (!this.isIncidentDashboardEnabled()) return { generatedAt: Date.now(), tasks: [], alerts: [] }
-		await this.loadIncidentHistory()
+		if (!this.isIncidentDashboardEnabled()) return { generatedAt: Date.now(), tasks: [], alerts: [], turns: [] }
+		if (!this.incidentHistoryLoaded) {
+			void this.loadIncidentHistory().catch(() => this.log("Failed to load incident dashboard history"))
+		}
 		return this.incidentMonitor.snapshot()
+	}
+
+	public async getIncidentDashboardTurnDetail(turnId: string): Promise<IncidentDashboardTurnDetail | undefined> {
+		if (!/^[a-f0-9]{64}$/.test(turnId) || !this.isIncidentDashboardEnabled()) return undefined
+		await this.loadIncidentHistory()
+		if (!this.isIncidentDashboardEnabled()) return undefined
+		return this.incidentMonitor.getTurnDetail(turnId)
+	}
+
+	public async startIncidentDebuggingTurnTask(turnId: string): Promise<Task> {
+		if (!this.isIncidentDashboardEnabled()) throw new Error("Alpha debug mode is disabled")
+		if (!/^[a-f0-9]{64}$/.test(turnId)) throw new Error("Turn is no longer available")
+		await this.loadIncidentHistory()
+		if (!this.isIncidentDashboardEnabled()) throw new Error("Alpha debug mode is disabled")
+		const prompt = this.incidentMonitor.buildTurnInvestigationPrompt(turnId)
+		const sourceTaskId = this.incidentMonitor.getTurnInvestigationReferences(turnId)?.taskId
+		if (!prompt || !sourceTaskId) throw new Error("Turn is no longer available")
+		const investigationId = `turn:${turnId}`
+		const pending = this.incidentLaunches.get(investigationId)
+		if (pending) return pending
+		const launch = (async () => {
+			await this.taskHistoryStoreReady
+			if (!this.isIncidentDashboardEnabled()) throw new Error("Alpha debug mode is disabled")
+			const existing = this.taskHistoryStore
+				.getAll()
+				.find((item) => item.diagnosticIncidentId === investigationId)
+			if (existing) {
+				await this.showTaskWithId(existing.id)
+				const task = this.getLiveTask(existing.id)
+				if (task) return task
+				throw new Error("Existing investigation could not be reopened")
+			}
+			if (!this.taskSessions.canCreateTask()) throw new Error("Maximum live task limit reached")
+			const task = await this.createTask(prompt, undefined, undefined, {
+				preserveExisting: true,
+				background: true,
+				taskMode: planModeSlug,
+				diagnosticSession: true,
+				diagnosticIncidentId: investigationId,
+				diagnosticSourceTaskId: sourceTaskId,
+			})
+			await this.showTaskWithId(task.taskId)
+			return task
+		})()
+		this.incidentLaunches.set(investigationId, launch)
+		try {
+			return await launch
+		} finally {
+			this.incidentLaunches.delete(investigationId)
+		}
 	}
 
 	public async startIncidentDebuggingTask(alertId: string): Promise<Task> {

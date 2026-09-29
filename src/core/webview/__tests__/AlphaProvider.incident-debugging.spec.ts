@@ -27,11 +27,34 @@ describe("AlphaProvider incident investigation launch", () => {
 	let createTask: ReturnType<typeof vi.fn>
 	let showTaskWithId: ReturnType<typeof vi.fn>
 	let getAll: ReturnType<typeof vi.fn>
+	let positiveTurnId: string
+	let failedTurnId: string
 
 	beforeEach(async () => {
 		storage = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-incident-launch-"))
 		monitor = new AgentIncidentMonitor({ now: () => 100 })
 		alertId = monitor.observe(failureEvent)!.id
+		monitor.observe({
+			...failureEvent,
+			eventId: "positive-turn-start",
+			sequence: 1,
+			taskId: "success-source",
+			turnId: "positive-turn",
+			type: "turn_started",
+			payload: { phase: "working" },
+		})
+		monitor.observe({
+			...failureEvent,
+			eventId: "positive-turn-completed",
+			sequence: 2,
+			taskId: "success-source",
+			turnId: "positive-turn",
+			occurredAt: 101,
+			type: "turn_completed",
+			payload: { status: "completed" },
+		})
+		failedTurnId = monitor.snapshot().turns.find((turn) => turn.status === "failed")!.id
+		positiveTurnId = monitor.snapshot().turns.find((turn) => turn.status === "completed")!.id
 		createTask = vi.fn().mockResolvedValue({ taskId: "diagnostic-task" } as Task)
 		showTaskWithId = vi.fn().mockResolvedValue(undefined)
 		getAll = vi.fn(() => [])
@@ -83,6 +106,55 @@ describe("AlphaProvider incident investigation launch", () => {
 		Object.assign(provider, { getLiveTask: () => oldTask })
 		expect(await provider.startIncidentDebuggingTask(alertId)).toBe(oldTask)
 		expect(showTaskWithId).toHaveBeenCalledExactlyOnceWith("old-investigation")
+		expect(createTask).not.toHaveBeenCalled()
+	})
+
+	it("returns lazy turn details and launches read-only investigations for positive and error turns", async () => {
+		const [failureDetail, positiveDetail] = await Promise.all([
+			provider.getIncidentDashboardTurnDetail(failedTurnId),
+			provider.getIncidentDashboardTurnDetail(positiveTurnId),
+		])
+		expect(failureDetail?.turn).toMatchObject({ id: failedTurnId, status: "failed" })
+		expect(positiveDetail?.turn).toMatchObject({ id: positiveTurnId, status: "completed" })
+
+		const [first, duplicate] = await Promise.all([
+			provider.startIncidentDebuggingTurnTask(positiveTurnId),
+			provider.startIncidentDebuggingTurnTask(positiveTurnId),
+		])
+		const failed = await provider.startIncidentDebuggingTurnTask(failedTurnId)
+		expect(first).toBe(duplicate)
+		expect(createTask).toHaveBeenCalledTimes(2)
+		expect(createTask.mock.calls[0]?.[0]).toContain("Status: completed")
+		expect(createTask.mock.calls[0]?.[0]).not.toContain("PRIVATE PROVIDER ERROR")
+		expect(createTask.mock.calls[0]?.[3]).toMatchObject({
+			diagnosticSession: true,
+			diagnosticIncidentId: `turn:${positiveTurnId}`,
+			diagnosticSourceTaskId: "success-source",
+		})
+		expect(createTask.mock.calls[1]?.[0]).toContain("Status: failed")
+		expect(createTask.mock.calls[1]?.[3]).toMatchObject({
+			diagnosticSession: true,
+			diagnosticIncidentId: `turn:${failedTurnId}`,
+			diagnosticSourceTaskId: "source-task",
+		})
+		expect(showTaskWithId).toHaveBeenCalledTimes(2)
+		expect(failed).toMatchObject({ taskId: "diagnostic-task" })
+	})
+
+	it("rejects raw turn identifiers at the provider boundary", async () => {
+		expect(await provider.getIncidentDashboardTurnDetail("raw-turn-id")).toBeUndefined()
+		await expect(provider.startIncidentDebuggingTurnTask("raw-turn-id")).rejects.toThrow(
+			"Turn is no longer available",
+		)
+		expect(createTask).not.toHaveBeenCalled()
+	})
+
+	it("requires the debug gate for turn details and investigations", async () => {
+		Object.assign(provider, { isIncidentDashboardEnabled: () => false })
+		expect(await provider.getIncidentDashboardTurnDetail(failedTurnId)).toBeUndefined()
+		await expect(provider.startIncidentDebuggingTurnTask(failedTurnId)).rejects.toThrow(
+			"Alpha debug mode is disabled",
+		)
 		expect(createTask).not.toHaveBeenCalled()
 	})
 })
