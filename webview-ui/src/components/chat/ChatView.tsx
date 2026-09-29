@@ -578,8 +578,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const prevExpandedRowsRef = useRef<Record<number, boolean>>()
 	const lastTtsRef = useRef<string>("")
 	const [wasStreaming, setWasStreaming] = useState<boolean>(false)
-	const [checkpointWarning, setCheckpointWarning] = useState<
-		{ type: "WAIT_TIMEOUT" | "INIT_TIMEOUT"; timeout: number } | undefined
+	const [checkpointWarningState, setCheckpointWarningState] = useState<
+		| {
+				taskId: string
+				warning: { type: "WAIT_TIMEOUT" | "INIT_TIMEOUT"; timeout: number }
+		  }
+		| undefined
 	>(undefined)
 	const [isCondensing, setIsCondensing] = useState<boolean>(false)
 	const everVisibleMessagesTsRef = useRef<LRUCache<number, boolean>>(
@@ -1889,8 +1893,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				case "checkpointInitWarning":
 					// Concurrent and recently viewed tasks share this message channel.
 					// Never project one task's checkpoint state onto another task.
-					if (message.taskId === visibleCurrentTaskId) {
-						setCheckpointWarning(message.checkpointWarning)
+					if (typeof message.taskId === "string" && message.taskId === visibleCurrentTaskId) {
+						setCheckpointWarningState(
+							message.checkpointWarning
+								? { taskId: message.taskId, warning: message.checkpointWarning }
+								: undefined,
+						)
 					}
 					break
 				case "interactionRequired":
@@ -1920,7 +1928,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			handleSetChatBoxMessage,
 			handlePrimaryButtonClick,
 			handleSecondaryButtonClick,
-			setCheckpointWarning,
+			setCheckpointWarningState,
 			playSound,
 			visibleCurrentTaskId,
 			t,
@@ -2436,15 +2444,19 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	// Checkpoint warnings are ephemeral state for the visible task.
 	useEffect(() => {
-		setCheckpointWarning(undefined)
+		setCheckpointWarningState(undefined)
 	}, [visibleCurrentTaskId])
 
 	// Clear the visible task's warning when its chat is hidden or removed.
 	useEffect(() => {
 		if (isHidden || !task) {
-			setCheckpointWarning(undefined)
+			setCheckpointWarningState(undefined)
 		}
 	}, [isHidden, task])
+	const checkpointWarning =
+		checkpointWarningState && checkpointWarningState.taskId === visibleCurrentTaskId
+			? checkpointWarningState.warning
+			: undefined
 
 	const placeholderText = task ? t("chat:typeMessage") : t("chat:typeTask")
 
