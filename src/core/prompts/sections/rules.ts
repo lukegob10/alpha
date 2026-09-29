@@ -132,7 +132,7 @@ RULES
 - Do not use the ~ character or $HOME to refer to the home directory.
 - Before using exec_command, use the SYSTEM INFORMATION context to make the command compatible with the user's environment. Set its workdir parameter instead of changing directories. When dependent commands must be chained, use \`${chainOp}\` for the active shell.${chainNote ? ` ${chainNote}` : ""}
 - Some modes have restrictions on which files they can edit. If you attempt to edit a restricted file, the operation will be rejected with a FileRestrictionError that will specify which file patterns are allowed for the current mode.
-- Ask necessary user questions directly, with concise, task-relevant suggestions.
+- Ask early when an undiscoverable answer or a user-requested choice would materially change the task. Use request_user_input_async when independent work can continue; otherwise use request_user_input. If neither is available, ask directly in chat.
 - Reuse user-provided file contents when sufficient, but obtain fresh reads when current content or mutation safeguards require them.
 - When the requested work and checks are complete, give a concise final answer.
 - Use vision to inspect task-relevant images.

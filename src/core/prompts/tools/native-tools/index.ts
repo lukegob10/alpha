@@ -45,7 +45,7 @@ export interface NativeToolsOptions {
 	namedAgentTypes?: readonly { name: string; description: string }[]
 	/** Advertise the host-enforced non-mutating command contract used by strict Plan mode. */
 	planMode?: boolean
-	/** Include request_user_input in the Plan-mode model catalog. */
+	/** Include the blocking question tool for primary Code and Plan tasks. */
 	includeRequestUserInput?: boolean
 	/** Include the nonblocking user question tool for catalog-capable root tasks. */
 	includeRequestUserInputAsync?: boolean
@@ -78,7 +78,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		agentKinds,
 		namedAgentTypes,
 		planMode = false,
-		includeRequestUserInput = taskKind === "primary" && planMode,
+		includeRequestUserInput = taskKind === "primary",
 		includeRequestUserInputAsync = false,
 		mcpResourcesAvailable = false,
 		includeLegacyMcpResource = false,

@@ -442,65 +442,70 @@ suite("Ask / Auto / Full Access in the extension host", function () {
 		})
 	}
 
-	test("Plan request_user_input asks once for all questions and returns structured answers to the model", async () => {
-		let pendingGroupedRequests = 0
-		const { asks, modelInputs } = await runScriptedApproval({
-			approvalMode: "auto",
-			mode: "architect",
-			calls: [
-				{
-					name: "request_user_input",
-					arguments: {
-						questions: [
-							{
-								id: "approach",
-								header: "Approach",
-								question: "Which implementation approach should the plan use?",
-								options: [
-									{ label: "Focused (Recommended)", description: "Keep the implementation narrow." },
-									{ label: "Broad", description: "Cover adjacent behavior too." },
-								],
-							},
-							{
-								id: "validation",
-								header: "Testing",
-								question: "Which validation should the plan include?",
-								options: [
-									{ label: "Focused tests", description: "Run tests for the changed behavior." },
-									{ label: "Full suite", description: "Run the complete test suite." },
-								],
-							},
-						],
-					},
-				},
-			],
-			onAsk: (task, ask) => {
-				if (ask.ask !== "followup") return
-				const payload = JSON.parse(ask.text ?? "{}")
-				assert.deepEqual(
-					payload.requestUserInput.questions.map((question: { id: string }) => question.id),
-					["approach", "validation"],
-				)
-				pendingGroupedRequests = task.clineMessages.filter(
-					(message) => message.type === "ask" && message.ask === "followup" && !message.isAnswered,
-				).length
-				task.handleWebviewAskResponse(
-					"messageResponse",
-					JSON.stringify({
-						answers: {
-							approach: { answers: ["Focused (Recommended)"] },
-							validation: { answers: ["Focused tests"] },
+	for (const mode of ["architect", "code"] as const) {
+		test(`${mode} request_user_input asks once for all questions and returns structured answers to the model`, async () => {
+			let pendingGroupedRequests = 0
+			const { asks, modelInputs } = await runScriptedApproval({
+				approvalMode: "auto",
+				mode,
+				calls: [
+					{
+						name: "request_user_input",
+						arguments: {
+							questions: [
+								{
+									id: "approach",
+									header: "Approach",
+									question: "Which implementation approach should the plan use?",
+									options: [
+										{
+											label: "Focused (Recommended)",
+											description: "Keep the implementation narrow.",
+										},
+										{ label: "Broad", description: "Cover adjacent behavior too." },
+									],
+								},
+								{
+									id: "validation",
+									header: "Testing",
+									question: "Which validation should the plan include?",
+									options: [
+										{ label: "Focused tests", description: "Run tests for the changed behavior." },
+										{ label: "Full suite", description: "Run the complete test suite." },
+									],
+								},
+							],
 						},
-					}),
-				)
-			},
+					},
+				],
+				onAsk: (task, ask) => {
+					if (ask.ask !== "followup") return
+					const payload = JSON.parse(ask.text ?? "{}")
+					assert.deepEqual(
+						payload.requestUserInput.questions.map((question: { id: string }) => question.id),
+						["approach", "validation"],
+					)
+					pendingGroupedRequests = task.clineMessages.filter(
+						(message) => message.type === "ask" && message.ask === "followup" && !message.isAnswered,
+					).length
+					task.handleWebviewAskResponse(
+						"messageResponse",
+						JSON.stringify({
+							answers: {
+								approach: { answers: ["Focused (Recommended)"] },
+								validation: { answers: ["Focused tests"] },
+							},
+						}),
+					)
+				},
+			})
+			assert.equal(asks.filter((ask) => ask === "followup").length, 1)
+			assert.equal(pendingGroupedRequests, 1, "one grouped request should be pending while the user answers")
+			const returnedAnswers = findRequestUserInputAnswerMap(modelInputs.at(-1))
+			assert.deepEqual(returnedAnswers, {
+				approach: { answers: ["Focused (Recommended)"] },
+				validation: { answers: ["Focused tests"] },
+			})
 		})
-		assert.equal(asks.filter((ask) => ask === "followup").length, 1)
-		assert.equal(pendingGroupedRequests, 1, "one grouped request should be pending while the user answers")
-		const returnedAnswers = findRequestUserInputAnswerMap(modelInputs.at(-1))
-		assert.deepEqual(returnedAnswers, {
-			approach: { answers: ["Focused (Recommended)"] },
-			validation: { answers: ["Focused tests"] },
-		})
-	})
+	}
 })

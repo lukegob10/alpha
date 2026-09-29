@@ -98,7 +98,9 @@ describe("getRulesSection", () => {
 	it("keeps primary rules free of fixed conversation and discovery recipes", () => {
 		const result = getRulesSection(cwd)
 
-		expect(result).toContain("Ask necessary user questions directly")
+		expect(result).toContain("Ask early when an undiscoverable answer")
+		expect(result).toContain("request_user_input_async when independent work can continue")
+		expect(result).toContain("otherwise use request_user_input")
 		expect(result).not.toContain("ask_followup_question")
 		expect(result).not.toContain("2-4 suggested answers")
 		expect(result).not.toContain("Desktop")

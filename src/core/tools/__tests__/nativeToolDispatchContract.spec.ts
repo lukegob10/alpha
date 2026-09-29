@@ -33,7 +33,7 @@ describe("native tool production dispatch contract", () => {
 
 		expect(exposedNames).toContain("update_plan")
 		expect(exposedNames).toContain("apply_patch")
-		expect(exposedNames).not.toContain("request_user_input")
+		expect(exposedNames).toContain("request_user_input")
 		expect(exposedNames).not.toContain("update_todo_list")
 		expect(ALWAYS_AVAILABLE_TOOLS).toContain("update_plan")
 		expect(ALWAYS_AVAILABLE_TOOLS).not.toContain("update_todo_list")

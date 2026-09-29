@@ -32,8 +32,9 @@ async function getCatalogNames(modelInfo?: ModelInfo, taskKind: "primary" | "sub
 	return result.tools.map((tool) => (tool.type === "function" ? tool.function.name : ""))
 }
 
-describe("async user input tool catalog", () => {
-	it("exposes the schema only when exact catalog metadata opts in", async () => {
+describe("user input tool catalog", () => {
+	it("always exposes blocking questions to primary Code tasks and gates async questions by model metadata", async () => {
+		expect(await getCatalogNames()).toContain("request_user_input")
 		expect(await getCatalogNames()).not.toContain("request_user_input_async")
 		expect(
 			await getCatalogNames({ ...capableModel, experimental_supported_tools: ["send_user_message_async"] }),
@@ -44,6 +45,7 @@ describe("async user input tool catalog", () => {
 	})
 
 	it("keeps the question action out of managed child catalogs", async () => {
+		expect(await getCatalogNames(undefined, "subagent")).not.toContain("request_user_input")
 		expect(await getCatalogNames(capableModel, "subagent")).not.toContain("request_user_input_async")
 	})
 })

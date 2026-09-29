@@ -146,6 +146,7 @@ describe("native tool-surface refactor contract", () => {
 				"delete_ticket",
 				"apply_patch",
 				"exec_command",
+				"request_user_input",
 				"view_image",
 				"write_stdin",
 				"update_plan",

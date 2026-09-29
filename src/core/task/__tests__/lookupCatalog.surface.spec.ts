@@ -37,7 +37,8 @@ describe("lookup catalog preset", () => {
 		const result = await buildNativeToolsArrayWithRestrictions(
 			options({ userRequestText: "Where is retryLimit defined?" }),
 		)
-		expect(namesOf(result.tools)).toEqual(["exec_command"])
+		expect(namesOf(result.tools)).toEqual(["exec_command", "request_user_input"])
+		expect(result.surface?.isCallable("request_user_input")).toBe(true)
 		expect(result.surface?.isCallable("spawn_agent")).toBe(false)
 		expect(result.surface?.isCallable("update_todo_list")).toBe(false)
 		expect(result.surface?.isCallable("attempt_completion")).toBe(false)
@@ -49,6 +50,14 @@ describe("lookup catalog preset", () => {
 		expect(result.surface?.isCallable("exec_command")).toBe(true)
 		for (const name of ["read_file", "list_files", "search_files", "codebase_search"])
 			expect(result.surface?.isCallable(name), name).toBe(false)
+	})
+
+	it("honors an explicit question-tool restriction on Code lookup turns", async () => {
+		const result = await buildNativeToolsArrayWithRestrictions(
+			options({ userRequestText: "Where is retryLimit defined?", disabledTools: ["request_user_input"] }),
+		)
+		expect(namesOf(result.tools)).toEqual(["exec_command"])
+		expect(result.surface?.isCallable("request_user_input")).toBe(false)
 	})
 
 	it("advertises VS Code LM's executable read command without widening its approval policy", async () => {
@@ -63,7 +72,8 @@ describe("lookup catalog preset", () => {
 		const command = result.tools.find((tool) => tool.type === "function" && tool.function.name === "exec_command")
 
 		expect(command).toBeDefined()
-		expect(namesOf(result.tools)).toEqual(["exec_command"])
+		expect(namesOf(result.tools)).toEqual(["exec_command", "request_user_input"])
+		expect(result.surface?.isCallable("request_user_input")).toBe(true)
 		expect(result.surface?.isCallable("exec_command")).toBe(true)
 		expect(isToolAllowed(result.surface?.policy, "exec_command")).toBe(true)
 		expect(result.surface?.policy.visibleTools).toContain("exec_command")
@@ -272,6 +282,7 @@ describe("lookup catalog preset", () => {
 			"list_mcp_resource_templates",
 			"list_mcp_resources",
 			"read_mcp_resource",
+			"request_user_input",
 		])
 	})
 
@@ -449,8 +460,8 @@ describe("lookup catalog preset", () => {
 				userRequestText: "Where is retryLimit defined?",
 			}),
 		)
-		expect(namesOf(result.tools)).toEqual(["exec_command"])
-		expect([...(result.allowedFunctionNames ?? [])].sort()).toEqual(["exec_command"])
+		expect(namesOf(result.tools)).toEqual(["exec_command", "request_user_input"])
+		expect([...(result.allowedFunctionNames ?? [])].sort()).toEqual(["exec_command", "request_user_input"])
 		expect(result.surface?.isCallable("spawn_agent")).toBe(false)
 		expect(namesOf(result.tools)).not.toContain("spawn_agent")
 	})
