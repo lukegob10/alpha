@@ -419,6 +419,8 @@ export class TaskToolCatalogCache {
 			policy: entry.full.policy,
 			readGrant: entry.full.readGrant,
 			profile: entry.full.profile,
+			diagnosticSession: entry.full.diagnosticSession,
+			diagnosticSourceTaskId: entry.full.diagnosticSourceTaskId,
 			includeAllToolsWithRestrictions: entry.full.includeAllToolsWithRestrictions,
 			applyProfile: false,
 		})

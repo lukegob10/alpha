@@ -8,12 +8,20 @@ import { taskDesignHandoffSchema } from "./task-design-handoff.js"
 import { taskReasoningPreferenceSchema, taskReasoningStateSchema } from "./task-reasoning.js"
 import { approvalModeSchema } from "./approval-mode.js"
 
+export const diagnosticTaskIdentitySchema = z.string().trim().min(1).max(128)
+
 /**
  * HistoryItem
  */
 
 export const historyItemSchema = z.object({
 	id: z.string(),
+	/** True only for host-created Alpha diagnostic sessions with a constrained read-only tool surface. */
+	diagnosticSession: z.boolean().optional(),
+	/** Bounded host-generated incident identity used to deduplicate diagnostics across reloads. */
+	diagnosticIncidentId: diagnosticTaskIdentitySchema.optional(),
+	/** Bounded source task identity whose redacted evidence a diagnostic session may inspect. */
+	diagnosticSourceTaskId: diagnosticTaskIdentitySchema.optional(),
 	/** Independent primary conversation launched by this task; distinct from managed-agent/delegation parentTaskId. */
 	orchestrationParentTaskId: z.string().min(1).optional(),
 	orchestrationWorkspaceMode: z.enum(["shared", "worktree"]).optional(),

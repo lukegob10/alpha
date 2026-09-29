@@ -132,6 +132,7 @@ import {
 	ConsecutiveMistakeError,
 	MAX_MCP_TOOLS_THRESHOLD,
 	countEnabledMcpTools,
+	diagnosticTaskIdentitySchema,
 	resolveSubagentDelegationPolicy,
 	migrateApprovalMode,
 	disabledSubagentAutoApprovalPolicy,
@@ -197,7 +198,7 @@ import { ReasoningSummary } from "./ReasoningSummary"
 import { getWorkspacePath } from "../../utils/path"
 import { getCommandShell } from "../../utils/shell"
 import { sanitizeToolUseId } from "../../utils/tool-id"
-import { getTaskDirectoryPath } from "../../utils/storage"
+import { getTaskDirectoryPath, resolveExistingTaskDirectoryPathReadOnly } from "../../utils/storage"
 
 // prompts
 import { formatResponse } from "../prompts/responses"
@@ -262,6 +263,7 @@ import {
 	willManageContext,
 } from "../context-management"
 import { AlphaProvider } from "../webview/AlphaProvider"
+import { collectDiagnosticsEvidence, type CollectedDiagnosticsEvidence } from "../webview/diagnosticsEvidence"
 import { MultiSearchReplaceDiffStrategy } from "../diff/strategies/multi-search-replace"
 import {
 	type ApiMessage,
@@ -692,6 +694,9 @@ export function getSubagentAllowedToolNames(
 
 export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	readonly taskId: string
+	readonly diagnosticSession: boolean
+	readonly diagnosticIncidentId?: string
+	readonly diagnosticSourceTaskId?: string
 	readonly orchestrationParentTaskId?: string
 	readonly orchestrationWorkspaceMode?: "shared" | "worktree"
 	readonly orchestrationWorkspaceRelativePath?: string
@@ -1591,6 +1596,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		checkpointTimeout = DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 		consecutiveMistakeLimit = DEFAULT_CONSECUTIVE_MISTAKE_LIMIT,
 		taskId,
+		diagnosticSession,
+		diagnosticIncidentId,
+		diagnosticSourceTaskId,
 		task,
 		images,
 		historyItem,
@@ -1652,6 +1660,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		this.taskId = historyItem ? historyItem.id : (taskId ?? uuidv7())
+		this.diagnosticSession = (historyItem?.diagnosticSession ?? diagnosticSession) === true
+		const incidentId = historyItem?.diagnosticIncidentId ?? diagnosticIncidentId
+		const sourceTaskId = historyItem?.diagnosticSourceTaskId ?? diagnosticSourceTaskId
+		this.diagnosticIncidentId =
+			incidentId === undefined ? undefined : diagnosticTaskIdentitySchema.parse(incidentId)
+		this.diagnosticSourceTaskId =
+			sourceTaskId === undefined ? undefined : diagnosticTaskIdentitySchema.parse(sourceTaskId)
+		if (
+			this.diagnosticSession &&
+			(!this.diagnosticIncidentId || !this.diagnosticSourceTaskId || this.diagnosticSourceTaskId === this.taskId)
+		) {
+			throw new Error("Diagnostic sessions require a bounded incident ID and source task ID.")
+		}
 		this.alphaMessagesHydrated = historyItem === undefined
 		this.orchestrationParentTaskId = historyItem?.orchestrationParentTaskId ?? orchestrationParentTaskId
 		this.orchestrationWorkspaceMode = historyItem?.orchestrationWorkspaceMode ?? orchestrationWorkspaceMode
@@ -1672,6 +1693,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.parentTaskId =
 			contextManifest?.orchestration?.ancestry.parentTaskId ?? historyItem?.parentTaskId ?? parentTask?.taskId
 		this.taskKind = historyItem?.taskKind ?? taskKind ?? "primary"
+		if (this.diagnosticSession && this.taskKind !== "primary") {
+			throw new Error("Diagnostic sessions must use the primary task runtime.")
+		}
 		this.subagentGroupId = historyItem?.subagentGroupId ?? subagentGroupId
 		this.subagentNickname = historyItem?.subagentNickname ?? subagentNickname
 		this.subagentRole = historyItem?.subagentRole ?? subagentRole
@@ -4865,6 +4889,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				const { historyItem, tokenUsage } = await taskMetadata({
 					taskId: this.taskId,
+					diagnosticSession: this.diagnosticSession,
+					diagnosticIncidentId: this.diagnosticIncidentId,
+					diagnosticSourceTaskId: this.diagnosticSourceTaskId,
 					orchestrationParentTaskId: this.orchestrationParentTaskId,
 					orchestrationWorkspaceMode: this.orchestrationWorkspaceMode,
 					orchestrationWorkspaceRelativePath: this.orchestrationWorkspaceRelativePath,
@@ -6981,6 +7008,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return hardCeiling.filter((tool) => granted.has(tool))
 	}
 
+	public async readDiagnosticEvidence(): Promise<CollectedDiagnosticsEvidence> {
+		if (!this.diagnosticSession || !this.diagnosticSourceTaskId) {
+			throw new Error("This task does not have diagnostic evidence authority.")
+		}
+		const sourceDirectory = await resolveExistingTaskDirectoryPathReadOnly(
+			this.globalStoragePath,
+			this.diagnosticSourceTaskId,
+		)
+		return collectDiagnosticsEvidence(sourceDirectory, this.diagnosticSourceTaskId)
+	}
+
 	private shouldExposeAgentLifecycleTools(): boolean {
 		// Primary catalogs stay eager across idle, active, and reloaded sessions.
 		// Managed children are narrowed separately by their frozen authority grants.
@@ -7960,6 +7998,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				signal,
 				allowedToolNames: this.getTaskAllowedToolNames(),
 				taskKind: this.taskKind,
+				diagnosticSession: this.diagnosticSession,
+				diagnosticSourceTaskId: this.diagnosticSourceTaskId,
 				enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
 				crossTaskRole: this.getCrossTaskRole(),
 				userRequestText: this.getUserRequestTextForCatalog(),
@@ -12634,6 +12674,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						signal,
 						allowedToolNames: this.getTaskAllowedToolNames(),
 						taskKind: this.taskKind,
+						diagnosticSession: this.diagnosticSession,
+						diagnosticSourceTaskId: this.diagnosticSourceTaskId,
 						enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
 						crossTaskRole: this.getCrossTaskRole(),
 						userRequestText: this.getUserRequestTextForCatalog(),
@@ -13183,6 +13225,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								signal: stepInterruptionSignal,
 								allowedToolNames: this.getTaskAllowedToolNames(),
 								taskKind: this.taskKind,
+								diagnosticSession: this.diagnosticSession,
+								diagnosticSourceTaskId: this.diagnosticSourceTaskId,
 								enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
 								crossTaskRole: this.getCrossTaskRole(),
 								userRequestText: this.getUserRequestTextForCatalog(),
@@ -13475,6 +13519,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					},
 					allowedToolNames: this.getTaskAllowedToolNames(),
 					taskKind: this.taskKind,
+					diagnosticSession: this.diagnosticSession,
+					diagnosticSourceTaskId: this.diagnosticSourceTaskId,
 					enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
 					crossTaskRole: this.getCrossTaskRole(),
 					userRequestText: this.getUserRequestTextForCatalog(),

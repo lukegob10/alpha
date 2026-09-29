@@ -1,0 +1,66 @@
+{
+	"title": "Incident dashboard",
+	"debugMode": "Debug mode",
+	"description": "Review recent task activity and investigate alerts.",
+	"refresh": "Refresh",
+	"loading": "Loading recent activity…",
+	"unavailable": "Dashboard data could not be loaded. Try again.",
+	"tryAgain": "Try again",
+	"attention": "Needs attention",
+	"alerts": "Alerts",
+	"alertCount_one": "{{count}} alert",
+	"alertCount_other": "{{count}} alerts",
+	"noAlerts": "No current alerts.",
+	"recent": "Current and recent tasks",
+	"activity": "Activity timeline",
+	"noActivity": "No recent task activity.",
+	"noTaskActivity": "No activity recorded for this task.",
+	"startDebuggingTask": "Start debugging task",
+	"startDebuggingTaskFor": "Start debugging task for {{title}}",
+	"errorStatusLabel": "Status",
+	"statusUnavailable": "Unavailable",
+	"errorStatus": {
+		"failed": "Failed",
+		"incomplete": "Incomplete"
+	},
+	"evidenceStatus": {
+		"captured": "Evidence captured",
+		"absent": "Evidence absent",
+		"incomplete": "Evidence incomplete",
+		"notChecked": "Evidence not checked"
+	},
+	"affectedTask": "Task",
+	"taskUnavailable": "Task unavailable",
+	"turnId": "Turn",
+	"affectedTool": "Tool",
+	"toolCallId": "Tool call",
+	"updated": "Updated {{time}}",
+	"snapshotUpdated": "Dashboard refreshed {{time}}",
+	"unknownTime": "Unknown time",
+	"severity": {
+		"error": "Error",
+		"warning": "Warning"
+	},
+	"state": {
+		"running": "Running",
+		"waiting": "Waiting",
+		"completed": "Completed",
+		"failed": "Failed",
+		"cancelled": "Cancelled",
+		"interrupted": "Interrupted",
+		"unknown": "Unknown"
+	},
+	"event": {
+		"task_started": "Task started",
+		"turn_started": "Turn started",
+		"turn_completed": "Turn completed",
+		"turn_failed": "Turn failed",
+		"approval_requested": "Approval requested",
+		"approval_resolved": "Approval resolved",
+		"cancelled": "Cancelled",
+		"interrupted": "Interrupted",
+		"lifecycle_resync": "Activity resynchronized",
+		"lifecycle_invalid": "Invalid lifecycle data",
+		"task_status_changed": "Task status changed"
+	}
+}

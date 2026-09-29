@@ -28,6 +28,9 @@ const taskSizeCache = new NodeCache({ stdTTL: 30, checkperiod: 5 * 60 })
 
 export type TaskMetadataOptions = {
 	taskId: string
+	diagnosticSession?: boolean
+	diagnosticIncidentId?: string
+	diagnosticSourceTaskId?: string
 	orchestrationParentTaskId?: string
 	orchestrationWorkspaceMode?: "shared" | "worktree"
 	orchestrationWorkspaceRelativePath?: string
@@ -72,6 +75,9 @@ export type TaskMetadataOptions = {
 
 export async function taskMetadata({
 	taskId: id,
+	diagnosticSession,
+	diagnosticIncidentId,
+	diagnosticSourceTaskId,
 	orchestrationParentTaskId,
 	orchestrationWorkspaceMode,
 	orchestrationWorkspaceRelativePath,
@@ -159,6 +165,9 @@ export async function taskMetadata({
 	// where attempt_completion might run before a separate status update.
 	const historyItem: HistoryItem = {
 		id,
+		...(diagnosticSession ? { diagnosticSession: true } : {}),
+		...(diagnosticIncidentId ? { diagnosticIncidentId } : {}),
+		...(diagnosticSourceTaskId ? { diagnosticSourceTaskId } : {}),
 		...(orchestrationParentTaskId ? { orchestrationParentTaskId } : {}),
 		...(orchestrationWorkspaceMode ? { orchestrationWorkspaceMode } : {}),
 		...(orchestrationWorkspaceRelativePath !== undefined ? { orchestrationWorkspaceRelativePath } : {}),

@@ -382,6 +382,65 @@ describe("Alpha", () => {
 	})
 
 	describe("constructor", () => {
+		it("restores bounded diagnostic-session authority from persisted history", () => {
+			const alphaTask = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				historyItem: {
+					id: "diagnostic-task",
+					diagnosticSession: true,
+					diagnosticIncidentId: "incident-42",
+					diagnosticSourceTaskId: "source-task-9",
+					number: 1,
+					ts: Date.now(),
+					task: "Inspect incident evidence",
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+				startTask: false,
+			})
+
+			expect(alphaTask.diagnosticSession).toBe(true)
+			expect(alphaTask.diagnosticIncidentId).toBe("incident-42")
+			expect(alphaTask.diagnosticSourceTaskId).toBe("source-task-9")
+		})
+
+		it("rejects unbounded or non-primary diagnostic history", () => {
+			const historyItem = {
+				id: "diagnostic-task",
+				diagnosticSession: true,
+				diagnosticIncidentId: "incident-42",
+				diagnosticSourceTaskId: "source-task-9".repeat(20),
+				number: 1,
+				ts: Date.now(),
+				task: "Inspect incident evidence",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				taskKind: "subagent" as const,
+			}
+
+			expect(
+				() =>
+					new Task({
+						provider: mockProvider,
+						apiConfiguration: mockApiConfig,
+						historyItem,
+						startTask: false,
+					}),
+			).toThrow()
+			expect(
+				() =>
+					new Task({
+						provider: mockProvider,
+						apiConfiguration: mockApiConfig,
+						historyItem: { ...historyItem, diagnosticSourceTaskId: "source-task-9" },
+						startTask: false,
+					}),
+			).toThrow("primary task runtime")
+		})
+
 		it("should always have diff strategy defined", async () => {
 			const alphaTask = new Task({
 				provider: mockProvider,

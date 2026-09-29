@@ -45,6 +45,22 @@ describe("compactTaskHistoryForGlobalState", () => {
 		expect(JSON.stringify(result)).not.toContain('"id":"child"')
 	})
 
+	it("preserves diagnostic authority metadata in the compatibility mirror", () => {
+		const result = compactTaskHistoryForGlobalState([
+			item({
+				diagnosticSession: true,
+				diagnosticIncidentId: "incident-42",
+				diagnosticSourceTaskId: "source-task-9",
+			}),
+		])
+
+		expect(result[0]).toMatchObject({
+			diagnosticSession: true,
+			diagnosticIncidentId: "incident-42",
+			diagnosticSourceTaskId: "source-task-9",
+		})
+	})
+
 	it("keeps the newest roots that fit and never exceeds the byte budget", () => {
 		const roots = Array.from({ length: 30 }, (_, index) =>
 			item({ id: `root-${index}`, number: index, ts: index, task: `${index}-${"é".repeat(2_000)}` }),

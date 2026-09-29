@@ -5,7 +5,7 @@ import * as vscode from "vscode"
 import { getNonce } from "./getNonce"
 import { getUri } from "./getUri"
 
-export type WebviewUiView = "app" | "tickets"
+export type WebviewUiView = "app" | "tickets" | "incidents"
 
 const HMR_PROBE_TIMEOUT_MS = 1_000
 const DEFAULT_VITE_PORT = "5173"
@@ -27,7 +27,7 @@ export async function resolveWebviewHtml(options: {
 }
 
 function viewAttribute(view: WebviewUiView) {
-	return view === "tickets" ? ' data-view="tickets"' : ""
+	return view === "app" ? "" : ` data-view="${view}"`
 }
 
 function readVitePort() {

@@ -45,6 +45,7 @@ import type { WorktreeIncludeStatus } from "./worktree.js"
 import type { SubagentChangeSetActionCapability, SubagentChangeSetActionResult } from "./subagent.js"
 import type { BrowserToolName } from "./browser.js"
 import type { ToolApprovalDecision } from "./tool-approval.js"
+import type { IncidentDashboardSnapshot } from "./incident-dashboard.js"
 import type { TaskApprovalModeUpdate, TaskApprovalModeUpdateResult } from "./task-approval-mode.js"
 import type { ApprovalMode } from "./approval-mode.js"
 import type { SearchFilesOutputMode, SearchFilesQueryResult } from "./tool-params.js"
@@ -332,6 +333,7 @@ export interface ExtensionMessage {
 		| "ttsStop"
 		| "fileSearchResults"
 		| "ticketSearchResults"
+		| "incidentDashboardUpdate"
 		| "toggleApiConfigPin"
 		| "acceptInput"
 		| "setHistoryPreviewCollapsed"
@@ -376,6 +378,7 @@ export interface ExtensionMessage {
 		| "subagentChangeSetActionCapability"
 		| "subagentChangeSetActionResult"
 		| "taskOpenResult"
+	snapshot?: IncidentDashboardSnapshot
 	text?: string
 	taskId?: string
 	subagentChangeSetActionCapability?: SubagentChangeSetActionCapability
@@ -906,6 +909,8 @@ interface WebviewMessageBase {
 		| "runScheduledTaskNow"
 		| "duplicateScheduledTask"
 		| "requestScheduledTaskSkills"
+		| "incidentDashboardReady"
+		| "startDebuggingTask"
 	text?: string
 	taskId?: string
 	parentTaskId?: string
@@ -1037,6 +1042,7 @@ interface WebviewMessageBase {
 }
 
 export type WebviewMessage =
+	| (Omit<WebviewMessageBase, "type"> & { type: "startDebuggingTask"; alertId: string })
 	| (Omit<WebviewMessageBase, "type" | "value"> & { type: "updateVSCodeSetting"; value?: number | boolean })
 	| (Omit<WebviewMessageBase, "type" | "taskId" | "approvalRequestId" | "toolApprovalDecision"> & {
 			type: "toolApprovalResponse"
@@ -1058,6 +1064,7 @@ export type WebviewMessage =
 				| "queueMessage"
 				| "toolApprovalResponse"
 				| "setTaskApprovalMode"
+				| "startDebuggingTask"
 			>
 	  })
 

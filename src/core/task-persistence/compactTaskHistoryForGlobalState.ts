@@ -18,6 +18,9 @@ const truncate = (value: string | undefined, maxChars: number): string | undefin
 
 const toCompatibilityItem = (item: HistoryItem): HistoryItem => ({
 	id: item.id,
+	diagnosticSession: item.diagnosticSession,
+	diagnosticIncidentId: item.diagnosticIncidentId,
+	diagnosticSourceTaskId: item.diagnosticSourceTaskId,
 	rootTaskId: item.rootTaskId,
 	number: item.number,
 	ts: item.ts,

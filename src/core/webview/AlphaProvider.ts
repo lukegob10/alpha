@@ -183,6 +183,14 @@ import {
 import { reconcileSubagentGroupAfterReload } from "../agent/SubagentGroupRecovery"
 import { AgentLifecycleJournal, type AgentLifecycleEventInput } from "../agent/lifecycle"
 import {
+	AgentIncidentMonitor,
+	buildIncidentInvestigationPrompt,
+	type IncidentTaskSeed,
+} from "../agent/AgentIncidentMonitor"
+import { collectDiagnosticsEvidence } from "./diagnosticsEvidence"
+import { readRecentIncidentEvents } from "./readRecentIncidentEvents"
+import { resolveExistingTaskDirectoryPathReadOnly } from "../../utils/storage"
+import {
 	formatParentVerificationContext,
 	isBlockingParentVerification,
 	type ParentCompletionDecision,
@@ -408,6 +416,12 @@ export class AlphaProvider
 	private readonly agentLifecycleProjector: AgentLifecycleProjector
 	/** Durable journals are opened lazily for canonical lifecycle producers. */
 	private readonly agentLifecycleJournals = new Map<string, Promise<AgentLifecycleJournal>>()
+	private readonly incidentMonitor = new AgentIncidentMonitor()
+	private readonly incidentHostStartedAt = Date.now()
+	private incidentHistoryLoaded = false
+	private incidentHistoryLoad?: Promise<void>
+	private readonly incidentLaunches = new Map<string, Promise<Task>>()
+	private readonly notifiedIncidentIds = new Set<string>()
 	/** Serialize task-level status writes without deriving them from turn snapshots. */
 	private readonly taskLifecycleHistoryWrites = new Map<string, Promise<void>>()
 	/** A waiting parent receives the child's result through wait_task, so no second message is needed. */
@@ -2667,6 +2681,126 @@ export class AlphaProvider
 		})
 	}
 
+	public isIncidentDashboardEnabled(): boolean {
+		return vscode.workspace.getConfiguration(Package.name).get<boolean>("debug", false)
+	}
+
+	public subscribeIncidentDashboard(listener: () => void): () => void {
+		return this.incidentMonitor.subscribe(listener)
+	}
+
+	private async loadIncidentHistory(): Promise<void> {
+		if (this.incidentHistoryLoaded || !this.isIncidentDashboardEnabled()) return
+		if (this.incidentHistoryLoad) return this.incidentHistoryLoad
+		this.incidentHistoryLoad = (async () => {
+			await this.taskHistoryStoreReady
+			const liveTaskIds = new Set(this.getLiveTaskIds())
+			const histories = this.taskHistoryStore
+				.getAll()
+				.filter((item) => !item.diagnosticSession)
+				.sort((a, b) => Number(liveTaskIds.has(b.id)) - Number(liveTaskIds.has(a.id)) || b.ts - a.ts)
+				.slice(0, 12)
+			const seeds: IncidentTaskSeed[] = []
+			for (let offset = 0; offset < histories.length; offset += 3) {
+				const batch = histories.slice(offset, offset + 3)
+				const events = await Promise.all(
+					batch.map((item) => readRecentIncidentEvents(this.contextProxy.globalStorageUri.fsPath, item.id)),
+				)
+				for (const [index, item] of batch.entries()) {
+					seeds.push({
+						taskId: item.id,
+						status: item.status,
+						updatedAt: item.ts,
+						diagnosticSession: item.diagnosticSession,
+						evidenceStatus: events[index].status,
+						events: events[index].events,
+					})
+				}
+			}
+			this.incidentMonitor.restore(seeds)
+			this.incidentHistoryLoaded = true
+		})().finally(() => {
+			this.incidentHistoryLoad = undefined
+		})
+		return this.incidentHistoryLoad
+	}
+
+	public async getIncidentDashboardSnapshot() {
+		if (!this.isIncidentDashboardEnabled()) return { generatedAt: Date.now(), tasks: [], alerts: [] }
+		await this.loadIncidentHistory()
+		return this.incidentMonitor.snapshot()
+	}
+
+	public async startIncidentDebuggingTask(alertId: string): Promise<Task> {
+		if (!this.isIncidentDashboardEnabled()) throw new Error("Alpha debug mode is disabled")
+		await this.loadIncidentHistory()
+		const alert = this.incidentMonitor.getAlert(alertId)
+		if (!alert?.taskId) throw new Error("Incident is no longer available")
+		const sourceTaskId = alert.taskId
+		const pending = this.incidentLaunches.get(alertId)
+		if (pending) return pending
+		const launch = (async () => {
+			await this.taskHistoryStoreReady
+			const existing = this.taskHistoryStore.getAll().find((item) => item.diagnosticIncidentId === alertId)
+			if (existing) {
+				await this.showTaskWithId(existing.id)
+				const task = this.getLiveTask(existing.id)
+				if (task) return task
+				throw new Error("Existing investigation could not be reopened")
+			}
+			const taskDirectory = await resolveExistingTaskDirectoryPathReadOnly(
+				this.contextProxy.globalStorageUri.fsPath,
+				sourceTaskId,
+			)
+			const evidence = await collectDiagnosticsEvidence(taskDirectory, sourceTaskId)
+			this.incidentMonitor.setEvidenceStatus(sourceTaskId, evidence.evidence.status)
+			const prompt = buildIncidentInvestigationPrompt(alert, evidence)
+			if (!this.taskSessions.canCreateTask()) throw new Error("Maximum live task limit reached")
+			const task = await this.createTask(prompt, undefined, undefined, {
+				preserveExisting: true,
+				background: true,
+				taskMode: planModeSlug,
+				diagnosticSession: true,
+				diagnosticIncidentId: alertId,
+				diagnosticSourceTaskId: sourceTaskId,
+			})
+			await this.showTaskWithId(task.taskId)
+			return task
+		})()
+		this.incidentLaunches.set(alertId, launch)
+		try {
+			return await launch
+		} finally {
+			this.incidentLaunches.delete(alertId)
+		}
+	}
+
+	private observeIncidentLifecycleEvent(event: NonNullable<AgentLifecycleProjectionResult["event"]>): void {
+		if (!this.isIncidentDashboardEnabled()) return
+		const diagnosticSession =
+			this.getLiveTask(event.taskId)?.diagnosticSession ??
+			this.taskHistoryStore.get(event.taskId)?.diagnosticSession ??
+			false
+		const alert = this.incidentMonitor.observe(event, { diagnosticSession })
+		if (alert && event.occurredAt >= this.incidentHostStartedAt) this.notifyIncidentAlert(alert)
+	}
+
+	private notifyIncidentAlert(alert: { id: string; severity: "error" | "warning" }): void {
+		if (!alert || this.notifiedIncidentIds.has(alert.id)) return
+		this.notifiedIncidentIds.add(alert.id)
+		if (this.notifiedIncidentIds.size > 50) {
+			const retained = new Set(this.incidentMonitor.snapshot().alerts.map((item) => item.id))
+			for (const id of this.notifiedIncidentIds) if (!retained.has(id)) this.notifiedIncidentIds.delete(id)
+		}
+		const notice =
+			alert.severity === "error"
+				? "Alpha detected a task failure. Review the incident timeline for details."
+				: "Alpha detected an incomplete lifecycle record. Review the incident timeline for details."
+		void Promise.resolve(vscode.window.showWarningMessage(notice, "Open Incident Dashboard")).then((selection) => {
+			if (selection === "Open Incident Dashboard") void vscode.commands.executeCommand("alpha.openIncidents")
+		})
+	}
+
 	/**
 	 * Ingest one provider-neutral lifecycle event at the extension boundary.
 	 * The event is validated and reduced before it is forwarded to the webview;
@@ -2686,6 +2820,7 @@ export class AlphaProvider
 			)
 		}
 		if (projection.kind === "applied" && projection.event && projection.taskId) {
+			this.observeIncidentLifecycleEvent(projection.event)
 			this.enqueueAgentLifecycleMessage({
 				type: "agentLifecycleEvent",
 				taskId: projection.taskId,
@@ -2722,6 +2857,17 @@ export class AlphaProvider
 		reason: "append_rejected" | "replay_rejected" = "append_rejected",
 	): AgentLifecycleProjectionResult {
 		this.markAgentLifecycleDegraded(taskId, error, reason)
+		if (reason === "append_rejected" && this.isIncidentDashboardEnabled()) {
+			const diagnosticSession =
+				this.getLiveTask(taskId)?.diagnosticSession ??
+				this.taskHistoryStore.get(taskId)?.diagnosticSession ??
+				false
+			const alert = this.incidentMonitor.recordProjectionIssue(
+				{ taskId, reason: "persistence_failed" },
+				{ diagnosticSession },
+			)
+			if (alert) this.notifyIncidentAlert(alert)
+		}
 		return {
 			kind: "invalid",
 			status: "invalid",
@@ -2889,6 +3035,7 @@ export class AlphaProvider
 			)
 		}
 		if (projection.kind === "applied" && projection.event && projection.taskId) {
+			this.observeIncidentLifecycleEvent(projection.event)
 			await this.enqueueAgentLifecycleMessage({
 				type: "agentLifecycleEvent",
 				taskId: projection.taskId,
@@ -3023,6 +3170,34 @@ export class AlphaProvider
 	}
 
 	private async handleAgentLifecycleSnapshotResync(request: AgentLifecycleSnapshotResyncRequest): Promise<void> {
+		if (
+			this.isIncidentDashboardEnabled() &&
+			["sequence_gap", "duplicate_event_conflict", "duplicate_sequence", "identity_conflict"].includes(
+				request.reason,
+			)
+		) {
+			const diagnosticSession =
+				this.getLiveTask(request.taskId)?.diagnosticSession ??
+				this.taskHistoryStore.get(request.taskId)?.diagnosticSession ??
+				false
+			const alert = this.incidentMonitor.recordProjectionIssue(
+				{
+					taskId: request.taskId,
+					reason: request.reason as
+						| "sequence_gap"
+						| "duplicate_event_conflict"
+						| "duplicate_sequence"
+						| "identity_conflict",
+					eventId: request.eventId,
+					runId: request.runId,
+					turnId: request.turnId,
+					expectedSequence: request.expectedSequence,
+					receivedSequence: request.receivedSequence,
+				},
+				{ diagnosticSession },
+			)
+			if (alert) this.notifyIncidentAlert(alert)
+		}
 		const task = this.getLiveTask(request.taskId)
 		if (!task) {
 			this.log(`Lifecycle snapshot resync requested for non-live task ${request.taskId}`)

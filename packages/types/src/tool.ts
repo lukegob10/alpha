@@ -44,6 +44,7 @@ export const toolNames = [
 	"list_mcp_resources",
 	"list_mcp_resource_templates",
 	"read_mcp_resource",
+	"read_diagnostic_evidence",
 	"discover_tools",
 	"tool_search",
 	"ask_followup_question",

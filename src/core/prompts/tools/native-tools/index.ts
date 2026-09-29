@@ -2,6 +2,7 @@ import { ticketTools } from "./tickets"
 import type OpenAI from "openai"
 import accessMcpResource from "./access_mcp_resource"
 import { mcpResourceTools } from "./mcp_resources"
+import readDiagnosticEvidence from "./read_diagnostic_evidence"
 import applyPatch from "./apply_patch"
 import requestUserInput from "./request_user_input"
 import requestUserInputAsync from "./request_user_input_async"
@@ -33,6 +34,8 @@ export type { ReadFileToolOptions } from "./read_file"
  * Options for customizing the native tools array.
  */
 export interface NativeToolsOptions {
+	/** Expose only the redacted diagnostic evidence reader for a host-created diagnostic task. */
+	diagnosticSession?: boolean
 	/** Whether the model supports image processing (default: false) */
 	supportsImages?: boolean
 	/** Browser tools currently registered by VS Code. Omit to include the full catalog (primarily for tests). */
@@ -71,6 +74,8 @@ export function getLegacyFileToolSchemas(options: Pick<NativeToolsOptions, "supp
  * @returns Array of native tool definitions
  */
 export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.ChatCompletionTool[] {
+	if (options.diagnosticSession) return [readDiagnosticEvidence]
+
 	const {
 		supportsImages = false,
 		availableBrowserToolNames,

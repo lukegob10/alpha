@@ -37,6 +37,7 @@ vi.mock("vscode", () => ({
 	workspace: {
 		workspaceFolders: undefined,
 		getConfiguration: vi.fn(() => ({ get: vi.fn(() => []) })),
+		onDidChangeConfiguration: vi.fn(() => ({ dispose: vi.fn() })),
 		registerTextDocumentContentProvider: vi.fn(() => ({ dispose: vi.fn() })),
 	},
 	languages: {

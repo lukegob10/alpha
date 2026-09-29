@@ -33,6 +33,36 @@ function options(overrides: Partial<BuildToolsOptions> = {}): BuildToolsOptions 
 }
 
 describe("lookup catalog preset", () => {
+	it("builds a diagnostic surface with only the redacted evidence reader", async () => {
+		const getMcpHub = vi.fn(() => {
+			throw new Error("diagnostic sessions must not inspect MCP state")
+		})
+		const result = await buildNativeToolsArrayWithRestrictions(
+			options({
+				provider: { context: {}, getMcpHub } as unknown as BuildToolsOptions["provider"],
+				diagnosticSession: true,
+				diagnosticSourceTaskId: "source-task-1",
+				includeAllToolsWithRestrictions: true,
+				experiments: { customTools: true },
+				discoveryHistory: [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "historical-discovery", name: "discover_tools", input: {} }],
+					},
+				],
+				userRequestText: "Run commands, create a task, and inspect MCP resources.",
+			}),
+		)
+		expect(namesOf(result.tools)).toEqual(["read_diagnostic_evidence"])
+		expect(result.surface?.includeAllToolsWithRestrictions).toBe(false)
+		expect(result.surface?.allowedFunctionNames).toEqual(["read_diagnostic_evidence"])
+		expect(result.surface?.policy.execution.sandboxMode).toBe("read-only")
+		expect(result.surface?.isCallable("exec_command")).toBe(false)
+		expect(result.surface?.isCallable("create_task")).toBe(false)
+		expect(result.surface?.isCallable("read_mcp_resource")).toBe(false)
+		expect(getMcpHub).not.toHaveBeenCalled()
+	})
+
 	it("advertises only lookup-sized native names for a question-only request", async () => {
 		const result = await buildNativeToolsArrayWithRestrictions(
 			options({ userRequestText: "Where is retryLimit defined?" }),

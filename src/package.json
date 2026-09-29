@@ -46,6 +46,7 @@
 	"activationEvents": [
 		"onWebviewPanel:alpha.htmlDocument",
 		"onWebviewPanel:alpha.tickets",
+		"onWebviewPanel:alpha.incidents",
 		"onLanguage",
 		"onStartupFinished"
 	],
@@ -79,6 +80,11 @@
 				"command": "alpha.openTickets",
 				"title": "%command.openTickets.title%",
 				"icon": "$(issues)"
+			},
+			{
+				"command": "alpha.openIncidents",
+				"title": "%command.openIncidents.title%",
+				"icon": "$(pulse)"
 			},
 			{
 				"command": "alpha.plusButtonClicked",
@@ -182,6 +188,12 @@
 			}
 		],
 		"menus": {
+			"commandPalette": [
+				{
+					"command": "alpha.openIncidents",
+					"when": "config.alpha.debug"
+				}
+			],
 			"explorer/context": [
 				{
 					"command": "alpha.previewHtmlDocument",
@@ -251,6 +263,11 @@
 					"when": "view == alpha.SidebarProvider"
 				},
 				{
+					"command": "alpha.openIncidents",
+					"group": "overflow@0",
+					"when": "view == alpha.SidebarProvider && config.alpha.debug"
+				},
+				{
 					"command": "alpha.scheduledTasksButtonClicked",
 					"group": "overflow@2",
 					"when": "view == alpha.SidebarProvider"
@@ -286,6 +303,11 @@
 					"command": "alpha.historyButtonClicked",
 					"group": "overflow@1",
 					"when": "activeWebviewPanelId == alpha.TabPanelProvider"
+				},
+				{
+					"command": "alpha.openIncidents",
+					"group": "overflow@0",
+					"when": "activeWebviewPanelId == alpha.TabPanelProvider && config.alpha.debug"
 				},
 				{
 					"command": "alpha.scheduledTasksButtonClicked",
