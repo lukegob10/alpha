@@ -211,7 +211,7 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 
 		if (existingShadowRepository) {
 			this.log(`[${this.constructor.name}#initShadowGit] shadow git repo already exists at ${this.dotGitDir}`)
-			const worktree = await this.getShadowGitConfigWorktree(git)
+			const worktree = await measurePhase("worktree config lookup", () => this.getShadowGitConfigWorktree(git))
 
 			if (!worktree) {
 				throw new Error("Checkpoints require core.worktree to be set in the shadow git config")

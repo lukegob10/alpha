@@ -13,6 +13,7 @@ import fs from "fs/promises"
 import EventEmitter from "events"
 import crypto from "crypto"
 import { v7 as uuidv7 } from "uuid"
+import type { AgentMessage } from "../task-persistence/AgentMessageInbox"
 import { isDeepStrictEqual } from "util"
 import { settlementDiagnostics } from "../agent/SettlementDiagnostics"
 import { resolveWaitTimeout } from "../tools/AgentLifecycleTool"
@@ -182,6 +183,14 @@ import {
 } from "../agent/VerificationScope"
 import { reconcileSubagentGroupAfterReload } from "../agent/SubagentGroupRecovery"
 import { AgentLifecycleJournal, type AgentLifecycleEventInput } from "../agent/lifecycle"
+import {
+	AgentIncidentMonitor,
+	buildIncidentInvestigationPrompt,
+	type IncidentTaskSeed,
+} from "../agent/AgentIncidentMonitor"
+import { collectDiagnosticsEvidence } from "./diagnosticsEvidence"
+import { readRecentIncidentEvents } from "./readRecentIncidentEvents"
+import { resolveExistingTaskDirectoryPathReadOnly } from "../../utils/storage"
 import {
 	formatParentVerificationContext,
 	isBlockingParentVerification,
@@ -408,6 +417,12 @@ export class AlphaProvider
 	private readonly agentLifecycleProjector: AgentLifecycleProjector
 	/** Durable journals are opened lazily for canonical lifecycle producers. */
 	private readonly agentLifecycleJournals = new Map<string, Promise<AgentLifecycleJournal>>()
+	private readonly incidentMonitor = new AgentIncidentMonitor()
+	private readonly incidentHostStartedAt = Date.now()
+	private incidentHistoryLoaded = false
+	private incidentHistoryLoad?: Promise<void>
+	private readonly incidentLaunches = new Map<string, Promise<Task>>()
+	private readonly notifiedIncidentIds = new Set<string>()
 	/** Serialize task-level status writes without deriving them from turn snapshots. */
 	private readonly taskLifecycleHistoryWrites = new Map<string, Promise<void>>()
 	/** A waiting parent receives the child's result through wait_task, so no second message is needed. */
@@ -442,7 +457,6 @@ export class AlphaProvider
 			inheritedSkills?: SkillCatalogEntry[]
 			inheritedSkillMode?: string
 			pendingFollowup?: string
-			pendingSteerMessage?: { message: string; sequence: number }
 		}
 	>()
 	private readonly boundedDelegationManager = new BoundedDelegationManager(
@@ -2667,6 +2681,126 @@ export class AlphaProvider
 		})
 	}
 
+	public isIncidentDashboardEnabled(): boolean {
+		return vscode.workspace.getConfiguration(Package.name).get<boolean>("debug", false)
+	}
+
+	public subscribeIncidentDashboard(listener: () => void): () => void {
+		return this.incidentMonitor.subscribe(listener)
+	}
+
+	private async loadIncidentHistory(): Promise<void> {
+		if (this.incidentHistoryLoaded || !this.isIncidentDashboardEnabled()) return
+		if (this.incidentHistoryLoad) return this.incidentHistoryLoad
+		this.incidentHistoryLoad = (async () => {
+			await this.taskHistoryStoreReady
+			const liveTaskIds = new Set(this.getLiveTaskIds())
+			const histories = this.taskHistoryStore
+				.getAll()
+				.filter((item) => !item.diagnosticSession)
+				.sort((a, b) => Number(liveTaskIds.has(b.id)) - Number(liveTaskIds.has(a.id)) || b.ts - a.ts)
+				.slice(0, 12)
+			const seeds: IncidentTaskSeed[] = []
+			for (let offset = 0; offset < histories.length; offset += 3) {
+				const batch = histories.slice(offset, offset + 3)
+				const events = await Promise.all(
+					batch.map((item) => readRecentIncidentEvents(this.contextProxy.globalStorageUri.fsPath, item.id)),
+				)
+				for (const [index, item] of batch.entries()) {
+					seeds.push({
+						taskId: item.id,
+						status: item.status,
+						updatedAt: item.ts,
+						diagnosticSession: item.diagnosticSession,
+						evidenceStatus: events[index].status,
+						events: events[index].events,
+					})
+				}
+			}
+			this.incidentMonitor.restore(seeds)
+			this.incidentHistoryLoaded = true
+		})().finally(() => {
+			this.incidentHistoryLoad = undefined
+		})
+		return this.incidentHistoryLoad
+	}
+
+	public async getIncidentDashboardSnapshot() {
+		if (!this.isIncidentDashboardEnabled()) return { generatedAt: Date.now(), tasks: [], alerts: [] }
+		await this.loadIncidentHistory()
+		return this.incidentMonitor.snapshot()
+	}
+
+	public async startIncidentDebuggingTask(alertId: string): Promise<Task> {
+		if (!this.isIncidentDashboardEnabled()) throw new Error("Alpha debug mode is disabled")
+		await this.loadIncidentHistory()
+		const alert = this.incidentMonitor.getAlert(alertId)
+		if (!alert?.taskId) throw new Error("Incident is no longer available")
+		const sourceTaskId = alert.taskId
+		const pending = this.incidentLaunches.get(alertId)
+		if (pending) return pending
+		const launch = (async () => {
+			await this.taskHistoryStoreReady
+			const existing = this.taskHistoryStore.getAll().find((item) => item.diagnosticIncidentId === alertId)
+			if (existing) {
+				await this.showTaskWithId(existing.id)
+				const task = this.getLiveTask(existing.id)
+				if (task) return task
+				throw new Error("Existing investigation could not be reopened")
+			}
+			const taskDirectory = await resolveExistingTaskDirectoryPathReadOnly(
+				this.contextProxy.globalStorageUri.fsPath,
+				sourceTaskId,
+			)
+			const evidence = await collectDiagnosticsEvidence(taskDirectory, sourceTaskId)
+			this.incidentMonitor.setEvidenceStatus(sourceTaskId, evidence.evidence.status)
+			const prompt = buildIncidentInvestigationPrompt(alert, evidence)
+			if (!this.taskSessions.canCreateTask()) throw new Error("Maximum live task limit reached")
+			const task = await this.createTask(prompt, undefined, undefined, {
+				preserveExisting: true,
+				background: true,
+				taskMode: planModeSlug,
+				diagnosticSession: true,
+				diagnosticIncidentId: alertId,
+				diagnosticSourceTaskId: sourceTaskId,
+			})
+			await this.showTaskWithId(task.taskId)
+			return task
+		})()
+		this.incidentLaunches.set(alertId, launch)
+		try {
+			return await launch
+		} finally {
+			this.incidentLaunches.delete(alertId)
+		}
+	}
+
+	private observeIncidentLifecycleEvent(event: NonNullable<AgentLifecycleProjectionResult["event"]>): void {
+		if (!this.isIncidentDashboardEnabled()) return
+		const diagnosticSession =
+			this.getLiveTask(event.taskId)?.diagnosticSession ??
+			this.taskHistoryStore.get(event.taskId)?.diagnosticSession ??
+			false
+		const alert = this.incidentMonitor.observe(event, { diagnosticSession })
+		if (alert && event.occurredAt >= this.incidentHostStartedAt) this.notifyIncidentAlert(alert)
+	}
+
+	private notifyIncidentAlert(alert: { id: string; severity: "error" | "warning" }): void {
+		if (!alert || this.notifiedIncidentIds.has(alert.id)) return
+		this.notifiedIncidentIds.add(alert.id)
+		if (this.notifiedIncidentIds.size > 50) {
+			const retained = new Set(this.incidentMonitor.snapshot().alerts.map((item) => item.id))
+			for (const id of this.notifiedIncidentIds) if (!retained.has(id)) this.notifiedIncidentIds.delete(id)
+		}
+		const notice =
+			alert.severity === "error"
+				? "Alpha detected a task failure. Review the incident timeline for details."
+				: "Alpha detected an incomplete lifecycle record. Review the incident timeline for details."
+		void Promise.resolve(vscode.window.showWarningMessage(notice, "Open Incident Dashboard")).then((selection) => {
+			if (selection === "Open Incident Dashboard") void vscode.commands.executeCommand("alpha.openIncidents")
+		})
+	}
+
 	/**
 	 * Ingest one provider-neutral lifecycle event at the extension boundary.
 	 * The event is validated and reduced before it is forwarded to the webview;
@@ -2686,6 +2820,7 @@ export class AlphaProvider
 			)
 		}
 		if (projection.kind === "applied" && projection.event && projection.taskId) {
+			this.observeIncidentLifecycleEvent(projection.event)
 			this.enqueueAgentLifecycleMessage({
 				type: "agentLifecycleEvent",
 				taskId: projection.taskId,
@@ -2722,6 +2857,17 @@ export class AlphaProvider
 		reason: "append_rejected" | "replay_rejected" = "append_rejected",
 	): AgentLifecycleProjectionResult {
 		this.markAgentLifecycleDegraded(taskId, error, reason)
+		if (reason === "append_rejected" && this.isIncidentDashboardEnabled()) {
+			const diagnosticSession =
+				this.getLiveTask(taskId)?.diagnosticSession ??
+				this.taskHistoryStore.get(taskId)?.diagnosticSession ??
+				false
+			const alert = this.incidentMonitor.recordProjectionIssue(
+				{ taskId, reason: "persistence_failed" },
+				{ diagnosticSession },
+			)
+			if (alert) this.notifyIncidentAlert(alert)
+		}
 		return {
 			kind: "invalid",
 			status: "invalid",
@@ -2889,6 +3035,7 @@ export class AlphaProvider
 			)
 		}
 		if (projection.kind === "applied" && projection.event && projection.taskId) {
+			this.observeIncidentLifecycleEvent(projection.event)
 			await this.enqueueAgentLifecycleMessage({
 				type: "agentLifecycleEvent",
 				taskId: projection.taskId,
@@ -3023,6 +3170,34 @@ export class AlphaProvider
 	}
 
 	private async handleAgentLifecycleSnapshotResync(request: AgentLifecycleSnapshotResyncRequest): Promise<void> {
+		if (
+			this.isIncidentDashboardEnabled() &&
+			["sequence_gap", "duplicate_event_conflict", "duplicate_sequence", "identity_conflict"].includes(
+				request.reason,
+			)
+		) {
+			const diagnosticSession =
+				this.getLiveTask(request.taskId)?.diagnosticSession ??
+				this.taskHistoryStore.get(request.taskId)?.diagnosticSession ??
+				false
+			const alert = this.incidentMonitor.recordProjectionIssue(
+				{
+					taskId: request.taskId,
+					reason: request.reason as
+						| "sequence_gap"
+						| "duplicate_event_conflict"
+						| "duplicate_sequence"
+						| "identity_conflict",
+					eventId: request.eventId,
+					runId: request.runId,
+					turnId: request.turnId,
+					expectedSequence: request.expectedSequence,
+					receivedSequence: request.receivedSequence,
+				},
+				{ diagnosticSession },
+			)
+			if (alert) this.notifyIncidentAlert(alert)
+		}
 		const task = this.getLiveTask(request.taskId)
 		if (!task) {
 			this.log(`Lifecycle snapshot resync requested for non-live task ${request.taskId}`)
@@ -4811,27 +4986,12 @@ export class AlphaProvider
 			if (!target) throw new Error("The child task is not live to receive messages")
 		}
 
-		const attribution = targetIsParent
-			? `Message from task ${sender.taskId}:`
-			: `Message from parent task ${sender.taskId}:`
-		const attributedMessage = `${attribution}\n${message.trim()}`
+		await target.receiveAgentMessage({ id: uuidv7(), senderTaskId: sender.taskId, text: message.trim() })
 		if (target.isCompleted()) {
-			await target.resumeCompletedTaskFollowup(attributedMessage)
+			await target.resumeCompletedTaskFollowup("Continue with the pending agent messages.", [], "agent")
 			return { task_id: resolvedTargetTaskId, status: "resumed" }
 		}
-		if (target.abort) throw new Error("The target task is stopped and cannot accept a message")
-		if (target.taskAsk) {
-			await target.submitUserMessage(attributedMessage)
-			return { task_id: resolvedTargetTaskId, status: "delivered" }
-		}
-		if (target.isTurnActive()) {
-			if (!target.messageQueueService.addMessage(attributedMessage)) {
-				throw new Error("The target task message queue is full")
-			}
-			return { task_id: resolvedTargetTaskId, status: "queued" }
-		}
-		await target.steerUserMessage(attributedMessage)
-		return { task_id: resolvedTargetTaskId, status: "resumed" }
+		return { task_id: resolvedTargetTaskId, status: "buffered" }
 	}
 
 	public async steerIndependentTask(
@@ -7865,52 +8025,20 @@ export class AlphaProvider
 			throw new Error(`Agent ${record.path} is ${record.status}; use followup_task after it stops`)
 		}
 		const child = this.getLiveTask(record.taskId)
-		const descriptor = this.subagentDescriptors.get(record.taskId)
-		if (child && !child.canAcceptSteerMessage()) {
-			throw new Error(`Agent ${record.path} cannot accept another message yet`)
+		if (!child && !this.subagentDescriptors.has(record.taskId)) {
+			throw new Error(`Agent ${record.path} has no retained runtime to receive a message`)
 		}
-		if (!child && (!descriptor || descriptor.pendingSteerMessage)) {
-			throw new Error(`Agent ${record.path} cannot queue another message yet`)
-		}
-
-		const event = await this.agentControlStore.appendEvent({
-			rootTaskId: record.rootTaskId,
-			sender: parent.taskId,
-			recipient: record.taskId,
-			kind: "message",
-			name: "parent_message",
-			payload: { message: instruction },
-		})
-		let delivery: "delivered" | "queued"
-		// Appending the mailbox event is asynchronous. A child can be constructed
-		// and drain its pre-launch mailbox while that write is pending, so the
-		// preflight Task reference above may be stale by the time the event commits.
-		// Re-resolve after persistence: if launch already passed its drain, steer the
-		// now-live child directly instead of leaving an unacknowledged event behind.
-		const deliveryChild = this.getLiveTask(record.taskId)
-		if (deliveryChild?.canAcceptSteerMessage()) {
-			await deliveryChild.steerUserMessage(instruction, undefined, () =>
-				this.acknowledgeQueuedAgentMessage(record, {
-					message: instruction,
-					sequence: event.entry.sequence,
-				}),
-			)
-			delivery = "delivered"
-		} else {
-			if (!descriptor) throw new Error(`Agent ${record.path} has no retained runtime descriptor`)
-			descriptor!.pendingSteerMessage = { message: instruction, sequence: event.entry.sequence }
-			delivery = "queued"
-		}
-		const prepared = record.groupId ? this.preparedSubagentGroups.get(record.groupId) : undefined
-		const agent = prepared?.group.agents.find((candidate) => candidate.taskId === record.taskId)
-		if (prepared && agent) {
-			const steeredAt = Date.now()
-			agent.phase = "steering"
-			agent.phaseStartedAt = steeredAt
-			agent.steerCount = (agent.steerCount ?? 0) + 1
-			agent.lastSteeredAt = steeredAt
-			await parent.upsertSubagentGroup(prepared.group)
-		}
+		const append = () =>
+			this.agentControlStore.appendEvent({
+				rootTaskId: record.rootTaskId,
+				sender: parent.taskId,
+				recipient: record.taskId,
+				kind: "message",
+				name: "parent_message",
+				payload: { message: instruction },
+			})
+		const event = child ? await child.admitAgentMessage(append) : await append()
+		const delivery = "buffered" as const
 		return {
 			taskId: record.taskId,
 			path: record.path,
@@ -7947,65 +8075,65 @@ export class AlphaProvider
 			throw new Error(`Immediate parent ${record.parentTaskId} for agent ${record.path} is missing`)
 		}
 
-		const event = await this.agentControlStore.appendEvent({
-			rootTaskId: record.rootTaskId,
-			sender: record.taskId,
-			recipient: parent.taskId,
-			kind: "message",
-			name: "agent_progress",
-			payload: { message: instruction },
-		})
+		const append = () =>
+			this.agentControlStore.appendEvent({
+				rootTaskId: record.rootTaskId,
+				sender: record.taskId,
+				recipient: parent.taskId,
+				kind: "message",
+				name: "agent_progress",
+				payload: { message: instruction },
+			})
+		const recipient = this.getLiveTask(parent.taskId)
+		const event = recipient ? await recipient.admitAgentMessage(append) : await append()
 		return {
 			taskId: record.taskId,
 			path: record.path,
 			parentTaskId: parent.taskId,
 			parentPath: parent.path,
-			delivery: "queued",
+			delivery: "buffered",
 			event: event.entry,
 		}
 	}
 
-	private getQueuedAgentMessage(record: AgentRecord): { message: string; sequence: number } | undefined {
-		const descriptor = this.subagentDescriptors.get(record.taskId)
-		let pending = descriptor?.pendingSteerMessage
-		if (!pending) {
-			// A pre-receipt runtime may have marked a message delivered as soon as
-			// it entered volatile Task memory. Recover those delivered-but-unacknowledged
-			// entries as well as new messages that have not yet reached API history.
-			const entry = this.agentControlStore.getUnacknowledgedMailboxEntries(record.taskId, {
-				rootTaskId: record.rootTaskId,
+	public hasPendingAgentMessages(task: Task): boolean {
+		// Hydration and delivery await readiness; this synchronous completion hint may run earlier.
+		if (this.agentControlStoreLoadedAt === undefined) return false
+		const rootTaskId = this.getAgentControlRootTaskId(task)
+		if (!this.agentControlStore.getAgent(task.taskId, rootTaskId)) return false
+		return this.agentControlStore
+			.getUnacknowledgedMailboxEntries(task.taskId, {
+				rootTaskId,
 				kinds: ["message"],
-			})[0]
-			const message = entry?.payload?.message
-			if (entry && typeof message === "string") {
-				pending = { message, sequence: entry.sequence }
+			})
+			.some((entry) => entry.claimId === undefined)
+	}
+
+	/** Agent input shares the durable mailbox, but never the human queue or steering path. */
+	public async deliverAgentMessages(task: Task, persist: (message: AgentMessage) => Promise<void>): Promise<void> {
+		await this.agentControlStoreReady
+		const rootTaskId = this.getAgentControlRootTaskId(task)
+		if (!this.agentControlStore.getAgent(task.taskId, rootTaskId)) return
+		await this.agentControlStore.retryPendingMailboxClaimSettlements(task.taskId, rootTaskId)
+		if (!this.hasPendingAgentMessages(task)) return
+		const claim = await this.agentControlStore.claimMailbox(task.taskId, {
+			rootTaskId,
+			kinds: ["message"],
+			channel: "automatic",
+			limit: 100,
+		})
+		if (!claim.entries.length) return
+		try {
+			for (const entry of claim.entries) {
+				const text = entry.payload?.message
+				if (typeof text !== "string" || !entry.senderTaskId) throw new Error("Invalid agent mailbox message")
+				await persist({ id: entry.eventId, senderTaskId: entry.senderTaskId, text })
 			}
+		} catch (error) {
+			await this.agentControlStore.settleMailboxClaim(task.taskId, claim.claimId, "release", rootTaskId)
+			throw error
 		}
-		return pending
-	}
-
-	private async acknowledgeQueuedAgentMessage(
-		record: AgentRecord,
-		pending: { message: string; sequence: number },
-	): Promise<void> {
-		await this.agentControlStore.acknowledge(record.taskId, pending.sequence, record.rootTaskId)
-		const descriptor = this.subagentDescriptors.get(record.taskId)
-		if (descriptor?.pendingSteerMessage?.sequence === pending.sequence) {
-			delete descriptor.pendingSteerMessage
-		}
-	}
-
-	/** Deliver a pre-launch steering message before the child's first model request. */
-	private async deliverQueuedAgentMessage(child: Task, record: AgentRecord): Promise<void> {
-		const pending = this.getQueuedAgentMessage(record)
-		if (!pending) return
-		if (!child.canAcceptSteerMessage()) {
-			throw new Error(`Agent ${record.path} cannot accept its queued message`)
-		}
-
-		await child.steerUserMessage(pending.message, undefined, () =>
-			this.acknowledgeQueuedAgentMessage(record, pending),
-		)
+		await this.agentControlStore.settleMailboxClaim(task.taskId, claim.claimId, "acknowledge", rootTaskId)
 	}
 
 	public async requiresExplicitAgentFollowupApproval(parent: Task, target: string): Promise<boolean> {
@@ -9429,32 +9557,14 @@ export class AlphaProvider
 					signal.addEventListener("abort", onCancelled, { once: true })
 					if (followupInstruction) {
 						descriptor.pendingFollowup = undefined
-						const record = this.agentControlStore.getAgent(
-							child.taskId,
-							this.getAgentControlRootTaskId(parent),
-						)
-						const queued = record ? this.getQueuedAgentMessage(record) : undefined
-						const instruction = queued
-							? `${followupInstruction}\n\nAdditional parent steering:\n${queued.message}`
-							: followupInstruction
-						const followup = child.resumeSubagentFollowup(
-							instruction,
-							queued && record ? () => this.acknowledgeQueuedAgentMessage(record, queued) : undefined,
-						)
+						const followup = child.resumeSubagentFollowup(followupInstruction)
 						void followup
 							.then(undefined, (error) => finish("failed", child.getTokenUsage(), String(error)))
 							.catch((error) =>
-								this.log(`Failed to acknowledge queued steering for ${child.taskId}: ${String(error)}`),
+								this.log(`Failed to finalize follow-up for ${child.taskId}: ${String(error)}`),
 							)
 					} else {
-						const record = this.agentControlStore.getAgent(
-							child.taskId,
-							this.getAgentControlRootTaskId(parent),
-						)
-						void (record ? this.deliverQueuedAgentMessage(child, record) : Promise.resolve()).then(
-							() => child.start(),
-							(error) => finish("failed", child.getTokenUsage(), String(error)),
-						)
+						child.start()
 					}
 				}
 			},

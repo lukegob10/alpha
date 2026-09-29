@@ -7,6 +7,7 @@ import { getDesignHandoffSource } from "../../prompts/sections/design-handoff"
 import {
 	createStepContext,
 	digestValue,
+	getStepContextDigests,
 	toStepContextMetadata,
 	type StepContext,
 	type StepInstructionFragment,
@@ -130,6 +131,26 @@ function makeContext(
 }
 
 describe("StepContext", () => {
+	it("reuses frozen digests only for contexts frozen by the capture boundary", () => {
+		const context = makeContext()
+		const digests = getStepContextDigests(context)
+		expect(getStepContextDigests(context)).toBe(digests)
+		expect(Object.isFrozen(digests)).toBe(true)
+		expect(toStepContextMetadata(context).stepContextDigest).toBe(digests.context)
+
+		// Legacy callers can supply structurally typed, only shallow-frozen objects.
+		// They must still be rehashed when nested content changes.
+		const legacy = structuredClone(context)
+		const instructions = { ...legacy.instructions }
+		const shallow = Object.freeze({ ...legacy, instructions })
+		const before = getStepContextDigests(shallow)
+		instructions.systemPrompt = "changed prompt"
+		const after = getStepContextDigests(shallow)
+		expect(after.context).not.toBe(before.context)
+		expect(after.prompt).not.toBe(before.prompt)
+		expect(after).toEqual(getStepContextDigests(structuredClone(shallow)))
+	})
+
 	it("captures an exact immutable request snapshot and redacts credentials", () => {
 		const context = makeContext()
 		transcript[0] = { role: "user", content: "mutated" }

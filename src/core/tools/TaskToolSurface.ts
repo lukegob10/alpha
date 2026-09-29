@@ -1,5 +1,5 @@
 import type OpenAI from "openai"
-import type { ApprovalMode } from "@alpha-code/types"
+import { diagnosticTaskIdentitySchema, type ApprovalMode } from "@alpha-code/types"
 
 import { digestValue } from "../agent/StepContext"
 import {
@@ -23,6 +23,8 @@ import {
 	type ToolPolicySnapshot,
 	type ToolExecutionPolicy,
 } from "../agent/ToolPolicy"
+
+export const DIAGNOSTIC_SESSION_ALLOWED_TOOLS = Object.freeze(["read_diagnostic_evidence"] as const)
 
 export type TaskToolSchema = OpenAI.Chat.ChatCompletionTool
 
@@ -65,6 +67,10 @@ export interface TaskToolSurfaceInput {
 	autoApprovalEnabled?: boolean
 	/** Captured primary-task read settings. Omission keeps legacy approval execution. */
 	readGrant?: TaskReadGrant
+	/** Host-owned capability flag persisted with diagnostic tasks and restored on reload. */
+	diagnosticSession?: boolean
+	/** Incident task whose redacted evidence the diagnostic tool may read. */
+	diagnosticSourceTaskId?: string
 	capabilities?: Readonly<Record<string, ToolCapabilities>>
 	outputLimits?: Readonly<Record<string, number>>
 	execution?: ToolPolicyInput["execution"]
@@ -88,6 +94,9 @@ export interface TaskToolSurface {
 	readonly profile: UserExecutionProfile
 	/** True when the provider receives a schema superset plus an allow-list. */
 	readonly includeAllToolsWithRestrictions: boolean
+	/** Host-owned diagnostic authority retained when a cached surface is projected. */
+	readonly diagnosticSession: boolean
+	readonly diagnosticSourceTaskId?: string
 	/** Policy-aware lookup that fails closed for hidden or disabled names. */
 	readonly resolve: (name: string) => ToolDescriptor | undefined
 	readonly isCallable: (name: string) => boolean
@@ -310,6 +319,26 @@ function executionInput(
 	}
 }
 
+function diagnosticExecutionInput(
+	input: TaskToolSurfaceInput,
+	source: PolicySource | undefined,
+): ToolPolicyInput["execution"] {
+	const base = executionInput(input, source)
+	return {
+		...base,
+		sandboxMode: "read-only",
+		// Diagnostic evidence uses a host-owned task ID, never workspace paths.
+		// An empty root list makes generic path checks fail closed.
+		workspaceRoots: [],
+		outsideWorkspace: undefined,
+		command: {
+			...base?.command,
+			allowedPrefixes: [],
+			deniedPrefixes: ["*"],
+		},
+	}
+}
+
 /**
  * Capture one coherent model/runtime tool surface.
  *
@@ -325,28 +354,60 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		input.registry ?? new ToolRegistry(capturedSchemas.length > 0 ? { nativeTools: capturedSchemas } : {})
 	const providerSchemas = providedSchemas !== undefined ? capturedSchemas : registry.getSchemas()
 	const source = asPolicySource(input.policy)
-	const includeAllToolsWithRestrictions = input.includeAllToolsWithRestrictions === true
+	const diagnosticSession = input.diagnosticSession === true
+	const includeAllToolsWithRestrictions = !diagnosticSession && input.includeAllToolsWithRestrictions === true
 	const profile = resolveProfile(input)
 
 	// Registry descriptors are immutable after capture. This prevents a later
 	// registration from making the digest and executable surface disagree.
 	registry.seal()
 
-	const allSchemas = normalizeSchemas(providerSchemas, registry, true)
+	const allSchemas = diagnosticSession
+		? DIAGNOSTIC_SESSION_ALLOWED_TOOLS.flatMap((name) => {
+				const schema = registry.getSchema(name)
+				return schema ? [schema] : []
+			})
+		: normalizeSchemas(providerSchemas, registry, true).filter(
+				(schema) =>
+					schema.type !== "function" ||
+					canonicalizeToolName(schema.function.name) !== "read_diagnostic_evidence",
+			)
 	const schemaNames = functionNames(allSchemas)
 	const schemaNameSet = new Set(schemaNames)
 	const requestedVisibleNames = input.visibleToolNames ?? input.visibleTools ?? source?.visibleTools ?? schemaNames
 	const policyVisibleSet = source ? new Set(source.visibleTools.map(canonicalizeToolName)) : undefined
+	const diagnosticAllowedNames: ReadonlySet<string> = new Set(DIAGNOSTIC_SESSION_ALLOWED_TOOLS)
+	const diagnosticToolAllowed = (name: string) => {
+		if (!diagnosticSession || input.taskKind === "subagent") return false
+		if (!diagnosticTaskIdentitySchema.safeParse(input.diagnosticSourceTaskId).success) return false
+		if (!diagnosticAllowedNames.has(canonicalizeToolName(name))) return false
+		const capability = registry.resolve(name)?.capabilities
+		return (
+			capability?.sideEffects === "none" &&
+			capability.controlFlow === false &&
+			capability.requiresApproval === false
+		)
+	}
 	const visibleNames = requestedVisibleNames
 		.map(canonicalizeToolName)
-		.filter((name) => schemaNameSet.has(name) && (!policyVisibleSet || policyVisibleSet.has(name)))
+		.filter(
+			(name) =>
+				schemaNameSet.has(name) &&
+				(!policyVisibleSet || policyVisibleSet.has(name)) &&
+				(!diagnosticSession || diagnosticToolAllowed(name)),
+		)
 	const visibleSet = new Set(visibleNames)
 	const requestedAllowedNames =
 		input.allowedToolNames ?? input.allowedFunctionNames ?? source?.allowedTools ?? visibleNames
 	const policyAllowedSet = source ? new Set(source.allowedTools.map(canonicalizeToolName)) : undefined
 	const candidateAllowedNames = requestedAllowedNames
 		.map(canonicalizeToolName)
-		.filter((name) => visibleSet.has(name) && (!policyAllowedSet || policyAllowedSet.has(name)))
+		.filter(
+			(name) =>
+				visibleSet.has(name) &&
+				(!policyAllowedSet || policyAllowedSet.has(name)) &&
+				(!diagnosticSession || diagnosticToolAllowed(name)),
+		)
 	const disabledNames = [
 		...(input.disabledTools ?? []),
 		...(input.disabledToolNames ?? []),
@@ -361,7 +422,7 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		autoApprovalEnabled: input.autoApprovalEnabled ?? source?.autoApprovalEnabled,
 		capabilities: descriptorCapabilities(registry, input.capabilities ?? source?.capabilities),
 		outputLimits: descriptorOutputLimits(registry, input.outputLimits ?? source?.outputLimits),
-		execution: executionInput(input, source),
+		execution: diagnosticSession ? diagnosticExecutionInput(input, source) : executionInput(input, source),
 	})
 
 	const profileResult =
@@ -419,6 +480,8 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		policy: finalPolicy,
 		readGrant,
 		profile: { id: profile.id, digest: executionProfileDigest(profile) },
+		diagnosticSession,
+		diagnosticSourceTaskId: input.diagnosticSourceTaskId,
 		includeAllToolsWithRestrictions,
 	})
 
@@ -432,6 +495,8 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		readGrant,
 		digest,
 		profile,
+		diagnosticSession,
+		diagnosticSourceTaskId: input.diagnosticSourceTaskId,
 		includeAllToolsWithRestrictions,
 		resolve: (name: string) => {
 			const canonical = canonicalizeToolName(name)

@@ -27,6 +27,7 @@ import type { Task } from "../task/Task"
 
 import { accessMcpResourceTool } from "./accessMcpResourceTool"
 import { listMcpResourcesTool, listMcpResourceTemplatesTool, readMcpResourceTool } from "./McpResourceTools"
+import { readDiagnosticEvidenceTool } from "./ReadDiagnosticEvidenceTool"
 import { applyDiffTool } from "./ApplyDiffTool"
 import { applyPatchTool } from "./ApplyPatchTool"
 import { askFollowupQuestionTool } from "./AskFollowupQuestionTool"
@@ -475,6 +476,7 @@ const TOOL_NAMES = [
 	"list_mcp_resources",
 	"list_mcp_resource_templates",
 	"read_mcp_resource",
+	"read_diagnostic_evidence",
 	"apply_diff",
 	"apply_patch",
 	"ask_followup_question",
@@ -573,6 +575,7 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 		// Individual tool handlers own the exact approval prompt. This flag is
 		// metadata for scheduling and future policy decisions, not a second prompt.
 		requiresApproval:
+			name !== "read_diagnostic_evidence" &&
 			name !== "report_progress" &&
 			name !== "list_tickets" &&
 			name !== "read_ticket" &&
@@ -803,6 +806,7 @@ export class ToolRegistry {
 		this.registerBuiltIn("list_mcp_resources", listMcpResourcesTool, schemas)
 		this.registerBuiltIn("list_mcp_resource_templates", listMcpResourceTemplatesTool, schemas)
 		this.registerBuiltIn("read_mcp_resource", readMcpResourceTool, schemas)
+		this.registerBuiltIn("read_diagnostic_evidence", readDiagnosticEvidenceTool, schemas)
 		this.registerBuiltIn("apply_diff", applyDiffTool, schemas)
 		this.registerBuiltIn("manage_command", manageCommandTool, schemas)
 		this.registerBuiltIn("write_stdin", writeStdinTool, schemas)

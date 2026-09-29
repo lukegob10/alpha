@@ -50,6 +50,55 @@ suite("Alpha Extension", function () {
 		await vscode.window.tabGroups.close(tabs)
 	})
 
+	test("Debug mode exposes the incident overflow action and opens one dashboard tab", async () => {
+		const extension = vscode.extensions.getExtension(process.env.ALPHA_E2E_EXTENSION_ID!)
+		assert.ok(extension)
+		const menus = extension.packageJSON.contributes?.menus as
+			| Record<string, Array<{ command: string; group?: string; when?: string }>>
+			| undefined
+		const viewAction = menus?.["view/title"]?.find((item) => item.command === "alpha.openIncidents")
+		assert.equal(viewAction?.group, "overflow@0")
+		assert.equal(viewAction?.when, "view == alpha.SidebarProvider && config.alpha.debug")
+		const editorAction = menus?.["editor/title"]?.find((item) => item.command === "alpha.openIncidents")
+		assert.equal(editorAction?.group, "overflow@0")
+		assert.equal(editorAction?.when, "activeWebviewPanelId == alpha.TabPanelProvider && config.alpha.debug")
+
+		const configuration = vscode.workspace.getConfiguration("alpha")
+		const priorDebug = configuration.inspect<boolean>("debug")?.globalValue
+		const incidentTabs = () =>
+			vscode.window.tabGroups.all
+				.flatMap((group) => group.tabs)
+				.filter(
+					(tab) =>
+						tab.input instanceof vscode.TabInputWebview && tab.input.viewType.includes("alpha.incidents"),
+				)
+		try {
+			await configuration.update("debug", true, vscode.ConfigurationTarget.Global)
+			assert.equal(vscode.workspace.getConfiguration("alpha").get("debug"), true)
+			const opened = new Promise<void>((resolve, reject) => {
+				const listener = vscode.window.tabGroups.onDidChangeTabs(() => {
+					if (incidentTabs().length > 0) {
+						clearTimeout(timeout)
+						listener.dispose()
+						resolve()
+					}
+				})
+				const timeout = setTimeout(() => {
+					listener.dispose()
+					reject(new Error("Incident dashboard tab did not open"))
+				}, 10000)
+			})
+			await vscode.commands.executeCommand("alpha.openIncidents")
+			await opened
+			await vscode.commands.executeCommand("alpha.openIncidents")
+			assert.equal(incidentTabs().length, 1)
+		} finally {
+			await configuration.update("debug", priorDebug, vscode.ConfigurationTarget.Global)
+			const tabs = incidentTabs()
+			if (tabs.length > 0) await vscode.window.tabGroups.close(tabs)
+		}
+	})
+
 	test("legacy provider setups remain readable and reject execution without disrupting the host", async () => {
 		const api = globalThis.api
 		const original = api.getConfiguration()
@@ -90,6 +139,7 @@ suite("Alpha Extension", function () {
 			"historyButtonClicked",
 			"scheduledTasksButtonClicked",
 			"openTickets",
+			"openIncidents",
 			"marketplaceButtonClicked",
 			"newTask",
 			"setCustomStoragePath",

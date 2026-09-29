@@ -183,6 +183,12 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 	): Promise<boolean> {
 		let decision = await task.waitForCompletionGateDecision()
 		if (decision.allowed) return false
+		if (task.hasPendingAgentMessages()) {
+			pushToolResult(
+				formatResponse.toolError(decision.message ?? "Read pending agent messages before completing."),
+			)
+			return true
+		}
 		if (decision.reasonCode === "interrupted") {
 			if (task.hasPendingSteerMessage()) {
 				pushToolResult(formatResponse.toolError(decision.message ?? "Completion interrupted by user guidance."))

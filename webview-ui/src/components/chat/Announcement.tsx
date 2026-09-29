@@ -1,7 +1,7 @@
 import { memo, useState } from "react"
 
 import { Package } from "@alpha/package"
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@src/components/ui"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@src/components/ui"
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 
 interface AnnouncementProps {
@@ -36,7 +36,9 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 					<DialogTitle>{t("chat:announcement.title", { version: Package.version })}</DialogTitle>
 				</DialogHeader>
 				<div className="space-y-2 text-sm">
-					<p>{t("chat:announcement.release.welcome", { version: Package.version })}</p>
+					<DialogDescription className="text-inherit">
+						{t("chat:announcement.release.welcome", { version: Package.version })}
+					</DialogDescription>
 					<ul className="list-disc space-y-1 pl-5">
 						<li>{t("chat:announcement.release.acceptanceChecks")}</li>
 						<li>{t("chat:announcement.release.commandControl")}</li>

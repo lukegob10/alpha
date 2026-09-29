@@ -45,6 +45,26 @@ describe("taskMetadata sub-agent routing", () => {
 		expect(JSON.stringify(historyItem.subagentModelRoute)).not.toMatch(/key|secret|authorization/i)
 	})
 
+	it("persists bounded diagnostic-session identity for task reload", async () => {
+		const { historyItem } = await taskMetadata({
+			taskId: "diagnostic-task",
+			diagnosticSession: true,
+			diagnosticIncidentId: "incident-42",
+			diagnosticSourceTaskId: "source-task-9",
+			taskNumber: 3,
+			messages: [],
+			globalStoragePath: storageRoot,
+			workspace,
+		})
+
+		expect(historyItem).toMatchObject({
+			id: "diagnostic-task",
+			diagnosticSession: true,
+			diagnosticIncidentId: "incident-42",
+			diagnosticSourceTaskId: "source-task-9",
+		})
+	})
+
 	it("persists a cloned context manifest without private instruction or turn bodies", async () => {
 		const route = {
 			source: "parent" as const,

@@ -17,7 +17,7 @@ export interface ToolPolicyCapability {
 	parallelMcpRead?: boolean
 }
 
-export type ToolSandboxMode = "workspace-write"
+export type ToolSandboxMode = "workspace-write" | "read-only"
 
 export interface ToolCommandPolicy {
 	allowedPrefixes: readonly string[]
@@ -114,7 +114,7 @@ export function createToolPolicySnapshot(input: ToolPolicyInput): ToolPolicySnap
 	const executionInput = input.execution ?? {}
 	const commandInput = executionInput.command ?? {}
 	const execution: ToolExecutionPolicy = {
-		sandboxMode: "workspace-write",
+		sandboxMode: executionInput.sandboxMode === "read-only" ? "read-only" : "workspace-write",
 		workspaceRoots: uniqueNames(executionInput.workspaceRoots ?? []),
 		...(executionInput.outsideWorkspace === "approval" ? { outsideWorkspace: "approval" as const } : {}),
 		command: {
@@ -188,7 +188,7 @@ export function getToolOutputLimit(policy: ToolPolicySnapshot | undefined, name:
 
 export function isPathAllowed(policy: ToolPolicySnapshot | undefined, candidate: string, cwd?: string): boolean {
 	const roots = policy?.execution.workspaceRoots ?? []
-	if (roots.length === 0) return true
+	if (roots.length === 0) return policy?.execution.sandboxMode !== "read-only"
 
 	const resolvedCandidate = path.resolve(cwd ?? roots[0], candidate)
 	return roots.some((root) => isPathWithinRoot(root, resolvedCandidate))
@@ -208,6 +208,7 @@ export function resolveCommandTimeoutMs(
 }
 
 export function isCommandDeniedByPolicy(policy: ToolPolicySnapshot | undefined, command: string): boolean {
+	if (policy?.execution.sandboxMode === "read-only") return true
 	const denied = policy?.execution.command.deniedPrefixes ?? []
 	const allowed = policy?.execution.command.allowedPrefixes ?? []
 	if (denied.length === 0) return false
@@ -230,12 +231,20 @@ function formatToolPolicySummary(
 ): string {
 	const timeout = execution.command.userTimeoutMs > 0 ? `${execution.command.userTimeoutMs}ms` : "none"
 	const outputLimit = Math.max(0, ...Object.values(outputLimits)) || DEFAULT_TOOL_OUTPUT_LIMIT
+	if (execution.sandboxMode === "read-only") {
+		return [
+			"Execution policy: diagnostic evidence reader only; workspace access and commands are unavailable",
+			`Workspace roots: ${execution.workspaceRoots.join(", ") || "none"}`,
+			`Tool output limit: ${outputLimit} characters`,
+			"Cancellation: aborts active tool processes",
+		].join("\n")
+	}
 	return [
 		`File policy: ${execution.sandboxMode}; commands use the user's normal shell with command and path preflight`,
 		`Workspace roots: ${execution.workspaceRoots.join(", ") || "task workspace"}`,
-		...(execution.outsideWorkspace === "approval"
-			? ["Outside file reads use read approvals; outside file writes require explicit approval"]
-			: ["File tools are restricted to the workspace roots"]),
+		execution.outsideWorkspace === "approval"
+			? "Outside file reads use read approvals; outside file writes require explicit approval"
+			: "File tools are restricted to the workspace roots",
 		"Command approval: follows global auto-approval and command rules; detected outside writes or unresolved write paths require approval.",
 		"Command path checks are best effort, not OS isolation. Arbitrary scripts and child processes are not contained.",
 		`Command timeout: ${timeout}`,

@@ -1,5 +1,6 @@
 import { registerBuiltinSkillInspection } from "./services/skills/builtinSkillInspection"
 import { TicketPanel } from "./services/tickets/TicketPanel"
+import { IncidentPanel } from "./core/webview/IncidentPanel"
 import * as vscode from "vscode"
 import { registerHtmlDocumentViewer } from "./core/webview/html-document"
 import * as dotenvx from "@dotenvx/dotenvx"
@@ -171,9 +172,12 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	const provider = new AlphaProvider(context, outputChannel, "sidebar", contextProxy)
 	const ticketPanel = new TicketPanel(context, provider)
+	const incidentPanel = new IncidentPanel(context, provider)
 	context.subscriptions.push(
 		ticketPanel,
 		vscode.commands.registerCommand("alpha.openTickets", (target?: unknown) => ticketPanel.open(target)),
+		incidentPanel,
+		vscode.commands.registerCommand("alpha.openIncidents", () => incidentPanel.open()),
 	)
 	sidebarProvider = provider
 	const scheduledTaskService = new ScheduledTaskService(context, provider, outputChannel)

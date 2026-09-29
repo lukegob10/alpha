@@ -1,6 +1,6 @@
 import type OpenAI from "openai"
 
-const REQUEST_USER_INPUT_DESCRIPTION = `Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.
+const REQUEST_USER_INPUT_DESCRIPTION = `Request user input for one to three short questions and wait for the response. Available to primary tasks in Code and Plan modes. Use when the user asks you to pose a question or an answer would materially improve the work. Do not use for permission or approval requests.
 
 Questions:
 - id: (required) Stable identifier for mapping answers (snake_case)

@@ -63,7 +63,7 @@ export const send_task_message = {
 	function: {
 		name: "send_task_message",
 		description:
-			"Send guidance to one direct child task, or send progress from this child to its recorded parent using task_id 'parent'. A child's final result is reported automatically. The receiving task sees a user message with sender attribution; a completed recipient resumes. This tool does not interrupt an active response; use steer_task for that. Unrelated task IDs are rejected.",
+			"Send an agent message to one direct child task, or send progress to this child's recorded parent using task_id 'parent'. Messages arrive automatically at the next model-step boundary, with sender attribution, outside the human queue. They never answer a human approval prompt. A child's final result is reported automatically; a completed recipient resumes. Use steer_task only for explicit interruption. Unrelated task IDs are rejected.",
 		strict: true,
 		parameters: {
 			type: "object",

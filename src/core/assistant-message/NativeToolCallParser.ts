@@ -14,13 +14,7 @@ import {
 } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 
-import {
-	type ToolUse,
-	type McpToolUse,
-	type ToolParamName,
-	type NativeToolArgs,
-	toolParamNames,
-} from "../../shared/tools"
+import { type ToolUse, type McpToolUse, type NativeToolArgs } from "../../shared/tools"
 import { resolveToolAlias } from "../prompts/tools/filter-tools-for-mode"
 import type {
 	ApiStreamToolCallStartChunk,
@@ -75,6 +69,18 @@ export class NativeToolCallParser {
 
 	private static isArgumentObject(value: unknown): value is Record<string, unknown> {
 		return typeof value === "object" && value !== null && !Array.isArray(value)
+	}
+
+	private static projectDisplayParams(args: Record<string, unknown>): Record<string, string | undefined> {
+		// Display projection is not a parameter-validation boundary. The tool's
+		// nativeArgs/schema owns validation; a global name list drifts as tools evolve.
+		// fromEntries also keeps untrusted __proto__ keys as ordinary own properties.
+		return Object.fromEntries(
+			Object.entries(args).map(([key, value]) => [
+				key,
+				typeof value === "string" ? value : JSON.stringify(value),
+			]),
+		)
 	}
 
 	private static isExecCommandArgs(value: unknown): value is NativeToolArgs["exec_command"] {
@@ -749,13 +755,7 @@ export class NativeToolCallParser {
 		// Build stringified params for display/partial-progress UI.
 		// NOTE: For streaming partial updates, we MUST populate params even for complex types
 		// because tool.handlePartial() methods rely on params to show UI updates.
-		const params: Partial<Record<ToolParamName, string>> = {}
-
-		for (const [key, value] of Object.entries(partialArgs)) {
-			if (toolParamNames.includes(key as ToolParamName)) {
-				params[key as ToolParamName] = typeof value === "string" ? value : JSON.stringify(value)
-			}
-		}
+		const params = this.projectDisplayParams(partialArgs)
 
 		// Build partial nativeArgs based on what we have so far
 		// Browser tools are a transparent bridge to tools registered by VS Code. Keep
@@ -1289,20 +1289,7 @@ export class NativeToolCallParser {
 
 			// Build stringified params for display/logging.
 			// Tool execution MUST use nativeArgs (typed) and does not support legacy fallbacks.
-			const params: Partial<Record<ToolParamName, string>> = {}
-
-			for (const [key, value] of Object.entries(args)) {
-				// Validate parameter name
-				if (!toolParamNames.includes(key as ToolParamName) && !customToolRegistry.has(resolvedName)) {
-					console.warn(`Unknown parameter '${key}' for tool '${resolvedName}'`)
-					console.warn(`Valid param names:`, toolParamNames)
-					continue
-				}
-
-				// Convert to string for legacy params format
-				const stringValue = typeof value === "string" ? value : JSON.stringify(value)
-				params[key as ToolParamName] = stringValue
-			}
+			const params = this.projectDisplayParams(args)
 
 			// Build typed nativeArgs for tool execution.
 			// Each case validates the minimum required parameters and constructs a properly typed

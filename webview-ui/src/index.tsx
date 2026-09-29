@@ -7,10 +7,15 @@ import App from "./App"
 import "@vscode/codicons/dist/codicon.css"
 
 const Tickets = lazy(() => import("./components/tickets/TicketsView"))
+const Incidents = lazy(() => import("./components/incidents/IncidentsView"))
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
-		{document.getElementById("root")?.dataset.view === "tickets" ? (
+		{document.getElementById("root")?.dataset.view === "incidents" ? (
+			<Suspense fallback={null}>
+				<Incidents />
+			</Suspense>
+		) : document.getElementById("root")?.dataset.view === "tickets" ? (
 			<Suspense fallback={null}>
 				<Tickets />
 			</Suspense>

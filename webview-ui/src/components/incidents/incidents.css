@@ -1,0 +1,385 @@
+.incident-dashboard {
+	box-sizing: border-box;
+	min-height: 100vh;
+	padding: clamp(20px, 4vw, 40px);
+	color: var(--vscode-foreground);
+	background: var(--vscode-editor-background);
+}
+
+.incident-dashboard-content {
+	width: min(100%, 1240px);
+	margin: 0 auto;
+}
+
+.incident-dashboard-header,
+.incident-panel-heading,
+.incident-task-heading {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 16px;
+}
+
+.incident-dashboard-header {
+	align-items: center;
+	margin-bottom: 28px;
+}
+
+.incident-dashboard-eyebrow,
+.incident-alert-severity {
+	margin: 0 0 5px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.82em;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+
+.incident-dashboard-header h1,
+.incident-panel h2,
+.incident-alert h3,
+.incident-task h3 {
+	margin: 0;
+	color: var(--vscode-foreground);
+}
+
+.incident-dashboard-header h1 {
+	font-size: 1.65em;
+}
+
+.incident-dashboard-description {
+	max-width: 650px;
+	margin: 8px 0 0;
+	color: var(--vscode-descriptionForeground);
+}
+
+.incident-refresh-button,
+.incident-secondary-button,
+.incident-debug-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 7px;
+	min-height: 32px;
+	padding: 5px 11px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	border-radius: 3px;
+	color: var(--vscode-button-foreground);
+	background: var(--vscode-button-background);
+	cursor: pointer;
+	font: inherit;
+	font-weight: 600;
+}
+
+.incident-refresh-button:hover,
+.incident-secondary-button:hover,
+.incident-debug-button:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.incident-dashboard button:focus-visible {
+	outline: 2px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+}
+
+.incident-dashboard-grid {
+	display: grid;
+	grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.3fr);
+	align-items: start;
+	gap: 18px;
+}
+
+.incident-panel {
+	min-width: 0;
+	padding: 20px;
+	border: 1px solid var(--vscode-contrastBorder, var(--vscode-panel-border, transparent));
+	border-radius: 6px;
+	background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+}
+
+.incident-panel-heading {
+	align-items: center;
+	margin-bottom: 16px;
+}
+
+.incident-panel h2 {
+	font-size: 1.18em;
+}
+
+.incident-count {
+	min-width: 26px;
+	padding: 3px 7px;
+	border-radius: 12px;
+	color: var(--vscode-badge-foreground);
+	background: var(--vscode-badge-background);
+	font-size: 0.9em;
+	font-variant-numeric: tabular-nums;
+	text-align: center;
+}
+
+.incident-alert-list,
+.incident-task-list {
+	display: grid;
+	gap: 12px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.incident-alert {
+	display: grid;
+	grid-template-columns: 24px minmax(0, 1fr);
+	gap: 11px;
+	padding: 14px;
+	border: 1px solid var(--vscode-contrastBorder, var(--vscode-panel-border, transparent));
+	border-left: 3px solid var(--incident-severity);
+	border-radius: 4px;
+	background: var(--vscode-editor-background);
+}
+
+.incident-alert--error {
+	--incident-severity: var(--vscode-errorForeground, var(--vscode-descriptionForeground));
+}
+
+.incident-alert--warning {
+	--incident-severity: var(
+		--vscode-editorWarning-foreground,
+		var(--vscode-list-warningForeground, var(--vscode-descriptionForeground))
+	);
+}
+
+.incident-alert-icon,
+.incident-alert-severity {
+	color: var(--incident-severity);
+}
+
+.incident-alert-icon {
+	padding-top: 2px;
+}
+
+.incident-alert h3 {
+	font-size: 1em;
+	line-height: 1.4;
+	overflow-wrap: anywhere;
+}
+
+.incident-alert-summary {
+	margin: 7px 0;
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.45;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.incident-alert-details {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 5px 14px;
+	margin: 10px 0 7px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.88em;
+}
+
+.incident-alert-details p,
+.incident-alert-reference {
+	margin: 0;
+}
+
+.incident-alert-details strong {
+	color: var(--vscode-foreground);
+}
+
+.incident-alert-reference {
+	margin: 4px 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.85em;
+	overflow-wrap: anywhere;
+}
+
+.incident-alert-reference code {
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 0.95em;
+}
+
+.incident-alert time,
+.incident-timeline time {
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.86em;
+}
+
+.incident-debug-button {
+	display: flex;
+	width: fit-content;
+	margin-top: 13px;
+}
+
+.incident-task {
+	padding: 14px;
+	border: 1px solid var(--vscode-contrastBorder, var(--vscode-panel-border, transparent));
+	border-radius: 4px;
+	background: var(--vscode-editor-background);
+}
+
+.incident-task-heading {
+	align-items: center;
+}
+
+.incident-task h3 {
+	min-width: 0;
+	font-size: 1em;
+	line-height: 1.4;
+	overflow-wrap: anywhere;
+}
+
+.incident-task-state {
+	flex-shrink: 0;
+	padding: 3px 7px;
+	border-radius: 12px;
+	color: var(--vscode-descriptionForeground);
+	background: var(--vscode-badge-background);
+	font-size: 0.8em;
+}
+
+.incident-task-state--failed {
+	color: var(--vscode-errorForeground, var(--vscode-descriptionForeground));
+}
+
+.incident-task-state--running,
+.incident-task-state--waiting {
+	color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
+}
+
+.incident-task-updated {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	margin: 6px 0 12px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.86em;
+}
+
+.incident-task-evidence {
+	margin: 0 0 12px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.86em;
+}
+
+.incident-timeline {
+	position: relative;
+	display: grid;
+	gap: 12px;
+	margin: 0;
+	padding: 0 0 0 17px;
+	list-style: none;
+}
+
+.incident-timeline::before {
+	position: absolute;
+	top: 5px;
+	bottom: 5px;
+	left: 4px;
+	width: 1px;
+	background: var(--vscode-contrastBorder, var(--vscode-panel-border, var(--vscode-descriptionForeground)));
+	content: "";
+}
+
+.incident-timeline-item {
+	position: relative;
+	display: grid;
+	grid-template-columns: minmax(100px, auto) minmax(0, 1fr);
+	align-items: baseline;
+	gap: 5px 10px;
+}
+
+.incident-timeline-item::before {
+	position: absolute;
+	top: 5px;
+	left: -16px;
+	width: 7px;
+	height: 7px;
+	border: 1px solid var(--vscode-descriptionForeground);
+	border-radius: 50%;
+	background: var(--vscode-editor-background);
+	content: "";
+}
+
+.incident-timeline-kind {
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.82em;
+}
+
+.incident-timeline-label {
+	min-width: 0;
+	color: var(--vscode-foreground);
+	font-size: 0.94em;
+	overflow-wrap: anywhere;
+}
+
+.incident-timeline time {
+	grid-column: 2;
+}
+
+.incident-empty-state,
+.incident-empty-timeline,
+.incident-dashboard-message {
+	color: var(--vscode-descriptionForeground);
+}
+
+.incident-dashboard-message {
+	padding: 20px;
+	border: 1px solid var(--vscode-contrastBorder, var(--vscode-panel-border, transparent));
+	border-radius: 6px;
+}
+
+.incident-dashboard-message p {
+	margin-top: 0;
+}
+
+.incident-empty-timeline {
+	margin: 0;
+	font-size: 0.9em;
+}
+
+.incident-dashboard-updated {
+	margin: 16px 2px 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.85em;
+	text-align: right;
+}
+
+@media (max-width: 760px) {
+	.incident-dashboard {
+		padding: 18px;
+	}
+
+	.incident-dashboard-header {
+		align-items: flex-start;
+	}
+
+	.incident-dashboard-grid {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+
+@media (max-width: 440px) {
+	.incident-dashboard-header {
+		flex-direction: column;
+	}
+
+	.incident-refresh-button {
+		align-self: flex-start;
+	}
+
+	.incident-panel {
+		padding: 14px;
+	}
+
+	.incident-timeline-item {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 3px;
+	}
+
+	.incident-timeline time {
+		grid-column: 1;
+	}
+}

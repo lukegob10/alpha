@@ -5,21 +5,43 @@ more specific `AGENTS.md` or `AGENTS.override.md` exists below it.
 
 ## Mission and priorities
 
-Develop Alpha Code as a reliable, fast coding-agent extension for VS Code. New features, structural improvements,
-performance work, and bug fixes should strengthen the same coherent harness rather than add parallel implementations.
+Develop Alpha Code as a reliable, fast VS Code extension that aligns as closely as possible with Codex CLI. New features,
+structural improvements, performance work, and bug fixes should strengthen the same coherent harness rather than add
+parallel implementations.
 
 Use this priority order when requirements compete:
 
 1. Correctness, data integrity, security, and the user's explicit intent.
 2. Compatibility with the exact reference host: **VS Code 1.122.1**.
-3. Provider-neutral behavior shared across all VS Code extension surfaces.
-4. Deterministic lifecycle, cancellation, persistence, and tool-policy semantics.
-5. Measured improvements to task quality, latency, token use, memory, and UI responsiveness.
-6. Backward compatibility for saved tasks, settings, modes, messages, and public extension API contracts.
-7. Small, reviewable changes that follow existing repository patterns.
+3. Close behavioral alignment with current Codex CLI across applicable agent capabilities.
+4. Provider-neutral behavior shared across all VS Code extension surfaces.
+5. Deterministic lifecycle, cancellation, persistence, and tool-policy semantics.
+6. Measured improvements to task quality, latency, token use, memory, and UI responsiveness.
+7. Backward compatibility for saved tasks, settings, modes, messages, and public extension API contracts.
+8. Small, reviewable changes that follow existing repository patterns.
 
 Do not trade correctness or policy enforcement for benchmark gains. Do not preserve accidental behavior when a failing
 test exposes a real bug; update the contract deliberately and document the compatibility impact.
+
+## Codex CLI is the reference
+
+Codex CLI is Alpha's north star for agent behavior, tools, context handling, task lifecycle, recovery, and user experience.
+Aim for close alignment across the board wherever that behavior applies to a VS Code extension. Treat a difference from
+Codex CLI as an intentional, explained choice, not as the default simply because Alpha already behaves differently.
+
+For questions, bugs, features, or design decisions about intended agent behavior, inspect the relevant current
+[Codex CLI source](https://github.com/openai/codex) and its tests first. Use current official OpenAI documentation when
+the source is unclear or additional product context is needed. Compare upstream behavior with Alpha's current code and
+tests, and record the upstream commit or retrieval date and any intentional divergence in durable design work. Do not
+infer current Codex behavior from memory or from older Alpha design documents.
+
+Translate verified Codex behavior into Alpha's native TypeScript architecture and VS Code APIs. Do not introduce Rust,
+port Codex CLI or Codex app source code, copy prompts wholesale, or build a parallel runtime to imitate their structure.
+The goal is behavioral alignment in Alpha's own implementation.
+
+Codex CLI's sandbox architecture is outside this alignment target. Keep and improve Alpha's existing execution,
+approval, workspace, and security protections. Also preserve and develop Alpha's built-in skills, HTML previewer, native
+Alpha Tickets engine, and scheduled tasks as first-class extension capabilities integrated with the shared harness.
 
 ## Required working method
 
@@ -30,8 +52,8 @@ Before changing code:
 - For a bug, reproduce it with a focused test or deterministic script when practical. Establish the root cause rather
   than patching only the visible symptom.
 - For a performance change, capture a meaningful baseline and define the metric and workload before optimizing.
-- Consult current primary documentation or source when comparing Alpha with Codex, VS Code, or another frontier
-  harness. Record the upstream version, commit, or retrieval date in durable design work; do not implement from memory.
+- Follow the Codex CLI source-first rule above for agent behavior. Consult current primary sources for VS Code or other
+  external contracts, and record the upstream version, commit, or retrieval date in durable design work.
 - Treat files in `docs/` as design history and context, not as proof of current behavior. Verify claims against current
   code, tests, and manifests.
 
@@ -135,8 +157,8 @@ Code (`code`) and Plan (`architect`) are the only executable modes. Mode changes
 models must not receive a `switch_mode` tool. Retired or unknown saved modes resume in Plan without gaining write
 authority. Keep historical transcripts readable; see `docs/mode-retirement.md` for the compatibility contract.
 
-When improving Alpha toward Codex or other frontier harnesses, converge on behavioral principles, not vendor-specific
-source structure or a copied prompt.
+Apply the Codex CLI direction above through Alpha's shared execution kernel and extension adapters. Other harnesses may
+inform a specific decision, but they do not replace Codex CLI as the target for agent behavior.
 
 - One shared execution kernel must serve every extension task surface. Sidebar, editor-panel, background-session, and
   webview presentation layers adapt or project canonical runtime state rather than implementing separate task loops.

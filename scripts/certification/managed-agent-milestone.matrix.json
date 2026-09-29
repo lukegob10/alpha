@@ -468,13 +468,15 @@
 		},
 		{
 			"id": "ROUTING-STEERING-RECEIPT-001",
-			"requirement": "Live parent steering is acknowledged only after durable child persistence, and delivered-but-unacknowledged steering is recovered on retained follow-up.",
+			"requirement": "Agent messages are delivered at a model-step boundary without steering or answering human prompts, acknowledged only after durable recipient persistence, and recovered on retained follow-up.",
 			"classification": "merge-dependent",
 			"trackIds": ["lifecycle-routing"],
 			"probes": [
 				{
-					"label": "durable live steering acknowledgement",
-					"patterns": ["acknowledges live steering only after the child reports durable persistence"]
+					"label": "durable agent input without approval interference",
+					"patterns": [
+						"keeps messages durable during an approval and retries failed transcript persistence without acknowledging other events"
+					]
 				},
 				{
 					"label": "delivered but unacknowledged follow-up recovery",
@@ -482,7 +484,7 @@
 					"patterns": [
 						"uses the current report when a retained follow-up completes successfully",
 						"PING_BEFORE_INTERRUPT",
-						"Additional parent steering"
+						"provider.deliverAgentMessages"
 					]
 				}
 			]

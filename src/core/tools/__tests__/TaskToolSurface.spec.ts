@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { createToolPolicySnapshot } from "../../agent/ToolPolicy"
+import { createToolPolicySnapshot, isCommandDeniedByPolicy, isPathAllowed } from "../../agent/ToolPolicy"
 import { createTaskToolSurface } from "../TaskToolSurface"
 import { ToolRegistry, type ToolDescriptor } from "../ToolRegistry"
 
@@ -124,6 +124,95 @@ describe("TaskToolSurface", () => {
 		expect(surface.resolve("write_file")).toBeUndefined()
 		expect(surface.isCallable("write_file")).toBe(false)
 		expect(surface.policy.disabledTools).toEqual(["write_to_file"])
+	})
+
+	it("limits diagnostic sessions to the registered evidence reader and denies workspace execution", () => {
+		const source = new ToolRegistry({ includeBuiltIns: false })
+		const diagnostic = descriptor("read_diagnostic_evidence", readCapabilities)
+		source.register(diagnostic)
+		source.register(descriptor("write_to_file", writeCapabilities))
+		source.register(descriptor("spawn_agent", { ...readCapabilities, controlFlow: true, sideEffects: "task" }))
+		source.register(descriptor("mcp__filesystem__read_file", readCapabilities))
+		const callerSchema = schema("read_diagnostic_evidence")
+		callerSchema.function.parameters.properties = { path: { type: "string" } }
+
+		const surface = createTaskToolSurface({
+			registry: source,
+			schemas: [
+				callerSchema,
+				schema("write_to_file"),
+				schema("spawn_agent"),
+				schema("mcp--filesystem--read_file"),
+			],
+			visibleToolNames: [
+				"read_diagnostic_evidence",
+				"write_to_file",
+				"spawn_agent",
+				"mcp__filesystem__read_file",
+			],
+			allowedToolNames: [
+				"read_diagnostic_evidence",
+				"write_to_file",
+				"spawn_agent",
+				"mcp__filesystem__read_file",
+			],
+			includeAllToolsWithRestrictions: true,
+			mode: "code",
+			cwd: "F:/workspace",
+			diagnosticSession: true,
+			diagnosticSourceTaskId: "source-task-1",
+		})
+
+		expect(surface.schemas).toEqual([diagnostic.schema])
+		expect(surface.schemas[0]).not.toMatchObject({
+			function: { parameters: { properties: { path: expect.anything() } } },
+		})
+		expect(surface.allowedFunctionNames).toEqual(["read_diagnostic_evidence"])
+		expect(surface.includeAllToolsWithRestrictions).toBe(false)
+		expect(surface.isCallable("read_diagnostic_evidence")).toBe(true)
+		expect(surface.resolve("write_to_file")).toBeUndefined()
+		expect(surface.isCallable("spawn_agent")).toBe(false)
+		expect(surface.isCallable("mcp__filesystem__read_file")).toBe(false)
+		expect(surface.policy.execution.sandboxMode).toBe("read-only")
+		expect(surface.policy.execution.workspaceRoots).toEqual([])
+		expect(surface.policy.execution.outsideWorkspace).toBeUndefined()
+		expect(isPathAllowed(surface.policy, "src/index.ts", "F:/workspace")).toBe(false)
+		expect(isCommandDeniedByPolicy(surface.policy, "git status")).toBe(true)
+		expect(surface.policy.summary).toContain("workspace access and commands are unavailable")
+		expect(surface.policy.summary).not.toContain("Command approval: follows global")
+	})
+
+	it("keeps the diagnostic reader hidden from ordinary task surfaces", () => {
+		const diagnostic = descriptor("read_diagnostic_evidence", readCapabilities)
+		const source = new ToolRegistry({ includeBuiltIns: false })
+		source.register(diagnostic)
+		const surface = createTaskToolSurface({
+			registry: source,
+			schemas: [diagnostic.schema],
+			visibleToolNames: ["read_diagnostic_evidence"],
+			allowedToolNames: ["read_diagnostic_evidence"],
+			mode: "code",
+		})
+
+		expect(surface.schemas).toEqual([])
+		expect(surface.allowedFunctionNames).toEqual([])
+		expect(surface.resolve("read_diagnostic_evidence")).toBeUndefined()
+		expect(surface.isCallable("read_diagnostic_evidence")).toBe(false)
+	})
+
+	it("fails closed for missing, invalid, or subagent diagnostic authority", () => {
+		const source = new ToolRegistry({ nativeTools: [schema("read_diagnostic_evidence")] })
+		const input = {
+			registry: source,
+			schemas: [schema("read_diagnostic_evidence")],
+			diagnosticSession: true,
+		}
+
+		expect(createTaskToolSurface(input).schemas).toEqual([])
+		expect(createTaskToolSurface({ ...input, diagnosticSourceTaskId: "x".repeat(129) }).schemas).toEqual([])
+		expect(
+			createTaskToolSurface({ ...input, diagnosticSourceTaskId: "source-1", taskKind: "subagent" }).schemas,
+		).toEqual([])
 	})
 
 	it("prefers a canonical schema when an alias appears first", () => {

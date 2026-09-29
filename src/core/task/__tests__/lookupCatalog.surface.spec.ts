@@ -33,11 +33,42 @@ function options(overrides: Partial<BuildToolsOptions> = {}): BuildToolsOptions 
 }
 
 describe("lookup catalog preset", () => {
+	it("builds a diagnostic surface with only the redacted evidence reader", async () => {
+		const getMcpHub = vi.fn(() => {
+			throw new Error("diagnostic sessions must not inspect MCP state")
+		})
+		const result = await buildNativeToolsArrayWithRestrictions(
+			options({
+				provider: { context: {}, getMcpHub } as unknown as BuildToolsOptions["provider"],
+				diagnosticSession: true,
+				diagnosticSourceTaskId: "source-task-1",
+				includeAllToolsWithRestrictions: true,
+				experiments: { customTools: true },
+				discoveryHistory: [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "historical-discovery", name: "discover_tools", input: {} }],
+					},
+				],
+				userRequestText: "Run commands, create a task, and inspect MCP resources.",
+			}),
+		)
+		expect(namesOf(result.tools)).toEqual(["read_diagnostic_evidence"])
+		expect(result.surface?.includeAllToolsWithRestrictions).toBe(false)
+		expect(result.surface?.allowedFunctionNames).toEqual(["read_diagnostic_evidence"])
+		expect(result.surface?.policy.execution.sandboxMode).toBe("read-only")
+		expect(result.surface?.isCallable("exec_command")).toBe(false)
+		expect(result.surface?.isCallable("create_task")).toBe(false)
+		expect(result.surface?.isCallable("read_mcp_resource")).toBe(false)
+		expect(getMcpHub).not.toHaveBeenCalled()
+	})
+
 	it("advertises only lookup-sized native names for a question-only request", async () => {
 		const result = await buildNativeToolsArrayWithRestrictions(
 			options({ userRequestText: "Where is retryLimit defined?" }),
 		)
-		expect(namesOf(result.tools)).toEqual(["exec_command"])
+		expect(namesOf(result.tools)).toEqual(["exec_command", "request_user_input"])
+		expect(result.surface?.isCallable("request_user_input")).toBe(true)
 		expect(result.surface?.isCallable("spawn_agent")).toBe(false)
 		expect(result.surface?.isCallable("update_todo_list")).toBe(false)
 		expect(result.surface?.isCallable("attempt_completion")).toBe(false)
@@ -49,6 +80,14 @@ describe("lookup catalog preset", () => {
 		expect(result.surface?.isCallable("exec_command")).toBe(true)
 		for (const name of ["read_file", "list_files", "search_files", "codebase_search"])
 			expect(result.surface?.isCallable(name), name).toBe(false)
+	})
+
+	it("honors an explicit question-tool restriction on Code lookup turns", async () => {
+		const result = await buildNativeToolsArrayWithRestrictions(
+			options({ userRequestText: "Where is retryLimit defined?", disabledTools: ["request_user_input"] }),
+		)
+		expect(namesOf(result.tools)).toEqual(["exec_command"])
+		expect(result.surface?.isCallable("request_user_input")).toBe(false)
 	})
 
 	it("advertises VS Code LM's executable read command without widening its approval policy", async () => {
@@ -63,7 +102,8 @@ describe("lookup catalog preset", () => {
 		const command = result.tools.find((tool) => tool.type === "function" && tool.function.name === "exec_command")
 
 		expect(command).toBeDefined()
-		expect(namesOf(result.tools)).toEqual(["exec_command"])
+		expect(namesOf(result.tools)).toEqual(["exec_command", "request_user_input"])
+		expect(result.surface?.isCallable("request_user_input")).toBe(true)
 		expect(result.surface?.isCallable("exec_command")).toBe(true)
 		expect(isToolAllowed(result.surface?.policy, "exec_command")).toBe(true)
 		expect(result.surface?.policy.visibleTools).toContain("exec_command")
@@ -272,6 +312,7 @@ describe("lookup catalog preset", () => {
 			"list_mcp_resource_templates",
 			"list_mcp_resources",
 			"read_mcp_resource",
+			"request_user_input",
 		])
 	})
 
@@ -449,8 +490,8 @@ describe("lookup catalog preset", () => {
 				userRequestText: "Where is retryLimit defined?",
 			}),
 		)
-		expect(namesOf(result.tools)).toEqual(["exec_command"])
-		expect([...(result.allowedFunctionNames ?? [])].sort()).toEqual(["exec_command"])
+		expect(namesOf(result.tools)).toEqual(["exec_command", "request_user_input"])
+		expect([...(result.allowedFunctionNames ?? [])].sort()).toEqual(["exec_command", "request_user_input"])
 		expect(result.surface?.isCallable("spawn_agent")).toBe(false)
 		expect(namesOf(result.tools)).not.toContain("spawn_agent")
 	})

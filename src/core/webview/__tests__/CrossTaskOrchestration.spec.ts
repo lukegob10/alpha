@@ -31,6 +31,7 @@ function createTask(overrides: Record<string, unknown> = {}): FakeTask {
 		isCompleted: vi.fn(() => false),
 		isTurnActive: vi.fn(() => true),
 		steerUserMessage: vi.fn(async () => undefined),
+		receiveAgentMessage: vi.fn(async () => undefined),
 		resumeCompletedTaskFollowup: vi.fn(async () => undefined),
 		submitUserMessage: vi.fn(async () => undefined),
 		messageQueueService: { addMessage: vi.fn(() => true) },
@@ -221,37 +222,44 @@ describe("Cross-task orchestration host", () => {
 		})
 	})
 
-	it("attributes child-to-parent input, rejects unrelated IDs, and does not allow a child to steer its parent", async () => {
-		const { provider, tasks, history, metadata } = createProviderFixture()
-		const parent = createTask()
-		const child = createTask({ taskId: "child-1", orchestrationParentTaskId: parent.taskId })
-		tasks.set(parent.taskId, parent)
-		tasks.set(child.taskId, child)
-		history.set(child.taskId, taskHistoryItem(child.taskId, parent.taskId))
-		metadata.set(child.taskId, { id: child.taskId, lifecycle: TaskLifecycleState.Running, lastUpdatedAt: 10 })
+	it.each([undefined, "tool", "followup"])(
+		"attributes child-to-parent input during ask %s, rejects unrelated IDs, and does not allow a child to steer its parent",
+		async (taskAsk) => {
+			const { provider, tasks, history, metadata } = createProviderFixture()
+			const parent = createTask({ taskAsk })
+			const child = createTask({ taskId: "child-1", orchestrationParentTaskId: parent.taskId })
+			tasks.set(parent.taskId, parent)
+			tasks.set(child.taskId, child)
+			history.set(child.taskId, taskHistoryItem(child.taskId, parent.taskId))
+			metadata.set(child.taskId, { id: child.taskId, lifecycle: TaskLifecycleState.Running, lastUpdatedAt: 10 })
 
-		await expect(
-			provider.sendIndependentTaskMessage(child as unknown as Task, parent.taskId, "Change focus"),
-		).resolves.toEqual({
-			task_id: parent.taskId,
-			status: "queued",
-		})
-		await expect(
-			provider.sendIndependentTaskMessage(child as unknown as Task, "parent", "Finished the review"),
-		).resolves.toEqual({ task_id: parent.taskId, status: "queued" })
-		expect(parent.messageQueueService.addMessage).toHaveBeenCalledWith(
-			`Message from task ${child.taskId}:\nChange focus`,
-		)
-		expect(parent.messageQueueService.addMessage).toHaveBeenCalledWith(
-			`Message from task ${child.taskId}:\nFinished the review`,
-		)
-		await expect(
-			provider.sendIndependentTaskMessage(parent as unknown as Task, "unrelated", "Hello"),
-		).rejects.toThrow("direct child")
-		await expect(
-			provider.steerIndependentTask(child as unknown as Task, parent.taskId, "Take over"),
-		).rejects.toThrow("top-level primary task")
-	})
+			await expect(
+				provider.sendIndependentTaskMessage(child as unknown as Task, parent.taskId, "Change focus"),
+			).resolves.toEqual({
+				task_id: parent.taskId,
+				status: "buffered",
+			})
+			await expect(
+				provider.sendIndependentTaskMessage(child as unknown as Task, "parent", "Finished the review"),
+			).resolves.toEqual({ task_id: parent.taskId, status: "buffered" })
+			expect(parent.receiveAgentMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ senderTaskId: child.taskId, text: "Change focus" }),
+			)
+			expect(parent.messageQueueService.addMessage).not.toHaveBeenCalled()
+			expect(parent.submitUserMessage).not.toHaveBeenCalled()
+			expect(parent.receiveAgentMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ senderTaskId: child.taskId, text: "Finished the review" }),
+			)
+			expect(parent.messageQueueService.addMessage).not.toHaveBeenCalled()
+			expect(parent.submitUserMessage).not.toHaveBeenCalled()
+			await expect(
+				provider.sendIndependentTaskMessage(parent as unknown as Task, "unrelated", "Hello"),
+			).rejects.toThrow("direct child")
+			await expect(
+				provider.steerIndependentTask(child as unknown as Task, parent.taskId, "Take over"),
+			).rejects.toThrow("top-level primary task")
+		},
+	)
 
 	it("returns a completed child's result to a parent that has finished its turn", async () => {
 		const { provider, internals, tasks, history, metadata } = createProviderFixture()
@@ -273,11 +281,13 @@ describe("Cross-task orchestration host", () => {
 
 		expect(parent.resumeCompletedTaskFollowup).toHaveBeenCalledOnce()
 		expect(parent.resumeCompletedTaskFollowup).toHaveBeenCalledWith(
-			`Message from task ${child.taskId}:\nCompleted.\nParser result is stable.`,
+			"Continue with the pending agent messages.",
+			[],
+			"agent",
 		)
 	})
 
-	it("queues parent messages and applies steering to only the addressed direct child", async () => {
+	it("buffers parent messages outside the human queue and applies steering to only the addressed direct child", async () => {
 		const { provider, tasks, history, metadata } = createProviderFixture()
 		const parent = createTask()
 		const child = createTask({
@@ -292,10 +302,12 @@ describe("Cross-task orchestration host", () => {
 
 		await expect(
 			provider.sendIndependentTaskMessage(parent as unknown as Task, child.taskId, "Keep the report brief"),
-		).resolves.toEqual({ task_id: child.taskId, status: "queued" })
-		expect(child.messageQueueService.addMessage).toHaveBeenCalledWith(
-			`Message from parent task ${parent.taskId}:\nKeep the report brief`,
+		).resolves.toEqual({ task_id: child.taskId, status: "buffered" })
+		expect(child.receiveAgentMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ senderTaskId: parent.taskId, text: "Keep the report brief" }),
 		)
+		expect(child.messageQueueService.addMessage).not.toHaveBeenCalled()
+		expect(child.submitUserMessage).not.toHaveBeenCalled()
 
 		await expect(
 			provider.steerIndependentTask(parent as unknown as Task, child.taskId, "Focus on parser recovery"),

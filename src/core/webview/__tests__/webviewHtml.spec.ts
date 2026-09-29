@@ -66,6 +66,17 @@ describe("resolveWebviewHtml", () => {
 		expect(html).toContain("'strict-dynamic'")
 	})
 
+	it("marks the incidents shell so the shared bundle mounts the incident dashboard", async () => {
+		const html = await resolveWebviewHtml({
+			webview: webview(),
+			extensionUri,
+			extensionMode: vscode.ExtensionMode.Production,
+			view: "incidents",
+		})
+		expect(html).toContain('<div id="root" data-view="incidents"></div>')
+		expect(html).toContain("'strict-dynamic'")
+	})
+
 	it("loads nonce'd Vite module scripts over 127.0.0.1 when the dev server is running", async () => {
 		vi.mocked(fs.existsSync).mockReturnValue(true)
 		vi.mocked(fs.readFileSync).mockReturnValue("5188\n")
@@ -105,7 +116,7 @@ describe("resolveWebviewHtml", () => {
 
 	it.each([404, 500, 503])("falls back for both panels when Vite returns HTTP %s", async (status) => {
 		vi.mocked(axios.get).mockResolvedValue({ status })
-		for (const view of ["app", "tickets"] as const) {
+		for (const view of ["app", "tickets", "incidents"] as const) {
 			const onHmrUnavailable = vi.fn()
 			const html = await resolveWebviewHtml({
 				webview: webview(),
@@ -116,7 +127,7 @@ describe("resolveWebviewHtml", () => {
 			})
 			expect(onHmrUnavailable).toHaveBeenCalledOnce()
 			expect(html).toContain("webview://webview-ui/build/assets/index.js")
-			expect(html.includes('data-view="tickets"')).toBe(view === "tickets")
+			expect(html.includes(`data-view="${view}"`)).toBe(view !== "app")
 			expect(html).not.toContain("/@react-refresh")
 		}
 	})

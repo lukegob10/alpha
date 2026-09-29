@@ -51,6 +51,23 @@ describe("ToolPolicy", () => {
 		expect(isPathAllowed(snapshot, "../outside.txt", "F:/workspace")).toBe(false)
 	})
 
+	it("fails closed for path and command checks in a read-only diagnostic policy", () => {
+		const snapshot = createToolPolicySnapshot({
+			visibleTools: ["read_diagnostic_evidence"],
+			allowedTools: ["read_diagnostic_evidence"],
+			execution: {
+				sandboxMode: "read-only",
+				workspaceRoots: [],
+				command: { allowedPrefixes: ["git"], deniedPrefixes: [] },
+			},
+		})
+
+		expect(isPathAllowed(snapshot, "src/index.ts", "F:/workspace")).toBe(false)
+		expect(isCommandDeniedByPolicy(snapshot, "git status")).toBe(true)
+		expect(snapshot.summary).toContain("diagnostic evidence reader only")
+		expect(snapshot.summary).not.toContain("Command approval: follows global")
+	})
+
 	it("uses the smallest positive timeout and preserves allowlist exemptions", () => {
 		const snapshot = policy()
 

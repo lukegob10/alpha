@@ -47,6 +47,16 @@ export async function getStorageBasePath(defaultPath: string): Promise<string> {
 	}
 }
 
+/** Resolves the configured storage location without creating or modifying directories. */
+export function getStorageBasePathReadOnly(defaultPath: string): string {
+	try {
+		const customStoragePath = vscode.workspace.getConfiguration(Package.name).get<string>("customStoragePath", "")
+		return customStoragePath || defaultPath
+	} catch {
+		return defaultPath
+	}
+}
+
 /**
  * Gets the storage directory path for a task
  */
@@ -78,6 +88,45 @@ export function resolveTaskDirectoryPath(basePath: string, taskId: string): stri
 	}
 
 	return taskDir
+}
+
+function isResolvedPathWithin(rootPath: string, candidatePath: string): boolean {
+	const relativePath = path.relative(rootPath, candidatePath)
+	return (
+		relativePath === "" ||
+		(!path.isAbsolute(relativePath) && relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`))
+	)
+}
+
+/**
+ * Resolves one existing task directory without creating storage. Missing task
+ * directories remain valid paths so read-only callers can report absent data.
+ */
+export async function resolveExistingTaskDirectoryPathReadOnly(defaultPath: string, taskId: string): Promise<string> {
+	const storageBasePath = getStorageBasePathReadOnly(defaultPath)
+	const taskDirectory = resolveTaskDirectoryPath(storageBasePath, taskId)
+	try {
+		const taskStats = await fs.lstat(taskDirectory)
+		if (!taskStats.isDirectory() || taskStats.isSymbolicLink()) {
+			throw new Error("Task storage path is not a regular directory")
+		}
+		const [realStorageBasePath, realTasksRoot, realTaskDirectory] = await Promise.all([
+			fs.realpath(storageBasePath),
+			fs.realpath(path.join(storageBasePath, "tasks")),
+			fs.realpath(taskDirectory),
+		])
+		const expectedTasksRoot = path.resolve(realStorageBasePath, "tasks")
+		if (
+			path.relative(expectedTasksRoot, realTasksRoot) !== "" ||
+			!isResolvedPathWithin(realTasksRoot, realTaskDirectory) ||
+			realTasksRoot === realTaskDirectory
+		) {
+			throw new Error("Task storage path escapes its configured storage root")
+		}
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+	}
+	return taskDirectory
 }
 
 export async function getTaskDirectoryPath(globalStoragePath: string, taskId: string): Promise<string> {

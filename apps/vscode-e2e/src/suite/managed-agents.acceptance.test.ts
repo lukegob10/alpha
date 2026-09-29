@@ -161,7 +161,7 @@ class ManagedAgentScriptedAI {
 		}
 		if (role === "root" && previousCall?.name === "send_message") {
 			const delivery = JSON.parse(priorResult ?? "null") as { delivery?: unknown; taskId?: unknown }
-			assert.ok(["delivered", "queued"].includes(String(delivery?.delivery)))
+			assert.equal(delivery?.delivery, "buffered")
 			assert.equal(delivery.taskId, this.taskIdsByRole.get("outer"))
 		}
 		if (role === "root" && previousCall?.name === "interrupt_agent") {

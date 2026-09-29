@@ -69,6 +69,9 @@ export interface BuildToolsOptions {
 	allowedToolNames?: readonly ToolName[]
 	/** Selects role-specific schemas for primary and managed-child tasks. */
 	taskKind?: "primary" | "subagent"
+	/** Restricts the task to the host-owned diagnostic evidence reader. */
+	diagnosticSession?: boolean
+	diagnosticSourceTaskId?: string
 	/** Stable primary-task lifecycle catalog; managed children remain allow-list constrained. */
 	enableAgentLifecycleTools?: boolean
 	/** Root tasks control direct children; an independent child can only message its recorded parent. */
@@ -143,7 +146,7 @@ const AGENT_LIFECYCLE_TOOLS = new Set(["list_agents", "wait_agent", "send_messag
 const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", ...AGENT_LIFECYCLE_TOOLS])
 
 // Bump when native schemas or provider projection rules change. Dynamic schemas are fingerprinted below.
-const TOOL_CATALOG_SCHEMA_VERSION = 13
+const TOOL_CATALOG_SCHEMA_VERSION = 14
 
 const ASYNC_USER_INPUT_CATALOG_NAMES = new Set(["request_user_input_async", "send_user_message_async"])
 
@@ -350,12 +353,14 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		apiConfiguration,
 		disabledTools: requestedDisabledTools,
 		modelInfo: rawModelInfo,
-		includeAllToolsWithRestrictions,
+		includeAllToolsWithRestrictions: requestedIncludeAllToolsWithRestrictions,
 		allowedToolNames,
 		taskKind = "primary",
 		enableAgentLifecycleTools = taskKind === "primary",
 		crossTaskRole = "none",
 	} = options
+	const diagnosticSession = options.diagnosticSession === true
+	const includeAllToolsWithRestrictions = !diagnosticSession && requestedIncludeAllToolsWithRestrictions === true
 	const modelIdentity = options.modelIdentity ?? { provider: apiConfiguration?.apiProvider }
 	const modelPreference = getModelSurgicalEditTool(modelIdentity)
 	const modelInfo = rawModelInfo
@@ -385,16 +390,22 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 	const disabledTools = orderedNames([...(requestedDisabledTools ?? []), ...(options.policy?.disabledTools ?? [])])!
 	const requestWorkClass = requestWorkClassCacheKey(options.userRequestText, taskKind)
 	const allowIndependentTaskCreation =
-		crossTaskRole === "root" && isExplicitIndependentTaskRequest(options.userRequestText)
+		!diagnosticSession && crossTaskRole === "root" && isExplicitIndependentTaskRequest(options.userRequestText)
 	const retainHistoricalCreateTaskSchema =
 		includeAllToolsWithRestrictions === true && historyContainsToolName(options.discoveryHistory, "create_task")
 
-	// Get CodeIndexManager for feature checking.
-	const { CodeIndexManager } = await awaitCatalogInput(import("../../services/code-index/manager"), options.signal)
-	options.signal?.throwIfAborted()
-	const codeIndexManager = CodeIndexManager.getInstance(provider.context, cwd)
+	const codeIndexManager = diagnosticSession
+		? undefined
+		: await (async () => {
+				const { CodeIndexManager } = await awaitCatalogInput(
+					import("../../services/code-index/manager"),
+					options.signal,
+				)
+				options.signal?.throwIfAborted()
+				return CodeIndexManager.getInstance(provider.context, cwd)
+			})()
 	let customTools: NonNullable<ToolRegistryOptions["customTools"]> = []
-	if (experiments?.customTools && mode !== planModeSlug) {
+	if (!diagnosticSession && experiments?.customTools && mode !== planModeSlug) {
 		const toolDirs = getLegacyConfigDirectoriesForCwd(cwd).map((dir) => path.join(dir, "tools"))
 		await awaitCatalogInput(customToolRegistry.loadFromDirectoriesIfStale(toolDirs), options.signal)
 		options.signal?.throwIfAborted()
@@ -411,16 +422,24 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 	}
 	customTools = availableCustomTools(customTools)
 	// All live reads precede this synchronous capture. No await may split key construction from its factory.
-	const mcpHub = provider.getMcpHub()
-	const servers = [...(mcpHub?.getServers() ?? [])].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-	const availableBrowserToolNames = [...getAvailableVSCodeBrowserToolNames()].sort()
-	const namedAgentTypes = Object.entries(provider.contextProxy?.getValues?.().subagentAgentTypes ?? {})
-		.map(([name, definition]) => ({ name, description: definition.description }))
-		.sort((a, b) => a.name.localeCompare(b.name))
+	const mcpHub = diagnosticSession ? undefined : provider.getMcpHub()
+	const servers = diagnosticSession
+		? []
+		: [...(mcpHub?.getServers() ?? [])].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+	const availableBrowserToolNames = diagnosticSession ? [] : [...getAvailableVSCodeBrowserToolNames()].sort()
+	const namedAgentTypes = diagnosticSession
+		? []
+		: Object.entries(provider.contextProxy?.getValues?.().subagentAgentTypes ?? {})
+				.map(([name, definition]) => ({ name, description: definition.description }))
+				.sort((a, b) => a.name.localeCompare(b.name))
 	const cache = options.catalogCache
 	const providerName = apiConfiguration?.apiProvider
 	const canDiscover =
-		!!cache && !includeAllToolsWithRestrictions && providerName !== "vertex" && providerName !== "vscode-lm"
+		!diagnosticSession &&
+		!!cache &&
+		!includeAllToolsWithRestrictions &&
+		providerName !== "vertex" &&
+		providerName !== "vscode-lm"
 	const key = cache
 		? digestValue({
 				schemaVersion: TOOL_CATALOG_SCHEMA_VERSION,
@@ -436,6 +455,8 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				disabledTools,
 				allowedToolNames: orderedNames(allowedToolNames),
 				taskKind,
+				diagnosticSession,
+				diagnosticSourceTaskId: options.diagnosticSourceTaskId,
 				enableAgentLifecycleTools,
 				crossTaskRole,
 				allowIndependentTaskCreation,
@@ -487,6 +508,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 
 		// Build native tools with dynamic read_file tool based on settings.
 		const nativeTools = getNativeTools({
+			diagnosticSession,
 			supportsImages,
 			availableBrowserToolNames,
 			taskKind,
@@ -505,8 +527,9 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		const legacyDiscoveryInHistory = historyContainsToolName(options.discoveryHistory, "discover_tools")
 		const discoveryInHistory =
 			legacyDiscoveryInHistory || historyContainsToolName(options.discoveryHistory, "tool_search")
-		if (canDiscover || (includeAllToolsWithRestrictions && discoveryInHistory)) nativeTools.push(toolSearch)
-		if (legacyDiscoveryInHistory) nativeTools.push(discoverTools)
+		if (!diagnosticSession && (canDiscover || (includeAllToolsWithRestrictions && discoveryInHistory)))
+			nativeTools.push(toolSearch)
+		if (!diagnosticSession && legacyDiscoveryInHistory) nativeTools.push(discoverTools)
 		// Managed child lanes provide a frozen authority allow-list. Retain only the
 		// orchestration schemas explicitly granted there.
 		const explicitlyAllowedTools = allowedToolNames
@@ -523,14 +546,18 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			return true
 		})
 		// Filter native tools based on mode restrictions.
-		const modeFilteredNativeTools = filterNativeToolsForMode(
-			taskNativeTools,
-			mode,
-			customModes,
-			experiments,
-			codeIndexManager,
-			filterSettings,
-			mcpHub,
+		const modeFilteredNativeTools = (
+			diagnosticSession
+				? taskNativeTools
+				: filterNativeToolsForMode(
+						taskNativeTools,
+						mode,
+						customModes,
+						experiments,
+						codeIndexManager,
+						filterSettings,
+						mcpHub,
+					)
 		).filter((tool) => {
 			const name = getToolName(tool)
 			return (
@@ -556,7 +583,15 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 
 		// Combine filtered native, MCP, and custom tools into one captured surface.
 		const taskAllowedNames = allowedToolNames ? new Set(allowedToolNames.map(canonicalizeToolName)) : undefined
-		const requestClass = classifyRequestWorkClass(options.userRequestText, { taskKind })
+		const requestClass: RequestWorkClassDecision = diagnosticSession
+			? {
+					class: "full",
+					reason: "uncertain",
+					includeSkill: false,
+					includeTickets: false,
+					includeMcpResources: false,
+				}
+			: classifyRequestWorkClass(options.userRequestText, { taskKind })
 		const filteredTools = applyLookupCatalogNarrowing(
 			[...filteredNativeTools, ...filteredMcpTools, ...nativeCustomTools].filter(
 				(tool) => !taskAllowedNames || taskAllowedNames.has(canonicalizeToolName(getToolName(tool))),
@@ -657,6 +692,8 @@ function createCapturedToolSurface(input: {
 		approvalMode: options.approvalMode,
 		autoApprovalEnabled: options.autoApprovalEnabled,
 		readGrant: options.readGrant,
+		diagnosticSession: options.diagnosticSession,
+		diagnosticSourceTaskId: options.diagnosticSourceTaskId,
 		mode: options.mode,
 		cwd: options.cwd,
 		taskKind: options.taskKind ?? "primary",

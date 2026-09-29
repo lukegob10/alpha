@@ -3,13 +3,25 @@ import osName from "os-name"
 
 import { getShell } from "../../../utils/shell"
 
+function getCommandSyntax(commandShell: string): string {
+	const executable = commandShell.split(/[\\/]/).pop()?.toLowerCase()
+	if (executable === "cmd.exe" || executable === "cmd") {
+		return "\nCommand syntax: cmd.exe uses double quotes; single quotes are literal characters. Do not assume Unix head/tail are installed. Use exec_command output limits for bounded output and rg --files to discover actual filenames before reading them."
+	}
+	if (executable && /^(?:powershell|pwsh)(?:\.exe)?$/.test(executable)) {
+		return "\nCommand syntax: use PowerShell syntax, Get-Content for files, and Select-Object -First for bounded pipelines; do not assume Unix head/tail are installed."
+	}
+	return ""
+}
+
 export function getSystemInfoSection(cwd: string, commandShell = getShell()): string {
-	// Try to get detailed OS name, fall back to basic info if it fails
+	// windows-release (used by os-name) launches WMIC/PowerShell synchronously.
+	// Prompt construction must not block checkpoint/process callbacks in the host.
 	let osInfo: string
 	try {
-		osInfo = osName()
+		osInfo = os.platform() === "win32" ? `Windows (kernel ${os.release()})` : osName()
 	} catch (error) {
-		// Fallback when os-name fails (e.g., PowerShell not available on Windows)
+		// Keep prompt construction available when descriptive metadata is unavailable.
 		const platform = os.platform()
 		const release = os.release()
 		osInfo = `${platform} ${release}`
@@ -20,7 +32,7 @@ export function getSystemInfoSection(cwd: string, commandShell = getShell()): st
 SYSTEM INFORMATION
 
 Operating System: ${osInfo}
-Default Shell: ${commandShell}
+Default Shell: ${commandShell}${getCommandSyntax(commandShell)}
 Home Directory: ${os.homedir().toPosix()}
 Current Workspace Directory: ${cwd.toPosix()}
 

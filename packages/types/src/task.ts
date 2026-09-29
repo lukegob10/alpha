@@ -98,6 +98,12 @@ export type TaskProviderEvents = {
  */
 
 export interface CreateTaskOptions {
+	/** Restrict this primary task to the host-owned read-only diagnostic tool surface. */
+	diagnosticSession?: boolean
+	/** Bounded host-generated incident identity used to deduplicate diagnostic tasks across reloads. */
+	diagnosticIncidentId?: string
+	/** Bounded source task identity whose redacted evidence a diagnostic session may inspect. */
+	diagnosticSourceTaskId?: string
 	/** Independent task preference; callers such as schedules supply their own snapshot. */
 	reasoningPreference?: import("./task-reasoning.js").TaskReasoningPreference
 	/** Approval mode captured for this task at creation; later setting changes apply to new tasks only. */
@@ -258,6 +264,9 @@ export type TaskMetadata = z.infer<typeof taskMetadataSchema>
 
 export interface TaskLike {
 	readonly taskId: string
+	readonly diagnosticSession?: boolean
+	readonly diagnosticIncidentId?: string
+	readonly diagnosticSourceTaskId?: string
 	readonly orchestrationParentTaskId?: string
 	readonly rootTaskId?: string
 	readonly parentTaskId?: string

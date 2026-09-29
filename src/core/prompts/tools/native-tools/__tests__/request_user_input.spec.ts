@@ -36,6 +36,6 @@ describe("request_user_input native tool", () => {
 				},
 			},
 		})
-		expect(requestUserInput.function.description).toContain("Plan mode")
+		expect(requestUserInput.function.description).toContain("Code and Plan modes")
 	})
 })

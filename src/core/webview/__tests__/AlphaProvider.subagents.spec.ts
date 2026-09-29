@@ -80,6 +80,7 @@ const makeProviderHarness = (
 		],
 	])
 	const provider = Object.assign(Object.create(AlphaProvider.prototype), {
+		agentControlStoreLoadedAt: Date.now(),
 		contextProxy: {
 			getValues: () => routingSettings,
 			setValues: vi.fn(async (values: Record<string, unknown>) => Object.assign(routingSettings, values)),
@@ -141,6 +142,7 @@ const makeProviderHarness = (
 }
 
 const makeParent = () => ({
+	admitAgentMessage: async (persist: () => Promise<unknown>) => persist(),
 	taskId: "parent-1",
 	taskKind: "primary",
 	metadata: { task: "parent" },
@@ -1441,8 +1443,12 @@ If complete, use attempt_completion.
 				cancelCurrentRequest: vi.fn(),
 				abortTask: vi.fn(async () => undefined),
 				resumeSubagentFollowup: vi.fn(async (instruction: string, onPersisted?: () => Promise<void>) => {
-					expect(instruction).toBe(
-						"Check one more edge case\n\nAdditional parent steering:\nPING_BEFORE_INTERRUPT",
+					expect(instruction).toBe("Check one more edge case")
+					await provider.deliverAgentMessages(
+						{ taskId, taskKind: "subagent", rootTaskId: parent.taskId } as any,
+						async (message) => {
+							expect(message.text).toBe("PING_BEFORE_INTERRUPT")
+						},
 					)
 					await onPersisted?.()
 					const message = {
@@ -2582,6 +2588,7 @@ If complete, use attempt_completion.
 		)
 		liveChildren.set(firstHandle.taskId, {
 			canAcceptSteerMessage: () => true,
+			admitAgentMessage: async (persist: () => Promise<unknown>) => persist(),
 			steerUserMessage,
 		})
 		liveChildren.set(secondHandle.taskId, {})
@@ -2595,7 +2602,7 @@ If complete, use attempt_completion.
 		expect(listed.mailbox.unreadCount).toBe(0)
 
 		await provider.sendMessageToAgent(parent as any, firstHandle.path, "Focus on the reload race")
-		expect(steerUserMessage).toHaveBeenCalledWith("Focus on the reload race", undefined, expect.any(Function))
+		expect(steerUserMessage).not.toHaveBeenCalled()
 		await provider.cancelAgent(parent as any, secondHandle.taskId, "No longer needed")
 
 		const firstRun = [...runs.entries()].find(([key]) => key.startsWith(`${firstHandle.taskId}:`))![1]
@@ -2661,183 +2668,111 @@ If complete, use attempt_completion.
 		expect(afterClose.agents).toEqual([])
 	})
 
-	it("queues immediate steering by stable task name before the child runtime is live", async () => {
+	it("buffers multiple pre-launch messages and delivers them in order only at the recipient boundary", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
-		const bounded = new BoundedDelegationManager(
-			async (_envelope, signal) =>
-				await new Promise<any>((_resolve, reject) => {
-					signal.addEventListener("abort", () => reject(signal.reason), { once: true })
-				}),
-			1,
-		)
-		;(provider as any).boundedDelegationManager = bounded
-		;(provider as any).asyncSubagentRunManager = new AsyncSubagentRunManager(bounded)
 		const prepared = await provider.prepareSubagentGroup(parent as any, [
 			{ task_name: "backend_review", objective: "Inspect lifecycle state", agent_kind: "review" },
 		])
-
-		const handle = await provider.launchPreparedSubagentGroup(parent as any, prepared, new AbortController().signal)
-		const result = (await provider.sendMessageToAgent(
-			parent as any,
-			"backend_review",
-			"Prioritize cancellation ordering",
-		)) as any
-
-		expect(handle.nickname).toBe("backend_review")
-		expect(handle.path).toBe("/root/backend-review")
-		expect(result).toMatchObject({ taskId: handle.taskId, path: handle.path, delivery: "queued" })
-		expect(JSON.stringify(result)).not.toContain("Prioritize cancellation ordering")
-		expect((provider as any).subagentDescriptors.get(handle.taskId).pendingSteerMessage).toMatchObject({
-			message: "Prioritize cancellation ordering",
-		})
-		const mailbox = (provider as any).agentControlStore.readMailbox(handle.taskId, {
-			rootTaskId: parent.taskId,
-			includeDelivered: false,
-			kinds: ["message"],
-		})
-		expect(mailbox.entries).toEqual([
-			expect.objectContaining({
-				name: "parent_message",
-				payload: { message: "Prioritize cancellation ordering" },
-			}),
-		])
-
-		let persist!: () => Promise<void>
-		const child = {
-			canAcceptSteerMessage: () => true,
-			steerUserMessage: vi.fn(
-				async (_message: string, _images: string[] | undefined, onPersisted: () => Promise<void>) => {
-					persist = onPersisted
-				},
-			),
-		}
-		const record = (provider as any).agentControlStore.getAgent(handle.taskId, parent.taskId)
-		await (provider as any).deliverQueuedAgentMessage(child, record)
-		expect(
-			(provider as any).agentControlStore.getUnacknowledgedMailboxEntries(handle.taskId, {
-				rootTaskId: parent.taskId,
-				kinds: ["message"],
-			}),
-		).toHaveLength(1)
-		expect((provider as any).subagentDescriptors.get(handle.taskId).pendingSteerMessage).toBeDefined()
-
-		await persist()
-
-		expect(
-			(provider as any).agentControlStore.getUnacknowledgedMailboxEntries(handle.taskId, {
-				rootTaskId: parent.taskId,
-				kinds: ["message"],
-			}),
-		).toEqual([])
-		expect((provider as any).subagentDescriptors.get(handle.taskId).pendingSteerMessage).toBeUndefined()
+		const records = await (provider as any).ensurePreparedSubagentControlRecords(parent, prepared)
+		const record = records.get(prepared.envelopes[0].id)!
+		const child = { taskId: record.taskId, taskKind: "subagent", rootTaskId: parent.taskId }
+		await expect(provider.sendMessageToAgent(parent as any, record.taskId, "First message")).resolves.toMatchObject(
+			{ delivery: "buffered" },
+		)
+		await provider.sendMessageToAgent(parent as any, record.taskId, "Second message")
+		expect(provider.hasPendingAgentMessages(child as any)).toBe(true)
+		const persist = vi.fn(async (_message: { text: string }) => undefined)
+		await provider.deliverAgentMessages(child as any, persist)
+		expect(persist.mock.calls.map(([message]) => message.text)).toEqual(["First message", "Second message"])
+		expect(provider.hasPendingAgentMessages(child as any)).toBe(false)
 	})
 
-	it("rechecks the child after mailbox persistence when launch drains before the event commits", async () => {
+	it("delivers a message appended after the child's first boundary on its next boundary", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
 		const prepared = await provider.prepareSubagentGroup(parent as any, [
-			{ task_name: "startup_race", objective: "Receive the queued parent message", agent_kind: "review" },
+			{ task_name: "startup_race", objective: "Receive the parent message", agent_kind: "review" },
 		])
-		const records = await (provider as any).ensurePreparedSubagentControlRecords(parent, prepared)
-		const record = records.get(prepared.envelopes[0].id)
-		assert.ok(record)
-
+		const store = (provider as any).agentControlStore as AgentControlStore
+		await (provider as any).ensurePreparedSubagentControlRecords(parent, prepared)
+		const record = store.getAgent(prepared.envelopes[0].id, parent.taskId)!
+		const child = { taskId: record.taskId, taskKind: "subagent", rootTaskId: parent.taskId }
 		let beginAppend!: () => void
-		const appendStarted = new Promise<void>((resolve) => {
+		const started = new Promise<void>((resolve) => {
 			beginAppend = resolve
 		})
 		let finishAppend!: () => void
-		const appendGate = new Promise<void>((resolve) => {
+		const gate = new Promise<void>((resolve) => {
 			finishAppend = resolve
 		})
-		const store = (provider as any).agentControlStore as AgentControlStore
 		const appendEvent = store.appendEvent.bind(store)
 		vi.spyOn(store, "appendEvent").mockImplementation(async (input) => {
-			if (input.name === "parent_message") {
-				beginAppend()
-				await appendGate
-			}
+			beginAppend()
+			await gate
 			return appendEvent(input)
 		})
-
-		let persist!: () => Promise<void>
-		const child = {
-			canAcceptSteerMessage: () => true,
-			steerUserMessage: vi.fn(
-				async (_message: string, _images: string[] | undefined, onPersisted: () => Promise<void>) => {
-					persist = onPersisted
-				},
-			),
-		}
-		;(provider as any).taskSessions.getTask = (taskId: string) =>
-			taskId === prepared.envelopes[0].id ? undefined : undefined
-		const sending = provider.sendMessageToAgent(parent as any, "startup_race", "STEERING_MESSAGE")
-		await appendStarted
-
-		// The child registers and performs its one pre-launch drain while the
-		// sender is waiting for the mailbox's durable append to finish.
-		;(provider as any).taskSessions.getTask = (taskId: string) =>
-			taskId === prepared.envelopes[0].id ? child : undefined
-		await (provider as any).deliverQueuedAgentMessage(child, record)
-		expect(child.steerUserMessage).not.toHaveBeenCalled()
-
+		const sending = provider.sendMessageToAgent(parent as any, record.taskId, "Message after startup")
+		await started
+		const persist = vi.fn(async (_message: { text: string }) => undefined)
+		await provider.deliverAgentMessages(child as any, persist)
+		expect(persist).not.toHaveBeenCalled()
 		finishAppend()
-		await expect(sending).resolves.toMatchObject({ delivery: "delivered", sequence: 1 })
-		expect(child.steerUserMessage).toHaveBeenCalledOnce()
-		expect(child.steerUserMessage).toHaveBeenCalledWith("STEERING_MESSAGE", undefined, expect.any(Function))
-		expect(store.getUnacknowledgedMailboxEntries(record.taskId, { rootTaskId: record.rootTaskId })).toHaveLength(1)
-
-		await persist()
-		expect(store.getUnacknowledgedMailboxEntries(record.taskId, { rootTaskId: record.rootTaskId })).toEqual([])
+		await sending
+		await provider.deliverAgentMessages(child as any, persist)
+		expect(persist).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ text: "Message after startup" }))
 	})
 
-	it("acknowledges live steering only after the child reports durable persistence", async () => {
+	it("keeps messages durable during an approval and retries failed transcript persistence without acknowledging other events", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
 		const root = await (provider as any).ensureAgentControlRoot(parent)
-		const record = await (provider as any).agentControlStore.createAgent({
-			taskId: "live-steering-child",
+		const store = (provider as any).agentControlStore as AgentControlStore
+		const record = await store.createAgent({
+			taskId: "live-message-child",
 			parentTaskId: root.taskId,
 			rootTaskId: root.rootTaskId,
-			nickname: "Live steering child",
+			nickname: "Live child",
 			role: "review",
-			objective: "Exercise durable steering",
+			objective: "Exercise durable messages",
 			status: "running",
 		})
-		let persist!: () => Promise<void>
 		const child = {
-			canAcceptSteerMessage: () => true,
-			steerUserMessage: vi.fn(
-				async (_message: string, _images: string[] | undefined, onPersisted: () => Promise<void>) => {
-					persist = onPersisted
-				},
-			),
+			taskId: record.taskId,
+			taskKind: "subagent",
+			rootTaskId: root.rootTaskId,
+			taskAsk: "tool",
+			canAcceptSteerMessage: () => false,
+			admitAgentMessage: async (persist: () => Promise<unknown>) => persist(),
+			steerUserMessage: vi.fn(),
+			submitUserMessage: vi.fn(),
 		}
-		;(provider as any).taskSessions.getTask = (taskId: string) => (taskId === record.taskId ? child : undefined)
-
+		;(provider as any).taskSessions.getTask = (id: string) => (id === record.taskId ? child : undefined)
+		await store.appendEvent({
+			rootTaskId: root.rootTaskId,
+			sender: root.taskId,
+			recipient: record.taskId,
+			kind: "result",
+			name: "unrelated_result",
+			payload: { taskId: root.taskId },
+		})
 		await provider.sendMessageToAgent(parent as any, record.taskId, "Persist me before acknowledging")
-
-		let entries = (provider as any).agentControlStore.getUnacknowledgedMailboxEntries(record.taskId, {
-			rootTaskId: root.rootTaskId,
-			kinds: ["message"],
-		})
-		expect(entries).toHaveLength(1)
-		expect(entries[0]).toMatchObject({ name: "parent_message" })
-		expect(entries[0]).not.toHaveProperty("deliveredAt")
-		expect(entries[0]).not.toHaveProperty("acknowledgedAt")
-
-		await persist()
-
-		entries = (provider as any).agentControlStore.getUnacknowledgedMailboxEntries(record.taskId, {
-			rootTaskId: root.rootTaskId,
-			kinds: ["message"],
-		})
-		expect(entries).toEqual([])
-		const persisted = (provider as any).agentControlStore
-			.getSnapshot()
-			.mailbox.find((entry: any) => entry.recipientTaskId === record.taskId && entry.kind === "message")
-		expect(persisted).toMatchObject({ deliveredAt: expect.any(Number), acknowledgedAt: expect.any(Number) })
+		expect(child.steerUserMessage).not.toHaveBeenCalled()
+		expect(child.submitUserMessage).not.toHaveBeenCalled()
+		await expect(
+			provider.deliverAgentMessages(child as any, async () => {
+				throw new Error("disk failure")
+			}),
+		).rejects.toThrow("disk failure")
+		expect(provider.hasPendingAgentMessages(child as any)).toBe(true)
+		const persist = vi.fn(async (_message: { text: string }) => undefined)
+		await provider.deliverAgentMessages(child as any, persist)
+		expect(persist).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ text: "Persist me before acknowledging" }),
+		)
+		expect(store.getUnacknowledgedMailboxEntries(record.taskId, { rootTaskId: root.rootTaskId })).toEqual([
+			expect.objectContaining({ name: "unrelated_result" }),
+		])
 	})
 
 	it("returns a compact agent projection without terminal reports or mailbox payloads", async () => {
@@ -3292,7 +3227,7 @@ If complete, use attempt_completion.
 			taskId: grandchild.taskId,
 			parentTaskId: child.taskId,
 			parentPath: child.path,
-			delivery: "queued",
+			delivery: "buffered",
 			event: {
 				senderTaskId: grandchild.taskId,
 				recipientTaskId: child.taskId,
@@ -4715,12 +4650,15 @@ If complete, use attempt_completion.
 		).resolves.toMatchObject({
 			taskId: child.taskId,
 			followup: true,
-			delivery: "queued",
+			delivery: "buffered",
 		})
 		expect(start).not.toHaveBeenCalled()
-		expect((provider as any).subagentDescriptors.get(child.taskId).pendingSteerMessage).toMatchObject({
-			message: "Check the second case",
-		})
+		expect(
+			(provider as any).agentControlStore.getUnacknowledgedMailboxEntries(child.taskId, {
+				rootTaskId: parent.taskId,
+				kinds: ["message"],
+			}),
+		).toEqual([expect.objectContaining({ payload: { message: "Check the second case" } })])
 		expect(
 			(provider as any).agentControlStore.getUnacknowledgedMailboxEntries(child.taskId, {
 				rootTaskId: root.rootTaskId,
@@ -4734,7 +4672,7 @@ If complete, use attempt_completion.
 		])
 	})
 
-	it("steers a live running follow-up through the child's next input boundary", async () => {
+	it("buffers a live running follow-up through the child's next input boundary", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
 		const root = await (provider as any).ensureAgentControlRoot(parent)
@@ -4749,7 +4687,13 @@ If complete, use attempt_completion.
 		})
 		const steerUserMessage = vi.fn(async () => undefined)
 		;(provider as any).taskSessions.getTask = (taskId: string) =>
-			taskId === child.taskId ? { canAcceptSteerMessage: () => true, steerUserMessage } : undefined
+			taskId === child.taskId
+				? {
+						canAcceptSteerMessage: () => true,
+						admitAgentMessage: async (persist: () => Promise<unknown>) => persist(),
+						steerUserMessage,
+					}
+				: undefined
 		const start = vi.spyOn(provider as any, "startPreparedSubagentRun")
 
 		await expect(
@@ -4757,9 +4701,9 @@ If complete, use attempt_completion.
 		).resolves.toMatchObject({
 			taskId: child.taskId,
 			followup: true,
-			delivery: "delivered",
+			delivery: "buffered",
 		})
-		expect(steerUserMessage).toHaveBeenCalledWith("Check the live case", undefined, expect.any(Function))
+		expect(steerUserMessage).not.toHaveBeenCalled()
 		expect(start).not.toHaveBeenCalled()
 	})
 

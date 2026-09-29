@@ -53,7 +53,7 @@ describe("getSystemInfoSection", () => {
 		expect(result).toContain(`Current Workspace Directory: ${mockCwd}`)
 	})
 
-	it("should handle Windows platform in fallback", () => {
+	it("uses native Windows metadata without invoking the synchronous OS caption probe", () => {
 		mockOsName.mockImplementation(() => {
 			throw new Error("Command failed with ENOENT: powershell")
 		})
@@ -62,7 +62,9 @@ describe("getSystemInfoSection", () => {
 
 		const result = getSystemInfoSection(mockCwd)
 
-		expect(result).toContain("Operating System: win32 10.0.19043")
+		expect(result).toContain("Operating System: Windows (kernel 10.0.19043)")
+		getSystemInfoSection(mockCwd)
+		expect(mockOsName).not.toHaveBeenCalled()
 	})
 
 	it("reports the actual command shell when it differs from the VS Code profile", () => {
@@ -71,5 +73,11 @@ describe("getSystemInfoSection", () => {
 		expect(getSystemInfoSection(mockCwd, "C:\\Windows\\System32\\cmd.exe")).toContain(
 			"Default Shell: C:\\Windows\\System32\\cmd.exe",
 		)
+	})
+
+	it("uses the captured PowerShell dialect even on a different host platform", () => {
+		const result = getSystemInfoSection(mockCwd, "C:\\Program Files\\PowerShell\\7\\pwsh.exe")
+		expect(result).toContain("Select-Object -First")
+		expect(result).not.toContain("single quotes are literal")
 	})
 })

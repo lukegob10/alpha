@@ -101,7 +101,7 @@ describe("filterNativeToolsForMode - disabledTools", () => {
 })
 
 describe("mode-specific user input tool", () => {
-	it("advertises request_user_input in Plan and preserves ask_followup_question in Code", () => {
+	it("advertises request_user_input in Code and Plan while retaining legacy Code questions", () => {
 		const tools = [makeTool("ask_followup_question"), makeTool("request_user_input")]
 		const codeNames = filterNativeToolsForMode(tools, "code", undefined, undefined, undefined, {}).map(
 			(tool) => (tool as any).function.name,
@@ -111,7 +111,7 @@ describe("mode-specific user input tool", () => {
 		)
 
 		expect(codeNames).toContain("ask_followup_question")
-		expect(codeNames).not.toContain("request_user_input")
+		expect(codeNames).toContain("request_user_input")
 		expect(planNames).toContain("request_user_input")
 		expect(planNames).not.toContain("ask_followup_question")
 	})

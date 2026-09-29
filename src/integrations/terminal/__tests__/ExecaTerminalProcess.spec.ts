@@ -24,7 +24,7 @@ vitest.mock("ps-tree", () => ({
 	default: vitest.fn((_: number, cb: any) => cb(null, [])),
 }))
 
-import { execa } from "execa"
+import { execa, ExecaError } from "execa"
 import * as path from "node:path"
 import psTree from "ps-tree"
 import { ExecaTerminalProcess } from "../ExecaTerminalProcess"
@@ -154,6 +154,36 @@ describe("ExecaTerminalProcess", () => {
 	})
 
 	describe("basic functionality", () => {
+		it.each([1, 2, 255])(
+			"returns command exit %s and output without dumping them into the host console",
+			async (exitCode) => {
+				const errorLog = vitest.spyOn(console, "error").mockImplementation(() => undefined)
+				const output = "command diagnostic output\n".repeat(4000)
+				const commandError = Object.assign(new ExecaError(), { message: output, exitCode })
+				const completed = vitest.fn()
+				terminalProcess.on("completed", completed)
+				vitest.mocked(execa).mockImplementationOnce((() => () => ({
+					pid: mockPid,
+					iterable: () =>
+						(async function* () {
+							yield output
+							throw commandError
+						})(),
+				})) as unknown as typeof execa)
+				try {
+					await terminalProcess.run("rg sample missing-file")
+					expect(mockTerminal.shellExecutionComplete).toHaveBeenCalledWith({
+						exitCode,
+						signalName: undefined,
+					})
+					expect(completed).toHaveBeenCalledWith(output)
+					expect(errorLog).not.toHaveBeenCalled()
+				} finally {
+					errorLog.mockRestore()
+				}
+			},
+		)
+
 		it("releases the actual terminal binding after a completed command", async () => {
 			const terminal = new ExecaTerminal(2, "/test/cwd")
 			const command = terminal.runCommand("echo test", {

@@ -23,7 +23,7 @@ const casesPath = path.join(
 	"../../../../evals/lookup-efficiency/cases.json",
 )
 
-const LOOKUP_NATIVE_NAMES = ["exec_command"]
+const LOOKUP_NATIVE_NAMES = ["exec_command", "request_user_input"]
 const RETIRED_LOOKUP_NAMES = ["codebase_search", "list_files", "read_file", "search_files"]
 const HIDDEN_WORKFLOW_NAMES = [
 	"spawn_agent",
@@ -141,7 +141,7 @@ describe("lookup-efficiency frozen prompts CI shape", () => {
 		}
 	})
 
-	it("advertises only the lookup-sized command catalog for every frozen prompt", async () => {
+	it("advertises only the lookup-sized command and question catalog for every frozen prompt", async () => {
 		const cases = await loadFrozenCases()
 		for (const fixture of cases) {
 			const result = await buildNativeToolsArrayWithRestrictions(options({ userRequestText: fixture.prompt }))

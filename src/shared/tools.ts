@@ -177,6 +177,7 @@ export type ToolParamName = (typeof toolParamNames)[number]
  * Tools not listed here will fall back to `any` for backward compatibility.
  */
 export type NativeToolArgs = BrowserToolArgs & {
+	read_diagnostic_evidence: Record<string, never>
 	access_mcp_resource: { server_name: string; uri: string }
 	list_mcp_resources: { server?: string; cursor?: string }
 	list_mcp_resource_templates: { server?: string; cursor?: string }
@@ -489,6 +490,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	list_mcp_resources: "list mcp resources",
 	list_mcp_resource_templates: "list mcp resource templates",
 	read_mcp_resource: "read an mcp resource",
+	read_diagnostic_evidence: "read diagnostic evidence",
 	discover_tools: "discover optional MCP tools",
 	tool_search: "search deferred tools",
 	ask_followup_question: "ask questions",
@@ -606,6 +608,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 // Tools that are always available to all modes.
 export const ALWAYS_AVAILABLE_TOOLS: ToolName[] = [
 	"ask_followup_question",
+	"request_user_input",
 	"request_user_input_async",
 	"attempt_completion",
 	"new_task",
