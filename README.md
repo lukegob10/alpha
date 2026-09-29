@@ -6,9 +6,9 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v3.1.1
+## Welcome to Alpha v3.1.2
 
-Alpha v3.1.1 keeps longer agent tasks moving and makes scheduled runs and task history more predictable.
+Alpha v3.1.2 keeps delegated work visible, prevents search loops, and makes active traces easier to follow.
 
 - One TypeScript turn engine coordinates model steps, tool calls, approvals, and delegated work across supported providers
 - Ask, Auto, and Full Access policies apply consistently to tool calls and child tasks
@@ -16,9 +16,10 @@ Alpha v3.1.1 keeps longer agent tasks moving and makes scheduled runs and task h
 - Completed work folds into a **Worked for** summary; expand it to inspect the full activity trace
 - Review the whole turn or open a per-file diff in Alpha Diff, with added and removed line counts
 - Automatic context compaction runs at safe boundaries when its configured threshold is reached
-- Managed agents receive enough default token budget to complete normal multi-step work
-- Scheduled tasks are scoped to open VS Code workspaces, with due runs claimed once across windows
-- Task history is scoped to the current project
+- Managed-agent tasks open only after launch and retain accurate terminal reasons when startup fails
+- Repeated search-only steps trigger bounded evidence consolidation and concrete-action recovery
+- Folded command and edit traces pulse subtly while work is still running, with reduced-motion support
+- Plan tools, command outcomes, model prompts, and turn sequencing align more closely with Codex CLI
 - The standalone Alpha CLI is retired; Alpha continues as a VS Code extension
 
 ---

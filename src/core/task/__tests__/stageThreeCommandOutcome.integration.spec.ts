@@ -532,10 +532,14 @@ describe("ordinary task tool contracts", () => {
 				installTerminal(terminal)
 				const result = await createScheduler(harness, []).run(response("physical-command", command))
 				expect(terminal.runCommand).toHaveBeenCalledOnce()
-				expect(result.results[0].status).toBe(program === "node" ? "success" : "error")
+				expect(result.results[0]).toMatchObject({
+					status: "success",
+					executionStatus: program === "node" ? "success" : "error",
+				})
 				expect(result.results[0].content).toEqual(
 					expect.stringMatching(program === "node" ? /v\d+\.\d+\.\d+/ : /not a git repository/),
 				)
+				expect(harness.toolResults()[0].is_error).toBe(false)
 			})
 		},
 	)
@@ -1184,7 +1188,7 @@ describe("Stage Three command outcome integration", () => {
 		})
 	})
 
-	it("reports a nonzero exit as failed even when receipt text is otherwise positive", async () => {
+	it("reports a nonzero exit as a completed tool transaction with failed process evidence", async () => {
 		await withTaskHarness(async (harness) => {
 			const events: AgentTurnEvent[] = []
 			const terminal = controlledTerminal(harness.workspacePath)
@@ -1197,12 +1201,12 @@ describe("Stage Three command outcome integration", () => {
 
 			expect(outcome.results[0]).toMatchObject({
 				callId: "exit-nonzero",
-				status: "error",
+				status: "success",
 				executionStatus: "error",
 				exitCode: 17,
 			})
 			expect(toolResultEvents(events)).toEqual([
-				expect.objectContaining({ callId: "exit-nonzero", status: "error" }),
+				expect.objectContaining({ callId: "exit-nonzero", status: "success" }),
 			])
 			expect(verificationEvents(events)).toEqual([
 				expect.objectContaining({ commandCategory: "test", status: "error", exitCode: 17 }),
@@ -1211,6 +1215,7 @@ describe("Stage Three command outcome integration", () => {
 				expect.objectContaining({ toolCallId: "exit-nonzero", status: "failed", exitCode: 17 }),
 			])
 			expect(resultIds(harness)).toEqual(["exit-nonzero"])
+			expect(harness.toolResults()[0].is_error).toBe(false)
 		})
 	})
 

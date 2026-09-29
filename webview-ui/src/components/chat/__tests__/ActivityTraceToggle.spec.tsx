@@ -48,4 +48,27 @@ describe("ActivityTraceToggle", () => {
 		expect(screen.getByRole("button", { name: "chat:activityTrace.workedFor 12m" })).toBeInTheDocument()
 		expect(screen.queryByText("8")).not.toBeInTheDocument()
 	})
+
+	it("animates only while the active trace is folded", () => {
+		const props = {
+			traceId: 1,
+			kind: "commands" as const,
+			count: 2,
+			controls: "row-1 row-2",
+			onToggle: vi.fn(),
+		}
+		const { rerender } = render(<ActivityTraceToggle {...props} active expanded={false} />)
+		const button = screen.getByRole("button", { name: "chat:activityTrace.runningCommands 2" })
+
+		expect(button).toHaveAttribute("aria-busy", "true")
+		expect(button).toHaveAttribute("data-active", "true")
+		expect(button).toHaveClass("activity-trace-toggle--active")
+
+		rerender(<ActivityTraceToggle {...props} active expanded />)
+		expect(button).not.toHaveAttribute("data-active")
+		expect(button).not.toHaveClass("activity-trace-toggle--active")
+
+		rerender(<ActivityTraceToggle {...props} active={false} expanded={false} />)
+		expect(button).not.toHaveAttribute("aria-busy")
+	})
 })

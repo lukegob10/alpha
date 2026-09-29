@@ -8,8 +8,12 @@ import type { HistoryItem } from "@alpha-code/types"
 
 import { TaskHistoryStore } from "../TaskHistoryStore"
 import { GlobalFileNames } from "../../../shared/globalFileNames"
+import { safeWriteJson } from "../../../utils/safeWriteJson"
 
-const { mockUnlink } = vi.hoisted(() => ({ mockUnlink: vi.fn() }))
+const { mockUnlink, mockSafeWriteJson } = vi.hoisted(() => ({
+	mockUnlink: vi.fn(),
+	mockSafeWriteJson: vi.fn(),
+}))
 
 vi.mock("fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("fs/promises")>()
@@ -23,10 +27,7 @@ vi.mock("../../../utils/storage", () => ({
 
 // Mock safeWriteJson to use plain fs writes in tests (avoids proper-lockfile issues)
 vi.mock("../../../utils/safeWriteJson", () => ({
-	safeWriteJson: vi.fn().mockImplementation(async (filePath: string, data: any) => {
-		await fs.mkdir(path.dirname(filePath), { recursive: true })
-		await fs.writeFile(filePath, JSON.stringify(data, null, "\t"), "utf8")
-	}),
+	safeWriteJson: mockSafeWriteJson,
 }))
 
 function makeHistoryItem(overrides: Partial<HistoryItem> = {}): HistoryItem {
@@ -49,6 +50,11 @@ describe("TaskHistoryStore", () => {
 
 	beforeEach(async () => {
 		mockUnlink.mockClear()
+		mockSafeWriteJson.mockReset()
+		mockSafeWriteJson.mockImplementation(async (filePath: string, data: any) => {
+			await fs.mkdir(path.dirname(filePath), { recursive: true })
+			await fs.writeFile(filePath, JSON.stringify(data, null, "\t"), "utf8")
+		})
 		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "task-history-test-"))
 		store = new TaskHistoryStore(tmpDir)
 	})
@@ -457,6 +463,47 @@ describe("TaskHistoryStore", () => {
 			expect(index.version).toBe(1)
 			expect(index.entries).toHaveLength(1)
 			expect(index.entries[0].id).toBe("flush-task")
+		})
+
+		it("serializes index refreshes across stores sharing one storage directory", async () => {
+			const siblingStore = new TaskHistoryStore(tmpDir)
+			await Promise.all([store.initialize(), siblingStore.initialize()])
+
+			let releaseFirstWrite!: () => void
+			const firstWriteBlocked = new Promise<void>((resolve) => {
+				releaseFirstWrite = resolve
+			})
+			let activeIndexWrites = 0
+			let maxActiveIndexWrites = 0
+			let indexWriteCount = 0
+			vi.mocked(safeWriteJson).mockImplementation(async (filePath: string, data: any) => {
+				if (path.basename(filePath) === GlobalFileNames.historyIndex) {
+					indexWriteCount++
+					activeIndexWrites++
+					maxActiveIndexWrites = Math.max(maxActiveIndexWrites, activeIndexWrites)
+					if (indexWriteCount === 1) await firstWriteBlocked
+					activeIndexWrites--
+				}
+				await fs.mkdir(path.dirname(filePath), { recursive: true })
+				await fs.writeFile(filePath, JSON.stringify(data, null, "\t"), "utf8")
+			})
+
+			const first = store.flushIndex()
+			await vi.waitFor(() => expect(indexWriteCount).toBe(1))
+			const second = siblingStore.flushIndex()
+			await new Promise<void>((resolve) => setImmediate(resolve))
+
+			try {
+				expect(indexWriteCount).toBe(1)
+				expect(maxActiveIndexWrites).toBe(1)
+			} finally {
+				releaseFirstWrite()
+			}
+			await Promise.all([first, second])
+			expect(indexWriteCount).toBe(2)
+			expect(maxActiveIndexWrites).toBe(1)
+			siblingStore.dispose()
+			await siblingStore.flushIndex()
 		})
 	})
 

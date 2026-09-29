@@ -161,6 +161,20 @@ describe("ManagedAgentTree", () => {
 		expect(onShowTask.mock.calls).toEqual([["parent-1"], ["child-2"]])
 	})
 
+	it("does not offer navigation for a child that failed before task creation", async () => {
+		const user = userEvent.setup()
+		const onShowTask = vi.fn()
+		const projection = hierarchyProjection()
+		projection.nodes[2].status = "failed"
+		projection.nodes[2].stopReason = "never_launched"
+		render(<ManagedAgentTree rootTaskId="root-1" projection={projection} onShowTask={onShowTask} />)
+
+		const task = screen.getByRole("button", { name: /Iris task unavailable · Failed/i })
+		expect(task).toBeDisabled()
+		await user.click(task)
+		expect(onShowTask).not.toHaveBeenCalled()
+	})
+
 	it("renders task links as native keyboard-focusable buttons", () => {
 		const onShowTask = vi.fn()
 		render(<ManagedAgentTree rootTaskId="root-1" projection={hierarchyProjection()} onShowTask={onShowTask} />)

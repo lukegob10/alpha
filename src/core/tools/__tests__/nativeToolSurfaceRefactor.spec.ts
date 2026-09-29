@@ -187,7 +187,6 @@ describe("native tool-surface refactor contract", () => {
 					"list_tickets",
 					"read_ticket",
 					"request_user_input",
-					"update_plan",
 					"exec_command",
 					"spawn_agent",
 					"list_agents",
@@ -289,11 +288,11 @@ describe("native tool-surface refactor contract", () => {
 
 			expect(names).toContain("exec_command")
 			expect(names).toEqual(expect.arrayContaining(["list_tickets", "read_ticket"]))
-			expect(names).toContain("update_plan")
 			for (const name of [
 				"manage_command",
 				"ask_followup_question",
 				"attempt_completion",
+				"update_plan",
 				"edit",
 				"write_to_file",
 				"new_task",

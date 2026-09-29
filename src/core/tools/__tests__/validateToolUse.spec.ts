@@ -68,8 +68,8 @@ describe("mode-validator", () => {
 				expect(isToolAllowedForMode("use_mcp_tool", architectMode, [])).toBe(false)
 				expect(isToolAllowedForMode("new_task", architectMode, [])).toBe(false)
 				expect(isToolAllowedForMode("switch_mode", architectMode, [])).toBe(false)
-				expect(isToolAllowedForMode("update_plan", architectMode, [])).toBe(true)
-				expect(isToolAllowedForMode("update_todo_list", architectMode, [])).toBe(true)
+				expect(isToolAllowedForMode("update_plan", architectMode, [])).toBe(false)
+				expect(isToolAllowedForMode("update_todo_list", architectMode, [])).toBe(false)
 				for (const name of ["create_task", "send_task_message", "steer_task", "stop_task"]) {
 					expect(isToolAllowedForMode(name, architectMode, [])).toBe(false)
 				}

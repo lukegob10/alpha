@@ -1,10 +1,10 @@
 /**
- * Verbatim model instructions from openai/codex at e0ef5a1a0f6421601baaa679fb37eddaa4e9c8c1.
- * Source: codex-rs/models-manager/models.json, fetched 2026-09-24; upstream returns this literal unchanged.
+ * Verbatim model instructions from openai/codex at 4994306e9f80448bde85e770a0b0c93d3fee5665.
+ * Source: codex-rs/models-manager/models.json, fetched 2026-09-29; upstream returns this literal unchanged.
  * GPT-5.6 Sol, Terra, and Luna share one byte-identical template in the pinned catalog.
  */
-export const CODEX_PROMPT_SOURCE_COMMIT = "e0ef5a1a0f6421601baaa679fb37eddaa4e9c8c1" as const
-export const CODEX_PROMPT_SOURCE_RETRIEVED_AT = "2026-09-24" as const
+export const CODEX_PROMPT_SOURCE_COMMIT = "4994306e9f80448bde85e770a0b0c93d3fee5665" as const
+export const CODEX_PROMPT_SOURCE_RETRIEVED_AT = "2026-09-29" as const
 
 export const CODEX_MODEL_INSTRUCTIONS = {
 	"gpt-6-astra":

@@ -72,15 +72,17 @@ describe("native tool production dispatch contract", () => {
 		}
 	})
 
-	it("registers the Plan input and progress adapters without legacy schemas", () => {
+	it("registers Plan input without Code checklist or legacy schemas", () => {
 		const planSchemas = getNativeTools({ planMode: true })
 		const registry = new ToolRegistry({ nativeTools: planSchemas })
 		const names = planSchemas.flatMap((tool) => (tool.type === "function" ? [tool.function.name] : []))
 
 		expect(names).toContain("request_user_input")
-		expect(names).toContain("update_plan")
+		expect(names).not.toContain("update_plan")
+		expect(names).not.toContain("update_todo_list")
 		expect(isValidToolName("request_user_input")).toBe(true)
 		expect(registry.resolve("request_user_input")?.execute).toBeTypeOf("function")
+		expect(registry.resolve("update_plan")).toBeUndefined()
 		expect(registry.resolve("ask_followup_question")).toBeUndefined()
 	})
 

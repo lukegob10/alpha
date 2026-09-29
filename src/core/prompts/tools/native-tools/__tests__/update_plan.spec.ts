@@ -19,15 +19,18 @@ describe("update_plan native tool", () => {
 		expect(parameters.additionalProperties).toBe(false)
 	})
 
-	it("keeps the same optional-explanation action in Code and Plan for the primary task", () => {
-		for (const planMode of [false, true]) {
-			const tools = getNativeTools({ planMode })
-			const planTools = tools.filter((tool) => tool.type === "function" && tool.function.name === "update_plan")
-			expect(planTools).toHaveLength(1)
-			expect(planTools[0]).toMatchObject({
-				function: { strict: false, parameters: { required: ["plan"] } },
-			})
-		}
+	it("advertises the optional-explanation action only to a primary Code task", () => {
+		const codeTools = getNativeTools()
+		const planTools = codeTools.filter((tool) => tool.type === "function" && tool.function.name === "update_plan")
+		expect(planTools).toHaveLength(1)
+		expect(planTools[0]).toMatchObject({
+			function: { strict: false, parameters: { required: ["plan"] } },
+		})
+
+		const architectTools = getNativeTools({ planMode: true })
+		expect(architectTools.some((tool) => tool.type === "function" && tool.function.name === "update_plan")).toBe(
+			false,
+		)
 		const childTools = getNativeTools({ taskKind: "subagent" })
 		expect(childTools.some((tool) => tool.type === "function" && tool.function.name === "update_plan")).toBe(false)
 	})

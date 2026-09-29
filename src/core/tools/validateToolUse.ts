@@ -22,7 +22,6 @@ const PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 	"codebase_search",
 	"request_user_input",
 	"request_user_input_async",
-	"update_plan",
 	"exec_command",
 	"spawn_agent",
 	"list_agents",

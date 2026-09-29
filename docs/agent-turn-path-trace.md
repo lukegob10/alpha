@@ -1,5 +1,69 @@
 # Agent turn path trace
 
+## Current Codex CLI alignment audit
+
+Reviewed 2026-09-29 against `openai/codex` commit
+[`65c3f40b`](https://github.com/openai/codex/commit/65c3f40befaa213788ca7f97cc955ba996ffa3f5). The audit used the
+current [turn loop](https://github.com/openai/codex/blob/65c3f40befaa213788ca7f97cc955ba996ffa3f5/codex-rs/core/src/session/turn.rs),
+[tool-result adapter](https://github.com/openai/codex/blob/65c3f40befaa213788ca7f97cc955ba996ffa3f5/codex-rs/core/src/tools/context.rs),
+[Plan tool handler](https://github.com/openai/codex/blob/65c3f40befaa213788ca7f97cc955ba996ffa3f5/codex-rs/core/src/tools/handlers/plan.rs).
+Embedded model and runtime prompt byte identity was verified separately against the
+[model catalog at `4994306e`](https://github.com/openai/codex/blob/4994306e9f80448bde85e770a0b0c93d3fee5665/codex-rs/models-manager/models.json),
+also retrieved 2026-09-29; that is the provenance pinned in the prompt source files.
+
+- The ordinary turn loop is aligned. A model tool call executes and its result becomes the next model input. A response
+  with visible assistant text and no pending tool or host continuation completes the turn. Alpha's `AgentTurnEngine` and
+  `Task` use that same boundary; completion, cancellation, errors, pending user input, hooks, and child work remain
+  explicit host states.
+- Alpha's embedded GPT-5.6 and GPT-6 model instructions remain byte-identical to the current catalog values. Prompt
+  assembly preserves the authority order: model base instructions, runtime collaboration/approval and Alpha's
+  host-enforced tool overlay, environment facts, user/project instructions, then the active Plan transition when present.
+  Alpha's overlay is an intentional VS Code adapter for its tool, approval, workspace, and persistence contracts.
+- One Plan-mode divergence was found and fixed. Codex rejects `update_plan` while the collaboration mode is Plan because
+  it is a Code-mode TODO/checklist tool. Alpha's Plan prompt already prohibited todo tools, but its catalog and validator
+  still advertised and executed `update_plan`. Plan now omits both the current name and saved alias and rejects either at
+  runtime; Code mode keeps the existing checklist and saved-history compatibility.
+- Investigation guidance is proportional in both prompts: use existing context, batch independent reads, skip a formal
+  plan for simple work, and stop reconnaissance once enough evidence exists. Alpha additionally has an outcome-aware
+  repetition detector that advises a strategy change for unchanged results. Neither current Codex nor Alpha imposes a
+  global command-count cutoff. Alpha's bounded search-loop recovery is a VS Code host recovery mechanism at the model-step
+  boundary, not a tool-admission rule.
+- A completed command is now separated from its process outcome in the same way as Codex. A numeric nonzero exit remains
+  failed execution and verification evidence, but the tool transaction delivered to the model is successful and retains
+  the exit code and output. Policy denials, launch failures, cancellation, timeouts, unknown outcomes, and bookkeeping
+  failures remain tool errors.
+- The current Codex catalog defaults GPT-5.6 Sol to Low reasoning and GPT-6 Sol to Medium. Max is a supported explicit
+  override, so a Max run can produce materially more reasoning and latency than the default. Reasoning blocks alone do
+  not show an orchestration loop; request/tool trace events are needed to distinguish model exploration, retries,
+  completion rejection, and host waits on the reported computer.
+
+The reported 30–40 minute run was not available as a trace, so this audit establishes the code and prompt contracts and
+fixes the demonstrated Plan mismatch; it does not assign every command in that external run to a specific cause.
+
+## Ripgrep search audit (2026-09-29)
+
+`rg` is the ripgrep executable, not a competing search engine. Alpha resolves `@vscode/ripgrep@1.17.0`, the official
+VS Code package, and the packaged Windows binary reports ripgrep 15.0.0 with PCRE2 JIT and runtime AVX2 support. OpenAI's
+[current model guidance](https://developers.openai.com/api/docs/guides/latest-model) continues to recommend `rg` and
+`rg --files` for text and file searches. The current upstream release is
+[ripgrep 15.2.0](https://github.com/BurntSushi/ripgrep/releases/tag/15.2.0); its published fixes do not explain a model
+issuing dozens of different search queries.
+
+The loop-policy defect was that every novel supported `rg` query received fresh-read credit. A first proposed fix counted
+individual searches and rejected later calls. That approach was removed: it did not match Codex's tool loop, turned a
+strategy problem into synthetic tool errors, and overfit raw call count (including useful parallel batches).
+
+Alpha now observes completed **model steps**. Three consecutive steps whose tool calls are all repository searches add a
+recovery checkpoint to the next model input. It asks the model to consolidate returned evidence, identify the unresolved
+hypothesis, and inspect, act, or request the specific missing information. If the model ignores two checkpoints and
+continues for a third three-step interval, the task reaches the existing recoverable pause/resume boundary without being
+failed. One step containing 40 parallel searches counts once; any mixed or non-search step resets the window. The
+classification covers native searches plus `rg`/`ripgrep`, `grep` variants, `Select-String`, and `git grep` through command
+aliases and common path/case variants. There is no query-term budget, total tool-call cap, or scheduler admission block.
+This stays close to Codex's normal tool-result feedback loop while adding the requested bounded recovery behavior.
+
+## Historical trace (2026-09-22)
+
 Date: 2026-09-22  
 Checkpoint inspected: `8a6f4cfd` (`codex/harness-improvement-cycle`)  
 Outcome: no production change. The trace did not establish a dominant, bounded runtime bottleneck with a task-level baseline.

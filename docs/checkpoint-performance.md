@@ -163,3 +163,26 @@ shadow setup, and a 20-second deadline. The old sequence expires at 20 seconds; 
 11.75 seconds because the redundant probe is absent. This demonstrates the timing cause and the corrected ordering,
 not a measured speedup or extension-host responsiveness result on the other PC. Its initial snapshot and disk behavior
 may differ, so a fresh trace is needed if that PC still reaches the deadline after updating.
+
+### Task-history index lock investigation, 2026-09-29
+
+The task-history `_index.json` file is a derived startup cache, not part of the shadow Git repository or checkpoint
+initialization state. Checkpoint readiness settles directly from `initShadowGit()`. Task status updates write their
+authoritative per-task `history_item.json` before scheduling a debounced index refresh, so an index lock cannot hold
+the checkpoint promise open or turn a completed Git operation into an initialization timeout.
+
+There was a separate same-process contention bug: sidebar and editor providers can own distinct `TaskHistoryStore`
+instances for the same global-storage path, and their aligned debounced or forced index refreshes could enter
+`safeWriteJson()` concurrently. The advisory file lease then made one provider wait or report `_index.json` as locked.
+Index refreshes are now serialized by resolved index path across the extension host, while `proper-lockfile` continues
+to protect separate VS Code processes. Each queued writer captures its cache snapshot only when its turn begins, so it
+includes mutations applied to that store while waiting. A deterministic two-store regression holds the first writer
+open and verifies that the second does not enter the persistence layer until the first releases.
+
+A successful 1.399-second `initShadowGit()` trace rules out the checkpoint deadline for that attempt. The remaining
+false report came from the presentation layer: checkpoint warnings shared the webview message channel without a task
+identifier, and `ChatView` retained the previous task's local warning when the visible task changed. A timed-out or
+previously viewed task could therefore display its terminal warning over a different task whose checkpoint service had
+initialized successfully. Warning and clear messages now carry the emitting task ID, the webview accepts them only for
+the visible task, and task switches clear the previous task's ephemeral warning. The regression covers a warning,
+task switch, late warning from the old task, warning for the new task, and successful clear.

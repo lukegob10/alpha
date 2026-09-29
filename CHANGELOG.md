@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.1.2
+
+### Patch Changes
+
+- Improve managed-agent launch recovery and navigation, align the agent loop and Plan tool surface more closely with Codex CLI, add bounded recovery for search-only loops, and show a subtle active-state animation on folded command traces.
+
 ## 3.1.1
 
 ### Patch Changes

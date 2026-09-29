@@ -39,6 +39,7 @@ const checkpointInitializationStates = new WeakMap<Task, CheckpointInitializatio
 function sendCheckpointInitWarn(task: Task, type?: "WAIT_TIMEOUT" | "INIT_TIMEOUT", timeout?: number) {
 	task.providerRef.deref()?.postMessageToWebview({
 		type: "checkpointInitWarning",
+		taskId: task.taskId,
 		checkpointWarning: type && timeout ? { type, timeout } : undefined,
 	})
 }

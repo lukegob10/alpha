@@ -9,17 +9,25 @@ import { ToolRegistry } from "../ToolRegistry"
 
 describe("update_plan tool surface", () => {
 	it.each(["code", "architect"])(
-		"dispatches new and saved plan calls through the %s action surface",
+		"dispatches saved plan compatibility only through the %s action surface",
 		async (mode) => {
 			const schemas = getNativeTools({ planMode: mode === "architect" })
 			const registry = new ToolRegistry({ nativeTools: schemas })
 			const surface = createTaskToolSurface({ registry, schemas, mode })
+			const isPlan = mode === "architect"
 			expect(schemas.some((schema) => schema.type === "function" && schema.function.name === "update_plan")).toBe(
-				true,
+				!isPlan,
 			)
 			expect(
 				schemas.some((schema) => schema.type === "function" && schema.function.name === "update_todo_list"),
 			).toBe(false)
+			if (isPlan) {
+				expect(registry.resolve("update_plan")).toBeUndefined()
+				expect(surface.allowedFunctionNames).not.toContain("update_plan")
+				expect(surface.policy.allowedTools).not.toContain("update_plan")
+				expect(surface.resolve("update_plan")).toBeUndefined()
+				return
+			}
 			expect(registry.resolve("update_plan")?.name).toBe("update_plan")
 			expect(registry.resolve("update_todo_list")?.name).toBe("update_plan")
 			expect(registry.getSchema("update_plan")).toMatchObject({

@@ -125,7 +125,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		...(!planMode ? [createWriteStdinTool()] : []),
 		runSlashCommand,
 		skill,
-		...(taskKind === "primary" ? [updatePlan] : []),
+		...(taskKind === "primary" && !planMode ? [updatePlan] : []),
 	] satisfies OpenAI.Chat.ChatCompletionTool[]
 }
 

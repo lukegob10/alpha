@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.1.1",
+		version: "3.1.2",
 	},
 }))
 
@@ -37,13 +37,13 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.1.1" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.1.2" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.1.1")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.1.2")).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Alpha v3.1.1 keeps longer agent tasks moving and makes scheduled runs and task history more predictable.",
+				"Alpha v3.1.2 keeps delegated work visible, prevents search loops, and makes active traces easier to follow.",
 			),
 		).toBeInTheDocument()
 	})
@@ -54,16 +54,20 @@ describe("Announcement", () => {
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
 			screen.getByText(
-				"Keep useful progress across repeated tool calls and recover when checkpoint setup is slow.",
+				"Open only managed-agent tasks that actually launched, with accurate terminal reasons when startup fails.",
 			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Give managed agents enough token budget to finish normal multi-step work."),
+			screen.getByText(
+				"Recover from repeated search-only steps by consolidating evidence and taking a concrete next action.",
+			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Run scheduled tasks only in open VS Code workspaces, with one claim across windows."),
+			screen.getByText("See a subtle pulse on folded command and edit traces while work is still running."),
 		).toBeInTheDocument()
-		expect(screen.getByText("Keep task history scoped to the current project.")).toBeInTheDocument()
+		expect(
+			screen.getByText("Use Codex-aligned Plan tools, command outcomes, prompts, and turn sequencing."),
+		).toBeInTheDocument()
 	})
 
 	it("falls back to English release text when a retired locale is requested", () => {
@@ -71,12 +75,12 @@ describe("Announcement", () => {
 
 		expect(
 			screen.getByText(
-				"Alpha v3.1.1 keeps longer agent tasks moving and makes scheduled runs and task history more predictable.",
+				"Alpha v3.1.2 keeps delegated work visible, prevents search loops, and makes active traces easier to follow.",
 			),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Keep useful progress across repeated tool calls and recover when checkpoint setup is slow.",
+				"Open only managed-agent tasks that actually launched, with accurate terminal reasons when startup fails.",
 			),
 		).toBeInTheDocument()
 	})

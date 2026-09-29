@@ -117,19 +117,22 @@ export function ManagedAgentTree({
 				Agents
 			</span>
 			<div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="list">
-				{visibleDescendants.map((node) => (
-					<div key={node.taskId} role="listitem" className="shrink-0">
-						<SubagentTaskLink
-							name={node.nickname}
-							status={node.status}
-							attention={compactAttention(node, attentionByTaskId.get(node.taskId))}
-							detail={`${node.role} · ${node.path}${node.depth > 1 ? ` · nested level ${node.depth}` : ""}`}
-							variant="chip"
-							disabled={!onShowTask}
-							onOpen={() => onShowTask?.(node.taskId)}
-						/>
-					</div>
-				))}
+				{visibleDescendants.map((node) => {
+					const taskUnavailable = node.stopReason === "never_launched"
+					return (
+						<div key={node.taskId} role="listitem" className="shrink-0">
+							<SubagentTaskLink
+								name={node.nickname}
+								status={node.status}
+								attention={compactAttention(node, attentionByTaskId.get(node.taskId))}
+								detail={`${node.role} · ${node.path}${node.depth > 1 ? ` · nested level ${node.depth}` : ""}`}
+								variant="chip"
+								disabled={!onShowTask || taskUnavailable}
+								onOpen={() => onShowTask?.(node.taskId)}
+							/>
+						</div>
+					)
+				})}
 			</div>
 			{isLoading && (
 				<span className="inline-flex shrink-0 items-center gap-1 px-1 text-[10px] text-vscode-descriptionForeground">

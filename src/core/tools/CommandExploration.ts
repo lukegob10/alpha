@@ -145,6 +145,157 @@ function normalizedExecutable(token: string): string | undefined {
 	return token.toLowerCase().replace(/\.(?:cmd|exe)$/i, "")
 }
 
+export type CommandExplorationSource = "ripgrep" | "git"
+
+export type CommandSearchSource = "ripgrep" | "grep" | "git-grep"
+
+const SEARCH_EXECUTABLES: Readonly<Record<string, CommandSearchSource>> = {
+	rg: "ripgrep",
+	ripgrep: "ripgrep",
+	grep: "grep",
+	egrep: "grep",
+	fgrep: "grep",
+	findstr: "grep",
+	"select-string": "grep",
+}
+
+const OUTPUT_PRESENTATION_EXECUTABLES = new Set([
+	"cut",
+	"format-list",
+	"format-table",
+	"head",
+	"measure-object",
+	"more",
+	"out-string",
+	"select-object",
+	"sort",
+	"sort-object",
+	"tail",
+	"uniq",
+	"where-object",
+])
+
+/**
+ * Split a search command from optional output-only pipeline stages. Compound
+ * execution and redirection are deliberately rejected so a productive action
+ * that merely starts with a search cannot be mistaken for a search-only step.
+ */
+function splitSearchPipeline(command: string): string[] | undefined {
+	const stages: string[] = []
+	let stage = ""
+	let quote: '"' | "'" | undefined
+	const boundedCommand = command.trim().slice(0, MAX_COMMAND_LENGTH)
+
+	for (let index = 0; index < boundedCommand.length; index++) {
+		const character = boundedCommand[index]
+		if (quote) {
+			stage += character
+			if (character === quote) quote = undefined
+			continue
+		}
+		if (character === '"' || character === "'") {
+			quote = character
+			stage += character
+			continue
+		}
+		if (/[;&<>\r\n]/.test(character)) return undefined
+		if (character === "|") {
+			if (boundedCommand[index + 1] === "|") return undefined
+			const completed = stage.trim()
+			if (!completed) return undefined
+			stages.push(completed)
+			stage = ""
+			continue
+		}
+		stage += character
+	}
+
+	if (quote) return undefined
+	const completed = stage.trim()
+	if (!completed) return undefined
+	stages.push(completed)
+	return stages
+}
+
+function tokenizeSearchStage(stage: string): string[] {
+	const tokens: string[] = []
+	let token = ""
+	let quote: '"' | "'" | undefined
+	let tokenStarted = false
+
+	for (const character of stage) {
+		if (quote) {
+			if (character === quote) quote = undefined
+			else token += character
+			tokenStarted = true
+			continue
+		}
+		if (character === '"' || character === "'") {
+			quote = character
+			tokenStarted = true
+			continue
+		}
+		if (/\s/.test(character)) {
+			if (tokenStarted) {
+				tokens.push(token)
+				if (tokens.length >= MAX_ARGUMENTS) break
+				token = ""
+				tokenStarted = false
+			}
+			continue
+		}
+		token += character
+		tokenStarted = true
+	}
+	if (tokenStarted && tokens.length < MAX_ARGUMENTS) tokens.push(token)
+	return tokens
+}
+
+function commandExecutableName(token: string): string | undefined {
+	const basename = token.replace(/\\/g, "/").split("/").pop()
+	return basename?.toLowerCase().replace(/\.(?:cmd|exe)$/i, "")
+}
+
+/** Classify repository text-search commands independently of shell presentation. */
+export function getCommandSearchSource(command: string): CommandSearchSource | undefined {
+	const stages = splitSearchPipeline(command)
+	if (!stages) return undefined
+	const [leadingStage, ...outputStages] = stages
+	if (
+		outputStages.some((stage) => {
+			const [token] = tokenizeSearchStage(stage)
+			const executable = token ? commandExecutableName(token) : undefined
+			return !executable || !OUTPUT_PRESENTATION_EXECUTABLES.has(executable)
+		})
+	) {
+		return undefined
+	}
+
+	const tokens = tokenizeSearchStage(leadingStage)
+	const executable = tokens[0] ? commandExecutableName(tokens[0]) : undefined
+	if (!executable) return undefined
+	const direct = SEARCH_EXECUTABLES[executable]
+	if (direct) return direct
+	if (executable !== "git") return undefined
+
+	let index = 1
+	while (index < tokens.length) {
+		if (tokens[index] === "--no-pager" || tokens[index] === "-P") index++
+		else if (tokens[index] === "-C" || tokens[index] === "-c") index += 2
+		else break
+	}
+	return tokens[index]?.toLowerCase() === "grep" ? "git-grep" : undefined
+}
+
+/** Classify a safe, standalone repository-inspection command without executing it. */
+export function getCommandExplorationSource(command: string): CommandExplorationSource | undefined {
+	const tokens = tokenizeSingleCommand(command)
+	const executable = tokens ? normalizedExecutable(tokens[0]) : undefined
+	if (executable === "rg") return "ripgrep"
+	if (executable === "git") return "git"
+	return undefined
+}
+
 function normalizedPathIdentity(value: string): string {
 	const normalized = path.normalize(value).split(path.sep).join("/")
 	return process.platform === "win32" ? normalized.toLowerCase() : normalized
@@ -360,14 +511,14 @@ export async function getTrustedCommandExploration(
 	if (input.executionStatus !== "succeeded" || input.exitCode !== 0) return undefined
 
 	const tokens = tokenizeSingleCommand(input.command)
-	const executable = tokens ? normalizedExecutable(tokens[0]) : undefined
-	if (!tokens || (executable !== "rg" && executable !== "git")) return undefined
+	const source = getCommandExplorationSource(input.command)
+	if (!tokens || !source) return undefined
 
 	try {
 		const [root, cwd] = await Promise.all([fs.realpath(input.workspaceRoot), fs.realpath(input.cwd)])
 		if (!containsPath(root, cwd)) return undefined
 		const inspection =
-			executable === "rg"
+			source === "ripgrep"
 				? await canonicalRgInspection(tokens.slice(1), root, cwd)
 				: await canonicalGitInspection(tokens, root, cwd)
 		if (!inspection) return undefined

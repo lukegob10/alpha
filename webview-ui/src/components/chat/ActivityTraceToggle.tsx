@@ -9,6 +9,7 @@ interface ActivityTraceToggleProps {
 	kind: ActionActivityKind
 	count: number
 	durationMs?: number
+	active?: boolean
 	expanded: boolean
 	controls: string
 	onToggle: () => void
@@ -32,11 +33,13 @@ export function ActivityTraceToggle({
 	kind,
 	count,
 	durationMs,
+	active = false,
 	expanded,
 	controls,
 	onToggle,
 }: ActivityTraceToggleProps) {
 	const { t } = useAppTranslation()
+	const isAnimating = active && !expanded && kind !== "worked"
 	const label =
 		kind === "worked"
 			? t("chat:activityTrace.workedFor", { duration: formatWorkedDuration(durationMs ?? 0) })
@@ -49,10 +52,15 @@ export function ActivityTraceToggle({
 			<button
 				type="button"
 				data-activity-trace-id={traceId}
+				data-active={isAnimating ? "true" : undefined}
+				aria-busy={active || undefined}
 				aria-expanded={expanded}
 				aria-controls={controls}
 				onClick={onToggle}
-				className="flex max-w-full items-center gap-1 rounded-md py-1.5 text-sm text-vscode-descriptionForeground hover:text-vscode-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder">
+				className={cn(
+					"activity-trace-toggle flex max-w-full items-center gap-1 rounded-md py-1.5 text-sm text-vscode-descriptionForeground hover:text-vscode-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder",
+					isAnimating && "activity-trace-toggle--active",
+				)}>
 				<span>{label}</span>
 				{kind !== "worked" && <span className="text-xs tabular-nums opacity-70">{count}</span>}
 				<ChevronRight aria-hidden="true" className={cn("size-3.5 shrink-0", expanded && "rotate-90")} />

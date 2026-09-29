@@ -7,6 +7,8 @@ import { describe, expect, it } from "vitest"
 import {
 	CODEX_MODEL_INSTRUCTIONS,
 	CODEX_MODEL_INSTRUCTIONS_SHA256,
+	CODEX_PROMPT_SOURCE_COMMIT,
+	CODEX_PROMPT_SOURCE_RETRIEVED_AT,
 	DEFAULT_CODEX_MODEL_PROMPT,
 	resolveCodexModelPrompt,
 } from "../codex-model-instructions"
@@ -36,6 +38,11 @@ const pinnedSourceSha256 = {
 } as const
 
 describe("pinned Codex model instructions", () => {
+	it("records the current upstream catalog provenance", () => {
+		expect(CODEX_PROMPT_SOURCE_COMMIT).toBe("4994306e9f80448bde85e770a0b0c93d3fee5665")
+		expect(CODEX_PROMPT_SOURCE_RETRIEVED_AT).toBe("2026-09-29")
+	})
+
 	it.each(codexModelIds)("resolves exact model id %s", (modelId, promptSlug) => {
 		const result = resolveCodexModelPrompt(modelId)
 

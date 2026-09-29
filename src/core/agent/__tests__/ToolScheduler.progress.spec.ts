@@ -483,7 +483,7 @@ describe("ToolScheduler progress observation", () => {
 	it.each([
 		{ status: "error" as const, executionStatus: "error" as const, exitCode: 1 },
 		{ status: "success" as const, executionStatus: "running" as const, exitCode: 0 },
-		{ status: "success" as const, executionStatus: "success" as const, exitCode: 1 },
+		{ status: "success" as const, executionStatus: "error" as const, exitCode: 1 },
 	])(
 		"drops trusted exploration unless the process actually exits successfully: $executionStatus/$exitCode",
 		async (metadata) => {

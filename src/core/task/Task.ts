@@ -225,6 +225,7 @@ import { AgentControlTransactionError } from "../agent/AgentControlTransaction"
 import type { CommandVerificationDiagnostic } from "../agent/VerificationScope"
 import { formatBackgroundCommandContext } from "../agent/CommandOutcomeContext"
 import { CompletionRecovery } from "../agent/CompletionRecovery"
+import { SearchLoopRecoveryPolicy, formatSearchLoopRecoveryGuidance } from "../agent/SearchLoopRecoveryPolicy"
 import {
 	isWorkerWritePathAllowed as isScopedWorkerWritePathAllowed,
 	redactTaskPrivatePaths,
@@ -903,6 +904,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private readonly toolCatalogCache = new TaskToolCatalogCache()
 	private currentRequestSignal?: AbortSignal
 	private readonly agentRetryPolicy = new AgentRetryPolicy()
+	private readonly searchLoopRecoveryPolicy: SearchLoopRecoveryPolicy
 	private readonly agentStepContextBuilder = new AgentStepContextBuilder<ApiHandler, unknown>()
 	private readonly agentTurnEventLog: AgentTurnEventLog
 	private readonly performanceObservabilityEnabled = process.env.ALPHA_TASK_OBSERVABILITY === "1"
@@ -1836,6 +1838,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.diffStrategy = new MultiSearchReplaceDiffStrategy()
 
 		this.toolRepetitionDetector = new ToolRepetitionDetector(this.consecutiveMistakeLimit)
+		this.searchLoopRecoveryPolicy = new SearchLoopRecoveryPolicy()
 
 		// Initialize todo list if provided
 		if (initialTodos && initialTodos.length > 0) {
@@ -8285,6 +8288,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// Ask replies, queued follow-ups, and steering converge here when consumed.
 			// Renew the attempt at this boundary; arrival alone can precede a still-running step.
 			this.toolRepetitionDetector?.resetProgress()
+			this.searchLoopRecoveryPolicy?.reset()
 			this.resetCompletionRecoveryState()
 			if (this.workContext) {
 				// External state is reusable only within the current user request.
@@ -9495,6 +9499,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Kicks off the checkpoints initialization process in the background.
 		if (userContent.length > 0) {
 			this.toolRepetitionDetector?.resetProgress()
+			this.searchLoopRecoveryPolicy?.reset()
 			this.resetCompletionRecoveryState()
 			this.completionHookConfig = readCompletionHookConfig()
 			this.pendingCompletionHookPrompt = undefined
@@ -9638,6 +9643,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					stepResult.status,
 					stepResult.reason,
 				)
+				if (
+					stepResult.status === "completed" &&
+					!this.pendingTurnSuspension &&
+					!this.abort &&
+					!this.didComplete
+				) {
+					this.observeSearchLoopStep(response)
+				}
 				const suspension = this.pendingTurnSuspension
 				if (suspension) {
 					this.pendingTurnSuspension = undefined
@@ -9923,6 +9936,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// This resumes inside the same loop, bypassing its initial reset. A user
 			// retry needs a fresh progress window before the next tool is observed.
 			this.toolRepetitionDetector?.resetProgress()
+			this.searchLoopRecoveryPolicy?.reset()
 			this.resetCompletionRecoveryState()
 			const feedbackImages = recovery.images ?? []
 			if (feedbackText.trim() || feedbackImages.length > 0) {
@@ -14426,6 +14440,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return this.pendingTurnSuspension !== undefined
 	}
 
+	private observeSearchLoopStep(response: AgentResponse): void {
+		const decision = this.searchLoopRecoveryPolicy?.observe(response.toolCalls)
+		if (!decision || decision.action === "continue") return
+		if (decision.action === "recover") {
+			this.userMessageContent.push({
+				type: "text",
+				text: formatSearchLoopRecoveryGuidance(decision.attempt),
+			})
+			return
+		}
+
+		this.suspendAfterCurrentTurn(t("common:errors.search_loop_recovery_paused"), "blocked")
+	}
+
 	/** Pure admission check; requesting a blocked retry is settled with its terminal receipt. */
 	public getToolRetryBlock(name: string, args: unknown): ToolFailureMetadata | undefined {
 		return this.toolRepetitionDetector.getRetryBlock?.(name, args)
@@ -14478,10 +14506,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}))
 		const scopedCheckFailure =
 			canonicalName === "exec_command" &&
-			failure?.reason === "execution_failed" &&
-			failure.outcome === "known" &&
+			result?.executionStatus === "error" &&
+			typeof result.exitCode === "number" &&
 			evidence?.status === "failed" &&
-			evidence.exitCode !== undefined &&
 			scopes.length > 0
 		let failureOwnedByCompletion = false
 		if (failure) this.lastToolFailure = { toolName: name, failure }

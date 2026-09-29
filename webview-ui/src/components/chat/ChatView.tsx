@@ -177,6 +177,7 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 	if (isHidden) {
 		return null
 	}
+	const lastRenderedMessageIndex = transcriptStartIndex + renderedGroupedMessages.length - 1
 
 	return (
 		<>
@@ -231,6 +232,11 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 								kind={trace.kind}
 								count={trace.count}
 								durationMs={trace.durationMs}
+								active={
+									isTurnActive &&
+									trace.kind !== "worked" &&
+									trace.endIndex === lastRenderedMessageIndex
+								}
 								expanded={traceExpanded}
 								controls={Array.from(
 									{ length: trace.endIndex - index + 1 },
@@ -1881,7 +1887,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					}
 					break
 				case "checkpointInitWarning":
-					setCheckpointWarning(message.checkpointWarning)
+					// Concurrent and recently viewed tasks share this message channel.
+					// Never project one task's checkpoint state onto another task.
+					if (message.taskId === visibleCurrentTaskId) {
+						setCheckpointWarning(message.checkpointWarning)
+					}
 					break
 				case "interactionRequired":
 					playSound("notification")
@@ -2424,12 +2434,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[handleSetExpandedRow, releaseFollow],
 	)
 
-	// Effect to clear checkpoint warning when messages appear or task changes
+	// Checkpoint warnings are ephemeral state for the visible task.
+	useEffect(() => {
+		setCheckpointWarning(undefined)
+	}, [visibleCurrentTaskId])
+
+	// Clear the visible task's warning when its chat is hidden or removed.
 	useEffect(() => {
 		if (isHidden || !task) {
 			setCheckpointWarning(undefined)
 		}
-	}, [modifiedMessages.length, isStreaming, isHidden, task])
+	}, [isHidden, task])
 
 	const placeholderText = task ? t("chat:typeMessage") : t("chat:typeTask")
 

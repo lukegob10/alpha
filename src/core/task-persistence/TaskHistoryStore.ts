@@ -19,6 +19,13 @@ interface HistoryIndex {
 }
 
 /**
+ * Providers in the same extension host share one global-storage directory.
+ * Serialize their derived index refreshes before they reach the inter-process
+ * lease so sibling views cannot contend with each other for `_index.json`.
+ */
+const indexWriteQueues = new Map<string, Promise<void>>()
+
+/**
  * TaskHistoryStore encapsulates all task history persistence logic.
  *
  * Each task's HistoryItem is stored as an individual JSON file in its
@@ -28,7 +35,8 @@ interface HistoryIndex {
  *
  * Cross-process safety comes from `safeWriteJson`'s `proper-lockfile`
  * on per-task file writes. Within a single extension host process,
- * an in-process write lock serializes mutations.
+ * an instance lock serializes mutations and a path-scoped queue serializes
+ * index refreshes from sibling providers.
  */
 /**
  * Options for TaskHistoryStore constructor.
@@ -418,13 +426,32 @@ export class TaskHistoryStore {
 	 */
 	private async writeIndex(): Promise<void> {
 		const indexPath = await this.getIndexPath()
-		const index: HistoryIndex = {
-			version: 1,
-			updatedAt: Date.now(),
-			entries: this.getAll(),
-		}
+		const previous = indexWriteQueues.get(indexPath) ?? Promise.resolve()
+		const write = previous
+			.catch(() => undefined)
+			.then(async () => {
+				// Snapshot at execution time so mutations applied to this store while it
+				// waited are included in the refresh.
+				const index: HistoryIndex = {
+					version: 1,
+					updatedAt: Date.now(),
+					entries: this.getAll(),
+				}
 
-		await safeWriteJson(indexPath, index)
+				await safeWriteJson(indexPath, index)
+			})
+		const settled = write.then(
+			() => undefined,
+			() => undefined,
+		)
+		indexWriteQueues.set(indexPath, settled)
+		void settled.then(() => {
+			if (indexWriteQueues.get(indexPath) === settled) {
+				indexWriteQueues.delete(indexPath)
+			}
+		})
+
+		return write
 	}
 
 	/**
