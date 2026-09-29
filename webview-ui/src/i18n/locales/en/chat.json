@@ -462,11 +462,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} brings a shared agent runtime and a clearer code review experience.",
-			"acceptanceChecks": "Use one provider-neutral TypeScript engine for model steps, tools, approvals, and delegated work.",
-			"commandControl": "Apply Ask, Auto, and Full Access policies consistently, including to child tasks.",
-			"workflowContinuity": "Expand a completed turn's Worked for summary to inspect its full activity trace.",
-			"chatUpdates": "Review the whole turn or open per-file diffs in Alpha Diff, with added and removed line counts."
+			"welcome": "Alpha v{{version}} keeps longer agent tasks moving and makes scheduled runs and task history more predictable.",
+			"acceptanceChecks": "Keep useful progress across repeated tool calls and recover when checkpoint setup is slow.",
+			"commandControl": "Give managed agents enough token budget to finish normal multi-step work.",
+			"workflowContinuity": "Run scheduled tasks only in open VS Code workspaces, with one claim across windows.",
+			"chatUpdates": "Keep task history scoped to the current project."
 		}
 	},
 	"crossTasks": {
