@@ -80,6 +80,9 @@ export default defineConfig(({ mode }) => {
 	]
 
 	return {
+		// Webview documents and extension assets have different origins. Resolve
+		// lazy module preloads relative to import.meta.url, not the document root.
+		base: "./",
 		plugins,
 		resolve: {
 			alias: {

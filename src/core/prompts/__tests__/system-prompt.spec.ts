@@ -419,6 +419,9 @@ describe("SYSTEM_PROMPT", () => {
 		expect(toolContract).toContain("Prefer the supplied apply_patch tool")
 		expect(toolContract).toContain("routes a complete standalone apply_patch heredoc")
 		expect(environment).toContain("Default Shell: C:\\Windows\\System32\\cmd.exe")
+		expect(environment).toContain("cmd.exe uses double quotes; single quotes are literal characters")
+		expect(environment).toContain("Do not assume Unix head/tail are installed")
+		expect(environment).toContain("rg --files to discover actual filenames")
 	})
 
 	it.each([

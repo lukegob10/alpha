@@ -135,7 +135,15 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 			)
 		} catch (error) {
 			if (error instanceof ExecaError) {
-				if (!this.aborted) console.error(`[ExecaTerminalProcess#run] shell execution error: ${error.message}`)
+				// Nonzero command exits are tool results, including rg's no-match exit 1.
+				// Execa's message duplicates the command and all captured output; sending
+				// it through the shared host console can copy megabytes of workspace data.
+				if (!this.aborted && error.exitCode === undefined) {
+					console.error("[ExecaTerminalProcess#run] command process failed", {
+						code: error.code,
+						signal: error.signal,
+					})
+				}
 				this.terminal.shellExecutionComplete({
 					exitCode: error.exitCode ?? (this.aborted ? 137 : 1),
 					signalName: error.signal,

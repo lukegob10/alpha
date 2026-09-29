@@ -106,7 +106,7 @@ cancellation, orphan/recovery failure, cancellation, failure, and completion.
 | `NEST-CANCEL-001`                      | Recursive cancel/interrupt/close and race idempotency                                           |
 | `ROUTING-MAILBOX-001`                  | Durable cursors, result claims, and managed-child parent-control waits                          |
 | `ROUTING-NESTED-001`                   | Immediate-parent routing, descendant authorization, and atomic claims                           |
-| `ROUTING-STEERING-RECEIPT-001`         | Durable steering acknowledgment and retained-follow-up recovery                                 |
+| `ROUTING-STEERING-RECEIPT-001`         | Durable agent-message acknowledgment, human approval isolation, and retained-follow-up recovery |
 | `ROUTING-PROGRESS-001`                 | Bounded immediate-parent progress routing and exact claim                                       |
 | `RECOVERY-BASE-001`                    | Registry, Worker orphan, and Apply-decision reload baseline                                     |
 | `RECOVERY-NESTED-001`                  | Nested topology/budget/mailbox rehydration and orphan cleanup                                   |

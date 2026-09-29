@@ -13,6 +13,7 @@ import fs from "fs/promises"
 import EventEmitter from "events"
 import crypto from "crypto"
 import { v7 as uuidv7 } from "uuid"
+import type { AgentMessage } from "../task-persistence/AgentMessageInbox"
 import { isDeepStrictEqual } from "util"
 import { settlementDiagnostics } from "../agent/SettlementDiagnostics"
 import { resolveWaitTimeout } from "../tools/AgentLifecycleTool"
@@ -456,7 +457,6 @@ export class AlphaProvider
 			inheritedSkills?: SkillCatalogEntry[]
 			inheritedSkillMode?: string
 			pendingFollowup?: string
-			pendingSteerMessage?: { message: string; sequence: number }
 		}
 	>()
 	private readonly boundedDelegationManager = new BoundedDelegationManager(
@@ -4986,27 +4986,12 @@ export class AlphaProvider
 			if (!target) throw new Error("The child task is not live to receive messages")
 		}
 
-		const attribution = targetIsParent
-			? `Message from task ${sender.taskId}:`
-			: `Message from parent task ${sender.taskId}:`
-		const attributedMessage = `${attribution}\n${message.trim()}`
+		await target.receiveAgentMessage({ id: uuidv7(), senderTaskId: sender.taskId, text: message.trim() })
 		if (target.isCompleted()) {
-			await target.resumeCompletedTaskFollowup(attributedMessage)
+			await target.resumeCompletedTaskFollowup("Continue with the pending agent messages.", [], "agent")
 			return { task_id: resolvedTargetTaskId, status: "resumed" }
 		}
-		if (target.abort) throw new Error("The target task is stopped and cannot accept a message")
-		if (target.taskAsk) {
-			await target.submitUserMessage(attributedMessage)
-			return { task_id: resolvedTargetTaskId, status: "delivered" }
-		}
-		if (target.isTurnActive()) {
-			if (!target.messageQueueService.addMessage(attributedMessage)) {
-				throw new Error("The target task message queue is full")
-			}
-			return { task_id: resolvedTargetTaskId, status: "queued" }
-		}
-		await target.steerUserMessage(attributedMessage)
-		return { task_id: resolvedTargetTaskId, status: "resumed" }
+		return { task_id: resolvedTargetTaskId, status: "buffered" }
 	}
 
 	public async steerIndependentTask(
@@ -8040,52 +8025,20 @@ export class AlphaProvider
 			throw new Error(`Agent ${record.path} is ${record.status}; use followup_task after it stops`)
 		}
 		const child = this.getLiveTask(record.taskId)
-		const descriptor = this.subagentDescriptors.get(record.taskId)
-		if (child && !child.canAcceptSteerMessage()) {
-			throw new Error(`Agent ${record.path} cannot accept another message yet`)
+		if (!child && !this.subagentDescriptors.has(record.taskId)) {
+			throw new Error(`Agent ${record.path} has no retained runtime to receive a message`)
 		}
-		if (!child && (!descriptor || descriptor.pendingSteerMessage)) {
-			throw new Error(`Agent ${record.path} cannot queue another message yet`)
-		}
-
-		const event = await this.agentControlStore.appendEvent({
-			rootTaskId: record.rootTaskId,
-			sender: parent.taskId,
-			recipient: record.taskId,
-			kind: "message",
-			name: "parent_message",
-			payload: { message: instruction },
-		})
-		let delivery: "delivered" | "queued"
-		// Appending the mailbox event is asynchronous. A child can be constructed
-		// and drain its pre-launch mailbox while that write is pending, so the
-		// preflight Task reference above may be stale by the time the event commits.
-		// Re-resolve after persistence: if launch already passed its drain, steer the
-		// now-live child directly instead of leaving an unacknowledged event behind.
-		const deliveryChild = this.getLiveTask(record.taskId)
-		if (deliveryChild?.canAcceptSteerMessage()) {
-			await deliveryChild.steerUserMessage(instruction, undefined, () =>
-				this.acknowledgeQueuedAgentMessage(record, {
-					message: instruction,
-					sequence: event.entry.sequence,
-				}),
-			)
-			delivery = "delivered"
-		} else {
-			if (!descriptor) throw new Error(`Agent ${record.path} has no retained runtime descriptor`)
-			descriptor!.pendingSteerMessage = { message: instruction, sequence: event.entry.sequence }
-			delivery = "queued"
-		}
-		const prepared = record.groupId ? this.preparedSubagentGroups.get(record.groupId) : undefined
-		const agent = prepared?.group.agents.find((candidate) => candidate.taskId === record.taskId)
-		if (prepared && agent) {
-			const steeredAt = Date.now()
-			agent.phase = "steering"
-			agent.phaseStartedAt = steeredAt
-			agent.steerCount = (agent.steerCount ?? 0) + 1
-			agent.lastSteeredAt = steeredAt
-			await parent.upsertSubagentGroup(prepared.group)
-		}
+		const append = () =>
+			this.agentControlStore.appendEvent({
+				rootTaskId: record.rootTaskId,
+				sender: parent.taskId,
+				recipient: record.taskId,
+				kind: "message",
+				name: "parent_message",
+				payload: { message: instruction },
+			})
+		const event = child ? await child.admitAgentMessage(append) : await append()
+		const delivery = "buffered" as const
 		return {
 			taskId: record.taskId,
 			path: record.path,
@@ -8122,65 +8075,65 @@ export class AlphaProvider
 			throw new Error(`Immediate parent ${record.parentTaskId} for agent ${record.path} is missing`)
 		}
 
-		const event = await this.agentControlStore.appendEvent({
-			rootTaskId: record.rootTaskId,
-			sender: record.taskId,
-			recipient: parent.taskId,
-			kind: "message",
-			name: "agent_progress",
-			payload: { message: instruction },
-		})
+		const append = () =>
+			this.agentControlStore.appendEvent({
+				rootTaskId: record.rootTaskId,
+				sender: record.taskId,
+				recipient: parent.taskId,
+				kind: "message",
+				name: "agent_progress",
+				payload: { message: instruction },
+			})
+		const recipient = this.getLiveTask(parent.taskId)
+		const event = recipient ? await recipient.admitAgentMessage(append) : await append()
 		return {
 			taskId: record.taskId,
 			path: record.path,
 			parentTaskId: parent.taskId,
 			parentPath: parent.path,
-			delivery: "queued",
+			delivery: "buffered",
 			event: event.entry,
 		}
 	}
 
-	private getQueuedAgentMessage(record: AgentRecord): { message: string; sequence: number } | undefined {
-		const descriptor = this.subagentDescriptors.get(record.taskId)
-		let pending = descriptor?.pendingSteerMessage
-		if (!pending) {
-			// A pre-receipt runtime may have marked a message delivered as soon as
-			// it entered volatile Task memory. Recover those delivered-but-unacknowledged
-			// entries as well as new messages that have not yet reached API history.
-			const entry = this.agentControlStore.getUnacknowledgedMailboxEntries(record.taskId, {
-				rootTaskId: record.rootTaskId,
+	public hasPendingAgentMessages(task: Task): boolean {
+		// Hydration and delivery await readiness; this synchronous completion hint may run earlier.
+		if (this.agentControlStoreLoadedAt === undefined) return false
+		const rootTaskId = this.getAgentControlRootTaskId(task)
+		if (!this.agentControlStore.getAgent(task.taskId, rootTaskId)) return false
+		return this.agentControlStore
+			.getUnacknowledgedMailboxEntries(task.taskId, {
+				rootTaskId,
 				kinds: ["message"],
-			})[0]
-			const message = entry?.payload?.message
-			if (entry && typeof message === "string") {
-				pending = { message, sequence: entry.sequence }
+			})
+			.some((entry) => entry.claimId === undefined)
+	}
+
+	/** Agent input shares the durable mailbox, but never the human queue or steering path. */
+	public async deliverAgentMessages(task: Task, persist: (message: AgentMessage) => Promise<void>): Promise<void> {
+		await this.agentControlStoreReady
+		const rootTaskId = this.getAgentControlRootTaskId(task)
+		if (!this.agentControlStore.getAgent(task.taskId, rootTaskId)) return
+		await this.agentControlStore.retryPendingMailboxClaimSettlements(task.taskId, rootTaskId)
+		if (!this.hasPendingAgentMessages(task)) return
+		const claim = await this.agentControlStore.claimMailbox(task.taskId, {
+			rootTaskId,
+			kinds: ["message"],
+			channel: "automatic",
+			limit: 100,
+		})
+		if (!claim.entries.length) return
+		try {
+			for (const entry of claim.entries) {
+				const text = entry.payload?.message
+				if (typeof text !== "string" || !entry.senderTaskId) throw new Error("Invalid agent mailbox message")
+				await persist({ id: entry.eventId, senderTaskId: entry.senderTaskId, text })
 			}
+		} catch (error) {
+			await this.agentControlStore.settleMailboxClaim(task.taskId, claim.claimId, "release", rootTaskId)
+			throw error
 		}
-		return pending
-	}
-
-	private async acknowledgeQueuedAgentMessage(
-		record: AgentRecord,
-		pending: { message: string; sequence: number },
-	): Promise<void> {
-		await this.agentControlStore.acknowledge(record.taskId, pending.sequence, record.rootTaskId)
-		const descriptor = this.subagentDescriptors.get(record.taskId)
-		if (descriptor?.pendingSteerMessage?.sequence === pending.sequence) {
-			delete descriptor.pendingSteerMessage
-		}
-	}
-
-	/** Deliver a pre-launch steering message before the child's first model request. */
-	private async deliverQueuedAgentMessage(child: Task, record: AgentRecord): Promise<void> {
-		const pending = this.getQueuedAgentMessage(record)
-		if (!pending) return
-		if (!child.canAcceptSteerMessage()) {
-			throw new Error(`Agent ${record.path} cannot accept its queued message`)
-		}
-
-		await child.steerUserMessage(pending.message, undefined, () =>
-			this.acknowledgeQueuedAgentMessage(record, pending),
-		)
+		await this.agentControlStore.settleMailboxClaim(task.taskId, claim.claimId, "acknowledge", rootTaskId)
 	}
 
 	public async requiresExplicitAgentFollowupApproval(parent: Task, target: string): Promise<boolean> {
@@ -9604,32 +9557,14 @@ export class AlphaProvider
 					signal.addEventListener("abort", onCancelled, { once: true })
 					if (followupInstruction) {
 						descriptor.pendingFollowup = undefined
-						const record = this.agentControlStore.getAgent(
-							child.taskId,
-							this.getAgentControlRootTaskId(parent),
-						)
-						const queued = record ? this.getQueuedAgentMessage(record) : undefined
-						const instruction = queued
-							? `${followupInstruction}\n\nAdditional parent steering:\n${queued.message}`
-							: followupInstruction
-						const followup = child.resumeSubagentFollowup(
-							instruction,
-							queued && record ? () => this.acknowledgeQueuedAgentMessage(record, queued) : undefined,
-						)
+						const followup = child.resumeSubagentFollowup(followupInstruction)
 						void followup
 							.then(undefined, (error) => finish("failed", child.getTokenUsage(), String(error)))
 							.catch((error) =>
-								this.log(`Failed to acknowledge queued steering for ${child.taskId}: ${String(error)}`),
+								this.log(`Failed to finalize follow-up for ${child.taskId}: ${String(error)}`),
 							)
 					} else {
-						const record = this.agentControlStore.getAgent(
-							child.taskId,
-							this.getAgentControlRootTaskId(parent),
-						)
-						void (record ? this.deliverQueuedAgentMessage(child, record) : Promise.resolve()).then(
-							() => child.start(),
-							(error) => finish("failed", child.getTokenUsage(), String(error)),
-						)
+						child.start()
 					}
 				}
 			},

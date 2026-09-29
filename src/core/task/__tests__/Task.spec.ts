@@ -44,9 +44,29 @@ import type { AgentTurnEvent } from "../../agent/AgentTurnEvents"
 import { captureEnvironmentDetails } from "../../environment/getEnvironmentDetails"
 import { checkAutoApproval, checkAutoApprovalWithInheritedPolicy } from "../../auto-approval"
 import * as contextManagement from "../../context-management"
+import type { AgentMessage } from "../../task-persistence/AgentMessageInbox"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import i18n from "../../../i18n"
 import enCommon from "../../../i18n/locales/en/common.json"
+
+// Task tests isolate filesystem durability; AgentMessageInbox.spec exercises the real durable store.
+vi.mock("../../task-persistence/AgentMessageInbox", () => ({
+	AgentMessageInbox: class {
+		messages: AgentMessage[] = []
+		hasPending() {
+			return this.messages.length > 0
+		}
+		async receive(message: AgentMessage) {
+			this.messages.push(message)
+		}
+		async deliver(persist: (message: AgentMessage) => Promise<void>) {
+			while (this.messages.length) {
+				await persist(this.messages[0])
+				this.messages.shift()
+			}
+		}
+	},
+}))
 
 // Mock delay before any imports that might use it
 vi.mock("delay", () => ({
@@ -322,6 +342,8 @@ describe("Alpha", () => {
 		}
 
 		// Mock provider methods
+		mockProvider.hasPendingAgentMessages = vi.fn(() => false)
+		mockProvider.deliverAgentMessages = vi.fn(async () => undefined)
 		mockProvider.postMessageToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebviewWithoutTaskHistory = vi.fn().mockResolvedValue(undefined)
@@ -2737,6 +2759,7 @@ describe("Alpha", () => {
 
 			expect(task.taskId).toBeDefined()
 			expect(resume).toHaveBeenCalledWith("evaluate the prior answer", expect.any(Function), ["image1.png"], {
+				inputOrigin: "human",
 				deferTaskStartedUntilInitialUserContentPersisted: true,
 				reuseRetainedHistory: true,
 			})
@@ -3585,6 +3608,92 @@ describe("Alpha", () => {
 			return { promise, resolve }
 		}
 
+		it.each(["primary", "subagent"] as const)(
+			"delivers %s agent input without human queue, approval response, or interruption",
+			async (kind) => {
+				const task = createTask(kind)
+				const userMessage = vi.fn()
+				task.on(AlphaCodeEventName.TaskUserMessage, userMessage)
+				const submit = vi.spyOn(task, "submitUserMessage")
+				const steer = vi.spyOn(task, "steerUserMessage")
+				const cancel = vi.spyOn(task, "cancelCurrentRequest")
+				;(task as any).activeAsk = { type: "tool" }
+				const save = vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+				const message = { id: "agent-event-1", senderTaskId: "parent", text: "Review this finding" }
+				await task.receiveAgentMessage(message)
+				expect(task.hasPendingAgentMessages()).toBe(true)
+				expect(task.messageQueueService.isEmpty()).toBe(true)
+				expect(submit).not.toHaveBeenCalled()
+				expect(steer).not.toHaveBeenCalled()
+				expect(cancel).not.toHaveBeenCalled()
+				expect(userMessage).not.toHaveBeenCalled()
+				expect(task.apiConversationHistory).toEqual([])
+				;(task as any).activeAsk = undefined
+				await (task as any).deliverAgentMessages()
+				expect(save).toHaveBeenCalled()
+				expect(task.apiConversationHistory).toEqual([expect.objectContaining({ agent_message_id: message.id })])
+				expect(JSON.stringify(task.apiConversationHistory)).toContain("<agent_message>")
+				expect(JSON.stringify(task.apiConversationHistory)).not.toContain("<user_message>")
+				expect((task as any).buildCleanConversationHistory(task.apiConversationHistory)[0]).not.toHaveProperty(
+					"agent_message_id",
+				)
+				// Human steering must preserve the receipt instead of merging away its identity.
+				expect((task as any).takeLastApiUserMessageContent()).toEqual([])
+				expect(task.apiConversationHistory).toHaveLength(1)
+				// Replay after a crash between transcript persistence and inbox ACK.
+				await task.receiveAgentMessage(message)
+				await (task as any).deliverAgentMessages()
+				expect(task.apiConversationHistory).toHaveLength(1)
+			},
+		)
+
+		it("blocks completion while an agent message is being durably admitted", async () => {
+			const task = createTask()
+			const gate = deferred()
+			const admitting = task.admitAgentMessage(() => gate.promise)
+			expect(await task.getCompletionGateDecision()).toMatchObject({ allowed: false, reasonCode: "interrupted" })
+			gate.resolve()
+			await admitting
+			expect(task.hasPendingAgentMessages()).toBe(false)
+		})
+
+		it("joins admitted mailbox writes before building the next model input", async () => {
+			const task = createTask()
+			const gate = deferred()
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			const admitting = task.admitAgentMessage(async () => {
+				await gate.promise
+				await task.receiveAgentMessage({ id: "slow-write", senderTaskId: "child", text: "Durable finding" })
+			})
+			const delivering = (task as any).deliverAgentMessages()
+			expect(task.apiConversationHistory).toEqual([])
+			gate.resolve()
+			await Promise.all([admitting, delivering])
+			expect(task.apiConversationHistory).toEqual([expect.objectContaining({ agent_message_id: "slow-write" })])
+		})
+
+		it("continues after visible text when agent input arrives during the model response", async () => {
+			const task = createTask()
+			const request = vi
+				.spyOn(task, "runAgentRequests")
+				.mockImplementationOnce(async () => {
+					await task.receiveAgentMessage({
+						id: "during-response",
+						senderTaskId: "child",
+						text: "New finding",
+					})
+					return { status: "completed", response: createAgentResponse([{ type: "text", text: "Done" }]) }
+				})
+				.mockImplementationOnce(async () => {
+					vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+					await (task as any).deliverAgentMessages()
+					return true
+				})
+			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
+			expect(request).toHaveBeenCalledTimes(2)
+			expect(request.mock.calls[1][0]).toEqual([])
+		})
+
 		it("uses the admitted step's approval mode and isolates the next-step task override", async () => {
 			const task = createTask()
 			task.setTaskApprovalMode("ask")
@@ -3633,6 +3742,36 @@ describe("Alpha", () => {
 			const unrelatedTask = createTask()
 			unrelatedTask.setTaskApprovalMode("ask")
 			expect(unrelatedTask["getApprovalModeForAsk"]()).toBe("ask")
+		})
+
+		it("persists tool results before agent input and sends both to the next provider request", async () => {
+			const task = createTask("subagent")
+			task.apiConversationHistory = [
+				{ role: "user", content: [{ type: "text", text: "Inspect a file" }] },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "read-1", name: "read_file", input: { path: "a.ts" } }],
+				},
+			]
+			await task.receiveAgentMessage({ id: "message-1", senderTaskId: "parent", text: "Parent finding" })
+			mockProvider.getState = vi.fn().mockResolvedValue({})
+			mockProvider.getValues = vi.fn().mockReturnValue({})
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			const requests: unknown[] = []
+			vi.spyOn(task.api, "createMessage").mockImplementation(async function* (_system, messages) {
+				requests.push(structuredClone(messages))
+				yield { type: "text", text: "Read both inputs." } as const
+			})
+			await expect(
+				task.runAgentRequests([{ type: "tool_result", tool_use_id: "read-1", content: "FILE_CONTENT" }], false),
+			).resolves.toMatchObject({ status: "completed" })
+			expect(requests).toHaveLength(1)
+			const request = JSON.stringify(requests[0])
+			expect(request).toContain("FILE_CONTENT")
+			expect(request).toContain("Parent finding")
+			expect(request.indexOf("FILE_CONTENT")).toBeLessThan(request.indexOf("Parent finding"))
+			expect(request).not.toContain("agent_message_id")
+			expect(task.hasPendingAgentMessages()).toBe(false)
 		})
 
 		it("includes pre-start managed-child steering in the first provider input before acknowledging it", async () => {
@@ -7796,6 +7935,8 @@ describe("pushToolResultToUserContent", () => {
 			new ContextProxy(mockExtensionContext),
 		) as any
 
+		mockProvider.hasPendingAgentMessages = vi.fn(() => false)
+		mockProvider.deliverAgentMessages = vi.fn(async () => undefined)
 		mockProvider.postMessageToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebviewWithoutTaskHistory = vi.fn().mockResolvedValue(undefined)

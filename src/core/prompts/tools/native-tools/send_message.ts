@@ -7,7 +7,7 @@ export const send_message = {
 	function: {
 		name: "send_message",
 		description:
-			"Deliver or queue a message for a pending or running child agent without starting a separate follow-up turn. Address the child by stable task_name, task ID, or canonical path. For deterministic immediate steering, this may follow spawn_agent for the same task_name in one response.",
+			"Send an agent message to a pending or running child. It is delivered automatically at the next model-step boundary, after current tools settle, without interrupting work or entering the human message queue. Address the child by stable task_name, task ID, or canonical path. Use followup_task to restart a stopped child.",
 		strict: true,
 		parameters: {
 			type: "object",

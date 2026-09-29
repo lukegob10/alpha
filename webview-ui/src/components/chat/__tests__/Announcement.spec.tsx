@@ -36,6 +36,9 @@ const renderAnnouncement = (language = "en") =>
 describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
+		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.1.1" }),
+		)
 
 		expect(screen.getByText("Welcome to Alpha v3.1.1")).toBeInTheDocument()
 		expect(

@@ -182,6 +182,10 @@ export interface StepContextDigests {
 	policy: string
 }
 
+// Only factory-created, deeply frozen contexts can reuse hashes. Weak keys do
+// not retain completed requests; legacy/structurally typed callers are rehashed.
+const capturedContextDigests = new WeakMap<StepContext, { value?: StepContextDigests }>()
+
 /** Backwards-friendly name for callers that describe this as a digest set. */
 export type StepContextDigestSet = StepContextDigests
 
@@ -298,6 +302,9 @@ export function digestValue(value: unknown): string {
  * keeps this helper safe for contexts assembled by older callers.
  */
 export function getStepContextDigests(context: StepContext): StepContextDigests {
+	const cached = capturedContextDigests.get(context)
+	if (cached?.value) return cached.value
+
 	const prompt = digestValue(context.instructions.systemPrompt)
 	const environment = digestValue(context.instructions.environmentDetails ?? "")
 	const stableEnvironment = digestValue(context.instructions.environmentSnapshot?.stable ?? {})
@@ -329,7 +336,7 @@ export function getStepContextDigests(context: StepContext): StepContextDigests 
 	delete contextProjection.createdAt
 	delete contextProjection.retryAttempt
 
-	return Object.freeze({
+	const digests = Object.freeze({
 		context: digestValue(contextProjection),
 		model,
 		prompt,
@@ -341,6 +348,8 @@ export function getStepContextDigests(context: StepContext): StepContextDigests 
 		tools,
 		policy,
 	})
+	if (cached) cached.value = digests
+	return digests
 }
 
 /** Alias used by callers that prefer a verb describing the operation. */
@@ -354,7 +363,9 @@ export function createStepContext(input: CreateStepContextInput): StepContext {
 		createdAt: input.createdAt ?? Date.now(),
 	}
 
-	return deepFreeze(cloneValue(context)) as StepContext
+	const captured = deepFreeze(cloneValue(context)) as StepContext
+	capturedContextDigests.set(captured, {})
+	return captured
 }
 
 /**

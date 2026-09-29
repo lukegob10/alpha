@@ -43,6 +43,35 @@ describe("NativeToolCallParser", () => {
 	})
 
 	describe("parseToolCall", () => {
+		it.each([
+			{ name: "read_ticket", args: { id: "ticket-123" } },
+			{
+				name: "spawn_agent",
+				args: {
+					task_name: "review",
+					message: "Review the ticket",
+					model: "gpt-6-sol",
+					reasoning_effort: "high",
+				},
+			},
+		] as const)("preserves valid $name display arguments without false parameter warnings", ({ name, args }) => {
+			const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+			try {
+				const result = NativeToolCallParser.parseToolCall({
+					id: "call-display",
+					name,
+					arguments: JSON.stringify(args),
+				})
+				expect(result).toMatchObject({ nativeArgs: args, params: args })
+				expect(warning).not.toHaveBeenCalled()
+				NativeToolCallParser.startStreamingToolCall("stream-display", name)
+				const partial = NativeToolCallParser.processStreamingChunk("stream-display", JSON.stringify(args))
+				expect(partial?.params).toEqual(args)
+			} finally {
+				warning.mockRestore()
+			}
+		})
+
 		describe("VS Code integrated-browser tools", () => {
 			it.each([...browserToolNames])("preserves a valid %s payload as native arguments", (name) => {
 				const payload = browserPayloads[name]

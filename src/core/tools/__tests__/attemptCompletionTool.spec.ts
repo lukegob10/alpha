@@ -73,6 +73,7 @@ describe("attemptCompletionTool", () => {
 		vi.mocked(vscode.workspace.getConfiguration).mockImplementation(mockGetConfiguration)
 
 		mockTask = {
+			hasPendingAgentMessages: vi.fn(() => false),
 			recordCompletionCandidate: vi.fn(),
 			evaluateCompletionHooks: vi.fn(async () => ({})),
 			getTaskLifetimeCancellationSignal: vi.fn(() => new AbortController().signal),

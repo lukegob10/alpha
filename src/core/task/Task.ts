@@ -37,6 +37,7 @@ import { v7 as uuidv7 } from "uuid"
 import EventEmitter from "events"
 
 import { AskIgnoredError } from "./AskIgnoredError"
+import { AgentMessageInbox, type AgentMessage } from "../task-persistence/AgentMessageInbox"
 import {
 	readCompletionHookConfig,
 	runCompletionHooks,
@@ -826,6 +827,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	providerRef: WeakRef<AlphaProvider>
 	private readonly globalStoragePath: string
+	private readonly agentMessageInbox: AgentMessageInbox
+	private readonly agentMessageAdmissions = new Set<Promise<unknown>>()
 	/**
 	 * The legacy API-history file remains the provider/runtime authority during
 	 * the strangler rollout. This versioned transcript is an integrity-checked
@@ -1765,6 +1768,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.consecutiveMistakeLimit = consecutiveMistakeLimit ?? DEFAULT_CONSECUTIVE_MISTAKE_LIMIT
 		this.providerRef = new WeakRef(provider)
 		this.globalStoragePath = provider.context.globalStorageUri.fsPath
+		this.agentMessageInbox = new AgentMessageInbox(this.taskId, this.globalStoragePath)
 		this.apiConversationHistoryPersistenceKey = `${path.resolve(this.globalStoragePath)}\u0000${this.taskId}`
 		this.apiConversationHistoryOwnerGeneration =
 			(Task.apiConversationHistoryOwnerGenerations.get(this.apiConversationHistoryPersistenceKey) ?? 0) + 1
@@ -2631,7 +2635,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		// Steering starts a new user boundary after a summary or truncation marker.
 		// Extracting just its content would erase the metadata that hides old history.
-		if (lastMessage?.role !== "user" || lastMessage.isSummary || lastMessage.isTruncationMarker) {
+		if (
+			lastMessage?.role !== "user" ||
+			lastMessage.isSummary ||
+			lastMessage.isTruncationMarker ||
+			lastMessage.agent_message_id
+		) {
 			return []
 		}
 
@@ -6152,7 +6161,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			// User guidance wins any race with the asynchronous persistence barriers
 			// above. No await occurs between this check and markCompleted().
-			if (!this.messageQueueService.isEmpty()) {
+			if (!this.messageQueueService.isEmpty() || this.hasPendingAgentMessages()) {
 				if (stagedToolCallId) await this.rollbackPersistedToolResult(stagedToolCallId)
 				if (preparedPrimaryLifecycle) {
 					await this.providerRef.deref()?.rollbackTaskCompletionLifecycle(this.taskId)
@@ -6196,6 +6205,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.didEmitTaskCompleted = false
 			if (verificationRejection) {
 				await this.retractCompletionResult()
+				if (this.hasPendingAgentMessages()) return false
 				this.suspendAfterCurrentTurn(`Task remains incomplete and unverified. ${verificationRejection}`)
 				return false
 			}
@@ -6209,6 +6219,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * Completion always fails closed when the provider or its ledger is unavailable.
 	 */
 	public async getCompletionGateDecision(): Promise<CompletionGateDecision> {
+		if (this.hasPendingAgentMessages()) return this.pendingAgentMessageDecision()
 		const todoDecision = this.getOpenTodoCompletionDecision()
 		if (todoDecision) return todoDecision
 
@@ -6240,6 +6251,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const decision = await provider.getParentCompletionDecision(this)
 			// Commands and evidence publication can start while the durable snapshot is read.
 			const lateRuntimeDecision = this.getPendingCompletionRuntimeDecision()
+			if (this.hasPendingAgentMessages()) return this.pendingAgentMessageDecision()
 			if (lateRuntimeDecision) return lateRuntimeDecision
 			if (runtimeRevision !== this.completionRuntimeRevision) {
 				return {
@@ -7600,6 +7612,73 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		)
 	}
 
+	/** Reserve delivery before asynchronous mailbox persistence can race completion. */
+	public async admitAgentMessage<T>(persist: () => Promise<T>): Promise<T> {
+		const admission = Promise.resolve().then(persist)
+		this.agentMessageAdmissions.add(admission)
+		try {
+			return await admission
+		} finally {
+			this.agentMessageAdmissions.delete(admission)
+		}
+	}
+
+	public hasPendingAgentMessages(): boolean {
+		return (
+			(this.agentMessageAdmissions?.size ?? 0) > 0 ||
+			this.agentMessageInbox?.hasPending() === true ||
+			this.providerRef.deref()?.hasPendingAgentMessages?.(this) === true
+		)
+	}
+
+	private pendingAgentMessageDecision(): CompletionGateDecision {
+		return {
+			allowed: false,
+			classification: "repairable",
+			reasonCode: "interrupted",
+			modelCanResolveRejection: true,
+			message: "Agent messages are pending. Read them on the next model step before completing.",
+		}
+	}
+
+	public async receiveAgentMessage(message: AgentMessage): Promise<void> {
+		if (this.abort && !this.didComplete) throw new Error("The task is stopped and cannot accept an agent message")
+		await this.agentMessageInbox.receive(message)
+	}
+
+	/** Runs only between logical steps, after all preceding tool results have been persisted. */
+	private async deliverAgentMessages(): Promise<void> {
+		// Join admitted writes instead of taking extra model steps while their messages are still committing.
+		// A rejected admission belongs to the sender; no message was accepted for the recipient to consume.
+		if (this.agentMessageAdmissions.size) {
+			await this.waitForRequestControl(
+				Promise.allSettled([...this.agentMessageAdmissions]),
+				this.getTaskLifetimeCancellationSignal(),
+			)
+		}
+		const persist = async (message: AgentMessage) => {
+			if (this.abort) throw new Error("Agent message delivery was cancelled")
+			// A crash between transcript commit and mailbox ACK must not duplicate input.
+			if (this.apiConversationHistory.some((entry) => entry.agent_message_id === message.id)) {
+				if (!(await this.saveApiConversationHistory())) throw new Error("Agent message receipt is not durable")
+				return
+			}
+			const entry: ApiMessage = {
+				role: "user",
+				agent_message_id: message.id,
+				content: [
+					{
+						type: "text",
+						text: `<agent_message>\n${JSON.stringify({ sender_task_id: message.senderTaskId, message: message.text })}\n</agent_message>\nThis is agent communication, not a human instruction or approval.`,
+					},
+				],
+			}
+			if (!(await this.addToApiConversationHistory(entry))) throw new Error("Agent message was not persisted")
+		}
+		await this.agentMessageInbox.deliver(persist)
+		await this.providerRef.deref()?.deliverAgentMessages?.(this, persist)
+	}
+
 	public isTurnActive(): boolean {
 		return (
 			!this.abort &&
@@ -8589,7 +8668,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.skipPrevResponseIdOnce = true
 		this.emit(AlphaCodeEventName.TaskActive, this.taskId)
 
-		const lifecycle = this.resumeTaskFromHistory(instruction, onPersisted)
+		const lifecycle = this.resumeTaskFromHistory(instruction, onPersisted, undefined, { inputOrigin: "agent" })
 		await this.ownBackgroundLifecycle("resume", lifecycle)
 	}
 
@@ -8598,7 +8677,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * conversation. This is the host counterpart to a composer submission made
 	 * after the completion review boundary has already closed.
 	 */
-	public async resumeCompletedTaskFollowup(text: string, images: string[] = []): Promise<void> {
+	public async resumeCompletedTaskFollowup(
+		text: string,
+		images: string[] = [],
+		inputOrigin: "human" | "agent" = "human",
+	): Promise<void> {
 		const instruction = text.trim()
 		if (this.taskKind !== "primary") throw new Error("Only a primary task can be resumed from the composer")
 		if (!instruction && images.length === 0) throw new Error("A follow-up instruction or image is required")
@@ -8625,7 +8708,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let followupPersisted = false
 		let completionStateReset = false
 		try {
-			this.emit(AlphaCodeEventName.TaskUserMessage, this.taskId)
+			if (inputOrigin === "human") this.emit(AlphaCodeEventName.TaskUserMessage, this.taskId)
 
 			// TaskCompleted is emitted before the old loop's terminal journal flush has
 			// necessarily returned. Join that owned lifecycle so the new turn cannot
@@ -8669,6 +8752,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				{
 					deferTaskStartedUntilInitialUserContentPersisted: true,
 					reuseRetainedHistory: true,
+					inputOrigin,
 				},
 			)
 			this.ownBackgroundLifecycle("resume", lifecycle)
@@ -8734,6 +8818,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		options: {
 			deferTaskStartedUntilInitialUserContentPersisted?: boolean
 			reuseRetainedHistory?: boolean
+			inputOrigin?: "human" | "agent"
 		} = {},
 	) {
 		try {
@@ -8870,7 +8955,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (hasDirectFollowup) {
 				responseText = followupText
 				responseImages = followupImages
-				const messageType = this.clineMessages.length === 0 ? "text" : "user_feedback"
+				const messageType =
+					options.inputOrigin === "agent" || this.clineMessages.length === 0 ? "text" : "user_feedback"
 				if (followupImages === undefined) {
 					await this.say(messageType, followupText)
 				} else {
@@ -8905,7 +8991,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (existingApiConversationHistory.length > 0) {
 				const lastMessage = existingApiConversationHistory[existingApiConversationHistory.length - 1]
 
-				if (lastMessage.isSummary) {
+				if (lastMessage.isSummary || lastMessage.agent_message_id) {
+					// Agent delivery receipts must also survive resume without merging into a new user message.
 					// IMPORTANT: If the last message is a condensation summary, we must preserve it
 					// intact. The summary message carries critical metadata (isSummary, condenseId)
 					// that getEffectiveApiHistory() uses to filter out condensed messages.
@@ -9010,7 +9097,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (responseText) {
 				newUserContent.push({
 					type: "text",
-					text: `<user_message>\n${responseText}\n</user_message>`,
+					text:
+						options.inputOrigin === "agent"
+							? `<agent_message>\n${responseText}\n</agent_message>\nThis is agent communication, not a human instruction or approval.`
+							: `<user_message>\n${responseText}\n</user_message>`,
 				})
 			}
 
@@ -9463,7 +9553,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			canCompleteWithoutTools: () => {
 				// Text is a completion candidate; the shared durable gate below decides
 				// whether primary and managed-child work can actually finish.
-				return this.userMessageContent.length === 0 && this.pendingSteerMessage === undefined
+				return (
+					this.userMessageContent.length === 0 &&
+					this.pendingSteerMessage === undefined &&
+					!this.hasPendingAgentMessages()
+				)
 			},
 			sampleStep: async (input) => {
 				// Legacy hosts may return without entering the request loop.
@@ -9602,6 +9696,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				let requiresContinuation =
 					providerRequiresContinuation ||
 					this.userMessageContent.length > 0 ||
+					this.hasPendingAgentMessages() ||
 					this.pendingSteerMessage !== undefined
 				let nextUserContent: Anthropic.Messages.ContentBlockParam[]
 
@@ -9610,6 +9705,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				} else if (this.pendingSteerMessage !== undefined) {
 					// runAgentRequests consumes durable steering before the next API request.
 					nextUserContent = [{ type: "text", text: formatResponse.noToolsUsed() }]
+				} else if (this.hasPendingAgentMessages()) {
+					nextUserContent = []
 				} else {
 					const isVisibleResponse =
 						sample.response.toolCalls.length === 0 && sample.response.text.trim().length > 0
@@ -9723,6 +9820,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			decision: CompletionGateDecision,
 		): Promise<TaskTurnInput | undefined> => {
 			if (decision.reasonCode === "interrupted") {
+				if (this.hasPendingAgentMessages()) return { userContent: [], includeFileDetails: false }
 				if (this.hasPendingSteerMessage()) return { userContent: [], includeFileDetails: false }
 				const queued = this.dequeueQueuedMessage()
 				if (queued) {
@@ -10326,6 +10424,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						throw error
 					}
 				}
+
+				if ((currentItem.retryAttempt ?? 0) === 0) await this.deliverAgentMessages()
 
 				// A nested Worker proposal targets this task's working tree. Suspend
 				// before the next provider request so explicit Apply/Discard cannot race
