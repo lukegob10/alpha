@@ -117,6 +117,264 @@
 	text-align: center;
 }
 
+.incident-turns-panel,
+.incident-turn-detail {
+	margin-bottom: 18px;
+}
+
+.incident-turn-scope {
+	margin: 6px 0 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.9em;
+}
+
+.incident-turn-stats {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: 10px;
+	margin: 0;
+}
+
+.incident-turn-stat {
+	min-width: 0;
+	padding: 12px;
+	border: 1px solid var(--vscode-contrastBorder, var(--vscode-panel-border, transparent));
+	border-radius: 4px;
+	background: var(--vscode-editor-background);
+}
+
+.incident-turn-stat dt {
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.84em;
+}
+
+.incident-turn-stat dd {
+	margin: 5px 0 0;
+	font-size: 1.35em;
+	font-weight: 600;
+	font-variant-numeric: tabular-nums;
+	overflow-wrap: anywhere;
+}
+
+.incident-turn-stat dd small {
+	display: block;
+	margin-top: 3px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.57em;
+	font-weight: 400;
+}
+
+.incident-turn-stat--positive dd,
+.incident-turn-status--completed {
+	color: var(--vscode-testing-iconPassed, var(--vscode-descriptionForeground));
+}
+
+.incident-turn-stat--error dd,
+.incident-turn-status--failed,
+.incident-turn-error-count {
+	color: var(--vscode-errorForeground, var(--vscode-descriptionForeground));
+}
+
+.incident-turn-status-counts {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 7px;
+	margin: 11px 0 16px;
+	padding: 0;
+	list-style: none;
+}
+
+.incident-turn-status-counts li {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 8px;
+	border-radius: 12px;
+	color: var(--vscode-descriptionForeground);
+	background: var(--vscode-badge-background);
+	font-size: 0.82em;
+}
+
+.incident-turn-status-counts strong {
+	color: var(--vscode-badge-foreground);
+	font-variant-numeric: tabular-nums;
+}
+
+.incident-turn-table-toolbar,
+.incident-turn-filters {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.incident-turn-table-toolbar {
+	justify-content: space-between;
+	margin-bottom: 9px;
+}
+
+.incident-turn-filter {
+	min-height: 30px;
+	padding: 4px 9px;
+	border: 1px solid var(--vscode-contrastBorder, var(--vscode-panel-border, transparent));
+	border-radius: 3px;
+	color: var(--vscode-foreground);
+	background: transparent;
+	cursor: pointer;
+	font: inherit;
+	font-size: 0.88em;
+}
+
+.incident-turn-filter:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.incident-turn-filter[aria-pressed="true"] {
+	border-color: var(--vscode-focusBorder);
+	background: var(--vscode-list-activeSelectionBackground, var(--vscode-button-background));
+	color: var(--vscode-list-activeSelectionForeground, var(--vscode-button-foreground));
+}
+
+.incident-turn-result-count {
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.85em;
+}
+
+.incident-turn-table-scroll {
+	width: 100%;
+	overflow-x: auto;
+	overscroll-behavior-x: contain;
+}
+
+.incident-turn-table {
+	width: 100%;
+	min-width: 720px;
+	border-collapse: collapse;
+	font-size: 0.9em;
+	text-align: left;
+}
+
+.incident-turn-table th,
+.incident-turn-table td {
+	padding: 9px 10px;
+	border-bottom: 1px solid var(--vscode-contrastBorder, var(--vscode-panel-border, transparent));
+	white-space: nowrap;
+}
+
+.incident-turn-table thead th {
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.85em;
+	font-weight: 600;
+}
+
+.incident-turn-table tbody tr:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.incident-turn-table tbody tr.incident-turn-row--selected {
+	background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground));
+	color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+}
+
+.incident-turn-select {
+	display: grid;
+	gap: 3px;
+	padding: 0;
+	border: 0;
+	color: inherit;
+	background: transparent;
+	cursor: pointer;
+	font: inherit;
+	text-align: left;
+}
+
+.incident-turn-select span {
+	color: var(--vscode-textLink-foreground, var(--vscode-foreground));
+}
+
+.incident-turn-select code,
+.incident-turn-detail-id code {
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 0.82em;
+}
+
+.incident-turn-status {
+	display: inline-block;
+	padding: 3px 7px;
+	border-radius: 12px;
+	color: var(--vscode-descriptionForeground);
+	background: var(--vscode-badge-background);
+	font-size: 0.83em;
+}
+
+.incident-turn-status--running,
+.incident-turn-status--interrupted {
+	color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
+}
+
+.incident-turn-detail-id {
+	margin: 6px 0 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.82em;
+	overflow-wrap: anywhere;
+}
+
+.incident-turn-detail-evidence {
+	margin: 0 0 12px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.88em;
+}
+
+.incident-turn-events {
+	display: grid;
+	gap: 0;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.incident-turn-event {
+	display: grid;
+	grid-template-columns: minmax(150px, 0.8fr) minmax(0, 1.2fr) minmax(150px, auto);
+	align-items: baseline;
+	gap: 8px 14px;
+	padding: 9px 0;
+	border-bottom: 1px solid var(--vscode-contrastBorder, var(--vscode-panel-border, transparent));
+}
+
+.incident-turn-event:last-child {
+	border-bottom: 0;
+}
+
+.incident-turn-event-kind {
+	color: var(--vscode-foreground);
+}
+
+.incident-turn-event-tool {
+	color: var(--vscode-descriptionForeground);
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 0.9em;
+	overflow-wrap: anywhere;
+}
+
+.incident-turn-event time {
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.86em;
+	text-align: right;
+}
+
+.incident-sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
 .incident-alert-list,
 .incident-task-list {
 	display: grid;
@@ -359,6 +617,19 @@
 	.incident-dashboard-grid {
 		grid-template-columns: minmax(0, 1fr);
 	}
+
+	.incident-turn-stats {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
+	.incident-turn-event {
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	}
+
+	.incident-turn-event time {
+		grid-column: 1 / -1;
+		text-align: left;
+	}
 }
 
 @media (max-width: 440px) {
@@ -380,6 +651,24 @@
 	}
 
 	.incident-timeline time {
+		grid-column: 1;
+	}
+
+	.incident-turn-stats {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.incident-turn-detail > .incident-panel-heading {
+		align-items: flex-start;
+		flex-direction: column;
+	}
+
+	.incident-turn-event {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 4px;
+	}
+
+	.incident-turn-event time {
 		grid-column: 1;
 	}
 }

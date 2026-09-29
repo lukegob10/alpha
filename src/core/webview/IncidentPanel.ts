@@ -1,5 +1,10 @@
 import * as vscode from "vscode"
 
+import {
+	incidentDashboardStartTurnInvestigationSchema,
+	incidentDashboardTurnDetailRequestSchema,
+	type IncidentDashboardTurnDetail,
+} from "@alpha-code/types"
 import type { AlphaProvider } from "./AlphaProvider"
 import { resolveWebviewHtml } from "./webviewHtml"
 
@@ -9,6 +14,7 @@ export class IncidentPanel implements vscode.Disposable {
 	private subscriptions: vscode.Disposable[] = []
 	private unsubscribe?: () => void
 	private publishTimer?: ReturnType<typeof setTimeout>
+	private publishRevision = 0
 	private disposed = false
 
 	constructor(
@@ -54,8 +60,17 @@ export class IncidentPanel implements vscode.Disposable {
 		panel.webview.onDidReceiveMessage(
 			(message: unknown) => {
 				if (!message || typeof message !== "object" || !("type" in message)) return
+				const detailRequest = incidentDashboardTurnDetailRequestSchema.safeParse(message)
+				const turnInvestigation = incidentDashboardStartTurnInvestigationSchema.safeParse(message)
 				if (message.type === "incidentDashboardReady") {
 					void this.publish()
+				} else if (detailRequest.success) {
+					void this.publishTurnDetail(panel, detailRequest.data.turnId)
+				} else if (turnInvestigation.success) {
+					void this.provider.startIncidentDebuggingTurnTask(turnInvestigation.data.turnId).catch(() => {
+						this.provider.log("Failed to start turn investigation")
+						void vscode.window.showErrorMessage("Could not start the Alpha turn investigation")
+					})
 				} else if (
 					message.type === "startDebuggingTask" &&
 					"alertId" in message &&
@@ -90,11 +105,29 @@ export class IncidentPanel implements vscode.Disposable {
 	private async publish(): Promise<void> {
 		const panel = this.panel
 		if (!panel) return
+		const revision = ++this.publishRevision
 		const snapshot = await this.provider.getIncidentDashboardSnapshot()
-		if (panel === this.panel) await panel.webview.postMessage({ type: "incidentDashboardUpdate", snapshot })
+		if (panel === this.panel && revision === this.publishRevision)
+			await panel.webview.postMessage({ type: "incidentDashboardUpdate", snapshot })
+	}
+
+	private async publishTurnDetail(panel: vscode.WebviewPanel, turnId: string): Promise<void> {
+		let detail: IncidentDashboardTurnDetail | undefined
+		try {
+			detail = await this.provider.getIncidentDashboardTurnDetail(turnId)
+		} catch {
+			this.provider.log("Failed to load turn details")
+		}
+		if (panel !== this.panel) return
+		await panel.webview.postMessage({
+			type: "incidentDashboardTurnDetail",
+			turnId,
+			...(detail ? { detail } : {}),
+		})
 	}
 
 	private close(): void {
+		this.publishRevision++
 		this.panel = undefined
 		if (this.publishTimer) clearTimeout(this.publishTimer)
 		this.publishTimer = undefined

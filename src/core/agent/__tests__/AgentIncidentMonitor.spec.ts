@@ -14,6 +14,7 @@ function lifecycleEvent(
 		taskId?: string
 		runId?: string
 		turnId?: string
+		stepId?: string
 		eventId?: string
 		sequence?: number
 		at?: number
@@ -26,6 +27,7 @@ function lifecycleEvent(
 		taskId: options.taskId ?? "task-incident",
 		runId: options.runId ?? "run-incident",
 		turnId: options.turnId ?? "turn-incident",
+		...(options.stepId ? { stepId: options.stepId } : {}),
 		occurredAt: options.at ?? 1_000 + (options.sequence ?? 1),
 		type,
 		payload,
@@ -332,5 +334,363 @@ describe("AgentIncidentMonitor", () => {
 		expect(prompt).not.toContain("PRIVATE_PROJECTION")
 		expect(prompt).not.toContain("PRIVATE_TRANSCRIPT_CONTENT")
 		expect(prompt).not.toContain("PRIVATE_PROVIDER_ERROR")
+	})
+
+	it("projects completed and failed turns with safe details and deduplicated counters", () => {
+		const monitor = new AgentIncidentMonitor({ now: () => 9_000 })
+		const positiveEvents = [
+			turnStarted({
+				taskId: "positive-task",
+				turnId: "positive-turn",
+				eventId: "positive-start",
+				sequence: 1,
+				at: 100,
+			}),
+			lifecycleEvent(
+				"step_started",
+				{ phase: "working" },
+				{
+					taskId: "positive-task",
+					turnId: "positive-turn",
+					stepId: "positive-step",
+					eventId: "positive-step-start",
+					sequence: 2,
+					at: 110,
+				},
+			),
+			lifecycleEvent(
+				"step_status_changed",
+				{ status: "completed" },
+				{
+					taskId: "positive-task",
+					turnId: "positive-turn",
+					stepId: "positive-step",
+					eventId: "positive-step-complete",
+					sequence: 3,
+					at: 120,
+				},
+			),
+			lifecycleEvent(
+				"tool_call_accepted",
+				{
+					item: {
+						itemId: "positive-call-item",
+						type: "tool_call",
+						toolCallId: "positive-call-id",
+						name: "read_file",
+						arguments: { path: "PRIVATE_PATH" },
+						status: "accepted",
+					},
+				},
+				{
+					taskId: "positive-task",
+					turnId: "positive-turn",
+					eventId: "positive-tool-accepted",
+					sequence: 4,
+					at: 130,
+				},
+			),
+			lifecycleEvent(
+				"tool_result_recorded",
+				{
+					item: {
+						itemId: "positive-result-item",
+						type: "tool_result",
+						toolCallId: "positive-call-id",
+						status: "success",
+						output: "PRIVATE_TOOL_OUTPUT",
+					},
+				},
+				{
+					taskId: "positive-task",
+					turnId: "positive-turn",
+					eventId: "positive-tool-success",
+					sequence: 5,
+					at: 140,
+				},
+			),
+			lifecycleEvent(
+				"turn_completed",
+				{ status: "completed" },
+				{
+					taskId: "positive-task",
+					turnId: "positive-turn",
+					eventId: "positive-complete",
+					sequence: 6,
+					at: 150,
+				},
+			),
+		]
+		for (const event of positiveEvents) monitor.observe(event)
+		monitor.observe(positiveEvents[3])
+
+		const failedEvents = [
+			turnStarted({
+				taskId: "failed-turn-task",
+				turnId: "reused-turn-id",
+				eventId: "failed-start",
+				sequence: 1,
+				at: 200,
+			}),
+			lifecycleEvent(
+				"tool_call_accepted",
+				{
+					item: {
+						itemId: "failed-call-item",
+						type: "tool_call",
+						toolCallId: "failed-call-id",
+						name: "run_command",
+						arguments: { command: "PRIVATE_COMMAND" },
+						status: "accepted",
+					},
+				},
+				{
+					taskId: "failed-turn-task",
+					turnId: "reused-turn-id",
+					eventId: "failed-tool-accepted",
+					sequence: 2,
+					at: 210,
+				},
+			),
+			lifecycleEvent(
+				"tool_result_recorded",
+				{
+					item: {
+						itemId: "failed-result-item",
+						type: "tool_result",
+						toolCallId: "failed-call-id",
+						status: "error",
+						output: "PRIVATE_ERROR_OUTPUT",
+					},
+				},
+				{
+					taskId: "failed-turn-task",
+					turnId: "reused-turn-id",
+					eventId: "failed-tool-error",
+					sequence: 3,
+					at: 220,
+				},
+			),
+			turnFailed({
+				taskId: "failed-turn-task",
+				turnId: "reused-turn-id",
+				eventId: "failed-terminal",
+				sequence: 4,
+				at: 230,
+			}),
+		]
+		for (const event of failedEvents) monitor.observe(event)
+
+		const snapshot = monitor.snapshot()
+		const positive = snapshot.turns.find(({ taskId }) => taskId === digest("positive-task"))!
+		const failed = snapshot.turns.find(({ taskId }) => taskId === digest("failed-turn-task"))!
+		expect(positive).toMatchObject({
+			id: digest("turn\0positive-task\0run-incident\0positive-turn"),
+			status: "completed",
+			startedAt: 100,
+			endedAt: 150,
+			durationMs: 50,
+			steps: 1,
+			toolCalls: 1,
+			toolErrors: 0,
+		})
+		expect(failed).toMatchObject({
+			status: "failed",
+			startedAt: 200,
+			endedAt: 230,
+			toolCalls: 1,
+			toolErrors: 1,
+		})
+		const detail = monitor.getTurnDetail(positive.id)!
+		expect(detail.turn.id).toBe(positive.id)
+		expect(detail.events.map(({ kind }) => kind)).toEqual([
+			"turn_started",
+			"step_started",
+			"step_completed",
+			"tool_accepted",
+			"tool_succeeded",
+			"turn_completed",
+		])
+		expect(detail.events.filter(({ kind }) => kind === "tool_accepted")[0].toolName).toBe("read_file")
+		expect(monitor.getTurnDetail(digest("unavailable"))).toBeUndefined()
+		expect(incidentDashboardSnapshotSchema.safeParse(snapshot).success).toBe(true)
+		const exposed = JSON.stringify({ snapshot, detail })
+		for (const privateValue of [
+			"positive-task",
+			"positive-turn",
+			"positive-step",
+			"positive-call-id",
+			"PRIVATE_PATH",
+			"PRIVATE_TOOL_OUTPUT",
+			"PRIVATE_COMMAND",
+			"PRIVATE_ERROR_OUTPUT",
+		])
+			expect(exposed).not.toContain(privateValue)
+	})
+
+	it("restores turn rows from seeded lifecycle tails and excludes diagnostic sessions", () => {
+		const monitor = new AgentIncidentMonitor({ now: () => 5_000 })
+		const started = turnStarted({
+			taskId: "restored-positive",
+			turnId: "restored-turn",
+			eventId: "restore-start",
+			at: 100,
+			sequence: 1,
+		})
+		const completed = lifecycleEvent(
+			"turn_completed",
+			{ status: "completed" },
+			{ taskId: "restored-positive", turnId: "restored-turn", eventId: "restore-complete", at: 125, sequence: 2 },
+		)
+		const failed = turnFailed({ taskId: "restored-diagnostic", eventId: "diagnostic-fail", at: 200, sequence: 1 })
+		const snapshot = monitor.restore([
+			{ taskId: "restored-positive", status: "completed", updatedAt: 125, events: [started, completed] },
+			{
+				taskId: "restored-diagnostic",
+				status: "failed",
+				updatedAt: 200,
+				diagnosticSession: true,
+				events: [failed],
+			},
+		])
+
+		expect(snapshot.turns).toHaveLength(1)
+		expect(snapshot.turns[0]).toMatchObject({ status: "completed", startedAt: 100, endedAt: 125, durationMs: 25 })
+		expect(snapshot.turns[0].taskId).toBe(digest("restored-positive"))
+		expect(snapshot.turns.map(({ taskId }) => taskId)).not.toContain(digest("restored-diagnostic"))
+		expect(monitor.getTurnDetail(digest("turn\0restored-diagnostic\0run-incident\0turn-incident"))).toBeUndefined()
+	})
+
+	it("bounds retained turns and detail events and explains inferred start times", () => {
+		const monitor = new AgentIncidentMonitor({ now: () => 9_000 })
+		const first = lifecycleEvent(
+			"step_started",
+			{ phase: "working" },
+			{
+				taskId: "long-turn-task",
+				turnId: "long-turn",
+				stepId: "step-0",
+				eventId: "long-step-0",
+				sequence: 1,
+				at: 100,
+			},
+		)
+		monitor.observe(first)
+		for (let index = 1; index < 50; index++) {
+			monitor.observe(
+				lifecycleEvent(
+					"step_started",
+					{ phase: "working" },
+					{
+						taskId: "long-turn-task",
+						turnId: "long-turn",
+						stepId: `step-${index}`,
+						eventId: `long-step-${index}`,
+						sequence: index + 1,
+						at: 100 + index,
+					},
+				),
+			)
+		}
+		const snapshot = monitor.snapshot()
+		const longTurnId = digest("turn\0long-turn-task\0run-incident\0long-turn")
+		const detail = monitor.getTurnDetail(longTurnId)!
+		const prompt = monitor.buildTurnInvestigationPrompt(longTurnId)!
+		expect(snapshot.turns.length).toBeLessThanOrEqual(64)
+		expect(detail.events).toHaveLength(40)
+		expect(detail.turn.steps).toBe(50)
+		expect(prompt).toContain("first retained lifecycle event; original start may be earlier")
+		expect(prompt).toContain("Steps: 50")
+		expect(Buffer.byteLength(prompt, "utf8")).toBeLessThanOrEqual(12_000)
+		expect(incidentDashboardSnapshotSchema.safeParse(snapshot).success).toBe(true)
+
+		const boundedMonitor = new AgentIncidentMonitor({ now: () => 9_000 })
+		for (let index = 0; index < 70; index++) {
+			const options = {
+				taskId: "bounded-task",
+				runId: "bounded-run",
+				turnId: `bounded-turn-${index}`,
+				at: 500 + index * 2,
+			}
+			boundedMonitor.observe(turnStarted({ ...options, eventId: `bounded-start-${index}`, sequence: 1 }))
+			boundedMonitor.observe(
+				lifecycleEvent(
+					"turn_completed",
+					{ status: "completed" },
+					{ ...options, eventId: `bounded-complete-${index}`, sequence: 2, at: options.at + 1 },
+				),
+			)
+		}
+		const boundedSnapshot = boundedMonitor.snapshot()
+		expect(boundedSnapshot.turns).toHaveLength(64)
+		expect(incidentDashboardSnapshotSchema.safeParse(boundedSnapshot).success).toBe(true)
+		const retainedTurnIds = boundedSnapshot.turns.map(({ id }) => id)
+		const oldStarted = turnStarted({
+			taskId: "bounded-task",
+			runId: "bounded-run",
+			turnId: "older-than-retained",
+			eventId: "old-retained-start",
+			at: 1,
+			sequence: 1,
+		})
+		const oldCompleted = lifecycleEvent(
+			"turn_completed",
+			{ status: "completed" },
+			{
+				taskId: "bounded-task",
+				runId: "bounded-run",
+				turnId: "older-than-retained",
+				eventId: "old-retained-complete",
+				at: 2,
+				sequence: 2,
+			},
+		)
+		const withOldHistory = boundedMonitor.restore([
+			{ taskId: "bounded-task", status: "completed", updatedAt: 2, events: [oldStarted, oldCompleted] },
+		])
+		expect(withOldHistory.turns.map(({ id }) => id)).toEqual(retainedTurnIds)
+	})
+
+	it("builds positive and error turn prompts from safe references only", () => {
+		const monitor = new AgentIncidentMonitor({ now: () => 9_000 })
+		monitor.observe(turnStarted({ taskId: "safe-task", turnId: "safe-turn", eventId: "safe-start", sequence: 1 }))
+		monitor.observe(
+			lifecycleEvent(
+				"turn_completed",
+				{ status: "completed", reason: "PRIVATE_COMPLETION_REASON" },
+				{ taskId: "safe-task", turnId: "safe-turn", eventId: "safe-complete", sequence: 2 },
+			),
+		)
+		monitor.observe(
+			turnStarted({
+				taskId: "failed-safe-task",
+				turnId: "failed-safe-turn",
+				eventId: "failed-safe-start",
+				sequence: 1,
+			}),
+		)
+		monitor.observe(
+			turnFailed({
+				taskId: "failed-safe-task",
+				turnId: "failed-safe-turn",
+				eventId: "failed-safe-end",
+				sequence: 2,
+			}),
+		)
+		const completedId = digest("turn\0safe-task\0run-incident\0safe-turn")
+		const failedId = digest("turn\0failed-safe-task\0run-incident\0failed-safe-turn")
+		const completedPrompt = monitor.buildTurnInvestigationPrompt(completedId)!
+		const failedPrompt = monitor.buildTurnInvestigationPrompt(failedId)!
+
+		expect(completedPrompt).toContain("Status: completed")
+		expect(completedPrompt).toContain(`Turn ID SHA-256: ${digest("safe-turn")}`)
+		expect(failedPrompt).toContain("Status: failed")
+		expect(failedPrompt).toContain(`Turn ID SHA-256: ${digest("failed-safe-turn")}`)
+		expect(completedPrompt).not.toContain("PRIVATE_COMPLETION_REASON")
+		expect(failedPrompt).not.toContain("failed-safe-task")
+		expect(monitor.getTurnInvestigationReferences(failedId)).toEqual({
+			taskId: "failed-safe-task",
+			turnIdSha256: digest("failed-safe-turn"),
+		})
 	})
 })

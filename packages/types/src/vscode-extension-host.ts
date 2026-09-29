@@ -45,7 +45,7 @@ import type { WorktreeIncludeStatus } from "./worktree.js"
 import type { SubagentChangeSetActionCapability, SubagentChangeSetActionResult } from "./subagent.js"
 import type { BrowserToolName } from "./browser.js"
 import type { ToolApprovalDecision } from "./tool-approval.js"
-import type { IncidentDashboardSnapshot } from "./incident-dashboard.js"
+import type { IncidentDashboardSnapshot, IncidentDashboardTurnDetail } from "./incident-dashboard.js"
 import type { TaskApprovalModeUpdate, TaskApprovalModeUpdateResult } from "./task-approval-mode.js"
 import type { ApprovalMode } from "./approval-mode.js"
 import type { SearchFilesOutputMode, SearchFilesQueryResult } from "./tool-params.js"
@@ -334,6 +334,7 @@ export interface ExtensionMessage {
 		| "fileSearchResults"
 		| "ticketSearchResults"
 		| "incidentDashboardUpdate"
+		| "incidentDashboardTurnDetail"
 		| "toggleApiConfigPin"
 		| "acceptInput"
 		| "setHistoryPreviewCollapsed"
@@ -379,6 +380,8 @@ export interface ExtensionMessage {
 		| "subagentChangeSetActionResult"
 		| "taskOpenResult"
 	snapshot?: IncidentDashboardSnapshot
+	turnId?: string
+	detail?: IncidentDashboardTurnDetail
 	text?: string
 	taskId?: string
 	subagentChangeSetActionCapability?: SubagentChangeSetActionCapability
@@ -910,6 +913,8 @@ interface WebviewMessageBase {
 		| "duplicateScheduledTask"
 		| "requestScheduledTaskSkills"
 		| "incidentDashboardReady"
+		| "incidentDashboardRequestTurnDetail"
+		| "startDebuggingTurn"
 		| "startDebuggingTask"
 	text?: string
 	taskId?: string
@@ -1043,6 +1048,8 @@ interface WebviewMessageBase {
 
 export type WebviewMessage =
 	| (Omit<WebviewMessageBase, "type"> & { type: "startDebuggingTask"; alertId: string })
+	| (Omit<WebviewMessageBase, "type"> & { type: "incidentDashboardRequestTurnDetail"; turnId: string })
+	| (Omit<WebviewMessageBase, "type"> & { type: "startDebuggingTurn"; turnId: string })
 	| (Omit<WebviewMessageBase, "type" | "value"> & { type: "updateVSCodeSetting"; value?: number | boolean })
 	| (Omit<WebviewMessageBase, "type" | "taskId" | "approvalRequestId" | "toolApprovalDecision"> & {
 			type: "toolApprovalResponse"
@@ -1065,6 +1072,8 @@ export type WebviewMessage =
 				| "toolApprovalResponse"
 				| "setTaskApprovalMode"
 				| "startDebuggingTask"
+				| "incidentDashboardRequestTurnDetail"
+				| "startDebuggingTurn"
 			>
 	  })
 

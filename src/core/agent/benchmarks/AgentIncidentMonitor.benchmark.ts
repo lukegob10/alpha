@@ -93,6 +93,41 @@ const snapshotStart = performance.now()
 for (let index = 0; index < snapshotCount; index++) monitor.snapshot()
 const snapshotWallMs = performance.now() - snapshotStart
 
+const turnTableMonitor = new AgentIncidentMonitor({ now: () => 20_000 })
+for (let index = 0; index < 64; index++) {
+	const envelope = {
+		version: 1 as const,
+		taskId: "turn-table-task",
+		runId: "turn-table-run",
+		turnId: `turn-table-${index}`,
+	}
+	turnTableMonitor.observe({
+		...envelope,
+		eventId: `turn-table-start-${index}`,
+		sequence: index * 2 + 1,
+		occurredAt: index * 10 + 1,
+		type: "turn_started",
+		payload: {},
+	})
+	turnTableMonitor.observe({
+		...envelope,
+		eventId: `turn-table-complete-${index}`,
+		sequence: index * 2 + 2,
+		occurredAt: index * 10 + 2,
+		type: "turn_completed",
+		payload: { status: "completed" },
+	})
+}
+const selectedTurnId = turnTableMonitor.snapshot().turns[0]?.id
+const turnTableSnapshotStart = performance.now()
+for (let index = 0; index < snapshotCount; index++) turnTableMonitor.snapshot()
+const turnTableSnapshotWallMs = performance.now() - turnTableSnapshotStart
+const detailStart = performance.now()
+for (let index = 0; index < snapshotCount; index++) {
+	if (selectedTurnId) turnTableMonitor.getTurnDetail(selectedTurnId)
+}
+const selectedTurnDetailWallMs = performance.now() - detailStart
+
 const capacityMonitor = new AgentIncidentMonitor({ now: () => 20_000 })
 capacityMonitor.subscribe(() => undefined)
 for (const event of capacityEvents.slice(0, 1_000)) capacityMonitor.observe(event)
@@ -117,6 +152,8 @@ console.log(
 		monitorOverheadMedianCpuPercent: Number(monitorOverheadCpuPercent.toFixed(1)),
 		snapshotCount,
 		snapshotWallMs: Number(snapshotWallMs.toFixed(2)),
+		turnTableSnapshotWallMs: Number(turnTableSnapshotWallMs.toFixed(2)),
+		selectedTurnDetailWallMs: Number(selectedTurnDetailWallMs.toFixed(2)),
 		capacityEventCount,
 		capacityObserveWallMs: Number(capacityWallMs.toFixed(2)),
 		capacityObserveEventsPerSecond: Math.round(capacityEventCount / (capacityWallMs / 1_000)),

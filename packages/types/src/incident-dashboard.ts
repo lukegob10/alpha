@@ -98,12 +98,64 @@ export const incidentDashboardAlertSchema = z
 	})
 	.strict()
 
+export const incidentDashboardTurnStatusSchema = z.enum(["running", "completed", "failed", "cancelled", "interrupted"])
+
+/** One bounded turn row. IDs are opaque hashes; content from prompts and tool results is excluded. */
+export const incidentDashboardTurnSchema = z
+	.object({
+		id: incidentDashboardHashSchema,
+		taskId: incidentDashboardHashSchema,
+		taskLabel: incidentDashboardTaskLabelSchema,
+		status: incidentDashboardTurnStatusSchema,
+		startedAt: incidentDashboardTimestampSchema,
+		endedAt: incidentDashboardTimestampSchema.optional(),
+		durationMs: incidentDashboardTimestampSchema.optional(),
+		steps: z.number().int().nonnegative().max(256),
+		toolCalls: z.number().int().nonnegative().max(256),
+		toolErrors: z.number().int().nonnegative().max(256),
+		evidenceStatus: incidentDashboardEvidenceStatusSchema.optional(),
+	})
+	.strict()
+
+export const incidentDashboardTurnEventKindSchema = z.enum([
+	"turn_started",
+	"step_started",
+	"step_completed",
+	"step_failed",
+	"tool_accepted",
+	"tool_succeeded",
+	"tool_failed",
+	"approval_requested",
+	"approval_resolved",
+	"turn_completed",
+	"turn_failed",
+	"turn_cancelled",
+	"turn_interrupted",
+])
+
+export const incidentDashboardTurnEventSchema = z
+	.object({
+		id: incidentDashboardHashSchema,
+		at: incidentDashboardTimestampSchema,
+		kind: incidentDashboardTurnEventKindSchema,
+		toolName: toolNamesSchema.optional(),
+	})
+	.strict()
+
+export const incidentDashboardTurnDetailSchema = z
+	.object({
+		turn: incidentDashboardTurnSchema,
+		events: z.array(incidentDashboardTurnEventSchema).max(40),
+	})
+	.strict()
+
 /** Bounded, privacy-filtered data for the in-extension incident dashboard. */
 export const incidentDashboardSnapshotSchema = z
 	.object({
 		generatedAt: incidentDashboardTimestampSchema,
 		tasks: z.array(incidentDashboardTaskSchema).max(12),
 		alerts: z.array(incidentDashboardAlertSchema).max(12),
+		turns: z.array(incidentDashboardTurnSchema).max(64),
 	})
 	.strict()
 
@@ -114,6 +166,28 @@ export const incidentDashboardUpdateMessageSchema = z
 	})
 	.strict()
 
+export const incidentDashboardTurnDetailRequestSchema = z
+	.object({
+		type: z.literal("incidentDashboardRequestTurnDetail"),
+		turnId: incidentDashboardHashSchema,
+	})
+	.strict()
+
+export const incidentDashboardStartTurnInvestigationSchema = z
+	.object({
+		type: z.literal("startDebuggingTurn"),
+		turnId: incidentDashboardHashSchema,
+	})
+	.strict()
+
+export const incidentDashboardTurnDetailMessageSchema = z
+	.object({
+		type: z.literal("incidentDashboardTurnDetail"),
+		turnId: incidentDashboardHashSchema,
+		detail: incidentDashboardTurnDetailSchema.optional(),
+	})
+	.strict()
+
 export type IncidentDashboardTimelineKind = z.infer<typeof incidentDashboardTimelineKindSchema>
 export type IncidentDashboardTaskState = z.infer<typeof incidentDashboardTaskStateSchema>
 export type IncidentDashboardEvidenceStatus = z.infer<typeof incidentDashboardEvidenceStatusSchema>
@@ -121,5 +195,8 @@ export type IncidentDashboardErrorStatus = z.infer<typeof incidentDashboardError
 export type IncidentDashboardTimelineItem = z.infer<typeof incidentDashboardTimelineItemSchema>
 export type IncidentDashboardTask = z.infer<typeof incidentDashboardTaskSchema>
 export type IncidentDashboardAlert = z.infer<typeof incidentDashboardAlertSchema> & { toolName?: ToolName }
+export type IncidentDashboardTurn = z.infer<typeof incidentDashboardTurnSchema>
+export type IncidentDashboardTurnEvent = z.infer<typeof incidentDashboardTurnEventSchema>
+export type IncidentDashboardTurnDetail = z.infer<typeof incidentDashboardTurnDetailSchema>
 export type IncidentDashboardSnapshot = z.infer<typeof incidentDashboardSnapshotSchema>
 export type IncidentDashboardUpdateMessage = z.infer<typeof incidentDashboardUpdateMessageSchema>
