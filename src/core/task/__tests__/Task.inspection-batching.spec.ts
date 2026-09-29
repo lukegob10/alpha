@@ -155,7 +155,8 @@ describe("inspection batches through the turn engine, scheduler and Task", () =>
 		)
 		expect(task.userMessageContent).toEqual([])
 
-		// Cosmetic changes to the same successful search still exhaust recovery.
+		// Cosmetic changes to the same successful search produce one strategy hint
+		// without ending an otherwise healthy investigation.
 		for (const decoration of ["--line-number", "--no-heading", "--color never", "-H"]) {
 			const command = `rg ${decoration} symbol0 src`
 			const trustedExploration = await getTrustedCommandExploration({
@@ -176,7 +177,7 @@ describe("inspection batches through the turn engine, scheduler and Task", () =>
 				trustedExploration,
 			})
 		}
-		expect(stopped).toBe(true)
+		expect(stopped).toBe(false)
 		expect(task.userMessageContent).toHaveLength(1)
 	})
 })

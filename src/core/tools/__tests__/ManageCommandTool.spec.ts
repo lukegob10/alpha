@@ -282,6 +282,95 @@ it("uses the numeric exec session to poll and send approved input through the to
 	expect(callbacks.handleError).not.toHaveBeenCalled()
 })
 
+it.each(["released", "reused"] as const)(
+	"returns a completed command receipt after its terminal was %s",
+	async (state) => {
+		const { task, callbacks, process, terminal, commandEvidence } = harness()
+		const sessionId = commandSessionRegistry.register(task, process)
+		process.isSettled = true
+		commandEvidence.status = "succeeded"
+		commandEvidence.exitCode = 0
+		if (state === "reused") {
+			terminal.taskId = "another-task"
+			terminal.process = { executionId: "next-command" } as never
+		} else {
+			terminal.process = undefined as never
+			terminal.running = false
+		}
+		const descriptor = new ToolRegistry().resolve("write_stdin")!
+		await descriptor.execute({
+			task,
+			call: {
+				type: "tool_use",
+				id: "settled-poll",
+				name: "write_stdin",
+				params: {},
+				partial: false,
+				nativeArgs: { session_id: sessionId, yield_time_ms: 0 },
+			},
+			callbacks,
+		})
+
+		expect(callbacks.handleError).not.toHaveBeenCalled()
+		expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("Process exited with code 0"))
+		expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("ready at http://localhost:1234"))
+		expect(process.writeInput).not.toHaveBeenCalled()
+		expect(commandSessionRegistry.resolve(task, sessionId)).toBeUndefined()
+	},
+)
+
+it("rejects input to a settled session before approval", async () => {
+	const { task, callbacks, process, terminal, commandEvidence } = harness()
+	const sessionId = commandSessionRegistry.register(task, process)
+	process.isSettled = true
+	commandEvidence.status = "succeeded"
+	terminal.process = undefined as never
+	terminal.running = false
+	await new ToolRegistry().resolve("write_stdin")!.execute({
+		task,
+		call: {
+			type: "tool_use",
+			id: "settled-input",
+			name: "write_stdin",
+			params: {},
+			partial: false,
+			nativeArgs: { session_id: sessionId, chars: "yes\n" },
+		},
+		callbacks,
+	})
+	expect(callbacks.askApproval).not.toHaveBeenCalled()
+	expect(callbacks.handleError).toHaveBeenCalledWith(
+		"controlling command",
+		expect.objectContaining({ message: "Command is no longer running" }),
+	)
+	expect(process.writeInput).not.toHaveBeenCalled()
+})
+
+it("does not expose a settled command session to another task instance", async () => {
+	const { task, callbacks, process, terminal } = harness()
+	const sessionId = commandSessionRegistry.register(task, process)
+	process.isSettled = true
+	terminal.process = undefined as never
+	terminal.running = false
+	await new ToolRegistry().resolve("write_stdin")!.execute({
+		task: { ...task } as Task,
+		call: {
+			type: "tool_use",
+			id: "foreign-poll",
+			name: "write_stdin",
+			params: {},
+			partial: false,
+			nativeArgs: { session_id: sessionId },
+		},
+		callbacks,
+	})
+	expect(callbacks.handleError).toHaveBeenCalledWith(
+		"controlling command",
+		expect.objectContaining({ message: "Command session is unavailable for this task" }),
+	)
+	expect(callbacks.pushToolResult).not.toHaveBeenCalled()
+})
+
 it("rejects a numeric session when approval resumes after its process identity changes", async () => {
 	const { task, callbacks, process } = harness()
 	const sessionId = commandSessionRegistry.register(task, process)

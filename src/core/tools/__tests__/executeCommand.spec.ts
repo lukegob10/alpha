@@ -379,7 +379,27 @@ describe("executeCommand", () => {
 
 			await expect(execution).resolves.toEqual([false, "Command was not started because the task was cancelled."])
 			expect(mockTerminal.runCommand).not.toHaveBeenCalled()
+			expect(TerminalRegistry.releaseTerminalReservation).toHaveBeenCalledWith(mockTerminal, mockTask.taskId)
 			expect(mockTask.failCommandExecution).toHaveBeenCalledWith("cancelled-call", "cancelled")
+		})
+
+		it("releases the terminal when command admission is cancelled", async () => {
+			let finishAdmission!: () => void
+			mockTask.admitCommandExecution = vitest.fn(
+				() => new Promise<void>((resolve) => (finishAdmission = resolve)),
+			)
+			const execution = executeCommandInTerminal(mockTask, {
+				executionId: "cancelled-during-admission",
+				toolCallId: "cancelled-call",
+				command: "long-running-command",
+			})
+			await vitest.waitFor(() => expect(mockTask.admitCommandExecution).toHaveBeenCalledOnce())
+			mockTask.abort = true
+			finishAdmission()
+
+			await expect(execution).resolves.toEqual([false, "Command was not started because the task was cancelled."])
+			expect(mockTerminal.runCommand).not.toHaveBeenCalled()
+			expect(TerminalRegistry.releaseTerminalReservation).toHaveBeenCalledWith(mockTerminal, mockTask.taskId)
 		})
 	})
 

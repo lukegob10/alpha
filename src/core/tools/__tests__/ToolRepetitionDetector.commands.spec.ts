@@ -51,7 +51,7 @@ describe("commands without semantic progress instrumentation", () => {
 					args: { command: "pnpm check-types", timeout: index },
 				}).action,
 		)
-		expect(actions).toEqual(["continue", "continue", "change-strategy", "continue", "stop"])
+		expect(actions).toEqual(["continue", "continue", "change-strategy", "continue", "continue"])
 	})
 
 	it("does not infer stagnation from distinct successful commands, including after history rollover", () => {
@@ -67,7 +67,7 @@ describe("commands without semantic progress instrumentation", () => {
 		}
 	})
 
-	it("still bounds repeated successful commands despite changed timeouts or verification associations", () => {
+	it("advises once on repeated successful commands despite changed timeouts or verification associations", () => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
 		const actions = Array.from(
 			{ length: 6 },
@@ -81,7 +81,7 @@ describe("commands without semantic progress instrumentation", () => {
 					},
 				}).action,
 		)
-		expect(actions).toEqual(["continue", "continue", "continue", "change-strategy", "continue", "stop"])
+		expect(actions).toEqual(["continue", "continue", "continue", "change-strategy", "continue", "continue"])
 	})
 
 	it("does not replace a trusted inspection identity with the raw command", () => {
@@ -95,10 +95,10 @@ describe("commands without semantic progress instrumentation", () => {
 					explorationFingerprint: "same-inspection",
 				}).action,
 		)
-		expect(actions).toEqual(["continue", "continue", "change-strategy", "continue", "stop"])
+		expect(actions).toEqual(["continue", "continue", "change-strategy", "continue", "continue"])
 	})
 
-	it.each(["error", "denied", "cancelled", "running", "unconfirmed"] as const)(
+	it.each(["error", "denied", "cancelled", "unconfirmed"] as const)(
 		"does not exempt commands with %s execution",
 		(status) => {
 			const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
@@ -106,13 +106,26 @@ describe("commands without semantic progress instrumentation", () => {
 				expect(
 					detector.recordOutcome({
 						...command(`node inspect-${index}.js`),
-						status: status === "running" || status === "unconfirmed" ? "success" : status,
+						status: status === "unconfirmed" ? "success" : status,
 						executionStatus: status === "unconfirmed" ? undefined : status,
 					}).stagnantCalls,
 				).toBe(index + 1)
 			}
 		},
 	)
+
+	it("retains the no-progress allowance while distinct commands are still running", () => {
+		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
+		for (let index = 0; index < 20; index++) {
+			expect(
+				detector.recordOutcome({
+					...command(`node long-running-${index}.js`),
+					executionStatus: "running",
+				}),
+			).toMatchObject({ action: "continue", stagnantCalls: 0 })
+		}
+		expect(detector.recordOutcome({ toolName: "no-op", kind: "other", status: "success" }).stagnantCalls).toBe(1)
+	})
 
 	it("retains command repetition across unrelated work and renews it only for explicit user recovery", () => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })

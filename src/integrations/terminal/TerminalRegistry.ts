@@ -166,7 +166,7 @@ export class TerminalRegistry {
 		const findAvailableTerminal = () => {
 			const terminals = this.getAllTerminals()
 			const matches = (t: AlphaTerminal) => {
-				if (t.busy || t.provider !== provider) {
+				if (t.busy || t.running || t.provider !== provider) {
 					return false
 				}
 
@@ -194,8 +194,23 @@ export class TerminalRegistry {
 		}
 
 		terminal.taskId = taskId
+		// Reserve the terminal before returning. Command admission awaits persistence,
+		// so another task must not acquire this shell before runCommand marks it busy.
+		terminal.busy = true
 
 		return terminal
+	}
+
+	/** Release a claim when command admission ends before runCommand starts. */
+	public static releaseTerminalReservation(terminal: AlphaTerminal, taskId?: string): void {
+		if (
+			terminal.taskId === taskId &&
+			terminal.busy &&
+			!terminal.running &&
+			(!terminal.process || terminal.process.isSettled)
+		) {
+			terminal.busy = false
+		}
 	}
 
 	/**
@@ -280,6 +295,7 @@ export class TerminalRegistry {
 	public static releaseTerminalsForTask(taskId: string): void {
 		this.terminals.forEach((terminal) => {
 			if (terminal.taskId === taskId) {
+				this.releaseTerminalReservation(terminal, taskId)
 				terminal.taskId = undefined
 			}
 		})

@@ -5395,7 +5395,7 @@ describe("Alpha", () => {
 
 			await task["handleConsecutiveMistakeLimit"]([])
 
-			expect(task.toolRepetitionDetector.recordOutcome(failed).action).toBe("stop")
+			expect(task.toolRepetitionDetector.recordOutcome(failed).action).toBe("continue")
 			expect(task.workContext.receipts[0].status).toBe("passed")
 			expect(Reflect.get(task, "automaticMistakeRecoveryCount")).toBe(1)
 		})
@@ -5412,7 +5412,7 @@ describe("Alpha", () => {
 				kind === "image" ? ["data:image/png;base64,aA=="] : [],
 			)
 			// A late result from the interrupted step must not consume the new request's allowance.
-			expect(task.toolRepetitionDetector.recordOutcome(failed).action).toBe("stop")
+			expect(task.toolRepetitionDetector.recordOutcome(failed).action).toBe("continue")
 			vi.spyOn(task, "attemptApiRequest").mockImplementation(async function* () {
 				expect(task.toolRepetitionDetector.recordOutcome(failed).action).toBe("change-strategy")
 				yield { type: "text", text: "Updated review." }
@@ -5479,97 +5479,44 @@ describe("Alpha", () => {
 			},
 		)
 
-		it.each(["yesButtonClicked", "messageResponse"] as const)(
-			"renews tool progress after %s recovery without immediately stopping fresh work",
-			async (response) => {
-				const task = createTask()
-				mockProvider.getVerificationProgressState = vi.fn().mockReturnValue(undefined)
-				task.toolRepetitionDetector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
-				vi.spyOn(task, "flushPendingToolResultsToHistory").mockResolvedValue(true)
-				const recoverySteps: number[] = []
-				let step = 0
-				const ask = vi.spyOn(task, "ask").mockImplementation(async (type) => {
-					if (type === "resume_task") {
-						recoverySteps.push(step)
-						if (recoverySteps.length > 1) task.abort = true
-						return {
-							response,
-							text: response === "messageResponse" ? "Inspect the other files." : undefined,
-						}
-					}
-					return { response: "yesButtonClicked" }
-				})
-				vi.spyOn(task, "runAgentRequests").mockImplementation(async () => {
-					step++
-					task.userMessageContent = []
-					if (step === 10) {
-						return {
-							status: "completed",
-							response: createAgentResponse([{ type: "text", text: "Review finished." }]),
-						}
-					}
-					const args = { path: step <= 5 ? "same.ts" : `other-${step}.ts` }
-					await task.recordToolCallForStopping("read_file", args, "success")
-					task.userMessageContent.push({
-						type: "tool_result",
-						tool_use_id: `read-${step}`,
-						content: "File contents",
-					})
+		it("keeps repeated reads in the model loop until an ordinary final answer", async () => {
+			const task = createTask()
+			mockProvider.getVerificationProgressState = vi.fn().mockReturnValue(undefined)
+			task.toolRepetitionDetector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
+			vi.spyOn(task, "flushPendingToolResultsToHistory").mockResolvedValue(true)
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
+			let step = 0
+			const requestStep = vi.spyOn(task, "runAgentRequests").mockImplementation(async () => {
+				step++
+				task.userMessageContent = []
+				if (step === 12) {
 					return {
 						status: "completed",
-						response: createAgentResponse([
-							{ type: "tool_call", id: `read-${step}`, name: "read_file", arguments: args },
-						]),
+						response: createAgentResponse([{ type: "text", text: "Review finished." }]),
 					}
+				}
+				const args = { path: "same.ts" }
+				await task.recordToolCallForStopping("read_file", args, "success")
+				task.userMessageContent.push({
+					type: "tool_result",
+					tool_use_id: `read-${step}`,
+					content: "Same contents",
 				})
+				return {
+					status: "completed",
+					response: createAgentResponse([
+						{ type: "tool_call", id: `read-${step}`, name: "read_file", arguments: args },
+					]),
+				}
+			})
 
-				await task["initiateTaskLoop"]([{ type: "text", text: "Review the files." }])
+			await task["initiateTaskLoop"]([{ type: "text", text: "Review the files." }])
 
-				expect(recoverySteps).toEqual([5])
-				expect(step).toBe(10)
-				expect(ask).toHaveBeenCalledWith("completion_result", "", false)
-				expect(Reflect.get(task, "didComplete")).toBe(true)
-			},
-		)
-
-		it.each(["yesButtonClicked", "messageResponse"] as const)(
-			"gives %s recovery a bounded new attempt when tools still repeat",
-			async (response) => {
-				const task = createTask()
-				mockProvider.getVerificationProgressState = vi.fn().mockReturnValue(undefined)
-				task.toolRepetitionDetector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
-				vi.spyOn(task, "flushPendingToolResultsToHistory").mockResolvedValue(true)
-				const recoverySteps: number[] = []
-				let step = 0
-				vi.spyOn(task, "ask").mockImplementation(async () => {
-					recoverySteps.push(step)
-					if (recoverySteps.length === 2) task.abort = true
-					return { response, text: response === "messageResponse" ? "Try again." : undefined }
-				})
-				vi.spyOn(task, "runAgentRequests").mockImplementation(async () => {
-					step++
-					task.userMessageContent = []
-					const args = { path: "same.ts" }
-					await task.recordToolCallForStopping("read_file", args, "success")
-					task.userMessageContent.push({
-						type: "tool_result",
-						tool_use_id: `read-${step}`,
-						content: "Same contents",
-					})
-					return {
-						status: "completed",
-						response: createAgentResponse([
-							{ type: "tool_call", id: `read-${step}`, name: "read_file", arguments: args },
-						]),
-					}
-				})
-
-				await task["initiateTaskLoop"]([{ type: "text", text: "Review the files." }])
-
-				expect(recoverySteps).toEqual([5, 10])
-				expect(Reflect.get(task, "didComplete")).toBe(false)
-			},
-		)
+			expect(requestStep).toHaveBeenCalledTimes(12)
+			expect(ask.mock.calls.map(([type]) => type)).not.toContain("resume_task")
+			expect(ask).toHaveBeenCalledWith("completion_result", "", false)
+			expect(Reflect.get(task, "didComplete")).toBe(true)
+		})
 
 		it.each(["failed", "incomplete", "exhausted"] as const)(
 			"persists one safe recovery explanation before asking to resume a pre-provider %s turn",

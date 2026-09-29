@@ -28,6 +28,7 @@ import { execa } from "execa"
 import * as path from "node:path"
 import psTree from "ps-tree"
 import { ExecaTerminalProcess } from "../ExecaTerminalProcess"
+import { ExecaTerminal } from "../ExecaTerminal"
 import { BaseTerminal } from "../BaseTerminal"
 import type { AlphaTerminal } from "../types"
 
@@ -56,7 +57,12 @@ describe("ExecaTerminalProcess", () => {
 			isClosed: vitest.fn().mockReturnValue(false),
 			runCommand: vitest.fn(),
 			setActiveStream: vitest.fn(),
-			shellExecutionComplete: vitest.fn(),
+			shellExecutionComplete: vitest.fn((details) => {
+				mockTerminal.running = false
+				mockTerminal.busy = false
+				terminalProcess.emit("shell_execution_complete", details)
+				mockTerminal.process = undefined
+			}),
 			getProcessesWithOutput: vitest.fn().mockReturnValue([]),
 			getUnretrievedOutput: vitest.fn().mockReturnValue(""),
 			getLastCommand: vitest.fn().mockReturnValue(""),
@@ -148,6 +154,22 @@ describe("ExecaTerminalProcess", () => {
 	})
 
 	describe("basic functionality", () => {
+		it("releases the actual terminal binding after a completed command", async () => {
+			const terminal = new ExecaTerminal(2, "/test/cwd")
+			const command = terminal.runCommand("echo test", {
+				onLine: vitest.fn(),
+				onCompleted: vitest.fn(),
+				onShellExecutionStarted: vitest.fn(),
+				onShellExecutionComplete: vitest.fn(),
+			})
+			await command
+
+			expect(command.isSettled).toBe(true)
+			expect(terminal.running).toBe(false)
+			expect(terminal.busy).toBe(false)
+			expect(terminal.process).toBeUndefined()
+		})
+
 		it("should create instance with terminal reference", () => {
 			expect(terminalProcess).toBeInstanceOf(ExecaTerminalProcess)
 			expect(terminalProcess.terminal).toBe(mockTerminal)

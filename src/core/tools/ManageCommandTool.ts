@@ -66,6 +66,7 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 		callbacks: ToolCallbacks,
 		assertSessionCurrent?: () => void,
 		sessionId?: number,
+		sessionProcess?: AlphaTerminalProcess,
 	): Promise<void> {
 		const startedAt = performance.now()
 		try {
@@ -89,11 +90,17 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 			const terminal = terminals.find(
 				(item) => item.taskId === task.taskId && item.process?.executionId === params.execution_id,
 			)
-			const process = terminal?.process
-			assertSessionCurrent?.()
+			const process =
+				terminal?.process ??
+				(params.action === "wait" &&
+				sessionProcess?.isSettled &&
+				sessionProcess.executionId === params.execution_id
+					? sessionProcess
+					: undefined)
 			if (params.action !== "wait") {
-				if (!process || !terminal.running || (params.action === "input" && process.isSettled))
+				if (!terminal || !process || !terminal.running || (params.action === "input" && process.isSettled))
 					throw new Error("Command is no longer running")
+				assertSessionCurrent?.()
 				if (params.action === "input" && (!process.writeInput || params.input == null))
 					throw new Error("This command does not support input, or input was not supplied")
 				if (

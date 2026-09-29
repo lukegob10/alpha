@@ -41,7 +41,7 @@ export interface ToolProgressDecision {
 }
 
 export interface ToolProgressOptions {
-	/** Stagnant outcomes before one strategy change; twice this number stops the current attempt. */
+	/** Stagnant outcomes before one strategy suggestion. This is not a task stop limit. */
 	noProgressLimit?: number
 	/** Recent outcomes retained, hard capped at 128 and at least twice noProgressLimit. */
 	historyLimit?: number
@@ -81,8 +81,8 @@ interface FailureAllowance {
 }
 
 /**
- * Bounded, outcome-aware stopping policy. This is not a completion or verification
- * engine: the execution host admits evidence and owns the resulting lifecycle.
+ * Bounded, outcome-aware retry and guidance policy. This is not a completion or
+ * verification engine: the execution host admits evidence and owns the lifecycle.
  * `check` retains the legacy pre-execution contract for unmigrated callers.
  */
 export class ToolRepetitionDetector {
@@ -98,11 +98,9 @@ export class ToolRepetitionDetector {
 	private readonly seenResourceStates = new Set<string>()
 	private readonly seenOpaqueResults = new Set<string>()
 	private readonly seenUnclassifiedCommands = new Set<string>()
-	private stopReason: "no-progress" | "unconfirmed-progress" = "no-progress"
 	private retainedOutcomeCount = 0
 	private stagnantCalls = 0
 	private strategyChangeIssued = false
-	private stopped = false
 	private readonly failureAllowances = new Map<string, FailureAllowance>()
 	private failureCapacity?: ToolFailureMetadata
 
@@ -136,7 +134,6 @@ export class ToolRepetitionDetector {
 		if (this.failureCapacity) return this.failureCapacityDecision(this.failureCapacity)
 		if (this.consecutiveIdenticalToolCallLimit <= 0 && failure?.outcome !== "unknown")
 			return this.progressDecision("continue")
-		if (this.stopped) return this.progressDecision("stop")
 		const operation = operationIdentity(observation.toolName, observation.args)
 		if (failure && (failure.reason !== "cancelled" || failure.outcome === "unknown")) {
 			const key = digest([failure.reason, failure.affectedScope])
@@ -177,6 +174,11 @@ export class ToolRepetitionDetector {
 					this.failureAllowances.delete(key)
 				}
 			}
+		}
+		// A backgrounded command has not produced its terminal outcome. Waiting for
+		// that outcome must not exhaust the current turn's no-progress allowance.
+		if (observation.status === "success" && observation.executionStatus === "running") {
+			return this.progressDecision("continue")
 		}
 
 		const outcome = {
@@ -250,12 +252,9 @@ export class ToolRepetitionDetector {
 			return this.progressDecision("continue")
 		}
 
-		this.stagnantCalls += 1
-		if (this.stagnantCalls >= this.noProgressLimit * 2) {
-			this.stopped = true
-			this.stopReason = opaque ? "unconfirmed-progress" : "no-progress"
-			return this.progressDecision("stop")
-		}
+		// A missing recognized delta is a useful hint, not proof that the task is
+		// blocked. Keep the hint bounded while letting the model use the result.
+		this.stagnantCalls = Math.min(this.noProgressLimit * 2, this.stagnantCalls + 1)
 		if (this.stagnantCalls >= this.noProgressLimit && !this.strategyChangeIssued) {
 			this.strategyChangeIssued = true
 			return this.progressDecision("change-strategy", opaque ? "unconfirmed-progress" : "no-progress")
@@ -277,11 +276,9 @@ export class ToolRepetitionDetector {
 		this.seenResourceStates.clear()
 		this.seenOpaqueResults.clear()
 		this.seenUnclassifiedCommands.clear()
-		this.stopReason = "no-progress"
 		this.retainedOutcomeCount = 0
 		this.stagnantCalls = 0
 		this.strategyChangeIssued = false
-		this.stopped = false
 	}
 
 	/** Pure, bounded gate for previously failed effects; inspection and alternatives remain available. */
@@ -361,12 +358,15 @@ export class ToolRepetitionDetector {
 		return progressed && freshBatch
 	}
 
-	private progressDecision(action: ToolProgressDecision["action"], reason = this.stopReason): ToolProgressDecision {
+	private progressDecision(
+		action: ToolProgressDecision["action"],
+		reason?: ToolProgressDecision["reason"],
+	): ToolProgressDecision {
 		return {
 			action,
 			stagnantCalls: this.stagnantCalls,
 			retainedOutcomes: this.retainedOutcomeCount,
-			...(action !== "continue" ? { reason } : {}),
+			...(action !== "continue" && reason ? { reason } : {}),
 		}
 	}
 

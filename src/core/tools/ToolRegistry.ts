@@ -325,6 +325,8 @@ class WriteStdinToolAdapter extends BaseTool<"write_stdin"> {
 			chars.length > 0
 				? Math.max(250, Math.min(30_000, requestedYieldTimeMs))
 				: Math.max(5_000, Math.min(MANAGE_COMMAND_MAX_TIMEOUT_MS, requestedYieldTimeMs))
+		const boundedCallbacks = withMaxOutputTokens(callbacks, maxOutputTokens, true)
+		let returnedResult = false
 		await manageCommandTool.execute(
 			{
 				execution_id: session.executionId,
@@ -333,13 +335,30 @@ class WriteStdinToolAdapter extends BaseTool<"write_stdin"> {
 				timeout_ms: yieldTimeMs,
 			},
 			task,
-			withMaxOutputTokens(callbacks, maxOutputTokens, true),
+			{
+				...boundedCallbacks,
+				pushToolResult: (content) => {
+					boundedCallbacks.pushToolResult(content)
+					returnedResult = true
+				},
+			},
 			() => {
-				if (!commandSessionRegistry.isCurrent(task, params.session_id, session.process))
+				if (chars.length > 0 && !commandSessionRegistry.isCurrent(task, params.session_id, session.process))
 					throw new Error("Command session changed while approval was pending")
 			},
 			params.session_id,
+			session.process,
 		)
+		if (
+			returnedResult &&
+			session.process.isSettled &&
+			!session.process.hasUnretrievedOutput() &&
+			task
+				.getCommandExecutionEvidence()
+				.some((item) => item.executionId === session.executionId && item.status !== "running")
+		) {
+			commandSessionRegistry.release(task, params.session_id)
+		}
 	}
 }
 

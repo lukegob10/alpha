@@ -176,6 +176,7 @@ describe("TerminalRegistry", () => {
 
 	it("does not resolve rg again when it reuses an Alpha terminal", async () => {
 		const first = await TerminalRegistry.getOrCreateTerminal("/test/reused-rg-path", "reused-rg-path")
+		TerminalRegistry.releaseTerminalReservation(first, "reused-rg-path")
 		const second = await TerminalRegistry.getOrCreateTerminal("/test/reused-rg-path", "reused-rg-path")
 
 		expect(second).toBe(first)
@@ -183,7 +184,7 @@ describe("TerminalRegistry", () => {
 		expect(mockCreateTerminal).toHaveBeenCalledOnce()
 	})
 
-	it("does not create duplicate terminals while rg resolution is pending", async () => {
+	it("claims separate terminals for concurrent commands while rg resolution is pending", async () => {
 		let releaseResolution!: (value: undefined) => void
 		const resolution = new Promise<undefined>((resolve) => (releaseResolution = resolve))
 		vi.mocked(resolveRipgrepBinary).mockReturnValue(resolution)
@@ -192,7 +193,16 @@ describe("TerminalRegistry", () => {
 		const second = TerminalRegistry.getOrCreateTerminal("/test/concurrent-rg-path", "concurrent-rg-path")
 		releaseResolution(undefined)
 
-		expect(await second).toBe(await first)
-		expect(mockCreateTerminal).toHaveBeenCalledOnce()
+		expect(await second).not.toBe(await first)
+		expect(mockCreateTerminal).toHaveBeenCalledTimes(2)
+	})
+
+	it("does not reuse a shell whose output reader settled while the physical command still runs", async () => {
+		const first = await TerminalRegistry.getOrCreateTerminal("/test/physical-command", "original")
+		first.busy = false
+		first.running = true
+		const second = await TerminalRegistry.getOrCreateTerminal("/test/physical-command", "other")
+		expect(second).not.toBe(first)
+		expect(first.taskId).toBe("original")
 	})
 })

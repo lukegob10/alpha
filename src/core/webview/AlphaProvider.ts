@@ -89,6 +89,8 @@ import {
 	DEFAULT_WRITE_DELAY_MS,
 	DEFAULT_MAX_CONCURRENT_TASKS,
 	DEFAULT_SUBAGENT_DELEGATION_POLICY,
+	LEGACY_SUBAGENT_MAX_INPUT_TOKENS,
+	LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS,
 	MAX_MANAGED_AGENT_TREE_ACTIVITY,
 	MAX_MANAGED_AGENT_TREE_NODES,
 	DEFAULT_MODES,
@@ -3791,7 +3793,7 @@ export class AlphaProvider
 			clineMessages: currentTask?.clineMessages || [],
 			currentTaskTodos: currentTask?.todoList || [],
 			messageQueue: currentTask?.messageQueueService?.messages,
-			taskHistory: this.taskHistoryStore.getAll().filter((item: HistoryItem) => item.ts && item.task),
+			taskHistory: this.taskHistoryStore.getByWorkspace(cwd).filter((item: HistoryItem) => item.ts && item.task),
 			scheduledTasks: scheduledTaskState?.tasks ?? [],
 			scheduledTaskRuns: scheduledTaskState?.runs ?? [],
 			soundEnabled: soundEnabled ?? false,
@@ -3965,7 +3967,7 @@ export class AlphaProvider
 			autoCondenseContextScope: stateValues.autoCondenseContextScope ?? "full-context",
 			postTurnCondenseContextPercent:
 				stateValues.postTurnCondenseContextPercent ?? DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
-			taskHistory: this.taskHistoryStore.getAll(),
+			taskHistory: this.taskHistoryStore.getByWorkspace(this.cwd),
 			scheduledTasks: this.scheduledTaskService?.getState().tasks ?? [],
 			scheduledTaskRuns: this.scheduledTaskService?.getState().runs ?? [],
 			allowedCommands: this.mergeAllowedCommands(stateValues.allowedCommands),
@@ -4067,6 +4069,7 @@ export class AlphaProvider
 	 */
 	async updateTaskHistory(item: HistoryItem, options: { broadcast?: boolean } = {}): Promise<HistoryItem[]> {
 		const { broadcast = true } = options
+		const previousItem = this.taskHistoryStore.get(item.id)
 
 		const history = await this.taskHistoryStore.upsert(item)
 		this.recentTasksCache = undefined
@@ -4075,7 +4078,12 @@ export class AlphaProvider
 		// Prefer per-item updates to avoid repeatedly cloning/sending the full history.
 		if (broadcast && this.isViewLaunched) {
 			const updatedItem = this.taskHistoryStore.get(item.id) ?? item
-			await this.postMessageToWebview({ type: "taskHistoryItemUpdated", taskHistoryItem: updatedItem })
+			if (this.taskHistoryStore.isForWorkspace(updatedItem, this.cwd)) {
+				await this.postMessageToWebview({ type: "taskHistoryItemUpdated", taskHistoryItem: updatedItem })
+			} else if (this.taskHistoryStore.isForWorkspace(previousItem, this.cwd)) {
+				// A task moved away from this project; remove its previously projected row.
+				await this.broadcastTaskHistoryUpdate()
+			}
 		}
 
 		return history
@@ -4142,11 +4150,11 @@ export class AlphaProvider
 			return
 		}
 
-		const taskHistory = history ?? this.taskHistoryStore.getAll()
+		const taskHistory = history ?? this.taskHistoryStore.getByWorkspace(this.cwd)
 
 		// Sort and filter the history the same way as getStateToPostToWebview
 		const sortedHistory = taskHistory
-			.filter((item: HistoryItem) => item.ts && item.task)
+			.filter((item: HistoryItem) => item.ts && item.task && this.taskHistoryStore.isForWorkspace(item, this.cwd))
 			.sort((a: HistoryItem, b: HistoryItem) => b.ts - a.ts)
 
 		await this.postMessageToWebview({
@@ -8522,7 +8530,10 @@ export class AlphaProvider
 			) {
 				throw new Error("authority_denied: only a managed Worker may grant a descendant Worker")
 			}
-			const legacySettings = resolveSubagentOrchestrationSettings()
+			const legacySettings = resolveSubagentOrchestrationSettings({
+				subagentMaxInputTokens: LEGACY_SUBAGENT_MAX_INPUT_TOKENS,
+				subagentMaxOutputTokens: LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS,
+			})
 			const limits: SubagentEffectiveLimits = parentOrchestration?.limits
 				? {
 						...structuredClone(parentOrchestration.limits),
@@ -8683,7 +8694,10 @@ export class AlphaProvider
 			if (record.parentTaskId !== record.rootTaskId || parent.taskId !== record.rootTaskId) {
 				throw new Error(`recovery_failed: nested legacy agent ${record.path} has no trustworthy ancestry`)
 			}
-			const legacySettings = resolveSubagentOrchestrationSettings()
+			const legacySettings = resolveSubagentOrchestrationSettings({
+				subagentMaxInputTokens: LEGACY_SUBAGENT_MAX_INPUT_TOKENS,
+				subagentMaxOutputTokens: LEGACY_SUBAGENT_MAX_OUTPUT_TOKENS,
+			})
 			const legacyDecision = finalizeSubagentDelegationPolicy(resolveSubagentDelegationPolicy({}), {
 				authorization: "group-approval",
 				groupApproved: true,

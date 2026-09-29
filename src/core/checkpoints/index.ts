@@ -232,7 +232,7 @@ async function initializeCheckpointService(task: Task): Promise<CheckpointServic
 		}
 
 		const service = task.checkpointService ?? RepoPerTaskCheckpointService.create(options)
-		const gitAvailable = await checkGitInstallation(task, service, log, provider)
+		const gitAvailable = await initializeShadowGit(task, service, log, provider)
 
 		// Git absence or initialization failure disables checkpoints. The shared
 		// completion handler decides whether a successfully initialized service may
@@ -252,41 +252,38 @@ async function initializeCheckpointService(task: Task): Promise<CheckpointServic
 	}
 }
 
-async function checkGitInstallation(
+async function notifyIfGitUnavailable(task: Task, log: (message: string) => void): Promise<void> {
+	const cancellationSignal = task.getTaskLifetimeCancellationSignal()
+	if (task.abort || cancellationSignal.aborted) return
+	try {
+		const gitCheckStartTime = Date.now()
+		const gitInstalled = await checkGitInstalled(cancellationSignal)
+		log(
+			`[Task#getCheckpointService] Git availability check after initialization failure ${Date.now() - gitCheckStartTime}ms`,
+		)
+		if (gitInstalled || task.abort || cancellationSignal.aborted) return
+
+		log("[Task#getCheckpointService] Git is not installed, disabling checkpoints")
+		const selection = await vscode.window.showWarningMessage(
+			t("common:errors.git_not_installed"),
+			t("common:buttons.learn_more"),
+		)
+		if (selection === t("common:buttons.learn_more")) {
+			await vscode.env.openExternal(vscode.Uri.parse("https://git-scm.com/downloads"))
+		}
+	} catch (error) {
+		if (task.abort || cancellationSignal.aborted) return
+		log(`[Task#getCheckpointService] failed to check Git after initialization failure: ${String(error)}`)
+	}
+}
+
+async function initializeShadowGit(
 	task: Task,
 	service: RepoPerTaskCheckpointService,
 	log: (message: string) => void,
 	provider: any,
 ): Promise<boolean> {
 	try {
-		const gitCheckStartTime = Date.now()
-		const gitInstalled = await checkGitInstalled()
-		log(`[Task#getCheckpointService] Git availability check ${Date.now() - gitCheckStartTime}ms`)
-
-		if (!gitInstalled) {
-			log("[Task#getCheckpointService] Git is not installed, disabling checkpoints")
-			task.enableCheckpoints = false
-			task.checkpointServiceInitializing = false
-
-			// Keep the user notification asynchronous so all checkpoint waiters can
-			// settle immediately when Git is unavailable.
-			void Promise.resolve(
-				vscode.window.showWarningMessage(t("common:errors.git_not_installed"), t("common:buttons.learn_more")),
-			)
-				.then((selection) => {
-					if (selection === t("common:buttons.learn_more")) {
-						return vscode.env.openExternal(vscode.Uri.parse("https://git-scm.com/downloads"))
-					}
-					return undefined
-				})
-				.catch((error) => {
-					log(`[Task#getCheckpointService] failed to show Git notification: ${error.message}`)
-				})
-
-			return false
-		}
-
-		// Git is installed, proceed with initialization
 		service.on("initialize", () => {
 			log("[Task#getCheckpointService] service initialized")
 			task.checkpointServiceInitializing = false
@@ -331,11 +328,14 @@ async function checkGitInstallation(
 		} catch (err) {
 			log(`[Task#getCheckpointService] initShadowGit -> ${err.message}`)
 			task.enableCheckpoints = false
+			// Git setup already proves availability on success. Probe only after a
+			// failure, outside the checkpoint deadline's completion path.
+			void notifyIfGitUnavailable(task, log)
 			return false
 		}
 	} catch (err) {
-		log(`[Task#getCheckpointService] Unexpected error during Git check: ${err.message}`)
-		console.error("Git check error:", err)
+		log(`[Task#getCheckpointService] Unexpected error during checkpoint setup: ${err.message}`)
+		console.error("Checkpoint setup error:", err)
 		task.enableCheckpoints = false
 		task.checkpointServiceInitializing = false
 		return false

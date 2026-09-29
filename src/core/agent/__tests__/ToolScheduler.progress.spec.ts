@@ -670,17 +670,32 @@ describe("ToolScheduler progress observation", () => {
 		const host = makeHost()
 		const registry = new ToolRegistry({ includeBuiltIns: false })
 		const detector = new ToolRepetitionDetector()
+		const failure = createToolFailure({
+			reason: "execution_failed",
+			scopeKind: "workspace",
+			scopeIdentity: workspace,
+			effectsStarted: "yes",
+			outcome: "known",
+			recovery: { kind: "repair" },
+		})
 		let effects = 0
 		let stopped = false
 		host.shouldStopRepeatedToolCall = () => stopped
-		host.recordToolCallForStopping = (toolName, args, status) => {
+		host.recordToolCallForStopping = (toolName, args, status, _category, result) => {
 			stopped =
-				detector.recordOutcome({ toolName, args, status, kind: "check", scope: workspace }).action === "stop"
+				detector.recordOutcome({
+					toolName,
+					args,
+					status,
+					kind: "check",
+					scope: workspace,
+					failure: result?.failure,
+				}).action === "stop"
 		}
 		registry.register(
 			descriptor("execute_command", async ({ callbacks }) => {
 				effects += 1
-				callbacks.setResultMetadata?.({ status: "error", exitCode: 1 })
+				callbacks.setResultMetadata?.({ status: "error", exitCode: 1, failure })
 				callbacks.pushToolResult("check failed")
 			}),
 		)
@@ -762,6 +777,14 @@ describe("ToolScheduler progress observation", () => {
 		const host = makeHost()
 		const registry = new ToolRegistry({ includeBuiltIns: false })
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 1 })
+		const failure = createToolFailure({
+			reason: "execution_failed",
+			scopeKind: "workspace",
+			scopeIdentity: workspace,
+			effectsStarted: "no",
+			outcome: "known",
+			recovery: { kind: "repair" },
+		})
 		const releases = Array.from({ length: 3 }, deferred)
 		const started = deferred()
 		const effects: string[] = []
@@ -771,7 +794,14 @@ describe("ToolScheduler progress observation", () => {
 		host.recordToolCallForStopping = (toolName, args, status, _category, result) => {
 			observed.push(result!.callId)
 			stopped =
-				detector.recordOutcome({ toolName, args, status, kind: "read", scope: workspace }).action === "stop"
+				detector.recordOutcome({
+					toolName,
+					args,
+					status,
+					kind: "read",
+					scope: workspace,
+					failure: result?.failure,
+				}).action === "stop"
 		}
 		registry.register(
 			descriptor(
@@ -780,7 +810,7 @@ describe("ToolScheduler progress observation", () => {
 					effects.push(call.id!)
 					if (effects.length === 3) started.resolve()
 					await releases[Number(call.id!.split("-")[1])].promise
-					callbacks.setResultMetadata?.({ status: "error" })
+					callbacks.setResultMetadata?.({ status: "error", failure })
 					callbacks.pushToolResult("read failed")
 				},
 				"parallel",

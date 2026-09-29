@@ -71,6 +71,7 @@ describe("write_stdin adapter", () => {
 			expect.any(Object),
 			expect.any(Function),
 			42,
+			expect.any(Object),
 		)
 	})
 

@@ -144,3 +144,22 @@ the original task runs and benchmark samples do not have controlled disk-cache s
 Validation for this fix: 25 core checkpoint tests, 59 checkpoint service/exclusion tests, the three-sample live
 workspace benchmark, extension typechecking, ESLint, Prettier, and the exact-host smoke gate on VS Code 1.122.1 all
 passed.
+
+### Slow-host checkpoint timeout, 2026-09-28
+
+A screenshot from a prior release on another Windows PC records a 17,003 ms Git-availability check followed by an
+11,749 ms `initShadowGit()` call. Those sequential stages exceed that task's 20-second checkpoint deadline, explaining
+the timeout warning despite a completed shadow repository. The user stopped the task afterward; its cancellation log
+does not show that checkpoint initialization stopped the agent. The extension-host unresponsive alert overlaps the slow
+Git check, but the screenshot has no CPU profile establishing what blocked the host.
+
+The successful initialization path no longer launches a separate `git --version` process. Successful shadow-repository
+setup already proves Git is available. If setup fails, checkpoint waiters settle first; a cancellable background check
+can still notify the active task when Git is missing without delaying task startup. The configured timeout still bounds how long
+checkpoint consumers wait for the initial baseline, and a late result still cannot publish a timed-out service.
+
+The deterministic regression reproduces the reported workload with a 17-second availability probe, an 11.75-second
+shadow setup, and a 20-second deadline. The old sequence expires at 20 seconds; the new sequence completes setup at
+11.75 seconds because the redundant probe is absent. This demonstrates the timing cause and the corrected ordering,
+not a measured speedup or extension-host responsiveness result on the other PC. Its initial snapshot and disk behavior
+may differ, so a fresh trace is needed if that PC still reaches the deadline after updating.

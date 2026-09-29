@@ -415,7 +415,7 @@ describe("Task manual compaction boundary", () => {
 		expect(vi.mocked(summarizeConversation).mock.calls[0][0].metadata?.instructionFragments).toEqual(fragments)
 	})
 
-	it("keeps useful exploration running across long history and compaction while retaining the repetition bound", async () => {
+	it("keeps useful exploration running across compaction and advises on repeated reads", async () => {
 		const { task, save } = harness()
 		const detector = task.toolRepetitionDetector
 		const suspend = vi.spyOn(task, "suspendAfterCurrentTurn").mockImplementation(() => {})
@@ -432,7 +432,8 @@ describe("Task manual compaction boundary", () => {
 		for (let index = 0; index < 12; index++) {
 			await task.recordToolCallForStopping("read_file", { path: "file-239.ts" }, "success")
 		}
-		expect(suspend).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("repeated tool outcomes"), "blocked")
+		expect(suspend).not.toHaveBeenCalled()
+		expect(Reflect.get(task, "userMessageContent")).toHaveLength(1)
 	})
 
 	it("uses the global threshold and effective output reservation for manual compaction", async () => {

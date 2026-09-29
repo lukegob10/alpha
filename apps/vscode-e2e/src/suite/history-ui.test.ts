@@ -62,6 +62,19 @@ suite("Inline Chats rendered history", function () {
 		})
 		const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
 		assert.ok(workspace)
+		await provider.updateTaskHistory(
+			{
+				id: "history-foreign-project",
+				task: "Foreign project history must stay hidden",
+				ts: Date.now(),
+				number: 100,
+				tokensIn: 10,
+				tokensOut: 5,
+				totalCost: 0,
+				workspace: `${workspace}-other`,
+			},
+			{ broadcast: false },
+		)
 		const titles = [
 			"hello world and test launch 2 subagents but just close them",
 			"hello world",

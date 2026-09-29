@@ -130,14 +130,13 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				}
 			}
 
-			this.emit(
-				"shell_execution_complete",
+			this.terminal.shellExecutionComplete(
 				this.aborted ? { exitCode: 137, signalName: "SIGKILL" } : { exitCode: 0 },
 			)
 		} catch (error) {
 			if (error instanceof ExecaError) {
 				if (!this.aborted) console.error(`[ExecaTerminalProcess#run] shell execution error: ${error.message}`)
-				this.emit("shell_execution_complete", {
+				this.terminal.shellExecutionComplete({
 					exitCode: error.exitCode ?? (this.aborted ? 137 : 1),
 					signalName: error.signal,
 				})
@@ -146,7 +145,7 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 					`[ExecaTerminalProcess#run] shell execution error: ${error instanceof Error ? error.message : String(error)}`,
 				)
 
-				this.emit("shell_execution_complete", { exitCode: 1 })
+				this.terminal.shellExecutionComplete({ exitCode: 1 })
 			}
 			this.subprocess = undefined
 		}

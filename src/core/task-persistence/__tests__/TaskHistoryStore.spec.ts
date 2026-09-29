@@ -159,6 +159,20 @@ describe("TaskHistoryStore", () => {
 			expect(wsB).toHaveLength(1)
 			expect(wsB[0].id).toBe("ws-b-1")
 		})
+
+		it("matches equivalent root paths and excludes unassigned or neighboring projects", async () => {
+			await store.initialize()
+			const workspace = path.join(tmpDir, "project")
+			await store.upsert(makeHistoryItem({ id: "same-root", workspace: `${workspace}${path.sep}` }))
+			await store.upsert(makeHistoryItem({ id: "neighbor", workspace: path.join(tmpDir, "project-other") }))
+			await store.upsert(makeHistoryItem({ id: "unassigned", workspace: undefined }))
+
+			expect(store.getByWorkspace(workspace).map((item) => item.id)).toEqual(["same-root"])
+			expect(store.getByWorkspace("")).toEqual([])
+			if (process.platform === "win32") {
+				expect(store.getByWorkspace(workspace.toUpperCase()).map((item) => item.id)).toEqual(["same-root"])
+			}
+		})
 	})
 
 	describe("upsert()", () => {

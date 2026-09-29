@@ -14315,7 +14315,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (this.abort) return
 		const canonicalName = canonicalizeToolName(name)
 		const failure = status === "success" ? undefined : normalizeToolFailure(result?.failure)
-		const retryWasBlocked = failure ? this.getToolRetryBlock(name, args) : undefined
 		const idleAgentWait = name === "wait_agent" && result?.waitOutcome === "idle"
 		const argumentRecord =
 			args !== null && typeof args === "object" && !Array.isArray(args)
@@ -14396,7 +14395,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 			}
 		}
-		const polling = name === "wait_agent" && result?.waitOutcome === "active"
+		const polling =
+			result?.waitOutcome === "active" &&
+			(name === "wait_agent" ||
+				name === "write_stdin" ||
+				(canonicalName === "manage_command" && argumentRecord?.action === "wait"))
 		const read = ["read_file", "list_files", "search_files", "codebase_search"].includes(name) || commandRead
 		const trustedExploration =
 			canonicalName === "exec_command" && status === "success" ? result?.trustedExploration : undefined
@@ -14430,20 +14433,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.suspendAfterCurrentTurn(
 					`Task remains incomplete: unresolved operation failures exceeded the bounded recovery record. ${guidance}`,
 				)
-			} else if (retryWasBlocked) {
-				this.suspendAfterCurrentTurn(`Task remains incomplete: ${guidance}`, "blocked")
 			} else if (decision.action !== "continue") {
+				// The failed operation has a terminal result; a scoped retry block
+				// must not suspend independent repair or inspection.
 				this.userMessageContent.push({ type: "text", text: guidance })
 			}
-		} else if (decision.action === "stop") {
-			this.suspendAfterCurrentTurn(
-				decision.reason === "unconfirmed-progress"
-					? "Task remains incomplete: repeated external calls returned unchanged results and progress could not be established. Use the existing results or inspect the relevant postcondition before repeating the operation."
-					: idleAgentWait
-						? "Task remains incomplete: repeated waits returned no usable agent update. Use available child results or continue other work; wait again when agent work or parent control is pending."
-						: "Task remains incomplete: repeated tool outcomes produced no new state or verification evidence. Resume with a different approach or the missing validation.",
-				"blocked",
-			)
 		} else if (decision.action === "change-strategy") {
 			this.userMessageContent.push({
 				type: "text",
@@ -14452,7 +14446,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						? "Repeated external calls returned unchanged results. Use existing results, inspect the relevant postcondition if needed, or choose a different approach. Do not repeat a mutation whose outcome is uncertain."
 						: idleAgentWait
 							? "Repeated waits returned no usable agent update. Use available child results or continue other work; wait again when agent work or parent control is pending."
-							: "Repeated tool outcomes produced no new state or verification evidence. Change strategy now: use existing evidence, resolve the missing validation, or report an explicit blocked/unverified outcome.",
+							: "Several tool results have not shown a recognized state or verification change. Check the results already available, then continue any remaining work with a concrete next action. Report a blocker only when it actually prevents progress.",
 			})
 		}
 	}

@@ -12,7 +12,7 @@ const failedCheck: ToolProgressObservation = {
 }
 
 describe("outcome-aware tool progress", () => {
-	it("bounds repeated batches larger than resource history, including reordered batches", () => {
+	it("recognizes repeated batches larger than resource history without interrupting the task", () => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2, historyLimit: 8 })
 		const resources = Array.from({ length: 16 }, (_, index) => ({
 			kind: "read" as const,
@@ -30,7 +30,7 @@ describe("outcome-aware tool progress", () => {
 		expect(read(true).stagnantCalls).toBe(1)
 		expect(read(false).action).toBe("change-strategy")
 		expect(read(true).stagnantCalls).toBe(3)
-		expect(read(false).action).toBe("stop")
+		expect(read(false).action).toBe("continue")
 	})
 
 	it("allows novel opaque outcomes without declaring progress or clearing prior strikes", () => {
@@ -56,7 +56,7 @@ describe("outcome-aware tool progress", () => {
 		).toMatchObject({ action: "change-strategy", reason: "unconfirmed-progress", stagnantCalls: 2 })
 	})
 
-	it("bounds alternating identical opaque outcomes and does not admit opaque errors", () => {
+	it("advises once on alternating identical opaque outcomes and does not admit opaque errors", () => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
 		const outcomes = Array.from({ length: 6 }, (_, index) =>
 			detector.recordOutcome({
@@ -66,7 +66,14 @@ describe("outcome-aware tool progress", () => {
 				opaqueResultFingerprint: String(index % 2),
 			}),
 		)
-		expect(outcomes.at(-1)).toMatchObject({ action: "stop", reason: "unconfirmed-progress" })
+		expect(outcomes.map((outcome) => outcome.action)).toEqual([
+			"continue",
+			"continue",
+			"continue",
+			"change-strategy",
+			"continue",
+			"continue",
+		])
 		const failures = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
 		for (let index = 0; index < 4; index++)
 			expect(
@@ -128,7 +135,7 @@ describe("outcome-aware tool progress", () => {
 						stateFingerprint: `after-${index}`,
 					},
 				})
-				expect(result.stagnantCalls).toBe(index + 1)
+				expect(result.stagnantCalls).toBe(status === "running" ? 0 : index + 1)
 			}
 		},
 	)
@@ -157,7 +164,7 @@ describe("outcome-aware tool progress", () => {
 			[38, 39, 38, 39].map(
 				(state, index) => detector.recordOutcome(mutation(index % 2 ? "38" : "39", String(state))).action,
 			),
-		).toEqual(["continue", "change-strategy", "continue", "stop"])
+		).toEqual(["continue", "change-strategy", "continue", "continue"])
 		detector.resetProgress()
 		expect(detector.recordOutcome(mutation("before", "after")).stagnantCalls).toBe(0)
 	})
@@ -178,7 +185,7 @@ describe("outcome-aware tool progress", () => {
 		}
 	})
 
-	it("changes strategy once, then stops repeated failed checks within the configured bound", () => {
+	it("changes strategy once without treating unclassified failures as a task stop", () => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 3 })
 		const actions = Array.from(
 			{ length: 7 },
@@ -187,7 +194,15 @@ describe("outcome-aware tool progress", () => {
 					.action,
 		)
 
-		expect(actions).toEqual(["continue", "continue", "change-strategy", "continue", "continue", "stop", "stop"])
+		expect(actions).toEqual([
+			"continue",
+			"continue",
+			"change-strategy",
+			"continue",
+			"continue",
+			"continue",
+			"continue",
+		])
 	})
 
 	it("counts alternating calls and successful handlers without outcome evidence as stagnation", () => {
@@ -204,7 +219,7 @@ describe("outcome-aware tool progress", () => {
 		)
 
 		expect(actions.filter((action) => action === "change-strategy")).toHaveLength(1)
-		expect(actions.at(-1)).toBe("stop")
+		expect(actions.at(-1)).toBe("continue")
 	})
 
 	it.each(["error", "denied", "cancelled"] as const)("does not accept novel evidence from a %s outcome", (status) => {
@@ -303,7 +318,7 @@ describe("outcome-aware tool progress", () => {
 			"change-strategy",
 			"continue",
 			"continue",
-			"stop",
+			"continue",
 		])
 
 		detector.resetProgress()
@@ -331,7 +346,7 @@ describe("outcome-aware tool progress", () => {
 			})
 		}
 		const actions = [38, 39, 38, 39, 38, 39].map((index) => detector.recordOutcome(observe(index)).action)
-		expect(actions).toEqual(["continue", "continue", "change-strategy", "continue", "continue", "stop"])
+		expect(actions).toEqual(["continue", "continue", "change-strategy", "continue", "continue", "continue"])
 	})
 
 	it("keeps forty distinct trusted shell inspections running like dedicated reads", () => {
@@ -350,7 +365,7 @@ describe("outcome-aware tool progress", () => {
 		}
 	})
 
-	it("bounds alternating unchanged shell inspections by their host-issued semantic identity", () => {
+	it("advises on alternating unchanged shell inspections by their host-issued semantic identity", () => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
 		const actions = Array.from(
 			{ length: 6 },
@@ -367,7 +382,7 @@ describe("outcome-aware tool progress", () => {
 				}).action,
 		)
 
-		expect(actions).toEqual(["continue", "continue", "continue", "change-strategy", "continue", "stop"])
+		expect(actions).toEqual(["continue", "continue", "continue", "change-strategy", "continue", "continue"])
 	})
 
 	it("does not let command spelling or timestamp output replace a trusted semantic identity", () => {
@@ -394,10 +409,10 @@ describe("outcome-aware tool progress", () => {
 				status: "success",
 				scope: "/workspace",
 			}).action,
-		).toBe("stop")
+		).toBe("continue")
 	})
 
-	it("stops alternating rereads of the same unchanged scoped evidence", () => {
+	it("advises on alternating rereads of the same unchanged scoped evidence", () => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2 })
 		const read = (path: string): ToolProgressObservation => ({
 			toolName: "read_file",
@@ -410,7 +425,7 @@ describe("outcome-aware tool progress", () => {
 			{ length: 6 },
 			(_, index) => detector.recordOutcome(read(index % 2 === 0 ? "/workspace/a.ts" : "/workspace/b.ts")).action,
 		)
-		expect(actions).toEqual(["continue", "continue", "continue", "change-strategy", "continue", "stop"])
+		expect(actions).toEqual(["continue", "continue", "continue", "change-strategy", "continue", "continue"])
 	})
 
 	it("does not confuse the same successful evidence across distinct scopes", () => {
@@ -449,13 +464,14 @@ describe("outcome-aware tool progress", () => {
 		)
 	})
 
-	it("preserves a stop until explicit user guidance resets the progress window", () => {
+	it("uses fresh evidence after strategy guidance without requiring user recovery", () => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 1 })
-		detector.recordOutcome(failedCheck)
-		expect(detector.recordOutcome(failedCheck).action).toBe("stop")
+		expect(detector.recordOutcome(failedCheck).action).toBe("change-strategy")
+		expect(detector.recordOutcome(failedCheck).action).toBe("continue")
 		expect(
 			detector.recordOutcome({ ...failedCheck, status: "success", evidenceFingerprint: "late:passed" }).action,
-		).toBe("stop")
+		).toBe("continue")
+		expect(detector.recordOutcome(failedCheck).action).toBe("change-strategy")
 		detector.resetProgress()
 		expect(detector.recordOutcome(failedCheck)).toMatchObject({ action: "change-strategy", stagnantCalls: 1 })
 	})
@@ -475,16 +491,17 @@ describe("outcome-aware tool progress", () => {
 		expect(result).toEqual({ action: "continue", stagnantCalls: 0, retainedOutcomes: 8 })
 	})
 
-	it("hard caps both the stagnation budget and retained outcomes for excessive configuration", () => {
+	it("hard caps advisory counts and retained outcomes for excessive configuration", () => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 10_000, historyLimit: 10_000 })
+		let suggestions = 0
 		for (let index = 0; index < 127; index++) {
-			expect(detector.recordOutcome(failedCheck).action).not.toBe("stop")
+			if (detector.recordOutcome(failedCheck).action === "change-strategy") suggestions++
 		}
+		expect(suggestions).toBe(1)
 		expect(detector.recordOutcome(failedCheck)).toEqual({
-			action: "stop",
+			action: "continue",
 			stagnantCalls: 128,
 			retainedOutcomes: 128,
-			reason: "no-progress",
 		})
 	})
 

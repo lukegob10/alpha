@@ -19,17 +19,8 @@ type HistoryPreviewProps = {
 }
 
 const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose }: HistoryPreviewProps) => {
-	const {
-		tasks,
-		searchQuery,
-		setSearchQuery,
-		sortOption,
-		setSortOption,
-		setLastNonRelevantSort,
-		showAllWorkspaces,
-		setShowAllWorkspaces,
-	} = useTaskSearch(true)
-	const { taskHistory } = useExtensionState()
+	const { tasks, searchQuery, setSearchQuery, sortOption, setSortOption, setLastNonRelevantSort } = useTaskSearch()
+	const { taskHistory, cwd } = useExtensionState()
 	const { groups, flatTasks, toggleExpand, isSearchMode } = useGroupedTasks(tasks, searchQuery)
 	const { t } = useAppTranslation()
 	const headingId = useId()
@@ -46,16 +37,21 @@ const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose 
 		if (!expanded) {
 			setSearchQuery("")
 			setSortOption("newest")
-			setShowAllWorkspaces(true)
 			setIsManaging(false)
 			setIsSelectionMode(false)
 			setSelectedTaskIds([])
 		}
-	}, [expanded, setSearchQuery, setSortOption, setShowAllWorkspaces])
+	}, [expanded, setSearchQuery, setSortOption])
 	// Filtering clears selection so hidden chats cannot be deleted accidentally.
 	useEffect(() => {
 		setSelectedTaskIds([])
-	}, [searchQuery, showAllWorkspaces])
+	}, [searchQuery])
+	useEffect(() => {
+		setSearchQuery("")
+		setSelectedTaskIds([])
+		setDeleteTaskId(null)
+		setShowBatchDeleteDialog(false)
+	}, [cwd, setSearchQuery])
 	const visibleIds = useMemo(() => new Set(tasks.map((task) => task.id)), [tasks])
 	const selectedIds = selectedTaskIds.filter((id) => visibleIds.has(id))
 	const deleteSubtaskCount = useMemo(() => {
@@ -84,7 +80,6 @@ const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose 
 		setSelectedTaskIds((ids) => (selected ? [...new Set([...ids, id])] : ids.filter((entry) => entry !== id)))
 	const rowProps = {
 		variant: isManaging ? ("full" as const) : ("compact" as const),
-		showWorkspace: isManaging && showAllWorkspaces,
 		isSelectionMode,
 		onToggleSelection: toggleTaskSelection,
 		onDelete: setDeleteTaskId,
@@ -170,14 +165,7 @@ const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose 
 					)}
 				</div>
 				<div className="flex min-w-0 items-center justify-between gap-2 px-1 py-1">
-					<select
-						className={selectClass}
-						aria-label={t("history:filterChats")}
-						value={showAllWorkspaces ? "all" : "current"}
-						onChange={(event) => setShowAllWorkspaces(event.target.value === "all")}>
-						<option value="all">{t("history:allChats")}</option>
-						<option value="current">{t("history:currentWorkspace")}</option>
-					</select>
+					<span className="text-xs text-vscode-descriptionForeground">{t("history:currentWorkspace")}</span>
 					<Button
 						variant="ghost"
 						size="icon"
