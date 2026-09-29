@@ -178,7 +178,7 @@ describe("ticket progress through the scheduler and Task", () => {
 		expect(Reflect.get(task, "userMessageContent")).toEqual([])
 	}, 60_000)
 
-	it("recognizes distinct result pages and bounds repeated empty searches despite query churn", async () => {
+	it("recognizes distinct result pages and advises after repeated empty searches despite query churn", async () => {
 		for (let index = 0; index < 12; index++) await store.create({ name: `Item ${index}` })
 		const { run, suspend, task } = harness()
 		for (let offset = 0; offset < 12; offset++) {
@@ -197,11 +197,16 @@ describe("ticket progress through the scheduler and Task", () => {
 				},
 			])
 		}
-		expect(suspend).toHaveBeenCalledOnce()
+		expect(suspend).not.toHaveBeenCalled()
 		expect(Reflect.get(task, "userMessageContent")).toHaveLength(1)
+		const followUp = await run([
+			{ type: "tool_call", id: "new-ticket", name: "create_ticket", arguments: { name: "Follow-up" } },
+		])
+		expect(followUp.results[0].status).toBe("success")
+		expect(suspend).not.toHaveBeenCalled()
 	}, 60_000)
 
-	it("bounds successful no-op updates without treating revision or locator spelling as progress", async () => {
+	it("advises after successful no-op updates without treating revision or locator spelling as progress", async () => {
 		let ticket = await store.create({ name: "Stable" })
 		const { run, suspend, task } = harness()
 		for (let index = 0; index < 4; index++) {
@@ -221,8 +226,19 @@ describe("ticket progress through the scheduler and Task", () => {
 			ticket = await store.read(ticket.id)
 		}
 		expect(ticket.name).toBe("Stable")
-		expect(suspend).toHaveBeenCalledOnce()
+		expect(suspend).not.toHaveBeenCalled()
 		expect(Reflect.get(task, "userMessageContent")).toHaveLength(1)
+		const followUp = await run([
+			{
+				type: "tool_call",
+				id: "real-update",
+				name: "update_ticket",
+				arguments: { id: ticket.id, expectedRevision: ticket.revision, name: "Updated" },
+			},
+		])
+		expect(followUp.results[0].status).toBe("success")
+		expect((await store.read(ticket.id)).name).toBe("Updated")
+		expect(suspend).not.toHaveBeenCalled()
 	})
 
 	it("preserves completed effects and independent work after an optional failed ticket operation", async () => {

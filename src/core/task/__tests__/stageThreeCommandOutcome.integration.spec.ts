@@ -466,7 +466,7 @@ function verificationEvents(events: AgentTurnEvent[]) {
 }
 
 describe("ordinary task tool contracts", () => {
-	it("retains pre-launch failure allowance through the real command, scheduler, and Task path", async () => {
+	it("blocks the failed command retry without suspending independent work", async () => {
 		await withTaskHarness(async (harness) => {
 			Reflect.set(harness.task, "toolRepetitionDetector", new ToolRepetitionDetector(3, { noProgressLimit: 2 }))
 			const events: AgentTurnEvent[] = []
@@ -495,7 +495,11 @@ describe("ordinary task tool contracts", () => {
 			const blocked = await createScheduler(harness, events).run(response("unavailable-repeat", "node --version"))
 			expect(blocked.results[0]).toMatchObject({ status: "error", failure: { reason: "pre_launch_rejected" } })
 			expect(blocked.results[0]?.content).toEqual(expect.stringContaining("Correct the reported prerequisite"))
-			expect(suspend).toHaveBeenCalledOnce()
+			expect(suspend).not.toHaveBeenCalled()
+			expect(harness.task.getToolRetryBlock("execute_command", { command: "node --version" })).toMatchObject({
+				reason: "pre_launch_rejected",
+			})
+			expect(harness.task.getToolRetryBlock("list_files", { path: "/repository" })).toBeUndefined()
 			expect(terminal.runCommand).not.toHaveBeenCalled()
 			const receipts = harness.toolResults().filter((receipt) => receipt.type === "tool_result")
 			expect(receipts).toHaveLength(5)
