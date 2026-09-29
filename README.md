@@ -6,9 +6,9 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v3.1.0
+## Welcome to Alpha v3.1.1
 
-Alpha v3.1.0 brings a shared, provider-neutral agent runtime together with a clearer task trace and code-review flow.
+Alpha v3.1.1 keeps longer agent tasks moving and makes scheduled runs and task history more predictable.
 
 - One TypeScript turn engine coordinates model steps, tool calls, approvals, and delegated work across supported providers
 - Ask, Auto, and Full Access policies apply consistently to tool calls and child tasks
@@ -16,6 +16,9 @@ Alpha v3.1.0 brings a shared, provider-neutral agent runtime together with a cle
 - Completed work folds into a **Worked for** summary; expand it to inspect the full activity trace
 - Review the whole turn or open a per-file diff in Alpha Diff, with added and removed line counts
 - Automatic context compaction runs at safe boundaries when its configured threshold is reached
+- Managed agents receive enough default token budget to complete normal multi-step work
+- Scheduled tasks are scoped to open VS Code workspaces, with due runs claimed once across windows
+- Task history is scoped to the current project
 - The standalone Alpha CLI is retired; Alpha continues as a VS Code extension
 
 ---

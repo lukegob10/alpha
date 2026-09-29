@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.1.1
+
+### Patch Changes
+
+- Preserve agent progress across repeated tool calls, recover checkpoint initialization reliably, and give managed agents enough default token budget to finish multi-step work.
+- Scope scheduled tasks to open VS Code workspaces, claim due runs once across windows, and scope task history to the current project.
+
 ## 3.1.0
 
 ### Major Changes

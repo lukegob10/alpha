@@ -629,7 +629,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "september-2026-v3.1.0-agent-runtime"
+	public readonly latestAnnouncementId = "september-2026-v3.1.1-agent-continuity"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
