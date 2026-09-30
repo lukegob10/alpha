@@ -487,7 +487,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		terminalZshP10k: false, // Default Powerlevel10k integration setting
 		terminalZdotdir: false, // Default ZDOTDIR handling setting
 		historyPreviewCollapsed: false, // Initialize the new state (default to expanded)
-		reasoningBlockCollapsed: false,
+		reasoningBlockCollapsed: true,
 		enterBehavior: "send", // Default: Enter sends, Shift+Enter creates newline
 		autoCondenseContext: true,
 		autoCondenseContextPercent: 100,
@@ -965,7 +965,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		autoCondenseContextScope: state.autoCondenseContextScope ?? "full-context",
 		postTurnCondenseContextPercent:
 			state.postTurnCondenseContextPercent ?? DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
-		reasoningBlockCollapsed: state.reasoningBlockCollapsed ?? false,
+		reasoningBlockCollapsed: state.reasoningBlockCollapsed ?? true,
 		didHydrateState,
 		showWelcome,
 		theme,

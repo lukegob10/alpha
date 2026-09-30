@@ -45,7 +45,7 @@ describe("search activity labels", () => {
 						ts: 1,
 						type,
 						...(type === "ask" ? { ask: "tool" } : { say: "tool" }),
-						reasoningSummary: "This synopsis belongs only on a Thinking row.",
+						reasoningSummary: "This hidden reasoning summary should not appear on a tool row.",
 						text: JSON.stringify({
 							tool: "searchFiles",
 							path: "frontend/src",
@@ -59,7 +59,7 @@ describe("search activity labels", () => {
 			)
 			const toggle = screen.getByRole("button", { name: label, expanded: false })
 			expect(toggle).not.toHaveTextContent("XYZ")
-			expect(screen.queryByText(/This synopsis/)).not.toBeInTheDocument()
+			expect(screen.queryByText(/This hidden reasoning summary/)).not.toBeInTheDocument()
 			expect(screen.getByText("XYZ|submit")).not.toBeVisible()
 			fireEvent.click(toggle)
 			expect(toggle).toHaveAttribute("aria-expanded", "true")
@@ -72,7 +72,7 @@ describe("search activity labels", () => {
 		},
 	)
 
-	it("keeps descriptive summaries attached to Thinking rows", () => {
+	it("omits reasoning summaries while keeping Thinking details available", () => {
 		render(
 			<Row
 				message={{
@@ -84,13 +84,12 @@ describe("search activity labels", () => {
 				}}
 			/>,
 		)
-		const toggle = screen.getByRole("button", { name: /Thinking.*Checking submission handlers/ })
-		expect(toggle).toHaveAttribute("aria-expanded", "true")
-		expect(screen.getByText(/The complete original reasoning/)).toBeVisible()
-		fireEvent.click(toggle)
+		const toggle = screen.getByRole("button", { name: "Thinking" })
 		expect(toggle).toHaveAttribute("aria-expanded", "false")
+		expect(screen.queryByText(/Checking submission handlers/)).not.toBeInTheDocument()
 		expect(screen.queryByText(/The complete original reasoning/)).not.toBeInTheDocument()
 		fireEvent.click(toggle)
+		expect(toggle).toHaveAttribute("aria-expanded", "true")
 		expect(screen.getByText(/The complete original reasoning/)).toBeVisible()
 	})
 })

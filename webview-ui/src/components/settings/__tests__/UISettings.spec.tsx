@@ -4,7 +4,7 @@ import { UISettings } from "../UISettings"
 
 describe("UISettings", () => {
 	const defaultProps = {
-		reasoningBlockCollapsed: false,
+		reasoningBlockCollapsed: true,
 		enterBehavior: "send" as const,
 		maxConcurrentTasks: 3,
 		setCachedStateField: vi.fn(),
@@ -12,8 +12,8 @@ describe("UISettings", () => {
 
 	it("renders the collapse thinking checkbox", () => {
 		const { getByTestId } = render(<UISettings {...defaultProps} />)
-		const checkbox = getByTestId("collapse-thinking-checkbox")
-		expect(checkbox).toBeTruthy()
+		const checkbox = getByTestId("collapse-thinking-checkbox") as HTMLInputElement
+		expect(checkbox.checked).toBe(true)
 	})
 
 	it("displays the correct initial state", () => {
@@ -30,7 +30,7 @@ describe("UISettings", () => {
 		fireEvent.click(checkbox)
 
 		await waitFor(() => {
-			expect(setCachedStateField).toHaveBeenCalledWith("reasoningBlockCollapsed", true)
+			expect(setCachedStateField).toHaveBeenCalledWith("reasoningBlockCollapsed", false)
 		})
 	})
 

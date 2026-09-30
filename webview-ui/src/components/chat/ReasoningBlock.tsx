@@ -7,23 +7,22 @@ import { ActivityStep } from "./ActivityStep"
 
 interface ReasoningBlockProps {
 	content: string
-	summary?: string
 	ts: number
 	isStreaming: boolean
 	isLast: boolean
 	collapsedByDefault?: boolean
 }
 
-export const ReasoningBlock = ({ content, summary, isStreaming, isLast, collapsedByDefault }: ReasoningBlockProps) => {
+export const ReasoningBlock = ({ content, isStreaming, isLast, collapsedByDefault }: ReasoningBlockProps) => {
 	const { t } = useTranslation()
-	const [isCollapsed, setIsCollapsed] = useState(collapsedByDefault ?? false)
+	const [isCollapsed, setIsCollapsed] = useState(collapsedByDefault ?? true)
 
 	const startTimeRef = useRef<number>(Date.now())
 	const [elapsed, setElapsed] = useState<number>(0)
 	const contentRef = useRef<HTMLDivElement>(null)
 
 	useEffect(() => {
-		setIsCollapsed(collapsedByDefault ?? false)
+		setIsCollapsed(collapsedByDefault ?? true)
 	}, [collapsedByDefault])
 
 	useEffect(() => {
@@ -44,9 +43,9 @@ export const ReasoningBlock = ({ content, summary, isStreaming, isLast, collapse
 
 	return (
 		<ActivityStep
+			active={isStreaming && isLast && isCollapsed}
 			isExpanded={!isCollapsed}
 			onToggleExpand={handleToggle}
-			description={summary}
 			summary={
 				<>
 					<Lightbulb className="w-4" />
