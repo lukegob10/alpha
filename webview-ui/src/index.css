@@ -358,14 +358,14 @@
 		pointer-events: none;
 		background: color-mix(
 			in srgb,
-			var(--vscode-progressBar-background, var(--vscode-focusBorder)) 20%,
+			var(--vscode-focusBorder, var(--vscode-progressBar-background)) 20%,
 			transparent
 		);
 		box-shadow:
 			inset 0 0 0 1px
-				color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-focusBorder)) 44%, transparent),
+				color-mix(in srgb, var(--vscode-focusBorder, var(--vscode-progressBar-background)) 44%, transparent),
 			0 0 14px
-				color-mix(in srgb, var(--vscode-progressBar-background, var(--vscode-focusBorder)) 24%, transparent);
+				color-mix(in srgb, var(--vscode-focusBorder, var(--vscode-progressBar-background)) 24%, transparent);
 		opacity: 0;
 	}
 
