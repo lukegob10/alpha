@@ -49,6 +49,11 @@ const TestComponent = () => {
 	)
 }
 
+const ReasoningPreferenceTestComponent = () => {
+	const { reasoningBlockCollapsed } = useExtensionState()
+	return <div data-testid="reasoning-block-collapsed">{String(reasoningBlockCollapsed)}</div>
+}
+
 const ApiConfigTestComponent = () => {
 	const { apiConfiguration, setApiConfiguration } = useExtensionState()
 
@@ -194,6 +199,18 @@ describe("ExtensionStateContext", () => {
 		)
 
 		expect(JSON.parse(screen.getByTestId("allowed-commands").textContent!)).toEqual([])
+	})
+
+	it("defaults reasoning traces to collapsed and preserves an explicit expanded preference", () => {
+		render(
+			<ExtensionStateContextProvider>
+				<ReasoningPreferenceTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+
+		expect(screen.getByTestId("reasoning-block-collapsed")).toHaveTextContent("true")
+		act(() => dispatchExtensionState({ reasoningBlockCollapsed: false }))
+		expect(screen.getByTestId("reasoning-block-collapsed")).toHaveTextContent("false")
 	})
 
 	it("initializes with soundEnabled set to false", () => {

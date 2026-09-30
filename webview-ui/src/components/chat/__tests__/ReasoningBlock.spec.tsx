@@ -6,44 +6,51 @@ vi.mock("../../common/MarkdownBlock", () => ({
 	default: ({ markdown }: { markdown: string }) => <div>{markdown}</div>,
 }))
 
-describe("inline thinking synopsis", () => {
+describe("thinking trace", () => {
 	const source = "A full first paragraph.\n\nThe longer second paragraph remains available."
 	const props = { content: source, ts: 1, isStreaming: true, isLast: true }
 
-	it("shows the synopsis and full reasoning by default, and lets the reader fold it", () => {
-		render(
-			<ReasoningBlock
-				{...props}
-				summary="Checking roles against the frontend to find documentation mismatches."
-			/>,
-		)
-		const toggle = screen.getByRole("button", { expanded: true })
-		expect(toggle).toHaveTextContent("Checking roles against the frontend")
+	it("shows only the Thinking label while reasoning is collapsed by default", () => {
+		render(<ReasoningBlock {...props} />)
+		const toggle = screen.getByRole("button", { expanded: false })
+		expect(toggle).toHaveTextContent("chat:reasoning.thinking")
+		expect(toggle).toHaveAttribute("aria-busy", "true")
+		expect(toggle.querySelector(".activity-step-toggle--active")).toBeInTheDocument()
+		expect(screen.queryByText(/The longer second paragraph/)).not.toBeInTheDocument()
+		fireEvent.click(toggle)
+		const expandedToggle = screen.getByRole("button", { expanded: true })
+		expect(expandedToggle).not.toHaveAttribute("aria-busy")
+		expect(expandedToggle.querySelector(".activity-step-toggle--active")).not.toBeInTheDocument()
 		expect(screen.getByText(/The longer second paragraph/)).toHaveTextContent(source.replace(/\s+/g, " "))
 		fireEvent.click(toggle)
-		expect(screen.getByRole("button", { expanded: false })).toBeInTheDocument()
+		expect(toggle).toHaveAttribute("aria-busy", "true")
+		expect(toggle.querySelector(".activity-step-toggle--active")).toBeInTheDocument()
 		expect(screen.queryByText(/The longer second paragraph/)).not.toBeInTheDocument()
-		fireEvent.click(toggle)
-		expect(screen.getByText(/The longer second paragraph/)).toBeVisible()
-		expect(toggle).toHaveTextContent("Checking roles against the frontend")
-	})
-
-	it("retains expansion and the synopsis as streaming finishes", () => {
-		const { rerender } = render(<ReasoningBlock {...props} summary="Checking roles." />)
-		expect(screen.getByRole("button", { expanded: true })).toBeInTheDocument()
-		rerender(<ReasoningBlock {...props} isStreaming={false} isLast={false} summary="Checking roles and metrics." />)
-		expect(screen.getByRole("button", { expanded: true })).toHaveTextContent("Checking roles and metrics.")
-		expect(screen.getByText(/The longer second paragraph/)).toBeVisible()
-	})
-
-	it("keeps old traces foldable without inventing a synopsis", () => {
-		render(<ReasoningBlock {...props} isStreaming={false} />)
-		const toggle = screen.getByRole("button", { expanded: true })
 		expect(toggle).toHaveTextContent("chat:reasoning.thinking")
+	})
+
+	it("preserves an explicit expanded preference and disables activity when finished", () => {
+		const { rerender } = render(<ReasoningBlock {...props} collapsedByDefault={false} />)
+		expect(screen.getByRole("button", { expanded: true })).toBeInTheDocument()
+		expect(screen.getByRole("button", { expanded: true })).not.toHaveAttribute("aria-busy")
+		expect(
+			screen.getByRole("button", { expanded: true }).querySelector(".activity-step-toggle--active"),
+		).not.toBeInTheDocument()
+		rerender(<ReasoningBlock {...props} isStreaming={false} isLast={false} collapsedByDefault={false} />)
+		expect(screen.getByRole("button", { expanded: true })).toHaveTextContent("chat:reasoning.thinking")
 		expect(screen.getByText(/The longer second paragraph/)).toBeVisible()
-		fireEvent.click(toggle)
+	})
+
+	it("keeps old traces foldable", () => {
+		render(<ReasoningBlock {...props} isStreaming={false} />)
+		const toggle = screen.getByRole("button", { expanded: false })
+		expect(toggle).toHaveTextContent("chat:reasoning.thinking")
+		expect(toggle).not.toHaveAttribute("aria-busy")
+		expect(toggle.querySelector(".activity-step-toggle--active")).not.toBeInTheDocument()
 		expect(screen.queryByText(/The longer second paragraph/)).not.toBeInTheDocument()
 		fireEvent.click(toggle)
 		expect(screen.getByText(/The longer second paragraph/)).toBeVisible()
+		fireEvent.click(toggle)
+		expect(screen.queryByText(/The longer second paragraph/)).not.toBeInTheDocument()
 	})
 })

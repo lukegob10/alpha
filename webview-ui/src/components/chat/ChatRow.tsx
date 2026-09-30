@@ -1320,7 +1320,6 @@ const ChatRowContentInner = ({
 					return (
 						<ReasoningBlock
 							content={message.text || ""}
-							summary={message.reasoningSummary}
 							ts={message.ts}
 							isStreaming={isStreaming}
 							isLast={isLast}
