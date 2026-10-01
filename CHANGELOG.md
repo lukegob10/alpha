@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.1.3
+
+### Patch Changes
+
+- Republish the verified queue and lifecycle fixes with a new patch version so VS Code recognizes the updated package.
+
 ## 3.1.2
 
 ### Patch Changes
