@@ -238,6 +238,8 @@ vi.mock("@alpha-code/telemetry", () => ({
 	},
 }))
 
+let storageFixtureCounter = 0
+
 describe("AlphaProvider - Sticky Provider Profile", () => {
 	let provider: AlphaProvider
 	let mockContext: vscode.ExtensionContext
@@ -295,7 +297,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 				packageJSON: { version: "1.0.0" },
 			},
 			globalStorageUri: {
-				fsPath: "/test/storage/path",
+				fsPath: `/test/sticky-profile/storage-${++storageFixtureCounter}`,
 			},
 		} as unknown as vscode.ExtensionContext
 
@@ -317,17 +319,13 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 				cspSource: "vscode-webview://test-csp-source",
 			},
 			visible: true,
-			onDidDispose: vi.fn().mockImplementation((callback) => {
-				callback()
-				return { dispose: vi.fn() }
-			}),
+			onDidDispose: vi.fn(() => ({ dispose: vi.fn() })),
 			onDidChangeVisibility: vi.fn().mockImplementation(() => ({ dispose: vi.fn() })),
 		} as unknown as vscode.WebviewView
 
 		provider = new AlphaProvider(mockContext, mockOutputChannel, "sidebar", new ContextProxy(mockContext))
 
-		// Wait for the async TaskHistoryStore initialization to complete
-		await new Promise((resolve) => setTimeout(resolve, 10))
+		await (provider as any).taskHistoryStoreReady
 
 		// Mock getMcpHub method
 		provider.getMcpHub = vi.fn().mockReturnValue({

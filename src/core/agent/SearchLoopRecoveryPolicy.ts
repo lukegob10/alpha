@@ -12,6 +12,11 @@ export interface SearchLoopRecoveryOptions {
 	maxAutomaticRecoveries?: number
 }
 
+export interface SearchLoopProgressObservation {
+	/** Progress admitted by the host's outcome observer, not inferred from model call counts. */
+	madeProgress: boolean
+}
+
 export type SearchLoopRecoveryDecision =
 	| {
 			action: "continue"
@@ -53,8 +58,9 @@ function isRepositorySearch(call: AgentToolCall): boolean {
  * Detects a search treadmill at the model-step boundary.
  *
  * Raw tool-call counts are deliberately irrelevant: a single step may contain
- * many independent searches. Any mixed or non-search step demonstrates a new
- * action and resets the bounded recovery window.
+ * many independent searches. Admitted outcome progress renews the recovery
+ * window; call shape alone cannot establish that successful exploration stalled.
+ * Mixed or non-search steps also leave this search-specific recovery window.
  */
 export class SearchLoopRecoveryPolicy {
 	private readonly searchOnlyStepLimit: number
@@ -73,8 +79,11 @@ export class SearchLoopRecoveryPolicy {
 		)
 	}
 
-	public observe(toolCalls: readonly AgentToolCall[]): SearchLoopRecoveryDecision {
-		if (toolCalls.length === 0 || !toolCalls.every(isRepositorySearch)) {
+	public observe(
+		toolCalls: readonly AgentToolCall[],
+		progress?: SearchLoopProgressObservation,
+	): SearchLoopRecoveryDecision {
+		if (progress?.madeProgress || toolCalls.length === 0 || !toolCalls.every(isRepositorySearch)) {
 			this.reset()
 			return this.continueDecision()
 		}

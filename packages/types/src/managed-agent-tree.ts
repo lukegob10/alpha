@@ -62,10 +62,14 @@ export const managedAgentTreeActivityProjectionSchema = z
 		createdAt: z.number().nonnegative(),
 		senderTaskId: z.string().min(1).optional(),
 		senderPath: agentCanonicalPathSchema.optional(),
+		recipientTaskId: z.string().min(1).optional(),
+		recipientPath: agentCanonicalPathSchema.optional(),
 		kind: agentMailboxKindSchema,
 		name: z.string().min(1).max(120),
 		summary: z.string().min(1).max(240),
+		/** Human read state; runtime delivery is tracked independently. */
 		unread: z.boolean(),
+		pendingDelivery: z.boolean().optional(),
 	})
 	.strict()
 export type ManagedAgentTreeActivityProjection = z.infer<typeof managedAgentTreeActivityProjectionSchema>

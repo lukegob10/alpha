@@ -64,16 +64,9 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				pushToolResult(await task.sayAndCreateMissingParamError("attempt_completion", "result"))
 				return
 			}
-			if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult)) return
+			if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult, toolCallId)) return
 			const hookOutcome = await task.evaluateCompletionHooks(result)
 			if (task.abort || task.getTaskLifetimeCancellationSignal().aborted) return
-			if (hookOutcome.limitReached) {
-				task.suspendAfterCurrentTurn(
-					"Completion hooks requested too many continuation steps. Resume the task to retry.",
-				)
-				pushToolResult(formatResponse.toolError("Completion hook continuation limit reached."))
-				return
-			}
 			if (hookOutcome.prompt) {
 				pushToolResult(formatResponse.toolError(hookOutcome.prompt))
 				return
@@ -86,7 +79,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			if (task.taskKind === "subagent") {
 				// task.say may yield long enough for a nested child to finish. Recheck
 				// the durable completion decision at the final transition boundary.
-				if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult)) {
+				if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult, toolCallId)) {
 					await task.retractCompletionResult()
 					return
 				}
@@ -152,6 +145,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			const { text, images } = await task.ask("completion_result", "", false)
 			const providedFeedback = Boolean(text?.trim()) || Boolean(images?.length)
 			const queuedFollowup = providedFeedback ? undefined : task.messageQueueService.dequeueMessage()
+			if (queuedFollowup) task.retainQueuedMessageToolReply?.(toolCallId, queuedFollowup)
 			const feedbackText = queuedFollowup?.text ?? text ?? ""
 			const feedbackImages = queuedFollowup?.images ?? images ?? []
 
@@ -159,7 +153,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				// A background child can finish while the completion prompt is open.
 				// Recheck the durable descendant/mailbox gate immediately before the
 				// persisted completion transition.
-				if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult)) {
+				if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult, toolCallId)) {
 					await task.retractCompletionResult()
 					return
 				}
@@ -180,6 +174,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 	private async rejectCompletionWithPendingParentVerification(
 		task: Task,
 		pushToolResult: AttemptCompletionCallbacks["pushToolResult"],
+		toolCallId?: string,
 	): Promise<boolean> {
 		let decision = await task.waitForCompletionGateDecision()
 		if (decision.allowed) return false
@@ -196,6 +191,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			}
 			const queued = task.messageQueueService.dequeueMessage()
 			if (queued) {
+				task.retainQueuedMessageToolReply?.(toolCallId, queued)
 				task.resetCompletionRecoveryState()
 				await task.retractCompletionResult()
 				await task.say("user_feedback", queued.text, queued.images)
@@ -313,6 +309,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				if (toolCallId) task.removePendingToolResult(toolCallId)
 				const queued = task.messageQueueService.dequeueMessage()
 				if (queued) {
+					task.retainQueuedMessageToolReply?.(toolCallId, queued)
 					await task.say("user_feedback", queued.text, queued.images)
 					pushToolResult(
 						formatResponse.toolResult(`<user_message>\n${queued.text}\n</user_message>`, queued.images),

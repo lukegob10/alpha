@@ -18,6 +18,7 @@ interface QueuedMessagesProps {
 	onReorder: (fromIndex: number, toIndex: number) => void
 	editingMessageId?: string
 	steeringMessageId?: string
+	pendingMessageId?: string
 }
 
 export const QueuedMessages = ({
@@ -28,6 +29,7 @@ export const QueuedMessages = ({
 	onReorder,
 	editingMessageId,
 	steeringMessageId,
+	pendingMessageId,
 }: QueuedMessagesProps) => {
 	const { t } = useTranslation("chat")
 	const draggedMessageIdRef = useRef<string | null>(null)
@@ -37,6 +39,12 @@ export const QueuedMessages = ({
 	if (queue.length === 0) {
 		return null
 	}
+	// Claimed and not-yet-admitted rows have no selectable queue position.
+	// Suspend reordering until the host finishes that handoff.
+	const reorderDisabled =
+		steeringMessageId !== undefined ||
+		pendingMessageId !== undefined ||
+		queue.some((message) => message.deliveryState === "delivering")
 
 	const resetDrag = () => {
 		draggedMessageIdRef.current = null
@@ -55,7 +63,7 @@ export const QueuedMessages = ({
 	}
 
 	const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
-		if (steeringMessageId !== undefined || getDraggedIndex() < 0) return
+		if (reorderDisabled || getDraggedIndex() < 0) return
 		event.preventDefault()
 		event.stopPropagation()
 		event.dataTransfer.dropEffect = "move"
@@ -84,7 +92,7 @@ export const QueuedMessages = ({
 			onDrop={(e) => {
 				const fromIndex = getDraggedIndex()
 				resetDrag()
-				if (steeringMessageId !== undefined || fromIndex < 0) return
+				if (reorderDisabled || fromIndex < 0) return
 				e.preventDefault()
 				e.stopPropagation()
 				const dropPosition = getDropTargetIndex(e.clientY)
@@ -103,7 +111,10 @@ export const QueuedMessages = ({
 				{queue.map((message, index) => {
 					const isEditing = editingMessageId === message.id
 					const isSteering = steeringMessageId === message.id
-					const controlsDisabled = isEditing || steeringMessageId !== undefined
+					const isPending = pendingMessageId === message.id
+					const isDelivering = message.deliveryState === "delivering"
+					const controlsDisabled = isEditing || isPending || isDelivering || steeringMessageId !== undefined
+					const dragDisabled = controlsDisabled || reorderDisabled
 
 					return (
 						<Fragment key={message.id}>
@@ -125,17 +136,17 @@ export const QueuedMessages = ({
 								<div className="flex items-center justify-between gap-1">
 									<button
 										type="button"
-										tabIndex={controlsDisabled ? -1 : 0}
+										tabIndex={dragDisabled ? -1 : 0}
 										aria-label={t("queuedMessages.dragHandle")}
 										title={t("queuedMessages.dragTooltip")}
-										draggable={!controlsDisabled}
+										draggable={!dragDisabled}
 										className={`inline-flex h-7 shrink-0 items-center justify-center px-1 text-vscode-descriptionForeground ${
-											controlsDisabled
+											dragDisabled
 												? "opacity-40 cursor-default"
 												: "cursor-grab active:cursor-grabbing"
 										} border-0 bg-transparent`}
 										onDragStart={(e) => {
-											if (controlsDisabled) {
+											if (dragDisabled) {
 												e.preventDefault()
 												return
 											}
@@ -144,8 +155,7 @@ export const QueuedMessages = ({
 											e.dataTransfer.setData("text/plain", String(index))
 										}}
 										onKeyDown={(e) => {
-											if (controlsDisabled || (e.key !== "ArrowUp" && e.key !== "ArrowDown"))
-												return
+											if (dragDisabled || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return
 											const targetIndex = e.key === "ArrowUp" ? index - 1 : index + 1
 											if (targetIndex < 0 || targetIndex >= queue.length) return
 											e.preventDefault()
@@ -165,6 +175,13 @@ export const QueuedMessages = ({
 										{isEditing && (
 											<div className="mt-1 text-xs text-vscode-descriptionForeground">
 												{t("queuedMessages.editing")}
+											</div>
+										)}
+										{(isPending || isDelivering) && (
+											<div
+												role="status"
+												className="mt-1 text-xs text-vscode-descriptionForeground">
+												{t(isPending ? "queuedMessages.queuing" : "queuedMessages.delivering")}
 											</div>
 										)}
 									</div>

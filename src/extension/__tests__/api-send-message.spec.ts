@@ -77,20 +77,31 @@ describe("API - SendMessage Command", () => {
 		})
 	})
 
-	it("targets a host sendMessage invoke at the current task", async () => {
-		vi.mocked(mockProvider.getCurrentTask).mockReturnValue({ taskId: "existing-task" } as ReturnType<
-			AlphaProvider["getCurrentTask"]
-		>)
+	it("admits host guidance in the addressed runtime while the webview is open", async () => {
+		const submitUserMessage = vi.fn().mockResolvedValue(undefined)
+		vi.mocked(mockProvider.getCurrentTask).mockReturnValue({
+			taskId: "existing-task",
+			submitUserMessage,
+		} as unknown as ReturnType<AlphaProvider["getCurrentTask"]>)
 
 		await api.sendMessage("Continue the opened task")
 
-		expect(mockPostMessageToWebview).toHaveBeenCalledWith({
-			type: "invoke",
-			invoke: "sendMessage",
-			text: "Continue the opened task",
-			images: undefined,
-			taskId: "existing-task",
-		})
+		expect(submitUserMessage).toHaveBeenCalledWith("Continue the opened task", undefined)
+		expect(mockPostMessageToWebview).not.toHaveBeenCalled()
+	})
+
+	it("exposes runtime admission failures to the caller", async () => {
+		vi.mocked(mockProvider.getCurrentTask).mockReturnValue({
+			submitUserMessage: vi.fn().mockRejectedValue(new Error("queue is full")),
+		} as unknown as ReturnType<AlphaProvider["getCurrentTask"]>)
+		await expect(api.sendMessage("keep this")).rejects.toThrow("queue is full")
+		expect(mockPostMessageToWebview).not.toHaveBeenCalled()
+	})
+
+	it("rejects a headless send with no recipient", async () => {
+		Object.assign(mockProvider, { viewLaunched: false })
+		await expect(api.sendMessage("missing recipient")).rejects.toThrow("without a current task")
+		expect(mockPostMessageToWebview).not.toHaveBeenCalled()
 	})
 
 	it("should handle SendMessage command with text and images", async () => {

@@ -295,6 +295,10 @@ export class TerminalRegistry {
 	public static releaseTerminalsForTask(taskId: string): void {
 		this.terminals.forEach((terminal) => {
 			if (terminal.taskId === taskId) {
+				// Disposal may follow a failed stop. Keep the canonical task handle
+				// until physical exit so a cleanup retry can still find its process.
+				if (terminal.running || (terminal.busy && terminal.process && terminal.process.isSettled !== true))
+					return
 				this.releaseTerminalReservation(terminal, taskId)
 				terminal.taskId = undefined
 			}

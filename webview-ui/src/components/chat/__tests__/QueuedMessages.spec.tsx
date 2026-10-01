@@ -42,6 +42,49 @@ describe("QueuedMessages", () => {
 		{ id: "msg1", timestamp: 1, text: "first", images: [] },
 		{ id: "msg2", timestamp: 2, text: "second", images: [] },
 	]
+	it.each(["pending", "delivering"] as const)(
+		"keeps %s input visible and prevents duplicate queue mutations",
+		(state) => {
+			const onRemove = vi.fn()
+			const onSteer = vi.fn()
+			const onEdit = vi.fn()
+			const onReorder = vi.fn()
+			render(
+				<QueuedMessages
+					queue={[
+						{ ...queue[0], ...(state === "delivering" ? { deliveryState: "delivering" as const } : {}) },
+						queue[1],
+					]}
+					pendingMessageId={state === "pending" ? "msg1" : undefined}
+					onRemove={onRemove}
+					onSteer={onSteer}
+					onEdit={onEdit}
+					onReorder={onReorder}
+				/>,
+			)
+			const row = screen.getByTestId("queued-message-msg1")
+			expect(row).toHaveTextContent("first")
+			expect(row).toHaveTextContent(state === "pending" ? "queuedMessages.queuing" : "queuedMessages.delivering")
+			expect(screen.getAllByTitle("queuedMessages.editTooltip")[0]).toBeDisabled()
+			expect(screen.getAllByTitle("queuedMessages.steerTooltip")[0]).toBeDisabled()
+			expect(screen.getAllByLabelText("common:answers.remove")[0]).toBeDisabled()
+			expect(screen.getAllByLabelText("queuedMessages.dragHandle").every((handle) => !handle.draggable)).toBe(
+				true,
+			)
+			fireEvent.keyDown(screen.getAllByLabelText("queuedMessages.dragHandle")[1], { key: "ArrowUp" })
+			expect(onReorder).not.toHaveBeenCalled()
+		},
+	)
+	it("rejects a drag that began before input was claimed for delivery", () => {
+		const onReorder = vi.fn()
+		const dataTransfer = createDragData()
+		const props = { queue, onRemove: vi.fn(), onSteer: vi.fn(), onEdit: vi.fn(), onReorder }
+		const { rerender } = render(<QueuedMessages {...props} />)
+		fireEvent.dragStart(screen.getAllByLabelText("queuedMessages.dragHandle")[1], { dataTransfer })
+		rerender(<QueuedMessages {...props} queue={[{ ...queue[0], deliveryState: "delivering" }, queue[1]]} />)
+		fireDragAt(screen.getByTestId("queued-messages"), "drop", 20, dataTransfer)
+		expect(onReorder).not.toHaveBeenCalled()
+	})
 
 	it.each([
 		{ fromIndex: 0, clientY: 45, position: 0, toIndex: 0 },

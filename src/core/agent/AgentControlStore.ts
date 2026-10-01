@@ -1377,6 +1377,7 @@ export class AgentControlStore {
 			state.agents.some((record) => record.rootTaskId === rootTaskId) ||
 			state.tombstones.some((record) => record.rootTaskId === rootTaskId) ||
 			state.mailbox.some((entry) => entry.rootTaskId === rootTaskId) ||
+			Object.hasOwn(state.humanReadCursors ?? {}, rootTaskId) ||
 			Object.keys(state.mailboxCursors).some((key) => key.startsWith(cursorKeyPrefix)) ||
 			state.verificationObligations.some((obligation) => obligation.rootTaskId === rootTaskId)
 
@@ -1395,6 +1396,7 @@ export class AgentControlStore {
 			draft.agents = draft.agents.filter((record) => record.rootTaskId !== rootTaskId)
 			draft.tombstones = draft.tombstones.filter((record) => record.rootTaskId !== rootTaskId)
 			draft.mailbox = draft.mailbox.filter((entry) => entry.rootTaskId !== rootTaskId)
+			if (draft.humanReadCursors) delete draft.humanReadCursors[rootTaskId]
 			draft.mailboxCursors = Object.fromEntries(
 				Object.entries(draft.mailboxCursors).filter(([key]) => !key.startsWith(cursorKeyPrefix)),
 			)
@@ -2489,6 +2491,28 @@ export class AgentControlStore {
 			}
 			draft.mailbox.push(entry)
 			return { entry: clone(entry), appended: true }
+		})
+	}
+
+	getHumanReadSequence(rootTaskId: string): number {
+		this.assertInitialized()
+		return this.state.humanReadCursors?.[rootTaskId] ?? 0
+	}
+
+	/** Viewing activity does not claim, deliver or acknowledge model input. */
+	async markActivityRead(rootTaskId: string, sequence: number): Promise<number> {
+		if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error("Invalid activity read sequence")
+		return this.transact((draft) => {
+			this.requireAddress(draft, rootTaskId, rootTaskId)
+			const current = draft.humanReadCursors?.[rootTaskId] ?? 0
+			const highest = draft.mailbox.reduce(
+				(last, entry) => (entry.rootTaskId === rootTaskId ? Math.max(last, entry.sequence) : last),
+				current,
+			)
+			if (sequence > highest) throw new Error("Activity read sequence is ahead of the stored mailbox")
+			const next = Math.max(current, sequence)
+			draft.humanReadCursors = { ...draft.humanReadCursors, [rootTaskId]: next }
+			return next
 		})
 	}
 

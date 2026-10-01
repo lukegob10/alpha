@@ -30,6 +30,21 @@ function isErrorTurn(turn: IncidentDashboardTurn) {
 	return turn.status === "failed" || turn.toolErrors > 0
 }
 
+function ProjectLabel({ workspace }: { workspace?: string }) {
+	const { t } = useTranslation("incidents")
+	// Saved tasks may come from either platform, regardless of the current host.
+	const name =
+		workspace
+			?.replace(/[\\/]+$/, "")
+			.split(/[\\/]/)
+			.pop() || workspace
+	return (
+		<span className="incident-project" title={workspace}>
+			{t("project")}: {name || t("projectUnavailable")}
+		</span>
+	)
+}
+
 export default function IncidentsView() {
 	const { t } = useTranslation("incidents")
 	const [snapshot, setSnapshot] = useState<IncidentDashboardSnapshot>()
@@ -41,6 +56,7 @@ export default function IncidentsView() {
 	const [loadingTurnDetail, setLoadingTurnDetail] = useState(false)
 	const [unavailableTurnDetail, setUnavailableTurnDetail] = useState(false)
 	const [invalidTurnDetail, setInvalidTurnDetail] = useState(false)
+	const [selectedTaskId, setSelectedTaskId] = useState<string>()
 	const [turnFilter, setTurnFilter] = useState<TurnFilter>("all")
 
 	const requestSnapshot = useCallback(() => {
@@ -197,6 +213,102 @@ export default function IncidentsView() {
 					</section>
 				) : (
 					<>
+						<section className="incident-panel" aria-labelledby="incident-alerts-heading">
+							<div className="incident-panel-heading">
+								<div>
+									<h2 id="incident-alerts-heading">{t("alerts")}</h2>
+								</div>
+								<span
+									className="incident-count"
+									aria-label={t("alertCount", { count: snapshot.alerts.length })}>
+									{snapshot.alerts.length}
+								</span>
+							</div>
+							{snapshot.alerts.length === 0 ? (
+								<p className="incident-empty-state">{t("noAlerts")}</p>
+							) : (
+								<ul className="incident-alert-list">
+									{snapshot.alerts.map((alert) => (
+										<li
+											className={`incident-alert incident-alert--${alert.severity}`}
+											key={alert.id}>
+											<div className="incident-alert-icon" aria-hidden="true">
+												<AlertTriangle size={17} />
+											</div>
+											<div className="incident-alert-content">
+												<p className="incident-alert-severity">
+													{t(`severity.${alert.severity}`)}
+												</p>
+												<h3>{alert.title}</h3>
+												<p>
+													<strong>{t("affectedTask")}:</strong>{" "}
+													{snapshot.tasks.find((task) => task.taskId === alert.taskId)
+														?.chatTitle ??
+														snapshot.tasks.find((task) => task.taskId === alert.taskId)
+															?.label ??
+														t("taskUnavailable")}
+												</p>
+												<ProjectLabel
+													workspace={
+														snapshot.tasks.find((task) => task.taskId === alert.taskId)
+															?.workspace
+													}
+												/>
+												<p className="incident-alert-summary">{alert.summary}</p>
+												<details>
+													<summary>{t("alertDetails")}</summary>
+													<div className="incident-alert-details">
+														<p>
+															<strong>{t("errorStatusLabel")}:</strong>{" "}
+															{t(`errorStatus.${alert.errorStatus}`)}
+														</p>
+														<p>{evidenceStatusLabel(alert.evidenceStatus)}</p>
+													</div>
+													{alert.turnIdSha256 && (
+														<p className="incident-alert-reference">
+															{t("turnId")}{" "}
+															<code title={alert.turnIdSha256}>
+																{alert.turnIdSha256.slice(0, 12)}
+															</code>
+														</p>
+													)}
+													{alert.toolName && (
+														<p className="incident-alert-reference">
+															{t("affectedTool")}: <code>{alert.toolName}</code>
+														</p>
+													)}
+													{alert.toolCallIdSha256 && (
+														<p className="incident-alert-reference">
+															{t("toolCallId")}{" "}
+															<code title={alert.toolCallIdSha256}>
+																{alert.toolCallIdSha256.slice(0, 12)}
+															</code>
+														</p>
+													)}
+												</details>
+												<time dateTime={new Date(alert.at).toISOString()}>
+													{formatTimestamp(alert.at)}
+												</time>
+												<button
+													className="incident-debug-button"
+													aria-label={t("startDebuggingTaskFor", { title: alert.title })}
+													type="button"
+													onClick={() =>
+														vscode.postMessage({
+															type: "startDebuggingTask",
+															alertId: alert.id,
+														})
+													}>
+													<Activity size={15} aria-hidden="true" />
+													{t("startDebuggingTask")}
+												</button>
+											</div>
+										</li>
+									))}
+								</ul>
+							)}
+						</section>
+
 						<section
 							className="incident-panel incident-turns-panel"
 							aria-labelledby="incident-turns-heading">
@@ -293,12 +405,13 @@ export default function IncidentsView() {
 														<button
 															className="incident-turn-select"
 															aria-label={t("inspectTurn", {
-																task: turn.taskLabel,
+																task: turn.chatTitle ?? turn.taskLabel,
 																id: turn.id.slice(0, 12),
 															})}
 															type="button"
 															onClick={() => requestTurnDetail(turn.id)}>
-															<span>{turn.taskLabel}</span>
+															<span>{turn.chatTitle ?? turn.taskLabel}</span>
+															<ProjectLabel workspace={turn.workspace} />
 															<code title={turn.id}>{turn.id.slice(0, 12)}</code>
 														</button>
 													</th>
@@ -341,9 +454,13 @@ export default function IncidentsView() {
 										<p className="incident-dashboard-eyebrow">{t("investigation")}</p>
 										<h2 id="incident-turn-detail-heading">
 											{t("turnDetailTitle", {
-												task: selectedTurn?.taskLabel ?? t("taskUnavailable"),
+												task:
+													selectedTurn?.chatTitle ??
+													selectedTurn?.taskLabel ??
+													t("taskUnavailable"),
 											})}
 										</h2>
+										<ProjectLabel workspace={selectedTurn?.workspace} />
 										{selectedTurn && (
 											<p className="incident-turn-detail-id">
 												<code title={selectedTurn.id}>{selectedTurn.id}</code>
@@ -353,7 +470,9 @@ export default function IncidentsView() {
 									{selectedTurn && (
 										<button
 											className="incident-debug-button"
-											aria-label={t("startDebuggingTurnFor", { task: selectedTurn.taskLabel })}
+											aria-label={t("startDebuggingTurnFor", {
+												task: selectedTurn.chatTitle ?? selectedTurn.taskLabel,
+											})}
 											type="button"
 											onClick={() =>
 												vscode.postMessage({
@@ -412,95 +531,9 @@ export default function IncidentsView() {
 						)}
 
 						<div className="incident-dashboard-grid">
-							<section className="incident-panel" aria-labelledby="incident-alerts-heading">
-								<div className="incident-panel-heading">
-									<div>
-										<p className="incident-dashboard-eyebrow">{t("attention")}</p>
-										<h2 id="incident-alerts-heading">{t("alerts")}</h2>
-									</div>
-									<span
-										className="incident-count"
-										aria-label={t("alertCount", { count: snapshot.alerts.length })}>
-										{snapshot.alerts.length}
-									</span>
-								</div>
-								{snapshot.alerts.length === 0 ? (
-									<p className="incident-empty-state">{t("noAlerts")}</p>
-								) : (
-									<ul className="incident-alert-list">
-										{snapshot.alerts.map((alert) => (
-											<li
-												className={`incident-alert incident-alert--${alert.severity}`}
-												key={alert.id}>
-												<div className="incident-alert-icon" aria-hidden="true">
-													<AlertTriangle size={17} />
-												</div>
-												<div className="incident-alert-content">
-													<p className="incident-alert-severity">
-														{t(`severity.${alert.severity}`)}
-													</p>
-													<h3>{alert.title}</h3>
-													<p className="incident-alert-summary">{alert.summary}</p>
-													<div className="incident-alert-details">
-														<p>
-															<strong>{t("affectedTask")}:</strong>{" "}
-															{snapshot.tasks.find((task) => task.taskId === alert.taskId)
-																?.label ?? t("taskUnavailable")}
-														</p>
-														<p>
-															<strong>{t("errorStatusLabel")}:</strong>{" "}
-															{t(`errorStatus.${alert.errorStatus}`)}
-														</p>
-														<p>{evidenceStatusLabel(alert.evidenceStatus)}</p>
-													</div>
-													{alert.turnIdSha256 && (
-														<p className="incident-alert-reference">
-															{t("turnId")}{" "}
-															<code title={alert.turnIdSha256}>
-																{alert.turnIdSha256.slice(0, 12)}
-															</code>
-														</p>
-													)}
-													{alert.toolName && (
-														<p className="incident-alert-reference">
-															{t("affectedTool")}: <code>{alert.toolName}</code>
-														</p>
-													)}
-													{alert.toolCallIdSha256 && (
-														<p className="incident-alert-reference">
-															{t("toolCallId")}{" "}
-															<code title={alert.toolCallIdSha256}>
-																{alert.toolCallIdSha256.slice(0, 12)}
-															</code>
-														</p>
-													)}
-													<time dateTime={new Date(alert.at).toISOString()}>
-														{formatTimestamp(alert.at)}
-													</time>
-													<button
-														className="incident-debug-button"
-														aria-label={t("startDebuggingTaskFor", { title: alert.title })}
-														type="button"
-														onClick={() =>
-															vscode.postMessage({
-																type: "startDebuggingTask",
-																alertId: alert.id,
-															})
-														}>
-														<Activity size={15} aria-hidden="true" />
-														{t("startDebuggingTask")}
-													</button>
-												</div>
-											</li>
-										))}
-									</ul>
-								)}
-							</section>
-
 							<section className="incident-panel" aria-labelledby="incident-activity-heading">
 								<div className="incident-panel-heading">
 									<div>
-										<p className="incident-dashboard-eyebrow">{t("recent")}</p>
 										<h2 id="incident-activity-heading">{t("activity")}</h2>
 									</div>
 								</div>
@@ -511,40 +544,56 @@ export default function IncidentsView() {
 										{snapshot.tasks.map((task) => (
 											<li className="incident-task" key={task.taskId}>
 												<div className="incident-task-heading">
-													<h3>{task.label}</h3>
+													<button
+														type="button"
+														className="incident-task-select"
+														aria-expanded={selectedTaskId === task.taskId}
+														onClick={() =>
+															setSelectedTaskId(
+																selectedTaskId === task.taskId
+																	? undefined
+																	: task.taskId,
+															)
+														}>
+														{task.chatTitle ?? task.label}
+													</button>
 													<span
 														className={`incident-task-state incident-task-state--${task.state}`}>
 														{t(`state.${task.state}`)}
 													</span>
 												</div>
+												<ProjectLabel workspace={task.workspace} />
 												<p className="incident-task-updated">
 													<Clock3 size={13} aria-hidden="true" />
 													{t("updated", {
 														time: formatTimestamp(task.updatedAt) ?? t("unknownTime"),
 													})}
 												</p>
-												<p className="incident-task-evidence">
+												<p
+													className="incident-task-evidence"
+													hidden={selectedTaskId !== task.taskId}>
 													{evidenceStatusLabel(task.evidenceStatus)}
 												</p>
-												{task.timeline.length > 0 ? (
-													<ol className="incident-timeline">
-														{task.timeline.map((event) => (
-															<li className="incident-timeline-item" key={event.id}>
-																<span className="incident-timeline-kind">
-																	{t(`event.${event.kind}`)}
-																</span>
-																<span className="incident-timeline-label">
-																	{event.label}
-																</span>
-																<time dateTime={new Date(event.at).toISOString()}>
-																	{formatTimestamp(event.at)}
-																</time>
-															</li>
-														))}
-													</ol>
-												) : (
-													<p className="incident-empty-timeline">{t("noTaskActivity")}</p>
-												)}
+												{selectedTaskId === task.taskId &&
+													(task.timeline.length > 0 ? (
+														<ol className="incident-timeline">
+															{task.timeline.map((event) => (
+																<li className="incident-timeline-item" key={event.id}>
+																	<span className="incident-timeline-kind">
+																		{t(`event.${event.kind}`)}
+																	</span>
+																	<span className="incident-timeline-label">
+																		{event.label}
+																	</span>
+																	<time dateTime={new Date(event.at).toISOString()}>
+																		{formatTimestamp(event.at)}
+																	</time>
+																</li>
+															))}
+														</ol>
+													) : (
+														<p className="incident-empty-timeline">{t("noTaskActivity")}</p>
+													))}
 											</li>
 										))}
 									</ul>

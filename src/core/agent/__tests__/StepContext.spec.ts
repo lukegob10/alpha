@@ -6,6 +6,7 @@ import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { getDesignHandoffSource } from "../../prompts/sections/design-handoff"
 import {
 	createStepContext,
+	deriveRetryStepContext,
 	digestValue,
 	getStepContextDigests,
 	toStepContextMetadata,
@@ -34,6 +35,8 @@ function makeContext(
 	overrides: Partial<{
 		systemPrompt: string
 		retryAttempt: number
+		modelId: string
+		instructionModelId: string
 		instructionFragments: StepInstructionFragment[]
 	}> = {},
 ): StepContext {
@@ -47,7 +50,8 @@ function makeContext(
 		provider: {
 			apiProvider: "openai",
 			apiProtocol: "openai-responses",
-			modelId: "gpt-5.6-luna",
+			modelId: overrides.modelId ?? "gpt-5.6-luna",
+			...(overrides.instructionModelId !== undefined ? { instructionModelId: overrides.instructionModelId } : {}),
 			modelInfo,
 			options: {
 				model: "gpt-5.6-luna",
@@ -131,6 +135,19 @@ function makeContext(
 }
 
 describe("StepContext", () => {
+	it("captures instruction identity independently from routing identity and retains it on retries", () => {
+		const original = makeContext()
+		const context = makeContext({ modelId: "opaque-host-route", instructionModelId: "gpt-6-luna" })
+		const retry = deriveRetryStepContext(context)
+		expect(retry.provider.modelId).toBe("opaque-host-route")
+		expect(retry.provider.instructionModelId).toBe("gpt-6-luna")
+		expect(retry.instructions.systemPrompt).toBe(context.instructions.systemPrompt)
+		expect(getStepContextDigests(retry).model).toBe(getStepContextDigests(context).model)
+		const differentFamily = makeContext({ modelId: "opaque-host-route", instructionModelId: "gpt-5.6-sol" })
+		expect(getStepContextDigests(differentFamily).model).not.toBe(getStepContextDigests(context).model)
+		expect(original.provider).not.toHaveProperty("instructionModelId")
+	})
+
 	it("reuses frozen digests only for contexts frozen by the capture boundary", () => {
 		const context = makeContext()
 		const digests = getStepContextDigests(context)

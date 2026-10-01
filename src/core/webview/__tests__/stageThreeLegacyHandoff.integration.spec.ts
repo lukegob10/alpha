@@ -24,6 +24,7 @@ import { Task } from "../../task/Task"
 import { WorkspaceMutationGate } from "../../task/WorkspaceMutationGate"
 import { AlphaProvider } from "../AlphaProvider"
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
+import { AgentLifecycleProjector } from "../AgentLifecycleProjection"
 
 const PARENT_ID = "stage-three-legacy-parent"
 const CHILD_ID = "stage-three-legacy-child"
@@ -202,6 +203,16 @@ async function createHarness() {
 	provider = Object.assign(Object.create(AlphaProvider.prototype), {
 		contextProxy: { globalStorageUri: { fsPath: storagePath } },
 		taskSessions: sessions,
+		// This legacy managed handoff has no independent-task outbox entries.
+		// Expose the same indexed records that its durable history fixture owns.
+		taskHistoryStore: {
+			getAll: () => [originalParent, originalChild],
+			get: (taskId: string) => [originalParent, originalChild].find((item) => item.id === taskId),
+		},
+		taskHistoryStoreReady: Promise.resolve(),
+		agentLifecycleProjector: new AgentLifecycleProjector(),
+		agentLifecycleDegradedSignals: new Map(),
+		postMessageToWebview: vi.fn(async () => {}),
 		workspaceMutationGate: gate,
 		legacyHandoffInputBuffers: buffers,
 		taskEventListeners: new WeakMap(),

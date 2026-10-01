@@ -7,10 +7,21 @@ import {
 	isInteractiveAsk,
 	isResumableAsk,
 	isNonBlockingAsk,
+	queuedMessageSchema,
 } from "../message.js"
 import type { WebviewMessage } from "../vscode-extension-host.js"
 
 describe("ask messages", () => {
+	test("accepts legacy queued input and its pending delivery projection", () => {
+		const legacy = { id: "input-identity", timestamp: 1, text: "arbitrary input", images: ["attachment"] }
+		expect(queuedMessageSchema.parse(legacy)).toEqual(legacy)
+		expect(queuedMessageSchema.parse({ ...legacy, deliveryState: "delivering" })).toEqual({
+			...legacy,
+			deliveryState: "delivering",
+		})
+		expect(queuedMessageSchema.safeParse({ ...legacy, deliveryState: "unknown" }).success).toBe(false)
+	})
+
 	test("round trips optional reasoning synopses without changing old saved traces", () => {
 		const old = { type: "say", say: "reasoning", ts: 1, text: "Full original reasoning." }
 		expect(alphaMessageSchema.parse(old)).toEqual(old)

@@ -146,7 +146,7 @@ const AGENT_LIFECYCLE_TOOLS = new Set(["list_agents", "wait_agent", "send_messag
 const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", ...AGENT_LIFECYCLE_TOOLS])
 
 // Bump when native schemas or provider projection rules change. Dynamic schemas are fingerprinted below.
-const TOOL_CATALOG_SCHEMA_VERSION = 14
+const TOOL_CATALOG_SCHEMA_VERSION = 15
 
 const ASYNC_USER_INPUT_CATALOG_NAMES = new Set(["request_user_input_async", "send_user_message_async"])
 

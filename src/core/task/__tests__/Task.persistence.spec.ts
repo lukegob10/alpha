@@ -153,7 +153,8 @@ vi.mock("p-wait-for", () => ({
 	default: mockPWaitFor,
 }))
 
-vi.mock("../../task-persistence", () => ({
+vi.mock("../../task-persistence", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../task-persistence")>()),
 	saveApiMessages: mockSaveApiMessages,
 	saveTaskMessages: mockSaveTaskMessages,
 	readApiMessages: mockReadApiMessages,
@@ -282,6 +283,18 @@ vi.mock("../../../utils/storage", () => ({
 		.mockImplementation((globalStoragePath) => Promise.resolve(`${globalStoragePath}/settings`)),
 }))
 
+// This suite injects transcript stores and a virtual filesystem. Keep the queue's
+// real admission/claim logic, but inject its storage boundary too; atomic queue
+// hydration and reload are exercised by TaskMessageQueuePersistence.spec.ts.
+vi.mock("../../task-persistence/TaskMessageQueuePersistence", () => ({
+	TaskMessageQueuePersistence: class {
+		async load() {
+			return []
+		}
+		async save() {}
+	},
+}))
+
 vi.mock("../../../utils/fs", () => ({
 	fileExistsAtPath: vi.fn().mockReturnValue(false),
 }))
@@ -381,6 +394,9 @@ describe("Task persistence", () => {
 		mockProvider.postStateToWebview = vi.fn().mockResolvedValue(undefined)
 		mockProvider.postStateToWebviewWithoutTaskHistory = vi.fn().mockResolvedValue(undefined)
 		mockProvider.updateTaskHistory = vi.fn().mockResolvedValue(undefined)
+		// These cases own API transcript receipts; the fixture has no independent
+		// child wait receipts to settle before replacing that transcript.
+		mockProvider.settleIndependentTaskWaitReceiptsForParent = vi.fn().mockResolvedValue(undefined)
 		// Canonical tool progress only needs the provider's captured verification
 		// state at this unit boundary; the real ledger is covered by its own suite.
 		mockProvider.getVerificationProgressState = vi.fn(() => ({ stateFingerprint: "task-persistence-fixture" }))
@@ -998,13 +1014,14 @@ describe("Task persistence", () => {
 			)
 
 			const rewriting = task.overwriteApiConversationHistory(rewritten)
+			await vi.waitFor(() => expect(finishSave).toBeTypeOf("function"))
 			expect(internal.environmentContext.needsFullSnapshot).toBe(true)
 			staleCapture.commit()
 			expect(internal.environmentContext.needsFullSnapshot).toBe(true)
 			expect(internal.environmentContext.terminalOutputCursor).toEqual(cursor)
 			finishSave(saved)
 			await expect(rewriting).resolves.toBe(saved)
-			expect(task.apiConversationHistory).toBe(rewritten)
+			expect(task.apiConversationHistory).toEqual(rewritten)
 			expect(internal.environmentContext.prepare("same-task", fields, "", []).details).toContain(
 				"# Environment Snapshot",
 			)

@@ -18,12 +18,14 @@ export interface AgentRetryPolicyOptions {
 	maxElapsedMs?: number
 	/** Delay before retrying the first failed attempt. */
 	baseDelayMs?: number
-	/** Hard upper bound for exponential and provider-requested delays. */
+	/** Hard upper bound for local exponential delay; server advice is a minimum. */
 	maxDelayMs?: number
 	/** Jitter strategy for exponential backoff. */
 	jitter?: "none" | "full"
 	/** Injectable source for deterministic tests and controlled runtimes. */
 	random?: () => number
+	/** Epoch clock used to capture one retry deadline before asynchronous notification. */
+	now?: () => number
 	/** Optional category-specific attempt budgets. */
 	maxAttemptsByCategory?: Partial<Record<AgentRetryCategory, number>>
 }
@@ -83,6 +85,8 @@ export interface AgentRetryDecision {
 	exhausted: boolean
 	/** Delay before the next attempt, or zero when exhausted. */
 	delayMs: number
+	/** Absolute epoch deadline for the selected delay, absent when exhausted. */
+	retryAt?: number
 	/** One-based number to use for the next attempt. */
 	nextAttempt: number
 	/** Why another attempt was denied, when exhausted. */
@@ -134,6 +138,7 @@ export class AgentRetryPolicy {
 	readonly maxAttemptsByCategory: Readonly<Record<AgentRetryCategory, number>>
 
 	private readonly random: () => number
+	private readonly now: () => number
 
 	constructor(options: AgentRetryPolicyOptions = {}) {
 		this.maxAttempts = normalizePositiveInteger(options.maxAttempts, DEFAULT_AGENT_RETRY_POLICY.maxAttempts)
@@ -142,6 +147,7 @@ export class AgentRetryPolicy {
 		this.maxDelayMs = normalizeNonNegativeNumber(options.maxDelayMs, DEFAULT_AGENT_RETRY_POLICY.maxDelayMs)
 		this.jitter = options.jitter ?? DEFAULT_AGENT_RETRY_POLICY.jitter
 		this.random = options.random ?? Math.random
+		this.now = options.now ?? (() => Date.now())
 
 		const categoryBudgets = Object.fromEntries(
 			AGENT_RETRY_CATEGORIES.map((category) => [
@@ -182,8 +188,8 @@ export class AgentRetryPolicy {
 
 	/**
 	 * Calculate an exponential delay. Full jitter samples from zero through the
-	 * exponential ceiling. A provider hint can lengthen the delay, but neither
-	 * value can exceed the policy cap.
+	 * exponential ceiling. Provider advice is a minimum and must never be
+	 * shortened by the local cap; decide() separately enforces the elapsed budget.
 	 */
 	getDelayMs(attempt: number, retryAfterMs?: number): number {
 		const normalizedAttempt = normalizeAttempt(attempt)
@@ -195,7 +201,7 @@ export class AgentRetryPolicy {
 		)
 		const exponentialDelay =
 			this.jitter === "full" ? boundedCeiling * normalizeRandomValue(this.random()) : boundedCeiling
-		return Math.min(this.maxDelayMs, Math.max(exponentialDelay, normalizeRetryAfterMs(retryAfterMs)))
+		return Math.max(exponentialDelay, normalizeRetryAfterMs(retryAfterMs))
 	}
 
 	/** Resolve retry/exhaustion, output guards, and delay in one stable result. */
@@ -229,6 +235,7 @@ export class AgentRetryPolicy {
 			exhausted,
 			delayMs: exhausted ? 0 : delayMs,
 			nextAttempt: attempt + 1,
+			...(!exhausted ? { retryAt: this.now() + delayMs } : {}),
 			...(reason ? { reason } : {}),
 		})
 	}

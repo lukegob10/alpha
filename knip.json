@@ -8,6 +8,8 @@
 		"src": {
 			"entry": [
 				"extension.ts",
+				"completion-followup.investigation.config.ts",
+				"early-task-ending.investigation.config.ts",
 				"workers/countTokens.ts",
 				"workers/sanitizeDocument.ts",
 				"core/agent/benchmarks/AgentControlStore.benchmark.ts",

@@ -75,6 +75,7 @@ export interface MentionContentBlock {
 		returnedLines: number
 		wasTruncated: boolean
 		linesShown?: [number, number]
+		firstClippedLine?: number
 	}
 }
 
@@ -89,18 +90,25 @@ export interface ParseMentionsResult {
 
 /**
  * Formats file content to look like a read_file tool result.
- * Includes Gemini-style truncation warning when content is truncated.
+ * Reports omitted source content and recovery through the currently available tool surface.
  */
 function formatFileReadResult(filePath: string, result: ExtractTextResult): string {
 	const header = `[read_file for '${filePath}']`
 
 	if (result.wasTruncated && result.linesShown) {
 		const [start, end] = result.linesShown
-		const nextOffset = end + 1
+		// A shortened line is not a complete read: advancing past it loses its tail.
+		const nextOffset = result.firstClippedLine ?? end + 1
+		const recovery =
+			result.firstClippedLine !== undefined
+				? `One or more shown lines were shortened; the first shortened line is ${result.firstClippedLine}.
+To recover omitted content: Use the available exec_command tool to reread from line ${nextOffset} in bounded character chunks. Do not advance past a shortened line until its omitted tail is covered.`
+				: `To read more: Use the available exec_command tool to read bounded line ranges starting at line ${nextOffset}.`
 		return `${header}
 IMPORTANT: File content truncated.
 Status: Showing lines ${start}-${end} of ${result.totalLines} total lines.
-To read more: Use the read_file tool with offset=${nextOffset} and limit=${DEFAULT_LINE_LIMIT}.
+${recovery}
+If read_file is already offered for this task, reread with offset=${nextOffset} and limit=${DEFAULT_LINE_LIMIT}; copy any returned Continuation exactly to recover remaining content, including partial-line tails.
 
 File: ${filePath}
 ${result.content}`
@@ -367,6 +375,7 @@ async function getFileOrFolderContentWithMetadata(
 						returnedLines: result.returnedLines,
 						wasTruncated: result.wasTruncated,
 						linesShown: result.linesShown,
+						...(result.firstClippedLine === undefined ? {} : { firstClippedLine: result.firstClippedLine }),
 					},
 				}
 			} catch (error) {

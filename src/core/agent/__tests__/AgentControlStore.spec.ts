@@ -24,6 +24,49 @@ const setup = async (persistence: AgentControlPersistence = new InMemoryAgentCon
 }
 
 describe("AgentControlStore", () => {
+	it("keeps durable human read state separate from runtime consumption", async () => {
+		const { store, persistence } = await setup()
+		const first = await store.appendEvent({
+			recipient: "root-1",
+			name: "message",
+			kind: "message",
+			payload: { message: "Update" },
+		})
+		const second = await store.appendEvent({
+			recipient: "root-1",
+			name: "message",
+			kind: "message",
+			payload: { message: "Later" },
+		})
+		const claim = await store.claimMailbox("root-1", { channel: "automatic" })
+		await store.acknowledgeMailboxClaim("root-1", claim.claimId)
+		expect(store.getHumanReadSequence("root-1")).toBe(0)
+		await store.markActivityRead("root-1", first.entry.sequence)
+		expect(store.getHumanReadSequence("root-1")).toBe(first.entry.sequence)
+		expect(
+			store
+				.readMailbox("root-1", { afterSequence: 0 })
+				.entries.every((entry) => entry.acknowledgedAt !== undefined),
+		).toBe(true)
+		const reloaded = new AgentControlStore(persistence, clock())
+		await reloaded.initialize()
+		expect(reloaded.getHumanReadSequence("root-1")).toBe(first.entry.sequence)
+		await reloaded.markActivityRead("root-1", 0)
+		expect(reloaded.getHumanReadSequence("root-1")).toBe(first.entry.sequence)
+		await expect(reloaded.markActivityRead("root-1", second.entry.sequence + 1)).rejects.toThrow("ahead")
+	})
+
+	it("reading one tree neither reads nor consumes another tree's messages", async () => {
+		const { store } = await setup()
+		await store.ensureRoot({ taskId: "root-2", objective: "Other task", status: "running" })
+		const first = await store.appendEvent({ recipient: "root-1", name: "message", kind: "message" })
+		const other = await store.appendEvent({ recipient: "root-2", name: "message", kind: "message" })
+		await store.markActivityRead("root-1", first.entry.sequence)
+		expect(store.getHumanReadSequence("root-2")).toBe(0)
+		expect(store.readMailbox("root-2").entries[0]?.eventId).toBe(other.entry.eventId)
+		expect(store.readMailbox("root-2").entries[0]?.acknowledgedAt).toBeUndefined()
+	})
+
 	const workerChangeSet = (
 		id: string,
 		status: "pending_review" | "conflicted" | "applied" | "discarded" | "scope_violation" | "unavailable",

@@ -274,13 +274,21 @@ export const extensionAgentLifecycleEventMessageSchema = agentLifecycleEventMess
 export const extensionAgentLifecycleSnapshotMessageSchema = agentLifecycleSnapshotMessageSchema
 export const extensionAgentLifecycleDegradedMessageSchema = agentLifecycleDegradedMessageSchema
 
-export type ChatCommand = "queueMessage" | "steerQueuedMessage"
+export type ChatCommand =
+	| "askResponse"
+	| "queueMessage"
+	| "steerQueuedMessage"
+	| "editQueuedMessage"
+	| "resumeCompletedTask"
+	| "steerSubagent"
 
 export type ChatCommandErrorCode =
 	| "task_unavailable"
 	| "message_not_found"
 	| "steer_pending"
 	| "image_resolution_failed"
+	| "queue_full"
+	| "stale_ask"
 	| "unknown"
 
 export interface ChatCommandResult {
@@ -777,6 +785,7 @@ interface WebviewMessageBase {
 		| "cancelSubagentGroup"
 		| "cancelSubagent"
 		| "steerSubagent"
+		| "markManagedAgentActivityRead"
 		| "respondToSubagentApproval"
 		| "openSubagentChangeSet"
 		| "requestSubagentChangeSetActionCapability"
@@ -945,6 +954,10 @@ interface WebviewMessageBase {
 	askResponse?: AlphaAskResponse
 	/** Transcript row answered by this ordinary user message, when it came from an async question card. */
 	asyncUserInputMessageTs?: number
+	/** Expected legacy blocking ask; a late response cannot answer a replacement ask. */
+	askMessageTs?: number
+	/** Highest managed activity sequence actually displayed by the human. */
+	activitySequence?: number
 	approvalRequestId?: string
 	toolApprovalDecision?: ToolApprovalDecision
 	apiConfiguration?: ProviderSettings

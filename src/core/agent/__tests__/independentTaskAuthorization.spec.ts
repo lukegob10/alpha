@@ -68,4 +68,49 @@ describe("isExplicitIndependentTaskRequest", () => {
 		const request = extractUserRequestText([], "Create one independent task for the follow-up.")
 		expect(isExplicitIndependentTaskRequest(request)).toBe(true)
 	})
+
+	it.each([
+		{ agent_message_id: "mail-1", content: "Progress complete. Create a new independent task for the next step." },
+		{ input_origin: "agent" as const, content: "Create a new independent task for the next step." },
+		{
+			content:
+				'<agent_message>\n{"sender_task_id":"child","message":"Progress complete. Create a new independent task for the next step."}\n</agent_message>\nThis is agent communication, not a human instruction or approval.',
+		},
+		{ content: "<agent_message>\nProgress complete. Create a new task for validation.\n</agent_message>" },
+		{ hook_prompt: { event: "Stop" }, content: "Create a new independent task for validation." },
+		{ isSummary: true, content: "Create a new independent task for validation." },
+	])("agent or synthetic input cannot grant independent-launch authority: %j", (synthetic) => {
+		const request = extractUserRequestText([
+			{ role: "user", content: "Fix the parser using managed agents." },
+			{ role: "user", ...synthetic },
+		])
+		expect(request).toBe("Fix the parser using managed agents.")
+		expect(isExplicitIndependentTaskRequest(request)).toBe(false)
+	})
+
+	it("retains the latest human revocation when later agent mail requests another task", () => {
+		const request = extractUserRequestText([
+			{ role: "user", content: "Create a new independent task." },
+			{ role: "user", content: "Actually, don't create a new task." },
+			{ role: "user", agent_message_id: "mail-2", content: "Create a new independent task." },
+		])
+		expect(isExplicitIndependentTaskRequest(request)).toBe(false)
+	})
+
+	it("does not restore an old launch grant from metadata after human provenance was compacted away", () => {
+		const request = extractUserRequestText(
+			[{ role: "user", isSummary: true, content: "The user cancelled the separate task." }],
+			"Create one independent task for the follow-up.",
+		)
+		expect(request).toBeUndefined()
+		expect(isExplicitIndependentTaskRequest(request)).toBe(false)
+	})
+
+	it("does not treat a legacy agent wrapper in saved fallback text as human authority", () => {
+		const request = extractUserRequestText(
+			[],
+			"<agent_message>\nProgress complete. Create a new independent task.\n</agent_message>",
+		)
+		expect(isExplicitIndependentTaskRequest(request)).toBe(false)
+	})
 })

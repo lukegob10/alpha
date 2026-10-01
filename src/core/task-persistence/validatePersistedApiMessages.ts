@@ -8,6 +8,21 @@ export function invalidPersistedApiMessages(value: unknown): string | undefined 
 	for (const [messageIndex, candidate] of value.entries()) {
 		const location = `message ${messageIndex}`
 		if (!isRecord(candidate)) return `${location} must be an object`
+		if (
+			candidate.input_origin !== undefined &&
+			candidate.input_origin !== "human" &&
+			candidate.input_origin !== "agent"
+		) {
+			return `${location} has invalid input provenance`
+		}
+		if (
+			candidate.queued_message_ids !== undefined &&
+			(!Array.isArray(candidate.queued_message_ids) ||
+				candidate.queued_message_ids.length > 100 ||
+				candidate.queued_message_ids.some((id) => !hasNonemptyId(id) || id.length > 256))
+		) {
+			return `${location} has invalid queued input receipts`
+		}
 		if ("hook_prompt" in candidate && !isHookPromptProvenance(candidate.hook_prompt)) {
 			return `${location} has invalid hook prompt provenance`
 		}

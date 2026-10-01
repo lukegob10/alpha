@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest"
+import { MAX_LINE_LENGTH } from "../../../core/prompts/tools/native-tools/read_file"
 import {
 	parseLines,
 	formatWithLineNumbers,
@@ -255,6 +256,24 @@ describe("formatWithLineNumbers", () => {
 // ─── readWithSlice Tests ──────────────────────────────────────────────────────
 
 describe("readWithSlice", () => {
+	it("reports the first shortened source line even when every selected line is returned", () => {
+		const result = readWithSlice(`before\n${"x".repeat(MAX_LINE_LENGTH + 1)}\nafter`)
+		expect(result).toMatchObject({
+			totalLines: 3,
+			returnedLines: 3,
+			wasTruncated: true,
+			firstClippedLine: 2,
+		})
+		expect(result.content).toContain("...")
+	})
+
+	it("does not report clipping outside the selected range or at the exact character limit", () => {
+		const result = readWithSlice(`${"x".repeat(MAX_LINE_LENGTH + 1)}\n${"y".repeat(MAX_LINE_LENGTH)}`, 1, 1)
+		expect(result.wasTruncated).toBe(false)
+		expect(result).not.toHaveProperty("firstClippedLine")
+		expect(result.content).toBe(`2 | ${"y".repeat(MAX_LINE_LENGTH)}`)
+	})
+
 	it("does not analyze indentation outside the requested slice", () => {
 		const content = Array.from({ length: 10_000 }, (_, index) => `\t    value${index} => {`).join("\n")
 		const trimStart = vi.spyOn(String.prototype, "trimStart")
@@ -278,12 +297,14 @@ describe("readWithSlice", () => {
 					if (start >= records.length) continue
 					const end = Math.min(start + limit, records.length)
 					const selected = records.slice(start, end)
+					const firstClippedLine = selected.find((line) => line.content.length > MAX_LINE_LENGTH)?.lineNumber
 					expect(readWithSlice(content, offset, limit)).toEqual({
 						content: formatWithLineNumbers(selected),
 						includedRanges: [[start + 1, end]],
 						totalLines: records.length,
 						returnedLines: selected.length,
-						wasTruncated: end < records.length,
+						wasTruncated: end < records.length || firstClippedLine !== undefined,
+						...(firstClippedLine === undefined ? {} : { firstClippedLine }),
 					})
 				}
 			}
@@ -337,6 +358,25 @@ describe("readWithSlice", () => {
 // ─── readWithIndentation Tests ────────────────────────────────────────────────
 
 describe("readWithIndentation", () => {
+	it.each([1, 2000])("reports clipping of a single source line with limit %i", (limit) => {
+		const result = readWithIndentation("x".repeat(MAX_LINE_LENGTH + 1), { anchorLine: 1, limit })
+		expect(result).toMatchObject({ totalLines: 1, returnedLines: 1, wasTruncated: true, firstClippedLine: 1 })
+	})
+
+	it("reports clipping within an expanded block", () => {
+		const result = readWithIndentation(`function f() {\n    ${"x".repeat(MAX_LINE_LENGTH)}\n}`, {
+			anchorLine: 2,
+			includeSiblings: true,
+		})
+		expect(result).toMatchObject({ returnedLines: 3, wasTruncated: true, firstClippedLine: 2 })
+	})
+
+	it("does not report shortening for a complete ordinary single line", () => {
+		const result = readWithIndentation("ordinary", { anchorLine: 1 })
+		expect(result.wasTruncated).toBe(false)
+		expect(result).not.toHaveProperty("firstClippedLine")
+	})
+
 	describe("basic block extraction", () => {
 		it("should extract content around the anchor line", () => {
 			const result = readWithIndentation(PYTHON_CODE, {

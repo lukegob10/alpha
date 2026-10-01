@@ -7,7 +7,7 @@ export const send_message = {
 	function: {
 		name: "send_message",
 		description:
-			"Send an agent message to a pending or running child. It is delivered automatically at the next model-step boundary, after current tools settle, without interrupting work or entering the human message queue. Address the child by stable task_name, task ID, or canonical path. Use followup_task to restart a stopped child.",
+			"Send a passive message to another agent in this task's managed tree, including your parent, /root, or a peer. It is delivered at the next model-step boundary, after current tools settle, and wakes an idle mailbox wait without interrupting work or answering human approval. It never starts a recipient turn. Address the agent by stable task_name, task ID, or canonical path. Use followup_task to restart a stopped child.",
 		strict: true,
 		parameters: {
 			type: "object",

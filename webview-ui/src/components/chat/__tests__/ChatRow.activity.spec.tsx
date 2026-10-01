@@ -49,8 +49,28 @@ describe("compact activity steps", () => {
 		expect(screen.getByText("The command path needs an update.")).toBeVisible()
 	})
 
-	it("shows available reasoning content by default", () => {
+	it("starts reasoning collapsed and preserves user expansion and collapse", () => {
 		renderRows([{ ts: 1, type: "say", say: "reasoning", text: "I found the execution path." }])
+		const toggle = screen.getByRole("button", { expanded: false })
+		expect(screen.queryByText("I found the execution path.")).not.toBeInTheDocument()
+		fireEvent.click(toggle)
+		expect(screen.getByText("I found the execution path.")).toBeVisible()
+		expect(toggle).toHaveAttribute("aria-expanded", "true")
+		fireEvent.click(toggle)
+		expect(toggle).toHaveAttribute("aria-expanded", "false")
+		expect(screen.queryByText("I found the execution path.")).not.toBeInTheDocument()
+	})
+
+	it("shows reasoning when the host explicitly selects the expanded preference", () => {
+		renderRows([{ ts: 1, type: "say", say: "reasoning", text: "I found the execution path." }])
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "state", state: { reasoningBlockCollapsed: false } },
+				}),
+			),
+		)
+		expect(screen.getByRole("button", { expanded: true })).toBeVisible()
 		expect(screen.getByText("I found the execution path.")).toBeVisible()
 	})
 

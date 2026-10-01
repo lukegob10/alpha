@@ -100,6 +100,7 @@ export class ToolRepetitionDetector {
 	private readonly seenUnclassifiedCommands = new Set<string>()
 	private retainedOutcomeCount = 0
 	private stagnantCalls = 0
+	private progressVersion = 0
 	private strategyChangeIssued = false
 	private readonly failureAllowances = new Map<string, FailureAllowance>()
 	private failureCapacity?: ToolFailureMetadata
@@ -247,6 +248,7 @@ export class ToolRepetitionDetector {
 
 		this.retainedOutcomeCount = Math.min(this.historyLimit, this.retainedOutcomeCount + 1)
 		if (progressed) {
+			this.progressVersion++
 			this.stagnantCalls = 0
 			this.strategyChangeIssued = false
 			return this.progressDecision("continue")
@@ -260,6 +262,11 @@ export class ToolRepetitionDetector {
 			return this.progressDecision("change-strategy", opaque ? "unconfirmed-progress" : "no-progress")
 		}
 		return this.progressDecision("continue")
+	}
+
+	/** Monotonic admission cursor for step policies; explicit recovery does not manufacture progress. */
+	public getProgressVersion(): number {
+		return this.progressVersion
 	}
 
 	public resetProgress(): void {

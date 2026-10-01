@@ -44,7 +44,17 @@ describe("AlphaProvider incident dashboard loading", () => {
 			incidentHistoryLoaded: false,
 			taskHistoryStoreReady: delay(25),
 			taskHistoryStore: {
-				getAll: () => [{ id: "stored-task", status: "completed", ts: Date.now() }],
+				getAll: () => [
+					{
+						id: "stored-task",
+						task: "Fix dashboard",
+						workspace: "/projects/Alpha-Code",
+						status: "completed",
+						ts: Date.now(),
+					},
+					{ id: "old-task", task: "Old chat", status: "completed", ts: Date.now() - 86_400_001 },
+					{ id: "investigation", diagnosticIncidentId: "investigate:abc", ts: Date.now() },
+				],
 			},
 			contextProxy: { globalStorageUri: { fsPath: "unused-storage-path" } },
 			getLiveTaskIds: () => [],
@@ -63,5 +73,9 @@ describe("AlphaProvider incident dashboard loading", () => {
 		expect(journalRead).toHaveBeenCalledExactlyOnceWith("unused-storage-path", "stored-task")
 		expect(monitor.snapshot().tasks[0]?.state).toBe("completed")
 		expect(snapshots.at(-1)?.tasks[0]?.state).toBe("completed")
+		expect((await provider.getIncidentDashboardSnapshot()).tasks[0]).toMatchObject({
+			chatTitle: "Fix dashboard",
+			workspace: "/projects/Alpha-Code",
+		})
 	})
 })

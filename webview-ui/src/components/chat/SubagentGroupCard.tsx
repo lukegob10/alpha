@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
+import { useTranslation } from "react-i18next"
 import {
 	ExternalLink,
 	FileDiff,
@@ -22,6 +23,7 @@ import type {
 import { SubagentTaskLink } from "@/components/agents/SubagentTaskLink"
 import { cn } from "@src/lib/utils"
 import { vscode } from "@src/utils/vscode"
+import { ExtensionStateContext } from "@src/context/ExtensionStateContextStore"
 
 import {
 	Button,
@@ -73,9 +75,22 @@ export interface SubagentGroupCardProps {
 }
 
 export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: SubagentGroupCardProps) => {
+	const { t } = useTranslation("chat")
+	const presentation = useContext(ExtensionStateContext)
+	const managedSteeringDrafts = presentation?.managedSteeringDrafts
+	const updateManagedSteeringDraft = presentation?.updateManagedSteeringDraft
+	const resolvedParentTaskId = parentTaskId ?? group.parentTaskId
+	const savedDraft = Object.values(managedSteeringDrafts ?? {}).find(
+		(draft) => draft.parentTaskId === resolvedParentTaskId && draft.groupId === group.groupId,
+	)
 	const isActive = activeStatuses.has(group.status)
-	const [steeringTaskId, setSteeringTaskId] = useState<string>()
-	const [steeringText, setSteeringText] = useState("")
+	const [steeringTaskId, setSteeringTaskId] = useState<string | undefined>(savedDraft?.taskId)
+	const [steeringText, setSteeringText] = useState(savedDraft?.text ?? "")
+	const [pendingSteeringRequest, setPendingSteeringRequest] = useState(savedDraft?.pendingRequestId)
+	const pendingSteeringRequestRef = useRef(savedDraft?.pendingRequestId)
+	const [steeringError, setSteeringError] = useState<string | undefined>(
+		savedDraft?.rejected ? t("managedSteering.failed") : undefined,
+	)
 	const [approvalTaskId, setApprovalTaskId] = useState<string>()
 	const [cancelRequestedTaskIds, setCancelRequestedTaskIds] = useState<Set<string>>(() => new Set())
 	const [changeSetCapabilities, setChangeSetCapabilities] = useState<
@@ -93,10 +108,7 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 		changeSetId: string
 	}>()
 	const actionTriggerRef = useRef<HTMLButtonElement | null>(null)
-	const resolvedParentTaskId = parentTaskId ?? group.parentTaskId
-	const steeringAgent = steeringTaskId
-		? group.agents.find((agent) => agent.taskId === steeringTaskId && agent.status === "running")
-		: undefined
+	const steeringAgent = steeringTaskId ? group.agents.find((agent) => agent.taskId === steeringTaskId) : undefined
 	const approvalAgent = approvalTaskId
 		? group.agents.find((agent) => agent.taskId === approvalTaskId && agent.pendingApproval)
 		: undefined
@@ -113,11 +125,55 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 	)
 
 	useEffect(() => {
-		if (steeringTaskId && !steeringAgent) {
-			setSteeringTaskId(undefined)
-			setSteeringText("")
+		if (!steeringTaskId) return
+		updateManagedSteeringDraft?.(`${resolvedParentTaskId}:${group.groupId}:${steeringTaskId}`, {
+			parentTaskId: resolvedParentTaskId,
+			groupId: group.groupId,
+			taskId: steeringTaskId,
+			text: steeringText,
+			pendingRequestId: pendingSteeringRequest,
+			rejected: Boolean(steeringError),
+		})
+	}, [
+		resolvedParentTaskId,
+		group.groupId,
+		steeringTaskId,
+		steeringText,
+		pendingSteeringRequest,
+		steeringError,
+		updateManagedSteeringDraft,
+	])
+
+	useEffect(() => {
+		if (steeringTaskId && steeringAgent?.status !== "running") setSteeringError(t("managedSteering.unavailable"))
+	}, [steeringAgent?.status, steeringTaskId, t])
+
+	useEffect(() => {
+		const handleSteeringResult = (event: MessageEvent<ExtensionMessage>) => {
+			const result = event.data?.chatCommandResult
+			if (
+				event.data?.type !== "chatCommandResult" ||
+				result?.command !== "steerSubagent" ||
+				result.taskId !== resolvedParentTaskId ||
+				result.requestId !== pendingSteeringRequestRef.current
+			)
+				return
+			pendingSteeringRequestRef.current = undefined
+			setPendingSteeringRequest(undefined)
+			if (result.status === "accepted") {
+				const draft = Object.entries(managedSteeringDrafts ?? {}).find(
+					([, draft]) =>
+						draft.pendingRequestId === result.requestId && draft.parentTaskId === resolvedParentTaskId,
+				)
+				if (draft) updateManagedSteeringDraft?.(draft[0])
+				setSteeringTaskId(undefined)
+				setSteeringText("")
+				setSteeringError(undefined)
+			} else setSteeringError(t("managedSteering.failed"))
 		}
-	}, [steeringAgent, steeringTaskId])
+		window.addEventListener("message", handleSteeringResult)
+		return () => window.removeEventListener("message", handleSteeringResult)
+	}, [resolvedParentTaskId, t, managedSteeringDrafts, updateManagedSteeringDraft])
 
 	useEffect(() => {
 		if (approvalTaskId && !approvalAgent) setApprovalTaskId(undefined)
@@ -259,20 +315,41 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 		setChangeSetConfirmation(undefined)
 	}
 	const closeSteeringDialog = () => {
+		if (pendingSteeringRequestRef.current) return
+		if (steeringTaskId) updateManagedSteeringDraft?.(`${resolvedParentTaskId}:${group.groupId}:${steeringTaskId}`)
 		setSteeringTaskId(undefined)
 		setSteeringText("")
+		setSteeringError(undefined)
 	}
 	const submitSteering = () => {
-		const text = steeringText.trim().slice(0, MAX_STEERING_MESSAGE_LENGTH)
-		if (!steeringAgent || steeringAgent.status !== "running" || !text) return
+		const text = steeringText.trim()
+		if (
+			!steeringAgent ||
+			steeringAgent.status !== "running" ||
+			!text ||
+			text.length > MAX_STEERING_MESSAGE_LENGTH ||
+			pendingSteeringRequestRef.current
+		)
+			return
+		const requestId = crypto.randomUUID()
+		pendingSteeringRequestRef.current = requestId
+		setPendingSteeringRequest(requestId)
+		setSteeringError(undefined)
+		updateManagedSteeringDraft?.(`${resolvedParentTaskId}:${group.groupId}:${steeringAgent.taskId}`, {
+			parentTaskId: resolvedParentTaskId,
+			groupId: group.groupId,
+			taskId: steeringAgent.taskId,
+			text: steeringText,
+			pendingRequestId: requestId,
+		})
 		vscode.postMessage({
 			type: "steerSubagent",
 			taskId: resolvedParentTaskId,
 			groupId: group.groupId,
 			subagentTaskId: steeringAgent.taskId,
 			text,
+			requestId,
 		})
-		closeSteeringDialog()
 	}
 	const cancelAgent = (agent: SubagentRunState) => {
 		if (!activeStatuses.has(agent.status) || cancelRequestedTaskIds.has(agent.taskId)) return
@@ -618,7 +695,7 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 			</Dialog>
 
 			<Dialog
-				open={Boolean(steeringAgent)}
+				open={Boolean(steeringTaskId)}
 				onOpenChange={(open) => {
 					if (!open) closeSteeringDialog()
 				}}>
@@ -649,20 +726,33 @@ export const SubagentGroupCard = memo(({ group, parentTaskId, onShowTask }: Suba
 							maxLength={MAX_STEERING_MESSAGE_LENGTH}
 							rows={5}
 							value={steeringText}
+							disabled={Boolean(pendingSteeringRequest)}
 							onChange={(event) => setSteeringText(event.target.value)}
 							placeholder="What should this sub-agent adjust?"
 						/>
 						<div className="text-right text-xs text-vscode-descriptionForeground" aria-live="off">
 							{steeringText.length}/{MAX_STEERING_MESSAGE_LENGTH}
 						</div>
+						{steeringError && (
+							<p role="alert" className="text-xs text-vscode-errorForeground">
+								{steeringError}
+							</p>
+						)}
 						<DialogFooter>
 							<DialogClose asChild>
-								<Button type="button" variant="secondary">
+								<Button type="button" variant="secondary" disabled={Boolean(pendingSteeringRequest)}>
 									Cancel
 								</Button>
 							</DialogClose>
-							<Button type="submit" variant="primary" disabled={!steeringText.trim()}>
-								Send steering
+							<Button
+								type="submit"
+								variant="primary"
+								disabled={
+									!steeringText.trim() ||
+									steeringAgent?.status !== "running" ||
+									Boolean(pendingSteeringRequest)
+								}>
+								{pendingSteeringRequest ? t("managedSteering.sending") : "Send steering"}
 							</Button>
 						</DialogFooter>
 					</form>

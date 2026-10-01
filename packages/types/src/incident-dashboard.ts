@@ -75,6 +75,8 @@ export const incidentDashboardTaskSchema = z
 	.object({
 		taskId: incidentDashboardHashSchema,
 		label: incidentDashboardTaskLabelSchema,
+		chatTitle: z.string().trim().min(1).max(200).optional(),
+		workspace: z.string().min(1).max(4096).optional(),
 		state: incidentDashboardTaskStateSchema,
 		updatedAt: incidentDashboardTimestampSchema,
 		timeline: z.array(incidentDashboardTimelineItemSchema).max(8),
@@ -106,6 +108,8 @@ export const incidentDashboardTurnSchema = z
 		id: incidentDashboardHashSchema,
 		taskId: incidentDashboardHashSchema,
 		taskLabel: incidentDashboardTaskLabelSchema,
+		chatTitle: z.string().trim().min(1).max(200).optional(),
+		workspace: z.string().min(1).max(4096).optional(),
 		status: incidentDashboardTurnStatusSchema,
 		startedAt: incidentDashboardTimestampSchema,
 		endedAt: incidentDashboardTimestampSchema.optional(),

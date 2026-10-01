@@ -488,7 +488,8 @@
 			"failed": "Failed",
 			"stopping": "Stopping",
 			"stopped": "Stopped"
-		}
+		},
+		"backToLauncher": "Launching chat"
 	},
 	"reasoning": {
 		"thinking": "Thinking",
@@ -623,8 +624,58 @@
 		"steer": "Steer",
 		"steerTooltip": "Send this queued message into the current turn",
 		"steering": "Steering…",
+		"queuing": "Queuing…",
+		"delivering": "Delivering to the current turn…",
 		"queueFailed": "The message could not be queued. Your draft is still in the composer.",
-		"steerFailed": "Steering could not start. The queued message is still available."
+		"steerFailed": "Steering could not start. The queued message is still available.",
+		"editFailed": "The edit was not accepted. Your draft is still in the composer.",
+		"resumeFailed": "The chat could not continue. Your draft is still available.",
+		"answerFailed": "The reply could not be delivered. Your draft is still available.",
+		"deliveryPending": "Earlier replies are still awaiting delivery. Your draft is still available."
+	},
+	"taskOperations": {
+		"createTask": "Create an independent chat",
+		"sendMessage": "Send a message to another chat",
+		"steerTask": "Steer another chat",
+		"stopTask": "Stop another chat",
+		"followupTask": "Continue a sub-agent",
+		"unknown": "Review the requested operation",
+		"recipient": "Recipient",
+		"objective": "Objective",
+		"message": "Message",
+		"workspace": "Workspace",
+		"reason": "Reason"
+	},
+	"taskAttention": {
+		"waiting": "{{name}} needs your input",
+		"open": "Open chat",
+		"openNamed": "Open {{name}} chat"
+	},
+	"hostMessages": {
+		"deliveryBackpressure": "An external message for chat {{taskId}} could not be delivered because the pending message limit was reached. Retry after pending messages are accepted."
+	},
+	"agentNavigation": {
+		"more": "Show {{count}} more agents",
+		"title": "All sub-agents",
+		"description": "Open an agent to inspect its conversation and status.",
+		"omitted": "{{count}} additional agents are available in chat history."
+	},
+	"agentActivity": {
+		"title": "Agent activity",
+		"open": "Activity ({{count}} unread)",
+		"description": "Recent communication and lifecycle updates. Reading them does not change agent delivery.",
+		"pending": "Pending delivery",
+		"delivered": "Delivered",
+		"empty": "No recent activity",
+		"openChat": "Open chat",
+		"openNamed": "Open {{name}} chat",
+		"markRead": "Mark this and earlier activity read",
+		"omitted": "{{count}} older activity entries are outside this view."
+	},
+	"managedSteering": {
+		"failed": "The instruction was not accepted. Your draft is still available.",
+		"unavailable": "This agent is no longer running. Your draft is still available to copy.",
+		"sending": "Sending steering…"
 	},
 	"modelResponseDelayed": "Waiting for the model's next update. Longer reasoning can take time.",
 	"contextMenu": {

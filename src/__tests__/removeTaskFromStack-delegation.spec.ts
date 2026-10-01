@@ -1,9 +1,18 @@
 // npx vitest run __tests__/removeTaskFromStack-delegation.spec.ts
 
-import { describe, it, expect, vi } from "vitest"
+import { afterEach, describe, it, expect, vi } from "vitest"
 import { AlphaProvider } from "../core/webview/AlphaProvider"
+import { TaskSessionRegistry } from "../core/webview/TaskSessionRegistry"
+import type { Task } from "../core/task/Task"
 
 describe("AlphaProvider.removeTaskFromStack() delegation awareness", () => {
+	let hostFixtureNumber = 0
+	const registeredViews: AlphaProvider[] = []
+	const activeInstances = (AlphaProvider as unknown as { activeInstances: Set<AlphaProvider> }).activeInstances
+	afterEach(() => {
+		for (const view of registeredViews.splice(0)) activeInstances.delete(view)
+	})
+
 	/**
 	 * Helper to build a minimal mock provider with a single task on the stack.
 	 * The task's parentTaskId and taskId are configurable.
@@ -13,6 +22,7 @@ describe("AlphaProvider.removeTaskFromStack() delegation awareness", () => {
 		parentTaskId?: string
 		parentHistoryItem?: Record<string, any>
 		getTaskWithIdError?: Error
+		taskSessions?: TaskSessionRegistry
 	}) {
 		const childTask = {
 			taskId: opts.childTaskId,
@@ -36,21 +46,89 @@ describe("AlphaProvider.removeTaskFromStack() delegation awareness", () => {
 		const provider = {
 			taskStack: [childTask] as any[],
 			taskEventListeners: new Map(),
-			taskSessions: {
-				markLifecycle: vi.fn(),
-				unregister: vi.fn().mockReturnValue(childTask),
-			},
+			taskSessions: opts.taskSessions ?? new TaskSessionRegistry(),
 			currentView: { type: "task", taskId: opts.childTaskId },
 			publishedTaskTranscriptRevisions: new Map(),
-			getActiveTaskId: vi.fn().mockReturnValue(undefined),
+			getActiveTaskId: vi.fn((): string | undefined => provider.taskSessions.getActiveTaskId()),
 			resetNewTaskDraftMode,
 			log: vi.fn(),
 			getTaskWithId,
 			updateTaskHistory,
 		}
 
+		Object.setPrototypeOf(provider, AlphaProvider.prototype)
+		provider.taskSessions.register(childTask as unknown as Task)
+		vi.spyOn(provider.taskSessions, "unregister")
+		Object.assign(provider, { postTaskSessionStateToWebview: vi.fn().mockResolvedValue(undefined) })
 		return { provider, childTask, updateTaskHistory, getTaskWithId, resetNewTaskDraftMode }
 	}
+
+	function sharedView(
+		taskSessions: TaskSessionRegistry,
+		currentView: { type: "task"; taskId: string } | { type: "newTaskDraft" },
+	) {
+		const view = {
+			taskSessions,
+			currentView,
+			newTaskDraftMode: "architect",
+			publishedTaskTranscriptRevisions: new Map(),
+			getActiveTaskId: () => taskSessions.getActiveTaskId(),
+			resetNewTaskDraftMode: vi.fn(),
+		}
+		Object.setPrototypeOf(view, AlphaProvider.prototype)
+		const provider = view as unknown as AlphaProvider
+		activeInstances.add(provider)
+		registeredViews.push(provider)
+		return view
+	}
+
+	it("resets each affected host view exactly once when the last shared task closes", async () => {
+		const host = `remove-task-views-${++hostFixtureNumber}`
+		const ownerSessions = TaskSessionRegistry.forGlobalStorage(host)
+		const { provider } = buildMockProvider({ childTaskId: "shared-task", taskSessions: ownerSessions })
+		const peerSessions = TaskSessionRegistry.forGlobalStorage(host)
+		peerSessions.focus("shared-task")
+		const peer = sharedView(peerSessions, { type: "task", taskId: "shared-task" })
+
+		await AlphaProvider.prototype.removeTaskFromStack.call(provider as unknown as AlphaProvider)
+
+		expect(provider.currentView).toEqual({ type: "newTaskDraft" })
+		expect(peer.currentView).toEqual({ type: "newTaskDraft" })
+		expect(provider.resetNewTaskDraftMode).toHaveBeenCalledTimes(1)
+		expect(peer.resetNewTaskDraftMode).toHaveBeenCalledTimes(1)
+		expect(ownerSessions.getTask("shared-task")).toBeUndefined()
+	})
+
+	it("preserves an unrelated view's existing Plan draft when another shared view closes", async () => {
+		const host = `remove-task-views-${++hostFixtureNumber}`
+		const { provider } = buildMockProvider({
+			childTaskId: "closing-task",
+			taskSessions: TaskSessionRegistry.forGlobalStorage(host),
+		})
+		const draft = sharedView(TaskSessionRegistry.forGlobalStorage(host), { type: "newTaskDraft" })
+
+		await AlphaProvider.prototype.removeTaskFromStack.call(provider as unknown as AlphaProvider)
+
+		expect(provider.resetNewTaskDraftMode).toHaveBeenCalledTimes(1)
+		expect(draft.currentView).toEqual({ type: "newTaskDraft" })
+		expect(draft.newTaskDraftMode).toBe("architect")
+		expect(draft.resetNewTaskDraftMode).not.toHaveBeenCalled()
+	})
+
+	it("does not reset the selected foreground view when an exact background task closes", async () => {
+		const { provider } = buildMockProvider({ childTaskId: "background-task" })
+		const foregroundTask = { taskId: "foreground-task" } as Task
+		provider.taskSessions.register(foregroundTask)
+		provider.currentView = { type: "task", taskId: foregroundTask.taskId }
+
+		await AlphaProvider.prototype.removeTaskFromStack.call(provider as unknown as AlphaProvider, {
+			taskId: "background-task",
+		})
+
+		expect(provider.currentView).toEqual({ type: "task", taskId: "foreground-task" })
+		expect(provider.taskSessions.getActiveTask()).toBe(foregroundTask)
+		expect(provider.resetNewTaskDraftMode).not.toHaveBeenCalled()
+	})
 
 	it("repairs parent metadata (delegated → active) when a delegated child is removed", async () => {
 		const { provider, updateTaskHistory, getTaskWithId, resetNewTaskDraftMode } = buildMockProvider({
@@ -190,10 +268,7 @@ describe("AlphaProvider.removeTaskFromStack() delegation awareness", () => {
 		const provider = {
 			taskStack: [] as any[],
 			taskEventListeners: new Map(),
-			taskSessions: {
-				markLifecycle: vi.fn(),
-				unregister: vi.fn(),
-			},
+			taskSessions: new TaskSessionRegistry(),
 			currentView: { type: "newTaskDraft" },
 			getActiveTaskId: vi.fn().mockReturnValue(undefined),
 			resetNewTaskDraftMode: vi.fn().mockResolvedValue(undefined),
@@ -202,6 +277,7 @@ describe("AlphaProvider.removeTaskFromStack() delegation awareness", () => {
 			updateTaskHistory: vi.fn(),
 		}
 
+		Object.setPrototypeOf(provider, AlphaProvider.prototype)
 		// Should not throw
 		await (AlphaProvider.prototype as any).removeTaskFromStack.call(provider)
 
@@ -294,10 +370,7 @@ describe("AlphaProvider.removeTaskFromStack() delegation awareness", () => {
 		const provider = {
 			taskStack: [taskB] as any[],
 			taskEventListeners: new Map(),
-			taskSessions: {
-				markLifecycle: vi.fn(),
-				unregister: vi.fn().mockReturnValue(taskB),
-			},
+			taskSessions: new TaskSessionRegistry(),
 			publishedTaskTranscriptRevisions: new Map(),
 			currentView: { type: "task", taskId: "task-B" },
 			getActiveTaskId: vi.fn().mockReturnValue(undefined),
@@ -307,6 +380,9 @@ describe("AlphaProvider.removeTaskFromStack() delegation awareness", () => {
 			updateTaskHistory,
 		}
 
+		Object.setPrototypeOf(provider, AlphaProvider.prototype)
+		provider.taskSessions.register(taskB as unknown as Task)
+		Object.assign(provider, { postTaskSessionStateToWebview: vi.fn().mockResolvedValue(undefined) })
 		// Simulate what delegateParentAndOpenChild does: pop B with skipDelegationRepair
 		await (AlphaProvider.prototype as any).removeTaskFromStack.call(provider, { skipDelegationRepair: true })
 

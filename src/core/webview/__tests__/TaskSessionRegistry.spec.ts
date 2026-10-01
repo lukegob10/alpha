@@ -45,6 +45,233 @@ const createLifecycleSnapshot = (
 		...overrides,
 	})
 
+let nextHostId = 0
+const createHostViews = (maxLiveTasks = 3) => {
+	const storage = `task-session-registry-tests/host-${++nextHostId}`
+	return {
+		storage,
+		sidebar: TaskSessionRegistry.forGlobalStorage(storage, maxLiveTasks),
+		panel: TaskSessionRegistry.forGlobalStorage(storage, maxLiveTasks),
+	}
+}
+
+const deferred = () => {
+	let resolve!: () => void
+	const promise = new Promise<void>((done) => {
+		resolve = done
+	})
+	return { promise, resolve }
+}
+
+describe("host task ownership", () => {
+	it("reserves prepared child capacity across views and roots before any child starts", () => {
+		const { sidebar, panel } = createHostViews(3)
+		sidebar.register(createTask("parent"))
+		const options = {
+			rootTaskId: "parent",
+			count: 1,
+			maxTotalTasks: 3,
+			maxRootTasks: 1,
+			activeRootTasks: 0,
+			isRootTaskRegistered: () => false,
+		}
+		sidebar.reserveTaskSlots("first-group", options)
+		expect(() => panel.reserveTaskSlots("same-root", options)).toThrow("root-wide child capacity")
+		panel.reserveTaskSlots("other-root", { ...options, rootTaskId: "other" })
+		expect(sidebar.canCreateTask()).toBe(false)
+		expect(() => sidebar.reserveTaskSlots("over-capacity", { ...options, rootTaskId: "third" })).toThrow(
+			"task capacity",
+		)
+		expect(() => panel.releaseTaskSlots("first-group")).toThrow("current owner")
+		sidebar.releaseTaskSlots("first-group")
+		expect(panel.getAvailableTaskCapacity()).toBe(1)
+	})
+
+	it("does not count registered child or control identities twice against a reservation", () => {
+		const { sidebar, panel } = createHostViews(3)
+		const controls = new Set<string>()
+		const isRootTaskRegistered = (taskId: string) => controls.has(taskId)
+		sidebar.reserveTaskSlots("group", {
+			rootTaskId: "parent",
+			count: 1,
+			maxTotalTasks: 3,
+			maxRootTasks: 2,
+			activeRootTasks: 0,
+			isRootTaskRegistered,
+		})
+		sidebar.setReservedTaskIds("group", ["child"])
+		expect(panel.getReservedTaskSlots("parent", isRootTaskRegistered)).toEqual({ total: 1, root: 1 })
+		controls.add("child")
+		expect(panel.getReservedTaskSlots("parent", isRootTaskRegistered)).toEqual({ total: 1, root: 0 })
+		sidebar.register(createTask("child"), { focus: false })
+		expect(panel.getReservedTaskSlots("parent", isRootTaskRegistered)).toEqual({ total: 0, root: 0 })
+		expect(panel.getAvailableTaskCapacity()).toBe(2)
+		sidebar.releaseTaskSlots("group")
+		sidebar.releaseTaskSlots("group")
+	})
+
+	it("shares canonical tasks, capacity and lifecycle without sharing view selection", () => {
+		const { sidebar, panel } = createHostViews(2)
+		const first = createTask("first")
+		const second = createTask("second")
+		sidebar.register(first)
+		panel.register(second)
+
+		expect(sidebar.getTask("second")).toBe(second)
+		expect(panel.getTask("first")).toBe(first)
+		expect(sidebar.getOwner("first")).toBe(sidebar)
+		expect(panel.getOwnedTasks()).toEqual([second])
+		expect(sidebar.getActiveTask()).toBe(first)
+		expect(panel.getActiveTask()).toBe(second)
+		expect(sidebar.canCreateTask()).toBe(false)
+		expect(panel.getAvailableTaskCapacity()).toBe(0)
+
+		sidebar.markLifecycle("first", TaskLifecycleState.Completed)
+		panel.setMaxLiveTasks(3)
+		expect(panel.getMetadata().first.lifecycle).toBe(TaskLifecycleState.Completed)
+		expect(sidebar.getMaxLiveTasks()).toBe(3)
+		expect(sidebar.getAvailableTaskCapacity()).toBe(2)
+		panel.clearFocus()
+		expect(sidebar.getActiveTask()).toBe(first)
+		expect(panel.getActiveTask()).toBeUndefined()
+	})
+
+	it("does not share tasks or recovery across global storage identities", async () => {
+		const firstHost = createHostViews()
+		const secondHost = createHostViews()
+		firstHost.sidebar.register(createTask("first"))
+		expect(secondHost.sidebar.getTask("first")).toBeUndefined()
+		const recoverFirst = vi.fn(async () => undefined)
+		const recoverSecond = vi.fn(async () => undefined)
+		await firstHost.sidebar.runStartupRecovery(recoverFirst)
+		await secondHost.sidebar.runStartupRecovery(recoverSecond)
+		expect(recoverFirst).toHaveBeenCalledOnce()
+		expect(recoverSecond).toHaveBeenCalledOnce()
+	})
+
+	it("attaches the same Task to another view without replacing its owner or revision", () => {
+		const { sidebar, panel } = createHostViews()
+		const task = createTask("shared")
+		sidebar.register(task)
+		const revision = sidebar.markTranscriptChanged(task.taskId)
+		panel.register(task)
+
+		expect(panel.getOwner(task.taskId)).toBe(sidebar)
+		expect(panel.getOwnedTasks()).toEqual([])
+		expect(panel.getActiveTask()).toBe(task)
+		expect(panel.getTranscriptRevision(task.taskId)).toBe(revision)
+		expect(sidebar.getLiveTaskCount()).toBe(1)
+	})
+
+	it("rejects a second runtime for a registered stable ID", () => {
+		const { sidebar, panel } = createHostViews()
+		const task = createTask("shared")
+		sidebar.register(task)
+		expect(() => panel.register(createTask("shared"))).toThrow("already has a registered runtime owner")
+		expect(sidebar.getTask(task.taskId)).toBe(task)
+		expect(panel.getActiveTask()).toBeUndefined()
+	})
+
+	it("allows only the current owner to replace or release a runtime", () => {
+		const { sidebar, panel } = createHostViews()
+		const original = createTask("shared")
+		const replacement = createTask("shared")
+		sidebar.register(original)
+		panel.focus(original.taskId)
+		expect(() => panel.replaceTask(original, replacement)).toThrow("current session owner")
+		expect(() => panel.unregister(original.taskId)).toThrow("current session owner")
+
+		sidebar.replaceTask(original, replacement)
+		expect(panel.getActiveTask()).toBe(replacement)
+		expect(panel.getOwner(original.taskId)).toBe(sidebar)
+		expect(() => sidebar.unregister(original.taskId, original)).toThrow("current session owner")
+		sidebar.unregister(replacement.taskId, replacement)
+		expect(panel.getActiveTask()).toBeUndefined()
+		expect(sidebar.getOwnedTasks()).toEqual([])
+	})
+
+	it("serializes one task's ownership transitions across views while other tasks progress", async () => {
+		const { sidebar, panel } = createHostViews()
+		const entered = deferred()
+		const finishFirst = deferred()
+		const calls: string[] = []
+		const first = sidebar.runOwnershipOperation("shared", async () => {
+			calls.push("first")
+			entered.resolve()
+			await finishFirst.promise
+		})
+		await entered.promise
+		const second = panel.runOwnershipOperation("shared", async () => {
+			calls.push("second")
+		})
+		await panel.runOwnershipOperation("independent", async () => {
+			calls.push("independent")
+		})
+		expect(calls).toEqual(["first", "independent"])
+		finishFirst.resolve()
+		await Promise.all([first, second])
+		expect(calls).toEqual(["first", "independent", "second"])
+	})
+
+	it("runs startup recovery once and protects even terminal Tasks retained for cleanup", async () => {
+		const { storage, sidebar, panel } = createHostViews()
+		const task = createTask("retained")
+		sidebar.register(task)
+		sidebar.markLifecycle(task.taskId, TaskLifecycleState.Closed)
+		const entered = deferred()
+		const finishRecovery = deferred()
+		const recover = vi.fn(async (hasOwner: (taskId: string) => boolean) => {
+			expect(hasOwner(task.taskId)).toBe(true)
+			expect(hasOwner("orphan")).toBe(false)
+			entered.resolve()
+			await finishRecovery.promise
+		})
+		const first = sidebar.runStartupRecovery(recover)
+		await entered.promise
+		const unexpectedRecovery = vi.fn(async () => undefined)
+		const second = panel.runStartupRecovery(unexpectedRecovery)
+		expect(second).toBe(first)
+		finishRecovery.resolve()
+		await Promise.all([first, second])
+		await TaskSessionRegistry.forGlobalStorage(storage).runStartupRecovery(unexpectedRecovery)
+		expect(recover).toHaveBeenCalledOnce()
+		expect(unexpectedRecovery).not.toHaveBeenCalled()
+	})
+
+	it("does not rerun a failed startup recovery when a new view attaches", async () => {
+		const { sidebar, panel } = createHostViews()
+		await expect(
+			sidebar.runStartupRecovery(async () => {
+				throw new Error("recovery failed")
+			}),
+		).rejects.toThrow("recovery failed")
+		const retry = vi.fn(async () => undefined)
+		await expect(panel.runStartupRecovery(retry)).rejects.toThrow("recovery failed")
+		expect(retry).not.toHaveBeenCalled()
+	})
+
+	it("retains cleanup ownership after failure and view disposal until a retry succeeds", async () => {
+		const { sidebar, panel } = createHostViews(1)
+		const task = createTask("cleanup")
+		sidebar.register(task)
+		panel.focus(task.taskId)
+		await expect(
+			sidebar.releaseAfterCleanup(task, async () => {
+				throw new Error("process still live")
+			}),
+		).rejects.toThrow("process still live")
+		sidebar.disposeView()
+		expect(panel.getTask(task.taskId)).toBe(task)
+		expect(panel.getOwner(task.taskId)).toBe(sidebar)
+		expect(sidebar.getOwnedTasks()).toEqual([task])
+		expect(panel.canCreateTask()).toBe(false)
+		await sidebar.releaseAfterCleanup(task, async () => undefined)
+		expect(panel.getTask(task.taskId)).toBeUndefined()
+		expect(panel.getActiveTask()).toBeUndefined()
+		expect(panel.canCreateTask()).toBe(true)
+	})
+})
+
 describe("TaskSessionRegistry", () => {
 	it("finds legacy ask state without cloning the task transcript", () => {
 		const messages = new Proxy(

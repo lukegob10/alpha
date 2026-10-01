@@ -161,7 +161,7 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 					case TaskCommandName.DeleteQueuedMessage:
 						this.log(`[API] DeleteQueuedMessage -> ${command.data}`)
 						try {
-							this.deleteQueuedMessage(command.data)
+							await this.deleteQueuedMessage(command.data)
 						} catch (error) {
 							const errorMessage = error instanceof Error ? error.message : String(error)
 							this.log(`[API] DeleteQueuedMessage failed for messageId ${command.data}: ${errorMessage}`)
@@ -283,17 +283,14 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 	public async sendMessage(text?: string, images?: string[]) {
 		const currentTask = this.sidebarProvider.getCurrentTask()
 
-		// In headless/sandbox flows the webview may not be launched, so routing
-		// through invoke=sendMessage drops the message. Deliver directly to the
-		// task ask-response channel instead.
-		if (!this.sidebarProvider.viewLaunched) {
-			if (!currentTask) {
-				this.log("[API#sendMessage] no current task in headless mode; message dropped")
-				return
-			}
-
+		// Runtime admission owns delivery even while the webview is editing or
+		// hydrating another chat. A posted UI invoke is only a transport receipt.
+		if (currentTask) {
 			await currentTask.submitUserMessage(text ?? "", images)
 			return
+		}
+		if (!this.sidebarProvider.viewLaunched) {
+			throw new Error("Cannot send a message without a current task or an open chat view")
 		}
 
 		await this.sidebarProvider.postMessageToWebview({
@@ -301,11 +298,10 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 			invoke: "sendMessage",
 			text,
 			images,
-			...(currentTask ? { taskId: currentTask.taskId } : {}),
 		})
 	}
 
-	public deleteQueuedMessage(messageId: string) {
+	public async deleteQueuedMessage(messageId: string) {
 		const currentTask = this.sidebarProvider.getCurrentTask()
 
 		if (!currentTask) {
@@ -313,7 +309,9 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 			return
 		}
 
+		await currentTask.messageQueueService.ready
 		currentTask.messageQueueService.removeMessage(messageId)
+		await currentTask.messageQueueService.flush()
 	}
 
 	public async pressPrimaryButton() {

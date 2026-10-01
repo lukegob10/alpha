@@ -79,6 +79,25 @@ describe("ChatRow - subtask links", () => {
 	})
 
 	describe("newTask tool", () => {
+		it("keeps an exact launch link when an unrelated child's result is adjacent", () => {
+			const message: AlphaMessage = {
+				ts: 1,
+				type: "ask",
+				ask: "tool",
+				childTaskId: "legacy-child",
+				text: JSON.stringify({ tool: "newTask", mode: "code", content: "Legacy objective" }),
+			}
+			const result: AlphaMessage = {
+				ts: 2,
+				type: "say",
+				say: "subtask_result",
+				subtaskResultChildId: "other-child",
+				text: "Other result",
+			}
+			renderChatRow(message, { childIds: ["other-child", "legacy-child"] }, [message, result])
+			fireEvent.click(screen.getByText("Go to subtask"))
+			expect(mockPostMessage).toHaveBeenCalledWith({ type: "showTaskWithId", text: "legacy-child" })
+		})
 		it("should display 'Go to subtask' link when currentTaskItem has childIds", () => {
 			const message = {
 				ts: Date.now(),
@@ -91,7 +110,7 @@ describe("ChatRow - subtask links", () => {
 				}),
 			}
 
-			// childIds maps by index to newTask messages - first newTask gets childIds[0]
+			// A single legacy launch and single child remain compatible.
 			renderChatRow(message, {
 				childIds: ["child-task-123"],
 			})
@@ -107,9 +126,10 @@ describe("ChatRow - subtask links", () => {
 			})
 		})
 
-		it("should display 'Go to subtask' link using index-matched childId for multiple newTasks", () => {
+		it("uses exact child identity instead of indexing a mixed child list", () => {
 			const message = {
 				ts: Date.now(),
+				childTaskId: "second-child",
 				type: "ask" as const,
 				ask: "tool" as const,
 				text: JSON.stringify({
@@ -119,8 +139,7 @@ describe("ChatRow - subtask links", () => {
 				}),
 			}
 
-			// The implementation maps newTask messages to childIds by index
-			// Since this is the first (and only) newTask message, it gets childIds[0]
+			// Persisted identity wins even when newer managed children enter the list.
 			renderChatRow(message, {
 				childIds: ["first-child", "second-child"],
 			})
@@ -130,10 +149,10 @@ describe("ChatRow - subtask links", () => {
 
 			fireEvent.click(goToSubtaskButton)
 
-			// First newTask message maps to first childId
+			// Select the recorded launch target.
 			expect(mockPostMessage).toHaveBeenCalledWith({
 				type: "showTaskWithId",
-				text: "first-child",
+				text: "second-child",
 			})
 		})
 
@@ -187,16 +206,17 @@ describe("ChatRow - subtask links", () => {
 	})
 
 	describe("subtask_result say message", () => {
-		it("should display 'Go to subtask' link when currentTaskItem has completedByChildId", () => {
+		it("uses each result row's recorded child instead of current completion metadata", () => {
 			const message = {
 				ts: Date.now(),
+				subtaskResultChildId: "completed-child-456",
 				type: "say" as const,
 				say: "subtask_result" as const,
 				text: "The subtask has been completed successfully.",
 			}
 
 			renderChatRow(message, {
-				completedByChildId: "completed-child-456",
+				completedByChildId: "newer-child",
 			})
 
 			const goToSubtaskButton = screen.getByText("Go to subtask")

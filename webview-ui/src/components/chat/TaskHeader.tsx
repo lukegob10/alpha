@@ -36,6 +36,7 @@ export interface TaskHeaderProps {
 	aggregatedCost?: number
 	hasSubtasks?: boolean
 	parentTaskId?: string
+	launcherTaskId?: string
 	isManagedSubagent?: boolean
 	costBreakdown?: string
 	contextTokens: number
@@ -58,6 +59,7 @@ const TaskHeader = ({
 	aggregatedCost,
 	hasSubtasks,
 	parentTaskId,
+	launcherTaskId,
 	isManagedSubagent,
 	costBreakdown,
 	contextTokens,
@@ -154,12 +156,13 @@ const TaskHeader = ({
 	const hasTodos = todos && Array.isArray(todos) && todos.length > 0
 
 	// Determine if this is a subtask (has a parent)
-	const isSubtask = !!parentTaskId
+	const returnTaskId = parentTaskId ?? launcherTaskId
+	const isSubtask = !!returnTaskId
 
 	const handleBackToParent = () => {
-		if (parentTaskId) {
-			if (onShowTask) onShowTask(parentTaskId)
-			else vscode.postMessage({ type: "showTaskWithId", text: parentTaskId })
+		if (returnTaskId) {
+			if (onShowTask) onShowTask(returnTaskId)
+			else vscode.postMessage({ type: "showTaskWithId", text: returnTaskId })
 		}
 	}
 
@@ -178,7 +181,11 @@ const TaskHeader = ({
 						onClick={handleBackToParent}
 						className="flex items-center gap-1.5 text-xs text-vscode-descriptionForeground hover:text-vscode-foreground">
 						<ArrowLeft className="size-3" />
-						{isManagedSubagent ? "Return to parent" : t("chat:task.backToParentTask")}
+						{launcherTaskId && !parentTaskId
+							? t("chat:crossTasks.backToLauncher")
+							: isManagedSubagent
+								? "Return to parent"
+								: t("chat:task.backToParentTask")}
 					</Button>
 					{isManagedSubagent && (
 						<div className="mt-1 space-y-1 px-2 text-xs text-vscode-descriptionForeground">

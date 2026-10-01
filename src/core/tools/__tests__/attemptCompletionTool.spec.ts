@@ -73,6 +73,7 @@ describe("attemptCompletionTool", () => {
 		vi.mocked(vscode.workspace.getConfiguration).mockImplementation(mockGetConfiguration)
 
 		mockTask = {
+			retainQueuedMessageToolReply: vi.fn(),
 			hasPendingAgentMessages: vi.fn(() => false),
 			recordCompletionCandidate: vi.fn(),
 			evaluateCompletionHooks: vi.fn(async () => ({})),
@@ -175,6 +176,30 @@ describe("attemptCompletionTool", () => {
 		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("command is still running"))
 		expect(mockTask.presentCompletionResult).not.toHaveBeenCalled()
 		expect(mockTask.emit).not.toHaveBeenCalledWith(AlphaCodeEventName.TaskCompleted, expect.anything())
+	})
+
+	it("binds queued guidance selected by the interrupted completion gate to its completion call", async () => {
+		mockTask.waitForCompletionGateDecision = vi.fn(async () => ({
+			allowed: false,
+			reasonCode: "interrupted" as const,
+			modelCanResolveRejection: true,
+		}))
+		mockTask.hasPendingSteerMessage = vi.fn(() => false)
+		mockTask.resetCompletionRecoveryState = vi.fn()
+		const queued = { id: "gate-guidance", text: "Verify the change", timestamp: 1 }
+		vi.mocked(mockTask.messageQueueService!.dequeueMessage).mockReturnValueOnce(queued)
+		const callbacks: AttemptCompletionCallbacks = {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+			toolCallId: "completion-gate-call",
+		}
+		await attemptCompletionTool.execute({ result: "Done" }, mockTask as Task, callbacks)
+		expect(mockTask.retainQueuedMessageToolReply).toHaveBeenCalledExactlyOnceWith("completion-gate-call", queued)
+		expect(mockTask.presentCompletionResult).not.toHaveBeenCalled()
+		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining(queued.text))
 	})
 
 	it("feeds a Stop hook rejection through the completion tool result without finalizing", async () => {
@@ -875,6 +900,12 @@ describe("attemptCompletionTool", () => {
 						[],
 					)
 					expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("<user_message>"))
+					if (delivery !== "reply") {
+						expect(mockTask.retainQueuedMessageToolReply).toHaveBeenCalledExactlyOnceWith(
+							"completion-followup",
+							expect.objectContaining({ id: "queued" }),
+						)
+					}
 				},
 			)
 		})

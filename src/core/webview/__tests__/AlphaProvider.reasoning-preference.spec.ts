@@ -8,6 +8,7 @@ import type {
 
 import { buildApiHandler } from "../../../api"
 import { AlphaProvider } from "../AlphaProvider"
+import { TaskSessionRegistry } from "../TaskSessionRegistry"
 import { Task } from "../../task/Task"
 
 const providerTestState = vi.hoisted(() => ({
@@ -186,6 +187,7 @@ function providerHarness(tasks: FakeTask[] = [], composer: TaskReasoningPreferen
 		setProviderSettings: vi.fn(async (settings: ProviderSettings) => Object.assign(state, settings)),
 	}
 	const provider = Object.create(AlphaProvider.prototype) as AlphaProvider & Record<string, any>
+	const taskSessions = new TaskSessionRegistry()
 	Object.assign(provider, {
 		contextProxy,
 		configurationQueue: Promise.resolve(),
@@ -208,7 +210,7 @@ function providerHarness(tasks: FakeTask[] = [], composer: TaskReasoningPreferen
 		}),
 		setValues: vi.fn(async (values: Record<string, unknown>) => Object.assign(state, values)),
 		log: vi.fn(),
-		taskSessions: { canCreateTask: vi.fn(() => true), register: vi.fn() },
+		taskSessions,
 		taskCreationCallback: vi.fn(),
 		agentControlStore: { retryPendingMailboxClaimSettlements: vi.fn(async () => undefined) },
 		getState: vi.fn(async () => ({
@@ -223,6 +225,7 @@ function providerHarness(tasks: FakeTask[] = [], composer: TaskReasoningPreferen
 			getProfile: vi.fn(async () => ({ ...baseConfiguration })),
 		},
 	})
+	for (const task of tasks) taskSessions.register(task as unknown as Task)
 	return { provider, contextProxy, state, taskMap }
 }
 

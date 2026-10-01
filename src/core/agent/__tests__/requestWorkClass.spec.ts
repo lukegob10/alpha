@@ -28,6 +28,20 @@ describe("classifyRequestWorkClass", () => {
 		expect(classifyRequestWorkClass("Add log rotation to the writer.")).toMatchObject({ class: "full" })
 	})
 
+	it("keeps action requests full when phrased as polite questions", () => {
+		for (const request of [
+			"Can you add retry backoff?",
+			"Could you fix the writer?",
+			"Would you update the timeout?",
+			"Will you remove the obsolete settings?",
+			"I want you to change the cache key.",
+			"We need to patch the request handler.",
+			"What file owns the timeout? Then update it.",
+		]) {
+			expect(classifyRequestWorkClass(request), request).toMatchObject({ class: "full" })
+		}
+	})
+
 	it("keeps the full catalog when implementation or workflow is requested", () => {
 		expect(classifyRequestWorkClass("Implement retry backoff in the scheduler.")).toMatchObject({
 			class: "full",

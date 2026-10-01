@@ -54,7 +54,7 @@ describe("AgentRetryPolicy", () => {
 		})
 	})
 
-	it("caps exponential delay and provider retry-after hints", () => {
+	it("caps local exponential delay while preserving the provider retry-after minimum", () => {
 		const policy = new AgentRetryPolicy({
 			maxAttempts: 5,
 			baseDelayMs: 100,
@@ -65,8 +65,37 @@ describe("AgentRetryPolicy", () => {
 		expect(policy.getDelayMs(1)).toBe(100)
 		expect(policy.getDelayMs(2)).toBe(200)
 		expect(policy.getDelayMs(3)).toBe(250)
-		expect(policy.getDelayMs(1, 500)).toBe(250)
+		expect(policy.getDelayMs(1, 500)).toBe(500)
 		expect(policy.getDelayMs(1, -10)).toBe(100)
+	})
+
+	it("honors a sixty-second provider deadline instead of the local thirty-second cap", () => {
+		const policy = new AgentRetryPolicy({ jitter: "none", now: () => 10_000 })
+		expect(policy.decide({ category: "rate-limit", attempt: 1, retryAfterMs: 60_000 })).toMatchObject({
+			shouldRetry: true,
+			delayMs: 60_000,
+			retryAt: 70_000,
+		})
+	})
+
+	it.each([
+		{ elapsedMs: 0, retryAfterMs: 120_000 },
+		{ elapsedMs: 45_000, retryAfterMs: 60_000 },
+	])("exhausts rather than shortening provider advice beyond the remaining allowance: %j", (request) => {
+		const policy = new AgentRetryPolicy({ jitter: "none" })
+		const decision = policy.decide({ category: "rate-limit", attempt: 1, ...request })
+		expect(decision).toMatchObject({ shouldRetry: false, delayMs: 0, reason: "elapsed-budget" })
+		expect(decision).not.toHaveProperty("retryAt")
+	})
+
+	it("captures one absolute retry deadline before notification time passes", () => {
+		let now = 10_000
+		const policy = new AgentRetryPolicy({ jitter: "none", now: () => now })
+		const decision = policy.decide({ category: "transport", attempt: 1, retryAfterMs: 10_000 })
+		now += 8_000
+		expect(decision.retryAt).toBe(20_000)
+		expect(decision.retryAt! - now).toBe(2_000)
+		expect(Object.isFrozen(decision)).toBe(true)
 	})
 
 	it("uses injectable full jitter and refuses replay after semantic output", () => {
@@ -79,6 +108,9 @@ describe("AgentRetryPolicy", () => {
 			delayMs: 0,
 			reason: "semantic-output",
 		})
+		expect(
+			policy.decide({ category: "rate-limit", attempt: 1, retryAfterMs: 60_000, hasSemanticOutput: true }),
+		).toMatchObject({ shouldRetry: false, delayMs: 0, reason: "semantic-output" })
 	})
 
 	it("enforces the elapsed retry budget before scheduling another attempt", () => {
@@ -175,10 +207,10 @@ describe("AgentRetryPolicy", () => {
 			vi.useRealTimers()
 		})
 
-		it("rejects promptly when cancellation occurs during the delay", async () => {
+		it.each([10_000, 60_000])("rejects promptly when cancellation occurs during a %dms delay", async (delayMs) => {
 			vi.useFakeTimers()
 			const controller = new AbortController()
-			const pending = delayWithAbort(10_000, controller.signal)
+			const pending = delayWithAbort(delayMs, controller.signal)
 			const abortReason = new Error("cancelled")
 
 			controller.abort(abortReason)

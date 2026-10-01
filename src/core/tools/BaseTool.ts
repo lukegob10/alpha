@@ -320,10 +320,10 @@ export abstract class BaseTool<TName extends ToolName> {
 		}
 
 		// Execute with typed parameters
-		await this.execute(
-			params,
-			task,
-			callbacks.toolCallId || !block.id ? callbacks : { ...callbacks, toolCallId: block.id },
-		)
+		const toolCallId = callbacks.toolCallId || block.id
+		const execute = () => this.execute(params, task, toolCallId ? { ...callbacks, toolCallId } : callbacks)
+		if (toolCallId && typeof task.withToolInputContext === "function")
+			await task.withToolInputContext(toolCallId, execute)
+		else await execute()
 	}
 }

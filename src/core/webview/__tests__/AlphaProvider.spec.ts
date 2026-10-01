@@ -28,6 +28,22 @@ import { safeWriteJson } from "../../../utils/safeWriteJson"
 
 import { AlphaProvider } from "../AlphaProvider"
 import { MessageManager } from "../../message-manager"
+import { MessageQueueService } from "../../message-queue/MessageQueueService"
+import { TaskSessionRegistry } from "../TaskSessionRegistry"
+import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
+
+// These are individual provider unit cases. Host-wide sharing is exercised by
+// AlphaProvider.host-ownership.spec.ts with two simultaneously attached views.
+beforeEach(() => {
+	vi.spyOn(TaskSessionRegistry, "forGlobalStorage").mockImplementation((_path, max) => new TaskSessionRegistry(max))
+	vi.spyOn(AgentControlStore, "forGlobalStorage").mockImplementation(
+		() => new AgentControlStore(new InMemoryAgentControlPersistence()),
+	)
+})
+afterEach(() => {
+	vi.mocked(TaskSessionRegistry.forGlobalStorage).mockRestore()
+	vi.mocked(AgentControlStore.forGlobalStorage).mockRestore()
+})
 
 // Mock setup must come before imports.
 vi.mock("../../prompts/sections/custom-instructions")
@@ -41,6 +57,9 @@ vi.mock("fs/promises", () => {
 	const transactionFiles = new Map<string, string>()
 	const transactionDirectories = new Set<string>()
 	const mockedFs = {
+		readdir: vi.fn().mockResolvedValue([]),
+		access: vi.fn().mockRejectedValue(Object.assign(new Error("not found"), { code: "ENOENT" })),
+		open: vi.fn().mockResolvedValue({ writeFile: vi.fn(), sync: vi.fn(), close: vi.fn() }),
 		mkdir: vi.fn().mockImplementation(async (filePath: string) => {
 			if (filePath.includes(".transaction.lock")) transactionDirectories.add(filePath)
 		}),
@@ -106,6 +125,7 @@ vi.mock("axios", () => ({
 vi.mock("../../../utils/safeWriteJson")
 
 vi.mock("../../../utils/storage", () => ({
+	getStorageBasePath: vi.fn().mockResolvedValue("/test/storage/path"),
 	getSettingsDirectoryPath: vi.fn().mockResolvedValue("/test/settings/path"),
 	getTaskDirectoryPath: vi.fn().mockResolvedValue("/test/task/path"),
 	getGlobalStoragePath: vi.fn().mockResolvedValue("/test/storage/path"),
@@ -488,7 +508,7 @@ describe("AlphaProvider", () => {
 		const child = Object.assign(new EventEmitter(), {
 			taskId: "managed-child",
 			taskKind: "subagent" as const,
-		}) as Task
+		}) as unknown as Task
 		const prepareRootCompletion = vi.spyOn(provider, "prepareTaskCompletionLifecycle")
 		const providerCompletion = vi.fn()
 		provider.on(AlphaCodeEventName.TaskCompleted, providerCompletion)
@@ -517,7 +537,8 @@ describe("AlphaProvider", () => {
 		const primary = Object.assign(new EventEmitter(), {
 			taskId: "completed-primary",
 			taskKind: "primary" as const,
-		}) as Task
+			clineMessages: [],
+		}) as unknown as Task
 		const lifecycleOrder: TaskLifecycleState[] = []
 		let releaseDuplicateCompletion!: () => void
 		const duplicateCompletion = new Promise<void>((resolve) => {
@@ -823,7 +844,7 @@ describe("AlphaProvider", () => {
 		const message = { ts: 1, type: "say", say: "text", text: "hello" } as const
 
 		await provider.postTaskMessageToWebview("messageCreated", "task-1", message)
-		vi.spyOn(provider, "isTaskOnScreen").mockReturnValue(true)
+		;(provider as any).currentView = { type: "task", taskId: "task-1" }
 		await provider.postTaskQueueToWebview("task-1", [
 			{ id: "queued-1", text: "continue", images: [], timestamp: 2 },
 		])
@@ -1006,7 +1027,16 @@ describe("AlphaProvider", () => {
 		})
 		const parentInstance = {
 			taskId: parentTaskId,
-			messageQueueService: { addMessage },
+			messageQueueService: {
+				addMessage,
+				addMessageDurably: vi.fn(async (text: string, images?: string[], id?: string) => {
+					const admitted = addMessage(text, images, id)
+					await parentInstance.messageQueueService.flush()
+					return admitted
+				}),
+				ready: Promise.resolve(),
+				flush: vi.fn(async () => undefined),
+			},
 			overwriteAlphaMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),
 			resumeAfterDelegation: vi.fn(),
@@ -1017,11 +1047,7 @@ describe("AlphaProvider", () => {
 			abort: false,
 			getCompletionGateDecision: vi.fn(async () => ({ allowed: true, modelCanResolveRejection: true })),
 			suspendAfterCurrentTurn: vi.fn(),
-			messageQueueService: {
-				on: vi.fn(),
-				off: vi.fn(),
-				isEmpty: vi.fn(() => true),
-			},
+			messageQueueService: new MessageQueueService(),
 		} as any
 
 		vi.spyOn(provider, "isTaskOnScreen").mockReturnValue(false)
@@ -1060,6 +1086,7 @@ describe("AlphaProvider", () => {
 
 		return {
 			childTaskId,
+			parentInstance,
 			reopening,
 			resolveChildStatus: () =>
 				resolveChildStatus({
@@ -1083,6 +1110,35 @@ describe("AlphaProvider", () => {
 		handoff.restoreReadFile()
 
 		expect(queued).toEqual(["older guidance", "newer guidance"])
+	})
+
+	test("retains guidance admitted while a delegated transfer awaits its durable receipt", async () => {
+		const queued: string[] = []
+		const handoff = await runLegacyHandoffWithBufferedGuidance(
+			vi.fn((text: string) => {
+				queued.push(text)
+				return { id: text, timestamp: Date.now(), text }
+			}),
+		)
+		let receiptEntered!: () => void
+		const entered = new Promise<void>((resolve) => {
+			receiptEntered = resolve
+		})
+		let finishReceipt!: () => void
+		const pendingReceipt = new Promise<void>((resolve) => {
+			finishReceipt = resolve
+		})
+		handoff.parentInstance.messageQueueService.flush.mockImplementationOnce(async () => {
+			receiptEntered()
+			await pendingReceipt
+		})
+		handoff.resolveChildStatus()
+		await entered
+		expect(provider.queueMessageForTask(handoff.childTaskId, "next guidance")).toBe(true)
+		finishReceipt()
+		await handoff.reopening
+		handoff.restoreReadFile()
+		expect(queued).toEqual(["older guidance", "next guidance"])
 	})
 
 	test("retains buffered guidance until enqueue succeeds", async () => {
@@ -1330,8 +1386,8 @@ describe("AlphaProvider", () => {
 
 		test("calls clearTask even with parent task (delegation via metadata)", async () => {
 			// Setup parent and child tasks
-			const parentTask = new Task(defaultTaskOptions)
-			const childTask = new Task(defaultTaskOptions)
+			const parentTask = Object.assign(new Task(defaultTaskOptions), { taskId: "parent-task" })
+			const childTask = Object.assign(new Task(defaultTaskOptions), { taskId: "child-task" })
 
 			// Set up parent-child relationship
 			;(childTask as any).parentTask = parentTask

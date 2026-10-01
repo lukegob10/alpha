@@ -324,7 +324,7 @@
 			"addButton": "Add",
 			"autoDenied": "Commands with the prefix `{{prefix}}` have been forbidden by the user. Do not bypass this restriction by running another command.",
 			"pathApprovalTitle": "File paths need approval",
-			"pathApprovalDescription": "This command uses a path outside the task root or has an unresolved write destination. Approval applies only to this run.",
+			"pathApprovalDescription": "Paths outside this task or unknown write locations. Approval is for this run only.",
 			"pathApprovalUnresolved": "Some write paths could not be resolved."
 		},
 		"apiRequestLimit": {

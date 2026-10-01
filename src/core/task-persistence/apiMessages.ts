@@ -29,6 +29,10 @@ export interface ApiMessagesCommitReceipt {
 }
 
 export type ApiMessage = Anthropic.MessageParam & {
+	/** Host-authored provenance; provider role alone does not establish human intent. */
+	input_origin?: "human" | "agent"
+	/** Accepted human queue entries durably incorporated into this user/tool-input boundary. */
+	queued_message_ids?: string[]
 	/** Host receipt for agent inbox delivery; never human approval or a provider response ID. */
 	agent_message_id?: string
 	/** Host-owned source of a hook continuation; retained in the canonical transcript across reload. */

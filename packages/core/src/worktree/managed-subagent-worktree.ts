@@ -68,6 +68,11 @@ export interface ApplyManagedWorktreeResult {
 	conflictPaths?: string[]
 }
 
+export interface ManagedWorkerRecoveryOptions {
+	/** Registered task ownership outlives terminal state when process cleanup needs retrying. */
+	hasTaskOwner?: (taskId: string) => boolean
+}
+
 const normalizeRelative = (value: string): string => value.split(path.sep).join("/").replace(/^\.\//, "")
 
 const isWithin = (root: string, candidate: string): boolean => {
@@ -678,7 +683,10 @@ export class ManagedSubagentWorktreeService {
 		}))
 	}
 
-	async recoverOrphans(storagePath: string): Promise<ManagedWorkerArtifact[]> {
+	async recoverOrphans(
+		storagePath: string,
+		options: ManagedWorkerRecoveryOptions = {},
+	): Promise<ManagedWorkerArtifact[]> {
 		const root = path.join(storagePath, "subagent-change-sets")
 		const worktreeRoot = path.join(storagePath, "subagent-worktrees")
 		let entries: string[] = []
@@ -691,6 +699,7 @@ export class ManagedSubagentWorktreeService {
 		for (const id of entries) {
 			try {
 				const artifact = await this.load(storagePath, id)
+				if (options.hasTaskOwner?.(artifact.taskId)) continue
 				const conventionalWorktreePath = path.join(worktreeRoot, artifact.id)
 				let recoverableWorktreePath: string | undefined
 				for (const candidate of [artifact.worktreePath, conventionalWorktreePath]) {
@@ -704,6 +713,7 @@ export class ManagedSubagentWorktreeService {
 					}
 				}
 
+				if (options.hasTaskOwner?.(artifact.taskId)) continue
 				if (artifact.status === "active") {
 					if (recoverableWorktreePath) {
 						if (artifact.worktreePath !== recoverableWorktreePath) {

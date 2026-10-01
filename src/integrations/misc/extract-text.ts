@@ -64,6 +64,8 @@ export interface ExtractTextResult {
 	wasTruncated: boolean
 	/** Line range shown [start, end] (1-based) */
 	linesShown?: [number, number]
+	/** First shown source line shortened by the character limit (1-based). */
+	firstClippedLine?: number
 }
 
 /**
@@ -114,6 +116,7 @@ export async function extractTextFromFileWithMetadata(
 			returnedLines: result.returnedLines,
 			wasTruncated: result.wasTruncated,
 			linesShown: result.includedRanges.length > 0 ? result.includedRanges[0] : undefined,
+			...(result.firstClippedLine === undefined ? {} : { firstClippedLine: result.firstClippedLine }),
 		}
 	} else {
 		throw new Error(`Cannot read text for file type: ${fileExtension}`)
