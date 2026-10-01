@@ -12,6 +12,35 @@ const failedCheck: ToolProgressObservation = {
 }
 
 describe("outcome-aware tool progress", () => {
+	it("advances its monotonic progress version only for admitted progress, including after an explicit reset", () => {
+		const detector = new ToolRepetitionDetector()
+		expect(detector.getProgressVersion()).toBe(0)
+		const read: ToolProgressObservation = {
+			toolName: "search_files",
+			kind: "read",
+			status: "success",
+			scope: "/workspace",
+			trustedProgress: { kind: "read", scope: "/workspace/file.ts", stateFingerprint: "returned lines" },
+		}
+		detector.recordOutcome(read)
+		expect(detector.getProgressVersion()).toBe(1)
+		detector.recordOutcome({ ...read, args: { query: "different wording" } })
+		expect(detector.getProgressVersion()).toBe(1)
+		detector.recordOutcome({ toolName: "wait_agent", kind: "poll", status: "success" })
+		detector.recordOutcome({
+			toolName: "use_mcp_tool",
+			kind: "other",
+			status: "success",
+			opaqueResultFingerprint: "new opaque",
+		})
+		detector.recordOutcome({ ...failedCheck, evidenceFingerprint: "unadmitted evidence" })
+		expect(detector.getProgressVersion()).toBe(1)
+		detector.resetProgress()
+		expect(detector.getProgressVersion()).toBe(1)
+		detector.recordOutcome(read)
+		expect(detector.getProgressVersion()).toBe(2)
+	})
+
 	it("recognizes repeated batches larger than resource history without interrupting the task", () => {
 		const detector = new ToolRepetitionDetector(3, { noProgressLimit: 2, historyLimit: 8 })
 		const resources = Array.from({ length: 16 }, (_, index) => ({

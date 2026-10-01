@@ -246,10 +246,12 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 			taskKind: "subagent",
 		})
 
-		for (const tool of orchestrationTools) {
+		for (const tool of orchestrationTools.filter((name) => name !== "send_message")) {
 			expect(names(result.tools as any)).not.toContain(tool)
 			expect(result.allowedFunctionNames).not.toContain(tool)
 		}
+		expect(names(result.tools as any)).toContain("send_message")
+		expect(result.allowedFunctionNames).toContain("send_message")
 		expect(names(result.tools as any)).not.toContain("report_progress")
 		expect(result.allowedFunctionNames).not.toContain("report_progress")
 	})

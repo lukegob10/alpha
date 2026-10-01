@@ -54,6 +54,7 @@ import { AlphaProvider } from "../core/webview/AlphaProvider"
 import type { Task } from "../core/task/Task"
 import { readTaskMessages } from "../core/task-persistence/taskMessages"
 import { readApiMessages, saveApiMessages, saveTaskMessages } from "../core/task-persistence"
+import { MessageQueueService } from "../core/message-queue/MessageQueueService"
 
 describe("Nested delegation resume (A → B → C)", () => {
 	beforeEach(() => {
@@ -124,7 +125,7 @@ describe("Nested delegation resume (A → B → C)", () => {
 				expect(opts).toEqual({ startTask: false, preserveExisting: true, background: true })
 				const instance = {
 					taskId: historyItem.id,
-					messageQueueService: { addMessage: vi.fn(() => true) },
+					messageQueueService: new MessageQueueService(),
 					resumeAfterDelegation: vi.fn().mockResolvedValue(undefined),
 					overwriteAlphaMessages: vi.fn().mockResolvedValue(undefined),
 					overwriteApiConversationHistory: vi.fn().mockResolvedValue(undefined),
@@ -168,6 +169,12 @@ describe("Nested delegation resume (A → B → C)", () => {
 				return await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(provider, params)
 			}),
 		} as unknown as AlphaProvider
+		Object.assign(provider, {
+			getTaskOwner: vi.fn((taskId: string) => (liveTasks.has(taskId) ? provider : undefined)),
+			getHostProviders: () => [provider],
+			isTaskSelected: (taskId: string) => taskId === currentActiveId,
+			taskNavigationGeneration: 0,
+		})
 
 		// Empty histories for simplicity
 		vi.mocked(readTaskMessages).mockResolvedValue([])

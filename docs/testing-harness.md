@@ -1,8 +1,7 @@
 # Testing and evaluation workflow
 
-The supported corporate workflow requires no Docker. Run these commands from the repository root with Node **24.14.1**, pnpm **11.24.0**, and npm **11.11.0**.
-VS Code **1.122.1** is still the release contract. The [research](harness-development-research.md) explains the design;
-the [implementation record](harness-implementation-progress.md) distinguishes new verification from historical results.
+The supported local workflow requires no Docker. Run these commands from the repository root with Node **24.14.1**, pnpm **11.24.0**, and npm **11.11.0**.
+VS Code **1.122.1** is the release contract.
 
 ## Docker-free corporate setup
 
@@ -14,10 +13,9 @@ pnpm harness doctor
 pnpm harness list
 ```
 
-Use your approved user-level pnpm registry/scope configuration for Artifactory. Obtain authentication through the
-corporate process; never commit tokens or print the user configuration into reports. Setup inherits that configuration.
-The lockfile is authoritative; do not substitute newer dependencies when a mirror lacks a package. The existing
-[migration record](toolchain-migration-step-3.md) documents registry inputs and remaining corporate validation.
+Use your approved user-level pnpm registry/scope configuration. Obtain authentication through your organization's
+process; never commit tokens or print the user configuration into reports. Setup inherits that configuration.
+The lockfile is authoritative; do not substitute newer dependencies when a mirror lacks a package.
 For an isolated automation checkout, `HUSKY=0` disables hook installation without changing shared Git configuration.
 The doctor reports toolchain agreement; it does not certify Artifactory authentication or provider access.
 
@@ -53,8 +51,8 @@ pnpm --filter @alpha-code/vscode-e2e test:campaign --storage-recovery-root <diff
 ```
 
 Use fresh owned directories outside the repository and personal VS Code profiles. Run these serially without concurrent
-builds. The [acceptance ledger](harness-acceptance-status.md) records what their real-host receipts prove and what remains
-untested; neither command calls a live provider.
+builds. The [managed-agent acceptance procedure](certification/managed-agent-live-acceptance.md) covers separate live
+integration requirements; neither command calls a live provider.
 
 The command wrapper selects existing runners and records exit status. SIGINT/SIGTERM cancels through the existing
 owned-process runner, awaits bounded cleanup and prevents later steps. Cancelled reports cannot pass; uncertain cleanup
@@ -126,7 +124,7 @@ pnpm harness run services
 The readiness command is read-only and redacts connection details. Service tests exercise PostgreSQL and Redis without
 container launch. Test database reset is destructive to the dedicated test database and is guarded separately from
 connectivity. A successful socket connection alone is not database readiness, permission to reset, or evidence of a
-completed service suite. See [Docker-free evaluator details](harness-docker-free.md).
+completed service suite.
 
 Docker remains optional coverage outside the corporate workflow: `pnpm harness run infrastructure` checks the container
 adapter; `docker:prepare`, `docker:campaign`, and `docker:stop` in `@alpha-code/evals` operate the container workflow.
@@ -148,5 +146,4 @@ boundary; do not silently downgrade container isolation to a normal workstation 
 6. Record keep/revise/revert/inconclusive and the claim's scope. Preserve unresolved incidents separately.
 
 A green rerun does not explain the historical ticket-progress timeout. The 75 ms real-filesystem fixture incident is
-separate. The [reliability investigation](harness-implementation-reliability.md) retains those distinctions and grader
-audit evidence; the [diagnostics record](harness-implementation-diagnostics.md) explains the safe-export compatibility.
+separate. The [diagnostics record](harness-implementation-diagnostics.md) explains the safe-export compatibility.

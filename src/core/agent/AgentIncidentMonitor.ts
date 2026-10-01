@@ -15,6 +15,8 @@ import {
 	type ToolName,
 } from "@alpha-code/types"
 
+export const INCIDENT_WINDOW_MS = 24 * 60 * 60 * 1_000
+
 const MAX_TASKS = 12
 const MAX_ALERTS = 12
 const MAX_TIMELINE_ITEMS = 8
@@ -568,8 +570,8 @@ function buildTurnInvestigationPrompt(
 			? turn.durationMs
 			: "unavailable"
 	const prompt = [
-		"Investigate this Alpha Code turn using only the bounded lifecycle facts below.",
-		"Do not infer or reconstruct user prompts, assistant/provider text, tool arguments, command text, or file contents.",
+		"Investigate this Alpha Code turn. The bounded lifecycle facts below are a starting point.",
+		"Verify the original request, responses, and tool transactions against the source task records; do not reconstruct missing content.",
 		"",
 		"Turn summary",
 		`- Task: ${safeTaskLabel}; task ID SHA-256 ${safeTask}`,
@@ -823,7 +825,10 @@ export class AgentIncidentMonitor {
 
 	/** Return a bounded immutable dashboard projection. */
 	snapshot(): IncidentDashboardSnapshot {
+		const generatedAt = this.currentTime()
+		const cutoff = generatedAt - INCIDENT_WINDOW_MS
 		const tasks = [...this.tasks.values()]
+			.filter((task) => task.updatedAt >= cutoff)
 			.sort((left, right) => right.updatedAt - left.updatedAt || left.taskId.localeCompare(right.taskId))
 			.slice(0, this.maxTasks)
 			.map((task) => ({
@@ -835,14 +840,16 @@ export class AgentIncidentMonitor {
 				timeline: task.timeline.map(({ sequence: _sequence, ...item }) => item),
 			}))
 		const alerts = [...this.alerts.values()]
+			.filter((alert) => alert.at >= cutoff)
 			.sort((left, right) => right.at - left.at || left.id.localeCompare(right.id))
 			.slice(0, this.maxAlerts)
 			.map((alert) => this.toDashboardAlert(alert))
 		const turns = [...this.turns.values()]
+			.filter((turn) => turn.lastEventAt >= cutoff)
 			.sort((left, right) => right.lastEventAt - left.lastEventAt || left.id.localeCompare(right.id))
 			.slice(0, MAX_TURNS)
 			.map((turn) => this.toDashboardTurn(turn))
-		return { generatedAt: this.currentTime(), tasks, alerts, turns }
+		return { generatedAt, tasks, alerts, turns }
 	}
 
 	/** Resolve one turn's safe, bounded event detail by its opaque dashboard ID. */
@@ -1414,8 +1421,8 @@ export function buildIncidentInvestigationPrompt(
 	const toolNameResult = toolNamesSchema.safeParse(alert.toolName)
 	const toolName = toolNameResult.success ? toolNameResult.data : "unavailable"
 	const prompt = [
-		"Investigate this Alpha Code incident using only the bounded evidence references below.",
-		"Do not infer or reconstruct user prompts, tool arguments, command text, provider payloads, or file contents.",
+		"Investigate this Alpha Code incident. Verify the bounded references below against the source task records.",
+		"Read the source conversation and trace before reporting findings. Do not infer missing content from hashes.",
 		"",
 		"Observed facts",
 		`- Incident: ${alertDescription.title} (${alertDescription.severity})`,

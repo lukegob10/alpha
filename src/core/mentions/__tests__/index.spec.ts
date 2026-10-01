@@ -125,4 +125,36 @@ describe("parseMentions - workspace file boundary", () => {
 		expect(extractTextFromFileWithMetadata).toHaveBeenCalledWith(path.resolve(cwd, "safe.txt"))
 		expect(result.contentBlocks[0]?.content).toContain("safe content")
 	})
+
+	it("directs recovery back to the shortened line rather than skipping its omitted tail", async () => {
+		vi.mocked(extractTextFromFileWithMetadata).mockResolvedValue({
+			content: "1 | shortened...",
+			totalLines: 1,
+			returnedLines: 1,
+			wasTruncated: true,
+			linesShown: [1, 1],
+			firstClippedLine: 1,
+		})
+		const result = await parseMentions("Read @/spec.txt", cwd)
+		const block = result.contentBlocks[0]!
+		expect(block.metadata).toMatchObject({ wasTruncated: true, firstClippedLine: 1 })
+		expect(block.content).toContain("shortened line is 1")
+		expect(block.content).toContain("exec_command")
+		expect(block.content).toContain("offset=1")
+		expect(block.content).toContain("Continuation")
+		expect(block.content).not.toContain("offset=2")
+	})
+
+	it("keeps the ordinary omitted-line continuation after the shown range", async () => {
+		vi.mocked(extractTextFromFileWithMetadata).mockResolvedValue({
+			content: "1 | first\n2 | second",
+			totalLines: 3,
+			returnedLines: 2,
+			wasTruncated: true,
+			linesShown: [1, 2],
+		})
+		const result = await parseMentions("Read @/spec.txt", cwd)
+		expect(result.contentBlocks[0]!.content).toContain("offset=3")
+		expect(result.contentBlocks[0]!.content).not.toContain("shortened line")
+	})
 })

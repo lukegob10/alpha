@@ -6,6 +6,24 @@ import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistr
 import { Task, getSubagentAllowedToolNames } from "../Task"
 
 describe("sub-agent task authority", () => {
+	it.each(["explore", "review", "worker"] as const)(
+		"keeps passive same-tree communication in nondelegating frozen %s profiles",
+		(role) => {
+			const child = Object.assign(Object.create(Task.prototype), {
+				taskKind: "subagent",
+				subagentRole: role,
+				subagentContextManifest: {
+					skills: [],
+					runtimePolicy: { allowedTools: ["attempt_completion"], delegate: false },
+				},
+			}) as Task
+			expect(child.getTaskAllowedToolNames()).toEqual(["send_message", "attempt_completion"])
+			expect(child.isToolAllowedForTask("send_message")).toBe(true)
+			expect(child.isToolAllowedForTask("spawn_agent")).toBe(false)
+			expect(child.isToolAllowedForTask("apply_patch")).toBe(false)
+			expect(child.isToolAllowedForTask("exec_command")).toBe(false)
+		},
+	)
 	it("records ordered credential-free terminal evidence and preserves the first terminal outcome", () => {
 		const child = Object.assign(Object.create(Task.prototype), {
 			taskKind: "subagent",
@@ -138,7 +156,7 @@ describe("sub-agent task authority", () => {
 		const child = Object.assign(Object.create(Task.prototype), { taskKind: "subagent" }) as Task
 		const allowed = child.getTaskAllowedToolNames()
 
-		expect(allowed).toEqual(["exec_command", "attempt_completion"])
+		expect(allowed).toEqual(["exec_command", "send_message", "attempt_completion"])
 		expect(child.isToolAllowedForTask("report_progress")).toBe(false)
 		expect(child.isToolAllowedForTask("exec_command")).toBe(true)
 		expect(child.isToolAllowedForTask("execute_command")).toBe(true)
@@ -182,7 +200,7 @@ describe("sub-agent task authority", () => {
 			},
 		}) as Task
 
-		expect(child.getTaskAllowedToolNames()).toEqual(["exec_command", "attempt_completion"])
+		expect(child.getTaskAllowedToolNames()).toEqual(["exec_command", "send_message", "attempt_completion"])
 	})
 
 	it("grants only current tools to delegating workers", () => {
@@ -192,11 +210,11 @@ describe("sub-agent task authority", () => {
 			"exec_command",
 			"manage_command",
 			"write_stdin",
+			"send_message",
 			"skill",
 			"spawn_agent",
 			"list_agents",
 			"wait_agent",
-			"send_message",
 			"followup_task",
 			"interrupt_agent",
 			"attempt_completion",
@@ -224,7 +242,7 @@ describe("sub-agent task authority", () => {
 			},
 		}) as Task
 
-		expect(child.getTaskAllowedToolNames()).toEqual(["exec_command"])
+		expect(child.getTaskAllowedToolNames()).toEqual(["exec_command", "send_message"])
 		expect(child.isToolAllowedForTask("execute_command")).toBe(true)
 		expect(child.isToolAllowedForTask("search_and_replace")).toBe(false)
 		expect(child.isToolAllowedForTask("write_file")).toBe(false)

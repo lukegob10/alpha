@@ -104,7 +104,7 @@ cancellation, orphan/recovery failure, cancellation, failure, and completion.
 | `NEST-DEPTH-001`                       | Positive authorized nesting, maximum depth, and authority narrowing                             |
 | `NEST-CAPACITY-001`                    | Atomic root-wide capacity and exact slot release                                                |
 | `NEST-CANCEL-001`                      | Recursive cancel/interrupt/close and race idempotency                                           |
-| `ROUTING-MAILBOX-001`                  | Durable cursors, result claims, and managed-child parent-control waits                          |
+| `ROUTING-MAILBOX-001`                  | Durable cursors, result claims, and managed-child passive parent-mail wakes                     |
 | `ROUTING-NESTED-001`                   | Immediate-parent routing, descendant authorization, and atomic claims                           |
 | `ROUTING-STEERING-RECEIPT-001`         | Durable agent-message acknowledgment, human approval isolation, and retained-follow-up recovery |
 | `ROUTING-PROGRESS-001`                 | Bounded immediate-parent progress routing and exact claim                                       |

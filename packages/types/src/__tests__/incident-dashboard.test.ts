@@ -20,6 +20,20 @@ const turn = {
 }
 
 describe("incident dashboard turn contract", () => {
+	it("accepts optional bounded chat titles and retains legacy anonymous rows", () => {
+		const snapshot = { generatedAt: 200, tasks: [], alerts: [], turns: [turn] }
+		expect(incidentDashboardSnapshotSchema.safeParse(snapshot).success).toBe(true)
+		expect(
+			incidentDashboardSnapshotSchema.safeParse({ ...snapshot, turns: [{ ...turn, chatTitle: "Fix dashboard" }] })
+				.success,
+		).toBe(true)
+		for (const chatTitle of ["", "x".repeat(201)]) {
+			expect(
+				incidentDashboardSnapshotSchema.safeParse({ ...snapshot, turns: [{ ...turn, chatTitle }] }).success,
+			).toBe(false)
+		}
+	})
+
 	it("accepts bounded positive and error turns without exposing content", () => {
 		const snapshot = { generatedAt: 200, tasks: [], alerts: [], turns: [turn, { ...turn, status: "failed" }] }
 		expect(incidentDashboardSnapshotSchema.safeParse(snapshot).success).toBe(true)
@@ -29,6 +43,20 @@ describe("incident dashboard turn contract", () => {
 		expect(
 			incidentDashboardSnapshotSchema.safeParse({ ...snapshot, turns: [{ ...turn, prompt: "secret" }] }).success,
 		).toBe(false)
+	})
+
+	it("accepts an optional saved workspace while bounding its length", () => {
+		const snapshot = { generatedAt: 200, tasks: [], alerts: [], turns: [turn] }
+		for (const workspace of [undefined, "/projects/Alpha-Code", "C:\\projects\\Alpha-Code"]) {
+			expect(
+				incidentDashboardSnapshotSchema.safeParse({ ...snapshot, turns: [{ ...turn, workspace }] }).success,
+			).toBe(true)
+		}
+		for (const workspace of ["", "x".repeat(4097)]) {
+			expect(
+				incidentDashboardSnapshotSchema.safeParse({ ...snapshot, turns: [{ ...turn, workspace }] }).success,
+			).toBe(false)
+		}
 	})
 
 	it("validates opaque detail requests and bounded responses", () => {

@@ -17,6 +17,16 @@ vi.mock("../../protect/AlphaProtectedController")
 vi.mock("../../context-tracking/FileContextTracker")
 vi.mock("../../../integrations/editor/DiffViewProvider")
 vi.mock("../../tools/ToolRepetitionDetector")
+// Metrics tests use virtual transcript storage; queue I/O has its own atomic
+// persistence coverage and must not write to the fixture's /test/path.
+vi.mock("../../task-persistence/TaskMessageQueuePersistence", () => ({
+	TaskMessageQueuePersistence: class {
+		async load() {
+			return []
+		}
+		async save() {}
+	},
+}))
 vi.mock("../../../api", () => ({
 	buildApiHandler: vi.fn(() => ({
 		getModel: () => ({ info: {}, id: "test-model" }),

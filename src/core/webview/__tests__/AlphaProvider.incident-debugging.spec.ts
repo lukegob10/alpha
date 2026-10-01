@@ -76,7 +76,7 @@ describe("AlphaProvider incident investigation launch", () => {
 		await fs.rm(storage, { recursive: true, force: true })
 	})
 
-	it("creates one marked read-only investigation from redacted evidence without modifying the source task", async () => {
+	it("creates one Code investigation grounded in the source task records", async () => {
 		const [first, second] = await Promise.all([
 			provider.startIncidentDebuggingTask(alertId),
 			provider.startIncidentDebuggingTask(alertId),
@@ -87,21 +87,47 @@ describe("AlphaProvider incident investigation launch", () => {
 		expect(prompt).toContain("Observed facts")
 		expect(prompt).toContain("Unverified hypotheses")
 		expect(prompt).not.toContain("PRIVATE PROVIDER ERROR")
-		expect(prompt).not.toContain(storage)
+		expect(prompt).toContain(JSON.stringify(path.join(storage, "tasks", "source-task")))
+		expect(prompt).toContain("ui_messages.json")
+		expect(prompt).toContain("provider_transcript.json")
+		expect(prompt).toContain("agent_lifecycle_events.jsonl")
+		expect(prompt).toContain("Read its saved conversation")
 		expect(images).toBeUndefined()
 		expect(parent).toBeUndefined()
 		expect(options).toMatchObject({
 			background: true,
 			preserveExisting: true,
-			diagnosticSession: true,
-			diagnosticIncidentId: alertId,
+			diagnosticSession: false,
+			taskMode: "code",
+			diagnosticIncidentId: `investigate:${alertId}`,
 			diagnosticSourceTaskId: "source-task",
 		})
 		expect(showTaskWithId).toHaveBeenCalledExactlyOnceWith("diagnostic-task")
 	})
 
+	it("leaves legacy restricted diagnostics intact and creates a separate investigation", async () => {
+		getAll.mockReturnValue([{ id: "legacy-diagnostic", diagnosticIncidentId: alertId, diagnosticSession: true }])
+		await provider.startIncidentDebuggingTask(alertId)
+		expect(createTask).toHaveBeenCalledTimes(1)
+		expect(createTask.mock.calls[0]?.[3]).toMatchObject({ diagnosticSession: false, taskMode: "code" })
+		expect(showTaskWithId).toHaveBeenCalledExactlyOnceWith("diagnostic-task")
+	})
+
+	it("does not create an investigation if debug mode is disabled during source resolution", async () => {
+		Object.assign(provider, {
+			buildSourceTaskInvestigationPrompt: async () => {
+				Object.assign(provider, { isIncidentDashboardEnabled: () => false })
+				return "source prompt"
+			},
+		})
+		await expect(provider.startIncidentDebuggingTurnTask(positiveTurnId)).rejects.toThrow(
+			"Alpha debug mode is disabled",
+		)
+		expect(createTask).not.toHaveBeenCalled()
+	})
+
 	it("reopens a persisted investigation instead of creating another task", async () => {
-		getAll.mockReturnValue([{ id: "old-investigation", diagnosticIncidentId: alertId }])
+		getAll.mockReturnValue([{ id: "old-investigation", diagnosticIncidentId: `investigate:${alertId}` }])
 		const oldTask = { taskId: "old-investigation" } as Task
 		Object.assign(provider, { getLiveTask: () => oldTask })
 		expect(await provider.startIncidentDebuggingTask(alertId)).toBe(oldTask)
@@ -109,7 +135,7 @@ describe("AlphaProvider incident investigation launch", () => {
 		expect(createTask).not.toHaveBeenCalled()
 	})
 
-	it("returns lazy turn details and launches read-only investigations for positive and error turns", async () => {
+	it("returns lazy turn details and launches Code investigations for positive and error turns", async () => {
 		const [failureDetail, positiveDetail] = await Promise.all([
 			provider.getIncidentDashboardTurnDetail(failedTurnId),
 			provider.getIncidentDashboardTurnDetail(positiveTurnId),
@@ -127,14 +153,16 @@ describe("AlphaProvider incident investigation launch", () => {
 		expect(createTask.mock.calls[0]?.[0]).toContain("Status: completed")
 		expect(createTask.mock.calls[0]?.[0]).not.toContain("PRIVATE PROVIDER ERROR")
 		expect(createTask.mock.calls[0]?.[3]).toMatchObject({
-			diagnosticSession: true,
-			diagnosticIncidentId: `turn:${positiveTurnId}`,
+			diagnosticSession: false,
+			taskMode: "code",
+			diagnosticIncidentId: `investigate:turn:${positiveTurnId}`,
 			diagnosticSourceTaskId: "success-source",
 		})
 		expect(createTask.mock.calls[1]?.[0]).toContain("Status: failed")
 		expect(createTask.mock.calls[1]?.[3]).toMatchObject({
-			diagnosticSession: true,
-			diagnosticIncidentId: `turn:${failedTurnId}`,
+			diagnosticSession: false,
+			taskMode: "code",
+			diagnosticIncidentId: `investigate:turn:${failedTurnId}`,
 			diagnosticSourceTaskId: "source-task",
 		})
 		expect(showTaskWithId).toHaveBeenCalledTimes(2)

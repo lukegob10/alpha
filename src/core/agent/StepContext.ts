@@ -76,6 +76,8 @@ export interface StepContextData {
 		apiProvider?: string
 		apiProtocol?: string
 		modelId: string
+		/** Optional instruction identity, distinct from the provider's execution ID. */
+		instructionModelId?: string
 		modelInfo: ModelInfo
 		options: Record<string, unknown>
 	}
@@ -329,6 +331,9 @@ export function getStepContextDigests(context: StepContext): StepContextDigests 
 	const model = digestValue({
 		provider: context.provider.apiProvider,
 		modelId: context.provider.modelId,
+		...(context.provider.instructionModelId !== undefined
+			? { instructionModelId: context.provider.instructionModelId }
+			: {}),
 		options: context.provider.options,
 	})
 

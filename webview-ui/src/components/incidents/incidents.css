@@ -84,12 +84,13 @@
 
 .incident-dashboard-grid {
 	display: grid;
-	grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.3fr);
+	grid-template-columns: minmax(0, 1fr);
 	align-items: start;
 	gap: 18px;
 }
 
 .incident-panel {
+	margin-bottom: 18px;
 	min-width: 0;
 	padding: 20px;
 	border: 1px solid var(--vscode-contrastBorder, var(--vscode-panel-border, transparent));
@@ -671,4 +672,37 @@
 	.incident-turn-event time {
 		grid-column: 1;
 	}
+}
+
+.incident-task-select {
+	border: 0;
+	padding: 0;
+	background: transparent;
+	color: var(--vscode-textLink-foreground);
+	font: inherit;
+	font-weight: 600;
+	text-align: left;
+	overflow-wrap: anywhere;
+	cursor: pointer;
+}
+
+.incident-alert-content summary {
+	cursor: pointer;
+	color: var(--vscode-descriptionForeground);
+	margin: 8px 0;
+}
+
+.incident-turn-select span {
+	max-width: 360px;
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+
+.incident-project {
+	display: block;
+	margin-top: 4px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 0.9em;
+	font-weight: 400;
+	overflow-wrap: anywhere;
 }

@@ -137,6 +137,8 @@ const agentControlStateFields = {
 	tombstones: z.array(closedAgentTombstoneSchema),
 	mailbox: z.array(agentMailboxEntrySchema),
 	mailboxCursors: z.record(z.string(), agentMailboxCursorSchema),
+	/** Human presentation cursor, independent of model receipt and acknowledgement. */
+	humanReadCursors: z.record(z.string(), z.number().int().nonnegative()).optional(),
 	verificationObligations: z.array(parentVerificationObligationSchema).default([]),
 }
 

@@ -12,5 +12,6 @@ export const agentTargetSchema = {
 	type: "string",
 	minLength: 1,
 	pattern: AGENT_TARGET_PATTERN,
-	description: "A stable child task_name, task ID, or canonical agent path such as /root/review.",
+	description:
+		"A stable task_name, task ID, or canonical agent path such as /root/review; the host checks recipient or control scope.",
 } as const

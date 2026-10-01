@@ -20,6 +20,7 @@ import {
 	ApiStream,
 	ApiStreamDeadlineError,
 	createLinkedAbortController,
+	createApiStreamError,
 	raceApiStreamAbort,
 	type LinkedAbortController,
 	type ApiStreamRequestMetadata,
@@ -58,6 +59,42 @@ function convertToVsCodeLmTools(tools: OpenAI.Chat.ChatCompletionTool[]): vscode
 				? normalizeToolSchema(tool.function.parameters as Record<string, unknown>)
 				: undefined,
 		}))
+}
+
+type VsCodeLmToolCallIntent = { callId: unknown; name: unknown; input: unknown }
+
+function isVsCodeLmToolCallIntent(chunk: unknown): chunk is VsCodeLmToolCallIntent {
+	return (
+		isLanguageModelToolCallPartLike(chunk) ||
+		(typeof chunk === "object" && chunk !== null && "callId" in chunk && "name" in chunk && "input" in chunk)
+	)
+}
+
+function serializeVsCodeLmToolCall(
+	chunk: VsCodeLmToolCallIntent,
+): { ok: true; id: string; name: string; arguments: string } | { ok: false; message: string } {
+	if (typeof chunk.callId !== "string" || !chunk.callId.trim()) {
+		return { ok: false, message: "VS Code LM returned a tool call without a stable call ID." }
+	}
+	if (typeof chunk.name !== "string" || !chunk.name.trim()) {
+		return { ok: false, message: "VS Code LM returned a tool call without a tool name." }
+	}
+	if (!chunk.input || typeof chunk.input !== "object" || Array.isArray(chunk.input)) {
+		return { ok: false, message: "VS Code LM returned a tool call with invalid arguments." }
+	}
+	try {
+		const argumentsString = JSON.stringify(chunk.input)
+		if (typeof argumentsString !== "string") {
+			return { ok: false, message: "VS Code LM returned a tool call with invalid serialized arguments." }
+		}
+		const serializedInput: unknown = JSON.parse(argumentsString)
+		if (!serializedInput || typeof serializedInput !== "object" || Array.isArray(serializedInput)) {
+			return { ok: false, message: "VS Code LM returned a tool call with invalid serialized arguments." }
+		}
+		return { ok: true, id: chunk.callId, name: chunk.name, arguments: argumentsString }
+	} catch {
+		return { ok: false, message: "VS Code LM returned a tool call whose arguments could not be serialized." }
+	}
 }
 
 type VsCodeLmModelConfiguration = {
@@ -1125,6 +1162,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		const disposeSignalBridge = bridgeAbortSignalToVsCodeCancellation(requestControl.signal, requestCancellation)
 		this.currentRequestSignalCleanup = disposeSignalBridge
 		let streamCompleted = false
+		let toolValidationFailed = false
 		let semanticOutputObserved = false
 		let responseStatefulMarker: string | undefined
 		let responseIterator: AsyncIterator<unknown> | undefined
@@ -1200,7 +1238,20 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				}
 
 				const chunk = nextChunk.value
+				const isToolIntent = isVsCodeLmToolCallIntent(chunk)
 				requestPhase = "response-stream"
+				// Once recognized tool intent is lost, retain only continuation/usage
+				// metadata. Later semantic output must not authorize further effects.
+				if (
+					toolValidationFailed &&
+					(isToolIntent ||
+						typeof chunk === "string" ||
+						isVsCodeLmThinkingPartLike(chunk) ||
+						isLanguageModelTextPartLike(chunk) ||
+						(getVsCodeLmMetadataMimeType(chunk) !== "usage" && !isVsCodeLmStatefulMarkerChunk(chunk)))
+				) {
+					continue
+				}
 				if (typeof chunk === "string") {
 					semanticOutputObserved ||= chunk.length > 0
 					accumulatedText.push(chunk)
@@ -1209,7 +1260,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 						type: "text",
 						text: chunk,
 					}
-				} else if (isVsCodeLmThinkingPartLike(chunk)) {
+				} else if (!isToolIntent && isVsCodeLmThinkingPartLike(chunk)) {
 					const thinkingText = getVsCodeLmThinkingText(chunk)
 					if (thinkingText.length === 0) {
 						continue
@@ -1222,7 +1273,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 						type: "reasoning",
 						text: thinkingText,
 					}
-				} else if (isLanguageModelTextPartLike(chunk)) {
+				} else if (!isToolIntent && isLanguageModelTextPartLike(chunk)) {
 					// Validate text part value
 					if (typeof chunk.value !== "string") {
 						console.warn("Alpha <Language Model API>: Invalid text part value received:", chunk.value)
@@ -1236,51 +1287,32 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 						type: "text",
 						text: chunk.value,
 					}
-				} else if (isLanguageModelToolCallPartLike(chunk)) {
-					try {
-						// Validate tool call parameters
-						if (!chunk.name || typeof chunk.name !== "string") {
-							console.warn("Alpha <Language Model API>: Invalid tool name received:", chunk.name)
-							continue
-						}
-
-						if (!chunk.callId || typeof chunk.callId !== "string") {
-							console.warn("Alpha <Language Model API>: Invalid tool callId received:", chunk.callId)
-							continue
-						}
-
-						// Ensure input is a valid object
-						if (!chunk.input || typeof chunk.input !== "object") {
-							console.warn("Alpha <Language Model API>: Invalid tool input received:", chunk.input)
-							continue
-						}
-
-						// Log tool call for debugging
-						console.debug("Alpha <Language Model API>: Processing tool call:", {
-							name: chunk.name,
-							callId: chunk.callId,
-							inputSize: JSON.stringify(chunk.input).length,
+				} else if (isToolIntent) {
+					semanticOutputObserved = true
+					const call = serializeVsCodeLmToolCall(chunk)
+					if (!call.ok || tools.length === 0) {
+						toolValidationFailed = true
+						yield createApiStreamError({
+							code: "InvalidToolCall",
+							message: call.ok
+								? "VS Code LM returned a tool call when no tools were offered."
+								: call.message,
+							retryable: false,
+							semanticOutputObserved,
+							phase: requestPhase,
+							requestId: metadata?.requestId,
+							attemptId: metadata?.attemptId,
+							metadata: {
+								...(typeof chunk.callId === "string" ? { callId: chunk.callId.slice(0, 256) } : {}),
+								...(typeof chunk.name === "string" ? { toolName: chunk.name.slice(0, 256) } : {}),
+							},
 						})
-
-						// Yield native tool_call chunk when tools are provided
-						if (metadata?.tools?.length) {
-							const argumentsString = JSON.stringify(chunk.input)
-							accumulatedText.push(argumentsString)
-							semanticOutputObserved = true
-							reportedUsage = undefined
-							yield {
-								type: "tool_call",
-								id: chunk.callId,
-								name: chunk.name,
-								arguments: argumentsString,
-							}
-							yield { type: "tool_call_end", id: chunk.callId }
-						}
-					} catch (error) {
-						console.error("Alpha <Language Model API>: Failed to process tool call:", error)
-						// Continue processing other chunks even if one fails
 						continue
 					}
+					accumulatedText.push(call.arguments)
+					reportedUsage = undefined
+					yield { type: "tool_call", id: call.id, name: call.name, arguments: call.arguments }
+					yield { type: "tool_call_end", id: call.id }
 				} else if (getVsCodeLmMetadataMimeType(chunk) === "usage") {
 					const usage = getVsCodeLmUsage(chunk)
 					if (usage) {
@@ -1347,6 +1379,11 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				throw new Error(`Alpha <Language Model API>: Response stream error: ${errorMessage}`)
 			}
 		} finally {
+			// Keep observed state on the matching response even if cancellation or a
+			// host error interrupts draining. A predecessor cannot overwrite its successor.
+			if (this.currentRequestCancellation === requestCancellation) {
+				this.currentResponseStatefulMarker = responseStatefulMarker
+			}
 			if (!streamCompleted) {
 				closeVsCodeLmResponseIterator(responseIterator)
 			}
@@ -1366,6 +1403,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 	// Return model information based on the current client state
 	override getModel(): {
 		id: string
+		instructionModelId?: string
 		info: ModelInfo
 		toolIdentity?: ModelToolIdentity
 	} {
@@ -1396,6 +1434,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 
 			return {
 				id: modelId,
+				instructionModelId: client.family || "vscode-lm",
 				info: modelInfo,
 				toolIdentity: { provider: "vscode-lm", vendor: client.vendor, family: client.family, id: client.id },
 			}

@@ -58,8 +58,10 @@ export interface IndentationReadResult {
 	totalLines: number
 	/** Lines actually returned */
 	returnedLines: number
-	/** Whether output was truncated due to limit */
+	/** Whether lines or within-line content were omitted by output limits */
 	wasTruncated: boolean
+	/** First returned source line shortened by the character limit (1-based). */
+	firstClippedLine?: number
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -249,6 +251,10 @@ export function formatWithLineNumbers(
 		.join("\n")
 }
 
+function getFirstClippedLine(lines: Pick<LineRecord, "lineNumber" | "content">[]): number | undefined {
+	return lines.find((line) => line.content.length > MAX_LINE_LENGTH)?.lineNumber
+}
+
 /**
  * Convert a contiguous array of LineRecords into merged ranges for output.
  */
@@ -335,12 +341,14 @@ export function readWithIndentation(content: string, options: IndentationReadOpt
 	// Edge case: if limit is 1, just return the anchor line
 	if (finalLimit === 1) {
 		const singleLine = [lines[anchorIdx]]
+		const firstClippedLine = getFirstClippedLine(singleLine)
 		return {
 			content: formatWithLineNumbers(singleLine),
 			includedRanges: [[anchorLine, anchorLine]],
 			totalLines,
 			returnedLines: 1,
-			wasTruncated: totalLines > 1,
+			wasTruncated: totalLines > 1 || firstClippedLine !== undefined,
+			...(firstClippedLine === undefined ? {} : { firstClippedLine }),
 		}
 	}
 
@@ -413,6 +421,7 @@ export function readWithIndentation(content: string, options: IndentationReadOpt
 
 	// Format output
 	const formattedContent = formatWithLineNumbers(result)
+	const firstClippedLine = getFirstClippedLine(result)
 
 	// Compute included ranges
 	const includedRanges = computeIncludedRanges(result)
@@ -422,7 +431,8 @@ export function readWithIndentation(content: string, options: IndentationReadOpt
 		includedRanges,
 		totalLines,
 		returnedLines: result.length,
-		wasTruncated: wasTruncated && result.length < totalLines,
+		wasTruncated: (wasTruncated && result.length < totalLines) || firstClippedLine !== undefined,
+		...(firstClippedLine === undefined ? {} : { firstClippedLine }),
 	}
 }
 
@@ -465,12 +475,14 @@ export function readWithSlice(
 
 	// Format output
 	const formattedContent = formatWithLineNumbers(selectedLines)
+	const firstClippedLine = getFirstClippedLine(selectedLines)
 
 	return {
 		content: formattedContent,
 		includedRanges: [[offset + 1, endIdx]], // 1-based
 		totalLines,
 		returnedLines: selectedLines.length,
-		wasTruncated,
+		wasTruncated: wasTruncated || firstClippedLine !== undefined,
+		...(firstClippedLine === undefined ? {} : { firstClippedLine }),
 	}
 }

@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import * as vscode from "vscode"
+import path from "node:path"
+import os from "node:os"
 
 import { AlphaProvider } from "../AlphaProvider"
 import { Task } from "../../task/Task"
@@ -96,7 +98,7 @@ describe("AlphaProvider flicker-free cancel", () => {
 				update: vi.fn().mockResolvedValue(undefined),
 				keys: vi.fn().mockReturnValue([]),
 			},
-			globalStorageUri: { fsPath: "/test/storage" },
+			globalStorageUri: { fsPath: path.join(os.tmpdir(), `alpha-cancel-${crypto.randomUUID()}`) },
 			secrets: {
 				get: vi.fn().mockResolvedValue(undefined),
 				store: vi.fn().mockResolvedValue(undefined),
@@ -178,7 +180,11 @@ describe("AlphaProvider flicker-free cancel", () => {
 		}
 
 		// Mock Task constructor
-		vi.mocked(Task).mockImplementation(() => mockTask2 as any)
+		vi.mocked(Task).mockImplementation((options) => {
+			mockTask2.taskId = options.historyItem?.id ?? mockTask2.taskId
+			options.onCreated?.(mockTask2)
+			return mockTask2 as any
+		})
 	})
 
 	it("should not remove current task from stack when rehydrating same taskId", async () => {

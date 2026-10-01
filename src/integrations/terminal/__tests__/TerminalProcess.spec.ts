@@ -273,6 +273,28 @@ describe("TerminalProcess", () => {
 			mockTerminalInfo.shellExecutionComplete({ exitCode: 130, signalName: "SIGINT" })
 		})
 
+		it("retries a failed interrupt without repeating an accepted interrupt", async () => {
+			mockTerminal.shellIntegration.executeCommand.mockImplementationOnce(() => {
+				mockTerminalInfo.setActiveStream(
+					(async function* () {
+						yield "\x1b]633;C\x07output before failure\n"
+						throw new Error("active stream failed")
+					})(),
+				)
+			})
+			const running = mockTerminalInfo.runCommand("echo test", callbacks())
+			await expect(running).rejects.toThrow("active stream failed")
+			mockTerminal.sendText.mockImplementationOnce(() => {
+				throw new Error("interrupt transport unavailable")
+			})
+			expect(() => running.abort()).toThrow("interrupt transport unavailable")
+			running.abort()
+			running.abort()
+			expect(mockTerminal.sendText).toHaveBeenCalledTimes(2)
+			expect(mockTerminal.sendText).toHaveBeenLastCalledWith("\x03")
+			mockTerminalInfo.shellExecutionComplete({ exitCode: 130, signalName: "SIGINT" })
+		})
+
 		it("does not interrupt the shell after the physical command has completed", async () => {
 			mockTerminal.shellIntegration.executeCommand.mockImplementationOnce(() => {
 				mockTerminalInfo.setActiveStream(

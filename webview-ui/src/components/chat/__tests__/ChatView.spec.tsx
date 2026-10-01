@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs"
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
 import { vscode } from "@src/utils/vscode"
 
-import ChatView, { ChatViewProps, isContextCondensationRequest } from "../ChatView"
+import ChatView, { ChatViewProps, type ChatViewRef, isContextCondensationRequest } from "../ChatView"
 
 vi.mock("@/i18n/TranslationContext", async () => {
 	const { default: i18n } = await import("@/i18n/setup")
@@ -393,11 +393,11 @@ const defaultProps: ChatViewProps = {
 
 const queryClient = new QueryClient()
 
-const renderChatView = (props: Partial<ChatViewProps> = {}) => {
+const renderChatView = (props: Partial<ChatViewProps> = {}, ref?: React.Ref<ChatViewRef>) => {
 	return render(
 		<ExtensionStateContextProvider>
 			<QueryClientProvider client={queryClient}>
-				<ChatView {...defaultProps} {...props} />
+				<ChatView {...defaultProps} {...props} ref={ref} />
 			</QueryClientProvider>
 		</ExtensionStateContextProvider>,
 	)
@@ -510,6 +510,8 @@ describe("ChatView async user input", () => {
 				type: "askResponse",
 				askResponse: "messageResponse",
 				text: "Use blue and label it Ready.",
+				requestId: expect.any(String),
+				askMessageTs: undefined,
 				images: [],
 				taskId,
 				asyncUserInputMessageTs: 2,
@@ -582,6 +584,7 @@ describe("ChatView async user input", () => {
 		await waitFor(() =>
 			expect(vscode.postMessage).toHaveBeenCalledWith({
 				type: "resumeCompletedTask",
+				requestId: expect.any(String),
 				taskId,
 				text: "Resume the task",
 				images: [],
@@ -1068,13 +1071,15 @@ describe("ChatView - Plan command", () => {
 		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
 
 		await waitFor(() => {
-			expect(vscode.postMessage).toHaveBeenCalledWith({
-				type: "askResponse",
-				askResponse: "messageResponse",
-				text: "/plan inspect the provider flow",
-				images: [],
-				taskId: "active-task",
-			})
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "askResponse",
+					askResponse: "messageResponse",
+					text: "/plan inspect the provider flow",
+					images: [],
+					taskId: "active-task",
+				}),
+			)
 		})
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "mode" }))
 	})
@@ -2089,13 +2094,15 @@ describe("ChatView - Message Queueing Tests", () => {
 			})
 
 			await waitFor(() =>
-				expect(vscode.postMessage).toHaveBeenCalledWith({
-					type: "askResponse",
-					askResponse: "messageResponse",
-					text: "Continue the reopened task",
-					images: [],
-					taskId,
-				}),
+				expect(vscode.postMessage).toHaveBeenCalledWith(
+					expect.objectContaining({
+						type: "askResponse",
+						askResponse: "messageResponse",
+						text: "Continue the reopened task",
+						images: [],
+						taskId,
+					}),
+				),
 			)
 			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "newTask" }))
 		})
@@ -2148,6 +2155,8 @@ describe("ChatView - Message Queueing Tests", () => {
 						expect(submissions).toEqual([
 							{
 								type: "askResponse",
+								askMessageTs: followUp.ts,
+								requestId: expect.any(String),
 								askResponse: "messageResponse",
 								text,
 								images: [],
@@ -2182,8 +2191,10 @@ describe("ChatView - Message Queueing Tests", () => {
 			expect(submissions).toEqual([
 				{
 					type: "askResponse",
+					askMessageTs: followUp.ts,
 					askResponse: "messageResponse",
 					text: "My answer",
+					requestId: expect.any(String),
 					images: [],
 					taskId: waitingTask.id,
 				},
@@ -2249,13 +2260,15 @@ describe("ChatView - Message Queueing Tests", () => {
 				await act(async () => {
 					invokeAnswer()
 				})
-				expect(vscode.postMessage).toHaveBeenCalledWith({
-					type: "askResponse",
-					askResponse: "messageResponse",
-					text: "My answer",
-					images: [],
-					taskId,
-				})
+				expect(vscode.postMessage).toHaveBeenCalledWith(
+					expect.objectContaining({
+						type: "askResponse",
+						askResponse: "messageResponse",
+						text: "My answer",
+						images: [],
+						taskId,
+					}),
+				)
 				expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
 			},
 		)
@@ -2318,7 +2331,15 @@ describe("ChatView - Message Queueing Tests", () => {
 					.mock.calls.map(([message]) => message)
 					.filter((message) => ["askResponse", "queueMessage", "newTask"].includes(message.type))
 				expect(submissions).toEqual([
-					{ type: "askResponse", askResponse: "messageResponse", text, images, taskId: waitingTask.id },
+					{
+						type: "askResponse",
+						requestId: expect.any(String),
+						askMessageTs: followUp.ts,
+						askResponse: "messageResponse",
+						text,
+						images,
+						taskId: waitingTask.id,
+					},
 				])
 				expect(queryByTestId("queued-messages")?.textContent).toBe(queuedText)
 				expect(input).toHaveValue("")
@@ -2350,13 +2371,15 @@ describe("ChatView - Message Queueing Tests", () => {
 					)
 				})
 
-				expect(vscode.postMessage).toHaveBeenCalledWith({
-					type: "askResponse",
-					askResponse: "messageResponse",
-					text: "My answer",
-					images: [],
-					taskId: waitingTask.id,
-				})
+				expect(vscode.postMessage).toHaveBeenCalledWith(
+					expect.objectContaining({
+						type: "askResponse",
+						askResponse: "messageResponse",
+						text: "My answer",
+						images: [],
+						taskId: waitingTask.id,
+					}),
+				)
 				expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
 			},
 		)
@@ -3450,6 +3473,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		await waitFor(() => {
 			expect(vscode.postMessage).toHaveBeenCalledWith({
 				type: "editQueuedMessage",
+				requestId: expect.any(String),
 				payload: {
 					id: "msg1",
 					text: "edited queued message",
@@ -3574,11 +3598,13 @@ describe("ChatView - Message Queueing Tests", () => {
 		vi.mocked(vscode.postMessage).mockClear()
 		fireEvent.click(getByText("chat:approve.title"))
 
-		expect(vscode.postMessage).toHaveBeenCalledWith({
-			type: "askResponse",
-			askResponse: "yesButtonClicked",
-			taskId: "task-1",
-		})
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "askResponse",
+				askResponse: "yesButtonClicked",
+				taskId: "task-1",
+			}),
+		)
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "askResponse",
@@ -3908,12 +3934,14 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		// Verify that the message was sent as askResponse, not queued
 		await waitFor(() => {
-			expect(vscode.postMessage).toHaveBeenCalledWith({
-				type: "askResponse",
-				askResponse: "messageResponse",
-				text: "follow-up after completion",
-				images: [],
-			})
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "askResponse",
+					askResponse: "messageResponse",
+					text: "follow-up after completion",
+					images: [],
+				}),
+			)
 		})
 
 		// Verify it was NOT queued
@@ -3972,13 +4000,15 @@ describe("ChatView - Message Queueing Tests", () => {
 		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
 
 		await waitFor(() => {
-			expect(vscode.postMessage).toHaveBeenCalledWith({
-				type: "askResponse",
-				askResponse: "messageResponse",
-				text: "continue in this task",
-				images: [],
-				taskId: "task-1",
-			})
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "askResponse",
+					askResponse: "messageResponse",
+					text: "continue in this task",
+					images: [],
+					taskId: "task-1",
+				}),
+			)
 		})
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
 	})
@@ -4036,13 +4066,15 @@ describe("ChatView - Message Queueing Tests", () => {
 		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
 
 		await waitFor(() => {
-			expect(vscode.postMessage).toHaveBeenCalledWith({
-				type: "askResponse",
-				askResponse: "messageResponse",
-				text: "evaluate that answer",
-				images: [],
-				taskId: "task-1",
-			})
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "askResponse",
+					askResponse: "messageResponse",
+					text: "evaluate that answer",
+					images: [],
+					taskId: "task-1",
+				}),
+			)
 		})
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "newTask" }))
 	})
@@ -4104,6 +4136,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 			expect(vscode.postMessage).toHaveBeenCalledWith({
 				type: "resumeCompletedTask",
+				requestId: expect.any(String),
 				taskId: "task-1",
 				text: "new work",
 				images: [],
@@ -4128,10 +4161,16 @@ describe("ChatView - Message Queueing Tests", () => {
 				window.dispatchEvent(
 					new MessageEvent("message", {
 						data: {
-							type: "invoke",
-							invoke: "setChatBoxMessage",
-							text: "new work",
-							images: [],
+							type: "chatCommandResult",
+							chatCommandResult: {
+								command: "resumeCompletedTask",
+								taskId: "task-1",
+								status: "rejected",
+								requestId: vi
+									.mocked(vscode.postMessage)
+									.mock.calls.find(([message]) => message.type === "resumeCompletedTask")?.[0]
+									.requestId,
+							},
 						},
 					}),
 				)
@@ -4313,13 +4352,15 @@ describe("ChatView - Message Queueing Tests", () => {
 		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
 
 		await waitFor(() => {
-			expect(vscode.postMessage).toHaveBeenCalledWith({
-				type: "askResponse",
-				askResponse: "messageResponse",
-				text: "continue the legacy task",
-				images: [],
-				taskId: "task-1",
-			})
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "askResponse",
+					askResponse: "messageResponse",
+					text: "continue the legacy task",
+					images: [],
+					taskId: "task-1",
+				}),
+			)
 		})
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "newTask" }))
 	})
@@ -4380,13 +4421,15 @@ describe("ChatView - Message Queueing Tests", () => {
 				fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
 			})
 
-			expect(vscode.postMessage).toHaveBeenCalledWith({
-				type: "askResponse",
-				askResponse: "messageResponse",
-				text: "follow up in this thread",
-				images: [],
-				taskId: "task-1",
-			})
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "askResponse",
+					askResponse: "messageResponse",
+					text: "follow up in this thread",
+					images: [],
+					taskId: "task-1",
+				}),
+			)
 			expect(vscode.postMessage).not.toHaveBeenCalledWith(
 				expect.objectContaining({
 					type: "newTask",
@@ -4760,5 +4803,391 @@ describe("ChatView - Context Condensing Indicator Tests", () => {
 			},
 			{ timeout: 2000 },
 		)
+	})
+})
+
+describe("ChatView chat-owned composer commands", () => {
+	beforeEach(() => vi.clearAllMocks())
+	const runningState = (id: string, queue: Array<{ id: string; text: string }> = []): Partial<ExtensionState> => ({
+		currentTaskId: id,
+		currentView: { type: "task", taskId: id },
+		currentTaskItem: { id, task: `Prompt ${id}`, ts: 1 },
+		clineMessages: [
+			{ type: "say", say: "task", ts: 1, text: `Prompt ${id}` },
+			{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "anthropic" }) },
+		],
+		messageQueue: queue,
+	})
+	const receipt = (command: string, requestId: string, taskId: string, status: string) =>
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "chatCommandResult", chatCommandResult: { command, requestId, taskId, status } },
+				}),
+			),
+		)
+	it("keeps submitted input in a queue preview until authoritative admission and preserves a later draft", async () => {
+		const view = renderChatView()
+		mockPostMessage(runningState("a"))
+		await waitFor(() => view.getByText("Prompt a"))
+		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		fireEvent.change(input, { target: { value: "Review the remaining changes" } })
+		fireEvent.keyDown(input, { key: "Enter" })
+		const request = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "queueMessage")![0]
+		expect(view.getByTestId("queued-messages")).toHaveTextContent("Review the remaining changes")
+		fireEvent.change(input, { target: { value: "Another draft" } })
+		mockPostMessage(runningState("a", [{ id: request.requestId!, text: "Review the remaining changes" }]))
+		await waitFor(() => expect(view.getAllByText("Review the remaining changes")).toHaveLength(1))
+		receipt("queueMessage", request.requestId!, "a", "accepted")
+		expect(input).toHaveValue("Another draft")
+		expect(view.getByTestId("queued-messages")).toHaveTextContent("Review the remaining changes")
+	})
+	it("restores rejected queue input alongside a draft typed while awaiting admission", async () => {
+		const view = renderChatView()
+		mockPostMessage(runningState("a"))
+		await waitFor(() => view.getByText("Prompt a"))
+		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		fireEvent.change(input, { target: { value: "Review the remaining changes" } })
+		fireEvent.keyDown(input, { key: "Enter" })
+		const request = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "queueMessage")![0]
+		fireEvent.change(input, { target: { value: "Another draft" } })
+		receipt("queueMessage", request.requestId!, "a", "rejected")
+		expect(input.value).toContain("Review the remaining changes")
+		expect(input.value).toContain("Another draft")
+		expect(view.getByRole("alert")).toHaveTextContent("chat:queuedMessages.queueFailed")
+	})
+	it("queues an operation request during streaming instead of clearing an ineligible operation", async () => {
+		const view = renderChatView()
+		mockPostMessage(runningState("a"))
+		await waitFor(() => view.getByText("Prompt a"))
+		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		fireEvent.change(input, { target: { value: "compact the context" } })
+		fireEvent.keyDown(input, { key: "Enter" })
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "queueMessage", taskId: "a", text: "compact the context" }),
+		)
+		expect(input).toHaveValue("compact the context")
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "condenseTaskContextRequest" }),
+		)
+	})
+	it("edits queued input even when its text resembles a composer operation", async () => {
+		const view = renderChatView()
+		mockPostMessage(runningState("a", [{ id: "queued-a", text: "Review the remaining changes" }]))
+		await waitFor(() => view.getByText("Prompt a"))
+		fireEvent.click(view.getByLabelText("Edit queued-a"))
+		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		fireEvent.change(input, { target: { value: "compact the context" } })
+		fireEvent.keyDown(input, { key: "Enter" })
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "editQueuedMessage",
+				taskId: "a",
+				payload: { id: "queued-a", text: "compact the context", images: [] },
+			}),
+		)
+		expect(input).toHaveValue("compact the context")
+	})
+	it.each(["streaming", "command", "tool"] as const)(
+		"queues typed input through the host Enter command during %s",
+		async (boundary) => {
+			const ref = React.createRef<ChatViewRef>()
+			const view = renderChatView({}, ref)
+			mockPostMessage({
+				...runningState("a"),
+				...(boundary === "streaming"
+					? {}
+					: {
+							clineMessages: [
+								{ type: "say", say: "task", ts: 1, text: "Prompt a" },
+								{
+									type: "ask",
+									ask: boundary,
+									ts: 2,
+									text:
+										boundary === "tool"
+											? JSON.stringify({ tool: "readFile", path: "a.ts" })
+											: "build",
+									partial: false,
+								},
+							],
+						}),
+			})
+			await waitFor(() => view.getByText("Prompt a"))
+			const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+			fireEvent.change(input, { target: { value: "Review the remaining changes" } })
+			vi.mocked(vscode.postMessage).mockClear()
+			act(() => ref.current!.acceptInput())
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "queueMessage", taskId: "a", text: "Review the remaining changes" }),
+			)
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "askResponse" }))
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(
+				expect.objectContaining({ type: "toolApprovalDecision" }),
+			)
+			expect(input).toHaveValue("Review the remaining changes")
+		},
+	)
+	it("restores a rejected reply to its owning chat and ignores duplicate receipts", async () => {
+		const view = renderChatView()
+		const waiting: Partial<ExtensionState> = {
+			...runningState("a"),
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Prompt a" },
+				{ type: "ask", ask: "followup", ts: 2, text: "Which option?" },
+			],
+		}
+		mockPostMessage(waiting)
+		await waitFor(() => view.getByText("Prompt a"))
+		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		fireEvent.change(input, { target: { value: "Choose option one" } })
+		fireEvent.keyDown(input, { key: "Enter" })
+		const request = vi.mocked(vscode.postMessage).mock.calls.find(([message]) => message.type === "askResponse")![0]
+		expect(request).toMatchObject({ requestId: expect.any(String), taskId: "a", askMessageTs: 2 })
+		mockPostMessage(runningState("b"))
+		await waitFor(() => view.getByText("Prompt b"))
+		fireEvent.change(input, { target: { value: "Draft b" } })
+		receipt("askResponse", request.requestId!, "a", "rejected")
+		receipt("askResponse", request.requestId!, "a", "rejected")
+		expect(input).toHaveValue("Draft b")
+		mockPostMessage(waiting)
+		await waitFor(() => view.getByText("Prompt a"))
+		expect(input).toHaveValue("Choose option one")
+		expect(view.getByRole("alert")).toHaveTextContent("chat:queuedMessages.answerFailed")
+	})
+
+	it("an accepted reply receipt preserves newly typed input", async () => {
+		const view = renderChatView()
+		mockPostMessage({
+			...runningState("a"),
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Prompt a" },
+				{ type: "ask", ask: "completion_result", ts: 2, text: "Completed report" },
+			],
+		})
+		await waitFor(() => view.getByText("Prompt a"))
+		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		fireEvent.change(input, { target: { value: "Continue this chat" } })
+		fireEvent.keyDown(input, { key: "Enter" })
+		const request = vi.mocked(vscode.postMessage).mock.calls.find(([message]) => message.type === "askResponse")![0]
+		fireEvent.change(input, { target: { value: "New draft" } })
+		receipt("askResponse", request.requestId!, "a", "accepted")
+		expect(input).toHaveValue("New draft")
+	})
+	it("keeps edits and late receipts on their originating chat across navigation", async () => {
+		const view = renderChatView()
+		mockPostMessage(runningState("a", [{ id: "queue-a", text: "Original queued text" }]))
+		await waitFor(() => view.getByText("Prompt a"))
+		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		fireEvent.change(input, { target: { value: "Prior draft a" } })
+		fireEvent.click(view.getByLabelText("Edit queue-a"))
+		fireEvent.change(input, { target: { value: "Edited queued text" } })
+		fireEvent.keyDown(input, { key: "Enter" })
+		const edit = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "editQueuedMessage")![0]
+		expect(edit).toMatchObject({
+			taskId: "a",
+			requestId: expect.any(String),
+			payload: { id: "queue-a", text: "Edited queued text" },
+		})
+		mockPostMessage(runningState("b"))
+		await waitFor(() => view.getByText("Prompt b"))
+		expect(input).toHaveValue("")
+		fireEvent.change(input, { target: { value: "Draft b" } })
+		fireEvent.keyDown(input, { key: "Enter" })
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "queueMessage", taskId: "b", text: "Draft b" }),
+		)
+		expect(
+			vi.mocked(vscode.postMessage).mock.calls.filter(([message]) => message.type === "editQueuedMessage"),
+		).toHaveLength(1)
+		receipt("editQueuedMessage", edit.requestId!, "a", "rejected")
+		expect(input).toHaveValue("Draft b")
+		mockPostMessage(runningState("a", [{ id: "queue-a", text: "Original queued text" }]))
+		await waitFor(() => view.getByText("Prompt a"))
+		expect(input).toHaveValue("Edited queued text")
+		expect(view.getByRole("alert")).toHaveTextContent("chat:queuedMessages.editFailed")
+		fireEvent.keyDown(input, { key: "Enter" })
+		const retry = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.filter(([message]) => message.type === "editQueuedMessage")
+			.at(-1)![0]
+		receipt("editQueuedMessage", retry.requestId!, "a", "accepted")
+		expect(input).toHaveValue("Prior draft a")
+	})
+	it("uses the committed chat identity for receipts immediately after navigation", async () => {
+		const listeners = new Set<EventListenerOrEventListenerObject>()
+		const addListener = window.addEventListener.bind(window)
+		const removeListener = window.removeEventListener.bind(window)
+		const addSpy = vi.spyOn(window, "addEventListener").mockImplementation((type, listener, options) => {
+			if (type === "message") listeners.add(listener)
+			addListener(type, listener, options)
+		})
+		const removeSpy = vi.spyOn(window, "removeEventListener").mockImplementation((type, listener, options) => {
+			if (type === "message") listeners.delete(listener)
+			removeListener(type, listener, options)
+		})
+		const view = renderChatView()
+		mockPostMessage(runningState("b"))
+		await waitFor(() => view.getByText("Prompt b"))
+		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		fireEvent.change(input, { target: { value: "Queued b" } })
+		fireEvent.keyDown(input, { key: "Enter" })
+		mockPostMessage(runningState("a"))
+		await waitFor(() => view.getByText("Prompt a"))
+		fireEvent.change(input, { target: { value: "Queued a" } })
+		fireEvent.keyDown(input, { key: "Enter" })
+		const requestA = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "queueMessage" && message.taskId === "a")![0]
+		// Retain the subscribed callbacks to model a receipt dispatched in the
+		// commit-to-passive-effect window, independently of React's test scheduler.
+		const subscribed = [...listeners]
+		try {
+			mockPostMessage(runningState("b"))
+			await waitFor(() => view.getByText("Prompt b"))
+			const event = new MessageEvent("message", {
+				data: {
+					type: "chatCommandResult",
+					chatCommandResult: {
+						command: "queueMessage",
+						requestId: requestA.requestId,
+						taskId: "a",
+						status: "accepted",
+					},
+				},
+			})
+			act(() => {
+				for (const listener of subscribed) {
+					if (typeof listener === "function") listener.call(window, event)
+					else listener.handleEvent(event)
+				}
+			})
+			fireEvent.keyDown(input, { key: "Enter" })
+			expect(
+				vi
+					.mocked(vscode.postMessage)
+					.mock.calls.filter(([message]) => message.type === "queueMessage" && message.taskId === "b"),
+			).toHaveLength(1)
+		} finally {
+			addSpy.mockRestore()
+			removeSpy.mockRestore()
+		}
+	})
+	it("restores rejected completed-chat guidance only to its owner", async () => {
+		const view = renderChatView()
+		const completed: Partial<ExtensionState> = {
+			...runningState("a"),
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Prompt a" },
+				{ type: "say", say: "completion_result", ts: 2, text: "Done" },
+			],
+			liveTasksById: {
+				a: {
+					id: "a",
+					status: "completed",
+					lifecycle: "completed",
+					isActive: true,
+					isStreaming: false,
+					isWaitingForInput: false,
+					lastUpdatedAt: 3,
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+		}
+		mockPostMessage(completed)
+		await waitFor(() => view.getByText("Prompt a"))
+		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		fireEvent.change(input, { target: { value: "Continue a" } })
+		fireEvent.keyDown(input, { key: "Enter" })
+		const request = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "resumeCompletedTask")![0]
+		mockPostMessage(runningState("b"))
+		await waitFor(() => view.getByText("Prompt b"))
+		fireEvent.change(input, { target: { value: "Keep draft b" } })
+		receipt("resumeCompletedTask", request.requestId!, "a", "rejected")
+		expect(input).toHaveValue("Keep draft b")
+		mockPostMessage(completed)
+		await waitFor(() => view.getByText("Prompt a"))
+		expect(input).toHaveValue("Continue a")
+	})
+	it("defers API guidance during an edit and preserves the separate composer draft", async () => {
+		const view = renderChatView()
+		mockPostMessage(runningState("a", [{ id: "queue-a", text: "Queued a" }]))
+		await waitFor(() => view.getByText("Prompt a"))
+		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		fireEvent.change(input, { target: { value: "Human draft" } })
+		fireEvent.click(view.getByLabelText("Edit queue-a"))
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "invoke", invoke: "sendMessage", taskId: "a", text: "API guidance", images: [] },
+				}),
+			),
+		)
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "editQueuedMessage" }))
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
+		fireEvent.keyDown(input, { key: "Escape" })
+		await waitFor(() =>
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "queueMessage", text: "API guidance", taskId: "a" }),
+			),
+		)
+		expect(input).toHaveValue("Human draft")
+		const request = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "queueMessage")![0]
+		receipt("queueMessage", request.requestId!, "a", "accepted")
+		expect(input).toHaveValue("Human draft")
+	})
+	it("opens the background chat named by its attention notification", async () => {
+		const view = renderChatView()
+		mockPostMessage(runningState("b"))
+		await waitFor(() => view.getByText("Prompt b"))
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", { data: { type: "interactionRequired", taskId: "attention-a" } }),
+			),
+		)
+		fireEvent.click(view.getByRole("button", { name: "chat:taskAttention.openNamed" }))
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "showTaskWithId", text: "attention-a" }),
+		)
+	})
+	it("makes deferred host-send overflow observable without replacing the composer", async () => {
+		const view = renderChatView()
+		mockPostMessage(runningState("a"))
+		await waitFor(() => view.getByText("Prompt a"))
+		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		fireEvent.change(input, { target: { value: "Keep human draft" } })
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			act(() => {
+				for (let index = 0; index < 17; index++)
+					window.dispatchEvent(
+						new MessageEvent("message", {
+							data: {
+								type: "invoke",
+								invoke: "sendMessage",
+								taskId: "not-selected",
+								text: `External ${index}`,
+							},
+						}),
+					)
+			})
+			expect(view.getByRole("alert")).toHaveTextContent("chat:hostMessages.deliveryBackpressure")
+			expect(input).toHaveValue("Keep human draft")
+		} finally {
+			warning.mockRestore()
+		}
 	})
 })

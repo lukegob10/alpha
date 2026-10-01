@@ -91,8 +91,9 @@ for (const output of ["capture", "inherit"] as const) {
 					'const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], { detached: false, stdio: "ignore" })',
 					`fs.writeFileSync(${JSON.stringify(descendantPidFile)}, String(descendant.pid))`,
 					`fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))`,
-					`fs.writeFileSync(${JSON.stringify(readyFile)}, "ready")`,
 					'process.on("SIGTERM", () => {})',
+					// Publish readiness only after the child is prepared to resist graceful termination.
+					`fs.writeFileSync(${JSON.stringify(readyFile)}, "ready")`,
 					"setInterval(() => {}, 1_000)",
 				].join(";"),
 			),
@@ -143,8 +144,8 @@ test("does not terminate an unrelated disposable child", async () => {
 				root,
 				[
 					'const fs = require("node:fs")',
-					`fs.writeFileSync(${JSON.stringify(ownedReady)}, "ready")`,
 					'process.on("SIGTERM", () => {})',
+					`fs.writeFileSync(${JSON.stringify(ownedReady)}, "ready")`,
 					"setInterval(() => {}, 1_000)",
 				].join(";"),
 			),
@@ -214,8 +215,8 @@ test(
 					root,
 					[
 						'const fs = require("node:fs")',
-						`fs.writeFileSync(${JSON.stringify(readyFile)}, "ready")`,
 						'process.on("SIGTERM", () => {})',
+						`fs.writeFileSync(${JSON.stringify(readyFile)}, "ready")`,
 						"setInterval(() => {}, 1_000)",
 					].join(";"),
 				),
@@ -256,8 +257,8 @@ test(
 					[
 						'const fs = require("node:fs")',
 						`fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))`,
-						`fs.writeFileSync(${JSON.stringify(readyFile)}, "ready")`,
 						'process.on("SIGTERM", () => {})',
+						`fs.writeFileSync(${JSON.stringify(readyFile)}, "ready")`,
 						"setInterval(() => {}, 1_000)",
 					].join(";"),
 				),

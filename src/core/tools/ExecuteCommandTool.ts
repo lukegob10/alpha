@@ -1087,7 +1087,66 @@ export async function executeCommandInTerminal(
 	let agentTimeoutId: NodeJS.Timeout | undefined
 	let userTimeoutId: NodeJS.Timeout | undefined
 	let isUserTimedOut = false
-	let userTimeoutCleanupError: unknown
+	let userTimeoutFinalization: Promise<void> | undefined
+	const finalizeUserTimeout = (): Promise<void> => {
+		if (userTimeoutFinalization) return userTimeoutFinalization
+		// This owner outlives the foreground race. The agent may already have
+		// received a background session when the process-lifetime timeout fires.
+		userTimeoutFinalization = (async () => {
+			try {
+				await Promise.resolve().then(() => process.abort())
+			} catch (error) {
+				const cleanupError = new CommandExecutionLifecycleError(
+					"await-command-process",
+					new Error(
+						`Command exceeded its timeout and process cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+						{ cause: error },
+					),
+				)
+				if (mutationReservationAcquired) {
+					const receiptError = new CommandMutationReceiptError("process-outcome-unknown", true, cleanupError)
+					const { recoveryError } = await handleCommandMutationFailure(receiptError)
+					if (recoveryError) {
+						throw new AggregateError(
+							[cleanupError, recoveryError],
+							"Timed-out command cleanup failed and unresolved mutation debt could not be persisted",
+						)
+					}
+				}
+				throw cleanupError
+			}
+
+			if (!mutationReservationAcquired) return
+			const timeoutError = new CommandExecutionLifecycleError(
+				"await-command-process",
+				new Error(`Command execution timed out after ${commandExecutionTimeout}ms`),
+			)
+			if (exitDetails) {
+				// Abort reported the physical exit. Its ordinary callback is fenced,
+				// so this owner must settle the exact/no-op receipt itself.
+				try {
+					await ensureMutationReceipt()
+				} catch (receiptError) {
+					throw new AggregateError(
+						[timeoutError, receiptError],
+						"Timed-out command mutation receipt could not be finalized",
+					)
+				}
+			} else {
+				const receiptError = new CommandMutationReceiptError("process-outcome-unknown", true, timeoutError)
+				const { recoveryError } = await handleCommandMutationFailure(receiptError)
+				if (recoveryError) {
+					throw new AggregateError(
+						[timeoutError, receiptError, recoveryError],
+						"Timed-out command ended without an observable outcome and unresolved debt could not be persisted",
+					)
+				}
+			}
+		})()
+		// A yielded command has no foreground caller left to observe rejection.
+		void userTimeoutFinalization.catch((error) => console.error("Timed-out command finalization failed:", error))
+		return userTimeoutFinalization
+	}
 
 	try {
 		const racers: Promise<void>[] = [process]
@@ -1116,9 +1175,17 @@ export async function executeCommandInTerminal(
 						// process cleanup may still flush output, but it must not settle the
 						// reservation or publish success independently of the timeout path.
 						commandTerminalOutcomeFenced = true
-						if (toolCallId) task.failCommandExecution?.(toolCallId, "timed_out", physicalExecutionId)
-						const status: CommandExecutionStatus = { executionId, status: "timeout" }
-						provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
+						const finalization = finalizeUserTimeout()
+						try {
+							if (toolCallId) task.failCommandExecution?.(toolCallId, "timed_out", physicalExecutionId)
+							const status: CommandExecutionStatus = { executionId, status: "timeout" }
+							provider?.postMessageToWebview({
+								type: "commandExecutionStatus",
+								text: JSON.stringify(status),
+							})
+						} catch (error) {
+							console.error("Failed to project a command timeout:", error)
+						}
 						if (runInBackground) {
 							task.didToolFailInCurrentTurn = true
 							void task
@@ -1130,13 +1197,9 @@ export async function executeCommandInTerminal(
 									console.error("Failed to report a background command timeout:", error),
 								)
 						}
-						void Promise.resolve(process.abort()).then(
+						void finalization.then(
 							() => reject(new Error(`Command execution timed out after ${commandExecutionTimeout}ms`)),
-							(error) => {
-								userTimeoutCleanupError = error
-								console.error("Failed to terminate a timed-out command:", error)
-								reject(error)
-							},
+							(error) => reject(error),
 						)
 					}, commandExecutionTimeout)
 				}),
@@ -1152,54 +1215,7 @@ export async function executeCommandInTerminal(
 		}
 	} catch (error) {
 		if (isUserTimedOut) {
-			if (userTimeoutCleanupError) {
-				const cleanupError = new CommandExecutionLifecycleError(
-					"await-command-process",
-					new Error(
-						`Command exceeded its timeout and process cleanup failed: ${userTimeoutCleanupError instanceof Error ? userTimeoutCleanupError.message : String(userTimeoutCleanupError)}`,
-						{ cause: userTimeoutCleanupError },
-					),
-				)
-				if (mutationReservationAcquired) {
-					const receiptError = new CommandMutationReceiptError("process-outcome-unknown", true, cleanupError)
-					const { recoveryError } = await handleCommandMutationFailure(receiptError)
-					if (recoveryError) {
-						throw new AggregateError(
-							[cleanupError, recoveryError],
-							"Timed-out command cleanup failed and unresolved mutation debt could not be persisted",
-						)
-					}
-				}
-				throw cleanupError
-			}
-
-			if (mutationReservationAcquired) {
-				const timeoutError = new CommandExecutionLifecycleError("await-command-process", error)
-				if (exitDetails) {
-					// A terminal outcome arrived as part of abort cleanup. Settle the
-					// exact/no-op receipt here because its normal callback is fenced.
-					try {
-						await ensureMutationReceipt()
-					} catch (receiptError) {
-						throw new AggregateError(
-							[timeoutError, receiptError],
-							"Timed-out command mutation receipt could not be finalized",
-						)
-					}
-				} else {
-					// A successful abort without a terminal callback does not prove the
-					// final workspace scope. Persist conservative unknown debt under the
-					// same physical reservation before returning the timeout result.
-					const receiptError = new CommandMutationReceiptError("process-outcome-unknown", true, timeoutError)
-					const { recoveryError } = await handleCommandMutationFailure(receiptError)
-					if (recoveryError) {
-						throw new AggregateError(
-							[timeoutError, receiptError, recoveryError],
-							"Timed-out command ended without an observable outcome and unresolved debt could not be persisted",
-						)
-					}
-				}
-			}
+			await finalizeUserTimeout()
 			await task.say("error", t("common:errors:command_timeout", { seconds: commandExecutionTimeoutSeconds }))
 			task.didToolFailInCurrentTurn = true
 			task.terminalProcess = undefined

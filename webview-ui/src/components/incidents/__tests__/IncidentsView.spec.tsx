@@ -22,6 +22,8 @@ vi.mock("react-i18next", () => ({
 		) => {
 			const labels: Record<string, string> = {
 				title: "Incident dashboard",
+				project: "Project",
+				projectUnavailable: "Not recorded",
 				debugMode: "Debug mode",
 				description:
 					"Review task activity, compare successful and error turns, and inspect lifecycle evidence.",
@@ -220,10 +222,12 @@ describe("IncidentsView", () => {
 		expect(screen.getByText("Turns with errors")).toBeInTheDocument()
 		expect(screen.getByText("Agent turn failed")).toBeInTheDocument()
 		expect(screen.getByRole("heading", { name: "Activity timeline" })).toBeInTheDocument()
+		expect(screen.queryByText("Turn failed")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Task 1234abcd" }))
 		expect(screen.getAllByText("Turn failed")).toHaveLength(2)
 		expect(screen.getAllByText("Task 1234abcd").length).toBeGreaterThanOrEqual(2)
 		expect(screen.getByText("Evidence captured")).toBeInTheDocument()
-		expect(screen.getByText("Evidence not checked")).toBeInTheDocument()
+		expect(screen.getByText("Evidence not checked")).toBeVisible()
 		expect(screen.getByText("read_file")).toBeInTheDocument()
 		expect(screen.getByText("aaaaaaaaaaaa")).toBeInTheDocument()
 		expect(screen.getByText("bbbbbbbbbbbb")).toBeInTheDocument()
@@ -233,6 +237,54 @@ describe("IncidentsView", () => {
 			type: "startDebuggingTask",
 			alertId: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 		})
+	})
+
+	it("shows chat titles and keeps task timelines collapsed until selected", () => {
+		render(<IncidentsView />)
+		reply({
+			type: "incidentDashboardUpdate",
+			snapshot: {
+				...snapshot,
+				tasks: snapshot.tasks.map((task) => ({ ...task, chatTitle: "Fix the dashboard" })),
+				turns: snapshot.turns.map((turn) => ({ ...turn, chatTitle: "Fix the dashboard" })),
+			},
+		})
+		expect(within(screen.getByRole("table")).getAllByText("Fix the dashboard")).toHaveLength(3)
+		expect(screen.queryByText("Turn failed")).not.toBeInTheDocument()
+		const task = screen.getByRole("button", { name: "Fix the dashboard" })
+		expect(task).toHaveAttribute("aria-expanded", "false")
+		fireEvent.click(task)
+		expect(task).toHaveAttribute("aria-expanded", "true")
+		expect(screen.getAllByText("Turn failed")).toHaveLength(2)
+		fireEvent.click(task)
+		expect(screen.queryByText("Turn failed")).not.toBeInTheDocument()
+	})
+
+	it.each(["/home/me/Alpha-Code/", "C:\\projects\\Alpha-Code\\"])(
+		"shows the project folder and retains the full path on hover: %s",
+		(workspace) => {
+			render(<IncidentsView />)
+			reply({
+				type: "incidentDashboardUpdate",
+				snapshot: {
+					...snapshot,
+					tasks: snapshot.tasks.map((task) => ({ ...task, workspace })),
+					turns: snapshot.turns.map((turn) => ({ ...turn, workspace })),
+				},
+			})
+			const labels = screen.getAllByText("Project: Alpha-Code")
+			expect(labels).toHaveLength(5)
+			for (const label of labels) expect(label).toHaveAttribute("title", workspace)
+			expect(screen.queryByText(workspace)).not.toBeInTheDocument()
+			fireEvent.click(screen.getByRole("button", { name: /Inspect turn eeeee/ }))
+			expect(screen.getAllByText("Project: Alpha-Code")).toHaveLength(6)
+		},
+	)
+
+	it("does not invent a project for older tasks without a saved workspace", () => {
+		render(<IncidentsView />)
+		reply({ type: "incidentDashboardUpdate", snapshot })
+		expect(screen.getAllByText("Project: Not recorded")).toHaveLength(5)
 	})
 
 	it("rejects snapshot fields that could expose prompts or tool output", async () => {

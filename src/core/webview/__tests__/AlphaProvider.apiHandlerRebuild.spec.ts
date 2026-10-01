@@ -64,6 +64,7 @@ vi.mock("proper-lockfile", () => ({
 }))
 
 vi.mock("../../../utils/storage", () => ({
+	getStorageBasePath: vi.fn(async (defaultPath: string) => defaultPath),
 	getSettingsDirectoryPath: vi.fn().mockResolvedValue("/test/settings/path"),
 	getTaskDirectoryPath: vi.fn().mockResolvedValue("/test/task/path"),
 	getGlobalStoragePath: vi.fn().mockResolvedValue("/test/storage/path"),
@@ -165,6 +166,8 @@ vi.mock("../../task/Task", () => ({
 	}),
 }))
 
+let storageFixtureCounter = 0
+
 describe("AlphaProvider - API Handler Rebuild Guard", () => {
 	let provider: AlphaProvider
 	let mockContext: vscode.ExtensionContext
@@ -211,7 +214,7 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 				packageJSON: { version: "1.0.0" },
 			},
 			globalStorageUri: {
-				fsPath: "/test/storage/path",
+				fsPath: `/test/apiHandlerRebuild/storage-${++storageFixtureCounter}`,
 			},
 		} as unknown as vscode.ExtensionContext
 
@@ -232,10 +235,7 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 				asWebviewUri: vi.fn(),
 			},
 			visible: true,
-			onDidDispose: vi.fn().mockImplementation((callback) => {
-				callback()
-				return { dispose: vi.fn() }
-			}),
+			onDidDispose: vi.fn(() => ({ dispose: vi.fn() })),
 			onDidChangeVisibility: vi.fn().mockImplementation(() => ({ dispose: vi.fn() })),
 		} as unknown as vscode.WebviewView
 

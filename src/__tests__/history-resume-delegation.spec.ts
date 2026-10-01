@@ -38,6 +38,50 @@ vi.mock("../core/task-persistence", () => ({
 import { AlphaProvider } from "../core/webview/AlphaProvider"
 import { readTaskMessages } from "../core/task-persistence/taskMessages"
 import { readApiMessages, saveApiMessages, saveTaskMessages } from "../core/task-persistence"
+import { MessageQueueService } from "../core/message-queue/MessageQueueService"
+
+const wiredProviders = new WeakSet<AlphaProvider>()
+const prepareQueue = (task: { messageQueueService?: MessageQueueService }) => {
+	const queue = task.messageQueueService ?? new MessageQueueService()
+	Object.assign(task, { messageQueueService: queue })
+	Object.assign(queue, {
+		ready: queue.ready ?? Promise.resolve(),
+		flush: queue.flush ?? vi.fn(async () => undefined),
+		removeMessage: queue.removeMessage ?? vi.fn(() => true),
+		addMessageDurably:
+			queue.addMessageDurably ??
+			vi.fn(async (text: string, images?: string[], id?: string) => {
+				const message = queue.addMessage(text, images, id)
+				await queue.flush()
+				return message
+			}),
+	})
+}
+
+const withHostFixture = (provider: AlphaProvider): AlphaProvider => {
+	if (wiredProviders.has(provider)) return provider
+	wiredProviders.add(provider)
+	Object.assign(provider, {
+		getTaskOwner: vi.fn((taskId: string) => {
+			const task = provider.getLiveTask?.(taskId)
+			if (task) prepareQueue(task)
+			return task ? provider : undefined
+		}),
+		getHostProviders: () => [provider],
+		isTaskSelected: (taskId: string) =>
+			provider.isTaskOnScreen?.(taskId) ?? provider.getCurrentTask?.()?.taskId === taskId,
+		taskNavigationGeneration: 0,
+		focusTask: provider.focusTask ?? vi.fn(async () => true),
+	})
+	const create = vi.mocked(provider.createTaskWithHistoryItem)
+	const implementation = create.getMockImplementation()!
+	create.mockImplementation(async (...args) => {
+		const task = await implementation(...args)
+		if (task) prepareQueue(task)
+		return task
+	})
+	return provider
+}
 
 const createLiveChild = (taskId: string) => ({
 	taskId,
@@ -103,7 +147,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 		vi.mocked(readTaskMessages).mockResolvedValue([])
 		vi.mocked(readApiMessages).mockResolvedValue([])
 
-		await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(provider, {
+		await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(withHostFixture(provider), {
 			parentTaskId: "parent-1",
 			childTaskId: "child-1",
 			completionResultSummary: "Child done",
@@ -175,7 +219,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 		vi.mocked(readTaskMessages).mockResolvedValue(existingUiMessages as any)
 		vi.mocked(readApiMessages).mockResolvedValue(existingApiMessages as any)
 
-		await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(provider, {
+		await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(withHostFixture(provider), {
 			parentTaskId: "p1",
 			childTaskId: "c1",
 			completionResultSummary: "Subtask completed successfully",
@@ -275,7 +319,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 		vi.mocked(readTaskMessages).mockResolvedValue(existingUiMessages as any)
 		vi.mocked(readApiMessages).mockResolvedValue(existingApiMessages as any)
 
-		await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(provider, {
+		await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(withHostFixture(provider), {
 			parentTaskId: "p-tool",
 			childTaskId: "c-tool",
 			completionResultSummary: "Subtask completed via tool_result",
@@ -350,7 +394,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 		vi.mocked(readTaskMessages).mockResolvedValue(existingUiMessages as any)
 		vi.mocked(readApiMessages).mockResolvedValue(existingApiMessages as any)
 
-		await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(provider, {
+		await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(withHostFixture(provider), {
 			parentTaskId: "p-no-tool",
 			childTaskId: "c-no-tool",
 			completionResultSummary: "Subtask completed without tool_use",
@@ -404,7 +448,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 		vi.mocked(readTaskMessages).mockResolvedValue([])
 		vi.mocked(readApiMessages).mockResolvedValue([])
 
-		await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(provider, {
+		await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(withHostFixture(provider), {
 			parentTaskId: "parent-2",
 			childTaskId: "child-2",
 			completionResultSummary: "Done",
@@ -451,7 +495,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 		vi.mocked(readTaskMessages).mockResolvedValue([])
 		vi.mocked(readApiMessages).mockResolvedValue([])
 
-		await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(provider, {
+		await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(withHostFixture(provider), {
 			parentTaskId: "p3",
 			childTaskId: "c3",
 			completionResultSummary: "Summary",
@@ -533,7 +577,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 		vi.mocked(readApiMessages).mockResolvedValue([])
 
 		await expect(
-			(AlphaProvider.prototype as any).reopenParentFromDelegation.call(provider, {
+			(AlphaProvider.prototype as any).reopenParentFromDelegation.call(withHostFixture(provider), {
 				parentTaskId: "parent-rpd06",
 				childTaskId: "child-rpd06",
 				completionResultSummary: "Subtask finished despite overwrite failures",
@@ -593,7 +637,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 		vi.mocked(readTaskMessages).mockResolvedValue([])
 		vi.mocked(readApiMessages).mockResolvedValue([])
 
-		await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(provider, {
+		await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(withHostFixture(provider), {
 			parentTaskId: "p4",
 			childTaskId: "c4",
 			completionResultSummary: "S",
@@ -660,7 +704,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 		vi.mocked(readTaskMessages).mockResolvedValue([])
 		vi.mocked(readApiMessages).mockResolvedValue([])
 
-		await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(provider, {
+		await (AlphaProvider.prototype as any).reopenParentFromDelegation.call(withHostFixture(provider), {
 			parentTaskId: "parent-rpd02",
 			childTaskId: "child-rpd02",
 			completionResultSummary: "Child done without being current",
@@ -751,7 +795,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 		vi.mocked(readApiMessages).mockResolvedValue([])
 
 		await expect(
-			(AlphaProvider.prototype as any).reopenParentFromDelegation.call(provider, {
+			(AlphaProvider.prototype as any).reopenParentFromDelegation.call(withHostFixture(provider), {
 				parentTaskId: "parent-rpd04",
 				childTaskId: "child-rpd04",
 				completionResultSummary: "Child completion with persistence failure",
@@ -853,7 +897,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 		})
 
 		await expect(
-			(AlphaProvider.prototype as any).reopenParentFromDelegation.call(provider, {
+			(AlphaProvider.prototype as any).reopenParentFromDelegation.call(withHostFixture(provider), {
 				parentTaskId,
 				childTaskId,
 				completionResultSummary: "Child result",
@@ -867,7 +911,11 @@ describe("History resume delegation - parent metadata transitions", () => {
 			requireAbortSuccess: true,
 		})
 		expect(operations).toEqual(["history:active", "stage-parent", `remove:${parentTaskId}`, "history:delegated"])
-		expect(childQueue.addMessage).toHaveBeenCalledWith("Please incorporate this before finishing", ["queued-image"])
+		expect(childQueue.addMessage).toHaveBeenCalledWith(
+			"Please incorporate this before finishing",
+			["queued-image"],
+			expect.any(String),
+		)
 		expect(parentInstance.messageQueueService.addMessage).not.toHaveBeenCalled()
 		expect(parentInstance.resumeAfterDelegation).not.toHaveBeenCalled()
 		expect(vi.mocked(saveTaskMessages)).toHaveBeenCalledTimes(2)
@@ -985,11 +1033,14 @@ describe("History resume delegation - parent metadata transitions", () => {
 			commitId: "11111111-1111-4111-8111-111111111111",
 		})
 
-		const handoffPromise = (AlphaProvider.prototype as any).reopenParentFromDelegation.call(provider, {
-			parentTaskId,
-			childTaskId,
-			completionResultSummary: "Child result",
-		})
+		const handoffPromise = (AlphaProvider.prototype as any).reopenParentFromDelegation.call(
+			withHostFixture(provider),
+			{
+				parentTaskId,
+				childTaskId,
+				completionResultSummary: "Child result",
+			},
+		)
 		await resumeStarted
 
 		// The one-time pre-resume drain has already run. A stale child-addressed
@@ -1007,7 +1058,11 @@ describe("History resume delegation - parent metadata transitions", () => {
 		releaseResume()
 		await expect(handoffPromise).resolves.toBeUndefined()
 
-		expect(parentQueue.addMessage).toHaveBeenCalledWith("Queued while the child is closing", ["race-image"])
+		expect(parentQueue.addMessage).toHaveBeenCalledWith(
+			"Queued while the child is closing",
+			["race-image"],
+			expect.any(String),
+		)
 		expect(parentQueue.addMessage).toHaveBeenCalledTimes(2)
 		expect(childQueue.addMessage).not.toHaveBeenCalled()
 		expect(focusTask).toHaveBeenCalledWith(parentTaskId)
@@ -1050,7 +1105,7 @@ describe("History resume delegation - parent metadata transitions", () => {
 		vi.mocked(readApiMessages).mockResolvedValue([])
 
 		await expect(
-			(AlphaProvider.prototype as any).reopenParentFromDelegation.call(provider, {
+			(AlphaProvider.prototype as any).reopenParentFromDelegation.call(withHostFixture(provider), {
 				parentTaskId: "p5",
 				childTaskId: "c5",
 				completionResultSummary: "Result",

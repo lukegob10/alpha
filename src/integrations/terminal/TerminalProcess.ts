@@ -296,8 +296,14 @@ export class TerminalProcess extends BaseTerminalProcess {
 		if (this.aborted || (this.isSettled && !this.terminal.running)) return
 		this.aborted = true
 		if (this.commandSubmitted && this.terminal.process === this) {
-			// Send SIGINT using CTRL+C
-			this.terminal.terminal.sendText("\x03")
+			try {
+				// Send SIGINT using CTRL+C. Only an accepted interrupt is idempotent;
+				// a synchronous transport failure must leave cleanup retryable.
+				this.terminal.terminal.sendText("\x03")
+			} catch (error) {
+				this.aborted = false
+				throw error
+			}
 		}
 	}
 

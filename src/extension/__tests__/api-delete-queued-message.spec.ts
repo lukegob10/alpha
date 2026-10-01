@@ -29,6 +29,7 @@ describe("API - DeleteQueuedMessage Command", () => {
 			getCurrentTask: vi.fn().mockReturnValue({
 				messageQueueService: {
 					removeMessage: mockRemoveMessage,
+					flush: vi.fn().mockResolvedValue(undefined),
 				},
 			}),
 			viewLaunched: true,
@@ -40,31 +41,31 @@ describe("API - DeleteQueuedMessage Command", () => {
 		;(api as any).log = mockLog
 	})
 
-	it("should remove a queued message by id", () => {
+	it("should remove a queued message by id", async () => {
 		const messageId = "msg-abc-123"
 
-		api.deleteQueuedMessage(messageId)
+		await api.deleteQueuedMessage(messageId)
 
 		expect(mockRemoveMessage).toHaveBeenCalledWith(messageId)
 		expect(mockRemoveMessage).toHaveBeenCalledTimes(1)
 	})
 
-	it("should handle missing current task gracefully and log a message", () => {
+	it("should handle missing current task gracefully and log a message", async () => {
 		;(mockProvider.getCurrentTask as ReturnType<typeof vi.fn>).mockReturnValue(undefined)
 
 		// Should not throw
-		expect(() => api.deleteQueuedMessage("msg-abc-123")).not.toThrow()
+		await expect(api.deleteQueuedMessage("msg-abc-123")).resolves.toBeUndefined()
 		expect(mockLog).toHaveBeenCalledWith(
 			"[API#deleteQueuedMessage] no current task; ignoring delete for messageId msg-abc-123",
 		)
 		expect(mockRemoveMessage).not.toHaveBeenCalled()
 	})
 
-	it("should handle non-existent message id gracefully", () => {
+	it("should handle non-existent message id gracefully", async () => {
 		mockRemoveMessage.mockReturnValue(false)
 
 		// Should not throw even when removeMessage returns false
-		expect(() => api.deleteQueuedMessage("non-existent-id")).not.toThrow()
+		await expect(api.deleteQueuedMessage("non-existent-id")).resolves.toBeUndefined()
 		expect(mockRemoveMessage).toHaveBeenCalledWith("non-existent-id")
 	})
 })

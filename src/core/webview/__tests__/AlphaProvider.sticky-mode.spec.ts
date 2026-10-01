@@ -263,6 +263,8 @@ vi.mock("@alpha-code/telemetry", () => ({
 	},
 }))
 
+let storageFixtureCounter = 0
+
 describe("AlphaProvider - Sticky Mode", () => {
 	it.each(["debug", "ask", "orchestrator", "custom-mode"])(
 		"rejects new task mode %s before configuration or task effects",
@@ -328,7 +330,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 				packageJSON: { version: "1.0.0" },
 			},
 			globalStorageUri: {
-				fsPath: "/test/storage/path",
+				fsPath: `/test/sticky-mode/storage-${++storageFixtureCounter}`,
 			},
 		} as unknown as vscode.ExtensionContext
 
@@ -350,17 +352,13 @@ describe("AlphaProvider - Sticky Mode", () => {
 				cspSource: "vscode-webview://test-csp-source",
 			},
 			visible: true,
-			onDidDispose: vi.fn().mockImplementation((callback) => {
-				callback()
-				return { dispose: vi.fn() }
-			}),
+			onDidDispose: vi.fn(() => ({ dispose: vi.fn() })),
 			onDidChangeVisibility: vi.fn().mockImplementation(() => ({ dispose: vi.fn() })),
 		} as unknown as vscode.WebviewView
 
 		provider = new AlphaProvider(mockContext, mockOutputChannel, "sidebar", new ContextProxy(mockContext))
 
-		// Wait for the async TaskHistoryStore initialization to complete
-		await new Promise((resolve) => setTimeout(resolve, 10))
+		await (provider as any).taskHistoryStoreReady
 
 		// Mock getMcpHub method
 		provider.getMcpHub = vi.fn().mockReturnValue({
@@ -1790,16 +1788,19 @@ describe("AlphaProvider - Sticky Mode", () => {
 				mode: "architect",
 			}
 
-			// Mock getTaskWithId to be slow
-			vi.spyOn(provider, "getTaskWithId").mockImplementation(async () => {
-				await new Promise((resolve) => setTimeout(resolve, 100))
-				return {
-					historyItem,
-					taskDirPath: "/test/path",
-					apiConversationHistoryFilePath: "/test/path/api_history.json",
-					uiMessagesFilePath: "/test/path/ui_messages.json",
-					apiConversationHistory: [],
-				}
+			// Pause at the actual restore profile lookup after its saved mode is published.
+			let profileLookupEntered!: () => void
+			let releaseProfileLookup!: () => void
+			const profileLookupStarted = new Promise<void>((resolve) => {
+				profileLookupEntered = resolve
+			})
+			const profileLookupGate = new Promise<void>((resolve) => {
+				releaseProfileLookup = resolve
+			})
+			vi.spyOn((provider as any).providerSettingsManager, "getModeConfigId").mockImplementation(async () => {
+				profileLookupEntered()
+				await profileLookupGate
+				return undefined
 			})
 
 			// Clear any previous calls
@@ -1807,11 +1808,13 @@ describe("AlphaProvider - Sticky Mode", () => {
 
 			// Start initialization
 			const initPromise = provider.createTaskWithHistoryItem(historyItem)
+			await profileLookupStarted
 
-			// Try to switch mode during initialization
+			// Try to switch mode while restoration is paused at the controlled boundary.
 			await provider.handleModeSwitch("code")
 
-			// Wait for initialization to complete
+			// Wait for initialization to complete.
+			releaseProfileLookup()
 			await initPromise
 
 			// Check all mode update calls

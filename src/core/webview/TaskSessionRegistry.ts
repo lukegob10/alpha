@@ -6,6 +6,7 @@ import {
 	TaskLifecycleState,
 	TaskStatus,
 } from "@alpha-code/types"
+import path from "node:path"
 
 import type { Task } from "../task/Task"
 import {
@@ -28,6 +29,7 @@ export const normalizeMaxLiveTasks = (value: unknown): number => {
 
 type TaskSession = {
 	task: Task
+	owner: TaskSessionRegistry
 	lifecycle: TaskLifecycleState
 	transcriptRevision: number
 	lastActivityAt: number
@@ -35,6 +37,36 @@ type TaskSession = {
 	/** Canonical lifecycle state, when the runtime has supplied one. */
 	lifecycleSnapshot?: AgentLifecycleSnapshot
 }
+
+type SharedTaskSessions = {
+	sessions: Map<string, TaskSession>
+	views: Set<TaskSessionRegistry>
+	lifecycleSnapshots: Map<string, AgentLifecycleSnapshot>
+	lifecycleDegradedTaskIds: Set<string>
+	nextTranscriptRevision: number
+	maxLiveTasks: number
+	ownershipOperations: Map<string, Promise<void>>
+	slotReservations: Map<string, TaskSlotReservation>
+	startupRecovery?: Promise<void>
+}
+
+type TaskSlotReservation = {
+	owner: TaskSessionRegistry
+	rootTaskId: string
+	count: number
+	taskIds?: readonly string[]
+}
+
+const createSharedTaskSessions = (maxLiveTasks: number): SharedTaskSessions => ({
+	sessions: new Map(),
+	views: new Set(),
+	lifecycleSnapshots: new Map(),
+	lifecycleDegradedTaskIds: new Set(),
+	nextTranscriptRevision: 0,
+	maxLiveTasks: normalizeMaxLiveTasks(maxLiveTasks),
+	ownershipOperations: new Map(),
+	slotReservations: new Map(),
+})
 
 const terminalLifecycleStates = new Set<TaskLifecycleState>([
 	TaskLifecycleState.Completed,
@@ -55,12 +87,194 @@ const terminalInputAskTypes = new Set<AlphaAsk>(["completion_result", "resume_ta
 const canAcceptTerminalAskInput = (ask: AlphaAsk | undefined) => Boolean(ask && terminalInputAskTypes.has(ask))
 
 export class TaskSessionRegistry {
-	private readonly sessions = new Map<string, TaskSession>()
+	private static readonly hosts = new Map<string, SharedTaskSessions>()
+	private readonly shared: SharedTaskSessions
 	private activeTaskId: string | undefined
-	private nextTranscriptRevision = 0
 
-	constructor(private maxLiveTasks = DEFAULT_MAX_LIVE_TASKS) {
-		this.maxLiveTasks = normalizeMaxLiveTasks(maxLiveTasks)
+	/** Share runtime ownership while retaining a distinct selection for each view. */
+	static forGlobalStorage(globalStoragePath: string, maxLiveTasks = DEFAULT_MAX_LIVE_TASKS): TaskSessionRegistry {
+		const resolvedPath = path.resolve(globalStoragePath)
+		const key = process.platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath
+		let shared = this.hosts.get(key)
+		if (!shared) {
+			shared = createSharedTaskSessions(maxLiveTasks)
+			this.hosts.set(key, shared)
+		}
+		return new TaskSessionRegistry(maxLiveTasks, shared)
+	}
+
+	constructor(maxLiveTasks = DEFAULT_MAX_LIVE_TASKS, shared?: SharedTaskSessions) {
+		this.shared = shared ?? createSharedTaskSessions(maxLiveTasks)
+		this.shared.views.add(this)
+	}
+
+	private get sessions(): Map<string, TaskSession> {
+		return this.shared.sessions
+	}
+
+	private get lifecycleSnapshots(): Map<string, AgentLifecycleSnapshot> {
+		return this.shared.lifecycleSnapshots
+	}
+
+	private get lifecycleDegradedTaskIds(): Set<string> {
+		return this.shared.lifecycleDegradedTaskIds
+	}
+
+	private get nextTranscriptRevision(): number {
+		return this.shared.nextTranscriptRevision
+	}
+
+	private set nextTranscriptRevision(value: number) {
+		this.shared.nextTranscriptRevision = value
+	}
+
+	private get maxLiveTasks(): number {
+		return this.shared.maxLiveTasks
+	}
+
+	private set maxLiveTasks(value: number) {
+		this.shared.maxLiveTasks = value
+	}
+
+	getOwner(taskId: string): TaskSessionRegistry | undefined {
+		return this.sessions.get(taskId)?.owner
+	}
+
+	sharesHostWith(other: TaskSessionRegistry): boolean {
+		return this.shared === other.shared
+	}
+
+	ownsTask(taskId: string): boolean {
+		return this.getOwner(taskId) === this
+	}
+
+	getOwnedTasks(): Task[] {
+		return Array.from(this.sessions.values())
+			.filter((session) => session.owner === this)
+			.map((session) => session.task)
+	}
+
+	getReservedTaskSlots(
+		rootTaskId: string,
+		isRootTaskRegistered: (taskId: string) => boolean,
+		excludedReservationId?: string,
+	): { total: number; root: number } {
+		let total = 0
+		let root = 0
+		for (const [id, reservation] of this.shared.slotReservations) {
+			if (id === excludedReservationId) continue
+			const unregistered = reservation.taskIds?.filter((taskId) => !this.sessions.has(taskId))
+			total += unregistered ? Math.min(reservation.count, unregistered.length) : reservation.count
+			if (reservation.rootTaskId === rootTaskId) {
+				root += unregistered
+					? Math.min(reservation.count, unregistered.filter((taskId) => !isRootTaskRegistered(taskId)).length)
+					: reservation.count
+			}
+		}
+		return { total, root }
+	}
+
+	/** Claim prepared-child capacity synchronously, before approval/context preparation can yield. */
+	reserveTaskSlots(
+		reservationId: string,
+		options: {
+			rootTaskId: string
+			count: number
+			maxTotalTasks: number
+			maxRootTasks: number
+			activeRootTasks: number
+			isRootTaskRegistered: (taskId: string) => boolean
+		},
+	): void {
+		if (this.shared.slotReservations.has(reservationId)) {
+			throw new Error(`Task capacity reservation ${reservationId} already exists`)
+		}
+		if (!Number.isSafeInteger(options.count) || options.count < 1) {
+			throw new Error("Task capacity reservation must contain a positive task count")
+		}
+		const reserved = this.getReservedTaskSlots(options.rootTaskId, options.isRootTaskRegistered)
+		const totalLimit = Math.min(this.maxLiveTasks, options.maxTotalTasks)
+		const availableTotal = Math.max(0, totalLimit - this.getLiveTaskCount() - reserved.total)
+		if (options.count > availableTotal) {
+			throw new Error(
+				`Not enough task capacity for ${options.count} sub-agent${options.count === 1 ? "" : "s"}. ` +
+					`Available slots: ${availableTotal}; effective total live-task maximum: ${totalLimit}.`,
+			)
+		}
+		const availableRoot = Math.max(0, options.maxRootTasks - options.activeRootTasks - reserved.root)
+		if (options.count > availableRoot) {
+			throw new Error(
+				`Not enough root-wide child capacity for ${options.count} sub-agent${options.count === 1 ? "" : "s"}. ` +
+					`Available slots: ${availableRoot}; effective root child maximum: ${options.maxRootTasks}.`,
+			)
+		}
+		this.shared.slotReservations.set(reservationId, {
+			owner: this,
+			rootTaskId: options.rootTaskId,
+			count: options.count,
+		})
+	}
+
+	setReservedTaskIds(reservationId: string, taskIds: readonly string[]): void {
+		const reservation = this.shared.slotReservations.get(reservationId)
+		if (!reservation || reservation.owner !== this) {
+			throw new Error(`Task capacity reservation ${reservationId} requires its current owner`)
+		}
+		if (taskIds.length !== reservation.count || new Set(taskIds).size !== taskIds.length) {
+			throw new Error("Task capacity reservation identities must match its reserved count")
+		}
+		reservation.taskIds = [...taskIds]
+	}
+
+	releaseTaskSlots(reservationId: string): void {
+		const reservation = this.shared.slotReservations.get(reservationId)
+		if (!reservation) return
+		if (reservation.owner !== this) {
+			throw new Error(`Task capacity reservation ${reservationId} requires its current owner`)
+		}
+		this.shared.slotReservations.delete(reservationId)
+	}
+
+	/** Detach presentation without releasing tasks whose cleanup may still need retrying. */
+	disposeView(): void {
+		this.clearFocus()
+		this.shared.views.delete(this)
+	}
+
+	/** Serialize replacement and cleanup for one stable task identity across views. */
+	async runOwnershipOperation<T>(taskId: string, operation: () => Promise<T>): Promise<T> {
+		const previous = this.shared.ownershipOperations.get(taskId) ?? Promise.resolve()
+		let release!: () => void
+		const pending = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		this.shared.ownershipOperations.set(taskId, pending)
+		await previous
+		try {
+			return await operation()
+		} finally {
+			release()
+			if (this.shared.ownershipOperations.get(taskId) === pending) {
+				this.shared.ownershipOperations.delete(taskId)
+			}
+		}
+	}
+
+	/** Recovery is host startup work; later views join it without rerunning it. */
+	runStartupRecovery(recover: (hasOwner: (taskId: string) => boolean) => Promise<void>): Promise<void> {
+		this.shared.startupRecovery ??= Promise.resolve().then(() => recover((taskId) => this.sessions.has(taskId)))
+		return this.shared.startupRecovery
+	}
+
+	/** Keep the canonical handle registered until its effect cleanup and termination settle. */
+	async releaseAfterCleanup(task: Task, cleanup: () => Promise<void>): Promise<void> {
+		await this.runOwnershipOperation(task.taskId, async () => {
+			if (this.getTask(task.taskId) !== task || !this.ownsTask(task.taskId)) {
+				throw new Error(`Task ${task.taskId} cleanup requires its current session owner`)
+			}
+			await cleanup()
+			this.unregister(task.taskId, task)
+		})
 	}
 
 	setMaxLiveTasks(maxLiveTasks: number): void {
@@ -112,14 +326,23 @@ export class TaskSessionRegistry {
 	}
 
 	canCreateTask(): boolean {
-		return this.getLiveTaskCount() < this.maxLiveTasks
+		return this.getAvailableTaskCapacity() > 0
 	}
 
 	getAvailableTaskCapacity(): number {
-		return Math.max(0, this.maxLiveTasks - this.getLiveTaskCount())
+		const reserved = this.getReservedTaskSlots("", () => false).total
+		return Math.max(0, this.maxLiveTasks - this.getLiveTaskCount() - reserved)
 	}
 
 	register(task: Task, options: { focus?: boolean; lifecycleSnapshot?: AgentLifecycleSnapshot } = {}): void {
+		const existing = this.sessions.get(task.taskId)
+		if (existing) {
+			if (existing.task !== task) {
+				throw new Error(`Task ${task.taskId} already has a registered runtime owner`)
+			}
+			if (options.focus ?? true) this.activeTaskId = task.taskId
+			return
+		}
 		const transcriptRevision = ++this.nextTranscriptRevision
 		const pendingSnapshot = options.lifecycleSnapshot ?? this.lifecycleSnapshots.get(task.taskId)
 		const projection = pendingSnapshot
@@ -130,6 +353,7 @@ export class TaskSessionRegistry {
 			: undefined
 		this.sessions.set(task.taskId, {
 			task,
+			owner: this,
 			transcriptRevision,
 			lifecycle: this.lifecycleDegradedTaskIds.has(task.taskId)
 				? projectAlphaMessageStatus({
@@ -174,16 +398,30 @@ export class TaskSessionRegistry {
 		this.activeTaskId = undefined
 	}
 
-	unregister(taskId: string): Task | undefined {
+	replaceTask(previous: Task, replacement: Task, options: { focus?: boolean } = {}): void {
+		if (previous.taskId !== replacement.taskId || this.getTask(previous.taskId) !== previous) {
+			throw new Error("Task replacement requires the current stable task identity")
+		}
+		if (!this.ownsTask(previous.taskId)) {
+			throw new Error(`Task ${previous.taskId} replacement requires its current session owner`)
+		}
+		this.sessions.delete(previous.taskId)
+		this.register(replacement, options)
+	}
+
+	unregister(taskId: string, expectedTask?: Task): Task | undefined {
 		const session = this.sessions.get(taskId)
 		if (!session) {
 			return undefined
 		}
+		if (session.owner !== this || (expectedTask && session.task !== expectedTask)) {
+			throw new Error(`Task ${taskId} removal requires its current session owner`)
+		}
 
 		this.sessions.delete(taskId)
 
-		if (this.activeTaskId === taskId) {
-			this.activeTaskId = this.getFallbackFocusTaskId()
+		for (const view of this.shared.views) {
+			if (view.activeTaskId === taskId) view.activeTaskId = view.getFallbackFocusTaskId()
 		}
 
 		return session.task
@@ -218,9 +456,6 @@ export class TaskSessionRegistry {
 	getTranscriptRevision(taskId: string): number | undefined {
 		return this.sessions.get(taskId)?.transcriptRevision
 	}
-
-	private readonly lifecycleSnapshots = new Map<string, AgentLifecycleSnapshot>()
-	private readonly lifecycleDegradedTaskIds = new Set<string>()
 
 	/** Prefer legacy transcript/task status while canonical persistence is unavailable. */
 	markLifecycleDegraded(taskId: string): void {

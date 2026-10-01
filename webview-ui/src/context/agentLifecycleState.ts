@@ -289,25 +289,36 @@ export function reduceAgentLifecycleEvent(
 	return parsed.success ? parsed.data : snapshot
 }
 
-function shouldReplaceSnapshot(previous: AgentLifecycleSnapshot | undefined, next: AgentLifecycleSnapshot): boolean {
+function shouldReplaceSnapshot(
+	previous: AgentLifecycleSnapshot | undefined,
+	next: AgentLifecycleSnapshot,
+	allowTurnReplacement: boolean,
+): boolean {
 	if (!previous) return true
 	if (previous.taskId !== next.taskId) return true
 	if (previous.runId === next.runId && previous.turnId === next.turnId)
 		return next.lastSequence >= previous.lastSequence
-	return previous.status !== "in_progress" || next.lastSequence >= previous.lastSequence
+	// Sequence numbers restart each turn. Only a newer host task-state envelope
+	// can replace an unfinished turn when its terminal packet was missed.
+	return allowTurnReplacement || previous.status !== "in_progress"
 }
 
 /** Merge full snapshots without allowing delayed state messages to roll back a task. */
 export function mergeAgentLifecycleSnapshots(
 	previous: AgentLifecycleSnapshots | undefined,
 	incoming: AgentLifecycleSnapshots | undefined,
+	allowTurnReplacement = false,
 ): AgentLifecycleSnapshots {
 	if (!incoming || Object.keys(incoming).length === 0) return previous ?? {}
 
 	let merged = previous ?? {}
 	for (const [taskId, value] of Object.entries(incoming ?? {})) {
 		const snapshot = parseAgentLifecycleSnapshot(value)
-		if (snapshot && snapshot.taskId === taskId && shouldReplaceSnapshot(merged[taskId], snapshot)) {
+		if (
+			snapshot &&
+			snapshot.taskId === taskId &&
+			shouldReplaceSnapshot(merged[taskId], snapshot, allowTurnReplacement)
+		) {
 			if (merged === previous) merged = { ...merged }
 			merged[taskId] = clone(snapshot)
 		}
@@ -438,7 +449,15 @@ export function projectLegacyLiveTaskMetadata(
 
 	const messages = state.currentTaskId === taskId ? state.clineMessages : []
 	const latest = messages.at(-1)
-	const taskAsk = [...messages].reverse().find((message) => message.type === "ask")
+	const inputBoundary = messages.findLast(
+		(message) =>
+			message.type === "ask" ||
+			(message.type === "say" && (message.say === "user_feedback" || message.say === "api_req_started")),
+	)
+	const taskAsk =
+		inputBoundary?.type === "ask" && inputBoundary.isAnswered !== true && inputBoundary.partial !== true
+			? inputBoundary
+			: undefined
 	const askType = taskAsk?.type === "ask" ? taskAsk.ask : undefined
 	const base: LiveTaskMetadata = existing ?? {
 		id: taskId,
@@ -484,7 +503,15 @@ export function projectLegacyLiveTaskMetadata(
 		return terminal(TaskLifecycleState.Completed, TaskStatus.Idle)
 	}
 
-	const historyStatus = state.currentTaskItem?.id === taskId ? state.currentTaskItem.status : undefined
+	const lastAsk = messages.findLast((message) => message.type === "ask")
+	const resumedCompletion =
+		inputBoundary?.type === "say" &&
+		lastAsk?.isAnswered === true &&
+		(lastAsk.ask === "resume_completed_task" || lastAsk.ask === "completion_result")
+	// History persistence can lag the admitted follow-up. Its old completion
+	// status must not undo the transcript's newer user/API boundary.
+	const historyStatus =
+		!resumedCompletion && state.currentTaskItem?.id === taskId ? state.currentTaskItem.status : undefined
 	if (historyStatus === "completed") return terminal(TaskLifecycleState.Completed, TaskStatus.Idle)
 	if (historyStatus === "failed") return terminal(TaskLifecycleState.Failed, TaskStatus.None)
 	if (historyStatus === "interrupted" || historyStatus === "cancelled" || historyStatus === "timed_out") {

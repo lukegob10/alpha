@@ -10,6 +10,16 @@ import { approvalModeSchema } from "./approval-mode.js"
 
 export const diagnosticTaskIdentitySchema = z.string().trim().min(1).max(128)
 
+/** Delivery receipts contain identities only; result text stays in the task transcript and recipient inbox. */
+export const orchestrationCompletionNotificationSchema = z.object({
+	id: z.string().min(1).max(256),
+	turnId: z.string().min(1).max(128),
+	completionMessageTs: z.number().finite(),
+	createdAt: z.number().finite(),
+	deliveredAt: z.number().finite().optional(),
+	deliveredVia: z.enum(["inbox", "wait"]).optional(),
+})
+
 /**
  * HistoryItem
  */
@@ -24,6 +34,8 @@ export const historyItemSchema = z.object({
 	diagnosticSourceTaskId: diagnosticTaskIdentitySchema.optional(),
 	/** Independent primary conversation launched by this task; distinct from managed-agent/delegation parentTaskId. */
 	orchestrationParentTaskId: z.string().min(1).optional(),
+	/** Bounded durable completion outbox. Undelivered receipts must never be evicted. */
+	orchestrationCompletionNotifications: z.array(orchestrationCompletionNotificationSchema).max(100).optional(),
 	orchestrationWorkspaceMode: z.enum(["shared", "worktree"]).optional(),
 	/** Workspace path below the Git root for restoring an isolated task worktree. Empty means Git root. */
 	orchestrationWorkspaceRelativePath: z.string().optional(),

@@ -1098,6 +1098,53 @@ describe("mergeExtensionState", () => {
 			expect(result.clineMessages).toBe(currentMessages)
 			expect(result.clineMessagesSeq).toBe(8)
 		})
+		it("rejects another chat's consumed queue projection without a navigation sequence", () => {
+			const messages = [makeMessage(2, "current chat")]
+			const queue = [{ id: "current-input", text: "still waiting", timestamp: 2 }]
+			const previous: ExtensionState = {
+				...baseState,
+				currentTaskId: "current-chat",
+				taskStateSeq: 6,
+				clineMessages: messages,
+				clineMessagesSeq: 8,
+				messageQueue: queue,
+				messageQueueSeq: 8,
+			}
+			const result = mergeExtensionState(previous, {
+				currentTaskId: "background-chat",
+				messageQueue: [],
+				messageQueueSeq: 9,
+				clineMessages: [makeMessage(1, "consumed background input")],
+				clineMessagesSeq: 9,
+			})
+			expect(result.currentTaskId).toBe("current-chat")
+			expect(result.messageQueue).toBe(queue)
+			expect(result.clineMessages).toBe(messages)
+			expect(result.clineMessagesSeq).toBe(8)
+		})
+		it("accepts the visible chat's consumed queue projection without a navigation sequence", () => {
+			const previous: ExtensionState = {
+				...baseState,
+				currentTaskId: "current-chat",
+				taskStateSeq: 6,
+				clineMessages: [],
+				clineMessagesSeq: 8,
+				messageQueue: [{ id: "input", text: "waiting", timestamp: 2 }],
+				messageQueueSeq: 8,
+			}
+			const messages = [makeMessage(2, "consumed current input")]
+			const result = mergeExtensionState(previous, {
+				currentTaskId: "current-chat",
+				messageQueue: [],
+				messageQueueSeq: 9,
+				clineMessages: messages,
+				clineMessagesSeq: 9,
+			})
+			expect(result.currentTaskId).toBe("current-chat")
+			expect(result.messageQueue).toEqual([])
+			expect(result.clineMessages).toBe(messages)
+			expect(result.clineMessagesSeq).toBe(9)
+		})
 
 		it("accepts the transcript that belongs to the navigation already on screen", () => {
 			const transcript = [makeMessage(1, "loaded")]

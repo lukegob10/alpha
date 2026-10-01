@@ -14,6 +14,8 @@ import {
 } from "@alpha-code/types"
 
 import { AlphaProvider } from "../AlphaProvider"
+import { TaskSessionRegistry } from "../TaskSessionRegistry"
+import type { Task } from "../../task/Task"
 import { AsyncSubagentRunManager } from "../../agent/AsyncSubagentRunManager"
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 import { BoundedDelegationManager } from "../../agent/BoundedDelegationManager"
@@ -65,6 +67,13 @@ const makeProviderHarness = (
 ) => {
 	const agentControlStore = new AgentControlStore(new InMemoryAgentControlPersistence())
 	const agentControlStoreReady = agentControlStore.initialize()
+	const taskSessions = new TaskSessionRegistry(3)
+	for (let index = 0; index < 3 - availableCapacity; index++) {
+		taskSessions.register(
+			{ taskId: `capacity-fixture-${index}`, taskKind: "primary", clineMessages: [] } as unknown as Task,
+			{ focus: false },
+		)
+	}
 	const historyItems = new Map([
 		[
 			"parent-1",
@@ -92,15 +101,7 @@ const makeProviderHarness = (
 				return structuredClone(profile)
 			}),
 		},
-		taskSessions: {
-			getAvailableTaskCapacity: () => availableCapacity,
-			getMaxLiveTasks: () => 3,
-			getLiveTaskCount: () => Math.max(0, 3 - availableCapacity),
-			getLiveTaskIds: () => [],
-			getMetadata: () => ({}),
-			getTask: () => undefined,
-			markLifecycle: vi.fn(),
-		},
+		taskSessions,
 		taskHistoryStore: {
 			get: () => undefined,
 			getAll: () => [],
@@ -119,6 +120,7 @@ const makeProviderHarness = (
 		agentControlStoreReady,
 		agentControlRootStatusWrites: new Map(),
 		taskLifecycleHistoryWrites: new Map(),
+		agentFollowupAdmissions: new Map(),
 		pendingManagedTaskCompletions: new Map(),
 		workspaceMutationGate: new WorkspaceMutationGate(),
 		boundedDelegationManager: { cancel: () => false },
@@ -518,9 +520,10 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 			{ objective: "Inspect the parser", agent_kind: "explore" },
 		])
 
-		;(provider as any).taskSessions.getAvailableTaskCapacity = () => 1
-		;(provider as any).taskSessions.getTask = (taskId: string) =>
-			taskId === first.envelopes[0].id ? { taskId } : undefined
+		;(provider as any).taskSessions.register(
+			{ taskId: first.envelopes[0].id, taskKind: "subagent", clineMessages: [] },
+			{ focus: false },
+		)
 
 		await expect(
 			provider.prepareSubagentGroup(parent as any, [
@@ -2310,6 +2313,129 @@ If complete, use attempt_completion.
 		).toEqual([])
 	})
 
+	it("uses the immediate owner for a terminal descendant follow-up and serializes concurrent admission", async () => {
+		const provider = makeProviderHarness(3)
+		const rootTask = makeParent()
+		const root = await Reflect.get(provider, "ensureAgentControlRoot").call(provider, rootTask)
+		const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+		const parentRecord = await store.createAgent({
+			taskId: "nested-owner",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "Owner",
+			role: "review",
+			objective: "Own child",
+			status: "running",
+		})
+		const owner = {
+			...makeParent(),
+			taskId: parentRecord.taskId,
+			taskKind: "subagent",
+			rootTaskId: root.rootTaskId,
+		}
+		const child = await store.createAgent({
+			taskId: "nested-followup",
+			parentTaskId: owner.taskId,
+			rootTaskId: root.rootTaskId,
+			groupId: "nested-followup-group",
+			nickname: "Nested",
+			role: "review",
+			objective: "Review",
+			status: "interrupted",
+		})
+		const prepared = {
+			group: {
+				groupId: child.groupId,
+				parentTaskId: owner.taskId,
+				agents: [
+					{
+						taskId: child.taskId,
+						nickname: child.nickname,
+						role: child.role,
+						status: "interrupted",
+						usage: {},
+					},
+				],
+			},
+			envelopes: [{ id: child.taskId, parentTaskId: owner.taskId }],
+		}
+		Reflect.get(provider, "subagentDescriptors").set(child.taskId, { parent: owner })
+		vi.spyOn(provider as any, "synchronizeParentVerificationObligations").mockResolvedValue(undefined)
+		vi.spyOn(provider as any, "assertRetainedAgentRelaunchCapacity").mockImplementation(() => undefined)
+		let entered!: () => void
+		let release!: () => void
+		const restoring = new Promise<void>((resolve) => {
+			entered = resolve
+		})
+		const barrier = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const restore = vi.spyOn(provider as any, "restorePreparedSubagentForFollowup").mockImplementation(async () => {
+			entered()
+			await barrier
+			return prepared
+		})
+		const start = vi
+			.spyOn(provider as any, "startPreparedSubagentRun")
+			.mockImplementation(async (_owner: any, _group: unknown, _signal: unknown, record: any) => ({
+				taskId: record.taskId,
+				path: record.path,
+				parentTaskId: _owner.taskId,
+			}))
+		const first = provider.followupAgentTask(rootTask as any, child.path, "First follow-up")
+		await restoring
+		const second = provider.followupAgentTask(rootTask as any, child.path, "Second follow-up")
+		release()
+		await expect(first).resolves.toMatchObject({ parentTaskId: owner.taskId, followup: true })
+		await expect(second).resolves.toMatchObject({ delivery: "buffered", followup: true })
+		expect(restore).toHaveBeenCalledOnce()
+		expect(restore).toHaveBeenCalledWith(
+			owner,
+			expect.objectContaining({ taskId: child.taskId }),
+			"First follow-up",
+		)
+		expect(start).toHaveBeenCalledOnce()
+		expect(start.mock.calls[0][0]).toBe(owner)
+		expect(owner.upsertSubagentGroup).toHaveBeenCalledOnce()
+		expect(rootTask.upsertSubagentGroup).not.toHaveBeenCalled()
+		expect(store.getUnacknowledgedMailboxEntries(child.taskId, { kinds: ["message"] })).toEqual([
+			expect.objectContaining({ payload: { message: "Second follow-up" } }),
+		])
+		expect(Reflect.get(provider, "agentFollowupAdmissions").size).toBe(0)
+	})
+
+	it("rejects an unloaded nested owner before changing its stopped child's lifecycle", async () => {
+		const provider = makeProviderHarness()
+		const rootTask = makeParent()
+		const root = await Reflect.get(provider, "ensureAgentControlRoot").call(provider, rootTask)
+		const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+		await store.createAgent({
+			taskId: "unloaded-owner",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "Owner",
+			role: "review",
+			objective: "Own child",
+			status: "running",
+		})
+		const child = await store.createAgent({
+			taskId: "unloaded-nested",
+			parentTaskId: "unloaded-owner",
+			rootTaskId: root.rootTaskId,
+			nickname: "Nested",
+			role: "review",
+			objective: "Review",
+			status: "interrupted",
+		})
+		await store.updateAgentStatus("unloaded-owner", "interrupted", {}, root.rootTaskId)
+		vi.spyOn(provider as any, "synchronizeParentVerificationObligations").mockResolvedValue(undefined)
+		await expect(provider.followupAgentTask(rootTask as any, child.path, "Resume")).rejects.toThrow(
+			"Open the immediate parent",
+		)
+		expect(store.getAgent(child.taskId, root.rootTaskId)?.status).toBe("interrupted")
+		expect(store.getUnacknowledgedMailboxEntries(child.taskId)).toEqual([])
+	})
+
 	it("cancels descendants deepest-first and distinguishes direct-child from deeper target causes", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
@@ -2704,6 +2830,58 @@ If complete, use attempt_completion.
 		await provider.closeAgent(parent as any, secondHandle.taskId)
 		const afterClose = (await provider.listAgents(parent as any)) as any
 		expect(afterClose.agents).toEqual([])
+	})
+
+	it("allows passive child replies to root and same-tree peers without granting lifecycle control", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const root = await Reflect.get(provider, "ensureAgentControlRoot").call(provider, parent)
+		const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+		const sender = await store.createAgent({
+			taskId: "sender",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "Sender",
+			role: "review",
+			objective: "Reply",
+			status: "running",
+		})
+		const peer = await store.createAgent({
+			taskId: "peer",
+			parentTaskId: root.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "Peer",
+			role: "review",
+			objective: "Review",
+			status: "running",
+		})
+		const childTask = {
+			...makeParent(),
+			taskId: sender.taskId,
+			taskKind: "subagent",
+			rootTaskId: root.rootTaskId,
+			parentTaskId: root.taskId,
+		}
+		Reflect.get(provider, "subagentDescriptors").set(peer.taskId, { parent })
+
+		await expect(
+			provider.sendMessageToAgent(childTask as any, "/root", "Finding for parent"),
+		).resolves.toMatchObject({ taskId: root.taskId, delivery: "buffered" })
+		await provider.sendMessageToAgent(childTask as any, peer.path, "Finding for peer")
+		expect(store.getUnacknowledgedMailboxEntries(root.taskId, { kinds: ["message"] })).toEqual([
+			expect.objectContaining({ senderTaskId: sender.taskId, name: "agent_message" }),
+		])
+		expect(store.getUnacknowledgedMailboxEntries(peer.taskId, { kinds: ["message"] })).toEqual([
+			expect.objectContaining({ senderTaskId: sender.taskId, name: "agent_message" }),
+		])
+		await expect(provider.followupAgentTask(childTask as any, peer.path, "Restart peer")).rejects.toThrow(
+			"outside the caller's managed subtree",
+		)
+		await expect(provider.sendMessageToAgent(childTask as any, sender.path, "Self")).rejects.toThrow("itself")
+		await store.ensureRoot({ taskId: "other-root", status: "running" })
+		await expect(provider.sendMessageToAgent(childTask as any, "other-root", "Cross tree")).rejects.toThrow(
+			"Unknown agent message recipient",
+		)
 	})
 
 	it("buffers multiple pre-launch messages and delivers them in order only at the recipient boundary", async () => {
@@ -3153,7 +3331,7 @@ If complete, use attempt_completion.
 		}
 	})
 
-	it("keeps a registered managed child waiting for immediate-parent control without active descendants", async () => {
+	it("wakes a registered child's idle wait for passive parent mail without consuming or steering it", async () => {
 		const provider = makeProviderHarness()
 		const rootTask = makeParent()
 		const root = await (provider as any).ensureAgentControlRoot(rootTask)
@@ -3168,6 +3346,17 @@ If complete, use attempt_completion.
 		})
 		const request = new AbortController()
 		const dispose = vi.fn()
+		const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+		let registered!: () => void
+		const subscribed = new Promise<void>((resolve) => {
+			registered = resolve
+		})
+		const subscribe = store.subscribe.bind(store)
+		vi.spyOn(store, "subscribe").mockImplementation((listener) => {
+			const unsubscribe = subscribe(listener)
+			registered()
+			return unsubscribe
+		})
 		const childTask = {
 			...makeParent(),
 			taskId: child.taskId,
@@ -3179,11 +3368,7 @@ If complete, use attempt_completion.
 
 		const waiting = provider.waitForAgent(childTask as any, 10_000)
 		try {
-			const initial = await Promise.race([
-				waiting,
-				new Promise<"still-waiting">((resolve) => setTimeout(() => resolve("still-waiting"), 50)),
-			])
-			expect(initial).toBe("still-waiting")
+			await subscribed
 			expect(childTask.beginAgentWait).toHaveBeenCalledOnce()
 
 			await (provider as any).agentControlStore.appendEvent({
@@ -3194,13 +3379,11 @@ If complete, use attempt_completion.
 				name: "parent_message",
 				payload: { message: "CANCEL_NOW" },
 			})
-			request.abort(Object.assign(new Error("Steered by parent"), { name: "SteerRequestInterruptError" }))
-
 			await expect(waiting).resolves.toMatchObject({
 				timedOut: false,
-				interrupted: true,
-				reason: "steered_input",
+				mailboxActivity: true,
 			})
+			expect(request.signal.aborted).toBe(false)
 			expect(childTask.stageWaitAgentNotifications).not.toHaveBeenCalled()
 			expect(
 				(provider as any).agentControlStore.getUnacknowledgedMailboxEntries(child.taskId, {
@@ -5235,25 +5418,26 @@ If complete, use attempt_completion.
 			parentTaskId: parent.taskId,
 			subagentGroupId: prepared.group.groupId,
 			canAcceptSteerMessage: vi.fn(() => true),
-			steerUserMessage: vi.fn(async () => undefined),
+			steerUserMessageDurably: vi.fn(async () => undefined),
 		}
 		const sibling = {
 			...target,
 			taskId: siblingId,
-			steerUserMessage: vi.fn(async () => undefined),
+			steerUserMessageDurably: vi.fn(async () => undefined),
 		}
 		;(provider as any).getLiveTask = (taskId: string) =>
 			taskId === targetId ? target : taskId === siblingId ? sibling : undefined
 
-		await provider.steerSubagent(
-			parent.taskId,
-			prepared.group.groupId,
-			targetId,
-			"  Focus on cancellation edges.  ",
-		)
+		await expect(
+			provider.steerSubagent(parent.taskId, prepared.group.groupId, targetId, "  Focus on cancellation edges.  "),
+		).resolves.toBe(true)
 
-		expect(target.steerUserMessage).toHaveBeenCalledWith("Focus on cancellation edges.")
-		expect(sibling.steerUserMessage).not.toHaveBeenCalled()
+		expect(target.steerUserMessageDurably).toHaveBeenCalledWith(
+			"Focus on cancellation edges.",
+			undefined,
+			expect.any(String),
+		)
+		expect(sibling.steerUserMessageDurably).not.toHaveBeenCalled()
 		expect(prepared.group.agents[0]).toMatchObject({ phase: "steering", steerCount: 1 })
 		expect(prepared.group.agents[0].lastSteeredAt).toEqual(expect.any(Number))
 		expect(parent.upsertSubagentGroup).toHaveBeenLastCalledWith(prepared.group)
@@ -5279,13 +5463,156 @@ If complete, use attempt_completion.
 			parentTaskId: parent.taskId,
 			subagentGroupId: prepared.group.groupId,
 			canAcceptSteerMessage: vi.fn(() => true),
-			steerUserMessage: vi.fn(async () => undefined),
+			steerUserMessageDurably: vi.fn(async () => undefined),
 		}
 		;(provider as any).getLiveTask = () => child
 
-		await provider.steerSubagent(parent.taskId, prepared.group.groupId, agent.taskId, "Skip that command")
+		await expect(
+			provider.steerSubagent(parent.taskId, prepared.group.groupId, agent.taskId, "Skip that command"),
+		).resolves.toBe(false)
 
-		expect(child.steerUserMessage).not.toHaveBeenCalled()
+		expect(child.steerUserMessageDurably).not.toHaveBeenCalled()
+	})
+
+	it("does not publish steering metadata when the child rejects admission", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect a file", agent_kind: "explore" },
+		])
+		const agent = prepared.group.agents[0]
+		agent.status = "running"
+		agent.phase = "working"
+		const child = {
+			taskId: agent.taskId,
+			parentTaskId: parent.taskId,
+			subagentGroupId: prepared.group.groupId,
+			canAcceptSteerMessage: vi.fn(() => true),
+			steerUserMessageDurably: vi.fn(async () => {
+				throw new Error("steer rejected")
+			}),
+			hasAcceptedQueuedUserMessage: vi.fn(async () => false),
+		}
+		;(provider as any).getLiveTask = () => child
+		parent.upsertSubagentGroup.mockClear()
+		await expect(
+			provider.steerSubagent(parent.taskId, prepared.group.groupId, agent.taskId, "Focus on safety"),
+		).rejects.toThrow("steer rejected")
+		expect(agent).toMatchObject({ phase: "working" })
+		expect(agent.steerCount).toBeUndefined()
+		expect(agent.lastSteeredAt).toBeUndefined()
+		expect(parent.upsertSubagentGroup).not.toHaveBeenCalled()
+	})
+
+	it("acknowledges a retained queued instruction when immediate steering loses its boundary", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect a file", agent_kind: "explore" },
+		])
+		const agent = prepared.group.agents[0]
+		agent.status = "running"
+		const child = {
+			taskId: agent.taskId,
+			parentTaskId: parent.taskId,
+			subagentGroupId: prepared.group.groupId,
+			canAcceptSteerMessage: vi.fn(() => true),
+			hasAcceptedQueuedUserMessage: vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true),
+			steerUserMessageDurably: vi.fn().mockRejectedValue(new Error("steering boundary changed")),
+		}
+		;(provider as any).getLiveTask = () => child
+		await expect(
+			provider.steerSubagent(
+				parent.taskId,
+				prepared.group.groupId,
+				agent.taskId,
+				"arbitrary input",
+				"retained-input-id",
+			),
+		).resolves.toBe(true)
+		expect(child.hasAcceptedQueuedUserMessage).toHaveBeenCalledTimes(2)
+		expect(agent).toMatchObject({ phase: "steering", steerCount: 1 })
+		await expect(
+			provider.steerSubagent(
+				parent.taskId,
+				prepared.group.groupId,
+				agent.taskId,
+				"arbitrary input",
+				"retained-input-id",
+			),
+		).resolves.toBe(true)
+		expect(child.steerUserMessageDurably).toHaveBeenCalledOnce()
+		expect(agent.steerCount).toBe(1)
+	})
+
+	it("accepts durable steering even when saving the parent projection fails", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect a file", agent_kind: "explore" },
+		])
+		const agent = prepared.group.agents[0]
+		agent.status = "running"
+		const child = {
+			taskId: agent.taskId,
+			parentTaskId: parent.taskId,
+			subagentGroupId: prepared.group.groupId,
+			canAcceptSteerMessage: vi.fn(() => true),
+			hasAcceptedQueuedUserMessage: vi.fn(async () => false),
+			steerUserMessageDurably: vi.fn(async () => undefined),
+		}
+		;(provider as any).getLiveTask = () => child
+		parent.upsertSubagentGroup.mockRejectedValueOnce(new Error("projection save failed"))
+		await expect(
+			provider.steerSubagent(
+				parent.taskId,
+				prepared.group.groupId,
+				agent.taskId,
+				"Focus on safety",
+				"accepted-steer",
+			),
+		).resolves.toBe(true)
+		expect(child.steerUserMessageDurably).toHaveBeenCalledExactlyOnceWith(
+			"Focus on safety",
+			undefined,
+			"accepted-steer",
+		)
+		expect(agent).toMatchObject({ phase: "steering", steerCount: 1, lastSteeredAt: expect.any(Number) })
+	})
+
+	it("acknowledges an accepted steering request retry without steering or incrementing metadata again", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Inspect a file", agent_kind: "explore" },
+		])
+		const agent = prepared.group.agents[0]
+		agent.status = "running"
+		agent.steerCount = 1
+		agent.lastSteeredAt = 101
+		const child = {
+			taskId: agent.taskId,
+			parentTaskId: parent.taskId,
+			subagentGroupId: prepared.group.groupId,
+			canAcceptSteerMessage: vi.fn(() => false),
+			hasAcceptedQueuedUserMessage: vi.fn(async () => true),
+			steerUserMessageDurably: vi.fn(async () => undefined),
+		}
+		;(provider as any).getLiveTask = () => child
+		parent.upsertSubagentGroup.mockClear()
+		await expect(
+			provider.steerSubagent(
+				parent.taskId,
+				prepared.group.groupId,
+				agent.taskId,
+				"Focus on safety",
+				"accepted-steer",
+			),
+		).resolves.toBe(true)
+		expect(child.hasAcceptedQueuedUserMessage).toHaveBeenCalledExactlyOnceWith("accepted-steer")
+		expect(child.steerUserMessageDurably).not.toHaveBeenCalled()
+		expect(agent).toMatchObject({ steerCount: 1, lastSteeredAt: 101 })
+		expect(parent.upsertSubagentGroup).not.toHaveBeenCalled()
 	})
 
 	it("cancels one agent without changing its running sibling", async () => {

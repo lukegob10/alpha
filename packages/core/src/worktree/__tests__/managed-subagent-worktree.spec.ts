@@ -305,6 +305,33 @@ describe("ManagedSubagentWorktreeService", () => {
 	)
 
 	it(
+		"leaves a Worker with a live task owner untouched when another view requests recovery",
+		async () => {
+			const validated = await service.validateScope(repo, ["src"])
+			const prepared = await service.create(storage, "worker-owned", validated)
+			await fs.writeFile(path.join(prepared.workspacePath, "src/value.txt"), "still working\n")
+			const metadataPath = path.join(storage, "subagent-change-sets", prepared.artifact.id, "metadata.json")
+			const metadataBefore = await fs.readFile(metadataPath, "utf8")
+			const reloadedService = new ManagedSubagentWorktreeService()
+
+			const recovered = await reloadedService.recoverOrphans(storage, {
+				hasTaskOwner: (taskId) => taskId === prepared.artifact.taskId,
+			})
+
+			expect(recovered).toEqual([])
+			expect(await fs.readFile(metadataPath, "utf8")).toBe(metadataBefore)
+			expect((await fs.readFile(path.join(prepared.workspacePath, "src/value.txt"), "utf8")).trim()).toBe(
+				"still working",
+			)
+			const orphaned = await reloadedService.recoverOrphans(storage, { hasTaskOwner: () => false })
+			expect(orphaned).toHaveLength(1)
+			expect(orphaned[0]).toMatchObject({ status: "pending_review", partial: true })
+			await expect(fs.access(prepared.workspacePath)).rejects.toThrow()
+		},
+		WORKTREE_TEST_TIMEOUT_MS,
+	)
+
+	it(
 		"recovers partial changes from an orphaned active worktree after reload",
 		async () => {
 			const validated = await service.validateScope(repo, ["src"])

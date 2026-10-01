@@ -205,4 +205,37 @@ describe("TerminalRegistry", () => {
 		expect(second).not.toBe(first)
 		expect(first.taskId).toBe("original")
 	})
+
+	it("retains task ownership until a physical command has stopped", async () => {
+		const terminal = await TerminalRegistry.getOrCreateTerminal("/test/cleanup-owner", "cleanup-owner")
+		terminal.running = true
+		TerminalRegistry.releaseTerminalsForTask("cleanup-owner")
+		expect(terminal.taskId).toBe("cleanup-owner")
+
+		terminal.running = false
+		terminal.busy = false
+		TerminalRegistry.releaseTerminalsForTask("cleanup-owner")
+		expect(terminal.taskId).toBeUndefined()
+	})
+
+	it("retains a busy process whose exit has not been confirmed", async () => {
+		const terminal = await TerminalRegistry.getOrCreateTerminal("/test/cleanup-pending", "cleanup-pending")
+		terminal.busy = true
+		terminal.process = { isSettled: false } as unknown as typeof terminal.process
+		TerminalRegistry.releaseTerminalsForTask("cleanup-pending")
+		expect(terminal.taskId).toBe("cleanup-pending")
+
+		terminal.process = { isSettled: true } as unknown as typeof terminal.process
+		TerminalRegistry.releaseTerminalsForTask("cleanup-pending")
+		expect(terminal.taskId).toBeUndefined()
+	})
+
+	it("releases an unlaunched reservation without a process", async () => {
+		const terminal = await TerminalRegistry.getOrCreateTerminal("/test/cleanup-unlaunched", "cleanup-unlaunched")
+		terminal.busy = true
+		expect(terminal.process).toBeUndefined()
+		TerminalRegistry.releaseTerminalsForTask("cleanup-unlaunched")
+		expect(terminal.taskId).toBeUndefined()
+		expect(terminal.busy).toBe(false)
+	})
 })

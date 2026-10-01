@@ -4,11 +4,22 @@ import { describe, it, expect, vi } from "vitest"
 import { AlphaCodeEventName } from "@alpha-code/types"
 import { AlphaProvider } from "../core/webview/AlphaProvider"
 
+const withHostFixture = (provider: AlphaProvider): AlphaProvider => {
+	Object.assign(provider, {
+		getTaskOwner: vi.fn((taskId: string) => (provider.getLiveTask(taskId) ? provider : undefined)),
+		getHostProviders: () => [provider],
+		isTaskSelected: (taskId: string) => provider.getCurrentTask()?.taskId === taskId,
+		taskNavigationGeneration: 0,
+	})
+	return provider
+}
+
 describe("AlphaProvider.delegateParentAndOpenChild()", () => {
 	it("persists parent delegation metadata and emits TaskDelegated", async () => {
 		const providerEmit = vi.fn()
 		const parentTask = {
 			taskId: "parent-1",
+			clineMessages: [],
 			emit: vi.fn(),
 			flushPendingToolResultsToHistory: vi.fn().mockResolvedValue(true),
 			getTaskApiConfigName: vi.fn().mockResolvedValue("profile-1"),
@@ -67,7 +78,10 @@ describe("AlphaProvider.delegateParentAndOpenChild()", () => {
 			mode: "code",
 		}
 
-		const child = await (AlphaProvider.prototype as any).delegateParentAndOpenChild.call(provider, params)
+		const child = await (AlphaProvider.prototype as any).delegateParentAndOpenChild.call(
+			withHostFixture(provider),
+			params,
+		)
 
 		expect(child.taskId).toBe("child-1")
 
@@ -115,6 +129,7 @@ describe("AlphaProvider.delegateParentAndOpenChild()", () => {
 
 		const parentTask = {
 			taskId: "parent-1",
+			clineMessages: [],
 			emit: vi.fn(),
 			flushPendingToolResultsToHistory: vi.fn().mockResolvedValue(true),
 			getTaskApiConfigName: vi.fn().mockResolvedValue("profile-1"),
@@ -157,7 +172,7 @@ describe("AlphaProvider.delegateParentAndOpenChild()", () => {
 			log: vi.fn(),
 		} as unknown as AlphaProvider
 
-		await (AlphaProvider.prototype as any).delegateParentAndOpenChild.call(provider, {
+		await (AlphaProvider.prototype as any).delegateParentAndOpenChild.call(withHostFixture(provider), {
 			parentTaskId: "parent-1",
 			message: "Do something",
 			initialTodos: [],
@@ -171,6 +186,7 @@ describe("AlphaProvider.delegateParentAndOpenChild()", () => {
 	it("delegates from a live parent even when another task is focused", async () => {
 		const parentTask = {
 			taskId: "parent-1",
+			clineMessages: [],
 			emit: vi.fn(),
 			flushPendingToolResultsToHistory: vi.fn().mockResolvedValue(true),
 			getTaskApiConfigName: vi.fn().mockResolvedValue("profile-1"),
@@ -204,7 +220,7 @@ describe("AlphaProvider.delegateParentAndOpenChild()", () => {
 			log: vi.fn(),
 		} as unknown as AlphaProvider
 
-		await (AlphaProvider.prototype as any).delegateParentAndOpenChild.call(provider, {
+		await (AlphaProvider.prototype as any).delegateParentAndOpenChild.call(withHostFixture(provider), {
 			parentTaskId: "parent-1",
 			message: "Do something",
 			initialTodos: [],

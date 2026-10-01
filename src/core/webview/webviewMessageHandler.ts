@@ -731,14 +731,18 @@ export const webviewMessageHandler = async (
 		case "resumeCompletedTask":
 			{
 				const restoreDraft = async (reason: string) => {
-					// The composer optimistically clears after submit. Restore the exact
-					// draft whenever the host cannot durably accept the continuation.
-					await provider.postMessageToWebview({
-						type: "invoke",
-						invoke: "setChatBoxMessage",
-						text: message.text,
-						images: message.images,
-					})
+					await postChatCommandResult("resumeCompletedTask", "rejected", "task_unavailable")
+					// Historical clients restore through invoke; always address the owning
+					// draft so a late rejection cannot overwrite another chat's composer.
+					if (!message.requestId) {
+						await provider.postMessageToWebview({
+							type: "invoke",
+							invoke: "setChatBoxMessage",
+							taskId: message.taskId,
+							text: message.text,
+							images: message.images,
+						})
+					}
 					vscode.window.showErrorMessage(`Failed to continue task: ${reason}`)
 				}
 				const task = getTaskForMessage(provider, message)
@@ -747,16 +751,43 @@ export const webviewMessageHandler = async (
 					await restoreDraft("the completed task is no longer available")
 					break
 				}
+				if (message.requestId && (await task.hasAcceptedQueuedUserMessage?.(message.requestId))) {
+					await postChatCommandResult("resumeCompletedTask", "accepted")
+					break
+				}
 				try {
-					const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
-					await task.resumeCompletedTaskFollowup(resolved.text ?? "", resolved.images ?? [])
-					await acknowledgeAsyncUserInput(provider, task, message.asyncUserInputMessageTs)
+					if (message.requestId && !task.isCompleted()) {
+						await restoreDraft("the task has not completed")
+						break
+					}
+					const resolved = await resolveIncomingImages({
+						text: message.text,
+						images: message.images,
+						taskId: message.taskId,
+					})
+					if (message.requestId) {
+						await task.submitUserMessage(
+							resolved.text ?? "",
+							resolved.images,
+							undefined,
+							undefined,
+							undefined,
+							message.requestId,
+						)
+					} else {
+						await task.resumeCompletedTaskFollowup(resolved.text ?? "", resolved.images ?? [])
+					}
 				} catch (error) {
 					provider.log(
 						`[webviewMessageHandler] Failed to resume completed task ${message.taskId}: ${error instanceof Error ? error.message : String(error)}`,
 					)
 					await restoreDraft(error instanceof Error ? error.message : String(error))
+					break
 				}
+				await acknowledgeAsyncUserInput(provider, task, message.asyncUserInputMessageTs).catch(() => {
+					provider.log("[webviewMessageHandler] Accepted follow-up's async card annotation remains pending")
+				})
+				await postChatCommandResult("resumeCompletedTask", "accepted")
 			}
 			break
 		case "startBlankTask":
@@ -770,19 +801,104 @@ export const webviewMessageHandler = async (
 			{
 				const task = getRequiredTaskForMessage(provider, message, "askResponse")
 				if (!task) {
+					await postChatCommandResult("askResponse", "rejected", "task_unavailable")
 					break
 				}
 				if (task.hasPendingToolApprovalRequest?.()) {
 					provider.log(
 						"[webviewMessageHandler] Ignoring legacy askResponse while a typed tool approval is active",
 					)
+					await postChatCommandResult("askResponse", "rejected", "stale_ask")
 					break
 				}
-				const resolved = await resolveIncomingImages({ text: message.text, images: message.images })
-				task.handleWebviewAskResponse(message.askResponse!, resolved.text, resolved.images)
+				if (
+					message.requestId &&
+					message.askResponse === "messageResponse" &&
+					(await task.hasAcceptedQueuedUserMessage?.(message.requestId))
+				) {
+					await postChatCommandResult("askResponse", "accepted")
+					break
+				}
+				const activeAskTs = () => (task.getActiveAskTimestamp ? task.getActiveAskTimestamp() : task.taskAsk?.ts)
+				const expectedAskTs = message.askMessageTs ?? activeAskTs()
+				let resolved: Awaited<ReturnType<typeof resolveIncomingImages>>
+				try {
+					resolved = await resolveIncomingImages({
+						text: message.text,
+						images: message.images,
+						taskId: message.taskId,
+					})
+				} catch {
+					await postChatCommandResult("askResponse", "rejected", "image_resolution_failed")
+					break
+				}
+				if (
+					expectedAskTs !== activeAskTs() ||
+					(expectedAskTs === undefined &&
+						typeof task.getActiveAskTimestamp === "function" &&
+						!(
+							message.requestId &&
+							message.askResponse === "messageResponse" &&
+							message.askMessageTs === undefined
+						))
+				) {
+					provider.log("[webviewMessageHandler] Ignoring a response to a replaced ask")
+					await postChatCommandResult("askResponse", "rejected", "stale_ask")
+					break
+				}
+				if (message.requestId && message.askResponse === "messageResponse") {
+					try {
+						await task.submitUserMessage(
+							resolved.text ?? "",
+							resolved.images,
+							undefined,
+							undefined,
+							undefined,
+							message.requestId,
+						)
+					} catch {
+						await postChatCommandResult("askResponse", "rejected", "unknown")
+						break
+					}
+					await acknowledgeAsyncUserInput(provider, task, message.asyncUserInputMessageTs).catch(() => {
+						provider.log("[webviewMessageHandler] Accepted input's async card annotation remains pending")
+					})
+					await postChatCommandResult("askResponse", "accepted")
+					break
+				}
+				const accepted = task.handleWebviewAskResponse(
+					message.askResponse!,
+					resolved.text,
+					resolved.images,
+					undefined,
+					expectedAskTs,
+				)
+				if (accepted === false) {
+					provider.log("[webviewMessageHandler] Ignoring an already-answered ask response")
+					if (
+						message.askResponse === "messageResponse" &&
+						(resolved.text?.trim() || resolved.images?.length)
+					) {
+						const queued = await provider.queueMessageForTaskDurably(
+							task.taskId,
+							resolved.text ?? "",
+							resolved.images,
+							message.requestId,
+						)
+						await postChatCommandResult(
+							"askResponse",
+							queued ? "accepted" : "rejected",
+							queued ? undefined : "queue_full",
+						)
+					} else {
+						await postChatCommandResult("askResponse", "rejected", "stale_ask")
+					}
+					break
+				}
 				if (message.askResponse === "messageResponse") {
 					await acknowledgeAsyncUserInput(provider, task, message.asyncUserInputMessageTs)
 				}
+				await postChatCommandResult("askResponse", "accepted")
 			}
 			break
 
@@ -1268,9 +1384,35 @@ export const webviewMessageHandler = async (
 				provider.log(
 					"[webviewMessageHandler] Ignoring steerSubagent: missing task, group, sub-agent id, or text",
 				)
+				await postChatCommandResult("steerSubagent", "rejected", "task_unavailable")
 				break
 			}
-			await provider.steerSubagent(message.taskId, message.groupId, message.subagentTaskId, message.text)
+			try {
+				const accepted = await provider.steerSubagent(
+					message.taskId,
+					message.groupId,
+					message.subagentTaskId,
+					message.text,
+					message.requestId,
+				)
+				await postChatCommandResult(
+					"steerSubagent",
+					accepted ? "accepted" : "rejected",
+					accepted ? undefined : "steer_pending",
+				)
+			} catch (error) {
+				provider.log(`[webviewMessageHandler] Sub-agent steering failed: ${String(error)}`)
+				await postChatCommandResult("steerSubagent", "rejected", "unknown")
+			}
+			break
+		case "markManagedAgentActivityRead":
+			if (
+				message.taskId &&
+				Number.isSafeInteger(message.activitySequence) &&
+				(message.activitySequence ?? -1) >= 0
+			) {
+				await provider.markManagedAgentActivityRead(message.taskId, message.activitySequence!)
+			}
 			break
 		case "respondToSubagentApproval":
 			if (
@@ -3259,13 +3401,42 @@ export const webviewMessageHandler = async (
 				}
 			}
 
-			if (!provider.queueMessageForTask(message.taskId, resolvedText, resolvedImages)) {
+			let admitted = false
+			try {
+				admitted = await provider.queueMessageForTaskDurably(
+					message.taskId,
+					resolvedText,
+					resolvedImages,
+					message.requestId,
+				)
+			} catch (error) {
+				provider.log(`[webviewMessageHandler] Queue admission failed: ${String(error)}`)
+				await postChatCommandResult(
+					"queueMessage",
+					"rejected",
+					/queue is full|storage limit/.test(String(error)) ? "queue_full" : "unknown",
+				)
+				break
+			}
+			if (!admitted) {
 				provider.log(`[webviewMessageHandler] Ignoring queueMessage: missing, terminal, or unknown taskId`)
 				await postChatCommandResult("queueMessage", "rejected", "task_unavailable")
 				break
 			}
 			const queueTask = provider.getLiveTask(message.taskId)
-			await acknowledgeAsyncUserInput(provider, queueTask, message.asyncUserInputMessageTs)
+			if (queueTask?.messageQueueService) {
+				const queue = queueTask.messageQueueService.visibleMessages ?? queueTask.messageQueueService.messages
+				// Fast consumption can beat this receipt; publish the containing chat
+				// together with the empty queue before the composer retires its preview.
+				if (message.requestId && !queue.some((entry) => entry.id === message.requestId)) {
+					await provider.postTaskQueueToWebview(queueTask.taskId, queue, { includeTranscript: true })
+				} else {
+					await provider.postTaskQueueToWebview(queueTask.taskId, queue)
+				}
+			}
+			await acknowledgeAsyncUserInput(provider, queueTask, message.asyncUserInputMessageTs).catch(() => {
+				provider.log("[webviewMessageHandler] Accepted queued input's async card annotation remains pending")
+			})
 			const clientElapsedMs =
 				typeof message.clientSubmittedAt === "number" &&
 				Number.isFinite(message.clientSubmittedAt) &&
@@ -3282,9 +3453,12 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "removeQueuedMessage": {
-			getRequiredTaskForMessage(provider, message, "removeQueuedMessage")?.messageQueueService.removeMessage(
-				message.text ?? "",
-			)
+			const queue = getRequiredTaskForMessage(provider, message, "removeQueuedMessage")?.messageQueueService
+			if (queue) {
+				await queue.ready
+				queue.removeMessage(message.text ?? "")
+				await queue.flush()
+			}
 			break
 		}
 		case "steerQueuedMessage": {
@@ -3294,8 +3468,8 @@ export const webviewMessageHandler = async (
 				break
 			}
 
-			// Keep the queue as the owner until the task accepts the handoff. If steering
-			// races another steer or a terminal transition, the message remains retryable.
+			await task.messageQueueService.ready
+			// Selection stays recoverable until the containing transcript is committed.
 			const queued = task.messageQueueService.getMessage(message.text ?? "")
 
 			if (!queued) {
@@ -3308,8 +3482,7 @@ export const webviewMessageHandler = async (
 			}
 
 			try {
-				await task.steerUserMessage(queued.text, queued.images)
-				task.messageQueueService.removeMessage(queued.id)
+				await task.steerQueuedUserMessage(queued.id)
 				await postChatCommandResult("steerQueuedMessage", "accepted")
 			} catch (error) {
 				provider.log(
@@ -3327,13 +3500,35 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "editQueuedMessage": {
-			if (message.payload) {
-				const { id, text, images } = message.payload as EditQueuedMessagePayload
-				getRequiredTaskForMessage(provider, message, "editQueuedMessage")?.messageQueueService.updateMessage(
-					id,
-					text,
-					images,
-				)
+			const task = getRequiredTaskForMessage(provider, message, "editQueuedMessage")
+			if (!task) {
+				await postChatCommandResult("editQueuedMessage", "rejected", "task_unavailable")
+				break
+			}
+			if (!message.payload || typeof message.payload !== "object") {
+				await postChatCommandResult("editQueuedMessage", "rejected", "unknown")
+				break
+			}
+			const { id, text, images } = message.payload as EditQueuedMessagePayload
+			if (
+				typeof id !== "string" ||
+				typeof text !== "string" ||
+				(images !== undefined && (!Array.isArray(images) || images.some((image) => typeof image !== "string")))
+			) {
+				await postChatCommandResult("editQueuedMessage", "rejected", "unknown")
+				break
+			}
+			try {
+				await task.messageQueueService.ready
+				const resolved = await resolveIncomingImages({ text, images, taskId: message.taskId })
+				if (!(await task.messageQueueService.updateMessageDurably(id, resolved.text ?? "", resolved.images))) {
+					await postChatCommandResult("editQueuedMessage", "rejected", "message_not_found")
+					break
+				}
+				await postChatCommandResult("editQueuedMessage", "accepted")
+			} catch (error) {
+				provider.log(`[webviewMessageHandler] Queued edit failed: ${String(error)}`)
+				await postChatCommandResult("editQueuedMessage", "rejected", "unknown")
 			}
 
 			break
@@ -3341,10 +3536,12 @@ export const webviewMessageHandler = async (
 		case "reorderQueuedMessage": {
 			if (message.payload) {
 				const { id, toIndex } = message.payload as ReorderQueuedMessagePayload
-				getRequiredTaskForMessage(provider, message, "reorderQueuedMessage")?.messageQueueService.moveMessage(
-					id,
-					toIndex,
-				)
+				const queue = getRequiredTaskForMessage(provider, message, "reorderQueuedMessage")?.messageQueueService
+				if (queue && typeof id === "string" && Number.isSafeInteger(toIndex)) {
+					await queue.ready
+					queue.moveMessage(id, toIndex)
+					await queue.flush()
+				}
 			}
 
 			break

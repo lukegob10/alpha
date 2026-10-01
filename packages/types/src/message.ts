@@ -507,6 +507,8 @@ export const alphaMessageSchema = z
 	.object({
 		/** Associates completed command output with its approval message when a batch runs concurrently. */
 		commandExecutionId: z.string().optional(),
+		/** Exact child for this historical launch/result, independent of later launches. */
+		childTaskId: z.string().min(1).optional(),
 		/** Correlates a typed tool approval prompt with its one-shot response. */
 		toolApprovalRequest: toolApprovalPromptSchema.optional(),
 		/** Typed, nonblocking question card emitted by request_user_input_async. */
@@ -596,6 +598,8 @@ export const queuedMessageSchema = z.object({
 	id: z.string(),
 	text: z.string(),
 	images: z.array(z.string()).optional(),
+	// Projection only: selected input remains visible until its transcript commits.
+	deliveryState: z.literal("delivering").optional(),
 })
 
 export type QueuedMessage = z.infer<typeof queuedMessageSchema>

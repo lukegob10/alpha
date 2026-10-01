@@ -26,6 +26,8 @@ import { formatPathTooltip } from "@src/utils/formatPathTooltip"
 
 import { ToolUseBlock, ToolUseBlockHeader } from "../common/ToolUseBlock"
 import UpdateTodoListToolBlock from "./UpdateTodoListToolBlock"
+import { isTaskOperationApproval, ToolApprovalDetails } from "./ToolApprovalDetails"
+import { resolveLegacyChildLink } from "./utils/legacyChildLink"
 import { TodoChangeDisplay } from "./TodoChangeDisplay"
 import CodeAccordion from "../common/CodeAccordion"
 import MarkdownBlock from "../common/MarkdownBlock"
@@ -575,6 +577,10 @@ const ChatRowContentInner = ({
 		</ActivityStep>
 	)
 
+	if (message.ask === "tool" && isTaskOperationApproval(message.text)) {
+		return <ToolApprovalDetails text={message.text} />
+	}
+
 	if (tool) {
 		const toolIcon = (name: string) => (
 			<span
@@ -1031,29 +1037,15 @@ const ChatRowContentInner = ({
 					</ActivityStep>
 				)
 			case "newTask":
-				// Find all newTask messages to determine which child task ID corresponds to this message
-				const newTaskMessages = clineMessages.filter((msg) => {
-					if (msg.type === "ask" && msg.ask === "tool") {
-						const t = safeJsonParse<AlphaSayTool>(msg.text)
-						return t?.tool === "newTask"
-					}
-					return false
-				})
-				const thisNewTaskIndex = newTaskMessages.findIndex((msg) => msg.ts === message.ts)
-				const childIds = currentTaskItem?.childIds || []
+				const childTaskId = resolveLegacyChildLink(message, clineMessages, currentTaskItem ?? undefined)
 
-				// Only get the child task ID if this newTask has been approved (has a corresponding entry in childIds)
-				// This prevents showing a link to a previous task when the current newTask is still awaiting approval
-				// Note: We don't use delegatedToId here because it persists after child tasks complete and would
-				// incorrectly point to the previous task when a new newTask is awaiting approval
-				const childTaskId =
-					thisNewTaskIndex >= 0 && thisNewTaskIndex < childIds.length ? childIds[thisNewTaskIndex] : undefined
-
-				// Check if the next message is a subtask_result - if so, don't show the button
-				// since the result is displayed right after this message
+				// The adjacent result replaces this link only when it names the same child.
 				const currentMessageIndex = clineMessages.findIndex((msg) => msg.ts === message.ts)
 				const nextMessage = currentMessageIndex >= 0 ? clineMessages[currentMessageIndex + 1] : undefined
-				const isFollowedBySubtaskResult = nextMessage?.type === "say" && nextMessage?.say === "subtask_result"
+				const isFollowedBySubtaskResult =
+					nextMessage?.type === "say" &&
+					nextMessage?.say === "subtask_result" &&
+					resolveLegacyChildLink(nextMessage, clineMessages, currentTaskItem ?? undefined) === childTaskId
 
 				return (
 					<ActivityStep
@@ -1224,9 +1216,11 @@ const ChatRowContentInner = ({
 					</ActivityStep>
 				)
 			default:
-				return null
+				return message.ask === "tool" ? <ToolApprovalDetails text={message.text} /> : null
 		}
 	}
+
+	if (message.ask === "tool") return <ToolApprovalDetails text={message.text} />
 
 	switch (message.type) {
 		case "say":
@@ -1292,7 +1286,11 @@ const ChatRowContentInner = ({
 					)
 				case "subtask_result":
 					// Get the child task ID that produced this result
-					const completedChildTaskId = currentTaskItem?.completedByChildId
+					const completedChildTaskId = resolveLegacyChildLink(
+						message,
+						clineMessages,
+						currentTaskItem ?? undefined,
+					)
 					return (
 						<ActivityStep
 							{...activityProps}

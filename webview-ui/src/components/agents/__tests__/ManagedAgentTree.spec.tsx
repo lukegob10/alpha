@@ -1,8 +1,10 @@
 import type { ManagedAgentTreeProjection, SubagentGroupState, SubagentRunState } from "@alpha-code/types"
 import userEvent from "@testing-library/user-event"
 import { render, screen, within } from "@testing-library/react"
+import { vscode } from "@/utils/vscode"
 
 import { ManagedAgentTree } from "../ManagedAgentTree"
+vi.mock("@/utils/vscode", () => ({ vscode: { postMessage: vi.fn() } }))
 
 const NOW = 1_700_000_000_000
 
@@ -102,6 +104,7 @@ const hierarchyProjection = (): ManagedAgentTreeProjection => ({
 })
 
 describe("ManagedAgentTree", () => {
+	beforeEach(() => vi.mocked(vscode.postMessage).mockClear())
 	it.each(["pending", "failed"] as const)("does not turn advisory %s evidence into required attention", (status) => {
 		const agent = makeAgent({
 			status: "completed",
@@ -262,7 +265,53 @@ describe("ManagedAgentTree", () => {
 		render(<ManagedAgentTree rootTaskId="root-1" groups={groups} maxVisibleAgents={3} onShowTask={vi.fn()} />)
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(3)
-		expect(screen.getByText("+3")).toHaveAttribute("title", "3 additional sub-agent tasks")
+		expect(screen.getByRole("button", { name: "agentNavigation.more" })).toHaveTextContent("+3")
+	})
+	it("opens agents beyond the compact limit through a keyboard-focusable button", async () => {
+		const user = userEvent.setup()
+		const onShowTask = vi.fn()
+		const groups = Array.from({ length: 4 }, (_, index) =>
+			makeGroup(makeAgent({ taskId: `child-${index}`, nickname: `Agent ${index}` })),
+		)
+		render(<ManagedAgentTree rootTaskId="root-1" groups={groups} maxVisibleAgents={1} onShowTask={onShowTask} />)
+		const overflow = screen.getByRole("button", { name: "agentNavigation.more" })
+		expect(overflow).toHaveProperty("tabIndex", 0)
+		expect(overflow).toHaveAttribute("type", "button")
+		await user.click(overflow)
+		const dialog = screen.getByRole("dialog", { name: "agentNavigation.title" })
+		await user.click(within(dialog).getByRole("button", { name: /Open Agent 3/i }))
+		expect(onShowTask).toHaveBeenCalledWith("child-3")
+		expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+	})
+	it("marks the displayed activity cursor and keeps human unread independent of runtime delivery", async () => {
+		const user = userEvent.setup()
+		const onShowTask = vi.fn()
+		const projection = hierarchyProjection()
+		projection.activity[0] = {
+			...projection.activity[0],
+			senderTaskId: "parent-1",
+			recipientTaskId: "child-2",
+			pendingDelivery: true,
+		}
+		const { rerender } = render(
+			<ManagedAgentTree rootTaskId="root-1" projection={projection} isVisible={false} onShowTask={onShowTask} />,
+		)
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		await user.click(screen.getByRole("button", { name: "agentActivity.open" }))
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		rerender(<ManagedAgentTree rootTaskId="root-1" projection={projection} onShowTask={onShowTask} />)
+		const dialog = screen.getByRole("dialog", { name: "agentActivity.title" })
+		expect(within(dialog).getByText("Cinder")).toBeInTheDocument()
+		expect(within(dialog).getByText("agentActivity.pending")).toBeInTheDocument()
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		await user.click(within(dialog).getByRole("button", { name: "agentActivity.markRead" }))
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "markManagedAgentActivityRead",
+			taskId: "root-1",
+			activitySequence: 1,
+		})
+		await user.click(within(dialog).getByRole("button", { name: "agentActivity.openNamed" }))
+		expect(onShowTask).toHaveBeenCalledWith("child-2")
 	})
 
 	it("disables navigation only when the host does not expose it", () => {

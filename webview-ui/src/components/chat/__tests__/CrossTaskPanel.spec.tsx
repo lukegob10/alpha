@@ -63,10 +63,10 @@ describe("CrossTaskPanel", () => {
 		)
 
 		expect(screen.getByRole("navigation", { name: "crossTasks.title" })).toBeInTheDocument()
-		expect(screen.getByText("crossTasks.thread 2")).toBeInTheDocument()
-		expect(screen.getByText("crossTasks.thread 3")).toBeInTheDocument()
-		expect(screen.getByText("crossTasks.thread 4")).toBeInTheDocument()
-		expect(screen.queryByText("Parse the AST")).not.toBeInTheDocument()
+		expect(screen.getByText("Parse the AST")).toBeInTheDocument()
+		expect(screen.getByText("Completed inspection")).toBeInTheDocument()
+		expect(screen.getByText("Stopped inspection")).toBeInTheDocument()
+		expect(screen.queryByText("Private sibling task")).not.toBeInTheDocument()
 		expect(screen.queryByText("crossTasks.workspace.worktree")).not.toBeInTheDocument()
 		expect(screen.queryByText("crossTasks.thread 5")).not.toBeInTheDocument()
 
@@ -96,7 +96,7 @@ describe("CrossTaskPanel", () => {
 			<CrossTaskPanel parentTaskId="parent-1" taskHistory={taskHistory} onOpen={onOpen} />,
 		)
 		expect(screen.getAllByRole("button", { name: "crossTasks.openTask" })).toHaveLength(10)
-		expect(screen.getByText("crossTasks.thread 11")).toBeInTheDocument()
+		expect(screen.getByText("Objective 9")).toBeInTheDocument()
 		rerender(<CrossTaskPanel parentTaskId="parent-1" taskHistory={[...taskHistory].reverse()} onOpen={onOpen} />)
 		fireEvent.click(screen.getAllByRole("button", { name: "crossTasks.openTask" })[0])
 		expect(onOpen).toHaveBeenCalledWith("child-01")

@@ -1,54 +1,6 @@
 # Dedicated VS Code live-Copilot test profiles
 
-This extends the existing extension-host runner. It does not replace the scripted or VS Code LM fixture gates, and it
-does not modify the CLI or VS Code shim. VS Code **1.122.1** remains the release-gating host; **1.136.1** is the additional
-compatibility target. A passing setup/preflight is not a passing Alpha task or a reliability benchmark.
-
-**Persistence corrected 2026-09-06:** live runs now use the normal development-host path below. The actual
-write/close/reopen/read regression passed on **both 1.122.1 and 1.136.1** for Alpha's global memento, workspace memento,
-and a synthetic SecretStorage value. The previous extension-test path failed the same test because its underlying
-state database is intentionally in memory. A separate real sign-in/close/reopen check on **1.122.1** subsequently
-confirmed Alpha-owned `canSendRequest: true` for exact Luna with High, without a setup request probe. At that point,
-authorization on 1.136.1 and actual live workflows remained unverified. No credentials were copied or inspected.
-
-**Current live blocker:** the authenticated 1.122.1 workflow hit an uncaught exception in its bundled Copilot 0.50.1,
-before an Alpha task was created. Repeating sign-in does not address that failure.
-
-### Copilot Git observer failure: investigation on 2026-09-14
-
-The exact-host core campaign `mode-removal-live-20260914-01` passed its harness unit, core regression, smoke and core
-1.122.1 prerequisites. Its first live scenario, `dev-git-inspect`, then failed with `TypeError: e is not iterable` in
-Copilot 0.50.1's `ObservableGit.init` / `mapObservableArrayCached` path. Authentication and exact Luna/High selection
-succeeded. A fresh-workspace isolated run reproduced the same stack; the other eight campaign scenarios did not run.
-The stack also appears in the pre-change campaign `core-luna-1221-20260911-01`.
-
-The bundled code matches the
-[1.122.1 source](https://github.com/microsoft/vscode/blob/8761a5560cfd65fdd19ce7e2bd18dab5c0a4d84e/extensions/copilot/src/platform/inlineEdits/common/observableGit.ts#L25)
-and [Microsoft's matching telemetry issue](https://github.com/microsoft/vscode/issues/318772).
-The [proposed upstream fix](https://github.com/microsoft/vscode/pull/318781) describes an observable subscription
-lifecycle problem that supplies `undefined` where an array is expected. That PR was still open when checked on
-2026-09-14; its proposed diagnosis is supporting evidence, not proof of a released fix. Disabling
-`github.copilot.nextEditSuggestions.enabled` in the dedicated 1.122.1 profile did not prevent the exception. The
-diagnostic override was removed afterward.
-
-The same isolated scenario passed on the already-installed **1.136.1 / Copilot 0.64.1** with real Luna/High, six model
-requests, all fixture and tool-transaction checks passing, and a normal host exit. Its run ID is
-`isolated-git-inspect-1361-20260914-01`. This is supplemental evidence from one sample, not an exact-host gate pass or a
-claim that the upstream bug is fixed in every newer host. Keep 1.122.1's failure visible; a baseline migration requires
-the coordinated repository changes described in `AGENTS.md`. Do not patch the downloaded Copilot bundle, suppress its
-uncaught exception, disable Git integration, or reset authentication to manufacture a passing run.
-
-The subsequent full campaign `mode-removal-live-1361-20260914-01` passed **9/9 core scenarios**, with one sample per
-scenario and **61 live Luna/High requests**. Git inspection, refactoring, search recovery, completion/idle, empty and
-error response recovery, stream cancellation/recovery, reload continuation, and background isolation all passed.
-All four gate prerequisites passed again, including the 1.122.1 smoke and core suites. The final gate receipt records
-`status: passed`, `stopReason: completed`, complete evidence retention, and unchanged built artifacts during the run.
-Token and cost totals were unavailable. This establishes a working supplemental live validation path on 1.136.1;
-the 1.122.1 live gate remains blocked by the separately recorded Copilot exception.
-
-Local campaign evidence is under `F:\alpha-vscode-e2e-runs\core-confidence`; isolated diagnostics are under its
-`mode-removal-isolated-evidence-20260914` directory. The runner receipts and `workflow-result.json`, when present, are
-the evidence of actual execution; a successful model preflight alone is insufficient.
+This guide documents dedicated live-Copilot profile setup and runner options. VS Code **1.122.1** remains the release-gating host; live-provider checks are supplemental and do not replace scripted or VS Code LM fixture gates. A successful setup or model discovery is not a passing Alpha task.
 
 ## Persistent storage requires a normal development host
 
@@ -58,12 +10,7 @@ model selection, setup controls, tool execution, scenarios, assertions, and requ
 The fixed sidecar manifest is materialized atomically in the existing compiled `out/` directory before launch. That
 directory is the sidecar extension root, so compiled suite modules have a recognized VS Code API identity.
 
-The previous test-mode launcher was incompatible with saved authentication/settings: VS Code forces its application,
-shared, profile, and workspace storage into memory when `extensionTestsLocationURI` is set. A directory surviving on
-disk did not prove those values survived. The coordinating thread reproduced this on **2026-09-06**, on both exact
-hosts: a random test value matched `globalState`, `workspaceState`, and a uniquely named synthetic SecretStorage entry
-in the first process; all three were missing after a fresh launch. These probes do not read real authentication entries.
-Reference: [exact 1.122.1 storage implementation](https://github.com/microsoft/vscode/blob/8761a5560cfd65fdd19ce7e2bd18dab5c0a4d84e/src/vs/platform/storage/electron-main/storageMainService.ts#L98).
+`extensionTestsLocationURI` makes VS Code use in-memory application, shared, profile, and workspace storage. Authenticated live runs therefore use a normal development host; an on-disk test directory alone does not prove that profile state persists. Synthetic persistence probes do not read real authentication entries. See the [exact 1.122.1 storage implementation](https://github.com/microsoft/vscode/blob/8761a5560cfd65fdd19ce7e2bd18dab5c0a4d84e/src/vs/platform/storage/electron-main/storageMainService.ts#L98).
 
 Normal live hosts also receive an owned `--shared-data-dir` under `profiles/<exact-version>/shared-data`. Existing
 schema-1 profile markers and user-data/extensions directories remain intact; no credentials or stores are copied,
@@ -91,10 +38,10 @@ storage. Close that dedicated window normally and inspect ownership before anoth
 Normal hosts do not inherit the campaign runner's console pipes, so a retained window cannot hold those handles open.
 Use the safe receipts and existing owned profile logs for diagnostics; deterministic test-mode console output is unchanged.
 
-Before asking for sign-in again, run the coordinating persistence probe through write → owned close → fresh read on
-both target versions, requiring all three synthetic values to survive. Even that passing result does **not** prove
-GitHub authorization; verify actual Copilot/Alpha access separately. Development-mode webviews use Alpha's existing
-local HMR probe and built-HTML fallback; do not change production behavior or serve an unrelated Vite UI for acceptance.
+When profile persistence is in doubt, verify it with synthetic values written before an owned host close and read
+after reopening. This does **not** prove GitHub authorization; verify actual Copilot/Alpha access separately.
+Development-mode webviews use Alpha's existing local HMR probe and built-HTML fallback; do not change production
+behavior or serve an unrelated Vite UI for acceptance.
 
 ## Prepare and discover
 
@@ -176,9 +123,6 @@ activation progress, query count, and whether a catalog event was observed. Empt
 Provider exceptions remain redacted and are not retried. Catalog readiness does **not** establish saved sign-in or Alpha
 consent; those checks remain separate. Reuse the dedicated profile, but verify authentication instead of assuming it.
 
-The cold-start regression was observed on **2026-09-06**, actual **1.122.1**: a warm setup returned 22 Copilot models, but
-the next automated launch read an empty catalog and stopped before Copilot activation. The focused regression failed
-before the readiness fix and passed afterward; live-host verification remains a separate requirement.
 Implementation was checked against VS Code commit `8761a5560cfd65fdd19ce7e2bd18dab5c0a4d84e`:
 [stable activation and model-event APIs](https://github.com/microsoft/vscode/blob/8761a5560cfd65fdd19ce7e2bd18dab5c0a4d84e/src/vscode-dts/vscode.d.ts),
 [language-model service](https://github.com/microsoft/vscode/blob/8761a5560cfd65fdd19ce7e2bd18dab5c0a4d84e/src/vs/workbench/contrib/chat/common/languageModels.ts),

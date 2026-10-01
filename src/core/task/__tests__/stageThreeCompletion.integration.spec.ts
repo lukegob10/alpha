@@ -197,6 +197,12 @@ async function createHarness() {
 		deferResponseTransaction = false,
 	) => {
 		requestStep.mockImplementation(async (input) => {
+			const receiptIds = task["getQueuedInputReceipts"](input)
+			if (receiptIds.length) {
+				task.apiConversationHistory.push({ role: "user", content: input, queued_message_ids: receiptIds })
+				task.messageQueueService.acknowledgeMessages(receiptIds)
+				await task.messageQueueService.flush()
+			}
 			// Model the request adapter's durable steering consumption; the real
 			// steerUserMessage admission and completion-wait interruption remain intact.
 			const pendingSteer = Reflect.get(task, "pendingSteerMessage") as
@@ -456,7 +462,7 @@ describe("Stage Three durable completion integration", () => {
 		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
 	})
 
-	it("stops after three configured hook continuations without completing", async () => {
+	it("continues configured hook repair until cancellation without promoting completion", async () => {
 		const harness = await setup()
 		const configuredHook = {
 			command: process.execPath,
@@ -466,9 +472,15 @@ describe("Stage Three durable completion integration", () => {
 			() =>
 				({ get: (key: string) => (key === "completionHooks" ? { stop: [configuredHook] } : undefined) }) as any,
 		)
+		const evaluate = harness.task.evaluateCompletionHooks.bind(harness.task)
+		vi.spyOn(harness.task, "evaluateCompletionHooks").mockImplementation(async (...args) => {
+			const outcome = await evaluate(...args)
+			if (harness.requests.length === 6) harness.cancel()
+			return outcome
+		})
 		await harness.run()
-		expect(harness.requests).toHaveLength(4)
-		expect(harness.ask).toHaveBeenCalledWith("resume_task")
+		expect(harness.requests).toHaveLength(6)
+		expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
 		expect(harness.presentCompletionResult).not.toHaveBeenCalled()
 		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(0)
 	})
@@ -529,9 +541,8 @@ describe("Stage Three durable completion integration", () => {
 		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
 	})
 
-	it("resets the hook continuation window when new user guidance is delivered", async () => {
+	it("resets the hook active flag when new human guidance is delivered", async () => {
 		const harness = await setup()
-		Reflect.set(harness.task, "completionHookContinuationCount", 0)
 		const configuredHook = {
 			command: process.execPath,
 			args: ["-e", "process.stdout.write(JSON.stringify({decision:'block',reason:'Check again.'}))"],
@@ -543,11 +554,13 @@ describe("Stage Three durable completion integration", () => {
 		for (let attempt = 0; attempt < 3; attempt++) {
 			expect(await harness.task.evaluateCompletionHooks("done")).toMatchObject({ prompt: "Check again." })
 		}
-		expect(await harness.task.evaluateCompletionHooks("done")).toEqual({ limitReached: true })
+		expect(await harness.task.evaluateCompletionHooks("done")).toMatchObject({ prompt: "Check again." })
+		expect(Reflect.get(harness.task, "completionHookActive")).toBe(true)
 		const buildUserMessageContent = Reflect.get(harness.task, "buildUserMessageContent") as (
 			text: string,
 		) => unknown
 		buildUserMessageContent.call(harness.task, "Please revisit the task.")
+		expect(Reflect.get(harness.task, "completionHookActive")).toBe(false)
 		expect(await harness.task.evaluateCompletionHooks("done")).toMatchObject({ prompt: "Check again." })
 	})
 
@@ -826,7 +839,7 @@ describe("Stage Three durable completion integration", () => {
 		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
 	})
 
-	it("keeps a healthy command running past 60 seconds during text completion without a model retry", async () => {
+	it("pauses completion after bounded observation while preserving a healthy command and its obligations", async () => {
 		const harness = await setup(true)
 		harness.task.beginCommandExecution("running-check", "physical-running-check", "pnpm exec vitest run")
 		const { running } = await observePendingCandidate(harness)
@@ -834,7 +847,7 @@ describe("Stage Three durable completion integration", () => {
 			await vi.advanceTimersByTimeAsync(60_000)
 			harness.assertNotCompleted()
 			expect(harness.requests).toHaveLength(1)
-			expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+			expect(harness.ask).toHaveBeenCalledWith("resume_task")
 			expect(harness.task.consecutiveMistakeCount).toBe(0)
 			expect(harness.task.hasActiveCommandExecutions()).toBe(true)
 		} finally {
@@ -842,7 +855,7 @@ describe("Stage Three durable completion integration", () => {
 			await vi.advanceTimersByTimeAsync(1_000)
 			await running
 		}
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(0)
 		expect(harness.requests).toHaveLength(1)
 	})
 

@@ -104,6 +104,8 @@ export interface ApiHandler {
 
 	getModel(): {
 		id: string
+		/** Verified model family used for instructions when execution IDs are opaque. */
+		instructionModelId?: string
 		info: ModelInfo
 		/** Provider-resolved identity used for host-specific tool preferences. */
 		toolIdentity?: ModelToolIdentity

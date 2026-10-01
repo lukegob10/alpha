@@ -31,6 +31,7 @@ vi.mock("../core/task/Task", () => ({
 import { retiredProviderNames, type ProviderSettings, type HistoryItem } from "@alpha-code/types"
 
 import { AlphaProvider } from "../core/webview/AlphaProvider"
+import { TaskSessionRegistry } from "../core/webview/TaskSessionRegistry"
 
 describe("AlphaProvider.createTask start control", () => {
 	afterEach(() => {
@@ -40,12 +41,12 @@ describe("AlphaProvider.createTask start control", () => {
 	})
 
 	const createProvider = () =>
-		({
+		Object.assign(Object.create(AlphaProvider.prototype), {
 			taskStack: [],
 			taskCreationQueue: Promise.resolve(),
 			createTaskUnderCreationLock: (AlphaProvider.prototype as any).createTaskUnderCreationLock,
 			getLiveTask: vi.fn(),
-			taskSessions: { canCreateTask: vi.fn(() => true) },
+			taskSessions: new TaskSessionRegistry(),
 			customModesManager: { updateCustomMode: vi.fn() },
 			taskCreationCallback: undefined,
 			setValues: vi.fn(),

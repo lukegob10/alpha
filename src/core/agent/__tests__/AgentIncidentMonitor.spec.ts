@@ -47,6 +47,20 @@ function turnFailed(options: Parameters<typeof lifecycleEvent>[2] = {}) {
 }
 
 describe("AgentIncidentMonitor", () => {
+	it("expires tasks, alerts, and turns after 24 hours without deleting their detail records", () => {
+		let now = 100_000_000
+		const monitor = new AgentIncidentMonitor({ now: () => now })
+		monitor.observe(turnFailed({ at: now - 86_400_001, taskId: "old" }))
+		monitor.observe(turnFailed({ at: now - 86_400_000, taskId: "boundary" }))
+		const snapshot = monitor.snapshot()
+		expect(snapshot.tasks.map((task) => task.taskId)).toEqual([digest("boundary")])
+		expect(snapshot.turns).toHaveLength(1)
+		expect(snapshot.alerts).toHaveLength(1)
+		now += 1
+		expect(monitor.snapshot()).toMatchObject({ tasks: [], turns: [], alerts: [] })
+		expect(monitor.getTurnDetail(snapshot.turns[0]!.id)).toBeDefined()
+	})
+
 	it("alerts immediately on explicit turn failure with only bounded safe evidence", () => {
 		const monitor = new AgentIncidentMonitor({ now: () => 5_000 })
 		const snapshots: Array<ReturnType<typeof monitor.snapshot>> = []
@@ -100,7 +114,6 @@ describe("AgentIncidentMonitor", () => {
 			lifecycleEvent("turn_interrupted", { status: "interrupted" }, { taskId: "restart-task", sequence: 1 }),
 		)
 		monitor.observe(turnStarted({ taskId: "healthy-task", sequence: 1, at: 1_000 }))
-		now += 24 * 60 * 60 * 1_000
 
 		expect(monitor.snapshot().alerts).toEqual([])
 		expect(monitor.snapshot().tasks.find((task) => task.taskId === digest("task-incident"))?.state).toBe(
@@ -109,6 +122,8 @@ describe("AgentIncidentMonitor", () => {
 		expect(monitor.snapshot().tasks.find((task) => task.taskId === digest("restart-task"))?.state).toBe(
 			"interrupted",
 		)
+		now += 24 * 60 * 60 * 1_000
+		expect(monitor.snapshot()).toMatchObject({ tasks: [], alerts: [], turns: [] })
 		expect(JSON.stringify(monitor.snapshot())).not.toContain("PRIVATE_APPROVAL_REASON")
 	})
 

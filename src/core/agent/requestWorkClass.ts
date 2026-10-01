@@ -65,7 +65,7 @@ const TICKET_INTENT_RE = /\btickets?\b|\b[A-Z]{2,4}(?:\s*(?:[-#]|number\s*)\s*)?
 const MCP_RESOURCE_INTENT_RE = /\bmcp\b|\bresource(?:s|\s+templates?)?\b/i
 
 const IMPLEMENTATION_LEAD_RE =
-	/^(?:please\s+)?(?:implement|fix|add|create|write|edit|delete|remove|rename|refactor|migrate|update|patch|install|change)\b/i
+	/(?:^|[.!?;\n]\s*)(?:(?:please|then|also|now|let's)\s+)*(?:(?:can|could|would|will)\s+you\s+|(?:i|we)\s+(?:want|need)\s+(?:you\s+to|to)\s+|(?:i|we)(?:'d| would)\s+like\s+(?:you\s+to|to)\s+)?(?:implement|fix|add|create|write|edit|delete|remove|rename|refactor|migrate|update|patch|install|change)\b/i
 
 const IMPLEMENTATION_ASK_RE =
 	/\bplease\s+(?:implement|fix|add|create|write|edit|delete|remove|rename|refactor|update|change)\b|\b(?:implement|refactor|migrate)\b|\band\s+(?:then\s+)?(?:fix|implement|change|edit|add|write)\b/i
@@ -132,18 +132,41 @@ export function classifyRequestWorkClass(
 	return { class: "full", reason: "uncertain", includeSkill, includeTickets, includeMcpResources }
 }
 
+interface RequestMessage {
+	role: string
+	content: unknown
+	agent_message_id?: string
+	input_origin?: "human" | "agent"
+	hook_prompt?: unknown
+	isSummary?: boolean
+	isTruncationMarker?: boolean
+}
+
 export function extractUserRequestText(
-	messages: readonly { role: string; content: unknown }[] | undefined,
+	messages: readonly RequestMessage[] | undefined,
 	fallbackTaskText?: string,
 ): string | undefined {
 	if (messages) {
 		for (let index = messages.length - 1; index >= 0; index--) {
 			const message = messages[index]
 			if (message.role !== "user") continue
+			// Provider roles include tool/agent/hook input. Only human instructions
+			// may authorize work; retain the last real human request and revocation.
+			if (
+				message.agent_message_id !== undefined ||
+				message.input_origin === "agent" ||
+				message.hook_prompt !== undefined ||
+				message.isSummary ||
+				message.isTruncationMarker
+			)
+				continue
 			if (isToolResultOnly(message.content)) continue
 			const extracted = normalizeUserRequestText(textFromContent(message.content))
 			if (extracted) return extracted
 		}
+		// Once history exists, an older metadata objective cannot stand in for
+		// missing human provenance (for example after compaction of a revocation).
+		if (messages.length > 0) return undefined
 	}
 	const fallback = normalizeUserRequestText(fallbackTaskText ?? "")
 	return fallback || undefined
@@ -169,6 +192,9 @@ function isToolResultOnly(content: unknown): boolean {
 }
 
 function normalizeUserRequestText(text: string): string {
+	// Historical agent continuations predate structured provenance. Read their
+	// host wrapper conservatively, including a continuation mixed with tool data.
+	if (/<agent_message(?:\s|>)/i.test(text)) return ""
 	const withoutEnvironment = text.replace(ENVIRONMENT_DETAILS_RE, "").trim()
 	const wrapped = withoutEnvironment.match(USER_MESSAGE_RE)
 	return (wrapped ? wrapped[1] : withoutEnvironment).trim()

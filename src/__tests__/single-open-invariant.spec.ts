@@ -2,6 +2,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { AlphaProvider } from "../core/webview/AlphaProvider"
+import { TaskSessionRegistry } from "../core/webview/TaskSessionRegistry"
 import { API } from "../extension/api"
 import * as ProfileValidatorMod from "../shared/ProfileValidator"
 
@@ -244,6 +245,11 @@ describe("Single-open-task invariant", () => {
 		const updateGlobalState = vi.fn().mockResolvedValue(undefined)
 
 		const provider = {
+			taskCreationCallback: vi.fn(),
+			createTaskWithHistoryItemUnderOwnership: (AlphaProvider.prototype as any)
+				.createTaskWithHistoryItemUnderOwnership,
+			getTaskOwner: (AlphaProvider.prototype as any).getTaskOwner,
+			taskSessions: new TaskSessionRegistry(),
 			getCurrentTask: vi.fn(() => undefined), // ensure not rehydrating
 			getLiveTask: vi.fn(() => undefined),
 			removeTaskFromStack,

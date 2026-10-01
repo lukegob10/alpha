@@ -457,6 +457,11 @@ describe("TaskHeader", () => {
 			renderTaskHeader({ parentTaskId: "parent-task-123" })
 			expect(screen.getByText("chat:task.backToParentTask")).toBeInTheDocument()
 		})
+		it("returns an independent chat to its launcher without a legacy parent relationship", () => {
+			renderTaskHeader({ launcherTaskId: "launching-chat" })
+			fireEvent.click(screen.getByRole("button", { name: "chat:crossTasks.backToLauncher" }))
+			expect(mockPostMessage).toHaveBeenCalledWith({ type: "showTaskWithId", text: "launching-chat" })
+		})
 
 		it("should call vscode.postMessage with showTaskWithId when back button is clicked", () => {
 			renderTaskHeader({ parentTaskId: "parent-task-123" })

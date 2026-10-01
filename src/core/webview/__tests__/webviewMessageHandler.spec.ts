@@ -56,10 +56,11 @@ const mockAlphaProvider = {
 	getReasoningCapabilities: vi.fn(),
 	activateProviderProfile: vi.fn(),
 	postStateToWebview: vi.fn(),
+	postTaskQueueToWebview: vi.fn(async () => undefined),
 	getCurrentTask: vi.fn(),
 	getLiveTask: vi.fn(),
 	canAcceptTaskInput: vi.fn(() => true),
-	queueMessageForTask: vi.fn((taskId: string, text: string, images?: string[]) => {
+	queueMessageForTaskDurably: vi.fn(async (taskId: string, text: string, images?: string[]) => {
 		const task = mockAlphaProvider.getLiveTask(taskId)
 		if (!task || !mockAlphaProvider.canAcceptTaskInput(taskId)) return false
 		return Boolean(task.messageQueueService.addMessage(text, images))
@@ -642,9 +643,13 @@ describe("webviewMessageHandler - image mentions", () => {
 		})
 
 		expect(vi.mocked(resolveImageMentions)).toHaveBeenCalled()
-		expect(mockHandleWebviewAskResponse).toHaveBeenCalledWith("messageResponse", "See @/img.png", [
-			"data:image/png;base64,from-mention",
-		])
+		expect(mockHandleWebviewAskResponse).toHaveBeenCalledWith(
+			"messageResponse",
+			"See @/img.png",
+			["data:image/png;base64,from-mention"],
+			undefined,
+			undefined,
+		)
 	})
 
 	it("persists the exact async question card after accepting its ordinary reply", async () => {
@@ -707,6 +712,51 @@ describe("webviewMessageHandler - image mentions", () => {
 		)
 	})
 
+	it("rejects a legacy reply when the ask changes during image resolution", async () => {
+		const handleWebviewAskResponse = vi.fn()
+		const task = { taskAsk: { ts: 10 }, cwd: "/mock/workspace", handleWebviewAskResponse }
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue(task as any)
+		let release!: (state: any) => void
+		vi.mocked(mockAlphaProvider.getState).mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					release = resolve
+				}),
+		)
+		const dispatch = webviewMessageHandler(mockAlphaProvider, {
+			type: "askResponse",
+			taskId: "task-1",
+			askMessageTs: 10,
+			askResponse: "messageResponse",
+			text: "see @/img.png",
+		})
+		await vi.waitFor(() => expect(release).toBeDefined())
+		task.taskAsk = { ts: 11 }
+		release({ maxImageFileSize: 5, maxTotalImageSize: 20 })
+		await dispatch
+		expect(handleWebviewAskResponse).not.toHaveBeenCalled()
+	})
+
+	it("correlates a failed completed-task resume without overwriting the active composer", async () => {
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue(undefined)
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "resumeCompletedTask",
+			taskId: "background",
+			requestId: "resume-1",
+			text: "retain this",
+		})
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				taskId: "background",
+				type: "chatCommandResult",
+				chatCommandResult: expect.objectContaining({ requestId: "resume-1", status: "rejected" }),
+			}),
+		)
+		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "invoke" }),
+		)
+	})
+
 	it("resumes a completed task with the submitted follow-up instead of creating a task", async () => {
 		const resumeCompletedTaskFollowup = vi.fn().mockResolvedValue(undefined)
 		const markAsyncUserInputAnswered = vi.fn().mockResolvedValue(true)
@@ -748,6 +798,7 @@ describe("webviewMessageHandler - image mentions", () => {
 			invoke: "setChatBoxMessage",
 			text: "keep this prompt",
 			images: ["image1.png"],
+			taskId: "task-1",
 		})
 		expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
 			"Failed to continue task: terminal journal unavailable",
@@ -769,6 +820,7 @@ describe("webviewMessageHandler - image mentions", () => {
 			invoke: "setChatBoxMessage",
 			text: "do not lose this prompt",
 			images: ["image1.png"],
+			taskId: "missing-task",
 		})
 		expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(
 			"Failed to continue task: the completed task is no longer available",
@@ -824,7 +876,104 @@ describe("webviewMessageHandler - queued message steering", () => {
 		vi.clearAllMocks()
 	})
 
-	it("removes the selected queued message and steers it into the active task", async () => {
+	it("publishes accepted input before acknowledging the composer submission", async () => {
+		const queue = [{ id: "visible-input", timestamp: 1, text: "unrelated words" }]
+		vi.mocked(mockAlphaProvider.queueMessageForTaskDurably).mockResolvedValueOnce(true)
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
+			taskId: "task-1",
+			messageQueueService: { visibleMessages: queue },
+		} as any)
+		let finishProjection!: () => void
+		const projectionStarted = new Promise<void>((resolve) => {
+			vi.mocked(mockAlphaProvider.postTaskQueueToWebview).mockImplementationOnce(async () => {
+				resolve()
+				await new Promise<void>((finish) => {
+					finishProjection = finish
+				})
+			})
+		})
+		const dispatch = webviewMessageHandler(mockAlphaProvider, {
+			type: "queueMessage",
+			taskId: "task-1",
+			requestId: "visible-input",
+			text: "unrelated words",
+		})
+		await Promise.race([projectionStarted, dispatch])
+		expect(mockAlphaProvider.postTaskQueueToWebview).toHaveBeenCalledWith("task-1", queue)
+		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "chatCommandResult" }),
+		)
+		finishProjection()
+		await dispatch
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({ chatCommandResult: expect.objectContaining({ status: "accepted" }) }),
+		)
+	})
+
+	it("waits for durable queue admission before acknowledging a background submission", async () => {
+		let admit!: (value: boolean) => void
+		vi.mocked(mockAlphaProvider.queueMessageForTaskDurably).mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					admit = resolve
+				}),
+		)
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({} as any)
+		const dispatch = webviewMessageHandler(mockAlphaProvider, {
+			type: "queueMessage",
+			taskId: "background",
+			requestId: "queue-durable",
+			text: "recoverable",
+		})
+		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()
+		admit(true)
+		await dispatch
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				taskId: "background",
+				chatCommandResult: expect.objectContaining({ requestId: "queue-durable", status: "accepted" }),
+			}),
+		)
+	})
+
+	it("publishes the containing transcript when accepted input is consumed before its receipt", async () => {
+		vi.mocked(mockAlphaProvider.queueMessageForTaskDurably).mockResolvedValueOnce(true)
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
+			taskId: "task-1",
+			messageQueueService: { visibleMessages: [] },
+		} as any)
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "queueMessage",
+			taskId: "task-1",
+			requestId: "already-consumed-input",
+			text: "arbitrary input",
+		})
+		expect(mockAlphaProvider.postTaskQueueToWebview).toHaveBeenCalledWith("task-1", [], {
+			includeTranscript: true,
+		})
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({ chatCommandResult: expect.objectContaining({ status: "accepted" }) }),
+		)
+	})
+
+	it("still acknowledges durable input when its async question annotation fails", async () => {
+		vi.mocked(mockAlphaProvider.queueMessageForTaskDurably).mockResolvedValueOnce(true)
+		const markAsyncUserInputAnswered = vi.fn().mockRejectedValue(new Error("annotation write failed"))
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({ markAsyncUserInputAnswered } as any)
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "queueMessage",
+			taskId: "task-1",
+			requestId: "accepted-input",
+			text: "arbitrary input",
+			asyncUserInputMessageTs: 42,
+		})
+		expect(markAsyncUserInputAnswered).toHaveBeenCalledWith(42)
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({ chatCommandResult: expect.objectContaining({ status: "accepted" }) }),
+		)
+	})
+
+	it("hands the selected identity to the task's durable steering boundary", async () => {
 		const queuedMessage = {
 			id: "queued-1",
 			timestamp: Date.now(),
@@ -833,7 +982,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 		}
 		const getMessage = vi.fn().mockReturnValue(queuedMessage)
 		const removeMessage = vi.fn().mockReturnValue(true)
-		const steerUserMessage = vi.fn().mockResolvedValue(undefined)
+		const steerQueuedUserMessage = vi.fn().mockResolvedValue(undefined)
 
 		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
 			taskId: "task-1",
@@ -841,7 +990,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 				getMessage,
 				removeMessage,
 			},
-			steerUserMessage,
+			steerQueuedUserMessage,
 			canAcceptSteerMessage: vi.fn(() => true),
 			hasPendingSteerMessage: vi.fn(() => false),
 		} as any)
@@ -854,9 +1003,8 @@ describe("webviewMessageHandler - queued message steering", () => {
 		})
 
 		expect(getMessage).toHaveBeenCalledWith("queued-1")
-		expect(steerUserMessage).toHaveBeenCalledWith("steer this now", ["img1.png"])
-		expect(removeMessage).toHaveBeenCalledWith("queued-1")
-		expect(steerUserMessage.mock.invocationCallOrder[0]).toBeLessThan(removeMessage.mock.invocationCallOrder[0])
+		expect(steerQueuedUserMessage).toHaveBeenCalledWith("queued-1")
+		expect(removeMessage).not.toHaveBeenCalled()
 		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "chatCommandResult",
@@ -878,7 +1026,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 		}
 		const getMessage = vi.fn().mockReturnValue(queuedMessage)
 		const removeMessage = vi.fn()
-		const steerUserMessage = vi.fn().mockRejectedValue(new Error("another steering message is pending"))
+		const steerQueuedUserMessage = vi.fn().mockRejectedValue(new Error("another steering message is pending"))
 
 		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
 			taskId: "task-1",
@@ -886,7 +1034,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 				getMessage,
 				removeMessage,
 			},
-			steerUserMessage,
+			steerQueuedUserMessage,
 			canAcceptSteerMessage: vi.fn(() => true),
 			hasPendingSteerMessage: vi.fn(() => true),
 		} as any)
@@ -912,7 +1060,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 	})
 
 	it("acknowledges a queued message only after the task accepts it", async () => {
-		vi.mocked(mockAlphaProvider.queueMessageForTask).mockReturnValue(true)
+		vi.mocked(mockAlphaProvider.queueMessageForTaskDurably).mockResolvedValue(true)
 		const recordTaskPerformanceDuration = vi.fn()
 		const markAsyncUserInputAnswered = vi.fn().mockResolvedValue(true)
 		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
@@ -947,7 +1095,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 
 	it("admits plain text without waiting for provider state", async () => {
 		const queued: string[] = []
-		vi.mocked(mockAlphaProvider.queueMessageForTask).mockImplementation((_taskId, text) => {
+		vi.mocked(mockAlphaProvider.queueMessageForTaskDurably).mockImplementation(async (_taskId, text) => {
 			queued.push(text)
 			return true
 		})
@@ -979,7 +1127,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 
 	it("keeps rapidly submitted plain-text messages ordered without dropping or duplicating them", async () => {
 		const queued: string[] = []
-		vi.mocked(mockAlphaProvider.queueMessageForTask).mockImplementation((_taskId, text) => {
+		vi.mocked(mockAlphaProvider.queueMessageForTaskDurably).mockImplementation(async (_taskId, text) => {
 			queued.push(text)
 			return true
 		})
@@ -1009,7 +1157,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 
 	it("still resolves image mentions and explicit images through provider limits", async () => {
 		const queued: Array<{ text: string; images?: string[] }> = []
-		vi.mocked(mockAlphaProvider.queueMessageForTask).mockImplementation((_taskId, text, images) => {
+		vi.mocked(mockAlphaProvider.queueMessageForTaskDurably).mockImplementation(async (_taskId, text, images) => {
 			queued.push({ text, images })
 			return true
 		})
@@ -1029,7 +1177,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 			requestId: "queue-mention",
 		})
 		await vi.waitFor(() => expect(mockAlphaProvider.getState).toHaveBeenCalled())
-		expect(mockAlphaProvider.queueMessageForTask).not.toHaveBeenCalled()
+		expect(mockAlphaProvider.queueMessageForTaskDurably).not.toHaveBeenCalled()
 		releaseState({ maxImageFileSize: 3, maxTotalImageSize: 9 })
 		await mentioned
 
@@ -1065,7 +1213,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 		const getMessage = vi.fn()
 		const steerUserMessage = vi.fn()
 		vi.mocked(mockAlphaProvider.canAcceptTaskInput).mockReturnValue(false)
-		vi.mocked(mockAlphaProvider.queueMessageForTask).mockReturnValue(false)
+		vi.mocked(mockAlphaProvider.queueMessageForTaskDurably).mockResolvedValue(false)
 		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
 			messageQueueService: {
 				addMessage,
@@ -1103,6 +1251,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
 			messageQueueService: {
 				moveMessage,
+				flush: vi.fn().mockResolvedValue(undefined),
 			},
 		} as any)
 
@@ -1404,6 +1553,7 @@ describe("webviewMessageHandler - sub-agent controls", () => {
 			"group-1",
 			"child-1",
 			"Focus on the parser boundary.",
+			undefined,
 		)
 		expect((mockAlphaProvider as any).cancelSubagent).toHaveBeenCalledWith("parent-1", "group-1", "child-2")
 	})

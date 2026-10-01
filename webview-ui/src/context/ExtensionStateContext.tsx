@@ -43,6 +43,8 @@ import {
 } from "./agentLifecycleState"
 
 export interface ExtensionStateContextType extends ExtensionState {
+	managedSteeringDrafts?: Record<string, ManagedSteeringDraft>
+	updateManagedSteeringDraft?: (key: string, draft?: ManagedSteeringDraft) => void
 	historyPreviewCollapsed?: boolean // Add the new state property
 	didHydrateState: boolean
 	showWelcome: boolean
@@ -156,6 +158,15 @@ export interface ExtensionStateContextType extends ExtensionState {
 	skills?: SkillMetadata[]
 }
 
+export interface ManagedSteeringDraft {
+	parentTaskId: string
+	groupId: string
+	taskId: string
+	text: string
+	pendingRequestId?: string
+	rejected?: boolean
+}
+
 export { ExtensionStateContext, ShellStateContext }
 
 interface CachedTaskTranscript {
@@ -211,10 +222,6 @@ export const mergeExtensionState = (
 		: prevCustomModePrompts
 	const experiments = newExperiments ? { ...prevExperiments, ...newExperiments } : prevExperiments
 	const rest = { ...prevRest, ...newRest }
-	const agentLifecycleSnapshots = mergeAgentLifecycleSnapshots(
-		prevState.agentLifecycleSnapshots,
-		newState.agentLifecycleSnapshots,
-	)
 	const agentLifecycleDegraded = mergeAgentLifecycleDegradedSignals(
 		prevState.agentLifecycleDegraded,
 		newState.agentLifecycleDegraded,
@@ -247,6 +254,11 @@ export const mergeExtensionState = (
 
 	const taskStateIsStale = isStale(incomingTaskStateSeq, previousTaskStateSeq)
 	const patchHasNoTaskStateSequence = hasDedicatedDomainSequence && incomingTaskStateSeq === undefined
+	const agentLifecycleSnapshots = mergeAgentLifecycleSnapshots(
+		prevState.agentLifecycleSnapshots,
+		taskStateIsStale || patchHasNoTaskStateSequence ? undefined : newState.agentLifecycleSnapshots,
+		incomingTaskStateSeq !== undefined && !taskStateIsStale && !patchHasNoTaskStateSequence,
+	)
 	if (taskStateIsStale || patchHasNoTaskStateSequence) {
 		rest.currentTaskId = prevState.currentTaskId
 		rest.taskReasoning = prevState.taskReasoning
@@ -309,6 +321,12 @@ export const mergeExtensionState = (
 		}
 	}
 	const rejectScopedDomains = targetsDifferentTask && (taskStateIsStale || patchHasNoTaskStateSequence)
+	if (rejectScopedDomains) {
+		// A consumed-input queue receipt may include its transcript. A late receipt
+		// cannot project that transcript onto a chat selected by another navigation.
+		rest.clineMessages = prevState.clineMessages
+		rest.clineMessagesSeq = prevState.clineMessagesSeq
+	}
 	if (rejectScopedDomains || isStale(incomingQueueSeq, previousQueueSeq)) {
 		rest.messageQueue = prevState.messageQueue
 		rest.messageQueueSeq = prevState.messageQueueSeq
@@ -430,6 +448,28 @@ function omitTranscriptState(value: ExtensionStateContextType): ExtensionStateCo
 const EMPTY_PROFILE_THRESHOLDS: Record<string, number> = {}
 
 export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+	const [managedSteeringDrafts, setManagedSteeringDrafts] = useState<Record<string, ManagedSteeringDraft>>({})
+	const updateManagedSteeringDraft = useCallback((key: string, draft?: ManagedSteeringDraft) => {
+		setManagedSteeringDrafts((current) => {
+			const previous = current[key]
+			if (
+				draft &&
+				previous &&
+				previous.parentTaskId === draft.parentTaskId &&
+				previous.groupId === draft.groupId &&
+				previous.taskId === draft.taskId &&
+				previous.text === draft.text &&
+				previous.pendingRequestId === draft.pendingRequestId &&
+				previous.rejected === draft.rejected
+			)
+				return current
+			if (!draft && !current[key]) return current
+			const next = { ...current }
+			if (draft) next[key] = draft
+			else delete next[key]
+			return next
+		})
+	}, [])
 	const transcriptCacheRef = useRef<TaskTranscriptCache>(new Map())
 	const getCachedTranscriptRevision = useCallback((taskId: string) => {
 		return getCachedTaskTranscript(transcriptCacheRef.current, taskId)?.revision
@@ -697,6 +737,23 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		(event: MessageEvent) => {
 			const message: ExtensionMessage = event.data
 			switch (message.type) {
+				case "chatCommandResult": {
+					const result = message.chatCommandResult
+					if (result?.command !== "steerSubagent" || !result.taskId) break
+					setManagedSteeringDrafts((current) => {
+						const next = { ...current }
+						let changed = false
+						for (const [key, draft] of Object.entries(current)) {
+							if (draft.parentTaskId !== result.taskId || draft.pendingRequestId !== result.requestId)
+								continue
+							changed = true
+							if (result.status === "accepted") delete next[key]
+							else next[key] = { ...draft, pendingRequestId: undefined, rejected: true }
+						}
+						return changed ? next : current
+					})
+					break
+				}
 				case "agentLifecycleEvent": {
 					setState((prevState) => applyLifecycleEventToExtensionState(prevState, message))
 					break
@@ -962,6 +1019,8 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 
 	const contextValue: ExtensionStateContextType = {
 		...state,
+		managedSteeringDrafts,
+		updateManagedSteeringDraft,
 		autoCondenseContextScope: state.autoCondenseContextScope ?? "full-context",
 		postTurnCondenseContextPercent:
 			state.postTurnCondenseContextPercent ?? DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,

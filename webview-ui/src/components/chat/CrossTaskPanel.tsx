@@ -95,9 +95,9 @@ export function CrossTaskPanel({ parentTaskId, taskHistory, liveTasksById, onOpe
 		<nav aria-label={t("crossTasks.title")} className="mx-3 mb-2 flex min-w-0 items-center gap-2 text-xs">
 			<span className="shrink-0 text-vscode-descriptionForeground">{t("crossTasks.title")}</span>
 			<ul className="flex min-w-0 items-center gap-1 overflow-x-auto">
-				{tasks.map((task, index) => {
+				{tasks.map((task) => {
 					const terminal = isTerminal(task.lifecycle)
-					const threadLabel = `${t("crossTasks.thread")} ${index + 2}`
+					const threadLabel = task.objective.trim() || t("crossTasks.untitled")
 					return (
 						<li key={task.id} className="flex shrink-0 items-center gap-0.5">
 							<button
@@ -123,7 +123,10 @@ export function CrossTaskPanel({ parentTaskId, taskHistory, liveTasksById, onOpe
 									}`}
 									aria-hidden="true"
 								/>
-								<span>{threadLabel}</span>
+								<span className="max-w-40 truncate">{threadLabel}</span>
+								<span className="text-[10px] text-vscode-descriptionForeground">
+									{lifecycleLabel(task.lifecycle, t)}
+								</span>
 								<ArrowUpRight className="size-3 shrink-0 opacity-50" aria-hidden="true" />
 							</button>
 							{!terminal && (

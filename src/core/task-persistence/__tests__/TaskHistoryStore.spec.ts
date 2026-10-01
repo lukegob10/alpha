@@ -525,6 +525,26 @@ describe("TaskHistoryStore", () => {
 	})
 
 	describe("invalidate()", () => {
+		it.each(["missing", "invalid", "wrong-identity"])(
+			"retains the cached owner when strict refresh encounters %s durable metadata",
+			async (failure) => {
+				await store.initialize()
+				const item = makeHistoryItem({ id: "strict-task" })
+				await store.upsert(item)
+				const filePath = path.join(tmpDir, "tasks", item.id, GlobalFileNames.historyItem)
+				if (failure === "missing") await fs.unlink(filePath)
+				else
+					await fs.writeFile(
+						filePath,
+						failure === "invalid" ? "{" : JSON.stringify({ ...item, id: "other-task" }),
+					)
+				await expect(store.invalidate(item.id, { requireExisting: true })).rejects.toThrow(
+					"Cannot verify durable history metadata",
+				)
+				expect(store.get(item.id)).toEqual(item)
+			},
+		)
+
 		it("re-reads a task from disk", async () => {
 			await store.initialize()
 

@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event"
 import { act, fireEvent, render, screen, waitFor } from "@/utils/test-utils"
 
 import { SubagentGroupCard } from "../SubagentGroupCard"
+import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
 
 const postMessage = vi.fn()
 vi.mock("@src/utils/vscode", () => ({ vscode: { postMessage: (...args: unknown[]) => postMessage(...args) } }))
@@ -140,7 +141,7 @@ describe("SubagentGroupCard", () => {
 		})
 	})
 
-	it("sends a bounded, trimmed steering instruction from the agent menu", async () => {
+	it("retains steering until a correlated receipt and rejects excess length", async () => {
 		const user = userEvent.setup()
 		render(<SubagentGroupCard group={makeGroup()} parentTaskId="parent-1" />)
 		await openActions(user, "Maple")
@@ -149,14 +150,42 @@ describe("SubagentGroupCard", () => {
 		const textarea = screen.getByRole("textbox", { name: "Steering instruction for Maple" })
 		fireEvent.change(textarea, { target: { value: `  ${"x".repeat(2_050)}  ` } })
 		await user.click(screen.getByRole("button", { name: "Send steering" }))
+		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "steerSubagent" }))
+		fireEvent.change(textarea, { target: { value: "  Inspect parsing  " } })
+		await user.click(screen.getByRole("button", { name: "Send steering" }))
 
 		expect(postMessage).toHaveBeenCalledWith({
 			type: "steerSubagent",
 			taskId: "parent-1",
 			groupId: "group-1",
 			subagentTaskId: "child-1",
-			text: "x".repeat(2_000),
+			text: "Inspect parsing",
+			requestId: expect.any(String),
 		})
+		expect(textarea).toHaveValue("  Inspect parsing  ")
+		const request = postMessage.mock.calls.find(([message]) => message.type === "steerSubagent")![0]
+		const receipt = (taskId: string, requestId: string, status: string) =>
+			act(() =>
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "chatCommandResult",
+							chatCommandResult: { command: "steerSubagent", taskId, requestId, status },
+						},
+					}),
+				),
+			)
+		receipt("other-parent", request.requestId, "accepted")
+		expect(screen.getByRole("dialog", { name: "Steer Maple" })).toBeInTheDocument()
+		receipt("parent-1", "stale-request", "accepted")
+		expect(textarea).toBeDisabled()
+		receipt("parent-1", request.requestId, "rejected")
+		expect(textarea).toHaveValue("  Inspect parsing  ")
+		expect(textarea).toBeEnabled()
+		await user.click(screen.getByRole("button", { name: "Send steering" }))
+		const retry = postMessage.mock.calls.filter(([message]) => message.type === "steerSubagent").at(-1)![0]
+		receipt("parent-1", retry.requestId, "accepted")
+		expect(screen.queryByRole("dialog", { name: "Steer Maple" })).not.toBeInTheDocument()
 	})
 
 	it("cancels one active agent without cancelling its sibling", async () => {
@@ -514,7 +543,7 @@ describe("SubagentGroupCard", () => {
 		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "respondToSubagentApproval" }))
 	})
 
-	it("closes steering when the selected agent is no longer running", async () => {
+	it("preserves the steering draft when the selected agent completes", async () => {
 		const user = userEvent.setup()
 		const runningAgent = makeGroup().agents[0]
 		const { rerender } = render(
@@ -522,6 +551,9 @@ describe("SubagentGroupCard", () => {
 		)
 		await openActions(user, "Maple")
 		await user.click(screen.getByRole("menuitem", { name: "Steer" }))
+		fireEvent.change(screen.getByRole("textbox", { name: "Steering instruction for Maple" }), {
+			target: { value: "Keep this instruction" },
+		})
 
 		rerender(
 			<SubagentGroupCard
@@ -533,7 +565,54 @@ describe("SubagentGroupCard", () => {
 			/>,
 		)
 
-		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Steer Maple" })).not.toBeInTheDocument())
+		expect(screen.getByRole("textbox", { name: "Steering instruction for Maple" })).toHaveValue(
+			"Keep this instruction",
+		)
+		expect(screen.getByRole("button", { name: "Send steering" })).toBeDisabled()
 		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "steerSubagent" }))
 	})
+	it.each(["accepted", "rejected"] as const)(
+		"handles a %s steering receipt while its card is unmounted",
+		async (status) => {
+			const user = userEvent.setup()
+			const Harness = ({ visible }: { visible: boolean }) => (
+				<ExtensionStateContextProvider>
+					{visible && <SubagentGroupCard group={makeGroup()} />}
+				</ExtensionStateContextProvider>
+			)
+			const { rerender } = render(<Harness visible />)
+			await openActions(user, "Maple")
+			await user.click(screen.getByRole("menuitem", { name: "Steer" }))
+			fireEvent.change(screen.getByRole("textbox", { name: "Steering instruction for Maple" }), {
+				target: { value: "Keep across navigation" },
+			})
+			await user.click(screen.getByRole("button", { name: "Send steering" }))
+			const request = postMessage.mock.calls.find(([message]) => message.type === "steerSubagent")![0]
+			rerender(<Harness visible={false} />)
+			act(() =>
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "chatCommandResult",
+							chatCommandResult: {
+								command: "steerSubagent",
+								taskId: "parent-1",
+								requestId: request.requestId,
+								status,
+							},
+						},
+					}),
+				),
+			)
+			rerender(<Harness visible />)
+			if (status === "accepted")
+				expect(screen.queryByRole("dialog", { name: "Steer Maple" })).not.toBeInTheDocument()
+			else {
+				expect(screen.getByRole("textbox", { name: "Steering instruction for Maple" })).toHaveValue(
+					"Keep across navigation",
+				)
+				expect(screen.getByRole("button", { name: "Send steering" })).toBeEnabled()
+			}
+		},
+	)
 })

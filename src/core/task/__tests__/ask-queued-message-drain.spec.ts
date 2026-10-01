@@ -40,6 +40,39 @@ describe("Task.ask queued message drain", () => {
 		commandApproval: createSubagentCommandApprovalPolicy(["git"], ["git push"], "7".repeat(64)),
 	}
 
+	it("accepts the first timestamp-correlated reply and rejects a second reply before polling consumes it", async () => {
+		const task = await createAskOnlyTask()
+		task["activeAsk"] = { type: "followup", ts: 101 }
+		expect(task.handleWebviewAskResponse("messageResponse", "FIRST", [], undefined, 101)).toBe(true)
+		expect(task.handleWebviewAskResponse("messageResponse", "SECOND", [], undefined, 101)).toBe(false)
+		expect(task["askResponseText"]).toBe("FIRST")
+		task["askResponse"] = undefined
+		task["activeAsk"] = { type: "followup", ts: 102 }
+		expect(task.handleWebviewAskResponse("messageResponse", "STALE", [], undefined, 101)).toBe(false)
+		expect(task["askResponse"]).toBeUndefined()
+	})
+
+	it("binds durable ask feedback to the host tool call that opened the ask", async () => {
+		const task = await createAskOnlyTask()
+		const queue = task.messageQueueService
+		const message = queue.addMessage("TOOL_FEEDBACK")!
+		queue.claimMessage(message.id)
+		const pending = task.withToolInputContext("call-with-question", () => task.ask("followup", "Question?", false))
+		await vi.waitFor(() => expect(task["activeAsk"]?.toolCallId).toBe("call-with-question"))
+		task.handleWebviewAskResponse("messageResponse", message.text, [], [message.id], task["activeAsk"]!.ts)
+		await expect(pending).resolves.toMatchObject({ queuedMessageIds: [message.id] })
+		expect(
+			task["getQueuedInputReceipts"]([
+				{ type: "tool_result", tool_use_id: "different-call", content: "feedback" },
+			]),
+		).toEqual([])
+		expect(
+			task["getQueuedInputReceipts"]([
+				{ type: "tool_result", tool_use_id: "call-with-question", content: "feedback" },
+			]),
+		).toEqual([message.id])
+	})
+
 	it("marks a cancelled grouped follow-up ask answered in the transcript", async () => {
 		const task = await createAskOnlyTask()
 		;(task as any).taskKind = "primary"
@@ -252,6 +285,60 @@ describe("Task.ask queued message drain", () => {
 		const result = await askPromise
 		expect(result.response).toBe("messageResponse")
 		expect(result.text).toBe("picked answer")
+	})
+
+	it("announces an interactive question with its task identity despite queued next-turn input", async () => {
+		vi.useFakeTimers()
+		const task = await createAskOnlyTask()
+		const postMessageToWebview = vi.fn()
+		Object.assign(task, {
+			addToAlphaMessages: vi.fn(async (message: AlphaMessage) => task.clineMessages.push(message)),
+			providerRef: {
+				deref: () => ({ getState: async () => ({}), isTaskOnScreen: () => true, postMessageToWebview }),
+			},
+		})
+		task.messageQueueService.addMessage("Keep this for the next turn")
+		const pending = task.ask("followup", "Which option?", false)
+		try {
+			await vi.advanceTimersByTimeAsync(2_100)
+			expect(postMessageToWebview).toHaveBeenCalledWith({ type: "interactionRequired", taskId: "task-1" })
+			expect(task.messageQueueService.messages[0]?.text).toBe("Keep this for the next turn")
+		} finally {
+			task.handleWebviewAskResponse("noButtonClicked")
+			await vi.advanceTimersByTimeAsync(250)
+			try {
+				await pending
+			} finally {
+				vi.useRealTimers()
+			}
+		}
+	})
+
+	it("forwards a Worker's blocked approval even when later guidance is queued", async () => {
+		const task = await createAskOnlyTask()
+		const surfaceSubagentApproval = vi.fn(async () => undefined)
+		Object.assign(task, {
+			subagentRole: "worker",
+			providerRef: {
+				deref: () => ({
+					getState: async () => ({}),
+					isTaskOnScreen: () => true,
+					surfaceSubagentApproval,
+					clearSubagentApproval: async () => undefined,
+				}),
+			},
+		})
+		task.messageQueueService.addMessage("Then inspect the results")
+		const pending = task.ask("command", "node script.js", false, undefined, false, true)
+		try {
+			await vi.waitFor(() =>
+				expect(surfaceSubagentApproval).toHaveBeenCalledWith(task, "command", "node script.js"),
+			)
+			expect(task.messageQueueService.messages).toHaveLength(1)
+		} finally {
+			task.handleWebviewAskResponse("noButtonClicked")
+			await pending
+		}
 	})
 
 	it.each(["completion_result", "resume_task", "resume_completed_task"] as const)(

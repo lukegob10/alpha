@@ -1,4 +1,7 @@
+import fs from "fs/promises"
+import { isBinaryFile } from "isbinaryfile"
 import {
+	extractTextFromFileWithMetadata,
 	addLineNumbers,
 	everyLineHasLineNumbers,
 	stripLineNumbers,
@@ -7,6 +10,35 @@ import {
 	processCarriageReturns,
 	processBackspaces,
 } from "../extract-text"
+import { MAX_LINE_LENGTH } from "../../../core/prompts/tools/native-tools/read_file"
+
+vi.mock("fs/promises", () => ({ default: { access: vi.fn(), readFile: vi.fn() } }))
+vi.mock("isbinaryfile", () => ({ isBinaryFile: vi.fn() }))
+
+describe("extractTextFromFileWithMetadata", () => {
+	beforeEach(() => {
+		vi.mocked(fs.access).mockResolvedValue(undefined)
+		vi.mocked(isBinaryFile).mockResolvedValue(false)
+	})
+
+	it("preserves long-line clipping provenance through the extraction result", async () => {
+		vi.mocked(fs.readFile).mockResolvedValue("x".repeat(MAX_LINE_LENGTH + 1))
+		expect(await extractTextFromFileWithMetadata("spec.txt")).toMatchObject({
+			totalLines: 1,
+			returnedLines: 1,
+			wasTruncated: true,
+			linesShown: [1, 1],
+			firstClippedLine: 1,
+		})
+	})
+
+	it("keeps complete ordinary text free of clipping metadata", async () => {
+		vi.mocked(fs.readFile).mockResolvedValue("ordinary text")
+		const result = await extractTextFromFileWithMetadata("spec.txt")
+		expect(result.wasTruncated).toBe(false)
+		expect(result).not.toHaveProperty("firstClippedLine")
+	})
+})
 
 describe("addLineNumbers", () => {
 	it("should add line numbers starting from 1 by default", () => {

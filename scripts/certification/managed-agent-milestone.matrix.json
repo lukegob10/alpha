@@ -435,9 +435,9 @@
 					"patterns": ["leaves the next model-facing user content free of child-report injection"]
 				},
 				{
-					"label": "managed-child parent-control wait",
+					"label": "managed-child parent-mail wake without consumption or steering",
 					"patterns": [
-						"keeps a registered managed child waiting for immediate-parent control without active descendants"
+						"wakes a registered child's idle wait for passive parent mail without consuming or steering it"
 					]
 				}
 			]

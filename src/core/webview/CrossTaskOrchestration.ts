@@ -18,6 +18,8 @@ export interface CrossTaskWaitResult {
 	timed_out?: true
 	cancelled?: true
 	result?: string
+	/** Stable completion identity acknowledged only by the saved successful wait tool result. */
+	completion_receipt_id?: string
 }
 
 /** Host boundary for independent task controls; task identity and parent scope are checked by the host. */

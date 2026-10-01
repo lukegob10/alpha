@@ -60,6 +60,7 @@ function compactedResult(messages: ApiMessage[]): SummarizeResponse {
 		content: "Earlier conversation",
 		ts: 10,
 		isSummary: true,
+		input_origin: "agent",
 		condenseId: "summary-1",
 	}
 	return {
@@ -1115,7 +1116,7 @@ describe("Task context recovery admission", () => {
 		saveRelease.resolve()
 		await expect(running).rejects.toThrow("Automatic retry deadline exceeded")
 		expect(events).toEqual(["save-started", "save-committed", "recovery-settled"])
-		expect(task.apiConversationHistory).toBe(result.messages)
+		expect(task.apiConversationHistory).toEqual(result.messages)
 		expect(save).toHaveBeenCalledOnce()
 		expect(api.createMessage).not.toHaveBeenCalled()
 		expect(provider.postMessageToWebview).toHaveBeenLastCalledWith({
@@ -1167,7 +1168,7 @@ describe("Task context recovery admission", () => {
 		await Reflect.get(task, "handleContextWindowExceededError").call(task)
 
 		expect(save).toHaveBeenCalledOnce()
-		expect(task.apiConversationHistory).toBe(result.messages)
+		expect(task.apiConversationHistory).toEqual(result.messages)
 		expect(manageContext).toHaveBeenCalledWith(
 			expect.objectContaining({ totalTokens: 100, contextWindow: 128_000, forceCompaction: true }),
 		)

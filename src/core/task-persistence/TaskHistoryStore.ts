@@ -2,7 +2,7 @@ import * as fs from "fs/promises"
 import * as fsSync from "fs"
 import * as path from "path"
 
-import type { HistoryItem } from "@alpha-code/types"
+import { historyItemSchema, type HistoryItem } from "@alpha-code/types"
 import deepEqual from "fast-deep-equal"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
@@ -331,7 +331,14 @@ export class TaskHistoryStore {
 	/**
 	 * Invalidate a single task's cache entry (re-read from disk on next access).
 	 */
-	async invalidate(taskId: string): Promise<void> {
+	async invalidate(taskId: string, options: { requireExisting?: boolean } = {}): Promise<void> {
+		if (options.requireExisting) {
+			// Effect fences retain their cached owner if durable metadata cannot be verified.
+			const item = await this.readTaskFile(taskId, options)
+			if (!item) throw new Error(`Task ${taskId} has no durable history metadata`)
+			this.cache.set(taskId, item)
+			return
+		}
 		try {
 			const item = await this.readTaskFile(taskId)
 			if (item) {
@@ -516,14 +523,23 @@ export class TaskHistoryStore {
 	/**
 	 * Read a HistoryItem from its per-task `history_item.json` file.
 	 */
-	private async readTaskFile(taskId: string): Promise<HistoryItem | null> {
+	private async readTaskFile(
+		taskId: string,
+		options: { requireExisting?: boolean } = {},
+	): Promise<HistoryItem | null> {
 		const filePath = await this.getTaskFilePath(taskId)
 
 		try {
 			const raw = await fs.readFile(filePath, "utf8")
-			const item: HistoryItem = JSON.parse(raw)
+			const parsed: unknown = JSON.parse(raw)
+			const item: HistoryItem = options.requireExisting
+				? historyItemSchema.parse(parsed)
+				: (parsed as HistoryItem)
+			if (options.requireExisting && item.id !== taskId) throw new Error("Task history identity does not match")
 			return item.id ? item : null
-		} catch {
+		} catch (error) {
+			if (options.requireExisting)
+				throw new Error(`Cannot verify durable history metadata for task ${taskId}`, { cause: error })
 			return null
 		}
 	}
