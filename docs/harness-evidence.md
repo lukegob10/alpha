@@ -21,6 +21,13 @@ retrieved 2026-10-02; it records only process and parent IDs, without command li
 The installer child-process regression exercises the current platform's native invocation and names that platform in its
 receipt. Linux tooling therefore executes its own editor argument check rather than skipping a Windows-only test.
 
+The webview build cache includes the extension manifest and shared runtime imports. Both Settings and the error UI embed
+the extension version at build time; restoring a webview cached before a release bump must not restore the old UX version.
+A disposable-workspace regression exercises the actual pinned
+[Turbo 2.5.6 root-relative inputs](https://github.com/vercel/turborepo/blob/v2.5.6/docs/site/content/docs/reference/configuration.mdx)
+contract (retrieved 2026-10-02), comparing cache keys before and after manifest and shared metadata changes. Rebuild the
+release package after a version bump and inspect both its manifest and compiled UI version.
+
 ```sh
 pnpm --filter @alpha-code/types build
 pnpm harness doctor
