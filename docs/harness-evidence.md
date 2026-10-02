@@ -11,6 +11,13 @@ On a fresh checkout, build the shared types before invoking the harness. Its reu
 schemas from `@alpha-code/types`, so lane commands cannot supply that prerequisite after the harness has already loaded.
 QA and release workflows build the package before invoking any harness lane or matrix command.
 
+The unit lane also requires `rg` on `PATH` for its real subprocess/approval integration. QA and both release workflows
+prepend the already installed `@vscode/ripgrep` binary directory through
+[`GITHUB_PATH`](https://docs.github.com/en/actions/reference/workflow-commands-for-github-actions#adding-a-system-path)
+(contract retrieved 2026-10-02). This makes the bundled executable available to subsequent steps without relying on a
+runner's global installation. The first 3.1.4 release attempt failed this prerequisite while the QA job with the same
+source passed; release workflows now use the same setup. The strict integration assertion remains required.
+
 Windows ownership inspection has a 30-second process deadline to allow cold CIM initialization. The host must still
 prove its ancestry; unavailable inspection, incomplete chains, foreign owners and cycles cannot pass. A real child-process
 test exercises the OS lookup in addition to controlled ancestry tests. Host startup failures retain the inspector's
