@@ -18,6 +18,9 @@ bounded message so an inspection failure can be distinguished from a foreign pro
 [Microsoft's Get-CimInstance contract](https://learn.microsoft.com/en-us/powershell/module/cimcmdlets/get-ciminstance?view=powershell-5.1),
 retrieved 2026-10-02; it records only process and parent IDs, without command lines or environment values.
 
+The installer child-process regression exercises the current platform's native invocation and names that platform in its
+receipt. Linux tooling therefore executes its own editor argument check rather than skipping a Windows-only test.
+
 ```sh
 pnpm --filter @alpha-code/types build
 pnpm harness doctor

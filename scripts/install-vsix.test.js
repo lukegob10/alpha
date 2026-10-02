@@ -92,15 +92,13 @@ test("quotes Windows data arguments and rejects command syntax delimiters", () =
 	}
 })
 
-test(
-	"forwards safe Windows .cmd arguments through a real child process",
-	{ skip: process.platform !== "win32" },
-	() => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-installer-test-"))
-		const payload = "workspace path with spaces\\alpha-beta.vsix"
-		const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") || "Path"
+test(`forwards safe ${process.platform === "win32" ? "Windows .cmd" : "Unix editor"} arguments through a real child process`, () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-installer-test-"))
+	const payload = "workspace path with spaces\\alpha-beta.vsix"
+	const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") || "Path"
 
-		try {
+	try {
+		if (process.platform === "win32") {
 			fs.writeFileSync(
 				path.join(root, "code.cmd"),
 				[
@@ -114,29 +112,40 @@ test(
 				].join("\r\n") + "\r\n",
 				"ascii",
 			)
-
-			const invocation = createEditorInvocation("code", ["--install-extension", payload], {
-				platform: "win32",
-				comSpec: process.env.ComSpec || "cmd.exe",
-			})
-			const result = spawnSync(invocation.file, invocation.args, {
-				cwd: root,
-				env: { ...process.env, [pathKey]: `${root};${process.env[pathKey] || ""}` },
-				encoding: "utf8",
-				stdio: "pipe",
-				windowsVerbatimArguments: invocation.options.windowsVerbatimArguments,
-			})
-
-			assert.equal(result.status, 0, result.error?.message || result.stderr)
-			assert.deepEqual(fs.readFileSync(path.join(root, "args.txt"), "utf8").trim().split(/\r?\n/u), [
-				"--install-extension",
-				payload,
-			])
-		} finally {
-			fs.rmSync(root, { recursive: true, force: true })
+		} else {
+			fs.writeFileSync(
+				path.join(root, "code"),
+				[
+					"#!/usr/bin/env node",
+					'const fs = require("node:fs")',
+					'const path = require("node:path")',
+					'fs.writeFileSync(path.join(__dirname, "args.txt"), process.argv.slice(2).join("\\n") + "\\n")',
+				].join("\n") + "\n",
+				{ mode: 0o700 },
+			)
 		}
-	},
-)
+
+		const invocation = createEditorInvocation("code", ["--install-extension", payload], {
+			platform: process.platform,
+			comSpec: process.env.ComSpec || "cmd.exe",
+		})
+		const result = spawnSync(invocation.file, invocation.args, {
+			cwd: root,
+			env: { ...process.env, [pathKey]: `${root}${path.delimiter}${process.env[pathKey] || ""}` },
+			encoding: "utf8",
+			stdio: "pipe",
+			windowsVerbatimArguments: invocation.options.windowsVerbatimArguments,
+		})
+
+		assert.equal(result.status, 0, result.error?.message || result.stderr)
+		assert.deepEqual(fs.readFileSync(path.join(root, "args.txt"), "utf8").trim().split(/\r?\n/u), [
+			"--install-extension",
+			payload,
+		])
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true })
+	}
+})
 
 test("rejects nightly installation before reading or invoking an editor", () => {
 	const result = spawnSync(process.execPath, [installerPath, "--nightly"], {
