@@ -31,6 +31,11 @@ jobs:
             - name: Build workspace types
               run: pnpm --filter @alpha-code/types build
 
+            - name: Add bundled ripgrep to PATH
+              shell: pwsh
+              working-directory: src
+              run: node -e "console.log(require('node:path').dirname(require('@vscode/ripgrep').rgPath))" >> $env:GITHUB_PATH
+
             - name: Run mechanical checks
               run: pnpm harness run static
 
