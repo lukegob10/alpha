@@ -21,7 +21,7 @@ jobs:
 
         steps:
             - name: Checkout code
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
               with:
                   fetch-depth: 0
 
@@ -131,7 +131,7 @@ jobs:
 
             - name: Retain release validation evidence
               if: always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: release-evidence-${{ github.run_id }}-${{ github.run_attempt }}
                   path: |

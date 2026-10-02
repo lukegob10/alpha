@@ -22,13 +22,13 @@ jobs:
 
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
 
             - name: Setup pinned local toolchain
               uses: ./.github/actions/setup-node-pnpm
 
             - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@v3
+              uses: docker/setup-buildx-action@v4
 
             - name: Create environment
               run: |

@@ -86,7 +86,7 @@ git clone https://github.com/lukegob10/alpha.git
 pnpm install
 ```
 
-The repository pins Node.js 24.14.1, npm 11.11.0, and pnpm 11.24.0. Use those versions for reproducible builds and
+The repository pins Node.js 24.21.0, npm 11.19.0, and pnpm 11.24.0. Use those versions for reproducible builds and
 checks. pnpm remains the package manager; npm is pinned for bootstrap and CI tooling. The development runtime does not
 change the extension's VS Code 1.125.0 compatibility contract.
 

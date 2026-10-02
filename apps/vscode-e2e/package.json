@@ -43,7 +43,7 @@
 		"@alpha-code/config-typescript": "workspace:^",
 		"@alpha-code/types": "workspace:^",
 		"@types/mocha": "^10.0.10",
-		"@types/node": "20.x",
+		"@types/node": "^24.1.0",
 		"@types/vscode": "1.125.0",
 		"@vscode/test-electron": "^2.4.0",
 		"glob": "^11.1.0",

@@ -1,6 +1,6 @@
 # Testing and evaluation workflow
 
-The supported local workflow requires no Docker. Run these commands from the repository root with Node **24.14.1**, pnpm **11.24.0**, and npm **11.11.0**.
+The supported local workflow requires no Docker. Run these commands from the repository root with Node **24.21.0**, pnpm **11.24.0**, and npm **11.19.0**.
 VS Code **1.125.0** is the release contract.
 
 ## Docker-free corporate setup

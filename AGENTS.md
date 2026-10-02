@@ -77,8 +77,8 @@ Before finishing:
 ## Runtime and toolchain baseline
 
 - Package manager: `pnpm@11.24.0`. Use pnpm only; do not create npm or Yarn lockfiles.
-- Development Node.js: `24.14.1`, as declared in the root and extension manifests. The extension's VS Code host
-  compatibility contract remains `1.125.0`.
+- Development Node.js: `24.21.0`, with its bundled npm `11.19.0`, as declared in the root and extension manifests.
+  The extension's VS Code host compatibility contract remains `1.125.0`.
 - TypeScript: `5.8.3` through the workspace configuration.
 - Formatting: tabs, width 4, 120-column print width, and no semicolons; see `.prettierrc.json`.
 - Build orchestration: Turborepo. Prefer existing root or package scripts over hand-built command sequences.

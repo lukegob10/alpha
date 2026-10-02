@@ -232,7 +232,9 @@ export async function runOwnedProcess(
 }
 
 function cleanupDeadlineMs(killGraceMs: number): number {
-	return Math.min(MAX_TIMER_MS, Math.max(1_000, killGraceMs + 1_000))
+	// Windows tree termination owns a separate taskkill deadline and does not use the POSIX signal grace period.
+	const terminationBudgetMs = process.platform === "win32" ? TASKKILL_TIMEOUT_MS : killGraceMs
+	return Math.min(MAX_TIMER_MS, Math.max(1_000, terminationBudgetMs + 1_000))
 }
 
 function normalizeLimit(
