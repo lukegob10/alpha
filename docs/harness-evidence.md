@@ -7,7 +7,12 @@ upstream sources and compatibility changes.
 
 ## Running the affected gates
 
+On a fresh checkout, build the shared types before invoking the harness. Its reused host evidence helpers consume runtime
+schemas from `@alpha-code/types`, so lane commands cannot supply that prerequisite after the harness has already loaded.
+QA and release workflows build the package before invoking any harness lane or matrix command.
+
 ```sh
+pnpm --filter @alpha-code/types build
 pnpm harness doctor
 pnpm harness run static
 pnpm harness run unit

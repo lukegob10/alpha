@@ -36,6 +36,8 @@ jobs:
               uses: actions/checkout@v4
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
             - name: Lint and check types through the local harness
               run: pnpm harness run static
             - name: Require current mechanical evidence
@@ -65,6 +67,8 @@ jobs:
               uses: actions/checkout@v4
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
             - name: Add bundled ripgrep to PATH
               shell: pwsh
               working-directory: src
@@ -92,6 +96,8 @@ jobs:
         steps:
             - uses: actions/checkout@v4
             - uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
             - run: pnpm harness run offline
             - run: pnpm --filter @alpha-code/evals lint
             - run: pnpm --filter @alpha-code/evals check-types
@@ -114,6 +120,8 @@ jobs:
               uses: actions/checkout@v4
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
             - name: Run offline core confidence and exact-host contracts
               shell: pwsh
               run: |
@@ -148,6 +156,8 @@ jobs:
         steps:
             - uses: actions/checkout@v4
             - uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
             - name: Run the exact reference-host smoke gate
               run: pnpm harness run host
             - name: Run independently asserted scripted task outcomes
