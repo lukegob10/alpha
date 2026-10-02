@@ -57,7 +57,7 @@ const HOW_TO_QUESTION_RE =
 const NAMED_SKILL_RE =
 	/\b(?:use|load|follow|apply)\s+(?:the\s+)?[\w.-]+\s+skill\b|\b(?:create|author)\s+(?:a\s+)?skill\b|\bSKILL\.md\b/i
 
-const TICKET_INTENT_RE = /\btickets?\b|\b[A-Z]{2,4}(?:\s*(?:[-#]|number\s*)\s*)?(?:\d{1,10}|one)\b/i
+const TICKET_INTENT_RE = /\btickets?\b|\b[A-Z]{2,4}(?:\s*(?:[-#]|number)\s*)?(?:\d{1,10}|one)\b/i
 
 const MCP_RESOURCE_INTENT_RE = /\bmcp\b|\bresource(?:s|\s+templates?)?\b/i
 

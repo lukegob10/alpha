@@ -7,6 +7,23 @@ import { classifyRequestWorkClass, extractUserRequestText } from "../requestWork
 import { toolNamesReferencedInHistory } from "../lookupToolCatalog"
 
 describe("classifyRequestWorkClass", () => {
+	it("bounds whitespace in malformed ticket references", async () => {
+		const sourcePath = fileURLToPath(new URL("../requestWorkClass.ts", import.meta.url))
+		const { stdout } = await promisify(execFile)(
+			process.execPath,
+			[
+				"--eval",
+				`const { classifyRequestWorkClass } = require(process.argv[1]);
+const content = "PM number" + "\\t".repeat(100_000) + "X";
+if (classifyRequestWorkClass(content).includeTickets) process.exit(1);
+process.stdout.write("bounded");`,
+				sourcePath,
+			],
+			{ timeout: 5_000, windowsHide: true, maxBuffer: 1024 },
+		)
+		expect(stdout).toBe("bounded")
+	}, 10_000)
+
 	it("classifies interrogative location and existence questions as lookup", () => {
 		const questions = [
 			"Where is retryLimit defined?",
@@ -153,6 +170,8 @@ describe("classifyRequestWorkClass", () => {
 			"What is PM-01 about?",
 			"What is PM number one about?",
 			"Where is PM number 1 documented?",
+			"What is PM number\t \tone about?",
+			"What is AB \t# \t123 about?",
 		]) {
 			const decision = classifyRequestWorkClass(text)
 			expect(decision, text).toMatchObject({ class: "lookup", includeTickets: true })

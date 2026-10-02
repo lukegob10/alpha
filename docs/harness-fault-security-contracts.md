@@ -22,6 +22,12 @@ The bounded child-process regression passes after the repair. Focused tests also
 nested/multiple blocks, unmatched tags, and a Unicode character whose lowercase form changes length, so delimiter
 offsets always refer to the original text.
 
+The next CodeQL analysis exposed an adjacent quadratic expression in ticket recognition: `number\s*` was followed by
+another `\s*`, giving failed numeric references many equivalent whitespace splits. Removing the inner repetition
+preserves accepted ticket spelling and whitespace while making the groups disjoint. A child-process probe with
+100,000 tabs after `PM number`, followed by a non-ticket suffix, hit its five-second deadline before the change and
+passes after it. Existing ticket questions and added mixed-whitespace variants retain their classifications.
+
 ## Reference inspected
 
 Retrieved on **2026-10-02** from Codex CLI commit
