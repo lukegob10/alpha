@@ -5,6 +5,7 @@ import * as path from "node:path"
 import { promisify } from "node:util"
 
 import { fingerprintArtifactPaths } from "./liveGate"
+import { campaignConfigDigest } from "./config"
 import { readBounded, rejectSymlinkComponents } from "../evidence/paths"
 import type { CampaignConfig, CampaignEvaluationIdentity } from "./types"
 
@@ -16,7 +17,7 @@ async function git(root: string, args: string[]): Promise<string> {
 }
 
 /** Conservative source identity includes tracked and nonignored untracked inputs, never their contents in reports. */
-async function sourceDigest(root: string, scopes: string[]): Promise<string> {
+export async function sourceDigest(root: string, scopes: string[]): Promise<string> {
 	const files = (await git(root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...scopes]))
 		.split("\0")
 		.filter(Boolean)
@@ -58,16 +59,7 @@ export async function captureCampaignEvaluationIdentity(
 			return null
 		}
 	}
-	// Campaign IDs, profile locations and executable paths are operational labels, not experimental treatments.
-	const configDigest = digest(
-		JSON.stringify({
-			hosts: config.hosts.map((host) => host.version),
-			scenarioIds: config.scenarioIds,
-			samples: config.samples,
-			budgets: config.budgets,
-			maxReproductions: config.maxReproductions,
-		}),
-	)
+	const configDigest = campaignConfigDigest(config)
 	const sourceComponentsDigest = await capture("sourceComponentsDigest", () =>
 		sourceDigest(root, ["src", "packages", "webview-ui"]),
 	)

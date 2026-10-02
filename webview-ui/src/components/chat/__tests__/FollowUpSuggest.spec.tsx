@@ -141,6 +141,30 @@ describe("FollowUpSuggest", () => {
 		expect(screen.queryByText(/\d+s/)).not.toBeInTheDocument()
 	})
 
+	it("prevents answered suggestions from submitting again while keeping copy available", () => {
+		renderWithTestProviders(
+			<FollowUpSuggest
+				suggestions={mockSuggestions}
+				onSuggestionClick={mockOnSuggestionClick}
+				ts={123}
+				isAnswered
+			/>,
+			defaultTestState,
+		)
+
+		const suggestion = screen.getByRole("button", { name: "First suggestion" })
+		fireEvent.click(suggestion)
+		expect(mockOnSuggestionClick).not.toHaveBeenCalled()
+		expect(suggestion).toBeDisabled()
+
+		fireEvent.click(screen.getAllByRole("button", { name: "Copy to input" })[0])
+		expect(mockOnSuggestionClick).toHaveBeenCalledTimes(1)
+		expect(mockOnSuggestionClick).toHaveBeenCalledWith(
+			mockSuggestions[0],
+			expect.objectContaining({ shiftKey: true }),
+		)
+	})
+
 	it("should clear interval and call onCancelAutoApproval when component unmounts", () => {
 		const { unmount } = renderWithTestProviders(
 			<FollowUpSuggest

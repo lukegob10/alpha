@@ -142,7 +142,7 @@ export class TicketPanel implements vscode.Disposable {
 		const projects = new Map<string, TicketStore>()
 		for (const folder of vscode.workspace.workspaceFolders ?? []) {
 			if (folder.uri.scheme !== "file") continue
-			const store = await TicketStore.forWorkspace(folder.uri.fsPath)
+			const store = await TicketStore.forWorkspace(folder.uri.fsPath, undefined, this.maintenance.signal)
 			await store.prepareReferences(this.maintenance.signal)
 			if (!this.panel || generation !== this.loadGeneration) return
 			projects.set(store.projectId, store)

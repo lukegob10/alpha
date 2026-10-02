@@ -8,7 +8,7 @@ suite("Alpha Tickets rendered landing", function () {
 	this.timeout(240_000)
 	test("opens the seeded workspace tickets across host themes", async function () {
 		if (!process.env.ALPHA_UI_ACCEPTANCE_NONCE) this.skip()
-		assert.equal(vscode.version, "1.122.1")
+		assert.equal(vscode.version, "1.125.0")
 		assert.equal(os.homedir(), process.env.ALPHA_UI_TICKETS_HOME)
 		const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
 		assert.ok(workspace)

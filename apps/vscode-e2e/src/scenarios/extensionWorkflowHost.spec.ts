@@ -197,13 +197,20 @@ const history = (command: string, cwd: unknown = workspace, name: "shell" | "exe
 	},
 ]
 
-test("completion review is observed without approval and rejects an already accepted completion", async () => {
+test("completion is observed without an approval and retains its completed state for review", async () => {
 	const task = {
 		taskId: "review-task",
-		taskAsk: { ts: 1, type: "ask", ask: "completion_result" } as AlphaMessage,
-		approveAsk: () => assert.fail("review observation must not accept completion"),
+		didComplete: true,
+		clineMessages: [
+			{ ts: 1, type: "say", say: "completion_result", text: "Done", partial: false },
+		] as AlphaMessage[],
+		waitForTermination: async () => undefined,
+		approveAsk: () => assert.fail("completion observation must not approve a boundary"),
 	}
-	const provider = Object.assign(new EventEmitter(), { getLiveTask: () => task })
+	const provider = Object.assign(new EventEmitter(), {
+		getLiveTask: () => task,
+		getStateToPostToWebview: async () => ({ currentTaskId: task.taskId }),
+	})
 	const api = Object.assign(new EventEmitter(), { sidebarProvider: provider, getConfiguration: () => ({}) })
 	const host = new ExtensionWorkflowHost(
 		api as unknown as AlphaCodeAPI,
@@ -213,9 +220,11 @@ test("completion review is observed without approval and rejects an already acce
 		5_000,
 	)
 	try {
-		await host.complete(task.taskId, "review")
 		api.emit(AlphaCodeEventName.TaskCompleted, task.taskId)
-		await assert.rejects(host.complete(task.taskId, "review"), /review_automatically_accepted/)
+		await host.complete(task.taskId)
+		const state = await host.captureCompletedTask(task.taskId)
+		assert.equal(state.currentTaskId, task.taskId)
+		assert.deepEqual(state.clineMessages, task.clineMessages)
 	} finally {
 		await host.dispose()
 	}

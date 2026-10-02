@@ -23,7 +23,7 @@ async function until(predicate: () => boolean) {
 suite("HTML document exact-host adapter", function () {
 	setDefaultSuiteTimeout(this)
 	test("Explorer preview opens without chat, follows edits, and closes without duplicate tabs", async () => {
-		assert.equal(vscode.version, "1.122.1")
+		assert.equal(vscode.version, "1.125.0")
 		const extensionId = process.env.ALPHA_E2E_EXTENSION_ID
 		assert.ok(extensionId)
 		const extension = vscode.extensions.getExtension(extensionId)

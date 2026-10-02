@@ -5,11 +5,28 @@ import {
 	expectedGraderControlDecisions,
 	graderControlKinds,
 	validateGraderControlSet,
+	evidenceFromText,
 	type GraderControl,
 } from "../index"
 
-const result = (decision: "passed" | "outcome_failed") =>
-	({ decision, results: [] }) as Awaited<ReturnType<GraderControl["run"]>>
+const result = (decision: "passed" | "outcome_failed"): Awaited<ReturnType<GraderControl["run"]>> => ({
+	decision,
+	results: [
+		{
+			graderId: "control",
+			graderVersion: 1,
+			type: "command",
+			status: decision === "passed" ? "passed" : "failed",
+			hardGate: true,
+			failureClass: "outcome",
+			startedAt: new Date(0).toISOString(),
+			finishedAt: new Date(1).toISOString(),
+			durationMs: 1,
+			diagnostics: [],
+			evidence: [evidenceFromText("control", "stdout", decision)],
+		},
+	],
+})
 
 function controls(): GraderControl[] {
 	return graderControlKinds.map((kind) => ({
@@ -21,6 +38,16 @@ function controls(): GraderControl[] {
 }
 
 describe("grader control audit", () => {
+	it("rejects claimed control decisions without executed grader evidence", async () => {
+		const audit = await auditGraderControls(
+			controls().map((control) => ({
+				...control,
+				run: async () => ({ decision: control.expectedDecision, results: [] }),
+			})),
+		)
+		expect(audit.passed).toBe(false)
+		expect(audit.entries.every(({ actualDecision }) => actualDecision === "grader_error")).toBe(true)
+	})
 	it("requires reference, alternative-correct, broken, and negative controls", () => {
 		const complete = controls()
 		expect(() => validateGraderControlSet(complete)).not.toThrow()

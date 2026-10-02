@@ -1,7 +1,7 @@
 # Testing and evaluation workflow
 
 The supported local workflow requires no Docker. Run these commands from the repository root with Node **24.14.1**, pnpm **11.24.0**, and npm **11.11.0**.
-VS Code **1.122.1** is the release contract.
+VS Code **1.125.0** is the release contract.
 
 ## Docker-free corporate setup
 
@@ -32,22 +32,22 @@ but cannot measure a live model's planning ability. Deterministic graders can al
 | `pnpm harness run unit`                                                 | Extension/dependencies/webview            | Scripted            | Broad regressions; includes bundle; bounded Vitest workers                           |
 | `pnpm harness run tooling`                                              | Scripts and host runner                   | Scripted            | Local reporting, installation and runner mechanics; no host launch                   |
 | `pnpm harness run offline`                                              | Evaluator unit/contract/certification     | Scripted            | Grading and comparison machinery; no Docker/Postgres/Redis/provider needed           |
-| `pnpm harness run host`                                                 | Actual VS Code 1.122.1                    | Scripted/LM fixture | Activation, modes and LM contracts; binary download/cache and desktop support needed |
+| `pnpm harness run host`                                                 | Actual VS Code 1.125.0                    | Scripted/LM fixture | Activation, modes and LM contracts; binary download/cache and desktop support needed |
 | `pnpm harness run confidence`                                           | Kernel plus actual host and certification | Scripted            | Existing core confidence gate, including fresh completion evidence                   |
 | `pnpm harness run services`                                             | Full evaluator                            | Scripted            | Dedicated test Postgres/Redis; no Docker                                             |
 | `pnpm --filter @alpha-code/evals benchmark:fixture-check`               | Task fixtures                             | Scripted            | Broken/reference fixture integrity; not model capability                             |
 | `pnpm --filter @alpha-code/evals benchmark:author-check`                | Task authoring                            | None                | Authoring/private-bank checks; private assets may be unavailable                     |
 
 The executable [catalog](../scripts/harness/catalog.mjs) is the command inventory; its test verifies delegation to
-existing package scripts. Old commands remain valid. Pass Vitest filters directly after `test`, without a standalone
+existing package scripts. Unversioned commands remain valid; exact-host commands now use the `:1250` suffix. Pass Vitest filters directly after `test`, without a standalone
 `--`. Use package tests/typechecks for changed shared packages. Run exact-host coverage for the surfaces listed in
 [AGENTS.md](../AGENTS.md), even if lower-level tests pass.
 
 Additional Docker-free storage experiments use the existing campaign runner after a successful build/host lane:
 
 ```sh
-pnpm --filter @alpha-code/vscode-e2e test:campaign --shared-storage-root <new-absolute-fixture-root> --vscode-version 1.122.1 --vscode-executable <absolute-1.122.1-Code-executable>
-pnpm --filter @alpha-code/vscode-e2e test:campaign --storage-recovery-root <different-new-absolute-fixture-root> --vscode-version 1.122.1 --vscode-executable <absolute-1.122.1-Code-executable>
+pnpm --filter @alpha-code/vscode-e2e test:campaign --shared-storage-root <new-absolute-fixture-root> --vscode-version 1.125.0 --vscode-executable <absolute-1.125.0-Code-executable>
+pnpm --filter @alpha-code/vscode-e2e test:campaign --storage-recovery-root <different-new-absolute-fixture-root> --vscode-version 1.125.0 --vscode-executable <absolute-1.125.0-Code-executable>
 ```
 
 Use fresh owned directories outside the repository and personal VS Code profiles. Run these serially without concurrent

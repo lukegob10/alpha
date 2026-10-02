@@ -20,7 +20,7 @@ import {
 } from "../liveHostProtocol"
 import { TestRunError } from "../runFailure"
 
-const expected = { runId: "normal-host-test", nonce: randomUUID(), actualVSCodeVersion: "1.122.1" }
+const expected = { runId: "normal-host-test", nonce: randomUUID(), actualVSCodeVersion: "1.125.0" }
 const receipt: LiveHostReceipt = {
 	...expected,
 	schemaVersion: 1,
@@ -41,7 +41,7 @@ test("receipts require exact run, nonce, host version, mode, status and process 
 	for (const change of [
 		{ runId: "stale-run" },
 		{ nonce: randomUUID() },
-		{ actualVSCodeVersion: "1.136.1" },
+		{ actualVSCodeVersion: "0.0.0" },
 		{ launchKind: "extension-test" },
 		{ schemaVersion: 2 },
 		{ pid: 0 },

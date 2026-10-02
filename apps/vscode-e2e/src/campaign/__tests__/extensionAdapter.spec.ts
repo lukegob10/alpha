@@ -21,7 +21,7 @@ import {
 const request: ScenarioRequest = {
 	campaignId: "test",
 	attemptId: "attempt-0001",
-	host: { version: "1.122.1" },
+	host: { version: "1.125.0" },
 	scenarioId: "review-edit-test-commit-followup",
 	sample: 1,
 	phase: "sample",
@@ -36,7 +36,7 @@ const workflow = () => ({
 	status: "passed",
 	checks: [{ name: "file-effect", passed: true }],
 	taskIds: ["task-1"],
-	hostVersion: "1.122.1",
+	hostVersion: "1.125.0",
 	providerMode: "scripted",
 	model: { id: "fake-model" },
 	requestsUsed: 2,
@@ -153,7 +153,7 @@ test("real storage admission counts prior campaigns and blocks launch, patch and
 test("projects verified metadata and rejects failed checks behind a passed claim", () => {
 	const projected = projectWorkflowResult(workflow(), request, "run")
 	assert.equal(projected.result.status, "passed")
-	assert.equal(projected.result.actualHostVersion, "1.122.1")
+	assert.equal(projected.result.actualHostVersion, "1.125.0")
 	assert.equal(projected.result.usage.requests, 2)
 	assert.equal(projected.result.usage.inputTokens, null)
 	assert.equal(projected.result.usage.outputTokens, null)
@@ -217,7 +217,7 @@ test("producer and consumer share resource limits and reject malformed result en
 
 test("does not substitute a host, model, or reasoning effort", () => {
 	assert.equal(
-		projectWorkflowResult({ ...workflow(), hostVersion: "1.136.1" }, request, "run").result.status,
+		projectWorkflowResult({ ...workflow(), hostVersion: "0.0.0" }, request, "run").result.status,
 		"blocked",
 	)
 	const liveRequest = { ...request, provider: { mode: "live-copilot" as const, modelId: "requested", effort: "max" } }

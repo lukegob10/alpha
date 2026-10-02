@@ -149,6 +149,40 @@ describe("foldedFileContext", () => {
 			expect(result.filesSkipped).toBeGreaterThan(0)
 		})
 
+		it("charges the full long-path wrapper before truncating definitions", async () => {
+			mockedParseSourceCodeDefinitions.mockResolvedValue("x".repeat(1000))
+			const result = await generateFoldedFileContext([`${"directory/".repeat(20)}file.ts`], {
+				cwd: "/test",
+				maxCharacters: 350,
+			})
+			expect(result.characterCount).toBeLessThanOrEqual(350)
+			expect(result.content).toContain("... (truncated)")
+			expect(result.content).toContain("</system-reminder>")
+		})
+
+		it("charges separators between complete file sections", async () => {
+			mockedParseSourceCodeDefinitions.mockResolvedValue("export const x = 1")
+			const files = ["a.ts", "b.ts", "c.ts"]
+			const unconstrained = await generateFoldedFileContext(files, { cwd: "/test" })
+			const maxCharacters = unconstrained.sections.reduce((total, section) => total + section.length, 0)
+			const result = await generateFoldedFileContext(files, { cwd: "/test", maxCharacters })
+			expect(result.characterCount).toBeLessThanOrEqual(maxCharacters)
+			expect(result.filesProcessed + result.filesSkipped).toBe(files.length)
+		})
+
+		it("stops later file reads when cancellation arrives during parsing", async () => {
+			const controller = new AbortController()
+			const reason = new Error("stop folded context")
+			mockedParseSourceCodeDefinitions.mockImplementationOnce(async () => {
+				controller.abort(reason)
+				return "export const x = 1"
+			})
+			await expect(
+				generateFoldedFileContext(["a.ts", "b.ts"], { cwd: "/test", signal: controller.signal }),
+			).rejects.toBe(reason)
+			expect(mockedParseSourceCodeDefinitions).toHaveBeenCalledTimes(1)
+		})
+
 		it("should handle Python files with its own system-reminder block", async () => {
 			const mockDefinitions = `1--2 | def greet(name)
 4--12 | class Person`

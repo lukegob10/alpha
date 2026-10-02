@@ -12,6 +12,16 @@ import {
 import type { WebviewMessage } from "../vscode-extension-host.js"
 
 describe("ask messages", () => {
+	test("retains bounded queued input identities on feedback and accepts older saved messages", () => {
+		const legacy = { type: "say", say: "user_feedback", ts: 1, text: "Continue the task" }
+		expect(alphaMessageSchema.parse(legacy)).toEqual(legacy)
+		const correlated = { ...legacy, queuedMessageIds: ["submission-1"] }
+		expect(alphaMessageSchema.parse(JSON.parse(JSON.stringify(correlated)))).toEqual(correlated)
+		for (const queuedMessageIds of [[""], ["x".repeat(257)], Array(101).fill("submission"), [123]]) {
+			expect(alphaMessageSchema.safeParse({ ...legacy, queuedMessageIds }).success).toBe(false)
+		}
+	})
+
 	test("accepts legacy queued input and its pending delivery projection", () => {
 		const legacy = { id: "input-identity", timestamp: 1, text: "arbitrary input", images: ["attachment"] }
 		expect(queuedMessageSchema.parse(legacy)).toEqual(legacy)

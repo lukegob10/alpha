@@ -230,13 +230,13 @@ const acceptCompletionBoundary = async (
 	})
 }
 
-suite("Alpha VS Code LM 1.122.1 contract", function () {
+suite("Alpha VS Code LM 1.125.0 contract", function () {
 	setDefaultSuiteTimeout(this)
 
 	let fixture: VsCodeLmFixtureControl
 
 	suiteSetup(async () => {
-		assert.equal(vscode.version, "1.122.1", "The VS Code LM contract must run on the exact supported host")
+		assert.equal(vscode.version, "1.125.0", "The VS Code LM contract must run on the exact supported host")
 		fixture = await getFixture()
 	})
 
@@ -280,7 +280,7 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 		}
 	})
 
-	test("characterizes VS Code 1.122.1 late cancellation at the direct LM boundary", async () => {
+	test("characterizes VS Code 1.125.0 late cancellation at the direct LM boundary", async () => {
 		fixture.reset("cancellation")
 		const [model] = await vscode.lm.selectChatModels({
 			vendor: FIXTURE_VENDOR,
@@ -294,7 +294,7 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 
 		try {
 			const response = await model.sendRequest(
-				[vscode.LanguageModelChatMessage.User("Characterize late cancellation on VS Code 1.122.1.")],
+				[vscode.LanguageModelChatMessage.User("Characterize late cancellation on VS Code 1.125.0.")],
 				{ justification: "Alpha exact-host cancellation contract test" },
 				cancellation.token,
 			)
@@ -312,12 +312,12 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 			assert.equal(
 				fixture.getRequests()[0]?.cancelled,
 				false,
-				"VS Code 1.122.1 unexpectedly forwarded cancellation after sendRequest returned; update this exact-host characterization",
+				"VS Code 1.125.0 unexpectedly forwarded cancellation after sendRequest returned; update this exact-host characterization",
 			)
 			assert.equal(
 				fixture.getEvents().some(({ type }) => type === "provider-token-cancelled"),
 				false,
-				"The direct fixture provider observed a late cancellation token on VS Code 1.122.1",
+				"The direct fixture provider observed a late cancellation token on VS Code 1.125.0",
 			)
 
 			fixture.releaseRequest(0)
@@ -576,7 +576,7 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 		}
 	})
 
-	test("settles Alpha cancellation across VS Code 1.122.1's late-token boundary and starts a healthy recovery task", async () => {
+	test("settles Alpha cancellation across VS Code 1.125.0's late-token boundary and starts a healthy recovery task", async () => {
 		const provider = getHostProvider()
 		fixture.reset("cancellation")
 
@@ -600,7 +600,7 @@ suite("Alpha VS Code LM 1.122.1 contract", function () {
 			assert.equal(
 				fixture.getRequests()[0]?.cancelled,
 				false,
-				"VS Code 1.122.1 should retain the provider token after its startup RPC returns",
+				"VS Code 1.125.0 should retain the provider token after its startup RPC returns",
 			)
 			await waitFor(() => provider.getLiveTask(cancelledTaskId)?.taskAsk?.ask === "resume_task", {
 				timeout: 10_000,

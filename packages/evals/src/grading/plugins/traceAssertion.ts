@@ -1,5 +1,6 @@
 import { evidenceFromText } from "../evidence"
 import type { GraderContext, GraderPlugin, GraderResult, TraceAssertionGraderSpec } from "../types"
+import { validateTraceEvidence } from "../validation"
 
 export class TraceAssertionGrader implements GraderPlugin<TraceAssertionGraderSpec> {
 	readonly type = "trace-assertion" as const
@@ -8,6 +9,7 @@ export class TraceAssertionGrader implements GraderPlugin<TraceAssertionGraderSp
 		spec: TraceAssertionGraderSpec,
 		context: GraderContext,
 	): Promise<Omit<GraderResult, "startedAt" | "finishedAt" | "durationMs">> {
+		validateTraceEvidence(context.trace)
 		const diagnostics: GraderResult["diagnostics"] = []
 		for (const assertion of spec.assertions) {
 			const matching = context.trace.filter(

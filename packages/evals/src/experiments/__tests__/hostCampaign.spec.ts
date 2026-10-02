@@ -11,7 +11,7 @@ function campaign() {
 		repairs: [],
 		requestedProvider: { mode: "scripted" },
 		retention: { status: "complete" },
-		evaluationPlan: { scenarioIds: ["cancel"], hostVersions: ["1.122.1"], samples: 1 },
+		evaluationPlan: { scenarioIds: ["cancel"], hostVersions: ["1.125.0"], samples: 1 },
 		evaluationIdentity: {
 			extensionCommit: "alpha-source-not-fixture",
 			workingTreeDigest: digest("a"),
@@ -31,12 +31,12 @@ function campaign() {
 					scenarioId: "cancel",
 					sample: 1,
 					phase: "sample",
-					host: { version: "1.122.1" },
+					host: { version: "1.125.0" },
 				},
 				result: {
 					failure: undefined as { class: string } | undefined,
 					status: "passed",
-					actualHostVersion: "1.122.1",
+					actualHostVersion: "1.125.0",
 					usage: { cost: null, inputTokens: null, outputTokens: null },
 				},
 				elapsedMs: 23,
@@ -132,7 +132,7 @@ describe("actual host campaign to paired report", () => {
 			),
 		).toThrow()
 		expect(() => exportHostCampaign({ ...value, mode: "reviewed-patch" }, { timeWindow: "block" })).toThrow()
-		value.attempts[0]!.result.actualHostVersion = "1.136.1"
+		value.attempts[0]!.result.actualHostVersion = "0.0.0"
 		expect(() => exportHostCampaign(value, { timeWindow: "block" })).toThrow("actual host")
 	})
 

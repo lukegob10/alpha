@@ -78,7 +78,7 @@ const manifest: PairManifest = {
 	profileRoot: profile,
 	artifactsRoot: path.join(profile, "evidence"),
 	deadline: Date.now() + 10000,
-	hostVersion: "1.122.1",
+	hostVersion: "1.125.0",
 	roles: {
 		a: { workspace: path.join(profile, "a"), workspaceFile: path.join(profile, "a.code-workspace") },
 		b: { workspace: path.join(profile, "b"), workspaceFile: path.join(profile, "b.code-workspace") },
@@ -89,7 +89,7 @@ const roots: WorkerIdentity[] = (["a", "b"] as const).map((role, index) => ({
 	nonce: manifest.nonce,
 	role,
 	pid: index + 2,
-	hostVersion: "1.122.1",
+	hostVersion: "1.125.0",
 	workspaceFile: manifest.roles[role].workspaceFile,
 	storagePath: path.join(profile, "storage"),
 	persistenceFile: path.join(profile, "storage", "agent_control.json"),

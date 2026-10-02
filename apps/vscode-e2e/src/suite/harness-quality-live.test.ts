@@ -93,7 +93,7 @@ suite("Live Copilot harness quality", function () {
 		if (browser)
 			await waitFor(() => vscode.lm.tools.some((tool) => tool.name === "open_browser_page"), {
 				timeout: 15_000,
-				description: "VS Code 1.122.1 browser tools",
+				description: "VS Code 1.125.0 browser tools",
 			})
 		await runLiveCase(
 			browser ? "browser-session" : "command-session",

@@ -15,6 +15,7 @@ concurrency:
 jobs:
     release-vsix-v2-preview:
         runs-on: windows-latest
+        timeout-minutes: 90
 
         steps:
             - name: Checkout code
@@ -28,11 +29,39 @@ jobs:
             - name: Build workspace types
               run: pnpm --filter @alpha-code/types build
 
-            - name: Run exact VS Code 1.122.1 release gate
-              run: pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
+            - name: Run mechanical checks
+              run: pnpm harness run static
+
+            - name: Run extension and UI unit checks
+              run: pnpm harness run unit
+
+            - name: Run runner tooling checks
+              run: pnpm harness run tooling
+
+            - name: Run offline evaluator checks
+              run: pnpm harness run offline
+
+            - name: Lint evaluator code
+              run: pnpm --filter @alpha-code/evals lint
+
+            - name: Check evaluator types
+              run: pnpm --filter @alpha-code/evals check-types
+
+            - name: Run exact VS Code 1.125.0 release gate
+              run: pnpm harness run host
+
+            - name: Verify managed-agent contracts and certification
+              run: pnpm harness run confidence
+
+            - name: Verify independent scripted task outcomes
+              run: pnpm harness run outcomes
+
+            - name: Require current release evidence
+              if: always()
+              run: pnpm harness matrix --output artifacts/harness/matrix-release.json --require static --require offline --require host --require confidence --require outcomes
 
             - name: Verify global command auto-approval and outside-path review
-              run: pnpm --filter @alpha-code/vscode-e2e test:command-paths:1221:run
+              run: pnpm --filter @alpha-code/vscode-e2e test:command-paths:1250:run
 
             - name: Package extension
               shell: pwsh
@@ -101,3 +130,22 @@ jobs:
                   if ($LASTEXITCODE -ne 0) {
                     throw "Preview release creation failed."
                   }
+
+            - name: Retain preview validation evidence
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: preview-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+                  path: |
+                      artifacts/harness/
+                      artifacts/core-confidence/*/gate-result.json
+                      artifacts/core-confidence/*/prepare-*.json
+                      artifacts/core-confidence/*/certification-*.json
+                      artifacts/core-confidence/*/*-result.json
+                      ${{ runner.temp }}/alpha-core-confidence/*/runs/**
+                      ${{ runner.temp }}/alpha-harness-outcomes/*/*/report-*.json
+                      ${{ runner.temp }}/alpha-harness-outcomes/*/*/attempt-*/evidence-index.json
+                      ${{ runner.temp }}/alpha-harness-outcomes/*/*/host-evidence/**
+                      ${{ runner.temp }}/alpha-vscode-e2e-*/artifacts/**
+                  retention-days: 14
+                  if-no-files-found: error

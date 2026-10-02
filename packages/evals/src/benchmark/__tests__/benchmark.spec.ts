@@ -3,6 +3,7 @@ import os from "node:os"
 import path from "node:path"
 
 import { canonicalJson } from "../../evidence/index"
+import { evidenceFromText } from "../../grading/index"
 import { stringify } from "yaml"
 
 import {
@@ -284,7 +285,24 @@ describe("frontier benchmark contracts", () => {
 				timeoutMs: 5_000,
 				signal: abort.signal,
 				execute: async (request) => ({
-					run: { decision: "passed", results: [] },
+					run: {
+						decision: "passed",
+						results: [
+							{
+								graderId: "trusted",
+								graderVersion: 1,
+								type: "command",
+								status: "passed",
+								hardGate: true,
+								failureClass: "outcome",
+								startedAt: new Date(0).toISOString(),
+								finishedAt: new Date(1).toISOString(),
+								durationMs: 1,
+								diagnostics: [],
+								evidence: [evidenceFromText("trusted:output", "stdout", "passed")],
+							},
+						],
+					},
 					artifacts: [
 						{
 							schemaVersion: 1 as const,

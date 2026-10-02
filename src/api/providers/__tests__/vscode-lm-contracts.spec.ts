@@ -41,7 +41,7 @@ vi.mock("vscode", () => {
 		dispose() {}
 	}
 	return {
-		version: "1.122.1",
+		version: "1.125.0",
 		workspace: {
 			onDidChangeConfiguration: vi.fn(() => ({ dispose() {} })),
 			getConfiguration: vi.fn(() => ({ get: () => 600 })),

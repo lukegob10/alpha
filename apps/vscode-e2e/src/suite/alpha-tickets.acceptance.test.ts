@@ -109,7 +109,7 @@ suite("Alpha Tickets eager tool acceptance", function () {
 	setDefaultSuiteTimeout(this)
 
 	test("offers all Ticket tools immediately and executes a real list with paired history", async () => {
-		assert.equal(vscode.version, "1.122.1")
+		assert.equal(vscode.version, "1.125.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider?: TicketHost }).sidebarProvider

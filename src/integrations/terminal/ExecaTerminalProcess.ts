@@ -2,13 +2,16 @@ import { execa, ExecaError } from "execa"
 import psTree from "ps-tree"
 import process from "process"
 import { execFile, type ExecFileException } from "node:child_process"
+import { captureRejectionSymbol } from "node:events"
 
-import type { AlphaTerminal } from "./types"
+import type { AlphaTerminal, ExitCodeDetails } from "./types"
 import { BaseTerminal } from "./BaseTerminal"
 import { BaseTerminalProcess } from "./BaseTerminalProcess"
 
 const PROCESS_TERMINATION_TIMEOUT_MS = 5_000
+const PROCESS_SETTLEMENT_POLL_MS = 25
 const PID_UPDATE_TIMEOUT_MS = 1_000
+const MAX_PENDING_LINE_OBSERVERS = 16
 
 export class ExecaTerminalProcess extends BaseTerminalProcess {
 	private terminalRef: WeakRef<AlphaTerminal>
@@ -17,14 +20,16 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 	private subprocess?: ReturnType<typeof execa>
 	private pidUpdatePromise?: Promise<void>
 	private abortPromise?: Promise<void>
+	private handleListenerRejection?: (error: unknown) => void
+	private readonly pendingLineObservers = new Set<Promise<void>>()
 
 	constructor(terminal: AlphaTerminal) {
-		super()
+		super({ captureRejections: true })
 
 		this.terminalRef = new WeakRef(terminal)
 
 		this.once("completed", () => {
-			this.terminal.busy = false
+			if (!this.terminal.process || this.terminal.process === this) this.terminal.busy = false
 		})
 	}
 
@@ -40,6 +45,35 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 
 	public override async run(command: string) {
 		this.command = command
+		let processSettlement: Promise<PromiseSettledResult<Awaited<ReturnType<typeof execa>>>> | undefined
+		let processFailure: Error | undefined
+		let outputFailureTermination: Promise<void> | undefined
+		let removeOutputFailureListener: (() => void) | undefined
+		let exitDetails: ExitCodeDetails = { exitCode: undefined }
+		let physicalProcessSettled = false
+		const stopAfterOutputFailure = (error: unknown): Promise<void> => {
+			if (outputFailureTermination) return outputFailureTermination
+			processFailure = error instanceof Error ? error : new Error(String(error))
+			if (error instanceof ExecaError) {
+				console.error("[ExecaTerminalProcess#run] command process failed", {
+					code: error.code,
+					signal: error.signal,
+				})
+			} else {
+				console.error(`[ExecaTerminalProcess#run] shell execution error: ${processFailure.message}`)
+			}
+			outputFailureTermination = (physicalProcessSettled ? Promise.resolve() : this.startTermination()).catch(
+				(terminationError) => {
+					processFailure = new AggregateError(
+						[processFailure, terminationError],
+						"Command output failed and process-tree termination failed",
+					)
+					console.error("[ExecaTerminalProcess#run] process-tree termination failed")
+				},
+			)
+			return outputFailureTermination
+		}
+		this.handleListenerRejection = (error) => void stopAfterOutputFailure(error)
 
 		try {
 			this.isHot = true
@@ -59,6 +93,15 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 					LC_ALL: "en_US.UTF-8",
 				},
 			})`${command}`
+			// Observe rejection immediately, and retain physical process ownership
+			// independently of the output iterator or its presentation callbacks.
+			processSettlement = Promise.allSettled([this.subprocess]).then(([outcome]) => outcome)
+			const outputStream = this.subprocess.all
+			if (outputStream) {
+				const onOutputError = (error: unknown) => void stopAfterOutputFailure(error)
+				outputStream.once("error", onOutputError)
+				removeOutputFailureListener = () => outputStream.removeListener("error", onOutputError)
+			}
 
 			this.pid = this.subprocess.pid
 
@@ -96,74 +139,136 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 					break
 				}
 
-				this.fullOutput += line
-				this.emit("output_available")
-
-				const now = Date.now()
-
-				if (this.isListening && (now - this.lastEmitTime_ms > 500 || this.lastEmitTime_ms === 0)) {
-					this.emitRemainingBufferIfListening()
-					this.lastEmitTime_ms = now
-				}
-
-				this.startHotTimer(line)
-			}
-
-			if (this.aborted) {
-				let timeoutId: NodeJS.Timeout | undefined
-
-				const kill = new Promise<void>((resolve, reject) => {
-					timeoutId = setTimeout(() => {
-						try {
-							this.subprocess?.kill("SIGKILL")
-							resolve()
-						} catch (error) {
-							reject(error)
-						}
-					}, PROCESS_TERMINATION_TIMEOUT_MS)
-				})
-
 				try {
-					await Promise.race([this.subprocess, kill])
-				} finally {
-					if (timeoutId) clearTimeout(timeoutId)
+					this.fullOutput += line
+					this.emit("output_available")
+
+					const now = Date.now()
+
+					if (this.isListening && (now - this.lastEmitTime_ms > 500 || this.lastEmitTime_ms === 0)) {
+						this.emitRemainingBufferIfListening()
+						this.lastEmitTime_ms = now
+					}
+
+					this.startHotTimer(line)
+					// Bound outstanding async output callbacks without awaiting every
+					// chunk or retaining a separate output queue. The active command
+					// consumer is synchronous; this only backpressures async observers.
+					if (this.pendingLineObservers.size >= MAX_PENDING_LINE_OBSERVERS) {
+						await Promise.race(this.pendingLineObservers)
+					}
+				} catch (error) {
+					// Execa's iterator.return() waits for process exit. Stop the
+					// process before throwing so iterator cleanup cannot deadlock.
+					await stopAfterOutputFailure(error)
+					throw error
 				}
 			}
 
-			this.terminal.shellExecutionComplete(
-				this.aborted ? { exitCode: 137, signalName: "SIGKILL" } : { exitCode: 0 },
-			)
+			const outcome = await processSettlement
+			if (outcome.status === "rejected") throw outcome.reason
+			exitDetails = this.aborted ? { exitCode: 137, signalName: "SIGKILL" } : { exitCode: 0 }
 		} catch (error) {
-			if (error instanceof ExecaError) {
+			if (error instanceof ExecaError && !processFailure && (error.exitCode !== undefined || this.aborted)) {
 				// Nonzero command exits are tool results, including rg's no-match exit 1.
 				// Execa's message duplicates the command and all captured output; sending
 				// it through the shared host console can copy megabytes of workspace data.
-				if (!this.aborted && error.exitCode === undefined) {
-					console.error("[ExecaTerminalProcess#run] command process failed", {
-						code: error.code,
-						signal: error.signal,
-					})
-				}
-				this.terminal.shellExecutionComplete({
-					exitCode: error.exitCode ?? (this.aborted ? 137 : 1),
+				// An iterable error is not itself proof that the process has settled.
+				await processSettlement
+				exitDetails = {
+					exitCode: error.exitCode ?? 137,
 					signalName: error.signal,
-				})
+				}
 			} else {
-				console.error(
-					`[ExecaTerminalProcess#run] shell execution error: ${error instanceof Error ? error.message : String(error)}`,
-				)
-
-				this.terminal.shellExecutionComplete({ exitCode: 1 })
+				await stopAfterOutputFailure(error)
+				if (this.subprocess) {
+					// A failed termination leaves Stop retryable. Do not release the
+					// terminal or advertise completion while that process still lives.
+					const outcome = await processSettlement
+					if (outcome?.status === "fulfilled") {
+						exitDetails = { exitCode: outcome.value.exitCode }
+					} else if (outcome?.reason instanceof ExecaError) {
+						exitDetails = { exitCode: outcome.reason.exitCode, signalName: outcome.reason.signal }
+					}
+				}
 			}
-			this.subprocess = undefined
 		}
 
-		this.terminal.setActiveStream(undefined)
-		this.emitRemainingBufferIfListening()
-		this.stopHotTimer()
-		this.emit("completed", this.fullOutput)
-		this.emit("continue")
+		physicalProcessSettled = true
+		await outputFailureTermination
 		this.subprocess = undefined
+		let failureReported = false
+		const reportFailure = () => {
+			if (!processFailure || failureReported) return
+			failureReported = true
+			this.emit("error", processFailure)
+		}
+		try {
+			reportFailure()
+			try {
+				this.terminal.shellExecutionComplete(exitDetails)
+				if (!processFailure) this.emitRemainingBufferIfListening()
+			} catch (error) {
+				await stopAfterOutputFailure(error)
+				reportFailure()
+			}
+			this.stopHotTimer()
+			const completionFailure = await this.emitCompletedAndWait()
+			if (completionFailure) {
+				await stopAfterOutputFailure(completionFailure)
+			}
+			// Completion observers may flush outstanding output callbacks. Join
+			// those callbacks before continue can resolve the command successfully.
+			await Promise.all(this.pendingLineObservers)
+			await outputFailureTermination
+			reportFailure()
+		} finally {
+			removeOutputFailureListener?.()
+			this.handleListenerRejection = undefined
+			// Shell completion permits terminal reuse while these observers settle.
+			// An old owner must never close the replacement's stream or clear it.
+			if (!this.terminal.process || this.terminal.process === this) this.terminal.setActiveStream(undefined)
+			this.stopHotTimer()
+			if (this.terminal.process === this) {
+				this.terminal.process = undefined
+				this.terminal.running = false
+				this.terminal.busy = false
+			}
+			this.emit("continue")
+		}
+	}
+
+	public override [captureRejectionSymbol](error: unknown, eventName: unknown, ..._args: unknown[]): void {
+		// This hook must stay synchronous: returning a rejecting promise can
+		// recursively invoke Node's rejection capture.
+		if (eventName !== "error" && this.handleListenerRejection) {
+			this.handleListenerRejection(error)
+		} else {
+			console.error("[ExecaTerminalProcess] terminal observer rejected outside active output handling", {
+				eventName: String(eventName),
+			})
+		}
+	}
+
+	private async emitCompletedAndWait(): Promise<Error | undefined> {
+		// Keep native once wrappers, listener order, and emitter context. Unlike
+		// streaming output callbacks, completion callbacks own the finalization
+		// barrier and must settle before the command promise can report success.
+		const pending = this.rawListeners("completed").map((listener) => {
+			try {
+				return Promise.resolve(listener.call(this, this.fullOutput))
+			} catch (error) {
+				return Promise.reject(error)
+			}
+		})
+		const failures = (await Promise.allSettled(pending)).flatMap((outcome) =>
+			outcome.status === "rejected"
+				? [outcome.reason instanceof Error ? outcome.reason : new Error(String(outcome.reason))]
+				: [],
+		)
+		if (failures.length === 1) return failures[0]
+		if (failures.length > 1) return new AggregateError(failures, "Command completion observers failed")
+		return undefined
 	}
 
 	public override continue() {
@@ -173,8 +278,12 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 	}
 
 	public override abort(): Promise<void> {
-		if (this.abortPromise) return this.abortPromise
 		this.aborted = true
+		return this.startTermination()
+	}
+
+	private startTermination(): Promise<void> {
+		if (this.abortPromise) return this.abortPromise
 		const abortPromise = this.terminateProcessTree().catch((error) => {
 			if (this.abortPromise === abortPromise) this.abortPromise = undefined
 			throw error
@@ -217,9 +326,11 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 
 		// Snapshot every descendant before terminating its parents so re-parenting
 		// cannot hide a process between discovery and delivery of SIGKILL.
+		const terminatedPids: number[] = []
 		for (const pid of [...descendants].reverse()) {
 			try {
 				this.killPid(pid)
+				terminatedPids.push(pid)
 			} catch (error) {
 				errors.push(error)
 			}
@@ -227,11 +338,57 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 		for (const pid of roots) {
 			try {
 				this.killPid(pid)
+				terminatedPids.push(pid)
 			} catch (error) {
 				errors.push(error)
 			}
 		}
+		try {
+			await this.waitForPosixProcessSettlement(terminatedPids)
+		} catch (error) {
+			errors.push(error)
+		}
 		this.throwTerminationErrors(errors)
+	}
+
+	private async waitForPosixProcessSettlement(pids: readonly number[]): Promise<void> {
+		if (pids.length === 0) return
+		const deadline = Date.now() + PROCESS_TERMINATION_TIMEOUT_MS
+		while (true) {
+			const remainingMs = deadline - Date.now()
+			if (remainingMs <= 0) throw new Error("Timed out waiting for the terminated process tree to stop")
+			const runningPids = await new Promise<number[]>((resolve, reject) => {
+				execFile(
+					"ps",
+					["-o", "pid=,stat=", "-p", pids.join(",")],
+					{ timeout: remainingMs, maxBuffer: 1024 * 1024 },
+					(error, stdout, stderr) => {
+						// ps exits 1 with no rows when every selected PID has disappeared.
+						if (
+							error &&
+							!(error.code === 1 && !error.killed && !error.signal && !stdout.trim() && !stderr.trim())
+						) {
+							reject(new Error("Failed to inspect terminated process-tree state", { cause: error }))
+							return
+						}
+						const running: number[] = []
+						for (const row of stdout.trim().split("\n").filter(Boolean)) {
+							const match = /^\s*(\d+)\s+(\S+)\s*$/.exec(row)
+							if (!match || !pids.includes(Number(match[1]))) {
+								reject(new Error("Invalid terminated process-tree state from ps"))
+								return
+							}
+							// A zombie is already dead; its parent/init owns reaping the PID.
+							// Signal delivery alone does not establish this exit boundary.
+							if (!/^[ZXx]/.test(match[2])) running.push(Number(match[1]))
+						}
+						resolve(running)
+					},
+				)
+			})
+			if (runningPids.length === 0) return
+			await new Promise<void>((resolve) => setTimeout(resolve, Math.min(PROCESS_SETTLEMENT_POLL_MS, remainingMs)))
+		}
 	}
 
 	private throwTerminationErrors(errors: readonly unknown[]): void {
@@ -351,7 +508,25 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 		const output = this.getUnretrievedOutput()
 
 		if (output !== "") {
-			this.emit("line", output)
+			// Native emit discards listener return values. Preserve native once
+			// wrappers and context while owning only still-pending output work.
+			for (const listener of this.rawListeners("line")) {
+				const result: unknown = listener.call(this, output)
+				if (
+					result &&
+					(typeof result === "object" || typeof result === "function") &&
+					"then" in result &&
+					typeof result.then === "function"
+				) {
+					const pending = Promise.resolve(result)
+						.then(
+							() => undefined,
+							(error) => this.handleListenerRejection?.(error),
+						)
+						.finally(() => this.pendingLineObservers.delete(pending))
+					this.pendingLineObservers.add(pending)
+				}
+			}
 		}
 	}
 }

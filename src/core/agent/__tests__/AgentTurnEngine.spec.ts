@@ -81,6 +81,62 @@ describe("AgentResponseAccumulator", () => {
 })
 
 describe("AgentTurnEngine", () => {
+	it("does not run effects or complete when a successful stream hides malformed tool arguments", async () => {
+		const response = await collectAgentResponse(
+			(async function* () {
+				yield { type: "text", text: "Finished." } as const
+				yield { type: "tool_call", id: "bad", name: "read_file", arguments: "not-json" } as const
+				yield { type: "outcome", status: "completed", terminal: true, semanticOutputObserved: true } as const
+			})(),
+		)
+		const host: AgentTurnStagedHost<string> = {
+			shouldAbort: () => false,
+			sampleStep: async () => ({ response }),
+			commitResponse: vi.fn(),
+			executeEffects: vi.fn(),
+			selectContinuation: vi.fn(async () => ({ nextInput: "complete" as const })),
+			releaseStep: vi.fn(),
+		}
+
+		const result = await new AgentTurnEngine(host).run("first")
+
+		expect(result).toMatchObject({ status: "failed", steps: 1 })
+		expect(host.commitResponse).toHaveBeenCalledOnce()
+		expect(host.executeEffects).not.toHaveBeenCalled()
+		expect(host.selectContinuation).not.toHaveBeenCalled()
+		expect(host.releaseStep).toHaveBeenCalledOnce()
+	})
+
+	it("preserves cancellation received while the final step releases its runtime ownership", async () => {
+		let aborted = false
+		let releaseStarted!: () => void
+		let finishRelease!: () => void
+		const started = new Promise<void>((resolve) => {
+			releaseStarted = resolve
+		})
+		const released = new Promise<void>((resolve) => {
+			finishRelease = resolve
+		})
+		const response = { ...emptyResponse(), text: "Candidate answer." }
+		const host: AgentTurnStagedHost<string> = {
+			shouldAbort: () => aborted,
+			sampleStep: vi.fn(async () => ({ response })),
+			selectContinuation: async () => ({ nextInput: "complete" }),
+			releaseStep: vi.fn(async () => {
+				releaseStarted()
+				await released
+			}),
+		}
+		const result = new AgentTurnEngine(host).run("first")
+		await started
+		aborted = true
+		finishRelease()
+
+		expect(await result).toMatchObject({ status: "aborted", steps: 1 })
+		expect(host.releaseStep).toHaveBeenCalledOnce()
+		expect(host.sampleStep).toHaveBeenCalledOnce()
+	})
+
 	it("does not run effects or complete a step for a truncated streamed tool call", async () => {
 		const response = await collectAgentResponse(
 			(async function* () {

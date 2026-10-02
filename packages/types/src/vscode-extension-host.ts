@@ -297,6 +297,8 @@ export interface ChatCommandResult {
 	command: ChatCommand
 	status: "accepted" | "rejected"
 	errorCode?: ChatCommandErrorCode
+	/** Accepted input was retained in the queue when immediate completed-task delivery could not start. */
+	deliveryState?: "queued"
 }
 
 /**

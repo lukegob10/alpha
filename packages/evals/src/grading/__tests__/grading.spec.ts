@@ -12,6 +12,7 @@ import {
 	HiddenGraderBoundaryError,
 	assertHiddenGraderBoundary,
 	createDefaultGraderRegistry,
+	evidenceFromText,
 	matchesGlob,
 	resolveContained,
 	resolveGraderAlias,
@@ -133,13 +134,7 @@ describe("grader plugins", () => {
 				kind: "stdout" | "stderr" | "file" | "diff" | "trace" | "report",
 				value: string,
 				mediaType: string,
-			) => ({
-				id,
-				kind,
-				mediaType,
-				digest: "sha256:artifact",
-				byteLength: value.length,
-			}),
+			) => evidenceFromText(id, kind, value, mediaType),
 		)
 		const runner = processRunner([{ stdout: "bounded", fullStdout: "full-output", fullStderr: "full-error" }])
 		await createDefaultGraderRegistry().execute(
@@ -359,9 +354,7 @@ describe("registry validity and repeatability", () => {
 	it("rejects duplicate plugins and invalid spec identities", async () => {
 		const plugin = { type: "filesystem", execute: vi.fn() } as unknown as GraderPlugin
 		expect(() => new GraderRegistry().register(plugin).register(plugin)).toThrow("already registered")
-		await expect(createDefaultGraderRegistry().execute([], context())).resolves.toMatchObject({
-			decision: "passed",
-		})
+		await expect(createDefaultGraderRegistry().execute([], context())).rejects.toThrow("At least one grader")
 		await expect(
 			createDefaultGraderRegistry().execute(
 				[{ ...base, id: "Bad ID", type: "filesystem", assertions: [] }],
@@ -381,7 +374,12 @@ describe("registry validity and repeatability", () => {
 	})
 
 	it("rejects missing plugins and normalizes non-Error plugin failures", async () => {
-		const spec: GraderSpec = { ...base, id: "state", type: "filesystem", assertions: [] }
+		const spec: GraderSpec = {
+			...base,
+			id: "state",
+			type: "filesystem",
+			assertions: [{ kind: "exists", path: "result.txt" }],
+		}
 		await expect(new GraderRegistry().execute([spec], context())).rejects.toThrow("No grader plugin")
 		const plugin = {
 			type: "filesystem",
@@ -417,8 +415,8 @@ describe("registry validity and repeatability", () => {
 		}
 		const changed = { ...context(), changedPaths: ["generated/bundle.js"] }
 		expect((await createDefaultGraderRegistry().execute([strict], changed)).decision).toBe("safety_failed")
-		expect((await createDefaultGraderRegistry().execute([{ ...strict, forbidden: [] }], changed)).decision).toBe(
-			"passed",
+		await expect(createDefaultGraderRegistry().execute([{ ...strict, forbidden: [] }], changed)).rejects.toThrow(
+			"Invalid or empty grader criteria",
 		)
 	})
 })
@@ -459,7 +457,12 @@ describe("hidden grader boundary", () => {
 			context(runner),
 		)
 		expect(result.decision).toBe("passed")
-		expect(runner.run).toHaveBeenCalledWith(expect.objectContaining({ cwd: hiddenRoot }))
+		expect(runner.run).toHaveBeenCalledWith(
+			expect.objectContaining({
+				cwd: await fs.realpath(hiddenRoot),
+				env: { EVAL_WORKSPACE_ROOT: await fs.realpath(workspaceRoot) },
+			}),
+		)
 	})
 
 	it("rejects a hidden command when no hidden root is configured", async () => {

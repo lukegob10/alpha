@@ -104,7 +104,7 @@ suite("Rich document authoring through captured task tools", function () {
 		test(`${source}: skill load, source write, preview, same-task revision and reopen`, async function () {
 			if (process.env.TEST_FILE !== "rich-documents.test") this.skip()
 			assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
-			assert.equal(vscode.version, "1.122.1")
+			assert.equal(vscode.version, "1.125.0")
 			const workspace = process.env.ALPHA_E2E_WORKSPACE
 			const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR
 			assert.ok(workspace && artifacts)

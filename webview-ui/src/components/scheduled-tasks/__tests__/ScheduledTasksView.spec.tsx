@@ -207,6 +207,70 @@ describe("scheduled task setup", () => {
 		})
 	})
 
+	it("preserves command denials when saving unrelated schedule edits", () => {
+		state.scheduledTasks = [{ ...saved, apiConfig, autoApproval: { approvalMode: "auto", deniedCommands: ["rm"] } }]
+		render(<ScheduledTasksView onDone={() => {}} />)
+		input("Name", "Renamed review")
+		fireEvent.click(screen.getByRole("button", { name: "Save" }))
+		expect(messages().at(-1)?.scheduledTaskUpdate?.autoApproval).toEqual({
+			approvalMode: "auto",
+			deniedCommands: ["rm"],
+		})
+	})
+
+	it("preserves exact schedule metadata when only its name is edited", () => {
+		const schedule = {
+			type: "customInterval" as const,
+			startAt: 1_900_000_012_345,
+			timezone: "Pacific/Auckland",
+			intervalMs: 90_000,
+			endAt: 1_950_000_000_000,
+		}
+		state.scheduledTasks = [{ ...saved, apiConfig, schedule }]
+		render(<ScheduledTasksView onDone={() => {}} />)
+		input("Name", "Renamed review")
+		fireEvent.click(screen.getByRole("button", { name: "Save" }))
+		expect(messages().at(-1)?.scheduledTaskUpdate?.schedule).toEqual(schedule)
+	})
+
+	it("preserves exact command timeout when only its name is edited", () => {
+		const execution = { type: "command" as const, command: "pnpm test", timeoutMs: 90_500 }
+		state.scheduledTasks = [
+			{
+				...saved,
+				execution,
+			},
+		]
+		render(<ScheduledTasksView onDone={() => {}} />)
+		input("Name", "Renamed command")
+		fireEvent.click(screen.getByRole("button", { name: "Save" }))
+		expect(messages().at(-1)?.scheduledTaskUpdate?.execution).toEqual(execution)
+	})
+
+	it("retains a recurring schedule's deadline and timezone when its interval changes", () => {
+		const schedule = {
+			type: "daily" as const,
+			startAt: saved.schedule.startAt,
+			intervalDays: 1,
+			timezone: "Pacific/Auckland",
+			endAt: 1_950_000_000_000,
+		}
+		state.scheduledTasks = [
+			{
+				...saved,
+				apiConfig,
+				schedule,
+			},
+		]
+		render(<ScheduledTasksView onDone={() => {}} />)
+		input("Repeat every", "2")
+		fireEvent.click(screen.getByRole("button", { name: "Save" }))
+		expect(messages().at(-1)?.scheduledTaskUpdate?.schedule).toEqual({
+			...schedule,
+			intervalDays: 2,
+		})
+	})
+
 	it("queries reasoning for the selected profile without touching chat preferences", () => {
 		render(<ScheduledTasksView onDone={() => {}} />)
 		select("Profile", apiConfig.id)

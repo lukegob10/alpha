@@ -295,13 +295,13 @@ export const mergeExtensionState = (
 	) {
 		rest.taskReasoning = undefined
 	}
-	if ("currentTaskId" in newState && newState.currentTaskId == null) {
+	if (acceptedTaskSnapshot && "currentTaskId" in newState && newState.currentTaskId == null) {
 		rest.currentTaskId = undefined
 	}
-	if ("currentTaskItem" in newState && newState.currentTaskItem == null) {
+	if (acceptedTaskSnapshot && "currentTaskItem" in newState && newState.currentTaskItem == null) {
 		rest.currentTaskItem = undefined
 	}
-	if ("activeTaskId" in newState && newState.activeTaskId == null) {
+	if (acceptedTaskSnapshot && "activeTaskId" in newState && newState.activeTaskId == null) {
 		rest.activeTaskId = undefined
 	}
 	// VS Code webview postMessage drops undefined properties, so a new-chat

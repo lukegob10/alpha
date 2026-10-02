@@ -70,7 +70,7 @@ interface SystemSnapshot {
 	totalMemoryBytes: number
 }
 
-const EXPECTED_HOST = "1.122.1"
+const EXPECTED_HOST = "1.125.0"
 const TRANSCRIPT_MESSAGES = 1_200
 const TRANSCRIPT_SENTINEL = "task-navigation-ui-transcript-sentinel"
 const CYCLES = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"] as const

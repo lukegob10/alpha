@@ -43,7 +43,7 @@ vi.mock("vscode", () => ({
 	env: { uriScheme: "vscode", language: "en", appName: "Visual Studio Code" },
 	ExtensionMode: { Production: 1, Development: 2, Test: 3 },
 	ConfigurationTarget: { Global: 1 },
-	version: "1.122.1",
+	version: "1.125.0",
 }))
 
 vi.mock("../../task/Task", () => ({

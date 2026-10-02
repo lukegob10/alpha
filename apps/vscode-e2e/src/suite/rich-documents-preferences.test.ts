@@ -44,7 +44,7 @@ suite("Rich document preferences in an installed profile", function () {
 				installedDirectory && installedVersion && workspace,
 				"An owned installed extension profile and workspace are required",
 			)
-			assert.equal(vscode.version, "1.122.1")
+			assert.equal(vscode.version, "1.125.0")
 			assert.equal(vscode.workspace.workspaceFolders?.length, 1)
 			const workspaceRoot = await fs.realpath(workspace)
 			assert.equal(await fs.realpath(vscode.workspace.workspaceFolders![0]!.uri.fsPath), workspaceRoot)

@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.1.4
+
+### Patch Changes
+
+- Harden tool approval, cancellation, task recovery, and context compaction while preserving provider state and user input.
+- Improve chat and ticket workflows, and align the extension and release gates with VS Code 1.125.0.
+- Require current test evidence and independent scripted task outcomes before publishing a release.
+
 ## 3.1.3
 
 ### Patch Changes

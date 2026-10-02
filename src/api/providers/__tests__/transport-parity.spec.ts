@@ -47,7 +47,7 @@ vi.mock("vscode", () => {
 		}
 	}
 	return {
-		version: "1.122.1",
+		version: "1.125.0",
 		env: { language: "en" },
 		workspace: {
 			getConfiguration: () => ({ get: () => undefined }),
@@ -283,7 +283,7 @@ describe("assembled prompt and native tool transport", () => {
 		// The mock proves Alpha's serialized request shape; only a live historical Vertex endpoint can validate acceptance.
 	})
 
-	it("VS Code 1.122.1 uses its User constructor for instructions and preserves the tool ID", async () => {
+	it("VS Code 1.125.0 uses its User constructor for instructions and preserves the tool ID", async () => {
 		sendRequest.mockResolvedValue({
 			stream: {
 				async *[Symbol.asyncIterator]() {

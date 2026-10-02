@@ -34,6 +34,7 @@ export class SkillsManager {
 	private providerRef: WeakRef<AlphaProvider>
 	private disposables: vscode.Disposable[] = []
 	private isDisposed = false
+	private discoveryGeneration = 0
 
 	constructor(
 		provider: AlphaProvider,
@@ -55,12 +56,17 @@ export class SkillsManager {
 	 * - .alpha/skills/[dirname] can be a symlink to a skill directory
 	 */
 	async discoverSkills(): Promise<void> {
-		this.skills.clear()
+		if (this.isDisposed) return
+		const generation = ++this.discoveryGeneration
+		const discovered = new Map<string, SkillMetadata>()
 		const skillsDirs = await this.getSkillsDirectories()
 
 		for (const { dir, source, mode } of skillsDirs) {
-			await this.scanSkillsDirectory(dir, source, mode)
+			if (this.isDisposed || generation !== this.discoveryGeneration) return
+			await this.scanSkillsDirectory(dir, source, discovered, mode)
 		}
+		// Readers see complete catalogs; an older refresh cannot overwrite a newer one.
+		if (!this.isDisposed && generation === this.discoveryGeneration) this.skills = discovered
 	}
 
 	async refreshSkills(): Promise<SkillMetadata[]> {
@@ -79,7 +85,12 @@ export class SkillsManager {
 	 * 1. The skills directory itself is a symlink (resolved by directoryExists using realpath)
 	 * 2. Individual skill subdirectories are symlinks
 	 */
-	private async scanSkillsDirectory(dirPath: string, source: SkillSource, mode?: string): Promise<void> {
+	private async scanSkillsDirectory(
+		dirPath: string,
+		source: SkillSource,
+		discovered: Map<string, SkillMetadata>,
+		mode?: string,
+	): Promise<void> {
 		if (!(await directoryExists(dirPath))) {
 			return
 		}
@@ -99,7 +110,7 @@ export class SkillsManager {
 				if (!stats?.isDirectory()) continue
 
 				// Load skill metadata - the skill name comes from the entry name (symlink name if symlinked)
-				await this.loadSkillMetadata(entryPath, source, mode, entryName)
+				await this.loadSkillMetadata(entryPath, source, discovered, mode, entryName)
 			}
 		} catch {
 			// Directory doesn't exist or can't be read - this is fine
@@ -116,6 +127,7 @@ export class SkillsManager {
 	private async loadSkillMetadata(
 		skillDir: string,
 		source: SkillSource,
+		discovered: Map<string, SkillMetadata>,
 		mode?: string,
 		skillName?: string,
 	): Promise<void> {
@@ -186,7 +198,7 @@ export class SkillsManager {
 			const primaryMode = modeSlugs?.[0]
 			const skillKey = this.getSkillKey(effectiveSkillName, source, primaryMode)
 
-			this.skills.set(skillKey, {
+			discovered.set(skillKey, {
 				name: effectiveSkillName,
 				description,
 				path: skillMdPath,
@@ -489,25 +501,20 @@ export class SkillsManager {
 			.map((word) => word.charAt(0).toUpperCase() + word.slice(1))
 			.join(" ")
 
-		// Build frontmatter with optional modeSlugs
-		const frontmatterLines = [`name: ${name}`, `description: ${trimmedDescription}`]
-		if (modeSlugs && modeSlugs.length > 0) {
-			frontmatterLines.push(`modeSlugs:`)
-			for (const slug of modeSlugs) {
-				frontmatterLines.push(`  - ${slug}`)
-			}
-		}
-
-		const skillContent = `---
-${frontmatterLines.join("\n")}
----
-
-# ${titleName}
+		// Serialize user text as YAML data, preserving punctuation and multiline descriptions.
+		const skillContent = matter.stringify(
+			`\n# ${titleName}
 
 ## Instructions
 
 Add your skill instructions here.
-`
+`,
+			{
+				name,
+				description: trimmedDescription,
+				...(modeSlugs?.length ? { modeSlugs } : {}),
+			},
+		)
 
 		// Write the SKILL.md file
 		await fs.writeFile(skillMdPath, skillContent, "utf-8")

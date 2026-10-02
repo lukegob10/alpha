@@ -14,7 +14,7 @@ function phases(): SharedStorageCampaignReport[] {
 				profileRoot: "same-owned-profile",
 				status: "passed",
 				execution: "extension-host",
-				hostVersion: "1.122.1",
+				hostVersion: "1.125.0",
 				cleanupVerified: true,
 				leaseReleased: true,
 				captureComplete: true,

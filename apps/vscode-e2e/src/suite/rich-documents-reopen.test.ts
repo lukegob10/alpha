@@ -9,7 +9,7 @@ suite("Rich document reopen in a new installed host", function () {
 	this.timeout(30_000)
 	test("opens the persisted authored bytes without creating a task or regenerating content", async function () {
 		if (process.env.TEST_FILE !== "rich-documents-reopen.test") this.skip()
-		assert.equal(vscode.version, "1.122.1")
+		assert.equal(vscode.version, "1.125.0")
 		const expectedDirectory = process.env.ALPHA_E2E_INSTALLED_EXTENSION_DIR
 		const expectedPath = process.env.ALPHA_RICH_REOPEN_PATH
 		const expectedHash = process.env.ALPHA_RICH_REOPEN_SHA256

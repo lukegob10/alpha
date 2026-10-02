@@ -19,7 +19,9 @@ async function readProcessParents(): Promise<Map<number, number>> {
 				"-Command",
 				"Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress",
 			],
-			{ timeout: 10_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true },
+			// Allow cold CIM initialization within the Windows inspection deadline.
+			// Inspection stays bounded and must still prove the complete ancestry chain.
+			{ timeout: 30_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true },
 		)
 		const rows: unknown = JSON.parse(stdout)
 		if (!Array.isArray(rows)) throw new Error("Process ancestry is unavailable")
@@ -67,6 +69,16 @@ export async function assertRunnerAncestry(
 	throw new Error(
 		"The test host is not owned by this runner; close the dedicated profile's existing windows before retrying",
 	)
+}
+
+/** Every runner-managed host needs ancestry proof, including disposable profiles. */
+export async function verifyTestHostOwnership(
+	env: NodeJS.ProcessEnv,
+	assertAncestry = assertRunnerAncestry,
+): Promise<"verified" | undefined> {
+	if (!env.ALPHA_E2E_PROFILE_DIR && env.ALPHA_E2E_RUNNER_PID === undefined) return undefined
+	await assertAncestry(Number(env.ALPHA_E2E_RUNNER_PID))
+	return "verified"
 }
 
 /** Cooperating launchers serialize per profile/version; unknown or crashed leases are never stolen by age. */

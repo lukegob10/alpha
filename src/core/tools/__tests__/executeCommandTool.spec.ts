@@ -41,7 +41,14 @@ vitest.mock("vscode", () => ({
 vitest.mock("../../../integrations/terminal/TerminalRegistry", () => ({
 	TerminalRegistry: {
 		getOrCreateTerminal: vitest.fn().mockResolvedValue({
-			runCommand: vitest.fn().mockResolvedValue(undefined),
+			runCommand: vitest.fn(() => {
+				const promise = Promise.resolve()
+				return Object.assign(new EventEmitter(), {
+					then: promise.then.bind(promise),
+					catch: promise.catch.bind(promise),
+					finally: promise.finally.bind(promise),
+				})
+			}),
 			getCurrentWorkingDirectory: vitest.fn().mockReturnValue("/test/workspace"),
 		}),
 		getTerminals: vitest.fn().mockReturnValue([]),

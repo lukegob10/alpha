@@ -3,6 +3,7 @@ import { test } from "node:test"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import * as os from "node:os"
+import { createHash } from "node:crypto"
 
 import { createDevelopmentSuite } from "../developmentSuites"
 import { assertLiveGateConfig, evaluateLiveGate, fingerprintGateArtifacts, prepareLiveGate } from "../liveGate"
@@ -43,6 +44,32 @@ function completeReport(plan = config()): CampaignReport {
 	)
 	return {
 		version: 1,
+		evaluationIdentity: {
+			extensionCommit: "a".repeat(40),
+			workingTreeDigest: "a".repeat(64),
+			extensionBuildDigest: "b".repeat(64),
+			harnessDigest: "c".repeat(64),
+			taskSetDigest: "d".repeat(64),
+			sourceComponentsDigest: "e".repeat(64),
+			configDigest: createHash("sha256")
+				.update(
+					JSON.stringify({
+						hosts: plan.hosts.map((host) => host.version),
+						scenarioIds: plan.scenarioIds,
+						samples: plan.samples,
+						budgets: plan.budgets,
+						maxReproductions: plan.maxReproductions,
+					}),
+				)
+				.digest("hex"),
+			unchanged: true,
+			missing: [],
+		},
+		evaluationPlan: {
+			scenarioIds: [...plan.scenarioIds],
+			hostVersions: plan.hosts.map((host) => host.version),
+			samples: plan.samples,
+		},
 		id: plan.id,
 		mode: "report-only",
 		requestedProvider: plan.provider,
@@ -57,13 +84,51 @@ function completeReport(plan = config()): CampaignReport {
 	}
 }
 
-test("gate covers the whole registered matrix and labels single-host acceptance separately", () => {
+test("live acceptance fails closed on missing, malformed, or changed build and task provenance", () => {
+	for (const alter of [
+		(report: CampaignReport) => delete report.evaluationIdentity,
+		(report: CampaignReport) => {
+			report.evaluationIdentity!.unchanged = false
+		},
+		(report: CampaignReport) => {
+			report.evaluationIdentity!.missing = ["harnessDigest"]
+		},
+		(report: CampaignReport) => {
+			report.evaluationIdentity!.extensionCommit = "unknown"
+		},
+		(report: CampaignReport) => {
+			report.evaluationIdentity!.extensionBuildDigest = null
+		},
+		(report: CampaignReport) => {
+			report.evaluationIdentity!.taskSetDigest = "unknown"
+		},
+		(report: CampaignReport) => {
+			report.evaluationIdentity!.configDigest = "0".repeat(64)
+		},
+		(report: CampaignReport) => delete report.evaluationPlan,
+		(report: CampaignReport) => {
+			report.evaluationPlan!.scenarioIds.pop()
+		},
+		(report: CampaignReport) => {
+			report.evaluationPlan!.samples++
+		},
+		(report: CampaignReport) => {
+			report.evaluationPlan!.hostVersions = []
+		},
+	]) {
+		const report = completeReport()
+		alter(report)
+		assert.equal(evaluateLiveGate(config(), report).status, "failed")
+	}
+})
+
+test("gate covers the whole registered matrix on the reference host", () => {
 	const plan = config()
 	const result = evaluateLiveGate(plan, completeReport(plan))
 	assert.equal(result.status, "passed")
-	assert.equal(result.scope, "reference-and-current-hosts")
-	assert.equal(result.cells.length, plan.scenarioIds.length * 2)
-	plan.hosts = [{ version: "1.136.1" }]
+	assert.equal(result.scope, "single-host-only")
+	assert.equal(result.cells.length, plan.scenarioIds.length)
+	plan.hosts = [{ version: "1.125.0" }]
 	assert.equal(evaluateLiveGate(plan, completeReport(plan)).scope, "single-host-only")
 })
 
@@ -134,7 +199,7 @@ test("gate cannot pass empty, missing, duplicate or fabricated coverage even wit
 test("gate requires actual live identity, usage, task and retained evidence for every cell", () => {
 	for (const alter of [
 		(report: CampaignReport) => {
-			report.attempts[0]!.result.actualHostVersion = "1.136.1"
+			delete report.attempts[0]!.result.actualHostVersion
 		},
 		(report: CampaignReport) => {
 			report.attempts[0]!.result.model!.id = "other-model"
@@ -349,9 +414,9 @@ test("core preparation includes the targeted loop regressions before optional ho
 		)
 		assert.deepEqual(scripts, [
 			"test:unit",
-			"test:smoke:1221",
+			"test:smoke:1250",
 			"test:core:regressions",
-			...(coverage === "full" ? ["test:core:1221:run"] : []),
+			...(coverage === "full" ? ["test:core:1250:run"] : []),
 		])
 	}
 })

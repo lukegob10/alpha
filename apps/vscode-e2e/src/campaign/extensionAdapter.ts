@@ -294,6 +294,7 @@ export function createExtensionCampaignOperations(
 					"--artifacts-dir",
 					artifactsRoot,
 					"--retain-evidence-for-campaign",
+					"--require-all-tests",
 					"--run-id",
 					record.runId,
 					"--file",

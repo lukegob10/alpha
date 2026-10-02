@@ -507,6 +507,8 @@ export const alphaMessageSchema = z
 	.object({
 		/** Associates completed command output with its approval message when a batch runs concurrently. */
 		commandExecutionId: z.string().optional(),
+		/** Durable input identities represented by this transcript message. */
+		queuedMessageIds: z.array(z.string().min(1).max(256)).min(1).max(100).optional(),
 		/** Exact child for this historical launch/result, independent of later launches. */
 		childTaskId: z.string().min(1).optional(),
 		/** Correlates a typed tool approval prompt with its one-shot response. */

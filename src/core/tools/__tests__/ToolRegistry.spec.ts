@@ -18,6 +18,36 @@ function schema(name: string) {
 }
 
 describe("ToolRegistry", () => {
+	it.each(["descriptor", "alias"])("keeps rejected registration atomic after a %s conflict", (conflict) => {
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const fixture = (name: string, aliases: string[]) => ({
+			name,
+			aliases,
+			schema: schema(name),
+			capabilities: {
+				concurrency: "serial" as const,
+				sideEffects: "none" as const,
+				controlFlow: false,
+				requiresApproval: false,
+			},
+			execute: async () => {},
+		})
+		registry.register(fixture("existing", conflict === "alias" ? ["occupied"] : []))
+		const beforeSchemas = registry.getSchemas()
+		const beforeAliases = registry.getAliases()
+
+		expect(() =>
+			registry.register(fixture("rejected", ["new_alias", conflict === "alias" ? "occupied" : "existing"])),
+		).toThrow(/alias/)
+
+		expect(registry.getSchemas()).toEqual(beforeSchemas)
+		expect(registry.getAliases()).toEqual(beforeAliases)
+		expect(registry.resolve("rejected")).toBeUndefined()
+		expect(registry.resolve("new_alias")).toBeUndefined()
+		registry.register(fixture("rejected", ["new_alias"]))
+		expect(registry.resolve("new_alias")?.name).toBe("rejected")
+	})
+
 	it("does not advertise or execute the retired image-generation provider", () => {
 		const registry = new ToolRegistry()
 		expect(registry.resolve("generate_image")).toBeUndefined()

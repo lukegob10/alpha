@@ -70,6 +70,7 @@ interface ChatTextAreaProps {
 	onEnqueueMessage?: () => void
 	enqueueDisabled?: boolean
 	conversationClineMessages?: AlphaMessage[]
+	conversationTaskId?: string
 	isInTask?: boolean
 	isTaskDraft?: boolean
 	draftApprovalMode?: ApprovalMode
@@ -101,6 +102,7 @@ export const ChatTextArea = memo(
 				onEnqueueMessage,
 				enqueueDisabled = false,
 				conversationClineMessages,
+				conversationTaskId,
 				isInTask,
 				isTaskDraft = false,
 				draftApprovalMode,
@@ -260,6 +262,7 @@ export const ChatTextArea = memo(
 
 			// Use custom hook for prompt history navigation
 			const { handleHistoryNavigation, resetHistoryNavigation, resetOnInputChange } = usePromptHistory({
+				taskId: conversationClineMessages !== undefined ? conversationTaskId : currentTaskId,
 				clineMessages: conversationClineMessages ?? clineMessages,
 				taskHistory,
 				cwd,

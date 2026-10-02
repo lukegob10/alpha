@@ -338,7 +338,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [isDraftView])
 	const activeMessages = useMemo(() => (isDraftView ? [] : messages), [isDraftView, messages])
 	const conversationPromptMessages = useStableConversationPromptMessages(activeMessages)
-	const visibleMessageQueue = useMemo(() => (isDraftView ? [] : messageQueue), [isDraftView, messageQueue])
+	const projectedMessageQueue = useMemo(() => (isDraftView ? [] : messageQueue), [isDraftView, messageQueue])
 	const visibleCurrentTaskId = isDraftView ? undefined : currentTaskId
 	const visibleTaskPayload = useMemo(
 		() => (visibleCurrentTaskId ? { taskId: visibleCurrentTaskId } : {}),
@@ -469,14 +469,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		return getLatestTodo(activeMessages)
 	}, [activeMessages, visibleCurrentTaskTodos])
 
-	const modifiedMessages = useMemo(
-		() => combineApiRequests(combineCommandSequences(activeMessages.slice(1))),
-		[activeMessages],
-	)
-
-	// Has to be after api_req_finished are all reduced into api_req_started messages.
-	const apiMetrics = useMemo(() => getApiMetrics(modifiedMessages), [modifiedMessages])
-
 	const {
 		inputValue,
 		setInputValue,
@@ -499,6 +491,51 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		getTaskDraft,
 		updateTaskDraft,
 	} = useTaskComposer(visibleCurrentTaskId)
+	const [answeredAsyncUserInputTs, setAnsweredAsyncUserInputTs] = useState<Set<string>>(() => new Set())
+	const pendingAsyncUserInputTs = useMemo(
+		() =>
+			new Set(
+				[pendingQueueRequest, pendingResumeRequest, ...pendingAskRequests].flatMap((submission) =>
+					submission?.asyncUserInputMessageTs === undefined ? [] : [submission.asyncUserInputMessageTs],
+				),
+			),
+		[pendingQueueRequest, pendingResumeRequest, pendingAskRequests],
+	)
+	const transcriptQueuedMessageIds = useMemo(
+		() => new Set(activeMessages.flatMap((message) => message.queuedMessageIds ?? [])),
+		[activeMessages],
+	)
+	// A completed-chat submission is already the next user message. Its durable
+	// queue receipt protects delivery but should not move it into the queue UI.
+	const visibleMessageQueue = useMemo(
+		() =>
+			projectedMessageQueue.filter(
+				(message) =>
+					message.id !== pendingResumeRequest?.requestId &&
+					!(message.deliveryState === "delivering" && transcriptQueuedMessageIds.has(message.id)),
+			),
+		[projectedMessageQueue, pendingResumeRequest?.requestId, transcriptQueuedMessageIds],
+	)
+	const pendingResumeMessage = useMemo<AlphaMessage | undefined>(
+		() =>
+			pendingResumeRequest && !transcriptQueuedMessageIds.has(pendingResumeRequest.requestId)
+				? {
+						type: "say",
+						say: "user_feedback",
+						ts: pendingResumeRequest.clientSubmittedAt ?? 0,
+						text: pendingResumeRequest.text,
+						images: pendingResumeRequest.images,
+						queuedMessageIds: [pendingResumeRequest.requestId],
+					}
+				: undefined,
+		[pendingResumeRequest, transcriptQueuedMessageIds],
+	)
+	const modifiedMessages = useMemo(() => {
+		const combined = combineApiRequests(combineCommandSequences(activeMessages.slice(1)))
+		return pendingResumeMessage ? [...combined, pendingResumeMessage] : combined
+	}, [activeMessages, pendingResumeMessage])
+	// Has to be after api_req_finished are all reduced into api_req_started messages.
+	const apiMetrics = useMemo(() => getApiMetrics(modifiedMessages), [modifiedMessages])
 	// Host admission is asynchronous. Show the exact submitted input until the
 	// task-owned queue projection arrives, without granting local queue authority.
 	const pendingQueuePreview =
@@ -527,6 +564,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const pendingEditRequestRef = useRef(pendingEditRequest)
 	const pendingResumeRequestRef = useRef(pendingResumeRequest)
 	const pendingAskRequestsRef = useRef(pendingAskRequests)
+	useEffect(() => {
+		if (!pendingResumeRequest || !transcriptQueuedMessageIds.has(pendingResumeRequest.requestId)) return
+		if (pendingResumeRequestRef.current?.requestId === pendingResumeRequest.requestId) {
+			pendingResumeRequestRef.current = null
+		}
+		setPendingResumeRequest((current) => (current?.requestId === pendingResumeRequest.requestId ? null : current))
+	}, [pendingResumeRequest, transcriptQueuedMessageIds, setPendingResumeRequest])
 	useLayoutEffect(() => {
 		inputValueRef.current = inputValue
 		selectedImagesRef.current = selectedImages
@@ -1233,6 +1277,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				text,
 				images: [...images],
 				clientSubmittedAt: Date.now(),
+				...(asyncUserInputMessageTs === undefined ? {} : { asyncUserInputMessageTs }),
 			}
 			pendingQueueRequestRef.current = request
 			setPendingQueueRequest(request)
@@ -1329,7 +1374,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 			if (isVisibleTaskCompleted && !hasOpenCompletedTaskResponseBoundary && visibleCurrentTaskId) {
 				const requestId = crypto.randomUUID()
-				const request = { requestId, taskId: visibleCurrentTaskId, text, images: [...images] }
+				const request = {
+					requestId,
+					taskId: visibleCurrentTaskId,
+					text,
+					images: [...images],
+					clientSubmittedAt: Math.max(Date.now(), (messagesRef.current.at(-1)?.ts ?? 0) + 1),
+					...(asyncUserInputMessageTs === undefined ? {} : { asyncUserInputMessageTs }),
+				}
 				pendingResumeRequestRef.current = request
 				setPendingResumeRequest(request)
 				vscode.postMessage({
@@ -1431,7 +1483,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						: undefined
 				const requestId = crypto.randomUUID()
 				if (visibleCurrentTaskId) {
-					const request = { requestId, taskId: visibleCurrentTaskId, text, images: [...images], askMessageTs }
+					const request = {
+						requestId,
+						taskId: visibleCurrentTaskId,
+						text,
+						images: [...images],
+						askMessageTs,
+						...(asyncUserInputMessageTs === undefined ? {} : { asyncUserInputMessageTs }),
+					}
 					pendingAskRequestsRef.current = [...pendingAskRequestsRef.current, request]
 					setPendingAskRequests(pendingAskRequestsRef.current)
 					setChatCommandError(undefined)
@@ -1978,6 +2037,22 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					const askRequest = draft.pendingAskRequests.find(
 						(request) => request.requestId === result.requestId,
 					)
+					const asyncSubmission =
+						result.command === "askResponse"
+							? askRequest
+							: result.command === "queueMessage"
+								? queueRequest
+								: result.command === "resumeCompletedTask"
+									? draft.pendingResumeRequest
+									: undefined
+					if (
+						result.status === "accepted" &&
+						asyncSubmission?.requestId === result.requestId &&
+						asyncSubmission.asyncUserInputMessageTs !== undefined
+					) {
+						const key = `${owner}:${asyncSubmission.asyncUserInputMessageTs}`
+						setAnsweredAsyncUserInputTs((current) => new Set(current).add(key))
+					}
 					if (result.command === "askResponse" && askRequest) {
 						const submission = askRequest
 						if (owner === visibleCurrentTaskId) {
@@ -2086,7 +2161,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					}
 					if (
 						result.command === "resumeCompletedTask" &&
-						draft.pendingResumeRequest?.requestId === result.requestId
+						draft.pendingResumeRequest?.requestId === result.requestId &&
+						(result.status === "rejected" ||
+							result.deliveryState === "queued" ||
+							messagesRef.current.some((message) => message.queuedMessageIds?.includes(result.requestId)))
 					) {
 						const submission = draft.pendingResumeRequest
 						if (owner === visibleCurrentTaskId) pendingResumeRequestRef.current = null
@@ -2102,7 +2180,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 									}
 								: {}),
 							chatCommandError:
-								result.status === "accepted" ? undefined : t("chat:queuedMessages.resumeFailed"),
+								result.status === "rejected"
+									? t("chat:queuedMessages.resumeFailed")
+									: result.deliveryState === "queued"
+										? t("chat:queuedMessages.resumeQueued")
+										: undefined,
 						}))
 					}
 					break
@@ -2751,7 +2833,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[handleSendMessage],
 	)
 
-	const [answeredAsyncUserInputTs, setAnsweredAsyncUserInputTs] = useState<Set<string>>(() => new Set())
 	const handleAsyncUserInputSubmit = useCallback(
 		(messageTs: number, response: string) => {
 			if (
@@ -2768,10 +2849,19 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				setShowRetiredProviderWarning(true)
 				return false
 			}
+			const key = `${visibleCurrentTaskId}:${messageTs}`
+			const question = messagesRef.current.find(
+				(message) => message.ts === messageTs && message.type === "say" && message.say === "async_user_input",
+			)
+			const draft = getTaskDraft(visibleCurrentTaskId)
+			const pending = [draft.pendingQueueRequest, draft.pendingResumeRequest, ...draft.pendingAskRequests].some(
+				(submission) => submission?.asyncUserInputMessageTs === messageTs,
+			)
+			if (!question || question.isAnswered || answeredAsyncUserInputTs.has(key) || pending) {
+				return false
+			}
 
 			if (!handleSendMessage(response, [], messageTs)) return false
-			const key = `${visibleCurrentTaskId}:${messageTs}`
-			setAnsweredAsyncUserInputTs((current) => new Set(current).add(key))
 			return true
 		},
 		[
@@ -2780,6 +2870,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			editingQueuedMessage,
 			isVisibleTaskFailedOrClosed,
 			apiConfiguration?.apiProvider,
+			answeredAsyncUserInputTs,
+			getTaskDraft,
 		],
 	)
 
@@ -2894,11 +2986,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					lastModifiedMessage={isLast ? modifiedMessages.at(-1) : undefined}
 					isLast={isLast}
 					isStreaming={isLast && isStreaming}
-					messageActionsDisabled={isTurnActive}
+					messageActionsDisabled={isTurnActive || isCompletedTaskResumePending}
 					onSuggestionClick={handleSuggestionClickInRow} // This was already stabilized
 					onRequestUserInputSubmit={handleRequestUserInputSubmit}
 					onRequestUserInputCancel={handleRequestUserInputCancel}
 					onAsyncUserInputSubmit={handleAsyncUserInputSubmit}
+					isAsyncUserInputPending={pendingAsyncUserInputTs.has(messageOrGroup.ts)}
 					isAsyncUserInputAnswered={
 						messageOrGroup.type === "say" &&
 						messageOrGroup.say === "async_user_input" &&
@@ -2941,11 +3034,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			groupedMessages.length,
 			isStreaming,
 			isTurnActive,
+			isCompletedTaskResumePending,
 			handleSuggestionClickInRow,
 			handleRequestUserInputSubmit,
 			handleRequestUserInputCancel,
 			handleAsyncUserInputSubmit,
 			answeredAsyncUserInputTs,
+			pendingAsyncUserInputTs,
 			visibleCurrentTaskId,
 			handleBatchFileResponse,
 			handleFollowUpUnmount,
@@ -3349,7 +3444,15 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				{!isManagedSubagent && (
 					<QueuedMessages
 						queue={displayedMessageQueue}
-						pendingMessageId={pendingQueuePreview?.id}
+						pendingMessageId={
+							pendingQueuePreview?.id ??
+							pendingResumeRequest?.requestId ??
+							projectedMessageQueue.find(
+								(message) =>
+									message.deliveryState === "delivering" &&
+									transcriptQueuedMessageIds.has(message.id),
+							)?.id
+						}
 						editingMessageId={editingQueuedMessage?.id}
 						steeringMessageId={pendingSteerRequest?.messageId}
 						onRemove={(index) => {
@@ -3479,6 +3582,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						onEnqueueMessage={handleEnqueueCurrentMessage}
 						enqueueDisabled={Boolean(pendingQueueRequest)}
 						conversationClineMessages={conversationPromptMessages}
+						conversationTaskId={visibleCurrentTaskId}
 						isInTask={Boolean(task)}
 						isTaskDraft={isDraftView}
 						draftApprovalMode={draftApprovalMode}

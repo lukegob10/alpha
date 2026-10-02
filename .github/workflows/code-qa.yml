@@ -36,8 +36,20 @@ jobs:
               uses: actions/checkout@v4
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
             - name: Lint and check types through the local harness
               run: pnpm harness run static
+            - name: Require current mechanical evidence
+              if: always()
+              run: pnpm harness matrix --output artifacts/harness/matrix-static.json --require static
+            - name: Retain mechanical evidence
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: mechanical-evidence
+                  path: artifacts/harness/
+                  retention-days: 14
 
     unit-test:
         name: platform-unit-test (${{ matrix.name }})
@@ -55,6 +67,8 @@ jobs:
               uses: actions/checkout@v4
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
             - name: Add bundled ripgrep to PATH
               shell: pwsh
               working-directory: src
@@ -63,6 +77,12 @@ jobs:
               run: pnpm harness run unit
             - name: Run repository and host-runner tooling tests
               run: pnpm harness run tooling
+            - name: Record platform execution scope
+              if: always()
+              run: pnpm harness matrix --output artifacts/harness/matrix-platform.json
+            - name: Require complete Linux tooling evidence
+              if: always() && matrix.os == 'ubuntu-latest'
+              run: pnpm harness matrix --output artifacts/harness/matrix-tooling.json --require tooling
             - name: Retain local command reports
               if: always()
               uses: actions/upload-artifact@v4
@@ -76,7 +96,14 @@ jobs:
         steps:
             - uses: actions/checkout@v4
             - uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
             - run: pnpm harness run offline
+            - run: pnpm --filter @alpha-code/evals lint
+            - run: pnpm --filter @alpha-code/evals check-types
+            - name: Require current offline evaluator evidence
+              if: always()
+              run: pnpm harness matrix --output artifacts/harness/matrix-offline.json --require offline
             - uses: actions/upload-artifact@v4
               if: always()
               with:
@@ -84,8 +111,8 @@ jobs:
                   path: artifacts/harness/
                   retention-days: 14
 
-    vscode-1221-smoke:
-        name: VS Code 1.122.1 extension-host contract
+    vscode-1250-smoke:
+        name: VS Code 1.125.0 extension-host contract
         runs-on: windows-latest
         timeout-minutes: 45
         steps:
@@ -93,12 +120,17 @@ jobs:
               uses: actions/checkout@v4
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
             - name: Run offline core confidence and exact-host contracts
               shell: pwsh
               run: |
                   New-Item -ItemType Directory -Force artifacts/certification | Out-Null
                   pnpm harness run confidence 2>&1 | Tee-Object -FilePath artifacts/certification/core-confidence.log
                   exit $LASTEXITCODE
+            - name: Require complete confidence evidence
+              if: always()
+              run: pnpm harness matrix --output artifacts/harness/matrix-confidence.json --require confidence
             - name: Retain confidence results and failure diagnostics
               if: always()
               uses: actions/upload-artifact@v4
@@ -113,6 +145,36 @@ jobs:
                       artifacts/core-confidence/*/certification-*.json
                       artifacts/core-confidence/*/*-result.json
                       ${{ runner.temp }}/alpha-core-confidence/*/runs/**
+                      ${{ runner.temp }}/alpha-vscode-e2e-*/artifacts/**
+                  retention-days: 14
+                  if-no-files-found: error
+
+    vscode-1250-outcomes:
+        name: VS Code 1.125.0 smoke and independent task outcomes
+        runs-on: windows-latest
+        timeout-minutes: 60
+        steps:
+            - uses: actions/checkout@v4
+            - uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
+            - name: Run the exact reference-host smoke gate
+              run: pnpm harness run host
+            - name: Run independently asserted scripted task outcomes
+              run: pnpm harness run outcomes
+            - name: Require current host and task evidence
+              if: always()
+              run: pnpm harness matrix --output artifacts/harness/matrix-outcomes.json --require host --require outcomes
+            - name: Retain projected outcome evidence
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: scripted-outcomes-${{ github.run_id }}-${{ github.run_attempt }}
+                  path: |
+                      artifacts/harness/
+                      ${{ runner.temp }}/alpha-harness-outcomes/*/*/report-*.json
+                      ${{ runner.temp }}/alpha-harness-outcomes/*/*/attempt-*/evidence-index.json
+                      ${{ runner.temp }}/alpha-harness-outcomes/*/*/host-evidence/**
                       ${{ runner.temp }}/alpha-vscode-e2e-*/artifacts/**
                   retention-days: 14
                   if-no-files-found: error

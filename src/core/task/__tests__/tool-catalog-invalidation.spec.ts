@@ -26,6 +26,7 @@ import type { ToolCallbacks } from "../../tools/BaseTool"
 import type { TaskReadGrant, ToolDescriptor, ToolExecutionContext } from "../../tools/ToolRegistry"
 import type { AlphaProvider } from "../../webview/AlphaProvider"
 import type { Task } from "../Task"
+import * as path from "path"
 import { buildNativeToolsArrayWithRestrictions, type BuildToolsOptions } from "../build-tools"
 import { TaskToolCatalogCache } from "../TaskToolCatalogCache"
 
@@ -305,6 +306,9 @@ describe("TaskToolCatalogCache effective input invalidation", () => {
 		const { options } = createFixture()
 		const customOptions = { ...options, experiments: { customTools: true } }
 		const first = await capture(customOptions)
+		expect(customToolRegistry.loadFromDirectoriesIfStale).toHaveBeenCalledWith(
+			expect.arrayContaining([path.join(customOptions.cwd, ".alpha", "tools")]),
+		)
 		const oldDescriptor = first.resolve(name)
 		expect(oldDescriptor).toBeDefined()
 		expect(await invokeDescriptor(oldDescriptor!)).toEqual(["old-result"])

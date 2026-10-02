@@ -15,6 +15,8 @@ describe("Task async user input message", () => {
 			abort: false,
 			taskId: "root-task",
 			instanceId: "primary",
+			clineMessages: emitted,
+			lastMessageTs: 123,
 			apiConversationHistory: providerHistory,
 			addToAlphaMessages: vi.fn(async (message: AlphaMessage) => emitted.push(message)),
 		} as unknown as Task
@@ -30,6 +32,7 @@ describe("Task async user input message", () => {
 			say: "async_user_input",
 			asyncUserInput: request,
 		})
+		expect(task.lastMessageTs).toBe(123)
 		expect(providerHistory).toEqual([{ role: "user", content: "Keep me updated." }])
 	})
 })

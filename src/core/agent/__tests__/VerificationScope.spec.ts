@@ -390,7 +390,7 @@ describe("verification scope observations", () => {
 		})
 	})
 
-	it("rejects stale HEAD snapshots and committed changes beyond the observation bound", async () => {
+	it("rejects stale HEAD snapshots", async () => {
 		await git(["init", "--quiet"])
 		await write("file.ts", "original\n")
 		await git(["add", "."])
@@ -401,8 +401,21 @@ describe("verification scope observations", () => {
 		const after = await captureGitMutationState(root)
 		await git(["commit", "--quiet", "--allow-empty", "-m", "later commit"])
 		await expect(compareGitMutationState(root, before, after)).rejects.toThrow("HEAD changed while comparing")
+	})
 
-		for (let index = 0; index < 257; index++) await write(`added-${index}.ts`, "new\n")
+	it("rejects committed changes beyond the observation bound", async () => {
+		await git(["init", "--quiet"])
+		await git(["commit", "--quiet", "--allow-empty", "-m", "baseline"])
+		const before = await captureGitMutationState(root)
+		// The boundary is path count, not serial fixture I/O. Bound setup concurrency
+		// and avoid repeating mkdir for files whose common parent already exists.
+		for (let offset = 0; offset < 257; offset += 16) {
+			await Promise.all(
+				Array.from({ length: Math.min(16, 257 - offset) }, (_, index) =>
+					fs.writeFile(path.join(root, `added-${offset + index}.ts`), "new\n"),
+				),
+			)
+		}
 		await git(["add", "."])
 		await git(["commit", "--quiet", "-m", "large change"])
 		await expect(compareGitMutationState(root, before, await captureGitMutationState(root))).rejects.toThrow(

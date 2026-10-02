@@ -262,6 +262,7 @@ describe("Agent control transaction contention", () => {
 		const ownerPath = path.join(`${holder.filePath}.transaction.lock`, "owner.json")
 		const ownerBefore = await fs.readFile(ownerPath, "utf8")
 		const operation = vi.fn(async () => "must not run")
+		useRetryDrivenClock()
 
 		try {
 			await expect(contender.withTransaction(operation, { operation: "mutation" })).rejects.toMatchObject({

@@ -1,6 +1,4 @@
-import * as fs from "fs/promises"
-
-import { resolveContained } from "../boundary"
+import { readContainedFile } from "../boundary"
 import { evidenceFromText } from "../evidence"
 import type { FilesystemGraderSpec, GraderContext, GraderPlugin, GraderResult } from "../types"
 
@@ -15,13 +13,7 @@ export class FilesystemGrader implements GraderPlugin<FilesystemGraderSpec> {
 		const evidence: GraderResult["evidence"] = []
 
 		for (const assertion of spec.assertions) {
-			const filePath = resolveContained(context.workspaceRoot, assertion.path)
-			let contents: string | undefined
-			try {
-				contents = await fs.readFile(filePath, "utf8")
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-			}
+			const contents = await readContainedFile(context.workspaceRoot, assertion.path)
 
 			let passed = false
 			switch (assertion.kind) {
@@ -50,6 +42,14 @@ export class FilesystemGrader implements GraderPlugin<FilesystemGraderSpec> {
 			}
 		}
 
+		evidence.push(
+			evidenceFromText(
+				`${spec.id}:assertions`,
+				"report",
+				JSON.stringify({ assertions: spec.assertions.length, failures: diagnostics.length }),
+				"application/json",
+			),
+		)
 		return result(spec, diagnostics.length === 0 ? "passed" : "failed", diagnostics, evidence)
 	}
 }

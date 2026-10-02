@@ -33,7 +33,12 @@ function createTask(onScreen = true) {
 			task.clineMessages.push(message)
 		}),
 		saveAlphaMessages: vi.fn(async () => true),
-		updateAlphaMessage: vi.fn(),
+		enqueueAlphaMessagesSave: vi.fn(async (snapshot: () => AlphaMessage[], onPersisted?: () => void) => {
+			snapshot()
+			onPersisted?.()
+			return true
+		}),
+		updateAlphaMessage: vi.fn(async () => undefined),
 		cancelAutoApprovalTimeout: vi.fn(),
 		checkpointSave: vi.fn(async () => undefined),
 		resetMistakeRecoveryState: vi.fn(),
@@ -128,6 +133,238 @@ it("joins a successful preceding terminal lifecycle before resuming the same tas
 	expect(resume).toHaveBeenCalledOnce()
 })
 
+it("selects a completed-task follow-up for immediate delivery while the previous lifecycle drains", async () => {
+	const { task, queue } = createTask()
+	task.markCompleted()
+	const guidance = queue.addMessage("The following question.")!
+	const ending = deferred()
+	Object.assign(task, { ownedLifecyclePromise: ending.promise })
+	const resume = vi.fn(async (_text: string, persisted?: () => void | Promise<void>) => {
+		expect(queue.getClaimedMessageIds()).toEqual([guidance.id])
+		queue.acknowledgeMessages([guidance.id])
+		await persisted?.()
+	})
+	Object.assign(task, { resumeTaskFromHistory: resume })
+	const accepted = task.resumeCompletedTaskFollowup(guidance.text, [], "human", [guidance.id])
+	try {
+		expect(queue.getClaimedMessageIds()).toEqual([guidance.id])
+		expect(queue.messages).toEqual([])
+		expect(queue.visibleMessages).toEqual([{ ...guidance, deliveryState: "delivering" }])
+		expect(resume).not.toHaveBeenCalled()
+	} finally {
+		ending.resolve()
+		await accepted
+	}
+	expect(resume).toHaveBeenCalledOnce()
+	expect(queue.hasUnconsumedInput()).toBe(false)
+})
+
+it("releases an immediate follow-up receipt when the previous terminal lifecycle cannot be joined", async () => {
+	const { task, queue } = createTask()
+	task.markCompleted()
+	const guidance = queue.addMessage("Keep this question available.")!
+	Object.assign(task, { ownedLifecyclePromise: Promise.reject(new Error("terminal journal failed")) })
+	const resume = vi.fn()
+	Object.assign(task, { resumeTaskFromHistory: resume })
+
+	await expect(task.resumeCompletedTaskFollowup(guidance.text, [], "human", [guidance.id])).rejects.toThrow(
+		"terminal journal failed",
+	)
+
+	expect(queue.getClaimedMessageIds()).toEqual([])
+	expect(queue.messages).toEqual([guidance])
+	expect(task.isCompleted()).toBe(true)
+	expect(resume).not.toHaveBeenCalled()
+})
+
+it("keeps a follow-up recoverable when cancellation wins while the preceding terminal lifecycle drains", async () => {
+	const { task, queue } = createTask()
+	task.markCompleted()
+	const guidance = queue.addMessage("Keep my cancelled follow-up available.")!
+	const ending = deferred()
+	Object.assign(task, { ownedLifecyclePromise: ending.promise })
+	const resume = vi.fn(async (_text: string, persisted?: () => void) => persisted?.())
+	Object.assign(task, { resumeTaskFromHistory: resume })
+	const accepted = task.resumeCompletedTaskFollowup(guidance.text, [], "human", [guidance.id])
+	task.abort = true
+	ending.resolve()
+
+	await expect(accepted).rejects.toThrow("cancelled")
+	expect(resume).not.toHaveBeenCalled()
+	expect(task.abort).toBe(true)
+	expect(task.isCompleted()).toBe(true)
+	expect(queue.getClaimedMessageIds()).toEqual([])
+	expect(queue.messages).toEqual([guidance])
+})
+
+it.each([undefined, false, true] as const)(
+	"copies exact admission IDs into a canonical feedback row with partial=%s",
+	async (partial) => {
+		const { task } = createTask()
+		const queuedMessageIds = ["follow-up-request"]
+		await task.say("user_feedback", "The following question.", [], partial, undefined, undefined, {
+			queuedMessageIds,
+		})
+		queuedMessageIds.push("another-request")
+
+		expect(task.clineMessages).toHaveLength(1)
+		expect(task.clineMessages[0]).toMatchObject({
+			type: "say",
+			say: "user_feedback",
+			text: "The following question.",
+			queuedMessageIds: ["follow-up-request"],
+		})
+	},
+)
+
+it("retains the exact admission identity when partial feedback is finalized", async () => {
+	const { task } = createTask()
+	await task.say("user_feedback", "The following", [], true, undefined, undefined, {
+		queuedMessageIds: ["follow-up-request"],
+	})
+	await task.say("user_feedback", "The following question.", [], false)
+
+	expect(task.clineMessages).toHaveLength(1)
+	expect(task.clineMessages[0]).toMatchObject({
+		type: "say",
+		say: "user_feedback",
+		partial: false,
+		text: "The following question.",
+		queuedMessageIds: ["follow-up-request"],
+	})
+})
+
+it("keeps already-consumed feedback immutable when its receipt is retried", async () => {
+	const { task } = createTask()
+	await task.say("user_feedback", "Accepted question.", ["accepted.png"], undefined, undefined, undefined, {
+		queuedMessageIds: ["accepted-request"],
+	})
+	const accepted = structuredClone(task.clineMessages[0])
+	task.apiConversationHistory.push({
+		role: "user",
+		content: "Accepted question.",
+		queued_message_ids: ["accepted-request"],
+	})
+	const resetProgress = vi.fn()
+	const resetSearch = vi.fn()
+	const resetCompletion = vi.spyOn(task, "resetCompletionRecoveryState")
+	const evidence = vi.fn()
+	Object.assign(task, {
+		toolRepetitionDetector: { resetProgress },
+		searchLoopRecoveryPolicy: { reset: resetSearch },
+		completionRuntimeRevision: 7,
+		workContext: { protected: true },
+		enqueueCommandEvidence: evidence,
+	})
+
+	await task.say("user_feedback", "Stale edited question.", ["stale.png"], undefined, undefined, undefined, {
+		queuedMessageIds: ["accepted-request"],
+	})
+
+	expect(task.clineMessages).toEqual([accepted])
+	expect(task["updateAlphaMessage"]).not.toHaveBeenCalled()
+	expect(task["enqueueAlphaMessagesSave"]).not.toHaveBeenCalled()
+	expect(resetProgress).not.toHaveBeenCalled()
+	expect(resetSearch).not.toHaveBeenCalled()
+	expect(resetCompletion).not.toHaveBeenCalled()
+	expect(evidence).not.toHaveBeenCalled()
+	expect(task["completionRuntimeRevision"]).toBe(7)
+})
+
+it("keeps matching text with different admission IDs as distinct feedback", async () => {
+	const { task } = createTask()
+	for (const id of ["first-request", "second-request"]) {
+		await task.say("user_feedback", "The same question.", [], undefined, undefined, undefined, {
+			queuedMessageIds: [id],
+		})
+	}
+
+	expect(task.clineMessages.map((message) => message.queuedMessageIds)).toEqual([
+		["first-request"],
+		["second-request"],
+	])
+})
+
+it("does not merge an overlapping batch of admission IDs into earlier feedback", async () => {
+	const { task } = createTask()
+	await task.say("user_feedback", "First batch.", [], undefined, undefined, undefined, {
+		queuedMessageIds: ["first-request", "second-request"],
+	})
+	await task.say("user_feedback", "Overlapping batch.", [], undefined, undefined, undefined, {
+		queuedMessageIds: ["second-request"],
+	})
+
+	expect(task.clineMessages.map((message) => message.text)).toEqual(["First batch.", "Overlapping batch."])
+})
+
+it("keeps automatic feedback separate from retried human admission", async () => {
+	const { task } = createTask()
+	await task.say("user_feedback", "Pending question.", [], undefined, undefined, undefined, {
+		queuedMessageIds: ["pending-request"],
+	})
+	const feedbackTs = task.clineMessages[0].ts
+	await task.say("user_feedback", "Automatic retry guidance.", [], undefined, undefined, undefined, {
+		feedbackSource: "automatic",
+		queuedMessageIds: ["pending-request"],
+	})
+	await task.say("user_feedback", "Edited question.", [], undefined, undefined, undefined, {
+		queuedMessageIds: ["pending-request"],
+	})
+
+	expect(task.clineMessages).toEqual([
+		expect.objectContaining({ ts: feedbackTs, text: "Edited question.", queuedMessageIds: ["pending-request"] }),
+		expect.objectContaining({ text: "Automatic retry guidance." }),
+	])
+	expect(task.clineMessages[1].queuedMessageIds).toBeUndefined()
+})
+
+it("matches receipt identity when unrelated transcript rows share its timestamp", async () => {
+	const { task } = createTask()
+	task.clineMessages = [
+		{ ts: 1, type: "say", say: "text", text: "An unrelated row." },
+		{ ts: 1, type: "say", say: "user_feedback", text: "Pending question.", queuedMessageIds: ["pending-request"] },
+	]
+	await task.say("user_feedback", "Edited question.", [], undefined, undefined, undefined, {
+		queuedMessageIds: ["pending-request"],
+	})
+
+	expect(task.clineMessages.map((message) => message.text)).toEqual(["An unrelated row.", "Edited question."])
+})
+
+it("leaves an unconsumed feedback row unchanged when its retry update cannot be saved", async () => {
+	const { task } = createTask()
+	await task.say("user_feedback", "Keep this pending question.", [], undefined, undefined, undefined, {
+		queuedMessageIds: ["pending-request"],
+	})
+	const pending = structuredClone(task.clineMessages[0])
+	vi.mocked(task["enqueueAlphaMessagesSave"]).mockResolvedValue(false)
+
+	await expect(
+		task.say("user_feedback", "Edited pending question.", [], undefined, undefined, undefined, {
+			queuedMessageIds: ["pending-request"],
+		}),
+	).rejects.toThrow("Unable to persist the retried user feedback")
+	expect(task.clineMessages).toEqual([pending])
+	expect(task["updateAlphaMessage"]).not.toHaveBeenCalled()
+})
+
+it("preserves a pending partial feedback update instead of reusing an earlier complete row", async () => {
+	const { task } = createTask()
+	await task.say("user_feedback", "Earlier question.", [], undefined, undefined, undefined, {
+		queuedMessageIds: ["pending-request"],
+	})
+	await task.say("user_feedback", "Partial question.", [], true, undefined, undefined, {
+		queuedMessageIds: ["pending-request"],
+	})
+	await task.say("user_feedback", "Final partial question.", [], false, undefined, undefined, {
+		queuedMessageIds: ["pending-request"],
+	})
+
+	expect(task.clineMessages.map((message) => message.text)).toEqual(["Earlier question.", "Final partial question."])
+	expect(task.clineMessages[1].partial).toBe(false)
+	expect(task["enqueueAlphaMessagesSave"]).not.toHaveBeenCalled()
+})
+
 it("starts one idle queued follow-up and carries its selected receipt to the history consumer", async () => {
 	const { task, queue } = createTask()
 	Object.assign(task, { isInitialized: true, _started: true })
@@ -180,6 +417,45 @@ it("keeps idle admission recoverable when selection persistence fails", async ()
 	expect(queue.messages.map((entry) => entry.text)).toEqual(["Keep this accepted guidance."])
 })
 
+it("retains accepted completed-task input in FIFO when retained preparation and its wake cannot proceed", async () => {
+	const { task, queue } = createTask()
+	Object.assign(task, { isInitialized: true, _started: true })
+	task.markCompleted()
+	const prepare = vi.fn(async () => {
+		throw new Error("retained preparation failed")
+	})
+	const resume = vi.fn()
+	Object.assign(task, { prepareForRetainedLifecycle: prepare, resumeTaskFromHistory: resume })
+	// Use the production wake ownership rule: a failed wake's release event
+	// cannot recursively restart that same owner indefinitely.
+	queue.on("stateChanged", () => {
+		void task["wakeQueuedInputWhenIdle"]().catch(() => undefined)
+	})
+
+	await expect(
+		task.submitUserMessage(
+			"Keep this accepted follow-up available.",
+			[],
+			undefined,
+			undefined,
+			undefined,
+			"request-1",
+		),
+	).resolves.toBeUndefined()
+	await task["queuedInputWakePromise"]?.catch(() => undefined)
+
+	expect(prepare).toHaveBeenCalled()
+	expect(resume).not.toHaveBeenCalled()
+	expect(task.isCompleted()).toBe(true)
+	expect(task["queuedInputWakePromise"]).toBeUndefined()
+	expect(queue.getClaimedMessageIds()).toEqual([])
+	expect(queue.messages).toEqual([
+		expect.objectContaining({ id: "request-1", text: "Keep this accepted follow-up available." }),
+	])
+	expect(task.apiConversationHistory.some((message) => message.queued_message_ids?.includes("request-1"))).toBe(false)
+	expect(task.clineMessages.some((message) => message.queuedMessageIds?.includes("request-1"))).toBe(false)
+})
+
 it("does not clear a newer lifecycle owner when an older lifecycle settles", async () => {
 	const { task } = createTask()
 	const old = deferred()
@@ -228,11 +504,12 @@ function createCompletionTask() {
 	return task
 }
 
-it("completes the unfailed ordinary-text control through the real turn engine", async () => {
+it("completes ordinary text through the real turn engine without waiting for acknowledgement", async () => {
 	const task = createCompletionTask()
 	await task["initiateTaskLoop"]([{ type: "text", text: "Finish the work." }])
 	expect(task.isCompleted()).toBe(true)
 	expect(task["runAgentRequests"]).toHaveBeenCalledOnce()
+	expect(task.ask).not.toHaveBeenCalled()
 })
 
 it.each(["finishCanonicalLifecycleTurn", "presentCompletionResult", "finalizeTaskCompletion"] as const)(

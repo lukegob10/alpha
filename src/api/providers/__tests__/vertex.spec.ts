@@ -159,6 +159,7 @@ describe("VertexHandler", () => {
 				{ type: "text", text: "Gemini response part 1" },
 				{ type: "text", text: " part 2" },
 				expect.objectContaining({ type: "usage", inputTokens: 10, outputTokens: 5 }),
+				expect.objectContaining({ type: "outcome", status: "completed", terminal: true }),
 			])
 		})
 
@@ -324,6 +325,7 @@ describe("VertexHandler", () => {
 								groundingMetadata: {
 									groundingChunks: [{ web: { uri: "https://example.com", title: "Example" } }],
 								},
+								finishReason: "STOP",
 							},
 						],
 						usageMetadata: {
@@ -357,6 +359,7 @@ describe("VertexHandler", () => {
 					cacheReadTokens: 2,
 					reasoningTokens: 3,
 				}),
+				expect.objectContaining({ type: "outcome", status: "completed", terminal: true }),
 			])
 		})
 
@@ -474,7 +477,7 @@ describe("VertexHandler", () => {
 				.fn()
 				.mockRejectedValueOnce(new Error("401 unauthorized"))
 				.mockResolvedValueOnce({
-					candidates: [{ content: { parts: [{ text: "Retried response" }] } }],
+					candidates: [{ content: { parts: [{ text: "Retried response" }] }, finishReason: "STOP" }],
 					usageMetadata: {
 						promptTokenCount: 3,
 						candidatesTokenCount: 4,
@@ -498,6 +501,7 @@ describe("VertexHandler", () => {
 			expect(chunks).toEqual([
 				{ type: "text", text: "Retried response" },
 				expect.objectContaining({ type: "usage", inputTokens: 3, outputTokens: 4 }),
+				expect.objectContaining({ type: "outcome", status: "completed", terminal: true }),
 			])
 		})
 	})

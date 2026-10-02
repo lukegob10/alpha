@@ -1,0 +1,172 @@
+{
+	"numTotalTestSuites": 2,
+	"numPassedTestSuites": 2,
+	"numFailedTestSuites": 0,
+	"numPendingTestSuites": 0,
+	"numTotalTests": 16,
+	"numPassedTests": 4,
+	"numFailedTests": 0,
+	"numPendingTests": 12,
+	"numTodoTests": 0,
+	"snapshot": {
+		"added": 0,
+		"failure": false,
+		"filesAdded": 0,
+		"filesRemoved": 0,
+		"filesRemovedList": [],
+		"filesUnmatched": 0,
+		"filesUpdated": 0,
+		"matched": 0,
+		"total": 0,
+		"unchecked": 0,
+		"uncheckedKeysByFile": [],
+		"unmatched": 0,
+		"updated": 0,
+		"didUpdate": false
+	},
+	"startTime": 1790914542551,
+	"success": true,
+	"testResults": [
+		{
+			"assertionResults": [
+				{
+					"ancestorTitles": ["ExecaTerminalProcess physical settlement"],
+					"fullName": "ExecaTerminalProcess physical settlement keeps a living subprocess owned after a reader failure",
+					"status": "skipped",
+					"title": "keeps a living subprocess owned after a reader failure",
+					"failureMessages": [],
+					"meta": {}
+				},
+				{
+					"ancestorTitles": ["ExecaTerminalProcess physical settlement"],
+					"fullName": "ExecaTerminalProcess physical settlement keeps a living subprocess owned after a Execa reader failure",
+					"status": "skipped",
+					"title": "keeps a living subprocess owned after a Execa reader failure",
+					"failureMessages": [],
+					"meta": {}
+				},
+				{
+					"ancestorTitles": ["ExecaTerminalProcess physical settlement"],
+					"fullName": "ExecaTerminalProcess physical settlement keeps a living subprocess owned after a line callback failure",
+					"status": "skipped",
+					"title": "keeps a living subprocess owned after a line callback failure",
+					"failureMessages": [],
+					"meta": {}
+				},
+				{
+					"ancestorTitles": ["ExecaTerminalProcess physical settlement"],
+					"fullName": "ExecaTerminalProcess physical settlement keeps a living subprocess owned after a async line callback failure",
+					"status": "skipped",
+					"title": "keeps a living subprocess owned after a async line callback failure",
+					"failureMessages": [],
+					"meta": {}
+				},
+				{
+					"ancestorTitles": ["ExecaTerminalProcess physical settlement"],
+					"fullName": "ExecaTerminalProcess physical settlement keeps a living subprocess owned after a merged output failure",
+					"status": "skipped",
+					"title": "keeps a living subprocess owned after a merged output failure",
+					"failureMessages": [],
+					"meta": {}
+				},
+				{
+					"ancestorTitles": ["ExecaTerminalProcess physical settlement"],
+					"fullName": "ExecaTerminalProcess physical settlement keeps a living subprocess owned after a reader after failed termination failure",
+					"status": "skipped",
+					"title": "keeps a living subprocess owned after a reader after failed termination failure",
+					"failureMessages": [],
+					"meta": {}
+				},
+				{
+					"ancestorTitles": ["ExecaTerminalProcess physical settlement"],
+					"fullName": "ExecaTerminalProcess physical settlement keeps a living subprocess owned after a reader and finalization failure",
+					"status": "skipped",
+					"title": "keeps a living subprocess owned after a reader and finalization failure",
+					"failureMessages": [],
+					"meta": {}
+				},
+				{
+					"ancestorTitles": ["ExecaTerminalProcess physical settlement"],
+					"fullName": "ExecaTerminalProcess physical settlement keeps a living subprocess owned after a reader and rejected error observer failure",
+					"status": "skipped",
+					"title": "keeps a living subprocess owned after a reader and rejected error observer failure",
+					"failureMessages": [],
+					"meta": {}
+				},
+				{
+					"ancestorTitles": ["ExecaTerminalProcess physical settlement"],
+					"fullName": "ExecaTerminalProcess physical settlement retains ownership after output EOF until the subprocess actually exits",
+					"status": "skipped",
+					"title": "retains ownership after output EOF until the subprocess actually exits",
+					"failureMessages": [],
+					"meta": {}
+				},
+				{
+					"ancestorTitles": ["ExecaTerminalProcess physical settlement"],
+					"fullName": "ExecaTerminalProcess physical settlement fails a command when its synchronous completed observer fails after exit",
+					"status": "passed",
+					"title": "fails a command when its synchronous completed observer fails after exit",
+					"duration": 5.063800000000015,
+					"failureMessages": [],
+					"meta": {}
+				},
+				{
+					"ancestorTitles": ["ExecaTerminalProcess physical settlement"],
+					"fullName": "ExecaTerminalProcess physical settlement fails a command when its asynchronous completed observer fails after exit",
+					"status": "passed",
+					"title": "fails a command when its asynchronous completed observer fails after exit",
+					"duration": 58.49169999999992,
+					"failureMessages": [],
+					"meta": {}
+				},
+				{
+					"ancestorTitles": ["ExecaTerminalProcess physical settlement"],
+					"fullName": "ExecaTerminalProcess physical settlement fails a command when its shell outcome completed observer fails after exit",
+					"status": "passed",
+					"title": "fails a command when its shell outcome completed observer fails after exit",
+					"duration": 1.1293000000000575,
+					"failureMessages": [],
+					"meta": {}
+				},
+				{
+					"ancestorTitles": ["ExecaTerminalProcess physical settlement"],
+					"fullName": "ExecaTerminalProcess physical settlement fails a command when its late output completed observer fails after exit",
+					"status": "passed",
+					"title": "fails a command when its late output completed observer fails after exit",
+					"duration": 60.678300000000036,
+					"failureMessages": [],
+					"meta": {}
+				},
+				{
+					"ancestorTitles": ["ExecaTerminalProcess physical settlement"],
+					"fullName": "ExecaTerminalProcess physical settlement backpressures a bounded batch of async output callbacks while preserving streaming order",
+					"status": "skipped",
+					"title": "backpressures a bounded batch of async output callbacks while preserving streaming order",
+					"failureMessages": [],
+					"meta": {}
+				},
+				{
+					"ancestorTitles": ["ExecaTerminalProcess physical settlement"],
+					"fullName": "ExecaTerminalProcess physical settlement leaves a replacement command owned when an older completed listener settles",
+					"status": "skipped",
+					"title": "leaves a replacement command owned when an older completed listener settles",
+					"failureMessages": [],
+					"meta": {}
+				},
+				{
+					"ancestorTitles": ["ExecaTerminalProcess physical settlement"],
+					"fullName": "ExecaTerminalProcess physical settlement leaves a replacement command owned when an older final cleanup settles",
+					"status": "skipped",
+					"title": "leaves a replacement command owned when an older final cleanup settles",
+					"failureMessages": [],
+					"meta": {}
+				}
+			],
+			"startTime": 1790914543473,
+			"endTime": 1790914543597.6782,
+			"status": "passed",
+			"message": "",
+			"name": "F:/roo-fork/Alpha-Code/src/integrations/terminal/__tests__/ExecaTerminalProcess.settlement.spec.ts"
+		}
+	]
+}

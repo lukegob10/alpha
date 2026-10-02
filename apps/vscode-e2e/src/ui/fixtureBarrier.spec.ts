@@ -20,11 +20,11 @@ test("UI fixture barriers require matching external receipts and preserve reserv
 			path.join(directory, "ui-done-good.json"),
 			JSON.stringify({ nonce, stage: "good", status: "passed" }),
 		)
-		await uiFixtureBarrier("good", { nonce: "wrong", stage: "wrong", version: "1.122.1" })
+		await uiFixtureBarrier("good", { nonce: "wrong", stage: "wrong", version: "1.125.0" })
 		assert.deepEqual(JSON.parse(await fs.readFile(path.join(directory, "ui-stage-good.json"), "utf8")), {
 			nonce,
 			stage: "good",
-			version: "1.122.1",
+			version: "1.125.0",
 		})
 		await fs.writeFile(
 			path.join(directory, "ui-done-stale.json"),

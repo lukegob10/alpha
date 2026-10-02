@@ -153,6 +153,7 @@ import {
 import { resolveTaskReasoning } from "../agent/TaskReasoning"
 import {
 	ApiStreamDeadlineError,
+	createLinkedAbortController,
 	ApiStream,
 	GroundingSource,
 	type ApiStreamChunk,
@@ -209,11 +210,7 @@ import { SYSTEM_PROMPT_FRAGMENTS, getPromptComponent, renderSystemPromptFragment
 import { filterNativeToolsForMode } from "../prompts/tools/filter-tools-for-mode"
 import { createSpawnAgentTool } from "../prompts/tools/native-tools/spawn_agent"
 import { addCustomInstructions, loadApplicableAgentInstructionSources } from "../prompts/sections"
-import {
-	getDesignHandoffPrompt,
-	getDesignHandoffSource,
-	MAX_DESIGN_HANDOFF_PROMPT_CHARS,
-} from "../prompts/sections/design-handoff"
+import { getDesignHandoffPrompt, getDesignHandoffSource } from "../prompts/sections/design-handoff"
 import { buildNativeToolsArrayWithRestrictions, createModelToolIdentity } from "./build-tools"
 import { TaskToolCatalogCache } from "./TaskToolCatalogCache"
 
@@ -649,6 +646,8 @@ export type ToolApprovalReviewOutcome =
 export type ToolApprovalReviewer = (
 	request: ToolApprovalRequest,
 	signal: AbortSignal,
+	/** Complete action details; request.description may only be a short summary. */
+	reviewMessage?: string,
 ) => Promise<ToolApprovalReviewOutcome>
 
 function parseToolApprovalReviewOutcome(value: unknown): ToolApprovalReviewOutcome {
@@ -1998,7 +1997,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					() => {
 						persisted = true
 						this.steerMessageAwaitingPersistence = false
-						this.emit(AlphaCodeEventName.TaskActive, this.taskId)
+						if (!this.abort && !this.abandoned) this.emit(AlphaCodeEventName.TaskActive, this.taskId)
 						resolvePersisted()
 					},
 					message.images,
@@ -2034,10 +2033,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return wake
 	}
 
-	private async prepareForRetainedLifecycle(): Promise<void> {
+	private async prepareForRetainedLifecycle(retainedInputIds: readonly string[] = []): Promise<void> {
 		if (this.taskTerminationPromise) await this.taskTerminationPromise
 		this.messageQueueService?.activate?.()
-		await this.releaseUnpersistedQueuedInputs()
+		await this.releaseUnpersistedQueuedInputs(retainedInputIds)
 		if (
 			this.messageQueueStateChangedHandler &&
 			!this.messageQueueService.listeners("stateChanged").includes(this.messageQueueStateChangedHandler)
@@ -2792,7 +2791,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	/** A retained lifecycle must be able to recover selections whose input was never committed. */
-	private async releaseUnpersistedQueuedInputs(): Promise<void> {
+	private async releaseUnpersistedQueuedInputs(retainedInputIds: readonly string[] = []): Promise<void> {
 		const queue = this.messageQueueService
 		if (!queue) return
 		await queue.ready
@@ -2800,8 +2799,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			(this.apiConversationHistory ?? []).flatMap((message) => message.queued_message_ids ?? []),
 		)
 		const ids = queue.getClaimedMessageIds?.() ?? []
+		const retained = new Set(retainedInputIds)
 		queue.acknowledgeMessages?.(ids.filter((id) => consumed.has(id)))
-		for (const id of ids.slice().reverse()) if (!consumed.has(id)) queue.releaseMessage?.(id)
+		for (const id of ids.slice().reverse()) if (!consumed.has(id) && !retained.has(id)) queue.releaseMessage?.(id)
 		await queue.flush?.()
 	}
 
@@ -5242,6 +5242,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		context: string,
 		mutate: (message: AlphaMessage | undefined) => AlphaMessage | undefined,
 		designHandoff?: TaskDesignHandoff,
+		matchesMessage: (message: AlphaMessage) => boolean = (message) => message.ts === timestamp,
 	): Promise<{ message: AlphaMessage; created: boolean } | undefined> {
 		for (const retryDelayMs of [0, 50, 200]) {
 			if (retryDelayMs > 0) await delay(retryDelayMs)
@@ -5252,7 +5253,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const saved = await this.enqueueAlphaMessagesSave(
 				() => {
 					const messages = structuredClone(this.clineMessages)
-					const index = messages.findIndex((message) => message.ts === timestamp)
+					const index = messages.findIndex(matchesMessage)
 					created = index < 0
 					stagedMessage = mutate(index >= 0 ? messages[index] : undefined)
 					if (!stagedMessage) return messages
@@ -5263,7 +5264,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				() => {
 					if (!stagedMessage) return
 					if (designHandoff) this.designHandoff = structuredClone(designHandoff)
-					const liveIndex = this.clineMessages.findIndex((message) => message.ts === timestamp)
+					const liveIndex = this.clineMessages.findIndex(matchesMessage)
 					committedMessage = structuredClone(stagedMessage)
 					if (liveIndex >= 0) this.clineMessages[liveIndex] = committedMessage
 					else this.clineMessages.push(committedMessage)
@@ -5501,7 +5502,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// The user has already supplied the guidance this safeguard would ask
 			// for. Deliver it with the pending tool result instead of interrupting
 			// it with another generic mistake-limit dialog.
-			await this.say("user_feedback", queuedGuidance.text, queuedGuidance.images)
+			await this.say(
+				"user_feedback",
+				queuedGuidance.text,
+				queuedGuidance.images,
+				undefined,
+				undefined,
+				undefined,
+				{
+					queuedMessageIds: [queuedGuidance.id],
+				},
+			)
 			currentUserContent.push(
 				...this.buildUserMessageContent(queuedGuidance.text, queuedGuidance.images, [queuedGuidance.id]),
 			)
@@ -5542,7 +5553,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.bindQueuedInputBlocks(feedback, queuedMessageIds ?? [])
 			currentUserContent.push(...feedback)
 
-			await this.say("user_feedback", text, images)
+			await this.say("user_feedback", text, images, undefined, undefined, undefined, { queuedMessageIds })
 		}
 
 		this.resetMistakeRecoveryState()
@@ -5589,7 +5600,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					requestId: toolApprovalRequest.requestId,
 					taskId: toolApprovalRequest.taskId,
 					toolName: toolApprovalRequest.toolName,
-					...(text === undefined ? {} : { description: text }),
+					...(toolApprovalRequest.description === undefined
+						? {}
+						: { description: redactTaskPrivatePaths(this, toolApprovalRequest.description) }),
 					...(toolApprovalRequest.askType === "command" && toolApprovalRequest.cwd !== undefined
 						? { cwd: redactTaskPrivatePaths(this, toolApprovalRequest.cwd) }
 						: {}),
@@ -5959,9 +5972,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	/** Route typed scheduler approvals through the reviewer or existing task ask policy. */
-	public async requestToolApproval(request: ToolApprovalRequest): Promise<ToolApprovalDecision | undefined> {
+	public async requestToolApproval(
+		request: ToolApprovalRequest,
+		reviewMessage = request.description,
+	): Promise<ToolApprovalDecision | undefined> {
 		const parsedRequest = toolApprovalRequestSchema.safeParse(request)
-		if (!parsedRequest.success || parsedRequest.data.taskId !== this.taskId) {
+		if (
+			!parsedRequest.success ||
+			parsedRequest.data.taskId !== this.taskId ||
+			(parsedRequest.data.askType === "command" && reviewMessage !== parsedRequest.data.description)
+		) {
 			throw new Error("Task received an invalid or mismatched tool approval request.")
 		}
 		if (this.activeToolApprovalRequest) {
@@ -5971,12 +5991,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.activeToolApprovalRequest = parsedRequest.data
 		this.activeToolApprovalDecision = undefined
 		try {
-			const reviewedDecision = await this.reviewToolApproval(parsedRequest.data)
+			const reviewedDecision = await this.reviewToolApproval(parsedRequest.data, reviewMessage)
 			if (reviewedDecision !== undefined) return reviewedDecision
 
 			const result = await this.ask(
 				parsedRequest.data.askType,
-				parsedRequest.data.description,
+				reviewMessage,
 				undefined,
 				undefined,
 				parsedRequest.data.forceApproval,
@@ -6038,7 +6058,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * reviewer is the user; an injected reviewer can only approve this call once
 	 * or deny it, and cannot grant a session amendment.
 	 */
-	private async reviewToolApproval(request: ToolApprovalRequest): Promise<ToolApprovalDecision | undefined> {
+	private async reviewToolApproval(
+		request: ToolApprovalRequest,
+		reviewMessage: string | undefined,
+	): Promise<ToolApprovalDecision | undefined> {
 		const reviewer = this.toolApprovalReviewer
 		if (!reviewer) return undefined
 
@@ -6055,7 +6078,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		try {
 			const rawOutcome = await Promise.race([
-				Promise.resolve().then(() => reviewer(request, signal)),
+				Promise.resolve().then(() => reviewer(request, signal, reviewMessage)),
 				cancellation,
 			])
 			if (rawOutcome === cancelled || signal.aborted) return { decision: "abort" }
@@ -8428,6 +8451,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.contextCondenseAbortController = controller
 		if (taskSignal.aborted) abortFromTask()
 		else taskSignal.addEventListener("abort", abortFromTask, { once: true })
+		const deadline = getBoundedRequestDeadline(getApiRequestTimeout(), undefined)
+		const contextControl = createLinkedAbortController({ signal: controller.signal, deadline })
 
 		const capturedProvider: CapturedTaskProvider = {
 			apiHandler: this.api,
@@ -8439,13 +8464,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			(this.reasoningHandlerUsers.get(capturedProvider.apiHandler) ?? 0) + 1,
 		)
 		try {
-			await this.prepareCapturedReasoning(capturedProvider, { signal: controller.signal })
-			await this.condenseContextWithSignal(controller.signal, capturedProvider)
+			await this.waitForRequestControl(
+				this.prepareCapturedReasoning(capturedProvider, { signal: contextControl.signal, deadline }),
+				contextControl.signal,
+				deadline,
+			)
+			await this.condenseContextWithSignal(contextControl.signal, capturedProvider, undefined, deadline)
 			performanceStatus = "completed"
 		} catch (error) {
 			performanceStatus = error instanceof Error && error.name === "AbortError" ? "cancelled" : "failed"
 			throw error
 		} finally {
+			contextControl.dispose()
 			this.reasoningHandlerUsers.delete(capturedProvider.apiHandler)
 			this.retireReasoningHandler(capturedProvider.apiHandler)
 			taskSignal.removeEventListener("abort", abortFromTask)
@@ -8461,10 +8491,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const lifetimeSignal = this.getTaskLifetimeCancellationSignal()
 		const interruption = new AbortController()
 		this.postTurnCompactionAbortController = interruption
-		const signal = AbortSignal.any([lifetimeSignal, interruption.signal])
+		const deadline = getBoundedRequestDeadline(getApiRequestTimeout(), undefined)
+		const contextControl = createLinkedAbortController({
+			signal: AbortSignal.any([lifetimeSignal, interruption.signal]),
+			deadline,
+		})
+		const signal = contextControl.signal
 		let capturedProvider: CapturedTaskProvider | undefined
 		try {
-			const state = await this.providerRef.deref()?.getState()
+			const pendingState = this.providerRef.deref()?.getState()
+			const state = pendingState ? await this.waitForRequestControl(pendingState, signal, deadline) : undefined
 			if (signal.aborted) signal.throwIfAborted()
 			if (this.pendingSteerMessage !== undefined || this.messageQueueService.hasUnconsumedInput()) return
 			const percent = state?.postTurnCondenseContextPercent ?? DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT
@@ -8479,14 +8515,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				capturedProvider.apiHandler,
 				(this.reasoningHandlerUsers.get(capturedProvider.apiHandler) ?? 0) + 1,
 			)
-			await this.prepareCapturedReasoning(capturedProvider, { signal })
+			await this.waitForRequestControl(
+				this.prepareCapturedReasoning(capturedProvider, { signal, deadline }),
+				signal,
+				deadline,
+			)
 			if (this.pendingSteerMessage !== undefined || this.messageQueueService.hasUnconsumedInput()) return
 			const scope = state?.autoCondenseContextScope ?? "full-context"
-			await this.condenseContextWithSignal(signal, capturedProvider, {
-				percent,
-				scope,
-				prefillTokens: scope === "after-prefix" ? this.getCompactionWindowPrefillTokens() : undefined,
-			})
+			await this.condenseContextWithSignal(
+				signal,
+				capturedProvider,
+				{
+					percent,
+					scope,
+					prefillTokens: scope === "after-prefix" ? this.getCompactionWindowPrefillTokens() : undefined,
+				},
+				deadline,
+			)
 		} catch (error) {
 			if (
 				interruption.signal.reason instanceof SteerRequestInterruptError &&
@@ -8494,9 +8539,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				!this.abort
 			)
 				return
-			if (signal.aborted || this.abort) throw error
+			if (lifetimeSignal.aborted || interruption.signal.aborted || this.abort) throw error
 			console.warn(`[Task#${this.taskId}] Post-turn compaction failed; the completed turn was preserved.`)
 		} finally {
+			contextControl.dispose()
 			if (this.postTurnCompactionAbortController === interruption)
 				this.postTurnCompactionAbortController = undefined
 			if (capturedProvider) {
@@ -8535,31 +8581,35 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		signal: AbortSignal,
 		capturedProvider: CapturedTaskProvider,
 		postTurn?: { percent: number; scope: AutoCondenseContextScope; prefillTokens?: number },
+		deadline?: number,
 	): Promise<void> {
-		this.throwIfStepInterrupted(signal)
+		const assertWithinBudget = () => {
+			this.throwIfStepInterrupted(signal)
+			throwIfAbsoluteDeadlineExceeded(deadline)
+		}
+		const waitForContextPreparation = <T>(operation: PromiseLike<T>): Promise<T> =>
+			this.waitForRequestControl(operation, signal, deadline)
+		assertWithinBudget()
 		// CRITICAL: Flush any pending tool results before condensing
 		// to ensure tool_use/tool_result pairs are complete in history
 		if (!(await this.flushPendingToolResultsToHistory())) {
 			throw new Error("Unable to persist pending tool results before condensing context.")
 		}
-		this.throwIfStepInterrupted(signal)
+		assertWithinBudget()
 		const history = this.apiConversationHistory
 		const historyDigest = digestProviderTranscript(history)
 		const { apiHandler, apiConfiguration } = capturedProvider
 
 		// Get condensing configuration
-		const state = await this.providerRef.deref()?.getState()
-		this.throwIfStepInterrupted(signal)
-		const mode = await this.getTaskMode()
+		const pendingState = this.providerRef.deref()?.getState()
+		const state = pendingState ? await waitForContextPreparation(pendingState) : undefined
+		assertWithinBudget()
+		const mode = await waitForContextPreparation(this.getTaskMode())
 		let instructionFragments: readonly ApiInstructionFragment[] | undefined
-		const systemPrompt = await this.getSystemPrompt(
-			state,
-			{ apiHandler, apiConfiguration },
-			undefined,
-			mode,
-			(fragments) => {
+		const systemPrompt = await waitForContextPreparation(
+			this.getSystemPrompt(state, { apiHandler, apiConfiguration }, undefined, mode, (fragments) => {
 				instructionFragments = fragments
-			},
+			}),
 		)
 		const customCondensingPrompt = state?.customSupportPrompts?.CONDENSE
 
@@ -8570,40 +8620,41 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (provider) {
 			const model = apiHandler.getModel()
 			const modelInfo = model.info
-			const toolsResult = await buildNativeToolsArrayWithRestrictions({
-				provider,
-				cwd: this.cwd,
-				mode,
-				customModes: state?.customModes,
-				experiments: state?.experiments,
-				apiConfiguration,
-				disabledTools: state?.disabledTools,
-				modelInfo,
-				modelIdentity: createModelToolIdentity(apiConfiguration, model),
-				includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
-				catalogCache: this.toolCatalogCache,
-				discoveryHistory: history,
-				signal,
-				allowedToolNames: this.getTaskAllowedToolNames(),
-				taskKind: this.taskKind,
-				diagnosticSession: this.diagnosticSession,
-				diagnosticSourceTaskId: this.diagnosticSourceTaskId,
-				enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
-				crossTaskRole: this.getCrossTaskRole(),
-				userRequestText: this.getUserRequestTextForCatalog(),
-			})
+			const toolsResult = await waitForContextPreparation(
+				buildNativeToolsArrayWithRestrictions({
+					provider,
+					cwd: this.cwd,
+					mode,
+					customModes: state?.customModes,
+					experiments: state?.experiments,
+					apiConfiguration,
+					disabledTools: state?.disabledTools,
+					modelInfo,
+					modelIdentity: createModelToolIdentity(apiConfiguration, model),
+					includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
+					catalogCache: this.toolCatalogCache,
+					discoveryHistory: history,
+					signal,
+					allowedToolNames: this.getTaskAllowedToolNames(),
+					taskKind: this.taskKind,
+					diagnosticSession: this.diagnosticSession,
+					diagnosticSourceTaskId: this.diagnosticSourceTaskId,
+					enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
+					crossTaskRole: this.getCrossTaskRole(),
+					userRequestText: this.getUserRequestTextForCatalog(),
+				}),
+			)
 			allTools = toolsResult.tools
 			allowedFunctionNames = toolsResult.allowedFunctionNames
 		}
 
 		// Build metadata with tools and taskId for the condensing API call
-		const requestTimeoutMs = getApiRequestTimeout()
 		const metadata: ApiHandlerCreateMessageMetadata = {
 			mode,
 			taskId: this.taskId,
 			signal,
 			...(instructionFragments ? { instructionFragments } : {}),
-			...(requestTimeoutMs !== undefined ? { deadline: Date.now() + requestTimeoutMs } : {}),
+			...(deadline !== undefined ? { deadline } : {}),
 			...(allTools.length > 0
 				? {
 						tools: allTools,
@@ -8621,12 +8672,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const reservedTokens = getModelReservedOutputTokens({ modelId, model: modelInfo, settings: apiConfiguration })
 		const threshold = resolveCondenseThreshold(state?.autoCondenseContextPercent ?? 100)
 		const { allowedTokens, triggerTokens } = getContextLimits(modelInfo.contextWindow, reservedTokens, threshold)
-		const prevContextTokens = await countContextTokens(
-			getEffectiveApiHistory(history),
-			apiHandler,
-			systemPrompt,
-			metadata,
-			countContext,
+		const prevContextTokens = await waitForContextPreparation(
+			countContextTokens(getEffectiveApiHistory(history), apiHandler, systemPrompt, metadata, countContext),
 		)
 		if (
 			postTurn &&
@@ -8643,33 +8690,37 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const targetTriggerTokens = postTurn
 			? Math.min(triggerTokens, Math.floor((allowedTokens * postTurn.percent) / 100))
 			: triggerTokens
-		const fixedTokens = await countContextTokens([], apiHandler, systemPrompt, metadata, countContext)
+		const fixedTokens = await waitForContextPreparation(
+			countContextTokens([], apiHandler, systemPrompt, metadata, countContext),
+		)
 		const maxContextTokens = getCompactionTargetTokens({
 			contextWindow: modelInfo.contextWindow,
 			reservedTokens,
 			triggerTokens: targetTriggerTokens,
 			fixedTokens,
 		})
-		const filesReadByAlpha = await this.getFilesReadByAlphaSafely("condenseContext")
-		this.throwIfStepInterrupted(signal)
+		const filesReadByAlpha = await waitForContextPreparation(this.getFilesReadByAlphaSafely("condenseContext"))
+		assertWithinBudget()
 
 		const { messages, summary, cost, error, condenseId, targetContextTokens, diagnostic, status } =
-			await summarizeConversation({
-				messages: history,
-				apiHandler,
-				systemPrompt,
-				taskId: this.taskId,
-				isAutomaticTrigger: postTurn !== undefined,
-				customCondensingPrompt,
-				metadata,
-				filesReadByAlpha,
-				cwd: this.cwd,
-				alphaIgnoreController: this.alphaIgnoreController,
-				countContext,
-				maxContextTokens,
-			})
+			await waitForContextPreparation(
+				summarizeConversation({
+					messages: history,
+					apiHandler,
+					systemPrompt,
+					taskId: this.taskId,
+					isAutomaticTrigger: postTurn !== undefined,
+					customCondensingPrompt,
+					metadata,
+					filesReadByAlpha,
+					cwd: this.cwd,
+					alphaIgnoreController: this.alphaIgnoreController,
+					countContext,
+					maxContextTokens,
+				}),
+			)
 		this.logCompactionDiagnostic(diagnostic && { stage: "summary", automatic: false, ...diagnostic })
-		this.throwIfStepInterrupted(signal)
+		assertWithinBudget()
 		// Rewind/edit can replace the transcript while the summarizer is awaiting its provider.
 		if (digestProviderTranscript(this.apiConversationHistory) !== historyDigest) {
 			throw new Error("Conversation history changed during context compaction; retry with the current history")
@@ -8705,35 +8756,40 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			)
 			return
 		}
-		let newContextTokens = await this.measureCompactedContext(
-			apiHandler,
-			systemPrompt,
-			metadata,
-			targetContextTokens,
-			// Stored messages include the rewind archive; only the active projection
-			// is sent to the provider and belongs in the input-budget check.
-			getEffectiveApiHistory(messages),
-			countContext,
+		let newContextTokens = await waitForContextPreparation(
+			this.measureCompactedContext(
+				apiHandler,
+				systemPrompt,
+				metadata,
+				targetContextTokens,
+				// Stored messages include the rewind archive; only the active projection
+				// is sent to the provider and belongs in the input-budget check.
+				getEffectiveApiHistory(messages),
+				countContext,
+			),
 		)
 		if (newContextTokens >= prevContextTokens) throw new ContextRecoveryExhaustedError()
-		this.throwIfStepInterrupted(signal)
+		assertWithinBudget()
 		if (digestProviderTranscript(this.apiConversationHistory) !== historyDigest) {
 			throw new Error("Conversation history changed during context compaction; retry with the current history")
 		}
 		if (!(await this.overwriteApiConversationHistory(messages))) {
 			throw new Error("Unable to persist condensed conversation history before continuing.")
 		}
+		assertWithinBudget()
 		this.environmentContext.reset()
 		await this.refreshEnvironmentContext(state, signal)
-		newContextTokens = await this.measureCompactedContext(
-			apiHandler,
-			systemPrompt,
-			metadata,
-			// The summary meets its target before fresh context is added. Resume
-			// within the configured working window, leaving room before the trigger.
-			Math.max(0, targetTriggerTokens - 1),
-			getEffectiveApiHistory(this.apiConversationHistory),
-			countContext,
+		newContextTokens = await waitForContextPreparation(
+			this.measureCompactedContext(
+				apiHandler,
+				systemPrompt,
+				metadata,
+				// The summary meets its target before fresh context is added. Resume
+				// within the configured working window, leaving room before the trigger.
+				Math.max(0, targetTriggerTokens - 1),
+				getEffectiveApiHistory(this.apiConversationHistory),
+				countContext,
+			),
 		)
 		if (newContextTokens >= prevContextTokens) throw new ContextRecoveryExhaustedError()
 
@@ -8771,6 +8827,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			previewEpoch?: number
 			/** Automatic retry guidance shares the feedback presentation, not the user-request boundary. */
 			feedbackSource?: "user" | "automatic"
+			/** Correlates canonical user input with its durable admission and optimistic UI row. */
+			queuedMessageIds?: readonly string[]
 		} = {},
 		contextCondense?: ContextCondense,
 		contextTruncation?: ContextTruncation,
@@ -8785,6 +8843,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			throw new Error(`[Task#say] task ${this.taskId}.${this.instanceId} aborted`)
 		}
 		if (text !== undefined) text = redactTaskPrivatePaths(this, text)
+		const queuedMessageIds =
+			options.feedbackSource !== "automatic" && options.queuedMessageIds?.length
+				? [...options.queuedMessageIds]
+				: undefined
+		const feedbackReceiptIds =
+			type === "user_feedback" && !partial && queuedMessageIds ? new Set(queuedMessageIds) : undefined
+		const isFeedbackConsumed = () =>
+			Boolean(
+				feedbackReceiptIds &&
+					this.apiConversationHistory.some((message) =>
+						message.queued_message_ids?.some((id) => feedbackReceiptIds.has(id)),
+					),
+			)
+		// A replay of durable input must not renew request progress or invalidate evidence.
+		if (isFeedbackConsumed()) return undefined
 		if (
 			type === "user_feedback" &&
 			!partial &&
@@ -8805,6 +8878,44 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		}
 
+		const lastFeedback = this.clineMessages.at(-1)
+		if (
+			feedbackReceiptIds &&
+			!(lastFeedback?.type === "say" && lastFeedback.say === type && lastFeedback.partial)
+		) {
+			const isSameFeedback = (message: AlphaMessage | undefined): message is AlphaMessage =>
+				Boolean(message) &&
+				message?.type === "say" &&
+				message.say === "user_feedback" &&
+				!message.partial &&
+				message.queuedMessageIds?.length === feedbackReceiptIds.size &&
+				message.queuedMessageIds.every((id) => feedbackReceiptIds.has(id))
+			const previousIndex = findLastIndex(this.clineMessages, isSameFeedback)
+			if (previousIndex >= 0) {
+				// Feedback can be visible before provider admission fails. Reuse only
+				// that exact receipt; consumed input is immutable even on a stale retry.
+				const committed = await this.commitAlphaMessageMutation(
+					this.clineMessages[previousIndex].ts,
+					"the retried user feedback",
+					(message) =>
+						!this.abort && !this.abandoned && !isFeedbackConsumed() && isSameFeedback(message)
+							? { ...message, text, images, queuedMessageIds }
+							: undefined,
+					undefined,
+					isSameFeedback,
+				)
+				if (this.abort || this.abandoned) {
+					throw new Error(`[Task#say] task ${this.taskId}.${this.instanceId} aborted`)
+				}
+				if (committed) {
+					if (!options.isNonInteractive) this.lastMessageTs = committed.message.ts
+					await this.updateAlphaMessage(committed.message)
+					return undefined
+				}
+				if (isFeedbackConsumed()) return undefined
+			}
+		}
+
 		if (partial !== undefined) {
 			const lastMessage = this.clineMessages.at(-1)
 
@@ -8822,6 +8933,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					lastMessage.partial = partial
 					lastMessage.progressStatus = progressStatus
 					lastMessage.asyncUserInput = options.asyncUserInput
+					if (queuedMessageIds) lastMessage.queuedMessageIds = queuedMessageIds
 					await this.updateAlphaMessage(lastMessage).catch((error) => {
 						console.error(`[Task#${this.taskId}] Failed to update partial message:`, error)
 					})
@@ -8845,6 +8957,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							contextCondense,
 							contextTruncation,
 							asyncUserInput: options.asyncUserInput,
+							...(queuedMessageIds ? { queuedMessageIds } : {}),
 						},
 						options.stateUpdate,
 					)
@@ -8864,6 +8977,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					lastMessage.partial = false
 					lastMessage.progressStatus = progressStatus
 					lastMessage.asyncUserInput = options.asyncUserInput
+					if (queuedMessageIds) lastMessage.queuedMessageIds = queuedMessageIds
 
 					// Instead of streaming partialMessage events, we do a save
 					// and post like normal to persist to disk.
@@ -8892,6 +9006,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							contextCondense,
 							contextTruncation,
 							asyncUserInput: options.asyncUserInput,
+							...(queuedMessageIds ? { queuedMessageIds } : {}),
 						},
 						options.stateUpdate,
 					)
@@ -8921,6 +9036,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					contextCondense,
 					contextTruncation,
 					asyncUserInput: options.asyncUserInput,
+					...(queuedMessageIds ? { queuedMessageIds } : {}),
 					...(options.commandExecutionId ? { commandExecutionId: options.commandExecutionId } : {}),
 				},
 				options.stateUpdate,
@@ -9194,7 +9310,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	/**
 	 * Continue a durably completed primary task without replacing its task ID or
 	 * conversation. This is the host counterpart to a composer submission made
-	 * after the completion review boundary has already closed.
+	 * after the previous task lifecycle has completed.
 	 */
 	public async resumeCompletedTaskFollowup(
 		text: string,
@@ -9228,19 +9344,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let followupPersisted = false
 		let completionStateReset = false
 		try {
+			// The admission receipt already protects this input. Select it before
+			// joining the old lifecycle so the host projects delivery immediately.
+			for (const id of queuedMessageIds ?? []) this.messageQueueService.claimMessage(id)
 			if (inputOrigin === "human") this.emit(AlphaCodeEventName.TaskUserMessage, this.taskId)
 
 			// TaskCompleted is emitted before the old loop's terminal journal flush has
 			// necessarily returned. Join that owned lifecycle so the new turn cannot
 			// overlap the preceding terminal write.
 			await this.waitForOwnedLifecycle()
+			if (this.abort || this.abandoned) throw new Error("Completed-task follow-up was cancelled")
 			if (!this.didComplete) throw new Error("The task has not completed")
 			if (this.isTaskLoopActive || this.isStreaming || this.isAgentTurnEngineActive) {
 				throw new Error("The completed task is still finalizing")
 			}
-			await this.prepareForRetainedLifecycle()
-			for (const id of queuedMessageIds ?? []) this.messageQueueService.claimMessage(id)
+			await this.prepareForRetainedLifecycle(queuedMessageIds)
 			await this.messageQueueService.flush()
+			if (this.abort || this.abandoned) throw new Error("Completed-task follow-up was cancelled")
 
 			completionStateReset = true
 			this._started = true
@@ -9267,7 +9387,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// truthfully Completed and can restore the submitted draft.
 					followupPersisted = true
 					this.steerMessageAwaitingPersistence = false
-					this.emit(AlphaCodeEventName.TaskActive, this.taskId)
+					// Stop can win after the user receipt commits but before queue ACK joins.
+					if (!this.abort && !this.abandoned) this.emit(AlphaCodeEventName.TaskActive, this.taskId)
 					resolvePersisted()
 				},
 				images,
@@ -9323,7 +9444,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			text,
 			() => {
 				persisted = true
-				this.emit(AlphaCodeEventName.TaskActive, this.taskId)
+				if (!this.abort && !this.abandoned) this.emit(AlphaCodeEventName.TaskActive, this.taskId)
 				resolvePersisted()
 			},
 			images,
@@ -9485,18 +9606,32 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				responseQueuedMessageIds = options.queuedMessageIds
 				const messageType =
 					options.inputOrigin === "agent" || this.clineMessages.length === 0 ? "text" : "user_feedback"
-				if (followupImages === undefined) {
+				if (options.queuedMessageIds?.length) {
+					await this.say(messageType, followupText, followupImages, undefined, undefined, undefined, {
+						queuedMessageIds: options.queuedMessageIds,
+					})
+				} else if (followupImages === undefined) {
 					await this.say(messageType, followupText)
 				} else {
 					await this.say(messageType, followupText, followupImages)
 				}
 			} else {
-				const askType: AlphaAsk =
-					lastAlphaMessage?.ask === "completion_result" ? "resume_completed_task" : "resume_task"
+				let completedHistory = lastAlphaMessage?.ask === "completion_result"
+				if (completedHistory || lastAlphaMessage?.say === "completion_result") {
+					// A final-looking row can precede a failed finalizer. Task history,
+					// rather than the completed model turn, owns accepted terminality.
+					const savedTask = await this.providerRef.deref()?.getTaskWithId(this.taskId, {
+						includeApiConversationHistory: false,
+					})
+					const status = savedTask?.historyItem.status
+					completedHistory = status === "completed" || (status === undefined && completedHistory)
+					if (this.abort || this.abandoned) return
+				}
+				const askType: AlphaAsk = completedHistory ? "resume_completed_task" : "resume_task"
 				const { response, text, images, queuedMessageIds } = await this.ask(askType) // Calls `postStateToWebview`.
 
 				if (response === "messageResponse") {
-					await this.say("user_feedback", text, images)
+					await this.say("user_feedback", text, images, undefined, undefined, undefined, { queuedMessageIds })
 					responseText = text
 					responseImages = images
 					responseQueuedMessageIds = queuedMessageIds
@@ -10060,7 +10195,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		let didEmitTaskStarted = false
 		const emitTaskStarted = () => {
-			if (didEmitTaskStarted) return
+			if (didEmitTaskStarted || this.abort || this.abandoned) return
 			didEmitTaskStarted = true
 			this.emit(AlphaCodeEventName.TaskStarted)
 		}
@@ -10268,7 +10403,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 					if (queuedMessage) {
 						requiresContinuation = true
-						await this.say("user_feedback", queuedMessage.text, queuedMessage.images)
+						await this.say(
+							"user_feedback",
+							queuedMessage.text,
+							queuedMessage.images,
+							undefined,
+							undefined,
+							undefined,
+							{
+								queuedMessageIds: [queuedMessage.id],
+							},
+						)
 						nextUserContent = this.buildUserMessageContent(queuedMessage.text, queuedMessage.images, [
 							queuedMessage.id,
 						])
@@ -10381,7 +10526,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (queued) {
 					this.resetCompletionRecoveryState()
 					await this.retractCompletionResult()
-					await this.say("user_feedback", queued.text, queued.images)
+					await this.say("user_feedback", queued.text, queued.images, undefined, undefined, undefined, {
+						queuedMessageIds: [queued.id],
+					})
 					return {
 						userContent: this.buildUserMessageContent(queued.text, queued.images, [queued.id]),
 						includeFileDetails: false,
@@ -10483,7 +10630,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.resetCompletionRecoveryState()
 			const feedbackImages = recovery.images ?? []
 			if (feedbackText.trim() || feedbackImages.length > 0) {
-				await this.say("user_feedback", feedbackText, feedbackImages)
+				await this.say("user_feedback", feedbackText, feedbackImages, undefined, undefined, undefined, {
+					queuedMessageIds: recovery.queuedMessageIds,
+				})
 				return {
 					userContent: this.buildUserMessageContent(feedbackText, feedbackImages, recovery.queuedMessageIds),
 					includeFileDetails: false,
@@ -10509,7 +10658,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					(this.pendingSteerMessage || this.messageQueueService.messages.length > 0)
 				) {
 					const queued = this.pendingSteerMessage ? undefined : this.dequeueQueuedMessage()
-					if (queued) await this.say("user_feedback", queued.text, queued.images)
+					if (queued) {
+						await this.say("user_feedback", queued.text, queued.images, undefined, undefined, undefined, {
+							queuedMessageIds: [queued.id],
+						})
+					}
 					nextTurnInput = {
 						userContent: queued
 							? this.buildUserMessageContent(queued.text, queued.images, [queued.id])
@@ -10592,10 +10745,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					continue
 				}
 
-				// Managed children publish through the same completion event as the tool.
-				// Their parent owns review; only primary tasks open the local review boundary.
+				// Both task kinds publish through the same verified completion transition.
+				// The visible answer does not require a user acknowledgement to finalize.
 				await this.presentCompletionResult(outcome.response.text)
-				const review = this.taskKind === "subagent" ? undefined : await this.ask("completion_result", "", false)
 				if (this.abort || this.didComplete) {
 					await appendTaskTerminalEvent(
 						this.abort ? "aborted" : "completed",
@@ -10606,17 +10758,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					return
 				}
 
-				const queuedFollowup =
-					!review || review.response === "yesButtonClicked" ? this.dequeueQueuedMessage() : undefined
-				const feedbackText = queuedFollowup?.text ?? review?.text ?? ""
-				const feedbackImages = queuedFollowup?.images ?? review?.images ?? []
+				const queuedFollowup = this.dequeueQueuedMessage()
+				const feedbackText = queuedFollowup?.text ?? ""
+				const feedbackImages = queuedFollowup?.images ?? []
 
-				const shouldFinish =
-					((!review || review.response === "yesButtonClicked") && !queuedFollowup) ||
-					(!feedbackText.trim() && feedbackImages.length === 0)
+				const shouldFinish = !queuedFollowup || (!feedbackText.trim() && feedbackImages.length === 0)
 				if (shouldFinish) {
-					// A background child or verification obligation can change while the
-					// review boundary is open. Recheck immediately before the terminal write.
+					// Presentation can yield while descendants or obligations change.
+					// Recheck immediately before the terminal write.
 					const finalCompletionDecision = await this.waitForCompletionGateDecision()
 					if (!finalCompletionDecision.allowed) {
 						await this.retractCompletionResult()
@@ -10640,7 +10789,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 					const lateQueuedFeedback = this.dequeueQueuedMessage()
 					if (lateQueuedFeedback) {
-						await this.say("user_feedback", lateQueuedFeedback.text, lateQueuedFeedback.images)
+						await this.say(
+							"user_feedback",
+							lateQueuedFeedback.text,
+							lateQueuedFeedback.images,
+							undefined,
+							undefined,
+							undefined,
+							{ queuedMessageIds: [lateQueuedFeedback.id] },
+						)
 						nextTurnInput = {
 							userContent: this.buildUserMessageContent(
 								lateQueuedFeedback.text,
@@ -10697,7 +10854,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 						const concurrentFeedback = this.dequeueQueuedMessage()
 						if (concurrentFeedback) {
-							await this.say("user_feedback", concurrentFeedback.text, concurrentFeedback.images)
+							await this.say(
+								"user_feedback",
+								concurrentFeedback.text,
+								concurrentFeedback.images,
+								undefined,
+								undefined,
+								undefined,
+								{ queuedMessageIds: [concurrentFeedback.id] },
+							)
 							nextTurnInput = {
 								userContent: this.buildUserMessageContent(
 									concurrentFeedback.text,
@@ -10732,12 +10897,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 
 				// A follow-up starts a new conversational turn; retain the prior answer's durable trace boundary.
-				await this.say("user_feedback", feedbackText, feedbackImages)
+				await this.say("user_feedback", feedbackText, feedbackImages, undefined, undefined, undefined, {
+					queuedMessageIds: queuedFollowup ? [queuedFollowup.id] : undefined,
+				})
 				nextTurnInput = {
 					userContent: this.buildUserMessageContent(
 						feedbackText,
 						feedbackImages,
-						queuedFollowup ? [queuedFollowup.id] : review?.queuedMessageIds,
+						queuedFollowup ? [queuedFollowup.id] : undefined,
 					),
 					includeFileDetails: false,
 				}
@@ -10938,6 +11105,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					maxDiagnosticMessages,
 					skillsManager: provider?.getSkillsManager(),
 					currentMode,
+					signal: this.getTaskCancellationSignal(),
 					onTicketActivity: async (activity) => {
 						await this.say("tool", JSON.stringify({ tool: "ticket", ticketActivity: activity }))
 					},
@@ -12213,6 +12381,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						responseStatus
 							? {
 									status: responseStatus,
+									...(providerOutcome?.requiresContinuation !== undefined
+										? { requiresContinuation: providerOutcome.requiresContinuation }
+										: {}),
 									...(responseReason ? { reason: responseReason } : {}),
 									...((providerErrorRetryable ?? providerOutcome?.retryable) !== undefined
 										? { retryable: providerErrorRetryable ?? providerOutcome?.retryable }
@@ -13300,8 +13471,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				!isSubagent &&
 				this.shouldExposeAgentLifecycleTools() &&
 				this.isToolAllowedForTask("spawn_agent") &&
-				classifyRequestWorkClass(this.getUserRequestTextForCatalog(), { taskKind: this.taskKind }).class !==
-					"lookup" &&
 				filterNativeToolsForMode([createSpawnAgentTool()], mode, customModes, experiments, undefined, {
 					modelInfo,
 					disabledTools: state?.disabledTools,
@@ -13351,16 +13520,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			)
 		})()
 
-		const modelContextWindow = apiHandler.getModel().info.contextWindow
 		const designHandoff = designHandoffOverride === null ? undefined : (designHandoffOverride ?? this.designHandoff)
 		const handoffPrompt =
 			this.taskKind === "primary" && mode === defaultModeSlug
 				? getDesignHandoffPrompt(designHandoff, {
 						taskId: this.taskId,
-						maxChars: Math.min(
-							MAX_DESIGN_HANDOFF_PROMPT_CHARS,
-							Math.max(4_096, Math.floor((modelContextWindow ?? 0) * 0.5)),
-						),
 					})
 				: undefined
 		const systemPrompt = renderSystemPromptFragments(promptFragments)
@@ -13388,240 +13552,248 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private async handleContextWindowExceededError(retryDeadline?: number): Promise<void> {
-		const signal = this.stepInterruptionController?.signal ?? this.getTaskLifetimeCancellationSignal()
 		const contextRecoveryDeadline = getBoundedRequestDeadline(getApiRequestTimeout(), retryDeadline)
-		const assertRecoveryWithinBudget = () => {
-			this.throwIfStepInterrupted(signal)
-			throwIfAbsoluteDeadlineExceeded(contextRecoveryDeadline)
-		}
-		const waitForBoundedRecovery = <T>(operation: PromiseLike<T>): Promise<T> =>
-			this.waitForRequestControl(operation, signal, contextRecoveryDeadline)
-		assertRecoveryWithinBudget()
-		const apiHandler = this.api
-		const apiConfiguration = this.effectiveApiConfiguration
-		const pendingState = this.providerRef.deref()?.getState()
-		const state = pendingState ? await waitForBoundedRecovery(pendingState) : undefined
-		assertRecoveryWithinBudget()
-		const mode = await waitForBoundedRecovery(this.getTaskMode())
-		assertRecoveryWithinBudget()
-
-		const { contextTokens } = this.getTokenUsage()
-		const model = apiHandler.getModel()
-		const modelInfo = model.info
-
-		const maxTokens = getModelReservedOutputTokens({
-			modelId: model.id,
-			model: modelInfo,
-			settings: apiConfiguration,
+		const contextControl = createLinkedAbortController({
+			signal: this.stepInterruptionController?.signal ?? this.getTaskLifetimeCancellationSignal(),
+			deadline: contextRecoveryDeadline,
 		})
-
-		const contextWindow = modelInfo.contextWindow
-
-		const { triggerTokens } = getContextLimits(
-			contextWindow,
-			maxTokens,
-			resolveCondenseThreshold(state?.autoCondenseContextPercent ?? 100),
-		)
-
-		// Log the context window error for debugging
-		console.warn(
-			`[Task#${this.taskId}] Context window exceeded for model ${apiHandler.getModel().id}. ` +
-				`Current tokens: ${contextTokens}, Context window: ${contextWindow}. ` +
-				`Recovering within the configured compaction budget.`,
-		)
-		let contextManagementUiStarted = false
-		let contextRecoveryError: unknown
-		let contextRecoveryCleanupError: unknown
+		const signal = contextControl.signal
 		try {
-			contextManagementUiStarted = true
-			const contextStartedMessage = this.providerRef
-				.deref()
-				?.postMessageToWebview({ type: "condenseTaskContextStarted", text: this.taskId })
-			if (contextStartedMessage) await waitForBoundedRecovery(contextStartedMessage)
+			const assertRecoveryWithinBudget = () => {
+				this.throwIfStepInterrupted(signal)
+				throwIfAbsoluteDeadlineExceeded(contextRecoveryDeadline)
+			}
+			const waitForBoundedRecovery = <T>(operation: PromiseLike<T>): Promise<T> =>
+				this.waitForRequestControl(operation, signal, contextRecoveryDeadline)
+			assertRecoveryWithinBudget()
+			const apiHandler = this.api
+			const apiConfiguration = this.effectiveApiConfiguration
+			const pendingState = this.providerRef.deref()?.getState()
+			const state = pendingState ? await waitForBoundedRecovery(pendingState) : undefined
+			assertRecoveryWithinBudget()
+			const mode = await waitForBoundedRecovery(this.getTaskMode())
 			assertRecoveryWithinBudget()
 
-			// Build tools for condensing metadata (same tools used for normal API calls).
-			const provider = this.providerRef.deref()
-			let allTools: import("openai").default.Chat.ChatCompletionTool[] = []
-			let allowedFunctionNames: string[] | undefined
-			if (provider) {
-				const toolsResult = await waitForBoundedRecovery(
-					buildNativeToolsArrayWithRestrictions({
-						provider,
-						cwd: this.cwd,
-						mode,
-						customModes: state?.customModes,
-						experiments: state?.experiments,
-						apiConfiguration,
-						disabledTools: state?.disabledTools,
-						modelInfo,
-						modelIdentity: createModelToolIdentity(apiConfiguration, model),
-						includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
-						catalogCache: this.toolCatalogCache,
-						discoveryHistory: this.apiConversationHistory,
-						signal,
-						allowedToolNames: this.getTaskAllowedToolNames(),
-						taskKind: this.taskKind,
-						diagnosticSession: this.diagnosticSession,
-						diagnosticSourceTaskId: this.diagnosticSourceTaskId,
-						enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
-						crossTaskRole: this.getCrossTaskRole(),
-						userRequestText: this.getUserRequestTextForCatalog(),
+			const { contextTokens } = this.getTokenUsage()
+			const model = apiHandler.getModel()
+			const modelInfo = model.info
+
+			const maxTokens = getModelReservedOutputTokens({
+				modelId: model.id,
+				model: modelInfo,
+				settings: apiConfiguration,
+			})
+
+			const contextWindow = modelInfo.contextWindow
+
+			const { triggerTokens } = getContextLimits(
+				contextWindow,
+				maxTokens,
+				resolveCondenseThreshold(state?.autoCondenseContextPercent ?? 100),
+			)
+
+			// Log the context window error for debugging
+			console.warn(
+				`[Task#${this.taskId}] Context window exceeded for model ${apiHandler.getModel().id}. ` +
+					`Current tokens: ${contextTokens}, Context window: ${contextWindow}. ` +
+					`Recovering within the configured compaction budget.`,
+			)
+			let contextManagementUiStarted = false
+			let contextRecoveryError: unknown
+			let contextRecoveryCleanupError: unknown
+			try {
+				contextManagementUiStarted = true
+				const contextStartedMessage = this.providerRef
+					.deref()
+					?.postMessageToWebview({ type: "condenseTaskContextStarted", text: this.taskId })
+				if (contextStartedMessage) await waitForBoundedRecovery(contextStartedMessage)
+				assertRecoveryWithinBudget()
+
+				// Build tools for condensing metadata (same tools used for normal API calls).
+				const provider = this.providerRef.deref()
+				let allTools: import("openai").default.Chat.ChatCompletionTool[] = []
+				let allowedFunctionNames: string[] | undefined
+				if (provider) {
+					const toolsResult = await waitForBoundedRecovery(
+						buildNativeToolsArrayWithRestrictions({
+							provider,
+							cwd: this.cwd,
+							mode,
+							customModes: state?.customModes,
+							experiments: state?.experiments,
+							apiConfiguration,
+							disabledTools: state?.disabledTools,
+							modelInfo,
+							modelIdentity: createModelToolIdentity(apiConfiguration, model),
+							includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
+							catalogCache: this.toolCatalogCache,
+							discoveryHistory: this.apiConversationHistory,
+							signal,
+							allowedToolNames: this.getTaskAllowedToolNames(),
+							taskKind: this.taskKind,
+							diagnosticSession: this.diagnosticSession,
+							diagnosticSourceTaskId: this.diagnosticSourceTaskId,
+							enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
+							crossTaskRole: this.getCrossTaskRole(),
+							userRequestText: this.getUserRequestTextForCatalog(),
+						}),
+					)
+					allTools = toolsResult.tools
+					allowedFunctionNames = toolsResult.allowedFunctionNames
+				}
+				assertRecoveryWithinBudget()
+
+				const metadata: ApiHandlerCreateMessageMetadata = {
+					mode,
+					taskId: this.taskId,
+					...(signal ? { signal } : {}),
+					...(contextRecoveryDeadline !== undefined ? { deadline: contextRecoveryDeadline } : {}),
+					...(allTools.length > 0
+						? {
+								tools: allTools,
+								tool_choice: "auto",
+								parallelToolCalls: true,
+								...(allowedFunctionNames ? { allowedFunctionNames } : {}),
+							}
+						: {}),
+				}
+				const countContext = createTokenCountContext(apiHandler, {
+					signal,
+					remoteDeadline: metadata.deadline,
+				})
+				const systemPrompt = await waitForBoundedRecovery(
+					this.getSystemPrompt(state, { apiHandler, apiConfiguration }),
+				)
+				assertRecoveryWithinBudget()
+				// Provider rejection forces a real reduction under the same captured settings.
+				const truncateResult = await waitForBoundedRecovery(
+					manageContext({
+						messages: this.apiConversationHistory,
+						totalTokens: contextTokens || 0,
+						maxTokens,
+						contextWindow,
+						apiHandler,
+						autoCondenseContext: true,
+						autoCondenseContextPercent: state?.autoCondenseContextPercent ?? 100,
+						forceCompaction: true,
+						systemPrompt,
+						taskId: this.taskId,
+						metadata,
+						countContext,
 					}),
 				)
-				allTools = toolsResult.tools
-				allowedFunctionNames = toolsResult.allowedFunctionNames
-			}
-			assertRecoveryWithinBudget()
+				assertRecoveryWithinBudget()
+				this.logCompactionDiagnostic(
+					truncateResult.diagnostic && { stage: "summary", automatic: true, ...truncateResult.diagnostic },
+				)
+				if (truncateResult.status === "exhausted" || truncateResult.status === "no_progress") {
+					throw new ContextRecoveryExhaustedError(truncateResult.error)
+				}
+				if (truncateResult.messages !== this.apiConversationHistory) {
+					let tokens = await waitForBoundedRecovery(
+						this.measureCompactedContext(
+							apiHandler,
+							systemPrompt,
+							metadata,
+							truncateResult.targetContextTokens,
+							getEffectiveApiHistory(truncateResult.messages),
+							countContext,
+						),
+					)
+					if (tokens >= truncateResult.prevContextTokens) {
+						throw new ContextRecoveryExhaustedError()
+					}
+					assertRecoveryWithinBudget()
+					// Transcript writes are atomic, generation-owned, and queue-capped. Await
+					// their commit instead of racing them so no detached stale snapshot can
+					// land after this recovery attempt has already reported cancellation.
+					if (!(await this.overwriteApiConversationHistory(truncateResult.messages))) {
+						throw new Error("Unable to persist forced context truncation before continuing.")
+					}
+					assertRecoveryWithinBudget()
+					this.environmentContext.reset()
+					await this.refreshEnvironmentContext(state, signal)
+					assertRecoveryWithinBudget()
+					tokens = await waitForBoundedRecovery(
+						this.measureCompactedContext(
+							apiHandler,
+							systemPrompt,
+							metadata,
+							Math.max(0, triggerTokens - 1),
+							getEffectiveApiHistory(this.apiConversationHistory),
+							countContext,
+						),
+					)
+					if (tokens >= truncateResult.prevContextTokens) {
+						throw new ContextRecoveryExhaustedError()
+					}
+					truncateResult.newContextTokens = tokens
+					truncateResult.newContextTokensAfterTruncation = tokens
+				}
 
-			const metadata: ApiHandlerCreateMessageMetadata = {
-				mode,
-				taskId: this.taskId,
-				...(signal ? { signal } : {}),
-				...(contextRecoveryDeadline !== undefined ? { deadline: contextRecoveryDeadline } : {}),
-				...(allTools.length > 0
-					? {
-							tools: allTools,
-							tool_choice: "auto",
-							parallelToolCalls: true,
-							...(allowedFunctionNames ? { allowedFunctionNames } : {}),
-						}
-					: {}),
-			}
-			const countContext = createTokenCountContext(apiHandler, {
-				signal,
-				remoteDeadline: metadata.deadline,
-			})
-			const systemPrompt = await waitForBoundedRecovery(
-				this.getSystemPrompt(state, { apiHandler, apiConfiguration }),
-			)
-			assertRecoveryWithinBudget()
-			// Provider rejection forces a real reduction under the same captured settings.
-			const truncateResult = await waitForBoundedRecovery(
-				manageContext({
-					messages: this.apiConversationHistory,
-					totalTokens: contextTokens || 0,
-					maxTokens,
-					contextWindow,
-					apiHandler,
-					autoCondenseContext: true,
-					autoCondenseContextPercent: state?.autoCondenseContextPercent ?? 100,
-					forceCompaction: true,
-					systemPrompt,
-					taskId: this.taskId,
-					metadata,
-					countContext,
-				}),
-			)
-			assertRecoveryWithinBudget()
-			this.logCompactionDiagnostic(
-				truncateResult.diagnostic && { stage: "summary", automatic: true, ...truncateResult.diagnostic },
-			)
-			if (truncateResult.status === "exhausted" || truncateResult.status === "no_progress") {
-				throw new ContextRecoveryExhaustedError(truncateResult.error)
-			}
-			if (truncateResult.messages !== this.apiConversationHistory) {
-				let tokens = await waitForBoundedRecovery(
-					this.measureCompactedContext(
-						apiHandler,
-						systemPrompt,
-						metadata,
-						truncateResult.targetContextTokens,
-						getEffectiveApiHistory(truncateResult.messages),
-						countContext,
-					),
-				)
-				if (tokens >= truncateResult.prevContextTokens) {
-					throw new ContextRecoveryExhaustedError()
+				if (truncateResult.summary) {
+					const { summary, cost, prevContextTokens, newContextTokens = 0, condenseId } = truncateResult
+					const contextCondense: ContextCondense = {
+						summary,
+						cost,
+						newContextTokens,
+						prevContextTokens,
+						condenseId,
+					}
+					await waitForBoundedRecovery(
+						this.say(
+							"condense_context",
+							undefined /* text */,
+							undefined /* images */,
+							false /* partial */,
+							undefined /* checkpoint */,
+							undefined /* progressStatus */,
+							{ isNonInteractive: true } /* options */,
+							contextCondense,
+						),
+					)
+				} else if (truncateResult.truncationId) {
+					// Sliding window truncation occurred (fallback when condensing fails or is disabled)
+					const contextTruncation: ContextTruncation = {
+						truncationId: truncateResult.truncationId,
+						messagesRemoved: truncateResult.messagesRemoved ?? 0,
+						prevContextTokens: truncateResult.prevContextTokens,
+						newContextTokens: truncateResult.newContextTokensAfterTruncation ?? 0,
+					}
+					await waitForBoundedRecovery(
+						this.say(
+							"sliding_window_truncation",
+							undefined /* text */,
+							undefined /* images */,
+							false /* partial */,
+							undefined /* checkpoint */,
+							undefined /* progressStatus */,
+							{ isNonInteractive: true } /* options */,
+							undefined /* contextCondense */,
+							contextTruncation,
+						),
+					)
 				}
 				assertRecoveryWithinBudget()
-				// Transcript writes are atomic, generation-owned, and queue-capped. Await
-				// their commit instead of racing them so no detached stale snapshot can
-				// land after this recovery attempt has already reported cancellation.
-				if (!(await this.overwriteApiConversationHistory(truncateResult.messages))) {
-					throw new Error("Unable to persist forced context truncation before continuing.")
+			} catch (error) {
+				contextRecoveryError = error
+				throw error
+			} finally {
+				if (contextManagementUiStarted) {
+					try {
+						const contextFinishedMessage = this.providerRef
+							.deref()
+							?.postMessageToWebview({ type: "condenseTaskContextResponse", text: this.taskId })
+						if (contextFinishedMessage) await waitForBoundedRecovery(contextFinishedMessage)
+					} catch (cleanupError) {
+						if (contextRecoveryError === undefined) contextRecoveryCleanupError = cleanupError
+					}
 				}
-				assertRecoveryWithinBudget()
-				this.environmentContext.reset()
-				await this.refreshEnvironmentContext(state, signal)
-				assertRecoveryWithinBudget()
-				tokens = await waitForBoundedRecovery(
-					this.measureCompactedContext(
-						apiHandler,
-						systemPrompt,
-						metadata,
-						Math.max(0, triggerTokens - 1),
-						getEffectiveApiHistory(this.apiConversationHistory),
-						countContext,
-					),
-				)
-				if (tokens >= truncateResult.prevContextTokens) {
-					throw new ContextRecoveryExhaustedError()
-				}
-				truncateResult.newContextTokens = tokens
-				truncateResult.newContextTokensAfterTruncation = tokens
 			}
-
-			if (truncateResult.summary) {
-				const { summary, cost, prevContextTokens, newContextTokens = 0, condenseId } = truncateResult
-				const contextCondense: ContextCondense = {
-					summary,
-					cost,
-					newContextTokens,
-					prevContextTokens,
-					condenseId,
-				}
-				await waitForBoundedRecovery(
-					this.say(
-						"condense_context",
-						undefined /* text */,
-						undefined /* images */,
-						false /* partial */,
-						undefined /* checkpoint */,
-						undefined /* progressStatus */,
-						{ isNonInteractive: true } /* options */,
-						contextCondense,
-					),
-				)
-			} else if (truncateResult.truncationId) {
-				// Sliding window truncation occurred (fallback when condensing fails or is disabled)
-				const contextTruncation: ContextTruncation = {
-					truncationId: truncateResult.truncationId,
-					messagesRemoved: truncateResult.messagesRemoved ?? 0,
-					prevContextTokens: truncateResult.prevContextTokens,
-					newContextTokens: truncateResult.newContextTokensAfterTruncation ?? 0,
-				}
-				await waitForBoundedRecovery(
-					this.say(
-						"sliding_window_truncation",
-						undefined /* text */,
-						undefined /* images */,
-						false /* partial */,
-						undefined /* checkpoint */,
-						undefined /* progressStatus */,
-						{ isNonInteractive: true } /* options */,
-						undefined /* contextCondense */,
-						contextTruncation,
-					),
-				)
-			}
-			assertRecoveryWithinBudget()
-		} catch (error) {
-			contextRecoveryError = error
-			throw error
+			if (contextRecoveryCleanupError !== undefined) throw contextRecoveryCleanupError
 		} finally {
-			if (contextManagementUiStarted) {
-				try {
-					const contextFinishedMessage = this.providerRef
-						.deref()
-						?.postMessageToWebview({ type: "condenseTaskContextResponse", text: this.taskId })
-					if (contextFinishedMessage) await waitForBoundedRecovery(contextFinishedMessage)
-				} catch (cleanupError) {
-					if (contextRecoveryError === undefined) contextRecoveryCleanupError = cleanupError
-				}
-			}
+			contextControl.dispose()
 		}
-		if (contextRecoveryCleanupError !== undefined) throw contextRecoveryCleanupError
 	}
 
 	/**
@@ -13920,296 +14092,328 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				contextManagementTimeoutMs,
 				options.retryDeadline,
 			)
-
-			const maxTokens = getModelReservedOutputTokens({
-				modelId: apiHandler.getModel().id,
-				model: modelInfo,
-				settings: apiConfiguration,
-			})
-
-			const contextWindow = modelInfo.contextWindow
-
-			const { allowedTokens, triggerTokens } = getContextLimits(
-				contextWindow,
-				maxTokens,
-				resolveCondenseThreshold(autoCondenseContextPercent),
-			)
-			const resumeLimit = autoCondenseContext ? Math.max(0, triggerTokens - 1) : allowedTokens
-			contextCount = createTokenCountContext(apiHandler, {
-				signal: stepInterruptionSignal,
-				remoteDeadline: contextManagementDeadline,
-			})
-			// Check if context management will likely run (threshold check)
-			// This allows us to show an in-progress indicator to the user
-			// We use the centralized willManageContext helper to avoid duplicating threshold logic
-			const lastMessage = this.apiConversationHistory[this.apiConversationHistory.length - 1]
-			const lastMessageContent = lastMessage?.content
-			let lastMessageTokens = 0
-			if (lastMessageContent) {
-				lastMessageTokens = Array.isArray(lastMessageContent)
-					? await waitForBoundedPreflight(contextCount.countTokens(lastMessageContent, apiHandler))
-					: await waitForBoundedPreflight(
-							contextCount.countTokens(
-								[{ type: "text", text: lastMessageContent as string }],
-								apiHandler,
-							),
-						)
+			const contextControl = createLinkedAbortController({ deadline: contextManagementDeadline })
+			// Keep caller cancellation linked after this phase so the shared token-count
+			// context remains cancellable at the final dispatched-request measurement.
+			const stepInterruptionSignal = AbortSignal.any([
+				contextControl.signal,
+				options.interruptionSignal ?? this.getTaskLifetimeCancellationSignal(),
+			])
+			const assertPreflightWithinBudget = () => {
+				throwIfAbsoluteDeadlineExceeded(options.retryDeadline)
+				this.throwIfStepInterrupted(stepInterruptionSignal)
+				throwIfAbsoluteDeadlineExceeded(contextManagementDeadline)
 			}
-			assertPreflightWithinBudget()
-
-			const contextManagementWillRun = willManageContext({
-				totalTokens: contextTokens,
-				contextWindow,
-				maxTokens,
-				autoCondenseContext,
-				autoCondenseContextPercent,
-				autoCondenseContextScope,
-				prefillContextTokens,
-				lastMessageTokens,
-			})
-
-			let contextManagementUiStarted = false
-			let contextManagementError: unknown
-			let contextManagementCleanupError: unknown
-			const automaticCondensationStartedAt =
-				this.performanceObservabilityEnabled && contextManagementWillRun && autoCondenseContext
-					? performance.now()
-					: undefined
-			let automaticCondensationStatus: Extract<AgentTurnEvent, { type: "task_performance" }>["status"] = "failed"
+			const waitForBoundedPreflight = async <T>(operation: PromiseLike<T>): Promise<T> => {
+				try {
+					return await this.waitForRequestControl(
+						operation,
+						stepInterruptionSignal,
+						contextManagementDeadline,
+					)
+				} catch (error) {
+					if (error instanceof ApiStreamDeadlineError) throwIfAbsoluteDeadlineExceeded(options.retryDeadline)
+					throw error
+				}
+			}
 			try {
-				// Send condenseTaskContextStarted BEFORE manageContext to show in-progress indicator.
-				// Everything after this notification stays under the matching cleanup boundary.
-				if (contextManagementWillRun && autoCondenseContext) {
-					contextManagementUiStarted = true
-					const contextStartedMessage = this.providerRef
-						.deref()
-						?.postMessageToWebview({ type: "condenseTaskContextStarted", text: this.taskId })
-					if (contextStartedMessage) await waitForBoundedPreflight(contextStartedMessage)
-					assertPreflightWithinBudget()
-				}
+				const maxTokens = getModelReservedOutputTokens({
+					modelId: apiHandler.getModel().id,
+					model: modelInfo,
+					settings: apiConfiguration,
+				})
 
-				const contextMgmtMetadata: ApiHandlerCreateMessageMetadata = {
-					mode,
-					taskId: this.taskId,
-					...(stepInterruptionSignal ? { signal: stepInterruptionSignal } : {}),
-					...(contextManagementDeadline !== undefined ? { deadline: contextManagementDeadline } : {}),
+				const contextWindow = modelInfo.contextWindow
+
+				const { allowedTokens, triggerTokens } = getContextLimits(
+					contextWindow,
+					maxTokens,
+					resolveCondenseThreshold(autoCondenseContextPercent),
+				)
+				const resumeLimit = autoCondenseContext ? Math.max(0, triggerTokens - 1) : allowedTokens
+				contextCount = createTokenCountContext(apiHandler, {
+					signal: stepInterruptionSignal,
+					remoteDeadline: contextManagementDeadline,
+				})
+				// Check if context management will likely run (threshold check)
+				// This allows us to show an in-progress indicator to the user
+				// We use the centralized willManageContext helper to avoid duplicating threshold logic
+				const lastMessage = this.apiConversationHistory[this.apiConversationHistory.length - 1]
+				const lastMessageContent = lastMessage?.content
+				let lastMessageTokens = 0
+				if (lastMessageContent) {
+					lastMessageTokens = Array.isArray(lastMessageContent)
+						? await waitForBoundedPreflight(contextCount.countTokens(lastMessageContent, apiHandler))
+						: await waitForBoundedPreflight(
+								contextCount.countTokens(
+									[{ type: "text", text: lastMessageContent as string }],
+									apiHandler,
+								),
+							)
 				}
-				// The preview can differ from the authoritative count. Let manageContext
-				// request tool overhead only when needed, retaining it for post-compaction counts.
-				const prepareContextMgmtTools = async () => {
-					let contextMgmtTools: OpenAI.Chat.ChatCompletionTool[] = []
-					let contextMgmtAllowedFunctionNames: string[] | undefined
-					const provider = this.providerRef.deref()
-					if (provider) {
-						const toolsResult = await waitForBoundedPreflight(
-							buildNativeToolsArrayWithRestrictions({
-								provider,
-								cwd: this.cwd,
-								mode,
-								customModes: state?.customModes,
-								experiments: state?.experiments,
-								apiConfiguration,
-								disabledTools: state?.disabledTools,
-								modelInfo,
-								modelIdentity: createModelToolIdentity(apiConfiguration, model),
-								includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
-								catalogCache: this.toolCatalogCache,
-								discoveryHistory: this.apiConversationHistory,
-								signal: stepInterruptionSignal,
-								allowedToolNames: this.getTaskAllowedToolNames(),
-								taskKind: this.taskKind,
-								diagnosticSession: this.diagnosticSession,
-								diagnosticSourceTaskId: this.diagnosticSourceTaskId,
-								enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
-								crossTaskRole: this.getCrossTaskRole(),
-								userRequestText: this.getUserRequestTextForCatalog(),
+				assertPreflightWithinBudget()
+
+				const contextManagementWillRun = willManageContext({
+					totalTokens: contextTokens,
+					contextWindow,
+					maxTokens,
+					autoCondenseContext,
+					autoCondenseContextPercent,
+					autoCondenseContextScope,
+					prefillContextTokens,
+					lastMessageTokens,
+				})
+
+				let contextManagementUiStarted = false
+				let contextManagementError: unknown
+				let contextManagementCleanupError: unknown
+				const automaticCondensationStartedAt =
+					this.performanceObservabilityEnabled && contextManagementWillRun && autoCondenseContext
+						? performance.now()
+						: undefined
+				let automaticCondensationStatus: Extract<AgentTurnEvent, { type: "task_performance" }>["status"] =
+					"failed"
+				try {
+					// Send condenseTaskContextStarted BEFORE manageContext to show in-progress indicator.
+					// Everything after this notification stays under the matching cleanup boundary.
+					if (contextManagementWillRun && autoCondenseContext) {
+						contextManagementUiStarted = true
+						const contextStartedMessage = this.providerRef
+							.deref()
+							?.postMessageToWebview({ type: "condenseTaskContextStarted", text: this.taskId })
+						if (contextStartedMessage) await waitForBoundedPreflight(contextStartedMessage)
+						assertPreflightWithinBudget()
+					}
+
+					const contextMgmtMetadata: ApiHandlerCreateMessageMetadata = {
+						mode,
+						taskId: this.taskId,
+						...(stepInterruptionSignal ? { signal: stepInterruptionSignal } : {}),
+						...(contextManagementDeadline !== undefined ? { deadline: contextManagementDeadline } : {}),
+					}
+					// The preview can differ from the authoritative count. Let manageContext
+					// request tool overhead only when needed, retaining it for post-compaction counts.
+					const prepareContextMgmtTools = async () => {
+						let contextMgmtTools: OpenAI.Chat.ChatCompletionTool[] = []
+						let contextMgmtAllowedFunctionNames: string[] | undefined
+						const provider = this.providerRef.deref()
+						if (provider) {
+							const toolsResult = await waitForBoundedPreflight(
+								buildNativeToolsArrayWithRestrictions({
+									provider,
+									cwd: this.cwd,
+									mode,
+									customModes: state?.customModes,
+									experiments: state?.experiments,
+									apiConfiguration,
+									disabledTools: state?.disabledTools,
+									modelInfo,
+									modelIdentity: createModelToolIdentity(apiConfiguration, model),
+									includeAllToolsWithRestrictions: apiConfiguration.apiProvider === "vertex",
+									catalogCache: this.toolCatalogCache,
+									discoveryHistory: this.apiConversationHistory,
+									signal: stepInterruptionSignal,
+									allowedToolNames: this.getTaskAllowedToolNames(),
+									taskKind: this.taskKind,
+									diagnosticSession: this.diagnosticSession,
+									diagnosticSourceTaskId: this.diagnosticSourceTaskId,
+									enableAgentLifecycleTools: this.shouldExposeAgentLifecycleTools(),
+									crossTaskRole: this.getCrossTaskRole(),
+									userRequestText: this.getUserRequestTextForCatalog(),
+								}),
+							)
+							contextMgmtTools = toolsResult.tools
+							contextMgmtAllowedFunctionNames = toolsResult.allowedFunctionNames
+						}
+						const toolsMetadata =
+							contextMgmtTools.length > 0
+								? {
+										tools: contextMgmtTools,
+										tool_choice: "auto" as const,
+										parallelToolCalls: true,
+										...(contextMgmtAllowedFunctionNames
+											? { allowedFunctionNames: contextMgmtAllowedFunctionNames }
+											: {}),
+									}
+								: {}
+						Object.assign(contextMgmtMetadata, toolsMetadata)
+						return toolsMetadata
+					}
+
+					// Get files read by Alpha for code folding - only when context management will run
+					const contextMgmtFilesReadByAlpha =
+						contextManagementWillRun && autoCondenseContext
+							? await waitForBoundedPreflight(this.getFilesReadByAlphaSafely("attemptApiRequest"))
+							: undefined
+
+					if (contextManagementWillRun && autoCondenseContext) {
+						await waitForBoundedPreflight(
+							this.publishCanonicalLifecyclePhase("compacting", () => {
+								try {
+									assertPreflightWithinBudget()
+									return true
+								} catch {
+									return false
+								}
 							}),
 						)
-						contextMgmtTools = toolsResult.tools
-						contextMgmtAllowedFunctionNames = toolsResult.allowedFunctionNames
 					}
-					const toolsMetadata =
-						contextMgmtTools.length > 0
-							? {
-									tools: contextMgmtTools,
-									tool_choice: "auto" as const,
-									parallelToolCalls: true,
-									...(contextMgmtAllowedFunctionNames
-										? { allowedFunctionNames: contextMgmtAllowedFunctionNames }
-										: {}),
-								}
-							: {}
-					Object.assign(contextMgmtMetadata, toolsMetadata)
-					return toolsMetadata
-				}
-
-				// Get files read by Alpha for code folding - only when context management will run
-				const contextMgmtFilesReadByAlpha =
-					contextManagementWillRun && autoCondenseContext
-						? await waitForBoundedPreflight(this.getFilesReadByAlphaSafely("attemptApiRequest"))
-						: undefined
-
-				if (contextManagementWillRun && autoCondenseContext) {
-					await waitForBoundedPreflight(
-						this.publishCanonicalLifecyclePhase("compacting", () => {
-							try {
-								assertPreflightWithinBudget()
-								return true
-							} catch {
-								return false
-							}
+					const truncateResult = await waitForBoundedPreflight(
+						manageContext({
+							messages: this.apiConversationHistory,
+							totalTokens: contextTokens,
+							maxTokens,
+							contextWindow,
+							apiHandler,
+							autoCondenseContext,
+							autoCondenseContextPercent,
+							autoCondenseContextScope,
+							prefillContextTokens,
+							systemPrompt,
+							taskId: this.taskId,
+							customCondensingPrompt,
+							metadata: contextMgmtMetadata,
+							prepareTools: prepareContextMgmtTools,
+							filesReadByAlpha: contextMgmtFilesReadByAlpha,
+							cwd: this.cwd,
+							alphaIgnoreController: this.alphaIgnoreController,
+							countContext: contextCount,
 						}),
 					)
-				}
-				const truncateResult = await waitForBoundedPreflight(
-					manageContext({
-						messages: this.apiConversationHistory,
-						totalTokens: contextTokens,
-						maxTokens,
-						contextWindow,
-						apiHandler,
-						autoCondenseContext,
-						autoCondenseContextPercent,
-						autoCondenseContextScope,
-						prefillContextTokens,
-						systemPrompt,
-						taskId: this.taskId,
-						customCondensingPrompt,
-						metadata: contextMgmtMetadata,
-						prepareTools: prepareContextMgmtTools,
-						filesReadByAlpha: contextMgmtFilesReadByAlpha,
-						cwd: this.cwd,
-						alphaIgnoreController: this.alphaIgnoreController,
-						countContext: contextCount,
-					}),
-				)
-				assertPreflightWithinBudget()
-				this.logCompactionDiagnostic(
-					truncateResult.diagnostic && { stage: "summary", automatic: true, ...truncateResult.diagnostic },
-				)
-				if (truncateResult.status === "exhausted" || truncateResult.status === "no_progress") {
-					throw new ContextRecoveryExhaustedError(truncateResult.error)
-				}
-				if (truncateResult.messages !== this.apiConversationHistory) {
-					let tokens = await waitForBoundedPreflight(
-						this.measureCompactedContext(
-							apiHandler,
-							systemPrompt,
-							contextMgmtMetadata,
-							truncateResult.targetContextTokens,
-							getEffectiveApiHistory(truncateResult.messages),
-							contextCount,
-						),
-					)
-					if (tokens >= truncateResult.prevContextTokens) throw new ContextRecoveryExhaustedError()
 					assertPreflightWithinBudget()
-					// Do not race this generation-owned, queue-capped transcript write.
-					// Completing it before surfacing cancellation prevents a detached
-					// compaction snapshot from landing after a newer request begins.
-					if (!(await this.overwriteApiConversationHistory(truncateResult.messages))) {
-						throw new Error("Unable to persist context recovery before continuing.")
+					this.logCompactionDiagnostic(
+						truncateResult.diagnostic && {
+							stage: "summary",
+							automatic: true,
+							...truncateResult.diagnostic,
+						},
+					)
+					if (truncateResult.status === "exhausted" || truncateResult.status === "no_progress") {
+						throw new ContextRecoveryExhaustedError(truncateResult.error)
 					}
-					assertPreflightWithinBudget()
-					this.environmentContext.reset()
-					await this.refreshEnvironmentContext(state, stepInterruptionSignal)
-					assertPreflightWithinBudget()
-					tokens = await waitForBoundedPreflight(
-						this.measureCompactedContext(
-							apiHandler,
-							systemPrompt,
-							contextMgmtMetadata,
-							resumeLimit,
-							getEffectiveApiHistory(this.apiConversationHistory),
-							contextCount,
-						),
-					)
-					if (tokens >= truncateResult.prevContextTokens) throw new ContextRecoveryExhaustedError()
-					truncateResult.newContextTokens = tokens
-					truncateResult.newContextTokensAfterTruncation = tokens
-					compactedContextLimit = resumeLimit
-					contextTokensBeforeCompaction = truncateResult.prevContextTokens
-				}
-				if (truncateResult.error && truncateResult.status !== "reduced") {
-					await waitForBoundedPreflight(this.say("condense_context_error", truncateResult.error))
-					assertPreflightWithinBudget()
-				}
-				if (truncateResult.summary) {
-					const { summary, cost, prevContextTokens, newContextTokens = 0, condenseId } = truncateResult
-					const contextCondense: ContextCondense = {
-						summary,
-						cost,
-						newContextTokens,
-						prevContextTokens,
-						condenseId,
+					if (truncateResult.messages !== this.apiConversationHistory) {
+						let tokens = await waitForBoundedPreflight(
+							this.measureCompactedContext(
+								apiHandler,
+								systemPrompt,
+								contextMgmtMetadata,
+								truncateResult.targetContextTokens,
+								getEffectiveApiHistory(truncateResult.messages),
+								contextCount,
+							),
+						)
+						if (tokens >= truncateResult.prevContextTokens) throw new ContextRecoveryExhaustedError()
+						assertPreflightWithinBudget()
+						// Do not race this generation-owned, queue-capped transcript write.
+						// Completing it before surfacing cancellation prevents a detached
+						// compaction snapshot from landing after a newer request begins.
+						if (!(await this.overwriteApiConversationHistory(truncateResult.messages))) {
+							throw new Error("Unable to persist context recovery before continuing.")
+						}
+						assertPreflightWithinBudget()
+						this.environmentContext.reset()
+						await this.refreshEnvironmentContext(state, stepInterruptionSignal)
+						assertPreflightWithinBudget()
+						tokens = await waitForBoundedPreflight(
+							this.measureCompactedContext(
+								apiHandler,
+								systemPrompt,
+								contextMgmtMetadata,
+								resumeLimit,
+								getEffectiveApiHistory(this.apiConversationHistory),
+								contextCount,
+							),
+						)
+						if (tokens >= truncateResult.prevContextTokens) throw new ContextRecoveryExhaustedError()
+						truncateResult.newContextTokens = tokens
+						truncateResult.newContextTokensAfterTruncation = tokens
+						compactedContextLimit = resumeLimit
+						contextTokensBeforeCompaction = truncateResult.prevContextTokens
 					}
-					await waitForBoundedPreflight(
-						this.say(
-							"condense_context",
-							undefined /* text */,
-							undefined /* images */,
-							false /* partial */,
-							undefined /* checkpoint */,
-							undefined /* progressStatus */,
-							{ isNonInteractive: true } /* options */,
-							contextCondense,
-						),
-					)
-					assertPreflightWithinBudget()
-				} else if (truncateResult.truncationId) {
-					// Sliding window truncation occurred (fallback when condensing fails or is disabled)
-					const contextTruncation: ContextTruncation = {
-						truncationId: truncateResult.truncationId,
-						messagesRemoved: truncateResult.messagesRemoved ?? 0,
-						prevContextTokens: truncateResult.prevContextTokens,
-						newContextTokens: truncateResult.newContextTokensAfterTruncation ?? 0,
+					if (truncateResult.error && truncateResult.status !== "reduced") {
+						await waitForBoundedPreflight(this.say("condense_context_error", truncateResult.error))
+						assertPreflightWithinBudget()
 					}
-					await waitForBoundedPreflight(
-						this.say(
-							"sliding_window_truncation",
-							undefined /* text */,
-							undefined /* images */,
-							false /* partial */,
-							undefined /* checkpoint */,
-							undefined /* progressStatus */,
-							{ isNonInteractive: true } /* options */,
-							undefined /* contextCondense */,
-							contextTruncation,
-						),
-					)
-					assertPreflightWithinBudget()
-				}
-				automaticCondensationStatus = "completed"
-			} catch (error) {
-				contextManagementError = error
-				automaticCondensationStatus =
-					error instanceof Error && error.name === "AbortError" ? "cancelled" : "failed"
-				throw error
-			} finally {
-				if (contextManagementUiStarted) {
-					try {
-						const contextFinishedMessage = this.providerRef
-							.deref()
-							?.postMessageToWebview({ type: "condenseTaskContextResponse", text: this.taskId })
-						if (contextFinishedMessage) await waitForBoundedPreflight(contextFinishedMessage)
-					} catch (cleanupError) {
-						// Preserve the initiating failure; cleanup has the same absolute budget
-						// and must never replace the actionable cancellation/deadline cause.
-						if (contextManagementError === undefined) {
-							contextManagementCleanupError = cleanupError
-							automaticCondensationStatus = "failed"
+					if (truncateResult.summary) {
+						const { summary, cost, prevContextTokens, newContextTokens = 0, condenseId } = truncateResult
+						const contextCondense: ContextCondense = {
+							summary,
+							cost,
+							newContextTokens,
+							prevContextTokens,
+							condenseId,
+						}
+						await waitForBoundedPreflight(
+							this.say(
+								"condense_context",
+								undefined /* text */,
+								undefined /* images */,
+								false /* partial */,
+								undefined /* checkpoint */,
+								undefined /* progressStatus */,
+								{ isNonInteractive: true } /* options */,
+								contextCondense,
+							),
+						)
+						assertPreflightWithinBudget()
+					} else if (truncateResult.truncationId) {
+						// Sliding window truncation occurred (fallback when condensing fails or is disabled)
+						const contextTruncation: ContextTruncation = {
+							truncationId: truncateResult.truncationId,
+							messagesRemoved: truncateResult.messagesRemoved ?? 0,
+							prevContextTokens: truncateResult.prevContextTokens,
+							newContextTokens: truncateResult.newContextTokensAfterTruncation ?? 0,
+						}
+						await waitForBoundedPreflight(
+							this.say(
+								"sliding_window_truncation",
+								undefined /* text */,
+								undefined /* images */,
+								false /* partial */,
+								undefined /* checkpoint */,
+								undefined /* progressStatus */,
+								{ isNonInteractive: true } /* options */,
+								undefined /* contextCondense */,
+								contextTruncation,
+							),
+						)
+						assertPreflightWithinBudget()
+					}
+					automaticCondensationStatus = "completed"
+				} catch (error) {
+					contextManagementError = error
+					automaticCondensationStatus =
+						error instanceof Error && error.name === "AbortError" ? "cancelled" : "failed"
+					throw error
+				} finally {
+					if (contextManagementUiStarted) {
+						try {
+							const contextFinishedMessage = this.providerRef
+								.deref()
+								?.postMessageToWebview({ type: "condenseTaskContextResponse", text: this.taskId })
+							if (contextFinishedMessage) await waitForBoundedPreflight(contextFinishedMessage)
+						} catch (cleanupError) {
+							// Preserve the initiating failure; cleanup has the same absolute budget
+							// and must never replace the actionable cancellation/deadline cause.
+							if (contextManagementError === undefined) {
+								contextManagementCleanupError = cleanupError
+								automaticCondensationStatus = "failed"
+							}
 						}
 					}
+					if (automaticCondensationStartedAt !== undefined) {
+						this.recordTaskPerformance(
+							"condensation",
+							automaticCondensationStartedAt,
+							automaticCondensationStatus,
+						)
+					}
 				}
-				if (automaticCondensationStartedAt !== undefined) {
-					this.recordTaskPerformance(
-						"condensation",
-						automaticCondensationStartedAt,
-						automaticCondensationStatus,
-					)
-				}
+				if (contextManagementCleanupError !== undefined) throw contextManagementCleanupError
+				assertPreflightWithinBudget()
+			} finally {
+				contextControl.dispose()
 			}
-			if (contextManagementCleanupError !== undefined) throw contextManagementCleanupError
-			assertPreflightWithinBudget()
 		}
 
 		// Get the effective API history by filtering out condensed messages
@@ -14347,15 +14551,29 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				: {}),
 		}
 
-		if (compactedContextLimit !== undefined) {
+		const requestContextLimit =
+			compactedContextLimit ??
+			(!retainedStep && capturedDesignHandoff
+				? getContextLimits(
+						modelInfo.contextWindow,
+						getModelReservedOutputTokens({
+							modelId: model.id,
+							model: modelInfo,
+							settings: apiConfiguration,
+						}),
+						100,
+					).allowedTokens
+				: undefined)
+		if (requestContextLimit !== undefined) {
 			// Final schemas and provider conversion can differ from the compaction input.
-			// Gate the actual new request before capturing it or admitting the provider.
+			// Approved designs are mandatory, including on the first step: measure the
+			// complete request instead of silently clipping implementation requirements.
 			const tokens = await waitForBoundedPreflight(
 				this.measureCompactedContext(
 					requestHandler,
 					systemPrompt,
 					{ ...metadata, signal: stepInterruptionSignal },
-					compactedContextLimit,
+					requestContextLimit,
 					cleanConversationHistory,
 					contextCount,
 				),

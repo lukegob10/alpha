@@ -520,6 +520,7 @@ export class AlphaProvider
 	private codeIndexManager?: CodeIndexManager
 	private _workspaceTracker?: WorkspaceTracker // workSpaceTracker read-only for access outside this class
 	protected mcpHub?: McpHub // Change from private to protected
+	private readonly mcpHubInitialization: Promise<void>
 	protected skillsManager?: SkillsManager
 	private scheduledTaskService?: ScheduledTaskService
 	private marketplaceManager: MarketplaceManager
@@ -760,8 +761,9 @@ export class AlphaProvider
 		})
 
 		// Initialize MCP Hub through the singleton manager
-		McpServerManager.getInstance(this.context, this)
+		this.mcpHubInitialization = McpServerManager.getInstance(this.context, this)
 			.then((hub) => {
+				if (this._disposed) return
 				this.mcpHub = hub
 				this.mcpHub.registerClient()
 			})
@@ -1195,7 +1197,10 @@ export class AlphaProvider
 
 		this._workspaceTracker?.dispose()
 		this._workspaceTracker = undefined
-		await this.mcpHub?.unregisterClient()
+		// Join acquisition before releasing its provider lease, even when no live
+		// client was registered. Pending views also keep the shared hub alive.
+		await this.mcpHubInitialization
+		await McpServerManager.unregisterProvider(this, this.mcpHub)
 		this.mcpHub = undefined
 		await this.skillsManager?.dispose()
 		this.skillsManager = undefined
@@ -1214,8 +1219,6 @@ export class AlphaProvider
 
 		// Clean up any event listeners attached to this provider
 		this.removeAllListeners()
-
-		McpServerManager.unregisterProvider(this)
 	}
 
 	public static getVisibleInstance(): AlphaProvider | undefined {
@@ -2741,14 +2744,21 @@ export class AlphaProvider
 		this.taskSessions.markActivity(taskId)
 		const transcriptRevision = this.taskSessions.markTranscriptChanged(taskId)
 		const liveTask = this.getLiveTaskMetadata()[taskId]
+		const publications: Promise<void>[] = []
+		// Reserve every view's sequence before a transport can yield, keeping an
+		// older broadcast from superseding a newer update on a later view.
 		for (const provider of this.getHostProviders()) {
 			if (provider._disposed) continue
 			const clineMessagesSeq = ++provider.clineMessagesSeq
-			await provider.postMessageToWebview({ type, taskId, clineMessage, clineMessagesSeq, liveTask })
-			if (provider.isTaskSelected(taskId) && provider.publishedTaskTranscriptRevisions.has(taskId)) {
-				provider.recordPublishedTaskTranscript(taskId, transcriptRevision)
-			}
+			publications.push(
+				provider.postMessageToWebview({ type, taskId, clineMessage, clineMessagesSeq, liveTask }).then(() => {
+					if (provider.isTaskSelected(taskId) && provider.publishedTaskTranscriptRevisions.has(taskId)) {
+						provider.recordPublishedTaskTranscript(taskId, transcriptRevision)
+					}
+				}),
+			)
 		}
+		await Promise.all(publications)
 		const task = this.getLiveTask(taskId)
 		if (task?.taskKind === "primary") {
 			await this.htmlDocumentAutoOpen.handle(
@@ -2801,14 +2811,18 @@ export class AlphaProvider
 
 	/** Publish only the visible task's todos instead of rebuilding extension state. */
 	async postTaskTodosToWebview(taskId: string, currentTaskTodos: TodoItem[]): Promise<void> {
+		const publications: Promise<void>[] = []
 		for (const provider of this.getHostProviders()) {
 			if (provider._disposed || !provider.isTaskSelected(taskId)) continue
 			const currentTaskTodosSeq = ++provider.currentTaskTodosSeq
-			await provider.postMessageToWebview({
-				type: "state",
-				state: { currentTaskId: taskId, currentTaskTodos, currentTaskTodosSeq },
-			})
+			publications.push(
+				provider.postMessageToWebview({
+					type: "state",
+					state: { currentTaskId: taskId, currentTaskTodos, currentTaskTodosSeq },
+				}),
+			)
 		}
+		await Promise.all(publications)
 	}
 
 	public isIncidentDashboardEnabled(): boolean {
@@ -6484,7 +6498,13 @@ export class AlphaProvider
 		run: () => Promise<T>,
 		options: { allowStoppedTask?: boolean } = {},
 	): Promise<T> {
-		return this.workspaceMutationGate.run(task.taskId, label, run, () => !options.allowStoppedTask && task.abort)
+		return this.workspaceMutationGate.run(
+			task.taskId,
+			label,
+			run,
+			() => !options.allowStoppedTask && task.abort,
+			options.allowStoppedTask ? undefined : task.getTaskLifetimeCancellationSignal(),
+		)
 	}
 
 	private getParentDelegationAuthority(parent: Task): {
@@ -7079,7 +7099,13 @@ export class AlphaProvider
 		}
 
 		return prepared.group.agents[0].role === "worker"
-			? this.workspaceMutationGate.run(parent.taskId, "Worker launch admission", launch, () => parent.abort)
+			? this.workspaceMutationGate.run(
+					parent.taskId,
+					"Worker launch admission",
+					launch,
+					() => Boolean(parent.abort || parentSignal.aborted),
+					AbortSignal.any([parent.getTaskLifetimeCancellationSignal(), parentSignal]),
+				)
 			: launch()
 	}
 
@@ -8865,6 +8891,7 @@ export class AlphaProvider
 							"Worker follow-up admission",
 							resume,
 							() => parent.abort,
+							parent.getTaskLifetimeCancellationSignal(),
 						)
 					: resume()
 			})
@@ -9727,8 +9754,12 @@ export class AlphaProvider
 		}
 		try {
 			if (prepared.group.agents.some((agent) => agent.role === "worker")) {
-				await this.workspaceMutationGate.run(parent.taskId, "Worker blocking launch admission", admit, () =>
-					Boolean(parent.abort || parentSignal.aborted),
+				await this.workspaceMutationGate.run(
+					parent.taskId,
+					"Worker blocking launch admission",
+					admit,
+					() => Boolean(parent.abort || parentSignal.aborted),
+					AbortSignal.any([parent.getTaskLifetimeCancellationSignal(), parentSignal]),
 				)
 			} else {
 				await admit()
@@ -10197,13 +10228,13 @@ export class AlphaProvider
 					resolveResult(status, tokenUsage, summaryOverride, stopReason)
 				}
 				const stopAndFinish = (
-					status: "cancelled" | "timed_out" | "interrupted",
+					status: "failed" | "cancelled" | "timed_out" | "interrupted",
 					tokenUsage: TokenUsage,
 					summaryOverride: string | undefined,
 					stopReason: SubagentStopReason,
 				): void => {
 					if (!claimSettlement()) return
-					child.abortReason = "user_cancelled"
+					child.abortReason = status === "failed" ? "streaming_failed" : "user_cancelled"
 					child.cancelCurrentRequest()
 					const stopChild = async () => {
 						// A managed child can itself own nested runs. Settle those deeper
@@ -10334,7 +10365,33 @@ export class AlphaProvider
 								this.log(`Failed to finalize follow-up for ${child.taskId}: ${String(error)}`),
 							)
 					} else {
-						child.start()
+						const failStartedRun = (error: unknown) =>
+							stopAndFinish(
+								"failed",
+								child.getTokenUsage(),
+								`Sub-agent execution failed: ${error instanceof Error ? error.message : String(error)}`,
+								"failed",
+							)
+						try {
+							child.start()
+							// start() owns a background promise. Startup failures can reject it
+							// before either terminal event exists, so join that same owner now.
+							if (typeof child.waitForTermination === "function") {
+								void child.waitForTermination().then(() => {
+									if (!settled && !signal.aborted && !child.abort && !child.abandoned) {
+										if (child.isCompleted?.()) {
+											finish(
+												child.subagentCompletionOutcome === "blocked" ? "blocked" : "completed",
+											)
+										} else if (!child.hasPendingAsk?.() && !child.taskAsk) {
+											failStartedRun(new Error("Child lifecycle ended without a terminal result"))
+										}
+									}
+								}, failStartedRun)
+							}
+						} catch (error) {
+							failStartedRun(error)
+						}
 					}
 				}
 			},

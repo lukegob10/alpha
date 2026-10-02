@@ -961,6 +961,43 @@ describe("mergeExtensionState", () => {
 			expect(result.clineMessagesSeq).toBe(5)
 		})
 
+		it.each([{ taskStateSeq: 4 }, { taskStateSeq: 5 }, { messageQueueSeq: 6 }])(
+			"does not let rejected task-domain nulls clear the selected chat (%j)",
+			(sequence) => {
+				const previous: ExtensionState = {
+					...baseState,
+					taskStateSeq: 5,
+					currentTaskId: "selected-task",
+					activeTaskId: "selected-task",
+					currentView: { type: "task", taskId: "selected-task" },
+					currentTaskItem: {
+						id: "selected-task",
+						number: 1,
+						ts: 1,
+						task: "selected",
+						tokensIn: 0,
+						tokensOut: 0,
+						totalCost: 0,
+					},
+				}
+				// Explicit nulls are accepted by the transport to clear optional identity fields.
+				const delivered = JSON.parse(
+					JSON.stringify({
+						...sequence,
+						currentTaskId: null,
+						currentTaskItem: null,
+						activeTaskId: null,
+						currentView: { type: "newTaskDraft" },
+					}),
+				) as Partial<ExtensionState>
+				const result = mergeExtensionState(previous, delivered)
+				expect(result.currentTaskId).toBe(previous.currentTaskId)
+				expect(result.currentTaskItem).toBe(previous.currentTaskItem)
+				expect(result.activeTaskId).toBe(previous.activeTaskId)
+				expect(result.currentView).toBe(previous.currentView)
+			},
+		)
+
 		it("keeps reasoning scoped to the accepted task sequence and clears it when an older host switches tasks", () => {
 			const previous: ExtensionState = {
 				...baseState,

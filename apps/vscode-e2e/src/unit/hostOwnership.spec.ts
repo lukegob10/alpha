@@ -3,7 +3,61 @@ import * as assert from "node:assert/strict"
 import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
-import { acquireProfileLease, assertRunnerAncestry } from "../hostOwnership"
+import { execFile } from "child_process"
+import { promisify } from "util"
+import { acquireProfileLease, assertRunnerAncestry, verifyTestHostOwnership } from "../hostOwnership"
+
+test("verifies a real child process through the operating system ancestry inspector", { timeout: 45_000 }, async () => {
+	const executeFile = promisify(execFile)
+	await executeFile(
+		process.execPath,
+		[
+			"--require",
+			"tsx/cjs",
+			"--eval",
+			"require(process.argv[1]).assertRunnerAncestry(Number(process.argv[2])).catch(error => { console.error(error.message); process.exitCode = 1 })",
+			require.resolve("../hostOwnership"),
+			String(process.pid),
+		],
+		{ timeout: 40_000, maxBuffer: 64 * 1024, windowsHide: true },
+	)
+})
+
+test("verifies disposable runner-managed hosts through the same ancestry gate as persistent profiles", async () => {
+	for (const profile of [undefined, "owned-profile"]) {
+		let inspected = false
+		const result = await verifyTestHostOwnership(
+			{ ALPHA_E2E_RUNNER_PID: "10", ALPHA_E2E_PROFILE_DIR: profile },
+			async (runnerPid) => {
+				inspected = true
+				await assertRunnerAncestry(runnerPid, 40, async () => new Map([[40, 10]]))
+			},
+		)
+		assert.equal(inspected, true)
+		assert.equal(result, "verified")
+	}
+})
+
+test("never verifies managed hosts with missing, invalid, foreign or unavailable runner ancestry", async () => {
+	for (const profile of [undefined, "owned-profile"]) {
+		for (const runnerPid of ["", "not-a-pid", "40", "50"]) {
+			await assert.rejects(
+				verifyTestHostOwnership({ ALPHA_E2E_RUNNER_PID: runnerPid, ALPHA_E2E_PROFILE_DIR: profile }, (pid) =>
+					assertRunnerAncestry(pid, 40, async () => new Map([[40, 10]])),
+				),
+				/Invalid|not owned/,
+			)
+		}
+		await assert.rejects(
+			verifyTestHostOwnership({ ALPHA_E2E_RUNNER_PID: "10", ALPHA_E2E_PROFILE_DIR: profile }, () =>
+				Promise.reject(new Error("unavailable")),
+			),
+			/unavailable/,
+		)
+	}
+	await assert.rejects(verifyTestHostOwnership({ ALPHA_E2E_PROFILE_DIR: "owned-profile" }), /Invalid/)
+	assert.equal(await verifyTestHostOwnership({}), undefined)
+})
 
 test("accepts only an extension host descended from the campaign runner", async () => {
 	const parents = async () =>

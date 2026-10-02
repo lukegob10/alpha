@@ -12,7 +12,7 @@ parallel implementations.
 Use this priority order when requirements compete:
 
 1. Correctness, data integrity, security, and the user's explicit intent.
-2. Compatibility with the exact reference host: **VS Code 1.122.1**.
+2. Compatibility with the exact reference host: **VS Code 1.125.0**.
 3. Close behavioral alignment with current Codex CLI across applicable agent capabilities.
 4. Provider-neutral behavior shared across all VS Code extension surfaces.
 5. Deterministic lifecycle, cancellation, persistence, and tool-policy semantics.
@@ -78,7 +78,7 @@ Before finishing:
 
 - Package manager: `pnpm@11.24.0`. Use pnpm only; do not create npm or Yarn lockfiles.
 - Development Node.js: `24.14.1`, as declared in the root and extension manifests. The extension's VS Code host
-  compatibility contract remains `1.122.1`.
+  compatibility contract remains `1.125.0`.
 - TypeScript: `5.8.3` through the workspace configuration.
 - Formatting: tabs, width 4, 120-column print width, and no semicolons; see `.prettierrc.json`.
 - Build orchestration: Turborepo. Prefer existing root or package scripts over hand-built command sequences.
@@ -95,16 +95,16 @@ Alpha is a VS Code extension. The standalone application in `apps/cli/` and its 
 tools remain supported and execute the real extension through VS Code. Preserve historical task and evaluation data;
 see `docs/cli-retirement.md` for the removal and compatibility contract.
 
-## VS Code 1.122.1 is the compatibility contract
+## VS Code 1.125.0 is the compatibility contract
 
-VS Code **1.122.1** is the reference product and release-gating host, not merely a suggested minimum.
+VS Code **1.125.0** is the reference product and release-gating host, not merely a suggested minimum.
 
-- Keep `src/package.json` compatible with `engines.vscode: ^1.122.1`.
-- Do not use an API, contribution point, behavior, or webview assumption unavailable in VS Code 1.122.1. A feature that
+- Keep `src/package.json` compatible with `engines.vscode: ^1.125.0`.
+- Do not use an API, contribution point, behavior, or webview assumption unavailable in VS Code 1.125.0. A feature that
   exists in the developer's newer editor is not sufficient evidence.
 - Prefer stable APIs. The E2E runner's `--enable-proposed-api=Alpha.alpha` flag is a test facility, not permission to make
   production behavior depend on proposed APIs.
-- Feature-detect optional newer APIs and provide a tested 1.122.1 fallback. Keep version-specific behavior isolated at a
+- Feature-detect optional newer APIs and provide a tested 1.125.0 fallback. Keep version-specific behavior isolated at a
   VS Code adapter boundary rather than spreading checks through the agent core.
 - Treat VS Code Language Model behavior as a host contract. Preserve response-part ordering, opaque/provider state,
   reasoning metadata, tool-call IDs, usage accounting, late-cancellation behavior, and recovery semantics.
@@ -112,12 +112,12 @@ VS Code **1.122.1** is the reference product and release-gating host, not merely
   Defer nonessential initialization and dispose subscriptions, watchers, terminals, processes, and timers.
 - A deliberate VS Code baseline migration must update the extension manifest, E2E runner/defaults, fixture manifest,
   exact-host tests, workflows, compatible VS Code types, and documentation as one reviewed change.
-- Deterministic extension-host tests use VS Code 1.122.1. Live GitHub Copilot evaluations may use the current installed
-  VS Code version with a dedicated, signed-in Alpha-owned profile. Record the exact host version, selected model ID,
-  profile, and run conditions with the result. A live run does not replace the deterministic exact-host gate:
+- All automated extension-host tests and live GitHub Copilot evaluations use exact VS Code 1.125.0. Live runs use
+  a dedicated, signed-in Alpha-owned 1.125.0 profile. Record the exact host version, selected model ID, profile, and run
+  conditions with the result. A live run does not replace the deterministic exact-host gate:
 
 ```sh
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
 ```
 
 Run that gate for changes involving extension activation, VS Code APIs or contributions, commands, webviews, VS Code LM,
@@ -146,7 +146,7 @@ version.
 - `packages/types/`: shared schemas and public contracts. Put cross-package message, lifecycle, configuration, and API
   types here rather than duplicating shapes.
 - `packages/core/`: platform-agnostic reusable functionality. Do not introduce `vscode` imports here.
-- `apps/vscode-e2e/`: real extension-host contract tests, including the exact 1.122.1 gate.
+- `apps/vscode-e2e/`: real extension-host contract tests, including the exact 1.125.0 gate.
 - `packages/evals/`, `evals/`, and `scripts/`: deterministic evaluation, certification, benchmark, and release tooling.
 - `docs/`: architectural decisions, investigations, and plans. Update the relevant document when an architectural
   contract or benchmark methodology changes.
@@ -263,7 +263,7 @@ amplification, webview commit/render counts, indexing throughput, memory growth,
   sidebar layouts.
 - Put new user-visible text in the English `package.nls.json` or English locale files. Alpha ships English only; do not add additional locale files or `package.nls.<locale>.json` overlays.
 - Add focused Testing Library/Vitest coverage for interaction and state behavior. For material visual changes, also verify
-  the result manually in the Extension Development Host on VS Code 1.122.1 when available.
+  the result manually in the Extension Development Host on VS Code 1.125.0 when available.
 
 ## Security and privacy
 
@@ -290,7 +290,7 @@ Use the smallest relevant checks during development and the full affected-surfac
 | Webview                  | Focused webview Vitest file, then `pnpm --dir webview-ui check-types`                                    |
 | Shared package           | Package tests and typecheck, plus affected consumer tests                                                |
 | Provider/stream/history  | Provider transform tests, task persistence/turn tests, and cancellation/error cases                      |
-| VS Code integration      | `pnpm --filter @alpha-code/vscode-e2e test:smoke:1221`                                                   |
+| VS Code integration      | `pnpm --filter @alpha-code/vscode-e2e test:smoke:1250`                                                   |
 | Managed agents           | Focused lifecycle/delegation tests and `pnpm certify:managed-agents:automated` when the contract changes |
 | Performance              | Focused correctness tests plus a recorded before/after benchmark on the same workload                    |
 | Release/package contents | `pnpm bundle`, `pnpm vsix`, then `node scripts/verify-vsix-contents.mjs <path-to-vsix>`                  |
@@ -314,7 +314,7 @@ pnpm check-types
 pnpm test
 pnpm knip
 pnpm bundle
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
 ```
 
 `pnpm test` bundles the extension and runs extension/dependency unit tests. Default lint and type checks use the same
@@ -334,7 +334,7 @@ checks during development, then the affected-surface and exact-host gates before
   to shell-specific assumptions.
 - Comments should explain invariants, ownership, or non-obvious compatibility constraints, not restate the code.
 - A task is done only when the requested behavior works, relevant regressions are covered, required validation passes,
-  VS Code 1.122.1 compatibility is preserved, and the final diff contains no unrelated changes.
+  VS Code 1.125.0 compatibility is preserved, and the final diff contains no unrelated changes.
 
 ## Maintaining these instructions
 

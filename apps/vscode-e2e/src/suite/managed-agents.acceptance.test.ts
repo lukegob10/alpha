@@ -541,6 +541,7 @@ interface ManagedAgentHostProvider {
 	showTaskWithId(taskId: string): Promise<void>
 	getLiveTask(taskId: string):
 		| {
+				didComplete: boolean
 				taskAsk?: AlphaMessage
 				isInitialized?: boolean
 				isTaskLoopActive?: boolean
@@ -549,9 +550,10 @@ interface ManagedAgentHostProvider {
 				currentAgentStep?: { stepId: string }
 				activeAsk?: { type: string; ts: number }
 				askResponse?: string
-				messageQueueService?: { isEmpty(): boolean }
+				messageQueueService?: { isEmpty(): boolean; hasUnconsumedInput(): boolean }
 				clineMessages?: AlphaMessage[]
 				approveAsk(): void
+				waitForTermination(): Promise<void>
 				getCommandExecutionEvidence(): Array<{
 					command?: string
 					status: string
@@ -1005,32 +1007,57 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			assert.equal(persisted.subagentMaxDepth, 2)
 			assert.equal(persisted.subagentDelegationPolicy, "proactive")
 
-			await waitFor(() => completionPromptTasks.has(rootTaskId!), {
-				timeout: 60_000,
-				interval: 50,
-				description: "root completion prompt after answering its follow-up",
-				onTimeout: async () => {
-					const state = await provider.getStateToPostToWebview()
-					return {
-						currentTaskId: state.currentTaskId,
-						liveTask: state.liveTasksById?.[rootTaskId!],
-						webviewReady: api.isReady(),
-						...getTaskDiagnostics(provider, rootTaskId!),
-					}
-				},
-			})
 			await waitFor(
-				() =>
-					completed.has(rootTaskId!) ||
-					provider.getLiveTask(rootTaskId!)?.taskAsk?.ask === "completion_result",
-				{ timeout: 10_000, interval: 50 },
+				() => {
+					assert.equal(
+						completionPromptTasks.has(rootTaskId!),
+						false,
+						"The root must complete without an acknowledgement prompt",
+					)
+					return completed.has(rootTaskId!)
+				},
+				{
+					timeout: 60_000,
+					interval: 50,
+					description: "automatic root completion after child review and verification",
+					onTimeout: async () => {
+						const state = await provider.getStateToPostToWebview()
+						return {
+							currentTaskId: state.currentTaskId,
+							liveTask: state.liveTasksById?.[rootTaskId!],
+							webviewReady: api.isReady(),
+							...getTaskDiagnostics(provider, rootTaskId!),
+						}
+					},
+				},
 			)
-			if (!completed.has(rootTaskId)) {
-				const rootTask = provider.getLiveTask(rootTaskId)
-				assert.ok(rootTask, "The root task disappeared before its completion prompt could be accepted")
-				rootTask.approveAsk()
-			}
-			await waitFor(() => completed.has(rootTaskId!), { timeout: 90_000, interval: 50 })
+			const rootTask = provider.getLiveTask(rootTaskId)
+			assert.ok(rootTask, "The completed root task must remain available for its next conversation turn")
+			await rootTask.waitForTermination()
+			assert.equal(rootTask.didComplete, true)
+			assert.equal(completionCounts.get(rootTaskId), 1, "Root completion must be published once")
+			assert.equal(
+				completionPromptTasks.has(rootTaskId),
+				false,
+				"Root completion must not ask for acknowledgement",
+			)
+			assert.equal(rootTask.taskAsk?.ask, undefined, "The completed root must not retain an active ask")
+			assert.equal(rootTask.messageQueueService?.hasUnconsumedInput(), false)
+			const rootCompletionRows = rootTask.clineMessages?.filter(
+				(message) => message.type === "say" && message.say === "completion_result" && !message.partial,
+			)
+			assert.equal(rootCompletionRows?.length, 1, "The root must retain one canonical final answer")
+			assert.equal(
+				rootCompletionRows?.[0]?.text,
+				"Reviewed the child proposals, applied the outer change, and verified the result.",
+			)
+			const completedRoot = (await provider.getStateToPostToWebview()).liveTasksById?.[rootTaskId]
+			assert.equal(completedRoot?.lifecycle, "completed")
+			assert.equal(completedRoot?.status, "idle")
+			assert.equal(completedRoot?.isStreaming, false)
+			assert.equal(completedRoot?.isTurnActive, false)
+			assert.equal(completedRoot?.isWaitingForInput, false)
+			assert.equal(completedRoot?.queueCount, 0)
 			assert.deepStrictEqual(toolFailures, [], "The scripted scenario emitted tool failures")
 			assert.ok(scriptedAI.observedMailboxClaims > 0, "The scenario never delivered a mailbox claim")
 			assert.equal(scriptedAI.observedSteeringMessage, true)
@@ -1140,6 +1167,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				assert.equal(finalTree.capacity.terminal, 4)
 				await uiFixtureBarrier("complete")
 			}
+			assert.equal(completionCounts.get(rootTaskId), 1, "Navigation must not republish root completion")
 		} finally {
 			scriptedAI.releaseDiscard()
 			scriptedAI.releaseReview()

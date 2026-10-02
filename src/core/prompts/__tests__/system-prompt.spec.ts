@@ -63,6 +63,7 @@ import { McpHub } from "../../../services/mcp/McpHub"
 import { defaultMode, defaultModeSlug, Mode, planModeSlug } from "../../../shared/modes"
 import "../../../utils/path"
 import { addCustomInstructionParts } from "../sections/custom-instructions"
+import { getModesSection } from "../sections/modes"
 import { MultiSearchReplaceDiffStrategy } from "../../diff/strategies/multi-search-replace"
 
 // Mock the sections
@@ -216,6 +217,12 @@ const createMockMcpHub = (withServers: boolean = false): McpHub =>
 	}) as unknown as McpHub
 
 describe("SYSTEM_PROMPT", () => {
+	it("passes the captured mode prompts to the catalog projection", async () => {
+		const capturedPrompts = { code: { whenToUse: "CAPTURED_MODE_GUIDANCE" } }
+		await SYSTEM_PROMPT_FRAGMENTS(mockContext, "/test/path", false, undefined, undefined, "code", capturedPrompts)
+		expect(getModesSection).toHaveBeenCalledWith(mockContext, capturedPrompts)
+	})
+
 	let mockMcpHub: McpHub
 	let experiments: Record<string, boolean> | undefined
 

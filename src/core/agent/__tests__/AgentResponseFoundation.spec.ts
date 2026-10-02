@@ -394,6 +394,36 @@ describe("AgentResponseAccumulator", () => {
 		})
 	})
 
+	it.each([
+		{ id: "bad", name: "read_file", arguments: "not-json" },
+		{ id: "bad", name: "read_file", arguments: "null" },
+		{ id: "", name: "read_file", arguments: "{}" },
+		{ id: "bad", name: "", arguments: "{}" },
+	])("does not hide an invalid call behind a successful provider outcome: %j", async (call) => {
+		const accumulator = new AgentResponseAccumulator()
+		await accumulator.add({ type: "text", text: "Finished." })
+		await accumulator.add({ type: "tool_call", ...call })
+		await accumulator.add({ type: "outcome", status: "completed", terminal: true, semanticOutputObserved: true })
+
+		const response = await accumulator.finish()
+
+		expect(response.toolCalls).toEqual([])
+		expect(response.items.at(-1)).toMatchObject({ type: "error", retryable: false })
+		expect(response.outcome).toMatchObject({ status: "failed", retryable: false })
+	})
+
+	it("does not hide colliding call IDs behind a successful provider outcome", async () => {
+		const accumulator = new AgentResponseAccumulator()
+		await accumulator.add({ type: "tool_call", id: "call/a", name: "read_file", arguments: "{}" })
+		await accumulator.add({ type: "tool_call", id: "call:a", name: "read_file", arguments: "{}" })
+		await accumulator.add({ type: "outcome", status: "completed", terminal: true, semanticOutputObserved: true })
+
+		const response = await accumulator.finish()
+
+		expect(response.items.at(-1)).toMatchObject({ type: "error", callId: "call:a", retryable: false })
+		expect(response.outcome).toMatchObject({ status: "failed", retryable: false })
+	})
+
 	it("retains an explicit provider terminal outcome", async () => {
 		const accumulator = new AgentResponseAccumulator()
 		await accumulator.add({

@@ -105,7 +105,7 @@ test("validates complete manifests and distinct role paths", () => {
 test("validates independent identity, task, and done fields", () => {
 	assert.equal(validateIdentities([identity("a"), identity("b")], manifest).length, 2)
 	for (const change of [
-		(value: ReturnType<typeof identity>) => (value.hostVersion = "1.136.1" as HostVersion),
+		(value: ReturnType<typeof identity>) => (value.hostVersion = "0.0.0" as HostVersion),
 		(value: ReturnType<typeof identity>) => (value.nonce = "stale"),
 		(value: ReturnType<typeof identity>) => (value.pid = 1),
 		(value: ReturnType<typeof identity>) => (value.storagePath = path.join(manifest.profileRoot, "other")),

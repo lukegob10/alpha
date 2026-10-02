@@ -88,7 +88,7 @@ suite("Diff preview ownership in the Extension Host", function () {
 	this.timeout(90_000)
 
 	test("background saves preserve focus, tabs, cursor position, and unsaved typing", async () => {
-		assert.equal(vscode.version, "1.122.1")
+		assert.equal(vscode.version, "1.125.0")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace)
 		const prefix = `background-edit-${randomUUID()}`

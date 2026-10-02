@@ -3,7 +3,16 @@
 	"extends": ["//"],
 	"tasks": {
 		"build": {
-			"inputs": ["src/**", "public/**", "index.html", "package.json", "tsconfig*.json", "vite.config.ts"],
+			"inputs": [
+				"src/**",
+				"public/**",
+				"index.html",
+				"package.json",
+				"tsconfig*.json",
+				"vite.config.ts",
+				"$TURBO_ROOT$/src/package.json",
+				"$TURBO_ROOT$/src/shared/**"
+			],
 			"outputs": ["../src/webview-ui/**"]
 		}
 	}

@@ -506,16 +506,17 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 
 		// Generate and validate diff
 		const diff = formatResponse.createPrettyPatch(relPath, originalContent, newContent)
-		if (!diff) {
-			await task.diffViewProvider.reset()
-			return { status: "success", result: `No changes needed for '${relPath}'` }
-		}
-
 		const moveAbsolutePath = change.movePath ? path.resolve(task.cwd, change.movePath) : undefined
 		const effectiveMovePath =
 			change.movePath && moveAbsolutePath && path.relative(absolutePath, moveAbsolutePath) !== ""
 				? change.movePath
 				: undefined
+		// An unchanged body can still rename the file; that effect must pass the
+		// same approval and stale-source/destination checks as a content update.
+		if (!diff && !effectiveMovePath) {
+			await task.diffViewProvider.reset()
+			return { status: "success", result: `No changes needed for '${relPath}'` }
+		}
 		const expectedSourceFileState: ExpectedFileState = { exists: true, content: originalContent }
 
 		// Validate and snapshot the move destination before showing the diff or

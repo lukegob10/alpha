@@ -8,7 +8,7 @@ suite("Rendered UI probe", function () {
 	this.timeout(90000)
 	test("holds the actual Alpha webview for owned renderer input", async function () {
 		if (!process.env.ALPHA_UI_PROBE_NONCE) this.skip()
-		assert.equal(vscode.version, "1.122.1")
+		assert.equal(vscode.version, "1.125.0")
 		const directory = process.env.ALPHA_E2E_ARTIFACTS_DIR!
 		const nonce = process.env.ALPHA_UI_PROBE_NONCE!
 		assert.ok(directory && nonce)

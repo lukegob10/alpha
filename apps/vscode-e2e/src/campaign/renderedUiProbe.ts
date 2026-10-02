@@ -33,14 +33,14 @@ export async function runRenderedUiProbe(
 	let observed: { status: string; nonce: string; [key: string]: unknown } = { status: "not_started", nonce }
 	const runId = `ui-${nonce}`
 	const directory = path.join(profileRoot, "evidence", runId)
-	const userData = path.join(profileRoot, "profile", "1.122.1", "user-data")
+	const userData = path.join(profileRoot, "profile", "1.125.0", "user-data")
 	const abort = new AbortController()
 	const combinedSignal = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal
 	const timer = setTimeout(() => abort.abort(), mode !== "probe" ? 360000 : 120000)
 	let hostSettled = false
 	const running = runExtensionTests({
 		providerMode: "scripted",
-		vscodeVersion: "1.122.1",
+		vscodeVersion: "1.125.0",
 		vscodeExecutablePath: executable,
 		testFile:
 			mode === "file-review"
@@ -92,7 +92,7 @@ export async function runRenderedUiProbe(
 							),
 						)
 						assert.equal(ready.nonce, nonce)
-						assert.equal(ready.version, "1.122.1")
+						assert.equal(ready.version, "1.125.0")
 						activePort = await fs.readFile(path.join(userData, "DevToolsActivePort"), "utf8")
 						return true
 					} catch (error) {
@@ -154,7 +154,7 @@ export async function runRenderedUiProbe(
 				observed = {
 					status: "passed",
 					nonce,
-					hostVersion: "1.122.1",
+					hostVersion: "1.125.0",
 					targetType: selected.target.type,
 					trustedInputVerified: true,
 					stages,
@@ -214,7 +214,7 @@ export async function runRenderedUiProbe(
 				observed = {
 					status: "passed",
 					nonce,
-					hostVersion: "1.122.1",
+					hostVersion: "1.125.0",
 					targetType: selected.target.type,
 					targetUrl: selected.target.url,
 					trustedInputVerified: true,
@@ -265,7 +265,7 @@ export async function runRenderedUiProbe(
 		result.ownershipGate !== "verified" ||
 		result.captureComplete !== true ||
 		result.hostExitObserved !== true ||
-		result.actualVSCodeVersion !== "1.122.1"
+		result.actualVSCodeVersion !== "1.125.0"
 	)
 		observed.status = "failed"
 	await fs.writeFile(

@@ -26,7 +26,7 @@ Do not use it for ordinary extension or webview changes unless the task also cha
 | Component              | Path                                                   | Purpose                                                                                                                  |
 | ---------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
 | Evaluation package     | `packages/evals/`                                      | Optional controller, runner, database, evidence, grading, and benchmark tooling that executes the real VS Code extension |
-| VS Code runner         | `apps/vscode-e2e/`                                     | Exact VS Code 1.122.1 contract tests, scripted providers, and live host harnesses                                        |
+| VS Code runner         | `apps/vscode-e2e/`                                     | Exact VS Code 1.125.0 contract tests, scripted providers, and live host harnesses                                        |
 | Local extension suites | `evals/`                                               | Deterministic extension and safety suites that are part of Alpha's quality checks                                        |
 | Campaign definitions   | `.frontier-campaign/`                                  | Tracked campaign configuration and templates; generated attempt output is disposable and ignored                         |
 | Exercise repository    | [Alpha-Evals](https://github.com/AlphaInc/Alpha-Evals) | External language exercises and their tests                                                                              |
@@ -72,7 +72,7 @@ pnpm test
 Use the exact release-host gate when a change affects extension activation, VS Code APIs, task lifecycle, or packaging:
 
 ```sh
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
 ```
 
 The default root checks intentionally exclude optional evaluator work. Run all retained workspace checks explicitly when

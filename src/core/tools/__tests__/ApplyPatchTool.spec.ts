@@ -2,6 +2,7 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import * as vscode from "vscode"
+import type { ToolApprovalRequest } from "@alpha-code/types"
 
 import { fileExistsAtPath } from "../../../utils/fs"
 import { experiments } from "../../../shared/experiments"
@@ -122,6 +123,76 @@ function createCallbacks(): any {
 }
 
 describe("ApplyPatchTool", () => {
+	it.each([100, 3_000])("approves a tiny patch independently of unchanged file size (%s lines)", async (lines) => {
+		const original = "const value = 1\n" + "// unchanged context\n".repeat(lines)
+		const final = original.replace("const value = 1", "const value = 2")
+		mockedFs.readFile.mockResolvedValue(original)
+		mockedFileExists.mockResolvedValue(true)
+		vi.mocked(experiments.isEnabled).mockReturnValue(true)
+		const requestToolApproval = vi.fn(async (_request: ToolApprovalRequest, _reviewMessage?: string) => ({
+			decision: "approve_once" as const,
+		}))
+		const task = Object.assign(createTask(), {
+			taskId: "large-patch-approval",
+			abort: false,
+			requestToolApproval,
+			userMessageContent: [],
+			pushToolResultToUserContent: vi.fn(() => true),
+		})
+		const patch =
+			"*** Begin Patch\n*** Update File: example.ts\n@@\n-const value = 1\n+const value = 2\n*** End Patch"
+		const call = { type: "tool_call" as const, id: "small-patch", name: "apply_patch", arguments: { patch } }
+		const result = await new ToolScheduler({
+			task,
+			registry: new ToolRegistry({ nativeTools: getNativeTools() }),
+			mode: "code",
+			includedTools: ["apply_patch"],
+		}).run({ items: [call], toolCalls: [call], text: "", reasoning: "" })
+
+		expect(patch.length).toBeLessThan(100)
+		expect(result.results).toMatchObject([{ status: "success" }])
+		expect(requestToolApproval).toHaveBeenCalledOnce()
+		const [request, reviewMessage] = requestToolApproval.mock.calls[0]!
+		expect(request.description!.length).toBeLessThan(100_000)
+		expect(JSON.parse(reviewMessage!)).toMatchObject({ originalContent: original, finalContent: final })
+		expect(task.diffViewProvider.saveDirectly).toHaveBeenCalledWith("example.ts", final, false, true, 0, {
+			exists: true,
+			content: original,
+		})
+	})
+
+	it.each([true, false])("moves unchanged content after approval (direct: %s)", async (direct) => {
+		vi.mocked(experiments.isEnabled).mockReturnValue(direct)
+		mockedFileExists.mockResolvedValue(true)
+		mockedFs.readFile.mockImplementation(async (filePath) => {
+			if (String(filePath).endsWith("moved.txt")) {
+				throw Object.assign(new Error("missing"), { code: "ENOENT" })
+			}
+			return "old\n"
+		})
+		const task = createTask()
+		const callbacks = createCallbacks()
+		await new ApplyPatchTool().execute(
+			{ patch: "*** Begin Patch\n*** Update File: source.txt\n*** Move to: moved.txt\n@@\n old\n*** End Patch" },
+			task,
+			callbacks,
+		)
+		expect(callbacks.askApproval).toHaveBeenCalledOnce()
+		expect(JSON.parse(callbacks.askApproval.mock.calls[0][1]).content).toContain("Move destination: moved.txt")
+		if (direct) {
+			expect(task.diffViewProvider.saveDirectly).toHaveBeenCalledWith("moved.txt", "old\n", false, true, 0, {
+				exists: false,
+			})
+		} else {
+			expect(task.diffViewProvider.saveChanges).toHaveBeenCalledWith(true, 0, {
+				relPath: "moved.txt",
+				expectedFileState: { exists: false },
+			})
+		}
+		expect(mockedFs.unlink).toHaveBeenCalledWith(path.resolve(task.cwd, "source.txt"))
+		expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "success" })
+	})
+
 	it("keeps newly created files out of editor tabs during background editing", async () => {
 		mockedFileExists.mockResolvedValue(false)
 		mockedFs.readFile.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }))

@@ -1,7 +1,8 @@
 import * as path from "node:path"
-import { setTimeout as delay } from "node:timers/promises"
+import { MessageChannel, Worker } from "node:worker_threads"
 import { HTML_DOCUMENT_LIMITS } from "@alpha-code/types"
 import { DocumentParser } from "../parser"
+import type { DocumentParseRequest } from "../sanitize"
 
 // The normal extension bundle produces this actual worker. Do not mock its
 // sanitizer: these tests exercise isolation, structured cloning and cancellation.
@@ -16,6 +17,8 @@ describe("DocumentParser built worker", () => {
 	})
 	afterEach(() => {
 		parser.dispose()
+		vi.restoreAllMocks()
+		vi.useRealTimers()
 	})
 
 	it("sanitizes valid HTML and returns usable structured-cloned reference maps", async () => {
@@ -49,20 +52,44 @@ describe("DocumentParser built worker", () => {
 		}
 	})
 
-	it("rejects adversarial depth within the deadline while the calling event loop remains responsive", async () => {
+	it("rejects adversarial depth through the actual built sanitizer worker", async () => {
 		const source = html("<div>".repeat(10000) + "nested" + "</div>".repeat(10000))
 		expect(Buffer.byteLength(source)).toBeLessThan(HTML_DOCUMENT_LIMITS.bytes)
-		const started = performance.now()
-		let heartbeatCount = 0
-		const interval = setInterval(() => heartbeatCount++, 10)
+		await expect(parser.parse(source)).rejects.toThrow("size")
+	})
+
+	it("keeps the host responsive and enforces its deadline while an actual worker is blocked", async () => {
+		parser = new DocumentParser(path.join(__dirname, "fixtures", "blockedParser.mjs"))
+		const gate = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)
+		const channel = new MessageChannel()
+		const ready = new Promise<void>((resolve) => channel.port1.once("message", () => resolve()))
+		const postMessage = Worker.prototype.postMessage
+		vi.spyOn(Worker.prototype, "postMessage").mockImplementation(function (
+			this: Worker,
+			request: DocumentParseRequest,
+		) {
+			postMessage.call(this, { ...request, gate, ready: channel.port2 }, [channel.port2])
+		})
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+		let settled = false
 		try {
-			const result = parser.parse(source).catch((error: Error) => error)
-			await delay(50)
-			expect(heartbeatCount).toBeGreaterThanOrEqual(2)
+			const result = parser.parse(html("<p>Blocked worker</p>")).catch((error: Error) => {
+				settled = true
+				return error
+			})
+			await ready
+			// The worker is physically waiting on Atomics. An event-loop checkpoint
+			// and the host deadline must progress independently of that worker.
+			await new Promise<void>((resolve) => setImmediate(resolve))
+			await vi.advanceTimersByTimeAsync(1499)
+			expect(settled).toBe(false)
+			await vi.advanceTimersByTimeAsync(1)
 			expect(await result).toMatchObject({ message: "size" })
-			expect(performance.now() - started).toBeLessThan(3500)
 		} finally {
-			clearInterval(interval)
+			Atomics.store(new Int32Array(gate), 0, 1)
+			Atomics.notify(new Int32Array(gate), 0)
+			channel.port1.close()
+			channel.port2.close()
 		}
 	})
 

@@ -93,6 +93,7 @@ function harness() {
 		taskKind: "primary",
 		workspacePath: process.cwd(),
 		abort: false,
+		taskCancellationController: new AbortController(),
 		api: originalHandler,
 		apiConfiguration,
 		effectiveApiConfiguration: { ...apiConfiguration },

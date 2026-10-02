@@ -383,10 +383,39 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 			return
 		}
 
-		const schedule = buildSchedule(scheduleType, startAtTimestamp, timezone, interval)
+		const previousSchedule = selectedTask?.schedule
+		// The form exposes minute precision and hides the deadline/timezone. Preserve
+		// stored precision and constraints unless the corresponding input changed.
+		const schedule = buildSchedule(
+			scheduleType,
+			previousSchedule && startAt === localDateTimeValue(previousSchedule.startAt)
+				? previousSchedule.startAt
+				: startAtTimestamp,
+			previousSchedule?.timezone ?? timezone,
+			interval,
+		)
+		if (schedule.type !== "once" && previousSchedule && "endAt" in previousSchedule) {
+			schedule.endAt = previousSchedule.endAt
+		}
+		if (
+			schedule.type === "customInterval" &&
+			previousSchedule?.type === "customInterval" &&
+			interval === getInterval(previousSchedule)
+		) {
+			schedule.intervalMs = previousSchedule.intervalMs
+		}
 		const execution: ScheduledTaskExecution =
 			executionType === "command"
-				? { type: "command", command, timeoutMs: Math.max(1, timeoutMinutes) * 60 * 1000 }
+				? {
+						type: "command",
+						command,
+						timeoutMs:
+							selectedTask?.execution?.type === "command" &&
+							timeoutMinutes ===
+								Math.max(1, Math.round((selectedTask.execution.timeoutMs ?? 600000) / 60000))
+								? selectedTask.execution.timeoutMs
+								: Math.max(1, timeoutMinutes) * 60 * 1000,
+					}
 				: executionType === "skill"
 					? {
 							type: "skill",
@@ -404,7 +433,12 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 			execution,
 			mode: taskMode,
 			...(executionType !== "command" ? { reasoningPreference } : {}),
-			autoApproval: { approvalMode },
+			autoApproval: {
+				approvalMode,
+				...(selectedTask?.autoApproval?.deniedCommands?.length
+					? { deniedCommands: selectedTask.autoApproval.deniedCommands }
+					: {}),
+			},
 			schedule,
 			workspace,
 			notificationPreference,

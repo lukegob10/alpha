@@ -300,7 +300,7 @@ async function activate(context) {
 		if (!workspace || path.resolve(workspace).toLowerCase() !== expectedWorkspace) {
 			throw new Error("Workspace does not match the automation fixture")
 		}
-		if (vscode.version !== "1.122.1") throw new Error("The host is not VS Code 1.122.1")
+		if (vscode.version !== "1.125.0") throw new Error("The host is not VS Code 1.125.0")
 		const alpha = vscode.extensions.getExtension("AlphaInc.alpha")
 		if (!alpha) {
 			report.visibleProviderExtensions = vscode.extensions.all

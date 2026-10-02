@@ -383,6 +383,53 @@ describe("AlphaProvider host ownership", () => {
 		)
 	})
 
+	it.each(["messages", "todos"] as const)(
+		"reserves %s broadcast sequences across views before a transport yields",
+		async (surface) => {
+			const host = storage()
+			const first = makeProvider(host)
+			const second = makeProvider(host)
+			const task = makeTask("shared")
+			await first.addTaskToStack(task)
+			await second.focusTask(task.taskId)
+			for (const provider of [first, second]) vi.mocked(provider.postMessageToWebview).mockClear()
+			const entered = barrier()
+			const release = barrier()
+			vi.mocked(first.postMessageToWebview).mockImplementationOnce(async () => {
+				entered.resolve()
+				await release.promise
+			})
+			const broadcast = (text: string) =>
+				surface === "messages"
+					? first.postTaskMessageToWebview("messageUpdated", task.taskId, {
+							ts: 1,
+							type: "say",
+							say: "text",
+							text,
+						})
+					: first.postTaskTodosToWebview(task.taskId, [{ id: "todo", content: text, status: "pending" }])
+			const older = broadcast("older")
+			await entered.promise
+			await broadcast("newer")
+			release.resolve()
+			await older
+			const publications = vi.mocked(second.postMessageToWebview).mock.calls.map(([message]) => {
+				if (message.type === "messageUpdated") {
+					return { text: message.clineMessage?.text, sequence: message.clineMessagesSeq ?? 0 }
+				}
+				return {
+					text: message.state?.currentTaskTodos?.[0].content,
+					sequence: message.state?.currentTaskTodosSeq ?? 0,
+				}
+			})
+			expect(publications).toHaveLength(2)
+			expect(publications.sort((a, b) => a.sequence - b.sequence).map(({ text }) => text)).toEqual([
+				"older",
+				"newer",
+			])
+		},
+	)
+
 	it("shares prepared-task capacity across providers before preparation yields", async () => {
 		const host = storage()
 		const first = makeProvider(host)

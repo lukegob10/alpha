@@ -4,6 +4,10 @@ vi.mock("../../../services/command/commands", () => ({
 	getCommands: vi.fn(),
 }))
 
+vi.mock("../../../integrations/misc/open-file", () => ({
+	openFile: vi.fn().mockResolvedValue(undefined),
+}))
+
 vi.mock("@anthropic-ai/vertex-sdk", () => ({
 	AnthropicVertex: vi.fn(),
 }))
@@ -23,6 +27,8 @@ import { webviewMessageHandler } from "../webviewMessageHandler"
 import * as todoTools from "../../tools/UpdateTodoListTool"
 import type { AlphaProvider } from "../AlphaProvider"
 import { getCommands } from "../../../services/command/commands"
+import { openFile } from "../../../integrations/misc/open-file"
+import { MessageQueueService } from "../../message-queue/MessageQueueService"
 
 const mockGetCommands = vi.mocked(getCommands)
 
@@ -303,6 +309,7 @@ vi.mock("fs/promises", () => {
 			readFile: mockReadFile,
 			writeFile: mockWriteFile,
 		},
+		access: vi.fn().mockResolvedValue(undefined),
 		rm: mockRm,
 		mkdir: mockMkdir,
 		readFile: mockReadFile,
@@ -871,6 +878,144 @@ describe("webviewMessageHandler - image mentions", () => {
 	})
 })
 
+describe("webviewMessageHandler - retained completed-task input receipts", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.mocked(mockAlphaProvider.getState).mockResolvedValue({ maxImageFileSize: 5, maxTotalImageSize: 20 } as any)
+	})
+
+	const request = {
+		type: "resumeCompletedTask" as const,
+		taskId: "task-1",
+		requestId: "retained-followup",
+		text: "Continue the work",
+	}
+
+	it.each(["consumed", "claimed"])("rechecks %s input after publishing its pending queue", async (state) => {
+		const queue = new MessageQueueService()
+		queue.addMessage(request.text, undefined, request.requestId)
+		const history: { queued_message_ids: string[] }[] = []
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
+			taskId: request.taskId,
+			apiConversationHistory: history,
+			messageQueueService: queue,
+			hasAcceptedQueuedUserMessage: vi.fn().mockResolvedValue(true),
+		} as any)
+		let releaseProjection!: () => void
+		let projectionStarted!: () => void
+		const started = new Promise<void>((resolve) => (projectionStarted = resolve))
+		vi.mocked(mockAlphaProvider.postTaskQueueToWebview).mockImplementationOnce(async () => {
+			projectionStarted()
+			await new Promise<void>((resolve) => (releaseProjection = resolve))
+		})
+		const dispatch = webviewMessageHandler(mockAlphaProvider, request)
+		await Promise.race([started, dispatch])
+		expect(mockAlphaProvider.postTaskQueueToWebview).toHaveBeenCalledOnce()
+		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()
+		if (state === "consumed") history.push({ queued_message_ids: [request.requestId] })
+		else queue.claimMessage(request.requestId)
+		releaseProjection()
+		await dispatch
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "chatCommandResult",
+			taskId: request.taskId,
+			requestId: request.requestId,
+			chatCommandResult: {
+				requestId: request.requestId,
+				taskId: request.taskId,
+				command: "resumeCompletedTask",
+				status: "accepted",
+			},
+		})
+	})
+
+	it.each([false, true])(
+		"publishes retained input before its accepted queued receipt (duplicate: %s)",
+		async (duplicate) => {
+			const queue = new MessageQueueService()
+			const submitUserMessage = vi.fn(async () => {
+				queue.addMessage(request.text, undefined, request.requestId)
+				queue.claimMessage(request.requestId)
+				// Preparation failed after admission; the owning task released its claim.
+				queue.releaseMessage(request.requestId)
+			})
+			if (duplicate) queue.addMessage(request.text, undefined, request.requestId)
+			vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
+				taskId: request.taskId,
+				cwd: "/mock/workspace",
+				apiConversationHistory: [],
+				messageQueueService: queue,
+				hasAcceptedQueuedUserMessage: vi.fn().mockResolvedValue(duplicate),
+				isCompleted: vi.fn().mockReturnValue(true),
+				submitUserMessage,
+			} as any)
+
+			await webviewMessageHandler(mockAlphaProvider, request)
+
+			expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+				type: "chatCommandResult",
+				taskId: request.taskId,
+				requestId: request.requestId,
+				chatCommandResult: {
+					requestId: request.requestId,
+					taskId: request.taskId,
+					command: "resumeCompletedTask",
+					status: "accepted",
+					deliveryState: "queued",
+				},
+			})
+			expect(mockAlphaProvider.postTaskQueueToWebview).toHaveBeenCalledExactlyOnceWith(
+				request.taskId,
+				queue.visibleMessages,
+			)
+			expect(vi.mocked(mockAlphaProvider.postTaskQueueToWebview).mock.invocationCallOrder[0]).toBeLessThan(
+				vi.mocked(mockAlphaProvider.postMessageToWebview).mock.invocationCallOrder[0],
+			)
+			expect(submitUserMessage).toHaveBeenCalledTimes(duplicate ? 0 : 1)
+			expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalledWith(
+				expect.objectContaining({ type: "invoke" }),
+			)
+		},
+	)
+
+	it.each([
+		{ duplicate: false, state: "consumed" },
+		{ duplicate: true, state: "consumed" },
+		{ duplicate: false, state: "claimed" },
+		{ duplicate: true, state: "claimed" },
+		{ duplicate: false, state: "unrelated" },
+		{ duplicate: true, state: "unrelated" },
+	])("omits queued delivery for $state input (duplicate: $duplicate)", async ({ duplicate, state }) => {
+		const queue = new MessageQueueService()
+		queue.addMessage(request.text, undefined, state === "unrelated" ? "different-request" : request.requestId)
+		if (state === "claimed") queue.claimMessage(request.requestId)
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
+			taskId: request.taskId,
+			cwd: "/mock/workspace",
+			apiConversationHistory: state === "consumed" ? [{ queued_message_ids: [request.requestId] }] : [],
+			messageQueueService: queue,
+			hasAcceptedQueuedUserMessage: vi.fn().mockResolvedValue(duplicate),
+			isCompleted: vi.fn().mockReturnValue(true),
+			submitUserMessage: vi.fn().mockResolvedValue(undefined),
+		} as any)
+
+		await webviewMessageHandler(mockAlphaProvider, request)
+
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
+			type: "chatCommandResult",
+			taskId: request.taskId,
+			requestId: request.requestId,
+			chatCommandResult: {
+				requestId: request.requestId,
+				taskId: request.taskId,
+				command: "resumeCompletedTask",
+				status: "accepted",
+			},
+		})
+		expect(mockAlphaProvider.postTaskQueueToWebview).not.toHaveBeenCalled()
+	})
+})
+
 describe("webviewMessageHandler - queued message steering", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
@@ -1361,7 +1506,7 @@ describe("webviewMessageHandler - deleteCustomMode", () => {
 
 	it("should delete a project mode and its rules folder", async () => {
 		const slug = "test-project-mode"
-		const rulesFolderPath = path.join("/mock/workspace", ".roo", `rules-${slug}`)
+		const rulesFolderPath = path.join("/mock/workspace", ".alpha", `rules-${slug}`)
 
 		vi.mocked(mockAlphaProvider.customModesManager.getCustomModes).mockResolvedValue([
 			{
@@ -1432,7 +1577,7 @@ describe("webviewMessageHandler - deleteCustomMode", () => {
 
 	it("should handle errors when deleting rules folder", async () => {
 		const slug = "test-mode-error"
-		const rulesFolderPath = path.join("/mock/workspace", ".roo", `rules-${slug}`)
+		const rulesFolderPath = path.join("/mock/workspace", ".alpha", `rules-${slug}`)
 		const error = new Error("Permission denied")
 
 		vi.mocked(mockAlphaProvider.customModesManager.getCustomModes).mockResolvedValue([
@@ -1461,6 +1606,54 @@ describe("webviewMessageHandler - deleteCustomMode", () => {
 		)
 		// No error response is sent anymore - we just continue with deletion
 		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()
+	})
+})
+
+describe("webviewMessageHandler - Alpha project configuration", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.mocked(mockAlphaProvider.getCurrentTask).mockReturnValue(undefined)
+		vi.mocked(getWorkspacePath).mockReturnValue("/mock/workspace")
+		vi.mocked(fs.access).mockRejectedValue(Object.assign(new Error("not found"), { code: "ENOENT" }))
+		vi.mocked(fs.writeFile).mockReset().mockResolvedValue(undefined)
+		mockGetCommands.mockResolvedValue([])
+	})
+
+	afterEach(() => {
+		vi.mocked(fs.access).mockResolvedValue(undefined)
+	})
+
+	it("creates and opens project MCP configuration in .alpha", async () => {
+		await webviewMessageHandler(mockAlphaProvider, { type: "openProjectMcpSettings" })
+		const configPath = path.join("/mock/workspace", ".alpha", "mcp.json")
+		expect(fs.mkdir).toHaveBeenCalledWith(path.dirname(configPath), { recursive: true })
+		expect(fs.writeFile).toHaveBeenCalledWith(configPath, JSON.stringify({ mcpServers: {} }, null, 2), {
+			encoding: "utf-8",
+			flag: "wx",
+		})
+		expect(openFile).toHaveBeenCalledWith(configPath)
+	})
+
+	it("opens an existing or concurrently created MCP file without overwriting it", async () => {
+		vi.mocked(fs.access).mockResolvedValue(undefined)
+		vi.mocked(fs.writeFile).mockRejectedValueOnce(Object.assign(new Error("exists"), { code: "EEXIST" }))
+		await webviewMessageHandler(mockAlphaProvider, { type: "openProjectMcpSettings" })
+		expect(openFile).toHaveBeenCalledWith(path.join("/mock/workspace", ".alpha", "mcp.json"))
+		expect(vscode.window.showErrorMessage).not.toHaveBeenCalled()
+	})
+
+	it("creates project slash commands in .alpha where discovery can find them", async () => {
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "createCommand",
+			text: "Project Setup",
+			values: { source: "project" },
+		})
+		expect(fs.writeFile).toHaveBeenCalledWith(
+			path.join("/mock/workspace", ".alpha", "commands", "project-setup.md"),
+			t("common:errors.command_template_content"),
+			"utf8",
+		)
+		expect(mockGetCommands).toHaveBeenCalledWith("/mock/workspace")
 	})
 })
 

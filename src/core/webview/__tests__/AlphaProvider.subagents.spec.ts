@@ -902,6 +902,187 @@ If complete, use attempt_completion.
 		})
 	})
 
+	it.each(["rejected", "thrown", "unterminated"] as const)(
+		"publishes a %s child startup and releases its slot for the next admitted child",
+		async (failure) => {
+			const provider = makeProviderHarness(2, { maxConcurrentSubagents: 1 })
+			const parent = makeParent()
+			const children = new Map<string, Task>()
+			;(provider as any).taskSessions.getTask = (taskId: string) =>
+				taskId === parent.taskId ? parent : children.get(taskId)
+			let started!: () => void
+			const startupStarted = new Promise<void>((resolve) => (started = resolve))
+			let finishStartup!: () => void
+			const startup = new Promise<void>((resolve, reject) => {
+				finishStartup = () =>
+					failure === "rejected" ? reject(new Error("child prompt preparation failed")) : resolve()
+			})
+			let releaseHistory!: () => void
+			const historyFinalization = new Promise<void>((resolve) => (releaseHistory = resolve))
+			// Task owns and reports its background rejection independently of the launcher.
+			void startup.catch(() => undefined)
+			let firstChild = true
+			;(provider as any).createTask = vi.fn(
+				async (_prompt: string, _images: unknown, _parent: unknown, options: { taskId: string }) => {
+					const rejectsStartup = firstChild
+					firstChild = false
+					const emitter = new EventEmitter()
+					const child = Object.assign(emitter, {
+						taskId: options.taskId,
+						clineMessages: [] as Task["clineMessages"],
+						abort: false,
+						getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
+						persistFrozenSubagentInstructions: vi.fn(async () => undefined),
+						finalizeSubagentHistory: vi.fn(async () => {
+							if (rejectsStartup) await historyFinalization
+						}),
+						cancelCurrentRequest: vi.fn(),
+						abortTask: vi.fn(async function (this: { abort: boolean }) {
+							this.abort = true
+						}),
+						waitForTermination: vi.fn(function (this: { abort: boolean }) {
+							return rejectsStartup && !this.abort ? startup : Promise.resolve()
+						}),
+						start() {
+							if (rejectsStartup) {
+								started()
+								if (failure === "thrown") throw new Error("child prompt preparation failed")
+							} else emitter.emit(AlphaCodeEventName.TaskCompleted, options.taskId, this.getTokenUsage())
+						},
+					})
+					children.set(options.taskId, child as unknown as Task)
+					return child
+				},
+			)
+			const bounded = new BoundedDelegationManager(
+				(envelope, signal) => (provider as any).runSubagentEnvelope(envelope, signal),
+				1,
+			)
+			const runs = new AsyncSubagentRunManager(bounded)
+			;(provider as any).boundedDelegationManager = bounded
+			;(provider as any).asyncSubagentRunManager = runs
+			const controller = new AbortController()
+			const prepared = await provider.prepareSubagentGroup(parent as any, [
+				{ task_name: "fails_startup", objective: "Inspect the initial ticket", agent_kind: "review" },
+			])
+			const handle = await provider.launchPreparedSubagentGroup(parent as any, prepared, controller.signal)
+			await startupStarted
+			finishStartup()
+			const failureSummary =
+				failure === "unterminated"
+					? "Child lifecycle ended without a terminal result"
+					: "child prompt preparation failed"
+			try {
+				await vi.waitFor(() => expect(children.get(handle.taskId)!.finalizeSubagentHistory).toHaveBeenCalled())
+				expect(children.get(handle.taskId)!.abortTask).toHaveBeenCalledOnce()
+				expect(runs.getSnapshot(handle.taskId)?.status).toBe("running")
+				await expect(
+					provider.prepareSubagentGroup(parent as any, [
+						{ task_name: "before_history", objective: "Inspect the next ticket", agent_kind: "review" },
+					]),
+				).rejects.toThrow("Not enough root-wide child capacity")
+				releaseHistory()
+				await vi.waitFor(() => expect(runs.getSnapshot(handle.taskId)?.status).toBe("failed"))
+				await vi.waitFor(() =>
+					expect((provider as any).agentControlStore.getAgent(handle.taskId, parent.taskId)).toMatchObject({
+						status: "failed",
+					}),
+				)
+				expect(runs.getResult(handle.taskId)).toMatchObject({
+					status: "failed",
+					stopReason: "failed",
+					summary: expect.stringContaining(failureSummary),
+				})
+				expect(children.get(handle.taskId)!.finalizeSubagentHistory).toHaveBeenCalledWith(
+					"failed",
+					expect.stringContaining(failureSummary),
+					"failed",
+				)
+				const next = await provider.prepareSubagentGroup(parent as any, [
+					{ task_name: "next_ticket", objective: "Inspect the next ticket", agent_kind: "review" },
+				])
+				const nextHandle = await provider.launchPreparedSubagentGroup(parent as any, next, controller.signal)
+				await expect(runs.waitForResult(nextHandle.taskId)).resolves.toMatchObject({ status: "completed" })
+				expect(children.get(handle.taskId)!.listenerCount(AlphaCodeEventName.TaskCompleted)).toBe(0)
+				expect(children.get(handle.taskId)!.listenerCount(AlphaCodeEventName.TaskAborted)).toBe(0)
+			} finally {
+				releaseHistory()
+				controller.abort()
+				await runs.waitForResult(handle.taskId)
+			}
+		},
+	)
+
+	it.each(["approval", "recovery", "blocked"] as const)(
+		"preserves an explicit %s boundary when the retained child lifecycle settles",
+		async (boundary) => {
+			const provider = makeProviderHarness()
+			const parent = makeParent()
+			;(provider as any).taskSessions.getTask = (taskId: string) =>
+				taskId === parent.taskId ? parent : undefined
+			let resolveLifecycle!: () => void
+			const lifecycle = new Promise<void>((resolve) => (resolveLifecycle = resolve))
+			let started!: () => void
+			const startup = new Promise<void>((resolve) => (started = resolve))
+			let observedWait!: () => void
+			const waitObserved = new Promise<void>((resolve) => (observedWait = resolve))
+			const emitter = new EventEmitter()
+			const child = Object.assign(emitter, {
+				taskId: "",
+				clineMessages: [] as Task["clineMessages"],
+				getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
+				persistFrozenSubagentInstructions: vi.fn(async () => undefined),
+				finalizeSubagentHistory: vi.fn(async () => undefined),
+				cancelCurrentRequest: vi.fn(),
+				abortTask: vi.fn(async () => undefined),
+				waitForTermination: vi.fn(() => lifecycle),
+				isCompleted: () => boundary === "blocked",
+				subagentCompletionOutcome: boundary === "blocked" ? ("blocked" as const) : undefined,
+				hasPendingAsk: () => {
+					observedWait()
+					return boundary === "approval"
+				},
+				taskAsk: boundary === "recovery" ? { ts: 1, type: "ask", ask: "resume_task" } : undefined,
+				start: () => started(),
+			})
+			;(provider as any).createTask = vi.fn(
+				async (_prompt: string, _images: unknown, _parent: unknown, options: { taskId: string }) => {
+					child.taskId = options.taskId
+					return child
+				},
+			)
+			const bounded = new BoundedDelegationManager((envelope, signal) =>
+				(provider as any).runSubagentEnvelope(envelope, signal),
+			)
+			const runs = new AsyncSubagentRunManager(bounded)
+			;(provider as any).boundedDelegationManager = bounded
+			;(provider as any).asyncSubagentRunManager = runs
+			const controller = new AbortController()
+			const prepared = await provider.prepareSubagentGroup(parent as any, [
+				{ objective: "Inspect the retained ticket", agent_kind: "review" },
+			])
+			const handle = await provider.launchPreparedSubagentGroup(parent as any, prepared, controller.signal)
+			await startup
+			resolveLifecycle()
+			try {
+				if (boundary !== "blocked") {
+					await waitObserved
+					expect(runs.getSnapshot(handle.taskId)?.status).toBe("running")
+					expect(child.finalizeSubagentHistory).not.toHaveBeenCalled()
+					expect(child.abortTask).not.toHaveBeenCalled()
+					emitter.emit(AlphaCodeEventName.TaskCompleted, child.taskId, child.getTokenUsage())
+				}
+				await expect(runs.waitForResult(handle.taskId)).resolves.toMatchObject({
+					status: boundary === "blocked" ? "blocked" : "completed",
+				})
+				expect(child.abortTask).not.toHaveBeenCalled()
+			} finally {
+				controller.abort()
+				await runs.waitForResult(handle.taskId)
+			}
+		},
+	)
+
 	it("allows a requested task name that belongs to a different root task", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()

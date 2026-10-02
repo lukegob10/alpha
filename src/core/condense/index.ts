@@ -206,15 +206,29 @@ export function getToolCallResultPairs(messages: ApiMessage[]): Map<string, Tool
 }
 
 /**
- * Reports whether every persisted tool call has a result and every result has
- * a corresponding call.  This is intentionally pure and does not discard
+ * Reports whether each call has exactly one later result and every result has
+ * a corresponding earlier call. This is intentionally pure and does not discard
  * history; callers that need recovery can use `injectSyntheticToolResults`.
  */
 export function hasToolCallResultIntegrity(messages: ApiMessage[]): boolean {
-	for (const pair of getToolCallResultPairs(messages).values()) {
-		if (pair.callMessageIndexes.length === 0 || pair.resultMessageIndexes.length === 0) return false
+	const calls = new Set<string>()
+	const results = new Set<string>()
+	for (const message of messages) {
+		if (!Array.isArray(message.content)) continue
+		for (const block of message.content) {
+			const callId = getToolCallId(block)
+			if (callId) {
+				if (calls.has(callId)) return false
+				calls.add(callId)
+			}
+			const resultId = getToolResultId(block)
+			if (resultId) {
+				if (!calls.has(resultId) || results.has(resultId)) return false
+				results.add(resultId)
+			}
+		}
 	}
-	return true
+	return calls.size === results.size
 }
 
 export const DEFAULT_RECENT_TAIL_TOKENS = 16_384
@@ -1128,38 +1142,24 @@ ${commandBlocks}
 		signal?.throwIfAborted()
 		if (error instanceof Error && error.name === "AbortError") throw error
 		if (streamError) return getStreamErrorResponse(streamError)
-		console.error("Error during condensing API call:", error)
-		const errorMessage = error instanceof Error ? error.message : String(error)
-
-		// Capture detailed error information for debugging
-		let errorDetails = ""
+		const errorMessage = getCondenseStreamErrorDetail({
+			type: "error",
+			error: "CondenseProviderError",
+			message: error instanceof Error ? error.message : typeof error === "string" ? error : "Provider error",
+		})
+		// Error response/body objects can include credentials or echoed input. Keep
+		// only bounded message text and scalar transport identifiers for diagnosis.
+		let errorDetails = errorMessage
 		if (error instanceof Error) {
-			errorDetails = `Error: ${error.message}`
-			// Capture any additional API error properties
 			const anyError = error as unknown as Record<string, unknown>
-			if (anyError.status) {
+			if (typeof anyError.status === "number" && Number.isInteger(anyError.status)) {
 				errorDetails += `\n\nHTTP Status: ${anyError.status}`
 			}
-			if (anyError.code) {
+			if (typeof anyError.code === "string" && /^[\w.-]{1,64}$/.test(anyError.code)) {
 				errorDetails += `\nError Code: ${anyError.code}`
 			}
-			if (anyError.response) {
-				try {
-					errorDetails += `\n\nAPI Response:\n${JSON.stringify(anyError.response, null, 2)}`
-				} catch {
-					errorDetails += `\n\nAPI Response: [Unable to serialize]`
-				}
-			}
-			if (anyError.body) {
-				try {
-					errorDetails += `\n\nResponse Body:\n${JSON.stringify(anyError.body, null, 2)}`
-				} catch {
-					errorDetails += `\n\nResponse Body: [Unable to serialize]`
-				}
-			}
-		} else {
-			errorDetails = String(error)
 		}
+		console.error("Error during condensing API call:", errorDetails)
 
 		return finish(
 			{
@@ -1222,6 +1222,7 @@ ${commandBlocks}
 					cwd,
 					alphaIgnoreController,
 					maxCharacters: Math.min(50_000, summaryBudgetTokens),
+					signal,
 				}),
 				signal,
 			)

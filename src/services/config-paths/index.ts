@@ -1,6 +1,59 @@
 import * as path from "path"
 import * as os from "os"
-import fs from "fs/promises"
+import * as fs from "fs/promises"
+import { constants } from "fs"
+
+/** Canonical root for configuration created by Alpha in the current project. */
+export function getProjectConfigDirectory(cwd: string): string {
+	return path.join(cwd, ".alpha")
+}
+
+/** Project-local Alpha configuration overrides existing legacy configuration. */
+export function getConfigDirectoriesForCwd(cwd: string): string[] {
+	return [...getLegacyConfigDirectoriesForCwd(cwd), getProjectConfigDirectory(cwd)]
+}
+
+/** Reads existing project configuration without rewriting the legacy source. */
+export async function getProjectConfigPathForRead(cwd: string, relativePath: string): Promise<string> {
+	const projectPath = path.join(getProjectConfigDirectory(cwd), relativePath)
+	try {
+		await fs.access(projectPath)
+		return projectPath
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+		return path.join(getLegacyProjectConfigDirectory(cwd), relativePath)
+	}
+}
+
+/**
+ * Preserve an existing project MCP configuration on the first use of its Alpha path.
+ * An exclusive copy keeps concurrent edits or an existing .alpha/mcp.json authoritative.
+ */
+export async function getProjectMcpConfigPath(cwd: string): Promise<string> {
+	const projectPath = path.join(getProjectConfigDirectory(cwd), "mcp.json")
+	try {
+		await fs.access(projectPath)
+		return projectPath
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+	}
+
+	const legacyPath = path.join(getLegacyProjectConfigDirectory(cwd), "mcp.json")
+	try {
+		await fs.access(legacyPath)
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return projectPath
+		throw error
+	}
+
+	await fs.mkdir(path.dirname(projectPath), { recursive: true })
+	try {
+		await fs.copyFile(legacyPath, projectPath, constants.COPYFILE_EXCL)
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+	}
+	return projectPath
+}
 
 /**
  * Gets the global .roo directory path based on the current platform

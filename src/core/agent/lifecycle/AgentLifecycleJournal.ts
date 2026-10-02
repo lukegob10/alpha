@@ -17,6 +17,7 @@ import {
 import { GlobalFileNames } from "../../../shared/globalFileNames"
 import { getTaskDirectoryPath } from "../../../utils/storage"
 import { atomicWriteJson, withFileLock } from "../../task-persistence/atomicWrite"
+import { redactAgentCredentialText } from "../redactCredentials"
 
 const MAX_VALUE_LENGTH = 8_000
 const REDACTED_VALUE = "[redacted]"
@@ -1071,13 +1072,7 @@ function redactLifecycleValue(
 ): unknown {
 	if (key && SECRET_KEY_PATTERN.test(key)) return REDACTED_VALUE
 	if (typeof value === "string") {
-		let redacted = value
-		redacted = redacted.replace(/(\bAuthorization\b\s*[:=]\s*Bearer\s+)[^\s,;}\]]+/gi, `$1${REDACTED_VALUE}`)
-		redacted = redacted.replace(
-			/(\b(?:api.?key|access.?key|client.?secret|secret|password|passwd|credential|authorization|private.?key|(?:(?:auth|access|refresh|id).?)?token)\b\s*[:=]\s*)(?!Bearer\b)(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
-			`$1${REDACTED_VALUE}`,
-		)
-		redacted = redacted.replace(/(\bBearer\s+)(?!\[redacted\])[^\s,;}\]]+/gi, `$1${REDACTED_VALUE}`)
+		const redacted = redactAgentCredentialText(value)
 		if (redacted.length <= maxValueLength) return redacted
 		const suffix = "\n[truncated]"
 		return `${redacted.slice(0, Math.max(0, maxValueLength - suffix.length))}${suffix}`

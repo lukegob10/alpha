@@ -97,7 +97,7 @@ suite("Alpha canonical update_plan acceptance", function () {
 	setDefaultSuiteTimeout(this)
 
 	test("updates plan state and sends a paired canonical call/result to the next provider request", async () => {
-		assert.equal(vscode.version, "1.122.1")
+		assert.equal(vscode.version, "1.125.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider?: UpdatePlanHost }).sidebarProvider

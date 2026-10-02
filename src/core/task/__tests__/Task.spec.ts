@@ -11,6 +11,7 @@ import { Anthropic } from "@anthropic-ai/sdk"
 import {
 	AlphaCodeEventName,
 	getApiProtocol,
+	alphaMessageSchema,
 	type AlphaAsk,
 	type ApprovalMode,
 	type GlobalState,
@@ -35,6 +36,7 @@ import { AgentResponseAccumulator } from "../../agent/AgentResponseAccumulator"
 import { AgentRetryPolicy } from "../../agent/AgentRetryPolicy"
 import { AgentControlTransactionError } from "../../agent/AgentControlTransaction"
 import { ToolScheduler } from "../../agent/ToolScheduler"
+import { createAgentLifecycleSnapshot } from "../../agent/lifecycle/reducer"
 import { parseProposedPlan } from "../../../shared/plan-mode"
 import { getNativeTools } from "../../prompts/tools/native-tools"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
@@ -2816,7 +2818,7 @@ describe("Alpha", () => {
 			const overwriteAlphaMessages = vi.spyOn(task, "overwriteAlphaMessages")
 			const reconcileSubagents = vi.spyOn(task as any, "reconcileInterruptedSubagentGroups")
 			vi.spyOn(task as any, "flushApiConversationHistoryPersistence").mockResolvedValue(undefined)
-			vi.spyOn(task, "say").mockResolvedValue(undefined)
+			const say = vi.spyOn(task, "say").mockResolvedValue(undefined)
 			const overwriteApiHistory = vi.spyOn(task, "overwriteApiConversationHistory").mockResolvedValue(true)
 			const continueLoop = vi
 				.spyOn(task as any, "initiateTaskLoop")
@@ -2825,13 +2827,30 @@ describe("Alpha", () => {
 					await onPersisted?.()
 				})
 
-			await task.resumeCompletedTaskFollowup("continue in place")
+			const queuedMessage = task.messageQueueService.addMessage("continue in place")!
+			await task.resumeCompletedTaskFollowup(queuedMessage.text, [], "human", [queuedMessage.id])
 
 			expect(loadAlphaMessages).not.toHaveBeenCalled()
 			expect(loadApiHistory).not.toHaveBeenCalled()
 			expect(overwriteAlphaMessages).not.toHaveBeenCalled()
 			expect(reconcileSubagents).not.toHaveBeenCalled()
 			expect(overwriteApiHistory).not.toHaveBeenCalled()
+			expect(say).toHaveBeenCalledWith(
+				"user_feedback",
+				"continue in place",
+				[],
+				undefined,
+				undefined,
+				undefined,
+				{
+					queuedMessageIds: [queuedMessage.id],
+				},
+			)
+			expect(
+				task["getQueuedInputReceipts"](
+					continueLoop.mock.calls[0]?.[0] as Parameters<Task["initiateTaskLoop"]>[0],
+				),
+			).toEqual([queuedMessage.id])
 			expect(continueLoop).toHaveBeenCalledWith(
 				[{ type: "text", text: "<user_message>\ncontinue in place\n</user_message>" }],
 				expect.any(Function),
@@ -2878,6 +2897,103 @@ describe("Alpha", () => {
 			expect(task.apiConversationHistory).toBe(originalHistory)
 			expect((task as any).didComplete).toBe(true)
 			expect((task as any).steerMessageAwaitingPersistence).toBe(false)
+		})
+
+		it("reuses persisted follow-up feedback after failed provider admission and an edited FIFO retry", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "initial task",
+				startTask: false,
+			})
+			// Drive each retry explicitly so its provider-admission failure remains observable.
+			task.messageQueueService.removeListener("stateChanged", task["messageQueueStateChangedHandler"]!)
+			task["messageQueueStateChangedHandler"] = undefined
+			task.markCompleted()
+			task.clineMessages = [{ ts: 1, type: "say", say: "completion_result", text: "done" }]
+			task.apiConversationHistory = [
+				{ role: "user", content: [{ type: "text", text: "initial task" }] },
+				{ role: "assistant", content: [{ type: "text", text: "done" }] },
+			]
+			const persistence = task as unknown as {
+				enqueueAlphaMessagesSave: Task["enqueueAlphaMessagesSave"]
+				saveApiConversationHistory: Task["saveApiConversationHistory"]
+				initiateTaskLoop: Task["initiateTaskLoop"]
+			}
+			let savedMessages = structuredClone(task.clineMessages)
+			vi.spyOn(persistence, "enqueueAlphaMessagesSave").mockImplementation(async (snapshot, onPersisted) => {
+				savedMessages = structuredClone(snapshot?.() ?? task.clineMessages)
+				onPersisted?.()
+				return true
+			})
+			const saveApiHistory = vi.spyOn(persistence, "saveApiConversationHistory").mockResolvedValue(false)
+			vi.spyOn(task, "retrySaveApiConversationHistory").mockResolvedValue(false)
+			const request = vi.fn()
+			vi.spyOn(persistence, "initiateTaskLoop").mockImplementation(async (content, onPersisted) => {
+				let admission: Promise<void> | undefined
+				await task["persistUserContentWithEnvironment"](
+					content,
+					undefined,
+					undefined,
+					() => {
+						admission = Promise.resolve(onPersisted?.())
+					},
+					undefined,
+					task["getQueuedInputReceipts"](content),
+					"human",
+				)
+				await admission
+				request(content)
+			})
+			const queued = await task.messageQueueService.addMessageDurably(
+				"Retry this follow-up.",
+				["data:image/png;base64,AAAA"],
+				"retry-request",
+			)
+			expect(queued).toBeDefined()
+
+			await expect(
+				task.resumeCompletedTaskFollowup(queued!.text, queued!.images, "human", [queued!.id]),
+			).rejects.toThrow("Failed to persist the user turn")
+			expect(savedMessages.filter((message) => message.say === "user_feedback")).toHaveLength(1)
+			const feedbackTs = savedMessages.find((message) => message.say === "user_feedback")!.ts
+			expect(task.isCompleted()).toBe(true)
+			expect(task.messageQueueService.messages.map((message) => message.id)).toEqual([queued!.id])
+			expect(task.messageQueueService.getClaimedMessageIds()).toEqual([])
+			expect(task.apiConversationHistory.some((message) => message.queued_message_ids?.length)).toBe(false)
+			expect(request).not.toHaveBeenCalled()
+
+			await task.messageQueueService.updateMessageDurably(queued!.id, "Edited follow-up.", [
+				"data:image/png;base64,BBBB",
+			])
+			const edited = task.messageQueueService.getMessage(queued!.id)!
+			saveApiHistory.mockResolvedValue(true)
+			await task.resumeCompletedTaskFollowup(edited.text, edited.images, "human", [edited.id])
+			await task["waitForOwnedLifecycle"]()
+
+			expect(task.clineMessages.filter((message) => message.say === "user_feedback")).toEqual([
+				expect.objectContaining({
+					ts: feedbackTs,
+					text: "Edited follow-up.",
+					images: ["data:image/png;base64,BBBB"],
+					queuedMessageIds: [edited.id],
+				}),
+			])
+			expect(savedMessages).toEqual(task.clineMessages)
+			expect(task.messageQueueService.hasUnconsumedInput()).toBe(false)
+			expect(
+				task.apiConversationHistory.filter((message) => message.queued_message_ids?.includes(edited.id)),
+			).toEqual([
+				expect.objectContaining({
+					role: "user",
+					queued_message_ids: [edited.id],
+					content: [
+						{ type: "text", text: "<user_message>\nEdited follow-up.\n</user_message>" },
+						{ type: "image", source: { type: "base64", media_type: "image/png", data: "BBBB" } },
+					],
+				}),
+			])
+			expect(request).toHaveBeenCalledOnce()
 		})
 
 		it("keeps a completed task terminal when its follow-up fails before persistence", async () => {
@@ -3640,6 +3756,70 @@ describe("Alpha", () => {
 			})
 			return { promise, resolve }
 		}
+
+		it("keeps Stop terminal when completed follow-up history precedes a held queue acknowledgement", async () => {
+			const task = createTask()
+			task.messageQueueService.removeListener("stateChanged", task["messageQueueStateChangedHandler"]!)
+			task["messageQueueStateChangedHandler"] = undefined
+			task.clineMessages = [{ ts: 1, type: "say", say: "completion_result", text: "done" }]
+			task.apiConversationHistory = [
+				{ role: "user", content: [{ type: "text", text: "initial task" }] },
+				{ role: "assistant", content: [{ type: "text", text: "done" }] },
+			]
+			task.markCompleted()
+			const savedReceipts: string[][] = []
+			const persistence = task as unknown as { saveApiConversationHistory: Task["saveApiConversationHistory"] }
+			vi.spyOn(persistence, "saveApiConversationHistory").mockImplementation(async () => {
+				savedReceipts.push(task.apiConversationHistory.flatMap((message) => message.queued_message_ids ?? []))
+				return true
+			})
+			const providerRequest = vi.spyOn(task.api, "createMessage")
+			const queued = await task.messageQueueService.addMessageDurably(
+				"Persist this cancelled follow-up.",
+				[],
+				"stop-request",
+			)
+			const acknowledgementStarted = deferred()
+			const releaseAcknowledgement = deferred()
+			const flush = task.messageQueueService.flush.bind(task.messageQueueService)
+			vi.spyOn(task.messageQueueService, "flush").mockImplementation(async () => {
+				if (task.apiConversationHistory.some((message) => message.queued_message_ids?.includes(queued!.id))) {
+					acknowledgementStarted.resolve()
+					await releaseAcknowledgement.promise
+				}
+				await flush()
+			})
+			const emitted = vi.spyOn(task, "emit")
+			const followup = task.resumeCompletedTaskFollowup(queued!.text, [], "human", [queued!.id])
+			await acknowledgementStarted.promise
+			expect(savedReceipts.some((ids) => ids.includes(queued!.id))).toBe(true)
+			expect(task.messageQueueService.hasUnconsumedInput()).toBe(false)
+			expect(providerRequest).not.toHaveBeenCalled()
+			const stopped = deferred()
+			task.once(AlphaCodeEventName.TaskAborted, () => stopped.resolve())
+			const stopping = task.abortTask()
+			await stopped.promise
+			const afterStop = emitted.mock.calls.length
+			releaseAcknowledgement.resolve()
+			await expect(followup).resolves.toBeUndefined()
+			await stopping
+			await task.waitForTermination()
+
+			expect(
+				emitted.mock.calls
+					.slice(afterStop)
+					.filter(
+						(call) =>
+							call[0] === AlphaCodeEventName.TaskActive || call[0] === AlphaCodeEventName.TaskStarted,
+					),
+			).toEqual([])
+			expect(task.abort).toBe(true)
+			expect(
+				task.apiConversationHistory.filter((message) => message.queued_message_ids?.includes(queued!.id)),
+			).toHaveLength(1)
+			expect(task.messageQueueService.hasUnconsumedInput()).toBe(false)
+			expect(providerRequest).not.toHaveBeenCalled()
+		})
 
 		it.each(["primary", "subagent"] as const)(
 			"delivers %s agent input without human queue, approval response, or interruption",
@@ -4621,6 +4801,36 @@ describe("Alpha", () => {
 			).resolves.toMatchObject({
 				status: "completed",
 				response: { text: "The response completed normally." },
+			})
+		})
+
+		it("retains provider continuation through canonical stream finalization", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			Object.defineProperty(task.api, "streamCapabilities", {
+				configurable: true,
+				value: { lifecycle: true, cancellation: true },
+			})
+			vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					yield { type: "text", text: "Continue processing this response." }
+					yield {
+						type: "outcome",
+						status: "completed",
+						terminal: true,
+						semanticOutputObserved: true,
+						requiresContinuation: true,
+					}
+				})(),
+			)
+
+			await expect(task.runAgentRequests([{ type: "text", text: "Start." }], false)).resolves.toMatchObject({
+				status: "completed",
+				response: { outcome: { status: "completed", requiresContinuation: true } },
 			})
 		})
 
@@ -5720,8 +5930,7 @@ describe("Alpha", () => {
 			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 
 			expect(requestStep).toHaveBeenCalledOnce()
-			expect(ask).toHaveBeenCalledOnce()
-			expect(ask).toHaveBeenCalledWith("completion_result", "", false)
+			expect(ask).not.toHaveBeenCalled()
 			expect(say).not.toHaveBeenCalledWith("completion_result", expect.anything())
 			const visibleFinals = task.clineMessages.filter(
 				(message) => message.type === "say" && message.say === "completion_result",
@@ -5794,7 +6003,7 @@ describe("Alpha", () => {
 			await expect(task.runAgentRequests([], false)).resolves.toMatchObject({ status: "completed" })
 		})
 
-		it.each(["reply", "queue"] as const)(
+		it.each(["submission", "queue"] as const)(
 			"renews exploration across %s follow-ups late in a long conversation",
 			async (source) => {
 				const task = createTask()
@@ -5808,16 +6017,18 @@ describe("Alpha", () => {
 					if (type === "resume_task") {
 						recoverySteps.push(step)
 						task.abort = true
-						return { response: "yesButtonClicked" }
 					}
+					return { response: "yesButtonClicked" }
+				})
+				const present = task.presentCompletionResult.bind(task)
+				vi.spyOn(task, "presentCompletionResult").mockImplementation(async (...args) => {
+					await present(...args)
 					completionCount++
-					if (completionCount === 9) return { response: "yesButtonClicked" }
+					if (completionCount === 9) return
 					const text = `Revisit the last three files for review question ${completionCount}.`
 					if (source === "queue") {
 						task.messageQueueService.addMessage(text, [])
-						return { response: "yesButtonClicked" }
-					}
-					return { response: "messageResponse", text }
+					} else await task.submitUserMessage(text, [])
 				})
 				vi.spyOn(task, "runAgentRequests").mockImplementation(async (input) => {
 					const receiptIds = task["getQueuedInputReceipts"](input)
@@ -5897,7 +6108,7 @@ describe("Alpha", () => {
 
 			expect(requestStep).toHaveBeenCalledTimes(12)
 			expect(ask.mock.calls.map(([type]) => type)).not.toContain("resume_task")
-			expect(ask).toHaveBeenCalledWith("completion_result", "", false)
+			expect(ask).not.toHaveBeenCalled()
 			expect(Reflect.get(task, "didComplete")).toBe(true)
 		})
 
@@ -6174,7 +6385,15 @@ describe("Alpha", () => {
 				])
 				expect(feedback).toHaveBeenCalledTimes(2)
 				expect(feedback).toHaveBeenCalledWith("error", enCommon.errors[`task_recovery_${status}`])
-				expect(feedback).toHaveBeenCalledWith("user_feedback", "Please continue from the partial result.", [])
+				expect(feedback).toHaveBeenCalledWith(
+					"user_feedback",
+					"Please continue from the partial result.",
+					[],
+					undefined,
+					undefined,
+					undefined,
+					{ queuedMessageIds: undefined },
+				)
 				const eventTypes = appendEvent.mock.calls.map(([event]) => (event as AgentTurnEvent).type)
 				expect(eventTypes).toContain(status === "incomplete" ? "turn_incomplete" : "turn_failed")
 				expect(eventTypes).not.toContain("task_failed")
@@ -6336,7 +6555,7 @@ describe("Alpha", () => {
 			},
 		)
 
-		it("rechecks open todos after the completion review boundary", async () => {
+		it("rechecks open todos after presenting the completion result", async () => {
 			vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
 				() =>
 					({
@@ -6348,9 +6567,10 @@ describe("Alpha", () => {
 			task.todoList = [{ id: "late", content: "Late work", status: "completed" }]
 			const finalize = vi.spyOn(task, "finalizeTaskCompletion")
 			const retract = vi.spyOn(task, "retractCompletionResult")
-			vi.spyOn(task, "ask").mockImplementationOnce(async () => {
+			const present = task.presentCompletionResult.bind(task)
+			vi.spyOn(task, "presentCompletionResult").mockImplementationOnce(async (...args) => {
+				await present(...args)
 				task.todoList = [{ id: "late", content: "Late work", status: "in_progress" }]
-				return { response: "yesButtonClicked", text: "", images: [] }
 			})
 			const requestStep = vi
 				.spyOn(task, "runAgentRequests")
@@ -6543,15 +6763,17 @@ describe("Alpha", () => {
 			expect(finalize).not.toHaveBeenCalled()
 		})
 
-		it.each(["review", "review gate", "finalization"])(
+		it.each(["presentation", "final gate", "finalization"])(
 			"preserves the final answer for a follow-up queued during %s",
 			async (boundary) => {
 				const task = createTask()
-				vi.spyOn(task, "ask").mockImplementationOnce(async () => {
-					if (boundary === "review") task.messageQueueService.addMessage("Please add the missing detail.")
-					return { response: "yesButtonClicked", text: "", images: [] }
+				const present = task.presentCompletionResult.bind(task)
+				vi.spyOn(task, "presentCompletionResult").mockImplementationOnce(async (...args) => {
+					await present(...args)
+					if (boundary === "presentation")
+						task.messageQueueService.addMessage("Please add the missing detail.")
 				})
-				if (boundary === "review gate") {
+				if (boundary === "final gate") {
 					vi.spyOn(task, "waitForCompletionGateDecision")
 						.mockResolvedValueOnce({ allowed: true, modelCanResolveRejection: false })
 						.mockImplementationOnce(async () => {
@@ -6586,19 +6808,19 @@ describe("Alpha", () => {
 			},
 		)
 
-		it("continues the same task when the user replies at the ordinary completion boundary", async () => {
+		it("continues the same task when the user submits guidance during completion presentation", async () => {
 			let timestamp = 1000
 			vi.spyOn(Date, "now").mockImplementation(() => ++timestamp)
 			const task = createTask()
 			const retract = vi.spyOn(task, "retractCompletionResult")
-			const ask = vi
-				.spyOn(task, "ask")
-				.mockResolvedValueOnce({
-					response: "messageResponse",
-					text: "Please expand on that.",
-					images: [],
-				})
-				.mockResolvedValueOnce({ response: "yesButtonClicked", text: "", images: [] })
+			const ask = vi.spyOn(task, "ask")
+			const present = task.presentCompletionResult.bind(task)
+			let followupId: string | undefined
+			vi.spyOn(task, "presentCompletionResult").mockImplementationOnce(async (...args) => {
+				await present(...args)
+				await task.submitUserMessage("Please expand on that.", [])
+				followupId = task.messageQueueService.messages[0]?.id
+			})
 			const say = vi.spyOn(task, "say")
 			const requestStep = vi
 				.spyOn(task, "runAgentRequests")
@@ -6606,7 +6828,11 @@ describe("Alpha", () => {
 					task.assistantMessageContent = [{ type: "text", content: "First answer.", partial: false }]
 					return false
 				})
-				.mockImplementationOnce(async () => {
+				.mockImplementationOnce(async (input) => {
+					const receiptIds = task["getQueuedInputReceipts"](input)
+					task.apiConversationHistory.push({ role: "user", content: input, queued_message_ids: receiptIds })
+					task.messageQueueService.acknowledgeMessages(receiptIds)
+					await task.messageQueueService.flush()
 					await task.say("text", "Expanded answer.", undefined, false)
 					task.assistantMessageContent = [{ type: "text", content: "Expanded answer.", partial: false }]
 					return false
@@ -6620,8 +6846,22 @@ describe("Alpha", () => {
 				false,
 			])
 			expect(retract).not.toHaveBeenCalled()
-			expect(say).toHaveBeenCalledWith("user_feedback", "Please expand on that.", [])
-			expect(ask).toHaveBeenCalledTimes(2)
+			expect(followupId).toBeDefined()
+			expect(say).toHaveBeenCalledWith(
+				"user_feedback",
+				"Please expand on that.",
+				[],
+				undefined,
+				undefined,
+				undefined,
+				{
+					queuedMessageIds: [followupId],
+				},
+			)
+			expect(task.clineMessages.find((message) => message.say === "user_feedback")).toMatchObject({
+				queuedMessageIds: [followupId],
+			})
+			expect(ask).not.toHaveBeenCalled()
 			expect(
 				task.clineMessages
 					.filter((message) => message.say === "completion_result")
@@ -6667,7 +6907,7 @@ describe("Alpha", () => {
 			expect(ask).toHaveBeenCalledWith("resume_task")
 
 			expect(requestStep).toHaveBeenCalledOnce()
-			expect(say).not.toHaveBeenCalledWith("user_feedback", expect.anything(), expect.anything())
+			expect(say.mock.calls.some(([type]) => type === "user_feedback")).toBe(false)
 			expect(task.clineMessages).toContainEqual(
 				expect.objectContaining({ type: "say", say: "completion_result", text: "Premature answer." }),
 			)
@@ -6701,7 +6941,7 @@ describe("Alpha", () => {
 			const task = createTask()
 			const firstImage = "data:image/png;base64,Zmlyc3Q="
 			const secondImage = "data:image/jpeg;base64,c2Vjb25k"
-			task.messageQueueService.addMessage("Use this queued detail.", [firstImage])
+			const firstQueuedMessage = task.messageQueueService.addMessage("Use this queued detail.", [firstImage])!
 			task.messageQueueService.addMessage("Keep this for later.", [secondImage])
 			const feedback = vi.spyOn(task, "say").mockResolvedValue(undefined)
 			const requestStep = vi
@@ -6727,7 +6967,15 @@ describe("Alpha", () => {
 				],
 				false,
 			])
-			expect(feedback).toHaveBeenCalledWith("user_feedback", "Use this queued detail.", [firstImage])
+			expect(feedback).toHaveBeenCalledWith(
+				"user_feedback",
+				"Use this queued detail.",
+				[firstImage],
+				undefined,
+				undefined,
+				undefined,
+				{ queuedMessageIds: [firstQueuedMessage.id] },
+			)
 			expect(task.messageQueueService.messages).toHaveLength(1)
 			expect(task.messageQueueService.messages[0]).toMatchObject({
 				text: "Keep this for later.",
@@ -7074,6 +7322,75 @@ describe("Alpha", () => {
 			expect(task.skipPrevResponseIdOnce).toBe(true)
 			expect(task.abort).toBe(false)
 			expect(task.abandoned).toBe(false)
+		})
+
+		it.each([
+			["say", "completed", "resume_completed_task"],
+			["say", "active", "resume_task"],
+			["say", "interrupted", "resume_task"],
+			["say", "failed", "resume_task"],
+			["say", undefined, "resume_task"],
+			["ask", "completed", "resume_completed_task"],
+			["ask", "interrupted", "resume_task"],
+			["ask", undefined, "resume_completed_task"],
+		] as const)(
+			"reopens a saved %s completion row with task status %s at %s",
+			async (type, status, expectedAsk) => {
+				const task = createTask()
+				const modelTurn = createAgentLifecycleSnapshot({
+					taskId: task.taskId,
+					runId: "history-run",
+					turnId: "history-turn",
+				})
+				modelTurn.status = "completed"
+				mockProvider.getAgentLifecycleSnapshot.mockReturnValue(modelTurn)
+				const completion = {
+					ts: 2,
+					...(type === "say"
+						? { type: "say" as const, say: "completion_result" as const }
+						: { type: "ask" as const, ask: "completion_result" as const }),
+					text: "The saved answer.",
+					partial: false,
+				}
+				const savedUi = [
+					{ ts: 1, type: "say" as const, say: "text" as const, text: "historical task" },
+					completion,
+				]
+				vi.spyOn(task as any, "getSavedAlphaMessages").mockResolvedValue(savedUi)
+				vi.spyOn(task as any, "getSavedApiConversationHistory").mockResolvedValue([
+					{ role: "assistant", content: [{ type: "text", text: "The saved answer." }] },
+				])
+				vi.spyOn(task, "overwriteApiConversationHistory").mockResolvedValue(true)
+				vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
+				vi.spyOn(task as any, "initiateTaskLoop").mockResolvedValue(undefined)
+				mockProvider.getTaskWithId.mockResolvedValue({ historyItem: { id: task.taskId, status } })
+				const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+
+				await task["resumeTaskFromHistory"]()
+
+				expect(ask).toHaveBeenCalledExactlyOnceWith(expectedAsk)
+				expect(task.clineMessages).toEqual(savedUi)
+				expect(task.isCompleted()).toBe(false)
+			},
+		)
+
+		it("reopens a managed child through verified child finalization without a local completion ask", async () => {
+			const task = createTask("subagent")
+			const completion = { ts: 2, type: "say" as const, say: "completion_result" as const, text: "Child answer." }
+			vi.spyOn(task as any, "getSavedAlphaMessages").mockResolvedValue([completion])
+			vi.spyOn(task as any, "getSavedApiConversationHistory").mockResolvedValue([
+				{ role: "assistant", content: [{ type: "text", text: completion.text }] },
+			])
+			const finalize = vi.spyOn(task, "finalizeTaskCompletion").mockResolvedValue(false)
+			const ask = vi.spyOn(task, "ask")
+			const continueLoop = vi.spyOn(task as any, "initiateTaskLoop")
+
+			await task["resumeTaskFromHistory"]()
+
+			expect(finalize).toHaveBeenCalledExactlyOnceWith()
+			expect(ask).not.toHaveBeenCalled()
+			expect(continueLoop).not.toHaveBeenCalled()
+			expect(task.isCompleted()).toBe(false)
 		})
 
 		it("paints the UI transcript before provider history finishes loading", async () => {
@@ -7521,14 +7838,22 @@ describe("Queued message processing after condense", () => {
 		})
 		const feedback = vi.spyOn(task, "say").mockResolvedValue(undefined)
 		task.consecutiveMistakeLimit = 1
-		task.messageQueueService.addMessage("Did we finish?")
+		const guidance = task.messageQueueService.addMessage("Did we finish?")!
 		// Simulate the in-flight model turn failing after the message was queued.
 		task.consecutiveMistakeCount = 1
 		const userContent: Anthropic.Messages.ContentBlockParam[] = []
 
 		await (task as any).handleConsecutiveMistakeLimit(userContent)
 
-		expect(feedback).toHaveBeenCalledWith("user_feedback", "Did we finish?", undefined)
+		expect(feedback).toHaveBeenCalledWith(
+			"user_feedback",
+			"Did we finish?",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{ queuedMessageIds: [guidance.id] },
+		)
 		expect(task.messageQueueService.isEmpty()).toBe(true)
 		expect(userContent).toContainEqual({
 			type: "text",
@@ -7667,7 +7992,7 @@ describe("Task typed tool approval bridge", () => {
 		).resolves.toEqual({ decision: "deny" })
 	})
 
-	const runApprovalTool = async (task: Task, askType: AlphaAsk) => {
+	const runApprovalTool = async (task: Task, askType: AlphaAsk, reviewMessage = "Perform the reviewed action") => {
 		const executeEffect = vi.fn()
 		const registry = new ToolRegistry({ includeBuiltIns: false })
 		const descriptor: ToolDescriptor = {
@@ -7684,7 +8009,7 @@ describe("Task typed tool approval bridge", () => {
 			capabilities: { concurrency: "serial", sideEffects: "task", controlFlow: false, requiresApproval: false },
 			getConcurrencyScope: () => "tool-approval-review-test",
 			execute: async ({ callbacks }) => {
-				if (await callbacks.askApproval(askType, "Perform the reviewed action")) {
+				if (await callbacks.askApproval(askType, reviewMessage)) {
 					executeEffect()
 					callbacks.pushToolResult("action completed")
 				}
@@ -7702,6 +8027,51 @@ describe("Task typed tool approval bridge", () => {
 		)
 		return { outcome, executeEffect }
 	}
+
+	it.each(["ask", "auto", "bypass"] as const)(
+		"preserves complete file review data and valid persisted prompts in %s mode",
+		async (taskApprovalMode) => {
+			const task = createTask({ taskApprovalMode })
+			const reviewMessage = JSON.stringify({
+				tool: "appliedDiff",
+				path: "large.ts",
+				originalContent: "a".repeat(60_000),
+				finalContent: "b".repeat(60_000),
+				isOutsideWorkspace: false,
+				isProtected: false,
+			})
+			const askSpy = vi.spyOn(task, "ask")
+			await runApprovalTool(task, "tool", reviewMessage)
+
+			expect(askSpy.mock.calls[0]![1]).toBe(reviewMessage)
+			const message = task.clineMessages.at(-1)!
+			expect(message.text).toBe(reviewMessage)
+			expect(message.toolApprovalRequest!.description!.length).toBeLessThan(100_000)
+			expect(alphaMessageSchema.safeParse(message).success).toBe(true)
+		},
+	)
+
+	it("gives reviewers the entire action when approval metadata contains only a summary", async () => {
+		const reviewer = vi.fn<ToolApprovalReviewer>(async () => ({ decision: "approve" }))
+		const task = createTask({ toolApprovalReviewer: reviewer })
+		const reviewMessage = JSON.stringify({ tool: "appliedDiff", path: "large.ts", content: "x".repeat(120_000) })
+		const { outcome, executeEffect } = await runApprovalTool(task, "tool", reviewMessage)
+		expect(outcome.results).toMatchObject([{ status: "success" }])
+		expect(executeEffect).toHaveBeenCalledOnce()
+		expect(reviewer.mock.calls[0]![0].description!.length).toBeLessThan(100_000)
+		expect(reviewer.mock.calls[0]![2]).toBe(reviewMessage)
+	})
+
+	it("rejects command review text that differs from the exact command in approval metadata", async () => {
+		const reviewer = vi.fn<ToolApprovalReviewer>(async () => ({ decision: "approve" }))
+		const task = createTask({ toolApprovalReviewer: reviewer })
+		const approval = request(task.taskId, { askType: "command", description: "pnpm test" })
+		await expect(task.requestToolApproval(approval, "pnpm test && another-command")).rejects.toThrow(
+			/invalid or mismatched/,
+		)
+		expect(reviewer).not.toHaveBeenCalled()
+		expect(task.hasPendingToolApprovalRequest()).toBe(false)
+	})
 
 	it("projects the reviewed working directory into command approval prompts", async () => {
 		const task = createTask()

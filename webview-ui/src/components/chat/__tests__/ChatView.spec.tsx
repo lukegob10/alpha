@@ -27,6 +27,7 @@ interface AlphaMessage {
 	isAnswered?: boolean
 	toolApprovalRequest?: ToolApprovalPrompt
 	asyncUserInput?: { questions: Array<{ title: string; options?: string[] }> }
+	queuedMessageIds?: string[]
 }
 
 interface ExtensionState {
@@ -62,12 +63,14 @@ vi.mock("../ChatRow", () => ({
 		onSuggestionClick,
 		onAsyncUserInputSubmit,
 		isAsyncUserInputAnswered,
+		isAsyncUserInputPending,
 	}: {
 		message: AlphaMessage
 		isTaskPrompt?: boolean
 		onSuggestionClick?: (suggestion: { answer: string; mode?: string }, event?: React.MouseEvent) => void
 		onAsyncUserInputSubmit?: (messageTs: number, response: string) => boolean
 		isAsyncUserInputAnswered?: boolean
+		isAsyncUserInputPending?: boolean
 	}) {
 		return (
 			<div data-testid="chat-row">
@@ -76,11 +79,16 @@ vi.mock("../ChatRow", () => ({
 					<>
 						<button
 							data-testid={`async-user-input-submit-${message.ts}`}
+							disabled={isAsyncUserInputAnswered || isAsyncUserInputPending}
 							onClick={() => onAsyncUserInputSubmit?.(message.ts, "Use blue and label it Ready.")}>
 							Send async reply
 						</button>
 						<span data-testid={`async-user-input-status-${message.ts}`}>
-							{isAsyncUserInputAnswered ? "Answers sent" : "Awaiting an answer"}
+							{isAsyncUserInputAnswered
+								? "Answers sent"
+								: isAsyncUserInputPending
+									? "Sending answer"
+									: "Awaiting an answer"}
 						</span>
 					</>
 				)}
@@ -474,6 +482,80 @@ describe("ChatView checkpoint initialization warnings", () => {
 describe("ChatView async user input", () => {
 	beforeEach(() => vi.clearAllMocks())
 
+	it.each(["askResponse", "queueMessage", "resumeCompletedTask"] as const)(
+		"allows a rejected async answer to retry through %s with a new receipt",
+		async (command) => {
+			const taskId = `async-rejected-${command}`
+			const view = renderChatView()
+			mockPostMessage({
+				currentTaskId: taskId,
+				currentView: { type: "task", taskId },
+				liveTasksById: {
+					[taskId]: {
+						id: taskId,
+						status: command === "queueMessage" ? "running" : "idle",
+						lifecycle: command === "resumeCompletedTask" ? "completed" : "running",
+						isActive: true,
+						isStreaming: command === "queueMessage",
+						isTurnActive: command === "queueMessage",
+						isWaitingForInput: false,
+						lastUpdatedAt: 3,
+						queueCount: 0,
+						tokensIn: 0,
+						tokensOut: 0,
+						totalCost: 0,
+					},
+				},
+				clineMessages: [
+					{ type: "say", say: "task", ts: 1, text: "Keep the async question" },
+					{
+						type: "say",
+						say: "async_user_input",
+						ts: 2,
+						asyncUserInput: { questions: [{ title: "Which color?" }] },
+					},
+				],
+			})
+			const submit = await waitFor(() => view.getByTestId("async-user-input-submit-2"))
+			const status = view.getByTestId("async-user-input-status-2")
+			const sendReceipt = async (requestId: string, result: "accepted" | "rejected", owner = taskId) => {
+				await act(async () => {
+					window.postMessage(
+						{
+							type: "chatCommandResult",
+							chatCommandResult: { requestId, taskId: owner, command, status: result },
+						},
+						"*",
+					)
+				})
+			}
+			vi.mocked(vscode.postMessage).mockClear()
+			fireEvent.click(submit)
+			await waitFor(() => expect(status).toHaveTextContent("Sending answer"))
+			const first = vi.mocked(vscode.postMessage).mock.calls.find(([message]) => message.type === command)![0]
+			expect(first.asyncUserInputMessageTs).toBe(2)
+			expect(submit).toBeDisabled()
+			await sendReceipt(first.requestId!, "accepted", "another-task")
+			expect(status).toHaveTextContent("Sending answer")
+			await sendReceipt(first.requestId!, "rejected")
+			await waitFor(() => expect(status).toHaveTextContent("Awaiting an answer"))
+			expect(submit).not.toBeDisabled()
+
+			fireEvent.click(submit)
+			await waitFor(() => expect(status).toHaveTextContent("Sending answer"))
+			const requests = vi.mocked(vscode.postMessage).mock.calls.filter(([message]) => message.type === command)
+			expect(requests).toHaveLength(2)
+			const second = requests[1][0]
+			expect(second).toMatchObject({ taskId, asyncUserInputMessageTs: 2 })
+			expect(second.requestId).not.toBe(first.requestId)
+			await sendReceipt(first.requestId!, "accepted")
+			expect(status).toHaveTextContent("Sending answer")
+			await sendReceipt(second.requestId!, "accepted")
+			await waitFor(() => expect(status).toHaveTextContent("Answers sent"))
+			expect(submit).toBeDisabled()
+		},
+	)
+
 	it("sends a submitted card as one ordinary message after later progress", async () => {
 		const taskId = "async-question-task"
 		const view = renderChatView()
@@ -499,7 +581,7 @@ describe("ChatView async user input", () => {
 
 		fireEvent.click(submit)
 
-		await waitFor(() => expect(view.getByTestId("async-user-input-status-2")).toHaveTextContent("Answers sent"))
+		await waitFor(() => expect(view.getByTestId("async-user-input-status-2")).toHaveTextContent("Sending answer"))
 		expect(
 			vi
 				.mocked(vscode.postMessage)
@@ -517,6 +599,22 @@ describe("ChatView async user input", () => {
 				asyncUserInputMessageTs: 2,
 			},
 		])
+		const request = vi.mocked(vscode.postMessage).mock.calls.find(([message]) => message.type === "askResponse")![0]
+		await act(async () => {
+			window.postMessage(
+				{
+					type: "chatCommandResult",
+					chatCommandResult: {
+						command: "askResponse",
+						requestId: request.requestId,
+						taskId,
+						status: "accepted",
+					},
+				},
+				"*",
+			)
+		})
+		await waitFor(() => expect(view.getByTestId("async-user-input-status-2")).toHaveTextContent("Answers sent"))
 	})
 
 	it("keeps an acknowledged card answered after task state reload", async () => {
@@ -4818,14 +4916,158 @@ describe("ChatView chat-owned composer commands", () => {
 		],
 		messageQueue: queue,
 	})
-	const receipt = (command: string, requestId: string, taskId: string, status: string) =>
+	const receipt = (command: string, requestId: string, taskId: string, status: string, deliveryState?: "queued") =>
 		act(() =>
 			window.dispatchEvent(
 				new MessageEvent("message", {
-					data: { type: "chatCommandResult", chatCommandResult: { command, requestId, taskId, status } },
+					data: {
+						type: "chatCommandResult",
+						chatCommandResult: { command, requestId, taskId, status, deliveryState },
+					},
 				}),
 			),
 		)
+	it("shows a completed-chat follow-up immediately in the transcript throughout durable admission", async () => {
+		const view = renderChatView()
+		const completedState: Partial<ExtensionState> = {
+			currentTaskId: "a",
+			currentView: { type: "task", taskId: "a" },
+			currentTaskItem: { id: "a", task: "Prompt a", ts: 1 },
+			liveTasksById: {
+				a: {
+					id: "a",
+					status: "idle",
+					lifecycle: "completed",
+					isActive: true,
+					isTurnActive: false,
+					isStreaming: false,
+					isWaitingForInput: false,
+					lastUpdatedAt: 2,
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Prompt a" },
+				{ type: "say", say: "completion_result", ts: 2, text: "Finished." },
+			],
+			messageQueue: [],
+		}
+		mockPostMessage(completedState)
+		await waitFor(() => view.getByText("Prompt a"))
+		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		fireEvent.change(input, { target: { value: "Explain the result" } })
+		fireEvent.keyDown(input, { key: "Enter" })
+		const request = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "resumeCompletedTask")![0]
+		const feedbackRows = () =>
+			view
+				.getAllByTestId("chat-row")
+				.filter(
+					(row) =>
+						row.textContent?.includes('"say":"user_feedback"') &&
+						row.textContent.includes("Explain the result"),
+				)
+		expect(feedbackRows()).toHaveLength(1)
+		expect(view.queryByTestId("queued-messages")).not.toBeInTheDocument()
+
+		const queued = { id: request.requestId!, timestamp: 3, text: "Explain the result", deliveryState: "delivering" }
+		mockPostMessage({ ...completedState, messageQueue: [queued] })
+		receipt("resumeCompletedTask", request.requestId!, "a", "accepted")
+		expect(feedbackRows()).toHaveLength(1)
+		expect(view.queryByTestId("queued-messages")).not.toBeInTheDocument()
+
+		mockPostMessage({
+			...completedState,
+			messageQueue: [queued],
+			clineMessages: [
+				...completedState.clineMessages!,
+				{
+					type: "say",
+					say: "user_feedback",
+					ts: 4,
+					text: "Explain the result",
+					queuedMessageIds: [request.requestId!],
+				},
+			],
+		})
+		await waitFor(() => {
+			expect(feedbackRows()).toHaveLength(1)
+			expect(feedbackRows()[0]).toHaveTextContent('"ts":4')
+			expect(view.queryByTestId("completed-task-resume-pending")).not.toBeInTheDocument()
+		})
+		expect(view.queryByTestId("queued-messages")).not.toBeInTheDocument()
+	})
+
+	it("releases the completed-chat composer when accepted input needs queued recovery", async () => {
+		const view = renderChatView()
+		const state: Partial<ExtensionState> = {
+			...runningState("a"),
+			liveTasksById: {
+				a: {
+					id: "a",
+					status: "idle",
+					lifecycle: "completed",
+					isActive: true,
+					isTurnActive: false,
+					isStreaming: false,
+					isWaitingForInput: false,
+					lastUpdatedAt: 2,
+					queueCount: 0,
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+			},
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Prompt a" },
+				{ type: "say", say: "completion_result", ts: 2, text: "Finished." },
+			],
+		}
+		mockPostMessage(state)
+		await waitFor(() => view.getByText("Prompt a"))
+		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		fireEvent.change(input, { target: { value: "Explain the retained result" } })
+		fireEvent.keyDown(input, { key: "Enter" })
+		const request = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "resumeCompletedTask")![0]
+		mockPostMessage({
+			...state,
+			messageQueue: [{ id: request.requestId!, text: "Explain the retained result", timestamp: 3 }],
+		})
+		receipt("resumeCompletedTask", request.requestId!, "a", "accepted", "queued")
+		await waitFor(() => expect(input).toHaveAttribute("data-sending-disabled", "false"))
+		expect(input).toHaveValue("")
+		expect(view.queryByTestId("completed-task-resume-pending")).not.toBeInTheDocument()
+		expect(view.getByTestId("queued-messages")).toHaveTextContent("Explain the retained result")
+		expect(view.getByText("chat:queuedMessages.resumeQueued")).toBeInTheDocument()
+	})
+
+	it("keeps released input actionable when its feedback row exists before provider-history persistence", async () => {
+		const view = renderChatView()
+		const queued = { id: "released-input", text: "Retry the retained input", timestamp: 3 }
+		const state = runningState("a", [queued])
+		mockPostMessage({
+			...state,
+			clineMessages: [
+				...state.clineMessages!,
+				{
+					type: "say",
+					say: "user_feedback",
+					ts: 4,
+					text: queued.text,
+					queuedMessageIds: [queued.id],
+				},
+			],
+		})
+		await waitFor(() => view.getByText("Prompt a"))
+		expect(view.getByTestId("queued-messages")).toHaveTextContent(queued.text)
+	})
+
 	it("keeps submitted input in a queue preview until authoritative admission and preserves a later draft", async () => {
 		const view = renderChatView()
 		mockPostMessage(runningState("a"))

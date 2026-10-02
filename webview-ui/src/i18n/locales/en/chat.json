@@ -544,6 +544,7 @@
 		"answerFor": "Answer for {{question}}",
 		"replyHelp": "You can answer now or later while the task continues.",
 		"submit": "Send response",
+		"pending": "Sending answers…",
 		"sent": "Response sent as a message"
 	},
 	"costs": {
@@ -630,6 +631,7 @@
 		"steerFailed": "Steering could not start. The queued message is still available.",
 		"editFailed": "The edit was not accepted. Your draft is still in the composer.",
 		"resumeFailed": "The chat could not continue. Your draft is still available.",
+		"resumeQueued": "The chat could not continue. Your message is saved in the queue.",
 		"answerFailed": "The reply could not be delivered. Your draft is still available.",
 		"deliveryPending": "Earlier replies are still awaiting delivery. Your draft is still available."
 	},

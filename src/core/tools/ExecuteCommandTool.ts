@@ -631,6 +631,8 @@ export async function executeCommandInTerminal(
 	let persistedResult: PersistedCommandOutput | undefined
 	let exitDetails: ExitCodeDetails | undefined
 	let shellIntegrationError: string | undefined
+	let terminalProcessFailure: CommandExecutionLifecycleError | undefined
+	let terminalProcessFailureHandling: Promise<void> | undefined
 	let hasAskedForCommandOutput = false
 
 	// Managed workers run unattended and must use the terminal provider whose
@@ -795,9 +797,8 @@ export async function executeCommandInTerminal(
 		}
 	}
 
-	// Track when onCompleted callback finishes to avoid race condition.
-	// The callback is async but Terminal/ExecaTerminal don't await it, so we track completion
-	// explicitly to ensure persistedResult is set before we use it.
+	// Track output bookkeeping for foreground and yielded commands. The VS Code
+	// terminal does not await this callback; Execa also joins its own observers.
 	let onCompletedPromise: Promise<void> | undefined
 	let resolveOnCompleted: (() => void) | undefined
 	let rejectOnCompleted: ((error: CommandOutputBookkeepingError) => void) | undefined
@@ -825,8 +826,8 @@ export async function executeCommandInTerminal(
 		resolveOnCompleted = resolve
 		rejectOnCompleted = reject
 	})
-	// Terminal event emitters do not await the async callback. Attach an observer
-	// immediately, while retaining the original promise for the foreground join.
+	// Observe immediately for adapters that do not await async callbacks, while
+	// retaining the original promise for the foreground join.
 	void onCompletedPromise.catch(() => undefined)
 	const scheduleMissingOutputCompletionFailure = () => {
 		if (onCompletedInvoked || outputBookkeepingFailure || missingOutputCompletionTimer) return
@@ -846,7 +847,7 @@ export async function executeCommandInTerminal(
 	}
 
 	const callbacks: AlphaTerminalCallbacks = {
-		onLine: async (lines: string, process: AlphaTerminalProcess) => {
+		onLine: (lines: string, process: AlphaTerminalProcess) => {
 			accumulatedOutput += lines
 
 			// Trim accumulated output to prevent unbounded memory growth
@@ -871,17 +872,21 @@ export async function executeCommandInTerminal(
 			// Mark that we've asked to prevent multiple concurrent asks
 			hasAskedForCommandOutput = true
 
-			try {
-				const { response, text, images } = await task.ask("command_output", "")
-				runInBackground = true
+			// The command controller owns this user interaction. Output delivery
+			// must settle independently so physical completion can join its callbacks.
+			void (async () => {
+				try {
+					const { response, text, images } = await task.ask("command_output", "")
+					runInBackground = true
 
-				if (response === "messageResponse") {
-					if (text || images?.length) message = { text, images }
-					process.continue()
+					if (response === "messageResponse") {
+						if (text || images?.length) message = { text, images }
+						process.continue()
+					}
+				} catch (_error) {
+					// Silently handle ask errors (e.g., "Current ask promise was ignored")
 				}
-			} catch (_error) {
-				// Silently handle ask errors (e.g., "Current ask promise was ignored")
-			}
+			})()
 		},
 		onCompleted: async (output: string | undefined) => {
 			onCompletedInvoked = true
@@ -934,7 +939,8 @@ export async function executeCommandInTerminal(
 					// must not be published until it has settled. A rejected output gate is
 					// surfaced separately by the foreground join or background observer.
 					await onCompletedPromise?.catch(() => undefined)
-					if (outputBookkeepingFailure || commandMutationFailureHandling) return
+					if (outputBookkeepingFailure || commandMutationFailureHandling || commandTerminalOutcomeFenced)
+						return
 					if (toolCallId) {
 						try {
 							task.completeCommandExecution?.(toolCallId, details, physicalExecutionId)
@@ -1079,6 +1085,43 @@ export async function executeCommandInTerminal(
 		throw launchError
 	}
 	task.terminalProcess = process
+	const onTerminalProcessError = (error: Error) => {
+		if (commandTerminalOutcomeFenced) return
+		commandTerminalOutcomeFenced = true
+		terminalProcessFailure = new CommandExecutionLifecycleError("await-command-process", error)
+		if (!onCompletedInvoked) {
+			// Process disposal owns this failure. Settle the output join now so the
+			// missing-completion timer cannot finalize the same command a second time.
+			clearTimeout(missingOutputCompletionTimer)
+			missingOutputCompletionTimer = undefined
+			outputBookkeepingFailure ??= new CommandOutputBookkeepingError(error)
+			rejectOnCompleted?.(outputBookkeepingFailure)
+		}
+		terminalProcessFailureHandling = (async () => {
+			// A yielded command no longer has a foreground promise to report failure.
+			// Preserve its unknown physical mutation scope instead of leaving a live
+			// reservation and running command evidence behind after the terminal closes.
+			if (!exitDetails && mutationReservationAcquired) {
+				const receiptError = new CommandMutationReceiptError(
+					"process-outcome-unknown",
+					true,
+					terminalProcessFailure,
+				)
+				const { recoveryError } = await handleCommandMutationFailure(receiptError)
+				if (recoveryError) throw recoveryError
+			} else {
+				if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+				task.didToolFailInCurrentTurn = true
+				if (exitDetails && backgroundResultReturned)
+					task.suspendAfterCurrentTurn(t("common:errors.command_output_bookkeeping_incomplete"))
+			}
+		})()
+		void terminalProcessFailureHandling.catch((failure) =>
+			console.error("[ExecuteCommandTool] Failed to preserve terminal process failure", failure),
+		)
+	}
+	process.once("error", onTerminalProcessError)
+	process.once("completed", () => process.removeListener("error", onTerminalProcessError))
 
 	// Dual-timeout logic:
 	// - Agent timeout: transitions the command to background (continues running).
@@ -1228,6 +1271,10 @@ export async function executeCommandInTerminal(
 
 		const processError = new CommandExecutionLifecycleError("await-command-process", error)
 		const failures: unknown[] = [processError]
+		if (terminalProcessFailureHandling) {
+			const [failureHandling] = await Promise.allSettled([terminalProcessFailureHandling])
+			if (failureHandling.status === "rejected") failures.push(failureHandling.reason)
+		}
 		if (exitDetails) {
 			const receiptResult = await Promise.allSettled([commandMutationCompletion])
 			if (receiptResult[0].status === "rejected") failures.push(receiptResult[0].reason)
@@ -1240,7 +1287,8 @@ export async function executeCommandInTerminal(
 			const outputResult = await Promise.allSettled([onCompletedPromise])
 			if (outputResult[0].status === "rejected") failures.push(outputResult[0].reason)
 		}
-		if (toolCallId) task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
+		if (toolCallId && !terminalProcessFailureHandling && !commandMutationFailureHandling)
+			task.failCommandExecution?.(toolCallId, "failed", physicalExecutionId)
 		if (failures.length > 1) {
 			throw new AggregateError(failures, "Command process and completion bookkeeping failed")
 		}
@@ -1286,6 +1334,10 @@ export async function executeCommandInTerminal(
 	// the correct order of messages (although the webview is smart about
 	// grouping command_output messages despite any gaps anyways).
 	await delay(50)
+	if (terminalProcessFailure) {
+		await terminalProcessFailureHandling
+		throw terminalProcessFailure
+	}
 
 	// Wait for onCompleted callback to finish if shell execution completed.
 	// This ensures persistedResult is set before we try to use it, fixing the race

@@ -8,7 +8,7 @@ import { pnpmCommand, runOwnedProcess } from "./campaign/ownedProcess"
 import { createReportStore, openCampaignRoot } from "./campaign/reportStore"
 import { runExtensionTests, type ExtensionTestRunResult } from "./runTest"
 import { readBounded } from "./evidence/paths"
-import { testRunFailureCode } from "./runFailure"
+import { isTestExecutionCounts, testRunFailureCode } from "./runFailure"
 
 /** Compose existing test and evidence owners; this runner never selects a live provider. */
 export async function runCoreConfidence(
@@ -62,15 +62,22 @@ export async function runCoreConfidence(
 			return 1
 		report.artifactDigest = await dependencies.fingerprintGateArtifacts(repositoryRoot, true)
 		let completionEvidence: string | undefined
-		for (const testFile of ["core-loop.test", "completion-idle.test", "managed-agents.acceptance.test"]) {
+		for (const testFile of [
+			"core-loop.test",
+			"core-loop-boundaries.test",
+			"completion-idle.test",
+			"managed-agents.acceptance.test",
+			"long-context-fanout.test",
+		]) {
 			signal.throwIfAborted()
 			report.stage = testFile
-			process.stdout.write(`Core confidence: ${testFile} on VS Code 1.122.1\n`)
+			process.stdout.write(`Core confidence: ${testFile} on VS Code 1.125.0\n`)
 			const result = await dependencies.runExtensionTests({
 				signal: AbortSignal.any([signal, AbortSignal.timeout(10 * 60_000)]),
-				vscodeVersion: "1.122.1",
+				vscodeVersion: "1.125.0",
 				providerMode: "scripted",
 				testFile,
+				requireAllTests: true,
 				profileDir: path.join(hostDirectory, "p"),
 				initializeProfile: true,
 				workspace: path.join(hostDirectory, "workspaces", testFile),
@@ -81,9 +88,16 @@ export async function runCoreConfidence(
 			if (
 				result.status !== "passed" ||
 				result.exitCode !== 0 ||
-				result.actualVSCodeVersion !== "1.122.1" ||
+				result.actualVSCodeVersion !== "1.125.0" ||
 				result.providerMode !== "scripted" ||
 				result.execution !== "extension-host" ||
+				!result.hostExitObserved ||
+				result.ownershipGate !== "verified" ||
+				result.requireAllTests !== true ||
+				!isTestExecutionCounts(result.testCounts) ||
+				result.testCounts.executed === 0 ||
+				result.testCounts.pending !== 0 ||
+				result.testCounts.failed !== 0 ||
 				!result.captureComplete ||
 				result.retention?.status !== "complete"
 			)

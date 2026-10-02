@@ -36,7 +36,7 @@ const CHECKPOINT_COMMIT_HASH_PATTERN = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i
  * @param baseDir - The directory where git operations should be executed
  * @returns A SimpleGit instance with sanitized environment
  */
-function createSanitizedGit(baseDir: string): SimpleGit {
+function createSanitizedGit(baseDir: string, signal?: AbortSignal): SimpleGit {
 	// Create a clean environment by explicitly unsetting git-related environment variables
 	// that could interfere with checkpoint operations
 	const sanitizedEnv: Record<string, string> = {}
@@ -79,6 +79,7 @@ function createSanitizedGit(baseDir: string): SimpleGit {
 
 	const options: CheckpointSimpleGitOptions = {
 		baseDir,
+		abort: signal,
 		// Keep checkpoint commits deterministic without spawning config commands.
 		config: [
 			// Checkpoints must observe edits even when user Git settings favor cached
@@ -175,7 +176,7 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		this.log = log
 	}
 
-	public async initShadowGit(onInit?: () => Promise<void>) {
+	public async initShadowGit(onInit?: () => Promise<void>, signal?: AbortSignal) {
 		if (this.git) {
 			throw new Error("Shadow git repo already initialized")
 		}
@@ -185,7 +186,10 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		const measurePhase = async <T>(name: string, operation: () => Promise<T>): Promise<T> => {
 			const phaseStartTime = Date.now()
 			try {
-				return await operation()
+				signal?.throwIfAborted()
+				const result = await operation()
+				signal?.throwIfAborted()
+				return result
 			} finally {
 				phaseDurations.push(`${name} ${Date.now() - phaseStartTime}ms`)
 			}
@@ -193,7 +197,8 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 
 		const existingShadowRepository = await measurePhase("shadow lookup", () => fileExistsAtPath(this.dotGitDir))
 		const nestedScanStartTime = Date.now()
-		const nestedGitPath = await this.getNestedGitRepository(!existingShadowRepository)
+		const nestedGitPath = await this.getNestedGitRepository(!existingShadowRepository, signal)
+		signal?.throwIfAborted()
 		const nestedScanDuration = Date.now() - nestedScanStartTime
 
 		if (nestedGitPath) {
@@ -202,7 +207,7 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 
 		await measurePhase("shadow directory setup", () => fs.mkdir(this.checkpointsDir, { recursive: true }))
 		const gitClientSetupStartTime = Date.now()
-		const git = createSanitizedGit(this.checkpointsDir)
+		const git = createSanitizedGit(this.checkpointsDir, signal)
 		phaseDurations.push(`git client setup ${Date.now() - gitClientSetupStartTime}ms`)
 
 		let created = false
@@ -241,22 +246,26 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 			try {
 				await this.stageAll(git)
 			} catch (error) {
+				signal?.throwIfAborted()
 				// Git can fail before writing a gitlink for an uncommitted nested repository.
-				const nestedGitPathAfterStageFailure = await this.getNestedGitRepository()
+				const nestedGitPathAfterStageFailure = await this.getNestedGitRepository(false, signal)
 				if (nestedGitPathAfterStageFailure) {
 					this.throwNestedGitRepositoryError(nestedGitPathAfterStageFailure)
 				}
 				throw error
 			}
+			signal?.throwIfAborted()
 			const stageDuration = Date.now() - stageStartTime
 			const indexValidationStartTime = Date.now()
 			const nestedGitlinkPath = await this.getNestedGitRepositoryFromIndex(git)
+			signal?.throwIfAborted()
 			const indexValidationDuration = Date.now() - indexValidationStartTime
 			if (nestedGitlinkPath) {
 				this.throwNestedGitRepositoryError(nestedGitlinkPath)
 			}
 			const commitStartTime = Date.now()
 			const { commit } = await git.commit("initial commit", { "--allow-empty": null })
+			signal?.throwIfAborted()
 			const commitDuration = Date.now() - commitStartTime
 			initialSnapshotDuration = Date.now() - initialSnapshotStartTime
 			initialSnapshotBreakdown = `git add ${stageDuration}ms, index validation ${indexValidationDuration}ms, initial commit ${commitDuration}ms`
@@ -277,9 +286,17 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 			`[${this.constructor.name}#initShadowGit] initialized shadow repo with base commit ${this.baseHash} in ${duration}ms (${durationDetails})`,
 		)
 
-		this.git = git
-
-		await onInit?.()
+		signal?.throwIfAborted()
+		// The initialization signal ends with that attempt. Keep later host restore
+		// operations independent from a cancelled task or an expired init deadline.
+		this.git = signal ? createSanitizedGit(this.checkpointsDir) : git
+		try {
+			await onInit?.()
+			signal?.throwIfAborted()
+		} catch (error) {
+			this.git = undefined
+			throw error
+		}
 
 		this.emit("initialize", {
 			type: "initialize",
@@ -364,8 +381,12 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		)
 	}
 
-	private async getNestedGitRepository(excludeCheckpointExcludedDirectories = false): Promise<string | null> {
+	private async getNestedGitRepository(
+		excludeCheckpointExcludedDirectories = false,
+		signal?: AbortSignal,
+	): Promise<string | null> {
 		try {
+			signal?.throwIfAborted()
 			// New snapshots can skip checkpoint-excluded directories. Existing indexes may still track
 			// files there, and a workspace .gitignore can override the shadow repo's exclude file.
 			const excludePatternStartTime = Date.now()
@@ -392,7 +413,8 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 			]
 
 			const ripgrepStartTime = Date.now()
-			const gitPaths = await executeRipgrep({ args, workspacePath: this.workspaceDir })
+			const gitPaths = await executeRipgrep({ args, workspacePath: this.workspaceDir, signal })
+			signal?.throwIfAborted()
 			const ripgrepDuration = Date.now() - ripgrepStartTime
 			this.log(
 				`[${this.constructor.name}#getNestedGitRepository] task ${this.taskId} scan phases: exclude-pattern discovery ${excludePatternDuration}ms, ripgrep resolution/process ${ripgrepDuration}ms`,
@@ -482,14 +504,17 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 
 	public saveCheckpoint(
 		message: string,
-		options?: { allowEmpty?: boolean; suppressMessage?: boolean },
+		options?: { allowEmpty?: boolean; suppressMessage?: boolean; signal?: AbortSignal },
 	): Promise<CheckpointResult | undefined> {
-		return this.enqueueCheckpointOperation(() => this.saveCheckpointTransaction(message, options))
+		return this.enqueueCheckpointOperation(() => {
+			options?.signal?.throwIfAborted()
+			return this.saveCheckpointTransaction(message, options)
+		})
 	}
 
 	private async saveCheckpointTransaction(
 		message: string,
-		options?: { allowEmpty?: boolean; suppressMessage?: boolean },
+		options?: { allowEmpty?: boolean; suppressMessage?: boolean; signal?: AbortSignal },
 	): Promise<CheckpointResult | undefined> {
 		try {
 			this.log(
@@ -499,12 +524,17 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 			if (!this.git) {
 				throw new Error("Shadow git repo not initialized")
 			}
+			const signal = options?.signal
+			signal?.throwIfAborted()
+			const git = signal ? createSanitizedGit(this.checkpointsDir, signal) : this.git
 
 			const startTime = Date.now()
-			await this.stageAll(this.git)
+			await this.stageAll(git)
+			signal?.throwIfAborted()
 
 			if (!options?.allowEmpty) {
-				const stagedChanges = await this.git.diffSummary(["--cached"])
+				const stagedChanges = await git.diffSummary(["--cached"])
+				signal?.throwIfAborted()
 				if (stagedChanges.files.length === 0) {
 					const duration = Date.now() - startTime
 					this.log(
@@ -515,7 +545,8 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 			}
 
 			const commitArgs = options?.allowEmpty ? { "--allow-empty": null } : undefined
-			const result = await this.git.commit(message, commitArgs)
+			const result = await git.commit(message, commitArgs)
+			signal?.throwIfAborted()
 			const fromHash = this._checkpoints[this._checkpoints.length - 1] ?? this.baseHash!
 			const toHash = result.commit || fromHash
 			const duration = Date.now() - startTime

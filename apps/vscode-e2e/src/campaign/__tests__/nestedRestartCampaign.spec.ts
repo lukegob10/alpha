@@ -29,6 +29,6 @@ test("nested restart admits only the exact host and an explicit executable", asy
 		/exact reference/,
 	)
 	await assert.rejects(
-		runNestedRestartCampaign({ fixtureRoot: path.resolve("unused-fixture"), host: { version: "1.122.1" } }),
+		runNestedRestartCampaign({ fixtureRoot: path.resolve("unused-fixture"), host: { version: "1.125.0" } }),
 	)
 })

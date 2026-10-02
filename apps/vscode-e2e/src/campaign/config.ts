@@ -1,5 +1,21 @@
 import * as path from "node:path"
+import { createHash } from "node:crypto"
 import { HOST_VERSIONS, type CampaignConfig, type CampaignHost, type CampaignRepair } from "./types"
+
+/** Operational labels and model selection are excluded so paired experiments share one workload identity. */
+export function campaignConfigDigest(config: CampaignConfig): string {
+	return createHash("sha256")
+		.update(
+			JSON.stringify({
+				hosts: config.hosts.map((host) => host.version),
+				scenarioIds: config.scenarioIds,
+				samples: config.samples,
+				budgets: config.budgets,
+				maxReproductions: config.maxReproductions,
+			}),
+		)
+		.digest("hex")
+}
 
 const object = (value: unknown): Record<string, unknown> => {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid campaign object")

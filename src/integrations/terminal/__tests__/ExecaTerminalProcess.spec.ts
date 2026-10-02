@@ -469,6 +469,83 @@ describe("ExecaTerminalProcess", () => {
 			}
 		})
 
+		it("waits for signalled POSIX children to stop without waiting for zombie reaping", async () => {
+			const processKill = vitest.spyOn(process, "kill").mockImplementation(() => true)
+			Object.defineProperty(process, "platform", { value: "linux" })
+			terminalProcess["subprocess"] = { pid: 12_345 } as ReturnType<typeof execa>
+			terminalProcess["pid"] = 23_456
+			execFileMock.mockImplementationOnce((_file, _args, _options, callback) => {
+				callback(null, "12345 Z\n23456 R\n", "")
+			})
+			execFileMock.mockImplementationOnce((_file, _args, _options, callback) => {
+				callback(null, "12345 Z\n23456 Z\n", "")
+			})
+			try {
+				let settled = false
+				const abort = terminalProcess.abort().then(() => (settled = true))
+				await vitest.advanceTimersByTimeAsync(0)
+				expect(settled).toBe(false)
+				expect(execFileMock).toHaveBeenCalledWith(
+					"ps",
+					["-o", "pid=,stat=", "-p", "23456,12345"],
+					expect.objectContaining({ timeout: 5_000 }),
+					expect.any(Function),
+				)
+				await vitest.advanceTimersByTimeAsync(25)
+				await abort
+				expect(settled).toBe(true)
+			} finally {
+				Object.defineProperty(process, "platform", { value: "win32" })
+				processKill.mockRestore()
+			}
+		})
+
+		it("bounds POSIX settlement and leaves a failed stop retryable", async () => {
+			const processKill = vitest.spyOn(process, "kill").mockImplementation(() => true)
+			Object.defineProperty(process, "platform", { value: "linux" })
+			terminalProcess["subprocess"] = { pid: 12_345 } as ReturnType<typeof execa>
+			terminalProcess["pid"] = 12_345
+			execFileMock.mockImplementation((_file, _args, _options, callback) => callback(null, "12345 R\n", ""))
+			try {
+				const rejected = expect(terminalProcess.abort()).rejects.toThrow(
+					"Timed out waiting for the terminated process tree to stop",
+				)
+				await vitest.advanceTimersByTimeAsync(5_000)
+				await rejected
+				execFileMock.mockImplementation((_file, _args, _options, callback) => {
+					callback(Object.assign(new Error("no selected processes"), { code: 1 }), "", "")
+				})
+				await expect(terminalProcess.abort()).resolves.toBeUndefined()
+			} finally {
+				Object.defineProperty(process, "platform", { value: "win32" })
+				processKill.mockRestore()
+			}
+		})
+
+		it.each(["missing ps", "invalid state"])("keeps POSIX settlement failures observable: %s", async (source) => {
+			const processKill = vitest.spyOn(process, "kill").mockImplementation(() => true)
+			Object.defineProperty(process, "platform", { value: "linux" })
+			terminalProcess["subprocess"] = { pid: 12_345 } as ReturnType<typeof execa>
+			terminalProcess["pid"] = 12_345
+			execFileMock.mockImplementation((_file, _args, _options, callback) => {
+				callback(
+					source === "missing ps" ? Object.assign(new Error("spawn ps ENOENT"), { code: "ENOENT" }) : null,
+					source === "invalid state" ? "unexpected output\n" : "",
+					"",
+				)
+			})
+			try {
+				await expect(terminalProcess.abort()).rejects.toThrow(
+					source === "missing ps"
+						? "Failed to inspect terminated process-tree state"
+						: "Invalid terminated process-tree state from ps",
+				)
+			} finally {
+				Object.defineProperty(process, "platform", { value: "win32" })
+				processKill.mockRestore()
+			}
+		})
+
 		it("keeps POSIX process-tree discovery failures observable", async () => {
 			const processKill = vitest.spyOn(process, "kill").mockImplementation(() => true)
 			Object.defineProperty(process, "platform", { value: "linux" })

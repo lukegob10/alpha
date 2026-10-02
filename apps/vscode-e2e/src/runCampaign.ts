@@ -112,8 +112,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 			values.has("--profile-dir")
 		)
 			throw new Error("Conflicting campaign modes")
-		const version = values.get("--vscode-version") ?? "1.122.1"
-		if (version !== "1.122.1") throw new Error("Nested restart requires the exact reference host")
+		const version = values.get("--vscode-version") ?? "1.125.0"
+		if (version !== "1.125.0") throw new Error("Nested restart requires the exact reference host")
 		const report = await withProcessSignals((signal) =>
 			runNestedRestartCampaign({
 				fixtureRoot: nestedRoot,
@@ -127,7 +127,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 	if (sharedRoot) {
 		if (recoveryRoot || flags.size || values.has("--config") || values.has("--root") || values.has("--profile-dir"))
 			throw new Error("Conflicting campaign modes")
-		const version = values.get("--vscode-version") ?? "1.122.1"
+		const version = values.get("--vscode-version") ?? "1.125.0"
 		if (!HOST_VERSIONS.includes(version as CampaignHost["version"]))
 			throw new Error("Unsupported shared-storage host")
 		const report = await withProcessSignals((signal) =>
@@ -143,7 +143,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 	if (recoveryRoot) {
 		if (flags.size || values.has("--config") || values.has("--root") || values.has("--profile-dir"))
 			throw new Error("Conflicting campaign modes")
-		const version = values.get("--vscode-version") ?? "1.122.1"
+		const version = values.get("--vscode-version") ?? "1.125.0"
 		if (!HOST_VERSIONS.includes(version as CampaignHost["version"])) throw new Error("Unsupported recovery host")
 		const report = await withProcessSignals((signal) =>
 			runStorageRecoveryCampaign({
@@ -211,8 +211,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 							gate: true,
 							preparation: [
 								"test:unit",
-								"test:smoke:1221",
-								...(suite === "core" ? ["test:core:regressions", "test:core:1221:run"] : []),
+								"test:smoke:1250",
+								...(suite === "core" ? ["test:core:regressions", "test:core:1250:run"] : []),
 							],
 						}
 					: {}),
@@ -253,7 +253,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 	return withProcessSignals(async (signal) => {
 		let artifactDigest: string | undefined
 		if (gate) {
-			process.stdout.write("Preparing live gate: unit tests, fresh build, and exact VS Code 1.122.1 contracts.\n")
+			process.stdout.write("Preparing live gate: unit tests, fresh build, and exact VS Code 1.125.0 contracts.\n")
 			if (
 				!(await prepareLiveGate(
 					repositoryRoot,

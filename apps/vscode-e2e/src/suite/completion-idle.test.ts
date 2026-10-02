@@ -8,9 +8,9 @@ import { ExtensionWorkflowHost } from "../scenarios/extensionWorkflowHost"
 import { WorkflowRequestBudget } from "../scenarios/requestBudget"
 import { createRepositoryFixture, runFixtureTests, verifyRepositoryFixture } from "../scenarios/repositoryFixture"
 
-suite("Completion review after an implementation thread", function () {
+suite("Completed task after an implementation thread", function () {
 	this.timeout(630_000)
-	test("stays idle without accepting completion and admits a same-task follow-up", async function () {
+	test("finalizes automatically, stays idle and admits a same-task follow-up", async function () {
 		if (process.env.TEST_FILE !== "completion-idle.test") this.skip()
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR
@@ -23,10 +23,10 @@ suite("Completion review after an implementation thread", function () {
 		const host = new ExtensionWorkflowHost(globalThis.api, workspace, provider, budget, 600_000)
 		try {
 			const id = await host.start("review")
-			await host.complete(id, "review")
+			await host.complete(id)
 			for (const phase of ["enhance", "commit", "followup"] as const) {
 				await host.followup(id, phase)
-				await host.complete(id, "review")
+				await host.complete(id)
 				await fs.appendFile(
 					path.join(artifacts, "completion-idle-progress.jsonl"),
 					JSON.stringify({ phase, taskId: id, requests: budget.used }) + "\n",
@@ -36,14 +36,14 @@ suite("Completion review after an implementation thread", function () {
 			for (const check of await verifyRepositoryFixture(workspace, "followup"))
 				assert.ok(check.passed, check.name)
 			await host.followup(id, "completionIdle")
-			await host.complete(id, "review")
+			await host.complete(id)
 			const requestsAtReview = budget.used
-			const before = await host.captureCompletionReview(id)
+			const before = await host.captureCompletedTask(id)
 			// This measured quiet window intentionally exceeds the UI's 30-second stall threshold.
 			// It is the workload under test, not synchronization for a race assertion.
 			const began = Date.now()
 			await delay(35_000)
-			const after = await host.captureCompletionReview(id)
+			const after = await host.captureCompletedTask(id)
 			const evidence = {
 				schemaVersion: 1,
 				runId: process.env.ALPHA_E2E_RUN_ID,
@@ -61,11 +61,15 @@ suite("Completion review after an implementation thread", function () {
 				flag: "wx",
 			})
 			assert.equal(budget.used, requestsAtReview, "Idle completion must not make another model request")
-			assert.equal(after.liveTasksById[id]?.isWaitingForInput, true, "Host must publish the review boundary")
 			assert.equal(
-				after.agentLifecycleSnapshots[id]?.phase,
-				"finalizing",
-				"Exercise the canonical assistant-text completion boundary",
+				after.liveTasksById[id]?.isWaitingForInput,
+				false,
+				"Completed work must not wait for acknowledgement",
+			)
+			assert.equal(
+				after.agentLifecycleSnapshots[id]?.status,
+				"completed",
+				"The canonical assistant-text turn must be terminal",
 			)
 			await host.followup(id, "verify")
 			await host.complete(id)

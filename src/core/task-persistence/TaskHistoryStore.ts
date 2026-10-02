@@ -57,6 +57,7 @@ export class TaskHistoryStore {
 	private writeLock: Promise<void> = Promise.resolve()
 	private indexWriteTimer: ReturnType<typeof setTimeout> | null = null
 	private fsWatcher: fsSync.FSWatcher | null = null
+	private watchDebounce: ReturnType<typeof setTimeout> | null = null
 	private reconcileTimer: ReturnType<typeof setTimeout> | null = null
 	private disposed = false
 
@@ -130,6 +131,10 @@ export class TaskHistoryStore {
 		if (this.fsWatcher) {
 			this.fsWatcher.close()
 			this.fsWatcher = null
+		}
+		if (this.watchDebounce) {
+			clearTimeout(this.watchDebounce)
+			this.watchDebounce = null
 		}
 
 		// Synchronously flush the index (best-effort)
@@ -332,23 +337,27 @@ export class TaskHistoryStore {
 	 * Invalidate a single task's cache entry (re-read from disk on next access).
 	 */
 	async invalidate(taskId: string, options: { requireExisting?: boolean } = {}): Promise<void> {
-		if (options.requireExisting) {
-			// Effect fences retain their cached owner if durable metadata cannot be verified.
-			const item = await this.readTaskFile(taskId, options)
-			if (!item) throw new Error(`Task ${taskId} has no durable history metadata`)
-			this.cache.set(taskId, item)
-			return
-		}
-		try {
-			const item = await this.readTaskFile(taskId)
-			if (item) {
+		// A refresh owns a cache mutation too. Serialize the read and publication
+		// so a delayed read cannot restore metadata older than a completed save.
+		return this.withLock(async () => {
+			if (options.requireExisting) {
+				// Effect fences retain their cached owner if durable metadata cannot be verified.
+				const item = await this.readTaskFile(taskId, options)
+				if (!item) throw new Error(`Task ${taskId} has no durable history metadata`)
 				this.cache.set(taskId, item)
-			} else {
+				return
+			}
+			try {
+				const item = await this.readTaskFile(taskId)
+				if (item) {
+					this.cache.set(taskId, item)
+				} else {
+					this.cache.delete(taskId)
+				}
+			} catch {
 				this.cache.delete(taskId)
 			}
-		} catch {
-			this.cache.delete(taskId)
-		}
+		})
 	}
 
 	/**
@@ -554,9 +563,6 @@ export class TaskHistoryStore {
 			return
 		}
 
-		// Use a debounced handler to avoid excessive reconciliation
-		let watchDebounce: ReturnType<typeof setTimeout> | null = null
-
 		this.getTasksDir()
 			.then((tasksDir) => {
 				if (this.disposed) {
@@ -570,10 +576,12 @@ export class TaskHistoryStore {
 						}
 
 						// Debounce the reconciliation triggered by fs.watch
-						if (watchDebounce) {
-							clearTimeout(watchDebounce)
+						if (this.watchDebounce) {
+							clearTimeout(this.watchDebounce)
 						}
-						watchDebounce = setTimeout(() => {
+						this.watchDebounce = setTimeout(() => {
+							this.watchDebounce = null
+							if (this.disposed) return
 							this.reconcile().catch((err) => {
 								console.error("[TaskHistoryStore] Reconciliation after fs.watch failed:", err)
 							})

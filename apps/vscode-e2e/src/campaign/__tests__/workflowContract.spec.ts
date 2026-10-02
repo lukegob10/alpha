@@ -38,7 +38,7 @@ test("the maximum-length driver result with real repository checks crosses the c
 	const request: ScenarioRequest = {
 		campaignId: "contract-test",
 		attemptId: "attempt-0001",
-		host: { version: "1.122.1" },
+		host: { version: "1.125.0" },
 		scenarioId: "long-thread",
 		sample: 1,
 		phase: "sample",

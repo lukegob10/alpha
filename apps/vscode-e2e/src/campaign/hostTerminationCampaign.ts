@@ -136,7 +136,7 @@ export async function runHostTerminationCampaign(options: {
 	host: CampaignHost
 	signal?: AbortSignal
 }): Promise<HostTerminationCampaignReport> {
-	assert.equal(options.host.version, "1.122.1")
+	assert.equal(options.host.version, "1.125.0")
 	assert.ok(options.host.executable && path.isAbsolute(options.host.executable))
 	const fixture = await initializeRecoveryFixture(options.fixtureRoot)
 	const report: HostTerminationCampaignReport = {

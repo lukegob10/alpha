@@ -1,4 +1,5 @@
 import * as path from "path"
+import matter from "gray-matter"
 
 // Use vi.hoisted to ensure mocks are available during hoisting
 const {
@@ -172,6 +173,85 @@ describe("SkillsManager", () => {
 
 	afterEach(async () => {
 		await skillsManager.dispose()
+	})
+
+	describe("discovery publication", () => {
+		function prepareDiscovery() {
+			mockDirectoryExists.mockImplementation(async (candidate: string) => candidate === globalSkillsDir)
+			mockRealpath.mockImplementation(async (candidate: string) => candidate)
+			mockReaddir.mockResolvedValue(["test-skill"])
+			mockStat.mockResolvedValue({ isDirectory: () => true })
+			mockFileExists.mockResolvedValue(true)
+		}
+		const skillText = (description: string) =>
+			`---\nname: test-skill\ndescription: ${description}\n---\nInstructions`
+
+		it("keeps the last complete catalog available while a refresh is reading", async () => {
+			prepareDiscovery()
+			mockReadFile.mockResolvedValue(skillText("Published"))
+			await skillsManager.discoverSkills()
+			let release!: (value: string) => void
+			let reading!: () => void
+			const started = new Promise<void>((resolve) => {
+				reading = resolve
+			})
+			mockReadFile.mockImplementation(() => {
+				reading()
+				return new Promise<string>((resolve) => {
+					release = resolve
+				})
+			})
+			const refreshing = skillsManager.discoverSkills()
+			await started
+			expect(skillsManager.getSkillsForMode("code").map(({ description }) => description)).toEqual(["Published"])
+			release(skillText("Refreshed"))
+			await refreshing
+			expect(skillsManager.getSkillsForMode("code").map(({ description }) => description)).toEqual(["Refreshed"])
+		})
+
+		it("does not republish an older discovery after a newer refresh completes", async () => {
+			prepareDiscovery()
+			let release!: (value: string) => void
+			let reading!: () => void
+			const started = new Promise<void>((resolve) => {
+				reading = resolve
+			})
+			mockReadFile
+				.mockImplementationOnce(() => {
+					reading()
+					return new Promise<string>((resolve) => {
+						release = resolve
+					})
+				})
+				.mockResolvedValue(skillText("Newer"))
+			const older = skillsManager.discoverSkills()
+			await started
+			await skillsManager.discoverSkills()
+			release(skillText("Older"))
+			await older
+			expect(skillsManager.getSkillsForMode("code").map(({ description }) => description)).toEqual(["Newer"])
+		})
+
+		it("does not resurrect the catalog when disposal interrupts discovery", async () => {
+			prepareDiscovery()
+			let release!: (value: string) => void
+			let reading!: () => void
+			const started = new Promise<void>((resolve) => {
+				reading = resolve
+			})
+			mockReadFile.mockImplementation(() => {
+				reading()
+				return new Promise<string>((resolve) => {
+					release = resolve
+				})
+			})
+			const discovering = skillsManager.discoverSkills()
+			await started
+			await skillsManager.dispose()
+			release(skillText("Disposed"))
+			await discovering
+			expect(skillsManager.getAllSkills()).toEqual([])
+		})
 	})
 
 	describe("built-in skills", () => {
@@ -1664,6 +1744,22 @@ Instructions`)
 	})
 
 	describe("createSkill", () => {
+		it.each(["Build: lint and test", "Preserve # literal text", "First line\nmodeSlugs: [architect]"])(
+			"round-trips description as YAML data: %s",
+			async (description) => {
+				mockDirectoryExists.mockResolvedValue(false)
+				mockRealpath.mockImplementation(async (candidate: string) => candidate)
+				mockFileExists.mockResolvedValue(false)
+				mockMkdir.mockResolvedValue(undefined)
+				mockWriteFile.mockResolvedValue(undefined)
+
+				await skillsManager.createSkill("new-skill", "global", description, ["code"])
+
+				const parsed = matter(mockWriteFile.mock.calls[0][1])
+				expect(parsed.data).toEqual({ name: "new-skill", description, modeSlugs: ["code"] })
+			},
+		)
+
 		it("should create a new global skill", async () => {
 			// Setup: no existing skills
 			mockDirectoryExists.mockResolvedValue(false)

@@ -39,6 +39,8 @@ export interface FoldedFileContextOptions {
 	cwd: string
 	/** Optional AlphaIgnoreController for file access validation */
 	alphaIgnoreController?: AlphaIgnoreController
+	/** Caller cancellation stops preparation before any subsequent file read. */
+	signal?: AbortSignal
 }
 
 /**
@@ -77,7 +79,8 @@ export async function generateFoldedFileContext(
 	filePaths: string[],
 	options: FoldedFileContextOptions,
 ): Promise<FoldedFileContextResult> {
-	const { maxCharacters = 50000, cwd, alphaIgnoreController } = options
+	const { maxCharacters = 50000, cwd, alphaIgnoreController, signal } = options
+	signal?.throwIfAborted()
 
 	const result: FoldedFileContextResult = {
 		content: "",
@@ -96,6 +99,7 @@ export async function generateFoldedFileContext(
 	const failedFiles: string[] = []
 
 	for (let i = 0; i < filePaths.length; i++) {
+		signal?.throwIfAborted()
 		const filePath = filePaths[i]
 		// Resolve to absolute path for tree-sitter
 		const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath)
@@ -103,6 +107,7 @@ export async function generateFoldedFileContext(
 		try {
 			// Get the folded definitions using tree-sitter
 			const definitions = await parseSourceCodeDefinitionsForFile(absolutePath, alphaIgnoreController)
+			signal?.throwIfAborted()
 
 			if (!definitions || isTreeSitterErrorString(definitions)) {
 				// File type not supported, no definitions found, or error accessing file
@@ -111,29 +116,29 @@ export async function generateFoldedFileContext(
 			}
 
 			// Wrap each file in its own <system-reminder> block
-			const sectionContent = `<system-reminder>
-## File Context: ${filePath}
-${definitions}
-</system-reminder>`
+			const sectionPrefix = `<system-reminder>\n## File Context: ${filePath}\n`
+			const sectionSuffix = "\n</system-reminder>"
+			const sectionContent = `${sectionPrefix}${definitions}${sectionSuffix}`
+			const separatorCharacters = foldedSections.length > 0 ? 1 : 0
 
 			// Check if adding this file would exceed the character limit
-			if (currentCharCount + sectionContent.length > maxCharacters) {
+			if (currentCharCount + separatorCharacters + sectionContent.length > maxCharacters) {
 				// Would exceed limit - check if we can fit at least a truncated version
-				const remainingChars = maxCharacters - currentCharCount
-				if (remainingChars < 200) {
+				const remainingChars = maxCharacters - currentCharCount - separatorCharacters
+				const truncationMarker = "\n... (truncated)"
+				const definitionBudget =
+					remainingChars - sectionPrefix.length - sectionSuffix.length - truncationMarker.length
+				if (remainingChars < 200 || definitionBudget < 1) {
 					// Not enough room for meaningful content, stop processing all remaining files
 					result.filesSkipped += filePaths.length - i
 					break
 				}
 
 				// Truncate the definitions to fit within the system-reminder block
-				const truncatedDefinitions = definitions.substring(0, remainingChars - 100) + "\n... (truncated)"
-				const truncatedContent = `<system-reminder>
-## File Context: ${filePath}
-${truncatedDefinitions}
-</system-reminder>`
+				const truncatedDefinitions = definitions.substring(0, definitionBudget) + truncationMarker
+				const truncatedContent = `${sectionPrefix}${truncatedDefinitions}${sectionSuffix}`
 				foldedSections.push(truncatedContent)
-				currentCharCount += truncatedContent.length
+				currentCharCount += separatorCharacters + truncatedContent.length
 				result.filesProcessed++
 
 				// Stop processing more files since we've hit the limit
@@ -142,9 +147,10 @@ ${truncatedDefinitions}
 			}
 
 			foldedSections.push(sectionContent)
-			currentCharCount += sectionContent.length
+			currentCharCount += separatorCharacters + sectionContent.length
 			result.filesProcessed++
 		} catch (error) {
+			signal?.throwIfAborted()
 			// Collect failed files for batch logging to reduce noise
 			failedFiles.push(filePath)
 			result.filesSkipped++

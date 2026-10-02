@@ -35,6 +35,7 @@ function correlatedFixture(save: () => Promise<void>) {
 		canAcceptTaskInput: vi.fn(() => true),
 		getState: vi.fn(async () => ({})),
 		postMessageToWebview: vi.fn(async () => {}),
+		postTaskQueueToWebview: vi.fn(async () => {}),
 		log: vi.fn(),
 	} as unknown as AlphaProvider
 	Object.assign(task, { providerRef: { deref: () => provider } })
@@ -181,17 +182,52 @@ describe("published ask response admission", () => {
 	})
 
 	it("uses a durable stable receipt for completed-task follow-up retries", async () => {
-		const { task, provider, message } = correlatedFixture(async () => {})
+		const { task, queue, provider, message } = correlatedFixture(async () => {})
 		task.markCompleted()
+		// Admission remains durable while the resumed input awaits consumption.
 		const resume = vi.spyOn(task, "resumeCompletedTaskFollowup").mockResolvedValue(undefined)
+		const projecting = deferred()
+		const projected = deferred()
+		vi.mocked(provider.postTaskQueueToWebview).mockImplementationOnce(async () => {
+			projecting.resolve()
+			await projected.promise
+		})
 		const followup = { ...message, type: "resumeCompletedTask" as const }
-		await webviewMessageHandler(provider, followup)
+		const handling = webviewMessageHandler(provider, followup)
+		await Promise.race([
+			projecting.promise,
+			handling.then(() => {
+				throw new Error("Handler settled before publishing its retained receipt")
+			}),
+		])
+		try {
+			expect(provider.postMessageToWebview).not.toHaveBeenCalled()
+			expect(queue.messages.map((entry) => entry.id)).toEqual(["ask-receipt"])
+		} finally {
+			projected.resolve()
+		}
+		await handling
 		await webviewMessageHandler(provider, followup)
 		expect(resume).toHaveBeenCalledOnce()
 		expect(resume).toHaveBeenCalledWith("Use this answer", [], "human", ["ask-receipt"])
+		expect(queue.messages.map((entry) => entry.id)).toEqual(["ask-receipt"])
+		expect(provider.postTaskQueueToWebview).toHaveBeenCalledTimes(2)
+		for (const call of [1, 2]) {
+			expect(provider.postTaskQueueToWebview).toHaveBeenNthCalledWith(call, task.taskId, queue.visibleMessages)
+			expect(vi.mocked(provider.postTaskQueueToWebview).mock.invocationCallOrder[call - 1]).toBeLessThan(
+				vi.mocked(provider.postMessageToWebview).mock.invocationCallOrder[call - 1],
+			)
+		}
+		expect(provider.postMessageToWebview).toHaveBeenCalledTimes(2)
 		expect(provider.postMessageToWebview).toHaveBeenLastCalledWith(
 			expect.objectContaining({
-				chatCommandResult: expect.objectContaining({ command: "resumeCompletedTask", status: "accepted" }),
+				chatCommandResult: expect.objectContaining({
+					requestId: "ask-receipt",
+					taskId: task.taskId,
+					command: "resumeCompletedTask",
+					status: "accepted",
+					deliveryState: "queued",
+				}),
 			}),
 		)
 	})

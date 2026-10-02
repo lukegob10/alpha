@@ -18,7 +18,47 @@ describe("TicketStore", () => {
 
 	it("does not create profile storage during inspection", async () => {
 		expect(await store.list()).toMatchObject({ tickets: [], total: 0 })
+		await expect(store.readMany(["PRO-01", "../escape"])).resolves.toEqual([
+			{ error: expect.any(Error) },
+			{ error: expect.any(Error) },
+		])
 		await expect(fs.stat(path.join(home, ".alpha"))).rejects.toMatchObject({ code: "ENOENT" })
+	})
+	it("reads mixed locator batches in order with independent errors and no cache across edits", async () => {
+		const first = await store.create({ name: "First" })
+		const second = await store.create({ name: "Second" })
+		await expect(store.readMany([second.id, "PRO-99", "../escape", "pro1"])).resolves.toEqual([
+			{ ticket: second },
+			{ error: expect.any(Error) },
+			{ error: expect.any(Error) },
+			{ ticket: first },
+		])
+		const updated = await store.update({
+			id: first.id,
+			expectedRevision: first.revision,
+			description: "External update",
+		})
+		await expect(store.readMany(["PRO-01", second.id])).resolves.toEqual([{ ticket: updated }, { ticket: second }])
+	})
+	it("retains duplicate reference and ID protections when reading an attachment batch", async () => {
+		const first = await store.create({ name: "First" })
+		const second = await store.create({ name: "Second" })
+		const secondFile = await store.markdownPath(second.id)
+		const secondMarkdown = await fs.readFile(secondFile, "utf8")
+		await fs.writeFile(secondFile, secondMarkdown.replace("PRO-02", "PRO-01"))
+		const ambiguous = await store.readMany(["PRO-01", first.id])
+		expect(ambiguous[0]).toMatchObject({ error: { message: "Duplicate ticket reference; repair Markdown files" } })
+		expect(ambiguous[1]).toEqual({ ticket: first })
+		await fs.writeFile(secondFile, secondMarkdown)
+		const firstFile = await store.markdownPath(first.id)
+		await fs.mkdir(path.join(store.directory, "in-progress"))
+		await fs.writeFile(
+			path.join(store.directory, "in-progress", `${first.id}.md`),
+			(await fs.readFile(firstFile, "utf8")).replace("PRO-01", "PRO-77"),
+		)
+		const duplicates = await store.readMany(["PRO-01", second.id])
+		expect(duplicates[0]).toMatchObject({ error: { message: "Duplicate ticket ID; repair Markdown files" } })
+		expect(duplicates[1]).toEqual({ ticket: second })
 	})
 	it("persists classification through edits, status moves, reload, and explicit removal", async () => {
 		const created = await store.create({ name: "Classified", type: "bug", priority: "high" })
@@ -446,6 +486,7 @@ describe("TicketStore", () => {
 			JSON.stringify({ id: ticket.id, from: "backlog", to: "in-progress", revision: ticket.revision, text }),
 		)
 		await expect(store.read(ticket.id)).rejects.toThrow("move pending")
+		await expect(store.readMany([ticket.id, "PRO-01"])).rejects.toThrow("move pending")
 		await store.recoverPendingMoves()
 		expect((await store.read(ticket.id)).status).toBe("in-progress")
 		await expect(fs.stat(file)).rejects.toMatchObject({ code: "ENOENT" })

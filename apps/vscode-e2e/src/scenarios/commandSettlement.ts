@@ -1,3 +1,5 @@
+import { addFilePatch, updateFilePatch } from "./scriptedPatch"
+
 /** One workload shared by scripted and live runs; the oracle is installed by the host, outside model authority. */
 export const MAX_SETTLEMENT_REVISIONS = 12
 export const SETTLEMENT_COMMANDS = Array.from(
@@ -21,16 +23,15 @@ export function settlementPrompt(revision: number): string {
 		"index.html must load app.js and style.css and contain elements with IDs count, increment, decrement, reset.",
 		"app.js runs directly in a browser, uses document.getElementById and addEventListener('click', handler), initializes count.textContent to 0, and makes the three buttons increment, decrement and reset the displayed integer. Use no external libraries or network.",
 		`config.json must have revision: ${revision}. Update README.md to describe the controls and revision ${revision}.`,
-		"Keep earlier functionality. Use file tools for edits. Do not edit .alphaignore or any .alpha-* file; the host owns the oracle and markers.",
-		`Run exactly this approved command with the workspace as cwd and timeout 1: ${SETTLEMENT_COMMANDS[revision - 1]}`,
-		"The Node command independently exercises the controls, emits a large output, then writes build-receipt.json after a short delay. Do not write that receipt yourself or rerun a running command. Finish with attempt_completion after it settles.",
+		"Keep earlier functionality. Use apply_patch for edits. Do not edit .alphaignore or any .alpha-* file; the host owns the oracle and markers.",
+		`Run exactly this approved command using exec_command with the workspace as workdir and yield_time_ms 10000: ${SETTLEMENT_COMMANDS[revision - 1]}`,
+		"The Node command independently exercises the controls, emits a large output, then writes build-receipt.json after a short delay. Do not write that receipt yourself or rerun a running command. If the result reports a running session, wait using write_stdin with that session_id. Finish with an ordinary final report after the command settles.",
 		"Do not install dependencies, delegate, use network services, or run any other terminal command.",
 	].join("\n")
 }
 
-export function settlementScript(revision: number, workspace: string) {
-	settlementPrompt(revision)
-	const files = {
+function settlementFiles(revision: number): Record<string, string> {
+	return {
 		"index.html":
 			'<!doctype html><link rel="stylesheet" href="style.css"><output id="count">0</output><button id="increment">+</button><button id="decrement">-</button><button id="reset">Reset</button><script src="app.js"></script>',
 		"app.js":
@@ -39,15 +40,30 @@ export function settlementScript(revision: number, workspace: string) {
 		"config.json": JSON.stringify({ revision }),
 		"README.md": `Counter revision ${revision}: increment, decrement, reset.`,
 	}
+}
+
+export function settlementScript(revision: number, workspace: string) {
+	settlementPrompt(revision)
+	const previous = revision > 1 ? settlementFiles(revision - 1) : undefined
+	const command = SETTLEMENT_COMMANDS[revision - 1]
+	if (typeof command !== "string") throw new Error("Missing settlement command")
 	return [
-		...Object.entries(files).map(([path, content]) => ({ name: "write_to_file", arguments: { path, content } })),
+		...Object.entries(settlementFiles(revision))
+			.filter(([file, content]) => previous?.[file] !== content)
+			.map(([file, content]) => {
+				const before = previous?.[file]
+				if (previous && typeof before !== "string") throw new Error("Missing prior settlement file")
+				return {
+					name: "apply_patch" as const,
+					arguments: {
+						patch:
+							before === undefined ? addFilePatch(file, content) : updateFilePatch(file, before, content),
+					},
+				}
+			}),
 		{
-			name: "shell",
-			arguments: { command: SETTLEMENT_COMMANDS[revision - 1], cwd: workspace, timeout: 1 },
-		},
-		{
-			name: "attempt_completion",
-			arguments: { result: `Counter revision ${revision} verified.`, outcome: "completed" },
+			name: "exec_command" as const,
+			arguments: { cmd: command, workdir: workspace, yield_time_ms: 10_000 },
 		},
 	]
 }

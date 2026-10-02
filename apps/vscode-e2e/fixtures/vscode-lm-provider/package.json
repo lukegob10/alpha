@@ -6,7 +6,7 @@
 	"publisher": "alpha-code-e2e",
 	"private": true,
 	"engines": {
-		"vscode": "^1.122.1"
+		"vscode": "^1.125.0"
 	},
 	"activationEvents": [
 		"onLanguageModelChat:alpha-e2e"

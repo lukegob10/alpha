@@ -5,6 +5,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { createRequire } from "node:module"
 import { createHash } from "node:crypto"
+import { agentLifecycleEventSchema, type AgentLifecycleEvent } from "@alpha-code/types"
 
 import { captureRepositoryEvidence, captureRunEvidence } from "./capture"
 import { classifyFailure } from "./classification"
@@ -15,7 +16,7 @@ import type { CaptureRunEvidenceOptions, EvidenceManifest, RunEvidenceMetadata }
 let root: string
 const metadata = (): RunEvidenceMetadata => ({
 	scenarioId: "review-edit-test-commit-followup",
-	hostVersion: "1.122.1",
+	hostVersion: "1.125.0",
 	provider: "live-copilot",
 	modelId: "gpt-5.6-luna",
 	reasoningEffort: "max",
@@ -130,6 +131,321 @@ test("classifies known failures without publishing arbitrary exception or code t
 		code: "UNKNOWN",
 	})
 	assert.deepEqual(classifyFailure("passed", { phase: "tool", code: "TOOL_ERROR" }), { category: "none", code: "OK" })
+})
+
+test("retains sequenced task performance facts without exporting arbitrary phases or metadata", async () => {
+	const storage = await ownedSource("storage")
+	const task = path.join(storage, "tasks", "task-1")
+	await fs.mkdir(task, { recursive: true })
+	const identity = { taskId: "task-1", runId: "event-run", turnId: "turn-1", stepId: "step-1" }
+	await fs.writeFile(
+		path.join(task, "agent_lifecycle_events.jsonl"),
+		JSON.stringify({ ...identity, sequence: 1, type: "turn_terminal", payload: { status: "completed" } }) + "\n",
+	)
+	const records = [{ ...identity, sequence: 1, event: { type: "turn_completed", status: "completed" } }]
+	const journalPath = path.join(task, "agent_turn_events.jsonl")
+	await fs.writeFile(journalPath, records.map((record) => JSON.stringify(record)).join("\n") + "\n")
+	await fs.writeFile(path.join(task, "api_conversation_history.json"), "[]")
+	const capture = (runId: string) =>
+		captureRunEvidence({ ...options(), runId, storagePath: storage, assertSourceOwned: assertFixtureOwned })
+	const baseline = await capture("performance-before")
+	assert.equal(baseline.captureComplete, true)
+	const phases = [
+		"checkpoint_ready",
+		"task_setup",
+		"first_provider_request",
+		"completed_task_followup",
+		"queue_admission",
+		"queued_message_wait",
+		"condensation",
+	]
+	const secret = "private-performance-phase-and-metadata"
+	const statuses = ["completed", "failed", "cancelled"]
+	const performanceRecords = [...phases, secret].map((phase, index) => ({
+		...identity,
+		sequence: index + 2,
+		event: {
+			type: "task_performance",
+			phase,
+			status: statuses[index % statuses.length],
+			durationMs: index + 42,
+			metadata: { prompt: secret, apiKey: secret },
+			output: secret,
+		},
+	}))
+	const source = [...records, ...performanceRecords].map((record) => JSON.stringify(record)).join("\n") + "\n"
+	await fs.writeFile(journalPath, source)
+	const result = await capture("performance-after")
+	assert.equal(result.captureComplete, true)
+	const manifest = await manifestOf(result.manifestPath)
+	assert.deepEqual(manifest.warnings, [])
+	const projected = JSON.parse(
+		await fs.readFile(
+			path.join(result.artifactDirectory, "task-1-agent_turn_events.jsonl.projection.json"),
+			"utf8",
+		),
+	)
+	assert.equal(projected.sourceSha256, createHash("sha256").update(source).digest("hex"))
+	assert.equal(projected.projection.validationStatus, "validated")
+	assert.equal(projected.projection.complete, true)
+	assert.equal(projected.projection.events.length, records.length + performanceRecords.length)
+	for (const [index, phase] of [...phases, undefined].entries()) {
+		assert.deepEqual(projected.projection.events[index + 1], {
+			type: "task_performance",
+			...Object.fromEntries(
+				Object.entries(identity).map(([key, value]) => [
+					key + "Sha256",
+					createHash("sha256").update(value).digest("hex"),
+				]),
+			),
+			sequence: index + 2,
+			status: statuses[index % statuses.length],
+			durationMs: index + 42,
+			...(phase ? { phase } : {}),
+		})
+	}
+	const join = JSON.parse(await fs.readFile(path.join(result.artifactDirectory, "task-1-evidence-join.json"), "utf8"))
+	assert.equal(join.status, "captured")
+	assert.deepEqual(join.validation, { lifecycle: "validated", eventLog: "validated" })
+	for (const artifact of manifest.artifacts) {
+		assert.ok(!(await fs.readFile(path.join(result.artifactDirectory, artifact.path), "utf8")).includes(secret))
+	}
+	assert.equal(await fs.readFile(journalPath, "utf8"), source)
+})
+
+test("captures tool effect records without sequence gaps or changing failed task evidence", async () => {
+	const storage = await ownedSource("storage")
+	const task = path.join(storage, "tasks", "task-1")
+	await fs.mkdir(task, { recursive: true })
+	const identity = { taskId: "task-1", runId: "lifecycle-run", turnId: "turn-1", stepId: "step-1" }
+	const secret = "private-tool-effect-arguments-and-output"
+	const readCall = "private-read-tool-call"
+	const commandCall = "private-command-tool-call"
+	const records = [
+		{ type: "turn_started", payload: { effectTrackingVersion: 1 } },
+		{ type: "step_started", payload: { phase: "working" } },
+		{
+			type: "tool_call_accepted",
+			payload: {
+				item: { itemId: "read-call", type: "tool_call", toolCallId: readCall, name: "read", arguments: secret },
+			},
+		},
+		{
+			type: "tool_result_recorded",
+			payload: {
+				item: {
+					itemId: "read-result",
+					type: "tool_result",
+					toolCallId: readCall,
+					status: "error",
+					output: secret,
+				},
+			},
+		},
+		{
+			type: "tool_call_accepted",
+			payload: {
+				item: {
+					itemId: "command-call",
+					type: "tool_call",
+					toolCallId: commandCall,
+					name: "execute_command",
+					arguments: secret,
+				},
+			},
+		},
+		{ type: "tool_effect_started", payload: { toolCallId: commandCall } },
+		{
+			type: "tool_result_recorded",
+			payload: {
+				item: {
+					itemId: "command-result",
+					type: "tool_result",
+					toolCallId: commandCall,
+					status: "success",
+					output: secret,
+				},
+			},
+		},
+		{ type: "step_status_changed", payload: { status: "completed" } },
+		{ type: "turn_terminal", payload: { status: "completed" } },
+	].map((record, index) =>
+		agentLifecycleEventSchema.parse({
+			...identity,
+			version: 1,
+			eventId: `event-${index + 1}`,
+			sequence: index + 1,
+			occurredAt: index + 1,
+			...record,
+		}),
+	)
+	const eventLog = [
+		{ type: "model_request_started" },
+		{ type: "tool_result", callId: readCall, name: "read", status: "error", output: secret },
+		{ type: "tool_result", callId: commandCall, name: "execute_command", status: "success", output: secret },
+		{ type: "turn_completed", status: "completed" },
+	].map((event, index) => ({ ...identity, runId: "event-log-run", sequence: index + 1, event }))
+	const sources = {
+		"agent_lifecycle_events.jsonl": records.map((record) => JSON.stringify(record)).join("\n") + "\n",
+		"agent_turn_events.jsonl": eventLog.map((record) => JSON.stringify(record)).join("\n") + "\n",
+		"api_conversation_history.json": JSON.stringify(
+			[readCall, commandCall].flatMap((callId, index) => [
+				{ role: "assistant", content: [{ type: "tool_use", id: callId, input: secret }] },
+				{
+					role: "user",
+					content: [{ type: "tool_result", tool_use_id: callId, is_error: index === 0, content: secret }],
+				},
+			]),
+		),
+	}
+	for (const [name, content] of Object.entries(sources)) await fs.writeFile(path.join(task, name), content)
+	const result = await captureRunEvidence({
+		...options(),
+		storagePath: storage,
+		assertSourceOwned: assertFixtureOwned,
+	})
+	assert.equal(result.captureComplete, true)
+	const manifest = await manifestOf(result.manifestPath)
+	assert.equal(manifest.metadata.outcome, "failed")
+	assert.deepEqual(manifest.warnings, [])
+	const lifecycle = JSON.parse(
+		await fs.readFile(
+			path.join(result.artifactDirectory, "task-1-agent_lifecycle_events.jsonl.projection.json"),
+			"utf8",
+		),
+	)
+	assert.equal(
+		lifecycle.sourceSha256,
+		createHash("sha256").update(sources["agent_lifecycle_events.jsonl"]).digest("hex"),
+	)
+	assert.equal(lifecycle.projection.validationStatus, "validated")
+	assert.equal(lifecycle.projection.complete, true)
+	assert.deepEqual(lifecycle.projection.warnings, [])
+	assert.deepEqual(
+		lifecycle.projection.events.map((event: { sequence: number }) => event.sequence),
+		records.map((record) => record.sequence),
+	)
+	assert.deepEqual(lifecycle.projection.events[5], {
+		type: "tool_effect_started",
+		...Object.fromEntries(
+			Object.entries({ eventId: "event-6", ...identity }).map(([key, value]) => [
+				`${key}Sha256`,
+				createHash("sha256").update(value).digest("hex"),
+			]),
+		),
+		sequence: 6,
+		occurredAt: 6,
+		callIdSha256: createHash("sha256").update(commandCall).digest("hex"),
+	})
+	const join = JSON.parse(await fs.readFile(path.join(result.artifactDirectory, "task-1-evidence-join.json"), "utf8"))
+	assert.equal(join.status, "captured")
+	assert.deepEqual(join.validation, { lifecycle: "validated", eventLog: "validated" })
+	const history = JSON.parse(
+		await fs.readFile(
+			path.join(result.artifactDirectory, "task-1-api_conversation_history.json.projection.json"),
+			"utf8",
+		),
+	)
+	assert.equal(history.projection[1].tools[0].isError, true)
+	assert.equal(history.projection[3].tools[0].isError, false)
+	const additive = JSON.parse(
+		await fs.readFile(
+			path.join(result.artifactDirectory, "task-1-agent_turn_events.jsonl.projection.json"),
+			"utf8",
+		),
+	)
+	assert.equal(additive.projection.events[1].status, "error")
+	assert.equal(additive.projection.events[2].status, "success")
+	for (const artifact of manifest.artifacts) {
+		const content = await fs.readFile(path.join(result.artifactDirectory, artifact.path), "utf8")
+		for (const value of [secret, readCall, commandCall]) assert.ok(!content.includes(value))
+	}
+	for (const [name, content] of Object.entries(sources))
+		assert.equal(await fs.readFile(path.join(task, name), "utf8"), content)
+})
+
+test("projects every canonical lifecycle event variant while omitting private payloads", async () => {
+	const storage = await ownedSource("storage")
+	const task = path.join(storage, "tasks", "task-1")
+	await fs.mkdir(task, { recursive: true })
+	const secret = "private-canonical-lifecycle-payload"
+	const text = { itemId: "text-1", type: "assistant_text" as const, text: secret }
+	const approval = {
+		itemId: "approval-item",
+		type: "approval" as const,
+		approvalId: "approval-1",
+		status: "requested" as const,
+		reason: secret,
+	}
+	const payloads = {
+		turn_started: {},
+		phase_changed: { phase: "working" },
+		step_started: {},
+		step_status_changed: { status: "completed", reason: secret },
+		item_added: { item: text },
+		item_updated: { item: text },
+		tool_call_accepted: {
+			item: {
+				itemId: "call",
+				type: "tool_call",
+				toolCallId: "call-1",
+				name: "execute_command",
+				arguments: secret,
+				status: "accepted",
+			},
+		},
+		tool_effect_started: { toolCallId: "call-1" },
+		tool_result_recorded: {
+			item: { itemId: "result", type: "tool_result", toolCallId: "call-1", status: "error", output: secret },
+		},
+		approval_requested: { item: approval },
+		approval_resolved: { item: { ...approval, status: "denied" } },
+		turn_status_changed: { status: "in_progress", reason: secret },
+		turn_terminal: { status: "failed", error: secret },
+		turn_completed: { status: "completed", reason: secret },
+		turn_interrupted: { status: "interrupted", reason: secret },
+		turn_cancelled: { reason: secret },
+		turn_failed: { status: "failed", error: secret },
+	} satisfies { [Type in AgentLifecycleEvent["type"]]: Extract<AgentLifecycleEvent, { type: Type }>["payload"] }
+	const identity = { taskId: "task-1", runId: "lifecycle-run", turnId: "turn-1", stepId: "step-1" }
+	const records = agentLifecycleEventSchema.options.map((schema, index) =>
+		schema.parse({
+			...identity,
+			version: 1,
+			eventId: `event-${index + 1}`,
+			sequence: index + 1,
+			occurredAt: index + 1,
+			type: schema.shape.type.value,
+			payload: payloads[schema.shape.type.value],
+		}),
+	)
+	const journal = records.map((record) => JSON.stringify(record)).join("\n") + "\n"
+	await fs.writeFile(path.join(task, "agent_lifecycle_events.jsonl"), journal)
+	await fs.writeFile(
+		path.join(task, "agent_turn_events.jsonl"),
+		JSON.stringify({ ...identity, sequence: 1, event: { type: "turn_failed", status: "failed" } }) + "\n",
+	)
+	await fs.writeFile(path.join(task, "api_conversation_history.json"), "[]")
+	const result = await captureRunEvidence({
+		...options(),
+		storagePath: storage,
+		assertSourceOwned: assertFixtureOwned,
+	})
+	assert.equal(result.captureComplete, true)
+	const projection = JSON.parse(
+		await fs.readFile(
+			path.join(result.artifactDirectory, "task-1-agent_lifecycle_events.jsonl.projection.json"),
+			"utf8",
+		),
+	)
+	assert.equal(projection.projection.validationStatus, "validated")
+	assert.deepEqual(projection.projection.warnings, [])
+	assert.deepEqual(
+		projection.projection.events.map((event: { type: string }) => event.type),
+		records.map((record) => record.type),
+	)
+	assert.ok(!JSON.stringify(projection).includes(secret))
+	assert.equal(await fs.readFile(path.join(task, "agent_lifecycle_events.jsonl"), "utf8"), journal)
 })
 
 test("reports closed journal budget and parse warnings and never marks rejected sources captured", async () => {

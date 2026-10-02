@@ -938,6 +938,39 @@ describe("ChatTextArea", () => {
 		})
 
 		describe("prompt history navigation", () => {
+			it("resets navigation by displayed chat identity even when shell selection is unchanged", () => {
+				const setInputValue = vi.fn()
+				const messages = [{ type: "say" as const, say: "user_feedback" as const, text: "same prompt", ts: 1 }]
+				const { container, rerender } = render(
+					<ChatTextArea
+						{...defaultProps}
+						conversationClineMessages={messages}
+						conversationTaskId="task-a"
+						isInTask
+						setInputValue={setInputValue}
+						inputValue="draft A"
+					/>,
+				)
+				const textarea = container.querySelector("textarea")!
+				textarea.setSelectionRange(0, 0)
+				fireEvent.keyDown(textarea, { key: "ArrowUp" })
+				expect(setInputValue).toHaveBeenCalledWith("same prompt")
+				setInputValue.mockClear()
+				rerender(
+					<ChatTextArea
+						{...defaultProps}
+						conversationClineMessages={messages}
+						conversationTaskId="task-b"
+						isInTask
+						setInputValue={setInputValue}
+						inputValue="draft B"
+					/>,
+				)
+				textarea.setSelectionRange(0, 0)
+				fireEvent.keyDown(textarea, { key: "ArrowDown" })
+				expect(setInputValue).not.toHaveBeenCalled()
+			})
+
 			const mockAlphaMessages = [
 				{ type: "say", say: "user_feedback", text: "First prompt", ts: 1000 },
 				{ type: "say", say: "user_feedback", text: "Second prompt", ts: 2000 },

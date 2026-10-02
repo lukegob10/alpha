@@ -24,6 +24,8 @@ function harness() {
 		instanceId: "queue-instance",
 		taskKind: "primary",
 		abort: false,
+		// Object.create bypasses Task's field initializers, including lifetime cancellation ownership.
+		taskCancellationController: new AbortController(),
 		didComplete: false,
 		clineMessages: [],
 		apiConversationHistory: [],
@@ -117,12 +119,26 @@ it("merges durable steering accepted while mention transformation is pending bef
 		return { content: structuredClone(userContent) }
 	})
 	const running = task.runAgentRequests([{ type: "text", text: "INITIAL" }], false)
-	const stopped = expect(running).rejects.toBe(stopBeforeProvider)
-	await transforming
-	await task.steerUserMessageDurably("STEER_DURING_TRANSFORM", [], "steer-transform")
-	expect(queue.getClaimedMessageIds()).toEqual(["steer-transform"])
-	finish()
-	await stopped
+	const stopped = running.then(
+		() => ({ status: "fulfilled" as const }),
+		(error: unknown) => ({ status: "rejected" as const, error }),
+	)
+	try {
+		await Promise.race([
+			transforming,
+			stopped.then((result) => {
+				if (result.status === "rejected") throw result.error
+				throw new Error("Agent request completed before entering the mention barrier")
+			}),
+		])
+		await task.steerUserMessageDurably("STEER_DURING_TRANSFORM", [], "steer-transform")
+		expect(queue.getClaimedMessageIds()).toEqual(["steer-transform"])
+	} finally {
+		finish()
+	}
+	const result = await stopped
+	if (result.status === "fulfilled") throw new Error("Agent request did not reject at the fixture provider boundary")
+	expect(result.error).toBe(stopBeforeProvider)
 	expect(persisted).toHaveLength(1)
 	expect(persisted[0].at(-1)?.queued_message_ids).toEqual(["steer-transform"])
 	expect(JSON.stringify(persisted[0].at(-1)?.content)).toContain("STEER_DURING_TRANSFORM")

@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 import * as vscode from "vscode"
-import { type AlphaMessage } from "@alpha-code/types"
+import { alphaMessageSchema, type AlphaMessage } from "@alpha-code/types"
 import { createCompletionReviewAcknowledger, withBoundedFixtureCleanup } from "./proportional-context-support"
 import { waitFor } from "./utils"
 
@@ -120,6 +120,7 @@ class ApprovalModeAI {
 async function runScriptedApproval(options: {
 	approvalMode: "ask" | "auto" | "bypass"
 	mode?: "code" | "architect"
+	requestText?: string
 	calls: Observation["calls"]
 	onAsk?: (task: ApprovalTask, ask: AlphaMessage, provider: ApprovalModeHostProvider) => void
 }): Promise<{
@@ -130,7 +131,7 @@ async function runScriptedApproval(options: {
 	modelInputs: unknown[][]
 	messages: AlphaMessage[]
 }> {
-	assert.equal(vscode.version, "1.122.1")
+	assert.equal(vscode.version, "1.125.0")
 	const workspace = process.env.ALPHA_E2E_WORKSPACE
 	const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR
 	assert.ok(workspace && artifacts)
@@ -154,7 +155,7 @@ async function runScriptedApproval(options: {
 	let messages: AlphaMessage[] = []
 	await withBoundedFixtureCleanup(async () => {
 		await globalThis.api.startNewTask({
-			text: "Exercise the session approval dial.",
+			text: options.requestText ?? "Exercise the session approval dial.",
 			configuration: {
 				...configuration,
 				apiProvider: "fake-ai",
@@ -199,6 +200,54 @@ async function runScriptedApproval(options: {
 
 suite("Ask / Auto / Full Access in the extension host", function () {
 	this.timeout(180_000)
+
+	for (const approvalMode of ["ask", "auto", "bypass"] as const) {
+		for (const viaCommand of [false, true]) {
+			test(`${approvalMode} saves a tiny patch to a large file after a skill request (command: ${viaCommand})`, async () => {
+				const workspace = process.env.ALPHA_E2E_WORKSPACE
+				assert.ok(workspace)
+				const relativeFile = `src/approval-large-${approvalMode}-${Date.now()}.txt`
+				const target = path.join(workspace, relativeFile)
+				const original = "before\n" + "unchanged context\n".repeat(4_000)
+				const final = original.replace("before", "after")
+				const patch = `*** Begin Patch\n*** Update File: ${relativeFile}\n@@\n-before\n+after\n*** End Patch`
+				assert.ok(patch.length < 200)
+				await fs.mkdir(path.dirname(target), { recursive: true })
+				await fs.writeFile(target, original)
+				try {
+					const { asks, messages } = await runScriptedApproval({
+						approvalMode,
+						requestText: "Use the api-export skill to retrieve the export and save the document.",
+						calls: [
+							viaCommand
+								? { name: "exec_command", arguments: { cmd: `apply_patch <<'PATCH'\n${patch}\nPATCH` } }
+								: { name: "apply_patch", arguments: { patch } },
+						],
+						onAsk: (task, ask) => {
+							if (ask.ask === "tool") task.approveAsk()
+						},
+					})
+					assert.equal((await fs.readFile(target, "utf8")).replaceAll("\r\n", "\n"), final)
+					assert.deepEqual(
+						asks.filter((ask) => ask !== "completion_result"),
+						approvalMode === "ask" ? ["tool"] : [],
+					)
+					const message = messages.find(
+						(item) => item.ask === "tool" && !item.partial && item.text?.includes(relativeFile),
+					)
+					assert.ok(message?.text)
+					assert.ok(message.text.length > 100_000)
+					assert.ok((message.toolApprovalRequest?.description?.length ?? Infinity) < 100_000)
+					assert.ok(alphaMessageSchema.safeParse(message).success)
+					const details = JSON.parse(message.text)
+					assert.equal(details.originalContent, original)
+					assert.equal(details.finalContent, final)
+				} finally {
+					await fs.rm(target, { force: true })
+				}
+			})
+		}
+	}
 
 	test("Auto writes inside the opened workspace without asking", async () => {
 		const relativeFile = `src/approval-inside-${Date.now()}.txt`

@@ -202,7 +202,7 @@ export async function runPortableRepro(options, dependencies = {}) {
 		if (launchError) throw launchError
 		try {
 			const result = JSON.parse(await fs.readFile(receipt, "utf8"))
-			if (result.runId !== options.runId || result.hostVersion !== "1.122.1") {
+			if (result.runId !== options.runId || result.hostVersion !== "1.125.0") {
 				throw new Error("Automation receipt identity does not match the requested run")
 			}
 			const windowCleanup = windowGuard ? await windowGuard("close", prepared, result) : undefined

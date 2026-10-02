@@ -166,6 +166,11 @@ export function validateAndFixToolResultIds(
 	}
 
 	// Match tool_results to tool_uses by position and fix incorrect IDs
+	// Identified receipts outrank positional legacy repair regardless of their
+	// arrival order. An orphan must never steal a later receipt's identity/status.
+	const identifiedToolUseIds = new Set(
+		toolResults.filter((result) => validToolUseIds.has(result.tool_use_id)).map((result) => result.tool_use_id),
+	)
 	const usedToolUseIds = new Set<string>()
 	const contentArray = userMessage.content as Anthropic.Messages.ContentBlockParam[]
 
@@ -190,7 +195,7 @@ export function validateAndFixToolResultIds(
 			if (toolResultIndex !== -1 && toolResultIndex < toolUseBlocks.length) {
 				const correctId = toolUseBlocks[toolResultIndex].id
 				// Only use this ID if it hasn't been used yet
-				if (!usedToolUseIds.has(correctId)) {
+				if (!usedToolUseIds.has(correctId) && !identifiedToolUseIds.has(correctId)) {
 					usedToolUseIds.add(correctId)
 					return {
 						...block,

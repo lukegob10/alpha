@@ -8,7 +8,7 @@ import type { AlphaCodeAPI } from "@alpha-code/types"
 
 import { waitFor } from "./utils"
 import { createSerializedJsonWriter, summarizeMochaFailure, type MochaFailureDiagnostic } from "./preflightEvidence"
-import { assertRunnerAncestry } from "../hostOwnership"
+import { verifyTestHostOwnership } from "../hostOwnership"
 import { discoverLiveCopilotModels, type LiveCopilotPreflightErrorCode } from "../liveModelSelection"
 import {
 	getLiveCopilotOptionsFromEnvironment,
@@ -126,12 +126,14 @@ export async function run() {
 		actualModelFamily?: string
 		actualReasoningEffort?: string
 		stage?: string
+		requireAllTests: boolean
 		testCounts?: TestExecutionCounts
 		failureDiagnostics?: MochaFailureDiagnostic[]
 	} = {
 		schemaVersion: 1,
 		runId,
 		actualVSCodeVersion: vscode.version,
+		requireAllTests: process.env.ALPHA_E2E_REQUIRE_ALL_TESTS === "1",
 	}
 	let ownershipGate: "verified" | undefined
 	const writePreflight = artifactsDir
@@ -150,14 +152,14 @@ export async function run() {
 		await recordPreflight("blocked", "host-version-mismatch")
 		throw new Error("The actual VS Code host does not match the requested version")
 	}
-	if (process.env.ALPHA_E2E_PROFILE_DIR) {
-		try {
-			await assertRunnerAncestry(Number(process.env.ALPHA_E2E_RUNNER_PID))
-			ownershipGate = "verified"
-		} catch {
-			await recordPreflight("blocked", "host-not-owned")
-			throw new Error("The persistent profile host is not owned by this test runner")
-		}
+	try {
+		ownershipGate = await verifyTestHostOwnership(process.env)
+	} catch (error) {
+		await recordPreflight("blocked", "host-not-owned")
+		// The inspector reads only numeric process relationships. Preserve its bounded
+		// failure context so an unavailable CIM service is not reported as a foreign host.
+		const detail = error instanceof Error ? error.message.slice(0, 2_048) : "Process ancestry inspection failed"
+		throw new Error(`The test host could not prove runner ownership: ${detail}`)
 	}
 	if (artifactsDir)
 		await fs.writeFile(
@@ -324,7 +326,7 @@ export async function run() {
 	const outcome = await new Promise<ReturnType<typeof testSuiteOutcome>>((resolve) => {
 		const runner = mocha.run((failures) => {
 			hostMetadata.failureDiagnostics = failureDiagnostics.length ? [...failureDiagnostics] : undefined
-			resolve(testSuiteOutcome(failures, runner.stats))
+			resolve(testSuiteOutcome(failures, runner.stats, { requireAllTests: hostMetadata.requireAllTests }))
 		})
 		runner.on("fail", (runnable, error) => {
 			if (failureDiagnostics.length < 8) failureDiagnostics.push(summarizeMochaFailure(runnable, error))

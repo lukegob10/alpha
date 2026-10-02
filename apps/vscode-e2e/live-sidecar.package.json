@@ -4,7 +4,7 @@
 	"version": "1.0.0",
 	"publisher": "alpha-code-e2e",
 	"private": true,
-	"engines": { "vscode": "^1.122.1" },
+	"engines": { "vscode": "^1.125.0" },
 	"activationEvents": ["onStartupFinished"],
 	"main": "./liveRunnerExtension.js"
 }

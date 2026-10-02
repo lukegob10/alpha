@@ -2,7 +2,7 @@
 	"schemaVersion": 1,
 	"suiteId": "managed-agent-milestone",
 	"description": "Combined certification for configurable orchestration, nested managed agents, the live agent tree, Worker verification, and Settings buffering.",
-	"minimumTestCount": 903,
+	"minimumTestCount": 935,
 	"expectedDeterministicRowCount": 26,
 	"expectedIntegrationPendingCount": 8,
 	"prerequisites": [
@@ -31,8 +31,10 @@
 			"id": "worker-worktree",
 			"label": "Worker isolation, Apply, and orphan recovery",
 			"packageDir": "packages/core",
-			"minimumTestCount": 11,
-			"include": ["^src/worktree/__tests__/managed-subagent-worktree\\.spec\\.ts$"]
+			"minimumTestCount": 25,
+			"include": [
+				"^src/worktree/__tests__/managed-subagent-worktree(?:\\.(?:capture-recovery|persistence))?\\.spec\\.ts$"
+			]
 		},
 		{
 			"id": "runtime-invariants",
@@ -51,7 +53,7 @@
 				"^core/task/__tests__/.*(?:agent|descendant|nested).*\\.spec\\.ts$",
 				"^core/prompts/tools/__tests__/build-tools-spawn-agent\\.spec\\.ts$",
 				"^core/tools/__tests__/(?:AgentLifecycleTools|SpawnAgentTool|ToolRegistry|nativeToolDispatchContract)\\.spec\\.ts$",
-				"^core/webview/__tests__/(?:AlphaProvider\\.(?:flicker-free-cancel|.*(?:agent|delegat|nested|tree).*)|TaskSessionRegistry)\\.spec\\.ts$",
+				"^core/webview/__tests__/(?:AlphaProvider\\.(?:flicker-free-cancel|.*(?:agent|delegat|nested|tree).*)|TaskSessionRegistry(?:\\.published-ask)?)\\.spec\\.ts$",
 				"^__tests__/(?:delegation-events|history-resume-delegation|nested-delegation-resume|provider-delegation)\\.spec\\.ts$"
 			]
 		},
@@ -59,8 +61,10 @@
 			"id": "terminal-process-cleanup",
 			"label": "Awaited terminal and real OS process-tree cleanup",
 			"packageDir": "src",
-			"minimumTestCount": 27,
-			"include": ["^integrations/terminal/__tests__/ExecaTerminalProcess(?:\\.integration)?\\.spec\\.ts$"]
+			"minimumTestCount": 45,
+			"include": [
+				"^integrations/terminal/__tests__/ExecaTerminalProcess(?:\\.(?:integration|settlement))?\\.spec\\.ts$"
+			]
 		},
 		{
 			"id": "task-history-compatibility",
@@ -93,7 +97,7 @@
 			"packageDir": "src",
 			"minimumTestCount": 118,
 			"include": [
-				"^api/providers/__tests__/(?:openai|vscode-lm)\\.spec\\.ts$",
+				"^api/providers/__tests__/(?:openai|vscode-lm|vertex|anthropic-vertex|vertex-provider-outcomes)\\.spec\\.ts$",
 				"^api/transform/__tests__/openai-format\\.spec\\.ts$",
 				"^core/assistant-message/__tests__/(?:NativeToolCallParser|spawn-agent-native-pipeline)\\.spec\\.ts$"
 			]
@@ -535,6 +539,10 @@
 					"patterns": ["recovers partial changes from an orphaned active worktree after reload"]
 				},
 				{
+					"label": "failed capture preserves recoverable Worker changes",
+					"patterns": ["retains the worktree after a failed"]
+				},
+				{
 					"label": "Apply decision reload",
 					"patterns": [
 						"lands the reviewed patch, survives reload without mandatory checks, and records optional evidence once"
@@ -817,6 +825,26 @@
 				{
 					"label": "real OS process-tree removal",
 					"patterns": ["removes the real shell, fixture parent, and sleeper child"]
+				},
+				{
+					"label": "output closure retains physical process ownership",
+					"patterns": ["retains ownership after output EOF until the subprocess actually exits"]
+				},
+				{
+					"label": "asynchronous output remains bounded and owned",
+					"patterns": [
+						"backpressures a bounded batch of async output callbacks while preserving streaming order"
+					]
+				},
+				{
+					"label": "finalization failure cannot become success",
+					"patterns": [
+						"it\\.each\\(\\[\"synchronous\", \"asynchronous\", \"shell outcome\", \"late output\"\\]\\)\\(\\s*\"fails a command when its %s completed observer fails after exit\""
+					]
+				},
+				{
+					"label": "old cleanup cannot alter the replacement command",
+					"patterns": ["leaves a replacement command"]
 				}
 			]
 		},

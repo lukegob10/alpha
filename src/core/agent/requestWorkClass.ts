@@ -1,8 +1,8 @@
 /**
- * Host-side request classification for catalog narrowing.
+ * Host-side request classification for completion and workflow guidance.
  *
- * Uncertain requests keep the full authorized Code-mode surface. This is not a
- * hidden model call and must not overfit to one repository or one user story.
+ * This heuristic is not an execution-policy boundary. Tool availability comes
+ * from the captured mode and policy, independently of request wording.
  */
 
 export type RequestWorkClass = "lookup" | "full"
@@ -18,16 +18,13 @@ export type RequestWorkClassReason =
 export interface RequestWorkClassDecision {
 	class: RequestWorkClass
 	reason: RequestWorkClassReason
-	/** Advertise `skill` on an otherwise lookup-sized catalog. */
+	/** The request references a named skill. */
 	includeSkill: boolean
-	/** Advertise Alpha Tickets tools on an otherwise lookup-sized catalog. */
+	/** The request references Alpha Tickets. */
 	includeTickets: boolean
-	/** Advertise MCP resource tools on an otherwise lookup-sized catalog. */
+	/** The request references MCP resources. */
 	includeMcpResources: boolean
 }
-
-const USER_MESSAGE_RE = /<user_message>\s*([\s\S]*?)\s*<\/user_message>/i
-const ENVIRONMENT_DETAILS_RE = /<environment_details>[\s\S]*?<\/environment_details>/gi
 
 const WORKFLOW_INTENT_RE =
 	/\b(?:spawn(?:_agent)?|delegate(?:\s+to)?\s+(?:a\s+)?(?:sub)?agent|create(?:\s+a)?\s+ticket|file(?:\s+a)?\s+ticket|update(?:\s+a)?\s+ticket|delete(?:\s+a)?\s+ticket|playwright|update[_ ](?:todo[_ ]list|plan)|work[- ]plan)\b/i
@@ -60,7 +57,7 @@ const HOW_TO_QUESTION_RE =
 const NAMED_SKILL_RE =
 	/\b(?:use|load|follow|apply)\s+(?:the\s+)?[\w.-]+\s+skill\b|\b(?:create|author)\s+(?:a\s+)?skill\b|\bSKILL\.md\b/i
 
-const TICKET_INTENT_RE = /\btickets?\b|\b[A-Z]{2,4}(?:\s*(?:[-#]|number\s*)\s*)?(?:\d{1,10}|one)\b/i
+const TICKET_INTENT_RE = /\btickets?\b|\b[A-Z]{2,4}(?:\s*(?:[-#]|number)\s*)?(?:\d{1,10}|one)\b/i
 
 const MCP_RESOURCE_INTENT_RE = /\bmcp\b|\bresource(?:s|\s+templates?)?\b/i
 
@@ -195,7 +192,31 @@ function normalizeUserRequestText(text: string): string {
 	// Historical agent continuations predate structured provenance. Read their
 	// host wrapper conservatively, including a continuation mixed with tool data.
 	if (/<agent_message(?:\s|>)/i.test(text)) return ""
-	const withoutEnvironment = text.replace(ENVIRONMENT_DETAILS_RE, "").trim()
-	const wrapped = withoutEnvironment.match(USER_MESSAGE_RE)
-	return (wrapped ? wrapped[1] : withoutEnvironment).trim()
+	const withoutEnvironment = stripEnvironmentDetails(text).trim()
+	const opening = /<user_message>/i.exec(withoutEnvironment)
+	if (!opening) return withoutEnvironment
+	const contentStart = opening.index + opening[0].length
+	const closingTag = /<\/user_message>/gi
+	closingTag.lastIndex = contentStart
+	const closing = closingTag.exec(withoutEnvironment)
+	return closing ? withoutEnvironment.slice(contentStart, closing.index).trim() : withoutEnvironment
+}
+
+function stripEnvironmentDetails(text: string): string {
+	const parts: string[] = []
+	let cursor = 0
+	let openIndex: number | undefined
+	// Scan fixed delimiters once. Searching for a closing tag from every unmatched
+	// opening tag would revisit the remaining input and block the extension host.
+	for (const match of text.matchAll(/<\/?environment_details>/gi)) {
+		if (match[0][1] !== "/") {
+			openIndex ??= match.index
+		} else if (openIndex !== undefined) {
+			parts.push(text.slice(cursor, openIndex))
+			cursor = match.index + match[0].length
+			openIndex = undefined
+		}
+	}
+	parts.push(text.slice(cursor))
+	return parts.join("")
 }

@@ -5,6 +5,7 @@ import { MAX_TERMINAL_OUTPUT_RECEIPT_CARRY_CHARACTERS } from "./types"
 import type { ExitCodeDetails } from "./types"
 import { BaseTerminalProcess } from "./BaseTerminalProcess"
 import { Terminal } from "./Terminal"
+import { t } from "../../i18n"
 
 type TerminalOutputCleanupMode = "normal" | "escape" | "osc" | "oscEscape" | "csi" | "csiSave"
 
@@ -24,11 +25,16 @@ export class TerminalProcess extends BaseTerminalProcess {
 	private aborted = false
 	private commandSubmitted = false
 	private outputCleanupState: TerminalOutputCleanupState = INITIAL_TERMINAL_OUTPUT_CLEANUP_STATE
+	private readonly terminalClosedController = new AbortController()
+	private disposeRunResources?: () => void
+	private activeIterator?: AsyncIterator<string>
+	private shellExecutionReported = false
 
 	constructor(terminal: Terminal) {
 		super()
 
 		this.terminalRef = new WeakRef(terminal)
+		this.once("shell_execution_complete", () => (this.shellExecutionReported = true))
 
 		this.once("completed", () => {
 			this.terminal.busy = false
@@ -57,6 +63,83 @@ export class TerminalProcess extends BaseTerminalProcess {
 	}
 
 	public override async run(command: string) {
+		try {
+			await this.runWithShellIntegration(command)
+		} finally {
+			this.disposeRunResources?.()
+			this.disposeRunResources = undefined
+			this.releaseOutputIterator()
+		}
+	}
+
+	public get terminalClosedSignal(): AbortSignal {
+		return this.terminalClosedController.signal
+	}
+
+	public notifyTerminalClosed(): void {
+		if (this.terminalClosedSignal.aborted) return
+		const error = new Error(
+			t(
+				this.shellExecutionReported
+					? "common:errors.command_terminal_closed_output"
+					: "common:errors.command_terminal_closed",
+			),
+		)
+		this.terminalClosedController.abort(error)
+		this.disposeRunResources?.()
+		this.releaseOutputIterator()
+		if (this.terminal.process === this) {
+			this.terminal.setActiveStream(undefined)
+			this.terminal.running = false
+			this.terminal.busy = false
+			this.terminal.process = undefined
+		}
+		// The shell's terminal exit code does not prove this command's outcome.
+		// Retain one failed process outcome; late stream/end events are fenced.
+		if (!this.isSettled) this.emit("error", error)
+		this.removeAllListeners("line")
+		this.removeAllListeners("completed")
+		this.removeAllListeners("continue")
+		this.removeAllListeners("stream_available")
+		this.removeAllListeners("shell_execution_started")
+		this.removeAllListeners("shell_execution_complete")
+		this.removeAllListeners("no_shell_integration")
+	}
+
+	private releaseOutputIterator(): void {
+		const iterator = this.activeIterator
+		this.activeIterator = undefined
+		if (iterator?.return) {
+			// VS Code readers do not expose a cancellation API. Request cleanup,
+			// but do not join a return queued behind an already stalled read.
+			void Promise.resolve()
+				.then(() => iterator.return?.())
+				.catch((error) => console.error("[TerminalProcess] Failed to close terminal output reader", error))
+		}
+	}
+
+	private async awaitTerminalOperation<T>(operation: Promise<T>): Promise<T> {
+		const signal = this.terminalClosedSignal
+		if (signal.aborted) {
+			void operation.catch(() => undefined)
+			signal.throwIfAborted()
+		}
+		let onAbort!: () => void
+		const closed = new Promise<never>((_, reject) => {
+			onAbort = () => reject(signal.reason)
+			signal.addEventListener("abort", onAbort, { once: true })
+		})
+		try {
+			const result = await Promise.race([operation, closed])
+			signal.throwIfAborted()
+			return result
+		} finally {
+			signal.removeEventListener("abort", onAbort)
+		}
+	}
+
+	private async runWithShellIntegration(command: string): Promise<void> {
+		this.terminalClosedSignal.throwIfAborted()
 		this.command = command
 		if (this.completeCancellationBeforeLaunch()) return
 
@@ -121,6 +204,13 @@ export class TerminalProcess extends BaseTerminalProcess {
 			onShellExecutionComplete = resolve
 			this.once("shell_execution_complete", onShellExecutionComplete)
 		})
+		this.disposeRunResources = () => {
+			clearTimeout(streamTimeoutId)
+			if (onStreamAvailable) this.removeListener("stream_available", onStreamAvailable)
+			if (onShellExecutionComplete) this.removeListener("shell_execution_complete", onShellExecutionComplete)
+			this.stopHotTimer()
+			this.isHot = false
+		}
 
 		// Execute command
 		const defaultWindowsShellProfile = vscode.workspace
@@ -164,8 +254,9 @@ export class TerminalProcess extends BaseTerminalProcess {
 		let stream: AsyncIterable<string>
 
 		try {
-			stream = await streamAvailable
+			stream = await this.awaitTerminalOperation(streamAvailable)
 		} catch (error) {
+			if (this.terminalClosedSignal.aborted) throw error
 			// Stream timeout or other error occurred
 			console.error("[Terminal Process] Stream error:", error.message)
 
@@ -183,6 +274,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 		}
 
 		let preOutput = ""
+		let startMarkerCarry = ""
 		let commandOutputStarted = false
 
 		/*
@@ -196,11 +288,22 @@ export class TerminalProcess extends BaseTerminalProcess {
 		 */
 
 		// Process stream data
-		for await (let data of stream) {
+		const iterator = stream[Symbol.asyncIterator]()
+		this.activeIterator = iterator
+		while (true) {
+			const next = await this.awaitTerminalOperation(iterator.next())
+			if (next.done) {
+				this.activeIterator = undefined
+				break
+			}
+			let data = next.value
 			// Check for command output start marker
 			if (!commandOutputStarted) {
 				preOutput += data
-				const match = this.matchAfterVsceStartMarkers(data)
+				// Output chunks may split the eight-character OSC start marker.
+				// Retain only its possible prefix instead of rescanning all pre-output.
+				const markerInput = startMarkerCarry + data
+				const match = this.matchAfterVsceStartMarkers(markerInput)
 
 				if (match !== undefined) {
 					commandOutputStarted = true
@@ -208,6 +311,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 					this.resetOutputBuffer()
 					this.emit("line", "") // Trigger UI to proceed
 				} else {
+					startMarkerCarry = markerInput.slice(-7)
 					continue
 				}
 			}
@@ -236,7 +340,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 		this.terminal.setActiveStream(undefined)
 
 		// Wait for shell execution to complete.
-		await shellExecutionComplete
+		await this.awaitTerminalOperation(shellExecutionComplete)
 
 		this.isHot = false
 

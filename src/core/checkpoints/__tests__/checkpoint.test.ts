@@ -136,7 +136,7 @@ describe("Checkpoint functionality", () => {
 			// saveCheckpoint should have been called
 			expect(mockCheckpointService.saveCheckpoint).toHaveBeenCalledWith(
 				expect.stringContaining("Task: test-task-id"),
-				{ allowEmpty: true, suppressMessage: false },
+				{ allowEmpty: true, suppressMessage: false, signal: expect.any(AbortSignal) },
 			)
 
 			// Result should contain the commit hash
@@ -208,6 +208,54 @@ describe("Checkpoint functionality", () => {
 
 			expect(result).toBeUndefined()
 			expect(mockTask.enableCheckpoints).toBe(false)
+		})
+
+		it("releases a stalled automatic save at the checkpoint deadline and cancels its work", async () => {
+			vi.useFakeTimers()
+			mockTask.checkpointTimeout = 10
+			mockCheckpointService.saveCheckpoint.mockImplementationOnce(() => new Promise(() => {}))
+			let settled = false
+			const save = checkpointSave(mockTask).then((result) => {
+				settled = true
+				return result
+			})
+			await vi.advanceTimersByTimeAsync(0)
+			expect(mockCheckpointService.saveCheckpoint).toHaveBeenCalledOnce()
+			await vi.advanceTimersByTimeAsync(10_000)
+			expect(settled).toBe(true)
+			await expect(save).resolves.toBeUndefined()
+			const options = mockCheckpointService.saveCheckpoint.mock.calls[0][1]
+			expect(options.signal.aborted).toBe(true)
+			expect(mockTask.enableCheckpoints).toBe(false)
+			expect(vi.getTimerCount()).toBe(0)
+			await checkpointSave(mockTask)
+			expect(mockCheckpointService.saveCheckpoint).toHaveBeenCalledOnce()
+		})
+
+		it("releases and cancels a stalled save when its task is cancelled", async () => {
+			vi.useFakeTimers()
+			const cancellation = new AbortController()
+			mockTask.getTaskLifetimeCancellationSignal = () => cancellation.signal
+			mockCheckpointService.saveCheckpoint.mockImplementationOnce(() => new Promise(() => {}))
+			let settled = false
+			const save = checkpointSave(mockTask).then(() => {
+				settled = true
+			})
+			await vi.advanceTimersByTimeAsync(0)
+			cancellation.abort()
+			await vi.advanceTimersByTimeAsync(0)
+			expect(settled).toBe(true)
+			await save
+			expect(mockCheckpointService.saveCheckpoint.mock.calls[0][1].signal.aborted).toBe(true)
+			expect(vi.getTimerCount()).toBe(0)
+		})
+
+		it("does not start a checkpoint save after task cancellation", async () => {
+			const cancellation = new AbortController()
+			mockTask.getTaskLifetimeCancellationSignal = () => cancellation.signal
+			cancellation.abort()
+			await expect(checkpointSave(mockTask)).resolves.toBeUndefined()
+			expect(mockCheckpointService.saveCheckpoint).not.toHaveBeenCalled()
 		})
 	})
 
@@ -581,6 +629,30 @@ describe("Checkpoint functionality", () => {
 	})
 
 	describe("getCheckpointService - initialization timeout behavior", () => {
+		it("settles all initialization waiters immediately on task cancellation", async () => {
+			vi.useFakeTimers()
+			const cancellation = new AbortController()
+			mockTask.getTaskLifetimeCancellationSignal = () => cancellation.signal
+			mockTask.checkpointService = undefined
+			mockCheckpointService.isInitialized = false
+			mockCheckpointService.initShadowGit.mockImplementationOnce(() => new Promise(() => {}))
+			let settled = false
+			const waiters = Promise.all([getCheckpointService(mockTask), getCheckpointService(mockTask)]).then(
+				(result) => {
+					settled = true
+					return result
+				},
+			)
+			cancellation.abort()
+			await vi.advanceTimersByTimeAsync(0)
+			expect(settled).toBe(true)
+			await expect(waiters).resolves.toEqual([undefined, undefined])
+			expect(mockCheckpointService.initShadowGit.mock.calls[0][1].aborted).toBe(true)
+			expect(mockTask.checkpointServiceInitializing).toBe(false)
+			expect(mockTask.checkpointService).toBeUndefined()
+			expect(vi.getTimerCount()).toBe(0)
+		})
+
 		it("does not spend the checkpoint deadline on a separate Git availability probe", async () => {
 			vi.useFakeTimers()
 			mockTask.checkpointService = undefined

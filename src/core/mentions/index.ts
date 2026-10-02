@@ -28,7 +28,7 @@ import { parsePlanModeCommand } from "../../shared/plan-mode"
 import { planModeSlug } from "../../shared/modes"
 import type { TicketActivity } from "@alpha-code/types"
 import { TicketStore } from "../../services/tickets/TicketStore"
-import { readTicketMention } from "../../services/tickets/TicketChat"
+import { readTicketMentions } from "../../services/tickets/TicketChat"
 
 export async function openMention(cwd: string, mention?: string): Promise<void> {
 	if (!mention) {
@@ -158,7 +158,9 @@ export async function parseMentions(
 	skillsManager?: SkillLookup,
 	currentMode: string = "code",
 	onTicketActivity?: (activity: TicketActivity) => Promise<void>,
+	signal?: AbortSignal,
 ): Promise<ParseMentionsResult> {
+	signal?.throwIfAborted()
 	const mentions: Set<string> = new Set()
 	const validCommands: Map<string, Command> = new Map()
 	const validSkills: Map<string, SkillContent> = new Map()
@@ -239,10 +241,18 @@ export async function parseMentions(
 		return match
 	})
 
+	const ticketLocators = Array.from(mentions)
+		.map(getTicketMentionLocator)
+		.filter((locator): locator is string => !!locator)
+	let ticketResults: Awaited<ReturnType<typeof readTicketMentions>> | undefined
+	let ticketIndex = 0
 	for (const mention of mentions) {
+		signal?.throwIfAborted()
 		const ticketLocator = getTicketMentionLocator(mention)
 		if (ticketLocator) {
-			const result = await readTicketMention(cwd, ticketLocator)
+			ticketResults ??= await readTicketMentions(cwd, ticketLocators, signal)
+			signal?.throwIfAborted()
+			const result = ticketResults[ticketIndex++]
 			contentBlocks.push({ type: "ticket", content: result.content })
 			await onTicketActivity?.(result.activity)
 		} else if (mention.startsWith("/")) {
@@ -314,6 +324,7 @@ export async function parseMentions(
 		slashCommandHelp += `\n\n${buildSkillResult(skillName, undefined, skillContent)}`
 	}
 
+	signal?.throwIfAborted()
 	return {
 		text: parsedText,
 		contentBlocks,

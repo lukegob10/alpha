@@ -3,7 +3,7 @@ import { downloadAndUnzipVSCode } from "@vscode/test-electron"
 import { runRenderedUiProbe } from "./campaign/renderedUiProbe"
 
 async function main() {
-	const executable = await downloadAndUnzipVSCode({ version: "1.122.1" })
+	const executable = await downloadAndUnzipVSCode({ version: "1.125.0" })
 	const output = path.resolve(__dirname, "../../../artifacts/reasoning-ui")
 	const result = await runRenderedUiProbe(executable, output, "reasoning")
 	console.log(JSON.stringify(result))

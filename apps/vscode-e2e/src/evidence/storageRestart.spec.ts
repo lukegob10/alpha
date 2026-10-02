@@ -61,7 +61,7 @@ beforeEach(async () => {
 		execution: "extension-host",
 		hostExitObserved: true,
 		ownershipGate: "verified",
-		actualVSCodeVersion: "1.122.1",
+		actualVSCodeVersion: "1.125.0",
 		launchedHostPid: 101,
 		extensionHostPid: 102,
 		extensionHostParentPid: 103,
@@ -73,7 +73,7 @@ beforeEach(async () => {
 		scenarioId: "storage-restart",
 		phase: "fault",
 		runId: proof.runId,
-		hostVersion: "1.122.1",
+		hostVersion: "1.125.0",
 		extensionHostPid: 102,
 		storagePath,
 		taskId: "task-failed",
@@ -93,7 +93,7 @@ beforeEach(async () => {
 			captureComplete: true,
 			bundleSha256: "a".repeat(64),
 			metadata: {
-				hostVersion: "1.122.1",
+				hostVersion: "1.125.0",
 				scenarioId: "storage-restart",
 				provider: "scripted",
 				taskIds: [receipt.taskId],
@@ -108,7 +108,7 @@ afterEach(async () => {
 
 const expected = () => ({
 	runId: proof.runId,
-	hostVersion: "1.122.1",
+	hostVersion: "1.125.0",
 	phase: "fault" as const,
 	storagePath: receipt.storagePath,
 })
@@ -202,7 +202,7 @@ test("rejects missing identity, test seams, version mismatch, and unobserved clo
 		{ extensionHostPid: undefined },
 		{ launchedHostPid: undefined },
 		{ extensionHostParentPid: undefined },
-		{ actualVSCodeVersion: "1.136.1" },
+		{ actualVSCodeVersion: "1.125.0" },
 		{ runId: "another-run" },
 		{ captureComplete: false },
 	]) {

@@ -1,6 +1,7 @@
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { EventEmitter } from "node:events"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { Task } from "../../task/Task"
@@ -45,7 +46,12 @@ async function startFileChangingCommand(
 		suspendAfterCurrentTurn: vi.fn(),
 	} as unknown as Task
 	let resolveProcess!: () => void
-	const process = new Promise<void>((resolve) => (resolveProcess = resolve)) as unknown as AlphaTerminalProcess
+	const promise = new Promise<void>((resolve) => (resolveProcess = resolve))
+	const process = Object.assign(new EventEmitter(), {
+		then: promise.then.bind(promise),
+		catch: promise.catch.bind(promise),
+		finally: promise.finally.bind(promise),
+	}) as unknown as AlphaTerminalProcess
 	process.continue = vi.fn()
 	const terminal = {
 		provider: "execa",

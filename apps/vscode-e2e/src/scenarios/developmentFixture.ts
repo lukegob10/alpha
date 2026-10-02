@@ -47,6 +47,30 @@ const GIT_COMMIT_CONFIG = [
 export const DEVELOPMENT_FIXTURE_VERSION = 1 as const
 export const DEVELOPMENT_FIXTURE_MARKER = DEVELOPMENT_FILES.marker
 
+/** Required independent assertions for saved outcome admission, owned beside their verification implementation. */
+export const DEVELOPMENT_PHASE_OUTCOME_CHECK_NAMES = Object.freeze({
+	devBootstrapBuild: Object.freeze([
+		"bootstrap-application-layout",
+		"bootstrap-main-branch",
+		"bootstrap-local-commit",
+		"bootstrap-commit-tracks-app",
+		"bootstrap-no-controller-tracked",
+		"bootstrap-task-readme-unchanged",
+		"bootstrap-readme-remains-unstaged",
+		"bootstrap-head-contains-app",
+		"bootstrap-cart-behavior",
+		"bootstrap-tests-executed",
+	] as const),
+	devInspectReadOnly: Object.freeze([
+		"inspect-mixed-state-seeded",
+		"inspect-head-preserved",
+		"inspect-index-preserved",
+		"inspect-tracked-bytes-preserved",
+		"inspect-untracked-bytes-preserved",
+		"inspect-cart-behavior",
+	] as const),
+})
+
 export interface DevelopmentVerification {
 	name: string
 	passed: boolean

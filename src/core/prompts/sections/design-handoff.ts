@@ -1,6 +1,6 @@
 import type { TaskDesignHandoff } from "@alpha-code/types"
 
-/** Keep one handoff bounded in a model step even when the durable record is larger. */
+/** Character budget available to callers explicitly requesting a handoff preview. */
 export const MAX_DESIGN_HANDOFF_PROMPT_CHARS = 24_000
 
 const DESIGN_HANDOFF_SOURCE_KIND = "design_handoff"
@@ -19,7 +19,7 @@ export interface DesignHandoffPrompt {
 export interface DesignHandoffPromptOptions {
 	/** The task that owns the current step. Handoffs never cross task boundaries. */
 	taskId: string
-	/** Optional model-derived character budget for this prompt. */
+	/** Optional preview budget. Execution must attach the complete approved design. */
 	maxChars?: number
 }
 
@@ -71,7 +71,6 @@ export function getDesignHandoffPrompt(
 	const source = getDesignHandoffSource(handoff, options.taskId)
 	if (!source) return undefined
 
-	const maxChars = Math.max(1, Math.floor(options.maxChars ?? MAX_DESIGN_HANDOFF_PROMPT_CHARS))
 	const header = [
 		"====",
 		"",
@@ -90,6 +89,10 @@ export function getDesignHandoffPrompt(
 		"--- BEGIN DESIGN HANDOFF MARKDOWN ---",
 	].join("\n")
 	const footer = "\n--- END DESIGN HANDOFF MARKDOWN ---"
+	const maxChars =
+		options.maxChars === undefined
+			? header.length + footer.length + handoff.markdown.length + 1
+			: Math.max(1, Math.floor(options.maxChars))
 	const availableChars = Math.max(0, maxChars - header.length - footer.length - 1)
 	const { body } = boundedMarkdown(handoff.markdown, availableChars)
 

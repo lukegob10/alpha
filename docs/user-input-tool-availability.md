@@ -2,7 +2,7 @@
 
 The primary Code and Plan tool catalogs expose `request_user_input`. It pauses the task for a structured answer and
 returns that answer on the original tool call. The Code catalog still applies disabled-tool settings, task policy, and
-lookup narrowing. Managed children cannot ask the user directly. Models explicitly marked for
+role restrictions. Managed children cannot ask the user directly. Models explicitly marked for
 `request_user_input_async` also receive the nonblocking question tool.
 
 This closes a Code-mode gap: for a lookup request on a model without async question support, Alpha previously advertised
@@ -21,4 +21,6 @@ documents the different continuation contract for async calls.
 Catalog cost checked on 2026-09-28 with `getNativeTools()` and UTF-8 JSON serialization: the Code `exec_command` schema
 is 1,450 bytes and the added `request_user_input` schema is 2,191 bytes. A command-and-question lookup therefore carries
 3,641 raw schema bytes before provider serialization or caching. This is a payload measurement, not a token or latency
-claim; the frozen lookup fixtures still verify the narrowed catalog shape.
+claim. As of 2026-10-02, lookup wording no longer narrows the authorized catalog; frozen lookup fixtures now verify
+stable Code-tool availability. See [file edit and approval alignment](file-edit-approval-codex-alignment.md) for the
+compatibility change and current Codex reference.

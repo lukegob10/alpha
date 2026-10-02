@@ -52,4 +52,23 @@ describe("searchWorkspaceFiles path contract", () => {
 
 		expect(results).toContainEqual(expect.objectContaining({ path: path.join("src", "index.ts"), type: "file" }))
 	})
+
+	it("enumerates checkpoint files with a cancellable process", async () => {
+		const cancellation = new AbortController()
+		const results = await executeRipgrep({
+			args: ["--files", tempDir],
+			workspacePath: tempDir,
+			signal: cancellation.signal,
+		})
+		expect(results).toContainEqual(expect.objectContaining({ path: path.join("src", "index.ts"), type: "file" }))
+	})
+
+	it("does not start checkpoint enumeration after cancellation", async () => {
+		const cancellation = new AbortController()
+		const reason = new Error("checkpoint scan cancelled")
+		cancellation.abort(reason)
+		await expect(
+			executeRipgrep({ args: ["--files", tempDir], workspacePath: tempDir, signal: cancellation.signal }),
+		).rejects.toBe(reason)
+	})
 })

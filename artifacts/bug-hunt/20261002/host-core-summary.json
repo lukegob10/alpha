@@ -1,0 +1,55 @@
+{
+	"assertions": 9,
+	"runs": [
+		{
+			"id": "f1ea95f1-40cb-4a7f-85b1-df18b3aa5e3f",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-core\\f1ea95f1-40cb-4a7f-85b1-df18b3aa5e3f",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		},
+		{
+			"id": "71ae8877-c372-4e31-831e-8d6cf91f742f",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-core\\71ae8877-c372-4e31-831e-8d6cf91f742f",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		},
+		{
+			"id": "ab02ac77-0481-4046-8ab4-18604d2fcf46",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-core\\ab02ac77-0481-4046-8ab4-18604d2fcf46",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		},
+		{
+			"id": "04397512-e4f0-4f78-9b3f-006f098b11ca",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-core\\04397512-e4f0-4f78-9b3f-006f098b11ca",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		},
+		{
+			"id": "454d1198-93b4-40db-8362-16d94296db32",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-core\\454d1198-93b4-40db-8362-16d94296db32",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		}
+	]
+}

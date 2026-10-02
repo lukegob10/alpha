@@ -5,6 +5,7 @@ import { developmentScript } from "./developmentCatalog"
 import { WorkflowRequestBudget } from "./requestBudget"
 import { settlementScript } from "./commandSettlement"
 import { BASELINE_MODULE_SOURCE, BASELINE_README, BASELINE_TEST_SOURCE } from "./repositoryFixture"
+import { addFilePatch, updateFilePatch } from "./scriptedPatch"
 
 export const ENHANCED_SOURCE = [
 	"function sum(values) {",
@@ -52,33 +53,44 @@ interface ScriptTool {
 	arguments: Record<string, unknown>
 }
 
-function patchLines(content: string): string[] {
-	return content.replace(/\r\n/g, "\n").replace(/\n$/, "").split("\n")
-}
-
-function updateFilePatch(file: string, before: string, after: string): string {
-	return [
-		"*** Begin Patch",
-		`*** Update File: ${file}`,
-		"@@",
-		...patchLines(before).map((line) => `-${line}`),
-		...patchLines(after).map((line) => `+${line}`),
-		"*** End Patch",
-	].join("\n")
-}
-
-function addFilePatch(file: string, content: string): string {
-	return [
-		"*** Begin Patch",
-		`*** Add File: ${file}`,
-		...patchLines(content).map((line) => `+${line}`),
-		"*** End Patch",
-	].join("\n")
-}
 type ScriptChunk =
 	| { type: "tool_call"; id: string; name: string; arguments: string }
 	| { type: "text"; text: string }
 	| { type: "usage"; inputTokens: number; outputTokens: number; totalCost: number }
+
+function runningCommandSession(messages: readonly unknown[], callId: string): number | undefined {
+	const isRecord = (value: unknown): value is Record<string, unknown> =>
+		value !== null && typeof value === "object" && !Array.isArray(value)
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index]
+		if (!isRecord(message) || message.role !== "user" || !Array.isArray(message.content)) continue
+		for (const result of message.content) {
+			if (!isRecord(result) || result.type !== "tool_result" || result.tool_use_id !== callId) continue
+			const texts =
+				typeof result.content === "string"
+					? [result.content]
+					: Array.isArray(result.content)
+						? result.content.flatMap((part) =>
+								isRecord(part) && part.type === "text" && typeof part.text === "string"
+									? [part.text]
+									: [],
+							)
+						: []
+			for (const text of texts) {
+				// Only the canonical envelope is session metadata; command output can contain arbitrary lookalikes.
+				const match = text
+					.slice(0, 2048)
+					.match(
+						/^(?:Chunk ID: [^\r\n]+\r?\n)?Wall time: \d+(?:\.\d+)? seconds\r?\nProcess running with session ID (\d+)\r?\n(?:Original token count: \d+\r?\n)?Output:\r?\n/,
+					)
+				const session = match ? Number(match[1]) : undefined
+				if (session !== undefined && Number.isSafeInteger(session) && session > 0) return session
+			}
+			return undefined
+		}
+	}
+	return undefined
+}
 
 /** An offline provider drives the same tools; it never directly writes fixture files or runs commands. */
 export class WorkflowScriptedAI {
@@ -86,6 +98,7 @@ export class WorkflowScriptedAI {
 	private calls = 0
 	private plan: ScriptTool[] = []
 	private finalReport = "The requested workflow step is complete."
+	private lastCommandCallId?: string
 	private removeRegistration?: () => void
 
 	constructor(
@@ -106,6 +119,8 @@ export class WorkflowScriptedAI {
 	}
 
 	setPhase(phase: WorkflowPromptName, step = 1): void {
+		this.finalReport = "The requested workflow step is complete."
+		this.lastCommandCallId = undefined
 		if (phase === "commandSettlement") {
 			this.plan = settlementScript(step, this.workspace)
 			return
@@ -115,7 +130,9 @@ export class WorkflowScriptedAI {
 				? "Copilot matches: docs/integrations.md:3 and config/assistants.json:1. The initial lib search was empty."
 				: phase === "devSearchAbsent"
 					? "No matches for AlphaMissingProvider947 in tracked repository files."
-					: "The requested workflow step is complete."
+					: phase === "devVerificationUnavailable"
+						? "Integration verification remains unverified: config/local-integration.json is missing. This task is blocked; the read-only review cannot provision that configuration. Repository state is unchanged."
+						: "The requested workflow step is complete."
 		if (isDevelopmentPrompt(phase)) {
 			this.plan = developmentScript(phase, this.workspace)
 			return
@@ -185,25 +202,33 @@ export class WorkflowScriptedAI {
 								JSON.stringify(accumulatedCases(step - 1), null, 2) + "\n",
 								JSON.stringify(accumulatedCases(step), null, 2) + "\n",
 							),
-					update("test/stats.test.cjs", scriptedTests(true, false), scriptedTests(true, true)),
+					...(step === 1
+						? [update("test/stats.test.cjs", scriptedTests(true, false), scriptedTests(true, true))]
+						: []),
 					command(WORKFLOW_COMMANDS.test),
 				]
 				break
 		}
 	}
 
-	async *createMessage(): AsyncGenerator<ScriptChunk> {
+	async *createMessage(_systemPrompt = "", messages: readonly unknown[] = []): AsyncGenerator<ScriptChunk> {
 		this.budget.consume()
 		this.calls++
-		const tool = this.plan.shift()
-		if (tool)
+		const session = this.lastCommandCallId ? runningCommandSession(messages, this.lastCommandCallId) : undefined
+		const tool =
+			session !== undefined
+				? { name: "write_stdin", arguments: { session_id: session, chars: "", yield_time_ms: 10_000 } }
+				: this.plan.shift()
+		if (tool) {
+			const id = `${this.id}-${this.calls}`
+			this.lastCommandCallId = tool.name === "exec_command" || tool.name === "write_stdin" ? id : undefined
 			yield {
 				type: "tool_call",
-				id: `${this.id}-${this.calls}`,
+				id,
 				name: tool.name,
 				arguments: JSON.stringify(tool.arguments),
 			}
-		else yield { type: "text", text: this.finalReport }
+		} else yield { type: "text", text: this.finalReport }
 		yield { type: "usage", inputTokens: 10, outputTokens: 5, totalCost: 0 }
 	}
 	getModel() {

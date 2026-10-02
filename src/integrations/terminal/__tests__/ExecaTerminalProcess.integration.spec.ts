@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process"
+import { readFileSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 import type { AlphaTerminal } from "../types"
 import { ExecaTerminalProcess } from "../ExecaTerminalProcess"
+import { ExecaTerminal } from "../ExecaTerminal"
 import { TerminalRegistry } from "../TerminalRegistry"
 import { executeCommandInTerminal } from "../../../core/tools/ExecuteCommandTool"
 
@@ -15,10 +17,15 @@ const fixturePath = path.join(path.dirname(fileURLToPath(import.meta.url)), "fix
 function isPidAlive(pid: number | undefined): boolean {
 	if (!pid) return false
 	try {
+		if (process.platform === "linux") {
+			// kill(pid, 0) also finds dead zombies awaiting init/parent reaping.
+			const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
+			return !/^[ZXx]/.test(stat.slice(stat.lastIndexOf(")") + 2))
+		}
 		process.kill(pid, 0)
 		return true
 	} catch (error) {
-		return (error as NodeJS.ErrnoException).code !== "ESRCH"
+		return !["ESRCH", "ENOENT"].includes((error as NodeJS.ErrnoException).code ?? "")
 	}
 }
 
@@ -55,6 +62,66 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 // The implementation relies on taskkill on Windows and ps on POSIX. Other
 // Node platforms are gated because neither process-tree primitive is defined.
 describe.skipIf(!supportedPlatform)("ExecaTerminalProcess process-tree integration", () => {
+	it.each(["callback", "stream"])(
+		"settles the real process tree before reporting an output %s failure",
+		async (source) => {
+			const terminal = new ExecaTerminal(3, path.dirname(fixturePath))
+			const failure = new Error("Output callback failed")
+			const errorLog = vitest.spyOn(console, "error").mockImplementation(() => undefined)
+			const shellCompleted = vitest.fn()
+			let fixturePids: FixturePids | undefined
+			let shellPid: number | undefined
+			const quote = (value: string) => `"${value.replaceAll('"', '\\"')}"`
+			const command = terminal.runCommand(`${quote(process.execPath)} ${quote(fixturePath)}`, {
+				onLine: (line, process) => {
+					fixturePids = JSON.parse(line.trim()) as FixturePids
+					shellPid = (process as ExecaTerminalProcess)["subprocess"]?.pid
+					expect(isPidAlive(shellPid)).toBe(true)
+					expect(isPidAlive(fixturePids.parentPid)).toBe(true)
+					expect(isPidAlive(fixturePids.childPid)).toBe(true)
+					if (source === "stream") {
+						;(process as ExecaTerminalProcess)["subprocess"]?.all?.destroy(failure)
+					} else {
+						throw failure
+					}
+				},
+				onCompleted: () => {
+					expect(isPidAlive(shellPid)).toBe(false)
+					expect(isPidAlive(fixturePids?.parentPid)).toBe(false)
+					expect(isPidAlive(fixturePids?.childPid)).toBe(false)
+				},
+				onShellExecutionStarted: vitest.fn(),
+				onShellExecutionComplete: shellCompleted,
+			})
+			const outcome = command.then(
+				() => ({ status: "success" as const }),
+				(error: unknown) => ({ status: "error" as const, error }),
+			)
+
+			try {
+				expect(await withTimeout(outcome, 10_000, "Output failure did not settle the process tree")).toEqual({
+					status: "error",
+					error: failure,
+				})
+				expect(fixturePids).toBeDefined()
+				expect(isPidAlive(shellPid)).toBe(false)
+				expect(isPidAlive(fixturePids?.parentPid)).toBe(false)
+				expect(isPidAlive(fixturePids?.childPid)).toBe(false)
+				expect(command.isSettled).toBe(true)
+				expect(terminal.running).toBe(false)
+				expect(terminal.busy).toBe(false)
+				expect(terminal.process).toBeUndefined()
+				expect(shellCompleted).toHaveBeenCalledOnce()
+			} finally {
+				forceKill(fixturePids?.childPid)
+				forceKill(fixturePids?.parentPid)
+				forceKill(shellPid)
+				await withTimeout(outcome, 1_000, "Output failure did not settle after cleanup").catch(() => undefined)
+				errorLog.mockRestore()
+			}
+		},
+	)
+
 	it("removes the real shell, fixture parent, and sleeper child", async () => {
 		const terminal = {
 			provider: "execa",

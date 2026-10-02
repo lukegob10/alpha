@@ -100,7 +100,7 @@ suite("Command file diffs in the extension host", function () {
 	this.timeout(120_000)
 
 	test("persists only the completed successful command edit", async () => {
-		assert.equal(vscode.version, "1.122.1")
+		assert.equal(vscode.version, "1.125.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace)

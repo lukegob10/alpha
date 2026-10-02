@@ -1,22 +1,20 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process"
-import { createHash, randomUUID } from "node:crypto"
+import { randomUUID } from "node:crypto"
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { lanes, selectLane } from "./catalog.mjs"
 import { pnpmInvocation } from "./pnpm.mjs"
 import { acquireBuildLease } from "./lease.mjs"
-import { executeSteps } from "./steps.mjs"
+import { executeSteps, recordHarnessFailure } from "./steps.mjs"
+import { collectSource, comparableSource } from "./source.mjs"
+import { configureLaneEvidence } from "./lane-evidence.mjs"
+import { buildEvidenceMatrix, parseMatrixArgs, readHarnessReports, writeEvidenceMatrix } from "./matrix.mjs"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"))
 const [action = "list", name, ...filters] = process.argv.slice(2)
-const hash = (bytes) => createHash("sha256").update(bytes).digest("hex")
-const git = (...args) => {
-	const result = spawnSync("git", args, { cwd: root, encoding: "utf8", windowsHide: true })
-	return result.status === 0 ? result.stdout.trim() : null
-}
 async function save(directory, report) {
 	await writeFile(path.join(directory, "result.json.tmp"), JSON.stringify(report, null, 2) + "\n")
 	await rename(path.join(directory, "result.json.tmp"), path.join(directory, "result.json"))
@@ -41,6 +39,8 @@ async function save(directory, report) {
 
 let releaseBuildLease
 let report
+let reportDirectory
+let stage = "setup"
 const abort = new AbortController()
 const cancel = (signal) => abort.abort(signal)
 const interrupt = () => cancel("SIGINT")
@@ -61,12 +61,39 @@ try {
 			pnpm: { expected: manifest.packageManager, actual: version ?? "invoke through pnpm harness" },
 			services:
 				"Optional: pnpm --filter @alpha-code/evals services:check. Offline and host lanes require no services or Docker.",
-			host: "not probed; host lane checks actual VS Code 1.122.1",
+			host: "not probed; host lane checks actual VS Code 1.125.0",
 			registry: "Uses pnpm/user registry configuration; credentials are never printed",
 		}
 		console.log(JSON.stringify(result, null, 2))
 		if (process.versions.node !== manifest.engines.node || `pnpm@${version}` !== manifest.packageManager)
 			process.exitCode = 1
+	} else if (action === "matrix") {
+		const options = parseMatrixArgs([name, ...filters].filter((value) => value !== undefined))
+		const invocation = process.env.npm_execpath ? pnpmInvocation(process.env.npm_execpath, ["--version"]) : null
+		const version = invocation
+			? spawnSync(invocation.executable, invocation.args, { encoding: "utf8" }).stdout?.trim()
+			: null
+		const matrix = await buildEvidenceMatrix({
+			root,
+			source: await collectSource(root),
+			node: process.versions.node,
+			pnpm: version,
+			reports: await readHarnessReports(path.join(root, "artifacts", "harness")),
+			requiredLanes: options.requiredLanes,
+		})
+		if (options.output) {
+			const output = await writeEvidenceMatrix(root, options.output, matrix)
+			console.log(
+				JSON.stringify({
+					output,
+					gate: matrix.gate,
+					evidence: matrix.evidence.length,
+					surfaces: matrix.cells.length,
+					layers: matrix.layers.length,
+				}),
+			)
+		} else console.log(JSON.stringify(matrix, null, 2))
+		if (matrix.gate.status === "failed") process.exitCode = 1
 	} else if (action === "run") {
 		const lane = selectLane(name, filters)
 		const pnpmPath = process.env.npm_execpath
@@ -79,11 +106,14 @@ try {
 		const id = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`
 		const directory = path.join(root, "artifacts", "harness", id)
 		await mkdir(directory, { recursive: true })
-		const status = git("status", "--porcelain")
+		reportDirectory = directory
+		const source = await collectSource(root)
+		const execution = await configureLaneEvidence({ lane, name, root, directory, id })
 		report = {
-			schemaVersion: 1,
+			schemaVersion: 2,
 			id,
 			lane: name,
+			filters,
 			status: "running",
 			startedAt: new Date().toISOString(),
 			fidelity: lane.fidelity,
@@ -92,31 +122,44 @@ try {
 			prerequisites: lane.prerequisites ?? [],
 			node: process.versions.node,
 			pnpm: version,
-			source: {
-				commit: git("rev-parse", "HEAD"),
-				dirty: status === null ? null : status.length > 0,
-				lockfileSha256: hash(await readFile(path.join(root, "pnpm-lock.yaml"))),
-			},
-			steps: lane.commands.map((args) => ({
+			source,
+			campaignRoot: execution.campaignRoot,
+			steps: execution.commands.map((args, index) => ({
 				command: `pnpm ${args.join(" ")}`,
+				baseArgs: lane.commands[index],
 				status: "not_started",
 				exitCode: null,
 			})),
 		}
 		console.log(`Local evidence: ${directory}`)
 		await save(directory, report)
+		stage = "execute"
 		await executeSteps({
-			commands: lane.commands,
+			commands: execution.commands,
 			root,
 			pnpmPath,
 			report,
 			signal: abort.signal,
 			save: (value) => save(directory, value),
+			environment: execution.environment,
+			verify: execution.verify,
 		})
+		stage = "source-finalization"
+		report.sourceAtEnd = await collectSource(root)
+		report.sourceUnchangedAtBoundaries = comparableSource(report.source, report.sourceAtEnd)
+		if (!report.sourceUnchangedAtBoundaries) {
+			report.status = "failed"
+			report.failure = "source_changed_during_run"
+		}
+		await save(directory, report)
 		process.exitCode =
 			report.status === "passed" ? 0 : abort.signal.aborted ? (abort.signal.reason === "SIGINT" ? 130 : 143) : 1
-	} else throw new Error("Usage: pnpm harness list | doctor | run <lane> [test paths]")
+	} else
+		throw new Error(
+			"Usage: pnpm harness list | doctor | run <lane> [test paths] | matrix [--output path] [--require lane]",
+		)
 } catch (error) {
+	if (reportDirectory) await recordHarnessFailure(report, stage, (value) => save(reportDirectory, value))
 	console.error(error.message)
 	process.exitCode = 1
 } finally {

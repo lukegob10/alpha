@@ -3,6 +3,7 @@ import { serializeError } from "serialize-error"
 import path from "path"
 import { createHash, randomUUID } from "crypto"
 import stringify from "safe-stable-stringify"
+import { t } from "../../i18n"
 import { isBundledSkillResource } from "../../services/skills/bundledSkillResources"
 import {
 	createTaskSessionApprovalKey,
@@ -123,7 +124,17 @@ type ToolExecutionHostAsk = (
 	requiresExplicitApproval?: boolean,
 ) => Promise<{ response: AlphaAskResponse; text?: string; images?: string[] }>
 
-type ToolExecutionHostApproval = (request: ToolApprovalRequest) => Promise<ToolApprovalDecision | undefined>
+/** Full review text stays separate from bounded metadata and is never truncated. */
+type ToolExecutionHostApproval = (
+	request: ToolApprovalRequest,
+	reviewMessage?: string,
+) => Promise<ToolApprovalDecision | undefined>
+
+function describeToolApproval(toolName: string, askType: AlphaAsk, message: string | undefined): string | undefined {
+	// Command amendments require the exact reviewed command. Never summarize it.
+	if (message === undefined || askType === "command" || message.length <= 4_096) return message
+	return t("tools:approvalDetails", { toolName, length: message.length })
+}
 
 /**
  * The small state and callback surface the scheduler needs from its host.
@@ -439,6 +450,8 @@ interface PreparedCall {
 	usageRecorded?: boolean
 	scope?: string
 	finalizeRead?: () => Promise<ToolResponse>
+	/** The handler returned a terminal result before cancellation, with no read finalizer pending. */
+	terminalResultReady?: boolean
 	pathIdentities?: ReadonlyArray<{ absolute: string; canonical: string }>
 	requiresExplicitApproval?: boolean
 	commandPathApproval?: { outsidePaths: string[]; unresolved: boolean }
@@ -685,6 +698,7 @@ export class ToolScheduler {
 	private parallelToolCount = 0
 	private outputTruncatedCount = 0
 	private readonly observedToolCallIds = new Set<string>()
+	private readonly repetitionSkippedResults = new WeakSet<ToolSchedulerResult>()
 	private readonly effectStartedCallIds = new Set<string>()
 	private deferredResultCommit?: { calls: AgentToolCall[]; results: ToolSchedulerResult[] }
 	private deferredCommitPromise?: Promise<void>
@@ -854,7 +868,9 @@ export class ToolScheduler {
 	}
 
 	private async observeToolResult(result: ToolSchedulerResult, call: AgentToolCall): Promise<void> {
-		if (!this.executionHost.recordToolCallForStopping) return
+		// A repetition skip closes a call without another attempt. Feeding that
+		// receipt back as new evidence can reopen the stop that produced it.
+		if (!this.executionHost.recordToolCallForStopping || this.repetitionSkippedResults.has(result)) return
 		const callId = sanitizeToolUseId(result.callId)
 		try {
 			if (
@@ -996,9 +1012,10 @@ export class ToolScheduler {
 		const finalize = item.finalizeRead
 		item.finalizeRead = undefined
 		if (item.read && result.status === "error") this.executionHost.didToolFailInCurrentTurn = true
-		// Effectful tools may report writes committed before cancellation. Keep
-		// those outcomes while still discarding late read-only output.
-		if (!finalize && item.descriptor?.capabilities.sideEffects !== "none") return result
+		// Cancellation can arrive while a sibling is draining. Keep completed
+		// results and committed effects; only unfinished read output is discarded.
+		if (!finalize && (item.terminalResultReady || item.descriptor?.capabilities.sideEffects !== "none"))
+			return result
 		if (!finalize || this.isCancelled()) return this.isCancelled() ? this.cancelledResultFor(item.call) : result
 		const startedAt = performance.now()
 		try {
@@ -1118,6 +1135,16 @@ export class ToolScheduler {
 				this.fillCancelledResults(results, calls, cursor)
 				return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
 			}
+			// Preflight and retry-block receipts also carry stopping evidence. Observe
+			// them before admitting the next call; executed results are deduplicated.
+			if (!this.options.deferResultCommit && cursor > 0 && results[cursor - 1]) {
+				try {
+					await this.observeToolResult(results[cursor - 1]!, calls[cursor - 1])
+				} catch (error) {
+					if (!(error instanceof ToolEffectFenceError)) throw error
+					return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
+				}
+			}
 
 			const item = prepared[cursor]
 			if (item.preparationResult) {
@@ -1147,10 +1174,12 @@ export class ToolScheduler {
 					item.toolCall?.nativeArgs ?? item.call.arguments,
 				)
 			) {
-				results[item.index] = resultForError(
+				const result = resultForError(
 					item.call,
 					`Stopping repeated ${item.call.name} call; use existing evidence or change the approach.`,
 				)
+				this.repetitionSkippedResults.add(result)
+				results[item.index] = result
 				cursor += 1
 				continue
 			}
@@ -1250,8 +1279,9 @@ export class ToolScheduler {
 			// the preceding parallel window has settled above, and this await prevents
 			// any later call from starting until the current call has returned.
 			try {
-				results[item.index] = await this.executeCall(item)
-				results[item.index] = await this.finalizeRead(item, results[item.index]!)
+				const result = await this.executeCall(item)
+				item.terminalResultReady = !item.finalizeRead && result.status !== "cancelled"
+				results[item.index] = await this.finalizeRead(item, result)
 				if (!this.options.deferResultCommit && !this.isCancelled()) {
 					await this.observeToolResult(results[item.index]!, item.call)
 				}
@@ -1298,7 +1328,9 @@ export class ToolScheduler {
 				// The only error it intentionally lets escape is the host's beforeEffect
 				// fence, which must fail the scheduler rather than become a tool result.
 				try {
-					results[index] = await this.executeCall(item)
+					const result = await this.executeCall(item)
+					item.terminalResultReady = !item.finalizeRead && result.status !== "cancelled"
+					results[index] = result
 				} catch (error) {
 					if (!(error instanceof ToolEffectFenceError)) throw error
 					failure ??= error
@@ -1956,6 +1988,7 @@ export class ToolScheduler {
 				]
 				const approvalWorkingDirectory =
 					type === "command" ? this.getApprovalWorkingDirectory(prepared.toolCall?.nativeArgs) : undefined
+				const description = describeToolApproval(approvalToolName, type, partialMessage)
 				const approvalRequest = typedApprovalHost
 					? toolApprovalRequestSchema.parse({
 							requestId,
@@ -1963,7 +1996,7 @@ export class ToolScheduler {
 							callId: prepared.call.id,
 							toolName: approvalToolName,
 							askType: type,
-							...(partialMessage === undefined ? {} : { description: partialMessage }),
+							...(description === undefined ? {} : { description }),
 							...(approvalWorkingDirectory === undefined ? {} : { cwd: approvalWorkingDirectory }),
 							forceApproval: forceApproval === true,
 							requiresExplicitApproval,
@@ -2010,7 +2043,9 @@ export class ToolScheduler {
 				let approvalEventReason: string | undefined
 				try {
 					if (typedApprovalHost && approvalRequest) {
-						const response = await this.raceCancellation(() => typedApprovalHost(approvalRequest))
+						const response = await this.raceCancellation(() =>
+							typedApprovalHost(approvalRequest, partialMessage),
+						)
 						if (response !== undefined) {
 							const parsed = toolApprovalDecisionSchema.safeParse(response)
 							if (!parsed.success) throw new Error("Tool approval host returned an invalid decision.")
@@ -2355,13 +2390,15 @@ export class ToolScheduler {
 						`Stopping repeated ${prepared.call.name} call; use existing evidence or change the approach.`,
 					),
 				)
-				return {
+				const result: ToolSchedulerResult = {
 					callId: prepared.call.id,
 					name: prepared.call.name,
 					status: "error",
 					content: collector.getContent(),
 					durationMs: Math.max(0, performance.now() - startedAt),
 				}
+				this.repetitionSkippedResults.add(result)
+				return result
 			}
 			let execution: Promise<void> | undefined
 			await this.admissionMutex.run(async () => {
@@ -2700,7 +2737,11 @@ export class ToolScheduler {
 		if (!this.options.deferResultCommit) return
 		this.deferredResultCommit = {
 			calls: [...calls],
-			results: results.map((result) => ({ ...result })),
+			results: results.map((result) => {
+				const retained = { ...result }
+				if (this.repetitionSkippedResults.has(result)) this.repetitionSkippedResults.add(retained)
+				return retained
+			}),
 		}
 	}
 

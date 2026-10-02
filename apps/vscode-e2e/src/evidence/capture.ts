@@ -55,6 +55,7 @@ const EVENT_TYPES = new Set([
 	"item_added",
 	"item_updated",
 	"tool_call_accepted",
+	"tool_effect_started",
 	"tool_result_recorded",
 	"approval_requested",
 	"approval_resolved",
@@ -69,6 +70,7 @@ const EVENT_TYPES = new Set([
 	"approval_result",
 	"retry",
 	"model_request_started",
+	"task_performance",
 	"request_usage",
 	"turn_completed",
 	"task_completed",
@@ -120,6 +122,15 @@ const PHASES = new Set([
 	"compacting",
 	"reporting",
 	"finalizing",
+])
+const TASK_PERFORMANCE_PHASES = new Set([
+	"task_setup",
+	"checkpoint_ready",
+	"first_provider_request",
+	"completed_task_followup",
+	"queue_admission",
+	"queued_message_wait",
+	"condensation",
 ])
 const DECISIONS = new Set(["approved", "denied", "cancelled"])
 
@@ -416,7 +427,8 @@ function projectJournalEvent(value: unknown): unknown {
 		if (
 			typeof value === "string" &&
 			((key === "status" && STATUSES.has(value)) ||
-				(key === "phase" && PHASES.has(value)) ||
+				(key === "phase" &&
+					(event.type === "task_performance" ? TASK_PERFORMANCE_PHASES : PHASES).has(value)) ||
 				(key === "decision" && DECISIONS.has(value)) ||
 				(key === "commandCategory" && ["test", "build", "lint", "typecheck"].includes(value)))
 		)
@@ -433,7 +445,7 @@ function projectJournalEvent(value: unknown): unknown {
 			: (event.name ?? event.toolName ?? payload?.toolName ?? item?.name)
 	const category = event.type === "verification_result" ? "verification" : toolCategory(name)
 	if (category) projected.toolCategory = category
-	const callId = payload?.callId
+	const callId = event.type === "tool_effect_started" ? payload?.toolCallId : payload?.callId
 	if (typeof callId === "string") projected.callIdSha256 = sha256(callId)
 	const code = knownFailureCode(payload?.code)
 	if (code) projected.code = code

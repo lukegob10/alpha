@@ -15,6 +15,8 @@ export type ToolTransactionErrorCode =
 	| "tool_use_wrong_role"
 	| "tool_result_wrong_role"
 	| "tool_use_id_invalid"
+	| "tool_use_name_invalid"
+	| "tool_use_input_missing"
 	| "duplicate_tool_use_id"
 	| "tool_result_id_invalid"
 	| "duplicate_tool_result_id"
@@ -22,6 +24,7 @@ export type ToolTransactionErrorCode =
 	| "missing_tool_result"
 	| "tool_result_order"
 	| "tool_result_status_invalid"
+	| "tool_result_content_invalid"
 
 export interface ToolTransactionInspection {
 	callCount: number
@@ -112,6 +115,21 @@ function isNonEmptyString(value: unknown): value is string {
 	return typeof value === "string" && value.trim().length > 0
 }
 
+function isResultContent(value: unknown): boolean {
+	// Preserve explicit empty outputs and open-ended typed media/provider blocks.
+	// A missing payload is not an observed result, even if its ID matches a call.
+	return (
+		typeof value === "string" ||
+		(Array.isArray(value) &&
+			value.every(
+				(block) =>
+					isObject(block) &&
+					isNonEmptyString(block.type) &&
+					(block.type !== "text" || typeof block.text === "string"),
+			))
+	)
+}
+
 function addError<T extends string>(errors: Set<T>, code: T): void {
 	errors.add(code)
 }
@@ -170,6 +188,8 @@ export function inspectToolTransactions(apiHistory: unknown): ToolTransactionIns
 					addError(errors, "tool_use_wrong_role")
 					continue
 				}
+				if (!isNonEmptyString(blockValue.name)) addError(errors, "tool_use_name_invalid")
+				if (!("input" in blockValue)) addError(errors, "tool_use_input_missing")
 
 				const id = blockValue.id
 				if (!isNonEmptyString(id)) {
@@ -196,6 +216,7 @@ export function inspectToolTransactions(apiHistory: unknown): ToolTransactionIns
 			if (blockValue.is_error !== undefined && typeof blockValue.is_error !== "boolean") {
 				addError(errors, "tool_result_status_invalid")
 			}
+			if (!isResultContent(blockValue.content)) addError(errors, "tool_result_content_invalid")
 
 			const id = blockValue.tool_use_id
 			if (!isNonEmptyString(id)) {
