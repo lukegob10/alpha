@@ -144,7 +144,8 @@ describe("WorktreeIncludeService", () => {
 		})
 	})
 
-	describe("copyWorktreeIncludeFiles", () => {
+	// These integrations launch native robocopy/cp processes; cold Windows CI startup can exceed the unit-test deadline.
+	describe("copyWorktreeIncludeFiles", { timeout: 30_000 }, () => {
 		let sourceDir: string
 		let targetDir: string
 

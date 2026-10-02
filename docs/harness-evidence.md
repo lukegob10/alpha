@@ -18,6 +18,12 @@ prepend the already installed `@vscode/ripgrep` binary directory through
 runner's global installation. The first 3.1.4 release attempt failed this prerequisite while the QA job with the same
 source passed; release workflows now use the same setup. The strict integration assertion remains required.
 
+The worktree-copy integration group uses a bounded 30-second test deadline, matching the adjacent real Git integration.
+Release run `37025939027` reached Vitest's default five-second deadline during native Windows copying before its content
+assertions ran; the same real-process file passed locally (20 tests). The deadline is scoped to this integration group;
+its copied-content, pattern-intersection, protected `.git` and progress assertions remain required. Suite-option
+inheritance follows the [Vitest 3 API](https://v3.vitest.dev/api/#describe) (retrieved 2026-10-02).
+
 Windows ownership inspection has a 30-second process deadline to allow cold CIM initialization. The host must still
 prove its ancestry; unavailable inspection, incomplete chains, foreign owners and cycles cannot pass. A real child-process
 test exercises the OS lookup in addition to controlled ancestry tests. Host startup failures retain the inspector's
