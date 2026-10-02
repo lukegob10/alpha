@@ -84,8 +84,8 @@ jobs:
                   path: artifacts/harness/
                   retention-days: 14
 
-    vscode-1221-smoke:
-        name: VS Code 1.122.1 extension-host contract
+    vscode-1250-smoke:
+        name: VS Code 1.125.0 extension-host contract
         runs-on: windows-latest
         timeout-minutes: 45
         steps:

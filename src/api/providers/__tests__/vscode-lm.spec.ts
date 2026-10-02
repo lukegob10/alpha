@@ -283,17 +283,17 @@ describe("VsCodeLmHandler", () => {
 		})
 
 		it("should explain the VS Code minimum when an unavailable GPT-5.6 selector is stale", async () => {
-			mockVsCodeVersion.value = "1.122.1"
+			mockVsCodeVersion.value = "1.125.0"
 			;(vscode.lm.selectChatModels as Mock).mockResolvedValueOnce([])
 
 			await expect(
 				handler["createClient"]({ vendor: "copilot", family: "gpt-5.6-sol", id: "copilot-gpt-5.6-sol" }),
-			).rejects.toThrow(/require VS Code 1\.128\.0 or newer \(current: 1\.122\.1\)/)
+			).rejects.toThrow(/require VS Code 1\.128\.0 or newer \(current: 1\.125\.0\)/)
 			expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(1)
 		})
 
 		it("should keep live GPT-5.6 discovery authoritative on older VS Code builds", async () => {
-			mockVsCodeVersion.value = "1.122.1"
+			mockVsCodeVersion.value = "1.125.0"
 			const liveModel = {
 				...mockLanguageModelChat,
 				vendor: "copilot",
@@ -310,7 +310,7 @@ describe("VsCodeLmHandler", () => {
 
 	describe("client resolution", () => {
 		it("shares one in-flight model selection across cold handlers with the same selector", async () => {
-			mockVsCodeVersion.value = "1.122.1"
+			mockVsCodeVersion.value = "1.125.0"
 			let resolveModels: ((models: (typeof mockLanguageModelChat)[]) => void) | undefined
 			;(vscode.lm.selectChatModels as Mock).mockImplementationOnce(
 				() =>
@@ -455,7 +455,7 @@ describe("VsCodeLmHandler", () => {
 		})
 
 		it("re-queries after the VS Code 1.122 model-change event invalidates retained clients", async () => {
-			mockVsCodeVersion.value = "1.122.1"
+			mockVsCodeVersion.value = "1.125.0"
 			const createResponse = () => ({
 				stream: (async function* () {
 					yield new vscode.LanguageModelTextPart("Response")
@@ -497,7 +497,7 @@ describe("VsCodeLmHandler", () => {
 		})
 
 		it("discards an in-flight selection invalidated by the VS Code 1.122 model-change event", async () => {
-			mockVsCodeVersion.value = "1.122.1"
+			mockVsCodeVersion.value = "1.125.0"
 			let resolveStaleModels: ((models: (typeof mockLanguageModelChat)[]) => void) | undefined
 			const staleModel = { ...mockLanguageModelChat, id: "stale-model" }
 			const freshModel = { ...mockLanguageModelChat, id: "fresh-model" }
@@ -652,8 +652,8 @@ describe("VsCodeLmHandler", () => {
 			expect(mockLanguageModelChat.countTokens).not.toHaveBeenCalled()
 		})
 
-		it("projects instruction fragments as ordered User messages on VS Code 1.122.1", async () => {
-			mockVsCodeVersion.value = "1.122.1"
+		it("projects instruction fragments as ordered User messages on VS Code 1.125.0", async () => {
+			mockVsCodeVersion.value = "1.125.0"
 			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
 				stream: (async function* () {
 					yield new vscode.LanguageModelTextPart("Response")
@@ -762,7 +762,7 @@ describe("VsCodeLmHandler", () => {
 		})
 
 		it("should classify VS Code 1.122 Copilot thinking parts before generic text parts", async () => {
-			mockVsCodeVersion.value = "1.122.1"
+			mockVsCodeVersion.value = "1.125.0"
 			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
 				stream: (async function* () {
 					yield { value: ["Working", "through the request"], id: undefined, metadata: undefined }
@@ -1224,7 +1224,7 @@ describe("VsCodeLmHandler", () => {
 		})
 
 		it("requires a read_file path in VS Code 1.122 request options", async () => {
-			mockVsCodeVersion.value = "1.122.1"
+			mockVsCodeVersion.value = "1.125.0"
 			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
 				stream: (async function* () {
 					yield new vscode.LanguageModelTextPart("Done")
@@ -1253,7 +1253,7 @@ describe("VsCodeLmHandler", () => {
 		})
 
 		it("should route reasoning effort through both public and VS Code 1.122 Copilot options", async () => {
-			mockVsCodeVersion.value = "1.122.1"
+			mockVsCodeVersion.value = "1.125.0"
 			handler = new VsCodeLmHandler({
 				...defaultOptions,
 				enableReasoningEffort: true,

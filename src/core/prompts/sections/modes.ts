@@ -5,14 +5,18 @@ import type { CustomModePrompts, ModeConfig } from "@alpha-code/types"
 import { codeModeSlug, modes, planModeSlug } from "../../../shared/modes"
 import { ensureSettingsDirectoryExists } from "../../../utils/globalContext"
 
-export async function getModesSection(context: vscode.ExtensionContext): Promise<string> {
+export async function getModesSection(
+	context: vscode.ExtensionContext,
+	capturedModePrompts?: CustomModePrompts,
+): Promise<string> {
 	// Make sure path gets created
 	await ensureSettingsDirectoryExists(context)
 
 	// Code and Plan are the complete execution catalog. Use
 	// prompt-component overrides from Settings without allowing a persisted
 	// custom mode with a reserved slug to replace either canonical definition.
-	const customModePrompts = context.globalState.get<CustomModePrompts>("customModePrompts") ?? {}
+	const customModePrompts =
+		capturedModePrompts ?? context.globalState.get<CustomModePrompts>("customModePrompts") ?? {}
 	const primaryModes = modes
 		.filter((mode) => mode.slug === planModeSlug || mode.slug === codeModeSlug)
 		.map((mode) => ({

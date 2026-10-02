@@ -16,6 +16,7 @@ vi.mock("react-i18next", () => ({
 							"chat:asyncUserInput.replyHelp": "Answers are sent as your next message.",
 							"chat:asyncUserInput.submit": "Send answers",
 							"chat:asyncUserInput.sent": "Answers sent",
+							"chat:asyncUserInput.pending": "Sending answers…",
 						} as Record<string, string>
 					)[key] ?? key),
 	}),
@@ -31,7 +32,7 @@ const request = {
 describe("AsyncUserInputCard", () => {
 	it("waits for explicit submission and sends all answers as ordinary text", () => {
 		const onSubmit = vi.fn(() => true)
-		render(<AsyncUserInputCard request={request} onSubmit={onSubmit} />)
+		const { rerender } = render(<AsyncUserInputCard request={request} onSubmit={onSubmit} />)
 
 		const submit = screen.getByRole("button", { name: "Send answers" })
 		expect(submit).toBeDisabled()
@@ -46,6 +47,7 @@ describe("AsyncUserInputCard", () => {
 		expect(onSubmit).toHaveBeenCalledExactlyOnceWith(
 			"Answers to the earlier questions:\n\nWhich environment should I use?\nAnswer: Production\n\nWhat deadline should I use?\nAnswer: Friday",
 		)
+		rerender(<AsyncUserInputCard request={request} isPending onSubmit={onSubmit} />)
 		expect(submit).toBeDisabled()
 	})
 
@@ -66,6 +68,55 @@ describe("AsyncUserInputCard", () => {
 		)
 		expect(answer).toBeEnabled()
 		expect(screen.queryByText("Answers sent")).not.toBeInTheDocument()
+	})
+
+	it("reopens the same answers when a pending submission is rejected", () => {
+		const onSubmit = vi.fn(() => true)
+		const { rerender } = render(<AsyncUserInputCard request={request} onSubmit={onSubmit} />)
+		fireEvent.click(screen.getByRole("radio", { name: "Production" }))
+		const answer = screen.getByRole("textbox", { name: "Answer for What deadline should I use?" })
+		fireEvent.change(answer, { target: { value: "Friday" } })
+		const submit = screen.getByRole("button", { name: "Send answers" })
+		fireEvent.click(submit)
+
+		rerender(<AsyncUserInputCard request={request} isPending onSubmit={onSubmit} />)
+		rerender(<AsyncUserInputCard request={request} isPending={false} onSubmit={onSubmit} />)
+
+		expect(submit).toBeEnabled()
+		expect(answer).toBeEnabled()
+		expect(answer).toHaveValue("Friday")
+		expect(screen.getByRole("radio", { name: "Production" })).toBeChecked()
+		expect(screen.queryByText("Answers sent")).not.toBeInTheDocument()
+		fireEvent.click(submit)
+		expect(onSubmit).toHaveBeenCalledTimes(2)
+		expect(onSubmit.mock.calls[0]).toEqual(onSubmit.mock.calls[1])
+	})
+
+	it("keeps pending delivery distinct from an accepted answer", () => {
+		const onSubmit = vi.fn(() => true)
+		const { rerender } = render(<AsyncUserInputCard request={request} onSubmit={onSubmit} />)
+		fireEvent.click(screen.getByRole("radio", { name: "Production" }))
+		fireEvent.change(screen.getByRole("textbox", { name: "Answer for What deadline should I use?" }), {
+			target: { value: "Friday" },
+		})
+		const submit = screen.getByRole("button", { name: "Send answers" })
+		fireEvent.click(submit)
+		rerender(<AsyncUserInputCard request={request} isPending onSubmit={onSubmit} />)
+
+		expect(screen.getByText("Sending answers…")).toBeInTheDocument()
+		expect(screen.queryByText("Answers sent")).not.toBeInTheDocument()
+		expect(screen.getByTestId("async-user-input-card")).toHaveAttribute("aria-busy", "true")
+		expect(submit).toBeDisabled()
+		fireEvent.click(submit)
+		fireEvent.submit(screen.getByTestId("async-user-input-card"))
+		expect(onSubmit).toHaveBeenCalledTimes(1)
+
+		rerender(<AsyncUserInputCard request={request} isAnswered onSubmit={onSubmit} />)
+		expect(screen.getByText("Answers sent")).toBeInTheDocument()
+		expect(screen.queryByText("Sending answers…")).not.toBeInTheDocument()
+		expect(submit).toBeDisabled()
+		fireEvent.submit(screen.getByTestId("async-user-input-card"))
+		expect(onSubmit).toHaveBeenCalledTimes(1)
 	})
 
 	it("renders previously answered cards as sent", () => {

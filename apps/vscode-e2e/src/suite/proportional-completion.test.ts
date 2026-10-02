@@ -11,12 +11,7 @@ import {
 	type TokenUsage,
 } from "@alpha-code/types"
 
-import {
-	createCompletionReviewAcknowledger,
-	parseContextRunMetadata,
-	withBoundedFixtureCleanup,
-	withFixtureCleanup,
-} from "./proportional-context-support"
+import { parseContextRunMetadata, withBoundedFixtureCleanup, withFixtureCleanup } from "./proportional-context-support"
 import { setDefaultSuiteTimeout } from "./test-utils"
 import { waitFor } from "./utils"
 
@@ -35,7 +30,8 @@ const policyDigest = createHash("sha256")
 			publicationDelayMs: 1500,
 			maxRequests: 2,
 			recoveryPolicy: "Await the original settlement, then emit the identical answer without tools",
-			uiPolicy: "Acknowledge the on-screen completion_result review once; never approve recovery or tools",
+			uiPolicy:
+				"Completion finalizes automatically after settlement without approving recovery, tools or completion",
 		}),
 	)
 	.digest("hex")
@@ -59,7 +55,6 @@ interface CompletionTask {
 	didComplete: boolean
 	abort: boolean
 	taskAsk?: { ask?: string }
-	approveAsk(): void
 	clineMessages: Array<{ ask?: string; say?: string; text?: string; partial?: boolean }>
 	getCompletionGateDecision(): Promise<GateDecision>
 	getCompletionStageMetrics?: () => CompletionMetrics
@@ -300,7 +295,7 @@ suite("Alpha proportional completion settlement measurements", function () {
 	let hostSampleIndex = 0
 	for (const scenario of ["command-publication", "no-op-receipt"] as const) {
 		test(`${scenario} preserves the same conditional provider policy across revisions`, async () => {
-			assert.equal(vscode.version, "1.122.1")
+			assert.equal(vscode.version, "1.125.0")
 			const provenance = parseContextRunMetadata(process.env.ALPHA_SCOPE_RUN_METADATA)
 			const expectation = process.env.ALPHA_COMPLETION_EXPECTATION
 			assert.ok(expectation === "reference" || expectation === "candidate", "Declare the assertion role")
@@ -315,7 +310,6 @@ suite("Alpha proportional completion settlement measurements", function () {
 				const reports = []
 				for (let sample = 0; sample < 3; sample++) {
 					const observation = new SettlementObservation(provider, scenario)
-					const acknowledgeCompletionReview = createCompletionReviewAcknowledger()
 					const scripted = new CompletionScriptedAI(observation, sample)
 					const onCompleted = (taskId: string) => {
 						if (observation.task?.taskId !== taskId) return
@@ -344,17 +338,12 @@ suite("Alpha proportional completion settlement measurements", function () {
 						await waitFor(
 							() => {
 								if (observation.completedEvents > 0 || observation.failures.length > 0) return true
-								if (
-									observation.task?.taskAsk?.ask === "completion_result" &&
-									observation.settledAt === undefined
-								) {
+								if (observation.task?.taskAsk?.ask === "completion_result") {
 									observation.recordFailure(
-										new Error("Completion review appeared before durable settlement"),
+										new Error("Completion is waiting for user acknowledgement"),
 									)
 									return true
 								}
-								if (acknowledgeCompletionReview(observation.task))
-									observation.completionReviewAcknowledgements++
 								return false
 							},
 							{
@@ -394,6 +383,8 @@ suite("Alpha proportional completion settlement measurements", function () {
 						assert.equal(task.didComplete, true)
 						assert.equal(task.abort, false)
 						assert.equal(observation.completedEvents, 1)
+						assert.equal(observation.completionReviewAcknowledgements, 0)
+						assert.ok(!task.clineMessages.some((message) => message.ask === "completion_result"))
 						assert.equal(observation.allowedGateObserved, true)
 						assert.ok(observation.firstGateAt !== undefined && observation.settledAt !== undefined)
 						assert.equal(

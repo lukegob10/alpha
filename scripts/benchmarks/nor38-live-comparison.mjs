@@ -151,7 +151,7 @@ function stopReason(report) {
 			return attempt.result.failure.class
 		if (
 			attempt.request.phase !== "sample" ||
-			attempt.result.actualHostVersion !== "1.136.1" ||
+			attempt.result.actualHostVersion !== "1.125.0" ||
 			attempt.result.model?.id !== PROVIDER.modelId ||
 			attempt.result.model?.effort !== PROVIDER.effort ||
 			!Number.isSafeInteger(attempt.result.usage.requests) ||
@@ -187,7 +187,7 @@ export async function main(argv = process.argv.slice(2)) {
 		side,
 		config: apis[side].parseCampaignConfig({
 			id: `${id}-b${index + 1}-${side}`,
-			hosts: [{ version: "1.136.1", executable: options["host-executable"] }],
+			hosts: [{ version: "1.125.0", executable: options["host-executable"] }],
 			scenarioIds: SCENARIOS,
 			samples: 1,
 			provider: PROVIDER,

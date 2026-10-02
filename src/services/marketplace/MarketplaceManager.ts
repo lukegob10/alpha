@@ -11,6 +11,7 @@ import { GlobalFileNames } from "../../shared/globalFileNames"
 import { ensureSettingsDirectoryExists } from "../../utils/globalContext"
 import { t } from "../../i18n"
 import type { CustomModesManager } from "../../core/config/CustomModesManager"
+import { getProjectMcpConfigPath } from "../config-paths"
 
 import { RemoteConfigLoader } from "./RemoteConfigLoader"
 import { SimpleInstaller } from "./SimpleInstaller"
@@ -234,7 +235,7 @@ export class MarketplaceManager {
 			}
 
 			// Check MCPs in .alpha/mcp.json
-			const projectMcpPath = path.join(workspaceFolder.uri.fsPath, ".roo", "mcp.json")
+			const projectMcpPath = await getProjectMcpConfigPath(workspaceFolder.uri.fsPath)
 			try {
 				const content = await fs.readFile(projectMcpPath, "utf-8")
 				const data = JSON.parse(content)

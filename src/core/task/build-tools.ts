@@ -15,7 +15,7 @@ import {
 import { customToolRegistry, formatNative } from "@alpha-code/core"
 
 import type { AlphaProvider } from "../webview/AlphaProvider"
-import { getLegacyConfigDirectoriesForCwd } from "../../services/config-paths/index.js"
+import { getConfigDirectoriesForCwd } from "../../services/config-paths/index.js"
 import { getAvailableVSCodeBrowserToolNames } from "../../services/browser/VSCodeBrowserTools"
 import { planModeSlug } from "../../shared/modes"
 
@@ -31,13 +31,8 @@ import { buildTaskToolSurface as captureTaskToolSurface, type TaskToolSurface } 
 import { canonicalizeToolName, ToolRegistry, type ToolRegistryOptions, type TaskReadGrant } from "../tools/ToolRegistry"
 import type { ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { digestValue } from "../agent/StepContext"
-import { classifyRequestWorkClass, type RequestWorkClassDecision } from "../agent/requestWorkClass"
 import { isExplicitIndependentTaskRequest } from "../agent/independentTaskAuthorization"
-import {
-	requestWorkClassCacheKey,
-	resolveLookupToolNames,
-	toolNamesReferencedInHistory,
-} from "../agent/lookupToolCatalog"
+import { toolNamesReferencedInHistory } from "../agent/lookupToolCatalog"
 import type { ApiMessage } from "../task-persistence/apiMessages"
 import type { McpHub } from "../../services/mcp/McpHub"
 import { buildMcpToolName } from "../../utils/mcp-name"
@@ -87,10 +82,7 @@ export interface BuildToolsOptions {
 	discoveryHistory?: readonly ApiMessage[]
 	/** Cancels this caller's wait without cancelling shared custom-tool loading. */
 	signal?: AbortSignal
-	/**
-	 * Latest user request text used to classify lookup vs full catalogs.
-	 * Uncertain or omitted text keeps the full authorized surface.
-	 */
+	/** Latest human request, used only to authorize independent task creation. */
 	userRequestText?: string
 }
 
@@ -146,7 +138,7 @@ const AGENT_LIFECYCLE_TOOLS = new Set(["list_agents", "wait_agent", "send_messag
 const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", ...AGENT_LIFECYCLE_TOOLS])
 
 // Bump when native schemas or provider projection rules change. Dynamic schemas are fingerprinted below.
-const TOOL_CATALOG_SCHEMA_VERSION = 15
+const TOOL_CATALOG_SCHEMA_VERSION = 16
 
 const ASYNC_USER_INPUT_CATALOG_NAMES = new Set(["request_user_input_async", "send_user_message_async"])
 
@@ -388,7 +380,6 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				}
 			: modelInfo
 	const disabledTools = orderedNames([...(requestedDisabledTools ?? []), ...(options.policy?.disabledTools ?? [])])!
-	const requestWorkClass = requestWorkClassCacheKey(options.userRequestText, taskKind)
 	const allowIndependentTaskCreation =
 		!diagnosticSession && crossTaskRole === "root" && isExplicitIndependentTaskRequest(options.userRequestText)
 	const retainHistoricalCreateTaskSchema =
@@ -406,7 +397,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			})()
 	let customTools: NonNullable<ToolRegistryOptions["customTools"]> = []
 	if (!diagnosticSession && experiments?.customTools && mode !== planModeSlug) {
-		const toolDirs = getLegacyConfigDirectoriesForCwd(cwd).map((dir) => path.join(dir, "tools"))
+		const toolDirs = getConfigDirectoriesForCwd(cwd).map((dir) => path.join(dir, "tools"))
 		await awaitCatalogInput(customToolRegistry.loadFromDirectoriesIfStale(toolDirs), options.signal)
 		options.signal?.throwIfAborted()
 		const serialized = new Map(customToolRegistry.getAllSerialized().map((tool) => [tool.name, tool]))
@@ -475,7 +466,6 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				autoApprovalEnabled: options.autoApprovalEnabled,
 				readGrant: options.readGrant,
 				policy: options.policy,
-				requestWorkClass,
 				historicalToolNames: includeAllToolsWithRestrictions
 					? toolNamesReferencedInHistory(options.discoveryHistory)
 					: undefined,
@@ -583,20 +573,10 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 
 		// Combine filtered native, MCP, and custom tools into one captured surface.
 		const taskAllowedNames = allowedToolNames ? new Set(allowedToolNames.map(canonicalizeToolName)) : undefined
-		const requestClass: RequestWorkClassDecision = diagnosticSession
-			? {
-					class: "full",
-					reason: "uncertain",
-					includeSkill: false,
-					includeTickets: false,
-					includeMcpResources: false,
-				}
-			: classifyRequestWorkClass(options.userRequestText, { taskKind })
-		const filteredTools = applyLookupCatalogNarrowing(
-			[...filteredNativeTools, ...filteredMcpTools, ...nativeCustomTools].filter(
-				(tool) => !taskAllowedNames || taskAllowedNames.has(canonicalizeToolName(getToolName(tool))),
-			),
-			requestClass,
+		// Request classification may guide planning, but cannot narrow execution
+		// authority: a lookup or skill can require an authorized follow-up edit.
+		const filteredTools = [...filteredNativeTools, ...filteredMcpTools, ...nativeCustomTools].filter(
+			(tool) => !taskAllowedNames || taskAllowedNames.has(canonicalizeToolName(getToolName(tool))),
 		)
 		const mcpCapture = captureMcpAvailability(provider, servers, mcpHub, connectedMcpTools)
 		const registry = new ToolRegistry({
@@ -610,8 +590,8 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				: {}),
 		})
 
-		// Restricted providers keep historical declarations callable-only via
-		// allowedFunctionNames. Lookup steps still omit unused workflow names.
+		// Restricted providers retain declarations for history replay. Only the
+		// policy-filtered allowedFunctionNames are callable on this step.
 		if (includeAllToolsWithRestrictions) {
 			const allTools = [...taskNativeTools, ...mcpTools, ...nativeCustomTools]
 			const allowedFunctionNames = filteredTools.map((tool) => resolveToolAlias(getToolName(tool)))
@@ -620,7 +600,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				options,
 				disabledTools,
 				registry,
-				schemas: advertiseRestrictedCatalog(allTools, filteredTools, requestClass, options.discoveryHistory),
+				schemas: allTools,
 				allowedFunctionNames,
 				includeAllToolsWithRestrictions: true,
 			})
@@ -648,27 +628,6 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		digest: surface.digest,
 		surface,
 	}
-}
-
-function applyLookupCatalogNarrowing(
-	tools: OpenAI.Chat.ChatCompletionTool[],
-	decision: RequestWorkClassDecision,
-): OpenAI.Chat.ChatCompletionTool[] {
-	const allowed = resolveLookupToolNames(decision)
-	if (!allowed) return tools
-	return tools.filter((tool) => allowed.has(canonicalizeToolName(getToolName(tool))))
-}
-
-function advertiseRestrictedCatalog(
-	allTools: OpenAI.Chat.ChatCompletionTool[],
-	filteredTools: OpenAI.Chat.ChatCompletionTool[],
-	decision: RequestWorkClassDecision,
-	history: readonly ApiMessage[] | undefined,
-): OpenAI.Chat.ChatCompletionTool[] {
-	if (decision.class !== "lookup") return allTools
-	const advertised = new Set(filteredTools.map((tool) => canonicalizeToolName(getToolName(tool))))
-	for (const name of toolNamesReferencedInHistory(history)) advertised.add(name)
-	return allTools.filter((tool) => advertised.has(canonicalizeToolName(getToolName(tool))))
 }
 
 function createCapturedToolSurface(input: {

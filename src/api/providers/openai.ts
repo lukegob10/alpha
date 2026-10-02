@@ -783,7 +783,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 	}
 
 	private async *finishOpenAiResponsesResult(
-		response: Partial<OpenAI.Responses.Response>,
+		response: Partial<OpenAI.Responses.Response> & { end_turn?: boolean },
 		toolCalls: Map<number, OpenAiResponsesToolCallState>,
 		handledOutputIdentities: Map<number, string>,
 		textDeltaParts: Set<string>,
@@ -829,6 +829,10 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			if (summary) yield { type: "reasoning", text: summary }
 		}
 		yield this.processOpenAiResponsesUsage(response.usage)
+		// Codex can finish this response while requesting another model step.
+		if (response.end_turn === false) {
+			yield createApiStreamOutcome({ status: "completed", requiresContinuation: true })
+		}
 	}
 
 	private async *emitOpenAiResponsesOutputItem(
@@ -837,8 +841,19 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		toolCalls: Map<number, OpenAiResponsesToolCallState>,
 		textDeltaParts: Set<string>,
 	): ApiStream {
+		const active = toolCalls.get(outputIndex)
+		if (
+			active &&
+			(item.type !== (active.type === "function" ? "function_call" : "custom_tool_call") ||
+				!("call_id" in item) ||
+				item.call_id !== active.id ||
+				!("name" in item) ||
+				item.name !== active.name)
+		) {
+			// The advertised identity owns the accumulated arguments and terminal receipt.
+			throw new Error("OpenAI Responses streamed tool call changed identity")
+		}
 		if (item.type === "function_call") {
-			const active = toolCalls.get(outputIndex)
 			if (!active) {
 				yield { type: "tool_call", id: item.call_id, name: item.name, arguments: item.arguments }
 				yield { type: "tool_call_end", id: item.call_id }
@@ -856,7 +871,6 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		}
 
 		if (item.type === "custom_tool_call") {
-			const active = toolCalls.get(outputIndex)
 			if (!active || active.type !== "custom") {
 				yield {
 					type: "tool_call",

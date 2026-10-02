@@ -39,8 +39,8 @@ export abstract class BaseTerminalProcess
 	private outputBufferGeneration = 0
 	private activeOutputReceipt?: OutputReceiptReservation
 
-	protected constructor() {
-		super()
+	protected constructor(options?: ConstructorParameters<typeof EventEmitter>[0]) {
+		super(options)
 		this.once("completed", () => (this.isSettled = true))
 		this.once("error", () => (this.isSettled = true))
 	}

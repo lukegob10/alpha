@@ -174,7 +174,7 @@ suite("Alpha proportional context request measurements", function () {
 
 	for (const scenario of ["conversation", "known-file-lookup"] as const) {
 		test(`${scenario} uses the actual Task request path with bounded scripted work`, async () => {
-			assert.equal(vscode.version, "1.122.1", "Request evidence must use the exact reference host")
+			assert.equal(vscode.version, "1.125.0", "Request evidence must use the exact reference host")
 			const provenance = parseContextRunMetadata(process.env.ALPHA_SCOPE_RUN_METADATA)
 			const provider = (globalThis.api as unknown as { sidebarProvider?: ContextHostProvider }).sidebarProvider
 			assert.ok(provider)

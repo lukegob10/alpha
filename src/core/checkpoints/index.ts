@@ -24,6 +24,8 @@ type CheckpointService = RepoPerTaskCheckpointService
 type CheckpointInitializationState = {
 	promise: Promise<CheckpointService | undefined>
 	resolve: (service: CheckpointService | undefined) => void
+	controller: AbortController
+	detachCancellation?: () => void
 	settled: boolean
 	warningTimer?: ReturnType<typeof setTimeout>
 	timeoutTimer?: ReturnType<typeof setTimeout>
@@ -52,12 +54,22 @@ export async function getCheckpointService(task: Task, _options: { interval?: nu
 	if (task.checkpointService?.isInitialized) {
 		return task.checkpointService
 	}
+	const cancellationSignal = task.getTaskLifetimeCancellationSignal()
+	if (task.abort || cancellationSignal.aborted) return undefined
 
 	let state = checkpointInitializationStates.get(task)
 	if (!state) {
 		const created = createCheckpointInitializationState()
-		state = created.state
+		const initializationState = created.state
+		state = initializationState
 		checkpointInitializationStates.set(task, state)
+		const cancelInitialization = () => {
+			initializationState.controller.abort(cancellationSignal.reason)
+			task.checkpointServiceInitializing = false
+			finishCheckpointInitialization(task, initializationState, undefined)
+		}
+		cancellationSignal.addEventListener("abort", cancelInitialization, { once: true })
+		state.detachCancellation = () => cancellationSignal.removeEventListener("abort", cancelInitialization)
 		scheduleCheckpointInitializationTimeout(task, state)
 		created.start(task)
 
@@ -85,6 +97,7 @@ function createCheckpointInitializationState(): {
 	const state: CheckpointInitializationState = {
 		promise,
 		resolve: resolveInitialization,
+		controller: new AbortController(),
 		settled: false,
 		warningShown: false,
 		timeoutShown: false,
@@ -96,7 +109,7 @@ function createCheckpointInitializationState(): {
 			// The state is placed in the WeakMap before this work can be observed by
 			// another task operation. Always settle the shared promise, even if a
 			// future change introduces an uncaught initialization error.
-			void initializeCheckpointService(task).then(
+			void initializeCheckpointService(task, state.controller.signal).then(
 				(service) => {
 					finishCheckpointInitialization(task, state, service)
 				},
@@ -125,6 +138,7 @@ function scheduleCheckpointInitializationTimeout(task: Task, state: CheckpointIn
 			sendCheckpointInitWarn(task, "INIT_TIMEOUT", task.checkpointTimeout)
 			task.enableCheckpoints = false
 		}
+		state.controller.abort(new Error(`Checkpoint initialization timed out after ${task.checkpointTimeout}s`))
 		task.checkpointServiceInitializing = false
 		finishCheckpointInitialization(task, state, undefined)
 	}, task.checkpointTimeout * 1000)
@@ -162,6 +176,8 @@ function finishCheckpointInitialization(
 	}
 
 	state.settled = true
+	state.detachCancellation?.()
+	state.detachCancellation = undefined
 	if (state.warningTimer) {
 		clearTimeout(state.warningTimer)
 		state.warningTimer = undefined
@@ -175,6 +191,7 @@ function finishCheckpointInitialization(
 		!!service &&
 		service.isInitialized &&
 		task.enableCheckpoints &&
+		!state.controller.signal.aborted &&
 		checkpointInitializationStates.get(task) === state
 
 	if (canPublishService) {
@@ -192,7 +209,7 @@ function finishCheckpointInitialization(
 	state.resolve(canPublishService ? service : undefined)
 }
 
-async function initializeCheckpointService(task: Task): Promise<CheckpointService | undefined> {
+async function initializeCheckpointService(task: Task, signal: AbortSignal): Promise<CheckpointService | undefined> {
 	const provider = task.providerRef.deref()
 
 	const log = (message: string) => {
@@ -209,6 +226,7 @@ async function initializeCheckpointService(task: Task): Promise<CheckpointServic
 	task.checkpointServiceInitializing = true
 
 	try {
+		signal.throwIfAborted()
 		const workspaceDir = task.cwd || getWorkspacePath()
 
 		if (!workspaceDir) {
@@ -233,7 +251,7 @@ async function initializeCheckpointService(task: Task): Promise<CheckpointServic
 		}
 
 		const service = task.checkpointService ?? RepoPerTaskCheckpointService.create(options)
-		const gitAvailable = await initializeShadowGit(task, service, log, provider)
+		const gitAvailable = await initializeShadowGit(task, service, log, provider, signal)
 
 		// Git absence or initialization failure disables checkpoints. The shared
 		// completion handler decides whether a successfully initialized service may
@@ -283,6 +301,7 @@ async function initializeShadowGit(
 	service: RepoPerTaskCheckpointService,
 	log: (message: string) => void,
 	provider: any,
+	signal: AbortSignal,
 ): Promise<boolean> {
 	try {
 		service.on("initialize", () => {
@@ -324,7 +343,7 @@ async function initializeShadowGit(
 		log("[Task#getCheckpointService] initializing shadow git")
 
 		try {
-			await service.initShadowGit()
+			await service.initShadowGit(undefined, signal)
 			return service.isInitialized
 		} catch (err) {
 			log(`[Task#getCheckpointService] initShadowGit -> ${err.message}`)
@@ -344,21 +363,51 @@ async function initializeShadowGit(
 }
 
 export async function checkpointSave(task: Task, force = false, suppressMessage = false) {
+	const cancellationSignal = task.getTaskLifetimeCancellationSignal()
+	if (task.abort || cancellationSignal.aborted) return
 	const service = await getCheckpointService(task)
 
-	if (!service) {
+	if (!service || task.abort || cancellationSignal.aborted) {
 		return
 	}
 
 	TelemetryService.instance.captureCheckpointCreated(task.taskId)
 
-	// Start the checkpoint process in the background.
-	return service
-		.saveCheckpoint(`Task: ${task.taskId}, Time: ${Date.now()}`, { allowEmpty: force, suppressMessage })
-		.catch((err) => {
+	// A save is awaited at the mutation gate. Bound the entire operation, including
+	// queue time, and cancel its Git process so an optional checkpoint cannot retain
+	// the gate after task cancellation or its configured deadline.
+	const controller = new AbortController()
+	const cancelSave = () => controller.abort(cancellationSignal.reason)
+	const timeout = setTimeout(
+		() => controller.abort(new Error(`Checkpoint save timed out after ${task.checkpointTimeout}s`)),
+		task.checkpointTimeout * 1000,
+	)
+	cancellationSignal.addEventListener("abort", cancelSave, { once: true })
+	let rejectOnAbort: (() => void) | undefined
+	const aborted = new Promise<never>((_, reject) => {
+		rejectOnAbort = () => reject(controller.signal.reason)
+		controller.signal.addEventListener("abort", rejectOnAbort, { once: true })
+	})
+	try {
+		return await Promise.race([
+			service.saveCheckpoint(`Task: ${task.taskId}, Time: ${Date.now()}`, {
+				allowEmpty: force,
+				suppressMessage,
+				signal: controller.signal,
+			}),
+			aborted,
+		])
+	} catch (err) {
+		if (!task.abort && !cancellationSignal.aborted) {
 			console.error("[Task#checkpointSave] caught unexpected error, disabling checkpoints", err)
 			task.enableCheckpoints = false
-		})
+		}
+		return undefined
+	} finally {
+		clearTimeout(timeout)
+		cancellationSignal.removeEventListener("abort", cancelSave)
+		if (rejectOnAbort) controller.signal.removeEventListener("abort", rejectOnAbort)
+	}
 }
 
 export type CheckpointRestoreOptions = {

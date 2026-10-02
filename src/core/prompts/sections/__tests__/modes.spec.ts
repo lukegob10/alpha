@@ -6,6 +6,19 @@ vi.mock("../../../../utils/globalContext", () => ({
 }))
 
 describe("getModesSection", () => {
+	it("uses captured mode prompts without reading changed live settings", async () => {
+		const context = {
+			globalState: { get: vi.fn(() => ({ code: { whenToUse: "LIVE_MODE_GUIDANCE" } })) },
+		} as any
+		const capturedPrompts = { code: { whenToUse: "CAPTURED_MODE_GUIDANCE" } }
+
+		const section = await getModesSection(context, capturedPrompts)
+
+		expect(section).toContain("CAPTURED_MODE_GUIDANCE")
+		expect(section).not.toContain("LIVE_MODE_GUIDANCE")
+		expect(context.globalState.get).not.toHaveBeenCalled()
+	})
+
 	it("advertises only canonical Plan and Code while leaving compatibility modes out of normal routing", async () => {
 		const context = {
 			globalState: {

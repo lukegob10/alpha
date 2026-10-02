@@ -1,0 +1,125 @@
+{
+	"assertions": 34,
+	"runs": [
+		{
+			"id": "cb9d5ad8-8a5a-4353-a04e-cb0400e64f79",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-smoke-final\\cb9d5ad8-8a5a-4353-a04e-cb0400e64f79",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		},
+		{
+			"id": "e6a07178-32a3-4332-857a-cb5c71d73f58",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-smoke-final\\e6a07178-32a3-4332-857a-cb5c71d73f58",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		},
+		{
+			"id": "3050453f-8d2f-42a6-b67a-279c699d36ef",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-smoke-final\\3050453f-8d2f-42a6-b67a-279c699d36ef",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		},
+		{
+			"id": "9d6f20aa-9093-4425-96e2-3616fa9a0824",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-smoke-final\\9d6f20aa-9093-4425-96e2-3616fa9a0824",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		},
+		{
+			"id": "8d8999b5-5474-4d6b-961b-fa78d568fa12",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-smoke-final\\8d8999b5-5474-4d6b-961b-fa78d568fa12",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		},
+		{
+			"id": "42565641-3852-4c27-a276-57b5d4b6ba02",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-smoke-final\\42565641-3852-4c27-a276-57b5d4b6ba02",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		},
+		{
+			"id": "51427b31-e383-4a04-8936-9a634e118394",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-smoke-final\\51427b31-e383-4a04-8936-9a634e118394",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		},
+		{
+			"id": "cb98d82a-23ae-4603-a629-70be3e73ed32",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-smoke-final\\cb98d82a-23ae-4603-a629-70be3e73ed32",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		},
+		{
+			"id": "bfbc4518-1d6f-422e-87e2-41415863998d",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-smoke-final\\bfbc4518-1d6f-422e-87e2-41415863998d",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		},
+		{
+			"id": "9de35bba-a442-45f1-93f9-61c7872d513e",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-smoke-final\\9de35bba-a442-45f1-93f9-61c7872d513e",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		},
+		{
+			"id": "ec1c5df2-5903-479a-bfdc-af288dfa7762",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-smoke-final\\ec1c5df2-5903-479a-bfdc-af288dfa7762",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		},
+		{
+			"id": "2bfafab6-ea27-4487-afcb-853d1400cb35",
+			"status": "passed",
+			"host": "1.125.0",
+			"profile": "F:\\alpha-e2e\\profiles\\1.125.0\\user-data",
+			"artifacts": "F:\\alpha-e2e\\artifacts\\bug-hunt-20261002-smoke-final\\2bfafab6-ea27-4487-afcb-853d1400cb35",
+			"ownership": "verified",
+			"captureComplete": true,
+			"hostExitObserved": true
+		}
+	]
+}

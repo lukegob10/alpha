@@ -132,7 +132,7 @@ test("portable runner creates an isolated sidecar and validates a correlated rec
 						path.join(sidecar, "run-2-task-result.json"),
 						JSON.stringify({
 							runId: "run-2",
-							hostVersion: "1.122.1",
+							hostVersion: "1.125.0",
 							status: "completed",
 							taskId: "task-1",
 							workspaceAddedByAutomation: true,
@@ -168,7 +168,7 @@ test("portable runner creates an isolated sidecar and validates a correlated rec
 					const sidecar = args[2].slice("--extensionDevelopmentPath=".length)
 					void fs.writeFile(
 						path.join(sidecar, "run-3-probe-result.json"),
-						JSON.stringify({ runId: "run-3", hostVersion: "1.122.1", stage: "ready" }),
+						JSON.stringify({ runId: "run-3", hostVersion: "1.125.0", stage: "ready" }),
 					)
 					return { unref() {} }
 				},
@@ -184,7 +184,7 @@ test("portable runner creates an isolated sidecar and validates a correlated rec
 					const sidecar = args[3].slice("--extensionDevelopmentPath=".length)
 					void fs.writeFile(
 						path.join(sidecar, "run-4-probe-result.json"),
-						JSON.stringify({ runId: "run-4", hostVersion: "1.122.1", stage: "ready" }),
+						JSON.stringify({ runId: "run-4", hostVersion: "1.125.0", stage: "ready" }),
 					)
 					return { unref() {} }
 				},

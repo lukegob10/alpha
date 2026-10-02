@@ -8,7 +8,7 @@ import { rejectSymlinkComponents } from "../evidence/paths"
 const verifiedPhase = (phase: SharedStorageCampaignReport) =>
 	phase.status === "passed" &&
 	phase.execution === "extension-host" &&
-	phase.hostVersion === "1.122.1" &&
+	phase.hostVersion === "1.125.0" &&
 	phase.cleanupVerified === true &&
 	phase.leaseReleased === true &&
 	phase.captureComplete === true &&
@@ -54,7 +54,7 @@ export async function runTaskHistoryChurnCampaign(options: {
 	host: CampaignHost
 	signal?: AbortSignal
 }) {
-	assert.equal(options.host.version, "1.122.1")
+	assert.equal(options.host.version, "1.125.0")
 	const phases: SharedStorageCampaignReport[] = []
 	for (const phase of ["populate", "reload"] as const) {
 		const previous = phases[0]

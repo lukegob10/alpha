@@ -23,9 +23,9 @@ export function assertTicketsUiHostResult(host: ExtensionTestRunResult): void {
 			host.ownershipGate === "verified" &&
 			host.captureComplete === true &&
 			host.hostExitObserved === true &&
-			host.actualVSCodeVersion === "1.122.1" &&
+			host.actualVSCodeVersion === "1.125.0" &&
 			host.exitCode === 0,
-		"Tickets renderer requires a passing, verified, complete VS Code 1.122.1 host result",
+		"Tickets renderer requires a passing, verified, complete VS Code 1.125.0 host result",
 	)
 }
 
@@ -116,7 +116,7 @@ export async function runTicketsUi(executable: string, output: string) {
 		profileDir,
 		workspace,
 		artifactsDir,
-		vscodeVersion: "1.122.1",
+		vscodeVersion: "1.125.0",
 		initializeProfile: true,
 	})
 	const fixtureFiles = await seedTicketStore(profile.workspace, isolatedHome)
@@ -125,7 +125,7 @@ export async function runTicketsUi(executable: string, output: string) {
 	let hostSettled = false
 	const running = runExtensionTests({
 		providerMode: "scripted",
-		vscodeVersion: "1.122.1",
+		vscodeVersion: "1.125.0",
 		vscodeExecutablePath: executable,
 		testFile: "tickets-ui.test",
 		rendererDebuggingPort: 0,
@@ -167,7 +167,7 @@ export async function runTicketsUi(executable: string, output: string) {
 								await fs.readFile(path.join(directory, `ui-stage-${stage}.json`), "utf8"),
 							)
 							assert.equal(receipt.nonce, nonce)
-							assert.equal(receipt.version, "1.122.1")
+							assert.equal(receipt.version, "1.125.0")
 							return true
 						} catch (error) {
 							if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
@@ -459,7 +459,7 @@ export async function runTicketsUi(executable: string, output: string) {
 
 if (require.main === module) {
 	void (async () => {
-		const executable = process.env.VSCODE_EXECUTABLE_PATH ?? (await downloadAndUnzipVSCode({ version: "1.122.1" }))
+		const executable = process.env.VSCODE_EXECUTABLE_PATH ?? (await downloadAndUnzipVSCode({ version: "1.125.0" }))
 		console.log(
 			JSON.stringify(await runTicketsUi(executable, path.resolve(__dirname, "../../../artifacts/tickets-ui"))),
 		)

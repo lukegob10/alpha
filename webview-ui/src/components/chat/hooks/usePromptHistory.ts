@@ -2,6 +2,7 @@ import { AlphaMessage, HistoryItem } from "@alpha-code/types"
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 interface UsePromptHistoryProps {
+	taskId?: string
 	clineMessages: AlphaMessage[] | undefined
 	taskHistory: HistoryItem[] | undefined
 	cwd: string | undefined
@@ -26,6 +27,7 @@ export interface UsePromptHistoryReturn {
 }
 
 export const usePromptHistory = ({
+	taskId,
 	clineMessages,
 	taskHistory,
 	cwd,
@@ -75,7 +77,7 @@ export const usePromptHistory = ({
 	useEffect(() => {
 		setHistoryIndex(-1)
 		setTempInput("")
-	}, [filteredPromptHistoryKey])
+	}, [filteredPromptHistoryKey, taskId, cwd])
 
 	const promptHistory = filteredPromptHistory
 

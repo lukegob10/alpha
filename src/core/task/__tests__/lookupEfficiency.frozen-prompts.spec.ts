@@ -23,16 +23,7 @@ const casesPath = path.join(
 	"../../../../evals/lookup-efficiency/cases.json",
 )
 
-const LOOKUP_NATIVE_NAMES = ["exec_command", "request_user_input"]
 const RETIRED_LOOKUP_NAMES = ["codebase_search", "list_files", "read_file", "search_files"]
-const HIDDEN_WORKFLOW_NAMES = [
-	"spawn_agent",
-	"update_plan",
-	"update_todo_list",
-	"write_to_file",
-	"skill",
-	"list_tickets",
-]
 
 const leftoverPlan: TaskWorkPlan = {
 	objective: "Fix behavior",
@@ -141,18 +132,19 @@ describe("lookup-efficiency frozen prompts CI shape", () => {
 		}
 	})
 
-	it("advertises only the lookup-sized command and question catalog for every frozen prompt", async () => {
+	it("keeps the authorized Code catalog stable for every frozen lookup prompt", async () => {
 		const cases = await loadFrozenCases()
+		const baseline = await buildNativeToolsArrayWithRestrictions(
+			options({ userRequestText: "Implement a change." }),
+		)
 		for (const fixture of cases) {
 			const result = await buildNativeToolsArrayWithRestrictions(options({ userRequestText: fixture.prompt }))
-			expect(namesOf(result.tools), fixture.id).toEqual([...LOOKUP_NATIVE_NAMES].sort())
+			expect(namesOf(result.tools), fixture.id).toEqual(namesOf(baseline.tools))
 			for (const retired of RETIRED_LOOKUP_NAMES) {
 				expect(result.surface?.isCallable(retired), `${fixture.id} ${retired}`).toBe(false)
 			}
-			expect(isToolAllowed(result.surface?.policy, "spawn_agent"), fixture.id).toBe(false)
-			for (const hidden of HIDDEN_WORKFLOW_NAMES) {
-				expect(result.surface?.isCallable(hidden), `${fixture.id} ${hidden}`).toBe(false)
-			}
+			expect(isToolAllowed(result.surface?.policy, "apply_patch"), fixture.id).toBe(true)
+			expect(result.surface?.isCallable("write_to_file"), fixture.id).toBe(false)
 			const command = result.tools.find(
 				(tool) => tool.type === "function" && tool.function?.name === "exec_command",
 			) as { function?: { description?: string } } | undefined

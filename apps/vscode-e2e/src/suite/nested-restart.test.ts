@@ -120,7 +120,7 @@ suite("Nested managed-agent host restart", function () {
 			return
 		}
 		assert.ok(phase === "prepare" || phase === "recover")
-		assert.equal(vscode.version, "1.122.1")
+		assert.equal(vscode.version, "1.125.0")
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider: Provider }).sidebarProvider
 		await Promise.all([provider.taskHistoryStoreReady, provider.agentControlStoreReady])

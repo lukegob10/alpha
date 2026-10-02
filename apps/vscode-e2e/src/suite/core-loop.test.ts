@@ -6,7 +6,7 @@ import { AlphaCodeEventName, TaskLifecycleState, type AlphaMessage, type Extensi
 
 import { readBoundedJson } from "../scenarios/extensionWorkflowHost"
 import { inspectTaskLifecycle, inspectToolTransactions } from "../scenarios/transactionAssertions"
-import { createCompletionReviewAcknowledger, withBoundedFixtureCleanup } from "./proportional-context-support"
+import { withBoundedFixtureCleanup } from "./proportional-context-support"
 import { waitFor } from "./utils"
 
 interface SmallTask {
@@ -15,7 +15,6 @@ interface SmallTask {
 	abort: boolean
 	taskAsk?: AlphaMessage
 	clineMessages: AlphaMessage[]
-	approveAsk(): void
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
 }
@@ -73,7 +72,7 @@ suite("Core loop proportional completion", function () {
 	this.timeout(120_000)
 	for (let sample = 1; sample <= 3; sample++) {
 		test(`small answer ${sample}: one request, zero tools, one durable completion`, async () => {
-			assert.equal(vscode.version, "1.122.1")
+			assert.equal(vscode.version, "1.125.0")
 			assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 			const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR
 			assert.ok(artifacts)
@@ -90,7 +89,6 @@ suite("Core loop proportional completion", function () {
 				if (id === observation.task?.taskId) completions++
 			}
 			globalThis.api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
-			const acknowledge = createCompletionReviewAcknowledger()
 			await withBoundedFixtureCleanup(async () => {
 				await globalThis.api.startNewTask({
 					text: "What is 6 times 7? Reply with the number.",
@@ -108,13 +106,10 @@ suite("Core loop proportional completion", function () {
 				await waitFor(
 					() => {
 						const task = observation.task
-						if (task?.taskAsk && !task.taskAsk.partial)
-							assert.equal(
-								task.taskAsk.ask,
-								"completion_result",
-								"Unexpected approval or recovery boundary",
-							)
-						acknowledge(task)
+						assert.ok(
+							!task?.taskAsk || task.taskAsk.partial,
+							"A small answer must not wait for user acknowledgement",
+						)
 						return completions > 0
 					},
 					{ description: "small answer completion", timeout: 30_000 },
@@ -158,6 +153,7 @@ suite("Core loop proportional completion", function () {
 				assert.equal(completions, 1)
 				assert.equal(task.didComplete, true)
 				assert.equal(task.abort, false)
+				assert.ok(!task.clineMessages.some((message) => message.ask === "completion_result"))
 				assert.equal(state.currentTaskId, task.taskId)
 				assert.ok(projected)
 				assert.equal(projected.lifecycle, TaskLifecycleState.Completed)

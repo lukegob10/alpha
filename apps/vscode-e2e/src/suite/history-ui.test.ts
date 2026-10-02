@@ -51,7 +51,7 @@ suite("Inline Chats rendered history", function () {
 	this.timeout(240_000)
 	test("retains the composer and searchable history across host themes", async function () {
 		if (!process.env.ALPHA_UI_ACCEPTANCE_NONCE) this.skip()
-		assert.equal(vscode.version, process.env.ALPHA_UI_EXPECTED_VSCODE_VERSION ?? "1.122.1")
+		assert.equal(vscode.version, process.env.ALPHA_UI_EXPECTED_VSCODE_VERSION ?? "1.125.0")
 		const api = globalThis.api
 		const originalConfiguration = api.getConfiguration()
 		const provider = (api as unknown as { sidebarProvider: NavigationFixtureHost }).sidebarProvider
@@ -133,8 +133,8 @@ suite("Inline Chats rendered history", function () {
 					writeDelayMs: 0,
 				},
 			})
-			await waitFor(() => provider.getLiveTask(taskId)?.taskAsk?.ask === "completion_result", {
-				description: "the navigation fixture completion boundary",
+			await waitFor(() => provider.getLiveTask(taskId)?.didComplete === true, {
+				description: "the navigation fixture to finalize completion",
 				timeout: 30_000,
 			})
 			const task = provider.getLiveTask(taskId)

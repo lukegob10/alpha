@@ -5,6 +5,7 @@ type WorkspaceMutationRequest<T> = {
 	resolve: (value: T) => void
 	reject: (error: unknown) => void
 	isCancelled?: () => boolean
+	detachCancellation?: () => void
 }
 
 export class WorkspaceMutationCancelledError extends Error {
@@ -43,20 +44,39 @@ export class WorkspaceMutationGate {
 			})
 	}
 
-	public run<T>(taskId: string, label: string, run: () => Promise<T>, isCancelled?: () => boolean): Promise<T> {
-		if (isCancelled?.()) {
+	public run<T>(
+		taskId: string,
+		label: string,
+		run: () => Promise<T>,
+		isCancelled?: () => boolean,
+		signal?: AbortSignal,
+	): Promise<T> {
+		if (signal?.aborted || isCancelled?.()) {
 			return Promise.reject(new WorkspaceMutationCancelledError(taskId, label))
 		}
 
 		return new Promise<T>((resolve, reject) => {
-			this.queue.push({
+			const request: WorkspaceMutationRequest<unknown> = {
 				taskId,
 				label,
 				run,
 				resolve: resolve as (value: unknown) => void,
 				reject,
-				isCancelled,
-			})
+				isCancelled: signal ? () => signal.aborted || !!isCancelled?.() : isCancelled,
+			}
+			this.queue.push(request)
+			if (signal) {
+				const cancelQueued = () => {
+					const index = this.queue.indexOf(request)
+					if (index === -1) return
+					this.queue.splice(index, 1)
+					request.detachCancellation?.()
+					reject(new WorkspaceMutationCancelledError(taskId, label))
+					this.drain()
+				}
+				signal.addEventListener("abort", cancelQueued, { once: true })
+				request.detachCancellation = () => signal.removeEventListener("abort", cancelQueued)
+			}
 			this.drain()
 		})
 	}
@@ -70,6 +90,7 @@ export class WorkspaceMutationGate {
 		if (!next) {
 			return
 		}
+		next.detachCancellation?.()
 
 		if (next.isCancelled?.()) {
 			next.reject(new WorkspaceMutationCancelledError(next.taskId, next.label))
@@ -78,7 +99,13 @@ export class WorkspaceMutationGate {
 		}
 
 		this.active = true
-		next.run()
+		// The owner remains joined until its operation settles. Only queued work
+		// is removable on cancellation; synchronous callback failures still release.
+		Promise.resolve()
+			.then(() => {
+				if (next.isCancelled?.()) throw new WorkspaceMutationCancelledError(next.taskId, next.label)
+				return next.run()
+			})
 			.then(next.resolve, next.reject)
 			.finally(() => {
 				this.active = false

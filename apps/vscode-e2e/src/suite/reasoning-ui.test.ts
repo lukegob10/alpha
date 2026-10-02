@@ -26,7 +26,7 @@ suite("Rendered reasoning controls", function () {
 	this.timeout(300_000)
 	test("uses the acknowledged composer choice on the wire without saving a profile", async function () {
 		if (!process.env.ALPHA_UI_ACCEPTANCE_NONCE) this.skip()
-		assert.equal(vscode.version, "1.122.1")
+		assert.equal(vscode.version, "1.125.0")
 		const provider = (globalThis.api as unknown as { sidebarProvider: ReasoningHost }).sidebarProvider
 		const requests: Array<{ model: string; reasoning_effort?: string }> = []
 		const server = createServer((request, response) => {

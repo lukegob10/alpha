@@ -36,6 +36,7 @@ const digest = (text: string) => createHash("sha256").update(text).digest("hex")
 const revisionOf = (status: TicketStatus, text: string) => digest(`${status}\0${text}`)
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT"
 const checkCancelled = (signal?: AbortSignal) => signal?.throwIfAborted()
+export type TicketReadResult = { ticket: Ticket } | { error: unknown }
 type TicketChildCounts = { childCount: number; completedChildCount: number }
 function countChildren(tickets: Ticket[]): Map<string, TicketChildCounts> {
 	const counts = new Map<string, TicketChildCounts>()
@@ -119,8 +120,10 @@ export class TicketStore {
 		readonly workspace: string,
 	) {}
 
-	static async forWorkspace(workspace: string, home = os.homedir()): Promise<TicketStore> {
+	static async forWorkspace(workspace: string, home = os.homedir(), signal?: AbortSignal): Promise<TicketStore> {
+		checkCancelled(signal)
 		const canonical = await fs.realpath(workspace)
+		checkCancelled(signal)
 		const key = process.platform === "win32" ? canonical.toLowerCase() : canonical
 		const name =
 			path
@@ -129,13 +132,42 @@ export class TicketStore {
 				.slice(0, 80) || "project"
 		const id = `${name}-${digest(key).slice(0, 12)}`
 		const store = new TicketStore(path.join(await fs.realpath(home), ".alpha", "tickets", id), id, canonical)
+		checkCancelled(signal)
 		// Join editor-owned migration if it is in flight; opening a store never starts a write.
-		await TicketStore.preparing.get(store.directory)
+		await TicketStore.joinPreparation(TicketStore.preparing.get(store.directory), signal)
+		checkCancelled(signal)
 		return store
 	}
 
+	private static async joinPreparation(preparation: Promise<void> | undefined, signal?: AbortSignal): Promise<void> {
+		if (!preparation) return
+		if (!signal) return preparation
+		checkCancelled(signal)
+		await new Promise<void>((resolve, reject) => {
+			const detach = () => signal.removeEventListener("abort", cancel)
+			const cancel = () => {
+				detach()
+				reject(signal.reason)
+			}
+			signal.addEventListener("abort", cancel, { once: true })
+			if (signal.aborted) cancel()
+			// Cancellation belongs to this reader. The editor's migration remains
+			// joined by its owner and other readers until its physical work settles.
+			preparation.then(
+				() => {
+					detach()
+					resolve()
+				},
+				(error) => {
+					detach()
+					reject(error)
+				},
+			)
+		})
+	}
+
 	static async initializeWorkspace(workspace: string, signal?: AbortSignal): Promise<void> {
-		const store = await TicketStore.forWorkspace(workspace)
+		const store = await TicketStore.forWorkspace(workspace, undefined, signal)
 		const preparation = store.prepareReferences(signal)
 		TicketStore.preparing.set(store.directory, preparation)
 		try {
@@ -362,6 +394,37 @@ export class TicketStore {
 	async read(id: string, signal?: AbortSignal): Promise<Ticket> {
 		return this.inspect(async () => (await this.locate(await this.resolveId(id, signal))).ticket, signal)
 	}
+	/** Resolve one attachment batch without rescanning the project for every reference. */
+	async readMany(locators: readonly string[], signal?: AbortSignal): Promise<TicketReadResult[]> {
+		return this.inspect(async () => {
+			let referenceTickets: Promise<Ticket[]> | undefined
+			const results: TicketReadResult[] = []
+			for (const locator of locators) {
+				checkCancelled(signal)
+				try {
+					const normalizedLocator = ticketLocatorSchema.parse(locator)
+					const id = await this.resolveId(
+						normalizedLocator,
+						signal,
+						() => (referenceTickets ??= this.scan(signal).then(({ tickets }) => tickets)),
+					)
+					// The reference scan is only an index for this batch. Re-read the
+					// selected UUID so fresh content and duplicate-ID checks stay authoritative.
+					const ticket = (await this.locate(id)).ticket
+					const expectedReference = ticketIdSchema.safeParse(normalizedLocator).success
+						? undefined
+						: normalizeTicketReference(normalizedLocator)
+					if (expectedReference && normalizeTicketReference(ticket.reference ?? "") !== expectedReference)
+						throw new Error("Ticket reference changed during attachment loading; reload")
+					results.push({ ticket })
+				} catch (error) {
+					checkCancelled(signal)
+					results.push({ error })
+				}
+			}
+			return results
+		}, signal)
+	}
 	async relations(id: string, signal?: AbortSignal): Promise<TicketRelations> {
 		const ticketId = ticketIdSchema.parse(id)
 		return this.inspect(async () => {
@@ -408,11 +471,15 @@ export class TicketStore {
 		return { tickets, invalidFiles }
 	}
 
-	private async resolveId(value: string, signal?: AbortSignal): Promise<string> {
+	private async resolveId(
+		value: string,
+		signal?: AbortSignal,
+		referenceTickets?: () => Promise<Ticket[]>,
+	): Promise<string> {
 		const locator = ticketLocatorSchema.parse(value)
 		if (ticketIdSchema.safeParse(locator).success) return locator
 		const reference = normalizeTicketReference(locator)
-		const { tickets } = await this.scan(signal)
+		const tickets = referenceTickets ? await referenceTickets() : (await this.scan(signal)).tickets
 		const matches = tickets.filter(
 			(ticket) => ticket.reference && normalizeTicketReference(ticket.reference) === reference,
 		)
@@ -590,6 +657,7 @@ export class TicketStore {
 		const source = this.file(intent.id, intent.from),
 			target = this.file(intent.id, intent.to)
 		if (source === target || typeof intent.text !== "string") throw new Error("Invalid ticket move journal")
+		if (Buffer.byteLength(intent.text, "utf8") > 100000) throw new Error("Ticket exceeds 100 KB")
 		if (this.parse(intent.text, intent.to).ticket.id !== intent.id) throw new Error("Invalid ticket move ID")
 		await this.safe(source)
 		await this.safe(target)

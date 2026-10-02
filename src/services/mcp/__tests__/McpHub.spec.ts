@@ -1,4 +1,6 @@
 import fs from "fs/promises"
+import * as fsPromises from "fs/promises"
+import * as path from "path"
 
 import type { Mock } from "vitest"
 import type { ExtensionContext, Uri } from "vscode"
@@ -348,6 +350,34 @@ describe("McpHub", () => {
 	})
 
 	describe("File watcher cleanup", () => {
+		it("writes project MCP settings to the same Alpha path used by discovery", async () => {
+			await mcpHub.waitUntilReady()
+			vi.mocked(fsPromises.access).mockResolvedValue(undefined)
+			vi.mocked(fsPromises.readFile).mockResolvedValue(
+				JSON.stringify({ mcpServers: { "test-server": { command: "node" } } }),
+			)
+			Object.assign(mockProvider, { cwd: "/test/workspace" })
+			mcpHub.connections = [
+				{
+					type: "disconnected",
+					server: { name: "test-server", config: "{}", source: "project", status: "disconnected" },
+					client: null,
+					transport: null,
+				},
+			]
+			vi.mocked(safeWriteJson).mockClear()
+
+			await mcpHub.updateServerTimeout("test-server", 120, "project")
+
+			expect(safeWriteJson).toHaveBeenCalledWith(
+				path.join("/test/workspace", ".alpha", "mcp.json"),
+				expect.objectContaining({
+					mcpServers: expect.objectContaining({ "test-server": expect.objectContaining({ timeout: 120 }) }),
+				}),
+				{ prettyPrint: true },
+			)
+		})
+
 		it("watches the canonical project MCP settings path", async () => {
 			const originalNodeEnv = process.env.NODE_ENV
 			process.env.NODE_ENV = "development"
@@ -364,7 +394,7 @@ describe("McpHub", () => {
 			try {
 				await (mcpHub as any).watchProjectMcpFile()
 
-				expect(vscode.RelativePattern).toHaveBeenCalledWith("/test/workspace", ".roo/mcp.json")
+				expect(vscode.RelativePattern).toHaveBeenCalledWith("/test/workspace", ".alpha/mcp.json")
 				expect(vscode.workspace.createFileSystemWatcher).toHaveBeenCalled()
 			} finally {
 				process.env.NODE_ENV = originalNodeEnv

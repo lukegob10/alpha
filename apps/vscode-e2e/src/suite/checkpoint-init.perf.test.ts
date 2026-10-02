@@ -20,10 +20,10 @@ type CheckpointServiceProbe = {
 }
 
 type CheckpointTaskProbe = {
+	didComplete: boolean
 	taskAsk?: AlphaMessage
 	checkpointService?: CheckpointServiceProbe
 	waitForTermination(): Promise<void>
-	approveAsk(): void
 }
 
 type CheckpointHostProbe = {
@@ -99,7 +99,7 @@ suite("Checkpoint initialization on the reference VS Code host", function () {
 	this.timeout(180_000)
 
 	test("records task and service latency and verifies save/restore on a disposable workspace", async () => {
-		assert.equal(vscode.version, "1.122.1", "This benchmark must run on the reference VS Code host")
+		assert.equal(vscode.version, "1.125.0", "This benchmark must run on the reference VS Code host")
 		assert.equal(
 			process.env.ALPHA_E2E_PROVIDER_MODE,
 			"scripted",
@@ -211,20 +211,15 @@ suite("Checkpoint initialization on the reference VS Code host", function () {
 
 				const task = (activeTask = host.getLiveTask(taskId)!)
 				assert.ok(task)
-				let completionAskApproved = false
 				const completion = waitUntilCompleted({ api, taskId })
 				scripted.release()
-				await waitFor(
-					() => {
-						if (task.taskAsk?.ask === "completion_result" && !completionAskApproved) {
-							completionAskApproved = true
-							task.approveAsk()
-						}
-						return completionAskApproved
-					},
-					{ description: `checkpoint probe task ${sampleIndex + 1} to reach completion` },
-				)
 				await completion
+				assert.equal(task.didComplete, true)
+				assert.notEqual(
+					task.taskAsk?.ask,
+					"completion_result",
+					"Completion must finalize without acknowledgement",
+				)
 				await task.waitForTermination()
 				await api.clearCurrentTask()
 				activeTask = undefined
@@ -267,11 +262,10 @@ suite("Checkpoint initialization on the reference VS Code host", function () {
 			host.log = originalProviderLog
 			activeScripted?.release()
 			if (activeTask) {
-				await waitFor(() => activeTask?.taskAsk?.ask === "completion_result", {
-					description: "the active checkpoint probe to reach its completion boundary",
+				await waitFor(() => activeTask?.didComplete === true, {
+					description: "the active checkpoint probe to finalize completion",
 					timeout: 30_000,
 				}).catch(() => undefined)
-				if (activeTask.taskAsk?.ask === "completion_result") activeTask.approveAsk()
 				await activeTask.waitForTermination().catch(() => undefined)
 			}
 			await api.clearCurrentTask().catch(() => undefined)

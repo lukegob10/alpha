@@ -1,7 +1,8 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
 import type { ModelInfo, ProviderSettings, TaskDesignHandoff } from "@alpha-code/types"
 
-import type { ApiHandler } from "../../../api"
+import type { ApiHandler, ApiHandlerCreateMessageMetadata } from "../../../api"
+import * as requestTimeout from "../../../api/providers/utils/timeout-config"
 import { BaseTerminal } from "../../../integrations/terminal/BaseTerminal"
 import { createAgentResponse, type AgentResponse } from "../../agent/AgentResponse"
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../../agent/AgentStepContextBuilder"
@@ -205,6 +206,72 @@ function runRecovery(task: Task, trigger: "manual" | "automatic" | "forced") {
 }
 
 describe("Task design handoff provenance", () => {
+	function largeHandoff(taskId: string): TaskDesignHandoff {
+		return {
+			title: "Complete approved design",
+			markdown: `${"Approved implementation detail.\n".repeat(2_000)}\nFINAL_APPROVED_REQUIREMENT`,
+			sourceTaskId: taskId,
+			digest: "c".repeat(64),
+			updatedAt: 1,
+		}
+	}
+
+	it("keeps the final approved requirement on small-window and reloaded Code steps", async () => {
+		const { task, api } = harness()
+		api.getModel = () => ({
+			id: "small-model",
+			info: { contextWindow: 8_000, maxTokens: 1024, supportsPromptCache: false },
+		})
+		const handoff = largeHandoff(task.taskId)
+		for (const captured of [handoff, structuredClone(handoff)]) {
+			const prompt = await Reflect.get(Task.prototype, "getSystemPrompt").call(
+				task,
+				{},
+				{ apiHandler: api, apiConfiguration: task.apiConfiguration },
+				captured,
+				"code",
+			)
+			expect(prompt.includes(handoff.markdown)).toBe(true)
+		}
+	})
+
+	it.each([true, false])("validates the complete approved handoff on the first request (fits: %s)", async (fits) => {
+		const { task, api, history, save } = harness()
+		const original = structuredClone(history)
+		const handoff = largeHandoff(task.taskId)
+		Reflect.set(task, "designHandoff", handoff)
+		Reflect.set(task, "getTokenUsage", () => ({ contextTokens: 0 }))
+		Reflect.set(task, "getSystemPrompt", Reflect.get(Task.prototype, "getSystemPrompt").bind(task))
+		api.countTokens.mockImplementation(async (blocks) =>
+			JSON.stringify(blocks).includes("FINAL_APPROVED_REQUIREMENT") ? (fits ? 20_000 : 200_000) : 10,
+		)
+		const request = task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true }).next()
+		if (fits) {
+			await request
+			expect(api.createMessage).toHaveBeenCalledOnce()
+			expect(api.createMessage.mock.calls[0][0].includes(handoff.markdown)).toBe(true)
+			expect(api.createMessage.mock.calls[0][2]?.instructionFragments).toContainEqual(
+				expect.objectContaining({
+					origin: "design-handoff",
+					content: expect.stringContaining(handoff.markdown),
+				}),
+			)
+		} else {
+			await expect(request).rejects.toMatchObject({ name: "ContextRecoveryExhaustedError", retryable: false })
+			expect(api.createMessage).not.toHaveBeenCalled()
+			expect(Reflect.get(task, "currentAgentStep")).toBeUndefined()
+		}
+		expect(
+			api.countTokens.mock.calls.some(([blocks]) =>
+				JSON.stringify(blocks).includes("FINAL_APPROVED_REQUIREMENT"),
+			),
+		).toBe(true)
+		expect(task.designHandoff).toEqual(handoff)
+		expect(task.apiConversationHistory).toEqual(original)
+		expect(save).not.toHaveBeenCalled()
+		expect(summarizeConversation).not.toHaveBeenCalled()
+	})
+
 	it("captures the Plan handoff on the Code step and retains it through compaction without transcript history", async () => {
 		const { task, api } = harness()
 		const handoff: TaskDesignHandoff = {
@@ -1021,8 +1088,9 @@ describe("Task context recovery admission", () => {
 		const { task, api, save, history } = harness()
 		const countStarted = deferred<void>()
 		const countFinished = deferred<number>()
+		let countSignal: AbortSignal | undefined
 		api.countTokens.mockImplementationOnce((_content, metadata) => {
-			expect(metadata?.signal).toBe(controller.signal)
+			countSignal = metadata?.signal
 			countStarted.resolve()
 			return countFinished.promise
 		})
@@ -1035,9 +1103,13 @@ describe("Task context recovery admission", () => {
 			})
 			.next()
 		await countStarted.promise
+		expect(countSignal).toBeDefined()
+		expect(countSignal?.aborted).toBe(false)
 
 		controller.abort(new Error("Context preparation cancelled"))
 		await expect(running).rejects.toThrow("Context preparation cancelled")
+		expect(countSignal?.aborted).toBe(true)
+		expect(countSignal?.reason).toBe(controller.signal.reason)
 		countFinished.resolve(10)
 		await Promise.resolve()
 
@@ -1061,7 +1133,7 @@ describe("Task context recovery admission", () => {
 			})
 
 			const running = Reflect.get(task, "handleContextWindowExceededError").call(task, 1_100) as Promise<void>
-			const rejected = expect(running).rejects.toThrow("Automatic retry deadline exceeded")
+			const rejected = expect(running).rejects.toMatchObject({ name: "ApiStreamDeadlineError" })
 			await recoveryStarted.promise
 			await vi.advanceTimersByTimeAsync(100)
 			await rejected
@@ -1072,6 +1144,263 @@ describe("Task context recovery admission", () => {
 				type: "condenseTaskContextResponse",
 				text: task.taskId,
 			})
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it.each(["automatic", "manual", "forced"] as const)(
+		"bounds %s compaction by its configured deadline and cancels pending work",
+		async (trigger) => {
+			vi.useFakeTimers()
+			try {
+				vi.setSystemTime(1_000)
+				vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(100)
+				const { task, api, provider, save, history } = harness()
+				const started = deferred<void>()
+				const released = deferred<void>()
+				let summarySignal: AbortSignal | undefined
+				const summary = async ({ metadata }: { metadata?: ApiHandlerCreateMessageMetadata }) => {
+					summarySignal = metadata?.signal
+					started.resolve()
+					await released.promise
+					return {
+						...compactedResult(history),
+						prevContextTokens: 100,
+						targetContextTokens: 80,
+						status: "reduced" as const,
+					}
+				}
+				if (trigger === "manual") vi.mocked(summarizeConversation).mockImplementationOnce(summary)
+				else vi.mocked(manageContext).mockImplementationOnce(summary)
+				let outcome: "pending" | "completed" | "failed" = "pending"
+				let failure: unknown
+				const running = runRecovery(task, trigger).then(
+					() => {
+						outcome = "completed"
+					},
+					(error: unknown) => {
+						outcome = "failed"
+						failure = error
+					},
+				)
+				await started.promise
+				await vi.advanceTimersByTimeAsync(100)
+				const outcomeAtDeadline = outcome
+				const signalAbortedAtDeadline = summarySignal?.aborted
+				released.resolve()
+				await running
+
+				expect(outcomeAtDeadline).toBe("failed")
+				expect(failure).toMatchObject({ name: "ApiStreamDeadlineError" })
+				expect(signalAbortedAtDeadline).toBe(true)
+				expect(api.createMessage).not.toHaveBeenCalled()
+				expect(save).not.toHaveBeenCalled()
+				expect(task.apiConversationHistory).toBe(history)
+				if (trigger !== "manual") {
+					expect(provider.postMessageToWebview).toHaveBeenLastCalledWith({
+						type: "condenseTaskContextResponse",
+						text: task.taskId,
+					})
+				}
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
+		},
+	)
+
+	it.each(["automatic", "manual", "forced"] as const)(
+		"bounds stalled %s compaction catalog preparation by the same phase deadline",
+		async (trigger) => {
+			vi.useFakeTimers()
+			try {
+				vi.setSystemTime(1_000)
+				vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(100)
+				const { task, api, save, history } = harness()
+				Reflect.set(task, "getTokenUsage", () => ({ contextTokens: 120_000 }))
+				api.countTokens.mockResolvedValue(130_000)
+				const actual =
+					await vi.importActual<typeof import("../../context-management")>("../../context-management")
+				vi.mocked(manageContext).mockImplementationOnce(actual.manageContext)
+				const started = deferred<void>()
+				const released = deferred<void>()
+				let catalogSignal: AbortSignal | undefined
+				vi.mocked(buildNativeToolsArrayWithRestrictions).mockImplementationOnce(async ({ signal }) => {
+					catalogSignal = signal
+					started.resolve()
+					await released.promise
+					return { tools: [] }
+				})
+				let failure: unknown
+				const running = runRecovery(task, trigger).catch((error: unknown) => {
+					failure = error
+				})
+				await started.promise
+				await vi.advanceTimersByTimeAsync(100)
+				const failureAtDeadline = failure
+				const signalAbortedAtDeadline = catalogSignal?.aborted
+				released.resolve()
+				await running
+
+				expect(failureAtDeadline).toMatchObject({ name: "ApiStreamDeadlineError" })
+				expect(signalAbortedAtDeadline).toBe(true)
+				expect(summarizeConversation).not.toHaveBeenCalled()
+				expect(save).not.toHaveBeenCalled()
+				expect(api.createMessage).not.toHaveBeenCalled()
+				expect(task.apiConversationHistory).toBe(history)
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
+		},
+	)
+
+	it.each(["automatic", "manual", "forced"] as const)(
+		"keeps disabled %s timeouts cancellable by Stop without discarding admitted input",
+		async (trigger) => {
+			vi.useFakeTimers()
+			try {
+				vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(undefined)
+				const { task, api, save, history } = harness()
+				const started = deferred<void>()
+				const released = deferred<void>()
+				let summarySignal: AbortSignal | undefined
+				const summary = async ({ metadata }: { metadata?: ApiHandlerCreateMessageMetadata }) => {
+					summarySignal = metadata?.signal
+					expect(metadata).not.toHaveProperty("deadline")
+					started.resolve()
+					await released.promise
+					return {
+						...compactedResult(history),
+						prevContextTokens: 100,
+						targetContextTokens: 80,
+						status: "reduced" as const,
+					}
+				}
+				if (trigger === "manual") vi.mocked(summarizeConversation).mockImplementationOnce(summary)
+				else vi.mocked(manageContext).mockImplementationOnce(summary)
+				let outcome: "pending" | "completed" | "failed" = "pending"
+				let failure: unknown
+				const running = runRecovery(task, trigger).then(
+					() => {
+						outcome = "completed"
+					},
+					(error: unknown) => {
+						outcome = "failed"
+						failure = error
+					},
+				)
+				await started.promise
+				await vi.advanceTimersByTimeAsync(10_000)
+				expect(outcome).toBe("pending")
+				expect(summarySignal?.aborted).toBe(false)
+				const stopped = new DOMException("Stopped during compaction", "AbortError")
+				;(Reflect.get(task, "taskCancellationController") as AbortController).abort(stopped)
+				await running
+				expect(outcome).toBe("failed")
+				expect(failure).toBe(stopped)
+				expect(summarySignal?.reason).toBe(stopped)
+				released.resolve()
+				await Promise.resolve()
+
+				expect(api.createMessage).not.toHaveBeenCalled()
+				expect(save).not.toHaveBeenCalled()
+				expect(task.apiConversationHistory).toBe(history)
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
+		},
+	)
+
+	it.each(["automatic", "manual", "forced"] as const)(
+		"joins an owned %s transcript commit before surfacing compaction timeout",
+		async (trigger) => {
+			vi.useFakeTimers()
+			try {
+				vi.setSystemTime(1_000)
+				vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(100)
+				const { task, api, save, history } = harness()
+				const result = {
+					...compactedResult(history),
+					prevContextTokens: 100,
+					targetContextTokens: 80,
+					status: "reduced" as const,
+				}
+				vi.mocked(manageContext).mockResolvedValueOnce(result)
+				vi.mocked(summarizeConversation).mockResolvedValueOnce(result)
+				const saveStarted = deferred<void>()
+				const saveReleased = deferred<void>()
+				const events: string[] = []
+				save.mockImplementationOnce(async () => {
+					events.push("commit-started")
+					saveStarted.resolve()
+					await saveReleased.promise
+					events.push("commit-finished")
+					return true
+				})
+				let failure: unknown
+				const running = runRecovery(task, trigger).catch((error: unknown) => {
+					failure = error
+					events.push("timeout-reported")
+				})
+				await saveStarted.promise
+				await vi.advanceTimersByTimeAsync(100)
+				expect(events).toEqual(["commit-started"])
+				expect(failure).toBeUndefined()
+				saveReleased.resolve()
+				await running
+
+				expect(failure).toMatchObject({ name: "ApiStreamDeadlineError" })
+				expect(events).toEqual(["commit-started", "commit-finished", "timeout-reported"])
+				expect(task.apiConversationHistory).toEqual(result.messages)
+				expect(save).toHaveBeenCalledOnce()
+				expect(api.createMessage).not.toHaveBeenCalled()
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
+		},
+	)
+
+	it("releases timed-out optional post-turn compaction while preserving the completed turn", async () => {
+		vi.useFakeTimers()
+		try {
+			vi.setSystemTime(1_000)
+			vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(100)
+			const { task, api, provider, save, history } = harness()
+			provider.getState.mockResolvedValue({ postTurnCondenseContextPercent: 80 })
+			api.countTokens.mockImplementation(async (blocks) =>
+				JSON.stringify(blocks).includes("Original request") ? 120_000 : 10,
+			)
+			const started = deferred<void>()
+			const released = deferred<void>()
+			let summarySignal: AbortSignal | undefined
+			vi.mocked(summarizeConversation).mockImplementationOnce(async ({ metadata, messages }) => {
+				summarySignal = metadata?.signal
+				started.resolve()
+				await released.promise
+				return compactedResult(messages)
+			})
+			let completed = false
+			const running = (Reflect.get(task, "maybeCompactAfterTurn").call(task) as Promise<void>).then(() => {
+				completed = true
+			})
+			await started.promise
+			await vi.advanceTimersByTimeAsync(100)
+			const completedAtDeadline = completed
+			const signalAbortedAtDeadline = summarySignal?.aborted
+			released.resolve()
+			await running
+
+			expect(completedAtDeadline).toBe(true)
+			expect(signalAbortedAtDeadline).toBe(true)
+			expect(Reflect.get(task, "postTurnCompactionAbortController")).toBeUndefined()
+			expect(task.apiConversationHistory).toBe(history)
+			expect(save).not.toHaveBeenCalled()
+			expect(api.createMessage).not.toHaveBeenCalled()
 			expect(vi.getTimerCount()).toBe(0)
 		} finally {
 			vi.useRealTimers()
@@ -1172,9 +1501,10 @@ describe("Task context recovery admission", () => {
 		expect(manageContext).toHaveBeenCalledWith(
 			expect.objectContaining({ totalTokens: 100, contextWindow: 128_000, forceCompaction: true }),
 		)
-		expect(vi.mocked(manageContext).mock.calls[0][0].metadata?.signal).toBe(
-			task.getTaskLifetimeCancellationSignal(),
-		)
+		expect(vi.mocked(manageContext).mock.calls[0][0].metadata).toMatchObject({
+			signal: expect.any(AbortSignal),
+			deadline: expect.any(Number),
+		})
 		expect(task.say).toHaveBeenCalledWith(
 			"condense_context",
 			undefined,
@@ -1427,7 +1757,7 @@ describe("Task context recovery admission", () => {
 			false,
 			"Implement a TypeScript change and run tests.",
 		],
-		["lookup catalog", "code", undefined, undefined, false, "Where is retryLimit defined?"],
+		["lookup request", "code", undefined, undefined, true, "Where is retryLimit defined?"],
 	] as const)(
 		"advertises the pinned root role only with a callable spawn_agent tool in %s",
 		async (_case, mode, disabledTools, excludedTools, expected, requestText) => {

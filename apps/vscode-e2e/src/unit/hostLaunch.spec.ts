@@ -24,7 +24,7 @@ test("a startup deadline returns unknown close and leaves its owned child alive 
 					launchArgs: ["-e", "setInterval(() => {}, 1000)", "--"],
 					liveHost: {
 						artifactsDir: root,
-						expected: { runId: "unknown-close", nonce: randomUUID(), actualVSCodeVersion: "1.122.1" },
+						expected: { runId: "unknown-close", nonce: randomUUID(), actualVSCodeVersion: "1.125.0" },
 					},
 				},
 				(pid) => {

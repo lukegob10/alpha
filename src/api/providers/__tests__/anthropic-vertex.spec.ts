@@ -192,6 +192,65 @@ describe("VertexHandler", () => {
 
 		const systemPrompt = "You are a helpful assistant"
 
+		it("does not replay a partially emitted stream when prompt caching fails", async () => {
+			handler = new AnthropicVertexHandler({ apiModelId: "claude-sonnet-4-6", vertexProjectId: "test-project" })
+			const cacheError = new Error("Prompt caching has been disabled")
+			const mockCreate = vitest
+				.fn()
+				.mockResolvedValueOnce({
+					async *[Symbol.asyncIterator]() {
+						yield {
+							type: "content_block_start",
+							index: 0,
+							content_block: { type: "text", text: "First attempt" },
+						}
+						throw cacheError
+					},
+				})
+				.mockResolvedValueOnce({
+					async *[Symbol.asyncIterator]() {
+						yield {
+							type: "content_block_start",
+							index: 0,
+							content_block: { type: "text", text: "Replayed attempt" },
+						}
+					},
+				})
+			setDirectClientCreate(handler, mockCreate)
+			const chunks: ApiStreamChunk[] = []
+			await expect(async () => {
+				for await (const chunk of handler.createMessage(systemPrompt, [])) chunks.push(chunk)
+			}).rejects.toThrow("Prompt caching has been disabled")
+			expect(mockCreate).toHaveBeenCalledOnce()
+			expect(chunks).toEqual([{ type: "text", text: "First attempt" }])
+		})
+
+		it("retries a prompt-cache rejection before any response is emitted", async () => {
+			handler = new AnthropicVertexHandler({ apiModelId: "claude-sonnet-4-6", vertexProjectId: "test-project" })
+			const mockCreate = vitest
+				.fn()
+				.mockRejectedValueOnce(new Error("Prompt caching has been disabled"))
+				.mockResolvedValueOnce({
+					async *[Symbol.asyncIterator]() {
+						yield {
+							type: "content_block_start",
+							index: 0,
+							content_block: { type: "text", text: "Uncached attempt" },
+						}
+					},
+				})
+			setDirectClientCreate(handler, mockCreate)
+			const chunks: ApiStreamChunk[] = []
+			for await (const chunk of handler.createMessage(systemPrompt, [])) chunks.push(chunk)
+			expect(mockCreate).toHaveBeenCalledTimes(2)
+			expect(mockCreate.mock.calls[0]?.[0].system).toEqual(expect.any(Array))
+			expect(mockCreate.mock.calls[1]?.[0].system).toBe(systemPrompt)
+			expect(chunks).toEqual([
+				{ type: "text", text: "Uncached attempt" },
+				expect.objectContaining({ type: "outcome", status: "incomplete", terminal: false }),
+			])
+		})
+
 		it.each([
 			{ label: "streaming", streaming: true },
 			{ label: "non-streaming", streaming: false },
@@ -300,10 +359,12 @@ describe("VertexHandler", () => {
 				},
 				{
 					type: "message_delta",
+					delta: { stop_reason: "end_turn" },
 					usage: {
 						output_tokens: 5,
 					},
 				},
+				{ type: "message_stop" },
 			]
 
 			// Setup async iterator for mock stream
@@ -325,7 +386,7 @@ describe("VertexHandler", () => {
 				chunks.push(chunk)
 			}
 
-			expect(chunks.length).toBe(4)
+			expect(chunks.length).toBe(5)
 			expect(chunks[0]).toEqual({
 				type: "usage",
 				inputTokens: 10,
@@ -344,6 +405,7 @@ describe("VertexHandler", () => {
 				inputTokens: 0,
 				outputTokens: 5,
 			})
+			expect(chunks[4]).toMatchObject({ type: "outcome", status: "completed", terminal: true })
 
 			expect(mockCreate).toHaveBeenCalledWith(
 				expect.objectContaining({
@@ -399,6 +461,7 @@ describe("VertexHandler", () => {
 				],
 				role: "assistant",
 				model: "claude-3-5-sonnet-v2@20241022",
+				stop_reason: "tool_use",
 				usage: {
 					input_tokens: 12,
 					output_tokens: 7,
@@ -430,6 +493,7 @@ describe("VertexHandler", () => {
 				{ type: "text", text: "Completed response" },
 				{ type: "tool_call", id: "toolu_1", name: "read_file", arguments: '{"path":"src/index.ts"}' },
 				{ type: "tool_call_end", id: "toolu_1" },
+				expect.objectContaining({ type: "outcome", status: "completed", terminal: true }),
 			])
 		})
 
@@ -477,7 +541,7 @@ describe("VertexHandler", () => {
 				chunks.push(chunk)
 			}
 
-			expect(chunks.length).toBe(3)
+			expect(chunks.length).toBe(4)
 			expect(chunks[0]).toEqual({
 				type: "text",
 				text: "First line",
@@ -490,6 +554,7 @@ describe("VertexHandler", () => {
 				type: "text",
 				text: "Second line",
 			})
+			expect(chunks[3]).toMatchObject({ type: "outcome", status: "incomplete", terminal: false })
 		})
 
 		it("should handle API errors for Claude", async () => {
@@ -888,7 +953,7 @@ describe("VertexHandler", () => {
 				chunks.push(chunk)
 			}
 
-			expect(chunks.length).toBe(3)
+			expect(chunks.length).toBe(4)
 			expect(chunks[0]).toEqual({
 				type: "reasoning",
 				text: "First thinking block",
@@ -901,6 +966,7 @@ describe("VertexHandler", () => {
 				type: "reasoning",
 				text: "Second thinking block",
 			})
+			expect(chunks[3]).toMatchObject({ type: "outcome", status: "incomplete", terminal: false })
 		})
 
 		it("should filter out internal reasoning blocks before sending to API", async () => {
@@ -1974,6 +2040,7 @@ describe("VertexHandler", () => {
 					type: "tool_call_end",
 					id: "toolu_switch",
 				},
+				expect.objectContaining({ type: "outcome", status: "incomplete", terminal: false }),
 			])
 		})
 	})

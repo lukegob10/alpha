@@ -631,7 +631,7 @@ function convertToStatefulVsCodeLmMessages(
 function toVsCodeLmInstructionMessages(
 	fragments: readonly ApiInstructionFragment[],
 ): vscode.LanguageModelChatMessage[] {
-	// VS Code 1.122.1 exposes User and Assistant constructors only. Keep the
+	// VS Code 1.125.0 exposes User and Assistant constructors only. Keep the
 	// fragment order and project every instruction role through one User fallback.
 	const content = fragments.map(({ content }) => content).join("")
 	return content ? [vscode.LanguageModelChatMessage.User(content)] : []
@@ -1338,7 +1338,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				this.currentResponseStatefulMarker = responseStatefulMarker
 			}
 
-			// VS Code 1.122.1's Copilot provider reports authoritative usage in a terminal
+			// VS Code 1.125.0's Copilot provider reports authoritative usage in a terminal
 			// LanguageModelDataPart. Avoid re-tokenizing the completed response here: countTokens
 			// can call the provider backend and otherwise delays the visible completion boundary.
 			yield {

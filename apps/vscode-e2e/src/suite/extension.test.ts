@@ -36,7 +36,7 @@ suite("Alpha Extension", function () {
 				reject(new Error("Ticket tab did not open"))
 			}, 10000)
 		})
-		// VS Code 1.122.1 title-menu mouse actions forward this focus context.
+		// VS Code 1.125.0 title-menu mouse actions forward this focus context.
 		await vscode.commands.executeCommand("alpha.openTickets", { preserveFocus: false })
 		await opened
 		const ticketTab = ticketTabs()[0]

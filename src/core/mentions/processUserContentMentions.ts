@@ -45,6 +45,7 @@ export async function processUserContentMentions({
 	skillsManager,
 	currentMode = "code",
 	onTicketActivity,
+	signal,
 }: {
 	userContent: Anthropic.Messages.ContentBlockParam[]
 	cwd: string
@@ -56,7 +57,9 @@ export async function processUserContentMentions({
 	skillsManager?: SkillLookup
 	currentMode?: string
 	onTicketActivity?: (activity: TicketActivity) => Promise<void>
+	signal?: AbortSignal
 }): Promise<ProcessUserContentMentionsResult> {
+	signal?.throwIfAborted()
 	const commandModes: Array<{ blockIndex: number; contentIndex: number; mode: string }> = []
 	const captureCommandMode = (mode: string | undefined, blockIndex: number, contentIndex: number) => {
 		if (mode) {
@@ -84,6 +87,7 @@ export async function processUserContentMentions({
 							skillsManager,
 							currentMode,
 							onTicketActivity,
+							signal,
 						)
 						captureCommandMode(result.mode, blockIndex, 0)
 
@@ -127,6 +131,7 @@ export async function processUserContentMentions({
 								skillsManager,
 								currentMode,
 								onTicketActivity,
+								signal,
 							)
 							captureCommandMode(result.mode, blockIndex, 0)
 
@@ -176,6 +181,7 @@ export async function processUserContentMentions({
 											skillsManager,
 											currentMode,
 											onTicketActivity,
+											signal,
 										)
 										captureCommandMode(result.mode, blockIndex, contentIndex)
 
@@ -221,6 +227,7 @@ export async function processUserContentMentions({
 			}),
 		)
 	).flat()
+	signal?.throwIfAborted()
 	const commandMode = commandModes.sort((a, b) => a.blockIndex - b.blockIndex || a.contentIndex - b.contentIndex)[0]
 		?.mode
 

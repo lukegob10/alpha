@@ -153,6 +153,51 @@ describe("attemptCompletionTool", () => {
 		})
 	})
 
+	it("finalizes a verified primary completion without waiting for acknowledgement", async () => {
+		await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+			toolCallId: "verified-primary-completion",
+		})
+
+		expect(mockTask.ask).not.toHaveBeenCalled()
+		expect(mockTask.presentCompletionResult).toHaveBeenCalledExactlyOnceWith("Task complete.", undefined, false)
+		expect(mockTask.finalizeTaskCompletion).toHaveBeenCalledOnce()
+		expect(mockHandleError).not.toHaveBeenCalled()
+	})
+
+	it.each(["hooks", "presentation"] as const)("does not finalize when cancelled during %s", async (stage) => {
+		const cancellation = new AbortController()
+		mockTask.getTaskLifetimeCancellationSignal = vi.fn(() => cancellation.signal)
+		if (stage === "hooks") {
+			vi.mocked(mockTask.evaluateCompletionHooks!).mockImplementationOnce(async () => {
+				cancellation.abort()
+				return {}
+			})
+		} else {
+			vi.mocked(mockTask.presentCompletionResult!).mockImplementationOnce(async () => {
+				cancellation.abort()
+			})
+		}
+
+		await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+			toolCallId: "cancelled-primary-completion",
+		})
+
+		expect(mockTask.ask).not.toHaveBeenCalled()
+		expect(mockTask.finalizeTaskCompletion).not.toHaveBeenCalled()
+		expect(mockTask.markCompleted).not.toHaveBeenCalled()
+		expect(mockHandleError).not.toHaveBeenCalled()
+	})
+
 	it("prevents an editing worker from completing while a command is active", async () => {
 		;(mockTask as any).taskKind = "subagent"
 		;(mockTask as any).subagentRole = "worker"
@@ -256,7 +301,7 @@ describe("attemptCompletionTool", () => {
 		await attemptCompletionTool.execute({ result: "Task complete." }, mockTask as Task, callbacks)
 
 		expect(mockTask.presentCompletionResult).toHaveBeenCalledWith("Task complete.", undefined, false)
-		expect(mockTask.ask).toHaveBeenCalledWith("completion_result", "", false)
+		expect(mockTask.ask).not.toHaveBeenCalled()
 		expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("became pending"))
 		expect(mockTask.retractCompletionResult).toHaveBeenCalledOnce()
 		expect(mockTask.markCompleted).not.toHaveBeenCalled()
@@ -801,7 +846,7 @@ describe("attemptCompletionTool", () => {
 				)
 			})
 
-			it("emits TaskCompleted only when completion is accepted", async () => {
+			it("emits TaskCompleted only after verified completion is durably finalized", async () => {
 				const block: AttemptCompletionToolUse = {
 					type: "tool_use",
 					id: "accepted-primary-completion",
@@ -810,8 +855,6 @@ describe("attemptCompletionTool", () => {
 					nativeArgs: { result: "2" },
 					partial: false,
 				}
-
-				mockTask.ask = vi.fn().mockResolvedValue({ response: "yesButtonClicked", text: "", images: [] })
 
 				const callbacks: AttemptCompletionCallbacks = {
 					askApproval: mockAskApproval,
@@ -839,7 +882,7 @@ describe("attemptCompletionTool", () => {
 				)
 			})
 
-			it.each(["reply", "queue", "finalization"])(
+			it.each(["presentation", "queue", "finalization"])(
 				"preserves the final answer without completing the task for a follow-up via %s",
 				async (delivery) => {
 					const block: AttemptCompletionToolUse = {
@@ -850,26 +893,22 @@ describe("attemptCompletionTool", () => {
 						partial: false,
 					}
 
-					mockTask.ask = vi.fn().mockResolvedValue({
-						response: "messageResponse",
-						text: delivery === "reply" ? "Different question now: what is 3+3?" : "",
-						images: [],
-					})
-					if (delivery === "queue") {
+					const queueGuidance = () =>
 						vi.mocked(mockTask.messageQueueService!.dequeueMessage).mockReturnValueOnce({
 							id: "queued",
 							text: "Different question now: what is 3+3?",
 							images: [],
 							timestamp: 1,
 						})
+					if (delivery === "presentation") {
+						vi.mocked(mockTask.presentCompletionResult!).mockImplementationOnce(async () => {
+							queueGuidance()
+						})
+					} else if (delivery === "queue") {
+						queueGuidance()
 					} else if (delivery === "finalization") {
 						vi.mocked(mockTask.finalizeTaskCompletion!).mockImplementationOnce(async () => {
-							vi.mocked(mockTask.messageQueueService!.dequeueMessage).mockReturnValueOnce({
-								id: "queued",
-								text: "Different question now: what is 3+3?",
-								images: [],
-								timestamp: 1,
-							})
+							queueGuidance()
 							return false
 						})
 					}
@@ -898,14 +937,17 @@ describe("attemptCompletionTool", () => {
 						"user_feedback",
 						"Different question now: what is 3+3?",
 						[],
+						undefined,
+						undefined,
+						undefined,
+						{ queuedMessageIds: ["queued"] },
 					)
 					expect(mockPushToolResult).toHaveBeenCalledWith(expect.stringContaining("<user_message>"))
-					if (delivery !== "reply") {
-						expect(mockTask.retainQueuedMessageToolReply).toHaveBeenCalledExactlyOnceWith(
-							"completion-followup",
-							expect.objectContaining({ id: "queued" }),
-						)
-					}
+					expect(mockTask.ask).not.toHaveBeenCalled()
+					expect(mockTask.retainQueuedMessageToolReply).toHaveBeenCalledExactlyOnceWith(
+						"completion-followup",
+						expect.objectContaining({ id: "queued" }),
+					)
 				},
 			)
 		})

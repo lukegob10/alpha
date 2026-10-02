@@ -92,7 +92,7 @@ suite("Managed-agent orderly host termination", function () {
 			return
 		}
 		assert.ok(phase === "prepare" || phase === "recover")
-		assert.equal(vscode.version, "1.122.1")
+		assert.equal(vscode.version, "1.125.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		if (phase === "prepare") await prepareTermination()
 		else await recoverTermination()

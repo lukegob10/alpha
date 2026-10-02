@@ -30,11 +30,11 @@ jobs:
             - name: Build workspace types
               run: pnpm --filter @alpha-code/types build
 
-            - name: Run exact VS Code 1.122.1 release gate
-              run: pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
+            - name: Run exact VS Code 1.125.0 release gate
+              run: pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
 
             - name: Verify command auto-approval and outside-path review
-              run: pnpm --filter @alpha-code/vscode-e2e test:command-paths:1221:run
+              run: pnpm --filter @alpha-code/vscode-e2e test:command-paths:1250:run
 
             - name: Package extension
               run: pnpm vsix

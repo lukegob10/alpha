@@ -165,11 +165,11 @@ export function readRunOptions(
 	validateLiveSetupTimeout(setupTimeoutMs, parsed.has("--setup"))
 	return {
 		providerMode: providerMode as ProviderMode,
-		vscodeVersion: parsed.get("--vscode-version") ?? env.VSCODE_VERSION ?? "1.122.1",
+		vscodeVersion: parsed.get("--vscode-version") ?? env.VSCODE_VERSION ?? "1.125.0",
 		vscodeExecutablePath: parsed.get("--vscode-executable") ?? env.VSCODE_EXECUTABLE_PATH,
-		workspace: parsed.get("--workspace"),
-		profileDir: parsed.get("--profile-dir"),
-		artifactsDir: parsed.get("--artifacts-dir"),
+		workspace: parsed.get("--workspace") ?? env.ALPHA_E2E_WORKSPACE_ROOT,
+		profileDir: parsed.get("--profile-dir") ?? env.ALPHA_E2E_PROFILE_ROOT,
+		artifactsDir: parsed.get("--artifacts-dir") ?? env.ALPHA_E2E_ARTIFACTS_ROOT,
 		initializeProfile: parsed.has("--init-profile"),
 		modelId: parsed.get("--model-id"),
 		modelFamily: parsed.get("--model-family"),

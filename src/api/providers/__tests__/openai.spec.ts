@@ -442,6 +442,56 @@ describe("OpenAiHandler", () => {
 			}).rejects.toThrow(`status ${status}`)
 		})
 
+		it.each([
+			{ streaming: true, endTurn: false },
+			{ streaming: true, endTurn: true },
+			{ streaming: true, endTurn: undefined },
+			{ streaming: false, endTurn: false },
+			{ streaming: false, endTurn: true },
+			{ streaming: false, endTurn: undefined },
+		])("preserves Responses end_turn=$endTurn with streaming=$streaming", async ({ streaming, endTurn }) => {
+			const response = {
+				id: "continuation-response",
+				status: "completed",
+				output: [
+					{
+						id: "message",
+						type: "message",
+						role: "assistant",
+						status: "completed",
+						content: [{ type: "output_text", text: "Continuing." }],
+					},
+				],
+				...(endTurn !== undefined ? { end_turn: endTurn } : {}),
+				usage: null,
+			}
+			mockResponsesCreate.mockResolvedValueOnce(
+				streaming
+					? {
+							[Symbol.asyncIterator]: async function* () {
+								yield { type: "response.completed", response }
+							},
+						}
+					: response,
+			)
+			const provider = new OpenAiHandler({
+				...mockOptions,
+				openAiModelId: "gpt-6-sol",
+				openAiStreamingEnabled: streaming,
+			})
+			const accumulator = new AgentResponseAccumulator()
+			for await (const chunk of provider.createMessage("system", [])) await accumulator.add(chunk)
+			const normalized = await accumulator.finish()
+			expect(normalized.items).toEqual(
+				expect.arrayContaining([expect.objectContaining({ type: "text", text: "Continuing." })]),
+			)
+			if (endTurn === false) {
+				expect(normalized.outcome).toMatchObject({ status: "completed", requiresContinuation: true })
+			} else {
+				expect(normalized.outcome?.requiresContinuation).not.toBe(true)
+			}
+		})
+
 		it("rejects a minimal completed event while a streamed tool call is still open", async () => {
 			mockResponsesCreate.mockResolvedValueOnce({
 				[Symbol.asyncIterator]: async function* () {
@@ -468,6 +518,36 @@ describe("OpenAiHandler", () => {
 				}
 			}).rejects.toThrow("streamed tool call was complete")
 			expect(chunks).not.toContainEqual({ type: "tool_call_end", id: "call_open" })
+		})
+
+		it.each([
+			{ change: "call ID", replacement: { call_id: "different-call" } },
+			{ change: "name", replacement: { name: "exec_command" } },
+			{ change: "type", replacement: { type: "custom_tool_call", input: "{}" } },
+		])("rejects a streamed tool whose final $change changes", async ({ replacement }) => {
+			const call = {
+				id: "tool-item",
+				type: "function_call",
+				call_id: "original-call",
+				name: "read_file",
+				arguments: "{}",
+			}
+			mockResponsesCreate.mockResolvedValueOnce({
+				[Symbol.asyncIterator]: async function* () {
+					yield { type: "response.output_item.added", output_index: 0, item: { ...call, arguments: "" } }
+					yield { type: "response.output_item.done", output_index: 0, item: { ...call, ...replacement } }
+					yield { type: "response.completed", response: { id: "response", status: "completed" } }
+				},
+			})
+			const provider = new OpenAiHandler({ ...mockOptions, openAiModelId: "gpt-6-sol" })
+			const chunks: ApiStreamChunk[] = []
+			await expect(async () => {
+				for await (const chunk of provider.createMessage("system", [], { taskId: "changed-tool-identity" })) {
+					chunks.push(chunk)
+				}
+			}).rejects.toThrow("changed identity")
+			expect(chunks.filter((chunk) => chunk.type === "tool_call_end" || chunk.type === "tool_call")).toEqual([])
+			expect(chunks.some((chunk) => chunk.type === "usage")).toBe(false)
 		})
 
 		it.each([

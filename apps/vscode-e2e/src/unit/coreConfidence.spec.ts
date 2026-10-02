@@ -29,7 +29,7 @@ async function fixture(context: TestContext) {
 				exitCode: 0,
 				providerMode: options.providerMode,
 				vscodeVersion: options.vscodeVersion!,
-				actualVSCodeVersion: "1.122.1",
+				actualVSCodeVersion: "1.125.0",
 				workspace: options.workspace!,
 				userDataDir: "unused",
 				extensionsDir: "unused",
@@ -93,14 +93,24 @@ test("core confidence composes offline owners and replays this run's completion 
 	assert.equal(await run.run(), 0)
 	assert.deepEqual(
 		run.hosts.map((host) => host.testFile),
-		["core-loop.test", "completion-idle.test", "managed-agents.acceptance.test"],
+		[
+			"core-loop.test",
+			"core-loop-boundaries.test",
+			"completion-idle.test",
+			"managed-agents.acceptance.test",
+			"long-context-fanout.test",
+		],
 	)
 	assert.ok(
-		run.hosts.every((host) => host.providerMode === "scripted" && host.vscodeVersion === "1.122.1" && host.signal),
+		run.hosts.every((host) => host.providerMode === "scripted" && host.vscodeVersion === "1.125.0" && host.signal),
 	)
 	assert.equal(
 		run.certificationEvidence,
-		path.join(run.hosts[1]!.artifactsDir!, "completion-idle.test", "completion-idle.json"),
+		path.join(
+			run.hosts.find((host) => host.testFile === "completion-idle.test")!.artifactsDir!,
+			"completion-idle.test",
+			"completion-idle.json",
+		),
 	)
 	assert.equal((await run.report()).status, "passed")
 	assert.ok(run.hosts.every((host) => !isWithin(run.root, host.profileDir!)))
@@ -120,9 +130,26 @@ test("failed preparation stops before host tests and preserves a failed verdict"
 	assert.equal((await run.report()).status, "failed")
 })
 
+test("response-boundary and fanout failures prevent certification and preserve the failing stage", async (context) => {
+	for (const failingFile of ["core-loop-boundaries.test", "long-context-fanout.test"]) {
+		const run = await fixture(context)
+		const original = run.dependencies.runExtensionTests
+		run.dependencies.runExtensionTests = async (options) => {
+			const result = await original(options)
+			return options.testFile === failingFile ? { ...result, status: "failed", exitCode: 1 } : result
+		}
+		assert.equal(await run.run(), 1)
+		assert.equal(run.hosts.at(-1)?.testFile, failingFile)
+		assert.equal(run.certificationEvidence, undefined)
+		const report = await run.report()
+		assert.equal(report.status, "failed")
+		assert.equal(report.stage, failingFile)
+	}
+})
+
 test("wrong host or incomplete evidence cannot reach certification", async (context) => {
 	for (const alter of [
-		{ actualVSCodeVersion: "1.136.1" },
+		{ actualVSCodeVersion: "0.0.0" },
 		{ captureComplete: false },
 		{ providerMode: "live-copilot" as const },
 	]) {

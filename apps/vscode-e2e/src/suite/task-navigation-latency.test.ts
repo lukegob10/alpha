@@ -91,8 +91,8 @@ suite("Task navigation latency on a completed multi-step task", function () {
 					writeDelayMs: 0,
 				},
 			})
-			await waitFor(() => host.getLiveTask(taskId)?.taskAsk?.ask === "completion_result", {
-				description: "the completed task's review boundary",
+			await waitFor(() => host.getLiveTask(taskId)?.didComplete === true, {
+				description: "the navigation fixture to finalize completion",
 				timeout: 120_000,
 			})
 			const task = host.getLiveTask(taskId)

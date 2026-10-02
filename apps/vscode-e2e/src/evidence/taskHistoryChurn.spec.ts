@@ -31,7 +31,7 @@ function receipt(overrides: Record<string, unknown> = {}) {
 		scenarioId: "task-history-churn" as const,
 		phase: "populate" as const,
 		runId: "task-history-churn-run",
-		hostVersion: "1.122.1",
+		hostVersion: "1.125.0",
 		extensionHostPid: 1234,
 		storagePath: path.resolve("task-history-churn-storage"),
 		windowRole: "single" as const,
@@ -65,7 +65,7 @@ test("creates one validated projection for single and shared-window hosts", () =
 	}
 	const parsed = createTaskHistoryChurnReceipt({
 		runId: "shared-window-a",
-		hostVersion: "1.122.1",
+		hostVersion: "1.125.0",
 		extensionHostPid: 1234,
 		storagePath: path.resolve("task-history-churn-storage"),
 		windowRole: "a",
@@ -88,7 +88,7 @@ test("requires shared-window receipts to prove one profile and disjoint task ide
 	}
 	const a = createTaskHistoryChurnReceipt({
 		runId: "shared-window-a",
-		hostVersion: "1.122.1",
+		hostVersion: "1.125.0",
 		extensionHostPid: 1234,
 		storagePath: path.resolve("task-history-churn-storage"),
 		windowRole: "a",

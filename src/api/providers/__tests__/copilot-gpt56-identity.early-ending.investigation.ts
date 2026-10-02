@@ -4,7 +4,7 @@ import type * as vscode from "vscode"
 const { selectChatModels } = vi.hoisted(() => ({ selectChatModels: vi.fn() }))
 
 vi.mock("vscode", () => ({
-	version: "1.122.1",
+	version: "1.125.0",
 	workspace: {
 		onDidChangeConfiguration: vi.fn(() => ({ dispose: vi.fn() })),
 		getConfiguration: vi.fn(() => ({ get: vi.fn(() => 600) })),

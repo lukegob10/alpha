@@ -24,6 +24,8 @@ import { experimentDefault } from "../../../shared/experiments"
 import { setTtsEnabled } from "../../../utils/tts"
 import { ContextProxy } from "../../config/ContextProxy"
 import { Task, TaskOptions } from "../../task/Task"
+import type { McpHub } from "../../../services/mcp/McpHub"
+import { McpServerManager } from "../../../services/mcp/McpServerManager"
 import { safeWriteJson } from "../../../utils/safeWriteJson"
 
 import { AlphaProvider } from "../AlphaProvider"
@@ -1025,8 +1027,11 @@ describe("AlphaProvider", () => {
 		const childStatus = new Promise<any>((resolve) => {
 			resolveChildStatus = resolve
 		})
+		const parentLifetime = new AbortController()
+		const childLifetime = new AbortController()
 		const parentInstance = {
 			taskId: parentTaskId,
+			getTaskLifetimeCancellationSignal: () => parentLifetime.signal,
 			messageQueueService: {
 				addMessage,
 				addMessageDurably: vi.fn(async (text: string, images?: string[], id?: string) => {
@@ -1045,6 +1050,7 @@ describe("AlphaProvider", () => {
 		const liveChild = {
 			taskId: childTaskId,
 			abort: false,
+			getTaskLifetimeCancellationSignal: () => childLifetime.signal,
 			getCompletionGateDecision: vi.fn(async () => ({ allowed: true, modelCanResolveRejection: true })),
 			suspendAfterCurrentTurn: vi.fn(),
 			messageQueueService: new MessageQueueService(),
@@ -1208,6 +1214,47 @@ describe("AlphaProvider", () => {
 			([msg]) => typeof msg === "string" && msg.includes("Disposing AlphaProvider..."),
 		)
 		expect(disposeCalls).toHaveLength(1)
+	})
+
+	test("joins MCP startup without registering a client after disposal begins", async () => {
+		let releaseHub!: (hub: McpHub) => void
+		const readiness = new Promise<McpHub>((resolve) => {
+			releaseHub = resolve
+		})
+		const hub = {
+			registerClient: vi.fn(),
+			unregisterClient: vi.fn().mockResolvedValue(undefined),
+		} as unknown as McpHub
+		const acquire = vi.spyOn(McpServerManager, "getInstance").mockReturnValueOnce(readiness)
+		const release = vi.spyOn(McpServerManager, "unregisterProvider").mockImplementation(async () => {})
+		const retiring = new AlphaProvider(mockContext, mockOutputChannel, "sidebar", new ContextProxy(mockContext))
+		let reachedMcpCleanup!: () => void
+		const cleanupReached = new Promise<void>((resolve) => {
+			reachedMcpCleanup = resolve
+		})
+		const tracker = (retiring as unknown as { _workspaceTracker: { dispose(): void } })._workspaceTracker
+		vi.spyOn(tracker, "dispose").mockImplementation(reachedMcpCleanup)
+		let disposed = false
+		const disposal = retiring.dispose().then(() => {
+			disposed = true
+		})
+		try {
+			await cleanupReached
+			await Promise.resolve()
+			const disposedBeforeReady = disposed
+			releaseHub(hub)
+			await disposal
+			await readiness
+			await Promise.resolve()
+			expect(disposedBeforeReady).toBe(false)
+			expect(hub.registerClient).not.toHaveBeenCalled()
+			expect(hub.unregisterClient).not.toHaveBeenCalled()
+			expect(release).toHaveBeenCalledOnce()
+			expect(retiring.getMcpHub()).toBeUndefined()
+		} finally {
+			acquire.mockRestore()
+			release.mockRestore()
+		}
 	})
 
 	test("dispose awaits the final compatibility write and absorbs its failure", async () => {

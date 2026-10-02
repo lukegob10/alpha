@@ -28,6 +28,7 @@ vi.mock("vscode", () => ({
 }))
 
 vi.mock("fs/promises", () => ({
+	access: vi.fn().mockResolvedValue(undefined),
 	mkdir: vi.fn(),
 	readFile: vi.fn(),
 	writeFile: vi.fn(),
@@ -1149,12 +1150,12 @@ describe("CustomModesManager", () => {
 
 				expect(result.success).toBe(true)
 
-				// Verify that no files were written outside the .roo directory
+				// Verify that no files were written outside the .alpha directory
 				const mockWorkspacePath = path.resolve("/mock/workspace")
 				const writtenRuleFiles = writtenFiles.filter((p) => !p.includes(".alphamodes"))
 				writtenRuleFiles.forEach((filePath) => {
 					const normalizedPath = path.normalize(filePath)
-					const expectedBasePath = path.normalize(path.join(mockWorkspacePath, ".roo"))
+					const expectedBasePath = path.normalize(path.join(mockWorkspacePath, ".alpha"))
 					expect(normalizedPath.startsWith(expectedBasePath)).toBe(true)
 				})
 
@@ -1234,7 +1235,11 @@ describe("CustomModesManager", () => {
 				expect(result.success).toBe(true)
 
 				// Verify that fs.rm was called to remove the existing rules folder
-				expect(fs.rm).toHaveBeenCalledWith(expect.stringContaining(path.join(".roo", "rules-test-mode")), {
+				expect(fs.rm).toHaveBeenCalledWith(expect.stringContaining(path.join(".alpha", "rules-test-mode")), {
+					recursive: true,
+					force: true,
+				})
+				expect(fs.rm).toHaveBeenCalledWith(path.join(mockWorkspacePath, ".roo", "rules-test-mode"), {
 					recursive: true,
 					force: true,
 				})
@@ -1292,7 +1297,7 @@ describe("CustomModesManager", () => {
 				expect(result.success).toBe(true)
 
 				// Verify that fs.rm was called to remove the existing rules folder
-				expect(fs.rm).toHaveBeenCalledWith(expect.stringContaining(path.join(".roo", "rules-test-mode")), {
+				expect(fs.rm).toHaveBeenCalledWith(expect.stringContaining(path.join(".alpha", "rules-test-mode")), {
 					recursive: true,
 					force: true,
 				})
@@ -1308,6 +1313,25 @@ describe("CustomModesManager", () => {
 	})
 
 	describe("checkRulesDirectoryHasContent", () => {
+		it("keeps legacy project rules readable when the Alpha rules directory is absent", async () => {
+			vi.spyOn(manager, "getCustomModes").mockResolvedValueOnce([
+				{
+					slug: "test-mode",
+					name: "Test Mode",
+					roleDefinition: "Test Role",
+					groups: ["read"],
+					source: "project",
+				},
+			])
+			vi.mocked(fs.access).mockRejectedValueOnce(Object.assign(new Error("not found"), { code: "ENOENT" }))
+			vi.mocked(fs.readdir).mockResolvedValueOnce([{ name: "legacy.md", isFile: () => true }] as never)
+			vi.mocked(fs.readFile).mockResolvedValueOnce("Legacy rule")
+			expect(await manager.checkRulesDirectoryHasContent("test-mode")).toBe(true)
+			expect(fs.readdir).toHaveBeenCalledWith(path.join(mockWorkspacePath, ".roo", "rules-test-mode"), {
+				withFileTypes: true,
+			})
+		})
+
 		it("should return false when no workspace is available", async () => {
 			;(getWorkspacePath as Mock).mockReturnValue(null)
 

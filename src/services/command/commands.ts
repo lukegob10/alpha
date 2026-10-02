@@ -2,7 +2,11 @@ import fs from "fs/promises"
 import * as path from "path"
 import { Dirent } from "fs"
 import matter from "gray-matter"
-import { getLegacyGlobalConfigDirectory, getLegacyProjectConfigDirectory } from "../config-paths"
+import {
+	getLegacyGlobalConfigDirectory,
+	getProjectConfigDirectory,
+	getLegacyProjectConfigDirectory,
+} from "../config-paths"
 import { getBuiltInCommands, getBuiltInCommand } from "./built-in-commands"
 
 /**
@@ -138,8 +142,9 @@ export async function getCommands(cwd: string): Promise<Command[]> {
 	await scanCommandDirectory(globalDir, "global", commands)
 
 	// Scan project commands (highest priority - override both global and built-in)
-	const projectDir = path.join(getLegacyProjectConfigDirectory(cwd), "commands")
-	await scanCommandDirectory(projectDir, "project", commands)
+	for (const projectRoot of [getLegacyProjectConfigDirectory(cwd), getProjectConfigDirectory(cwd)]) {
+		await scanCommandDirectory(path.join(projectRoot, "commands"), "project", commands)
+	}
 
 	return Array.from(commands.values())
 }
@@ -156,13 +161,19 @@ export async function getCommand(cwd: string, name: string): Promise<Command | u
 	}
 
 	// Try to find the command directly without scanning all commands
-	const projectDir = path.join(getLegacyProjectConfigDirectory(cwd), "commands")
+	const projectDir = path.join(getProjectConfigDirectory(cwd), "commands")
 	const globalDir = path.join(getLegacyGlobalConfigDirectory(), "commands")
 
 	// Check project directory first (highest priority)
 	const projectCommand = await tryLoadCommand(projectDir, name, "project")
 	if (projectCommand) {
 		return projectCommand
+	}
+
+	const legacyProjectDir = path.join(getLegacyProjectConfigDirectory(cwd), "commands")
+	const legacyProjectCommand = await tryLoadCommand(legacyProjectDir, name, "project")
+	if (legacyProjectCommand) {
+		return legacyProjectCommand
 	}
 
 	// Check global directory if not found in project
@@ -335,7 +346,7 @@ async function scanCommandDirectory(
 				}
 
 				// Project commands override global ones
-				if (source === "project" || !commands.has(commandName)) {
+				if (source === "project" || commands.get(commandName)?.source !== "global") {
 					commands.set(commandName, {
 						name: commandName,
 						content: commandContent,

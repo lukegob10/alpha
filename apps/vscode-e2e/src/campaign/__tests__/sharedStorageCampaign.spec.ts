@@ -47,7 +47,7 @@ type Fault =
 	| "scan-incomplete"
 
 /** File receipts simulate the external hosts; no process, live provider or real-host evidence is manufactured. */
-async function exercise(fault: Fault, version: CampaignHost["version"] = "1.122.1") {
+async function exercise(fault: Fault, version: CampaignHost["version"] = "1.125.0") {
 	const temporary = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-pair-unit-")))
 	const root = path.join(temporary, "campaign")
 	const executable = await fs.realpath(process.execPath)
@@ -314,7 +314,7 @@ async function exercise(fault: Fault, version: CampaignHost["version"] = "1.122.
 	}
 }
 
-for (const version of ["1.122.1", "1.136.1"] as const)
+for (const version of ["1.125.0"] as const)
 	test(`controller succeeds only after both durable receipts and cleanup (${version})`, async () => {
 		const { report, capture, leaseRetained } = await exercise("none", version)
 		assert.equal(report.status, "passed")

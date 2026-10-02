@@ -126,7 +126,7 @@ suite("Alpha view_image native tool acceptance", function () {
 	setDefaultSuiteTimeout(this)
 
 	test("advertises view_image and delivers one real image result while rejecting a spoofed PNG", async () => {
-		assert.equal(vscode.version, "1.122.1", "The image tool acceptance must run on the exact supported host")
+		assert.equal(vscode.version, "1.125.0", "The image tool acceptance must run on the exact supported host")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 
 		const workspace = vscode.workspace.workspaceFolders?.[0]

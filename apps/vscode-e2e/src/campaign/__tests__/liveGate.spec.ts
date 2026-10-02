@@ -57,13 +57,13 @@ function completeReport(plan = config()): CampaignReport {
 	}
 }
 
-test("gate covers the whole registered matrix and labels single-host acceptance separately", () => {
+test("gate covers the whole registered matrix on the reference host", () => {
 	const plan = config()
 	const result = evaluateLiveGate(plan, completeReport(plan))
 	assert.equal(result.status, "passed")
-	assert.equal(result.scope, "reference-and-current-hosts")
-	assert.equal(result.cells.length, plan.scenarioIds.length * 2)
-	plan.hosts = [{ version: "1.136.1" }]
+	assert.equal(result.scope, "single-host-only")
+	assert.equal(result.cells.length, plan.scenarioIds.length)
+	plan.hosts = [{ version: "1.125.0" }]
 	assert.equal(evaluateLiveGate(plan, completeReport(plan)).scope, "single-host-only")
 })
 
@@ -134,7 +134,7 @@ test("gate cannot pass empty, missing, duplicate or fabricated coverage even wit
 test("gate requires actual live identity, usage, task and retained evidence for every cell", () => {
 	for (const alter of [
 		(report: CampaignReport) => {
-			report.attempts[0]!.result.actualHostVersion = "1.136.1"
+			delete report.attempts[0]!.result.actualHostVersion
 		},
 		(report: CampaignReport) => {
 			report.attempts[0]!.result.model!.id = "other-model"
@@ -349,9 +349,9 @@ test("core preparation includes the targeted loop regressions before optional ho
 		)
 		assert.deepEqual(scripts, [
 			"test:unit",
-			"test:smoke:1221",
+			"test:smoke:1250",
 			"test:core:regressions",
-			...(coverage === "full" ? ["test:core:1221:run"] : []),
+			...(coverage === "full" ? ["test:core:1250:run"] : []),
 		])
 	}
 })

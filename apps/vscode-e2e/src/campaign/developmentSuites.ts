@@ -107,8 +107,8 @@ export function createDevelopmentSuite(options: DevelopmentSuiteOptions): Campai
 	}
 
 	const definition = SUITE_DEFINITIONS[options.suite as DevelopmentSuiteName]
-	// Routine runs use the release-gating host. Forward compatibility costs an explicit additional run.
-	const defaultHosts = options.suite === "core" ? DEFAULT_HOSTS.slice(0, 1) : DEFAULT_HOSTS
+	// All automated suites use the exact release-gating host.
+	const defaultHosts = DEFAULT_HOSTS
 	const hosts = options.host === undefined ? defaultHosts.map((host) => ({ ...host })) : [options.host]
 	const scenarioIds = [...definition.scenarioIds]
 	const samples = options.samples ?? definition.samples

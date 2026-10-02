@@ -385,6 +385,7 @@ export class ManagedSubagentWorktreeService {
 		if (!artifact.worktreePath) return artifact
 		const indexPath = path.join(this.artifactDir(storagePath, artifact.id), "result.index")
 		const indexEnv = { GIT_INDEX_FILE: indexPath, GIT_WORK_TREE: artifact.worktreePath }
+		let capturePersisted = false
 		try {
 			const gitCwd = await this.resolveArtifactGitCwd(artifact)
 			await fs.rm(indexPath, { force: true })
@@ -425,6 +426,7 @@ export class ManagedSubagentWorktreeService {
 				artifact.error = `Worker changed paths outside its write scope: ${[...new Set(violations)].join(", ")}`
 				artifact.partial = partial
 				await this.persist(storagePath, artifact)
+				capturePersisted = true
 				return artifact
 			}
 
@@ -482,6 +484,7 @@ export class ManagedSubagentWorktreeService {
 				delete artifact.patchFile
 				delete artifact.error
 				await this.persist(storagePath, artifact)
+				capturePersisted = true
 				return artifact
 			}
 			const patchName = "changes.patch"
@@ -501,18 +504,24 @@ export class ManagedSubagentWorktreeService {
 			artifact.partial = partial
 			delete artifact.error
 			await this.persist(storagePath, artifact)
+			capturePersisted = true
 			return artifact
 		} finally {
 			await fs.rm(indexPath, { force: true }).catch(() => undefined)
-			try {
-				await this.cleanupWorktreeWithRetry(artifact)
-				delete artifact.worktreePath
-			} catch (error) {
-				artifact.error = `Captured changes, but managed worktree cleanup must be retried: ${
-					error instanceof Error ? error.message : String(error)
-				}`
+			// Until export and metadata are durable, the existing active record and
+			// physical worktree are the only complete recovery source. A failed capture
+			// must not remove them or publish a partially assembled terminal snapshot.
+			if (capturePersisted) {
+				try {
+					await this.cleanupWorktreeWithRetry(artifact)
+					delete artifact.worktreePath
+				} catch (error) {
+					artifact.error = `Captured changes, but managed worktree cleanup must be retried: ${
+						error instanceof Error ? error.message : String(error)
+					}`
+				}
+				await this.persist(storagePath, artifact)
 			}
-			await this.persist(storagePath, artifact)
 		}
 	}
 

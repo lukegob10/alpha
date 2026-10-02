@@ -11,7 +11,7 @@ const verifiedHost = {
 	ownershipGate: "verified",
 	captureComplete: true,
 	hostExitObserved: true,
-	actualVSCodeVersion: "1.122.1",
+	actualVSCodeVersion: "1.125.0",
 } as const
 
 test("history UI accepts only a complete result from its owned exact-version host", async () => {

@@ -75,6 +75,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			task.consecutiveMistakeCount = 0
 
 			await task.presentCompletionResult(result, undefined, false)
+			if (task.abort || task.getTaskLifetimeCancellationSignal().aborted) return
 
 			if (task.taskKind === "subagent") {
 				// task.say may yield long enough for a nested child to finish. Recheck
@@ -142,17 +143,16 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				}
 			}
 
-			const { text, images } = await task.ask("completion_result", "", false)
-			const providedFeedback = Boolean(text?.trim()) || Boolean(images?.length)
-			const queuedFollowup = providedFeedback ? undefined : task.messageQueueService.dequeueMessage()
+			// Completion is a runtime transition, not a user approval. Pending guidance
+			// continues the conversation before the durable finalizer can close it.
+			const queuedFollowup = task.messageQueueService.dequeueMessage()
 			if (queuedFollowup) task.retainQueuedMessageToolReply?.(toolCallId, queuedFollowup)
-			const feedbackText = queuedFollowup?.text ?? text ?? ""
-			const feedbackImages = queuedFollowup?.images ?? images ?? []
+			const feedbackText = queuedFollowup?.text ?? ""
+			const feedbackImages = queuedFollowup?.images ?? []
 
 			if (!feedbackText.trim() && feedbackImages.length === 0) {
-				// A background child can finish while the completion prompt is open.
-				// Recheck the durable descendant/mailbox gate immediately before the
-				// persisted completion transition.
+				// Presentation can yield while descendants or guidance arrive. Recheck
+				// the durable gate immediately before the persisted transition.
 				if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult, toolCallId)) {
 					await task.retractCompletionResult()
 					return
@@ -162,7 +162,9 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			}
 
 			// Continue the conversation without retracting the previous answer's durable trace boundary.
-			await task.say("user_feedback", feedbackText, feedbackImages)
+			await task.say("user_feedback", feedbackText, feedbackImages, undefined, undefined, undefined, {
+				queuedMessageIds: queuedFollowup ? [queuedFollowup.id] : undefined,
+			})
 
 			const toolFeedback = `<user_message>\n${feedbackText}\n</user_message>`
 			pushToolResult(formatResponse.toolResult(toolFeedback, feedbackImages))
@@ -194,7 +196,9 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				task.retainQueuedMessageToolReply?.(toolCallId, queued)
 				task.resetCompletionRecoveryState()
 				await task.retractCompletionResult()
-				await task.say("user_feedback", queued.text, queued.images)
+				await task.say("user_feedback", queued.text, queued.images, undefined, undefined, undefined, {
+					queuedMessageIds: [queued.id],
+				})
 				pushToolResult(
 					formatResponse.toolResult(`<user_message>\n${queued.text}\n</user_message>`, queued.images),
 				)
@@ -231,7 +235,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 	 * Returns:
 	 * - "delegated" when completion was approved and parent resumed
 	 * - "denied" when user denied finishing the subtask
-	 * - "continue" when caller should fall through to normal completion ask flow
+	 * - "continue" when caller should fall through to primary completion finalization
 	 */
 	private async delegateToParent(
 		task: Task,
@@ -310,7 +314,9 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				const queued = task.messageQueueService.dequeueMessage()
 				if (queued) {
 					task.retainQueuedMessageToolReply?.(toolCallId, queued)
-					await task.say("user_feedback", queued.text, queued.images)
+					await task.say("user_feedback", queued.text, queued.images, undefined, undefined, undefined, {
+						queuedMessageIds: [queued.id],
+					})
 					pushToolResult(
 						formatResponse.toolResult(`<user_message>\n${queued.text}\n</user_message>`, queued.images),
 					)

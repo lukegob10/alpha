@@ -370,6 +370,27 @@ describe("ReadFileTool", () => {
 	})
 
 	describe("RooIgnore handling", () => {
+		it.each([{ path: "secret.env" }, { files: [{ path: "secret.env" }] }])(
+			"rechecks ignore access after approval for %j",
+			async (params) => {
+				const task = createMockTask()
+				const callbacks = createMockCallbacks()
+				callbacks.askApprovalResponse.mockImplementation(async () => {
+					task.alphaIgnoreController.validateAccess.mockReturnValue(false)
+					return { response: "yesButtonClicked" }
+				})
+				await readFileTool.execute(params, task as any, callbacks)
+				expect(mockedFsStat).not.toHaveBeenCalled()
+				expect(mockedFsReadFile).not.toHaveBeenCalled()
+				expect(mockedIsBinaryFile).not.toHaveBeenCalled()
+				expect(task.fileContextTracker.trackFileContext).not.toHaveBeenCalled()
+				expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "denied" })
+				expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
+					expect.stringContaining("blocked by the .alphaignore"),
+				)
+			},
+		)
+
 		it("should block access to alphaignore-protected files", async () => {
 			const mockTask = createMockTask({ alphaIgnoreAllowed: false })
 			const callbacks = createMockCallbacks()

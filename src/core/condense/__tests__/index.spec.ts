@@ -1117,6 +1117,45 @@ describe("summarizeConversation", () => {
 		expect(result.errorDetails).not.toContain("rawPayload")
 	})
 
+	it("does not copy thrown provider response payloads into diagnostics or logs", async () => {
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Initial task", ts: 1 },
+			{ role: "assistant", content: "Prior work. ".repeat(1000), ts: 2 },
+			{ role: "user", content: "Continue", ts: 3 },
+		]
+		const providerError = Object.assign(new Error("Provider unavailable"), {
+			status: 503,
+			code: "service_unavailable",
+			response: { headers: { authorization: "secret-canary" }, prompt: "private-prompt-canary" },
+			body: { credentials: "body-secret-canary" },
+		})
+		vi.mocked(mockApiHandler.createMessage).mockImplementation(() => {
+			throw providerError
+		})
+		const log = vi.spyOn(console, "error").mockImplementation(() => undefined)
+		try {
+			const result = await summarizeConversation({
+				messages,
+				apiHandler: mockApiHandler,
+				systemPrompt: defaultSystemPrompt,
+				taskId,
+			})
+			expect(result.status).toBe("no_progress")
+			expect(result.messages).toBe(messages)
+			expect(result.errorDetails).toContain("503")
+			expect(result.errorDetails).toContain("service_unavailable")
+			const diagnostics = JSON.stringify({
+				error: result.error,
+				details: result.errorDetails,
+				logs: log.mock.calls,
+			})
+			expect(diagnostics).not.toContain("secret-canary")
+			expect(diagnostics).not.toContain("private-prompt-canary")
+		} finally {
+			log.mockRestore()
+		}
+	})
+
 	it("does not expose history hidden by truncation to the summarizer", async () => {
 		const truncationId = "truncation-before-condense"
 		const hiddenContent = "hidden history must not be summarized"

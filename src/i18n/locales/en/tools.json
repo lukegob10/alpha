@@ -1,4 +1,5 @@
 {
+	"approvalDetails": "{{toolName}}: review the complete action in the tool details ({{length}} characters).",
 	"readFile": {
 		"linesRange": " (lines {{start}}-{{end}})",
 		"definitionsOnly": " (definitions only)",

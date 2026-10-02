@@ -6,6 +6,7 @@ export interface ComposerSubmission {
 	text: string
 	images: string[]
 	clientSubmittedAt?: number
+	asyncUserInputMessageTs?: number
 }
 
 export interface TaskComposerDraft {

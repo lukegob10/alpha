@@ -324,7 +324,10 @@ export class AgentResponseAccumulator {
 			if (left.index === undefined && right.index !== undefined) return 1
 			return left.order - right.order
 		})
-		const exposeAllToolCalls = this.responseOutcome === undefined
+		// A successful finish must still validate every call. Filtering to accepted
+		// calls here would silently erase malformed payloads and ID collisions,
+		// allowing visible text to complete a turn which actually failed parsing.
+		const exposeAllToolCalls = this.responseOutcome === undefined || this.responseOutcome.status === "completed"
 		const exposedTools = exposeAllToolCalls ? pendingTools : pendingTools.filter((pending) => pending.accepted)
 
 		for (const pending of exposedTools) {

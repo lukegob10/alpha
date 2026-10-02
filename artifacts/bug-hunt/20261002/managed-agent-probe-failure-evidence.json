@@ -1,0 +1,683 @@
+{
+	"schemaVersion": 1,
+	"suiteId": "managed-agent-milestone",
+	"scope": "deterministic-offline-only",
+	"generatedAt": "2026-10-02T04:14:05.550Z",
+	"durationMs": 252906,
+	"invocation": {
+		"strict": true,
+		"arguments": ["--strict", "--evidence", "artifacts/certification/managed-agent-milestone-evidence.json"],
+		"node": "v24.14.1",
+		"platform": "win32",
+		"architecture": "x64"
+	},
+	"source": {
+		"stableDuringRun": true,
+		"start": {
+			"headCommit": "1adc85c1a3f560508458f6526b4de370ad0ad3d5",
+			"workingTreeDirty": true,
+			"sourceStateSha256": "43a8bbb2bb53139699d4323458b237cce13d865d30354764a7c4db042397b30a",
+			"trackedDiffSha256": "aadb28c03280695b73667f19e7c6bc38470c8478bf6d71c292cdeb401d5491a6",
+			"untrackedFilesSha256": "cf32d868d02d21cd352f65c9eb625cef41f2e0184611087a97520bf9b54e12da",
+			"untrackedFileCount": 37,
+			"excludedEvidencePath": "artifacts/certification/managed-agent-milestone-evidence.json"
+		},
+		"end": {
+			"headCommit": "1adc85c1a3f560508458f6526b4de370ad0ad3d5",
+			"workingTreeDirty": true,
+			"sourceStateSha256": "43a8bbb2bb53139699d4323458b237cce13d865d30354764a7c4db042397b30a",
+			"trackedDiffSha256": "aadb28c03280695b73667f19e7c6bc38470c8478bf6d71c292cdeb401d5491a6",
+			"untrackedFilesSha256": "cf32d868d02d21cd352f65c9eb625cef41f2e0184611087a97520bf9b54e12da",
+			"untrackedFileCount": 37,
+			"excludedEvidencePath": "artifacts/certification/managed-agent-milestone-evidence.json"
+		},
+		"matrixSha256": "3f38ab07d5cd77be23b948de0db279e290eb0b8a3e4db923e59cba772217f405"
+	},
+	"outcome": {
+		"status": "FAIL",
+		"exitCode": 1,
+		"testCounts": {
+			"total": 2875,
+			"passed": 2875,
+			"failed": 0,
+			"skipped": 0,
+			"todo": 0
+		},
+		"testBaseline": {
+			"minimum": 935,
+			"actual": 2875,
+			"satisfied": true
+		},
+		"rowStatusCounts": {
+			"PASS": 25,
+			"FAIL": 1,
+			"PENDING-INTEGRATION": 8
+		},
+		"rowBaseline": {
+			"deterministic": 26,
+			"pendingIntegration": 8
+		},
+		"liveAcceptance": "NOT_RUN",
+		"integrationRowsPending": 8,
+		"note": "Passing deterministic rows do not satisfy real provider, VS Code host, multi-window, or live UI acceptance."
+	},
+	"prerequisites": [
+		{
+			"id": "live-playbook-preflight",
+			"status": "PASS",
+			"exitCode": 0,
+			"durationMs": 5016
+		},
+		{
+			"id": "types-build",
+			"status": "PASS",
+			"exitCode": 0,
+			"durationMs": 11955
+		}
+	],
+	"tracks": [
+		{
+			"id": "types-contracts",
+			"status": "PASS",
+			"exitCode": 0,
+			"files": [
+				"src/__tests__/agent-control-managed-tree.test.ts",
+				"src/__tests__/message.test.ts",
+				"src/__tests__/provider-settings.test.ts",
+				"src/__tests__/subagent-context.test.ts",
+				"src/__tests__/subagent-lifecycle.test.ts",
+				"src/__tests__/subagent-orchestration.test.ts",
+				"src/__tests__/subagent-spawn-agent.test.ts"
+			],
+			"minimumTestCount": 79,
+			"durationMs": 3342,
+			"suites": {
+				"total": 16,
+				"passed": 16,
+				"failed": 0,
+				"skipped": 0
+			},
+			"tests": {
+				"total": 103,
+				"passed": 103,
+				"failed": 0,
+				"skipped": 0,
+				"todo": 0
+			},
+			"failedTests": [],
+			"skippedTests": []
+		},
+		{
+			"id": "worker-worktree",
+			"status": "PASS",
+			"exitCode": 0,
+			"files": [
+				"src/worktree/__tests__/managed-subagent-worktree.capture-recovery.spec.ts",
+				"src/worktree/__tests__/managed-subagent-worktree.persistence.spec.ts",
+				"src/worktree/__tests__/managed-subagent-worktree.spec.ts"
+			],
+			"minimumTestCount": 25,
+			"durationMs": 53670,
+			"suites": {
+				"total": 6,
+				"passed": 6,
+				"failed": 0,
+				"skipped": 0
+			},
+			"tests": {
+				"total": 25,
+				"passed": 25,
+				"failed": 0,
+				"skipped": 0,
+				"todo": 0
+			},
+			"failedTests": [],
+			"skippedTests": []
+		},
+		{
+			"id": "runtime-invariants",
+			"status": "PASS",
+			"exitCode": 0,
+			"files": [
+				"core/agent/__tests__/AgentControlBenchmarkFixture.spec.ts",
+				"core/agent/__tests__/AgentControlBenchmarkReport.spec.ts",
+				"core/agent/__tests__/AgentControlBenchmarkWorkers.spec.ts",
+				"core/agent/__tests__/AgentControlLockWaiter.spec.ts",
+				"core/agent/__tests__/AgentControlStore.contention.spec.ts",
+				"core/agent/__tests__/AgentControlStore.nested.spec.ts",
+				"core/agent/__tests__/AgentControlStore.primary-verification.spec.ts",
+				"core/agent/__tests__/AgentControlStore.queue-diagnostics.spec.ts",
+				"core/agent/__tests__/AgentControlStore.recovery-races.spec.ts",
+				"core/agent/__tests__/AgentControlStore.release-cleanup.spec.ts",
+				"core/agent/__tests__/AgentControlStore.release-diagnostics.spec.ts",
+				"core/agent/__tests__/AgentControlStore.replacement.spec.ts",
+				"core/agent/__tests__/AgentControlStore.spec.ts",
+				"core/agent/__tests__/AgentControlStore.transaction-isolation.spec.ts",
+				"core/agent/__tests__/AgentControlStore.wakeup.spec.ts",
+				"core/agent/__tests__/AgentIncidentMonitor.spec.ts",
+				"core/agent/__tests__/AgentResponseFoundation.spec.ts",
+				"core/agent/__tests__/AgentRetryPolicy.spec.ts",
+				"core/agent/__tests__/AgentStepContextBuilder.spec.ts",
+				"core/agent/__tests__/AgentStepRuntime.spec.ts",
+				"core/agent/__tests__/AgentTurnEngine.spec.ts",
+				"core/agent/__tests__/AgentTurnEventLog.spec.ts",
+				"core/agent/__tests__/AgentTurnTelemetry.spec.ts",
+				"core/agent/__tests__/AsyncSubagentRunManager.spec.ts",
+				"core/agent/__tests__/BoundedDelegationManager.result-contract.spec.ts",
+				"core/agent/__tests__/BoundedDelegationManager.root-capacity.spec.ts",
+				"core/agent/__tests__/BoundedDelegationManager.spec.ts",
+				"core/agent/__tests__/BoundedDelegationManager.stop-reasons.spec.ts",
+				"core/agent/__tests__/certification/managed-agent-store-certification.spec.ts",
+				"core/agent/__tests__/CommandOutcomeContext.spec.ts",
+				"core/agent/__tests__/CompletionHooks.spec.ts",
+				"core/agent/__tests__/CompletionRecovery.spec.ts",
+				"core/agent/__tests__/ExecutionProfile.spec.ts",
+				"core/agent/__tests__/independentTaskAuthorization.spec.ts",
+				"core/agent/__tests__/InternalTaskEnvelope.authority-contract.spec.ts",
+				"core/agent/__tests__/InternalTaskEnvelope.nested.spec.ts",
+				"core/agent/__tests__/InternalTaskEnvelope.spec.ts",
+				"core/agent/__tests__/managedToolAdmission.integration.spec.ts",
+				"core/agent/__tests__/outsideWorkspaceAccess.spec.ts",
+				"core/agent/__tests__/ParallelReads.spec.ts",
+				"core/agent/__tests__/primary-completion-policy.spec.ts",
+				"core/agent/__tests__/proportionalScope.integration.spec.ts",
+				"core/agent/__tests__/RequestPacing.spec.ts",
+				"core/agent/__tests__/requestWorkClass.spec.ts",
+				"core/agent/__tests__/SearchLoopRecoveryPolicy.spec.ts",
+				"core/agent/__tests__/SettlementDiagnostics.spec.ts",
+				"core/agent/__tests__/StepContext.spec.ts",
+				"core/agent/__tests__/SubagentContextCapture.spec.ts",
+				"core/agent/__tests__/SubagentDelegation.spec.ts",
+				"core/agent/__tests__/SubagentModelRouter.spec.ts",
+				"core/agent/__tests__/SubagentNicknameRegistry.spec.ts",
+				"core/agent/__tests__/TaskReasoning.spec.ts",
+				"core/agent/__tests__/TaskWorkContext.spec.ts",
+				"core/agent/__tests__/ToolPolicy.spec.ts",
+				"core/agent/__tests__/ToolScheduler.command-batching.spec.ts",
+				"core/agent/__tests__/ToolScheduler.deferredResults.spec.ts",
+				"core/agent/__tests__/ToolScheduler.manage-command-read.spec.ts",
+				"core/agent/__tests__/ToolScheduler.progress.spec.ts",
+				"core/agent/__tests__/ToolScheduler.spec.ts",
+				"core/agent/__tests__/VerificationScope.repository-transitions.spec.ts",
+				"core/agent/__tests__/VerificationScope.spec.ts"
+			],
+			"minimumTestCount": 189,
+			"durationMs": 50751,
+			"suites": {
+				"total": 134,
+				"passed": 134,
+				"failed": 0,
+				"skipped": 0
+			},
+			"tests": {
+				"total": 965,
+				"passed": 965,
+				"failed": 0,
+				"skipped": 0,
+				"todo": 0
+			},
+			"failedTests": [],
+			"skippedTests": []
+		},
+		{
+			"id": "lifecycle-routing",
+			"status": "PASS",
+			"exitCode": 0,
+			"files": [
+				"__tests__/delegation-events.spec.ts",
+				"__tests__/history-resume-delegation.spec.ts",
+				"__tests__/nested-delegation-resume.spec.ts",
+				"__tests__/provider-delegation.spec.ts",
+				"core/prompts/tools/__tests__/build-tools-spawn-agent.spec.ts",
+				"core/task/__tests__/async-subagent-result-delivery.spec.ts",
+				"core/task/__tests__/subagent-authority.spec.ts",
+				"core/task/__tests__/subagent-followup.spec.ts",
+				"core/task/__tests__/Task.agent-wait-progress.spec.ts",
+				"core/task/__tests__/Task.spec.ts",
+				"core/task/__tests__/Task.subagent-context.spec.ts",
+				"core/tools/__tests__/AgentLifecycleTools.spec.ts",
+				"core/tools/__tests__/nativeToolDispatchContract.spec.ts",
+				"core/tools/__tests__/SpawnAgentTool.spec.ts",
+				"core/tools/__tests__/ToolRegistry.spec.ts",
+				"core/webview/__tests__/AlphaProvider.flicker-free-cancel.spec.ts",
+				"core/webview/__tests__/AlphaProvider.subagents.spec.ts",
+				"core/webview/__tests__/TaskSessionRegistry.published-ask.spec.ts",
+				"core/webview/__tests__/TaskSessionRegistry.spec.ts"
+			],
+			"minimumTestCount": 195,
+			"durationMs": 29621,
+			"suites": {
+				"total": 60,
+				"passed": 60,
+				"failed": 0,
+				"skipped": 0
+			},
+			"tests": {
+				"total": 618,
+				"passed": 618,
+				"failed": 0,
+				"skipped": 0,
+				"todo": 0
+			},
+			"failedTests": [],
+			"skippedTests": []
+		},
+		{
+			"id": "terminal-process-cleanup",
+			"status": "PASS",
+			"exitCode": 0,
+			"files": [
+				"integrations/terminal/__tests__/ExecaTerminalProcess.integration.spec.ts",
+				"integrations/terminal/__tests__/ExecaTerminalProcess.settlement.spec.ts",
+				"integrations/terminal/__tests__/ExecaTerminalProcess.spec.ts"
+			],
+			"minimumTestCount": 45,
+			"durationMs": 6795,
+			"suites": {
+				"total": 10,
+				"passed": 10,
+				"failed": 0,
+				"skipped": 0
+			},
+			"tests": {
+				"total": 52,
+				"passed": 52,
+				"failed": 0,
+				"skipped": 0,
+				"todo": 0
+			},
+			"failedTests": [],
+			"skippedTests": []
+		},
+		{
+			"id": "task-history-compatibility",
+			"status": "PASS",
+			"exitCode": 0,
+			"files": [
+				"core/task-persistence/__tests__/compactTaskHistoryForGlobalState.spec.ts",
+				"core/webview/__tests__/AlphaProvider.taskHistory.spec.ts"
+			],
+			"minimumTestCount": 20,
+			"durationMs": 6998,
+			"suites": {
+				"total": 9,
+				"passed": 9,
+				"failed": 0,
+				"skipped": 0
+			},
+			"tests": {
+				"total": 29,
+				"passed": 29,
+				"failed": 0,
+				"skipped": 0,
+				"todo": 0
+			},
+			"failedTests": [],
+			"skippedTests": []
+		},
+		{
+			"id": "worker-completion-gate",
+			"status": "PASS",
+			"exitCode": 0,
+			"files": [
+				"core/task-persistence/__tests__/stageThreeVerificationRecovery.integration.spec.ts",
+				"core/task/__tests__/completionDiagnostics.spec.ts",
+				"core/task/__tests__/stageThreeCompletion.integration.spec.ts",
+				"core/task/__tests__/Task.external-mutation-runtime.spec.ts",
+				"core/task/__tests__/Task.external-mutation.spec.ts",
+				"core/task/__tests__/WorkspaceMutationGate.spec.ts",
+				"core/tools/__tests__/attemptCompletionTool.spec.ts",
+				"core/tools/__tests__/executeCommandTool.spec.ts",
+				"core/webview/__tests__/AlphaProvider.change-set-actions.spec.ts",
+				"core/webview/__tests__/AlphaProvider.primary-verification.spec.ts",
+				"core/webview/__tests__/webviewMessageHandler.edit.spec.ts"
+			],
+			"minimumTestCount": 68,
+			"durationMs": 45456,
+			"suites": {
+				"total": 30,
+				"passed": 30,
+				"failed": 0,
+				"skipped": 0
+			},
+			"tests": {
+				"total": 205,
+				"passed": 205,
+				"failed": 0,
+				"skipped": 0,
+				"todo": 0
+			},
+			"failedTests": [],
+			"skippedTests": []
+		},
+		{
+			"id": "provider-protocol",
+			"status": "PASS",
+			"exitCode": 0,
+			"files": [
+				"api/providers/__tests__/anthropic-vertex.spec.ts",
+				"api/providers/__tests__/openai.spec.ts",
+				"api/providers/__tests__/vertex-provider-outcomes.spec.ts",
+				"api/providers/__tests__/vertex.spec.ts",
+				"api/providers/__tests__/vscode-lm.spec.ts",
+				"api/transform/__tests__/openai-format.spec.ts",
+				"core/assistant-message/__tests__/NativeToolCallParser.spec.ts",
+				"core/assistant-message/__tests__/spawn-agent-native-pipeline.spec.ts"
+			],
+			"minimumTestCount": 118,
+			"durationMs": 8864,
+			"suites": {
+				"total": 66,
+				"passed": 66,
+				"failed": 0,
+				"skipped": 0
+			},
+			"tests": {
+				"total": 477,
+				"passed": 477,
+				"failed": 0,
+				"skipped": 0,
+				"todo": 0
+			},
+			"failedTests": [],
+			"skippedTests": []
+		},
+		{
+			"id": "live-tree-ui",
+			"status": "PASS",
+			"exitCode": 0,
+			"files": [
+				"src/components/agents/__tests__/ManagedAgentTree.spec.tsx",
+				"src/components/agents/__tests__/managedAgentTreeAdapter.spec.ts",
+				"src/components/chat/__tests__/ChatRow.agent-lifecycle.spec.tsx",
+				"src/components/chat/__tests__/ChatView.spec.tsx",
+				"src/components/chat/__tests__/SubagentGroupCard.spec.tsx",
+				"src/components/chat/__tests__/SubagentGroupCard.worker-regression-track.spec.tsx",
+				"src/components/chat/__tests__/TaskHeader.spec.tsx",
+				"src/components/chat/__tests__/TaskHeader.vscode-lm.spec.tsx",
+				"src/components/history/__tests__/TaskItem.spec.tsx",
+				"src/components/history/__tests__/TaskItemFooter.spec.tsx",
+				"src/components/history/__tests__/useGroupedTasks.spec.ts",
+				"src/context/__tests__/ExtensionStateContext.spec.tsx"
+			],
+			"minimumTestCount": 164,
+			"durationMs": 20707,
+			"suites": {
+				"total": 55,
+				"passed": 55,
+				"failed": 0,
+				"skipped": 0
+			},
+			"tests": {
+				"total": 357,
+				"passed": 357,
+				"failed": 0,
+				"skipped": 0,
+				"todo": 0
+			},
+			"failedTests": [],
+			"skippedTests": []
+		},
+		{
+			"id": "settings-buffering",
+			"status": "PASS",
+			"exitCode": 0,
+			"files": [
+				"src/components/settings/__tests__/SettingsView.change-detection.spec.tsx",
+				"src/components/settings/__tests__/SettingsView.spec.tsx",
+				"src/components/settings/__tests__/SettingsView.unsaved-changes.spec.tsx"
+			],
+			"minimumTestCount": 32,
+			"durationMs": 8781,
+			"suites": {
+				"total": 14,
+				"passed": 14,
+				"failed": 0,
+				"skipped": 0
+			},
+			"tests": {
+				"total": 44,
+				"passed": 44,
+				"failed": 0,
+				"skipped": 0,
+				"todo": 0
+			},
+			"failedTests": [],
+			"skippedTests": []
+		}
+	],
+	"deterministicRows": [
+		{
+			"id": "CFG-CONTRACT-001",
+			"requirement": "ExtensionState/updateSettings expose the exact bounded orchestration fields and defaults agreed with the backend.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "CFG-FROZEN-001",
+			"requirement": "Every child freezes contextManifest.orchestration ancestry, delegationPolicy, and limits; legacy omissions recover with frozen legacy defaults.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "PROJECTION-CONTRACT-001",
+			"requirement": "Live/list projections expose depth, maxDepth, delegationPolicy, effectiveLimits, and terminal stopReason.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "CFG-POLICY-001",
+			"requirement": "Explicit-request versus proactive delegation policy is enforced and reload-stable.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "CFG-TIMEOUT-001",
+			"requirement": "Validated role-specific timeouts survive reload and produce one deterministic terminal result.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "CFG-BUDGET-001",
+			"requirement": "Output, token, and cost limits stop the root tree deterministically and report the effective stop reason.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "NEST-DEPTH-001",
+			"requirement": "Authorized children may spawn descendants only within configured depth and narrowed authority.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "NEST-CAPACITY-001",
+			"requirement": "One root-wide capacity pool bounds every descendant and releases slots on terminal transitions.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "NEST-CANCEL-001",
+			"requirement": "Cancel, interrupt, and close have deterministic descendant/subtree semantics.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "ROUTING-MAILBOX-001",
+			"requirement": "Mailbox events and terminal results route once to the owning parent with durable cursors and native wait receipts.",
+			"classification": "baseline",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "ROUTING-NESTED-001",
+			"requirement": "Descendant results, messages, waits, and controls use the immediate owning parent and atomic result claims.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "ROUTING-STEERING-RECEIPT-001",
+			"requirement": "Agent messages are delivered at a model-step boundary without steering or answering human prompts, acknowledged only after durable recipient persistence, and recovered on retained follow-up.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "ROUTING-PROGRESS-001",
+			"requirement": "report_progress is a bounded, auto-approved sub-agent-only capability that durably routes once to the immediate parent without result-claim interference.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "RECOVERY-BASE-001",
+			"requirement": "Registry reload and Worker orphan recovery are idempotent on the depth-one baseline.",
+			"classification": "baseline",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "RECOVERY-NESTED-001",
+			"requirement": "Reload reconstructs nested ownership, budgets, mailbox routing, and orphan cleanup without flattening.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "CONTEXT-INHERIT-001",
+			"requirement": "fork_turns inheritance is frozen, credential-free, digest-checked, and authority-narrowed.",
+			"classification": "baseline",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "NEST-COMPLETION-001",
+			"requirement": "A managed parent cannot complete with active descendants or unowned descendant terminal results.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "WORKER-GATE-001",
+			"requirement": "Worker changes remain quarantined until approval-mode policy safely settles them: Ask requires review, Auto/Full Access auto-apply eligible scoped changes, and parent verification gates completion while optional process evidence remains advisory.",
+			"classification": "baseline",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "PROTOCOL-STRICT-001",
+			"requirement": "Managed-agent lifecycle calls survive strict native-provider parsing and parallel tool-call streams.",
+			"classification": "baseline",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "WORKER-NESTED-001",
+			"requirement": "A descendant Worker has an explicit evidence owner and the same review, effect-settlement, and pre-terminal completion checks as a root-owned Worker.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "UI-LIVE-TREE-001",
+			"requirement": "Compact agent task surfaces render nested status and exact navigation while preserving actionable controls, attention, and reload recovery without dashboard noise.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "UI-SETTINGS-BUFFER-001",
+			"requirement": "Approval mode settings bind to cachedState and unrelated live updates cannot erase unsaved edits.",
+			"classification": "baseline",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "UI-SETTINGS-DEBT-001",
+			"requirement": "Settings change-detection regressions contain no skipped or placeholder assertions.",
+			"classification": "known-debt",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "RUNTIME-LEGACY-DEBT-001",
+			"requirement": "Selected legacy Task coverage contains no silently skipped cases.",
+			"classification": "known-debt",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		},
+		{
+			"id": "PROCESS-TREE-CLEANUP-001",
+			"requirement": "Terminal abort is awaited, bounded, idempotent, and removes a real local shell/parent/child process tree.",
+			"classification": "merge-dependent",
+			"status": "FAIL",
+			"detail": "missing deterministic evidence: finalization failure cannot become success"
+		},
+		{
+			"id": "PERSISTENCE-COMPACT-GLOBAL-STATE-001",
+			"requirement": "The downgrade-compatible global-state history mirror is byte-bounded, root-only, newest-first, and cannot mutate authoritative history.",
+			"classification": "merge-dependent",
+			"status": "PASS",
+			"detail": "all declared evidence passed"
+		}
+	],
+	"integrationRows": [
+		{
+			"id": "INT-POLICY-PROVENANCE-001",
+			"requirement": "Real conversation: explicit-only delegation accepts genuine user authorization and rejects model-inferred/protocol-shaped authorization across reload.",
+			"status": "PENDING-INTEGRATION",
+			"detail": "Requires the real conversation/provider boundary to distinguish direct human provenance from generated or replayed records."
+		},
+		{
+			"id": "INT-NESTED-RELOAD-001",
+			"requirement": "Real VS Code host: nested spawn, root-wide capacity, descendant cancellation, crash/reload, immediate-parent mailbox routing, and orphan cleanup.",
+			"status": "PENDING-INTEGRATION",
+			"detail": "Requires extension-host restart and real managed child processes; unit mocks cannot establish process ownership or crash recovery."
+		},
+		{
+			"id": "INT-BUDGET-STOP-001",
+			"requirement": "Real provider: role timeout and root output/token/cost exhaustion stop all descendants once with accurate usage and cost.",
+			"status": "PENDING-INTEGRATION",
+			"detail": "Requires billable provider usage/stream termination and wall-clock enforcement that deterministic offline tests must not simulate as proof."
+		},
+		{
+			"id": "INT-WORKER-GATE-001",
+			"requirement": "Real VS Code host: Ask requires Worker Apply/Discard review while Auto/Full Access automatically apply eligible scoped changes; parent verification and optional process evidence retain their contract across reload.",
+			"status": "PENDING-INTEGRATION",
+			"detail": "Requires the real extension host, terminal ownership, filesystem worktree, approval-mode transitions, UI review, reload, and completion transition."
+		},
+		{
+			"id": "INT-LIVE-TREE-001",
+			"requirement": "Real webview: compact nested task rows update status and attention, open the exact child without disturbing siblings, retain overflow actions, and preserve Settings unsaved edits across background refreshes.",
+			"status": "PENDING-INTEGRATION",
+			"detail": "Requires the live webview/extension message loop and user-visible timing; jsdom does not prove host/webview convergence."
+		},
+		{
+			"id": "INT-PROCESS-CANCEL-001",
+			"requirement": "Real extension-host termination cancels non-cooperative descendant HTTP streams and process trees without leaking capacity.",
+			"status": "PENDING-INTEGRATION",
+			"detail": "Requires OS process ownership and provider abort behavior beyond the in-memory runner seams."
+		},
+		{
+			"id": "INT-STORAGE-WRITERS-001",
+			"requirement": "Multiple real extension hosts/windows cannot corrupt shared agent-control state or double-claim mailbox results.",
+			"status": "PENDING-INTEGRATION",
+			"detail": "Requires multi-process writers against the real global-storage filesystem; the in-process store singleton cannot prove this."
+		},
+		{
+			"id": "INT-GLOBAL-STATE-SIZE-001",
+			"requirement": "Real extension-host global state remains below its configured compatibility budget during managed-agent churn and reload.",
+			"status": "PENDING-INTEGRATION",
+			"detail": "The deterministic compaction tests prove helper behavior only; real VS Code storage serialization and multi-window reload require dedicated host instrumentation."
+		}
+	]
+}

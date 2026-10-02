@@ -52,7 +52,7 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 	try {
 		signal?.throwIfAborted()
 		if (task.abort) throw new Error("Ticket operation cancelled")
-		const store = await TicketStore.forWorkspace(task.cwd)
+		const store = await TicketStore.forWorkspace(task.cwd, undefined, signal)
 		const approveMutation = async (
 			operation: "create" | "update" | "delete",
 			name: string,

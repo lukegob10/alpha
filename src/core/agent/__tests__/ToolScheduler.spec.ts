@@ -1190,6 +1190,132 @@ describe("ToolScheduler", () => {
 		expect(requests[1]!.requestId).not.toBe(requests[0]!.requestId)
 	})
 
+	it.each(["apply_patch", "apply_diff", "edit", "edit_file", "search_replace", "write_to_file", "use_mcp_tool"])(
+		"keeps the full %s review separate from bounded approval metadata",
+		async (toolName) => {
+			const task = makeTask()
+			const message = JSON.stringify({
+				tool: "appliedDiff",
+				path: "large.ts",
+				originalContent: "x".repeat(120_000),
+			})
+			const requestToolApproval = vi.fn(async (_request: ToolApprovalRequest, _reviewMessage?: string) => ({
+				decision: "approve_once" as const,
+			}))
+			const effect = vi.fn()
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			registry.register(
+				descriptor(toolName, "serial", async ({ callbacks }) => {
+					if (await callbacks.askApproval(toolName === "use_mcp_tool" ? "use_mcp_server" : "tool", message)) {
+						effect()
+						callbacks.pushToolResult("saved")
+					}
+				}),
+			)
+			Object.assign(task, { requestToolApproval, cwd: "/workspace" })
+
+			const outcome = await new ToolScheduler({ task, registry, mode: "code", validateCall: () => {} }).run(
+				response({
+					id: "large-review",
+					name: toolName,
+					arguments: { patch: "*** Begin Patch\n*** Add File: large.ts\n+updated\n*** End Patch" },
+				}),
+			)
+
+			expect(outcome.results).toMatchObject([{ status: "success", content: "saved" }])
+			expect(effect).toHaveBeenCalledOnce()
+			expect(requestToolApproval).toHaveBeenCalledOnce()
+			const [request, reviewMessage] = requestToolApproval.mock.calls[0]!
+			expect(request.description!.length).toBeLessThan(100_000)
+			expect(reviewMessage).toBe(message)
+			expect(request.availableDecisions).not.toContain("approve_session")
+		},
+	)
+
+	it.each([
+		["deny", "denied"],
+		["abort", "cancelled"],
+	] as const)("honors %s for a large review without starting the effect", async (decision, status) => {
+		const task = makeTask()
+		const effect = vi.fn()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(
+			descriptor("apply_patch", "serial", async ({ callbacks }) => {
+				if (await callbacks.askApproval("tool", "x".repeat(120_000))) effect()
+			}),
+		)
+		Object.assign(task, { requestToolApproval: vi.fn(async () => ({ decision })), cwd: "/workspace" })
+		const outcome = await new ToolScheduler({ task, registry, mode: "code", validateCall: () => {} }).run(
+			response({
+				id: "declined-review",
+				name: "apply_patch",
+				arguments: { patch: "*** Begin Patch\n*** Add File: large.ts\n+updated\n*** End Patch" },
+			}),
+		)
+		expect(outcome.results).toMatchObject([{ status }])
+		expect(effect).not.toHaveBeenCalled()
+	})
+
+	it("binds session approval to complete review data even when summaries are identical", async () => {
+		const task = makeTask()
+		let message = "a".repeat(8_000)
+		const requestToolApproval = vi.fn(async (_request: ToolApprovalRequest, _reviewMessage?: string) => ({
+			decision: "approve_session" as const,
+		}))
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(
+			descriptor("apply_patch", "serial", async ({ callbacks }) => {
+				if (await callbacks.askApproval("tool", message)) callbacks.pushToolResult("saved")
+			}),
+		)
+		Object.assign(task, { requestToolApproval, cwd: "/workspace" })
+		for (const id of ["first-review", "same-review", "changed-review"]) {
+			if (id === "changed-review") message = "b".repeat(8_000)
+			const outcome = await new ToolScheduler({ task, registry, mode: "code", validateCall: () => {} }).run(
+				response({
+					id,
+					name: "apply_patch",
+					arguments: { patch: "*** Begin Patch\n*** Add File: large.ts\n+updated\n*** End Patch" },
+				}),
+			)
+			expect(outcome.results).toMatchObject([{ status: "success" }])
+		}
+		expect(requestToolApproval).toHaveBeenCalledTimes(2)
+		const [first, changed] = requestToolApproval.mock.calls
+		expect(first[0].description).toBe(changed[0].description)
+		expect(first[1]).not.toBe(changed[1])
+	})
+
+	it.each([6_000, 100_001])("never summarizes a command approval (%s characters)", async (length) => {
+		const task = makeTask()
+		const command = "x".repeat(length)
+		const effect = vi.fn()
+		const requestToolApproval = vi.fn(async (_request: ToolApprovalRequest, _reviewMessage?: string) => ({
+			decision: "approve_once" as const,
+		}))
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(
+			descriptor("reviewable_command", "serial", async ({ callbacks }) => {
+				if (await callbacks.askApproval("command", command)) {
+					effect()
+					callbacks.pushToolResult("executed")
+				}
+			}),
+		)
+		Object.assign(task, { requestToolApproval })
+		const outcome = await new ToolScheduler({ task, registry, mode: "code", validateCall: () => {} }).run(
+			response({ id: "command-review", name: "reviewable_command" }),
+		)
+		if (length > 100_000) {
+			expect(outcome.results).toMatchObject([{ status: "error" }])
+			expect(effect).not.toHaveBeenCalled()
+			expect(requestToolApproval).not.toHaveBeenCalled()
+		} else {
+			expect(outcome.results).toMatchObject([{ status: "success" }])
+			expect(requestToolApproval).toHaveBeenCalledWith(expect.objectContaining({ description: command }), command)
+		}
+	})
+
 	it("includes the effective command working directory in a typed approval request", async () => {
 		const task = makeTask()
 		const workspace = path.join(tmpdir(), "approval-command-workspace")
@@ -3054,6 +3180,145 @@ describe("ToolScheduler", () => {
 		expect(resultIds(task)).toEqual([])
 	})
 
+	it.each([
+		{ status: "success" as const, deferResultCommit: false },
+		{ status: "error" as const, deferResultCommit: false },
+		{ status: "success" as const, deferResultCommit: true },
+		{ status: "error" as const, deferResultCommit: true },
+	])(
+		"preserves a completed $status sibling read when cancellation arrives (deferred=$deferResultCommit)",
+		async ({ status, deferResultCommit }) => {
+			const task = makeTask()
+			const controller = new AbortController()
+			const firstReturned = deferred()
+			const siblingStarted = deferred()
+			const releaseSibling = deferred()
+			const events: AgentTurnEvent[] = []
+			const executions: string[] = []
+			const completedContent = JSON.stringify({ status, message: "Read finished before Stop." })
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			registry.register(
+				descriptor("read", "parallel", async ({ call, callbacks }) => {
+					executions.push(call.id!)
+					if (call.id === "completed") {
+						callbacks.setResultMetadata?.({ status })
+						callbacks.pushToolResult(completedContent)
+						firstReturned.resolve()
+						return
+					}
+					await firstReturned.promise
+					siblingStarted.resolve()
+					await releaseSibling.promise
+					callbacks.pushToolResult("Late sibling output.")
+				}),
+			)
+			const scheduler = new ToolScheduler({
+				task,
+				registry,
+				mode: "code",
+				executionMode: "selective-parallel",
+				maxConcurrency: 2,
+				validateCall: () => {},
+				signal: controller.signal,
+				preserveAbortedResults: true,
+				deferResultCommit,
+				onEvent: (event) => {
+					events.push(event)
+				},
+			})
+			let finished = false
+			const run = scheduler
+				.run(
+					response(
+						{ id: "completed", name: "read" },
+						{ id: "running", name: "read" },
+						{ id: "pending", name: "read" },
+					),
+				)
+				.then((outcome) => {
+					finished = true
+					return outcome
+				})
+
+			await siblingStarted.promise
+			controller.abort()
+			try {
+				await Promise.resolve()
+				expect(finished).toBe(false)
+			} finally {
+				releaseSibling.resolve()
+			}
+			const outcome = await run
+			expect(outcome.status).toBe("aborted")
+			expect(executions).toEqual(["completed", "running"])
+			expect(outcome.results.map((result) => result.status)).toEqual([status, "cancelled", "cancelled"])
+			expect(outcome.results[0].content).toBe(completedContent)
+			expect(outcome.results.slice(1).map((result) => JSON.parse(String(result.content)).status)).toEqual([
+				"cancelled",
+				"cancelled",
+			])
+			if (deferResultCommit) {
+				expect(task.userMessageContent).toEqual([])
+				expect(events.filter((event) => event.type === "tool_result")).toEqual([])
+				await scheduler.commitDeferredResults()
+				await scheduler.commitDeferredResults()
+			}
+			expect(resultIds(task)).toEqual(["completed", "running", "pending"])
+			expect(task.userMessageContent[0]).toMatchObject({
+				content: completedContent,
+				is_error: status === "error",
+			})
+			expect(events.filter((event) => event.type === "tool_result").map((event) => event.status)).toEqual([
+				status,
+				"cancelled",
+				"cancelled",
+			])
+		},
+	)
+
+	it("cancels a prepared read whose terminal result still requires ordered finalization", async () => {
+		const task = makeTask()
+		const controller = new AbortController()
+		const siblingStarted = deferred()
+		const releaseSibling = deferred()
+		const finalize = vi.fn(async () => "Prepared read output.")
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register({
+			...descriptor("read", "parallel", async () => {}),
+			prepareParallelRead: async (_task, call) => ({
+				scope: path.resolve(tmpdir(), "scheduler-fixture", call.id!),
+				run: async () => {
+					if (call.id === "running") {
+						siblingStarted.resolve()
+						await releaseSibling.promise
+					}
+					return finalize
+				},
+			}),
+		})
+		const run = new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			executionMode: "selective-parallel",
+			maxConcurrency: 2,
+			validateCall: () => {},
+			signal: controller.signal,
+			preserveAbortedResults: true,
+			policy: createToolPolicySnapshot({ visibleTools: ["read"], autoApprovalEnabled: true }),
+			readGrant: { enabled: true, workspaceRoot: tmpdir(), showIgnoredFiles: false },
+		}).run(response({ id: "prepared", name: "read" }, { id: "running", name: "read" }))
+
+		await siblingStarted.promise
+		controller.abort()
+		releaseSibling.resolve()
+		const outcome = await run
+		expect(outcome.status).toBe("aborted")
+		expect(outcome.results.map((result) => result.status)).toEqual(["cancelled", "cancelled"])
+		expect(finalize).not.toHaveBeenCalled()
+		expect(resultIds(task)).toEqual(["prepared", "running"])
+	})
+
 	it("publishes cancelled running and pending receipts without changing earlier completed receipts", async () => {
 		const task = makeTask()
 		const controller = new AbortController()
@@ -3187,6 +3452,58 @@ describe("ToolScheduler", () => {
 		expect(executions).toBe(0)
 		expect(resultIds(task)).toEqual(["stale", "unstarted"])
 		expect(task.userMessageContentReady).toBe(true)
+	})
+
+	it("observes a preflight failure before admitting a later mutation", async () => {
+		const task = makeTask()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const execute = vi.fn(async ({ callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
+			callbacks.pushToolResult("must not run")
+		})
+		registry.register(descriptor("mutation", "serial", execute))
+		task.recordToolCallForStopping = vi.fn(async () => {
+			throw new Error("preflight evidence could not be recorded")
+		})
+
+		const outcome = await new ToolScheduler({ task, registry, mode: "code", validateCall: () => {} }).run(
+			response({ id: "invalid", name: "unknown" }, { id: "unstarted", name: "mutation" }),
+		)
+
+		expect(execute).not.toHaveBeenCalled()
+		expect(outcome.status).toBe("failed")
+		expect(outcome.failure).toMatchObject({
+			callId: "invalid",
+			message: "preflight evidence could not be recorded",
+		})
+		expect(outcome.results.map(({ status }) => status)).toEqual(["error", "error"])
+		expect(resultIds(task)).toEqual(["invalid", "unstarted"])
+	})
+
+	it("uses preflight failure evidence to stop the next repeated call", async () => {
+		const task = makeTask()
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const execute = vi.fn(async ({ callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
+			callbacks.pushToolResult("must not run")
+		})
+		registry.register(descriptor("mutation", "serial", execute))
+		let failureObserved = false
+		task.recordToolCallForStopping = vi.fn(async () => {
+			failureObserved = true
+		})
+		task.shouldStopRepeatedToolCall = () => failureObserved
+		const outcome = await new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			validateCall: (call) => {
+				if (call.id === "invalid") throw new Error("invalid arguments")
+			},
+		}).run(response({ id: "invalid", name: "mutation" }, { id: "repeat", name: "mutation" }))
+
+		expect(execute).not.toHaveBeenCalled()
+		expect(outcome.results[1]).toMatchObject({ status: "error" })
+		expect(outcome.results[1].content).toContain("Stopping repeated")
+		expect(resultIds(task)).toEqual(["invalid", "repeat"])
 	})
 
 	it("preserves completed effects when a later transcript fence rejects", async () => {

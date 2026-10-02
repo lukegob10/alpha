@@ -160,6 +160,9 @@ export class BoundedDelegationManager {
 				envelope.budget.timeoutMs,
 			)
 			const result = await this.runner(envelope, controller.signal)
+			if (result.taskId !== envelope.id) {
+				throw new Error(`Sub-agent runner returned task ${result.taskId} for handle ${envelope.id}`)
+			}
 			const cancelled = controller.signal.aborted
 			return {
 				...result,
@@ -290,7 +293,8 @@ export class BoundedDelegationManager {
 
 	private getDefaultStopReason(status: InternalTaskStatus): SubagentStopReason {
 		if (status === "completed" || status === "blocked") return "completed"
-		if (status === "cancelled" || status === "denied") return "cancelled"
+		if (status === "cancelled") return "cancelled"
+		if (status === "denied") return "authority_denied"
 		if (status === "timed_out") return "timeout"
 		if (status === "interrupted") return "interrupted"
 		return "failed"

@@ -14,6 +14,8 @@ vi.mock("fs/promises", () => ({
 		stat: mockStat,
 		readFile: mockReadFile,
 	},
+	stat: mockStat,
+	readFile: mockReadFile,
 }))
 
 // Mock os module

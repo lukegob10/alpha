@@ -253,20 +253,20 @@ export async function runReliabilityScenario(
 		} else {
 			taskId = await host.start("review")
 			result.taskIds.push(taskId)
-			await host.complete(taskId, "review")
+			await host.complete(taskId)
 			for (const phase of ["enhance", "commit", "followup", "completionIdle"] as const) {
 				await measure(phase, async () => {
 					await host.followup(taskId!, phase)
-					await host.complete(taskId!, "review")
+					await host.complete(taskId!)
 				})
 			}
 			for (const item of await repository.verify("followup")) check(`implementation_${item.name}`, item.passed)
 			check("implementation_tests_pass", (await repository.test()).exitCode === 0)
-			const before = await host.captureCompletionReview(taskId)
+			const before = await host.captureCompletedTask(taskId)
 			const requestsAtReview = budget.used
 			const began = performance.now()
-			if (options.scenarioId === "completion-idle") await measure("idle_review", () => delay(35_000))
-			const after = await host.captureCompletionReview(taskId)
+			if (options.scenarioId === "completion-idle") await measure("idle_completion", () => delay(35_000))
+			const after = await host.captureCompletedTask(taskId)
 			await writeEvidence("completion-idle.json", {
 				schemaVersion: 1,
 				runId: options.runId,
@@ -280,8 +280,8 @@ export async function runReliabilityScenario(
 				states: [before, after],
 			})
 			check("idle_makes_no_requests", budget.used === requestsAtReview)
-			check("host_waits_for_review", after.liveTasksById[taskId]?.isWaitingForInput === true)
-			await measure("review_followup", () => host.followup(taskId!, "verify"))
+			check("host_completed_without_acknowledgement", after.liveTasksById[taskId]?.isWaitingForInput === false)
+			await measure("completed_followup", () => host.followup(taskId!, "verify"))
 			await host.complete(taskId)
 			await inspect(taskId)
 			if (options.scenarioId === "completion-admission") {

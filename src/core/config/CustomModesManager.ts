@@ -10,7 +10,12 @@ import { type ModeConfig, type PromptComponent, customModesSettingsSchema, modeC
 
 import { fileExistsAtPath } from "../../utils/fs"
 import { getWorkspacePath } from "../../utils/path"
-import { getLegacyGlobalConfigDirectory } from "../../services/config-paths"
+import {
+	getLegacyGlobalConfigDirectory,
+	getLegacyProjectConfigDirectory,
+	getProjectConfigDirectory,
+	getProjectConfigPathForRead,
+} from "../../services/config-paths"
 import { logger } from "../../utils/logging"
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { ensureSettingsDirectoryExists } from "../../utils/globalContext"
@@ -552,23 +557,26 @@ export class CustomModesManager {
 			const scope = mode.source || "global"
 
 			// Determine the rules folder path
-			let rulesFolderPath: string
+			let rulesFolderPaths: string[]
 			if (scope === "project") {
 				const workspacePath = getWorkspacePath()
 				if (workspacePath) {
-					rulesFolderPath = path.join(workspacePath, ".roo", `rules-${slug}`)
+					rulesFolderPaths = [
+						getProjectConfigDirectory(workspacePath),
+						getLegacyProjectConfigDirectory(workspacePath),
+					].map((directory) => path.join(directory, `rules-${slug}`))
 				} else {
 					return // No workspace, can't delete project rules
 				}
 			} else {
 				// Global scope - use OS home directory
 				const homeDir = os.homedir()
-				rulesFolderPath = path.join(homeDir, ".roo", `rules-${slug}`)
+				rulesFolderPaths = [path.join(homeDir, ".roo", `rules-${slug}`)]
 			}
 
 			// Check if the rules folder exists and delete it
-			const rulesFolderExists = await fileExistsAtPath(rulesFolderPath)
-			if (rulesFolderExists) {
+			for (const rulesFolderPath of rulesFolderPaths) {
+				if (!(await fileExistsAtPath(rulesFolderPath))) continue
 				try {
 					await fs.rm(rulesFolderPath, { recursive: true, force: true })
 					logger.info(`Deleted rules folder for mode ${slug}: ${rulesFolderPath}`)
@@ -650,12 +658,12 @@ export class CustomModesManager {
 				const legacyGlobalConfigDir = getLegacyGlobalConfigDirectory()
 				modeRulesDir = path.join(legacyGlobalConfigDir, `rules-${slug}`)
 			} else {
-				// For project modes, check in workspace .roo directory
+				// Project Alpha rules take priority, with legacy rules remaining readable.
 				const workspacePath = getWorkspacePath()
 				if (!workspacePath) {
 					return false
 				}
-				modeRulesDir = path.join(workspacePath, ".roo", `rules-${slug}`)
+				modeRulesDir = await getProjectConfigPathForRead(workspacePath, `rules-${slug}`)
 			}
 
 			try {
@@ -761,7 +769,7 @@ export class CustomModesManager {
 			// Check for .alpha/rules-{slug}/ directory (or rules-{slug}/ for global)
 			const modeRulesDir = isGlobalMode
 				? path.join(baseDir, `rules-${slug}`)
-				: path.join(baseDir, ".roo", `rules-${slug}`)
+				: await getProjectConfigPathForRead(baseDir, `rules-${slug}`)
 
 			let rulesFiles: RuleFile[] = []
 			try {
@@ -845,18 +853,27 @@ export class CustomModesManager {
 			rulesFolderPath = path.join(baseDir, `rules-${importMode.slug}`)
 		} else {
 			const workspacePath = getWorkspacePath()
-			baseDir = path.join(workspacePath, ".roo")
+			baseDir = getProjectConfigDirectory(workspacePath)
 			rulesFolderPath = path.join(baseDir, `rules-${importMode.slug}`)
 		}
 
-		// Always remove the existing rules folder for this mode if it exists
-		// This ensures that if the imported mode has no rules, the folder is cleaned up
-		try {
-			await fs.rm(rulesFolderPath, { recursive: true, force: true })
-			logger.info(`Removed existing ${source} rules folder for mode ${importMode.slug}`)
-		} catch (error) {
-			// It's okay if the folder doesn't exist
-			logger.debug(`No existing ${source} rules folder to remove for mode ${importMode.slug}`)
+		// Replacing a project mode also clears its legacy rules so fallback reads cannot
+		// resurrect instructions omitted by the imported mode.
+		const existingRulesFolders =
+			source === "project"
+				? [
+						rulesFolderPath,
+						path.join(getLegacyProjectConfigDirectory(getWorkspacePath()), `rules-${importMode.slug}`),
+					]
+				: [rulesFolderPath]
+		for (const existingRulesFolder of existingRulesFolders) {
+			try {
+				await fs.rm(existingRulesFolder, { recursive: true, force: true })
+				logger.info(`Removed existing ${source} rules folder for mode ${importMode.slug}`)
+			} catch (error) {
+				// It's okay if the folder doesn't exist
+				logger.debug(`No existing ${source} rules folder to remove for mode ${importMode.slug}`)
+			}
 		}
 
 		// Only proceed with file creation if there are rules files to import

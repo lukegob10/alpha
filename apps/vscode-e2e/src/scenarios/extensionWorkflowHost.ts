@@ -546,11 +546,10 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		}
 	}
 
-	async complete(taskId: string, outcome: "completed" | "blocked" | "review" = "completed"): Promise<void> {
+	async complete(taskId: string, outcome: "completed" | "blocked" = "completed"): Promise<void> {
 		const expected = this.expectedCompletions.get(taskId) ?? 1
 		await this.until(() => {
 			if ((this.completions.get(taskId) ?? 0) >= expected) {
-				if (outcome === "review") throw new WorkflowFailure("lifecycle", "review_automatically_accepted")
 				if (outcome === "blocked") throw new WorkflowFailure("lifecycle", "unexpected_completed_verification")
 				return true
 			}
@@ -578,7 +577,6 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 				this.approvedAsks.add(ask.ts)
 				task.approveAsk()
 			} else if (ask.ask === "completion_result") {
-				if (outcome === "review") return true
 				if (outcome === "blocked") throw new WorkflowFailure("lifecycle", "unexpected_completed_verification")
 				this.approvedAsks.add(ask.ts)
 				task.approveAsk()
@@ -742,10 +740,14 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 	}
 
 	/** Capture only fixture lifecycle state; never export profile configuration or credentials. */
-	async captureCompletionReview(taskId: string) {
+	async captureCompletedTask(taskId: string) {
 		const task = this.requireTask(taskId)
-		if (task.taskAsk?.ask !== "completion_result" || task.didComplete)
-			throw new WorkflowFailure("lifecycle", "completion_review_lost")
+		if (
+			!task.didComplete ||
+			!task.clineMessages.some((message) => message.say === "completion_result" && !message.partial)
+		)
+			throw new WorkflowFailure("lifecycle", "completed_task_unavailable")
+		await task.waitForTermination()
 		return this.captureTaskState(taskId)
 	}
 

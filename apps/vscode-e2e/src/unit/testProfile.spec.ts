@@ -14,7 +14,7 @@ import {
 	type TestProfileOptions,
 } from "../testProfile"
 
-const VERSION = "1.122.1"
+const VERSION = "1.125.0"
 
 const removeTestArea = async (root: string): Promise<void> => {
 	await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 25 })
@@ -85,7 +85,7 @@ test("normal-host shared data extends existing marked profiles without changing 
 	const old = await prepareTestProfile(persistentOptions(root))
 	const marker = await readMarker(old.profileDir!)
 	await fs.writeFile(path.join(old.userDataDir, "keep.txt"), "existing data")
-	for (const version of ["1.122.1", "1.136.1"]) {
+	for (const version of ["1.125.0", "1.125.0"]) {
 		const options = persistentOptions(root, { vscodeVersion: version, initializeProfile: false, sharedData: true })
 		const current = await prepareTestProfile(options)
 		assert.equal(current.sharedDataDir, path.join(current.profileDir!, version, "shared-data"))
@@ -193,7 +193,7 @@ test("rejects symlink/reparse aliases for explicit roots", async (context) => {
 
 test("rejects nonexact persistent versions before creating persistent state", async (context) => {
 	const root = await createTestArea(context)
-	for (const vscodeVersion of ["stable", "insiders", "1.122", "1.122.1-beta.1", "01.122.1"]) {
+	for (const vscodeVersion of ["stable", "insiders", "1.122", "1.125.0-beta.1", "01.125.0"]) {
 		await assertProfileInvalid(
 			prepareTestProfile(persistentOptions(root, { vscodeVersion })),
 			/exact|major\.minor\.patch/i,

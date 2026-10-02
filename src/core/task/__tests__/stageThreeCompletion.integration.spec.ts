@@ -1163,6 +1163,7 @@ describe("Stage Three durable completion integration", () => {
 		expect(harness.guardTriggered()).toBe(false)
 		expect(harness.requests).toHaveLength(1)
 		expect(Reflect.get(harness.task, "didComplete")).toBe(true)
+		expect(harness.ask).not.toHaveBeenCalled()
 		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
 		expect(harness.store.getVerificationObligations({ parentTaskId: TASK_ID })).toEqual([])
 		expect(harness.store.getAgent(TASK_ID, TASK_ID)?.status).toBe("completed")

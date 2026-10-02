@@ -1072,6 +1072,8 @@ export class ToolRegistry {
 		const aliases = [
 			...new Set(descriptor.aliases.map((alias) => canonicalizeAlias(alias)).filter((alias) => alias !== name)),
 		]
+		// Validate the complete alias set before publishing any executable state.
+		for (const alias of aliases) this.assertAliasAvailable(alias, name)
 		const frozenDescriptor: ToolDescriptor = {
 			...descriptor,
 			name,
@@ -1131,9 +1133,7 @@ export class ToolRegistry {
 		return this.sealed
 	}
 
-	private addAlias(alias: string, canonical: string): void {
-		const normalizedAlias = canonicalizeAlias(alias)
-		const normalizedCanonical = canonicalizeToolName(canonical)
+	private assertAliasAvailable(normalizedAlias: string, normalizedCanonical: string): void {
 		if (!normalizedAlias || normalizedAlias === normalizedCanonical) return
 		const descriptorConflict = this.descriptors.has(normalizedAlias)
 		if (descriptorConflict && normalizedAlias !== normalizedCanonical) {
@@ -1146,6 +1146,13 @@ export class ToolRegistry {
 				`Tool alias "${normalizedAlias}" is already assigned to "${existing}" and cannot resolve to "${normalizedCanonical}".`,
 			)
 		}
+	}
+
+	private addAlias(alias: string, canonical: string): void {
+		const normalizedAlias = canonicalizeAlias(alias)
+		const normalizedCanonical = canonicalizeToolName(canonical)
+		if (!normalizedAlias || normalizedAlias === normalizedCanonical) return
+		this.assertAliasAvailable(normalizedAlias, normalizedCanonical)
 		this.aliases.set(normalizedAlias, normalizedCanonical)
 
 		const descriptor = this.descriptors.get(normalizedCanonical)

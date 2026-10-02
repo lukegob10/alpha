@@ -215,6 +215,38 @@ describe("HTML document viewer lifecycle through host boundaries", () => {
 		expect(panel.webview.html).toContain("img-src data:")
 	})
 
+	it("keeps the hydrated last good document through repeated failed refreshes", async () => {
+		await fs.writeFile(
+			path.join(root, "screen.png"),
+			Buffer.from(
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1cAAAAASUVORK5CYII=",
+				"base64",
+			),
+		)
+		const panel = await open("images.html", "Images", '<img data-image="screen.png" alt="Screen">')
+		const lastGoodHtml = latest(panel).html
+		expect(lastGoodHtml).toContain("data:image/png;base64,")
+		await fs.writeFile(path.join(root, "images.html"), "Invalid document")
+		for (let attempt = 0; attempt < 2; attempt++) {
+			await refresh(panel, () => host.watchers[0].change.fire())
+			expect(latest(panel)).toMatchObject({ stale: true, html: lastGoodHtml })
+		}
+	})
+
+	it("replays a bounded snapshot without disk work for twenty ready handshakes", async () => {
+		const panel = await open("payload.html", "Payload")
+		const snapshot = latest(panel)
+		const diskReads = vi.mocked(fs.open).mock.calls.length
+		const initialPosts = panel.webview.postMessage.mock.calls.length
+		for (let index = 0; index < 20; index++) send(panel, "ready")
+		await nextTurn()
+		const replayed = panel.webview.postMessage.mock.calls.slice(initialPosts)
+		expect(replayed).toHaveLength(20)
+		expect(vi.mocked(fs.open)).toHaveBeenCalledTimes(diskReads)
+		expect(Buffer.byteLength(snapshot.html)).toBe(65)
+		expect(replayed.reduce((bytes, [message]) => bytes + Buffer.byteLength(message.html), 0)).toBe(1_300)
+	})
+
 	it("renders relative PNG chart files and refreshes their images in a nested document", async () => {
 		await fs.mkdir(path.join(root, "reports", "plots"), { recursive: true })
 		const panel = await open(

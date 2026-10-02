@@ -175,9 +175,9 @@ export async function prepareLiveGate(
 	if (!pnpmCliPath || !path.isAbsolute(pnpmCliPath)) throw new Error("Run the live gate through pnpm")
 	for (const script of [
 		"test:unit",
-		"test:smoke:1221",
+		"test:smoke:1250",
 		...(coreCoverage !== "none" ? ["test:core:regressions"] : []),
-		...(coreCoverage === "full" ? ["test:core:1221:run"] : []),
+		...(coreCoverage === "full" ? ["test:core:1250:run"] : []),
 	]) {
 		signal.throwIfAborted()
 		process.stdout.write(`Live gate prerequisite: ${script}\n`)

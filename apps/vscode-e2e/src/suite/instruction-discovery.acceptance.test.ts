@@ -42,8 +42,8 @@ class InstructionDiscoveryScriptedAI {
 suite("Alpha project instruction discovery acceptance", function () {
 	setDefaultSuiteTimeout(this)
 
-	test("loads ancestor AGENTS.override before its standard file and includes cwd guidance on VS Code 1.122.1", async () => {
-		assert.equal(vscode.version, "1.122.1")
+	test("loads ancestor AGENTS.override before its standard file and includes cwd guidance on VS Code 1.125.0", async () => {
+		assert.equal(vscode.version, "1.125.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace, "The runner must supply its owned workspace")

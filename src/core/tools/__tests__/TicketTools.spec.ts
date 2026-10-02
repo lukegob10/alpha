@@ -9,6 +9,35 @@ import { isToolAllowedForMode } from "../validateToolUse"
 describe("native tickets", () => {
 	afterEach(() => vi.restoreAllMocks())
 	it.each(["list_tickets", "read_ticket"] as const)(
+		"cancels %s storage preparation with exactly one terminal result",
+		async (name) => {
+			const cancellation = new AbortController()
+			const reason = new Error("ticket preparation cancelled")
+			vi.spyOn(TicketStore, "forWorkspace").mockImplementation(async (_cwd, _home, signal) => {
+				expect(signal).toBe(cancellation.signal)
+				cancellation.abort(reason)
+				throw reason
+			})
+			const task = { cwd: "/project", abort: false, say: vi.fn() }
+			const callbacks = { setResultMetadata: vi.fn(), pushToolResult: vi.fn(), signal: cancellation.signal }
+			await executeTicketTool({
+				task,
+				callbacks,
+				call: { name, nativeArgs: name === "read_ticket" ? { id: "PM-01" } : {} },
+			} as unknown as ToolExecutionContext)
+			expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "cancelled" })
+			expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
+			expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0])).toEqual({
+				status: "cancelled",
+				message: reason.message,
+			})
+			expect(JSON.parse(task.say.mock.calls[0][1]).ticketActivity).toEqual({
+				operation: name === "read_ticket" ? "read" : "list",
+				state: "cancelled",
+			})
+		},
+	)
+	it.each(["list_tickets", "read_ticket"] as const)(
 		"publishes %s evidence without exposing ticket contents in chat",
 		async (name) => {
 			const ticket = {

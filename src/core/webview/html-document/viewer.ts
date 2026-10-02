@@ -241,7 +241,7 @@ export class HtmlDocumentViewer implements vscode.Disposable {
 				: "missing"
 			entry.snapshot = {
 				revision,
-				html: entry.document?.html,
+				html: entry.snapshot?.html,
 				title: entry.document?.title,
 				error: t(`htmlDocument:errors.${known}`),
 				stale: Boolean(entry.document),

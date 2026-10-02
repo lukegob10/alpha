@@ -1,0 +1,16 @@
+{
+	"phase": "stopped-at-user-request",
+	"statusNote": "Repairs implemented; final certification failed source stability during separate concurrent edits. Fresh stable gates and packaging remain pending.",
+	"finalCertificationEvidence": "artifacts/certification/managed-agent-milestone-evidence.json",
+	"freezeRequested": true,
+	"maxUnitTestWorkers": 2,
+	"referenceHost": "1.125.0",
+	"upstreamCommit": "cb6da58876afed3ede0ab11084f67dd5394ecb48",
+	"coordinatorThreadId": "01a0f9fb-108b-76e2-a86c-8c8ed3a8a9d7",
+	"threads": [
+		{ "lane": "core", "threadId": "01a0fa64-ac7f-7e50-bb45-2ca5255e829e", "hostId": "local" },
+		{ "lane": "tools", "threadId": "01a0fa64-b5d3-7ff1-ba05-cfde76f2802e", "hostId": "local" },
+		{ "lane": "context", "threadId": "01a0fa64-ba8b-7903-95f3-b05675b3a8ae", "hostId": "local" },
+		{ "lane": "ux", "threadId": "01a0fa64-c332-71c3-ad97-cf34122a7ad0", "hostId": "local" }
+	]
+}

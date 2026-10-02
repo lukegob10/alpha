@@ -40,6 +40,7 @@ export class TerminalRegistry {
 			const terminal = this.getTerminalByVSCETerminal(vsceTerminal)
 
 			if (terminal) {
+				if (terminal instanceof Terminal) terminal.notifyTerminalClosed()
 				ShellIntegrationManager.zshCleanupTmpDir(terminal.id)
 			}
 		})

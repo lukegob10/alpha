@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { classifyRequestWorkClass, extractUserRequestText } from "../requestWorkClass"
-import { resolveLookupToolNames, toolNamesReferencedInHistory } from "../lookupToolCatalog"
+import { toolNamesReferencedInHistory } from "../lookupToolCatalog"
 
 describe("classifyRequestWorkClass", () => {
 	it("classifies interrogative location and existence questions as lookup", () => {
@@ -42,7 +42,7 @@ describe("classifyRequestWorkClass", () => {
 		}
 	})
 
-	it("keeps the full catalog when implementation or workflow is requested", () => {
+	it("recognizes implementation and workflow requests", () => {
 		expect(classifyRequestWorkClass("Implement retry backoff in the scheduler.")).toMatchObject({
 			class: "full",
 			reason: "implementation",
@@ -69,7 +69,7 @@ describe("classifyRequestWorkClass", () => {
 		})
 	})
 
-	it("keeps browser interaction requests in the full catalog despite unrelated read-only constraints", () => {
+	it("recognizes browser interactions despite unrelated read-only constraints", () => {
 		const request =
 			"Use Alpha's integrated VS Code browser tools to open that URL, inspect the page, select a category filter, add one synthetic item, and reload it. Do not modify inventory.csv, credentials, or VS Code profile settings."
 
@@ -106,7 +106,7 @@ describe("classifyRequestWorkClass", () => {
 		}
 	})
 
-	it("keeps browser capability and how-to questions narrow", () => {
+	it("classifies browser capability and how-to questions as lookup", () => {
 		for (const request of [
 			"Can you explain what the browser tools do? Do not modify inventory.csv.",
 			"What browser tools are available? Do not edit source files.",
@@ -136,14 +136,12 @@ describe("classifyRequestWorkClass", () => {
 		expect(classifyRequestWorkClass("How do I launch a thread?")).toMatchObject({ class: "lookup" })
 	})
 
-	it("keeps skill and ticket extras without hiding a named skill or ticket on lookup", () => {
+	it("recognizes named skills and tickets in lookup requests", () => {
 		const skill = classifyRequestWorkClass("Where is the exporter registered? Use the pdf-processing skill.")
 		expect(skill).toMatchObject({ class: "lookup", includeSkill: true, includeTickets: false })
-		expect([...resolveLookupToolNames(skill)!]).toEqual(expect.arrayContaining(["skill", "exec_command"]))
 
 		const ticket = classifyRequestWorkClass("Read ticket AB-123 and tell me where the mentioned helper lives.")
 		expect(ticket).toMatchObject({ class: "lookup", includeTickets: true })
-		expect([...resolveLookupToolNames(ticket)!]).toEqual(expect.arrayContaining(["read_ticket", "list_tickets"]))
 	})
 
 	it("recognizes ordinary ticket questions and project references as ticket lookups", () => {
@@ -155,9 +153,6 @@ describe("classifyRequestWorkClass", () => {
 		]) {
 			const decision = classifyRequestWorkClass(text)
 			expect(decision, text).toMatchObject({ class: "lookup", includeTickets: true })
-			expect([...resolveLookupToolNames(decision)!]).toEqual(
-				expect.arrayContaining(["list_tickets", "read_ticket"]),
-			)
 		}
 	})
 
@@ -169,7 +164,7 @@ describe("classifyRequestWorkClass", () => {
 		expect(classifyRequestWorkClass("ok")).toMatchObject({ class: "full", reason: "uncertain" })
 	})
 
-	it("does not narrow managed-child catalogs", () => {
+	it("classifies managed-child work as full", () => {
 		expect(classifyRequestWorkClass("Where is retryLimit defined?", { taskKind: "subagent" })).toMatchObject({
 			class: "full",
 			reason: "subagent",

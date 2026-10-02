@@ -73,7 +73,12 @@ describe("executeCommand", () => {
 		}
 
 		// Create mock process that resolves immediately
-		mockProcess = Promise.resolve()
+		const promise = Promise.resolve()
+		mockProcess = Object.assign(new EventEmitter(), {
+			then: promise.then.bind(promise),
+			catch: promise.catch.bind(promise),
+			finally: promise.finally.bind(promise),
+		})
 		mockProcess.continue = vitest.fn()
 
 		// Create mock terminal with getCurrentWorkingDirectory method
@@ -410,7 +415,12 @@ describe("executeCommand", () => {
 			mockTask.taskKind = "subagent"
 			mockTask.subagentRole = "worker"
 			let resolveProcess!: () => void
-			const backgroundProcess = new Promise<void>((resolve) => (resolveProcess = resolve)) as any
+			const promise = new Promise<void>((resolve) => (resolveProcess = resolve))
+			const backgroundProcess = Object.assign(new EventEmitter(), {
+				then: promise.then.bind(promise),
+				catch: promise.catch.bind(promise),
+				finally: promise.finally.bind(promise),
+			}) as any
 			backgroundProcess.continue = vitest.fn()
 			backgroundProcess.isSettled = false
 			backgroundProcess.hasUnretrievedOutput = vitest.fn(() => true)
@@ -736,7 +746,12 @@ describe("executeCommand", () => {
 
 	it("does not fabricate user feedback for an offscreen command-output response", async () => {
 		let resolveProcess!: () => void
-		const backgroundProcess = new Promise<void>((resolve) => (resolveProcess = resolve)) as any
+		const promise = new Promise<void>((resolve) => (resolveProcess = resolve))
+		const backgroundProcess = Object.assign(new EventEmitter(), {
+			then: promise.then.bind(promise),
+			catch: promise.catch.bind(promise),
+			finally: promise.finally.bind(promise),
+		}) as any
 		backgroundProcess.continue = vitest.fn()
 		mockTask.ask = vitest.fn().mockResolvedValue({ response: "messageResponse" })
 		mockTerminal.runCommand.mockImplementation((_command: string, callbacks: AlphaTerminalCallbacks) => {

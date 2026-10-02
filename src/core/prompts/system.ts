@@ -186,6 +186,7 @@ async function generatePrompt(
 	todoList?: TodoItem[],
 	modelId?: string,
 	skillsManager?: SkillsManager,
+	capturedModePrompts: CustomModePrompts = {},
 ): Promise<SystemPromptFragments> {
 	if (!context) {
 		throw new Error("Extension context is required for generating system prompt")
@@ -206,7 +207,7 @@ async function generatePrompt(
 	const [modesSection, skillsSection] = subagentRole
 		? ["", ""]
 		: await Promise.all([
-				getModesSection(context),
+				getModesSection(context, capturedModePrompts),
 				isPlanMode ? Promise.resolve("") : getSkillsSection(skillsManager, mode as string),
 			])
 
@@ -410,6 +411,7 @@ export const SYSTEM_PROMPT_FRAGMENTS = async (
 		todoList,
 		modelId,
 		skillsManager,
+		customModePrompts ?? {},
 	)
 }
 

@@ -44,7 +44,7 @@ async function createCampaign() {
 	await fs.writeFile(
 		reportPath,
 		JSON.stringify({
-			hostVersion: "1.136.1",
+			hostVersion: "1.125.0",
 			modelId: "gpt-test",
 			effort: "high",
 			requestLimit: 40,
@@ -90,7 +90,7 @@ describe("problem-solving campaign diagnosis", () => {
 			taskSetSha256: "d".repeat(64),
 			plannedTaskIds: ["alpha-scheduler-ordering"],
 			plannedRepetitions: 1,
-			hostVersion: "1.136.1",
+			hostVersion: "1.125.0",
 			modelId: "gpt-test",
 			requestLimit: 40,
 		})

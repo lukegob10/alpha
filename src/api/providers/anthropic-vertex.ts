@@ -15,7 +15,7 @@ import { safeJsonParse } from "@alpha-code/core"
 import { ApiHandlerOptions } from "../../shared/api"
 import { logger } from "../../utils/logging"
 
-import { ApiStream, isApiStreamAbortError } from "../transform/stream"
+import { ApiStream, createApiStreamOutcome, isApiStreamAbortError } from "../transform/stream"
 import { addCacheBreakpoints } from "../transform/caching/vertex"
 import { getModelParams } from "../transform/model-params"
 import { filterNonAnthropicBlocks } from "../transform/anthropic-filter"
@@ -115,6 +115,45 @@ function prependUserInstructionContext(
 	return [{ ...firstMessage, content }, ...messages.slice(1)]
 }
 
+function createAnthropicOutcome(
+	stopReason: string | null | undefined,
+	terminal: boolean,
+	semanticOutputObserved: boolean,
+	metadata?: ApiHandlerCreateMessageMetadata,
+	hasUnterminatedToolCall = false,
+) {
+	let reason: string | undefined
+	if (!terminal) {
+		reason = "Anthropic response ended before message_stop."
+	} else if (stopReason === "max_tokens") {
+		reason = "Anthropic response reached the output token limit (stop_reason=max_tokens)."
+	} else if (stopReason === "model_context_window_exceeded") {
+		reason = "Anthropic response reached the model context window limit."
+	} else if (hasUnterminatedToolCall) {
+		reason = "Anthropic response stopped before its streamed tool call was complete."
+	} else if (!stopReason) {
+		reason = "Anthropic response did not include a terminal stop reason."
+	} else if (
+		stopReason !== "end_turn" &&
+		stopReason !== "stop_sequence" &&
+		stopReason !== "tool_use" &&
+		stopReason !== "refusal" &&
+		stopReason !== "pause_turn"
+	) {
+		reason = `Anthropic response ended with an unrecognized stop reason (${stopReason}).`
+	}
+
+	return createApiStreamOutcome({
+		status: reason ? "incomplete" : "completed",
+		terminal,
+		semanticOutputObserved,
+		...(reason ? { reason, retryable: !terminal && !semanticOutputObserved } : {}),
+		...(!reason && stopReason === "pause_turn" ? { requiresContinuation: true } : {}),
+		requestId: metadata?.requestId,
+		attemptId: metadata?.attemptId,
+	})
+}
+
 // A model ID supplied by the gateway may be newer than the static catalog. Keep
 // the opaque ID usable while withholding reasoning capabilities until the model
 // has an explicitly verified entry in the catalog.
@@ -128,6 +167,7 @@ const UNKNOWN_VERTEX_CLAUDE_MODEL_INFO: ModelInfo = {
 // https://docs.anthropic.com/en/api/claude-on-vertex-ai
 export class AnthropicVertexHandler extends BaseProvider implements SingleCompletionHandler {
 	protected options: ApiHandlerOptions
+	readonly streamCapabilities = { lifecycle: true } as const
 	private client?: AnthropicVertex
 	private directClient?: AnthropicVertex
 	private readonly vertexGatewaySettings?: VertexGatewaySettings
@@ -778,6 +818,8 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 				metadata?.signal,
 			)
 			let emittedAnyStreamChunk = false
+			let semanticOutputObserved = false
+			let stopReason: string | null | undefined
 			const activeToolUseBlocks = new Map<
 				number,
 				{
@@ -807,6 +849,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 					for (const [index, block] of response.content.entries()) {
 						switch (block.type) {
 							case "text": {
+								semanticOutputObserved ||= Boolean(block.text)
 								if (index > 0) {
 									yield { type: "text", text: "\n" }
 								}
@@ -814,6 +857,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 								break
 							}
 							case "thinking": {
+								semanticOutputObserved ||= Boolean(block.thinking)
 								this.lastThoughtSignature = block.signature || undefined
 								if (index > 0) {
 									yield { type: "reasoning", text: "\n" }
@@ -822,6 +866,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 								break
 							}
 							case "tool_use": {
+								semanticOutputObserved = true
 								const toolUseBlock = block as Anthropic.Messages.ToolUseBlock & { input?: unknown }
 								yield {
 									type: "tool_call",
@@ -835,6 +880,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 						}
 					}
 
+					yield createAnthropicOutcome(response.stop_reason, true, semanticOutputObserved, metadata)
 					return
 				}
 
@@ -861,6 +907,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 							break
 						}
 						case "message_delta": {
+							stopReason = chunk.delta?.stop_reason ?? stopReason
 							yield {
 								type: "usage",
 								inputTokens: 0,
@@ -869,9 +916,21 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 
 							break
 						}
+						case "message_stop": {
+							metadata?.signal?.throwIfAborted()
+							yield createAnthropicOutcome(
+								stopReason,
+								true,
+								semanticOutputObserved,
+								metadata,
+								activeToolUseBlocks.size > 0,
+							)
+							return
+						}
 						case "content_block_start": {
 							switch (chunk.content_block!.type) {
 								case "text": {
+									semanticOutputObserved ||= Boolean(chunk.content_block.text)
 									if (chunk.index! > 0) {
 										yield { type: "text", text: "\n" }
 									}
@@ -880,6 +939,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 									break
 								}
 								case "thinking": {
+									semanticOutputObserved ||= Boolean(chunk.content_block.thinking)
 									this.lastThoughtSignature = chunk.content_block.signature || undefined
 									if (chunk.index! > 0) {
 										yield { type: "reasoning", text: "\n" }
@@ -889,6 +949,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 									break
 								}
 								case "tool_use": {
+									semanticOutputObserved = true
 									const toolUseBlock = chunk.content_block as Anthropic.Messages.ToolUseBlock & {
 										input?: unknown
 									}
@@ -916,10 +977,12 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 						case "content_block_delta": {
 							switch (chunk.delta!.type) {
 								case "text_delta": {
+									semanticOutputObserved ||= Boolean(chunk.delta.text)
 									yield { type: "text", text: chunk.delta!.text }
 									break
 								}
 								case "thinking_delta": {
+									semanticOutputObserved ||= Boolean(chunk.delta.thinking)
 									yield { type: "reasoning", text: (chunk.delta as any).thinking }
 									break
 								}
@@ -928,6 +991,7 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 									break
 								}
 								case "input_json_delta": {
+									semanticOutputObserved ||= Boolean(chunk.delta.partial_json)
 									const activeToolUseBlock = activeToolUseBlocks.get(chunk.index!)
 									if (activeToolUseBlock) {
 										activeToolUseBlock.sawInputJsonDelta = true
@@ -972,6 +1036,9 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 					}
 				}
 
+				metadata?.signal?.throwIfAborted()
+				// A stop reason alone cannot replace the protocol's final message_stop event.
+				yield createAnthropicOutcome(stopReason, false, semanticOutputObserved, metadata)
 				return
 			} catch (error) {
 				if (isApiStreamAbortError(error, metadata?.signal)) {
@@ -987,7 +1054,12 @@ export class AnthropicVertexHandler extends BaseProvider implements SingleComple
 					continue
 				}
 
-				if (!didRetryWithoutPromptCache && usePromptCache && this.isPromptCachingDisabledError(error)) {
+				if (
+					!didRetryWithoutPromptCache &&
+					!emittedAnyStreamChunk &&
+					usePromptCache &&
+					this.isPromptCachingDisabledError(error)
+				) {
 					didRetryWithoutPromptCache = true
 					usePromptCache = false
 					continue

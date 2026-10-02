@@ -680,8 +680,10 @@ describe("ToolScheduler progress observation", () => {
 		})
 		let effects = 0
 		let stopped = false
+		const observed: string[] = []
 		host.shouldStopRepeatedToolCall = () => stopped
 		host.recordToolCallForStopping = (toolName, args, status, _category, result) => {
+			observed.push(result!.callId)
 			stopped =
 				detector.recordOutcome({
 					toolName,
@@ -707,6 +709,8 @@ describe("ToolScheduler progress observation", () => {
 			validateCall: () => {},
 		}).run(calls("execute_command", 24))
 		expect(effects).toBe(12)
+		expect(observed).toEqual(calls("execute_command", 12).map((call) => call.id))
+		expect(stopped).toBe(true)
 		expect(outcome.results).toHaveLength(24)
 		expect(outcome.results[0]?.content).toEqual("check failed")
 		expect(outcome.results.slice(0, 12).every((result) => result.content === "check failed")).toBe(true)
@@ -831,8 +835,77 @@ describe("ToolScheduler progress observation", () => {
 		releases[1].resolve()
 		await pending
 		expect(effects).toEqual(["call-0", "call-1", "call-2"])
-		expect(observed.slice(0, 3)).toEqual(["call-0", "call-1", "call-2"])
+		expect(observed).toEqual(["call-0", "call-1", "call-2"])
+		expect(stopped).toBe(true)
 		expect(receiptIds(host)).toEqual(calls("read", 8).map((call) => call.id))
+	})
+
+	it.each([
+		["admission", false],
+		["execution recheck", false],
+		["admission", true],
+		["execution recheck", true],
+	] as const)(
+		"retains the %s repetition skip receipt without another observation (deferred=%s)",
+		async (gate, deferResultCommit) => {
+			const host = makeHost()
+			const observe = vi.fn()
+			host.recordToolCallForStopping = observe
+			let stopChecks = 0
+			host.shouldStopRepeatedToolCall = () => {
+				stopChecks += 1
+				return gate === "admission" || stopChecks >= 2
+			}
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			const execute = vi.fn(async ({ callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
+				callbacks.pushToolResult("must not run")
+			})
+			registry.register(descriptor("read", execute, "parallel"))
+
+			const scheduler = new ToolScheduler({
+				executionHost: host,
+				registry,
+				mode: "code",
+				validateCall: () => {},
+				deferResultCommit,
+			})
+			const outcome = await scheduler.run(calls("read", 1))
+			if (deferResultCommit) {
+				expect(receiptIds(host)).toEqual([])
+				await scheduler.commitDeferredResults()
+			}
+
+			expect(execute).not.toHaveBeenCalled()
+			expect(observe).not.toHaveBeenCalled()
+			expect(outcome.results[0]).toMatchObject({ status: "error" })
+			expect(outcome.results[0].content).toContain("Stopping repeated")
+			expect(receiptIds(host)).toEqual(["call-0"])
+		},
+	)
+
+	it("observes real handler output even when its text resembles a repetition skip", async () => {
+		const host = makeHost()
+		const observe = vi.fn()
+		host.recordToolCallForStopping = observe
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const content = "Stopping repeated mutation call; use existing evidence or change the approach."
+		registry.register(
+			descriptor("mutation", async ({ callbacks }) => {
+				callbacks.setResultMetadata?.({ status: "error" })
+				callbacks.pushToolResult(content)
+			}),
+		)
+
+		const outcome = await new ToolScheduler({
+			executionHost: host,
+			registry,
+			mode: "code",
+			validateCall: () => {},
+		}).run(calls("mutation", 1))
+
+		expect(observe).toHaveBeenCalledOnce()
+		expect(observe.mock.calls[0][4]).toBe(outcome.results[0])
+		expect(receiptIds(host)).toEqual(["call-0"])
 	})
 
 	it("retains completed effects and prevents later effects when observing evidence fails", async () => {

@@ -30,7 +30,7 @@ test("missing source and builds remain explicit; operational IDs and model selec
 	const root = await mkdtemp(path.join(tmpdir(), "alpha-identity-"))
 	const config: CampaignConfig = {
 		id: "first",
-		hosts: [{ version: "1.122.1" }],
+		hosts: [{ version: "1.125.0" }],
 		scenarioIds: ["read-only"],
 		samples: 1,
 		provider: { mode: "scripted" },
@@ -58,7 +58,7 @@ test("extension build identity includes native and external runtime files, inclu
 	const root = await mkdtemp(path.join(tmpdir(), "alpha-runtime-identity-"))
 	const config: CampaignConfig = {
 		id: "runtime",
-		hosts: [{ version: "1.122.1" }],
+		hosts: [{ version: "1.125.0" }],
 		scenarioIds: ["read-only"],
 		samples: 1,
 		provider: { mode: "scripted" },

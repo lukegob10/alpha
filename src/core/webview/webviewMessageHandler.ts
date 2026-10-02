@@ -2,7 +2,12 @@ import { safeWriteJson } from "../../utils/safeWriteJson"
 import * as path from "path"
 import * as os from "os"
 import * as fs from "fs/promises"
-import { getLegacyConfigDirectoriesForCwd } from "../../services/config-paths/index.js"
+import {
+	getConfigDirectoriesForCwd,
+	getProjectConfigDirectory,
+	getProjectConfigPathForRead,
+	getProjectMcpConfigPath,
+} from "../../services/config-paths/index.js"
 import pWaitFor from "p-wait-for"
 import * as vscode from "vscode"
 
@@ -17,6 +22,7 @@ import {
 	type ReorderQueuedMessagePayload,
 	type ChatCommand,
 	type ChatCommandErrorCode,
+	type ChatCommandResult,
 	TelemetryEventName,
 	AlphaCodeSettings,
 	ExperimentId,
@@ -256,6 +262,7 @@ export const webviewMessageHandler = async (
 		command: ChatCommand,
 		status: "accepted" | "rejected",
 		errorCode?: ChatCommandErrorCode,
+		deliveryState?: ChatCommandResult["deliveryState"],
 	) => {
 		if (!message.requestId) return
 		await provider.postMessageToWebview({
@@ -268,6 +275,7 @@ export const webviewMessageHandler = async (
 				command,
 				status,
 				...(errorCode ? { errorCode } : {}),
+				...(deliveryState ? { deliveryState } : {}),
 			},
 		})
 	}
@@ -751,8 +759,25 @@ export const webviewMessageHandler = async (
 					await restoreDraft("the completed task is no longer available")
 					break
 				}
+				const postAcceptedResumeResult = async () => {
+					const requestId = message.requestId
+					const queue = task.messageQueueService
+					const isRetainedInputPending = () =>
+						!!requestId &&
+						!task.apiConversationHistory?.some((entry) => entry.queued_message_ids?.includes(requestId)) &&
+						!!queue?.messages.some((entry) => entry.id === requestId)
+					let deliveryState: ChatCommandResult["deliveryState"]
+					if (queue && isRetainedInputPending()) {
+						// Admission remains accepted when preparation releases its selected
+						// input. Publish the owning queue before acknowledging that recovery.
+						await provider.postTaskQueueToWebview(task.taskId, queue.visibleMessages)
+						// Consumption or a new claim can advance while projection is in flight.
+						if (isRetainedInputPending()) deliveryState = "queued"
+					}
+					await postChatCommandResult("resumeCompletedTask", "accepted", undefined, deliveryState)
+				}
 				if (message.requestId && (await task.hasAcceptedQueuedUserMessage?.(message.requestId))) {
-					await postChatCommandResult("resumeCompletedTask", "accepted")
+					await postAcceptedResumeResult()
 					break
 				}
 				try {
@@ -787,7 +812,7 @@ export const webviewMessageHandler = async (
 				await acknowledgeAsyncUserInput(provider, task, message.asyncUserInputMessageTs).catch(() => {
 					provider.log("[webviewMessageHandler] Accepted follow-up's async card annotation remains pending")
 				})
-				await postChatCommandResult("resumeCompletedTask", "accepted")
+				await postAcceptedResumeResult()
 			}
 			break
 		case "startBlankTask":
@@ -1533,15 +1558,17 @@ export const webviewMessageHandler = async (
 			}
 
 			const workspaceFolder = getCurrentCwd()
-			const legacyConfigDir = path.join(workspaceFolder, ".roo")
-			const mcpPath = path.join(legacyConfigDir, "mcp.json")
 
 			try {
-				await fs.mkdir(legacyConfigDir, { recursive: true })
-				const exists = await fileExistsAtPath(mcpPath)
-
-				if (!exists) {
-					await safeWriteJson(mcpPath, { mcpServers: {} }, { prettyPrint: true })
+				const mcpPath = await getProjectMcpConfigPath(workspaceFolder)
+				await fs.mkdir(path.dirname(mcpPath), { recursive: true })
+				try {
+					await fs.writeFile(mcpPath, JSON.stringify({ mcpServers: {} }, null, 2), {
+						encoding: "utf-8",
+						flag: "wx",
+					})
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
 				}
 
 				await openFile(mcpPath)
@@ -1988,7 +2015,7 @@ export const webviewMessageHandler = async (
 		}
 		case "refreshCustomTools": {
 			try {
-				const toolDirs = getLegacyConfigDirectoriesForCwd(getCurrentCwd()).map((dir) => path.join(dir, "tools"))
+				const toolDirs = getConfigDirectoriesForCwd(getCurrentCwd()).map((dir) => path.join(dir, "tools"))
 				await customToolRegistry.loadFromDirectories(toolDirs)
 
 				await provider.postMessageToWebview({
@@ -2325,9 +2352,9 @@ export const webviewMessageHandler = async (
 				if (scope === "project") {
 					const workspacePath = getWorkspacePath()
 					if (workspacePath) {
-						rulesFolderPath = path.join(workspacePath, ".roo", `rules-${message.slug}`)
+						rulesFolderPath = await getProjectConfigPathForRead(workspacePath, `rules-${message.slug}`)
 					} else {
-						rulesFolderPath = path.join(".roo", `rules-${message.slug}`)
+						break
 					}
 				} else {
 					// Global scope - use OS home directory
@@ -3265,7 +3292,7 @@ export const webviewMessageHandler = async (
 						vscode.window.showErrorMessage(t("common:errors.no_workspace_for_project_command"))
 						break
 					}
-					commandsDir = path.join(workspaceRoot, ".roo", "commands")
+					commandsDir = path.join(getProjectConfigDirectory(workspaceRoot), "commands")
 				}
 
 				// Ensure the commands directory exists

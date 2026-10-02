@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { isToolAllowed } from "../../agent/ToolPolicy"
+import { createToolPolicySnapshot, isToolAllowed } from "../../agent/ToolPolicy"
 import { buildNativeToolsArrayWithRestrictions, type BuildToolsOptions } from "../../task/build-tools"
 import { TaskToolCatalogCache } from "../../task/TaskToolCatalogCache"
 
@@ -32,7 +32,62 @@ function options(overrides: Partial<BuildToolsOptions> = {}): BuildToolsOptions 
 	}
 }
 
-describe("lookup catalog preset", () => {
+describe("request-independent tool authority", () => {
+	it.each(["openai", "vscode-lm", "vertex"] as const)(
+		"keeps authorized edits available across request wording and approval modes on %s",
+		async (apiProvider) => {
+			for (const approvalMode of ["ask", "auto", "bypass"] as const) {
+				const base = options({
+					apiConfiguration: { apiProvider },
+					includeAllToolsWithRestrictions: apiProvider === "vertex",
+					approvalMode,
+				})
+				const implementation = await buildNativeToolsArrayWithRestrictions({
+					...base,
+					userRequestText: "Write the exported document to reports/export.md.",
+				})
+				for (const userRequestText of [
+					"Use the api-export skill.",
+					"Use the api-export skill to retrieve the API export and save the document.",
+					"Can you retrieve the API export and save the document?",
+					"Where is retryLimit defined?",
+				]) {
+					const result = await buildNativeToolsArrayWithRestrictions({ ...base, userRequestText })
+					expect(result.surface?.isCallable("apply_patch"), `${approvalMode}: ${userRequestText}`).toBe(true)
+					expect(namesOf(result.tools)).toEqual(namesOf(implementation.tools))
+					expect(result.digest).toBe(implementation.digest)
+					expect(result.surface?.policy.approval.mode).toBe(approvalMode)
+				}
+			}
+		},
+	)
+
+	it.each(["openai", "vscode-lm", "vertex"] as const)(
+		"preserves mode, disabled-tool, captured-policy, and child authority limits on %s",
+		async (apiProvider) => {
+			for (const restrictions of [
+				{ mode: "architect" },
+				{ disabledTools: ["apply_patch"] },
+				{ policy: createToolPolicySnapshot({ visibleTools: ["exec_command", "skill"] }) },
+				{ taskKind: "subagent", allowedToolNames: ["exec_command", "skill"] },
+			] satisfies Partial<BuildToolsOptions>[]) {
+				for (const userRequestText of ["Use the api-export skill.", "Write the exported document."]) {
+					const result = await buildNativeToolsArrayWithRestrictions(
+						options({
+							apiConfiguration: { apiProvider },
+							includeAllToolsWithRestrictions: apiProvider === "vertex",
+							approvalMode: "bypass",
+							userRequestText,
+							...restrictions,
+						}),
+					)
+					expect(result.surface?.isCallable("apply_patch")).toBe(false)
+					expect(isToolAllowed(result.surface?.policy, "apply_patch")).toBe(false)
+				}
+			}
+		},
+	)
+
 	it("builds a diagnostic surface with only the redacted evidence reader", async () => {
 		const getMcpHub = vi.fn(() => {
 			throw new Error("diagnostic sessions must not inspect MCP state")
@@ -63,20 +118,22 @@ describe("lookup catalog preset", () => {
 		expect(getMcpHub).not.toHaveBeenCalled()
 	})
 
-	it("advertises only lookup-sized native names for a question-only request", async () => {
+	it("keeps authorized workflow tools available for a question-only request", async () => {
 		const result = await buildNativeToolsArrayWithRestrictions(
 			options({ userRequestText: "Where is retryLimit defined?" }),
 		)
-		expect(namesOf(result.tools)).toEqual(["exec_command", "request_user_input"])
+		expect(namesOf(result.tools)).toEqual(
+			expect.arrayContaining(["exec_command", "request_user_input", "apply_patch"]),
+		)
 		expect(result.surface?.isCallable("request_user_input")).toBe(true)
-		expect(result.surface?.isCallable("spawn_agent")).toBe(false)
-		expect(result.surface?.isCallable("update_todo_list")).toBe(false)
+		expect(result.surface?.isCallable("spawn_agent")).toBe(true)
+		expect(result.surface?.isCallable("update_todo_list")).toBe(true)
 		expect(result.surface?.isCallable("attempt_completion")).toBe(false)
 		expect(result.surface?.isCallable("write_to_file")).toBe(false)
-		expect(result.surface?.isCallable("skill")).toBe(false)
-		expect(result.surface?.isCallable("list_tickets")).toBe(false)
-		expect(result.surface?.resolve("spawn_agent")).toBeUndefined()
-		expect(isToolAllowed(result.surface?.policy, "spawn_agent")).toBe(false)
+		expect(result.surface?.isCallable("skill")).toBe(true)
+		expect(result.surface?.isCallable("list_tickets")).toBe(true)
+		expect(result.surface?.resolve("spawn_agent")).toBeDefined()
+		expect(isToolAllowed(result.surface?.policy, "spawn_agent")).toBe(true)
 		expect(result.surface?.isCallable("exec_command")).toBe(true)
 		for (const name of ["read_file", "list_files", "search_files", "codebase_search"])
 			expect(result.surface?.isCallable(name), name).toBe(false)
@@ -86,7 +143,8 @@ describe("lookup catalog preset", () => {
 		const result = await buildNativeToolsArrayWithRestrictions(
 			options({ userRequestText: "Where is retryLimit defined?", disabledTools: ["request_user_input"] }),
 		)
-		expect(namesOf(result.tools)).toEqual(["exec_command"])
+		expect(namesOf(result.tools)).toContain("exec_command")
+		expect(namesOf(result.tools)).not.toContain("request_user_input")
 		expect(result.surface?.isCallable("request_user_input")).toBe(false)
 	})
 
@@ -102,7 +160,9 @@ describe("lookup catalog preset", () => {
 		const command = result.tools.find((tool) => tool.type === "function" && tool.function.name === "exec_command")
 
 		expect(command).toBeDefined()
-		expect(namesOf(result.tools)).toEqual(["exec_command", "request_user_input"])
+		expect(namesOf(result.tools)).toEqual(
+			expect.arrayContaining(["exec_command", "request_user_input", "apply_patch"]),
+		)
 		expect(result.surface?.isCallable("request_user_input")).toBe(true)
 		expect(result.surface?.isCallable("exec_command")).toBe(true)
 		expect(isToolAllowed(result.surface?.policy, "exec_command")).toBe(true)
@@ -129,9 +189,9 @@ describe("lookup catalog preset", () => {
 		const ticketTools = ["list_tickets", "read_ticket", "create_ticket", "update_ticket", "delete_ticket"]
 		expect(names).toEqual(expect.arrayContaining(ticketTools))
 		for (const name of ticketTools) expect(result.surface?.isCallable(name)).toBe(true)
-		expect(names).not.toContain("spawn_agent")
+		expect(names).toContain("spawn_agent")
 		expect(names).not.toContain("write_to_file")
-		expect(result.surface?.isCallable("spawn_agent")).toBe(false)
+		expect(result.surface?.isCallable("spawn_agent")).toBe(true)
 		expect(result.surface?.isCallable("write_to_file")).toBe(false)
 	})
 
@@ -307,13 +367,15 @@ describe("lookup catalog preset", () => {
 		const result = await buildNativeToolsArrayWithRestrictions(
 			options({ provider, userRequestText: "What MCP resources does docs provide?" }),
 		)
-		expect(namesOf(result.tools)).toEqual([
-			"exec_command",
-			"list_mcp_resource_templates",
-			"list_mcp_resources",
-			"read_mcp_resource",
-			"request_user_input",
-		])
+		expect(namesOf(result.tools)).toEqual(
+			expect.arrayContaining([
+				"exec_command",
+				"list_mcp_resource_templates",
+				"list_mcp_resources",
+				"read_mcp_resource",
+				"request_user_input",
+			]),
+		)
 	})
 
 	it("does not advertise legacy checklist schemas on managed children", async () => {
@@ -474,7 +536,7 @@ describe("lookup catalog preset", () => {
 		expect(result.surface?.isCallable("attempt_completion")).toBe(false)
 	})
 
-	it("does not guess a slim catalog when the request is uncertain", async () => {
+	it("keeps authorized Code tools available when the request is uncertain", async () => {
 		const result = await buildNativeToolsArrayWithRestrictions(
 			options({ userRequestText: "Handle the scheduler." }),
 		)
@@ -482,7 +544,7 @@ describe("lookup catalog preset", () => {
 		expect(result.surface?.isCallable("write_to_file")).toBe(false)
 	})
 
-	it("omits unused workflow schemas on Vertex lookup turns", async () => {
+	it("keeps authorized workflow schemas callable on Vertex lookup turns", async () => {
 		const result = await buildNativeToolsArrayWithRestrictions(
 			options({
 				apiConfiguration: { apiProvider: "vertex" },
@@ -490,18 +552,23 @@ describe("lookup catalog preset", () => {
 				userRequestText: "Where is retryLimit defined?",
 			}),
 		)
-		expect(namesOf(result.tools)).toEqual(["exec_command", "request_user_input"])
-		expect([...(result.allowedFunctionNames ?? [])].sort()).toEqual(["exec_command", "request_user_input"])
-		expect(result.surface?.isCallable("spawn_agent")).toBe(false)
-		expect(namesOf(result.tools)).not.toContain("spawn_agent")
+		expect(namesOf(result.tools)).toEqual(
+			expect.arrayContaining(["exec_command", "request_user_input", "apply_patch"]),
+		)
+		expect(result.allowedFunctionNames).toEqual(
+			expect.arrayContaining(["exec_command", "request_user_input", "apply_patch"]),
+		)
+		expect(result.surface?.isCallable("spawn_agent")).toBe(true)
+		expect(namesOf(result.tools)).toContain("spawn_agent")
 	})
 
-	it("keeps historical Vertex declarations visible but not callable on a later lookup", async () => {
+	it("keeps disabled historical Vertex declarations visible but not callable on a later lookup", async () => {
 		const result = await buildNativeToolsArrayWithRestrictions(
 			options({
 				apiConfiguration: { apiProvider: "vertex" },
 				includeAllToolsWithRestrictions: true,
 				userRequestText: "Where is retryLimit defined?",
+				disabledTools: ["spawn_agent"],
 				discoveryHistory: [
 					{
 						role: "assistant",
@@ -516,7 +583,7 @@ describe("lookup catalog preset", () => {
 		expect(result.surface?.isCallable("exec_command")).toBe(true)
 	})
 
-	it("widens at a later step when the captured user text becomes an implementation request", async () => {
+	it("keeps the same catalog when a lookup becomes an implementation request", async () => {
 		const cache = new TaskToolCatalogCache()
 		const lookup = await buildNativeToolsArrayWithRestrictions(
 			options({ catalogCache: cache, userRequestText: "Where is retryLimit defined?" }),
@@ -527,21 +594,22 @@ describe("lookup catalog preset", () => {
 		expect(lookup.surface?.isCallable("write_to_file")).toBe(false)
 		expect(implement.surface?.isCallable("write_to_file")).toBe(false)
 		expect(implement.surface?.isCallable("apply_patch")).toBe(true)
-		expect(lookup.digest).not.toBe(implement.digest)
+		expect(lookup.surface?.isCallable("apply_patch")).toBe(true)
+		expect(lookup.digest).toBe(implement.digest)
 	})
 
-	it("does not grant write tools when a Plan-mode lookup intersects the inspect-only allow-list", async () => {
+	it("does not grant write tools on a Plan-mode lookup", async () => {
 		const result = await buildNativeToolsArrayWithRestrictions(
 			options({ mode: "architect", userRequestText: "Where is retryLimit defined?" }),
 		)
-		expect(namesOf(result.tools)).toEqual(["exec_command", "request_user_input"].sort())
+		expect(namesOf(result.tools)).toEqual(expect.arrayContaining(["exec_command", "request_user_input"]))
 		for (const name of ["read_file", "list_files", "search_files", "codebase_search"])
 			expect(result.surface?.isCallable(name), name).toBe(false)
 		expect(result.surface?.isCallable("write_to_file")).toBe(false)
-		expect(result.surface?.isCallable("spawn_agent")).toBe(false)
+		expect(result.surface?.isCallable("apply_patch")).toBe(false)
 	})
 
-	it("does not narrow managed-child catalogs from lookup classification", async () => {
+	it("keeps managed-child catalogs independent of lookup wording", async () => {
 		const result = await buildNativeToolsArrayWithRestrictions(
 			options({
 				taskKind: "subagent",

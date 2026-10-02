@@ -81,6 +81,56 @@ beforeEach(() => {
 })
 
 describe("exact recent working set", () => {
+	it.each(["result_before_call", "duplicate_result", "duplicate_call"])(
+		"rejects malformed complete-looking transactions before compaction (%s)",
+		async (malformation) => {
+			const call: ApiMessage = {
+				role: "assistant",
+				content: [{ type: "tool_use", id: "call", name: "read_file", input: { path: "a.ts" } }],
+			}
+			const result: ApiMessage = {
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "call", content: "contents" }],
+			}
+			const transaction =
+				malformation === "result_before_call"
+					? [result, call]
+					: malformation === "duplicate_result"
+						? [
+								call,
+								{
+									...result,
+									content: [
+										...(result.content as Anthropic.Messages.ContentBlockParam[]),
+										...(result.content as Anthropic.Messages.ContentBlockParam[]),
+									],
+								},
+							]
+						: [
+								{
+									...call,
+									content: [
+										...(call.content as Anthropic.Messages.ContentBlockParam[]),
+										...(call.content as Anthropic.Messages.ContentBlockParam[]),
+									],
+								},
+								result,
+							]
+			const messages: ApiMessage[] = [
+				{ role: "user", content: "Initial task" },
+				...transaction,
+				{ role: "user", content: "Continue" },
+			]
+			const provider = new SummaryProvider()
+			expect(hasToolCallResultIntegrity(messages)).toBe(false)
+			const compacted = await summarizeConversation(options(messages, provider))
+			expect(compacted.status).toBe("exhausted")
+			expect(compacted.messages).toBe(messages)
+			expect(compacted.diagnostic?.reason).toBe("invalid_history")
+			expect(provider.requests).toEqual([])
+		},
+	)
+
 	it("does not request a summary when mandatory input consumes its entire budget", async () => {
 		const provider = new SummaryProvider()
 		const messages = history()

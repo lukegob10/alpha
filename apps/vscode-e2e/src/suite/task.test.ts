@@ -2,11 +2,13 @@ import * as assert from "assert"
 
 import { AlphaCodeEventName, type AlphaMessage } from "@alpha-code/types"
 
-import { waitFor, waitUntilCompleted } from "./utils"
+import { waitFor } from "./utils"
 import { setDefaultSuiteTimeout } from "./test-utils"
+import { withBoundedFixtureCleanup } from "./proportional-context-support"
 
 class TaskScriptedAI {
 	readonly id = "task-e2e"
+	removeFromCache?: () => void
 
 	async *createMessage(): AsyncGenerator<
 		{ type: "text"; text: string } | { type: "usage"; inputTokens: number; outputTokens: number; totalCost: number }
@@ -39,7 +41,15 @@ class TaskScriptedAI {
 }
 
 type TaskHostProvider = {
-	getLiveTask(taskId: string): { taskAsk?: { ask?: string }; approveAsk(): void } | undefined
+	getLiveTask(taskId: string):
+		| {
+				didComplete: boolean
+				taskAsk?: AlphaMessage
+				clineMessages: AlphaMessage[]
+				messageQueueService: { hasUnconsumedInput(): boolean }
+				waitForTermination(): Promise<void>
+		  }
+		| undefined
 }
 
 suite("Alpha Task", function () {
@@ -50,20 +60,24 @@ suite("Alpha Task", function () {
 		const provider = (api as unknown as { sidebarProvider?: TaskHostProvider }).sidebarProvider
 		assert.ok(provider, "The extension API did not expose its host provider to the task E2E test")
 
-		const messages: AlphaMessage[] = []
-
-		api.on(AlphaCodeEventName.Message, ({ message }) => {
-			if (message.type === "say" && message.partial === false) {
-				messages.push(message)
-			}
-		})
-
+		const originalConfiguration = api.getConfiguration()
+		const scriptedAI = new TaskScriptedAI()
+		const completionCounts = new Map<string, number>()
+		const completionPromptTasks = new Set<string>()
+		const onMessage = ({ taskId, message }: { taskId: string; message: AlphaMessage }) => {
+			if (message.type === "ask" && message.ask === "completion_result") completionPromptTasks.add(taskId)
+		}
+		const onCompleted = (taskId: string) => {
+			completionCounts.set(taskId, (completionCounts.get(taskId) ?? 0) + 1)
+		}
+		api.on(AlphaCodeEventName.Message, onMessage)
+		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
 		const configuration =
 			process.env.ALPHA_E2E_PROVIDER_MODE === "scripted"
 				? {
-						...api.getConfiguration(),
+						...originalConfiguration,
 						apiProvider: "fake-ai" as const,
-						fakeAi: new TaskScriptedAI(),
+						fakeAi: scriptedAI,
 						mode: "code",
 						autoApprovalEnabled: true,
 						requestDelaySeconds: 0,
@@ -71,32 +85,50 @@ suite("Alpha Task", function () {
 						enableCheckpoints: false,
 					}
 				: { mode: "code" as const, autoApprovalEnabled: true }
-		const taskId = await api.startNewTask({
-			configuration,
-			text: "Hello world, what is your name? Respond with 'My name is ...'",
-		})
-
-		let completionAskApproved = false
-		const completion = waitUntilCompleted({ api, taskId })
-		await waitFor(
-			() => {
-				const task = provider.getLiveTask(taskId)
-				if (task?.taskAsk?.ask === "completion_result" && !completionAskApproved) {
-					completionAskApproved = true
-					task.approveAsk()
-				}
-				return completionAskApproved
+		let taskId: string | undefined
+		await withBoundedFixtureCleanup(async () => {
+			taskId = await api.startNewTask({
+				configuration,
+				text: "Hello world, what is your name? Respond with 'My name is ...'",
+			})
+			await waitFor(
+				() => {
+					assert.equal(
+						completionPromptTasks.has(taskId!),
+						false,
+						"Completion must not ask for acknowledgement",
+					)
+					return (
+						(completionCounts.get(taskId!) ?? 0) > 0 && provider.getLiveTask(taskId!)?.didComplete === true
+					)
+				},
+				{ description: "automatic task completion" },
+			)
+			const task = provider.getLiveTask(taskId)
+			assert.ok(task, "The completed task must remain available")
+			await task.waitForTermination()
+			assert.equal(completionCounts.get(taskId), 1, "Task completion must be published once")
+			assert.equal(completionPromptTasks.has(taskId), false)
+			assert.equal(task.taskAsk?.ask, undefined)
+			assert.equal(task.messageQueueService.hasUnconsumedInput(), false)
+			const completionRows = task.clineMessages.filter(
+				(message) => message.type === "say" && message.say === "completion_result" && !message.partial,
+			)
+			assert.equal(completionRows.length, 1, "The task must retain one canonical final answer")
+			assert.ok(
+				completionRows[0]?.text?.includes("My name is Alpha"),
+				`Completion should include "My name is Alpha"`,
+			)
+		}, [
+			async () => {
+				if (taskId && !provider.getLiveTask(taskId)?.didComplete) await api.cancelCurrentTask()
+				if (taskId) await provider.getLiveTask(taskId)?.waitForTermination()
 			},
-			{ description: "the scripted task completion boundary" },
-		)
-		await completion
-
-		assert.ok(
-			!!messages.find(
-				({ say, text }) =>
-					(say === "completion_result" || say === "text") && text?.includes("My name is Alpha"),
-			),
-			`Completion should include "My name is Alpha"`,
-		)
+			() => api.clearCurrentTask(),
+			() => api.off(AlphaCodeEventName.Message, onMessage),
+			() => api.off(AlphaCodeEventName.TaskCompleted, onCompleted),
+			() => scriptedAI.removeFromCache?.(),
+			() => api.setConfiguration(originalConfiguration),
+		])
 	})
 })

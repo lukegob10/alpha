@@ -356,7 +356,7 @@ suite("Managed-agent budget Extension Host acceptance", function () {
 			this.skip()
 			return
 		}
-		assert.equal(vscode.version, "1.122.1")
+		assert.equal(vscode.version, "1.125.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		await runBudgetCase({
 			caseName: "role-timeout",

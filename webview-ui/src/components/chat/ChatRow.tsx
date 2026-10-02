@@ -152,6 +152,7 @@ interface ChatRowProps {
 	onRequestUserInputCancel?: () => void
 	onAsyncUserInputSubmit?: (messageTs: number, response: string) => boolean
 	isAsyncUserInputAnswered?: boolean
+	isAsyncUserInputPending?: boolean
 	onBatchFileResponse?: (response: { [key: string]: boolean }) => void
 	onFollowUpUnmount?: () => void
 	isFollowUpAnswered?: boolean
@@ -238,6 +239,7 @@ const ChatRowContentInner = ({
 	onRequestUserInputCancel,
 	onAsyncUserInputSubmit,
 	isAsyncUserInputAnswered,
+	isAsyncUserInputPending,
 	onFollowUpUnmount,
 	onBatchFileResponse,
 	isFollowUpAnswered,
@@ -1236,8 +1238,10 @@ const ChatRowContentInner = ({
 							</div>
 							<div className="ml-6">
 								<AsyncUserInputCard
+									key={`${currentTaskId}:${message.ts}`}
 									request={request}
 									isAnswered={isAsyncUserInputAnswered}
+									isPending={isAsyncUserInputPending}
 									onSubmit={(response) => onAsyncUserInputSubmit?.(message.ts, response) ?? false}
 								/>
 							</div>

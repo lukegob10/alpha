@@ -402,6 +402,11 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 					}
 				}
 
+				// Cleanup is part of the step boundary and can yield to a late Stop.
+				// Do not publish the completion candidate captured before that drain.
+				if (outcome?.status === "completed" && this.host.shouldAbort()) {
+					return terminalOutcome("aborted", steps, sample.response, reason)
+				}
 				if (outcome) return outcome
 				if (!hasContinuation) {
 					return terminalOutcome(

@@ -5,12 +5,13 @@ Copilot requests. Code QA runs the same command on Windows for pull requests and
 
 The command composes the existing E2E runner, managed-agent certification, and evidence stores:
 
-1. Run E2E unit tests, build fresh extension/webview artifacts, and pass the exact VS Code **1.122.1** smoke and LM contracts.
+1. Run E2E unit tests, build fresh extension/webview artifacts, and pass the exact VS Code **1.125.0** smoke and LM contracts.
    Run the explicit `test:core:regressions` selection for tool repetition, ticket batches, read/MCP progress, failed turns,
    compaction, request accounting, and Worker persistence, which are not all included in managed-agent certification.
 2. Run three small-answer trials: one request, zero tools, one completion, and matching runtime, persisted journal, and
    extension-side projected status.
-3. Run completion review/idle/follow-up and managed-child acceptance in the real 1.122.1 host. Completion must stay idle
+3. Run response continuation/malformed-call/incomplete-output boundaries, completion review/idle/follow-up, managed-child
+   acceptance, and five-child long-context fanout in the real 1.125.0 host. Completion must stay idle
    through the 35-second observation window; child results, parent review, verification, and navigation use existing tests.
 4. Run managed-agent certification, including React replay of **this run's** completion capture. Existing deterministic
    coverage exercises productive repetition, genuine stalls, retries, command settlement, cancellation, and persistence.
@@ -28,7 +29,7 @@ explicitly after review. Never use an earlier green run to describe changed sour
 
 `pnpm test:live:core` uses the existing live gate and a fixed nine-scenario subset: small repository inspection, refactoring,
 search recovery, completion idle, empty-response recovery, provider-error recovery, streaming cancellation, reload, and
-background isolation. It runs the offline host prerequisites before paid requests. Defaults: VS Code 1.122.1, one sample
+background isolation. It runs the offline host prerequisites before paid requests. Defaults: VS Code 1.125.0, one sample
 per scenario, **300 total requests**, two hours overall, and ten minutes per attempt. The total request limit includes
 recovery requests; increasing samples does not increase that budget. An exhausted budget leaves missing cells unpassed.
 
@@ -41,7 +42,7 @@ pnpm test:live:core --model-id gpt-5.6-luna --effort high --max-requests 100 --s
 After choosing the budget, replace `--dry-run` with `--init-root` for the first run into a new empty campaign root. Later
 runs use its existing marker and a new run ID. Follow [the profile guide](vscode-live-test-profiles.md) for authentication
 and owned-profile setup. The example model is not an availability guarantee. This suite is Copilot-only; it does not change
-Vertex setup or model routing. An explicitly selected 1.136.1 run is supplemental and cannot satisfy the 1.122.1 gate.
+Vertex setup or model routing. Live acceptance supplements the scripted and LM-fixture 1.125.0 gates.
 
 Gate results identify the scenario subset, exact model/effort, host, samples, total usage/budget, and each attempt's requests
 and elapsed time. Every required cell needs retained evidence and actual usage. Historical failures, excess usage, duplicate

@@ -13,7 +13,7 @@ export async function runNestedRestartCampaign(options: {
 	host: CampaignHost
 	signal?: AbortSignal
 }) {
-	assert.equal(options.host.version, "1.122.1")
+	assert.equal(options.host.version, "1.125.0")
 	assert.ok(options.host.executable && path.isAbsolute(options.host.executable))
 	const fixture = await initializeRecoveryFixture(options.fixtureRoot)
 	const runs: ExtensionTestRunResult[] = []
@@ -48,7 +48,7 @@ export async function runNestedRestartCampaign(options: {
 			runs.push(result)
 			assert.equal(signal.aborted, false, "The bounded host run did not finish before its deadline")
 			assert.equal(result.execution, "extension-host")
-			assert.equal(result.actualVSCodeVersion, "1.122.1")
+			assert.equal(result.actualVSCodeVersion, "1.125.0")
 			assert.equal(result.ownershipGate, "verified")
 			assert.equal(result.hostExitObserved, true)
 			for (const pid of new Set([

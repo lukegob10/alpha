@@ -48,10 +48,10 @@ test("preserves the existing suites and adds explicit live reliability acceptanc
 
 test("uses bounded matrix budgets and scales iterations to the selected host count", () => {
 	const expected = {
-		smoke: { samples: 1, maxIterations: 18, maxRequests: 300, maxDurationMs: 30 * 60 * 1_000 },
-		development: { samples: 1, maxIterations: 72, maxRequests: 1_200, maxDurationMs: 2 * 60 * 60 * 1_000 },
-		soak: { samples: 3, maxIterations: 216, maxRequests: 3_000, maxDurationMs: 6 * 60 * 60 * 1_000 },
-		reliability: { samples: 1, maxIterations: 66, maxRequests: 1_200, maxDurationMs: 2 * 60 * 60 * 1_000 },
+		smoke: { samples: 1, maxIterations: 9, maxRequests: 300, maxDurationMs: 30 * 60 * 1_000 },
+		development: { samples: 1, maxIterations: 36, maxRequests: 1_200, maxDurationMs: 2 * 60 * 60 * 1_000 },
+		soak: { samples: 3, maxIterations: 108, maxRequests: 3_000, maxDurationMs: 6 * 60 * 60 * 1_000 },
+		reliability: { samples: 1, maxIterations: 33, maxRequests: 1_200, maxDurationMs: 2 * 60 * 60 * 1_000 },
 		core: { samples: 1, maxIterations: 27, maxRequests: 300, maxDurationMs: 2 * 60 * 60 * 1_000 },
 	} as const
 
@@ -74,7 +74,7 @@ test("uses bounded matrix budgets and scales iterations to the selected host cou
 		assert.equal(config.maxReproductions, 2)
 	}
 
-	const singleHost = createDevelopmentSuite(options({ suite: "development", host: { version: "1.136.1" } }))
+	const singleHost = createDevelopmentSuite(options({ suite: "development", host: { version: "1.125.0" } }))
 	assert.equal(singleHost.budgets.maxIterations, 36)
 })
 
@@ -90,7 +90,7 @@ test("core acceptance uses Copilot on the reference host with explicit bounded s
 			maxRequests: 100,
 		}),
 	)
-	assert.deepEqual(config.hosts, [{ version: "1.122.1" }])
+	assert.deepEqual(config.hosts, [{ version: "1.125.0" }])
 	assert.equal(config.samples, 3)
 	assert.equal(config.budgets.maxRequests, 100)
 	assert.equal(config.budgets.maxIterations, 81)
@@ -112,8 +112,8 @@ test("core acceptance uses Copilot on the reference host with explicit bounded s
 })
 
 test("defaults to the exact supported hosts in compatibility order and accepts one host", () => {
-	assert.deepEqual(createDevelopmentSuite(options()).hosts, [{ version: "1.122.1" }, { version: "1.136.1" }])
-	assert.deepEqual(createDevelopmentSuite(options({ host: { version: "1.122.1" } })).hosts, [{ version: "1.122.1" }])
+	assert.deepEqual(createDevelopmentSuite(options()).hosts, [{ version: "1.125.0" }])
+	assert.deepEqual(createDevelopmentSuite(options({ host: { version: "1.125.0" } })).hosts, [{ version: "1.125.0" }])
 })
 
 test("requires an exact live model and an explicit supported effort", () => {
@@ -148,17 +148,17 @@ test("rejects invalid suite, provider, host, and path inputs", () => {
 		/Invalid development suite provider/,
 	)
 	assert.throws(
-		() => createDevelopmentSuite(options({ host: { version: "stable" as "1.122.1" } })),
+		() => createDevelopmentSuite(options({ host: { version: "stable" as "1.125.0" } })),
 		/Unsupported host version/,
 	)
 	assert.throws(
-		() => createDevelopmentSuite(options({ host: { version: "1.122.1", executable: "relative/vscode" } })),
+		() => createDevelopmentSuite(options({ host: { version: "1.125.0", executable: "relative/vscode" } })),
 		/Host executable must be absolute/,
 	)
 	assert.throws(() => createDevelopmentSuite(options({ id: "../outside-campaign" })), /Invalid campaign identifier/)
 
 	const absoluteExecutable = createDevelopmentSuite(
-		options({ host: { version: "1.122.1", executable: path.resolve("vscode.exe") } }),
+		options({ host: { version: "1.125.0", executable: path.resolve("vscode.exe") } }),
 	)
 	assert.equal(absoluteExecutable.hosts[0]?.executable, path.resolve("vscode.exe"))
 })
@@ -170,7 +170,7 @@ test("returns an existing parser-compatible campaign config without source repai
 
 	const existing: CampaignConfig = {
 		id: "existing-campaign",
-		hosts: [{ version: "1.122.1" }],
+		hosts: [{ version: "1.125.0" }],
 		scenarioIds: ["review-edit-test-commit-followup"],
 		samples: 1,
 		provider: { mode: "scripted" },

@@ -11,6 +11,20 @@ const handoff = {
 }
 
 describe("getDesignHandoffPrompt", () => {
+	it("retains the complete approved handoff across reload", () => {
+		const tailRequirement = "FINAL REQUIREMENT: Verify the last integration."
+		const large = { ...handoff, markdown: `${"Design detail.\n".repeat(3_000)}\n${tailRequirement}` }
+		const first = getDesignHandoffPrompt(large, { taskId: "task-1" })!
+		const afterReload = getDesignHandoffPrompt(structuredClone(large), { taskId: "task-1" })!
+
+		expect(large.markdown).toContain(tailRequirement)
+		expect(first.text.includes(large.markdown)).toBe(true)
+		expect(first.text).toContain(tailRequirement)
+		expect(first.text).not.toContain("Only this bounded excerpt is attached")
+		expect(first.source.path).toBe("task:task-1:design-handoff")
+		expect(afterReload).toEqual(first)
+	})
+
 	it("keeps the handoff scoped to its owning primary task and records provenance", () => {
 		const rendered = getDesignHandoffPrompt(handoff, { taskId: "task-1" })
 

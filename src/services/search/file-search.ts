@@ -20,19 +20,23 @@ export async function executeRipgrep({
 	args,
 	workspacePath,
 	limit = 500,
+	signal,
 }: {
 	args: string[]
 	workspacePath: string
 	limit?: number
+	signal?: AbortSignal
 }): Promise<FileResult[]> {
+	signal?.throwIfAborted()
 	const rgPath = await getBinPath()
+	signal?.throwIfAborted()
 
 	if (!rgPath) {
 		throw new Error(`ripgrep not found: ${rgPath}`)
 	}
 
 	return executeWithRipgrepFallback(rgPath, (activeRgPath) =>
-		executeRipgrepAtPath(activeRgPath, args, workspacePath, limit),
+		executeRipgrepAtPath(activeRgPath, args, workspacePath, limit, signal),
 	)
 }
 
@@ -41,9 +45,13 @@ function executeRipgrepAtPath(
 	args: string[],
 	workspacePath: string,
 	limit: number,
+	signal?: AbortSignal,
 ): Promise<FileResult[]> {
 	return new Promise((resolve, reject) => {
-		const rgProcess = childProcess.spawn(rgPath, args)
+		signal?.throwIfAborted()
+		const rgProcess = signal
+			? childProcess.spawn(rgPath, args, { signal, windowsHide: true })
+			: childProcess.spawn(rgPath, args)
 		const rl = readline.createInterface({ input: rgProcess.stdout, crlfDelay: Infinity })
 		const fileResults: FileResult[] = []
 		const dirSet = new Set<string>() // Track unique directory paths.

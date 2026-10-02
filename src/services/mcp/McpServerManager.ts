@@ -11,6 +11,7 @@ export class McpServerManager {
 	private static readonly GLOBAL_STATE_KEY = "mcpHubInstanceId"
 	private static providers: Set<AlphaProvider> = new Set()
 	private static initializationPromise: Promise<McpHub> | null = null
+	private static cleanupPromise: Promise<void> | null = null
 
 	/**
 	 * Get the singleton McpHub instance.
@@ -18,6 +19,8 @@ export class McpServerManager {
 	 * Thread-safe implementation using a promise-based lock.
 	 */
 	static async getInstance(context: vscode.ExtensionContext, provider: AlphaProvider): Promise<McpHub> {
+		// A new client must not acquire the hub being retired by cleanup.
+		if (this.cleanupPromise) await this.cleanupPromise
 		// Register the provider
 		this.providers.add(provider)
 
@@ -41,11 +44,15 @@ export class McpServerManager {
 				// Double-check instance in case it was created while we were waiting
 				if (!this.instance) {
 					const hub = new McpHub(provider)
-					// Wait for all MCP servers to finish connecting (or timing out)
-					await hub.waitUntilReady()
-					this.instance = hub
-					// Store a unique identifier in global state to track the primary instance
-					await context.globalState.update(this.GLOBAL_STATE_KEY, Date.now().toString())
+					try {
+						// Publish only after readiness and state storage succeed.
+						await hub.waitUntilReady()
+						await context.globalState.update(this.GLOBAL_STATE_KEY, Date.now().toString())
+						this.instance = hub
+					} catch (error) {
+						await hub.dispose()
+						throw error
+					}
 				}
 				return this.instance
 			} finally {
@@ -61,8 +68,17 @@ export class McpServerManager {
 	 * Remove a provider from the tracked set.
 	 * This is called when a webview is disposed.
 	 */
-	static unregisterProvider(provider: AlphaProvider): void {
-		this.providers.delete(provider)
+	static async unregisterProvider(provider: AlphaProvider, hub?: McpHub): Promise<void> {
+		const owned = this.providers.delete(provider)
+		// Provider leases include acquisitions awaiting readiness. Client count
+		// alone cannot decide whether the shared hub is unused yet.
+		const release = owned && hub ? hub.unregisterClient(false) : Promise.resolve()
+		if (this.providers.size === 0) {
+			// Reserve cleanup before yielding so a new acquisition waits for retirement.
+			await Promise.all([release, this.cleanup(provider.context)])
+		} else {
+			await release
+		}
 	}
 
 	/**
@@ -80,11 +96,22 @@ export class McpServerManager {
 	 * Clean up the singleton instance and all its resources.
 	 */
 	static async cleanup(context: vscode.ExtensionContext): Promise<void> {
-		if (this.instance) {
-			await this.instance.dispose()
-			this.instance = null
-			await context.globalState.update(this.GLOBAL_STATE_KEY, undefined)
-		}
-		this.providers.clear()
+		if (this.cleanupPromise) return this.cleanupPromise
+		this.cleanupPromise = (async () => {
+			try {
+				// Construction owns resources before instance publication. Join it even
+				// when it fails; that path disposes its own unpublished hub.
+				await this.initializationPromise?.catch(() => undefined)
+				if (this.instance) {
+					await this.instance.dispose()
+					this.instance = null
+					await context.globalState.update(this.GLOBAL_STATE_KEY, undefined)
+				}
+			} finally {
+				this.providers.clear()
+				this.cleanupPromise = null
+			}
+		})()
+		return this.cleanupPromise
 	}
 }

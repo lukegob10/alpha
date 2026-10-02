@@ -6,16 +6,21 @@ import type { AsyncUserInputData } from "@alpha-code/types"
 interface AsyncUserInputCardProps {
 	request: AsyncUserInputData
 	isAnswered?: boolean
+	isPending?: boolean
 	onSubmit: (response: string) => boolean
 }
 
-export const AsyncUserInputCard = ({ request, isAnswered = false, onSubmit }: AsyncUserInputCardProps) => {
+export const AsyncUserInputCard = ({
+	request,
+	isAnswered = false,
+	isPending = false,
+	onSubmit,
+}: AsyncUserInputCardProps) => {
 	const { t } = useTranslation()
 	const cardId = useId()
 	const helpId = `${cardId}-help`
 	const [answers, setAnswers] = useState<Record<number, string>>({})
-	const [submitted, setSubmitted] = useState(false)
-	const disabled = isAnswered || submitted
+	const disabled = isAnswered || isPending
 	const canSubmit = request.questions.every((_, index) => Boolean(answers[index]?.trim()))
 
 	const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -26,9 +31,7 @@ export const AsyncUserInputCard = ({ request, isAnswered = false, onSubmit }: As
 			.map((question, index) => `${question.title}\nAnswer: ${answers[index]!.trim()}`)
 			.join("\n\n")
 		const response = `${t("chat:asyncUserInput.responsePrefix")}\n\n${answerText}`
-		if (onSubmit(response)) {
-			setSubmitted(true)
-		}
+		onSubmit(response)
 	}
 
 	return (
@@ -36,6 +39,7 @@ export const AsyncUserInputCard = ({ request, isAnswered = false, onSubmit }: As
 			className="flex flex-col gap-4"
 			onSubmit={handleSubmit}
 			aria-label={t("chat:asyncUserInput.title")}
+			aria-busy={isPending}
 			aria-describedby={disabled ? undefined : helpId}
 			data-testid="async-user-input-card">
 			{request.questions.map((question, index) => (
@@ -68,7 +72,9 @@ export const AsyncUserInputCard = ({ request, isAnswered = false, onSubmit }: As
 			))}
 			<div className="flex items-center justify-between gap-2">
 				{disabled ? (
-					<span className="text-sm text-vscode-descriptionForeground">{t("chat:asyncUserInput.sent")}</span>
+					<span className="text-sm text-vscode-descriptionForeground" role="status">
+						{t(isAnswered ? "chat:asyncUserInput.sent" : "chat:asyncUserInput.pending")}
+					</span>
 				) : (
 					<span id={helpId} className="text-xs text-vscode-descriptionForeground">
 						{t("chat:asyncUserInput.replyHelp")}

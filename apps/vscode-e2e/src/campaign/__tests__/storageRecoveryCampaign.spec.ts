@@ -20,7 +20,7 @@ test("dedicated restart sequence requires evidence and quiescence before quarant
 			await fs.readFile(path.resolve(__dirname, "../../../../../src/package.json"), "utf8"),
 		)
 		const report = await runStorageRecoveryCampaign(
-			{ fixtureRoot: root, host: { version: "1.122.1", executable: process.execPath } },
+			{ fixtureRoot: root, host: { version: "1.125.0", executable: process.execPath } },
 			{
 				assertQuiescence: async (proof, receipt) => {
 					events.push(`gate:${receipt.phase}`)

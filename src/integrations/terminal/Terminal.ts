@@ -9,6 +9,7 @@ import { mergePromise } from "./mergePromise"
 
 export class Terminal extends BaseTerminal {
 	public terminal: vscode.Terminal
+	private readonly pendingProcesses = new Set<TerminalProcess>()
 
 	public cmdCounter: number = 0
 
@@ -45,6 +46,17 @@ export class Terminal extends BaseTerminal {
 		return this.terminal.exitStatus !== undefined
 	}
 
+	public notifyTerminalClosed(): void {
+		// Shell exit releases process ownership before the output reader drains.
+		// Keep those readers reachable until their physical run has finished.
+		const processes = new Set(this.pendingProcesses)
+		if (this.process instanceof TerminalProcess) processes.add(this.process)
+		for (const process of processes) process.notifyTerminalClosed()
+		this.pendingProcesses.clear()
+		this.running = false
+		this.busy = false
+	}
+
 	public override runCommand(command: string, callbacks: AlphaTerminalCallbacks): AlphaTerminalProcessResultPromise {
 		// We set busy before the command is running because the terminal may be
 		// waiting on terminal integration, and we must prevent another instance
@@ -54,6 +66,7 @@ export class Terminal extends BaseTerminal {
 		const process = new TerminalProcess(this)
 		process.command = command
 		this.process = process
+		this.pendingProcesses.add(process)
 
 		// Set up event handlers from callbacks before starting process.
 		// This ensures that we don't miss any events because they are
@@ -74,7 +87,10 @@ export class Terminal extends BaseTerminal {
 
 			// Wait for shell integration before executing the command
 			pWaitFor(() => this.terminal.shellIntegration !== undefined, {
-				timeout: Terminal.getShellIntegrationTimeout(),
+				timeout: {
+					milliseconds: Terminal.getShellIntegrationTimeout(),
+					signal: process.terminalClosedSignal,
+				},
 			})
 				.then(
 					() => {
@@ -85,6 +101,7 @@ export class Terminal extends BaseTerminal {
 						return process.run(command)
 					},
 					() => {
+						if (process.terminalClosedSignal.aborted) return
 						console.log(`[Terminal ${this.id}] Shell integration not available. Command execution aborted.`)
 
 						// Clean up temporary directory if shell integration is not available
@@ -97,12 +114,14 @@ export class Terminal extends BaseTerminal {
 					},
 				)
 				.catch((error: unknown) => {
+					if (process.terminalClosedSignal.aborted) return
 					// A stream failure does not prove the shell command stopped. Keep a
 					// running terminal reserved until its physical end event arrives.
 					if (!this.running) this.busy = false
 					this.setActiveStream(undefined)
 					process.emit("error", error instanceof Error ? error : new Error(String(error)))
 				})
+				.finally(() => this.pendingProcesses.delete(process))
 		})
 
 		return mergePromise(process, promise)

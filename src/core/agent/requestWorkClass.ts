@@ -1,8 +1,8 @@
 /**
- * Host-side request classification for catalog narrowing.
+ * Host-side request classification for completion and workflow guidance.
  *
- * Uncertain requests keep the full authorized Code-mode surface. This is not a
- * hidden model call and must not overfit to one repository or one user story.
+ * This heuristic is not an execution-policy boundary. Tool availability comes
+ * from the captured mode and policy, independently of request wording.
  */
 
 export type RequestWorkClass = "lookup" | "full"
@@ -18,11 +18,11 @@ export type RequestWorkClassReason =
 export interface RequestWorkClassDecision {
 	class: RequestWorkClass
 	reason: RequestWorkClassReason
-	/** Advertise `skill` on an otherwise lookup-sized catalog. */
+	/** The request references a named skill. */
 	includeSkill: boolean
-	/** Advertise Alpha Tickets tools on an otherwise lookup-sized catalog. */
+	/** The request references Alpha Tickets. */
 	includeTickets: boolean
-	/** Advertise MCP resource tools on an otherwise lookup-sized catalog. */
+	/** The request references MCP resources. */
 	includeMcpResources: boolean
 }
 

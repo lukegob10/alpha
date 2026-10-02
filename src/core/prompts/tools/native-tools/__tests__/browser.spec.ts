@@ -28,7 +28,7 @@ describe("VS Code integrated-browser native tools", () => {
 		})
 	})
 
-	it("requires the URL that VS Code 1.122.1 requires to open a browser page", () => {
+	it("requires the URL that VS Code 1.125.0 requires to open a browser page", () => {
 		const tool = getNativeTools().find(
 			(tool) => tool.type === "function" && tool.function.name === "open_browser_page",
 		)

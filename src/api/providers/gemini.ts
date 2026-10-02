@@ -27,6 +27,7 @@ import { t } from "i18next"
 import {
 	ApiStreamDeadlineError,
 	createLinkedAbortController,
+	createApiStreamOutcome,
 	raceApiStreamAbort,
 	type ApiStream,
 	type GroundingSource,
@@ -120,6 +121,32 @@ function prependUserInstructionContext(
 	return [{ ...firstMessage, content }, ...messages.slice(1)]
 }
 
+function createGeminiOutcome(
+	finishReason: string | undefined,
+	semanticOutputObserved: boolean,
+	metadata?: ApiHandlerCreateMessageMetadata,
+) {
+	const normalizedReason = finishReason?.replace(/^FINISH_REASON_/, "")
+	const terminal = Boolean(normalizedReason && normalizedReason !== "UNSPECIFIED")
+	let reason: string | undefined
+	if (!terminal) {
+		reason = "Gemini response ended before a terminal finish reason."
+	} else if (normalizedReason === "MAX_TOKENS") {
+		reason = "Gemini response reached the output token limit (finishReason=MAX_TOKENS)."
+	} else if (normalizedReason !== "STOP") {
+		reason = `Gemini response stopped with finish reason ${normalizedReason}.`
+	}
+
+	return createApiStreamOutcome({
+		status: reason ? "incomplete" : "completed",
+		terminal,
+		semanticOutputObserved,
+		...(reason ? { reason, retryable: !terminal && !semanticOutputObserved } : {}),
+		requestId: metadata?.requestId,
+		attemptId: metadata?.attemptId,
+	})
+}
+
 /**
  * Internal Vertex Gemini transport shared by the Vertex provider adapter.
  *
@@ -129,6 +156,7 @@ function prependUserInstructionContext(
  */
 export abstract class VertexGeminiHandler extends BaseProvider implements SingleCompletionHandler {
 	protected options: ApiHandlerOptions
+	readonly streamCapabilities = { lifecycle: true } as const
 
 	private client: GoogleGenAI
 	private readonly vertexGatewaySettings?: VertexGatewaySettings
@@ -808,6 +836,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 			}
 
 			let emittedAnyStreamChunk = false
+			let semanticOutputObserved = false
 
 			try {
 				if (this.options.vertexStreamingEnabled === false) {
@@ -838,10 +867,12 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 
 							if (part.thought) {
 								if (part.text) {
+									semanticOutputObserved = true
 									yield { type: "reasoning", text: part.text }
 								}
 							} else if (part.functionCall) {
 								hasContent = true
+								semanticOutputObserved = true
 								const callId = part.functionCall.id || `${part.functionCall.name}-${toolCallCounter}`
 								yield {
 									type: "tool_call",
@@ -853,11 +884,13 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 								toolCallCounter++
 							} else if (part.text) {
 								hasContent = true
+								semanticOutputObserved = true
 								yield { type: "text", text: part.text }
 							}
 						}
 					} else if (result.text) {
 						hasContent = true
+						semanticOutputObserved = true
 						yield { type: "text", text: result.text }
 					}
 
@@ -894,6 +927,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 						yield { type: "text", text: this.getNoVisibleContentMessage(candidate?.finishReason) }
 					}
 
+					yield createGeminiOutcome(candidate?.finishReason, semanticOutputObserved, metadata)
 					return
 				}
 
@@ -972,10 +1006,12 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 								if (part.thought) {
 									// This is a thinking/reasoning part
 									if (part.text) {
+										semanticOutputObserved = true
 										yield { type: "reasoning", text: part.text }
 									}
 								} else if (part.functionCall) {
 									hasContent = true
+									semanticOutputObserved = true
 									// Gemini sends complete function calls in a single chunk
 									// Emit as partial chunks for consistent handling with NativeToolCallParser
 									const callId =
@@ -1006,6 +1042,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 									// This is regular content
 									if (part.text) {
 										hasContent = true
+										semanticOutputObserved = true
 										yield { type: "text", text: part.text }
 									}
 								}
@@ -1016,6 +1053,7 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 					// Fallback to the original text property if no candidates structure
 					else if (chunk.text) {
 						hasContent = true
+						semanticOutputObserved = true
 						yield { type: "text", text: chunk.text }
 					}
 
@@ -1063,6 +1101,8 @@ export abstract class VertexGeminiHandler extends BaseProvider implements Single
 					yield { type: "text", text: this.getNoVisibleContentMessage(finishReason) }
 				}
 
+				// EOF is transport closure; only STOP is successful provider completion.
+				yield createGeminiOutcome(finishReason, semanticOutputObserved, metadata)
 				return
 			} catch (error) {
 				if (metadata?.signal?.aborted) {

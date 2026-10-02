@@ -283,6 +283,19 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				const relPath = fileResult.path
 				const fullPath = path.resolve(task.cwd, relPath)
 				const entry = fileResult.entry!
+				// Approval/settings waits may outlive an ignore-policy update. A prior
+				// grant cannot authorize a read that is now blocked by the workspace.
+				if (task.alphaIgnoreController?.validateAccess(relPath) === false) {
+					const errorMsg = formatResponse.alphaIgnoreError(relPath)
+					updateFileResult(fileResult, {
+						status: "blocked",
+						error: errorMsg,
+						nativeContent: `File: ${relPath}\nError: ${errorMsg}`,
+					})
+					callbacks.setResultMetadata?.({ status: "denied" })
+					await task.say("rooignore_error", relPath)
+					continue
+				}
 
 				try {
 					// Check if path is a directory

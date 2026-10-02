@@ -58,7 +58,7 @@ test("workflow results validate optional effective E2E approval-policy identitie
 		status: "passed",
 		checks: [],
 		taskIds: ["task-1"],
-		hostVersion: "1.136.1",
+		hostVersion: "1.125.0",
 		providerMode: "live-copilot",
 		model: { id: "gpt-5.6-luna" },
 		requestsUsed: 1,

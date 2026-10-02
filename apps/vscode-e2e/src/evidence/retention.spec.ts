@@ -28,7 +28,7 @@ async function run(runId: string, outcome: EvidenceOutcome = "passed") {
 		runId,
 		metadata: {
 			scenarioId: "retention",
-			hostVersion: "1.122.1",
+			hostVersion: "1.125.0",
 			provider: "scripted",
 			taskIds: [],
 			startedAt: new Date(now - 1_000).toISOString(),

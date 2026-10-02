@@ -210,11 +210,15 @@ export function buildInternalTaskEnvelope(input: BuildInternalTaskEnvelopeInput)
 			throw new Error("Nested internal tasks must name a parent below their orchestration root")
 		}
 	}
-	if (input.agentKind && !(input.agentKind in internalAgentDefinitions))
+	if (input.agentKind && !Object.hasOwn(internalAgentDefinitions, input.agentKind))
 		throw new Error(`Unknown agent kind: ${input.agentKind}`)
 	const agentKind = (input.agentKind ?? "general") as InternalAgentKind
 	const routeId = (input.modelRouteId ?? "balanced") as ModelRouteId
-	if (!(routeId in modelRoutes)) throw new Error(`Unknown model route: ${input.modelRouteId}`)
+	if (!Object.hasOwn(modelRoutes, routeId)) throw new Error(`Unknown model route: ${input.modelRouteId}`)
+	const policy = resolveInternalTaskPolicy(input.parentPolicy, input.requestedPolicy, agentKind)
+	if (policy.mutate && input.parentAllowedPaths !== undefined && input.allowedPaths === undefined) {
+		throw new Error("Internal task requires an explicit write scope under a scoped parent")
+	}
 	validateScope(
 		input.workspaceRoots,
 		input.allowedPaths,
@@ -263,7 +267,7 @@ export function buildInternalTaskEnvelope(input: BuildInternalTaskEnvelopeInput)
 			sharedWorkspace: input.sharedWorkspace ?? true,
 			contextRefs: [...new Set(input.contextRefs ?? [])].sort(),
 		},
-		policy: resolveInternalTaskPolicy(input.parentPolicy, input.requestedPolicy, agentKind),
+		policy,
 		skills,
 		modelRoute: route,
 		budget,

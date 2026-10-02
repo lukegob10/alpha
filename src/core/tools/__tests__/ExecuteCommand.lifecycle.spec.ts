@@ -110,10 +110,126 @@ async function createFixture(
 		supersedePendingAsk: vi.fn(),
 		suspendAfterCurrentTurn: vi.fn(),
 	} as unknown as Task
-	return { cwd, task, process, store, provider, launch }
+	return {
+		cwd,
+		task,
+		process,
+		store,
+		provider,
+		launch,
+		reportOutput: (line: string) => callbacks.onLine(line, process as unknown as AlphaTerminalProcess),
+		finishProcess: async () => {
+			callbacks.onShellExecutionComplete({ exitCode: 0 }, process as unknown as AlphaTerminalProcess)
+			await callbacks.onCompleted("finished", process as unknown as AlphaTerminalProcess)
+			process.isSettled = true
+			terminal.busy = false
+			process.emit("completed", "finished")
+			resolveProcess()
+		},
+		reportShellExit: () =>
+			callbacks.onShellExecutionComplete({ exitCode: 0 }, process as unknown as AlphaTerminalProcess),
+	}
 }
 
 describe("primary command timeout mutation receipts", () => {
+	it("finishes command output bookkeeping without waiting for the held user question", async () => {
+		const fixture = await createFixture()
+		let resolveQuestion!: (answer: Awaited<ReturnType<Task["ask"]>>) => void
+		const question = new Promise<Awaited<ReturnType<Task["ask"]>>>((resolve) => (resolveQuestion = resolve))
+		fixture.task.ask = vi.fn(() => question)
+		const execution = executeCommandInTerminal(fixture.task, {
+			executionId: "held-question",
+			toolCallId: "held-question-call",
+			command: "command",
+			terminalShellIntegrationDisabled: true,
+			agentTimeout: 0,
+			commandExecutionTimeout: 0,
+		})
+		let outputSettled = false
+		try {
+			await fixture.launch
+			const outputCompletion = Promise.resolve(fixture.reportOutput("ready\n")).then(() => {
+				outputSettled = true
+			})
+			await new Promise<void>((resolve) => setImmediate(resolve))
+			expect(fixture.task.ask).toHaveBeenCalledExactlyOnceWith("command_output", "")
+			expect(outputSettled).toBe(true)
+			await fixture.finishProcess()
+			await outputCompletion
+			expect(await execution).toEqual([false, expect.stringContaining("Exit code: 0")])
+			expect(fixture.task.completeCommandExecution).toHaveBeenCalledOnce()
+			expect(fixture.task.failCommandExecution).not.toHaveBeenCalled()
+		} finally {
+			resolveQuestion({ response: "yesButtonClicked" })
+			if (!fixture.process.isSettled) await fixture.finishProcess()
+			await execution.catch(() => undefined)
+		}
+	})
+
+	it("settles output ownership once when a yielded command's terminal closes after shell exit", async () => {
+		const fixture = await createFixture()
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+		const execution = executeCommandInTerminal(fixture.task, {
+			executionId: "closed-output",
+			toolCallId: "closed-output-call",
+			command: "long-running-command",
+			terminalShellIntegrationDisabled: true,
+			agentTimeout: 1_000,
+			commandExecutionTimeout: 0,
+		})
+		await fixture.launch
+		await vi.advanceTimersByTimeAsync(1_100)
+		await execution
+		fixture.reportShellExit()
+		fixture.process.isSettled = true
+		fixture.process.emit("error", new Error("terminal output reader closed"))
+		await vi.advanceTimersByTimeAsync(0)
+		await vi.waitFor(() => expect(fixture.provider.releasePrimaryMutation).toHaveBeenCalledOnce())
+		await vi.advanceTimersByTimeAsync(0)
+		expect(fixture.task.failCommandExecution).toHaveBeenCalledExactlyOnceWith(
+			"closed-output-call",
+			"failed",
+			expect.stringMatching(/^closed-output:/),
+		)
+		expect(fixture.task.completeCommandExecution).not.toHaveBeenCalled()
+		expect(fixture.task.suspendAfterCurrentTurn).toHaveBeenCalledOnce()
+		expect(
+			fixture.store.getVerificationObligations().flatMap((obligation) => obligation.mutationReservations),
+		).toEqual([])
+	})
+
+	it("preserves unresolved mutation debt when a yielded command loses its terminal", async () => {
+		const fixture = await createFixture()
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+		const execution = executeCommandInTerminal(fixture.task, {
+			executionId: "closed-background",
+			toolCallId: "closed-background-call",
+			command: "long-running-command",
+			terminalShellIntegrationDisabled: true,
+			agentTimeout: 1_000,
+			commandExecutionTimeout: 0,
+		})
+		await fixture.launch
+		await vi.advanceTimersByTimeAsync(1_100)
+		await execution
+		fixture.process.on("error", () => {})
+		fixture.process.isSettled = true
+		fixture.process.emit("error", new Error("command terminal closed"))
+		await vi.advanceTimersByTimeAsync(0)
+		expect(fixture.provider.recordPrimaryMutation).toHaveBeenCalledOnce()
+		expect(fixture.store.getVerificationObligations()[0]?.mutationReservations).toEqual([])
+		expect(fixture.store.getParentCompletionDecision("timeout-root").allowed).toBe(false)
+		expect(fixture.task.failCommandExecution).toHaveBeenCalledExactlyOnceWith(
+			"closed-background-call",
+			"failed",
+			expect.stringMatching(/^closed-background:/),
+		)
+		fixture.reportShellExit()
+		await vi.advanceTimersByTimeAsync(0)
+		expect(fixture.task.completeCommandExecution).not.toHaveBeenCalled()
+		expect(fixture.provider.recordPrimaryMutation).toHaveBeenCalledOnce()
+	})
+
 	it("settles the physical reservation when the hard timeout fires after the command yielded", async () => {
 		const fixture = await createFixture()
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })

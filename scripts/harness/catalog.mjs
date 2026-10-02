@@ -46,12 +46,12 @@ export const lanes = {
 	},
 	host: {
 		exclusiveBuild: true,
-		fidelity: "actual VS Code 1.122.1",
+		fidelity: "actual VS Code 1.125.0",
 		decisions: "scripted / LM fixture",
 		owner: "apps/vscode-e2e",
 		proves: "Activation, modes and VS Code LM host contracts; not all UI acceptance",
-		prerequisites: ["VS Code 1.122.1 binary/download access and desktop host support"],
-		commands: [["--filter", "@alpha-code/vscode-e2e", "test:smoke:1221"]],
+		prerequisites: ["VS Code 1.125.0 binary/download access and desktop host support"],
+		commands: [["--filter", "@alpha-code/vscode-e2e", "test:smoke:1250"]],
 	},
 	confidence: {
 		exclusiveBuild: true,
@@ -59,7 +59,7 @@ export const lanes = {
 		decisions: "scripted",
 		owner: "apps/vscode-e2e, certification",
 		proves: "Existing core confidence gate, including strict managed-agent evidence",
-		prerequisites: ["VS Code 1.122.1 binary/download access and desktop host support"],
+		prerequisites: ["VS Code 1.125.0 binary/download access and desktop host support"],
 		commands: [["--filter", "@alpha-code/types", "build"], ["test:core:confidence"]],
 	},
 	services: {

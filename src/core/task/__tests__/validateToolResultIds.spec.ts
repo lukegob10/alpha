@@ -432,10 +432,10 @@ describe("validateAndFixToolResultIds", () => {
 			expect(Array.isArray(result.content)).toBe(true)
 			const resultContent = result.content as Anthropic.ToolResultBlockParam[]
 			// Should only keep one tool_result since there's only one tool_use
-			// The first invalid one gets fixed to the valid ID, then the second one
-			// (which already has that ID) becomes a duplicate and is filtered out
+			// The identified second result owns the call ID; the orphan cannot replace it.
 			expect(resultContent.length).toBe(1)
 			expect(resultContent[0].tool_use_id).toBe("call_55577629")
+			expect(resultContent[0].content).toBe("Content from second result")
 		})
 
 		it("should preserve text blocks while filtering orphaned tool_results", () => {

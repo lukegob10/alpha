@@ -8,6 +8,7 @@ import {
 } from "@alpha-code/types"
 import path from "node:path"
 
+import { findLast } from "../../shared/array"
 import type { Task } from "../task/Task"
 import {
 	projectAgentLifecycleSnapshot,
@@ -312,7 +313,7 @@ export class TaskSessionRegistry {
 			return true
 		}
 
-		return canAcceptTerminalAskInput(session.task.taskAsk?.ask)
+		return canAcceptTerminalAskInput(this.getCurrentTaskAsk(session.task)?.ask)
 	}
 
 	getLiveTaskIds(): string[] {
@@ -566,21 +567,44 @@ export class TaskSessionRegistry {
 		if (session) session.lifecycleSnapshot = undefined
 	}
 
+	private getCurrentTaskAsk(task: Task): AlphaMessage | undefined {
+		if (typeof task.getActiveAskTimestamp !== "function") return task.taskAsk
+		if (task.abort) return undefined
+		const askTs = task.getActiveAskTimestamp()
+		if (askTs === undefined || (task.lastMessageTs !== undefined && task.lastMessageTs !== askTs)) return undefined
+
+		// Input ownership is installed before publication. The attention fields
+		// follow a delayed timer and must not leave an already-published ask running.
+		const ask = findLast(task.clineMessages, (message) => message.ts === askTs)
+		return ask?.type === "ask" && ask.partial !== true && !ask.isAnswered ? ask : undefined
+	}
+
+	private getTaskProjection(session: TaskSession, taskAsk?: AlphaMessage): AlphaMessageStatusProjection {
+		const { task } = session
+		const snapshot = session.lifecycleSnapshot
+		if (snapshot && !this.lifecycleDegradedTaskIds.has(task.taskId)) {
+			// A terminal turn can already own its task's next input boundary. Project
+			// that exact live ask without converting the containing task into a failure.
+			if (snapshot.status !== "in_progress" && taskAsk) return projectAlphaMessageStatus(taskAsk)
+			return projectAgentLifecycleSnapshot(snapshot, { taskAsk, messages: task.clineMessages })
+		}
+		return projectAlphaMessageStatus({ messages: task.clineMessages, taskAsk, taskStatus: task.taskStatus })
+	}
+
 	private getEffectiveLifecycle(session: TaskSession): TaskLifecycleState {
 		if (isTerminalLifecycle(session.lifecycle)) {
 			return session.lifecycle
 		}
-		if (isTerminalAsk(session.task.taskAsk?.ask)) {
+		const taskAsk = this.getCurrentTaskAsk(session.task)
+		if (isTerminalAsk(taskAsk?.ask)) {
 			return TaskLifecycleState.Completed
 		}
 		if (
-			session.lifecycleSnapshot?.status === "in_progress" &&
-			!this.lifecycleDegradedTaskIds.has(session.task.taskId)
+			taskAsk ||
+			(session.lifecycleSnapshot?.status === "in_progress" &&
+				!this.lifecycleDegradedTaskIds.has(session.task.taskId))
 		) {
-			return projectAgentLifecycleSnapshot(session.lifecycleSnapshot, {
-				taskAsk: session.task.taskAsk,
-				messages: session.task.clineMessages,
-			}).lifecycle
+			return this.getTaskProjection(session, taskAsk).lifecycle
 		}
 
 		return session.lifecycle
@@ -605,25 +629,17 @@ export class TaskSessionRegistry {
 			const { task } = session
 			const tokenUsage = task.tokenUsage
 			const lifecycle = this.getEffectiveLifecycle(session)
-			const taskAsk = task.taskAsk
+			const taskAsk = this.getCurrentTaskAsk(task)
 			const isTerminal = isTerminalLifecycle(lifecycle)
-			const projection: AlphaMessageStatusProjection =
-				session.lifecycleSnapshot && !this.lifecycleDegradedTaskIds.has(task.taskId)
-					? projectAgentLifecycleSnapshot(session.lifecycleSnapshot, {
-							taskAsk,
-							messages: task.clineMessages,
-						})
-					: projectAlphaMessageStatus({
-							messages: task.clineMessages,
-							taskAsk,
-							taskStatus: task.taskStatus,
-						})
+			const projection = this.getTaskProjection(session, taskAsk)
 			const isWaitingForInput =
 				!isTerminal &&
 				(lifecycle === TaskLifecycleState.Waiting || projection.isWaitingForInput || Boolean(taskAsk))
 			const waitingReason = isTerminal
 				? undefined
-				: (session.waitingReason ?? projection.waitingReason ?? taskAsk?.ask)
+				: taskAsk
+					? (projection.waitingReason ?? session.waitingReason ?? taskAsk.ask)
+					: (session.waitingReason ?? projection.waitingReason)
 			const status = isTerminal
 				? TaskStatus.Idle
 				: isWaitingForInput

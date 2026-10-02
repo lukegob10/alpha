@@ -88,6 +88,7 @@ export const FollowUpSuggest = ({
 	])
 	const handleSuggestionClick = useCallback(
 		(suggestion: SuggestionItem, event: React.MouseEvent) => {
+			if (isAnswered) return
 			// Mark a suggestion as selected if it's not a shift-click (which just copies to input)
 			if (!event.shiftKey) {
 				setSuggestionSelected(true)
@@ -100,7 +101,7 @@ export const FollowUpSuggest = ({
 			// The parent component will handle mode switching if needed
 			onSuggestionClick?.(suggestion, event)
 		},
-		[onSuggestionClick, onCancelAutoApproval],
+		[onSuggestionClick, onCancelAutoApproval, isAnswered],
 	)
 
 	// Don't render if there are no suggestions or no click handler.
@@ -127,6 +128,7 @@ export const FollowUpSuggest = ({
 									"border-vscode-foreground/60 rounded-b-none -mb-1",
 							)}
 							onClick={(event) => handleSuggestionClick(suggestion, event)}
+							disabled={isAnswered}
 							aria-label={suggestion.answer}>
 							{suggestion.answer}
 						</Button>

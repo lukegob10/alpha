@@ -16,7 +16,7 @@ const options: WorkflowOptions = {
 	scenarioId: "review-edit-test-commit-followup",
 	phase: "run",
 	workspace: "/fixture",
-	hostVersion: "1.122.1",
+	hostVersion: "1.125.0",
 	providerMode: "scripted",
 	model: { id: "fixture" },
 	turns: 6,
