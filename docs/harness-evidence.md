@@ -11,6 +11,13 @@ On a fresh checkout, build the shared types before invoking the harness. Its reu
 schemas from `@alpha-code/types`, so lane commands cannot supply that prerequisite after the harness has already loaded.
 QA and release workflows build the package before invoking any harness lane or matrix command.
 
+Windows ownership inspection has a 30-second process deadline to allow cold CIM initialization. The host must still
+prove its ancestry; unavailable inspection, incomplete chains, foreign owners and cycles cannot pass. A real child-process
+test exercises the OS lookup in addition to controlled ancestry tests. Host startup failures retain the inspector's
+bounded message so an inspection failure can be distinguished from a foreign process. The local COM lookup follows
+[Microsoft's Get-CimInstance contract](https://learn.microsoft.com/en-us/powershell/module/cimcmdlets/get-ciminstance?view=powershell-5.1),
+retrieved 2026-10-02; it records only process and parent IDs, without command lines or environment values.
+
 ```sh
 pnpm --filter @alpha-code/types build
 pnpm harness doctor

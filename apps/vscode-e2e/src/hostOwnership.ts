@@ -19,7 +19,9 @@ async function readProcessParents(): Promise<Map<number, number>> {
 				"-Command",
 				"Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress",
 			],
-			{ timeout: 10_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true },
+			// Allow cold CIM initialization within the Windows inspection deadline.
+			// Inspection stays bounded and must still prove the complete ancestry chain.
+			{ timeout: 30_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true },
 		)
 		const rows: unknown = JSON.parse(stdout)
 		if (!Array.isArray(rows)) throw new Error("Process ancestry is unavailable")

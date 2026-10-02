@@ -154,9 +154,12 @@ export async function run() {
 	}
 	try {
 		ownershipGate = await verifyTestHostOwnership(process.env)
-	} catch {
+	} catch (error) {
 		await recordPreflight("blocked", "host-not-owned")
-		throw new Error("The test host is not owned by this test runner")
+		// The inspector reads only numeric process relationships. Preserve its bounded
+		// failure context so an unavailable CIM service is not reported as a foreign host.
+		const detail = error instanceof Error ? error.message.slice(0, 2_048) : "Process ancestry inspection failed"
+		throw new Error(`The test host could not prove runner ownership: ${detail}`)
 	}
 	if (artifactsDir)
 		await fs.writeFile(

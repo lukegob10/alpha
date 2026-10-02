@@ -3,7 +3,25 @@ import * as assert from "node:assert/strict"
 import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
+import { execFile } from "child_process"
+import { promisify } from "util"
 import { acquireProfileLease, assertRunnerAncestry, verifyTestHostOwnership } from "../hostOwnership"
+
+test("verifies a real child process through the operating system ancestry inspector", { timeout: 45_000 }, async () => {
+	const executeFile = promisify(execFile)
+	await executeFile(
+		process.execPath,
+		[
+			"--require",
+			"tsx/cjs",
+			"--eval",
+			"require(process.argv[1]).assertRunnerAncestry(Number(process.argv[2])).catch(error => { console.error(error.message); process.exitCode = 1 })",
+			require.resolve("../hostOwnership"),
+			String(process.pid),
+		],
+		{ timeout: 40_000, maxBuffer: 64 * 1024, windowsHide: true },
+	)
+})
 
 test("verifies disposable runner-managed hosts through the same ancestry gate as persistent profiles", async () => {
 	for (const profile of [undefined, "owned-profile"]) {
