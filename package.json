@@ -2,8 +2,8 @@
 	"name": "alpha",
 	"packageManager": "pnpm@11.24.0",
 	"engines": {
-		"node": "24.14.1",
-		"npm": "11.11.0"
+		"node": "24.21.0",
+		"npm": "11.19.0"
 	},
 	"scripts": {
 		"harness": "node scripts/harness/run.mjs",

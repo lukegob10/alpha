@@ -29,11 +29,11 @@ seven fixed engine scripts or claim unmeasured provider-token savings.
 
 ## Run
 
-From the repository root with Node 24.14.1, npm 11.11.0, and pnpm 11.24.0:
+From the repository root with Node 24.21.0, npm 11.19.0, and pnpm 11.24.0:
 
 ```sh
 node --test scripts/evals/proportional-scope-report.test.mjs
-pnpm --dir src test -- core/agent/__tests__/proportionalScope.integration.spec.ts
+pnpm --dir src test core/agent/__tests__/proportionalScope.integration.spec.ts
 ```
 
 To save one privacy-safe report per case, set `ALPHA_SCOPE_REPORT_DIR` to an output directory before running the integration

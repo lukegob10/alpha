@@ -73,7 +73,7 @@
 	"devDependencies": {
 		"@alpha-code/config-eslint": "workspace:^",
 		"@alpha-code/config-typescript": "workspace:^",
-		"@types/node": "20.x",
+		"@types/node": "^24.1.0",
 		"drizzle-kit": "^0.31.1",
 		"tsx": "^4.22.0",
 		"vitest": "^3.2.3"

@@ -31,12 +31,18 @@ RUN curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /
   && apt-get update && apt-get install -y docker-ce-cli \
   && rm -rf /var/lib/apt/lists/*
 
-# Install VS Code
+# Install the exact reference VS Code host, rather than the repository's moving latest package.
+ARG VSCODE_VERSION=1.125.0
 RUN wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > packages.microsoft.gpg \
   && install -D -o root -g root -m 644 packages.microsoft.gpg /etc/apt/keyrings/packages.microsoft.gpg \
   && echo "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" | tee /etc/apt/sources.list.d/vscode.list > /dev/null \
   && rm -f packages.microsoft.gpg \
-  && apt-get update && apt-get install -y code \
+  && apt-get update \
+  && alpha_vscode_arch="$(dpkg --print-architecture | sed 's/^amd64$/x64/')" \
+  && wget -qO /tmp/alpha-vscode-host.deb "https://update.code.visualstudio.com/${VSCODE_VERSION}/linux-deb-${alpha_vscode_arch}/stable" \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/alpha-vscode-host.deb \
+  && test "$(dpkg-query --show --showformat='${Version}' code | cut -d- -f1)" = "${VSCODE_VERSION}" \
+  && rm -f /tmp/alpha-vscode-host.deb \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /roo
@@ -50,8 +56,8 @@ ENV MISE_DATA_DIR="/root/.local/share/mise"
 ENV PATH="/root/.local/share/mise/shims:/root/.local/bin:$PATH"
 
 # Define pinned language runtime versions for evaluator exercises
-ARG NODE_VERSION=24.14.1
-ARG NPM_VERSION=11.11.0
+ARG NODE_VERSION=24.21.0
+ARG NPM_VERSION=11.19.0
 ARG PNPM_VERSION=11.24.0
 ARG PYTHON_VERSION=3.13.2
 ARG GO_VERSION=1.24.2

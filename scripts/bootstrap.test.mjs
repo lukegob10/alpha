@@ -7,8 +7,47 @@ import test from "node:test"
 import { fileURLToPath } from "node:url"
 
 const bootstrapPath = fileURLToPath(new URL("./bootstrap.mjs", import.meta.url))
-const { packageManager } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
+const { packageManager, engines, devDependencies } = JSON.parse(
+	readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+)
 const requiredVersion = packageManager.slice("pnpm@".length)
+
+test("local, extension, CI and evaluator toolchain pins agree", () => {
+	const read = (file) => readFileSync(new URL(file, import.meta.url), "utf8")
+	const extension = JSON.parse(read("../src/package.json"))
+	const action = read("../.github/actions/setup-node-pnpm/action.yml")
+	const runner = read("../packages/evals/Dockerfile.runner")
+	const inputDefault = (name) =>
+		new RegExp(`^    ${name}:\\r?\\n(?:[^\\n]*\\n){2}        default: "([^"]+)"`, "m").exec(action)?.[1]
+	const runnerArg = (name) => new RegExp(`^ARG ${name}=([^\\r\\n]+)`, "m").exec(runner)?.[1]
+
+	assert.equal(read("../.nvmrc").trim(), `v${engines.node}`)
+	assert.equal(extension.engines.node, engines.node)
+	assert.equal(inputDefault("node-version"), engines.node)
+	assert.equal(inputDefault("npm-version"), engines.npm)
+	assert.equal(inputDefault("pnpm-version"), requiredVersion)
+	assert.equal(runnerArg("NODE_VERSION"), engines.node)
+	assert.equal(runnerArg("NPM_VERSION"), engines.npm)
+	assert.equal(runnerArg("PNPM_VERSION"), requiredVersion)
+	assert.equal(runnerArg("VSCODE_VERSION"), extension.engines.vscode.replace(/^[~^]/u, ""))
+	for (const workspace of [
+		"src",
+		"webview-ui",
+		"apps/vscode-e2e",
+		"packages/build",
+		"packages/core",
+		"packages/evals",
+		"packages/ipc",
+		"packages/telemetry",
+		"packages/types",
+	]) {
+		assert.equal(
+			JSON.parse(read(`../${workspace}/package.json`)).devDependencies["@types/node"],
+			devDependencies["@types/node"],
+			workspace,
+		)
+	}
+})
 
 function runBootstrap(t, { installedVersion, invokedVersion, installStatus = 0 }) {
 	const root = mkdtempSync(join(tmpdir(), "alpha-bootstrap-test-"))

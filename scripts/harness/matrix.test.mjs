@@ -13,7 +13,7 @@ import { proofFixture } from "./fixtures/outcome-proof.mjs"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const source = { commit: "a".repeat(40), dirty: false, treeSha256: "a".repeat(64), lockfileSha256: "a".repeat(64) }
-const context = { source, node: "24.14.1", pnpm: "11.24.0", now: Date.parse("2026-10-02T11:00:00.000Z"), strict: true }
+const context = { source, node: "24.21.0", pnpm: "11.24.0", now: Date.parse("2026-10-02T11:00:00.000Z"), strict: true }
 function report(lane = "static", id = "report-test") {
 	return {
 		schemaVersion: 2,

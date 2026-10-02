@@ -1,8 +1,8 @@
-import { ChildProcess, spawn, type ChildProcess as ChildProcessHandle } from "node:child_process"
+import childProcess, { ChildProcess, spawn, type ChildProcess as ChildProcessHandle } from "node:child_process"
 import { access, mkdtemp, readFile, rm } from "node:fs/promises"
 import { watch } from "node:fs"
 import * as assert from "node:assert/strict"
-import { afterEach, test } from "node:test"
+import { afterEach, test, type TestContext } from "node:test"
 import * as os from "node:os"
 import * as path from "node:path"
 
@@ -14,6 +14,78 @@ const disposableChildren: ChildProcessHandle[] = []
 afterEach(async () => {
 	for (const child of disposableChildren.splice(0)) await disposeChild(child)
 	await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+})
+
+function mockWindowsProcesses(context: TestContext) {
+	const platform = Object.getOwnPropertyDescriptor(process, "platform")!
+	Object.defineProperty(process, "platform", { value: "win32" })
+	context.after(() => Object.defineProperty(process, "platform", platform))
+	context.mock.timers.enable({ apis: ["setTimeout"] })
+	const child = new ChildProcess()
+	Object.defineProperty(child, "pid", { value: 12345 })
+	const taskkill = new ChildProcess()
+	const childKill = context.mock.method(child, "kill", () => true)
+	context.mock.method(taskkill, "kill", () => true)
+	const spawner = context.mock.method(childProcess, "spawn", (command: string) =>
+		command === "taskkill.exe" ? taskkill : child,
+	)
+	return { child, taskkill, childKill, spawner }
+}
+
+test("Windows cancellation waits for tree termination within taskkill's process budget", async (context) => {
+	const { child, taskkill, childKill, spawner } = mockWindowsProcesses(context)
+	const controller = new AbortController()
+	const running = runOwnedProcess(
+		{ executable: "fixture-node", args: [], cwd: process.cwd() },
+		{
+			signal: controller.signal,
+			killGraceMs: 25,
+		},
+	)
+	let finished = false
+	void running.then(
+		() => {
+			finished = true
+		},
+		() => {
+			finished = true
+		},
+	)
+	controller.abort()
+	context.mock.timers.tick(1_500)
+	await Promise.resolve()
+	assert.equal(finished, false)
+	assert.equal(childKill.mock.callCount(), 0)
+	const treeTerminationCall = spawner.mock.calls[1]
+	assert.ok(treeTerminationCall)
+	assert.deepEqual(treeTerminationCall.arguments.slice(0, 2), ["taskkill.exe", ["/PID", "12345", "/T", "/F"]])
+	taskkill.emit("close", 0, null)
+	child.emit("close", 1, null)
+	assert.equal((await running).cleanupVerified, true)
+	assert.equal(childKill.mock.callCount(), 0)
+})
+
+test("Windows cancellation still rejects with unverified cleanup when tree termination never closes", async (context) => {
+	const { child } = mockWindowsProcesses(context)
+	const controller = new AbortController()
+	const running = runOwnedProcess(
+		{ executable: "fixture-node", args: [], cwd: process.cwd() },
+		{
+			signal: controller.signal,
+			killGraceMs: 25,
+		},
+	)
+	const rejected = assert.rejects(
+		running,
+		(error: unknown) =>
+			error instanceof Error &&
+			error.name === "OwnedProcessCleanupError" &&
+			(error as Error & { cleanupVerified?: boolean }).cleanupVerified === false,
+	)
+	controller.abort()
+	context.mock.timers.tick(6_000)
+	await rejected
+	assert.equal(child.listenerCount("close"), 0)
 })
 
 test("runs a directly-spawned child and captures both output streams", async () => {

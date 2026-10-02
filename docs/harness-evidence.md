@@ -1,11 +1,38 @@
 # Harness evidence runbook
 
 The local harness composes the existing package runners. It does not implement another agent, grader, task loop or test
-framework. Alpha's extension remains the system under test; exact-host runs use VS Code **1.125.0**. Node **24.14.1** and
+framework. Alpha's extension remains the system under test; exact-host runs use VS Code **1.125.0**. Node **24.21.0** and
 pnpm **11.24.0** are required. See [the hardening investigation](testing-evaluation-hardening.md) for reproduced failures,
 upstream sources and compatibility changes.
 
 ## Running the affected gates
+
+The 2026-10-02 toolchain alignment pins local development, both manifests, CI defaults and the evaluator runner to
+[Node 24.21.0 LTS](https://nodejs.org/en/blog/release/v24.21.0), with its bundled npm 11.19.0 from the
+[official distribution index](https://nodejs.org/dist/index.json) (retrieved 2026-10-02). pnpm remains 11.24.0.
+The bootstrap contract test checks these pins agree. Historical measurements retain the runtime actually used.
+All workspace Node typings now use the shared Node 24 specification, resolving to the existing 24.2.1 dependency;
+the deliberate lockfile update preserves every production package's metadata and version.
+VS Code stays exactly 1.125.0: its [host configuration](https://github.com/microsoft/vscode/blob/1.125.0/.npmrc)
+controls the embedded Electron runtime independently of development Node.
+The evaluator image also installs the versioned 1.125.0 Debian package and verifies its installed package version,
+following the [official Linux installation contract](https://code.visualstudio.com/docs/setup/linux) (retrieved
+2026-10-02), so its host cannot drift with the apt repository's latest package.
+
+The external CI actions now declare `runs.using: node24`: checkout, setup-node, cache and pnpm setup use v5, artifact
+upload uses v6, and CodeQL and Docker Buildx setup use v4. Their official action manifests and migration notes were
+retrieved 2026-10-02, following [GitHub's Node 20 retirement](https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/).
+The [artifact v6 migration](https://github.com/actions/upload-artifact/tree/v6#v6---whats-new) requires runner 2.327.1
+or newer; the observed hosted release runner was 2.337.0. Setup-node's new automatic package-manager cache is explicitly
+disabled because the composite action already owns the pnpm store cache. Node 20 deprecation was a warning in the
+failed release, not the cause of its native integration failure.
+
+The Node 24.21.0 runner checks also reproduced a Windows cancellation deadline mismatch: the root fallback ran after
+about one second even though the owned `taskkill.exe /T /F` operation had a five-second deadline. The outer cleanup
+deadline now allows that operation's existing budget plus one second for close; an unfinished tree still rejects with
+`cleanupVerified=false`. A controlled-timer regression failed before the fix when the root was killed at 1.5 seconds
+while tree termination was pending, and a second regression retains bounded failure for a process that never closes.
+POSIX signal grace and all process-ownership checks are unchanged.
 
 On a fresh checkout, build the shared types before invoking the harness. Its reused host evidence helpers consume runtime
 schemas from `@alpha-code/types`, so lane commands cannot supply that prerequisite after the harness has already loaded.
@@ -99,7 +126,7 @@ established. Empty surface/column intersections remain **coverage-gap**. These l
 repository quality score.
 
 The Node reporter consumes structured per-file and cumulative summaries from the
-[Node 24.14.1 test-runner contract](https://github.com/nodejs/node/blob/v24.14.1/doc/api/test.md)
+[Node 24.21.0 test-runner contract](https://github.com/nodejs/node/blob/v24.21.0/doc/api/test.md)
 (retrieved 2026-10-02). A test against the pinned runtime verifies that boundary; console reporter text is not parsed.
 
 The 15 layers are explicitly represented, with zero-based IDs matching the JSON:

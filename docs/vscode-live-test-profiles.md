@@ -44,7 +44,7 @@ behavior or serve an unrelated Vite UI for acceptance.
 
 ## Prepare and discover
 
-Use the repository toolchain: Node 24.14.1, npm 11.11.0, and pnpm 11.24.0. From the repository root:
+Use the repository toolchain: Node 24.21.0, npm 11.19.0, and pnpm 11.24.0. From the repository root:
 
 ```sh
 pnpm install --frozen-lockfile

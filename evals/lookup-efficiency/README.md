@@ -12,7 +12,7 @@ See [prompts.md](prompts.md). Cases: named-function definition (positive), named
 
 ## Run
 
-From the repository root with Node 24.14.1:
+From the repository root with Node 24.21.0:
 
 ```sh
 node --test scripts/evals/lookup-efficiency-report.test.mjs

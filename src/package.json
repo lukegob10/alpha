@@ -11,7 +11,7 @@
 	},
 	"engines": {
 		"vscode": "^1.125.0",
-		"node": "24.14.1"
+		"node": "24.21.0"
 	},
 	"author": {
 		"name": "Alpha"
@@ -631,7 +631,7 @@
 		"@types/debug": "^4.1.12",
 		"@types/diff": "^5.2.1",
 		"@types/lodash.debounce": "^4.0.9",
-		"@types/node": "20.x",
+		"@types/node": "^24.1.0",
 		"@types/proper-lockfile": "^4.1.4",
 		"@types/ps-tree": "^1.1.6",
 		"@types/vscode": "1.125.0",

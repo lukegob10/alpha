@@ -13,7 +13,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Checkout code
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
             - name: Verify all translations are complete
@@ -23,7 +23,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Checkout code
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
             - name: Run knip checks
@@ -33,7 +33,7 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Checkout code
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
             - name: Build workspace types
@@ -45,7 +45,7 @@ jobs:
               run: pnpm harness matrix --output artifacts/harness/matrix-static.json --require static
             - name: Retain mechanical evidence
               if: always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: mechanical-evidence
                   path: artifacts/harness/
@@ -64,7 +64,7 @@ jobs:
                       name: windows-latest
         steps:
             - name: Checkout code
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
             - name: Build workspace types
@@ -85,7 +85,7 @@ jobs:
               run: pnpm harness matrix --output artifacts/harness/matrix-tooling.json --require tooling
             - name: Retain local command reports
               if: always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: local-harness-${{ matrix.name }}
                   path: artifacts/harness/
@@ -94,7 +94,7 @@ jobs:
     offline-evaluator:
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v5
             - uses: ./.github/actions/setup-node-pnpm
             - name: Build workspace types
               run: pnpm --filter @alpha-code/types build
@@ -104,7 +104,7 @@ jobs:
             - name: Require current offline evaluator evidence
               if: always()
               run: pnpm harness matrix --output artifacts/harness/matrix-offline.json --require offline
-            - uses: actions/upload-artifact@v4
+            - uses: actions/upload-artifact@v6
               if: always()
               with:
                   name: offline-evaluator
@@ -117,7 +117,7 @@ jobs:
         timeout-minutes: 45
         steps:
             - name: Checkout code
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
             - name: Build workspace types
@@ -133,7 +133,7 @@ jobs:
               run: pnpm harness matrix --output artifacts/harness/matrix-confidence.json --require confidence
             - name: Retain confidence results and failure diagnostics
               if: always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: core-confidence-${{ github.run_id }}-${{ github.run_attempt }}
                   path: |
@@ -154,7 +154,7 @@ jobs:
         runs-on: windows-latest
         timeout-minutes: 60
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v5
             - uses: ./.github/actions/setup-node-pnpm
             - name: Build workspace types
               run: pnpm --filter @alpha-code/types build
@@ -167,7 +167,7 @@ jobs:
               run: pnpm harness matrix --output artifacts/harness/matrix-outcomes.json --require host --require outcomes
             - name: Retain projected outcome evidence
               if: always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: scripted-outcomes-${{ github.run_id }}-${{ github.run_attempt }}
                   path: |
