@@ -3,6 +3,7 @@ import * as assert from "node:assert/strict"
 import * as fs from "fs/promises"
 import * as path from "path"
 import * as os from "os"
+import { createRequire } from "node:module"
 import { readRunOptions, runExtensionTests, type ExtensionTestRunResult } from "../runTest"
 import { prepareEvidenceRun, captureRunEvidence, markRunRetentionEligible } from "../evidence"
 import { EVIDENCE_RETENTION_ELIGIBLE } from "../evidence/retention"
@@ -25,6 +26,89 @@ const writeHostPreflight = async (options: HostLaunchOptions, version = "1.125.0
 		}),
 	)
 }
+
+test("strict suite selection is an explicit runner flag", () => {
+	const selected = readRunOptions(["--provider", "scripted", "--require-all-tests"], {})
+	assert.equal(selected.requireAllTests, true)
+	assert.equal(readRunOptions(["--provider", "scripted"], {}).requireAllTests, false)
+})
+
+test("actual disposable completion cannot pass without observed host ownership", async (context) => {
+	// Intercept the production launch module to exercise completion validation without starting VS Code.
+	const launcher = createRequire(__filename)("../hostLaunch") as typeof import("../hostLaunch")
+	context.mock.method(launcher, "launchExtensionHost", async (options: HostLaunchOptions) => {
+		await writeHostPreflight(options)
+		return 0
+	})
+	const result = await runExtensionTests({ providerMode: "scripted", vscodeVersion: "1.125.0" })
+	try {
+		assert.equal(result.execution, "extension-host")
+		assert.equal(result.status, "blocked")
+		assert.equal(result.failure, "host-not-owned")
+		assert.equal(result.exitCode, 1)
+		assert.equal(result.ownershipGate, undefined)
+	} finally {
+		assert.equal(await fs.realpath(path.dirname(result.temporaryRoot!)), await fs.realpath(os.tmpdir()))
+		assert.match(path.basename(result.temporaryRoot!), /^alpha-vscode-e2e-/)
+		await fs.rm(result.temporaryRoot!, { recursive: true, force: true })
+	}
+})
+
+test("strict launches require terminal coherent test counts even after a zero host exit", async () => {
+	for (const variant of [
+		"passed",
+		"missing-stage",
+		"missing-policy",
+		"missing-counts",
+		"pending",
+		"incoherent",
+	] as const) {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-strict-runner-"))
+		try {
+			const result = await runExtensionTests(
+				{
+					providerMode: "scripted",
+					vscodeVersion: "1.125.0",
+					profileDir: path.join(root, "profile"),
+					workspace: path.join(root, "workspace"),
+					artifactsDir: path.join(root, "artifacts"),
+					initializeProfile: true,
+					requireAllTests: true,
+					testFile: "extension.test",
+					extensionTestsEnv: { ALPHA_E2E_REQUIRE_ALL_TESTS: "0" },
+				},
+				{
+					launch: async (launch) => {
+						await writeHostPreflight(launch)
+						const file = path.join(
+							launch.extensionTestsEnv!.ALPHA_E2E_ARTIFACTS_DIR!,
+							"host-preflight.json",
+						)
+						const receipt = JSON.parse(await fs.readFile(file, "utf8"))
+						receipt.stage = "suite-complete"
+						receipt.requireAllTests = true
+						receipt.testCounts = { total: 1, passed: 1, pending: 0, executed: 1, failed: 0 }
+						if (variant === "missing-stage") delete receipt.stage
+						if (variant === "missing-policy") delete receipt.requireAllTests
+						if (variant === "missing-counts") delete receipt.testCounts
+						if (variant === "pending")
+							receipt.testCounts = { total: 2, passed: 1, pending: 1, executed: 1, failed: 0 }
+						if (variant === "incoherent") receipt.testCounts.passed = 2
+						await fs.writeFile(file, JSON.stringify(receipt))
+						return 0
+					},
+				},
+			)
+			assert.equal(result.status, variant === "passed" ? "passed" : "blocked")
+			assert.equal(result.exitCode, variant === "passed" ? 0 : 1)
+			if (variant === "pending") assert.equal(result.failure, "tests-skipped")
+		} finally {
+			assert.equal(path.dirname(root), os.tmpdir())
+			assert.match(path.basename(root), /^alpha-strict-runner-/)
+			await fs.rm(root, { recursive: true, force: true })
+		}
+	}
+})
 
 async function writeNormalCompletion(options: HostLaunchOptions, status: "passed" | "failed" = "passed") {
 	const { artifactsDir, expected } = options.liveHost!

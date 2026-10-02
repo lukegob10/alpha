@@ -69,6 +69,16 @@ export async function assertRunnerAncestry(
 	)
 }
 
+/** Every runner-managed host needs ancestry proof, including disposable profiles. */
+export async function verifyTestHostOwnership(
+	env: NodeJS.ProcessEnv,
+	assertAncestry = assertRunnerAncestry,
+): Promise<"verified" | undefined> {
+	if (!env.ALPHA_E2E_PROFILE_DIR && env.ALPHA_E2E_RUNNER_PID === undefined) return undefined
+	await assertAncestry(Number(env.ALPHA_E2E_RUNNER_PID))
+	return "verified"
+}
+
 /** Cooperating launchers serialize per profile/version; unknown or crashed leases are never stolen by age. */
 export async function acquireProfileLease(userDataDir: string): Promise<() => Promise<void>> {
 	const leasePath = path.join(path.dirname(userDataDir), ".alpha-e2e-launch.json")

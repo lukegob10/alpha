@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs/promises"
-import { createHash } from "crypto"
+import { createHash, randomUUID } from "crypto"
 import os from "os"
 import path from "path"
+import { ticketSchema, type TicketStatus } from "@alpha-code/types"
 import * as atomicWrite from "../../../core/task-persistence/atomicWrite"
 import { TicketStore } from "../TicketStore"
 
@@ -18,19 +19,38 @@ describe("TicketStore deletion", () => {
 		vi.restoreAllMocks()
 		await fs.rm(home, { recursive: true, force: true })
 	})
+	const writeFixture = async (name: string, reference: string, status: TicketStatus) => {
+		const id = randomUUID()
+		const timestamp = "2026-10-02T00:00:00.000Z"
+		const text = `---\nschemaVersion: 1\nid: ${id}\nreference: ${reference}\nname: ${name}\ncreatedAt: "${timestamp}"\nupdatedAt: "${timestamp}"\nlinkedTaskIds: []\n---\n## Description\nSnapshot content\n\n## Implementation summary\nCompleted work\n`
+		const file = path.join(store.directory, status, `${id}.md`)
+		await fs.mkdir(path.dirname(file), { recursive: true })
+		await fs.writeFile(file, text)
+		return ticketSchema.parse({
+			schemaVersion: 1,
+			id,
+			reference,
+			name,
+			status,
+			createdAt: timestamp,
+			updatedAt: timestamp,
+			linkedTaskIds: [],
+			description: "Snapshot content",
+			context: "",
+			successCriteria: "",
+			implementationSummary: "Completed work",
+			revision: createHash("sha256").update(`${status}\0${text}`).digest("hex"),
+		})
+	}
 
 	it.each(["backlog", "in-progress", "complete", "canceled"] as const)(
 		"deletes only the selected %s ticket",
 		async (status) => {
-			const created = await store.create({ name: "Delete this ticket", description: "Snapshot content" })
-			const ticket = await store.update({
-				id: created.id,
-				expectedRevision: created.revision,
-				status,
-				implementationSummary: "Completed work",
-			})
-			const retained = await store.create({ name: "Keep this ticket" })
-			const file = await store.markdownPath(ticket.id)
+			// Delete consumes authoritative Markdown. CRUD setup is covered in TicketStore.spec;
+			// these cases exercise the deletion boundary for each persisted status directly.
+			const ticket = await writeFixture("Delete this ticket", "PRO-01", status)
+			const retained = await writeFixture("Keep this ticket", "PRO-02", "backlog")
+			const file = path.join(store.directory, status, `${ticket.id}.md`)
 			expect(await store.delete({ id: ticket.reference!, expectedRevision: ticket.revision })).toEqual(ticket)
 			await expect(fs.stat(file)).rejects.toMatchObject({ code: "ENOENT" })
 			await expect(store.read(ticket.id)).rejects.toThrow("not found")

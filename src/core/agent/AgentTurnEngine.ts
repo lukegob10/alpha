@@ -104,6 +104,17 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error)
 }
 
+function mergePhaseResult(current: AgentTurnPhaseResult, next: AgentTurnPhaseResult | void): AgentTurnPhaseResult {
+	// Completion and cleanup still run after a fault, but cannot replace the
+	// first terminal phase or its diagnostics with a secondary failure.
+	if (!next || (current.status && current.status !== "completed")) return current
+	return {
+		status: next.status ?? current.status,
+		reason: next.reason ?? current.reason,
+		error: next.error ?? current.error,
+	}
+}
+
 function outcomeStatus(response: AgentResponse): AgentTurnStepStatus | undefined {
 	switch (response.outcome?.status) {
 		case "failed":
@@ -114,6 +125,18 @@ function outcomeStatus(response: AgentResponse): AgentTurnStepStatus | undefined
 			return "aborted"
 		default:
 			return response.items.some((item) => item.type === "error") ? "failed" : undefined
+	}
+}
+
+function captureResponsePhase(phase: AgentTurnPhaseResult, response: AgentResponse): AgentTurnPhaseResult {
+	if (phase.status && phase.status !== "completed") return phase
+	const status = outcomeStatus(response)
+	if (!status) return phase
+	return {
+		...phase,
+		status,
+		reason:
+			phase.reason ?? response.outcome?.reason ?? response.items.find((item) => item.type === "error")?.message,
 	}
 }
 
@@ -180,11 +203,16 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 					return terminalOutcome("failed", steps, undefined, errorMessage(error), error)
 				}
 				steps += 1
+				result = { ...result, ...captureResponsePhase(result, result.response) }
 
 				try {
-					await this.host.onStepComplete?.(result.response, steps)
+					const completed = await this.host.onStepComplete?.(result.response, steps)
+					result = { ...result, ...mergePhaseResult(result, completed) }
 				} catch (error) {
-					return terminalOutcome("failed", steps, result.response, errorMessage(error), error)
+					result = {
+						...result,
+						...mergePhaseResult(result, { status: "failed", reason: errorMessage(error), error }),
+					}
 				}
 
 				if (this.host.shouldAbort()) {
@@ -272,17 +300,15 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 				}
 				steps += 1
 
-				let status = sample.status
-				let reason = sample.reason
-				let error = sample.error
+				let { status, reason, error } = captureResponsePhase(sample, sample.response)
 				let outcome: AgentTurnOutcome | undefined
 				let continuationInput: TInput | undefined
 				let hasContinuation = false
 				const absorbPhase = (result: AgentTurnPhaseResult | void) => {
-					if (!result) return
-					if (result.status && result.status !== "completed") status = result.status
-					if (result.reason !== undefined) reason = result.reason
-					if (result.error !== undefined) error = result.error
+					const merged = mergePhaseResult({ status, reason, error }, result)
+					status = merged.status
+					reason = merged.reason
+					error = merged.error
 				}
 
 				try {
@@ -298,19 +324,13 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 						absorbPhase(await this.host.executeEffects?.(sample, steps))
 					}
 				} catch (phaseError) {
-					status = "failed"
-					reason = errorMessage(phaseError)
-					error = phaseError
+					absorbPhase({ status: "failed", reason: errorMessage(phaseError), error: phaseError })
 				}
 
 				try {
 					absorbPhase(await this.host.onStepComplete?.(sample.response, steps))
 				} catch (callbackError) {
-					if (!status || status === "completed") {
-						status = "failed"
-						reason = errorMessage(callbackError)
-						error = callbackError
-					}
+					absorbPhase({ status: "failed", reason: errorMessage(callbackError), error: callbackError })
 				}
 
 				try {

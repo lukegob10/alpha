@@ -15,8 +15,14 @@ import {
 	developmentScript,
 	type DevelopmentPhaseId,
 } from "./developmentCatalog"
-import { createDevelopmentFixture, disposeDevelopmentFixture, verifyDevelopmentFixture } from "./developmentFixture"
+import {
+	DEVELOPMENT_PHASE_OUTCOME_CHECK_NAMES,
+	createDevelopmentFixture,
+	disposeDevelopmentFixture,
+	verifyDevelopmentFixture,
+} from "./developmentFixture"
 import { TEST_ROOT_OWNERSHIP_MARKER } from "../testProfile"
+import { applyFixturePatch } from "./fixturePatchTestHelper"
 
 const execFileAsync = promisify(execFile)
 const TEST_ROOT_PREFIX = "alpha-code-development-bank-test-"
@@ -62,39 +68,21 @@ function safeChildEnvironment(workspace: string): NodeJS.ProcessEnv {
 	return environment
 }
 
-function relativeWorkspacePath(workspace: string, value: unknown): string {
-	if (typeof value !== "string" || value.trim().length === 0 || value.includes("\0")) {
-		throw new Error("scripted file path must be non-empty")
-	}
-	const resolved = path.resolve(workspace, value)
-	const relative = path.relative(workspace, resolved)
-	if (!relative || path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`)) {
-		throw new Error(`scripted file path escapes workspace: ${value}`)
-	}
-	return resolved
-}
-
 async function applyDevelopmentScript(workspace: string, phase: DevelopmentPhaseId): Promise<string[]> {
 	const calls = developmentScript(phase, workspace)
 	const executedCommands: string[] = []
 	for (const call of calls) {
 		const args = call.arguments
 		switch (call.name) {
-			case "read_file":
-				await fs.readFile(relativeWorkspacePath(workspace, args.path), "utf8")
+			case "apply_patch":
+				await applyFixturePatch(workspace, args.patch)
 				break
-			case "write_to_file": {
-				const filePath = relativeWorkspacePath(workspace, args.path)
-				if (typeof args.content !== "string") throw new Error("scripted file content must be a string")
-				await fs.mkdir(path.dirname(filePath), { recursive: true })
-				await fs.writeFile(filePath, args.content, "utf8")
-				break
-			}
-			case "shell": {
-				if (typeof args.command !== "string" || args.cwd !== workspace || args.timeout !== 30) {
+			case "exec_command": {
+				if (typeof args.cmd !== "string" || args.workdir !== workspace || args.yield_time_ms !== 10_000) {
 					throw new Error("scripted command arguments are outside the development harness")
 				}
-				const tokens = tokenize(args.command)
+				assert.ok((DEVELOPMENT_PHASES[phase].commands as readonly string[]).includes(args.cmd))
+				const tokens = tokenize(args.cmd)
 				const program = tokens.shift()
 				if (program === undefined) throw new Error("scripted command is empty")
 				const executable = program === "node" ? process.execPath : program
@@ -106,9 +94,9 @@ async function applyDevelopmentScript(workspace: string, phase: DevelopmentPhase
 					})
 				} catch (error) {
 					const detail = error instanceof Error ? error.message : String(error)
-					throw new Error(`scripted command failed: ${args.command}: ${detail}`)
+					throw new Error(`scripted command failed: ${args.cmd}: ${detail}`)
 				}
-				executedCommands.push(args.command)
+				executedCommands.push(args.cmd)
 				break
 			}
 			default:
@@ -162,6 +150,13 @@ async function assertChecksPass(
 	phase: "baseline" | DevelopmentPhaseId,
 ) {
 	const checks = await verifyDevelopmentFixture(workspace, scenarioId, phase)
+	if (phase === "devBootstrapBuild" || phase === "devInspectReadOnly") {
+		for (const name of DEVELOPMENT_PHASE_OUTCOME_CHECK_NAMES[phase])
+			assert.ok(
+				checks.some((check) => check.name === name && check.passed),
+				`${scenarioId}/${phase} omitted required outcome assertion: ${name}`,
+			)
+	}
 	assert.equal(
 		allChecksPassed(checks),
 		true,
@@ -184,10 +179,10 @@ test("keeps the development catalog typed, bounded, and scriptable", () => {
 		assert.ok(requiredCommands.every((command) => phase.prompt.includes(command)))
 		const calls = developmentScript(phaseId, path.join(tmpdir(), "alpha-code-development-script-preview"))
 		const scriptCommands: string[] = calls
-			.filter((call) => call.name === "shell")
+			.filter((call) => call.name === "exec_command")
 			.map((call) => {
-				if (typeof call.arguments.command !== "string") throw new Error("script command must be a string")
-				return call.arguments.command
+				if (typeof call.arguments.cmd !== "string") throw new Error("script command must be a string")
+				return call.arguments.cmd
 			})
 		assert.ok(requiredCommands.every((command) => scriptCommands.includes(command)))
 	}

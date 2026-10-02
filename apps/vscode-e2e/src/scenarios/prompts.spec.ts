@@ -20,7 +20,7 @@ test("bootstrap discloses the controller-file ignore requirement enforced by the
 
 test("development prompts describe the exact per-call command boundary", () => {
 	for (const phase of Object.values(DEVELOPMENT_PHASES)) {
-		assert.ok(phase.prompt.includes("separate shell call"))
+		assert.ok(phase.prompt.includes("separate exec_command call"))
 		assert.ok(phase.prompt.includes("shell operators"))
 	}
 })

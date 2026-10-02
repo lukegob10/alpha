@@ -1,3 +1,5 @@
+import { addFilePatch, updateFilePatch } from "./scriptedPatch"
+
 export const DEVELOPMENT_SCENARIO_IDS = [
 	"dev-repo-bootstrap",
 	"dev-git-inspect",
@@ -293,6 +295,20 @@ test("every record carries the v2 kind", () => {
 
 type DevelopmentToolCall = { name: string; arguments: Record<string, unknown> }
 
+const developmentReadCommand = (file: string): string =>
+	`node -e "process.stdout.write(require('node:fs').readFileSync('${file}','utf8'))"`
+
+const mergeConflictCart = [
+	DEVELOPMENT_REFERENCE_CONTENT.baseCart.split("module.exports")[0],
+	"<<<<<<< HEAD\n",
+	DEVELOPMENT_REFERENCE_CONTENT.mainCart.slice(DEVELOPMENT_REFERENCE_CONTENT.mainCart.indexOf("function taxedTotal")),
+	"=======\n",
+	DEVELOPMENT_REFERENCE_CONTENT.featureCart.slice(
+		DEVELOPMENT_REFERENCE_CONTENT.featureCart.indexOf("function discountedTotal"),
+	),
+	">>>>>>> feature/cart-discounts\n\n",
+].join("")
+
 const gitCommit = (message: string): string =>
 	`git -c core.autocrlf=false -c core.hooksPath=.git/alpha-empty-hooks -c commit.gpgSign=false -c user.name=AlphaDevelopmentFixture -c user.email=alpha-development@example.invalid commit --no-verify -m "${message}"`
 
@@ -302,8 +318,8 @@ const developmentScope = (commands: readonly string[]): string =>
 		"Do not use network services, remotes, push, dependency installation, delegation, global Git configuration, or deletion of unknown directories.",
 		"Do not edit .alpha-e2e-owned.json, .alpha-development-fixture.json, .alpha-development-state.json, .alphaignore, or any file outside the workspace.",
 		"A successful test command must execute the listed tests with no skipped or todo cases.",
-		"Submit each terminal command as a separate shell call. Do not combine commands or add prefixes, shell operators, pipelines, or command substitution.",
-		"Use Alpha file tools for file inspection and edits. The host permits only these exact terminal commands with the workspace as cwd:",
+		"Submit each terminal command as a separate exec_command call. Do not combine commands or add prefixes, shell operators, pipelines, or command substitution.",
+		"Inspect files with the approved read commands and use apply_patch for edits. The host permits only these exact terminal commands with the workspace as workdir:",
 		...commands,
 	].join("\n")
 
@@ -353,6 +369,24 @@ const migrationCommands = [
 	"git diff -- data/records.json scripts/migrate.cjs",
 ] as const
 
+const inspectAllowedCommands = [
+	developmentReadCommand(DEVELOPMENT_FILES.readme),
+	developmentReadCommand(DEVELOPMENT_FILES.cart),
+	...inspectCommands,
+] as const
+const refactorAllowedCommands = [developmentReadCommand(DEVELOPMENT_FILES.cart), ...refactorCommands] as const
+const selectiveAllowedCommands = [
+	developmentReadCommand(DEVELOPMENT_FILES.cart),
+	developmentReadCommand(DEVELOPMENT_FILES.cartTest),
+	...selectiveCommands,
+] as const
+const mergeAllowedCommands = [developmentReadCommand(DEVELOPMENT_FILES.cart), ...mergeCommands] as const
+const migrationAllowedCommands = [
+	developmentReadCommand(DEVELOPMENT_FILES.data),
+	developmentReadCommand(DEVELOPMENT_FILES.migration),
+	...migrationCommands,
+] as const
+
 export const RECOVERY_COMMANDS = {
 	rg: "rg -n -i -- Copilot lib",
 	narrow: "git grep -n -i -e Copilot -- lib",
@@ -369,7 +403,11 @@ const searchCommands = [
 	RECOVERY_COMMANDS.status,
 ]
 const absentCommands = [RECOVERY_COMMANDS.absent, RECOVERY_COMMANDS.status]
-const unavailableCommands = [RECOVERY_COMMANDS.verify, RECOVERY_COMMANDS.status]
+const unavailableCommands = [
+	developmentReadCommand("scripts/verify-integration.cjs"),
+	RECOVERY_COMMANDS.verify,
+	RECOVERY_COMMANDS.status,
+]
 
 export const DEVELOPMENT_PHASES = Object.freeze({
 	devSearchScope: {
@@ -418,61 +456,61 @@ export const DEVELOPMENT_PHASES = Object.freeze({
 	devInspectReadOnly: {
 		prompt: [
 			"[development:inspect]",
-			developmentScope(inspectCommands),
+			developmentScope(inspectAllowedCommands),
 			"Inspect the repository's branch, recent history, tracked changes, staged changes, and untracked files for a handoff report.",
 			"This is strictly read-only: do not write files, stage or unstage anything, commit, checkout, merge, reset, or otherwise change the index, HEAD, tracked bytes, or untracked bytes. Report what you observed after the inspection.",
 		].join("\n"),
-		commands: inspectCommands,
+		commands: inspectAllowedCommands,
 		requiredCommands: inspectCommands,
 	},
 	devRefactorExtract: {
 		prompt: [
 			"[development:refactor]",
-			developmentScope(refactorCommands),
+			developmentScope(refactorAllowedCommands),
 			"On a new feature/cart-total-extraction branch, perform a behavior-preserving multi-file extraction from lib/cart.cjs into lib/lineItemTotal.cjs. That helper must export a lineItemTotal(item) function, while lib/cart.cjs retains the public total(items) API.",
 			"Keep the existing API tests intact, run the real node:test suite, stage only the refactor files, and create one local commit. The branch must remain local and the working tree must be clean when finished.",
 		].join("\n"),
-		commands: refactorCommands,
+		commands: refactorAllowedCommands,
 		requiredCommands: [refactorCommands[0], refactorCommands[1], refactorCommands[3]],
 	},
 	devSelectiveCommit: {
 		prompt: [
 			"[development:selective-commit]",
-			developmentScope(selectiveCommands),
+			developmentScope(selectiveAllowedCommands),
 			"Fix the empty-cart behavior in lib/cart.cjs and add an empty-cart regression in test/cart.test.cjs while retaining the existing tests.",
 			"Commit only those two requested files using the path-limited commit command. Do not edit, stage, unstage, overwrite, or delete the unrelated staged release note, the unrelated working-notes file, or the untracked scratch file. Leave those unrelated bytes and staged state exactly as found.",
 		].join("\n"),
-		commands: selectiveCommands,
+		commands: selectiveAllowedCommands,
 		requiredCommands: [selectiveCommands[2], selectiveCommands[3], selectiveCommands[4]],
 	},
 	devMergeResolve: {
 		prompt: [
 			"[development:merge-conflict]",
-			developmentScope(mergeCommands),
+			developmentScope(mergeAllowedCommands),
 			"A real local merge is already paused on main with a conflict in lib/cart.cjs. Resolve it so the existing total API and both branch behaviors—discounted totals and taxed totals—remain available, without weakening the retained node:test coverage.",
 			"Run the full three-file test command, stage the resolved conflict, and finish the merge with one local commit that has both parents. Do not abort the merge, reset history, or create a remote.",
 		].join("\n"),
-		commands: mergeCommands,
+		commands: mergeAllowedCommands,
 		requiredCommands: [mergeCommands[3], mergeCommands[2], mergeCommands[4]],
 	},
 	devMigrationUpgrade: {
 		prompt: [
 			"[development:migration-upgrade]",
-			developmentScope(migrationCommands),
+			developmentScope(migrationAllowedCommands),
 			"Implement the one-off migration in scripts/migrate.cjs for the disposable data/records.json file only.",
 			'Upgrade version 1 to version 2, preserve every existing top-level and record field and every record ID, and add kind = "account" to each record. The command must be safe to run on an already upgraded file. Do not install packages, commit, or touch any other data source. Run the migration once and execute the real node:test checks.',
 		].join("\n"),
-		commands: migrationCommands,
+		commands: migrationAllowedCommands,
 		requiredCommands: [migrationCommands[0], migrationCommands[1]],
 	},
 	devMigrationRerun: {
 		prompt: [
 			"[development:migration-rerun]",
-			developmentScope(migrationCommands),
+			developmentScope(migrationAllowedCommands),
 			"Re-run the completed local migration command against data/records.json, then run the real node:test checks again.",
 			'The second run must be idempotent: version, IDs, preserved fields, kind = "account", ordering, and serialized data must not change. Keep the operation limited to the disposable JSON data, do not commit, and report the unchanged result.',
 		].join("\n"),
-		commands: migrationCommands,
+		commands: migrationAllowedCommands,
 		requiredCommands: [migrationCommands[0], migrationCommands[1]],
 	},
 } as const satisfies Record<
@@ -525,14 +563,18 @@ export function developmentScript(phase: DevelopmentPhaseId, workspace: string):
 		throw new Error(`Unknown development phase: ${String(phase)}`)
 	}
 
-	const read = (file: string): DevelopmentToolCall => ({ name: "read_file", arguments: { path: file } })
-	const write = (file: string, content: string): DevelopmentToolCall => ({
-		name: "write_to_file",
-		arguments: { path: file, content },
+	const read = (file: string): DevelopmentToolCall => command(developmentReadCommand(file))
+	const add = (file: string, content: string): DevelopmentToolCall => ({
+		name: "apply_patch",
+		arguments: { patch: addFilePatch(file, content) },
+	})
+	const update = (file: string, before: string, after: string): DevelopmentToolCall => ({
+		name: "apply_patch",
+		arguments: { patch: updateFilePatch(file, before, after) },
 	})
 	const command = (value: string): DevelopmentToolCall => ({
-		name: "shell",
-		arguments: { command: value, cwd: workspace, timeout: 30 },
+		name: "exec_command",
+		arguments: { cmd: value, workdir: workspace, yield_time_ms: 10_000 },
 	})
 
 	switch (phase) {
@@ -541,23 +583,13 @@ export function developmentScript(phase: DevelopmentPhaseId, workspace: string):
 		case "devSearchAbsent":
 			return absentCommands.map(command)
 		case "devVerificationUnavailable":
-			return [
-				read("scripts/verify-integration.cjs"),
-				...unavailableCommands.map(command),
-				{
-					name: "attempt_completion",
-					arguments: {
-						outcome: "blocked",
-						result: "Integration verification remains unverified: config/local-integration.json is missing. The read-only review cannot provision that configuration. Repository state is unchanged.",
-					},
-				},
-			]
+			return unavailableCommands.map(command)
 		case "devBootstrapBuild":
 			return [
-				write(DEVELOPMENT_FILES.gitIgnore, DEVELOPMENT_REFERENCE_CONTENT.gitIgnore),
-				write(DEVELOPMENT_FILES.packageJson, DEVELOPMENT_REFERENCE_CONTENT.packageJson),
-				write(DEVELOPMENT_FILES.cart, DEVELOPMENT_REFERENCE_CONTENT.bootstrapCart),
-				write(DEVELOPMENT_FILES.cartTest, DEVELOPMENT_REFERENCE_CONTENT.bootstrapTest),
+				add(DEVELOPMENT_FILES.gitIgnore, DEVELOPMENT_REFERENCE_CONTENT.gitIgnore),
+				add(DEVELOPMENT_FILES.packageJson, DEVELOPMENT_REFERENCE_CONTENT.packageJson),
+				add(DEVELOPMENT_FILES.cart, DEVELOPMENT_REFERENCE_CONTENT.bootstrapCart),
+				add(DEVELOPMENT_FILES.cartTest, DEVELOPMENT_REFERENCE_CONTENT.bootstrapTest),
 				command(bootstrapCommands[0]),
 				command(bootstrapCommands[1]),
 				command(bootstrapCommands[2]),
@@ -577,8 +609,12 @@ export function developmentScript(phase: DevelopmentPhaseId, workspace: string):
 			return [
 				command(refactorCommands[0]),
 				read(DEVELOPMENT_FILES.cart),
-				write(DEVELOPMENT_FILES.lineItemTotal, DEVELOPMENT_REFERENCE_CONTENT.lineItemTotal),
-				write(DEVELOPMENT_FILES.cart, DEVELOPMENT_REFERENCE_CONTENT.refactoredCart),
+				add(DEVELOPMENT_FILES.lineItemTotal, DEVELOPMENT_REFERENCE_CONTENT.lineItemTotal),
+				update(
+					DEVELOPMENT_FILES.cart,
+					DEVELOPMENT_REFERENCE_CONTENT.baseCart,
+					DEVELOPMENT_REFERENCE_CONTENT.refactoredCart,
+				),
 				command(refactorCommands[1]),
 				command(refactorCommands[2]),
 				command(refactorCommands[3]),
@@ -589,8 +625,19 @@ export function developmentScript(phase: DevelopmentPhaseId, workspace: string):
 				read(DEVELOPMENT_FILES.cartTest),
 				command(selectiveCommands[0]),
 				command(selectiveCommands[1]),
-				write(DEVELOPMENT_FILES.cart, DEVELOPMENT_REFERENCE_CONTENT.selectiveFixedCart),
-				write(DEVELOPMENT_FILES.cartTest, DEVELOPMENT_REFERENCE_CONTENT.selectiveRequestedTest),
+				update(
+					DEVELOPMENT_FILES.cart,
+					DEVELOPMENT_REFERENCE_CONTENT.selectiveBrokenCart,
+					DEVELOPMENT_REFERENCE_CONTENT.selectiveFixedCart,
+				),
+				update(
+					DEVELOPMENT_FILES.cartTest,
+					DEVELOPMENT_REFERENCE_CONTENT.baseCartTest.replace(
+						/test\("empty carts total zero"[\s\S]*?\n\}\)\n\n/,
+						"",
+					),
+					DEVELOPMENT_REFERENCE_CONTENT.selectiveRequestedTest,
+				),
 				command(selectiveCommands[2]),
 				command(selectiveCommands[3]),
 				command(selectiveCommands[4]),
@@ -600,7 +647,7 @@ export function developmentScript(phase: DevelopmentPhaseId, workspace: string):
 				read(DEVELOPMENT_FILES.cart),
 				command(mergeCommands[0]),
 				command(mergeCommands[1]),
-				write(DEVELOPMENT_FILES.cart, DEVELOPMENT_REFERENCE_CONTENT.mergedCart),
+				update(DEVELOPMENT_FILES.cart, mergeConflictCart, DEVELOPMENT_REFERENCE_CONTENT.mergedCart),
 				command(mergeCommands[2]),
 				command(mergeCommands[3]),
 				command(mergeCommands[4]),
@@ -609,7 +656,11 @@ export function developmentScript(phase: DevelopmentPhaseId, workspace: string):
 			return [
 				read(DEVELOPMENT_FILES.data),
 				read(DEVELOPMENT_FILES.migration),
-				write(DEVELOPMENT_FILES.migration, DEVELOPMENT_REFERENCE_CONTENT.migrationFinal),
+				update(
+					DEVELOPMENT_FILES.migration,
+					DEVELOPMENT_REFERENCE_CONTENT.migrationStub,
+					DEVELOPMENT_REFERENCE_CONTENT.migrationFinal,
+				),
 				command(migrationCommands[0]),
 				command(migrationCommands[1]),
 			]

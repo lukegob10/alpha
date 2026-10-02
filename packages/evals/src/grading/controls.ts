@@ -1,4 +1,5 @@
 import type { GraderRunResult } from "./types"
+import { aggregateGraderResults } from "./aggregate"
 
 export const graderControlKinds = ["reference", "alternative-correct", "broken", "negative"] as const
 export type GraderControlKind = (typeof graderControlKinds)[number]
@@ -42,12 +43,13 @@ export async function auditGraderControls(controls: readonly GraderControl[]): P
 	const entries: GraderControlAuditEntry[] = []
 	for (const control of controls) {
 		const result = await control.run()
+		const actualDecision = aggregateGraderResults(result.results)
 		entries.push({
 			id: control.id,
 			kind: control.kind,
 			expectedDecision: control.expectedDecision,
-			actualDecision: result.decision,
-			passed: result.decision === control.expectedDecision,
+			actualDecision,
+			passed: actualDecision === result.decision && actualDecision === control.expectedDecision,
 			result,
 		})
 	}

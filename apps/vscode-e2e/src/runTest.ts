@@ -4,7 +4,15 @@ import { randomUUID } from "crypto"
 
 import { prepareTestProfile, cleanupTestProfile } from "./testProfile"
 import { acquireProfileLease } from "./hostOwnership"
-import { TestRunError, testRunFailureCode, describeTestRunFailure, type TestRunFailureCode } from "./runFailure"
+import {
+	TestRunError,
+	testRunFailureCode,
+	describeTestRunFailure,
+	isTestExecutionCounts,
+	testSuiteOutcome,
+	type TestExecutionCounts,
+	type TestRunFailureCode,
+} from "./runFailure"
 import { launchExtensionHost, HostLaunchCancelledError, type HostLaunchOptions } from "./hostLaunch"
 import {
 	prepareLiveSidecar,
@@ -22,6 +30,7 @@ import {
 } from "./evidence"
 import { finalizeRunEvidence, finalizeRunRetention, type RunRetentionReport } from "./runEvidence"
 import { validateLiveSetupTimeout } from "./suite/liveCopilot"
+import { writeHarnessReceipt } from "./harnessReceipt"
 
 export type ProviderMode = "live" | "scripted" | "vscode-lm-fixture" | "live-copilot"
 
@@ -49,6 +58,8 @@ export interface ExtensionTestRunOptions {
 	setupTimeoutMs?: number
 	testFile?: string
 	testGrep?: string
+	/** Hard gates require every selected Mocha test to execute and pass. */
+	requireAllTests?: boolean
 	runId?: string
 	scenarioId?: string
 	scenarioPhase?: "run" | "prepare" | "continue"
@@ -80,6 +91,8 @@ export interface ExtensionTestRunResult {
 	actualVSCodeVersion?: string
 	actualModelId?: string
 	actualReasoningEffort?: string
+	requireAllTests?: boolean
+	testCounts?: TestExecutionCounts
 	evidenceManifestPath?: string
 	captureComplete?: boolean
 	evidenceFailure?: "evidence-failed"
@@ -108,7 +121,7 @@ export interface ExtensionTestRunDependencies {
 }
 
 const providerModes: readonly ProviderMode[] = ["live", "scripted", "vscode-lm-fixture", "live-copilot"]
-const flags = new Set(["--init-profile", "--setup", "--retain-evidence-for-campaign"])
+const flags = new Set(["--init-profile", "--setup", "--retain-evidence-for-campaign", "--require-all-tests"])
 const valueOptions = new Set([
 	"--provider",
 	"--vscode-version",
@@ -178,6 +191,7 @@ export function readRunOptions(
 		setupTimeoutMs,
 		testFile: parsed.get("--file") ?? env.TEST_FILE,
 		testGrep: parsed.get("--grep") ?? env.TEST_GREP,
+		requireAllTests: parsed.has("--require-all-tests"),
 		runId: parsed.get("--run-id"),
 		scenarioId: parsed.get("--scenario-id"),
 		scenarioPhase: phase,
@@ -208,6 +222,9 @@ type HostPreflight = {
 	code?: string
 	actualModelId?: string
 	actualReasoningEffort?: string
+	stage?: string
+	requireAllTests?: boolean
+	testCounts?: TestExecutionCounts
 }
 
 async function readHostPreflight(artifactsDir: string, runId: string): Promise<HostPreflight> {
@@ -229,6 +246,11 @@ async function readHostPreflight(artifactsDir: string, runId: string): Promise<H
 		) {
 			throw new Error("Invalid host evidence")
 		}
+		if (
+			("requireAllTests" in host && typeof host.requireAllTests !== "boolean") ||
+			("testCounts" in host && !isTestExecutionCounts(host.testCounts))
+		)
+			throw new Error("Invalid host test counts")
 		return host as HostPreflight
 	} catch {
 		throw new TestRunError("host-preflight-missing", "Missing or invalid host preflight evidence")
@@ -333,6 +355,10 @@ export async function runExtensionTests(
 		throw new Error("Live Copilot tests require a dedicated --profile-dir and an exact --model-id")
 	}
 	if (options.setup && options.providerMode !== "live-copilot") throw new Error("--setup requires live-copilot")
+	if (options.requireAllTests !== undefined && typeof options.requireAllTests !== "boolean")
+		throw new TestRunError("invalid-options", "Required test policy must be a boolean")
+	if (options.setup && options.requireAllTests)
+		throw new TestRunError("invalid-options", "Interactive setup does not execute a required test suite")
 	if (
 		options.requestLimit !== undefined &&
 		(!Number.isSafeInteger(options.requestLimit) || options.requestLimit < 1)
@@ -411,6 +437,7 @@ export async function runExtensionTests(
 					modelFamily: options.modelFamily,
 					reasoningEffort: options.reasoningEffort,
 					testFile: options.testFile,
+					requireAllTests: options.requireAllTests === true,
 					setup: options.setup === true,
 				},
 				null,
@@ -471,6 +498,7 @@ export async function runExtensionTests(
 				ALPHA_E2E_SCENARIO_PHASE: options.scenarioPhase,
 				ALPHA_E2E_SCENARIO_RESULT_PATH: scenarioResultPath,
 				ALPHA_E2E_REQUEST_LIMIT: options.requestLimit?.toString(),
+				ALPHA_E2E_REQUIRE_ALL_TESTS: options.requireAllTests ? "1" : "0",
 				TEST_FILE: options.testFile ?? (options.scenarioId ? "workflow.test" : undefined),
 				TEST_GREP: options.testGrep,
 			},
@@ -504,8 +532,18 @@ export async function runExtensionTests(
 		}
 		const ownershipGate =
 			"ownershipGate" in host && host.ownershipGate === "verified" ? ("verified" as const) : undefined
-		if (profile.profileDir && !ownershipGate)
+		if ((profile.profileDir || !dependencies.launch) && !ownershipGate)
 			throw new TestRunError("host-not-owned", "Host ownership was not verified")
+		if (exitCode === 0 && host.status === "passed" && options.requireAllTests) {
+			if (host.stage !== "suite-complete" || host.requireAllTests !== true || !host.testCounts)
+				throw new TestRunError("host-preflight-missing", "Required suite completion evidence is missing")
+			const { failure } = testSuiteOutcome(
+				host.testCounts.failed,
+				{ tests: host.testCounts.total, passes: host.testCounts.passed, pending: host.testCounts.pending },
+				{ requireAllTests: true },
+			)
+			if (failure) throw new TestRunError(failure, "Required suite did not execute every selected test")
+		}
 		const failure = exitCode !== 0 || host.status !== "passed" ? testRunFailureCode(host, "host-failed") : undefined
 		result = {
 			...identity,
@@ -516,6 +554,8 @@ export async function runExtensionTests(
 			actualVSCodeVersion: host.actualVSCodeVersion,
 			actualModelId: host.actualModelId,
 			actualReasoningEffort: host.actualReasoningEffort,
+			requireAllTests: host.requireAllTests,
+			testCounts: host.testCounts,
 			exitCode: failure ? exitCode || 1 : 0,
 			retained: Boolean(profile.profileDir) || Boolean(failure),
 			failure,
@@ -539,11 +579,15 @@ export async function runExtensionTests(
 		}
 		let actualVSCodeVersion: string | undefined
 		let ownershipGate: "verified" | undefined
+		let requireAllTests: boolean | undefined
+		let testCounts: TestExecutionCounts | undefined
 		try {
 			const host = await readHostPreflight(artifactsDir, runId)
 			failure = testRunFailureCode(host, failure)
 			actualVSCodeVersion = host.actualVSCodeVersion
 			ownershipGate = host.ownershipGate === "verified" ? "verified" : undefined
+			requireAllTests = host.requireAllTests
+			testCounts = host.testCounts
 		} catch {
 			/* Missing or invalid evidence cannot improve the known failure classification. */
 		}
@@ -553,6 +597,8 @@ export async function runExtensionTests(
 			hostExitObserved,
 			actualVSCodeVersion,
 			ownershipGate,
+			requireAllTests,
+			testCounts,
 			exitCode: 1,
 			retained: true,
 			failure,
@@ -619,6 +665,18 @@ export async function runExtensionTests(
 		result.guidance = describeTestRunFailure({ code: result.failure }).guidance
 	}
 	await cleanupTestProfile(profile, result.exitCode === 0)
+	if (process.env.ALPHA_HARNESS_EVIDENCE_DIR && result.execution === "extension-host") {
+		try {
+			await writeHarnessReceipt(process.env.ALPHA_HARNESS_EVIDENCE_DIR, options, result, startedAt)
+		} catch {
+			result = {
+				...result,
+				status: result.status === "passed" ? "blocked" : result.status,
+				exitCode: result.exitCode || 1,
+				failure: result.failure ?? "evidence-failed",
+			}
+		}
+	}
 	return result
 }
 

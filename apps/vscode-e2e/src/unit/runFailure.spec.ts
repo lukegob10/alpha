@@ -90,3 +90,17 @@ test("real Mocha passing execution passes, and assertion/hook failures retain th
 	}
 	assert.equal(testSuiteOutcome(0).failure, "no-tests-executed")
 })
+
+test("required suites reject partial skips and incoherent success counts", () => {
+	const partial = { tests: 2, passes: 1, pending: 1 }
+	assert.equal(testSuiteOutcome(0, partial).failure, undefined, "optional suites retain partial execution support")
+	assert.equal(testSuiteOutcome(0, partial, { requireAllTests: true }).failure, "tests-skipped")
+	for (const stats of [
+		{ tests: 2, passes: 0, pending: 0 },
+		{ tests: 1, passes: 2, pending: 0 },
+		{ tests: 1, passes: 1, pending: -1 },
+		{ tests: 1.5, passes: 1, pending: 0.5 },
+	])
+		assert.equal(testSuiteOutcome(0, stats).failure, "invalid-test-counts")
+	assert.equal(testSuiteOutcome(1, partial, { requireAllTests: true }).failure, "host-failed")
+})

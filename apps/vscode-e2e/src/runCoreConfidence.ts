@@ -8,7 +8,7 @@ import { pnpmCommand, runOwnedProcess } from "./campaign/ownedProcess"
 import { createReportStore, openCampaignRoot } from "./campaign/reportStore"
 import { runExtensionTests, type ExtensionTestRunResult } from "./runTest"
 import { readBounded } from "./evidence/paths"
-import { testRunFailureCode } from "./runFailure"
+import { isTestExecutionCounts, testRunFailureCode } from "./runFailure"
 
 /** Compose existing test and evidence owners; this runner never selects a live provider. */
 export async function runCoreConfidence(
@@ -77,6 +77,7 @@ export async function runCoreConfidence(
 				vscodeVersion: "1.125.0",
 				providerMode: "scripted",
 				testFile,
+				requireAllTests: true,
 				profileDir: path.join(hostDirectory, "p"),
 				initializeProfile: true,
 				workspace: path.join(hostDirectory, "workspaces", testFile),
@@ -90,6 +91,13 @@ export async function runCoreConfidence(
 				result.actualVSCodeVersion !== "1.125.0" ||
 				result.providerMode !== "scripted" ||
 				result.execution !== "extension-host" ||
+				!result.hostExitObserved ||
+				result.ownershipGate !== "verified" ||
+				result.requireAllTests !== true ||
+				!isTestExecutionCounts(result.testCounts) ||
+				result.testCounts.executed === 0 ||
+				result.testCounts.pending !== 0 ||
+				result.testCounts.failed !== 0 ||
 				!result.captureComplete ||
 				result.retention?.status !== "complete"
 			)

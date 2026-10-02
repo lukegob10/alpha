@@ -4,6 +4,7 @@ import * as path from "path"
 
 import type { StepContext } from "./StepContext"
 import type { AgentTurnEvent, AgentTurnEventIdentity } from "./AgentTurnEvents"
+import { redactAgentCredentialText } from "./redactCredentials"
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { getTaskDirectoryPath } from "../../utils/storage"
 
@@ -181,26 +182,6 @@ function isSensitiveKey(key: string): boolean {
 	return SECRET_KEY_PATTERN.test(key)
 }
 
-/**
- * Redact common secret-bearing string forms before they reach the JSONL log.
- * Key-based redaction below remains the primary defence; this handles command
- * output and error strings such as `apiKey=...` and `Authorization: Bearer ...`.
- */
-function redactString(value: string): string {
-	let redacted = value
-	redacted = redacted.replace(/(\bAuthorization\b\s*[:=]\s*Bearer\s+)[^\s,;}\]]+/gi, `$1${REDACTED_VALUE}`)
-	redacted = redacted.replace(
-		/(\b(?:api.?key|access.?key|client.?secret|secret|password|passwd|credential|authorization|private.?key|(?:(?:auth|access|refresh|id).?)?token)\b\s*[:=]\s*)(?!Bearer\b)(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
-		`$1${REDACTED_VALUE}`,
-	)
-	redacted = redacted.replace(/(\bBearer\s+)(?!\[redacted\])[^\s,;}\]]+/gi, `$1${REDACTED_VALUE}`)
-	redacted = redacted.replace(
-		/([?&](?:api.?key|access.?key|secret|password|credential|authorization|(?:(?:auth|access|refresh|id).?)?token)=)[^&#\s]+/gi,
-		`$1${REDACTED_VALUE}`,
-	)
-	return redacted
-}
-
 function truncateString(value: string, maxValueLength: number): string {
 	if (value.length <= maxValueLength) return value
 	const suffix = "\n[truncated]"
@@ -216,7 +197,7 @@ function boundValue(value: unknown, maxValueLength: number, seen = new WeakSet<o
 	if (key && isSensitiveKey(key)) return REDACTED_VALUE
 
 	if (typeof value === "string") {
-		return truncateString(redactString(value), maxValueLength)
+		return truncateString(redactAgentCredentialText(value), maxValueLength)
 	}
 	if (value === null || typeof value === "boolean" || typeof value === "number") return value
 	if (typeof value === "bigint") return String(value)
@@ -226,8 +207,8 @@ function boundValue(value: unknown, maxValueLength: number, seen = new WeakSet<o
 	if (value instanceof Error) {
 		return {
 			name: value.name,
-			message: truncateString(redactString(value.message), maxValueLength),
-			...(value.stack ? { stack: truncateString(redactString(value.stack), maxValueLength) } : {}),
+			message: truncateString(redactAgentCredentialText(value.message), maxValueLength),
+			...(value.stack ? { stack: truncateString(redactAgentCredentialText(value.stack), maxValueLength) } : {}),
 		}
 	}
 	if (value instanceof Date) return value.toISOString()

@@ -3,6 +3,7 @@ import { test } from "node:test"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import * as os from "node:os"
+import { createHash } from "node:crypto"
 
 import { createDevelopmentSuite } from "../developmentSuites"
 import { assertLiveGateConfig, evaluateLiveGate, fingerprintGateArtifacts, prepareLiveGate } from "../liveGate"
@@ -43,6 +44,32 @@ function completeReport(plan = config()): CampaignReport {
 	)
 	return {
 		version: 1,
+		evaluationIdentity: {
+			extensionCommit: "a".repeat(40),
+			workingTreeDigest: "a".repeat(64),
+			extensionBuildDigest: "b".repeat(64),
+			harnessDigest: "c".repeat(64),
+			taskSetDigest: "d".repeat(64),
+			sourceComponentsDigest: "e".repeat(64),
+			configDigest: createHash("sha256")
+				.update(
+					JSON.stringify({
+						hosts: plan.hosts.map((host) => host.version),
+						scenarioIds: plan.scenarioIds,
+						samples: plan.samples,
+						budgets: plan.budgets,
+						maxReproductions: plan.maxReproductions,
+					}),
+				)
+				.digest("hex"),
+			unchanged: true,
+			missing: [],
+		},
+		evaluationPlan: {
+			scenarioIds: [...plan.scenarioIds],
+			hostVersions: plan.hosts.map((host) => host.version),
+			samples: plan.samples,
+		},
 		id: plan.id,
 		mode: "report-only",
 		requestedProvider: plan.provider,
@@ -56,6 +83,44 @@ function completeReport(plan = config()): CampaignReport {
 		retention: { status: "complete" },
 	}
 }
+
+test("live acceptance fails closed on missing, malformed, or changed build and task provenance", () => {
+	for (const alter of [
+		(report: CampaignReport) => delete report.evaluationIdentity,
+		(report: CampaignReport) => {
+			report.evaluationIdentity!.unchanged = false
+		},
+		(report: CampaignReport) => {
+			report.evaluationIdentity!.missing = ["harnessDigest"]
+		},
+		(report: CampaignReport) => {
+			report.evaluationIdentity!.extensionCommit = "unknown"
+		},
+		(report: CampaignReport) => {
+			report.evaluationIdentity!.extensionBuildDigest = null
+		},
+		(report: CampaignReport) => {
+			report.evaluationIdentity!.taskSetDigest = "unknown"
+		},
+		(report: CampaignReport) => {
+			report.evaluationIdentity!.configDigest = "0".repeat(64)
+		},
+		(report: CampaignReport) => delete report.evaluationPlan,
+		(report: CampaignReport) => {
+			report.evaluationPlan!.scenarioIds.pop()
+		},
+		(report: CampaignReport) => {
+			report.evaluationPlan!.samples++
+		},
+		(report: CampaignReport) => {
+			report.evaluationPlan!.hostVersions = []
+		},
+	]) {
+		const report = completeReport()
+		alter(report)
+		assert.equal(evaluateLiveGate(config(), report).status, "failed")
+	}
+})
 
 test("gate covers the whole registered matrix on the reference host", () => {
 	const plan = config()

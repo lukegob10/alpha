@@ -6,6 +6,7 @@ import { StaticAnalysisGrader } from "./plugins/staticAnalysis"
 import { TraceAssertionGrader } from "./plugins/traceAssertion"
 import { UsagePolicyGrader } from "./plugins/usagePolicy"
 import type { GraderContext, GraderPlugin, GraderResult, GraderRunResult, GraderSpec, GraderType } from "./types"
+import { validateGraderResult, validateGraderSpec } from "./validation"
 
 export class GraderRegistry {
 	private readonly plugins = new Map<GraderType, GraderPlugin>()
@@ -25,7 +26,7 @@ export class GraderRegistry {
 			const startedAt = context.clock.now().toISOString()
 			const startedMs = context.clock.monotonicMs()
 			try {
-				const partial = await plugin.execute(spec, context)
+				const partial = validateGraderResult(spec, await plugin.execute(spec, context))
 				results.push({
 					...partial,
 					startedAt,
@@ -64,6 +65,7 @@ export function createDefaultGraderRegistry(): GraderRegistry {
 }
 
 export function validateSpecs(specs: GraderSpec[]): void {
+	if (specs.length === 0) throw new Error("At least one grader is required")
 	const identities = new Set<string>()
 	for (const spec of specs) {
 		if (!/^[a-z0-9][a-z0-9._-]*$/.test(spec.id)) throw new Error(`Invalid grader id: ${spec.id}`)
@@ -72,4 +74,5 @@ export function validateSpecs(specs: GraderSpec[]): void {
 		if (identities.has(identity)) throw new Error(`Duplicate grader identity: ${identity}`)
 		identities.add(identity)
 	}
+	for (const spec of specs) validateGraderSpec(spec)
 }

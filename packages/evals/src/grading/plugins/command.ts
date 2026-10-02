@@ -1,5 +1,5 @@
 import { evidenceFromText } from "../evidence"
-import { assertHiddenGraderBoundary } from "../boundary"
+import { resolveHiddenGraderBoundary } from "../boundary"
 import type { CommandGraderSpec, GraderContext, GraderPlugin, GraderResult } from "../types"
 
 export class CommandGrader implements GraderPlugin<CommandGraderSpec> {
@@ -9,11 +9,14 @@ export class CommandGrader implements GraderPlugin<CommandGraderSpec> {
 		spec: CommandGraderSpec,
 		context: GraderContext,
 	): Promise<Omit<GraderResult, "startedAt" | "finishedAt" | "durationMs">> {
+		let cwd = context.workspaceRoot
+		let workspaceRoot = context.workspaceRoot
 		if (spec.cwd === "hidden") {
 			if (!context.hiddenRoot) throw new Error(`Hidden root is required for grader ${spec.id}`)
-			assertHiddenGraderBoundary({ workspaceRoot: context.workspaceRoot, hiddenRoot: context.hiddenRoot })
+			const roots = await resolveHiddenGraderBoundary({ workspaceRoot, hiddenRoot: context.hiddenRoot })
+			cwd = roots.hiddenRoot
+			workspaceRoot = roots.workspaceRoot
 		}
-		const cwd = spec.cwd === "hidden" ? context.hiddenRoot! : context.workspaceRoot
 		const diagnostics: GraderResult["diagnostics"] = []
 		const evidence: GraderResult["evidence"] = []
 
@@ -21,7 +24,7 @@ export class CommandGrader implements GraderPlugin<CommandGraderSpec> {
 			const result = await context.processRunner.run({
 				...command,
 				cwd,
-				env: spec.cwd === "hidden" ? { EVAL_WORKSPACE_ROOT: context.workspaceRoot } : undefined,
+				env: spec.cwd === "hidden" ? { EVAL_WORKSPACE_ROOT: workspaceRoot } : undefined,
 				timeoutMs: spec.timeoutMs,
 				maxOutputBytes: spec.maxOutputBytes,
 			})
@@ -41,7 +44,14 @@ export class CommandGrader implements GraderPlugin<CommandGraderSpec> {
 					result.fullStderr ?? result.stderr,
 				),
 			)
-			if (result.timedOut) throw new Error(`Grader command timed out: ${command.command}`)
+			if (result.timedOut || result.exitCode === null) {
+				diagnostics.push({
+					code: result.timedOut ? "command_timeout" : "command_incomplete",
+					message: result.timedOut ? "Grader command timed out" : "Grader command ended without an exit code",
+					severity: "error",
+				})
+				return baseResult(spec, "error", diagnostics, evidence)
+			}
 			if (result.exitCode !== 0) {
 				diagnostics.push({
 					code: "command_exit_nonzero",
@@ -69,7 +79,7 @@ function captureEvidence(
 
 function baseResult(
 	spec: CommandGraderSpec,
-	status: "passed" | "failed",
+	status: "passed" | "failed" | "error",
 	diagnostics: GraderResult["diagnostics"],
 	evidence: GraderResult["evidence"],
 ): Omit<GraderResult, "startedAt" | "finishedAt" | "durationMs"> {

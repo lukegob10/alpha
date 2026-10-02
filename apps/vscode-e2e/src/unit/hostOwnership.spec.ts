@@ -3,7 +3,43 @@ import * as assert from "node:assert/strict"
 import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
-import { acquireProfileLease, assertRunnerAncestry } from "../hostOwnership"
+import { acquireProfileLease, assertRunnerAncestry, verifyTestHostOwnership } from "../hostOwnership"
+
+test("verifies disposable runner-managed hosts through the same ancestry gate as persistent profiles", async () => {
+	for (const profile of [undefined, "owned-profile"]) {
+		let inspected = false
+		const result = await verifyTestHostOwnership(
+			{ ALPHA_E2E_RUNNER_PID: "10", ALPHA_E2E_PROFILE_DIR: profile },
+			async (runnerPid) => {
+				inspected = true
+				await assertRunnerAncestry(runnerPid, 40, async () => new Map([[40, 10]]))
+			},
+		)
+		assert.equal(inspected, true)
+		assert.equal(result, "verified")
+	}
+})
+
+test("never verifies managed hosts with missing, invalid, foreign or unavailable runner ancestry", async () => {
+	for (const profile of [undefined, "owned-profile"]) {
+		for (const runnerPid of ["", "not-a-pid", "40", "50"]) {
+			await assert.rejects(
+				verifyTestHostOwnership({ ALPHA_E2E_RUNNER_PID: runnerPid, ALPHA_E2E_PROFILE_DIR: profile }, (pid) =>
+					assertRunnerAncestry(pid, 40, async () => new Map([[40, 10]])),
+				),
+				/Invalid|not owned/,
+			)
+		}
+		await assert.rejects(
+			verifyTestHostOwnership({ ALPHA_E2E_RUNNER_PID: "10", ALPHA_E2E_PROFILE_DIR: profile }, () =>
+				Promise.reject(new Error("unavailable")),
+			),
+			/unavailable/,
+		)
+	}
+	await assert.rejects(verifyTestHostOwnership({ ALPHA_E2E_PROFILE_DIR: "owned-profile" }), /Invalid/)
+	assert.equal(await verifyTestHostOwnership({}), undefined)
+})
 
 test("accepts only an extension host descended from the campaign runner", async () => {
 	const parents = async () =>

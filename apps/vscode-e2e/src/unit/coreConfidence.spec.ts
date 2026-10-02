@@ -30,6 +30,9 @@ async function fixture(context: TestContext) {
 				providerMode: options.providerMode,
 				vscodeVersion: options.vscodeVersion!,
 				actualVSCodeVersion: "1.125.0",
+				requireAllTests: true,
+				testCounts: { total: 1, passed: 1, pending: 0, executed: 1, failed: 0 },
+				ownershipGate: "verified",
 				workspace: options.workspace!,
 				userDataDir: "unused",
 				extensionsDir: "unused",
@@ -152,6 +155,11 @@ test("wrong host or incomplete evidence cannot reach certification", async (cont
 		{ actualVSCodeVersion: "0.0.0" },
 		{ captureComplete: false },
 		{ providerMode: "live-copilot" as const },
+		{ requireAllTests: false },
+		{ testCounts: undefined },
+		{ testCounts: { total: 2, passed: 1, pending: 1, executed: 1, failed: 0 } },
+		{ hostExitObserved: false },
+		{ ownershipGate: undefined },
 	]) {
 		const run = await fixture(context)
 		const original = run.dependencies.runExtensionTests

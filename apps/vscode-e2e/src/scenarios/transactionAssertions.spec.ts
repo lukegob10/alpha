@@ -121,6 +121,40 @@ test("does not reinterpret a successful or error result and handles malformed in
 	)
 })
 
+test("a result ID without an observed payload cannot establish tool completion", () => {
+	for (const content of [undefined, null, 7, {}, [undefined], [{ type: "text" }]]) {
+		const inspected = inspectToolTransactions([
+			{ role: "assistant", content: [{ type: "tool_use", id: "call", name: "read_file", input: {} }] },
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "call", content }] },
+		])
+		assert.deepEqual(inspected.errors, ["tool_result_content_invalid"])
+	}
+	for (const content of ["", [], [{ type: "text", text: "" }]]) {
+		assert.deepEqual(
+			inspectToolTransactions([
+				{ role: "assistant", content: [{ type: "tool_use", id: "call", name: "read_file", input: {} }] },
+				{ role: "user", content: [{ type: "tool_result", tool_use_id: "call", content }] },
+			]).errors,
+			[],
+			"an explicitly observed empty result is different from an unavailable payload",
+		)
+	}
+})
+
+test("malformed call names and absent arguments cannot become grading evidence", () => {
+	for (const block of [
+		{ type: "tool_use", id: "call", input: {} },
+		{ type: "tool_use", id: "call", name: "   ", input: {} },
+		{ type: "tool_use", id: "call", name: "read_file" },
+	]) {
+		const inspected = inspectToolTransactions([
+			{ role: "assistant", content: [block] },
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "call", content: "observed" }] },
+		])
+		assert.ok(inspected.errors.length > 0)
+	}
+})
+
 test("counts canonical lifecycle terminal outcomes per run/turn and ignores other task IDs", () => {
 	const taskId = "task-a"
 	const events = [

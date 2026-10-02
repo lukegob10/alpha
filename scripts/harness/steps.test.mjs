@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import path from "node:path"
 import { test } from "node:test"
-import { executeSteps } from "./steps.mjs"
+import { executeSteps, recordHarnessFailure } from "./steps.mjs"
 
 function fixture(overrides = {}) {
 	return {
@@ -81,5 +81,37 @@ test("launch and cleanup exceptions are recorded without copying sensitive error
 		assert.equal(input.report.steps[0].error, cleanup ? "cleanup_failed" : "process_failed")
 		assert.equal(Boolean(input.report.cleanupUnverified), cleanup)
 		assert.equal(JSON.stringify(input.report).includes("private child output"), false)
+	}
+})
+
+test("final provenance exceptions persist a sanitized failure without replacing the original error", async () => {
+	const report = { status: "passed" }
+	let saved
+	await recordHarnessFailure(report, "source-finalization", async (value) => {
+		saved = structuredClone(value)
+	})
+	assert.equal(saved.status, "failed")
+	assert.deepEqual(saved.failure, { code: "harness_exception", stage: "source-finalization" })
+	await recordHarnessFailure(report, "source-finalization", async () => {
+		throw new Error("private write diagnostic")
+	})
+	assert.equal(JSON.stringify(report).includes("private"), false)
+})
+
+test("an exit-zero hard gate cannot pass when its execution receipt is missing or skipped", async () => {
+	for (const reason of ["missing_test_receipt", "skipped_hard_gate"]) {
+		let calls = 0
+		const input = fixture({
+			runProcess: async () => {
+				calls++
+				return { exitCode: 0, signal: null, cleanupVerified: true }
+			},
+			verify: async () => ({ status: "failed", reason }),
+		})
+		await executeSteps(input)
+		assert.equal(calls, 1)
+		assert.equal(input.report.status, "failed")
+		assert.equal(input.report.steps[0].evidence.reason, reason)
+		assert.equal(input.report.steps[1].status, "not_started")
 	}
 })

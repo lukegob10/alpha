@@ -1,5 +1,7 @@
 import { RECOVERY_COMMANDS, type DevelopmentPhaseId } from "./developmentCatalog"
 import type { WorkflowCheck } from "./contracts"
+import { inspectTaskLifecycle } from "./transactionAssertions"
+import { inspectWorkflowCommandReceipts, workflowCommand } from "./workflowTrace"
 
 export type RecoveryPhase = Extract<
 	DevelopmentPhaseId,
@@ -15,7 +17,40 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
 		? (value as Record<string, unknown>)
 		: undefined
 
-const COMMAND_TOOL_NAMES = new Set(["shell", "execute_command"])
+export interface RecoveryLifecycleEvidence {
+	events: unknown
+	taskId: string
+}
+
+function hasCompletedPhase(evidence: RecoveryLifecycleEvidence | undefined, phaseStart: number): boolean {
+	if (!evidence || !Array.isArray(evidence.events) || !Number.isFinite(phaseStart) || phaseStart < 0) return false
+	const events = evidence.events
+		.map(record)
+		.filter((event): event is Record<string, unknown> => event !== undefined && event.taskId === evidence.taskId)
+	if (
+		events.some(
+			(event) =>
+				typeof event.occurredAt !== "number" || !Number.isFinite(event.occurredAt) || event.occurredAt < 0,
+		)
+	)
+		return false
+	const turnKey = (event: Record<string, unknown>) => JSON.stringify([event.runId, event.turnId])
+	// Task admission may follow turn_started. Include that containing turn's
+	// earlier start instead of fabricating terminality from a timestamp slice.
+	const phaseTurns = new Set(
+		events.filter((event) => typeof event.occurredAt === "number" && event.occurredAt >= phaseStart).map(turnKey),
+	)
+	const inspected = inspectTaskLifecycle(
+		events.filter((event) => phaseTurns.has(turnKey(event))),
+		evidence.taskId,
+	)
+	return (
+		inspected.errors.length === 0 &&
+		inspected.completedTurns === 1 &&
+		inspected.cancelledTurns === 0 &&
+		inspected.failedTurns === 0
+	)
+}
 
 function textContent(value: unknown): string {
 	if (typeof value === "string") return value
@@ -28,10 +63,17 @@ function textContent(value: unknown): string {
 }
 
 /** Grade only the current phase; never expose arbitrary output in campaign summaries. */
-export function inspectRecoveryTrace(history: unknown, ui: unknown, phase: RecoveryPhase): WorkflowCheck[] {
-	const calls = new Map<string, { name: string; input: Record<string, unknown> }>()
+export function inspectRecoveryTrace(
+	history: unknown,
+	ui: unknown,
+	phase: RecoveryPhase,
+	lifecycle?: RecoveryLifecycleEvidence,
+): WorkflowCheck[] {
+	const calls = new Map<string, { name: string; input: Record<string, unknown>; command?: string }>()
 	const receipts = new Map<string, { text: string; error: boolean }>()
+	let phaseHistory: unknown[] = []
 	let finalText = ""
+	let finalReport: string | undefined
 	let inPhase = false
 	let phaseStart = 0
 	const marker =
@@ -47,11 +89,18 @@ export function inspectRecoveryTrace(history: unknown, ui: unknown, phase: Recov
 			inPhase = true
 			calls.clear()
 			receipts.clear()
+			phaseHistory = []
 			finalText = ""
-			phaseStart = typeof message.ts === "number" ? message.ts : 0
+			finalReport = undefined
+			phaseStart = typeof message.ts === "number" ? message.ts : NaN
 		}
 		if (!inPhase) continue
-		if (message.role === "assistant") finalText += textContent(message.content)
+		phaseHistory.push(value)
+		if (message.role === "assistant") {
+			const text = textContent(message.content)
+			finalText += text
+			if (text.trim()) finalReport = text
+		}
 		for (const item of Array.isArray(message.content) ? message.content : []) {
 			const block = record(item)
 			if (!block) continue
@@ -61,24 +110,30 @@ export function inspectRecoveryTrace(history: unknown, ui: unknown, phase: Recov
 				typeof block.id === "string" &&
 				typeof block.name === "string"
 			) {
-				calls.set(block.id, { name: block.name, input: record(block.input) ?? {} })
+				calls.set(block.id, {
+					name: block.name,
+					input: record(block.input) ?? {},
+					command: workflowCommand(block.name, block.input),
+				})
 			} else if (
 				message.role === "user" &&
 				block.type === "tool_result" &&
 				typeof block.tool_use_id === "string" &&
 				calls.has(block.tool_use_id)
 			) {
-				receipts.set(block.tool_use_id, { text: textContent(block.content), error: block.is_error === true })
+				const text = textContent(block.content)
+				receipts.set(block.tool_use_id, {
+					text,
+					error: block.is_error === true,
+				})
 			}
 		}
 	}
+	const observedCommands = inspectWorkflowCommandReceipts(phaseHistory).commands
 	const commandResults = (command: string) =>
-		[...calls].flatMap(([id, call]) => {
-			const receipt = receipts.get(id)
-			return COMMAND_TOOL_NAMES.has(call.name) && call.input.command === command && receipt ? [receipt] : []
-		})
+		observedCommands.filter((receipt) => receipt.command === command && receipt.resultCallIds.length > 0)
 	const exited = (command: string, exitCode: number) =>
-		commandResults(command).some((result) => new RegExp(`Exit code: ${exitCode}(?:\\r?\\n|$)`).test(result.text))
+		commandResults(command).some((result) => result.exitCode === exitCode)
 	const reports = [...calls].filter(([id, call]) => call.name === "attempt_completion" && receipts.has(id))
 	for (const [, call] of reports) if (typeof call.input.result === "string") finalText += `\n${call.input.result}`
 	const allowedErrors = new Set<string>(
@@ -95,26 +150,23 @@ export function inspectRecoveryTrace(history: unknown, ui: unknown, phase: Recov
 			name: "recovery_no_repeated_command_loop",
 			passed: [
 				...new Set(
-					[...calls.values()]
-						.filter((call) => COMMAND_TOOL_NAMES.has(call.name))
-						.map((call) => call.input.command),
+					[...calls.values()].filter((call) => call.command !== undefined).map((call) => call.command),
 				),
 			].every((command) => typeof command === "string" && commandResults(command).length <= 2),
 		},
 		{
 			name: "recovery_only_expected_errors",
-			passed: [...receipts].every(
-				([id, receipt]) =>
-					!receipt.error ||
-					(calls.get(id) !== undefined &&
-						COMMAND_TOOL_NAMES.has(calls.get(id)!.name) &&
-						allowedErrors.has(String(calls.get(id)?.input.command)) &&
-						(calls.get(id)?.input.command === RECOVERY_COMMANDS.rg
-							? /Exit code: (?:1|127)(?:\r?\n|$)/.test(receipt.text)
-							: new RegExp(
-									`Exit code: ${phase === "devVerificationUnavailable" ? 2 : 1}(?:\\r?\\n|$)`,
-								).test(receipt.text))),
-			),
+			passed: [...receipts].every(([id, receipt]) => {
+				if (!receipt.error) return true
+				const command = observedCommands.find((candidate) => candidate.resultCallIds.includes(id))
+				return (
+					command !== undefined &&
+					allowedErrors.has(command.command) &&
+					(command.command === RECOVERY_COMMANDS.rg
+						? command.exitCode === 1 || command.exitCode === 127
+						: command.exitCode === (phase === "devVerificationUnavailable" ? 2 : 1))
+				)
+			}),
 		},
 	]
 	if (phase === "devSearchScope") {
@@ -126,7 +178,8 @@ export function inspectRecoveryTrace(history: unknown, ui: unknown, phase: Recov
 				passed:
 					exited(RECOVERY_COMMANDS.broad, 0) &&
 					commandResults(RECOVERY_COMMANDS.broad).some(
-						({ text }) => text.includes("docs/integrations.md") && text.includes("config/assistants.json"),
+						({ output }) =>
+							output.includes("docs/integrations.md") && output.includes("config/assistants.json"),
 					),
 			},
 			{
@@ -157,17 +210,25 @@ export function inspectRecoveryTrace(history: unknown, ui: unknown, phase: Recov
 		const messages = (Array.isArray(ui) ? ui : [])
 			.map(record)
 			.filter((message) => message && typeof message.ts === "number" && message.ts >= phaseStart)
-		const report = blocked[0]?.[1].input.result
+		// A physical turn can complete with an honest report that the requested
+		// integration is still unverified. Legacy reports remain readable, but
+		// neither their tool name nor its absence proves physical completion.
+		const report = reports.length === 0 ? finalReport : blocked[0]?.[1].input.result
 		checks.push(
 			{
 				name: "verification_prerequisite_failure_observed",
 				passed:
 					exited(RECOVERY_COMMANDS.verify, 2) &&
-					commandResults(RECOVERY_COMMANDS.verify).some(({ text }) =>
-						text.includes("INTEGRATION_CONFIGURATION_MISSING"),
+					commandResults(RECOVERY_COMMANDS.verify).some(({ output }) =>
+						output.includes("INTEGRATION_CONFIGURATION_MISSING"),
 					),
 			},
-			{ name: "verification_one_blocked_handoff", passed: blocked.length === 1 && reports.length === 1 },
+			{
+				name: "verification_one_blocked_handoff",
+				passed:
+					hasCompletedPhase(lifecycle, phaseStart) &&
+					(reports.length === 0 || (blocked.length === 1 && reports.length === 1)),
+			},
 			{
 				name: "verification_missing_evidence_reported",
 				passed:
@@ -182,7 +243,7 @@ export function inspectRecoveryTrace(history: unknown, ui: unknown, phase: Recov
 					messages.some(
 						(message) =>
 							message?.type === "say" &&
-							message.say === "text" &&
+							(message.say === "text" || message.say === "completion_result") &&
 							message.partial !== true &&
 							message.text === report,
 					),
@@ -191,7 +252,10 @@ export function inspectRecoveryTrace(history: unknown, ui: unknown, phase: Recov
 				name: "verification_no_error_or_success_final",
 				passed: !messages.some(
 					(message) =>
-						message?.type === "say" && (message.say === "completion_result" || message.say === "error"),
+						message?.type === "say" &&
+						(message.say === "error" ||
+							(message.say === "completion_result" &&
+								(message.partial === true || message.text !== report))),
 				),
 			},
 		)

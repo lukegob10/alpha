@@ -33,6 +33,7 @@ const workflowTools = new Set<ToolName>([
 	"list_files",
 	"search_files",
 	"exec_command",
+	"write_stdin",
 	"shell",
 	"execute_command",
 	"manage_command",
@@ -724,6 +725,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 							history,
 							await readBoundedJson(path.join(directory, "ui_messages.json")),
 							this.activePrompt,
+							{ events, taskId },
 						),
 					}
 				: {}),

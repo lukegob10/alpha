@@ -4,7 +4,34 @@ import type { AlphaProvider } from "../../core/webview/AlphaProvider"
 import { withFileLock } from "../../core/task-persistence/atomicWrite"
 import type { TicketStore } from "./TicketStore"
 
+const pendingLaunches = new Map<string, Promise<Ticket>>()
+
 export async function workOnTicket(
+	store: TicketStore,
+	provider: Pick<AlphaProvider, "createTask" | "showTaskWithId">,
+	id: string,
+	revision: string,
+): Promise<Ticket> {
+	const directory = process.platform === "win32" ? store.directory.toLowerCase() : store.directory
+	const key = JSON.stringify([directory, id, revision])
+	const pending = pendingLaunches.get(key)
+	if (pending) {
+		const ticket = structuredClone(await pending)
+		await provider.showTaskWithId(ticket.linkedTaskIds.at(-1)!)
+		return ticket
+	}
+	// Same-process callers share the owner instead of competing on finite lock
+	// backoff. The advisory lock below still serializes independent extension hosts.
+	const launch = launchTicket(store, provider, id, revision)
+	pendingLaunches.set(key, launch)
+	try {
+		return structuredClone(await launch)
+	} finally {
+		if (pendingLaunches.get(key) === launch) pendingLaunches.delete(key)
+	}
+}
+
+async function launchTicket(
 	store: TicketStore,
 	provider: Pick<AlphaProvider, "createTask" | "showTaskWithId">,
 	id: string,

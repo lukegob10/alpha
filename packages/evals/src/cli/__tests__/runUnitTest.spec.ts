@@ -1,3 +1,7 @@
+import * as fs from "node:fs/promises"
+import * as os from "node:os"
+import * as path from "node:path"
+
 import { describe, expect, it, vi } from "vitest"
 
 import type { Task } from "../../db/index"
@@ -16,6 +20,15 @@ vi.mock("../../benchmark/index", () => ({
 }))
 
 const logger = { info: vi.fn(), error: vi.fn(), raw: vi.fn(), close: vi.fn() } as unknown as Logger
+const temporaryRoots: string[] = []
+
+afterEach(async () => {
+	for (const root of temporaryRoots.splice(0)) {
+		expect(await fs.realpath(root)).toBe(root)
+		expect(path.basename(root)).toMatch(/^alpha-unit-test-grader-/)
+		await fs.rm(root, { recursive: true, force: true })
+	}
+})
 
 function task(language: Task["language"]): Task {
 	return {
@@ -155,6 +168,11 @@ describe("runUnitTest grader adapter", () => {
 	})
 
 	it("allows a hidden deterministic grader to reject a visible-test pass", async () => {
+		const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-unit-test-grader-")))
+		temporaryRoots.push(root)
+		const workspaceRoot = path.join(root, "workspace")
+		const hiddenRoot = path.join(root, "private")
+		await Promise.all([fs.mkdir(workspaceRoot), fs.mkdir(hiddenRoot)])
 		benchmarkMocks.findBenchmarkTask.mockResolvedValue({
 			suite: { id: "frontier-v1" },
 			task: {
@@ -166,7 +184,7 @@ describe("runUnitTest grader adapter", () => {
 			},
 		})
 		benchmarkMocks.loadPrivateGraderBundle.mockResolvedValue({
-			root: "/trusted/private",
+			root: hiddenRoot,
 			manifest: {
 				graders: [{ id: "javascript-fixture.private", entrypoint: "fixture/grader.mjs" }],
 			},
@@ -210,7 +228,7 @@ describe("runUnitTest grader adapter", () => {
 			task: task("javascript"),
 			attemptId: 2,
 			logger,
-			workspaceRoot: "/agent/workspace",
+			workspaceRoot,
 			processRunner,
 			clock: new VirtualClock(),
 			changedPaths: ["src/index.js"],
@@ -221,8 +239,8 @@ describe("runUnitTest grader adapter", () => {
 		expect(processRunner.calls[2]).toMatchObject({
 			command: "node",
 			args: ["fixture/grader.mjs"],
-			cwd: "/trusted/private",
-			env: { EVAL_WORKSPACE_ROOT: "/agent/workspace" },
+			cwd: hiddenRoot,
+			env: { EVAL_WORKSPACE_ROOT: workspaceRoot },
 		})
 	})
 })

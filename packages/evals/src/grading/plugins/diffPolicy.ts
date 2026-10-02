@@ -42,7 +42,9 @@ export class DiffPolicyGrader implements GraderPlugin<DiffPolicyGraderSpec> {
 			hardGate: spec.hardGate,
 			failureClass: spec.failureClass,
 			diagnostics,
-			evidence: [evidenceFromText(`${spec.id}:paths`, "diff", context.changedPaths.join("\n"))],
+			evidence: [
+				evidenceFromText(`${spec.id}:paths`, "diff", JSON.stringify(context.changedPaths), "application/json"),
+			],
 		}
 	}
 }
@@ -50,5 +52,5 @@ export class DiffPolicyGrader implements GraderPlugin<DiffPolicyGraderSpec> {
 export function matchesGlob(value: string, pattern: string): boolean {
 	const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&")
 	const regex = escaped.replaceAll("**", "\u0000").replaceAll("*", "[^/]*").replaceAll("\u0000", ".*")
-	return new RegExp(`^${regex}$`).test(value.replaceAll("\\", "/"))
+	return new RegExp(`^${regex}$`, "s").test(value.replaceAll("\\", "/"))
 }

@@ -8,6 +8,7 @@ import { isReliabilityScenario, RELIABILITY_ACCEPTANCE_SCENARIO_IDS } from "../s
 import { rejectSymlinkComponents } from "../evidence/paths"
 import { pnpmCommand, runOwnedProcess } from "./ownedProcess"
 import { CORE_SCENARIO_IDS } from "./developmentSuites"
+import { campaignConfigDigest } from "./config"
 import type { CampaignConfig, CampaignReport } from "./types"
 
 export function assertLiveGateConfig(config: CampaignConfig): void {
@@ -80,8 +81,30 @@ export function evaluateLiveGate(config: CampaignConfig, report: CampaignReport)
 		),
 	)
 	const attemptsAccountedFor = cells.reduce((sum, cell) => sum + cell.attemptIds.length, 0) === report.attempts.length
+	const identity = report.evaluationIdentity
+	const identityVerified =
+		identity?.unchanged === true &&
+		Array.isArray(identity.missing) &&
+		identity.missing.length === 0 &&
+		typeof identity.extensionCommit === "string" &&
+		/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(identity.extensionCommit) &&
+		[
+			identity.workingTreeDigest,
+			identity.extensionBuildDigest,
+			identity.harnessDigest,
+			identity.taskSetDigest,
+			identity.sourceComponentsDigest,
+		].every((value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value)) &&
+		identity.configDigest === campaignConfigDigest(config)
+	const plan = report.evaluationPlan
+	const planVerified =
+		plan?.samples === config.samples &&
+		JSON.stringify(plan.scenarioIds) === JSON.stringify(config.scenarioIds) &&
+		JSON.stringify(plan.hostVersions) === JSON.stringify(config.hosts.map((host) => host.version))
 	const passed =
 		report.id === config.id &&
+		identityVerified &&
+		planVerified &&
 		report.mode === "report-only" &&
 		report.requestedProvider.mode === "live-copilot" &&
 		report.requestedProvider.modelId === config.provider.modelId &&
@@ -115,6 +138,7 @@ export function evaluateLiveGate(config: CampaignConfig, report: CampaignReport)
 		status: passed ? "passed" : "failed",
 		stopReason: report.stopReason ?? "incomplete",
 		retention: report.retention ?? null,
+		provenance: { identityVerified: Boolean(identityVerified), planVerified: Boolean(planVerified) },
 		counts: report.counts,
 		provider: config.provider,
 		budgets: config.budgets,

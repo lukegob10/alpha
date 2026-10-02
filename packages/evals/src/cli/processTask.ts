@@ -42,6 +42,7 @@ import { Logger, getTag, isDockerContainer } from "./utils"
 import { redisClient, getPubSubKey, registerRunner, deregisterRunner } from "./redis"
 import { runUnitTest } from "./runUnitTest"
 import { runTaskInVscode } from "./runTaskInVscode"
+import { captureWorkspaceBaseline, collectChangedPaths } from "./workspaceChanges"
 
 type ProcessTaskOptions = {
 	taskId: number
@@ -115,6 +116,8 @@ export const processTask = async ({
 			workspaceRoot = path.join(localSandboxRoot, "agent-workspace")
 			await prepareTaskWorkspace(task, workspaceRoot, processRunner)
 		}
+		const baselineCommit = await captureWorkspaceBaseline(workspaceRoot, processRunner)
+		await record("workspace.baseline_captured", { commit: baselineCommit })
 
 		const identities = await createRuntimeIdentities({
 			taskId: task.benchmarkTaskIdentity ?? `${task.language}/${task.exercise}`,
@@ -169,7 +172,7 @@ export const processTask = async ({
 			throw new Error(`Admitted task ${benchmark.task.id} is missing its normalized agent trace`)
 		}
 		const usage = normalizeUsage(persistedMetrics)
-		const changedPaths = await collectChangedPaths(workspaceRoot, processRunner)
+		const changedPaths = await collectChangedPaths(workspaceRoot, processRunner, baselineCommit)
 		const environment = runtimeEnvironment(run, containerized)
 		descriptors = await collectWorkspaceEvidence({
 			attemptId: String(attempt.id),
@@ -319,12 +322,14 @@ export const processTaskInContainer = async ({
 		const hostSandbox = path.posix.join("/tmp/evals/task-sandboxes", String(attempt.id))
 		const hostWorkspace = path.join(hostSandbox, "agent-workspace")
 		await prepareTaskWorkspace(task, hostWorkspace, processRunner)
+		const baselineCommit = await captureWorkspaceBaseline(hostWorkspace, processRunner)
 		await fs.mkdir(path.join(hostSandbox, "grader-broker"), { recursive: true })
 
 		const controller = new AbortController()
 		const brokerPromise = requiresBroker
 			? serveGraderRequest({
 					root: path.join(hostSandbox, "grader-broker"),
+					expectedAttemptId: attempt.id,
 					timeoutMs: Math.max(120_000, (run.timeout || 5) * 60_000),
 					signal: controller.signal,
 					execute: (request) =>
@@ -335,6 +340,7 @@ export const processTaskInContainer = async ({
 							workspaceRoot: hostWorkspace,
 							processRunner,
 							hostSandbox,
+							baselineCommit,
 						}),
 				})
 			: undefined
@@ -508,6 +514,7 @@ async function executeTrustedGrade(input: {
 	workspaceRoot: string
 	processRunner: HarnessProcessRunner
 	hostSandbox: string
+	baselineCommit: string
 }) {
 	const artifactRoot = path.join(input.hostSandbox, "trusted-artifacts")
 	const store = new FilesystemArtifactStore(artifactRoot)
@@ -517,7 +524,7 @@ async function executeTrustedGrade(input: {
 		attemptId: input.request.attemptId,
 		logger: input.logger,
 		workspaceRoot: input.workspaceRoot,
-		changedPaths: input.request.changedPaths,
+		changedPaths: await collectChangedPaths(input.workspaceRoot, input.processRunner, input.baselineCommit),
 		trace: input.request.trace,
 		usage: input.request.usage,
 		environment: input.request.environment,
@@ -664,27 +671,8 @@ function normalizeAgentTrace(records: unknown[]): EvalTraceEvent[] {
 	})
 }
 
-async function collectChangedPaths(workspaceRoot: string, processRunner: HarnessProcessRunner): Promise<string[]> {
-	const result = await processRunner.run({
-		command: "git",
-		args: ["status", "--porcelain=v1", "--untracked-files=all"],
-		cwd: workspaceRoot,
-		timeoutMs: 30_000,
-		maxOutputBytes: 10 * 1024 * 1024,
-	})
-	if (result.timedOut || result.exitCode !== 0) {
-		if (process.env.NODE_ENV === "test") return []
-		throw new Error(`Unable to collect changed paths: ${result.stderr}`)
-	}
-	return result.stdout
-		.split(/\r?\n/)
-		.filter(Boolean)
-		.map((line) => line.slice(3).split(" -> ").at(-1)!.replaceAll("\\", "/"))
-		.sort()
-}
-
 function normalizeUsage(metrics: Awaited<ReturnType<typeof getTasks>>[number]["taskMetrics"] | undefined) {
-	if (!metrics) return { modelCalls: 0, toolCalls: 0, costUsd: 0 }
+	if (!metrics) return { available: false, reason: "task_metrics_missing" }
 	const toolCalls = Object.values(metrics.toolUsage ?? {}).reduce((total, usage) => total + usage.attempts, 0)
 	return {
 		modelCalls: metrics.requestUsage?.length ?? 0,

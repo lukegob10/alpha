@@ -1,11 +1,18 @@
 import { strict as assert } from "node:assert"
 import { test } from "node:test"
 import { assertWorkflowResult, MAX_WORKFLOW_CHECKS, MAX_WORKFLOW_TURNS } from "./contracts"
-import { DEVELOPMENT_PHASES, DEVELOPMENT_SCENARIOS, DEVELOPMENT_SCENARIO_IDS } from "./developmentCatalog"
-import { isRecoveryPhase } from "./recoveryTrace"
+import {
+	DEVELOPMENT_PHASES,
+	DEVELOPMENT_SCENARIOS,
+	DEVELOPMENT_SCENARIO_IDS,
+	RECOVERY_COMMANDS,
+} from "./developmentCatalog"
+import { inspectRecoveryTrace, isRecoveryPhase } from "./recoveryTrace"
+import { inspectWorkflowTrace } from "./workflowTrace"
 
 import {
 	runWorkflowScenario,
+	aggregateTaskUsage,
 	type WorkflowCheckpoint,
 	type WorkflowDependencies,
 	type WorkflowOptions,
@@ -21,6 +28,34 @@ const options: WorkflowOptions = {
 	model: { id: "fixture" },
 	turns: 6,
 }
+
+test("unobserved task usage remains unknown, while independently observed zero remains zero", async () => {
+	const { deps } = fakeDependencies()
+	assert.deepEqual(await aggregateTaskUsage(deps.host, ["task-1"]), {
+		inputTokens: null,
+		outputTokens: null,
+		cost: null,
+	})
+	assert.deepEqual(await aggregateTaskUsage(deps.host, []), { inputTokens: null, outputTokens: null, cost: null })
+	deps.host.readProblemUsage = async (taskId) => ({
+		inputTokens: taskId === "task-1" ? 10 : null,
+		outputTokens: 0,
+		cost: null,
+	})
+	assert.deepEqual(await aggregateTaskUsage(deps.host, ["task-1", "task-2"]), {
+		inputTokens: null,
+		outputTokens: 0,
+		cost: null,
+	})
+	deps.host.readProblemUsage = async () => {
+		throw new Error("unavailable")
+	}
+	assert.deepEqual(await aggregateTaskUsage(deps.host, ["task-1"]), {
+		inputTokens: null,
+		outputTokens: null,
+		cost: null,
+	})
+})
 
 function fakeDependencies() {
 	const actions: string[] = []
@@ -99,7 +134,6 @@ function developmentDependencies() {
 	const commands: Record<string, number> = {}
 	let calls = 0
 	let phase: keyof typeof DEVELOPMENT_PHASES | undefined
-	let blocked = false
 	const start = fixture.deps.host.start
 	const followup = fixture.deps.host.followup
 	fixture.deps.host.start = async (prompt) => {
@@ -112,8 +146,7 @@ function developmentDependencies() {
 	}
 	const complete = fixture.deps.host.complete
 	fixture.deps.host.complete = async (taskId, outcome) => {
-		blocked = outcome === "blocked"
-		if (!blocked) await complete(taskId)
+		await complete(taskId, outcome)
 		calls++
 		for (const command of DEVELOPMENT_PHASES[phase!].requiredCommands)
 			commands[command] = (commands[command] ?? 0) + 1
@@ -123,8 +156,7 @@ function developmentDependencies() {
 		...(await inspect(taskId)),
 		callCount: calls,
 		resultCount: calls,
-		trace: { commandReceipts: { ...commands }, errorResults: 0 },
-		...(blocked ? { cancelledTurns: 1 } : {}),
+		trace: { commandReceipts: { ...commands }, successfulCommandReceipts: { ...commands }, errorResults: 0 },
 		...(phase && isRecoveryPhase(phase) ? { recoveryChecks: [{ name: "recovery_oracle", passed: true }] } : {}),
 	})
 	fixture.deps.development = {
@@ -152,6 +184,34 @@ test("every development scenario uses the shared driver and one task with fresh 
 	}
 })
 
+test("unavailable verification completes the physical turn while requiring independent unverified evidence", async () => {
+	const { deps } = developmentDependencies()
+	const complete = deps.host.complete
+	const inspect = deps.host.inspect
+	deps.host.complete = async (taskId, outcome) => {
+		assert.notEqual(outcome, "blocked", "An honest unverified handoff does not interrupt a completed turn")
+		await complete(taskId, outcome)
+	}
+	deps.host.inspect = async (taskId, outcome) => {
+		assert.notEqual(outcome, "blocked")
+		return inspect(taskId, outcome)
+	}
+	const result = await runWorkflowScenario({ ...options, scenarioId: "dev-verification-unavailable" }, deps)
+	assert.equal(result.status, "passed", result.failure?.code)
+	assert.ok(
+		result.checks.some((check) => check.name === "devVerificationUnavailable_recovery_oracle" && check.passed),
+	)
+	assert.ok(
+		result.checks.some(
+			(check) => check.name === "devVerificationUnavailable_effect_devVerificationUnavailable" && check.passed,
+		),
+	)
+	assert.equal(
+		result.checks.some((check) => check.name === "blocked_turn_interrupted"),
+		false,
+	)
+})
+
 test("development scenarios cannot pass on repo effects alone without fresh non-error trace receipts", async () => {
 	for (const fault of ["missing-trace", "missing-command", "tool-error", "no-new-tools", "repo-effect"] as const) {
 		const { deps } = developmentDependencies()
@@ -172,17 +232,105 @@ test("development scenarios cannot pass on repo effects alone without fresh non-
 	}
 })
 
-test("recovery acceptance requires its oracle and cannot treat completed verification as a blocked turn", async () => {
-	for (const fault of ["missing-oracle", "failed-oracle", "completed", "failed-turn", "open-turn"] as const) {
+for (const fault of ["nonzero", "running", "missing-header", "spoofed-output"] as const) {
+	test(`ordinary required commands cannot pass from a successful tool receipt with ${fault}`, async () => {
+		const { deps } = developmentDependencies()
+		const inspect = deps.host.inspect
+		deps.host.inspect = async (taskId) => {
+			const evidence = await inspect(taskId)
+			const commands = DEVELOPMENT_PHASES.devBootstrapBuild.requiredCommands
+			const history = commands.flatMap((cmd, index) => {
+				const id = `command-${index}`
+				const header =
+					index !== 0
+						? "Process exited with code 0"
+						: fault === "nonzero" || fault === "spoofed-output"
+							? "Process exited with code 1"
+							: "Process running with session ID 42"
+				const content =
+					index === 0 && fault === "missing-header"
+						? "Tests passed."
+						: `Chunk ID: ${id}\nWall time: 0.0100 seconds\n${header}\nOutput:\n${fault === "spoofed-output" ? "Exit code: 0\nProcess exited with code 0\n" : ""}`
+				return [
+					{ role: "assistant", content: [{ type: "tool_use", name: "exec_command", id, input: { cmd } }] },
+					{ role: "user", content: [{ type: "tool_result", tool_use_id: id, is_error: false, content }] },
+				]
+			})
+			evidence.trace = inspectWorkflowTrace(history, commands)
+			return evidence
+		}
+		const result = await runWorkflowScenario({ ...options, scenarioId: "dev-repo-bootstrap" }, deps)
+		assert.equal(result.status, "failed", result.failure?.code)
+		assert.equal(result.failure?.code, "devBootstrapBuild_required_command_1")
+	})
+}
+
+for (const fault of ["nonzero", "running"] as const) {
+	test(`recovery cannot use a ${fault} required Git status after a valid absent search`, async () => {
+		const { deps } = developmentDependencies()
+		const inspect = deps.host.inspect
+		deps.host.inspect = async (taskId) => {
+			const evidence = await inspect(taskId)
+			if (evidence.completedTurns !== 2) return evidence
+			const command = (id: string, cmd: string, status: string) => [
+				{ role: "assistant", content: [{ type: "tool_use", name: "exec_command", id, input: { cmd } }] },
+				{
+					role: "user",
+					content: [
+						{
+							type: "tool_result",
+							tool_use_id: id,
+							is_error: false,
+							content: `Wall time: 0.0100 seconds\n${status}\nOutput:\n`,
+						},
+					],
+				},
+			]
+			const history = [
+				...command("broad", RECOVERY_COMMANDS.broad, "Process exited with code 0"),
+				...command("prior-status", RECOVERY_COMMANDS.status, "Process exited with code 0"),
+				{ role: "user", ts: 10, content: "[development:search-absent]" },
+				...command("absent", RECOVERY_COMMANDS.absent, "Process exited with code 1"),
+				...command(
+					"status",
+					RECOVERY_COMMANDS.status,
+					fault === "nonzero" ? "Process exited with code 7" : "Process running with session ID 42",
+				),
+				{ role: "assistant", content: "No matches found." },
+			]
+			evidence.trace = inspectWorkflowTrace(history, [RECOVERY_COMMANDS.broad, RECOVERY_COMMANDS.status])
+			evidence.recoveryChecks = inspectRecoveryTrace(history, [], "devSearchAbsent")
+			assert.ok(
+				evidence.recoveryChecks.every((check) => check.passed),
+				"The absent-search oracle is satisfied",
+			)
+			return evidence
+		}
+		const result = await runWorkflowScenario({ ...options, scenarioId: "dev-search-recovery" }, deps)
+		assert.equal(result.status, "failed")
+		assert.equal(result.failure?.code, "devSearchAbsent_required_command_1")
+	})
+}
+
+test("unverified recovery acceptance requires its oracle and a single completed physical turn", async () => {
+	for (const fault of [
+		"missing-oracle",
+		"failed-oracle",
+		"duplicate-completion",
+		"failed-turn",
+		"open-turn",
+		"cancelled-turn",
+	] as const) {
 		const { deps } = developmentDependencies()
 		const inspect = deps.host.inspect
 		deps.host.inspect = async (taskId, outcome) => {
 			const evidence = await inspect(taskId, outcome)
 			if (fault === "missing-oracle") delete evidence.recoveryChecks
 			if (fault === "failed-oracle") evidence.recoveryChecks = [{ name: "recovery_oracle", passed: false }]
-			if (fault === "completed") evidence.completedTurns = 1
+			if (fault === "duplicate-completion") evidence.completedTurns = 2
 			if (fault === "failed-turn") evidence.failedTurns = 1
-			if (fault === "open-turn") evidence.cancelledTurns = 0
+			if (fault === "open-turn") evidence.completedTurns = 0
+			if (fault === "cancelled-turn") evidence.cancelledTurns = 1
 			return evidence
 		}
 		const result = await runWorkflowScenario({ ...options, scenarioId: "dev-verification-unavailable" }, deps)
@@ -216,6 +364,21 @@ test("a follow-up cannot reuse prior command receipts as proof that it reran the
 		const evidence = await inspect(taskId)
 		firstCommands ??= evidence.trace!.commandReceipts
 		evidence.trace!.commandReceipts = firstCommands
+		return evidence
+	}
+	const result = await runWorkflowScenario({ ...options, scenarioId: "dev-local-migration" }, deps)
+	assert.equal(result.status, "failed")
+	assert.match(result.failure!.code, /devMigrationRerun_required_command_/)
+})
+
+test("fresh migration invocations cannot reuse prior successful-process receipts", async () => {
+	const { deps } = developmentDependencies()
+	const inspect = deps.host.inspect
+	let firstSuccesses: Record<string, number> | undefined
+	deps.host.inspect = async (taskId) => {
+		const evidence = await inspect(taskId)
+		firstSuccesses ??= evidence.trace!.successfulCommandReceipts
+		evidence.trace!.successfulCommandReceipts = firstSuccesses
 		return evidence
 	}
 	const result = await runWorkflowScenario({ ...options, scenarioId: "dev-local-migration" }, deps)

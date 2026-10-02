@@ -1039,6 +1039,63 @@ export async function createRepositoryFixture(
 	return { workspace: prepared.root, initialCommit: inspection.git.initialCommit }
 }
 
+/** Required independent assertions for saved outcome admission, owned beside their verification implementation. */
+export const REPOSITORY_VERIFICATION_CHECK_NAMES = Object.freeze({
+	baseline: Object.freeze([
+		"marker-owned",
+		"required-artifacts",
+		"no-remotes",
+		"controller-files-ignored",
+		"approved-artifact-layout",
+		"baseline-source",
+		"baseline-empty-list-bug",
+		"primary-empty-list-requirement",
+		"primary-number-requirement",
+		"baseline-tests-fail",
+		"baseline-commit",
+	] as const),
+	enhanced: Object.freeze([
+		"marker-owned",
+		"required-artifacts",
+		"no-remotes",
+		"controller-files-ignored",
+		"approved-artifact-layout",
+		"enhanced-source",
+		"primary-empty-list-requirement",
+		"primary-number-requirement",
+		"enhanced-tests-pass",
+	] as const),
+	committed: Object.freeze([
+		"marker-owned",
+		"required-artifacts",
+		"no-remotes",
+		"controller-files-ignored",
+		"approved-artifact-layout",
+		"enhanced-source",
+		"primary-empty-list-requirement",
+		"primary-number-requirement",
+		"enhanced-tests-pass",
+		"committed-history",
+		"committed-clean",
+	] as const),
+	followup: Object.freeze([
+		"marker-owned",
+		"required-artifacts",
+		"no-remotes",
+		"controller-files-ignored",
+		"approved-artifact-layout",
+		"enhanced-source",
+		"primary-empty-list-requirement",
+		"primary-number-requirement",
+		"followup-test-present",
+		"followup-negative-number-requirement",
+		"followup-readme-requirement",
+		"workflow-cases-valid",
+		"workflow-cases-covered",
+		"followup-tests-pass",
+	] as const),
+})
+
 /**
  * Verify fixture requirements independently from the fixture's own test runner. This function never changes the
  * workspace and reports named checks so callers can identify the failed contract.

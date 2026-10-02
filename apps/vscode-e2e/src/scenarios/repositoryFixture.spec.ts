@@ -9,6 +9,7 @@ import assert from "node:assert/strict"
 import {
 	FIXTURE_CONTENT,
 	FIXTURE_FILES,
+	REPOSITORY_VERIFICATION_CHECK_NAMES,
 	createRepositoryFixture,
 	readFixtureCommit,
 	runFixtureTests,
@@ -103,6 +104,19 @@ function allChecksPassed(checks: Array<{ name: string; passed: boolean }>): bool
 	return checks.length > 0 && checks.every((check) => check.passed)
 }
 
+async function assertChecksPass(
+	workspace: string,
+	expected: keyof typeof REPOSITORY_VERIFICATION_CHECK_NAMES,
+): Promise<void> {
+	const checks = await verifyRepositoryFixture(workspace, expected)
+	assert.equal(allChecksPassed(checks), true)
+	for (const name of REPOSITORY_VERIFICATION_CHECK_NAMES[expected])
+		assert.ok(
+			checks.some((check) => check.name === name && check.passed),
+			`${expected} omitted required outcome assertion: ${name}`,
+		)
+}
+
 test("creates and independently verifies the deterministic baseline", async () => {
 	await withTempDirectory(async (directory) => {
 		const workspace = path.join(directory, "fixture")
@@ -120,7 +134,7 @@ test("creates and independently verifies the deterministic baseline", async () =
 			`Expected baseline tests to fail: ${JSON.stringify(baselineTests)}`,
 		)
 		await fs.writeFile(path.join(workspace, FIXTURE_FILES.checkpoint), '{"phase":"baseline"}\n', "utf8")
-		assert.equal(allChecksPassed(await verifyRepositoryFixture(workspace, "baseline")), true)
+		await assertChecksPass(workspace, "baseline")
 
 		assert.equal(
 			await fs.readFile(path.join(workspace, FIXTURE_FILES.module), "utf8"),
@@ -167,16 +181,16 @@ test("verifies enhanced, committed, and follow-up states", async () => {
 
 		await fs.writeFile(path.join(workspace, FIXTURE_FILES.module), FIXTURE_CONTENT.enhancedModule, "utf8")
 		await fs.writeFile(path.join(workspace, FIXTURE_FILES.primaryTest), FIXTURE_CONTENT.enhancedTest, "utf8")
-		assert.equal(allChecksPassed(await verifyRepositoryFixture(workspace, "enhanced")), true)
+		await assertChecksPass(workspace, "enhanced")
 		assert.equal((await runFixtureTests(workspace)).exitCode, 0)
 
 		await commitEnhancedState(workspace)
 		assert.notEqual(await readFixtureCommit(workspace), created.initialCommit)
-		assert.equal(allChecksPassed(await verifyRepositoryFixture(workspace, "committed")), true)
+		await assertChecksPass(workspace, "committed")
 
 		await fs.writeFile(path.join(workspace, FIXTURE_FILES.primaryTest), FIXTURE_CONTENT.followupPrimaryTest, "utf8")
 		await fs.writeFile(path.join(workspace, FIXTURE_FILES.readme), FIXTURE_CONTENT.followupReadme, "utf8")
-		assert.equal(allChecksPassed(await verifyRepositoryFixture(workspace, "followup")), true)
+		await assertChecksPass(workspace, "followup")
 		assert.equal((await runFixtureTests(workspace)).exitCode, 0)
 
 		await fs.writeFile(
@@ -185,7 +199,7 @@ test("verifies enhanced, committed, and follow-up states", async () => {
 			"utf8",
 		)
 		await fs.writeFile(path.join(workspace, FIXTURE_FILES.primaryTest), FIXTURE_CONTENT.extendedTest, "utf8")
-		assert.equal(allChecksPassed(await verifyRepositoryFixture(workspace, "followup")), true)
+		await assertChecksPass(workspace, "followup")
 	})
 })
 

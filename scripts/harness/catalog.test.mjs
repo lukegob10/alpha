@@ -12,7 +12,11 @@ test("every lane delegates to an existing package command", () => {
 					: args[0] === "--filter"
 						? args[1] === "@alpha-code/types"
 							? "packages/types/package.json"
-							: "apps/vscode-e2e/package.json"
+							: args[1] === "@alpha-code/evals"
+								? "packages/evals/package.json"
+								: args[1] === "@alpha-code/vscode-webview"
+									? "webview-ui/package.json"
+									: "apps/vscode-e2e/package.json"
 						: "package.json"
 			const script = args[0].startsWith("--") ? args[2] : args[0]
 			const manifest = JSON.parse(readFileSync(new URL(`../../${packagePath}`, import.meta.url)))
@@ -32,7 +36,9 @@ test("focused selection preserves argument boundaries and requires explicit test
 test("offline selection cannot start services or provider campaigns", () => {
 	assert.deepEqual(selectLane("offline").commands, [
 		["--filter", "@alpha-code/types", "build"],
-		["test:evals:offline"],
+		["--filter", "@alpha-code/evals", "test:unit"],
+		["--filter", "@alpha-code/evals", "test:contract"],
+		["--filter", "@alpha-code/evals", "test:certification"],
 	])
 	assert.equal(lanes.offline.decisions, "scripted")
 	assert.ok(lanes.services.prerequisites.length)
@@ -42,4 +48,11 @@ test("offline selection cannot start services or provider campaigns", () => {
 		false,
 	)
 	assert.deepEqual(lanes.infrastructure.commands, [["test:evals:infrastructure"]])
+})
+
+test("hard offline and host lanes require explicit execution receipts", () => {
+	assert.ok(lanes.offline.receipts.slice(1).every((receipt) => receipt.requireAllTests))
+	assert.equal(lanes.host.receipts[0].runner, "extension-host")
+	assert.equal(lanes.outcomes.receipts[2].runner, "task-outcomes")
+	assert.ok(lanes.outcomes.commands[2].includes("scripted"))
 })

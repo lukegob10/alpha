@@ -23,6 +23,8 @@ export const TEST_RUN_FAILURE_CODES = [
 	"evidence-failed",
 	"authentication-unknown",
 	"no-tests-executed",
+	"tests-skipped",
+	"invalid-test-counts",
 	"evidence-retention-failed",
 ] as const
 
@@ -67,6 +69,10 @@ const FAILURE_GUIDANCE: Record<TestRunFailureCode, string> = {
 		"Evidence retention could not establish a complete within-budget result. Preserve protected/raw sources, inspect the durable retention report, and stop further campaign admission until storage state is known.",
 	"no-tests-executed":
 		"The selected Mocha suite executed no non-pending tests. Check --file and --grep and any suite skip conditions; a zero-match or fully skipped run is not a passing test gate.",
+	"tests-skipped":
+		"A required suite skipped selected tests. Inspect its pending test count and skip conditions; every selected hard-gate test must execute and pass.",
+	"invalid-test-counts":
+		"The host did not report coherent test execution counts. Preserve the run receipts and inspect the selected runner; an incomplete count cannot establish acceptance.",
 	"invalid-options":
 		"Check option names and values in docs/vscode-live-test-profiles.md. Use --provider scripted for a disposable deterministic run, or provide all three dedicated paths for a persistent run.",
 	"profile-invalid":
@@ -111,10 +117,28 @@ export type TestExecutionCounts = {
 	failed: number
 }
 
+/** Validate receipts at the runner boundary; hook failures may outnumber ended tests. */
+export function isTestExecutionCounts(value: unknown): value is TestExecutionCounts {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false
+	const counts = value as Record<string, unknown>
+	if (
+		!["total", "passed", "pending", "executed", "failed"].every(
+			(key) => typeof counts[key] === "number" && Number.isSafeInteger(counts[key]) && counts[key] >= 0,
+		)
+	)
+		return false
+	return (
+		counts.total === Number(counts.pending) + Number(counts.executed) &&
+		Number(counts.passed) <= Number(counts.executed) &&
+		(counts.failed !== 0 || counts.passed === counts.executed)
+	)
+}
+
 /** Mocha's test-end count includes pending tests; zero failures alone is not an executed-test receipt. */
 export function testSuiteOutcome(
 	failures: number,
-	stats?: Pick<import("mocha").Stats, "tests" | "passes" | "pending">,
+	stats?: { tests: number; passes: number; pending: number },
+	options: { requireAllTests?: boolean } = {},
 ) {
 	const counts: TestExecutionCounts = {
 		total: stats?.tests ?? 0,
@@ -123,8 +147,17 @@ export function testSuiteOutcome(
 		executed: Math.max(0, (stats?.tests ?? 0) - (stats?.pending ?? 0)),
 		failed: failures,
 	}
+	const coherent = isTestExecutionCounts(counts)
 	const failure: TestRunFailureCode | undefined =
-		failures > 0 ? "host-failed" : counts.executed > 0 ? undefined : "no-tests-executed"
+		failures > 0
+			? "host-failed"
+			: !coherent
+				? "invalid-test-counts"
+				: counts.executed === 0
+					? "no-tests-executed"
+					: options.requireAllTests && counts.pending > 0
+						? "tests-skipped"
+						: undefined
 	return { counts, failure }
 }
 

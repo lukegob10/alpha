@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import type { HarnessProcessSpec } from "../../orchestration/index"
 
 import {
 	initialAttemptState,
@@ -88,7 +89,20 @@ const logger = {
 	close: vi.fn(),
 	path: "/tmp/test-evidence.log",
 } as unknown as Logger
-const processRunner = { run: mocks.processRun }
+const processRunner = {
+	run: (spec: HarnessProcessSpec) =>
+		spec.command === "git" &&
+		(spec.args?.[0] === "rev-parse" || (spec.args?.[0] === "ls-files" && spec.args.includes("-v")))
+			? Promise.resolve({
+					exitCode: 0,
+					stdout: spec.args?.[0] === "rev-parse" ? "a".repeat(40) : "",
+					stderr: "",
+					durationMs: 1,
+					timedOut: false,
+					outputTruncated: false,
+				})
+			: mocks.processRun(spec),
+}
 
 let state: AttemptLifecycleState
 
@@ -189,11 +203,42 @@ describe("processTaskInContainer lifecycle integration", () => {
 		})
 		await processTaskInContainer({ taskId: task.id, jobToken: null, logger, maxRetries: 0, processRunner })
 		expect(mocks.serveGraderRequest).toHaveBeenCalledOnce()
+		expect(mocks.serveGraderRequest).toHaveBeenCalledWith(expect.objectContaining({ expectedAttemptId: 101 }))
 		const args = mocks.processRun.mock.calls[0]![0].args.join(" ")
 		expect(args).not.toContain("/var/run/docker.sock")
 		expect(args).not.toContain("private-benchmark")
 		expect(args).not.toContain("/tmp/evals:/var/log/evals")
 		expect(args).toContain("/tmp/evals/task-sandboxes/101:/var/log/evals:rw")
+	})
+
+	it("derives trusted diff grading from the host workspace instead of the agent's changed-path claim", async () => {
+		mocks.findBenchmarkTask.mockResolvedValue({
+			task: { graders: [{ alias: "hidden_tests", bundleId: "private" }] },
+		})
+		mocks.serveGraderRequest.mockResolvedValue(undefined)
+		await processTaskInContainer({ taskId: task.id, jobToken: null, logger, maxRetries: 0, processRunner })
+		mocks.processRun.mockResolvedValue({
+			exitCode: 0,
+			stdout: "src/actual-change.js\0",
+			stderr: "",
+			durationMs: 1,
+			timedOut: false,
+			outputTruncated: false,
+		})
+		await mocks.serveGraderRequest.mock.calls[0]![0].execute({
+			schemaVersion: 1,
+			attemptId: 101,
+			workspaceRoot: "/untrusted",
+			changedPaths: [],
+			trace: [],
+			environment: {},
+		})
+		expect(mocks.runUnitTest).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workspaceRoot: expect.stringContaining("task-sandboxes"),
+				changedPaths: ["src/actual-change.js"],
+			}),
+		)
 	})
 
 	it("keeps secret values out of Docker arguments and exposes only environment names", async () => {
@@ -263,6 +308,73 @@ describe("processTaskInContainer lifecycle integration", () => {
 })
 
 describe("processTask lifecycle integration", () => {
+	it("includes committed changes even when the agent leaves a clean working tree", async () => {
+		mocks.processRun.mockImplementation(async ({ args }: { args: string[] }) => ({
+			exitCode: 0,
+			stdout: args[0] === "rev-parse" ? "a".repeat(40) : args[0] === "diff" ? "generated/forbidden.js\0" : "",
+			stderr: "",
+			durationMs: 1,
+			timedOut: false,
+			outputTruncated: false,
+		}))
+		await processTask({ taskId: task.id, jobToken: null, logger, processRunner })
+		expect(mocks.runUnitTest).toHaveBeenCalledWith(
+			expect.objectContaining({ changedPaths: ["generated/forbidden.js"] }),
+		)
+	})
+
+	it("includes ignored files instead of allowing .gitignore to bypass diff policy", async () => {
+		mocks.processRun.mockImplementation(async ({ args }: { args: string[] }) => ({
+			exitCode: 0,
+			stdout: args[0] === "rev-parse" ? "a".repeat(40) : args[0] === "ls-files" ? "generated/hidden.js\0" : "",
+			stderr: "",
+			durationMs: 1,
+			timedOut: false,
+			outputTruncated: false,
+		}))
+		await processTask({ taskId: task.id, jobToken: null, logger, processRunner })
+		expect(mocks.runUnitTest).toHaveBeenCalledWith(
+			expect.objectContaining({ changedPaths: ["generated/hidden.js"] }),
+		)
+	})
+
+	it("preserves both rename paths and special filenames for diff policy grading", async () => {
+		mocks.processRun.mockResolvedValue({
+			exitCode: 0,
+			stdout: "src/new name.js\0generated/old.js\0source -> target.txt\0src/é\nfile.js\0",
+			stderr: "",
+			durationMs: 1,
+			timedOut: false,
+			outputTruncated: false,
+		})
+		await processTask({ taskId: task.id, jobToken: null, logger, processRunner })
+		expect(mocks.runUnitTest).toHaveBeenCalledWith(
+			expect.objectContaining({
+				changedPaths: ["generated/old.js", "source -> target.txt", "src/new name.js", "src/é\nfile.js"],
+			}),
+		)
+	})
+
+	it.each([
+		{ exitCode: 1, stdout: "", outputTruncated: false },
+		{ exitCode: 0, stdout: "src/file.js\0", outputTruncated: true },
+		{ exitCode: 0, stdout: "src/file.js", outputTruncated: false },
+		{ exitCode: 0, stdout: "src/file.js\0\0", outputTruncated: false },
+	])("fails closed when Git evidence is unavailable, truncated, or malformed: %j", async (result) => {
+		mocks.processRun.mockResolvedValue({ ...result, stderr: "", durationMs: 1, timedOut: false })
+		await expect(processTask({ taskId: task.id, jobToken: null, logger, processRunner })).rejects.toThrow(
+			/evidence/,
+		)
+		expect(mocks.runUnitTest).not.toHaveBeenCalled()
+	})
+
+	it("marks absent task metrics unavailable without fabricating zero cost", async () => {
+		await processTask({ taskId: task.id, jobToken: null, logger, processRunner })
+		expect(mocks.runUnitTest).toHaveBeenCalledWith(
+			expect.objectContaining({ usage: { available: false, reason: "task_metrics_missing" } }),
+		)
+	})
+
 	it.each(["local", "container"])(
 		"rejects a retired CLI run before %s execution without changing historical data",
 		async (surface) => {
@@ -284,7 +396,7 @@ describe("processTask lifecycle integration", () => {
 	)
 
 	it("moves a successful task through every phase and finalizes passed", async () => {
-		await processTask({ taskId: task.id, jobToken: null, logger })
+		await processTask({ taskId: task.id, jobToken: null, logger, processRunner })
 
 		expect(mocks.ensureAttempt).toHaveBeenCalledWith(task.id, 1)
 		expect(mocks.applyAttemptEvent.mock.calls.map(([, event]) => event)).toEqual([
@@ -321,7 +433,7 @@ describe("processTask lifecycle integration", () => {
 		mocks.readJsonLines.mockResolvedValue([
 			{ sequence: 4, timestamp: 1_750_000_000_000, event: { type: "tool_result", tool: "read_file" } },
 		])
-		await processTask({ taskId: task.id, jobToken: null, logger })
+		await processTask({ taskId: task.id, jobToken: null, logger, processRunner })
 		expect(mocks.runUnitTest).toHaveBeenCalledWith(
 			expect.objectContaining({
 				trace: [
@@ -338,7 +450,9 @@ describe("processTask lifecycle integration", () => {
 
 	it("classifies runner execution exceptions as agent errors", async () => {
 		mocks.runTaskInVscode.mockRejectedValue(new Error("provider disconnected"))
-		await expect(processTask({ taskId: task.id, jobToken: null, logger })).rejects.toThrow("provider disconnected")
+		await expect(processTask({ taskId: task.id, jobToken: null, logger, processRunner })).rejects.toThrow(
+			"provider disconnected",
+		)
 		expect(state).toMatchObject({
 			phase: "agent_execution",
 			terminalStatus: "agent_error",
@@ -349,19 +463,23 @@ describe("processTask lifecycle integration", () => {
 
 	it("classifies setup exceptions as infrastructure errors", async () => {
 		mocks.registerRunner.mockRejectedValue(new Error("redis unavailable"))
-		await expect(processTask({ taskId: task.id, jobToken: null, logger })).rejects.toThrow("redis unavailable")
+		await expect(processTask({ taskId: task.id, jobToken: null, logger, processRunner })).rejects.toThrow(
+			"redis unavailable",
+		)
 		expect(state).toMatchObject({ phase: "setup", terminalStatus: "infrastructure_error" })
 	})
 
 	it("classifies thrown grader exceptions as grader errors", async () => {
 		mocks.runUnitTest.mockRejectedValue(new Error("grader crashed"))
-		await expect(processTask({ taskId: task.id, jobToken: null, logger })).rejects.toThrow("grader crashed")
+		await expect(processTask({ taskId: task.id, jobToken: null, logger, processRunner })).rejects.toThrow(
+			"grader crashed",
+		)
 		expect(state).toMatchObject({ phase: "grading", terminalStatus: "grader_error" })
 	})
 
 	it("maps a persisted grader error decision to grader_error lifecycle state", async () => {
 		mocks.runUnitTest.mockResolvedValue({ decision: "grader_error", results: [] })
-		await expect(processTask({ taskId: task.id, jobToken: null, logger })).resolves.toBeUndefined()
+		await expect(processTask({ taskId: task.id, jobToken: null, logger, processRunner })).resolves.toBeUndefined()
 		expect(state).toMatchObject({
 			phase: "grading",
 			terminalStatus: "grader_error",
@@ -370,26 +488,26 @@ describe("processTask lifecycle integration", () => {
 
 	it("preserves a safety hard-gate decision", async () => {
 		mocks.runUnitTest.mockResolvedValue({ decision: "safety_failed", results: [] })
-		await processTask({ taskId: task.id, jobToken: null, logger })
+		await processTask({ taskId: task.id, jobToken: null, logger, processRunner })
 		expect(state).toMatchObject({ phase: "grading", terminalStatus: "safety_failed" })
 	})
 
 	it("preserves an explicit agent cancellation after collecting and grading evidence", async () => {
 		mocks.runTaskInVscode.mockResolvedValue("cancelled")
-		await processTask({ taskId: task.id, jobToken: null, logger })
+		await processTask({ taskId: task.id, jobToken: null, logger, processRunner })
 		expect(state).toMatchObject({ phase: "grading", terminalStatus: "cancelled" })
 		expect(mocks.runUnitTest).toHaveBeenCalledOnce()
 	})
 
 	it("classifies wall-budget termination separately from safety and outcome failures", async () => {
 		mocks.runTaskInVscode.mockResolvedValue("budget_exhausted")
-		await processTask({ taskId: task.id, jobToken: null, logger })
+		await processTask({ taskId: task.id, jobToken: null, logger, processRunner })
 		expect(state).toMatchObject({ phase: "grading", terminalStatus: "budget_exhausted" })
 	})
 
 	it("classifies an agent wall-clock timeout as an agent error", async () => {
 		mocks.runTaskInVscode.mockResolvedValue("agent_error")
-		await processTask({ taskId: task.id, jobToken: null, logger })
+		await processTask({ taskId: task.id, jobToken: null, logger, processRunner })
 		expect(state).toMatchObject({ phase: "grading", terminalStatus: "agent_error" })
 	})
 
@@ -404,7 +522,7 @@ describe("processTask lifecycle integration", () => {
 				},
 			],
 		})
-		await processTask({ taskId: task.id, jobToken: null, logger })
+		await processTask({ taskId: task.id, jobToken: null, logger, processRunner })
 		expect(state).toMatchObject({ phase: "grading", terminalStatus: "budget_exhausted" })
 	})
 
@@ -412,7 +530,7 @@ describe("processTask lifecycle integration", () => {
 		mocks.validateEvidenceBundle
 			.mockResolvedValueOnce({ valid: true, issues: [] })
 			.mockResolvedValueOnce({ valid: false, issues: [{ code: "event_sequence_gap", detail: "late gap" }] })
-		await expect(processTask({ taskId: task.id, jobToken: null, logger })).rejects.toThrow(
+		await expect(processTask({ taskId: task.id, jobToken: null, logger, processRunner })).rejects.toThrow(
 			"Final evidence integrity failed",
 		)
 		expect(state).toMatchObject({
@@ -424,7 +542,7 @@ describe("processTask lifecycle integration", () => {
 
 	it("does not rerun an already terminal attempt", async () => {
 		state = { phase: "grading", terminalStatus: "passed", version: 5 }
-		await processTask({ taskId: task.id, jobToken: null, logger })
+		await processTask({ taskId: task.id, jobToken: null, logger, processRunner })
 		expect(mocks.registerRunner).not.toHaveBeenCalled()
 		expect(mocks.runTaskInVscode).not.toHaveBeenCalled()
 	})
