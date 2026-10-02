@@ -26,9 +26,6 @@ export interface RequestWorkClassDecision {
 	includeMcpResources: boolean
 }
 
-const USER_MESSAGE_RE = /<user_message>\s*([\s\S]*?)\s*<\/user_message>/i
-const ENVIRONMENT_DETAILS_RE = /<environment_details>[\s\S]*?<\/environment_details>/gi
-
 const WORKFLOW_INTENT_RE =
 	/\b(?:spawn(?:_agent)?|delegate(?:\s+to)?\s+(?:a\s+)?(?:sub)?agent|create(?:\s+a)?\s+ticket|file(?:\s+a)?\s+ticket|update(?:\s+a)?\s+ticket|delete(?:\s+a)?\s+ticket|playwright|update[_ ](?:todo[_ ]list|plan)|work[- ]plan)\b/i
 
@@ -195,7 +192,31 @@ function normalizeUserRequestText(text: string): string {
 	// Historical agent continuations predate structured provenance. Read their
 	// host wrapper conservatively, including a continuation mixed with tool data.
 	if (/<agent_message(?:\s|>)/i.test(text)) return ""
-	const withoutEnvironment = text.replace(ENVIRONMENT_DETAILS_RE, "").trim()
-	const wrapped = withoutEnvironment.match(USER_MESSAGE_RE)
-	return (wrapped ? wrapped[1] : withoutEnvironment).trim()
+	const withoutEnvironment = stripEnvironmentDetails(text).trim()
+	const opening = /<user_message>/i.exec(withoutEnvironment)
+	if (!opening) return withoutEnvironment
+	const contentStart = opening.index + opening[0].length
+	const closingTag = /<\/user_message>/gi
+	closingTag.lastIndex = contentStart
+	const closing = closingTag.exec(withoutEnvironment)
+	return closing ? withoutEnvironment.slice(contentStart, closing.index).trim() : withoutEnvironment
+}
+
+function stripEnvironmentDetails(text: string): string {
+	const parts: string[] = []
+	let cursor = 0
+	let openIndex: number | undefined
+	// Scan fixed delimiters once. Searching for a closing tag from every unmatched
+	// opening tag would revisit the remaining input and block the extension host.
+	for (const match of text.matchAll(/<\/?environment_details>/gi)) {
+		if (match[0][1] !== "/") {
+			openIndex ??= match.index
+		} else if (openIndex !== undefined) {
+			parts.push(text.slice(cursor, openIndex))
+			cursor = match.index + match[0].length
+			openIndex = undefined
+		}
+	}
+	parts.push(text.slice(cursor))
+	return parts.join("")
 }

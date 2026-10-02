@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest"
+import { execFile } from "node:child_process"
+import { fileURLToPath } from "node:url"
+import { promisify } from "node:util"
 
 import { classifyRequestWorkClass, extractUserRequestText } from "../requestWorkClass"
 import { toolNamesReferencedInHistory } from "../lookupToolCatalog"
@@ -173,6 +176,48 @@ describe("classifyRequestWorkClass", () => {
 })
 
 describe("extractUserRequestText", () => {
+	it.each([
+		["before<ENVIRONMENT_DETAILS>nested<environment_details>state</environment_details>after", "beforeafter"],
+		["a<environment_details>x</environment_details>b<environment_details>y</environment_details>c", "abc"],
+		["before<environment_details>unclosed", "before<environment_details>unclosed"],
+		["before</environment_details>after", "before</environment_details>after"],
+		["İ<environment_details>state</environment_details>after", "İafter"],
+	])("preserves legacy environment wrapper semantics: %s", (content, expected) => {
+		expect(extractUserRequestText([{ role: "user", content }])).toBe(expected)
+	})
+
+	it.each([
+		["prefix<USER_MESSAGE>  hello\n</user_message>suffix", "hello"],
+		["<user_message>first<user_message>nested</user_message>suffix", "first<user_message>nested"],
+		["before<user_message>unclosed", "before<user_message>unclosed"],
+		["before</user_message>after", "before</user_message>after"],
+	])("preserves legacy user wrapper semantics: %s", (content, expected) => {
+		expect(extractUserRequestText([{ role: "user", content }])).toBe(expected)
+	})
+
+	it.each(["environment_details", "user_message"])(
+		"handles repeated unclosed %s tags within a bounded child-process deadline",
+		async (tag) => {
+			// An isolated process can be killed even if a synchronous regex blocks its event loop.
+			const sourcePath = fileURLToPath(new URL("../requestWorkClass.ts", import.meta.url))
+			const { stdout } = await promisify(execFile)(
+				process.execPath,
+				[
+					"--eval",
+					`const { extractUserRequestText } = require(process.argv[1]);
+const content = process.argv[2].repeat(100_000);
+if (extractUserRequestText([{ role: "user", content }]) !== content) process.exit(1);
+process.stdout.write("preserved");`,
+					sourcePath,
+					`<${tag}>`,
+				],
+				{ timeout: 5_000, windowsHide: true, maxBuffer: 1024 },
+			)
+			expect(stdout).toBe("preserved")
+		},
+		10_000,
+	)
+
 	it("prefers the latest user_message wrapper and skips tool-result rows", () => {
 		const text = extractUserRequestText(
 			[

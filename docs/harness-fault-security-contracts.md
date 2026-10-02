@@ -1,5 +1,27 @@
 # Harness finalization and diagnostic credential contracts
 
+## Release validation: bounded legacy request normalization
+
+CodeQL's `js/polynomial-redos` check identified repeated unclosed `<environment_details>` tags in human request text as
+an extension-host denial-of-service path. The previous global block regex searched the remaining suffix again for each
+opening tag. A child-process regression with 50,000 unclosed tags hit its five-second deadline before the repair.
+The equivalent user-message wrapper also hit that deadline with 100,000 tags. Both paths now have the bounded regression.
+
+The existing request extractor now scans fixed opening/closing delimiters and assembles the retained text. It keeps
+the old case-insensitive, first-closing-tag behavior, multiple-block removal, unmatched-tag preservation, Unicode text,
+human provenance checks, and request classification. This is an Alpha legacy-wrapper compatibility repair, not an
+execution-policy or tool-authority change.
+
+Current Codex CLI source was rechecked at **`ca466061d64f0b44f416135c7fd06aa7af850bbc`**, retrieved **2026-10-02**, including
+[`tools/executed_tool_calls/request_metadata.rs`](https://github.com/openai/codex/blob/ca466061d64f0b44f416135c7fd06aa7af850bbc/codex-rs/core/src/tools/executed_tool_calls/request_metadata.rs)
+and [`session/turn.rs`](https://github.com/openai/codex/blob/ca466061d64f0b44f416135c7fd06aa7af850bbc/codex-rs/core/src/session/turn.rs).
+Upstream attaches host observations to structured request items; Alpha retains its own historical XML-style wrapper
+reader. No upstream prompt, sandbox, or runtime implementation is imported.
+
+The bounded child-process regression passes after the repair. Focused tests also cover ordinary wrapped requests,
+nested/multiple blocks, unmatched tags, and a Unicode character whose lowercase form changes length, so delimiter
+offsets always refer to the original text.
+
 ## Reference inspected
 
 Retrieved on **2026-10-02** from Codex CLI commit
