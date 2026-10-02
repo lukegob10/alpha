@@ -134,3 +134,34 @@ pnpm --dir src exec eslint integrations/terminal/BaseTerminalProcess.ts integrat
 
 The fix removes a demonstrated failure-path hang and false completion. Test timings are validation overhead and are not
 evidence of a general latency, throughput, token, or memory improvement.
+
+## Release validation follow-up: POSIX descendant settlement
+
+GitHub's Linux unit lane exposed a remaining shutdown race in the real merged-output failure test. A Node **24.14.1**
+Linux reproduction ran the bundled current terminal implementation and inspected `/proc/<pid>/stat`: after completion,
+the shell was gone but the parent and sleeper child still had state `R`. Both disappeared later. Sending `SIGKILL` and
+awaiting the shell's Execa result therefore did not establish the descendants' physical exit boundary.
+
+Current Codex CLI was inspected again at **`ca466061d64f0b44f416135c7fd06aa7af850bbc`**, retrieved **2026-10-02**:
+[`unified_exec/process.rs`](https://github.com/openai/codex/blob/ca466061d64f0b44f416135c7fd06aa7af850bbc/codex-rs/core/src/unified_exec/process.rs)
+and its tests distinguish confirmed termination from failure, and
+[`utils/pty/src/process_group.rs`](https://github.com/openai/codex/blob/ca466061d64f0b44f416135c7fd06aa7af850bbc/codex-rs/utils/pty/src/process_group.rs)
+and its tests target descendants as well as the leader. Alpha retains its existing POSIX descendant discovery and
+per-PID signals rather than changing command isolation or adopting Codex's process-group setup.
+
+The POSIX owner now follows signal delivery with asynchronous `ps` state inspection of the captured targets. A 25 ms
+condition poll has a five-second deadline, including each inspection's process timeout. Missing PIDs and dead/zombie
+states finish the wait; still-running targets do not. Inspection failures and timeout remain errors, and a failed Stop
+remains retryable. Windows retains the existing `taskkill` behavior. No persisted, provider, or wire contracts change.
+
+Node's [signal API](https://nodejs.org/api/process.html#processkillpid-signal) documents signal delivery and signal-zero
+existence checking. The [Linux process-state contract](https://man7.org/linux/man-pages/man5/proc_pid_stat.5.html),
+retrieved **2026-10-02**, distinguishes running processes from dead zombies awaiting parent/init reaping. The Linux
+integration oracle now checks this state rather than treating an unreaped dead PID as a running process. The production
+wait still rejects every executing state, including the `R` state observed in the failing reproduction.
+
+The fake-timer regression failed on the previous implementation because Stop completed while its
+child was still running. Additional cases cover dead zombies, missing selected PIDs, bounded timeout and Stop retry,
+missing `ps`, and malformed state output. All **56 terminal tests across three files** passed with the repair on Windows;
+the real callback and merged-stream reproduction also passed on Linux with all captured PIDs gone before completion.
+The final Linux CI lane remains the full-platform gate.

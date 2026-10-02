@@ -9,6 +9,7 @@ import { BaseTerminal } from "./BaseTerminal"
 import { BaseTerminalProcess } from "./BaseTerminalProcess"
 
 const PROCESS_TERMINATION_TIMEOUT_MS = 5_000
+const PROCESS_SETTLEMENT_POLL_MS = 25
 const PID_UPDATE_TIMEOUT_MS = 1_000
 const MAX_PENDING_LINE_OBSERVERS = 16
 
@@ -325,9 +326,11 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 
 		// Snapshot every descendant before terminating its parents so re-parenting
 		// cannot hide a process between discovery and delivery of SIGKILL.
+		const terminatedPids: number[] = []
 		for (const pid of [...descendants].reverse()) {
 			try {
 				this.killPid(pid)
+				terminatedPids.push(pid)
 			} catch (error) {
 				errors.push(error)
 			}
@@ -335,11 +338,57 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 		for (const pid of roots) {
 			try {
 				this.killPid(pid)
+				terminatedPids.push(pid)
 			} catch (error) {
 				errors.push(error)
 			}
 		}
+		try {
+			await this.waitForPosixProcessSettlement(terminatedPids)
+		} catch (error) {
+			errors.push(error)
+		}
 		this.throwTerminationErrors(errors)
+	}
+
+	private async waitForPosixProcessSettlement(pids: readonly number[]): Promise<void> {
+		if (pids.length === 0) return
+		const deadline = Date.now() + PROCESS_TERMINATION_TIMEOUT_MS
+		while (true) {
+			const remainingMs = deadline - Date.now()
+			if (remainingMs <= 0) throw new Error("Timed out waiting for the terminated process tree to stop")
+			const runningPids = await new Promise<number[]>((resolve, reject) => {
+				execFile(
+					"ps",
+					["-o", "pid=,stat=", "-p", pids.join(",")],
+					{ timeout: remainingMs, maxBuffer: 1024 * 1024 },
+					(error, stdout, stderr) => {
+						// ps exits 1 with no rows when every selected PID has disappeared.
+						if (
+							error &&
+							!(error.code === 1 && !error.killed && !error.signal && !stdout.trim() && !stderr.trim())
+						) {
+							reject(new Error("Failed to inspect terminated process-tree state", { cause: error }))
+							return
+						}
+						const running: number[] = []
+						for (const row of stdout.trim().split("\n").filter(Boolean)) {
+							const match = /^\s*(\d+)\s+(\S+)\s*$/.exec(row)
+							if (!match || !pids.includes(Number(match[1]))) {
+								reject(new Error("Invalid terminated process-tree state from ps"))
+								return
+							}
+							// A zombie is already dead; its parent/init owns reaping the PID.
+							// Signal delivery alone does not establish this exit boundary.
+							if (!/^[ZXx]/.test(match[2])) running.push(Number(match[1]))
+						}
+						resolve(running)
+					},
+				)
+			})
+			if (runningPids.length === 0) return
+			await new Promise<void>((resolve) => setTimeout(resolve, Math.min(PROCESS_SETTLEMENT_POLL_MS, remainingMs)))
+		}
 	}
 
 	private throwTerminationErrors(errors: readonly unknown[]): void {

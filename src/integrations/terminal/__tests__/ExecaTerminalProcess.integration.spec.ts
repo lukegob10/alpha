@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process"
+import { readFileSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -16,10 +17,15 @@ const fixturePath = path.join(path.dirname(fileURLToPath(import.meta.url)), "fix
 function isPidAlive(pid: number | undefined): boolean {
 	if (!pid) return false
 	try {
+		if (process.platform === "linux") {
+			// kill(pid, 0) also finds dead zombies awaiting init/parent reaping.
+			const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
+			return !/^[ZXx]/.test(stat.slice(stat.lastIndexOf(")") + 2))
+		}
 		process.kill(pid, 0)
 		return true
 	} catch (error) {
-		return (error as NodeJS.ErrnoException).code !== "ESRCH"
+		return !["ESRCH", "ENOENT"].includes((error as NodeJS.ErrnoException).code ?? "")
 	}
 }
 
