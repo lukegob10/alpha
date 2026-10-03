@@ -812,6 +812,7 @@ describe("VsCodeLmHandler", () => {
 				type: "usage",
 				inputTokens: usage.prompt_tokens,
 				outputTokens: usage.completion_tokens,
+				usageSource: "provider",
 			})
 			expect(mockLanguageModelChat.countTokens).not.toHaveBeenCalledWith(responseText, expect.anything())
 			expect(handler.getStatefulMarker()).toBe(Buffer.from(statefulMarker).toString("base64"))
@@ -863,6 +864,7 @@ describe("VsCodeLmHandler", () => {
 					type: "usage",
 					inputTokens: usage.prompt_tokens,
 					outputTokens: usage.completion_tokens,
+					usageSource: "provider",
 				})
 				expect(sentinelEncodesBeforeRequest).toBe(0)
 				expect(sentinelEncodeCount).toBe(0)
@@ -970,6 +972,7 @@ describe("VsCodeLmHandler", () => {
 				type: "usage",
 				inputTokens: expect.any(Number),
 				outputTokens: Math.ceil(new TextEncoder().encode(responseText).byteLength / 3),
+				usageSource: "estimate",
 			})
 			expect(mockLanguageModelChat.countTokens).not.toHaveBeenCalledWith(responseText, expect.anything())
 		})

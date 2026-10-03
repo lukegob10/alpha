@@ -7,9 +7,16 @@ const mocks = vi.hoisted(() => ({
 	reap: vi.fn(),
 	disconnect: vi.fn(),
 	close: vi.fn(),
+	send: vi.fn(),
+	identity: undefined as import("@alpha-code/types").ExecutionIdentity | undefined,
+	writeReceipt: vi.fn(),
 	listeners: new Map<string, () => void>(),
 }))
-vi.mock("fs", () => ({ existsSync: () => true, readFileSync: () => "fixture prompt" }))
+vi.mock("fs", () => ({
+	existsSync: () => true,
+	readFileSync: () => "fixture prompt",
+	promises: { writeFile: mocks.writeReceipt },
+}))
 vi.mock("execa", () => ({ execa: mocks.spawn }))
 vi.mock("p-wait-for", () => ({ default: mocks.wait }))
 vi.mock("../../db/index", () => ({
@@ -27,11 +34,13 @@ vi.mock("../utils", () => ({
 vi.mock("@alpha-code/ipc", () => ({
 	IpcClient: class {
 		isReady = true
+		executionIdentity = mocks.identity
+		serverProcess = { pid: 100, ppid: 99 }
 		disconnect = mocks.disconnect
 		on(name: string, listener: () => void) {
 			mocks.listeners.set(name, listener)
 		}
-		sendCommand() {}
+		sendCommand = mocks.send
 	},
 }))
 import { IpcMessageType } from "@alpha-code/types"
@@ -50,10 +59,71 @@ beforeEach(() => {
 	vi.useFakeTimers()
 	vi.resetAllMocks()
 	mocks.listeners.clear()
+	mocks.identity = undefined
+	mocks.writeReceipt.mockResolvedValue(undefined)
 	mocks.spawn.mockReturnValue(new Promise(() => {}))
 	mocks.reap.mockResolvedValue(undefined)
 })
 afterEach(() => vi.useRealTimers())
+
+it("refuses a paid benchmark before dispatch when execution identity is missing", async () => {
+	const options = input()
+	options.run.campaignHardCapUsd = 2
+	options.task.benchmarkTaskIdentity = "fixture@1"
+	mocks.wait.mockResolvedValue(undefined)
+	const pending = runTaskInVscode(options)
+	const rejection = expect(pending).rejects.toThrow("Executed harness identity unavailable")
+	await vi.advanceTimersByTimeAsync(3000)
+	await rejection
+	expect(mocks.send).not.toHaveBeenCalled()
+	expect(mocks.reap).toHaveBeenCalledOnce()
+	expect(mocks.close).toHaveBeenCalledOnce()
+})
+
+it("captures exact-host execution identity before dispatch, preserving process cleanup", async () => {
+	mocks.identity = {
+		schemaVersion: 1,
+		hostVersion: "1.125.0",
+		extensionId: "Alpha.alpha",
+		extensionVersion: "1.0.0",
+		entrypointDigest: `sha256:${"a".repeat(64)}`,
+		manifestDigest: `sha256:${"b".repeat(64)}`,
+		identityScope: "observed-entrypoint-and-manifest",
+	}
+	const options = input()
+	options.onExecutionIdentity = vi.fn().mockResolvedValue(undefined)
+	mocks.wait.mockResolvedValueOnce(undefined).mockImplementationOnce(async () => {
+		mocks.listeners.get(IpcMessageType.Disconnect)!()
+	})
+	const pending = runTaskInVscode(options)
+	const rejection = expect(pending).rejects.toThrow("Client disconnected before task completion")
+	await vi.advanceTimersByTimeAsync(3000)
+	await rejection
+	expect(options.onExecutionIdentity).toHaveBeenCalledWith(mocks.identity)
+	expect(mocks.writeReceipt).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('"pid":100'), {
+		mode: 0o600,
+	})
+	expect(mocks.writeReceipt.mock.invocationCallOrder[0]).toBeLessThan(mocks.send.mock.invocationCallOrder[0]!)
+	expect(mocks.reap).toHaveBeenCalledOnce()
+})
+
+it("rejects another host version before dispatch", async () => {
+	mocks.identity = {
+		schemaVersion: 1,
+		hostVersion: "1.136.1",
+		extensionId: "Alpha.alpha",
+		extensionVersion: "1.0.0",
+		entrypointDigest: `sha256:${"a".repeat(64)}`,
+		manifestDigest: `sha256:${"b".repeat(64)}`,
+		identityScope: "observed-entrypoint-and-manifest",
+	}
+	mocks.wait.mockResolvedValue(undefined)
+	const pending = runTaskInVscode(input())
+	const rejection = expect(pending).rejects.toThrow("exact VS Code 1.125.0")
+	await vi.advanceTimersByTimeAsync(3000)
+	await rejection
+	expect(mocks.send).not.toHaveBeenCalled()
+})
 
 it("aborts and reaps the subprocess and closes the logger after all IPC connections fail", async () => {
 	mocks.wait.mockRejectedValue(new Error("IPC unavailable"))

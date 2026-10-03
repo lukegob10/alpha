@@ -28,10 +28,22 @@ export enum IpcOrigin {
  * Ack
  */
 
+export const executionIdentitySchema = z.object({
+	schemaVersion: z.literal(1),
+	hostVersion: z.string().min(1).max(64),
+	extensionId: z.string().min(1).max(128),
+	extensionVersion: z.string().min(1).max(64),
+	entrypointDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+	manifestDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+	identityScope: z.literal("observed-entrypoint-and-manifest"),
+})
+export type ExecutionIdentity = z.infer<typeof executionIdentitySchema>
+
 export const ackSchema = z.object({
 	clientId: z.string(),
 	pid: z.number(),
 	ppid: z.number(),
+	executionIdentity: executionIdentitySchema.optional(),
 })
 
 export type Ack = z.infer<typeof ackSchema>

@@ -119,7 +119,7 @@ export const processTask = async ({
 		const baselineCommit = await captureWorkspaceBaseline(workspaceRoot, processRunner)
 		await record("workspace.baseline_captured", { commit: baselineCommit })
 
-		const identities = await createRuntimeIdentities({
+		const identityInput = {
 			taskId: task.benchmarkTaskIdentity ?? `${task.language}/${task.exercise}`,
 			taskManifest: benchmark.task,
 			workspace: workspaceRoot,
@@ -130,8 +130,9 @@ export const processTask = async ({
 			model: run.model,
 			settings: run.settings,
 			processRunner,
-			network: "restricted",
-		})
+			network: "restricted" as const,
+		}
+		let identities = await createRuntimeIdentities(identityInput)
 		await persistRuntimeIdentities(identities.taskManifest, identities.variantManifest)
 		await recordEvidenceIntegrity({
 			attemptId: attempt.id,
@@ -146,7 +147,25 @@ export const processTask = async ({
 			await redis.publish(getPubSubKey(run.id), JSON.stringify(event))
 		}
 		logger.info(`running task ${task.id} (${task.language}/${task.exercise}) via vscode...`)
-		const executionOutcome = await runTaskInVscode({ run, task, jobToken, publish, logger, workspaceRoot })
+		const executionOutcome = await runTaskInVscode({
+			run,
+			task,
+			jobToken,
+			publish,
+			logger,
+			workspaceRoot,
+			onExecutionIdentity: async (executionIdentity) => {
+				identities = await createRuntimeIdentities({ ...identityInput, executionIdentity })
+				await persistRuntimeIdentities(identities.taskManifest, identities.variantManifest)
+				await recordEvidenceIntegrity({
+					attemptId: attempt.id,
+					status: "pending",
+					taskIdentity: identities.taskIdentity,
+					variantIdentity: identities.variantIdentity,
+				})
+				await record("extension.execution_identity", executionIdentity)
+			},
+		})
 		await transition({ type: "agent_completed" })
 
 		const evidencePaths = taskEvidencePaths(logger.path, task)

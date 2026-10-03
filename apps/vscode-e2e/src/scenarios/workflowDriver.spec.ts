@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert"
 import { test } from "node:test"
-import { assertWorkflowResult, MAX_WORKFLOW_CHECKS, MAX_WORKFLOW_TURNS } from "./contracts"
+import { assertWorkflowResult, MAX_WORKFLOW_CHECKS, MAX_WORKFLOW_TURNS, WorkflowFailure } from "./contracts"
 import {
 	DEVELOPMENT_PHASES,
 	DEVELOPMENT_SCENARIOS,
@@ -511,6 +511,19 @@ test("failure result never copies arbitrary exception data", async () => {
 	assert.equal(result.status, "failed")
 	assert.equal(JSON.stringify(result).includes("secret-token"), false)
 	assert.deepEqual(result.failure, { category: "harness", code: "unclassified_failure" })
+})
+
+test("timeout attribution supplements the primary workflow failure", async () => {
+	const { deps } = fakeDependencies()
+	deps.host.complete = async () => {
+		throw new WorkflowFailure("lifecycle", "unexpected_resume_task", false, "request_timeout")
+	}
+	const result = await runWorkflowScenario(options, deps)
+	assert.deepEqual(result.failure, {
+		category: "lifecycle",
+		code: "unexpected_resume_task",
+		providerCode: "request_timeout",
+	})
 })
 
 test("reload rejects changed repository identity before any model dispatch", async () => {

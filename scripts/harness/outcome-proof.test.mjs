@@ -11,6 +11,105 @@ import { require as tsRequire } from "tsx/cjs/api"
 const { joinProjectedEvidence } = tsRequire("../../apps/vscode-e2e/src/evidence/journalProjection.ts", import.meta.url)
 
 const verdict = (fixture) => outcomeProofVerdict(fixture.proofs, fixture.campaign, fixture.receipts, fixture.build)
+
+test("outcome journal admission accepts only known request metadata and preserves legacy evidence", () => {
+	const withRequestMetadata = () => {
+		const fixture = proofFixture()
+		const proof = fixture.proofs[0]
+		const events = proof.artifacts[3].value.projection.events
+		const terminal = events[0]
+		events.splice(
+			0,
+			1,
+			{ ...terminal, type: "model_request_started", purpose: "task", sequence: 1 },
+			{ ...terminal, type: "request_usage", purpose: "reasoning-summary", usageSource: "provider", sequence: 2 },
+			{
+				...terminal,
+				type: "model_request_failed",
+				purpose: "task",
+				providerFailureCode: "request_timeout",
+				sequence: 3,
+			},
+			{ ...terminal, sequence: 4 },
+		)
+		return fixture
+	}
+	const refresh = (fixture) => {
+		const proof = fixture.proofs[0]
+		proof.artifacts[5].value = JSON.parse(
+			JSON.stringify({
+				status: "captured",
+				validation: { lifecycle: "validated", eventLog: "validated" },
+				...joinProjectedEvidence({
+					lifecycle: proof.artifacts[2].value.projection.events,
+					eventLog: proof.artifacts[3].value.projection.events,
+				}),
+			}),
+		)
+		for (const artifact of proof.artifacts) {
+			const bytes = Buffer.from(JSON.stringify(artifact.value, null, 2))
+			artifact.bytes = bytes.length
+			artifact.sha256 = createHash("sha256").update(bytes).digest("hex")
+			Object.assign(
+				proof.manifest.artifacts.find((declared) => declared.path === artifact.path),
+				{
+					bytes: artifact.bytes,
+					sha256: artifact.sha256,
+				},
+			)
+		}
+	}
+	const fixture = withRequestMetadata()
+	for (const source of ["provider", "estimate", "unknown"]) {
+		fixture.proofs[0].artifacts[3].value.projection.events[1].usageSource = source
+		refresh(fixture)
+		assert.equal(verdict(fixture).status, "passed")
+	}
+	assert.equal(verdict(proofFixture()).status, "passed")
+	for (const mutate of [
+		(events) => (events[0].purpose = "unrecognized"),
+		(events) => (events[1].usageSource = "unrecognized"),
+		(events) => (events[2].providerFailureCode = "unrecognized"),
+		(events) => (events[3].purpose = "task"),
+		(events) => (events[0].usageSource = "provider"),
+		(events) => (events[0].providerFailureCode = "request_timeout"),
+		(events) => (events[0].unrecognized = true),
+	]) {
+		const invalid = withRequestMetadata()
+		mutate(invalid.proofs[0].artifacts[3].value.projection.events)
+		refresh(invalid)
+		assert.equal(verdict(invalid).reason, "invalid_outcome_task_projection")
+	}
+})
+
+test("independent workflow admission validates optional request-purpose counts and retains legacy receipts", () => {
+	const fixture = proofFixture()
+	const workflow = fixture.proofs[0].workflow
+	const refreshDigest = () => {
+		const bytes = Buffer.from(JSON.stringify(workflow.value, null, 2) + "\n")
+		workflow.bytes = bytes.length
+		workflow.sha256 = createHash("sha256").update(bytes).digest("hex")
+	}
+	workflow.value.requestsByPurpose = { task: workflow.value.requestsUsed, "reasoning-summary": 0 }
+	refreshDigest()
+	assert.equal(verdict(fixture).status, "passed")
+	workflow.value.requestsByPurpose = { task: workflow.value.requestsUsed - 1, "reasoning-summary": 1 }
+	refreshDigest()
+	assert.equal(verdict(fixture).status, "passed")
+	for (const counts of [
+		{ task: workflow.value.requestsUsed - 1, "reasoning-summary": 0 },
+		{ task: -1, "reasoning-summary": workflow.value.requestsUsed + 1 },
+		{ task: workflow.value.requestsUsed, "reasoning-summary": 0, unrecognized: 1 },
+	]) {
+		workflow.value.requestsByPurpose = counts
+		refreshDigest()
+		assert.equal(verdict(fixture).status, "failed")
+	}
+	delete workflow.value.requestsByPurpose
+	refreshDigest()
+	assert.equal(verdict(fixture).status, "passed")
+})
+
 test("capture completeness never substitutes for exact task and independent workflow evidence", () => {
 	assert.equal(verdict(proofFixture()).status, "passed")
 	for (const mutate of [

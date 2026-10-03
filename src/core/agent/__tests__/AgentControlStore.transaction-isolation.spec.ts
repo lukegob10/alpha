@@ -53,6 +53,18 @@ const eventInput = {
 }
 
 describe("AgentControlStore transaction isolation", () => {
+	it("keeps a no-op projection isolated from a persistence reader's shared object", async () => {
+		const fixture = createPersistence()
+		const store = await fixture.createStore()
+		await store.ensureRoot({ taskId: "root-1" })
+		await store.appendEvent(eventInput)
+		await store.appendEvent(eventInput)
+		const before = store.getSnapshot()
+		const shared = fixture.getStored() as AgentControlState
+		shared.mailbox[0]!.name = "external-change"
+		expect(store.getSnapshot()).toEqual(before)
+	})
+
 	it("refreshes an independent writer's receipt and projection on a no-op without writing or publishing", async () => {
 		const fixture = createPersistence()
 		const first = await fixture.createStore()

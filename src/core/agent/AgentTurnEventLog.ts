@@ -22,6 +22,7 @@ const PROJECTED_EVENT_TYPES = new Set([
 	"progress",
 	"retry",
 	"model_request_started",
+	"model_request_failed",
 	"task_performance",
 	"request_usage",
 	"context_refreshed",
@@ -262,6 +263,10 @@ function projectEvent(event: AgentTurnEvent): Record<string, unknown> {
 	const projected: Record<string, unknown> = {
 		type: rawType && PROJECTED_EVENT_TYPES.has(rawType) ? rawType : "unknown",
 	}
+	if (source.purpose === "task" || source.purpose === "reasoning-summary") projected.purpose = source.purpose
+	if (source.code === "ProviderTimeout") projected.providerFailureCode = "request_timeout"
+	if (["provider", "estimate", "unknown"].includes(String(source.usageSource)))
+		projected.usageSource = source.usageSource
 	for (const key of ["status", "decision", "commandCategory"] as const) {
 		const value = projectString(source[key])
 		if (

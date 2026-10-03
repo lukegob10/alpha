@@ -25,6 +25,56 @@ import { WorkflowFailure } from "./contracts"
 
 const workspace = process.cwd()
 
+for (const [name, later, attributed] of [
+	["current timeout", [], true],
+	["a newer main request", [{ type: "model_request_started", purpose: "task" }], false],
+	["a completed main request", [{ type: "request_usage", purpose: "task" }], false],
+	["late auxiliary usage", [{ type: "request_usage", purpose: "reasoning-summary" }], true],
+] as const) {
+	test(`resume failure preserves ${name} attribution without changing its primary code`, async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-timeout-attribution-"))
+		const taskId = "timeout-task"
+		const task = { taskId, taskAsk: { ts: 1, ask: "resume_task", partial: false }, apiConversationHistory: [] }
+		const directory = path.join(root, taskId)
+		await fs.mkdir(directory)
+		await fs.writeFile(
+			path.join(directory, "agent_turn_events.jsonl"),
+			[
+				{ type: "model_request_started", purpose: "task" },
+				{ type: "model_request_failed", code: "ProviderTimeout", purpose: "task" },
+				...later,
+			]
+				.map((event) => JSON.stringify({ event }))
+				.join("\n") + "\n",
+		)
+		const provider = Object.assign(new EventEmitter(), {
+			getLiveTask: () => task,
+			getTaskWithId: async () => ({ taskDirPath: directory }),
+		})
+		const api = Object.assign(new EventEmitter(), { sidebarProvider: provider, getConfiguration: () => ({}) })
+		const host = new ExtensionWorkflowHost(
+			api as unknown as AlphaCodeAPI,
+			workspace,
+			"scripted",
+			new WorkflowRequestBudget(10),
+			5_000,
+		)
+		try {
+			await assert.rejects(
+				host.complete(taskId),
+				(error: unknown) =>
+					error instanceof WorkflowFailure &&
+					error.category === "lifecycle" &&
+					error.code === "unexpected_resume_task" &&
+					error.providerCode === (attributed ? "request_timeout" : undefined),
+			)
+		} finally {
+			await host.dispose()
+			await fs.rm(root, { recursive: true, force: true })
+		}
+	})
+}
+
 test("post-compaction reopen replaces the task instance and preserves the summary before follow-up", async () => {
 	const actions: string[] = []
 	const saved = [{ role: "user", content: "summary", isSummary: true, condenseId: "saved-summary" }]

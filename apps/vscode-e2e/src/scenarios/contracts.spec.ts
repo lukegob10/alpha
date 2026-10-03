@@ -65,5 +65,23 @@ test("workflow results validate optional effective E2E approval-policy identitie
 		e2eApprovalPolicySha256: "a".repeat(64),
 	}
 	assertWorkflowResult(result)
+	assertWorkflowResult({ ...result, requestsByPurpose: { task: 1, "reasoning-summary": 0 } })
+	assert.throws(
+		() => assertWorkflowResult({ ...result, requestsByPurpose: { task: 1, "reasoning-summary": 1 } }),
+		WorkflowFailure,
+	)
+	assert.throws(
+		() =>
+			assertWorkflowResult({
+				...result,
+				status: "failed",
+				failure: {
+					category: "lifecycle",
+					code: "unexpected_resume_task",
+					providerCode: "arbitrary-private-error",
+				},
+			}),
+		WorkflowFailure,
+	)
 	assert.throws(() => assertWorkflowResult({ ...result, e2eApprovalPolicySha256: "invalid" }), WorkflowFailure)
 })

@@ -4,7 +4,13 @@ import * as path from "node:path"
 
 import { parse } from "yaml"
 
-import { createDefaultGraderRegistry, type CommandGraderSpec, type GraderRunResult } from "../grading/index"
+import {
+	aggregateGraderResults,
+	createDefaultGraderRegistry,
+	type CommandGraderSpec,
+	type FilesystemGraderSpec,
+	type GraderRunResult,
+} from "../grading/index"
 import { ExecaHarnessProcessRunner, systemClock, type HarnessProcessRunner } from "../orchestration/index"
 import { benchmarkSuiteManifestSchema, type BenchmarkTaskManifest } from "./contracts"
 import { loadProblemSolvingSet, type ProblemSolvingTask } from "./problemSolving"
@@ -67,6 +73,7 @@ export type ProblemSolvingHostResult = {
 	failureClass?: ProblemSolvingFailureClass
 	failureCategory?: ProblemSolvingDiagnosticFailureCategory | null
 	failureCode?: ProblemSolvingDiagnosticFailureCode | null
+	providerFailureCode?: "request_timeout" | null
 	modelId?: string | null
 	effort?: string | null
 	e2eApprovalPolicySha256?: string | null
@@ -77,6 +84,8 @@ export type ProblemSolvingHostResult = {
 		inputTokens: number | null
 		outputTokens: number | null
 		requests: number | null
+		taskRequests?: number
+		summaryRequests?: number
 	}
 }
 
@@ -124,6 +133,7 @@ export type ProblemSolvingAttemptReport = {
 	failureClass: ProblemSolvingFailureClass | null
 	failureCategory?: ProblemSolvingDiagnosticFailureCategory | null
 	failureCode?: ProblemSolvingDiagnosticFailureCode | null
+	providerFailureCode?: "request_timeout" | null
 	status: "passed" | "failed" | "blocked" | "cancelled"
 }
 
@@ -186,8 +196,9 @@ export function problemSolvingHostFromReceipts(input: {
 	workflow: {
 		status?: string
 		requestsUsed?: number | null
+		requestsByPurpose?: { task: number; "reasoning-summary": number }
 		usage?: { inputTokens?: number | null; outputTokens?: number | null; cost?: number | null }
-		failure?: { category?: string; code?: string }
+		failure?: { category?: string; code?: string; providerCode?: string }
 		model?: { id?: string; reasoningEffort?: string }
 		e2eApprovalPolicySha256?: string
 	} | null
@@ -200,11 +211,18 @@ export function problemSolvingHostFromReceipts(input: {
 	// A zero price is not a measured cost. Copilot often stores 0 when no price was returned.
 	const cost =
 		typeof reported?.cost === "number" && Number.isFinite(reported.cost) && reported.cost > 0 ? reported.cost : null
+	const purposes = input.workflow?.requestsByPurpose
+	const validPurposes =
+		purposes &&
+		token(purposes.task) !== null &&
+		token(purposes["reasoning-summary"]) !== null &&
+		purposes.task + purposes["reasoning-summary"] === requests
 	const usage = {
 		cost,
 		inputTokens: token(reported?.inputTokens),
 		outputTokens: token(reported?.outputTokens),
-		requests: typeof requests === "number" ? requests : null,
+		requests: token(requests),
+		...(validPurposes ? { taskRequests: purposes.task, summaryRequests: purposes["reasoning-summary"] } : {}),
 	}
 	const modelId = input.workflow?.model?.id ?? null
 	const effort = input.workflow?.model?.reasoningEffort ?? null
@@ -238,6 +256,7 @@ export function problemSolvingHostFromReceipts(input: {
 		failureClass,
 		failureCategory,
 		failureCode,
+		providerFailureCode: input.workflow?.failure?.providerCode === "request_timeout" ? "request_timeout" : null,
 	}
 }
 
@@ -322,6 +341,8 @@ export async function runProblemSolvingAttempt(options: {
 	await fs.mkdir(profileDir, { recursive: true })
 	await fs.mkdir(artifactsDir, { recursive: true })
 	await fs.cp(fixture, workspace, { recursive: true })
+	// Capture acceptance authority before exposing the editable workspace to the agent.
+	const preparedGrader = await prepareWorkspaceGrader(workspace, task.id)
 	const promptPath = path.join(workspace, "prompt.md")
 	let prompt = await fs.readFile(promptPath, "utf8")
 	let promptVariantInstructionSha256: string | null = null
@@ -363,7 +384,7 @@ export async function runProblemSolvingAttempt(options: {
 		host.failureClass === "cancellation" ||
 		host.failureClass === "authentication" ||
 		host.failureClass === "profile_busy"
-	const grader = skipGrader ? null : await gradeWorkspace(workspace, task.id, options.processRunner)
+	const grader = skipGrader ? null : await gradeWorkspace(workspace, task.id, preparedGrader, options.processRunner)
 	const failureClass = classify(host, grader)
 	const solved = !diagnostic && host.status === "passed" && grader?.decision === "passed" && failureClass === null
 	return {
@@ -391,6 +412,7 @@ export async function runProblemSolvingAttempt(options: {
 		failureClass,
 		failureCategory: host.failureCategory ?? null,
 		failureCode: host.failureCode ?? null,
+		providerFailureCode: host.providerFailureCode ?? null,
 		status: solved
 			? "passed"
 			: host.status === "cancelled" || failureClass === "cancellation"
@@ -412,6 +434,7 @@ function classify(host: ProblemSolvingHostResult, grader: GraderRunResult | null
 async function gradeWorkspace(
 	workspace: string,
 	taskId: string,
+	prepared: Awaited<ReturnType<typeof prepareWorkspaceGrader>>,
 	processRunner: HarnessProcessRunner = new ExecaHarnessProcessRunner(),
 ): Promise<GraderRunResult> {
 	const spec: CommandGraderSpec = {
@@ -420,18 +443,108 @@ async function gradeWorkspace(
 		type: "command",
 		hardGate: true,
 		failureClass: "outcome",
-		commands: [{ command: "node", args: ["--test", ...(await visibleTestFiles(workspace))] }],
+		commands: [{ command: "node", args: ["--test", ...prepared.files] }],
 		cwd: "workspace",
 		timeoutMs: 30_000,
 		maxOutputBytes: 256_000,
 	}
-	return createDefaultGraderRegistry().execute([spec], {
+	const context = {
 		workspaceRoot: workspace,
 		changedPaths: [],
 		trace: [],
 		processRunner,
 		clock: systemClock,
-	})
+	}
+	const registry = createDefaultGraderRegistry()
+	const before = await registry.execute([{ ...prepared.integrity, id: `${prepared.integrity.id}.before` }], context)
+	if (before.decision !== "passed") return before
+	// Acceptance checks execute from an owned snapshot outside the model's
+	// workspace. Edited source is copied in; original checks and module metadata
+	// come from the prepared fixture, never the model's final test selection.
+	const parent = await fs.realpath(path.dirname(workspace))
+	const gradingRoot = await fs.mkdtemp(path.join(parent, "alpha-grader-"))
+	try {
+		let bytes = 0
+		let files = 0
+		await fs.cp(workspace, gradingRoot, {
+			recursive: true,
+			filter: async (source) => {
+				const relative = path.relative(workspace, source)
+				const segments = relative.split(path.sep).map((part) => part.toLowerCase())
+				if (
+					segments[0] === "test" ||
+					segments.includes(".git") ||
+					segments.includes("node_modules") ||
+					segments.includes(".alpha")
+				)
+					return false
+				const stat = await fs.lstat(source)
+				if (stat.isSymbolicLink()) throw new Error("Grader workspace cannot contain symbolic links")
+				if (stat.isFile()) {
+					bytes += stat.size
+					files++
+					if (bytes > 32 * 1024 * 1024 || files > 4096) throw new Error("Grader workspace exceeds its bound")
+				}
+				return true
+			},
+		})
+		for (const input of prepared.inputs) {
+			const destination = path.join(gradingRoot, input.path)
+			await fs.mkdir(path.dirname(destination), { recursive: true })
+			await fs.writeFile(destination, input.bytes)
+		}
+		const isolated = { ...context, workspaceRoot: gradingRoot }
+		const graded = await registry.execute([spec], isolated)
+		const isolatedAfter = await registry.execute(
+			[{ ...prepared.integrity, id: `${prepared.integrity.id}.snapshot-after` }],
+			isolated,
+		)
+		const after = await registry.execute([{ ...prepared.integrity, id: `${prepared.integrity.id}.after` }], context)
+		const results = [...before.results, ...graded.results, ...isolatedAfter.results, ...after.results]
+		return { results, decision: aggregateGraderResults(results) }
+	} finally {
+		await removeOwnedGraderSnapshot(gradingRoot, parent)
+	}
+}
+
+async function removeOwnedGraderSnapshot(directory: string, parent: string): Promise<void> {
+	const resolved = await fs.realpath(directory)
+	if (path.dirname(resolved) !== parent || !path.basename(resolved).startsWith("alpha-grader-"))
+		throw new Error("Grader cleanup ownership mismatch")
+	await fs.rm(resolved, { recursive: true, force: true })
+}
+
+async function prepareWorkspaceGrader(workspace: string, taskId: string) {
+	const assertions: FilesystemGraderSpec["assertions"] = []
+	const inputs: Array<{ path: string; bytes: Buffer }> = [
+		{ path: "package.json", bytes: await fs.readFile(path.join(workspace, "package.json")) },
+	]
+	async function visit(relative: string): Promise<void> {
+		for (const entry of await fs.readdir(path.join(workspace, relative), { withFileTypes: true })) {
+			const filename = `${relative}/${entry.name}`
+			if (entry.isSymbolicLink()) throw new Error("Grader inputs cannot contain symbolic links")
+			if (entry.isDirectory()) await visit(filename)
+			else if (entry.isFile()) {
+				const bytes = await fs.readFile(path.join(workspace, filename))
+				inputs.push({ path: filename, bytes })
+				assertions.push({
+					kind: "digest-equals",
+					path: filename,
+					expected: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+				})
+			}
+		}
+	}
+	await visit("test")
+	const integrity: FilesystemGraderSpec = {
+		id: `${taskId}.grader-integrity`,
+		version: 1,
+		type: "filesystem",
+		hardGate: true,
+		failureClass: "outcome",
+		assertions,
+	}
+	return { files: await visibleTestFiles(workspace), integrity, inputs }
 }
 
 async function visibleTestFiles(workspace: string): Promise<string[]> {

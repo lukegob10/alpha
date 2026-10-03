@@ -18,6 +18,27 @@ const options = {
 	turns: 6,
 }
 
+for (const providerCode of [undefined, "request_timeout"] as const)
+	test(`reliability failures retain the primary shape with attribution ${providerCode ?? "absent"}`, async () => {
+		const repository = {
+			create: async () => {
+				throw new WorkflowFailure("lifecycle", "unexpected_resume_task", false, providerCode)
+			},
+		} as unknown as WorkflowDependencies["repository"]
+		const result = await runReliabilityScenario(
+			options,
+			{} as ExtensionWorkflowHost,
+			new WorkflowRequestBudget(40),
+			repository,
+			async () => {},
+		)
+		assert.deepEqual(result.failure, {
+			category: "lifecycle",
+			code: "unexpected_resume_task",
+			...(providerCode ? { providerCode } : {}),
+		})
+	})
+
 for (const scenarioId of LONG_CONTEXT_SCENARIO_IDS)
 	test(`${scenarioId} keeps one retained task across recovery and a graded code fix`, async () => {
 		const exhaustEmpty = scenarioId === "long-context-empty-exhaustion"

@@ -3,6 +3,29 @@ import { test } from "node:test"
 
 import { guardTaskApi, guardVsCodeLmHandler, WorkflowRequestBudget } from "./requestBudget"
 
+test("auxiliary handlers share the dispatch cap and report a separate purpose count", async () => {
+	let sends = 0
+	const client = Object.freeze({ id: "model", sendRequest: async () => ++sends })
+	const task = {
+		api: { getClient: async () => client },
+		createReasoningSummaryHandler: () => ({ getClient: async () => client }),
+	}
+	const original = task.createReasoningSummaryHandler
+	const budget = new WorkflowRequestBudget(2, "model")
+	const restore = guardTaskApi(task, budget)
+	try {
+		await (await task.api.getClient()).sendRequest()
+		await (await task.createReasoningSummaryHandler().getClient()).sendRequest()
+		assert.deepEqual(budget.usedByPurpose, { task: 1, "reasoning-summary": 1 })
+		const guarded = await task.createReasoningSummaryHandler().getClient()
+		assert.throws(() => guarded.sendRequest(), /request_limit_reached/)
+	} finally {
+		restore()
+	}
+	assert.equal(task.createReasoningSummaryHandler, original)
+	assert.equal(sends, 2)
+})
+
 test("fault hooks only receive resolved real responses and never bypass the request budget", async () => {
 	let resolveResponse!: (value: object) => void
 	let sends = 0

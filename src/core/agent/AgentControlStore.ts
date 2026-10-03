@@ -131,6 +131,7 @@ interface OwnerLeaseHandle {
 interface PersistedAgentControlState {
 	state: AgentControlState
 	migrated: boolean
+	comparisonState?: unknown
 }
 
 /** Replaceable persistence seam used by the production file store and deterministic tests. */
@@ -1799,8 +1800,15 @@ export class AgentControlStore {
 		return summarizeParentVerification(this.getVerificationObligations({ rootTaskId, workerTaskId }))
 	}
 
-	getParentCompletionDecision(parentTaskId: string, rootTaskId?: string): ParentCompletionDecision {
-		return decideParentCompletion(this.getVerificationObligations({ rootTaskId, parentTaskId }))
+	getParentCompletionDecision(
+		parentTaskId: string,
+		rootTaskId?: string,
+		activeBackgroundExecutionIds: readonly string[] = [],
+	): ParentCompletionDecision {
+		return decideParentCompletion(
+			this.getVerificationObligations({ rootTaskId, parentTaskId }),
+			activeBackgroundExecutionIds,
+		)
 	}
 
 	/** Actual primary file changes extend the existing ledger, independently of provider history. */
@@ -2882,9 +2890,11 @@ export class AgentControlStore {
 					async () => {
 						ownerLeaseRecovery = await this.ensureCurrentOwnerLease()
 						const reloadDurableState = this.persistence.withTransaction !== undefined
-						const persisted = reloadDurableState ? await this.readPersistedState() : undefined
-						const base = persisted?.state ?? this.state
-						const draft = clone(base)
+						const persisted = reloadDurableState ? await this.readPersistedState(true) : undefined
+						const base = persisted ? persisted.comparisonState : this.state
+						// Parsing already produces an isolated draft. Keep the read-only comparison
+						// separately so failed mutations cannot escape into storage or the local view.
+						const draft = persisted?.state ?? clone(this.state)
 						if (ownerLeaseRecovery) this.applyOwnerLeaseRecovery(draft, ownerLeaseRecovery)
 						const previousMailboxLength = draft.mailbox.length
 						value = mutate(draft)
@@ -2893,7 +2903,7 @@ export class AgentControlStore {
 						// requested mutation already applied. Refresh the local projection but
 						// avoid rewriting an identical complete snapshot.
 						if (reloadDurableState && !persisted?.migrated && isDeepStrictEqual(draft, base)) {
-							committedState = base
+							committedState = draft
 							return
 						}
 
@@ -3288,13 +3298,23 @@ export class AgentControlStore {
 		this.recoveryScanTimer = undefined
 	}
 
-	private async readPersistedState(): Promise<PersistedAgentControlState> {
+	private async readPersistedState(forTransaction = false): Promise<PersistedAgentControlState> {
 		const stored = await this.persistence.read()
 		const state = stored === undefined ? initialState(this.now()) : agentControlStateSchema.parse(stored)
+		// Zod copies typed fields, but unknown-valued records keep opaque nested
+		// references. Detach those leaves before using the parsed graph as a draft.
+		for (const entry of state.mailbox) if (entry.payload) entry.payload = clone(entry.payload)
+		for (const agent of state.agents) {
+			if (agent.snapshot?.metadata) agent.snapshot.metadata = clone(agent.snapshot.metadata)
+			if (agent.terminalResult?.metadata) agent.terminalResult.metadata = clone(agent.terminalResult.metadata)
+		}
 		const highestSequence = state.mailbox.reduce((highest, entry) => Math.max(highest, entry.sequence), 0)
 		state.nextSequence = Math.max(state.nextSequence, highestSequence + 1)
 		return {
 			state,
+			// Defaults, migration and sequence repair can change parsed values. In those
+			// cases compare against an isolated normalized snapshot, preserving no-op semantics.
+			comparisonState: forTransaction ? (isDeepStrictEqual(stored, state) ? stored : clone(state)) : undefined,
 			migrated:
 				stored !== undefined &&
 				typeof stored === "object" &&

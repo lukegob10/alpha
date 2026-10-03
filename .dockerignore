@@ -1,88 +1,56 @@
-# git
-.git
-
-# build artifacts
-bin/
-dist/
-**/dist/
-out/
-**/out/
-src/webview-ui/
-
-# dependencies
-node_modules/
-**/node_modules/
-
-# testing
-coverage/
-**/.vscode-test/
-**/mock/
-
-# devtools
-knip.json
-.husky/
-
-# monorepo
-.turbo/
-**/.turbo/
-
-# next.js
-**/.next/
-.vercel
-
-# Ignore common development files
-node_modules
-.git
-.gitignore
-.dockerignore
-.env*
-.vscode
-.idea
-
-# Ignore build artifacts
-dist
-build
-*.log
-*.tmp
-.cache
-coverage
-
-# Ignore OS files
-.DS_Store
-Thumbs.db
-
-# Ignore test files
-__tests__
-*.test.js
-*.spec.js
-*.test.ts
-*.spec.ts
-
-# Ignore development config files
-.eslintrc*
-.prettierrc*
-
-# Ignore most directories except what we need for the build
-apps/
-evals/
-webview-ui/node_modules
-src/node_modules
-
-# Keep essential files for the build
-!README.md
-!CHANGELOG.md
+# Only build inputs belong in the evaluator image. Local Alpha indexes,
+# task history, service storage and run artifacts stay out.
+**
 !package.json
 !pnpm-lock.yaml
 !pnpm-workspace.yaml
-!scripts/bootstrap.mjs
-!src/
-!webview-ui/
-!packages/evals/.docker/entrypoints/runner.sh
+!turbo.json
+!.prettierrc.json
+!README.md
+!CHANGELOG.md
+!LICENSE
+!scripts/
+!scripts/**
+!packages/
 !packages/build/
+!packages/build/**
 !packages/config-eslint/
+!packages/config-eslint/**
 !packages/config-typescript/
+!packages/config-typescript/**
 !packages/core/
+!packages/core/**
 !packages/evals/
+!packages/evals/**
 !packages/ipc/
+!packages/ipc/**
 !packages/telemetry/
+!packages/telemetry/**
 !packages/types/
+!packages/types/**
+!src/
+!src/**
+!webview-ui/
+!webview-ui/**
+!evals/
+!evals/**
+
+# Keep exclusions after directory exceptions so descendants remain excluded.
+**/.git/
+**/.vscode/
+**/.alpha/
+**/node_modules/
+**/dist/
+**/out/
+**/.turbo/
+**/.vscode-test/
+**/artifacts/
+**/coverage/
+**/*.log
+**/*.tmp
+src/webview-ui/
+packages/evals/.docker/postgres/
+packages/evals/.docker/redis/
+**/.env*
+!packages/evals/.env.development
+!packages/evals/.env.test

@@ -62,6 +62,24 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 // The implementation relies on taskkill on Windows and ps on POSIX. Other
 // Node platforms are gated because neither process-tree primitive is defined.
 describe.skipIf(!supportedPlatform)("ExecaTerminalProcess process-tree integration", () => {
+	it("retains complete high-output UTF-8 and CRLF data without Execa's duplicate buffer", async () => {
+		const outputFixture = path.join(path.dirname(fixturePath), "high-output.mjs")
+		const expected = "界🙂\r\n".repeat(8192 * 32) + "final-no-newline🙂"
+		const terminal = new ExecaTerminal(31, path.dirname(fixturePath))
+		let completed = ""
+		const command = terminal.runCommand(`"${process.execPath}" "${outputFixture}"`, {
+			onLine: () => undefined,
+			onCompleted: (output) => {
+				completed = output ?? ""
+			},
+			onShellExecutionStarted: () => undefined,
+			onShellExecutionComplete: () => undefined,
+		})
+		await withTimeout(command, 10_000, "High output did not complete")
+		expect(completed).toBe(expected)
+		expect(terminal.running).toBe(false)
+		expect(command.isSettled).toBe(true)
+	})
 	it.each(["callback", "stream"])(
 		"settles the real process tree before reporting an output %s failure",
 		async (source) => {

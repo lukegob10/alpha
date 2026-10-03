@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest"
 
-import { EventJournal, type ArtifactDescriptor } from "../../../evidence/index"
+import {
+	EventJournal,
+	manifestIdentity,
+	type ArtifactDescriptor,
+	type TaskManifest,
+	type VariantManifest,
+} from "../../../evidence/index"
 import {
 	getArtifactDescriptors,
 	getEvalEvents,
@@ -8,12 +14,50 @@ import {
 	persistArtifactDescriptors,
 	persistEvalEvent,
 	recordEvidenceIntegrity,
+	persistRuntimeIdentities,
+	getRuntimeVariantManifest,
 } from "../evidence"
 import { ensureAttempt } from "../lifecycle"
 import { createRun } from "../runs"
 import { createTask } from "../tasks"
 
 describe("M4 evidence persistence", () => {
+	it("retrieves observed installed identities by their verified content identity", async () => {
+		const digest = `sha256:${"a".repeat(64)}`
+		const task: TaskManifest = {
+			schemaVersion: 1,
+			id: "installation-fixture",
+			version: 1,
+			fixtureDigest: digest,
+			capabilities: ["coding"],
+			risk: "medium",
+			network: "disabled",
+			graders: [{ id: "tests", version: 1 }],
+		}
+		const variant: VariantManifest = {
+			schemaVersion: 1,
+			id: "installation-observation",
+			extensionCommit: "installed:Alpha.alpha@1.0.0",
+			workingTreeDigest: digest,
+			model: "fixed-model",
+			promptDigest: digest,
+			toolSchemaDigest: digest,
+			runnerImageDigest: digest,
+			identityStatus: "observed_entrypoint",
+			executionIdentity: {
+				schemaVersion: 1,
+				hostVersion: "1.125.0",
+				extensionId: "Alpha.alpha",
+				extensionVersion: "1.0.0",
+				entrypointDigest: digest,
+				manifestDigest: digest,
+				identityScope: "observed-entrypoint-and-manifest",
+			},
+		}
+		await persistRuntimeIdentities(task, variant)
+		expect(await getRuntimeVariantManifest(manifestIdentity(variant))).toEqual(variant)
+		expect(await getRuntimeVariantManifest("unavailable-installed-identity")).toBeNull()
+	})
 	it("idempotently persists normalized events and artifact descriptors", async () => {
 		const run = await createRun({ model: "test", socketPath: "evidence.sock" })
 		const task = await createTask({ runId: run.id, language: "javascript", exercise: "evidence" })

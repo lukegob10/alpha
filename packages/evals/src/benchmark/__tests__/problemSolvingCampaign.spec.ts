@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
+import { ExecaHarnessProcessRunner } from "../../orchestration/index"
 
 import {
 	existingExtensionRunnerArguments,
@@ -29,9 +30,60 @@ function host(overrides: Partial<ProblemSolvingHostResult> = {}): ProblemSolving
 }
 
 describe("problem-solving extension campaign", () => {
+	it.each(["selector", "modified-check", "deleted-check"])(
+		"rejects an unchanged broken solution after %s tampering",
+		async (change) => {
+			const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-grader-authority-"))
+			try {
+				const result = await runProblemSolvingAttempt({
+					evalRoot,
+					repositoryRoot,
+					taskId: "repo-cache-invalidation",
+					attemptRoot: root,
+					attemptId: "integrity-attempt",
+					hostVersion: "1.125.0",
+					provider: "live-copilot",
+					runExtension: async ({ workspace }) => {
+						if (change === "selector") {
+							const filename = path.join(workspace, "package.json")
+							const manifest = JSON.parse(await fs.readFile(filename, "utf8"))
+							manifest.scripts.test = "node --test test/pass.js"
+							await fs.writeFile(filename, JSON.stringify(manifest))
+							await fs.writeFile(
+								path.join(workspace, "test", "pass.js"),
+								"import test from 'node:test'; test('pass', () => {})\n",
+							)
+						} else {
+							for (const file of await fs.readdir(path.join(workspace, "test"))) {
+								const filename = path.join(workspace, "test", file)
+								if (change === "deleted-check") await fs.unlink(filename)
+								else
+									await fs.writeFile(
+										filename,
+										"import test from 'node:test'; test('pass', () => {})\n",
+									)
+							}
+						}
+						return host()
+					},
+				})
+				expect(result).toMatchObject({
+					status: "failed",
+					countsAsSolving: false,
+					graderDecision: "outcome_failed",
+				})
+			} finally {
+				await fs.rm(root, { recursive: true, force: true })
+			}
+		},
+	)
+
 	it("grades a fresh workspace from the selected task and keeps failure classes distinct", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-problem-solving-campaign-"))
 		try {
+			let modelWorkspace: string | undefined
+			let independentCheckRuns = 0
+			const runner = new ExecaHarnessProcessRunner()
 			const passed = await runProblemSolvingAttempt({
 				evalRoot,
 				repositoryRoot,
@@ -42,7 +94,23 @@ describe("problem-solving extension campaign", () => {
 				provider: "live-copilot",
 				modelId: "gpt-test",
 				effort: "medium",
+				processRunner: {
+					run: async (request) => {
+						if (request.command === "node" && request.args.includes("--test")) {
+							expect(request.cwd).not.toBe(modelWorkspace)
+							expect(path.basename(request.cwd ?? "")).toMatch(/^alpha-grader-/)
+							independentCheckRuns++
+						}
+						return runner.run(request)
+					},
+				},
 				runExtension: async (request) => {
+					modelWorkspace = request.workspace
+					// A model-authored test remains work product, outside acceptance authority.
+					await fs.writeFile(
+						path.join(request.workspace, "test", "new-test.js"),
+						"import test from 'node:test'; test('additional', () => {})\n",
+					)
 					await fs.writeFile(
 						path.join(request.workspace, "src", "cache.js"),
 						"export class ConfigCache {\n" +
@@ -55,6 +123,7 @@ describe("problem-solving extension campaign", () => {
 					return host()
 				},
 			})
+			expect(independentCheckRuns).toBe(1)
 			const blocked = await runProblemSolvingAttempt({
 				evalRoot,
 				repositoryRoot,
@@ -209,6 +278,7 @@ describe("problem-solving extension campaign", () => {
 			workflow: {
 				status: "passed",
 				requestsUsed: 6,
+				requestsByPurpose: { task: 4, "reasoning-summary": 2 },
 				usage: { inputTokens: 28000, outputTokens: 1200, cost: 0 },
 				model: { id: "gpt-test", reasoningEffort: "high" },
 				e2eApprovalPolicySha256: "A".repeat(64),
@@ -221,11 +291,34 @@ describe("problem-solving extension campaign", () => {
 			runnerFailure: "authentication-required",
 		})
 		expect(finished.status).toBe("passed")
-		expect(finished.usage).toEqual({ cost: null, inputTokens: 28000, outputTokens: 1200, requests: 6 })
+		expect(finished.usage).toEqual({
+			cost: null,
+			inputTokens: 28000,
+			outputTokens: 1200,
+			requests: 6,
+			taskRequests: 4,
+			summaryRequests: 2,
+		})
 		expect(finished.e2eApprovalPolicySha256).toBe("a".repeat(64))
 		expect(unavailable.status).toBe("blocked")
 		expect(unavailable.failureClass).toBe("authentication")
 		expect(unavailable.usage.requests).toBeNull()
+		const malformed = problemSolvingHostFromReceipts({
+			buildIdentity: "abc123",
+			tracePath: null,
+			workflow: {
+				status: "failed",
+				requestsUsed: 6,
+				requestsByPurpose: { task: 6, "reasoning-summary": 2 },
+				failure: { category: "lifecycle", code: "unexpected_resume_task", providerCode: "request_timeout" },
+			},
+		})
+		expect(malformed.usage.taskRequests).toBeUndefined()
+		expect(malformed).toMatchObject({
+			failureCategory: "lifecycle",
+			failureCode: "unexpected_resume_task",
+			providerFailureCode: "request_timeout",
+		})
 	})
 
 	it("retains only allowlisted failure signals from workflow receipts", () => {

@@ -83,6 +83,9 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				windowsHide: true,
 				cwd: this.terminal.getCurrentWorkingDirectory(),
 				all: true,
+				// Alpha owns the complete output and receipts. Avoid Execa retaining
+				// another stdout/stderr/all copy of the same command output.
+				buffer: false,
 				// Ignore stdin to ensure non-interactive mode and prevent hanging
 				stdin: "ignore",
 				env: {
@@ -123,13 +126,18 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				})
 			}
 
-			const rawStream = this.subprocess.iterable({ from: "all", preserveNewlines: true })
+			// Binary chunks avoid retaining an arbitrarily long line before yielding.
+			const rawStream = this.subprocess.iterable({ from: "all", binary: true })
 
 			// Wrap the stream to ensure all chunks are strings (execa can return Uint8Array)
 			const stream = (async function* () {
+				const decoder = new TextDecoder()
 				for await (const chunk of rawStream) {
-					yield typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)
+					const text = typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true })
+					if (text) yield text
 				}
+				const tail = decoder.decode()
+				if (tail) yield tail
 			})()
 
 			this.terminal.setActiveStream(stream, this.pid)

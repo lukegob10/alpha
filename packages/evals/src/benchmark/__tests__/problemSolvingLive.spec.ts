@@ -3,10 +3,13 @@ import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+
+import { ExecaHarnessProcessRunner } from "../../orchestration/index"
 
 import {
 	extensionBundleDigest,
+	launchExtension,
 	orderProblemSolvingPromptVariants,
 	runLiveProblemSolvingCore,
 } from "../problemSolvingLive"
@@ -33,10 +36,46 @@ function options(attemptRoot: string, overrides: Partial<Parameters<typeof runLi
 }
 
 afterEach(async () => {
+	vi.restoreAllMocks()
 	await Promise.all(roots.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })))
 })
 
 describe("live problem-solving runner configuration", () => {
+	it("retains request purposes and provider failure attribution through the actual receipt reader", async () => {
+		const directory = await root()
+		const request = {
+			workspace: directory,
+			profileDir: path.join(directory, "profile"),
+			artifactsDir: path.join(directory, "artifacts"),
+			runId: "receipt-handoff",
+			requestLimit: 40,
+			provider: "live-copilot" as const,
+			modelId: "model",
+			effort: "high",
+			hostVersion: "1.125.0",
+			taskId: "fixture",
+			promptPath: path.join(directory, "prompt.md"),
+		}
+		vi.spyOn(ExecaHarnessProcessRunner.prototype, "run").mockImplementation(async () => {
+			const receiptDir = path.join(request.artifactsDir, request.runId)
+			await fs.mkdir(receiptDir, { recursive: true })
+			await fs.writeFile(
+				path.join(receiptDir, "workflow-result.json"),
+				JSON.stringify({
+					status: "failed",
+					requestsUsed: 7,
+					requestsByPurpose: { task: 5, "reasoning-summary": 2 },
+					failure: { category: "lifecycle", code: "unexpected_resume_task", providerCode: "request_timeout" },
+				}),
+			)
+			return { exitCode: 0, timedOut: false, stdout: "", stderr: "", durationMs: 0, outputTruncated: false }
+		})
+		const host = await launchExtension(request, repositoryRoot, "frozen-build")
+		expect(host.usage).toMatchObject({ requests: 7, taskRequests: 5, summaryRequests: 2 })
+		expect(host.failureCode).toBe("unexpected_resume_task")
+		expect(host.providerFailureCode).toBe("request_timeout")
+	})
+
 	it("balances prompt-arm order across repetitions", () => {
 		expect(orderProblemSolvingPromptVariants(["baseline", "single-command"], 1)).toEqual([
 			"baseline",

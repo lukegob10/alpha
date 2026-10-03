@@ -48,11 +48,15 @@ services:
 
     runner:
         container_name: evals-runner
+        image: evals-runner
         build:
             context: ../../
             dockerfile: packages/evals/Dockerfile.runner
         environment:
             - HOST_EXECUTION_METHOD=docker
+        env_file:
+            - path: .env.local
+              required: false
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock
             - /tmp/evals:/var/log/evals

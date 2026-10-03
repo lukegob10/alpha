@@ -1,4 +1,4 @@
-import { type TaskEvent } from "@alpha-code/types"
+import { type TaskEvent, type ExecutionIdentity } from "@alpha-code/types"
 
 import type { Run, Task } from "../db/index"
 import { Logger } from "./utils"
@@ -17,4 +17,5 @@ export type RunTaskOptions = {
 	publish: (taskEvent: TaskEvent) => Promise<void>
 	logger: Logger
 	workspaceRoot?: string
+	onExecutionIdentity?: (identity: ExecutionIdentity) => Promise<void>
 }

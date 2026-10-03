@@ -549,7 +549,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 
 	async complete(taskId: string, outcome: "completed" | "blocked" = "completed"): Promise<void> {
 		const expected = this.expectedCompletions.get(taskId) ?? 1
-		await this.until(() => {
+		await this.until(async () => {
 			if ((this.completions.get(taskId) ?? 0) >= expected) {
 				if (outcome === "blocked") throw new WorkflowFailure("lifecycle", "unexpected_completed_verification")
 				return true
@@ -597,10 +597,33 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 					task.approveAsk()
 				}
 			} else {
-				throw unexpectedAskFailure(ask)
+				const failure = unexpectedAskFailure(ask)
+				if (ask.ask === "resume_task") {
+					if (await this.latestProviderTimeout(taskId))
+						throw new WorkflowFailure(failure.category, failure.code, failure.blocked, "request_timeout")
+				}
+				throw failure
 			}
 			return false
 		}, "completion_boundary_timeout")
+	}
+
+	private async latestProviderTimeout(taskId: string): Promise<boolean> {
+		try {
+			const { taskDirPath: directory } = await this.provider.getTaskWithId(taskId)
+			if (!path.isAbsolute(directory) || path.basename(directory) !== taskId) return false
+			const events = await readBoundedJson(path.join(directory, "agent_turn_events.jsonl"), true)
+			if (!Array.isArray(events)) return false
+			for (const entry of [...events].reverse()) {
+				const event = record(record(entry)?.event)
+				if (event?.purpose === "reasoning-summary") continue
+				if (event?.code === "ProviderTimeout") return true
+				if (event?.type === "request_usage" || event?.type === "model_request_started") return false
+			}
+		} catch {
+			/* Optional failure attribution must preserve the primary workflow failure. */
+		}
+		return false
 	}
 
 	async waitForCommandApproval(taskId: string): Promise<void> {
@@ -734,6 +757,10 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 
 	requestsUsed(): number {
 		return this.budget.used
+	}
+
+	requestsByPurpose() {
+		return { ...this.budget.usedByPurpose }
 	}
 
 	async readProblemUsage(taskId: string): Promise<ReturnType<typeof usageFromHistoryItem>> {

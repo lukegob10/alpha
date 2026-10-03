@@ -77,6 +77,30 @@ describe("M4 evidence contracts", () => {
 			expect(base.variantManifest.extensionCommit).toBe("unavailable:executed-harness")
 			expect(base.variantManifest.identityStatus).toBe("executed_harness_unavailable")
 			expect(base.variantManifest.settingsDigest).toBeDefined()
+			const executionIdentity = {
+				schemaVersion: 1 as const,
+				hostVersion: "1.125.0",
+				extensionId: "Alpha.alpha",
+				extensionVersion: "1.0.0",
+				entrypointDigest: `sha256:${"a".repeat(64)}`,
+				manifestDigest: `sha256:${"b".repeat(64)}`,
+				identityScope: "observed-entrypoint-and-manifest" as const,
+			}
+			const observed = await createRuntimeIdentities({
+				...baseInput(root, prompt, runner),
+				settings: { temperature: 0 },
+				executionIdentity,
+			})
+			expect(observed.taskIdentity).toBe(base.taskIdentity)
+			expect(observed.variantManifest.identityStatus).toBe("observed_entrypoint")
+			expect(observed.variantManifest.executionIdentity).toEqual(executionIdentity)
+			expect(observed.variantManifest.extensionCommit).toBe("installed:Alpha.alpha@1.0.0")
+			const changed = await createRuntimeIdentities({
+				...baseInput(root, prompt, runner),
+				settings: { temperature: 0 },
+				executionIdentity: { ...executionIdentity, entrypointDigest: `sha256:${"c".repeat(64)}` },
+			})
+			expect(changed.variantIdentity).not.toBe(observed.variantIdentity)
 			await fs.writeFile(prompt, "prompt-v2")
 			const promptChanged = await createRuntimeIdentities({
 				...baseInput(root, prompt, runner),

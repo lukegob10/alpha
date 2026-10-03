@@ -32,6 +32,8 @@ async function createFixture(
 	const launch = new Promise<void>((resolve) => (launched = resolve))
 	let resolveProcess!: () => void
 	const processPromise = new Promise<void>((resolve) => (resolveProcess = resolve))
+	let completionObserversCalled!: () => void
+	const completionBarrier = new Promise<void>((resolve) => (completionObserversCalled = resolve))
 	let callbacks!: AlphaTerminalCallbacks
 	const process = Object.assign(new EventEmitter(), {
 		isSettled: false,
@@ -117,13 +119,21 @@ async function createFixture(
 		store,
 		provider,
 		launch,
+		completionBarrier,
+		releaseProcess: resolveProcess,
 		reportOutput: (line: string) => callbacks.onLine(line, process as unknown as AlphaTerminalProcess),
-		finishProcess: async () => {
+		finishProcess: async (joinObservers = false) => {
 			callbacks.onShellExecutionComplete({ exitCode: 0 }, process as unknown as AlphaTerminalProcess)
 			await callbacks.onCompleted("finished", process as unknown as AlphaTerminalProcess)
 			process.isSettled = true
 			terminal.busy = false
-			process.emit("completed", "finished")
+			if (joinObservers) {
+				const pending = process.rawListeners("completed").map((listener) => listener.call(process, "finished"))
+				completionObserversCalled()
+				await Promise.all(pending)
+			} else {
+				process.emit("completed", "finished")
+			}
 			resolveProcess()
 		},
 		reportShellExit: () =>
@@ -132,6 +142,36 @@ async function createFixture(
 }
 
 describe("primary command timeout mutation receipts", () => {
+	it("completes an exited thenable process before the foreground yield timer", async () => {
+		const fixture = await createFixture()
+		const execution = executeCommandInTerminal(fixture.task, {
+			executionId: "early-exit",
+			toolCallId: "early-exit-call",
+			command: "command",
+			terminalShellIntegrationDisabled: true,
+			agentTimeout: 10_000,
+			commandExecutionTimeout: 0,
+		})
+		await fixture.launch
+		let completionSettled = false
+		const completion = fixture.finishProcess(true).then(() => {
+			completionSettled = true
+		})
+		try {
+			await fixture.completionBarrier
+			await new Promise<void>((resolve) => setImmediate(resolve))
+			expect(completionSettled).toBe(true)
+			await completion
+			expect(await execution).toEqual([false, expect.stringContaining("Exit code: 0")])
+			expect(fixture.task.completeCommandExecution).toHaveBeenCalledOnce()
+			expect(fixture.process.continue).not.toHaveBeenCalled()
+		} finally {
+			fixture.releaseProcess()
+			await completion
+			await execution
+		}
+	})
+
 	it("finishes command output bookkeeping without waiting for the held user question", async () => {
 		const fixture = await createFixture()
 		let resolveQuestion!: (answer: Awaited<ReturnType<Task["ask"]>>) => void

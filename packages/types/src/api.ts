@@ -8,7 +8,30 @@ import type { IpcMessage, IpcServerEvents } from "./ipc.js"
 
 export type AlphaCodeAPIEvents = AlphaCodeEvents
 
+export interface ModelProbeResult {
+	status: "completed" | "failed"
+	requests: 0 | 1
+	modelId: string | null
+	firstTextMs: number | null
+	wallMs: number
+	usage: {
+		inputTokens: number
+		outputTokens: number
+		source: "provider" | "estimate" | "unknown"
+		cost: number | null
+	} | null
+	failureCode:
+		| "request_failed"
+		| "cancellation_unsupported"
+		| "cancelled_or_deadline"
+		| "empty_response"
+		| "incomplete_response"
+		| null
+}
+
 export interface AlphaCodeAPI extends EventEmitter<AlphaCodeAPIEvents> {
+	/** Optional for older installed extensions. One separately accounted, tool-free readiness request. */
+	probeModel?(signal?: AbortSignal): Promise<ModelProbeResult>
 	/**
 	 * Starts a new task with an optional initial message and images.
 	 * @param task Optional initial task message.

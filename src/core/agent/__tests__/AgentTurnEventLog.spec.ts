@@ -20,6 +20,47 @@ import {
 } from "../AgentTurnEventLog"
 
 describe("AgentTurnEventLog", () => {
+	it("projects closed request purpose, usage provenance, and timeout codes without error contents", () => {
+		const record: PersistedAgentTurnEvent = {
+			taskId: "task",
+			runId: "run",
+			sequence: 1,
+			timestamp: 123,
+			event: {
+				type: "model_request_failed",
+				purpose: "task",
+				code: "ProviderTimeout",
+				error: "private provider payload",
+			},
+		}
+		expect(projectPersistedAgentTurnEvent(record).event).toEqual({
+			type: "model_request_failed",
+			purpose: "task",
+			providerFailureCode: "request_timeout",
+			errorPresent: true,
+		})
+		record.event = {
+			type: "request_usage",
+			purpose: "reasoning-summary",
+			usageSource: "provider",
+			requestIndex: 1,
+			retry: false,
+			inputTokens: 12,
+			outputTokens: 3,
+			cacheReadTokens: 0,
+		}
+		expect(projectPersistedAgentTurnEvent(record).event).toMatchObject({
+			type: "request_usage",
+			purpose: "reasoning-summary",
+			usageSource: "provider",
+			inputTokens: 12,
+			outputTokens: 3,
+		})
+		record.event = { type: "turn_failed", code: "arbitrary-secret-code", error: "private provider payload" }
+		expect(JSON.stringify(projectPersistedAgentTurnEvent(record))).not.toMatch(
+			/arbitrary-secret-code|private provider payload/,
+		)
+	})
 	it("projects task performance samples as phase, outcome, and duration only", async () => {
 		const record: PersistedAgentTurnEvent = {
 			taskId: "task-performance",

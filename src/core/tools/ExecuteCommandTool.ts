@@ -1121,7 +1121,10 @@ export async function executeCommandInTerminal(
 		)
 	}
 	process.once("error", onTerminalProcessError)
-	process.once("completed", () => process.removeListener("error", onTerminalProcessError))
+	process.once("completed", () => {
+		// The process is thenable; returning it makes the completion barrier wait on itself.
+		process.removeListener("error", onTerminalProcessError)
+	})
 
 	// Dual-timeout logic:
 	// - Agent timeout: transitions the command to background (continues running).

@@ -73,6 +73,7 @@ export function admitHarnessReport(
 			return invalid("missing_or_invalid_step_evidence")
 		const descriptor = lane.receipts?.[index] ?? (report.lane === "focused" ? { runner: "vitest" } : null)
 		if (descriptor && ["node", "vitest"].includes(descriptor.runner)) {
+			if (!step.evidence.receipt) return invalid("test_execution_receipt_unavailable")
 			const verdict = testEvidenceVerdict(step.evidence.receipt, strict || descriptor.requireAllTests)
 			if (step.evidence.receipt?.runner !== descriptor.runner) return invalid("wrong_test_runner")
 			if (verdict.status !== "passed")

@@ -29,6 +29,11 @@ const specSchema: z.ZodType<GraderSpec> = z.union([
 					z.object({ kind: z.literal("absent"), path: nonempty }),
 					z.object({ kind: z.literal("content-equals"), path: nonempty, expected: z.string() }),
 					z.object({
+						kind: z.literal("digest-equals"),
+						path: nonempty,
+						expected: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+					}),
+					z.object({
 						kind: z.literal("content-matches"),
 						path: nonempty,
 						pattern: nonempty,

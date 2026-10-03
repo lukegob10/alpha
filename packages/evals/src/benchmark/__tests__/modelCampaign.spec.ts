@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
 	createTask: vi.fn(),
 	findTrialForTask: vi.fn(),
 	getTasks: vi.fn(),
+	getRuntimeVariantManifest: vi.fn(),
 	loadBenchmarkCatalog: vi.fn(),
 	runEvals: vi.fn(),
 }))
@@ -17,14 +18,20 @@ vi.mock("../../db/index", () => ({
 	createTask: mocks.createTask,
 	findTrialForTask: mocks.findTrialForTask,
 	getTasks: mocks.getTasks,
+	getRuntimeVariantManifest: mocks.getRuntimeVariantManifest,
 }))
 
 vi.mock("../../cli/runEvals", () => ({ runEvals: mocks.runEvals }))
 vi.mock("../loader", () => ({ loadBenchmarkCatalog: mocks.loadBenchmarkCatalog }))
 
-import { runBenchmarkModelCampaign } from "../modelCampaign"
+import { resolveModelCampaignProvider, runBenchmarkModelCampaign } from "../modelCampaign"
 
 describe("runBenchmarkModelCampaign", () => {
+	it("normalizes the existing native configuration alias at the campaign boundary", () => {
+		expect(resolveModelCampaignProvider("openai-native")).toBe("openai")
+		expect(resolveModelCampaignProvider("openai")).toBe("openai")
+		expect(() => resolveModelCampaignProvider("unknown")).toThrow("Unsupported campaign provider")
+	})
 	const originalOpenAiApiKey = process.env.OPENAI_API_KEY
 
 	beforeEach(() => {
@@ -33,6 +40,7 @@ describe("runBenchmarkModelCampaign", () => {
 		mocks.createTask.mockResolvedValue({ id: 101 })
 		mocks.findTrialForTask.mockResolvedValue(undefined)
 		mocks.getTasks.mockResolvedValue([])
+		mocks.getRuntimeVariantManifest.mockResolvedValue(null)
 		mocks.loadBenchmarkCatalog.mockResolvedValue({
 			tasks: new Map([
 				[
@@ -119,5 +127,39 @@ describe("runBenchmarkModelCampaign", () => {
 				evidenceOutput: "unused",
 			}),
 		).rejects.toMatchObject({ errors: [execution, evidence] })
+	})
+	it("exports observed installation receipts without promoting them to a complete experiment identity", async () => {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "campaign-installation-export-"))
+		const executionIdentity = {
+			schemaVersion: 1,
+			hostVersion: "1.125.0",
+			extensionId: "Alpha.alpha",
+			extensionVersion: "1.0.0",
+			entrypointDigest: `sha256:${"a".repeat(64)}`,
+			manifestDigest: `sha256:${"b".repeat(64)}`,
+			identityScope: "observed-entrypoint-and-manifest",
+		}
+		mocks.getTasks.mockResolvedValue([{ id: 101, benchmarkTaskIdentity: "task@1", iteration: 1 }])
+		mocks.findTrialForTask.mockResolvedValue({ id: 10, status: "passed", variantIdentity: "installed-variant" })
+		mocks.getRuntimeVariantManifest.mockResolvedValue({ executionIdentity, identityStatus: "observed_entrypoint" })
+		try {
+			await runBenchmarkModelCampaign({
+				publicRoot: "benchmarks",
+				partition: "development",
+				modelRole: "luna-high",
+				modelId: "gpt-5.6-luna",
+				evidenceOutput: directory,
+			})
+			const lifecycle = JSON.parse(await fs.readFile(path.join(directory, "run-42/lifecycle.json"), "utf8"))
+			expect(lifecycle.trials[0]).toMatchObject({
+				executionIdentity,
+				runtimeIdentityStatus: "observed_entrypoint",
+			})
+			const campaign = JSON.parse(await fs.readFile(path.join(directory, "run-42/campaign.json"), "utf8"))
+			expect(campaign.variant).toBeNull()
+			expect(campaign.incomplete[0].reason).toContain("executed_component_identity_only")
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true })
+		}
 	})
 })

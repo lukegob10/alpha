@@ -26,6 +26,26 @@ export const parentVerificationObligationId = (changeSetId: string): string => `
 const isPrimaryObligation = (obligation: ParentVerificationObligation): boolean => obligation.origin === "primary"
 
 /**
+ * A yielded primary process may outlive its turn. Only current runtime ownership
+ * can defer its receipt from the completion gate; the durable reservation remains
+ * until physical settlement and still prevents scoped verification credit.
+ */
+export function projectParentCompletionObligations(
+	obligations: readonly ParentVerificationObligation[],
+	activeBackgroundExecutionIds: readonly string[] = [],
+): ParentVerificationObligation[] {
+	const active = new Set(activeBackgroundExecutionIds)
+	return obligations.map((obligation) =>
+		isPrimaryObligation(obligation) && active.size > 0 && obligation.mutationReservations?.length
+			? {
+					...obligation,
+					mutationReservations: obligation.mutationReservations.filter((token) => !active.has(token)),
+				}
+			: obligation,
+	)
+}
+
+/**
  * Review and effect settlement are completion gates. An approved Worker change
  * may have missing or failed optional process evidence without blocking the
  * parent; malformed applied records still fail closed.
@@ -128,8 +148,11 @@ function parentEvidenceMessage(obligation: ParentVerificationObligation): string
 	}
 }
 
-export function decideParentCompletion(obligations: readonly ParentVerificationObligation[]): ParentCompletionDecision {
-	const blockingObligations = obligations
+export function decideParentCompletion(
+	obligations: readonly ParentVerificationObligation[],
+	activeBackgroundExecutionIds: readonly string[] = [],
+): ParentCompletionDecision {
+	const blockingObligations = projectParentCompletionObligations(obligations, activeBackgroundExecutionIds)
 		.filter(isBlockingParentVerification)
 		.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
 		.map((item) => structuredClone(item))

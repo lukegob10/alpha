@@ -1439,6 +1439,11 @@ describe("Task retained retry wire inputs", () => {
 			await vi.advanceTimersByTimeAsync(100)
 			await rejected
 			expect(compatibilityMetadata?.deadline).toBe(6_100)
+			expect(Reflect.get(task, "appendAgentTurnEvent")).toHaveBeenCalledWith({
+				type: "model_request_failed",
+				purpose: "task",
+				code: "ProviderTimeout",
+			})
 			expect(compatibilityMetadata?.signal?.aborted).toBe(true)
 			expect(closeCompatibilityIterator).toHaveBeenCalledOnce()
 			expect(originalHandler.createMessage).toHaveBeenCalledTimes(2)

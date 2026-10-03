@@ -4955,7 +4955,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				: "disable",
 		}
 		this.currentAgentStep = {
-			createReasoningSummaryHandler: () => buildApiHandler(summaryConfiguration),
+			createReasoningSummaryHandler: () => this.createReasoningSummaryHandler(summaryConfiguration),
 			snapshot,
 			getRequest: () => {
 				if (!capturedRequest) throw new Error("The captured provider request has been released.")
@@ -5128,6 +5128,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.emit(AlphaCodeEventName.Message, { action: "updated", message })
 	}
 
+	/** Separate presentation transport, with the same observable provider creation boundary as task work. */
+	public createReasoningSummaryHandler(configuration: ProviderSettings): ApiHandler {
+		return buildApiHandler(configuration)
+	}
+
+	private recordProviderRequestTimeout(): void {
+		// appendAgentTurnEvent captures the current immutable step and request IDs
+		// before its first await, including when this timeout triggers cancellation.
+		void this.appendAgentTurnEvent({ type: "model_request_failed", purpose: "task", code: "ProviderTimeout" })
+	}
+
 	private summarizeReasoning(message: AlphaMessage | undefined): void {
 		const step = this.currentAgentStep
 		if (this.abort || !step || message?.say !== "reasoning") return
@@ -5136,10 +5147,40 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await this.updateAlphaMessage(updated)
 			await this.saveAlphaMessages()
 		})
+		const identity = {
+			turnId: step.turnId,
+			stepId: step.stepId,
+			requestId: crypto.randomUUID(),
+			attemptId: crypto.randomUUID(),
+		}
 		this.reasoningSummaries.update({
 			message,
 			createHandler: step.createReasoningSummaryHandler,
 			protocol: step.snapshot.context.provider.apiProtocol === "anthropic" ? "anthropic" : "openai",
+			observeRequest: () =>
+				this.appendAgentTurnEvent(
+					{ type: "model_request_started", attempt: 0, purpose: "reasoning-summary" },
+					step.snapshot.context,
+					identity,
+				),
+			observeUsage: (chunk, totalCost) =>
+				this.appendAgentTurnEvent(
+					{
+						type: "request_usage",
+						purpose: "reasoning-summary",
+						requestIndex: message.ts,
+						retry: false,
+						inputTokens: chunk.inputTokens,
+						outputTokens: chunk.outputTokens,
+						cacheReadTokens: chunk.cacheReadTokens ?? 0,
+						cacheWriteTokens: chunk.cacheWriteTokens,
+						reasoningTokens: chunk.reasoningTokens,
+						totalCost,
+						usageSource: chunk.usageSource ?? "unknown",
+					},
+					step.snapshot.context,
+					identity,
+				),
 		})
 	}
 
@@ -6604,6 +6645,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		try {
 			await this.pendingCommandVerification
 			const runtimeRevision = this.completionRuntimeRevision
+			const backgroundExecutions = JSON.stringify(this.getActiveBackgroundCommandExecutionIds())
 			const outstanding =
 				this.workContext?.plan && !this.isLookupStyleCompletionTurn()
 					? await getOutstandingAcceptanceChecks(
@@ -6617,7 +6659,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const lateRuntimeDecision = this.getPendingCompletionRuntimeDecision()
 			if (this.hasPendingAgentMessages()) return this.pendingAgentMessageDecision()
 			if (lateRuntimeDecision) return lateRuntimeDecision
-			if (runtimeRevision !== this.completionRuntimeRevision) {
+			if (
+				runtimeRevision !== this.completionRuntimeRevision ||
+				backgroundExecutions !== JSON.stringify(this.getActiveBackgroundCommandExecutionIds())
+			) {
 				return {
 					allowed: false,
 					classification: "waiting",
@@ -6755,11 +6800,36 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			(evidence) => evidence.status === "running",
 		)
 		if (running.length === 0) return false
-		if (!this.isLookupStyleCompletionTurn()) return true
-		return running.some((evidence) => !this.isAbandonedInspectionCommand(evidence))
+		const activeBackgroundExecutions = new Set(this.getActiveBackgroundCommandExecutionIds())
+		const lookup = this.isLookupStyleCompletionTurn()
+		return running.some(
+			(evidence) =>
+				!activeBackgroundExecutions.has(evidence.executionId) &&
+				!(lookup && this.isUnscopedBackgroundCommand(evidence)),
+		)
 	}
 
-	private isAbandonedInspectionCommand(evidence: CommandExecutionEvidence): boolean {
+	/** Runtime ownership, never persisted history or command spelling, permits a process to outlive its turn. */
+	public getActiveBackgroundCommandExecutionIds(): string[] {
+		if (this.taskKind !== "primary") return []
+		const terminals = TerminalRegistry.getTerminals(true, this.taskId)
+		return [...(this.commandExecutionEvidence?.values() ?? [])]
+			.filter(
+				(evidence) =>
+					this.isUnscopedBackgroundCommand(evidence) &&
+					terminals.some(
+						(terminal) =>
+							terminal.taskId === this.taskId &&
+							terminal.running &&
+							terminal.process?.executionId === evidence.executionId &&
+							terminal.process.isSettled === false,
+					),
+			)
+			.map((evidence) => evidence.executionId)
+			.sort()
+	}
+
+	private isUnscopedBackgroundCommand(evidence: CommandExecutionEvidence): boolean {
 		return (
 			evidence.status === "running" &&
 			evidence.returnedInBackground === true &&
@@ -7160,7 +7230,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	public markCommandExecutionBackgrounded(toolCallId: string, executionId: string): void {
 		const evidence = this.commandExecutionEvidence.get(toolCallId)
-		if (evidence?.executionId === executionId) evidence.returnedInBackground = true
+		if (evidence?.executionId === executionId && !evidence.returnedInBackground) {
+			evidence.returnedInBackground = true
+			this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
+		}
 	}
 
 	public getBackgroundCommandContext(): string | undefined {
@@ -11585,6 +11658,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 							try {
 								return await withApiRequestTimeout(operation, operationName, boundedTimeoutMs, () => {
+									this.recordProviderRequestTimeout()
 									requestController?.abort(new ApiStreamDeadlineError())
 									const iteratorReturn = iterator.return?.(undefined)
 									if (iteratorReturn) {
@@ -11698,6 +11772,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									totalCost = chunk.totalCost
 									await this.appendAgentTurnEvent({
 										type: "request_usage",
+										purpose: "task",
+										usageSource: chunk.usageSource ?? "unknown",
 										requestIndex: lastApiReqIndex,
 										retry: (currentItem.retryAttempt ?? 0) > 0,
 										inputTokens: chunk.inputTokens,
@@ -14639,7 +14715,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await this.publishCanonicalLifecyclePhase("working", lifecyclePreflightIsCurrent)
 			if (!lifecyclePreflightIsCurrent()) return
 			await this.appendAgentTurnEvent(
-				{ type: "model_request_started", attempt: retryAttempt + 1 },
+				{ type: "model_request_started", attempt: retryAttempt + 1, purpose: "task" },
 				step.snapshot.context,
 			)
 			if (!lifecyclePreflightIsCurrent()) return
@@ -14733,7 +14809,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					Promise.race([firstChunkPromise, abortPromise]),
 					`API response stream for ${step.snapshot.context.provider.modelId}`,
 					requestTimeoutMs,
-					() => requestController.abort(new ApiStreamDeadlineError()),
+					() => {
+						this.recordProviderRequestTimeout()
+						requestController.abort(new ApiStreamDeadlineError())
+					},
 				)
 				removeFirstChunkAbortListener?.()
 				removeFirstChunkAbortListener = undefined
@@ -14897,7 +14976,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 											Promise.race([nextPromise, abortPromise]),
 											`API response stream for ${step.snapshot.context.provider.modelId}`,
 											readTimeoutMs,
-											() => compatibilityController.abort(new ApiStreamDeadlineError()),
+											() => {
+												this.recordProviderRequestTimeout()
+												compatibilityController.abort(new ApiStreamDeadlineError())
+											},
 										)
 									} catch (error) {
 										if (Date.now() >= compatibilityRetryDeadline) {

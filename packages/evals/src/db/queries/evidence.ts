@@ -8,6 +8,7 @@ import {
 	type EvalEvent,
 	type TaskManifest,
 	type VariantManifest,
+	variantManifestSchema,
 } from "../../evidence/index"
 import type { EvidenceBundle } from "../../evidence/index"
 import { client as db } from "../db"
@@ -119,6 +120,16 @@ export async function persistRuntimeIdentities(taskManifest: TaskManifest, varia
 			.onConflictDoNothing()
 	})
 	return { taskIdentity, variantIdentity }
+}
+
+/** Verify the persisted content identity before exposing installation evidence. */
+export async function getRuntimeVariantManifest(identity: string): Promise<VariantManifest | null> {
+	const row = await db.query.variants.findFirst({ where: eq(variants.identity, identity) })
+	if (!row) return null
+	const manifest = variantManifestSchema.parse(row.manifest)
+	if (manifestIdentity(manifest) !== identity || sha256(canonicalJson(manifest)) !== row.manifestDigest)
+		throw new Error("Runtime variant manifest integrity mismatch")
+	return manifest
 }
 
 export async function getReconstructableEvidenceBundle(attemptId: number): Promise<EvidenceBundle> {

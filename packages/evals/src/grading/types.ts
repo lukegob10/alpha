@@ -48,6 +48,7 @@ export type FilesystemAssertion =
 	| { kind: "exists"; path: string }
 	| { kind: "absent"; path: string }
 	| { kind: "content-equals"; path: string; expected: string }
+	| { kind: "digest-equals"; path: string; expected: string }
 	| { kind: "content-matches"; path: string; pattern: string; flags?: string }
 
 export type FilesystemGraderSpec = BaseGraderSpec & {
