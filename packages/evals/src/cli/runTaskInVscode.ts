@@ -23,7 +23,15 @@ import { isDockerContainer, copyConversationHistory, mergeToolUsage, waitForSubp
 import { evaluatorIpcEndpoint, vscodeLaunch } from "./vscodeLaunch"
 import { MessageLogDeduper } from "./messageLogDeduper"
 
-export const runTaskInVscode = async ({ run, task, publish, logger, jobToken, workspaceRoot }: RunTaskOptions) => {
+export const runTaskInVscode = async ({
+	run,
+	task,
+	publish,
+	logger,
+	jobToken,
+	workspaceRoot,
+	onExecutionIdentity,
+}: RunTaskOptions) => {
 	const controller = new AbortController()
 	let client: IpcClient | undefined
 	let subprocess: ReturnType<typeof execa> | undefined
@@ -98,6 +106,23 @@ export const runTaskInVscode = async ({ run, task, publish, logger, jobToken, wo
 		}
 
 		let taskStartedAt = Date.now()
+		if (task.benchmarkTaskIdentity && !client.executionIdentity)
+			throw new Error("Executed harness identity unavailable; refusing a paid benchmark request")
+		if (client.executionIdentity) {
+			if (client.executionIdentity.hostVersion !== "1.125.0")
+				throw new Error("Evaluator requires exact VS Code 1.125.0")
+			await fs.promises.writeFile(
+				`${logger.path}.execution.json`,
+				JSON.stringify({
+					...client.executionIdentity,
+					serverProcess: client.serverProcess ?? null,
+					observedAt: new Date().toISOString(),
+					runnerImageId: process.env.EVALS_RUNNER_IMAGE_ID ?? null,
+				}) + "\n",
+				{ mode: 0o600 },
+			)
+			await onExecutionIdentity?.(client.executionIdentity)
+		}
 		let taskFinishedAt: number | undefined
 		let taskAbortedAt: number | undefined
 		let taskTimedOut: boolean = false

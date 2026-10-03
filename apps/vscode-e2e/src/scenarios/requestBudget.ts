@@ -3,6 +3,7 @@ import type { LiveResponseProbe } from "./liveResponseProbe"
 
 export class WorkflowRequestBudget {
 	used = 0
+	usedByPurpose = { task: 0, "reasoning-summary": 0 }
 	exhausted = false
 	failure?: WorkflowFailure
 	model: WorkflowResult["model"] = {}
@@ -19,12 +20,13 @@ export class WorkflowRequestBudget {
 		}
 	}
 
-	consume(): void {
+	consume(purpose: keyof WorkflowRequestBudget["usedByPurpose"] = "task"): void {
 		if (this.used >= this.limit) {
 			this.exhausted = true
 			throw new WorkflowFailure("provider", "request_limit_reached", true)
 		}
 		this.used++
+		this.usedByPurpose[purpose]++
 	}
 
 	observeModel(client: Record<string, unknown>): void {
@@ -41,7 +43,11 @@ export class WorkflowRequestBudget {
 }
 
 /** Test-only predispatch fence. It never mutates the shared VS Code client or counts a turn as a request. */
-export function guardVsCodeLmHandler(handler: unknown, budget: WorkflowRequestBudget): () => void {
+export function guardVsCodeLmHandler(
+	handler: unknown,
+	budget: WorkflowRequestBudget,
+	purpose: keyof WorkflowRequestBudget["usedByPurpose"] = "task",
+): () => void {
 	if (
 		!handler ||
 		typeof handler !== "object" ||
@@ -75,10 +81,10 @@ export function guardVsCodeLmHandler(handler: unknown, budget: WorkflowRequestBu
 					const value: unknown = Reflect.get(client, key, client)
 					if (key === "sendRequest") {
 						return (...requestArgs: unknown[]) => {
-							budget.consume()
+							budget.consume(purpose)
 							const request = budget.used
-							const probe = budget.responseProbe
-							const transform = budget.transformResponse
+							const probe = purpose === "task" ? budget.responseProbe : undefined
+							const transform = purpose === "task" ? budget.transformResponse : undefined
 							const response: unknown = Reflect.apply(
 								value as (...args: unknown[]) => unknown,
 								client,
@@ -108,13 +114,30 @@ export function guardVsCodeLmHandler(handler: unknown, budget: WorkflowRequestBu
 }
 
 /** Install from AlphaProvider's synchronous taskCreated event, before Task.start/resume. */
-export function guardTaskApi(task: { api: unknown }, budget: WorkflowRequestBudget): () => void {
+export function guardTaskApi(
+	task: { api: unknown; createReasoningSummaryHandler?: unknown },
+	budget: WorkflowRequestBudget,
+): () => void {
 	const descriptor = Object.getOwnPropertyDescriptor(task, "api")
 	if (!descriptor || !descriptor.configurable || !("value" in descriptor)) {
 		throw new WorkflowFailure("configuration", "request_guard_unsupported_task", true)
 	}
 	let api = task.api
 	let release = guardVsCodeLmHandler(api, budget)
+	const summaryFactory = task.createReasoningSummaryHandler
+	const summaryDescriptor = Object.getOwnPropertyDescriptor(task, "createReasoningSummaryHandler")
+	const summaryReleases: Array<() => void> = []
+	const guardedSummaryFactory = (...args: unknown[]) => {
+		const handler: unknown = Reflect.apply(summaryFactory as (...args: unknown[]) => unknown, task, args)
+		summaryReleases.push(guardVsCodeLmHandler(handler, budget, "reasoning-summary"))
+		return handler
+	}
+	if (typeof summaryFactory === "function")
+		Object.defineProperty(task, "createReasoningSummaryHandler", {
+			configurable: true,
+			writable: true,
+			value: guardedSummaryFactory,
+		})
 	const get = () => api
 	Object.defineProperty(task, "api", {
 		configurable: true,
@@ -130,6 +153,11 @@ export function guardTaskApi(task: { api: unknown }, budget: WorkflowRequestBudg
 	})
 	return () => {
 		release()
+		for (const restore of summaryReleases) restore()
+		if (task.createReasoningSummaryHandler === guardedSummaryFactory) {
+			if (summaryDescriptor) Object.defineProperty(task, "createReasoningSummaryHandler", summaryDescriptor)
+			else Reflect.deleteProperty(task, "createReasoningSummaryHandler")
+		}
 		if (Object.getOwnPropertyDescriptor(task, "api")?.get === get) {
 			Object.defineProperty(task, "api", { ...descriptor, value: api })
 		}

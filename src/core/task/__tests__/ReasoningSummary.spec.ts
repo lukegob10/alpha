@@ -25,6 +25,8 @@ function harness(createMessage?: ApiHandler["createMessage"]) {
 	}
 	const publish = vi.fn(async () => {})
 	const summary = new ReasoningSummary("task-a", publish)
+	const observeRequest = vi.fn()
+	const observeUsage = vi.fn()
 	const message: AlphaMessage = {
 		ts: 1,
 		type: "say",
@@ -32,8 +34,9 @@ function harness(createMessage?: ApiHandler["createMessage"]) {
 		text: "Reasoning paragraph. ".repeat(25),
 		partial: true,
 	}
-	const update = () => summary.update({ message, createHandler: () => handler, protocol: "openai" })
-	return { handler, publish, summary, message, update }
+	const update = () =>
+		summary.update({ message, createHandler: () => handler, protocol: "openai", observeRequest, observeUsage })
+	return { handler, publish, summary, message, update, observeRequest, observeUsage }
 }
 
 describe("ReasoningSummary", () => {
@@ -81,6 +84,8 @@ describe("ReasoningSummary", () => {
 		await vi.advanceTimersByTimeAsync(750)
 		expect(h.handler.createMessage).toHaveBeenCalledTimes(2)
 		expect(h.message.reasoningSummaryUsage?.cost).toBe(0.02)
+		expect(h.observeRequest).toHaveBeenCalledTimes(2)
+		expect(h.observeUsage).toHaveBeenCalledTimes(2)
 		h.summary.dispose()
 	})
 
@@ -186,6 +191,8 @@ describe("ReasoningSummary", () => {
 		release()
 		await vi.advanceTimersByTimeAsync(1)
 		expect(h.message.reasoningSummaryUsage?.cost).toBe(0.01)
+		expect(h.observeRequest).toHaveBeenCalledOnce()
+		expect(h.observeUsage).toHaveBeenCalledWith(expect.objectContaining({ type: "usage", inputTokens: 100 }), 0.01)
 		expect(h.message.reasoningSummary).toBeUndefined()
 		expect(h.publish).not.toHaveBeenCalled()
 	})

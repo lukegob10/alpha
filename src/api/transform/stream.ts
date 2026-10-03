@@ -113,6 +113,7 @@ export interface LinkedAbortController {
 /** Error used when a request reaches its caller-supplied deadline. */
 export class ApiStreamDeadlineError extends Error {
 	override readonly name = "ApiStreamDeadlineError"
+	readonly code = "ProviderTimeout"
 
 	constructor(message = "Provider request deadline exceeded") {
 		super(message)
@@ -448,6 +449,7 @@ export interface ApiStreamThinkingCompleteChunk {
 
 export interface ApiStreamUsageChunk {
 	type: "usage"
+	usageSource?: "provider" | "estimate" | "unknown"
 	inputTokens: number
 	outputTokens: number
 	cacheWriteTokens?: number

@@ -1,4 +1,5 @@
 import { readContainedFile } from "../boundary"
+import { sha256 } from "../../evidence/canonical"
 import { evidenceFromText } from "../evidence"
 import type { FilesystemGraderSpec, GraderContext, GraderPlugin, GraderResult } from "../types"
 
@@ -13,7 +14,8 @@ export class FilesystemGrader implements GraderPlugin<FilesystemGraderSpec> {
 		const evidence: GraderResult["evidence"] = []
 
 		for (const assertion of spec.assertions) {
-			const contents = await readContainedFile(context.workspaceRoot, assertion.path)
+			const bytes = await readContainedFile(context.workspaceRoot, assertion.path, null)
+			const contents = bytes?.toString("utf8")
 
 			let passed = false
 			switch (assertion.kind) {
@@ -26,11 +28,23 @@ export class FilesystemGrader implements GraderPlugin<FilesystemGraderSpec> {
 				case "content-equals":
 					passed = contents === assertion.expected
 					break
+				case "digest-equals":
+					passed = bytes !== undefined && sha256(bytes) === assertion.expected
+					break
 				case "content-matches":
 					passed = contents !== undefined && new RegExp(assertion.pattern, assertion.flags).test(contents)
 					break
 			}
-			if (contents !== undefined)
+			if (assertion.kind === "digest-equals" && bytes !== undefined)
+				evidence.push(
+					evidenceFromText(
+						`${spec.id}:${assertion.path}`,
+						"report",
+						JSON.stringify({ digest: sha256(bytes), byteLength: bytes.length }),
+						"application/json",
+					),
+				)
+			else if (contents !== undefined)
 				evidence.push(evidenceFromText(`${spec.id}:${assertion.path}`, "file", contents))
 			if (!passed) {
 				diagnostics.push({

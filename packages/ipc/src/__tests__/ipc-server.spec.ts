@@ -1,6 +1,6 @@
 import type { Socket } from "node:net"
 
-import { IpcMessageType } from "@alpha-code/types"
+import { IpcMessageType, type ExecutionIdentity } from "@alpha-code/types"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 type BackendHandler = (...args: unknown[]) => void
@@ -67,6 +67,76 @@ describe("IpcServer disposal", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 		mocks.reset()
+	})
+	it("sends the observed installation receipt only after capture completes", async () => {
+		const identity: ExecutionIdentity = {
+			schemaVersion: 1,
+			hostVersion: "1.125.0",
+			extensionId: "Alpha.alpha",
+			extensionVersion: "1.0.0",
+			entrypointDigest: `sha256:${"a".repeat(64)}`,
+			manifestDigest: `sha256:${"b".repeat(64)}`,
+			identityScope: "observed-entrypoint-and-manifest",
+		}
+		let resolve!: (identity: ExecutionIdentity) => void
+		const captured = new Promise<ExecutionIdentity>((done) => {
+			resolve = done
+		})
+		const server = new IpcServer("test.sock", vi.fn(), () => captured)
+		const socket = createSocket()
+		server.listen()
+		mocks.emitBackend("connect", socket)
+		expect(mocks.backendServer.emit).not.toHaveBeenCalled()
+		resolve(identity)
+		await captured
+		expect(mocks.backendServer.emit).toHaveBeenCalledWith(
+			socket,
+			"message",
+			expect.objectContaining({
+				type: IpcMessageType.Ack,
+				data: expect.objectContaining({ executionIdentity: identity, pid: process.pid }),
+			}),
+		)
+		server.dispose()
+	})
+
+	it.each(["disconnect", "dispose"])("discards a delayed identity after %s", async (ending) => {
+		let resolve!: (identity: ExecutionIdentity) => void
+		const captured = new Promise<ExecutionIdentity>((done) => {
+			resolve = done
+		})
+		const server = new IpcServer("test.sock", vi.fn(), () => captured)
+		const socket = createSocket()
+		server.listen()
+		mocks.emitBackend("connect", socket)
+		if (ending === "disconnect") mocks.emitBackend("socket.disconnected", socket)
+		else server.dispose()
+		resolve({
+			schemaVersion: 1,
+			hostVersion: "1.125.0",
+			extensionId: "Alpha.alpha",
+			extensionVersion: "1.0.0",
+			entrypointDigest: `sha256:${"a".repeat(64)}`,
+			manifestDigest: `sha256:${"b".repeat(64)}`,
+			identityScope: "observed-entrypoint-and-manifest",
+		})
+		await captured
+		expect(mocks.backendServer.emit).not.toHaveBeenCalled()
+		server.dispose()
+	})
+
+	it("preserves legacy connection readiness when optional capture fails", async () => {
+		const onConnect = vi.fn()
+		const server = new IpcServer("test.sock", vi.fn(), async () => {
+			throw new Error("capture failed")
+		})
+		server.on(IpcMessageType.Connect, onConnect)
+		server.listen()
+		mocks.emitBackend("connect", createSocket())
+		await Promise.resolve()
+		expect(onConnect).toHaveBeenCalledOnce()
+		expect(mocks.backendServer.emit.mock.calls[0]?.[2].data.executionIdentity).toBeUndefined()
+		server.dispose()
 	})
 
 	it("stops the backend, destroys clients, and detaches listeners exactly once", () => {

@@ -2,7 +2,7 @@ import { EVALS_SETTINGS, type AlphaCodeSettings } from "@alpha-code/types"
 import fs from "node:fs/promises"
 import path from "node:path"
 
-import { createRun, createTask, findTrialForTask, getTasks } from "../db/index"
+import { createRun, createTask, findTrialForTask, getTasks, getRuntimeVariantManifest } from "../db/index"
 import { runEvals } from "../cli/runEvals"
 import type { ExerciseLanguage } from "../exercises/index"
 import type { TrialTerminalStatus } from "../lifecycle/index"
@@ -14,7 +14,13 @@ import { sealCampaignExport } from "../experiments/campaign"
 import { canonicalJson, sha256 } from "../evidence/canonical"
 
 export type ModelCampaignPartition = Extract<BenchmarkPartition, "smoke" | "development" | "regression" | "holdout">
-export type ModelCampaignProvider = "openai"
+export type ModelCampaignProvider = "openai" | "openai-native"
+
+/** Campaign transport is OpenAI Compatible; accept the existing native-provider configuration alias. */
+export function resolveModelCampaignProvider(provider: string = "openai"): "openai" {
+	if (provider === "openai" || provider === "openai-native") return "openai"
+	throw new Error(`Unsupported campaign provider: ${provider}`)
+}
 
 export async function runBenchmarkModelCampaign(options: {
 	publicRoot: string
@@ -32,8 +38,7 @@ export async function runBenchmarkModelCampaign(options: {
 	evidenceOutput?: string
 }): Promise<number> {
 	if (!options.modelId.trim()) throw new Error("A concrete provider model id is required")
-	const provider = options.provider ?? "openai"
-	if (provider !== "openai") throw new Error(`Unsupported campaign provider: ${provider}`)
+	const provider = resolveModelCampaignProvider(options.provider)
 	const apiKeyVariable = "OPENAI_API_KEY"
 	if (!process.env[apiKeyVariable]?.trim()) throw new Error(`${apiKeyVariable} is required for provider ${provider}`)
 	const catalog = await loadBenchmarkCatalog(options.publicRoot)
@@ -116,6 +121,7 @@ export async function runBenchmarkModelCampaign(options: {
 			const lifecycle = []
 			for (const row of rows) {
 				const trial = await findTrialForTask(row.id)
+				const variant = trial?.variantIdentity ? await getRuntimeVariantManifest(trial.variantIdentity) : null
 				lifecycle.push({
 					taskId: row.id,
 					benchmarkTaskIdentity: row.benchmarkTaskIdentity,
@@ -127,6 +133,8 @@ export async function runBenchmarkModelCampaign(options: {
 					attemptCount: trial?.attemptCount ?? null,
 					taskDefinitionIdentity: trial?.taskDefinitionIdentity ?? null,
 					runtimeVariantIdentity: trial?.variantIdentity ?? null,
+					executionIdentity: variant?.executionIdentity ?? null,
+					runtimeIdentityStatus: variant?.identityStatus ?? "executed_harness_unavailable",
 				})
 			}
 			const receipt = sealCampaignExport({
@@ -148,7 +156,9 @@ export async function runBenchmarkModelCampaign(options: {
 				observations: [],
 				incomplete: [
 					{
-						reason: "executed_harness_unavailable: legacy installed-extension runner does not attest the executed bundle; lifecycle.json preserves available trial evidence",
+						reason: lifecycle.some((trial) => trial.executionIdentity)
+							? "executed_component_identity_only: lifecycle.json retains owned exact-host entrypoint/manifest evidence; complete experiment component identities remain unavailable"
+							: "executed_harness_unavailable: no owned execution receipt was captured; lifecycle.json preserves available trial evidence",
 					},
 				],
 			})

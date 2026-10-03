@@ -298,7 +298,11 @@ export async function runReliabilityScenario(
 				? error
 				: new WorkflowFailure("harness", "reliability_unclassified_failure")
 		result.status = failure.blocked ? "blocked" : "failed"
-		result.failure = { category: failure.category, code: failure.code }
+		result.failure = {
+			category: failure.category,
+			code: failure.code,
+			...(failure.providerCode ? { providerCode: failure.providerCode } : {}),
+		}
 		if (taskId) {
 			try {
 				await writeEvidence("reliability-failure-state.json", await host.captureTaskState(taskId))
@@ -312,6 +316,7 @@ export async function runReliabilityScenario(
 		budget.transformResponse = undefined
 		budget.responseProbe = undefined
 		result.requestsUsed = budget.used
+		result.requestsByPurpose = { ...budget.usedByPurpose }
 		if (result.taskIds.length > 0 && typeof host.readProblemUsage === "function") {
 			result.usage = await aggregateTaskUsage(host, result.taskIds)
 		}

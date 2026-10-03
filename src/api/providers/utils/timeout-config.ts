@@ -3,6 +3,17 @@ import { Package } from "../../../shared/package"
 
 const DEFAULT_API_REQUEST_TIMEOUT_SECONDS = 600
 
+export class ApiRequestTimeoutError extends Error {
+	readonly code = "ProviderTimeout"
+	constructor(
+		operationName: string,
+		readonly timeoutMs: number,
+	) {
+		super(formatApiRequestTimeoutError(operationName, timeoutMs))
+		this.name = "ApiRequestTimeoutError"
+	}
+}
+
 /**
  * Gets the API request timeout from VSCode configuration with validation.
  *
@@ -57,7 +68,7 @@ export async function withApiRequestTimeout<T>(
 				// The timeout error below is the actionable failure.
 			}
 
-			reject(new Error(formatApiRequestTimeoutError(operationName, timeoutMs)))
+			reject(new ApiRequestTimeoutError(operationName, timeoutMs))
 		}, timeoutMs)
 	})
 

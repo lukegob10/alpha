@@ -196,6 +196,7 @@ import { resolveExistingTaskDirectoryPathReadOnly } from "../../utils/storage"
 import {
 	formatParentVerificationContext,
 	isBlockingParentVerification,
+	projectParentCompletionObligations,
 	type ParentCompletionDecision,
 } from "../agent/ParentVerification"
 import {
@@ -7956,7 +7957,10 @@ export class AlphaProvider
 	public async getParentVerificationContext(parent: Task): Promise<string | undefined> {
 		await this.agentControlStoreReady
 		return formatParentVerificationContext(
-			this.agentControlStore.getVerificationObligations({ parentTaskId: parent.taskId }),
+			projectParentCompletionObligations(
+				this.agentControlStore.getVerificationObligations({ parentTaskId: parent.taskId }),
+				parent.getActiveBackgroundCommandExecutionIds?.() ?? [],
+			),
 		)
 	}
 
@@ -8217,7 +8221,11 @@ export class AlphaProvider
 		const root = await this.ensureAgentControlRoot(parent)
 		await this.agentControlStore.retryPendingMailboxClaimSettlements(parent.taskId, root.rootTaskId)
 		await this.reconcileWaitAgentClaims(parent, root.rootTaskId)
-		const verificationDecision = this.agentControlStore.getParentCompletionDecision(parent.taskId, root.rootTaskId)
+		const verificationDecision = this.agentControlStore.getParentCompletionDecision(
+			parent.taskId,
+			root.rootTaskId,
+			parent.getActiveBackgroundCommandExecutionIds?.() ?? [],
+		)
 		const activeDescendants = this.agentControlStore
 			.listDescendants(parent.taskId, root.rootTaskId)
 			.filter((record) =>
@@ -8267,11 +8275,19 @@ export class AlphaProvider
 			rootTaskId: root.rootTaskId,
 			includeDelivered: false,
 		})
-		const obligations = this.agentControlStore.getVerificationObligations({
-			rootTaskId: root.rootTaskId,
-			parentTaskId: parent.taskId,
-		})
-		const completionDecision = this.agentControlStore.getParentCompletionDecision(parent.taskId, root.rootTaskId)
+		const activeBackgroundExecutionIds = parent.getActiveBackgroundCommandExecutionIds?.() ?? []
+		const obligations = projectParentCompletionObligations(
+			this.agentControlStore.getVerificationObligations({
+				rootTaskId: root.rootTaskId,
+				parentTaskId: parent.taskId,
+			}),
+			activeBackgroundExecutionIds,
+		)
+		const completionDecision = this.agentControlStore.getParentCompletionDecision(
+			parent.taskId,
+			root.rootTaskId,
+			activeBackgroundExecutionIds,
+		)
 		return {
 			rootTaskId: root.rootTaskId,
 			observedAt: Date.now(),

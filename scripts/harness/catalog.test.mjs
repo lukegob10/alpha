@@ -42,7 +42,9 @@ test("offline selection cannot start services or provider campaigns", () => {
 	])
 	assert.equal(lanes.offline.decisions, "scripted")
 	assert.ok(lanes.services.prerequisites.length)
-	assert.ok(lanes.services.commands.some((args) => args.includes("test:evals:services")))
+	assert.ok(lanes.services.commands.some((args) => args.includes("services:check")))
+	assert.ok(lanes.services.commands.some((args) => args.includes("test:integration")))
+	assert.ok(lanes.services.commands.some((args) => args.includes("test:redis")))
 	assert.equal(
 		lanes.services.commands.some((args) => args.includes("test:evals")),
 		false,
@@ -51,8 +53,16 @@ test("offline selection cannot start services or provider campaigns", () => {
 })
 
 test("hard offline and host lanes require explicit execution receipts", () => {
+	assert.equal(lanes.unit.receipts.filter((receipt) => receipt?.runner === "vitest").length, 5)
 	assert.ok(lanes.offline.receipts.slice(1).every((receipt) => receipt.requireAllTests))
 	assert.equal(lanes.host.receipts[0].runner, "extension-host")
 	assert.equal(lanes.outcomes.receipts[2].runner, "task-outcomes")
 	assert.ok(lanes.outcomes.commands[2].includes("scripted"))
+	assert.deepEqual(
+		lanes.services.receipts.slice(2).map(({ config }) => config),
+		["integration", "services"],
+	)
+	assert.ok(lanes.services.receipts.slice(2).every((receipt) => receipt.requireAllTests))
+	assert.equal(lanes.infrastructure.receipts[0].config, "infrastructure")
+	assert.equal(lanes.infrastructure.receipts[0].requireAllTests, true)
 })

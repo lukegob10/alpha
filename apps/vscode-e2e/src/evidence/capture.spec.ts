@@ -55,6 +55,98 @@ async function manifestOf(manifestPath: string): Promise<EvidenceManifest> {
 	return JSON.parse(await fs.readFile(manifestPath, "utf8")) as EvidenceManifest
 }
 
+test("categorizes canonical commands and aliases without exporting names or payloads", async () => {
+	const storage = await ownedSource("storage")
+	const task = path.join(storage, "tasks", "task-1")
+	await fs.mkdir(task, { recursive: true })
+	const names = ["exec_command", "write_stdin", "execute_command", "apply_patch", "private-unknown-tool"]
+	await fs.writeFile(
+		path.join(task, "agent_turn_events.jsonl"),
+		names
+			.map((name, index) =>
+				JSON.stringify({
+					taskId: "task-1",
+					runId: "event-run",
+					sequence: index + 1,
+					event: {
+						type: "tool_result",
+						callId: `call-${index}`,
+						name,
+						status: "success",
+						output: "private-payload",
+					},
+				}),
+			)
+			.join("\n") + "\n",
+	)
+	const result = await captureRunEvidence({
+		...options(),
+		storagePath: storage,
+		assertSourceOwned: assertFixtureOwned,
+	})
+	const text = await fs.readFile(
+		path.join(result.artifactDirectory, "task-1-agent_turn_events.jsonl.projection.json"),
+		"utf8",
+	)
+	const projected = JSON.parse(text)
+	assert.deepEqual(
+		projected.projection.events.map((event: { toolCategory: string }) => event.toolCategory),
+		["command", "command", "command", "edit", "other"],
+	)
+	assert.ok(!text.includes("private-payload") && !text.includes("private-unknown-tool"))
+})
+
+test("preserves request purpose, usage provenance and timeout evidence without exposing unknown values", async () => {
+	const storage = await ownedSource("storage")
+	const task = path.join(storage, "tasks", "task-1")
+	await fs.mkdir(task, { recursive: true })
+	const secret = "private-request-metadata"
+	const events = [
+		{ type: "model_request_started", attempt: 1, purpose: "task" },
+		{ type: "model_request_started", attempt: 0, purpose: "reasoning-summary" },
+		{ type: "request_usage", purpose: "task", usageSource: "provider", inputTokens: 12, outputTokens: 3 },
+		{
+			type: "request_usage",
+			purpose: "reasoning-summary",
+			usageSource: "estimate",
+			inputTokens: 4,
+			outputTokens: 1,
+		},
+		{ type: "request_usage", purpose: "task", usageSource: "unknown", inputTokens: 2, outputTokens: 0 },
+		{ type: "model_request_failed", purpose: "task", code: "ProviderTimeout", message: secret },
+		{ type: "request_usage", purpose: secret, usageSource: secret, inputTokens: 0, outputTokens: 0 },
+		{ type: "model_request_failed", purpose: secret, code: secret, providerFailureCode: secret },
+		{ type: "model_request_started", attempt: 1 },
+	]
+	await fs.writeFile(
+		path.join(task, "agent_turn_events.jsonl"),
+		events.map((event, index) => JSON.stringify({ sequence: index + 1, event })).join("\n") + "\n",
+	)
+	const result = await captureRunEvidence({
+		...options(),
+		storagePath: storage,
+		assertSourceOwned: assertFixtureOwned,
+	})
+	const text = await fs.readFile(
+		path.join(result.artifactDirectory, "task-1-agent_turn_events.jsonl.projection.json"),
+		"utf8",
+	)
+	const projected = JSON.parse(text).projection.events
+	assert.deepEqual(
+		projected.map((event: { purpose?: string }) => event.purpose),
+		["task", "reasoning-summary", "task", "reasoning-summary", "task", "task", undefined, undefined, undefined],
+	)
+	assert.deepEqual(
+		projected.slice(2, 5).map((event: { usageSource?: string }) => event.usageSource),
+		["provider", "estimate", "unknown"],
+	)
+	assert.equal(projected[5].providerFailureCode, "request_timeout")
+	assert.ok(!Object.hasOwn(projected[6], "purpose") && !Object.hasOwn(projected[6], "usageSource"))
+	assert.ok(!Object.hasOwn(projected[7], "providerFailureCode"))
+	assert.ok(!Object.hasOwn(projected[8], "purpose"))
+	assert.ok(!text.includes(secret))
+})
+
 test("captures bounded long task sources beyond the repository file budget without exporting payloads", async () => {
 	const storage = await ownedSource("storage")
 	const task = path.join(storage, "tasks", "task-1")

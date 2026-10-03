@@ -1,4 +1,5 @@
 import fs from "node:fs/promises"
+import type { ExecutionIdentity } from "@alpha-code/types"
 
 import type { HarnessProcessRunner } from "../orchestration/index"
 import { canonicalJson, sha256 } from "./canonical"
@@ -33,6 +34,7 @@ export async function createRuntimeIdentities(input: {
 	settings: unknown
 	processRunner: HarnessProcessRunner
 	network: "disabled" | "restricted" | "enabled"
+	executionIdentity?: ExecutionIdentity
 }): Promise<RuntimeIdentities> {
 	const fixtureDigest = await digestWorkspaceTree({ workspace: input.workspace, processRunner: input.processRunner })
 	const prompt = await readFirst(input.promptFiles)
@@ -53,9 +55,14 @@ export async function createRuntimeIdentities(input: {
 		id: `runtime-${input.model}`,
 		// The installed extension used by the legacy evaluator is not attested by
 		// the task repository's HEAD. Preserve identity incompleteness explicitly.
-		extensionCommit: "unavailable:executed-harness",
-		workingTreeDigest: sha256("unavailable:executed-harness"),
-		identityStatus: "executed_harness_unavailable",
+		extensionCommit: input.executionIdentity
+			? `installed:${input.executionIdentity.extensionId}@${input.executionIdentity.extensionVersion}`
+			: "unavailable:executed-harness",
+		workingTreeDigest: input.executionIdentity
+			? sha256(canonicalJson(input.executionIdentity))
+			: sha256("unavailable:executed-harness"),
+		identityStatus: input.executionIdentity ? "observed_entrypoint" : "executed_harness_unavailable",
+		executionIdentity: input.executionIdentity,
 		model: input.model,
 		promptDigest: sha256(prompt),
 		toolSchemaDigest: sha256("unavailable:executed-tool-schema"),

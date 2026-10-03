@@ -7,6 +7,7 @@ import {
 	type TaskCommand,
 	type IpcClientEvents,
 	type IpcMessage,
+	type ExecutionIdentity,
 	IpcOrigin,
 	IpcMessageType,
 	TaskCommandName,
@@ -19,6 +20,8 @@ export class IpcClient extends EventEmitter<IpcClientEvents> {
 	private readonly _log: (...args: unknown[]) => void
 	private _isConnected = false
 	private _clientId?: string
+	executionIdentity?: ExecutionIdentity
+	serverProcess?: { pid: number; ppid: number }
 
 	constructor(socketPath: string, log = console.log) {
 		super()
@@ -53,6 +56,9 @@ export class IpcClient extends EventEmitter<IpcClientEvents> {
 
 		this.log("[client#onDisconnect]")
 		this._isConnected = false
+		this._clientId = undefined
+		this.executionIdentity = undefined
+		this.serverProcess = undefined
 		this.emit(IpcMessageType.Disconnect)
 	}
 
@@ -77,6 +83,8 @@ export class IpcClient extends EventEmitter<IpcClientEvents> {
 			switch (payload.type) {
 				case IpcMessageType.Ack:
 					this._clientId = payload.data.clientId
+					this.executionIdentity = payload.data.executionIdentity
+					this.serverProcess = { pid: payload.data.pid, ppid: payload.data.ppid }
 					this.emit(IpcMessageType.Ack, payload.data)
 					break
 				case IpcMessageType.TaskEvent:

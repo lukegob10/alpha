@@ -70,6 +70,7 @@ const EVENT_TYPES = new Set([
 	"approval_result",
 	"retry",
 	"model_request_started",
+	"model_request_failed",
 	"task_performance",
 	"request_usage",
 	"turn_completed",
@@ -149,6 +150,8 @@ const TOOL_CATEGORIES: Readonly<Record<string, string>> = {
 	apply_patch: "edit",
 	shell: "command",
 	execute_command: "command",
+	exec_command: "command",
+	write_stdin: "command",
 	manage_command: "command",
 	attempt_completion: "workflow",
 	ask_followup_question: "workflow",
@@ -438,6 +441,24 @@ function projectJournalEvent(value: unknown): unknown {
 		const value = raw?.[key] ?? payload?.[key]
 		if (typeof value === "boolean") projected[key] = value
 	}
+	if (
+		event.type === "model_request_started" ||
+		event.type === "model_request_failed" ||
+		event.type === "request_usage"
+	) {
+		const purpose = payload?.purpose
+		if (purpose === "task" || purpose === "reasoning-summary") projected.purpose = purpose
+	}
+	if (event.type === "request_usage") {
+		const usageSource = payload?.usageSource
+		if (usageSource === "provider" || usageSource === "estimate" || usageSource === "unknown")
+			projected.usageSource = usageSource
+	}
+	if (
+		event.type === "model_request_failed" &&
+		(payload?.code === "ProviderTimeout" || payload?.providerFailureCode === "request_timeout")
+	)
+		projected.providerFailureCode = "request_timeout"
 	const item = object(payload?.item)
 	const name =
 		event.type === "verification_result"

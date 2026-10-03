@@ -14,7 +14,21 @@ export const lanes = {
 		decisions: "scripted",
 		owner: "src, packages, webview-ui",
 		proves: "Extension dependency and UI contracts; includes bundle prerequisite",
-		commands: [["test", "--env-mode=loose"]],
+		commands: [
+			["bundle"],
+			...["packages/types", "packages/core", "packages/ipc", "packages/telemetry", "webview-ui", "src"].map(
+				(directory) => ["--dir", directory, "test"],
+			),
+		],
+		// Ordinary workspace units retain their declared skips, recorded in each
+		// receipt. Hard acceptance lanes below continue to require every test.
+		receipts: [
+			null,
+			...["packages/types", "packages/core", "packages/ipc", "packages/telemetry", "webview-ui", "src"].map(
+				(directory) =>
+					directory === "packages/telemetry" ? null : { runner: "vitest", packageDir: directory },
+			),
+		],
 	},
 	focused: {
 		fidelity: "unit/component and scripted integration",
@@ -113,7 +127,18 @@ export const lanes = {
 		prerequisites: [
 			"Dedicated configured test Postgres and Redis; never point destructive tests at shared application data",
 		],
-		commands: [["--filter", "@alpha-code/types", "build"], ["test:evals:services"]],
+		commands: [
+			["--filter", "@alpha-code/types", "build"],
+			["--filter", "@alpha-code/evals", "services:check"],
+			["--filter", "@alpha-code/evals", "test:integration"],
+			["--filter", "@alpha-code/evals", "test:redis"],
+		],
+		receipts: [
+			null,
+			null,
+			{ runner: "vitest", requireAllTests: true, config: "integration" },
+			{ runner: "vitest", requireAllTests: true, config: "services" },
+		],
 	},
 	infrastructure: {
 		fidelity: "optional container infrastructure",
@@ -122,6 +147,7 @@ export const lanes = {
 		proves: "Docker adapter isolation and cleanup contracts; outside the Docker-free corporate workflow",
 		prerequisites: ["Docker engine and approved test images"],
 		commands: [["test:evals:infrastructure"]],
+		receipts: [{ runner: "vitest", requireAllTests: true, config: "infrastructure" }],
 	},
 }
 

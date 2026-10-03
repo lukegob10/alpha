@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.1.5
+
+### Patch Changes
+
+- Allow launch tasks to complete while owned background web or Electron applications remain running, preserving verification and process cleanup requirements.
+- Fix command completion deadlocks and reduce duplicate output buffering and retained-state copying.
+- Account for reasoning-summary requests in task budgets and improve provider readiness, timeout diagnostics, and command telemetry.
+- Keep local credentials out of evaluator images and fix fresh database and Redis configuration.
+- Protect original benchmark acceptance checks, normalize fixture digests across platforms, and require current execution receipts and recorded build identities.
+
 ## 3.1.4
 
 ### Patch Changes

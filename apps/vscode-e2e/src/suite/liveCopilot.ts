@@ -1,5 +1,7 @@
 import type { AlphaCodeAPI } from "@alpha-code/types"
 import { TestRunError } from "../runFailure"
+import path from "node:path"
+import { writeJsonAtomically } from "./preflightEvidence"
 
 import {
 	configureLiveCopilot,
@@ -33,7 +35,28 @@ export async function runLiveCopilotPreflight(
 	options: LiveCopilotOptions,
 	dependencies?: LiveCopilotAuthDependencies,
 ): Promise<LiveCopilotPreflightMetadata> {
-	return configureLiveCopilot(api, options, dependencies)
+	const preflight = await configureLiveCopilot(api, options, dependencies)
+	if (options.setup || !preflight.ready) return preflight
+	if (!api.probeModel)
+		throw new TestRunError(
+			"provider-unavailable",
+			"The installed Alpha extension cannot perform a completion readiness probe",
+		)
+	const probe = await api.probeModel(dependencies?.signal)
+	if (options.artifactsDir)
+		await writeJsonAtomically(path.join(options.artifactsDir, "live-completion-probe.json"), {
+			schemaVersion: 1,
+			purpose: "readiness",
+			requestCap: 1,
+			countsAsSolving: false,
+			...probe,
+		})
+	if (probe.status !== "completed" || probe.modelId !== preflight.discovery.selectedModel?.id)
+		throw new TestRunError(
+			"provider-unavailable",
+			"Actual Alpha completion readiness probe failed; inspect its run-owned receipt",
+		)
+	return preflight
 }
 
 export type LiveSetupAction = "continue" | "finish" | "cancel" | undefined

@@ -5,6 +5,7 @@ import { parse } from "yaml"
 
 import { canonicalJson, sha256 } from "../evidence/index"
 import { isSupportedGraderAlias } from "../grading/index"
+import { canonicalFixtureBytes, fixtureTreeDigest } from "./fixtureDigest.mjs"
 import {
 	benchmarkReleaseLockSchema,
 	benchmarkSuiteManifestSchema,
@@ -164,7 +165,7 @@ async function validateTaskFiles(
 		throw new Error(`Task ${task.id} contains a symlink escaping the public benchmark root`)
 	}
 	if (task.promptDigest) {
-		const actual = sha256(await fs.readFile(prompt))
+		const actual = sha256(canonicalFixtureBytes(await fs.readFile(prompt)))
 		if (actual !== task.promptDigest) throw new Error(`Prompt digest mismatch for ${task.id}`)
 	}
 	if (task.fixtureDigest) {
@@ -255,9 +256,10 @@ async function digestDirectory(root: string, excluded: Set<string>): Promise<str
 		}
 	}
 	await visit(root)
-	const rows: Array<[string, string]> = []
-	for (const file of files.sort()) rows.push([normalize(path.relative(root, file)), sha256(await fs.readFile(file))])
-	return sha256(JSON.stringify(rows))
+	const rows: Array<{ path: string; bytes: Buffer }> = []
+	for (const file of files.sort())
+		rows.push({ path: normalize(path.relative(root, file)), bytes: await fs.readFile(file) })
+	return fixtureTreeDigest(rows)
 }
 
 export function benchmarkTaskSetDigest(tasks: BenchmarkTaskManifest[]): string {

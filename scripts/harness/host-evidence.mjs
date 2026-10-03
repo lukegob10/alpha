@@ -16,6 +16,7 @@ export const smokeHostFiles = [
 	"view-image.acceptance.test",
 	"compaction-acceptance.test",
 	"vscode-lm-contract.test",
+	"background-command-completion.test",
 ]
 export const confidenceHostFiles = [
 	...smokeHostFiles,

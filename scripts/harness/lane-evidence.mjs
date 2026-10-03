@@ -1,6 +1,7 @@
 import { glob, mkdir, readFile, readdir, unlink } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 import { require as tsRequire } from "tsx/cjs/api"
 import { normalizeVitestEvidence, readExecutionJson, testEvidenceVerdict } from "./execution-evidence.mjs"
 import { hostSuiteVerdict, outcomeCampaignVerdict, readHostReceipts } from "./host-evidence.mjs"
@@ -18,11 +19,21 @@ export async function expectedTestFiles(root, descriptor, args) {
 		patterns = config.test.include.map((pattern) => `packages/evals/${pattern}`)
 		const defaults = tsRequire("vitest/config", import.meta.url).configDefaults
 		exclude = (config.test.exclude ?? defaults.exclude).map((pattern) => `packages/evals/${pattern}`)
-	} else if (descriptor.runner === "vitest" && args.includes("src")) {
-		const config = tsRequire("../../src/vitest.config.ts", import.meta.url).default
+	} else if (descriptor.runner === "vitest" && (descriptor.packageDir || args.includes("src"))) {
+		const directory = descriptor.packageDir ?? "src"
+		// The catalog owns configuration; a test inventory root may be a fixture
+		// without a config and must still honor the owning package's exclusions.
+		const configPath = fileURLToPath(new URL(`../../${directory}/vitest.config.ts`, import.meta.url))
+		const configured = await readFile(configPath)
+			.then(() => true)
+			.catch((error) => {
+				if (error.code === "ENOENT") return false
+				throw error
+			})
+		const config = configured ? tsRequire(configPath, import.meta.url).default : { test: {} }
 		const defaults = tsRequire("vitest/config", import.meta.url).configDefaults
-		patterns = (config.test.include ?? defaults.include).map((pattern) => `src/${pattern}`)
-		exclude = (config.test.exclude ?? defaults.exclude).map((pattern) => `src/${pattern}`)
+		patterns = (config.test.include ?? defaults.include).map((pattern) => `${directory}/${pattern}`)
+		exclude = (config.test.exclude ?? defaults.exclude).map((pattern) => `${directory}/${pattern}`)
 	} else if (descriptor.runner === "node") {
 		patterns = args.includes("test:tooling")
 			? JSON.parse(await readFile(path.join(root, "package.json"), "utf8"))
@@ -38,7 +49,12 @@ export async function expectedTestFiles(root, descriptor, args) {
 			descriptor.runner === "vitest" && !descriptor.config
 				? args.slice(args.indexOf("test") + 1).filter((value) => !value.startsWith("-"))
 				: []
-		if (!filters.length || filters.some((filter) => normalized.slice(4).includes(filter.replaceAll("\\", "/"))))
+		if (
+			!filters.length ||
+			filters.some((filter) =>
+				normalized.slice((descriptor.packageDir ?? "src").length + 1).includes(filter.replaceAll("\\", "/")),
+			)
+		)
 			matches.push(normalized)
 		if (matches.length > 10_000) throw new Error("Test inventory exceeds its bound")
 	}

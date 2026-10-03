@@ -1,6 +1,7 @@
 import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
+import { createHash } from "node:crypto"
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -72,6 +73,22 @@ function context(runner = processRunner()): GraderContext {
 const base = { version: 1, hardGate: true, failureClass: "outcome" as const }
 
 describe("grader plugins", () => {
+	it("checks original binary bytes without UTF-8 coercion or exporting their contents", async () => {
+		const bytes = Buffer.from([0xff, 0xfe, 0x0d, 0x0a, 0x00])
+		await fs.writeFile(path.join(workspaceRoot, "binary.dat"), bytes)
+		const expected = `sha256:${createHash("sha256").update(bytes).digest("hex")}`
+		const spec: GraderSpec = {
+			...base,
+			id: "original-bytes",
+			type: "filesystem",
+			assertions: [{ kind: "digest-equals", path: "binary.dat", expected }],
+		}
+		const before = await createDefaultGraderRegistry().execute([spec], context())
+		expect(before.decision).toBe("passed")
+		expect(JSON.stringify(before)).not.toContain(bytes.toString("base64"))
+		await fs.writeFile(path.join(workspaceRoot, "binary.dat"), bytes.toString("utf8"))
+		expect((await createDefaultGraderRegistry().execute([spec], context())).decision).toBe("outcome_failed")
+	})
 	it("hard-gates model, tool, and cost budgets from normalized evidence", async () => {
 		const run = await createDefaultGraderRegistry().execute(
 			[

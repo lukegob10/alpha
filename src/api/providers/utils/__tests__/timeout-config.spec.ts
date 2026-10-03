@@ -1,7 +1,38 @@
 // npx vitest run api/providers/utils/__tests__/timeout-config.spec.ts
 
-import { getApiRequestTimeout } from "../timeout-config"
+import { ApiRequestTimeoutError, getApiRequestTimeout, withApiRequestTimeout } from "../timeout-config"
 import * as vscode from "vscode"
+
+describe("request timeout attribution", () => {
+	afterEach(() => vitest.useRealTimers())
+	it("retains a stable provider timeout code and cancels the underlying request once", async () => {
+		vitest.useFakeTimers()
+		const cancel = vitest.fn()
+		const pending = withApiRequestTimeout(new Promise<void>(() => {}), "provider stream", 100, cancel)
+		const rejected = expect(pending).rejects.toMatchObject({
+			code: "ProviderTimeout",
+			timeoutMs: 100,
+			name: "ApiRequestTimeoutError",
+		})
+		await vitest.advanceTimersByTimeAsync(100)
+		await rejected
+		expect(cancel).toHaveBeenCalledOnce()
+		expect(vitest.getTimerCount()).toBe(0)
+		expect(new ApiRequestTimeoutError("provider stream", 100).message).toBe(
+			"provider stream timed out after 1 second.",
+		)
+	})
+	it("clears the deadline after early completion", async () => {
+		vitest.useFakeTimers()
+		const cancel = vitest.fn()
+		expect(await withApiRequestTimeout(Promise.resolve("complete"), "provider stream", 100, cancel)).toBe(
+			"complete",
+		)
+		await vitest.advanceTimersByTimeAsync(100)
+		expect(cancel).not.toHaveBeenCalled()
+		expect(vitest.getTimerCount()).toBe(0)
+	})
+})
 
 // Mock vscode
 vitest.mock("vscode", () => ({

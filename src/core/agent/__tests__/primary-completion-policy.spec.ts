@@ -3,10 +3,35 @@ import { AgentControlStore, InMemoryAgentControlPersistence } from "../AgentCont
 import {
 	decideParentCompletion,
 	formatParentVerificationContext,
+	projectParentCompletionObligations,
 	summarizeParentVerification,
 } from "../ParentVerification"
 
 describe("proportionate primary completion", () => {
+	it("projects only live primary reservation tokens without changing durable obligations", async () => {
+		const store = new AgentControlStore(new InMemoryAgentControlPersistence())
+		await store.initialize()
+		await store.ensureRoot({ taskId: "root", objective: "Launch a service", status: "running" })
+		await store.reservePrimaryMutation("root", "root", "/workspace", "live-process")
+		const obligations = store.getVerificationObligations({ parentTaskId: "root" })
+		const before = structuredClone(obligations)
+		expect(decideParentCompletion(obligations).allowed).toBe(false)
+		expect(decideParentCompletion(obligations, ["wrong-process"]).allowed).toBe(false)
+		expect(store.getParentCompletionDecision("root", "root", ["live-process"]).allowed).toBe(true)
+		expect(
+			formatParentVerificationContext(projectParentCompletionObligations(obligations, ["live-process"])),
+		).toBeUndefined()
+		for (const blocked of [
+			{ ...obligations[0]!, scopeUnresolved: true },
+			{ ...obligations[0]!, mutationReservations: ["live-process", "other-write"] },
+			{ ...obligations[0]!, origin: "worker" as const },
+		]) {
+			expect(decideParentCompletion([blocked], ["live-process"]).allowed).toBe(false)
+		}
+		expect(obligations).toEqual(before)
+		expect(store.getVerificationObligations({ parentTaskId: "root" })).toEqual(before)
+	})
+
 	it("invalidates earlier Worker evidence when a completed command's diff is unavailable", async () => {
 		const store = new AgentControlStore(new InMemoryAgentControlPersistence())
 		await store.initialize()

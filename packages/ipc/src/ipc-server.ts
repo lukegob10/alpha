@@ -10,6 +10,7 @@ import {
 	IpcOrigin,
 	IpcMessageType,
 	type IpcMessage,
+	type ExecutionIdentity,
 	ipcMessageSchema,
 } from "@alpha-code/types"
 
@@ -27,7 +28,11 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements AlphaCod
 	private _serverStarted = false
 	private _server?: typeof ipc.server
 
-	constructor(socketPath: string, log = console.log) {
+	constructor(
+		socketPath: string,
+		log = console.log,
+		private readonly getExecutionIdentity?: () => Promise<ExecutionIdentity>,
+	) {
 		super()
 
 		this._socketPath = socketPath
@@ -107,15 +112,29 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements AlphaCod
 		}
 	}
 
-	private onConnect(socket: Socket) {
+	private async onConnect(socket: Socket) {
 		const clientId = crypto.randomBytes(6).toString("hex")
 		this._clients.set(clientId, socket)
 		this.log(`[server#onConnect] clientId = ${clientId}, # clients = ${this._clients.size}`)
+		let executionIdentity: ExecutionIdentity | undefined
+		if (this.getExecutionIdentity) {
+			try {
+				executionIdentity = await this.getExecutionIdentity()
+			} catch {
+				this.log("[server#onConnect] execution identity unavailable")
+			}
+		}
+		if (this._isDisposed || !this._clients.has(clientId)) return
 
 		this.send(socket, {
 			type: IpcMessageType.Ack,
 			origin: IpcOrigin.Server,
-			data: { clientId, pid: process.pid, ppid: process.ppid },
+			data: {
+				clientId,
+				pid: process.pid,
+				ppid: process.ppid,
+				...(executionIdentity ? { executionIdentity } : {}),
+			},
 		})
 
 		this.emit(IpcMessageType.Connect, clientId)

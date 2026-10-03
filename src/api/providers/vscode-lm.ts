@@ -1343,6 +1343,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			// can call the provider backend and otherwise delays the visible completion boundary.
 			yield {
 				type: "usage",
+				usageSource: reportedUsage ? "provider" : "estimate",
 				inputTokens: reportedUsage?.inputTokens ?? estimateVsCodeLmInputTokens(vsCodeLmMessages, tools),
 				outputTokens: reportedUsage?.outputTokens ?? estimateTokens(accumulatedText.join("")),
 			}

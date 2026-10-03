@@ -134,7 +134,7 @@ async function readRecord(file: string): Promise<Record<string, unknown> | null>
 	}
 }
 
-async function launchExtension(
+export async function launchExtension(
 	request: ProblemSolvingExtensionRequest,
 	repositoryRoot: string,
 	buildIdentity: string,
@@ -163,6 +163,12 @@ async function launchExtension(
 	const workflow = await readRecord(path.join(receiptDir, "workflow-result.json"))
 	const runner = await readRecord(path.join(receiptDir, "run-result.json"))
 	const failure = workflow?.failure
+	const purposes = workflow?.requestsByPurpose
+	const taskRequests = purposes && typeof purposes === "object" && "task" in purposes ? purposes.task : undefined
+	const summaryRequests =
+		purposes && typeof purposes === "object" && "reasoning-summary" in purposes
+			? purposes["reasoning-summary"]
+			: undefined
 	return problemSolvingHostFromReceipts({
 		buildIdentity,
 		tracePath: workflow ? path.join(receiptDir, "workflow-result.json") : null,
@@ -170,6 +176,10 @@ async function launchExtension(
 			? {
 					status: typeof workflow.status === "string" ? workflow.status : undefined,
 					requestsUsed: typeof workflow.requestsUsed === "number" ? workflow.requestsUsed : null,
+					requestsByPurpose:
+						typeof taskRequests === "number" && typeof summaryRequests === "number"
+							? { task: taskRequests, "reasoning-summary": summaryRequests }
+							: undefined,
 					usage:
 						workflow.usage && typeof workflow.usage === "object" && !Array.isArray(workflow.usage)
 							? {
@@ -197,6 +207,10 @@ async function launchExtension(
 									code:
 										typeof (failure as { code?: unknown }).code === "string"
 											? (failure as { code: string }).code
+											: undefined,
+									providerCode:
+										(failure as { providerCode?: unknown }).providerCode === "request_timeout"
+											? "request_timeout"
 											: undefined,
 								}
 							: undefined,

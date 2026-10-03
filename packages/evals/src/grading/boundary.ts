@@ -87,7 +87,13 @@ function sameFile(before: Stats, after: Stats): boolean {
 }
 
 /** One contained read for both file graders; unknown access and path races cannot prove absence or success. */
-export async function readContainedFile(root: string, relativePath: string): Promise<string | undefined> {
+export function readContainedFile(root: string, relativePath: string): Promise<string | undefined>
+export function readContainedFile(root: string, relativePath: string, encoding: null): Promise<Buffer | undefined>
+export async function readContainedFile(
+	root: string,
+	relativePath: string,
+	encoding: "utf8" | null = "utf8",
+): Promise<string | Buffer | undefined> {
 	const lexicalRoot = path.resolve(root)
 	const candidate = resolveContained(lexicalRoot, relativePath)
 	const canonicalRoot = await fs.realpath(lexicalRoot)
@@ -100,7 +106,7 @@ export async function readContainedFile(root: string, relativePath: string): Pro
 		const current = await inspectContainedFile(canonicalRoot, relative)
 		if (!sameFile(before.stat, opened) || !current || !sameFile(current.stat, opened))
 			throw new HiddenGraderBoundaryError("Grader evidence changed before capture")
-		const contents = await handle.readFile("utf8")
+		const contents = encoding === null ? await handle.readFile() : await handle.readFile(encoding)
 		const after = await handle.stat()
 		const retained = await inspectContainedFile(canonicalRoot, relative)
 		if (

@@ -88,6 +88,9 @@ const eventKeys = [
 	"retryable",
 	"toolCategory",
 	"code",
+	"purpose",
+	"usageSource",
+	"providerFailureCode",
 ]
 
 export class OutcomeProofError extends Error {
@@ -169,6 +172,16 @@ function validJournal(value, taskId, lifecycle) {
 		for (const [key, field] of Object.entries(event)) {
 			if (key.endsWith("Sha256")) {
 				if (!digest(field)) return false
+			} else if (key === "purpose") {
+				if (
+					!["model_request_started", "model_request_failed", "request_usage"].includes(event.type) ||
+					!["task", "reasoning-summary"].includes(field)
+				)
+					return false
+			} else if (key === "usageSource") {
+				if (event.type !== "request_usage" || !["provider", "estimate", "unknown"].includes(field)) return false
+			} else if (key === "providerFailureCode") {
+				if (event.type !== "model_request_failed" || field !== "request_timeout") return false
 			} else if (typeof field === "string") {
 				if (!/^[A-Za-z_]+$/.test(field) || field.length > 128) return false
 			} else if (typeof field !== "boolean" && (typeof field !== "number" || !Number.isFinite(field)))
@@ -329,6 +342,7 @@ export function outcomeProofVerdict(proofs, campaign, receipts, build) {
 					"providerMode",
 					"model",
 					"requestsUsed",
+					"requestsByPurpose",
 					"e2eApprovalPolicySha256",
 					"usage",
 					"failure",
@@ -341,6 +355,8 @@ export function outcomeProofVerdict(proofs, campaign, receipts, build) {
 				return failed("failed_independent_workflow_result")
 			if (
 				!onlyKeys(workflow.value.model, ["id", "family", "vendor", "reasoningEffort"]) ||
+				(workflow.value.requestsByPurpose &&
+					!onlyKeys(workflow.value.requestsByPurpose, ["task", "reasoning-summary"])) ||
 				(workflow.value.usage && !onlyKeys(workflow.value.usage, ["inputTokens", "outputTokens", "cost"]))
 			)
 				return failed("invalid_independent_workflow_projection")

@@ -32,6 +32,8 @@ import { Package } from "../shared/package"
 import { AlphaProvider } from "../core/webview/AlphaProvider"
 import { openAlphaInNewTab } from "../activate/registerCommands"
 import { getCommands } from "../services/command/commands"
+import { probeModel } from "../api/probeModel"
+import { readExecutionIdentity } from "./executionIdentity"
 
 export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 	private readonly outputChannel: vscode.OutputChannel
@@ -67,7 +69,9 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 		this.registerListeners(this.sidebarProvider)
 
 		if (socketPath) {
-			const ipc = (this.ipc = new IpcServer(socketPath, this.log))
+			const identity = readExecutionIdentity(this.context.extensionPath, vscode.version)
+			void identity.catch(() => undefined)
+			const ipc = (this.ipc = new IpcServer(socketPath, this.log, () => identity))
 			this.context.subscriptions.push(ipc)
 
 			ipc.listen()
@@ -84,9 +88,7 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 
 				switch (command.commandName) {
 					case TaskCommandName.StartNewTask:
-						this.log(
-							`[API] StartNewTask -> ${command.data.text}, ${JSON.stringify(command.data.configuration)}`,
-						)
+						this.log("[API] StartNewTask")
 						await this.startNewTask(command.data)
 						break
 					case TaskCommandName.CancelTask:
@@ -508,6 +510,11 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 		await this.sidebarProvider.setValues(values)
 		await this.sidebarProvider.providerSettingsManager.saveConfig(values.currentApiConfigName || "default", values)
 		await this.sidebarProvider.postStateToWebview()
+	}
+
+	public async probeModel(signal?: AbortSignal) {
+		const { apiConfiguration } = await this.sidebarProvider.getState()
+		return probeModel(apiConfiguration, signal)
 	}
 
 	// Provider Profile Management

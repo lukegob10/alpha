@@ -76,7 +76,8 @@ export type AgentTurnEvent =
 	  }
 	| { type: "progress"; callId?: string; icon?: string; text?: string }
 	| { type: "retry"; attempt: number; reason: string; delayMs?: number }
-	| { type: "model_request_started"; attempt: number }
+	| { type: "model_request_started"; attempt: number; purpose?: "task" | "reasoning-summary" }
+	| ({ type: "model_request_failed"; purpose?: "task" | "reasoning-summary" } & AgentTurnFailure)
 	| {
 			type: "task_performance"
 			phase:
@@ -92,6 +93,8 @@ export type AgentTurnEvent =
 	  }
 	| {
 			type: "request_usage"
+			purpose?: "task" | "reasoning-summary"
+			usageSource?: "provider" | "estimate" | "unknown"
 			requestIndex: number
 			retry: boolean
 			inputTokens: number

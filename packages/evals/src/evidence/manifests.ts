@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { executionIdentitySchema } from "@alpha-code/types"
 
 import { canonicalJson, sha256 } from "./canonical"
 
@@ -25,7 +26,8 @@ export const variantManifestSchema = z.object({
 	promptDigest: digest,
 	toolSchemaDigest: digest,
 	runnerImageDigest: digest,
-	identityStatus: z.enum(["verified", "executed_harness_unavailable"]).optional(),
+	identityStatus: z.enum(["verified", "observed_entrypoint", "executed_harness_unavailable"]).optional(),
+	executionIdentity: executionIdentitySchema.optional(),
 	settingsDigest: digest.optional(),
 })
 

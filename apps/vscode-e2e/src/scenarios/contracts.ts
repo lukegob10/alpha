@@ -47,6 +47,7 @@ export interface WorkflowResult {
 	providerMode: string
 	model: { id?: string; family?: string; vendor?: string; reasoningEffort?: string }
 	requestsUsed: number | null
+	requestsByPurpose?: { task: number; "reasoning-summary": number }
 	/** Stable hash of effective E2E approval settings; excludes the task workspace path. */
 	e2eApprovalPolicySha256?: string
 	usage?: {
@@ -54,7 +55,7 @@ export interface WorkflowResult {
 		outputTokens: number | null
 		cost: number | null
 	}
-	failure?: { category: WorkflowFailureCategory; code: string }
+	failure?: { category: WorkflowFailureCategory; code: string; providerCode?: "request_timeout" }
 }
 
 export class WorkflowFailure extends Error {
@@ -62,6 +63,7 @@ export class WorkflowFailure extends Error {
 		readonly category: WorkflowFailureCategory,
 		readonly code: string,
 		readonly blocked = false,
+		readonly providerCode?: "request_timeout",
 	) {
 		super(`Workflow ${category}: ${code}`)
 	}
@@ -83,6 +85,17 @@ export function isWorkflowCheck(value: unknown): value is WorkflowCheck {
 
 /** Shared producer/consumer envelope validation; outcome assertions remain independent. */
 export function assertWorkflowResult(value: unknown): asserts value is WorkflowResult {
+	if (isRecord(value) && value.requestsByPurpose !== undefined) {
+		const counts = value.requestsByPurpose
+		if (
+			!isRecord(counts) ||
+			![counts.task, counts["reasoning-summary"]].every(
+				(count) => typeof count === "number" && Number.isSafeInteger(count) && count >= 0,
+			) ||
+			(counts.task as number) + (counts["reasoning-summary"] as number) !== value.requestsUsed
+		)
+			throw new WorkflowFailure("harness", "invalid_workflow_request_purposes")
+	}
 	if (
 		!isRecord(value) ||
 		value.schemaVersion !== 1 ||
@@ -140,7 +153,8 @@ export function assertWorkflowResult(value: unknown): asserts value is WorkflowR
 				"timeout",
 				"harness",
 			].includes(value.failure.category) ||
-			!boundedText(value.failure.code)
+			!boundedText(value.failure.code) ||
+			(value.failure.providerCode !== undefined && value.failure.providerCode !== "request_timeout")
 		)
 			throw new WorkflowFailure("harness", "invalid_workflow_failure")
 	}
