@@ -44,6 +44,11 @@ The real extension-host scenario launches frontend/backend HTTP services through
 turn with services alive, then stops the services and checks actual zero exits, receipt settlement, workspace change
 projection, and exactly one completion event. It runs in the exact VS Code 1.125.0 smoke gate:
 
+The strict harness inventory also requires this suite in smoke and confidence receipts. Release preparation exposed an
+omitted inventory entry: all thirteen smoke suites passed in CI, but the receipt verifier rejected the additional suite.
+A regression now compares both inventories with the canonical runner scripts and checks that missing background-launch
+receipts and unregistered extra suites still fail. The original failed CI report remains evidence for its recorded source.
+
 ```sh
 pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
 ```

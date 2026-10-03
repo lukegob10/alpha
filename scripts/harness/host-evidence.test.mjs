@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { test } from "node:test"
 import {
@@ -10,6 +11,32 @@ import {
 } from "./host-evidence.mjs"
 
 import { hostReceipt, outcomeFixture } from "./fixtures/evidence.mjs"
+
+test("host inventory matches the canonical runner scripts and requires background launch receipts", async () => {
+	const manifest = JSON.parse(await readFile(new URL("../../apps/vscode-e2e/package.json", import.meta.url), "utf8"))
+	const files = (script) => [...script.matchAll(/--file ([\w.-]+)/g)].map((match) => match[1])
+	assert.deepEqual(smokeHostFiles, files(manifest.scripts["test:smoke:1250:run"]))
+	assert.deepEqual(confidenceHostFiles, [...smokeHostFiles, ...files(manifest.scripts["test:core:1250:run"])])
+	for (const [suite, expected] of [
+		["smoke", smokeHostFiles],
+		["confidence", confidenceHostFiles],
+	]) {
+		assert.ok(expected.includes("background-command-completion.test"))
+		const receipts = expected.map(hostReceipt)
+		assert.equal(hostSuiteVerdict(receipts, suite).status, "passed")
+		assert.equal(
+			hostSuiteVerdict(
+				receipts.filter((receipt) => receipt.testFile !== "background-command-completion.test"),
+				suite,
+			).reason,
+			"incomplete_host_suite",
+		)
+		assert.equal(
+			hostSuiteVerdict([...receipts, hostReceipt("unregistered-contract.test")], suite).reason,
+			"incomplete_host_suite",
+		)
+	}
+})
 
 test("host gate revalidates receipts and refuses unknown, partial, skipped, or contradictory suites", () => {
 	for (const file of [...smokeHostFiles, ...confidenceHostFiles])
@@ -115,8 +142,9 @@ test("smoke contracts require the provider selected by their canonical scripts",
 	}
 })
 
-test("confidence composes all twelve smoke hosts and five core hosts without admitting unit fixtures", () => {
-	assert.equal(confidenceHostFiles.length, 17)
+test("confidence composes all thirteen smoke hosts and five core hosts without admitting unit fixtures", () => {
+	assert.equal(smokeHostFiles.length, 13)
+	assert.equal(confidenceHostFiles.length, 18)
 	assert.deepEqual(confidenceHostFiles.slice(0, smokeHostFiles.length), smokeHostFiles)
 	const receipts = confidenceHostFiles.map(hostReceipt)
 	assert.equal(hostSuiteVerdict(receipts, "confidence").status, "passed")
