@@ -617,7 +617,7 @@ export class ManagedSubagentWorktreeService {
 	): Promise<PreparedManagedWorktree> {
 		const artifactId = crypto.randomUUID()
 		const dir = this.artifactDir(storagePath, artifactId)
-		const worktreePath = path.join(storagePath, "subagent-worktrees", artifactId)
+		let worktreePath = path.join(storagePath, "subagent-worktrees", artifactId)
 		const indexPath = path.join(dir, "snapshot.index")
 		await fs.mkdir(path.dirname(dir), { recursive: true })
 		// Exclusive creation establishes ownership before rollback can remove anything.
@@ -665,9 +665,21 @@ export class ManagedSubagentWorktreeService {
 				gitRelativeFileScope: validated.gitRelativeFileScope,
 				changes: [],
 			}
+			// Recent Git for Windows resolves junctions to their physical paths during
+			// setup, defeating the invocation adapter's short aliases. Keep durable
+			// proposals in extension storage, but allocate an owned short checkout.
+			if (process.platform === "win32" && worktreePath.length >= MAX_GIT_SETUP_PATH) {
+				worktreePath = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-worker-checkout-"))
+				ownsWorktreePath = true
+				artifact.worktreePath = worktreePath
+				if ((await fs.realpath(worktreePath)).length >= MAX_GIT_SETUP_PATH)
+					throw new Error("The temporary directory is too long for a managed Git checkout")
+			}
 			await this.persist(storagePath, artifact)
-			await fs.mkdir(worktreePath)
-			ownsWorktreePath = true
+			if (!ownsWorktreePath) {
+				await fs.mkdir(worktreePath)
+				ownsWorktreePath = true
+			}
 			await this.git(validated.gitRoot, ["worktree", "add", "--detach", worktreePath, baselineCommit])
 			worktreeAdded = true
 			await this.git(validated.gitRoot, ["worktree", "lock", "--reason", "Alpha editing sub-agent", worktreePath])

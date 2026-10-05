@@ -69,11 +69,15 @@ describe("ManagedSubagentWorktreeService", () => {
 			const headBefore = await git(["rev-parse", "HEAD"])
 			const validated = await service.validateScope(path.join(repo, "src"), ["value.txt"])
 			const prepared = await service.create(longStorage, "long-path-worker", validated)
+			const physicalWorktree = await fs.realpath(prepared.artifact.worktreePath!)
 			try {
 				expect(
 					path.join(longStorage, "subagent-change-sets", prepared.artifact.id, "snapshot.index").length,
 				).toBe(storageLength + 73)
-				expect(prepared.workspacePath.length).toBeGreaterThan(260)
+				expect((await fs.realpath(prepared.workspacePath)).length).toBeLessThan(220)
+				expect(
+					(await new ManagedSubagentWorktreeService().load(longStorage, prepared.artifact.id)).worktreePath,
+				).toBe(prepared.artifact.worktreePath)
 				expect(
 					(await fs.readFile(path.join(prepared.workspacePath, "value.txt"), "utf8")).replace(/\r\n/g, "\n"),
 				).toBe("working\n")
@@ -90,14 +94,16 @@ describe("ManagedSubagentWorktreeService", () => {
 					})
 					expect(nestedArtifact.worktreePath).toBeUndefined()
 					expect(nestedArtifact.error).toBeUndefined()
+					await expect(fs.stat(nested.artifact.worktreePath!)).rejects.toMatchObject({ code: "ENOENT" })
 					expect(await service.apply(longStorage, nested.artifact.id)).toEqual({ status: "applied" })
 				} finally {
 					await service.deleteArtifact(longStorage, nested.artifact.id)
 				}
 				const artifact = await service.capture(longStorage, prepared.artifact.id)
-				expect(artifact.status).toBe("pending_review")
+				expect(artifact.status, artifact.error).toBe("pending_review")
 				expect(artifact.worktreePath).toBeUndefined()
 				expect(artifact.error).toBeUndefined()
+				await expect(fs.stat(prepared.artifact.worktreePath!)).rejects.toMatchObject({ code: "ENOENT" })
 				expect(artifact.changes.map((change) => change.path)).toEqual(["src/value.txt"])
 				expect(await service.apply(longStorage, artifact.id)).toEqual({ status: "applied" })
 				expect((await fs.readFile(path.join(repo, "src/value.txt"), "utf8")).replace(/\r\n/g, "\n")).toBe(
@@ -106,7 +112,9 @@ describe("ManagedSubagentWorktreeService", () => {
 				expect(await git(["diff", "--cached", "--binary"])).toBe(indexBefore)
 				expect(await git(["rev-parse", "HEAD"])).toBe(headBefore)
 				expect(await git(["config", "--local", "core.longpaths"])).toBe("false")
-				expect(await git(["worktree", "list", "--porcelain"])).not.toContain(prepared.artifact.id)
+				expect(await git(["worktree", "list", "--porcelain"])).not.toContain(
+					physicalWorktree.replace(/\\/g, "/"),
+				)
 				expect(await fs.readFile(path.join(longStorage, "external.txt"), "utf8")).toBe("keep\n")
 			} finally {
 				await service.deleteArtifact(longStorage, prepared.artifact.id)

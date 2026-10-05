@@ -144,6 +144,16 @@ describe("Worker capture failure preserves uncommitted changes", () => {
 			const bucket = path.join(longStorage, "subagent-worktrees")
 			await fs.mkdir(bucket, { recursive: true })
 			await fs.writeFile(path.join(bucket, "external.txt"), "preserve\n")
+			// Short checkouts no longer use a target junction. Retain native alias
+			// cleanup coverage through the Git effect's long snapshot worktree.
+			const snapshotWorktree = path.join(longStorage, "long snapshot worktree")
+			await fs.mkdir(snapshotWorktree)
+			const owner = service as unknown as GitEffect
+			const actualGit = owner.git.bind(service)
+			vi.spyOn(owner, "git").mockImplementation((cwd, args, env) =>
+				actualGit(cwd, args, args[0] === "read-tree" ? { ...env, GIT_WORK_TREE: snapshotWorktree } : env),
+			)
+			const validated = await service.validateScope(repo, ["src"])
 			const before = await git(["worktree", "list", "--porcelain"])
 			const ownerDirectories = new Set<string>()
 			const cleanupInvocations = async () => {
@@ -171,7 +181,7 @@ describe("Worker capture failure preserves uncommitted changes", () => {
 				const parent = path.dirname(value)
 				if (path.basename(parent).startsWith("alpha-worker-git-")) {
 					ownerDirectories.add(parent)
-					if (!injected && path.basename(value) === (stage === "junction" ? "target" : "owner.json")) {
+					if (!injected && path.basename(value) === (stage === "junction" ? "result" : "owner.json")) {
 						injected = true
 						throw Object.assign(new Error("Owned Git unlink is temporarily unavailable"), { code: "EBUSY" })
 					}
@@ -180,9 +190,9 @@ describe("Worker capture failure preserves uncommitted changes", () => {
 			})
 			const failures: unknown[] = []
 			try {
-				await expect(
-					service.create(longStorage, "unlink-failure-worker", await service.validateScope(repo, ["src"])),
-				).rejects.toThrow("Temporary Git path cleanup is unconfirmed")
+				await expect(service.create(longStorage, "unlink-failure-worker", validated)).rejects.toThrow(
+					"Temporary Git path cleanup is unconfirmed",
+				)
 				expect(injected).toBe(true)
 				expect(ownerDirectories.size).toBeGreaterThan(0)
 				for (const directory of ownerDirectories)
@@ -202,9 +212,14 @@ describe("Worker capture failure preserves uncommitted changes", () => {
 		TIMEOUT,
 	)
 
-	it.each(["startup", "delete"] as const)(
-		"retains addressable ownership when %s worktree cleanup cannot be confirmed",
-		async (operation) => {
+	it.each(
+		(["startup", "delete"] as const).flatMap((operation) =>
+			[false, true].map((longStorage) => ({ operation, longStorage })),
+		),
+	)(
+		"retains addressable ownership when $operation worktree cleanup cannot be confirmed (long storage: $longStorage)",
+		async ({ operation, longStorage }) => {
+			if (longStorage) storage = path.join(root, "s".repeat(70), "s".repeat(70))
 			const validated = await service.validateScope(repo, ["src"])
 			// Fail only the external Git removal effect; the registered checkout,
 			// artifact reader and subsequent recovery use real Git and filesystem state.
@@ -234,13 +249,15 @@ describe("Worker capture failure preserves uncommitted changes", () => {
 				const retained = await service.load(storage, id)
 				expect(retained).toMatchObject({ id, status: "active" })
 				expect(retained.worktreePath).toBeDefined()
+				const registeredPath = (await fs.realpath(retained.worktreePath!)).replace(/\\/g, "/")
 				expect(await fs.readFile(path.join(retained.worktreePath!, "src/value.txt"), "utf8")).toBe("baseline\n")
-				expect(await git(["worktree", "list", "--porcelain"])).toContain(id)
+				expect(await git(["worktree", "list", "--porcelain"])).toContain(registeredPath)
 				removal.mockRestore()
 				const recovered = await new ManagedSubagentWorktreeService().recoverOrphans(storage)
 				expect(recovered).toEqual([expect.objectContaining({ id, status: "discarded", partial: true })])
 				expect((await service.load(storage, id)).worktreePath).toBeUndefined()
-				expect(await git(["worktree", "list", "--porcelain"])).not.toContain(id)
+				await expect(fs.access(retained.worktreePath!)).rejects.toMatchObject({ code: "ENOENT" })
+				expect(await git(["worktree", "list", "--porcelain"])).not.toContain(registeredPath)
 			} finally {
 				removal.mockRestore()
 				await new ManagedSubagentWorktreeService().deleteArtifact(storage, id)
