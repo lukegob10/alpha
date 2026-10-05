@@ -12,7 +12,7 @@ import {
 	resolveCodexRuntimeInstructions,
 } from "../codex-runtime-instructions"
 
-const gpt6ModelPrompts = ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] as const
+const gpt6ModelPrompts = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"] as const
 const pinnedSourceSha256 = {
 	defaultCollaboration: "c1ed5ce0a3a49ba35b9eeba9774e0bd8ebd10eddec13b2dac564e7170513356c",
 	multiAgentRootRole: "4c86e7411c24afc557c906f31a267c991568311715cc81ba0129604c70b83755",

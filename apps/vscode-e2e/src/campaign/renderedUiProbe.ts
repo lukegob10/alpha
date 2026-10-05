@@ -162,6 +162,7 @@ export async function runRenderedUiProbe(
 					...(modelSwitchTiming ? { modelSwitchTiming } : {}),
 				}
 			} else {
+				await cdp.request("Page.bringToFront", {}, workbenchSession)
 				const focused = await cdp.request<Evaluation<boolean>>(
 					"Runtime.evaluate",
 					{
@@ -174,7 +175,7 @@ export async function runRenderedUiProbe(
 				assert.equal(focused.result.value, true)
 				await cdp.request(
 					"Input.dispatchKeyEvent",
-					{ type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 },
+					{ type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" },
 					sessionId,
 				)
 				await cdp.request(

@@ -45,4 +45,28 @@ describe("VS Code LM context window", () => {
 			expect(getVscodeLlmContextWindow(model, 1_050_000)).toBe(1_050_000)
 		},
 	)
+
+	describe("GPT-6.1 Sol host-declared input ceiling", () => {
+		const sol61 = { vendor: "copilot", family: "gpt-6.1-sol" }
+
+		it.each([undefined, 272_000, 922_000, 1_050_000])(
+			"uses the observed input ceiling without inventing a context configuration for %s",
+			(configuredSize) => {
+				expect(getVscodeLlmContextWindow(sol61, configuredSize)).toBe(922_000)
+				expect(getVscodeLlmExtendedContextSize(sol61)).toBeUndefined()
+			},
+		)
+
+		it.each([
+			[921_793, 921_793],
+			[921_793.9, 921_793],
+			[64_000, 64_000],
+			[1_050_000, 922_000],
+		])("constrains the observed ceiling by actual live input limit %s", (maxInputTokens, expected) => {
+			const model = { ...sol61, maxInputTokens }
+			expect(getVscodeLlmContextWindow(model)).toBe(expected)
+			expect(getVscodeLlmContextWindow(model, 1_050_000)).toBe(expected)
+			expect(getVscodeLlmExtendedContextSize(model)).toBeUndefined()
+		})
+	})
 })

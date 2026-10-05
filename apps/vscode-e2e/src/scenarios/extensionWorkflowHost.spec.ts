@@ -5,7 +5,15 @@ import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { AlphaCodeEventName, type AlphaMessage, type AlphaCodeAPI, type AlphaCodeSettings } from "@alpha-code/types"
+import {
+	AlphaCodeEventName,
+	type ApprovalMode,
+	type AlphaMessage,
+	type AlphaCodeAPI,
+	type AlphaCodeSettings,
+	type TaskApprovalModeUpdate,
+	type TaskApprovalModeUpdateResult,
+} from "@alpha-code/types"
 
 import {
 	ExtensionWorkflowHost,
@@ -343,6 +351,212 @@ test("cancellation waits for an actual scoped command approval and never approve
 		} finally {
 			await host.dispose()
 		}
+	}
+})
+
+function approvalWorkflowFixture(updateResult?: (update: TaskApprovalModeUpdate) => TaskApprovalModeUpdateResult) {
+	const taskId = "approval-workflow-task"
+	const pending = {
+		taskId,
+		taskAsk: { ts: 1, type: "ask", ask: "command", text: WORKFLOW_COMMANDS.test } as AlphaMessage | undefined,
+		apiConversationHistory: history(WORKFLOW_COMMANDS.test),
+		clineMessages: [] as AlphaMessage[],
+		didComplete: false,
+		approveAsk: () => assert.fail("the cancellation hold must never approve its command"),
+	}
+	const resumed = {
+		...pending,
+		taskAsk: { ts: 2, type: "ask", ask: "resume_task" } as AlphaMessage | undefined,
+	}
+	let current = pending
+	let taskApprovalMode: ApprovalMode = "auto"
+	const configurations: AlphaCodeSettings[] = []
+	const starts: AlphaCodeSettings[] = []
+	const updates: TaskApprovalModeUpdate[] = []
+	const guidance: string[] = []
+	const actions: string[] = []
+	let cancellations = 0
+	const snapshot = (configuration: AlphaCodeSettings): AlphaCodeSettings => ({
+		...configuration,
+		deniedCommands: [...(configuration.deniedCommands ?? [])],
+		disabledTools: [...(configuration.disabledTools ?? [])],
+	})
+	const provider = Object.assign(new EventEmitter(), {
+		viewLaunched: true,
+		getLiveTask: (id: string) => (id === taskId ? current : undefined),
+		getStateToPostToWebview: async () => ({ currentTaskId: taskId }),
+		createTaskWithHistoryItem: async () => assert.fail("cancel already rehydrated the saved task"),
+		updateTaskApprovalMode: (update: TaskApprovalModeUpdate): TaskApprovalModeUpdateResult => {
+			assert.equal(current, resumed)
+			assert.equal(current.taskAsk?.ask, "resume_task")
+			updates.push({ ...update })
+			actions.push("task-policy")
+			const result: TaskApprovalModeUpdateResult = updateResult?.(update) ?? { ...update, status: "applied" }
+			if (
+				result.status === "applied" &&
+				result.requestId === update.requestId &&
+				result.taskId === taskId &&
+				result.approvalMode === update.approvalMode
+			)
+				taskApprovalMode = update.approvalMode
+			return result
+		},
+	})
+	const api = Object.assign(new EventEmitter(), {
+		sidebarProvider: provider,
+		getConfiguration: () => ({}),
+		setConfiguration: async (configuration: AlphaCodeSettings) => {
+			configurations.push(snapshot(configuration))
+			actions.push(`configuration:${configuration.approvalMode}`)
+		},
+		startNewTask: async ({ configuration }: { configuration: AlphaCodeSettings }) => {
+			starts.push(snapshot(configuration))
+			taskApprovalMode = configuration.approvalMode ?? "auto"
+			return taskId
+		},
+		isReady: () => true,
+		isTaskInHistory: async () => true,
+		getCurrentTaskStack: () => [taskId],
+		resumeTask: async () => assert.fail("retain the already rehydrated task"),
+		cancelCurrentTask: async () => {
+			cancellations++
+			actions.push("cancel")
+			current = resumed
+		},
+		sendMessage: async (text: string) => {
+			assert.equal(current, resumed)
+			guidance.push(text)
+			actions.push("guidance")
+			current.taskAsk = undefined
+			const message: AlphaMessage = { ts: 3, type: "say", say: "user_feedback", text }
+			current.clineMessages.push(message)
+			api.emit(AlphaCodeEventName.Message, { taskId, action: "created", message })
+		},
+	})
+	const host = new ExtensionWorkflowHost(
+		api as unknown as AlphaCodeAPI,
+		workspace,
+		"scripted",
+		new WorkflowRequestBudget(10),
+		5_000,
+	)
+	return {
+		host,
+		api,
+		provider,
+		taskId,
+		pending,
+		resumed,
+		configurations,
+		starts,
+		updates,
+		guidance,
+		actions,
+		get taskApprovalMode() {
+			return taskApprovalMode
+		},
+		get cancellations() {
+			return cancellations
+		},
+		async dispose() {
+			pending.didComplete = true
+			resumed.didComplete = true
+			await host.dispose()
+		},
+	}
+}
+
+test("cancellation hold captures Ask and restores Auto on the rehydrated task before guidance", async () => {
+	const fixture = approvalWorkflowFixture()
+	try {
+		assert.equal(await fixture.host.start("hold"), fixture.taskId)
+		assert.equal(fixture.configurations[0]?.approvalMode, "ask")
+		assert.equal(fixture.starts[0]?.approvalMode, "ask")
+		assert.equal(fixture.taskApprovalMode, "ask")
+		await fixture.host.waitForCommandApproval(fixture.taskId)
+		assert.equal(fixture.pending.taskAsk?.ask, "command")
+		await fixture.host.cancel(fixture.taskId)
+		assert.equal(fixture.cancellations, 1)
+		assert.equal(fixture.taskApprovalMode, "ask", "changing profile defaults cannot restore saved task policy")
+		await fixture.host.resume(fixture.taskId, "enhance")
+		assert.equal(fixture.provider.getLiveTask(fixture.taskId), fixture.resumed)
+		assert.equal(fixture.configurations[1]?.approvalMode, "auto")
+		assert.equal(fixture.taskApprovalMode, "auto")
+		assert.equal(fixture.updates.length, 1)
+		assert.equal(fixture.updates[0]?.taskId, fixture.taskId)
+		assert.equal(fixture.updates[0]?.approvalMode, "auto")
+		assert.ok(fixture.updates[0]?.requestId)
+		assert.deepEqual(fixture.actions, [
+			"configuration:ask",
+			"cancel",
+			"configuration:auto",
+			"task-policy",
+			"guidance",
+		])
+		assert.equal(fixture.guidance.length, 1)
+		assert.equal(fixture.host.admissionsAreUnique(fixture.taskId), true)
+		const before = fixture.starts[0]
+		const after = fixture.configurations[1]
+		assert.ok(before && after)
+		assert.deepEqual(after.deniedCommands, before.deniedCommands)
+		assert.ok(after.deniedCommands?.includes("git push"))
+		assert.deepEqual(after.disabledTools, WORKFLOW_DISABLED_TOOLS)
+		assert.equal(after.alwaysAllowWriteOutsideWorkspace, false)
+		assert.equal(after.alwaysAllowWriteProtected, false)
+		assert.equal(after.mcpEnabled, false)
+		assert.equal(after.alwaysAllowSubagents, false)
+		assert.equal(fixture.api.listenerCount(AlphaCodeEventName.Message), 0)
+	} finally {
+		await fixture.dispose()
+	}
+})
+
+test("cancellation resume rejects failed or mismatched task policy receipts before guidance", async () => {
+	const results: Array<(update: TaskApprovalModeUpdate) => TaskApprovalModeUpdateResult> = [
+		({ requestId, taskId }) => ({ requestId, taskId, status: "targetUnavailable" }),
+		({ requestId, taskId }) => ({ requestId, taskId, status: "rejected", error: "notMutable" }),
+		(update) => ({ ...update, status: "applied", requestId: "another-request" }),
+		(update) => ({ ...update, status: "applied", taskId: "another-task" }),
+		(update) => ({ ...update, status: "applied", approvalMode: "ask" }),
+	]
+	for (const result of results) {
+		const fixture = approvalWorkflowFixture(result)
+		try {
+			await fixture.host.start("hold")
+			await fixture.host.cancel(fixture.taskId)
+			await assert.rejects(
+				fixture.host.resume(fixture.taskId, "enhance"),
+				(error: unknown) =>
+					error instanceof WorkflowFailure &&
+					error.category === "policy" &&
+					error.code === "task_approval_mode_update_failed",
+			)
+			assert.equal(fixture.updates.length, 1)
+			assert.equal(fixture.guidance.length, 0)
+			assert.equal(fixture.provider.getLiveTask(fixture.taskId), fixture.resumed)
+			assert.equal(fixture.resumed.taskAsk?.ask, "resume_task")
+			assert.equal(fixture.taskApprovalMode, "ask")
+			assert.equal(fixture.api.listenerCount(AlphaCodeEventName.Message), 0)
+		} finally {
+			await fixture.dispose()
+		}
+	}
+})
+
+test("ordinary workflow Auto start and resume do not request a task policy change", async () => {
+	const fixture = approvalWorkflowFixture(() => assert.fail("ordinary Auto policy must stay unchanged"))
+	try {
+		await fixture.host.start("review")
+		assert.equal(fixture.starts[0]?.approvalMode, "auto")
+		await fixture.host.cancel(fixture.taskId)
+		await fixture.host.resume(fixture.taskId, "enhance")
+		assert.equal(fixture.taskApprovalMode, "auto")
+		assert.equal(fixture.configurations[1]?.approvalMode, "auto")
+		assert.equal(fixture.updates.length, 0)
+		assert.equal(fixture.guidance.length, 1)
+		assert.equal(fixture.host.admissionsAreUnique(fixture.taskId), true)
+	} finally {
+		await fixture.dispose()
 	}
 })
 

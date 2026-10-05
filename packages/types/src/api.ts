@@ -8,12 +8,17 @@ import type { IpcMessage, IpcServerEvents } from "./ipc.js"
 
 export type AlphaCodeAPIEvents = AlphaCodeEvents
 
+/** Alpha adapter phases; they describe progress without asserting provider availability. */
+export type ModelRequestPhase = "model-selection" | "request-admission" | "first-response-chunk" | "response-stream"
+
 export interface ModelProbeResult {
 	status: "completed" | "failed"
 	requests: 0 | 1
 	modelId: string | null
 	firstTextMs: number | null
 	wallMs: number
+	/** Optional for older adapters. Contains only the last reported, bounded request phase. */
+	requestPhase?: ModelRequestPhase
 	usage: {
 		inputTokens: number
 		outputTokens: number

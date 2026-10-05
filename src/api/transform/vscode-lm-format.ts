@@ -1,6 +1,8 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import * as vscode from "vscode"
 
+import { normalizeToolHistory, toFunctionToolInput } from "./tool-history"
+
 /**
  * Safely converts a value into a plain object.
  */
@@ -101,7 +103,7 @@ export function convertToVsCodeLmMessages(
 ): vscode.LanguageModelChatMessage[] {
 	const vsCodeLmMessages: vscode.LanguageModelChatMessage[] = []
 
-	for (const anthropicMessage of anthropicMessages) {
+	for (const anthropicMessage of normalizeToolHistory(anthropicMessages)) {
 		// Handle simple string messages
 		if (typeof anthropicMessage.content === "string") {
 			vsCodeLmMessages.push(
@@ -148,7 +150,11 @@ export function convertToVsCodeLmMessages(
 				for (const part of anthropicMessage.content) {
 					if (part.type === "tool_use") {
 						contentParts.push(
-							new vscode.LanguageModelToolCallPart(part.id, part.name, asObjectSafe(part.input)),
+							new vscode.LanguageModelToolCallPart(
+								part.id,
+								part.name,
+								asObjectSafe(toFunctionToolInput(part.name, part.input)),
+							),
 						)
 					} else if (part.type === "image") {
 						contentParts.push(convertAnthropicImagePart(part))

@@ -116,6 +116,38 @@ describe("TaskItem", () => {
 		expect(screen.getByTestId("export")).toBeInTheDocument()
 	})
 
+	it("selects compact rows with a checkbox or keyboard without opening the chat", () => {
+		const onToggleSelection = vi.fn()
+		const { rerender } = render(
+			<TaskItem item={mockTask} variant="compact" isSelectionMode onToggleSelection={onToggleSelection} />,
+		)
+		const row = screen.getByTestId("task-item-1")
+		const checkbox = screen.getByRole("checkbox")
+		fireEvent.click(checkbox)
+		expect(onToggleSelection).toHaveBeenCalledTimes(1)
+		expect(onToggleSelection).toHaveBeenLastCalledWith("1", true)
+		fireEvent.keyDown(row, { key: "Enter" })
+		expect(onToggleSelection).toHaveBeenCalledTimes(2)
+		fireEvent.keyDown(checkbox, { key: "Enter" })
+		expect(onToggleSelection).toHaveBeenCalledTimes(2)
+		rerender(
+			<TaskItem
+				item={mockTask}
+				variant="compact"
+				isSelectionMode
+				isSelected
+				onToggleSelection={onToggleSelection}
+			/>,
+		)
+		expect(checkbox).toBeChecked()
+		expect(row).toHaveAttribute("aria-pressed", "true")
+		fireEvent.keyDown(row, { key: " " })
+		expect(onToggleSelection).toHaveBeenLastCalledWith("1", false)
+		rerender(<TaskItem item={mockTask} variant="compact" isSelectionMode />)
+		fireEvent.click(row)
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+	})
+
 	it("displays time ago information", () => {
 		render(
 			<TaskItem

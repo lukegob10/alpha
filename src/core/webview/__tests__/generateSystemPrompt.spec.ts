@@ -45,4 +45,22 @@ describe("generateSystemPrompt", () => {
 		expect(SYSTEM_PROMPT).toHaveBeenCalledOnce()
 		expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[14]).toBe("gpt-6-luna")
 	})
+
+	it("uses the resolved instruction model identity for a host model alias", async () => {
+		vi.mocked(buildApiHandler).mockReturnValue({
+			getModel: () => ({ id: "copilot-host-alias", instructionModelId: "gpt-6.1-sol", info: {} }),
+		} as any)
+		const provider = {
+			context: {} as vscode.ExtensionContext,
+			cwd: "F:/workspace",
+			getState: vi.fn().mockResolvedValue({ apiConfiguration: { apiProvider: "vscode-lm" } }),
+			customModesManager: { getCustomModes: vi.fn().mockResolvedValue([]) },
+			getCurrentTask: vi.fn().mockReturnValue(undefined),
+			getSkillsManager: vi.fn().mockReturnValue(undefined),
+		}
+
+		await generateSystemPrompt(provider as any, { mode: "code" } as any)
+
+		expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[14]).toBe("gpt-6.1-sol")
+	})
 })

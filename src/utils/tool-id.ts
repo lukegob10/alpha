@@ -1,5 +1,49 @@
 import * as crypto from "crypto"
 
+export class ToolHistoryError extends Error {
+	constructor(
+		readonly code:
+			| "conflicting_tool_call_ids"
+			| "conflicting_tool_result_ids"
+			| "invalid_tool_call"
+			| "invalid_tool_result_id"
+			| "conflicting_tool_results"
+			| "duplicate_open_tool_call",
+	) {
+		super(`Invalid tool history: ${code}`)
+		this.name = "ToolHistoryError"
+	}
+}
+
+/** Resolve accepted persisted aliases without changing the model-visible ID. */
+export function getToolCallId(block: unknown): string | undefined {
+	if (!isRecord(block) || (block.type !== "tool_use" && block.type !== "tool_call")) return undefined
+	return resolveToolId(block.id, block.tool_call_id, "conflicting_tool_call_ids")
+}
+
+/** Empty legacy/canonical fields may fall back; different nonempty IDs are ambiguous. */
+export function getToolResultId(block: unknown): string | undefined {
+	if (!isRecord(block) || block.type !== "tool_result") return undefined
+	return resolveToolId(block.tool_use_id, block.tool_call_id, "conflicting_tool_result_ids")
+}
+
+function resolveToolId(
+	canonical: unknown,
+	legacy: unknown,
+	conflict: "conflicting_tool_call_ids" | "conflicting_tool_result_ids",
+): string | undefined {
+	const canonicalId = typeof canonical === "string" && canonical.length > 0 ? canonical : undefined
+	const legacyId = typeof legacy === "string" && legacy.length > 0 ? legacy : undefined
+	if (canonicalId !== undefined && legacyId !== undefined && canonicalId !== legacyId) {
+		throw new ToolHistoryError(conflict)
+	}
+	return canonicalId ?? legacyId
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
 /**
  * OpenAI Responses API maximum length for call_id field.
  * This limit applies to both function_call and function_call_output items.

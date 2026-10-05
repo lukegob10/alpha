@@ -320,24 +320,39 @@ export async function activate(context: vscode.ExtensionContext) {
 
 // This method is called when your extension is deactivated.
 export async function deactivate() {
-	outputChannel.appendLine(`${Package.name} extension deactivated`)
+	const log = (message: string) => {
+		try {
+			outputChannel.appendLine(message)
+		} catch {
+			// The host may close its output channel before asynchronous deactivation finishes.
+		}
+	}
+	log(`${Package.name} extension deactivated`)
 
 	const provider = sidebarProvider
 	sidebarProvider = undefined
 	if (provider) {
 		try {
 			await provider.dispose()
-		} catch (error) {
-			outputChannel.appendLine(`Failed to dispose sidebar provider: ${String(error)}`)
+		} catch {
+			log("Failed to dispose sidebar provider")
 		}
 	}
 
 	try {
 		await AgentControlStore.shutdownGlobalStores()
-	} catch (error) {
-		outputChannel.appendLine(`Failed to release managed-agent runtime ownership: ${String(error)}`)
+	} catch {
+		log("Failed to release managed-agent runtime ownership")
 	}
-	await McpServerManager.cleanup(extensionContext)
-	TelemetryService.instance.shutdown()
+	try {
+		await McpServerManager.cleanup(extensionContext)
+	} catch {
+		log("Failed to shut down MCP services")
+	}
+	try {
+		await TelemetryService.instance.shutdown()
+	} catch {
+		log("Failed to shut down telemetry clients")
+	}
 	TerminalRegistry.cleanup()
 }

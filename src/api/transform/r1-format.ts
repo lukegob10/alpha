@@ -1,6 +1,8 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 
+import { normalizeToolHistory, toFunctionToolInput } from "./tool-history"
+
 type ContentPartText = OpenAI.Chat.ChatCompletionContentPartText
 type ContentPartImage = OpenAI.Chat.ChatCompletionContentPartImage
 type UserMessage = OpenAI.Chat.ChatCompletionUserMessageParam
@@ -42,7 +44,7 @@ export function convertToR1Format(
 ): Message[] {
 	const result: Message[] = []
 
-	for (const message of messages) {
+	for (const message of normalizeToolHistory(messages)) {
 		// Check if the message has reasoning_content (for DeepSeek interleaved thinking)
 		const messageWithReasoning = message as AnthropicMessage & { reasoning_content?: string }
 		const reasoningContent = messageWithReasoning.reasoning_content
@@ -178,7 +180,7 @@ export function convertToR1Format(
 							type: "function",
 							function: {
 								name: part.name,
-								arguments: JSON.stringify(part.input),
+								arguments: JSON.stringify(toFunctionToolInput(part.name, part.input)),
 							},
 						})
 					} else if ((part as any).type === "reasoning" && (part as any).text) {

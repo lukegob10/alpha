@@ -43,6 +43,7 @@ import { getApiMetrics } from "@alpha/getApiMetrics"
 import { getLatestTodo } from "@alpha/todo"
 
 import { vscode } from "@src/utils/vscode"
+import { cn } from "@src/lib/utils"
 import { normalizeUserFacingSuggestionMode } from "@src/utils/modePresentation"
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
@@ -3169,8 +3170,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					)}
 				</>
 			) : (
-				<div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto p-3 min-[400px]:p-5">
-					<div className="mx-auto flex w-full max-w-[760px] min-h-0 flex-1 flex-col">
+				<div className="new-task-home relative flex min-h-0 flex-1 flex-col overflow-y-auto">
+					<div className="chat-column flex min-h-0 flex-1 flex-col">
 						{(taskHistory.length > 0 || showChatsPanel) && (
 							<HistoryPreview
 								expanded={showChatsPanel}
@@ -3179,7 +3180,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 								onClose={closeChatsPanel}
 							/>
 						)}
-						<div data-testid="alpha-home-brand" className="flex min-h-0 flex-1 items-center justify-center">
+						{/* Keep the decorative watermark from forcing a scrollbar when history fills the panel. */}
+						<div
+							data-testid="alpha-home-brand"
+							className="flex min-h-0 flex-1 items-center justify-center overflow-hidden">
 							<AlphaHero variant="watermark" />
 						</div>
 					</div>
@@ -3273,7 +3277,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				</div>
 			)}
 
-			<div data-testid="chat-bottom-dock" className="chat-column relative z-20 flex shrink-0 flex-col">
+			<div
+				data-testid="chat-bottom-dock"
+				className={cn("chat-column relative z-20 flex shrink-0 flex-col", !task && "new-task-dock")}>
 				{task && (
 					<>
 						{isCompletedTaskResumePending && !isManagedSubagent && (
@@ -3555,6 +3561,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				{!isManagedSubagent && (
 					<ChatTextArea
 						ref={textAreaRef}
+						appearance={task ? "default" : "newTask"}
 						inputValue={inputValue}
 						setInputValue={setInputValue}
 						sendingDisabled={

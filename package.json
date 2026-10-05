@@ -47,7 +47,7 @@
 		"test:evals:services": "pnpm --filter @alpha-code/evals test:services",
 		"test:evals:infrastructure": "pnpm --filter @alpha-code/evals test:docker",
 		"test:evals:offline": "pnpm --filter @alpha-code/evals test:unit && pnpm --filter @alpha-code/evals test:contract && pnpm --filter @alpha-code/evals test:certification",
-		"test:tooling": "node --test --test-reporter=spec --test-reporter=./scripts/harness/node-reporter.mjs --test-reporter-destination=stdout --test-reporter-destination=stdout scripts/install-vsix.test.js scripts/bootstrap.test.mjs scripts/webview-preload.test.mjs scripts/harness/*.test.mjs scripts/evals/*.test.mjs"
+		"test:tooling": "node --require=tsx/cjs --test --test-reporter=spec --test-reporter=./scripts/harness/node-reporter.mjs --test-reporter-destination=stdout --test-reporter-destination=stdout scripts/*.test.js scripts/*.test.mjs scripts/harness/*.test.mjs scripts/evals/*.test.mjs scripts/evals/*.test.ts"
 	},
 	"devDependencies": {
 		"@changesets/cli": "^2.27.10",

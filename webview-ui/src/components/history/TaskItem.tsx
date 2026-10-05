@@ -10,6 +10,7 @@ import { formatTimeAgo } from "@/utils/format"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 
 import TaskItemFooter from "./TaskItemFooter"
+import TaskItemActionsMenu from "./TaskItemActionsMenu"
 import { StandardTooltip } from "../ui"
 import { useTaskOpeningFeedback } from "./useTaskOpeningFeedback"
 
@@ -106,8 +107,8 @@ const TaskItem = ({
 		: undefined
 
 	const handleClick = () => {
-		if (isSelectionMode && onToggleSelection) {
-			onToggleSelection(item.id, !isSelected)
+		if (isSelectionMode) {
+			onToggleSelection?.(item.id, !isSelected)
 			return
 		}
 
@@ -156,6 +157,7 @@ const TaskItem = ({
 			key={item.id}
 			data-testid={`task-item-${item.id}`}
 			data-contained={contained ? "true" : "false"}
+			data-selected={isSelectionMode ? isSelected : undefined}
 			className={cn(
 				"cursor-pointer group relative overflow-hidden text-vscode-foreground/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-vscode-focusBorder",
 				contained
@@ -171,23 +173,24 @@ const TaskItem = ({
 			tabIndex={0}
 			aria-busy={isOpening}
 			aria-current={isActive ? "page" : undefined}
-			aria-label={`Open task: ${item.task}`}>
+			aria-pressed={isSelectionMode ? isSelected : undefined}
+			aria-label={isSelectionMode ? t("history:selectChat", { task: item.task }) : `Open task: ${item.task}`}>
 			<div
 				className={cn(
 					"flex min-w-0",
 					isCompact ? "min-h-7 items-center gap-2 px-2 py-1" : "gap-3 px-4 py-3.5",
 					!isCompact && isSelectionMode && "pb-3 pl-3",
 				)}>
-				{/* Selection checkbox - only in full variant */}
-				{!isCompact && isSelectionMode && (
+				{isSelectionMode && (
 					<div
-						className="task-checkbox mt-1"
+						className={cn("task-checkbox shrink-0", isCompact ? "flex items-center" : "mt-1")}
 						onClick={(e) => {
 							e.stopPropagation()
 						}}>
 						<Checkbox
+							aria-label={t("history:selectChat", { task: item.task })}
 							checked={isSelected}
-							onCheckedChange={(checked: boolean) => onToggleSelection?.(item.id, checked === true)}
+							onCheckedChange={(checked) => onToggleSelection?.(item.id, checked === true)}
 							variant="description"
 						/>
 					</div>
@@ -226,13 +229,16 @@ const TaskItem = ({
 						) : (
 							statusIndicator
 						)}
-						{/* Arrow icon that appears on hover */}
-						{isOpening ? (
+						{isSelectionMode ? (
+							isCompact && <span className="size-5 shrink-0" aria-hidden="true" />
+						) : isOpening ? (
 							<span
 								className="codicon codicon-loading codicon-modifier-spin size-4 shrink-0"
 								data-testid="task-opening-indicator"
 								aria-hidden="true"
 							/>
+						) : isCompact && onDelete ? (
+							<TaskItemActionsMenu item={item} onDelete={onDelete} />
 						) : (
 							<ArrowRight
 								className={cn(

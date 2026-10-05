@@ -59,6 +59,45 @@ describe("skillTool", () => {
 		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith("Missing parameter error")
 	})
 
+	it("loads the task's skill catalog and mode when foreground workspace state differs", async () => {
+		mockTask.cwd = "/scheduled/project"
+		mockTask.getTaskMode = vi.fn().mockResolvedValue("architect")
+		const scopedManager = {
+			getSkillContent: vi.fn().mockResolvedValue({
+				name: "review",
+				description: "Review the scheduled project",
+				path: "/scheduled/project/.agents/skills/review/SKILL.md",
+				source: "project",
+				instructions: "Scheduled project instructions",
+			}),
+		}
+		const provider = mockTask.providerRef.deref()
+		provider.getSkillsManager.mockImplementation(async (task?: Task) =>
+			task === mockTask ? scopedManager : mockSkillsManager,
+		)
+
+		await skillTool.handle(
+			mockTask as Task,
+			{
+				type: "tool_use",
+				name: "skill",
+				params: {},
+				partial: false,
+				nativeArgs: { skill: "review" },
+			},
+			mockCallbacks,
+		)
+
+		expect(provider.getSkillsManager).toHaveBeenCalledExactlyOnceWith(mockTask)
+		expect(scopedManager.getSkillContent).toHaveBeenCalledWith("review", "architect")
+		expect(mockSkillsManager.getSkillContent).not.toHaveBeenCalled()
+		expect(provider.getState).not.toHaveBeenCalled()
+		expect(mockCallbacks.askApproval).toHaveBeenCalledOnce()
+		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(
+			expect.stringContaining("Scheduled project instructions"),
+		)
+	})
+
 	it("should handle skill not found", async () => {
 		const block: ToolUse<"skill"> = {
 			type: "tool_use" as const,

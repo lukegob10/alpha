@@ -1,17 +1,8 @@
 import type OpenAI from "openai"
 
 import type { ApiInstructionFragment } from "../index"
-
-const FREEFORM_APPLY_PATCH_MODEL_IDS = new Set([
-	"gpt-5.4",
-	"gpt-5.5",
-	"gpt-5.6-luna",
-	"gpt-5.6-sol",
-	"gpt-5.6-terra",
-	"gpt-6-astra",
-	"gpt-6-luna",
-	"gpt-6-sol",
-])
+import { normalizeToolHistory, toFunctionToolInput } from "../transform/tool-history"
+import { getNativeOpenAiModelCapabilities } from "./utils/openai-model-capabilities"
 
 const APPLY_PATCH_DESCRIPTION =
 	"The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON."
@@ -40,33 +31,20 @@ eof_line: "*** End of File" LF
 `
 
 /**
- * This is Alpha's explicit compatibility list for native OpenAI Responses
- * models. The pinned Codex checkout uses model capability metadata to gate
- * its freeform patch tool; compatible endpoints keep JSON functions.
+ * Transport selection and freeform tool support are distinct capabilities.
+ * Compatible endpoints retain JSON functions unless explicitly supported.
  */
 export function supportsOpenAiResponsesFreeformApplyPatch(
 	modelId: string,
 	baseUrl?: string,
 	useAzure?: boolean,
 ): boolean {
-	if (useAzure || !FREEFORM_APPLY_PATCH_MODEL_IDS.has(modelId)) return false
-	if (!baseUrl?.trim()) return true
-
-	try {
-		const url = new URL(baseUrl)
-		return (
-			url.hostname.toLowerCase() === "api.openai.com" &&
-			(url.pathname === "" || url.pathname === "/" || url.pathname === "/v1" || url.pathname === "/v1/") &&
-			!url.search &&
-			!url.hash
-		)
-	} catch {
-		return false
-	}
+	return getNativeOpenAiModelCapabilities(modelId, baseUrl, useAzure)?.freeformApplyPatch === true
 }
 
 export function toOpenAiResponsesTools(
 	tools: readonly OpenAI.Chat.ChatCompletionTool[] | undefined,
+	freeformApplyPatch = true,
 ): OpenAI.Responses.Tool[] | undefined {
 	if (!tools) return undefined
 
@@ -74,7 +52,7 @@ export function toOpenAiResponsesTools(
 	for (const tool of tools) {
 		if (tool.type !== "function") return undefined
 		const definition = tool.function
-		if (definition.name === "apply_patch") {
+		if (definition.name === "apply_patch" && freeformApplyPatch) {
 			result.push({
 				type: "custom",
 				name: definition.name,
@@ -98,12 +76,13 @@ export function toOpenAiResponsesTools(
 
 export function toOpenAiResponsesToolChoice(
 	choice: OpenAI.Chat.ChatCompletionCreateParams["tool_choice"] | undefined,
+	freeformApplyPatch = true,
 ): OpenAI.Responses.ResponseCreateParamsNonStreaming["tool_choice"] | undefined {
 	if (choice === undefined || typeof choice === "string") return choice
 	if (choice.type !== "function") return undefined
 
 	const name = choice.function.name
-	return name === "apply_patch" ? { type: "custom", name } : { type: "function", name }
+	return name === "apply_patch" && freeformApplyPatch ? { type: "custom", name } : { type: "function", name }
 }
 
 export function buildOpenAiResponsesInput(
@@ -111,6 +90,7 @@ export function buildOpenAiResponsesInput(
 	instructionFragments: readonly ApiInstructionFragment[] | undefined,
 	messages: readonly unknown[],
 	store: boolean | undefined,
+	freeformApplyPatch = true,
 ): OpenAI.Responses.ResponseInputItem[] {
 	const input: OpenAI.Responses.ResponseInputItem[] = []
 	const instructions = instructionFragments ?? [{ role: "system" as const, content: systemPrompt }]
@@ -120,7 +100,7 @@ export function buildOpenAiResponsesInput(
 	}
 
 	const callNames = new Map<string, string>()
-	for (const candidate of messages) {
+	for (const candidate of normalizeToolHistory(messages)) {
 		if (!isRecord(candidate)) continue
 		if (candidate.type === "reasoning") {
 			const item = toReasoningInput(candidate, store)
@@ -148,7 +128,7 @@ export function buildOpenAiResponsesInput(
 					const toolName = callNames.get(block.tool_use_id)
 					const output = toolResultText(block.content)
 					input.push(
-						toolName === "apply_patch"
+						toolName === "apply_patch" && freeformApplyPatch
 							? { type: "custom_tool_call_output", call_id: block.tool_use_id, output }
 							: { type: "function_call_output", call_id: block.tool_use_id, output },
 					)
@@ -185,18 +165,20 @@ export function buildOpenAiResponsesInput(
 			}
 			if (!isToolUse(block)) continue
 			callNames.set(block.id, block.name)
-			if (block.name === "apply_patch") {
+			if (block.name === "apply_patch" && freeformApplyPatch) {
 				const patch =
-					isRecord(block.input) && typeof block.input.patch === "string"
-						? block.input.patch
-						: JSON.stringify(block.input)
+					typeof block.input === "string"
+						? block.input
+						: isRecord(block.input) && typeof block.input.patch === "string"
+							? block.input.patch
+							: JSON.stringify(block.input)
 				input.push({ type: "custom_tool_call", call_id: block.id, name: block.name, input: patch })
 			} else {
 				input.push({
 					type: "function_call",
 					call_id: block.id,
 					name: block.name,
-					arguments: JSON.stringify(block.input),
+					arguments: JSON.stringify(toFunctionToolInput(block.name, block.input)),
 				})
 			}
 		}

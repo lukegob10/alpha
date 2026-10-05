@@ -74,10 +74,12 @@ const cancellationMessage = (reason: unknown, fallback: string): string => {
 export class BoundedDelegationManager {
 	private readonly activeByRoot = new Map<string, number>()
 	private readonly pending: Array<{
-		envelope: InternalTaskEnvelope
+		rootKey: string
+		maxConcurrency: number
 		wake: () => void
 	}> = []
 	private readonly activeRuns = new Map<string, AbortController>()
+	private readonly completions = new Map<string, Promise<InternalTaskResult>>()
 	constructor(
 		private readonly runner: InternalTaskRunner,
 		private readonly maxConcurrency: number | ((envelope: InternalTaskEnvelope) => number) = 2,
@@ -126,7 +128,26 @@ export class BoundedDelegationManager {
 		onStarted?: () => void,
 	): Promise<InternalTaskResult> {
 		if (this.activeRuns.has(envelope.id)) throw new Error(`Internal task is already running: ${envelope.id}`)
+		const completion = this.execute(envelope, parentSignal, onStarted)
+		this.completions.set(envelope.id, completion)
+		try {
+			return await completion
+		} finally {
+			if (this.completions.get(envelope.id) === completion) this.completions.delete(envelope.id)
+		}
+	}
 
+	/** Join owned execution and cleanup for either blocking or asynchronous callers. */
+	waitForResult(taskId: string): Promise<InternalTaskResult> | undefined {
+		return this.completions.get(taskId)
+	}
+
+	private async execute(
+		envelope: InternalTaskEnvelope,
+		parentSignal?: AbortSignal,
+		onStarted?: () => void,
+	): Promise<InternalTaskResult> {
+		const rootKey = this.getRootKey(envelope)
 		const controller = new AbortController()
 		this.activeRuns.set(envelope.id, controller)
 		const cancelFromParent = () =>
@@ -148,7 +169,10 @@ export class BoundedDelegationManager {
 		let timer: ReturnType<typeof setTimeout> | undefined
 		const started = Date.now()
 		try {
-			await this.acquire(envelope, controller.signal)
+			if (controller.signal.aborted) throw controller.signal.reason
+			// Capture admission policy once. Cleanup for another run must not invoke
+			// a caller's resolver again or replace a queued run's frozen limit.
+			await this.acquire(rootKey, this.getMaxConcurrency(envelope), controller.signal)
 			acquired = true
 			if (controller.signal.aborted) throw controller.signal.reason
 			onStarted?.()
@@ -166,7 +190,11 @@ export class BoundedDelegationManager {
 			const cancelled = controller.signal.aborted
 			return {
 				...result,
-				status: cancelled ? this.getCancellationStatus(controller.signal) : result.status,
+				// Cancellation is a requested cause, not proof that owned cleanup succeeded.
+				status:
+					cancelled && result.status !== "failed"
+						? this.getCancellationStatus(controller.signal)
+						: result.status,
 				stopReason: cancelled
 					? this.getCancellationStopReason(controller.signal)
 					: (result.stopReason ?? this.getDefaultStopReason(result.status)),
@@ -175,7 +203,14 @@ export class BoundedDelegationManager {
 				requiresParentVerification: result.changedFiles.length > 0,
 			}
 		} catch (error) {
-			const status = controller.signal.aborted ? this.getCancellationStatus(controller.signal) : "failed"
+			const cancellationError =
+				error === controller.signal.reason ||
+				error instanceof InternalTaskCancellationError ||
+				(error instanceof Error && error.name === "AbortError")
+			const status =
+				controller.signal.aborted && cancellationError
+					? this.getCancellationStatus(controller.signal)
+					: "failed"
 			return {
 				taskId: envelope.id,
 				status,
@@ -196,7 +231,7 @@ export class BoundedDelegationManager {
 		} finally {
 			if (timer) clearTimeout(timer)
 			if (parentListenerAttached) parentSignal?.removeEventListener("abort", cancelFromParent)
-			if (acquired) this.release(envelope)
+			if (acquired) this.release(rootKey)
 			if (this.activeRuns.get(envelope.id) === controller) this.activeRuns.delete(envelope.id)
 		}
 	}
@@ -220,10 +255,9 @@ export class BoundedDelegationManager {
 		}
 		return envelopes.map((item) => results.get(item.id)!)
 	}
-	private async acquire(envelope: InternalTaskEnvelope, signal?: AbortSignal): Promise<void> {
+	private async acquire(rootKey: string, maxConcurrency: number, signal?: AbortSignal): Promise<void> {
 		if (signal?.aborted) throw signal.reason
-		const rootKey = this.getRootKey(envelope)
-		if (this.getActive(rootKey) < this.getMaxConcurrency(envelope)) {
+		if (this.getActive(rootKey) < maxConcurrency) {
 			this.activeByRoot.set(rootKey, this.getActive(rootKey) + 1)
 			return
 		}
@@ -238,20 +272,17 @@ export class BoundedDelegationManager {
 				if (i >= 0) this.pending.splice(i, 1)
 				reject(signal?.reason)
 			}
-			this.pending.push({ envelope, wake })
+			this.pending.push({ rootKey, maxConcurrency, wake })
 			signal?.addEventListener("abort", cancel, { once: true })
 		})
 	}
-	private release(envelope: InternalTaskEnvelope): void {
-		const rootKey = this.getRootKey(envelope)
+	private release(rootKey: string): void {
 		const active = Math.max(0, this.getActive(rootKey) - 1)
 		if (active === 0) this.activeByRoot.delete(rootKey)
 		else this.activeByRoot.set(rootKey, active)
 
 		const nextIndex = this.pending.findIndex(
-			(entry) =>
-				this.getRootKey(entry.envelope) === rootKey &&
-				this.getActive(rootKey) < this.getMaxConcurrency(entry.envelope),
+			(entry) => entry.rootKey === rootKey && this.getActive(rootKey) < entry.maxConcurrency,
 		)
 		if (nextIndex >= 0) this.pending.splice(nextIndex, 1)[0].wake()
 	}

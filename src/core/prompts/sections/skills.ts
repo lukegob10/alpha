@@ -8,6 +8,11 @@ export interface SkillCatalogEntry {
 	path: string
 }
 
+export interface SkillSectionParts {
+	catalog: string
+	guidance: string
+}
+
 function escapeXml(value: string): string {
 	return value
 		.replace(/&/g, "&amp;")
@@ -29,17 +34,36 @@ export async function getSkillsSection(
 	skillsManager: SkillsManagerLike | undefined,
 	currentMode: string | undefined,
 ): Promise<string> {
-	if (!skillsManager || !currentMode) return ""
+	return renderSkillSection(await getSkillsSectionParts(skillsManager, currentMode))
+}
+
+/** Keep user-controlled skill metadata separate from host-owned invocation instructions. */
+export async function getSkillsSectionParts(
+	skillsManager: SkillsManagerLike | undefined,
+	currentMode: string | undefined,
+): Promise<SkillSectionParts> {
+	if (!skillsManager || !currentMode) return { catalog: "", guidance: "" }
 
 	// Get skills filtered by current mode (with override resolution)
 	const skills = skillsManager.getSkillsForMode(currentMode)
-	return getSkillsCatalogSection(skills, currentMode)
+	return getSkillsCatalogSectionParts(skills, currentMode)
 }
 
 /** Format an already captured, mode-filtered skill catalog without consulting mutable manager state. */
 export function getSkillsCatalogSection(skills: readonly SkillCatalogEntry[], currentMode: string | undefined): string {
-	if (!currentMode) return ""
-	if (skills.length === 0) return ""
+	return renderSkillSection(getSkillsCatalogSectionParts(skills, currentMode))
+}
+
+function renderSkillSection({ catalog, guidance }: SkillSectionParts): string {
+	return catalog ? `${catalog}\n\n${guidance}` : ""
+}
+
+/** Split an already captured catalog without consulting mutable manager state. */
+export function getSkillsCatalogSectionParts(
+	skills: readonly SkillCatalogEntry[],
+	currentMode: string | undefined,
+): SkillSectionParts {
+	if (!currentMode || skills.length === 0) return { catalog: "", guidance: "" }
 
 	const skillsXml = skills
 		.map((skill) => {
@@ -50,15 +74,15 @@ export function getSkillsCatalogSection(skills: readonly SkillCatalogEntry[], cu
 		})
 		.join("\n")
 
-	return `====
+	const catalog = `====
 
 AVAILABLE SKILLS
 
 <available_skills>
 ${skillsXml}
-</available_skills>
+</available_skills>`
 
-<skill_guidance>
+	const guidance = `<skill_guidance>
 Evaluate the catalog in <available_skills> against the current request. Load a skill only when a <description> clearly and unambiguously matches, or when the user names a skill or asks to use it. No match means proceed with zero skill tool calls.
 
 When a skill matches:
@@ -94,4 +118,5 @@ CONSTRAINTS:
 - Mode-specific skills may come from skills-${currentMode}/ with project-level overrides taking precedence over global skills.
 </context_notes>
 `
+	return { catalog, guidance }
 }

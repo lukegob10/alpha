@@ -47,6 +47,7 @@ import { usePromptHistory } from "./hooks/usePromptHistory"
 import { useTicketSearch } from "./hooks/useTicketSearch"
 
 interface ChatTextAreaProps {
+	appearance?: "default" | "newTask"
 	inputValue: string
 	setInputValue: (value: string) => void
 	sendingDisabled: boolean
@@ -81,6 +82,7 @@ export const ChatTextArea = memo(
 	forwardRef<HTMLTextAreaElement, ChatTextAreaProps>(
 		(
 			{
+				appearance = "default",
 				inputValue,
 				setInputValue,
 				sendingDisabled,
@@ -110,6 +112,7 @@ export const ChatTextArea = memo(
 			},
 			ref,
 		) => {
+			const isNewTask = appearance === "newTask" && !isEditMode
 			const { t } = useAppTranslation()
 			const {
 				filePaths,
@@ -1160,12 +1163,15 @@ export const ChatTextArea = memo(
 			return (
 				<div
 					className={cn(
-						"box-border flex flex-col gap-1 outline-none",
+						"box-border flex flex-col outline-none",
+						!isNewTask && "gap-1",
 						isEditMode
 							? "chat-composer w-full rounded-xl border border-transparent p-2"
-							: "chat-composer surface-raised relative mx-auto w-[calc(100%-30px)] rounded-2xl p-1.5",
+							: isNewTask
+								? "chat-composer new-task-composer relative w-full"
+								: "chat-composer surface-raised relative mx-auto w-[calc(100%-30px)] rounded-2xl p-1.5",
 					)}>
-					<div className={cn(!isEditMode && "relative")}>
+					<div className={cn(!isEditMode && "relative", isNewTask && "new-task-input")}>
 						<div
 							className={cn(
 								"chat-text-area",
@@ -1232,7 +1238,7 @@ export const ChatTextArea = memo(
 									"flex",
 									"flex-col-reverse",
 									"min-h-0",
-									"overflow-hidden",
+									isNewTask ? "overflow-visible" : "overflow-hidden",
 									"rounded-xl",
 								)}>
 								<div
@@ -1248,16 +1254,16 @@ export const ChatTextArea = memo(
 										"text-transparent",
 										"overflow-hidden",
 										"font-vscode-font-family",
-										"text-vscode-editor-font-size",
-										"leading-vscode-editor-line-height",
+										isNewTask
+											? "new-task-input-text"
+											: "text-vscode-editor-font-size leading-vscode-editor-line-height",
 										isFocused
 											? "border border-transparent"
 											: isDraggingOver
 												? "border-2 border-dashed border-vscode-focusBorder"
 												: "border border-transparent",
-										"pl-2",
-										"py-2",
-										isEditMode ? "pr-20" : "pr-9",
+										isNewTask ? "pl-0 py-1" : "pl-2 py-2",
+										isEditMode ? "pr-20" : isNewTask ? "pr-10" : "pr-9",
 										"z-10",
 										"forced-color-adjust-none",
 										"rounded-xl",
@@ -1320,10 +1326,11 @@ export const ChatTextArea = memo(
 										"w-full",
 										"text-[var(--chat-foreground)]",
 										"font-vscode-font-family",
-										"text-vscode-editor-font-size",
-										"leading-vscode-editor-line-height",
+										isNewTask
+											? "new-task-input-text"
+											: "text-vscode-editor-font-size leading-vscode-editor-line-height",
 										"cursor-text",
-										"py-2 pl-2",
+										isNewTask ? "py-1 pl-0" : "py-2 pl-2",
 										isFocused
 											? "border border-transparent focus:outline-0 focus-visible:ring-0"
 											: isDraggingOver
@@ -1334,13 +1341,13 @@ export const ChatTextArea = memo(
 											: "bg-transparent",
 										"transition-background-color duration-150 ease-in-out",
 										"will-change-background-color",
-										"min-h-[94px]",
+										isNewTask ? "min-h-[98px]" : "min-h-[94px]",
 										"box-border",
 										"rounded-xl",
 										"resize-none",
 										"overflow-x-hidden",
 										"overflow-y-auto",
-										isEditMode ? "pr-20" : "pr-9",
+										isEditMode ? "pr-20" : isNewTask ? "pr-10" : "pr-9",
 										"flex-none flex-grow",
 										"z-[2]",
 										"scrollbar-none",
@@ -1349,7 +1356,11 @@ export const ChatTextArea = memo(
 									onScroll={() => updateHighlights()}
 								/>
 
-								<div className="absolute bottom-2 right-1 z-30 flex flex-col items-center gap-0">
+								<div
+									className={cn(
+										"absolute z-30 flex flex-col items-center gap-0",
+										isNewTask ? "new-task-input-actions" : "bottom-2 right-1",
+									)}>
 									<StandardTooltip content={t("chat:addImages")}>
 										<button
 											aria-label={t("chat:addImages")}
@@ -1357,13 +1368,17 @@ export const ChatTextArea = memo(
 											onClick={!shouldDisableImages ? onSelectImages : undefined}
 											className={cn(
 												"relative inline-flex items-center justify-center",
-												"bg-transparent border-none p-1.5",
-												"rounded-md min-w-[28px] min-h-[28px]",
+												"bg-transparent p-1.5",
+												isNewTask
+													? "new-task-attachment"
+													: "border-none rounded-md min-w-[28px] min-h-[28px]",
 												"text-vscode-descriptionForeground hover:text-vscode-foreground",
 												"transition-[color,background-color,opacity,transform] duration-150",
 												"cursor-pointer",
 												!shouldDisableImages
-													? "opacity-60 hover:opacity-100 pointer-events-auto"
+													? isNewTask
+														? "pointer-events-auto"
+														: "opacity-60 hover:opacity-100 pointer-events-auto"
 													: "opacity-0 pointer-events-none",
 												!shouldDisableImages &&
 													"hover:bg-vscode-toolbar-hoverBackground active:scale-95",
@@ -1493,7 +1508,7 @@ export const ChatTextArea = memo(
 									</StandardTooltip>
 								</div>
 
-								{!inputValue && (
+								{!inputValue && !isNewTask && (
 									<div
 										className={cn(
 											"absolute left-2 z-30 flex items-center h-8 font-vscode-font-family text-vscode-editor-font-size leading-vscode-editor-line-height",
@@ -1524,38 +1539,65 @@ export const ChatTextArea = memo(
 						/>
 					)}
 
-					<div className="flex items-center gap-2 px-1 pt-0.5">
-						<div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 flex-1">
-							<ModeSelector
-								value={mode}
-								title={t("chat:selectMode")}
-								onChange={handleModeChange}
-								disabled={modeSwitchDisabled}
-								triggerClassName="text-ellipsis overflow-hidden flex-shrink-0"
-								modeShortcutText={modeShortcutText}
-								customModes={customModes}
-								customModePrompts={customModePrompts}
-							/>
-							<ApiConfigSelector
-								value={currentConfigId}
-								displayName={displayName}
-								disabled={selectApiConfigDisabled}
-								title={t("chat:selectApiConfig")}
-								onChange={handleApiConfigChange}
-								triggerClassName="min-w-[28px] text-ellipsis overflow-hidden flex-shrink"
-								listApiConfigMeta={listApiConfigMeta || []}
-								pinnedApiConfigs={pinnedApiConfigs}
-								togglePinnedApiConfig={togglePinnedApiConfig}
-							/>
-							<ChatReasoningControl profileLoading={reasoningProfileLoading} />
-							<AutoApproveDropdown
-								isDraft={isTaskDraft}
-								draftApprovalMode={draftApprovalMode}
-								onDraftApprovalModeChange={onDraftApprovalModeChange}
-								triggerClassName="min-w-[28px] text-ellipsis overflow-hidden flex-shrink"
-							/>
+					<div className={isNewTask ? "new-task-composer-footer" : "flex items-center gap-2 px-1 pt-0.5"}>
+						<div
+							className={
+								isNewTask
+									? "new-task-settings"
+									: "flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 flex-1"
+							}>
+							<div className={isNewTask ? "new-task-setting" : "contents"}>
+								{isNewTask && <span className="new-task-setting-label">{t("chat:composer.mode")}</span>}
+								<ModeSelector
+									value={mode}
+									title={t("chat:selectMode")}
+									onChange={handleModeChange}
+									disabled={modeSwitchDisabled}
+									triggerClassName="text-ellipsis overflow-hidden flex-shrink-0"
+									modeShortcutText={modeShortcutText}
+									customModes={customModes}
+									customModePrompts={customModePrompts}
+								/>
+							</div>
+							<div className={isNewTask ? "new-task-setting" : "contents"}>
+								{isNewTask && (
+									<span className="new-task-setting-label">{t("chat:composer.model")}</span>
+								)}
+								<ApiConfigSelector
+									value={currentConfigId}
+									displayName={displayName}
+									disabled={selectApiConfigDisabled}
+									title={t("chat:selectApiConfig")}
+									onChange={handleApiConfigChange}
+									triggerClassName="min-w-[28px] text-ellipsis overflow-hidden flex-shrink"
+									listApiConfigMeta={listApiConfigMeta || []}
+									pinnedApiConfigs={pinnedApiConfigs}
+									togglePinnedApiConfig={togglePinnedApiConfig}
+								/>
+							</div>
+							<div className={isNewTask ? "new-task-setting" : "contents"}>
+								{isNewTask && (
+									<span className="new-task-setting-label">{t("chat:composer.effort")}</span>
+								)}
+								<ChatReasoningControl profileLoading={reasoningProfileLoading} />
+							</div>
+							<div className={isNewTask ? "new-task-setting" : "contents"}>
+								{isNewTask && (
+									<span className="new-task-setting-label">{t("chat:composer.approvals")}</span>
+								)}
+								<AutoApproveDropdown
+									isDraft={isTaskDraft}
+									draftApprovalMode={draftApprovalMode}
+									onDraftApprovalModeChange={onDraftApprovalModeChange}
+									triggerClassName="min-w-[28px] text-ellipsis overflow-hidden flex-shrink"
+								/>
+							</div>
 						</div>
-						<div className={cn("flex flex-shrink-0 items-center gap-0.5 h-5 leading-none", "pr-2")}>
+						<div
+							className={cn(
+								"flex flex-shrink-0 items-center gap-0.5 leading-none",
+								!isNewTask && "h-5 pr-2",
+							)}>
 							{isTtsPlaying && (
 								<StandardTooltip content={t("chat:stopTts")}>
 									<button

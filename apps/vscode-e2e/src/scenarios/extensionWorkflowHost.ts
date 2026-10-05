@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 
@@ -10,6 +10,8 @@ import {
 	type AlphaCodeAPI,
 	type AlphaCodeSettings,
 	type ExtensionState,
+	type TaskApprovalModeUpdate,
+	type TaskApprovalModeUpdateResult,
 } from "@alpha-code/types"
 
 import { waitFor } from "../suite/utils"
@@ -84,6 +86,7 @@ interface HostProvider {
 	getStateToPostToWebview(): Promise<ExtensionState>
 	getTaskSettlementDiagnostics(task: HostTask): unknown
 	recordPrimaryMutation(task: HostTask, ...args: unknown[]): Promise<boolean>
+	updateTaskApprovalMode?(update: TaskApprovalModeUpdate): TaskApprovalModeUpdateResult
 	focusTask?(taskId: string): Promise<boolean>
 	getTaskWithId(taskId: string): Promise<{ historyItem: unknown; taskDirPath: string }>
 	createTaskWithHistoryItem(
@@ -487,6 +490,8 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 	async start(prompt: WorkflowPromptName, options?: { autoApprovalEnabled?: boolean }): Promise<string> {
 		if (options?.autoApprovalEnabled !== undefined)
 			this.configuration.autoApprovalEnabled = options.autoApprovalEnabled
+		// The cancellation fixture must hold a real command ask under canonical policy.
+		this.configuration.approvalMode = prompt === "hold" ? "ask" : "auto"
 		this.activePrompt = prompt
 		this.scripted?.setPhase(prompt)
 		// Policy stays explicit across reloads and never derives from the selected model.
@@ -663,6 +668,8 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		options: { reopen?: boolean } = {},
 	): Promise<void> {
 		if (!(await this.api.isTaskInHistory(taskId))) throw new WorkflowFailure("persistence", "saved_task_missing")
+		const restoreAutoApproval = this.activePrompt === "hold" && prompt !== "hold"
+		if (restoreAutoApproval) this.configuration.approvalMode = "auto"
 		// The saved provider callback does not restore global execution policy.
 		// Establish the same dedicated-profile policy before Task construction.
 		await this.api.setConfiguration(this.configuration)
@@ -697,6 +704,19 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			(this.requireTask(taskId) === previous || summaryCount(this.requireTask(taskId)) !== previousSummaries)
 		) {
 			throw new WorkflowFailure("persistence", "compacted_task_reopen_failed")
+		}
+		if (restoreAutoApproval) {
+			// Cancellation restores the saved Ask override. Update that exact live task
+			// through the normal host boundary before admitting the continuation step.
+			const requestId = randomUUID()
+			const result = this.provider.updateTaskApprovalMode?.({ requestId, taskId, approvalMode: "auto" })
+			if (
+				result?.status !== "applied" ||
+				result.requestId !== requestId ||
+				result.taskId !== taskId ||
+				result.approvalMode !== "auto"
+			)
+				throw new WorkflowFailure("policy", "task_approval_mode_update_failed")
 		}
 		await this.followup(taskId, prompt, step)
 	}

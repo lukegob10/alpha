@@ -204,4 +204,37 @@ describe("extension lifecycle", () => {
 		expect(mocks.shutdownTelemetry).toHaveBeenCalledOnce()
 		expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
 	})
+	it("awaits telemetry shutdown before completing deactivation", async () => {
+		let finish!: () => void
+		let started!: () => void
+		const shutdownStarted = new Promise<void>((resolve) => (started = resolve))
+		mocks.shutdownTelemetry.mockImplementationOnce(() => {
+			started()
+			return new Promise<void>((resolve) => (finish = resolve))
+		})
+		let settled = false
+		const deactivating = deactivate().then(() => {
+			settled = true
+		})
+		try {
+			await shutdownStarted
+			expect(settled).toBe(false)
+			expect(mocks.cleanupTerminal).not.toHaveBeenCalled()
+		} finally {
+			finish()
+			await deactivating
+		}
+		expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
+	})
+	it.each(["telemetry", "mcp"])(
+		"finishes other cleanup after %s shutdown rejects without logging raw errors",
+		async (client) => {
+			const shutdown = client === "telemetry" ? mocks.shutdownTelemetry : mocks.cleanupMcp
+			shutdown.mockRejectedValueOnce(new Error("SECRET-shutdown-error"))
+			await expect(deactivate()).resolves.toBeUndefined()
+			expect(mocks.shutdownTelemetry).toHaveBeenCalledOnce()
+			expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
+			expect(JSON.stringify(mocks.outputChannel.appendLine.mock.calls)).not.toContain("SECRET")
+		},
+	)
 })

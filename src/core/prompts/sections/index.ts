@@ -13,5 +13,10 @@ export { getToolUseGuidelinesSection } from "./tool-use-guidelines"
 export { getCapabilitiesSection } from "./capabilities"
 export { getModesSection } from "./modes"
 export { markdownFormattingSection } from "./markdown-formatting"
-export { getSkillsSection, getSkillsCatalogSection } from "./skills"
+export {
+	getSkillsSection,
+	getSkillsCatalogSection,
+	getSkillsSectionParts,
+	getSkillsCatalogSectionParts,
+} from "./skills"
 export type { SkillCatalogEntry } from "./skills"

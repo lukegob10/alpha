@@ -4,7 +4,7 @@ import * as os from "os"
 import * as path from "path"
 import * as fs from "fs/promises"
 
-import { readApiMessages } from "../apiMessages"
+import { readApiMessages, saveApiMessages, type ApiMessage } from "../apiMessages"
 import { ProviderTranscriptStoreError } from "../ProviderTranscriptStore"
 
 let tmpBaseDir: string
@@ -93,6 +93,18 @@ describe("apiMessages.readApiMessages", () => {
 		["untyped content block", [{ role: "user", content: [{}] }]],
 		["invalid reasoning record", [{ type: "reasoning", encrypted_content: 7 }]],
 		[
+			"invalid embedded encrypted reasoning",
+			[{ role: "assistant", content: [{ type: "reasoning", encrypted_content: 7 }] }],
+		],
+		[
+			"invalid thinking signature",
+			[{ role: "assistant", content: [{ type: "thinking", thinking: "Keep the block.", signature: 7 }] }],
+		],
+		[
+			"invalid thought signature",
+			[{ role: "assistant", content: [{ type: "thoughtSignature", thoughtSignature: { opaque: true } }] }],
+		],
+		[
 			"missing tool input",
 			[{ role: "assistant", content: [{ type: "tool_use", id: "call-1", name: "read_file" }] }],
 		],
@@ -108,6 +120,106 @@ describe("apiMessages.readApiMessages", () => {
 			code: "invalid_messages",
 		})
 		expect(await fs.readFile(filePath, "utf8")).toBe(contents)
+	})
+
+	it("round-trips ordered reasoning blocks and opaque provider metadata", async () => {
+		const taskId = "task-reasoning-continuity"
+		const messages = [
+			{
+				role: "assistant",
+				content: [
+					{ type: "reasoning", encrypted_content: "encrypted-1", id: "rs-1", summary: [] },
+					{ type: "reasoning", encrypted_content: "encrypted-2", id: "rs-2", summary: [] },
+					{ type: "thinking", thinking: "First block.", signature: "first-signature" },
+					{ type: "thinking", thinking: "Second block.", signature: "second-signature" },
+					{ type: "redacted_thinking", data: "opaque-redacted" },
+					{ type: "thoughtSignature", thoughtSignature: "gemini-signature" },
+					{ type: "future_provider_block", opaque: { state: [1, 2] } },
+					{ type: "text", text: "Answer." },
+				],
+				reasoning_details: [{ type: "future_provider_reasoning", opaque: { state: [1, 2] } }],
+				reasoning_content: "interleaved reasoning",
+				provider_state: { opaque: [1, 2] },
+			},
+		] as unknown as ApiMessage[]
+
+		await saveApiMessages({ taskId, globalStoragePath: tmpBaseDir, messages })
+
+		expect(await readApiMessages({ taskId, globalStoragePath: tmpBaseDir })).toEqual(messages)
+	})
+
+	it.each(["tool_use_id", "tool_call_id"] as const)(
+		"round-trips freeform patch input and its failed %s terminal result without changing either payload",
+		async (resultIdField) => {
+			const taskId = "task-freeform-patch-continuity"
+			const patch =
+				'*** Begin Patch\n*** Add File: quoted-path.txt\n+const path = "C:\\workspace\\file.txt"\n*** End Patch'
+			const messages = [
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "legacy-patch-call", name: "apply_patch", input: patch }],
+				},
+				{
+					role: "user",
+					content: [
+						{
+							type: "tool_result",
+							[resultIdField]: "legacy-patch-call",
+							content: "Patch rejected: the file changed after capture.",
+							is_error: true,
+						},
+					],
+				},
+			] as unknown as ApiMessage[]
+			const before = structuredClone(messages)
+
+			await saveApiMessages({ taskId, globalStoragePath: tmpBaseDir, messages })
+			const restored = await readApiMessages({ taskId, globalStoragePath: tmpBaseDir })
+
+			expect(restored).toEqual(before)
+			expect(messages).toEqual(before)
+		},
+	)
+
+	it("rejects a malformed continuity rewrite before replacing valid history", async () => {
+		const taskId = "task-invalid-reasoning-rewrite"
+		await saveApiMessages({
+			taskId,
+			globalStoragePath: tmpBaseDir,
+			messages: [{ role: "assistant", content: "Keep the saved answer." }],
+		})
+		const filePath = path.join(tmpBaseDir, "tasks", taskId, "api_conversation_history.json")
+		const contents = await fs.readFile(filePath, "utf8")
+		const malformed = [
+			{ role: "assistant", content: [{ type: "reasoning", encrypted_content: 7 }] },
+		] as unknown as ApiMessage[]
+
+		await expect(
+			saveApiMessages({ taskId, globalStoragePath: tmpBaseDir, messages: malformed }),
+		).rejects.toMatchObject({ code: "invalid_messages" })
+		expect(await fs.readFile(filePath, "utf8")).toBe(contents)
+	})
+
+	it.each([
+		{ type: "tool_use", id: "first", tool_call_id: "other", name: "read_file", input: {} },
+		{ type: "tool_result", tool_use_id: "first", tool_call_id: "other", content: "Error: denied", is_error: true },
+	])("rejects conflicting tool aliases without replacing the last valid transcript (%j)", async (block) => {
+		const taskId = "task-conflicting-tool-aliases"
+		await saveApiMessages({
+			taskId,
+			globalStoragePath: tmpBaseDir,
+			messages: [{ role: "assistant", content: "Preserve this answer." }],
+		})
+		const filePath = path.join(tmpBaseDir, "tasks", taskId, "api_conversation_history.json")
+		const beforeBytes = await fs.readFile(filePath)
+		await expect(
+			saveApiMessages({
+				taskId,
+				globalStoragePath: tmpBaseDir,
+				messages: [{ role: "user", content: [block] }] as unknown as ApiMessage[],
+			}),
+		).rejects.toMatchObject({ code: "invalid_messages" })
+		expect(await fs.readFile(filePath)).toEqual(beforeBytes)
 	})
 
 	it("preserves valid completion-hook provenance in persisted API history", async () => {

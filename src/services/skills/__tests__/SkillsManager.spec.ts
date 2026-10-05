@@ -1,5 +1,6 @@
 import * as path from "path"
 import matter from "gray-matter"
+import * as vscode from "vscode"
 
 // Use vi.hoisted to ensure mocks are available during hoisting
 const {
@@ -17,6 +18,7 @@ const {
 	mockRmdir,
 	mockCreateFileSystemWatcher,
 	mockWatchers,
+	mockProjectInstructionDirectories,
 } = vi.hoisted(() => {
 	const watchers: Array<{
 		onDidChange: ReturnType<typeof vi.fn>
@@ -38,6 +40,7 @@ const {
 		mockRm: vi.fn(),
 		mockRename: vi.fn(),
 		mockRmdir: vi.fn(),
+		mockProjectInstructionDirectories: vi.fn(),
 		mockWatchers: watchers,
 		mockCreateFileSystemWatcher: vi.fn(() => {
 			const watcher = {
@@ -114,6 +117,7 @@ const GLOBAL_AGENTS_DIR = p(HOME_DIR, ".agents")
 vi.mock("../../config-paths", () => ({
 	getGlobalAgentsDirectory: () => GLOBAL_AGENTS_DIR,
 	getProjectAgentsDirectoryForCwd: (cwd: string) => p(cwd, ".agents"),
+	getProjectInstructionDirectoriesForCwd: mockProjectInstructionDirectories,
 	directoryExists: mockDirectoryExists,
 	fileExists: mockFileExists,
 }))
@@ -158,6 +162,7 @@ describe("SkillsManager", () => {
 		vi.clearAllMocks()
 		mockWatchers.length = 0
 		mockHomedir.mockReturnValue(HOME_DIR)
+		mockProjectInstructionDirectories.mockImplementation(async (cwd: string) => ({ root: cwd, directories: [cwd] }))
 
 		// Create mock provider
 		mockProvider = {
@@ -508,6 +513,87 @@ describe("SkillsManager", () => {
 	})
 
 	describe("discoverSkills", () => {
+		it("discovers portable repository skills from the project root through cwd with nearer overrides", async () => {
+			const nestedDir = p(PROJECT_DIR, "packages", "app")
+			const ancestorSkillsDir = p(PROJECT_DIR, "packages", ".agents", "skills")
+			const nestedSkillsDir = p(nestedDir, ".agents", "skills")
+			const skillFiles = new Map([
+				[p(projectAgentsSkillsDir, "shared", "SKILL.md"), "Repository"],
+				[p(projectAgentsSkillsDir, "root-only", "SKILL.md"), "Root only"],
+				[p(ancestorSkillsDir, "shared", "SKILL.md"), "Package"],
+				[p(nestedSkillsDir, "shared", "SKILL.md"), "Nested"],
+			])
+			mockProjectInstructionDirectories.mockResolvedValue({
+				root: PROJECT_DIR,
+				directories: [PROJECT_DIR, p(PROJECT_DIR, "packages"), nestedDir],
+			})
+			mockDirectoryExists.mockImplementation(async (dir: string) =>
+				[projectAgentsSkillsDir, ancestorSkillsDir, nestedSkillsDir].includes(dir),
+			)
+			mockRealpath.mockImplementation(async (candidate: string) => candidate)
+			mockReaddir.mockImplementation(async (dir: string) =>
+				dir === projectAgentsSkillsDir ? ["shared", "root-only"] : ["shared"],
+			)
+			mockStat.mockResolvedValue({ isDirectory: () => true })
+			mockFileExists.mockImplementation(async (file: string) => skillFiles.has(file))
+			mockReadFile.mockImplementation(
+				async (file: string) =>
+					`---\nname: ${path.basename(path.dirname(file))}\ndescription: ${skillFiles.get(file)}\n---\nInstructions`,
+			)
+			const scoped = new SkillsManager(mockProvider as AlphaProvider, nestedDir)
+
+			try {
+				await scoped.discoverSkills()
+				expect(scoped.getSkillsForMode("code")).toEqual([
+					expect.objectContaining({ name: "shared", description: "Nested", source: "project" }),
+					expect.objectContaining({ name: "root-only", description: "Root only", source: "project" }),
+				])
+				expect(mockDirectoryExists).not.toHaveBeenCalledWith(p(path.dirname(PROJECT_DIR), ".agents", "skills"))
+			} finally {
+				await scoped.dispose()
+			}
+		})
+
+		it("retains the exact discovered path for frozen children when a same-source Alpha override appears", async () => {
+			const portablePath = p(projectAgentsSkillsDir, "shared", "SKILL.md")
+			const alphaPath = p(projectSkillsDir, "shared", "SKILL.md")
+			let includePortable = true
+			let includeAlpha = false
+			mockDirectoryExists.mockImplementation(
+				async (dir: string) =>
+					(dir === projectAgentsSkillsDir && includePortable) || (dir === projectSkillsDir && includeAlpha),
+			)
+			mockRealpath.mockImplementation(async (candidate: string) => candidate)
+			mockReaddir.mockResolvedValue(["shared"])
+			mockStat.mockResolvedValue({ isDirectory: () => true })
+			mockFileExists.mockResolvedValue(true)
+			mockReadFile.mockImplementation(
+				async (file: string) =>
+					`---\nname: shared\ndescription: ${file === portablePath ? "Portable" : "Alpha"}\n---\n${file} instructions`,
+			)
+			await skillsManager.discoverSkills()
+			const captured = await skillsManager.getSkillContent("shared", "code")
+			includeAlpha = true
+			await skillsManager.refreshSkills()
+
+			expect((await skillsManager.getSkillContent("shared", "code"))?.path).toBe(alphaPath)
+			expect(await skillsManager.getSkillContentByPath("shared", portablePath)).toEqual(captured)
+			expect(await skillsManager.getSkillContentByPath("other-name", portablePath)).toBeNull()
+			mockReadFile.mockClear()
+			expect(
+				await skillsManager.getSkillContentByPath("shared", p(PROJECT_DIR, "unknown", "SKILL.md")),
+			).toBeNull()
+			expect(mockReadFile).not.toHaveBeenCalled()
+
+			includePortable = false
+			await skillsManager.refreshSkills()
+			mockReadFile.mockClear()
+			expect(await skillsManager.getSkillContentByPath("shared", portablePath)).toBeNull()
+			expect(mockReadFile).not.toHaveBeenCalled()
+			await skillsManager.dispose()
+			expect(await skillsManager.getSkillContentByPath("shared", alphaPath)).toBeNull()
+		})
+
 		it("discovers scheduled workspace skills without watching or reading the coding workspace", async () => {
 			const scheduledDir = p(PROJECT_DIR, "scheduled")
 			const skillDir = p(scheduledDir, ".agents", "skills", "review")
@@ -1254,6 +1340,76 @@ Instructions here...`
 	})
 
 	describe("file watchers", () => {
+		it("refreshes task-scoped watcher catalogs without publishing foreground skills", async () => {
+			const previousNodeEnv = process.env.NODE_ENV
+			process.env.NODE_ENV = "development"
+			const scoped = new SkillsManager(mockProvider as AlphaProvider, PROJECT_DIR, { notifyWebview: false })
+			mockDirectoryExists.mockImplementation(async (dir: string) => dir === projectAgentsSkillsDir)
+			mockRealpath.mockImplementation(async (candidate: string) => candidate)
+			mockReaddir.mockResolvedValue(["scoped-skill"])
+			mockStat.mockResolvedValue({ isDirectory: () => true })
+			mockFileExists.mockResolvedValue(true)
+			let description = "Initial scoped description"
+			mockReadFile.mockImplementation(
+				async () => `---\nname: scoped-skill\ndescription: ${description}\n---\nBody`,
+			)
+
+			try {
+				await scoped.initialize()
+				expect(scoped.getSkillsForMode("code")[0]?.description).toBe(description)
+				const watcher = mockWatchers[12]!
+				for (const [index, event] of [
+					watcher.onDidChange,
+					watcher.onDidCreate,
+					watcher.onDidDelete,
+				].entries()) {
+					description = `Refreshed scoped description ${index}`
+					await event.mock.calls[0]![0]({ fsPath: p(projectAgentsSkillsDir, "scoped-skill", "SKILL.md") })
+					expect(scoped.getSkillsForMode("code")[0]?.description).toBe(description)
+				}
+				expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
+				await scoped.dispose()
+				for (const fileWatcher of mockWatchers) expect(fileWatcher.dispose).toHaveBeenCalledOnce()
+			} finally {
+				await scoped.dispose()
+				process.env.NODE_ENV = previousNodeEnv
+			}
+		})
+
+		it("watches portable ancestor roots for nested tasks without watching sibling scopes", async () => {
+			const previousNodeEnv = process.env.NODE_ENV
+			process.env.NODE_ENV = "development"
+			const nestedDir = p(PROJECT_DIR, "nested")
+			const scoped = new SkillsManager(mockProvider as AlphaProvider, nestedDir)
+			mockProjectInstructionDirectories.mockResolvedValue({
+				root: PROJECT_DIR,
+				directories: [PROJECT_DIR, nestedDir],
+			})
+			mockDirectoryExists.mockResolvedValue(false)
+
+			try {
+				await scoped.initialize()
+				expect(vscode.RelativePattern).toHaveBeenCalledWith(
+					PROJECT_DIR,
+					".agents/{skills,skills-*}/**/SKILL.md",
+				)
+				expect(vscode.RelativePattern).toHaveBeenCalledWith(nestedDir, ".agents/{skills,skills-*}/**/SKILL.md")
+				expect(vscode.RelativePattern).not.toHaveBeenCalledWith(
+					p(PROJECT_DIR, "sibling"),
+					".agents/{skills,skills-*}/**/SKILL.md",
+				)
+				expect(mockWatchers).toHaveLength(20)
+				const createHandler = mockWatchers[12].onDidCreate.mock.calls[0]?.[0]
+				await createHandler({ fsPath: projectAgentsSkillsDir })
+				expect(mockProvider.postMessageToWebview).toHaveBeenCalledWith({ type: "skills", skills: [] })
+				await scoped.dispose()
+				for (const watcher of mockWatchers) expect(watcher.dispose).toHaveBeenCalledOnce()
+			} finally {
+				await scoped.dispose()
+				process.env.NODE_ENV = previousNodeEnv
+			}
+		})
+
 		it("watches stable roots and posts refreshed skills when SKILL.md changes", async () => {
 			const previousNodeEnv = process.env.NODE_ENV
 			process.env.NODE_ENV = "development"

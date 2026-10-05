@@ -149,6 +149,46 @@ Use skill workflow`,
 		expect(getCommandNames).not.toHaveBeenCalled()
 	})
 
+	it("uses the task's workspace and sticky mode for skill fallback instead of foreground state", async () => {
+		mockTask.cwd = "/scheduled/project"
+		mockTask.getTaskMode = vi.fn().mockResolvedValue("architect")
+		const scopedManager = {
+			getSkillContent: vi.fn().mockResolvedValue({
+				name: "review",
+				description: "Review the scheduled project",
+				path: "/scheduled/project/.agents/skills/review/SKILL.md",
+				source: "project",
+				instructions: "Scheduled review workflow",
+			}),
+		}
+		const foregroundManager = { getSkillContent: vi.fn().mockResolvedValue(null) }
+		const provider = mockTask.providerRef.deref()
+		provider.getState.mockResolvedValue({ experiments: { runSlashCommand: true }, mode: "code" })
+		provider.getSkillsManager.mockImplementation(async (task?: Task) =>
+			task === mockTask ? scopedManager : foregroundManager,
+		)
+		vi.mocked(getCommand).mockResolvedValue(undefined)
+
+		await runSlashCommandTool.handle(
+			mockTask as Task,
+			{
+				type: "tool_use",
+				name: "run_slash_command",
+				params: {},
+				partial: false,
+				nativeArgs: { command: "review" },
+			},
+			mockCallbacks,
+		)
+
+		expect(getCommand).toHaveBeenCalledWith(mockTask.cwd, "review")
+		expect(provider.getSkillsManager).toHaveBeenCalledExactlyOnceWith(mockTask)
+		expect(scopedManager.getSkillContent).toHaveBeenCalledWith("review", "architect")
+		expect(foregroundManager.getSkillContent).not.toHaveBeenCalled()
+		expect(mockCallbacks.askApproval).toHaveBeenCalledOnce()
+		expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("Scheduled review workflow"))
+	})
+
 	it("should preserve command precedence over skill fallback", async () => {
 		const block: ToolUse<"run_slash_command"> = {
 			type: "tool_use" as const,

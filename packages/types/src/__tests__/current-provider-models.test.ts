@@ -3,6 +3,7 @@ import { VERTEX_1M_CONTEXT_MODEL_IDS, vertexDefaultModelId, vertexModels } from 
 import {
 	getVscodeLlmCatalogModels,
 	getVscodeLlmExtendedContextSize,
+	getVscodeLlmModelId,
 	getVscodeLlmModelInfo,
 	mergeVscodeLlmModels,
 	vscodeLlmModels,
@@ -60,6 +61,7 @@ describe("supported provider model catalogs", () => {
 			"gpt-6-astra",
 			"gpt-6-luna",
 			"gpt-6-sol",
+			"gpt-6.1-sol",
 			"claude-fable-5",
 			"claude-haiku-4.5",
 			"claude-sonnet-4.5",
@@ -113,6 +115,57 @@ describe("supported provider model catalogs", () => {
 					}),
 				)
 			}
+		})
+
+		it.each([
+			{ family: "gpt-6.1-sol" },
+			{ id: "gpt-6.1-sol" },
+			{ version: "gpt-6.1-sol" },
+			{ name: "GPT-6.1 Sol" },
+		])("recognizes the observed GPT-6.1 Sol host identity %j", (identity) => {
+			const model = { vendor: "copilot", ...identity }
+			expect(getVscodeLlmModelId(model)).toBe("gpt-6.1-sol")
+			expect(getVscodeLlmModelInfo(model)).toMatchObject({
+				family: "gpt-6.1-sol",
+				version: "gpt-6.1-sol",
+				name: "GPT-6.1 Sol",
+				contextWindow: 922_000,
+				maxInputTokens: 922_000,
+				supportsImages: true,
+				supportsReasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
+			})
+		})
+
+		it("does not invent Sol 6.1 reasoning defaults or context-configuration support", () => {
+			const model = getVscodeLlmModelInfo({ vendor: "copilot", family: "gpt-6.1-sol" })
+			expect(model).toBeDefined()
+			expect(model?.reasoningEffort).toBeUndefined()
+			expect(model?.requiredReasoningEffort).not.toBe(true)
+			expect(model?.supportsContextWindowConfiguration).not.toBe(true)
+			expect(model?.extendedContextSize).toBeUndefined()
+		})
+
+		it("retains opaque Sol 6.1 live routing IDs while using the observed display name for capabilities", () => {
+			const liveModels = [
+				{ vendor: "copilot", id: "opaque-route-a", name: "GPT-6.1 Sol", maxInputTokens: 921_793 },
+				{ vendor: "copilot", id: "opaque-route-b", name: "GPT-6.1 Sol", maxInputTokens: 64_000 },
+			]
+			const original = structuredClone(liveModels)
+			const merged = mergeVscodeLlmModels(liveModels)
+
+			expect(merged.map(({ id }) => id)).toEqual(["opaque-route-a", "opaque-route-b"])
+			expect(merged.map(getVscodeLlmModelId)).toEqual(["gpt-6.1-sol", "gpt-6.1-sol"])
+			expect(liveModels).toEqual(original)
+		})
+
+		it("keeps the Sol 6.1 capability catalog selector canonical without creating availability", () => {
+			expect(getVscodeLlmCatalogModels()).toContainEqual({
+				vendor: "copilot",
+				family: "gpt-6.1-sol",
+				name: "GPT-6.1 Sol",
+			})
+			expect(mergeVscodeLlmModels([])).toEqual([])
+			expect(getVscodeLlmModelInfo({ vendor: "other", family: "gpt-6.1-sol" })).toBeUndefined()
 		})
 
 		it("preserves distinct live model IDs and filters retired models", () => {

@@ -1,6 +1,7 @@
 import { execFile } from "child_process"
 import crypto from "crypto"
 import * as fs from "fs/promises"
+import * as os from "os"
 import * as path from "path"
 import { promisify } from "util"
 
@@ -8,6 +9,12 @@ import { worktreeIncludeService } from "./worktree-include.js"
 
 const execFileAsync = promisify(execFile)
 const MAX_GIT_OUTPUT = 100 * 1024 * 1024
+// Managed storage can exceed MAX_PATH even when every path component is valid.
+// Override only our Git invocations; never change the user's repository/global config.
+const GIT_PLATFORM_ARGS = process.platform === "win32" ? ["-c", "core.longpaths=true"] : []
+// Git for Windows 2.43 reserves 40 characters from its 260-character startup path
+// limit before loading core.longpaths. This conservative reserve is host-derived.
+const MAX_GIT_SETUP_PATH = 260 - 40
 const GLOB_PATTERN = /[*?[\]{}!]/
 // Match the extension's bounded atomic-replacement allowance: six attempts, 775 ms total backoff.
 const METADATA_RETRY_DELAYS_MS = [25, 50, 100, 200, 400] as const
@@ -80,27 +87,370 @@ const isWithin = (root: string, candidate: string): boolean => {
 	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
 }
 
+const samePath = (left: string, right: string): boolean =>
+	process.platform === "win32"
+		? path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase()
+		: path.resolve(left) === path.resolve(right)
+
+interface GitPathInvocation {
+	cwd: string
+	args: string[]
+	env?: NodeJS.ProcessEnv
+	prefix: string[]
+	ownerDirectory?: string
+	ownerIdentity?: { dev: bigint; ino: bigint }
+	links: Array<{ link: string; target: string }>
+	commonDir?: string
+	addedWorktree?: string
+}
+
+class GitPathCleanupError extends AggregateError {
+	constructor(
+		errors: unknown[],
+		readonly invocation: GitPathInvocation,
+		message: string,
+	) {
+		super(errors, `${message}; recovery owner: ${invocation.ownerDirectory}`)
+	}
+}
+
+class GitStartupPathCleanupError extends GitPathCleanupError {
+	constructor(errors: unknown[], invocation: GitPathInvocation) {
+		super(errors, invocation, "Git startup failed and registered path cleanup is unconfirmed")
+	}
+}
+
 /** Native, platform-neutral quarantine lifecycle for one editing sub-agent. */
 export class ManagedSubagentWorktreeService {
+	private async readGitPathFile(file: string): Promise<string> {
+		if ((await fs.stat(file)).size > 64 * 1024) throw new Error(`Invalid Git path file: ${file}`)
+		return (await fs.readFile(file, "utf8")).trim()
+	}
+
+	private async resolveGitPaths(
+		cwd: string,
+		explicitGitDir?: string,
+	): Promise<{ root?: string; gitDir: string; commonDir: string }> {
+		let root: string | undefined
+		let gitDir = explicitGitDir
+		if (!gitDir) {
+			let candidate = path.resolve(cwd)
+			while (true) {
+				const marker = path.join(candidate, ".git")
+				try {
+					const stat = await fs.stat(marker)
+					if (stat.isDirectory()) gitDir = marker
+					else {
+						const value = await this.readGitPathFile(marker)
+						if (!value.startsWith("gitdir: ")) throw new Error(`Invalid Git worktree marker: ${marker}`)
+						gitDir = path.resolve(candidate, value.slice("gitdir: ".length))
+					}
+					root = await fs.realpath(candidate)
+					break
+				} catch (error) {
+					const code = (error as NodeJS.ErrnoException | undefined)?.code
+					if (code !== "ENOENT" && code !== "ENOTDIR") throw error
+					const parent = path.dirname(candidate)
+					if (parent === candidate) throw new Error(`Not a Git repository: ${cwd}`)
+					candidate = parent
+				}
+			}
+		}
+		gitDir = await fs.realpath(path.resolve(cwd, gitDir))
+		let commonDir = gitDir
+		try {
+			commonDir = await fs.realpath(
+				path.resolve(gitDir, await this.readGitPathFile(path.join(gitDir, "commondir"))),
+			)
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") throw error
+		}
+		return { root, gitDir, commonDir }
+	}
+
+	private async releaseGitPaths(invocation: GitPathInvocation): Promise<void> {
+		if (!invocation.ownerDirectory) return
+		try {
+			const owner = await fs.lstat(invocation.ownerDirectory, { bigint: true })
+			if (
+				!owner.isDirectory() ||
+				owner.isSymbolicLink() ||
+				owner.dev !== invocation.ownerIdentity?.dev ||
+				owner.ino !== invocation.ownerIdentity?.ino
+			) {
+				throw new Error(`Temporary Git directory ownership changed: ${invocation.ownerDirectory}`)
+			}
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return
+			throw new GitPathCleanupError([error], invocation, "Temporary Git directory cleanup is unconfirmed")
+		}
+		const errors: unknown[] = []
+		for (const { link, target } of [...invocation.links].reverse()) {
+			try {
+				const stat = await fs.lstat(link)
+				const linkedTarget = await fs.readlink(link)
+				if (
+					!stat.isSymbolicLink() ||
+					path.toNamespacedPath(linkedTarget).toLowerCase() !== path.toNamespacedPath(target).toLowerCase()
+				) {
+					throw new Error(`Temporary Git junction ownership changed: ${link}`)
+				}
+				// Unlink only the junction. Never recurse through its physical target.
+				await fs.unlink(link)
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") errors.push(error)
+			}
+		}
+		if (errors.length === 0) {
+			try {
+				await fs
+					.unlink(path.join(invocation.ownerDirectory, "owner.json"))
+					.catch((error: NodeJS.ErrnoException) => {
+						if (error.code !== "ENOENT") throw error
+					})
+				await fs.rmdir(invocation.ownerDirectory).catch((error: NodeJS.ErrnoException) => {
+					if (error.code !== "ENOENT") throw error
+				})
+			} catch (error) {
+				errors.push(error)
+			}
+		}
+		if (errors.length > 0) {
+			throw new GitPathCleanupError(errors, invocation, "Temporary Git path cleanup is unconfirmed")
+		}
+	}
+
+	private async prepareGitPaths(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<GitPathInvocation> {
+		const invocation: GitPathInvocation = { cwd, args, env, prefix: [], links: [] }
+		const addedWorktree =
+			args[0] === "worktree" && args[1] === "add" && args[2] === "--detach" ? args[3] : undefined
+		if (
+			process.platform !== "win32" ||
+			![cwd, env?.GIT_WORK_TREE, addedWorktree].some((value) => value && value.length >= MAX_GIT_SETUP_PATH)
+		)
+			return invocation
+		const explicitGitDir = args.find((arg) => arg.startsWith("--git-dir="))?.slice("--git-dir=".length)
+		const paths = await this.resolveGitPaths(cwd, explicitGitDir)
+		const ownerDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-worker-git-"))
+		invocation.ownerDirectory = ownerDirectory
+		try {
+			const owner = await fs.lstat(ownerDirectory, { bigint: true })
+			invocation.ownerIdentity = { dev: owner.dev, ino: owner.ino }
+			await fs.writeFile(
+				path.join(ownerDirectory, "owner.json"),
+				JSON.stringify({ kind: "managed-worker-git-paths", cwd, worktree: env?.GIT_WORK_TREE, addedWorktree }),
+				"utf8",
+			)
+			if (path.join(ownerDirectory, "repository", "worktrees", "x".repeat(36)).length >= MAX_GIT_SETUP_PATH) {
+				throw new Error(`The temporary directory is too long for Git repository setup: ${ownerDirectory}`)
+			}
+			const alias = async (target: string, name: string): Promise<string> => {
+				const physical = await fs.realpath(target)
+				const link = path.join(ownerDirectory, name)
+				await fs.symlink(physical, link, "junction")
+				invocation.links.push({ link, target: physical })
+				if (!samePath(await fs.realpath(link), physical))
+					throw new Error(`Temporary Git junction target changed: ${link}`)
+				return link
+			}
+			let gitDir = paths.gitDir
+			if (gitDir.length >= MAX_GIT_SETUP_PATH) {
+				if (!isWithin(paths.commonDir, gitDir))
+					throw new Error("Linked Git administration is outside its common directory")
+				gitDir = path.join(await alias(paths.commonDir, "repository"), path.relative(paths.commonDir, gitDir))
+			}
+			const sourceRoot =
+				paths.root && paths.root.length >= MAX_GIT_SETUP_PATH ? await alias(paths.root, "worktree") : paths.root
+			const worktree = env?.GIT_WORK_TREE ?? paths.root
+			const worktreeAlias =
+				worktree && paths.root && samePath(worktree, paths.root)
+					? sourceRoot
+					: worktree && worktree.length >= MAX_GIT_SETUP_PATH
+						? await alias(worktree, "result")
+						: worktree
+			// Keep the native repository-relative prefix for scoped callers. Temporary
+			// paths adapt native Git startup; they do not change the logical Git cwd.
+			invocation.cwd =
+				sourceRoot && paths.root
+					? path.join(sourceRoot, path.relative(paths.root, await fs.realpath(cwd)))
+					: ownerDirectory
+			invocation.prefix = [`--git-dir=${gitDir}`]
+			if (worktreeAlias) invocation.prefix.push(`--work-tree=${worktreeAlias}`)
+			invocation.env = env?.GIT_WORK_TREE ? { ...env, GIT_WORK_TREE: worktreeAlias } : env
+			invocation.args = args.map((arg) => (arg.startsWith("--git-dir=") ? `--git-dir=${gitDir}` : arg))
+			if (addedWorktree) {
+				const bucket = await alias(path.dirname(addedWorktree), "target")
+				invocation.args = [...invocation.args]
+				invocation.args[3] = path.join(bucket, path.basename(addedWorktree))
+				invocation.commonDir = paths.commonDir
+				invocation.addedWorktree = addedWorktree
+			}
+			return invocation
+		} catch (error) {
+			try {
+				await this.releaseGitPaths(invocation)
+			} catch (cleanupError) {
+				throw new GitPathCleanupError(
+					[error, cleanupError],
+					invocation,
+					"Git path preparation failed and cleanup is unconfirmed",
+				)
+			}
+			throw error
+		}
+	}
+
+	private async physicalizeWorktreeRegistration(invocation: GitPathInvocation): Promise<void> {
+		if (!invocation.addedWorktree || !invocation.commonDir) return
+		const physicalWorktree = invocation.addedWorktree
+		const marker = path.join(physicalWorktree, ".git")
+		if (!(await fs.lstat(marker)).isFile())
+			throw new Error(`Managed worktree marker is not an owned regular file: ${marker}`)
+		const markerValue = await this.readGitPathFile(marker)
+		if (!markerValue.startsWith("gitdir: ")) throw new Error(`Invalid managed worktree marker: ${marker}`)
+		const admin = await fs.realpath(path.resolve(physicalWorktree, markerValue.slice("gitdir: ".length)))
+		if (!isWithin(path.join(invocation.commonDir, "worktrees"), admin))
+			throw new Error("Managed worktree administration escaped its owning repository")
+		const registration = path.join(admin, "gitdir")
+		if (
+			!(await fs.lstat(registration)).isFile() ||
+			!samePath(await fs.realpath(await this.readGitPathFile(registration)), await fs.realpath(marker))
+		) {
+			throw new Error("Managed worktree registration no longer belongs to its startup target")
+		}
+		// These two files are startup-owned. No invocation alias may outlive startup.
+		if (!samePath(path.resolve(physicalWorktree, markerValue.slice("gitdir: ".length)), admin))
+			await fs.writeFile(marker, `gitdir: ${admin}\n`, "utf8")
+		if (!samePath(await this.readGitPathFile(registration), marker))
+			await fs.writeFile(registration, `${marker}\n`, "utf8")
+	}
+
+	private async invokeGit(
+		cwd: string,
+		args: string[],
+		env: NodeJS.ProcessEnv | undefined,
+		buffer: boolean,
+	): Promise<string | Buffer> {
+		const invocation = await this.prepareGitPaths(cwd, args, env)
+		const execute = async (commandArgs: string[], asBuffer = false): Promise<string | Buffer> => {
+			const command = [...GIT_PLATFORM_ARGS, ...invocation.prefix, ...commandArgs]
+			const options = {
+				cwd: invocation.cwd,
+				env: invocation.env ? { ...process.env, ...invocation.env } : process.env,
+				maxBuffer: MAX_GIT_OUTPUT,
+				windowsHide: true,
+			}
+			return asBuffer
+				? (await execFileAsync("git", command, { ...options, encoding: "buffer" })).stdout
+				: (await execFileAsync("git", command, { ...options, encoding: "utf8" })).stdout
+		}
+		let failure: unknown
+		let failed = false
+		let output: string | Buffer = ""
+		let retainPaths = false
+		try {
+			let stdout = await execute(invocation.args, buffer)
+			if (invocation.addedWorktree && invocation.commonDir) {
+				const physicalWorktree = invocation.addedWorktree
+				await this.physicalizeWorktreeRegistration(invocation)
+				await execute(["worktree", "repair", physicalWorktree])
+				await this.physicalizeWorktreeRegistration(invocation)
+				const listed = String(await execute(["worktree", "list", "--porcelain", "-z"]))
+				if (
+					!listed
+						.split("\0")
+						.some(
+							(entry) =>
+								entry.startsWith("worktree ") &&
+								samePath(entry.slice("worktree ".length), physicalWorktree),
+						)
+				) {
+					throw new Error("Managed worktree physical registration could not be confirmed")
+				}
+			}
+			if (
+				invocation.ownerDirectory &&
+				!buffer &&
+				args[0] === "rev-parse" &&
+				args.some((arg) =>
+					["--show-toplevel", "--absolute-git-dir", "--git-common-dir", "--git-dir"].includes(arg),
+				)
+			) {
+				const value = String(stdout)
+				stdout = `${await fs.realpath(path.resolve(invocation.cwd, value.trim()))}${value.endsWith("\n") ? "\n" : ""}`
+			}
+			output = stdout
+		} catch (error) {
+			failed = true
+			failure = error
+			if (invocation.addedWorktree) {
+				try {
+					// Roll back while an unrepaired Git registration can still reach its
+					// invocation-owned target. Physical-path removal cannot match that alias.
+					const target = invocation.args[3]!
+					const listed = String(await execute(["worktree", "list", "--porcelain", "-z"]))
+					const registered = listed
+						.split("\0")
+						.find(
+							(entry) =>
+								entry.startsWith("worktree ") &&
+								[target, invocation.addedWorktree!].some((owned) =>
+									samePath(entry.slice("worktree ".length), owned),
+								),
+						)
+					if (registered) {
+						await execute(["worktree", "remove", "--force", registered.slice("worktree ".length)])
+					}
+				} catch (cleanupError) {
+					retainPaths = true
+					failure = new GitStartupPathCleanupError([error, cleanupError], invocation)
+				}
+			}
+		}
+		if (!retainPaths) {
+			try {
+				if (!retainPaths) await this.releaseGitPaths(invocation)
+			} catch (cleanupError) {
+				failure = failed
+					? new GitPathCleanupError(
+							[failure, cleanupError],
+							invocation,
+							"Git failed and temporary path cleanup is unconfirmed",
+						)
+					: cleanupError
+				failed = true
+			}
+		}
+		if (failed) throw failure
+		return output
+	}
+
 	private async git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
-		const { stdout } = await execFileAsync("git", args, {
-			cwd,
-			env: env ? { ...process.env, ...env } : process.env,
-			encoding: "utf8",
-			maxBuffer: MAX_GIT_OUTPUT,
-			windowsHide: true,
-		})
-		return String(stdout)
+		return String(await this.invokeGit(cwd, args, env, false))
 	}
 
 	private async gitBuffer(cwd: string, args: string[]): Promise<Buffer> {
-		const { stdout } = await execFileAsync("git", args, {
-			cwd,
-			encoding: "buffer",
-			maxBuffer: MAX_GIT_OUTPUT,
-			windowsHide: true,
-		})
+		const stdout = await this.invokeGit(cwd, args, undefined, true)
 		return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout)
+	}
+
+	private async hasRegisteredWorktree(
+		gitRoot: string,
+		worktreePath: string,
+		prefix: string[] = [],
+	): Promise<boolean> {
+		const output = await this.git(gitRoot, [...prefix, "worktree", "list", "--porcelain", "-z"])
+		for (const entry of output.split("\0")) {
+			if (!entry.startsWith("worktree ")) continue
+			const listed = entry.slice("worktree ".length)
+			if (samePath(listed, worktreePath)) return true
+			try {
+				if (samePath(await fs.realpath(listed), await fs.realpath(worktreePath))) return true
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") throw error
+			}
+		}
+		return false
 	}
 
 	private artifactDir(storagePath: string, artifactId: string): string {
@@ -269,61 +619,85 @@ export class ManagedSubagentWorktreeService {
 		const dir = this.artifactDir(storagePath, artifactId)
 		const worktreePath = path.join(storagePath, "subagent-worktrees", artifactId)
 		const indexPath = path.join(dir, "snapshot.index")
-		await fs.mkdir(dir, { recursive: true })
-		await fs.mkdir(path.dirname(worktreePath), { recursive: true })
-		await fs.rm(indexPath, { force: true })
-		const indexEnv = { GIT_INDEX_FILE: indexPath }
-		const parentCommit = (
-			await this.git(validated.gitRoot, ["rev-parse", "--verify", "HEAD"]).catch(() => "")
-		).trim()
-		if (parentCommit) await this.git(validated.gitRoot, ["read-tree", parentCommit], indexEnv)
-		await this.git(validated.gitRoot, ["add", "-A"], indexEnv)
-		const tree = (await this.git(validated.gitRoot, ["write-tree"], indexEnv)).trim()
-		const commitArgs = ["commit-tree", tree]
-		if (parentCommit) commitArgs.push("-p", parentCommit)
-		commitArgs.push("-m", "Alpha worker baseline")
-		const baselineCommit = (
-			await this.git(validated.gitRoot, commitArgs, {
-				...indexEnv,
-				GIT_AUTHOR_NAME: "Alpha",
-				GIT_AUTHOR_EMAIL: "alpha@local.invalid",
-				GIT_COMMITTER_NAME: "Alpha",
-				GIT_COMMITTER_EMAIL: "alpha@local.invalid",
-			})
-		).trim()
-		await fs.rm(indexPath, { force: true })
-		const now = Date.now()
-		const artifact: ManagedWorkerArtifact = {
-			id: artifactId,
-			taskId,
-			status: "active",
-			createdAt: now,
-			updatedAt: now,
-			gitRoot: validated.gitRoot,
-			logicalWorkspace: validated.logicalWorkspace,
-			logicalWorkspaceFromRoot: validated.logicalWorkspaceFromRoot,
-			worktreePath,
-			baselineCommit,
-			writeScope: validated.writeScope,
-			gitRelativeScope: validated.gitRelativeScope,
-			fileWriteScope: validated.fileWriteScope,
-			gitRelativeFileScope: validated.gitRelativeFileScope,
-			changes: [],
-		}
-		await this.persist(storagePath, artifact)
+		await fs.mkdir(path.dirname(dir), { recursive: true })
+		// Exclusive creation establishes ownership before rollback can remove anything.
+		await fs.mkdir(dir)
+		let artifact: ManagedWorkerArtifact | undefined
+		let ownsWorktreePath = false
+		let worktreeAdded = false
 		try {
+			await fs.mkdir(path.dirname(worktreePath), { recursive: true })
+			const indexEnv = { GIT_INDEX_FILE: indexPath }
+			const parentCommit = (
+				await this.git(validated.gitRoot, ["rev-parse", "--verify", "HEAD"]).catch(() => "")
+			).trim()
+			if (parentCommit) await this.git(validated.gitRoot, ["read-tree", parentCommit], indexEnv)
+			await this.git(validated.gitRoot, ["add", "-A"], indexEnv)
+			const tree = (await this.git(validated.gitRoot, ["write-tree"], indexEnv)).trim()
+			const commitArgs = ["commit-tree", tree]
+			if (parentCommit) commitArgs.push("-p", parentCommit)
+			commitArgs.push("-m", "Alpha worker baseline")
+			const baselineCommit = (
+				await this.git(validated.gitRoot, commitArgs, {
+					...indexEnv,
+					GIT_AUTHOR_NAME: "Alpha",
+					GIT_AUTHOR_EMAIL: "alpha@local.invalid",
+					GIT_COMMITTER_NAME: "Alpha",
+					GIT_COMMITTER_EMAIL: "alpha@local.invalid",
+				})
+			).trim()
+			await fs.rm(indexPath, { force: true })
+			const now = Date.now()
+			artifact = {
+				id: artifactId,
+				taskId,
+				status: "active",
+				createdAt: now,
+				updatedAt: now,
+				gitRoot: validated.gitRoot,
+				logicalWorkspace: validated.logicalWorkspace,
+				logicalWorkspaceFromRoot: validated.logicalWorkspaceFromRoot,
+				worktreePath,
+				baselineCommit,
+				writeScope: validated.writeScope,
+				gitRelativeScope: validated.gitRelativeScope,
+				fileWriteScope: validated.fileWriteScope,
+				gitRelativeFileScope: validated.gitRelativeFileScope,
+				changes: [],
+			}
+			await this.persist(storagePath, artifact)
+			await fs.mkdir(worktreePath)
+			ownsWorktreePath = true
 			await this.git(validated.gitRoot, ["worktree", "add", "--detach", worktreePath, baselineCommit])
+			worktreeAdded = true
 			await this.git(validated.gitRoot, ["worktree", "lock", "--reason", "Alpha editing sub-agent", worktreePath])
 			await worktreeIncludeService.copyWorktreeIncludeFiles(validated.gitRoot, worktreePath)
+			return {
+				artifact,
+				workspacePath: path.join(worktreePath, validated.logicalWorkspaceFromRoot),
+			}
 		} catch (error) {
-			await this.git(validated.gitRoot, ["worktree", "unlock", worktreePath]).catch(() => undefined)
-			await this.git(validated.gitRoot, ["worktree", "remove", "--force", worktreePath]).catch(() => undefined)
-			await fs.rm(dir, { recursive: true, force: true })
+			try {
+				if (error instanceof GitStartupPathCleanupError)
+					await this.physicalizeWorktreeRegistration(error.invocation)
+				if (ownsWorktreePath && artifact) {
+					// A failed `worktree add` can already have registered its target. Check
+					// ownership before deleting the directory or discarding recovery metadata.
+					const registered =
+						worktreeAdded || (await this.hasRegisteredWorktree(validated.gitRoot, worktreePath))
+					if (registered) await this.cleanupWorktreeWithRetry(artifact)
+					else await fs.rm(worktreePath, { recursive: true, force: true })
+				}
+				if (error instanceof GitPathCleanupError) await this.releaseGitPaths(error.invocation)
+				await fs.rm(dir, { recursive: true, force: true })
+			} catch (cleanupError) {
+				// Keep an addressable artifact for orphan recovery when cleanup is unproven.
+				throw new AggregateError(
+					[error, cleanupError],
+					`Managed Worker ${taskId} startup failed and owned cleanup could not be confirmed: ${error instanceof Error ? error.message : String(error)}; ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+				)
+			}
 			throw error
-		}
-		return {
-			artifact,
-			workspacePath: path.join(worktreePath, validated.logicalWorkspaceFromRoot),
 		}
 	}
 
@@ -528,8 +902,21 @@ export class ManagedSubagentWorktreeService {
 	private async cleanupWorktree(artifact: ManagedWorkerArtifact): Promise<void> {
 		if (!artifact.worktreePath) return
 		const admin = await this.resolveWorktreeAdmin(artifact)
-		await this.git(admin.cwd, [...admin.prefix, "worktree", "unlock", artifact.worktreePath]).catch(() => undefined)
-		await this.git(admin.cwd, [...admin.prefix, "worktree", "remove", "--force", artifact.worktreePath])
+		let absent = false
+		try {
+			await fs.lstat(artifact.worktreePath)
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") throw error
+			absent = true
+		}
+		// A prior remove may have succeeded before prune or invocation cleanup
+		// failed. Skip removal only when both physical and registered ownership ended.
+		if (!absent || (await this.hasRegisteredWorktree(admin.cwd, artifact.worktreePath, admin.prefix))) {
+			await this.git(admin.cwd, [...admin.prefix, "worktree", "unlock", artifact.worktreePath]).catch(
+				() => undefined,
+			)
+			await this.git(admin.cwd, [...admin.prefix, "worktree", "remove", "--force", artifact.worktreePath])
+		}
 		await this.git(admin.cwd, [...admin.prefix, "worktree", "prune"])
 	}
 
@@ -738,12 +1125,12 @@ export class ManagedSubagentWorktreeService {
 						await this.persist(storagePath, artifact)
 						recovered.push(artifact)
 					}
-				} else if (recoverableWorktreePath) {
+				} else if (recoverableWorktreePath || artifact.worktreePath) {
 					// Capture can finish before a transient Windows/Git lock allows the
 					// linked worktree to be removed. Legacy metadata can also omit the
-					// still-existing path. Retry only cleanup; the quarantined commit and
-					// patch are already authoritative.
-					artifact.worktreePath = recoverableWorktreePath
+					// still-existing path. A removed path can retain pending prune work.
+					// Retry only cleanup; the quarantined commit and patch are authoritative.
+					artifact.worktreePath = recoverableWorktreePath ?? artifact.worktreePath
 					await this.cleanupWorktreeWithRetry(artifact)
 					delete artifact.worktreePath
 					if (artifact.error?.startsWith("Captured changes, but managed worktree cleanup")) {
@@ -760,7 +1147,7 @@ export class ManagedSubagentWorktreeService {
 
 	async deleteArtifact(storagePath: string, artifactId: string): Promise<void> {
 		const artifact = await this.load(storagePath, artifactId).catch(() => undefined)
-		if (artifact?.worktreePath) await this.cleanupWorktreeWithRetry(artifact).catch(() => undefined)
+		if (artifact?.worktreePath) await this.cleanupWorktreeWithRetry(artifact)
 		await fs.rm(this.artifactDir(storagePath, artifactId), { recursive: true, force: true })
 	}
 }

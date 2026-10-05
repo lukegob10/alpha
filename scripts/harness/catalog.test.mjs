@@ -1,7 +1,23 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { readFileSync } from "node:fs"
+import { glob } from "node:fs/promises"
+import { fileURLToPath } from "node:url"
 import { lanes, selectLane } from "./catalog.mjs"
+import { expectedTestFiles } from "./lane-evidence.mjs"
+
+test("tooling execution includes every Node test in its script owners", async () => {
+	const root = fileURLToPath(new URL("../../", import.meta.url))
+	const observed = await expectedTestFiles(root, { runner: "node" }, ["test:tooling"])
+	const expected = []
+	for await (const file of glob(
+		["scripts/*.test.{js,mjs,ts}", "scripts/harness/*.test.{js,mjs,ts}", "scripts/evals/*.test.{js,mjs,ts}"],
+		{ cwd: root },
+	)) {
+		expected.push(file.replaceAll("\\", "/"))
+	}
+	assert.deepEqual(observed, expected.sort())
+})
 
 test("every lane delegates to an existing package command", () => {
 	for (const lane of Object.values(lanes)) {
@@ -53,7 +69,9 @@ test("offline selection cannot start services or provider campaigns", () => {
 })
 
 test("hard offline and host lanes require explicit execution receipts", () => {
-	assert.equal(lanes.unit.receipts.filter((receipt) => receipt?.runner === "vitest").length, 5)
+	assert.equal(lanes.unit.receipts.filter((receipt) => receipt?.runner === "vitest").length, 7)
+	assert.ok(lanes.unit.commands.some((args) => args[1] === "packages/build" && args[2] === "test"))
+	assert.ok(lanes.unit.receipts.some((receipt) => receipt?.packageDir === "packages/telemetry"))
 	assert.ok(lanes.offline.receipts.slice(1).every((receipt) => receipt.requireAllTests))
 	assert.equal(lanes.host.receipts[0].runner, "extension-host")
 	assert.equal(lanes.outcomes.receipts[2].runner, "task-outcomes")

@@ -35,7 +35,7 @@ For a local E2E run in PowerShell:
 
 ```powershell
 $env:ALPHA_TASK_OBSERVABILITY = "1"
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1221
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1250
 Remove-Item Env:ALPHA_TASK_OBSERVABILITY
 ```
 
@@ -44,7 +44,7 @@ VS Code Language Model contract where configured; timings should be compared onl
 and cache conditions.
 
 The rendered composer responsiveness check is separate from the opt-in task trace. Run
-`pnpm --filter @alpha-code/vscode-e2e test:reasoning:1221` to switch between GPT 6 Luna and GPT 5.6 Luna in the actual
+`pnpm --filter @alpha-code/vscode-e2e test:reasoning:1250` to switch between GPT 6 Luna and GPT 5.6 Luna in the actual
 composer, verify the reasoning control is ready, and confirm the next request uses `gpt-5.6-luna` with high reasoning.
 The switch-to-ready time must be at most 5 seconds and is written to `artifacts/reasoning-ui/ui-probe-<run-id>.json`.
 This exact-host UI test uses a local scripted endpoint, so it checks selection and propagation without measuring either

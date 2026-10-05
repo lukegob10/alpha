@@ -1,4 +1,4 @@
-import { useCallback } from "react"
+import { useCallback, type ComponentProps } from "react"
 import { AlertDialogProps } from "@radix-ui/react-alert-dialog"
 
 import {
@@ -20,9 +20,10 @@ interface DeleteTaskDialogProps extends AlertDialogProps {
 	taskId: string
 	/** Number of subtasks that will also be deleted (for cascade delete warning) */
 	subtaskCount?: number
+	onCloseAutoFocus?: ComponentProps<typeof AlertDialogContent>["onCloseAutoFocus"]
 }
 
-export const DeleteTaskDialog = ({ taskId, subtaskCount = 0, ...props }: DeleteTaskDialogProps) => {
+export const DeleteTaskDialog = ({ taskId, subtaskCount = 0, onCloseAutoFocus, ...props }: DeleteTaskDialogProps) => {
 	const { t } = useAppTranslation()
 
 	const { onOpenChange } = props
@@ -40,7 +41,7 @@ export const DeleteTaskDialog = ({ taskId, subtaskCount = 0, ...props }: DeleteT
 
 	return (
 		<AlertDialog {...props}>
-			<AlertDialogContent onEscapeKeyDown={() => onOpenChange?.(false)}>
+			<AlertDialogContent onEscapeKeyDown={() => onOpenChange?.(false)} onCloseAutoFocus={onCloseAutoFocus}>
 				<AlertDialogHeader>
 					<AlertDialogTitle>{t("history:deleteTask")}</AlertDialogTitle>
 					<AlertDialogDescription>{message}</AlertDialogDescription>

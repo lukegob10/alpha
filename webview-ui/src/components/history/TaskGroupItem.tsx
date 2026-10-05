@@ -18,6 +18,7 @@ interface TaskGroupItemProps {
 	isSelectionMode?: boolean
 	/** Whether this group's parent is selected */
 	isSelected?: boolean
+	selectedTaskIds?: ReadonlySet<string>
 	/** Callback when selection state changes */
 	onToggleSelection?: (taskId: string, isSelected: boolean) => void
 	/** Callback when delete is requested */
@@ -40,6 +41,7 @@ const TaskGroupItem = ({
 	showWorkspace = false,
 	isSelectionMode = false,
 	isSelected = false,
+	selectedTaskIds,
 	onToggleSelection,
 	onDelete,
 	onToggleExpand,
@@ -97,7 +99,16 @@ const TaskGroupItem = ({
 					hidden={!isExpanded}
 					className="overflow-hidden border-t border-[var(--border-subtle)] bg-[color-mix(in_srgb,var(--surface-sunken)_88%,transparent)] py-1.5">
 					{subtasks.map((node) => (
-						<SubtaskRow key={node.item.id} node={node} depth={1} onToggleExpand={onToggleSubtaskExpand} />
+						<SubtaskRow
+							key={node.item.id}
+							node={node}
+							depth={1}
+							onToggleExpand={onToggleSubtaskExpand}
+							isSelectionMode={isSelectionMode}
+							selectedTaskIds={selectedTaskIds}
+							onToggleSelection={onToggleSelection}
+							onDelete={onDelete}
+						/>
 					))}
 				</div>
 			)}

@@ -40,6 +40,35 @@ function result(taskId: string): Omit<InternalTaskResult, "modelRouteId" | "requ
 }
 
 describe("BoundedDelegationManager root-wide capacity", () => {
+	it("retains the admission limit while queued without changing another run's completion", async () => {
+		let concurrency = 1
+		const resolveConcurrency = vi.fn(() => concurrency)
+		let announceStarted!: () => void
+		const started = new Promise<void>((resolve) => (announceStarted = resolve))
+		let finishFirst!: () => void
+		const invoked: string[] = []
+		const manager = new BoundedDelegationManager(async (item) => {
+			invoked.push(item.id)
+			if (item.id === "first") {
+				announceStarted()
+				await new Promise<void>((resolve) => (finishFirst = resolve))
+			}
+			return result(item.id)
+		}, resolveConcurrency)
+
+		const first = manager.run(envelope("first", "root-1", "root-1", 1))
+		await started
+		const queued = manager.run(envelope("queued", "root-1", "root-1", 1))
+		expect(invoked).toEqual(["first"])
+		concurrency = 0
+		finishFirst()
+
+		await expect(first).resolves.toMatchObject({ taskId: "first", status: "completed" })
+		await expect(queued).resolves.toMatchObject({ taskId: "queued", status: "completed" })
+		expect(resolveConcurrency).toHaveBeenCalledTimes(2)
+		expect(invoked).toEqual(["first", "queued"])
+	})
+
 	it("counts descendants against one root cap without serializing another root", async () => {
 		const releases = new Map<string, () => void>()
 		const started: string[] = []

@@ -90,6 +90,7 @@ vi.mock("vscode", () => {
 				content: Array.isArray(content) ? content : [new MockLanguageModelTextPart(content)],
 			})),
 		},
+		LanguageModelChatMessageRole: { Assistant: "assistant", User: "user" },
 		LanguageModelTextPart: MockLanguageModelTextPart,
 		LanguageModelToolCallPart: MockLanguageModelToolCallPart,
 		LanguageModelToolResultPart: MockLanguageModelToolResultPart,
@@ -108,9 +109,10 @@ import type OpenAI from "openai"
 import { VsCodeLmHandler, getVsCodeLmModels } from "../vscode-lm"
 import type { ApiHandlerOptions } from "../../../shared/api"
 import { resolveTaskReasoning } from "../../../core/agent/TaskReasoning"
-import type { ProviderSettings } from "@alpha-code/types"
+import type { ModelRequestPhase, ProviderSettings } from "@alpha-code/types"
 import type { Anthropic } from "@anthropic-ai/sdk"
 import { createReadFileTool } from "../../../core/prompts/tools/native-tools/read_file"
+import { ApiStreamDeadlineError, iterateApiStreamWithAbort } from "../../transform/stream"
 
 const mockLanguageModelChat = {
 	id: "test-model",
@@ -570,6 +572,178 @@ describe("VsCodeLmHandler", () => {
 			handler["client"] = mockLanguageModelChat
 		})
 
+		it.each<ModelRequestPhase>(["model-selection", "request-admission", "first-response-chunk", "response-stream"])(
+			"observes stalled %s before the consumer's abort wrapper closes",
+			async (phase) => {
+				mockVsCodeVersion.value = "1.125.0"
+				mockGetApiRequestTimeoutSetting.mockReturnValue(0)
+				const phases: ModelRequestPhase[] = []
+				let markStarted!: () => void
+				const started = new Promise<void>((resolve) => {
+					markStarted = resolve
+				})
+				let rejectTransport!: (error: Error) => void
+				const pendingTransport = new Promise<never>((_resolve, reject) => {
+					rejectTransport = reject
+				})
+				const stall = () => {
+					markStarted()
+					return pendingTransport
+				}
+				const closeResponseIterator = vi.fn(async () => ({ done: true as const, value: undefined }))
+				if (phase === "model-selection") {
+					handler["client"] = null
+					vi.mocked(vscode.lm.selectChatModels).mockReset().mockImplementationOnce(stall)
+				} else if (phase === "request-admission") {
+					mockLanguageModelChat.sendRequest.mockImplementationOnce(stall)
+				} else {
+					let reads = 0
+					mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+						stream: {
+							[Symbol.asyncIterator]() {
+								return {
+									next: () => {
+										if (phase === "response-stream" && reads++ === 0) {
+											return Promise.resolve({
+												done: false as const,
+												value: new vscode.LanguageModelTextPart("First part"),
+											})
+										}
+										return stall()
+									},
+									return: closeResponseIterator,
+								}
+							},
+						},
+					})
+				}
+				const controller = new AbortController()
+				const source = handler.createMessage("System", [{ role: "user", content: "Hello" }], {
+					taskId: `observe-${phase}`,
+					signal: controller.signal,
+					onRequestPhase: (observed) => phases.push(observed),
+				})
+				const consumer = iterateApiStreamWithAbort(source, controller.signal)
+				let pending = consumer.next()
+				try {
+					if (phase === "response-stream") {
+						await expect(pending).resolves.toMatchObject({ value: { type: "text", text: "First part" } })
+						pending = consumer.next()
+					}
+					await started
+					const expected: ModelRequestPhase[] = [
+						"model-selection",
+						"request-admission",
+						"first-response-chunk",
+						"response-stream",
+					]
+					expect(phases).toEqual(expected.slice(0, expected.indexOf(phase) + 1))
+					controller.abort(new ApiStreamDeadlineError())
+					await expect(pending).resolves.toMatchObject({ done: true })
+					// Stage evidence survives even when no phase-bearing adapter error is yielded.
+					expect(phases.at(-1)).toBe(phase)
+				} finally {
+					controller.abort(new ApiStreamDeadlineError())
+					rejectTransport(new Error("Abandoned host operation settled"))
+					await pending.catch(() => undefined)
+					await consumer.return(undefined)
+					await source.return(undefined)
+				}
+				expect(mockCancellationSources[0]?.cancel).toHaveBeenCalledOnce()
+				expect(mockCancellationSources[0]?.dispose).toHaveBeenCalledOnce()
+				expect(mockLanguageModelChat.sendRequest).toHaveBeenCalledTimes(phase === "model-selection" ? 0 : 1)
+				if (phase === "first-response-chunk" || phase === "response-stream") {
+					expect(closeResponseIterator).toHaveBeenCalledOnce()
+				}
+			},
+		)
+
+		it("observes each request stage once without adding chunks or retaining a predecessor's phase", async () => {
+			mockVsCodeVersion.value = "1.125.0"
+			const response = () => ({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("First")
+					yield new vscode.LanguageModelTextPart("Second")
+					yield new vscode.LanguageModelDataPart(
+						new TextEncoder().encode(JSON.stringify({ inputTokens: 3, outputTokens: 2 })),
+						"usage",
+					)
+				})(),
+			})
+			for (const taskId of ["first-observed-request", "follow-up-observed-request"]) {
+				mockLanguageModelChat.sendRequest.mockImplementationOnce(async () => response())
+				const phases: ModelRequestPhase[] = []
+				const chunks = []
+				for await (const chunk of handler.createMessage("System", [{ role: "user", content: "Hello" }], {
+					taskId,
+					onRequestPhase: (phase) => phases.push(phase),
+				})) {
+					chunks.push(chunk)
+				}
+				expect(phases).toEqual([
+					"model-selection",
+					"request-admission",
+					"first-response-chunk",
+					"response-stream",
+				])
+				expect(chunks).toEqual([
+					{ type: "text", text: "First" },
+					{ type: "text", text: "Second" },
+					{ type: "usage", usageSource: "provider", inputTokens: 3, outputTokens: 2 },
+				])
+			}
+			expect(mockLanguageModelChat.sendRequest).toHaveBeenCalledTimes(2)
+			for (const [, options] of mockLanguageModelChat.sendRequest.mock.calls) {
+				expect(options).not.toHaveProperty("onRequestPhase")
+			}
+		})
+
+		it("isolates thrown and rejected phase observations from transport, output and cleanup", async () => {
+			mockVsCodeVersion.value = "1.125.0"
+			const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
+			try {
+				for (const observe of [
+					() => {
+						throw new Error("Observer detail must not be logged")
+					},
+					async () => {
+						throw new Error("Rejected observer detail must not be logged")
+					},
+				]) {
+					const onRequestPhase = vi.fn(observe)
+					const cancellationIndex = mockCancellationSources.length
+					mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+						stream: (async function* () {
+							yield new vscode.LanguageModelTextPart("Unaffected")
+						})(),
+					})
+					const chunks = []
+					for await (const chunk of handler.createMessage("System", [{ role: "user", content: "Hello" }], {
+						taskId: "failing-phase-observer",
+						onRequestPhase,
+					})) {
+						chunks.push(chunk)
+					}
+					expect(onRequestPhase.mock.calls).toEqual([
+						["model-selection"],
+						["request-admission"],
+						["first-response-chunk"],
+						["response-stream"],
+					])
+					expect(chunks).toEqual([
+						{ type: "text", text: "Unaffected" },
+						expect.objectContaining({ type: "usage" }),
+					])
+					expect(mockCancellationSources[cancellationIndex]?.cancel).not.toHaveBeenCalled()
+					expect(mockCancellationSources[cancellationIndex]?.dispose).toHaveBeenCalledOnce()
+				}
+				expect(mockLanguageModelChat.sendRequest).toHaveBeenCalledTimes(2)
+				expect(consoleError).not.toHaveBeenCalled()
+			} finally {
+				consoleError.mockRestore()
+			}
+		})
+
 		it("should stream text responses", async () => {
 			const systemPrompt = "You are a helpful assistant"
 			const messages: Anthropic.Messages.MessageParam[] = [
@@ -904,6 +1078,71 @@ describe("VsCodeLmHandler", () => {
 			expect(assistantMessage?.content[0]).toMatchObject({ type: "tool_call", callId: "call-1" })
 			expect(markerPart).toMatchObject({ mimeType: "stateful_marker" })
 			expect(Array.from(markerPart.data)).toEqual(Array.from(marker))
+		})
+
+		it("replays inherited legacy results once per occurrence while preserving marker and part order", async () => {
+			mockVsCodeVersion.value = "1.125.0"
+			const marker = new TextEncoder().encode("synthetic-replay-marker")
+			const patch =
+				'*** Begin Patch\r\n*** Add File: file.txt\r\n+const path = "C:\\work\\file.txt"\r\n*** End Patch\n'
+			const result = {
+				type: "tool_result",
+				tool_call_id: "reused-call",
+				content: "Error: cancelled",
+				is_error: true,
+			}
+			const messages = [
+				{
+					role: "assistant",
+					content: [
+						{ type: "text", text: "Before the tool." },
+						{ type: "tool_use", id: "reused-call", name: "apply_patch", input: patch },
+					],
+					vscodeLmStatefulMarker: Buffer.from(marker).toString("base64"),
+				},
+				{ role: "user", content: [result, { ...result, tool_use_id: "reused-call" }] },
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "reused-call", name: "read_file", input: { path: "file.txt" } }],
+				},
+				{ role: "user", content: [{ ...result, content: null }] },
+			] as unknown as Anthropic.Messages.MessageParam[]
+			const before = structuredClone(messages)
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({ stream: (async function* () {})() })
+
+			for await (const _chunk of handler.createMessage("System", messages)) {
+				// Consume the finite scripted response; no host or model request is made.
+			}
+
+			expect(mockLanguageModelChat.sendRequest).toHaveBeenCalledOnce()
+			const requestMessages = mockLanguageModelChat.sendRequest.mock
+				.calls[0][0] as vscode.LanguageModelChatMessage[]
+			const assistantMessages = requestMessages.filter(
+				(message) => message.role === vscode.LanguageModelChatMessageRole.Assistant,
+			)
+			expect(assistantMessages[0].content).toEqual([
+				expect.objectContaining({ type: "text", value: "Before the tool." }),
+				expect.objectContaining({
+					type: "tool_call",
+					callId: "reused-call",
+					name: "apply_patch",
+					input: { patch },
+				}),
+				expect.objectContaining({ mimeType: "stateful_marker", data: marker }),
+			])
+			expect(assistantMessages[1].content[0]).toMatchObject({
+				type: "tool_call",
+				callId: "reused-call",
+				name: "read_file",
+				input: { path: "file.txt" },
+			})
+			const terminalParts = requestMessages
+				.flatMap((message) => message.content)
+				.filter((part) => part instanceof vscode.LanguageModelToolResultPart)
+			expect(terminalParts).toHaveLength(2)
+			expect(terminalParts.map((part) => part.callId)).toEqual(["reused-call", "reused-call"])
+			expect(terminalParts[0].content[0]).toMatchObject({ value: "Error: cancelled" })
+			expect(messages).toEqual(before)
 		})
 
 		it("should clear a prior stateful marker when the next response does not emit one", async () => {
@@ -1431,6 +1670,61 @@ describe("VsCodeLmHandler", () => {
 				expect.anything(),
 			)
 		})
+
+		it.each(["gpt-6.1-sol", "opaque-copilot-selected-id"])(
+			"passes GPT-6.1 Sol maximum reasoning for live ID %s on VS Code 1.125.0 without inventing context options",
+			async (id) => {
+				mockVsCodeVersion.value = "1.125.0"
+				handler.dispose()
+				handler = new VsCodeLmHandler({
+					vsCodeLmModelSelector: { vendor: "copilot", family: "gpt-6.1-sol", id },
+					enableReasoningEffort: true,
+					reasoningEffort: "max",
+					vsCodeLmContextSize: 922_000,
+				})
+				const gpt61SolModel = {
+					...mockLanguageModelChat,
+					id,
+					name: "GPT-6.1 Sol",
+					vendor: "copilot",
+					family: "gpt-6.1-sol",
+					version: "gpt-6.1-sol",
+					maxInputTokens: 921_793,
+					sendRequest: vi.fn().mockResolvedValueOnce({
+						stream: (async function* () {
+							yield new vscode.LanguageModelTextPart("Maximum reasoned response")
+						})(),
+					}),
+				}
+				handler["client"] = gpt61SolModel as unknown as vscode.LanguageModelChat
+
+				for await (const _chunk of handler.createMessage("System", [
+					{ role: "user", content: "Think fully" },
+				])) {
+					// consume stream
+				}
+
+				expect(gpt61SolModel.sendRequest).toHaveBeenCalledWith(
+					expect.any(Array),
+					expect.objectContaining({
+						modelOptions: { reasoningEffort: "max" },
+						configuration: { reasoningEffort: "max" },
+					}),
+					expect.anything(),
+				)
+				expect(handler.getModel()).toMatchObject({
+					id,
+					instructionModelId: "gpt-6.1-sol",
+					toolIdentity: { provider: "vscode-lm", vendor: "copilot", family: "gpt-6.1-sol", id },
+					info: {
+						supportsReasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
+						supportsImages: true,
+						contextWindow: gpt61SolModel.maxInputTokens,
+						contextWindowIncludesOutput: false,
+					},
+				})
+			},
+		)
 
 		it("should pass Claude's 1M-tier input budget through both model option routes", async () => {
 			handler = new VsCodeLmHandler({

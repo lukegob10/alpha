@@ -1,6 +1,8 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 
+import { normalizeToolHistory, toFunctionToolInput } from "./tool-history"
+
 /**
  * Options for converting Anthropic messages to OpenAI format.
  */
@@ -48,7 +50,7 @@ export function convertToOpenAiMessages(
 	// Use provided normalization function or identity function
 	const normalizeId = options?.normalizeToolCallId ?? ((id: string) => id)
 
-	for (const anthropicMessage of anthropicMessages) {
+	for (const anthropicMessage of normalizeToolHistory(anthropicMessages)) {
 		if (typeof anthropicMessage.content === "string") {
 			// Some upstream transforms
 			// will convert a single text block into a string for compactness.
@@ -215,7 +217,7 @@ export function convertToOpenAiMessages(
 					function: {
 						name: toolMessage.name,
 						// json string
-						arguments: JSON.stringify(toolMessage.input),
+						arguments: JSON.stringify(toFunctionToolInput(toolMessage.name, toolMessage.input)),
 					},
 				}))
 

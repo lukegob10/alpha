@@ -5,7 +5,11 @@ import * as vscode from "vscode"
 import matter from "gray-matter"
 
 import type { AlphaProvider } from "../../core/webview/AlphaProvider"
-import { getGlobalAgentsDirectory, getProjectAgentsDirectoryForCwd } from "../config-paths"
+import {
+	getGlobalAgentsDirectory,
+	getProjectAgentsDirectoryForCwd,
+	getProjectInstructionDirectoriesForCwd,
+} from "../config-paths"
 import { directoryExists, fileExists } from "../config-paths"
 import { SkillMetadata, SkillContent, SkillSource } from "../../shared/skills"
 import { modes, getAllModes } from "../../shared/modes"
@@ -21,6 +25,11 @@ export type { SkillMetadata, SkillContent, SkillSource }
 
 const ALPHA_CONFIG_DIR = ".alpha"
 
+export interface SkillsManagerOptions {
+	/** Only the foreground manager may publish the Settings skill catalog. */
+	notifyWebview?: boolean
+}
+
 function getGlobalAlphaDirectory(): string {
 	return path.join(os.homedir(), ALPHA_CONFIG_DIR)
 }
@@ -31,16 +40,20 @@ function getProjectAlphaDirectoryForCwd(cwd: string): string {
 
 export class SkillsManager {
 	private skills: Map<string, SkillMetadata> = new Map()
+	private skillsByPath: Map<string, SkillMetadata> = new Map()
 	private providerRef: WeakRef<AlphaProvider>
 	private disposables: vscode.Disposable[] = []
 	private isDisposed = false
 	private discoveryGeneration = 0
+	private readonly notifyWebview: boolean
 
 	constructor(
 		provider: AlphaProvider,
 		private readonly workspacePath?: string,
+		options: SkillsManagerOptions = {},
 	) {
 		this.providerRef = new WeakRef(provider)
+		this.notifyWebview = options.notifyWebview ?? true
 	}
 
 	async initialize(): Promise<void> {
@@ -59,14 +72,18 @@ export class SkillsManager {
 		if (this.isDisposed) return
 		const generation = ++this.discoveryGeneration
 		const discovered = new Map<string, SkillMetadata>()
+		const discoveredByPath = new Map<string, SkillMetadata>()
 		const skillsDirs = await this.getSkillsDirectories()
 
 		for (const { dir, source, mode } of skillsDirs) {
 			if (this.isDisposed || generation !== this.discoveryGeneration) return
-			await this.scanSkillsDirectory(dir, source, discovered, mode)
+			await this.scanSkillsDirectory(dir, source, discovered, discoveredByPath, mode)
 		}
 		// Readers see complete catalogs; an older refresh cannot overwrite a newer one.
-		if (!this.isDisposed && generation === this.discoveryGeneration) this.skills = discovered
+		if (!this.isDisposed && generation === this.discoveryGeneration) {
+			this.skills = discovered
+			this.skillsByPath = discoveredByPath
+		}
 	}
 
 	async refreshSkills(): Promise<SkillMetadata[]> {
@@ -76,7 +93,9 @@ export class SkillsManager {
 
 	private async refreshSkillsAndNotify(): Promise<void> {
 		const skills = await this.refreshSkills()
-		await this.providerRef.deref()?.postMessageToWebview({ type: "skills", skills })
+		if (this.notifyWebview && !this.isDisposed) {
+			await this.providerRef.deref()?.postMessageToWebview({ type: "skills", skills })
+		}
 	}
 
 	/**
@@ -89,6 +108,7 @@ export class SkillsManager {
 		dirPath: string,
 		source: SkillSource,
 		discovered: Map<string, SkillMetadata>,
+		discoveredByPath: Map<string, SkillMetadata>,
 		mode?: string,
 	): Promise<void> {
 		if (!(await directoryExists(dirPath))) {
@@ -110,7 +130,7 @@ export class SkillsManager {
 				if (!stats?.isDirectory()) continue
 
 				// Load skill metadata - the skill name comes from the entry name (symlink name if symlinked)
-				await this.loadSkillMetadata(entryPath, source, discovered, mode, entryName)
+				await this.loadSkillMetadata(entryPath, source, discovered, discoveredByPath, mode, entryName)
 			}
 		} catch {
 			// Directory doesn't exist or can't be read - this is fine
@@ -128,6 +148,7 @@ export class SkillsManager {
 		skillDir: string,
 		source: SkillSource,
 		discovered: Map<string, SkillMetadata>,
+		discoveredByPath: Map<string, SkillMetadata>,
 		mode?: string,
 		skillName?: string,
 	): Promise<void> {
@@ -198,14 +219,18 @@ export class SkillsManager {
 			const primaryMode = modeSlugs?.[0]
 			const skillKey = this.getSkillKey(effectiveSkillName, source, primaryMode)
 
-			discovered.set(skillKey, {
+			const skill: SkillMetadata = {
 				name: effectiveSkillName,
 				description,
 				path: skillMdPath,
 				source,
 				mode: primaryMode, // Deprecated: kept for backward compatibility
 				modeSlugs, // New: array of mode slugs, undefined = any mode
-			})
+			}
+			discovered.set(skillKey, skill)
+			// Override resolution changes the visible catalog, but a child may have captured
+			// an earlier path that is still discovered. Keep only this refresh's identities.
+			discoveredByPath.set(this.normalizeSkillPath(skillMdPath), skill)
 		} catch (error) {
 			console.error(`Failed to load skill at ${skillDir}:`, error)
 		}
@@ -377,19 +402,17 @@ export class SkillsManager {
 
 	/** Resolve a previously captured skill by its exact path, independent of mutable mode overrides. */
 	async getSkillContentByPath(name: string, capturedPath: string): Promise<SkillContent | null> {
-		const normalize = (candidate: string) => {
-			const resolved = path.resolve(candidate)
-			return process.platform === "win32" ? resolved.toLowerCase() : resolved
-		}
-		const expectedPath = normalize(capturedPath)
-		const skill = Array.from(this.skills.values()).find(
-			(candidate) => candidate.name === name && normalize(candidate.path) === expectedPath,
-		)
-		if (!skill) return null
+		const skill = this.skillsByPath.get(this.normalizeSkillPath(capturedPath))
+		if (!skill || skill.name !== name) return null
 
 		const fileContent = await fs.readFile(skill.path, "utf-8")
 		const { content: body } = matter(fileContent)
 		return { ...skill, instructions: body.trim() }
+	}
+
+	private normalizeSkillPath(candidate: string): string {
+		const resolved = path.resolve(candidate)
+		return process.platform === "win32" ? resolved.toLowerCase() : resolved
 	}
 
 	/**
@@ -692,7 +715,7 @@ Add your skill instructions here.
 		}
 		const cwd = this.workspacePath ?? provider?.cwd
 		const projectAlphaDir = cwd ? getProjectAlphaDirectoryForCwd(cwd) : null
-		const projectAgentsDir = cwd ? getProjectAgentsDirectoryForCwd(cwd) : null
+		const projectDirectories = cwd ? (await getProjectInstructionDirectoriesForCwd(cwd)).directories : []
 
 		// Get list of modes to check for mode-specific skills
 		const modesList = await this.getAvailableModes()
@@ -704,7 +727,8 @@ Add your skill instructions here.
 		//
 		// Processing order (later directories override earlier ones at the same source level):
 		// - Global: .agents/skills first, then .alpha/skills (so Alpha-specific skills win)
-		// - Project: .agents/skills first, then .alpha/skills (so Alpha-specific skills win)
+		// - Project: .agents/skills from the project root through cwd, then cwd's .alpha/skills.
+		//   This retains Alpha-specific overrides; a nearer portable skill overrides its ancestor.
 
 		// Global .agents directories (lowest priority - shared across agents)
 		dirs.push({ dir: path.join(globalAgentsDir, "skills"), source: "global" })
@@ -712,8 +736,9 @@ Add your skill instructions here.
 			dirs.push({ dir: path.join(globalAgentsDir, `skills-${mode}`), source: "global", mode })
 		}
 
-		// Project .agents directories
-		if (projectAgentsDir) {
+		// Portable skills apply from the nearest repository root through this task's cwd.
+		for (const directory of projectDirectories) {
+			const projectAgentsDir = getProjectAgentsDirectoryForCwd(directory)
 			dirs.push({ dir: path.join(projectAgentsDir, "skills"), source: "project" })
 			for (const mode of modesList) {
 				dirs.push({ dir: path.join(projectAgentsDir, `skills-${mode}`), source: "project", mode })
@@ -767,13 +792,15 @@ Add your skill instructions here.
 			return
 		}
 
-		const provider = this.providerRef.deref()
-		if (!provider?.cwd) return
+		const cwd = this.workspacePath ?? this.providerRef.deref()?.cwd
+		if (!cwd) return
+		const { directories } = await getProjectInstructionDirectoriesForCwd(cwd)
+		if (this.isDisposed) return
 
 		this.watchSkillsTree(os.homedir(), ".alpha")
 		this.watchSkillsTree(os.homedir(), ".agents")
-		this.watchSkillsTree(provider.cwd, ".alpha")
-		this.watchSkillsTree(provider.cwd, ".agents")
+		this.watchSkillsTree(cwd, ".alpha")
+		for (const directory of directories) this.watchSkillsTree(directory, ".agents")
 	}
 
 	private watchSkillsTree(basePath: string, configDirName: string): void {
@@ -814,5 +841,6 @@ Add your skill instructions here.
 		this.disposables.forEach((d) => d.dispose())
 		this.disposables = []
 		this.skills.clear()
+		this.skillsByPath.clear()
 	}
 }

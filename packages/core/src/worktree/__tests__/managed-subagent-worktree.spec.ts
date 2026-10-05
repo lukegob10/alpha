@@ -1,12 +1,14 @@
 import { execFile } from "child_process"
+import crypto from "crypto"
 import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
 import { promisify } from "util"
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { ManagedSubagentWorktreeService } from "../managed-subagent-worktree.js"
+import { worktreeIncludeService } from "../worktree-include.js"
 
 const execFileAsync = promisify(execFile)
 const WORKTREE_TEST_TIMEOUT_MS = 30_000
@@ -41,8 +43,149 @@ describe("ManagedSubagentWorktreeService", () => {
 	}, WORKTREE_TEST_TIMEOUT_MS)
 
 	afterEach(async () => {
+		vi.restoreAllMocks()
 		await fs.rm(root, { recursive: true, force: true })
 	}, WORKTREE_TEST_TIMEOUT_MS)
+
+	it.skipIf(process.platform !== "win32").each([202, 218])(
+		"uses long Windows storage length %i with spaces for nested Workers without changing Git configuration",
+		async (storageLength) => {
+			let longStorage = path.join(await fs.realpath(root), "long storage")
+			while (longStorage.length < storageLength) {
+				const remaining = storageLength - longStorage.length
+				const componentLength = remaining > 63 ? Math.min(62, remaining - 3) : remaining - 1
+				if (componentLength < 1) throw new Error("Test storage path cannot fit another component")
+				longStorage = path.join(longStorage, "s".repeat(componentLength))
+			}
+			expect(longStorage.length).toBe(storageLength)
+			expect(Math.max(...longStorage.split(path.sep).map((part) => part.length))).toBeLessThanOrEqual(62)
+			await fs.mkdir(longStorage, { recursive: true })
+			await fs.writeFile(path.join(longStorage, "external.txt"), "keep\n")
+			await git(["config", "core.longpaths", "false"])
+			await write("src/value.txt", "staged\n")
+			await git(["add", "src/value.txt"])
+			await write("src/value.txt", "working\n")
+			const indexBefore = await git(["diff", "--cached", "--binary"])
+			const headBefore = await git(["rev-parse", "HEAD"])
+			const validated = await service.validateScope(path.join(repo, "src"), ["value.txt"])
+			const prepared = await service.create(longStorage, "long-path-worker", validated)
+			try {
+				expect(
+					path.join(longStorage, "subagent-change-sets", prepared.artifact.id, "snapshot.index").length,
+				).toBe(storageLength + 73)
+				expect(prepared.workspacePath.length).toBeGreaterThan(260)
+				expect(
+					(await fs.readFile(path.join(prepared.workspacePath, "value.txt"), "utf8")).replace(/\r\n/g, "\n"),
+				).toBe("working\n")
+				const nestedScope = await service.validateScope(prepared.workspacePath, ["value.txt"])
+				expect(nestedScope.logicalWorkspace).toBe(await fs.realpath(prepared.workspacePath))
+				expect(nestedScope.gitRelativeFileScope).toEqual(["src/value.txt"])
+				const nested = await service.create(longStorage, "nested-long-path-worker", nestedScope)
+				try {
+					await fs.writeFile(path.join(nested.workspacePath, "value.txt"), "worker\n")
+					const nestedArtifact = await service.capture(longStorage, nested.artifact.id)
+					expect(nestedArtifact).toMatchObject({
+						status: "pending_review",
+						changes: [expect.objectContaining({ path: "src/value.txt" })],
+					})
+					expect(nestedArtifact.worktreePath).toBeUndefined()
+					expect(nestedArtifact.error).toBeUndefined()
+					expect(await service.apply(longStorage, nested.artifact.id)).toEqual({ status: "applied" })
+				} finally {
+					await service.deleteArtifact(longStorage, nested.artifact.id)
+				}
+				const artifact = await service.capture(longStorage, prepared.artifact.id)
+				expect(artifact.status).toBe("pending_review")
+				expect(artifact.worktreePath).toBeUndefined()
+				expect(artifact.error).toBeUndefined()
+				expect(artifact.changes.map((change) => change.path)).toEqual(["src/value.txt"])
+				expect(await service.apply(longStorage, artifact.id)).toEqual({ status: "applied" })
+				expect((await fs.readFile(path.join(repo, "src/value.txt"), "utf8")).replace(/\r\n/g, "\n")).toBe(
+					"worker\n",
+				)
+				expect(await git(["diff", "--cached", "--binary"])).toBe(indexBefore)
+				expect(await git(["rev-parse", "HEAD"])).toBe(headBefore)
+				expect(await git(["config", "--local", "core.longpaths"])).toBe("false")
+				expect(await git(["worktree", "list", "--porcelain"])).not.toContain(prepared.artifact.id)
+				expect(await fs.readFile(path.join(longStorage, "external.txt"), "utf8")).toBe("keep\n")
+			} finally {
+				await service.deleteArtifact(longStorage, prepared.artifact.id)
+			}
+		},
+		WORKTREE_TEST_TIMEOUT_MS,
+	)
+
+	it(
+		"removes owned startup artifacts when baseline snapshotting fails before worktree registration",
+		async () => {
+			const validated = await service.validateScope(repo, ["src"])
+			const gitDirectory = path.join(repo, ".git")
+			const savedGitDirectory = path.join(root, "saved-git")
+			await fs.mkdir(storage, { recursive: true })
+			await fs.writeFile(path.join(storage, "external.txt"), "keep\n")
+			await fs.rename(gitDirectory, savedGitDirectory)
+			try {
+				await expect(service.create(storage, "snapshot-failure-worker", validated)).rejects.toThrow(
+					"not a git repository",
+				)
+				expect(await fs.readdir(path.join(storage, "subagent-change-sets"))).toEqual([])
+				expect(await fs.readdir(path.join(storage, "subagent-worktrees"))).toEqual([])
+				expect(await fs.readFile(path.join(storage, "external.txt"), "utf8")).toBe("keep\n")
+			} finally {
+				await fs.rename(savedGitDirectory, gitDirectory)
+			}
+		},
+		WORKTREE_TEST_TIMEOUT_MS,
+	)
+
+	it(
+		"removes the registered checkout and owned artifacts when startup inclusion fails",
+		async () => {
+			const validated = await service.validateScope(repo, ["src"])
+			const headBefore = await git(["rev-parse", "HEAD"])
+			const worktreesBefore = await git(["worktree", "list", "--porcelain"])
+			await fs.mkdir(storage, { recursive: true })
+			await fs.writeFile(path.join(storage, "external.txt"), "keep\n")
+			vi.spyOn(worktreeIncludeService, "copyWorktreeIncludeFiles").mockRejectedValueOnce(
+				new Error("include failed"),
+			)
+			await expect(service.create(storage, "inclusion-failure-worker", validated)).rejects.toThrow(
+				"include failed",
+			)
+			expect(await fs.readdir(path.join(storage, "subagent-change-sets"))).toEqual([])
+			expect(await fs.readdir(path.join(storage, "subagent-worktrees"))).toEqual([])
+			expect(await git(["worktree", "list", "--porcelain"])).toBe(worktreesBefore)
+			expect(await git(["rev-parse", "HEAD"])).toBe(headBefore)
+			expect(await fs.readFile(path.join(storage, "external.txt"), "utf8")).toBe("keep\n")
+		},
+		WORKTREE_TEST_TIMEOUT_MS,
+	)
+
+	it.each(["artifact", "checkout"] as const)(
+		"preserves an existing %s directory when startup cannot claim ownership",
+		async (collision) => {
+			const id = "00000000-0000-4000-8000-000000000001"
+			const existing = path.join(
+				storage,
+				collision === "artifact" ? "subagent-change-sets" : "subagent-worktrees",
+				id,
+			)
+			await fs.mkdir(existing, { recursive: true })
+			await fs.writeFile(path.join(existing, "external.txt"), "keep\n")
+			const worktreesBefore = await git(["worktree", "list", "--porcelain"])
+			const validated = await service.validateScope(repo, ["src"])
+			vi.spyOn(crypto, "randomUUID").mockReturnValueOnce(id)
+			await expect(service.create(storage, "collision-worker", validated)).rejects.toMatchObject({
+				code: "EEXIST",
+			})
+			expect(await fs.readdir(existing)).toEqual(["external.txt"])
+			expect(await fs.readFile(path.join(existing, "external.txt"), "utf8")).toBe("keep\n")
+			expect(await git(["worktree", "list", "--porcelain"])).toBe(worktreesBefore)
+			if (collision === "checkout")
+				expect(await fs.readdir(path.join(storage, "subagent-change-sets"))).toEqual([])
+		},
+		WORKTREE_TEST_TIMEOUT_MS,
+	)
 
 	it(
 		"snapshots a dirty checkout without changing the parent branch or index, then applies unstaged",

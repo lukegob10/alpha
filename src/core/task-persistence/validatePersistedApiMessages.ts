@@ -1,3 +1,5 @@
+import { getToolCallId, getToolResultId, ToolHistoryError } from "../../utils/tool-id"
+
 /**
  * Validate the stable provider-history protocol without discarding open-ended
  * provider metadata. Incomplete tool transactions remain valid here: recovery
@@ -26,16 +28,16 @@ export function invalidPersistedApiMessages(value: unknown): string | undefined 
 		if ("hook_prompt" in candidate && !isHookPromptProvenance(candidate.hook_prompt)) {
 			return `${location} has invalid hook prompt provenance`
 		}
-		if (candidate.type === "reasoning" && candidate.role === undefined) {
-			if (typeof candidate.encrypted_content !== "string" || candidate.encrypted_content.length === 0) {
-				return `${location} must contain encrypted reasoning`
-			}
-			if (candidate.id !== undefined && typeof candidate.id !== "string")
-				return `${location} has an invalid reasoning ID`
-			if (candidate.summary !== undefined && !Array.isArray(candidate.summary)) {
-				return `${location} has an invalid reasoning summary`
-			}
-			continue
+		if (candidate.reasoning_details !== undefined && !Array.isArray(candidate.reasoning_details)) {
+			return `${location} has invalid reasoning details`
+		}
+		if (candidate.reasoning_content !== undefined && typeof candidate.reasoning_content !== "string") {
+			return `${location} has invalid reasoning content`
+		}
+		if (candidate.type === "reasoning") {
+			const problem = invalidReasoningRecord(candidate, true)
+			if (problem) return `${location} ${problem}`
+			if (candidate.role === undefined) continue
 		}
 		if (candidate.role !== "user" && candidate.role !== "assistant") return `${location} has an invalid role`
 		if (typeof candidate.content === "string") continue
@@ -45,9 +47,32 @@ export function invalidPersistedApiMessages(value: unknown): string | undefined 
 			if (!isRecord(block) || typeof block.type !== "string" || block.type.length === 0) {
 				return `${blockLocation} must be a typed object`
 			}
+			try {
+				getToolCallId(block)
+				getToolResultId(block)
+			} catch (error) {
+				if (error instanceof ToolHistoryError) return `${blockLocation} has conflicting tool IDs`
+				throw error
+			}
 			switch (block.type) {
 				case "text":
 					if (typeof block.text !== "string") return `${blockLocation} has invalid text`
+					break
+				case "reasoning": {
+					const problem = invalidReasoningRecord(block, false)
+					if (problem) return `${blockLocation} ${problem}`
+					break
+				}
+				case "thinking":
+					if (typeof block.thinking !== "string") return `${blockLocation} has invalid thinking text`
+					if (!hasNonemptyId(block.signature)) return `${blockLocation} has an invalid thinking signature`
+					break
+				case "redacted_thinking":
+					if (typeof block.data !== "string") return `${blockLocation} has invalid redacted thinking`
+					break
+				case "thoughtSignature":
+					if (!hasNonemptyId(block.thoughtSignature))
+						return `${blockLocation} has an invalid thought signature`
 					break
 				case "tool_use":
 					if (typeof block.id !== "string" || block.id.length === 0)
@@ -79,6 +104,22 @@ export function invalidPersistedApiMessages(value: unknown): string | undefined 
 			}
 		}
 	}
+	return undefined
+}
+
+/** Known continuity fields must be replayable; provider-specific extra fields remain opaque. */
+function invalidReasoningRecord(value: Record<string, unknown>, requireEncrypted: boolean): string | undefined {
+	if ((requireEncrypted || value.encrypted_content !== undefined) && !hasNonemptyId(value.encrypted_content)) {
+		return "must contain encrypted reasoning"
+	}
+	if (value.text !== undefined && typeof value.text !== "string") return "has invalid reasoning text"
+	if (!requireEncrypted && value.text === undefined && value.encrypted_content === undefined) {
+		return "must contain reasoning text or encrypted reasoning"
+	}
+	if (value.id !== undefined && typeof value.id !== "string") return "has an invalid reasoning ID"
+	if (value.summary !== undefined && !Array.isArray(value.summary)) return "has an invalid reasoning summary"
+	if (value.signature !== undefined && typeof value.signature !== "string")
+		return "has an invalid reasoning signature"
 	return undefined
 }
 

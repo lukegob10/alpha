@@ -116,6 +116,7 @@ async function prepareTermination(): Promise<void> {
 		apiProvider: "fake-ai",
 		fakeAi: model,
 		mode: "code",
+		approvalMode: "auto",
 		autoApprovalEnabled: true,
 		alwaysAllowReadOnly: true,
 		alwaysAllowWrite: true,

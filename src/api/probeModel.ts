@@ -1,10 +1,16 @@
 import type { ProviderSettings, ModelProbeResult } from "@alpha-code/types"
 import { buildApiHandler, type ApiHandler } from "./index"
-import { createLinkedAbortController, iterateApiStreamWithAbort, raceApiStreamAbort } from "./transform/stream"
+import {
+	createLinkedAbortController,
+	isApiStreamAbortError,
+	iterateApiStreamWithAbort,
+	raceApiStreamAbort,
+} from "./transform/stream"
 
 /** One bounded, tool-free readiness request through Alpha's actual provider adapter. */
 export async function probeModel(configuration: ProviderSettings, signal?: AbortSignal): Promise<ModelProbeResult> {
-	const control = createLinkedAbortController({ signal, deadline: Date.now() + 60_000 })
+	const deadline = Date.now() + 60_000
+	const control = createLinkedAbortController({ signal, deadline })
 	const start = performance.now()
 	const result: ModelProbeResult = {
 		status: "failed",
@@ -16,23 +22,25 @@ export async function probeModel(configuration: ProviderSettings, signal?: Abort
 		failureCode: "request_failed",
 	}
 	let handler: ApiHandler | undefined
+	let observingPhase = true
 	try {
 		handler = buildApiHandler(structuredClone(configuration))
 		if (!handler.streamCapabilities?.cancellation) {
 			result.failureCode = "cancellation_unsupported"
 			return result
 		}
-		if (handler.prepareModel)
-			await raceApiStreamAbort(
-				handler.prepareModel({ signal: control.signal, deadline: Date.now() + 60_000 }),
-				control.signal,
-			)
+		if (handler.prepareModel) {
+			result.requestPhase = "model-selection"
+			await raceApiStreamAbort(handler.prepareModel({ signal: control.signal, deadline }), control.signal)
+		}
 		control.signal.throwIfAborted()
 		result.modelId = handler.getModel().id
 		result.requests = 1
 		let text = false
 		let completed = !handler.streamCapabilities.lifecycle
 		let failed = false
+		let cancelled = false
+		let terminalAccepted = false
 		for await (const chunk of iterateApiStreamWithAbort(
 			handler.createMessage(
 				"Reply with OK to this readiness check.",
@@ -40,11 +48,22 @@ export async function probeModel(configuration: ProviderSettings, signal?: Abort
 				{
 					taskId: "alpha-readiness-probe",
 					signal: control.signal,
-					deadline: Date.now() + 60_000,
+					deadline,
 					tools: [],
 					tool_choice: "none",
 					store: false,
 					suppressPreviousResponseId: true,
+					onRequestPhase: (phase) => {
+						if (
+							observingPhase &&
+							!control.signal.aborted &&
+							(phase === "model-selection" ||
+								phase === "request-admission" ||
+								phase === "first-response-chunk" ||
+								phase === "response-stream")
+						)
+							result.requestPhase = phase
+					},
 				},
 			),
 			control.signal,
@@ -60,23 +79,35 @@ export async function probeModel(configuration: ProviderSettings, signal?: Abort
 					cost: chunk.totalCost ?? null,
 				}
 			else if (chunk.type === "outcome") {
-				completed = chunk.terminal && chunk.status === "completed"
+				control.signal.throwIfAborted()
+				completed = chunk.terminal && chunk.status === "completed" && !chunk.requiresContinuation
 				failed ||= !completed
+				cancelled ||= chunk.status === "cancelled"
+				if (chunk.terminal) {
+					terminalAccepted = true
+					observingPhase = false
+					break
+				}
 			} else if (chunk.type === "error" || chunk.type.startsWith("tool_call")) failed = true
 		}
-		if (text && completed && !failed) {
+		// The abort-aware iterator may finish cleanly when it races a stalled provider.
+		// Cancellation still owns the terminal result, including after partial output.
+		if (!terminalAccepted) control.signal.throwIfAborted()
+		if (cancelled) result.failureCode = "cancelled_or_deadline"
+		else if (text && completed && !failed) {
 			result.status = "completed"
 			result.failureCode = null
 		} else result.failureCode = text ? "incomplete_response" : "empty_response"
-	} catch {
-		result.failureCode = control.signal.aborted ? "cancelled_or_deadline" : "request_failed"
+	} catch (error) {
+		result.failureCode = isApiStreamAbortError(error, control.signal) ? "cancelled_or_deadline" : "request_failed"
 	} finally {
+		observingPhase = false
 		if (handler && "dispose" in handler && typeof handler.dispose === "function") {
 			try {
 				handler.dispose()
 			} catch {
 				result.status = "failed"
-				result.failureCode = "request_failed"
+				if (result.failureCode !== "cancelled_or_deadline") result.failureCode = "request_failed"
 			}
 		}
 		control.dispose()

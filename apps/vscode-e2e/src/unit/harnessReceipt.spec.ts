@@ -57,7 +57,7 @@ test("harness receipts project final observed state and omit raw locations and e
 		)
 		assert.equal(await fs.readFile(path.join(root, "receipt-test.json"), "utf8"), bytes)
 	} finally {
-		assert.equal(path.dirname(root), os.tmpdir())
+		assert.equal(await fs.realpath(path.dirname(root)), await fs.realpath(os.tmpdir()))
 		assert.match(path.basename(root), /^alpha-harness-receipt-/)
 		await fs.rm(root, { recursive: true, force: true })
 	}

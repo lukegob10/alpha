@@ -20,6 +20,7 @@ interface PanelMetrics {
 	scrollWidth: number
 	clientWidth: number
 	composer: boolean
+	alignedCards: boolean
 	text: string
 }
 
@@ -248,9 +249,23 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 			await check("!!d.querySelector('[data-testid=history-search-input]')")
 			await check("!!d.querySelector('[data-testid=task-item-history-visual-0]')")
 			const metrics = await evaluate<PanelMetrics>(
-				`(()=>{const s=d.querySelector('[data-testid="history-search-input"]').closest('section');const r=s.getBoundingClientRect();const c=d.querySelector('textarea');return {width:r.width,height:r.height,scrollWidth:s.scrollWidth,clientWidth:s.clientWidth,text:s.innerText,composer:!!c&&c.getBoundingClientRect().height>0}})()`,
+				`(()=>{
+					const s=d.querySelector('[data-testid="history-search-input"]').closest('section');
+					const r=s.getBoundingClientRect(),c=d.querySelector('textarea');
+					const history=s.querySelector('.new-task-history-list').getBoundingClientRect();
+					const composer=c?.closest('.new-task-composer')?.getBoundingClientRect();
+					return {
+						width:r.width,height:r.height,scrollWidth:s.scrollWidth,clientWidth:s.clientWidth,text:s.innerText,
+						composer:!!c&&c.getBoundingClientRect().height>0,
+						alignedCards:!!composer&&Math.abs(history.left-composer.left)<0.1&&Math.abs(history.right-composer.right)<0.1
+					};
+				})()`,
 			)
 			assert.ok(metrics.composer, "Composer remains visible alongside Chats")
+			assert.ok(
+				metrics.alignedCards,
+				"Expanded history and composer retain aligned card edges in a narrow sidebar",
+			)
 			assert.ok(metrics.width > 0 && metrics.width <= 420, `Narrow sidebar required, observed ${metrics.width}px`)
 			assert.ok(metrics.scrollWidth <= metrics.clientWidth + 1, "Narrow panel has no horizontal overflow")
 			assert.ok(!metrics.text.includes("View all"), "History is available inline")

@@ -1,4 +1,5 @@
 import path from "path"
+import { z } from "zod"
 
 import {
 	SUBAGENT_CONTEXT_MANIFEST_VERSION,
@@ -18,7 +19,10 @@ import {
 } from "@alpha-code/types"
 
 import type { ApiMessage } from "../task-persistence/apiMessages"
+import { invalidPersistedApiMessages } from "../task-persistence/validatePersistedApiMessages"
+import { getEffectiveApiHistory } from "../condense"
 import { digestValue } from "./StepContext"
+import { getToolCallId, getToolResultId } from "../../utils/tool-id"
 
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/
 const ENVIRONMENT_DETAILS_PATTERN = /<environment_details\b[^>]*>[\s\S]*?<\/environment_details\s*>/gi
@@ -42,7 +46,7 @@ const DIRECT_HUMAN_FEEDBACK_RECORD_PATTERN = /^<user_message>[\s\S]*<\/user_mess
 const PRIVATE_KEY_BLOCK_PATTERN = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gi
 const COOKIE_HEADER_PATTERN = /^(\s*(?:set-cookie|cookie)\s*:).+$/gim
 const LABELED_CREDENTIAL_PATTERN =
-	/(\b(?:api[_ -]?key|(?:aws[_ -]?)?secret[_ -]?access[_ -]?key|access[_ -]?key(?:[_ -]?id)?|account[_ -]?key|client[_ -]?secret|private[_ -]?key|secret|password|credential|auth(?:orization)?|(?:access|refresh|id)?[_ -]?token|session(?:[_ -]?(?:id|token))?|cookie|connection[_ -]?string)\b"?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|(?:(?:bearer|basic)\s+)?[^\s,;]+)/gi
+	/(\b(?:api[_ -]?key|(?:aws[_ -]?)?secret[_ -]?access[_ -]?key|access[_ -]?key(?:[_ -]?id)?|account[_ -]?key|client[_ -]?secret|private[_ -]?key|secret|password|credential|auth(?:orization)?|(?:access|refresh|id)?[_ -]?token|session(?:[_ -]?(?:id|token))?|cookie|connection[_ -]?string)\b"?\s*[:=]\s*)(?:\[REDACTED CREDENTIAL\]|"[^"\r\n]*"|'[^'\r\n]*'|(?:(?:bearer|basic)\s+)?[^\s,;]+)/gi
 const BEARER_CREDENTIAL_PATTERN = /(\bbearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi
 const OPENAI_CREDENTIAL_PATTERN = /\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b/g
 const GITHUB_CREDENTIAL_PATTERN = /\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}\b/g
@@ -87,7 +91,16 @@ export interface CaptureSubagentContextInput {
 	/** Supplied by the caller so the pure capture result is deterministic and auditable. */
 	capturedAt: number
 	forkTurns: SubagentForkTurns
+	/** Immutable provider-facing history, after the parent's persistence barrier and effective-history projection. */
 	history: readonly ApiMessage[]
+	/** Opt-in host contract. Legacy callers retain their existing data-only evidence path. */
+	historyInheritance?: {
+		parentModelRoute: SubagentModelRouteState
+		/** Indexes in history classified as final by canonical host state, never by assistant role or text alone. */
+		finalAssistantMessageIndexes?: readonly number[]
+		/** Host proof of a reusable context baseline captured at this same boundary; route equality alone is insufficient. */
+		contextBaselineVerified?: boolean
+	}
 	instructions: {
 		/** The exact effective instruction text applied at the capture boundary. */
 		effectiveText: string
@@ -126,7 +139,21 @@ export interface CapturedSubagentContext {
 	inheritedTurnContext: string
 	/** In-memory evidence for callers/tests. Do not persist this alongside the public manifest. */
 	selectedTurns: CapturedSubagentTurn[]
+	/** Private launch data. Persist messages through the child's authoritative transcript writer, not the manifest. */
+	historyFork: SubagentHistoryFork
 }
+
+export type SubagentHistoryFork =
+	| { kind: "none" }
+	| { kind: "text"; reason: "legacy_capture" }
+	| {
+			kind: "native"
+			parentTaskId: string
+			messages: ApiMessage[]
+			digest: string
+			/** Defaults to rebuilding. Reuse requires an all-history fork, a compatible route and verified host baseline. */
+			requiresContextRebuild: boolean
+	  }
 
 function uniqueSorted(values: readonly string[]): string[] {
 	return [...new Set(values)].sort((left, right) => left.localeCompare(right))
@@ -251,26 +278,31 @@ function recordAssistantToolUses(message: ApiMessage, toolNamesById: Map<string,
 	if (message.role !== "assistant" || !Array.isArray(message.content)) return
 
 	for (const block of message.content) {
-		if (
-			block &&
-			typeof block === "object" &&
-			block.type === "tool_use" &&
-			typeof block.id === "string" &&
-			typeof block.name === "string"
-		) {
-			toolNamesById.set(block.id, block.name)
-		}
+		const id = getToolCallId(block)
+		if (id === undefined) continue
+		const directName = Reflect.get(block, "name")
+		const legacyFunction = Reflect.get(block, "function")
+		const name =
+			typeof directName === "string"
+				? directName
+				: legacyFunction !== null && typeof legacyFunction === "object" && !Array.isArray(legacyFunction)
+					? Reflect.get(legacyFunction, "name")
+					: undefined
+		if (typeof name === "string") toolNamesById.set(id, name)
 	}
 }
 
 function extractDirectHumanFeedback(
 	toolResult: {
-		tool_use_id: string
-		content?: string | unknown[]
+		type: "tool_result"
+		tool_use_id?: unknown
+		tool_call_id?: unknown
+		content?: string | unknown[] | null
 	},
 	toolNamesById: ReadonlyMap<string, string>,
 ): string {
-	const toolName = toolNamesById.get(toolResult.tool_use_id)
+	const id = getToolResultId(toolResult)
+	const toolName = id === undefined ? undefined : toolNamesById.get(id)
 	if (!toolName || !DIRECT_HUMAN_FEEDBACK_TOOLS.has(toolName)) return ""
 
 	const textBlocks =
@@ -312,7 +344,7 @@ function extractSafeText(message: ApiMessage, toolNamesById: ReadonlyMap<string,
 			const sanitized = sanitizeEvidenceText(block.text, message.role === "user")
 			return sanitized ? [sanitized] : []
 		}
-		if (message.role === "user" && block.type === "tool_result" && typeof block.tool_use_id === "string") {
+		if (message.role === "user" && block.type === "tool_result") {
 			const feedback = extractDirectHumanFeedback(block, toolNamesById)
 			return feedback ? [feedback] : []
 		}
@@ -383,6 +415,392 @@ export function selectCapturedTurns(
 
 	const requestedCount = Number(parsedForkTurns)
 	return turns.slice(Math.max(0, turns.length - requestedCount)).map(cloneCapturedTurn)
+}
+
+const NATIVE_TOOL_BLOCK_TYPES = new Set([
+	"tool_use",
+	"tool_result",
+	"tool_call",
+	"function_call",
+	"function_call_output",
+	"custom_tool_call",
+	"custom_tool_call_output",
+	"tool_search_call",
+	"tool_search_output",
+])
+type NativeConversationContent = Exclude<ApiMessage["content"], string>
+const nativeCacheControlSchema = z
+	.object({ type: z.literal("ephemeral") })
+	.strict()
+	.nullable()
+	.optional()
+const nativeTextBlockSchema = z
+	.object({ type: z.literal("text"), text: z.string(), cache_control: nativeCacheControlSchema })
+	.strict()
+const nativeImageBlockSchema = z
+	.object({
+		type: z.literal("image"),
+		source: z
+			.object({
+				type: z.literal("base64"),
+				media_type: z.enum(["image/jpeg", "image/png", "image/gif", "image/webp"]),
+				data: z.string().min(1),
+			})
+			.strict(),
+		cache_control: nativeCacheControlSchema,
+	})
+	.strict()
+const nativeDocumentBlockSchema = z
+	.object({
+		type: z.literal("document"),
+		source: z.union([
+			z
+				.object({
+					type: z.literal("base64"),
+					media_type: z.literal("application/pdf"),
+					data: z.string().min(1),
+				})
+				.strict(),
+			z.object({ type: z.literal("text"), media_type: z.literal("text/plain"), data: z.string() }).strict(),
+			z
+				.object({
+					type: z.literal("content"),
+					content: z.union([z.string(), z.array(z.union([nativeTextBlockSchema, nativeImageBlockSchema]))]),
+				})
+				.strict(),
+		]),
+		cache_control: nativeCacheControlSchema,
+		citations: z.object({ enabled: z.boolean().optional() }).strict().optional(),
+		context: z.string().nullable().optional(),
+		title: z.string().nullable().optional(),
+	})
+	.strict()
+const nativeConversationMessagesSchema = z.array(
+	z
+		.object({
+			role: z.enum(["user", "assistant"]),
+			content: z.union([
+				z.string().min(1),
+				z.array(z.union([nativeTextBlockSchema, nativeImageBlockSchema, nativeDocumentBlockSchema])).min(1),
+			]),
+			input_origin: z.literal("agent"),
+			phase: z.literal("final_answer").optional(),
+			ts: z.number().finite().optional(),
+			isSummary: z.literal(true).optional(),
+			condenseId: z.string().optional(),
+			internal_chat_message_metadata_passthrough: z
+				.object({ content_item_kinds: z.array(z.string()) })
+				.strict()
+				.optional(),
+		})
+		.strict(),
+)
+
+/** Only model-context annotations cross compatible routes; opaque continuation and host receipts are parent-local. */
+function cloneConversationAnnotations(
+	message: ApiMessage,
+	compatibleRoute: boolean,
+	retainedContentIndexes?: number[],
+) {
+	if (!compatibleRoute || !retainedContentIndexes) return {}
+	const annotations = (message as ApiMessage & { internal_chat_message_metadata_passthrough?: unknown })
+		.internal_chat_message_metadata_passthrough
+	if (!annotations || typeof annotations !== "object" || Array.isArray(annotations)) return {}
+	const kinds = (annotations as { content_item_kinds?: unknown }).content_item_kinds
+	if (!Array.isArray(kinds) || !kinds.every((kind): kind is string => typeof kind === "string")) return {}
+	const sourceContentCount = typeof message.content === "string" ? 1 : message.content.length
+	if (kinds.length !== sourceContentCount) return {}
+	return {
+		internal_chat_message_metadata_passthrough: {
+			content_item_kinds: retainedContentIndexes.map((index) => kinds[index]),
+		},
+	}
+}
+
+function cloneNativeMedia(block: NativeConversationContent[number]): NativeConversationContent[number] {
+	const parsed = z.union([nativeImageBlockSchema, nativeDocumentBlockSchema]).safeParse(block)
+	if (!parsed.success) throw new Error("Unsupported native media shape in parent model history")
+	const media = parsed.data
+	if (media.type === "document") {
+		if (media.title) media.title = redactCredentialText(media.title)
+		if (media.context) media.context = redactCredentialText(media.context)
+		if (media.source.type === "text") media.source.data = redactCredentialText(media.source.data)
+		if (media.source.type === "content") {
+			if (typeof media.source.content === "string")
+				media.source.content = redactCredentialText(media.source.content)
+			else {
+				for (const nested of media.source.content) {
+					if (nested.type === "text") nested.text = redactCredentialText(nested.text)
+				}
+			}
+		}
+	}
+	return media
+}
+
+function projectNativeConversationMessage(
+	message: ApiMessage,
+	toolNamesById: ReadonlyMap<string, string>,
+	isFinalAssistant: boolean,
+	retainProviderMetadata: boolean,
+): ApiMessage | undefined {
+	if (message.type === "reasoning" || message.isTruncationMarker || message.agent_message_id || message.hook_prompt) {
+		return undefined
+	}
+	if (message.role === "assistant" && !isFinalAssistant) return undefined
+
+	let content: ApiMessage["content"]
+	let retainedContentIndexes: number[] | undefined
+	const toolBlocks = Array.isArray(message.content)
+		? message.content.filter((block) => NATIVE_TOOL_BLOCK_TYPES.has(block.type))
+		: []
+	if (message.role === "assistant" && toolBlocks.length > 0) {
+		// Alpha's legacy terminal tool carries its final report in arguments. Only
+		// canonical host finality permits this projection; ordinary tool steps vanish.
+		const completion = toolBlocks.length === 1 ? toolBlocks[0] : undefined
+		if (completion?.type !== "tool_use" || completion.name !== "attempt_completion") return undefined
+		const input = completion.input
+		if (!input || typeof input !== "object" || !("result" in input) || typeof input.result !== "string") {
+			return undefined
+		}
+		content = sanitizeEvidenceText(input.result)
+		if (!content) return undefined
+	} else if (typeof message.content === "string") {
+		content = sanitizeEvidenceText(message.content, message.role === "user")
+		if (!content) return undefined
+		retainedContentIndexes = [0]
+	} else {
+		retainedContentIndexes = []
+		let hasDerivedContent = false
+		content = message.content.flatMap((block, index): NativeConversationContent => {
+			if (block.type === "text") {
+				const text = sanitizeEvidenceText(block.text, message.role === "user")
+				if (text) retainedContentIndexes!.push(index)
+				return text
+					? [
+							{
+								type: "text",
+								text,
+								...(retainProviderMetadata && block.cache_control
+									? { cache_control: block.cache_control }
+									: {}),
+							},
+						]
+					: []
+			}
+			if (message.role === "user" && (block.type === "image" || block.type === "document")) {
+				retainedContentIndexes!.push(index)
+				return [cloneNativeMedia(block)]
+			}
+			if (message.role === "user" && block.type === "tool_result") {
+				const text = extractDirectHumanFeedback(block, toolNamesById)
+				if (text) hasDerivedContent = true
+				return text ? [{ type: "text", text }] : []
+			}
+			return []
+		})
+		if (content.length === 0) return undefined
+		if (hasDerivedContent) retainedContentIndexes = undefined
+	}
+
+	// Role is model context, not approval provenance. Inherited human input must not
+	// be recaptured as a local child authorization after a reload or nested fork.
+	return {
+		role: message.role,
+		...(typeof message.ts === "number" && Number.isFinite(message.ts) ? { ts: message.ts } : {}),
+		...(message.isSummary === true
+			? { isSummary: true, ...(typeof message.condenseId === "string" ? { condenseId: message.condenseId } : {}) }
+			: {}),
+		...cloneConversationAnnotations(message, retainProviderMetadata, retainedContentIndexes),
+		// Binary media is already encoded provider input, not text to redact. Clone
+		// it verbatim; token-shaped substrings can be legitimate base64 bytes.
+		content: structuredClone(content),
+		input_origin: "agent",
+		...(message.role === "assistant" ? { phase: "final_answer" } : {}),
+	}
+}
+
+interface NativeConversationTurn {
+	ordinal: number
+	entries: { sourceMessageIndex: number; message: ApiMessage }[]
+}
+
+function captureNativeConversation(input: CaptureSubagentContextInput): {
+	historyFork: Extract<SubagentHistoryFork, { kind: "native" }>
+	selectedTurns: CapturedSubagentTurn[]
+} {
+	const validationError = invalidPersistedApiMessages(input.history)
+	if (validationError) throw new Error(`Cannot fork invalid parent model history: ${validationError}`)
+	const effectiveHistory = getEffectiveApiHistory([...input.history])
+	if (
+		effectiveHistory.length !== input.history.length ||
+		effectiveHistory.some((message, index) => message !== input.history[index])
+	) {
+		throw new Error("Native sub-agent capture requires effective parent history without archived messages")
+	}
+	const compatibleRoute = isCompatibleHistoryRoute(input)
+	const finalIndexes = new Set(input.historyInheritance?.finalAssistantMessageIndexes ?? [])
+	for (const index of finalIndexes) {
+		if (!Number.isSafeInteger(index) || index < 0 || index >= input.history.length) {
+			throw new Error("Sub-agent final-answer indexes must identify messages in the captured history")
+		}
+		if (input.history[index].role !== "assistant") {
+			throw new Error("Sub-agent final-answer indexes must identify assistant messages")
+		}
+	}
+
+	const turns: NativeConversationTurn[] = []
+	const baseline: ApiMessage[] = []
+	const toolNamesById = new Map<string, string>()
+	let current: NativeConversationTurn | undefined
+	for (const [sourceMessageIndex, message] of input.history.entries()) {
+		recordAssistantToolUses(message, toolNamesById)
+		const phase = (message as ApiMessage & { phase?: unknown }).phase
+		const projected = projectNativeConversationMessage(
+			message,
+			toolNamesById,
+			finalIndexes.has(sourceMessageIndex) || phase === "final_answer",
+			compatibleRoute,
+		)
+		if (!projected) continue
+		if (message.isSummary === true) {
+			// A summary represents older context, not a provable user-led turn. Its
+			// already-effective body is retained only for a full-history fork.
+			baseline.push(projected)
+			continue
+		}
+		if (message.role === "user") {
+			current = { ordinal: turns.length, entries: [] }
+			turns.push(current)
+		}
+		if (current) current.entries.push({ sourceMessageIndex, message: projected })
+		else baseline.push(projected)
+	}
+
+	const selected =
+		input.forkTurns === "all" ? turns : turns.slice(Math.max(0, turns.length - Number(input.forkTurns)))
+	const messages = [
+		...(input.forkTurns === "all" ? baseline : []),
+		...selected.flatMap((turn) => turn.entries.map((entry) => entry.message)),
+	]
+	const selectedTurns = selected.map(({ ordinal, entries }) => {
+		const digest = digestValue(entries.map(({ message }) => message))
+		return {
+			ref: createTurnRef(input.parentTaskId, ordinal, digest),
+			ordinal,
+			sourceMessageIndexes: entries.map(({ sourceMessageIndex }) => sourceMessageIndex),
+			digest,
+			messages: entries.map(({ sourceMessageIndex, message }) => ({
+				role: message.role,
+				sourceMessageIndex,
+				text:
+					typeof message.content === "string"
+						? message.content
+						: message.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n\n"),
+			})),
+		}
+	})
+	return {
+		historyFork: {
+			kind: "native",
+			parentTaskId: input.parentTaskId,
+			messages,
+			digest: digestValue(messages),
+			requiresContextRebuild:
+				input.forkTurns !== "all" ||
+				!compatibleRoute ||
+				input.historyInheritance?.contextBaselineVerified !== true,
+		},
+		selectedTurns,
+	}
+}
+
+function isCompatibleHistoryRoute(input: CaptureSubagentContextInput): boolean {
+	const parent = input.historyInheritance?.parentModelRoute
+	const child = input.modelRoute
+	return Boolean(
+		parent?.provider &&
+			parent.modelId &&
+			parent.provider === child.provider &&
+			parent.modelId === child.modelId &&
+			(parent.profileId === undefined || child.profileId === undefined || parent.profileId === child.profileId),
+	)
+}
+
+/** Verify a private launch seed before the child installs it through its normal transcript writer. */
+export function assertSubagentHistoryFork(
+	value: unknown,
+	manifest: SubagentContextManifest,
+): asserts value is SubagentHistoryFork {
+	if (!isValidSubagentContextManifest(manifest) || !value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("Managed child history fork failed integrity validation")
+	}
+	const fork = value as Record<string, unknown>
+	if (fork.kind === "none" && manifest.requestedForkTurns === "none" && Object.keys(fork).length === 1) return
+	if (
+		fork.kind === "text" &&
+		manifest.requestedForkTurns !== "none" &&
+		fork.reason === "legacy_capture" &&
+		Object.keys(fork).length === 2
+	) {
+		return
+	}
+	if (
+		fork.kind !== "native" ||
+		manifest.requestedForkTurns === "none" ||
+		fork.parentTaskId !== manifest.parentTaskId ||
+		typeof fork.digest !== "string" ||
+		!SHA256_HEX_PATTERN.test(fork.digest) ||
+		typeof fork.requiresContextRebuild !== "boolean" ||
+		(!fork.requiresContextRebuild && manifest.requestedForkTurns !== "all") ||
+		Object.keys(fork).some(
+			(key) => !["kind", "parentTaskId", "messages", "digest", "requiresContextRebuild"].includes(key),
+		) ||
+		invalidPersistedApiMessages(fork.messages) ||
+		!nativeConversationMessagesSchema.safeParse(fork.messages).success
+	) {
+		throw new Error("Managed child history fork failed integrity validation")
+	}
+	const messages = fork.messages as ApiMessage[]
+	if (digestValue(messages) !== fork.digest)
+		throw new Error("Managed child history fork digest does not match its seed")
+	const turnDigests: string[] = []
+	let currentTurn: ApiMessage[] | undefined
+	for (const [index, message] of messages.entries()) {
+		const annotations = (
+			message as ApiMessage & { internal_chat_message_metadata_passthrough?: { content_item_kinds: string[] } }
+		).internal_chat_message_metadata_passthrough
+		if (
+			(message.isSummary === true && (index !== 0 || manifest.requestedForkTurns !== "all")) ||
+			(message.isSummary === true && message.role !== "user") ||
+			(message.condenseId !== undefined && message.isSummary !== true) ||
+			(message.role === "assistant" && (message as ApiMessage & { phase?: unknown }).phase !== "final_answer") ||
+			(message.role === "user" && "phase" in message) ||
+			(annotations &&
+				annotations.content_item_kinds.length !==
+					(typeof message.content === "string" ? 1 : message.content.length)) ||
+			(Array.isArray(message.content) &&
+				message.content.some(
+					(block) =>
+						block.type !== "text" &&
+						!(message.role === "user" && ["image", "document"].includes(block.type)),
+				))
+		) {
+			throw new Error("Managed child history fork contains non-conversational or parent-owned records")
+		}
+		if (message.role === "user" && message.isSummary !== true) {
+			if (currentTurn) turnDigests.push(digestValue(currentTurn))
+			currentTurn = []
+		}
+		currentTurn?.push(message)
+	}
+	if (currentTurn) turnDigests.push(digestValue(currentTurn))
+	if (
+		turnDigests.length !== manifest.selectedUserTurns.count ||
+		turnDigests.some((digest, index) => digest !== manifest.selectedUserTurns.refs[index].digest)
+	) {
+		throw new Error("Managed child history fork does not match the selected parent turns")
+	}
 }
 
 function cloneCapturedTurn(turn: CapturedSubagentTurn): CapturedSubagentTurn {
@@ -586,19 +1004,36 @@ export function captureSubagentContext(input: CaptureSubagentContextInput): Capt
 	if (!Number.isSafeInteger(input.capturedAt) || input.capturedAt < 0) {
 		throw new Error("Sub-agent context capturedAt must be a non-negative safe integer")
 	}
-	if (!input.instructions.effectiveText.trim()) {
+	if (
+		typeof input.instructions.effectiveText !== "string" ||
+		(!input.historyInheritance && !input.instructions.effectiveText.trim())
+	) {
 		throw new Error("Sub-agent context requires the exact effective instruction text")
 	}
 
-	const selectedTurns = boundCapturedTurns(
-		input.parentTaskId,
-		selectCapturedTurns(captureUserLedTurns(input.parentTaskId, input.history), forkTurns),
-	)
+	const native = forkTurns !== "none" && input.historyInheritance ? captureNativeConversation(input) : undefined
+	const historyFork: SubagentHistoryFork =
+		native?.historyFork ?? (forkTurns === "none" ? { kind: "none" } : { kind: "text", reason: "legacy_capture" })
+	const selectedTurns =
+		native?.selectedTurns ??
+		boundCapturedTurns(
+			input.parentTaskId,
+			selectCapturedTurns(captureUserLedTurns(input.parentTaskId, input.history), forkTurns),
+		)
 	const sources = input.instructions.sources.map((source, index) => ({
 		kind: source.kind.trim(),
 		ref: source.ref.trim(),
 		digest: resolveContentDigest(source, `Instruction source ${index + 1}`),
 	}))
+	// A native boundary may have no applied user instructions. Preserve its exact
+	// body, including empty text, while retaining the manifest's provenance contract.
+	if (input.historyInheritance && sources.length === 0) {
+		sources.push({
+			kind: "aggregate",
+			ref: `task:${input.parentTaskId.trim()}:effective-instructions`,
+			digest: digestValue(input.instructions.effectiveText),
+		})
+	}
 	const skills = input.skills
 		.map((skill, index) => ({
 			name: skill.name.trim(),
@@ -643,11 +1078,13 @@ export function captureSubagentContext(input: CaptureSubagentContextInput): Capt
 		...withoutDigest,
 		manifestDigest: digestValue(withoutDigest),
 	})
+	assertSubagentHistoryFork(historyFork, manifest)
 
 	return {
 		manifest,
-		inheritedTurnContext: renderInheritedTurnContext(selectedTurns),
+		inheritedTurnContext: historyFork.kind === "native" ? "" : renderInheritedTurnContext(selectedTurns),
 		selectedTurns,
+		historyFork,
 	}
 }
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.1.6
+
+### Patch Changes
+
+- Preserve tool call and result identity across provider history replay, recovery, and context compaction.
+- Align inherited instructions, skills, Plan mode, and bounded subagent context with the shared agent harness.
+- Fix root-scoped subagent names, worktree recovery, provider cancellation diagnostics, and awaited telemetry cleanup.
+- Improve task history actions and chat input behavior, and strengthen exact-host test fixtures and certification diagnostics.
+- Retain known limitations: the small concurrent retained-state benchmark regresses, and the live core campaign passes 26 of 27 samples after verified offline regrading with a dedicated Git-disabled profile.
+
 ## 3.1.5
 
 ### Patch Changes

@@ -2,10 +2,9 @@ import * as fs from "fs/promises"
 import * as path from "path"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
-import { fileExistsAtPath } from "../../utils/fs"
-import { safeWriteJson } from "../../utils/safeWriteJson"
-import { getTaskDirectoryPath } from "../../utils/storage"
+import { resolveExistingTaskDirectoryPathReadOnly } from "../../utils/storage"
 import { digestValue } from "../agent/StepContext"
+import { atomicWriteJson, withFileLock } from "./atomicWrite"
 
 const SUBAGENT_INSTRUCTION_SNAPSHOT_VERSION = 1 as const
 
@@ -16,9 +15,24 @@ interface SubagentInstructionSnapshot {
 }
 
 export function assertFrozenSubagentInstructions(instructions: string, expectedDigest: string): void {
-	if (!instructions.trim() || digestValue(instructions) !== expectedDigest) {
+	if (typeof instructions !== "string" || digestValue(instructions) !== expectedDigest) {
 		throw new Error("Managed child frozen instruction snapshot failed integrity validation")
 	}
+}
+
+async function resolveSnapshotFilePath(globalStoragePath: string, taskId: string): Promise<string> {
+	const taskDir = await resolveExistingTaskDirectoryPathReadOnly(globalStoragePath, taskId)
+	// The shared resolver validates existing task directories. A missing child
+	// also needs its parent checked before the writer creates any directories.
+	try {
+		const tasksRoot = await fs.lstat(path.dirname(taskDir))
+		if (!tasksRoot.isDirectory() || tasksRoot.isSymbolicLink()) {
+			throw new Error("Task storage path is not a regular directory")
+		}
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+	}
+	return path.join(taskDir, GlobalFileNames.subagentInstructionSnapshot)
 }
 
 export async function saveSubagentInstructionSnapshot({
@@ -33,14 +47,24 @@ export async function saveSubagentInstructionSnapshot({
 	expectedDigest: string
 }): Promise<void> {
 	assertFrozenSubagentInstructions(instructions, expectedDigest)
-	const taskDir = await getTaskDirectoryPath(globalStoragePath, taskId)
-	const filePath = path.join(taskDir, GlobalFileNames.subagentInstructionSnapshot)
+	const filePath = await resolveSnapshotFilePath(globalStoragePath, taskId)
 	const snapshot: SubagentInstructionSnapshot = {
 		version: SUBAGENT_INSTRUCTION_SNAPSHOT_VERSION,
 		digest: expectedDigest,
 		instructions,
 	}
-	await safeWriteJson(filePath, snapshot)
+	await withFileLock(filePath, async () => {
+		const existing = await readSnapshotFromPath(filePath, expectedDigest)
+		// The first durable boundary owns this child. Launch retries validate
+		// that boundary rather than silently replacing it or repairing corruption.
+		if (existing !== undefined) {
+			if (existing !== instructions) {
+				throw new Error("Managed child frozen instruction snapshot failed integrity validation")
+			}
+			return
+		}
+		await atomicWriteJson(filePath, snapshot, { requireAtomicReplace: true })
+	})
 }
 
 export async function readSubagentInstructionSnapshot({
@@ -52,9 +76,21 @@ export async function readSubagentInstructionSnapshot({
 	globalStoragePath: string
 	expectedDigest: string
 }): Promise<string | undefined> {
-	const taskDir = await getTaskDirectoryPath(globalStoragePath, taskId)
-	const filePath = path.join(taskDir, GlobalFileNames.subagentInstructionSnapshot)
-	if (!(await fileExistsAtPath(filePath))) return undefined
+	const filePath = await resolveSnapshotFilePath(globalStoragePath, taskId)
+	return readSnapshotFromPath(filePath, expectedDigest)
+}
+
+async function readSnapshotFromPath(filePath: string, expectedDigest: string): Promise<string | undefined> {
+	let stats: Awaited<ReturnType<typeof fs.lstat>>
+	try {
+		stats = await fs.lstat(filePath)
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+		throw new Error("Managed child frozen instruction snapshot is unreadable")
+	}
+	if (!stats.isFile() || stats.isSymbolicLink()) {
+		throw new Error("Managed child frozen instruction snapshot is invalid")
+	}
 
 	let value: unknown
 	try {

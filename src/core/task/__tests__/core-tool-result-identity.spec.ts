@@ -56,3 +56,34 @@ it("keeps out-of-order identified results and their statuses", () => {
 	]
 	expect(repair(["first", "second"], results)).toEqual(results)
 })
+
+it("preserves reversed accepted legacy receipts, empty-field fallback and failure status", () => {
+	const rawResults = [
+		{ type: "tool_result", tool_call_id: "second", content: "Failed", is_error: true },
+		{ type: "tool_result", tool_use_id: "", tool_call_id: "first", content: "Succeeded", opaque: { kept: true } },
+	]
+	const original = structuredClone(rawResults)
+	expect(repair(["first", "second"], rawResults as unknown as Anthropic.ToolResultBlockParam[])).toEqual(original)
+	expect(rawResults).toEqual(original)
+})
+
+it("pairs accepted legacy calls with their existing receipts without fabricating interruption", () => {
+	const assistant = {
+		role: "assistant",
+		content: [{ type: "tool_call", tool_call_id: "retained", name: "read_file", arguments: { path: "a.ts" } }],
+	} as unknown as Anthropic.MessageParam
+	const user = {
+		role: "user",
+		content: [{ type: "tool_result", tool_call_id: "retained", content: "Actual failure", is_error: true }],
+	} as unknown as Anthropic.MessageParam
+	const original = structuredClone(user)
+	expect(validateAndFixToolResultIds(user, [assistant])).toEqual(original)
+	expect(user).toEqual(original)
+})
+
+it("rejects conflicting aliases instead of guessing a receipt identity", () => {
+	const results = [
+		{ type: "tool_result", tool_use_id: "first", tool_call_id: "second", content: "Sensitive output" },
+	] as unknown as Anthropic.ToolResultBlockParam[]
+	expect(() => repair(["first", "second"], results)).toThrow("conflicting_tool_result_ids")
+})

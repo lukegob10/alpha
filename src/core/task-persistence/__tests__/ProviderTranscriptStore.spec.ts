@@ -5,6 +5,7 @@ import crypto from "crypto"
 
 import type { ApiMessage } from "../apiMessages"
 import { GlobalFileNames } from "../../../shared/globalFileNames"
+import { buildOpenAiResponsesInput } from "../../../api/providers/openai-responses"
 
 vi.mock("../../../utils/storage", () => ({
 	getTaskDirectoryPath: async (globalStoragePath: string, taskId: string) => {
@@ -121,6 +122,54 @@ describe("ProviderTranscriptStore", () => {
 		] as ApiMessage[]
 		await store.commit(history)
 		expect((await store.read()).messages).toEqual(history)
+	})
+
+	it("keeps verified persisted bytes and digest intact when projecting a hydrated legacy patch transaction", async () => {
+		const store = new ProviderTranscriptStore(taskId, storagePath)
+		const patch =
+			'*** Begin Patch\r\n*** Add File: file.txt\r\n+const path = "C:\\work\\file.txt"\r\n*** End Patch\n'
+		const history = [
+			{ type: "reasoning", encrypted_content: "synthetic-encrypted", summary: [], id: "reasoning-1" },
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "patch-call", name: "apply_patch", input: patch }],
+				provider_state: { opaque: [1, 2] },
+			},
+			{
+				role: "user",
+				content: [
+					{
+						type: "tool_result",
+						tool_call_id: "patch-call",
+						content: "Error: cancelled",
+						is_error: true,
+						status: "cancelled",
+					},
+				],
+			},
+		] as unknown as ApiMessage[]
+		const receipt = await store.commit(history)
+		const filePath = await store.getFilePath()
+		const beforeBytes = await fs.readFile(filePath)
+		const hydrated = await store.read()
+		const beforeMessages = structuredClone(hydrated.messages)
+
+		expect(buildOpenAiResponsesInput("", [], hydrated.messages, false)).toContainEqual({
+			type: "custom_tool_call",
+			call_id: "patch-call",
+			name: "apply_patch",
+			input: patch,
+		})
+		expect(buildOpenAiResponsesInput("", [], hydrated.messages, false)).toContainEqual({
+			type: "custom_tool_call_output",
+			call_id: "patch-call",
+			output: "Error: cancelled",
+		})
+		expect(hydrated.messages).toEqual(beforeMessages)
+		expect(hydrated.messages).toEqual(history)
+		expect(await fs.readFile(filePath)).toEqual(beforeBytes)
+		expect(await store.hasCommitReceipt(receipt)).toBe(true)
+		expect((await store.read()).digest).toBe(digestProviderTranscript(history))
 	})
 
 	it("quarantines a corrupt envelope and rebuilds it from the authoritative transcript", async () => {

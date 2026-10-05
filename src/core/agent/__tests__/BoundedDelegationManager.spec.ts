@@ -1,4 +1,8 @@
-import { BoundedDelegationManager, InternalTaskCancellationError } from "../BoundedDelegationManager"
+import {
+	BoundedDelegationManager,
+	InternalTaskCancellationError,
+	type InternalTaskRunner,
+} from "../BoundedDelegationManager"
 import { buildInternalTaskEnvelope, type InternalTaskPolicy } from "../InternalTaskEnvelope"
 const policy: InternalTaskPolicy = {
 	read: true,
@@ -29,6 +33,13 @@ const result = (taskId: string) => ({
 	remainingRisks: [],
 	usage: { durationMs: 1 },
 })
+
+function barrier() {
+	let resolve!: () => void
+	const promise = new Promise<void>((complete) => (resolve = complete))
+	return { promise, resolve }
+}
+
 describe("bounded delegation", () => {
 	it("notifies an observer only after capacity is acquired", async () => {
 		const order: string[] = []
@@ -174,6 +185,166 @@ describe("bounded delegation", () => {
 
 		releaseSibling()
 		await expect(sibling).resolves.toMatchObject({ taskId: "b", status: "completed" })
+	})
+
+	it("holds capacity until a cancelled runner settles and preserves its late mutation evidence", async () => {
+		const entered = barrier()
+		const cleanup = barrier()
+		const nextStarted = barrier()
+		let cancelledSignal: AbortSignal | undefined
+		const runner = vi.fn<InternalTaskRunner>(async (item, signal) => {
+			if (item.id === "cancelled") {
+				cancelledSignal = signal
+				entered.resolve()
+				await cleanup.promise
+				return {
+					...result(item.id),
+					changedFiles: ["src/partially-written.ts"],
+					evidence: [{ kind: "file", reference: "src/partially-written.ts", outcome: "changed" }],
+				}
+			}
+			if (item.id === "queued") nextStarted.resolve()
+			return result(item.id)
+		})
+		const manager = new BoundedDelegationManager(runner, 1)
+		const cancelled = manager.run(envelope("cancelled"))
+		await entered.promise
+		const queued = manager.run(envelope("queued"))
+		let settled = false
+		void cancelled.then(() => (settled = true))
+
+		try {
+			expect(manager.cancel("cancelled", "User stopped the child")).toBe(true)
+			expect(manager.cancel("cancelled")).toBe(false)
+			expect(cancelledSignal?.aborted).toBe(true)
+			expect(cancelledSignal?.reason).toMatchObject({ kind: "user_cancelled" })
+			await expect(
+				manager.run({ ...envelope("independent"), rootTaskId: "independent-root" }),
+			).resolves.toMatchObject({ taskId: "independent", status: "completed" })
+			expect(settled).toBe(false)
+			expect(runner.mock.calls.map(([item]) => item.id)).toEqual(["cancelled", "independent"])
+		} finally {
+			cleanup.resolve()
+		}
+
+		await expect(cancelled).resolves.toMatchObject({
+			taskId: "cancelled",
+			status: "cancelled",
+			stopReason: "cancelled",
+			changedFiles: ["src/partially-written.ts"],
+			evidence: [{ kind: "file", reference: "src/partially-written.ts", outcome: "changed" }],
+			requiresParentVerification: true,
+		})
+		await nextStarted.promise
+		await expect(queued).resolves.toMatchObject({ taskId: "queued", status: "completed" })
+		expect(runner.mock.calls.map(([item]) => item.id)).toEqual(["cancelled", "independent", "queued"])
+	})
+
+	it("joins an active blocking run until owned cleanup settles, then releases its join handle", async () => {
+		const entered = barrier()
+		const cleanup = barrier()
+		const manager = new BoundedDelegationManager(async (item, signal) => {
+			entered.resolve()
+			await cleanup.promise
+			throw signal.reason
+		})
+		const run = manager.run(envelope("child"))
+		await entered.promise
+		const join = manager.waitForResult("child")
+		let settled = false
+		void join?.then(() => (settled = true))
+		try {
+			expect(join).toBeDefined()
+			expect(manager.cancel("child")).toBe(true)
+			expect(settled).toBe(false)
+			cleanup.resolve()
+			await expect(join).resolves.toMatchObject({ status: "cancelled", stopReason: "cancelled" })
+			await run
+			expect(manager.waitForResult("child")).toBeUndefined()
+		} finally {
+			cleanup.resolve()
+			await run
+		}
+	})
+
+	it.each(["returned", "thrown"] as const)(
+		"preserves a %s shutdown failure and its parent cancellation cause",
+		async (outcome) => {
+			const entered = barrier()
+			const finishCleanup = barrier()
+			const parent = new AbortController()
+			const manager = new BoundedDelegationManager(async (item) => {
+				entered.resolve()
+				await finishCleanup.promise
+				if (outcome === "thrown") throw new Error("Owned process shutdown could not be confirmed")
+				return {
+					...result(item.id),
+					status: "failed" as const,
+					stopReason: "failed" as const,
+					summary: "Owned process shutdown could not be confirmed",
+					remainingRisks: ["Owned process may still be running"],
+					changedFiles: ["src/partial.ts"],
+				}
+			}, 1)
+			const run = manager.run(envelope("child"), parent.signal)
+			try {
+				await entered.promise
+				parent.abort(new Error("Parent requested cancellation"))
+				finishCleanup.resolve()
+				const terminal = await run
+				expect(terminal).toMatchObject({
+					status: "failed",
+					stopReason: "parent_cancelled",
+					summary: "Owned process shutdown could not be confirmed",
+				})
+				if (outcome === "returned") {
+					expect(terminal.remainingRisks).toEqual(["Owned process may still be running"])
+					expect(terminal.requiresParentVerification).toBe(true)
+				}
+			} finally {
+				finishCleanup.resolve()
+				await run
+			}
+		},
+	)
+
+	it("retains each queued child's admission limit when the live resolver changes", async () => {
+		const releases = [barrier(), barrier(), barrier()]
+		const starts = [barrier(), barrier(), barrier()]
+		const ids = ["first", "second", "third"]
+		const runner = vi.fn<InternalTaskRunner>(async (item) => {
+			const index = ids.indexOf(item.id)
+			starts[index].resolve()
+			await releases[index].promise
+			return result(item.id)
+		})
+		const liveLimit = { value: 1 }
+		const resolver = vi.fn(() => liveLimit.value)
+		const manager = new BoundedDelegationManager(runner, resolver)
+		const first = manager.run(envelope(ids[0]))
+		await starts[0].promise
+		const second = manager.run(envelope(ids[1]))
+		const third = manager.run(envelope(ids[2]))
+
+		try {
+			liveLimit.value = 3
+			releases[0].resolve()
+			await first
+			await starts[1].promise
+			expect(runner.mock.calls.map(([item]) => item.id)).toEqual(["first", "second"])
+			expect(resolver).toHaveBeenCalledTimes(3)
+
+			releases[1].resolve()
+			await second
+			await starts[2].promise
+		} finally {
+			for (const release of releases) release.resolve()
+			await Promise.allSettled([first, second, third])
+		}
+
+		await expect(third).resolves.toMatchObject({ taskId: "third", status: "completed" })
+		expect(runner.mock.calls.map(([item]) => item.id)).toEqual(ids)
+		expect(resolver).toHaveBeenCalledTimes(3)
 	})
 
 	it("rejects duplicate task IDs before launching a batch", async () => {

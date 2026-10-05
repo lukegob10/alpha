@@ -1,5 +1,8 @@
 // npx vitest src/integrations/terminal/__tests__/TerminalProcessExec.pwsh.spec.ts
 
+// Probe shell availability only for this suite instead of every unit-test file.
+import "./setupTerminalTests"
+
 import * as vscode from "vscode"
 
 import { ExitCodeDetails } from "../types"

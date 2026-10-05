@@ -14,6 +14,7 @@ import {
 	type SubagentChangeSetActionCapability,
 } from "@alpha-code/types"
 import { readBounded } from "../evidence/paths"
+import { updateFilePatch } from "../scenarios/scriptedPatch"
 import { waitFor } from "./utils"
 
 const execute = promisify(execFile)
@@ -66,17 +67,29 @@ class HoldingAI {
 	private readonly release = new Set<() => void>()
 	private readonly turns = new Map<string, number>()
 	nestedId?: string
-	async *createMessage(_system: string, _messages: unknown[], metadata?: { taskId?: string }) {
+	async *createMessage(
+		_system: string,
+		_messages: unknown[],
+		metadata?: { taskId?: string; tools?: readonly { type: string; function?: { name: string } }[] },
+	) {
 		const id = metadata?.taskId
 		assert.ok(id)
 		const turn = this.turns.get(id) ?? 0
 		this.turns.set(id, turn + 1)
 		if (id === this.nestedId && turn === 0) {
+			assert.ok(
+				metadata?.tools?.some(
+					(schema) => schema.type === "function" && schema.function?.name === "apply_patch",
+				),
+				"Scripted nested-restart tool apply_patch is absent from this request's captured tool catalog.",
+			)
 			yield {
 				type: "tool_call" as const,
 				id: `write-${id}`,
-				name: "write_to_file",
-				arguments: JSON.stringify({ path: "scope/nested.json", content: '{"recovered":true}\n' }),
+				name: "apply_patch",
+				arguments: JSON.stringify({
+					patch: updateFilePatch("scope/nested.json", '{"recovered":false}\n', '{"recovered":true}\n'),
+				}),
 			}
 			return
 		}
@@ -129,6 +142,7 @@ suite("Nested managed-agent host restart", function () {
 			apiProvider: "fake-ai",
 			fakeAi: model,
 			mode: "code",
+			approvalMode: "auto",
 			autoApprovalEnabled: true,
 			alwaysAllowReadOnly: true,
 			alwaysAllowWrite: true,

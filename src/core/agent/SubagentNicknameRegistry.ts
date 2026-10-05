@@ -68,7 +68,8 @@ export type SubagentCallsignPickIndex = (size: number) => number
 export class SubagentNicknameRegistry {
 	private readonly callsigns: readonly string[]
 	private readonly pickIndex: SubagentCallsignPickIndex
-	private readonly assigned = new Set<string>()
+	private readonly assignedByRoot = new Map<string, Set<string>>()
+	private readonly assignments = new Map<string, { rootTaskId: string; names: string[] }>()
 
 	constructor(
 		options: {
@@ -84,10 +85,18 @@ export class SubagentNicknameRegistry {
 	}
 
 	assign(
+		rootTaskId: string,
+		groupId: string,
 		count: number,
 		reserved: Iterable<string> = [],
 		preferredNames: readonly (string | undefined)[] = [],
 	): string[] {
+		if (!rootTaskId.trim() || !groupId.trim()) {
+			throw new Error("Sub-agent nickname assignment requires a root task and reservation group")
+		}
+		if (this.assignments.has(groupId)) {
+			throw new Error("Sub-agent nickname reservation group is already assigned")
+		}
 		if (!Number.isInteger(count) || count < 1 || count > 2) {
 			throw new Error("Sub-agent nickname assignment requires one or two names")
 		}
@@ -95,7 +104,8 @@ export class SubagentNicknameRegistry {
 			throw new Error("Preferred sub-agent names must match the requested count")
 		}
 
-		const unavailable = new Set([...this.assigned, ...Array.from(reserved, (name) => name.toLowerCase())])
+		const rootAssignments = this.assignedByRoot.get(rootTaskId) ?? new Set<string>()
+		const unavailable = new Set([...rootAssignments, ...Array.from(reserved, (name) => name.toLowerCase())])
 		const requested = new Set<string>()
 		for (const preferredName of preferredNames) {
 			const preferred = preferredName?.trim()
@@ -122,10 +132,28 @@ export class SubagentNicknameRegistry {
 		}
 
 		for (const name of assigned) {
-			this.assigned.add(name.toLowerCase())
+			rootAssignments.add(name.toLowerCase())
 		}
+		this.assignedByRoot.set(rootTaskId, rootAssignments)
+		this.assignments.set(groupId, { rootTaskId, names: assigned.map((name) => name.toLowerCase()) })
 
 		return assigned
+	}
+
+	/** Release only this preparation's names; durable agent records remain reserved by the caller. */
+	release(groupId: string): void {
+		const assignment = this.assignments.get(groupId)
+		if (!assignment) return
+		this.assignments.delete(groupId)
+		const rootAssignments = this.assignedByRoot.get(assignment.rootTaskId)
+		if (!rootAssignments) return
+		for (const name of assignment.names) rootAssignments.delete(name)
+		if (rootAssignments.size === 0) this.assignedByRoot.delete(assignment.rootTaskId)
+	}
+
+	clear(): void {
+		this.assignments.clear()
+		this.assignedByRoot.clear()
 	}
 
 	private nextCallsign(unavailable: Set<string>): string {

@@ -348,7 +348,7 @@ describe("AlphaProvider flicker-free cancel", () => {
 		])
 	})
 
-	it("starts local cancellation even when lifecycle and history persistence fail", async () => {
+	it("starts local cancellation but surfaces failed descendant cleanup without rehydrating", async () => {
 		mockTask1.isStreaming = false
 		mockTask1.cancelCurrentRequest = vi.fn()
 		;(provider as any).taskStack = [mockTask1]
@@ -356,7 +356,7 @@ describe("AlphaProvider flicker-free cancel", () => {
 		;(provider as any).agentControlStoreReady = Promise.reject(new Error("control store unavailable"))
 		vi.mocked(provider.getTaskWithId).mockRejectedValueOnce(new Error("history unavailable"))
 
-		await expect(provider.cancelTask("task-1", "webview_stop")).resolves.toBeUndefined()
+		await expect(provider.cancelTask("task-1", "webview_stop")).rejects.toThrow("control store unavailable")
 
 		expect(mockTask1.cancelCurrentRequest).toHaveBeenCalledOnce()
 		expect(mockTask1.abortTask).toHaveBeenCalledOnce()
@@ -365,6 +365,47 @@ describe("AlphaProvider flicker-free cancel", () => {
 			expect.stringContaining("managed descendant cleanup failed"),
 		)
 		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(expect.stringContaining("history unavailable"))
+	})
+
+	it("joins the parent abort boundary before reporting descendant cleanup failure and retaining its owner", async () => {
+		let entered!: () => void
+		const joinEntered = new Promise<void>((resolve) => (entered = resolve))
+		let release!: () => void
+		const join = new Promise<void>((resolve) => (release = resolve))
+		mockTask1.cancelCurrentRequest = vi.fn()
+		mockTask1.lifecycleRuntime = {
+			join: vi.fn(async () => {
+				entered()
+				await join
+			}),
+			waitForPersistence: vi.fn(async () => undefined),
+		}
+		;(provider as any).taskStack = [mockTask1]
+		;(provider as any).getLiveTask = vi.fn(() => mockTask1)
+		;(provider as any).agentControlStoreReady = Promise.resolve()
+		const cleanupFailure = new Error("Descendant process shutdown is unconfirmed")
+		vi.spyOn(provider as any, "cancelManagedTaskDescendants").mockRejectedValueOnce(cleanupFailure)
+		const rehydrate = vi.spyOn(provider, "createTaskWithHistoryItem")
+		const cancellation = provider.cancelTask("task-1", "webview_stop")
+		let settled = false
+		void cancellation.then(
+			() => (settled = true),
+			() => (settled = true),
+		)
+		try {
+			await joinEntered
+			expect(settled).toBe(false)
+			expect(mockTask1.abortReason).toBe("user_cancelled")
+			expect(rehydrate).not.toHaveBeenCalled()
+			release()
+			await expect(cancellation).rejects.toBe(cleanupFailure)
+			expect(mockTask1.lifecycleRuntime.waitForPersistence).toHaveBeenCalledOnce()
+			expect(rehydrate).not.toHaveBeenCalled()
+			expect(provider.getLiveTask("task-1")).toBe(mockTask1)
+		} finally {
+			release()
+			await cancellation.catch(() => undefined)
+		}
 	})
 
 	it("should remove task from stack when creating different task", async () => {

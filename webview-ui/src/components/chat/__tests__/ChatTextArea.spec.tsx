@@ -84,6 +84,39 @@ describe("ChatTextArea", () => {
 		})
 	})
 
+	describe("new task appearance", () => {
+		it("labels the existing settings and removes the helper text without changing Enter submission", () => {
+			const { rerender } = render(<ChatTextArea {...defaultProps} appearance="newTask" />)
+			for (const label of ["Mode", "Model", "Effort", "Approvals"]) {
+				expect(screen.getByText(label)).toBeInTheDocument()
+			}
+			for (const testId of [
+				"mode-selector-trigger",
+				"dropdown-trigger",
+				"reasoning-trigger",
+				"auto-approve-dropdown-trigger",
+			]) {
+				expect(screen.getByTestId(testId)).toBeInTheDocument()
+			}
+			expect(screen.queryByText(/hold shift to drag in files/)).not.toBeInTheDocument()
+			rerender(<ChatTextArea {...defaultProps} appearance="newTask" inputValue="Inspect this project" />)
+			fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" })
+			expect(defaultProps.onSend).toHaveBeenCalledTimes(1)
+		})
+
+		it.each([false, true])("keeps conversation and edit composers unchanged (edit=%s)", (isEditMode) => {
+			render(
+				<ChatTextArea
+					{...defaultProps}
+					isEditMode={isEditMode}
+					appearance={isEditMode ? "newTask" : "default"}
+				/>,
+			)
+			expect(screen.queryByText("Effort")).not.toBeInTheDocument()
+			expect(screen.getByText(/hold shift to drag in files/)).toBeInTheDocument()
+		})
+	})
+
 	describe("mode selection surface", () => {
 		it.each(["@tickets:PM", "@ticket:PM-", "@PM-0", "@PM"])(
 			"searches a typed ticket reference: %s",
