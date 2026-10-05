@@ -106,6 +106,29 @@ describe("campaign configuration", () => {
 })
 
 describe("CampaignRunner", () => {
+	it("writes new campaigns to evaluator artifacts when no output root is configured", async () => {
+		const root = await makeRoot()
+		const clock = new FakeClock()
+		const processRunner = new FakeProcessRunner([passedResult], clock)
+		const campaign = campaignConfigSchema.parse({ ...config(), artifactRoot: undefined })
+		const attempt = await new CampaignRunner({
+			repositoryRoot: root,
+			config: campaign,
+			processRunner,
+			clock,
+		}).runValidation()
+
+		expect(attempt.status).toBe("passed")
+		const commandRoot = path.join(
+			root,
+			"packages/evals/artifacts/campaigns/test-campaign/attempts",
+			attempt.id,
+			"commands/check",
+		)
+		expect(await fs.readFile(path.join(commandRoot, "stdout.txt"), "utf8")).toBe("ok\n")
+		await expect(fs.stat(path.join(root, ".frontier-campaign"))).rejects.toMatchObject({ code: "ENOENT" })
+	})
+
 	it("runs validation and records durable command artifacts", async () => {
 		const root = await makeRoot()
 		const clock = new FakeClock()

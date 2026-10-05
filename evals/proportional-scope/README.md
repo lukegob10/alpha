@@ -4,7 +4,7 @@ These seven fixtures make conversation, lookup, edit, cross-component repair, se
 repeatable. `cases.json` supplies prompts, quality criteria, workspace snapshots, and focused Node test entrypoints. The
 mutation fixtures deliberately start broken. They are not an admitted live-model benchmark suite.
 
-The [current independent acceptance contract](../../docs/nor36-efficiency-acceptance.md) measures production request
+The [current independent acceptance contract](acceptance.md) measures production request
 preflight separately from these unchanged scripts. Its paired-report admission helper rejects mismatched or incomplete
 evidence and never treats byte counts or local tokenizer estimates as provider usage.
 

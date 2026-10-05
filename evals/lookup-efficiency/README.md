@@ -2,7 +2,7 @@
 
 Tiny synthetic workspaces and a frozen four-prompt set for measuring **production-shaped lookup cost**. They are a sibling of the proportional-scope suite, not a replacement.
 
-Scripted traces in `scripts/evals/lookup-efficiency-report.test.mjs` prove the reporter and measurement contract. They are not a live-model budget. The NOR-36 scripted narrow-lookup class remains a different measurement: **2 model requests / 1 tool result** on the unchanged proportional-scope fixture (`docs/nor36-efficiency-acceptance.md`). Do not change those seven fixtures or their scripts to manufacture a lookup improvement.
+Scripted traces in `scripts/evals/lookup-efficiency-report.test.mjs` prove the reporter and measurement contract. They are not a live-model budget. The NOR-36 scripted narrow-lookup class remains a different measurement: **2 model requests / 1 tool result** on the unchanged proportional-scope fixture ([acceptance contract](../proportional-scope/acceptance.md)). Do not change those seven fixtures or their scripts to manufacture a lookup improvement.
 
 Live Copilot or other provider samples are a **separate recorded run**. One live sample is not a general quality or speed improvement. This subset is `unadmitted` and does not require Postgres, Redis, or `pnpm test:evals:offline`.
 

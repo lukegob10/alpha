@@ -16,7 +16,7 @@ Use it when a task involves:
 - `packages/evals/` controller, runner, database, evidence, grading, or benchmark code
 - `apps/vscode-e2e/` host-contract and live evaluation runners
 - extension-specific suites under `evals/`
-- reproducible benchmark campaign definitions under `.frontier-campaign/`
+- historical campaign snapshots under `evals/archive/frontier-campaign/`
 - adding or reviewing exercises in the external [Alpha-Evals](https://github.com/AlphaInc/Alpha-Evals) repository
 
 Do not use it for ordinary extension or webview changes unless the task also changes an evaluation contract.
@@ -28,7 +28,7 @@ Do not use it for ordinary extension or webview changes unless the task also cha
 | Evaluation package     | `packages/evals/`                                      | Optional controller, runner, database, evidence, grading, and benchmark tooling that executes the real VS Code extension |
 | VS Code runner         | `apps/vscode-e2e/`                                     | Exact VS Code 1.125.0 contract tests, scripted providers, and live host harnesses                                        |
 | Local extension suites | `evals/`                                               | Deterministic extension and safety suites that are part of Alpha's quality checks                                        |
-| Campaign definitions   | `.frontier-campaign/`                                  | Tracked campaign configuration and templates; generated attempt output is disposable and ignored                         |
+| Historical campaigns   | `evals/archive/frontier-campaign/`                     | Archived configurations, authoring reports, and milestone results; new run output belongs in ignored evaluator artifacts |
 | Exercise repository    | [Alpha-Evals](https://github.com/AlphaInc/Alpha-Evals) | External language exercises and their tests                                                                              |
 
 The evaluator launches the real extension through VS Code. It is not a second Alpha runtime. Keep extension policy,
@@ -56,8 +56,8 @@ packages/evals/
 ```
 
 Treat `packages/evals/src/**/__fixtures__` and contract fixtures as immutable test inputs unless a contract change
-explicitly requires updating them. Historical `.frontier-campaign/campaigns/*/attempts/` output is evidence, not a source
-fixture; new runs should write it outside Git or under the ignored attempts path.
+explicitly requires updating them. Historical campaign output is evidence, not a source fixture. New campaigns default to
+`packages/evals/artifacts/campaigns/`; authoring reports default to `packages/evals/artifacts/authoring/`. Both are ignored.
 
 ## Common commands
 
@@ -110,10 +110,10 @@ must remain able to load older records.
 
 ## Campaigns and evidence
 
-Tracked files under `.frontier-campaign/` are definitions, templates, and reproducibility metadata. Generated attempt
-outputs belong in the ignored `campaigns/*/attempts/` paths or in the external evidence roots documented by the run. Do
-not delete campaign definitions or immutable evaluator fixtures because no current source file imports them: the campaign
-runner resolves them by path at execution time.
+Tracked files under `evals/archive/frontier-campaign/` preserve historical definitions, reports, and reproducibility
+metadata. Some snapshots name retired packages and missing documents; do not treat them as current runnable commands.
+Preserve their bytes and recorded digests. Explicit legacy artifact roots remain supported for existing configurations.
+Do not delete immutable evaluator fixtures because no current source file imports them: runners resolve inputs by path.
 
 When reporting benchmark results, identify the campaign/configuration, evaluator version, VS Code host, model and effort,
 fixture or exercise revision, and evidence root. Separate deterministic offline checks from live-model observations.

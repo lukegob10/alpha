@@ -7,6 +7,7 @@ type ErrorProps = {
 } & WithTranslation
 
 type ErrorState = {
+	hasError: boolean
 	error?: string
 	componentStack?: string | null
 	timestamp?: number
@@ -15,47 +16,60 @@ type ErrorState = {
 class ErrorBoundary extends Component<ErrorProps, ErrorState> {
 	constructor(props: ErrorProps) {
 		super(props)
-		this.state = {}
+		this.state = { hasError: false }
 	}
 
 	static getDerivedStateFromError(error: unknown) {
 		let errorMessage = ""
 
 		if (error instanceof Error) {
-			errorMessage = error.stack ?? error.message
+			errorMessage = error.stack || error.message || error.name
 		} else {
 			errorMessage = `${error}`
 		}
 
 		return {
+			hasError: true,
 			error: errorMessage,
 			timestamp: Date.now(),
 		}
 	}
 
-	async componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+	componentDidCatch(error: unknown, errorInfo: React.ErrorInfo) {
 		const componentStack = errorInfo.componentStack || ""
-		const { enhanceErrorWithSourceMaps } = await import("@src/utils/sourceMapUtils")
-		const enhancedError = await enhanceErrorWithSourceMaps(error, componentStack)
+		this.setState({ componentStack })
+		void this.reportError(error, componentStack)
+	}
 
-		telemetryClient.capture("error_boundary_caught_error", {
-			error: enhancedError.message,
-			stack: enhancedError.sourceMappedStack || enhancedError.stack,
-			componentStack: enhancedError.sourceMappedComponentStack || componentStack,
-			timestamp: Date.now(),
-			errorType: enhancedError.name,
-		})
+	private async reportError(error: unknown, componentStack: string) {
+		try {
+			const errorToReport = error instanceof Error ? error : new Error(String(error))
+			if (!(error instanceof Error)) errorToReport.stack = undefined
+			const { enhanceErrorWithSourceMaps } = await import("@src/utils/sourceMapUtils")
+			const enhancedError = await enhanceErrorWithSourceMaps(errorToReport, componentStack)
 
-		this.setState({
-			error: enhancedError.sourceMappedStack || enhancedError.stack,
-			componentStack: enhancedError.sourceMappedComponentStack || componentStack,
-		})
+			// Diagnostics may be incomplete; they must never clear the captured failure or retry its children.
+			this.setState((state) => ({
+				error: enhancedError.sourceMappedStack || enhancedError.stack || state.error,
+				componentStack: enhancedError.sourceMappedComponentStack || componentStack,
+			}))
+
+			telemetryClient.capture("error_boundary_caught_error", {
+				error: enhancedError.message,
+				stack: enhancedError.sourceMappedStack || enhancedError.stack,
+				componentStack: enhancedError.sourceMappedComponentStack || componentStack,
+				timestamp: Date.now(),
+				errorType: enhancedError.name,
+			})
+		} catch {
+			console.error("[ErrorBoundary] Failed to enhance render error diagnostics")
+		}
 	}
 
 	render() {
 		const { t } = this.props
 
-		if (!this.state.error) {
+		if (!this.state.hasError) {
 			return this.props.children
 		}
 

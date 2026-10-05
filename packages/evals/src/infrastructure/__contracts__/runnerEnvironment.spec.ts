@@ -33,6 +33,8 @@ describe("runner environment on real Docker", () => {
 				"packages/evals/node_modules",
 				"packages/evals/artifacts",
 				"src/out",
+				"evals/archive",
+				"evals/reports",
 			]) {
 				await fs.mkdir(path.join(context, directory), { recursive: true })
 				await fs.writeFile(
@@ -62,7 +64,7 @@ describe("runner environment on real Docker", () => {
 				imageId,
 				"/bin/sh",
 				"-c",
-				"test ! -e /fixture/.env.local && test ! -e /fixture/packages/evals/.env.local && test ! -e /fixture/packages/other/.env.production && test -e /fixture/packages/evals/.env.test && test -e /fixture/packages/evals/.env.development && test ! -e /fixture/src/node_modules && test ! -e /fixture/packages/evals/node_modules && test ! -e /fixture/packages/evals/artifacts && test ! -e /fixture/src/out && test -e /fixture/evals/public-fixture-sentinel",
+				"test ! -e /fixture/.env.local && test ! -e /fixture/packages/evals/.env.local && test ! -e /fixture/packages/other/.env.production && test -e /fixture/packages/evals/.env.test && test -e /fixture/packages/evals/.env.development && test ! -e /fixture/src/node_modules && test ! -e /fixture/packages/evals/node_modules && test ! -e /fixture/packages/evals/artifacts && test ! -e /fixture/src/out && test ! -e /fixture/evals/archive && test ! -e /fixture/evals/reports && test -e /fixture/evals/public-fixture-sentinel",
 			])
 			expect(probe.exitCode).toBe(0)
 		} finally {

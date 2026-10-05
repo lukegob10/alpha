@@ -6,9 +6,9 @@
 
 > Your AI-Powered Dev Team, Right in Your Editor
 
-## Welcome to Alpha v3.1.2
+## Welcome to Alpha
 
-Alpha v3.1.2 keeps delegated work visible, prevents search loops, and makes active traces easier to follow.
+Alpha keeps delegated work visible, prevents search loops, and makes active traces easier to follow.
 
 - One TypeScript turn engine coordinates model steps, tool calls, approvals, and delegated work across supported providers
 - Ask, Auto, and Full Access policies apply consistently to tool calls and child tasks
@@ -54,7 +54,8 @@ Existing custom-mode, Ask, Debug, and Orchestrator tasks and stored configuratio
 
 ## Resources
 
-- **[Project Docs](docs/):** Local technical documentation for Alpha internals and planned work.
+- **[Project Docs](docs/README.md):** Maintained compatibility contracts and operating guides.
+- **[Evaluation inputs](evals/README.md):** Benchmark suites, fixtures, and historical evaluation evidence.
 - **[GitHub Issues](https://github.com/lukegob10/alpha/issues):** Report bugs, feature requests, and development questions.
 
 ---
@@ -83,7 +84,7 @@ git clone https://github.com/lukegob10/alpha.git
 2. **Install dependencies**:
 
 ```sh
-pnpm install
+pnpm install --frozen-lockfile
 ```
 
 The repository pins Node.js 24.21.0, npm 11.19.0, and pnpm 11.24.0. Use those versions for reproducible builds and
@@ -190,7 +191,8 @@ We use [changesets](https://github.com/changesets/changesets) for versioning and
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the short issue-first contribution flow.
+Open a [GitHub issue](https://github.com/lukegob10/alpha/issues) describing the problem or proposed change before
+starting a substantial contribution. Follow [AGENTS.md](AGENTS.md) for engineering and validation requirements.
 
 ---
 

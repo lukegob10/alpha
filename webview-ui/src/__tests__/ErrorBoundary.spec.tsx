@@ -2,6 +2,7 @@ import React from "react"
 import { render, screen, waitFor } from "@testing-library/react"
 import ErrorBoundary from "../components/ErrorBoundary"
 import { telemetryClient } from "@src/utils/TelemetryClient"
+import { enhanceErrorWithSourceMaps } from "@src/utils/sourceMapUtils"
 
 // Mock telemetry client
 vi.mock("@src/utils/TelemetryClient", () => ({
@@ -43,6 +44,7 @@ const ErrorThrower = ({ shouldThrow = false, message = "Test error" }: { shouldT
 describe("ErrorBoundary", () => {
 	// Suppress console errors during tests
 	beforeEach(() => {
+		vi.clearAllMocks()
 		vi.spyOn(console, "error").mockImplementation(() => {})
 	})
 
@@ -60,6 +62,130 @@ describe("ErrorBoundary", () => {
 
 		expect(screen.getByTestId("test-child")).toBeInTheDocument()
 		expect(screen.getByText("Test Content")).toBeInTheDocument()
+	})
+
+	it("renders the error screen when the thrown error has no message or stack", async () => {
+		const error = new Error("")
+		error.stack = ""
+		const BrokenComponent = () => {
+			throw error
+		}
+
+		render(
+			<ErrorBoundary>
+				<BrokenComponent />
+			</ErrorBoundary>,
+		)
+
+		expect(screen.getByText(/errorBoundary.title/)).toBeInTheDocument()
+		await waitFor(() => expect(telemetryClient.capture).toHaveBeenCalledTimes(1))
+	})
+
+	it("keeps the error screen instead of retrying children when diagnostics have no stack", async () => {
+		const error = new Error("Error without a stack")
+		error.stack = undefined
+		let shouldThrow = true
+		const BrokenComponent = () => {
+			if (shouldThrow) throw error
+			return <div>Unexpected automatic retry</div>
+		}
+
+		render(
+			<ErrorBoundary>
+				<BrokenComponent />
+			</ErrorBoundary>,
+		)
+		shouldThrow = false
+
+		await waitFor(() => expect(telemetryClient.capture).toHaveBeenCalledTimes(1))
+		expect(screen.getByText(/errorBoundary.title/)).toBeInTheDocument()
+		expect(screen.getByText("Error without a stack")).toBeInTheDocument()
+		expect(screen.queryByText("Unexpected automatic retry")).not.toBeInTheDocument()
+		expect(enhanceErrorWithSourceMaps).toHaveBeenCalledTimes(1)
+	})
+
+	it.each([
+		["string", "Tool response could not be rendered"],
+		["empty string", ""],
+		["null", null],
+		["undefined", undefined],
+	] as const)("keeps the error screen when a child throws %s", async (_label, error) => {
+		const BrokenComponent = () => {
+			throw error
+		}
+
+		render(
+			<ErrorBoundary>
+				<BrokenComponent />
+			</ErrorBoundary>,
+		)
+
+		await waitFor(() => expect(telemetryClient.capture).toHaveBeenCalledTimes(1))
+		expect(screen.getByText(/errorBoundary.title/)).toBeInTheDocument()
+		expect(enhanceErrorWithSourceMaps).toHaveBeenCalledWith(
+			expect.objectContaining({ message: String(error), stack: undefined }),
+			expect.any(String),
+		)
+	})
+
+	it("preserves the error and component stack when source-map enhancement fails", async () => {
+		vi.mocked(enhanceErrorWithSourceMaps).mockRejectedValueOnce(new Error("Source map unavailable"))
+
+		render(
+			<ErrorBoundary>
+				<ErrorThrower shouldThrow message="Original rendering error" />
+			</ErrorBoundary>,
+		)
+
+		await waitFor(() =>
+			expect(console.error).toHaveBeenCalledWith("[ErrorBoundary] Failed to enhance render error diagnostics"),
+		)
+		expect(screen.getByText(/errorBoundary.title/)).toBeInTheDocument()
+		expect(screen.getByText(/Original rendering error/)).toBeInTheDocument()
+		expect(screen.getByText(/errorBoundary.componentStack/)).toBeInTheDocument()
+		expect(telemetryClient.capture).not.toHaveBeenCalled()
+	})
+
+	it("preserves the error screen when diagnostic reporting fails", async () => {
+		vi.mocked(telemetryClient.capture).mockImplementationOnce(() => {
+			throw new Error("Reporter unavailable")
+		})
+
+		render(
+			<ErrorBoundary>
+				<ErrorThrower shouldThrow message="Original rendering error" />
+			</ErrorBoundary>,
+		)
+
+		await waitFor(() =>
+			expect(console.error).toHaveBeenCalledWith("[ErrorBoundary] Failed to enhance render error diagnostics"),
+		)
+		expect(screen.getByText(/errorBoundary.title/)).toBeInTheDocument()
+		expect(screen.getByText(/Original rendering error/)).toBeInTheDocument()
+	})
+
+	it("displays the source-mapped error and component stack when diagnostics succeed", async () => {
+		const enhancedError = Object.assign(new Error("Original error"), {
+			sourceMappedStack: "Source-mapped rendering error",
+			sourceMappedComponentStack: "Source-mapped component stack",
+		})
+		vi.mocked(enhanceErrorWithSourceMaps).mockResolvedValueOnce(enhancedError)
+
+		render(
+			<ErrorBoundary>
+				<ErrorThrower shouldThrow />
+			</ErrorBoundary>,
+		)
+
+		expect(await screen.findByText("Source-mapped rendering error")).toBeInTheDocument()
+		expect(screen.getByText("Source-mapped component stack")).toBeInTheDocument()
+		expect(telemetryClient.capture).toHaveBeenCalledWith(
+			"error_boundary_caught_error",
+			expect.objectContaining({
+				stack: "Source-mapped rendering error",
+				componentStack: "Source-mapped component stack",
+			}),
+		)
 	})
 
 	it("renders error UI when a child component throws", async () => {

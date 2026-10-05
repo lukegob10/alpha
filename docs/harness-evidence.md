@@ -2,8 +2,8 @@
 
 The local harness composes the existing package runners. It does not implement another agent, grader, task loop or test
 framework. Alpha's extension remains the system under test; exact-host runs use VS Code **1.125.0**. Node **24.21.0** and
-pnpm **11.24.0** are required. See [the hardening investigation](testing-evaluation-hardening.md) for reproduced failures,
-upstream sources and compatibility changes.
+pnpm **11.24.0** are required. See [the testing workflow](testing-harness.md) for the supported commands and evidence
+requirements.
 
 ## Running the affected gates
 
