@@ -93,6 +93,16 @@ export const lanes = {
 		commands: [["--filter", "@alpha-code/vscode-e2e", "test:smoke:1250"]],
 		receipts: [{ runner: "extension-host", suite: "smoke" }],
 	},
+	extended: {
+		exclusiveBuild: true,
+		fidelity: "actual VS Code 1.125.0",
+		decisions: "scripted",
+		owner: "apps/vscode-e2e",
+		proves: "Instruction discovery, HTML previews, offline storage recovery and scheduled-task host contracts",
+		prerequisites: ["VS Code 1.125.0 binary/download access and desktop host support"],
+		commands: [["--filter", "@alpha-code/vscode-e2e", "test:extended:1250"]],
+		receipts: [{ runner: "extension-host", suite: "extended" }],
+	},
 	confidence: {
 		exclusiveBuild: true,
 		fidelity: "scripted integration and actual host",

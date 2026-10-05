@@ -4,6 +4,7 @@ import path from "node:path"
 import { test } from "node:test"
 import {
 	confidenceHostFiles,
+	extendedHostFiles,
 	hostSuiteVerdict,
 	outcomeCampaignVerdict,
 	smokeHostFiles,
@@ -17,6 +18,7 @@ test("host inventory matches the canonical runner scripts and requires backgroun
 	const files = (script) => [...script.matchAll(/--file ([\w.-]+)/g)].map((match) => match[1])
 	assert.deepEqual(smokeHostFiles, files(manifest.scripts["test:smoke:1250:run"]))
 	assert.deepEqual(confidenceHostFiles, [...smokeHostFiles, ...files(manifest.scripts["test:core:1250:run"])])
+	assert.deepEqual(extendedHostFiles, files(manifest.scripts["test:extended:1250:run"]))
 	for (const [suite, expected] of [
 		["smoke", smokeHostFiles],
 		["confidence", confidenceHostFiles],
@@ -174,4 +176,28 @@ test("distinct outcome scenarios cannot reuse an attempt, evidence index, or obs
 	campaign.attempts[1].evidence = campaign.attempts[0].evidence
 	receipts[1].runId = receipts[0].runId
 	assert.equal(outcomeCampaignVerdict(campaign, receipts, campaign.id).status, "failed")
+})
+
+test("extended coverage requires distinct complete scripted receipts from the exact reference host", () => {
+	const receipts = extendedHostFiles.map(hostReceipt)
+	assert.equal(hostSuiteVerdict(receipts, "extended").status, "passed")
+	assert.equal(hostSuiteVerdict(receipts, "smoke").reason, "incomplete_host_suite")
+	assert.equal(hostSuiteVerdict(receipts.slice(1), "extended").reason, "incomplete_host_suite")
+	assert.equal(
+		hostSuiteVerdict([...receipts, hostReceipt("unregistered-contract.test")], "extended").reason,
+		"incomplete_host_suite",
+	)
+	for (const mutate of [
+		(values) => (values[1].runId = values[0].runId),
+		(values) => (values[1].testFile = values[0].testFile),
+		(values) => (values[0].providerMode = "vscode-lm-fixture"),
+		(values) => (values[0].actualHostVersion = "1.126.0"),
+		(values) => (values[0].testCounts = { total: 2, passed: 1, pending: 1, executed: 1, failed: 0 }),
+		(values) => (values[0].ownershipGate = null),
+		(values) => (values[0].requireAllTests = false),
+	]) {
+		const incomplete = structuredClone(receipts)
+		mutate(incomplete)
+		assert.equal(hostSuiteVerdict(incomplete, "extended").status, "failed")
+	}
 })

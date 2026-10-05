@@ -37,7 +37,9 @@
 		"test:managed-agents": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm test:managed-agents:run",
 		"test:managed-agents:run": "rimraf out && tsc -p tsconfig.json && node ./out/runTest.js --provider scripted --require-all-tests --file managed-agents.acceptance.test && node ./out/runTest.js --vscode-version 1.125.0 --provider scripted --require-all-tests --file long-context-fanout.test",
 		"clean": "rimraf out .turbo",
-		"test:background-apps:1250": "pnpm -w bundle && pnpm compile && node ./out/runTest.js --vscode-version 1.125.0 --provider scripted --require-all-tests --file background-command-completion.test"
+		"test:background-apps:1250": "pnpm -w bundle && pnpm compile && node ./out/runTest.js --vscode-version 1.125.0 --provider scripted --require-all-tests --file background-command-completion.test",
+		"test:extended:1250": "pnpm -w bundle && pnpm --filter @alpha-code/vscode-webview build && pnpm test:extended:1250:run",
+		"test:extended:1250:run": "pnpm compile && node ./out/runTest.js --vscode-version 1.125.0 --provider scripted --require-all-tests --file instruction-discovery.acceptance.test && node ./out/runTest.js --vscode-version 1.125.0 --provider scripted --require-all-tests --file html-document.test && node ./out/runTest.js --vscode-version 1.125.0 --provider scripted --require-all-tests --file storage-recovery.test && node ./out/runTest.js --vscode-version 1.125.0 --provider scripted --require-all-tests --file scheduled-tasks.acceptance.test"
 	},
 	"devDependencies": {
 		"@alpha-code/config-eslint": "workspace:^",

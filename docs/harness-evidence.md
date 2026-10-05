@@ -77,9 +77,10 @@ pnpm harness run tooling
 pnpm harness run offline
 pnpm harness run focused core/agent/__tests__/AgentTurnEngine.spec.ts
 pnpm harness run host
+pnpm harness run extended
 pnpm harness run confidence
 pnpm harness run outcomes
-pnpm harness matrix --output artifacts/harness/evidence-matrix.json --require static --require offline --require host --require confidence --require outcomes
+pnpm harness matrix --output artifacts/harness/evidence-matrix.json --require static --require offline --require host --require extended --require confidence --require outcomes
 ```
 
 Run build and host lanes sequentially. Their shared lease prevents one runner from replacing binaries used by another.
@@ -87,18 +88,19 @@ Focused checks accept test paths, without a standalone `--` or arbitrary runner 
 two in harness processes. Source changes during a run invalidate that run; editing after a run makes its receipt stale
 for the edited checkout. Repeat the required lanes after the final source change.
 
-| Lane             | Existing owner and evidence scope                                                                           |
-| ---------------- | ----------------------------------------------------------------------------------------------------------- |
-| `static`         | Root lint and type checks for extension, webview and host runner; mechanical command evidence               |
-| `unit`           | Root bundle and Turbo package tests; command exit evidence only                                             |
-| `tooling`        | Repository Node tests and compiled host-runner Node tests; observed file counts and outcomes                |
-| `offline`        | Evaluator unit, contract and certification suites; complete configured test inventory                       |
-| `focused`        | Selected extension Vitest files; observed execution for that selected scope                                 |
-| `host`           | The literal `test:smoke:1250` owner, including the LM fixture contract; every selected test required        |
-| `confidence`     | Core confidence owner, full smoke plus five core host suites, and deterministic managed-agent certification |
-| `outcomes`       | Existing smoke campaign, one sample each of three independently asserted scripted workflows                 |
-| `services`       | Existing PostgreSQL/Redis integration suite, requiring dedicated test service URLs                          |
-| `infrastructure` | Optional Docker adapter suite, requiring its configured engine and images                                   |
+| Lane             | Existing owner and evidence scope                                                                             |
+| ---------------- | ------------------------------------------------------------------------------------------------------------- |
+| `static`         | Root lint and type checks for extension, webview and host runner; mechanical command evidence                 |
+| `unit`           | Bundle plus extension/shared/React Vitest receipts; declared skips remain visible                             |
+| `tooling`        | Repository Node tests and compiled host-runner Node tests; observed file counts and outcomes                  |
+| `offline`        | Evaluator unit, contract and certification suites; complete configured test inventory                         |
+| `focused`        | Selected extension Vitest files; observed execution for that selected scope                                   |
+| `host`           | The literal `test:smoke:1250` owner, including the LM fixture contract; every selected test required          |
+| `extended`       | Instruction discovery, HTML previews, offline lock recovery and scheduled tasks; every selected test required |
+| `confidence`     | Core confidence owner, full smoke plus five core host suites, and deterministic managed-agent certification   |
+| `outcomes`       | Existing smoke campaign, one sample each of three independently asserted scripted workflows                   |
+| `services`       | Existing PostgreSQL/Redis integration suite, requiring dedicated test service URLs                            |
+| `infrastructure` | Optional Docker adapter suite, requiring its configured engine and images                                     |
 
 The three outcome scenarios are `dev-git-inspect`, `dev-repo-bootstrap` and `review-edit-test-commit-followup`. They run
 real extension tasks with a scripted provider and inspect repository effects independently. They establish bounded
@@ -113,10 +115,11 @@ not require those services, Docker, Copilot authentication or paid provider requ
 
 ## Reading the matrix
 
-`scripts/harness/inventory.mjs` maps current owners and nearest tests to 18 surfaces and eight evidence columns:
+`scripts/harness/inventory.mjs` maps current owners and nearest tests to 22 surfaces and eight evidence columns:
 mechanical, component, end-to-end, regression, robustness, security, performance and live. The surfaces cover the agent
 loop, instructions, providers, context, persistence, search, diagnostics/LSP, reads, edits, shell, verification, Git,
-tool routing, subagents, permissions, recovery, compaction and extension UI. Each entry retains its source/test references,
+tool routing, subagents, permissions, recovery, compaction, extension UI, Tickets, skills, scheduled tasks and HTML previews.
+Each entry retains its source/test references,
 execution history, current observations and unexecuted files.
 
 An existing file is **discovered** evidence, not an executed test. **Executed-pass** applies only to the admitted scope;

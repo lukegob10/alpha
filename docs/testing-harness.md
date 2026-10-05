@@ -33,6 +33,7 @@ but cannot measure a live model's planning ability. Deterministic graders can al
 | `pnpm harness run tooling`                                              | Scripts and host runner                   | Scripted            | Local reporting, installation and runner mechanics; no host launch                   |
 | `pnpm harness run offline`                                              | Evaluator unit/contract/certification     | Scripted            | Grading and comparison machinery; no Docker/Postgres/Redis/provider needed           |
 | `pnpm harness run host`                                                 | Actual VS Code 1.125.0                    | Scripted/LM fixture | Activation, modes and LM contracts; binary download/cache and desktop support needed |
+| `pnpm harness run extended`                                             | Actual VS Code 1.125.0                    | Scripted            | Instructions, HTML previews, offline lock recovery and scheduled tasks               |
 | `pnpm harness run confidence`                                           | Kernel plus actual host and certification | Scripted            | Existing core confidence gate, including fresh completion evidence                   |
 | `pnpm harness run services`                                             | Full evaluator                            | Scripted            | Dedicated test Postgres/Redis; no Docker                                             |
 | `pnpm --filter @alpha-code/evals benchmark:fixture-check`               | Task fixtures                             | Scripted            | Broken/reference fixture integrity; not model capability                             |
@@ -58,7 +59,7 @@ The command wrapper selects existing runners and records exit status. SIGINT/SIG
 owned-process runner, awaits bounded cleanup and prevents later steps. Cancelled reports cannot pass; uncertain cleanup
 preserves the workspace lease. It is not a new test engine, grader or lifecycle
 store. It retains the first failure and leaves later steps `not_started`. It does not automatically retry tests.
-Build-bearing `static`, `unit`, `tooling`, `offline`, `host`, `confidence` and `services` lanes take a shared workspace lease: rebuilding `src/dist` while a host
+Build-bearing `static`, `unit`, `tooling`, `offline`, `host`, `extended`, `confidence`, `outcomes` and `services` lanes take a shared workspace lease: rebuilding `src/dist` while a host
 uses its bundled tools can cause missing-binary failures. Older direct package commands remain available but bypass
 this wrapper lease; never run those builds concurrently with an active host. After an interrupted wrapper, inspect
 `artifacts/harness/.build-host-lock/owner.json` and confirm its process and child hosts have stopped before removing
@@ -108,7 +109,7 @@ live success differences require repeated live observations and an appropriate u
 
 ## Optional native or approved service-backed evaluator
 
-The default corporate loop is `static`, `unit`, `tooling`, `offline`, `host` and `confidence`.
+The default corporate loop is `static`, `unit`, `tooling`, `offline`, `host`, `extended`, `confidence` and `outcomes`.
 Actual VS Code host campaigns and export/paired reports also need no Docker, PostgreSQL or Redis. They retain source/build
 identity, task evidence, private graders and repeatable comparison manifests using the existing host runner.
 
@@ -147,3 +148,7 @@ boundary; do not silently downgrade container isolation to a normal workstation 
 
 A green rerun does not explain the historical ticket-progress timeout. Preserve each incident's original evidence;
 the [evidence runbook](harness-evidence.md) describes report validation and retention.
+
+The [October 5 testing cycle](testing-cycle-2026-10-05.md) records the broad baseline, native feature coverage additions,
+suite-discovery guards and packaging regressions. CI runs the existing unit/tooling commands on Windows, Linux and macOS;
+the extended host lane remains pinned to VS Code 1.125.0 and requires complete execution receipts.

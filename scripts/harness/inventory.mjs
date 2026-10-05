@@ -18,6 +18,10 @@ export const surfaces = [
 	"retry-recovery",
 	"compaction",
 	"ui-extension",
+	"tickets",
+	"skills",
+	"scheduled-tasks",
+	"html-preview",
 ]
 export const columns = ["mechanical", "component", "e2e", "regression", "robustness", "security", "performance", "live"]
 export const layers = [
@@ -252,13 +256,71 @@ export const evidenceInventory = [
 		"webview-ui/src/context/__tests__/followup-lifecycle-projection.spec.ts",
 		"webview-ui/src/components/settings/__tests__/SettingsView.spec.tsx",
 	]),
+	component("ticket-engine", "tickets", "src/services/tickets/TicketStore.ts", [
+		"src/services/tickets/__tests__/TicketStore.spec.ts",
+		"src/core/tools/__tests__/Tickets.eager-surface.integration.spec.ts",
+		"webview-ui/src/components/tickets/__tests__/TicketsView.spec.tsx",
+	]),
+	component("skill-catalog", "skills", "src/services/skills/SkillsManager.ts", [
+		"src/services/skills/__tests__/SkillsManager.spec.ts",
+		"src/services/skills/__tests__/skillInvocation.spec.ts",
+		"src/services/skills/__tests__/bundledSkillResources.spec.ts",
+		"webview-ui/src/components/settings/__tests__/SkillsSettings.spec.tsx",
+	]),
+	component(
+		"scheduled-task-service",
+		"scheduled-tasks",
+		"src/services/scheduled-tasks/ScheduledTaskService.ts",
+		[
+			"src/services/scheduled-tasks/__tests__/ScheduledTaskStore.spec.ts",
+			"src/services/scheduled-tasks/__tests__/ScheduledTaskService.profiles.spec.ts",
+			"src/services/scheduled-tasks/__tests__/ScheduledTaskService.approval.spec.ts",
+			"src/services/scheduled-tasks/__tests__/schedule.spec.ts",
+			"webview-ui/src/components/scheduled-tasks/__tests__/ScheduledTasksView.spec.tsx",
+		],
+		{ columns: ["component", "regression", "robustness", "security"], layers: [1, 4, 7, 8] },
+	),
+	component(
+		"html-document-preview",
+		"html-preview",
+		"src/core/webview/html-document/viewer.ts",
+		[
+			"src/core/webview/html-document/__tests__/viewer.spec.ts",
+			"src/core/webview/html-document/__tests__/sanitize.spec.ts",
+			"src/core/webview/html-document/__tests__/paths.spec.ts",
+			"webview-ui/src/utils/__tests__/html-document-viewer.spec.ts",
+		],
+		{ columns: ["component", "regression", "security"], layers: [1, 4, 8] },
+	),
+	component(
+		"release-content-contracts",
+		"ui-extension",
+		"scripts/verify-vsix-contents.mjs",
+		["scripts/verify-vsix-contents.test.mjs"],
+		{ surfaces: ["ui-extension", "skills", "html-preview", "search-grep"], lanes: ["tooling"] },
+	),
 	host("host-loop", "agent-loop", ["core-loop.test", "core-loop-boundaries.test"], { layers: [2, 6] }),
-	host("host-instructions", "prompts-instructions", ["instruction-discovery.acceptance.test"]),
+	host("host-instructions", "prompts-instructions", ["instruction-discovery.acceptance.test"], {
+		lanes: ["extended"],
+	}),
 	host("host-lm", "model-provider", ["vscode-lm-contract.test", "vscode-lm-empty-recovery.test"]),
 	host("host-context", "context-construction", ["long-context-fanout.test", "proportional-context.test"]),
 	host("host-storage", "memory-persistence", ["storage-recovery.test", "storage-restart.test"], {
 		columns: ["e2e", "robustness"],
 		layers: [2, 7, 11],
+	}),
+	host("host-storage-recovery", "memory-persistence", ["storage-recovery.test"], {
+		lanes: ["extended"],
+		columns: ["e2e", "robustness"],
+		layers: [2, 7],
+		scope: "Offline lock evidence, owned repair and live-owner rejection; phased storage restart remains separate",
+	}),
+	host("host-tickets", "tickets", ["alpha-tickets.acceptance.test"]),
+	host("host-html-preview", "html-preview", ["html-document.test"], { lanes: ["extended"] }),
+	host("host-scheduled-tasks", "scheduled-tasks", ["scheduled-tasks.acceptance.test"], {
+		lanes: ["extended"],
+		columns: ["e2e", "regression", "robustness", "security"],
+		layers: [2, 4, 7, 8],
 	}),
 	host("host-search", "search-grep", ["tool-search.acceptance.test", "tools/search-files.test"]),
 	host("host-reads", "file-reads", ["tools/read-file.test"]),

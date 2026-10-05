@@ -57,6 +57,9 @@ jobs:
             - name: Run exact VS Code 1.125.0 release gate
               run: pnpm harness run host
 
+            - name: Verify extended exact-host feature coverage
+              run: pnpm harness run extended
+
             - name: Verify managed-agent contracts and certification
               run: pnpm harness run confidence
 
@@ -65,7 +68,7 @@ jobs:
 
             - name: Require current release evidence
               if: always()
-              run: pnpm harness matrix --output artifacts/harness/matrix-release.json --require static --require offline --require host --require confidence --require outcomes
+              run: pnpm harness matrix --output artifacts/harness/matrix-release.json --require static --require offline --require host --require extended --require confidence --require outcomes
 
             - name: Verify command auto-approval and outside-path review
               run: pnpm --filter @alpha-code/vscode-e2e test:command-paths:1250:run
